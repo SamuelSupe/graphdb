@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 )
 
 type SavedQuery struct {

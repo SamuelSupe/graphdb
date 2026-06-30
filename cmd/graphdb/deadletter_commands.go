@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func deadLetters(args []string, store *storage.TenantStore) error {

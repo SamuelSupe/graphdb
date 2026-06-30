@@ -3,7 +3,7 @@ package query
 import (
 	"testing"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestBooleanWhereExpression(t *testing.T) {

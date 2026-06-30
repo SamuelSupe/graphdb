@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 const defaultTenantUsageCacheTTL = 60 * time.Second

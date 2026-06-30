@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"graphdb/internal/config"
-	"graphdb/internal/httpapi"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func TestNewHTTPServerSetsProductionTimeouts(t *testing.T) {

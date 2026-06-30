@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]any, string, error) {

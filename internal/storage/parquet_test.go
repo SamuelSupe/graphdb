@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"

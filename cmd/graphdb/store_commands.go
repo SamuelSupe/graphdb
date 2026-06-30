@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/httpapi"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func initTenant(args []string, store *storage.TenantStore) error {

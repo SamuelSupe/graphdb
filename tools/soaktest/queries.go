@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 )
 
 type queryCase struct {

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"sync"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 type entityPageCache struct {

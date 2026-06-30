@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func indexContentHash(value any) string {

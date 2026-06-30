@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"graphdb/internal/query"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func TestHTTPErrorCodeContractMapsProductErrors(t *testing.T) {

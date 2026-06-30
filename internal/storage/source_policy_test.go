@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestPutSourcePolicyRequiresWriterLease(t *testing.T) {

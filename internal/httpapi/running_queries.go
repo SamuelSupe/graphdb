@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 )
 
 type RunningQueryRegistry struct {

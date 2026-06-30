@@ -1,6 +1,6 @@
 package query
 
-import "graphdb/internal/graph"
+import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 
 func pathMatches(path graph.Path, filter PathFilter) bool {
 	if !pathStepsMatch(path, filter, true) {

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (s *TenantStore) putSnapshotRecordIfAbsentOrEquivalent(ctx context.Context, key string, record snapshotRecord) error {

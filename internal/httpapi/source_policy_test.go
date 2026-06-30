@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func TestHTTPSourcePolicyAndCommitSuppressed(t *testing.T) {

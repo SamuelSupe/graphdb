@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"graphdb/internal/query"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func runQuery(args []string, store *storage.TenantStore) error {

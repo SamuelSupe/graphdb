@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 type storeFlags struct {

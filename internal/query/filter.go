@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"strings"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func requestFilters(request Request) []Filter {

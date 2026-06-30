@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (l *PersistedIndexLookup) ListEntities(ctx context.Context, kind string, fields []string) ([]graph.Entity, bool, error) {

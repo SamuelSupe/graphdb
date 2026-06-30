@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 const manifestObjectMissingReloads = 2

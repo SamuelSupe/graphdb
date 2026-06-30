@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID string) (func(), bool) {

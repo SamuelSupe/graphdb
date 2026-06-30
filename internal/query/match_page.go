@@ -1,6 +1,6 @@
 package query
 
-import "graphdb/internal/graph"
+import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 
 type matchPageState struct {
 	pastCursor    bool

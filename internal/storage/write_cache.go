@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (loadedGraph, error) {

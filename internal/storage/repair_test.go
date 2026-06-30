@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestJSONManifestIsRejectedAndRepairRebuildsParquet(t *testing.T) {

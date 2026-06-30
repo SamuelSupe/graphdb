@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"graphdb/internal/config"
-	"graphdb/internal/httpapi"
-	"graphdb/internal/observability"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 const httpShutdownTimeout = 10 * time.Second

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions) (CommitResult, error) {

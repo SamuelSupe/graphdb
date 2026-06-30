@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func (s *Server) listEntities(w http.ResponseWriter, r *http.Request) {

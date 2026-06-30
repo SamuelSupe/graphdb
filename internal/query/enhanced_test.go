@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestEnhancedFiltersSortProjectionAggregationAndStableCursor(t *testing.T) {
