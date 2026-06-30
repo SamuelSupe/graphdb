@@ -1,0 +1,148 @@
+{
+  "mutations": {
+    "upsert_ci_types": [
+      {
+        "name": "host",
+        "display_name": "Host",
+        "fields": {
+          "hostname": {
+            "type": "string",
+            "required": true,
+            "unique": true,
+            "indexed": true
+          },
+          "region": {
+            "type": "string",
+            "default": "unknown",
+            "indexed": true
+          }
+        },
+        "identity_keys": [
+          {
+            "name": "hostname",
+            "fields": ["hostname"],
+            "confidence_threshold": 0.7,
+            "strategy": "merge"
+          }
+        ]
+      },
+      {
+        "name": "service",
+        "display_name": "Service",
+        "fields": {
+          "name": {
+            "type": "string",
+            "required": true,
+            "unique": true,
+            "indexed": true
+          }
+        },
+        "identity_keys": [
+          {
+            "name": "name",
+            "fields": ["name"],
+            "strategy": "merge"
+          }
+        ]
+      },
+      {
+        "name": "database",
+        "display_name": "Database",
+        "fields": {
+          "name": {
+            "type": "string",
+            "required": true,
+            "unique": true,
+            "indexed": true
+          }
+        },
+        "identity_keys": [
+          {
+            "name": "name",
+            "fields": ["name"],
+            "strategy": "merge"
+          }
+        ]
+      }
+    ],
+    "upsert_entities": [
+      {
+        "id": "host:aws:i-001",
+        "kind": "host",
+        "source": "aws",
+        "external_id": "i-001",
+        "confidence": 0.85,
+        "source_priority": 10,
+        "fields": {
+          "hostname": "app-01",
+          "region": "us-east-1"
+        }
+      },
+      {
+        "id": "host:agent:app-01",
+        "kind": "host",
+        "source": "agent",
+        "external_id": "app-01",
+        "confidence": 0.95,
+        "source_priority": 20,
+        "fields": {
+          "hostname": "app-01",
+          "region": "us-east-1"
+        }
+      },
+      {
+        "id": "service:frontend",
+        "kind": "service",
+        "source": "kubernetes",
+        "external_id": "default/frontend",
+        "confidence": 0.9,
+        "source_priority": 15,
+        "fields": {
+          "name": "frontend"
+        }
+      },
+      {
+        "id": "service:api",
+        "kind": "service",
+        "source": "kubernetes",
+        "external_id": "default/api",
+        "confidence": 0.9,
+        "source_priority": 15,
+        "fields": {
+          "name": "api"
+        }
+      },
+      {
+        "id": "db:postgres",
+        "kind": "database",
+        "source": "rds",
+        "external_id": "postgres-01",
+        "confidence": 0.9,
+        "source_priority": 15,
+        "fields": {
+          "name": "postgres"
+        }
+      }
+    ],
+    "upsert_edges": [
+      {
+        "id": "edge:frontend-depends-on-api",
+        "type": "depends_on",
+        "from": "service:frontend",
+        "to": "service:api"
+      },
+      {
+        "id": "edge:api-depends-on-postgres",
+        "type": "depends_on",
+        "from": "service:api",
+        "to": "db:postgres"
+      },
+      {
+        "id": "edge:api-runs-on-app-01",
+        "type": "runs_on",
+        "from": "service:api",
+        "to": "host:aws:i-001"
+      }
+    ]
+  }
+}

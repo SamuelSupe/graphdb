@@ -1,0 +1,26 @@
+{
+  "backpressure": {
+    "object_latency_threshold_ms": 2000,
+    "cas_conflict_window_ms": 30000,
+    "cas_conflict_threshold": 5,
+    "max_commit_tail": 300,
+    "retry_after_ms": 2000
+  },
+  "quota": {
+    "max_entities_per_tenant": 0,
+    "max_edges_per_tenant": 0
+  },
+  "maintenance": {
+    "auto_compact": true,
+    "compact_commit_tail_threshold": 240,
+    "gc_interval_seconds": 1800,
+    "keep_snapshots": 2,
+    "deadletter_max_age_seconds": 604800,
+    "task_max_age_seconds": 604800,
+    "cleanup_index_orphans": true
+  },
+  "indexes": {
+    "auto_rebuild": true,
+    "rebuild_on_stale": true
+  }
+}

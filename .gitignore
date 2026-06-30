@@ -1,0 +1,6 @@
+.graphdb/
+.gocache/
+bin/
+coverage.out
+dist/
+soak-runs/

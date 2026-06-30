@@ -1,0 +1,9 @@
+{
+  "op": "shortest_path",
+  "id": "service:frontend",
+  "target_id": "db:postgres",
+  "direction": "out",
+  "relation_type": "depends_on",
+  "depth": 8,
+  "cost_limit": 5000
+}

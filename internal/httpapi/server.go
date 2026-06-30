@@ -1,0 +1,490 @@
+package httpapi
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"graphdb/internal/graph"
+	"graphdb/internal/observability"
+	"graphdb/internal/storage"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+)
+
+type Server struct {
+	Store                 *storage.TenantStore
+	Cache                 *storage.ReaderCache
+	Mode                  string
+	Admission             *QueryAdmission
+	ReadAdmission         *QueryAdmission
+	WriteAdmission        *WriteAdmission
+	WriteExecutionTimeout time.Duration
+	ReaderCatchupTimeout  time.Duration
+	QueryRegistry         *RunningQueryRegistry
+	Observability         *observability.Observability
+	UsageCacheTTL         time.Duration
+	maintenance           *maintenanceState
+	usageCache            *tenantUsageCache
+}
+
+type CommitRequest struct {
+	ExpectedVersion *int64          `json:"expected_version,omitempty"`
+	IdempotencyKey  string          `json:"idempotency_key,omitempty"`
+	Mutations       graph.Mutations `json:"mutations"`
+}
+
+func (s *Server) Handler() http.Handler {
+	if s.QueryRegistry == nil {
+		s.QueryRegistry = NewRunningQueryRegistry()
+	}
+	if s.Observability == nil {
+		s.Observability = observability.New(io.Discard, 500*time.Millisecond)
+	}
+	if s.usageCache == nil {
+		s.usageCache = newTenantUsageCache(s.tenantUsageCacheTTL())
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/health", s.health)
+	mux.HandleFunc("GET /metrics", s.metrics)
+	mux.HandleFunc("GET /openapi.yaml", s.openAPI)
+	mux.HandleFunc("/v1/tenants", s.tenantLifecycle)
+	mux.HandleFunc("/v1/tenants/", s.tenantLifecycle)
+	mux.HandleFunc("GET /v1/tenant-usage", s.tenantUsage)
+	mux.HandleFunc("POST /v1/commits", s.commit)
+	mux.HandleFunc("POST /v1/ingest/batches", s.ingest)
+	mux.HandleFunc("GET /v1/ingest/collectors/", s.collectorStatus)
+	mux.HandleFunc("GET /v1/ingest/deadletters/", s.listDeadLetters)
+	mux.HandleFunc("POST /v1/ingest/deadletters/", s.replayDeadLetters)
+	mux.HandleFunc("GET /v1/entities", s.listEntities)
+	mux.HandleFunc("GET /v1/entities/stream", s.streamEntities)
+	mux.HandleFunc("GET /v1/entities/", s.entity)
+	mux.HandleFunc("GET /v1/edges", s.listEdges)
+	mux.HandleFunc("GET /v1/edges/stream", s.streamEdges)
+	mux.HandleFunc("GET /v1/export/snapshot", s.exportSnapshot)
+	mux.HandleFunc("GET /v1/export/snapshot/stream", s.streamSnapshot)
+	mux.HandleFunc("GET /v1/ci-types", s.ciTypes)
+	mux.HandleFunc("GET /v1/relation-types", s.relationTypes)
+	mux.HandleFunc("/v1/source-policy", s.sourcePolicy)
+	mux.HandleFunc("/v1/tenant-config", s.tenantConfig)
+	mux.HandleFunc("POST /v1/query", s.query)
+	mux.HandleFunc("POST /v1/query/stream", s.queryStream)
+	mux.HandleFunc("POST /v1/query/gql", s.queryGQL)
+	mux.HandleFunc("POST /v1/query/gql/stream", s.queryGQLStream)
+	mux.HandleFunc("GET /v1/queries/running", s.listRunningQueries)
+	mux.HandleFunc("DELETE /v1/queries/running/", s.killRunningQuery)
+	mux.HandleFunc("GET /v1/query/templates", s.listQueryTemplates)
+	mux.HandleFunc("POST /v1/query/templates", s.saveQueryTemplate)
+	mux.HandleFunc("POST /v1/query/templates/", s.runQueryTemplate)
+	mux.HandleFunc("GET /v1/tasks", s.listTasks)
+	mux.HandleFunc("POST /v1/tasks", s.startTask)
+	mux.HandleFunc("GET /v1/tasks/", s.task)
+	mux.HandleFunc("POST /v1/tasks/", s.taskAction)
+	mux.HandleFunc("GET /v1/indexes", s.indexCatalog)
+	mux.HandleFunc("POST /v1/indexes", s.createIndex)
+	mux.HandleFunc("GET /v1/indexes/definitions", s.indexDefinitions)
+	mux.HandleFunc("DELETE /v1/indexes/definitions/", s.dropIndex)
+	mux.HandleFunc("GET /v1/indexes/health", s.indexHealth)
+	mux.HandleFunc("GET /v1/indexes/tasks/", s.indexTask)
+	mux.HandleFunc("POST /v1/indexes/rebuild", s.rebuildIndexes)
+	mux.HandleFunc("GET /v1/control/writer-lease", s.writerLease)
+	mux.HandleFunc("GET /v1/control/reader-lag", s.readerLag)
+	mux.HandleFunc("GET /v1/control/reader-freshness", s.readerLag)
+	mux.HandleFunc("GET /v1/control/reader-fleet-readiness", s.readerFleetReadiness)
+	mux.HandleFunc("GET /v1/control/reader-traffic-gate", s.readerTrafficGate)
+	mux.HandleFunc("GET /v1/control/integrity-audit", s.integrityAudit)
+	mux.HandleFunc("POST /v1/control/recover", s.recoverTenant)
+	mux.HandleFunc("POST /v1/control/repair", s.repairTenant)
+	mux.HandleFunc("POST /v1/control/cleanup-commits", s.cleanupCommits)
+	mux.HandleFunc("POST /v1/control/gc", s.runGC)
+	mux.HandleFunc("POST /v1/compact", s.compact)
+	return s.observeHTTP(s.tenantLifecycleGate(mux))
+}
+
+func (s *Server) tenantUsageCacheTTL() time.Duration {
+	if s.UsageCacheTTL != 0 {
+		return s.UsageCacheTTL
+	}
+	return defaultTenantUsageCacheTTL
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "mode": s.Mode})
+}
+
+func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	_, _ = w.Write(s.obs().Metrics.SnapshotPrometheus())
+}
+
+func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
+	if !s.writeAllowed() {
+		writeError(w, http.StatusMethodNotAllowed, "writes are disabled in reader mode")
+		return
+	}
+	tenantID, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
+	release, ok := s.enterWrite(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
+	var request CommitRequest
+	if !decodeJSONBody(w, r, &request, maxWriteRequestBytes) {
+		return
+	}
+	writeCtx, cancel := s.writeExecutionContext(r.Context())
+	defer cancel()
+	result, err := s.Store.CommitWithReport(writeCtx, tenantID, request.Mutations, storage.CommitOptions{ExpectedVersion: request.ExpectedVersion, IdempotencyKey: request.IdempotencyKey})
+	if err != nil {
+		if s.writeBackpressureIfNeeded(w, tenantID, err) {
+			return
+		}
+		if writeCtx.Err() != nil {
+			if commitMayHaveChangedData(result) {
+				s.invalidate(tenantID)
+			}
+			s.auditError("commit_timeout", tenantID, err, map[string]any{"idempotency_key": request.IdempotencyKey})
+			writeRequestError(w, writeCtx.Err())
+			return
+		}
+		if commitMayHaveChangedData(result) {
+			s.invalidate(tenantID)
+			s.auditError("commit_metadata_failed", tenantID, err, map[string]any{"idempotency_key": request.IdempotencyKey})
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.auditError("commit_failed", tenantID, err, map[string]any{})
+		writeErrorErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.invalidate(tenantID)
+	s.recordSuppressed(tenantID, result.Suppressed)
+	s.auditInfo("commit_applied", tenantID, map[string]any{
+		"version": result.Version, "suppressed": len(result.Suppressed), "canonical_entities": len(result.CanonicalEntities), "canonical_edges": len(result.CanonicalEdges),
+	})
+	writeJSON(w, http.StatusOK, result)
+}
+
+func commitMayHaveChangedData(result storage.CommitResult) bool {
+	return result.Version > 0 || result.ReadAfterCommitID != "" || result.DataMD5 != ""
+}
+
+func (s *Server) entity(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
+	id, err := escapedPathTail(r, "/v1/entities/")
+	if err != nil || id == "" {
+		writeError(w, http.StatusBadRequest, "entity id is required")
+		return
+	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
+	target, err := s.readTarget(r, tenantID, readFreshness{})
+	if err != nil {
+		writeReadError(w, err)
+		return
+	}
+	if target.ManifestVersion > 0 {
+		options, version, ok := s.lazyQueryOptions(r.Context(), tenantID, target.ManifestVersion)
+		if ok && target.requiresVersion(version) && options.EntityLookup != nil {
+			entity, ok, err := options.EntityLookup.GetEntity(r.Context(), id, nil)
+			if err != nil {
+				writeReadError(w, err)
+				return
+			}
+			if ok {
+				s.recordReaderVisible(tenantID, version)
+				writeJSON(w, http.StatusOK, map[string]any{"version": version, "entity": entity})
+				return
+			}
+		}
+	}
+	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	if err != nil {
+		writeReadError(w, err)
+		return
+	}
+	entity, ok := g.GetEntityByReference(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "entity not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": manifest.Version, "entity": entity})
+}
+
+func escapedPathTail(r *http.Request, prefix string) (string, error) {
+	escaped := r.URL.EscapedPath()
+	if !strings.HasPrefix(escaped, prefix) {
+		return "", nil
+	}
+	return url.PathUnescape(strings.TrimPrefix(escaped, prefix))
+}
+
+func escapedPathParts(r *http.Request, prefix string, count int) ([]string, error) {
+	escaped := r.URL.EscapedPath()
+	if !strings.HasPrefix(escaped, prefix) {
+		return nil, nil
+	}
+	raw := strings.TrimPrefix(escaped, prefix)
+	parts := strings.Split(raw, "/")
+	if len(parts) != count {
+		return nil, nil
+	}
+	decoded := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value, err := url.PathUnescape(part)
+		if err != nil {
+			return nil, err
+		}
+		decoded = append(decoded, value)
+	}
+	return decoded, nil
+}
+
+func (s *Server) ciTypes(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
+	target, err := s.readTarget(r, tenantID, readFreshness{})
+	if err != nil {
+		writeReadError(w, err)
+		return
+	}
+	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	if err != nil {
+		writeReadError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": manifest.Version, "ci_types": g.ListCITypes()})
+}
+
+func (s *Server) relationTypes(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
+	release, ok := s.enterRead(w, r, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
+	target, err := s.readTarget(r, tenantID, readFreshness{})
+	if err != nil {
+		writeReadError(w, err)
+		return
+	}
+	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	if err != nil {
+		writeReadError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": manifest.Version, "relation_types": g.ListRelationTypes()})
+}
+
+func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
+	if !s.writeAllowed() {
+		writeError(w, http.StatusMethodNotAllowed, "compaction is disabled in reader mode")
+		return
+	}
+	tenantID, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
+	manifest, err := s.Store.Compact(r.Context(), tenantID)
+	if err != nil {
+		s.auditError("compact_failed", tenantID, err, map[string]any{})
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.invalidate(tenantID)
+	s.auditInfo("compact_applied", tenantID, map[string]any{"version": manifest.Version})
+	writeJSON(w, http.StatusOK, manifest)
+}
+
+func (s *Server) writeAllowed() bool {
+	return s.Mode == "" || s.Mode == "all" || s.Mode == "writer"
+}
+
+func (s *Server) loadGraph(ctx context.Context, tenantID string) (*graph.Graph, storage.Manifest, error) {
+	return s.loadGraphAtLeast(ctx, tenantID, 0)
+}
+
+func (s *Server) loadGraphAtLeast(ctx context.Context, tenantID string, minVersion int64) (*graph.Graph, storage.Manifest, error) {
+	if s.Cache != nil {
+		if minVersion > 0 {
+			return s.Cache.LoadAtLeast(ctx, tenantID, minVersion)
+		}
+		return s.Cache.Load(ctx, tenantID)
+	}
+	return s.Store.LoadAtLeast(ctx, tenantID, minVersion)
+}
+
+func (s *Server) invalidate(tenantID string) {
+	if s.Cache != nil {
+		s.Cache.Invalidate(tenantID)
+	}
+}
+
+func (s *Server) obs() *observability.Observability {
+	if s.Observability == nil {
+		s.Observability = observability.New(io.Discard, 500*time.Millisecond)
+	}
+	return s.Observability
+}
+
+func (s *Server) observeHTTP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		obs := s.obs()
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		tenantID := r.Header.Get("X-Tenant-ID")
+		obs.RegisterTenant(tenantID)
+		tracer := otel.Tracer("graphdb/http")
+		ctx, span := tracer.Start(ctx, "HTTP request")
+		defer span.End()
+		r = r.WithContext(ctx)
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(recorder, r)
+		duration := time.Since(start)
+		route := observedRoute(r)
+		span.SetName(r.Method + " " + route)
+		obs.Metrics.RecordHTTPRequest(r.Method, route, recorder.status, duration)
+		span.SetAttributes(
+			attribute.String("http.request.method", r.Method),
+			attribute.String("url.path", r.URL.Path),
+			attribute.String("http.route", route),
+			attribute.Int("http.response.status_code", recorder.status),
+			attribute.String("graphdb.tenant", tenantID),
+		)
+		if recorder.status >= 500 {
+			span.SetStatus(codes.Error, http.StatusText(recorder.status))
+		}
+		obs.Logger.Info("http_request", map[string]any{
+			"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,
+			"status": recorder.status, "duration_ms": float64(duration.Microseconds()) / 1000,
+		})
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusRecorder) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func observedRoute(r *http.Request) string {
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+	path := r.URL.Path
+	switch {
+	case path == "/v1/entities":
+		return "GET /v1/entities"
+	case path == "/v1/tenant-usage":
+		return "GET /v1/tenant-usage"
+	case path == "/v1/tenants":
+		return r.Method + " /v1/tenants"
+	case strings.HasPrefix(path, "/v1/tenants/"):
+		return r.Method + " /v1/tenants/{tenant_id}"
+	case path == "/v1/entities/stream":
+		return "GET /v1/entities/stream"
+	case strings.HasPrefix(path, "/v1/entities/"):
+		return "GET /v1/entities/{id}"
+	case path == "/v1/edges":
+		return "GET /v1/edges"
+	case path == "/v1/edges/stream":
+		return "GET /v1/edges/stream"
+	case path == "/v1/export/snapshot":
+		return "GET /v1/export/snapshot"
+	case path == "/v1/export/snapshot/stream":
+		return "GET /v1/export/snapshot/stream"
+	case strings.HasPrefix(path, "/v1/ingest/collectors/"):
+		return "GET /v1/ingest/collectors/{source}/{collector_id}"
+	case strings.HasPrefix(path, "/v1/ingest/deadletters/") && strings.HasSuffix(path, "/replay"):
+		return "POST /v1/ingest/deadletters/{source}/replay"
+	case strings.HasPrefix(path, "/v1/ingest/deadletters/"):
+		return "GET /v1/ingest/deadletters/{source}"
+	case strings.HasPrefix(path, "/v1/query/templates/"):
+		return "POST /v1/query/templates/{name}/run"
+	case path == "/v1/queries/running":
+		return "GET /v1/queries/running"
+	case strings.HasPrefix(path, "/v1/queries/running/"):
+		return "DELETE /v1/queries/running/{id}"
+	case strings.HasPrefix(path, "/v1/tasks/"):
+		return "GET /v1/tasks/{id}"
+	case strings.HasPrefix(path, "/v1/indexes/definitions/"):
+		return "DELETE /v1/indexes/definitions/{name}"
+	case strings.HasPrefix(path, "/v1/indexes/tasks/"):
+		return "GET /v1/indexes/tasks/{task_id}"
+	case path == "/v1/control/reader-lag":
+		return "GET /v1/control/reader-lag"
+	case path == "/v1/control/reader-freshness":
+		return "GET /v1/control/reader-freshness"
+	case path == "/v1/control/reader-fleet-readiness":
+		return "GET /v1/control/reader-fleet-readiness"
+	case path == "/v1/control/reader-traffic-gate":
+		return "GET /v1/control/reader-traffic-gate"
+	case path == "/v1/control/integrity-audit":
+		return "GET /v1/control/integrity-audit"
+	default:
+		return r.Method + " " + path
+	}
+}
+
+func (s *Server) recordSuppressed(tenantID string, conflicts []graph.FieldConflict) {
+	if len(conflicts) == 0 {
+		return
+	}
+	counts := map[string]int{}
+	for _, conflict := range conflicts {
+		resource := conflict.ResourceType
+		if resource == "" {
+			resource = "entity"
+		}
+		counts[resource]++
+	}
+	for resource, count := range counts {
+		s.obs().Metrics.RecordSuppressed(tenantID, resource, count)
+	}
+}
+
+func (s *Server) auditInfo(event string, tenantID string, fields map[string]any) {
+	fields["tenant"] = tenantID
+	s.obs().Logger.Info(event, fields)
+}
+
+func (s *Server) auditError(event string, tenantID string, err error, fields map[string]any) {
+	fields["tenant"] = tenantID
+	fields["error"] = err.Error()
+	s.obs().Logger.Error(event, fields)
+}

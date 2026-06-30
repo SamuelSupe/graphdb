@@ -1,0 +1,35 @@
+{
+  "op": "match",
+  "kind": "host",
+  "where": [
+    {
+      "field": "hostname",
+      "op": "prefix",
+      "value": "app-"
+    },
+    {
+      "field": "region",
+      "op": "in",
+      "value": ["us-east-1", "eu-west-1"]
+    }
+  ],
+  "sort": [
+    {
+      "field": "hostname"
+    }
+  ],
+  "project": ["id", "hostname", "region"],
+  "aggregate": [
+    {
+      "op": "count"
+    },
+    {
+      "op": "count_by",
+      "field": "region",
+      "name": "hosts_by_region"
+    }
+  ],
+  "limit": 50,
+  "timeout_ms": 200,
+  "cost_limit": 1000
+}

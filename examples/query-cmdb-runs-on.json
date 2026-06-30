@@ -1,0 +1,7 @@
+{
+  "op": "neighbors",
+  "id": "service:api",
+  "direction": "out",
+  "relation_type": "runs_on",
+  "limit": 10
+}

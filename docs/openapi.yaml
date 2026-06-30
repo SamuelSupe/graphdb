@@ -1,0 +1,2177 @@
+openapi: 3.0.3
+info:
+  title: GraphDB Internal API
+  version: 1.0.0
+  description: Internal object-store backed multi-tenant graph database API.
+servers:
+  - url: http://localhost:8080
+security:
+  - TenantHeader: []
+paths:
+  /openapi.yaml:
+    get:
+      security: []
+      summary: Fetch this OpenAPI contract.
+      responses:
+        '200':
+          description: OpenAPI YAML document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /v1/commits:
+    post:
+      summary: Apply an atomic direct mutation commit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitRequest'
+      responses:
+        '200':
+          description: Commit applied, skipped by md5, or idempotently replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/WriteBackpressure'
+  /v1/ingest/batches:
+    post:
+      summary: Apply a collector ingestion batch with idempotency and partial failure reporting.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+      responses:
+        '200':
+          description: Batch accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '207':
+          description: Batch accepted with item failures.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/WriteBackpressure'
+  /v1/query:
+    post:
+      summary: Execute the JSON query DSL.
+      parameters:
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Query result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/query/stream:
+    post:
+      summary: Execute a query and stream newline-delimited JSON pages.
+      parameters:
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: NDJSON stream.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/query/gql:
+    post:
+      summary: Execute a text GQL query compiled to the JSON query DSL.
+      parameters:
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GQLQueryRequest'
+          text/plain:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: Query result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/query/gql/stream:
+    post:
+      summary: Execute a text GQL query and stream newline-delimited JSON pages.
+      parameters:
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GQLQueryRequest'
+          text/plain:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: NDJSON stream.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/queries/running:
+    get:
+      summary: List running queries for the tenant on this process.
+      responses:
+        '200':
+          description: Running queries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RunningQuery'
+  /v1/queries/running/{query_id}:
+    delete:
+      summary: Cancel a running query on this process.
+      parameters:
+        - name: query_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Query cancellation requested.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  killed:
+                    type: boolean
+                  query:
+                    $ref: '#/components/schemas/RunningQuery'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/tenants:
+    get:
+      summary: List tenants.
+      parameters:
+        - name: include_legacy
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Scan legacy tenant prefixes when true; default lists only lifecycle-managed tenants.
+      responses:
+        '200':
+          description: Tenant list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TenantInfo'
+    post:
+      summary: Create or materialize tenant metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantRequest'
+      responses:
+        '200':
+          description: Tenant created or already present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantInfo'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/tenant-usage:
+    get:
+      summary: Report tenant object count, bytes, and retention policy.
+      responses:
+        '200':
+          description: Tenant usage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantUsage'
+  /v1/tenants/{tenant_id}:
+    get:
+      summary: Get tenant status and metadata.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Tenant info.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantInfo'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      summary: Replace tenant display metadata.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantRequest'
+      responses:
+        '200':
+          description: Tenant metadata updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantInfo'
+    delete:
+      summary: Soft delete a tenant.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Tenant marked deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantInfo'
+  /v1/tenants/{tenant_id}/disable:
+    post:
+      summary: Disable tenant writes.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Tenant disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantInfo'
+  /v1/tenants/{tenant_id}/enable:
+    post:
+      summary: Re-enable a disabled or soft-deleted tenant.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Tenant enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantInfo'
+  /v1/tenants/{tenant_id}/purge:
+    post:
+      summary: Permanently delete all objects under a tenant prefix.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: force
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Tenant purge report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantPurgeReport'
+  /v1/tenants/{tenant_id}/clone:
+    post:
+      summary: Clone a tenant current snapshot into a new tenant.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantCloneRequest'
+      responses:
+        '202':
+          description: Tenant cloned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantInfo'
+  /v1/tenants/{tenant_id}/backup:
+    post:
+      summary: Start a tenant backup task.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '202':
+          description: Tenant backup task queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/tenants/{tenant_id}/restore:
+    post:
+      summary: Start a tenant restore task from a backup key.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantRestoreRequest'
+      responses:
+        '202':
+          description: Tenant restore task queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/tenants/{tenant_id}/restore-drill:
+    post:
+      summary: Start a tenant restore drill task.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantRestoreDrillRequest'
+      responses:
+        '202':
+          description: Tenant restore drill task queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/entities:
+    get:
+      summary: Page current entities by kind, source, or shard.
+      parameters:
+        - $ref: '#/components/parameters/Kind'
+        - $ref: '#/components/parameters/Source'
+        - $ref: '#/components/parameters/Shard'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      responses:
+        '200':
+          description: Entity page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/entities/stream:
+    get:
+      summary: Stream current entity pages as newline-delimited JSON.
+      parameters:
+        - $ref: '#/components/parameters/Kind'
+        - $ref: '#/components/parameters/Source'
+        - $ref: '#/components/parameters/Shard'
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      responses:
+        '200':
+          description: NDJSON stream.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /v1/entities/{id}:
+    get:
+      summary: Get one entity by ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      responses:
+        '200':
+          description: Entity result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: integer
+                  entity:
+                    $ref: '#/components/schemas/Entity'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/edges:
+    get:
+      summary: Page current edges by type and from shard.
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: from_shard
+          in: query
+          schema:
+            type: integer
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      responses:
+        '200':
+          description: Edge page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgePage'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /v1/edges/stream:
+    get:
+      summary: Stream current edge pages as newline-delimited JSON.
+      parameters:
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      responses:
+        '200':
+          description: NDJSON stream.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /v1/export/snapshot:
+    get:
+      summary: Export the current snapshot page.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      responses:
+        '200':
+          description: Snapshot export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotPage'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /v1/export/snapshot/stream:
+    get:
+      summary: Stream the current snapshot as newline-delimited JSON.
+      description: Defaults to a refs stream for sharded snapshot catalogs. Use inline=true for row-by-row entity and edge records.
+      parameters:
+        - name: inline
+          in: query
+          schema:
+            type: boolean
+          description: Return row-by-row entity and edge records instead of object references.
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      responses:
+        '200':
+          description: NDJSON stream.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /v1/indexes:
+    get:
+      summary: Get the persisted index catalog.
+      responses:
+        '200':
+          description: Index catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexCatalog'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/indexes/rebuild:
+    post:
+      summary: Rebuild persisted indexes.
+      parameters:
+        - name: async
+          in: query
+          schema:
+            type: boolean
+          description: Start a background Parquet rebuild.
+      responses:
+        '200':
+          description: Synchronous rebuild completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexCatalog'
+        '202':
+          description: Background rebuild task started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/indexes/health:
+    get:
+      summary: Check persisted index health.
+      description: Defaults to a bounded catalog/manifest freshness check. Pass deep=true for full object/content validation.
+      parameters:
+        - name: deep
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Run full index object and content validation.
+      responses:
+        '200':
+          description: Index health.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexHealth'
+  /v1/indexes/tasks/{task_id}:
+    get:
+      summary: Get a background index rebuild task.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Index task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexTask'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/control/reader-freshness:
+    get:
+      summary: Report tenant reader freshness and commit tail replay status.
+      responses:
+        '200':
+          description: Reader freshness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderFreshness'
+  /v1/control/reader-lag:
+    get:
+      summary: Compatibility alias for reader freshness.
+      responses:
+        '200':
+          description: Reader freshness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderFreshness'
+  /v1/control/reader-fleet-readiness:
+    get:
+      summary: Aggregate reader heartbeat readiness for this tenant.
+      parameters:
+        - name: min_version
+          in: query
+          schema:
+            type: integer
+          description: Version every ready reader must be able to serve; defaults to current writer manifest version.
+        - name: min_ready
+          in: query
+          schema:
+            type: integer
+          description: Minimum ready readers required; default 1.
+        - name: max_staleness_ms
+          in: query
+          schema:
+            type: integer
+          description: Heartbeat freshness window; default 30000.
+      responses:
+        '200':
+          description: Reader fleet readiness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderFleetReadiness'
+  /v1/control/reader-traffic-gate:
+    get:
+      summary: Deployment-facing local reader traffic gate.
+      parameters:
+        - name: min_version
+          in: query
+          schema:
+            type: integer
+          description: Version this reader must serve; defaults to current writer manifest version.
+        - name: max_staleness_ms
+          in: query
+          schema:
+            type: integer
+          description: Staleness window used only when allow_stale=true; default 30000.
+        - name: allow_stale
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: When true, bounded stale readers may keep traffic until max_staleness_ms is exceeded.
+        - name: refresh
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: When true, a lagging cached reader attempts to load at least the target version before deciding.
+      responses:
+        '200':
+          description: This reader can receive traffic for the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderTrafficGate'
+        '503':
+          description: This reader should be drained from traffic for the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderTrafficGate'
+  /v1/control/recover:
+    post:
+      summary: Recover contiguous orphan commits into the tenant manifest.
+      responses:
+        '200':
+          description: Recovery report.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/control/integrity-audit:
+    get:
+      summary: Audit manifest, snapshot, index, and entity-record integrity.
+      parameters:
+        - name: deep
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: When false, skip index object and entity-record expansion.
+      responses:
+        '200':
+          description: Integrity audit report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrityAuditReport'
+  /v1/control/repair:
+    post:
+      summary: Inspect or apply deterministic tenant repair.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                apply:
+                  type: boolean
+      responses:
+        '200':
+          description: Repair report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepairReport'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/source-policy:
+    get:
+      summary: Get the tenant source priority policy.
+      responses:
+        '200':
+          description: Source policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourcePolicyResponse'
+    put:
+      summary: Replace the tenant source priority policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourcePolicy'
+      responses:
+        '200':
+          description: Updated source policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourcePolicyResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/tenant-config:
+    get:
+      summary: Get tenant runtime config overrides.
+      responses:
+        '200':
+          description: Tenant config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantConfigResponse'
+    put:
+      summary: Replace tenant runtime config overrides.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantConfig'
+      responses:
+        '200':
+          description: Updated tenant config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantConfigResponse'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/tasks:
+    get:
+      summary: List unified operational tasks.
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Task list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+    post:
+      summary: Start a unified operational task.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskStartRequest'
+      responses:
+        '202':
+          description: Task queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/tasks/{task_id}:
+    get:
+      summary: Get a unified operational task.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/tasks/{task_id}/cancel:
+    post:
+      summary: Cancel a queued or running unified operational task.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task canceled or already terminal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/tasks/{task_id}/retry:
+    post:
+      summary: Retry a failed or canceled unified operational task.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Retry task queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+components:
+  securitySchemes:
+    TenantHeader:
+      type: apiKey
+      in: header
+      name: X-Tenant-ID
+  parameters:
+    TenantID:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+    Kind:
+      name: kind
+      in: query
+      schema:
+        type: string
+    Source:
+      name: source
+      in: query
+      schema:
+        type: string
+    Shard:
+      name: shard
+      in: query
+      schema:
+        type: integer
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 10000
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    ReadMinVersion:
+      name: min_version
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+      description: Require the reader-visible snapshot to be at least this version.
+    ReadAllowStale:
+      name: allow_stale
+      in: query
+      schema:
+        type: boolean
+      description: Permit any locally visible version when min_version is omitted.
+    ReadMinVersionHeader:
+      name: X-GraphDB-Min-Version
+      in: header
+      schema:
+        type: integer
+        minimum: 0
+      description: Header form of min_version.
+    ReadAllowStaleHeader:
+      name: X-GraphDB-Allow-Stale
+      in: header
+      schema:
+        type: boolean
+      description: Header form of allow_stale.
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    MethodNotAllowed:
+      description: Operation disabled in this mode.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unprocessable:
+      description: Query parsed but cannot be executed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Admission rejected the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ReaderNotFresh:
+      description: Reader cannot satisfy the requested minimum version before catch-up timeout.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Retry delay in seconds.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    WriteBackpressure:
+      description: Write backpressure rejected the request.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Retry delay in seconds.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WriteBackpressureError'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error, code, message, retryable]
+      properties:
+        error:
+          type: string
+          description: Backward-compatible error message.
+        code:
+          type: string
+          enum:
+            - bad_request
+            - invalid_tenant
+            - tenant_required
+            - tenant_disabled
+            - tenant_deleted
+            - operation_disabled
+            - not_found
+            - method_not_allowed
+            - request_too_large
+            - too_many_requests
+            - internal_error
+            - invalid_json
+            - invalid_query
+            - query_limit_exceeded
+            - index_stale
+            - reader_not_fresh
+            - quota_exceeded
+            - lease_held
+            - manifest_cas_conflict
+            - object_write_conflict
+            - object_store_unavailable
+            - task_conflict
+            - repair_required
+            - version_conflict
+            - idempotency_conflict
+            - commit_tail_too_long
+            - index_rebuild_running
+            - maintenance_task_running
+            - write_admission_queue_timeout
+            - write_backpressure
+            - request_timeout
+            - request_canceled
+        message:
+          type: string
+        retryable:
+          type: boolean
+        detail:
+          type: object
+          additionalProperties: true
+    WriteBackpressureError:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          required: [retry_after_ms, reasons]
+          properties:
+            retry_after_ms:
+              type: integer
+            reasons:
+              type: array
+              items:
+                $ref: '#/components/schemas/BackpressureReason'
+    BackpressureReason:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - object_store_latency_high
+            - manifest_cas_conflicts_high
+            - index_rebuild_running
+            - gc_running
+            - commit_tail_too_long
+            - tenant_entity_quota_exceeded
+            - tenant_edge_quota_exceeded
+            - write_admission_queue_timeout
+        current:
+          type: number
+        threshold:
+          type: number
+        message:
+          type: string
+    CommitRequest:
+      type: object
+      required: [mutations]
+      properties:
+        expected_version:
+          type: integer
+        idempotency_key:
+          type: string
+          description: Optional direct commit idempotency key. Same key must reuse the same request body.
+        mutations:
+          $ref: '#/components/schemas/Mutations'
+    CommitResult:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        version:
+          type: integer
+        readable_version:
+          type: integer
+        read_after_commit_id:
+          type: string
+        skipped:
+          type: boolean
+        idempotent_replay:
+          type: boolean
+        data_md5:
+          type: string
+        suppressed:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conflict'
+    Mutations:
+      type: object
+      properties:
+        upsert_ci_types:
+          type: array
+          items:
+            type: object
+        upsert_relation_types:
+          type: array
+          items:
+            type: object
+        upsert_entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entity'
+        delete_entities:
+          type: array
+          items:
+            type: string
+        upsert_edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/Edge'
+        delete_edges:
+          type: array
+          items:
+            type: string
+        delete_edge_requests:
+          type: array
+          items:
+            type: object
+    Entity:
+      type: object
+      required: [kind]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        source:
+          type: string
+        external_id:
+          type: string
+        source_priority:
+          type: integer
+        confidence:
+          type: number
+        fields:
+          type: object
+          additionalProperties: true
+        field_sources:
+          type: object
+          additionalProperties: true
+    Edge:
+      type: object
+      required: [type, from, to]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+        source:
+          type: string
+        external_id:
+          type: string
+        source_priority:
+          type: integer
+        confidence:
+          type: number
+        fields:
+          type: object
+          additionalProperties: true
+    Conflict:
+      type: object
+      properties:
+        resource_type:
+          type: string
+        entity_id:
+          type: string
+        edge_id:
+          type: string
+        canonical_id:
+          type: string
+        field:
+          type: string
+        message:
+          type: string
+    IngestRequest:
+      type: object
+      required: [source, collector_id, items]
+      properties:
+        source:
+          type: string
+        collector_id:
+          type: string
+        batch_id:
+          type: string
+        idempotency_key:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    IngestResult:
+      type: object
+      properties:
+        batch_id:
+          type: string
+        accepted:
+          type: integer
+        failed:
+          type: integer
+        suppressed:
+          type: integer
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conflict'
+    QueryRequest:
+      type: object
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum: [match, neighbors, traverse, shortest_path, impact, explain, profile]
+        kind:
+          type: string
+        id:
+          type: string
+        relation_type:
+          type: string
+        direction:
+          type: string
+          enum: [out, in, both]
+        where:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        where_expr:
+          $ref: '#/components/schemas/FilterExpr'
+        edge_where:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        edge_where_expr:
+          $ref: '#/components/schemas/FilterExpr'
+        project:
+          type: array
+          items:
+            type: string
+        sort:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        aggregate:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        group_by:
+          type: array
+          items:
+            type: string
+        having:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        having_expr:
+          $ref: '#/components/schemas/FilterExpr'
+        path:
+          type: object
+          additionalProperties: true
+        limit:
+          type: integer
+        cursor:
+          type: string
+        timeout_ms:
+          type: integer
+        min_version:
+          type: integer
+          minimum: 0
+          description: Require read-after-write visibility at or above this manifest version.
+        allow_stale:
+          type: boolean
+          description: Permit a cached visible version when min_version is omitted.
+    GQLQueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          description: Text GQL query such as FIND host WHERE hostname PREFIX "app-" LIMIT 100.
+        min_version:
+          type: integer
+          minimum: 0
+          description: Require read-after-write visibility at or above this manifest version.
+        allow_stale:
+          type: boolean
+          description: Permit a cached visible version when min_version is omitted.
+        cursor:
+          type: string
+          description: Opaque cursor from a previous GQL query response.
+        timeout_ms:
+          type: integer
+          minimum: 0
+        cost_limit:
+          type: integer
+          minimum: 0
+        profile:
+          type: boolean
+          description: Attach plan and operator profile to the compiled query response.
+    FilterExpr:
+      type: object
+      description: Boolean filter tree. Composite op is and/or/not; leaf op uses eq, neq, in, gt, gte, lt, lte, prefix, contains, fuzzy, or exists.
+      properties:
+        op:
+          type: string
+        field:
+          type: string
+        value: {}
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterExpr'
+    QueryResponse:
+      type: object
+      properties:
+        version:
+          type: integer
+        results:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        next_cursor:
+          type: string
+        aggregates:
+          type: object
+          additionalProperties: true
+        groups:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        plan:
+          type: object
+          additionalProperties: true
+        profile:
+          type: object
+          additionalProperties: true
+    RunningQuery:
+      type: object
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        op:
+          type: string
+        target_op:
+          type: string
+        route:
+          type: string
+        remote_addr:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        canceled:
+          type: boolean
+        request:
+          $ref: '#/components/schemas/QueryRequest'
+    EntityPage:
+      type: object
+      properties:
+        version:
+          type: integer
+        entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entity'
+        next_cursor:
+          type: string
+    EdgePage:
+      type: object
+      properties:
+        version:
+          type: integer
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/Edge'
+        next_cursor:
+          type: string
+    SnapshotPage:
+      type: object
+      properties:
+        version:
+          type: integer
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        next_cursor:
+          type: string
+    IndexCatalog:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        version:
+          type: integer
+        indexes:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexSpec'
+        edge_shards:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeShardSpec'
+        entity_pages:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityPageSpec'
+    IndexSpec:
+      type: object
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+        field:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        format:
+          type: string
+          enum: [parquet]
+        codec:
+          type: string
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexObject'
+        row_count:
+          type: integer
+        entry_count:
+          type: integer
+        distinct_values:
+          type: integer
+        content_hash:
+          type: string
+        schema_hash:
+          type: string
+    EdgeShardSpec:
+      type: object
+      properties:
+        relation_type:
+          type: string
+        shard:
+          type: string
+        format:
+          type: string
+          enum: [parquet]
+        codec:
+          type: string
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexObject'
+        row_count:
+          type: integer
+        edge_count:
+          type: integer
+        content_hash:
+          type: string
+        schema_hash:
+          type: string
+    EntityPageSpec:
+      type: object
+      properties:
+        shard:
+          type: string
+        format:
+          type: string
+          enum: [parquet]
+        codec:
+          type: string
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexObject'
+        row_count:
+          type: integer
+        entity_count:
+          type: integer
+        content_hash:
+          type: string
+        schema_hash:
+          type: string
+    IndexObject:
+      type: object
+      properties:
+        role:
+          type: string
+        key:
+          type: string
+        format:
+          type: string
+          enum: [parquet]
+        codec:
+          type: string
+        row_count:
+          type: integer
+        content_hash:
+          type: string
+        schema_hash:
+          type: string
+    IndexHealth:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, missing, stale, error]
+        manifest_version:
+          type: integer
+        catalog_version:
+          type: integer
+        issues:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    ReaderFreshness:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        status:
+          type: string
+          enum: [fresh, stale, cold, loading, refreshing, ahead]
+        fresh:
+          type: boolean
+        consistent:
+          type: boolean
+        manifest_version:
+          type: integer
+        visible_version:
+          type: integer
+        lag:
+          type: integer
+        writer_manifest_version:
+          type: integer
+        reader_manifest_version:
+          type: integer
+        version_lag:
+          type: integer
+        lag_ms:
+          type: integer
+        writer_updated_at:
+          type: string
+          format: date-time
+        reader_updated_at:
+          type: string
+          format: date-time
+        cache:
+          type: object
+          properties:
+            configured:
+              type: boolean
+            cached:
+              type: boolean
+            loading:
+              type: boolean
+            cached_at:
+              type: string
+              format: date-time
+            expires_at:
+              type: string
+              format: date-time
+            last_access:
+              type: string
+              format: date-time
+            ttl_ms:
+              type: integer
+        commit_tail:
+          type: object
+          properties:
+            writer_length:
+              type: integer
+            reader_length:
+              type: integer
+            snapshot_version:
+              type: integer
+            reader_snapshot_version:
+              type: integer
+            replay_status:
+              type: string
+              enum: [direct, replayed, pending, not_loaded, loading, ahead]
+    ReaderFleetReadiness:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+        target_version:
+          type: integer
+        min_ready:
+          type: integer
+        max_staleness_ms:
+          type: integer
+        ready:
+          type: boolean
+        total_readers:
+          type: integer
+        ready_readers:
+          type: integer
+        stale_readers:
+          type: integer
+        readers:
+          type: array
+          items:
+            type: object
+            properties:
+              reader_id:
+                type: string
+              instance_id:
+                type: string
+              status:
+                type: string
+              ready:
+                type: boolean
+              visible_version:
+                type: integer
+              manifest_version:
+                type: integer
+              version_lag:
+                type: integer
+              age_ms:
+                type: integer
+              reason:
+                type: string
+              last_seen_at:
+                type: string
+                format: date-time
+    ReaderTrafficGate:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+        serve_traffic:
+          type: boolean
+        status:
+          type: string
+          enum: [ready, draining]
+        reason:
+          type: string
+        message:
+          type: string
+        target_version:
+          type: integer
+        max_staleness_ms:
+          type: integer
+        allow_stale:
+          type: boolean
+        refresh_attempt:
+          type: boolean
+        refresh_success:
+          type: boolean
+        freshness:
+          $ref: '#/components/schemas/ReaderFreshness'
+    RepairReport:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        manifest_version:
+          type: integer
+        apply:
+          type: boolean
+        status:
+          type: string
+          enum: [ready, warn, error]
+        issues:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        plan:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        actions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        remaining_issues:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        index_health:
+          $ref: '#/components/schemas/IndexHealth'
+        verification:
+          $ref: '#/components/schemas/IntegrityAuditReport'
+    IntegrityAuditReport:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        status:
+          type: string
+          enum: [ok, warn, error]
+        manifest_version:
+          type: integer
+        snapshot_version:
+          type: integer
+        index_catalog_version:
+          type: integer
+        objects:
+          type: integer
+        bytes:
+          type: integer
+        issues:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    IndexTask:
+      type: object
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        status:
+          type: string
+        phase:
+          type: string
+        catalog_version:
+          type: integer
+        progress_total:
+          type: integer
+        progress_completed:
+          type: integer
+        error:
+          type: string
+    SourcePolicyResponse:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        policy:
+          $ref: '#/components/schemas/SourcePolicy'
+    TenantUsage:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        prefix:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+        manifest_version:
+          type: integer
+        snapshot_version:
+          type: integer
+        commit_tail_length:
+          type: integer
+        object_count:
+          type: integer
+        total_bytes:
+          type: integer
+        tenant_config_found:
+          type: boolean
+        retention:
+          type: object
+          properties:
+            keep_snapshots:
+              type: integer
+            deadletter_max_age_seconds:
+              type: integer
+            task_max_age_seconds:
+              type: integer
+            cleanup_index_orphans:
+              type: boolean
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              object_count:
+                type: integer
+              bytes:
+                type: integer
+    SourcePolicy:
+      type: object
+      properties:
+        default_priority:
+          type: integer
+        sources:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              priority:
+                type: integer
+              description:
+                type: string
+    TaskStartRequest:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [compact, gc, repair, export_snapshot, replay_deadletters, index_rebuild, tenant_backup, tenant_restore, tenant_restore_drill]
+        params:
+          type: object
+          additionalProperties: true
+          description: Task-specific parameters such as apply, source, limit, keep_snapshots, deadletter_max_age_seconds, task_max_age_seconds, cleanup_index_orphans, backup_key, overwrite, dry_run, target_tenant_id, target_prefix, query_templates, cleanup, or cursor.
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, canceled]
+        phase:
+          type: string
+        progress_completed:
+          type: integer
+        progress_total:
+          type: integer
+        owner_id:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+        checkpoint:
+          type: object
+          additionalProperties: true
+        result:
+          type: object
+          additionalProperties: true
+        result_key:
+          type: string
+        error:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+    TenantRequest:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        config:
+          $ref: '#/components/schemas/TenantConfig'
+        source_policy:
+          $ref: '#/components/schemas/SourcePolicy'
+    TenantCloneRequest:
+      allOf:
+        - $ref: '#/components/schemas/TenantRequest'
+        - type: object
+          required: [target_tenant_id]
+          properties:
+            target_tenant_id:
+              type: string
+    TenantRestoreRequest:
+      type: object
+      required: [backup_key]
+      properties:
+        backup_key:
+          type: string
+        overwrite:
+          type: boolean
+        dry_run:
+          type: boolean
+    TenantRestoreDrillRequest:
+      type: object
+      properties:
+        backup_key:
+          type: string
+          description: Optional backup result key or backup manifest key. If omitted, the drill creates a fresh backup first.
+        target_tenant_id:
+          type: string
+        target_prefix:
+          type: string
+          description: Optional alternate object-store prefix for the restored drill tenant.
+        cleanup:
+          type: boolean
+          description: Defaults to true and purges the restored drill tenant after proof generation.
+        dry_run:
+          type: boolean
+        query_templates:
+          type: array
+          items:
+            type: string
+          description: Optional saved query template names. If omitted, all saved query templates are run.
+        query_timeout_ms:
+          type: integer
+          format: int64
+    TenantInfo:
+      allOf:
+        - $ref: '#/components/schemas/TenantRequest'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [active, disabled, deleted]
+            cloned_from:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            disabled_at:
+              type: string
+              format: date-time
+            deleted_at:
+              type: string
+              format: date-time
+            manifest_version:
+              type: integer
+            snapshot_version:
+              type: integer
+            commit_tail_length:
+              type: integer
+            exists:
+              type: boolean
+            last_updated_at:
+              type: string
+              format: date-time
+    TenantPurgeReport:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        deleted:
+          type: integer
+        deleted_keys:
+          type: array
+          items:
+            type: string
+    TenantConfigResponse:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        config:
+          $ref: '#/components/schemas/TenantConfig'
+    TenantConfig:
+      type: object
+      properties:
+        backpressure:
+          type: object
+          properties:
+            object_latency_threshold_ms:
+              type: integer
+            cas_conflict_window_ms:
+              type: integer
+            cas_conflict_threshold:
+              type: integer
+            max_commit_tail:
+              type: integer
+            retry_after_ms:
+              type: integer
+        quota:
+          type: object
+          properties:
+            max_entities_per_tenant:
+              type: integer
+            max_edges_per_tenant:
+              type: integer
+        maintenance:
+          type: object
+          properties:
+            auto_compact:
+              type: boolean
+            compact_commit_tail_threshold:
+              type: integer
+            compact_object_count_threshold:
+              type: integer
+            compact_bytes_threshold:
+              type: integer
+            small_file_object_threshold:
+              type: integer
+            small_file_bytes_threshold:
+              type: integer
+            entity_page_split_threshold:
+              type: integer
+            entity_page_merge_threshold:
+              type: integer
+            edge_shard_split_threshold:
+              type: integer
+            edge_shard_merge_threshold:
+              type: integer
+            gc_interval_seconds:
+              type: integer
+            keep_snapshots:
+              type: integer
+            deadletter_max_age_seconds:
+              type: integer
+            task_max_age_seconds:
+              type: integer
+            cleanup_index_orphans:
+              type: boolean
+        indexes:
+          type: object
+          properties:
+            auto_rebuild:
+              type: boolean
+            rebuild_on_stale:
+              type: boolean

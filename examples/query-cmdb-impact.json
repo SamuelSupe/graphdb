@@ -1,0 +1,12 @@
+{
+  "op": "impact",
+  "id": "service:api",
+  "depth": 4,
+  "path": {
+    "end_kind": "database",
+    "max_paths": 20
+  },
+  "limit": 20,
+  "timeout_ms": 500,
+  "cost_limit": 5000
+}

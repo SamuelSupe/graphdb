@@ -1,0 +1,8 @@
+.git
+.gocache
+.graphdb
+bin
+coverage.out
+dist
+soak-runs
+*.test

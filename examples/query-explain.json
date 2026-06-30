@@ -1,0 +1,14 @@
+{
+  "op": "explain",
+  "target_op": "match",
+  "kind": "host",
+  "where": [
+    {
+      "field": "hostname",
+      "op": "eq",
+      "value": "app-01"
+    }
+  ],
+  "limit": 10,
+  "cost_limit": 1000
+}

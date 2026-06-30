@@ -1,0 +1,23 @@
+{
+  "name": "hosts-by-region",
+  "description": "List hosts in one region with query profile output.",
+  "request": {
+    "op": "profile",
+    "target_op": "match",
+    "kind": "host",
+    "where": [
+      {
+        "field": "region",
+        "op": "eq",
+        "value": "us-east-1"
+      }
+    ],
+    "sort": [
+      {
+        "field": "hostname"
+      }
+    ],
+    "project": ["id", "hostname", "region"],
+    "limit": 50
+  }
+}

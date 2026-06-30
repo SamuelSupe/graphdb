@@ -1,0 +1,8 @@
+{
+  "op": "match",
+  "kind": "host",
+  "filters": {
+    "hostname": "app-01"
+  },
+  "limit": 10
+}

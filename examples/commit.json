@@ -1,0 +1,41 @@
+{
+  "mutations": {
+    "upsert_relation_types": [
+      {
+        "name": "works_at",
+        "from_kind": "person",
+        "to_kind": "company",
+        "directed": true,
+        "cardinality": "many_to_one"
+      }
+    ],
+    "upsert_entities": [
+      {
+        "id": "person:alice",
+        "kind": "person",
+        "fields": {
+          "name": "Alice",
+          "age": 31
+        }
+      },
+      {
+        "id": "company:acme",
+        "kind": "company",
+        "fields": {
+          "name": "ACME"
+        }
+      }
+    ],
+    "upsert_edges": [
+      {
+        "id": "edge:alice-acme",
+        "type": "works_at",
+        "from": "person:alice",
+        "to": "company:acme",
+        "fields": {
+          "role": "engineer"
+        }
+      }
+    ]
+  }
+}

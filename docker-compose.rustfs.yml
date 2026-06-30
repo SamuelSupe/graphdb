@@ -1,0 +1,132 @@
+services:
+  rustfs:
+    image: rustfs/rustfs:latest
+    command: server --address :9000 /data
+    environment:
+      RUSTFS_ACCESS_KEY: graphdbadmin
+      RUSTFS_SECRET_KEY: graphdbsecret
+      RUSTFS_REGION: us-east-1
+      RUSTFS_VOLUMES: /data
+    ports:
+      - "${RUSTFS_API_PORT:-39000}:9000"
+    volumes:
+      - rustfs-data:/data
+
+  create-bucket:
+    image: minio/mc:latest
+    depends_on:
+      - rustfs
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://rustfs:9000 graphdbadmin graphdbsecret; do sleep 1; done;
+      mc mb --ignore-existing local/graphdb;
+      "
+
+  graphdb:
+    image: graphdb-rustfs:local
+    build: .
+    depends_on:
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      GRAPHDB_ADDR: ":8080"
+      GRAPHDB_MODE: writer
+      GRAPHDB_INSTANCE_ID: graphdb-writer
+      GRAPHDB_STORAGE: s3
+      GRAPHDB_PREFIX: graphdb
+      GRAPHDB_MAINTENANCE_INTERVAL: ${GRAPHDB_MAINTENANCE_INTERVAL:-5m}
+      GRAPHDB_WRITE_EXECUTION_TIMEOUT: ${GRAPHDB_WRITE_EXECUTION_TIMEOUT:-90s}
+      GRAPHDB_WRITE_OBJECT_ERROR_WINDOW: ${GRAPHDB_WRITE_OBJECT_ERROR_WINDOW:-30s}
+      GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD: ${GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD:-1}
+      GRAPHDB_WRITE_MAX_OBJECTS_PER_TENANT: ${GRAPHDB_WRITE_MAX_OBJECTS_PER_TENANT:-15000}
+      GRAPHDB_WRITE_MAX_BYTES_PER_TENANT: ${GRAPHDB_WRITE_MAX_BYTES_PER_TENANT:-1073741824}
+      S3_ENDPOINT: http://rustfs:9000
+      S3_BUCKET: graphdb
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: graphdbadmin
+      S3_SECRET_ACCESS_KEY: graphdbsecret
+    ports:
+      - "${GRAPHDB_PORT:-38080}:8080"
+
+  graphdb-reader:
+    image: graphdb-rustfs:local
+    depends_on:
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      GRAPHDB_ADDR: ":8080"
+      GRAPHDB_MODE: reader
+      GRAPHDB_INSTANCE_ID: graphdb-reader
+      GRAPHDB_STORAGE: s3
+      GRAPHDB_PREFIX: graphdb
+      S3_ENDPOINT: http://rustfs:9000
+      S3_BUCKET: graphdb
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: graphdbadmin
+      S3_SECRET_ACCESS_KEY: graphdbsecret
+      GRAPHDB_POLL_INTERVAL: 5s
+      GRAPHDB_READER_CATCHUP_TIMEOUT: ${GRAPHDB_READER_CATCHUP_TIMEOUT:-2s}
+      GRAPHDB_READ_MAX_CONCURRENT: ${GRAPHDB_READ_MAX_CONCURRENT:-128}
+      GRAPHDB_READ_MAX_PER_TENANT: ${GRAPHDB_READ_MAX_PER_TENANT:-64}
+      GRAPHDB_READ_OBJECT_MAX_CONCURRENT: ${GRAPHDB_READ_OBJECT_MAX_CONCURRENT:-128}
+      GRAPHDB_READ_OBJECT_SINGLEFLIGHT: ${GRAPHDB_READ_OBJECT_SINGLEFLIGHT:-true}
+      GRAPHDB_FAULT_OBJECT_READ_DELAY: ${GRAPHDB_FAULT_OBJECT_READ_DELAY:-}
+    ports:
+      - "${GRAPHDB_READER_PORT:-38081}:8080"
+
+  graphdb-reader-2:
+    image: graphdb-rustfs:local
+    profiles: ["scale-readers"]
+    depends_on:
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      GRAPHDB_ADDR: ":8080"
+      GRAPHDB_MODE: reader
+      GRAPHDB_INSTANCE_ID: graphdb-reader-2
+      GRAPHDB_STORAGE: s3
+      GRAPHDB_PREFIX: graphdb
+      S3_ENDPOINT: http://rustfs:9000
+      S3_BUCKET: graphdb
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: graphdbadmin
+      S3_SECRET_ACCESS_KEY: graphdbsecret
+      GRAPHDB_POLL_INTERVAL: 5s
+      GRAPHDB_READER_CATCHUP_TIMEOUT: ${GRAPHDB_READER_CATCHUP_TIMEOUT:-2s}
+      GRAPHDB_READ_MAX_CONCURRENT: ${GRAPHDB_READ_MAX_CONCURRENT:-128}
+      GRAPHDB_READ_MAX_PER_TENANT: ${GRAPHDB_READ_MAX_PER_TENANT:-64}
+      GRAPHDB_READ_OBJECT_MAX_CONCURRENT: ${GRAPHDB_READ_OBJECT_MAX_CONCURRENT:-128}
+      GRAPHDB_READ_OBJECT_SINGLEFLIGHT: ${GRAPHDB_READ_OBJECT_SINGLEFLIGHT:-true}
+      GRAPHDB_FAULT_OBJECT_READ_DELAY: ${GRAPHDB_FAULT_OBJECT_READ_DELAY:-}
+    ports:
+      - "${GRAPHDB_READER2_PORT:-38082}:8080"
+
+  graphdb-reader-3:
+    image: graphdb-rustfs:local
+    profiles: ["scale-readers"]
+    depends_on:
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      GRAPHDB_ADDR: ":8080"
+      GRAPHDB_MODE: reader
+      GRAPHDB_INSTANCE_ID: graphdb-reader-3
+      GRAPHDB_STORAGE: s3
+      GRAPHDB_PREFIX: graphdb
+      S3_ENDPOINT: http://rustfs:9000
+      S3_BUCKET: graphdb
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: graphdbadmin
+      S3_SECRET_ACCESS_KEY: graphdbsecret
+      GRAPHDB_POLL_INTERVAL: 5s
+      GRAPHDB_READER_CATCHUP_TIMEOUT: ${GRAPHDB_READER_CATCHUP_TIMEOUT:-2s}
+      GRAPHDB_READ_MAX_CONCURRENT: ${GRAPHDB_READ_MAX_CONCURRENT:-128}
+      GRAPHDB_READ_MAX_PER_TENANT: ${GRAPHDB_READ_MAX_PER_TENANT:-64}
+      GRAPHDB_READ_OBJECT_MAX_CONCURRENT: ${GRAPHDB_READ_OBJECT_MAX_CONCURRENT:-128}
+      GRAPHDB_READ_OBJECT_SINGLEFLIGHT: ${GRAPHDB_READ_OBJECT_SINGLEFLIGHT:-true}
+      GRAPHDB_FAULT_OBJECT_READ_DELAY: ${GRAPHDB_FAULT_OBJECT_READ_DELAY:-}
+    ports:
+      - "${GRAPHDB_READER3_PORT:-38083}:8080"
+
+volumes:
+  rustfs-data:

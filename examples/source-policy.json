@@ -1,0 +1,25 @@
+{
+  "default_priority": 0,
+  "sources": [
+    {
+      "name": "manual",
+      "priority": 1000,
+      "description": "operator-entered or reviewed CMDB values"
+    },
+    {
+      "name": "agent",
+      "priority": 100,
+      "description": "host agent collected values"
+    },
+    {
+      "name": "cloud",
+      "priority": 50,
+      "description": "cloud API inventory values"
+    },
+    {
+      "name": "aws",
+      "priority": 50,
+      "description": "AWS collector inventory values"
+    }
+  ]
+}

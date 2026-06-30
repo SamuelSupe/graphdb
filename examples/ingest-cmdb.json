@@ -1,0 +1,43 @@
+{
+  "source": "aws",
+  "collector_id": "collector-a",
+  "batch_id": "aws-batch-001",
+  "idempotency_key": "aws-batch-001",
+  "cursor": "aws-cursor-001",
+  "items": [
+    {
+      "external_id": "i-002",
+      "entity": {
+        "id": "host:aws:i-002",
+        "kind": "host",
+        "confidence": 0.9,
+        "source_priority": 10,
+        "fields": {
+          "hostname": "app-02",
+          "region": "eu-west-1"
+        }
+      }
+    },
+    {
+      "external_id": "default/backend",
+      "entity": {
+        "id": "service:backend",
+        "kind": "service",
+        "confidence": 0.9,
+        "source_priority": 15,
+        "fields": {
+          "name": "backend"
+        }
+      }
+    },
+    {
+      "external_id": "backend-runs-on-i-002",
+      "edge": {
+        "id": "edge:backend-runs-on-app-02",
+        "type": "runs_on",
+        "from": "service:backend",
+        "to": "host:aws:i-002"
+      }
+    }
+  ]
+}

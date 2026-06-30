@@ -1,0 +1,7 @@
+{
+  "op": "neighbors",
+  "id": "person:alice",
+  "direction": "out",
+  "relation_type": "works_at",
+  "limit": 10
+}
