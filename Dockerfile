@@ -4,7 +4,7 @@ COPY go.mod go.sum ./
 COPY vendor ./vendor
 COPY cmd ./cmd
 COPY internal ./internal
-RUN go build -mod=vendor -o /out/graphdb ./cmd/graphdb
+RUN go build -o /out/graphdb ./cmd/graphdb
 
 FROM alpine:3.20
 RUN adduser -D -H graphdb

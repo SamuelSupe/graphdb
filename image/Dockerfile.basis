@@ -1,0 +1,11 @@
+FROM registry.jiagouyun.com/middlewares/ubuntu-zy-root:v2 AS base
+
+MAINTAINER "tanbiao@jiagouyun.com"
+
+
+RUN apt-get update -y && \
+    apt-get install -y tzdata curl wget iputils-ping telnet dnsutils net-tools iftop jq && \
+    apt-get -qq install -y --no-install-recommends ca-certificates && \
+    update-ca-certificates && \
+    ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone

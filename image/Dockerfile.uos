@@ -1,0 +1,16 @@
+FROM registry.jiagouyun.com/basis/uos-kodo-basis:uos-kodo-basis-2025-01-07
+
+ARG TARGETARCH
+MAINTAINER "lhm@guance.com"
+
+RUN yum -qq install -y jq
+
+COPY ./image/cmd ./image/cmd/$TARGETARCH/ /graphdb/
+COPY ./image/config /graphdb/config
+
+WORKDIR /graphdb
+
+# 添加普通用户并将/kodo 文件夹授予权限
+RUN groupadd -r -g 1000 guance && useradd -r -g guance -u 1000 -s /sbin/nologin guance && chown -R guance:guance /graphdb
+CMD /graphdb/graphdb serve
+
