@@ -13,23 +13,38 @@ type CIType struct {
 }
 
 type FieldSpec struct {
-	Type     string `json:"type,omitempty"`
-	Required bool   `json:"required,omitempty"`
-	Indexed  bool   `json:"indexed,omitempty"`
-	Unique   bool   `json:"unique,omitempty"`
-	Enum     []any  `json:"enum,omitempty"`
-	Default  any    `json:"default,omitempty"`
+	Type          string `json:"type,omitempty"`
+	MergeStrategy string `json:"merge_strategy,omitempty"`
+	Required      bool   `json:"required,omitempty"`
+	Indexed       bool   `json:"indexed,omitempty"`
+	Unique        bool   `json:"unique,omitempty"`
+	Enum          []any  `json:"enum,omitempty"`
+	Default       any    `json:"default,omitempty"`
 }
 
 type SourcePolicy struct {
-	DefaultPriority int                `json:"default_priority"`
-	Sources         []SourcePolicyItem `json:"sources,omitempty"`
+	DefaultPriority int                 `json:"default_priority"`
+	Sources         []SourcePolicyItem  `json:"sources,omitempty"`
+	FieldAliases    []FieldAliasRule    `json:"field_aliases,omitempty"`
+	FieldPriorities []FieldPriorityRule `json:"field_priorities,omitempty"`
 }
 
 type SourcePolicyItem struct {
 	Name        string `json:"name"`
 	Priority    int    `json:"priority"`
 	Description string `json:"description,omitempty"`
+}
+
+type FieldAliasRule struct {
+	Source  string            `json:"source"`
+	Kind    string            `json:"kind,omitempty"`
+	Aliases map[string]string `json:"aliases,omitempty"`
+}
+
+type FieldPriorityRule struct {
+	Source string         `json:"source"`
+	Kind   string         `json:"kind,omitempty"`
+	Fields map[string]int `json:"fields,omitempty"`
 }
 
 type IdentityKey struct {
@@ -43,7 +58,9 @@ type Entity struct {
 	ID              string                 `json:"id"`
 	Kind            string                 `json:"kind"`
 	Fields          Fields                 `json:"fields,omitempty"`
+	FieldWriteModes map[string]string      `json:"field_write_modes,omitempty"`
 	FieldSources    map[string]FieldSource `json:"field_sources,omitempty"`
+	FieldConflicts  []FieldConflict        `json:"-"`
 	ExistenceSource *FieldSource           `json:"existence_source,omitempty"`
 	Source          string                 `json:"source,omitempty"`
 	ExternalID      string                 `json:"external_id,omitempty"`
@@ -83,6 +100,7 @@ type FieldConflict struct {
 	CanonicalID      string `json:"canonical_id,omitempty"`
 	IncomingID       string `json:"incoming_id,omitempty"`
 	Field            string `json:"field,omitempty"`
+	AliasField       string `json:"alias_field,omitempty"`
 	ExistingSource   string `json:"existing_source,omitempty"`
 	ExistingPriority int    `json:"existing_priority"`
 	IncomingSource   string `json:"incoming_source,omitempty"`

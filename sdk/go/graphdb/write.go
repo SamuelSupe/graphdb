@@ -105,6 +105,7 @@ type IngestConflict struct {
 	CanonicalID      string `json:"canonical_id,omitempty"`
 	IncomingID       string `json:"incoming_id,omitempty"`
 	Field            string `json:"field,omitempty"`
+	AliasField       string `json:"alias_field,omitempty"`
 	ExistingSource   string `json:"existing_source,omitempty"`
 	ExistingPriority int    `json:"existing_priority,omitempty"`
 	IncomingSource   string `json:"incoming_source,omitempty"`

@@ -43,11 +43,15 @@ func TestGoSDKCompleteFlowAgainstRealServer(t *testing.T) {
 	policy := SourcePolicy{DefaultPriority: 0, Sources: []SourcePolicyItem{
 		{Name: "manual", Priority: 1000},
 		{Name: "agent", Priority: 100},
+	}, FieldAliases: []FieldAliasRule{
+		{Source: "agent", Kind: "host", Aliases: map[string]string{"host_name": "hostname"}},
+	}, FieldPriorities: []FieldPriorityRule{
+		{Source: "agent", Kind: "host", Fields: map[string]int{"hostname": 150}},
 	}}
-	if out, err := client.PutSourcePolicy(ctx, policy); err != nil || !out.Configured || len(out.Policy.Sources) != 2 {
+	if out, err := client.PutSourcePolicy(ctx, policy); err != nil || !out.Configured || len(out.Policy.Sources) != 2 || len(out.Policy.FieldAliases) != 1 || len(out.Policy.FieldPriorities) != 1 {
 		t.Fatalf("put source policy = %#v err=%v", out, err)
 	}
-	if out, err := client.GetSourcePolicy(ctx); err != nil || !out.Configured {
+	if out, err := client.GetSourcePolicy(ctx); err != nil || !out.Configured || out.Policy.FieldAliases[0].Aliases["host_name"] != "hostname" || out.Policy.FieldPriorities[0].Fields["hostname"] != 150 {
 		t.Fatalf("get source policy = %#v err=%v", out, err)
 	}
 	if out, err := client.PutTenantConfig(ctx, map[string]any{"retention": map[string]any{"keep_snapshots": 2}}); err != nil || !out.Configured {

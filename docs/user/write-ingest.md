@@ -55,6 +55,14 @@ Entity fields:
 - `source`, `external_id`, `confidence`, `source_priority`: source metadata.
 - `identity_keys`: optional identity metadata used by CI type identity rules.
 
+Array field merge:
+
+- Define array fields as `{"type":"array","merge_strategy":"append_unique"}`
+  in the CI type to append unique incoming values by default.
+- Use a field name suffix `!` to force replace for that write, for example
+  `"tags!": ["blue"]`.
+- `!` only changes array merge vs replace. It does not bypass source priority.
+
 Example:
 
 ```json
@@ -66,7 +74,9 @@ Example:
   "confidence": 0.9,
   "fields": {
     "hostname": "app-01",
-    "region": "us-east-1"
+    "region": "us-east-1",
+    "tags": ["prod"],
+    "labels!": ["owned"]
   }
 }
 ```
@@ -119,6 +129,31 @@ Priority rules:
   `source_priority`.
 - If policy exists but source is unknown, `default_priority` is used.
 - If no policy exists, request `source_priority` is used.
+
+Field priority rules:
+
+- `field_priorities` can give selected canonical entity fields an absolute
+  effective priority for a source, without changing the entity-level
+  `source_priority`.
+- `source + kind + field` rules override source-global field rules.
+- Field priorities run after field aliases, so configure canonical field names.
+- Direct commit entities without `source` do not use field priorities. Ingest
+  entities inherit the batch `source` first, then field priorities are applied.
+
+Field alias rules:
+
+- `field_aliases` maps incoming top-level `entity.fields` names to canonical
+  field names before merge, indexing, MD5 skip, query, scan, and export.
+- `source + kind` rules are applied before source-global fallback rules.
+- Direct commit entities without `source` do not use aliases. Ingest entities
+  inherit the batch `source` first, then aliases are applied.
+- If canonical and alias are both present in one payload, canonical wins. A
+  different alias value is returned as a suppressed conflict with
+  `alias_field`.
+- Multiple aliases for the same canonical field are resolved by alias field
+  name sort order, so the result is deterministic.
+- Aliases do not support nested paths, wildcard matching, regex, or value/type
+  conversion. Query DSL and scan/export APIs always use canonical fields.
 
 Field merge rules:
 

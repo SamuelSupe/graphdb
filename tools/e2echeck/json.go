@@ -64,3 +64,33 @@ func nestedString(root map[string]any, path ...string) string {
 	}
 	return stringValue(current)
 }
+
+func stringArray(value any) []string {
+	items := arrayValue(value)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, stringValue(item))
+	}
+	return out
+}
+
+func sameStrings(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func hasSuppressedField(body map[string]any, field string) bool {
+	for _, item := range arrayValue(body["suppressed"]) {
+		if stringValue(mapValue(item)["field"]) == field {
+			return true
+		}
+	}
+	return false
+}

@@ -23,8 +23,13 @@ func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) 
 	if commit.Version <= g.Version {
 		return nil, ApplyReport{}, fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
 	}
+	policyReport := ApplyReport{}
 	if options.SourcePolicy != nil {
-		commit.Mutations = ApplySourcePolicy(commit.Mutations, *options.SourcePolicy)
+		var err error
+		commit.Mutations, policyReport, err = ApplySourcePolicy(commit.Mutations, *options.SourcePolicy)
+		if err != nil {
+			return nil, ApplyReport{}, err
+		}
 	}
 	clone := g.Clone()
 	clone.Version = commit.Version
@@ -32,6 +37,7 @@ func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) 
 	if err != nil {
 		return nil, ApplyReport{}, err
 	}
+	report.Suppressed = append(policyReport.Suppressed, report.Suppressed...)
 	return clone, report, nil
 }
 
@@ -182,13 +188,19 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		}
 		report.CanonicalEntities = append(report.CanonicalEntities, entityCanonicalization(normalized, incomingID, targetID))
 		normalized.ID = targetID
+		report.Suppressed = append(report.Suppressed, entityFieldConflictsForTarget(normalized, targetID)...)
+		normalized.FieldConflicts = nil
 		if previous, ok := g.Entities[normalized.ID]; ok {
 			if previous.Kind != normalized.Kind {
 				return ApplyReport{}, fmt.Errorf("entity %q kind change from %q to %q is not allowed", normalized.ID, previous.Kind, normalized.Kind)
 			}
 			normalized.ID = incomingID
 			var mergeReport ApplyReport
-			normalized, mergeReport = mergeEntityForUpsert(previous, normalized, targetID, commit.Version, now)
+			fields, err := g.EffectiveFields(previous.Kind)
+			if err != nil {
+				return ApplyReport{}, err
+			}
+			normalized, mergeReport = mergeEntityForUpsert(previous, normalized, targetID, fields, commit.Version, now)
 			report.Suppressed = append(report.Suppressed, mergeReport.Suppressed...)
 			if !previous.CreatedAt.IsZero() {
 				normalized.CreatedAt = previous.CreatedAt
@@ -207,6 +219,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if previous, ok := g.Entities[normalized.ID]; ok {
 			g.removeEntityFromIndexes(normalized.ID, previous)
 		}
+		clearEntityWriteMetadata(&normalized)
 		g.Entities[normalized.ID] = normalized
 		g.addEntityToIndexes(normalized.ID, normalized)
 		report.AffectedEntityIDs = appendUnique(report.AffectedEntityIDs, normalized.ID)

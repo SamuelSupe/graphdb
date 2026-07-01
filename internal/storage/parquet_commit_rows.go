@@ -471,6 +471,7 @@ func ciTypeRows(ordinal int, ciType graph.CIType) []parquetCommitRow {
 			ChildOrdinal:  i,
 			EntryKey:      fieldName,
 			FieldType:     spec.Type,
+			Strategy:      spec.MergeStrategy,
 			Required:      spec.Required,
 			Indexed:       spec.Indexed,
 			Unique:        spec.Unique,
@@ -553,6 +554,7 @@ func entityMutationRows(kind string, parent int, child int, entity graph.Entity)
 			CreatedAtValue: entity.CreatedAt,
 			UpdatedAtValue: entity.UpdatedAt,
 			SplitFrom:      entity.SplitFrom,
+			Strategy:       entity.FieldWriteModes[component.Key],
 			FieldSource:    component.FieldSource,
 			EntitySource:   component.EntitySource,
 		}
@@ -1142,7 +1144,7 @@ func (b *commitBuild) applyCITypeRow(row parquetCommitRow) error {
 			item.item.Fields = map[string]graph.FieldSpec{}
 		}
 		item.fields[row.ChildOrdinal] = row.EntryKey
-		item.item.Fields[row.EntryKey] = graph.FieldSpec{Type: row.FieldType, Required: row.Required, Indexed: row.Indexed, Unique: row.Unique}
+		item.item.Fields[row.EntryKey] = graph.FieldSpec{Type: row.FieldType, MergeStrategy: row.Strategy, Required: row.Required, Indexed: row.Indexed, Unique: row.Unique}
 	case commitRowCITypeFieldEnum:
 		field := item.fields[row.ChildOrdinal]
 		spec := item.item.Fields[field]
@@ -1208,7 +1210,7 @@ func (b *entityBuild) apply(row parquetCommitRow) error {
 		b.initialized = true
 	}
 	return applyEntityPageRow(&b.item, entityPageRow{
-		Kind: row.ComponentKind, Ordinal: row.NestedOrdinal, Key: row.EntryKey, Value: row.Value, FieldSource: row.FieldSource, EntitySource: row.EntitySource,
+		Kind: row.ComponentKind, Ordinal: row.NestedOrdinal, Key: row.EntryKey, Value: row.Value, Strategy: row.Strategy, FieldSource: row.FieldSource, EntitySource: row.EntitySource,
 	})
 }
 

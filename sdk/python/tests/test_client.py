@@ -35,6 +35,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_PUT(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.__class__.requests.append((self.command, self.path, dict(self.headers), body))
+        if self.path == "/v1/source-policy":
+            self._json({"configured": True, "policy": json.loads(body)})
+        else:
+            self.send_error(404)
+
     def do_GET(self):
         self.__class__.requests.append((self.command, self.path, dict(self.headers), b""))
         if self.path == "/v1/entities/host%3A1":
@@ -100,6 +109,23 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(body, b"FIND host LIMIT 1")
         with client.stream_gql("FIND host LIMIT 1") as stream:
             self.assertEqual(len(list(stream)), 2)
+
+    def test_source_policy_field_aliases_are_sent(self):
+        client = GraphDBClient(self.base_url, tenant_id="tenant-a")
+        policy = {
+            "default_priority": 0,
+            "sources": [{"name": "agent", "priority": 100}],
+            "field_aliases": [{"source": "agent", "aliases": {"host_name": "hostname"}}],
+            "field_priorities": [{"source": "agent", "fields": {"hostname": 150}}],
+        }
+        result = client.put_source_policy(policy)
+        self.assertEqual(result["policy"]["field_aliases"][0]["aliases"]["host_name"], "hostname")
+        self.assertEqual(result["policy"]["field_priorities"][0]["fields"]["hostname"], 150)
+        method, path, headers, body = Handler.requests[-1]
+        self.assertEqual((method, path), ("PUT", "/v1/source-policy"))
+        sent = json.loads(body)
+        self.assertEqual(sent["field_aliases"][0]["aliases"]["host_name"], "hostname")
+        self.assertEqual(sent["field_priorities"][0]["fields"]["hostname"], 150)
 
 
 if __name__ == "__main__":

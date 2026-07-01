@@ -57,7 +57,8 @@ func (g *Graph) canonicalizeEntitySet(version int64, updatedAt time.Time) map[st
 			continue
 		}
 		target := g.Entities[targetID]
-		merged := mergeEntity(target, entity)
+		fields, _ := g.EffectiveFields(target.Kind)
+		merged := mergeEntityWithSpecs(target, entity, fields)
 		if !target.CreatedAt.IsZero() {
 			merged.CreatedAt = target.CreatedAt
 		}

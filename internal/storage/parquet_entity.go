@@ -359,6 +359,7 @@ type entityPageRow struct {
 	Ordinal      int
 	Key          string
 	Value        parquetValue
+	Strategy     string
 	FieldSource  graph.FieldSource
 	EntitySource graph.EntitySource
 }
@@ -454,6 +455,12 @@ func applyEntityPageRow(entity *graph.Entity, row entityPageRow) error {
 			entity.Fields = graph.Fields{}
 		}
 		entity.Fields[row.Key] = value
+		if row.Strategy != "" {
+			if entity.FieldWriteModes == nil {
+				entity.FieldWriteModes = map[string]string{}
+			}
+			entity.FieldWriteModes[row.Key] = row.Strategy
+		}
 	case entityPageRowFieldSource:
 		if entity.FieldSources == nil {
 			entity.FieldSources = map[string]graph.FieldSource{}

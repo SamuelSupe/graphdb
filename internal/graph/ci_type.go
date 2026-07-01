@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+const (
+	FieldMergeReplace      = "replace"
+	FieldMergeAppendUnique = "append_unique"
+)
+
 func normalizeCIType(ciType CIType) (CIType, error) {
 	ciType.Name = strings.TrimSpace(ciType.Name)
 	if ciType.Name == "" {
@@ -44,6 +49,13 @@ func normalizeFieldSpecs(ciTypeName string, specs map[string]FieldSpec) (map[str
 		}
 		if !validFieldType(spec.Type) {
 			return nil, fmt.Errorf("ci type %q field %q has unsupported type %q", ciTypeName, fieldName, spec.Type)
+		}
+		spec.MergeStrategy = strings.TrimSpace(spec.MergeStrategy)
+		if spec.MergeStrategy != "" && spec.MergeStrategy != FieldMergeReplace && spec.MergeStrategy != FieldMergeAppendUnique {
+			return nil, fmt.Errorf("ci type %q field %q has unsupported merge_strategy %q", ciTypeName, fieldName, spec.MergeStrategy)
+		}
+		if spec.MergeStrategy == FieldMergeAppendUnique && spec.Type != "array" {
+			return nil, fmt.Errorf("ci type %q field %q append_unique merge_strategy requires array type", ciTypeName, fieldName)
 		}
 		if spec.Default != nil && !valueMatchesType(spec.Default, spec.Type) {
 			return nil, fmt.Errorf("ci type %q field %q default does not match type %q", ciTypeName, fieldName, spec.Type)

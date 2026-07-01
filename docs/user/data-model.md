@@ -25,7 +25,8 @@ Tenant id is supplied by `X-Tenant-ID` for data APIs. Each tenant has:
   "display_name": "Host",
   "fields": {
     "hostname": {"type": "string", "required": true, "unique": true, "indexed": true},
-    "region": {"type": "string", "default": "unknown", "indexed": true}
+    "region": {"type": "string", "default": "unknown", "indexed": true},
+    "tags": {"type": "array", "merge_strategy": "append_unique"}
   },
   "identity_keys": [
     {"name": "hostname", "fields": ["hostname"], "strategy": "merge"}
@@ -36,6 +37,11 @@ Tenant id is supplied by `X-Tenant-ID` for data APIs. Each tenant has:
 Validation is intentionally light because upstream systems are expected to
 validate payloads. CI type fields are mainly used for defaults, indexing,
 identity reconciliation, and operator understanding.
+
+Array fields can opt into merge behavior with `merge_strategy:
+"append_unique"`. Existing array order is preserved and incoming unique values
+are appended. A write can force replace for that field by using a `!` suffix in
+the entity payload, for example `"tags!": ["blue"]`.
 
 ## Entity
 
@@ -128,9 +134,16 @@ Tenant source policy defines effective priority:
     {"name": "manual", "priority": 1000},
     {"name": "agent", "priority": 100},
     {"name": "aws", "priority": 50}
+  ],
+  "field_priorities": [
+    {"source": "aws", "kind": "host", "fields": {"hostname": 1200}}
   ]
 }
 ```
+
+`field_priorities` applies only to top-level entity fields and uses canonical
+field names after write-time aliases. It changes the field owner priority, not
+the entity-level `source_priority`.
 
 Entity field, edge field, and edge existence merges use:
 

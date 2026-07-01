@@ -92,9 +92,40 @@ Recommended baseline:
     {"name": "agent", "priority": 100},
     {"name": "cloud", "priority": 50},
     {"name": "aws", "priority": 50}
+  ],
+  "field_aliases": [
+    {
+      "source": "aws",
+      "kind": "host",
+      "aliases": {
+        "privateIpAddress": "private_ip",
+        "instanceName": "hostname"
+      }
+    },
+    {
+      "source": "agent",
+      "aliases": {
+        "host_name": "hostname"
+      }
+    }
+  ],
+  "field_priorities": [
+    {
+      "source": "aws",
+      "kind": "host",
+      "fields": {
+        "hostname": 1200,
+        "private_ip": 900
+      }
+    }
   ]
 }
 ```
+
+`field_aliases` only rewrites top-level entity fields on write. The stored graph,
+indexes, query DSL, scan, and export APIs expose only the canonical field names.
+`field_priorities` also uses canonical field names and only changes field-level
+merge ownership; it does not change the entity-level source priority.
 
 ## Tenant Config
 

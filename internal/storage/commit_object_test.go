@@ -52,6 +52,7 @@ func TestCommitObjectParquetRoundTripAllMutationKinds(t *testing.T) {
 				Fields: map[string]graph.FieldSpec{
 					"hostname": {Type: "string", Required: true, Indexed: true, Unique: true, Enum: []any{"app-01", "app-02"}, Default: "app-01"},
 					"cpu":      {Type: "number"},
+					"tags":     {Type: "array", MergeStrategy: graph.FieldMergeAppendUnique},
 				},
 				IdentityKeys: []graph.IdentityKey{{Name: "host_identity", Fields: []string{"hostname"}, ConfidenceThreshold: 0.9, Strategy: "first"}},
 			}},
@@ -63,11 +64,12 @@ func TestCommitObjectParquetRoundTripAllMutationKinds(t *testing.T) {
 			}},
 			DeleteRelationTypes: []string{"legacy_relation"},
 			UpsertEntities: []graph.Entity{{
-				ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "app-01", "cpu": float64(4)}, Source: "agent", ExternalID: "i-a",
+				ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "app-01", "cpu": float64(4), "tags": []any{"blue"}}, Source: "agent", ExternalID: "i-a",
 				Confidence: 0.8, SourceRank: 100, Version: 8, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
-				FieldSources: map[string]graph.FieldSource{"hostname": {Source: "agent", Priority: 100, Version: 8, UpdatedAt: now}},
-				Sources:      []graph.EntitySource{{Source: "agent", ExternalID: "i-a", Confidence: 0.8, Priority: 100, ObservedAt: now}},
-				MergedFrom:   []string{"host:old-a"}, SplitFrom: "host:split",
+				FieldSources:    map[string]graph.FieldSource{"hostname": {Source: "agent", Priority: 100, Version: 8, UpdatedAt: now}},
+				FieldWriteModes: map[string]string{"tags": graph.FieldMergeReplace},
+				Sources:         []graph.EntitySource{{Source: "agent", ExternalID: "i-a", Confidence: 0.8, Priority: 100, ObservedAt: now}},
+				MergedFrom:      []string{"host:old-a"}, SplitFrom: "host:split",
 			}},
 			DeleteEntities: []string{"host:deleted"},
 			DeleteEntityRequests: []graph.EntityDeleteRequest{{
@@ -163,6 +165,61 @@ func TestTenantStoreWritesCommitEnvelope(t *testing.T) {
 	}
 	if _, ok := loaded.GetEntity("host:a"); !ok {
 		t.Fatal("host:a missing after envelope load")
+	}
+}
+
+func TestTenantStoreArrayMergeMarkerSurvivesCommitReload(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{
+			"tags": {Type: "array", MergeStrategy: graph.FieldMergeAppendUnique},
+		}}},
+		UpsertEntities: []graph.Entity{{
+			ID: "host:a", Kind: "host", Fields: graph.Fields{"tags": []any{"abc", "bcd"}},
+		}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	if _, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:a", Kind: "host", Fields: graph.Fields{"tags": []any{"bcd", "aaa"}},
+	}}}, CommitOptions{}); err != nil {
+		t.Fatalf("append commit: %v", err)
+	}
+	store.deleteWriteCache("tenant-a")
+	loaded, _, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("reload after append: %v", err)
+	}
+	entity, ok := loaded.GetEntity("host:a")
+	if !ok {
+		t.Fatal("host:a missing after append reload")
+	}
+	if got := entity.Fields["tags"]; !reflect.DeepEqual(got, []any{"abc", "bcd", "aaa"}) {
+		t.Fatalf("tags after append reload = %#v", got)
+	}
+	if _, ok := entity.Fields["tags!"]; ok {
+		t.Fatalf("override marker leaked after append reload: %#v", entity.Fields)
+	}
+	if _, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:a", Kind: "host", Fields: graph.Fields{"tags!": []any{"forced"}},
+	}}}, CommitOptions{}); err != nil {
+		t.Fatalf("replace commit: %v", err)
+	}
+	store.deleteWriteCache("tenant-a")
+	loaded, _, err = store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("reload after replace: %v", err)
+	}
+	entity, ok = loaded.GetEntity("host:a")
+	if !ok {
+		t.Fatal("host:a missing after replace reload")
+	}
+	if got := entity.Fields["tags"]; !reflect.DeepEqual(got, []any{"forced"}) {
+		t.Fatalf("tags after replace reload = %#v", got)
+	}
+	if _, ok := entity.Fields["tags!"]; ok {
+		t.Fatalf("override marker leaked after replace reload: %#v", entity.Fields)
 	}
 }
 

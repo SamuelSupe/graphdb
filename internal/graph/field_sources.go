@@ -12,11 +12,15 @@ func stampFieldSources(entity *Entity, version int64, updatedAt time.Time) {
 		entity.FieldSources = map[string]FieldSource{}
 	}
 	for field := range entity.Fields {
+		if source, ok := entity.FieldSources[field]; ok {
+			entity.FieldSources[field] = stampFieldSource(source, owner)
+			continue
+		}
 		entity.FieldSources[field] = owner
 	}
 }
 
-func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, version int64, updatedAt time.Time) (Entity, ApplyReport) {
+func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, fieldSpecs map[string]FieldSpec, version int64, updatedAt time.Time) (Entity, ApplyReport) {
 	merged := copyEntity(existing)
 	backfillFieldSources(&merged)
 	incomingOwner := writeOwnerFromEntity(incoming, version, updatedAt)
@@ -24,9 +28,25 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, ver
 	report := ApplyReport{}
 	for field, value := range incoming.Fields {
 		current, exists := merged.Fields[field]
+		fieldOwner := incomingFieldOwner(incoming, field, incomingOwner, version, updatedAt)
+		if shouldAppendUnique(fieldSpecs[field], incoming, field) {
+			if !exists || isEmptyFieldValue(current) {
+				merged.Fields[field] = copyAny(value)
+				setFieldSource(&merged, field, fieldOwner)
+				continue
+			}
+			mergedValue, changed, ok := appendUniqueArrayField(current, value)
+			if ok {
+				if changed {
+					merged.Fields[field] = mergedValue
+					setFieldSource(&merged, field, betterFieldSource(fieldSourceOrEntityOwner(merged, field), fieldOwner))
+				}
+				continue
+			}
+		}
 		if !exists || isEmptyFieldValue(current) {
 			merged.Fields[field] = copyAny(value)
-			setFieldSource(&merged, field, incomingOwner)
+			setFieldSource(&merged, field, fieldOwner)
 			continue
 		}
 		existingOwner := fieldSourceOrEntityOwner(merged, field)
@@ -38,17 +58,17 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, ver
 				Field:            field,
 				ExistingSource:   existingOwner.Source,
 				ExistingPriority: existingOwner.Priority,
-				IncomingSource:   incomingOwner.Source,
-				IncomingPriority: incomingOwner.Priority,
+				IncomingSource:   fieldOwner.Source,
+				IncomingPriority: fieldOwner.Priority,
 				ExistingValue:    current,
 				IncomingValue:    value,
 				Message:          "incoming empty field value was ignored because upsert does not clear existing values",
 			})
 			continue
 		}
-		if incomingCanOverwrite(existingOwner, incomingOwner) {
+		if incomingCanOverwrite(existingOwner, fieldOwner) {
 			merged.Fields[field] = copyAny(value)
-			setFieldSource(&merged, field, incomingOwner)
+			setFieldSource(&merged, field, fieldOwner)
 			continue
 		}
 		if reflect.DeepEqual(current, value) {
@@ -61,8 +81,8 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, ver
 			Field:            field,
 			ExistingSource:   existingOwner.Source,
 			ExistingPriority: existingOwner.Priority,
-			IncomingSource:   incomingOwner.Source,
-			IncomingPriority: incomingOwner.Priority,
+			IncomingSource:   fieldOwner.Source,
+			IncomingPriority: fieldOwner.Priority,
 			ExistingValue:    current,
 			IncomingValue:    value,
 			Message:          "incoming field value was ignored because source priority is lower",
@@ -83,7 +103,49 @@ func mergeEntityForUpsert(existing Entity, incoming Entity, targetID string, ver
 	}
 	merged.MergedFrom = appendUnique(merged.MergedFrom, incoming.MergedFrom...)
 	merged.ID = targetID
+	clearEntityWriteMetadata(&merged)
 	return merged, report
+}
+
+func shouldAppendUnique(spec FieldSpec, incoming Entity, field string) bool {
+	return effectiveMergeStrategy(spec) == FieldMergeAppendUnique && incoming.FieldWriteModes[field] != FieldMergeReplace
+}
+
+func effectiveMergeStrategy(spec FieldSpec) string {
+	if spec.MergeStrategy == "" {
+		return FieldMergeReplace
+	}
+	return spec.MergeStrategy
+}
+
+func appendUniqueArrayField(existing any, incoming any) ([]any, bool, bool) {
+	existingValues, ok := existing.([]any)
+	if !ok {
+		return nil, false, false
+	}
+	incomingValues, ok := incoming.([]any)
+	if !ok {
+		return nil, false, false
+	}
+	merged := copyAnySlice(existingValues)
+	changed := false
+	for _, value := range incomingValues {
+		if arrayContainsValue(merged, value) {
+			continue
+		}
+		merged = append(merged, copyAny(value))
+		changed = true
+	}
+	return merged, changed, true
+}
+
+func arrayContainsValue(values []any, value any) bool {
+	for _, existing := range values {
+		if fieldValuesEqual(existing, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func backfillFieldSources(entity *Entity) {
@@ -109,6 +171,33 @@ func fieldSourceOrEntityOwner(entity Entity, field string) FieldSource {
 		return *entity.ExistenceSource
 	}
 	return ownerFromEntity(entity, entity.Version, entity.UpdatedAt)
+}
+
+func incomingFieldOwner(entity Entity, field string, fallback FieldSource, version int64, updatedAt time.Time) FieldSource {
+	source, ok := entity.FieldSources[field]
+	if !ok {
+		return fallback
+	}
+	return stampFieldSource(source, fallbackWithVersion(fallback, version, updatedAt))
+}
+
+func stampFieldSource(source FieldSource, fallback FieldSource) FieldSource {
+	if source.Source == "" {
+		source.Source = fallback.Source
+	}
+	if source.Version == 0 {
+		source.Version = fallback.Version
+	}
+	if source.UpdatedAt.IsZero() {
+		source.UpdatedAt = fallback.UpdatedAt
+	}
+	return source
+}
+
+func fallbackWithVersion(source FieldSource, version int64, updatedAt time.Time) FieldSource {
+	source.Version = version
+	source.UpdatedAt = updatedAt
+	return source
 }
 
 func setFieldSource(entity *Entity, field string, source FieldSource) {
@@ -151,6 +240,19 @@ func incomingCanOverwrite(existing FieldSource, incoming FieldSource) bool {
 		return incoming.Priority > existing.Priority
 	}
 	return incoming.Confidence >= existing.Confidence
+}
+
+func betterFieldSource(existing FieldSource, incoming FieldSource) FieldSource {
+	if incoming.Priority != existing.Priority {
+		if incoming.Priority > existing.Priority {
+			return incoming
+		}
+		return existing
+	}
+	if incoming.Confidence > existing.Confidence {
+		return incoming
+	}
+	return existing
 }
 
 func isEmptyFieldValue(value any) bool {
