@@ -21,7 +21,11 @@ func (g *Graph) applyMerge(request MergeRequest, version int64, now time.Time) e
 		if source.Kind != target.Kind {
 			return fmt.Errorf("cannot merge entity %q kind %q into %q kind %q", sourceID, source.Kind, target.ID, target.Kind)
 		}
-		target = mergeEntity(target, source)
+		fields, err := g.EffectiveFields(target.Kind)
+		if err != nil {
+			return err
+		}
+		target = mergeEntityWithSpecs(target, source, fields)
 		target.MergedFrom = appendUnique(target.MergedFrom, sourceID)
 		for edgeID, edge := range g.Edges {
 			if edge.From == sourceID {
@@ -80,6 +84,7 @@ func (g *Graph) applySplit(request SplitRequest, version int64, now time.Time) e
 		if err := g.validateIdentityAvailable(normalized); err != nil {
 			return err
 		}
+		clearEntityWriteMetadata(&normalized)
 		g.Entities[normalized.ID] = normalized
 	}
 	return nil

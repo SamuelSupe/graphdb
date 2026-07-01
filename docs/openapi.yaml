@@ -1212,7 +1212,7 @@ components:
         upsert_ci_types:
           type: array
           items:
-            type: object
+            $ref: '#/components/schemas/CIType'
         upsert_relation_types:
           type: array
           items:
@@ -1237,6 +1237,46 @@ components:
           type: array
           items:
             type: object
+    CIType:
+      type: object
+      properties:
+        name:
+          type: string
+        display_name:
+          type: string
+        extends:
+          type: array
+          items:
+            type: string
+        fields:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/FieldSpec'
+        identity_keys:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    FieldSpec:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [any, string, number, bool, object, array]
+        merge_strategy:
+          type: string
+          enum: [replace, append_unique]
+          description: For array fields, append_unique preserves existing order and appends unique incoming values unless the write uses a ! field marker.
+        required:
+          type: boolean
+        indexed:
+          type: boolean
+        unique:
+          type: boolean
+        enum:
+          type: array
+          items: {}
+        default: {}
     Entity:
       type: object
       required: [kind]
@@ -1294,6 +1334,8 @@ components:
         canonical_id:
           type: string
         field:
+          type: string
+        alias_field:
           type: string
         message:
           type: string
@@ -1946,6 +1988,36 @@ components:
                 type: integer
               description:
                 type: string
+        field_aliases:
+          type: array
+          items:
+            type: object
+            required: [source, aliases]
+            properties:
+              source:
+                type: string
+              kind:
+                type: string
+              aliases:
+                type: object
+                additionalProperties:
+                  type: string
+                description: Incoming top-level entity field name to canonical field name.
+        field_priorities:
+          type: array
+          items:
+            type: object
+            required: [source, fields]
+            properties:
+              source:
+                type: string
+              kind:
+                type: string
+              fields:
+                type: object
+                additionalProperties:
+                  type: integer
+                description: Canonical top-level entity field name to absolute effective priority.
     TaskStartRequest:
       type: object
       required: [type]

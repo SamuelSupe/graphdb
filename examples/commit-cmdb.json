@@ -15,6 +15,10 @@
             "type": "string",
             "default": "unknown",
             "indexed": true
+          },
+          "tags": {
+            "type": "array",
+            "merge_strategy": "append_unique"
           }
         },
         "identity_keys": [
@@ -75,7 +79,8 @@
         "source_priority": 10,
         "fields": {
           "hostname": "app-01",
-          "region": "us-east-1"
+          "region": "us-east-1",
+          "tags": ["aws"]
         }
       },
       {
@@ -87,7 +92,8 @@
         "source_priority": 20,
         "fields": {
           "hostname": "app-01",
-          "region": "us-east-1"
+          "region": "us-east-1",
+          "tags": ["agent"]
         }
       },
       {

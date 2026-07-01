@@ -134,6 +134,44 @@ func TestHTTPCommitSkipsUnchangedContent(t *testing.T) {
 	}
 }
 
+func TestHTTPCommitArrayMergeAndOverrideMarker(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	seed := CommitRequest{Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{
+			"tags": {Type: "array", MergeStrategy: graph.FieldMergeAppendUnique},
+		}}},
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"tags": []any{"abc", "bcd"}}}},
+	}}
+	if rr := serveJSON(handler, http.MethodPost, "/v1/commits", "tenant-a", seed); rr.Code != http.StatusOK {
+		t.Fatalf("seed commit status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	appendTags := CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:a", Kind: "host", Fields: graph.Fields{"tags": []any{"bcd", "aaa"}},
+	}}}}
+	if rr := serveJSON(handler, http.MethodPost, "/v1/commits", "tenant-a", appendTags); rr.Code != http.StatusOK {
+		t.Fatalf("append commit status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	get := httptest.NewRequest(http.MethodGet, "/v1/entities/host:a", nil)
+	get.Header.Set("X-Tenant-ID", "tenant-a")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, get)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"tags":["abc","bcd","aaa"]`) {
+		t.Fatalf("get after append status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	replaceTags := CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:a", Kind: "host", Fields: graph.Fields{"tags!": []any{"forced"}},
+	}}}}
+	if rr := serveJSON(handler, http.MethodPost, "/v1/commits", "tenant-a", replaceTags); rr.Code != http.StatusOK {
+		t.Fatalf("replace commit status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, get)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"tags":["forced"]`) || strings.Contains(rr.Body.String(), "tags!") {
+		t.Fatalf("get after replace status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHTTPCommitIdempotencyReplayAndConflict(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	handler := (&Server{Store: store, Mode: "all"}).Handler()

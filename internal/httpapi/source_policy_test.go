@@ -16,8 +16,8 @@ func TestHTTPSourcePolicyAndCommitSuppressed(t *testing.T) {
 	policy := graph.SourcePolicy{DefaultPriority: 0, Sources: []graph.SourcePolicyItem{
 		{Name: "manual", Priority: 1000},
 		{Name: "aws", Priority: 50},
-	}}
-	if rr := serveJSON(handler, http.MethodPut, "/v1/source-policy", "tenant-a", policy); rr.Code != http.StatusOK {
+	}, FieldPriorities: []graph.FieldPriorityRule{{Source: "aws", Kind: "host", Fields: map[string]int{"hostname": 1200}}}}
+	if rr := serveJSON(handler, http.MethodPut, "/v1/source-policy", "tenant-a", policy); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"field_priorities"`) {
 		t.Fatalf("put source policy = %d body=%s", rr.Code, rr.Body.String())
 	}
 	get := httptest.NewRequest(http.MethodGet, "/v1/source-policy", nil)
@@ -26,6 +26,13 @@ func TestHTTPSourcePolicyAndCommitSuppressed(t *testing.T) {
 	handler.ServeHTTP(rr, get)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"configured":false`) {
 		t.Fatalf("tenant-b source policy = %d body=%s", rr.Code, rr.Body.String())
+	}
+	get = httptest.NewRequest(http.MethodGet, "/v1/source-policy", nil)
+	get.Header.Set("X-Tenant-ID", "tenant-a")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, get)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"field_priorities"`) || !strings.Contains(rr.Body.String(), `"hostname":1200`) {
+		t.Fatalf("tenant-a source policy = %d body=%s", rr.Code, rr.Body.String())
 	}
 	manual := CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{
 		ID: "host:1", Kind: "host", Source: "manual", Fields: graph.Fields{"owner": "platform"},

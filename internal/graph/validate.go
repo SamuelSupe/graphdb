@@ -20,11 +20,9 @@ func normalizeEntity(entity Entity) (Entity, error) {
 	if entity.Fields == nil {
 		entity.Fields = Fields{}
 	}
-	fields, err := normalizeFields(entity.Fields)
-	if err != nil {
+	if err := prepareEntityFieldWrites(&entity); err != nil {
 		return Entity{}, fmt.Errorf("entity %q fields: %w", entity.ID, err)
 	}
-	entity.Fields = fields
 	identity, err := normalizeFields(entity.Identity)
 	if err != nil {
 		return Entity{}, fmt.Errorf("entity %q identity_keys: %w", entity.ID, err)

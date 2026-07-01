@@ -46,11 +46,17 @@ reader, _ := graphdb.NewClient("http://127.0.0.1:38081", graphdb.WithTenant("dem
 
 ```go
 result, err := writer.Commit(ctx, graphdb.Mutations{
+    UpsertCITypes: []graphdb.CIType{{
+        Name: "host",
+        Fields: map[string]graphdb.FieldSpec{
+            "tags": {Type: "array", MergeStrategy: "append_unique"},
+        },
+    }},
     UpsertRelationTypes: []graphdb.RelationType{{
         Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true,
     }},
     UpsertEntities: []graphdb.Entity{
-        {ID: "host:1", Kind: "host", Source: "agent", Fields: graphdb.Fields{"hostname": "app-01"}},
+        {ID: "host:1", Kind: "host", Source: "agent", Fields: graphdb.Fields{"hostname": "app-01", "tags": []any{"agent"}}},
         {ID: "service:api", Kind: "service", Source: "manual", Fields: graphdb.Fields{"name": "api"}},
     },
     UpsertEdges: []graphdb.Edge{{
@@ -61,6 +67,18 @@ if err != nil {
     return err
 }
 fmt.Println(result.Version, result.Skipped, result.Suppressed)
+```
+
+For array fields declared with `MergeStrategy: "append_unique"`, repeated
+writes append unique elements. Use a `!` suffix to force replace in one write:
+
+```go
+_, err = writer.Commit(ctx, graphdb.Mutations{
+    UpsertEntities: []graphdb.Entity{{
+        ID: "host:1", Kind: "host",
+        Fields: graphdb.Fields{"tags!": []any{"manual"}},
+    }},
+}, nil)
 ```
 
 ### Go: Ingestion
@@ -240,6 +258,23 @@ _, err := writer.PutSourcePolicy(ctx, graphdb.SourcePolicy{
         {Name: "agent", Priority: 100},
         {Name: "aws", Priority: 50},
     },
+    FieldAliases: []graphdb.FieldAliasRule{
+        {
+            Source: "aws",
+            Kind: "host",
+            Aliases: map[string]string{
+                "privateIpAddress": "private_ip",
+                "instanceName": "hostname",
+            },
+        },
+    },
+    FieldPriorities: []graphdb.FieldPriorityRule{
+        {
+            Source: "aws",
+            Kind: "host",
+            Fields: map[string]int{"hostname": 1200, "private_ip": 900},
+        },
+    },
 })
 ```
 
@@ -252,6 +287,23 @@ writer.put_source_policy({
         {"name": "manual", "priority": 1000},
         {"name": "agent", "priority": 100},
         {"name": "aws", "priority": 50},
+    ],
+    "field_aliases": [
+        {
+            "source": "aws",
+            "kind": "host",
+            "aliases": {
+                "privateIpAddress": "private_ip",
+                "instanceName": "hostname",
+            },
+        },
+    ],
+    "field_priorities": [
+        {
+            "source": "aws",
+            "kind": "host",
+            "fields": {"hostname": 1200, "private_ip": 900},
+        },
     ],
 })
 ```

@@ -34,7 +34,9 @@ func copyFields(fields Fields) Fields {
 
 func copyEntity(entity Entity) Entity {
 	entity.Fields = copyFields(entity.Fields)
+	entity.FieldWriteModes = copyFieldWriteModes(entity.FieldWriteModes)
 	entity.FieldSources = copyFieldSources(entity.FieldSources)
+	entity.FieldConflicts = append([]FieldConflict(nil), entity.FieldConflicts...)
 	if entity.ExistenceSource != nil {
 		source := *entity.ExistenceSource
 		entity.ExistenceSource = &source
@@ -43,6 +45,17 @@ func copyEntity(entity Entity) Entity {
 	entity.Sources = append([]EntitySource(nil), entity.Sources...)
 	entity.MergedFrom = append([]string(nil), entity.MergedFrom...)
 	return entity
+}
+
+func copyFieldWriteModes(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func CopyEntity(entity Entity) Entity {

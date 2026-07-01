@@ -53,6 +53,30 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	}
 }
 
+func TestCommitSkipsWhenAppendUniqueAddsNoElements(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{
+			"tags": {Type: "array", MergeStrategy: graph.FieldMergeAppendUnique},
+		}}},
+		UpsertEntities: []graph.Entity{{
+			ID: "host:a", Kind: "host", Fields: graph.Fields{"tags": []any{"abc"}},
+		}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	second, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:a", Kind: "host", Fields: graph.Fields{"tags": []any{"abc"}},
+	}}}, CommitOptions{})
+	if err != nil {
+		t.Fatalf("second commit: %v", err)
+	}
+	if !second.Skipped || second.Version != 1 {
+		t.Fatalf("second result = %#v, want skipped at version 1", second)
+	}
+}
+
 func TestIngestMarksSkippedWhenCommitContentUnchanged(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

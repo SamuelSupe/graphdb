@@ -21,5 +21,37 @@
       "priority": 50,
       "description": "AWS collector inventory values"
     }
+  ],
+  "field_aliases": [
+    {
+      "source": "aws",
+      "kind": "host",
+      "aliases": {
+        "privateIpAddress": "private_ip",
+        "instanceName": "hostname"
+      }
+    },
+    {
+      "source": "agent",
+      "aliases": {
+        "host_name": "hostname"
+      }
+    }
+  ],
+  "field_priorities": [
+    {
+      "source": "aws",
+      "kind": "host",
+      "fields": {
+        "hostname": 1200,
+        "private_ip": 900
+      }
+    },
+    {
+      "source": "agent",
+      "fields": {
+        "tags": 100
+      }
+    }
   ]
 }

@@ -31,6 +31,22 @@ func sourcePolicy() graph.SourcePolicy {
 			{Name: "manual", Priority: 1000},
 			{Name: "agent", Priority: 100},
 			{Name: "cloud", Priority: 50},
+			{Name: "aws", Priority: 50},
+		},
+		FieldAliases: []graph.FieldAliasRule{
+			{Source: "aws", Kind: "host", Aliases: map[string]string{
+				"instanceName":     "hostname",
+				"privateIpAddress": "private_ip",
+			}},
+			{Source: "agent", Aliases: map[string]string{
+				"host_name": "hostname",
+			}},
+		},
+		FieldPriorities: []graph.FieldPriorityRule{
+			{Source: "aws", Kind: "host", Fields: map[string]int{
+				"hostname":   1200,
+				"private_ip": 900,
+			}},
 		},
 	}
 }
@@ -39,8 +55,10 @@ func seedMutations(id ids) graph.Mutations {
 	return graph.Mutations{
 		UpsertCITypes: []graph.CIType{
 			{Name: "host", Fields: map[string]graph.FieldSpec{
-				"hostname": {Type: "string", Required: true, Unique: true, Indexed: true},
-				"region":   {Type: "string", Indexed: true},
+				"hostname":   {Type: "string", Required: true, Unique: true, Indexed: true},
+				"private_ip": {Type: "string", Indexed: true},
+				"region":     {Type: "string", Indexed: true},
+				"tags":       {Type: "array", MergeStrategy: graph.FieldMergeAppendUnique},
 			}},
 			{Name: "service", Fields: map[string]graph.FieldSpec{"name": {Type: "string", Required: true, Indexed: true}}},
 			{Name: "database", Fields: map[string]graph.FieldSpec{"name": {Type: "string", Required: true, Indexed: true}}},

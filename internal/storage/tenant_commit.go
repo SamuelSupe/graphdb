@@ -97,7 +97,8 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	if err != nil {
 		return CommitResult{}, err
 	}
-	mutations, err = s.resolveSourcePriorities(ctx, tenantID, mutations)
+	var policyReport graph.ApplyReport
+	mutations, policyReport, err = s.resolveSourcePolicy(ctx, tenantID, mutations)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -122,6 +123,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	if err != nil {
 		return CommitResult{}, err
 	}
+	report.Suppressed = append(policyReport.Suppressed, report.Suppressed...)
 	if err := s.checkQuotaAfterApply(ctx, tenantID, loaded.Graph, nextGraph); err != nil {
 		return CommitResult{}, err
 	}

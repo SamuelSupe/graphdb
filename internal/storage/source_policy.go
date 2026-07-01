@@ -84,13 +84,32 @@ func (s *TenantStore) putSourcePolicyRecordWithMeta(ctx context.Context, tenantI
 	return s.putBytesWithMeta(ctx, s.sourcePolicyKey(tenantID), data, meta)
 }
 
-func (s *TenantStore) resolveSourcePriorities(ctx context.Context, tenantID string, mutations graph.Mutations) (graph.Mutations, error) {
+func (s *TenantStore) resolveSourcePolicy(ctx context.Context, tenantID string, mutations graph.Mutations) (graph.Mutations, graph.ApplyReport, error) {
 	policy, ok, err := s.GetSourcePolicy(ctx, tenantID)
 	if err != nil {
-		return graph.Mutations{}, err
+		return graph.Mutations{}, graph.ApplyReport{}, err
 	}
 	if !ok {
-		return mutations, nil
+		prepared, err := graph.PrepareEntityFieldWrites(mutations)
+		if err != nil {
+			return graph.Mutations{}, graph.ApplyReport{}, err
+		}
+		return clearIncomingEntityFieldSources(prepared), graph.ApplyReport{}, nil
 	}
-	return graph.ApplySourcePolicy(mutations, policy), nil
+	return graph.ApplySourcePolicy(mutations, policy)
+}
+
+func clearIncomingEntityFieldSources(mutations graph.Mutations) graph.Mutations {
+	mutations.UpsertEntities = append([]graph.Entity(nil), mutations.UpsertEntities...)
+	for i := range mutations.UpsertEntities {
+		mutations.UpsertEntities[i].FieldSources = nil
+	}
+	mutations.SplitEntities = append([]graph.SplitRequest(nil), mutations.SplitEntities...)
+	for i := range mutations.SplitEntities {
+		mutations.SplitEntities[i].Entities = append([]graph.Entity(nil), mutations.SplitEntities[i].Entities...)
+		for j := range mutations.SplitEntities[i].Entities {
+			mutations.SplitEntities[i].Entities[j].FieldSources = nil
+		}
+	}
+	return mutations
 }

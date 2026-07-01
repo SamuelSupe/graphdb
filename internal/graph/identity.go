@@ -120,11 +120,27 @@ func sortIdentitySignatures(signatures []identitySignature) {
 }
 
 func mergeEntity(existing, incoming Entity) Entity {
+	return mergeEntityWithSpecs(existing, incoming, nil)
+}
+
+func mergeEntityWithSpecs(existing, incoming Entity, fieldSpecs map[string]FieldSpec) Entity {
 	merged := copyEntity(existing)
 	backfillFieldSources(&merged)
 	incoming = copyEntity(incoming)
 	backfillFieldSources(&incoming)
 	for key, value := range incoming.Fields {
+		if shouldAppendUnique(fieldSpecs[key], incoming, key) {
+			if current, ok := merged.Fields[key]; ok {
+				mergedValue, changed, ok := appendUniqueArrayField(current, value)
+				if ok {
+					if changed {
+						merged.Fields[key] = mergedValue
+						setFieldSource(&merged, key, betterFieldSource(fieldSourceOrEntityOwner(merged, key), fieldSourceOrEntityOwner(incoming, key)))
+					}
+					continue
+				}
+			}
+		}
 		if _, ok := merged.Fields[key]; !ok || entityRankCanOverwrite(incoming, existing) {
 			merged.Fields[key] = value
 			setFieldSource(&merged, key, fieldSourceOrEntityOwner(incoming, key))
@@ -144,6 +160,7 @@ func mergeEntity(existing, incoming Entity) Entity {
 		merged.MergedFrom = appendUnique(merged.MergedFrom, incoming.ID)
 	}
 	merged.MergedFrom = appendUnique(merged.MergedFrom, incoming.MergedFrom...)
+	clearEntityWriteMetadata(&merged)
 	return merged
 }
 

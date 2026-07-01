@@ -48,6 +48,9 @@ func (r *runner) run(ctx context.Context) error {
 	if err := r.checkSourcePriority(ctx, id.host1); err != nil {
 		return err
 	}
+	if err := r.checkSourceFieldGovernance(ctx); err != nil {
+		return err
+	}
 	if err := r.checkEntityGovernance(ctx); err != nil {
 		return err
 	}
@@ -119,6 +122,10 @@ func (r *runner) checkSourcePolicy(ctx context.Context) error {
 	}
 	if !boolValue(resp.json["configured"]) {
 		return fmt.Errorf("source policy not configured on reader")
+	}
+	policy := mapValue(resp.json["policy"])
+	if len(arrayValue(policy["field_aliases"])) == 0 || len(arrayValue(policy["field_priorities"])) == 0 {
+		return fmt.Errorf("source policy missing aliases or field priorities: %s", string(resp.body))
 	}
 	pass("source policy configured")
 	return nil
