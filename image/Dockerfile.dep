@@ -1,21 +1,16 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-ARG GIT_USER
-ARG GIT_TOKEN
-ARG GOPRIVATE
-
 ENV GOPATH=/work
 ENV PATH=$PATH:$GOPATH/bin
 
-COPY . $GOPATH/kodo
-WORKDIR $GOPATH/kodo
+WORKDIR /work/src/graphdb
 
-RUN git config --global url."https://${GIT_USER}:${GIT_TOKEN}@${GOPRIVATE}".insteadOf "https://${GOPRIVATE}"
 RUN go env -w GONOPROXY="gitlab.jiagouyun.com/*" GONOSUMDB="gitlab.jiagouyun.com/*" GOPRIVATE="gitlab.jiagouyun.com/*"
 RUN go env -w GOPROXY="https://goproxy.cn,direct"
-RUN sed -i 's/:\/\/deb.debian.org/:\/\/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
-RUN go install golang.org/x/tools/cmd/goyacc@v0.1.5
-RUN make deps
-RUN rm -rf $GOPATH/graphdb
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/:\/\/deb.debian.org/:\/\/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources; \
+    fi
 
+COPY go.mod go.sum ./
+RUN go mod download

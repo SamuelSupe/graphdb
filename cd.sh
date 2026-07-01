@@ -1,169 +1,194 @@
-      
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# This script will provide the latest version, please do not modify this script in your project
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
 
-# get the Rancher config for the corresponding cluster
-function get_rancher_config() {
-  cluster_with_prefix=$1
-  
-  # get the prefix and cluster ID from the environment variable
-  IFS=':' read -ra parts <<< "$cluster_with_prefix"
-  prefix="${parts[0]}"
-  cluster_id="${parts[2]}"
+require_env() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    die "$name is required"
+  fi
+}
 
-  # get the API URL and token from the environment variable
-  IFS=' ' read -ra API_URLS <<< "$RANCHER_API_BASE_URL"
-  IFS=' ' read -ra TOKENS <<< "$PROD_RANCHER_TOKEN"
+latest_tag() {
+  local pattern="$1"
+  git tag --list | grep -E "$pattern" | sort -V | tail -1 || true
+}
 
-  for url in "${API_URLS[@]}"; do
-    if [[ "$url" == "${prefix}:"* ]]; then
-      api_url="${url#*:}"
+get_rancher_config() {
+  local cluster_with_prefix="$1"
+  local prefix site cluster_id api_url="" rancher_token="" item
+
+  IFS=':' read -r prefix site cluster_id <<< "$cluster_with_prefix"
+  if [[ -z "$prefix" || -z "$cluster_id" ]]; then
+    echo "Invalid cluster entry: $cluster_with_prefix, want <prefix>:<site>:<cluster-id>" >&2
+    return 1
+  fi
+
+  require_env RANCHER_API_BASE_URL
+  require_env PROD_RANCHER_TOKEN
+
+  for item in ${RANCHER_API_BASE_URL}; do
+    if [[ "$item" == "${prefix}:"* ]]; then
+      api_url="${item#*:}"
       break
     fi
   done
 
-  for token in "${TOKENS[@]}"; do
-    if [[ "$token" == "${prefix}:"* ]]; then
-      rancher_token="${token#*:}"
+  for item in ${PROD_RANCHER_TOKEN}; do
+    if [[ "$item" == "${prefix}:"* ]]; then
+      rancher_token="${item#*:}"
       break
     fi
   done
 
   if [[ -z "$api_url" || -z "$rancher_token" ]]; then
-    echo "Error: No Rancher configuration found for prefix $prefix" >&2
+    echo "No Rancher configuration found for prefix $prefix" >&2
     return 1
   fi
 
-  echo "$api_url"
-  echo "$rancher_token"
-  echo "$cluster_id"
+  printf '%s\t%s\t%s\n' "$api_url" "$rancher_token" "$cluster_id"
 }
 
-function do_cd(){
-  cluster_with_prefix=$1
-  imageFullName=$2
-  namespace=$3
-  workload=$4
-  version=$5
-  workloadType=$6
+do_cd() {
+  local cluster_with_prefix="$1"
+  local image_full_name="$2"
+  local namespace="$3"
+  local workload="$4"
+  local version="$5"
+  local workload_type="$6"
+  local rancher_config api_url token cluster_id url image_path data
 
-  # get the Rancher config for the corresponding cluster
-  rancher_config=($(get_rancher_config "$cluster_with_prefix"))
-
-  if [[ $? -ne 0 ]]; then
+  if ! rancher_config="$(get_rancher_config "$cluster_with_prefix")"; then
     return 1
   fi
-  
-  api_url="${rancher_config[0]}"
-  token="${rancher_config[1]}"
-  cluster_id="${rancher_config[2]}"
 
-  url=${api_url}/k8s/clusters/${cluster_id}/apis/apps/v1/namespaces/${namespace}/${workloadType}/${workload}
-  imagePath=${imageFullName}:${version}
+  IFS=$'\t' read -r api_url token cluster_id <<< "$rancher_config"
+  url="${api_url}/k8s/clusters/${cluster_id}/apis/apps/v1/namespaces/${namespace}/${workload_type}/${workload}"
+  image_path="${image_full_name}:${version}"
+  printf -v data '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"%s"}]' "$image_path"
 
-  data='[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"'${imagePath}'"}]'
-
-  curl -u "${token}" -X PATCH -H 'Content-Type: application/json-patch+json' $url -d "${data}"
-  # echo "${token}" -X PATCH -H 'Content-Type: application/json-patch+json' $url -d "${data}"
+  echo "Patching ${workload_type}/${workload} to ${image_path}"
+  curl -fsS -u "$token" -X PATCH -H 'Content-Type: application/json-patch+json' "$url" -d "$data"
 }
 
-function deploy_cluster(){
-  cluster_with_prefix=$1
-  version=$2
+deploy_cluster() {
+  local cluster_with_prefix="$1"
+  local version="$2"
+  local image_full_name workload deployed=0
+
+  require_env DEPLOY_IMAGE_HOST
+  require_env DEPLOY_IMAGE_PATH
+  require_env DEPLOY_NAMESPACE
 
   echo "do upgrade, version: ${version}"
-  namespace=launcher
-  imageFullName=${DEPLOY_IMAGE_HOST}${DEPLOY_IMAGE_PATH}
+  image_full_name="${DEPLOY_IMAGE_HOST}${DEPLOY_IMAGE_PATH}"
 
-  # deploy deployments
-  for wk in $DEPLOY_PROJECT_WORKLOAD
-  do
-    do_cd $cluster_with_prefix $imageFullName $DEPLOY_NAMESPACE $wk $version deployments
+  for workload in ${DEPLOY_PROJECT_WORKLOAD:-}; do
+    deployed=1
+    do_cd "$cluster_with_prefix" "$image_full_name" "$DEPLOY_NAMESPACE" "$workload" "$version" deployments
   done
 
-  # deploy statefulsets
-  for wk in $DEPLOY_PROJECT_STATEFULSET
-  do
-    do_cd $cluster_with_prefix $imageFullName $DEPLOY_NAMESPACE $wk $version statefulsets
+  for workload in ${DEPLOY_PROJECT_STATEFULSET:-}; do
+    deployed=1
+    do_cd "$cluster_with_prefix" "$image_full_name" "$DEPLOY_NAMESPACE" "$workload" "$version" statefulsets
   done
+
+  if [[ "$deployed" -eq 0 ]]; then
+    die "DEPLOY_PROJECT_WORKLOAD or DEPLOY_PROJECT_STATEFULSET must include at least one workload"
+  fi
 }
 
-function each_cluster(){
-  lastReleaseTag=$(git tag --list | grep -E "^release_" | sort -V | tail -1)
-  lastDeployTag=$(git tag --list | grep -E "^deploy_" | sort -V | tail -1)
+each_cluster() {
+  local last_release_tag last_deploy_tag split_site="" cluster_with_prefix prefix site cluster_id
 
-  splitV=(${lastDeployTag//_/ })
-  splitSite=${splitV[2]}
+  require_env RANCHER_CLUSTER_IDS
 
-  for cluster_with_prefix in $RANCHER_CLUSTER_IDS
-  do
-    IFS=':' read -ra parts <<< "$cluster_with_prefix"
-    prefix="${parts[0]}"
-    site="${parts[1]}"
-    
-    if [[ -z "$splitSite" || "$splitSite" == "all" || "$site" == "$splitSite" ]]; then
-      echo "Deploying to cluster: $cluster_with_prefix with version: $lastReleaseTag"
-      deploy_cluster $cluster_with_prefix $lastReleaseTag
+  git fetch --tags
+  last_release_tag="$(latest_tag "^release_")"
+  last_deploy_tag="$(latest_tag "^deploy_")"
+
+  if [[ -z "$last_release_tag" ]]; then
+    die "No release_* tag found"
+  fi
+
+  if [[ -n "$last_deploy_tag" ]]; then
+    IFS='_' read -r _ _ split_site _ <<< "$last_deploy_tag"
+  fi
+
+  for cluster_with_prefix in ${RANCHER_CLUSTER_IDS}; do
+    IFS=':' read -r prefix site cluster_id <<< "$cluster_with_prefix"
+    if [[ -z "$split_site" || "$split_site" == "all" || "$site" == "$split_site" ]]; then
+      echo "Deploying to cluster: $cluster_with_prefix with version: $last_release_tag"
+      deploy_cluster "$cluster_with_prefix" "$last_release_tag"
     fi
   done
 }
 
-# each_cluster
+do_trigger_tag() {
+  local trigger_site="$1"
+  local last_release_tag last_release_commit last_deploy_tag new_deploy_tag deploy_count deploy_prefix
 
-function do_trigger_tag(){
-  trigger_site=$1
+  git fetch --tags
+  last_release_tag="$(latest_tag "^release_")"
+  last_deploy_tag="$(latest_tag "^deploy_")"
 
-  git fetch --tag
-  lastReleaseTag=$(git tag --list | grep -E "^release_" | sort -V | tail -1)
-  lastReleaseTagCommitID=$(git rev-list -n 1 ${lastReleaseTag})
-  lastDeployTag=$(git tag --list | grep -E "^deploy_" | sort -V | tail -1)
+  if [[ -z "$last_release_tag" ]]; then
+    die "No release_* tag found"
+  fi
 
-  [[ ${#lastDeployTag} > 0 ]] && {
-    v=(${lastDeployTag//_/ })
-    v_main=${v[0]}
+  last_release_commit="$(git rev-list -n 1 "$last_release_tag")"
 
-    # if the tag already exists, the next version number increases by 1
-    # if the tag does not exist, the next version number is 00001
-    deployCount=$[10#${lastDeployTag:${#v_main} + 1:5} + 100001]
-    deployCount=${deployCount:1:5}
+  if [[ -n "$last_deploy_tag" ]]; then
+    deploy_prefix="${last_deploy_tag%%_*}"
+    deploy_count=$((10#${last_deploy_tag:${#deploy_prefix} + 1:5} + 100001))
+    deploy_count="${deploy_count:1:5}"
+  else
+    deploy_prefix="deploy"
+    deploy_count="00001"
+  fi
 
-    echo $deployCount
+  if [[ -z "$trigger_site" || "$trigger_site" == "all" ]]; then
+    new_deploy_tag="${deploy_prefix}_${deploy_count}"
+  else
+    new_deploy_tag="${deploy_prefix}_${deploy_count}_${trigger_site}"
+  fi
 
-    if [[ -z "$trigger_site" || "$trigger_site" == "all" ]]; then
-      newDeployTag=${v_main}_${deployCount}
-    else 
-      newDeployTag=${v_main}_${deployCount}_${trigger_site}
-    fi
-
-  } || {
-    newDeployTag=deploy_00001
-  }
-
-  echo $newDeployTag
-
-  # in the latest release tag, add a deploy tag, trigger CD action
-  git tag -a $newDeployTag -m 'deploy trigger ${newDeployTag}' $lastReleaseTagCommitID
+  echo "$new_deploy_tag"
+  git tag -a "$new_deploy_tag" -m "deploy trigger ${new_deploy_tag}" "$last_release_commit"
   git push --tags
 }
 
+usage() {
+  echo "Usage:"
+  echo "  bash cd.sh -d"
+  echo "  bash cd.sh -t <site|all>"
+}
+
+if [[ "$#" -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
 while getopts ":t:d" opt; do
-    case $opt in
-        t)
-            echo "add a tag to deploy trigger"
-            param_t="$OPTARG"
-
-            do_trigger_tag $param_t
-            ;;
-        d)
-            echo "do deploy"
-            each_cluster
-            ;;
-        ?)
-            echo "-t: trigger CD action, with the option to specify site deployment, or 'all' to deploy all sites"
-            exit 1
-            ;;
-    esac
+  case "$opt" in
+    t)
+      echo "add a tag to deploy trigger"
+      do_trigger_tag "$OPTARG"
+      ;;
+    d)
+      echo "do deploy"
+      each_cluster
+      ;;
+    :)
+      die "Option -$OPTARG requires an argument"
+      ;;
+    ?)
+      usage
+      exit 1
+      ;;
+  esac
 done
-
-    

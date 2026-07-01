@@ -5,3 +5,8 @@ coverage.out
 dist/
 soak-runs/
 .idea/
+/graphdb
+/image/cmd/
+/image/linux-amd64/
+/image/linux-arm64/
+/git/

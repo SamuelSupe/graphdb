@@ -1,4 +1,4 @@
-from registry.jiagouyun.com/middlewares/uniontechos-server-zy-root:v2.0 AS base
+FROM registry.jiagouyun.com/middlewares/uniontechos-server-zy-root:v2.0 AS base
 
 MAINTAINER "lhm@guance.com"
 
@@ -9,8 +9,7 @@ RUN curl -o /etc/yum.repos.d/uos-local.repo https://pmgmt.jiagouyun.com/repo/uos
 RUN yum install -y dpkg libaio-devel libaio unzip wget iputils telnet bind-utils net-tools tzdata && \
     yum -qq install -y ca-certificates && \
     ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-    echo "Asia/Shanghai" > /etc/timezone 
+    echo "Asia/Shanghai" > /etc/timezone
 
 RUN yum -qq install -y ca-certificates && \
     update-ca-trust
-
