@@ -21,7 +21,12 @@ type S3Store struct {
 	region    string
 	accessKey string
 	secretKey string
+	pathStyle bool
 	client    *http.Client
+}
+
+type S3Options struct {
+	PathStyle bool
 }
 
 const (
@@ -31,6 +36,10 @@ const (
 )
 
 func NewS3Store(endpoint, bucket, region, accessKey, secretKey string) (*S3Store, error) {
+	return NewS3StoreWithOptions(endpoint, bucket, region, accessKey, secretKey, S3Options{})
+}
+
+func NewS3StoreWithOptions(endpoint, bucket, region, accessKey, secretKey string, options S3Options) (*S3Store, error) {
 	parsed, err := url.Parse(strings.TrimRight(endpoint, "/"))
 	if err != nil {
 		return nil, err
@@ -53,6 +62,7 @@ func NewS3Store(endpoint, bucket, region, accessKey, secretKey string) (*S3Store
 		region:    region,
 		accessKey: accessKey,
 		secretKey: secretKey,
+		pathStyle: options.PathStyle,
 		client:    &http.Client{Timeout: defaultS3RequestTimeout, Transport: newS3Transport()},
 	}, nil
 }
@@ -249,12 +259,7 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 	if query == nil {
 		query = url.Values{}
 	}
-	u := *s.endpoint
-	u.Path = s.bucketPath()
-	if key != "" {
-		u.Path += "/" + key
-	}
-	u.RawQuery = canonicalQuery(query)
+	u := s.requestURL(key, query)
 
 	payloadHash := sha256Hex(body)
 	now := time.Now().UTC()
@@ -298,6 +303,22 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 	return nil, fmt.Errorf("%w: request exhausted retries", ErrObjectStoreUnavailable)
 }
 
+func (s *S3Store) requestURL(key string, query url.Values) url.URL {
+	u := *s.endpoint
+	if s.pathStyle {
+		u.Path = s.pathStylePath(key)
+	} else {
+		u.Host = s.bucket + "." + u.Host
+		u.Path = endpointPath(s.endpoint.Path, key)
+	}
+	u.RawQuery = canonicalQuery(query)
+	return u
+}
+
+func (s *S3Store) pathStylePath(key string) string {
+	return endpointPath(s.bucketPath(), key)
+}
+
 func retryableS3TransportError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
@@ -317,6 +338,20 @@ func (s *S3Store) bucketPath() string {
 		return "/" + s.bucket
 	}
 	return base + "/" + s.bucket
+}
+
+func endpointPath(base, key string) string {
+	base = strings.TrimRight(base, "/")
+	if key == "" {
+		if base == "" {
+			return "/"
+		}
+		return base
+	}
+	if base == "" {
+		return "/" + key
+	}
+	return base + "/" + key
 }
 
 func readS3Error(resp *http.Response) error {

@@ -4,12 +4,63 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestS3StoreDefaultsToVirtualHostedStyle(t *testing.T) {
+	store, err := NewS3Store("https://tos.example.com/proxy", "bucket", "us-east-1", "access", "secret")
+	if err != nil {
+		t.Fatalf("new s3 store: %v", err)
+	}
+	store.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme != "https" || r.URL.Host != "bucket.tos.example.com" || r.URL.Path != "/proxy/objects/current.json" {
+			t.Fatalf("request URL = %s, want https://bucket.tos.example.com/proxy/objects/current.json", r.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    r,
+		}, nil
+	})
+	data, err := store.Get(context.Background(), "objects/current.json")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("data = %q, want ok", string(data))
+	}
+}
+
+func TestS3StorePathStyleOption(t *testing.T) {
+	store, err := NewS3StoreWithOptions("https://tos.example.com/proxy", "bucket", "us-east-1", "access", "secret", S3Options{PathStyle: true})
+	if err != nil {
+		t.Fatalf("new s3 store: %v", err)
+	}
+	store.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme != "https" || r.URL.Host != "tos.example.com" || r.URL.Path != "/proxy/bucket/objects/current.json" {
+			t.Fatalf("request URL = %s, want https://tos.example.com/proxy/bucket/objects/current.json", r.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Request:    r,
+		}, nil
+	})
+	data, err := store.Get(context.Background(), "objects/current.json")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("data = %q, want ok", string(data))
+	}
+}
 
 func TestS3ConditionalPutFetchesMissingETag(t *testing.T) {
 	var sawConditionalPut atomic.Bool
@@ -165,7 +216,7 @@ func TestS3StorePreservesEndpointPathPrefix(t *testing.T) {
 	}))
 	defer server.Close()
 
-	store, err := NewS3Store(server.URL+"/proxy", "bucket", "us-east-1", "access", "secret")
+	store, err := NewS3StoreWithOptions(server.URL+"/proxy", "bucket", "us-east-1", "access", "secret", S3Options{PathStyle: true})
 	if err != nil {
 		t.Fatalf("new s3 store: %v", err)
 	}
@@ -419,7 +470,7 @@ func TestS3StoreRejectsEmptyObjectKeysBeforeHTTP(t *testing.T) {
 
 func newTestS3Store(t *testing.T, server *httptest.Server) *S3Store {
 	t.Helper()
-	store, err := NewS3Store(server.URL, "bucket", "us-east-1", "access", "secret")
+	store, err := NewS3StoreWithOptions(server.URL, "bucket", "us-east-1", "access", "secret", S3Options{PathStyle: true})
 	if err != nil {
 		t.Fatalf("new s3 store: %v", err)
 	}

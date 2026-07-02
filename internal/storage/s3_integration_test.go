@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,12 +16,17 @@ func TestS3StoreIntegration(t *testing.T) {
 	if os.Getenv("GRAPHDB_MINIO_INTEGRATION") != "1" {
 		t.Skip("set GRAPHDB_MINIO_INTEGRATION=1 to run against S3/MinIO")
 	}
-	s3, err := NewS3Store(
+	pathStyle, err := envBool("S3_PATH_STYLE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s3, err := NewS3StoreWithOptions(
 		os.Getenv("S3_ENDPOINT"),
 		os.Getenv("S3_BUCKET"),
 		envOr("S3_REGION", "us-east-1"),
 		envOr("S3_ACCESS_KEY_ID", os.Getenv("AWS_ACCESS_KEY_ID")),
 		envOr("S3_SECRET_ACCESS_KEY", os.Getenv("AWS_SECRET_ACCESS_KEY")),
+		S3Options{PathStyle: pathStyle},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -79,4 +85,19 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBool(key string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return false, nil
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "y", "on":
+		return true, nil
+	case "0", "false", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
 }

@@ -76,6 +76,7 @@ log "S3 compatibility against RustFS"
 GRAPHDB_MINIO_INTEGRATION=1 \
 S3_ENDPOINT="$RUSTFS_URL" \
 S3_BUCKET="${S3_BUCKET:-graphdb}" \
+S3_PATH_STYLE=true \
 S3_REGION="${S3_REGION:-us-east-1}" \
 S3_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID:-graphdbadmin}" \
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-graphdbsecret}" \

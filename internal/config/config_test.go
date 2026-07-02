@@ -255,6 +255,35 @@ func TestLoadRejectsInvalidOTLPInsecure(t *testing.T) {
 	}
 }
 
+func TestLoadParsesS3PathStyle(t *testing.T) {
+	setLocalConfigEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.S3PathStyle {
+		t.Fatal("S3PathStyle default = true, want false")
+	}
+
+	t.Setenv("S3_PATH_STYLE", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load with S3_PATH_STYLE: %v", err)
+	}
+	if !cfg.S3PathStyle {
+		t.Fatal("S3PathStyle = false, want true")
+	}
+}
+
+func TestLoadRejectsInvalidS3PathStyle(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("S3_PATH_STYLE", "sometimes")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "S3_PATH_STYLE must be a boolean") {
+		t.Fatalf("Load err = %v, want S3_PATH_STYLE validation", err)
+	}
+}
+
 func TestLoadNormalizesObjectPrefix(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_PREFIX", " /prod/blue/ ")
@@ -320,4 +349,5 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_OTLP_INSECURE", "")
 	t.Setenv("GRAPHDB_SERVICE_NAME", "")
 	t.Setenv("GRAPHDB_INSTANCE_ID", "")
+	t.Setenv("S3_PATH_STYLE", "")
 }

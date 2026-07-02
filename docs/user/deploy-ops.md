@@ -32,6 +32,7 @@ S3-compatible storage:
 GRAPHDB_STORAGE=s3
 S3_ENDPOINT=http://127.0.0.1:39000
 S3_BUCKET=graphdb
+S3_PATH_STYLE=true
 S3_REGION=us-east-1
 S3_ACCESS_KEY_ID=graphdbadmin
 S3_SECRET_ACCESS_KEY=graphdbsecret

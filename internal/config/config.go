@@ -58,6 +58,7 @@ type Config struct {
 	S3Region          string
 	S3AccessKeyID     string
 	S3SecretAccessKey string
+	S3PathStyle       bool
 }
 
 func Load() (Config, error) {
@@ -101,6 +102,9 @@ func Load() (Config, error) {
 	}
 	cfg.S3AccessKeyID = firstNonEmpty(os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("AWS_ACCESS_KEY_ID"))
 	cfg.S3SecretAccessKey = firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
+	if err := loadBoolEnv("S3_PATH_STYLE", &cfg.S3PathStyle); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_POLL_INTERVAL", &cfg.PollInterval); err != nil {
 		return Config{}, err
 	}
@@ -306,7 +310,7 @@ func NewObjectStore(cfg Config) (storage.ObjectStore, error) {
 	case "local":
 		return storage.NewFileStore(cfg.DataDir), nil
 	case "s3":
-		return storage.NewS3Store(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey)
+		return storage.NewS3StoreWithOptions(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, storage.S3Options{PathStyle: cfg.S3PathStyle})
 	default:
 		return nil, fmt.Errorf("unsupported GRAPHDB_STORAGE %q", cfg.StoreKind)
 	}

@@ -794,7 +794,8 @@ writer/reader e2e, load test, reader freshness smoke, repair/recover smoke,
 multi-reader cold-start with slow object reads, reader restart, writer restart,
 and object-store outage rejection. Set
 `RUN_EXTERNAL_S3=1` with `S3_ENDPOINT`, `S3_BUCKET`, and credentials to add an
-external S3-compatible endpoint to the same matrix. Set
+external S3-compatible endpoint to the same matrix. Set `S3_PATH_STYLE=true`
+when that endpoint requires path-style access. Set
 `RUN_OBJECT_STORE_OUTAGE=0` to skip the disruptive outage drill in shared local
 environments. Set `RUN_COLD_READER_SCALE=0` to skip the isolated multi-reader
 slow-read drill.
@@ -846,6 +847,8 @@ flags without changing process-wide defaults.
 - `GRAPHDB_SERVICE_NAME=graphdb`
 - `S3_ENDPOINT=http://localhost:9000`
 - `S3_BUCKET=graphdb`
+- `S3_PATH_STYLE=false` (default virtual-host access; set `true` for local
+  MinIO/RustFS-style endpoints)
 - `S3_REGION=us-east-1`
 - `S3_ACCESS_KEY_ID=minioadmin`
 - `S3_SECRET_ACCESS_KEY=minioadmin`

@@ -20,6 +20,7 @@ type storeFlags struct {
 	region    string
 	accessKey string
 	secretKey string
+	pathStyle bool
 }
 
 func main() {
@@ -81,6 +82,7 @@ func addStoreFlags(prefix string, target *storeFlags) {
 	flag.StringVar(&target.region, prefix+"-s3-region", "us-east-1", "S3 region")
 	flag.StringVar(&target.accessKey, prefix+"-s3-access-key-id", "", "S3 access key id")
 	flag.StringVar(&target.secretKey, prefix+"-s3-secret-access-key", "", "S3 secret access key")
+	flag.BoolVar(&target.pathStyle, prefix+"-s3-path-style", false, "use S3 path-style URLs instead of virtual-host URLs")
 }
 
 func openStore(cfg storeFlags) (storage.ObjectStore, error) {
@@ -88,7 +90,7 @@ func openStore(cfg storeFlags) (storage.ObjectStore, error) {
 	case "local":
 		return storage.NewFileStore(cfg.dataDir), nil
 	case "s3":
-		return storage.NewS3Store(cfg.endpoint, cfg.bucket, cfg.region, cfg.accessKey, cfg.secretKey)
+		return storage.NewS3StoreWithOptions(cfg.endpoint, cfg.bucket, cfg.region, cfg.accessKey, cfg.secretKey, storage.S3Options{PathStyle: cfg.pathStyle})
 	default:
 		return nil, fmt.Errorf("unsupported storage kind %q", cfg.kind)
 	}
