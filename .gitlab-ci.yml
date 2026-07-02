@@ -1,6 +1,6 @@
 variables:
-  GLOBAL_BASE_IMAGE: pubrepo.jiagouyun.com/base/golang:1.25.8
-  DEP_IMAGE: registry.jiagouyun.com/basis/kodo-dep-go1.25.8
+  GLOBAL_BASE_IMAGE: pubrepo.jiagouyun.com/base/golang:1.25.11
+  DEP_IMAGE: registry.jiagouyun.com/basis/kodo-dep-go1.25.11
   CACHE_IMAGE_PATH: image-cache
   PROJECT: "graphdb"
   CONTAINER_NAME: "graphdb-build"
