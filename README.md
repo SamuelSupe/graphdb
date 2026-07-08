@@ -749,6 +749,10 @@ Error contract:
   events, and slow query logs are emitted as JSON lines to stdout.
 - `GRAPHDB_OTLP_ENDPOINT` enables OTLP/HTTP tracing. Leave it empty to keep
   tracing no-op. Use `GRAPHDB_OTLP_INSECURE=true` for plain HTTP collectors.
+  `POST /v1/commits` emits child spans for write admission, request decoding,
+  commit execution, graph load, commit-tail replay, manifest CAS write, index
+  update, and object-store operations so slow writes can be broken down by
+  phase.
 - `GRAPHDB_SLOW_QUERY_THRESHOLD` controls slow query logging. Set it to `0` to
   disable slow query classification.
 - `GRAPHDB_INDEX_HEALTH_INTERVAL` controls background health sampling for

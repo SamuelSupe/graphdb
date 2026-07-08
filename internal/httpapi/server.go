@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Server struct {
@@ -124,28 +125,63 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
+	tracer := otel.Tracer("graphdb/http")
+	ctx, span := tracer.Start(r.Context(), "graphdb.commit.http")
+	var spanErr error
+	defer func() { endHTTPSpan(span, spanErr) }()
+	r = r.WithContext(ctx)
+
 	if !s.writeAllowed() {
+		span.SetAttributes(attribute.String("graphdb.commit.result", "write_disabled"))
 		writeError(w, http.StatusMethodNotAllowed, "writes are disabled in reader mode")
 		return
 	}
 	tenantID, ok := tenantFromRequest(w, r)
 	if !ok {
+		span.SetAttributes(attribute.String("graphdb.commit.result", "tenant_required"))
 		return
 	}
-	release, ok := s.enterWrite(w, r, tenantID)
+	span.SetAttributes(attribute.String("graphdb.tenant", tenantID))
+
+	enterCtx, enterSpan := tracer.Start(r.Context(), "graphdb.commit.enter_write", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
+	release, ok := s.enterWrite(w, r.WithContext(enterCtx), tenantID)
 	if !ok {
+		span.SetAttributes(attribute.String("graphdb.commit.result", "write_admission_rejected"))
+		endHTTPSpan(enterSpan, traceError("write admission rejected"))
 		return
 	}
+	endHTTPSpan(enterSpan, nil)
 	defer release()
+
 	var request CommitRequest
+	_, decodeSpan := tracer.Start(r.Context(), "graphdb.commit.decode_request", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
 	if !decodeJSONBody(w, r, &request, maxWriteRequestBytes) {
+		span.SetAttributes(attribute.String("graphdb.commit.result", "decode_failed"))
+		endHTTPSpan(decodeSpan, traceError("decode commit request failed"))
 		return
 	}
+	decodeSpan.SetAttributes(commitRequestAttributes(request)...)
+	endHTTPSpan(decodeSpan, nil)
+
 	writeCtx, cancel := s.writeExecutionContext(r.Context())
 	defer cancel()
-	result, err := s.Store.CommitWithReport(writeCtx, tenantID, request.Mutations, storage.CommitOptions{ExpectedVersion: request.ExpectedVersion, IdempotencyKey: request.IdempotencyKey})
+
+	storeCtx, storeSpan := tracer.Start(writeCtx, "graphdb.commit.store_commit", trace.WithAttributes(append([]attribute.KeyValue{
+		attribute.String("graphdb.tenant", tenantID),
+	}, commitRequestAttributes(request)...)...))
+	result, err := s.Store.CommitWithReport(storeCtx, tenantID, request.Mutations, storage.CommitOptions{ExpectedVersion: request.ExpectedVersion, IdempotencyKey: request.IdempotencyKey})
+	storeSpan.SetAttributes(
+		attribute.Int64("graphdb.commit.version", result.Version),
+		attribute.Int64("graphdb.commit.readable_version", result.ReadableVersion),
+		attribute.Bool("graphdb.commit.skipped", result.Skipped),
+		attribute.Bool("graphdb.commit.idempotent_replay", result.IdempotentReplay),
+		attribute.Int("graphdb.commit.index_warnings", len(result.IndexWarnings)),
+	)
+	endHTTPSpan(storeSpan, err)
 	if err != nil {
+		spanErr = err
 		if s.writeBackpressureIfNeeded(w, tenantID, err) {
+			span.SetAttributes(attribute.String("graphdb.commit.result", "write_backpressure"))
 			return
 		}
 		if writeCtx.Err() != nil {
@@ -153,24 +189,41 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 				s.invalidate(tenantID)
 			}
 			s.auditError("commit_timeout", tenantID, err, map[string]any{"idempotency_key": request.IdempotencyKey})
+			span.SetAttributes(attribute.String("graphdb.commit.result", "write_context_error"))
 			writeRequestError(w, writeCtx.Err())
 			return
 		}
 		if commitMayHaveChangedData(result) {
 			s.invalidate(tenantID)
 			s.auditError("commit_metadata_failed", tenantID, err, map[string]any{"idempotency_key": request.IdempotencyKey})
+			span.SetAttributes(attribute.String("graphdb.commit.result", "metadata_failed"))
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		s.auditError("commit_failed", tenantID, err, map[string]any{})
+		span.SetAttributes(attribute.String("graphdb.commit.result", "failed"))
 		writeErrorErr(w, http.StatusBadRequest, err)
 		return
 	}
+
+	_, afterSpan := tracer.Start(r.Context(), "graphdb.commit.after_commit", trace.WithAttributes(
+		attribute.String("graphdb.tenant", tenantID),
+		attribute.Int64("graphdb.commit.version", result.Version),
+		attribute.Int("graphdb.commit.suppressed", len(result.Suppressed)),
+		attribute.Int("graphdb.commit.canonical_entities", len(result.CanonicalEntities)),
+		attribute.Int("graphdb.commit.canonical_edges", len(result.CanonicalEdges)),
+	))
 	s.invalidate(tenantID)
 	s.recordSuppressed(tenantID, result.Suppressed)
 	s.auditInfo("commit_applied", tenantID, map[string]any{
 		"version": result.Version, "suppressed": len(result.Suppressed), "canonical_entities": len(result.CanonicalEntities), "canonical_edges": len(result.CanonicalEdges),
 	})
+	endHTTPSpan(afterSpan, nil)
+	span.SetAttributes(
+		attribute.String("graphdb.commit.result", "ok"),
+		attribute.Int64("graphdb.commit.version", result.Version),
+		attribute.Int("graphdb.commit.index_warnings", len(result.IndexWarnings)),
+	)
 	writeJSON(w, http.StatusOK, result)
 }
 
