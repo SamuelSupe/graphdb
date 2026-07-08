@@ -98,9 +98,26 @@ func (s *TenantStore) putEntityRecordIfChanged(ctx context.Context, job entityRe
 	if err != nil {
 		return err
 	}
+	mayExist, err := s.objectKeyMayExist(ctx, job.Key)
+	if err != nil {
+		return err
+	}
+	if !mayExist {
+		if _, err := s.Objects.PutConditional(ctx, job.Key, data, PutCondition{IfNoneMatch: true}); err == nil {
+			s.markObjectKeyCached(job.Key)
+			return nil
+		} else if !errors.Is(err, ErrConflict) {
+			return err
+		}
+	}
 	existing, meta, err := s.Objects.GetWithMeta(ctx, job.Key)
 	if errors.Is(err, ErrNotFound) {
-		return s.putBytesWithMeta(ctx, job.Key, data, ObjectMeta{Key: job.Key})
+		if _, err := s.Objects.PutConditional(ctx, job.Key, data, PutCondition{IfNoneMatch: true}); err == nil {
+			s.markObjectKeyCached(job.Key)
+			return nil
+		} else {
+			return err
+		}
 	}
 	if err != nil {
 		return err
@@ -114,7 +131,11 @@ func (s *TenantStore) putEntityRecordIfChanged(ctx context.Context, job entityRe
 			return fmt.Errorf("%w: entity record %q is newer than rebuild target", ErrConflict, job.Key)
 		}
 	}
-	return s.putBytesWithMeta(ctx, job.Key, data, meta)
+	if err := s.putBytesWithMeta(ctx, job.Key, data, meta); err != nil {
+		return err
+	}
+	s.markObjectKeyCached(job.Key)
+	return nil
 }
 
 func (s *TenantStore) putEntityRecordWithMeta(ctx context.Context, key string, record EntityRecord, meta ObjectMeta) error {

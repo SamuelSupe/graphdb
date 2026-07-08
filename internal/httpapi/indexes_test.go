@@ -187,6 +187,42 @@ func TestHTTPRebuildIndexesWritesParquet(t *testing.T) {
 	}
 }
 
+func TestHTTPSyncRebuildSkipsEntityRecordCleanup(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	commitBody := CommitRequest{Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{
+			Name:   "host",
+			Fields: map[string]graph.FieldSpec{"hostname": {Type: "string", Indexed: true}},
+		}},
+		UpsertEntities: []graph.Entity{{ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": "app-01"}}},
+	}}
+	if rr := serveJSON(handler, http.MethodPost, "/v1/commits", "tenant-a", commitBody); rr.Code != http.StatusOK {
+		t.Fatalf("commit = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := serveJSON(handler, http.MethodPost, "/v1/indexes/rebuild", "tenant-a", map[string]any{}); rr.Code != http.StatusOK {
+		t.Fatalf("first rebuild = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if count := countEntityRecordObjects(t, store, "tenant-a"); count == 0 {
+		t.Fatal("first rebuild did not create entity records")
+	}
+	if rr := serveJSON(handler, http.MethodPost, "/v1/indexes/rebuild", "tenant-a", map[string]any{}); rr.Code != http.StatusOK {
+		t.Fatalf("second rebuild = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if count := countEntityRecordObjects(t, store, "tenant-a"); count == 0 {
+		t.Fatal("sync rebuild cleanup deleted entity records")
+	}
+}
+
+func countEntityRecordObjects(t *testing.T, store *storage.TenantStore, tenantID string) int {
+	t.Helper()
+	objects, err := store.Objects.List(t.Context(), "test/tenants/"+tenantID+"/indexes/entities/by-id/")
+	if err != nil {
+		t.Fatalf("list entity records: %v", err)
+	}
+	return len(objects)
+}
+
 func TestHTTPRebuildIndexesRejectsFormatOverride(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	handler := (&Server{Store: store, Mode: "all"}).Handler()

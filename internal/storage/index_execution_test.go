@@ -68,6 +68,160 @@ func TestPersistedIndexLookupAndIncrementalUpdate(t *testing.T) {
 	}
 }
 
+func TestWriterHotCommitAvoidsFixedMetadataReads(t *testing.T) {
+	ctx := context.Background()
+	objects := newCountingReadStore(NewMemoryStore())
+	store := newParquetIndexTenantStore(objects, "test")
+	store.Backpressure = NewWritePressure(BackpressureConfig{MaxCommitTail: 300})
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	objects.Reset()
+	result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": "app-02"},
+	}}}, CommitOptions{})
+	if err != nil {
+		t.Fatalf("hot commit: %v", err)
+	}
+	if len(result.IndexWarnings) != 0 {
+		t.Fatalf("index warnings = %#v", result.IndexWarnings)
+	}
+	for _, fragment := range []string{"/_registry.parquet", "/manifest.parquet", "/metadata.parquet", "/control/writer-lease.parquet", "/indexes/catalog.parquet", "/config/source-policy.parquet", "/config/tenant.parquet"} {
+		if got := objects.CountContains(fragment); got != 0 {
+			t.Fatalf("hot commit GET count for %s = %d, want 0", fragment, got)
+		}
+	}
+}
+
+func TestRebuildIndexesAvoidsNewEntityRecordMissReads(t *testing.T) {
+	ctx := context.Background()
+	objects := newCountingReadStore(NewMemoryStore())
+	store := newParquetIndexTenantStore(objects, "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	objects.Reset()
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if got := objects.CountContains("/indexes/entities/by-id/"); got != 0 {
+		t.Fatalf("new entity record GET count = %d, want 0", got)
+	}
+}
+
+func TestOptionalEntityRecordsCanBeDisabled(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	store.WriteEntityRecords = false
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if count := entityRecordObjectCountForTest(t, ctx, store, "tenant-a"); count != 0 {
+		t.Fatalf("entity record objects = %d, want 0", count)
+	}
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	entity, ok, err := lookup.GetEntity(ctx, "host:app-01", []string{"hostname"})
+	if err != nil || !ok || entity.Fields["hostname"] != "app-01" {
+		t.Fatalf("page lookup entity=%#v ok=%v err=%v", entity, ok, err)
+	}
+
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": "app-02"},
+	}}}, CommitOptions{}); err != nil {
+		t.Fatalf("incremental commit: %v", err)
+	}
+	catalog, err = store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("catalog: %v", err)
+	}
+	if count := entityRecordObjectCountForTest(t, ctx, store, "tenant-a"); count != 0 {
+		t.Fatalf("entity record objects after incremental = %d, want 0", count)
+	}
+	lookup = &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	entity, ok, err = lookup.GetEntity(ctx, "host:app-01", []string{"hostname"})
+	if err != nil || !ok || entity.Fields["hostname"] != "app-02" {
+		t.Fatalf("updated page lookup entity=%#v ok=%v err=%v", entity, ok, err)
+	}
+}
+
+func TestIncrementalIndexCatalogReusesUnchangedEntityPageObjects(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	entities := make([]graph.Entity, 0, 400)
+	for i := 0; i < 400; i++ {
+		id := fmt.Sprintf("host:%03d", i)
+		entities = append(entities, graph.Entity{ID: id, Kind: "host", Fields: graph.Fields{"hostname": id, "region": "us-east-1"}})
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{
+			"hostname": {Type: "string", Indexed: true},
+			"region":   {Type: "string", Indexed: true},
+		}}},
+		UpsertEntities: entities,
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:000", Kind: "host", Fields: graph.Fields{"hostname": "changed"},
+	}}}, CommitOptions{})
+	if err != nil {
+		t.Fatalf("incremental commit: %v", err)
+	}
+	if len(result.IndexWarnings) != 0 {
+		t.Fatalf("index warnings = %#v", result.IndexWarnings)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("catalog: %v", err)
+	}
+	reused, current := 0, 0
+	for _, index := range catalog.Indexes {
+		for _, object := range index.Objects {
+			version, ok := store.parquetVersionFromKey("tenant-a", object.Key)
+			if !ok {
+				continue
+			}
+			switch version {
+			case 1:
+				reused++
+			case catalog.Version:
+				current++
+			}
+		}
+	}
+	if reused == 0 || current == 0 {
+		t.Fatalf("secondary index object versions reused=%d current=%d, want both non-zero", reused, current)
+	}
+}
+
+func entityRecordObjectCountForTest(t *testing.T, ctx context.Context, store *TenantStore, tenantID string) int {
+	t.Helper()
+	objects, err := store.Objects.List(ctx, store.entityRecordPrefix(tenantID))
+	if err != nil {
+		t.Fatalf("list entity records: %v", err)
+	}
+	count := 0
+	for _, object := range objects {
+		if _, ok, err := store.entityIDFromRecordKey(tenantID, object.Key); err != nil {
+			t.Fatalf("parse entity record key %q: %v", object.Key, err)
+		} else if ok {
+			count++
+		}
+	}
+	return count
+}
+
 func TestFilteredFieldIndexScanReadsCandidateShard(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()

@@ -154,7 +154,7 @@ func (s *TenantStore) auditSecondaryIndexObjects(ctx context.Context, tenantID s
 		if !ok {
 			continue
 		}
-		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, version, spec.Type == "unique")
+		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, spec.Type == "unique")
 		if err != nil {
 			report.addIssue("secondary_index_decode_failed", "error", "secondary_index", spec.Name, object.Key, err.Error())
 			continue
@@ -180,7 +180,7 @@ func (s *TenantStore) auditIndexEdgeShardObjects(ctx context.Context, tenantID s
 		if !ok {
 			continue
 		}
-		shard, err := decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, version)
+		shard, err := decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, 0)
 		if err != nil {
 			report.addIssue("edge_shard_decode_failed", "error", "edge_shard", resourceID, object.Key, err.Error())
 			continue
@@ -202,7 +202,7 @@ func (s *TenantStore) auditIndexEntityPageObjects(ctx context.Context, tenantID 
 		if !ok {
 			continue
 		}
-		page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, version)
+		page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
 		if err != nil {
 			report.addIssue("entity_page_decode_failed", "error", "entity_page", spec.Shard, object.Key, err.Error())
 			continue

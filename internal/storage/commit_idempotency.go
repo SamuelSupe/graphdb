@@ -39,6 +39,13 @@ func (s *TenantStore) loadDirectCommitRecord(ctx context.Context, tenantID strin
 		return DirectCommitRecord{}, false, nil
 	}
 	key := s.commitIdempotencyKey(tenantID, request.IdempotencyKey)
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil {
+		return DirectCommitRecord{}, false, err
+	}
+	if !mayExist {
+		return DirectCommitRecord{}, false, nil
+	}
 	record, err := s.loadDirectCommitRecordByKey(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return DirectCommitRecord{}, false, nil
@@ -70,6 +77,7 @@ func (s *TenantStore) saveDirectCommitRecord(ctx context.Context, tenantID strin
 	key := s.commitIdempotencyKey(tenantID, request.IdempotencyKey)
 	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
 	if err == nil {
+		s.markObjectKeyCached(key)
 		return nil
 	}
 	if !errors.Is(err, ErrConflict) {

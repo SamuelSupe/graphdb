@@ -112,7 +112,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				}
 				candidates = scan.IDs
 			}
-			page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, version)
+			page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
 			if (err != nil || !entityPageReadable(page, tenantID, version, spec)) && cached {
 				key := firstIndexObjectKey(spec.Objects, "page", s.parquetEntityPageVersionKey(tenantID, version, spec.Shard))
 				s.dropCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
@@ -130,7 +130,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 					}
 					candidates = scan.IDs
 				}
-				page, err = decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, version)
+				page, err = decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
 			}
 			if err != nil {
 				return EntityScanResult{}, false, err

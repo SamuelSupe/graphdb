@@ -63,6 +63,14 @@ const (
 )
 
 func (s *TenantStore) writeParquetEdgeShards(ctx context.Context, tenantID string, shards []EdgeShardData) error {
+	return s.writeParquetEdgeShardsWithOptions(ctx, tenantID, shards, true)
+}
+
+func (s *TenantStore) writeParquetEdgeShardsFast(ctx context.Context, tenantID string, shards []EdgeShardData) error {
+	return s.writeParquetEdgeShardsWithOptions(ctx, tenantID, shards, false)
+}
+
+func (s *TenantStore) writeParquetEdgeShardsWithOptions(ctx context.Context, tenantID string, shards []EdgeShardData, checkExisting bool) error {
 	for _, group := range edgeShardDataPackGroups(shards) {
 		for i := range group.Shards {
 			group.Shards[i].TenantID = tenantID
@@ -72,14 +80,16 @@ func (s *TenantStore) writeParquetEdgeShards(ctx context.Context, tenantID strin
 		key := s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, pack.Shard)
 		if len(group.Shards) > 1 {
 			key = s.parquetEdgeShardPackVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
-			if _, ok, err := s.existingParquetEdgeShardPackMeta(ctx, key, tenantID, group.Shards); err != nil || ok {
-				if err != nil {
-					return err
+			if checkExisting {
+				if _, ok, err := s.existingParquetEdgeShardPackMeta(ctx, key, tenantID, group.Shards); err != nil || ok {
+					if err != nil {
+						return err
+					}
+					continue
 				}
-				continue
 			}
 		}
-		if err := s.putParquetEdgeShardObject(ctx, key, tenantID, pack); err != nil {
+		if err := s.putParquetEdgeShardObject(ctx, key, tenantID, pack, checkExisting); err != nil {
 			return err
 		}
 	}
@@ -88,22 +98,50 @@ func (s *TenantStore) writeParquetEdgeShards(ctx context.Context, tenantID strin
 
 func (s *TenantStore) putParquetEdgeShard(ctx context.Context, tenantID string, shard EdgeShardData) error {
 	key := s.parquetEdgeShardVersionKey(tenantID, shard.Version, shard.RelationType, shard.Shard)
-	return s.putParquetEdgeShardObject(ctx, key, tenantID, shard)
+	return s.putParquetEdgeShardObject(ctx, key, tenantID, shard, true)
 }
 
-func (s *TenantStore) putParquetEdgeShardObject(ctx context.Context, key string, tenantID string, shard EdgeShardData) error {
-	if ok, err := s.parquetEdgeShardUnchanged(ctx, key, tenantID, shard); err != nil || ok {
-		return err
+func (s *TenantStore) putParquetEdgeShardObject(ctx context.Context, key string, tenantID string, shard EdgeShardData, checkExisting bool) error {
+	if checkExisting {
+		if ok, err := s.parquetEdgeShardUnchanged(ctx, key, tenantID, shard); err != nil || ok {
+			return err
+		}
 	}
 	data, err := marshalParquetEdgeShard(ctx, shard)
 	if err != nil {
 		return err
 	}
-	_, err = s.putBytesIfChangedMeta(ctx, key, data)
+	if _, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true}); err == nil {
+		s.markObjectKeyCached(key)
+		return nil
+	} else if !errors.Is(err, ErrConflict) {
+		return err
+	}
+	return s.putConflictingParquetEdgeShardObject(ctx, key, tenantID, shard, data)
+}
+
+func (s *TenantStore) putConflictingParquetEdgeShardObject(ctx context.Context, key string, tenantID string, shard EdgeShardData, data []byte) error {
+	existing, meta, err := s.Objects.GetWithMeta(ctx, key)
+	if err != nil {
+		return err
+	}
+	decoded, decodeErr := decodeParquetEdgeShard(ctx, existing, tenantID, shard.RelationType, shard.Shard, shard.Version)
+	if decodeErr == nil && edgeShardContentHash(decoded) == edgeShardContentHash(shard) {
+		s.markObjectKeyCached(key)
+		return nil
+	}
+	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
+	if err == nil {
+		s.markObjectKeyCached(key)
+	}
 	return err
 }
 
 func (s *TenantStore) parquetEdgeShardUnchanged(ctx context.Context, key string, tenantID string, shard EdgeShardData) (bool, error) {
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil || !mayExist {
+		return false, err
+	}
 	data, _, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
@@ -119,6 +157,10 @@ func (s *TenantStore) parquetEdgeShardUnchanged(ctx context.Context, key string,
 }
 
 func (s *TenantStore) existingParquetEdgeShardPackMeta(ctx context.Context, key string, tenantID string, shards []EdgeShardData) (ObjectMeta, bool, error) {
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil || !mayExist {
+		return ObjectMeta{}, false, err
+	}
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return ObjectMeta{}, false, nil
@@ -605,7 +647,7 @@ func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID s
 	if data, _, ok, err := s.cachedIndexObject(ctx, "edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash); err != nil {
 		return EdgeShardData{}, false, err
 	} else if ok {
-		shard, err := decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, version)
+		shard, err := decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, 0)
 		if err == nil && edgeShardObjectMatchesCatalog(shard, spec, version) {
 			return shard, true, nil
 		}
@@ -618,7 +660,7 @@ func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID s
 	if err != nil {
 		return EdgeShardData{}, false, err
 	}
-	shard, err := decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, version)
+	shard, err := decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, 0)
 	if err != nil {
 		return EdgeShardData{}, false, err
 	}

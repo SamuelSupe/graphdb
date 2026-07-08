@@ -8,14 +8,7 @@ import (
 
 func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (loadedGraph, error) {
 	if cached, ok := s.getWriteCache(tenantID); ok {
-		manifest, _, err := s.getManifest(ctx, tenantID)
-		if err != nil {
-			return loadedGraph{}, err
-		}
-		if cached.Manifest.Version >= manifest.Version && sameManifestReadSet(cached.Manifest, manifest) {
-			return cached, nil
-		}
-		s.deleteWriteCache(tenantID)
+		return cached, nil
 	}
 	return s.loadWithMeta(ctx, tenantID)
 }

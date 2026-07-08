@@ -438,18 +438,22 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			if err := validateTenantConfig(*record.Config); err != nil {
 				return TenantRestoreReport{}, err
 			}
-			if err := s.putTenantConfigRecordWithMeta(ctx, task.TenantID, tenantConfigRecord{TenantID: task.TenantID, Config: *record.Config}, ObjectMeta{Key: s.tenantConfigKey(task.TenantID)}); err != nil {
+			meta, err := s.putTenantConfigRecordWithMeta(ctx, task.TenantID, tenantConfigRecord{TenantID: task.TenantID, Config: *record.Config}, ObjectMeta{Key: s.tenantConfigKey(task.TenantID)})
+			if err != nil {
 				return TenantRestoreReport{}, err
 			}
+			s.setCachedTenantConfig(task.TenantID, *record.Config, true, meta)
 		}
 		if record.SourcePolicy != nil {
 			normalized, err := graph.NormalizeSourcePolicy(*record.SourcePolicy)
 			if err != nil {
 				return TenantRestoreReport{}, err
 			}
-			if err := s.putSourcePolicyRecordWithMeta(ctx, task.TenantID, sourcePolicyRecord{TenantID: task.TenantID, SourcePolicy: normalized}, ObjectMeta{Key: s.sourcePolicyKey(task.TenantID)}); err != nil {
+			meta, err := s.putSourcePolicyRecordWithMeta(ctx, task.TenantID, sourcePolicyRecord{TenantID: task.TenantID, SourcePolicy: normalized}, ObjectMeta{Key: s.sourcePolicyKey(task.TenantID)})
+			if err != nil {
 				return TenantRestoreReport{}, err
 			}
+			s.setCachedSourcePolicy(task.TenantID, normalized, true, meta)
 		}
 		if err := s.addTenantToRegistry(ctx, task.TenantID); err != nil {
 			return TenantRestoreReport{}, err

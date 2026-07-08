@@ -56,23 +56,35 @@ type CommitOptions struct {
 }
 
 type TenantStore struct {
-	Objects              ObjectStore
-	Prefix               string
-	lockMu               sync.Mutex
-	tenantLocks          map[string]*tenantLock
-	writeCache           map[string]loadedGraph
-	indexCache           *indexObjectCache
-	entityPageCache      *entityPageCache
-	taskMu               sync.Mutex
-	indexTasks           map[string]IndexTask
-	taskCancels          map[string]context.CancelFunc
-	InstanceID           string
-	LeaseTTL             time.Duration
-	MaxRetries           int
-	IndexFormat          string
-	Backpressure         *WritePressure
-	BackpressureObserver BackpressureObserver
-	CacheObserver        ReaderCacheObserver
+	Objects                    ObjectStore
+	Prefix                     string
+	lockMu                     sync.Mutex
+	tenantLocks                map[string]*tenantLock
+	tenantRegistryMu           sync.Mutex
+	writeCache                 map[string]loadedGraph
+	writerLeaseCache           map[string]cachedWriterLease
+	registeredTenantCache      map[string]struct{}
+	collectorStatusCache       map[string]cachedCollectorStatus
+	objectKeyCache             map[string]struct{}
+	objectPrefixCache          map[string]struct{}
+	tenantMetadataCache        map[string]cachedTenantMetadata
+	sourcePolicyCache          map[string]cachedSourcePolicy
+	tenantConfigCache          map[string]cachedTenantConfig
+	indexCatalogCache          map[string]cachedIndexCatalog
+	indexCache                 *indexObjectCache
+	entityPageCache            *entityPageCache
+	taskMu                     sync.Mutex
+	indexTasks                 map[string]IndexTask
+	taskCancels                map[string]context.CancelFunc
+	InstanceID                 string
+	LeaseTTL                   time.Duration
+	MaxRetries                 int
+	IndexFormat                string
+	WriteEntityRecords         bool
+	MaterializeCollectorStatus bool
+	Backpressure               *WritePressure
+	BackpressureObserver       BackpressureObserver
+	CacheObserver              ReaderCacheObserver
 }
 
 type loadedGraph struct {
@@ -87,17 +99,28 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		instanceID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return &TenantStore{
-		Objects:         objects,
-		Prefix:          cleanPrefix(prefix),
-		tenantLocks:     map[string]*tenantLock{},
-		writeCache:      map[string]loadedGraph{},
-		indexCache:      newIndexObjectCache(4096),
-		entityPageCache: newEntityPageCache(2048),
-		indexTasks:      map[string]IndexTask{},
-		taskCancels:     map[string]context.CancelFunc{},
-		InstanceID:      instanceID,
-		LeaseTTL:        30 * time.Second,
-		MaxRetries:      3,
+		Objects:                    objects,
+		Prefix:                     cleanPrefix(prefix),
+		tenantLocks:                map[string]*tenantLock{},
+		writeCache:                 map[string]loadedGraph{},
+		writerLeaseCache:           map[string]cachedWriterLease{},
+		registeredTenantCache:      map[string]struct{}{},
+		collectorStatusCache:       map[string]cachedCollectorStatus{},
+		objectKeyCache:             map[string]struct{}{},
+		objectPrefixCache:          map[string]struct{}{},
+		tenantMetadataCache:        map[string]cachedTenantMetadata{},
+		sourcePolicyCache:          map[string]cachedSourcePolicy{},
+		tenantConfigCache:          map[string]cachedTenantConfig{},
+		indexCatalogCache:          map[string]cachedIndexCatalog{},
+		indexCache:                 newIndexObjectCache(4096),
+		entityPageCache:            newEntityPageCache(2048),
+		indexTasks:                 map[string]IndexTask{},
+		taskCancels:                map[string]context.CancelFunc{},
+		InstanceID:                 instanceID,
+		LeaseTTL:                   30 * time.Second,
+		MaxRetries:                 3,
+		WriteEntityRecords:         true,
+		MaterializeCollectorStatus: true,
 	}
 }
 

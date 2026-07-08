@@ -251,6 +251,7 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 		return report, err
 	}
 	s.deleteWriteCache(tenantID)
+	s.deleteCachedTenantMetadata(tenantID)
 	return report, nil
 }
 
@@ -420,7 +421,7 @@ func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string) (string, error) {
-	metadata, configured, _, err := s.getTenantMetadataWithMeta(ctx, tenantID)
+	metadata, configured, _, err := s.getTenantMetadataForWrite(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
@@ -428,6 +429,18 @@ func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string)
 		return TenantStatusActive, nil
 	}
 	return metadata.Status, nil
+}
+
+func (s *TenantStore) getTenantMetadataForWrite(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
+	if metadata, configured, meta, ok := s.getCachedTenantMetadata(tenantID); ok {
+		return metadata, configured, meta, nil
+	}
+	metadata, configured, meta, err := s.getTenantMetadataWithMeta(ctx, tenantID)
+	if err != nil {
+		return TenantMetadata{}, false, ObjectMeta{}, err
+	}
+	s.setCachedTenantMetadata(tenantID, metadata, configured, meta)
+	return metadata, configured, meta, nil
 }
 
 func (s *TenantStore) tenantInfoFromMetadata(ctx context.Context, metadata TenantMetadata, exists bool) (TenantInfo, error) {
@@ -457,16 +470,20 @@ func (s *TenantStore) cloneTenantConfigs(ctx context.Context, sourceTenantID str
 	if policy, ok, err := s.GetSourcePolicy(ctx, sourceTenantID); err != nil {
 		return err
 	} else if ok {
-		if err := s.putSourcePolicyRecordWithMeta(ctx, targetTenantID, sourcePolicyRecord{TenantID: targetTenantID, SourcePolicy: policy}, ObjectMeta{Key: s.sourcePolicyKey(targetTenantID)}); err != nil {
+		meta, err := s.putSourcePolicyRecordWithMeta(ctx, targetTenantID, sourcePolicyRecord{TenantID: targetTenantID, SourcePolicy: policy}, ObjectMeta{Key: s.sourcePolicyKey(targetTenantID)})
+		if err != nil {
 			return err
 		}
+		s.setCachedSourcePolicy(targetTenantID, policy, true, meta)
 	}
 	if config, ok, err := s.GetTenantConfig(ctx, sourceTenantID); err != nil {
 		return err
 	} else if ok {
-		if err := s.putTenantConfigRecordWithMeta(ctx, targetTenantID, tenantConfigRecord{TenantID: targetTenantID, Config: config}, ObjectMeta{Key: s.tenantConfigKey(targetTenantID)}); err != nil {
+		meta, err := s.putTenantConfigRecordWithMeta(ctx, targetTenantID, tenantConfigRecord{TenantID: targetTenantID, Config: config}, ObjectMeta{Key: s.tenantConfigKey(targetTenantID)})
+		if err != nil {
 			return err
 		}
+		s.setCachedTenantConfig(targetTenantID, config, true, meta)
 	}
 	return nil
 }
@@ -480,9 +497,11 @@ func (s *TenantStore) applyTenantCreateTemplates(ctx context.Context, tenantID s
 		if err != nil {
 			return err
 		}
-		if err := s.putTenantConfigRecordWithMeta(ctx, tenantID, tenantConfigRecord{TenantID: tenantID, Config: *options.Config}, meta); err != nil {
+		nextMeta, err := s.putTenantConfigRecordWithMeta(ctx, tenantID, tenantConfigRecord{TenantID: tenantID, Config: *options.Config}, meta)
+		if err != nil {
 			return err
 		}
+		s.setCachedTenantConfig(tenantID, *options.Config, true, nextMeta)
 	}
 	if options.SourcePolicy != nil {
 		normalized, err := graph.NormalizeSourcePolicy(*options.SourcePolicy)
@@ -493,9 +512,11 @@ func (s *TenantStore) applyTenantCreateTemplates(ctx context.Context, tenantID s
 		if err != nil {
 			return err
 		}
-		if err := s.putSourcePolicyRecordWithMeta(ctx, tenantID, sourcePolicyRecord{TenantID: tenantID, SourcePolicy: normalized}, meta); err != nil {
+		nextMeta, err := s.putSourcePolicyRecordWithMeta(ctx, tenantID, sourcePolicyRecord{TenantID: tenantID, SourcePolicy: normalized}, meta)
+		if err != nil {
 			return err
 		}
+		s.setCachedSourcePolicy(tenantID, normalized, true, nextMeta)
 	}
 	return nil
 }
@@ -506,7 +527,13 @@ func (s *TenantStore) putTenantMetadata(ctx context.Context, tenantID string, me
 	if err != nil {
 		return err
 	}
-	return s.Objects.Put(ctx, s.tenantMetadataKey(tenantID), data)
+	key := s.tenantMetadataKey(tenantID)
+	if err := s.Objects.Put(ctx, key, data); err != nil {
+		s.deleteCachedTenantMetadata(tenantID)
+		return err
+	}
+	s.setCachedTenantMetadata(tenantID, metadata, true, ObjectMeta{Key: key, Exists: true})
+	return nil
 }
 
 func legacyTenantMetadata(tenantID string) TenantMetadata {

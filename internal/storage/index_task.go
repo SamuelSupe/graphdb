@@ -36,21 +36,31 @@ func (s *TenantStore) StartIndexRebuild(ctx context.Context, tenantID string) (I
 }
 
 func (s *TenantStore) startIndexRebuildLocked(ctx context.Context, tenantID string) (IndexTask, error) {
+	return s.startIndexRebuild(ctx, tenantID, true)
+}
+
+func (s *TenantStore) startIndexRebuildAfterDefinitionChangeLocked(ctx context.Context, tenantID string) (IndexTask, error) {
+	return s.startIndexRebuild(ctx, tenantID, false)
+}
+
+func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, reuseRunning bool) (IndexTask, error) {
 	s.taskMu.Lock()
 	if s.indexTasks == nil {
 		s.indexTasks = map[string]IndexTask{}
 	}
-	if task, ok := s.indexTasks[tenantID]; ok && task.Status == "running" {
-		s.taskMu.Unlock()
-		return task, nil
-	}
-	if task, ok, err := s.findRunningIndexRebuildTask(ctx, tenantID); err != nil {
-		s.taskMu.Unlock()
-		return IndexTask{}, err
-	} else if ok {
-		s.indexTasks[tenantID] = task
-		s.taskMu.Unlock()
-		return task, nil
+	if reuseRunning {
+		if task, ok := s.indexTasks[tenantID]; ok && task.Status == "running" {
+			s.taskMu.Unlock()
+			return task, nil
+		}
+		if task, ok, err := s.findRunningIndexRebuildTask(ctx, tenantID); err != nil {
+			s.taskMu.Unlock()
+			return IndexTask{}, err
+		} else if ok {
+			s.indexTasks[tenantID] = task
+			s.taskMu.Unlock()
+			return task, nil
+		}
 	}
 	id, err := newCommitID()
 	if err != nil {
@@ -192,7 +202,7 @@ func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
 	task.CatalogVersion = catalog.Version
 	task.UpdatedAt = time.Now().UTC()
 	s.trySaveIndexTask(context.Background(), task)
-	gcReport, cleanupErr := s.RunGC(context.Background(), tenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true})
+	gcReport, cleanupErr := s.RunGC(context.Background(), tenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
 	task.Status = "succeeded"
 	task.Phase = "done"
 	task.ProgressCompleted = 1

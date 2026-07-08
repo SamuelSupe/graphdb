@@ -93,6 +93,9 @@ func (s *TenantStore) commitWithRetryLocked(ctx context.Context, tenantID string
 }
 
 func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions) (CommitResult, error) {
+	if opts.ExpectedVersion != nil {
+		s.deleteWriteCache(tenantID)
+	}
 	loaded, err := s.loadForWriteLocked(ctx, tenantID)
 	if err != nil {
 		return CommitResult{}, err

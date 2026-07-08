@@ -67,7 +67,7 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 	if err := s.putIndexDefinitionsWithMeta(ctx, tenantID, record, meta); err != nil {
 		return IndexDefinitionResult{}, err
 	}
-	task, err := s.startIndexRebuildLocked(ctx, tenantID)
+	task, err := s.startIndexRebuildAfterDefinitionChangeLocked(ctx, tenantID)
 	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
@@ -108,7 +108,7 @@ func (s *TenantStore) DropIndex(ctx context.Context, tenantID string, name strin
 	if err := s.putIndexDefinitionsWithMeta(ctx, tenantID, record, meta); err != nil {
 		return IndexDefinitionResult{}, err
 	}
-	task, err := s.startIndexRebuildLocked(ctx, tenantID)
+	task, err := s.startIndexRebuildAfterDefinitionChangeLocked(ctx, tenantID)
 	if err != nil {
 		return IndexDefinitionResult{}, err
 	}

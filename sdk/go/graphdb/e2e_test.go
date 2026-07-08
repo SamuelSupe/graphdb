@@ -236,6 +236,8 @@ func TestPythonSDKCompleteFlowAgainstRealServer(t *testing.T) {
 		"PYTHONPATH="+filepath.Join(root, "sdk", "python"),
 		"GRAPHDB_TEST_BASE_URL="+server.URL,
 		"GRAPHDB_TEST_TENANT=python-sdk-e2e",
+		"NO_PROXY=*",
+		"no_proxy=*",
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

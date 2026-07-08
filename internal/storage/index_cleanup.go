@@ -100,15 +100,19 @@ func (s *TenantStore) deleteObsoleteIndexObjectIfSafe(ctx context.Context, targe
 	if err != nil {
 		return err
 	}
+	return s.deleteObsoleteIndexObjectDataIfSafe(ctx, target, currentVersion, data, meta)
+}
+
+func (s *TenantStore) deleteObsoleteIndexObjectDataIfSafe(ctx context.Context, target indexObjectTarget, currentVersion int64, data []byte, meta ObjectMeta) error {
 	ok := obsoleteIndexObjectSafeToDelete(data, target, currentVersion)
 	if !ok {
 		return nil
 	}
-	err = s.Objects.DeleteConditional(ctx, target.Key, PutCondition{IfMatch: meta.ETag})
+	if target.Immutable {
+		return s.Objects.Delete(ctx, target.Key)
+	}
+	err := s.Objects.DeleteConditional(ctx, target.Key, PutCondition{IfMatch: meta.ETag})
 	if errors.Is(err, ErrConditionalDeleteUnsupported) {
-		if target.Immutable {
-			return s.deleteImmutableObsoleteIndexObject(ctx, target, currentVersion, data)
-		}
 		return s.deleteObsoleteIndexObjectWithLease(ctx, target, currentVersion, data)
 	}
 	if errors.Is(err, ErrConflict) {
@@ -119,22 +123,8 @@ func (s *TenantStore) deleteObsoleteIndexObjectIfSafe(ctx context.Context, targe
 	return nil
 }
 
-func (s *TenantStore) deleteImmutableObsoleteIndexObject(ctx context.Context, target indexObjectTarget, currentVersion int64, expected []byte) error {
-	latest, err := s.Objects.Get(ctx, target.Key)
-	if errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(latest, expected) || !obsoleteIndexObjectSafeToDelete(latest, target, currentVersion) {
-		return nil
-	}
-	return s.Objects.Delete(ctx, target.Key)
-}
-
 func (s *TenantStore) deleteListedObsoleteIndexObjectIfSafe(ctx context.Context, tenantID string, key string, currentVersion int64) error {
-	data, _, err := s.Objects.GetWithMeta(ctx, key)
+	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
@@ -145,7 +135,7 @@ func (s *TenantStore) deleteListedObsoleteIndexObjectIfSafe(ctx context.Context,
 	if !ok {
 		return nil
 	}
-	return s.deleteObsoleteIndexObjectIfSafe(ctx, target, currentVersion)
+	return s.deleteObsoleteIndexObjectDataIfSafe(ctx, target, currentVersion, data, meta)
 }
 
 func (s *TenantStore) deleteObsoleteIndexObjectWithLease(ctx context.Context, target indexObjectTarget, currentVersion int64, expected []byte) error {

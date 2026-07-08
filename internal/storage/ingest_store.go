@@ -12,10 +12,17 @@ import (
 
 func (s *TenantStore) loadIngestRecord(ctx context.Context, tenantID string, request IngestRequest) (IngestBatchRecord, bool, error) {
 	if request.IdempotencyKey != "" {
-		for _, key := range []string{
+		keys := []string{
 			s.ingestIdempotencyKey(tenantID, request.Source, request.CollectorID, request.IdempotencyKey),
 			s.legacyIngestIdempotencyKey(tenantID, request.Source, request.IdempotencyKey),
-		} {
+		}
+		if request.BatchID != request.IdempotencyKey {
+			keys = append(keys,
+				s.ingestBatchKey(tenantID, request.Source, request.CollectorID, request.IdempotencyKey),
+				s.legacyIngestBatchKey(tenantID, request.Source, request.IdempotencyKey),
+			)
+		}
+		for _, key := range keys {
 			record, ok, err := s.loadMatchingIngestIdempotencyRecord(ctx, tenantID, key, request)
 			if err != nil || ok {
 				return record, ok, err
@@ -37,6 +44,13 @@ func (s *TenantStore) loadIngestRecord(ctx context.Context, tenantID string, req
 }
 
 func (s *TenantStore) loadMatchingIngestRecord(ctx context.Context, tenantID string, key string, request IngestRequest) (IngestBatchRecord, bool, error) {
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil {
+		return IngestBatchRecord{}, false, err
+	}
+	if !mayExist {
+		return IngestBatchRecord{}, false, nil
+	}
 	record, _, err := s.loadIngestRecordWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return IngestBatchRecord{}, false, nil
@@ -54,6 +68,13 @@ func (s *TenantStore) loadMatchingIngestRecord(ctx context.Context, tenantID str
 }
 
 func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, tenantID string, key string, request IngestRequest) (IngestBatchRecord, bool, error) {
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil {
+		return IngestBatchRecord{}, false, err
+	}
+	if !mayExist {
+		return IngestBatchRecord{}, false, nil
+	}
 	record, _, err := s.loadIngestRecordWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return IngestBatchRecord{}, false, nil
@@ -86,7 +107,7 @@ func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantI
 func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, record IngestBatchRecord) error {
 	record.TenantID = tenantID
 	var result error
-	if record.Request.IdempotencyKey != "" {
+	if record.Request.IdempotencyKey != "" && record.Request.IdempotencyKey != record.Result.BatchID {
 		key := s.ingestIdempotencyKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Request.IdempotencyKey)
 		if err := s.saveIngestRecord(ctx, tenantID, key, record); err != nil {
 			result = errors.Join(result, fmt.Errorf("save idempotency record: %w", err))
@@ -106,6 +127,7 @@ func (s *TenantStore) saveIngestRecord(ctx context.Context, tenantID string, key
 	}
 	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
 	if err == nil {
+		s.markObjectKeyCached(key)
 		return nil
 	}
 	if !errors.Is(err, ErrConflict) {
@@ -114,6 +136,9 @@ func (s *TenantStore) saveIngestRecord(ctx context.Context, tenantID string, key
 	existing, meta, err := s.loadIngestRecordWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		_, retryErr := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+		if retryErr == nil {
+			s.markObjectKeyCached(key)
+		}
 		return retryErr
 	}
 	if err != nil {
@@ -126,6 +151,9 @@ func (s *TenantStore) saveIngestRecord(ctx context.Context, tenantID string, key
 		return fmt.Errorf("%w: ingest record for source %q collector %q batch %q idempotency %q changed while publishing", ErrConflict, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Request.IdempotencyKey)
 	}
 	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
+	if err == nil {
+		s.markObjectKeyCached(key)
+	}
 	if errors.Is(err, ErrConflict) {
 		return fmt.Errorf("%w: ingest record changed while repairing mismatched metadata", ErrConflict)
 	}
@@ -203,18 +231,27 @@ func ingestRecordRequestEqualIgnoringBatch(stored IngestRequest, incoming Ingest
 }
 
 func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, request IngestRequest, result IngestResult, started time.Time, finished time.Time) error {
+	if !s.MaterializeCollectorStatus {
+		return s.cacheCollectorStatusFromBatches(ctx, tenantID, request, result, started, finished)
+	}
 	key := s.collectorStatusKey(tenantID, request.Source, request.CollectorID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
-		status, meta, err := s.loadCollectorStatusWithMeta(ctx, tenantID, request.Source, request.CollectorID)
-		if err != nil {
-			return err
+		status, meta, ok := s.getCachedCollectorStatus(key)
+		if !ok {
+			var err error
+			status, meta, err = s.loadCollectorStatusWithMeta(ctx, tenantID, request.Source, request.CollectorID)
+			if err != nil {
+				return err
+			}
 		}
 		applyCollectorStatusResult(&status, tenantID, request, result, started, finished)
-		if err := s.putCollectorStatusWithMeta(ctx, key, status, meta); err == nil {
+		if nextMeta, err := s.putCollectorStatusWithMeta(ctx, key, status, meta); err == nil {
+			s.setCachedCollectorStatus(key, status, nextMeta)
 			return nil
 		} else if !errors.Is(err, ErrConflict) {
 			return err
 		}
+		s.deleteCachedCollectorStatus(key)
 		if attempt+1 >= s.retryCount() {
 			break
 		}
@@ -226,6 +263,9 @@ func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, 
 }
 
 func (s *TenantStore) repairCollectorStatusAfterSkip(ctx context.Context, tenantID string, record IngestBatchRecord) error {
+	if !s.MaterializeCollectorStatus {
+		return s.repairCachedCollectorStatusFromBatches(ctx, tenantID, record)
+	}
 	request := record.Request
 	result := record.Result
 	key := s.collectorStatusKey(tenantID, request.Source, request.CollectorID)
@@ -238,7 +278,8 @@ func (s *TenantStore) repairCollectorStatusAfterSkip(ctx context.Context, tenant
 			return nil
 		}
 		applyCollectorStatusResult(&status, tenantID, request, result, record.StartedAt, record.FinishedAt)
-		if err := s.putCollectorStatusWithMeta(ctx, key, status, meta); err == nil {
+		if nextMeta, err := s.putCollectorStatusWithMeta(ctx, key, status, meta); err == nil {
+			s.setCachedCollectorStatus(key, status, nextMeta)
 			return nil
 		} else if !errors.Is(err, ErrConflict) {
 			return err
@@ -276,6 +317,17 @@ func (s *TenantStore) GetCollectorStatus(ctx context.Context, tenantID string, s
 	if source == "" || collectorID == "" {
 		return CollectorStatus{}, fmt.Errorf("source and collector_id are required")
 	}
+	key := s.collectorStatusKey(tenantID, source, collectorID)
+	if status, _, ok := s.getCachedCollectorStatus(key); ok {
+		return status, nil
+	}
+	if !s.MaterializeCollectorStatus {
+		status, err := s.deriveCollectorStatusFromBatches(ctx, tenantID, source, collectorID)
+		if err == nil {
+			s.setCachedCollectorStatus(key, status, ObjectMeta{Key: key})
+		}
+		return status, err
+	}
 	status, _, err := s.loadCollectorStatusWithMeta(ctx, tenantID, source, collectorID)
 	return status, err
 }
@@ -302,12 +354,12 @@ func (s *TenantStore) loadCollectorStatusWithMeta(ctx context.Context, tenantID 
 	return status, meta, nil
 }
 
-func (s *TenantStore) putCollectorStatusWithMeta(ctx context.Context, key string, status CollectorStatus, meta ObjectMeta) error {
+func (s *TenantStore) putCollectorStatusWithMeta(ctx context.Context, key string, status CollectorStatus, meta ObjectMeta) (ObjectMeta, error) {
 	data, err := marshalParquetCollectorStatus(ctx, status)
 	if err != nil {
-		return err
+		return ObjectMeta{}, err
 	}
-	return s.putBytesWithMeta(ctx, key, data, meta)
+	return s.putBytesWithMetaResult(ctx, key, data, meta)
 }
 
 func applyCollectorStatusResult(status *CollectorStatus, tenantID string, request IngestRequest, result IngestResult, started time.Time, finished time.Time) {

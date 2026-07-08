@@ -12,46 +12,52 @@ import (
 )
 
 type Config struct {
-	Addr                        string
-	Mode                        string
-	Prefix                      string
-	PollInterval                time.Duration
-	DataDir                     string
-	StoreKind                   string
-	QueryMaxConcurrent          int
-	QueryMaxPerTenant           int
-	QueryQueueTimeout           time.Duration
-	ReadMaxConcurrent           int
-	ReadMaxPerTenant            int
-	ReadQueueTimeout            time.Duration
-	ReadObjectMaxConcurrent     int
-	ReadObjectSingleflight      bool
-	WriteMaxConcurrent          int
-	WriteMaxPerTenant           int
-	WriteQueueTimeout           time.Duration
-	WriteExecutionTimeout       time.Duration
-	WriteObjectLatencyThreshold time.Duration
-	WriteObjectErrorWindow      time.Duration
-	WriteObjectErrorThreshold   int
-	WriteCASConflictWindow      time.Duration
-	WriteCASConflictThreshold   int
-	WriteMaxCommitTail          int
-	WriteMaxObjectsPerTenant    int
-	WriteMaxBytesPerTenant      int64
-	WriteMaxEntitiesPerTenant   int
-	WriteMaxEdgesPerTenant      int
-	SlowQueryThreshold          time.Duration
-	IndexHealthInterval         time.Duration
-	MaintenanceInterval         time.Duration
-	TenantUsageCacheTTL         time.Duration
-	ReaderCatchupTimeout        time.Duration
-	ReaderIndexCacheEntries     int
-	ReaderIndexCacheDir         string
-	FaultObjectReadDelay        time.Duration
-	OTLPEndpoint                string
-	OTLPInsecure                bool
-	ServiceName                 string
-	InstanceID                  string
+	Addr                              string
+	Mode                              string
+	Prefix                            string
+	PollInterval                      time.Duration
+	DataDir                           string
+	StoreKind                         string
+	QueryMaxConcurrent                int
+	QueryMaxPerTenant                 int
+	QueryQueueTimeout                 time.Duration
+	ReadMaxConcurrent                 int
+	ReadMaxPerTenant                  int
+	ReadQueueTimeout                  time.Duration
+	ReadObjectMaxConcurrent           int
+	ReadObjectSingleflight            bool
+	WriteMaxConcurrent                int
+	WriteMaxPerTenant                 int
+	WriteQueueTimeout                 time.Duration
+	WriteExecutionTimeout             time.Duration
+	WriteObjectLatencyThreshold       time.Duration
+	WriteObjectErrorWindow            time.Duration
+	WriteObjectErrorThreshold         int
+	WriteCASConflictWindow            time.Duration
+	WriteCASConflictThreshold         int
+	WriteMaxCommitTail                int
+	WriteMaxObjectsPerTenant          int
+	WriteMaxBytesPerTenant            int64
+	WriteMaxEntitiesPerTenant         int
+	WriteMaxEdgesPerTenant            int
+	WriterObjectCache                 bool
+	WriterObjectCacheMaxBytes         int64
+	WriterObjectCacheMaxKeys          int
+	WriterObjectCacheNegativeTTL      time.Duration
+	IngestCollectorStatusMaterialized bool
+	SlowQueryThreshold                time.Duration
+	IndexHealthInterval               time.Duration
+	MaintenanceInterval               time.Duration
+	TenantUsageCacheTTL               time.Duration
+	ReaderCatchupTimeout              time.Duration
+	ReaderIndexCacheEntries           int
+	ReaderIndexCacheDir               string
+	IndexEntityRecords                bool
+	FaultObjectReadDelay              time.Duration
+	OTLPEndpoint                      string
+	OTLPInsecure                      bool
+	ServiceName                       string
+	InstanceID                        string
 
 	S3Endpoint        string
 	S3Bucket          string
@@ -62,42 +68,48 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		Addr:                        getenv("GRAPHDB_ADDR", ":8080"),
-		Mode:                        getenv("GRAPHDB_MODE", "all"),
-		Prefix:                      getenv("GRAPHDB_PREFIX", "graphdb"),
-		PollInterval:                2 * time.Second,
-		DataDir:                     getenv("GRAPHDB_DATA_DIR", ".graphdb"),
-		StoreKind:                   os.Getenv("GRAPHDB_STORAGE"),
-		QueryMaxConcurrent:          64,
-		QueryMaxPerTenant:           32,
-		QueryQueueTimeout:           5 * time.Second,
-		ReadMaxConcurrent:           128,
-		ReadMaxPerTenant:            64,
-		ReadQueueTimeout:            500 * time.Millisecond,
-		ReadObjectMaxConcurrent:     128,
-		ReadObjectSingleflight:      true,
-		WriteMaxConcurrent:          32,
-		WriteMaxPerTenant:           1,
-		WriteQueueTimeout:           2 * time.Second,
-		WriteExecutionTimeout:       90 * time.Second,
-		WriteObjectLatencyThreshold: 2 * time.Second,
-		WriteObjectErrorWindow:      30 * time.Second,
-		WriteObjectErrorThreshold:   1,
-		WriteCASConflictWindow:      30 * time.Second,
-		WriteCASConflictThreshold:   5,
-		WriteMaxCommitTail:          300,
-		SlowQueryThreshold:          500 * time.Millisecond,
-		IndexHealthInterval:         30 * time.Second,
-		MaintenanceInterval:         30 * time.Second,
-		TenantUsageCacheTTL:         60 * time.Second,
-		ReaderCatchupTimeout:        2 * time.Second,
-		ReaderIndexCacheEntries:     4096,
-		OTLPEndpoint:                os.Getenv("GRAPHDB_OTLP_ENDPOINT"),
-		ServiceName:                 getenv("GRAPHDB_SERVICE_NAME", "graphdb"),
-		InstanceID:                  strings.TrimSpace(os.Getenv("GRAPHDB_INSTANCE_ID")),
-		S3Endpoint:                  os.Getenv("S3_ENDPOINT"),
-		S3Bucket:                    os.Getenv("S3_BUCKET"),
-		S3Region:                    getenv("S3_REGION", "us-east-1"),
+		Addr:                              getenv("GRAPHDB_ADDR", ":8080"),
+		Mode:                              getenv("GRAPHDB_MODE", "all"),
+		Prefix:                            getenv("GRAPHDB_PREFIX", "graphdb"),
+		PollInterval:                      2 * time.Second,
+		DataDir:                           getenv("GRAPHDB_DATA_DIR", ".graphdb"),
+		StoreKind:                         os.Getenv("GRAPHDB_STORAGE"),
+		QueryMaxConcurrent:                64,
+		QueryMaxPerTenant:                 32,
+		QueryQueueTimeout:                 5 * time.Second,
+		ReadMaxConcurrent:                 128,
+		ReadMaxPerTenant:                  64,
+		ReadQueueTimeout:                  500 * time.Millisecond,
+		ReadObjectMaxConcurrent:           128,
+		ReadObjectSingleflight:            true,
+		WriteMaxConcurrent:                32,
+		WriteMaxPerTenant:                 1,
+		WriteQueueTimeout:                 2 * time.Second,
+		WriteExecutionTimeout:             90 * time.Second,
+		WriteObjectLatencyThreshold:       2 * time.Second,
+		WriteObjectErrorWindow:            30 * time.Second,
+		WriteObjectErrorThreshold:         1,
+		WriteCASConflictWindow:            30 * time.Second,
+		WriteCASConflictThreshold:         5,
+		WriteMaxCommitTail:                300,
+		WriterObjectCache:                 true,
+		WriterObjectCacheMaxBytes:         512 * 1024 * 1024,
+		WriterObjectCacheMaxKeys:          200000,
+		WriterObjectCacheNegativeTTL:      5 * time.Minute,
+		IngestCollectorStatusMaterialized: false,
+		SlowQueryThreshold:                500 * time.Millisecond,
+		IndexHealthInterval:               30 * time.Second,
+		MaintenanceInterval:               30 * time.Second,
+		TenantUsageCacheTTL:               60 * time.Second,
+		ReaderCatchupTimeout:              2 * time.Second,
+		ReaderIndexCacheEntries:           4096,
+		IndexEntityRecords:                false,
+		OTLPEndpoint:                      os.Getenv("GRAPHDB_OTLP_ENDPOINT"),
+		ServiceName:                       getenv("GRAPHDB_SERVICE_NAME", "graphdb"),
+		InstanceID:                        strings.TrimSpace(os.Getenv("GRAPHDB_INSTANCE_ID")),
+		S3Endpoint:                        os.Getenv("S3_ENDPOINT"),
+		S3Bucket:                          os.Getenv("S3_BUCKET"),
+		S3Region:                          getenv("S3_REGION", "us-east-1"),
 	}
 	cfg.S3AccessKeyID = firstNonEmpty(os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("AWS_ACCESS_KEY_ID"))
 	cfg.S3SecretAccessKey = firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
@@ -170,6 +182,21 @@ func Load() (Config, error) {
 	if err := loadIntEnv("GRAPHDB_WRITE_MAX_EDGES_PER_TENANT", &cfg.WriteMaxEdgesPerTenant); err != nil {
 		return Config{}, err
 	}
+	if err := loadBoolEnv("GRAPHDB_WRITER_OBJECT_CACHE", &cfg.WriterObjectCache); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES", &cfg.WriterObjectCacheMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS", &cfg.WriterObjectCacheMaxKeys); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL", &cfg.WriterObjectCacheNegativeTTL); err != nil {
+		return Config{}, err
+	}
+	if err := loadBoolEnv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", &cfg.IngestCollectorStatusMaterialized); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_SLOW_QUERY_THRESHOLD", &cfg.SlowQueryThreshold); err != nil {
 		return Config{}, err
 	}
@@ -189,6 +216,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.ReaderIndexCacheDir = strings.TrimSpace(os.Getenv("GRAPHDB_READER_INDEX_CACHE_DIR"))
+	if err := loadBoolEnv("GRAPHDB_INDEX_ENTITY_RECORDS", &cfg.IndexEntityRecords); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_FAULT_OBJECT_READ_DELAY", &cfg.FaultObjectReadDelay); err != nil {
 		return Config{}, err
 	}
@@ -234,6 +264,14 @@ func (cfg Config) BackpressureConfig() storage.BackpressureConfig {
 		MaxEntitiesPerTenant:   cfg.WriteMaxEntitiesPerTenant,
 		MaxEdgesPerTenant:      cfg.WriteMaxEdgesPerTenant,
 		RetryAfter:             2 * time.Second,
+	}
+}
+
+func (cfg Config) WriterObjectCacheConfig() storage.WriterObjectCacheConfig {
+	return storage.WriterObjectCacheConfig{
+		MaxBytes:    cfg.WriterObjectCacheMaxBytes,
+		MaxKeys:     cfg.WriterObjectCacheMaxKeys,
+		NegativeTTL: cfg.WriterObjectCacheNegativeTTL,
 	}
 }
 
@@ -285,6 +323,22 @@ func loadInt64Env(key string, target *int64) error {
 	return nil
 }
 
+func loadBytesEnv(key string, target *int64) error {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	value, err := parseBytes(raw)
+	if err != nil {
+		return fmt.Errorf("%s must be a byte size: %w", key, err)
+	}
+	if value < 0 {
+		return fmt.Errorf("%s must be >= 0", key)
+	}
+	*target = value
+	return nil
+}
+
 func loadDurationEnv(key string, target *time.Duration) error {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -299,6 +353,37 @@ func loadDurationEnv(key string, target *time.Duration) error {
 	}
 	*target = value
 	return nil
+}
+
+func parseBytes(raw string) (int64, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	lower := strings.ToLower(value)
+	multipliers := []struct {
+		suffix string
+		mul    int64
+	}{
+		{"kib", 1024},
+		{"mib", 1024 * 1024},
+		{"gib", 1024 * 1024 * 1024},
+		{"kb", 1000},
+		{"mb", 1000 * 1000},
+		{"gb", 1000 * 1000 * 1000},
+		{"b", 1},
+	}
+	for _, multiplier := range multipliers {
+		if strings.HasSuffix(lower, multiplier.suffix) {
+			number := strings.TrimSpace(value[:len(value)-len(multiplier.suffix)])
+			parsed, err := strconv.ParseInt(number, 10, 64)
+			if err != nil {
+				return 0, err
+			}
+			return parsed * multiplier.mul, nil
+		}
+	}
+	return strconv.ParseInt(value, 10, 64)
 }
 
 func NewObjectStore(cfg Config) (storage.ObjectStore, error) {

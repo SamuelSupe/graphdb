@@ -61,6 +61,50 @@ func TestCreateIndexBackfillsSchemalessFieldAndDropRemovesIt(t *testing.T) {
 	}
 }
 
+func TestDropIndexStartsNewRebuildWhenPreviousTaskRunning(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{
+		{ID: "host:1", Kind: "host", Fields: graph.Fields{"owner": "platform"}},
+	}}, CommitOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	now := time.Now().UTC()
+	record := IndexDefinitionRecord{TenantID: "tenant-a", Indexes: []IndexDefinition{{
+		Name:      "host.owner",
+		Kind:      "host",
+		Field:     "owner",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}}}
+	if err := store.putIndexDefinitionsWithMeta(ctx, "tenant-a", record, ObjectMeta{Key: store.indexDefinitionsKey("tenant-a")}); err != nil {
+		t.Fatalf("put index definitions: %v", err)
+	}
+	oldTask := IndexTask{
+		ID:        "old-running",
+		TenantID:  "tenant-a",
+		Type:      "rebuild",
+		Status:    "running",
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	store.taskMu.Lock()
+	store.indexTasks["tenant-a"] = oldTask
+	store.taskMu.Unlock()
+
+	dropped, err := store.DropIndex(ctx, "tenant-a", "host.owner")
+	if err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	if dropped.Task.ID == oldTask.ID {
+		t.Fatalf("drop reused stale rebuild task %q", oldTask.ID)
+	}
+	catalog := waitIndexCatalogIndexes(t, store, "tenant-a", 0)
+	if len(catalog.Indexes) != 0 {
+		t.Fatalf("catalog after drop = %#v", catalog)
+	}
+}
+
 func TestIndexDefinitionsRejectNonParquetBytes(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

@@ -235,6 +235,21 @@ Response fields:
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.
 
+Collector batch sizing:
+
+- Start with 200 logical CMDB groups per batch, then move toward 500 when the
+  object store and writer timeout budget are stable.
+- Prefer larger batches over many small concurrent batches. Every batch has
+  fixed commit, manifest, idempotency, and collector metadata cost.
+- When `batch_id` already identifies the collector checkpoint, reuse the same
+  value as `idempotency_key`; the writer can then store one coalesced ingest
+  record instead of two metadata objects.
+- Keep retrying the same `batch_id` and `idempotency_key` after a `429`, with
+  exponential backoff and jitter. Do not generate a new idempotency key for a
+  retry of the same source page.
+- Increase collector HTTP timeouts when moving from 200 to 500 groups because
+  each group commonly expands to multiple entities and edges.
+
 Collector status:
 
 ```sh

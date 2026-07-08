@@ -17,8 +17,30 @@ type MeteredObjectStore struct {
 	LatencyOnly bool
 }
 
+type objectStoreUnwrapper interface {
+	UnwrapObjectStore() ObjectStore
+}
+
 func NewMeteredObjectStore(inner ObjectStore, pressure *WritePressure, observer ObjectOperationObserver) *MeteredObjectStore {
 	return &MeteredObjectStore{Inner: inner, Pressure: pressure, Observer: observer}
+}
+
+func FindMeteredObjectStore(objects ObjectStore) *MeteredObjectStore {
+	for objects != nil {
+		if metered, ok := objects.(*MeteredObjectStore); ok {
+			return metered
+		}
+		unwrapper, ok := objects.(objectStoreUnwrapper)
+		if !ok {
+			return nil
+		}
+		next := unwrapper.UnwrapObjectStore()
+		if next == objects {
+			return nil
+		}
+		objects = next
+	}
+	return nil
 }
 
 func (s *MeteredObjectStore) Get(ctx context.Context, key string) (data []byte, err error) {
@@ -90,6 +112,8 @@ func objectOperationStatus(err error) string {
 	switch {
 	case err == nil:
 		return "ok"
+	case errors.Is(err, ErrConditionalDeleteUnsupported):
+		return "unsupported"
 	case errors.Is(err, ErrConflict):
 		return "conflict"
 	case errors.Is(err, ErrNotFound):

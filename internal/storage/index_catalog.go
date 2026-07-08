@@ -182,9 +182,12 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.putIndexCatalogWithMeta(ctx, tenantID, catalog, previousMeta); err != nil {
+	catalogMeta, err := s.putIndexCatalogWithMeta(ctx, tenantID, catalog, previousMeta)
+	if err != nil {
+		s.deleteCachedIndexCatalog(tenantID)
 		return IndexCatalog{}, err
 	}
+	s.setCachedIndexCatalog(tenantID, catalog, catalogMeta)
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -300,94 +303,105 @@ func (s *TenantStore) getIndexCatalogWithMeta(ctx context.Context, tenantID stri
 	return catalog, meta, nil
 }
 
-func (s *TenantStore) putIndexCatalogWithMeta(ctx context.Context, tenantID string, catalog IndexCatalog, meta ObjectMeta) error {
+func (s *TenantStore) getIndexCatalogForWriteWithMeta(ctx context.Context, tenantID string) (IndexCatalog, ObjectMeta, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return IndexCatalog{}, ObjectMeta{}, err
+	}
+	if catalog, meta, ok := s.getCachedIndexCatalog(tenantID); ok {
+		return catalog, meta, nil
+	}
+	catalog, meta, err := s.getIndexCatalogWithMeta(ctx, tenantID)
+	if err != nil {
+		return IndexCatalog{}, meta, err
+	}
+	s.setCachedIndexCatalog(tenantID, catalog, meta)
+	return catalog, meta, nil
+}
+
+func (s *TenantStore) putIndexCatalogWithMeta(ctx context.Context, tenantID string, catalog IndexCatalog, meta ObjectMeta) (ObjectMeta, error) {
+	return s.putIndexCatalogWithMetaMode(ctx, tenantID, catalog, meta, false)
+}
+
+func (s *TenantStore) putIndexCatalogWithMetaFast(ctx context.Context, tenantID string, catalog IndexCatalog, meta ObjectMeta) (ObjectMeta, error) {
+	return s.putIndexCatalogWithMetaMode(ctx, tenantID, catalog, meta, true)
+}
+
+func (s *TenantStore) putIndexCatalogWithMetaMode(ctx context.Context, tenantID string, catalog IndexCatalog, meta ObjectMeta, fast bool) (ObjectMeta, error) {
 	catalog.TenantID = tenantID
 	key := s.indexCatalogKey(tenantID)
 	data, err := marshalParquetIndexCatalog(ctx, catalog)
 	if err != nil {
-		return err
+		return ObjectMeta{}, err
 	}
-	if err := s.putIndexCatalogVersion(ctx, tenantID, catalog, data); err != nil {
-		return err
+	if err := s.putIndexCatalogVersion(ctx, tenantID, catalog, data, fast); err != nil {
+		return ObjectMeta{}, err
 	}
 	writeMeta := meta
 	if writeMeta.Key != key {
 		writeMeta = ObjectMeta{Key: key}
-	} else if writeMeta.Exists {
-		existing, currentMeta, err := s.Objects.GetWithMeta(ctx, key)
-		if errors.Is(err, ErrNotFound) {
-			writeMeta = ObjectMeta{Key: key}
-		} else if err != nil {
-			return err
-		} else {
-			existingCatalog, err := decodeIndexCatalogObject(ctx, existing)
-			if err == nil {
-				existingHash, existingHashErr := indexCatalogContentHash(existingCatalog)
-				nextHash, nextHashErr := indexCatalogContentHash(catalog)
-				if existingHashErr == nil && nextHashErr == nil && existingHash == nextHash {
-					return nil
-				}
-			}
-			writeMeta = currentMeta
-		}
 	}
-	if err := s.putBytesWithMeta(ctx, key, data, writeMeta); err != nil {
-		return err
+	nextMeta, err := s.putBytesWithMetaResult(ctx, key, data, writeMeta)
+	if err != nil {
+		return ObjectMeta{}, err
 	}
-	return nil
+	s.setCachedIndexCatalog(tenantID, catalog, nextMeta)
+	return nextMeta, nil
 }
 
-func (s *TenantStore) putIndexCatalogVersion(ctx context.Context, tenantID string, catalog IndexCatalog, data []byte) error {
+func (s *TenantStore) putIndexCatalogVersion(ctx context.Context, tenantID string, catalog IndexCatalog, data []byte, fast bool) error {
 	hash, err := indexCatalogContentHash(catalog)
 	if err != nil {
 		return err
 	}
-	if err := s.putImmutableIndexCatalogVersion(ctx, s.indexCatalogVersionHashKey(tenantID, catalog.Version, hash), catalog.Version, data); err != nil {
+	if err := s.putImmutableIndexCatalogVersion(ctx, s.indexCatalogVersionHashKey(tenantID, catalog.Version, hash), catalog.Version, data, fast); err != nil {
 		return err
 	}
-	return s.putLegacyIndexCatalogVersion(ctx, tenantID, catalog.Version, data)
+	return s.putLegacyIndexCatalogVersion(ctx, tenantID, catalog.Version, data, fast)
 }
 
-func (s *TenantStore) putImmutableIndexCatalogVersion(ctx context.Context, key string, version int64, data []byte) error {
-	existing, err := s.Objects.Get(ctx, key)
-	if err == nil {
-		if sameIndexCatalogObjectContent(ctx, existing, data) {
-			return nil
+func (s *TenantStore) putImmutableIndexCatalogVersion(ctx context.Context, key string, version int64, data []byte, fast bool) error {
+	if !fast {
+		existing, err := s.Objects.Get(ctx, key)
+		if err == nil {
+			if sameIndexCatalogObjectContent(ctx, existing, data) {
+				return nil
+			}
+			return fmt.Errorf("%w: index catalog version %d already exists with different content", ErrConflict, version)
 		}
-		return fmt.Errorf("%w: index catalog version %d already exists with different content", ErrConflict, version)
-	}
-	if !errors.Is(err, ErrNotFound) {
-		return err
-	}
-	if _, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true}); err != nil {
-		if !errors.Is(err, ErrConflict) {
+		if !errors.Is(err, ErrNotFound) {
 			return err
 		}
-		existing, getErr := s.Objects.Get(ctx, key)
-		if getErr != nil {
-			return getErr
-		}
-		if sameIndexCatalogObjectContent(ctx, existing, data) {
-			return nil
-		}
-		return fmt.Errorf("%w: index catalog version %d already exists with different content", ErrConflict, version)
 	}
-	return nil
-}
-
-func (s *TenantStore) putLegacyIndexCatalogVersion(ctx context.Context, tenantID string, version int64, data []byte) error {
-	key := s.indexCatalogVersionKey(tenantID, version)
-	existing, err := s.Objects.Get(ctx, key)
-	if err == nil {
-		if sameIndexCatalogObjectContent(ctx, existing, data) {
-			return nil
-		}
+	if _, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true}); err == nil {
 		return nil
-	}
-	if !errors.Is(err, ErrNotFound) {
+	} else if !errors.Is(err, ErrConflict) {
 		return err
 	}
-	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+	existing, getErr := s.Objects.Get(ctx, key)
+	if getErr != nil {
+		return getErr
+	}
+	if sameIndexCatalogObjectContent(ctx, existing, data) {
+		return nil
+	}
+	return fmt.Errorf("%w: index catalog version %d already exists with different content", ErrConflict, version)
+}
+
+func (s *TenantStore) putLegacyIndexCatalogVersion(ctx context.Context, tenantID string, version int64, data []byte, fast bool) error {
+	key := s.indexCatalogVersionKey(tenantID, version)
+	if !fast {
+		existing, err := s.Objects.Get(ctx, key)
+		if err == nil {
+			if sameIndexCatalogObjectContent(ctx, existing, data) {
+				return nil
+			}
+			return nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
+	_, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
 	if errors.Is(err, ErrConflict) {
 		return nil
 	}

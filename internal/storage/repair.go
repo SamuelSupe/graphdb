@@ -107,6 +107,7 @@ func (s *TenantStore) RepairTenant(ctx context.Context, tenantID string, options
 	}
 	if reportNeedsIndexRebuild(working) {
 		if err := runRepairAction(ctx, options, &report, "rebuild_indexes", func() (string, error) {
+			s.deleteCachedIndexCatalog(tenantID)
 			catalog, err := s.RebuildIndexes(ctx, tenantID)
 			return fmt.Sprintf("index catalog version %d rebuilt", catalog.Version), err
 		}); err != nil {
