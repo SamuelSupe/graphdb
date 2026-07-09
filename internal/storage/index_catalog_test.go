@@ -511,6 +511,31 @@ func TestStartIndexRebuildDeduplicatesRunningTenantTask(t *testing.T) {
 	}
 }
 
+func TestIndexRebuildTaskSkipsEntityRecordCleanup(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+	if _, err := store.loadEntityRecord(ctx, "tenant-a", "host:app-01"); err != nil {
+		t.Fatalf("entity record before task: %v", err)
+	}
+	task, err := store.StartIndexRebuild(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("start rebuild: %v", err)
+	}
+	finished := waitIndexTask(t, store, task.ID)
+	if finished.Status != "succeeded" {
+		t.Fatalf("task = %#v", finished)
+	}
+	if _, err := store.loadEntityRecord(ctx, "tenant-a", "host:app-01"); err != nil {
+		t.Fatalf("entity record after task: %v", err)
+	}
+}
+
 func TestStartIndexRebuildDeduplicatesPersistedRunningTenantTask(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()

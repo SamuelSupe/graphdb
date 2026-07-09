@@ -30,18 +30,26 @@ const (
 )
 
 func (s *TenantStore) writeParquetSecondaryIndexes(ctx context.Context, tenantID string, indexes []SecondaryIndex) error {
+	return s.writeParquetSecondaryIndexesWithOptions(ctx, tenantID, indexes, true)
+}
+
+func (s *TenantStore) writeParquetSecondaryIndexesFast(ctx context.Context, tenantID string, indexes []SecondaryIndex) error {
+	return s.writeParquetSecondaryIndexesWithOptions(ctx, tenantID, indexes, false)
+}
+
+func (s *TenantStore) writeParquetSecondaryIndexesWithOptions(ctx context.Context, tenantID string, indexes []SecondaryIndex, checkExisting bool) error {
 	for _, index := range indexes {
 		index.TenantID = tenantID
 		groups := secondaryIndexObjectGroups(index)
 		if len(groups) == 0 {
-			if err := s.putParquetSecondaryIndex(ctx, tenantID, index); err != nil {
+			if err := s.putParquetSecondaryIndex(ctx, tenantID, index, checkExisting); err != nil {
 				return err
 			}
 			continue
 		}
 		for _, group := range groups {
 			group.Index.TenantID = tenantID
-			if err := s.putParquetSecondaryIndexShard(ctx, tenantID, group.ID, group.Index); err != nil {
+			if err := s.putParquetSecondaryIndexShard(ctx, tenantID, group.ID, group.Index, checkExisting); err != nil {
 				return err
 			}
 		}
@@ -49,29 +57,57 @@ func (s *TenantStore) writeParquetSecondaryIndexes(ctx context.Context, tenantID
 	return nil
 }
 
-func (s *TenantStore) putParquetSecondaryIndex(ctx context.Context, tenantID string, index SecondaryIndex) error {
+func (s *TenantStore) putParquetSecondaryIndex(ctx context.Context, tenantID string, index SecondaryIndex, checkExisting bool) error {
 	key := s.parquetSecondaryIndexVersionKey(tenantID, index.Version, index.Kind, index.Field)
-	return s.putParquetSecondaryIndexObject(ctx, key, tenantID, index)
+	return s.putParquetSecondaryIndexObject(ctx, key, tenantID, index, checkExisting)
 }
 
-func (s *TenantStore) putParquetSecondaryIndexShard(ctx context.Context, tenantID string, shardID string, index SecondaryIndex) error {
+func (s *TenantStore) putParquetSecondaryIndexShard(ctx context.Context, tenantID string, shardID string, index SecondaryIndex, checkExisting bool) error {
 	key := s.parquetSecondaryIndexShardVersionKey(tenantID, index.Version, index.Kind, index.Field, shardID)
-	return s.putParquetSecondaryIndexObject(ctx, key, tenantID, index)
+	return s.putParquetSecondaryIndexObject(ctx, key, tenantID, index, checkExisting)
 }
 
-func (s *TenantStore) putParquetSecondaryIndexObject(ctx context.Context, key string, tenantID string, index SecondaryIndex) error {
-	if ok, err := s.parquetSecondaryIndexUnchanged(ctx, key, tenantID, index); err != nil || ok {
-		return err
+func (s *TenantStore) putParquetSecondaryIndexObject(ctx context.Context, key string, tenantID string, index SecondaryIndex, checkExisting bool) error {
+	if checkExisting {
+		if ok, err := s.parquetSecondaryIndexUnchanged(ctx, key, tenantID, index); err != nil || ok {
+			return err
+		}
 	}
 	data, err := marshalParquetSecondaryIndex(ctx, index)
 	if err != nil {
 		return err
 	}
-	_, err = s.putBytesIfChangedMeta(ctx, key, data)
+	if _, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true}); err == nil {
+		s.markObjectKeyCached(key)
+		return nil
+	} else if !errors.Is(err, ErrConflict) {
+		return err
+	}
+	return s.putConflictingParquetSecondaryIndexObject(ctx, key, tenantID, index, data)
+}
+
+func (s *TenantStore) putConflictingParquetSecondaryIndexObject(ctx context.Context, key string, tenantID string, index SecondaryIndex, data []byte) error {
+	existing, meta, err := s.Objects.GetWithMeta(ctx, key)
+	if err != nil {
+		return err
+	}
+	decoded, decodeErr := decodeParquetSecondaryIndex(ctx, existing, tenantID, index.Kind, index.Field, index.Version, index.Unique)
+	if decodeErr == nil && secondaryIndexContentHash(decoded) == secondaryIndexContentHash(index) {
+		s.markObjectKeyCached(key)
+		return nil
+	}
+	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
+	if err == nil {
+		s.markObjectKeyCached(key)
+	}
 	return err
 }
 
 func (s *TenantStore) parquetSecondaryIndexUnchanged(ctx context.Context, key string, tenantID string, index SecondaryIndex) (bool, error) {
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil || !mayExist {
+		return false, err
+	}
 	data, _, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
@@ -406,7 +442,7 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 	if data, _, ok, err := s.cachedIndexObject(ctx, "secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash); err != nil {
 		return SecondaryIndex{}, false, err
 	} else if ok {
-		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, version, spec.Type == "unique")
+		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, spec.Type == "unique")
 		if err == nil && secondaryIndexObjectMatches(index, tenantID, version, spec, object.ContentHash) {
 			return index, true, nil
 		}
@@ -419,7 +455,7 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 	if err != nil {
 		return SecondaryIndex{}, false, err
 	}
-	index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, version, spec.Type == "unique")
+	index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, spec.Type == "unique")
 	if err != nil {
 		return SecondaryIndex{}, false, err
 	}

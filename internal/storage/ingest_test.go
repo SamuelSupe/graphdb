@@ -67,6 +67,165 @@ func TestIngestBatchPartialFailureIdempotencyAndCollectorStatus(t *testing.T) {
 	assertParquetDeadLetter(t, ctx, store, store.deadLetterKey("tenant-a", "aws", "collector-a/batch-1"), "tenant-a", "aws", "collector-a/batch-1")
 }
 
+func TestIngestCollectorStatusCacheAvoidsHotStatusRead(t *testing.T) {
+	ctx := context.Background()
+	objects := newCountingReadStore(NewMemoryStore())
+	store := NewTenantStore(objects, "test")
+	first := IngestRequest{
+		Source:      "agent",
+		CollectorID: "collector-a",
+		BatchID:     "batch-1",
+		Items: []IngestItem{{
+			ExternalID: "host-1",
+			Entity:     &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"hostname": "host-1"}},
+		}},
+	}
+	if _, err := store.Ingest(ctx, "tenant-a", first); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	objects.Reset()
+	second := first
+	second.BatchID = "batch-2"
+	second.Items[0].ExternalID = "host-2"
+	second.Items[0].Entity = &graph.Entity{ID: "host:2", Kind: "host", Fields: graph.Fields{"hostname": "host-2"}}
+	if _, err := store.Ingest(ctx, "tenant-a", second); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	if got := objects.CountContains("/ingest/agent/collectors/collector-a.parquet"); got != 0 {
+		t.Fatalf("collector status GET count = %d, want 0", got)
+	}
+}
+
+func TestIngestCollectorStatusCanBeDerivedWhenMaterializationDisabled(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	store.MaterializeCollectorStatus = false
+	first := IngestRequest{
+		Source:      "agent",
+		CollectorID: "collector-a",
+		BatchID:     "batch-1",
+		Cursor:      "cursor-1",
+		Items: []IngestItem{{
+			ExternalID: "host-1",
+			Entity:     &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"hostname": "host-1"}},
+		}},
+	}
+	second := first
+	second.BatchID = "batch-2"
+	second.Cursor = "cursor-2"
+	second.Items = []IngestItem{{
+		ExternalID: "host-2",
+		Entity:     &graph.Entity{ID: "host:2", Kind: "host", Fields: graph.Fields{"hostname": "host-2"}},
+	}}
+	if _, err := store.Ingest(ctx, "tenant-a", first); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	if _, err := store.Ingest(ctx, "tenant-a", second); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	statusKey := store.collectorStatusKey("tenant-a", "agent", "collector-a")
+	if _, err := objects.Get(ctx, statusKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("collector status object err = %v, want not found", err)
+	}
+	status, err := store.GetCollectorStatus(ctx, "tenant-a", "agent", "collector-a")
+	if err != nil {
+		t.Fatalf("cached collector status: %v", err)
+	}
+	if status.LastBatchID != "batch-2" || status.LastCursor != "cursor-2" || status.AppliedTotal != 2 || status.FailedTotal != 0 {
+		t.Fatalf("cached collector status = %#v", status)
+	}
+
+	restarted := NewTenantStore(objects, "test")
+	restarted.MaterializeCollectorStatus = false
+	status, err = restarted.GetCollectorStatus(ctx, "tenant-a", "agent", "collector-a")
+	if err != nil {
+		t.Fatalf("derived collector status: %v", err)
+	}
+	if status.LastBatchID != "batch-2" || status.LastCursor != "cursor-2" || status.AppliedTotal != 2 || status.FailedTotal != 0 {
+		t.Fatalf("derived collector status = %#v", status)
+	}
+}
+
+func TestIngestRecordKeyCacheAvoidsHotMissReads(t *testing.T) {
+	ctx := context.Background()
+	objects := newCountingReadStore(NewMemoryStore())
+	store := NewTenantStore(objects, "test")
+	first := IngestRequest{
+		Source:         "loadtest",
+		CollectorID:    "collector-a",
+		BatchID:        "batch-1",
+		IdempotencyKey: "idem-1",
+		Items: []IngestItem{{
+			ExternalID: "host-1",
+			Entity:     &graph.Entity{ID: "host:1", Kind: "host"},
+		}},
+	}
+	if _, err := store.Ingest(ctx, "tenant-a", first); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	objects.Reset()
+	second := first
+	second.BatchID = "batch-2"
+	second.IdempotencyKey = "idem-2"
+	second.Items = []IngestItem{{
+		ExternalID: "host-2",
+		Entity:     &graph.Entity{ID: "host:2", Kind: "host"},
+	}}
+	if _, err := store.Ingest(ctx, "tenant-a", second); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	for _, fragment := range []string{"/ingest/loadtest/idempotency/", "/ingest/loadtest/batches/"} {
+		if got := objects.CountContains(fragment); got != 0 {
+			t.Fatalf("ingest record GET count for %s = %d, want 0", fragment, got)
+		}
+	}
+}
+
+func TestIngestCoalescesSameBatchAndIdempotencyRecord(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	request := IngestRequest{
+		Source:         "loadtest",
+		CollectorID:    "collector-a",
+		BatchID:        "batch-1",
+		IdempotencyKey: "batch-1",
+		Items: []IngestItem{{
+			ExternalID: "host-1",
+			Entity:     &graph.Entity{ID: "host:1", Kind: "host"},
+		}},
+	}
+	result, err := store.Ingest(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if result.Version != 1 {
+		t.Fatalf("version = %d, want 1", result.Version)
+	}
+	if _, err := objects.Get(ctx, store.ingestIdempotencyKey("tenant-a", "loadtest", "collector-a", "batch-1")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("idempotency object err = %v, want not found", err)
+	}
+	assertParquetIngestRecord(t, ctx, store, store.ingestBatchKey("tenant-a", "loadtest", "collector-a", "batch-1"), request)
+
+	replay := request
+	replay.BatchID = "batch-retry"
+	replayed, err := store.Ingest(ctx, "tenant-a", replay)
+	if err != nil {
+		t.Fatalf("replay ingest: %v", err)
+	}
+	if !replayed.Skipped || replayed.Version != result.Version || replayed.BatchID != "batch-1" {
+		t.Fatalf("replayed = %#v, want original coalesced record", replayed)
+	}
+	_, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if manifest.Version != 1 {
+		t.Fatalf("manifest version = %d, replay should not create another commit", manifest.Version)
+	}
+}
+
 func TestIngestNormalizesControlScopeFields(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

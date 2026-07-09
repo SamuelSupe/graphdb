@@ -172,6 +172,10 @@ func (s *TenantStore) ingestBatchKey(tenantID string, source string, collectorID
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "batches", objectSegment(collectorID), objectSegment(batchID)+".parquet")
 }
 
+func (s *TenantStore) ingestBatchPrefix(tenantID string, source string, collectorID string) string {
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "batches", objectSegment(collectorID)) + "/"
+}
+
 func (s *TenantStore) legacyIngestBatchKey(tenantID string, source string, batchID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "batches", objectSegment(batchID)+".parquet")
 }

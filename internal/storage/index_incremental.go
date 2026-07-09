@@ -12,21 +12,21 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 	if !canIncrementIndexes(mutations) {
 		return nil
 	}
-	catalog, catalogMeta, err := s.getIndexCatalogWithMeta(ctx, tenantID)
+	catalog, catalogMeta, err := s.getIndexCatalogForWriteWithMeta(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return s.refreshParquetIndexesAfterCommit(ctx, tenantID, catalog, catalogMeta, after, version)
+	return s.refreshParquetIndexesAfterCommit(ctx, tenantID, catalog, catalogMeta, before, after, version)
 }
 
 func (s *TenantStore) ensureIncrementalIndexCurrent(ctx context.Context, tenantID string, version int64) error {
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return err
 	}
-	current, _, err := s.getManifest(ctx, tenantID)
+	current, err := s.currentManifestForWriteAdmission(ctx, tenantID)
 	if err != nil {
 		return err
 	}

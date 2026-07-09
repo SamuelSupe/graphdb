@@ -30,10 +30,14 @@ func (s *TenantStore) putBytesWithMetaResult(ctx context.Context, key string, da
 }
 
 func (s *TenantStore) putBytesIfChangedMeta(ctx context.Context, key string, data []byte) (ObjectMeta, error) {
-	existing, meta, err := s.Objects.GetWithMeta(ctx, key)
-	if errors.Is(err, ErrNotFound) {
-		return s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+	meta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+	if err == nil {
+		return meta, nil
 	}
+	if !errors.Is(err, ErrConflict) {
+		return ObjectMeta{}, err
+	}
+	existing, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return ObjectMeta{}, err
 	}

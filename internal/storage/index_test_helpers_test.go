@@ -137,7 +137,7 @@ func writeParquetIndexCatalogForTest(t *testing.T, ctx context.Context, store *T
 	} else if err != nil {
 		t.Fatalf("get index catalog meta: %v", err)
 	}
-	if err := store.putIndexCatalogWithMeta(ctx, tenantID, catalog, meta); err != nil {
+	if _, err := store.putIndexCatalogWithMeta(ctx, tenantID, catalog, meta); err != nil {
 		t.Fatalf("write parquet index catalog: %v", err)
 	}
 }

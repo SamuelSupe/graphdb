@@ -22,6 +22,8 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_WRITE_MAX_BYTES_PER_TENANT",
 		"GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT",
 		"GRAPHDB_WRITE_MAX_EDGES_PER_TENANT",
+		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES",
+		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS",
 		"GRAPHDB_READER_INDEX_CACHE_ENTRIES",
 	}
 	for _, key := range cases {
@@ -79,6 +81,7 @@ func TestLoadRejectsNegativeDurations(t *testing.T) {
 		"GRAPHDB_TENANT_USAGE_CACHE_TTL",
 		"GRAPHDB_READER_CATCHUP_TIMEOUT",
 		"GRAPHDB_FAULT_OBJECT_READ_DELAY",
+		"GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL",
 	}
 	for _, key := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -106,6 +109,7 @@ func TestLoadAllowsZeroDurations(t *testing.T) {
 	t.Setenv("GRAPHDB_TENANT_USAGE_CACHE_TTL", "0")
 	t.Setenv("GRAPHDB_READER_CATCHUP_TIMEOUT", "0")
 	t.Setenv("GRAPHDB_FAULT_OBJECT_READ_DELAY", "0")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL", "0")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -125,6 +129,9 @@ func TestLoadAllowsZeroDurations(t *testing.T) {
 	if cfg.ReaderCatchupTimeout != 0 {
 		t.Fatalf("reader catchup timeout = %s, want 0", cfg.ReaderCatchupTimeout)
 	}
+	if cfg.WriterObjectCacheNegativeTTL != 0 {
+		t.Fatalf("writer object cache negative ttl = %s, want 0", cfg.WriterObjectCacheNegativeTTL)
+	}
 }
 
 func TestLoadParsesPositiveDurations(t *testing.T) {
@@ -141,6 +148,7 @@ func TestLoadParsesPositiveDurations(t *testing.T) {
 	t.Setenv("GRAPHDB_TENANT_USAGE_CACHE_TTL", "45s")
 	t.Setenv("GRAPHDB_READER_CATCHUP_TIMEOUT", "850ms")
 	t.Setenv("GRAPHDB_FAULT_OBJECT_READ_DELAY", "25ms")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL", "3m")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -162,6 +170,9 @@ func TestLoadParsesPositiveDurations(t *testing.T) {
 	}
 	if cfg.FaultObjectReadDelay != 25*time.Millisecond {
 		t.Fatalf("fault read delay = %s, want 25ms", cfg.FaultObjectReadDelay)
+	}
+	if cfg.WriterObjectCacheNegativeTTL != 3*time.Minute {
+		t.Fatalf("writer object cache negative ttl = %s, want 3m", cfg.WriterObjectCacheNegativeTTL)
 	}
 }
 
@@ -198,6 +209,42 @@ func TestLoadRejectsWriteMaxPerTenantAboveOne(t *testing.T) {
 	}
 }
 
+func TestLoadParsesWriterObjectCacheConfig(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE", "false")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES", "64MiB")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS", "1234")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL", "45s")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WriterObjectCache {
+		t.Fatalf("writer object cache enabled = true, want false")
+	}
+	if cfg.WriterObjectCacheMaxBytes != 64*1024*1024 || cfg.WriterObjectCacheMaxKeys != 1234 || cfg.WriterObjectCacheNegativeTTL != 45*time.Second {
+		t.Fatalf("writer object cache config = %#v", cfg.WriterObjectCacheConfig())
+	}
+}
+
+func TestLoadRejectsInvalidWriterObjectCacheToggle(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE", "maybe")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GRAPHDB_WRITER_OBJECT_CACHE must be a boolean") {
+		t.Fatalf("Load err = %v, want writer object cache bool validation", err)
+	}
+}
+
+func TestLoadRejectsInvalidWriterObjectCacheBytes(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES", "64XB")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES must be a byte size") {
+		t.Fatalf("Load err = %v, want writer object cache byte validation", err)
+	}
+}
+
 func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_READ_MAX_CONCURRENT", "17")
@@ -215,6 +262,64 @@ func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	}
 	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight {
 		t.Fatalf("reader read-path config = %#v", cfg)
+	}
+}
+
+func TestLoadParsesIndexEntityRecordsConfig(t *testing.T) {
+	setLocalConfigEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if cfg.IndexEntityRecords {
+		t.Fatal("index entity records default enabled = true, want false")
+	}
+
+	t.Setenv("GRAPHDB_INDEX_ENTITY_RECORDS", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load enabled: %v", err)
+	}
+	if !cfg.IndexEntityRecords {
+		t.Fatal("index entity records enabled = false, want true")
+	}
+}
+
+func TestLoadParsesIngestCollectorStatusMaterializedConfig(t *testing.T) {
+	setLocalConfigEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if cfg.IngestCollectorStatusMaterialized {
+		t.Fatal("ingest collector status materialized default enabled = true, want false")
+	}
+
+	t.Setenv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load enabled: %v", err)
+	}
+	if !cfg.IngestCollectorStatusMaterialized {
+		t.Fatal("ingest collector status materialized enabled = false, want true")
+	}
+}
+
+func TestLoadRejectsInvalidIngestCollectorStatusMaterializedToggle(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", "maybe")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED must be a boolean") {
+		t.Fatalf("Load err = %v, want ingest collector status bool validation", err)
+	}
+}
+
+func TestLoadRejectsInvalidIndexEntityRecordsToggle(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_INDEX_ENTITY_RECORDS", "maybe")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GRAPHDB_INDEX_ENTITY_RECORDS must be a boolean") {
+		t.Fatalf("Load err = %v, want index entity records bool validation", err)
 	}
 }
 
@@ -331,19 +436,31 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_WRITE_MAX_CONCURRENT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "")
 	t.Setenv("GRAPHDB_WRITE_QUEUE_TIMEOUT", "")
+	t.Setenv("GRAPHDB_WRITE_EXECUTION_TIMEOUT", "")
 	t.Setenv("GRAPHDB_WRITE_OBJECT_LATENCY_THRESHOLD", "")
+	t.Setenv("GRAPHDB_WRITE_OBJECT_ERROR_WINDOW", "")
+	t.Setenv("GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD", "")
 	t.Setenv("GRAPHDB_WRITE_CAS_CONFLICT_WINDOW", "")
 	t.Setenv("GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_COMMIT_TAIL", "")
+	t.Setenv("GRAPHDB_WRITE_MAX_OBJECTS_PER_TENANT", "")
+	t.Setenv("GRAPHDB_WRITE_MAX_BYTES_PER_TENANT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_EDGES_PER_TENANT", "")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE", "")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES", "")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS", "")
+	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL", "")
+	t.Setenv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", "")
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "")
 	t.Setenv("GRAPHDB_SLOW_QUERY_THRESHOLD", "")
 	t.Setenv("GRAPHDB_INDEX_HEALTH_INTERVAL", "")
 	t.Setenv("GRAPHDB_MAINTENANCE_INTERVAL", "")
 	t.Setenv("GRAPHDB_TENANT_USAGE_CACHE_TTL", "")
+	t.Setenv("GRAPHDB_READER_CATCHUP_TIMEOUT", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "")
+	t.Setenv("GRAPHDB_INDEX_ENTITY_RECORDS", "")
 	t.Setenv("GRAPHDB_FAULT_OBJECT_READ_DELAY", "")
 	t.Setenv("GRAPHDB_OTLP_ENDPOINT", "")
 	t.Setenv("GRAPHDB_OTLP_INSECURE", "")

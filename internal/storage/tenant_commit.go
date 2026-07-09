@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -173,13 +172,10 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		)
 		endStorageSpan(span, err)
 	}()
-
-	loadCtx, loadSpan := startStorageSpan(ctx, "graphdb.storage.commit.load_for_write", tenantTraceAttr(tenantID))
-	loaded, err := s.loadForWriteLocked(loadCtx, tenantID)
-	if err == nil {
-		loadSpan.SetAttributes(append(manifestTraceAttrs("graphdb.loaded_manifest", loaded.Manifest), graphTraceAttrs("graphdb.loaded_graph", loaded.Graph)...)...)
+	if opts.ExpectedVersion != nil {
+		s.deleteWriteCache(tenantID)
 	}
-	endStorageSpan(loadSpan, err)
+	loaded, err := s.loadForWriteLocked(ctx, tenantID)
 	if err != nil {
 		return CommitResult{}, err
 	}

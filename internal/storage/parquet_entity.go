@@ -67,8 +67,17 @@ const (
 const parquetEntityPageRowGroupSize int64 = 512
 
 func (s *TenantStore) writeParquetEntityPages(ctx context.Context, tenantID string, pages []EntityPageData, version int64) error {
+	return s.writeParquetEntityPagesWithOptions(ctx, tenantID, pages, version, true)
+}
+
+func (s *TenantStore) writeParquetEntityPagesFast(ctx context.Context, tenantID string, pages []EntityPageData, version int64) error {
+	return s.writeParquetEntityPagesWithOptions(ctx, tenantID, pages, version, false)
+}
+
+func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, tenantID string, pages []EntityPageData, version int64, checkExisting bool) error {
 	recordJobs := []entityRecordWriteJob{}
 	currentIDs := map[string]struct{}{}
+	writeRecords := s.WriteEntityRecords
 	for _, group := range entityPageDataPackGroups(pages) {
 		for i := range group.Pages {
 			group.Pages[i].TenantID = tenantID
@@ -78,35 +87,44 @@ func (s *TenantStore) writeParquetEntityPages(ctx context.Context, tenantID stri
 		key := s.parquetEntityPageVersionKey(tenantID, pack.Version, pack.Shard)
 		if len(group.Pages) > 1 {
 			key = s.parquetEntityPagePackVersionKey(tenantID, pack.Version, group.ID)
-			if pageMeta, ok, err := s.existingParquetEntityPagePackMeta(ctx, key, tenantID, group.Pages); err != nil || ok {
-				if err != nil {
-					return err
-				}
-				for _, page := range group.Pages {
-					pageHash := entityPageContentHash(page)
-					for _, entity := range page.Entities {
-						record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
-						recordKey := s.entityRecordKey(tenantID, entity.ID)
-						currentIDs[entity.ID] = struct{}{}
-						recordJobs = append(recordJobs, entityRecordWriteJob{Key: recordKey, Record: record})
+			if checkExisting {
+				if pageMeta, ok, err := s.existingParquetEntityPagePackMeta(ctx, key, tenantID, group.Pages); err != nil || ok {
+					if err != nil {
+						return err
 					}
+					if writeRecords {
+						for _, page := range group.Pages {
+							pageHash := entityPageContentHash(page)
+							for _, entity := range page.Entities {
+								record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
+								recordKey := s.entityRecordKey(tenantID, entity.ID)
+								currentIDs[entity.ID] = struct{}{}
+								recordJobs = append(recordJobs, entityRecordWriteJob{Key: recordKey, Record: record})
+							}
+						}
+					}
+					continue
 				}
-				continue
 			}
 		}
-		pageMeta, err := s.putParquetEntityPageObject(ctx, key, tenantID, pack)
+		pageMeta, err := s.putParquetEntityPageObject(ctx, key, tenantID, pack, checkExisting)
 		if err != nil {
 			return err
 		}
-		for _, page := range group.Pages {
-			pageHash := entityPageContentHash(page)
-			for _, entity := range page.Entities {
-				record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
-				key := s.entityRecordKey(tenantID, entity.ID)
-				currentIDs[entity.ID] = struct{}{}
-				recordJobs = append(recordJobs, entityRecordWriteJob{Key: key, Record: record})
+		if writeRecords {
+			for _, page := range group.Pages {
+				pageHash := entityPageContentHash(page)
+				for _, entity := range page.Entities {
+					record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
+					key := s.entityRecordKey(tenantID, entity.ID)
+					currentIDs[entity.ID] = struct{}{}
+					recordJobs = append(recordJobs, entityRecordWriteJob{Key: key, Record: record})
+				}
 			}
 		}
+	}
+	if !writeRecords {
+		return nil
 	}
 	if err := s.putEntityRecordBatch(ctx, recordJobs); err != nil {
 		return err
@@ -116,18 +134,26 @@ func (s *TenantStore) writeParquetEntityPages(ctx context.Context, tenantID stri
 
 func (s *TenantStore) putParquetEntityPage(ctx context.Context, tenantID string, page EntityPageData) (ObjectMeta, error) {
 	key := s.parquetEntityPageVersionKey(tenantID, page.Version, page.Shard)
-	return s.putParquetEntityPageObject(ctx, key, tenantID, page)
+	return s.putParquetEntityPageObject(ctx, key, tenantID, page, true)
 }
 
-func (s *TenantStore) putParquetEntityPageObject(ctx context.Context, key string, tenantID string, page EntityPageData) (ObjectMeta, error) {
-	if meta, ok, err := s.existingParquetEntityPageMeta(ctx, key, tenantID, page); err != nil || ok {
-		return meta, err
+func (s *TenantStore) putParquetEntityPageObject(ctx context.Context, key string, tenantID string, page EntityPageData, checkExisting bool) (ObjectMeta, error) {
+	if checkExisting {
+		if meta, ok, err := s.existingParquetEntityPageMeta(ctx, key, tenantID, page); err != nil || ok {
+			return meta, err
+		}
 	}
 	data, err := marshalParquetEntityPage(ctx, page)
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	meta, err := s.putBytesIfChangedMeta(ctx, key, data)
+	meta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+	if err == nil {
+		s.markObjectKeyCached(key)
+	}
+	if errors.Is(err, ErrConflict) {
+		meta, err = s.putConflictingParquetEntityPageObject(ctx, key, tenantID, page, data)
+	}
 	if err == nil && !isIndexPackID(page.Shard) {
 		if decoded, decodeErr := decodeParquetEntityPage(ctx, data, tenantID, page.Shard, page.Version); decodeErr == nil {
 			s.putCachedEntityPage(tenantID, page.Version, key, entityPageContentHash(page), parquetEntityPageSchemaHash(), decoded, meta.ETag)
@@ -136,7 +162,31 @@ func (s *TenantStore) putParquetEntityPageObject(ctx context.Context, key string
 	return meta, err
 }
 
+func (s *TenantStore) putConflictingParquetEntityPageObject(ctx context.Context, key string, tenantID string, page EntityPageData, data []byte) (ObjectMeta, error) {
+	existing, meta, err := s.Objects.GetWithMeta(ctx, key)
+	if err != nil {
+		return ObjectMeta{}, err
+	}
+	decoded, decodeErr := decodeParquetEntityPage(ctx, existing, tenantID, page.Shard, page.Version)
+	if decodeErr == nil && entityPageContentHash(decoded) == entityPageContentHash(page) {
+		s.markObjectKeyCached(key)
+		if !isIndexPackID(page.Shard) {
+			s.putCachedEntityPage(tenantID, page.Version, key, entityPageContentHash(page), parquetEntityPageSchemaHash(), decoded, meta.ETag)
+		}
+		return meta, nil
+	}
+	nextMeta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
+	if err == nil {
+		s.markObjectKeyCached(key)
+	}
+	return nextMeta, err
+}
+
 func (s *TenantStore) existingParquetEntityPageMeta(ctx context.Context, key string, tenantID string, page EntityPageData) (ObjectMeta, bool, error) {
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil || !mayExist {
+		return ObjectMeta{}, false, err
+	}
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return ObjectMeta{}, false, nil
@@ -156,6 +206,10 @@ func (s *TenantStore) existingParquetEntityPageMeta(ctx context.Context, key str
 }
 
 func (s *TenantStore) existingParquetEntityPagePackMeta(ctx context.Context, key string, tenantID string, pages []EntityPageData) (ObjectMeta, bool, error) {
+	mayExist, err := s.objectKeyMayExist(ctx, key)
+	if err != nil || !mayExist {
+		return ObjectMeta{}, false, err
+	}
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return ObjectMeta{}, false, nil
@@ -861,14 +915,14 @@ func (s *TenantStore) loadParquetEntityPageObject(ctx context.Context, tenantID 
 	if err != nil || !ok {
 		return EntityPageData{}, "", ok, err
 	}
-	page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, version)
+	page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
 	if (err != nil || !entityPageReadable(page, tenantID, version, spec)) && cached {
 		s.dropCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
 		data, meta, ok, _, err = s.loadParquetEntityPageObjectBytes(ctx, tenantID, version, spec)
 		if err != nil || !ok {
 			return EntityPageData{}, "", ok, err
 		}
-		page, err = decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, version)
+		page, err = decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
 	}
 	if err != nil {
 		return EntityPageData{}, "", false, err

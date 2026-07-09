@@ -141,17 +141,20 @@ func (s *TenantStore) PutTenantConfig(ctx context.Context, tenantID string, conf
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return TenantConfig{}, err
 	}
-	_, _, meta, err := s.getTenantConfigWithMeta(ctx, tenantID)
+	_, _, meta, err := s.getTenantConfigForWrite(ctx, tenantID)
 	if err != nil {
 		return TenantConfig{}, err
 	}
 	record := tenantConfigRecord{TenantID: tenantID, Config: config}
-	if err := s.putTenantConfigRecordWithMeta(ctx, tenantID, record, meta); err != nil {
+	nextMeta, err := s.putTenantConfigRecordWithMeta(ctx, tenantID, record, meta)
+	if err != nil {
+		s.deleteCachedTenantConfig(tenantID)
 		if errors.Is(err, ErrConflict) {
 			return TenantConfig{}, fmt.Errorf("%w: tenant config for tenant %q changed while publishing", ErrConflict, tenantID)
 		}
 		return TenantConfig{}, err
 	}
+	s.setCachedTenantConfig(tenantID, config, true, nextMeta)
 	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
 		return TenantConfig{}, err
 	}
@@ -186,13 +189,13 @@ func (s *TenantStore) getTenantConfigWithMeta(ctx context.Context, tenantID stri
 	return record.Config, true, meta, nil
 }
 
-func (s *TenantStore) putTenantConfigRecordWithMeta(ctx context.Context, tenantID string, record tenantConfigRecord, meta ObjectMeta) error {
+func (s *TenantStore) putTenantConfigRecordWithMeta(ctx context.Context, tenantID string, record tenantConfigRecord, meta ObjectMeta) (ObjectMeta, error) {
 	record.TenantID = tenantID
 	data, err := marshalParquetTenantConfig(ctx, record)
 	if err != nil {
-		return err
+		return ObjectMeta{}, err
 	}
-	return s.putBytesWithMeta(ctx, s.tenantConfigKey(tenantID), data, meta)
+	return s.putBytesWithMetaResult(ctx, s.tenantConfigKey(tenantID), data, meta)
 }
 
 func (s *TenantStore) effectiveBackpressureConfig(ctx context.Context, tenantID string) (BackpressureConfig, error) {
@@ -200,7 +203,7 @@ func (s *TenantStore) effectiveBackpressureConfig(ctx context.Context, tenantID 
 	if s.Backpressure != nil {
 		base = s.Backpressure.Config()
 	}
-	config, ok, err := s.GetTenantConfig(ctx, tenantID)
+	config, ok, _, err := s.getTenantConfigForWrite(ctx, tenantID)
 	if err != nil {
 		return BackpressureConfig{}, err
 	}
@@ -210,6 +213,18 @@ func (s *TenantStore) effectiveBackpressureConfig(ctx context.Context, tenantID 
 	applyTenantBackpressureConfig(&base, config.Backpressure)
 	applyTenantQuotaConfig(&base, config.Quota)
 	return normalizeBackpressureConfig(base), nil
+}
+
+func (s *TenantStore) getTenantConfigForWrite(ctx context.Context, tenantID string) (TenantConfig, bool, ObjectMeta, error) {
+	if config, configured, meta, ok := s.getCachedTenantConfig(tenantID); ok {
+		return config, configured, meta, nil
+	}
+	config, configured, meta, err := s.getTenantConfigWithMeta(ctx, tenantID)
+	if err != nil {
+		return TenantConfig{}, false, ObjectMeta{}, err
+	}
+	s.setCachedTenantConfig(tenantID, config, configured, meta)
+	return config, configured, meta, nil
 }
 
 func applyTenantBackpressureConfig(base *BackpressureConfig, config TenantBackpressureConfig) {

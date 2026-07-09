@@ -87,6 +87,7 @@ func (s *TenantStore) repairTenantMetadata(ctx context.Context, tenantID string)
 }
 
 func (s *TenantStore) repairTenantRegistry(ctx context.Context, tenantID string, issues []RepairIssue) (int, error) {
+	s.deleteRegisteredTenantCached(tenantID)
 	if hasRepairIssueCode(issues, "tenant_registry_unreadable") {
 		tenants, err := s.RebuildTenantRegistry(ctx)
 		return len(tenants), err

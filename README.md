@@ -126,18 +126,20 @@ go run ./tools/loadtest \
   -tenant loadtest \
   -writers 8 \
   -readers 16 \
-  -batches 240 \
-  -batch-size 20 \
+  -batches 20 \
+  -batch-size 200 \
   -http-timeout 2m \
   -maintenance-timeout 10m
 ```
 
 `batch-size` is the number of host/service groups per batch; each group writes
-one host, one service, and one edge. v1 keeps one in-process writer hot cache
-per tenant to avoid replaying object-storage commit tails on every write. This
-matches the product boundary of one active writer process per tenant. The
-object-storage lease and manifest CAS are duplicate-writer guards, not a
-multi-writer coordination layer.
+one host, one service, and one edge. Keep collector batches in the 200-500
+group range before adding writer concurrency; smaller batches amplify commit,
+manifest, idempotency, and collector metadata object writes. v1 keeps one
+in-process writer hot cache per tenant to avoid replaying object-storage commit
+tails on every write. This matches the product boundary of one active writer
+process per tenant. The object-storage lease and manifest CAS are
+duplicate-writer guards, not a multi-writer coordination layer.
 
 For overload tests, add `-allow-write-backpressure`; write-side `429` responses
 are then counted in status totals as expected load shedding instead of failing
@@ -785,6 +787,13 @@ Error contract:
 - `GRAPHDB_READER_INDEX_CACHE_DIR` enables a disk-backed cache for the same
   Parquet read objects. By default it uses
   `GRAPHDB_DATA_DIR/cache/index-objects`.
+- `GRAPHDB_INDEX_ENTITY_RECORDS=false` skips optional per-entity by-id record
+  objects on the service write path. Entity reads still use Parquet entity
+  pages; set it to `true` only when that extra by-id acceleration is needed.
+- `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=false` skips the optional
+  per-batch collector status object overwrite. Status reads use process cache
+  or derive from persisted ingest batch records; set it to `true` if an
+  eagerly materialized status object is required.
 - `GRAPHDB_FAULT_OBJECT_READ_DELAY` is a fault-injection knob for load, soak,
   and release-gate drills. Leave it unset in normal deployments; setting it
   adds delay to object `Get`, `Head`, and `List` reads before read protection
@@ -846,6 +855,8 @@ flags without changing process-wide defaults.
 - `GRAPHDB_TENANT_USAGE_CACHE_TTL=60s`
 - `GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096`
 - `GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects`
+- `GRAPHDB_INDEX_ENTITY_RECORDS=false`
+- `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=false`
 - `GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces`
 - `GRAPHDB_OTLP_INSECURE=true`
 - `GRAPHDB_SERVICE_NAME=graphdb`

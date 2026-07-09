@@ -12,14 +12,15 @@ import (
 const defaultGCReaderMaxAge = 5 * time.Minute
 
 type GCOptions struct {
-	KeepSnapshots       int
-	DeadLetterMaxAge    time.Duration
-	TaskMaxAge          time.Duration
-	CleanupIndexOrphans bool
-	ReaderMaxAge        time.Duration
-	CheckpointCursor    string
-	MaxDeletes          int
-	DryRun              bool
+	KeepSnapshots           int
+	DeadLetterMaxAge        time.Duration
+	TaskMaxAge              time.Duration
+	CleanupIndexOrphans     bool
+	ReaderMaxAge            time.Duration
+	CheckpointCursor        string
+	MaxDeletes              int
+	DryRun                  bool
+	SkipEntityRecordCleanup bool
 }
 
 type GCReport struct {
@@ -143,11 +144,13 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			if err := s.cleanupIndexOrphansLocked(ctx, tenantID); err != nil {
 				report.IndexCleanupError = err.Error()
 			}
-			deletedRecords, recordKeys, err := s.cleanupEntityRecordsLocked(ctx, tenantID)
-			report.DeletedEntityRecords = deletedRecords
-			report.DeletedKeys = append(report.DeletedKeys, recordKeys...)
-			if err != nil && report.IndexCleanupError == "" {
-				report.IndexCleanupError = err.Error()
+			if !options.SkipEntityRecordCleanup {
+				deletedRecords, recordKeys, err := s.cleanupEntityRecordsLocked(ctx, tenantID)
+				report.DeletedEntityRecords = deletedRecords
+				report.DeletedKeys = append(report.DeletedKeys, recordKeys...)
+				if err != nil && report.IndexCleanupError == "" {
+					report.IndexCleanupError = err.Error()
+				}
 			}
 		}
 	}

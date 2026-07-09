@@ -61,31 +61,34 @@ func (s *TenantStore) PutSourcePolicy(ctx context.Context, tenantID string, poli
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return graph.SourcePolicy{}, err
 	}
-	_, _, meta, err := s.getSourcePolicyWithMeta(ctx, tenantID)
+	_, _, meta, err := s.getSourcePolicyForWrite(ctx, tenantID)
 	if err != nil {
 		return graph.SourcePolicy{}, err
 	}
 	record := sourcePolicyRecord{TenantID: tenantID, SourcePolicy: normalized}
-	if err := s.putSourcePolicyRecordWithMeta(ctx, tenantID, record, meta); err != nil {
+	nextMeta, err := s.putSourcePolicyRecordWithMeta(ctx, tenantID, record, meta)
+	if err != nil {
+		s.deleteCachedSourcePolicy(tenantID)
 		if errors.Is(err, ErrConflict) {
 			return graph.SourcePolicy{}, fmt.Errorf("%w: source policy for tenant %q changed while publishing", ErrConflict, tenantID)
 		}
 		return graph.SourcePolicy{}, err
 	}
+	s.setCachedSourcePolicy(tenantID, normalized, true, nextMeta)
 	return normalized, nil
 }
 
-func (s *TenantStore) putSourcePolicyRecordWithMeta(ctx context.Context, tenantID string, record sourcePolicyRecord, meta ObjectMeta) error {
+func (s *TenantStore) putSourcePolicyRecordWithMeta(ctx context.Context, tenantID string, record sourcePolicyRecord, meta ObjectMeta) (ObjectMeta, error) {
 	record.TenantID = tenantID
 	data, err := marshalParquetSourcePolicy(ctx, record)
 	if err != nil {
-		return err
+		return ObjectMeta{}, err
 	}
-	return s.putBytesWithMeta(ctx, s.sourcePolicyKey(tenantID), data, meta)
+	return s.putBytesWithMetaResult(ctx, s.sourcePolicyKey(tenantID), data, meta)
 }
 
 func (s *TenantStore) resolveSourcePolicy(ctx context.Context, tenantID string, mutations graph.Mutations) (graph.Mutations, graph.ApplyReport, error) {
-	policy, ok, err := s.GetSourcePolicy(ctx, tenantID)
+	policy, ok, _, err := s.getSourcePolicyForWrite(ctx, tenantID)
 	if err != nil {
 		return graph.Mutations{}, graph.ApplyReport{}, err
 	}
@@ -97,6 +100,18 @@ func (s *TenantStore) resolveSourcePolicy(ctx context.Context, tenantID string, 
 		return clearIncomingEntityFieldSources(prepared), graph.ApplyReport{}, nil
 	}
 	return graph.ApplySourcePolicy(mutations, policy)
+}
+
+func (s *TenantStore) getSourcePolicyForWrite(ctx context.Context, tenantID string) (graph.SourcePolicy, bool, ObjectMeta, error) {
+	if policy, configured, meta, ok := s.getCachedSourcePolicy(tenantID); ok {
+		return policy, configured, meta, nil
+	}
+	policy, configured, meta, err := s.getSourcePolicyWithMeta(ctx, tenantID)
+	if err != nil {
+		return graph.SourcePolicy{}, false, ObjectMeta{}, err
+	}
+	s.setCachedSourcePolicy(tenantID, policy, configured, meta)
+	return policy, configured, meta, nil
 }
 
 func clearIncomingEntityFieldSources(mutations graph.Mutations) graph.Mutations {

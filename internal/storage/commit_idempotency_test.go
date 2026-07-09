@@ -52,6 +52,26 @@ func TestDirectCommitIdempotencyReplaysSameRequest(t *testing.T) {
 	}
 }
 
+func TestDirectCommitIdempotencyKeyCacheAvoidsHotMissRead(t *testing.T) {
+	ctx := context.Background()
+	objects := newCountingReadStore(NewMemoryStore())
+	store := NewTenantStore(objects, "test")
+	if _, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, CommitOptions{IdempotencyKey: "idem-1"}); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	objects.Reset()
+	if _, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
+	}, CommitOptions{IdempotencyKey: "idem-2"}); err != nil {
+		t.Fatalf("second commit: %v", err)
+	}
+	if got := objects.CountContains("/idempotency/commits/"); got != 0 {
+		t.Fatalf("commit idempotency GET count = %d, want 0", got)
+	}
+}
+
 func TestDirectCommitIdempotencyRejectsDifferentPayload(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

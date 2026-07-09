@@ -76,6 +76,8 @@ Write path:
 - `GRAPHDB_WRITE_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_WRITE_EXECUTION_TIMEOUT=90s`
 - `GRAPHDB_WRITE_MAX_COMMIT_TAIL=300`
+- `GRAPHDB_INDEX_ENTITY_RECORDS=false`
+- `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=false`
 
 `GRAPHDB_WRITE_MAX_PER_TENANT` must be `0` or `1`. Keep it at `1` in normal
 single-writer deployment. `0` disables that admission dimension and should only
@@ -169,3 +171,9 @@ Traces are exported over OTLP/HTTP when `GRAPHDB_OTLP_ENDPOINT` is set.
 - Run restore drills, integrity audit, and GC on a schedule.
 - Treat object store latency and 429 backpressure as collector slow-down
   signals, not data loss.
+- Size collectors for 200-500 logical CMDB groups per batch before increasing
+  per-tenant writer concurrency. Small batches multiply commit, manifest,
+  idempotency, and collector metadata object writes.
+- Retry `429` with the same `batch_id` and `idempotency_key`, plus exponential
+  backoff and jitter. A retry of the same source page must not create a new
+  idempotency key.

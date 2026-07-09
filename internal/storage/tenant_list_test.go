@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -68,6 +70,27 @@ func TestCommitRegistersManagedTenant(t *testing.T) {
 	}
 }
 
+func TestTenantRegistryUpdateRetriesCASConflict(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := &tenantRegistryConflictOnceStore{ObjectStore: base}
+	store := NewTenantStore(objects, "test")
+	store.MaxRetries = 2
+	if err := store.addTenantToRegistry(ctx, "tenant-a"); err != nil {
+		t.Fatalf("addTenantToRegistry: %v", err)
+	}
+	if objects.conflictCount() != 1 {
+		t.Fatalf("conflicts = %d, want 1", objects.conflictCount())
+	}
+	tenants, err := store.ListManagedTenants(ctx)
+	if err != nil {
+		t.Fatalf("ListManagedTenants: %v", err)
+	}
+	if want := []string{"tenant-a"}; !reflect.DeepEqual(tenants, want) {
+		t.Fatalf("tenants = %#v, want %#v", tenants, want)
+	}
+}
+
 func TestListManagedTenantsDoesNotScanLegacyPrefixes(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
@@ -108,4 +131,29 @@ type noListTenantObjectStore struct {
 
 func (s noListTenantObjectStore) List(context.Context, string) ([]ObjectInfo, error) {
 	return nil, errors.New("list should not be used")
+}
+
+type tenantRegistryConflictOnceStore struct {
+	ObjectStore
+	mu        sync.Mutex
+	conflicts int
+}
+
+func (s *tenantRegistryConflictOnceStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if strings.HasSuffix(key, "/_registry.parquet") {
+		s.mu.Lock()
+		if s.conflicts == 0 {
+			s.conflicts++
+			s.mu.Unlock()
+			return ObjectMeta{Key: key}, ErrConflict
+		}
+		s.mu.Unlock()
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
+func (s *tenantRegistryConflictOnceStore) conflictCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conflicts
 }

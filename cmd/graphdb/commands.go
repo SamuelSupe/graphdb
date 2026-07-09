@@ -38,7 +38,12 @@ func run(args []string) error {
 		Singleflight:  cfg.ReadObjectSingleflight,
 	})
 	objects = storage.NewMeteredObjectStore(objects, pressure, nil)
+	if cfg.WriterObjectCache && (cfg.Mode == "all" || cfg.Mode == "writer") {
+		objects = storage.NewWriterObjectCache(objects, cfg.WriterObjectCacheConfig())
+	}
 	store := storage.NewTenantStore(objects, cfg.Prefix)
+	store.WriteEntityRecords = cfg.IndexEntityRecords
+	store.MaterializeCollectorStatus = cfg.IngestCollectorStatusMaterialized
 	store.ConfigureIndexObjectCache(storage.IndexObjectCacheConfig{
 		MaxEntries: cfg.ReaderIndexCacheEntries,
 		DiskDir:    cfg.ReaderIndexCacheDir,
@@ -174,7 +179,7 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		_ = shutdownTrace(shutdownCtx)
 	}()
 	obs := observability.New(os.Stdout, cfg.SlowQueryThreshold)
-	if metered, ok := store.Objects.(*storage.MeteredObjectStore); ok {
+	if metered := storage.FindMeteredObjectStore(store.Objects); metered != nil {
 		metered.Observer = obs.Metrics
 	}
 	store.BackpressureObserver = obs.Metrics

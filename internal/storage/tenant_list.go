@@ -15,6 +15,8 @@ type tenantRegistry struct {
 	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
+const tenantRegistryUpdateRetries = 10
+
 func (s *TenantStore) ListTenants(ctx context.Context) ([]string, error) {
 	if tenants, ok, err := s.getTenantRegistry(ctx); err != nil {
 		return nil, err
@@ -60,6 +62,8 @@ func (s *TenantStore) ListTenantsIncludingLegacy(ctx context.Context) ([]string,
 }
 
 func (s *TenantStore) RebuildTenantRegistry(ctx context.Context) ([]string, error) {
+	s.tenantRegistryMu.Lock()
+	defer s.tenantRegistryMu.Unlock()
 	tenants, err := s.listTenantsByPrefix(ctx)
 	if err != nil {
 		return nil, err
@@ -74,6 +78,7 @@ func (s *TenantStore) RebuildTenantRegistry(ctx context.Context) ([]string, erro
 	if err := s.putTenantRegistryWithMeta(ctx, tenantRegistry{TenantIDs: tenants}, meta); err != nil {
 		return nil, err
 	}
+	s.replaceRegisteredTenantCache(tenants)
 	return tenants, nil
 }
 
@@ -104,18 +109,64 @@ func (s *TenantStore) listTenantsByPrefix(ctx context.Context) ([]string, error)
 }
 
 func (s *TenantStore) addTenantToRegistry(ctx context.Context, tenantID string) error {
-	return s.updateTenantRegistry(ctx, func(seen map[string]struct{}) {
+	if s.isRegisteredTenantCached(tenantID) {
+		return nil
+	}
+	if err := s.updateTenantRegistry(ctx, func(seen map[string]struct{}) bool {
+		if _, ok := seen[tenantID]; ok {
+			return false
+		}
 		seen[tenantID] = struct{}{}
-	})
+		return true
+	}); err != nil {
+		return err
+	}
+	s.setRegisteredTenantCached(tenantID)
+	return nil
 }
 
 func (s *TenantStore) removeTenantFromRegistry(ctx context.Context, tenantID string) error {
-	return s.updateTenantRegistry(ctx, func(seen map[string]struct{}) {
+	if err := s.updateTenantRegistry(ctx, func(seen map[string]struct{}) bool {
+		if _, ok := seen[tenantID]; !ok {
+			return false
+		}
 		delete(seen, tenantID)
-	})
+		return true
+	}); err != nil {
+		return err
+	}
+	s.deleteRegisteredTenantCached(tenantID)
+	return nil
 }
 
-func (s *TenantStore) updateTenantRegistry(ctx context.Context, update func(map[string]struct{})) error {
+func (s *TenantStore) updateTenantRegistry(ctx context.Context, update func(map[string]struct{}) bool) error {
+	s.tenantRegistryMu.Lock()
+	defer s.tenantRegistryMu.Unlock()
+	attempts := s.MaxRetries
+	if attempts < tenantRegistryUpdateRetries {
+		attempts = tenantRegistryUpdateRetries
+	}
+	var last error
+	for attempt := 0; attempt < attempts; attempt++ {
+		err := s.updateTenantRegistryOnce(ctx, update)
+		if err == nil {
+			return nil
+		}
+		last = err
+		if !errors.Is(err, ErrConflict) {
+			return err
+		}
+		if attempt+1 >= attempts {
+			break
+		}
+		if err := retryDelay(ctx, attempt); err != nil {
+			return err
+		}
+	}
+	return last
+}
+
+func (s *TenantStore) updateTenantRegistryOnce(ctx context.Context, update func(map[string]struct{}) bool) error {
 	key := s.tenantRegistryKey()
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	registry := tenantRegistry{}
@@ -138,7 +189,10 @@ func (s *TenantStore) updateTenantRegistry(ctx context.Context, update func(map[
 			seen[tenantID] = struct{}{}
 		}
 	}
-	update(seen)
+	changed := update(seen)
+	if !changed {
+		return nil
+	}
 	tenants := make([]string, 0, len(seen))
 	for tenantID := range seen {
 		tenants = append(tenants, tenantID)

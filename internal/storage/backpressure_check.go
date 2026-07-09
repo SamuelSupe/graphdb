@@ -22,7 +22,7 @@ func (s *TenantStore) CheckWriteBackpressure(ctx context.Context, tenantID strin
 		return err
 	}
 	reasons := s.Backpressure.ReasonsWithConfig(tenantID, config)
-	manifest, _, err := s.getManifest(ctx, tenantID)
+	manifest, err := s.currentManifestForWriteAdmission(ctx, tenantID)
 	if err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
 			return newBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter)
@@ -70,6 +70,14 @@ func (s *TenantStore) CheckWriteBackpressure(ctx context.Context, tenantID strin
 	}
 	reasons = appendBackpressureReasons(reasons, s.Backpressure.ReasonsWithConfig(tenantID, config)...)
 	return newBackpressureError(reasons, config.RetryAfter)
+}
+
+func (s *TenantStore) currentManifestForWriteAdmission(ctx context.Context, tenantID string) (Manifest, error) {
+	if loaded, ok := s.getWriteCache(tenantID); ok {
+		return loaded.Manifest, nil
+	}
+	manifest, _, err := s.getManifest(ctx, tenantID)
+	return manifest, err
 }
 
 func objectStoreUnavailableBackpressureReason(err error) (BackpressureReason, bool) {

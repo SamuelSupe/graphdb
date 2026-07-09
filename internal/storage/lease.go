@@ -16,6 +16,9 @@ type WriterLease struct {
 
 func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) error {
 	now := time.Now().UTC()
+	if _, _, ok := s.getCachedWriterLease(tenantID, now); ok {
+		return nil
+	}
 	next := WriterLease{
 		TenantID:  tenantID,
 		OwnerID:   s.InstanceID,
@@ -27,7 +30,8 @@ func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) e
 		current, meta, err := s.getWriterLease(ctx, tenantID, key)
 		switch {
 		case errors.Is(err, ErrNotFound):
-			if _, err := s.putLease(ctx, key, next, ObjectMeta{Key: key}); err == nil {
+			if meta, err := s.putLease(ctx, key, next, ObjectMeta{Key: key}); err == nil {
+				s.setCachedWriterLease(tenantID, next, meta)
 				return nil
 			} else if !errors.Is(err, ErrConflict) {
 				return err
@@ -35,14 +39,17 @@ func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) e
 		case err != nil:
 			return err
 		case current.OwnerID == s.InstanceID || current.ExpiresAt.Before(now):
-			if _, err := s.putLease(ctx, key, next, meta); err == nil {
+			if meta, err := s.putLease(ctx, key, next, meta); err == nil {
+				s.setCachedWriterLease(tenantID, next, meta)
 				return nil
 			} else if !errors.Is(err, ErrConflict) {
 				return err
 			}
 		default:
+			s.deleteCachedWriterLease(tenantID)
 			return fmt.Errorf("%w: tenant %q lease owner %q until %s", ErrLeaseHeld, tenantID, current.OwnerID, current.ExpiresAt.Format(time.RFC3339))
 		}
+		s.deleteCachedWriterLease(tenantID)
 		if err := retryDelay(ctx, attempt); err != nil {
 			return err
 		}

@@ -117,7 +117,7 @@ func (s *Server) rebuildIndexes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) cleanupIndexOrphansAfterRebuild(r *http.Request, tenantID string, version int64, async bool) {
-	report, err := s.Store.RunGC(r.Context(), tenantID, storage.GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true})
+	report, err := s.Store.RunGC(r.Context(), tenantID, storage.GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
 	if err != nil {
 		s.auditError("index_rebuild_cleanup_failed", tenantID, err, map[string]any{"version": version, "async": async})
 		return

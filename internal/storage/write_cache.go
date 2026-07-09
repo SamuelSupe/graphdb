@@ -19,25 +19,21 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 	if cached, ok := s.getWriteCache(tenantID); ok {
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_cache.found", true),
+			attribute.Bool("graphdb.write_cache.hit", true),
 			attribute.Int64("graphdb.write_cache.version", cached.Manifest.Version),
+			attribute.Int64("graphdb.write_cache.current_manifest_version", cached.Manifest.Version),
 		)
-		manifest, _, err := s.getManifest(ctx, tenantID)
-		if err != nil {
-			return loadedGraph{}, err
-		}
-		if cached.Manifest.Version >= manifest.Version && sameManifestReadSet(cached.Manifest, manifest) {
-			span.SetAttributes(attribute.Bool("graphdb.write_cache.hit", true))
-			return cached, nil
-		}
-		span.SetAttributes(
-			attribute.Bool("graphdb.write_cache.hit", false),
-			attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
-		)
-		s.deleteWriteCache(tenantID)
-	} else {
-		span.SetAttributes(attribute.Bool("graphdb.write_cache.found", false))
+		return cached, nil
 	}
-	return s.loadWithMeta(ctx, tenantID)
+	span.SetAttributes(
+		attribute.Bool("graphdb.write_cache.found", false),
+		attribute.Bool("graphdb.write_cache.hit", false),
+	)
+	loaded, err = s.loadWithMeta(ctx, tenantID)
+	if err == nil {
+		span.SetAttributes(attribute.Int64("graphdb.write_cache.current_manifest_version", loaded.Manifest.Version))
+	}
+	return loaded, err
 }
 
 func (s *TenantStore) getWriteCache(tenantID string) (loadedGraph, bool) {
