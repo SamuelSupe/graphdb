@@ -7,11 +7,20 @@ import (
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID string) (func(), bool) {
-	release, waited, err := s.WriteAdmission.Acquire(r.Context(), tenantID)
+	tracer := otel.Tracer("graphdb/http")
+	acquireCtx, acquireSpan := tracer.Start(r.Context(), "graphdb.commit.write_admission.acquire", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
+	release, waited, err := s.WriteAdmission.Acquire(acquireCtx, tenantID)
+	acquireSpan.SetAttributes(attribute.Int64("graphdb.write_admission.wait_ms", waited.Milliseconds()))
 	if err != nil {
+		acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "rejected"))
+		endHTTPSpan(acquireSpan, err)
 		s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "rejected", waited)
 		s.writeBackpressure(w, tenantID, &storage.BackpressureError{
 			Reasons: []storage.BackpressureReason{{
@@ -22,8 +31,16 @@ func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID str
 		})
 		return nil, false
 	}
+	acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "accepted"))
+	endHTTPSpan(acquireSpan, nil)
 	s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "accepted", waited)
-	if err := s.Store.CheckWriteBackpressure(r.Context(), tenantID); err != nil {
+
+	checkCtx, checkSpan := tracer.Start(r.Context(), "graphdb.commit.check_backpressure", trace.WithAttributes(
+		attribute.String("graphdb.tenant", tenantID),
+		attribute.Int64("graphdb.write_admission.wait_ms", waited.Milliseconds()),
+	))
+	if err := s.Store.CheckWriteBackpressure(checkCtx, tenantID); err != nil {
+		endHTTPSpan(checkSpan, err)
 		release()
 		if s.writeBackpressureIfNeeded(w, tenantID, err) {
 			return nil, false
@@ -31,6 +48,7 @@ func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID str
 		writeError(w, http.StatusBadRequest, err.Error())
 		return nil, false
 	}
+	endHTTPSpan(checkSpan, nil)
 	return release, true
 }
 

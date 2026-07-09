@@ -8,6 +8,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var errInvalidIndexTask = errors.New("invalid index task")
@@ -79,32 +81,60 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 	return task, nil
 }
 
-func (s *TenantStore) findRunningIndexRebuildTask(ctx context.Context, tenantID string) (IndexTask, bool, error) {
+func (s *TenantStore) findRunningIndexRebuildTask(ctx context.Context, tenantID string) (running IndexTask, found bool, err error) {
+	ctx, span := startStorageSpan(ctx, "graphdb.storage.write_backpressure.find_running_index_rebuild_task",
+		tenantTraceAttr(tenantID),
+		attribute.String("graphdb.index_task.type", "rebuild"),
+		attribute.String("graphdb.index_task.status", "running"),
+	)
+	var listed, candidates, loaded, ignored, activeChecks, inactive int
+	defer func() {
+		span.SetAttributes(
+			attribute.Int("graphdb.index_task.objects_listed", listed),
+			attribute.Int("graphdb.index_task.candidates", candidates),
+			attribute.Int("graphdb.index_task.loaded", loaded),
+			attribute.Int("graphdb.index_task.ignored", ignored),
+			attribute.Int("graphdb.index_task.active_checks", activeChecks),
+			attribute.Int("graphdb.index_task.inactive", inactive),
+			attribute.Bool("graphdb.index_task.running_found", found),
+		)
+		if found {
+			span.SetAttributes(attribute.String("graphdb.index_task.id", running.ID))
+		}
+		endStorageSpan(span, err)
+	}()
 	objects, err := s.Objects.List(ctx, s.indexTaskPrefix(tenantID))
 	if err != nil {
 		return IndexTask{}, false, err
 	}
-	var running IndexTask
+	listed = len(objects)
 	for _, object := range objects {
 		taskID, ok := indexTaskIDFromKey(object.Key)
 		if !ok {
+			ignored++
 			continue
 		}
+		candidates++
 		task, err := s.GetIndexTask(ctx, tenantID, taskID)
 		if errors.Is(err, ErrNotFound) || errors.Is(err, errInvalidIndexTask) {
+			ignored++
 			continue
 		}
 		if err != nil {
 			return IndexTask{}, false, err
 		}
+		loaded++
 		if task.TenantID != tenantID || task.Type != "rebuild" || task.Status != "running" {
+			ignored++
 			continue
 		}
+		activeChecks++
 		active, err := s.indexTaskActive(ctx, tenantID, task, time.Now().UTC())
 		if err != nil {
 			return IndexTask{}, false, err
 		}
 		if !active {
+			inactive++
 			continue
 		}
 		if running.ID == "" || task.StartedAt.Before(running.StartedAt) {
