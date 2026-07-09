@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,6 +119,39 @@ func TestCommitBackpressureRejectsDuringIndexRebuild(t *testing.T) {
 	assertBackpressureReason(t, err, "index_rebuild_running")
 }
 
+func TestCommitBackpressureIndexRebuildCheckDoesNotScanHistoricalTasks(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := newCountingListStore(base)
+	store := NewTenantStore(objects, "test")
+	store.Backpressure = NewWritePressure(BackpressureConfig{})
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		taskID := fmt.Sprintf("old-index-task-%d", i)
+		if err := putIndexTaskFixture(ctx, store, store.indexTaskKey("tenant-a", taskID), IndexTask{
+			ID:         taskID,
+			TenantID:   "tenant-a",
+			Type:       "rebuild",
+			Status:     "succeeded",
+			StartedAt:  now.Add(-time.Hour),
+			UpdatedAt:  now.Add(-time.Hour),
+			FinishedAt: now.Add(-time.Hour),
+		}); err != nil {
+			t.Fatalf("seed historical index task: %v", err)
+		}
+	}
+
+	objects.reset()
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := objects.count(store.indexTaskPrefix("tenant-a")); got != 0 {
+		t.Fatalf("index task list count = %d, want 0", got)
+	}
+}
+
 func TestCommitBackpressureRejectsDuringGC(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
@@ -222,4 +257,33 @@ type unavailableGetMetaStore struct {
 
 func (s *unavailableGetMetaStore) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
 	return nil, ObjectMeta{Key: key}, ErrObjectStoreUnavailable
+}
+
+type countingListStore struct {
+	ObjectStore
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newCountingListStore(inner ObjectStore) *countingListStore {
+	return &countingListStore{ObjectStore: inner, counts: map[string]int{}}
+}
+
+func (s *countingListStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	s.mu.Lock()
+	s.counts[prefix]++
+	s.mu.Unlock()
+	return s.ObjectStore.List(ctx, prefix)
+}
+
+func (s *countingListStore) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counts = map[string]int{}
+}
+
+func (s *countingListStore) count(prefix string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[prefix]
 }

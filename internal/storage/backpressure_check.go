@@ -227,13 +227,24 @@ func (s *TenantStore) findRunningTask(ctx context.Context, tenantID string, task
 		}
 		endStorageSpan(span, err)
 	}()
-	tasks, err := s.ListTasks(ctx, tenantID, TaskListOptions{Type: taskType, Status: "running", Limit: 1})
+	tasks, err := s.listStoredTasks(ctx, tenantID)
 	if err != nil {
 		return Task{}, false, err
 	}
-	span.SetAttributes(attribute.Int("graphdb.task.matched", len(tasks)))
-	if len(tasks) == 0 {
+	span.SetAttributes(attribute.Int("graphdb.task.objects_loaded", len(tasks)))
+	for _, candidate := range tasks {
+		if candidate.Type != taskType || candidate.Status != "running" {
+			continue
+		}
+		if !found || candidate.StartedAt.After(task.StartedAt) {
+			task = candidate
+			found = true
+		}
+	}
+	if !found {
+		span.SetAttributes(attribute.Int("graphdb.task.matched", 0))
 		return Task{}, false, nil
 	}
-	return tasks[0], true, nil
+	span.SetAttributes(attribute.Int("graphdb.task.matched", 1))
+	return task, true, nil
 }
