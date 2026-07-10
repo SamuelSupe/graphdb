@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestVisitEntitiesStopsAfterFirstPageAndKeepsCacheReadOnly(t *testing.T) {

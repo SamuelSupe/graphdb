@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 const timeSortLayout = "2006-01-02T15:04:05.000000000Z07:00"

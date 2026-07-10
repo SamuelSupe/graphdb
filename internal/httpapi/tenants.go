@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 type tenantRequest struct {

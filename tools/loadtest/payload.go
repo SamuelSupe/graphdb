@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/query"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func schemaMutations() graph.Mutations {

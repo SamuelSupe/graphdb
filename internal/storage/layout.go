@@ -3,7 +3,7 @@ package storage
 import (
 	"fmt"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 const (

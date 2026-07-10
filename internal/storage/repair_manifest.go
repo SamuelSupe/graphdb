@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (s *TenantStore) manifestRepairIssues(ctx context.Context, tenantID string, manifest Manifest, manifestErr error) []RepairIssue {

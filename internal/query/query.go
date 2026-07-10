@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func Execute(g *graph.Graph, request Request) (Response, error) {

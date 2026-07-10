@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func listTenants(args []string, store *storage.TenantStore) error {

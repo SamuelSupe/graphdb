@@ -1,6 +1,6 @@
 package storage
 
-import "graphdb/internal/graph"
+import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 
 func estimateEntityPageBytes(page EntityPageData) int64 {
 	size := int64(128 + len(page.TenantID) + len(page.Shard))

@@ -3,7 +3,7 @@ package httpapi
 import (
 	"net/http"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {

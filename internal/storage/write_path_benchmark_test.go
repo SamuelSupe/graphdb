@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func BenchmarkSingleEntityIndexedCommit(b *testing.B) {

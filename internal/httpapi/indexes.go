@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func (s *Server) indexCatalog(w http.ResponseWriter, r *http.Request) {

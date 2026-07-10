@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (s *TenantStore) reuseUnchangedIndexCatalogObjects(tenantID string, catalog *IndexCatalog, previous IndexCatalog) {

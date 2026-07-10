@@ -1,0 +1,146 @@
+variables:
+  GLOBAL_BASE_IMAGE: pubrepo.jiagouyun.com/base/golang:1.25.11
+  DEP_IMAGE: registry.jiagouyun.com/basis/kodo-dep-go1.25.11
+  CACHE_IMAGE_PATH: image-cache
+  PROJECT: "graphdb"
+  CONTAINER_NAME: "graphdb-build"
+  WORKDIR_IMAGE: /work/src/graphdb
+  REGISTRY_IMAGE: registry.jiagouyun.com/cloudcare-forethought/graphdb
+  PUBREPO_IMAGE: pubrepo.jiagouyun.com/cloudcare-forethought/graphdb
+  RUNTIME_BASE_IMAGE: registry.jiagouyun.com/basis/kodo-basis:kodo-basis-2026-03-25
+  UOS_RUNTIME_BASE_IMAGE: registry.jiagouyun.com/basis/uos-kodo-basis:uos-kodo-basis-2025-01-07
+
+stages:
+  - build-dep
+  - build
+  - deploy
+
+build-dep:
+  stage: build-dep
+  when: manual
+  variables:
+    BASE_IMAGE: $GLOBAL_BASE_IMAGE
+  script:
+    - echo "$DEP_IMAGE"
+    - echo "$BASE_IMAGE"
+    - docker rmi -f "$DEP_IMAGE:latest" || true
+    - docker build --build-arg BASE_IMAGE="$BASE_IMAGE" -t "$DEP_IMAGE:latest" -f ./image/Dockerfile.dep .
+    - docker push "$DEP_IMAGE:latest"
+  tags:
+    - cloudcare-multiarch
+
+build-testing:
+  stage: build
+  resource_group: production
+  only:
+    - /^testing-.*$/
+  script:
+    - docker rm -f "$CONTAINER_NAME" || true
+    - start_time=`date +%s`
+    - docker run --name "$CONTAINER_NAME" --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
+    - compile_time=`date +%s`; echo compile `expr $compile_time - $start_time` s.
+    - docker buildx build --build-arg BASE_IMAGE="$RUNTIME_BASE_IMAGE" --platform linux/arm64,linux/amd64 -t "$REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" -f ./image/Dockerfile . --push
+    - image_time=`date +%s`; echo build image `expr $image_time - $compile_time` s.
+    - push_time=`date +%s`; echo push image `expr $push_time - $image_time` s.
+  after_script:
+    - docker rm -f "$CONTAINER_NAME" || true
+  tags:
+    - cloudcare-multiarch
+
+
+build-release:
+  stage: build
+  resource_group: production
+  only:
+    - /^release(\/|-)?.*$/
+  script:
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
+    - docker buildx build --build-arg BASE_IMAGE="$RUNTIME_BASE_IMAGE" --platform linux/arm64,linux/amd64 -t "$REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" -t "$PUBREPO_IMAGE:$CI_COMMIT_REF_SLUG" -f ./image/Dockerfile . --push
+  tags:
+    - cloudcare-multiarch
+
+build-preprod:
+  stage: build
+  resource_group: production
+  only:
+    - /^pre(\/|-)?.*$/
+  script:
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
+    - make pub_registry_image VERSION="$CI_COMMIT_REF_SLUG" RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE"
+  tags:
+    - cloudcare-multiarch
+
+deployProd:
+  stage: deploy
+  resource_group: production
+  only:
+    - /^deploy_\d+/
+  script:
+    - bash cd.sh -d
+  tags:
+    - cloudcare-multiarch
+
+buildRTM:
+  stage: build
+  resource_group: graphdb-production
+  only:
+    - /\d+\.\d+\.\d+-\w+-\d+-prod/
+  script:
+    - V=(${CI_COMMIT_REF_NAME//[\.-]/ })
+    - VDIR=${V[0]}.${V[1]}.${V[2]}
+    - REPO=dataflux/$VDIR
+    - TAG=${PROJECT}-${V[3]}-${V[4]}
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
+    - make pub_pubrepo_image REPO="$REPO:$TAG" RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE"
+  tags:
+    - cloudcare-multiarch
+
+buildUOSRTM:
+  stage: build
+  resource_group: graphdb-production
+  only:
+    - /\d+\.\d+\.\d+-\w+-\d+-uos-prod/
+  script:
+    - V=(${CI_COMMIT_REF_NAME//[\.-]/ })
+    - VDIR=${V[0]}.${V[1]}.${V[2]}
+    - REPO=uos-dataflux/$VDIR
+    - TAG=${PROJECT}-${V[3]}-${V[4]}
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
+    - make pub_pubrepo_uos_image REPO="$REPO:$TAG" UOS_RUNTIME_BASE_IMAGE="$UOS_RUNTIME_BASE_IMAGE"
+  tags:
+    - cloudcare-multiarch
+
+buildRTMPrev:
+  stage: build
+  resource_group: graphdb-production
+  only:
+    - /\d+\.\d+\.\d+\.\d+-\w+-prev/
+  script:
+    - V=(${CI_COMMIT_REF_NAME//[\.-]/ })
+    - VDIR=${V[0]}.${V[1]}.${V[2]}.${V[3]}
+    - REPO=dataflux-prev/$VDIR
+    - TAG=${PROJECT}-${V[4]}
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
+    - make pub_pubrepo_image REPO="$REPO:$TAG" RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE"
+  tags:
+    - cloudcare-multiarch
+
+buildBasisImage:
+  stage: build
+  resource_group: graphdb-production
+  only:
+    - /^graphdb-basis[\/-_]?.*$/
+  script:
+    - docker buildx build --platform linux/arm64,linux/amd64 -t "registry.jiagouyun.com/basis/graphdb-basis:$CI_COMMIT_REF_SLUG" -f image/Dockerfile.basis . --push
+  tags:
+    - cloudcare-multiarch
+
+buildUOSBasisImage:
+  stage: build
+  resource_group: graphdb-production
+  only:
+    - /^uos-graphdb-basis[\/-_]?.*$/
+  script:
+    - docker buildx build --platform linux/arm64,linux/amd64 -t "registry.jiagouyun.com/basis/uos-graphdb-basis:$CI_COMMIT_REF_SLUG" -f image/Dockerfile.uos.basis . --push
+  tags:
+    - cloudcare-multiarch

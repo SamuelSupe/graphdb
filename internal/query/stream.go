@@ -3,7 +3,7 @@ package query
 import (
 	"context"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 type StreamMeta struct {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 const (

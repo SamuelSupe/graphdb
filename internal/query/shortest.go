@@ -3,7 +3,7 @@ package query
 import (
 	"fmt"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func executeShortestPath(g *graph.Graph, request Request, cursor cursorState, budget *budget) (Response, error) {

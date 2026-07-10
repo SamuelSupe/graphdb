@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 type queryReadMemoKey struct{}

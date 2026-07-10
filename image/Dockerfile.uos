@@ -1,0 +1,20 @@
+ARG BASE_IMAGE=registry.jiagouyun.com/basis/uos-kodo-basis:uos-kodo-basis-2025-01-07
+FROM ${BASE_IMAGE}
+
+ARG TARGETARCH=amd64
+MAINTAINER "lhm@guance.com"
+
+RUN yum -qq install -y jq
+
+COPY ./image/cmd/${TARGETARCH}/graphdb /graphdb/graphdb
+
+WORKDIR /graphdb
+
+RUN groupadd -r -g 1000 guance && \
+    useradd -r -g guance -u 1000 -s /sbin/nologin guance && \
+    chmod +x /graphdb/graphdb && \
+    chown -R guance:guance /graphdb
+
+USER guance
+ENTRYPOINT ["/graphdb/graphdb"]
+CMD ["serve"]

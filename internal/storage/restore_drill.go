@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 )
 
 const defaultRestoreDrillQueryTimeout = 30 * time.Second

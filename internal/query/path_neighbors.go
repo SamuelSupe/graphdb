@@ -1,6 +1,6 @@
 package query
 
-import "graphdb/internal/graph"
+import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 
 func neighborsFor(g *graph.Graph, entityID string, request Request) []graph.Neighbor {
 	neighbors, _ := neighborsForBudget(g, entityID, request, nil)

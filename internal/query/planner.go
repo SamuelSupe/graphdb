@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func PlanQuery(g *graph.Graph, request Request) Plan {

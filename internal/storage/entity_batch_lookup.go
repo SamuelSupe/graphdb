@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 const entityBatchLookupConcurrency = 16

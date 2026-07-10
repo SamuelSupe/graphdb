@@ -9,14 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"graphdb/internal/graph"
-
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestPutSourcePolicyRequiresWriterLease(t *testing.T) {

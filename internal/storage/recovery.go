@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 type RecoveryReport struct {

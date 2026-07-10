@@ -3,7 +3,7 @@ package storage
 import (
 	"strings"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func captureIndexBefore(g *graph.Graph, mutations graph.Mutations) *graph.Graph {

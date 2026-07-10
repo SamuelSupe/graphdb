@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestEntityRecordModeUsesLogicalEntityPageObjects(t *testing.T) {

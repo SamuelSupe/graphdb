@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 type maintenanceState struct {

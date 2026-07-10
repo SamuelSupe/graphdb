@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestConcurrentDirectCommitsAreSerializedAndAllVisible(t *testing.T) {

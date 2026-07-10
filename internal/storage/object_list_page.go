@@ -26,7 +26,7 @@ func listObjectPage(ctx context.Context, objects ObjectStore, prefix string, aft
 	case *WriterObjectCache:
 		return listObjectPage(ctx, store.Inner, prefix, after, limit)
 	case *MeteredObjectStore:
-		done := store.start("list_page")
+		ctx, done := store.start(ctx, "list_page", prefix, -1)
 		items, next, err := listObjectPage(ctx, store.Inner, prefix, after, limit)
 		done(err)
 		return items, next, err

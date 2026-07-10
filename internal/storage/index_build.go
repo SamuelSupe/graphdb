@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func buildIndexCatalog(g *graph.Graph, version int64) (IndexCatalog, error) {

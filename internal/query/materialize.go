@@ -3,7 +3,7 @@ package query
 import (
 	"sort"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func materializeEntity(g *graph.Graph, id string, request Request, budget *budget) (graph.Entity, bool, error) {

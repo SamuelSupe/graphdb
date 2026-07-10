@@ -231,6 +231,10 @@ func (s *TenantStore) indexTaskKey(tenantID string, taskID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "tasks", objectSegment(taskID)+".parquet")
 }
 
+func (s *TenantStore) indexRebuildRunningTaskKey(tenantID string) string {
+	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "running", "rebuild.parquet")
+}
+
 func (s *TenantStore) indexTaskPrefix(tenantID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "tasks") + "/"
 }

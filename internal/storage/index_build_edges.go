@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func (s *TenantStore) writeEdgeShards(ctx context.Context, tenantID string, g *graph.Graph, version int64) error {

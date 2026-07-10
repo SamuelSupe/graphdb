@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"graphdb/internal/config"
-	"graphdb/internal/httpapi"
-	"graphdb/internal/observability"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 const httpShutdownTimeout = 10 * time.Second
@@ -344,6 +344,7 @@ Environment:
   GRAPHDB_SERVICE_NAME=graphdb
   S3_ENDPOINT=http://localhost:9000
   S3_BUCKET=graphdb
+  S3_PATH_STYLE=false
   S3_REGION=us-east-1
   S3_ACCESS_KEY_ID=minioadmin
   S3_SECRET_ACCESS_KEY=minioadmin`)

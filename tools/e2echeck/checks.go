@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/httpapi"
-	"graphdb/internal/query"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 type runner struct {

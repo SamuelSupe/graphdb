@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"graphdb/internal/graph"
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func (s *Server) withReadOnlyGraphForRead(ctx context.Context, tenantID string, target readTarget, fn func(*graph.Graph, storage.Manifest) error) error {

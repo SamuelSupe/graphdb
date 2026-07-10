@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func graphConsistencyIssues(g *graph.Graph) []RepairIssue {

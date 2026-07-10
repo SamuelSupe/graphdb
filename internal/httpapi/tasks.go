@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"graphdb/internal/storage"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 type TaskStartRequest struct {
