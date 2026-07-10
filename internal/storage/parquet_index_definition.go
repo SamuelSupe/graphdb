@@ -75,10 +75,11 @@ func marshalParquetIndexDefinitions(ctx context.Context, record IndexDefinitionR
 }
 
 func decodeParquetIndexDefinitions(ctx context.Context, data []byte) (IndexDefinitionRecord, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return IndexDefinitionRecord{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return IndexDefinitionRecord{}, fmt.Errorf("parquet index definitions is empty")

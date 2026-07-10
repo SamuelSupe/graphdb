@@ -63,10 +63,11 @@ func marshalParquetCollectorStatus(ctx context.Context, status CollectorStatus) 
 }
 
 func decodeParquetCollectorStatus(ctx context.Context, data []byte) (CollectorStatus, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return CollectorStatus{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() != 1 {
 		return CollectorStatus{}, fmt.Errorf("parquet collector status has %d rows, want 1", table.NumRows())

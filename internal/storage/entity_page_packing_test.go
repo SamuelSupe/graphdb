@@ -39,6 +39,29 @@ func TestEntityRecordModeUsesLogicalEntityPageObjects(t *testing.T) {
 	}
 }
 
+func TestEntityPagePackingRespectsByteBudget(t *testing.T) {
+	pages := []EntityPageData{
+		{Shard: "00", Entities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"payload": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}},
+		{Shard: "01", Entities: []graph.Entity{{ID: "host:b", Kind: "host", Fields: graph.Fields{"payload": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}},
+	}
+	firstBytes := estimateEntityPageBytes(pages[0])
+	secondBytes := estimateEntityPageBytes(pages[1])
+	budget := firstBytes + secondBytes - 1
+
+	groups := entityPageDataPackGroups(pages, true, budget)
+	if len(groups) != 2 {
+		t.Fatalf("byte-limited entity page groups = %d, want 2", len(groups))
+	}
+	specs := []EntityPageSpec{
+		{Shard: pages[0].Shard, EntityCount: len(pages[0].Entities), estimatedBytes: firstBytes},
+		{Shard: pages[1].Shard, EntityCount: len(pages[1].Entities), estimatedBytes: secondBytes},
+	}
+	packIDs := entityPagePackIDs(specs, true, budget)
+	if packIDs["entities\x00"+pages[0].Shard] == packIDs["entities\x00"+pages[1].Shard] {
+		t.Fatalf("byte-limited entity page specs shared pack %q", packIDs["entities\x00"+pages[0].Shard])
+	}
+}
+
 func TestEntityPageWriteDoesNotRetainDecodedWriterCopy(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	page := EntityPageData{

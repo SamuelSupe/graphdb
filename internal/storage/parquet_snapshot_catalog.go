@@ -83,10 +83,11 @@ func marshalParquetSnapshotSchema(ctx context.Context, schemaData snapshotSchema
 }
 
 func decodeParquetSnapshotSchema(ctx context.Context, data []byte) (snapshotSchemaData, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return snapshotSchemaData{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return snapshotSchemaData{}, fmt.Errorf("parquet snapshot schema is empty")
@@ -240,10 +241,11 @@ func marshalParquetShardedSnapshotCatalog(ctx context.Context, catalog ShardedSn
 }
 
 func decodeParquetShardedSnapshotCatalog(ctx context.Context, data []byte) (ShardedSnapshotCatalog, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return ShardedSnapshotCatalog{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return ShardedSnapshotCatalog{}, fmt.Errorf("parquet snapshot catalog is empty")

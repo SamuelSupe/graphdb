@@ -84,18 +84,18 @@ func finishEntityPages(pages map[string]EntityPageData) []EntityPageData {
 	return items
 }
 
-func entityPagePackIDs(pages []EntityPageSpec, packPages bool) map[string]string {
+func entityPagePackIDs(pages []EntityPageSpec, packPages bool, maxBytes int64) map[string]string {
 	if !packPages {
 		return nil
 	}
 	items := make([]indexPackItem, 0, len(pages))
 	for _, page := range pages {
-		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: page.EntityCount})
+		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: page.EntityCount, Bytes: page.estimatedBytes})
 	}
-	return indexPackMap(planIndexPacks(items))
+	return indexPackMap(planIndexPacksWithMaxBytes(items, maxBytes))
 }
 
-func entityPageDataPackGroups(pages []EntityPageData, packPages bool) []entityPageDataPackGroup {
+func entityPageDataPackGroups(pages []EntityPageData, packPages bool, maxBytes int64) []entityPageDataPackGroup {
 	if !packPages {
 		out := make([]entityPageDataPackGroup, 0, len(pages))
 		for _, page := range pages {
@@ -106,10 +106,10 @@ func entityPageDataPackGroups(pages []EntityPageData, packPages bool) []entityPa
 	items := make([]indexPackItem, 0, len(pages))
 	byShard := map[string]EntityPageData{}
 	for _, page := range pages {
-		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: len(page.Entities)})
+		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: len(page.Entities), Bytes: entityPagePackBytes(page)})
 		byShard[page.Shard] = page
 	}
-	groups := planIndexPacks(items)
+	groups := planIndexPacksWithMaxBytes(items, maxBytes)
 	out := make([]entityPageDataPackGroup, 0, len(groups))
 	for _, group := range groups {
 		packed := entityPageDataPackGroup{ID: group.ID}

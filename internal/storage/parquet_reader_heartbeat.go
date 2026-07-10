@@ -67,10 +67,11 @@ func marshalParquetReaderHeartbeat(ctx context.Context, heartbeat ReaderHeartbea
 }
 
 func decodeParquetReaderHeartbeat(ctx context.Context, data []byte) (ReaderHeartbeat, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() != 1 {
 		return ReaderHeartbeat{}, fmt.Errorf("parquet reader heartbeat has %d rows, want 1", table.NumRows())

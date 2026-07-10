@@ -89,8 +89,10 @@ type TenantStore struct {
 	MaxRetries                 int
 	MaxWriteCacheTenants       int
 	MaxWriteCacheBytes         int64
+	EntityPagePackMaxBytes     int64
 	IndexFormat                string
 	WriteEntityRecords         bool
+	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool
 	Backpressure               *WritePressure
 	BackpressureObserver       BackpressureObserver
@@ -139,6 +141,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		MaxRetries:                 3,
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
+		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,
 	}

@@ -60,10 +60,11 @@ func buildIndexArtifactsWithDefinitions(g *graph.Graph, version int64, definitio
 	}
 	for _, page := range entityPages {
 		catalog.EntityPages = append(catalog.EntityPages, EntityPageSpec{
-			Shard:       page.Shard,
-			EntityCount: len(page.Entities),
-			ContentHash: entityPageContentHash(page),
-			UpdatedAt:   now,
+			Shard:          page.Shard,
+			EntityCount:    len(page.Entities),
+			ContentHash:    entityPageContentHash(page),
+			UpdatedAt:      now,
+			estimatedBytes: entityPagePackBytes(page),
 		})
 	}
 	sortIndexCatalog(&catalog)

@@ -61,15 +61,16 @@ type EdgeShard struct {
 }
 
 type EntityPageSpec struct {
-	Shard       string        `json:"shard"`
-	Format      string        `json:"format,omitempty"`
-	Codec       string        `json:"codec,omitempty"`
-	Objects     []IndexObject `json:"objects,omitempty"`
-	RowCount    int           `json:"row_count,omitempty"`
-	EntityCount int           `json:"entity_count"`
-	ContentHash string        `json:"content_hash,omitempty"`
-	SchemaHash  string        `json:"schema_hash,omitempty"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	Shard          string        `json:"shard"`
+	Format         string        `json:"format,omitempty"`
+	Codec          string        `json:"codec,omitempty"`
+	Objects        []IndexObject `json:"objects,omitempty"`
+	RowCount       int           `json:"row_count,omitempty"`
+	EntityCount    int           `json:"entity_count"`
+	ContentHash    string        `json:"content_hash,omitempty"`
+	SchemaHash     string        `json:"schema_hash,omitempty"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+	estimatedBytes int64
 }
 
 type SecondaryIndex struct {

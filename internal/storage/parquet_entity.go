@@ -15,6 +15,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
+	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
@@ -78,7 +79,7 @@ func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, te
 	recordJobs := []entityRecordWriteJob{}
 	currentIDs := map[string]struct{}{}
 	writeRecords := s.WriteEntityRecords
-	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords) {
+	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes) {
 		for i := range group.Pages {
 			group.Pages[i].TenantID = tenantID
 		}
@@ -296,27 +297,58 @@ func marshalParquetEntityPage(ctx context.Context, page EntityPageData) ([]byte,
 }
 
 func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, shard string, version int64) (EntityPageData, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
 	if err != nil {
 		return EntityPageData{}, err
 	}
-	defer table.Release()
-	if table.NumCols() < int64(parquetEntityColumnEntitySourceStaleAt+1) {
-		return EntityPageData{}, fmt.Errorf("parquet entity page has %d columns, want at least %d", table.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
+	defer reader.Close()
+	if reader.MetaData().Schema.NumColumns() < parquetEntityColumnEntitySourceStaleAt+1 {
+		return EntityPageData{}, fmt.Errorf("parquet entity page has %d columns, want at least %d", reader.MetaData().Schema.NumColumns(), parquetEntityColumnEntitySourceStaleAt+1)
+	}
+	columns := make([]int, reader.MetaData().Schema.NumColumns())
+	for i := range columns {
+		columns[i] = i
+	}
+	fileReader, err := pqarrow.NewFileReader(reader, pqarrow.ArrowReadProperties{BatchSize: parquetEntityPageRowGroupSize}, memory.DefaultAllocator)
+	if err != nil {
+		return EntityPageData{}, err
 	}
 
 	page := EntityPageData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Shard: shard, Version: version}
 	byID := map[string]*graph.Entity{}
+	for rowGroup := 0; rowGroup < reader.NumRowGroups(); rowGroup++ {
+		table, release, err := readParquetRowGroups(ctx, fileReader, columns, []int{rowGroup})
+		if err != nil {
+			return EntityPageData{}, err
+		}
+		err = appendParquetEntityPageRows(table, tenantID, shard, version, &page, byID)
+		table.Release()
+		release()
+		if err != nil {
+			return EntityPageData{}, err
+		}
+	}
+	for _, entity := range byID {
+		page.Entities = append(page.Entities, decodedEntityPageCopy(*entity))
+	}
+	sort.Slice(page.Entities, func(i, j int) bool { return page.Entities[i].ID < page.Entities[j].ID })
+	return page, nil
+}
+
+func appendParquetEntityPageRows(table arrow.Table, tenantID string, shard string, version int64, page *EntityPageData, byID map[string]*graph.Entity) error {
+	if table.NumCols() < int64(parquetEntityColumnEntitySourceStaleAt+1) {
+		return fmt.Errorf("parquet entity page has %d columns, want at least %d", table.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
+	}
 	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
 	for reader.Next() {
 		record := reader.RecordBatch()
 		if record.NumCols() < int64(parquetEntityColumnEntitySourceStaleAt+1) {
-			return EntityPageData{}, fmt.Errorf("parquet entity record has %d columns, want at least %d", record.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
+			return fmt.Errorf("parquet entity record has %d columns, want at least %d", record.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
 		}
 		columns, err := parquetEntityPageColumns(record)
 		if err != nil {
-			return EntityPageData{}, err
+			return err
 		}
 		for i := 0; i < int(record.NumRows()); i++ {
 			rowTenant := columns.tenantID.Value(i)
@@ -324,7 +356,7 @@ func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, 
 				if page.TenantID == "" || page.TenantID == tenantID {
 					page.TenantID = rowTenant
 				} else if page.TenantID != rowTenant {
-					return EntityPageData{}, fmt.Errorf("parquet entity page tenant mismatch")
+					return fmt.Errorf("parquet entity page tenant mismatch")
 				}
 			}
 			rowShard := columns.shard.Value(i)
@@ -339,7 +371,7 @@ func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, 
 				} else if page.Shard == "" || page.Shard == shard {
 					page.Shard = rowShard
 				} else if page.Shard != rowShard {
-					return EntityPageData{}, fmt.Errorf("parquet entity page shard mismatch")
+					return fmt.Errorf("parquet entity page shard mismatch")
 				}
 			}
 			rowVersion := columns.pageVersion.Value(i)
@@ -347,7 +379,7 @@ func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, 
 				if page.Version == 0 || version == 0 || page.Version == version {
 					page.Version = rowVersion
 				} else if page.Version != rowVersion {
-					return EntityPageData{}, fmt.Errorf("parquet entity page version mismatch")
+					return fmt.Errorf("parquet entity page version mismatch")
 				}
 			}
 			if page.UpdatedAt.IsZero() {
@@ -371,15 +403,11 @@ func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, 
 				entity = &created
 			}
 			if err := applyEntityPageRow(entity, entityPageRowFromColumns(columns, i)); err != nil {
-				return EntityPageData{}, err
+				return err
 			}
 		}
 	}
-	for _, entity := range byID {
-		page.Entities = append(page.Entities, decodedEntityPageCopy(*entity))
-	}
-	sort.Slice(page.Entities, func(i, j int) bool { return page.Entities[i].ID < page.Entities[j].ID })
-	return page, nil
+	return reader.Err()
 }
 
 func decodedEntityPageCopy(entity graph.Entity) graph.Entity {
@@ -831,21 +859,17 @@ func (l *PersistedIndexLookup) getEntityFromParquetPage(ctx context.Context, rec
 	if record.Page != spec.Shard {
 		return graph.Entity{}, false, nil
 	}
-	page, ok, err := l.loadParquetEntityPage(ctx, spec)
+	matched, err := l.entityRecordMatchesPage(ctx, record)
 	if err != nil {
 		if ctx.Err() != nil {
 			return graph.Entity{}, false, err
 		}
 		return graph.Entity{}, false, nil
 	}
-	if !ok {
+	if !matched || record.Entity.ID != record.ID {
 		return graph.Entity{}, false, nil
 	}
-	entity, ok := l.entityFromCachedPage(spec.Shard, record.ID, page)
-	if !ok || entity.ID != record.ID {
-		return graph.Entity{}, false, nil
-	}
-	return trimEntityFields(entity, fields), true, nil
+	return trimEntityFields(record.Entity, fields), true, nil
 }
 
 func (l *PersistedIndexLookup) listParquetEntitiesFromPage(ctx context.Context, spec EntityPageSpec, kind string, fields []string) ([]graph.Entity, bool, error) {

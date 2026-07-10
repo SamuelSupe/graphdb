@@ -54,10 +54,11 @@ func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard str
 	if err != nil {
 		return out, err
 	}
-	table, err := fileReader.ReadRowGroups(ctx, parquetEntityCandidateColumns, rowGroups)
+	table, release, err := readParquetRowGroups(ctx, fileReader, parquetEntityCandidateColumns, rowGroups)
 	if err != nil {
 		return out, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumCols() < int64(len(parquetEntityCandidateColumns)) {
 		return out, fmt.Errorf("parquet entity candidate scan has %d columns, want %d", table.NumCols(), len(parquetEntityCandidateColumns))

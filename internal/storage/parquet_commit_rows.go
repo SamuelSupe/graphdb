@@ -282,10 +282,11 @@ func marshalParquetCommitItems(ctx context.Context, tenantID string, items []par
 }
 
 func decodeParquetCommitItems(ctx context.Context, data []byte) ([]parquetCommitTableItem, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return nil, fmt.Errorf("parquet commit table is empty")

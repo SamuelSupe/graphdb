@@ -51,7 +51,7 @@ func (s *TenantStore) reuseUnchangedIndexCatalogObjects(tenantID string, catalog
 	for _, spec := range previous.EntityPages {
 		previousPages[spec.Shard] = spec
 	}
-	entityPackIDs := entityPagePackIDs(catalog.EntityPages, !s.WriteEntityRecords)
+	entityPackIDs := entityPagePackIDs(catalog.EntityPages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes)
 	changedEntityGroups := map[string]bool{}
 	for i := range catalog.EntityPages {
 		spec := &catalog.EntityPages[i]
@@ -213,7 +213,7 @@ func (s *TenantStore) edgeShardGroupUsesVersion(tenantID string, catalog IndexCa
 func (s *TenantStore) writeChangedParquetEntityPagesFast(ctx context.Context, tenantID string, pages []EntityPageData, catalog IndexCatalog, before *graph.Graph, after *graph.Graph, version int64) error {
 	recordJobs := []entityRecordWriteJob{}
 	writeRecords := s.WriteEntityRecords
-	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords) {
+	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes) {
 		for i := range group.Pages {
 			group.Pages[i].TenantID = tenantID
 		}

@@ -133,10 +133,11 @@ func marshalParquetEntityRecord(ctx context.Context, record EntityRecord) ([]byt
 }
 
 func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string, id string) (EntityRecord, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return EntityRecord{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return EntityRecord{}, fmt.Errorf("parquet entity record is empty")

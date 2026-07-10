@@ -802,12 +802,18 @@ Error contract:
 - `GRAPHDB_READ_OBJECT_MAX_CONCURRENT` limits concurrent object-store reads per
   process, and `GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true` coalesces concurrent
   reads for the same object key during cold cache misses.
+- `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT` bounds process-wide Arrow/Parquet
+  materialization. The default is `4`; lower it when large entity pages cause
+  heap pressure, at the cost of queued reads.
 - `GRAPHDB_READER_INDEX_CACHE_DIR` enables a disk-backed cache for the same
   Parquet read objects. By default it uses
   `GRAPHDB_DATA_DIR/cache/index-objects`.
+- `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES` limits the estimated payload of a
+  merged entity-page object. The default is `32MiB`; it prevents large fields
+  from turning row-count-based packs into oversized Parquet decode units.
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false` skips optional per-entity by-id record
-  objects on the service write path. Entity reads still use Parquet entity
-  pages; set it to `true` only when that extra by-id acceleration is needed.
+  objects on the service write path. Set it to `true` on both writer and reader
+  processes to return validated by-id records before loading an entity page.
   In that mode logical entity pages stay un-packed so one page update does not
   invalidate records belonging to unrelated sibling pages.
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true` incrementally maintains
@@ -877,6 +883,8 @@ flags without changing process-wide defaults.
 - `GRAPHDB_TENANT_USAGE_CACHE_TTL=60s`
 - `GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096`
 - `GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects`
+- `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=4`
+- `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
 - `GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces`
