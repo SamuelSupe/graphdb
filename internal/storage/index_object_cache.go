@@ -1,83 +1,144 @@
 package storage
 
 import (
+	"container/list"
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
+)
+
+const (
+	defaultIndexCacheMaxBytes     = 512 << 20
+	defaultIndexDiskCacheMaxBytes = 4 << 30
+	defaultIndexDiskCacheTTL      = 7 * 24 * time.Hour
+	defaultIndexRevalidateTTL     = 30 * time.Second
 )
 
 type IndexObjectCacheConfig struct {
-	MaxEntries int
-	DiskDir    string
+	MaxEntries    int
+	MaxBytes      int64
+	DiskDir       string
+	DiskMaxBytes  int64
+	DiskTTL       time.Duration
+	RevalidateTTL time.Duration
 }
 
 type indexObjectCache struct {
-	mu          sync.Mutex
-	max         int
-	diskDir     string
-	data        map[string]cachedIndexObject
-	order       []string
-	prefetching map[string]struct{}
+	mu            sync.Mutex
+	max           int
+	maxBytes      int64
+	bytes         int64
+	data          map[string]*indexObjectMemoryEntry
+	lru           *list.List
+	prefetching   map[string]struct{}
+	disk          *indexDiskCache
+	revalidateTTL time.Duration
+}
+
+type indexObjectMemoryEntry struct {
+	value cachedIndexObject
+	size  int64
+	elem  *list.Element
 }
 
 type cachedIndexObject struct {
-	data []byte
-	meta ObjectMeta
-}
-
-type indexObjectDiskMeta struct {
-	Key  string `json:"key"`
-	ETag string `json:"etag"`
+	data        []byte
+	meta        ObjectMeta
+	validatedAt time.Time
+	verified    bool
 }
 
 func newIndexObjectCache(max int) *indexObjectCache {
-	return &indexObjectCache{max: max, data: map[string]cachedIndexObject{}, prefetching: map[string]struct{}{}}
+	if max < 0 {
+		max = 0
+	}
+	return &indexObjectCache{
+		max:         max,
+		maxBytes:    indexCacheByteLimit(max, defaultIndexCacheMaxBytes),
+		data:        map[string]*indexObjectMemoryEntry{},
+		lru:         list.New(),
+		prefetching: map[string]struct{}{},
+	}
+}
+
+func indexCacheByteLimit(entries int, ceiling int64) int64 {
+	if entries <= 0 {
+		return 0
+	}
+	limit := int64(entries) << 20
+	if limit > ceiling {
+		return ceiling
+	}
+	return limit
 }
 
 func (s *TenantStore) ConfigureIndexObjectCache(config IndexObjectCacheConfig) {
-	if config.MaxEntries < 0 {
-		config.MaxEntries = 0
-	}
 	cache := newIndexObjectCache(config.MaxEntries)
-	cache.diskDir = config.DiskDir
+	if config.RevalidateTTL < 0 {
+		cache.revalidateTTL = 0
+	} else if config.RevalidateTTL == 0 {
+		cache.revalidateTTL = defaultIndexRevalidateTTL
+	} else {
+		cache.revalidateTTL = config.RevalidateTTL
+	}
+	if config.MaxBytes > 0 {
+		cache.maxBytes = config.MaxBytes
+	}
+	if config.DiskDir != "" && cache.max > 0 {
+		diskMaxBytes := config.DiskMaxBytes
+		if diskMaxBytes <= 0 {
+			diskMaxBytes = indexCacheByteLimit(cache.max*4, defaultIndexDiskCacheMaxBytes)
+		}
+		ttl := config.DiskTTL
+		if ttl <= 0 {
+			ttl = defaultIndexDiskCacheTTL
+		}
+		cache.disk = newIndexDiskCache(config.DiskDir, cache.max, diskMaxBytes, ttl)
+	}
 	s.indexCache = cache
-	s.entityPageCache = newEntityPageCache(config.MaxEntries)
+	s.entityPageCache = newConfiguredEntityPageCache(config.MaxEntries)
 }
 
 func (s *TenantStore) cachedIndexObject(ctx context.Context, kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) ([]byte, ObjectMeta, bool, error) {
+	data, meta, _, ok, err := s.cachedIndexObjectWithVerification(ctx, kind, tenantID, version, objectKey, contentHash, schemaHash)
+	return data, meta, ok, err
+}
+
+func (s *TenantStore) cachedIndexObjectWithVerification(ctx context.Context, kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) ([]byte, ObjectMeta, bool, bool, error) {
 	if s.indexCache == nil || contentHash == "" || schemaHash == "" {
-		return nil, ObjectMeta{}, false, nil
+		return nil, ObjectMeta{}, false, false, nil
 	}
 	cacheKey := indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash)
 	entry, ok, err := s.indexCache.get(ctx, cacheKey, objectKey)
+	s.recordIndexCache(tenantID, kind, cacheStatus(ok, err))
 	if err != nil || !ok {
-		s.recordIndexCache(tenantID, kind, cacheStatus(ok, err))
-		return nil, ObjectMeta{}, ok, err
+		return nil, ObjectMeta{}, false, ok, err
 	}
-	if entry.meta.ETag != "" {
-		meta, err := objectMeta(ctx, s.Objects, objectKey)
-		if errors.Is(err, ErrNotFound) {
+	if s.indexCache.needsRevalidation(entry.validatedAt) {
+		meta, metaErr := objectMeta(ctx, s.Objects, objectKey)
+		if errors.Is(metaErr, ErrNotFound) || (metaErr == nil && entry.meta.ETag != "" && meta.ETag != entry.meta.ETag) {
 			s.indexCache.drop(cacheKey)
 			s.recordIndexCache(tenantID, kind, "stale")
-			return nil, ObjectMeta{}, false, nil
+			return nil, ObjectMeta{}, false, false, nil
 		}
-		if err != nil {
+		if metaErr != nil {
 			s.recordIndexCache(tenantID, kind, "error")
-			return nil, ObjectMeta{}, false, err
+			return nil, ObjectMeta{}, false, false, metaErr
 		}
-		if meta.ETag != entry.meta.ETag {
-			s.indexCache.drop(cacheKey)
-			s.recordIndexCache(tenantID, kind, "stale")
-			return nil, ObjectMeta{}, false, nil
-		}
+		cachedETag := entry.meta.ETag
 		entry.meta = meta
+		entry.validatedAt = time.Now()
+		if cachedETag == "" || meta.ETag == "" {
+			entry.verified = false
+		}
+		s.indexCache.markValidated(cacheKey, meta, entry.validatedAt)
+		if !entry.verified {
+			s.indexCache.markContentUnverified(cacheKey)
+		}
 	}
-	s.recordIndexCache(tenantID, kind, "hit")
-	return append([]byte(nil), entry.data...), entry.meta, true, nil
+	return entry.data, entry.meta, entry.verified, true, nil
 }
 
 func cacheStatus(ok bool, err error) string {
@@ -97,11 +158,26 @@ func (s *TenantStore) recordIndexCache(tenantID string, kind string, status stri
 }
 
 func (s *TenantStore) putCachedIndexObject(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string, data []byte, meta ObjectMeta) {
+	s.putCachedIndexObjectState(kind, tenantID, version, objectKey, contentHash, schemaHash, data, meta, false)
+}
+
+func (s *TenantStore) putVerifiedCachedIndexObject(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string, data []byte, meta ObjectMeta) {
+	s.putCachedIndexObjectState(kind, tenantID, version, objectKey, contentHash, schemaHash, data, meta, true)
+}
+
+func (s *TenantStore) putCachedIndexObjectState(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string, data []byte, meta ObjectMeta, verified bool) {
 	if s.indexCache == nil || contentHash == "" || schemaHash == "" || len(data) == 0 {
 		return
 	}
 	cacheKey := indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash)
-	s.indexCache.put(cacheKey, cachedIndexObject{data: data, meta: meta})
+	s.indexCache.put(cacheKey, cachedIndexObject{data: data, meta: meta, validatedAt: time.Now(), verified: verified})
+}
+
+func (s *TenantStore) markCachedIndexObjectVerified(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
+	if s.indexCache == nil {
+		return
+	}
+	s.indexCache.markContentVerified(indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash))
 }
 
 func (s *TenantStore) dropCachedIndexObject(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
@@ -121,12 +197,10 @@ func (s *TenantStore) prefetchIndexObject(ctx context.Context, kind string, tena
 	}
 	go func() {
 		defer s.indexCache.finishPrefetch(cacheKey)
-		pctx := context.WithoutCancel(ctx)
-		data, meta, err := s.Objects.GetWithMeta(pctx, objectKey)
-		if err != nil {
-			return
+		data, meta, err := s.Objects.GetWithMeta(context.WithoutCancel(ctx), objectKey)
+		if err == nil {
+			s.indexCache.put(cacheKey, cachedIndexObject{data: data, meta: meta, validatedAt: time.Now()})
 		}
-		s.indexCache.put(cacheKey, cachedIndexObject{data: data, meta: meta})
 	}()
 }
 
@@ -145,29 +219,29 @@ func indexObjectCacheKey(kind string, tenantID string, version int64, objectKey 
 }
 
 func (c *indexObjectCache) get(ctx context.Context, cacheKey string, objectKey string) (cachedIndexObject, bool, error) {
-	c.mu.Lock()
-	if entry, ok := c.data[cacheKey]; ok {
-		c.touchLocked(cacheKey)
-		c.mu.Unlock()
-		entry.meta.Exists = true
-		if entry.meta.Key == "" {
-			entry.meta.Key = objectKey
-		}
-		entry.data = append([]byte(nil), entry.data...)
-		return entry, true, nil
+	if err := objectContextErr(ctx); err != nil {
+		return cachedIndexObject{}, false, err
 	}
-	diskDir := c.diskDir
+	c.mu.Lock()
+	if entry := c.data[cacheKey]; entry != nil {
+		c.lru.MoveToFront(entry.elem)
+		value := entry.value
+		c.mu.Unlock()
+		// Cache payloads are immutable after insertion. All callers are internal
+		// decoders, so lending the slice avoids a full Parquet copy on every hit.
+		value.meta = normalizeObjectMeta(objectKey, value.meta)
+		return value, true, nil
+	}
+	disk := c.disk
 	c.mu.Unlock()
-
-	if diskDir == "" {
+	if disk == nil {
 		return cachedIndexObject{}, false, nil
 	}
-	entry, ok, err := readIndexObjectCacheFile(diskDir, cacheKey, objectKey)
+	entry, ok, err := disk.get(cacheKey, objectKey)
 	if err != nil || !ok {
 		return cachedIndexObject{}, ok, err
 	}
-	c.put(cacheKey, entry)
-	entry.data = append([]byte(nil), entry.data...)
+	c.putMemory(cacheKey, entry)
 	return entry, true, objectContextErr(ctx)
 }
 
@@ -175,66 +249,116 @@ func (c *indexObjectCache) put(cacheKey string, entry cachedIndexObject) {
 	if c == nil || len(entry.data) == 0 {
 		return
 	}
-	entry.data = append([]byte(nil), entry.data...)
+	c.putMemory(cacheKey, entry)
 	c.mu.Lock()
-	if c.max > 0 {
-		if _, ok := c.data[cacheKey]; !ok {
-			c.order = append(c.order, cacheKey)
-		}
-		c.data[cacheKey] = entry
-		c.touchLocked(cacheKey)
-		for len(c.data) > c.max && len(c.order) > 0 {
-			evicted := c.order[0]
-			c.order = c.order[1:]
-			delete(c.data, evicted)
-		}
-	}
-	diskDir := c.diskDir
+	disk := c.disk
 	c.mu.Unlock()
-	if diskDir != "" {
-		_ = writeIndexObjectCacheFile(diskDir, cacheKey, entry)
+	if disk != nil {
+		_ = disk.put(cacheKey, entry)
 	}
+}
+
+func (c *indexObjectCache) putMemory(cacheKey string, entry cachedIndexObject) {
+	if c.max == 0 || len(entry.data) == 0 {
+		return
+	}
+	entry.data = append([]byte(nil), entry.data...)
+	size := int64(len(entry.data) + len(cacheKey) + len(entry.meta.Key) + len(entry.meta.ETag) + 96)
+	if c.maxBytes > 0 && size > c.maxBytes {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if existing := c.data[cacheKey]; existing != nil {
+		c.bytes -= existing.size
+		existing.value = entry
+		existing.size = size
+		c.bytes += size
+		c.lru.MoveToFront(existing.elem)
+	} else {
+		memoryEntry := &indexObjectMemoryEntry{value: entry, size: size}
+		memoryEntry.elem = c.lru.PushFront(cacheKey)
+		c.data[cacheKey] = memoryEntry
+		c.bytes += size
+	}
+	c.evictMemoryLocked()
+}
+
+func (c *indexObjectCache) needsRevalidation(validatedAt time.Time) bool {
+	return c.revalidateTTL <= 0 || validatedAt.IsZero() || time.Since(validatedAt) >= c.revalidateTTL
+}
+
+func (c *indexObjectCache) markValidated(cacheKey string, meta ObjectMeta, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.data[cacheKey]; entry != nil {
+		entry.value.meta = meta
+		entry.value.validatedAt = at
+	}
+}
+
+func (c *indexObjectCache) markContentVerified(cacheKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.data[cacheKey]; entry != nil {
+		entry.value.verified = true
+	}
+}
+
+func (c *indexObjectCache) markContentUnverified(cacheKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.data[cacheKey]; entry != nil {
+		entry.value.verified = false
+	}
+}
+
+func (c *indexObjectCache) evictMemoryLocked() {
+	for len(c.data) > c.max || (c.maxBytes > 0 && c.bytes > c.maxBytes) {
+		elem := c.lru.Back()
+		if elem == nil {
+			return
+		}
+		c.removeMemoryLocked(elem.Value.(string))
+	}
+}
+
+func (c *indexObjectCache) removeMemoryLocked(cacheKey string) {
+	entry := c.data[cacheKey]
+	if entry == nil {
+		return
+	}
+	c.bytes -= entry.size
+	c.lru.Remove(entry.elem)
+	delete(c.data, cacheKey)
 }
 
 func (c *indexObjectCache) has(cacheKey string) bool {
 	c.mu.Lock()
-	if _, ok := c.data[cacheKey]; ok {
-		c.touchLocked(cacheKey)
+	entry := c.data[cacheKey]
+	if entry != nil {
+		c.lru.MoveToFront(entry.elem)
 		c.mu.Unlock()
 		return true
 	}
-	diskDir := c.diskDir
+	disk := c.disk
 	c.mu.Unlock()
-	if diskDir == "" {
-		return false
-	}
-	_, err := os.Stat(indexObjectCachePath(diskDir, cacheKey))
-	return err == nil
+	return disk != nil && disk.has(cacheKey)
 }
 
 func (c *indexObjectCache) drop(cacheKey string) {
 	c.mu.Lock()
-	delete(c.data, cacheKey)
-	for i, key := range c.order {
-		if key == cacheKey {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			break
-		}
-	}
-	diskDir := c.diskDir
+	c.removeMemoryLocked(cacheKey)
+	disk := c.disk
 	c.mu.Unlock()
-	if diskDir != "" {
-		_ = os.Remove(indexObjectCachePath(diskDir, cacheKey))
-		_ = os.Remove(indexObjectCacheMetaPath(diskDir, cacheKey))
+	if disk != nil {
+		disk.drop(cacheKey)
 	}
 }
 
 func (c *indexObjectCache) beginPrefetch(cacheKey string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.prefetching == nil {
-		c.prefetching = map[string]struct{}{}
-	}
 	if _, ok := c.prefetching[cacheKey]; ok {
 		return false
 	}
@@ -246,75 +370,4 @@ func (c *indexObjectCache) finishPrefetch(cacheKey string) {
 	c.mu.Lock()
 	delete(c.prefetching, cacheKey)
 	c.mu.Unlock()
-}
-
-func (c *indexObjectCache) touchLocked(cacheKey string) {
-	for i, key := range c.order {
-		if key == cacheKey {
-			copy(c.order[i:], c.order[i+1:])
-			c.order[len(c.order)-1] = cacheKey
-			return
-		}
-	}
-	if c.max > 0 {
-		c.order = append(c.order, cacheKey)
-	}
-}
-
-func indexObjectCachePath(diskDir string, cacheKey string) string {
-	return filepath.Join(diskDir, objectContentHash([]byte(cacheKey))+".parquet")
-}
-
-func indexObjectCacheMetaPath(diskDir string, cacheKey string) string {
-	return indexObjectCachePath(diskDir, cacheKey) + ".meta"
-}
-
-func readIndexObjectCacheFile(diskDir string, cacheKey string, objectKey string) (cachedIndexObject, bool, error) {
-	data, err := os.ReadFile(indexObjectCachePath(diskDir, cacheKey))
-	if errors.Is(err, os.ErrNotExist) {
-		return cachedIndexObject{}, false, nil
-	}
-	if err != nil {
-		return cachedIndexObject{}, false, err
-	}
-	metaData, err := os.ReadFile(indexObjectCacheMetaPath(diskDir, cacheKey))
-	if errors.Is(err, os.ErrNotExist) {
-		return cachedIndexObject{}, false, nil
-	}
-	if err != nil {
-		return cachedIndexObject{}, false, err
-	}
-	var diskMeta indexObjectDiskMeta
-	if err := json.Unmarshal(metaData, &diskMeta); err != nil {
-		return cachedIndexObject{}, false, nil
-	}
-	meta := ObjectMeta{Key: objectKey, ETag: diskMeta.ETag, Exists: true}
-	if diskMeta.Key != "" {
-		meta.Key = diskMeta.Key
-	}
-	return cachedIndexObject{data: data, meta: meta}, true, nil
-}
-
-func writeIndexObjectCacheFile(diskDir string, cacheKey string, entry cachedIndexObject) error {
-	if err := os.MkdirAll(diskDir, 0o755); err != nil {
-		return err
-	}
-	path := indexObjectCachePath(diskDir, cacheKey)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, entry.data, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	metaData, err := json.Marshal(indexObjectDiskMeta{Key: entry.meta.Key, ETag: entry.meta.ETag})
-	if err != nil {
-		return err
-	}
-	metaPath := indexObjectCacheMetaPath(diskDir, cacheKey)
-	metaTmp := metaPath + ".tmp"
-	if err := os.WriteFile(metaTmp, metaData, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(metaTmp, metaPath)
 }

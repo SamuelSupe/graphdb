@@ -73,33 +73,43 @@ type EntityPageSpec struct {
 }
 
 type SecondaryIndex struct {
-	LayoutVersion int                 `json:"layout_version,omitempty"`
-	TenantID      string              `json:"tenant_id,omitempty"`
-	Kind          string              `json:"kind"`
-	Field         string              `json:"field"`
-	Unique        bool                `json:"unique"`
-	Values        map[string][]string `json:"values"`
-	Version       int64               `json:"version"`
-	UpdatedAt     time.Time           `json:"updated_at"`
+	LayoutVersion      int                 `json:"layout_version,omitempty"`
+	TenantID           string              `json:"tenant_id,omitempty"`
+	Kind               string              `json:"kind"`
+	Field              string              `json:"field"`
+	Unique             bool                `json:"unique"`
+	Values             map[string][]string `json:"values"`
+	Version            int64               `json:"version"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+	cacheVerified      bool
+	hashCanonical      bool
+	logicalContentHash string
+	cachedObjectGroups []secondaryIndexObjectGroup
 }
 
 type EdgeShardData struct {
-	LayoutVersion int          `json:"layout_version,omitempty"`
-	TenantID      string       `json:"tenant_id,omitempty"`
-	RelationType  string       `json:"relation_type"`
-	Shard         string       `json:"shard"`
-	Edges         []graph.Edge `json:"edges"`
-	Version       int64        `json:"version"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	LayoutVersion      int          `json:"layout_version,omitempty"`
+	TenantID           string       `json:"tenant_id,omitempty"`
+	RelationType       string       `json:"relation_type"`
+	Shard              string       `json:"shard"`
+	Edges              []graph.Edge `json:"edges"`
+	Version            int64        `json:"version"`
+	UpdatedAt          time.Time    `json:"updated_at"`
+	cacheVerified      bool
+	hashCanonical      bool
+	logicalContentHash string
 }
 
 type EntityPageData struct {
-	LayoutVersion int            `json:"layout_version,omitempty"`
-	TenantID      string         `json:"tenant_id,omitempty"`
-	Shard         string         `json:"shard"`
-	Entities      []graph.Entity `json:"entities"`
-	Version       int64          `json:"version"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	LayoutVersion      int            `json:"layout_version,omitempty"`
+	TenantID           string         `json:"tenant_id,omitempty"`
+	Shard              string         `json:"shard"`
+	Entities           []graph.Entity `json:"entities"`
+	Version            int64          `json:"version"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	cacheVerified      bool
+	hashCanonical      bool
+	logicalContentHash string
 }
 
 type EntityRecord struct {
@@ -155,28 +165,23 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err != nil {
 		return IndexCatalog{}, err
 	}
-	catalog, err := buildIndexCatalogWithDefinitions(g, manifest.Version, definitions)
+	artifacts, err := buildIndexArtifactsWithDefinitions(g, manifest.Version, definitions)
 	if err != nil {
 		return IndexCatalog{}, err
 	}
+	catalog := artifacts.Catalog
 	catalog.TenantID = tenantID
 	s.decorateIndexCatalog(&catalog, tenantID, format)
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
-	indexes, err := buildSecondaryIndexesWithDefinitions(g, manifest.Version, definitions)
-	if err != nil {
+	if err := s.writeSecondaryIndexesWithFormat(ctx, tenantID, artifacts.Indexes, format); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.writeSecondaryIndexesWithFormat(ctx, tenantID, indexes, format); err != nil {
+	if err := s.writeEdgeShardsWithFormat(ctx, tenantID, artifacts.EdgeShards, format); err != nil {
 		return IndexCatalog{}, err
 	}
-	edgeShards := buildEdgeShards(g, manifest.Version)
-	if err := s.writeEdgeShardsWithFormat(ctx, tenantID, edgeShards, format); err != nil {
-		return IndexCatalog{}, err
-	}
-	entityPages := buildEntityPages(g, manifest.Version)
-	if err := s.writeEntityPagesWithFormat(ctx, tenantID, g, manifest.Version, entityPages, format); err != nil {
+	if err := s.writeEntityPagesWithFormat(ctx, tenantID, g, manifest.Version, artifacts.EntityPages, format); err != nil {
 		return IndexCatalog{}, err
 	}
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
@@ -228,6 +233,29 @@ func (s *TenantStore) GetIndexCatalog(ctx context.Context, tenantID string) (Ind
 	}
 	catalog, _, err := s.getIndexCatalogWithMeta(ctx, tenantID)
 	return catalog, err
+}
+
+// GetIndexCatalogAtVersion reuses a decoded catalog only when the caller has
+// already established the matching manifest version. A same-version catalog
+// rebuild can change index availability, but cannot expose different graph
+// data, so this cache does not weaken the manifest visibility boundary.
+func (s *TenantStore) GetIndexCatalogAtVersion(ctx context.Context, tenantID string, version int64) (IndexCatalog, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return IndexCatalog{}, err
+	}
+	if cached, _, ok := s.getCachedIndexCatalog(tenantID); ok {
+		if version <= 0 || cached.Version == version {
+			return cached, nil
+		}
+	}
+	catalog, meta, err := s.getIndexCatalogWithMeta(ctx, tenantID)
+	if err != nil {
+		return IndexCatalog{}, err
+	}
+	if version <= 0 || catalog.Version == version {
+		s.setCachedIndexCatalog(tenantID, catalog, meta)
+	}
+	return catalog, nil
 }
 
 func (s *TenantStore) GetIndexCatalogVersion(ctx context.Context, tenantID string, version int64) (IndexCatalog, error) {

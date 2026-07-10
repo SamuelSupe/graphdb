@@ -17,6 +17,20 @@ import (
 
 const parquetEntityRecordCodec = "entity-record-arrow-parquet-v1"
 
+var (
+	// Entity-record objects are intentionally tiny and are read by key. Per-column
+	// dictionaries and statistics cost far more memory than they save here.
+	parquetEntityRecordWriterProperties = parquet.NewWriterProperties(
+		parquet.WithCompression(compress.Codecs.Snappy),
+		parquet.WithDictionaryDefault(false),
+		parquet.WithStats(false),
+	)
+	parquetEntityRecordArrowProperties = pqarrow.NewArrowWriterProperties(
+		pqarrow.WithAllocator(memory.DefaultAllocator),
+	)
+	sharedParquetEntityRecordSchema = newParquetEntityRecordArrowSchema()
+)
+
 const (
 	parquetEntityRecordColumnTenantID = iota
 	parquetEntityRecordColumnID
@@ -110,13 +124,9 @@ func marshalParquetEntityRecord(ctx context.Context, record EntityRecord) ([]byt
 
 	batch := builder.NewRecordBatch()
 	defer batch.Release()
-	table := array.NewTableFromRecords(schema, []arrow.RecordBatch{batch})
-	defer table.Release()
 
 	var buf bytes.Buffer
-	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
-	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, 1, writerProps, arrowProps); err != nil {
+	if err := writeParquetEntityRecordBatch(&buf, batch); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
@@ -410,6 +420,10 @@ func entityRecordRowFromColumns(columns parquetEntityRecordColumnSet, row int) e
 }
 
 func parquetEntityRecordArrowSchema() *arrow.Schema {
+	return sharedParquetEntityRecordSchema
+}
+
+func newParquetEntityRecordArrowSchema() *arrow.Schema {
 	return arrow.NewSchema([]arrow.Field{
 		{Name: "tenant_id", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "id", Type: arrow.BinaryTypes.String, Nullable: false},

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -246,6 +247,46 @@ func (s *S3Store) List(ctx context.Context, prefix string) ([]ObjectInfo, error)
 		return items[i].Key < items[j].Key
 	})
 	return items, nil
+}
+
+func (s *S3Store) ListPage(ctx context.Context, prefix string, after string, limit int) ([]ObjectInfo, string, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	query := url.Values{}
+	query.Set("list-type", "2")
+	query.Set("prefix", prefix)
+	query.Set("max-keys", strconv.Itoa(limit))
+	if after != "" {
+		query.Set("start-after", after)
+	}
+	resp, err := s.do(ctx, http.MethodGet, "", query, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		err := readS3Error(resp)
+		resp.Body.Close()
+		return nil, "", err
+	}
+	var result listBucketResult
+	decodeErr := xml.NewDecoder(resp.Body).Decode(&result)
+	resp.Body.Close()
+	if decodeErr != nil {
+		return nil, "", decodeErr
+	}
+	items := make([]ObjectInfo, 0, len(result.Contents))
+	for _, object := range result.Contents {
+		items = append(items, ObjectInfo{Key: object.Key, Size: object.Size, ETag: cleanETag(object.ETag)})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	if !result.IsTruncated {
+		return items, "", nil
+	}
+	if len(items) == 0 {
+		return nil, "", fmt.Errorf("s3 list page for prefix %q was truncated without objects", prefix)
+	}
+	return items, items[len(items)-1].Key, nil
 }
 
 func (s *S3Store) do(ctx context.Context, method, key string, query url.Values, body []byte) (*http.Response, error) {

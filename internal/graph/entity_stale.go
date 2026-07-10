@@ -18,9 +18,10 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 	}
 	observed := observedExternalIDSet(request.ObservedExternalIDs)
 	report := ApplyReport{}
+	affected := newUniqueStringCollector(&report.AffectedEntityIDs)
 	ids := sortedEntityIDs(g.Entities)
 	for _, entityID := range ids {
-		entity := g.Entities[entityID]
+		entity := copyEntity(g.Entities[entityID])
 		if request.Kind != "" && entity.Kind != request.Kind {
 			continue
 		}
@@ -35,14 +36,14 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 			g.removeEntityFromIndexes(entityID, g.Entities[entityID])
 			g.Entities[entityID] = entity
 			g.addEntityToIndexes(entityID, entity)
-			report.AffectedEntityIDs = appendUnique(report.AffectedEntityIDs, entityID)
+			affected.add(entityID)
 		case "delete":
 			backfillFieldSources(&entity)
 			existingOwner := *entity.ExistenceSource
 			incomingOwner := sourceForStaleDelete(request, version, now)
 			if sourceCanDeleteEntity(existingOwner, incomingOwner) {
 				g.deleteEntityForce(entityID)
-				report.AffectedEntityIDs = appendUnique(report.AffectedEntityIDs, entityID)
+				affected.add(entityID)
 				continue
 			}
 			report.Suppressed = append(report.Suppressed, staleDeleteConflict(entityID, request, existingOwner, incomingOwner))

@@ -168,7 +168,7 @@ type EntityBatchLookup interface {
 }
 
 type EntityPageLookup interface {
-	ListEntities(ctx context.Context, kind string, fields []string) ([]graph.Entity, bool, error)
+	VisitEntities(ctx context.Context, kind string, fields []string, afterID string, visit func(graph.Entity) (bool, error)) (bool, error)
 }
 
 type PlannerStats struct {

@@ -119,6 +119,7 @@ func mergeEdgeList(edges []Edge, version int64, updatedAt time.Time) (map[string
 	next := map[string]Edge{}
 	report := ApplyReport{}
 	for _, edge := range edges {
+		edge = copyEdge(edge)
 		incomingID := firstNonEmpty(edge.ID, edge.ExternalID)
 		edge = canonicalizeEdge(edge, firstNonZero(edge.Version, version), firstNonZeroTime(edge.UpdatedAt, updatedAt))
 		if existing, ok := next[edge.ID]; ok {

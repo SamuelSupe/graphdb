@@ -76,14 +76,28 @@ func (c *ReaderCache) Start(ctx context.Context) {
 }
 
 func (c *ReaderCache) Load(ctx context.Context, tenantID string) (*graph.Graph, Manifest, error) {
-	return c.load(ctx, tenantID, 0)
+	return c.load(ctx, tenantID, 0, false)
 }
 
 func (c *ReaderCache) LoadAtLeast(ctx context.Context, tenantID string, minVersion int64) (*graph.Graph, Manifest, error) {
-	return c.load(ctx, tenantID, minVersion)
+	return c.load(ctx, tenantID, minVersion, false)
 }
 
-func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int64) (*graph.Graph, Manifest, error) {
+// WithReadOnlyGraphAtLeast lends the immutable cache snapshot to fn without
+// cloning it. The callback must not retain or mutate the graph. Public Load
+// methods keep returning isolated copies for callers that need ownership.
+func (c *ReaderCache) WithReadOnlyGraphAtLeast(ctx context.Context, tenantID string, minVersion int64, fn func(*graph.Graph, Manifest) error) error {
+	if fn == nil {
+		return nil
+	}
+	g, manifest, err := c.load(ctx, tenantID, minVersion, true)
+	if err != nil {
+		return err
+	}
+	return fn(g, manifest)
+}
+
+func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int64, shared bool) (*graph.Graph, Manifest, error) {
 	for {
 		now := time.Now()
 		c.mu.RLock()
@@ -93,7 +107,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.touch(tenantID)
 			c.recordCache(tenantID, "hit")
 			c.recordVisible(tenantID, entry.manifest.Version)
-			return cloneCacheEntry(entry)
+			return cacheEntryGraph(entry, shared)
 		}
 		startGen := c.gens[tenantID]
 		c.mu.RUnlock()
@@ -114,7 +128,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.mu.Unlock()
 			c.recordCache(tenantID, "hit")
 			c.recordVisible(tenantID, entry.manifest.Version)
-			return cloneCacheEntry(entry)
+			return cacheEntryGraph(entry, shared)
 		}
 		startGen = c.gens[tenantID]
 		if ok && manifest.Version == entry.manifest.Version && entry.manifest.Version >= minVersion {
@@ -127,7 +141,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.mu.Unlock()
 			c.recordCache(tenantID, "revalidated")
 			c.recordVisible(tenantID, entry.manifest.Version)
-			return cloneCacheEntry(entry)
+			return cacheEntryGraph(entry, shared)
 		}
 		c.mu.Unlock()
 
@@ -153,7 +167,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.finishLoad(tenantID, load)
 			c.recordCache(tenantID, "hit_newer")
 			c.recordVisible(tenantID, entry.manifest.Version)
-			return cloneCacheEntry(entry)
+			return cacheEntryGraph(entry, shared)
 		}
 		if c.gens[tenantID] != startGen {
 			c.mu.Unlock()
@@ -164,7 +178,11 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			continue
 		}
 		now = time.Now()
-		c.entries[tenantID] = cacheEntry{graph: g.Clone(), manifest: loaded, cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: now}
+		cachedGraph := g
+		if !shared {
+			cachedGraph = g.Clone()
+		}
+		c.entries[tenantID] = cacheEntry{graph: cachedGraph, manifest: loaded, cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: now}
 		c.mu.Unlock()
 		c.finishLoad(tenantID, load)
 		c.recordVisible(tenantID, loaded.Version)
@@ -278,7 +296,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		}
 		c.entries[tenantID] = entry
 		c.mu.Unlock()
-		return cloneCacheEntry(entry)
+		return cacheEntryGraph(entry, !markAccess)
 	}
 	load, acquired, err := c.beginLoad(ctx, tenantID)
 	if err != nil {
@@ -306,7 +324,11 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	if ok && !markAccess {
 		lastAccess = entry.lastAccess
 	}
-	c.entries[tenantID] = cacheEntry{graph: g.Clone(), manifest: loaded, cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: lastAccess}
+	cachedGraph := g
+	if markAccess {
+		cachedGraph = g.Clone()
+	}
+	c.entries[tenantID] = cacheEntry{graph: cachedGraph, manifest: loaded, cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: lastAccess}
 	c.mu.Unlock()
 	c.finishLoad(tenantID, load)
 	return g, loaded, nil
@@ -331,8 +353,15 @@ func (c *ReaderCache) reloadAfterGenerationChange(ctx context.Context, tenantID 
 }
 
 func cloneCacheEntry(entry cacheEntry) (*graph.Graph, Manifest, error) {
+	return cacheEntryGraph(entry, false)
+}
+
+func cacheEntryGraph(entry cacheEntry, shared bool) (*graph.Graph, Manifest, error) {
 	if entry.graph == nil {
 		return nil, entry.manifest, nil
+	}
+	if shared {
+		return entry.graph, entry.manifest, nil
 	}
 	return entry.graph.Clone(), entry.manifest, nil
 }

@@ -1,9 +1,6 @@
 package graph
 
 import (
-	"crypto/md5"
-	"encoding/hex"
-	"encoding/json"
 	"sort"
 )
 
@@ -67,29 +64,37 @@ type logicalEdgeSource struct {
 	Priority   int     `json:"priority,omitempty"`
 }
 
-func (g *Graph) ContentMD5() (string, error) {
-	data, err := json.Marshal(g.logicalSnapshot())
-	if err != nil {
-		return "", err
-	}
-	sum := md5.Sum(data)
-	return hex.EncodeToString(sum[:]), nil
-}
-
 func (g *Graph) logicalSnapshot() logicalSnapshot {
-	snapshot := g.Snapshot()
 	out := logicalSnapshot{
-		CITypes:       snapshot.CITypes,
-		RelationTypes: snapshot.RelationTypes,
-		Entities:      make([]logicalEntity, 0, len(snapshot.Entities)),
-		Edges:         make([]logicalEdge, 0, len(snapshot.Edges)),
+		CITypes:       make([]CIType, 0, len(g.CITypes)),
+		RelationTypes: make([]RelationType, 0, len(g.RelationTypes)),
+		Entities:      make([]logicalEntity, 0, len(g.Entities)),
+		Edges:         make([]logicalEdge, 0, len(g.Edges)),
 	}
-	for _, entity := range snapshot.Entities {
+	for _, ciType := range g.CITypes {
+		out.CITypes = append(out.CITypes, copyCIType(ciType))
+	}
+	for _, relationType := range g.RelationTypes {
+		out.RelationTypes = append(out.RelationTypes, copyRelationType(relationType))
+	}
+	for _, entity := range g.Entities {
 		out.Entities = append(out.Entities, logicalEntityFromEntity(entity))
 	}
-	for _, edge := range snapshot.Edges {
+	for _, edge := range g.Edges {
 		out.Edges = append(out.Edges, logicalEdgeFromEdge(edge))
 	}
+	sort.Slice(out.CITypes, func(i, j int) bool {
+		return out.CITypes[i].Name < out.CITypes[j].Name
+	})
+	sort.Slice(out.RelationTypes, func(i, j int) bool {
+		return out.RelationTypes[i].Name < out.RelationTypes[j].Name
+	})
+	sort.Slice(out.Entities, func(i, j int) bool {
+		return out.Entities[i].ID < out.Entities[j].ID
+	})
+	sort.Slice(out.Edges, func(i, j int) bool {
+		return out.Edges[i].ID < out.Edges[j].ID
+	})
 	return out
 }
 

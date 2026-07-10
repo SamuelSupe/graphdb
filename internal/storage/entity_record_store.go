@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -94,15 +95,26 @@ wait:
 }
 
 func (s *TenantStore) putEntityRecordIfChanged(ctx context.Context, job entityRecordWriteJob) error {
-	data, err := marshalParquetEntityRecord(ctx, job.Record)
-	if err != nil {
-		return err
-	}
 	mayExist, err := s.objectKeyMayExist(ctx, job.Key)
 	if err != nil {
 		return err
 	}
+	var data []byte
+	marshal := func() error {
+		if data != nil {
+			return nil
+		}
+		encoded, err := marshalParquetEntityRecord(ctx, job.Record)
+		if err != nil {
+			return err
+		}
+		data = encoded
+		return nil
+	}
 	if !mayExist {
+		if err := marshal(); err != nil {
+			return err
+		}
 		if _, err := s.Objects.PutConditional(ctx, job.Key, data, PutCondition{IfNoneMatch: true}); err == nil {
 			s.markObjectKeyCached(job.Key)
 			return nil
@@ -112,6 +124,9 @@ func (s *TenantStore) putEntityRecordIfChanged(ctx context.Context, job entityRe
 	}
 	existing, meta, err := s.Objects.GetWithMeta(ctx, job.Key)
 	if errors.Is(err, ErrNotFound) {
+		if err := marshal(); err != nil {
+			return err
+		}
 		if _, err := s.Objects.PutConditional(ctx, job.Key, data, PutCondition{IfNoneMatch: true}); err == nil {
 			s.markObjectKeyCached(job.Key)
 			return nil
@@ -121,6 +136,27 @@ func (s *TenantStore) putEntityRecordIfChanged(ctx context.Context, job entityRe
 	}
 	if err != nil {
 		return err
+	}
+	if err := marshal(); err != nil {
+		return err
+	}
+	// Current-format encoding is deterministic. An exact byte match proves the
+	// stored record is current without allocating a second full Parquet decode.
+	if bytes.Equal(existing, data) {
+		return nil
+	}
+	header, headerErr := readParquetEntityRecordHeader(existing)
+	if headerErr == nil && (header.PageHash != job.Record.PageHash || header.PageETag != job.Record.PageETag) {
+		// A page binding change makes the previous record unusable regardless of
+		// its entity payload. Avoid decoding every field/source row just to replace
+		// it, while retaining the newer-version guard below for valid records.
+		if header.Version <= job.Record.Version {
+			if err := s.putBytesWithMeta(ctx, job.Key, data, meta); err != nil {
+				return err
+			}
+			s.markObjectKeyCached(job.Key)
+			return nil
+		}
 	}
 	got, err := decodeEntityRecordObject(ctx, existing, job.Key, job.Record.TenantID, job.Record.ID)
 	if err == nil {

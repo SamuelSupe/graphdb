@@ -240,7 +240,7 @@ func (s *Server) readerTrafficGateReport(r *http.Request, tenantID string) (Read
 		}
 	}
 	heartbeat := storage.ReaderHeartbeat{
-		ReaderID:        s.Store.InstanceID,
+		ReaderID:        s.Store.ReaderHeartbeatID(),
 		InstanceID:      s.Store.InstanceID,
 		TenantID:        tenantID,
 		Mode:            s.Mode,
@@ -345,7 +345,7 @@ func (s *Server) recordReaderHeartbeat(r *http.Request, report ReaderFreshnessRe
 		return nil
 	}
 	_, err := s.Store.PutReaderHeartbeat(r.Context(), report.TenantID, storage.ReaderHeartbeat{
-		ReaderID:        s.Store.InstanceID,
+		ReaderID:        s.Store.ReaderHeartbeatID(),
 		InstanceID:      s.Store.InstanceID,
 		TenantID:        report.TenantID,
 		Mode:            s.Mode,

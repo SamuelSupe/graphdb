@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -32,6 +33,7 @@ type Server struct {
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration
 	maintenance           *maintenanceState
+	maintenanceOnce       sync.Once
 	usageCache            *tenantUsageCache
 }
 
@@ -42,6 +44,7 @@ type CommitRequest struct {
 }
 
 func (s *Server) Handler() http.Handler {
+	s.maintenanceRuntime()
 	if s.QueryRegistry == nil {
 		s.QueryRegistry = NewRunningQueryRegistry()
 	}
@@ -266,17 +269,23 @@ func (s *Server) entity(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	var entity graph.Entity
+	var found bool
+	var version int64
+	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
+		entity, found = g.GetEntityByReference(id)
+		version = manifest.Version
+		return nil
+	})
 	if err != nil {
 		writeReadError(w, err)
 		return
 	}
-	entity, ok := g.GetEntityByReference(id)
-	if !ok {
+	if !found {
 		writeError(w, http.StatusNotFound, "entity not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": manifest.Version, "entity": entity})
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "entity": entity})
 }
 
 func escapedPathTail(r *http.Request, prefix string) (string, error) {
@@ -323,12 +332,18 @@ func (s *Server) ciTypes(w http.ResponseWriter, r *http.Request) {
 		writeReadError(w, err)
 		return
 	}
-	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	var items []graph.CIType
+	var version int64
+	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
+		items = g.ListCITypes()
+		version = manifest.Version
+		return nil
+	})
 	if err != nil {
 		writeReadError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": manifest.Version, "ci_types": g.ListCITypes()})
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "ci_types": items})
 }
 
 func (s *Server) relationTypes(w http.ResponseWriter, r *http.Request) {
@@ -346,12 +361,18 @@ func (s *Server) relationTypes(w http.ResponseWriter, r *http.Request) {
 		writeReadError(w, err)
 		return
 	}
-	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	var items []graph.RelationType
+	var version int64
+	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
+		items = g.ListRelationTypes()
+		version = manifest.Version
+		return nil
+	})
 	if err != nil {
 		writeReadError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": manifest.Version, "relation_types": g.ListRelationTypes()})
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "relation_types": items})
 }
 
 func (s *Server) compact(w http.ResponseWriter, r *http.Request) {

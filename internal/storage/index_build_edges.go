@@ -25,28 +25,55 @@ func (s *TenantStore) writeEdgeShardsWithFormat(ctx context.Context, tenantID st
 }
 
 func buildEdgeShards(g *graph.Graph, version int64) []EdgeShardData {
-	edges := make([]graph.Edge, 0, len(g.Edges))
+	counts := edgeShardCounts(g)
+	now := time.Now().UTC()
+	shards := newEdgeShardBuckets(counts, version, now)
 	for _, edge := range g.Edges {
-		edges = append(edges, edge)
+		appendEdgeShard(shards, edge)
 	}
-	return buildEdgeShardsFromEdges(edges, version)
+	return finishEdgeShards(shards)
 }
 
 func buildEdgeShardsFromEdges(edges []graph.Edge, version int64) []EdgeShardData {
-	now := time.Now().UTC()
-	shards := map[string]EdgeShardData{}
+	counts := make(map[string]int, len(edges))
 	for _, edge := range edges {
-		shardID := edgeShardID(edge.From)
-		key := edge.Type + "\x00" + shardID
-		shard := shards[key]
-		shard.LayoutVersion = CurrentObjectLayoutVersion
-		shard.RelationType = edge.Type
-		shard.Shard = shardID
-		shard.Version = version
-		shard.UpdatedAt = now
-		shard.Edges = append(shard.Edges, edge)
-		shards[key] = shard
+		counts[edge.Type+"\x00"+edgeShardID(edge.From)]++
 	}
+	now := time.Now().UTC()
+	shards := newEdgeShardBuckets(counts, version, now)
+	for _, edge := range edges {
+		appendEdgeShard(shards, edge)
+	}
+	return finishEdgeShards(shards)
+}
+
+func newEdgeShardBuckets(counts map[string]int, version int64, now time.Time) map[string]EdgeShardData {
+	shards := make(map[string]EdgeShardData, len(counts))
+	for key, count := range counts {
+		relationType, shardID := splitShard(key)
+		shards[key] = EdgeShardData{
+			LayoutVersion: CurrentObjectLayoutVersion,
+			RelationType:  relationType,
+			Shard:         shardID,
+			Edges:         make([]graph.Edge, 0, count),
+			Version:       version,
+			UpdatedAt:     now,
+			hashCanonical: true,
+		}
+	}
+	return shards
+}
+
+func appendEdgeShard(shards map[string]EdgeShardData, edge graph.Edge) {
+	shardID := edgeShardID(edge.From)
+	key := edge.Type + "\x00" + shardID
+	shard := shards[key]
+	shard.Edges = append(shard.Edges, edge)
+	shard.hashCanonical = shard.hashCanonical && graphEdgeHashCanonical(edge)
+	shards[key] = shard
+}
+
+func finishEdgeShards(shards map[string]EdgeShardData) []EdgeShardData {
 	items := make([]EdgeShardData, 0, len(shards))
 	for _, shard := range shards {
 		sort.Slice(shard.Edges, func(i, j int) bool { return shard.Edges[i].ID < shard.Edges[j].ID })
@@ -100,9 +127,11 @@ func mergeEdgeShardPack(group edgeShardDataPackGroup) EdgeShardData {
 		Shard:         group.ID,
 		Version:       first.Version,
 		UpdatedAt:     first.UpdatedAt,
+		hashCanonical: true,
 	}
 	for _, shard := range group.Shards {
 		merged.Edges = append(merged.Edges, shard.Edges...)
+		merged.hashCanonical = merged.hashCanonical && shard.hashCanonical
 	}
 	sort.Slice(merged.Edges, func(i, j int) bool { return merged.Edges[i].ID < merged.Edges[j].ID })
 	return merged

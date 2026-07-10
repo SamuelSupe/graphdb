@@ -790,10 +790,12 @@ Error contract:
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false` skips optional per-entity by-id record
   objects on the service write path. Entity reads still use Parquet entity
   pages; set it to `true` only when that extra by-id acceleration is needed.
-- `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=false` skips the optional
-  per-batch collector status object overwrite. Status reads use process cache
-  or derive from persisted ingest batch records; set it to `true` if an
-  eagerly materialized status object is required.
+  In that mode logical entity pages stay un-packed so one page update does not
+  invalidate records belonging to unrelated sibling pages.
+- `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true` incrementally maintains
+  the collector checkpoint and is the default. Setting it to `false` makes a
+  cold status read derive state from all persisted ingest batch records and is
+  intended only for compatibility or controlled migrations.
 - `GRAPHDB_FAULT_OBJECT_READ_DELAY` is a fault-injection knob for load, soak,
   and release-gate drills. Leave it unset in normal deployments; setting it
   adds delay to object `Get`, `Head`, and `List` reads before read protection
@@ -849,6 +851,8 @@ flags without changing process-wide defaults.
 - `GRAPHDB_WRITE_MAX_BYTES_PER_TENANT=0`
 - `GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT=0`
 - `GRAPHDB_WRITE_MAX_EDGES_PER_TENANT=0`
+- `GRAPHDB_WRITE_CACHE_MAX_BYTES=512MiB` bounds retained writer graphs using
+  a conservative logical-size memory weight; `0` disables the graph cache.
 - `GRAPHDB_SLOW_QUERY_THRESHOLD=500ms`
 - `GRAPHDB_INDEX_HEALTH_INTERVAL=30s`
 - `GRAPHDB_MAINTENANCE_INTERVAL=30s`
@@ -856,7 +860,7 @@ flags without changing process-wide defaults.
 - `GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096`
 - `GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
-- `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=false`
+- `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
 - `GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces`
 - `GRAPHDB_OTLP_INSECURE=true`
 - `GRAPHDB_SERVICE_NAME=graphdb`

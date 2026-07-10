@@ -24,6 +24,9 @@ type PersistedIndexLookup struct {
 
 	recordMu    sync.Mutex
 	recordCache map[string]EntityRecord
+
+	edgeMu    sync.Mutex
+	edgeCache map[string]map[string][]graph.Edge
 }
 
 func (l *PersistedIndexLookup) MatchFieldIndex(ctx context.Context, kind string, field string, values []any) ([]string, bool, error) {
@@ -182,7 +185,7 @@ func fieldIndexMatchesCatalog(index SecondaryIndex, spec IndexSpec, version int6
 	if index.Version > version || index.Kind != spec.Kind || index.Field != spec.Field {
 		return false
 	}
-	if spec.ContentHash == "" || secondaryIndexContentHash(index) != spec.ContentHash {
+	if !index.cacheVerified && (spec.ContentHash == "" || secondaryIndexContentHash(index) != spec.ContentHash) {
 		return false
 	}
 	entryCount, distinctValues := secondaryIndexCounts(index)
@@ -196,7 +199,7 @@ func edgeShardMatchesCatalog(shard EdgeShardData, spec EdgeShard, version int64)
 	if shard.Version > version || shard.RelationType != spec.RelationType || shard.Shard != spec.Shard || len(shard.Edges) != spec.EdgeCount {
 		return false
 	}
-	return spec.ContentHash != "" && edgeShardContentHash(shard) == spec.ContentHash
+	return shard.cacheVerified || (spec.ContentHash != "" && edgeShardContentHash(shard) == spec.ContentHash)
 }
 
 func entityRecordMatchesCatalog(record EntityRecord, tenantID string, id string, catalog IndexCatalog, version int64) bool {
@@ -312,7 +315,7 @@ func (l *PersistedIndexLookup) loadEntityPage(ctx context.Context, shard string)
 	l.pageMu.Unlock()
 
 	if spec, ok := l.catalogEntityPageSpec(shard); ok && specFormat(spec.Format) == IndexFormatParquet {
-		loaded, _, ok, err := l.Store.loadParquetEntityPageObject(ctx, l.TenantID, l.Version, spec)
+		loaded, _, ok, err := l.Store.loadValidatedParquetEntityPageObject(ctx, l.TenantID, l.Version, spec)
 		if err != nil || !ok {
 			if err != nil {
 				return EntityPageData{}, err

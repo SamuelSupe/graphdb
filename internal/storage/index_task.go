@@ -71,13 +71,18 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 	}
 	now := time.Now().UTC()
 	task := IndexTask{ID: id, TenantID: tenantID, Type: "rebuild", Status: "running", Phase: "queued", ProgressTotal: 1, OwnerID: s.InstanceID, StartedAt: now, UpdatedAt: now}
+	if !s.reserveQueuedTask() {
+		s.taskMu.Unlock()
+		return IndexTask{}, fmt.Errorf("task queue is full")
+	}
 	if err := s.saveIndexTask(ctx, task); err != nil {
+		s.releaseQueuedTask()
 		s.taskMu.Unlock()
 		return IndexTask{}, err
 	}
 	s.indexTasks[tenantID] = task
 	s.taskMu.Unlock()
-	go s.runIndexRebuildTask(tenantID, task)
+	go s.runIndexTaskAdmitted(tenantID, task)
 	return task, nil
 }
 

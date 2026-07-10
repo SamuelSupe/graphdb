@@ -22,6 +22,7 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_WRITE_MAX_BYTES_PER_TENANT",
 		"GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT",
 		"GRAPHDB_WRITE_MAX_EDGES_PER_TENANT",
+		"GRAPHDB_WRITE_CACHE_MAX_BYTES",
 		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES",
 		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS",
 		"GRAPHDB_READER_INDEX_CACHE_ENTRIES",
@@ -227,6 +228,27 @@ func TestLoadParsesWriterObjectCacheConfig(t *testing.T) {
 	}
 }
 
+func TestLoadParsesWriteCacheMemoryLimit(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_WRITE_CACHE_MAX_BYTES", "96MiB")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WriteCacheMaxBytes != 96*1024*1024 {
+		t.Fatalf("write cache max bytes = %d, want %d", cfg.WriteCacheMaxBytes, 96*1024*1024)
+	}
+}
+
+func TestLoadRejectsInvalidWriteCacheMemoryLimit(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_WRITE_CACHE_MAX_BYTES", "96XB")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GRAPHDB_WRITE_CACHE_MAX_BYTES must be a byte size") {
+		t.Fatalf("Load err = %v, want write cache byte validation", err)
+	}
+}
+
 func TestLoadRejectsInvalidWriterObjectCacheToggle(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE", "maybe")
@@ -291,17 +313,17 @@ func TestLoadParsesIngestCollectorStatusMaterializedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load default: %v", err)
 	}
-	if cfg.IngestCollectorStatusMaterialized {
-		t.Fatal("ingest collector status materialized default enabled = true, want false")
+	if !cfg.IngestCollectorStatusMaterialized {
+		t.Fatal("ingest collector status materialized default enabled = false, want true")
 	}
 
-	t.Setenv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", "true")
+	t.Setenv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", "false")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatalf("Load enabled: %v", err)
 	}
-	if !cfg.IngestCollectorStatusMaterialized {
-		t.Fatal("ingest collector status materialized enabled = false, want true")
+	if cfg.IngestCollectorStatusMaterialized {
+		t.Fatal("ingest collector status materialized disabled = true, want false")
 	}
 }
 
@@ -447,6 +469,7 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_WRITE_MAX_BYTES_PER_TENANT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_EDGES_PER_TENANT", "")
+	t.Setenv("GRAPHDB_WRITE_CACHE_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE", "")
 	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS", "")

@@ -29,26 +29,52 @@ func (s *TenantStore) writeEntityPagesWithFormat(ctx context.Context, tenantID s
 }
 
 func buildEntityPages(g *graph.Graph, version int64) []EntityPageData {
-	entities := make([]graph.Entity, 0, len(g.Entities))
+	counts := entityPageCounts(g)
+	now := time.Now().UTC()
+	pages := newEntityPageBuckets(counts, version, now)
 	for _, entity := range g.Entities {
-		entities = append(entities, entity)
+		appendEntityPage(pages, entity)
 	}
-	return buildEntityPagesFromEntities(entities, version)
+	return finishEntityPages(pages)
 }
 
 func buildEntityPagesFromEntities(entities []graph.Entity, version int64) []EntityPageData {
-	now := time.Now().UTC()
-	pages := map[string]EntityPageData{}
+	counts := make(map[string]int, len(entities))
 	for _, entity := range entities {
-		shardID := entityShardID(entity.ID)
-		page := pages[shardID]
-		page.LayoutVersion = CurrentObjectLayoutVersion
-		page.Shard = shardID
-		page.Version = version
-		page.UpdatedAt = now
-		page.Entities = append(page.Entities, entity)
-		pages[shardID] = page
+		counts[entityShardID(entity.ID)]++
 	}
+	now := time.Now().UTC()
+	pages := newEntityPageBuckets(counts, version, now)
+	for _, entity := range entities {
+		appendEntityPage(pages, entity)
+	}
+	return finishEntityPages(pages)
+}
+
+func newEntityPageBuckets(counts map[string]int, version int64, now time.Time) map[string]EntityPageData {
+	pages := make(map[string]EntityPageData, len(counts))
+	for shardID, count := range counts {
+		pages[shardID] = EntityPageData{
+			LayoutVersion: CurrentObjectLayoutVersion,
+			Shard:         shardID,
+			Entities:      make([]graph.Entity, 0, count),
+			Version:       version,
+			UpdatedAt:     now,
+			hashCanonical: true,
+		}
+	}
+	return pages
+}
+
+func appendEntityPage(pages map[string]EntityPageData, entity graph.Entity) {
+	shardID := entityShardID(entity.ID)
+	page := pages[shardID]
+	page.Entities = append(page.Entities, entity)
+	page.hashCanonical = page.hashCanonical && graphEntityHashCanonical(entity)
+	pages[shardID] = page
+}
+
+func finishEntityPages(pages map[string]EntityPageData) []EntityPageData {
 	items := make([]EntityPageData, 0, len(pages))
 	for _, page := range pages {
 		sort.Slice(page.Entities, func(i, j int) bool { return page.Entities[i].ID < page.Entities[j].ID })
@@ -58,7 +84,10 @@ func buildEntityPagesFromEntities(entities []graph.Entity, version int64) []Enti
 	return items
 }
 
-func entityPagePackIDs(pages []EntityPageSpec) map[string]string {
+func entityPagePackIDs(pages []EntityPageSpec, packPages bool) map[string]string {
+	if !packPages {
+		return nil
+	}
 	items := make([]indexPackItem, 0, len(pages))
 	for _, page := range pages {
 		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: page.EntityCount})
@@ -66,7 +95,14 @@ func entityPagePackIDs(pages []EntityPageSpec) map[string]string {
 	return indexPackMap(planIndexPacks(items))
 }
 
-func entityPageDataPackGroups(pages []EntityPageData) []entityPageDataPackGroup {
+func entityPageDataPackGroups(pages []EntityPageData, packPages bool) []entityPageDataPackGroup {
+	if !packPages {
+		out := make([]entityPageDataPackGroup, 0, len(pages))
+		for _, page := range pages {
+			out = append(out, entityPageDataPackGroup{ID: page.Shard, Pages: []EntityPageData{page}})
+		}
+		return out
+	}
 	items := make([]indexPackItem, 0, len(pages))
 	byShard := map[string]EntityPageData{}
 	for _, page := range pages {
@@ -101,9 +137,11 @@ func mergeEntityPagePack(group entityPageDataPackGroup) EntityPageData {
 		Shard:         group.ID,
 		Version:       first.Version,
 		UpdatedAt:     first.UpdatedAt,
+		hashCanonical: true,
 	}
 	for _, page := range group.Pages {
 		merged.Entities = append(merged.Entities, page.Entities...)
+		merged.hashCanonical = merged.hashCanonical && page.hashCanonical
 	}
 	sort.Slice(merged.Entities, func(i, j int) bool { return merged.Entities[i].ID < merged.Entities[j].ID })
 	return merged

@@ -147,6 +147,72 @@ func TestIngestCollectorStatusCanBeDerivedWhenMaterializationDisabled(t *testing
 	}
 }
 
+func TestCollectorStatusMaterializationMigratesDisabledHistoryOnce(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	legacy := NewTenantStore(objects, "test")
+	legacy.MaterializeCollectorStatus = false
+	request := func(batch int) IngestRequest {
+		return IngestRequest{
+			Source:      "agent",
+			CollectorID: "collector-a",
+			BatchID:     fmt.Sprintf("batch-%d", batch),
+			Cursor:      fmt.Sprintf("cursor-%d", batch),
+			Items: []IngestItem{{
+				ExternalID: fmt.Sprintf("host-%d", batch),
+				Entity:     &graph.Entity{ID: fmt.Sprintf("host:%d", batch), Kind: "host"},
+			}},
+		}
+	}
+	for batch := 1; batch <= 2; batch++ {
+		if _, err := legacy.Ingest(ctx, "tenant-a", request(batch)); err != nil {
+			t.Fatalf("legacy ingest %d: %v", batch, err)
+		}
+	}
+	statusKey := legacy.collectorStatusKey("tenant-a", "agent", "collector-a")
+	if _, err := objects.Get(ctx, statusKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("legacy status err = %v, want not found", err)
+	}
+
+	upgraded := NewTenantStore(objects, "test")
+	upgraded.InstanceID = legacy.InstanceID
+	upgraded.MaterializeCollectorStatus = true
+	if _, err := upgraded.Ingest(ctx, "tenant-a", request(3)); err != nil {
+		t.Fatalf("upgrade ingest: %v", err)
+	}
+	status, err := upgraded.GetCollectorStatus(ctx, "tenant-a", "agent", "collector-a")
+	if err != nil {
+		t.Fatalf("migrated status: %v", err)
+	}
+	if status.LastBatchID != "batch-3" || status.LastCursor != "cursor-3" || status.AppliedTotal != 3 || status.FailedTotal != 0 {
+		t.Fatalf("migrated status = %#v", status)
+	}
+	if _, err := objects.Get(ctx, statusKey); err != nil {
+		t.Fatalf("materialized status object: %v", err)
+	}
+
+	// Prove subsequent restarts use the materialized checkpoint instead of
+	// deriving history again: remove old history, then increment from 3 to 4.
+	for batch := 1; batch <= 3; batch++ {
+		if err := objects.Delete(ctx, upgraded.ingestBatchKey("tenant-a", "agent", "collector-a", fmt.Sprintf("batch-%d", batch))); err != nil {
+			t.Fatalf("delete old batch %d: %v", batch, err)
+		}
+	}
+	hot := NewTenantStore(objects, "test")
+	hot.InstanceID = upgraded.InstanceID
+	hot.MaterializeCollectorStatus = true
+	if _, err := hot.Ingest(ctx, "tenant-a", request(4)); err != nil {
+		t.Fatalf("hot incremental ingest: %v", err)
+	}
+	status, err = hot.GetCollectorStatus(ctx, "tenant-a", "agent", "collector-a")
+	if err != nil {
+		t.Fatalf("hot status: %v", err)
+	}
+	if status.LastBatchID != "batch-4" || status.AppliedTotal != 4 {
+		t.Fatalf("hot incremental status = %#v", status)
+	}
+}
+
 func TestIngestRecordKeyCacheAvoidsHotMissReads(t *testing.T) {
 	ctx := context.Background()
 	objects := newCountingReadStore(NewMemoryStore())

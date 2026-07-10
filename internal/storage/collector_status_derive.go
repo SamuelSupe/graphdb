@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"sort"
 	"time"
 )
 
@@ -38,7 +37,10 @@ func (s *TenantStore) deriveCollectorStatusFromBatches(ctx context.Context, tena
 	if err != nil {
 		return status, err
 	}
-	records := make([]IngestBatchRecord, 0, len(objects))
+	var latest IngestBatchRecord
+	hasLatest := false
+	appliedTotal := 0
+	failedTotal := 0
 	for _, object := range objects {
 		record, _, err := s.loadIngestRecordWithMeta(ctx, object.Key)
 		if errors.Is(err, ErrNotFound) {
@@ -50,22 +52,30 @@ func (s *TenantStore) deriveCollectorStatusFromBatches(ctx context.Context, tena
 		if !collectorStatusRecordMatches(record, tenantID, source, collectorID) {
 			continue
 		}
-		records = append(records, record)
+		appliedTotal += record.Result.Applied
+		failedTotal += record.Result.Failed
+		if !hasLatest || collectorStatusRecordAfter(record, latest) {
+			latest = record
+			hasLatest = true
+		}
 	}
-	sort.Slice(records, func(i, j int) bool {
-		left, right := collectorStatusRecordTime(records[i]), collectorStatusRecordTime(records[j])
-		if !left.Equal(right) {
-			return left.Before(right)
-		}
-		if records[i].Result.Version != records[j].Result.Version {
-			return records[i].Result.Version < records[j].Result.Version
-		}
-		return records[i].Result.BatchID < records[j].Result.BatchID
-	})
-	for _, record := range records {
-		applyCollectorStatusResult(&status, tenantID, record.Request, record.Result, record.StartedAt, record.FinishedAt)
+	if hasLatest {
+		applyCollectorStatusResult(&status, tenantID, latest.Request, latest.Result, latest.StartedAt, latest.FinishedAt)
+		status.AppliedTotal = appliedTotal
+		status.FailedTotal = failedTotal
 	}
 	return status, nil
+}
+
+func collectorStatusRecordAfter(left IngestBatchRecord, right IngestBatchRecord) bool {
+	leftTime, rightTime := collectorStatusRecordTime(left), collectorStatusRecordTime(right)
+	if !leftTime.Equal(rightTime) {
+		return leftTime.After(rightTime)
+	}
+	if left.Result.Version != right.Result.Version {
+		return left.Result.Version > right.Result.Version
+	}
+	return left.Result.BatchID > right.Result.BatchID
 }
 
 func collectorStatusRecordMatches(record IngestBatchRecord, tenantID string, source string, collectorID string) bool {

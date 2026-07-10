@@ -300,6 +300,32 @@ func TestS3ListFailsClosedOnRepeatedContinuationToken(t *testing.T) {
 	}
 }
 
+func TestS3ListPageUsesStartAfterAndLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/bucket" {
+			http.Error(w, fmt.Sprintf("unexpected %s %s", r.Method, r.URL.Path), http.StatusNotFound)
+			return
+		}
+		query := r.URL.Query()
+		if query.Get("prefix") != "objects/" || query.Get("start-after") != "objects/a" || query.Get("max-keys") != "2" {
+			http.Error(w, "unexpected page query", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<ListBucketResult><IsTruncated>true</IsTruncated><Contents><Key>objects/b</Key><Size>2</Size></Contents><Contents><Key>objects/c</Key><Size>3</Size></Contents></ListBucketResult>`))
+	}))
+	defer server.Close()
+
+	store := newTestS3Store(t, server)
+	items, next, err := store.ListPage(context.Background(), "objects/", "objects/a", 2)
+	if err != nil {
+		t.Fatalf("list page: %v", err)
+	}
+	if len(items) != 2 || items[0].Key != "objects/b" || items[1].Key != "objects/c" || next != "objects/c" {
+		t.Fatalf("items=%#v next=%q", items, next)
+	}
+}
+
 func TestS3ConditionalPutRequiresETagAfterFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

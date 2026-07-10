@@ -126,18 +126,34 @@ type commitObject struct {
 type commitObjectScan struct {
 	Items       []commitObject
 	InvalidKeys []string
+	NextCursor  string
+	Truncated   bool
 }
 
 func (s *TenantStore) loadCommitObjects(ctx context.Context, tenantID string, referenced map[string]struct{}) (commitObjectScan, error) {
-	objects, err := s.Objects.List(ctx, s.commitPrefix(tenantID))
+	return s.loadCommitObjectsPage(ctx, tenantID, referenced, "", 0)
+}
+
+func (s *TenantStore) loadCommitObjectsPage(ctx context.Context, tenantID string, referenced map[string]struct{}, cursor string, limit int) (commitObjectScan, error) {
+	objects, nextCursor, err := listObjectPage(ctx, s.Objects, s.commitPrefix(tenantID), cursor, limit)
 	if err != nil {
 		return commitObjectScan{}, err
 	}
-	scan := commitObjectScan{Items: make([]commitObject, 0, len(objects))}
+	capacity := len(objects)
+	if limit > 0 && capacity > limit {
+		capacity = limit
+	}
+	scan := commitObjectScan{Items: make([]commitObject, 0, capacity)}
+	reachedSegments := false
 	for _, object := range objects {
 		if strings.HasPrefix(object.Key, s.commitSegmentPrefix(tenantID)) {
+			if limit > 0 {
+				reachedSegments = true
+				break
+			}
 			continue
 		}
+		scan.NextCursor = object.Key
 		if _, ok := referenced[object.Key]; ok {
 			continue
 		}
@@ -162,6 +178,12 @@ func (s *TenantStore) loadCommitObjects(ctx context.Context, tenantID string, re
 			continue
 		}
 		scan.Items = append(scan.Items, commitObject{Key: object.Key, Commit: commit})
+	}
+	scan.Truncated = nextCursor != "" && !reachedSegments
+	if scan.Truncated {
+		scan.NextCursor = nextCursor
+	} else {
+		scan.NextCursor = ""
 	}
 	sort.Slice(scan.Items, func(i, j int) bool {
 		if scan.Items[i].Commit.Version == scan.Items[j].Commit.Version {

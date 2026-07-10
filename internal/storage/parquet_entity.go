@@ -78,7 +78,7 @@ func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, te
 	recordJobs := []entityRecordWriteJob{}
 	currentIDs := map[string]struct{}{}
 	writeRecords := s.WriteEntityRecords
-	for _, group := range entityPageDataPackGroups(pages) {
+	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords) {
 		for i := range group.Pages {
 			group.Pages[i].TenantID = tenantID
 		}
@@ -154,11 +154,8 @@ func (s *TenantStore) putParquetEntityPageObject(ctx context.Context, key string
 	if errors.Is(err, ErrConflict) {
 		meta, err = s.putConflictingParquetEntityPageObject(ctx, key, tenantID, page, data)
 	}
-	if err == nil && !isIndexPackID(page.Shard) {
-		if decoded, decodeErr := decodeParquetEntityPage(ctx, data, tenantID, page.Shard, page.Version); decodeErr == nil {
-			s.putCachedEntityPage(tenantID, page.Version, key, entityPageContentHash(page), parquetEntityPageSchemaHash(), decoded, meta.ETag)
-		}
-	}
+	// Do not duplicate the writer's full graph in the decoded read cache. The
+	// first reader fills the bounded cache on demand from this immutable object.
 	return meta, err
 }
 
@@ -170,9 +167,6 @@ func (s *TenantStore) putConflictingParquetEntityPageObject(ctx context.Context,
 	decoded, decodeErr := decodeParquetEntityPage(ctx, existing, tenantID, page.Shard, page.Version)
 	if decodeErr == nil && entityPageContentHash(decoded) == entityPageContentHash(page) {
 		s.markObjectKeyCached(key)
-		if !isIndexPackID(page.Shard) {
-			s.putCachedEntityPage(tenantID, page.Version, key, entityPageContentHash(page), parquetEntityPageSchemaHash(), decoded, meta.ETag)
-		}
 		return meta, nil
 	}
 	nextMeta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
@@ -886,52 +880,87 @@ func (l *PersistedIndexLookup) loadParquetEntityPage(ctx context.Context, spec E
 	if err != nil {
 		return EntityPageData{}, false, err
 	}
-	if !entityPageReadable(page, l.TenantID, l.Version, spec) {
-		return EntityPageData{}, false, nil
-	}
 	return page, true, nil
 }
 
 func (s *TenantStore) loadParquetEntityPageObject(ctx context.Context, tenantID string, version int64, spec EntityPageSpec) (EntityPageData, string, bool, error) {
+	var result EntityPageData
+	var resultETag string
+	ok, err := s.withParquetEntityPageObject(ctx, tenantID, version, spec, func(page EntityPageData, etag string, _ bool) error {
+		result = copyEntityPage(page)
+		resultETag = etag
+		return nil
+	})
+	return result, resultETag, ok, err
+}
+
+func (s *TenantStore) loadValidatedParquetEntityPageObject(ctx context.Context, tenantID string, version int64, spec EntityPageSpec) (EntityPageData, string, bool, error) {
+	var result EntityPageData
+	var resultETag string
+	valid := false
+	ok, err := s.withParquetEntityPageObject(ctx, tenantID, version, spec, func(page EntityPageData, etag string, validated bool) error {
+		if validated {
+			result = copyEntityPage(page)
+			resultETag = etag
+			valid = true
+		}
+		return nil
+	})
+	return result, resultETag, ok && valid, err
+}
+
+func (s *TenantStore) withParquetEntityPageObject(ctx context.Context, tenantID string, version int64, spec EntityPageSpec, visit func(EntityPageData, string, bool) error) (bool, error) {
 	key := firstIndexObjectKey(spec.Objects, "page", s.parquetEntityPageVersionKey(tenantID, version, spec.Shard))
-	if page, etag, ok := s.cachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash); ok {
-		meta, err := objectMeta(ctx, s.Objects, key)
-		if errors.Is(err, ErrNotFound) {
-			s.dropCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash)
-			return EntityPageData{}, "", false, nil
+	if entry, revalidate, ok := s.borrowCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash); ok {
+		page, etag := entry.page, entry.etag
+		cacheValid := true
+		if revalidate {
+			meta, err := objectMeta(ctx, s.Objects, key)
+			if errors.Is(err, ErrNotFound) {
+				s.dropCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash)
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			if etag != "" && meta.ETag != etag {
+				s.dropCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash)
+				cacheValid = false
+			} else {
+				s.entityPageCache.markValidated(entityPageCacheKey(tenantID, version, key, spec.ContentHash, spec.SchemaHash), meta.ETag)
+				etag = meta.ETag
+			}
 		}
-		if err != nil {
-			return EntityPageData{}, "", false, err
-		}
-		if etag != "" && meta.ETag != etag {
-			s.dropCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash)
-		} else if entityPageReadable(page, tenantID, version, spec) {
-			return page, meta.ETag, true, nil
-		} else {
-			s.dropCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash)
+		if cacheValid {
+			// Pages enter this cache only after tenant/version/content/schema checks.
+			// The immutable cache key plus ETag revalidation preserves that result,
+			// so recomputing the full logical page hash on every hit is redundant.
+			return true, visit(page, etag, true)
 		}
 	}
 	data, meta, ok, cached, err := s.loadParquetEntityPageObjectBytes(ctx, tenantID, version, spec)
 	if err != nil || !ok {
-		return EntityPageData{}, "", ok, err
+		return ok, err
 	}
 	page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
-	if (err != nil || !entityPageReadable(page, tenantID, version, spec)) && cached {
+	readable := err == nil && entityPageReadable(page, tenantID, version, spec)
+	if !readable && cached {
 		s.dropCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
 		data, meta, ok, _, err = s.loadParquetEntityPageObjectBytes(ctx, tenantID, version, spec)
 		if err != nil || !ok {
-			return EntityPageData{}, "", ok, err
+			return ok, err
 		}
 		page, err = decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
+		readable = err == nil && entityPageReadable(page, tenantID, version, spec)
 	}
 	if err != nil {
-		return EntityPageData{}, "", false, err
+		return false, err
 	}
-	if entityPageReadable(page, tenantID, version, spec) {
+	if readable {
 		s.putCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash, data, meta)
 		s.putCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash, page, meta.ETag)
 	}
-	return page, meta.ETag, true, nil
+	return true, visit(page, meta.ETag, readable)
 }
 
 func (s *TenantStore) loadParquetEntityPageObjectBytes(ctx context.Context, tenantID string, version int64, spec EntityPageSpec) ([]byte, ObjectMeta, bool, bool, error) {

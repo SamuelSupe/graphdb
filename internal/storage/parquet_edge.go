@@ -616,7 +616,7 @@ func edgeShardRowFromColumns(columns parquetEdgeShardColumnSet, row int) edgeSha
 }
 
 func (l *PersistedIndexLookup) outEdgesFromParquetShard(ctx context.Context, spec EdgeShard, from string, allowed map[string]struct{}) ([]graph.Edge, bool, error) {
-	shard, ok, err := l.Store.loadParquetEdgeShardObject(ctx, l.TenantID, l.Version, spec)
+	edges, ok, err := l.cachedParquetOutEdges(ctx, spec, from)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, false, err
@@ -626,29 +626,30 @@ func (l *PersistedIndexLookup) outEdgesFromParquetShard(ctx context.Context, spe
 	if !ok {
 		return nil, false, nil
 	}
-	if !indexTenantMatches(shard.TenantID, l.TenantID) {
-		return nil, false, nil
-	}
-	if !edgeShardMatchesCatalog(shard, spec, l.Version) {
-		return nil, false, nil
-	}
-	edges := make([]graph.Edge, 0)
-	for _, edge := range shard.Edges {
-		if edge.From == from && relationAllowedForLookup(edge.Type, allowed) {
-			edges = append(edges, edge)
+	if len(allowed) > 0 {
+		filtered := edges[:0]
+		for _, edge := range edges {
+			if relationAllowedForLookup(edge.Type, allowed) {
+				filtered = append(filtered, edge)
+			}
 		}
+		edges = filtered
 	}
-	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
 	return edges, true, nil
 }
 
 func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID string, version int64, spec EdgeShard) (EdgeShardData, bool, error) {
 	key := firstIndexObjectKey(spec.Objects, "shard", s.parquetEdgeShardVersionKey(tenantID, version, spec.RelationType, spec.Shard))
-	if data, _, ok, err := s.cachedIndexObject(ctx, "edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash); err != nil {
+	if data, _, verified, ok, err := s.cachedIndexObjectWithVerification(ctx, "edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash); err != nil {
 		return EdgeShardData{}, false, err
 	} else if ok {
 		shard, err := decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, 0)
+		shard.cacheVerified = verified
 		if err == nil && edgeShardObjectMatchesCatalog(shard, spec, version) {
+			if !verified {
+				s.markCachedIndexObjectVerified("edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
+			}
+			shard.cacheVerified = true
 			return shard, true, nil
 		}
 		s.dropCachedIndexObject("edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
@@ -665,7 +666,8 @@ func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID s
 		return EdgeShardData{}, false, err
 	}
 	if edgeShardObjectMatchesCatalog(shard, spec, version) {
-		s.putCachedIndexObject("edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash, data, meta)
+		shard.cacheVerified = true
+		s.putVerifiedCachedIndexObject("edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash, data, meta)
 	}
 	return shard, true, nil
 }
@@ -677,7 +679,7 @@ func edgeShardObjectMatchesCatalog(shard EdgeShardData, spec EdgeShard, version 
 	if version > 0 && shard.Version > version {
 		return false
 	}
-	return spec.ContentHash != "" && edgeShardContentHash(shard) == spec.ContentHash
+	return shard.cacheVerified || (spec.ContentHash != "" && edgeShardContentHash(shard) == spec.ContentHash)
 }
 
 func parquetEdgeShardArrowSchema() *arrow.Schema {

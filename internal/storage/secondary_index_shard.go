@@ -53,6 +53,9 @@ func secondaryIndexObjects(index SecondaryIndex) []IndexObject {
 }
 
 func secondaryIndexObjectGroups(index SecondaryIndex) []secondaryIndexObjectGroup {
+	if index.cachedObjectGroups != nil {
+		return index.cachedObjectGroups
+	}
 	logical := splitSecondaryIndex(index)
 	if len(logical) == 0 {
 		return nil
@@ -93,17 +96,25 @@ func secondaryIndexPackGroup(shards []secondaryIndexShard) secondaryIndexObjectG
 		indexes = append(indexes, shard.Index)
 	}
 	sort.Strings(ids)
+	merged := shards[0].Index
+	if len(shards) > 1 {
+		merged = mergeSecondaryIndexShards(indexes)
+	}
 	return secondaryIndexObjectGroup{
 		ID:     secondaryIndexPackID(ids),
 		Shards: ids,
-		Index:  mergeSecondaryIndexShards(indexes),
+		Index:  merged,
 	}
 }
 
 func mergeSecondaryIndexShards(indexes []SecondaryIndex) SecondaryIndex {
 	var merged SecondaryIndex
 	merged.Values = map[string][]string{}
+	merged.cacheVerified = len(indexes) > 0
+	merged.hashCanonical = len(indexes) > 0
 	for _, index := range indexes {
+		merged.cacheVerified = merged.cacheVerified && index.cacheVerified
+		merged.hashCanonical = merged.hashCanonical && index.hashCanonical
 		if merged.Kind == "" {
 			merged.LayoutVersion = index.LayoutVersion
 			merged.TenantID = index.TenantID
@@ -149,10 +160,15 @@ func splitSecondaryIndex(index SecondaryIndex) []secondaryIndexShard {
 				Values:        map[string][]string{},
 				Version:       index.Version,
 				UpdatedAt:     index.UpdatedAt,
+				hashCanonical: index.hashCanonical,
 			}
 		}
-		shard.Values[value] = append([]string(nil), ids...)
-		sort.Strings(shard.Values[value])
+		if index.hashCanonical {
+			shard.Values[value] = ids
+		} else {
+			shard.Values[value] = append([]string(nil), ids...)
+			sort.Strings(shard.Values[value])
+		}
 		byID[shardID] = shard
 	}
 	ids := make([]string, 0, len(byID))
@@ -194,10 +210,15 @@ func splitStringSecondaryIndexShard(shard secondaryIndexShard, prefixBytes int) 
 				Values:        map[string][]string{},
 				Version:       shard.Index.Version,
 				UpdatedAt:     shard.Index.UpdatedAt,
+				hashCanonical: shard.Index.hashCanonical,
 			}
 		}
-		next.Values[value] = append([]string(nil), ids...)
-		sort.Strings(next.Values[value])
+		if shard.Index.hashCanonical {
+			next.Values[value] = ids
+		} else {
+			next.Values[value] = append([]string(nil), ids...)
+			sort.Strings(next.Values[value])
+		}
 		byID[shardID] = next
 	}
 	if len(byID) < 2 {

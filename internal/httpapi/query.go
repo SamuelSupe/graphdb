@@ -136,7 +136,7 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, route, r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
-	r = r.WithContext(ctx)
+	r = r.WithContext(withQueryReadMemo(ctx))
 	start := time.Now()
 	release, err := s.Admission.Acquire(r.Context(), tenantID)
 	if err != nil {
@@ -327,6 +327,7 @@ func queryTemplateNameFromPath(r *http.Request) (string, error) {
 }
 
 func (s *Server) executeQuery(r *http.Request, tenantID string, request query.Request) (query.Response, error) {
+	r = r.WithContext(withQueryReadMemo(r.Context()))
 	release, err := s.Admission.Acquire(r.Context(), tenantID)
 	if err != nil {
 		return query.Response{}, err
@@ -349,12 +350,14 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 			return response, err
 		}
 	}
-	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
-	if err != nil {
-		return query.Response{}, err
-	}
-	options = s.queryOptions(r.Context(), tenantID, manifest.Version)
-	return query.ExecuteContextWithOptions(r.Context(), g, request, options)
+	var response query.Response
+	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
+		options = s.queryOptions(r.Context(), tenantID, manifest.Version)
+		var executeErr error
+		response, executeErr = query.ExecuteContextWithOptions(r.Context(), g, request, options)
+		return executeErr
+	})
+	return response, err
 }
 
 func queryReadFreshness(request query.Request) readFreshness {
@@ -362,7 +365,7 @@ func queryReadFreshness(request query.Request) readFreshness {
 }
 
 func (s *Server) queryOptions(ctx context.Context, tenantID string, version int64) query.ExecuteOptions {
-	catalog, err := s.Store.GetIndexCatalog(ctx, tenantID)
+	catalog, err := s.currentQueryCatalog(ctx, tenantID, version)
 	if err != nil || catalog.Version != version {
 		return query.ExecuteOptions{}
 	}
@@ -370,7 +373,11 @@ func (s *Server) queryOptions(ctx context.Context, tenantID string, version int6
 }
 
 func (s *Server) lazyQueryOptions(ctx context.Context, tenantID string, maxVersion int64) (query.ExecuteOptions, int64, bool) {
-	catalog, err := s.Store.GetIndexCatalog(ctx, tenantID)
+	expectedVersion := maxVersion
+	if maxVersion == unconstrainedVersion {
+		expectedVersion = 0
+	}
+	catalog, err := s.currentQueryCatalog(ctx, tenantID, expectedVersion)
 	if err != nil || catalog.Version <= 0 || catalog.Version > maxVersion {
 		return query.ExecuteOptions{}, 0, false
 	}

@@ -62,14 +62,7 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	if ok {
 		results, nextCursor, err = streamLazyMatch(g, request, cursor, budget, ids)
 	} else if lazyKindScanAvailable(g, request, plan, budget) {
-		var entities []graph.Entity
-		entities, ok, err = lazyKindScanEntities(request, budget)
-		if err == nil && !ok {
-			err = ErrIndexUnavailable
-		}
-		if err == nil {
-			results, nextCursor, err = streamLazyMatchEntities(g, request, cursor, budget, entities)
-		}
+		results, nextCursor, err = streamLazyKindMatch(g, request, cursor, budget)
 	} else {
 		return true, ErrIndexUnavailable
 	}
@@ -164,30 +157,33 @@ func streamLazyMatch(g *graph.Graph, request Request, cursor cursorState, budget
 	return results, "", nil
 }
 
-func streamLazyMatchEntities(g *graph.Graph, request Request, cursor cursorState, budget *budget, entities []graph.Entity) ([]Result, string, error) {
-	limit := normalizedLimit(request.Limit)
-	results := make([]Result, 0, limit)
+func streamLazyKindMatch(g *graph.Graph, request Request, cursor cursorState, budget *budget) ([]Result, string, error) {
+	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
-	for _, entity := range entities {
+	afterID, _ := cursorEntityID(cursor)
+	ok, err := visitLazyKindScanEntities(request, budget, afterID, func(entity graph.Entity) (bool, error) {
 		stop, err := appendPageMatch(&results, entity, request, cursor, state, budget)
 		if err != nil {
-			return nil, "", err
+			return false, err
 		}
-		if stop {
-			next := ""
-			if len(results) > 0 {
-				next = encodeCursor(cursorState{Version: g.Version, After: resultIdentity(results[len(results)-1]), Query: cursorQueryHash(request)})
-			}
-			budget.returned = len(results)
-			budget.truncated = next != ""
-			return results, next, nil
-		}
+		return !stop, nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok {
+		return nil, "", ErrIndexUnavailable
 	}
 	if err := validatePageCursor(cursor, state); err != nil {
 		return nil, "", err
 	}
+	next := ""
+	if state.hasNext && len(results) > 0 {
+		next = encodeCursor(cursorState{Version: g.Version, After: resultIdentity(results[len(results)-1]), Query: cursorQueryHash(request)})
+	}
 	budget.returned = len(results)
-	return results, "", nil
+	budget.truncated = next != ""
+	return results, next, nil
 }
 
 func candidateIDsForPlan(plan Plan, budget *budget) ([]string, bool, error) {

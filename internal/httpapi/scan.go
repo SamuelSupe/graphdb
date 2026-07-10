@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
@@ -301,15 +302,21 @@ func (s *Server) exportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeReadError(w, err)
 		return
 	}
-	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	var snapshot graph.Snapshot
+	var version int64
+	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
+		snapshot = g.Snapshot()
+		version = manifest.Version
+		return nil
+	})
 	if err != nil {
 		writeReadError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tenant_id": tenantID,
-		"version":   manifest.Version,
-		"snapshot":  g.Snapshot(),
+		"version":   version,
+		"snapshot":  snapshot,
 	})
 }
 
@@ -419,17 +426,22 @@ func (s *Server) streamIndexedSnapshot(w http.ResponseWriter, r *http.Request, t
 }
 
 func (s *Server) streamLoadedSnapshot(w http.ResponseWriter, r *http.Request, tenantID string, target readTarget) {
-	g, manifest, err := s.loadGraphForRead(r.Context(), tenantID, target)
+	var snapshot graph.Snapshot
+	var version int64
+	err := s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
+		snapshot = g.Snapshot()
+		version = manifest.Version
+		return nil
+	})
 	if err != nil {
 		writeReadError(w, err)
 		return
 	}
-	snapshot := g.Snapshot()
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
 	if err := encodeStreamItem(r.Context(), encoder, map[string]any{
-		"stream": "snapshot", "tenant_id": tenantID, "version": manifest.Version,
+		"stream": "snapshot", "tenant_id": tenantID, "version": version,
 	}, flush); err != nil {
 		return
 	}
@@ -453,7 +465,7 @@ func (s *Server) streamLoadedSnapshot(w http.ResponseWriter, r *http.Request, te
 			return
 		}
 	}
-	_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": manifest.Version}, flush)
+	_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": version}, flush)
 }
 
 const scanStreamPageSize = 500

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,6 +40,43 @@ func TestWriterObjectCachePutConditionalCachesMetaReads(t *testing.T) {
 	}
 	if base.getWithMetaCalls != 0 || base.headCalls != 0 || base.getCalls != 0 {
 		t.Fatalf("underlying reads get=%d get_with_meta=%d head=%d, want zeros", base.getCalls, base.getWithMetaCalls, base.headCalls)
+	}
+}
+
+func TestWriterObjectCacheDoesNotRetainOversizedList(t *testing.T) {
+	ctx := context.Background()
+	memory := NewMemoryStore()
+	for i := 0; i < 8; i++ {
+		key := "objects/" + strings.Repeat(string(rune('a'+i)), 80)
+		if err := memory.Put(ctx, key, []byte("value")); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	base := newCountingObjectStore(memory)
+	cache := NewWriterObjectCache(base, WriterObjectCacheConfig{MaxBytes: 256, MaxKeys: 100})
+	for i := 0; i < 2; i++ {
+		if _, err := cache.List(ctx, "objects/"); err != nil {
+			t.Fatalf("list %d: %v", i, err)
+		}
+	}
+	if base.listCalls != 2 {
+		t.Fatalf("underlying list calls = %d, want 2 for an oversized uncached list", base.listCalls)
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.listBytes != 0 || len(cache.lists) != 0 {
+		t.Fatalf("oversized list retained: bytes=%d lists=%d", cache.listBytes, len(cache.lists))
+	}
+}
+
+func TestWriterObjectCacheCountsListsAgainstByteLimit(t *testing.T) {
+	cache := NewWriterObjectCache(NewMemoryStore(), WriterObjectCacheConfig{MaxBytes: 512, MaxKeys: 100})
+	cache.cacheList("objects/", []ObjectInfo{{Key: "objects/a", ETag: "etag"}})
+	cache.cachePositive("objects/data", make([]byte, 480), ObjectMeta{Key: "objects/data"}, false)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.bytes+cache.listBytes > cache.maxBytes {
+		t.Fatalf("cache bytes = %d + %d, max = %d", cache.bytes, cache.listBytes, cache.maxBytes)
 	}
 }
 
