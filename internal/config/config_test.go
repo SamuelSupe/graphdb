@@ -27,6 +27,7 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES",
 		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS",
 		"GRAPHDB_READER_INDEX_CACHE_ENTRIES",
+		"GRAPHDB_READER_INDEX_CACHE_MAX_BYTES",
 		"GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES",
 	}
 	for _, key := range cases {
@@ -278,13 +279,14 @@ func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_OBJECT_SINGLEFLIGHT", "false")
 	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "7")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "123")
+	t.Setenv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", "48MiB")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "/tmp/graphdb-index-cache")
 	t.Setenv("GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES", "12MiB")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.ReaderIndexCacheEntries != 123 || cfg.ReaderIndexCacheDir != "/tmp/graphdb-index-cache" {
+	if cfg.ReaderIndexCacheEntries != 123 || cfg.ReaderIndexCacheMaxBytes != 48*1024*1024 || cfg.ReaderIndexCacheDir != "/tmp/graphdb-index-cache" {
 		t.Fatalf("reader index cache config = %#v", cfg)
 	}
 	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight || cfg.ParquetDecodeMaxConcurrent != 7 {
@@ -529,6 +531,7 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_TENANT_USAGE_CACHE_TTL", "")
 	t.Setenv("GRAPHDB_READER_CATCHUP_TIMEOUT", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "")
+	t.Setenv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "")
 	t.Setenv("GRAPHDB_INDEX_ENTITY_RECORDS", "")
 	t.Setenv("GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES", "")

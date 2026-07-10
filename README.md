@@ -803,8 +803,11 @@ Error contract:
   process, and `GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true` coalesces concurrent
   reads for the same object key during cold cache misses.
 - `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT` bounds process-wide Arrow/Parquet
-  materialization. The default is `4`; lower it when large entity pages cause
+  materialization. The default is `2`; lower it when large entity pages cause
   heap pressure, at the cost of queued reads.
+- `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES` limits the in-memory raw Parquet
+  object cache. The default is `256MiB`; lower it when cache residency competes
+  with decode buffers.
 - `GRAPHDB_READER_INDEX_CACHE_DIR` enables a disk-backed cache for the same
   Parquet read objects. By default it uses
   `GRAPHDB_DATA_DIR/cache/index-objects`.
@@ -883,7 +886,8 @@ flags without changing process-wide defaults.
 - `GRAPHDB_TENANT_USAGE_CACHE_TTL=60s`
 - `GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096`
 - `GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects`
-- `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=4`
+- `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=2`
+- `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB`
 - `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`

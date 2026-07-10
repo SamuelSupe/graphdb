@@ -50,6 +50,7 @@ func run(args []string) error {
 	store.MaterializeCollectorStatus = cfg.IngestCollectorStatusMaterialized
 	store.ConfigureIndexObjectCache(storage.IndexObjectCacheConfig{
 		MaxEntries: cfg.ReaderIndexCacheEntries,
+		MaxBytes:   cfg.ReaderIndexCacheMaxBytes,
 		DiskDir:    cfg.ReaderIndexCacheDir,
 	})
 	if cfg.InstanceID != "" {
@@ -337,7 +338,7 @@ Environment:
   GRAPHDB_READ_QUEUE_TIMEOUT=500ms
   GRAPHDB_READ_OBJECT_MAX_CONCURRENT=128
   GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true
-  GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=4
+  GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=2
   GRAPHDB_WRITE_MAX_CONCURRENT=32
   GRAPHDB_WRITE_MAX_PER_TENANT=1 (single-writer mode; 0 disables this admission dimension)
   GRAPHDB_WRITE_QUEUE_TIMEOUT=2s
@@ -353,6 +354,7 @@ Environment:
   GRAPHDB_TENANT_USAGE_CACHE_TTL=60s
   GRAPHDB_READER_CATCHUP_TIMEOUT=2s
   GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096
+  GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB
   GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects
   GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB
   GRAPHDB_FAULT_OBJECT_READ_DELAY=25ms

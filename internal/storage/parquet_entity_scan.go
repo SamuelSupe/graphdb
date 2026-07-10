@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
@@ -50,25 +49,20 @@ func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard str
 	if len(rowGroups) == 0 {
 		return out, objectContextErr(ctx)
 	}
-	fileReader, err := pqarrow.NewFileReader(reader, pqarrow.ArrowReadProperties{BatchSize: 4096}, memory.DefaultAllocator)
+	fileReader, err := pqarrow.NewFileReader(reader, pqarrow.ArrowReadProperties{BatchSize: parquetEntityPageReadBatchSize}, memory.DefaultAllocator)
 	if err != nil {
 		return out, err
 	}
-	table, release, err := readParquetRowGroups(ctx, fileReader, parquetEntityCandidateColumns, rowGroups)
+	recordReader, release, err := readParquetRecordReader(ctx, fileReader, parquetEntityCandidateColumns, rowGroups)
 	if err != nil {
 		return out, err
 	}
 	defer release()
-	defer table.Release()
-	if table.NumCols() < int64(len(parquetEntityCandidateColumns)) {
-		return out, fmt.Errorf("parquet entity candidate scan has %d columns, want %d", table.NumCols(), len(parquetEntityCandidateColumns))
-	}
+	defer recordReader.Release()
 
 	states := map[string]*parquetEntityCandidateState{}
-	tableReader := array.NewTableReader(table, 4096)
-	defer tableReader.Release()
-	for tableReader.Next() {
-		record := tableReader.RecordBatch()
+	for recordReader.Next() {
+		record := recordReader.RecordBatch()
 		if record.NumCols() < int64(len(parquetEntityCandidateColumns)) {
 			return out, fmt.Errorf("parquet entity candidate record has %d columns, want %d", record.NumCols(), len(parquetEntityCandidateColumns))
 		}
@@ -130,7 +124,7 @@ func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard str
 			}
 		}
 	}
-	if err := tableReader.Err(); err != nil {
+	if err := recordReader.Err(); err != nil {
 		return out, err
 	}
 	for id, state := range states {

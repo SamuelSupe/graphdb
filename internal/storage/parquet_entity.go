@@ -65,7 +65,10 @@ const (
 	entityPageRowExistenceSource = "existence_source"
 )
 
-const parquetEntityPageRowGroupSize int64 = 512
+const (
+	parquetEntityPageRowGroupSize  int64 = 512
+	parquetEntityPageReadBatchSize int64 = 128
+)
 
 func (s *TenantStore) writeParquetEntityPages(ctx context.Context, tenantID string, pages []EntityPageData, version int64) error {
 	return s.writeParquetEntityPagesWithOptions(ctx, tenantID, pages, version, true)
@@ -309,24 +312,27 @@ func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, 
 	for i := range columns {
 		columns[i] = i
 	}
-	fileReader, err := pqarrow.NewFileReader(reader, pqarrow.ArrowReadProperties{BatchSize: parquetEntityPageRowGroupSize}, memory.DefaultAllocator)
+	fileReader, err := pqarrow.NewFileReader(reader, pqarrow.ArrowReadProperties{BatchSize: parquetEntityPageReadBatchSize}, memory.DefaultAllocator)
 	if err != nil {
 		return EntityPageData{}, err
 	}
 
 	page := EntityPageData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Shard: shard, Version: version}
 	byID := map[string]*graph.Entity{}
-	for rowGroup := 0; rowGroup < reader.NumRowGroups(); rowGroup++ {
-		table, release, err := readParquetRowGroups(ctx, fileReader, columns, []int{rowGroup})
+	recordReader, release, err := readParquetRecordReader(ctx, fileReader, columns, nil)
+	if err != nil {
+		return EntityPageData{}, err
+	}
+	defer release()
+	defer recordReader.Release()
+	for recordReader.Next() {
+		err = appendParquetEntityPageRecord(recordReader.RecordBatch(), tenantID, shard, version, &page, byID)
 		if err != nil {
 			return EntityPageData{}, err
 		}
-		err = appendParquetEntityPageRows(table, tenantID, shard, version, &page, byID)
-		table.Release()
-		release()
-		if err != nil {
-			return EntityPageData{}, err
-		}
+	}
+	if err := recordReader.Err(); err != nil {
+		return EntityPageData{}, err
 	}
 	for _, entity := range byID {
 		page.Entities = append(page.Entities, decodedEntityPageCopy(*entity))
@@ -342,72 +348,78 @@ func appendParquetEntityPageRows(table arrow.Table, tenantID string, shard strin
 	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
 	for reader.Next() {
-		record := reader.RecordBatch()
-		if record.NumCols() < int64(parquetEntityColumnEntitySourceStaleAt+1) {
-			return fmt.Errorf("parquet entity record has %d columns, want at least %d", record.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
-		}
-		columns, err := parquetEntityPageColumns(record)
-		if err != nil {
+		if err := appendParquetEntityPageRecord(reader.RecordBatch(), tenantID, shard, version, page, byID); err != nil {
 			return err
-		}
-		for i := 0; i < int(record.NumRows()); i++ {
-			rowTenant := columns.tenantID.Value(i)
-			if rowTenant != "" {
-				if page.TenantID == "" || page.TenantID == tenantID {
-					page.TenantID = rowTenant
-				} else if page.TenantID != rowTenant {
-					return fmt.Errorf("parquet entity page tenant mismatch")
-				}
-			}
-			rowShard := columns.shard.Value(i)
-			if shard != "" && rowShard != "" && rowShard != shard {
-				continue
-			}
-			if rowShard != "" {
-				if shard == "" {
-					if page.Shard == "" {
-						page.Shard = rowShard
-					}
-				} else if page.Shard == "" || page.Shard == shard {
-					page.Shard = rowShard
-				} else if page.Shard != rowShard {
-					return fmt.Errorf("parquet entity page shard mismatch")
-				}
-			}
-			rowVersion := columns.pageVersion.Value(i)
-			if rowVersion != 0 {
-				if page.Version == 0 || version == 0 || page.Version == version {
-					page.Version = rowVersion
-				} else if page.Version != rowVersion {
-					return fmt.Errorf("parquet entity page version mismatch")
-				}
-			}
-			if page.UpdatedAt.IsZero() {
-				page.UpdatedAt = parseParquetTime(columns.pageUpdatedAt.Value(i))
-			}
-			entity := byID[columns.id.Value(i)]
-			if entity == nil {
-				created := graph.Entity{
-					ID:         columns.id.Value(i),
-					Kind:       columns.kind.Value(i),
-					Source:     columns.source.Value(i),
-					ExternalID: columns.externalID.Value(i),
-					Version:    columns.entityVersion.Value(i),
-					CreatedAt:  parseParquetTime(columns.entityCreatedAt.Value(i)),
-					UpdatedAt:  parseParquetTime(columns.entityUpdatedAt.Value(i)),
-					Confidence: columns.confidence.Value(i),
-					SourceRank: int(columns.sourceRank.Value(i)),
-					SplitFrom:  columns.splitFrom.Value(i),
-				}
-				byID[created.ID] = &created
-				entity = &created
-			}
-			if err := applyEntityPageRow(entity, entityPageRowFromColumns(columns, i)); err != nil {
-				return err
-			}
 		}
 	}
 	return reader.Err()
+}
+
+func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, shard string, version int64, page *EntityPageData, byID map[string]*graph.Entity) error {
+	if record.NumCols() < int64(parquetEntityColumnEntitySourceStaleAt+1) {
+		return fmt.Errorf("parquet entity record has %d columns, want at least %d", record.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
+	}
+	columns, err := parquetEntityPageColumns(record)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < int(record.NumRows()); i++ {
+		rowTenant := columns.tenantID.Value(i)
+		if rowTenant != "" {
+			if page.TenantID == "" || page.TenantID == tenantID {
+				page.TenantID = rowTenant
+			} else if page.TenantID != rowTenant {
+				return fmt.Errorf("parquet entity page tenant mismatch")
+			}
+		}
+		rowShard := columns.shard.Value(i)
+		if shard != "" && rowShard != "" && rowShard != shard {
+			continue
+		}
+		if rowShard != "" {
+			if shard == "" {
+				if page.Shard == "" {
+					page.Shard = rowShard
+				}
+			} else if page.Shard == "" || page.Shard == shard {
+				page.Shard = rowShard
+			} else if page.Shard != rowShard {
+				return fmt.Errorf("parquet entity page shard mismatch")
+			}
+		}
+		rowVersion := columns.pageVersion.Value(i)
+		if rowVersion != 0 {
+			if page.Version == 0 || version == 0 || page.Version == version {
+				page.Version = rowVersion
+			} else if page.Version != rowVersion {
+				return fmt.Errorf("parquet entity page version mismatch")
+			}
+		}
+		if page.UpdatedAt.IsZero() {
+			page.UpdatedAt = parseParquetTime(columns.pageUpdatedAt.Value(i))
+		}
+		entity := byID[columns.id.Value(i)]
+		if entity == nil {
+			created := graph.Entity{
+				ID:         columns.id.Value(i),
+				Kind:       columns.kind.Value(i),
+				Source:     columns.source.Value(i),
+				ExternalID: columns.externalID.Value(i),
+				Version:    columns.entityVersion.Value(i),
+				CreatedAt:  parseParquetTime(columns.entityCreatedAt.Value(i)),
+				UpdatedAt:  parseParquetTime(columns.entityUpdatedAt.Value(i)),
+				Confidence: columns.confidence.Value(i),
+				SourceRank: int(columns.sourceRank.Value(i)),
+				SplitFrom:  columns.splitFrom.Value(i),
+			}
+			byID[created.ID] = &created
+			entity = &created
+		}
+		if err := applyEntityPageRow(entity, entityPageRowFromColumns(columns, i)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func decodedEntityPageCopy(entity graph.Entity) graph.Entity {

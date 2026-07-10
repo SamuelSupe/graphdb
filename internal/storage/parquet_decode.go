@@ -17,8 +17,8 @@ type parquetDecodeAdmission struct {
 
 var processParquetDecodeAdmission parquetDecodeAdmission
 
-// ConfigureParquetDecodeMaxConcurrent bounds full Parquet table materialization
-// for this process. A non-positive value leaves decoding unbounded.
+// ConfigureParquetDecodeMaxConcurrent bounds Arrow/Parquet decoding for this
+// process. A non-positive value leaves decoding unbounded.
 func ConfigureParquetDecodeMaxConcurrent(maxConcurrent int) {
 	var limit chan struct{}
 	if maxConcurrent > 0 {
@@ -70,4 +70,19 @@ func readParquetRowGroups(ctx context.Context, reader *pqarrow.FileReader, colum
 		return nil, nil, err
 	}
 	return table, release, nil
+}
+
+// readParquetRecordReader holds one admission slot while a streaming reader
+// owns its Arrow decode buffers. Callers must release both returned values.
+func readParquetRecordReader(ctx context.Context, reader *pqarrow.FileReader, columns []int, rowGroups []int) (pqarrow.RecordReader, func(), error) {
+	release, err := acquireParquetDecode(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	recordReader, err := reader.GetRecordReader(ctx, columns, rowGroups)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return recordReader, release, nil
 }

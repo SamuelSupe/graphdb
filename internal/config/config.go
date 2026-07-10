@@ -53,6 +53,7 @@ type Config struct {
 	TenantUsageCacheTTL               time.Duration
 	ReaderCatchupTimeout              time.Duration
 	ReaderIndexCacheEntries           int
+	ReaderIndexCacheMaxBytes          int64
 	ReaderIndexCacheDir               string
 	IndexEntityRecords                bool
 	EntityPagePackMaxBytes            int64
@@ -90,7 +91,7 @@ func Load() (Config, error) {
 		ReadQueueTimeout:                  500 * time.Millisecond,
 		ReadObjectMaxConcurrent:           128,
 		ReadObjectSingleflight:            true,
-		ParquetDecodeMaxConcurrent:        4,
+		ParquetDecodeMaxConcurrent:        2,
 		WriteMaxConcurrent:                32,
 		WriteMaxPerTenant:                 1,
 		WriteQueueTimeout:                 2 * time.Second,
@@ -113,6 +114,7 @@ func Load() (Config, error) {
 		TenantUsageCacheTTL:               60 * time.Second,
 		ReaderCatchupTimeout:              2 * time.Second,
 		ReaderIndexCacheEntries:           4096,
+		ReaderIndexCacheMaxBytes:          256 * 1024 * 1024,
 		IndexEntityRecords:                false,
 		EntityPagePackMaxBytes:            32 * 1024 * 1024,
 		OTLPEndpoint:                      os.Getenv("GRAPHDB_OTLP_ENDPOINT"),
@@ -239,6 +241,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", &cfg.ReaderIndexCacheEntries); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", &cfg.ReaderIndexCacheMaxBytes); err != nil {
 		return Config{}, err
 	}
 	cfg.ReaderIndexCacheDir = strings.TrimSpace(os.Getenv("GRAPHDB_READER_INDEX_CACHE_DIR"))
