@@ -252,6 +252,14 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 	}
 	s.deleteWriteCache(tenantID)
 	s.deleteCachedTenantMetadata(tenantID)
+	s.deleteCachedTenantConfig(tenantID)
+	s.deleteCachedSourcePolicy(tenantID)
+	s.deleteCachedIndexCatalog(tenantID)
+	s.deleteCachedWriterLease(tenantID)
+	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
+	if cache, ok := s.Objects.(*WriterObjectCache); ok {
+		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))
+	}
 	return report, nil
 }
 

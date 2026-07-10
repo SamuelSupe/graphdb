@@ -3,6 +3,7 @@ package graph
 import "sort"
 
 func (g *Graph) rebuildIndexes() {
+	g.cow = nil
 	g.out = map[string]map[string]struct{}{}
 	g.in = map[string]map[string]struct{}{}
 	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
@@ -53,29 +54,9 @@ func (g *Graph) rebuildIndexes() {
 
 func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
 	for _, signature := range g.identitySignatures(entity) {
-		if g.identityIndex[entity.Kind][signature.Value] == id {
-			delete(g.identityIndex[entity.Kind], signature.Value)
+		if identities := g.identityIndex[entity.Kind]; identities != nil && identities[signature.Value] == id {
+			delete(g.writableIdentityKind(entity.Kind), signature.Value)
 		}
-	}
-	for field, value := range entity.Fields {
-		key, ok := scalarKey(value)
-		if !ok {
-			continue
-		}
-		ids := g.fieldIndex[entity.Kind][field][key]
-		delete(ids, id)
-		if len(ids) == 0 {
-			delete(g.fieldIndex[entity.Kind][field], key)
-		}
-	}
-}
-
-func (g *Graph) addEntityToIndexes(id string, entity Entity) {
-	if g.identityIndex[entity.Kind] == nil {
-		g.identityIndex[entity.Kind] = map[string]string{}
-	}
-	for _, signature := range g.identitySignatures(entity) {
-		g.identityIndex[entity.Kind][signature.Value] = id
 	}
 	for field, value := range entity.Fields {
 		key, ok := scalarKey(value)
@@ -83,32 +64,40 @@ func (g *Graph) addEntityToIndexes(id string, entity Entity) {
 			continue
 		}
 		byKind := g.fieldIndex[entity.Kind]
-		if byKind == nil {
-			byKind = map[string]map[string]map[string]struct{}{}
-			g.fieldIndex[entity.Kind] = byKind
+		if byKind == nil || byKind[field] == nil || byKind[field][key] == nil {
+			continue
 		}
-		byField := byKind[field]
-		if byField == nil {
-			byField = map[string]map[string]struct{}{}
-			byKind[field] = byField
+		ids := g.writableFieldValue(entity.Kind, field, key)
+		delete(ids, id)
+		if len(ids) == 0 {
+			delete(g.writableFieldName(entity.Kind, field), key)
 		}
-		ids := byField[key]
-		if ids == nil {
-			ids = map[string]struct{}{}
-			byField[key] = ids
+	}
+}
+
+func (g *Graph) addEntityToIndexes(id string, entity Entity) {
+	for _, signature := range g.identitySignatures(entity) {
+		g.writableIdentityKind(entity.Kind)[signature.Value] = id
+	}
+	for field, value := range entity.Fields {
+		key, ok := scalarKey(value)
+		if !ok {
+			continue
 		}
-		ids[id] = struct{}{}
+		g.writableFieldValue(entity.Kind, field, key)[id] = struct{}{}
 	}
 }
 
 func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
 	if edges := g.out[edge.From]; edges != nil {
+		edges = g.writableOut(edge.From)
 		delete(edges, id)
 		if len(edges) == 0 {
 			delete(g.out, edge.From)
 		}
 	}
 	if edges := g.in[edge.To]; edges != nil {
+		edges = g.writableIn(edge.To)
 		delete(edges, id)
 		if len(edges) == 0 {
 			delete(g.in, edge.To)
@@ -117,14 +106,8 @@ func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
 }
 
 func (g *Graph) addEdgeToIndexes(id string, edge Edge) {
-	if g.out[edge.From] == nil {
-		g.out[edge.From] = map[string]struct{}{}
-	}
-	g.out[edge.From][id] = struct{}{}
-	if g.in[edge.To] == nil {
-		g.in[edge.To] = map[string]struct{}{}
-	}
-	g.in[edge.To][id] = struct{}{}
+	g.writableOut(edge.From)[id] = struct{}{}
+	g.writableIn(edge.To)[id] = struct{}{}
 }
 
 func (g *Graph) indexSnapshot() IndexSnapshot {
@@ -160,6 +143,7 @@ func (g *Graph) indexSnapshot() IndexSnapshot {
 }
 
 func (g *Graph) loadIndexSnapshot(snapshot IndexSnapshot) {
+	g.cow = nil
 	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
 	g.out = map[string]map[string]struct{}{}
 	g.in = map[string]map[string]struct{}{}

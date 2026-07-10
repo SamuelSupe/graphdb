@@ -80,12 +80,18 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 		StartedAt:     now,
 		UpdatedAt:     now,
 	}
+	if active, reused, err := s.admitTask(task); err != nil {
+		return Task{}, err
+	} else if reused {
+		return active, nil
+	}
 	if err := s.saveTask(ctx, task); err != nil {
+		s.releaseTaskAdmission(task)
 		return Task{}, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	s.registerTaskCancel(tenantID, id, cancel)
-	go s.runTask(runCtx, cancel, task)
+	go s.runTaskAdmitted(runCtx, cancel, task)
 	return task, nil
 }
 

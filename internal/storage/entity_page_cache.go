@@ -1,26 +1,47 @@
 package storage
 
 import (
+	"container/list"
 	"strconv"
 	"sync"
-
-	"graphdb/internal/graph"
+	"time"
 )
 
 type entityPageCache struct {
-	mu    sync.Mutex
-	max   int
-	data  map[string]cachedEntityPage
-	order []string
+	mu              sync.Mutex
+	max             int
+	maxBytes        int64
+	bytes           int64
+	revalidateAfter time.Duration
+	data            map[string]cachedEntityPage
+	order           *list.List
+	nodes           map[string]*list.Element
 }
 
 type cachedEntityPage struct {
-	page EntityPageData
-	etag string
+	page        EntityPageData
+	etag        string
+	validatedAt time.Time
+	size        int64
 }
 
 func newEntityPageCache(max int) *entityPageCache {
-	return &entityPageCache{max: max, data: map[string]cachedEntityPage{}}
+	return newEntityPageCacheWithRevalidation(max, 0)
+}
+
+func newConfiguredEntityPageCache(max int) *entityPageCache {
+	return newEntityPageCacheWithRevalidation(max, 30*time.Second)
+}
+
+func newEntityPageCacheWithRevalidation(max int, revalidateAfter time.Duration) *entityPageCache {
+	return &entityPageCache{
+		max:             max,
+		maxBytes:        entityPageCacheByteLimit(max),
+		revalidateAfter: revalidateAfter,
+		data:            map[string]cachedEntityPage{},
+		order:           list.New(),
+		nodes:           map[string]*list.Element{},
+	}
 }
 
 func entityPageCacheKey(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) string {
@@ -28,14 +49,27 @@ func entityPageCacheKey(tenantID string, version int64, objectKey string, conten
 }
 
 func (s *TenantStore) cachedEntityPage(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) (EntityPageData, string, bool) {
+	page, etag, _, ok := s.cachedEntityPageForRead(tenantID, version, objectKey, contentHash, schemaHash)
+	return page, etag, ok
+}
+
+func (s *TenantStore) cachedEntityPageForRead(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) (EntityPageData, string, bool, bool) {
+	entry, revalidate, ok := s.borrowCachedEntityPage(tenantID, version, objectKey, contentHash, schemaHash)
+	if !ok {
+		return EntityPageData{}, "", false, false
+	}
+	return copyEntityPage(entry.page), entry.etag, revalidate, true
+}
+
+func (s *TenantStore) borrowCachedEntityPage(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) (cachedEntityPage, bool, bool) {
 	if s.entityPageCache == nil || contentHash == "" || schemaHash == "" || objectKey == "" {
-		return EntityPageData{}, "", false
+		return cachedEntityPage{}, false, false
 	}
 	entry, ok := s.entityPageCache.get(entityPageCacheKey(tenantID, version, objectKey, contentHash, schemaHash))
 	if !ok {
-		return EntityPageData{}, "", false
+		return cachedEntityPage{}, false, false
 	}
-	return copyEntityPage(entry.page), entry.etag, true
+	return entry, s.entityPageCache.needsRevalidation(entry), true
 }
 
 func (s *TenantStore) dropCachedEntityPage(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
@@ -50,7 +84,7 @@ func (s *TenantStore) putCachedEntityPage(tenantID string, version int64, object
 		return
 	}
 	key := entityPageCacheKey(tenantID, version, objectKey, contentHash, schemaHash)
-	s.entityPageCache.put(key, cachedEntityPage{page: copyEntityPage(page), etag: etag})
+	s.entityPageCache.put(key, cachedEntityPage{page: copyEntityPage(page), etag: etag, validatedAt: time.Now()})
 }
 
 func (c *entityPageCache) get(key string) (cachedEntityPage, bool) {
@@ -60,8 +94,7 @@ func (c *entityPageCache) get(key string) (cachedEntityPage, bool) {
 	if !ok {
 		return cachedEntityPage{}, false
 	}
-	c.touchLocked(key)
-	entry.page = copyEntityPage(entry.page)
+	c.order.MoveToBack(c.nodes[key])
 	return entry, true
 }
 
@@ -69,17 +102,28 @@ func (c *entityPageCache) put(key string, entry cachedEntityPage) {
 	if c == nil || c.max <= 0 {
 		return
 	}
-	entry.page = copyEntityPage(entry.page)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.data[key]; !ok {
-		c.order = append(c.order, key)
+	entry.size = estimateEntityPageBytes(entry.page)
+	if previous, ok := c.data[key]; ok {
+		c.bytes -= previous.size
+	}
+	if node := c.nodes[key]; node != nil {
+		c.order.MoveToBack(node)
+	} else {
+		c.nodes[key] = c.order.PushBack(key)
 	}
 	c.data[key] = entry
-	c.touchLocked(key)
-	for len(c.data) > c.max && len(c.order) > 0 {
-		evicted := c.order[0]
-		c.order = c.order[1:]
+	c.bytes += entry.size
+	for len(c.data) > c.max || c.bytes > c.maxBytes {
+		front := c.order.Front()
+		if front == nil {
+			break
+		}
+		evicted := front.Value.(string)
+		c.order.Remove(front)
+		delete(c.nodes, evicted)
+		c.bytes -= c.data[evicted].size
 		delete(c.data, evicted)
 	}
 }
@@ -87,113 +131,40 @@ func (c *entityPageCache) put(key string, entry cachedEntityPage) {
 func (c *entityPageCache) drop(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.bytes -= c.data[key].size
 	delete(c.data, key)
-	for i, value := range c.order {
-		if value == key {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			return
-		}
+	if node := c.nodes[key]; node != nil {
+		c.order.Remove(node)
+		delete(c.nodes, key)
 	}
 }
 
-func (c *entityPageCache) touchLocked(key string) {
-	for i, value := range c.order {
-		if value != key {
-			continue
-		}
-		copy(c.order[i:], c.order[i+1:])
-		c.order[len(c.order)-1] = key
+func (c *entityPageCache) needsRevalidation(entry cachedEntityPage) bool {
+	return c.revalidateAfter <= 0 || entry.validatedAt.IsZero() || time.Since(entry.validatedAt) >= c.revalidateAfter
+}
+
+func (c *entityPageCache) markValidated(key string, etag string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.data[key]
+	if !ok {
 		return
 	}
+	entry.validatedAt = time.Now()
+	if etag != "" {
+		entry.etag = etag
+	}
+	c.data[key] = entry
 }
 
-func copyEntityPage(page EntityPageData) EntityPageData {
-	page.Entities = copyGraphEntities(page.Entities)
-	return page
-}
-
-func copyGraphEntities(entities []graph.Entity) []graph.Entity {
-	if len(entities) == 0 {
-		return nil
+func entityPageCacheByteLimit(entries int) int64 {
+	if entries <= 0 {
+		return 0
 	}
-	out := make([]graph.Entity, len(entities))
-	for i, entity := range entities {
-		out[i] = copyEntityShape(entity)
+	const ceiling = int64(512 << 20)
+	limit := int64(entries) << 20
+	if limit > ceiling {
+		return ceiling
 	}
-	return out
-}
-
-func copyEntityShape(entity graph.Entity) graph.Entity {
-	entity.Fields = copyFieldsShape(entity.Fields)
-	entity.FieldSources = copyFieldSourcesShape(entity.FieldSources)
-	if entity.ExistenceSource != nil {
-		source := *entity.ExistenceSource
-		entity.ExistenceSource = &source
-	}
-	entity.Identity = copyMapAnyShape(entity.Identity)
-	entity.Sources = append([]graph.EntitySource(nil), entity.Sources...)
-	entity.MergedFrom = append([]string(nil), entity.MergedFrom...)
-	return entity
-}
-
-func copyFieldsShape(fields graph.Fields) graph.Fields {
-	if fields == nil {
-		return nil
-	}
-	out := make(graph.Fields, len(fields))
-	for key, value := range fields {
-		out[key] = copyAnyShape(value)
-	}
-	return out
-}
-
-func copyFieldSourcesShape(sources map[string]graph.FieldSource) map[string]graph.FieldSource {
-	if sources == nil {
-		return nil
-	}
-	out := make(map[string]graph.FieldSource, len(sources))
-	for key, value := range sources {
-		out[key] = value
-	}
-	return out
-}
-
-func copyMapAnyShape(values map[string]any) map[string]any {
-	if values == nil {
-		return nil
-	}
-	out := make(map[string]any, len(values))
-	for key, value := range values {
-		out[key] = copyAnyShape(value)
-	}
-	return out
-}
-
-func copyAnyShape(value any) any {
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case graph.Fields:
-		return copyFieldsShape(typed)
-	case map[string]any:
-		return copyMapAnyShape(typed)
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = copyAnyShape(item)
-		}
-		return out
-	case []string:
-		return append([]string(nil), typed...)
-	case []int:
-		return append([]int(nil), typed...)
-	case []int64:
-		return append([]int64(nil), typed...)
-	case []float64:
-		return append([]float64(nil), typed...)
-	case []bool:
-		return append([]bool(nil), typed...)
-	default:
-		return value
-	}
+	return limit
 }

@@ -16,47 +16,8 @@ func buildIndexCatalog(g *graph.Graph, version int64) (IndexCatalog, error) {
 }
 
 func buildIndexCatalogWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition) (IndexCatalog, error) {
-	now := time.Now().UTC()
-	catalog := IndexCatalog{LayoutVersion: CurrentObjectLayoutVersion, Version: version, UpdatedAt: now}
-	indexes, err := buildSecondaryIndexesWithDefinitions(g, version, definitions)
-	if err != nil {
-		return IndexCatalog{}, err
-	}
-	for _, index := range indexes {
-		summary := secondaryIndexSummary(index, 16)
-		catalog.Indexes = append(catalog.Indexes, IndexSpec{
-			Name:           index.Kind + "." + index.Field,
-			Kind:           index.Kind,
-			Field:          index.Field,
-			Type:           secondaryIndexType(index),
-			Status:         "ready",
-			Objects:        secondaryIndexObjects(index),
-			EntryCount:     summary.EntryCount,
-			DistinctValues: summary.DistinctValues,
-			TopValues:      summary.TopValues,
-			ContentHash:    secondaryIndexContentHash(index),
-			UpdatedAt:      now,
-		})
-	}
-	for _, shard := range buildEdgeShards(g, version) {
-		catalog.EdgeShards = append(catalog.EdgeShards, EdgeShard{
-			RelationType: shard.RelationType,
-			Shard:        shard.Shard,
-			EdgeCount:    len(shard.Edges),
-			ContentHash:  edgeShardContentHash(shard),
-			UpdatedAt:    now,
-		})
-	}
-	for _, page := range buildEntityPages(g, version) {
-		catalog.EntityPages = append(catalog.EntityPages, EntityPageSpec{
-			Shard:       page.Shard,
-			EntityCount: len(page.Entities),
-			ContentHash: entityPageContentHash(page),
-			UpdatedAt:   now,
-		})
-	}
-	sortIndexCatalog(&catalog)
-	return catalog, nil
+	artifacts, err := buildIndexArtifactsWithDefinitions(g, version, definitions)
+	return artifacts.Catalog, err
 }
 
 func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID string, format string) {
@@ -106,7 +67,7 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 		shard.SchemaHash = parquetEdgeShardSchemaHash()
 		shard.Objects = []IndexObject{{Role: "shard", Key: key, Format: IndexFormatParquet, Codec: parquetEdgeShardCodec, RowCount: shard.EdgeCount, ContentHash: shard.ContentHash, SchemaHash: shard.SchemaHash}}
 	}
-	entityPackIDs := entityPagePackIDs(catalog.EntityPages)
+	entityPackIDs := entityPagePackIDs(catalog.EntityPages, !s.WriteEntityRecords)
 	for i := range catalog.EntityPages {
 		page := &catalog.EntityPages[i]
 		page.Format = format
@@ -169,6 +130,7 @@ func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definit
 				Values:        map[string][]string{},
 				Version:       version,
 				UpdatedAt:     now,
+				hashCanonical: true,
 			}
 			addEntitiesToIndex(g, &index)
 			indexes[index.Kind+"\x00"+index.Field] = index
@@ -183,6 +145,7 @@ func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definit
 			Values:        map[string][]string{},
 			Version:       version,
 			UpdatedAt:     now,
+			hashCanonical: true,
 		}
 		if existing, ok := indexes[index.Kind+"\x00"+index.Field]; ok && existing.Unique {
 			index.Unique = true

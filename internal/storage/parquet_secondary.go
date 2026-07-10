@@ -439,11 +439,16 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 	if object.Key == "" {
 		return SecondaryIndex{}, false, nil
 	}
-	if data, _, ok, err := s.cachedIndexObject(ctx, "secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash); err != nil {
+	if data, _, verified, ok, err := s.cachedIndexObjectWithVerification(ctx, "secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash); err != nil {
 		return SecondaryIndex{}, false, err
 	} else if ok {
 		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, spec.Type == "unique")
+		index.cacheVerified = verified
 		if err == nil && secondaryIndexObjectMatches(index, tenantID, version, spec, object.ContentHash) {
+			if !verified {
+				s.markCachedIndexObjectVerified("secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash)
+			}
+			index.cacheVerified = true
 			return index, true, nil
 		}
 		s.dropCachedIndexObject("secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash)
@@ -460,7 +465,8 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 		return SecondaryIndex{}, false, err
 	}
 	if secondaryIndexObjectMatches(index, tenantID, version, spec, object.ContentHash) {
-		s.putCachedIndexObject("secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash, data, meta)
+		index.cacheVerified = true
+		s.putVerifiedCachedIndexObject("secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash, data, meta)
 	}
 	return index, true, nil
 }
@@ -492,7 +498,7 @@ func secondaryIndexObjectMatches(index SecondaryIndex, tenantID string, version 
 	if !indexTenantMatches(index.TenantID, tenantID) || index.Version > version {
 		return false
 	}
-	return contentHash != "" && secondaryIndexContentHash(index) == contentHash
+	return index.cacheVerified || (contentHash != "" && secondaryIndexContentHash(index) == contentHash)
 }
 
 func secondaryIndexShardObjectsForFilters(objects []IndexObject, filters []query.Filter) ([]IndexObject, bool) {

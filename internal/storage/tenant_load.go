@@ -202,5 +202,5 @@ func applyManifestCommit(g *graph.Graph, commitKey string, commit graph.Commit) 
 	if commit.Version != g.Version+1 {
 		return fmt.Errorf("non-contiguous commit version %d after graph version %d in %q", commit.Version, g.Version, commitKey)
 	}
-	return g.ApplyCommit(commit)
+	return g.ApplyCommitInPlaceForStorage(commit)
 }

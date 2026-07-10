@@ -23,6 +23,7 @@ func (s *TenantStore) getCachedWriterLease(tenantID string, now time.Time) (Writ
 func (s *TenantStore) setCachedWriterLease(tenantID string, lease WriterLease, meta ObjectMeta) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	evictOneCacheEntry(s.writerLeaseCache, tenantID, maxWriterMetadataCacheEntries)
 	s.writerLeaseCache[tenantID] = cachedWriterLease{lease: lease, meta: meta}
 }
 

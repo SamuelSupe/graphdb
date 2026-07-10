@@ -120,8 +120,11 @@ func TestRunGCIgnoresStaleReaderHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
-	if report.ReaderWatermarkReaders != 0 || report.ReaderWatermarkIgnored != 1 {
+	if report.ReaderWatermarkReaders != 0 || report.ReaderWatermarkIgnored != 0 {
 		t.Fatalf("reader watermark report = %#v", report)
+	}
+	if _, err := store.Objects.Get(ctx, store.readerHeartbeatKey("tenant-a", "reader-stale")); err != ErrNotFound {
+		t.Fatalf("stale reader heartbeat get err = %v, want ErrNotFound", err)
 	}
 	if report.DeletedSnapshots != 1 {
 		t.Fatalf("report = %#v, want stale heartbeat ignored", report)

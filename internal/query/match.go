@@ -3,6 +3,9 @@ package query
 import "graphdb/internal/graph"
 
 func executeMatch(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
+	if lazyKindScanAvailable(g, request, plan, budget) {
+		return executeLazyKindScan(g, request, plan, cursor, budget)
+	}
 	if canPageMatchEarly(request) {
 		return executeMatchPage(g, request, plan, cursor, budget)
 	}
@@ -166,10 +169,6 @@ func matchCandidatesForPlan(g *graph.Graph, request Request, plan Plan, budget *
 		return g.MatchEntities(request.Kind, nil), nil
 	default:
 		if lazyExecution(g, budget) {
-			entities, ok, err := lazyKindScanEntities(request, budget)
-			if err != nil || ok {
-				return entities, err
-			}
 			return nil, ErrIndexUnavailable
 		}
 		return g.MatchEntities(request.Kind, nil), nil

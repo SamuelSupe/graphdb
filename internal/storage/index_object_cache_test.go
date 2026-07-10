@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"graphdb/internal/graph"
 )
@@ -33,6 +35,67 @@ func TestIndexObjectCacheAvoidsRepeatedFieldIndexReads(t *testing.T) {
 	}
 	if got := objects.CountContains("/indexes/parquet/versions/"); got != 1 {
 		t.Fatalf("parquet index object gets = %d, want one object-store read", got)
+	}
+}
+
+func TestIndexObjectMemoryCacheHonorsByteLimit(t *testing.T) {
+	cache := newIndexObjectCache(10)
+	cache.maxBytes = 420
+	cache.put("first", cachedIndexObject{data: make([]byte, 300), meta: ObjectMeta{Key: "first"}})
+	cache.put("second", cachedIndexObject{data: make([]byte, 300), meta: ObjectMeta{Key: "second"}})
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.bytes > cache.maxBytes || len(cache.data) > 1 {
+		t.Fatalf("memory cache bytes=%d entries=%d max=%d", cache.bytes, len(cache.data), cache.maxBytes)
+	}
+}
+
+func TestIndexObjectDiskCacheHonorsEntryLimit(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.ConfigureIndexObjectCache(IndexObjectCacheConfig{
+		MaxEntries:   2,
+		MaxBytes:     1 << 20,
+		DiskDir:      dir,
+		DiskMaxBytes: 1 << 20,
+	})
+	for i := int64(1); i <= 3; i++ {
+		store.putCachedIndexObject("entity_page", "tenant-a", i, "object", "content", "schema", []byte("data"), ObjectMeta{Key: "object"})
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read cache dir: %v", err)
+	}
+	dataFiles := 0
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".parquet") {
+			dataFiles++
+		}
+	}
+	if dataFiles > 2 {
+		t.Fatalf("disk cache data files = %d, want at most 2", dataFiles)
+	}
+}
+
+func TestIndexObjectDiskCacheDoesNotPersistVerifiedState(t *testing.T) {
+	dir := t.TempDir()
+	cacheKey := indexObjectCacheKey("secondary_index", "tenant-a", 1, "object", "content", "schema")
+	first := newIndexObjectCache(2)
+	first.disk = newIndexDiskCache(dir, 2, 1<<20, time.Hour)
+	first.put(cacheKey, cachedIndexObject{
+		data:     []byte("parquet bytes"),
+		meta:     ObjectMeta{Key: "object", ETag: "etag"},
+		verified: true,
+	})
+
+	second := newIndexObjectCache(2)
+	second.disk = newIndexDiskCache(dir, 2, 1<<20, time.Hour)
+	entry, ok, err := second.get(context.Background(), cacheKey, "object")
+	if err != nil || !ok {
+		t.Fatalf("disk get ok=%v err=%v", ok, err)
+	}
+	if entry.verified {
+		t.Fatal("disk cache persisted process-local content verification")
 	}
 }
 

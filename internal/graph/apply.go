@@ -23,6 +23,34 @@ func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) 
 	if commit.Version <= g.Version {
 		return nil, ApplyReport{}, fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
 	}
+	return g.applyCommitToCopy(g.Clone(), commit, options)
+}
+
+// ApplyCommitStorageCopyWithOptions returns a mutation copy optimized for the
+// storage commit path. The result must be treated as immutable after publish;
+// unlike Clone, unchanged entity and edge values may be shared.
+func (g *Graph) ApplyCommitStorageCopyWithOptions(commit Commit, options ApplyOptions) (*Graph, ApplyReport, error) {
+	if commit.Version <= g.Version {
+		return nil, ApplyReport{}, fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
+	}
+	return g.applyCommitToCopy(g.cloneForStorageMutation(), commit, options)
+}
+
+// ApplyCommitInPlaceForStorage replays a commit into a private graph being
+// loaded from storage. The caller must discard the graph when an error occurs.
+func (g *Graph) ApplyCommitInPlaceForStorage(commit Commit) error {
+	if commit.Version <= g.Version {
+		return fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
+	}
+	g.Version = commit.Version
+	_, err := g.applyMutations(commit, ApplyOptions{})
+	return err
+}
+
+func (g *Graph) applyCommitToCopy(clone *Graph, commit Commit, options ApplyOptions) (*Graph, ApplyReport, error) {
+	if commit.Version <= g.Version {
+		return nil, ApplyReport{}, fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
+	}
 	policyReport := ApplyReport{}
 	if options.SourcePolicy != nil {
 		var err error
@@ -31,7 +59,6 @@ func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) 
 			return nil, ApplyReport{}, err
 		}
 	}
-	clone := g.Clone()
 	clone.Version = commit.Version
 	report, err := clone.applyMutations(commit, options)
 	if err != nil {
@@ -43,6 +70,7 @@ func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) 
 
 func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, error) {
 	report := ApplyReport{}
+	affected := newUniqueStringCollector(&report.AffectedEntityIDs)
 	now := commit.CreatedAt
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -76,6 +104,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if !ok {
 			continue
 		}
+		edge = copyEdge(edge)
 		backfillEdgeSources(&edge, edge.Version, edge.UpdatedAt)
 		existingOwner := *edge.ExistenceSource
 		incomingOwner := sourceForDelete(request, commit.Version, now)
@@ -98,12 +127,13 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if !ok {
 			continue
 		}
+		entity = copyEntity(entity)
 		backfillFieldSources(&entity)
 		existingOwner := *entity.ExistenceSource
 		incomingOwner := sourceForEntityDelete(request, commit.Version, now)
 		if sourceCanDeleteEntity(existingOwner, incomingOwner) {
 			g.deleteEntityForce(entityID)
-			report.AffectedEntityIDs = appendUnique(report.AffectedEntityIDs, entityID)
+			affected.add(entityID)
 			continue
 		}
 		report.Suppressed = append(report.Suppressed, entityExistenceConflict(entityID, request, existingOwner, incomingOwner))
@@ -117,7 +147,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 			continue
 		}
 		g.deleteEntityForce(resolved)
-		report.AffectedEntityIDs = appendUnique(report.AffectedEntityIDs, resolved)
+		affected.add(resolved)
 	}
 	for _, relationName := range commit.Mutations.DeleteRelationTypes {
 		if relationName == "" {
@@ -222,7 +252,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		clearEntityWriteMetadata(&normalized)
 		g.Entities[normalized.ID] = normalized
 		g.addEntityToIndexes(normalized.ID, normalized)
-		report.AffectedEntityIDs = appendUnique(report.AffectedEntityIDs, normalized.ID)
+		affected.add(normalized.ID)
 	}
 	for _, request := range commit.Mutations.MarkSourceStale {
 		staleReport, err := g.applySourceStale(request, commit.Version, now)
@@ -230,7 +260,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 			return ApplyReport{}, err
 		}
 		report.Suppressed = append(report.Suppressed, staleReport.Suppressed...)
-		report.AffectedEntityIDs = appendUnique(report.AffectedEntityIDs, staleReport.AffectedEntityIDs...)
+		affected.add(staleReport.AffectedEntityIDs...)
 	}
 	for _, merge := range commit.Mutations.MergeEntities {
 		if err := g.applyMerge(merge, commit.Version, now); err != nil {

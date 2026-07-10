@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,82 @@ func TestMaintenanceAutoCompactsSmallFiles(t *testing.T) {
 	}
 	if len(report.Tenants) != 1 || report.Tenants[0].CompactReason != "small_files" {
 		t.Fatalf("tenant report = %#v", report.Tenants)
+	}
+}
+
+func TestAutoCompactSkipsUsageForAlreadyCompactedManifest(t *testing.T) {
+	server := &Server{}
+	report := &MaintenanceReport{}
+	manifest := storage.Manifest{
+		TenantID:           "tenant-a",
+		Version:            42,
+		SnapshotVersion:    42,
+		SnapshotKey:        "snapshot.parquet",
+		SnapshotCatalogKey: "snapshot-catalog.parquet",
+	}
+	autoCompact := true
+	objectThreshold := 1
+	decision := server.autoCompactDecision(context.Background(), "tenant-a", manifest, storage.TenantMaintenanceConfig{
+		AutoCompact:                 &autoCompact,
+		CompactObjectCountThreshold: &objectThreshold,
+	}, report)
+	if decision.Compact || len(report.Errors) != 0 {
+		t.Fatalf("auto compact decision = %#v report=%#v", decision, report)
+	}
+}
+
+func TestMaintenanceHistoricalObjectsDoNotRetriggerCompactForOneNewCommit(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.CreateTenant(ctx, "tenant-a", storage.TenantCreateOptions{}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("initial commit: %v", err)
+	}
+	if _, err := store.Compact(ctx, "tenant-a"); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	for i := 0; i < 32; i++ {
+		key := fmt.Sprintf("test/tenants/tenant-a/history/object-%03d.parquet", i)
+		if err := store.Objects.Put(ctx, key, []byte("historical")); err != nil {
+			t.Fatalf("put historical object: %v", err)
+		}
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("post-compact commit: %v", err)
+	}
+	autoCompact := true
+	autoRebuild := false
+	tailThreshold := 1000
+	objectThreshold := 1
+	gcDisabled := int64(0)
+	if _, err := store.PutTenantConfig(ctx, "tenant-a", storage.TenantConfig{
+		Maintenance: storage.TenantMaintenanceConfig{
+			AutoCompact:                 &autoCompact,
+			CompactCommitTailThreshold:  &tailThreshold,
+			CompactObjectCountThreshold: &objectThreshold,
+			GCIntervalSeconds:           &gcDisabled,
+		},
+		Indexes: storage.TenantIndexConfig{AutoRebuild: &autoRebuild, RebuildOnStale: &autoRebuild},
+	}); err != nil {
+		t.Fatalf("put tenant config: %v", err)
+	}
+
+	report := (&Server{Store: store, Mode: "all"}).runMaintenanceOnce(ctx, time.Now().UTC())
+	if report.Compacted != 0 || len(report.Errors) != 0 {
+		t.Fatalf("maintenance report = %#v, want no historical-object recompact", report)
+	}
+	manifest, err := store.CurrentManifest(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	if storage.ManifestCommitTailLength(manifest) != 1 {
+		t.Fatalf("commit tail = %d, want 1", storage.ManifestCommitTailLength(manifest))
 	}
 }
 

@@ -18,27 +18,22 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 	if err != nil {
 		return err
 	}
-	catalog, err := buildIndexCatalogWithDefinitions(g, version, definitions)
+	artifacts, err := buildIndexArtifactsWithDefinitions(g, version, definitions)
 	if err != nil {
 		return err
 	}
+	catalog := artifacts.Catalog
 	catalog.TenantID = tenantID
 	s.decorateIndexCatalog(&catalog, tenantID, IndexFormatParquet)
 	s.reuseUnchangedIndexCatalogObjects(tenantID, &catalog, previous)
 
-	indexes, err := buildSecondaryIndexesWithDefinitions(g, version, definitions)
-	if err != nil {
+	if err := s.writeChangedParquetSecondaryIndexesFast(ctx, tenantID, artifacts.Indexes, catalog, version); err != nil {
 		return err
 	}
-	if err := s.writeChangedParquetSecondaryIndexesFast(ctx, tenantID, indexes, catalog, version); err != nil {
+	if err := s.writeChangedParquetEdgeShardsFast(ctx, tenantID, artifacts.EdgeShards, catalog, version); err != nil {
 		return err
 	}
-	edgeShards := buildEdgeShards(g, version)
-	if err := s.writeChangedParquetEdgeShardsFast(ctx, tenantID, edgeShards, catalog, version); err != nil {
-		return err
-	}
-	entityPages := buildEntityPages(g, version)
-	if err := s.writeChangedParquetEntityPagesFast(ctx, tenantID, entityPages, catalog, before, g, version); err != nil {
+	if err := s.writeChangedParquetEntityPagesFast(ctx, tenantID, artifacts.EntityPages, catalog, before, g, version); err != nil {
 		return err
 	}
 	if err := s.ensureIncrementalIndexCurrent(ctx, tenantID, version); err != nil {

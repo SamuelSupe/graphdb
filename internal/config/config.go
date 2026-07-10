@@ -40,6 +40,7 @@ type Config struct {
 	WriteMaxBytesPerTenant            int64
 	WriteMaxEntitiesPerTenant         int
 	WriteMaxEdgesPerTenant            int
+	WriteCacheMaxBytes                int64
 	WriterObjectCache                 bool
 	WriterObjectCacheMaxBytes         int64
 	WriterObjectCacheMaxKeys          int
@@ -92,11 +93,12 @@ func Load() (Config, error) {
 		WriteCASConflictWindow:            30 * time.Second,
 		WriteCASConflictThreshold:         5,
 		WriteMaxCommitTail:                300,
+		WriteCacheMaxBytes:                512 * 1024 * 1024,
 		WriterObjectCache:                 true,
 		WriterObjectCacheMaxBytes:         512 * 1024 * 1024,
 		WriterObjectCacheMaxKeys:          200000,
 		WriterObjectCacheNegativeTTL:      5 * time.Minute,
-		IngestCollectorStatusMaterialized: false,
+		IngestCollectorStatusMaterialized: true,
 		SlowQueryThreshold:                500 * time.Millisecond,
 		IndexHealthInterval:               30 * time.Second,
 		MaintenanceInterval:               30 * time.Second,
@@ -180,6 +182,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_WRITE_MAX_EDGES_PER_TENANT", &cfg.WriteMaxEdgesPerTenant); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_WRITE_CACHE_MAX_BYTES", &cfg.WriteCacheMaxBytes); err != nil {
 		return Config{}, err
 	}
 	if err := loadBoolEnv("GRAPHDB_WRITER_OBJECT_CACHE", &cfg.WriterObjectCache); err != nil {

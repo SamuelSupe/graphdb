@@ -37,9 +37,6 @@ func measuredCandidateIDs(g *graph.Graph, request Request, plan Plan, budget *bu
 			return len(ids), err
 		}
 		if lazyExecution(g, budget) {
-			if lazyKindScanAvailable(g, request, plan, budget) {
-				return 0, nil
-			}
 			return 0, ErrIndexUnavailable
 		}
 		ids, ok = runtimeCandidateIDs(g, request, plan)

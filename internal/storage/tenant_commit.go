@@ -93,10 +93,20 @@ func (s *TenantStore) commitWithRetryLocked(ctx context.Context, tenantID string
 }
 
 func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions) (CommitResult, error) {
+	var loaded loadedGraph
+	var err error
 	if opts.ExpectedVersion != nil {
-		s.deleteWriteCache(tenantID)
+		manifest, meta, manifestErr := s.getManifest(ctx, tenantID)
+		if manifestErr != nil {
+			return CommitResult{}, manifestErr
+		}
+		if *opts.ExpectedVersion != manifest.Version {
+			return CommitResult{}, fmt.Errorf("expected version %d, current version %d", *opts.ExpectedVersion, manifest.Version)
+		}
+		loaded, err = s.loadForExpectedVersionLocked(ctx, tenantID, *opts.ExpectedVersion, manifest, meta)
+	} else {
+		loaded, err = s.loadForWriteLocked(ctx, tenantID)
 	}
-	loaded, err := s.loadForWriteLocked(ctx, tenantID)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -106,9 +116,6 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		return CommitResult{}, err
 	}
 	manifest := loaded.Manifest
-	if opts.ExpectedVersion != nil && *opts.ExpectedVersion != manifest.Version {
-		return CommitResult{}, fmt.Errorf("expected version %d, current version %d", *opts.ExpectedVersion, manifest.Version)
-	}
 	version := manifest.Version + 1
 	commitID, err := newCommitID()
 	if err != nil {
@@ -122,7 +129,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		CreatedAt:     time.Now().UTC(),
 		Mutations:     mutations,
 	}
-	nextGraph, report, err := loaded.Graph.ApplyCommitCopyWithOptions(commit, graph.ApplyOptions{})
+	nextGraph, report, err := loaded.Graph.ApplyCommitStorageCopyWithOptions(commit, graph.ApplyOptions{})
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -130,15 +137,22 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	if err := s.checkQuotaAfterApply(ctx, tenantID, loaded.Graph, nextGraph); err != nil {
 		return CommitResult{}, err
 	}
-	previousMD5, err := loaded.Graph.ContentMD5()
-	if err != nil {
-		return CommitResult{}, err
+	previousMD5 := loaded.DataMD5
+	if previousMD5 == "" {
+		var logicalBytes int64
+		previousMD5, logicalBytes, err = loaded.Graph.ContentMD5WithLogicalSize()
+		if err != nil {
+			return CommitResult{}, err
+		}
+		loaded.DataMD5 = previousMD5
+		loaded.CacheBytes = writeCacheBytesFromLogicalSize(logicalBytes)
 	}
-	nextMD5, err := nextGraph.ContentMD5()
+	nextMD5, nextLogicalBytes, err := nextGraph.ContentMD5WithLogicalSize()
 	if err != nil {
 		return CommitResult{}, err
 	}
 	if previousMD5 == nextMD5 {
+		s.setWriteCache(tenantID, loaded)
 		return CommitResult{
 			Manifest:          manifest,
 			ReadableVersion:   manifest.Version,
@@ -169,7 +183,10 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		s.deleteWriteCache(tenantID)
 		return CommitResult{}, err
 	}
-	s.setWriteCache(tenantID, loadedGraph{Graph: nextGraph, Manifest: manifest, Meta: meta})
+	s.setWriteCache(tenantID, loadedGraph{
+		Graph: nextGraph, Manifest: manifest, Meta: meta, DataMD5: nextMD5,
+		CacheBytes: writeCacheBytesFromLogicalSize(nextLogicalBytes),
+	})
 	result := CommitResult{
 		Manifest:          manifest,
 		ReadableVersion:   version,

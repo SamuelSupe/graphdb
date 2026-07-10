@@ -12,6 +12,7 @@ import (
 func TestEntityPagePackingMergesSmallPages(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	store.WriteEntityRecords = false
 	entities := entitiesForDistinctShards("host", "host", 8, entityShardID)
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)

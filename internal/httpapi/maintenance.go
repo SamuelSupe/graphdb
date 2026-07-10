@@ -3,14 +3,22 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"graphdb/internal/storage"
 )
 
 type maintenanceState struct {
-	lastGC map[string]time.Time
+	mu       sync.Mutex
+	lastGC   map[string]time.Time
+	gcCursor map[string]string
 }
+
+const (
+	defaultMaintenanceGCMaxDeletes = 256
+	autoCompactObjectMinTail       = 16
+)
 
 type MaintenanceReport struct {
 	StartedAt      time.Time                 `json:"started_at"`
@@ -160,6 +168,18 @@ func (s *Server) autoCompactDecision(ctx context.Context, tenantID string, manif
 	if tailThreshold > 0 && tailLength >= tailThreshold {
 		return autoCompactDecision{Compact: true, Reason: "commit_tail", Current: int64(tailLength), Threshold: int64(tailThreshold)}
 	}
+	// Compaction cannot reduce historical object inventory once the current
+	// version is already snapshotted. Retention/GC owns those old objects.
+	if tailLength == 0 && manifest.Version == manifest.SnapshotVersion && manifest.SnapshotKey != "" && manifest.SnapshotCatalogKey != "" {
+		return autoCompactDecision{}
+	}
+	// Historical objects remain after compaction until retention removes them.
+	// Require a meaningful amount of new tail data before object-count/byte
+	// heuristics can trigger another compaction. The explicit tail threshold
+	// above still wins when operators configure a lower threshold.
+	if manifest.SnapshotKey != "" && tailLength < autoCompactObjectMinTail {
+		return autoCompactDecision{}
+	}
 	objectThreshold := intValue(config.CompactObjectCountThreshold, 0)
 	bytesThreshold := int64Value(config.CompactBytesThreshold, 0)
 	smallObjectThreshold := intValue(config.SmallFileObjectThreshold, 0)
@@ -205,13 +225,15 @@ func (s *Server) maybeRunGC(ctx context.Context, tenantID string, now time.Time,
 		DeadLetterMaxAge:    time.Duration(int64Value(config.DeadLetterMaxAgeSeconds, 0)) * time.Second,
 		TaskMaxAge:          time.Duration(int64Value(config.TaskMaxAgeSeconds, 0)) * time.Second,
 		CleanupIndexOrphans: boolPtrValue(config.CleanupIndexOrphans, true),
+		CheckpointCursor:    s.gcCursor(tenantID),
+		MaxDeletes:          defaultMaintenanceGCMaxDeletes,
 	})
 	if err != nil {
 		report.addError(tenantID, "gc", err)
 		s.auditError("maintenance_gc_failed", tenantID, err, map[string]any{"keep_snapshots": keepSnapshots})
 		return
 	}
-	s.markGC(tenantID, now)
+	s.markGC(tenantID, now, gcReport.Checkpoint)
 	report.GCRuns++
 	tenantReport.GCRun = true
 	s.auditInfo("maintenance_gc_completed", tenantID, map[string]any{
@@ -229,7 +251,7 @@ func (s *Server) maybeRebuildIndexes(ctx context.Context, tenantID string, confi
 	if !autoRebuild && !rebuildOnStale {
 		return
 	}
-	health, err := s.Store.IndexHealth(ctx, tenantID)
+	health, err := s.Store.IndexHealthWithOptions(ctx, tenantID, storage.IndexHealthOptions{})
 	if err != nil {
 		report.addError(tenantID, "index_health", err)
 		s.auditError("maintenance_index_health_failed", tenantID, err, map[string]any{})
@@ -294,18 +316,65 @@ func (s *Server) storageLayoutFindings(ctx context.Context, tenantID string, con
 }
 
 func (s *Server) gcDue(tenantID string, now time.Time, interval time.Duration) bool {
-	if s.maintenance == nil {
-		s.maintenance = &maintenanceState{lastGC: map[string]time.Time{}}
+	state := s.maintenanceRuntime()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.lastGC == nil {
+		state.lastGC = map[string]time.Time{}
 	}
-	last, ok := s.maintenance.lastGC[tenantID]
+	if state.gcCursor == nil {
+		state.gcCursor = map[string]string{}
+	}
+	if state.gcCursor[tenantID] != "" {
+		return true
+	}
+	last, ok := state.lastGC[tenantID]
 	return !ok || !now.Before(last.Add(interval))
 }
 
-func (s *Server) markGC(tenantID string, now time.Time) {
-	if s.maintenance == nil {
-		s.maintenance = &maintenanceState{lastGC: map[string]time.Time{}}
+func (s *Server) gcCursor(tenantID string) string {
+	state := s.maintenanceRuntime()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.gcCursor == nil {
+		state.gcCursor = map[string]string{}
 	}
-	s.maintenance.lastGC[tenantID] = now
+	return state.gcCursor[tenantID]
+}
+
+func (s *Server) markGC(tenantID string, now time.Time, checkpoint storage.GCCheckpoint) {
+	state := s.maintenanceRuntime()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.lastGC == nil {
+		state.lastGC = map[string]time.Time{}
+	}
+	if state.gcCursor == nil {
+		state.gcCursor = map[string]string{}
+	}
+	if checkpoint.Paused && checkpoint.NextCursor != "" {
+		state.gcCursor[tenantID] = checkpoint.NextCursor
+		return
+	}
+	delete(state.gcCursor, tenantID)
+	state.lastGC[tenantID] = now
+}
+
+func (s *Server) maintenanceRuntime() *maintenanceState {
+	s.maintenanceOnce.Do(func() {
+		if s.maintenance == nil {
+			s.maintenance = &maintenanceState{}
+		}
+		s.maintenance.mu.Lock()
+		defer s.maintenance.mu.Unlock()
+		if s.maintenance.lastGC == nil {
+			s.maintenance.lastGC = map[string]time.Time{}
+		}
+		if s.maintenance.gcCursor == nil {
+			s.maintenance.gcCursor = map[string]string{}
+		}
+	})
+	return s.maintenance
 }
 
 func (r *MaintenanceReport) addError(tenantID string, action string, err error) {

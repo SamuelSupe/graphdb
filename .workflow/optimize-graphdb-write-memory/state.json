@@ -1,0 +1,31 @@
+{
+  "title": "Optimize GraphDB write memory",
+  "slug": "optimize-graphdb-write-memory",
+  "created_at": "2026-07-10T00:07:10+00:00",
+  "status": "complete",
+  "approval": {
+    "required": false,
+    "granted": true,
+    "notes": "Local non-destructive profiling and implementation only"
+  },
+  "packets": [
+    {"id": "WM-A", "status": "complete", "owner": "profile"},
+    {"id": "WM-B", "status": "complete", "owner": "entity-records"},
+    {"id": "WM-C", "status": "complete", "owner": "index-build"}
+  ],
+  "verification": {
+    "status": "passed",
+    "checks": [
+      "focused graph/storage/config tests",
+      "go test ./... -count=1",
+      "focused graph/storage race tests",
+      "default and entity-record write benchmarks",
+      "seed-excluded live heap and RSS sampling",
+      "go test -race ./internal/storage -count=1 (301s)",
+      "go test -race ./internal/graph ./internal/config ./cmd/graphdb",
+      "go vet ./...",
+      "git diff --check",
+      "workflow artifact verification"
+    ]
+  }
+}

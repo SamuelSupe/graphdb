@@ -16,6 +16,7 @@ type Graph struct {
 	in            map[string]map[string]struct{}
 	fieldIndex    map[string]map[string]map[string]map[string]struct{}
 	identityIndex map[string]map[string]string
+	cow           *copyOnWriteState
 }
 
 func New() *Graph {

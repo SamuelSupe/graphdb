@@ -35,3 +35,28 @@ func BenchmarkApplyManyToManyEdges(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkApplySingleEntityStorageCopy(b *testing.B) {
+	const entityCount = 10000
+	g := New()
+	entities := make([]Entity, 0, entityCount)
+	for i := 0; i < entityCount; i++ {
+		entities = append(entities, Entity{ID: fmt.Sprintf("host:%05d", i), Kind: "host", Fields: Fields{"state": "ready"}})
+	}
+	if err := g.ApplyCommit(Commit{ID: "seed", Version: 1, Mutations: Mutations{UpsertEntities: entities}}); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, err := g.ApplyCommitStorageCopyWithOptions(Commit{
+			ID:      fmt.Sprintf("update-%d", i),
+			Version: 2,
+			Mutations: Mutations{UpsertEntities: []Entity{{
+				ID: "host:00000", Kind: "host", Fields: Fields{"state": "updated"},
+			}}},
+		}, ApplyOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}

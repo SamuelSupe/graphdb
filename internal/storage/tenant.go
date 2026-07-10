@@ -62,9 +62,12 @@ type TenantStore struct {
 	tenantLocks                map[string]*tenantLock
 	tenantRegistryMu           sync.Mutex
 	writeCache                 map[string]loadedGraph
+	writeCacheOrder            []string
+	writeCacheBytes            int64
 	writerLeaseCache           map[string]cachedWriterLease
 	registeredTenantCache      map[string]struct{}
 	collectorStatusCache       map[string]cachedCollectorStatus
+	readerHeartbeatCache       map[string]cachedReaderHeartbeat
 	objectKeyCache             map[string]struct{}
 	objectPrefixCache          map[string]struct{}
 	tenantMetadataCache        map[string]cachedTenantMetadata
@@ -76,9 +79,16 @@ type TenantStore struct {
 	taskMu                     sync.Mutex
 	indexTasks                 map[string]IndexTask
 	taskCancels                map[string]context.CancelFunc
+	taskActive                 map[string]Task
+	taskQueueSlots             chan struct{}
+	taskExecutionSlots         chan struct{}
+	taskTenantSlots            []chan struct{}
 	InstanceID                 string
+	ReaderID                   string
 	LeaseTTL                   time.Duration
 	MaxRetries                 int
+	MaxWriteCacheTenants       int
+	MaxWriteCacheBytes         int64
 	IndexFormat                string
 	WriteEntityRecords         bool
 	MaterializeCollectorStatus bool
@@ -88,9 +98,11 @@ type TenantStore struct {
 }
 
 type loadedGraph struct {
-	Graph    *graph.Graph
-	Manifest Manifest
-	Meta     ObjectMeta
+	Graph      *graph.Graph
+	Manifest   Manifest
+	Meta       ObjectMeta
+	DataMD5    string
+	CacheBytes int64
 }
 
 func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
@@ -106,6 +118,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		writerLeaseCache:           map[string]cachedWriterLease{},
 		registeredTenantCache:      map[string]struct{}{},
 		collectorStatusCache:       map[string]cachedCollectorStatus{},
+		readerHeartbeatCache:       map[string]cachedReaderHeartbeat{},
 		objectKeyCache:             map[string]struct{}{},
 		objectPrefixCache:          map[string]struct{}{},
 		tenantMetadataCache:        map[string]cachedTenantMetadata{},
@@ -116,9 +129,16 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		entityPageCache:            newEntityPageCache(2048),
 		indexTasks:                 map[string]IndexTask{},
 		taskCancels:                map[string]context.CancelFunc{},
+		taskActive:                 map[string]Task{},
+		taskQueueSlots:             make(chan struct{}, defaultTaskQueueLimit),
+		taskExecutionSlots:         make(chan struct{}, defaultTaskExecutionLimit),
+		taskTenantSlots:            newTaskTenantSlots(defaultTaskTenantStripes),
 		InstanceID:                 instanceID,
+		ReaderID:                   instanceID,
 		LeaseTTL:                   30 * time.Second,
 		MaxRetries:                 3,
+		MaxWriteCacheTenants:       64,
+		MaxWriteCacheBytes:         512 * 1024 * 1024,
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,
 	}
@@ -166,6 +186,9 @@ func (s *TenantStore) compactLocked(ctx context.Context, tenantID string) (Manif
 	}
 	g := loaded.Graph
 	manifest := loaded.Manifest
+	if manifestCommitTailLength(manifest) == 0 && manifest.Version == manifest.SnapshotVersion && manifest.SnapshotKey != "" && manifest.SnapshotCatalogKey != "" {
+		return manifest, nil
+	}
 	snapshot := g.Snapshot()
 	snapshotCatalog, err := s.putShardedSnapshot(ctx, tenantID, snapshot)
 	if err != nil {
@@ -190,6 +213,6 @@ func (s *TenantStore) compactLocked(ctx context.Context, tenantID string) (Manif
 		s.deleteWriteCache(tenantID)
 		return Manifest{}, err
 	}
-	s.setWriteCache(tenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta})
+	s.setWriteCache(tenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: loaded.DataMD5, CacheBytes: loaded.CacheBytes})
 	return manifest, nil
 }

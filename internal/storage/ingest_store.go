@@ -237,12 +237,16 @@ func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, 
 	key := s.collectorStatusKey(tenantID, request.Source, request.CollectorID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
 		status, meta, ok := s.getCachedCollectorStatus(key)
+		migrated := false
 		if !ok {
 			var err error
-			status, meta, err = s.loadCollectorStatusWithMeta(ctx, tenantID, request.Source, request.CollectorID)
+			status, meta, migrated, err = s.ensureMaterializedCollectorStatus(ctx, tenantID, request.Source, request.CollectorID)
 			if err != nil {
 				return err
 			}
+		}
+		if migrated || collectorStatusCoversResult(status, result) {
+			return nil
 		}
 		applyCollectorStatusResult(&status, tenantID, request, result, started, finished)
 		if nextMeta, err := s.putCollectorStatusWithMeta(ctx, key, status, meta); err == nil {
@@ -270,11 +274,11 @@ func (s *TenantStore) repairCollectorStatusAfterSkip(ctx context.Context, tenant
 	result := record.Result
 	key := s.collectorStatusKey(tenantID, request.Source, request.CollectorID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
-		status, meta, err := s.loadCollectorStatusWithMeta(ctx, tenantID, request.Source, request.CollectorID)
+		status, meta, migrated, err := s.ensureMaterializedCollectorStatus(ctx, tenantID, request.Source, request.CollectorID)
 		if err != nil {
 			return err
 		}
-		if collectorStatusCoversResult(status, result) || !collectorStatusCanRepairSkippedResult(status, meta, result) {
+		if migrated || collectorStatusCoversResult(status, result) || !collectorStatusCanRepairSkippedResult(status, meta, result) {
 			return nil
 		}
 		applyCollectorStatusResult(&status, tenantID, request, result, record.StartedAt, record.FinishedAt)
@@ -328,7 +332,7 @@ func (s *TenantStore) GetCollectorStatus(ctx context.Context, tenantID string, s
 		}
 		return status, err
 	}
-	status, _, err := s.loadCollectorStatusWithMeta(ctx, tenantID, source, collectorID)
+	status, _, _, err := s.ensureMaterializedCollectorStatus(ctx, tenantID, source, collectorID)
 	return status, err
 }
 

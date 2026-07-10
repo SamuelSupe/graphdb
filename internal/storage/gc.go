@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,7 @@ type GCOptions struct {
 	TaskMaxAge              time.Duration
 	CleanupIndexOrphans     bool
 	ReaderMaxAge            time.Duration
+	ReaderScanLimit         int
 	CheckpointCursor        string
 	MaxDeletes              int
 	DryRun                  bool
@@ -93,7 +95,7 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		}
 		return report, err
 	}
-	protection, err := s.gcReaderProtection(ctx, tenantID, options.ReaderMaxAge, time.Now().UTC())
+	protection, err := s.gcReaderProtection(ctx, tenantID, options.ReaderMaxAge, options.ReaderScanLimit, time.Now().UTC())
 	if err != nil {
 		return finish(err)
 	}
@@ -110,11 +112,16 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return finish(err)
 		}
 	}
-	deleted, keys, err := s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, protection, checkpoint)
-	report.DeletedSnapshots = deleted
-	report.DeletedKeys = append(report.DeletedKeys, keys...)
-	if err != nil {
-		return finish(err)
+	var deleted int
+	var keys []string
+	if options.TaskMaxAge > 0 {
+		cutoff := time.Now().UTC().Add(-options.TaskMaxAge)
+		taskReport := taskCleanupReport{}
+		if err := s.cleanupIndexTasksLocked(ctx, tenantID, cutoff, &taskReport, checkpoint); err != nil {
+			return finish(err)
+		}
+		report.DeletedIndexTasks = taskReport.DeletedIndexTasks
+		report.DeletedKeys = append(report.DeletedKeys, taskReport.DeletedKeys...)
 	}
 	if options.DeadLetterMaxAge > 0 {
 		deleted, keys, err = s.cleanupDeadLettersLocked(ctx, tenantID, options.DeadLetterMaxAge, checkpoint)
@@ -124,11 +131,18 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return finish(err)
 		}
 	}
+	deleted, keys, err = s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, protection, checkpoint)
+	report.DeletedSnapshots = deleted
+	report.DeletedKeys = append(report.DeletedKeys, keys...)
+	if err != nil {
+		return finish(err)
+	}
 	if options.TaskMaxAge > 0 {
-		taskReport, err := s.cleanupTasksLocked(ctx, tenantID, options.TaskMaxAge, checkpoint)
+		cutoff := time.Now().UTC().Add(-options.TaskMaxAge)
+		taskReport := taskCleanupReport{}
+		err := s.cleanupUnifiedTasksLocked(ctx, tenantID, cutoff, &taskReport, checkpoint)
 		report.DeletedTasks = taskReport.DeletedTasks
 		report.DeletedTaskResults = taskReport.DeletedTaskResults
-		report.DeletedIndexTasks = taskReport.DeletedIndexTasks
 		report.DeletedKeys = append(report.DeletedKeys, taskReport.DeletedKeys...)
 		if err != nil {
 			return finish(err)
@@ -161,14 +175,22 @@ func (p gcReaderProtection) activeReaderBehind(manifestVersion int64) bool {
 	return p.Active > 0 && p.Watermark > 0 && p.Watermark < manifestVersion
 }
 
-func (s *TenantStore) gcReaderProtection(ctx context.Context, tenantID string, maxAge time.Duration, now time.Time) (gcReaderProtection, error) {
+func (s *TenantStore) gcReaderProtection(ctx context.Context, tenantID string, maxAge time.Duration, scanLimit int, now time.Time) (gcReaderProtection, error) {
 	if maxAge < 0 {
 		return gcReaderProtection{}, nil
 	}
 	if maxAge == 0 {
 		maxAge = defaultGCReaderMaxAge
 	}
-	heartbeats, err := s.ListReaderHeartbeats(ctx, tenantID)
+	if scanLimit <= 0 {
+		scanLimit = readerHeartbeatScanLimit
+	}
+	heartbeats, err := s.ListReaderHeartbeatsWithOptions(ctx, tenantID, ReaderHeartbeatListOptions{
+		MaxAge:        maxAge,
+		Limit:         readerHeartbeatListLimit,
+		ScanLimit:     scanLimit,
+		DeleteExpired: true,
+	})
 	if err != nil {
 		return gcReaderProtection{}, err
 	}
@@ -209,7 +231,13 @@ func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string,
 	referenced := referencedCommits(manifest)
 	report.ReferencedKeys = len(referenced)
 	checkpoint.addPrefix(s.commitPrefix(tenantID))
-	scan, err := s.loadCommitObjects(ctx, tenantID, referenced)
+	commitPrefix := s.commitPrefix(tenantID)
+	cursor := checkpoint.options.CheckpointCursor
+	if cursor != "" && !strings.HasPrefix(cursor, commitPrefix) && cursor > commitPrefix {
+		return report, nil
+	}
+	pageLimit := checkpoint.scanPageLimit()
+	scan, err := s.loadCommitObjectsPage(ctx, tenantID, referenced, cursor, pageLimit)
 	if err != nil {
 		return report, err
 	}
@@ -229,6 +257,13 @@ func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string,
 			report.DeletedKeys = append(report.DeletedKeys, item.Key)
 		}
 	}
+	if checkpoint.checkpoint.Paused {
+		return report, errGCPaused
+	}
+	if scan.Truncated && !checkpoint.checkpoint.Paused {
+		checkpoint.pauseAt(scan.NextCursor)
+		return report, errGCPaused
+	}
 	if err := s.cleanupCommitSegmentsLocked(ctx, tenantID, manifest, referenced, &report, checkpoint); err != nil {
 		return report, err
 	}
@@ -236,10 +271,13 @@ func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string,
 }
 
 func (s *TenantStore) cleanupCommitSegmentsLocked(ctx context.Context, tenantID string, manifest Manifest, referenced map[string]struct{}, report *CleanupReport, checkpoint *gcCheckpointRunner) error {
-	checkpoint.addPrefix(s.commitSegmentPrefix(tenantID))
-	objects, err := s.Objects.List(ctx, s.commitSegmentPrefix(tenantID))
+	prefix := s.commitSegmentPrefix(tenantID)
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
 	if err != nil {
 		return err
+	}
+	if skip {
+		return nil
 	}
 	for _, object := range objects {
 		if _, ok := referenced[object.Key]; ok {
@@ -265,69 +303,77 @@ func (s *TenantStore) cleanupCommitSegmentsLocked(ctx context.Context, tenantID 
 			report.DeletedKeys = append(report.DeletedKeys, object.Key)
 		}
 	}
-	return nil
+	return checkpoint.pauseAfterPage(next)
 }
 
 func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID string, manifest Manifest, keepSnapshots int, protection gcReaderProtection, checkpoint *gcCheckpointRunner) (int, []string, error) {
 	if keepSnapshots < 1 {
 		keepSnapshots = 1
 	}
-	checkpoint.addPrefix(s.snapshotPrefix(tenantID))
-	objects, err := s.Objects.List(ctx, s.snapshotPrefix(tenantID))
-	if err != nil {
-		return 0, nil, err
+	// A reader can require the closest snapshot at or before its visible
+	// version. Conservatively defer snapshot retention while any reader is
+	// active instead of materializing every snapshot to rediscover that base.
+	if protection.Active > 0 {
+		return 0, nil, nil
 	}
 	type snapshotObject struct {
 		Key     string
 		Version int64
 	}
-	items := make([]snapshotObject, 0, len(objects))
+	prefix := s.snapshotPrefix(tenantID)
+	checkpoint.addPrefix(prefix)
+	deleted := 0
+	keys := make([]string, 0)
+	pageCursor := ""
+	if version, ok := shardedSnapshotVersionFromCursor(prefix, checkpoint.options.CheckpointCursor); ok {
+		shardedKeys, err := s.deleteShardedSnapshotVersionObjectsLocked(ctx, tenantID, version, checkpoint)
+		keys = append(keys, shardedKeys...)
+		if err != nil {
+			return deleted, keys, err
+		}
+		removed, err := checkpoint.deleteKeyIgnoringCursor(ctx, s.Objects, s.snapshotKey(tenantID, version))
+		if err != nil {
+			return deleted, keys, err
+		}
+		if removed {
+			deleted++
+			keys = append(keys, s.snapshotKey(tenantID, version))
+		}
+		if checkpoint.checkpoint.Paused {
+			return deleted, keys, errGCPaused
+		}
+		pageCursor = s.snapshotKey(tenantID, version)
+	} else {
+		var skip bool
+		pageCursor, skip = checkpoint.pageCursor(prefix)
+		if skip {
+			return 0, nil, nil
+		}
+	}
+	pageLimit := checkpoint.scanPageLimit()
+	if pageLimit > 0 {
+		pageLimit += keepSnapshots
+	}
+	objects, next, err := listObjectPage(ctx, s.Objects, prefix, pageCursor, pageLimit)
+	if err != nil {
+		return deleted, keys, err
+	}
+	items := make([]snapshotObject, 0, min(len(objects), pageLimit))
+	reachedSharded := false
 	for _, object := range objects {
+		if strings.HasPrefix(object.Key, prefix+"sharded/") {
+			reachedSharded = true
+			break
+		}
 		version, ok := snapshotIdentityFromKey(object.Key)
 		if !ok {
 			continue
 		}
 		items = append(items, snapshotObject{Key: object.Key, Version: version})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Version == items[j].Version {
-			return items[i].Key > items[j].Key
-		}
-		return items[i].Version > items[j].Version
-	})
-	keep := map[string]struct{}{}
-	if manifest.SnapshotKey != "" {
-		keep[manifest.SnapshotKey] = struct{}{}
-	}
-	for i, item := range items {
-		if i < keepSnapshots {
-			keep[item.Key] = struct{}{}
-		}
-	}
-	snapshotVersionProtected := map[int64]struct{}{}
-	for _, snapshotVersion := range protection.SnapshotVersions {
-		snapshotVersionProtected[snapshotVersion] = struct{}{}
-	}
-	for _, item := range items {
-		if _, ok := snapshotVersionProtected[item.Version]; ok {
-			keep[item.Key] = struct{}{}
-		}
-	}
-	for _, visibleVersion := range protection.VisibleVersions {
-		if _, ok := snapshotVersionProtected[visibleVersion]; ok {
-			continue
-		}
-		for _, item := range items {
-			if item.Version <= visibleVersion {
-				keep[item.Key] = struct{}{}
-				break
-			}
-		}
-	}
-	deleted := 0
-	keys := make([]string, 0)
-	for _, item := range items {
-		if _, ok := keep[item.Key]; ok {
+	safeCount := max(0, len(items)-keepSnapshots)
+	for _, item := range items[:safeCount] {
+		if item.Key == manifest.SnapshotKey {
 			continue
 		}
 		shardedKeys, err := s.deleteShardedSnapshotVersionObjectsLocked(ctx, tenantID, item.Version, checkpoint)
@@ -344,15 +390,28 @@ func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID strin
 			keys = append(keys, item.Key)
 		}
 	}
+	if checkpoint.checkpoint.Paused {
+		return deleted, keys, errGCPaused
+	}
+	if next != "" && !reachedSharded {
+		resume := pageCursor
+		if safeCount > 0 {
+			resume = items[safeCount-1].Key
+		}
+		checkpoint.pauseAt(resume)
+		return deleted, keys, errGCPaused
+	}
 	return deleted, keys, nil
 }
 
 func (s *TenantStore) deleteShardedSnapshotVersionObjectsLocked(ctx context.Context, tenantID string, version int64, checkpoint *gcCheckpointRunner) ([]string, error) {
 	prefix := s.snapshotVersionPrefix(tenantID, version) + "/"
-	checkpoint.addPrefix(prefix)
-	objects, err := s.Objects.List(ctx, prefix)
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
 	if err != nil {
 		return nil, err
+	}
+	if skip {
+		return nil, nil
 	}
 	keys := make([]string, 0, len(objects))
 	for _, object := range objects {
@@ -364,15 +423,33 @@ func (s *TenantStore) deleteShardedSnapshotVersionObjectsLocked(ctx context.Cont
 			keys = append(keys, object.Key)
 		}
 	}
+	if err := checkpoint.pauseAfterPage(next); err != nil {
+		return keys, err
+	}
 	return keys, nil
+}
+
+func shardedSnapshotVersionFromCursor(snapshotPrefix string, cursor string) (int64, bool) {
+	marker := snapshotPrefix + "sharded/v"
+	if !strings.HasPrefix(cursor, marker) {
+		return 0, false
+	}
+	rest := strings.TrimPrefix(cursor, marker)
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		rest = rest[:slash]
+	}
+	version, err := strconv.ParseInt(rest, 10, 64)
+	return version, err == nil && version >= 0
 }
 
 func (s *TenantStore) cleanupDeadLettersLocked(ctx context.Context, tenantID string, maxAge time.Duration, checkpoint *gcCheckpointRunner) (int, []string, error) {
 	prefix := s.tenantObjectPrefix(tenantID) + "ingest/"
-	checkpoint.addPrefix(prefix)
-	objects, err := s.Objects.List(ctx, prefix)
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
 	if err != nil {
 		return 0, nil, err
+	}
+	if skip {
+		return 0, nil, nil
 	}
 	cutoff := time.Now().UTC().Add(-maxAge)
 	deleted := 0
@@ -411,6 +488,9 @@ func (s *TenantStore) cleanupDeadLettersLocked(ctx context.Context, tenantID str
 			deleted++
 			keys = append(keys, object.Key)
 		}
+	}
+	if err := checkpoint.pauseAfterPage(next); err != nil {
+		return deleted, keys, err
 	}
 	return deleted, keys, nil
 }
@@ -455,25 +535,15 @@ type taskCleanupReport struct {
 	DeletedKeys        []string
 }
 
-func (s *TenantStore) cleanupTasksLocked(ctx context.Context, tenantID string, maxAge time.Duration, checkpoint *gcCheckpointRunner) (taskCleanupReport, error) {
-	cutoff := time.Now().UTC().Add(-maxAge)
-	report := taskCleanupReport{}
-	if err := s.cleanupUnifiedTasksLocked(ctx, tenantID, cutoff, &report, checkpoint); err != nil {
-		return report, err
-	}
-	if err := s.cleanupIndexTasksLocked(ctx, tenantID, cutoff, &report, checkpoint); err != nil {
-		return report, err
-	}
-	return report, nil
-}
-
 func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID string, cutoff time.Time, report *taskCleanupReport, checkpoint *gcCheckpointRunner) error {
-	checkpoint.addPrefix(s.taskPrefix(tenantID))
-	objects, err := s.Objects.List(ctx, s.taskPrefix(tenantID))
+	prefix := s.taskPrefix(tenantID)
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
 	if err != nil {
 		return err
 	}
-	prefix := s.taskPrefix(tenantID)
+	if skip {
+		return nil
+	}
 	for _, object := range objects {
 		rest := strings.TrimPrefix(object.Key, prefix)
 		if strings.Contains(rest, "/") {
@@ -522,14 +592,17 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 			report.DeletedKeys = append(report.DeletedKeys, object.Key)
 		}
 	}
-	return nil
+	return checkpoint.pauseAfterPage(next)
 }
 
 func (s *TenantStore) cleanupIndexTasksLocked(ctx context.Context, tenantID string, cutoff time.Time, report *taskCleanupReport, checkpoint *gcCheckpointRunner) error {
-	checkpoint.addPrefix(s.indexTaskPrefix(tenantID))
-	objects, err := s.Objects.List(ctx, s.indexTaskPrefix(tenantID))
+	prefix := s.indexTaskPrefix(tenantID)
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
 	if err != nil {
 		return err
+	}
+	if skip {
+		return nil
 	}
 	for _, object := range objects {
 		taskID, ok := indexTaskIDFromKey(object.Key)
@@ -555,7 +628,7 @@ func (s *TenantStore) cleanupIndexTasksLocked(ctx context.Context, tenantID stri
 			report.DeletedKeys = append(report.DeletedKeys, object.Key)
 		}
 	}
-	return nil
+	return checkpoint.pauseAfterPage(next)
 }
 
 func taskStillActive(task Task) bool {

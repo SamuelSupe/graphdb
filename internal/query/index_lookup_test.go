@@ -139,7 +139,9 @@ func (l *countingLazyMatchLookup) GetEntity(_ context.Context, id string, _ []st
 type pageScanLookup struct {
 	entities []graph.Entity
 	fields   []string
+	afterID  string
 	calls    int
+	visited  int
 }
 
 func (l *pageScanLookup) MatchFieldIndex(context.Context, string, string, []any) ([]string, bool, error) {
@@ -154,16 +156,27 @@ func (l *pageScanLookup) GetEntity(context.Context, string, []string) (graph.Ent
 	return graph.Entity{}, false, nil
 }
 
-func (l *pageScanLookup) ListEntities(_ context.Context, kind string, fields []string) ([]graph.Entity, bool, error) {
+func (l *pageScanLookup) VisitEntities(_ context.Context, kind string, fields []string, afterID string, visit func(graph.Entity) (bool, error)) (bool, error) {
 	l.calls++
 	l.fields = append([]string(nil), fields...)
-	out := make([]graph.Entity, 0, len(l.entities))
+	l.afterID = afterID
 	for _, entity := range l.entities {
-		if kind == "" || entity.Kind == kind {
-			out = append(out, entity)
+		if kind != "" && entity.Kind != kind {
+			continue
+		}
+		if afterID != "" && entity.ID < afterID {
+			continue
+		}
+		l.visited++
+		keepGoing, err := visit(entity)
+		if err != nil {
+			return false, err
+		}
+		if !keepGoing {
+			return true, nil
 		}
 	}
-	return out, true, nil
+	return true, nil
 }
 
 type driftingEdgeLookup struct {
@@ -198,6 +211,29 @@ func (l *driftingEdgeLookup) GetEntity(_ context.Context, id string, _ []string)
 type countingOutEdgeLookup struct {
 	edges []graph.Edge
 	calls []string
+}
+
+type adjacencyLookup struct {
+	entities map[string]graph.Entity
+	edges    map[string][]graph.Edge
+	calls    map[string]int
+}
+
+func (l *adjacencyLookup) MatchFieldIndex(context.Context, string, string, []any) ([]string, bool, error) {
+	return nil, false, nil
+}
+
+func (l *adjacencyLookup) OutEdges(_ context.Context, from string, _ map[string]struct{}) ([]graph.Edge, bool, error) {
+	if l.calls == nil {
+		l.calls = map[string]int{}
+	}
+	l.calls[from]++
+	return append([]graph.Edge(nil), l.edges[from]...), true, nil
+}
+
+func (l *adjacencyLookup) GetEntity(_ context.Context, id string, _ []string) (graph.Entity, bool, error) {
+	entity, ok := l.entities[id]
+	return entity, ok, nil
 }
 
 func (l *countingOutEdgeLookup) MatchFieldIndex(context.Context, string, string, []any) ([]string, bool, error) {
@@ -409,6 +445,143 @@ func TestLazyKindScanUsesEntityPagesForFuzzyMatch(t *testing.T) {
 	}
 	if response.Results[0].Fields["owner"] != "platform" {
 		t.Fatalf("projection = %#v", response.Results[0].Fields)
+	}
+}
+
+func TestLazyKindScanStopsAfterLimitLookahead(t *testing.T) {
+	g := graph.New()
+	g.Version = 1
+	lookup := &pageScanLookup{}
+	for i := 0; i < 100; i++ {
+		lookup.entities = append(lookup.entities, graph.Entity{ID: fmt.Sprintf("service:%03d", i), Kind: "service"})
+	}
+	response, err := ExecuteContextWithOptions(context.Background(), g, Request{Op: "match", Kind: "service", Limit: 2}, ExecuteOptions{
+		PlannerStats: PlannerStats{Version: 1, EntityPages: []PlannerEntityPageStat{{Shard: "00", EntityCount: 100}}},
+		IndexLookup:  lookup,
+		EntityLookup: lookup,
+	})
+	if err != nil {
+		t.Fatalf("lazy kind scan: %v", err)
+	}
+	if len(response.Results) != 2 || response.NextCursor == "" {
+		t.Fatalf("response = %#v, want two results and next cursor", response)
+	}
+	if lookup.visited != 3 {
+		t.Fatalf("visited = %d, want limit+1", lookup.visited)
+	}
+}
+
+func TestLazyKindScanSecondPageStartsAtCursorEntity(t *testing.T) {
+	g := graph.New()
+	g.Version = 1
+	lookup := &pageScanLookup{}
+	for i := 0; i < 8; i++ {
+		lookup.entities = append(lookup.entities, graph.Entity{ID: fmt.Sprintf("service:%02d", i), Kind: "service"})
+	}
+	request := Request{Op: "match", Kind: "service", Limit: 2}
+	options := ExecuteOptions{
+		PlannerStats: PlannerStats{Version: 1, EntityPages: []PlannerEntityPageStat{{Shard: "00", EntityCount: len(lookup.entities)}}},
+		IndexLookup:  lookup,
+		EntityLookup: lookup,
+	}
+	first, err := ExecuteContextWithOptions(context.Background(), g, request, options)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("first page missing cursor")
+	}
+	lookup.visited = 0
+	request.Cursor = first.NextCursor
+	second, err := ExecuteContextWithOptions(context.Background(), g, request, options)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if lookup.afterID != "service:01" {
+		t.Fatalf("visitor after id = %q, want service:01", lookup.afterID)
+	}
+	if lookup.visited != 4 {
+		t.Fatalf("second page visited = %d, want cursor + page + lookahead", lookup.visited)
+	}
+	if len(second.Results) != 2 || second.Results[0].Entity.ID != "service:02" || second.Results[1].Entity.ID != "service:03" {
+		t.Fatalf("second page results = %#v", second.Results)
+	}
+}
+
+func TestShortestPathExpandsDiamondNodeOnce(t *testing.T) {
+	ids := []string{"start", "left", "right", "merge", "leaf", "target"}
+	lookup := &adjacencyLookup{entities: map[string]graph.Entity{}, edges: map[string][]graph.Edge{}}
+	for _, id := range ids {
+		lookup.entities[id] = graph.Entity{ID: id, Kind: "node"}
+	}
+	add := func(from, to string) {
+		lookup.edges[from] = append(lookup.edges[from], graph.Edge{ID: from + "->" + to, Type: "links", From: from, To: to})
+	}
+	add("start", "left")
+	add("start", "right")
+	add("left", "merge")
+	add("right", "merge")
+	add("merge", "leaf")
+	g := graph.New()
+	g.Version = 1
+	response, err := ExecuteContextWithOptions(context.Background(), g, Request{
+		Op: "shortest_path", ID: "start", TargetID: "target", Direction: "out", Depth: 4,
+	}, ExecuteOptions{
+		PlannerStats: PlannerStats{Version: 1, EntityPages: []PlannerEntityPageStat{{Shard: "00", EntityCount: len(ids)}}, EdgeShards: []PlannerEdgeStat{{RelationType: "links", Shard: "00", EdgeCount: 5}}},
+		IndexLookup:  lookup,
+		EntityLookup: lookup,
+	})
+	if err != nil {
+		t.Fatalf("shortest path: %v", err)
+	}
+	if len(response.Results) != 0 {
+		t.Fatalf("results = %#v, want none", response.Results)
+	}
+	if lookup.calls["merge"] != 1 {
+		t.Fatalf("merge expansions = %d, want 1", lookup.calls["merge"])
+	}
+}
+
+func TestSteppedShortestPathKeepsDistinctCycleHistories(t *testing.T) {
+	ids := []string{"start", "a", "b", "x", "target"}
+	lookup := &adjacencyLookup{entities: map[string]graph.Entity{}, edges: map[string][]graph.Edge{}}
+	for _, id := range ids {
+		lookup.entities[id] = graph.Entity{ID: id, Kind: "node"}
+	}
+	add := func(from, to string) {
+		lookup.edges[from] = append(lookup.edges[from], graph.Edge{ID: from + "->" + to, Type: "links", From: from, To: to})
+	}
+	add("start", "a")
+	add("start", "b")
+	add("a", "x")
+	add("a", "target")
+	add("b", "x")
+	add("x", "a")
+	g := graph.New()
+	g.Version = 1
+	response, err := ExecuteContextWithOptions(context.Background(), g, Request{
+		Op: "shortest_path", ID: "start", TargetID: "target", Direction: "out", Depth: 4,
+		Path: PathFilter{Steps: make([]PathStep, 4)},
+	}, ExecuteOptions{
+		PlannerStats: PlannerStats{Version: 1, EntityPages: []PlannerEntityPageStat{{Shard: "00", EntityCount: len(ids)}}, EdgeShards: []PlannerEdgeStat{{RelationType: "links", Shard: "00", EdgeCount: 6}}},
+		IndexLookup:  lookup,
+		EntityLookup: lookup,
+	})
+	if err != nil {
+		t.Fatalf("shortest path: %v", err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Path == nil {
+		t.Fatalf("results = %#v, want one path", response.Results)
+	}
+	path := response.Results[0].Path
+	want := []string{"start", "b", "x", "a", "target"}
+	if len(path.Entities) != len(want) {
+		t.Fatalf("path entities = %#v, want %v", path.Entities, want)
+	}
+	for i, entity := range path.Entities {
+		if entity.ID != want[i] {
+			t.Fatalf("path[%d] = %q, want %q", i, entity.ID, want[i])
+		}
 	}
 }
 

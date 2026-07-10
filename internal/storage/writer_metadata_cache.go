@@ -2,6 +2,11 @@ package storage
 
 import "graphdb/internal/graph"
 
+const (
+	maxWriterMetadataCacheEntries = 4_096
+	maxIndexCatalogCacheEntries   = 512
+)
+
 type cachedSourcePolicy struct {
 	policy     graph.SourcePolicy
 	configured bool
@@ -38,6 +43,7 @@ func (s *TenantStore) getCachedSourcePolicy(tenantID string) (graph.SourcePolicy
 func (s *TenantStore) setCachedSourcePolicy(tenantID string, policy graph.SourcePolicy, configured bool, meta ObjectMeta) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	evictOneCacheEntry(s.sourcePolicyCache, tenantID, maxWriterMetadataCacheEntries)
 	s.sourcePolicyCache[tenantID] = cachedSourcePolicy{policy: copySourcePolicy(policy), configured: configured, meta: meta}
 }
 
@@ -60,6 +66,7 @@ func (s *TenantStore) getCachedTenantConfig(tenantID string) (TenantConfig, bool
 func (s *TenantStore) setCachedTenantConfig(tenantID string, config TenantConfig, configured bool, meta ObjectMeta) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	evictOneCacheEntry(s.tenantConfigCache, tenantID, maxWriterMetadataCacheEntries)
 	s.tenantConfigCache[tenantID] = cachedTenantConfig{config: config, configured: configured, meta: meta}
 }
 
@@ -82,6 +89,7 @@ func (s *TenantStore) getCachedTenantMetadata(tenantID string) (TenantMetadata, 
 func (s *TenantStore) setCachedTenantMetadata(tenantID string, metadata TenantMetadata, configured bool, meta ObjectMeta) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	evictOneCacheEntry(s.tenantMetadataCache, tenantID, maxWriterMetadataCacheEntries)
 	s.tenantMetadataCache[tenantID] = cachedTenantMetadata{metadata: metadata, configured: configured, meta: meta}
 }
 
@@ -139,7 +147,18 @@ func (s *TenantStore) getCachedIndexCatalog(tenantID string) (IndexCatalog, Obje
 func (s *TenantStore) setCachedIndexCatalog(tenantID string, catalog IndexCatalog, meta ObjectMeta) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	evictOneCacheEntry(s.indexCatalogCache, tenantID, maxIndexCatalogCacheEntries)
 	s.indexCatalogCache[tenantID] = cachedIndexCatalog{catalog: copyIndexCatalog(catalog), meta: meta}
+}
+
+func evictOneCacheEntry[T any](cache map[string]T, incoming string, max int) {
+	if _, exists := cache[incoming]; exists || len(cache) < max {
+		return
+	}
+	for key := range cache {
+		delete(cache, key)
+		return
+	}
 }
 
 func (s *TenantStore) deleteCachedIndexCatalog(tenantID string) {

@@ -42,6 +42,7 @@ func run(args []string) error {
 		objects = storage.NewWriterObjectCache(objects, cfg.WriterObjectCacheConfig())
 	}
 	store := storage.NewTenantStore(objects, cfg.Prefix)
+	store.MaxWriteCacheBytes = cfg.WriteCacheMaxBytes
 	store.WriteEntityRecords = cfg.IndexEntityRecords
 	store.MaterializeCollectorStatus = cfg.IngestCollectorStatusMaterialized
 	store.ConfigureIndexObjectCache(storage.IndexObjectCacheConfig{
@@ -50,6 +51,9 @@ func run(args []string) error {
 	})
 	if cfg.InstanceID != "" {
 		store.InstanceID = cfg.InstanceID
+		store.ReaderID = cfg.InstanceID
+	} else if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		store.ReaderID = fmt.Sprintf("%s|%s|%s|%s", hostname, cfg.Mode, cfg.Addr, cfg.Prefix)
 	}
 	store.Backpressure = pressure
 
@@ -185,7 +189,7 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 	store.BackpressureObserver = obs.Metrics
 	store.CacheObserver = obs.Metrics
 	obs.StartIndexHealthMonitor(ctx, cfg.IndexHealthInterval, func(checkCtx context.Context, tenantID string) (string, int, error) {
-		health, err := store.IndexHealth(checkCtx, tenantID)
+		health, err := store.IndexHealthWithOptions(checkCtx, tenantID, storage.IndexHealthOptions{})
 		if err != nil {
 			return "error", 1, err
 		}
