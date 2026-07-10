@@ -767,6 +767,12 @@ Error contract:
   and sets the value to `false`. This does not modify the deployment environment
   after a restart. Restrict this process-level control endpoint to trusted
   operators at the network boundary.
+- Go runtime profiles are available through the standard `net/http/pprof`
+  endpoints: `GET /debug/pprof/`, `GET /debug/pprof/heap?gc=1`,
+  `GET /debug/pprof/profile?seconds=30`, and
+  `GET /debug/pprof/trace?seconds=1`. These process-wide endpoints can expose
+  stack traces, command-line arguments, and memory details, so expose them only
+  on a trusted operator network.
 - `GRAPHDB_SLOW_QUERY_THRESHOLD` controls slow query logging. Set it to `0` to
   disable slow query classification.
 - `GRAPHDB_INDEX_HEALTH_INTERVAL` controls background health sampling for

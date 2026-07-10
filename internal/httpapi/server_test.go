@@ -89,6 +89,22 @@ func TestHTTPOpenAPIContractRoute(t *testing.T) {
 	}
 }
 
+func TestHTTPPprofEndpoints(t *testing.T) {
+	handler := (&Server{Mode: "all"}).Handler()
+
+	index := httptest.NewRecorder()
+	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
+	if index.Code != http.StatusOK || !strings.Contains(index.Body.String(), "Types of profiles available") {
+		t.Fatalf("pprof index status=%d body=%s", index.Code, index.Body.String())
+	}
+
+	heap := httptest.NewRecorder()
+	handler.ServeHTTP(heap, httptest.NewRequest(http.MethodGet, "/debug/pprof/heap?debug=1", nil))
+	if heap.Code != http.StatusOK || !strings.Contains(heap.Body.String(), "heap profile:") {
+		t.Fatalf("pprof heap status=%d body=%s", heap.Code, heap.Body.String())
+	}
+}
+
 func TestHTTPDatadogProfilingControl(t *testing.T) {
 	profiler := &fakeDatadogProfiler{}
 	handler := (&Server{Mode: "all", DatadogProfiler: profiler}).Handler()

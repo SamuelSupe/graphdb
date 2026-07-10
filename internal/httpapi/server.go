@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"strings"
 	"sync"
@@ -59,6 +60,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /openapi.yaml", s.openAPI)
+	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	mux.HandleFunc("/v1/tenants", s.tenantLifecycle)
 	mux.HandleFunc("/v1/tenants/", s.tenantLifecycle)
 	mux.HandleFunc("GET /v1/tenant-usage", s.tenantUsage)
