@@ -169,6 +169,17 @@ func serve(cfg config.Config, store *storage.TenantStore) error {
 }
 
 func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantStore) error {
+	datadogProfiler, err := observability.NewDatadogProfilerController(observability.DatadogProfilerConfig{
+		Enabled:     cfg.DatadogProfilingEnabled,
+		ServiceName: cfg.DatadogServiceName,
+		Environment: cfg.DatadogEnvironment,
+		Version:     cfg.DatadogVersion,
+	})
+	if err != nil {
+		return err
+	}
+	defer datadogProfiler.Stop()
+
 	shutdownTrace, err := observability.SetupOTLP(ctx, observability.TraceConfig{
 		Endpoint:    cfg.OTLPEndpoint,
 		Insecure:    cfg.OTLPInsecure,
@@ -211,13 +222,14 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		WriteExecutionTimeout: cfg.WriteExecutionTimeout,
 		ReaderCatchupTimeout:  cfg.ReaderCatchupTimeout,
 		Observability:         obs,
+		DatadogProfiler:       datadogProfiler,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
 	}
 	api.StartMaintenanceLoop(ctx, cfg.MaintenanceInterval)
 	server := newHTTPServer(cfg, api)
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "mode": cfg.Mode, "storage": cfg.StoreKind, "prefix": cfg.Prefix,
-		"otlp_enabled": cfg.OTLPEndpoint != "",
+		"otlp_enabled": cfg.OTLPEndpoint != "", "datadog_profiling_enabled": cfg.DatadogProfilingEnabled,
 	})
 	return runHTTPServer(ctx, server, httpShutdownTimeout)
 }
@@ -342,6 +354,12 @@ Environment:
   GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
   GRAPHDB_OTLP_INSECURE=true
   GRAPHDB_SERVICE_NAME=graphdb
+  DD_PROFILING_ENABLED=false
+  DD_AGENT_HOST=datadog-agent
+  DD_TRACE_AGENT_PORT=8126
+  DD_SERVICE=graphdb
+  DD_ENV=production
+  DD_VERSION=2026.07.10
   S3_ENDPOINT=http://localhost:9000
   S3_BUCKET=graphdb
   S3_PATH_STYLE=false

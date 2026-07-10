@@ -526,6 +526,7 @@ Control endpoints:
 - `POST /v1/control/recover`
 - `POST /v1/control/repair`
 - `POST /v1/control/cleanup-commits`
+- `POST /v1/control/profiling`
 
 `reader-freshness` reports writer manifest version, reader-visible version,
 version lag, lag age, cache state, and commit tail replay status. Readers return
@@ -755,6 +756,17 @@ Error contract:
   commit execution, graph load, commit-tail replay, manifest CAS write, index
   update, and object-store operations so slow writes can be broken down by
   phase.
+- `DD_PROFILING_ENABLED=true` starts the Datadog continuous profiler for the
+  `serve` command. It initializes only `dd-trace-go/v2/profiler`; it does not
+  import or start the Datadog tracer. `DD_SERVICE`, `DD_ENV`, and `DD_VERSION`
+  set the profile's service identity. Datadog Agent or agentless upload settings
+  continue to use the standard `DD_*` variables.
+- `POST /v1/control/profiling` accepts `{"enabled":true|false}` to control the
+  profiler for the current process. Enabling sets that process's
+  `DD_PROFILING_ENABLED=true` before starting the profiler; disabling stops it
+  and sets the value to `false`. This does not modify the deployment environment
+  after a restart. Restrict this process-level control endpoint to trusted
+  operators at the network boundary.
 - `GRAPHDB_SLOW_QUERY_THRESHOLD` controls slow query logging. Set it to `0` to
   disable slow query classification.
 - `GRAPHDB_INDEX_HEALTH_INTERVAL` controls background health sampling for

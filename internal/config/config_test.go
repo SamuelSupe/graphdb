@@ -382,6 +382,44 @@ func TestLoadRejectsInvalidOTLPInsecure(t *testing.T) {
 	}
 }
 
+func TestLoadParsesDatadogProfilingConfig(t *testing.T) {
+	setLocalConfigEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if cfg.DatadogProfilingEnabled {
+		t.Fatal("DatadogProfilingEnabled = true by default, want false")
+	}
+	if cfg.DatadogServiceName != "graphdb" {
+		t.Fatalf("DatadogServiceName = %q, want graphdb", cfg.DatadogServiceName)
+	}
+
+	t.Setenv("DD_PROFILING_ENABLED", "true")
+	t.Setenv("DD_SERVICE", "graphdb-profile")
+	t.Setenv("DD_ENV", "staging")
+	t.Setenv("DD_VERSION", "2026.07.10")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DatadogProfilingEnabled {
+		t.Fatal("DatadogProfilingEnabled = false, want true")
+	}
+	if cfg.DatadogServiceName != "graphdb-profile" || cfg.DatadogEnvironment != "staging" || cfg.DatadogVersion != "2026.07.10" {
+		t.Fatalf("datadog profiling config = %#v", cfg)
+	}
+}
+
+func TestLoadRejectsInvalidDatadogProfilingToggle(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("DD_PROFILING_ENABLED", "sometimes")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "DD_PROFILING_ENABLED must be a boolean") {
+		t.Fatalf("Load err = %v, want Datadog profiling bool validation", err)
+	}
+}
+
 func TestLoadParsesS3PathStyle(t *testing.T) {
 	setLocalConfigEnv(t)
 	cfg, err := Load()
@@ -488,6 +526,10 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_OTLP_ENDPOINT", "")
 	t.Setenv("GRAPHDB_OTLP_INSECURE", "")
 	t.Setenv("GRAPHDB_SERVICE_NAME", "")
+	t.Setenv("DD_PROFILING_ENABLED", "")
+	t.Setenv("DD_SERVICE", "")
+	t.Setenv("DD_ENV", "")
+	t.Setenv("DD_VERSION", "")
 	t.Setenv("GRAPHDB_INSTANCE_ID", "")
 	t.Setenv("S3_PATH_STYLE", "")
 }

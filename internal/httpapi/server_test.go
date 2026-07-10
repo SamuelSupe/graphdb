@@ -16,9 +16,29 @@ import (
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
+
+type fakeDatadogProfiler struct {
+	enabled bool
+	calls   []bool
+	err     error
+}
+
+func (p *fakeDatadogProfiler) SetEnabled(enabled bool) (observability.DatadogProfilerStatus, error) {
+	p.calls = append(p.calls, enabled)
+	if p.err != nil {
+		return p.Status(), p.err
+	}
+	p.enabled = enabled
+	return p.Status(), nil
+}
+
+func (p *fakeDatadogProfiler) Status() observability.DatadogProfilerStatus {
+	return observability.DatadogProfilerStatus{Enabled: p.enabled, DDProfilingEnabled: p.enabled}
+}
 
 func TestHTTPCommitGetAndTenantIsolation(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
@@ -66,6 +86,39 @@ func TestHTTPOpenAPIContractRoute(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "/v1/commits:") || !strings.Contains(body, "WriteBackpressureError:") {
 		t.Fatalf("openapi body missing required contract snippets: %s", body)
+	}
+}
+
+func TestHTTPDatadogProfilingControl(t *testing.T) {
+	profiler := &fakeDatadogProfiler{}
+	handler := (&Server{Mode: "all", DatadogProfiler: profiler}).Handler()
+
+	rr := serveJSON(handler, http.MethodPost, "/v1/control/profiling", "", map[string]bool{"enabled": true})
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"enabled":true`) || !strings.Contains(rr.Body.String(), `"dd_profiling_enabled":true`) {
+		t.Fatalf("enable status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(profiler.calls) != 1 || !profiler.calls[0] {
+		t.Fatalf("enable calls=%v", profiler.calls)
+	}
+
+	rr = serveJSON(handler, http.MethodPost, "/v1/control/profiling", "", map[string]bool{"enabled": false})
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"enabled":false`) || !strings.Contains(rr.Body.String(), `"dd_profiling_enabled":false`) {
+		t.Fatalf("disable status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(profiler.calls) != 2 || profiler.calls[1] {
+		t.Fatalf("disable calls=%v", profiler.calls)
+	}
+}
+
+func TestHTTPDatadogProfilingControlRejectsInvalidRequests(t *testing.T) {
+	handler := (&Server{Mode: "all", DatadogProfiler: &fakeDatadogProfiler{}}).Handler()
+	if rr := serveJSON(handler, http.MethodPost, "/v1/control/profiling", "", map[string]bool{}); rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing enabled status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	handler = (&Server{Mode: "all"}).Handler()
+	if rr := serveJSON(handler, http.MethodPost, "/v1/control/profiling", "", map[string]bool{"enabled": true}); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 
