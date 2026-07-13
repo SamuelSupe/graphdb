@@ -13,6 +13,8 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type GQLQueryRequest struct {
@@ -34,6 +36,7 @@ func (s *Server) query(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &request, maxQueryRequestBytes) {
 		return
 	}
+	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(request)...)
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, "POST /v1/query", r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
@@ -57,6 +60,7 @@ func (s *Server) queryGQL(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(request)...)
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, "POST /v1/query/gql", r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
@@ -80,18 +84,28 @@ func (s *Server) queryGQLStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(request)...)
 	s.executeQueryStream(w, r, tenantID, request, "POST /v1/query/gql/stream")
 }
 
 func decodeGQLQueryRequest(w http.ResponseWriter, r *http.Request) (query.Request, bool) {
 	contentType := strings.ToLower(r.Header.Get("Content-Type"))
 	if strings.HasPrefix(contentType, "text/plain") || strings.HasPrefix(contentType, "application/gql") {
+		_, span := startAPIPhase(r.Context(), "decode_request", traceRequestAttributes(r, maxQueryRequestBytes)...)
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxQueryRequestBytes))
 		if err != nil {
+			endHTTPSpan(span, err)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return query.Request{}, false
 		}
-		request, err := query.ParseGQL(string(data))
+		if span != nil {
+			span.SetAttributes(
+				attribute.Bool("graphdb.request.decoded", true),
+				attribute.Int("graphdb.request.body_bytes", len(data)),
+			)
+		}
+		endHTTPSpan(span, nil)
+		request, err := parseGQLRequest(r.Context(), string(data))
 		if err != nil {
 			writeQueryError(w, err)
 			return query.Request{}, false
@@ -106,7 +120,7 @@ func decodeGQLQueryRequest(w http.ResponseWriter, r *http.Request) (query.Reques
 		writeError(w, http.StatusBadRequest, "gql query is required")
 		return query.Request{}, false
 	}
-	request, err := query.ParseGQL(body.Query)
+	request, err := parseGQLRequest(r.Context(), body.Query)
 	if err != nil {
 		writeQueryError(w, err)
 		return query.Request{}, false
@@ -120,6 +134,12 @@ func decodeGQLQueryRequest(w http.ResponseWriter, r *http.Request) (query.Reques
 	return request, true
 }
 
+func parseGQLRequest(ctx context.Context, gql string) (request query.Request, err error) {
+	_, span := startAPIPhase(ctx, "parse_gql", attribute.Int("graphdb.query.gql_bytes", len(gql)))
+	defer func() { endHTTPSpan(span, err) }()
+	return query.ParseGQL(gql)
+}
+
 func (s *Server) queryStream(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantFromRequest(w, r)
 	if !ok {
@@ -129,6 +149,7 @@ func (s *Server) queryStream(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &request, maxQueryRequestBytes) {
 		return
 	}
+	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(request)...)
 	s.executeQueryStream(w, r, tenantID, request, "POST /v1/query/stream")
 }
 
@@ -138,7 +159,7 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
 	r = r.WithContext(withQueryReadMemo(ctx))
 	start := time.Now()
-	release, err := s.Admission.Acquire(r.Context(), tenantID)
+	release, err := s.acquireQuery(r.Context(), tenantID)
 	if err != nil {
 		s.observeQuery(tenantID, request, query.Response{}, err, time.Since(start))
 		writeQueryError(w, err)
@@ -155,11 +176,18 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 		writeQueryError(w, err)
 		return
 	}
+	_ = encodeMaterializedQueryStream(w, r, response)
+}
+
+func encodeMaterializedQueryStream(w http.ResponseWriter, r *http.Request, response query.Response) (err error) {
+	ctx, span := startAPIPhase(r.Context(), "encode_stream", queryResponseTraceAttributes(response)...)
+	defer func() { endHTTPSpan(span, err) }()
+	r = r.WithContext(ctx)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
 	stats := response.Stats
-	if err := encodeStreamItem(r.Context(), encoder, query.StreamMeta{
+	if err = encodeStreamItem(r.Context(), encoder, query.StreamMeta{
 		Version:    response.Version,
 		NextCursor: response.NextCursor,
 		Stats:      &stats,
@@ -168,14 +196,14 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 		Plan:       response.Plan,
 		Profile:    response.Profile,
 	}, flush); err != nil {
-		return
+		return err
 	}
 	for _, result := range response.Results {
-		if err := encodeStreamItem(r.Context(), encoder, result, flush); err != nil {
-			return
+		if err = encodeStreamItem(r.Context(), encoder, result, flush); err != nil {
+			return err
 		}
 	}
-	_ = encodeStreamItem(r.Context(), encoder, query.StreamMeta{
+	err = encodeStreamItem(r.Context(), encoder, query.StreamMeta{
 		Version:    response.Version,
 		NextCursor: response.NextCursor,
 		Stats:      &stats,
@@ -184,9 +212,25 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 		Profile:    response.Profile,
 		Done:       true,
 	}, flush)
+	return err
 }
 
-func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Request, tenantID string, request query.Request) (bool, error) {
+func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Request, tenantID string, request query.Request) (handled bool, resultErr error) {
+	ctx, span := startAPIPhase(r.Context(), "execute_lazy_stream", append([]attribute.KeyValue{
+		attribute.String("graphdb.tenant", tenantID),
+	}, queryRequestTraceAttributes(request)...)...)
+	r = r.WithContext(ctx)
+	started := false
+	defer func() {
+		if span != nil {
+			span.SetAttributes(
+				attribute.Bool("graphdb.query.lazy_stream.handled", handled),
+				attribute.Bool("graphdb.query.lazy_stream.started", started),
+			)
+		}
+		endHTTPSpan(span, resultErr)
+	}()
+
 	target, err := s.readTarget(r, tenantID, queryReadFreshness(request))
 	if err != nil {
 		writeQueryError(w, err)
@@ -200,7 +244,6 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 	g.Version = version
 	encoder := json.NewEncoder(w)
 	flush := streamFlush(w)
-	started := false
 	ok, err = query.StreamContextWithOptions(r.Context(), g, request, options, func(item any) error {
 		if !started {
 			w.Header().Set("Content-Type", "application/x-ndjson")
@@ -298,6 +341,7 @@ func (s *Server) runQueryTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(saved.Request)...)
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, saved.Request, "POST /v1/query/templates/{name}/run", r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
@@ -328,7 +372,7 @@ func queryTemplateNameFromPath(r *http.Request) (string, error) {
 
 func (s *Server) executeQuery(r *http.Request, tenantID string, request query.Request) (query.Response, error) {
 	r = r.WithContext(withQueryReadMemo(r.Context()))
-	release, err := s.Admission.Acquire(r.Context(), tenantID)
+	release, err := s.acquireQuery(r.Context(), tenantID)
 	if err != nil {
 		return query.Response{}, err
 	}
@@ -336,21 +380,40 @@ func (s *Server) executeQuery(r *http.Request, tenantID string, request query.Re
 	return s.executeQueryAdmitted(r, tenantID, request)
 }
 
-func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request query.Request) (query.Response, error) {
+func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request query.Request) (response query.Response, err error) {
+	ctx, span := startAPIPhase(r.Context(), "execute_query", append([]attribute.KeyValue{
+		attribute.String("graphdb.tenant", tenantID),
+	}, queryRequestTraceAttributes(request)...)...)
+	r = r.WithContext(ctx)
+	defer func() {
+		if span != nil {
+			span.SetAttributes(queryResponseTraceAttributes(response)...)
+		}
+		endHTTPSpan(span, err)
+	}()
+
 	target, err := s.readTarget(r, tenantID, queryReadFreshness(request))
 	if err != nil {
 		return query.Response{}, err
 	}
 	options, version, ok := s.lazyQueryOptions(r.Context(), tenantID, target.ManifestVersion)
 	if ok && target.requiresVersion(version) && query.SupportsLazyRead(request, options.PlannerStats) {
+		if span != nil {
+			span.SetAttributes(attribute.String("graphdb.query.execution_path", "lazy_index"))
+		}
 		g := graph.New()
 		g.Version = version
-		response, err := query.ExecuteContextWithOptions(r.Context(), g, request, options)
+		response, err = query.ExecuteContextWithOptions(r.Context(), g, request, options)
 		if err == nil || !errors.Is(err, query.ErrIndexUnavailable) {
 			return response, err
 		}
+		if span != nil {
+			span.SetAttributes(attribute.Bool("graphdb.query.lazy_fallback", true))
+		}
 	}
-	var response query.Response
+	if span != nil {
+		span.SetAttributes(attribute.String("graphdb.query.execution_path", "materialized_graph"))
+	}
 	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
 		options = s.queryOptions(r.Context(), tenantID, manifest.Version)
 		var executeErr error
@@ -358,6 +421,25 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		return executeErr
 	})
 	return response, err
+}
+
+func (s *Server) acquireQuery(ctx context.Context, tenantID string) (func(), error) {
+	acquireCtx, span := startAPIPhase(ctx, "query_admission.acquire", attribute.String("graphdb.tenant", tenantID))
+	start := time.Now()
+	release, err := s.Admission.Acquire(acquireCtx, tenantID)
+	waited := time.Since(start)
+	if span != nil {
+		result := "accepted"
+		if err != nil {
+			result = "rejected"
+		}
+		span.SetAttributes(
+			attribute.String("graphdb.query_admission.result", result),
+			attribute.Int64("graphdb.query_admission.wait_ms", waited.Milliseconds()),
+		)
+	}
+	endHTTPSpan(span, err)
+	return release, err
 }
 
 func queryReadFreshness(request query.Request) readFreshness {

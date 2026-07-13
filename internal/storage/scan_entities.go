@@ -10,7 +10,12 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options EntityScanOptions) (EntityScanResult, error) {
+func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options EntityScanOptions) (result EntityScanResult, err error) {
+	ctx, span := startStorageSpan(ctx, "graphdb.storage.scan.entities", entityScanTraceAttrs(tenantID, options)...)
+	defer func() {
+		span.SetAttributes(entityScanResultTraceAttrs(result)...)
+		endStorageSpan(span, err)
+	}()
 	if err := ValidateTenantID(tenantID); err != nil {
 		return EntityScanResult{}, err
 	}

@@ -14,11 +14,18 @@ import (
 )
 
 func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID string) (func(), bool) {
+	enterCtx, enterSpan := startAPIPhase(r.Context(), "enter_write", attribute.String("graphdb.tenant", tenantID))
+	r = r.WithContext(enterCtx)
+	var enterErr error
+	defer func() { endHTTPSpan(enterSpan, enterErr) }()
+
 	tracer := otel.Tracer("graphdb/http")
-	acquireCtx, acquireSpan := tracer.Start(r.Context(), "graphdb.commit.write_admission.acquire", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
+	prefix := apiTracePrefix(r.Context(), "graphdb.commit")
+	acquireCtx, acquireSpan := tracer.Start(r.Context(), prefix+".write_admission.acquire", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
 	release, waited, err := s.WriteAdmission.Acquire(acquireCtx, tenantID)
 	acquireSpan.SetAttributes(attribute.Int64("graphdb.write_admission.wait_ms", waited.Milliseconds()))
 	if err != nil {
+		enterErr = err
 		acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "rejected"))
 		endHTTPSpan(acquireSpan, err)
 		s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "rejected", waited)
@@ -35,11 +42,12 @@ func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID str
 	endHTTPSpan(acquireSpan, nil)
 	s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "accepted", waited)
 
-	checkCtx, checkSpan := tracer.Start(r.Context(), "graphdb.commit.check_backpressure", trace.WithAttributes(
+	checkCtx, checkSpan := tracer.Start(r.Context(), prefix+".check_backpressure", trace.WithAttributes(
 		attribute.String("graphdb.tenant", tenantID),
 		attribute.Int64("graphdb.write_admission.wait_ms", waited.Milliseconds()),
 	))
 	if err := s.Store.CheckWriteBackpressure(checkCtx, tenantID); err != nil {
+		enterErr = err
 		endHTTPSpan(checkSpan, err)
 		release()
 		if s.writeBackpressureIfNeeded(w, tenantID, err) {

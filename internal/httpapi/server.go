@@ -445,11 +445,17 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		defer span.End()
 		r = r.WithContext(ctx)
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		var apiSpan trace.Span
+		var apiTraced bool
+		r, apiSpan, apiTraced = startAPIRequestTrace(r)
+		if apiTraced {
+			defer func() { endAPIRequestTrace(apiSpan, recorder.status) }()
+		}
 		start := time.Now()
 		next.ServeHTTP(recorder, r)
 		duration := time.Since(start)
 		route := observedRoute(r)
-		span.SetName(r.Method + " " + route)
+		span.SetName(route)
 		obs.Metrics.RecordHTTPRequest(r.Method, route, recorder.status, duration)
 		span.SetAttributes(
 			attribute.String("http.request.method", r.Method),

@@ -752,10 +752,13 @@ Error contract:
   events, and slow query logs are emitted as JSON lines to stdout.
 - `GRAPHDB_OTLP_ENDPOINT` enables OTLP/HTTP tracing. Leave it empty to keep
   tracing no-op. Use `GRAPHDB_OTLP_INSECURE=true` for plain HTTP collectors.
-  `POST /v1/commits` emits child spans for write admission, request decoding,
-  commit execution, graph load, commit-tail replay, manifest CAS write, index
-  update, and object-store operations so slow writes can be broken down by
-  phase.
+  Registered `/v1/` endpoints emit stable `graphdb.<operation>.http` spans with
+  child spans for tenant resolution, request decoding, admission, reader
+  freshness, graph loading, query/scan execution, and object-store operations.
+  Dynamic tenant, entity, task, cursor, and template values are not included in
+  span names. `POST /v1/commits` keeps its existing `graphdb.commit.*` hierarchy
+  for commit execution, graph load, commit-tail replay, manifest CAS writes,
+  and index updates.
 - `DD_PROFILING_ENABLED=true` starts the Datadog continuous profiler for the
   `serve` command. It initializes only `dd-trace-go/v2/profiler`; it does not
   import or start the Datadog tracer. `DD_SERVICE`, `DD_ENV`, and `DD_VERSION`

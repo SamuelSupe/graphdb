@@ -6,11 +6,22 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
-func (s *Server) withReadOnlyGraphForRead(ctx context.Context, tenantID string, target readTarget, fn func(*graph.Graph, storage.Manifest) error) error {
+func (s *Server) withReadOnlyGraphForRead(ctx context.Context, tenantID string, target readTarget, fn func(*graph.Graph, storage.Manifest) error) (err error) {
+	ctx, span := startAPIPhase(ctx, "read_graph_view",
+		attribute.String("graphdb.tenant", tenantID),
+		attribute.Int64("graphdb.read.target_version", target.TargetVersion),
+		attribute.Bool("graphdb.reader_cache.configured", s.Cache != nil),
+	)
+	defer func() { endHTTPSpan(span, err) }()
+
 	if s.Cache == nil {
-		g, manifest, err := s.loadGraphForRead(ctx, tenantID, target)
+		var g *graph.Graph
+		var manifest storage.Manifest
+		g, manifest, err = s.loadGraphForRead(ctx, tenantID, target)
 		if err != nil {
 			return err
 		}
@@ -25,7 +36,7 @@ func (s *Server) withReadOnlyGraphForRead(ctx context.Context, tenantID string, 
 	}
 	defer cancel()
 	var callbackErr error
-	err := s.Cache.WithReadOnlyGraphAtLeast(loadCtx, tenantID, target.TargetVersion, func(g *graph.Graph, manifest storage.Manifest) error {
+	err = s.Cache.WithReadOnlyGraphAtLeast(loadCtx, tenantID, target.TargetVersion, func(g *graph.Graph, manifest storage.Manifest) error {
 		if target.TargetVersion > 0 && manifest.Version < target.TargetVersion {
 			callbackErr = s.readerNotFresh(tenantID, manifest.Version, target.TargetVersion, "version_lag", nil)
 			return nil

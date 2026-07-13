@@ -11,6 +11,8 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -51,7 +53,24 @@ func (e *readerNotFreshError) Unwrap() error {
 	return e.Err
 }
 
-func (s *Server) readTarget(r *http.Request, tenantID string, body readFreshness) (readTarget, error) {
+func (s *Server) readTarget(r *http.Request, tenantID string, body readFreshness) (target readTarget, err error) {
+	ctx, span := startAPIPhase(r.Context(), "read_target",
+		attribute.String("graphdb.tenant", tenantID),
+		attribute.Int64("graphdb.read.body_min_version", body.MinVersion),
+		attribute.Bool("graphdb.read.body_allow_stale", body.AllowStale),
+	)
+	r = r.WithContext(ctx)
+	defer func() {
+		if span != nil {
+			span.SetAttributes(
+				attribute.Int64("graphdb.read.manifest_version", target.ManifestVersion),
+				attribute.Int64("graphdb.read.target_version", target.TargetVersion),
+				attribute.Bool("graphdb.read.allow_stale", target.AllowStale),
+			)
+		}
+		endHTTPSpan(span, err)
+	}()
+
 	freshness, err := parseReadFreshness(r, body)
 	if err != nil {
 		return readTarget{}, err
@@ -66,11 +85,11 @@ func (s *Server) readTarget(r *http.Request, tenantID string, body readFreshness
 	if freshness.MinVersion > manifest.Version {
 		return readTarget{}, s.readerNotFresh(tenantID, manifest.Version, freshness.MinVersion, "manifest_behind", nil)
 	}
-	target := manifest.Version
+	targetVersion := manifest.Version
 	if freshness.AllowStale {
-		target = freshness.MinVersion
+		targetVersion = freshness.MinVersion
 	}
-	return readTarget{ManifestVersion: manifest.Version, TargetVersion: target, AllowStale: freshness.AllowStale}, nil
+	return readTarget{ManifestVersion: manifest.Version, TargetVersion: targetVersion, AllowStale: freshness.AllowStale}, nil
 }
 
 func parseReadFreshness(r *http.Request, body readFreshness) (readFreshness, error) {
@@ -111,7 +130,20 @@ func (target readTarget) requiresVersion(version int64) bool {
 	return target.TargetVersion == 0 || version >= target.TargetVersion
 }
 
-func (s *Server) loadGraphForRead(ctx context.Context, tenantID string, target readTarget) (*graph.Graph, storage.Manifest, error) {
+func (s *Server) loadGraphForRead(ctx context.Context, tenantID string, target readTarget) (g *graph.Graph, manifest storage.Manifest, err error) {
+	ctx, span := startAPIPhase(ctx, "load_graph",
+		attribute.String("graphdb.tenant", tenantID),
+		attribute.Int64("graphdb.read.target_version", target.TargetVersion),
+		attribute.Bool("graphdb.read.allow_stale", target.AllowStale),
+		attribute.Bool("graphdb.reader_cache.configured", s.Cache != nil),
+	)
+	defer func() {
+		if span != nil {
+			span.SetAttributes(attribute.Int64("graphdb.read.visible_version", manifest.Version))
+		}
+		endHTTPSpan(span, err)
+	}()
+
 	loadCtx := ctx
 	cancel := func() {}
 	catchupStart := time.Time{}
@@ -120,7 +152,7 @@ func (s *Server) loadGraphForRead(ctx context.Context, tenantID string, target r
 		catchupStart = time.Now()
 	}
 	defer cancel()
-	g, manifest, err := s.loadGraphAtLeast(loadCtx, tenantID, target.TargetVersion)
+	g, manifest, err = s.loadGraphAtLeast(loadCtx, tenantID, target.TargetVersion)
 	if err != nil {
 		if target.TargetVersion > 0 && readCatchupFailed(loadCtx, err) {
 			if cached, cachedManifest, ok, cacheErr := s.cachedGraphAtLeast(tenantID, target.TargetVersion); cacheErr != nil {
