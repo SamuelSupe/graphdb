@@ -5,7 +5,6 @@ import (
 	"errors"
 	"reflect"
 	"sort"
-	"strings"
 	"sync"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -27,6 +26,9 @@ type PersistedIndexLookup struct {
 
 	edgeMu    sync.Mutex
 	edgeCache map[string]map[string][]graph.Edge
+
+	edgeCatalogMu      sync.Mutex
+	edgeCatalogByShard map[string]edgeShardCatalog
 }
 
 func (l *PersistedIndexLookup) MatchFieldIndex(ctx context.Context, kind string, field string, values []any) ([]string, bool, error) {
@@ -156,15 +158,6 @@ func (l *PersistedIndexLookup) catalogFieldSpec(kind string, field string) (Inde
 		}
 	}
 	return IndexSpec{}, false
-}
-
-func (l *PersistedIndexLookup) catalogEdgeShardSpec(relationType string, shard string) (EdgeShard, bool) {
-	for _, edgeShard := range l.Catalog.EdgeShards {
-		if edgeShard.RelationType == relationType && edgeShard.Shard == shard {
-			return edgeShard, true
-		}
-	}
-	return EdgeShard{}, false
 }
 
 func catalogHasEntityPage(catalog IndexCatalog, shard string) bool {
@@ -391,84 +384,10 @@ func secondaryIndexTopValues(index SecondaryIndex, limit int) []IndexValueStat {
 	return values
 }
 
-func (l *PersistedIndexLookup) relationTypesForShard(shardID string, allowed map[string]struct{}) []string {
-	seen := map[string]struct{}{}
-	for _, shard := range l.Catalog.EdgeShards {
-		if shard.Shard != shardID || !relationAllowedForLookup(shard.RelationType, allowed) {
-			continue
-		}
-		seen[shard.RelationType] = struct{}{}
-	}
-	values := make([]string, 0, len(seen))
-	for value := range seen {
-		values = append(values, value)
-	}
-	sort.Strings(values)
-	return values
-}
-
 func relationAllowedForLookup(relationType string, allowed map[string]struct{}) bool {
 	if len(allowed) == 0 {
 		return true
 	}
 	_, ok := allowed[relationType]
 	return ok
-}
-
-func trimEntityFields(entity graph.Entity, fields []string) graph.Entity {
-	entity = graph.CopyEntity(entity)
-	if len(fields) == 0 {
-		return entity
-	}
-	keep := map[string]struct{}{}
-	for _, field := range fields {
-		if fieldName, ok := entityFieldName(field); ok {
-			keep[fieldName] = struct{}{}
-		}
-	}
-	if len(keep) == 0 {
-		entity.Fields = graph.Fields{}
-		entity.FieldSources = nil
-		return entity
-	}
-	next := graph.Fields{}
-	for field, value := range entity.Fields {
-		if _, ok := keep[field]; ok {
-			next[field] = value
-		}
-	}
-	entity.Fields = next
-	entity.FieldSources = trimFieldSources(entity.FieldSources, keep)
-	return entity
-}
-
-func trimFieldSources(sources map[string]graph.FieldSource, keep map[string]struct{}) map[string]graph.FieldSource {
-	if len(sources) == 0 || len(keep) == 0 {
-		return nil
-	}
-	next := map[string]graph.FieldSource{}
-	for field := range keep {
-		if source, ok := sources[field]; ok {
-			next[field] = source
-		}
-	}
-	if len(next) == 0 {
-		return nil
-	}
-	return next
-}
-
-func entityFieldName(field string) (string, bool) {
-	switch field {
-	case "", "id", "kind", "source", "external_id", "confidence", "source_priority", "created_at", "updated_at":
-		return "", false
-	}
-	if strings.HasPrefix(field, "identity.") {
-		return "", false
-	}
-	if strings.HasPrefix(field, "fields.") {
-		name := strings.TrimPrefix(field, "fields.")
-		return name, name != ""
-	}
-	return field, true
 }
