@@ -73,11 +73,14 @@ func queryRequestTraceAttributes(request query.Request) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("graphdb.query.op", request.Op),
 		attribute.String("graphdb.query.target_op", request.TargetOp),
+		attribute.String("graphdb.query.kind", request.Kind),
 		attribute.Int("graphdb.query.filters", len(request.Filters)+len(request.Where)),
 		attribute.Int("graphdb.query.edge_filters", len(request.EdgeWhere)),
 		attribute.Int("graphdb.query.project_fields", len(request.Project)),
+		attribute.Int("graphdb.query.sort_fields", len(request.Sort)),
 		attribute.Int("graphdb.query.aggregations", len(request.Aggregate)),
 		attribute.Int("graphdb.query.group_by_fields", len(request.GroupBy)),
+		attribute.Int("graphdb.query.relation_types", len(request.RelationTypes)),
 		attribute.Int("graphdb.query.limit", request.Limit),
 		attribute.Int("graphdb.query.depth", request.Depth),
 		attribute.Int("graphdb.query.timeout_ms", request.TimeoutMS),
@@ -85,6 +88,9 @@ func queryRequestTraceAttributes(request query.Request) []attribute.KeyValue {
 		attribute.Int64("graphdb.query.min_version", request.MinVersion),
 		attribute.Bool("graphdb.query.allow_stale", request.AllowStale),
 		attribute.Bool("graphdb.query.cursor_present", request.Cursor != ""),
+		attribute.Bool("graphdb.query.id_present", request.ID != ""),
+		attribute.Bool("graphdb.query.where_expr_present", request.WhereExpr != nil),
+		attribute.Bool("graphdb.query.edge_where_expr_present", request.EdgeWhereExpr != nil),
 		attribute.Bool("graphdb.query.profile", request.Profile),
 	}
 }

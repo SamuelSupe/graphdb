@@ -6,6 +6,8 @@ import (
 	"sort"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func Execute(g *graph.Graph, request Request) (Response, error) {
@@ -25,7 +27,7 @@ func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Requ
 		if err := validateRequest(target); err != nil {
 			return Response{}, err
 		}
-		plan := PlanQueryWithStats(g, target, options.PlannerStats)
+		plan := measureQueryPlan(ctx, g, target, options.PlannerStats, newProfiler(false))
 		return Response{Version: g.Version, Plan: &plan}, nil
 	}
 	if request.Op == "profile" {
@@ -40,11 +42,7 @@ func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Requ
 		return Response{}, err
 	}
 	profiler := newProfiler(request.Profile)
-	var plan Plan
-	_ = profiler.measure("plan", request.Op, 0, func() (int, error) {
-		plan = PlanQueryWithStats(g, request, options.PlannerStats)
-		return len(plan.Steps), nil
-	})
+	plan := measureQueryPlan(ctx, g, request, options.PlannerStats, profiler)
 	budget, cancel := newBudget(ctx, request, profiler, options.IndexLookup, options.EntityLookup)
 	defer cancel()
 	if err := budget.measure("admission", "", plan.EstimatedCost, func() (int, error) {
@@ -56,11 +54,11 @@ func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Requ
 	if err := budget.measure("cursor", "", 0, func() (int, error) {
 		var err error
 		cursor, err = parseCursor(request.Cursor)
-		return 0, err
+		if err != nil {
+			return 0, err
+		}
+		return 0, validateCursor(cursor, g.Version, request)
 	}); err != nil {
-		return Response{}, err
-	}
-	if err := validateCursor(cursor, g.Version, request); err != nil {
 		return Response{}, err
 	}
 	run := func(response Response, err error) (Response, error) {
@@ -80,6 +78,29 @@ func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Requ
 	default:
 		return Response{}, fmt.Errorf("%w: unsupported op %q", ErrInvalid, request.Op)
 	}
+}
+
+func measureQueryPlan(ctx context.Context, g *graph.Graph, request Request, stats PlannerStats, profiler *profiler) Plan {
+	_, span := startQueryOperatorSpan(ctx, "plan", request.Op, 0)
+	var plan Plan
+	_ = profiler.measure("plan", request.Op, 0, func() (int, error) {
+		plan = PlanQueryWithStats(g, request, stats)
+		return len(plan.Steps), nil
+	})
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("graphdb.query.kind", request.Kind),
+			attribute.String("graphdb.query.plan.strategy", plan.Strategy),
+			attribute.String("graphdb.query.plan.index", plan.Index),
+			attribute.String("graphdb.query.plan.stats_source", plan.StatsSource),
+			attribute.Int("graphdb.query.plan.steps", len(plan.Steps)),
+			attribute.Int("graphdb.query.plan.estimated_rows", plan.EstimatedRows),
+			attribute.Int("graphdb.query.plan.estimated_cost", plan.EstimatedCost),
+			attribute.Int("graphdb.query.plan.warnings", len(plan.Warnings)),
+		)
+	}
+	endQueryOperatorSpan(span, nil)
+	return plan
 }
 
 func targetRequest(request Request) (Request, error) {

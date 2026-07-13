@@ -190,13 +190,55 @@ func TestQueryEmitsExecutionTrace(t *testing.T) {
 		"graphdb.query.execute.current_index_catalog",
 		"graphdb.query.execute.read_graph_view",
 		"graphdb.query.execute.load_graph",
+		"graphdb.query.operator.plan",
+		"graphdb.query.operator.admission",
+		"graphdb.query.operator.cursor",
+		"graphdb.query.operator.entity_scan",
+		"graphdb.query.operator.filter_project",
 	} {
 		requireRecordedSpan(t, spans, name)
 	}
 	assertSpanAttribute(t, top, "graphdb.query.op", "match")
+	assertSpanAttribute(t, top, "graphdb.query.kind", "host")
 	execute := requireRecordedSpan(t, spans, "graphdb.query.execute.execute_query")
 	assertSpanAttribute(t, execute, "graphdb.query.execution_path", "materialized_graph")
 	assertSpanAttribute(t, execute, "graphdb.query.returned", int64(1))
+	entityScan := requireRecordedSpan(t, spans, "graphdb.query.operator.entity_scan")
+	if entityScan.Parent().SpanID() != execute.SpanContext().SpanID() {
+		t.Fatalf("entity scan parent = %s, want execute span %s", entityScan.Parent().SpanID(), execute.SpanContext().SpanID())
+	}
+	assertSpanAttribute(t, entityScan, "graphdb.query.operator.rows", int64(1))
+	filterProject := requireRecordedSpan(t, spans, "graphdb.query.operator.filter_project")
+	assertSpanAttribute(t, filterProject, "graphdb.query.operator.scanned", int64(1))
+}
+
+func TestLazyQueryNestsPersistedScanUnderQueryOperator(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := store.RebuildIndexes(context.Background(), "tenant-a"); err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+
+	recorder := installSpanRecorder(t)
+	handler := (&Server{Store: store, Mode: "all", Admission: NewQueryAdmission(1, 1, 0)}).Handler()
+	rr := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{Op: "match", Kind: "host"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("query = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	spans := recorder.Ended()
+	execute := requireRecordedSpan(t, spans, "graphdb.query.execute.execute_query")
+	assertSpanAttribute(t, execute, "graphdb.query.execution_path", "lazy_index")
+	entityScan := requireRecordedSpan(t, spans, "graphdb.query.operator.entity_scan")
+	persistedScan := requireRecordedSpan(t, spans, "graphdb.storage.index_lookup.visit_entities")
+	if persistedScan.Parent().SpanID() != entityScan.SpanContext().SpanID() {
+		t.Fatalf("persisted scan parent = %s, want entity scan %s", persistedScan.Parent().SpanID(), entityScan.SpanContext().SpanID())
+	}
+	assertSpanAttribute(t, persistedScan, "graphdb.index_lookup.physical_entities_examined", int64(1))
 }
 
 func TestCommitKeepsExistingTraceNames(t *testing.T) {

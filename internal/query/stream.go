@@ -34,11 +34,7 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 		return true, err
 	}
 	profiler := newProfiler(request.Profile)
-	var plan Plan
-	_ = profiler.measure("plan", request.Op, 0, func() (int, error) {
-		plan = PlanQueryWithStats(g, request, options.PlannerStats)
-		return len(plan.Steps), nil
-	})
+	plan := measureQueryPlan(ctx, g, request, options.PlannerStats, profiler)
 	budget, cancel := newBudget(ctx, request, profiler, options.IndexLookup, options.EntityLookup)
 	defer cancel()
 	if err := budget.measure("admission", "", plan.EstimatedCost, func() (int, error) {
@@ -46,11 +42,15 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	}); err != nil {
 		return true, err
 	}
-	cursor, err := parseCursor(request.Cursor)
-	if err != nil {
-		return true, err
-	}
-	if err := validateCursor(cursor, g.Version, request); err != nil {
+	var cursor cursorState
+	if err := budget.measure("cursor", "", 0, func() (int, error) {
+		var parseErr error
+		cursor, parseErr = parseCursor(request.Cursor)
+		if parseErr != nil {
+			return 0, parseErr
+		}
+		return 0, validateCursor(cursor, g.Version, request)
+	}); err != nil {
 		return true, err
 	}
 	ids, ok, err := candidateIDsForPlan(plan, budget)

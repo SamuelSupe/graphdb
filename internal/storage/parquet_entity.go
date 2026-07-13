@@ -946,13 +946,23 @@ func (s *TenantStore) loadValidatedParquetEntityPageObject(ctx context.Context, 
 }
 
 func (s *TenantStore) withParquetEntityPageObject(ctx context.Context, tenantID string, version int64, spec EntityPageSpec, visit func(EntityPageData, string, bool) error) (bool, error) {
+	traceStats := entityPageVisitTraceStatsFromContext(ctx)
 	key := firstIndexObjectKey(spec.Objects, "page", s.parquetEntityPageVersionKey(tenantID, version, spec.Shard))
 	if entry, revalidate, ok := s.borrowCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash); ok {
+		if traceStats != nil {
+			traceStats.decodedCacheHits++
+		}
 		page, etag := entry.page, entry.etag
 		cacheValid := true
 		if revalidate {
+			if traceStats != nil {
+				traceStats.cacheRevalidations++
+			}
 			meta, err := objectMeta(ctx, s.Objects, key)
 			if errors.Is(err, ErrNotFound) {
+				if traceStats != nil {
+					traceStats.cacheInvalidations++
+				}
 				s.dropCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash)
 				return false, nil
 			}
@@ -960,6 +970,9 @@ func (s *TenantStore) withParquetEntityPageObject(ctx context.Context, tenantID 
 				return false, err
 			}
 			if etag != "" && meta.ETag != etag {
+				if traceStats != nil {
+					traceStats.cacheInvalidations++
+				}
 				s.dropCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash)
 				cacheValid = false
 			} else {
@@ -974,19 +987,47 @@ func (s *TenantStore) withParquetEntityPageObject(ctx context.Context, tenantID 
 			return true, visit(page, etag, true)
 		}
 	}
+	if traceStats != nil {
+		traceStats.decodedCacheMisses++
+	}
 	data, meta, ok, cached, err := s.loadParquetEntityPageObjectBytes(ctx, tenantID, version, spec)
 	if err != nil || !ok {
 		return ok, err
 	}
+	if traceStats != nil {
+		if cached {
+			traceStats.rawCacheHits++
+		} else {
+			traceStats.objectLoads++
+		}
+	}
+	decodeStart := time.Now()
 	page, err := decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
+	if traceStats != nil {
+		traceStats.parquetDecodes++
+		traceStats.parquetDecodeDuration += time.Since(decodeStart)
+	}
 	readable := err == nil && entityPageReadable(page, tenantID, version, spec)
 	if !readable && cached {
 		s.dropCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
-		data, meta, ok, _, err = s.loadParquetEntityPageObjectBytes(ctx, tenantID, version, spec)
+		var retryCached bool
+		data, meta, ok, retryCached, err = s.loadParquetEntityPageObjectBytes(ctx, tenantID, version, spec)
 		if err != nil || !ok {
 			return ok, err
 		}
+		if traceStats != nil {
+			if retryCached {
+				traceStats.rawCacheHits++
+			} else {
+				traceStats.objectLoads++
+			}
+		}
+		decodeStart = time.Now()
 		page, err = decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, 0)
+		if traceStats != nil {
+			traceStats.parquetDecodes++
+			traceStats.parquetDecodeDuration += time.Since(decodeStart)
+		}
 		readable = err == nil && entityPageReadable(page, tenantID, version, spec)
 	}
 	if err != nil {
