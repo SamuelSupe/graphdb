@@ -91,11 +91,14 @@ func (s *TenantStore) listTenantsByPrefix(ctx context.Context) ([]string, error)
 	seen := map[string]struct{}{}
 	for _, object := range objects {
 		rest := strings.TrimPrefix(object.Key, prefix)
-		tenantID, _, ok := strings.Cut(rest, "/")
+		tenantID, tenantKey, ok := strings.Cut(rest, "/")
 		if !ok || tenantID == "" {
 			continue
 		}
 		if err := ValidateTenantID(tenantID); err != nil {
+			continue
+		}
+		if !tenantDataObject(tenantKey) {
 			continue
 		}
 		seen[tenantID] = struct{}{}

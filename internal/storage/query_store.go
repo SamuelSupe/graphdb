@@ -33,6 +33,9 @@ func (s *TenantStore) SaveQuery(ctx context.Context, tenantID string, saved Save
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return SavedQuery{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return SavedQuery{}, err
+	}
 	existing, exists, meta, err := s.getSavedQueryWithMeta(ctx, tenantID, saved.Name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return SavedQuery{}, err
@@ -46,9 +49,6 @@ func (s *TenantStore) SaveQuery(ctx context.Context, tenantID string, saved Save
 		saved.CreatedAt = now
 	}
 	saved.UpdatedAt = now
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
-		return SavedQuery{}, err
-	}
 	if err := s.putSavedQueryWithMeta(ctx, tenantID, saved, meta); err != nil {
 		if errors.Is(err, ErrConflict) {
 			return SavedQuery{}, fmt.Errorf("%w: saved query %q for tenant %q changed while publishing", ErrConflict, saved.Name, tenantID)

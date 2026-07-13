@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
@@ -96,6 +98,171 @@ func TestDirectCommitIdempotencyRejectsDifferentPayload(t *testing.T) {
 	if _, ok := g.GetEntity("host:b"); ok {
 		t.Fatal("conflicting idempotent commit wrote host:b")
 	}
+}
+
+func TestDirectCommitPreparedRecordRecoversAmbiguousManifestPublish(t *testing.T) {
+	ctx := context.Background()
+	objects := &writeThenFailManifestStore{ObjectStore: NewMemoryStore()}
+	store := NewTenantStore(objects, "test")
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+
+	if _, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{IdempotencyKey: "idem-ambiguous"}); err == nil {
+		t.Fatal("first commit succeeded despite injected ambiguous manifest response")
+	}
+	_, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load published commit: %v", err)
+	}
+	if manifest.Version != 1 {
+		t.Fatalf("manifest version = %d, want published version 1", manifest.Version)
+	}
+
+	replay, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{IdempotencyKey: "idem-ambiguous"})
+	if err != nil {
+		t.Fatalf("recover ambiguous commit: %v", err)
+	}
+	if replay.Version != 1 || !replay.Skipped || !replay.IdempotentReplay {
+		t.Fatalf("replay result = %#v", replay)
+	}
+	_, manifest, err = store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if manifest.Version != 1 {
+		t.Fatalf("manifest version after replay = %d, want 1", manifest.Version)
+	}
+}
+
+func TestDirectCommitPreparedRecordReplaysWhenFinalizationFails(t *testing.T) {
+	ctx := context.Background()
+	objects := &failNthIdempotencyPutStore{ObjectStore: NewMemoryStore(), failAt: 3}
+	store := NewTenantStore(objects, "test")
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+
+	first, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{IdempotencyKey: "idem-finalize"})
+	if err == nil || !strings.Contains(err.Error(), "complete commit idempotency record") {
+		t.Fatalf("first commit err = %v, want finalization failure", err)
+	}
+	if first.Version != 1 {
+		t.Fatalf("first result = %#v", first)
+	}
+	record, _, err := store.loadDirectCommitRecordWithMeta(ctx, store.commitIdempotencyKey("tenant-a", "idem-finalize"))
+	if err != nil {
+		t.Fatalf("load prepared record: %v", err)
+	}
+	if record.Status != directCommitStatusPrepared || record.Result.Version != 1 {
+		t.Fatalf("prepared record = %#v", record)
+	}
+
+	replay, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{IdempotencyKey: "idem-finalize"})
+	if err != nil {
+		t.Fatalf("replay prepared commit: %v", err)
+	}
+	if replay.Version != first.Version || !replay.Skipped || !replay.IdempotentReplay {
+		t.Fatalf("replay result = %#v, first=%#v", replay, first)
+	}
+	_, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if manifest.Version != 1 {
+		t.Fatalf("manifest version after replay = %d, want 1", manifest.Version)
+	}
+}
+
+func TestDirectCommitWriterTakeoverInvalidatesIdempotencyMiss(t *testing.T) {
+	ctx := context.Background()
+	objects := &failNthIdempotencyPutStore{ObjectStore: NewMemoryStore(), failAt: 3}
+	writerA := NewTenantStore(objects, "test")
+	writerB := NewTenantStore(objects, "test")
+	key := writerA.commitIdempotencyKey("tenant-a", "idem-takeover")
+	mayExist, err := writerA.objectKeyMayExist(ctx, key)
+	if err != nil || mayExist {
+		t.Fatalf("prime writer A miss: exists=%v err=%v", mayExist, err)
+	}
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	first, err := writerB.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{IdempotencyKey: "idem-takeover"})
+	if err == nil || first.Version != 1 {
+		t.Fatalf("writer B finalization result=%#v err=%v", first, err)
+	}
+
+	leaseKey := writerB.writerLeaseKey("tenant-a")
+	lease, meta, err := writerB.getWriterLease(ctx, "tenant-a", leaseKey)
+	if err != nil {
+		t.Fatalf("load writer B lease: %v", err)
+	}
+	lease.ExpiresAt = time.Now().UTC().Add(-time.Second)
+	lease.UpdatedAt = lease.ExpiresAt
+	if _, err := writerB.putLease(ctx, leaseKey, lease, meta); err != nil {
+		t.Fatalf("expire writer B lease: %v", err)
+	}
+
+	replay, err := writerA.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{IdempotencyKey: "idem-takeover"})
+	if err != nil {
+		t.Fatalf("writer A takeover replay: %v", err)
+	}
+	if replay.Version != first.Version || !replay.Skipped || !replay.IdempotentReplay {
+		t.Fatalf("takeover replay = %#v, first=%#v", replay, first)
+	}
+	mayExist, err = writerA.objectKeyMayExist(ctx, key)
+	if err != nil || !mayExist {
+		t.Fatalf("writer A cache after takeover: exists=%v err=%v", mayExist, err)
+	}
+	_, manifest, err := writerA.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if manifest.Version != 1 {
+		t.Fatalf("manifest version after takeover replay = %d, want 1", manifest.Version)
+	}
+}
+
+type writeThenFailManifestStore struct {
+	ObjectStore
+	mu     sync.Mutex
+	failed bool
+}
+
+func (s *writeThenFailManifestStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if strings.HasSuffix(key, "/manifest.parquet") {
+		manifest, err := decodeParquetManifest(ctx, data)
+		if err == nil && manifest.Version == 1 {
+			s.mu.Lock()
+			shouldFail := !s.failed
+			if shouldFail {
+				s.failed = true
+			}
+			s.mu.Unlock()
+			if shouldFail {
+				meta, err := s.ObjectStore.PutConditional(ctx, key, data, condition)
+				if err != nil {
+					return meta, err
+				}
+				return meta, context.DeadlineExceeded
+			}
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
+type failNthIdempotencyPutStore struct {
+	ObjectStore
+	mu     sync.Mutex
+	count  int
+	failAt int
+}
+
+func (s *failNthIdempotencyPutStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if strings.Contains(key, "/idempotency/commits/") {
+		s.mu.Lock()
+		s.count++
+		fail := s.count == s.failAt
+		s.mu.Unlock()
+		if fail {
+			return ObjectMeta{Key: key}, errors.New("injected idempotency finalization failure")
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
 }
 
 func TestTenantConfigQuotaOverridesGlobalDefaults(t *testing.T) {

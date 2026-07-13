@@ -120,6 +120,15 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
+	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
+			return IngestResult{}, pressure
+		}
+		return IngestResult{}, err
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return IngestResult{}, err
+	}
 	started := time.Now().UTC()
 	if previousRecord, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
@@ -139,12 +148,6 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	result.Cursor = request.Cursor
 	pendingApplied := result.Applied
 	if pendingApplied > 0 {
-		if err := s.acquireWriterLease(ctx, tenantID); err != nil {
-			if pressure := s.objectStoreBackpressureError(err); pressure != nil {
-				return IngestResult{}, pressure
-			}
-			return IngestResult{}, err
-		}
 		if err := s.CheckWriteBackpressure(ctx, tenantID); err != nil {
 			return IngestResult{}, err
 		}

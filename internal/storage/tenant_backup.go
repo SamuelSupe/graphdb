@@ -431,6 +431,9 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			return TenantRestoreReport{}, err
 		}
 		metadata := restoredTenantMetadata(record.Metadata, task.TenantID)
+		if err := s.clearTenantPurgeTombstone(ctx, task.TenantID); err != nil {
+			return TenantRestoreReport{}, err
+		}
 		if err := s.putTenantMetadata(ctx, task.TenantID, metadata); err != nil {
 			return TenantRestoreReport{}, err
 		}
@@ -625,17 +628,5 @@ func (s *TenantStore) taskResultIdentityFromKey(key string) (string, string, boo
 }
 
 func (s *TenantStore) tenantRestoreDataExists(ctx context.Context, tenantID string) (bool, error) {
-	objects, err := s.Objects.List(ctx, s.tenantObjectPrefix(tenantID))
-	if err != nil {
-		return false, err
-	}
-	prefix := s.tenantObjectPrefix(tenantID)
-	for _, object := range objects {
-		rest := strings.TrimPrefix(object.Key, prefix)
-		if strings.HasPrefix(rest, "tasks/") {
-			continue
-		}
-		return true, nil
-	}
-	return false, nil
+	return s.tenantDataExists(ctx, tenantID)
 }

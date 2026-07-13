@@ -55,6 +55,9 @@ func (s *TenantStore) repairManifest(ctx context.Context, tenantID string) (Mani
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return Manifest{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return Manifest{}, err
+	}
 	loaded, err := s.reconstructManifestFromObjects(ctx, tenantID)
 	if err != nil {
 		return Manifest{}, err

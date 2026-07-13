@@ -150,6 +150,7 @@ func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCo
 func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row parquetCommitRow) error {
 	switch row.Kind {
 	case directCommitRowMetadata:
+		record.Status = row.Action
 		record.StartedAt = row.CreatedAtValue
 		record.FinishedAt = row.UpdatedAtValue
 		record.Result.UpdatedAt = row.FieldSource.UpdatedAt
@@ -247,6 +248,7 @@ func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row pa
 func directCommitRecordRows(record DirectCommitRecord) ([]parquetCommitRow, error) {
 	metadata := parquetCommitRow{
 		Kind:           directCommitRowMetadata,
+		Action:         record.Status,
 		ID:             record.Request.IdempotencyKey,
 		SourceID:       record.Result.HeadCommitID,
 		TargetID:       record.Result.ReadAfterCommitID,

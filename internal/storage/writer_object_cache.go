@@ -84,6 +84,24 @@ func (s *WriterObjectCache) UnwrapObjectStore() ObjectStore {
 	return s.Inner
 }
 
+func FindWriterObjectCache(objects ObjectStore) *WriterObjectCache {
+	for objects != nil {
+		if cache, ok := objects.(*WriterObjectCache); ok {
+			return cache
+		}
+		unwrapper, ok := objects.(objectStoreUnwrapper)
+		if !ok {
+			return nil
+		}
+		next := unwrapper.UnwrapObjectStore()
+		if next == objects {
+			return nil
+		}
+		objects = next
+	}
+	return nil
+}
+
 func (s *WriterObjectCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := objectContextErr(ctx); err != nil {
 		return nil, err

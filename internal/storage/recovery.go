@@ -47,6 +47,9 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return RecoveryReport{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return RecoveryReport{}, err
+	}
 	loaded, err := s.loadWithMeta(ctx, tenantID)
 	if err != nil {
 		return RecoveryReport{}, err
@@ -109,6 +112,9 @@ func (s *TenantStore) CleanupCommits(ctx context.Context, tenantID string) (Clea
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return CleanupReport{}, err
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return CleanupReport{}, err
 	}
 	manifest, _, err := s.getManifest(ctx, tenantID)

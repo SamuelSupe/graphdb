@@ -4,18 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
 
 type putCountingStore struct {
 	ObjectStore
-	puts        int
-	gets        int
-	deletes     int
-	pageCalls   int
-	lastPrefix  string
-	lastPageLen int
+	puts             int
+	gets             int
+	deletes          int
+	heartbeatGets    int
+	heartbeatDeletes int
+	pageCalls        int
+	lastPrefix       string
+	lastPageLen      int
 }
 
 func (s *putCountingStore) ListPage(ctx context.Context, prefix string, after string, limit int) ([]ObjectInfo, string, error) {
@@ -33,11 +36,17 @@ func (s *putCountingStore) Put(ctx context.Context, key string, data []byte) err
 
 func (s *putCountingStore) Get(ctx context.Context, key string) ([]byte, error) {
 	s.gets++
+	if strings.Contains(key, "/control/readers/") {
+		s.heartbeatGets++
+	}
 	return s.ObjectStore.Get(ctx, key)
 }
 
 func (s *putCountingStore) Delete(ctx context.Context, key string) error {
 	s.deletes++
+	if strings.Contains(key, "/control/readers/") {
+		s.heartbeatDeletes++
+	}
 	return s.ObjectStore.Delete(ctx, key)
 }
 
@@ -106,6 +115,8 @@ func TestReaderHeartbeatLegacyCleanupHasTotalWorkBudget(t *testing.T) {
 	}
 	objects.gets = 0
 	objects.deletes = 0
+	objects.heartbeatGets = 0
+	objects.heartbeatDeletes = 0
 	options := ReaderHeartbeatListOptions{MaxAge: time.Minute, Limit: 4096, ScanLimit: 64, DeleteExpired: true}
 	if _, err := store.ListReaderHeartbeatsWithOptions(ctx, "tenant-a", options); !errors.Is(err, errReaderHeartbeatScanIncomplete) {
 		t.Fatalf("first cleanup err = %v, want incomplete", err)
@@ -155,8 +166,8 @@ func TestGCFailsClosedWhenHeartbeatInventoryExceedsScanBudget(t *testing.T) {
 	if !errors.Is(err, errReaderHeartbeatScanIncomplete) {
 		t.Fatalf("gc err = %v, want incomplete heartbeat scan", err)
 	}
-	if objects.gets > 64 || objects.deletes > 64 {
-		t.Fatalf("gc heartbeat gets/deletes = %d/%d, want <=64", objects.gets, objects.deletes)
+	if objects.heartbeatGets > 64 || objects.heartbeatDeletes > 64 {
+		t.Fatalf("gc heartbeat gets/deletes = %d/%d, want <=64", objects.heartbeatGets, objects.heartbeatDeletes)
 	}
 }
 
