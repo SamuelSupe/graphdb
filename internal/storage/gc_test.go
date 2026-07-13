@@ -267,6 +267,40 @@ func TestRunGCCheckpointCursorResumesDeleteBudget(t *testing.T) {
 	}
 }
 
+func TestRunGCRejectsCheckpointCursorInsideCurrentSnapshot(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	manifest, err := store.Compact(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{CheckpointCursor: manifest.SnapshotCatalogKey}); err == nil {
+		t.Fatal("gc accepted checkpoint cursor inside current snapshot")
+	}
+	if _, err := objects.Get(ctx, manifest.SnapshotKey); err != nil {
+		t.Fatalf("current snapshot deleted: %v", err)
+	}
+	if _, err := objects.Get(ctx, manifest.SnapshotCatalogKey); err != nil {
+		t.Fatalf("current snapshot catalog deleted: %v", err)
+	}
+	cold := NewTenantStore(objects, "test")
+	graphData, loaded, err := cold.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("cold load after rejected gc: %v", err)
+	}
+	if loaded.Version != manifest.Version {
+		t.Fatalf("loaded version = %d, want %d", loaded.Version, manifest.Version)
+	}
+	if _, ok := graphData.GetEntity("host:1"); !ok {
+		t.Fatal("current snapshot entity missing")
+	}
+}
+
 func TestRunGCCleansExpiredTasksAndResults(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

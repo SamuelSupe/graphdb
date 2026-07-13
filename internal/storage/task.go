@@ -61,6 +61,14 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	if err := validateTaskParams(taskType, params); err != nil {
 		return Task{}, err
 	}
+	unlock := s.lockTenant(tenantID)
+	defer unlock()
+	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return Task{}, err
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return Task{}, err
+	}
 	checkpoint := taskInitialCheckpoint(params)
 	id, err := newCommitID()
 	if err != nil {

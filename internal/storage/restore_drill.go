@@ -85,8 +85,10 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 	targetStore := s.restoreDrillTargetStore(targetPrefix)
 	dryRun := boolTaskParam(task.Params, "dry_run")
 	cleanup := restoreDrillCleanup(task.Params)
-	if !dryRun && cleanPrefix(targetPrefix) == s.Prefix && targetTenantID == task.TenantID {
-		return TenantRestoreDrillReport{}, fmt.Errorf("restore drill target must not be the source tenant")
+	if !dryRun {
+		if err := s.validateRestoreDrillTarget(targetPrefix, targetTenantID); err != nil {
+			return TenantRestoreDrillReport{}, err
+		}
 	}
 	report := TenantRestoreDrillReport{
 		TenantID:       task.TenantID,
@@ -119,6 +121,9 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 		_ = s.updateTaskProgress(ctx, task, "restore_drill_dry_run_done", total, total, map[string]any{"phase": "restore_drill_dry_run_done", "backup_key": report.BackupKey, "backup_manifest_key": report.BackupManifestKey, "recoverable": report.Recoverable})
 		return report, nil
 	}
+	if err := targetStore.claimRestoreDrillTarget(ctx, targetTenantID); err != nil {
+		return report, err
+	}
 	if err := s.updateTaskProgress(ctx, task, "restore_drill_restore", 2, total, map[string]any{"phase": "restore_drill_restore", "backup_key": report.BackupKey}); err != nil {
 		return report, err
 	}
@@ -129,7 +134,7 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 		Status:    TaskStatusRunning,
 		Phase:     "restore_drill_restore",
 		OwnerID:   s.InstanceID,
-		Params:    map[string]any{"backup_key": report.BackupKey, "overwrite": true},
+		Params:    map[string]any{"backup_key": report.BackupKey, "overwrite": false},
 		StartedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
@@ -137,7 +142,14 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 	if err != nil {
 		return report, err
 	}
+	if restoreReport.TargetExists || restoreReport.Overwrote {
+		return report, fmt.Errorf("%w: restore drill target was not exclusively created by this task", ErrConflict)
+	}
 	targetStore.finishSyntheticRestoreTask(targetTenantID, restoreTask.ID)
+	ownership, err := targetStore.captureRestoreDrillOwnership(ctx, targetTenantID, restoreTask.ID)
+	if err != nil {
+		return report, err
+	}
 	report.Restore = &restoreReport
 	if err := s.updateTaskProgress(ctx, task, "restore_drill_audit", 3, total, map[string]any{"phase": "restore_drill_audit", "version": restoreReport.Version}); err != nil {
 		return report, err
@@ -169,7 +181,7 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 		if err := s.updateTaskProgress(ctx, task, "restore_drill_cleanup", 6, total, map[string]any{"phase": "restore_drill_cleanup"}); err != nil {
 			return report, err
 		}
-		purge, err := targetStore.PurgeTenant(ctx, targetTenantID, true)
+		purge, err := targetStore.cleanupRestoreDrillTarget(ctx, targetTenantID, ownership)
 		if err != nil {
 			report.CleanupError = err.Error()
 			report.Proof.Checks = append(report.Proof.Checks, TenantRestoreProofCheck{Name: "cleanup", Status: "error", Required: true, Message: err.Error()})

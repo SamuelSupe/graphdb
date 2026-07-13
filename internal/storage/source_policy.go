@@ -61,6 +61,9 @@ func (s *TenantStore) PutSourcePolicy(ctx context.Context, tenantID string, poli
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return graph.SourcePolicy{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return graph.SourcePolicy{}, err
+	}
 	_, _, meta, err := s.getSourcePolicyForWrite(ctx, tenantID)
 	if err != nil {
 		return graph.SourcePolicy{}, err

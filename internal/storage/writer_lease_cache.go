@@ -46,3 +46,16 @@ func (s *TenantStore) cachedWriterLeaseUsable(lease WriterLease, now time.Time) 
 	}
 	return lease.ExpiresAt.After(now.Add(refreshBefore))
 }
+
+func (s *TenantStore) invalidateWriterTakeoverState(tenantID string) {
+	s.deleteWriteCache(tenantID)
+	s.deleteCachedTenantMetadata(tenantID)
+	s.deleteCachedTenantConfig(tenantID)
+	s.deleteCachedSourcePolicy(tenantID)
+	s.deleteCachedIndexCatalog(tenantID)
+	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))
+		cache.ClearPrefix(s.tenantPurgeTombstoneKey(tenantID))
+	}
+}

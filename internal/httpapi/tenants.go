@@ -369,6 +369,11 @@ func tenantMutationRequest(r *http.Request) bool {
 		path == "/v1/indexes" ||
 		path == "/v1/indexes/rebuild" ||
 		strings.HasPrefix(path, "/v1/indexes/definitions/") ||
+		path == "/v1/compact" ||
+		path == "/v1/control/recover" ||
+		path == "/v1/control/repair" ||
+		path == "/v1/control/cleanup-commits" ||
+		path == "/v1/control/gc" ||
 		path == "/v1/query/templates" ||
 		strings.HasPrefix(path, "/v1/query/templates/")
 }

@@ -59,7 +59,7 @@ func (s *TenantStore) CheckWriteBackpressure(ctx context.Context, tenantID strin
 			Message:   "compact required",
 		})
 	}
-	if task, ok, err := s.findRunningIndexRebuildTask(ctx, tenantID); err != nil {
+	if task, ok, _, err := s.findRunningIndexRebuildTask(ctx, tenantID); err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
 			return newBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter)
 		}

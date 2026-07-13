@@ -71,6 +71,14 @@ func (s *TenantStore) repairTenantMetadata(ctx context.Context, tenantID string)
 	if err := ValidateTenantID(tenantID); err != nil {
 		return err
 	}
+	unlock := s.lockTenant(tenantID)
+	defer unlock()
+	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return err
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return err
+	}
 	manifest, _, _ := s.getManifest(ctx, tenantID)
 	now := time.Now().UTC()
 	createdAt := manifest.UpdatedAt

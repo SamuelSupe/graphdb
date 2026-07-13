@@ -70,6 +70,9 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return TenantInfo{}, err
 	}
+	if err := s.clearTenantPurgeTombstone(ctx, tenantID); err != nil {
+		return TenantInfo{}, err
+	}
 	existing, configured, _, err := s.getTenantMetadataWithMeta(ctx, tenantID)
 	if err != nil {
 		return TenantInfo{}, err
@@ -178,62 +181,56 @@ func (s *TenantStore) tenantInfos(ctx context.Context, tenants []string) ([]Tena
 }
 
 func (s *TenantStore) UpdateTenantMetadata(ctx context.Context, tenantID string, options TenantCreateOptions) (TenantInfo, error) {
-	metadata, err := s.mutableTenantMetadata(ctx, tenantID)
-	if err != nil {
-		return TenantInfo{}, err
-	}
-	metadata.Name = options.Name
-	metadata.Description = options.Description
-	metadata.Labels = cloneStringMap(options.Labels)
-	metadata.Metadata = cloneAnyMap(options.Metadata)
-	metadata.UpdatedAt = time.Now().UTC()
-	if err := s.putTenantMetadata(ctx, tenantID, metadata); err != nil {
-		return TenantInfo{}, err
-	}
-	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
-		return TenantInfo{}, err
-	}
-	return s.tenantInfoFromMetadata(ctx, metadata, true)
+	return s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
+		metadata.Name = options.Name
+		metadata.Description = options.Description
+		metadata.Labels = cloneStringMap(options.Labels)
+		metadata.Metadata = cloneAnyMap(options.Metadata)
+		metadata.UpdatedAt = time.Now().UTC()
+	})
 }
 
 func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, status string) (TenantInfo, error) {
 	if status != TenantStatusActive && status != TenantStatusDisabled && status != TenantStatusDeleted {
 		return TenantInfo{}, fmt.Errorf("unsupported tenant status %q", status)
 	}
-	metadata, err := s.mutableTenantMetadata(ctx, tenantID)
-	if err != nil {
-		return TenantInfo{}, err
-	}
-	now := time.Now().UTC()
-	metadata.Status = status
-	metadata.UpdatedAt = now
-	if status == TenantStatusDisabled {
-		metadata.DisabledAt = now
-	} else if status == TenantStatusDeleted {
-		metadata.DeletedAt = now
-	} else {
-		metadata.DisabledAt = time.Time{}
-		metadata.DeletedAt = time.Time{}
-	}
-	if err := s.putTenantMetadata(ctx, tenantID, metadata); err != nil {
-		return TenantInfo{}, err
-	}
-	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
-		return TenantInfo{}, err
-	}
-	return s.tenantInfoFromMetadata(ctx, metadata, true)
+	return s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
+		now := time.Now().UTC()
+		metadata.Status = status
+		metadata.UpdatedAt = now
+		if status == TenantStatusDisabled {
+			metadata.DisabledAt = now
+		} else if status == TenantStatusDeleted {
+			metadata.DeletedAt = now
+		} else {
+			metadata.DisabledAt = time.Time{}
+			metadata.DeletedAt = time.Time{}
+		}
+	})
 }
 
 func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantPurgeReport{}, err
 	}
+	unlock := s.lockTenant(tenantID)
+	defer unlock()
+	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return TenantPurgeReport{}, err
+	}
+	return s.purgeTenantLocked(ctx, tenantID, force)
+}
+
+func (s *TenantStore) purgeTenantLocked(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
 	info, err := s.GetTenantInfo(ctx, tenantID)
 	if err != nil {
 		return TenantPurgeReport{}, err
 	}
 	if !force && info.Status != TenantStatusDeleted {
 		return TenantPurgeReport{}, fmt.Errorf("tenant must be soft deleted before purge")
+	}
+	if err := s.putTenantPurgeTombstone(ctx, tenantID); err != nil {
+		return TenantPurgeReport{}, err
 	}
 	objects, err := s.Objects.List(ctx, s.tenantObjectPrefix(tenantID))
 	if err != nil {
@@ -257,7 +254,7 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 	s.deleteCachedIndexCatalog(tenantID)
 	s.deleteCachedWriterLease(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
-	if cache, ok := s.Objects.(*WriterObjectCache); ok {
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
 		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))
 	}
 	return report, nil
@@ -293,6 +290,9 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 	targetLock := s.lockTenant(targetTenantID)
 	defer targetLock()
 	if err := s.acquireWriterLease(ctx, targetTenantID); err != nil {
+		return TenantInfo{}, err
+	}
+	if err := s.clearTenantPurgeTombstone(ctx, targetTenantID); err != nil {
 		return TenantInfo{}, err
 	}
 	snapshot := g.Snapshot()
@@ -377,28 +377,45 @@ func (s *TenantStore) TenantStatus(ctx context.Context, tenantID string) (string
 	return s.tenantMetadataStatus(ctx, tenantID)
 }
 
-func (s *TenantStore) mutableTenantMetadata(ctx context.Context, tenantID string) (TenantMetadata, error) {
+func (s *TenantStore) mutateTenantMetadata(ctx context.Context, tenantID string, mutate func(*TenantMetadata)) (TenantInfo, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
-		return TenantMetadata{}, err
+		return TenantInfo{}, err
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
-		return TenantMetadata{}, err
+		return TenantInfo{}, err
 	}
-	metadata, configured, _, err := s.getTenantMetadataWithMeta(ctx, tenantID)
-	if err != nil {
-		return TenantMetadata{}, err
+	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		metadata, configured, meta, err := s.getTenantMetadataWithMeta(ctx, tenantID)
+		if err != nil {
+			return TenantInfo{}, err
+		}
+		if !configured {
+			if exists, err := s.tenantPrefixExists(ctx, tenantID); err != nil {
+				return TenantInfo{}, err
+			} else if !exists {
+				return TenantInfo{}, ErrNotFound
+			}
+			metadata = legacyTenantMetadata(tenantID)
+		}
+		mutate(&metadata)
+		if _, err := s.putTenantMetadataWithMeta(ctx, tenantID, metadata, meta); err != nil {
+			s.deleteCachedTenantMetadata(tenantID)
+			if errors.Is(err, ErrConflict) && attempt+1 < s.retryCount() {
+				if err := retryDelay(ctx, attempt); err != nil {
+					return TenantInfo{}, err
+				}
+				continue
+			}
+			return TenantInfo{}, err
+		}
+		if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
+			return TenantInfo{}, err
+		}
+		return s.tenantInfoFromMetadata(ctx, metadata, true)
 	}
-	if configured {
-		return metadata, nil
-	}
-	if exists, err := s.tenantPrefixExists(ctx, tenantID); err != nil {
-		return TenantMetadata{}, err
-	} else if !exists {
-		return TenantMetadata{}, ErrNotFound
-	}
-	return legacyTenantMetadata(tenantID), nil
+	return TenantInfo{}, fmt.Errorf("%w: tenant metadata for %q changed while publishing", ErrConflict, tenantID)
 }
 
 func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
@@ -429,6 +446,13 @@ func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string) (string, error) {
+	purged, err := s.tenantPurgeTombstoneExists(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	if purged {
+		return TenantStatusDeleted, nil
+	}
 	metadata, configured, _, err := s.getTenantMetadataForWrite(ctx, tenantID)
 	if err != nil {
 		return "", err
@@ -467,11 +491,7 @@ func (s *TenantStore) tenantInfoFromMetadata(ctx context.Context, metadata Tenan
 }
 
 func (s *TenantStore) tenantPrefixExists(ctx context.Context, tenantID string) (bool, error) {
-	objects, err := s.Objects.List(ctx, s.tenantObjectPrefix(tenantID))
-	if err != nil {
-		return false, err
-	}
-	return len(objects) > 0, nil
+	return s.tenantDataExists(ctx, tenantID)
 }
 
 func (s *TenantStore) cloneTenantConfigs(ctx context.Context, sourceTenantID string, targetTenantID string) error {
@@ -542,6 +562,20 @@ func (s *TenantStore) putTenantMetadata(ctx context.Context, tenantID string, me
 	}
 	s.setCachedTenantMetadata(tenantID, metadata, true, ObjectMeta{Key: key, Exists: true})
 	return nil
+}
+
+func (s *TenantStore) putTenantMetadataWithMeta(ctx context.Context, tenantID string, metadata TenantMetadata, meta ObjectMeta) (ObjectMeta, error) {
+	metadata.TenantID = tenantID
+	data, err := marshalParquetTenantMetadata(ctx, metadata)
+	if err != nil {
+		return ObjectMeta{}, err
+	}
+	next, err := s.putBytesWithMetaResult(ctx, s.tenantMetadataKey(tenantID), data, meta)
+	if err != nil {
+		return ObjectMeta{}, err
+	}
+	s.setCachedTenantMetadata(tenantID, metadata, true, next)
+	return next, nil
 }
 
 func legacyTenantMetadata(tenantID string) TenantMetadata {

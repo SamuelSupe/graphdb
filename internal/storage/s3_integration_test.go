@@ -34,11 +34,19 @@ func TestS3StoreIntegration(t *testing.T) {
 	store := NewTenantStore(s3, "graphdb-integration-test")
 	ctx := context.Background()
 	tenant := fmt.Sprintf("it-tenant-%d", time.Now().UnixNano())
-	_, err = store.Commit(ctx, tenant, graph.Mutations{
+	mutations := graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "person:alice", Kind: "person"}},
-	}, CommitOptions{})
+	}
+	first, err := store.CommitWithReport(ctx, tenant, mutations, CommitOptions{IdempotencyKey: "commit-1"})
 	if err != nil {
 		t.Fatalf("commit: %v", err)
+	}
+	replay, err := store.CommitWithReport(ctx, tenant, mutations, CommitOptions{IdempotencyKey: "commit-1"})
+	if err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	if replay.Version != first.Version || !replay.Skipped || !replay.IdempotentReplay {
+		t.Fatalf("idempotent replay = %#v, first=%#v", replay, first)
 	}
 	loaded, manifest, err := store.Load(ctx, tenant)
 	if err != nil {
@@ -49,6 +57,18 @@ func TestS3StoreIntegration(t *testing.T) {
 	}
 	if _, ok := loaded.GetEntity("person:alice"); !ok {
 		t.Fatal("entity missing after S3 reload")
+	}
+	if _, err := store.SetTenantStatus(ctx, tenant, TenantStatusDeleted); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if _, err := store.PurgeTenant(ctx, tenant, false); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if _, err := store.Commit(ctx, tenant, mutations, CommitOptions{}); !errors.Is(err, ErrTenantDeleted) {
+		t.Fatalf("commit after purge err = %v, want ErrTenantDeleted", err)
+	}
+	if _, err := store.CreateTenant(ctx, tenant, TenantCreateOptions{}); err != nil {
+		t.Fatalf("explicit tenant recreate after purge: %v", err)
 	}
 	key := "graphdb-integration-test/conditional-delete/" + tenant + ".json"
 	if err := s3.Put(ctx, key, []byte("old")); err != nil {

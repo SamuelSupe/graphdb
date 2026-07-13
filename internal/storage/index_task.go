@@ -34,6 +34,9 @@ func (s *TenantStore) StartIndexRebuild(ctx context.Context, tenantID string) (I
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexTask{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return IndexTask{}, err
+	}
 	return s.startIndexRebuildLocked(ctx, tenantID)
 }
 
@@ -86,7 +89,7 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 	return task, nil
 }
 
-func (s *TenantStore) findRunningIndexRebuildTask(ctx context.Context, tenantID string) (running IndexTask, found bool, err error) {
+func (s *TenantStore) findRunningIndexRebuildTask(ctx context.Context, tenantID string) (running IndexTask, found bool, authoritative bool, err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.write_backpressure.find_running_index_rebuild_task",
 		tenantTraceAttr(tenantID),
 		attribute.String("graphdb.index_task.type", "rebuild"),
@@ -115,40 +118,45 @@ func (s *TenantStore) findRunningIndexRebuildTask(ctx context.Context, tenantID 
 	}()
 	task, err := s.getIndexRebuildRunningMarker(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {
-		return IndexTask{}, false, nil
+		return IndexTask{}, false, false, nil
 	}
 	if errors.Is(err, errInvalidIndexTask) {
 		markerInvalid = true
 		_ = s.Objects.Delete(ctx, s.indexRebuildRunningTaskKey(tenantID))
-		return IndexTask{}, false, nil
+		return IndexTask{}, false, false, nil
 	}
 	if err != nil {
-		return IndexTask{}, false, err
+		return IndexTask{}, false, false, err
 	}
 	markerFound = true
 	loaded = 1
 	if !indexTaskStillActive(task) {
 		stale = true
-		_ = s.clearIndexRebuildRunningMarker(ctx, tenantID, task.ID)
-		return IndexTask{}, false, nil
+		persisted, loadErr := s.GetIndexTask(ctx, tenantID, task.ID)
+		if loadErr == nil && !indexTaskStillActive(persisted) {
+			_ = s.clearIndexRebuildRunningMarker(ctx, tenantID, task.ID)
+		} else if loadErr != nil && !errors.Is(loadErr, ErrNotFound) {
+			return IndexTask{}, false, true, loadErr
+		}
+		return IndexTask{}, false, true, nil
 	}
 	activeChecks = 1
 	active, err := s.indexTaskActive(ctx, tenantID, task, time.Now().UTC())
 	if err != nil {
-		return IndexTask{}, false, err
+		return IndexTask{}, false, true, err
 	}
 	if !active {
 		stale = true
 		inactive = 1
 		_ = s.clearIndexRebuildRunningMarker(ctx, tenantID, task.ID)
-		return IndexTask{}, false, nil
+		return IndexTask{}, false, false, nil
 	}
-	return task, true, nil
+	return task, true, true, nil
 }
 
 func (s *TenantStore) findRunningIndexRebuildTaskIncludingLegacy(ctx context.Context, tenantID string) (IndexTask, bool, error) {
-	task, ok, err := s.findRunningIndexRebuildTask(ctx, tenantID)
-	if err != nil || ok {
+	task, ok, authoritative, err := s.findRunningIndexRebuildTask(ctx, tenantID)
+	if err != nil || ok || authoritative {
 		return task, ok, err
 	}
 	task, ok, err = s.scanRunningIndexRebuildTasks(ctx, tenantID)
@@ -335,7 +343,6 @@ func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenant
 }
 
 func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
-	defer s.clearIndexRebuildTask(tenantID, task.ID)
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			task.FinishedAt = time.Now().UTC()
@@ -343,7 +350,7 @@ func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
 			task.Status = "failed"
 			task.Phase = "failed"
 			task.Error = fmt.Sprintf("panic: %v", recovered)
-			s.trySaveIndexTask(context.Background(), task)
+			s.finishIndexRebuildTask(task)
 		}
 	}()
 	task.Phase = "backfill"
@@ -358,7 +365,7 @@ func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
 		task.Status = "failed"
 		task.Phase = "failed"
 		task.Error = err.Error()
-		s.trySaveIndexTask(context.Background(), task)
+		s.finishIndexRebuildTask(task)
 		return
 	}
 	task.Phase = "cleanup"
@@ -378,7 +385,7 @@ func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
 	} else if gcReport.IndexCleanupSkippedReason != "" {
 		task.Error = "index cleanup skipped: " + gcReport.IndexCleanupSkippedReason
 	}
-	s.trySaveIndexTask(context.Background(), task)
+	s.finishIndexRebuildTask(task)
 }
 
 func (s *TenantStore) clearIndexRebuildTask(tenantID string, taskID string) {

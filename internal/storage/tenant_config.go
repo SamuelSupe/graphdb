@@ -141,6 +141,9 @@ func (s *TenantStore) PutTenantConfig(ctx context.Context, tenantID string, conf
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return TenantConfig{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return TenantConfig{}, err
+	}
 	_, _, meta, err := s.getTenantConfigForWrite(ctx, tenantID)
 	if err != nil {
 		return TenantConfig{}, err

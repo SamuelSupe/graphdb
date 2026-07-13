@@ -14,6 +14,9 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	if err := s.acquireWriterLease(ctx, task.TenantID); err != nil {
 		return nil, "", err
 	}
+	if err := s.EnsureTenantWritable(ctx, task.TenantID); err != nil {
+		return nil, "", err
+	}
 	loaded, err := s.loadForWriteLocked(ctx, task.TenantID)
 	if err != nil {
 		return nil, "", err

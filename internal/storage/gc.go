@@ -81,8 +81,14 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return GCReport{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return GCReport{}, err
+	}
 	manifest, _, err := s.getManifest(ctx, tenantID)
 	if err != nil {
+		return GCReport{}, err
+	}
+	if err := s.validateGCSnapshotCursor(tenantID, manifest, options.CheckpointCursor); err != nil {
 		return GCReport{}, err
 	}
 	report := GCReport{TenantID: tenantID, ManifestVersion: manifest.Version}
@@ -169,6 +175,14 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		}
 	}
 	return finish(nil)
+}
+
+func (s *TenantStore) validateGCSnapshotCursor(tenantID string, manifest Manifest, cursor string) error {
+	version, ok := shardedSnapshotVersionFromCursor(s.snapshotPrefix(tenantID), cursor)
+	if !ok || manifest.SnapshotKey == "" || version != manifest.SnapshotVersion {
+		return nil
+	}
+	return fmt.Errorf("gc checkpoint cursor references current snapshot version %d", version)
 }
 
 func (p gcReaderProtection) activeReaderBehind(manifestVersion int64) bool {

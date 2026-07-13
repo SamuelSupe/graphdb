@@ -31,6 +31,7 @@ func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) e
 		switch {
 		case errors.Is(err, ErrNotFound):
 			if meta, err := s.putLease(ctx, key, next, ObjectMeta{Key: key}); err == nil {
+				s.invalidateWriterTakeoverState(tenantID)
 				s.setCachedWriterLease(tenantID, next, meta)
 				return nil
 			} else if !errors.Is(err, ErrConflict) {
@@ -40,6 +41,9 @@ func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) e
 			return err
 		case current.OwnerID == s.InstanceID || current.ExpiresAt.Before(now):
 			if meta, err := s.putLease(ctx, key, next, meta); err == nil {
+				if current.OwnerID != s.InstanceID {
+					s.invalidateWriterTakeoverState(tenantID)
+				}
 				s.setCachedWriterLease(tenantID, next, meta)
 				return nil
 			} else if !errors.Is(err, ErrConflict) {

@@ -61,6 +61,9 @@ func (s *TenantStore) RepairTenant(ctx context.Context, tenantID string, options
 	if !options.Apply {
 		return report, nil
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return report, err
+	}
 	working := report
 	structuralRepair := false
 	if reportNeedsManifestRebuild(working) {

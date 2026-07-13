@@ -155,6 +155,9 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return IndexCatalog{}, err
+	}
 	loaded, err := s.loadForWriteLocked(ctx, tenantID)
 	if err != nil {
 		return IndexCatalog{}, err

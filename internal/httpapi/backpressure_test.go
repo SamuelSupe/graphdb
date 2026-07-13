@@ -126,7 +126,7 @@ func TestHTTPIngestWriteExecutionTimeoutReturnsGatewayTimeout(t *testing.T) {
 	}
 }
 
-func TestHTTPCommitTimeoutAfterApplyReturnsGatewayTimeout(t *testing.T) {
+func TestHTTPCommitIdempotencyReservationTimeoutDoesNotApply(t *testing.T) {
 	store := storage.NewTenantStore(&timeoutMatchingPutStore{
 		ObjectStore: storage.NewMemoryStore(),
 		contains:    "/idempotency/commits/",
@@ -149,11 +149,11 @@ func TestHTTPCommitTimeoutAfterApplyReturnsGatewayTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if manifest.Version != 1 {
-		t.Fatalf("manifest version = %d, want published commit", manifest.Version)
+	if manifest.Version != 0 {
+		t.Fatalf("manifest version = %d, want no published commit", manifest.Version)
 	}
-	if _, ok := g.GetEntity("host:after-apply"); !ok {
-		t.Fatal("published commit should remain visible after metadata timeout")
+	if _, ok := g.GetEntity("host:after-apply"); ok {
+		t.Fatal("commit must not apply when its idempotency reservation times out")
 	}
 }
 

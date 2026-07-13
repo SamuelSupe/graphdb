@@ -53,6 +53,7 @@ type snapshotRecord struct {
 type CommitOptions struct {
 	ExpectedVersion *int64
 	IdempotencyKey  string
+	directCommit    *directCommitReservation
 }
 
 type TenantStore struct {
@@ -177,6 +178,9 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return Manifest{}, err
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Manifest{}, err
 	}
 	return s.compactLocked(ctx, tenantID)

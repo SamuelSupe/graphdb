@@ -12,6 +12,12 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
+const (
+	directCommitStatusPending   = "pending"
+	directCommitStatusPrepared  = "prepared"
+	directCommitStatusCommitted = "committed"
+)
+
 type DirectCommitRequest struct {
 	ExpectedVersion *int64          `json:"expected_version,omitempty"`
 	IdempotencyKey  string          `json:"idempotency_key,omitempty"`
@@ -20,10 +26,17 @@ type DirectCommitRequest struct {
 
 type DirectCommitRecord struct {
 	TenantID   string              `json:"tenant_id,omitempty"`
+	Status     string              `json:"status,omitempty"`
 	Request    DirectCommitRequest `json:"request"`
 	Result     CommitResult        `json:"result"`
 	StartedAt  time.Time           `json:"started_at"`
 	FinishedAt time.Time           `json:"finished_at"`
+}
+
+type directCommitReservation struct {
+	key    string
+	record DirectCommitRecord
+	meta   ObjectMeta
 }
 
 func directCommitRequest(mutations graph.Mutations, opts CommitOptions) DirectCommitRequest {
@@ -34,77 +47,125 @@ func directCommitRequest(mutations graph.Mutations, opts CommitOptions) DirectCo
 	}
 }
 
-func (s *TenantStore) loadDirectCommitRecord(ctx context.Context, tenantID string, request DirectCommitRequest) (DirectCommitRecord, bool, error) {
+func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, request DirectCommitRequest, started time.Time) (*directCommitReservation, *CommitResult, error) {
 	if request.IdempotencyKey == "" {
-		return DirectCommitRecord{}, false, nil
+		return nil, nil, nil
 	}
 	key := s.commitIdempotencyKey(tenantID, request.IdempotencyKey)
-	mayExist, err := s.objectKeyMayExist(ctx, key)
+	pending := DirectCommitRecord{
+		TenantID:  tenantID,
+		Status:    directCommitStatusPending,
+		Request:   request,
+		StartedAt: started,
+	}
+	data, err := marshalParquetDirectCommitRecord(ctx, pending)
 	if err != nil {
-		return DirectCommitRecord{}, false, err
+		return nil, nil, err
 	}
-	if !mayExist {
-		return DirectCommitRecord{}, false, nil
+	meta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+	if err == nil {
+		s.markObjectKeyCached(key)
+		return &directCommitReservation{key: key, record: pending, meta: meta}, nil, nil
 	}
-	record, err := s.loadDirectCommitRecordByKey(ctx, key)
-	if errors.Is(err, ErrNotFound) {
-		return DirectCommitRecord{}, false, nil
+	if !errors.Is(err, ErrConflict) {
+		return nil, nil, err
 	}
+
+	existing, meta, err := s.loadDirectCommitRecordWithMeta(ctx, key)
 	if err != nil {
-		return DirectCommitRecord{}, false, err
+		return nil, nil, fmt.Errorf("load existing commit idempotency record: %w", err)
 	}
-	if record.TenantID != "" && record.TenantID != tenantID {
-		return DirectCommitRecord{}, false, fmt.Errorf("commit idempotency tenant mismatch: path tenant %q contains tenant %q", tenantID, record.TenantID)
+	if err := validateDirectCommitRecord(tenantID, request, existing); err != nil {
+		return nil, nil, err
 	}
-	if record.Request.IdempotencyKey != request.IdempotencyKey {
-		return DirectCommitRecord{}, false, nil
+	switch directCommitRecordStatus(existing) {
+	case directCommitStatusCommitted:
+		result := replayDirectCommitResult(existing)
+		return nil, &result, nil
+	case directCommitStatusPending:
+		return &directCommitReservation{key: key, record: existing, meta: meta}, nil, nil
+	case directCommitStatusPrepared:
+		published, decisive, err := s.directCommitPreparedPublished(ctx, tenantID, existing)
+		if err != nil {
+			return nil, nil, err
+		}
+		if published {
+			result := replayDirectCommitResult(existing)
+			return nil, &result, nil
+		}
+		if !decisive {
+			return nil, nil, fmt.Errorf("%w: commit idempotency key %q has an ambiguous prepared outcome", ErrConflict, request.IdempotencyKey)
+		}
+		return &directCommitReservation{key: key, record: existing, meta: meta}, nil, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported commit idempotency status %q", existing.Status)
 	}
-	if !directCommitRequestEqual(record.Request, request) {
-		return DirectCommitRecord{}, false, fmt.Errorf("commit idempotency conflict for key %q: stored request differs from incoming request", request.IdempotencyKey)
-	}
-	return record, true, nil
 }
 
-func (s *TenantStore) saveDirectCommitRecord(ctx context.Context, tenantID string, request DirectCommitRequest, result CommitResult, started time.Time, finished time.Time) error {
-	if request.IdempotencyKey == "" {
+func (s *TenantStore) prepareDirectCommit(ctx context.Context, reservation *directCommitReservation, result CommitResult, finished time.Time) error {
+	if reservation == nil {
 		return nil
 	}
-	record := DirectCommitRecord{TenantID: tenantID, Request: request, Result: result, StartedAt: started, FinishedAt: finished}
+	record := reservation.record
+	record.Status = directCommitStatusPrepared
+	record.Result = result
+	record.FinishedAt = finished
+	return s.updateDirectCommitReservation(ctx, reservation, record)
+}
+
+func (s *TenantStore) completeDirectCommit(ctx context.Context, reservation *directCommitReservation, result CommitResult, finished time.Time) error {
+	if reservation == nil {
+		return nil
+	}
+	record := reservation.record
+	record.Status = directCommitStatusCommitted
+	record.Result = result
+	record.FinishedAt = finished
+	return s.updateDirectCommitReservation(ctx, reservation, record)
+}
+
+func (s *TenantStore) updateDirectCommitReservation(ctx context.Context, reservation *directCommitReservation, record DirectCommitRecord) error {
 	data, err := marshalParquetDirectCommitRecord(ctx, record)
 	if err != nil {
 		return err
 	}
-	key := s.commitIdempotencyKey(tenantID, request.IdempotencyKey)
-	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
-	if err == nil {
-		s.markObjectKeyCached(key)
-		return nil
-	}
-	if !errors.Is(err, ErrConflict) {
+	meta, err := s.putBytesWithMetaResult(ctx, reservation.key, data, reservation.meta)
+	if err != nil {
 		return err
 	}
-	existing, err := s.loadDirectCommitRecordByKey(ctx, key)
-	if err != nil {
-		return fmt.Errorf("%w: existing commit idempotency record is unreadable; repair blocked", err)
-	}
-	if directCommitRecordSameResult(existing, record) {
-		return nil
-	}
-	if existing.TenantID == "" || existing.TenantID == tenantID {
-		return fmt.Errorf("%w: commit idempotency key %q changed while publishing", ErrConflict, request.IdempotencyKey)
-	}
-	return fmt.Errorf("%w: commit idempotency key %q belongs to another tenant", ErrConflict, request.IdempotencyKey)
+	reservation.record = record
+	reservation.meta = meta
+	s.markObjectKeyCached(reservation.key)
+	return nil
 }
 
-func (s *TenantStore) loadDirectCommitRecordByKey(ctx context.Context, key string) (DirectCommitRecord, error) {
-	data, err := s.Objects.Get(ctx, key)
+func (s *TenantStore) loadDirectCommitRecordWithMeta(ctx context.Context, key string) (DirectCommitRecord, ObjectMeta, error) {
+	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
-		return DirectCommitRecord{}, err
+		return DirectCommitRecord{}, ObjectMeta{}, err
 	}
 	if !isParquetBytes(data) {
-		return DirectCommitRecord{}, fmt.Errorf("unsupported commit idempotency record: only parquet records are readable")
+		return DirectCommitRecord{}, ObjectMeta{}, fmt.Errorf("unsupported commit idempotency record: only parquet records are readable")
 	}
-	return decodeParquetDirectCommitRecord(ctx, data)
+	record, err := decodeParquetDirectCommitRecord(ctx, data)
+	return record, meta, err
+}
+
+func validateDirectCommitRecord(tenantID string, request DirectCommitRequest, record DirectCommitRecord) error {
+	if record.TenantID != "" && record.TenantID != tenantID {
+		return fmt.Errorf("commit idempotency tenant mismatch: path tenant %q contains tenant %q", tenantID, record.TenantID)
+	}
+	if record.Request.IdempotencyKey != request.IdempotencyKey || !directCommitRequestEqual(record.Request, request) {
+		return fmt.Errorf("commit idempotency conflict for key %q: stored request differs from incoming request", request.IdempotencyKey)
+	}
+	return nil
+}
+
+func directCommitRecordStatus(record DirectCommitRecord) string {
+	if record.Status == "" {
+		return directCommitStatusCommitted
+	}
+	return record.Status
 }
 
 func replayDirectCommitResult(record DirectCommitRecord) CommitResult {
