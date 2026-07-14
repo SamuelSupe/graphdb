@@ -12,6 +12,7 @@ import (
 
 var parquetEntityCandidateColumns = []int{
 	parquetEntityColumnID,
+	parquetEntityColumnShard,
 	parquetEntityColumnKind,
 	parquetEntityColumnSource,
 	parquetEntityColumnRowKind,
@@ -21,6 +22,7 @@ var parquetEntityCandidateColumns = []int{
 
 type parquetEntityCandidateScan struct {
 	IDs              map[string]struct{}
+	Shards           map[string]string
 	RowGroupsRead    int
 	RowGroupsSkipped int
 }
@@ -29,6 +31,7 @@ type parquetEntityCandidateState struct {
 	baseSet  bool
 	baseOK   bool
 	sourceOK bool
+	shard    string
 }
 
 func shouldScanParquetEntityCandidates(options EntityScanOptions, cursor scanCursor) bool {
@@ -36,7 +39,16 @@ func shouldScanParquetEntityCandidates(options EntityScanOptions, cursor scanCur
 }
 
 func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard string, options EntityScanOptions, cursor scanCursor) (parquetEntityCandidateScan, error) {
-	out := parquetEntityCandidateScan{IDs: map[string]struct{}{}}
+	out, err := scanParquetEntityObjectCandidates(ctx, data, options)
+	if err != nil {
+		return out, err
+	}
+	out.IDs = filterParquetEntityCandidates(out, shard, cursor)
+	return out, nil
+}
+
+func scanParquetEntityObjectCandidates(ctx context.Context, data []byte, options EntityScanOptions) (parquetEntityCandidateScan, error) {
+	out := parquetEntityCandidateScan{IDs: map[string]struct{}{}, Shards: map[string]string{}}
 	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
 	if err != nil {
 		return out, err
@@ -70,23 +82,27 @@ func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard str
 		if err != nil {
 			return out, err
 		}
-		kinds, err := parquetStringColumn(record, 1, "kind")
+		shards, err := parquetStringColumn(record, 1, "shard")
 		if err != nil {
 			return out, err
 		}
-		sources, err := parquetStringColumn(record, 2, "source")
+		kinds, err := parquetStringColumn(record, 2, "kind")
 		if err != nil {
 			return out, err
 		}
-		rowKinds, err := parquetStringColumn(record, 3, "row_kind")
+		sources, err := parquetStringColumn(record, 3, "source")
 		if err != nil {
 			return out, err
 		}
-		fieldSources, err := parquetStringColumn(record, 4, "field_source_source")
+		rowKinds, err := parquetStringColumn(record, 4, "row_kind")
 		if err != nil {
 			return out, err
 		}
-		entitySources, err := parquetStringColumn(record, 5, "entity_source_source")
+		fieldSources, err := parquetStringColumn(record, 5, "field_source_source")
+		if err != nil {
+			return out, err
+		}
+		entitySources, err := parquetStringColumn(record, 6, "entity_source_source")
 		if err != nil {
 			return out, err
 		}
@@ -102,7 +118,8 @@ func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard str
 			}
 			if !state.baseSet {
 				state.baseSet = true
-				state.baseOK = scanKey(shard, id) > cursor.After && (options.Kind == "" || kinds.Value(row) == options.Kind)
+				state.baseOK = options.Kind == "" || kinds.Value(row) == options.Kind
+				state.shard = shards.Value(row)
 			}
 			if options.Source == "" {
 				state.sourceOK = true
@@ -130,9 +147,30 @@ func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard str
 	for id, state := range states {
 		if state.baseOK && state.sourceOK {
 			out.IDs[id] = struct{}{}
+			out.Shards[id] = state.shard
 		}
 	}
 	return out, objectContextErr(ctx)
+}
+
+func filterParquetEntityCandidates(scan parquetEntityCandidateScan, shard string, cursor scanCursor) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for id := range scan.IDs {
+		rowShard := scan.Shards[id]
+		if shard != "" {
+			if rowShard != "" && rowShard != shard {
+				continue
+			}
+			if rowShard == "" && !indexShardIDMatches(id, shard) {
+				continue
+			}
+		}
+		if scanKey(shard, id) <= cursor.After {
+			continue
+		}
+		ids[id] = struct{}{}
+	}
+	return ids
 }
 
 func parquetEntityCandidateRowGroups(reader *pqfile.Reader, options EntityScanOptions) []int {

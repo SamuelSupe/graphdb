@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"sync"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -16,6 +17,37 @@ type parquetDecodeAdmission struct {
 }
 
 var processParquetDecodeAdmission parquetDecodeAdmission
+
+type parquetDecodeTraceKey struct{}
+
+type parquetDecodeTraceStats struct {
+	mu         sync.Mutex
+	admissions int
+	wait       time.Duration
+}
+
+func withParquetDecodeTraceStats(ctx context.Context, stats *parquetDecodeTraceStats) context.Context {
+	return context.WithValue(ctx, parquetDecodeTraceKey{}, stats)
+}
+
+func (s *parquetDecodeTraceStats) recordAdmission(wait time.Duration) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.admissions++
+	s.wait += wait
+	s.mu.Unlock()
+}
+
+func (s *parquetDecodeTraceStats) snapshot() (int, time.Duration) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.admissions, s.wait
+}
 
 // ConfigureParquetDecodeMaxConcurrent bounds Arrow/Parquet decoding for this
 // process. A non-positive value leaves decoding unbounded.
@@ -36,10 +68,17 @@ func acquireParquetDecode(ctx context.Context) (func(), error) {
 	if limit == nil {
 		return func() {}, nil
 	}
+	waitStarted := time.Now()
 	select {
 	case limit <- struct{}{}:
+		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
+			stats.recordAdmission(time.Since(waitStarted))
+		}
 		return func() { <-limit }, nil
 	case <-ctx.Done():
+		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
+			stats.recordAdmission(time.Since(waitStarted))
+		}
 		return nil, ctx.Err()
 	}
 }

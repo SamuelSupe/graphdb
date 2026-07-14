@@ -41,11 +41,15 @@ func (s *TenantStore) CurrentScanCatalog(ctx context.Context, tenantID string) (
 }
 
 func (s *TenantStore) ListEntitiesFromCatalog(ctx context.Context, tenantID string, catalog IndexCatalog, options EntityScanOptions) (result EntityScanResult, err error) {
+	stats := newEntityScanTraceStats()
+	stats.path = "catalog_index_pages"
+	stats.catalogVersion = catalog.Version
+	stats.catalogPages = len(catalog.EntityPages)
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.scan.entities_from_catalog", append(entityScanTraceAttrs(tenantID, options),
 		attribute.Int64("graphdb.scan.catalog_version", catalog.Version),
 	)...)
 	defer func() {
-		span.SetAttributes(entityScanResultTraceAttrs(result)...)
+		span.SetAttributes(append(entityScanResultTraceAttrs(result), stats.attrs()...)...)
 		endStorageSpan(span, err)
 	}()
 	if err := validateScanCatalog(tenantID, catalog); err != nil {
@@ -56,7 +60,7 @@ func (s *TenantStore) ListEntitiesFromCatalog(ctx context.Context, tenantID stri
 	if err != nil {
 		return EntityScanResult{}, err
 	}
-	result, ok, err := s.listEntitiesFromPages(ctx, tenantID, catalog.Version, catalog, options, cursor)
+	result, ok, err := s.listEntitiesFromPages(ctx, tenantID, catalog.Version, catalog, options, cursor, stats)
 	if err != nil {
 		return EntityScanResult{}, err
 	}
