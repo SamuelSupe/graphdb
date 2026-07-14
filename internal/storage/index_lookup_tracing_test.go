@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-func TestVisitEntitiesTraceReportsPhysicalScanForMissingKind(t *testing.T) {
+func TestVisitEntitiesTraceReportsCandidatePruningForMissingKind(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	entities := []graph.Entity{
@@ -45,14 +45,20 @@ func TestVisitEntitiesTraceReportsPhysicalScanForMissingKind(t *testing.T) {
 	span := requireStorageSpan(t, recorder.Ended(), "graphdb.storage.index_lookup.visit_entities")
 	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.kind", "missing-kind")
 	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.available", true)
-	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.physical_entities_examined", int64(len(entities)))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.physical_entities_examined", int64(0))
 	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.kind_matched", int64(0))
 	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.candidates_delivered", int64(0))
 	if got := storageSpanInt64(t, span, "graphdb.index_lookup.page_specs_visited"); got == 0 {
 		t.Fatal("page_specs_visited = 0, want at least one persisted page")
 	}
-	if got := storageSpanInt64(t, span, "graphdb.index_lookup.parquet_decodes"); got == 0 {
-		t.Fatal("parquet_decodes = 0, want at least one decoded page")
+	if got := storageSpanInt64(t, span, "graphdb.index_lookup.parquet_decodes"); got != 0 {
+		t.Fatalf("parquet_decodes = %d, want candidate pruning before full decode", got)
+	}
+	if got := storageSpanInt64(t, span, "graphdb.index_lookup.candidate_object_scans"); got == 0 {
+		t.Fatal("candidate_object_scans = 0, want at least one lightweight candidate scan")
+	}
+	if got := storageSpanInt64(t, span, "graphdb.index_lookup.pages_skipped_by_kind"); got == 0 {
+		t.Fatal("pages_skipped_by_kind = 0, want missing kind pages to be pruned")
 	}
 }
 

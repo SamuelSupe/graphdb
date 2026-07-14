@@ -15,23 +15,43 @@ import (
 type entityPageVisitTraceKey struct{}
 
 type entityPageVisitTraceStats struct {
-	pageGroupsTotal          int
-	pageGroupsVisited        int
-	pageSpecsVisited         int
-	pagesReadable            int
-	physicalEntitiesExamined int
-	kindMatched              int
-	candidatesDelivered      int
-	cursorSkipped            int
-	decodedCacheHits         int
-	decodedCacheMisses       int
-	cacheRevalidations       int
-	cacheInvalidations       int
-	rawCacheHits             int
-	objectLoads              int
-	parquetDecodes           int
-	parquetDecodeDuration    time.Duration
-	earlyStop                bool
+	pageGroupsTotal           int
+	pageGroupsVisited         int
+	pageSpecsVisited          int
+	pagesReadable             int
+	physicalEntitiesExamined  int
+	kindMatched               int
+	candidatesDelivered       int
+	cursorSkipped             int
+	decodedCacheHits          int
+	decodedCacheMisses        int
+	cacheRevalidations        int
+	cacheInvalidations        int
+	rawCacheHits              int
+	objectLoads               int
+	parquetDecodes            int
+	parquetDecodeDuration     time.Duration
+	uniqueObjects             map[string]struct{}
+	physicalObjectReuses      int
+	candidateFilterRequests   int
+	candidateObjectScans      int
+	candidateScanReuses       int
+	candidateRowGroupsRead    int
+	candidateRowGroupsSkipped int
+	candidateIDsMatched       int
+	candidateIDsSelected      int
+	candidateScanDuration     time.Duration
+	pagesSkippedByKind        int
+	parquetAdmissions         int
+	parquetAdmissionWait      time.Duration
+	earlyStop                 bool
+}
+
+func (s *entityPageVisitTraceStats) markObject(key string) {
+	if s == nil || key == "" {
+		return
+	}
+	s.uniqueObjects[key] = struct{}{}
 }
 
 func withEntityPageVisitTraceStats(ctx context.Context, stats *entityPageVisitTraceStats) context.Context {
@@ -69,9 +89,12 @@ func (l *PersistedIndexLookup) VisitEntities(ctx context.Context, kind string, f
 		attribute.Bool("graphdb.index_lookup.cursor_present", afterID != ""),
 		attribute.Int("graphdb.index_lookup.catalog_pages", catalogPages),
 	)
-	stats := &entityPageVisitTraceStats{}
+	stats := &entityPageVisitTraceStats{uniqueObjects: map[string]struct{}{}}
 	ctx = withEntityPageVisitTraceStats(ctx, stats)
+	decodeStats := &parquetDecodeTraceStats{}
+	ctx = withParquetDecodeTraceStats(ctx, decodeStats)
 	defer func() {
+		stats.parquetAdmissions, stats.parquetAdmissionWait = decodeStats.snapshot()
 		span.SetAttributes(
 			attribute.Bool("graphdb.index_lookup.available", available),
 			attribute.Int("graphdb.index_lookup.page_groups_total", stats.pageGroupsTotal),
@@ -90,6 +113,21 @@ func (l *PersistedIndexLookup) VisitEntities(ctx context.Context, kind string, f
 			attribute.Int("graphdb.index_lookup.object_loads", stats.objectLoads),
 			attribute.Int("graphdb.index_lookup.parquet_decodes", stats.parquetDecodes),
 			attribute.Int64("graphdb.index_lookup.parquet_decode_ms", stats.parquetDecodeDuration.Milliseconds()),
+			attribute.Int("graphdb.index_lookup.unique_objects", len(stats.uniqueObjects)),
+			attribute.Int("graphdb.index_lookup.physical_object_reuses", stats.physicalObjectReuses),
+			attribute.Int("graphdb.index_lookup.candidate_filter_requests", stats.candidateFilterRequests),
+			attribute.Int("graphdb.index_lookup.candidate_object_scans", stats.candidateObjectScans),
+			attribute.Int("graphdb.index_lookup.candidate_scan_reuses", stats.candidateScanReuses),
+			attribute.Int("graphdb.index_lookup.candidate_row_groups_read", stats.candidateRowGroupsRead),
+			attribute.Int("graphdb.index_lookup.candidate_row_groups_skipped", stats.candidateRowGroupsSkipped),
+			attribute.Int("graphdb.index_lookup.candidate_ids_matched", stats.candidateIDsMatched),
+			attribute.Int("graphdb.index_lookup.candidate_ids_selected", stats.candidateIDsSelected),
+			attribute.Int64("graphdb.index_lookup.candidate_scan_ms", stats.candidateScanDuration.Milliseconds()),
+			attribute.Int("graphdb.index_lookup.pages_skipped_by_kind", stats.pagesSkippedByKind),
+			attribute.Bool("graphdb.index_lookup.kind_candidate_found", stats.candidateIDsMatched > 0),
+			attribute.Bool("graphdb.index_lookup.candidate_pruned_all_pages", stats.pageSpecsVisited > 0 && stats.pagesSkippedByKind == stats.pageSpecsVisited),
+			attribute.Int("graphdb.index_lookup.parquet_admissions", stats.parquetAdmissions),
+			attribute.Int64("graphdb.index_lookup.parquet_admission_wait_ms", stats.parquetAdmissionWait.Milliseconds()),
 			attribute.Bool("graphdb.index_lookup.early_stop", stats.earlyStop),
 		)
 		endStorageSpan(span, err)
@@ -97,6 +135,7 @@ func (l *PersistedIndexLookup) VisitEntities(ctx context.Context, kind string, f
 	if l == nil || l.Catalog.Version != l.Version || visit == nil {
 		return false, nil
 	}
+	ctx = withEntityPageVisitSession(ctx, newEntityPageVisitSession(l, kind, stats))
 	groups := make(map[string][]EntityPageSpec)
 	shards := make([]string, 0, len(l.Catalog.EntityPages))
 	for _, spec := range l.Catalog.EntityPages {
@@ -188,10 +227,7 @@ func (l *PersistedIndexLookup) visitEntitiesFromPage(ctx context.Context, spec E
 	}
 	readable := false
 	keepGoing := true
-	ok, err := l.Store.withParquetEntityPageObject(ctx, l.TenantID, l.Version, spec, func(page EntityPageData, _ string, validated bool) error {
-		if !validated {
-			return nil
-		}
+	consumePage := func(page EntityPageData) error {
 		readable = true
 		if stats != nil {
 			stats.pagesReadable++
@@ -222,6 +258,22 @@ func (l *PersistedIndexLookup) visitEntitiesFromPage(ctx context.Context, spec E
 			}
 		}
 		return nil
+	}
+	if session := entityPageVisitSessionFromContext(ctx); session != nil {
+		ok, skipped, err := session.visitPage(ctx, spec, consumePage)
+		if skipped {
+			return true, true, nil
+		}
+		if err != nil || !ok || !readable {
+			return ok && readable, false, err
+		}
+		return true, keepGoing, nil
+	}
+	ok, err := l.Store.withParquetEntityPageObject(ctx, l.TenantID, l.Version, spec, func(page EntityPageData, _ string, validated bool) error {
+		if !validated {
+			return nil
+		}
+		return consumePage(page)
 	})
 	if err != nil || !ok || !readable {
 		return ok && readable, false, err
