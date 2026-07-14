@@ -26,7 +26,7 @@ func (c *Client) GetEntity(ctx context.Context, id string, options *ReadOptions)
 	var response struct {
 		Entity Entity `json:"entity"`
 	}
-	err = c.doJSON(ctx, "GET", "/v1/entities/"+url.PathEscape(id), "", values, nil, &response)
+	err = c.doJSON(ctx, "GET", "/v1/entities/"+pathEscape(id), "", values, nil, &response)
 	return response.Entity, err
 }
 

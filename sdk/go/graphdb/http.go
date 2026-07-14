@@ -51,7 +51,11 @@ func (c *Client) do(ctx context.Context, method string, path string, tenantID st
 	if c == nil {
 		return nil, errors.New("nil GraphDB client")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.url(path, query), body)
+	requestURL, err := c.url(path, query)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -90,13 +94,19 @@ func (c *Client) setHeaders(req *http.Request, tenantID string, contentType stri
 	}
 }
 
-func (c *Client) url(path string, query url.Values) string {
+func (c *Client) url(path string, query url.Values) (string, error) {
 	next := *c.baseURL
-	basePath := strings.TrimRight(next.Path, "/")
+	basePath := strings.TrimRight(next.EscapedPath(), "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	next.Path = basePath + path
+	escapedPath := basePath + path
+	decodedPath, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return "", err
+	}
+	next.Path = decodedPath
+	next.RawPath = escapedPath
 	next.RawQuery = query.Encode()
-	return next.String()
+	return next.String(), nil
 }
