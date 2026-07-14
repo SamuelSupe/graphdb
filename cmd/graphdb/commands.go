@@ -340,7 +340,7 @@ Environment:
   GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true
   GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=2
   GRAPHDB_WRITE_MAX_CONCURRENT=32
-  GRAPHDB_WRITE_MAX_PER_TENANT=1 (single-writer mode; 0 disables this admission dimension)
+  GRAPHDB_WRITE_MAX_PER_TENANT=1 (1 is strict request serialization; 2-4 enables bounded request pipelining; 0 disables this admission dimension)
   GRAPHDB_WRITE_QUEUE_TIMEOUT=2s
   GRAPHDB_WRITE_OBJECT_LATENCY_THRESHOLD=2s
   GRAPHDB_WRITE_CAS_CONFLICT_WINDOW=30s

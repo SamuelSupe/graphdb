@@ -83,9 +83,11 @@ Write path:
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
 
-`GRAPHDB_WRITE_MAX_PER_TENANT` must be `0` or `1`. Keep it at `1` in normal
-single-writer deployment. `0` disables that admission dimension and should only
-be used for controlled testing.
+Keep `GRAPHDB_WRITE_MAX_PER_TENANT=1` for strict request serialization. Values
+such as `2`-`4` allow bounded pipelining of backpressure checks and post-commit
+metadata finalization; manifest publication remains protected by the per-tenant
+single-writer lock. `0` disables that admission dimension and should only be
+used for controlled testing.
 
 Observability:
 

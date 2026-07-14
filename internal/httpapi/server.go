@@ -180,7 +180,11 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 	storeCtx, storeSpan := tracer.Start(writeCtx, "graphdb.commit.store_commit", trace.WithAttributes(append([]attribute.KeyValue{
 		attribute.String("graphdb.tenant", tenantID),
 	}, commitRequestAttributes(request)...)...))
-	result, err := s.Store.CommitWithReport(storeCtx, tenantID, request.Mutations, storage.CommitOptions{ExpectedVersion: request.ExpectedVersion, IdempotencyKey: request.IdempotencyKey})
+	result, err := s.Store.CommitWithReport(storeCtx, tenantID, request.Mutations, storage.CommitOptions{
+		ExpectedVersion:          request.ExpectedVersion,
+		IdempotencyKey:           request.IdempotencyKey,
+		WriteBackpressureChecked: true,
+	})
 	storeSpan.SetAttributes(
 		attribute.Int64("graphdb.commit.version", result.Version),
 		attribute.Int64("graphdb.commit.readable_version", result.ReadableVersion),

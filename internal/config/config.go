@@ -279,9 +279,6 @@ func Load() (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("unsupported GRAPHDB_MODE %q", cfg.Mode)
 	}
-	if cfg.WriteMaxPerTenant > 1 {
-		return Config{}, fmt.Errorf("GRAPHDB_WRITE_MAX_PER_TENANT must be 0 or 1 in single-writer mode")
-	}
 	return cfg, nil
 }
 

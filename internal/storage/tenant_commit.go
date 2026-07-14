@@ -39,7 +39,40 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 		return CommitResult{}, err
 	}
 	request := directCommitRequest(mutations, opts)
+	preflightCtx, preflightSpan := startStorageSpan(ctx, "graphdb.storage.commit.preflight",
+		tenantTraceAttr(tenantID),
+		attribute.Bool("graphdb.commit.write_backpressure_reused", opts.WriteBackpressureChecked),
+	)
+	if !opts.WriteBackpressureChecked {
+		checkCtx, checkSpan := startStorageSpan(preflightCtx, "graphdb.storage.commit.check_backpressure", tenantTraceAttr(tenantID))
+		err = s.CheckWriteBackpressure(checkCtx, tenantID)
+		endStorageSpan(checkSpan, err)
+		if err != nil {
+			endStorageSpan(preflightSpan, err)
+			return CommitResult{}, err
+		}
+	}
+	endStorageSpan(preflightSpan, nil)
 
+	result, reservation, err := s.commitWithinTenantLock(ctx, tenantID, mutations, opts, request)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	finished := time.Now().UTC()
+	completeCtx, completeSpan := startStorageSpan(ctx, "graphdb.storage.commit.complete_idempotency_record",
+		tenantTraceAttr(tenantID),
+		attribute.Int64("graphdb.commit.version", result.Version),
+		attribute.Bool("graphdb.commit.outside_tenant_lock", true),
+	)
+	err = s.completeDirectCommit(completeCtx, reservation, result, finished)
+	endStorageSpan(completeSpan, err)
+	if err != nil {
+		return result, fmt.Errorf("complete commit idempotency record: %w", err)
+	}
+	return result, nil
+}
+
+func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions, request DirectCommitRequest) (result CommitResult, reservation *directCommitReservation, err error) {
 	_, lockSpan := startStorageSpan(ctx, "graphdb.storage.commit.lock_tenant", tenantTraceAttr(tenantID))
 	lockStarted := time.Now()
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
@@ -50,76 +83,66 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	)
 	endStorageSpan(lockSpan, err)
 	if err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, nil, err
 	}
-	defer unlock()
+	criticalCtx, criticalSpan := startStorageSpan(ctx, "graphdb.storage.commit.critical_section", tenantTraceAttr(tenantID))
+	criticalStarted := time.Now()
+	defer func() {
+		unlock()
+		criticalSpan.SetAttributes(
+			attribute.Int64("graphdb.commit.lock_held_ms", time.Since(criticalStarted).Milliseconds()),
+			attribute.Int64("graphdb.commit.version", result.Version),
+		)
+		endStorageSpan(criticalSpan, err)
+	}()
 
-	backpressureCtx, backpressureSpan := startStorageSpan(ctx, "graphdb.storage.commit.check_backpressure.initial", tenantTraceAttr(tenantID))
-	err = s.CheckWriteBackpressure(backpressureCtx, tenantID)
-	endStorageSpan(backpressureSpan, err)
-	if err != nil {
-		return CommitResult{}, err
-	}
-
-	leaseCtx, leaseSpan := startStorageSpan(ctx, "graphdb.storage.commit.acquire_writer_lease", tenantTraceAttr(tenantID))
+	leaseCtx, leaseSpan := startStorageSpan(criticalCtx, "graphdb.storage.commit.acquire_writer_lease", tenantTraceAttr(tenantID))
 	err = s.acquireWriterLease(leaseCtx, tenantID)
 	endStorageSpan(leaseSpan, err)
 	if err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
-			return CommitResult{}, pressure
+			return CommitResult{}, nil, pressure
 		}
-		return CommitResult{}, err
+		return CommitResult{}, nil, err
 	}
-	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
-		return CommitResult{}, err
+	revalidateCtx, revalidateSpan := startStorageSpan(criticalCtx, "graphdb.storage.commit.revalidate_tenant_writable", tenantTraceAttr(tenantID))
+	err = s.EnsureTenantWritable(revalidateCtx, tenantID)
+	endStorageSpan(revalidateSpan, err)
+	if err != nil {
+		return CommitResult{}, nil, err
 	}
-	registryCtx, registrySpan := startStorageSpan(ctx, "graphdb.storage.commit.add_tenant_registry", tenantTraceAttr(tenantID))
+	registryCtx, registrySpan := startStorageSpan(criticalCtx, "graphdb.storage.commit.add_tenant_registry", tenantTraceAttr(tenantID))
 	err = s.addTenantToRegistry(registryCtx, tenantID)
 	endStorageSpan(registrySpan, err)
 	if err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
-			return CommitResult{}, pressure
+			return CommitResult{}, nil, pressure
 		}
-		return CommitResult{}, err
-	}
-
-	backpressureCtx, backpressureSpan = startStorageSpan(ctx, "graphdb.storage.commit.check_backpressure.after_lease", tenantTraceAttr(tenantID))
-	err = s.CheckWriteBackpressure(backpressureCtx, tenantID)
-	endStorageSpan(backpressureSpan, err)
-	if err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, nil, err
 	}
 	started := time.Now().UTC()
-	idemCtx, idemSpan := startStorageSpan(ctx, "graphdb.storage.commit.reserve_idempotency_record", tenantTraceAttr(tenantID), attribute.Bool("graphdb.commit.idempotency_key_present", request.IdempotencyKey != ""))
+	idemCtx, idemSpan := startStorageSpan(criticalCtx, "graphdb.storage.commit.reserve_idempotency_record", tenantTraceAttr(tenantID), attribute.Bool("graphdb.commit.idempotency_key_present", request.IdempotencyKey != ""))
 	reservation, replay, err := s.beginDirectCommit(idemCtx, tenantID, request, started)
 	idemSpan.SetAttributes(attribute.Bool("graphdb.commit.idempotency_replay_found", replay != nil))
 	endStorageSpan(idemSpan, err)
 	if err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
-			return CommitResult{}, pressure
+			return CommitResult{}, nil, pressure
 		}
-		return CommitResult{}, err
+		return CommitResult{}, nil, err
 	}
 	if replay != nil {
-		return *replay, nil
+		return *replay, nil, nil
 	}
 	opts.directCommit = reservation
 
-	retryCtx, retrySpan := startStorageSpan(ctx, "graphdb.storage.commit.retry_loop", tenantTraceAttr(tenantID))
+	retryCtx, retrySpan := startStorageSpan(criticalCtx, "graphdb.storage.commit.retry_loop", tenantTraceAttr(tenantID))
 	result, err = s.commitWithRetryLocked(retryCtx, tenantID, mutations, opts)
 	endStorageSpan(retrySpan, err)
-	finished := time.Now().UTC()
 	if err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, nil, err
 	}
-
-	saveCtx, saveSpan := startStorageSpan(ctx, "graphdb.storage.commit.complete_idempotency_record", tenantTraceAttr(tenantID), attribute.Int64("graphdb.commit.version", result.Version))
-	err = s.completeDirectCommit(saveCtx, reservation, result, finished)
-	endStorageSpan(saveSpan, err)
-	if err != nil {
-		return result, fmt.Errorf("complete commit idempotency record: %w", err)
-	}
-	return result, nil
+	return result, reservation, nil
 }
 
 func (s *TenantStore) commitWithRetryLocked(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions) (result CommitResult, err error) {

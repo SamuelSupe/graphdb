@@ -170,6 +170,59 @@ func TestDirectCommitPreparedRecordReplaysWhenFinalizationFails(t *testing.T) {
 	}
 }
 
+func TestDirectCommitFinalizationDoesNotHoldTenantLock(t *testing.T) {
+	ctx := context.Background()
+	objects := &blockIdempotencyFinalizationStore{
+		ObjectStore: NewMemoryStore(),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	store := NewTenantStore(objects, "test")
+	type commitOutcome struct {
+		result CommitResult
+		err    error
+	}
+	done := make(chan commitOutcome, 1)
+	go func() {
+		result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+		}, CommitOptions{IdempotencyKey: "idem-finalize-unlocked"})
+		done <- commitOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-objects.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("commit did not reach blocked idempotency finalization")
+	}
+	secondCtx, cancel := context.WithTimeout(ctx, time.Second)
+	second, err := store.CommitWithReport(secondCtx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
+	}, CommitOptions{})
+	cancel()
+	if err != nil {
+		close(objects.release)
+		t.Fatalf("second commit remained blocked by idempotency finalization: %v", err)
+	}
+	if second.Version != 2 {
+		close(objects.release)
+		t.Fatalf("second commit version = %d, want 2", second.Version)
+	}
+	close(objects.release)
+
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			t.Fatalf("commit: %v", outcome.err)
+		}
+		if outcome.result.Version != 1 {
+			t.Fatalf("commit version = %d, want 1", outcome.result.Version)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("commit did not finish after finalization resumed")
+	}
+}
+
 func TestDirectCommitWriterTakeoverInvalidatesIdempotencyMiss(t *testing.T) {
 	ctx := context.Background()
 	objects := &failNthIdempotencyPutStore{ObjectStore: NewMemoryStore(), failAt: 3}
@@ -250,6 +303,32 @@ type failNthIdempotencyPutStore struct {
 	mu     sync.Mutex
 	count  int
 	failAt int
+}
+
+type blockIdempotencyFinalizationStore struct {
+	ObjectStore
+	mu      sync.Mutex
+	count   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockIdempotencyFinalizationStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if strings.Contains(key, "/idempotency/commits/") {
+		s.mu.Lock()
+		s.count++
+		finalizing := s.count == 3
+		s.mu.Unlock()
+		if finalizing {
+			close(s.entered)
+			select {
+			case <-s.release:
+			case <-ctx.Done():
+				return ObjectMeta{Key: key}, ctx.Err()
+			}
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
 }
 
 func (s *failNthIdempotencyPutStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {

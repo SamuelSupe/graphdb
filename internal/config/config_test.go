@@ -205,12 +205,15 @@ func TestLoadParsesWriteBackpressureConfig(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsWriteMaxPerTenantAboveOne(t *testing.T) {
+func TestLoadAllowsWriteRequestPipeliningPerTenant(t *testing.T) {
 	setLocalConfigEnv(t)
-	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "2")
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "GRAPHDB_WRITE_MAX_PER_TENANT must be 0 or 1") {
-		t.Fatalf("Load err = %v, want single-writer validation", err)
+	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "4")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WriteMaxPerTenant != 4 {
+		t.Fatalf("WriteMaxPerTenant = %d, want 4", cfg.WriteMaxPerTenant)
 	}
 }
 

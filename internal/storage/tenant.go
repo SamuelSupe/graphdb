@@ -53,7 +53,10 @@ type snapshotRecord struct {
 type CommitOptions struct {
 	ExpectedVersion *int64
 	IdempotencyKey  string
-	directCommit    *directCommitReservation
+	// WriteBackpressureChecked avoids repeating the full admission scan when
+	// the HTTP layer already completed it for this request.
+	WriteBackpressureChecked bool
+	directCommit             *directCommitReservation
 }
 
 type TenantStore struct {

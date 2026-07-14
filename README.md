@@ -868,8 +868,9 @@ flags without changing process-wide defaults.
 - `GRAPHDB_QUERY_MAX_PER_TENANT=32`
 - `GRAPHDB_QUERY_QUEUE_TIMEOUT=5s`
 - `GRAPHDB_WRITE_MAX_CONCURRENT=32`
-- `GRAPHDB_WRITE_MAX_PER_TENANT=1` (single-writer mode; `0` disables this
-  admission dimension, values greater than `1` are rejected)
+- `GRAPHDB_WRITE_MAX_PER_TENANT=1` (`1` strictly serializes requests; values
+  such as `2`-`4` allow bounded lock-external request pipelining while manifest
+  publication remains single-writer; `0` disables this admission dimension)
 - `GRAPHDB_WRITE_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_WRITE_OBJECT_LATENCY_THRESHOLD=2s`
 - `GRAPHDB_WRITE_OBJECT_ERROR_WINDOW=30s`
