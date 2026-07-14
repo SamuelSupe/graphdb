@@ -41,8 +41,17 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	request := directCommitRequest(mutations, opts)
 
 	_, lockSpan := startStorageSpan(ctx, "graphdb.storage.commit.lock_tenant", tenantTraceAttr(tenantID))
-	unlock := s.lockTenant(tenantID)
-	endStorageSpan(lockSpan, nil)
+	lockStarted := time.Now()
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	lockSpan.SetAttributes(
+		attribute.Int64("graphdb.commit.lock_wait_ms", time.Since(lockStarted).Milliseconds()),
+		attribute.Bool("graphdb.commit.lock_acquired", err == nil),
+		attribute.String("graphdb.commit.lock_priority", "foreground"),
+	)
+	endStorageSpan(lockSpan, err)
+	if err != nil {
+		return CommitResult{}, err
+	}
 	defer unlock()
 
 	backpressureCtx, backpressureSpan := startStorageSpan(ctx, "graphdb.storage.commit.check_backpressure.initial", tenantTraceAttr(tenantID))

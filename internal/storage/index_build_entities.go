@@ -175,12 +175,16 @@ func (s *TenantStore) tombstoneStaleEntityRecords(ctx context.Context, tenantID 
 		if _, current := currentIDs[entityID]; current {
 			continue
 		}
-		meta, err := objectMeta(ctx, s.Objects, object.Key)
+		data, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return err
+		}
+		current, decodeErr := decodeEntityRecordObject(ctx, data, object.Key, tenantID, entityID)
+		if decodeErr == nil && current.Version > version {
+			return fmt.Errorf("%w: entity record %q is newer than rebuild target", ErrConflict, object.Key)
 		}
 		if meta.ETag == "" {
 			return fmt.Errorf("entity record %q missing etag for safe stale cleanup", object.Key)

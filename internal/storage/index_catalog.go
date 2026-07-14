@@ -150,8 +150,6 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err != nil {
 		return IndexCatalog{}, err
 	}
-	unlock := s.lockTenant(tenantID)
-	defer unlock()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -176,6 +174,8 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	catalog := artifacts.Catalog
 	catalog.TenantID = tenantID
 	s.decorateIndexCatalog(&catalog, tenantID, format)
+	// Versioned index artifacts are immutable. Build and upload them without the
+	// tenant lock, then validate and publish the mutable catalog under the lock.
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -188,8 +188,26 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err := s.writeEntityPagesWithFormat(ctx, tenantID, g, manifest.Version, artifacts.EntityPages, format); err != nil {
 		return IndexCatalog{}, err
 	}
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return IndexCatalog{}, err
+	}
+	defer unlock()
+	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return IndexCatalog{}, err
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return IndexCatalog{}, err
+	}
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
+	}
+	currentDefinitions, err := s.getIndexDefinitions(ctx, tenantID)
+	if err != nil {
+		return IndexCatalog{}, err
+	}
+	if !slices.Equal(definitions, currentDefinitions) {
+		return IndexCatalog{}, fmt.Errorf("%w: index definitions changed while rebuilding indexes", ErrConflict)
 	}
 	catalogMeta, err := s.putIndexCatalogWithMeta(ctx, tenantID, catalog, previousMeta)
 	if err != nil {
