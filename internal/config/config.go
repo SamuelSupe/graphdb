@@ -61,10 +61,6 @@ type Config struct {
 	OTLPEndpoint                      string
 	OTLPInsecure                      bool
 	ServiceName                       string
-	DatadogProfilingEnabled           bool
-	DatadogServiceName                string
-	DatadogEnvironment                string
-	DatadogVersion                    string
 	InstanceID                        string
 
 	S3Endpoint        string
@@ -126,13 +122,7 @@ func Load() (Config, error) {
 	}
 	cfg.S3AccessKeyID = firstNonEmpty(os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("AWS_ACCESS_KEY_ID"))
 	cfg.S3SecretAccessKey = firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
-	cfg.DatadogServiceName = firstNonEmpty(strings.TrimSpace(os.Getenv("DD_SERVICE")), cfg.ServiceName)
-	cfg.DatadogEnvironment = strings.TrimSpace(os.Getenv("DD_ENV"))
-	cfg.DatadogVersion = strings.TrimSpace(os.Getenv("DD_VERSION"))
 	if err := loadBoolEnv("S3_PATH_STYLE", &cfg.S3PathStyle); err != nil {
-		return Config{}, err
-	}
-	if err := loadBoolEnv("DD_PROFILING_ENABLED", &cfg.DatadogProfilingEnabled); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_POLL_INTERVAL", &cfg.PollInterval); err != nil {

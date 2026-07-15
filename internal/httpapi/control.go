@@ -23,10 +23,6 @@ type RepairRequest struct {
 	Apply bool `json:"apply,omitempty"`
 }
 
-type DatadogProfilingRequest struct {
-	Enabled *bool `json:"enabled"`
-}
-
 type ReaderFreshnessReport struct {
 	TenantID              string               `json:"tenant_id"`
 	Status                string               `json:"status"`
@@ -110,29 +106,6 @@ func (s *Server) writerLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, lease)
-}
-
-func (s *Server) datadogProfiling(w http.ResponseWriter, r *http.Request) {
-	if s.DatadogProfiler == nil {
-		writeError(w, http.StatusServiceUnavailable, "Datadog profiling controller is not configured")
-		return
-	}
-	var request DatadogProfilingRequest
-	if !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
-		return
-	}
-	if request.Enabled == nil {
-		writeError(w, http.StatusBadRequest, "enabled is required")
-		return
-	}
-	status, err := s.DatadogProfiler.SetEnabled(*request.Enabled)
-	if err != nil {
-		s.obs().Logger.Error("datadog_profiling_update_failed", map[string]any{"enabled": *request.Enabled, "error": err.Error()})
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.obs().Logger.Info("datadog_profiling_updated", map[string]any{"enabled": status.Enabled, "dd_profiling_enabled": status.DDProfilingEnabled})
-	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) readerLag(w http.ResponseWriter, r *http.Request) {

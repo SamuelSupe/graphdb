@@ -83,7 +83,6 @@ func TestAPITraceRoutes(t *testing.T) {
 		{http.MethodGet, "/v1/control/reader-fleet-readiness", "control.reader_fleet_readiness", "GET /v1/control/reader-fleet-readiness"},
 		{http.MethodGet, "/v1/control/reader-traffic-gate", "control.reader_traffic_gate", "GET /v1/control/reader-traffic-gate"},
 		{http.MethodGet, "/v1/control/integrity-audit", "control.integrity_audit", "GET /v1/control/integrity-audit"},
-		{http.MethodPost, "/v1/control/profiling", "control.profiling", "POST /v1/control/profiling"},
 		{http.MethodPost, "/v1/control/recover", "control.recover", "POST /v1/control/recover"},
 		{http.MethodPost, "/v1/control/repair", "control.repair", "POST /v1/control/repair"},
 		{http.MethodPost, "/v1/control/cleanup-commits", "control.cleanup_commits", "POST /v1/control/cleanup-commits"},

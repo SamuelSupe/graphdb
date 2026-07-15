@@ -260,8 +260,6 @@ func controlAPITraceRoute(method string, path string) apiTraceRoute {
 		return apiTraceRoute{"control.reader_traffic_gate", "GET /v1/control/reader-traffic-gate"}
 	case "/v1/control/integrity-audit":
 		return apiTraceRoute{"control.integrity_audit", "GET /v1/control/integrity-audit"}
-	case "/v1/control/profiling":
-		return apiTraceRoute{"control.profiling", "POST /v1/control/profiling"}
 	case "/v1/control/recover":
 		return apiTraceRoute{"control.recover", "POST /v1/control/recover"}
 	case "/v1/control/repair":
