@@ -110,10 +110,11 @@ func marshalParquetManifest(ctx context.Context, manifest Manifest) ([]byte, err
 }
 
 func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return Manifest{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return Manifest{}, fmt.Errorf("parquet manifest is empty")

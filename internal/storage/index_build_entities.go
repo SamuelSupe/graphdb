@@ -84,18 +84,18 @@ func finishEntityPages(pages map[string]EntityPageData) []EntityPageData {
 	return items
 }
 
-func entityPagePackIDs(pages []EntityPageSpec, packPages bool) map[string]string {
+func entityPagePackIDs(pages []EntityPageSpec, packPages bool, maxBytes int64) map[string]string {
 	if !packPages {
 		return nil
 	}
 	items := make([]indexPackItem, 0, len(pages))
 	for _, page := range pages {
-		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: page.EntityCount})
+		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: page.EntityCount, Bytes: page.estimatedBytes})
 	}
-	return indexPackMap(planIndexPacks(items))
+	return indexPackMap(planIndexPacksWithMaxBytes(items, maxBytes))
 }
 
-func entityPageDataPackGroups(pages []EntityPageData, packPages bool) []entityPageDataPackGroup {
+func entityPageDataPackGroups(pages []EntityPageData, packPages bool, maxBytes int64) []entityPageDataPackGroup {
 	if !packPages {
 		out := make([]entityPageDataPackGroup, 0, len(pages))
 		for _, page := range pages {
@@ -106,10 +106,10 @@ func entityPageDataPackGroups(pages []EntityPageData, packPages bool) []entityPa
 	items := make([]indexPackItem, 0, len(pages))
 	byShard := map[string]EntityPageData{}
 	for _, page := range pages {
-		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: len(page.Entities)})
+		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: len(page.Entities), Bytes: entityPagePackBytes(page)})
 		byShard[page.Shard] = page
 	}
-	groups := planIndexPacks(items)
+	groups := planIndexPacksWithMaxBytes(items, maxBytes)
 	out := make([]entityPageDataPackGroup, 0, len(groups))
 	for _, group := range groups {
 		packed := entityPageDataPackGroup{ID: group.ID}
@@ -175,12 +175,16 @@ func (s *TenantStore) tombstoneStaleEntityRecords(ctx context.Context, tenantID 
 		if _, current := currentIDs[entityID]; current {
 			continue
 		}
-		meta, err := objectMeta(ctx, s.Objects, object.Key)
+		data, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return err
+		}
+		current, decodeErr := decodeEntityRecordObject(ctx, data, object.Key, tenantID, entityID)
+		if decodeErr == nil && current.Version > version {
+			return fmt.Errorf("%w: entity record %q is newer than rebuild target", ErrConflict, object.Key)
 		}
 		if meta.ETag == "" {
 			return fmt.Errorf("entity record %q missing etag for safe stale cleanup", object.Key)

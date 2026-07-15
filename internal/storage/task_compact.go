@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -9,8 +10,6 @@ import (
 
 func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]any, string, error) {
 	total := taskProgressTotal(task.Type)
-	unlock := s.lockTenant(task.TenantID)
-	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, task.TenantID)
 	if err != nil {
 		return nil, "", err
@@ -66,6 +65,31 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	if err := s.compactTaskSnapshotRecord(ctx, task, snapshotKey, snapshot, total); err != nil {
 		return nil, "", err
 	}
+	unlock, err := s.lockTenantMaintenance(ctx, task.TenantID)
+	if err != nil {
+		return nil, "", err
+	}
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			unlock()
+		}
+	}()
+	boundCtx, err = s.acquireAndBindWriterFence(ctx, task.TenantID)
+	if err != nil {
+		return nil, "", err
+	}
+	ctx = boundCtx
+	if err := s.EnsureTenantWritable(ctx, task.TenantID); err != nil {
+		return nil, "", err
+	}
+	current, currentMeta, err := s.getManifest(ctx, task.TenantID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !cachedManifestMatches(loaded, current, currentMeta) {
+		return nil, "", fmt.Errorf("%w: manifest changed while compacting tenant %q", ErrConflict, task.TenantID)
+	}
 	manifest := Manifest{
 		LayoutVersion:      CurrentObjectLayoutVersion,
 		TenantID:           task.TenantID,
@@ -83,7 +107,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	}, map[string]any{"version": manifest.Version, "snapshot_key": manifest.SnapshotKey, "snapshot_catalog_key": manifest.SnapshotCatalogKey}); err != nil {
 		return nil, "", err
 	}
-	meta, err := s.putManifestMeta(ctx, task.TenantID, manifest, loaded.Meta)
+	meta, err := s.putManifestMeta(ctx, task.TenantID, manifest, currentMeta)
 	if err != nil {
 		s.deleteWriteCache(task.TenantID)
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "compact_publish_manifest", total-1, total, taskActionUpdate{
@@ -92,7 +116,9 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		}, nil)
 		return nil, "", err
 	}
-	s.setWriteCache(task.TenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5})
+	s.setWriteCache(task.TenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5, CacheBytes: loaded.CacheBytes})
+	unlock()
+	lockHeld = false
 	_ = s.updateTaskActionProgress(ctx, task, "compact_done", total, total, taskActionUpdate{
 		ID:     "publish_manifest",
 		Status: "completed",

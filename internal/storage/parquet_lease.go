@@ -53,10 +53,11 @@ func marshalParquetWriterLease(ctx context.Context, lease WriterLease) ([]byte, 
 }
 
 func decodeParquetWriterLease(ctx context.Context, data []byte) (WriterLease, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return WriterLease{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() != 1 {
 		return WriterLease{}, fmt.Errorf("parquet writer lease has %d rows, want 1", table.NumRows())

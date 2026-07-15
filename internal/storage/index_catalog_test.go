@@ -71,6 +71,58 @@ func TestRebuildIndexesWritesCatalogSecondaryIndexesAndEdgeShards(t *testing.T) 
 	}
 }
 
+func TestRebuildIndexObjectBuildDoesNotBlockCommit(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+
+	blocking := &blockOnceGetWithMetaStore{
+		ObjectStore: base,
+		substring:   "/fields/",
+		paused:      make(chan struct{}),
+		resume:      make(chan struct{}),
+	}
+	store.Objects = blocking
+	rebuildDone := make(chan error, 1)
+	go func() {
+		_, err := store.RebuildIndexes(ctx, "tenant-a")
+		rebuildDone <- err
+	}()
+	select {
+	case <-blocking.paused:
+	case <-time.After(time.Second):
+		t.Fatal("rebuild did not reach blocked index object read")
+	}
+
+	commitCtx, cancel := context.WithTimeout(ctx, time.Second)
+	_, commitErr := store.Commit(commitCtx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:app-02", Kind: "host", Fields: graph.Fields{"hostname": "app-02"}}},
+	}, CommitOptions{})
+	cancel()
+	close(blocking.resume)
+	rebuildErr := <-rebuildDone
+	if commitErr != nil {
+		t.Fatalf("commit was blocked by index object build: %v", commitErr)
+	}
+	if !errors.Is(rebuildErr, ErrConflict) {
+		t.Fatalf("stale rebuild err = %v, want ErrConflict", rebuildErr)
+	}
+
+	record, err := store.loadEntityRecord(ctx, "tenant-a", "host:app-02")
+	if err != nil {
+		t.Fatalf("load entity record after concurrent commit: %v", err)
+	}
+	if record.Deleted || record.Version != 2 {
+		t.Fatalf("entity record = %#v, want live version 2", record)
+	}
+}
+
 func TestRebuildIndexesDoesNotPublishStaleCatalogAfterLeaseTakeover(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
@@ -800,6 +852,32 @@ type blockOncePutStore struct {
 
 	mu      sync.Mutex
 	blocked bool
+}
+
+type blockOnceGetWithMetaStore struct {
+	ObjectStore
+	substring string
+	paused    chan struct{}
+	resume    chan struct{}
+	once      sync.Once
+}
+
+func (s *blockOnceGetWithMetaStore) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
+	var wait bool
+	if strings.Contains(key, s.substring) {
+		s.once.Do(func() {
+			wait = true
+			close(s.paused)
+		})
+	}
+	if wait {
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return nil, ObjectMeta{}, ctx.Err()
+		}
+	}
+	return s.ObjectStore.GetWithMeta(ctx, key)
 }
 
 func (s *blockOncePutStore) Put(ctx context.Context, key string, data []byte) error {

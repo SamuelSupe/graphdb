@@ -62,10 +62,11 @@ func marshalParquetDeadLetter(ctx context.Context, letter DeadLetter) ([]byte, e
 }
 
 func decodeParquetDeadLetter(ctx context.Context, data []byte) (DeadLetter, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return DeadLetter{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return DeadLetter{}, fmt.Errorf("parquet deadletter is empty")

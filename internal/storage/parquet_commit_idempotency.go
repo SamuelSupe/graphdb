@@ -77,10 +77,11 @@ func marshalParquetDirectCommitRecord(ctx context.Context, record DirectCommitRe
 }
 
 func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCommitRecord, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return DirectCommitRecord{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return DirectCommitRecord{}, fmt.Errorf("parquet direct commit record is empty")

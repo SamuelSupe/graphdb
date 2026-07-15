@@ -67,6 +67,8 @@ Read path:
 - `GRAPHDB_READ_QUEUE_TIMEOUT=500ms`
 - `GRAPHDB_READ_OBJECT_MAX_CONCURRENT=128`
 - `GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true`
+- `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=2`
+- `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB`
 - `GRAPHDB_READER_CATCHUP_TIMEOUT=2s`
 
 Write path:
@@ -77,12 +79,15 @@ Write path:
 - `GRAPHDB_WRITE_EXECUTION_TIMEOUT=90s`
 - `GRAPHDB_WRITE_MAX_COMMIT_TAIL=300`
 - `GRAPHDB_WRITE_CACHE_MAX_BYTES=512MiB`
+- `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
 
-`GRAPHDB_WRITE_MAX_PER_TENANT` must be `0` or `1`. Keep it at `1` in normal
-single-writer deployment. `0` disables that admission dimension and should only
-be used for controlled testing.
+Keep `GRAPHDB_WRITE_MAX_PER_TENANT=1` for strict request serialization. Values
+such as `2`-`4` allow bounded pipelining of backpressure checks and post-commit
+metadata finalization; manifest publication remains protected by the per-tenant
+single-writer lock. `0` disables that admission dimension and should only be
+used for controlled testing.
 
 Observability:
 

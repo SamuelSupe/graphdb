@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -33,6 +35,75 @@ func TestTenantLockKeepsSlotForWaiter(t *testing.T) {
 	waiterUnlock()
 	if got := tenantLockSlotCount(store); got != 0 {
 		t.Fatalf("tenant lock slots after waiter release = %d, want 0", got)
+	}
+}
+
+func TestTenantLockWaitCanBeCanceled(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	firstUnlock := store.lockTenant("tenant-a")
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		unlock func()
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		unlock, err := store.lockTenantForeground(ctx, "tenant-a")
+		done <- result{unlock: unlock, err: err}
+	}()
+	waitForTenantLockRefs(t, store, "tenant-a", 2)
+	cancel()
+	got := <-done
+	if got.unlock != nil || !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("canceled lock result unlock=%v err=%v", got.unlock != nil, got.err)
+	}
+	waitForTenantLockRefs(t, store, "tenant-a", 1)
+	firstUnlock()
+	if got := tenantLockSlotCount(store); got != 0 {
+		t.Fatalf("tenant lock slots after cancellation = %d, want 0", got)
+	}
+}
+
+func TestForegroundTenantLockPassesQueuedMaintenance(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	firstUnlock := store.lockTenant("tenant-a")
+	maintenance := make(chan func(), 1)
+	go func() {
+		unlock, err := store.lockTenantMaintenance(context.Background(), "tenant-a")
+		if err != nil {
+			return
+		}
+		maintenance <- unlock
+	}()
+	waitForTenantLockRefs(t, store, "tenant-a", 2)
+	foreground := make(chan func(), 1)
+	go func() {
+		unlock, err := store.lockTenantForeground(context.Background(), "tenant-a")
+		if err != nil {
+			return
+		}
+		foreground <- unlock
+	}()
+	waitForTenantLockRefs(t, store, "tenant-a", 3)
+	firstUnlock()
+
+	var foregroundUnlock func()
+	select {
+	case foregroundUnlock = <-foreground:
+	case <-maintenance:
+		t.Fatal("maintenance lock was granted before queued foreground write")
+	case <-time.After(time.Second):
+		t.Fatal("foreground lock was not granted")
+	}
+	foregroundUnlock()
+	select {
+	case maintenanceUnlock := <-maintenance:
+		maintenanceUnlock()
+	case <-time.After(time.Second):
+		t.Fatal("maintenance lock was not granted after foreground release")
+	}
+	if got := tenantLockSlotCount(store); got != 0 {
+		t.Fatalf("tenant lock slots after releases = %d, want 0", got)
 	}
 }
 

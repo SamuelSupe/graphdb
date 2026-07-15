@@ -10,6 +10,9 @@ This is a user-facing endpoint map. The detailed schema contract is
 | `GET` | `/v1/health` | Process health and mode. |
 | `GET` | `/metrics` | Prometheus metrics. |
 | `GET` | `/openapi.yaml` | OpenAPI contract. |
+| `GET` | `/debug/pprof/` | Go runtime profiling index; serves heap, goroutine, block, mutex, and other profiles. |
+| `GET` | `/debug/pprof/profile?seconds=30` | CPU profile for the requested duration. |
+| `GET` | `/debug/pprof/trace?seconds=1` | Go execution trace for the requested duration. |
 
 ## Tenant Lifecycle
 

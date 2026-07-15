@@ -13,6 +13,7 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_READ_MAX_CONCURRENT",
 		"GRAPHDB_READ_MAX_PER_TENANT",
 		"GRAPHDB_READ_OBJECT_MAX_CONCURRENT",
+		"GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT",
 		"GRAPHDB_WRITE_MAX_CONCURRENT",
 		"GRAPHDB_WRITE_MAX_PER_TENANT",
 		"GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD",
@@ -26,6 +27,8 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_BYTES",
 		"GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS",
 		"GRAPHDB_READER_INDEX_CACHE_ENTRIES",
+		"GRAPHDB_READER_INDEX_CACHE_MAX_BYTES",
+		"GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES",
 	}
 	for _, key := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -46,6 +49,7 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_READ_MAX_PER_TENANT", "0")
 	t.Setenv("GRAPHDB_READ_OBJECT_MAX_CONCURRENT", "0")
+	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_WRITE_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "0")
 	t.Setenv("GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD", "0")
@@ -60,7 +64,7 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 	if cfg.QueryMaxConcurrent != 0 || cfg.QueryMaxPerTenant != 0 {
 		t.Fatalf("query limits = %d/%d, want 0/0", cfg.QueryMaxConcurrent, cfg.QueryMaxPerTenant)
 	}
-	if cfg.ReadMaxConcurrent != 0 || cfg.ReadMaxPerTenant != 0 || cfg.ReadObjectMaxConcurrent != 0 {
+	if cfg.ReadMaxConcurrent != 0 || cfg.ReadMaxPerTenant != 0 || cfg.ReadObjectMaxConcurrent != 0 || cfg.ParquetDecodeMaxConcurrent != 0 {
 		t.Fatalf("read limits = %#v, want zeros", cfg)
 	}
 	if cfg.WriteMaxConcurrent != 0 || cfg.WriteMaxPerTenant != 0 || cfg.WriteObjectErrorThreshold != 0 || cfg.WriteCASConflictThreshold != 0 || cfg.WriteMaxCommitTail != 0 || cfg.WriteMaxObjectsPerTenant != 0 || cfg.WriteMaxBytesPerTenant != 0 {
@@ -201,12 +205,15 @@ func TestLoadParsesWriteBackpressureConfig(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsWriteMaxPerTenantAboveOne(t *testing.T) {
+func TestLoadAllowsWriteRequestPipeliningPerTenant(t *testing.T) {
 	setLocalConfigEnv(t)
-	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "2")
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "GRAPHDB_WRITE_MAX_PER_TENANT must be 0 or 1") {
-		t.Fatalf("Load err = %v, want single-writer validation", err)
+	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "4")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WriteMaxPerTenant != 4 {
+		t.Fatalf("WriteMaxPerTenant = %d, want 4", cfg.WriteMaxPerTenant)
 	}
 }
 
@@ -273,17 +280,23 @@ func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_MAX_PER_TENANT", "5")
 	t.Setenv("GRAPHDB_READ_OBJECT_MAX_CONCURRENT", "23")
 	t.Setenv("GRAPHDB_READ_OBJECT_SINGLEFLIGHT", "false")
+	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "7")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "123")
+	t.Setenv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", "48MiB")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "/tmp/graphdb-index-cache")
+	t.Setenv("GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES", "12MiB")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.ReaderIndexCacheEntries != 123 || cfg.ReaderIndexCacheDir != "/tmp/graphdb-index-cache" {
+	if cfg.ReaderIndexCacheEntries != 123 || cfg.ReaderIndexCacheMaxBytes != 48*1024*1024 || cfg.ReaderIndexCacheDir != "/tmp/graphdb-index-cache" {
 		t.Fatalf("reader index cache config = %#v", cfg)
 	}
-	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight {
+	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight || cfg.ParquetDecodeMaxConcurrent != 7 {
 		t.Fatalf("reader read-path config = %#v", cfg)
+	}
+	if cfg.EntityPagePackMaxBytes != 12*1024*1024 {
+		t.Fatalf("entity page pack max bytes = %d, want %d", cfg.EntityPagePackMaxBytes, 12*1024*1024)
 	}
 }
 
@@ -455,6 +468,7 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_QUEUE_TIMEOUT", "")
 	t.Setenv("GRAPHDB_READ_OBJECT_MAX_CONCURRENT", "")
 	t.Setenv("GRAPHDB_READ_OBJECT_SINGLEFLIGHT", "")
+	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_CONCURRENT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "")
 	t.Setenv("GRAPHDB_WRITE_QUEUE_TIMEOUT", "")
@@ -482,8 +496,10 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_TENANT_USAGE_CACHE_TTL", "")
 	t.Setenv("GRAPHDB_READER_CATCHUP_TIMEOUT", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "")
+	t.Setenv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "")
 	t.Setenv("GRAPHDB_INDEX_ENTITY_RECORDS", "")
+	t.Setenv("GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_FAULT_OBJECT_READ_DELAY", "")
 	t.Setenv("GRAPHDB_OTLP_ENDPOINT", "")
 	t.Setenv("GRAPHDB_OTLP_INSECURE", "")

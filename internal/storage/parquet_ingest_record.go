@@ -72,10 +72,11 @@ func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) (
 }
 
 func decodeParquetIngestRecord(ctx context.Context, data []byte) (IngestBatchRecord, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return IngestBatchRecord{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return IngestBatchRecord{}, fmt.Errorf("parquet ingest record is empty")

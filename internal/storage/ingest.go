@@ -118,7 +118,10 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
 		return IngestResult{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return IngestResult{}, err
+	}
 	defer unlock()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {

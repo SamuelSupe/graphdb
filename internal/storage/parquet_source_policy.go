@@ -141,10 +141,11 @@ func marshalParquetSourcePolicy(ctx context.Context, record sourcePolicyRecord) 
 }
 
 func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRecord, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return sourcePolicyRecord{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return sourcePolicyRecord{}, fmt.Errorf("parquet source policy is empty")

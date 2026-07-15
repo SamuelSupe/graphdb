@@ -67,7 +67,7 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 		shard.SchemaHash = parquetEdgeShardSchemaHash()
 		shard.Objects = []IndexObject{{Role: "shard", Key: key, Format: IndexFormatParquet, Codec: parquetEdgeShardCodec, RowCount: shard.EdgeCount, ContentHash: shard.ContentHash, SchemaHash: shard.SchemaHash}}
 	}
-	entityPackIDs := entityPagePackIDs(catalog.EntityPages, !s.WriteEntityRecords)
+	entityPackIDs := entityPagePackIDs(catalog.EntityPages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes)
 	for i := range catalog.EntityPages {
 		page := &catalog.EntityPages[i]
 		page.Format = format

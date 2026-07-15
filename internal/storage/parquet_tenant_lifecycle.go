@@ -125,10 +125,11 @@ func marshalParquetTenantMetadata(ctx context.Context, metadata TenantMetadata) 
 }
 
 func decodeParquetTenantMetadata(ctx context.Context, data []byte) (TenantMetadata, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return TenantMetadata{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return TenantMetadata{}, fmt.Errorf("parquet tenant metadata is empty")
@@ -230,10 +231,11 @@ func marshalParquetTenantRegistry(ctx context.Context, registry tenantRegistry) 
 }
 
 func decodeParquetTenantRegistry(ctx context.Context, data []byte) (tenantRegistry, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return tenantRegistry{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return tenantRegistry{}, fmt.Errorf("parquet tenant registry has %d rows, want at least 1", table.NumRows())

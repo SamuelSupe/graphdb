@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type budget struct {
@@ -63,8 +65,32 @@ func admitQuery(plan Plan, budget *budget) error {
 	return budget.check()
 }
 
-func (b *budget) measure(name string, detail string, cost int, fn func() (int, error)) error {
-	return b.profiler.measure(name, detail, cost, fn)
+func (b *budget) measure(name string, detail string, cost int, fn func() (int, error)) (err error) {
+	ctx, span := startQueryOperatorSpan(b.ctx, name, detail, cost)
+	previousCtx := b.ctx
+	b.ctx = ctx
+	beforeScanned := b.scanned
+	beforeVisited := b.visited
+	beforeCost := b.cost
+	rows := 0
+	defer func() {
+		b.ctx = previousCtx
+		if span != nil {
+			span.SetAttributes(
+				attribute.Int("graphdb.query.operator.rows", rows),
+				attribute.Int("graphdb.query.operator.scanned", b.scanned-beforeScanned),
+				attribute.Int("graphdb.query.operator.visited", b.visited-beforeVisited),
+				attribute.Int("graphdb.query.operator.cost", b.cost-beforeCost),
+			)
+		}
+		endQueryOperatorSpan(span, err)
+	}()
+	err = b.profiler.measure(name, detail, cost, func() (int, error) {
+		var measureErr error
+		rows, measureErr = fn()
+		return rows, measureErr
+	})
+	return err
 }
 
 func (b *budget) profile() []OperatorStat {

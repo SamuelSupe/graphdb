@@ -27,6 +27,11 @@ func estimateEntityPageBytes(page EntityPageData) int64 {
 	return size * 5
 }
 
+func entityPagePackBytes(page EntityPageData) int64 {
+	page.TenantID = ""
+	return estimateEntityPageBytes(page)
+}
+
 func estimateAnyMap(values map[string]any) int64 {
 	if values == nil {
 		return 0

@@ -108,6 +108,57 @@ func TestTenantStoreCommitLoadAndCompact(t *testing.T) {
 	}
 }
 
+func TestCompactSnapshotBuildDoesNotBlockCommit(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	blocking := &blockOncePutStore{
+		ObjectStore: base,
+		substring:   "/snapshots/sharded/",
+		paused:      make(chan struct{}),
+		resume:      make(chan struct{}),
+	}
+	store := NewTenantStore(blocking, "test")
+	if _, err := store.Commit(ctx, "tenant-a", sampleMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	compactDone := make(chan error, 1)
+	go func() {
+		_, err := store.Compact(ctx, "tenant-a")
+		compactDone <- err
+	}()
+	select {
+	case <-blocking.paused:
+	case <-time.After(time.Second):
+		t.Fatal("compact did not reach blocked snapshot write")
+	}
+
+	commitCtx, cancel := context.WithTimeout(ctx, time.Second)
+	_, commitErr := store.Commit(commitCtx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "person:bob", Kind: "person"}},
+	}, CommitOptions{})
+	cancel()
+	close(blocking.resume)
+	compactErr := <-compactDone
+	if commitErr != nil {
+		t.Fatalf("commit was blocked by compact snapshot build: %v", commitErr)
+	}
+	if !errors.Is(compactErr, ErrConflict) {
+		t.Fatalf("stale compact err = %v, want ErrConflict", compactErr)
+	}
+
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load after concurrent commit: %v", err)
+	}
+	if manifest.Version != 2 {
+		t.Fatalf("manifest version = %d, want 2", manifest.Version)
+	}
+	if _, ok := g.GetEntity("person:bob"); !ok {
+		t.Fatal("concurrent commit entity missing")
+	}
+}
+
 func TestLoadUsesShardedSnapshotWhenFullSnapshotMissing(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

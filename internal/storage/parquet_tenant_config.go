@@ -82,10 +82,11 @@ func marshalParquetTenantConfig(ctx context.Context, record tenantConfigRecord) 
 }
 
 func decodeParquetTenantConfig(ctx context.Context, data []byte) (tenantConfigRecord, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return tenantConfigRecord{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return tenantConfigRecord{}, fmt.Errorf("parquet tenant config is empty")

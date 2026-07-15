@@ -37,6 +37,7 @@ func run(args []string) error {
 		MaxConcurrent: cfg.ReadObjectMaxConcurrent,
 		Singleflight:  cfg.ReadObjectSingleflight,
 	})
+	storage.ConfigureParquetDecodeMaxConcurrent(cfg.ParquetDecodeMaxConcurrent)
 	objects = storage.NewMeteredObjectStore(objects, pressure, nil)
 	if cfg.WriterObjectCache && (cfg.Mode == "all" || cfg.Mode == "writer") {
 		objects = storage.NewWriterObjectCache(objects, cfg.WriterObjectCacheConfig())
@@ -44,9 +45,12 @@ func run(args []string) error {
 	store := storage.NewTenantStore(objects, cfg.Prefix)
 	store.MaxWriteCacheBytes = cfg.WriteCacheMaxBytes
 	store.WriteEntityRecords = cfg.IndexEntityRecords
+	store.UseEntityRecordsForRead = cfg.IndexEntityRecords
+	store.EntityPagePackMaxBytes = cfg.EntityPagePackMaxBytes
 	store.MaterializeCollectorStatus = cfg.IngestCollectorStatusMaterialized
 	store.ConfigureIndexObjectCache(storage.IndexObjectCacheConfig{
 		MaxEntries: cfg.ReaderIndexCacheEntries,
+		MaxBytes:   cfg.ReaderIndexCacheMaxBytes,
 		DiskDir:    cfg.ReaderIndexCacheDir,
 	})
 	if cfg.InstanceID != "" {
@@ -322,8 +326,9 @@ Environment:
   GRAPHDB_READ_QUEUE_TIMEOUT=500ms
   GRAPHDB_READ_OBJECT_MAX_CONCURRENT=128
   GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true
+  GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=2
   GRAPHDB_WRITE_MAX_CONCURRENT=32
-  GRAPHDB_WRITE_MAX_PER_TENANT=1 (single-writer mode; 0 disables this admission dimension)
+  GRAPHDB_WRITE_MAX_PER_TENANT=1 (1 is strict request serialization; 2-4 enables bounded request pipelining; 0 disables this admission dimension)
   GRAPHDB_WRITE_QUEUE_TIMEOUT=2s
   GRAPHDB_WRITE_OBJECT_LATENCY_THRESHOLD=2s
   GRAPHDB_WRITE_CAS_CONFLICT_WINDOW=30s
@@ -337,7 +342,9 @@ Environment:
   GRAPHDB_TENANT_USAGE_CACHE_TTL=60s
   GRAPHDB_READER_CATCHUP_TIMEOUT=2s
   GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096
+  GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB
   GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects
+  GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB
   GRAPHDB_FAULT_OBJECT_READ_DELAY=25ms
   GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
   GRAPHDB_OTLP_INSECURE=true

@@ -330,10 +330,11 @@ func marshalParquetTaskRows(ctx context.Context, identity parquetTaskIdentity, r
 }
 
 func decodeParquetTaskRows(ctx context.Context, data []byte) (parquetTaskIdentity, []parquetTaskRow, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return parquetTaskIdentity{}, nil, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return parquetTaskIdentity{}, nil, fmt.Errorf("parquet task is empty")

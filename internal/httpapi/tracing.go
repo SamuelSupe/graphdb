@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -65,5 +66,45 @@ func mutationAttributes(mutations graph.Mutations) []attribute.KeyValue {
 		attribute.Int("graphdb.mutations.delete_edge_requests", len(mutations.DeleteEdgeRequests)),
 		attribute.Int("graphdb.mutations.merge_entities", len(mutations.MergeEntities)),
 		attribute.Int("graphdb.mutations.split_entities", len(mutations.SplitEntities)),
+	}
+}
+
+func queryRequestTraceAttributes(request query.Request) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("graphdb.query.op", request.Op),
+		attribute.String("graphdb.query.target_op", request.TargetOp),
+		attribute.String("graphdb.query.kind", request.Kind),
+		attribute.Int("graphdb.query.filters", len(request.Filters)+len(request.Where)),
+		attribute.Int("graphdb.query.edge_filters", len(request.EdgeWhere)),
+		attribute.Int("graphdb.query.project_fields", len(request.Project)),
+		attribute.Int("graphdb.query.sort_fields", len(request.Sort)),
+		attribute.Int("graphdb.query.aggregations", len(request.Aggregate)),
+		attribute.Int("graphdb.query.group_by_fields", len(request.GroupBy)),
+		attribute.Int("graphdb.query.relation_types", len(request.RelationTypes)),
+		attribute.Int("graphdb.query.limit", request.Limit),
+		attribute.Int("graphdb.query.depth", request.Depth),
+		attribute.Int("graphdb.query.timeout_ms", request.TimeoutMS),
+		attribute.Int("graphdb.query.cost_limit", request.CostLimit),
+		attribute.Int64("graphdb.query.min_version", request.MinVersion),
+		attribute.Bool("graphdb.query.allow_stale", request.AllowStale),
+		attribute.Bool("graphdb.query.cursor_present", request.Cursor != ""),
+		attribute.Bool("graphdb.query.id_present", request.ID != ""),
+		attribute.Bool("graphdb.query.where_expr_present", request.WhereExpr != nil),
+		attribute.Bool("graphdb.query.edge_where_expr_present", request.EdgeWhereExpr != nil),
+		attribute.Bool("graphdb.query.profile", request.Profile),
+	}
+}
+
+func queryResponseTraceAttributes(response query.Response) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.Int64("graphdb.query.version", response.Version),
+		attribute.Int("graphdb.query.results", len(response.Results)),
+		attribute.Int("graphdb.query.scanned", response.Stats.Scanned),
+		attribute.Int("graphdb.query.visited", response.Stats.Visited),
+		attribute.Int("graphdb.query.returned", response.Stats.Returned),
+		attribute.Int("graphdb.query.cost", response.Stats.Cost),
+		attribute.Bool("graphdb.query.timed_out", response.Stats.TimedOut),
+		attribute.Bool("graphdb.query.truncated", response.Stats.Truncated),
+		attribute.Bool("graphdb.query.next_cursor_present", response.NextCursor != ""),
 	}
 }
