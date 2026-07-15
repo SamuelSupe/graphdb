@@ -95,14 +95,6 @@ Observability:
 - `GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces`
 - `GRAPHDB_OTLP_INSECURE=true`
 - `GRAPHDB_SERVICE_NAME=graphdb`
-- `DD_PROFILING_ENABLED=false`
-- `DD_SERVICE=graphdb`
-- `DD_ENV=production`
-- `DD_VERSION=<release-version>`
-
-Set `DD_PROFILING_ENABLED=true` to enable only Datadog continuous profiling.
-GraphDB does not initialize the Datadog tracer; the existing OTLP tracing switch
-remains `GRAPHDB_OTLP_ENDPOINT`.
 
 ## MinIO Local Stack
 

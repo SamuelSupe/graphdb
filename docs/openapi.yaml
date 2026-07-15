@@ -797,27 +797,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IntegrityAuditReport'
-  /v1/control/profiling:
-    post:
-      summary: Enable or disable Datadog profiling for the current process.
-      description: Enabling updates DD_PROFILING_ENABLED only in the running GraphDB process before starting the profiler.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DatadogProfilingRequest'
-      responses:
-        '200':
-          description: Current Datadog profiler status.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DatadogProfilingStatus'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '503':
-          description: Datadog profiling controller is not configured.
   /v1/control/repair:
     post:
       summary: Inspect or apply deterministic tenant repair.
@@ -1162,22 +1141,6 @@ components:
         detail:
           type: object
           additionalProperties: true
-    DatadogProfilingRequest:
-      type: object
-      required: [enabled]
-      properties:
-        enabled:
-          type: boolean
-    DatadogProfilingStatus:
-      type: object
-      required: [enabled, dd_profiling_enabled]
-      properties:
-        enabled:
-          type: boolean
-          description: Whether the GraphDB profiler controller has started the profiler.
-        dd_profiling_enabled:
-          type: boolean
-          description: Current-process value of DD_PROFILING_ENABLED.
     WriteBackpressureError:
       allOf:
         - $ref: '#/components/schemas/ErrorResponse'

@@ -526,7 +526,6 @@ Control endpoints:
 - `POST /v1/control/recover`
 - `POST /v1/control/repair`
 - `POST /v1/control/cleanup-commits`
-- `POST /v1/control/profiling`
 
 `reader-freshness` reports writer manifest version, reader-visible version,
 version lag, lag age, cache state, and commit tail replay status. Readers return
@@ -759,17 +758,6 @@ Error contract:
   span names. `POST /v1/commits` keeps its existing `graphdb.commit.*` hierarchy
   for commit execution, graph load, commit-tail replay, manifest CAS writes,
   and index updates.
-- `DD_PROFILING_ENABLED=true` starts the Datadog continuous profiler for the
-  `serve` command. It initializes only `dd-trace-go/v2/profiler`; it does not
-  import or start the Datadog tracer. `DD_SERVICE`, `DD_ENV`, and `DD_VERSION`
-  set the profile's service identity. Datadog Agent or agentless upload settings
-  continue to use the standard `DD_*` variables.
-- `POST /v1/control/profiling` accepts `{"enabled":true|false}` to control the
-  profiler for the current process. Enabling sets that process's
-  `DD_PROFILING_ENABLED=true` before starting the profiler; disabling stops it
-  and sets the value to `false`. This does not modify the deployment environment
-  after a restart. Restrict this process-level control endpoint to trusted
-  operators at the network boundary.
 - Go runtime profiles are available through the standard `net/http/pprof`
   endpoints: `GET /debug/pprof/`, `GET /debug/pprof/heap?gc=1`,
   `GET /debug/pprof/profile?seconds=30`, and

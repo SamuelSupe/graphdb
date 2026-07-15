@@ -32,7 +32,6 @@ type Server struct {
 	ReaderCatchupTimeout  time.Duration
 	QueryRegistry         *RunningQueryRegistry
 	Observability         *observability.Observability
-	DatadogProfiler       observability.DatadogProfiler
 	UsageCacheTTL         time.Duration
 	maintenance           *maintenanceState
 	maintenanceOnce       sync.Once
@@ -110,7 +109,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/control/reader-fleet-readiness", s.readerFleetReadiness)
 	mux.HandleFunc("GET /v1/control/reader-traffic-gate", s.readerTrafficGate)
 	mux.HandleFunc("GET /v1/control/integrity-audit", s.integrityAudit)
-	mux.HandleFunc("POST /v1/control/profiling", s.datadogProfiling)
 	mux.HandleFunc("POST /v1/control/recover", s.recoverTenant)
 	mux.HandleFunc("POST /v1/control/repair", s.repairTenant)
 	mux.HandleFunc("POST /v1/control/cleanup-commits", s.cleanupCommits)
@@ -548,8 +546,6 @@ func observedRoute(r *http.Request) string {
 		return "GET /v1/control/reader-traffic-gate"
 	case path == "/v1/control/integrity-audit":
 		return "GET /v1/control/integrity-audit"
-	case path == "/v1/control/profiling":
-		return "POST /v1/control/profiling"
 	default:
 		return r.Method + " " + path
 	}
