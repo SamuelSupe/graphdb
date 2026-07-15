@@ -9,6 +9,8 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -105,15 +107,32 @@ type StreamErrorResponse struct {
 }
 
 func tenantFromRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
+	_, span := startAPIPhase(r.Context(), "resolve_tenant")
 	tenantID := r.Header.Get("X-Tenant-ID")
 	if tenantID == "" {
+		if span != nil {
+			span.SetAttributes(attribute.String("graphdb.tenant.resolve_result", "missing"))
+		}
+		endHTTPSpan(span, traceError("X-Tenant-ID header is required"))
 		writeError(w, http.StatusBadRequest, "X-Tenant-ID header is required")
 		return "", false
 	}
 	if err := storage.ValidateTenantID(tenantID); err != nil {
+		if span != nil {
+			span.SetAttributes(attribute.String("graphdb.tenant.resolve_result", "invalid"))
+		}
+		endHTTPSpan(span, err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return "", false
 	}
+	setAPITraceTenant(r.Context(), tenantID)
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("graphdb.tenant", tenantID),
+			attribute.String("graphdb.tenant.resolve_result", "ok"),
+		)
+	}
+	endHTTPSpan(span, nil)
 	return tenantID, true
 }
 

@@ -10,6 +10,9 @@ This is a user-facing endpoint map. The detailed schema contract is
 | `GET` | `/v1/health` | Process health and mode. |
 | `GET` | `/metrics` | Prometheus metrics. |
 | `GET` | `/openapi.yaml` | OpenAPI contract. |
+| `GET` | `/debug/pprof/` | Go runtime profiling index; serves heap, goroutine, block, mutex, and other profiles. |
+| `GET` | `/debug/pprof/profile?seconds=30` | CPU profile for the requested duration. |
+| `GET` | `/debug/pprof/trace?seconds=1` | Go execution trace for the requested duration. |
 
 ## Tenant Lifecycle
 
@@ -103,3 +106,4 @@ This is a user-facing endpoint map. The detailed schema contract is
 | `GET` | `/v1/control/reader-lag` | Compatibility alias for freshness. |
 | `GET` | `/v1/control/reader-fleet-readiness` | Fleet readiness report. |
 | `GET` | `/v1/control/reader-traffic-gate` | Traffic gate result for deployment checks. |
+| `POST` | `/v1/control/profiling` | Enable or disable Datadog profiling for this process. |

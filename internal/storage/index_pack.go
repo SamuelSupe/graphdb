@@ -8,15 +8,17 @@ import (
 )
 
 const (
-	indexPackPrefix          = "pack_"
-	indexPackTargetRows      = 2048
-	indexPackMaxLogicalItems = 64
+	indexPackPrefix                     = "pack_"
+	indexPackTargetRows                 = 2048
+	indexPackMaxLogicalItems            = 64
+	defaultEntityPagePackMaxBytes int64 = 32 << 20
 )
 
 type indexPackItem struct {
 	ID    string
 	Group string
 	Rows  int
+	Bytes int64
 }
 
 type indexPackGroup struct {
@@ -25,6 +27,10 @@ type indexPackGroup struct {
 }
 
 func planIndexPacks(items []indexPackItem) []indexPackGroup {
+	return planIndexPacksWithMaxBytes(items, 0)
+}
+
+func planIndexPacksWithMaxBytes(items []indexPackItem, maxBytes int64) []indexPackGroup {
 	if len(items) == 0 {
 		return nil
 	}
@@ -39,6 +45,7 @@ func planIndexPacks(items []indexPackItem) []indexPackGroup {
 	current := make([]indexPackItem, 0)
 	currentGroup := ""
 	currentRows := 0
+	currentBytes := int64(0)
 	flush := func() {
 		if len(current) == 0 {
 			return
@@ -47,19 +54,22 @@ func planIndexPacks(items []indexPackItem) []indexPackGroup {
 		current = nil
 		currentGroup = ""
 		currentRows = 0
+		currentBytes = 0
 	}
 	for _, item := range items {
-		if item.Rows >= indexPackTargetRows {
+		itemBytes := max(item.Bytes, 0)
+		if item.Rows >= indexPackTargetRows || (maxBytes > 0 && itemBytes >= maxBytes) {
 			flush()
 			groups = append(groups, indexPackGroup{ID: item.ID, Items: []indexPackItem{item}})
 			continue
 		}
-		if len(current) > 0 && (item.Group != currentGroup || currentRows+item.Rows > indexPackTargetRows || len(current) >= indexPackMaxLogicalItems) {
+		if len(current) > 0 && (item.Group != currentGroup || currentRows+item.Rows > indexPackTargetRows || (maxBytes > 0 && currentBytes+itemBytes > maxBytes) || len(current) >= indexPackMaxLogicalItems) {
 			flush()
 		}
 		current = append(current, item)
 		currentGroup = item.Group
 		currentRows += item.Rows
+		currentBytes += itemBytes
 	}
 	flush()
 	return groups

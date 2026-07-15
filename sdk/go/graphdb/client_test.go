@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -41,6 +42,43 @@ func TestCommitSetsTenantHeaderAndParsesResult(t *testing.T) {
 	}
 	if result.Version != 3 || result.ReadableVersion != 3 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestGetEntityEscapesPathSegmentExactlyOnce(t *testing.T) {
+	ids := []string{
+		"urn:host:default:我来添加一个主机看看",
+		"urn:kubernetes:default:namespace/name 100%",
+	}
+	for _, id := range ids {
+		t.Run(id, func(t *testing.T) {
+			expectedPath := "/proxy%20root/v1/entities/" + url.PathEscape(id)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.EscapedPath(); got != expectedPath {
+					t.Errorf("escaped path = %q, want %q", got, expectedPath)
+				}
+				if got := r.URL.Path; got != "/proxy root/v1/entities/"+id {
+					t.Errorf("decoded path = %q, want %q", got, "/proxy root/v1/entities/"+id)
+				}
+				if got := r.URL.Query().Get("min_version"); got != "42" {
+					t.Errorf("min_version = %q, want 42", got)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"entity": Entity{ID: id, Kind: "host"}})
+			}))
+			defer server.Close()
+
+			client, err := NewClient(server.URL+"/proxy%20root/", WithTenant("tenant-a"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			entity, err := client.GetEntity(context.Background(), id, &ReadOptions{MinVersion: 42})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entity.ID != id {
+				t.Fatalf("entity ID = %q, want %q", entity.ID, id)
+			}
+		})
 	}
 }
 

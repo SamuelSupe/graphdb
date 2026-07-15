@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,25 @@ func TestHTTPCommitBackpressureReturns429(t *testing.T) {
 	metrics := string(obs.Metrics.SnapshotPrometheus())
 	if !strings.Contains(metrics, `graphdb_write_backpressure_total{tenant="tenant-a",reason="object_store_latency_high"} 1`) {
 		t.Fatalf("metrics missing backpressure count:\n%s", metrics)
+	}
+}
+
+func TestHTTPCommitReusesWriteBackpressureCheck(t *testing.T) {
+	objects := &countTaskListStore{ObjectStore: storage.NewMemoryStore()}
+	store := storage.NewTenantStore(objects, "test")
+	store.Backpressure = storage.NewWritePressure(storage.BackpressureConfig{})
+	handler := (&Server{
+		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second),
+	}).Handler()
+
+	rr := serveJSON(handler, httpMethodPost, "/v1/commits", "tenant-a", CommitRequest{Mutations: graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}})
+	if rr.Code != 200 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := objects.taskLists(); got != 1 {
+		t.Fatalf("task list calls = %d, want one backpressure scan", got)
 	}
 }
 
@@ -207,6 +227,27 @@ func (s *slowConditionalPutStore) PutConditional(ctx context.Context, key string
 type timeoutMatchingPutStore struct {
 	storage.ObjectStore
 	contains string
+}
+
+type countTaskListStore struct {
+	storage.ObjectStore
+	mu    sync.Mutex
+	count int
+}
+
+func (s *countTaskListStore) List(ctx context.Context, prefix string) ([]storage.ObjectInfo, error) {
+	if strings.Contains(prefix, "/tenants/tenant-a/tasks/") {
+		s.mu.Lock()
+		s.count++
+		s.mu.Unlock()
+	}
+	return s.ObjectStore.List(ctx, prefix)
+}
+
+func (s *countTaskListStore) taskLists() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.count
 }
 
 func (s *timeoutMatchingPutStore) PutConditional(ctx context.Context, key string, data []byte, condition storage.PutCondition) (storage.ObjectMeta, error) {

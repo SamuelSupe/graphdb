@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -161,18 +163,33 @@ func (s *TenantStore) getShardedSnapshotCatalog(ctx context.Context, tenantID st
 	return catalog, nil
 }
 
-func (s *TenantStore) CurrentShardedSnapshotCatalog(ctx context.Context, tenantID string) (ShardedSnapshotCatalog, Manifest, error) {
+func (s *TenantStore) CurrentShardedSnapshotCatalog(ctx context.Context, tenantID string) (catalog ShardedSnapshotCatalog, manifest Manifest, err error) {
+	ctx, span := startStorageSpan(ctx, "graphdb.storage.snapshot.current_catalog", tenantTraceAttr(tenantID))
+	defer func() {
+		span.SetAttributes(
+			attribute.Bool("graphdb.snapshot.catalog_available", err == nil),
+			attribute.Int64("graphdb.snapshot.catalog_version", catalog.Version),
+			attribute.Int64("graphdb.snapshot.manifest_version", manifest.Version),
+			attribute.Int("graphdb.snapshot.entity_pages", len(catalog.EntityPages)),
+			attribute.Int("graphdb.snapshot.edge_shards", len(catalog.EdgeShards)),
+		)
+		spanErr := err
+		if errors.Is(err, ErrNotFound) {
+			spanErr = nil
+		}
+		endStorageSpan(span, spanErr)
+	}()
 	if err := ValidateTenantID(tenantID); err != nil {
 		return ShardedSnapshotCatalog{}, Manifest{}, err
 	}
-	manifest, _, err := s.getManifest(ctx, tenantID)
+	manifest, _, err = s.getManifest(ctx, tenantID)
 	if err != nil {
 		return ShardedSnapshotCatalog{}, Manifest{}, err
 	}
 	if manifest.SnapshotCatalogKey == "" {
 		return ShardedSnapshotCatalog{}, manifest, ErrNotFound
 	}
-	catalog, err := s.getShardedSnapshotCatalog(ctx, tenantID, manifest.SnapshotCatalogKey)
+	catalog, err = s.getShardedSnapshotCatalog(ctx, tenantID, manifest.SnapshotCatalogKey)
 	if err != nil {
 		return ShardedSnapshotCatalog{}, manifest, err
 	}

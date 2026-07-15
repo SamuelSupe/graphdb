@@ -87,6 +87,103 @@ func TestVisitEntitiesStopsAfterFirstPageAndKeepsCacheReadOnly(t *testing.T) {
 	}
 }
 
+func TestVisitEntitiesSkipsPackedPagesWhenKindIsAbsent(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	store.WriteEntityRecords = false
+	entities := entitiesForDistinctShards("host", "query-packed-scan", 8, entityShardID)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	keys := entityPageObjectKeys(catalog.EntityPages)
+	if len(catalog.EntityPages) != len(entities) || len(keys) != 1 {
+		t.Fatalf("test requires one packed object across logical pages: pages=%d keys=%#v", len(catalog.EntityPages), keys)
+	}
+
+	objects := &countingMetaReadStore{ObjectStore: base}
+	store.Objects = objects
+	recorder := installStorageSpanRecorder(t)
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	visited := 0
+	available, err := lookup.VisitEntities(ctx, "system", nil, "", func(graph.Entity) (bool, error) {
+		visited++
+		return true, nil
+	})
+	if err != nil || !available || visited != 0 {
+		t.Fatalf("visit entities available=%v visited=%d err=%v", available, visited, err)
+	}
+	if got := objects.GetWithMetaCount(keys[0]); got != 1 {
+		t.Fatalf("packed entity object reads = %d, want one", got)
+	}
+
+	span := requireStorageSpan(t, recorder.Ended(), "graphdb.storage.index_lookup.visit_entities")
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.unique_objects", int64(1))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.object_loads", int64(1))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.candidate_object_scans", int64(1))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.candidate_filter_requests", int64(len(catalog.EntityPages)))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.candidate_scan_reuses", int64(len(catalog.EntityPages)-1))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.parquet_decodes", int64(0))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.pages_skipped_by_kind", int64(len(catalog.EntityPages)))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.kind_candidate_found", false)
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.candidate_pruned_all_pages", true)
+	requireStorageSpan(t, recorder.Ended(), "graphdb.storage.index_lookup.visit_entities.candidate_filter")
+}
+
+func TestVisitEntitiesDecodesOnlyMatchingPackedShards(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	store.WriteEntityRecords = false
+	entities := entitiesForDistinctShards("host", "query-packed-match", 8, entityShardID)
+	entities[0].Kind = "system"
+	entities[1].Kind = "system"
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	keys := entityPageObjectKeys(catalog.EntityPages)
+	if len(keys) != 1 {
+		t.Fatalf("test requires one packed object, keys=%#v", keys)
+	}
+
+	objects := &countingMetaReadStore{ObjectStore: base}
+	store.Objects = objects
+	recorder := installStorageSpanRecorder(t)
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	var got []string
+	available, err := lookup.VisitEntities(ctx, "system", nil, "", func(entity graph.Entity) (bool, error) {
+		got = append(got, entity.ID)
+		return true, nil
+	})
+	if err != nil || !available {
+		t.Fatalf("visit entities available=%v err=%v", available, err)
+	}
+	sort.Strings(got)
+	want := []string{entities[0].ID, entities[1].ID}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("visited IDs = %q, want %q", got, want)
+	}
+	if count := objects.GetWithMetaCount(keys[0]); count != 1 {
+		t.Fatalf("packed entity object reads = %d, want one", count)
+	}
+
+	span := requireStorageSpan(t, recorder.Ended(), "graphdb.storage.index_lookup.visit_entities")
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.candidate_object_scans", int64(1))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.parquet_decodes", int64(2))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.kind_matched", int64(2))
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.pages_skipped_by_kind", int64(len(catalog.EntityPages)-2))
+	requireStorageSpan(t, recorder.Ended(), "graphdb.storage.index_lookup.visit_entities.decode_page")
+}
+
 func TestVisitEntitiesResumesFromLegacyCatalogShard(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

@@ -10,7 +10,12 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options EdgeScanOptions) (EdgeScanResult, error) {
+func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options EdgeScanOptions) (result EdgeScanResult, err error) {
+	ctx, span := startStorageSpan(ctx, "graphdb.storage.scan.edges", edgeScanTraceAttrs(tenantID, options)...)
+	defer func() {
+		span.SetAttributes(edgeScanResultTraceAttrs(result)...)
+		endStorageSpan(span, err)
+	}()
 	if err := ValidateTenantID(tenantID); err != nil {
 		return EdgeScanResult{}, err
 	}

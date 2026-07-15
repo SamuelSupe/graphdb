@@ -7,6 +7,8 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type tenantRequest struct {
@@ -328,28 +330,51 @@ func (s *Server) tenantLifecycle(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) tenantLifecycleGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := startAPIPhase(r.Context(), "tenant_lifecycle_gate")
 		if s.Store == nil || strings.HasPrefix(r.URL.Path, "/v1/tenants") {
+			if span != nil {
+				span.SetAttributes(attribute.String("graphdb.tenant_gate.result", "bypassed"))
+			}
+			endHTTPSpan(span, nil)
 			next.ServeHTTP(w, r)
 			return
 		}
 		tenantID := r.Header.Get("X-Tenant-ID")
 		if tenantID == "" {
+			if span != nil {
+				span.SetAttributes(attribute.String("graphdb.tenant_gate.result", "tenant_missing"))
+			}
+			endHTTPSpan(span, nil)
 			next.ServeHTTP(w, r)
 			return
 		}
-		status, err := s.Store.TenantStatus(r.Context(), tenantID)
+		setAPITraceTenant(ctx, tenantID)
+		status, err := s.Store.TenantStatus(ctx, tenantID)
 		if err != nil {
+			endHTTPSpan(span, err)
 			writeTenantLifecycleError(w, err)
 			return
 		}
+		if span != nil {
+			span.SetAttributes(
+				attribute.String("graphdb.tenant", tenantID),
+				attribute.String("graphdb.tenant.status", status),
+			)
+		}
 		if status == storage.TenantStatusDeleted {
+			endHTTPSpan(span, storage.ErrTenantDeleted)
 			writeErrorErr(w, http.StatusGone, storage.ErrTenantDeleted)
 			return
 		}
 		if status == storage.TenantStatusDisabled && tenantMutationRequest(r) {
+			endHTTPSpan(span, storage.ErrTenantDisabled)
 			writeErrorErr(w, http.StatusForbidden, storage.ErrTenantDisabled)
 			return
 		}
+		if span != nil {
+			span.SetAttributes(attribute.String("graphdb.tenant_gate.result", "allowed"))
+		}
+		endHTTPSpan(span, nil)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -379,11 +404,29 @@ func tenantMutationRequest(r *http.Request) bool {
 }
 
 func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int, message string) (string, bool) {
+	_, span := startAPIPhase(r.Context(), "resolve_tenant")
 	parts, err := escapedPathParts(r, "/v1/tenants/", count)
 	if err != nil || len(parts) != count || parts[0] == "" {
+		if err == nil {
+			err = traceError(message)
+		}
+		endHTTPSpan(span, err)
 		writeError(w, http.StatusBadRequest, message)
 		return "", false
 	}
+	if err := storage.ValidateTenantID(parts[0]); err != nil {
+		endHTTPSpan(span, err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return "", false
+	}
+	setAPITraceTenant(r.Context(), parts[0])
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("graphdb.tenant", parts[0]),
+			attribute.String("graphdb.tenant.resolve_result", "ok"),
+		)
+	}
+	endHTTPSpan(span, nil)
 	return parts[0], true
 }
 

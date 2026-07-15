@@ -152,6 +152,30 @@ func TestOptionalEntityRecordsCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestPersistedEntityLookupUsesValidatedEntityRecordBeforePage(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	store.UseEntityRecordsForRead = true
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	entity, ok, err := lookup.GetEntity(ctx, "host:app-01", []string{"hostname"})
+	if err != nil || !ok || entity.Fields["hostname"] != "app-01" {
+		t.Fatalf("entity=%#v ok=%v err=%v", entity, ok, err)
+	}
+	lookup.pageMu.Lock()
+	loadedPages := len(lookup.pageCache)
+	lookup.pageMu.Unlock()
+	if loadedPages != 0 {
+		t.Fatalf("entity record lookup decoded %d page(s), want 0", loadedPages)
+	}
+}
+
 func TestIncrementalIndexCatalogReusesUnchangedEntityPageObjects(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")

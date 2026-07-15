@@ -526,6 +526,7 @@ Control endpoints:
 - `POST /v1/control/recover`
 - `POST /v1/control/repair`
 - `POST /v1/control/cleanup-commits`
+- `POST /v1/control/profiling`
 
 `reader-freshness` reports writer manifest version, reader-visible version,
 version lag, lag age, cache state, and commit tail replay status. Readers return
@@ -751,10 +752,30 @@ Error contract:
   events, and slow query logs are emitted as JSON lines to stdout.
 - `GRAPHDB_OTLP_ENDPOINT` enables OTLP/HTTP tracing. Leave it empty to keep
   tracing no-op. Use `GRAPHDB_OTLP_INSECURE=true` for plain HTTP collectors.
-  `POST /v1/commits` emits child spans for write admission, request decoding,
-  commit execution, graph load, commit-tail replay, manifest CAS write, index
-  update, and object-store operations so slow writes can be broken down by
-  phase.
+  Registered `/v1/` endpoints emit stable `graphdb.<operation>.http` spans with
+  child spans for tenant resolution, request decoding, admission, reader
+  freshness, graph loading, query/scan execution, and object-store operations.
+  Dynamic tenant, entity, task, cursor, and template values are not included in
+  span names. `POST /v1/commits` keeps its existing `graphdb.commit.*` hierarchy
+  for commit execution, graph load, commit-tail replay, manifest CAS writes,
+  and index updates.
+- `DD_PROFILING_ENABLED=true` starts the Datadog continuous profiler for the
+  `serve` command. It initializes only `dd-trace-go/v2/profiler`; it does not
+  import or start the Datadog tracer. `DD_SERVICE`, `DD_ENV`, and `DD_VERSION`
+  set the profile's service identity. Datadog Agent or agentless upload settings
+  continue to use the standard `DD_*` variables.
+- `POST /v1/control/profiling` accepts `{"enabled":true|false}` to control the
+  profiler for the current process. Enabling sets that process's
+  `DD_PROFILING_ENABLED=true` before starting the profiler; disabling stops it
+  and sets the value to `false`. This does not modify the deployment environment
+  after a restart. Restrict this process-level control endpoint to trusted
+  operators at the network boundary.
+- Go runtime profiles are available through the standard `net/http/pprof`
+  endpoints: `GET /debug/pprof/`, `GET /debug/pprof/heap?gc=1`,
+  `GET /debug/pprof/profile?seconds=30`, and
+  `GET /debug/pprof/trace?seconds=1`. These process-wide endpoints can expose
+  stack traces, command-line arguments, and memory details, so expose them only
+  on a trusted operator network.
 - `GRAPHDB_SLOW_QUERY_THRESHOLD` controls slow query logging. Set it to `0` to
   disable slow query classification.
 - `GRAPHDB_INDEX_HEALTH_INTERVAL` controls background health sampling for
@@ -784,12 +805,21 @@ Error contract:
 - `GRAPHDB_READ_OBJECT_MAX_CONCURRENT` limits concurrent object-store reads per
   process, and `GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true` coalesces concurrent
   reads for the same object key during cold cache misses.
+- `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT` bounds process-wide Arrow/Parquet
+  materialization. The default is `2`; lower it when large entity pages cause
+  heap pressure, at the cost of queued reads.
+- `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES` limits the in-memory raw Parquet
+  object cache. The default is `256MiB`; lower it when cache residency competes
+  with decode buffers.
 - `GRAPHDB_READER_INDEX_CACHE_DIR` enables a disk-backed cache for the same
   Parquet read objects. By default it uses
   `GRAPHDB_DATA_DIR/cache/index-objects`.
+- `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES` limits the estimated payload of a
+  merged entity-page object. The default is `32MiB`; it prevents large fields
+  from turning row-count-based packs into oversized Parquet decode units.
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false` skips optional per-entity by-id record
-  objects on the service write path. Entity reads still use Parquet entity
-  pages; set it to `true` only when that extra by-id acceleration is needed.
+  objects on the service write path. Set it to `true` on both writer and reader
+  processes to return validated by-id records before loading an entity page.
   In that mode logical entity pages stay un-packed so one page update does not
   invalidate records belonging to unrelated sibling pages.
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true` incrementally maintains
@@ -838,8 +868,9 @@ flags without changing process-wide defaults.
 - `GRAPHDB_QUERY_MAX_PER_TENANT=32`
 - `GRAPHDB_QUERY_QUEUE_TIMEOUT=5s`
 - `GRAPHDB_WRITE_MAX_CONCURRENT=32`
-- `GRAPHDB_WRITE_MAX_PER_TENANT=1` (single-writer mode; `0` disables this
-  admission dimension, values greater than `1` are rejected)
+- `GRAPHDB_WRITE_MAX_PER_TENANT=1` (`1` strictly serializes requests; values
+  such as `2`-`4` allow bounded lock-external request pipelining while manifest
+  publication remains single-writer; `0` disables this admission dimension)
 - `GRAPHDB_WRITE_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_WRITE_OBJECT_LATENCY_THRESHOLD=2s`
 - `GRAPHDB_WRITE_OBJECT_ERROR_WINDOW=30s`
@@ -859,6 +890,9 @@ flags without changing process-wide defaults.
 - `GRAPHDB_TENANT_USAGE_CACHE_TTL=60s`
 - `GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096`
 - `GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects`
+- `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=2`
+- `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB`
+- `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
 - `GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces`

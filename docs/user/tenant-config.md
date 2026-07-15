@@ -182,3 +182,12 @@ go run ./cmd/graphdb tenant-config demo
 go run ./cmd/graphdb set-tenant-config demo examples/tenant-config.json
 go run ./cmd/graphdb tenant-usage demo
 ```
+
+To permanently purge every managed and legacy tenant from the configured
+storage, use the guarded helper script. Review the target with `--dry-run`
+before confirming the destructive operation:
+
+```sh
+GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh --dry-run
+GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh
+```

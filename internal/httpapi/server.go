@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ type Server struct {
 	ReaderCatchupTimeout  time.Duration
 	QueryRegistry         *RunningQueryRegistry
 	Observability         *observability.Observability
+	DatadogProfiler       observability.DatadogProfiler
 	UsageCacheTTL         time.Duration
 	maintenance           *maintenanceState
 	maintenanceOnce       sync.Once
@@ -58,6 +60,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /openapi.yaml", s.openAPI)
+	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	mux.HandleFunc("/v1/tenants", s.tenantLifecycle)
 	mux.HandleFunc("/v1/tenants/", s.tenantLifecycle)
 	mux.HandleFunc("GET /v1/tenant-usage", s.tenantUsage)
@@ -103,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/control/reader-fleet-readiness", s.readerFleetReadiness)
 	mux.HandleFunc("GET /v1/control/reader-traffic-gate", s.readerTrafficGate)
 	mux.HandleFunc("GET /v1/control/integrity-audit", s.integrityAudit)
+	mux.HandleFunc("POST /v1/control/profiling", s.datadogProfiling)
 	mux.HandleFunc("POST /v1/control/recover", s.recoverTenant)
 	mux.HandleFunc("POST /v1/control/repair", s.repairTenant)
 	mux.HandleFunc("POST /v1/control/cleanup-commits", s.cleanupCommits)
@@ -172,7 +180,11 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 	storeCtx, storeSpan := tracer.Start(writeCtx, "graphdb.commit.store_commit", trace.WithAttributes(append([]attribute.KeyValue{
 		attribute.String("graphdb.tenant", tenantID),
 	}, commitRequestAttributes(request)...)...))
-	result, err := s.Store.CommitWithReport(storeCtx, tenantID, request.Mutations, storage.CommitOptions{ExpectedVersion: request.ExpectedVersion, IdempotencyKey: request.IdempotencyKey})
+	result, err := s.Store.CommitWithReport(storeCtx, tenantID, request.Mutations, storage.CommitOptions{
+		ExpectedVersion:          request.ExpectedVersion,
+		IdempotencyKey:           request.IdempotencyKey,
+		WriteBackpressureChecked: true,
+	})
 	storeSpan.SetAttributes(
 		attribute.Int64("graphdb.commit.version", result.Version),
 		attribute.Int64("graphdb.commit.readable_version", result.ReadableVersion),
@@ -437,11 +449,17 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		defer span.End()
 		r = r.WithContext(ctx)
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		var apiSpan trace.Span
+		var apiTraced bool
+		r, apiSpan, apiTraced = startAPIRequestTrace(r)
+		if apiTraced {
+			defer func() { endAPIRequestTrace(apiSpan, recorder.status) }()
+		}
 		start := time.Now()
 		next.ServeHTTP(recorder, r)
 		duration := time.Since(start)
 		route := observedRoute(r)
-		span.SetName(r.Method + " " + route)
+		span.SetName(route)
 		obs.Metrics.RecordHTTPRequest(r.Method, route, recorder.status, duration)
 		span.SetAttributes(
 			attribute.String("http.request.method", r.Method),
@@ -530,6 +548,8 @@ func observedRoute(r *http.Request) string {
 		return "GET /v1/control/reader-traffic-gate"
 	case path == "/v1/control/integrity-audit":
 		return "GET /v1/control/integrity-audit"
+	case path == "/v1/control/profiling":
+		return "POST /v1/control/profiling"
 	default:
 		return r.Method + " " + path
 	}

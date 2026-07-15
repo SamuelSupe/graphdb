@@ -2,10 +2,27 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
-func (s *TenantStore) CurrentScanCatalog(ctx context.Context, tenantID string) (IndexCatalog, error) {
+func (s *TenantStore) CurrentScanCatalog(ctx context.Context, tenantID string) (catalog IndexCatalog, err error) {
+	ctx, span := startStorageSpan(ctx, "graphdb.storage.scan.current_catalog", tenantTraceAttr(tenantID))
+	defer func() {
+		span.SetAttributes(
+			attribute.Bool("graphdb.scan.catalog_available", err == nil),
+			attribute.Int64("graphdb.scan.catalog_version", catalog.Version),
+			attribute.Int("graphdb.scan.entity_pages", len(catalog.EntityPages)),
+			attribute.Int("graphdb.scan.edge_shards", len(catalog.EdgeShards)),
+		)
+		spanErr := err
+		if errors.Is(err, ErrNotFound) {
+			spanErr = nil
+		}
+		endStorageSpan(span, spanErr)
+	}()
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -13,7 +30,7 @@ func (s *TenantStore) CurrentScanCatalog(ctx context.Context, tenantID string) (
 	if err != nil {
 		return IndexCatalog{}, err
 	}
-	catalog, err := s.GetIndexCatalog(ctx, tenantID)
+	catalog, err = s.GetIndexCatalog(ctx, tenantID)
 	if err != nil {
 		return IndexCatalog{}, err
 	}
@@ -23,7 +40,18 @@ func (s *TenantStore) CurrentScanCatalog(ctx context.Context, tenantID string) (
 	return catalog, nil
 }
 
-func (s *TenantStore) ListEntitiesFromCatalog(ctx context.Context, tenantID string, catalog IndexCatalog, options EntityScanOptions) (EntityScanResult, error) {
+func (s *TenantStore) ListEntitiesFromCatalog(ctx context.Context, tenantID string, catalog IndexCatalog, options EntityScanOptions) (result EntityScanResult, err error) {
+	stats := newEntityScanTraceStats()
+	stats.path = "catalog_index_pages"
+	stats.catalogVersion = catalog.Version
+	stats.catalogPages = len(catalog.EntityPages)
+	ctx, span := startStorageSpan(ctx, "graphdb.storage.scan.entities_from_catalog", append(entityScanTraceAttrs(tenantID, options),
+		attribute.Int64("graphdb.scan.catalog_version", catalog.Version),
+	)...)
+	defer func() {
+		span.SetAttributes(append(entityScanResultTraceAttrs(result), stats.attrs()...)...)
+		endStorageSpan(span, err)
+	}()
 	if err := validateScanCatalog(tenantID, catalog); err != nil {
 		return EntityScanResult{}, err
 	}
@@ -32,7 +60,7 @@ func (s *TenantStore) ListEntitiesFromCatalog(ctx context.Context, tenantID stri
 	if err != nil {
 		return EntityScanResult{}, err
 	}
-	result, ok, err := s.listEntitiesFromPages(ctx, tenantID, catalog.Version, catalog, options, cursor)
+	result, ok, err := s.listEntitiesFromPages(ctx, tenantID, catalog.Version, catalog, options, cursor, stats)
 	if err != nil {
 		return EntityScanResult{}, err
 	}
@@ -42,7 +70,14 @@ func (s *TenantStore) ListEntitiesFromCatalog(ctx context.Context, tenantID stri
 	return result, nil
 }
 
-func (s *TenantStore) ListEdgesFromCatalog(ctx context.Context, tenantID string, catalog IndexCatalog, options EdgeScanOptions) (EdgeScanResult, error) {
+func (s *TenantStore) ListEdgesFromCatalog(ctx context.Context, tenantID string, catalog IndexCatalog, options EdgeScanOptions) (result EdgeScanResult, err error) {
+	ctx, span := startStorageSpan(ctx, "graphdb.storage.scan.edges_from_catalog", append(edgeScanTraceAttrs(tenantID, options),
+		attribute.Int64("graphdb.scan.catalog_version", catalog.Version),
+	)...)
+	defer func() {
+		span.SetAttributes(edgeScanResultTraceAttrs(result)...)
+		endStorageSpan(span, err)
+	}()
 	if err := validateScanCatalog(tenantID, catalog); err != nil {
 		return EdgeScanResult{}, err
 	}

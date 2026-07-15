@@ -59,10 +59,11 @@ func marshalParquetSnapshotRecord(ctx context.Context, record snapshotRecord) ([
 }
 
 func decodeParquetSnapshotRecord(ctx context.Context, data []byte) (snapshotRecord, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return snapshotRecord{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return snapshotRecord{}, fmt.Errorf("parquet snapshot record is empty")

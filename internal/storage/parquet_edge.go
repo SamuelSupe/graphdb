@@ -252,10 +252,11 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 }
 
 func decodeParquetEdgeShard(ctx context.Context, data []byte, tenantID string, relationType string, shardID string, version int64) (EdgeShardData, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return EdgeShardData{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumCols() < int64(parquetEdgeColumnEdgeSourceObservedAt+1) {
 		return EdgeShardData{}, fmt.Errorf("parquet edge shard has %d columns, want at least %d", table.NumCols(), parquetEdgeColumnEdgeSourceObservedAt+1)

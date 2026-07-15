@@ -48,6 +48,54 @@ func TestEntityPagePackingMergesSmallPages(t *testing.T) {
 	}
 }
 
+func TestEntityScanReadsAndFiltersPackedPageOncePerRequest(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := newParquetIndexTenantStore(base, "test")
+	store.WriteEntityRecords = false
+	entities := entitiesForDistinctShards("host", "packed-scan", 8, entityShardID)
+	entities[0].Kind = "system"
+	entities[1].Kind = "system"
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	keys := entityPageObjectKeys(catalog.EntityPages)
+	if len(catalog.EntityPages) != len(entities) || len(keys) != 1 {
+		t.Fatalf("test requires one packed object across logical pages: pages=%d keys=%#v", len(catalog.EntityPages), keys)
+	}
+
+	objects := &countingMetaReadStore{ObjectStore: base}
+	store.Objects = objects
+	recorder := installStorageSpanRecorder(t)
+	result, err := store.ListEntitiesFromCatalog(ctx, "tenant-a", catalog, EntityScanOptions{Kind: "system", Limit: 500})
+	if err != nil || len(result.Entities) != 2 {
+		t.Fatalf("list entities result=%#v err=%v", result, err)
+	}
+	if got := objects.GetWithMetaCount(keys[0]); got != 1 {
+		t.Fatalf("packed entity object reads = %d, want one request-local physical read", got)
+	}
+
+	span := requireStorageSpan(t, recorder.Ended(), "graphdb.storage.scan.entities.pages")
+	assertStorageSpanAttribute(t, span, "graphdb.scan.unique_objects", int64(1))
+	assertStorageSpanAttribute(t, span, "graphdb.scan.object_loads", int64(1))
+	assertStorageSpanAttribute(t, span, "graphdb.scan.candidate_object_scans", int64(1))
+	assertStorageSpanAttribute(t, span, "graphdb.scan.candidate_filter_requests", int64(len(catalog.EntityPages)))
+	assertStorageSpanAttribute(t, span, "graphdb.scan.candidate_scan_reuses", int64(len(catalog.EntityPages)-1))
+	assertStorageSpanAttribute(t, span, "graphdb.scan.parquet_decodes", int64(2))
+	requireStorageSpan(t, recorder.Ended(), "graphdb.storage.scan.entities.candidate_filter")
+	requireStorageSpan(t, recorder.Ended(), "graphdb.storage.scan.entities.decode_page")
+	for _, entity := range entities[:2] {
+		spec := requireEntityPageSpec(t, catalog, entityShardID(entity.ID))
+		if _, _, ok := store.cachedEntityPage("tenant-a", catalog.Version, keys[0], spec.ContentHash, spec.SchemaHash); !ok {
+			t.Fatalf("decoded entity page for %q was not cached", entity.ID)
+		}
+	}
+}
+
 func TestEdgeShardPackingMergesSmallShards(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")

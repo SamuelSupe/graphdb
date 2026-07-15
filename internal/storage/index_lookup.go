@@ -101,31 +101,26 @@ func (l *PersistedIndexLookup) GetEntity(ctx context.Context, id string, fields 
 	if l == nil || l.Catalog.Version != l.Version {
 		return graph.Entity{}, false, nil
 	}
+	if l.Store.UseEntityRecordsForRead {
+		record, err := l.loadEntityRecord(ctx, id)
+		if err != nil && ctx.Err() != nil {
+			return graph.Entity{}, false, err
+		}
+		if err == nil && entityRecordMatchesCatalog(record, l.TenantID, id, l.Catalog, l.Version) {
+			if spec, ok := l.catalogEntityPageSpec(record.Page); ok && specFormat(spec.Format) == IndexFormatParquet {
+				entity, found, err := l.getEntityFromParquetPage(ctx, record, fields, spec)
+				if err != nil || found {
+					return entity, found, err
+				}
+			}
+		}
+	}
 	for _, shard := range indexShardIDCandidates(id) {
 		if spec, ok := l.catalogEntityPageSpec(shard); ok {
 			entity, found, err := l.getEntityByIDFromParquetPage(ctx, id, fields, spec)
 			if err != nil || found {
 				return entity, found, err
 			}
-		}
-	}
-	record, err := l.loadEntityRecord(ctx, id)
-	if errors.Is(err, ErrNotFound) {
-		return graph.Entity{}, false, nil
-	}
-	if err != nil {
-		if ctx.Err() != nil {
-			return graph.Entity{}, false, err
-		}
-		return graph.Entity{}, false, nil
-	}
-	if !entityRecordMatchesCatalog(record, l.TenantID, id, l.Catalog, l.Version) {
-		return graph.Entity{}, false, nil
-	}
-	if spec, ok := l.catalogEntityPageSpec(record.Page); ok {
-		switch specFormat(spec.Format) {
-		case IndexFormatParquet:
-			return l.getEntityFromParquetPage(ctx, record, fields, spec)
 		}
 	}
 	return graph.Entity{}, false, nil

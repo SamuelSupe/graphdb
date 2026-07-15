@@ -83,3 +83,47 @@ func TestParquetEntityCandidateScanFiltersSourceAndCursor(t *testing.T) {
 		t.Fatalf("candidate IDs = %#v, want only host:b", scan.IDs)
 	}
 }
+
+func TestParquetEntityCandidateScanFiltersPackedPageByLogicalShard(t *testing.T) {
+	ctx := context.Background()
+	firstID, secondID := entityIDsInDifferentShards(t)
+	firstShard := entityShardID(firstID)
+	page := EntityPageData{
+		TenantID:  "tenant-a",
+		Shard:     "pack_test",
+		Version:   1,
+		UpdatedAt: time.Now().UTC(),
+		Entities: []graph.Entity{
+			{ID: firstID, Kind: "system", Source: "agent"},
+			{ID: secondID, Kind: "system", Source: "agent"},
+		},
+	}
+	data, err := marshalParquetEntityPage(ctx, page)
+	if err != nil {
+		t.Fatalf("marshal packed page: %v", err)
+	}
+	scan, err := scanParquetEntityPageCandidates(ctx, data, firstShard, EntityScanOptions{Kind: "system"}, scanCursor{})
+	if err != nil {
+		t.Fatalf("candidate scan: %v", err)
+	}
+	if _, ok := scan.IDs[firstID]; !ok {
+		t.Fatalf("candidate IDs = %#v, want %q", scan.IDs, firstID)
+	}
+	if _, ok := scan.IDs[secondID]; ok {
+		t.Fatalf("candidate IDs = %#v, packed entity from another shard %q must be excluded", scan.IDs, secondID)
+	}
+}
+
+func entityIDsInDifferentShards(t *testing.T) (string, string) {
+	t.Helper()
+	firstID := "system:packed-0"
+	firstShard := entityShardID(firstID)
+	for i := 1; i < 1000; i++ {
+		candidate := fmt.Sprintf("system:packed-%d", i)
+		if entityShardID(candidate) != firstShard {
+			return firstID, candidate
+		}
+	}
+	t.Fatal("failed to find entity IDs in different shards")
+	return "", ""
+}

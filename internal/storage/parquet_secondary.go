@@ -165,10 +165,11 @@ func marshalParquetSecondaryIndex(ctx context.Context, index SecondaryIndex) ([]
 }
 
 func decodeParquetSecondaryIndex(ctx context.Context, data []byte, tenantID string, kind string, field string, version int64, unique bool) (SecondaryIndex, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return SecondaryIndex{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumCols() < int64(parquetSecondaryColumnEntityID+1) {
 		return SecondaryIndex{}, fmt.Errorf("parquet secondary index has %d columns, want at least %d", table.NumCols(), parquetSecondaryColumnEntityID+1)

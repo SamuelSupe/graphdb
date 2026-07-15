@@ -152,10 +152,11 @@ func marshalParquetSavedQuery(ctx context.Context, saved SavedQuery) ([]byte, er
 }
 
 func decodeParquetSavedQuery(ctx context.Context, data []byte) (SavedQuery, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return SavedQuery{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return SavedQuery{}, fmt.Errorf("parquet saved query is empty")

@@ -38,6 +38,7 @@ func commitOptionTraceAttrs(opts CommitOptions) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.Bool("graphdb.commit.expected_version_present", opts.ExpectedVersion != nil),
 		attribute.Bool("graphdb.commit.idempotency_key_present", opts.IdempotencyKey != ""),
+		attribute.Bool("graphdb.commit.write_backpressure_checked", opts.WriteBackpressureChecked),
 	}
 	if opts.ExpectedVersion != nil {
 		attrs = append(attrs, attribute.Int64("graphdb.commit.expected_version", *opts.ExpectedVersion))

@@ -53,7 +53,10 @@ type snapshotRecord struct {
 type CommitOptions struct {
 	ExpectedVersion *int64
 	IdempotencyKey  string
-	directCommit    *directCommitReservation
+	// WriteBackpressureChecked avoids repeating the full admission scan when
+	// the HTTP layer already completed it for this request.
+	WriteBackpressureChecked bool
+	directCommit             *directCommitReservation
 }
 
 type TenantStore struct {
@@ -90,8 +93,10 @@ type TenantStore struct {
 	MaxRetries                 int
 	MaxWriteCacheTenants       int
 	MaxWriteCacheBytes         int64
+	EntityPagePackMaxBytes     int64
 	IndexFormat                string
 	WriteEntityRecords         bool
+	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool
 	Backpressure               *WritePressure
 	BackpressureObserver       BackpressureObserver
@@ -140,6 +145,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		MaxRetries:                 3,
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
+		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,
 	}
@@ -172,7 +178,40 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return Manifest{}, err
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return Manifest{}, err
+	}
+	loaded, err := s.loadForWriteLocked(ctx, tenantID)
+	if err != nil {
+		return Manifest{}, err
+	}
+	g := loaded.Graph
+	manifest := loaded.Manifest
+	alreadyCompacted := manifestCommitTailLength(manifest) == 0 && manifest.Version == manifest.SnapshotVersion && manifest.SnapshotKey != "" && manifest.SnapshotCatalogKey != ""
+	var snapshotCatalog ShardedSnapshotCatalog
+	var snapshotKey string
+	if !alreadyCompacted {
+		// Snapshot objects are versioned and immutable, so their expensive build
+		// can run concurrently with foreground commits.
+		snapshot := g.Snapshot()
+		snapshotCatalog, err = s.putShardedSnapshot(ctx, tenantID, snapshot)
+		if err != nil {
+			return Manifest{}, err
+		}
+		snapshotKey = s.snapshotKey(tenantID, snapshot.Version)
+		record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Snapshot: snapshot}
+		if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
+			return Manifest{}, err
+		}
+	}
+
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return Manifest{}, err
+	}
 	defer unlock()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return Manifest{}, err
@@ -180,39 +219,26 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Manifest{}, err
 	}
-	return s.compactLocked(ctx, tenantID)
-}
-
-func (s *TenantStore) compactLocked(ctx context.Context, tenantID string) (Manifest, error) {
-	loaded, err := s.loadForWriteLocked(ctx, tenantID)
+	current, currentMeta, err := s.getManifest(ctx, tenantID)
 	if err != nil {
 		return Manifest{}, err
 	}
-	g := loaded.Graph
-	manifest := loaded.Manifest
-	if manifestCommitTailLength(manifest) == 0 && manifest.Version == manifest.SnapshotVersion && manifest.SnapshotKey != "" && manifest.SnapshotCatalogKey != "" {
-		return manifest, nil
+	if !cachedManifestMatches(loaded, current, currentMeta) {
+		return Manifest{}, fmt.Errorf("%w: manifest changed while compacting tenant %q", ErrConflict, tenantID)
 	}
-	snapshot := g.Snapshot()
-	snapshotCatalog, err := s.putShardedSnapshot(ctx, tenantID, snapshot)
-	if err != nil {
-		return Manifest{}, err
+	if alreadyCompacted {
+		return current, nil
 	}
-	snapshotKey := s.snapshotKey(tenantID, snapshot.Version)
-	record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Snapshot: snapshot}
-	if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
-		return Manifest{}, err
-	}
+	manifest = current
 	manifest.TenantID = tenantID
 	manifest.LayoutVersion = CurrentObjectLayoutVersion
-	manifest.Version = snapshot.Version
 	manifest.SnapshotKey = snapshotKey
 	manifest.SnapshotCatalogKey = snapshotCatalog.Key
-	manifest.SnapshotVersion = snapshot.Version
+	manifest.SnapshotVersion = manifest.Version
 	manifest.CommitSegments = nil
 	manifest.CommitKeys = nil
 	manifest.UpdatedAt = time.Now().UTC()
-	meta, err := s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
+	meta, err := s.putManifestMeta(ctx, tenantID, manifest, currentMeta)
 	if err != nil {
 		s.deleteWriteCache(tenantID)
 		return Manifest{}, err

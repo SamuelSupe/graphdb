@@ -26,6 +26,7 @@ type Config struct {
 	ReadQueueTimeout                  time.Duration
 	ReadObjectMaxConcurrent           int
 	ReadObjectSingleflight            bool
+	ParquetDecodeMaxConcurrent        int
 	WriteMaxConcurrent                int
 	WriteMaxPerTenant                 int
 	WriteQueueTimeout                 time.Duration
@@ -52,12 +53,18 @@ type Config struct {
 	TenantUsageCacheTTL               time.Duration
 	ReaderCatchupTimeout              time.Duration
 	ReaderIndexCacheEntries           int
+	ReaderIndexCacheMaxBytes          int64
 	ReaderIndexCacheDir               string
 	IndexEntityRecords                bool
+	EntityPagePackMaxBytes            int64
 	FaultObjectReadDelay              time.Duration
 	OTLPEndpoint                      string
 	OTLPInsecure                      bool
 	ServiceName                       string
+	DatadogProfilingEnabled           bool
+	DatadogServiceName                string
+	DatadogEnvironment                string
+	DatadogVersion                    string
 	InstanceID                        string
 
 	S3Endpoint        string
@@ -84,6 +91,7 @@ func Load() (Config, error) {
 		ReadQueueTimeout:                  500 * time.Millisecond,
 		ReadObjectMaxConcurrent:           128,
 		ReadObjectSingleflight:            true,
+		ParquetDecodeMaxConcurrent:        2,
 		WriteMaxConcurrent:                32,
 		WriteMaxPerTenant:                 1,
 		WriteQueueTimeout:                 2 * time.Second,
@@ -106,7 +114,9 @@ func Load() (Config, error) {
 		TenantUsageCacheTTL:               60 * time.Second,
 		ReaderCatchupTimeout:              2 * time.Second,
 		ReaderIndexCacheEntries:           4096,
+		ReaderIndexCacheMaxBytes:          256 * 1024 * 1024,
 		IndexEntityRecords:                false,
+		EntityPagePackMaxBytes:            32 * 1024 * 1024,
 		OTLPEndpoint:                      os.Getenv("GRAPHDB_OTLP_ENDPOINT"),
 		ServiceName:                       getenv("GRAPHDB_SERVICE_NAME", "graphdb"),
 		InstanceID:                        strings.TrimSpace(os.Getenv("GRAPHDB_INSTANCE_ID")),
@@ -116,7 +126,13 @@ func Load() (Config, error) {
 	}
 	cfg.S3AccessKeyID = firstNonEmpty(os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("AWS_ACCESS_KEY_ID"))
 	cfg.S3SecretAccessKey = firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
+	cfg.DatadogServiceName = firstNonEmpty(strings.TrimSpace(os.Getenv("DD_SERVICE")), cfg.ServiceName)
+	cfg.DatadogEnvironment = strings.TrimSpace(os.Getenv("DD_ENV"))
+	cfg.DatadogVersion = strings.TrimSpace(os.Getenv("DD_VERSION"))
 	if err := loadBoolEnv("S3_PATH_STYLE", &cfg.S3PathStyle); err != nil {
+		return Config{}, err
+	}
+	if err := loadBoolEnv("DD_PROFILING_ENABLED", &cfg.DatadogProfilingEnabled); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_POLL_INTERVAL", &cfg.PollInterval); err != nil {
@@ -144,6 +160,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadBoolEnv("GRAPHDB_READ_OBJECT_SINGLEFLIGHT", &cfg.ReadObjectSingleflight); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", &cfg.ParquetDecodeMaxConcurrent); err != nil {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_WRITE_MAX_CONCURRENT", &cfg.WriteMaxConcurrent); err != nil {
@@ -224,8 +243,14 @@ func Load() (Config, error) {
 	if err := loadIntEnv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", &cfg.ReaderIndexCacheEntries); err != nil {
 		return Config{}, err
 	}
+	if err := loadBytesEnv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", &cfg.ReaderIndexCacheMaxBytes); err != nil {
+		return Config{}, err
+	}
 	cfg.ReaderIndexCacheDir = strings.TrimSpace(os.Getenv("GRAPHDB_READER_INDEX_CACHE_DIR"))
 	if err := loadBoolEnv("GRAPHDB_INDEX_ENTITY_RECORDS", &cfg.IndexEntityRecords); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES", &cfg.EntityPagePackMaxBytes); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_FAULT_OBJECT_READ_DELAY", &cfg.FaultObjectReadDelay); err != nil {
@@ -253,9 +278,6 @@ func Load() (Config, error) {
 	case "all", "writer", "reader":
 	default:
 		return Config{}, fmt.Errorf("unsupported GRAPHDB_MODE %q", cfg.Mode)
-	}
-	if cfg.WriteMaxPerTenant > 1 {
-		return Config{}, fmt.Errorf("GRAPHDB_WRITE_MAX_PER_TENANT must be 0 or 1 in single-writer mode")
 	}
 	return cfg, nil
 }

@@ -130,10 +130,11 @@ func marshalParquetIndexCatalog(ctx context.Context, catalog IndexCatalog) ([]by
 }
 
 func decodeParquetIndexCatalog(ctx context.Context, data []byte) (IndexCatalog, error) {
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, release, err := readParquetTable(ctx, data)
 	if err != nil {
 		return IndexCatalog{}, err
 	}
+	defer release()
 	defer table.Release()
 	if table.NumRows() < 1 {
 		return IndexCatalog{}, fmt.Errorf("parquet index catalog is empty")
