@@ -39,7 +39,7 @@ build-testing:
     - start_time=`date +%s`
     - docker run --name "$CONTAINER_NAME" --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
     - compile_time=`date +%s`; echo compile `expr $compile_time - $start_time` s.
-    - docker buildx build --build-arg BASE_IMAGE="$RUNTIME_BASE_IMAGE" --platform linux/arm64,linux/amd64 -t "$REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" -f ./image/Dockerfile . --push
+    - docker buildx build --build-arg BASE_IMAGE="$RUNTIME_BASE_IMAGE" --platform linux/arm64,linux/amd64 -t "$REGISTRY_IMAGE:$CI_COMMIT_REF_NAME" -f ./image/Dockerfile . --push
     - image_time=`date +%s`; echo build image `expr $image_time - $compile_time` s.
     - push_time=`date +%s`; echo push image `expr $push_time - $image_time` s.
   after_script:
@@ -55,7 +55,7 @@ build-release:
     - /^release(\/|-)?.*$/
   script:
     - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
-    - docker buildx build --build-arg BASE_IMAGE="$RUNTIME_BASE_IMAGE" --platform linux/arm64,linux/amd64 -t "$REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" -t "$PUBREPO_IMAGE:$CI_COMMIT_REF_SLUG" -f ./image/Dockerfile . --push
+    - docker buildx build --build-arg BASE_IMAGE="$RUNTIME_BASE_IMAGE" --platform linux/arm64,linux/amd64 -t "$REGISTRY_IMAGE:$CI_COMMIT_REF_NAME" -t "$PUBREPO_IMAGE:$CI_COMMIT_REF_NAME" -f ./image/Dockerfile . --push
   tags:
     - cloudcare-multiarch
 
@@ -66,7 +66,7 @@ build-preprod:
     - /^pre(\/|-)?.*$/
   script:
     - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
-    - make pub_registry_image VERSION="$CI_COMMIT_REF_SLUG" RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE"
+    - make pub_registry_image VERSION="$CI_COMMIT_REF_NAME" RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE"
   tags:
     - cloudcare-multiarch
 
@@ -131,7 +131,7 @@ buildBasisImage:
   only:
     - /^graphdb-basis[\/-_]?.*$/
   script:
-    - docker buildx build --platform linux/arm64,linux/amd64 -t "registry.jiagouyun.com/basis/graphdb-basis:$CI_COMMIT_REF_SLUG" -f image/Dockerfile.basis . --push
+    - docker buildx build --platform linux/arm64,linux/amd64 -t "registry.jiagouyun.com/basis/graphdb-basis:$CI_COMMIT_REF_NAME" -f image/Dockerfile.basis . --push
   tags:
     - cloudcare-multiarch
 
@@ -141,6 +141,6 @@ buildUOSBasisImage:
   only:
     - /^uos-graphdb-basis[\/-_]?.*$/
   script:
-    - docker buildx build --platform linux/arm64,linux/amd64 -t "registry.jiagouyun.com/basis/uos-graphdb-basis:$CI_COMMIT_REF_SLUG" -f image/Dockerfile.uos.basis . --push
+    - docker buildx build --platform linux/arm64,linux/amd64 -t "registry.jiagouyun.com/basis/uos-graphdb-basis:$CI_COMMIT_REF_NAME" -f image/Dockerfile.uos.basis . --push
   tags:
     - cloudcare-multiarch
