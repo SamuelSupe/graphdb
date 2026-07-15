@@ -150,7 +150,7 @@ func TestCommitRetryReacquiresWriterLeaseAfterManifestConflict(t *testing.T) {
 	base := NewMemoryStore()
 	objects := &takeoverOnManifestPutStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	store := NewTenantStore(objects, "test")
-	store.LeaseTTL = time.Nanosecond
+	store.LeaseTTL = time.Hour
 	store.MaxRetries = 2
 
 	_, err := store.Commit(ctx, "tenant-a", graph.Mutations{
@@ -668,7 +668,7 @@ func TestDeadLetterListAndReplaySkipScopeMismatchedRecords(t *testing.T) {
 		},
 	}
 	key := store.deadLetterKey("tenant-a", "aws", mismatched.ID)
-	if _, err := store.putDeadLetterWithMeta(ctx, key, mismatched, ObjectMeta{Key: key}); err != nil {
+	if _, err := store.putDeadLetterWithMeta(ctx, "tenant-a", key, mismatched, ObjectMeta{Key: key}); err != nil {
 		t.Fatalf("put mismatched deadletter: %v", err)
 	}
 	letters, err := store.ListDeadLetters(ctx, "tenant-a", "aws")
@@ -1134,7 +1134,9 @@ type takeoverOnManifestPutStore struct {
 func (s *takeoverOnManifestPutStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
 	if strings.HasSuffix(key, "/manifest.parquet") && !s.triggered {
 		s.triggered = true
-		time.Sleep(time.Millisecond)
+		if err := expireWriterLeaseForTakeover(ctx, s.base, s.tenantID); err != nil {
+			return ObjectMeta{}, err
+		}
 		takeover := NewTenantStore(s.base, "test")
 		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.Commit(ctx, s.tenantID, graph.Mutations{
@@ -1144,6 +1146,26 @@ func (s *takeoverOnManifestPutStore) PutConditional(ctx context.Context, key str
 		}
 	}
 	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
+func expireWriterLeaseForTakeover(ctx context.Context, base *MemoryStore, tenantID string) error {
+	store := NewTenantStore(base, "test")
+	key := store.writerLeaseKey(tenantID)
+	data, meta, err := base.GetWithMeta(ctx, key)
+	if err != nil {
+		return err
+	}
+	lease, err := decodeParquetWriterLease(ctx, data)
+	if err != nil {
+		return err
+	}
+	lease.ExpiresAt = time.Now().UTC().Add(-time.Second)
+	data, err = marshalParquetWriterLease(ctx, lease)
+	if err != nil {
+		return err
+	}
+	_, err = base.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
+	return err
 }
 
 func putPendingDeadLetterForTest(t *testing.T, ctx context.Context, store *TenantStore, tenantID string, source string, id string) {
@@ -1166,7 +1188,7 @@ func putPendingDeadLetterForTest(t *testing.T, ctx context.Context, store *Tenan
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if _, err := store.putDeadLetterWithMeta(ctx, store.deadLetterKey(tenantID, source, id), letter, ObjectMeta{Key: store.deadLetterKey(tenantID, source, id)}); err != nil {
+	if _, err := store.putDeadLetterWithMeta(ctx, tenantID, store.deadLetterKey(tenantID, source, id), letter, ObjectMeta{Key: store.deadLetterKey(tenantID, source, id)}); err != nil {
 		t.Fatalf("put deadletter: %v", err)
 	}
 }

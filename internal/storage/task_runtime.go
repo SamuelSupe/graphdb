@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -33,34 +34,46 @@ func taskProgressTotal(taskType string) int {
 }
 
 func (s *TenantStore) updateTaskProgress(ctx context.Context, task Task, phase string, completed int, total int, checkpoint map[string]any) error {
-	current := s.taskStateOrLocal(ctx, task)
-	if current.Status == TaskStatusCanceled {
-		return context.Canceled
+	if _, err := s.prepareTenantWrite(ctx, task.TenantID); err != nil {
+		return err
 	}
-	if taskTerminal(current.Status) && current.Status != TaskStatusQueued && current.Status != TaskStatusRunning {
+	writeCtx := context.WithoutCancel(ctx)
+	update := func(current *Task) error {
+		if taskTerminal(current.Status) {
+			return context.Canceled
+		}
+		progressTotal := total
+		if progressTotal <= 0 {
+			progressTotal = current.ProgressTotal
+		}
+		if progressTotal <= 0 {
+			progressTotal = taskProgressTotal(task.Type)
+		}
+		progressCompleted := completed
+		if progressCompleted < 0 {
+			progressCompleted = 0
+		}
+		if progressCompleted > progressTotal {
+			progressCompleted = progressTotal
+		}
+		current.Status = TaskStatusRunning
+		current.Phase = phase
+		current.ProgressCompleted = progressCompleted
+		current.ProgressTotal = progressTotal
+		current.UpdatedAt = time.Now().UTC()
+		if checkpoint != nil {
+			current.Checkpoint = mergeTaskMap(current.Checkpoint, checkpoint)
+		}
 		return nil
 	}
-	if total <= 0 {
-		total = current.ProgressTotal
+	_, err := s.mutateTask(writeCtx, task.TenantID, task.ID, update)
+	if errors.Is(err, ErrNotFound) {
+		if err := s.saveTask(writeCtx, task); err != nil {
+			return err
+		}
+		_, err = s.mutateTask(writeCtx, task.TenantID, task.ID, update)
 	}
-	if total <= 0 {
-		total = taskProgressTotal(task.Type)
-	}
-	if completed < 0 {
-		completed = 0
-	}
-	if completed > total {
-		completed = total
-	}
-	current.Status = TaskStatusRunning
-	current.Phase = phase
-	current.ProgressCompleted = completed
-	current.ProgressTotal = total
-	current.UpdatedAt = time.Now().UTC()
-	if checkpoint != nil {
-		current.Checkpoint = mergeTaskMap(current.Checkpoint, checkpoint)
-	}
-	return s.saveTask(context.Background(), current)
+	return err
 }
 
 func (s *TenantStore) taskStateOrLocal(ctx context.Context, task Task) Task {

@@ -239,6 +239,35 @@ func TestTenantBackupAndRestoreTasks(t *testing.T) {
 	if err != nil || health.Status != "ready" {
 		t.Fatalf("restored index health=%#v err=%v", health, err)
 	}
+	overwrite, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "overwrite": true})
+	if err != nil {
+		t.Fatalf("start overwrite restore: %v", err)
+	}
+	overwrite = waitForTaskAcrossPurge(t, ctx, store, "tenant-b", overwrite.ID)
+	if overwrite.Status != TaskStatusSucceeded || overwrite.Result["overwrote"] != true {
+		t.Fatalf("overwrite restore task = %#v", overwrite)
+	}
+}
+
+func waitForTaskAcrossPurge(t *testing.T, ctx context.Context, store *TenantStore, tenantID string, taskID string) Task {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		task, err := store.GetTask(ctx, tenantID, taskID)
+		if errors.Is(err, ErrNotFound) {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("get task: %v", err)
+		}
+		if task.Status != TaskStatusQueued && task.Status != TaskStatusRunning {
+			return task
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("task %s did not finish", taskID)
+	return Task{}
 }
 
 func TestTenantBackupRetryContinuesAfterBackupRecord(t *testing.T) {

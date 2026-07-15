@@ -27,8 +27,12 @@ type PersistedIndexLookup struct {
 	edgeMu    sync.Mutex
 	edgeCache map[string]map[string][]graph.Edge
 
-	edgeCatalogMu      sync.Mutex
-	edgeCatalogByShard map[string]edgeShardCatalog
+	edgeCatalogMu        sync.Mutex
+	edgeCatalogByShard   map[string]edgeShardCatalog
+	entityCatalogMu      sync.Mutex
+	entityCatalogByShard map[string]EntityPageSpec
+	fieldCatalogMu       sync.Mutex
+	fieldCatalogByKey    map[string]IndexSpec
 }
 
 func (l *PersistedIndexLookup) MatchFieldIndex(ctx context.Context, kind string, field string, values []any) ([]string, bool, error) {
@@ -119,7 +123,7 @@ func (l *PersistedIndexLookup) GetEntity(ctx context.Context, id string, fields 
 		}
 		return graph.Entity{}, false, nil
 	}
-	if !entityRecordMatchesCatalog(record, l.TenantID, id, l.Catalog, l.Version) {
+	if !l.entityRecordMatchesCatalog(record, id) {
 		return graph.Entity{}, false, nil
 	}
 	if spec, ok := l.catalogEntityPageSpec(record.Page); ok {
@@ -157,28 +161,25 @@ func (l *PersistedIndexLookup) loadEntityRecord(ctx context.Context, id string) 
 }
 
 func (l *PersistedIndexLookup) catalogFieldSpec(kind string, field string) (IndexSpec, bool) {
-	for _, index := range l.Catalog.Indexes {
-		if index.Kind == kind && index.Field == field && index.Status == "ready" {
-			return index, true
+	l.fieldCatalogMu.Lock()
+	defer l.fieldCatalogMu.Unlock()
+	if l.fieldCatalogByKey == nil {
+		l.fieldCatalogByKey = make(map[string]IndexSpec, len(l.Catalog.Indexes))
+		for _, index := range l.Catalog.Indexes {
+			if index.Status == "ready" {
+				l.fieldCatalogByKey[index.Kind+"\x00"+index.Field] = index
+			}
 		}
 	}
-	return IndexSpec{}, false
-}
-
-func catalogHasEntityPage(catalog IndexCatalog, shard string) bool {
-	for _, page := range catalog.EntityPages {
-		if page.Shard == shard {
-			return true
-		}
-	}
-	return false
+	index, ok := l.fieldCatalogByKey[kind+"\x00"+field]
+	return index, ok
 }
 
 func fieldIndexMatchesCatalog(index SecondaryIndex, spec IndexSpec, version int64) bool {
 	if index.Version > version || index.Kind != spec.Kind || index.Field != spec.Field {
 		return false
 	}
-	if !index.cacheVerified && (spec.ContentHash == "" || secondaryIndexContentHash(index) != spec.ContentHash) {
+	if !index.cacheVerified && !secondaryIndexSpecContentHashMatches(index, spec) {
 		return false
 	}
 	entryCount, distinctValues := secondaryIndexCounts(index)
@@ -195,14 +196,15 @@ func edgeShardMatchesCatalog(shard EdgeShardData, spec EdgeShard, version int64)
 	return shard.cacheVerified || (spec.ContentHash != "" && edgeShardContentHash(shard) == spec.ContentHash)
 }
 
-func entityRecordMatchesCatalog(record EntityRecord, tenantID string, id string, catalog IndexCatalog, version int64) bool {
+func (l *PersistedIndexLookup) entityRecordMatchesCatalog(record EntityRecord, id string) bool {
+	_, pageExists := l.catalogEntityPageSpec(record.Page)
 	return !record.Deleted &&
-		record.Version <= version &&
-		indexTenantMatches(record.TenantID, tenantID) &&
+		record.Version <= l.Version &&
+		indexTenantMatches(record.TenantID, l.TenantID) &&
 		record.ID == id &&
 		record.Entity.ID == id &&
 		indexShardIDMatches(id, record.Page) &&
-		catalogHasEntityPage(catalog, record.Page)
+		pageExists
 }
 
 func (l *PersistedIndexLookup) entityRecordMatchesPage(ctx context.Context, record EntityRecord) (bool, error) {
@@ -291,12 +293,16 @@ func indexTenantMatches(objectTenantID string, tenantID string) bool {
 }
 
 func (l *PersistedIndexLookup) catalogEntityPageSpec(shard string) (EntityPageSpec, bool) {
-	for _, page := range l.Catalog.EntityPages {
-		if page.Shard == shard {
-			return page, true
+	l.entityCatalogMu.Lock()
+	defer l.entityCatalogMu.Unlock()
+	if l.entityCatalogByShard == nil {
+		l.entityCatalogByShard = make(map[string]EntityPageSpec, len(l.Catalog.EntityPages))
+		for _, page := range l.Catalog.EntityPages {
+			l.entityCatalogByShard[page.Shard] = page
 		}
 	}
-	return EntityPageSpec{}, false
+	page, ok := l.entityCatalogByShard[shard]
+	return page, ok
 }
 
 func (l *PersistedIndexLookup) loadEntityPage(ctx context.Context, shard string) (EntityPageData, error) {

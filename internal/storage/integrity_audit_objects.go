@@ -291,10 +291,10 @@ func (s *TenantStore) auditEntityRecordContent(record EntityRecord, key string, 
 	if record.Page != expectedRecord.Page {
 		report.addIssue("entity_record_page_mismatch", "error", "entity_record", record.ID, key, "entity record page does not match entity page")
 	}
-	if record.PageHash != "" && record.PageHash != expectedRecord.PageHash {
+	if record.Version >= catalogVersion && record.PageHash != "" && record.PageHash != expectedRecord.PageHash {
 		report.addIssue("entity_record_page_hash_mismatch", "error", "entity_record", record.ID, key, "entity record page hash does not match entity page")
 	}
-	if record.PageETag != "" && expectedRecord.PageETag != "" && record.PageETag != expectedRecord.PageETag {
+	if record.Version >= catalogVersion && record.PageETag != "" && expectedRecord.PageETag != "" && record.PageETag != expectedRecord.PageETag {
 		report.addIssue("entity_record_page_etag_mismatch", "error", "entity_record", record.ID, key, "entity record page etag does not match entity page")
 	}
 	if !reflect.DeepEqual(record.Entity, expectedRecord.Entity) || strings.TrimSpace(record.Entity.ID) != record.ID {

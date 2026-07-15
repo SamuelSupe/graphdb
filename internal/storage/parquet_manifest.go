@@ -36,6 +36,9 @@ const (
 	parquetManifestColumnSegmentLastVersion
 	parquetManifestColumnSegmentCount
 	parquetManifestColumnSegmentContentHash
+	parquetManifestColumnWriterFence
+	parquetManifestColumnWriterFenceEpoch
+	parquetManifestColumnDataMD5
 )
 
 const (
@@ -76,6 +79,9 @@ func marshalParquetManifest(ctx context.Context, manifest Manifest) ([]byte, err
 		builder.Field(parquetManifestColumnSegmentLastVersion).(*array.Int64Builder).Append(segment.LastVersion)
 		builder.Field(parquetManifestColumnSegmentCount).(*array.Int64Builder).Append(int64(segment.Count))
 		builder.Field(parquetManifestColumnSegmentContentHash).(*array.StringBuilder).Append(segment.ContentHash)
+		builder.Field(parquetManifestColumnWriterFence).(*array.StringBuilder).Append(normalized.WriterFence)
+		builder.Field(parquetManifestColumnWriterFenceEpoch).(*array.Int64Builder).Append(normalized.WriterFenceEpoch)
+		builder.Field(parquetManifestColumnDataMD5).(*array.StringBuilder).Append(normalized.DataMD5)
 	}
 
 	if len(normalized.CommitSegments) == 0 && len(normalized.CommitKeys) == 0 {
@@ -140,6 +146,15 @@ func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
 				SnapshotCatalogKey: columns.snapshotCatalogKey.Value(i),
 				SnapshotVersion:    columns.snapshotVersion.Value(i),
 				UpdatedAt:          parseParquetTime(columns.updatedAt.Value(i)),
+			}
+			if columns.writerFence != nil {
+				rowManifest.WriterFence = columns.writerFence.Value(i)
+			}
+			if columns.writerFenceEpoch != nil {
+				rowManifest.WriterFenceEpoch = columns.writerFenceEpoch.Value(i)
+			}
+			if columns.dataMD5 != nil {
+				rowManifest.DataMD5 = columns.dataMD5.Value(i)
 			}
 			if rows == 0 {
 				manifest = rowManifest
@@ -214,6 +229,9 @@ type parquetManifestColumnSet struct {
 	segmentLastVersion  *array.Int64
 	segmentCount        *array.Int64
 	segmentContentHash  *array.String
+	writerFence         *array.String
+	writerFenceEpoch    *array.Int64
+	dataMD5             *array.String
 }
 
 func parquetManifestColumns(batch arrow.RecordBatch) (parquetManifestColumnSet, error) {
@@ -279,6 +297,21 @@ func parquetManifestColumns(batch arrow.RecordBatch) (parquetManifestColumnSet, 
 	if columns.segmentContentHash, err = parquetStringColumn(batch, parquetManifestColumnSegmentContentHash, "segment_content_hash"); err != nil {
 		return columns, err
 	}
+	if batch.NumCols() > int64(parquetManifestColumnWriterFence) {
+		if columns.writerFence, err = parquetStringColumn(batch, parquetManifestColumnWriterFence, "writer_fence"); err != nil {
+			return columns, err
+		}
+	}
+	if batch.NumCols() > int64(parquetManifestColumnWriterFenceEpoch) {
+		if columns.writerFenceEpoch, err = parquetInt64Column(batch, parquetManifestColumnWriterFenceEpoch, "writer_fence_epoch"); err != nil {
+			return columns, err
+		}
+	}
+	if batch.NumCols() > int64(parquetManifestColumnDataMD5) {
+		if columns.dataMD5, err = parquetStringColumn(batch, parquetManifestColumnDataMD5, "data_md5"); err != nil {
+			return columns, err
+		}
+	}
 	return columns, nil
 }
 
@@ -304,6 +337,9 @@ func parquetManifestArrowSchema() *arrow.Schema {
 		{Name: "segment_last_version", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
 		{Name: "segment_count", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
 		{Name: "segment_content_hash", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "writer_fence", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "writer_fence_epoch", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
+		{Name: "data_md5", Type: arrow.BinaryTypes.String, Nullable: false},
 	}, nil)
 }
 
@@ -322,6 +358,9 @@ func sameManifestMetadata(left Manifest, right Manifest) bool {
 		left.SnapshotKey == right.SnapshotKey &&
 		left.SnapshotCatalogKey == right.SnapshotCatalogKey &&
 		left.SnapshotVersion == right.SnapshotVersion &&
+		left.WriterFence == right.WriterFence &&
+		left.WriterFenceEpoch == right.WriterFenceEpoch &&
+		left.DataMD5 == right.DataMD5 &&
 		formatParquetTime(left.UpdatedAt) == formatParquetTime(right.UpdatedAt)
 }
 
@@ -338,6 +377,15 @@ func manifestContentHash(manifest Manifest) (string, error) {
 		formatParquetTime(normalized.UpdatedAt),
 		formatInt64ForHash(int64(len(normalized.CommitSegments))),
 		formatInt64ForHash(int64(len(normalized.CommitKeys))),
+	}
+	if normalized.WriterFence != "" {
+		parts = append(parts, normalized.WriterFence)
+	}
+	if normalized.WriterFenceEpoch > 0 {
+		parts = append(parts, formatInt64ForHash(normalized.WriterFenceEpoch))
+	}
+	if normalized.DataMD5 != "" {
+		parts = append(parts, normalized.DataMD5)
 	}
 	for _, segment := range normalized.CommitSegments {
 		parts = append(parts,

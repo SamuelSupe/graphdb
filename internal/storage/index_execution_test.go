@@ -95,6 +95,11 @@ func TestWriterHotCommitAvoidsFixedMetadataReads(t *testing.T) {
 			t.Fatalf("hot commit GET count for %s = %d, want 0", fragment, got)
 		}
 	}
+	for _, fragment := range []string{"/indexes/running/rebuild.parquet", "/tasks/_active/gc.parquet"} {
+		if got := objects.CountContains(fragment); got != 1 {
+			t.Fatalf("hot commit admission GET count for %s = %d, want 1", fragment, got)
+		}
+	}
 }
 
 func TestRebuildIndexesAvoidsNewEntityRecordMissReads(t *testing.T) {
@@ -1690,7 +1695,7 @@ func TestPersistedEntityLookupProjectionAndIncrementalDelete(t *testing.T) {
 	}
 }
 
-func TestIncrementalEntityPageRewriteRefreshesSiblingRecords(t *testing.T) {
+func TestIncrementalEntityPageRewriteKeepsSiblingRecordsValidWithoutRewrite(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
 	ids := sameEntityShardIDs(t, "host:page-test-", 3)
@@ -1727,8 +1732,12 @@ func TestIncrementalEntityPageRewriteRefreshesSiblingRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load record %s: %v", id, err)
 		}
-		if record.PageHash != spec.ContentHash || record.PageETag == "" {
-			t.Fatalf("record %s hash/etag = %q/%q, want page hash %q and etag", id, record.PageHash, record.PageETag, spec.ContentHash)
+		if record.Version >= catalog.Version || record.PageHash == spec.ContentHash {
+			t.Fatalf("sibling record %s was rewritten with page version %d/hash %q", id, record.Version, record.PageHash)
+		}
+		lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+		if entity, ok, err := lookup.GetEntity(ctx, id, nil); err != nil || !ok || entity.ID != id {
+			t.Fatalf("sibling lookup entity=%#v ok=%v err=%v", entity, ok, err)
 		}
 	}
 	health, err := store.IndexHealth(ctx, "tenant-a")

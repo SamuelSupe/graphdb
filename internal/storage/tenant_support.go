@@ -51,6 +51,34 @@ func (s *TenantStore) putManifest(ctx context.Context, tenantID string, manifest
 }
 
 func (s *TenantStore) putManifestMeta(ctx context.Context, tenantID string, manifest Manifest, meta ObjectMeta) (ObjectMeta, error) {
+	lease, _, ok := s.getCachedWriterLeaseAny(tenantID)
+	if !ok {
+		if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+			return ObjectMeta{}, err
+		}
+		lease, _, ok = s.getCachedWriterLeaseAny(tenantID)
+		if !ok {
+			return ObjectMeta{}, fmt.Errorf("%w: tenant %q has no cached writer fence", ErrLeaseHeld, tenantID)
+		}
+	}
+	if lease.FenceToken == "" || lease.FenceEpoch <= 0 {
+		return ObjectMeta{}, fmt.Errorf("%w: tenant %q has an invalid writer fence", ErrLeaseHeld, tenantID)
+	}
+	if manifest.WriterFence != "" && manifest.WriterFence != lease.FenceToken {
+		return ObjectMeta{}, fmt.Errorf("%w: tenant %q manifest belongs to another writer fence", ErrLeaseHeld, tenantID)
+	}
+	if manifest.WriterFenceEpoch > lease.FenceEpoch {
+		return ObjectMeta{}, fmt.Errorf("%w: tenant %q manifest belongs to a newer writer fence", ErrLeaseHeld, tenantID)
+	}
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return ObjectMeta{}, err
+	}
+	manifest.WriterFence = lease.FenceToken
+	manifest.WriterFenceEpoch = lease.FenceEpoch
+	return s.putManifestMetaUnchecked(ctx, tenantID, manifest, meta)
+}
+
+func (s *TenantStore) putManifestMetaUnchecked(ctx context.Context, tenantID string, manifest Manifest, meta ObjectMeta) (ObjectMeta, error) {
 	manifest.TenantID = tenantID
 	data, err := marshalParquetManifest(ctx, manifest)
 	if err != nil {
@@ -68,6 +96,40 @@ func (s *TenantStore) putManifestMeta(ctx context.Context, tenantID string, mani
 		return ObjectMeta{}, fmt.Errorf("%w: manifest for tenant %q changed while publishing", ErrConflict, tenantID)
 	}
 	return next, err
+}
+
+func (s *TenantStore) publishWriterFence(ctx context.Context, tenantID string, lease WriterLease) error {
+	if lease.FenceToken == "" || lease.FenceEpoch <= 0 {
+		return fmt.Errorf("writer fence token is required")
+	}
+	key := s.manifestKey(tenantID)
+	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		if cache := FindWriterObjectCache(s.Objects); cache != nil {
+			cache.ClearPrefix(key)
+		}
+		manifest, meta, err := s.getManifest(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if !meta.Exists || (manifest.WriterFence == lease.FenceToken && manifest.WriterFenceEpoch == lease.FenceEpoch) {
+			return nil
+		}
+		if manifest.WriterFenceEpoch > lease.FenceEpoch ||
+			(manifest.WriterFenceEpoch == lease.FenceEpoch && manifest.WriterFenceEpoch > 0 && manifest.WriterFence != lease.FenceToken) {
+			return fmt.Errorf("%w: tenant %q has a newer writer fence", ErrLeaseHeld, tenantID)
+		}
+		manifest.WriterFence = lease.FenceToken
+		manifest.WriterFenceEpoch = lease.FenceEpoch
+		if _, err := s.putManifestMetaUnchecked(ctx, tenantID, manifest, meta); err == nil {
+			return nil
+		} else if !errors.Is(err, ErrConflict) {
+			return err
+		}
+		if err := retryDelay(ctx, attempt); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: manifest for tenant %q changed while fencing writer", ErrConflict, tenantID)
 }
 
 func (s *TenantStore) manifestKey(tenantID string) string {

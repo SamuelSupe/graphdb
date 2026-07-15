@@ -60,20 +60,21 @@ func (s *TenantStore) runTaskAdmitted(ctx context.Context, cancel context.Cancel
 	defer s.releaseTaskAdmission(task)
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
 	if !acquireTaskSlot(ctx, s.taskTenantSlot(task.TenantID)) {
-		s.persistQueuedTaskCancellation(task)
+		s.persistQueuedTaskCancellation(ctx, task)
 		return
 	}
 	defer releaseTaskSlot(s.taskTenantSlot(task.TenantID))
 	if !acquireTaskSlot(ctx, s.taskExecutionSlots) {
-		s.persistQueuedTaskCancellation(task)
+		s.persistQueuedTaskCancellation(ctx, task)
 		return
 	}
 	defer releaseTaskSlot(s.taskExecutionSlots)
 	s.runTask(ctx, cancel, task)
 }
 
-func (s *TenantStore) persistQueuedTaskCancellation(task Task) {
-	current := s.taskStateOrLocal(context.Background(), task)
+func (s *TenantStore) persistQueuedTaskCancellation(ctx context.Context, task Task) {
+	writeCtx := context.WithoutCancel(ctx)
+	current := s.taskStateOrLocal(writeCtx, task)
 	if taskTerminal(current.Status) {
 		return
 	}
@@ -83,12 +84,11 @@ func (s *TenantStore) persistQueuedTaskCancellation(task Task) {
 	current.Error = TaskStatusCanceled
 	current.UpdatedAt = now
 	current.FinishedAt = now
-	s.trySaveTask(context.Background(), current)
+	s.trySaveTask(writeCtx, current)
 }
 
-func (s *TenantStore) runIndexTaskAdmitted(tenantID string, task IndexTask) {
+func (s *TenantStore) runIndexTaskAdmitted(ctx context.Context, tenantID string, task IndexTask) {
 	defer s.releaseQueuedTask()
-	ctx := context.Background()
 	tenantSlot := s.taskTenantSlot(tenantID)
 	if !acquireTaskSlot(ctx, tenantSlot) {
 		return
@@ -98,7 +98,7 @@ func (s *TenantStore) runIndexTaskAdmitted(tenantID string, task IndexTask) {
 		return
 	}
 	defer releaseTaskSlot(s.taskExecutionSlots)
-	s.runIndexRebuildTask(tenantID, task)
+	s.runIndexRebuildTask(ctx, tenantID, task)
 }
 
 func (s *TenantStore) reserveQueuedTask() bool {

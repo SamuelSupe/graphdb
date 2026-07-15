@@ -20,6 +20,13 @@ func (s *TenantStore) getCachedWriterLease(tenantID string, now time.Time) (Writ
 	return cached.lease, cached.meta, true
 }
 
+func (s *TenantStore) getCachedWriterLeaseAny(tenantID string) (WriterLease, ObjectMeta, bool) {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	cached, ok := s.writerLeaseCache[tenantID]
+	return cached.lease, cached.meta, ok
+}
+
 func (s *TenantStore) setCachedWriterLease(tenantID string, lease WriterLease, meta ObjectMeta) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
@@ -53,6 +60,7 @@ func (s *TenantStore) invalidateWriterTakeoverState(tenantID string) {
 	s.deleteCachedTenantConfig(tenantID)
 	s.deleteCachedSourcePolicy(tenantID)
 	s.deleteCachedIndexCatalog(tenantID)
+	s.deleteCachedTenantPurgeTombstone(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {
 		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))

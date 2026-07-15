@@ -58,9 +58,11 @@ func (s *TenantStore) PutSourcePolicy(ctx context.Context, tenantID string, poli
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return graph.SourcePolicy{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return graph.SourcePolicy{}, err
 	}
@@ -87,7 +89,7 @@ func (s *TenantStore) putSourcePolicyRecordWithMeta(ctx context.Context, tenantI
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	return s.putBytesWithMetaResult(ctx, s.sourcePolicyKey(tenantID), data, meta)
+	return s.putTenantBytesWithMetaResult(ctx, tenantID, s.sourcePolicyKey(tenantID), data, meta)
 }
 
 func (s *TenantStore) resolveSourcePolicy(ctx context.Context, tenantID string, mutations graph.Mutations) (graph.Mutations, graph.ApplyReport, error) {

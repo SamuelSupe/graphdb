@@ -30,9 +30,11 @@ func (s *TenantStore) SaveQuery(ctx context.Context, tenantID string, saved Save
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return SavedQuery{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return SavedQuery{}, err
 	}
@@ -144,5 +146,5 @@ func (s *TenantStore) putSavedQueryWithMeta(ctx context.Context, tenantID string
 	if err != nil {
 		return err
 	}
-	return s.putBytesWithMeta(ctx, s.savedQueryKey(tenantID, saved.Name), data, meta)
+	return s.putTenantBytesWithMeta(ctx, tenantID, s.savedQueryKey(tenantID, saved.Name), data, meta)
 }

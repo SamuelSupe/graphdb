@@ -74,7 +74,7 @@ func (s *TenantStore) putBackupManifest(ctx context.Context, tenantID string, ba
 	if err != nil {
 		return "", err
 	}
-	if err := s.Objects.Put(ctx, key, data); err != nil {
+	if err := s.putTenantGenerationObject(ctx, tenantID, key, data); err != nil {
 		return "", err
 	}
 	return key, nil

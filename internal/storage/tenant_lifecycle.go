@@ -67,12 +67,11 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.prepareCreateAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return TenantInfo{}, err
 	}
-	if err := s.clearTenantPurgeTombstone(ctx, tenantID); err != nil {
-		return TenantInfo{}, err
-	}
+	ctx = boundCtx
 	existing, configured, _, err := s.getTenantMetadataWithMeta(ctx, tenantID)
 	if err != nil {
 		return TenantInfo{}, err
@@ -88,7 +87,11 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 		return TenantInfo{}, err
 	}
 	if !meta.Exists {
-		manifest = Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC()}
+		_, dataMD5, _, err := newEmptyTenantGraph()
+		if err != nil {
+			return TenantInfo{}, err
+		}
+		manifest = Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataMD5: dataMD5}
 		if _, err := s.putManifestMeta(ctx, tenantID, manifest, meta); err != nil {
 			return TenantInfo{}, err
 		}
@@ -215,29 +218,61 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	if metadata, exists, _, err := s.getTenantPurgeTombstone(ctx, tenantID); err != nil {
+		return TenantPurgeReport{}, err
+	} else if phase, _ := tenantPurgeState(metadata, exists); phase == tenantPurgePhaseComplete {
+		residual, err := s.tenantResidualObjectsExist(ctx, tenantID)
+		if err != nil {
+			return TenantPurgeReport{}, err
+		}
+		if !residual {
+			return TenantPurgeReport{TenantID: tenantID}, nil
+		}
+		if err := s.reopenCompletedTenantPurge(ctx, tenantID); err != nil {
+			return TenantPurgeReport{}, err
+		}
+	}
+	if err := s.acquireWriterLeaseForPurge(ctx, tenantID); err != nil {
 		return TenantPurgeReport{}, err
 	}
 	return s.purgeTenantLocked(ctx, tenantID, force)
 }
 
 func (s *TenantStore) purgeTenantLocked(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
-	info, err := s.GetTenantInfo(ctx, tenantID)
+	metadata, markerExists, _, err := s.getTenantPurgeTombstone(ctx, tenantID)
 	if err != nil {
 		return TenantPurgeReport{}, err
 	}
-	if !force && info.Status != TenantStatusDeleted {
-		return TenantPurgeReport{}, fmt.Errorf("tenant must be soft deleted before purge")
+	phase, _ := tenantPurgeState(metadata, markerExists)
+	if phase == tenantPurgePhaseComplete {
+		return TenantPurgeReport{TenantID: tenantID}, nil
 	}
-	if err := s.putTenantPurgeTombstone(ctx, tenantID); err != nil {
+	if phase != tenantPurgePhaseRunning {
+		info, err := s.GetTenantInfo(ctx, tenantID)
+		if err != nil {
+			return TenantPurgeReport{}, err
+		}
+		if !force && info.Status != TenantStatusDeleted {
+			return TenantPurgeReport{}, fmt.Errorf("tenant must be soft deleted before purge")
+		}
+	}
+	operationID, alreadyComplete, err := s.beginTenantPurge(ctx, tenantID)
+	if err != nil {
 		return TenantPurgeReport{}, err
+	}
+	if alreadyComplete {
+		return TenantPurgeReport{TenantID: tenantID}, nil
 	}
 	objects, err := s.Objects.List(ctx, s.tenantObjectPrefix(tenantID))
 	if err != nil {
 		return TenantPurgeReport{}, err
 	}
 	report := TenantPurgeReport{TenantID: tenantID}
+	leaseKey := s.writerLeaseKey(tenantID)
 	for _, object := range objects {
+		if object.Key == leaseKey {
+			continue
+		}
 		if err := s.Objects.Delete(ctx, object.Key); err != nil {
 			return report, err
 		}
@@ -247,12 +282,19 @@ func (s *TenantStore) purgeTenantLocked(ctx context.Context, tenantID string, fo
 	if err := s.removeTenantFromRegistry(ctx, tenantID); err != nil {
 		return report, err
 	}
+	if err := s.completeTenantPurge(ctx, tenantID, operationID); err != nil {
+		return report, err
+	}
+	if err := s.releaseWriterLeaseForPurge(ctx, tenantID); err != nil {
+		return report, err
+	}
 	s.deleteWriteCache(tenantID)
 	s.deleteCachedTenantMetadata(tenantID)
 	s.deleteCachedTenantConfig(tenantID)
 	s.deleteCachedSourcePolicy(tenantID)
 	s.deleteCachedIndexCatalog(tenantID)
 	s.deleteCachedWriterLease(tenantID)
+	s.deleteCachedTenantPurgeTombstone(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {
 		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))
@@ -289,12 +331,11 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 	}
 	targetLock := s.lockTenant(targetTenantID)
 	defer targetLock()
-	if err := s.acquireWriterLease(ctx, targetTenantID); err != nil {
+	boundCtx, err := s.prepareCreateAndBindWriterFence(ctx, targetTenantID)
+	if err != nil {
 		return TenantInfo{}, err
 	}
-	if err := s.clearTenantPurgeTombstone(ctx, targetTenantID); err != nil {
-		return TenantInfo{}, err
-	}
+	ctx = boundCtx
 	snapshot := g.Snapshot()
 	snapshotKey := ""
 	snapshotCatalogKey := ""
@@ -383,9 +424,11 @@ func (s *TenantStore) mutateTenantMetadata(ctx context.Context, tenantID string,
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return TenantInfo{}, err
 	}
+	ctx = boundCtx
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
 		metadata, configured, meta, err := s.getTenantMetadataWithMeta(ctx, tenantID)
 		if err != nil {
@@ -446,14 +489,14 @@ func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string) (string, error) {
-	purged, err := s.tenantPurgeTombstoneExists(ctx, tenantID)
+	purged, err := s.tenantPurgeTombstoneExistsCached(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
 	if purged {
 		return TenantStatusDeleted, nil
 	}
-	metadata, configured, _, err := s.getTenantMetadataForWrite(ctx, tenantID)
+	metadata, configured, _, err := s.getTenantMetadataForStatus(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
@@ -461,6 +504,25 @@ func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string)
 		return TenantStatusActive, nil
 	}
 	return metadata.Status, nil
+}
+
+func (s *TenantStore) getTenantMetadataForStatus(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
+	if metadata, configured, meta, ok := s.getCachedTenantMetadataFresh(tenantID, time.Now().UTC()); ok {
+		return metadata, configured, meta, nil
+	}
+	metadata, configured, meta, err := s.getTenantMetadataWithMetaFresh(ctx, tenantID)
+	if err != nil {
+		return TenantMetadata{}, false, ObjectMeta{}, err
+	}
+	s.setCachedTenantMetadata(tenantID, metadata, configured, meta)
+	return metadata, configured, meta, nil
+}
+
+func (s *TenantStore) getTenantMetadataWithMetaFresh(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.ClearPrefix(s.tenantMetadataKey(tenantID))
+	}
+	return s.getTenantMetadataWithMeta(ctx, tenantID)
 }
 
 func (s *TenantStore) getTenantMetadataForWrite(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
@@ -556,7 +618,7 @@ func (s *TenantStore) putTenantMetadata(ctx context.Context, tenantID string, me
 		return err
 	}
 	key := s.tenantMetadataKey(tenantID)
-	if err := s.Objects.Put(ctx, key, data); err != nil {
+	if err := s.putTenantObject(ctx, tenantID, key, data); err != nil {
 		s.deleteCachedTenantMetadata(tenantID)
 		return err
 	}
@@ -570,7 +632,7 @@ func (s *TenantStore) putTenantMetadataWithMeta(ctx context.Context, tenantID st
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	next, err := s.putBytesWithMetaResult(ctx, s.tenantMetadataKey(tenantID), data, meta)
+	next, err := s.putTenantBytesWithMetaResult(ctx, tenantID, s.tenantMetadataKey(tenantID), data, meta)
 	if err != nil {
 		return ObjectMeta{}, err
 	}

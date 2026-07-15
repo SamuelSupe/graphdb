@@ -91,6 +91,26 @@ func TestWriteCacheRejectsOversizedGraphAndAccountsReplacement(t *testing.T) {
 	}
 }
 
+func TestWriteCacheAccountsVariableLengthPayload(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.MaxWriteCacheTenants = 10
+	store.MaxWriteCacheBytes = 1024 * 1024
+	g := graph.New()
+	g.Entities["host:large"] = graph.Entity{
+		ID:     "host:large",
+		Kind:   "host",
+		Fields: graph.Fields{"payload": strings.Repeat("x", 200*1024)},
+	}
+	loaded := loadedGraph{Graph: g, Manifest: Manifest{Version: 1}}
+	if weight := normalizedWriteCacheBytes(loaded); weight <= store.MaxWriteCacheBytes {
+		t.Fatalf("variable-length graph weight = %d, want above %d", weight, store.MaxWriteCacheBytes)
+	}
+	store.setWriteCache("tenant-a", loaded)
+	if _, ok := store.getWriteCache("tenant-a"); ok {
+		t.Fatal("oversized variable-length graph should not be retained")
+	}
+}
+
 func TestExpectedVersionMismatchDoesNotLoadCommitHistory(t *testing.T) {
 	ctx := context.Background()
 	objects := newPathCountingStore(NewMemoryStore())

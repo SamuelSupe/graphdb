@@ -623,6 +623,10 @@ go run ./tools/tenantmigrate -tenant tenant-a \
   -dry-run
 ```
 
+The migration acquires the target tenant writer fence. `-overwrite` removes
+target objects under that fence while preserving the active lease, and the
+copied manifest is rebound to the target generation before publication.
+
 Tenant renames must use backup/restore because tenant IDs are embedded inside
 objects.
 

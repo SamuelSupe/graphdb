@@ -11,9 +11,11 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	total := taskProgressTotal(task.Type)
 	unlock := s.lockTenant(task.TenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, task.TenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, task.TenantID)
+	if err != nil {
 		return nil, "", err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, task.TenantID); err != nil {
 		return nil, "", err
 	}
@@ -36,6 +38,13 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 			},
 		}, map[string]any{"version": current.Version, "snapshot_catalog_key": current.SnapshotCatalogKey})
 		return taskResult(current), "", nil
+	}
+	dataMD5 := loaded.DataMD5
+	if dataMD5 == "" {
+		dataMD5, err = g.ContentMD5()
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "compact_load_current", 1, total, taskActionUpdate{
 		ID:     "load_current",
@@ -65,6 +74,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		SnapshotCatalogKey: catalog.Key,
 		SnapshotVersion:    snapshot.Version,
 		UpdatedAt:          time.Now().UTC(),
+		DataMD5:            dataMD5,
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "compact_publish_manifest", total-1, total, taskActionUpdate{
 		ID:     "publish_manifest",
@@ -76,13 +86,13 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	meta, err := s.putManifestMeta(ctx, task.TenantID, manifest, loaded.Meta)
 	if err != nil {
 		s.deleteWriteCache(task.TenantID)
-		_ = s.updateTaskActionProgress(context.Background(), task, "compact_publish_manifest", total-1, total, taskActionUpdate{
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "compact_publish_manifest", total-1, total, taskActionUpdate{
 			ID:  "publish_manifest",
 			Err: err,
 		}, nil)
 		return nil, "", err
 	}
-	s.setWriteCache(task.TenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta})
+	s.setWriteCache(task.TenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5})
 	_ = s.updateTaskActionProgress(ctx, task, "compact_done", total, total, taskActionUpdate{
 		ID:     "publish_manifest",
 		Status: "completed",
@@ -123,7 +133,7 @@ func (s *TenantStore) compactTaskSnapshotCatalog(ctx context.Context, task Task,
 	}
 	catalog, err := s.putShardedSnapshot(ctx, task.TenantID, snapshot)
 	if err != nil {
-		_ = s.updateTaskActionProgress(context.Background(), task, "compact_write_snapshot_catalog", 2, total, taskActionUpdate{ID: "write_snapshot_catalog", Err: err}, nil)
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "compact_write_snapshot_catalog", 2, total, taskActionUpdate{ID: "write_snapshot_catalog", Err: err}, nil)
 		return ShardedSnapshotCatalog{}, err
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "compact_snapshot_catalog_done", 2, total, taskActionUpdate{
@@ -162,7 +172,7 @@ func (s *TenantStore) compactTaskSnapshotRecord(ctx context.Context, task Task, 
 	}
 	record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: task.TenantID, Snapshot: snapshot}
 	if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
-		_ = s.updateTaskActionProgress(context.Background(), task, "compact_write_snapshot_record", 3, total, taskActionUpdate{ID: "write_snapshot_record", Err: err}, nil)
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "compact_write_snapshot_record", 3, total, taskActionUpdate{ID: "write_snapshot_record", Err: err}, nil)
 		return err
 	}
 	return s.updateTaskActionProgress(ctx, task, "compact_snapshot_record_done", 3, total, taskActionUpdate{

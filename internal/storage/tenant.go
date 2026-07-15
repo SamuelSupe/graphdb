@@ -20,6 +20,9 @@ type Manifest struct {
 	CommitSegments     []CommitSegmentRef `json:"commit_segments,omitempty"`
 	CommitKeys         []string           `json:"commit_keys,omitempty"`
 	UpdatedAt          time.Time          `json:"updated_at"`
+	WriterFence        string             `json:"-"`
+	WriterFenceEpoch   int64              `json:"-"`
+	DataMD5            string             `json:"-"`
 }
 
 type CommitSegmentRef struct {
@@ -72,9 +75,11 @@ type TenantStore struct {
 	objectKeyCache             map[string]struct{}
 	objectPrefixCache          map[string]struct{}
 	tenantMetadataCache        map[string]cachedTenantMetadata
+	purgeTombstoneCache        map[string]cachedTenantPurgeTombstone
 	sourcePolicyCache          map[string]cachedSourcePolicy
 	tenantConfigCache          map[string]cachedTenantConfig
 	indexCatalogCache          map[string]cachedIndexCatalog
+	compiledScanCatalogCache   map[string]*compiledScanCatalog
 	indexCache                 *indexObjectCache
 	entityPageCache            *entityPageCache
 	taskMu                     sync.Mutex
@@ -87,6 +92,8 @@ type TenantStore struct {
 	InstanceID                 string
 	ReaderID                   string
 	LeaseTTL                   time.Duration
+	LifecycleCacheTTL          time.Duration
+	TaskMarkerTTL              time.Duration
 	MaxRetries                 int
 	MaxWriteCacheTenants       int
 	MaxWriteCacheBytes         int64
@@ -123,9 +130,11 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		objectKeyCache:             map[string]struct{}{},
 		objectPrefixCache:          map[string]struct{}{},
 		tenantMetadataCache:        map[string]cachedTenantMetadata{},
+		purgeTombstoneCache:        map[string]cachedTenantPurgeTombstone{},
 		sourcePolicyCache:          map[string]cachedSourcePolicy{},
 		tenantConfigCache:          map[string]cachedTenantConfig{},
 		indexCatalogCache:          map[string]cachedIndexCatalog{},
+		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},
 		indexCache:                 newIndexObjectCache(4096),
 		entityPageCache:            newEntityPageCache(2048),
 		indexTasks:                 map[string]IndexTask{},
@@ -137,6 +146,8 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		InstanceID:                 instanceID,
 		ReaderID:                   instanceID,
 		LeaseTTL:                   30 * time.Second,
+		LifecycleCacheTTL:          time.Second,
+		TaskMarkerTTL:              30 * time.Second,
 		MaxRetries:                 3,
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
@@ -151,16 +162,31 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return Manifest{}, err
 	}
-	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC()}
+	ctx = boundCtx
+	g, dataMD5, cacheBytes, err := newEmptyTenantGraph()
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataMD5: dataMD5}
 	meta, err := s.putManifestMeta(ctx, tenantID, manifest, ObjectMeta{Key: s.manifestKey(tenantID)})
 	if err == nil {
 		_ = s.addTenantToRegistry(ctx, tenantID)
-		s.setWriteCache(tenantID, loadedGraph{Graph: graph.New(), Manifest: manifest, Meta: meta})
+		s.setWriteCache(tenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5, CacheBytes: cacheBytes})
 	}
 	return manifest, err
+}
+
+func newEmptyTenantGraph() (*graph.Graph, string, int64, error) {
+	g := graph.New()
+	if _, err := g.ContentFingerprint(); err != nil {
+		return nil, "", 0, err
+	}
+	dataMD5, logicalBytes, err := g.ContentMD5WithLogicalSize()
+	return g, dataMD5, writeCacheBytesForGraph(g, logicalBytes), err
 }
 
 func (s *TenantStore) Commit(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions) (Manifest, error) {
@@ -174,9 +200,11 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return Manifest{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Manifest{}, err
 	}
@@ -192,6 +220,13 @@ func (s *TenantStore) compactLocked(ctx context.Context, tenantID string) (Manif
 	manifest := loaded.Manifest
 	if manifestCommitTailLength(manifest) == 0 && manifest.Version == manifest.SnapshotVersion && manifest.SnapshotKey != "" && manifest.SnapshotCatalogKey != "" {
 		return manifest, nil
+	}
+	dataMD5 := loaded.DataMD5
+	if dataMD5 == "" {
+		dataMD5, err = g.ContentMD5()
+		if err != nil {
+			return Manifest{}, err
+		}
 	}
 	snapshot := g.Snapshot()
 	snapshotCatalog, err := s.putShardedSnapshot(ctx, tenantID, snapshot)
@@ -212,11 +247,12 @@ func (s *TenantStore) compactLocked(ctx context.Context, tenantID string) (Manif
 	manifest.CommitSegments = nil
 	manifest.CommitKeys = nil
 	manifest.UpdatedAt = time.Now().UTC()
+	manifest.DataMD5 = dataMD5
 	meta, err := s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
 	if err != nil {
 		s.deleteWriteCache(tenantID)
 		return Manifest{}, err
 	}
-	s.setWriteCache(tenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: loaded.DataMD5, CacheBytes: loaded.CacheBytes})
+	s.setWriteCache(tenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5, CacheBytes: loaded.CacheBytes})
 	return manifest, nil
 }

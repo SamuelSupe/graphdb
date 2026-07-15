@@ -1,6 +1,10 @@
 package storage
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import (
+	"time"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+)
 
 const (
 	maxWriterMetadataCacheEntries = 4_096
@@ -23,11 +27,13 @@ type cachedTenantMetadata struct {
 	metadata   TenantMetadata
 	configured bool
 	meta       ObjectMeta
+	checkedAt  time.Time
 }
 
 type cachedIndexCatalog struct {
-	catalog IndexCatalog
-	meta    ObjectMeta
+	catalog     IndexCatalog
+	meta        ObjectMeta
+	contentHash string
 }
 
 func (s *TenantStore) getCachedSourcePolicy(tenantID string) (graph.SourcePolicy, bool, ObjectMeta, bool) {
@@ -90,7 +96,17 @@ func (s *TenantStore) setCachedTenantMetadata(tenantID string, metadata TenantMe
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
 	evictOneCacheEntry(s.tenantMetadataCache, tenantID, maxWriterMetadataCacheEntries)
-	s.tenantMetadataCache[tenantID] = cachedTenantMetadata{metadata: metadata, configured: configured, meta: meta}
+	s.tenantMetadataCache[tenantID] = cachedTenantMetadata{metadata: metadata, configured: configured, meta: meta, checkedAt: time.Now().UTC()}
+}
+
+func (s *TenantStore) getCachedTenantMetadataFresh(tenantID string, now time.Time) (TenantMetadata, bool, ObjectMeta, bool) {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	cached, ok := s.tenantMetadataCache[tenantID]
+	if !ok || now.Sub(cached.checkedAt) >= s.lifecycleCacheTTL() {
+		return TenantMetadata{}, false, ObjectMeta{}, false
+	}
+	return cached.metadata, cached.configured, cached.meta, true
 }
 
 func (s *TenantStore) deleteCachedTenantMetadata(tenantID string) {
@@ -145,10 +161,29 @@ func (s *TenantStore) getCachedIndexCatalog(tenantID string) (IndexCatalog, Obje
 }
 
 func (s *TenantStore) setCachedIndexCatalog(tenantID string, catalog IndexCatalog, meta ObjectMeta) {
+	contentHash := catalog.contentHash
+	if contentHash == "" {
+		contentHash, _ = indexCatalogContentHash(catalog)
+	}
+	s.setCachedIndexCatalogWithHash(tenantID, catalog, meta, contentHash)
+}
+
+func (s *TenantStore) setCachedIndexCatalogWithHash(tenantID string, catalog IndexCatalog, meta ObjectMeta, contentHash string) {
+	catalog.contentHash = contentHash
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
 	evictOneCacheEntry(s.indexCatalogCache, tenantID, maxIndexCatalogCacheEntries)
-	s.indexCatalogCache[tenantID] = cachedIndexCatalog{catalog: copyIndexCatalog(catalog), meta: meta}
+	s.indexCatalogCache[tenantID] = cachedIndexCatalog{catalog: copyIndexCatalog(catalog), meta: meta, contentHash: contentHash}
+}
+
+func (s *TenantStore) getCachedIndexCatalogSnapshot(tenantID string, version int64, contentHash string) (IndexCatalog, bool) {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	cached, ok := s.indexCatalogCache[tenantID]
+	if !ok || cached.catalog.Version != version || cached.contentHash == "" || cached.contentHash != contentHash {
+		return IndexCatalog{}, false
+	}
+	return copyIndexCatalog(cached.catalog), true
 }
 
 func evictOneCacheEntry[T any](cache map[string]T, incoming string, max int) {

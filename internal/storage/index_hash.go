@@ -4,9 +4,39 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"sort"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func secondaryIndexObjectSetContentHash(objects []IndexObject) string {
+	type digest struct {
+		Role        string `json:"role"`
+		Key         string `json:"key"`
+		RowCount    int    `json:"row_count"`
+		ContentHash string `json:"content_hash"`
+		SchemaHash  string `json:"schema_hash"`
+	}
+	items := make([]digest, 0, len(objects))
+	for _, object := range objects {
+		items = append(items, digest{
+			Role: object.Role, Key: object.Key, RowCount: object.RowCount,
+			ContentHash: object.ContentHash, SchemaHash: object.SchemaHash,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Role == items[j].Role {
+			return items[i].Key < items[j].Key
+		}
+		return items[i].Role < items[j].Role
+	})
+	return indexContentHash(items)
+}
+
+func secondaryIndexSpecContentHashMatches(index SecondaryIndex, spec IndexSpec) bool {
+	return spec.ContentHash != "" &&
+		(secondaryIndexContentHash(index) == spec.ContentHash || secondaryIndexObjectSetContentHash(spec.Objects) == spec.ContentHash)
+}
 
 func indexContentHash(value any) string {
 	data, err := json.Marshal(value)

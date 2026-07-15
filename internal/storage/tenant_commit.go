@@ -46,7 +46,7 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	defer unlock()
 
 	backpressureCtx, backpressureSpan := startStorageSpan(ctx, "graphdb.storage.commit.check_backpressure.initial", tenantTraceAttr(tenantID))
-	err = s.CheckWriteBackpressure(backpressureCtx, tenantID)
+	err = s.checkWriteBackpressure(backpressureCtx, tenantID, false)
 	endStorageSpan(backpressureSpan, err)
 	if err != nil {
 		return CommitResult{}, err
@@ -59,6 +59,10 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
 			return CommitResult{}, pressure
 		}
+		return CommitResult{}, err
+	}
+	ctx, err = s.bindCurrentWriterFence(ctx, tenantID)
+	if err != nil {
 		return CommitResult{}, err
 	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
@@ -75,7 +79,7 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	}
 
 	backpressureCtx, backpressureSpan = startStorageSpan(ctx, "graphdb.storage.commit.check_backpressure.after_lease", tenantTraceAttr(tenantID))
-	err = s.CheckWriteBackpressure(backpressureCtx, tenantID)
+	err = s.checkWriteBackpressure(backpressureCtx, tenantID, true)
 	endStorageSpan(backpressureSpan, err)
 	if err != nil {
 		return CommitResult{}, err
@@ -240,25 +244,30 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		return CommitResult{}, err
 	}
 
-	_, md5Span := startStorageSpan(ctx, "graphdb.storage.commit.compute_content_md5", tenantTraceAttr(tenantID))
-	previousMD5 := loaded.DataMD5
-	if previousMD5 == "" {
-		var logicalBytes int64
-		previousMD5, logicalBytes, err = loaded.Graph.ContentMD5WithLogicalSize()
-		if err != nil {
-			endStorageSpan(md5Span, err)
-			return CommitResult{}, err
+	_, fingerprintSpan := startStorageSpan(ctx, "graphdb.storage.commit.evaluate_content_change", tenantTraceAttr(tenantID))
+	fingerprintSpan.SetAttributes(attribute.Bool("graphdb.commit.content_changed", report.Changed))
+	endStorageSpan(fingerprintSpan, nil)
+	if !report.Changed {
+		previousMD5 := loaded.DataMD5
+		if previousMD5 == "" {
+			previousMD5 = manifest.DataMD5
+		}
+		if previousMD5 == "" || loaded.CacheBytes <= 0 {
+			computedMD5, logicalBytes, hashErr := loaded.Graph.ContentMD5WithLogicalSize()
+			if hashErr != nil {
+				return CommitResult{}, hashErr
+			}
+			if previousMD5 == "" {
+				previousMD5 = computedMD5
+			}
+			loaded.CacheBytes = writeCacheBytesForGraph(loaded.Graph, logicalBytes)
+		}
+		if previousMD5 == "" {
+			return CommitResult{}, fmt.Errorf("logical graph content md5 is empty")
 		}
 		loaded.DataMD5 = previousMD5
-		loaded.CacheBytes = writeCacheBytesFromLogicalSize(logicalBytes)
-	}
-	nextMD5, nextLogicalBytes, err := nextGraph.ContentMD5WithLogicalSize()
-	md5Span.SetAttributes(attribute.Bool("graphdb.commit.content_changed", previousMD5 != nextMD5))
-	endStorageSpan(md5Span, err)
-	if err != nil {
-		return CommitResult{}, err
-	}
-	if previousMD5 == nextMD5 {
+		loaded.Manifest.DataMD5 = previousMD5
+		manifest.DataMD5 = previousMD5
 		s.setWriteCache(tenantID, loaded)
 		return CommitResult{
 			Manifest:          manifest,
@@ -270,23 +279,47 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 			CanonicalEdges:    report.CanonicalEdges,
 		}, nil
 	}
+	_, md5Span := startStorageSpan(ctx, "graphdb.storage.commit.compute_content_md5", tenantTraceAttr(tenantID))
+	nextMD5, logicalBytes, err := nextGraph.ContentMD5WithLogicalSize()
+	endStorageSpan(md5Span, err)
+	if err != nil {
+		return CommitResult{}, err
+	}
 	commitKey := s.commitKey(tenantID, version, commitID)
 	putCommitCtx, putCommitSpan := startStorageSpan(ctx, "graphdb.storage.commit.put_commit_object",
 		tenantTraceAttr(tenantID),
 		attribute.Int64("graphdb.commit.version", version),
 	)
-	err = s.putCommitObjectIfAbsent(putCommitCtx, commitKey, commit)
+	commitMeta, putErr := s.putCommitObjectIfAbsentMeta(putCommitCtx, commitKey, commit)
+	err = putErr
 	endStorageSpan(putCommitSpan, err)
 	if err != nil {
 		s.deleteWriteCache(tenantID)
 		return CommitResult{}, err
 	}
+	commitPublished := false
+	defer func() {
+		if err == nil || commitPublished || !commitMeta.Exists || commitMeta.ETag == "" {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		current, _, manifestErr := s.getManifest(cleanupCtx, tenantID)
+		if manifestErr != nil || current.Version >= commit.Version {
+			return
+		}
+		cleanupErr := s.Objects.DeleteConditional(cleanupCtx, commitKey, PutCondition{IfMatch: commitMeta.ETag})
+		if cleanupErr != nil && !errors.Is(cleanupErr, ErrConflict) && !errors.Is(cleanupErr, ErrNotFound) {
+			err = errors.Join(err, fmt.Errorf("rollback unpublished commit object %q: %w", commitKey, cleanupErr))
+		}
+	}()
 	manifest.TenantID = tenantID
 	manifest.LayoutVersion = CurrentObjectLayoutVersion
 	manifest.Version = version
 	manifest.HeadCommitID = commitID
 	manifest.CommitKeys = append(append([]string(nil), manifest.CommitKeys...), commitKey)
 	manifest.UpdatedAt = commit.CreatedAt
+	manifest.DataMD5 = nextMD5
 	segmentCtx, segmentSpan := startStorageSpan(ctx, "graphdb.storage.commit.segment_tail",
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.commit_tail.length_before", manifestCommitTailLength(manifest)),
@@ -334,9 +367,10 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		s.deleteWriteCache(tenantID)
 		return CommitResult{}, err
 	}
+	commitPublished = true
 	s.setWriteCache(tenantID, loadedGraph{
 		Graph: nextGraph, Manifest: manifest, Meta: meta, DataMD5: nextMD5,
-		CacheBytes: writeCacheBytesFromLogicalSize(nextLogicalBytes),
+		CacheBytes: writeCacheBytesForGraph(nextGraph, logicalBytes),
 	})
 	indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
 		tenantTraceAttr(tenantID),

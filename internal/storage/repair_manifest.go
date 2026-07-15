@@ -52,9 +52,11 @@ func (s *TenantStore) repairManifest(ctx context.Context, tenantID string) (Mani
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return Manifest{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Manifest{}, err
 	}

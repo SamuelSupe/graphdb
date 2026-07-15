@@ -10,6 +10,10 @@ import (
 )
 
 func (s *TenantStore) CheckWriteBackpressure(ctx context.Context, tenantID string) (err error) {
+	return s.checkWriteBackpressure(ctx, tenantID, true)
+}
+
+func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID string, authoritative bool) (err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.write_backpressure.check", tenantTraceAttr(tenantID))
 	defer func() {
 		endStorageSpan(span, err)
@@ -31,10 +35,15 @@ func (s *TenantStore) CheckWriteBackpressure(ctx context.Context, tenantID strin
 	}
 	reasons := s.Backpressure.ReasonsWithConfig(tenantID, config)
 	span.SetAttributes(
+		attribute.Bool("graphdb.write_backpressure.authoritative", authoritative),
 		attribute.Int("graphdb.write_backpressure.reasons_initial", len(reasons)),
 		attribute.Int("graphdb.write_backpressure.max_commit_tail", config.MaxCommitTail),
 		attribute.Int64("graphdb.write_backpressure.retry_after_ms", config.RetryAfter.Milliseconds()),
 	)
+	if !authoritative {
+		span.SetAttributes(attribute.Int("graphdb.write_backpressure.reasons_final", len(reasons)))
+		return newBackpressureError(reasons, config.RetryAfter)
+	}
 	manifest, err := s.currentManifestForWriteAdmission(ctx, tenantID)
 	if err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
@@ -227,24 +236,8 @@ func (s *TenantStore) findRunningTask(ctx context.Context, tenantID string, task
 		}
 		endStorageSpan(span, err)
 	}()
-	tasks, err := s.listStoredTasks(ctx, tenantID)
-	if err != nil {
-		return Task{}, false, err
+	if taskType == TaskTypeGC {
+		return s.findRunningGCTask(ctx, tenantID)
 	}
-	span.SetAttributes(attribute.Int("graphdb.task.objects_loaded", len(tasks)))
-	for _, candidate := range tasks {
-		if candidate.Type != taskType || candidate.Status != "running" {
-			continue
-		}
-		if !found || candidate.StartedAt.After(task.StartedAt) {
-			task = candidate
-			found = true
-		}
-	}
-	if !found {
-		span.SetAttributes(attribute.Int("graphdb.task.matched", 0))
-		return Task{}, false, nil
-	}
-	span.SetAttributes(attribute.Int("graphdb.task.matched", 1))
-	return task, true, nil
+	return Task{}, false, nil
 }

@@ -9,10 +9,16 @@ import (
 // indexBuildArtifacts keeps the catalog and the objects used to describe it
 // together so callers never need to rebuild the same full-graph indexes.
 type indexBuildArtifacts struct {
-	Catalog     IndexCatalog
-	Indexes     []SecondaryIndex
-	EdgeShards  []EdgeShardData
-	EntityPages []EntityPageData
+	Catalog                IndexCatalog
+	Indexes                []SecondaryIndex
+	IncrementalIndexWrites []incrementalSecondaryIndexWrite
+	EdgeShards             []EdgeShardData
+	EntityPages            []EntityPageData
+}
+
+type incrementalSecondaryIndexWrite struct {
+	Key   string
+	Index SecondaryIndex
 }
 
 func buildIndexArtifactsWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition) (indexBuildArtifacts, error) {

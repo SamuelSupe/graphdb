@@ -56,7 +56,7 @@ func (s *TenantStore) saveDeadLetter(ctx context.Context, tenantID string, reque
 		UpdatedAt:  now,
 	}
 	key := s.deadLetterKey(tenantID, request.Source, record.ID)
-	_, err := s.putDeadLetterWithMeta(ctx, key, record, ObjectMeta{Key: key})
+	_, err := s.putDeadLetterWithMeta(ctx, tenantID, key, record, ObjectMeta{Key: key})
 	return err
 }
 
@@ -126,6 +126,14 @@ func (s *TenantStore) ReplayDeadLetters(ctx context.Context, tenantID string, so
 		return ReplayReport{}, err
 	}
 	source = normalizedSource
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
+		return ReplayReport{}, err
+	}
+	ctx = boundCtx
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return ReplayReport{}, err
+	}
 	if limit < 0 {
 		return ReplayReport{}, fmt.Errorf("limit must be a non-negative integer")
 	}
@@ -180,11 +188,11 @@ func (s *TenantStore) replayDeadLetter(ctx context.Context, tenantID string, sou
 	finalizeDeadLetterReplay(&claimed, result)
 	if err != nil {
 		claimed.Error = err.Error()
-		_, saveErr := s.putDeadLetterWithMeta(ctx, deadLetterObjectKey(s, tenantID, source, claimed), claimed, meta)
+		_, saveErr := s.putDeadLetterWithMeta(ctx, tenantID, deadLetterObjectKey(s, tenantID, source, claimed), claimed, meta)
 		return result, true, errors.Join(err, saveErr)
 	}
 	claimed.Error = ""
-	_, err = s.putDeadLetterWithMeta(ctx, deadLetterObjectKey(s, tenantID, source, claimed), claimed, meta)
+	_, err = s.putDeadLetterWithMeta(ctx, tenantID, deadLetterObjectKey(s, tenantID, source, claimed), claimed, meta)
 	return result, true, err
 }
 
@@ -240,7 +248,7 @@ func (s *TenantStore) claimDeadLetterReplay(ctx context.Context, tenantID string
 	claimed.Status = "replaying"
 	claimed.Error = ""
 	claimed.UpdatedAt = time.Now().UTC()
-	nextMeta, err := s.putDeadLetterWithMeta(ctx, key, claimed, meta)
+	nextMeta, err := s.putDeadLetterWithMeta(ctx, tenantID, key, claimed, meta)
 	if errors.Is(err, ErrConflict) {
 		return DeadLetter{}, ObjectMeta{}, false, nil
 	}
@@ -259,7 +267,7 @@ func deadLetterObjectKey(s *TenantStore, tenantID string, source string, letter 
 	return s.deadLetterKey(tenantID, source, letter.ID)
 }
 
-func (s *TenantStore) putDeadLetterWithMeta(ctx context.Context, key string, letter DeadLetter, meta ObjectMeta) (ObjectMeta, error) {
+func (s *TenantStore) putDeadLetterWithMeta(ctx context.Context, tenantID string, key string, letter DeadLetter, meta ObjectMeta) (ObjectMeta, error) {
 	data, err := marshalParquetDeadLetter(ctx, letter)
 	if err != nil {
 		return ObjectMeta{}, err
@@ -270,7 +278,7 @@ func (s *TenantStore) putDeadLetterWithMeta(ctx context.Context, key string, let
 	} else {
 		condition.IfNoneMatch = true
 	}
-	return s.Objects.PutConditional(ctx, key, data, condition)
+	return s.putTenantGenerationConditional(ctx, tenantID, key, data, condition)
 }
 
 func deadLetterRequest(request IngestRequest, result IngestResult) IngestRequest {
@@ -303,11 +311,15 @@ func (s *TenantStore) DeleteDeadLetter(ctx context.Context, tenantID string, sou
 		return err
 	}
 	source = normalizedSource
-	err = s.Objects.Delete(ctx, s.deadLetterKey(tenantID, source, id))
-	if errors.Is(err, ErrNotFound) {
-		return nil
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
+		return err
 	}
-	return err
+	ctx = boundCtx
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return err
+	}
+	return s.deleteTenantObject(ctx, tenantID, s.deadLetterKey(tenantID, source, id))
 }
 
 func invalidDeadLetter(tenantID string, source string, key string, err error) DeadLetter {

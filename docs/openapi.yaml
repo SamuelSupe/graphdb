@@ -1202,6 +1202,7 @@ components:
           type: boolean
         data_md5:
           type: string
+          description: MD5 of the canonical logical graph content, encoded as 32 hexadecimal characters.
         suppressed:
           type: array
           items:

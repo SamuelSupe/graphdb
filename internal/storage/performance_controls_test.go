@@ -34,6 +34,11 @@ func (s *putCountingStore) Put(ctx context.Context, key string, data []byte) err
 	return s.ObjectStore.Put(ctx, key, data)
 }
 
+func (s *putCountingStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	s.puts++
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
 func (s *putCountingStore) Get(ctx context.Context, key string) ([]byte, error) {
 	s.gets++
 	if strings.Contains(key, "/control/readers/") {
@@ -48,6 +53,14 @@ func (s *putCountingStore) Delete(ctx context.Context, key string) error {
 		s.heartbeatDeletes++
 	}
 	return s.ObjectStore.Delete(ctx, key)
+}
+
+func (s *putCountingStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
+	s.deletes++
+	if strings.Contains(key, "/control/readers/") {
+		s.heartbeatDeletes++
+	}
+	return s.ObjectStore.DeleteConditional(ctx, key, condition)
 }
 
 func TestReaderHeartbeatWritesAreRateLimitedAndStateSensitive(t *testing.T) {

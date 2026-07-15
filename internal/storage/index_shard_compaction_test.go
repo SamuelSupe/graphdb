@@ -106,6 +106,53 @@ func TestSecondaryIndexHotStringShardSplitsByLongerPrefix(t *testing.T) {
 	}
 }
 
+func TestIncrementalSecondaryIndexAddsNewSplitPrefixWithoutShadowing(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	entities := make([]graph.Entity, 0, 2200)
+	for i := 0; i < 1100; i++ {
+		entities = append(entities,
+			graph.Entity{ID: fmt.Sprintf("host:a-%04d", i), Kind: "host", Fields: graph.Fields{"hostname": "hotkey-a"}},
+			graph.Entity{ID: fmt.Sprintf("host:b-%04d", i), Kind: "host", Fields: graph.Fields{"hostname": "hotkey-b"}},
+		)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertCITypes: []graph.CIType{{
+			Name:   "host",
+			Fields: map[string]graph.FieldSpec{"hostname": {Type: "string", Indexed: true}},
+		}},
+		UpsertEntities: entities,
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:c", Kind: "host", Fields: graph.Fields{"hostname": "hotkey-c"},
+	}}}, CommitOptions{}); err != nil {
+		t.Fatalf("incremental commit: %v", err)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("catalog: %v", err)
+	}
+	spec := requireFieldIndexSpec(t, catalog, "host", "hostname")
+	if _, ok := indexObjectByRole(spec.Objects, secondaryIndexShardRole("s_hotkey-")); ok {
+		t.Fatalf("new value published shadowing base shard: %#v", spec.Objects)
+	}
+	if _, ok := indexObjectByRole(spec.Objects, secondaryIndexShardRole("s_hotkey-c")); !ok {
+		t.Fatalf("missing non-shadowing shard s_hotkey-c: %#v", spec.Objects)
+	}
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	for value, want := range map[string]int{"hotkey-a": 1100, "hotkey-b": 1100, "hotkey-c": 1} {
+		ids, ok, err := lookup.MatchFieldIndex(ctx, "host", "hostname", []any{value})
+		if err != nil || !ok || len(ids) != want {
+			t.Fatalf("lookup %q ids=%d ok=%v err=%v, want %d", value, len(ids), ok, err, want)
+		}
+	}
+}
+
 func uniqueObjectKeys(objects []IndexObject) []string {
 	seen := map[string]struct{}{}
 	keys := make([]string, 0, len(objects))

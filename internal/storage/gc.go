@@ -78,9 +78,11 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return GCReport{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return GCReport{}, err
 	}

@@ -15,13 +15,34 @@ func (g *Graph) ApplyCommitWithOptions(commit Commit, options ApplyOptions) (App
 	if err != nil {
 		return ApplyReport{}, err
 	}
-	*g = *clone
+	g.replaceState(clone)
 	return report, nil
+}
+
+func (g *Graph) replaceState(next *Graph) {
+	fingerprint, fingerprintReady := next.contentFingerprintState()
+	g.contentFingerprintMu.Lock()
+	defer g.contentFingerprintMu.Unlock()
+	g.Version = next.Version
+	g.CITypes = next.CITypes
+	g.Entities = next.Entities
+	g.RelationTypes = next.RelationTypes
+	g.Edges = next.Edges
+	g.out = next.out
+	g.in = next.in
+	g.fieldIndex = next.fieldIndex
+	g.identityIndex = next.identityIndex
+	g.cow = next.cow
+	g.contentFingerprint = fingerprint
+	g.contentFingerprintReady = fingerprintReady
 }
 
 func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) (*Graph, ApplyReport, error) {
 	if commit.Version <= g.Version {
 		return nil, ApplyReport{}, fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
+	}
+	if err := g.ensureContentFingerprint(); err != nil {
+		return nil, ApplyReport{}, err
 	}
 	return g.applyCommitToCopy(g.Clone(), commit, options)
 }
@@ -33,6 +54,9 @@ func (g *Graph) ApplyCommitStorageCopyWithOptions(commit Commit, options ApplyOp
 	if commit.Version <= g.Version {
 		return nil, ApplyReport{}, fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
 	}
+	if err := g.ensureContentFingerprint(); err != nil {
+		return nil, ApplyReport{}, err
+	}
 	return g.applyCommitToCopy(g.cloneForStorageMutation(), commit, options)
 }
 
@@ -41,6 +65,9 @@ func (g *Graph) ApplyCommitStorageCopyWithOptions(commit Commit, options ApplyOp
 func (g *Graph) ApplyCommitInPlaceForStorage(commit Commit) error {
 	if commit.Version <= g.Version {
 		return fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, g.Version)
+	}
+	if err := g.ensureContentFingerprint(); err != nil {
+		return err
 	}
 	g.Version = commit.Version
 	_, err := g.applyMutations(commit, ApplyOptions{})
@@ -70,7 +97,9 @@ func (g *Graph) applyCommitToCopy(clone *Graph, commit Commit, options ApplyOpti
 
 func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, error) {
 	report := ApplyReport{}
+	tracker := newMutationFingerprintTracker(g)
 	affected := newUniqueStringCollector(&report.AffectedEntityIDs)
+	affectedEdges := newUniqueStringCollector(&report.AffectedEdgeIDs)
 	now := commit.CreatedAt
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -85,10 +114,13 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 			return ApplyReport{}, err
 		}
 		if resolved != "" {
+			tracker.touchEdge(resolved)
+			affectedEdges.add(resolved)
 			edge := g.Edges[resolved]
 			g.removeEdgeFromIndexes(resolved, edge)
 			delete(g.Edges, resolved)
 		} else {
+			tracker.touchEdge(edgeID)
 			delete(g.Edges, edgeID)
 		}
 	}
@@ -104,11 +136,13 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if !ok {
 			continue
 		}
+		tracker.touchEdge(edgeID)
 		edge = copyEdge(edge)
 		backfillEdgeSources(&edge, edge.Version, edge.UpdatedAt)
 		existingOwner := *edge.ExistenceSource
 		incomingOwner := sourceForDelete(request, commit.Version, now)
 		if sourceCanDeleteEdge(existingOwner, incomingOwner) {
+			affectedEdges.add(edgeID)
 			g.removeEdgeFromIndexes(edgeID, edge)
 			delete(g.Edges, edgeID)
 			continue
@@ -132,6 +166,8 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		existingOwner := *entity.ExistenceSource
 		incomingOwner := sourceForEntityDelete(request, commit.Version, now)
 		if sourceCanDeleteEntity(existingOwner, incomingOwner) {
+			tracker.touchEntityWithEdges(entityID)
+			affectedEdges.add(g.incidentEdgeIDs(entityID)...)
 			g.deleteEntityForce(entityID)
 			affected.add(entityID)
 			continue
@@ -146,6 +182,8 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if resolved == "" {
 			continue
 		}
+		tracker.touchEntityWithEdges(resolved)
+		affectedEdges.add(g.incidentEdgeIDs(resolved)...)
 		g.deleteEntityForce(resolved)
 		affected.add(resolved)
 	}
@@ -153,9 +191,12 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if relationName == "" {
 			return ApplyReport{}, fmt.Errorf("delete relation type name is required")
 		}
+		tracker.touchRelationType(relationName)
 		delete(g.RelationTypes, relationName)
 		for edgeID, edge := range g.Edges {
 			if edge.Type == relationName {
+				tracker.touchEdge(edgeID)
+				affectedEdges.add(edgeID)
 				g.removeEdgeFromIndexes(edgeID, edge)
 				delete(g.Edges, edgeID)
 			}
@@ -170,6 +211,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 				return ApplyReport{}, fmt.Errorf("cannot delete ci type %q while entities of that kind exist", ciTypeName)
 			}
 		}
+		tracker.touchCIType(ciTypeName)
 		delete(g.CITypes, ciTypeName)
 		indexesDirty = true
 	}
@@ -178,6 +220,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if err != nil {
 			return ApplyReport{}, err
 		}
+		tracker.touchCIType(normalized.Name)
 		g.CITypes[normalized.Name] = normalized
 		indexesDirty = true
 	}
@@ -194,6 +237,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if err != nil {
 			return ApplyReport{}, err
 		}
+		tracker.touchRelationType(normalized.Name)
 		g.RelationTypes[normalized.Name] = normalized
 		if err := g.validateAllEdges(); err != nil {
 			return ApplyReport{}, err
@@ -216,6 +260,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if err != nil {
 			return ApplyReport{}, err
 		}
+		tracker.touchEntity(targetID)
 		report.CanonicalEntities = append(report.CanonicalEntities, entityCanonicalization(normalized, incomingID, targetID))
 		normalized.ID = targetID
 		report.Suppressed = append(report.Suppressed, entityFieldConflictsForTarget(normalized, targetID)...)
@@ -255,19 +300,22 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		affected.add(normalized.ID)
 	}
 	for _, request := range commit.Mutations.MarkSourceStale {
-		staleReport, err := g.applySourceStale(request, commit.Version, now)
+		staleReport, err := g.applySourceStale(request, commit.Version, now, tracker)
 		if err != nil {
 			return ApplyReport{}, err
 		}
 		report.Suppressed = append(report.Suppressed, staleReport.Suppressed...)
 		affected.add(staleReport.AffectedEntityIDs...)
+		affectedEdges.add(staleReport.AffectedEdgeIDs...)
 	}
 	for _, merge := range commit.Mutations.MergeEntities {
+		tracker.touchMerge(merge)
 		if err := g.applyMerge(merge, commit.Version, now); err != nil {
 			return ApplyReport{}, err
 		}
 	}
 	for _, split := range commit.Mutations.SplitEntities {
+		tracker.touchSplit(split)
 		if err := g.applySplit(split, commit.Version, now); err != nil {
 			return ApplyReport{}, err
 		}
@@ -281,6 +329,8 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		sanitizeIncomingEdgeSources(&normalized)
 		incomingID := firstNonEmpty(normalized.ID, normalized.ExternalID)
 		normalized = canonicalizeEdge(normalized, commit.Version, now)
+		tracker.touchEdge(normalized.ID)
+		affectedEdges.add(normalized.ID)
 		report.CanonicalEdges = append(report.CanonicalEdges, EdgeCanonicalization{
 			CanonicalID: normalized.ID,
 			IncomingID:  incomingID,
@@ -312,6 +362,9 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if err := g.validateCardinality(normalized); err != nil {
 			return ApplyReport{}, err
 		}
+	}
+	if err := tracker.finish(&report); err != nil {
+		return ApplyReport{}, err
 	}
 	return report, nil
 }

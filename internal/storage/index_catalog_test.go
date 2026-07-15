@@ -400,7 +400,7 @@ func TestIndexRebuildTaskRecoversPanicAndMarksFailed(t *testing.T) {
 		t.Fatalf("save task: %v", err)
 	}
 	store.Objects = &panicOnIndexWriteStore{ObjectStore: base, panicFragment: "/indexes/parquet/"}
-	store.runIndexRebuildTask("tenant-a", task)
+	store.runIndexRebuildTask(ctx, "tenant-a", task)
 
 	loaded, err := store.GetIndexTask(ctx, "tenant-a", task.ID)
 	if err != nil {
@@ -423,7 +423,7 @@ func TestIndexRebuildTaskRetriesFinalStatusSave(t *testing.T) {
 		t.Fatalf("save task: %v", err)
 	}
 	store.Objects = &failOnceTaskStatusStore{ObjectStore: base, fragment: "/indexes/tasks/task-flaky.parquet"}
-	store.runIndexRebuildTask("tenant-a", task)
+	store.runIndexRebuildTask(ctx, "tenant-a", task)
 
 	loaded, err := store.GetIndexTask(ctx, "tenant-a", task.ID)
 	if err != nil {

@@ -62,7 +62,7 @@ func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, re
 	if err != nil {
 		return nil, nil, err
 	}
-	meta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+	meta, err := s.putTenantConditionalIfBound(ctx, tenantID, key, data, PutCondition{IfNoneMatch: true})
 	if err == nil {
 		s.markObjectKeyCached(key)
 		return &directCommitReservation{key: key, record: pending, meta: meta}, nil, nil
@@ -129,7 +129,11 @@ func (s *TenantStore) updateDirectCommitReservation(ctx context.Context, reserva
 	if err != nil {
 		return err
 	}
-	meta, err := s.putBytesWithMetaResult(ctx, reservation.key, data, reservation.meta)
+	condition := PutCondition{IfNoneMatch: !reservation.meta.Exists}
+	if reservation.meta.Exists {
+		condition.IfMatch = reservation.meta.ETag
+	}
+	meta, err := s.putTenantConditionalIfBound(ctx, record.TenantID, reservation.key, data, condition)
 	if err != nil {
 		return err
 	}

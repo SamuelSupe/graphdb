@@ -92,11 +92,11 @@ func TestS3StoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get new meta: %v", err)
 	}
-	if err := s3.DeleteConditional(ctx, key, PutCondition{IfMatch: newMeta.ETag}); !errors.Is(err, ErrConflict) || !errors.Is(err, ErrConditionalDeleteUnsupported) {
-		t.Fatalf("matching conditional delete err = %v, want conservative unsupported conflict", err)
+	if err := s3.DeleteConditional(ctx, key, PutCondition{IfMatch: newMeta.ETag}); err != nil {
+		t.Fatalf("matching conditional delete: %v", err)
 	}
-	if err := s3.Delete(ctx, key); err != nil {
-		t.Fatalf("cleanup delete: %v", err)
+	if _, err := s3.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("conditionally deleted object err = %v, want ErrNotFound", err)
 	}
 }
 

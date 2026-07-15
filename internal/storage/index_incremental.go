@@ -19,7 +19,7 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 	if err != nil {
 		return err
 	}
-	return s.refreshParquetIndexesAfterCommit(ctx, tenantID, catalog, catalogMeta, before, after, version)
+	return s.refreshParquetIndexesAfterCommit(ctx, tenantID, catalog, catalogMeta, before, after, report, version)
 }
 
 func (s *TenantStore) ensureIncrementalIndexCurrent(ctx context.Context, tenantID string, version int64) error {

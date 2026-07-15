@@ -63,9 +63,11 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return Task{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Task{}, err
 	}
@@ -93,11 +95,25 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	} else if reused {
 		return active, nil
 	}
+	if task.Type == TaskTypeGC {
+		active, reused, err := s.claimGCRunningMarker(ctx, task)
+		if err != nil {
+			s.releaseTaskAdmission(task)
+			return Task{}, err
+		}
+		if reused {
+			s.releaseTaskAdmission(task)
+			return active, nil
+		}
+	}
 	if err := s.saveTask(ctx, task); err != nil {
+		if task.Type == TaskTypeGC {
+			s.abandonGCRunningMarker(ctx, task)
+		}
 		s.releaseTaskAdmission(task)
 		return Task{}, err
 	}
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.registerTaskCancel(tenantID, id, cancel)
 	go s.runTaskAdmitted(runCtx, cancel, task)
 	return task, nil
@@ -167,9 +183,12 @@ func (s *TenantStore) ListTasks(ctx context.Context, tenantID string, options Ta
 }
 
 func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, task Task) {
+	writeCtx := context.WithoutCancel(ctx)
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
 	stopWatch := s.watchTaskCancellation(task, cancel)
 	defer stopWatch()
+	stopHeartbeat := s.startGCTaskHeartbeat(writeCtx, task, cancel)
+	defer stopHeartbeat()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			task.Status = "failed"
@@ -177,7 +196,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 			task.Error = fmt.Sprintf("panic: %v", recovered)
 			task.FinishedAt = time.Now().UTC()
 			task.UpdatedAt = task.FinishedAt
-			s.trySaveTask(context.Background(), task)
+			s.trySaveTask(writeCtx, task)
 		}
 	}()
 	if s.taskCancelRequested(context.Background(), task) {
@@ -187,23 +206,33 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 	task.Phase = "running"
 	task.ProgressTotal = taskProgressTotal(task.Type)
 	task.UpdatedAt = time.Now().UTC()
-	s.trySaveTask(context.Background(), task)
+	s.trySaveTask(writeCtx, task)
 	result, resultKey, err := s.runTaskOperation(ctx, task)
-	task = s.taskStateOrLocal(context.Background(), task)
+	if task.Type == TaskTypeTenantRestore {
+		current, stateErr := s.GetTask(writeCtx, task.TenantID, task.ID)
+		if stateErr == nil && current.OwnerID == task.OwnerID && taskCheckpointBool(current, "purged_existing") {
+			if rebound, bindErr := s.rebindCurrentWriterFence(writeCtx, task.TenantID); bindErr != nil {
+				err = errors.Join(err, bindErr)
+			} else {
+				writeCtx = rebound
+			}
+		}
+	}
+	task = s.taskStateOrLocal(writeCtx, task)
 	task.FinishedAt = time.Now().UTC()
 	task.UpdatedAt = task.FinishedAt
 	if ctx.Err() != nil || taskCanceled(err) || task.Status == TaskStatusCanceled {
 		task.Status = "canceled"
 		task.Phase = "canceled"
 		task.Error = "canceled"
-		s.trySaveTask(context.Background(), task)
+		s.trySaveTask(writeCtx, task)
 		return
 	}
 	if err != nil {
 		task.Status = "failed"
 		task.Phase = "failed"
 		task.Error = err.Error()
-		s.trySaveTask(context.Background(), task)
+		s.trySaveTask(writeCtx, task)
 		return
 	}
 	task.Status = "succeeded"
@@ -216,7 +245,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 		task.Checkpoint = map[string]any{}
 	}
 	task.Checkpoint["completed"] = true
-	s.trySaveTask(context.Background(), task)
+	s.trySaveTask(writeCtx, task)
 }
 
 func (s *TenantStore) runTaskOperation(ctx context.Context, task Task) (map[string]any, string, error) {
@@ -314,7 +343,7 @@ func (s *TenantStore) exportSnapshotTask(ctx context.Context, task Task) (map[st
 	}
 	g, manifest, err := s.Load(ctx, task.TenantID)
 	if err != nil {
-		_ = s.updateTaskActionProgress(context.Background(), task, "export_load_snapshot", 1, total, taskActionUpdate{ID: "load_snapshot", Err: err}, nil)
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "export_load_snapshot", 1, total, taskActionUpdate{ID: "load_snapshot", Err: err}, nil)
 		return nil, "", err
 	}
 	snapshot := g.Snapshot()
@@ -335,7 +364,7 @@ func (s *TenantStore) exportSnapshotTask(ctx context.Context, task Task) (map[st
 		return nil, "", err
 	}
 	if err := s.putTaskResult(ctx, task.TenantID, task.ID, record); err != nil {
-		_ = s.updateTaskActionProgress(context.Background(), task, "export_write_result", 2, total, taskActionUpdate{ID: "write_result", Err: err}, nil)
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "export_write_result", 2, total, taskActionUpdate{ID: "write_result", Err: err}, nil)
 		return nil, "", err
 	}
 	_ = s.updateTaskActionProgress(ctx, task, "export_done", total, total, taskActionUpdate{
@@ -409,11 +438,36 @@ func (s *TenantStore) listIndexTasksAsTasks(ctx context.Context, tenantID string
 }
 
 func (s *TenantStore) saveTask(ctx context.Context, task Task) error {
-	data, err := marshalParquetTask(ctx, task)
-	if err != nil {
-		return err
+	key := s.taskKey(task.TenantID, task.ID)
+	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		current, meta, err := s.getTaskObjectWithMeta(ctx, task.TenantID, task.ID)
+		if errors.Is(err, ErrNotFound) {
+			meta = ObjectMeta{Key: key}
+		} else if err != nil {
+			return err
+		} else if current.Status == TaskStatusCanceled && task.Status != TaskStatusCanceled {
+			return context.Canceled
+		} else if taskTerminal(current.Status) && current.Status != task.Status {
+			return nil
+		}
+		data, err := marshalParquetTask(ctx, task)
+		if err != nil {
+			return err
+		}
+		condition := PutCondition{IfNoneMatch: !meta.Exists}
+		if meta.Exists {
+			condition.IfMatch = meta.ETag
+		}
+		if _, err := s.putTenantConditional(ctx, task.TenantID, key, data, condition); err == nil {
+			return s.syncGCRunningMarker(ctx, task)
+		} else if !errors.Is(err, ErrConflict) {
+			return err
+		}
+		if err := retryDelay(ctx, attempt); err != nil {
+			return err
+		}
 	}
-	return s.Objects.Put(ctx, s.taskKey(task.TenantID, task.ID), data)
+	return fmt.Errorf("%w: task %q changed while publishing", ErrConflict, task.ID)
 }
 
 func (s *TenantStore) trySaveTask(ctx context.Context, task Task) {
@@ -590,14 +644,24 @@ func taskIDFromKey(key string) (string, bool) {
 }
 
 func (s *TenantStore) getTaskObject(ctx context.Context, tenantID string, taskID string) (Task, error) {
-	data, err := s.Objects.Get(ctx, s.taskKey(tenantID, taskID))
+	task, _, err := s.getTaskObjectWithMeta(ctx, tenantID, taskID)
+	return task, err
+}
+
+func (s *TenantStore) getTaskObjectWithMeta(ctx context.Context, tenantID string, taskID string) (Task, ObjectMeta, error) {
+	key := s.taskKey(tenantID, taskID)
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.ClearPrefix(key)
+	}
+	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
-		return Task{}, err
+		return Task{}, meta, err
 	}
 	if !isParquetBytes(data) {
-		return Task{}, fmt.Errorf("unsupported task object: only parquet tasks are readable")
+		return Task{}, meta, fmt.Errorf("unsupported task object: only parquet tasks are readable")
 	}
-	return decodeParquetTask(ctx, data)
+	task, err := decodeParquetTask(ctx, data)
+	return task, meta, err
 }
 
 func (s *TenantStore) putTaskResult(ctx context.Context, tenantID string, taskID string, result map[string]any) error {
@@ -605,5 +669,5 @@ func (s *TenantStore) putTaskResult(ctx context.Context, tenantID string, taskID
 	if err != nil {
 		return err
 	}
-	return s.Objects.Put(ctx, s.taskResultKey(tenantID, taskID), data)
+	return s.putTenantObject(ctx, tenantID, s.taskResultKey(tenantID, taskID), data)
 }

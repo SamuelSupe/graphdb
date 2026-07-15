@@ -135,6 +135,7 @@ type IndexCatalog struct {
 	EdgeShards    []EdgeShard      `json:"edge_shards"`
 	EntityPages   []EntityPageSpec `json:"entity_pages,omitempty"`
 	UpdatedAt     time.Time        `json:"updated_at"`
+	contentHash   string
 }
 
 func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (IndexCatalog, error) {
@@ -152,6 +153,10 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return IndexCatalog{}, err
+	}
+	ctx, err = s.bindCurrentWriterFence(ctx, tenantID)
+	if err != nil {
 		return IndexCatalog{}, err
 	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
@@ -190,12 +195,11 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
-	catalogMeta, err := s.putIndexCatalogWithMeta(ctx, tenantID, catalog, previousMeta)
+	_, err = s.putIndexCatalogWithMeta(ctx, tenantID, catalog, previousMeta)
 	if err != nil {
 		s.deleteCachedIndexCatalog(tenantID)
 		return IndexCatalog{}, err
 	}
-	s.setCachedIndexCatalog(tenantID, catalog, catalogMeta)
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -234,7 +238,10 @@ func (s *TenantStore) GetIndexCatalog(ctx context.Context, tenantID string) (Ind
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
-	catalog, _, err := s.getIndexCatalogWithMeta(ctx, tenantID)
+	catalog, meta, err := s.getIndexCatalogWithMeta(ctx, tenantID)
+	if err == nil {
+		s.setCachedIndexCatalog(tenantID, catalog, meta)
+	}
 	return catalog, err
 }
 
@@ -272,14 +279,18 @@ func (s *TenantStore) GetIndexCatalogSnapshot(ctx context.Context, tenantID stri
 	if version <= 0 {
 		return IndexCatalog{}, ErrNotFound
 	}
-	current, err := s.GetIndexCatalog(ctx, tenantID)
+	if contentHash != "" {
+		if cached, ok := s.getCachedIndexCatalogSnapshot(tenantID, version, contentHash); ok {
+			return cached, nil
+		}
+	}
+	current, err := s.GetIndexCatalogAtVersion(ctx, tenantID, version)
 	if err == nil && current.Version == version {
 		if contentHash == "" {
 			return current, nil
 		}
-		hash, hashErr := indexCatalogContentHash(current)
-		if hashErr == nil && hash == contentHash {
-			return current, nil
+		if cached, ok := s.getCachedIndexCatalogSnapshot(tenantID, version, contentHash); ok {
+			return cached, nil
 		}
 	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -364,7 +375,8 @@ func (s *TenantStore) putIndexCatalogWithMetaMode(ctx context.Context, tenantID 
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	if err := s.putIndexCatalogVersion(ctx, tenantID, catalog, data, fast); err != nil {
+	contentHash, err := s.putIndexCatalogVersion(ctx, tenantID, catalog, data, fast)
+	if err != nil {
 		return ObjectMeta{}, err
 	}
 	writeMeta := meta
@@ -375,19 +387,22 @@ func (s *TenantStore) putIndexCatalogWithMetaMode(ctx context.Context, tenantID 
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	s.setCachedIndexCatalog(tenantID, catalog, nextMeta)
+	s.setCachedIndexCatalogWithHash(tenantID, catalog, nextMeta, contentHash)
 	return nextMeta, nil
 }
 
-func (s *TenantStore) putIndexCatalogVersion(ctx context.Context, tenantID string, catalog IndexCatalog, data []byte, fast bool) error {
+func (s *TenantStore) putIndexCatalogVersion(ctx context.Context, tenantID string, catalog IndexCatalog, data []byte, fast bool) (string, error) {
 	hash, err := indexCatalogContentHash(catalog)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := s.putImmutableIndexCatalogVersion(ctx, s.indexCatalogVersionHashKey(tenantID, catalog.Version, hash), catalog.Version, data, fast); err != nil {
-		return err
+		return "", err
 	}
-	return s.putLegacyIndexCatalogVersion(ctx, tenantID, catalog.Version, data, fast)
+	if err := s.putLegacyIndexCatalogVersion(ctx, tenantID, catalog.Version, data, fast); err != nil {
+		return "", err
+	}
+	return hash, nil
 }
 
 func (s *TenantStore) putImmutableIndexCatalogVersion(ctx context.Context, key string, version int64, data []byte, fast bool) error {

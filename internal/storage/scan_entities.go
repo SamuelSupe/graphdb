@@ -84,16 +84,22 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 }
 
 func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string, version int64, catalog IndexCatalog, options EntityScanOptions, cursor scanCursor) (EntityScanResult, bool, error) {
+	compiled, err := s.compiledScanCatalog(tenantID, catalog, cursor.CatalogHash)
+	if err != nil {
+		return EntityScanResult{}, false, err
+	}
 	items := make([]graph.Entity, 0, normalizedScanLimit(options.Limit)+1)
-	shards := entityScanShards(catalog, options.Shard)
+	shards := compiled.entityTargets(options.Shard)
+	specs := compiled.entitySpecs
+	shards = shards[entityScanStart(shards, cursor.After):]
 	for i, shard := range shards {
-		spec, ok := entityPageSpec(catalog, shard)
+		spec, ok := specs[shard]
 		if !ok {
 			return EntityScanResult{}, false, nil
 		}
 		if specFormat(spec.Format) == IndexFormatParquet {
 			if i+1 < len(shards) {
-				if next, ok := entityPageSpec(catalog, shards[i+1]); ok && specFormat(next.Format) == IndexFormatParquet {
+				if next, ok := specs[shards[i+1]]; ok && specFormat(next.Format) == IndexFormatParquet {
 					s.prefetchParquetEntityPageObject(ctx, tenantID, version, next)
 				}
 			}
@@ -151,14 +157,14 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				}
 				items = append(items, entity)
 				if len(items) > normalizedScanLimit(options.Limit) {
-					return entityScanPage(tenantID, version, items, options, true, scanCatalogContentHash(catalog)), true, nil
+					return entityScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
 				}
 			}
 			continue
 		}
 		return EntityScanResult{}, false, nil
 	}
-	return entityScanPage(tenantID, version, items, options, false, scanCatalogContentHash(catalog)), true, nil
+	return entityScanPage(tenantID, version, items, options, false, compiled.contentHash), true, nil
 }
 
 func pageEntities(candidates []graph.Entity, version int64, options EntityScanOptions, cursor scanCursor) ([]graph.Entity, string) {
@@ -227,18 +233,6 @@ func entityMatchesSource(entity graph.Entity, source string) bool {
 		}
 	}
 	return false
-}
-
-func entityScanShards(catalog IndexCatalog, requested string) []string {
-	if requested != "" {
-		return []string{requested}
-	}
-	shards := make([]string, 0, len(catalog.EntityPages))
-	for _, page := range catalog.EntityPages {
-		shards = append(shards, page.Shard)
-	}
-	sort.Strings(shards)
-	return shards
 }
 
 func entityPageSpec(catalog IndexCatalog, shard string) (EntityPageSpec, bool) {

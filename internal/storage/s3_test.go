@@ -408,39 +408,64 @@ func TestS3ConditionalPutConflictStatusMapsToErrConflict(t *testing.T) {
 	}
 }
 
-func TestS3ConditionalDeleteWithIfMatchFailsClosedBeforeHTTP(t *testing.T) {
+func TestS3ConditionalDeleteWithIfMatch(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		http.Error(w, fmt.Sprintf("unexpected %s %s", r.Method, r.URL.Path), http.StatusInternalServerError)
+		if r.Method != http.MethodDelete || r.URL.Path != "/bucket/objects/current.json" || r.Header.Get("If-Match") != `"etag-old"` {
+			http.Error(w, fmt.Sprintf("unexpected %s %s if-match=%q", r.Method, r.URL.Path, r.Header.Get("If-Match")), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
 	store := newTestS3Store(t, server)
 	err := store.DeleteConditional(context.Background(), "objects/current.json", PutCondition{IfMatch: "etag-old"})
-	if !errors.Is(err, ErrConflict) || !errors.Is(err, ErrConditionalDeleteUnsupported) {
-		t.Fatalf("delete err = %v, want ErrConflict and ErrConditionalDeleteUnsupported", err)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("conditional delete made %d HTTP calls", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("conditional delete made %d HTTP calls, want 1", calls.Load())
 	}
 }
 
-func TestS3ConditionalDeleteWithIfNoneMatchFailsClosedBeforeHTTP(t *testing.T) {
+func TestS3ConditionalDeleteConflictStatusMapsToErrConflict(t *testing.T) {
+	for _, status := range []int{http.StatusPreconditionFailed, http.StatusConflict, http.StatusNotFound} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			store := newTestS3Store(t, server)
+			err := store.DeleteConditional(context.Background(), "objects/current.json", PutCondition{IfMatch: "etag-old"})
+			if !errors.Is(err, ErrConflict) {
+				t.Fatalf("delete err = %v, want ErrConflict", err)
+			}
+		})
+	}
+}
+
+func TestS3ConditionalDeleteWithIfNoneMatchUsesHead(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		http.Error(w, fmt.Sprintf("unexpected %s %s", r.Method, r.URL.Path), http.StatusInternalServerError)
+		if r.Method != http.MethodHead {
+			http.Error(w, fmt.Sprintf("unexpected %s %s", r.Method, r.URL.Path), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("ETag", `"existing"`)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	store := newTestS3Store(t, server)
 	err := store.DeleteConditional(context.Background(), "objects/current.json", PutCondition{IfNoneMatch: true})
-	if !errors.Is(err, ErrConflict) || !errors.Is(err, ErrConditionalDeleteUnsupported) {
-		t.Fatalf("delete err = %v, want ErrConflict and ErrConditionalDeleteUnsupported", err)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("delete err = %v, want ErrConflict", err)
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("conditional delete made %d HTTP calls", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("conditional delete made %d HTTP calls, want 1", calls.Load())
 	}
 }
 

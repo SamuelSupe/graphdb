@@ -196,6 +196,7 @@ func decodeParquetIndexCatalog(ctx context.Context, data []byte) (IndexCatalog, 
 	if expectedHash == "" || expectedHash != hash {
 		return IndexCatalog{}, fmt.Errorf("index catalog content hash mismatch")
 	}
+	catalog.contentHash = hash
 	return catalog, nil
 }
 

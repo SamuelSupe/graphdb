@@ -9,10 +9,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-const (
-	writeCacheLogicalWeight = int64(8)
-	minimumWriteCacheBytes  = int64(4 * 1024)
-)
+const minimumWriteCacheBytes = int64(4 * 1024)
+const writeCacheLogicalBytesMultiplier = int64(8)
 
 func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (loaded loadedGraph, err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.load_for_write", tenantTraceAttr(tenantID))
@@ -139,20 +137,6 @@ func cloneGraph(g *graph.Graph) (*graph.Graph, error) {
 	return g.Clone(), nil
 }
 
-func writeCacheBytesFromLogicalSize(logicalBytes int64) int64 {
-	if logicalBytes <= 0 {
-		return minimumWriteCacheBytes
-	}
-	if logicalBytes > (1<<63-1)/writeCacheLogicalWeight {
-		return 1<<63 - 1
-	}
-	weighted := logicalBytes * writeCacheLogicalWeight
-	if weighted < minimumWriteCacheBytes {
-		return minimumWriteCacheBytes
-	}
-	return weighted
-}
-
 func normalizedWriteCacheBytes(loaded loadedGraph) int64 {
 	if loaded.CacheBytes > 0 {
 		return loaded.CacheBytes
@@ -160,12 +144,48 @@ func normalizedWriteCacheBytes(loaded loadedGraph) int64 {
 	if loaded.Graph == nil {
 		return minimumWriteCacheBytes
 	}
-	// Callers that did not just compute a logical hash use a conservative,
-	// allocation-free fallback. Normal commits carry the measured logical size.
-	weight := minimumWriteCacheBytes + int64(len(loaded.Graph.Entities))*1024 + int64(len(loaded.Graph.Edges))*768
-	weight += int64(len(loaded.Graph.CITypes)+len(loaded.Graph.RelationTypes)) * 2048
+	_, logicalBytes, err := loaded.Graph.ContentMD5WithLogicalSize()
+	if err != nil {
+		return int64(^uint64(0) >> 1)
+	}
+	return writeCacheBytesForGraph(loaded.Graph, logicalBytes)
+}
+
+func writeCacheBytesFromLogicalSize(logicalBytes int64) int64 {
+	maxInt64 := int64(^uint64(0) >> 1)
+	if logicalBytes > maxInt64/writeCacheLogicalBytesMultiplier {
+		return maxInt64
+	}
+	weight := logicalBytes * writeCacheLogicalBytesMultiplier
 	if weight < minimumWriteCacheBytes {
-		return 1<<63 - 1
+		return minimumWriteCacheBytes
 	}
 	return weight
+}
+
+func writeCacheBytesForGraph(g *graph.Graph, logicalBytes int64) int64 {
+	variableWeight := writeCacheBytesFromLogicalSize(logicalBytes)
+	if g == nil {
+		return variableWeight
+	}
+	maxInt64 := int64(^uint64(0) >> 1)
+	structuralWeight := minimumWriteCacheBytes
+	parts := []struct {
+		count int
+		bytes int64
+	}{
+		{len(g.Entities), 1024},
+		{len(g.Edges), 768},
+		{len(g.CITypes) + len(g.RelationTypes), 2048},
+	}
+	for _, part := range parts {
+		if int64(part.count) > (maxInt64-structuralWeight)/part.bytes {
+			return maxInt64
+		}
+		structuralWeight += int64(part.count) * part.bytes
+	}
+	if structuralWeight > variableWeight {
+		return structuralWeight
+	}
+	return variableWeight
 }

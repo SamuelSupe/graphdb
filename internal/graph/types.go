@@ -246,10 +246,13 @@ type ApplyOptions struct {
 }
 
 type ApplyReport struct {
-	Suppressed        []FieldConflict          `json:"suppressed,omitempty"`
-	CanonicalEntities []EntityCanonicalization `json:"canonical_entities,omitempty"`
-	CanonicalEdges    []EdgeCanonicalization   `json:"canonical_edges,omitempty"`
-	AffectedEntityIDs []string                 `json:"-"`
+	Suppressed         []FieldConflict          `json:"suppressed,omitempty"`
+	CanonicalEntities  []EntityCanonicalization `json:"canonical_entities,omitempty"`
+	CanonicalEdges     []EdgeCanonicalization   `json:"canonical_edges,omitempty"`
+	AffectedEntityIDs  []string                 `json:"-"`
+	AffectedEdgeIDs    []string                 `json:"-"`
+	Changed            bool                     `json:"-"`
+	ContentFingerprint string                   `json:"-"`
 }
 
 type Snapshot struct {

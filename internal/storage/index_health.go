@@ -270,7 +270,7 @@ func (s *TenantStore) checkFieldIndexObjects(ctx context.Context, tenantID strin
 		}
 		if indexSpec.ContentHash == "" {
 			health.Issues = append(health.Issues, "field index "+indexSpec.Name+" content hash missing")
-		} else if secondaryIndexContentHash(index) != indexSpec.ContentHash {
+		} else if !secondaryIndexSpecContentHashMatches(index, indexSpec) {
 			health.Issues = append(health.Issues, "field index "+indexSpec.Name+" content hash mismatch")
 		}
 		if index.Kind != indexSpec.Kind || index.Field != indexSpec.Field {
@@ -554,10 +554,10 @@ func checkEntityRecordContent(record EntityRecord, expected entityRecordExpectat
 	if record.Page != expected.Page {
 		health.Issues = append(health.Issues, "entity record "+entity.ID+" page mismatch")
 	}
-	if record.PageHash != "" && record.PageHash != expected.PageHash {
+	if record.Version >= catalogVersion && record.PageHash != "" && record.PageHash != expected.PageHash {
 		health.Issues = append(health.Issues, "entity record "+entity.ID+" page hash mismatch")
 	}
-	if record.PageETag != "" && expected.PageETag != "" && record.PageETag != expected.PageETag {
+	if record.Version >= catalogVersion && record.PageETag != "" && expected.PageETag != "" && record.PageETag != expected.PageETag {
 		health.Issues = append(health.Issues, "entity record "+entity.ID+" page etag mismatch")
 	}
 	if record.ContentHash != "" && entityRecordContentHash(record) != record.ContentHash {

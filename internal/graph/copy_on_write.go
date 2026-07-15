@@ -12,16 +12,19 @@ type copyOnWriteState struct {
 }
 
 func (g *Graph) cloneForStorageMutation() *Graph {
+	fingerprint, fingerprintReady := g.contentFingerprintState()
 	return &Graph{
-		Version:       g.Version,
-		CITypes:       shallowCopyMap(g.CITypes),
-		Entities:      shallowCopyMap(g.Entities),
-		RelationTypes: shallowCopyMap(g.RelationTypes),
-		Edges:         shallowCopyMap(g.Edges),
-		out:           shallowCopyMap(g.out),
-		in:            shallowCopyMap(g.in),
-		fieldIndex:    shallowCopyMap(g.fieldIndex),
-		identityIndex: shallowCopyMap(g.identityIndex),
+		Version:                 g.Version,
+		CITypes:                 shallowCopyMap(g.CITypes),
+		Entities:                shallowCopyMap(g.Entities),
+		RelationTypes:           shallowCopyMap(g.RelationTypes),
+		Edges:                   shallowCopyMap(g.Edges),
+		out:                     shallowCopyMap(g.out),
+		in:                      shallowCopyMap(g.in),
+		fieldIndex:              shallowCopyMap(g.fieldIndex),
+		identityIndex:           shallowCopyMap(g.identityIndex),
+		contentFingerprint:      fingerprint,
+		contentFingerprintReady: fingerprintReady,
 		cow: &copyOnWriteState{
 			outNodes:      map[string]struct{}{},
 			inNodes:       map[string]struct{}{},

@@ -81,7 +81,7 @@ func TestCommitBackpressureRecordsManifestCASConflict(t *testing.T) {
 	base := NewMemoryStore()
 	objects := &takeoverOnManifestPutStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	store := NewTenantStore(objects, "test")
-	store.LeaseTTL = time.Nanosecond
+	store.LeaseTTL = time.Hour
 	store.MaxRetries = 2
 	store.Backpressure = NewWritePressure(BackpressureConfig{CASConflictThreshold: 1})
 

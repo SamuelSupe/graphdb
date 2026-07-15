@@ -275,7 +275,10 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 	if g.Version != manifest.Version {
 		return loadedGraph{}, fmt.Errorf("manifest version mismatch: manifest version %d loaded graph version %d", manifest.Version, g.Version)
 	}
-	return loadedGraph{Graph: g, Manifest: manifest, Meta: meta}, nil
+	if _, err := g.ContentFingerprint(); err != nil {
+		return loadedGraph{}, err
+	}
+	return loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: manifest.DataMD5}, nil
 }
 
 func sameManifestReadSet(a, b Manifest) bool {

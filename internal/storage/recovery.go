@@ -44,9 +44,11 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return RecoveryReport{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return RecoveryReport{}, err
 	}
@@ -111,9 +113,11 @@ func (s *TenantStore) CleanupCommits(ctx context.Context, tenantID string) (Clea
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return CleanupReport{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return CleanupReport{}, err
 	}

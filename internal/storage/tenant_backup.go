@@ -63,7 +63,7 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 	}
 	g, manifest, err := s.Load(ctx, task.TenantID)
 	if err != nil {
-		_ = s.updateTaskActionProgress(context.Background(), task, "backup_load_snapshot", 1, total, taskActionUpdate{ID: "load_snapshot_metadata", Err: err}, nil)
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_load_snapshot", 1, total, taskActionUpdate{ID: "load_snapshot_metadata", Err: err}, nil)
 		return nil, "", err
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "backup_load_metadata", 2, total, taskActionUpdate{
@@ -131,7 +131,7 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 			return nil, "", err
 		}
 		if err := s.putTaskResult(ctx, task.TenantID, task.ID, taskResult(record)); err != nil {
-			_ = s.updateTaskActionProgress(context.Background(), task, "backup_write_result", 3, total, taskActionUpdate{ID: "write_backup_record", Err: err}, nil)
+			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_write_result", 3, total, taskActionUpdate{ID: "write_backup_record", Err: err}, nil)
 			return nil, "", err
 		}
 		if err := s.updateTaskActionProgress(ctx, task, "backup_result_written", 3, total, taskActionUpdate{
@@ -163,12 +163,12 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 	if backupManifestKey == "" {
 		backupManifest, err = s.buildBackupManifest(ctx, task.TenantID, task.ID, record, resultKey, manifest)
 		if err != nil {
-			_ = s.updateTaskActionProgress(context.Background(), task, "backup_write_manifest", 4, total, taskActionUpdate{ID: "write_backup_manifest", Err: err}, nil)
+			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_write_manifest", 4, total, taskActionUpdate{ID: "write_backup_manifest", Err: err}, nil)
 			return nil, "", err
 		}
 		backupManifestKey, err = s.putBackupManifest(ctx, task.TenantID, task.ID, backupManifest)
 		if err != nil {
-			_ = s.updateTaskActionProgress(context.Background(), task, "backup_write_manifest", 4, total, taskActionUpdate{ID: "write_backup_manifest", Err: err}, nil)
+			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_write_manifest", 4, total, taskActionUpdate{ID: "write_backup_manifest", Err: err}, nil)
 			return nil, "", err
 		}
 	}
@@ -184,7 +184,7 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 	}
 	integrity := s.validateBackupManifest(ctx, backupManifest)
 	if integrity.Status != "ok" {
-		_ = s.updateTaskActionProgress(context.Background(), task, "backup_validate_manifest", 4, total, taskActionUpdate{
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_validate_manifest", 4, total, taskActionUpdate{
 			ID:     "validate_backup_manifest",
 			Status: "failed",
 			Verification: map[string]any{
@@ -273,7 +273,7 @@ func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantR
 	}
 	input, err := s.loadTenantBackupInput(ctx, backupKey)
 	if err != nil {
-		_ = s.updateTaskActionProgress(context.Background(), task, "restore_load_backup", 1, total, taskActionUpdate{ID: "load_backup", Err: err}, nil)
+		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_load_backup", 1, total, taskActionUpdate{ID: "load_backup", Err: err}, nil)
 		return TenantRestoreReport{}, err
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "restore_backup_loaded", 1, total, taskActionUpdate{
@@ -343,9 +343,14 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			}
 			purge, err := s.PurgeTenant(ctx, task.TenantID, true)
 			if err != nil {
-				_ = s.updateTaskActionProgress(context.Background(), task, "restore_purge_existing", 2, total, taskActionUpdate{ID: "purge_existing", Err: err}, nil)
+				_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_purge_existing", 2, total, taskActionUpdate{ID: "purge_existing", Err: err}, nil)
 				return TenantRestoreReport{}, err
 			}
+			boundCtx, err := s.prepareCreateAndBindWriterFence(ctx, task.TenantID)
+			if err != nil {
+				return TenantRestoreReport{}, err
+			}
+			ctx = boundCtx
 			if err := s.updateTaskActionProgress(ctx, task, "restore_purge_done", 2, total, taskActionUpdate{
 				ID:     "purge_existing",
 				Status: "completed",
@@ -366,10 +371,12 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			return TenantRestoreReport{}, err
 		}
 		unlock := s.lockTenant(task.TenantID)
-		if err := s.acquireWriterLease(ctx, task.TenantID); err != nil {
+		boundCtx, err := s.acquireAndBindWriterFence(ctx, task.TenantID)
+		if err != nil {
 			unlock()
 			return TenantRestoreReport{}, err
 		}
+		ctx = boundCtx
 		catalog, err := s.putShardedSnapshot(ctx, task.TenantID, snapshot)
 		if err != nil {
 			unlock()
@@ -431,9 +438,6 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			return TenantRestoreReport{}, err
 		}
 		metadata := restoredTenantMetadata(record.Metadata, task.TenantID)
-		if err := s.clearTenantPurgeTombstone(ctx, task.TenantID); err != nil {
-			return TenantRestoreReport{}, err
-		}
 		if err := s.putTenantMetadata(ctx, task.TenantID, metadata); err != nil {
 			return TenantRestoreReport{}, err
 		}
@@ -489,7 +493,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		var err error
 		catalogIndex, err = s.RebuildIndexes(ctx, task.TenantID)
 		if err != nil {
-			_ = s.updateTaskActionProgress(context.Background(), task, "restore_rebuild_indexes", 5, total, taskActionUpdate{ID: "rebuild_indexes", Err: err}, nil)
+			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_rebuild_indexes", 5, total, taskActionUpdate{ID: "rebuild_indexes", Err: err}, nil)
 			return TenantRestoreReport{}, err
 		}
 		if err := s.updateTaskActionProgress(ctx, task, "restore_indexes_done", 6, total, taskActionUpdate{

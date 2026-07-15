@@ -191,7 +191,7 @@ func TestRunGCCleansExpiredDeadLetters(t *testing.T) {
 		UpdatedAt: old,
 	}
 	key := store.deadLetterKey("tenant-a", "agent", letter.ID)
-	if _, err := store.putDeadLetterWithMeta(ctx, key, letter, ObjectMeta{Key: key}); err != nil {
+	if _, err := store.putDeadLetterWithMeta(ctx, "tenant-a", key, letter, ObjectMeta{Key: key}); err != nil {
 		t.Fatalf("put deadletter: %v", err)
 	}
 	report, err := store.RunGC(ctx, "tenant-a", GCOptions{DeadLetterMaxAge: time.Hour})
@@ -363,7 +363,7 @@ func putExpiredDeadLetter(t *testing.T, ctx context.Context, store *TenantStore,
 		UpdatedAt: old,
 	}
 	key := store.deadLetterKey(tenantID, source, letter.ID)
-	if _, err := store.putDeadLetterWithMeta(ctx, key, letter, ObjectMeta{Key: key}); err != nil {
+	if _, err := store.putDeadLetterWithMeta(ctx, tenantID, key, letter, ObjectMeta{Key: key}); err != nil {
 		t.Fatalf("put deadletter %q: %v", batchID, err)
 	}
 	return key

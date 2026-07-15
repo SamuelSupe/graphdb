@@ -67,6 +67,12 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 			return task, nil
 		}
 	}
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
+		s.taskMu.Unlock()
+		return IndexTask{}, err
+	}
+	ctx = boundCtx
 	id, err := newCommitID()
 	if err != nil {
 		s.taskMu.Unlock()
@@ -85,7 +91,7 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 	}
 	s.indexTasks[tenantID] = task
 	s.taskMu.Unlock()
-	go s.runIndexTaskAdmitted(tenantID, task)
+	go s.runIndexTaskAdmitted(context.WithoutCancel(ctx), tenantID, task)
 	return task, nil
 }
 
@@ -122,7 +128,7 @@ func (s *TenantStore) findRunningIndexRebuildTask(ctx context.Context, tenantID 
 	}
 	if errors.Is(err, errInvalidIndexTask) {
 		markerInvalid = true
-		_ = s.Objects.Delete(ctx, s.indexRebuildRunningTaskKey(tenantID))
+		_ = s.deleteTenantGenerationObject(ctx, tenantID, s.indexRebuildRunningTaskKey(tenantID))
 		return IndexTask{}, false, false, nil
 	}
 	if err != nil {
@@ -322,7 +328,7 @@ func (s *TenantStore) saveIndexRebuildRunningMarker(ctx context.Context, task In
 	if err != nil {
 		return err
 	}
-	return s.Objects.Put(ctx, s.indexRebuildRunningTaskKey(task.TenantID), data)
+	return s.putTenantGenerationObject(ctx, task.TenantID, s.indexRebuildRunningTaskKey(task.TenantID), data)
 }
 
 func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenantID string, taskID string) error {
@@ -331,7 +337,7 @@ func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenant
 		return nil
 	}
 	if errors.Is(err, errInvalidIndexTask) {
-		return s.Objects.Delete(ctx, s.indexRebuildRunningTaskKey(tenantID))
+		return s.deleteTenantGenerationObject(ctx, tenantID, s.indexRebuildRunningTaskKey(tenantID))
 	}
 	if err != nil {
 		return err
@@ -339,10 +345,11 @@ func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenant
 	if task.ID != taskID {
 		return nil
 	}
-	return s.Objects.Delete(ctx, s.indexRebuildRunningTaskKey(tenantID))
+	return s.deleteTenantGenerationObject(ctx, tenantID, s.indexRebuildRunningTaskKey(tenantID))
 }
 
-func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
+func (s *TenantStore) runIndexRebuildTask(ctx context.Context, tenantID string, task IndexTask) {
+	writeCtx := context.WithoutCancel(ctx)
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			task.FinishedAt = time.Now().UTC()
@@ -350,29 +357,29 @@ func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
 			task.Status = "failed"
 			task.Phase = "failed"
 			task.Error = fmt.Sprintf("panic: %v", recovered)
-			s.finishIndexRebuildTask(task)
+			s.finishIndexRebuildTask(writeCtx, task)
 		}
 	}()
 	task.Phase = "backfill"
 	task.ProgressCompleted = 0
 	task.ProgressTotal = 1
 	task.UpdatedAt = time.Now().UTC()
-	s.trySaveIndexTask(context.Background(), task)
-	catalog, err := s.RebuildIndexes(context.Background(), tenantID)
+	s.trySaveIndexTask(writeCtx, task)
+	catalog, err := s.RebuildIndexes(writeCtx, tenantID)
 	task.FinishedAt = time.Now().UTC()
 	task.UpdatedAt = task.FinishedAt
 	if err != nil {
 		task.Status = "failed"
 		task.Phase = "failed"
 		task.Error = err.Error()
-		s.finishIndexRebuildTask(task)
+		s.finishIndexRebuildTask(writeCtx, task)
 		return
 	}
 	task.Phase = "cleanup"
 	task.CatalogVersion = catalog.Version
 	task.UpdatedAt = time.Now().UTC()
-	s.trySaveIndexTask(context.Background(), task)
-	gcReport, cleanupErr := s.RunGC(context.Background(), tenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
+	s.trySaveIndexTask(writeCtx, task)
+	gcReport, cleanupErr := s.RunGC(writeCtx, tenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
 	task.Status = "succeeded"
 	task.Phase = "done"
 	task.ProgressCompleted = 1
@@ -385,7 +392,7 @@ func (s *TenantStore) runIndexRebuildTask(tenantID string, task IndexTask) {
 	} else if gcReport.IndexCleanupSkippedReason != "" {
 		task.Error = "index cleanup skipped: " + gcReport.IndexCleanupSkippedReason
 	}
-	s.finishIndexRebuildTask(task)
+	s.finishIndexRebuildTask(writeCtx, task)
 }
 
 func (s *TenantStore) clearIndexRebuildTask(tenantID string, taskID string) {
@@ -404,14 +411,14 @@ func (s *TenantStore) saveIndexTask(ctx context.Context, task IndexTask) error {
 	if err != nil {
 		return err
 	}
-	if err := s.Objects.Put(ctx, s.indexTaskKey(task.TenantID, task.ID), data); err != nil {
+	if err := s.putTenantGenerationObject(ctx, task.TenantID, s.indexTaskKey(task.TenantID, task.ID), data); err != nil {
 		return err
 	}
 	if task.Type != "rebuild" {
 		return nil
 	}
 	if indexTaskStillActive(task) {
-		return s.Objects.Put(ctx, s.indexRebuildRunningTaskKey(task.TenantID), data)
+		return s.putTenantGenerationObject(ctx, task.TenantID, s.indexRebuildRunningTaskKey(task.TenantID), data)
 	}
 	return s.clearIndexRebuildRunningMarker(ctx, task.TenantID, task.ID)
 }

@@ -21,6 +21,8 @@ const (
 	parquetWriterLeaseColumnExpiresAt
 	parquetWriterLeaseColumnUpdatedAt
 	parquetWriterLeaseColumnContentHash
+	parquetWriterLeaseColumnFenceToken
+	parquetWriterLeaseColumnFenceEpoch
 )
 
 func marshalParquetWriterLease(ctx context.Context, lease WriterLease) ([]byte, error) {
@@ -33,6 +35,8 @@ func marshalParquetWriterLease(ctx context.Context, lease WriterLease) ([]byte, 
 	builder.Field(parquetWriterLeaseColumnExpiresAt).(*array.StringBuilder).Append(formatParquetTime(lease.ExpiresAt))
 	builder.Field(parquetWriterLeaseColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(lease.UpdatedAt))
 	builder.Field(parquetWriterLeaseColumnContentHash).(*array.StringBuilder).Append(writerLeaseContentHash(lease))
+	builder.Field(parquetWriterLeaseColumnFenceToken).(*array.StringBuilder).Append(lease.FenceToken)
+	builder.Field(parquetWriterLeaseColumnFenceEpoch).(*array.Int64Builder).Append(lease.FenceEpoch)
 
 	batch := builder.NewRecordBatch()
 	defer batch.Release()
@@ -93,6 +97,20 @@ func decodeParquetWriterLease(ctx context.Context, data []byte) (WriterLease, er
 		ExpiresAt: parseParquetTime(expiresColumn.Value(0)),
 		UpdatedAt: parseParquetTime(updatedColumn.Value(0)),
 	}
+	if table.NumCols() > int64(parquetWriterLeaseColumnFenceToken) {
+		fenceColumn, err := parquetStringColumn(batch, parquetWriterLeaseColumnFenceToken, "fence_token")
+		if err != nil {
+			return WriterLease{}, err
+		}
+		lease.FenceToken = fenceColumn.Value(0)
+	}
+	if table.NumCols() > int64(parquetWriterLeaseColumnFenceEpoch) {
+		fenceEpochColumn, err := parquetInt64Column(batch, parquetWriterLeaseColumnFenceEpoch, "fence_epoch")
+		if err != nil {
+			return WriterLease{}, err
+		}
+		lease.FenceEpoch = fenceEpochColumn.Value(0)
+	}
 	if lease.TenantID != tenantColumn.Value(0) || lease.OwnerID != ownerColumn.Value(0) {
 		return WriterLease{}, fmt.Errorf("writer lease identity mismatch")
 	}
@@ -110,14 +128,23 @@ func parquetWriterLeaseArrowSchema() *arrow.Schema {
 		{Name: "expires_at", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "updated_at", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "content_hash", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "fence_token", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "fence_epoch", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
 	}, nil)
 }
 
 func writerLeaseContentHash(lease WriterLease) string {
-	return parquetScalarContentHash(
+	parts := []string{
 		lease.TenantID,
 		lease.OwnerID,
 		formatParquetTime(lease.ExpiresAt),
 		formatParquetTime(lease.UpdatedAt),
-	)
+	}
+	if lease.FenceToken != "" {
+		parts = append(parts, lease.FenceToken)
+	}
+	if lease.FenceEpoch > 0 {
+		parts = append(parts, formatInt64ForHash(lease.FenceEpoch))
+	}
+	return parquetScalarContentHash(parts...)
 }

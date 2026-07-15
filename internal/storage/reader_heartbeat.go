@@ -74,7 +74,8 @@ func (s *TenantStore) PutReaderHeartbeat(ctx context.Context, tenantID string, h
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	if err := s.Objects.Put(ctx, s.readerHeartbeatKey(tenantID, heartbeat.ReaderID), data); err != nil {
+	key := s.readerHeartbeatKey(tenantID, heartbeat.ReaderID)
+	if err := s.putTenantGenerationObject(ctx, tenantID, key, data); err != nil {
 		return ReaderHeartbeat{}, err
 	}
 	s.cacheReaderHeartbeatWrite(cacheKey, heartbeat, time.Now())
@@ -141,10 +142,13 @@ func (s *TenantStore) ListReaderHeartbeatsWithOptions(ctx context.Context, tenan
 			}
 			expired := options.MaxAge > 0 && !heartbeat.LastSeenAt.IsZero() && now.Sub(heartbeat.LastSeenAt) > options.MaxAge
 			if expired && options.DeleteExpired {
-				if err := s.Objects.Delete(ctx, object.Key); err != nil {
+				err := s.Objects.DeleteConditional(ctx, object.Key, PutCondition{IfMatch: object.ETag})
+				if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) && !errors.Is(err, ErrConditionalDeleteUnsupported) {
 					return nil, err
 				}
-				s.deleteReaderHeartbeatWrite(tenantID + "\x00" + readerID)
+				if err == nil || errors.Is(err, ErrNotFound) {
+					s.deleteReaderHeartbeatWrite(tenantID + "\x00" + readerID)
+				}
 				continue
 			}
 			items = append(items, heartbeat)

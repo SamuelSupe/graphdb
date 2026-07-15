@@ -80,23 +80,55 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	if err != nil {
 		return report, err
 	}
-	rewrites := map[string][]byte{}
-	if !options.DryRun {
-		rewrites, err = source.prepareTenantMigrationRewrites(ctx, sourceTenantID, targetTenantID, sourceObjects, targetPrefix)
-		if err != nil {
-			return report, err
-		}
-	}
 	report.TargetExists = len(targetObjects) > 0
 	if report.TargetExists && !options.Overwrite && !options.DryRun {
 		return report, fmt.Errorf("%w: target tenant %q already exists", ErrConflict, targetTenantID)
 	}
-	if report.TargetExists && options.Overwrite && !options.DryRun {
+	if options.DryRun {
+		for _, object := range sourceObjects {
+			report.Objects++
+			report.Bytes += object.Size
+			report.Skipped++
+			if len(report.Samples) < tenantMigrationSampleLimit {
+				relative := strings.TrimPrefix(object.Key, sourcePrefix)
+				report.Samples = append(report.Samples, TenantMigrationObject{SourceKey: object.Key, TargetKey: targetPrefix + relative, Bytes: object.Size, ETag: object.ETag})
+			}
+		}
+		report.FinishedAt = time.Now().UTC()
+		return report, nil
+	}
+	targetCtx, err := target.acquireAndBindWriterFence(ctx, targetTenantID)
+	if err != nil {
+		return report, err
+	}
+	lease, _, ok := target.getCachedWriterLeaseAny(targetTenantID)
+	if !ok {
+		return report, fmt.Errorf("%w: target tenant %q has no active writer fence", ErrLeaseHeld, targetTenantID)
+	}
+	targetFence := writerFenceRef{ownerID: lease.OwnerID, token: lease.FenceToken, epoch: lease.FenceEpoch}
+	rewrites, err := source.prepareTenantMigrationRewrites(ctx, sourceTenantID, targetTenantID, sourceObjects, targetPrefix, targetFence)
+	if err != nil {
+		return report, err
+	}
+	if report.TargetExists && options.Overwrite {
+		targetObjects, err = target.Objects.List(targetCtx, targetPrefix)
+		if err != nil {
+			return report, err
+		}
 		for _, object := range targetObjects {
-			if err := target.Objects.Delete(ctx, object.Key); err != nil {
+			if object.Key == target.writerLeaseKey(targetTenantID) {
+				continue
+			}
+			if err := target.deleteTenantObject(targetCtx, targetTenantID, object.Key); err != nil {
 				return report, err
 			}
 		}
+		target.deleteWriteCache(targetTenantID)
+		target.deleteCachedTenantMetadata(targetTenantID)
+		target.deleteCachedTenantConfig(targetTenantID)
+		target.deleteCachedSourcePolicy(targetTenantID)
+		target.deleteCachedIndexCatalog(targetTenantID)
+		target.clearObjectKeyPrefix(targetPrefix)
 	}
 
 	for _, object := range sourceObjects {
@@ -114,10 +146,6 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		if len(report.Samples) < tenantMigrationSampleLimit {
 			report.Samples = append(report.Samples, TenantMigrationObject{SourceKey: object.Key, TargetKey: targetKey, Bytes: object.Size, ETag: object.ETag})
 		}
-		if options.DryRun {
-			report.Skipped++
-			continue
-		}
 		data := rewrites[object.Key]
 		if len(data) == 0 {
 			data, err = source.Objects.Get(ctx, object.Key)
@@ -125,7 +153,7 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 				return report, err
 			}
 		}
-		if err := target.Objects.Put(ctx, targetKey, data); err != nil {
+		if err := target.putTenantObject(targetCtx, targetTenantID, targetKey, data); err != nil {
 			return report, err
 		}
 		report.Copied++
@@ -133,20 +161,15 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 			report.Samples[len(report.Samples)-1].SHA256 = objectContentHash(data)
 		}
 	}
-	if !options.DryRun {
-		if err := target.addTenantToRegistry(ctx, targetTenantID); err != nil {
-			return report, err
-		}
+	if err := target.addTenantToRegistry(targetCtx, targetTenantID); err != nil {
+		return report, err
 	}
 	report.FinishedAt = time.Now().UTC()
 	return report, nil
 }
 
-func (s *TenantStore) prepareTenantMigrationRewrites(ctx context.Context, tenantID string, targetTenantID string, objects []ObjectInfo, targetPrefix string) (map[string][]byte, error) {
+func (s *TenantStore) prepareTenantMigrationRewrites(ctx context.Context, tenantID string, targetTenantID string, objects []ObjectInfo, targetPrefix string, targetFence writerFenceRef) (map[string][]byte, error) {
 	sourcePrefix := s.tenantObjectPrefix(tenantID)
-	if sourcePrefix == targetPrefix && tenantID == targetTenantID {
-		return nil, nil
-	}
 	rewrites := map[string][]byte{}
 	segmentHashes := map[string]string{}
 	for _, object := range objects {
@@ -173,7 +196,7 @@ func (s *TenantStore) prepareTenantMigrationRewrites(ctx context.Context, tenant
 		if err != nil {
 			return nil, err
 		}
-		rewritten, changed, err := s.rewriteTenantMigrationObject(ctx, data, object.Key, tenantID, targetTenantID, sourcePrefix, targetPrefix, segmentHashes)
+		rewritten, changed, err := s.rewriteTenantMigrationObject(ctx, data, object.Key, tenantID, targetTenantID, sourcePrefix, targetPrefix, segmentHashes, targetFence)
 		if err != nil {
 			return nil, err
 		}
@@ -184,7 +207,7 @@ func (s *TenantStore) prepareTenantMigrationRewrites(ctx context.Context, tenant
 	return rewrites, nil
 }
 
-func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []byte, key string, tenantID string, targetTenantID string, sourcePrefix string, targetPrefix string, segmentHashes map[string]string) ([]byte, bool, error) {
+func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []byte, key string, tenantID string, targetTenantID string, sourcePrefix string, targetPrefix string, segmentHashes map[string]string, targetFence writerFenceRef) ([]byte, bool, error) {
 	relative := strings.TrimPrefix(key, sourcePrefix)
 	switch {
 	case relative == "manifest.parquet":
@@ -193,6 +216,8 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 			return nil, false, err
 		}
 		manifest.TenantID = targetTenantID
+		manifest.WriterFence = targetFence.token
+		manifest.WriterFenceEpoch = targetFence.epoch
 		manifest.SnapshotKey = rewriteTenantObjectKey(manifest.SnapshotKey, sourcePrefix, targetPrefix)
 		manifest.SnapshotCatalogKey = rewriteTenantObjectKey(manifest.SnapshotCatalogKey, sourcePrefix, targetPrefix)
 		for i := range manifest.CommitKeys {

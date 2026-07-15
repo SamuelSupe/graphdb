@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 func (s *TenantStore) CurrentScanCatalog(ctx context.Context, tenantID string) (IndexCatalog, error) {
@@ -80,4 +82,48 @@ func scanCatalogContentHash(catalog IndexCatalog) string {
 		return ""
 	}
 	return hash
+}
+
+func entityPageSpecMap(catalog IndexCatalog) map[string]EntityPageSpec {
+	specs := make(map[string]EntityPageSpec, len(catalog.EntityPages))
+	for _, spec := range catalog.EntityPages {
+		specs[spec.Shard] = spec
+	}
+	return specs
+}
+
+func edgeShardSpecMap(catalog IndexCatalog) map[string]EdgeShard {
+	specs := make(map[string]EdgeShard, len(catalog.EdgeShards))
+	for _, spec := range catalog.EdgeShards {
+		specs[edgeShardTargetKey(spec.RelationType, spec.Shard)] = spec
+	}
+	return specs
+}
+
+func entityScanStart(shards []string, after string) int {
+	separator := strings.IndexByte(after, 0)
+	if separator < 0 {
+		return 0
+	}
+	shard := after[:separator]
+	return sort.SearchStrings(shards, shard)
+}
+
+func edgeScanStart(targets []edgeShardTarget, after string) int {
+	first := strings.IndexByte(after, 0)
+	if first < 0 {
+		return 0
+	}
+	secondOffset := strings.IndexByte(after[first+1:], 0)
+	if secondOffset < 0 {
+		return 0
+	}
+	group := after[:first+1+secondOffset]
+	return sort.Search(len(targets), func(i int) bool {
+		return edgeShardTargetKey(targets[i].RelationType, targets[i].Shard) >= group
+	})
+}
+
+func edgeShardTargetKey(relationType string, shard string) string {
+	return relationType + "\x00" + shard
 }

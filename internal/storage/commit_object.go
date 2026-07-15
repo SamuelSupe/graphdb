@@ -9,12 +9,16 @@ import (
 )
 
 func (s *TenantStore) putCommitObjectIfAbsent(ctx context.Context, key string, commit graph.Commit) error {
+	_, err := s.putCommitObjectIfAbsentMeta(ctx, key, commit)
+	return err
+}
+
+func (s *TenantStore) putCommitObjectIfAbsentMeta(ctx context.Context, key string, commit graph.Commit) (ObjectMeta, error) {
 	data, err := marshalParquetCommitObject(ctx, commit)
 	if err != nil {
-		return err
+		return ObjectMeta{}, err
 	}
-	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
-	return err
+	return s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
 }
 
 func (s *TenantStore) getCommitObject(ctx context.Context, key string) (graph.Commit, error) {

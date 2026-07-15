@@ -2,6 +2,7 @@ package graph
 
 import (
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,10 @@ type Graph struct {
 	fieldIndex    map[string]map[string]map[string]map[string]struct{}
 	identityIndex map[string]map[string]string
 	cow           *copyOnWriteState
+
+	contentFingerprint      [16]byte
+	contentFingerprintReady bool
+	contentFingerprintMu    sync.Mutex
 }
 
 func New() *Graph {
@@ -82,16 +87,19 @@ func FromSnapshot(snapshot Snapshot) (*Graph, error) {
 }
 
 func (g *Graph) Clone() *Graph {
+	fingerprint, fingerprintReady := g.contentFingerprintState()
 	clone := &Graph{
-		Version:       g.Version,
-		CITypes:       map[string]CIType{},
-		Entities:      map[string]Entity{},
-		RelationTypes: map[string]RelationType{},
-		Edges:         map[string]Edge{},
-		out:           copySetMap(g.out),
-		in:            copySetMap(g.in),
-		fieldIndex:    copyFieldIndex(g.fieldIndex),
-		identityIndex: copyStringMap(g.identityIndex),
+		Version:                 g.Version,
+		CITypes:                 map[string]CIType{},
+		Entities:                map[string]Entity{},
+		RelationTypes:           map[string]RelationType{},
+		Edges:                   map[string]Edge{},
+		out:                     copySetMap(g.out),
+		in:                      copySetMap(g.in),
+		fieldIndex:              copyFieldIndex(g.fieldIndex),
+		identityIndex:           copyStringMap(g.identityIndex),
+		contentFingerprint:      fingerprint,
+		contentFingerprintReady: fingerprintReady,
 	}
 	for name, ciType := range g.CITypes {
 		clone.CITypes[name] = copyCIType(ciType)

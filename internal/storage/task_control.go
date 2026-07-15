@@ -26,19 +26,22 @@ func (s *TenantStore) CancelTask(ctx context.Context, tenantID string, taskID st
 			return Task{}, fmt.Errorf("legacy index task cancellation is not supported")
 		}
 	}
-	if taskTerminal(task.Status) {
-		return task, nil
-	}
-	s.cancelTaskRuntime(tenantID, taskID)
-	now := time.Now().UTC()
-	task.Status = TaskStatusCanceled
-	task.Phase = TaskStatusCanceled
-	task.Error = TaskStatusCanceled
-	task.UpdatedAt = now
-	task.FinishedAt = now
-	if err := s.saveTask(ctx, task); err != nil {
+	task, err = s.mutateTask(ctx, tenantID, taskID, func(current *Task) error {
+		if taskTerminal(current.Status) {
+			return nil
+		}
+		now := time.Now().UTC()
+		current.Status = TaskStatusCanceled
+		current.Phase = TaskStatusCanceled
+		current.Error = TaskStatusCanceled
+		current.UpdatedAt = now
+		current.FinishedAt = now
+		return nil
+	})
+	if err != nil {
 		return Task{}, err
 	}
+	s.cancelTaskRuntime(tenantID, taskID)
 	return task, nil
 }
 

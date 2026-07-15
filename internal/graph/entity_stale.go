@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now time.Time) (ApplyReport, error) {
+func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now time.Time, tracker *mutationFingerprintTracker) (ApplyReport, error) {
 	request.Source = strings.TrimSpace(request.Source)
 	request.Kind = strings.TrimSpace(request.Kind)
 	request.Action = strings.TrimSpace(request.Action)
@@ -19,6 +19,7 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 	observed := observedExternalIDSet(request.ObservedExternalIDs)
 	report := ApplyReport{}
 	affected := newUniqueStringCollector(&report.AffectedEntityIDs)
+	affectedEdges := newUniqueStringCollector(&report.AffectedEdgeIDs)
 	ids := sortedEntityIDs(g.Entities)
 	for _, entityID := range ids {
 		entity := copyEntity(g.Entities[entityID])
@@ -30,6 +31,7 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 		}
 		switch request.Action {
 		case "mark_stale":
+			tracker.touchEntity(entityID)
 			markEntitySourceStale(&entity, request.Source, version, now)
 			entity.Version = version
 			entity.UpdatedAt = now
@@ -42,6 +44,8 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 			existingOwner := *entity.ExistenceSource
 			incomingOwner := sourceForStaleDelete(request, version, now)
 			if sourceCanDeleteEntity(existingOwner, incomingOwner) {
+				tracker.touchEntityWithEdges(entityID)
+				affectedEdges.add(g.incidentEdgeIDs(entityID)...)
 				g.deleteEntityForce(entityID)
 				affected.add(entityID)
 				continue

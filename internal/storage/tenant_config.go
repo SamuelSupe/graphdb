@@ -138,9 +138,11 @@ func (s *TenantStore) PutTenantConfig(ctx context.Context, tenantID string, conf
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return TenantConfig{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return TenantConfig{}, err
 	}
@@ -198,7 +200,7 @@ func (s *TenantStore) putTenantConfigRecordWithMeta(ctx context.Context, tenantI
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	return s.putBytesWithMetaResult(ctx, s.tenantConfigKey(tenantID), data, meta)
+	return s.putTenantBytesWithMetaResult(ctx, tenantID, s.tenantConfigKey(tenantID), data, meta)
 }
 
 func (s *TenantStore) effectiveBackpressureConfig(ctx context.Context, tenantID string) (BackpressureConfig, error) {

@@ -2,10 +2,43 @@ package storage
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func TestInitTenantConcurrentFirstLoadAndCommit(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatalf("init tenant: %v", err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, _, err := store.Load(ctx, "tenant-a")
+		errs <- err
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{}, CommitOptions{})
+		errs <- err
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent first operation: %v", err)
+		}
+	}
+}
 
 func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	ctx := context.Background()
@@ -19,6 +52,17 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	}
 	if first.Skipped || first.Version != 1 || first.DataMD5 == "" {
 		t.Fatalf("first result = %#v, want committed version 1 with data md5", first)
+	}
+	g, _, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load committed graph: %v", err)
+	}
+	legacyMD5, err := g.ContentMD5()
+	if err != nil {
+		t.Fatalf("legacy content md5: %v", err)
+	}
+	if first.DataMD5 != legacyMD5 {
+		t.Fatalf("data_md5 = %q, want legacy logical md5 %q", first.DataMD5, legacyMD5)
 	}
 
 	second, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{})
@@ -41,6 +85,9 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	if manifest.Version != 1 || len(manifest.CommitKeys) != 1 {
 		t.Fatalf("manifest after skip = %#v, want original single commit", manifest)
 	}
+	if manifest.DataMD5 != first.DataMD5 {
+		t.Fatalf("manifest data md5 = %q, want %q", manifest.DataMD5, first.DataMD5)
+	}
 
 	changed, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
 		Kind: "host", Source: "agent", ExternalID: "i-1", Fields: graph.Fields{"hostname": "app-02"},
@@ -50,6 +97,35 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	}
 	if changed.Skipped || changed.Version != 2 || changed.DataMD5 == first.DataMD5 {
 		t.Fatalf("changed result = %#v, want committed version 2 with new md5", changed)
+	}
+}
+
+func TestCommitPreservesDataMD5WhenLoadingLegacyManifest(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	writer := NewTenantStore(objects, "test")
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	first, err := writer.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	manifest, meta, err := writer.getManifest(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("get manifest: %v", err)
+	}
+	manifest.DataMD5 = ""
+	if _, err := writer.putManifestMeta(ctx, "tenant-a", manifest, meta); err != nil {
+		t.Fatalf("write legacy manifest: %v", err)
+	}
+
+	cold := NewTenantStore(objects, "test")
+	cold.InstanceID = writer.InstanceID
+	replay, err := cold.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{})
+	if err != nil {
+		t.Fatalf("cold no-op commit: %v", err)
+	}
+	if !replay.Skipped || replay.DataMD5 != first.DataMD5 {
+		t.Fatalf("legacy manifest replay = %#v, want skipped md5 %q", replay, first.DataMD5)
 	}
 }
 
@@ -74,6 +150,32 @@ func TestCommitSkipsWhenAppendUniqueAddsNoElements(t *testing.T) {
 	}
 	if !second.Skipped || second.Version != 1 {
 		t.Fatalf("second result = %#v, want skipped at version 1", second)
+	}
+}
+
+func TestCommitFingerprintStableAfterColdSnapshotLoad(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	writer := NewTenantStore(objects, "test")
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "app-01"},
+	}}}
+	first, err := writer.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := writer.Compact(ctx, "tenant-a"); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	cold := NewTenantStore(objects, "test")
+	cold.InstanceID = writer.InstanceID
+	second, err := cold.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{})
+	if err != nil {
+		t.Fatalf("cold no-op commit: %v", err)
+	}
+	if !second.Skipped || second.DataMD5 != first.DataMD5 {
+		t.Fatalf("cold result = %#v, want skipped fingerprint %q", second, first.DataMD5)
 	}
 }
 

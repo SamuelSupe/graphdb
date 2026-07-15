@@ -115,7 +115,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if request.BatchID == "" {
 		request.BatchID = defaultIngestBatchID(request)
 	}
-	if err := s.CheckWriteBackpressure(ctx, tenantID); err != nil {
+	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
 		return IngestResult{}, err
 	}
 	unlock := s.lockTenant(tenantID)
@@ -126,7 +126,15 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 		}
 		return IngestResult{}, err
 	}
+	boundCtx, err := s.bindCurrentWriterFence(ctx, tenantID)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return IngestResult{}, err
+	}
+	if err := s.checkWriteBackpressure(ctx, tenantID, true); err != nil {
 		return IngestResult{}, err
 	}
 	started := time.Now().UTC()
@@ -148,9 +156,6 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	result.Cursor = request.Cursor
 	pendingApplied := result.Applied
 	if pendingApplied > 0 {
-		if err := s.CheckWriteBackpressure(ctx, tenantID); err != nil {
-			return IngestResult{}, err
-		}
 		commitResult, err := s.commitWithRetryLocked(ctx, tenantID, mutations, CommitOptions{})
 		if err != nil {
 			if errors.Is(err, ErrBackpressure) {

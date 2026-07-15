@@ -46,9 +46,11 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return IndexDefinitionResult{}, err
 	}
@@ -87,9 +89,11 @@ func (s *TenantStore) DropIndex(ctx context.Context, tenantID string, name strin
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
+	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return IndexDefinitionResult{}, err
 	}

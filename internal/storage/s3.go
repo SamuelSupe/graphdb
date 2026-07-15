@@ -186,16 +186,33 @@ func (s *S3Store) DeleteConditional(ctx context.Context, key string, condition P
 	if err := validateObjectKey(key); err != nil {
 		return err
 	}
-	if condition.IfMatch != "" || condition.IfNoneMatch {
-		return fmt.Errorf("%w: %w: s3 conditional delete is not supported by this object store", ErrConflict, ErrConditionalDeleteUnsupported)
+	if condition.IfNoneMatch {
+		if _, err := s.Head(ctx, key); errors.Is(err, ErrNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return ErrConflict
 	}
 	headers := http.Header{}
+	if condition.IfMatch != "" {
+		headers.Set("If-Match", quoteETag(condition.IfMatch))
+	}
 	resp, err := s.doWithHeaders(ctx, http.MethodDelete, key, nil, nil, headers)
 	if err != nil {
 		return err
 	}
 	defer drainAndClose(resp.Body)
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
+	if resp.StatusCode == http.StatusPreconditionFailed || (resp.StatusCode == http.StatusConflict && condition.IfMatch != "") {
+		return ErrConflict
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		if condition.IfMatch != "" {
+			return ErrConflict
+		}
+		return nil
+	}
+	if resp.StatusCode == http.StatusNoContent {
 		return nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -84,17 +84,23 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 }
 
 func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, version int64, catalog IndexCatalog, options EdgeScanOptions, cursor scanCursor) (EdgeScanResult, bool, error) {
+	compiled, err := s.compiledScanCatalog(tenantID, catalog, cursor.CatalogHash)
+	if err != nil {
+		return EdgeScanResult{}, false, err
+	}
 	items := make([]graph.Edge, 0, normalizedScanLimit(options.Limit)+1)
-	targets := edgeScanShards(catalog, options)
+	targets := compiled.edgeScanTargets(options)
+	specs := compiled.edgeSpecs
+	targets = targets[edgeScanStart(targets, cursor.After):]
 	for i, target := range targets {
-		spec, ok := edgeShardSpec(catalog, target.RelationType, target.Shard)
+		spec, ok := specs[edgeShardTargetKey(target.RelationType, target.Shard)]
 		if !ok {
 			return EdgeScanResult{}, false, nil
 		}
 		if specFormat(spec.Format) == IndexFormatParquet {
 			if i+1 < len(targets) {
 				nextTarget := targets[i+1]
-				if next, ok := edgeShardSpec(catalog, nextTarget.RelationType, nextTarget.Shard); ok && specFormat(next.Format) == IndexFormatParquet {
+				if next, ok := specs[edgeShardTargetKey(nextTarget.RelationType, nextTarget.Shard)]; ok && specFormat(next.Format) == IndexFormatParquet {
 					s.prefetchParquetEdgeShardObject(ctx, tenantID, version, next)
 				}
 			}
@@ -111,14 +117,14 @@ func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, 
 				}
 				items = append(items, edge)
 				if len(items) > normalizedScanLimit(options.Limit) {
-					return edgeScanPage(tenantID, version, items, options, true, scanCatalogContentHash(catalog)), true, nil
+					return edgeScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
 				}
 			}
 			continue
 		}
 		return EdgeScanResult{}, false, nil
 	}
-	return edgeScanPage(tenantID, version, items, options, false, scanCatalogContentHash(catalog)), true, nil
+	return edgeScanPage(tenantID, version, items, options, false, compiled.contentHash), true, nil
 }
 
 func pageEdges(candidates []graph.Edge, version int64, options EdgeScanOptions, cursor scanCursor) ([]graph.Edge, string) {
@@ -195,29 +201,6 @@ func edgeMatchesSource(edge graph.Edge, source string) bool {
 type edgeShardTarget struct {
 	RelationType string
 	Shard        string
-}
-
-func edgeScanShards(catalog IndexCatalog, options EdgeScanOptions) []edgeShardTarget {
-	items := make([]edgeShardTarget, 0, len(catalog.EdgeShards))
-	for _, shard := range catalog.EdgeShards {
-		if options.Type != "" && shard.RelationType != options.Type {
-			continue
-		}
-		if options.FromShard != "" && shard.Shard != options.FromShard {
-			continue
-		}
-		if options.From != "" && !indexShardIDMatches(options.From, shard.Shard) {
-			continue
-		}
-		items = append(items, edgeShardTarget{RelationType: shard.RelationType, Shard: shard.Shard})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].RelationType == items[j].RelationType {
-			return items[i].Shard < items[j].Shard
-		}
-		return items[i].RelationType < items[j].RelationType
-	})
-	return items
 }
 
 func edgeShardSpec(catalog IndexCatalog, relationType string, shard string) (EdgeShard, bool) {

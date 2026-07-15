@@ -136,8 +136,9 @@ func (s *TenantStore) parquetObjectSuffix(tenantID string, key string) string {
 }
 
 func (s *TenantStore) writeChangedParquetSecondaryIndexesFast(ctx context.Context, tenantID string, indexes []SecondaryIndex, catalog IndexCatalog, version int64) error {
+	specs := indexCatalogSpecMap(catalog)
 	for _, index := range indexes {
-		spec, ok := indexCatalogSpec(catalog, index.Kind, index.Field)
+		spec, ok := specs[index.Kind+"\x00"+index.Field]
 		if !ok {
 			continue
 		}
@@ -164,6 +165,15 @@ func (s *TenantStore) writeChangedParquetSecondaryIndexesFast(ctx context.Contex
 	return nil
 }
 
+func (s *TenantStore) writeIncrementalSecondaryIndexObjects(ctx context.Context, tenantID string, writes []incrementalSecondaryIndexWrite) error {
+	for _, write := range writes {
+		if err := s.putParquetSecondaryIndexObject(ctx, write.Key, tenantID, write.Index, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *TenantStore) secondaryIndexGroupUsesVersion(tenantID string, spec IndexSpec, group secondaryIndexObjectGroup, version int64) bool {
 	for _, shardID := range group.Shards {
 		object, ok := indexObjectByRole(spec.Objects, secondaryIndexShardRole(shardID))
@@ -175,11 +185,12 @@ func (s *TenantStore) secondaryIndexGroupUsesVersion(tenantID string, spec Index
 }
 
 func (s *TenantStore) writeChangedParquetEdgeShardsFast(ctx context.Context, tenantID string, shards []EdgeShardData, catalog IndexCatalog, version int64) error {
+	specs := edgeShardSpecMap(catalog)
 	for _, group := range edgeShardDataPackGroups(shards) {
 		for i := range group.Shards {
 			group.Shards[i].TenantID = tenantID
 		}
-		if !s.edgeShardGroupUsesVersion(tenantID, catalog, group, version) {
+		if !s.edgeShardGroupUsesVersion(tenantID, specs, group, version) {
 			continue
 		}
 		pack := mergeEdgeShardPack(group)
@@ -195,9 +206,9 @@ func (s *TenantStore) writeChangedParquetEdgeShardsFast(ctx context.Context, ten
 	return nil
 }
 
-func (s *TenantStore) edgeShardGroupUsesVersion(tenantID string, catalog IndexCatalog, group edgeShardDataPackGroup, version int64) bool {
+func (s *TenantStore) edgeShardGroupUsesVersion(tenantID string, specs map[string]EdgeShard, group edgeShardDataPackGroup, version int64) bool {
 	for _, shard := range group.Shards {
-		spec, ok := edgeShardSpec(catalog, shard.RelationType, shard.Shard)
+		spec, ok := specs[edgeShardTargetKey(shard.RelationType, shard.Shard)]
 		if !ok {
 			continue
 		}
@@ -210,14 +221,19 @@ func (s *TenantStore) edgeShardGroupUsesVersion(tenantID string, catalog IndexCa
 	return false
 }
 
-func (s *TenantStore) writeChangedParquetEntityPagesFast(ctx context.Context, tenantID string, pages []EntityPageData, catalog IndexCatalog, before *graph.Graph, after *graph.Graph, version int64) error {
+func (s *TenantStore) writeChangedParquetEntityPagesFast(ctx context.Context, tenantID string, pages []EntityPageData, catalog IndexCatalog, before *graph.Graph, after *graph.Graph, changedEntityIDs []string, version int64) error {
 	recordJobs := []entityRecordWriteJob{}
 	writeRecords := s.WriteEntityRecords
+	changed := make(map[string]struct{}, len(changedEntityIDs))
+	for _, entityID := range changedEntityIDs {
+		changed[entityID] = struct{}{}
+	}
+	specs := entityPageSpecMap(catalog)
 	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords) {
 		for i := range group.Pages {
 			group.Pages[i].TenantID = tenantID
 		}
-		if !s.entityPageGroupUsesVersion(tenantID, catalog, group, version) {
+		if !s.entityPageGroupUsesVersion(tenantID, specs, group, version) {
 			continue
 		}
 		pack := mergeEntityPagePack(group)
@@ -234,6 +250,9 @@ func (s *TenantStore) writeChangedParquetEntityPagesFast(ctx context.Context, te
 			for _, page := range group.Pages {
 				pageHash := entityPageContentHash(page)
 				for _, entity := range page.Entities {
+					if _, ok := changed[entity.ID]; !ok {
+						continue
+					}
 					record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
 					recordJobs = append(recordJobs, entityRecordWriteJob{Key: s.entityRecordKey(tenantID, entity.ID), Record: record})
 				}
@@ -246,12 +265,12 @@ func (s *TenantStore) writeChangedParquetEntityPagesFast(ctx context.Context, te
 	if err := s.putEntityRecordBatch(ctx, recordJobs); err != nil {
 		return err
 	}
-	return s.tombstoneDeletedEntityRecords(ctx, tenantID, before, after, version)
+	return s.tombstoneDeletedEntityRecords(ctx, tenantID, before, after, changedEntityIDs, version)
 }
 
-func (s *TenantStore) entityPageGroupUsesVersion(tenantID string, catalog IndexCatalog, group entityPageDataPackGroup, version int64) bool {
+func (s *TenantStore) entityPageGroupUsesVersion(tenantID string, specs map[string]EntityPageSpec, group entityPageDataPackGroup, version int64) bool {
 	for _, page := range group.Pages {
-		spec, ok := entityPageSpec(catalog, page.Shard)
+		spec, ok := specs[page.Shard]
 		if !ok {
 			continue
 		}
@@ -264,12 +283,15 @@ func (s *TenantStore) entityPageGroupUsesVersion(tenantID string, catalog IndexC
 	return false
 }
 
-func (s *TenantStore) tombstoneDeletedEntityRecords(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, version int64) error {
+func (s *TenantStore) tombstoneDeletedEntityRecords(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, changedEntityIDs []string, version int64) error {
 	if before == nil || after == nil {
 		return nil
 	}
-	for id := range before.Entities {
-		if _, ok := after.Entities[id]; ok {
+	for _, id := range changedEntityIDs {
+		if _, existed := before.Entities[id]; !existed {
+			continue
+		}
+		if _, exists := after.Entities[id]; exists {
 			continue
 		}
 		key := s.entityRecordKey(tenantID, id)
@@ -301,11 +323,10 @@ func (s *TenantStore) indexObjectUsesVersion(tenantID string, object IndexObject
 	return ok && objectVersion == version
 }
 
-func indexCatalogSpec(catalog IndexCatalog, kind string, field string) (IndexSpec, bool) {
+func indexCatalogSpecMap(catalog IndexCatalog) map[string]IndexSpec {
+	specs := make(map[string]IndexSpec, len(catalog.Indexes))
 	for _, spec := range catalog.Indexes {
-		if spec.Kind == kind && spec.Field == field {
-			return spec, true
-		}
+		specs[spec.Kind+"\x00"+spec.Field] = spec
 	}
-	return IndexSpec{}, false
+	return specs
 }
