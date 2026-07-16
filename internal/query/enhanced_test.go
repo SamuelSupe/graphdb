@@ -234,6 +234,21 @@ func TestProjectionTrimsFieldSources(t *testing.T) {
 	}
 }
 
+func TestProjectionTrimsFieldWriteModes(t *testing.T) {
+	entity := graph.Entity{
+		ID:              "host:modes",
+		Kind:            "host",
+		Fields:          graph.Fields{"keep": "value", "drop": "unused"},
+		FieldWriteModes: map[string]string{"keep": graph.FieldMergeReplace, "drop": graph.FieldMergeReplace},
+	}
+	result := Result{Entity: &entity}
+	applyProjection(&result, []string{"keep"})
+	modes := result.Entity.FieldWriteModes
+	if len(modes) != 1 || modes["keep"] != graph.FieldMergeReplace {
+		t.Fatalf("field_write_modes = %#v, want only keep", modes)
+	}
+}
+
 func TestProjectionKeepsMetaFieldsSeparateFromSchemalessFields(t *testing.T) {
 	g := graph.New()
 	if err := g.ApplyCommit(graph.Commit{

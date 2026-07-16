@@ -10,6 +10,8 @@ func trimEntityFields(entity graph.Entity, fields []string) graph.Entity {
 	if len(fields) == 0 {
 		return graph.CopyEntity(entity)
 	}
+	fieldSources := entity.FieldSources
+	fieldWriteModes := entity.FieldWriteModes
 	keep := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
 		if fieldName, ok := entityFieldName(field); ok {
@@ -19,6 +21,7 @@ func trimEntityFields(entity graph.Entity, fields []string) graph.Entity {
 	if len(keep) == 0 {
 		entity.Fields = graph.Fields{}
 		entity.FieldSources = nil
+		entity.FieldWriteModes = nil
 		return graph.CopyEntity(entity)
 	}
 
@@ -29,8 +32,12 @@ func trimEntityFields(entity graph.Entity, fields []string) graph.Entity {
 		}
 	}
 	entity.Fields = selected
-	entity.FieldSources = trimFieldSources(entity.FieldSources, keep)
-	return graph.CopyEntity(entity)
+	entity.FieldSources = nil
+	entity.FieldWriteModes = nil
+	projected := graph.CopyEntity(entity)
+	projected.FieldSources = trimFieldSources(fieldSources, keep)
+	projected.FieldWriteModes = trimFieldWriteModes(fieldWriteModes, keep)
+	return projected
 }
 
 func trimFieldSources(sources map[string]graph.FieldSource, keep map[string]struct{}) map[string]graph.FieldSource {
@@ -41,6 +48,22 @@ func trimFieldSources(sources map[string]graph.FieldSource, keep map[string]stru
 	for field := range keep {
 		if source, ok := sources[field]; ok {
 			next[field] = source
+		}
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	return next
+}
+
+func trimFieldWriteModes(modes map[string]string, keep map[string]struct{}) map[string]string {
+	if len(modes) == 0 || len(keep) == 0 {
+		return nil
+	}
+	next := make(map[string]string, min(len(modes), len(keep)))
+	for field := range keep {
+		if mode, ok := modes[field]; ok {
+			next[field] = mode
 		}
 	}
 	if len(next) == 0 {

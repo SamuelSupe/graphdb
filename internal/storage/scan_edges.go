@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -84,7 +83,7 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 	if err != nil {
 		return EdgeScanResult{}, err
 	}
-	edges, next := pageEdges(sortedScanEdges(g.Edges), loaded.Version, options, cursor)
+	edges, next := pageEdgeMap(g.Edges, loaded.Version, options, cursor)
 	return EdgeScanResult{TenantID: tenantID, Version: loaded.Version, Edges: edges, NextCursor: next}, nil
 }
 
@@ -160,19 +159,6 @@ func edgeScanPage(tenantID string, version int64, items []graph.Edge, options Ed
 		next = encodeScanCursor(scanCursor{Version: version, CatalogHash: catalogHash, After: scanKey(last.Type+"\x00"+edgeShardID(last.From), last.ID), Query: edgeScanQueryHash(options)})
 	}
 	return EdgeScanResult{TenantID: tenantID, Version: version, Edges: append([]graph.Edge(nil), page...), NextCursor: next, IndexedRead: true}
-}
-
-func sortedScanEdges(edges map[string]graph.Edge) []graph.Edge {
-	items := make([]graph.Edge, 0, len(edges))
-	for _, edge := range edges {
-		items = append(items, edge)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		left := scanKey(items[i].Type+"\x00"+edgeShardID(items[i].From), items[i].ID)
-		right := scanKey(items[j].Type+"\x00"+edgeShardID(items[j].From), items[j].ID)
-		return left < right
-	})
-	return items
 }
 
 func edgeMatchesScan(edge graph.Edge, options EdgeScanOptions) bool {

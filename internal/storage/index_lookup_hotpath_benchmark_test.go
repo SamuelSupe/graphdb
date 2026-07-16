@@ -118,8 +118,11 @@ func TestTrimEntityFieldsKeepsProjectedValuesIsolated(t *testing.T) {
 	}
 
 	projected := trimEntityFields(entity, []string{"keep"})
-	if len(projected.Fields) != 1 || len(projected.FieldSources) != 1 {
+	if len(projected.Fields) != 1 || len(projected.FieldSources) != 1 || len(projected.FieldWriteModes) != 1 {
 		t.Fatalf("projected entity = %#v", projected)
+	}
+	if _, ok := projected.FieldWriteModes["drop"]; ok {
+		t.Fatalf("projection kept dropped write mode: %#v", projected.FieldWriteModes)
 	}
 	projected.Fields["keep"].(map[string]any)["nested"].([]any)[0] = "changed"
 	projected.FieldWriteModes["keep"] = "changed"

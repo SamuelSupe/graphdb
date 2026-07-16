@@ -56,12 +56,16 @@ func canBuildBoundedMatchPage(request Request, cursor cursorState) bool {
 func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.Entity, cursor cursorState, budget *budget) (Response, error) {
 	acc := newAggregateAccumulator(request.Aggregate)
 	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
-	results := make([]Result, 0, normalizedLimit(request.Limit)+1)
 	keep := normalizedLimit(request.Limit) + 1
+	results := make([]Result, 0, keep)
+	var sorted *boundedResults
+	if len(request.Sort) > 0 {
+		sorted = newBoundedResults(request.Sort, keep)
+	}
 	if err := budget.measure("filter-project", "", len(entities), func() (int, error) {
 		for _, entity := range entities {
 			if err := budget.add(1); err != nil {
-				return len(results), err
+				return len(results) + sorted.Len(), err
 			}
 			budget.scanned++
 			if !requestEntityMatches(request, entity) {
@@ -70,37 +74,25 @@ func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.E
 			result := Result{Entity: &entity}
 			acc.add(result)
 			groupAcc.add(result)
-			if len(request.Sort) > 0 {
-				results = appendBoundedSorted(results, result, request.Sort, keep)
+			if sorted != nil {
+				sorted.Add(result)
 				continue
 			}
 			if len(results) < keep {
 				results = append(results, result)
 			}
 		}
-		return len(results), nil
+		return len(results) + sorted.Len(), nil
 	}); err != nil {
 		return Response{}, err
 	}
 	if err := budget.check(); err != nil {
 		return Response{}, err
 	}
+	if sorted != nil {
+		results = sorted.Sorted()
+	}
 	return buildResponseWithAggregatesAndGroups(g.Version, results, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
-}
-
-func appendBoundedSorted(results []Result, result Result, specs []SortSpec, keep int) []Result {
-	if keep <= 0 {
-		return nil
-	}
-	if len(results) >= keep && compareResults(result, results[len(results)-1], specs) >= 0 {
-		return results
-	}
-	results = append(results, result)
-	sortResults(results, specs)
-	if len(results) > keep {
-		results = results[:keep]
-	}
-	return results
 }
 
 func matchOperatorName(plan Plan) string {

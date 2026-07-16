@@ -2,18 +2,26 @@ package storage
 
 import (
 	"crypto/sha256"
-	"fmt"
 	"strings"
 )
 
 const indexShardBuckets = 64
+
+var indexShardHex = func() [256]string {
+	const digits = "0123456789abcdef"
+	var values [256]string
+	for i := range values {
+		values[i] = string([]byte{digits[i>>4], digits[i&0x0f]})
+	}
+	return values
+}()
 
 func hashedIndexShardID(value string) string {
 	if value == "" {
 		return "default"
 	}
 	sum := sha256.Sum256([]byte(strings.ToLower(value)))
-	return fmt.Sprintf("%02x", int(sum[0])%indexShardBuckets)
+	return indexShardHex[int(sum[0])%indexShardBuckets]
 }
 
 func legacyIndexShardID(value string) string {
@@ -21,7 +29,7 @@ func legacyIndexShardID(value string) string {
 		return "default"
 	}
 	sum := sha256.Sum256([]byte(strings.ToLower(value)))
-	return fmt.Sprintf("%02x", sum[0])
+	return indexShardHex[sum[0]]
 }
 
 func indexShardIDCandidates(value string) []string {

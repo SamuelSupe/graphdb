@@ -111,6 +111,7 @@ func applyProjection(result *Result, fields []string) {
 	result.Fields = projected
 	result.Entity.Fields = entityFields
 	trimEntityFieldSources(result.Entity, entityFields)
+	trimEntityFieldWriteModes(result.Entity, entityFields)
 }
 
 func projectionEntityFieldName(field string) (string, bool) {
@@ -147,6 +148,27 @@ func trimEntityFieldSources(entity *graph.Entity, fields graph.Fields) {
 		return
 	}
 	entity.FieldSources = next
+}
+
+func trimEntityFieldWriteModes(entity *graph.Entity, fields graph.Fields) {
+	if entity == nil || len(entity.FieldWriteModes) == 0 {
+		return
+	}
+	if len(fields) == 0 {
+		entity.FieldWriteModes = nil
+		return
+	}
+	next := make(map[string]string, min(len(entity.FieldWriteModes), len(fields)))
+	for field := range fields {
+		if mode, ok := entity.FieldWriteModes[field]; ok {
+			next[field] = mode
+		}
+	}
+	if len(next) == 0 {
+		entity.FieldWriteModes = nil
+		return
+	}
+	entity.FieldWriteModes = next
 }
 
 func pathEnd(path graph.Path) graph.Entity {

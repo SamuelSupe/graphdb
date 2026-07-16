@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -139,8 +138,9 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 	}
 	_, sortSpan := startStorageSpan(ctx, "graphdb.storage.scan.entities.sort_fallback",
 		attribute.Int("graphdb.scan.input_entities", len(g.Entities)),
+		attribute.String("graphdb.scan.fallback_strategy", "bounded_heap"),
 	)
-	entities, next := pageEntities(sortedScanEntities(g.Entities), loaded.Version, options, cursor)
+	entities, next := pageEntityMap(g.Entities, loaded.Version, options, cursor)
 	sortSpan.SetAttributes(attribute.Int("graphdb.scan.returned", len(entities)))
 	endStorageSpan(sortSpan, nil)
 	return EntityScanResult{TenantID: tenantID, Version: loaded.Version, Entities: entities, NextCursor: next}, nil
@@ -411,19 +411,6 @@ func entityScanPage(tenantID string, version int64, items []graph.Entity, option
 		next = encodeScanCursor(scanCursor{Version: version, CatalogHash: catalogHash, After: scanKey(entityShardID(last.ID), last.ID), Query: entityScanQueryHash(options)})
 	}
 	return EntityScanResult{TenantID: tenantID, Version: version, Entities: append([]graph.Entity(nil), page...), NextCursor: next, IndexedRead: true}
-}
-
-func sortedScanEntities(entities map[string]graph.Entity) []graph.Entity {
-	items := make([]graph.Entity, 0, len(entities))
-	for _, entity := range entities {
-		items = append(items, entity)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		left := scanKey(entityShardID(items[i].ID), items[i].ID)
-		right := scanKey(entityShardID(items[j].ID), items[j].ID)
-		return left < right
-	})
-	return items
 }
 
 func entityMatchesScan(entity graph.Entity, options EntityScanOptions) bool {
