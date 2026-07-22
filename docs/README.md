@@ -5,6 +5,7 @@ write, query, deploy, and operate GraphDB from the API and CLI.
 
 Reference documents:
 
+- [database-introduction.md](database-introduction.md): GraphDB 中文简介和快速了解入口。
 - [user/README.md](user/README.md): user guide entrypoint.
 - [user/sdk.md](user/sdk.md): Go and Python SDK usage.
 - [gql.md](gql.md): GQL text query language.
