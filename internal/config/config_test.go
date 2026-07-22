@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
@@ -424,6 +426,95 @@ func TestLoadRejectsInvalidS3PathStyle(t *testing.T) {
 	}
 }
 
+func TestLoadValidatesNativeObjectStorageProfile(t *testing.T) {
+	setup := func(t *testing.T) {
+		t.Helper()
+		setLocalConfigEnv(t)
+		t.Setenv("GRAPHDB_STORAGE", "s3")
+		t.Setenv("S3_PROVIDER", storage.ObjectProviderAliyunOSS)
+		t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologySingle)
+		t.Setenv("S3_VERSIONING", storage.BucketVersioningDisabled)
+	}
+	cases := []struct {
+		name string
+		set  func(t *testing.T)
+		want string
+	}{
+		{
+			name: "requires single writer",
+			set: func(t *testing.T) {
+				t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
+			},
+			want: "GRAPHDB_WRITER_TOPOLOGY=single",
+		},
+		{
+			name: "requires disabled versioning",
+			set: func(t *testing.T) {
+				t.Setenv("S3_VERSIONING", "enabled")
+			},
+			want: "S3_VERSIONING=disabled",
+		},
+		{
+			name: "rejects unknown provider",
+			set: func(t *testing.T) {
+				t.Setenv("S3_PROVIDER", "unknown")
+			},
+			want: "unsupported S3_PROVIDER",
+		},
+		{
+			name: "rejects cos path style",
+			set: func(t *testing.T) {
+				t.Setenv("S3_PROVIDER", storage.ObjectProviderTencentCOS)
+				t.Setenv("S3_PATH_STYLE", "true")
+			},
+			want: "does not support S3_PATH_STYLE=true",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			setup(t)
+			tt.set(t)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load err = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewObjectStoreSelectsNativeSingleWriterProfiles(t *testing.T) {
+	cases := []struct {
+		provider string
+		endpoint string
+		region   string
+	}{
+		{provider: storage.ObjectProviderAliyunOSS, endpoint: "https://oss-cn-hangzhou.aliyuncs.com", region: "cn-hangzhou"},
+		{provider: storage.ObjectProviderHuaweiOBS, endpoint: "https://obs.cn-north-4.myhuaweicloud.com", region: "cn-north-4"},
+		{provider: storage.ObjectProviderTencentCOS, endpoint: "https://graphdb-1250000000.cos.ap-guangzhou.myqcloud.com", region: "ap-guangzhou"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.provider, func(t *testing.T) {
+			objects, err := NewObjectStore(Config{
+				StoreKind:         "s3",
+				S3Provider:        tt.provider,
+				S3Versioning:      storage.BucketVersioningDisabled,
+				WriterTopology:    storage.WriterTopologySingle,
+				S3Endpoint:        tt.endpoint,
+				S3Bucket:          "graphdb-1250000000",
+				S3Region:          tt.region,
+				S3AccessKeyID:     "access-key",
+				S3SecretAccessKey: "secret-key",
+			})
+			if err != nil {
+				t.Fatalf("NewObjectStore: %v", err)
+			}
+			if _, ok := objects.(*storage.SingleWriterObjectStore); !ok {
+				t.Fatalf("store type = %T, want *storage.SingleWriterObjectStore", objects)
+			}
+		})
+	}
+}
+
 func TestLoadNormalizesObjectPrefix(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_PREFIX", " /prod/blue/ ")
@@ -506,4 +597,7 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_SERVICE_NAME", "")
 	t.Setenv("GRAPHDB_INSTANCE_ID", "")
 	t.Setenv("S3_PATH_STYLE", "")
+	t.Setenv("S3_PROVIDER", "")
+	t.Setenv("S3_VERSIONING", "")
+	t.Setenv("GRAPHDB_WRITER_TOPOLOGY", "")
 }

@@ -9,6 +9,7 @@ import (
 var ErrNotFound = errors.New("object not found")
 var ErrConflict = errors.New("object write conflict")
 var ErrLeaseHeld = errors.New("writer lease is held")
+var ErrConditionalWriteUnsupported = errors.New("conditional write unsupported")
 var ErrConditionalDeleteUnsupported = errors.New("conditional delete unsupported")
 var ErrObjectStoreUnavailable = errors.New("object store unavailable")
 var ErrTenantDisabled = errors.New("tenant disabled")
