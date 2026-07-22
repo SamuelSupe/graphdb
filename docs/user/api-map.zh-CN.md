@@ -1,0 +1,110 @@
+# API Map
+
+[English](api-map.md)
+
+这是面向用户的 endpoint 速查表，详细 schema 见
+[../openapi.yaml](../openapi.yaml)。
+
+## 系统
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/v1/health` | 进程健康状态和运行模式。 |
+| `GET` | `/metrics` | Prometheus 指标。 |
+| `GET` | `/openapi.yaml` | OpenAPI 合同。 |
+| `GET` | `/debug/pprof/` | Go 运行时 profiling 入口。 |
+| `GET` | `/debug/pprof/profile?seconds=30` | 指定时长 CPU profile。 |
+| `GET` | `/debug/pprof/trace?seconds=1` | Go 执行 trace。 |
+
+## 租户生命周期
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/v1/tenants` | 列出租户。 |
+| `POST` | `/v1/tenants` | 创建租户。 |
+| `GET` | `/v1/tenants/{tenant}` | 获取租户信息。 |
+| `PUT` | `/v1/tenants/{tenant}` | 更新租户元数据。 |
+| `DELETE` | `/v1/tenants/{tenant}` | 软删除租户。 |
+| `POST` | `/v1/tenants/{tenant}/disable` | 禁止租户写入。 |
+| `POST` | `/v1/tenants/{tenant}/enable` | 启用租户。 |
+| `POST` | `/v1/tenants/{tenant}/purge` | 清理租户对象。 |
+| `POST` | `/v1/tenants/{tenant}/clone` | 克隆租户。 |
+| `POST` | `/v1/tenants/{tenant}/backup` | 启动备份任务。 |
+| `POST` | `/v1/tenants/{tenant}/restore` | 启动恢复任务。 |
+| `POST` | `/v1/tenants/{tenant}/restore-drill` | 启动恢复演练任务。 |
+
+## 写入与采集
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `POST` | `/v1/commits` | 原子图变更提交。 |
+| `POST` | `/v1/ingest/batches` | 采集批次写入。 |
+| `GET` | `/v1/ingest/collectors/{source}/{collector_id}` | 采集器状态。 |
+| `GET` | `/v1/ingest/deadletters/{source}` | 列出死信。 |
+| `POST` | `/v1/ingest/deadletters/{source}/replay` | 重放死信。 |
+| `GET` | `/v1/source-policy` | 获取租户 source policy。 |
+| `PUT` | `/v1/source-policy` | 更新租户 source policy。 |
+| `GET` | `/v1/tenant-config` | 获取租户配置。 |
+| `PUT` | `/v1/tenant-config` | 更新租户配置。 |
+| `GET` | `/v1/tenant-usage` | 租户对象和字节用量。 |
+
+## 读取与查询
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/v1/entities/{id}` | 按 ID 获取实体。 |
+| `GET` | `/v1/ci-types` | 列出 CI type。 |
+| `GET` | `/v1/relation-types` | 列出关系类型。 |
+| `POST` | `/v1/query` | JSON Query DSL。 |
+| `POST` | `/v1/query/stream` | JSON Query DSL NDJSON 流。 |
+| `POST` | `/v1/query/gql` | GQL 文本查询。 |
+| `POST` | `/v1/query/gql/stream` | GQL NDJSON 流。 |
+| `GET` | `/v1/queries/running` | 列出进程内运行中的查询。 |
+| `DELETE` | `/v1/queries/running/{query_id}` | 取消运行中的查询。 |
+| `GET` | `/v1/query/templates` | 列出保存的查询。 |
+| `POST` | `/v1/query/templates` | 保存查询模板。 |
+| `POST` | `/v1/query/templates/{name}/run` | 执行保存的查询。 |
+
+## 扫描与导出
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/v1/entities` | 按 kind/source/shard 分页实体。 |
+| `GET` | `/v1/entities/stream` | 以 NDJSON 流输出实体。 |
+| `GET` | `/v1/edges` | 按 type/from/source/shard 分页边。 |
+| `GET` | `/v1/edges/stream` | 以 NDJSON 流输出边。 |
+| `GET` | `/v1/export/snapshot` | 内联返回当前 snapshot。 |
+| `GET` | `/v1/export/snapshot/stream` | 流式返回 snapshot 行或 shard 引用。 |
+
+## 任务与维护
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/v1/tasks` | 列出任务。 |
+| `POST` | `/v1/tasks` | 启动任务。 |
+| `GET` | `/v1/tasks/{task_id}` | 获取任务。 |
+| `POST` | `/v1/tasks/{task_id}/cancel` | 取消任务。 |
+| `POST` | `/v1/tasks/{task_id}/retry` | 重试任务。 |
+| `POST` | `/v1/compact` | 同步 compact snapshot。 |
+| `GET` | `/v1/indexes` | 获取索引目录。 |
+| `POST` | `/v1/indexes` | 创建二级索引并启动重建。 |
+| `GET` | `/v1/indexes/definitions` | 列出索引定义。 |
+| `DELETE` | `/v1/indexes/definitions/{name}` | 删除索引并启动重建。 |
+| `GET` | `/v1/indexes/health` | 索引健康状态。 |
+| `GET` | `/v1/indexes/tasks/{task_id}` | 兼容旧索引任务查询。 |
+| `POST` | `/v1/indexes/rebuild` | 重建索引。 |
+| `GET` | `/v1/control/integrity-audit` | 全链完整性审计。 |
+| `POST` | `/v1/control/recover` | 恢复孤儿 commit。 |
+| `POST` | `/v1/control/repair` | repair dry-run/apply。 |
+| `POST` | `/v1/control/cleanup-commits` | 清理过期 commit。 |
+| `POST` | `/v1/control/gc` | 支持 checkpoint/dry-run 的 GC。 |
+
+## Reader 与 Writer 控制
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/v1/control/writer-lease` | 查看 writer lease。 |
+| `GET` | `/v1/control/reader-freshness` | reader 新鲜度报告。 |
+| `GET` | `/v1/control/reader-lag` | freshness 兼容别名。 |
+| `GET` | `/v1/control/reader-fleet-readiness` | reader 集群就绪报告。 |
+| `GET` | `/v1/control/reader-traffic-gate` | 部署检查使用的流量闸门结果。 |

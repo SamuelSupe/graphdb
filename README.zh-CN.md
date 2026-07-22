@@ -120,7 +120,8 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 - 部署、使用、API、查询和 SDK 文档；
 - `.sha256` 校验文件。
 
-详见[发行版部署文档](docs/user/release-deployment.md)。推送匹配
+详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
+[英文版本](docs/user/release-deployment.md)。推送匹配
 `release_*` 的标签会触发 [GitHub Actions](.github/workflows/release.yml)，
 自动构建并发布归档包。
 
@@ -128,16 +129,17 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 
 | 文档 | 内容 |
 | --- | --- |
-| [数据库简介](docs/database-introduction.md) | 产品定位、数据模型、架构和当前边界。 |
-| [使用手册](docs/user/usage-manual.md) | 租户、写入、查询、CMDB、索引、维护和 SDK。 |
-| [部署与运维](docs/user/deploy-ops.md) | `all`/`writer`/`reader`、S3、RustFS、健康检查和生产规则。 |
-| [发行版部署](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
-| [读与查询](docs/user/read-query.md) | JSON DSL、GQL、分页、流式、explain 和 profile。 |
-| [写入与采集](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
-| [数据模型](docs/user/data-model.md) | tenant、CI type、entity、relation、edge 和数据治理。 |
-| [API Map](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
+| [数据库简介](docs/database-introduction.zh-CN.md) · [English](docs/database-introduction.md) | 产品定位、数据模型、架构和当前边界。 |
+| [使用手册](docs/user/usage-manual.zh-CN.md) · [English](docs/user/usage-manual.md) | 租户、写入、查询、CMDB、索引、维护和 SDK。 |
+| [部署与运维](docs/user/deploy-ops.zh-CN.md) · [English](docs/user/deploy-ops.md) | `all`/`writer`/`reader`、S3、RustFS、健康检查和生产规则。 |
+| [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
+| [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | JSON DSL、GQL、分页、流式、explain 和 profile。 |
+| [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
+| [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、CI type、entity、relation、edge 和数据治理。 |
+| [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |
-| [Go/Python SDK](docs/user/sdk.md) | SDK 初始化、读写、流式访问和重试指导。 |
+| [Go/Python SDK](docs/user/sdk.zh-CN.md) · [English](docs/user/sdk.md) | SDK 初始化、读写、流式访问和重试指导。 |
+| [全部用户指南](docs/user/README.zh-CN.md) · [English](docs/user/README.md) | 完整 API、部署、运维和故障排查入口。 |
 
 ## 当前边界
 

@@ -123,7 +123,8 @@ Each release archive contains:
 - deployment, usage, API, query, and SDK documentation;
 - a `.sha256` checksum file.
 
-See the [release deployment guide](docs/user/release-deployment.md). Pushing a
+See the [release deployment guide](docs/user/release-deployment.md) or its
+[中文版本](docs/user/release-deployment.zh-CN.md). Pushing a
 tag matching `release_*` triggers [GitHub Actions](.github/workflows/release.yml)
 to build and publish the archive automatically.
 
@@ -131,15 +132,16 @@ to build and publish the archive automatically.
 
 | Guide | Contents |
 | --- | --- |
-| [Database introduction](docs/database-introduction.md) | Product shape, data model, architecture, and boundaries. |
-| [Usage manual](docs/user/usage-manual.md) | Tenants, writes, queries, CMDB, indexes, maintenance, and SDKs. |
-| [Deployment and operations](docs/user/deploy-ops.md) | `all`/`writer`/`reader`, S3, RustFS, health checks, and production rules. |
-| [Release deployment](docs/user/release-deployment.md) | Download, verify, upgrade, rollback, and security boundaries. |
-| [Read and query](docs/user/read-query.md) | JSON DSL, GQL, pagination, streaming, explain, and profile. |
-| [Write and ingest](docs/user/write-ingest.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
-| [Data model](docs/user/data-model.md) | Tenants, CI types, entities, relations, edges, and source governance. |
+| [Database introduction](docs/database-introduction.md) · [中文](docs/database-introduction.zh-CN.md) | Product shape, data model, architecture, and boundaries. |
+| [Usage manual](docs/user/usage-manual.md) · [中文](docs/user/usage-manual.zh-CN.md) | Tenants, writes, queries, CMDB, indexes, maintenance, and SDKs. |
+| [Deployment and operations](docs/user/deploy-ops.md) · [中文](docs/user/deploy-ops.zh-CN.md) | `all`/`writer`/`reader`, S3, RustFS, health checks, and production rules. |
+| [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
+| [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | JSON DSL, GQL, pagination, streaming, explain, and profile. |
+| [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
+| [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, CI types, entities, relations, edges, and source governance. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
-| [Go and Python SDKs](docs/user/sdk.md) | Client setup, reads, writes, streaming, and retry guidance. |
+| [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |
+| [All user guides](docs/user/README.md) · [中文](docs/user/README.zh-CN.md) | Complete API, deployment, operations, and troubleshooting map. |
 
 ## Project status and boundaries
 

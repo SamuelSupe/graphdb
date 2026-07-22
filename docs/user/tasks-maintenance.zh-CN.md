@@ -1,12 +1,12 @@
-# Tasks And Maintenance
+# 任务与维护
 
-[中文](tasks-maintenance.zh-CN.md)
+[English](tasks-maintenance.md)
 
-Long-running operations use the unified task model.
+长时间运行的操作统一使用 task 模型。
 
 ## Task API
 
-Start:
+启动：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tasks" \
@@ -15,35 +15,35 @@ curl -sS -X POST "$WRITER/v1/tasks" \
   -d '{"type":"compact"}'
 ```
 
-List:
+列出：
 
 ```sh
 curl -sS "$WRITER/v1/tasks?type=compact&status=running&limit=20" \
   -H 'X-Tenant-ID: demo'
 ```
 
-Get:
+查看：
 
 ```sh
 curl -sS "$WRITER/v1/tasks/<task-id>" -H 'X-Tenant-ID: demo'
 ```
 
-Cancel:
+取消：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tasks/<task-id>/cancel" -H 'X-Tenant-ID: demo'
 ```
 
-Retry:
+重试：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tasks/<task-id>/retry" -H 'X-Tenant-ID: demo'
 ```
 
-Task fields include `id`, `type`, `status`, `phase`, progress counters,
-`params`, `checkpoint`, `result`, `result_key`, `error`, and timestamps.
+任务字段包括 `id`、`type`、`status`、`phase`、进度计数、
+`params`、`checkpoint`、`result`、`result_key`、`error` 和时间戳。
 
-Supported task types:
+支持的 task 类型：
 
 - `compact`
 - `gc`
@@ -57,13 +57,13 @@ Supported task types:
 
 ## Compact
 
-Synchronous endpoint:
+同步接口：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/compact" -H 'X-Tenant-ID: demo'
 ```
 
-Task:
+异步 task：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tasks" \
@@ -72,12 +72,12 @@ curl -sS -X POST "$WRITER/v1/tasks" \
   -d '{"type":"compact"}'
 ```
 
-Compact writes a snapshot/catalog and publishes a manifest pointing at it. It
-reduces reader replay cost and commit tail pressure.
+Compact 写入 snapshot/catalog 并发布指向它的 manifest，降低 reader 回放成本
+和 commit tail 压力。
 
 ## GC
 
-Synchronous endpoint:
+同步接口：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/control/gc" \
@@ -93,11 +93,10 @@ curl -sS -X POST "$WRITER/v1/control/gc" \
   }'
 ```
 
-GC respects reader heartbeats and keeps objects needed by active readers. When
-`max_deletes` pauses a run, pass returned `checkpoint.next_cursor` as `cursor`
-to continue.
+GC 遵守 reader heartbeat，保留活跃 reader 所需对象。当 `max_deletes` 暂停
+运行时，将返回的 `checkpoint.next_cursor` 作为 `cursor` 继续。
 
-Task:
+task 方式：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tasks" \
@@ -106,16 +105,16 @@ curl -sS -X POST "$WRITER/v1/tasks" \
   -d '{"type":"gc","params":{"keep_snapshots":2,"dry_run":false}}'
 ```
 
-## Repair And Integrity Audit
+## Repair 与完整性审计
 
-Audit:
+审计：
 
 ```sh
 curl -sS "$WRITER/v1/control/integrity-audit?deep=true" \
   -H 'X-Tenant-ID: demo'
 ```
 
-Repair dry-run:
+repair 预演：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/control/repair" \
@@ -124,7 +123,7 @@ curl -sS -X POST "$WRITER/v1/control/repair" \
   -d '{"apply":false}'
 ```
 
-Repair apply:
+repair apply：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/control/repair" \
@@ -133,26 +132,26 @@ curl -sS -X POST "$WRITER/v1/control/repair" \
   -d '{"apply":true}'
 ```
 
-Use audit after repair to verify the remaining issue count.
+repair 后再次运行 audit，确认剩余问题数量。
 
-## Recovery And Commit Cleanup
+## 恢复与 Commit 清理
 
-Recover unpublished commits:
+恢复未发布 commit：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/control/recover" -H 'X-Tenant-ID: demo'
 ```
 
-Cleanup obsolete commit objects:
+清理过期 commit 对象：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/control/cleanup-commits" \
   -H 'X-Tenant-ID: demo'
 ```
 
-## Indexes
+## 索引
 
-Create a secondary index:
+创建二级索引：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/indexes" \
@@ -161,48 +160,38 @@ curl -sS -X POST "$WRITER/v1/indexes" \
   -d '{"name":"host_hostname","kind":"host","field":"hostname"}'
 ```
 
-List definitions:
+查看定义和目录：
 
 ```sh
 curl -sS "$READER/v1/indexes/definitions" -H 'X-Tenant-ID: demo'
-```
-
-Catalog:
-
-```sh
 curl -sS "$READER/v1/indexes" -H 'X-Tenant-ID: demo'
 ```
 
-Health:
+健康检查：
 
 ```sh
 curl -sS "$READER/v1/indexes/health" -H 'X-Tenant-ID: demo'
 curl -sS "$READER/v1/indexes/health?deep=true" -H 'X-Tenant-ID: demo'
 ```
 
-Rebuild:
+重建和删除：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/indexes/rebuild?async=true" \
   -H 'X-Tenant-ID: demo'
-```
-
-Drop:
-
-```sh
 curl -sS -X DELETE "$WRITER/v1/indexes/definitions/host_hostname" \
   -H 'X-Tenant-ID: demo'
 ```
 
-## Backup, Restore, Restore Drill
+## 备份、恢复与恢复演练
 
-Start backup:
+启动备份：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tenants/demo/backup"
 ```
 
-Restore:
+恢复：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tenants/demo/restore" \
@@ -210,7 +199,7 @@ curl -sS -X POST "$WRITER/v1/tenants/demo/restore" \
   -d '{"backup_key":"tenants/demo/backups/...","overwrite":true,"dry_run":false}'
 ```
 
-Restore drill:
+恢复演练：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tenants/demo/restore-drill" \
@@ -223,8 +212,7 @@ curl -sS -X POST "$WRITER/v1/tenants/demo/restore-drill" \
   }'
 ```
 
-Use restore drill to prove backups are usable without overwriting the source
-tenant.
+恢复演练用于证明备份可用，同时不覆盖源租户。
 
 ## CLI
 

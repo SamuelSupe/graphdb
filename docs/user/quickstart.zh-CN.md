@@ -1,48 +1,46 @@
-# Quick Start
+# 快速开始
 
-[中文](quickstart.zh-CN.md)
+[English](quickstart.md)
 
-## Local File Storage
+## 本地文件存储
 
-Start one local process:
+启动单个本地进程：
 
 ```sh
 go run ./cmd/graphdb serve
 ```
 
-The default API address is `http://127.0.0.1:8080`.
-
-Check health:
+默认 API 地址为 `http://127.0.0.1:8080`。检查健康状态：
 
 ```sh
 curl -sS http://127.0.0.1:8080/v1/health
 ```
 
-## Docker Compose With MinIO
+## Docker Compose + MinIO
 
 ```sh
 docker compose up --build
 ```
 
-Override ports if needed:
+需要覆盖端口时：
 
 ```sh
 MINIO_API_PORT=29000 MINIO_CONSOLE_PORT=29001 GRAPHDB_PORT=28080 docker compose up --build
 ```
 
-## Docker Compose With RustFS
+## Docker Compose + RustFS
 
 ```sh
 docker compose -f docker-compose.rustfs.yml up --build
 ```
 
-Default ports:
+默认端口：
 
-- Writer: `http://127.0.0.1:38080`
-- Reader: `http://127.0.0.1:38081`
-- RustFS S3 API: `http://127.0.0.1:39000`
+- Writer：`http://127.0.0.1:38080`
+- Reader：`http://127.0.0.1:38081`
+- RustFS S3 API：`http://127.0.0.1:39000`
 
-## Create A Tenant
+## 创建租户
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/v1/tenants \
@@ -50,13 +48,13 @@ curl -sS -X POST http://127.0.0.1:8080/v1/tenants \
   -d '{"tenant_id":"demo","name":"Demo"}'
 ```
 
-CLI equivalent:
+CLI 等价命令：
 
 ```sh
 go run ./cmd/graphdb create-tenant demo
 ```
 
-## Write Data
+## 写入数据
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/v1/commits \
@@ -65,18 +63,18 @@ curl -sS -X POST http://127.0.0.1:8080/v1/commits \
   -d @examples/commit.json
 ```
 
-CLI equivalent:
+CLI 等价命令：
 
 ```sh
 go run ./cmd/graphdb commit demo examples/commit.json
 ```
 
-The response contains `version`, `readable_version`, `skipped`,
-`canonical_edges`, and optional `suppressed` conflicts.
+响应包含 `version`、`readable_version`、`skipped`、
+`canonical_edges` 和可选的 `suppressed` 冲突信息。
 
-## Query Data
+## 查询数据
 
-JSON DSL:
+JSON DSL：
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/v1/query \
@@ -85,7 +83,7 @@ curl -sS -X POST http://127.0.0.1:8080/v1/query \
   -d @examples/query-match.json
 ```
 
-GQL:
+GQL：
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/v1/query/gql \
@@ -94,16 +92,16 @@ curl -sS -X POST http://127.0.0.1:8080/v1/query/gql \
   --data-binary 'FIND person WHERE name = "Alice" LIMIT 10'
 ```
 
-## Read After Write
+## 写入后读取
 
-Use the committed version as `min_version` when a reader must catch up:
+当 reader 必须追上某次写入时，把提交版本作为 `min_version`：
 
 ```sh
 curl -sS 'http://127.0.0.1:8080/v1/entities/person:alice?min_version=1' \
   -H 'X-Tenant-ID: demo'
 ```
 
-If stale reads are acceptable:
+如果允许读取旧版本：
 
 ```sh
 curl -sS 'http://127.0.0.1:8080/v1/entities/person:alice?allow_stale=true' \
