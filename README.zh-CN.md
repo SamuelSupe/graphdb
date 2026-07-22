@@ -110,8 +110,8 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 
 ## 发行版
 
-当前发行版：
-[**release_20260722_01**](https://github.com/SamuelSupe/graphdb/releases/tag/release_20260722_01)。
+当前发行版为 GraphDB 1.0：
+[**v1.0.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.0.0)。
 
 发行包包含：
 
@@ -121,9 +121,9 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送匹配
-`release_*` 的标签会触发 [GitHub Actions](.github/workflows/release.yml)，
-自动构建并发布归档包。
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.0.0` 的语义化版本
+标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
+归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 
 ## 文档入口
 

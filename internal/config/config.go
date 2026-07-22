@@ -69,6 +69,9 @@ type Config struct {
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3PathStyle       bool
+	S3Provider        string
+	S3Versioning      string
+	WriterTopology    string
 }
 
 func Load() (Config, error) {
@@ -119,6 +122,9 @@ func Load() (Config, error) {
 		S3Endpoint:                        os.Getenv("S3_ENDPOINT"),
 		S3Bucket:                          os.Getenv("S3_BUCKET"),
 		S3Region:                          getenv("S3_REGION", "us-east-1"),
+		S3Provider:                        storage.NormalizeObjectProvider(os.Getenv("S3_PROVIDER")),
+		S3Versioning:                      strings.ToLower(strings.TrimSpace(os.Getenv("S3_VERSIONING"))),
+		WriterTopology:                    normalizeWriterTopology(os.Getenv("GRAPHDB_WRITER_TOPOLOGY")),
 	}
 	cfg.S3AccessKeyID = firstNonEmpty(os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("AWS_ACCESS_KEY_ID"))
 	cfg.S3SecretAccessKey = firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
@@ -269,6 +275,9 @@ func Load() (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("unsupported GRAPHDB_MODE %q", cfg.Mode)
 	}
+	if err := cfg.validateObjectStore(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -408,14 +417,85 @@ func parseBytes(raw string) (int64, error) {
 }
 
 func NewObjectStore(cfg Config) (storage.ObjectStore, error) {
+	if err := cfg.validateObjectStore(); err != nil {
+		return nil, err
+	}
 	switch cfg.StoreKind {
 	case "local":
 		return storage.NewFileStore(cfg.DataDir), nil
 	case "s3":
-		return storage.NewS3StoreWithOptions(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, storage.S3Options{PathStyle: cfg.S3PathStyle})
+		options := storage.S3Options{PathStyle: cfg.S3PathStyle}
+		switch cfg.objectProvider() {
+		case storage.ObjectProviderGenericS3:
+			return storage.NewS3StoreWithOptions(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
+		case storage.ObjectProviderAliyunOSS:
+			objects, err := storage.NewAliyunOSSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
+			if err != nil {
+				return nil, err
+			}
+			return storage.NewSingleWriterObjectStore(objects), nil
+		case storage.ObjectProviderHuaweiOBS:
+			objects, err := storage.NewHuaweiOBSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
+			if err != nil {
+				return nil, err
+			}
+			return storage.NewSingleWriterObjectStore(objects), nil
+		case storage.ObjectProviderTencentCOS:
+			objects, err := storage.NewTencentCOSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
+			if err != nil {
+				return nil, err
+			}
+			return storage.NewSingleWriterObjectStore(objects), nil
+		}
+		return nil, fmt.Errorf("unsupported S3_PROVIDER %q", cfg.S3Provider)
 	default:
 		return nil, fmt.Errorf("unsupported GRAPHDB_STORAGE %q", cfg.StoreKind)
 	}
+}
+
+func (cfg Config) validateObjectStore() error {
+	if cfg.StoreKind != "s3" {
+		return nil
+	}
+	provider := cfg.objectProvider()
+	if !storage.IsKnownObjectProvider(provider) {
+		return fmt.Errorf("unsupported S3_PROVIDER %q", cfg.S3Provider)
+	}
+	topology := cfg.writerTopology()
+	switch topology {
+	case storage.WriterTopologyCAS, storage.WriterTopologySingle:
+	default:
+		return fmt.Errorf("unsupported GRAPHDB_WRITER_TOPOLOGY %q", cfg.WriterTopology)
+	}
+	if !storage.IsNativeObjectProvider(provider) {
+		return nil
+	}
+	if topology != storage.WriterTopologySingle {
+		return fmt.Errorf("S3_PROVIDER %q requires GRAPHDB_WRITER_TOPOLOGY=%s", provider, storage.WriterTopologySingle)
+	}
+	if strings.ToLower(strings.TrimSpace(cfg.S3Versioning)) != storage.BucketVersioningDisabled {
+		return fmt.Errorf("S3_PROVIDER %q requires S3_VERSIONING=%s", provider, storage.BucketVersioningDisabled)
+	}
+	if provider == storage.ObjectProviderTencentCOS && cfg.S3PathStyle {
+		return fmt.Errorf("S3_PROVIDER %q does not support S3_PATH_STYLE=true", provider)
+	}
+	return nil
+}
+
+func (cfg Config) objectProvider() string {
+	return storage.NormalizeObjectProvider(cfg.S3Provider)
+}
+
+func (cfg Config) writerTopology() string {
+	return normalizeWriterTopology(cfg.WriterTopology)
+}
+
+func normalizeWriterTopology(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return storage.WriterTopologyCAS
+	}
+	return value
 }
 
 func normalizeObjectPrefix(prefix string) (string, error) {
