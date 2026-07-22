@@ -5,6 +5,10 @@
 GraphDB 为每个租户保存一张当前图，不提供历史版本查询；每次读取观察一个
 manifest snapshot 版本。
 
+核心模型与具体领域无关：应用可以只使用无模式实体和类型化边，不必定义 CI
+type。`CIType` 和 source governance 都是可选的领域元数据，适合需要采集合并
+和身份治理的 CMDB 等场景。
+
 ## Tenant
 
 数据 API 通过 `X-Tenant-ID` 提供租户 ID。每个租户包含：
@@ -19,7 +23,8 @@ manifest snapshot 版本。
 
 ## CI Type
 
-`CIType` 为 CMDB 实体提供可选的 kind 级元数据：
+`CIType` 为实体提供可选的 kind 级元数据，尤其适合需要字段规则和身份合并的
+CMDB 风格实体：
 
 ```json
 {

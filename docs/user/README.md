@@ -2,20 +2,24 @@
 
 [中文](README.zh-CN.md)
 
-This guide is for service owners, collector authors, and operators using
-GraphDB as an internal CMDB graph database.
+This guide is for service owners, ingest-client authors, and operators using
+GraphDB as a general-purpose graph database. CMDB is one supported scenario;
+the same entity, relationship, query, and storage APIs can serve other
+entity-relationship applications.
 
 ## What GraphDB provides
 
 - Multi-tenant graph data isolated by `X-Tenant-ID`.
-- Schemaless entities with optional CI type definitions.
+- Schemaless entities with optional type definitions, including CI types for
+  CMDB-style modeling.
 - Typed directed edges with `(type, from, to)` canonical identity.
 - One active writer per tenant; readers independently reload from object storage.
 - Object-storage persistence using Parquet manifests, commits, snapshots, entity
   pages, edge shards, and index objects.
 - JSON Query DSL, text GQL, scan/export APIs, saved queries, and running-query
   control.
-- Source-priority governance for entity fields, edge fields, and edge existence.
+- Optional source-priority governance for entity fields, edge fields, and edge
+  existence.
 - Tenant lifecycle, source policy, tenant config, index management, unified
   tasks, maintenance, integrity audit, and reader freshness checks.
 
