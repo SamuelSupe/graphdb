@@ -157,7 +157,7 @@ S3_SECRET_ACCESS_KEY=<secret-key>
 - `GRAPHDB_MAINTENANCE_INTERVAL`：compact、GC 和索引维护调度间隔。
 - `GRAPHDB_OTLP_ENDPOINT`：可选的 OTLP/HTTP trace 接收地址。
 
-完整配置见 [deploy-ops.md](deploy-ops.md) 和根目录 README 的
+完整配置见 [deploy-ops.md](deploy-ops.zh-CN.md) 和根目录 README 的
 Configuration 小节。
 
 ## 6. 流量接入与健康检查

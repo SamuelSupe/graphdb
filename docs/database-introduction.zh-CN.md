@@ -128,10 +128,10 @@ X-Tenant-ID: demo
 
 ## 相关文档
 
-- [快速开始](user/quickstart.md)
-- [数据模型](user/data-model.md)
-- [写入与采集](user/write-ingest.md)
-- [读取与查询](user/read-query.md)
-- [部署与运维](user/deploy-ops.md)
+- [快速开始](user/quickstart.zh-CN.md)
+- [数据模型](user/data-model.zh-CN.md)
+- [写入与采集](user/write-ingest.zh-CN.md)
+- [读取与查询](user/read-query.zh-CN.md)
+- [部署与运维](user/deploy-ops.zh-CN.md)
 - [整体架构](architecture.md)
 - [OpenAPI](openapi.yaml)

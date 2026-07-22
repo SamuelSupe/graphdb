@@ -4,7 +4,7 @@
 
 本文档给出从创建租户、写入图数据到查询和维护的最短操作路径。HTTP API
 的完整契约见 [openapi.yaml](../openapi.yaml)，更细的模型说明见
-[data-model.md](data-model.md)。
+[data-model.md](data-model.zh-CN.md)。
 
 ## 1. 启动与变量
 
@@ -199,11 +199,11 @@ curl -fsS "$BASE/openapi.yaml"
 排查顺序建议是：先查 `/v1/health`，再查对象存储连通性、bucket/prefix、
 `/metrics` 中的写入 backpressure、CAS 冲突、reader 可见版本和索引健康。
 错误响应中的 `code`、`retryable` 和 `detail` 比展示文本更适合程序处理；
-错误码表见 [errors-troubleshooting.md](errors-troubleshooting.md)。
+错误码表见 [errors-troubleshooting.md](errors-troubleshooting.zh-CN.md)。
 
 ## 9. SDK
 
 Go SDK 和 Python SDK 的安装、写入、查询、流式读取与重试示例见
-[sdk.md](sdk.md)。生产 collector 应优先使用批量 ingest、稳定幂等键和
+[sdk.md](sdk.zh-CN.md)。生产 collector 应优先使用批量 ingest、稳定幂等键和
 `Retry-After`，并把 tenant、source、external ID 和 identity key 作为可追踪
 字段保存。
