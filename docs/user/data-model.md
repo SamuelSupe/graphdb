@@ -5,6 +5,10 @@
 GraphDB stores one current graph per tenant. It does not expose historical
 version queries; each read observes a manifest snapshot version.
 
+The core model is domain-neutral: applications can use schemaless entities and
+typed edges without defining a CI type. `CIType` and source governance are
+optional domain metadata, useful for CMDB-style ingestion and reconciliation.
+
 ## Tenant
 
 Tenant id is supplied by `X-Tenant-ID` for data APIs. Each tenant has:
@@ -19,7 +23,9 @@ Tenant id is supplied by `X-Tenant-ID` for data APIs. Each tenant has:
 
 ## CI Type
 
-`CIType` defines optional kind-level metadata for CMDB entities:
+`CIType` defines optional kind-level metadata for entities. It is especially
+useful for CMDB-style entities that need field rules and identity
+reconciliation:
 
 ```json
 {

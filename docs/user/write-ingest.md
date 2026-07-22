@@ -10,6 +10,10 @@ GraphDB has two write paths:
 
 Both require `X-Tenant-ID`. In reader mode both return `405`.
 
+These are general graph write APIs. The request and file examples below use
+CMDB-style collector data where that makes the ingestion and reconciliation
+behavior concrete; other domains can omit CI types and source governance.
+
 ## Direct Commit
 
 Request shape:
@@ -52,9 +56,10 @@ curl -sS -X POST "$WRITER/v1/commits" \
 Entity fields:
 
 - `id`: stable entity id.
-- `kind`: CI kind, for example `host`, `service`, `database`.
+- `kind`: application-defined entity kind, for example `host`, `service`, or
+  `database` in the CMDB examples.
 - `fields`: schemaless JSON object.
-- `source`, `external_id`, `confidence`, `source_priority`: source metadata.
+- `source`, `external_id`, `confidence`, `source_priority`: optional source metadata.
 - `identity_keys`: optional identity metadata used by CI type identity rules.
 
 Array field merge:
@@ -237,7 +242,7 @@ Response fields:
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.
 
-Collector batch sizing:
+Collector batch sizing for CMDB workloads:
 
 - Start with 200 logical CMDB groups per batch, then move toward 500 when the
   object store and writer timeout budget are stable.

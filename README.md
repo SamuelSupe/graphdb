@@ -2,7 +2,7 @@
 
 # GraphDB
 
-**An object-storage-backed graph database for CMDB and IT topology**
+**A general-purpose object-storage-backed graph database for entities, relationships, and topology**
 
 [![Latest Release](https://img.shields.io/github/v/release/SamuelSupe/graphdb?display_name=tag)](https://github.com/SamuelSupe/graphdb/releases)
 [![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
@@ -12,17 +12,19 @@
 
 </div>
 
-GraphDB is a Go-based v1 graph database for CMDB, asset relationships, service
-dependencies, and impact analysis. It persists tenant data to local disk or
-S3-compatible object storage, using Parquet, manifest CAS, snapshots, and
-commit replay to provide versioned writes and explicit read-freshness control.
+GraphDB is a Go-based v1 general-purpose graph database for entity-relationship
+data. CMDB, asset relationships, service dependencies, topology, and impact
+analysis are supported application scenarios. It persists tenant data to local
+disk or S3-compatible object storage, using Parquet, manifest CAS, snapshots,
+and commit replay to provide versioned writes and explicit read-freshness
+control.
 
 ## Highlights
 
 | Capability | Description |
 | --- | --- |
 | Multi-tenant graph data | Tenant prefixes, entities, edges, and indexes are isolated by `X-Tenant-ID`. |
-| CMDB modeling | CI types, field constraints, identity reconciliation, source priority, and manual merge/split. |
+| Optional domain modeling | Type metadata, field constraints, identity reconciliation, source priority, and manual merge/split for ingestion-heavy domains such as CMDB. |
 | Graph queries | JSON Query DSL, GQL, match, neighbors, traverse, impact, and shortest path. |
 | Object-storage persistence | Parquet manifests, commits, snapshots, entity pages, edge shards, and index objects. |
 | Read/write topology | One binary supports `all`, `writer`, and `reader` deployment modes. |
@@ -134,12 +136,12 @@ supported for older deployment workflows.
 | Guide | Contents |
 | --- | --- |
 | [Database introduction](docs/database-introduction.md) · [中文](docs/database-introduction.zh-CN.md) | Product shape, data model, architecture, and boundaries. |
-| [Usage manual](docs/user/usage-manual.md) · [中文](docs/user/usage-manual.zh-CN.md) | Tenants, writes, queries, CMDB, indexes, maintenance, and SDKs. |
+| [Usage manual](docs/user/usage-manual.md) · [中文](docs/user/usage-manual.zh-CN.md) | Tenants, writes, queries, optional CMDB scenario capabilities, indexes, maintenance, and SDKs. |
 | [Deployment and operations](docs/user/deploy-ops.md) · [中文](docs/user/deploy-ops.zh-CN.md) | `all`/`writer`/`reader`, S3, RustFS, health checks, and production rules. |
 | [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
 | [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | JSON DSL, GQL, pagination, streaming, explain, and profile. |
 | [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
-| [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, CI types, entities, relations, edges, and source governance. |
+| [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, optional CI types, entities, relations, edges, and source governance. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
 | [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |
 | [All user guides](docs/user/README.md) · [中文](docs/user/README.zh-CN.md) | Complete API, deployment, operations, and troubleshooting map. |
@@ -148,6 +150,7 @@ supported for older deployment workflows.
 
 GraphDB v1 is intentionally focused:
 
+- a general-purpose entity-relationship graph core, with CMDB governance as an optional domain profile;
 - one active writer per tenant, without a distributed transaction coordinator;
 - object storage as the recommended production persistence layer;
 - explicit reader freshness controls for strong-read workflows;

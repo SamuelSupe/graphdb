@@ -2,8 +2,8 @@
 
 [English](usage-manual.md)
 
-本文档给出从创建租户、写入图数据到查询和维护的最短操作路径。HTTP API
-的完整契约见 [openapi.yaml](../openapi.yaml)，更细的模型说明见
+本文档给出从创建租户、写入通用图数据到查询和维护的最短操作路径；其中的
+CMDB 数据治理是可选场景能力。HTTP API 的完整契约见 [openapi.yaml](../openapi.yaml)，更细的模型说明见
 [data-model.md](data-model.zh-CN.md)。
 
 ## 1. 启动与变量
@@ -139,7 +139,7 @@ curl -fsS "$BASE/v1/entities/person:alice?allow_stale=true" \
   -H "$TENANT_HEADER"
 ```
 
-## 6. CMDB 能力
+## 6. CMDB 场景能力（可选）
 
 CI type 可声明字段类型、必填、枚举、默认值、索引和唯一约束；source
 policy 用于控制多个采集源对同一字段的优先级。常见关系类型包括

@@ -179,9 +179,9 @@ Traces are exported over OTLP/HTTP when `GRAPHDB_OTLP_ENDPOINT` is set.
 - Run restore drills, integrity audit, and GC on a schedule.
 - Treat object store latency and 429 backpressure as collector slow-down
   signals, not data loss.
-- Size collectors for 200-500 logical CMDB groups per batch before increasing
-  per-tenant writer concurrency. Small batches multiply commit, manifest,
-  idempotency, and collector metadata object writes.
+- For CMDB collector workloads, size batches at 200-500 logical groups before
+  increasing per-tenant writer concurrency. Small batches multiply commit,
+  manifest, idempotency, and collector metadata object writes.
 - Retry `429` with the same `batch_id` and `idempotency_key`, plus exponential
   backoff and jitter. A retry of the same source page must not create a new
   idempotency key.

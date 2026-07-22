@@ -2,7 +2,7 @@
 
 # GraphDB
 
-**面向 CMDB 与 IT 拓扑的对象存储图数据库**
+**面向实体、关系与拓扑的通用对象存储图数据库**
 
 [![Latest Release](https://img.shields.io/github/v/release/SamuelSupe/graphdb?display_name=tag)](https://github.com/SamuelSupe/graphdb/releases)
 [![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
@@ -12,16 +12,17 @@
 
 </div>
 
-GraphDB 是一个 Go 实现的 v1 图数据库，面向 CMDB、资产关系、服务依赖和
-影响分析场景。它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用
-Parquet、manifest CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。
+GraphDB 是一个 Go 实现的 v1 通用图数据库，面向实体关系数据。CMDB、资产
+关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。它把租户数据持久化
+到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest CAS、快照和提交回放，
+提供可追踪的写入版本与可控的新鲜度。
 
 ## 核心能力
 
 | 能力 | 说明 |
 | --- | --- |
 | 多租户图数据 | 通过 `X-Tenant-ID` 隔离租户前缀、实体、边和索引。 |
-| CMDB 建模 | CI type、字段约束、identity reconciliation、source priority 和人工合并/拆分。 |
+| 可选领域建模 | 类型元数据、字段约束、identity reconciliation、source priority 和人工合并/拆分，适合 CMDB 等采集密集型领域。 |
 | 图查询 | JSON Query DSL、GQL、match、neighbors、traverse、impact、shortest path。 |
 | 对象存储持久化 | Parquet manifest、commit、snapshot、entity page、edge shard 和 index object。 |
 | 读写分离 | 同一二进制支持 `all`、`writer`、`reader`，通过部署拓扑分流。 |
@@ -130,12 +131,12 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 | 文档 | 内容 |
 | --- | --- |
 | [数据库简介](docs/database-introduction.zh-CN.md) · [English](docs/database-introduction.md) | 产品定位、数据模型、架构和当前边界。 |
-| [使用手册](docs/user/usage-manual.zh-CN.md) · [English](docs/user/usage-manual.md) | 租户、写入、查询、CMDB、索引、维护和 SDK。 |
+| [使用手册](docs/user/usage-manual.zh-CN.md) · [English](docs/user/usage-manual.md) | 租户、写入、查询、可选的 CMDB 场景能力、索引、维护和 SDK。 |
 | [部署与运维](docs/user/deploy-ops.zh-CN.md) · [English](docs/user/deploy-ops.md) | `all`/`writer`/`reader`、S3、RustFS、健康检查和生产规则。 |
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
 | [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | JSON DSL、GQL、分页、流式、explain 和 profile。 |
 | [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
-| [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、CI type、entity、relation、edge 和数据治理。 |
+| [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |
 | [Go/Python SDK](docs/user/sdk.zh-CN.md) · [English](docs/user/sdk.md) | SDK 初始化、读写、流式访问和重试指导。 |
@@ -145,6 +146,7 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 
 GraphDB v1 目前明确保持以下边界：
 
+- 通用实体关系图内核，CMDB 数据治理作为可选的领域 profile；
 - 每个租户一个活跃 writer，不提供分布式事务协调器；
 - 对象存储是生产持久化的推荐来源；
 - 强读场景通过显式 reader freshness 控制；

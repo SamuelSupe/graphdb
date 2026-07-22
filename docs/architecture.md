@@ -1,10 +1,10 @@
-# GraphDB 产品整体架构
+# GraphDB 图数据库整体架构
 
-本文说明 GraphDB 作为内部 CMDB 图数据库的整体产品架构。GraphDB 是一个基于 S3/MinIO/RustFS 兼容对象存储的多租户、读写分离图数据库，面向实体、关系、采集接入、查询、导出和运维控制场景。
+本文说明 GraphDB 作为通用实体关系图数据库的整体产品架构。GraphDB 是一个基于 S3/MinIO/RustFS 兼容对象存储的多租户、读写分离图数据库，面向实体、关系、写入接入、查询、导出和运维控制场景；CMDB、IT 拓扑和依赖分析是其中的应用场景。
 
 ## 1. 产品定位
 
-GraphDB 的核心目标是作为内部 CMDB 图数据底座：
+GraphDB 的核心目标是作为通用实体关系图数据底座，并通过可选的领域能力支持 CMDB 等场景：
 
 - 以对象存储作为持久化真源，避免依赖传统数据库实例。
 - 以租户 prefix 隔离数据，HTTP 侧通过 `X-Tenant-ID` 选择租户。
@@ -18,8 +18,8 @@ GraphDB 的核心目标是作为内部 CMDB 图数据底座：
 ```mermaid
 flowchart LR
   subgraph Clients["Internal Systems"]
-    Collector["Collectors / Agents"]
-    CMDBUI["CMDB Services"]
+    Ingest["Applications / Ingest Clients"]
+    GraphApps["Graph Applications"]
     Ops["Ops / Export Jobs"]
   end
 
@@ -45,9 +45,9 @@ flowchart LR
     Traces["OTLP traces"]
   end
 
-  Collector -->|POST /v1/ingest/batches| Writer
-  CMDBUI -->|POST /v1/commits| Writer
-  CMDBUI -->|POST /v1/query| ReaderA
+  Ingest -->|POST /v1/ingest/batches| Writer
+  GraphApps -->|POST /v1/commits| Writer
+  GraphApps -->|POST /v1/query| ReaderA
   Ops -->|scan/export APIs| ReaderB
   CLI --> Writer
   CLI --> ReaderA
@@ -99,7 +99,7 @@ flowchart TB
 模块职责：
 
 - `httpapi`: HTTP API、读写模式控制、query/write admission、429 backpressure、审计日志。
-- `graph`: Entity、Edge、CIType、RelationType、source priority、字段归属、关系三元组 canonical identity。
+- `graph`: Entity、Edge、可选 CIType、RelationType、source priority、字段归属、关系三元组 canonical identity。
 - `storage`: 对象存储读写、manifest CAS、writer lease、commit replay、snapshot compact、index rebuild、ingest idempotency 和 dead-letter。
 - `query`: JSON DSL、planner、index lookup、lazy materialization、path traversal、streaming。
 - `observability`: Prometheus 指标、stdout JSON 日志、OTLP trace。

@@ -2,8 +2,9 @@
 
 [中文](usage-manual.zh-CN.md)
 
-This manual gives the shortest path from creating a tenant and writing graph
-data to querying, CMDB governance, maintenance, and troubleshooting. See the
+This manual gives the shortest path from creating a tenant and writing general
+graph data to querying, optional CMDB governance, maintenance, and
+troubleshooting. See the
 [OpenAPI contract](../openapi.yaml) for the complete HTTP API and the
 [Data Model](data-model.md) for deeper model details.
 
@@ -143,7 +144,7 @@ curl -fsS "$BASE/v1/entities/person:alice?allow_stale=true" \
   -H "$TENANT_HEADER"
 ```
 
-## 6. CMDB capabilities
+## 6. CMDB scenario capabilities (optional)
 
 A CI type can declare field types, required/enum/default/index/unique
 constraints. Source policy controls priority when multiple collectors write

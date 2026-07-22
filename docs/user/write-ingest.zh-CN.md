@@ -10,6 +10,9 @@ GraphDB 有两条写入路径：
 
 两者都需要 `X-Tenant-ID`；在 reader 模式都返回 `405`。
 
+这两条都是通用图数据写入接口。下面的请求和文件示例在需要具体说明采集与
+身份合并时使用 CMDB 风格数据；其他领域可以不使用 CI type 和 source governance。
+
 ## 直接提交
 
 请求结构：
@@ -49,9 +52,9 @@ curl -sS -X POST "$WRITER/v1/commits" \
 实体字段：
 
 - `id`：稳定实体 ID。
-- `kind`：CI 类型，例如 `host`、`service`、`database`。
+- `kind`：由应用定义的实体类型；下方 CMDB 示例使用 `host`、`service`、`database`。
 - `fields`：无模式 JSON 对象。
-- `source`、`external_id`、`confidence`、`source_priority`：来源元数据。
+- `source`、`external_id`、`confidence`、`source_priority`：可选的来源元数据。
 - `identity_keys`：由 CI type 身份规则使用的可选身份信息。
 
 数组字段合并：
@@ -224,7 +227,7 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `failures`：item 级错误；
 - `conflicts`：被抑制冲突和提交失败原因。
 
-采集批次建议：
+CMDB 采集场景的批次建议：
 
 - 从每批 200 个逻辑 CMDB 组开始，对象存储和 writer 超时稳定后再接近 500；
 - 优先扩大批次，而不是并发大量小批次；每批都有固定的 commit、manifest、

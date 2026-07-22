@@ -4,7 +4,7 @@
 
 ## 目标
 
-验证当前 GQL 作为 CMDB 查询语言的可靠性。测试覆盖数据写入、GQL 解析、JSON DSL 映射、查询执行、HTTP/CLI 入口、stream、分页、一致性和错误边界。
+验证当前 GQL 作为通用图查询语言的可靠性。测试数据使用 CMDB 典型的实体、关系和来源治理作为一个覆盖场景；测试覆盖数据写入、GQL 解析、JSON DSL 映射、查询执行、HTTP/CLI 入口、stream、分页、一致性和错误边界。
 
 ## 测试数据集
 
@@ -134,7 +134,7 @@ go test -race ./internal/query ./internal/httpapi
 
 ## 结论
 
-当前 GQL 已覆盖内部 CMDB 常用查询和组合：
+当前 GQL 已覆盖通用图查询能力，并以内部 CMDB 常用查询作为一组验证样例：
 
 - 当前态实体查询
 - 一跳邻居查询

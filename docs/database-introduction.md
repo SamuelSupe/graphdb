@@ -2,22 +2,26 @@
 
 [中文](database-introduction.zh-CN.md)
 
-GraphDB is a lightweight Go graph database focused on internal CMDB
-workloads. It organizes entities and their relationships as a graph and uses
-local files or S3-compatible object storage as the persistence backend. It
-supports multi-tenancy, collector ingestion, graph queries, and operations.
+GraphDB is a lightweight, general-purpose Go graph database for
+entity-relationship data. It organizes entities and their relationships as a
+graph and uses local files or S3-compatible object storage as the persistence
+backend. CMDB is one supported application scenario, alongside asset
+relationships, service dependencies, topology, lineage, and other graph-shaped
+workloads. It supports multi-tenancy, ingestion, graph queries, and operations.
 
 ## Core capabilities
 
-- **Graph data model**: use `Entity` for resources and directed `Edge` values
-  for relationships such as host, service, and database dependencies.
+- **Graph data model**: use `Entity` for domain objects and directed `Edge`
+  values for relationships such as dependencies, ownership, containment, or
+  other application-defined links.
 - **Tenant isolation**: each tenant uses an independent data prefix; data APIs
   select the tenant with `X-Tenant-ID`.
 - **Flexible data shape**: entity fields can be schemaless or described with
-  `CIType` field types, required/default/unique/index properties.
-- **Identity and governance**: `IdentityKey` rules reconcile duplicates, while
-  source priority, confidence, and write time resolve field and relation
-  conflicts.
+  optional type metadata such as `CIType` field types,
+  required/default/unique/index properties.
+- **Optional identity and source governance**: applications can use
+  `IdentityKey` rules to reconcile duplicates, while source priority,
+  confidence, and write time resolve field and relation conflicts.
 - **Object-storage persistence**: manifests define visibility boundaries;
   immutable commits, Parquet snapshots, and rebuildable indexes persist data.
   Manifest CAS prevents stale writers from overwriting newer versions.
@@ -29,15 +33,17 @@ supports multi-tenancy, collector ingestion, graph queries, and operations.
 
 ## What it is useful for
 
-GraphDB can serve as the data layer for a CMDB or resource relationship graph:
+GraphDB can serve as the data layer for general entity-relationship
+applications, including CMDB and resource relationship graphs:
 
-- find services running on a host;
-- trace dependencies between services, hosts, and databases;
+- model domain objects and typed relationships with flexible properties;
+- traverse dependencies, ownership, containment, lineage, or other graph
+  structures;
 - calculate impact scope and shortest paths;
-- accept batches from multiple collectors with idempotency, identity
-  reconciliation, and field conflict handling;
-- provide a stable query interface to CMDB, asset, topology, and operations
-  products.
+- accept direct writes or batches with idempotency and optional source
+  reconciliation;
+- provide a stable query interface to graph applications, including CMDB,
+  asset, topology, and operations products.
 
 ## Data model
 
@@ -45,7 +51,7 @@ GraphDB can serve as the data layer for a CMDB or resource relationship graph:
 Tenant
  ├── Entity       resource, such as host, service, or database
  ├── Edge         relationship, such as runs_on or depends_on
- ├── CIType       entity type definition and identity rules
+ ├── CIType       optional entity type definition and identity rules
  └── RelationType relationship type, direction, and cardinality
 ```
 
@@ -75,7 +81,7 @@ Entity fields remain flexible:
 
 ```mermaid
 flowchart LR
-  Client["CMDB / collectors / operations tools"] --> API["GraphDB HTTP API or CLI"]
+  Client["Graph applications / ingest clients / operations tools"] --> API["GraphDB HTTP API or CLI"]
   API --> Graph["Graph model and query execution"]
   Graph --> Store["Tenant Store\nmanifest / commit / snapshot / index"]
   Store --> Object["Local files or S3-compatible object storage"]
