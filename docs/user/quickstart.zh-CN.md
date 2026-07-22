@@ -10,7 +10,7 @@
 go run ./cmd/graphdb serve
 ```
 
-默认 API 地址为 \`http://127.0.0.1:8080\`。检查健康状态：
+默认 API 地址为 `http://127.0.0.1:8080`。检查健康状态：
 
 ```sh
 curl -sS http://127.0.0.1:8080/v1/health
@@ -36,9 +36,9 @@ docker compose -f docker-compose.rustfs.yml up --build
 
 默认端口：
 
-- Writer：\`http://127.0.0.1:38080\`
-- Reader：\`http://127.0.0.1:38081\`
-- RustFS S3 API：\`http://127.0.0.1:39000\`
+- Writer：`http://127.0.0.1:38080`
+- Reader：`http://127.0.0.1:38081`
+- RustFS S3 API：`http://127.0.0.1:39000`
 
 ## 创建租户
 
@@ -69,8 +69,8 @@ CLI 等价命令：
 go run ./cmd/graphdb commit demo examples/commit.json
 ```
 
-响应包含 \`version\`、\`readable_version\`、\`skipped\`、
-\`canonical_edges\` 和可选的 \`suppressed\` 冲突信息。
+响应包含 `version`、`readable_version`、`skipped`、
+`canonical_edges` 和可选的 `suppressed` 冲突信息。
 
 ## 查询数据
 
@@ -94,7 +94,7 @@ curl -sS -X POST http://127.0.0.1:8080/v1/query/gql \
 
 ## 写入后读取
 
-当 reader 必须追上某次写入时，把提交版本作为 \`min_version\`：
+当 reader 必须追上某次写入时，把提交版本作为 `min_version`：
 
 ```sh
 curl -sS 'http://127.0.0.1:8080/v1/entities/person:alice?min_version=1' \

@@ -7,7 +7,7 @@ manifest snapshot 版本。
 
 ## Tenant
 
-数据 API 通过 \`X-Tenant-ID\` 提供租户 ID。每个租户包含：
+数据 API 通过 `X-Tenant-ID` 提供租户 ID。每个租户包含：
 
 - manifest 和 commit tail；
 - 可选的 compact snapshot；
@@ -19,7 +19,7 @@ manifest snapshot 版本。
 
 ## CI Type
 
-\`CIType\` 为 CMDB 实体提供可选的 kind 级元数据：
+`CIType` 为 CMDB 实体提供可选的 kind 级元数据：
 
 ```json
 {
@@ -39,9 +39,9 @@ manifest snapshot 版本。
 校验保持有意轻量，因为上游系统应负责 payload 校验。CI type 主要用于默认
 值、索引、身份合并和运维理解。
 
-数组字段可以使用 \`merge_strategy: "append_unique"\`。现有数组顺序保持不变，
-新来的不重复值追加到末尾。写入时可以在字段名后加 \`!\` 强制替换，例如
-\`"tags!": ["blue"]\`。
+数组字段可以使用 `merge_strategy: "append_unique"`。现有数组顺序保持不变，
+新来的不重复值追加到末尾。写入时可以在字段名后加 `!` 强制替换，例如
+`"tags!": ["blue"]`。
 
 ## Entity
 
@@ -64,14 +64,14 @@ manifest snapshot 版本。
 
 重要字段：
 
-- \`id\`：稳定的内部 ID；
-- \`kind\`：实体类型；
-- \`fields\`：无模式 JSON 对象；
-- \`source\`、\`external_id\`：上游身份；
-- \`confidence\`：source priority 相同的平局决胜值；
-- \`source_priority\`：没有租户 source policy 覆盖时使用；
-- \`field_sources\`：GraphDB 记录的字段归属；
-- \`sources\`：累积的来源观察记录。
+- `id`：稳定的内部 ID；
+- `kind`：实体类型；
+- `fields`：无模式 JSON 对象；
+- `source`、`external_id`：上游身份；
+- `confidence`：source priority 相同的平局决胜值；
+- `source_priority`：没有租户 source policy 覆盖时使用；
+- `field_sources`：GraphDB 记录的字段归属；
+- `sources`：累积的来源观察记录。
 
 ## Relation Type
 
@@ -90,12 +90,12 @@ manifest snapshot 版本。
 
 支持的 cardinality：
 
-- \`many_to_many\`
-- \`one_to_many\`
-- \`many_to_one\`
-- \`one_to_one\`
+- `many_to_many`
+- `one_to_many`
+- `many_to_one`
+- `one_to_one`
 
-\`impact_direction\` 控制该关系类型在影响查询中的传播。
+`impact_direction` 控制该关系类型在影响查询中的传播。
 
 ## Edge
 
@@ -113,13 +113,13 @@ manifest snapshot 版本。
 }
 ```
 
-保存的边身份由 \`(type, from, to)\` 规范化：
+保存的边身份由 `(type, from, to)` 规范化：
 
 ```text
 edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
 ```
 
-输入 \`id\` 会作为 source metadata 中的别名保留。相同 triple 的重复 upsert
+输入 `id` 会作为 source metadata 中的别名保留。相同 triple 的重复 upsert
 会合并为同一条边，即使不同采集器使用不同 ID。
 
 ## Source Governance
@@ -140,13 +140,13 @@ edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
 }
 ```
 
-\`field_priorities\` 只作用于顶层实体字段，并在写入别名处理后使用规范字段名。
-它改变字段归属优先级，不改变实体级 \`source_priority\`。
+`field_priorities` 只作用于顶层实体字段，并在写入别名处理后使用规范字段名。
+它改变字段归属优先级，不改变实体级 `source_priority`。
 
 实体字段、边字段和边存在性的合并顺序：
 
 1. 高优先级胜出；
-2. 优先级相同使用更高 \`confidence\`；
+2. 优先级相同使用更高 `confidence`；
 3. 优先级和 confidence 都相同使用最后写入；
 4. 低优先级写入/删除被抑制并返回。
 
@@ -154,8 +154,8 @@ edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
 
 ## Snapshot Version
 
-每个可见 commit 都会增加租户 manifest 的 \`version\`。读响应包含其观察到的
-版本；读后写场景使用 \`min_version\`。
+每个可见 commit 都会增加租户 manifest 的 `version`。读响应包含其观察到的
+版本；读后写场景使用 `min_version`。
 
-如果写入后的 MD5 与当前图一致，GraphDB 返回 \`skipped=true\`，不会发布
+如果写入后的 MD5 与当前图一致，GraphDB 返回 `skipped=true`，不会发布
 新 commit。

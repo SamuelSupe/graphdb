@@ -1,5 +1,7 @@
 # Read And Query
 
+[中文](read-query.zh-CN.md)
+
 Use query APIs for graph traversal and filtered retrieval. Use scan/export APIs
 for operational extraction; see [Scan And Export](scan-export.md).
 

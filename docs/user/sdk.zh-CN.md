@@ -3,7 +3,7 @@
 [English](sdk.md)
 
 GraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务端
-\`internal\` 包，可以安全地 vendoring 到采集器、内部服务和运维工具。
+`internal` 包，可以安全地 vendoring 到采集器、内部服务和运维工具。
 
 SDK 覆盖：
 
@@ -70,7 +70,7 @@ if err != nil {
 fmt.Println(result.Version, result.Skipped, result.Suppressed)
 ```
 
-使用 \`MergeStrategy: "append_unique"\` 的数组字段会追加不重复值；加 \`!\`
+使用 `MergeStrategy: "append_unique"` 的数组字段会追加不重复值；加 `!`
 强制某次写入替换：
 
 ```go
@@ -331,8 +331,8 @@ freshness = reader.reader_freshness()
 
 写入和采集：
 
-- 始终设置 \`idempotency_key\`；
+- 始终设置 `idempotency_key`；
 - 429 时遵守 SDK 重试提示，用相同 payload 和相同 key 重试；
-- \`idempotency_conflict\` 表示 payload 不同，除非 payload 与原请求完全一致，
+- `idempotency_conflict` 表示 payload 不同，除非 payload 与原请求完全一致，
   不要继续使用同一个 key；
 - 被抑制的 source-priority 冲突会在成功响应中返回，不会成为 SDK 异常。

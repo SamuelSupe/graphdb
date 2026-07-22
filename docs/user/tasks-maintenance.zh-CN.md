@@ -40,20 +40,20 @@ curl -sS -X POST "$WRITER/v1/tasks/<task-id>/cancel" -H 'X-Tenant-ID: demo'
 curl -sS -X POST "$WRITER/v1/tasks/<task-id>/retry" -H 'X-Tenant-ID: demo'
 ```
 
-任务字段包括 \`id\`、\`type\`、\`status\`、\`phase\`、进度计数、
-\`params\`、\`checkpoint\`、\`result\`、\`result_key\`、\`error\` 和时间戳。
+任务字段包括 `id`、`type`、`status`、`phase`、进度计数、
+`params`、`checkpoint`、`result`、`result_key`、`error` 和时间戳。
 
 支持的 task 类型：
 
-- \`compact\`
-- \`gc\`
-- \`repair\`
-- \`export_snapshot\`
-- \`replay_deadletters\`
-- \`index_rebuild\`
-- \`tenant_backup\`
-- \`tenant_restore\`
-- \`tenant_restore_drill\`
+- `compact`
+- `gc`
+- `repair`
+- `export_snapshot`
+- `replay_deadletters`
+- `index_rebuild`
+- `tenant_backup`
+- `tenant_restore`
+- `tenant_restore_drill`
 
 ## Compact
 
@@ -93,8 +93,8 @@ curl -sS -X POST "$WRITER/v1/control/gc" \
   }'
 ```
 
-GC 遵守 reader heartbeat，保留活跃 reader 所需对象。当 \`max_deletes\` 暂停
-运行时，将返回的 \`checkpoint.next_cursor\` 作为 \`cursor\` 继续。
+GC 遵守 reader heartbeat，保留活跃 reader 所需对象。当 `max_deletes` 暂停
+运行时，将返回的 `checkpoint.next_cursor` 作为 `cursor` 继续。
 
 task 方式：
 

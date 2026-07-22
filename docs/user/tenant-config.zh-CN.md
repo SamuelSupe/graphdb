@@ -2,7 +2,7 @@
 
 [English](tenant-config.md)
 
-租户生命周期 API 不受租户 header 限制；数据 API 仍通过 \`X-Tenant-ID\`
+租户生命周期 API 不受租户 header 限制；数据 API 仍通过 `X-Tenant-ID`
 限定租户。
 
 ## 生命周期
@@ -124,8 +124,8 @@ curl -sS -X PUT "$WRITER/v1/source-policy" \
 }
 ```
 
-\`field_aliases\` 只在写入时重写顶层实体字段。保存的图、索引、查询 DSL、
-scan 和 export API 只暴露规范字段名。\`field_priorities\` 同样使用规范字段名，
+`field_aliases` 只在写入时重写顶层实体字段。保存的图、索引、查询 DSL、
+scan 和 export API 只暴露规范字段名。`field_priorities` 同样使用规范字段名，
 只改变字段级合并归属，不改变实体级 source priority。
 
 ## Tenant Config
@@ -147,12 +147,12 @@ curl -sS -X PUT "$WRITER/v1/tenant-config" \
 
 配置区段：
 
-- \`backpressure\`：对象延迟阈值、CAS 冲突窗口、commit tail 阈值和重试提示；
-- \`quota\`：租户最大实体数和边数；
-- \`maintenance\`：自动 compact、GC 间隔、保留策略、小文件阈值和孤立索引清理；
-- \`indexes\`：自动重建行为。
+- `backpressure`：对象延迟阈值、CAS 冲突窗口、commit tail 阈值和重试提示；
+- `quota`：租户最大实体数和边数；
+- `maintenance`：自动 compact、GC 间隔、保留策略、小文件阈值和孤立索引清理；
+- `indexes`：自动重建行为。
 
-根据字段不同，\`0\` 通常表示没有配额或关闭阈值。
+根据字段不同，`0` 通常表示没有配额或关闭阈值。
 
 ## Tenant Usage
 
@@ -182,7 +182,7 @@ go run ./cmd/graphdb tenant-usage demo
 ```
 
 若要从配置存储中永久清理所有受管和 legacy 租户，使用带保护的脚本，并先
-用 \`--dry-run\` 检查目标：
+用 `--dry-run` 检查目标：
 
 ```sh
 GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh --dry-run

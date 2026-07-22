@@ -1,5 +1,7 @@
 # Scan And Export
 
+[中文](scan-export.zh-CN.md)
+
 Scan/export APIs return current state without the query planner. Use them for
 operations, reconciliation, migration, and offline export.
 

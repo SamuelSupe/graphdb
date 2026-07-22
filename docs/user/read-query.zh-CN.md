@@ -12,24 +12,24 @@ curl -sS "$READER/v1/entities/host:aws:i-001?min_version=12" \
   -H 'X-Tenant-ID: demo'
 ```
 
-成功返回实体对象，不存在时返回 \`404\`。
+成功返回实体对象，不存在时返回 `404`。
 
 ## JSON Query DSL
 
 入口：
 
-- \`POST /v1/query\`
-- \`POST /v1/query/stream\`
+- `POST /v1/query`
+- `POST /v1/query/stream`
 
-支持的 \`op\`：
+支持的 `op`：
 
-- \`match\`
-- \`neighbors\`
-- \`traverse\`
-- \`impact\`
-- \`shortest_path\`
-- \`explain\`
-- \`profile\`
+- `match`
+- `neighbors`
+- `traverse`
+- `impact`
+- `shortest_path`
+- `explain`
+- `profile`
 
 示例：
 
@@ -150,12 +150,12 @@ go run ./cmd/graphdb gql demo query.gql
 
 支持：
 
-- \`eq\`、\`neq\`、\`in\`
-- \`gt\`、\`gte\`、\`lt\`、\`lte\`
-- \`exists\`
-- \`prefix\`、\`contains\`、\`fuzzy\`
-- 使用 \`and\`、\`or\`、\`not\` 的 \`where_expr\`
-- 路径/邻居边过滤的 \`edge_where\` 和 \`edge_where_expr\`
+- `eq`、`neq`、`in`
+- `gt`、`gte`、`lt`、`lte`
+- `exists`
+- `prefix`、`contains`、`fuzzy`
+- 使用 `and`、`or`、`not` 的 `where_expr`
+- 路径/邻居边过滤的 `edge_where` 和 `edge_where_expr`
 
 投影可以减少返回字段：
 
@@ -181,7 +181,7 @@ go run ./cmd/graphdb gql demo query.gql
 
 ## 分页
 
-使用 \`limit\` 和 \`next_cursor\`：
+使用 `limit` 和 `next_cursor`：
 
 ```sh
 curl -sS -X POST "$READER/v1/query" \
@@ -201,7 +201,7 @@ cursor 绑定查询结构和 snapshot 版本。使用不同查询或不兼容版
 
 ## 流式查询
 
-使用 \`POST /v1/query/stream\` 或 \`POST /v1/query/gql/stream\` 获取
+使用 `POST /v1/query/stream` 或 `POST /v1/query/gql/stream` 获取
 NDJSON。响应依次输出 meta 行、结果行和最终 done 行。
 
 ## Explain 与 Profile
@@ -214,7 +214,7 @@ NDJSON。响应依次输出 meta 行、结果行和最终 done 行。
 {"op":"profile","target_op":"match","kind":"host","where":[{"field":"region","op":"eq","value":"us-east-1"}]}
 ```
 
-普通查询也可以设置 \`profile=true\`，返回计划和算子耗时。
+普通查询也可以设置 `profile=true`，返回计划和算子耗时。
 
 ## 保存的查询
 

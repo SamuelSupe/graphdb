@@ -1,5 +1,7 @@
 # Go And Python SDK
 
+[中文](sdk.zh-CN.md)
+
 GraphDB provides lightweight Go and Python SDKs over the HTTP API. They do not
 import service `internal` packages and are safe to vendor into collectors,
 internal services, and operations tools.

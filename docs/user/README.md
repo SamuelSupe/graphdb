@@ -1,25 +1,25 @@
 # GraphDB User Guide
 
+[中文](README.zh-CN.md)
+
 This guide is for service owners, collector authors, and operators using
 GraphDB as an internal CMDB graph database.
 
-## What GraphDB Provides
+## What GraphDB provides
 
 - Multi-tenant graph data isolated by `X-Tenant-ID`.
 - Schemaless entities with optional CI type definitions.
 - Typed directed edges with `(type, from, to)` canonical identity.
-- Single active writer per tenant; readers are independent and reload from
-  object storage.
-- Object-storage persistence using Parquet manifests, commits, snapshots,
-  entity pages, edge shards, and index objects.
-- JSON Query DSL, text GQL, scan/export APIs, saved queries, and running query
+- One active writer per tenant; readers independently reload from object storage.
+- Object-storage persistence using Parquet manifests, commits, snapshots, entity
+  pages, edge shards, and index objects.
+- JSON Query DSL, text GQL, scan/export APIs, saved queries, and running-query
   control.
-- Source-priority write governance for entity fields, edge fields, and edge
-  existence.
+- Source-priority governance for entity fields, edge fields, and edge existence.
 - Tenant lifecycle, source policy, tenant config, index management, unified
   tasks, maintenance, integrity audit, and reader freshness checks.
 
-## Common HTTP Conventions
+## Common HTTP conventions
 
 All tenant-scoped data APIs require:
 
@@ -30,19 +30,19 @@ Content-Type: application/json
 
 Read APIs support freshness controls:
 
-- Body: `min_version`, `allow_stale`
-- Query: `?min_version=123&allow_stale=true`
-- Headers: `X-GraphDB-Min-Version`, `X-GraphDB-Allow-Stale`
+- body: `min_version`, `allow_stale`;
+- query: `?min_version=123&allow_stale=true`;
+- headers: `X-GraphDB-Min-Version`, `X-GraphDB-Allow-Stale`.
 
 Mode behavior:
 
-- `GRAPHDB_MODE=writer`: write/control APIs are enabled; read APIs can be used
-  for checks.
-- `GRAPHDB_MODE=reader`: write/config/task mutation APIs return `405`; read,
-  query, scan, metrics, and freshness APIs remain available.
+- `GRAPHDB_MODE=writer`: write/control APIs are enabled; read APIs remain
+  available for checks.
+- `GRAPHDB_MODE=reader`: write/config/task mutations return `405`; reads,
+  queries, scans, metrics, and freshness APIs remain available.
 - `GRAPHDB_MODE=all`: local or small single-process mode.
 
-Examples use these shell variables:
+Examples use:
 
 ```sh
 export WRITER=http://127.0.0.1:38080
@@ -50,37 +50,25 @@ export READER=http://127.0.0.1:38081
 export BASE=http://127.0.0.1:8080
 ```
 
-## Document Map
+## Document map
 
-- [Quick Start](quickstart.md): start locally, create a tenant, write data, run
-  queries.
-- [Release Deployment](release-deployment.md): download a GitHub Release and
-  deploy it with a binary, Docker Compose, MinIO, or RustFS.
-- [Usage Manual](usage-manual.md): Chinese end-to-end guide for common API,
-  CLI, SDK, and operations workflows.
-- [Data Model](data-model.md): CI types, entities, relation types, edges,
-  source governance, snapshots.
-- [Write And Ingest](write-ingest.md): direct commits, collector ingestion,
-  source policy, idempotency, delete semantics, 429 backpressure.
-- [Read And Query](read-query.md): entity lookup, JSON DSL, GQL, streaming,
-  saved queries, pagination, query kill.
-- [Scan And Export](scan-export.md): operational list/export APIs for current
-  state extraction.
-- [Tenant And Config](tenant-config.md): lifecycle, source policy, quota,
-  retention, maintenance and index settings.
-- [Deployment And Operations](deploy-ops.md): local, MinIO, RustFS, writer and
-  reader deployment, environment variables, readiness.
-- [Tasks And Maintenance](tasks-maintenance.md): compact, GC, repair, export,
-  backup, restore, index rebuild, task control.
-- [Errors And Troubleshooting](errors-troubleshooting.md): stable error
-  envelope, common failures, metrics and logs.
-- [Go And Python SDK](sdk.md): SDK installation, read/write examples, streaming,
-  and retry handling.
-- [API Map](api-map.md): endpoint list grouped by domain.
+- [Quick Start](quickstart.md) · [中文](quickstart.zh-CN.md)
+- [Release Deployment](release-deployment.md) · [中文](release-deployment.zh-CN.md)
+- [Usage Manual](usage-manual.md) · [中文](usage-manual.zh-CN.md)
+- [Data Model](data-model.md) · [中文](data-model.zh-CN.md)
+- [Write And Ingest](write-ingest.md) · [中文](write-ingest.zh-CN.md)
+- [Read And Query](read-query.md) · [中文](read-query.zh-CN.md)
+- [Scan And Export](scan-export.md) · [中文](scan-export.zh-CN.md)
+- [Tenant And Config](tenant-config.md) · [中文](tenant-config.zh-CN.md)
+- [Deployment And Operations](deploy-ops.md) · [中文](deploy-ops.zh-CN.md)
+- [Tasks And Maintenance](tasks-maintenance.md) · [中文](tasks-maintenance.zh-CN.md)
+- [Errors And Troubleshooting](errors-troubleshooting.md) · [中文](errors-troubleshooting.zh-CN.md)
+- [Go And Python SDK](sdk.md) · [中文](sdk.zh-CN.md)
+- [API Map](api-map.md) · [中文](api-map.zh-CN.md)
 
-Reference:
+Reference documents:
 
-- [../gql.md](../gql.md)
-- [../query_capabilities.md](../query_capabilities.md)
-- [../error_codes.md](../error_codes.md)
-- [../openapi.yaml](../openapi.yaml)
+- [GQL](../gql.md)
+- [Query capabilities](../query_capabilities.md)
+- [Error codes](../error_codes.md)
+- [OpenAPI](../openapi.yaml)

@@ -1,5 +1,7 @@
 # Tenant And Config
 
+[中文](tenant-config.zh-CN.md)
+
 Tenant lifecycle APIs are not tenant-header scoped. Data APIs remain scoped by
 `X-Tenant-ID`.
 

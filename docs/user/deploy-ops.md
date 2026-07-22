@@ -1,5 +1,7 @@
 # Deployment And Operations
 
+[中文](deploy-ops.zh-CN.md)
+
 ## Runtime Modes
 
 ```sh

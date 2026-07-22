@@ -1,5 +1,7 @@
 # Data Model
 
+[中文](data-model.zh-CN.md)
+
 GraphDB stores one current graph per tenant. It does not expose historical
 version queries; each read observes a manifest snapshot version.
 

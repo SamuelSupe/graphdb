@@ -1,5 +1,7 @@
 # Quick Start
 
+[中文](quickstart.zh-CN.md)
+
 ## Local File Storage
 
 Start one local process:
