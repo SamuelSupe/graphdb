@@ -13,6 +13,15 @@ query references are in [docs/openapi.yaml](docs/openapi.yaml),
 [docs/gql.md](docs/gql.md). Go and Python SDK examples are in
 [docs/user/sdk.md](docs/user/sdk.md).
 
+发行版和部署入口：
+
+- [发行版部署文档](docs/user/release-deployment.md)：下载 GitHub Release、单机、Docker Compose、RustFS 和升级回滚。
+- [使用手册](docs/user/usage-manual.md)：租户、写入、查询、采集、SDK 和常见错误。
+
+GitHub Release 由 `.github/workflows/release.yml` 构建。推送形如
+`release_20260722_01` 的标签后，Workflow 会生成多平台二进制、部署文件和
+SHA-256 校验文件。
+
 ## Architecture
 
 - Writes go through immutable commit envelope objects, then publish a tenant

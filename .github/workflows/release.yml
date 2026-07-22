@@ -1,0 +1,62 @@
+name: Build GraphDB release
+
+on:
+  push:
+    tags:
+      - "release_*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build release package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          root="dist/${tag}"
+          mkdir -p "$root/bin" "$root/docs" "$root/examples"
+
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -mod=mod -trimpath -ldflags="-s -w" \
+              -o "$root/bin/graphdb-${os}-${arch}" ./cmd/graphdb
+          done
+
+          cp README.md Dockerfile docker-compose.yml docker-compose.rustfs.yml "$root/"
+          cp docs/openapi.yaml docs/query_capabilities.md docs/gql.md docs/error_codes.md "$root/docs/"
+          cp -R docs/user "$root/docs/"
+          cp -R examples/. "$root/examples/"
+          printf '%s\n' "$tag" > "$root/VERSION"
+
+          tar -C dist -czf "dist/graphdb-${tag}.tar.gz" "$tag"
+          (cd dist && sha256sum "graphdb-${tag}.tar.gz" > "graphdb-${tag}.tar.gz.sha256")
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "GraphDB $GITHUB_REF_NAME" \
+            --generate-notes \
+            "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" \
+            "dist/graphdb-${GITHUB_REF_NAME}.tar.gz.sha256"

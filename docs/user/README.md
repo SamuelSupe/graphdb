@@ -54,6 +54,10 @@ export BASE=http://127.0.0.1:8080
 
 - [Quick Start](quickstart.md): start locally, create a tenant, write data, run
   queries.
+- [Release Deployment](release-deployment.md): download a GitHub Release and
+  deploy it with a binary, Docker Compose, MinIO, or RustFS.
+- [Usage Manual](usage-manual.md): Chinese end-to-end guide for common API,
+  CLI, SDK, and operations workflows.
 - [Data Model](data-model.md): CI types, entities, relation types, edges,
   source governance, snapshots.
 - [Write And Ingest](write-ingest.md): direct commits, collector ingestion,
