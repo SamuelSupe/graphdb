@@ -2,24 +2,24 @@
 
 [English](release-deployment.md)
 
-本文档面向需要下载、部署和升级 GraphDB 的服务负责人。首个 GitHub
-发行版标签为 `release_20260722_01`，发布页位于：
+本文档面向需要下载、部署和升级 GraphDB 的服务负责人。GraphDB 1.0 的
+GitHub 发行版标签为 `v1.0.0`，发布页位于：
 
-<https://github.com/SamuelSupe/graphdb/releases>
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.0.0>
 
 ## 1. 下载与校验
 
 发行页提供以下资产：
 
-- `graphdb-release_20260722_01.tar.gz`：二进制、文档、示例和 Compose 文件。
-- `graphdb-release_20260722_01.tar.gz.sha256`：SHA-256 校验文件。
+- `graphdb-v1.0.0.tar.gz`：二进制、文档、示例和 Compose 文件。
+- `graphdb-v1.0.0.tar.gz.sha256`：SHA-256 校验文件。
 
 下载后校验并解包：
 
 ```sh
-sha256sum -c graphdb-release_20260722_01.tar.gz.sha256
-tar -xzf graphdb-release_20260722_01.tar.gz
-cd graphdb-release_20260722_01
+sha256sum -c graphdb-v1.0.0.tar.gz.sha256
+tar -xzf graphdb-v1.0.0.tar.gz
+cd graphdb-v1.0.0
 ```
 
 压缩包包含：

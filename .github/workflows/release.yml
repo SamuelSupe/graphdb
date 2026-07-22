@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "release_*"
+      - "v*"
 
 permissions:
   contents: write
@@ -41,8 +42,9 @@ jobs:
               -o "$root/bin/graphdb-${os}-${arch}" ./cmd/graphdb
           done
 
-          cp README.md Dockerfile docker-compose.yml docker-compose.rustfs.yml "$root/"
-          cp docs/openapi.yaml docs/query_capabilities.md docs/gql.md docs/error_codes.md "$root/docs/"
+          cp README.md README.zh-CN.md Dockerfile docker-compose.yml docker-compose.rustfs.yml "$root/"
+          cp docs/README.md docs/README.zh-CN.md docs/database-introduction.md docs/database-introduction.zh-CN.md \
+            docs/openapi.yaml docs/query_capabilities.md docs/gql.md docs/error_codes.md "$root/docs/"
           cp -R docs/user "$root/docs/"
           cp -R examples/. "$root/examples/"
           printf '%s\n' "$tag" > "$root/VERSION"

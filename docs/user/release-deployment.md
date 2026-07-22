@@ -3,22 +3,22 @@
 [中文](release-deployment.zh-CN.md)
 
 This guide is for service owners who need to download, deploy, upgrade, and
-roll back GraphDB. The first GitHub release tag is
-`release_20260722_01`: <https://github.com/SamuelSupe/graphdb/releases>
+roll back GraphDB. The GraphDB 1.0 GitHub release tag is
+`v1.0.0`: <https://github.com/SamuelSupe/graphdb/releases/tag/v1.0.0>
 
 ## 1. Download and verify
 
 The release page provides:
 
-- `graphdb-release_20260722_01.tar.gz`: binaries, docs, examples, and Compose files.
-- `graphdb-release_20260722_01.tar.gz.sha256`: SHA-256 checksum.
+- `graphdb-v1.0.0.tar.gz`: binaries, docs, examples, and Compose files.
+- `graphdb-v1.0.0.tar.gz.sha256`: SHA-256 checksum.
 
 Verify and unpack:
 
 ```sh
-sha256sum -c graphdb-release_20260722_01.tar.gz.sha256
-tar -xzf graphdb-release_20260722_01.tar.gz
-cd graphdb-release_20260722_01
+sha256sum -c graphdb-v1.0.0.tar.gz.sha256
+tar -xzf graphdb-v1.0.0.tar.gz
+cd graphdb-v1.0.0
 ```
 
 The archive contains:

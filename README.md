@@ -113,8 +113,8 @@ authorization, TLS, and rate limiting at the gateway or service mesh.
 
 ## Release
 
-The current release is
-[**release_20260722_01**](https://github.com/SamuelSupe/graphdb/releases/tag/release_20260722_01).
+The current release is GraphDB 1.0:
+[**v1.0.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.0.0).
 
 Each release archive contains:
 
@@ -124,9 +124,10 @@ Each release archive contains:
 - a `.sha256` checksum file.
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
-[中文版本](docs/user/release-deployment.zh-CN.md). Pushing a
-tag matching `release_*` triggers [GitHub Actions](.github/workflows/release.yml)
-to build and publish the archive automatically.
+[中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
+tag such as `v1.0.0` triggers [GitHub Actions](.github/workflows/release.yml) to
+build and publish the archive automatically. Legacy `release_*` tags remain
+supported for older deployment workflows.
 
 ## Documentation
 
