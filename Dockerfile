@@ -1,10 +1,10 @@
-FROM golang:1.25-alpine AS build
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-COPY vendor ./vendor
+RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN go build -o /out/graphdb ./cmd/graphdb
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/graphdb ./cmd/graphdb
 
 FROM alpine:3.20
 RUN adduser -D -H graphdb
