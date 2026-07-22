@@ -1,31 +1,30 @@
-# Go And Python SDK
+# Go 与 Python SDK
 
-[中文](sdk.zh-CN.md)
+[English](sdk.md)
 
-GraphDB provides lightweight Go and Python SDKs over the HTTP API. They do not
-import service `internal` packages and are safe to vendor into collectors,
-internal services, and operations tools.
+GraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务端
+`internal` 包，可以安全地 vendoring 到采集器、内部服务和运维工具。
 
-SDK scope:
+SDK 覆盖：
 
-- tenant lifecycle basics.
-- direct commits and ingestion batches.
-- source policy and tenant config.
-- entity lookup, list entities/edges, export streams.
-- JSON Query DSL and GQL.
-- saved query and running query control.
-- task, index health/rebuild, reader freshness, writer lease, audit/repair.
-- structured API errors with code and retry hints.
+- 租户生命周期基础操作；
+- 直接 commit 和批量 ingest；
+- source policy 和 tenant config；
+- 实体查询、实体/边列表和导出流；
+- JSON Query DSL 和 GQL；
+- saved query 和运行中查询控制；
+- task、索引健康/重建、reader freshness、writer lease、审计/修复；
+- 带错误码和重试提示的结构化 API 错误。
 
 ## Go SDK
 
-Package:
+包：
 
 ```go
 import graphdb "gitlab.jiagouyun.com/guance/graphdb/sdk/go/graphdb"
 ```
 
-Create a client:
+创建客户端：
 
 ```go
 client, err := graphdb.NewClient(
@@ -37,14 +36,14 @@ if err != nil {
 }
 ```
 
-Use separate writer and reader clients when deployed separately:
+读写分离时使用不同客户端：
 
 ```go
 writer, _ := graphdb.NewClient("http://127.0.0.1:38080", graphdb.WithTenant("demo"))
 reader, _ := graphdb.NewClient("http://127.0.0.1:38081", graphdb.WithTenant("demo"))
 ```
 
-### Go: Direct Commit
+### Go：直接 Commit
 
 ```go
 result, err := writer.Commit(ctx, graphdb.Mutations{
@@ -71,8 +70,8 @@ if err != nil {
 fmt.Println(result.Version, result.Skipped, result.Suppressed)
 ```
 
-For array fields declared with `MergeStrategy: "append_unique"`, repeated
-writes append unique elements. Use a `!` suffix to force replace in one write:
+使用 `MergeStrategy: "append_unique"` 的数组字段会追加不重复值；加 `!`
+强制某次写入替换：
 
 ```go
 _, err = writer.Commit(ctx, graphdb.Mutations{
@@ -83,7 +82,7 @@ _, err = writer.Commit(ctx, graphdb.Mutations{
 }, nil)
 ```
 
-### Go: Ingestion
+### Go：Ingestion
 
 ```go
 result, err := writer.Ingest(ctx, graphdb.IngestRequest{
@@ -99,7 +98,7 @@ result, err := writer.Ingest(ctx, graphdb.IngestRequest{
 })
 ```
 
-### Go: Query
+### Go：查询
 
 ```go
 response, err := reader.Query(ctx, graphdb.QueryRequest{
@@ -111,13 +110,13 @@ response, err := reader.Query(ctx, graphdb.QueryRequest{
 })
 ```
 
-GQL:
+GQL：
 
 ```go
 response, err := reader.GQL(ctx, `FIND host WHERE hostname PREFIX "app-" LIMIT 100`)
 ```
 
-Streaming:
+流式：
 
 ```go
 stream, err := reader.GQLStream(ctx, `FIND host LIMIT 1000`)
@@ -137,7 +136,7 @@ if err := stream.Err(); err != nil {
 }
 ```
 
-### Go: Error Handling
+### Go：错误处理
 
 ```go
 _, err = writer.Commit(ctx, mutations, &graphdb.CommitOptions{IdempotencyKey: key})
@@ -145,20 +144,20 @@ var apiErr *graphdb.APIError
 if errors.As(err, &apiErr) {
     if apiErr.StatusCode == 429 && apiErr.RetryAfter > 0 {
         time.Sleep(apiErr.RetryAfter)
-        // retry with the same idempotency key
+        // 使用相同幂等键重试
     }
 }
 ```
 
 ## Python SDK
 
-Install from the repo:
+从仓库安装：
 
 ```sh
 python3 -m pip install -e sdk/python
 ```
 
-Create a client:
+创建客户端：
 
 ```python
 from graphdb_sdk import GraphDBClient
@@ -167,7 +166,7 @@ writer = GraphDBClient("http://127.0.0.1:38080", tenant_id="demo")
 reader = GraphDBClient("http://127.0.0.1:38081", tenant_id="demo")
 ```
 
-### Python: Direct Commit
+### Python：直接 Commit
 
 ```python
 result = writer.commit(
@@ -186,7 +185,7 @@ result = writer.commit(
 print(result["version"], result.get("skipped"))
 ```
 
-### Python: Ingestion
+### Python：Ingestion
 
 ```python
 result = writer.ingest({
@@ -208,7 +207,7 @@ result = writer.ingest({
 })
 ```
 
-### Python: Query
+### Python：查询
 
 ```python
 response = reader.query({
@@ -221,13 +220,13 @@ response = reader.query({
 })
 ```
 
-GQL:
+GQL：
 
 ```python
 response = reader.gql('FIND host WHERE hostname PREFIX "app-" LIMIT 100')
 ```
 
-Streaming:
+流式：
 
 ```python
 with reader.stream_gql("FIND host LIMIT 1000") as stream:
@@ -235,7 +234,7 @@ with reader.stream_gql("FIND host LIMIT 1000") as stream:
         print(item)
 ```
 
-### Python: Error Handling
+### Python：错误处理
 
 ```python
 from graphdb_sdk import GraphDBAPIError
@@ -244,13 +243,13 @@ try:
     writer.commit(mutations, idempotency_key="batch-001")
 except GraphDBAPIError as err:
     if err.status_code == 429 and err.retry_after_ms:
-        # sleep and retry with the same idempotency key
+        # 休眠后使用相同幂等键重试
         pass
 ```
 
-## Source Policy Example
+## Source Policy 示例
 
-Go:
+Go：
 
 ```go
 _, err := writer.PutSourcePolicy(ctx, graphdb.SourcePolicy{
@@ -280,7 +279,7 @@ _, err := writer.PutSourcePolicy(ctx, graphdb.SourcePolicy{
 })
 ```
 
-Python:
+Python：
 
 ```python
 writer.put_source_policy({
@@ -310,9 +309,9 @@ writer.put_source_policy({
 })
 ```
 
-## Operational Calls
+## 运维调用
 
-Go:
+Go：
 
 ```go
 health, _ := reader.IndexHealth(ctx, false)
@@ -320,7 +319,7 @@ task, _ := writer.StartTask(ctx, "compact", nil)
 freshness, _ := reader.ReaderFreshness(ctx)
 ```
 
-Python:
+Python：
 
 ```python
 health = reader.index_health()
@@ -328,13 +327,12 @@ task = writer.start_task("compact")
 freshness = reader.reader_freshness()
 ```
 
-## Retry Guidance
+## 重试建议
 
-For writes and ingestion:
+写入和采集：
 
-- Always set `idempotency_key`.
-- On `429`, honor SDK retry hints and retry the same payload with the same key.
-- On `idempotency_conflict`, do not retry with the same key unless the payload
-  is exactly the original payload.
-- Suppressed source-priority conflicts are returned in the successful response;
-  they are not SDK exceptions.
+- 始终设置 `idempotency_key`；
+- 429 时遵守 SDK 重试提示，用相同 payload 和相同 key 重试；
+- `idempotency_conflict` 表示 payload 不同，除非 payload 与原请求完全一致，
+  不要继续使用同一个 key；
+- 被抑制的 source-priority 冲突会在成功响应中返回，不会成为 SDK 异常。

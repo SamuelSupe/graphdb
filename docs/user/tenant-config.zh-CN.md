@@ -1,13 +1,13 @@
-# Tenant And Config
+# 租户与配置
 
-[中文](tenant-config.zh-CN.md)
+[English](tenant-config.md)
 
-Tenant lifecycle APIs are not tenant-header scoped. Data APIs remain scoped by
-`X-Tenant-ID`.
+租户生命周期 API 不受租户 header 限制；数据 API 仍通过 `X-Tenant-ID`
+限定租户。
 
-## Lifecycle
+## 生命周期
 
-Create:
+创建：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tenants" \
@@ -19,20 +19,20 @@ curl -sS -X POST "$WRITER/v1/tenants" \
   }'
 ```
 
-List:
+列出：
 
 ```sh
 curl -sS "$WRITER/v1/tenants"
 curl -sS "$WRITER/v1/tenants?include_legacy=true"
 ```
 
-Get:
+查看：
 
 ```sh
 curl -sS "$WRITER/v1/tenants/demo"
 ```
 
-Update metadata:
+更新元数据：
 
 ```sh
 curl -sS -X PUT "$WRITER/v1/tenants/demo" \
@@ -40,26 +40,26 @@ curl -sS -X PUT "$WRITER/v1/tenants/demo" \
   -d '{"name":"Demo CMDB","labels":{"env":"prod"}}'
 ```
 
-Disable and enable:
+禁用和启用：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tenants/demo/disable"
 curl -sS -X POST "$WRITER/v1/tenants/demo/enable"
 ```
 
-Soft delete:
+软删除：
 
 ```sh
 curl -sS -X DELETE "$WRITER/v1/tenants/demo"
 ```
 
-Purge object data after soft delete:
+软删除后清理对象数据：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tenants/demo/purge?force=true"
 ```
 
-Clone:
+克隆：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/tenants/demo/clone" \
@@ -69,13 +69,13 @@ curl -sS -X POST "$WRITER/v1/tenants/demo/clone" \
 
 ## Source Policy
 
-Get:
+读取：
 
 ```sh
 curl -sS "$WRITER/v1/source-policy" -H 'X-Tenant-ID: demo'
 ```
 
-Put:
+更新：
 
 ```sh
 curl -sS -X PUT "$WRITER/v1/source-policy" \
@@ -84,7 +84,7 @@ curl -sS -X PUT "$WRITER/v1/source-policy" \
   -d @examples/source-policy.json
 ```
 
-Recommended baseline:
+推荐基线：
 
 ```json
 {
@@ -124,20 +124,19 @@ Recommended baseline:
 }
 ```
 
-`field_aliases` only rewrites top-level entity fields on write. The stored graph,
-indexes, query DSL, scan, and export APIs expose only the canonical field names.
-`field_priorities` also uses canonical field names and only changes field-level
-merge ownership; it does not change the entity-level source priority.
+`field_aliases` 只在写入时重写顶层实体字段。保存的图、索引、查询 DSL、
+scan 和 export API 只暴露规范字段名。`field_priorities` 同样使用规范字段名，
+只改变字段级合并归属，不改变实体级 source priority。
 
 ## Tenant Config
 
-Get:
+读取：
 
 ```sh
 curl -sS "$WRITER/v1/tenant-config" -H 'X-Tenant-ID: demo'
 ```
 
-Put:
+更新：
 
 ```sh
 curl -sS -X PUT "$WRITER/v1/tenant-config" \
@@ -146,16 +145,14 @@ curl -sS -X PUT "$WRITER/v1/tenant-config" \
   -d @examples/tenant-config.json
 ```
 
-Config sections:
+配置区段：
 
-- `backpressure`: object latency threshold, CAS conflict window, commit tail
-  threshold, retry hint.
-- `quota`: max entities and max edges for the tenant.
-- `maintenance`: auto compact, GC interval, retention, small-file thresholds,
-  index orphan cleanup.
-- `indexes`: auto rebuild behavior.
+- `backpressure`：对象延迟阈值、CAS 冲突窗口、commit tail 阈值和重试提示；
+- `quota`：租户最大实体数和边数；
+- `maintenance`：自动 compact、GC 间隔、保留策略、小文件阈值和孤立索引清理；
+- `indexes`：自动重建行为。
 
-`0` usually means no quota or disabled threshold, depending on the field.
+根据字段不同，`0` 通常表示没有配额或关闭阈值。
 
 ## Tenant Usage
 
@@ -163,8 +160,7 @@ Config sections:
 curl -sS "$WRITER/v1/tenant-usage" -H 'X-Tenant-ID: demo'
 ```
 
-Use tenant usage to watch object count, byte count, and category growth before
-enabling hard quota.
+使用 tenant usage 观察对象数、字节数和分类增长，再决定是否启用硬配额。
 
 ## CLI
 
@@ -185,9 +181,8 @@ go run ./cmd/graphdb set-tenant-config demo examples/tenant-config.json
 go run ./cmd/graphdb tenant-usage demo
 ```
 
-To permanently purge every managed and legacy tenant from the configured
-storage, use the guarded helper script. Review the target with `--dry-run`
-before confirming the destructive operation:
+若要从配置存储中永久清理所有受管和 legacy 租户，使用带保护的脚本，并先
+用 `--dry-run` 检查目标：
 
 ```sh
 GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh --dry-run

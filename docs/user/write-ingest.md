@@ -1,5 +1,7 @@
 # Write And Ingest
 
+[中文](write-ingest.zh-CN.md)
+
 GraphDB has two write paths:
 
 - `POST /v1/commits`: direct atomic graph mutation.

@@ -1,5 +1,7 @@
 # Errors And Troubleshooting
 
+[中文](errors-troubleshooting.zh-CN.md)
+
 ## Error Envelope
 
 All non-2xx HTTP errors use:

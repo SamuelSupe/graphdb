@@ -1,5 +1,7 @@
 # API Map
 
+[中文](api-map.zh-CN.md)
+
 This is a user-facing endpoint map. The detailed schema contract is
 [../openapi.yaml](../openapi.yaml).
 

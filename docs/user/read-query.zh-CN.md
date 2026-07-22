@@ -1,27 +1,27 @@
-# Read And Query
+# 读取与查询
 
-[中文](read-query.zh-CN.md)
+[English](read-query.md)
 
-Use query APIs for graph traversal and filtered retrieval. Use scan/export APIs
-for operational extraction; see [Scan And Export](scan-export.md).
+查询 API 用于图遍历和过滤读取；运维抽取使用 scan/export API，详见
+[扫描与导出](scan-export.zh-CN.md)。
 
-## Entity Lookup
+## 实体查询
 
 ```sh
 curl -sS "$READER/v1/entities/host:aws:i-001?min_version=12" \
   -H 'X-Tenant-ID: demo'
 ```
 
-Response is the entity object or `404`.
+成功返回实体对象，不存在时返回 `404`。
 
 ## JSON Query DSL
 
-Entrypoints:
+入口：
 
 - `POST /v1/query`
 - `POST /v1/query/stream`
 
-Supported `op` values:
+支持的 `op`：
 
 - `match`
 - `neighbors`
@@ -31,7 +31,7 @@ Supported `op` values:
 - `explain`
 - `profile`
 
-Example:
+示例：
 
 ```json
 {
@@ -49,7 +49,7 @@ Example:
 }
 ```
 
-Response:
+响应：
 
 ```json
 {
@@ -60,11 +60,11 @@ Response:
 }
 ```
 
-See [../query_capabilities.md](../query_capabilities.md) for the full JSON DSL.
+完整 JSON DSL 见 [query_capabilities.md](../query_capabilities.md)。
 
 ## GQL
 
-GQL is the text query language compiled to the JSON DSL.
+GQL 是会编译为 JSON DSL 的文本查询语言：
 
 ```sql
 FIND host
@@ -74,7 +74,7 @@ ORDER BY hostname ASC
 LIMIT 100
 ```
 
-HTTP:
+HTTP：
 
 ```sh
 curl -sS -X POST "$READER/v1/query/gql" \
@@ -83,17 +83,17 @@ curl -sS -X POST "$READER/v1/query/gql" \
   --data-binary @query.gql
 ```
 
-CLI:
+CLI：
 
 ```sh
 go run ./cmd/graphdb gql demo query.gql
 ```
 
-See [../gql.md](../gql.md) for complete syntax.
+完整语法见 [gql.md](../gql.md)。
 
-## Graph Operations
+## 图操作
 
-Neighbors:
+邻居：
 
 ```json
 {
@@ -105,7 +105,7 @@ Neighbors:
 }
 ```
 
-Traverse:
+遍历：
 
 ```json
 {
@@ -122,7 +122,7 @@ Traverse:
 }
 ```
 
-Impact:
+影响分析：
 
 ```json
 {
@@ -134,7 +134,7 @@ Impact:
 }
 ```
 
-Shortest path:
+最短路径：
 
 ```json
 {
@@ -146,24 +146,24 @@ Shortest path:
 }
 ```
 
-## Filters, Projection, Sort, Aggregate
+## 过滤、投影、排序和聚合
 
-Filtering supports:
+支持：
 
-- `eq`, `neq`, `in`
-- `gt`, `gte`, `lt`, `lte`
+- `eq`、`neq`、`in`
+- `gt`、`gte`、`lt`、`lte`
 - `exists`
-- `prefix`, `contains`, `fuzzy`
-- `where_expr` with `and`, `or`, `not`
-- `edge_where` and `edge_where_expr` for path/neighbor edge filters
+- `prefix`、`contains`、`fuzzy`
+- 使用 `and`、`or`、`not` 的 `where_expr`
+- 路径/邻居边过滤的 `edge_where` 和 `edge_where_expr`
 
-Projection reduces returned fields:
+投影可以减少返回字段：
 
 ```json
 "project": ["id", "kind", "hostname", "fields.owner"]
 ```
 
-Aggregation:
+聚合：
 
 ```json
 "aggregate": [
@@ -173,15 +173,15 @@ Aggregation:
 ]
 ```
 
-Group by:
+分组：
 
 ```json
 "group_by": ["region"]
 ```
 
-## Pagination
+## 分页
 
-Use `limit` and `next_cursor`.
+使用 `limit` 和 `next_cursor`：
 
 ```sh
 curl -sS -X POST "$READER/v1/query" \
@@ -190,39 +190,35 @@ curl -sS -X POST "$READER/v1/query" \
   -d '{"op":"match","kind":"host","limit":100}'
 ```
 
-For the next page, submit the same query with returned `cursor`:
+下一页提交带有返回 cursor 的相同查询：
 
 ```json
 {"op":"match","kind":"host","limit":100,"cursor":"..."}
 ```
 
-Cursors are tied to query shape and snapshot version. Reusing a cursor with a
-different query or incompatible version is rejected.
+cursor 绑定查询结构和 snapshot 版本。使用不同查询或不兼容版本复用 cursor
+会被拒绝。
 
-## Streaming
+## 流式查询
 
-Use `POST /v1/query/stream` or `POST /v1/query/gql/stream` for NDJSON output.
-The response emits one meta row, result rows, then a final done row.
+使用 `POST /v1/query/stream` 或 `POST /v1/query/gql/stream` 获取
+NDJSON。响应依次输出 meta 行、结果行和最终 done 行。
 
-## Explain And Profile
-
-Explain:
+## Explain 与 Profile
 
 ```json
 {"op":"explain","target_op":"match","kind":"host","where":[{"field":"hostname","op":"eq","value":"app-01"}]}
 ```
 
-Profile:
-
 ```json
 {"op":"profile","target_op":"match","kind":"host","where":[{"field":"region","op":"eq","value":"us-east-1"}]}
 ```
 
-`profile=true` on normal queries also returns plan and operator timings.
+普通查询也可以设置 `profile=true`，返回计划和算子耗时。
 
-## Saved Queries
+## 保存的查询
 
-Save:
+保存：
 
 ```sh
 curl -sS -X POST "$WRITER/v1/query/templates" \
@@ -231,28 +227,28 @@ curl -sS -X POST "$WRITER/v1/query/templates" \
   -d @examples/query-template-hosts.json
 ```
 
-List:
+列出：
 
 ```sh
 curl -sS "$READER/v1/query/templates" -H 'X-Tenant-ID: demo'
 ```
 
-Run:
+执行：
 
 ```sh
 curl -sS -X POST "$READER/v1/query/templates/hosts-by-region/run" \
   -H 'X-Tenant-ID: demo'
 ```
 
-## Running Query Control
+## 运行中查询控制
 
-List current in-process queries:
+列出当前进程查询：
 
 ```sh
 curl -sS "$READER/v1/queries/running" -H 'X-Tenant-ID: demo'
 ```
 
-Cancel:
+取消：
 
 ```sh
 curl -sS -X DELETE "$READER/v1/queries/running/<query-id>" \
