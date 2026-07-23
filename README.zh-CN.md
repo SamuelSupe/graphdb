@@ -87,15 +87,43 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/query \
   -H 'Content-Type: application/json' \
   --data @examples/query-match.json
 
-# 4. 使用 GQL 查询
+# 4. 使用 GQL 查询通用图数据
 curl -fsS -X POST http://127.0.0.1:8080/v1/query/gql \
   -H 'X-Tenant-ID: demo' \
   -H 'Content-Type: text/plain' \
-  --data-binary 'FIND person WHERE name = "Alice" LIMIT 10'
+  --data-binary 'FIND person WHERE name = "Alice" PROJECT id, name LIMIT 10'
 ```
 
 写入响应中的 `version` 可以作为 reader 查询的 `min_version`，保证读到指定
 版本；只有在明确接受最终一致性时才使用 `allow_stale=true`。
+
+## 通用图场景：使用 GQL 查询
+
+`examples/commit.json` 包含一个非 CMDB 的通用图：`person:alice` 通过
+`works_at` 关系连接到 `company:acme`。GQL 面向应用自定义的实体类型、字段
+和关系类型，因此同一套语法也适用于组织关系、项目依赖、数据血缘和其他图结构数据。
+
+按属性查询实体：
+
+```sql
+FIND person
+WHERE name = "Alice"
+PROJECT id, name
+LIMIT 10
+```
+
+沿类型化关系查询一跳邻居：
+
+```sql
+NEIGHBORS person:alice OUT
+REL works_at
+PROJECT id, name
+LIMIT 10
+```
+
+`FIND` 对应实体匹配，`NEIGHBORS` 和 `TRAVERSE` 用于关系遍历。GQL 会编译
+到同一套 JSON Query DSL 和查询 planner；过滤、路径、分页、`EXPLAIN`、
+`PROFILE` 等完整语法见 [GQL 文档](docs/gql.md)。
 
 ## 部署模式
 
