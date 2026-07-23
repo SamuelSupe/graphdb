@@ -132,7 +132,15 @@ func (s *TenantStore) backupManifestIdentityFromKey(key string) (string, string,
 	return tenantID, decoded, true
 }
 
-func (s *TenantStore) buildBackupManifest(ctx context.Context, tenantID string, backupID string, record TenantBackupRecord, backupRecordKey string, manifest Manifest) (TenantBackupManifest, error) {
+func (s *TenantStore) buildBackupManifest(
+	ctx context.Context,
+	tenantID string,
+	backupID string,
+	record TenantBackupRecord,
+	backupRecordKey string,
+	manifest Manifest,
+	tenantManifestKey string,
+) (TenantBackupManifest, error) {
 	refs := []BackupObjectRef{}
 	addRef := func(ref BackupObjectRef) error {
 		if ref.Key == "" {
@@ -151,7 +159,10 @@ func (s *TenantStore) buildBackupManifest(ctx context.Context, tenantID string, 
 	if err := addKey("backup_record", backupRecordKey, 1, "", "", true); err != nil {
 		return TenantBackupManifest{}, err
 	}
-	if err := addKey("tenant_manifest", s.manifestKey(tenantID), 1, "", "", true); err != nil {
+	if tenantManifestKey == "" {
+		tenantManifestKey = s.manifestKey(tenantID)
+	}
+	if err := addKey("tenant_manifest", tenantManifestKey, 1, "", "", true); err != nil {
 		return TenantBackupManifest{}, err
 	}
 	if err := addKey("snapshot_record", manifest.SnapshotKey, 1, "", "", false); err != nil {

@@ -17,6 +17,9 @@ type WriterLease struct {
 }
 
 func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) error {
+	if s.coordinated() {
+		return nil
+	}
 	if bound, ok := s.writerFenceFromContext(ctx, tenantID); ok {
 		return s.ensureBoundWriterLease(ctx, tenantID, bound.fence)
 	}
@@ -24,6 +27,9 @@ func (s *TenantStore) acquireWriterLease(ctx context.Context, tenantID string) e
 }
 
 func (s *TenantStore) acquireWriterLeaseForPurge(ctx context.Context, tenantID string) error {
+	if s.coordinated() {
+		return nil
+	}
 	return s.acquireWriterLeaseMode(ctx, tenantID, true)
 }
 
@@ -117,6 +123,9 @@ func (s *TenantStore) finishWriterLeaseAcquire(ctx context.Context, tenantID str
 }
 
 func (s *TenantStore) releaseWriterLeaseForPurge(ctx context.Context, tenantID string) error {
+	if s.coordinated() {
+		return nil
+	}
 	key := s.writerLeaseKey(tenantID)
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {
 		cache.ClearPrefix(key)

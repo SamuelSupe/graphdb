@@ -67,6 +67,8 @@ func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Requ
 	switch request.Op {
 	case "match":
 		return run(executeMatch(g, request, plan, cursor, budget))
+	case "pattern":
+		return run(executePattern(g, request, plan, cursor, budget))
 	case "neighbors":
 		return run(executeNeighbors(g, request, cursor, budget))
 	case "traverse":

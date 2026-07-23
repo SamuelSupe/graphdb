@@ -21,6 +21,8 @@ func PlanQueryWithStats(g *graph.Graph, request Request, stats PlannerStats) Pla
 	switch request.Op {
 	case "match":
 		planMatch(&plan, g, request, stats)
+	case "pattern":
+		planPattern(&plan, g, request, stats)
 	case "neighbors":
 		plan.Strategy = "adjacency"
 		plan.Index = "edge_adjacency"
@@ -60,6 +62,37 @@ func PlanQueryWithStats(g *graph.Graph, request Request, stats PlannerStats) Pla
 		plan.Warnings = append(plan.Warnings, "estimated cost exceeds cost_limit")
 	}
 	return plan
+}
+
+func planPattern(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) {
+	planMatch(plan, g, request, stats)
+	startRows := max(plan.EstimatedRows, 1)
+	edges := estimateEdgeShardTotal(stats, relationTypeSet(request))
+	entities := 0
+	for _, page := range stats.EntityPages {
+		entities += max(page.EntityCount, 0)
+	}
+	if edges == 0 {
+		edges = len(g.Edges)
+	}
+	if entities == 0 {
+		entities = len(g.Entities)
+	}
+	fanout := 1
+	if entities > 0 && edges > entities {
+		fanout = (edges + entities - 1) / entities
+	}
+	paths := startRows
+	for range request.Path.Steps {
+		if paths > 100000/fanout {
+			paths = 100000
+			break
+		}
+		paths *= fanout
+	}
+	plan.Steps = append(plan.Steps, PlanStep{Name: "bounded-pattern-expand", Detail: fmt.Sprintf("steps=%d", len(request.Path.Steps)), Cost: paths})
+	plan.EstimatedRows = paths
+	plan.EstimatedCost += paths
 }
 
 func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) {

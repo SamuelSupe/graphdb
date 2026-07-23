@@ -3,7 +3,7 @@
 [中文](README.zh-CN.md)
 
 User-facing guides live under [user/](user/README.md). They describe how to
-start, write, query, deploy, and operate GraphDB through the API and CLI.
+start, write, query, deploy, and operate GGraphDB through the API and CLI.
 Every user guide has an English default file and a matching `.zh-CN.md` file
 with a language-switch link at the top.
 
@@ -27,7 +27,9 @@ with a language-switch link at the top.
 ## Reference documents
 
 - [Database Introduction](database-introduction.md) · [中文](database-introduction.zh-CN.md)
-- [GQL](gql.md)
+- [GraphQL](graphql.md) · [中文](graphql.zh-CN.md)
+- [Legacy Text DSL compatibility](gql.md)
+- [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md)
 - [Query capabilities](query_capabilities.md)
 - [Error codes](error_codes.md)
 - [Architecture](architecture.md)

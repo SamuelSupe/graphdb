@@ -37,6 +37,9 @@ func equalityFilters(filters []Filter) graph.Fields {
 }
 
 func indexedField(field string) (string, bool) {
+	if field == "labels" {
+		return graph.ReservedLabelsField, true
+	}
 	switch field {
 	case "", "id", "kind", "source", "external_id", "confidence", "source_priority", "created_at", "updated_at":
 		return "", false
@@ -163,6 +166,14 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 	case "prefix":
 		return strings.HasPrefix(fmt.Sprint(actual), fmt.Sprint(filter.Value))
 	case "contains":
+		if values, ok := reflectSlice(actual); ok {
+			for _, value := range values {
+				if valuesEqual(value, filter.Value) {
+					return true
+				}
+			}
+			return false
+		}
 		return strings.Contains(strings.ToLower(fmt.Sprint(actual)), strings.ToLower(fmt.Sprint(filter.Value)))
 	case "fuzzy":
 		return fuzzyMatch(fmt.Sprint(actual), fmt.Sprint(filter.Value))
@@ -207,6 +218,11 @@ func edgeFilterValue(edge graph.Edge, field string) (any, bool) {
 }
 
 func entityFilterValue(entity graph.Entity, field string) (any, bool) {
+	if field == "labels" {
+		if value, ok := entity.Fields[graph.ReservedLabelsField]; ok {
+			return value, true
+		}
+	}
 	switch field {
 	case "", "id":
 		return entity.ID, true
@@ -246,6 +262,11 @@ func entityFilterValue(entity graph.Entity, field string) (any, bool) {
 }
 
 func entityValue(entity graph.Entity, field string) any {
+	if field == "labels" {
+		if value, ok := entity.Fields[graph.ReservedLabelsField]; ok {
+			return value
+		}
+	}
 	switch field {
 	case "", "id":
 		return entity.ID

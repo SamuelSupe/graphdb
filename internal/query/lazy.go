@@ -8,8 +8,43 @@ func SupportsLazyRead(request Request, stats PlannerStats) bool {
 	switch target.Op {
 	case "match":
 		return lazyMatchSupported(target, stats)
+	case "pattern":
+		return lazyMatchSupported(target, stats) && lazyPatternDirectionsSupported(target, stats)
 	case "neighbors", "traverse", "impact", "shortest_path":
-		return target.Direction == "out" && target.ID != "" && len(stats.EdgeShards) > 0
+		if target.Op == "impact" && target.Direction != "out" {
+			return false
+		}
+		return target.ID != "" && lazyDirectionSupported(target.Direction, stats)
+	default:
+		return false
+	}
+}
+
+func lazyPatternDirectionsSupported(request Request, stats PlannerStats) bool {
+	direction := request.Direction
+	if direction == "" {
+		direction = "out"
+	}
+	for _, step := range request.Path.Steps {
+		stepDirection := step.Direction
+		if stepDirection == "" {
+			stepDirection = direction
+		}
+		if !lazyDirectionSupported(stepDirection, stats) {
+			return false
+		}
+	}
+	return true
+}
+
+func lazyDirectionSupported(direction string, stats PlannerStats) bool {
+	switch direction {
+	case "out":
+		return len(stats.EdgeShards) > 0
+	case "in":
+		return len(stats.ReverseEdgeShards) > 0
+	case "both", "":
+		return len(stats.EdgeShards) > 0 && len(stats.ReverseEdgeShards) > 0
 	default:
 		return false
 	}

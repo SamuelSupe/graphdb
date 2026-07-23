@@ -61,6 +61,15 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	if err := validateTaskParams(taskType, params); err != nil {
 		return Task{}, err
 	}
+	if s.coordinated() {
+		if _, exists, err := s.Coordinator.Head(ctx, tenantID); err != nil {
+			return Task{}, err
+		} else if !exists {
+			if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
+				return Task{}, err
+			}
+		}
+	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
@@ -202,6 +211,17 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 	if s.taskCancelRequested(context.Background(), task) {
 		return
 	}
+	stopCoordinatorLease, leaseErr := s.startCoordinatorTaskLease(task, cancel)
+	if leaseErr != nil {
+		task.Status = TaskStatusFailed
+		task.Phase = TaskStatusFailed
+		task.Error = leaseErr.Error()
+		task.FinishedAt = time.Now().UTC()
+		task.UpdatedAt = task.FinishedAt
+		s.trySaveTask(writeCtx, task)
+		return
+	}
+	defer stopCoordinatorLease()
 	task.Status = "running"
 	task.Phase = "running"
 	task.ProgressTotal = taskProgressTotal(task.Type)
@@ -310,6 +330,9 @@ func (s *TenantStore) runTaskOperation(ctx context.Context, task Task) (map[stri
 		return taskResult(report), "", err
 	case TaskTypeTenantRestoreDrill:
 		report, err := s.tenantRestoreDrillTask(ctx, task)
+		return taskResult(report), "", err
+	case TaskTypeBulkImport:
+		report, err := s.bulkImportTask(ctx, task)
 		return taskResult(report), "", err
 	default:
 		return nil, "", fmt.Errorf("unsupported task type %q", task.Type)
@@ -510,7 +533,7 @@ func taskFromIndexTask(task IndexTask) Task {
 func normalizeTaskType(taskType string) (string, error) {
 	taskType = strings.TrimSpace(taskType)
 	switch taskType {
-	case TaskTypeCompact, TaskTypeGC, TaskTypeRepair, TaskTypeExportSnapshot, TaskTypeReplayDeadLetter, TaskTypeIndexRebuild, TaskTypeTenantBackup, TaskTypeTenantRestore, TaskTypeTenantRestoreDrill:
+	case TaskTypeCompact, TaskTypeGC, TaskTypeRepair, TaskTypeExportSnapshot, TaskTypeReplayDeadLetter, TaskTypeIndexRebuild, TaskTypeTenantBackup, TaskTypeTenantRestore, TaskTypeTenantRestoreDrill, TaskTypeBulkImport:
 		return taskType, nil
 	default:
 		return "", fmt.Errorf("unsupported task type %q", taskType)
@@ -536,6 +559,17 @@ func validateTaskParams(taskType string, params map[string]any) error {
 			if err := ValidateTenantID(targetTenantID); err != nil {
 				return err
 			}
+		}
+	case TaskTypeBulkImport:
+		if strings.TrimSpace(stringTaskParam(params, "import_id")) == "" || strings.TrimSpace(stringTaskParam(params, "source_key")) == "" {
+			return fmt.Errorf("import_id and source_key are required for bulk_import task")
+		}
+		if _, err := normalizeImportOptions(ImportOptions{
+			Format: stringTaskParam(params, "format"), Source: stringTaskParam(params, "source"),
+			CollectorID: stringTaskParam(params, "collector_id"), BatchSize: intTaskParam(params, "batch_size"),
+			OnError: stringTaskParam(params, "on_error"),
+		}); err != nil {
+			return err
 		}
 	}
 	if intTaskParam(params, "limit") < 0 || intTaskParam(params, "keep_snapshots") < 0 || intTaskParam(params, "max_deletes") < 0 || int64TaskParam(params, "deadletter_max_age_seconds") < 0 || int64TaskParam(params, "task_max_age_seconds") < 0 || int64TaskParam(params, "query_timeout_ms") < 0 {

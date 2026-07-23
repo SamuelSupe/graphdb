@@ -14,13 +14,14 @@ import (
 )
 
 type TenantBackupRecord struct {
-	TenantID     string              `json:"tenant_id"`
-	Version      int64               `json:"version"`
-	CreatedAt    time.Time           `json:"created_at"`
-	Metadata     TenantMetadata      `json:"metadata,omitempty"`
-	Config       *TenantConfig       `json:"config,omitempty"`
-	SourcePolicy *graph.SourcePolicy `json:"source_policy,omitempty"`
-	Snapshot     graph.Snapshot      `json:"snapshot"`
+	TenantID        string              `json:"tenant_id"`
+	Version         int64               `json:"version"`
+	CreatedAt       time.Time           `json:"created_at"`
+	Metadata        TenantMetadata      `json:"metadata,omitempty"`
+	Config          *TenantConfig       `json:"config,omitempty"`
+	SourcePolicy    *graph.SourcePolicy `json:"source_policy,omitempty"`
+	RelationSchemas []RelationSchema    `json:"relation_schemas,omitempty"`
+	Snapshot        graph.Snapshot      `json:"snapshot"`
 }
 
 type TenantRestoreReport struct {
@@ -61,11 +62,13 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 	}, nil); err != nil {
 		return nil, "", err
 	}
-	g, manifest, err := s.Load(ctx, task.TenantID)
+	loaded, err := s.loadWithMeta(ctx, task.TenantID)
 	if err != nil {
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_load_snapshot", 1, total, taskActionUpdate{ID: "load_snapshot_metadata", Err: err}, nil)
 		return nil, "", err
 	}
+	g := loaded.Graph
+	manifest := loaded.Manifest
 	if err := s.updateTaskActionProgress(ctx, task, "backup_load_metadata", 2, total, taskActionUpdate{
 		ID:     "load_snapshot_metadata",
 		Status: "completed",
@@ -102,6 +105,11 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 		return nil, "", err
 	} else if ok {
 		record.SourcePolicy = &policy
+	}
+	if schemas, err := s.GetRelationSchemas(ctx, task.TenantID); err != nil {
+		return nil, "", err
+	} else if len(schemas.RelationSchemas) > 0 {
+		record.RelationSchemas = append([]RelationSchema(nil), schemas.RelationSchemas...)
 	}
 	resultKey := s.taskResultKey(task.TenantID, task.ID)
 	backupRecordReady := false
@@ -161,7 +169,9 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 		}
 	}
 	if backupManifestKey == "" {
-		backupManifest, err = s.buildBackupManifest(ctx, task.TenantID, task.ID, record, resultKey, manifest)
+		backupManifest, err = s.buildBackupManifest(
+			ctx, task.TenantID, task.ID, record, resultKey, manifest, loaded.Meta.Key,
+		)
 		if err != nil {
 			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_write_manifest", 4, total, taskActionUpdate{ID: "write_backup_manifest", Err: err}, nil)
 			return nil, "", err
@@ -240,6 +250,7 @@ func tenantBackupTaskSummary(record TenantBackupRecord, resultKey string, manife
 		"edges":                 len(record.Snapshot.Edges),
 		"has_config":            record.Config != nil,
 		"has_policy":            record.SourcePolicy != nil,
+		"relation_schemas":      len(record.RelationSchemas),
 		"result_key":            resultKey,
 		"backup_key":            resultKey,
 		"backup_manifest_key":   manifestKey,
@@ -397,7 +408,24 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			SnapshotVersion:    snapshot.Version,
 			UpdatedAt:          time.Now().UTC(),
 		}
-		if _, err := s.putManifestMeta(ctx, task.TenantID, manifest, ObjectMeta{Key: s.manifestKey(task.TenantID)}); err != nil {
+		currentMeta := ObjectMeta{Key: s.manifestKey(task.TenantID)}
+		if s.coordinated() {
+			head, exists, headErr := s.Coordinator.Head(ctx, task.TenantID)
+			if headErr != nil {
+				unlock()
+				return TenantRestoreReport{}, headErr
+			}
+			if exists && head.Status != TenantStatusDeleted {
+				_, currentMeta, err = s.getManifest(ctx, task.TenantID)
+			}
+		} else {
+			_, currentMeta, err = s.getManifest(ctx, task.TenantID)
+		}
+		if err != nil {
+			unlock()
+			return TenantRestoreReport{}, err
+		}
+		if _, err := s.putManifestMeta(ctx, task.TenantID, manifest, currentMeta); err != nil {
 			unlock()
 			return TenantRestoreReport{}, err
 		}
@@ -433,7 +461,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		if err := s.updateTaskActionProgress(ctx, task, "restore_write_metadata", 4, total, taskActionUpdate{
 			ID:     "write_metadata",
 			Status: "running",
-			Input:  map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil},
+			Input:  map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil, "relation_schemas": len(record.RelationSchemas)},
 		}, map[string]any{"phase": "restore_write_metadata", "backup_key": backupKey, "version": manifest.Version}); err != nil {
 			return TenantRestoreReport{}, err
 		}
@@ -462,13 +490,16 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			}
 			s.setCachedSourcePolicy(task.TenantID, normalized, true, meta)
 		}
+		if err := s.putRelationSchemasForLifecycle(ctx, task.TenantID, record.RelationSchemas, manifest.Version); err != nil {
+			return TenantRestoreReport{}, err
+		}
 		if err := s.addTenantToRegistry(ctx, task.TenantID); err != nil {
 			return TenantRestoreReport{}, err
 		}
 		if err := s.updateTaskActionProgress(ctx, task, "restore_metadata_done", 4, total, taskActionUpdate{
 			ID:     "write_metadata",
 			Status: "completed",
-			Output: map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil},
+			Output: map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil, "relation_schemas": len(record.RelationSchemas)},
 			Verification: map[string]any{
 				"metadata_written": true,
 			},

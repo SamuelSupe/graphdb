@@ -67,7 +67,7 @@ func collectPaths(g *graph.Graph, start graph.Entity, request Request, maxResult
 		next := make([]pendingPath, 0)
 		finalLevel := level+1 == depth
 		for _, current := range queue {
-			neighbors, err := neighborsForBudget(g, current.entityID, request, budget)
+			neighbors, err := neighborsForBudget(g, current.entityID, requestForPathLevel(request, level), budget)
 			if err != nil {
 				return nil, err
 			}
@@ -99,4 +99,35 @@ func collectPaths(g *graph.Graph, start graph.Entity, request Request, maxResult
 		queue = next
 	}
 	return results, nil
+}
+
+func requestForPathLevel(request Request, level int) Request {
+	if level >= len(request.Path.Steps) {
+		return request
+	}
+	step := request.Path.Steps[level]
+	if step.Direction != "" {
+		request.Direction = step.Direction
+	}
+	if len(step.RelationTypes) == 0 {
+		return request
+	}
+	allowed := relationTypeSet(request)
+	relations := make([]string, 0, len(step.RelationTypes))
+	for _, relation := range step.RelationTypes {
+		if len(allowed) == 0 {
+			relations = append(relations, relation)
+			continue
+		}
+		if _, ok := allowed[relation]; ok {
+			relations = append(relations, relation)
+		}
+	}
+	if len(relations) == 0 {
+		relations = []string{"\x00"}
+	}
+	request.RelationType = ""
+	request.RelationTypes = relations
+	request.Path.RelationTypes = nil
+	return request
 }

@@ -1,6 +1,11 @@
-# GQL 查询语言
+# 旧文本查询 DSL（1.0 兼容入口）
 
-GQL 是 GraphDB 的文本查询语言。它不是新的执行引擎，而是编译成现有 JSON Query DSL 后继续走同一套 planner、索引下推、lazy read、admission、timeout 和错误码。
+1.0 文档曾把这套 `FIND`/`MATCH` 语法称为 `GQL`。GGraphDB 1.1 不再把
+这个名称作为产品查询语言名称：它不是 GraphQL，也不是 ISO GQL。该入口仅为
+1.0 客户端兼容而保留，并编译成现有 JSON Query DSL，继续走同一套 planner、
+索引下推、lazy read、admission、timeout 和错误码。
+
+新接入优先使用 [GraphQL](graphql.zh-CN.md) 或 JSON Query DSL。
 
 ## 入口
 
@@ -22,7 +27,7 @@ curl -sS http://127.0.0.1:8080/v1/query/gql \
   --data-binary 'FIND host WHERE hostname PREFIX "app-" LIMIT 100'
 ```
 
-流式 GQL：
+流式旧文本 DSL：
 
 ```bash
 curl -sS http://127.0.0.1:8080/v1/query/gql/stream \
@@ -64,6 +69,23 @@ LIMIT 100
 ```
 
 编译为 `op=match`。
+
+### MATCH
+
+按起点类型和字段筛选实体，再执行固定步数的图模式匹配：
+
+```sql
+MATCH document
+WHERE labels CONTAINS "article"
+PATH
+STEP OUT REL cites NODE document WHERE status = "published"
+STEP IN REL authored_by NODE person
+LIMIT 20
+```
+
+编译为 `op=pattern`。`PATH` 必须包含 1 到 8 个 `STEP`；每一步都可以独立
+指定 `OUT`、`IN` 或 `BOTH`、关系类型、目标实体类型、目标实体条件和边条件。
+未写方向时使用 `OUT`。匹配的是精确步数，不会执行无界展开。
 
 ### NEIGHBORS
 
@@ -237,7 +259,8 @@ LIMIT 100
 
 ## 当前限制
 
-- GQL 不支持 Cypher/Gremlin 图模式语法。
+- `MATCH` 只支持 1 到 8 步的有界模式；不支持无界重复、变量绑定、
+  `OPTIONAL`、跨模式 join 或完整 Cypher/Gremlin 语法。
 - 不支持子查询、join、表达式计算和用户自定义函数。
-- GQL 只查询当前可见快照，不查询历史版本。
+- 旧文本 DSL 只查询当前可见快照，不查询历史版本。
 - `POST /v1/query/gql/stream` 支持 NDJSON 流式返回。带全局排序、聚合或路径结果时仍会先构建当前结果页或聚合结果；超大当前态导出仍优先使用 scan/export API。

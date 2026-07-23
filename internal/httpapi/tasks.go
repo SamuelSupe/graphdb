@@ -28,7 +28,7 @@ func (s *Server) startTask(w http.ResponseWriter, r *http.Request) {
 	task, err := s.Store.StartTask(r.Context(), tenantID, request.Type, request.Params)
 	if err != nil {
 		s.auditError("task_start_failed", tenantID, err, map[string]any{"type": request.Type})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("task_started", tenantID, map[string]any{"task_id": task.ID, "type": task.Type})
@@ -46,7 +46,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		Limit:  parsePositiveInt(r.URL.Query().Get("limit")),
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
@@ -96,7 +96,7 @@ func (s *Server) taskAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.auditError("task_action_failed", tenantID, err, map[string]any{"task_id": parts[0], "action": parts[1]})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("task_action_applied", tenantID, map[string]any{"task_id": task.ID, "action": parts[1], "status": task.Status})

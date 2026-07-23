@@ -60,11 +60,17 @@ type CommitOptions struct {
 	// the HTTP layer already completed it for this request.
 	WriteBackpressureChecked bool
 	directCommit             *directCommitReservation
+	collectorState           *CollectorStateUpdate
 }
 
 type TenantStore struct {
 	Objects                    ObjectStore
+	Coordinator                WriteCoordinator
 	Prefix                     string
+	coordinatorStatusMu        sync.RWMutex
+	coordinatorStatusCache     CoordinatorStatus
+	objectProbeMu              sync.Mutex
+	objectProbeActive          *objectStoreProbeCall
 	lockMu                     sync.Mutex
 	tenantLocks                map[string]*tenantLock
 	tenantRegistryMu           sync.Mutex
@@ -98,6 +104,9 @@ type TenantStore struct {
 	LifecycleCacheTTL          time.Duration
 	TaskMarkerTTL              time.Duration
 	MaxRetries                 int
+	CoordinatorRetryLimit      int
+	CoordinatorPendingTTL      time.Duration
+	CoordinatorCleanup         CoordinatorCleanupConfig
 	MaxWriteCacheTenants       int
 	MaxWriteCacheBytes         int64
 	EntityPagePackMaxBytes     int64
@@ -108,6 +117,7 @@ type TenantStore struct {
 	Backpressure               *WritePressure
 	BackpressureObserver       BackpressureObserver
 	CacheObserver              ReaderCacheObserver
+	CoordinatorObserver        CoordinatorObserver
 }
 
 type loadedGraph struct {
@@ -154,6 +164,9 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		LifecycleCacheTTL:          time.Second,
 		TaskMarkerTTL:              30 * time.Second,
 		MaxRetries:                 3,
+		CoordinatorRetryLimit:      8,
+		CoordinatorPendingTTL:      coordinatorPendingReservationTTL,
+		CoordinatorCleanup:         DefaultCoordinatorCleanupConfig(),
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
 		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
@@ -203,6 +216,16 @@ func (s *TenantStore) Commit(ctx context.Context, tenantID string, mutations gra
 func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
+	}
+	if s.coordinated() {
+		operationCtx, stop, err := s.startCoordinatorOperationLease(
+			ctx, tenantID, TaskTypeCompact,
+		)
+		if err != nil {
+			return Manifest{}, err
+		}
+		defer stop()
+		ctx = operationCtx
 	}
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -255,6 +278,26 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	ctx = boundCtx
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Manifest{}, err
+	}
+	if s.coordinated() {
+		manifest, meta, err := s.publishCoordinatedCompaction(
+			ctx,
+			tenantID,
+			loaded,
+			snapshotKey,
+			snapshotCatalog.Key,
+			dataMD5,
+		)
+		if err != nil {
+			return Manifest{}, err
+		}
+		if manifest.Version == loaded.Manifest.Version {
+			s.setWriteCache(tenantID, loadedGraph{
+				Graph: g, Manifest: manifest, Meta: meta,
+				DataMD5: dataMD5, CacheBytes: loaded.CacheBytes,
+			})
+		}
+		return manifest, nil
 	}
 	current, currentMeta, err := s.getManifest(ctx, tenantID)
 	if err != nil {

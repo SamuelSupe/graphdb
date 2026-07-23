@@ -22,6 +22,8 @@ type Graph struct {
 	contentFingerprint      [16]byte
 	contentFingerprintReady bool
 	contentFingerprintMu    sync.Mutex
+	logicalHashCache        *logicalHashCache
+	logicalHashMu           sync.Mutex
 }
 
 func New() *Graph {
@@ -88,6 +90,7 @@ func FromSnapshot(snapshot Snapshot) (*Graph, error) {
 
 func (g *Graph) Clone() *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
+	logicalHashCache := g.cloneLogicalHashCache()
 	clone := &Graph{
 		Version:                 g.Version,
 		CITypes:                 map[string]CIType{},
@@ -100,6 +103,7 @@ func (g *Graph) Clone() *Graph {
 		identityIndex:           copyStringMap(g.identityIndex),
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
+		logicalHashCache:        logicalHashCache,
 	}
 	for name, ciType := range g.CITypes {
 		clone.CITypes[name] = copyCIType(ciType)

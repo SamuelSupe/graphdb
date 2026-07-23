@@ -222,6 +222,9 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
+	if err := s.rebuildReverseIndex(ctx, tenantID, g, manifest.Version); err != nil {
+		return IndexCatalog{}, fmt.Errorf("rebuild reverse index: %w", err)
+	}
 	return catalog, nil
 }
 
@@ -402,7 +405,15 @@ func (s *TenantStore) putIndexCatalogWithMetaMode(ctx context.Context, tenantID 
 	if writeMeta.Key != key {
 		writeMeta = ObjectMeta{Key: key}
 	}
-	nextMeta, err := s.putBytesWithMetaResult(ctx, key, data, writeMeta)
+	var nextMeta ObjectMeta
+	if s.coordinated() {
+		nextMeta, err = s.putTenantGenerationConditional(ctx, tenantID, key, data, PutCondition{
+			IfNoneMatch: !writeMeta.Exists,
+			IfMatch:     writeMeta.ETag,
+		})
+	} else {
+		nextMeta, err = s.putBytesWithMetaResult(ctx, key, data, writeMeta)
+	}
 	if err != nil {
 		return ObjectMeta{}, err
 	}

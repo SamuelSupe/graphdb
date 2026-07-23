@@ -1,12 +1,13 @@
 openapi: 3.0.3
 info:
-  title: GraphDB Internal API
-  version: 1.0.0
-  description: Internal object-store backed multi-tenant graph database API.
+  title: GGraphDB API
+  version: 1.1.0
+  description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.1 preserves the 1.0 core data layout.
 servers:
   - url: http://localhost:8080
 security:
-  - TenantHeader: []
+  - GatewayBearer: []
+    TenantHeader: []
 paths:
   /openapi.yaml:
     get:
@@ -17,6 +18,46 @@ paths:
           description: OpenAPI YAML document.
           content:
             application/yaml:
+              schema:
+                type: string
+  /v1/health:
+    get:
+      security: []
+      summary: Report process liveness and coordinator status.
+      responses:
+        '200':
+          description: The process is alive; status reflects the last background coordinator sample and is degraded when that sample is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessHealth'
+  /v1/readiness:
+    get:
+      security: []
+      summary: Report whether this process is ready to receive traffic.
+      responses:
+        '200':
+          description: The process, object store, and configured coordinator are ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessReadiness'
+        '503':
+          description: The object store or configured coordinator is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessReadiness'
+  /metrics:
+    get:
+      security: []
+      summary: Export Prometheus metrics from the admin listener.
+      description: This endpoint has no tenant scope and must be protected by the management network or gateway.
+      responses:
+        '200':
+          description: Prometheus text exposition.
+          content:
+            text/plain:
               schema:
                 type: string
   /v1/commits:
@@ -39,8 +80,12 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/WriteBackpressure'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/ingest/batches:
     post:
       summary: Apply a collector ingestion batch with idempotency and partial failure reporting.
@@ -67,8 +112,242 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/WriteBackpressure'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/imports:
+    post:
+      summary: Upload CSV or JSONL and start a resumable bulk import task.
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [jsonl, csv]
+          description: Optional when Content-Type identifies JSONL or CSV.
+        - name: source
+          in: query
+          schema:
+            type: string
+            default: bulk_import
+        - name: collector_id
+          in: query
+          schema:
+            type: string
+            default: file
+        - name: batch_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5000
+            default: 500
+        - name: on_error
+          in: query
+          schema:
+            type: string
+            enum: [abort, continue]
+            default: abort
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema:
+              type: string
+              description: One IngestItem JSON object per non-empty line.
+          text/csv:
+            schema:
+              type: string
+              description: CSV with a required record_type column.
+      responses:
+        '202':
+          description: Bulk import task queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '413':
+          description: Import source exceeds the 32 MiB request limit.
+        '429':
+          $ref: '#/components/responses/WriteBackpressure'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/ingest/collectors/{source}/{collector_id}:
+    get:
+      summary: Get the materialized status for one collector.
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collector_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Collector status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectorStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/ingest/deadletters/{source}:
+    get:
+      summary: List dead-letter ingestion batches for a source.
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dead-letter records.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deadletters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeadLetter'
+  /v1/ingest/deadletters/{source}/replay:
+    post:
+      summary: Replay unresolved dead-letter batches for a source.
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: Replay report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/ci-types:
+    get:
+      summary: List legacy CI type metadata.
+      responses:
+        '200':
+          description: Legacy alias of the entity type list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CITypeList'
+  /v1/entity-types:
+    get:
+      summary: List domain-neutral entity type metadata.
+      responses:
+        '200':
+          description: Entity types at the visible graph version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityTypeList'
+  /v1/relation-types:
+    get:
+      summary: List relation type metadata.
+      responses:
+        '200':
+          description: Relation types at the visible graph version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: integer
+                  relation_types:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RelationType'
+  /v1/relation-schemas:
+    get:
+      summary: List relation property schemas.
+      responses:
+        '200':
+          description: Relation property schema sidecar catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelationSchemaCatalog'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/relation-schemas/{relation_type}:
+    parameters:
+      - name: relation_type
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      summary: Create or replace one relation property schema.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelationSchema'
+      responses:
+        '200':
+          description: Updated relation schema catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelationSchemaCatalog'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+    delete:
+      summary: Delete one relation property schema.
+      responses:
+        '200':
+          description: Updated relation schema catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelationSchemaCatalog'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/query:
     post:
       summary: Execute the JSON query DSL.
@@ -123,9 +402,33 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         '503':
           $ref: '#/components/responses/ReaderNotFresh'
+  /v1/query/graphql:
+    post:
+      summary: Execute a GraphQL query document.
+      description: Accepts one graph root field and returns a GraphQL data/errors envelope. Query execution errors are encoded in a 200 response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphQLRequest'
+      responses:
+        '200':
+          description: GraphQL execution response, including query execution errors.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQLResponse'
+        '400':
+          description: Invalid GraphQL document, operation, or variables.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQLResponse'
   /v1/query/gql:
     post:
-      summary: Execute a text GQL query compiled to the JSON query DSL.
+      deprecated: true
+      summary: Execute the deprecated 1.0 FIND/MATCH text DSL.
       parameters:
         - $ref: '#/components/parameters/ReadMinVersion'
         - $ref: '#/components/parameters/ReadAllowStale'
@@ -157,7 +460,8 @@ paths:
           $ref: '#/components/responses/ReaderNotFresh'
   /v1/query/gql/stream:
     post:
-      summary: Execute a text GQL query and stream newline-delimited JSON pages.
+      deprecated: true
+      summary: Execute the deprecated 1.0 text DSL as newline-delimited JSON.
       parameters:
         - $ref: '#/components/parameters/ReadMinVersion'
         - $ref: '#/components/parameters/ReadAllowStale'
@@ -183,6 +487,62 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/query/templates:
+    get:
+      summary: List saved query templates for the tenant.
+      responses:
+        '200':
+          description: Saved query list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SavedQuery'
+    post:
+      summary: Create or replace a saved query template.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavedQuery'
+      responses:
+        '200':
+          description: Saved query.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedQuery'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /v1/query/templates/{name}/run:
+    post:
+      summary: Execute one saved query template.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Query result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '503':
@@ -247,6 +607,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/TenantInfo'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
     post:
       summary: Create or materialize tenant metadata.
       requestBody:
@@ -266,6 +628,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenant-usage:
     get:
       summary: Report tenant object count, bytes, and retention policy.
@@ -290,6 +656,8 @@ paths:
                 $ref: '#/components/schemas/TenantInfo'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
     put:
       summary: Replace tenant display metadata.
       parameters:
@@ -307,6 +675,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantInfo'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
     delete:
       summary: Soft delete a tenant.
       parameters:
@@ -318,6 +690,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantInfo'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenants/{tenant_id}/disable:
     post:
       summary: Disable tenant writes.
@@ -330,6 +706,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantInfo'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenants/{tenant_id}/enable:
     post:
       summary: Re-enable a disabled or soft-deleted tenant.
@@ -342,6 +722,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantInfo'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenants/{tenant_id}/purge:
     post:
       summary: Permanently delete all objects under a tenant prefix.
@@ -358,6 +742,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantPurgeReport'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenants/{tenant_id}/clone:
     post:
       summary: Clone a tenant current snapshot into a new tenant.
@@ -376,6 +764,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantInfo'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenants/{tenant_id}/backup:
     post:
       summary: Start a tenant backup task.
@@ -390,6 +782,10 @@ paths:
                 $ref: '#/components/schemas/Task'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenants/{tenant_id}/restore:
     post:
       summary: Start a tenant restore task from a backup key.
@@ -412,6 +808,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenants/{tenant_id}/restore-drill:
     post:
       summary: Start a tenant restore drill task.
@@ -434,6 +834,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/entities:
     get:
       summary: Page current entities by kind, source, or shard.
@@ -619,6 +1023,70 @@ paths:
                 $ref: '#/components/schemas/IndexCatalog'
         '404':
           $ref: '#/components/responses/NotFound'
+    post:
+      summary: Create a persisted secondary index definition and queue rebuild.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexDefinition'
+      responses:
+        '202':
+          description: Index definition created and rebuild queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexDefinitionResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/indexes/definitions:
+    get:
+      summary: List persisted secondary index definitions.
+      responses:
+        '200':
+          description: Index definitions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  indexes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IndexDefinition'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/indexes/definitions/{name}:
+    delete:
+      summary: Delete a secondary index definition and queue rebuild.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Index definition removed and rebuild queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexDefinitionResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/indexes/rebuild:
     post:
       summary: Rebuild persisted indexes.
@@ -645,6 +1113,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/indexes/health:
     get:
       summary: Check persisted index health.
@@ -664,6 +1136,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IndexHealth'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/indexes/tasks/{task_id}:
     get:
       summary: Get a background index rebuild task.
@@ -692,6 +1166,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReaderFreshness'
+  /v1/control/writer-lease:
+    get:
+      summary: Get the current local writer lease and fencing token.
+      responses:
+        '200':
+          description: Writer lease.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriterLease'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/control/reader-lag:
     get:
       summary: Compatibility alias for reader freshness.
@@ -780,6 +1266,10 @@ paths:
                 additionalProperties: true
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/control/integrity-audit:
     get:
       summary: Audit manifest, snapshot, index, and entity-record integrity.
@@ -797,6 +1287,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IntegrityAuditReport'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/control/repair:
     post:
       summary: Inspect or apply deterministic tenant repair.
@@ -818,6 +1310,71 @@ paths:
                 $ref: '#/components/schemas/RepairReport'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/control/cleanup-commits:
+    post:
+      summary: Delete unreferenced stale commit objects while retaining future commits.
+      responses:
+        '200':
+          description: Commit cleanup report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CleanupReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/control/gc:
+    post:
+      summary: Run bounded tenant garbage collection.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GCRequest'
+      responses:
+        '200':
+          description: Garbage collection report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GCReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/compact:
+    post:
+      summary: Compact the current graph into a new immutable snapshot manifest.
+      responses:
+        '200':
+          description: New tenant manifest.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/source-policy:
     get:
       summary: Get the tenant source priority policy.
@@ -828,6 +1385,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SourcePolicyResponse'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
     put:
       summary: Replace the tenant source priority policy.
       requestBody:
@@ -845,6 +1404,10 @@ paths:
                 $ref: '#/components/schemas/SourcePolicyResponse'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenant-config:
     get:
       summary: Get tenant runtime config overrides.
@@ -855,6 +1418,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantConfigResponse'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
     put:
       summary: Replace tenant runtime config overrides.
       requestBody:
@@ -872,6 +1437,10 @@ paths:
                 $ref: '#/components/schemas/TenantConfigResponse'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tasks:
     get:
       summary: List unified operational tasks.
@@ -897,6 +1466,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Task'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
     post:
       summary: Start a unified operational task.
       requestBody:
@@ -916,6 +1487,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tasks/{task_id}:
     get:
       summary: Get a unified operational task.
@@ -952,6 +1527,10 @@ paths:
                 $ref: '#/components/schemas/Task'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tasks/{task_id}/retry:
     post:
       summary: Retry a failed or canceled unified operational task.
@@ -972,12 +1551,22 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
 components:
   securitySchemes:
+    GatewayBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Identity credential validated by the trusted gateway; GGraphDB does not validate this token directly.
     TenantHeader:
       type: apiKey
       in: header
       name: X-Tenant-ID
+      description: Tenant routing metadata injected by a trusted gateway; this header is not proof of identity.
   parameters:
     TenantID:
       name: tenant_id
@@ -1091,7 +1680,103 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/WriteBackpressureError'
+    Conflict:
+      description: The expected version changed, another writer still owns the idempotency key, or the CAS retry budget was exhausted.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    CoordinatorUnavailable:
+      description: A required coordinator or object-store dependency is unavailable; writes fail closed and never fall back to local coordination.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Retry delay in seconds when supplied.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
+    CoordinatorStatus:
+      type: object
+      required: [backend, available, schema_version, tenants, outbox_backlog, derived_backlog, max_legacy_mirror_lag, checked_at]
+      properties:
+        backend:
+          type: string
+          enum: [local, postgres]
+        available:
+          type: boolean
+        schema_version:
+          type: integer
+        namespace:
+          type: string
+        tenants:
+          type: integer
+        outbox_backlog:
+          type: integer
+        derived_backlog:
+          type: integer
+        max_legacy_mirror_lag:
+          type: integer
+        checked_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+    ObjectStoreStatus:
+      type: object
+      required: [available, checked_at]
+      properties:
+        available:
+          type: boolean
+        checked_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+    ProcessHealth:
+      type: object
+      required: [status, mode, coordination, build]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        mode:
+          type: string
+          enum: [all, writer, reader]
+        coordination:
+          $ref: '#/components/schemas/CoordinatorStatus'
+        build:
+          $ref: '#/components/schemas/BuildInfo'
+    ProcessReadiness:
+      type: object
+      required: [status, mode, coordination, object_store, build]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        mode:
+          type: string
+          enum: [all, writer, reader]
+        coordination:
+          $ref: '#/components/schemas/CoordinatorStatus'
+        object_store:
+          $ref: '#/components/schemas/ObjectStoreStatus'
+        build:
+          $ref: '#/components/schemas/BuildInfo'
+    BuildInfo:
+      type: object
+      required: [version, commit, date, go_version]
+      properties:
+        version:
+          type: string
+        commit:
+          type: string
+        date:
+          type: string
+        go_version:
+          type: string
     ErrorResponse:
       type: object
       required: [error, code, message, retryable]
@@ -1127,6 +1812,9 @@ components:
             - repair_required
             - version_conflict
             - idempotency_conflict
+            - idempotency_in_progress
+            - write_conflict
+            - coordinator_unavailable
             - commit_tail_too_long
             - index_rebuild_running
             - maintenance_task_running
@@ -1214,6 +1902,20 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CIType'
+        delete_ci_types:
+          type: array
+          items:
+            type: string
+        upsert_entity_types:
+          type: array
+          description: GGraphDB 1.1 alias of upsert_ci_types; both forms cannot appear together.
+          items:
+            $ref: '#/components/schemas/CIType'
+        delete_entity_types:
+          type: array
+          description: GGraphDB 1.1 alias of delete_ci_types.
+          items:
+            type: string
         upsert_relation_types:
           type: array
           items:
@@ -1258,6 +1960,24 @@ components:
           items:
             type: object
             additionalProperties: true
+    CITypeList:
+      type: object
+      properties:
+        version:
+          type: integer
+        ci_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/CIType'
+    EntityTypeList:
+      type: object
+      properties:
+        version:
+          type: integer
+        entity_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/CIType'
     FieldSpec:
       type: object
       properties:
@@ -1286,6 +2006,11 @@ components:
           type: string
         kind:
           type: string
+        labels:
+          type: array
+          description: Domain-neutral labels stored compatibly inside the 1.0 fields map.
+          items:
+            type: string
         source:
           type: string
         external_id:
@@ -1323,6 +2048,84 @@ components:
         fields:
           type: object
           additionalProperties: true
+    RelationType:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        display_name:
+          type: string
+        reverse_name:
+          type: string
+        from_kind:
+          type: string
+        to_kind:
+          type: string
+        from_kinds:
+          type: array
+          items:
+            type: string
+        to_kinds:
+          type: array
+          items:
+            type: string
+        directed:
+          type: boolean
+        cardinality:
+          type: string
+          enum: [many_to_many, one_to_many, many_to_one, one_to_one]
+        impact_direction:
+          type: string
+        allow_cross_kind:
+          type: boolean
+    RelationSchema:
+      type: object
+      required: [relation_type]
+      properties:
+        relation_type:
+          type: string
+        description:
+          type: string
+        strict:
+          type: boolean
+          description: Reject edge properties not declared in fields.
+        fields:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/RelationFieldSpec'
+    RelationFieldSpec:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [any, string, number, bool, object, array]
+        required:
+          type: boolean
+        enum:
+          type: array
+          items: {}
+        default: {}
+      description: Relation properties intentionally do not support merge_strategy, indexed, or unique in 1.1.
+    RelationSchemaCatalog:
+      type: object
+      properties:
+        layout_version:
+          type: integer
+        tenant_id:
+          type: string
+        revision:
+          type: integer
+        graph_version:
+          type: integer
+          description: Latest core graph version validated against this schema catalog.
+        updated_at:
+          type: string
+          format: date-time
+        relation_schemas:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelationSchema'
     Conflict:
       type: object
       properties:
@@ -1362,32 +2165,161 @@ components:
       properties:
         batch_id:
           type: string
-        accepted:
+        version:
+          type: integer
+        applied:
           type: integer
         failed:
           type: integer
         suppressed:
           type: integer
+        skipped:
+          type: boolean
+        cursor:
+          type: string
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              external_id:
+                type: string
+              error:
+                type: string
         conflicts:
           type: array
           items:
             $ref: '#/components/schemas/Conflict'
+    CollectorStatus:
+      type: object
+      required: [tenant_id, source, collector_id, last_version, applied_total, failed_total]
+      properties:
+        tenant_id:
+          type: string
+        source:
+          type: string
+        collector_id:
+          type: string
+        last_batch_id:
+          type: string
+        last_cursor:
+          type: string
+        last_version:
+          type: integer
+        last_started_at:
+          type: string
+          format: date-time
+        last_finished_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+        applied_total:
+          type: integer
+        failed_total:
+          type: integer
+    DeadLetter:
+      type: object
+      required: [id, tenant_id, source, batch_id, request, last_result, attempts, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        source:
+          type: string
+        batch_id:
+          type: string
+        request:
+          $ref: '#/components/schemas/IngestRequest'
+        last_result:
+          $ref: '#/components/schemas/IngestResult'
+        attempts:
+          type: integer
+        status:
+          type: string
+        error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        replayed_at:
+          type: string
+          format: date-time
+    ReplayReport:
+      type: object
+      properties:
+        scanned:
+          type: integer
+        replayed:
+          type: integer
+        resolved:
+          type: integer
+        failed:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestResult'
+        checkpoint:
+          type: object
+          additionalProperties: true
+    SavedQuery:
+      type: object
+      required: [name, request]
+      properties:
+        tenant_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        request:
+          $ref: '#/components/schemas/QueryRequest'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     QueryRequest:
       type: object
       required: [op]
       properties:
         op:
           type: string
-          enum: [match, neighbors, traverse, shortest_path, impact, explain, profile]
+          enum: [match, pattern, neighbors, traverse, shortest_path, impact, explain, profile]
+        target_op:
+          type: string
+          enum: [match, pattern, neighbors, traverse, shortest_path, impact]
         kind:
           type: string
+        filters:
+          type: object
+          additionalProperties: true
         id:
+          type: string
+        target_id:
           type: string
         relation_type:
           type: string
+        relation_types:
+          type: array
+          items:
+            type: string
         direction:
           type: string
           enum: [out, in, both]
+        direction_strategy:
+          type: string
+          enum: [impact]
+        depth:
+          type: integer
         where:
           type: array
           items:
@@ -1428,14 +2360,20 @@ components:
         having_expr:
           $ref: '#/components/schemas/FilterExpr'
         path:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/PathFilter'
         limit:
           type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
         cursor:
           type: string
         timeout_ms:
           type: integer
+        cost_limit:
+          type: integer
+        profile:
+          type: boolean
         min_version:
           type: integer
           minimum: 0
@@ -1443,13 +2381,115 @@ components:
         allow_stale:
           type: boolean
           description: Permit a cached visible version when min_version is omitted.
+    PathFilter:
+      type: object
+      properties:
+        node_kinds:
+          type: array
+          items:
+            type: string
+        end_kind:
+          type: string
+        end_where:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        end_where_expr:
+          $ref: '#/components/schemas/FilterExpr'
+        relation_types:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/PathStep'
+        max_paths:
+          type: integer
+    PathStep:
+      type: object
+      properties:
+        direction:
+          type: string
+          enum: [out, in, both]
+        relation_types:
+          type: array
+          items:
+            type: string
+        node_kinds:
+          type: array
+          items:
+            type: string
+        where:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        where_expr:
+          $ref: '#/components/schemas/FilterExpr'
+        edge_where:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        edge_where_expr:
+          $ref: '#/components/schemas/FilterExpr'
+    GraphQLRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          description: GraphQL query document.
+        operationName:
+          type: string
+          description: Required when the document contains more than one operation.
+        variables:
+          type: object
+          additionalProperties: true
+          description: GraphQL variables; the graph root accepts a QueryRequest scalar.
+    GraphQLResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          nullable: true
+          additionalProperties: true
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphQLError'
+    GraphQLError:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        path:
+          type: array
+          items: {}
+        locations:
+          type: array
+          items:
+            type: object
+            properties:
+              line:
+                type: integer
+              column:
+                type: integer
+        extensions:
+          type: object
+          additionalProperties: true
     GQLQueryRequest:
       type: object
       required: [query]
       properties:
         query:
           type: string
-          description: Text GQL query such as FIND host WHERE hostname PREFIX "app-" LIMIT 100.
+          description: Deprecated 1.0 text DSL such as FIND host WHERE hostname PREFIX "app-" LIMIT 100.
         min_version:
           type: integer
           minimum: 0
@@ -1459,7 +2499,7 @@ components:
           description: Permit a cached visible version when min_version is omitted.
         cursor:
           type: string
-          description: Opaque cursor from a previous GQL query response.
+          description: Opaque cursor from a previous legacy text-DSL response.
         timeout_ms:
           type: integer
           minimum: 0
@@ -1566,6 +2606,32 @@ components:
             additionalProperties: true
         next_cursor:
           type: string
+    IndexDefinition:
+      type: object
+      required: [name, kind, field]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+        field:
+          type: string
+        unique:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    IndexDefinitionResult:
+      type: object
+      required: [definition]
+      properties:
+        definition:
+          $ref: '#/components/schemas/IndexDefinition'
+        task:
+          $ref: '#/components/schemas/IndexTask'
     IndexCatalog:
       type: object
       properties:
@@ -1922,6 +2988,106 @@ components:
           type: integer
         error:
           type: string
+    WriterLease:
+      type: object
+      required: [tenant_id, owner_id, expires_at, updated_at]
+      properties:
+        tenant_id:
+          type: string
+        owner_id:
+          type: string
+        fence_token:
+          type: string
+        fence_epoch:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CleanupReport:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        manifest_version:
+          type: integer
+        deleted:
+          type: integer
+        kept_future:
+          type: integer
+        referenced_keys:
+          type: integer
+        deleted_keys:
+          type: array
+          items:
+            type: string
+        future_keys:
+          type: array
+          items:
+            type: string
+        invalid_keys:
+          type: array
+          items:
+            type: string
+    GCRequest:
+      type: object
+      properties:
+        keep_snapshots:
+          type: integer
+          minimum: 0
+        deadletter_max_age_seconds:
+          type: integer
+          minimum: 0
+        task_max_age_seconds:
+          type: integer
+          minimum: 0
+        cleanup_index_orphans:
+          type: boolean
+        cursor:
+          type: string
+        max_deletes:
+          type: integer
+          minimum: 0
+        dry_run:
+          type: boolean
+    GCReport:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        manifest_version:
+          type: integer
+        deleted_snapshots:
+          type: integer
+        deleted_deadletters:
+          type: integer
+        deleted_tasks:
+          type: integer
+        deleted_task_results:
+          type: integer
+        deleted_import_sources:
+          type: integer
+        deleted_index_tasks:
+          type: integer
+        deleted_entity_records:
+          type: integer
+        deleted_coordinator_manifests:
+          type: integer
+        deleted_write_contexts:
+          type: integer
+        reader_watermark_version:
+          type: integer
+        commit_cleanup:
+          $ref: '#/components/schemas/CleanupReport'
+        deleted_keys:
+          type: array
+          items:
+            type: string
+        checkpoint:
+          type: object
+          additionalProperties: true
     SourcePolicyResponse:
       type: object
       properties:
@@ -2025,11 +3191,11 @@ components:
       properties:
         type:
           type: string
-          enum: [compact, gc, repair, export_snapshot, replay_deadletters, index_rebuild, tenant_backup, tenant_restore, tenant_restore_drill]
+          enum: [compact, gc, repair, export_snapshot, replay_deadletters, index_rebuild, tenant_backup, tenant_restore, tenant_restore_drill, bulk_import]
         params:
           type: object
           additionalProperties: true
-          description: Task-specific parameters such as apply, source, limit, keep_snapshots, deadletter_max_age_seconds, task_max_age_seconds, cleanup_index_orphans, backup_key, overwrite, dry_run, target_tenant_id, target_prefix, query_templates, cleanup, or cursor.
+          description: Task-specific parameters. Use POST /v1/imports rather than constructing bulk_import source_key parameters directly.
     Task:
       type: object
       properties:

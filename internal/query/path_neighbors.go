@@ -29,16 +29,46 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 	if budget == nil || budget.lookup == nil {
 		return nil, false, nil
 	}
-	if request.Direction != "out" {
+	if request.DirectionStrategy == "impact" && request.Direction != "out" {
 		return nil, false, nil
 	}
-	edges, ok, err := budget.lookup.OutEdges(budget.ctx, entityID, relationTypeSet(request))
-	if err != nil || !ok {
-		if err == nil && !ok && lazyExecution(g, budget) {
-			return nil, false, ErrIndexUnavailable
+	allowed := relationTypeSet(request)
+	var edges []graph.Edge
+	switch request.Direction {
+	case "out":
+		out, ok, err := budget.lookup.OutEdges(budget.ctx, entityID, allowed)
+		if err != nil || !ok {
+			return shardUnavailable(g, budget, ok, err)
 		}
-		return nil, false, err
+		edges = out
+	case "in":
+		reverse, ok := budget.lookup.(ReverseIndexLookup)
+		if !ok {
+			return shardUnavailable(g, budget, false, nil)
+		}
+		incoming, found, err := reverse.InEdges(budget.ctx, entityID, allowed)
+		if err != nil || !found {
+			return shardUnavailable(g, budget, found, err)
+		}
+		edges = incoming
+	case "both", "":
+		reverse, ok := budget.lookup.(ReverseIndexLookup)
+		if !ok {
+			return shardUnavailable(g, budget, false, nil)
+		}
+		out, outOK, err := budget.lookup.OutEdges(budget.ctx, entityID, allowed)
+		if err != nil || !outOK {
+			return shardUnavailable(g, budget, outOK, err)
+		}
+		incoming, inOK, err := reverse.InEdges(budget.ctx, entityID, allowed)
+		if err != nil || !inOK {
+			return shardUnavailable(g, budget, inOK, err)
+		}
+		edges = append(out, incoming...)
+	default:
+		return nil, false, nil
 	}
+	edges = uniqueNeighborEdges(edges)
 	neighbors := make([]graph.Neighbor, 0, len(edges))
 	for _, edge := range edges {
 		if !requestEdgeMatches(request, edge) {
@@ -47,7 +77,11 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 		if err := budget.add(1); err != nil {
 			return nil, false, err
 		}
-		entity, ok, err := materializeEntity(g, edge.To, request, budget)
+		neighborID, direction := edge.To, "out"
+		if edge.To == entityID && request.Direction != "out" {
+			neighborID, direction = edge.From, "in"
+		}
+		entity, ok, err := materializeEntity(g, neighborID, request, budget)
 		if err != nil {
 			return nil, false, err
 		}
@@ -60,9 +94,29 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 		if !pathAllowsKind(entity.Kind, request.Path) {
 			continue
 		}
-		neighbors = append(neighbors, graph.Neighbor{Entity: entity, Edge: edge, Direction: "out"})
+		neighbors = append(neighbors, graph.Neighbor{Entity: entity, Edge: edge, Direction: direction})
 	}
 	return neighbors, true, nil
+}
+
+func shardUnavailable(g *graph.Graph, budget *budget, ok bool, err error) ([]graph.Neighbor, bool, error) {
+	if err == nil && !ok && lazyExecution(g, budget) {
+		return nil, false, ErrIndexUnavailable
+	}
+	return nil, false, err
+}
+
+func uniqueNeighborEdges(edges []graph.Edge) []graph.Edge {
+	seen := make(map[string]struct{}, len(edges))
+	out := edges[:0]
+	for _, edge := range edges {
+		if _, exists := seen[edge.ID]; exists {
+			continue
+		}
+		seen[edge.ID] = struct{}{}
+		out = append(out, edge)
+	}
+	return out
 }
 
 func filterRequestEdges(request Request, neighbors []graph.Neighbor) []graph.Neighbor {

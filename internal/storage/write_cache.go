@@ -20,6 +20,46 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 		}
 		endStorageSpan(span, err)
 	}()
+	if s.coordinated() {
+		manifest, meta, manifestErr := s.getManifest(ctx, tenantID)
+		if manifestErr != nil {
+			return loadedGraph{}, manifestErr
+		}
+		if cached, ok := s.getWriteCache(tenantID); ok {
+			if cachedManifestMatches(cached, manifest, meta) {
+				span.SetAttributes(
+					attribute.Bool("graphdb.write_cache.found", true),
+					attribute.Bool("graphdb.write_cache.hit", true),
+					attribute.Int64("graphdb.write_cache.version", cached.Manifest.Version),
+					attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
+				)
+				return cached, nil
+			}
+			caughtUp, applied, catchupErr := s.catchUpWriteCache(
+				ctx, tenantID, cached, manifest, meta,
+			)
+			if catchupErr != nil {
+				return loadedGraph{}, catchupErr
+			}
+			if applied {
+				span.SetAttributes(
+					attribute.Bool("graphdb.write_cache.found", true),
+					attribute.Bool("graphdb.write_cache.hit", true),
+					attribute.Bool("graphdb.write_cache.incremental_catchup", true),
+					attribute.Int64("graphdb.write_cache.version", cached.Manifest.Version),
+					attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
+				)
+				s.setWriteCache(tenantID, caughtUp)
+				return caughtUp, nil
+			}
+		}
+		span.SetAttributes(
+			attribute.Bool("graphdb.write_cache.found", false),
+			attribute.Bool("graphdb.write_cache.hit", false),
+			attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
+		)
+		return s.loadManifestGraph(ctx, tenantID, manifest, meta)
+	}
 	if cached, ok := s.getWriteCache(tenantID); ok {
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_cache.found", true),
@@ -89,6 +129,16 @@ func (s *TenantStore) setWriteCache(tenantID string, loaded loadedGraph) {
 		return
 	}
 	if previous, ok := s.writeCache[tenantID]; ok {
+		previousRevision := coordinatedMetaRevision(previous.Meta)
+		loadedRevision := coordinatedMetaRevision(loaded.Meta)
+		if s.coordinated() && previousRevision > 0 && loadedRevision > 0 {
+			if previousRevision > loadedRevision ||
+				(previousRevision == loadedRevision && previous.Manifest.Version > loaded.Manifest.Version) {
+				return
+			}
+		} else if previous.Manifest.Version > loaded.Manifest.Version {
+			return
+		}
 		s.writeCacheBytes -= previous.CacheBytes
 	}
 	s.writeCache[tenantID] = loaded
@@ -98,6 +148,14 @@ func (s *TenantStore) setWriteCache(tenantID string, loaded loadedGraph) {
 		oldest := s.writeCacheOrder[0]
 		s.removeWriteCacheLocked(oldest)
 	}
+}
+
+func coordinatedMetaRevision(meta ObjectMeta) int64 {
+	revision, err := parseCoordinatedRevision(meta)
+	if err != nil {
+		return 0
+	}
+	return revision
 }
 
 func (s *TenantStore) deleteWriteCache(tenantID string) {

@@ -4,7 +4,12 @@ bin/
 coverage.out
 dist/
 soak-runs/
+capacity-runs/
+.ci-bin/
 .idea/
+.DS_Store
+__pycache__/
+*.py[cod]
 /graphdb
 /image/cmd/
 /image/linux-amd64/

@@ -28,6 +28,8 @@ func taskProgressTotal(taskType string) int {
 		return 7
 	case TaskTypeTenantRestoreDrill:
 		return 7
+	case TaskTypeBulkImport:
+		return 1
 	default:
 		return 1
 	}

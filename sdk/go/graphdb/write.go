@@ -75,6 +75,7 @@ type IngestItem struct {
 	DeleteEdge   *EdgeDeleteRequest   `json:"delete_edge,omitempty"`
 	Relation     *RelationType        `json:"relation_type,omitempty"`
 	CIType       *CIType              `json:"ci_type,omitempty"`
+	EntityType   *EntityType          `json:"entity_type,omitempty"`
 }
 
 type IngestResult struct {

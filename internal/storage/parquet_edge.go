@@ -639,6 +639,29 @@ func (l *PersistedIndexLookup) outEdgesFromParquetShard(ctx context.Context, spe
 	return edges, true, nil
 }
 
+func (l *PersistedIndexLookup) inEdgesFromParquetShard(ctx context.Context, spec EdgeShard, to string, allowed map[string]struct{}) ([]graph.Edge, bool, error) {
+	edges, ok, err := l.cachedParquetInEdges(ctx, spec, to)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	if len(allowed) > 0 {
+		filtered := edges[:0]
+		for _, edge := range edges {
+			if relationAllowedForLookup(edge.Type, allowed) {
+				filtered = append(filtered, edge)
+			}
+		}
+		edges = filtered
+	}
+	return edges, true, nil
+}
+
 func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID string, version int64, spec EdgeShard) (EdgeShardData, bool, error) {
 	key := firstIndexObjectKey(spec.Objects, "shard", s.parquetEdgeShardVersionKey(tenantID, version, spec.RelationType, spec.Shard))
 	if data, _, verified, ok, err := s.cachedIndexObjectWithVerification(ctx, "edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash); err != nil {

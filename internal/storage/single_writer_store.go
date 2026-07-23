@@ -8,7 +8,7 @@ import (
 
 const singleWriterLockStripes = 64
 
-// SingleWriterObjectStore preserves GraphDB's conditional-write API for a
+// SingleWriterObjectStore preserves GGraphDB's conditional-write API for a
 // provider that only offers atomic create-if-absent. Its read-check-write path
 // is safe only when every writer is in this process; it is not a distributed
 // CAS implementation.

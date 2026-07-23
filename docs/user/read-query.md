@@ -24,6 +24,7 @@ Entrypoints:
 Supported `op` values:
 
 - `match`
+- `pattern`
 - `neighbors`
 - `traverse`
 - `impact`
@@ -62,9 +63,28 @@ Response:
 
 See [../query_capabilities.md](../query_capabilities.md) for the full JSON DSL.
 
-## GQL
+## GraphQL
 
-GQL is the text query language compiled to the JSON DSL.
+GraphQL accepts a standard document plus a `QueryRequest` variable:
+
+```sh
+curl -sS -X POST "$READER/v1/query/graphql" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query":"query Find($request: QueryRequest!) { graph(request: $request) { version results stats nextCursor } }",
+    "operationName":"Find",
+    "variables":{"request":{"op":"match","kind":"host","limit":100}}
+  }'
+```
+
+See [../graphql.md](../graphql.md) for the schema, response envelope, errors,
+fragments, and 1.1 boundaries.
+
+## Legacy text DSL
+
+The 1.0 `FIND`/`MATCH` text DSL is compiled to the JSON DSL. Its old `GQL`
+name is deprecated; this interface is not GraphQL.
 
 ```sql
 FIND host
@@ -89,9 +109,40 @@ CLI:
 go run ./cmd/graphdb gql demo query.gql
 ```
 
-See [../gql.md](../gql.md) for complete syntax.
+See [../gql.md](../gql.md) for the compatibility syntax.
 
 ## Graph Operations
+
+Bounded graph pattern (exactly two steps in this example):
+
+```json
+{
+  "op": "pattern",
+  "kind": "document",
+  "where": [{"field": "labels", "op": "contains", "value": "article"}],
+  "path": {
+    "steps": [
+      {
+        "direction": "out",
+        "relation_types": ["cites"],
+        "node_kinds": ["document"],
+        "where": [{"field": "status", "op": "eq", "value": "published"}]
+      },
+      {
+        "direction": "in",
+        "relation_types": ["authored_by"],
+        "node_kinds": ["person"]
+      }
+    ]
+  },
+  "limit": 20
+}
+```
+
+`pattern` requires 1 to 8 steps and returns complete paths matching that exact
+step count. Each step can independently constrain direction, relation types,
+destination entity kinds/properties, and edge properties. It does not provide
+unbounded repetition, variable binding, optional patterns, or joins.
 
 Neighbors:
 
@@ -145,6 +196,10 @@ Shortest path:
   "depth": 6
 }
 ```
+
+Persisted forward and reverse adjacency shards let lazy reads execute `out`,
+`in`, and `both` traversal directions without loading the whole graph when the
+index catalog matches the visible graph version.
 
 ## Filters, Projection, Sort, Aggregate
 

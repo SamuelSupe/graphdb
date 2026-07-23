@@ -22,6 +22,14 @@ func (s *TenantStore) getSourcePolicyWithMeta(ctx context.Context, tenantID stri
 	if err := ValidateTenantID(tenantID); err != nil {
 		return graph.SourcePolicy{}, false, ObjectMeta{}, err
 	}
+	if s.coordinated() {
+		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
+		if err != nil {
+			return graph.SourcePolicy{}, false, ObjectMeta{}, err
+		}
+		return snapshot.SourcePolicy, snapshot.SourcePolicyConfigured,
+			coordinatedManifestMeta(s.sourcePolicyKey(tenantID), head), nil
+	}
 	var record sourcePolicyRecord
 	key := s.sourcePolicyKey(tenantID)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
@@ -56,6 +64,9 @@ func (s *TenantStore) PutSourcePolicy(ctx context.Context, tenantID string, poli
 	if err != nil {
 		return graph.SourcePolicy{}, err
 	}
+	if s.coordinated() {
+		return s.putCoordinatedSourcePolicy(ctx, tenantID, normalized)
+	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
@@ -84,6 +95,13 @@ func (s *TenantStore) PutSourcePolicy(ctx context.Context, tenantID string, poli
 }
 
 func (s *TenantStore) putSourcePolicyRecordWithMeta(ctx context.Context, tenantID string, record sourcePolicyRecord, meta ObjectMeta) (ObjectMeta, error) {
+	if s.coordinated() {
+		if _, err := s.PutSourcePolicy(ctx, tenantID, record.SourcePolicy); err != nil {
+			return ObjectMeta{}, err
+		}
+		_, _, next, err := s.getSourcePolicyWithMeta(ctx, tenantID)
+		return next, err
+	}
 	record.TenantID = tenantID
 	data, err := marshalParquetSourcePolicy(ctx, record)
 	if err != nil {
@@ -108,6 +126,9 @@ func (s *TenantStore) resolveSourcePolicy(ctx context.Context, tenantID string, 
 }
 
 func (s *TenantStore) getSourcePolicyForWrite(ctx context.Context, tenantID string) (graph.SourcePolicy, bool, ObjectMeta, error) {
+	if s.coordinated() {
+		return s.getSourcePolicyWithMeta(ctx, tenantID)
+	}
 	if policy, configured, meta, ok := s.getCachedSourcePolicy(tenantID); ok {
 		return policy, configured, meta, nil
 	}
@@ -117,6 +138,39 @@ func (s *TenantStore) getSourcePolicyForWrite(ctx context.Context, tenantID stri
 	}
 	s.setCachedSourcePolicy(tenantID, policy, configured, meta)
 	return policy, configured, meta, nil
+}
+
+func (s *TenantStore) putCoordinatedSourcePolicy(
+	ctx context.Context,
+	tenantID string,
+	policy graph.SourcePolicy,
+) (graph.SourcePolicy, error) {
+	if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
+		return graph.SourcePolicy{}, err
+	}
+	for attempt := 0; attempt < s.CoordinatorRetryLimit+1; attempt++ {
+		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
+		if err != nil {
+			return graph.SourcePolicy{}, err
+		}
+		snapshot.SourcePolicy = policy
+		snapshot.SourcePolicyConfigured = true
+		_, published, err := s.publishCoordinatedWriteContext(ctx, head, snapshot)
+		if err != nil {
+			return graph.SourcePolicy{}, err
+		}
+		if published {
+			s.deleteCachedSourcePolicy(tenantID)
+			if err := s.mirrorLatestWriteContext(ctx, tenantID); err != nil {
+				return graph.SourcePolicy{}, err
+			}
+			return policy, nil
+		}
+		if err := coordinatorRetryDelay(ctx, attempt); err != nil {
+			return graph.SourcePolicy{}, err
+		}
+	}
+	return graph.SourcePolicy{}, fmt.Errorf("%w: source policy for tenant %q changed while publishing", ErrWriteConflict, tenantID)
 }
 
 func clearIncomingEntityFieldSources(mutations graph.Mutations) graph.Mutations {

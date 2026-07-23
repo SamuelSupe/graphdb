@@ -20,6 +20,31 @@ func runQuery(args []string, store *storage.TenantStore) error {
 	return executeQuery(store, args[0], request)
 }
 
+func runGraphQL(args []string, store *storage.TenantStore) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: graphdb graphql <tenant-id> <graphql-request.json>")
+	}
+	var document query.GraphQLRequest
+	if err := readJSONFile(args[1], &document); err != nil {
+		return err
+	}
+	plan, requestErrors := query.ParseGraphQL(document)
+	if len(requestErrors) > 0 {
+		return requestErrors
+	}
+	g, _, err := store.Load(context.Background(), args[0])
+	if err != nil {
+		return err
+	}
+	response, err := query.Execute(g, plan.Request)
+	if err != nil {
+		return err
+	}
+	return printJSON(map[string]any{"data": plan.Data(response)})
+}
+
+// runGQL preserves the 1.0 FIND/MATCH text DSL compatibility command.
+// It does not parse GraphQL documents.
 func runGQL(args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb gql <tenant-id> <query.gql>")

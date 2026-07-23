@@ -12,6 +12,7 @@ variables:
 
 stages:
   - build-dep
+  - test
   - build
   - deploy
 
@@ -26,6 +27,82 @@ build-dep:
     - docker rmi -f "$DEP_IMAGE:latest" || true
     - docker build --build-arg BASE_IMAGE="$BASE_IMAGE" -t "$DEP_IMAGE:latest" -f ./image/Dockerfile.dep .
     - docker push "$DEP_IMAGE:latest"
+  tags:
+    - cloudcare-multiarch
+
+verify-release:
+  stage: test
+  variables:
+    GIT_DEPTH: "0"
+  only:
+    - /^release(\/|-)?.*$/
+    - /\d+\.\d+\.\d+-\w+-\d+-prod/
+    - /\d+\.\d+\.\d+-\w+-\d+-uos-prod/
+    - /\d+\.\d+\.\d+\.\d+-\w+-prev/
+  script:
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" bash -lc 'RELEASE_GATE_VERIFY_ONLY=1 scripts/release_gate.sh'
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" python:3.12-alpine python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
+  tags:
+    - cloudcare-multiarch
+
+verify-coordination-release:
+  stage: test
+  only:
+    - /^release(\/|-)?.*$/
+    - /\d+\.\d+\.\d+-\w+-\d+-prod/
+    - /\d+\.\d+\.\d+-\w+-\d+-uos-prod/
+    - /\d+\.\d+\.\d+\.\d+-\w+-prev/
+  script:
+    - mkdir -p .ci-bin
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" go test -mod=readonly -c -o .ci-bin/graphdb-storage.test ./internal/storage
+    - GRAPHDB_STORAGE_TEST_BIN="$(pwd)/.ci-bin/graphdb-storage.test" scripts/postgres_cas_gate.sh integration
+  after_script:
+    - rm -f .ci-bin/graphdb-storage.test
+  tags:
+    - cloudcare-multiarch
+
+verify-cas-soak-release:
+  stage: test
+  timeout: 50m
+  variables:
+    GIT_DEPTH: "0"
+  only:
+    - /^release(\/|-)?.*$/
+    - /\d+\.\d+\.\d+-\w+-\d+-prod/
+    - /\d+\.\d+\.\d+-\w+-\d+-uos-prod/
+    - /\d+\.\d+\.\d+\.\d+-\w+-prev/
+  script:
+    - mkdir -p .ci-bin
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" go test -mod=readonly -c -o .ci-bin/graphdb-storage.test ./internal/storage
+    - GRAPHDB_COMPAT_BUILD_IMAGE="$DEP_IMAGE" GRAPHDB_TEST_BUILD_COMMIT="$CI_COMMIT_SHA" GRAPHDB_TEST_CAS_STRESS_REPORT="$(pwd)/.ci-artifacts/cas-stress.json" GRAPHDB_STORAGE_TEST_BIN="$(pwd)/.ci-bin/graphdb-storage.test" scripts/postgres_cas_gate.sh soak
+  artifacts:
+    when: always
+    paths:
+      - .ci-artifacts/cas-stress.json
+  after_script:
+    - rm -f .ci-bin/graphdb-storage.test
+  tags:
+    - cloudcare-multiarch
+
+verify-rollback-release:
+  stage: test
+  variables:
+    GIT_DEPTH: "0"
+  only:
+    - /^release(\/|-)?.*$/
+    - /\d+\.\d+\.\d+-\w+-\d+-prod/
+    - /\d+\.\d+\.\d+-\w+-\d+-uos-prod/
+    - /\d+\.\d+\.\d+\.\d+-\w+-prev/
+  script:
+    - mkdir -p .ci-bin .ci-artifacts
+    - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" go test -mod=readonly -c -o .ci-bin/graphdb-storage.test ./internal/storage
+    - GRAPHDB_TEST_BUILD_COMMIT="$CI_COMMIT_SHA" GRAPHDB_TEST_ROLLBACK_REPORT="$(pwd)/.ci-artifacts/rollback-drill.json" GRAPHDB_STORAGE_TEST_BIN="$(pwd)/.ci-bin/graphdb-storage.test" scripts/postgres_cas_gate.sh rollback
+  artifacts:
+    when: always
+    paths:
+      - .ci-artifacts/rollback-drill.json
+  after_script:
+    - rm -f .ci-bin/graphdb-storage.test
   tags:
     - cloudcare-multiarch
 
@@ -50,12 +127,33 @@ build-testing:
 
 build-release:
   stage: build
+  needs:
+    - verify-release
+    - verify-coordination-release
+    - verify-cas-soak-release
+    - verify-rollback-release
   resource_group: production
   only:
     - /^release(\/|-)?.*$/
   script:
+    - grep -F '"schema_version": 2' .ci-artifacts/cas-stress.json
+    - grep -F '"success": true' .ci-artifacts/cas-stress.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/cas-stress.json
+    - grep -F '"legacy_v1_binary_validated": true' .ci-artifacts/cas-stress.json
+    - grep -F '"schema_version": 1' .ci-artifacts/rollback-drill.json
+    - grep -F '"success": true' .ci-artifacts/rollback-drill.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/rollback-drill.json
+    - grep -F '"outbox_backlog": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"legacy_mirror_lag": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"marker_removed": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"postgres_writer_fenced": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"local_writer_succeeded": true' .ci-artifacts/rollback-drill.json
     - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
     - docker buildx build --build-arg BASE_IMAGE="$RUNTIME_BASE_IMAGE" --platform linux/arm64,linux/amd64 -t "$REGISTRY_IMAGE:$CI_COMMIT_REF_NAME" -t "$PUBREPO_IMAGE:$CI_COMMIT_REF_NAME" -f ./image/Dockerfile . --push
+  artifacts:
+    paths:
+      - .ci-artifacts/cas-stress.json
+      - .ci-artifacts/rollback-drill.json
   tags:
     - cloudcare-multiarch
 
@@ -82,46 +180,109 @@ deployProd:
 
 buildRTM:
   stage: build
+  needs:
+    - verify-release
+    - verify-coordination-release
+    - verify-cas-soak-release
+    - verify-rollback-release
   resource_group: graphdb-production
   only:
     - /\d+\.\d+\.\d+-\w+-\d+-prod/
   script:
+    - grep -F '"schema_version": 2' .ci-artifacts/cas-stress.json
+    - grep -F '"success": true' .ci-artifacts/cas-stress.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/cas-stress.json
+    - grep -F '"legacy_v1_binary_validated": true' .ci-artifacts/cas-stress.json
+    - grep -F '"schema_version": 1' .ci-artifacts/rollback-drill.json
+    - grep -F '"success": true' .ci-artifacts/rollback-drill.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/rollback-drill.json
+    - grep -F '"outbox_backlog": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"legacy_mirror_lag": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"marker_removed": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"postgres_writer_fenced": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"local_writer_succeeded": true' .ci-artifacts/rollback-drill.json
     - V=(${CI_COMMIT_REF_NAME//[\.-]/ })
     - VDIR=${V[0]}.${V[1]}.${V[2]}
     - REPO=dataflux/$VDIR
     - TAG=${PROJECT}-${V[3]}-${V[4]}
     - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
     - make pub_pubrepo_image REPO="$REPO:$TAG" RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE"
+  artifacts:
+    paths:
+      - .ci-artifacts/cas-stress.json
+      - .ci-artifacts/rollback-drill.json
   tags:
     - cloudcare-multiarch
 
 buildUOSRTM:
   stage: build
+  needs:
+    - verify-release
+    - verify-coordination-release
+    - verify-cas-soak-release
+    - verify-rollback-release
   resource_group: graphdb-production
   only:
     - /\d+\.\d+\.\d+-\w+-\d+-uos-prod/
   script:
+    - grep -F '"schema_version": 2' .ci-artifacts/cas-stress.json
+    - grep -F '"success": true' .ci-artifacts/cas-stress.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/cas-stress.json
+    - grep -F '"legacy_v1_binary_validated": true' .ci-artifacts/cas-stress.json
+    - grep -F '"schema_version": 1' .ci-artifacts/rollback-drill.json
+    - grep -F '"success": true' .ci-artifacts/rollback-drill.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/rollback-drill.json
+    - grep -F '"outbox_backlog": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"legacy_mirror_lag": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"marker_removed": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"postgres_writer_fenced": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"local_writer_succeeded": true' .ci-artifacts/rollback-drill.json
     - V=(${CI_COMMIT_REF_NAME//[\.-]/ })
     - VDIR=${V[0]}.${V[1]}.${V[2]}
     - REPO=uos-dataflux/$VDIR
     - TAG=${PROJECT}-${V[3]}-${V[4]}
     - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
     - make pub_pubrepo_uos_image REPO="$REPO:$TAG" UOS_RUNTIME_BASE_IMAGE="$UOS_RUNTIME_BASE_IMAGE"
+  artifacts:
+    paths:
+      - .ci-artifacts/cas-stress.json
+      - .ci-artifacts/rollback-drill.json
   tags:
     - cloudcare-multiarch
 
 buildRTMPrev:
   stage: build
+  needs:
+    - verify-release
+    - verify-coordination-release
+    - verify-cas-soak-release
+    - verify-rollback-release
   resource_group: graphdb-production
   only:
     - /\d+\.\d+\.\d+\.\d+-\w+-prev/
   script:
+    - grep -F '"schema_version": 2' .ci-artifacts/cas-stress.json
+    - grep -F '"success": true' .ci-artifacts/cas-stress.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/cas-stress.json
+    - grep -F '"legacy_v1_binary_validated": true' .ci-artifacts/cas-stress.json
+    - grep -F '"schema_version": 1' .ci-artifacts/rollback-drill.json
+    - grep -F '"success": true' .ci-artifacts/rollback-drill.json
+    - grep -F "\"commit\": \"$CI_COMMIT_SHA\"" .ci-artifacts/rollback-drill.json
+    - grep -F '"outbox_backlog": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"legacy_mirror_lag": 0' .ci-artifacts/rollback-drill.json
+    - grep -F '"marker_removed": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"postgres_writer_fenced": true' .ci-artifacts/rollback-drill.json
+    - grep -F '"local_writer_succeeded": true' .ci-artifacts/rollback-drill.json
     - V=(${CI_COMMIT_REF_NAME//[\.-]/ })
     - VDIR=${V[0]}.${V[1]}.${V[2]}.${V[3]}
     - REPO=dataflux-prev/$VDIR
     - TAG=${PROJECT}-${V[4]}
     - docker run --rm -v "$(pwd):$WORKDIR_IMAGE" -w "$WORKDIR_IMAGE" "$DEP_IMAGE" make build
     - make pub_pubrepo_image REPO="$REPO:$TAG" RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE"
+  artifacts:
+    paths:
+      - .ci-artifacts/cas-stress.json
+      - .ci-artifacts/rollback-drill.json
   tags:
     - cloudcare-multiarch
 

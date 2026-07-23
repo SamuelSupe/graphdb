@@ -39,6 +39,9 @@ const (
 	ErrorCodeRepairRequired         ErrorCode = "repair_required"
 	ErrorCodeVersionConflict        ErrorCode = "version_conflict"
 	ErrorCodeIdempotencyConflict    ErrorCode = "idempotency_conflict"
+	ErrorCodeIdempotencyInProgress  ErrorCode = "idempotency_in_progress"
+	ErrorCodeWriteConflict          ErrorCode = "write_conflict"
+	ErrorCodeCoordinatorUnavailable ErrorCode = "coordinator_unavailable"
 	ErrorCodeCommitTailTooLong      ErrorCode = "commit_tail_too_long"
 	ErrorCodeIndexRebuildRunning    ErrorCode = "index_rebuild_running"
 	ErrorCodeMaintenanceTaskRunning ErrorCode = "maintenance_task_running"
@@ -76,6 +79,9 @@ var stableErrorCodes = []ErrorCode{
 	ErrorCodeRepairRequired,
 	ErrorCodeVersionConflict,
 	ErrorCodeIdempotencyConflict,
+	ErrorCodeIdempotencyInProgress,
+	ErrorCodeWriteConflict,
+	ErrorCodeCoordinatorUnavailable,
 	ErrorCodeCommitTailTooLong,
 	ErrorCodeIndexRebuildRunning,
 	ErrorCodeMaintenanceTaskRunning,
@@ -152,6 +158,42 @@ func writeErrorErr(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, response)
 }
 
+func writeStorageError(w http.ResponseWriter, err error) {
+	response := errorResponseFor(http.StatusBadRequest, err, "", nil)
+	writeJSON(w, storageErrorStatus(response.Code), response)
+}
+
+func storageErrorStatus(code ErrorCode) int {
+	switch code {
+	case ErrorCodeNotFound:
+		return http.StatusNotFound
+	case ErrorCodeTenantDisabled:
+		return http.StatusForbidden
+	case ErrorCodeTenantDeleted:
+		return http.StatusGone
+	case ErrorCodeQuotaExceeded:
+		return http.StatusTooManyRequests
+	case ErrorCodeLeaseHeld,
+		ErrorCodeManifestCASConflict,
+		ErrorCodeObjectWriteConflict,
+		ErrorCodeTaskConflict,
+		ErrorCodeRepairRequired,
+		ErrorCodeVersionConflict,
+		ErrorCodeIdempotencyConflict,
+		ErrorCodeIdempotencyInProgress,
+		ErrorCodeWriteConflict:
+		return http.StatusConflict
+	case ErrorCodeObjectStoreUnavailable, ErrorCodeCoordinatorUnavailable:
+		return http.StatusServiceUnavailable
+	case ErrorCodeRequestTimeout:
+		return http.StatusGatewayTimeout
+	case ErrorCodeRequestCanceled:
+		return 499
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 func writeErrorDetail(w http.ResponseWriter, status int, code ErrorCode, message string, retryable bool, detail any) {
 	writeJSON(w, status, buildErrorResponse(code, message, retryable, detail))
 }
@@ -225,6 +267,18 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeLeaseHeld, true
 	case errors.Is(err, storage.ErrObjectStoreUnavailable):
 		return ErrorCodeObjectStoreUnavailable, true
+	case errors.Is(err, storage.ErrCoordinatorUnavailable):
+		return ErrorCodeCoordinatorUnavailable, true
+	case errors.Is(err, storage.ErrCoordinatorFenced):
+		return ErrorCodeCoordinatorUnavailable, false
+	case errors.Is(err, storage.ErrWriteConflict):
+		return ErrorCodeWriteConflict, true
+	case errors.Is(err, storage.ErrVersionConflict):
+		return ErrorCodeVersionConflict, false
+	case errors.Is(err, storage.ErrIdempotencyInProgress):
+		return ErrorCodeIdempotencyInProgress, true
+	case errors.Is(err, storage.ErrTaskLeaseHeld):
+		return ErrorCodeTaskConflict, false
 	case errors.Is(err, storage.ErrTenantDisabled):
 		return ErrorCodeTenantDisabled, false
 	case errors.Is(err, storage.ErrTenantDeleted):

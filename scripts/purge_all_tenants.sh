@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/purge_all_tenants.sh [--dry-run] [--yes] [--managed-only]
 
-Permanently purge every GraphDB tenant visible to the configured object store.
+Permanently purge every GGraphDB tenant visible to the configured object store.
 
 Options:
   --dry-run       List tenants and commands without deleting data.
@@ -16,7 +16,7 @@ Options:
 Environment:
   GRAPHDB_BIN     Path to the graphdb executable (default: graphdb in PATH).
 
-All normal GraphDB configuration variables, including GRAPHDB_STORAGE,
+All normal GGraphDB configuration variables, including GRAPHDB_STORAGE,
 GRAPHDB_DATA_DIR, GRAPHDB_PREFIX, and S3_*, are passed through unchanged.
 EOF
 }
@@ -65,7 +65,7 @@ if [[ "$include_legacy" == true ]]; then
   list_args+=(--include-legacy)
 fi
 
-echo "Reading tenants from the configured GraphDB storage..."
+echo "Reading tenants from the configured GGraphDB storage..."
 tenant_json="$("$graphdb_bin" "${list_args[@]}")"
 if ! jq -e '
   .tenants | type == "array" and

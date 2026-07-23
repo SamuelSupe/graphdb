@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
@@ -21,6 +22,10 @@ const httpShutdownTimeout = 10 * time.Second
 func run(args []string) error {
 	if len(args) == 0 {
 		printHelp()
+		return nil
+	}
+	if args[0] == "version" || args[0] == "--version" {
+		printVersion()
 		return nil
 	}
 	cfg, err := config.Load()
@@ -60,6 +65,33 @@ func run(args []string) error {
 		store.ReaderID = fmt.Sprintf("%s|%s|%s|%s", hostname, cfg.Mode, cfg.Addr, cfg.Prefix)
 	}
 	store.Backpressure = pressure
+	store.CoordinatorRetryLimit = cfg.WriteCASMaxRetries
+	store.CoordinatorPendingTTL = cfg.CoordinatorPendingReservationTTL
+	store.CoordinatorCleanup = cfg.CoordinatorCleanupConfig()
+
+	coordinator, err := config.NewCoordinator(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+	if coordinator != nil {
+		defer coordinator.Close()
+	}
+	if args[0] == "coordinator" {
+		return coordinatorCommand(args[1:], store, coordinator)
+	}
+	if coordinator != nil {
+		if err := coordinator.CheckSchema(context.Background()); err != nil {
+			return err
+		}
+		store.SetCoordinator(coordinator)
+		if err := store.EnsurePostgresMarker(context.Background()); err != nil {
+			return err
+		}
+	} else if commandMayWrite(args[0], cfg.Mode) {
+		if err := store.EnsureLocalWriterAllowed(context.Background()); err != nil {
+			return err
+		}
+	}
 
 	switch args[0] {
 	case "serve":
@@ -112,6 +144,8 @@ func run(args []string) error {
 		return replayDeadLetters(args[1:], store)
 	case "query":
 		return runQuery(args[1:], store)
+	case "graphql":
+		return runGraphQL(args[1:], store)
 	case "gql":
 		return runGQL(args[1:], store)
 	case "save-query":
@@ -166,6 +200,25 @@ func run(args []string) error {
 	}
 }
 
+func commandMayWrite(command string, mode string) bool {
+	if command == "serve" {
+		return mode == "all" || mode == "writer"
+	}
+	switch command {
+	case "init-tenant", "create-tenant", "set-tenant-metadata",
+		"disable-tenant", "enable-tenant", "delete-tenant", "purge-tenant",
+		"clone-tenant", "backup-tenant", "restore-tenant", "restore-drill-tenant",
+		"commit", "ingest",
+		"set-source-policy", "set-tenant-config", "replay-deadletters",
+		"save-query", "start-task", "cancel-task", "retry-task",
+		"create-index", "drop-index", "rebuild-indexes", "recover",
+		"repair", "cleanup-commits", "gc", "compact":
+		return true
+	default:
+		return false
+	}
+}
+
 func serve(cfg config.Config, store *storage.TenantStore) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -192,6 +245,8 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 	}
 	store.BackpressureObserver = obs.Metrics
 	store.CacheObserver = obs.Metrics
+	store.CoordinatorObserver = obs.Metrics
+	store.StartCoordinatorStatusMonitor(ctx, cfg.PollInterval, cfg.ReadinessTimeout)
 	obs.StartIndexHealthMonitor(ctx, cfg.IndexHealthInterval, func(checkCtx context.Context, tenantID string) (string, int, error) {
 		health, err := store.IndexHealthWithOptions(checkCtx, tenantID, storage.IndexHealthOptions{})
 		if err != nil {
@@ -214,22 +269,48 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		WriteAdmission:        writeAdmission,
 		WriteExecutionTimeout: cfg.WriteExecutionTimeout,
 		ReaderCatchupTimeout:  cfg.ReaderCatchupTimeout,
+		ReadinessTimeout:      cfg.ReadinessTimeout,
 		Observability:         obs,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
 	}
 	api.StartMaintenanceLoop(ctx, cfg.MaintenanceInterval)
-	server := newHTTPServer(cfg, api)
+	if cfg.Mode == "all" || cfg.Mode == "writer" {
+		store.StartCoordinatorMaintenance(ctx, cfg.PollInterval)
+	}
+	var servers []*http.Server
+	if cfg.AdminAddr != "" {
+		servers = []*http.Server{
+			newDataHTTPServer(cfg, api),
+			newAdminHTTPServer(cfg, api),
+		}
+	} else {
+		servers = []*http.Server{newHTTPServer(cfg, api)}
+	}
 	obs.Logger.Info("server_start", map[string]any{
-		"addr": cfg.Addr, "mode": cfg.Mode, "storage": cfg.StoreKind, "prefix": cfg.Prefix,
+		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
+		"mode": cfg.Mode, "storage": cfg.StoreKind, "prefix": cfg.Prefix,
+		"coordination": store.CoordinationBackend(),
 		"otlp_enabled": cfg.OTLPEndpoint != "",
 	})
-	return runHTTPServer(ctx, server, httpShutdownTimeout)
+	return runHTTPServers(ctx, servers, httpShutdownTimeout)
 }
 
 func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
+	return newHTTPServerWithHandler(cfg.Addr, api.Handler())
+}
+
+func newDataHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
+	return newHTTPServerWithHandler(cfg.Addr, api.DataHandler())
+}
+
+func newAdminHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
+	return newHTTPServerWithHandler(cfg.AdminAddr, api.AdminHandler(cfg.PprofEnabled))
+}
+
+func newHTTPServerWithHandler(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           api.Handler(),
+		Addr:              addr,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      10 * time.Minute,
@@ -238,33 +319,62 @@ func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
 }
 
 func runHTTPServer(ctx context.Context, server *http.Server, shutdownTimeout time.Duration) error {
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.ListenAndServe()
-	}()
+	return runHTTPServers(ctx, []*http.Server{server}, shutdownTimeout)
+}
+
+func runHTTPServers(ctx context.Context, servers []*http.Server, shutdownTimeout time.Duration) error {
+	if len(servers) == 0 {
+		return nil
+	}
+	errCh := make(chan error, len(servers))
+	for _, server := range servers {
+		go func(server *http.Server) {
+			errCh <- server.ListenAndServe()
+		}(server)
+	}
+	var firstErr error
+	received := 0
 	select {
 	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+		received++
+		if !errors.Is(err, http.ErrServerClosed) {
+			firstErr = err
 		}
-		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			return err
-		}
-		err := <-errCh
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
 	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	for _, server := range servers {
+		if err := server.Shutdown(shutdownCtx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	for received < len(servers) {
+		err := <-errCh
+		received++
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func printVersion() {
+	info := buildinfo.Current()
+	fmt.Printf("GGraphDB %s commit=%s built=%s go=%s\n", info.Version, info.Commit, info.Date, info.GoVersion)
 }
 
 func printHelp() {
 	fmt.Println(`graphdb commands:
   graphdb serve
+  graphdb version
+  graphdb coordinator migrate
+  graphdb coordinator bootstrap --dry-run|--apply
+  graphdb coordinator status
+  graphdb coordinator sync-legacy-manifest
+  graphdb coordinator rollback --dry-run
+  graphdb coordinator rollback --apply --writers-stopped
   graphdb init-tenant <tenant-id>
   graphdb list-tenants
   graphdb tenant <tenant-id>
@@ -289,7 +399,8 @@ func printHelp() {
   graphdb deadletters <tenant-id> <source>
   graphdb replay-deadletters <tenant-id> <source> [limit]
   graphdb query <tenant-id> <query.json>
-  graphdb gql <tenant-id> <query.gql>
+  graphdb graphql <tenant-id> <graphql-request.json>
+  graphdb gql <tenant-id> <legacy-query.gql> (deprecated legacy text DSL)
   graphdb save-query <tenant-id> <saved-query.json>
   graphdb list-queries <tenant-id>
   graphdb run-saved-query <tenant-id> <name>
@@ -314,7 +425,20 @@ func printHelp() {
   graphdb compact <tenant-id>
 
 Environment:
+  GRAPHDB_ADDR=:8080
+  GRAPHDB_ADMIN_ADDR=127.0.0.1:8081 (optional separate admin listener)
+  GRAPHDB_PPROF_ENABLED=false (requires GRAPHDB_ADMIN_ADDR)
   GRAPHDB_MODE=all|writer|reader
+  GRAPHDB_COORDINATION=local|postgres
+  GRAPHDB_POSTGRES_DSN=postgres://user:password@host:5432/graphdb
+  GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination
+  GRAPHDB_COORDINATOR_NAMESPACE=<stable-cluster-id>
+  GRAPHDB_WRITE_CAS_MAX_RETRIES=8
+  GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION=24h
+  GRAPHDB_COORDINATOR_OUTBOX_RETENTION=1h
+  GRAPHDB_COORDINATOR_CLEANUP_INTERVAL=1m
+  GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE=5000
+  GRAPHDB_READINESS_TIMEOUT=2s
   GRAPHDB_STORAGE=local|s3
   GRAPHDB_DATA_DIR=.graphdb
   GRAPHDB_PREFIX=graphdb

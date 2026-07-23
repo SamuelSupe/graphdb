@@ -58,5 +58,5 @@ func commitPayloadHash(commit graph.Commit) (string, error) {
 
 func commitPayloadJSON(commit graph.Commit) ([]byte, error) {
 	commit.LayoutVersion = CurrentObjectLayoutVersion
-	return json.Marshal(commit)
+	return json.Marshal(legacyCommitWire(commit))
 }

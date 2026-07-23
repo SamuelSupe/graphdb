@@ -69,6 +69,7 @@ type PathFilter struct {
 }
 
 type PathStep struct {
+	Direction     string      `json:"direction,omitempty"`
 	RelationTypes []string    `json:"relation_types,omitempty"`
 	NodeKinds     []string    `json:"node_kinds,omitempty"`
 	Where         []Filter    `json:"where,omitempty"`
@@ -111,6 +112,24 @@ type AggregateGroup struct {
 	Aggregates map[string]any `json:"aggregates"`
 }
 
+type GraphQLRequest struct {
+	Query         string         `json:"query"`
+	OperationName string         `json:"operationName,omitempty"`
+	Variables     map[string]any `json:"variables,omitempty"`
+}
+
+type GraphQLError struct {
+	Message    string           `json:"message"`
+	Path       []any            `json:"path,omitempty"`
+	Locations  []map[string]int `json:"locations,omitempty"`
+	Extensions map[string]any   `json:"extensions,omitempty"`
+}
+
+type GraphQLResponse struct {
+	Data   map[string]any `json:"data,omitempty"`
+	Errors []GraphQLError `json:"errors,omitempty"`
+}
+
 func (c *Client) Query(ctx context.Context, request QueryRequest) (out QueryResponse, err error) {
 	err = c.doJSON(ctx, "POST", "/v1/query", "", nil, request, &out)
 	return out, err
@@ -120,11 +139,20 @@ func (c *Client) QueryStream(ctx context.Context, request QueryRequest) (*Stream
 	return c.streamJSON(ctx, "POST", "/v1/query/stream", "", nil, request)
 }
 
+func (c *Client) GraphQL(ctx context.Context, request GraphQLRequest) (out GraphQLResponse, err error) {
+	err = c.doJSON(ctx, "POST", "/v1/query/graphql", "", nil, request, &out)
+	return out, err
+}
+
+// GQL executes the legacy FIND/MATCH text DSL. It is not GraphQL.
+// Deprecated: use Query for the JSON DSL or GraphQL for GraphQL documents.
 func (c *Client) GQL(ctx context.Context, text string) (out QueryResponse, err error) {
 	err = c.doText(ctx, "POST", "/v1/query/gql", "", nil, text, &out)
 	return out, err
 }
 
+// GQLStream streams the legacy FIND/MATCH text DSL.
+// Deprecated: use QueryStream. GraphQL responses are not NDJSON streams.
 func (c *Client) GQLStream(ctx context.Context, text string) (*Stream, error) {
 	return c.streamText(ctx, "POST", "/v1/query/gql/stream", "", nil, text)
 }

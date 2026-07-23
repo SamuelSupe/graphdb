@@ -2,17 +2,18 @@
 
 [中文](sdk.zh-CN.md)
 
-GraphDB provides lightweight Go and Python SDKs over the HTTP API. They do not
+GGraphDB provides lightweight Go and Python SDKs over the HTTP API. They do not
 import service `internal` packages and are safe to vendor into collectors,
 internal services, and operations tools.
 
 SDK scope:
 
 - tenant lifecycle basics.
-- direct commits and ingestion batches.
+- direct commits, ingestion batches, and CSV/JSONL imports.
+- entity-type aliases and relation property schemas.
 - source policy and tenant config.
 - entity lookup, list entities/edges, export streams.
-- JSON Query DSL and GQL.
+- GraphQL and JSON Query DSL.
 - saved query and running query control.
 - task, index health/rebuild, reader freshness, writer lease, audit/repair.
 - structured API errors with code and retry hints.
@@ -29,8 +30,9 @@ Create a client:
 
 ```go
 client, err := graphdb.NewClient(
-    "http://127.0.0.1:38080",
+    "https://graphdb.example.com",
     graphdb.WithTenant("demo"),
+    graphdb.WithBearerToken(token),
 )
 if err != nil {
     return err
@@ -48,7 +50,7 @@ reader, _ := graphdb.NewClient("http://127.0.0.1:38081", graphdb.WithTenant("dem
 
 ```go
 result, err := writer.Commit(ctx, graphdb.Mutations{
-    UpsertCITypes: []graphdb.CIType{{
+    UpsertEntityTypes: []graphdb.EntityType{{
         Name: "host",
         Fields: map[string]graphdb.FieldSpec{
             "tags": {Type: "array", MergeStrategy: "append_unique"},
@@ -58,7 +60,7 @@ result, err := writer.Commit(ctx, graphdb.Mutations{
         Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true,
     }},
     UpsertEntities: []graphdb.Entity{
-        {ID: "host:1", Kind: "host", Source: "agent", Fields: graphdb.Fields{"hostname": "app-01", "tags": []any{"agent"}}},
+        {ID: "host:1", Kind: "host", Labels: []string{"asset"}, Source: "agent", Fields: graphdb.Fields{"hostname": "app-01", "tags": []any{"agent"}}},
         {ID: "service:api", Kind: "service", Source: "manual", Fields: graphdb.Fields{"name": "api"}},
     },
     UpsertEdges: []graphdb.Edge{{
@@ -99,6 +101,30 @@ result, err := writer.Ingest(ctx, graphdb.IngestRequest{
 })
 ```
 
+### Go: 1.1 Schema And File Import
+
+```go
+catalog, err := writer.PutRelationSchema(ctx, graphdb.RelationSchema{
+    RelationType: "cites",
+    Strict: true,
+    Fields: map[string]graphdb.FieldSpec{
+        "confidence": {Type: "number", Required: true},
+    },
+})
+if err != nil {
+    return err
+}
+fmt.Println(catalog.Revision)
+
+task, err := writer.StartImport(ctx, strings.NewReader(jsonl), graphdb.ImportOptions{
+    Format: "jsonl", Source: "knowledge-base", CollectorID: "files",
+    BatchSize: 500, OnError: "continue",
+})
+```
+
+Use `ListEntityTypes`, `ListRelationSchemas`, and the normal task methods to
+inspect type metadata, schemas, and import progress.
+
 ### Go: Query
 
 ```go
@@ -111,13 +137,22 @@ response, err := reader.Query(ctx, graphdb.QueryRequest{
 })
 ```
 
-GQL:
+GraphQL:
 
 ```go
-response, err := reader.GQL(ctx, `FIND host WHERE hostname PREFIX "app-" LIMIT 100`)
+response, err := reader.GraphQL(ctx, graphdb.GraphQLRequest{
+    Query: `query Find($request: QueryRequest!) {
+        graph(request: $request) { version results stats }
+    }`,
+    OperationName: "Find",
+    Variables: map[string]any{
+        "request": map[string]any{"op": "match", "kind": "host", "limit": 100},
+    },
+})
 ```
 
-Streaming:
+The deprecated `GQL` and `GQLStream` methods preserve the 1.0 `FIND`/`MATCH`
+text DSL. They are not GraphQL. Legacy NDJSON example:
 
 ```go
 stream, err := reader.GQLStream(ctx, `FIND host LIMIT 1000`)
@@ -163,8 +198,8 @@ Create a client:
 ```python
 from graphdb_sdk import GraphDBClient
 
-writer = GraphDBClient("http://127.0.0.1:38080", tenant_id="demo")
-reader = GraphDBClient("http://127.0.0.1:38081", tenant_id="demo")
+writer = GraphDBClient("https://graphdb.example.com", tenant_id="demo", bearer_token=token)
+reader = GraphDBClient("https://graphdb.example.com", tenant_id="demo", bearer_token=token)
 ```
 
 ### Python: Direct Commit
@@ -172,10 +207,12 @@ reader = GraphDBClient("http://127.0.0.1:38081", tenant_id="demo")
 ```python
 result = writer.commit(
     {
+        "upsert_entity_types": [{"name": "host"}],
         "upsert_entities": [
             {
                 "id": "host:1",
                 "kind": "host",
+                "labels": ["asset"],
                 "source": "agent",
                 "fields": {"hostname": "app-01"},
             }
@@ -208,6 +245,27 @@ result = writer.ingest({
 })
 ```
 
+### Python: 1.1 Schema And File Import
+
+```python
+catalog = writer.put_relation_schema("cites", {
+    "strict": True,
+    "fields": {"confidence": {"type": "number", "required": True}},
+})
+
+task = writer.start_import(
+    jsonl_data,
+    "jsonl",
+    source="knowledge-base",
+    collector_id="files",
+    batch_size=500,
+    on_error="continue",
+)
+```
+
+Use `list_entity_types()`, `list_relation_schemas()`, and `get_task(task["id"])`
+to inspect metadata and import progress.
+
 ### Python: Query
 
 ```python
@@ -221,13 +279,18 @@ response = reader.query({
 })
 ```
 
-GQL:
+GraphQL:
 
 ```python
-response = reader.gql('FIND host WHERE hostname PREFIX "app-" LIMIT 100')
+response = reader.graphql(
+    "query Find($request: QueryRequest!) { graph(request: $request) { version results stats } }",
+    {"request": {"op": "match", "kind": "host", "limit": 100}},
+    "Find",
+)
 ```
 
-Streaming:
+The deprecated `gql` and `stream_gql` methods preserve the 1.0 text DSL.
+Legacy NDJSON example:
 
 ```python
 with reader.stream_gql("FIND host LIMIT 1000") as stream:

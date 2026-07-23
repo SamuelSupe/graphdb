@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,6 +21,12 @@ func TestCommitSetsTenantHeaderAndParsesResult(t *testing.T) {
 		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
 			t.Fatalf("tenant header = %q", got)
 		}
+		if got := r.Header.Get("User-Agent"); got != "graphdb-go-sdk/1.1.0" {
+			t.Fatalf("user agent = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("authorization = %q", got)
+		}
 		var request CommitRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -30,7 +38,7 @@ func TestCommitSetsTenantHeaderAndParsesResult(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(server.URL, WithTenant("tenant-a"))
+	client, err := NewClient(server.URL, WithTenant("tenant-a"), WithBearerToken("test-token"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +137,69 @@ func TestGQLUsesTextPlain(t *testing.T) {
 	}
 	if result.Version != 9 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestGraphQLUsesStandardTransport(t *testing.T) {
+	var got GraphQLRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/query/graphql" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = io.WriteString(w, `{"data":{"graph":{"version":3}}}`)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithTenant("tenant-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.GraphQL(context.Background(), GraphQLRequest{
+		Query:         `query Version($request: QueryRequest!) { graph(request: $request) { version } }`,
+		OperationName: "Version",
+		Variables:     map[string]any{"request": map[string]any{"op": "match"}},
+	})
+	if err != nil {
+		t.Fatalf("GraphQL: %v", err)
+	}
+	if got.OperationName != "Version" || response.Data["graph"] == nil {
+		t.Fatalf("request=%#v response=%#v", got, response)
+	}
+}
+
+func TestVersion11SchemaAndImportAPIs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/imports":
+			data, _ := io.ReadAll(r.Body)
+			if r.Header.Get("Content-Type") != "application/x-ndjson" || string(data) != "{\"entity\":{}}\n" {
+				t.Fatalf("import content-type=%q body=%q", r.Header.Get("Content-Type"), data)
+			}
+			if r.URL.Query().Get("format") != "jsonl" || r.URL.Query().Get("batch_size") != "25" {
+				t.Fatalf("import query = %v", r.URL.Query())
+			}
+			_ = json.NewEncoder(w).Encode(Task{ID: "task-import", Type: "bulk_import"})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/relation-schemas/cites":
+			_ = json.NewEncoder(w).Encode(RelationSchemaCatalog{Revision: 2, RelationSchemas: []RelationSchema{{RelationType: "cites"}}})
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL, WithTenant("tenant-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := client.StartImport(context.Background(), strings.NewReader("{\"entity\":{}}\n"), ImportOptions{Format: "jsonl", BatchSize: 25})
+	if err != nil || task.ID != "task-import" {
+		t.Fatalf("task=%#v err=%v", task, err)
+	}
+	catalog, err := client.PutRelationSchema(context.Background(), RelationSchema{RelationType: "cites", Strict: true})
+	if err != nil || catalog.Revision != 2 {
+		t.Fatalf("catalog=%#v err=%v", catalog, err)
 	}
 }
 

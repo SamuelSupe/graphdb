@@ -104,6 +104,11 @@ func applyProjection(result *Result, fields []string) {
 		if !ok {
 			continue
 		}
+		if field == "labels" {
+			if _, exists := result.Entity.Fields[graph.ReservedLabelsField]; !exists {
+				name = "labels"
+			}
+		}
 		if _, ok := result.Entity.Fields[name]; ok {
 			entityFields[name] = value
 		}
@@ -115,6 +120,9 @@ func applyProjection(result *Result, fields []string) {
 }
 
 func projectionEntityFieldName(field string) (string, bool) {
+	if field == "labels" {
+		return graph.ReservedLabelsField, true
+	}
 	switch field {
 	case "", "id", "kind", "source", "external_id", "confidence", "source_priority", "created_at", "updated_at":
 		return "", false

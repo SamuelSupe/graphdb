@@ -21,8 +21,11 @@ func (g *Graph) ApplyCommitWithOptions(commit Commit, options ApplyOptions) (App
 
 func (g *Graph) replaceState(next *Graph) {
 	fingerprint, fingerprintReady := next.contentFingerprintState()
+	logicalHashCache := next.cloneLogicalHashCache()
 	g.contentFingerprintMu.Lock()
 	defer g.contentFingerprintMu.Unlock()
+	g.logicalHashMu.Lock()
+	defer g.logicalHashMu.Unlock()
 	g.Version = next.Version
 	g.CITypes = next.CITypes
 	g.Entities = next.Entities
@@ -35,6 +38,7 @@ func (g *Graph) replaceState(next *Graph) {
 	g.cow = next.cow
 	g.contentFingerprint = fingerprint
 	g.contentFingerprintReady = fingerprintReady
+	g.logicalHashCache = logicalHashCache
 }
 
 func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) (*Graph, ApplyReport, error) {

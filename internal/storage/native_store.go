@@ -50,12 +50,27 @@ type nativeObjectClient interface {
 	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
 }
 
-// NativeObjectStore maps native provider create-only support to GraphDB's
+type nativeObjectProber interface {
+	Probe(context.Context) error
+}
+
+// NativeObjectStore maps native provider create-only support to GGraphDB's
 // object-store contract. It intentionally does not emulate ETag CAS: that
 // translation belongs to SingleWriterObjectStore, where the single-writer
 // topology is explicit.
 type NativeObjectStore struct {
 	client nativeObjectClient
+}
+
+func (s *NativeObjectStore) Probe(ctx context.Context) error {
+	if err := objectContextErr(ctx); err != nil {
+		return err
+	}
+	if prober, ok := s.client.(nativeObjectProber); ok {
+		return prober.Probe(nativeContext(ctx))
+	}
+	_, err := s.client.List(nativeContext(ctx), "")
+	return err
 }
 
 func newNativeObjectStore(client nativeObjectClient) *NativeObjectStore {

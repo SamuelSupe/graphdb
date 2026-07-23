@@ -31,10 +31,15 @@ type Metrics struct {
 	readerCatchupLatency map[string]*histogram
 	readerCache          map[string]float64
 
-	writeBackpressure map[string]float64
-	writeAdmission    map[string]*histogram
-	manifestConflicts map[string]float64
-	commitTailLength  map[string]float64
+	writeBackpressure      map[string]float64
+	writeAdmission         map[string]*histogram
+	manifestConflicts      map[string]float64
+	commitTailLength       map[string]float64
+	coordinatorCAS         map[string]float64
+	coordinatorCleanup     map[string]float64
+	coordinatorCleanupRuns map[string]float64
+	coordinatorHeads       map[string]float64
+	coordinatorStatus      map[string]float64
 
 	suppressed        map[string]float64
 	ingestSuppressed  map[string]float64
@@ -52,27 +57,32 @@ type histogram struct {
 
 func NewMetrics() *Metrics {
 	return &Metrics{
-		httpRequests:         map[string]float64{},
-		httpDuration:         map[string]*histogram{},
-		objectDuration:       map[string]*histogram{},
-		queries:              map[string]float64{},
-		queryDuration:        map[string]*histogram{},
-		slowQueries:          map[string]float64{},
-		readAdmission:        map[string]*histogram{},
-		readerNotFresh:       map[string]float64{},
-		readerVisibleVersion: map[string]float64{},
-		readerCatchup:        map[string]float64{},
-		readerCatchupLatency: map[string]*histogram{},
-		readerCache:          map[string]float64{},
-		writeBackpressure:    map[string]float64{},
-		writeAdmission:       map[string]*histogram{},
-		manifestConflicts:    map[string]float64{},
-		commitTailLength:     map[string]float64{},
-		suppressed:           map[string]float64{},
-		ingestSuppressed:     map[string]float64{},
-		indexHealthChecks:    map[string]float64{},
-		indexHealthStatus:    map[string]string{},
-		indexHealthIssues:    map[string]float64{},
+		httpRequests:           map[string]float64{},
+		httpDuration:           map[string]*histogram{},
+		objectDuration:         map[string]*histogram{},
+		queries:                map[string]float64{},
+		queryDuration:          map[string]*histogram{},
+		slowQueries:            map[string]float64{},
+		readAdmission:          map[string]*histogram{},
+		readerNotFresh:         map[string]float64{},
+		readerVisibleVersion:   map[string]float64{},
+		readerCatchup:          map[string]float64{},
+		readerCatchupLatency:   map[string]*histogram{},
+		readerCache:            map[string]float64{},
+		writeBackpressure:      map[string]float64{},
+		writeAdmission:         map[string]*histogram{},
+		manifestConflicts:      map[string]float64{},
+		commitTailLength:       map[string]float64{},
+		coordinatorCAS:         map[string]float64{},
+		coordinatorCleanup:     map[string]float64{},
+		coordinatorCleanupRuns: map[string]float64{},
+		coordinatorHeads:       map[string]float64{},
+		coordinatorStatus:      map[string]float64{},
+		suppressed:             map[string]float64{},
+		ingestSuppressed:       map[string]float64{},
+		indexHealthChecks:      map[string]float64{},
+		indexHealthStatus:      map[string]string{},
+		indexHealthIssues:      map[string]float64{},
 	}
 }
 
@@ -130,6 +140,53 @@ func (m *Metrics) RecordCommitTail(tenantID string, length int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.commitTailLength[tenantID] = float64(length)
+}
+
+func (m *Metrics) RecordCoordinatorCAS(tenantID string, status string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordinatorCAS[labelKey(tenantID, status)]++
+}
+
+func (m *Metrics) RecordCoordinatorHeadRevision(tenantID string, revision int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if value := float64(revision); value > m.coordinatorHeads[tenantID] {
+		m.coordinatorHeads[tenantID] = value
+	}
+}
+
+func (m *Metrics) RecordCoordinatorCleanup(status string, idempotencyDeleted, outboxDeleted int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordinatorCleanupRuns[status]++
+	m.coordinatorCleanup["commit_idempotency"] += float64(idempotencyDeleted)
+	m.coordinatorCleanup["legacy_manifest_outbox"] += float64(outboxDeleted)
+}
+
+func (m *Metrics) RecordCoordinatorStatus(backend string, available bool, mirrorLag, outbox, derived int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	availableValue := float64(0)
+	if available {
+		availableValue = 1
+	}
+	m.coordinatorStatus[labelKey(backend, "available")] = availableValue
+	m.coordinatorStatus[labelKey(backend, "mirror_lag")] = float64(mirrorLag)
+	m.coordinatorStatus[labelKey(backend, "outbox_backlog")] = float64(outbox)
+	m.coordinatorStatus[labelKey(backend, "derived_backlog")] = float64(derived)
 }
 
 func (m *Metrics) RecordQuery(tenantID string, op string, status string, duration time.Duration, slow bool) {
@@ -244,6 +301,11 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeCounter(&b, "graphdb_write_backpressure_total", "Rejected writes by tenant and backpressure reason.", []string{"tenant", "reason"}, m.writeBackpressure)
 	writeHistogram(&b, "graphdb_write_admission_queue_seconds", "Write admission queue wait time.", []string{"tenant", "status"}, m.writeAdmission)
 	writeCounter(&b, "graphdb_manifest_cas_conflicts_total", "Manifest compare-and-swap conflicts by tenant.", []string{"tenant"}, m.manifestConflicts)
+	writeCounter(&b, "graphdb_coordinator_cas_total", "PostgreSQL head CAS results by tenant and status.", []string{"tenant", "status"}, m.coordinatorCAS)
+	writeCounter(&b, "graphdb_coordinator_cleanup_runs_total", "PostgreSQL coordination cleanup runs by status.", []string{"status"}, m.coordinatorCleanupRuns)
+	writeCounter(&b, "graphdb_coordinator_cleanup_deleted_total", "Expired PostgreSQL coordination rows deleted by table.", []string{"table"}, m.coordinatorCleanup)
+	writeGaugeValues(&b, "graphdb_coordinator_head_revision", "Latest PostgreSQL head revision observed by this process.", []string{"tenant"}, m.coordinatorHeads)
+	writeGaugeValues(&b, "graphdb_coordinator_status", "Coordinator availability and queue gauges by backend and metric.", []string{"backend", "metric"}, m.coordinatorStatus)
 	writeGaugeValues(&b, "graphdb_commit_tail_length", "Latest commit tail length by tenant.", []string{"tenant"}, m.commitTailLength)
 	writeCounter(&b, "graphdb_write_suppressed_conflicts_total", "Suppressed write conflicts by tenant and resource type.", []string{"tenant", "resource_type"}, m.suppressed)
 	writeCounter(&b, "graphdb_ingest_suppressed_conflicts_total", "Suppressed ingest conflicts by tenant and source.", []string{"tenant", "source"}, m.ingestSuppressed)

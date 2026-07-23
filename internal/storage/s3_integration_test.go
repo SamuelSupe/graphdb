@@ -31,6 +31,9 @@ func TestS3StoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s3.Probe(context.Background()); err != nil {
+		t.Fatalf("probe bucket: %v", err)
+	}
 	store := NewTenantStore(s3, "graphdb-integration-test")
 	ctx := context.Background()
 	tenant := fmt.Sprintf("it-tenant-%d", time.Now().UnixNano())

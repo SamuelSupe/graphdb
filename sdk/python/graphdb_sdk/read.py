@@ -25,6 +25,12 @@ class ReadMixin:
     def stream_snapshot(self, **options):
         return self._stream("GET", self._url_path("/v1/export/snapshot/stream", options))
 
+    def list_entity_types(self, **options) -> dict:
+        return self._json("GET", "/v1/entity-types", query=options)
+
+    def list_relation_schemas(self) -> dict:
+        return self._json("GET", "/v1/relation-schemas")
+
     def _read_query(self, min_version: int | None, allow_stale: bool) -> dict:
         query = {}
         if min_version is not None:

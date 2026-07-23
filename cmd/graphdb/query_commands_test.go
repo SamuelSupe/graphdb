@@ -48,6 +48,31 @@ func TestRunGQLCommandRejectsBadSyntax(t *testing.T) {
 	}
 }
 
+func TestRunGraphQLCommandExecutesDocument(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:app-01", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	queryPath := filepath.Join(t.TempDir(), "request.json")
+	if err := os.WriteFile(queryPath, []byte(`{
+		"query":"query Find($request: QueryRequest!) { graph(request: $request) { version results } }",
+		"operationName":"Find",
+		"variables":{"request":{"op":"match","kind":"host","limit":10}}
+	}`), 0o600); err != nil {
+		t.Fatalf("write GraphQL request: %v", err)
+	}
+	output := captureStdout(t, func() {
+		if err := runGraphQL([]string{"tenant-a", queryPath}, store); err != nil {
+			t.Fatalf("run graphql: %v", err)
+		}
+	})
+	if !strings.Contains(output, `"data"`) || !strings.Contains(output, `"host:app-01"`) {
+		t.Fatalf("output = %s", output)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout

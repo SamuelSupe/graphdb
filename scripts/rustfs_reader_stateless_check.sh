@@ -46,7 +46,11 @@ json_number() {
   sed -n "s/.*\"$field\":\\([0-9][0-9]*\\).*/\\1/p" | head -n 1
 }
 
-docker compose -p "$PROJECT" --profile scale-readers -f docker-compose.rustfs.yml up -d --build
+if [[ "${GRAPHDB_RELEASE_USE_PREBUILT_IMAGE:-0}" == "1" ]]; then
+  docker compose -p "$PROJECT" --profile scale-readers -f docker-compose.rustfs.yml up -d --no-build
+else
+  docker compose -p "$PROJECT" --profile scale-readers -f docker-compose.rustfs.yml up -d --build
+fi
 wait_health "$WRITER_URL"
 for reader in "${READERS[@]}"; do
   wait_health "$reader"

@@ -13,7 +13,7 @@ READER_RESTART_COMMAND="${SOAK_READER_RESTART_COMMAND:-docker compose -p $COMPOS
 
 docker compose -p "$COMPOSE_PROJECT" -f docker-compose.rustfs.yml up -d --build
 
-go run ./tools/soaktest \
+go run -mod=readonly ./tools/soaktest \
   -writer "$WRITER_URL" \
   -reader "$READER_URL" \
   -tenant "$TENANT" \
@@ -39,7 +39,7 @@ go run ./tools/soaktest \
   -reader-restart-command "$READER_RESTART_COMMAND" \
   -out "$OUT"
 
-go run ./tools/soakreport \
+go run -mod=readonly ./tools/soakreport \
   -in "$OUT" \
   -min-duration "${SOAK_MIN_DURATION:-0}" \
   -warmup "${SOAK_REPORT_WARMUP:-45m}" \

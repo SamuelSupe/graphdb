@@ -119,6 +119,15 @@ func (c *Client) ListCITypes(ctx context.Context, options *ReadOptions) (out map
 	return out, err
 }
 
+func (c *Client) ListEntityTypes(ctx context.Context, options *ReadOptions) (out map[string]any, err error) {
+	values := url.Values{}
+	if options != nil {
+		values = options.values()
+	}
+	err = c.doJSON(ctx, "GET", "/v1/entity-types", "", values, nil, &out)
+	return out, err
+}
+
 func (c *Client) ListRelationTypes(ctx context.Context, options *ReadOptions) (out map[string]any, err error) {
 	values := url.Values{}
 	if options != nil {

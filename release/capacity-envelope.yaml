@@ -1,0 +1,49 @@
+schema_version: 1
+release: "1.1"
+scope: per_tenant
+
+correctness_concurrency_gate:
+  writers: 8
+  required_outcomes:
+    lost_commits: 0
+    duplicate_versions: 0
+
+postgres_cas_gate:
+  active_writers_per_tenant: 2
+  target_commits_per_second: 20
+  duration: 30m
+  minimum_throughput_ratio: 0.90
+  server_cas_replays_per_request: 8
+  client_write_conflict_retries: 64
+  client_retry_backoff_max: 2s
+  client_retry_routing: load_balanced_across_writers
+  compact_commit_tail_threshold: 1000
+  write_backpressure_commit_tail: 1500
+  maximum_maintenance_interval: 30s
+  required_outcomes:
+    lost_commits: 0
+    duplicate_versions: 0
+    terminal_errors: 0
+
+compatibility_gate:
+  v1_tag: release_20260722_01
+  required_directions:
+    - v1_writer_v11_reader
+    - v11_writer_v1_reader
+
+query_contract:
+  maximum_result_limit: 1000
+
+topology_contract:
+  local_coordination:
+    writers_per_tenant: 1
+  postgres_coordination:
+    minimum_writers_per_tenant: 2
+    maximum_writers_per_tenant: 8
+    object_store_provider: generic-s3
+
+notes:
+  - This is a release gate, not a maximum supported graph size.
+  - Eight deployed writers are supported, but the sustained hot-tenant throughput gate uses two active contenders.
+  - Client retries rotate across writers to verify cluster-wide idempotency instead of relying on process affinity.
+  - Larger commit rates or graph sizes require a target-environment baseline.

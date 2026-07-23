@@ -483,7 +483,7 @@ func (s *Server) recoverTenant(w http.ResponseWriter, r *http.Request) {
 	report, err := s.Store.RecoverTenant(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("tenant_recovery_failed", tenantID, err, map[string]any{})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.invalidate(tenantID)
@@ -502,7 +502,7 @@ func (s *Server) integrityAudit(w http.ResponseWriter, r *http.Request) {
 	report, err := s.Store.AuditIntegrity(r.Context(), tenantID, storage.IntegrityAuditOptions{Deep: deep})
 	if err != nil {
 		s.auditError("integrity_audit_failed", tenantID, err, map[string]any{"deep": deep})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("integrity_audit_completed", tenantID, map[string]any{
@@ -527,7 +527,7 @@ func (s *Server) repairTenant(w http.ResponseWriter, r *http.Request) {
 	report, err := s.Store.RepairTenant(r.Context(), tenantID, storage.RepairOptions{Apply: request.Apply})
 	if err != nil {
 		s.auditError("tenant_repair_failed", tenantID, err, map[string]any{"apply": request.Apply})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	if request.Apply {
@@ -551,7 +551,7 @@ func (s *Server) cleanupCommits(w http.ResponseWriter, r *http.Request) {
 	report, err := s.Store.CleanupCommits(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("commit_cleanup_failed", tenantID, err, map[string]any{})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("commit_cleanup_completed", tenantID, map[string]any{
@@ -588,7 +588,7 @@ func (s *Server) runGC(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.auditError("gc_failed", tenantID, err, map[string]any{})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("gc_completed", tenantID, map[string]any{

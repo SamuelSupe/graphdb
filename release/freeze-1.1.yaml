@@ -1,0 +1,41 @@
+schema_version: 1
+release: "1.1"
+status: frozen
+effective_from: commit_containing_this_file
+effective_date: "2026-07-23"
+
+public_contract:
+  product_name: GGraphDB
+  query_protocol: GraphQL
+  graphql_endpoint: /v1/query/graphql
+  legacy_text_dsl_endpoint: /v1/query/gql
+
+compatibility:
+  object_layout_version: 2
+  preserve_1_0_readability: true
+  retained_identifiers:
+    - graphdb_binary
+    - graphdb_module_paths
+    - GRAPHDB_environment
+    - X-GraphDB_headers
+    - graphdb_object_keys
+    - gql_legacy_route
+
+allowed_after_freeze:
+  - release_blocker_fixes
+  - security_fixes
+  - backward_compatibility_fixes
+  - test_and_gate_repairs
+  - documentation_and_operations_corrections
+
+blocked_after_freeze:
+  - new_public_features
+  - new_query_syntax
+  - incompatible_api_changes
+  - object_layout_changes
+  - unapproved_dependency_expansion
+
+required_release_evidence:
+  - schema_2_postgres_cas_30m
+  - formal_postgres_to_local_rollback
+  - v1_reader_legacy_manifest_compatibility

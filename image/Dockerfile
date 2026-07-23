@@ -5,6 +5,7 @@ ARG TARGETARCH=amd64
 MAINTAINER "tanbiao@jiagouyun.com"
 
 COPY ./image/cmd/${TARGETARCH}/graphdb /graphdb/graphdb
+COPY ./docs/openapi.yaml /graphdb/docs/openapi.yaml
 
 WORKDIR /graphdb
 

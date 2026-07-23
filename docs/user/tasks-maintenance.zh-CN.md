@@ -54,6 +54,11 @@ curl -sS -X POST "$WRITER/v1/tasks/<task-id>/retry" -H 'X-Tenant-ID: demo'
 - `tenant_backup`
 - `tenant_restore`
 - `tenant_restore_drill`
+- `bulk_import`
+
+`bulk_import` 应通过 `POST /v1/imports` 创建；上传接口会在租户范围内暂存
+源文件并安全构造 task 参数。task checkpoint 记录源位置、批次号、计数和
+问题样本，使 retry 可以在保持稳定 batch identity 的前提下恢复。
 
 ## Compact
 

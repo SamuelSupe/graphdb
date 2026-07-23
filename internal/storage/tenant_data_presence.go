@@ -22,5 +22,6 @@ func (s *TenantStore) tenantDataExists(ctx context.Context, tenantID string) (bo
 func tenantDataObject(relativeKey string) bool {
 	return relativeKey != "" &&
 		!strings.HasPrefix(relativeKey, "control/") &&
+		!strings.HasPrefix(relativeKey, "coordination/") &&
 		!strings.HasPrefix(relativeKey, "tasks/")
 }

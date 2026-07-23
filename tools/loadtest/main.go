@@ -21,6 +21,7 @@ type config struct {
 	httpTimeout            time.Duration
 	maintenanceTimeout     time.Duration
 	allowWriteBackpressure bool
+	reportJSON             string
 }
 
 func main() {
@@ -59,9 +60,16 @@ func main() {
 	_ = client.indexHealth(ctx, metrics)
 	_ = client.collectorStatus(ctx, metrics)
 
+	elapsed := time.Since(start)
 	fmt.Printf("elapsed=%s tenant=%s writer=%s reader=%s writers=%d readers=%d batches=%d batch_size=%d allow_write_backpressure=%t\n",
-		time.Since(start).Round(time.Millisecond), cfg.tenant, cfg.baseURL, reader.baseURL, cfg.writers, cfg.readers, cfg.batches, cfg.batchSize, cfg.allowWriteBackpressure)
+		elapsed.Round(time.Millisecond), cfg.tenant, cfg.baseURL, reader.baseURL, cfg.writers, cfg.readers, cfg.batches, cfg.batchSize, cfg.allowWriteBackpressure)
 	metrics.print(os.Stdout)
+	if cfg.reportJSON != "" {
+		if err := writeLoadReport(cfg.reportJSON, cfg, reader.baseURL, elapsed, metrics); err != nil {
+			fmt.Fprintf(os.Stderr, "write report: %v\n", err)
+			os.Exit(2)
+		}
+	}
 	if metrics.hasErrors() {
 		os.Exit(2)
 	}
@@ -69,8 +77,8 @@ func main() {
 
 func parseConfig() config {
 	cfg := config{}
-	flag.StringVar(&cfg.baseURL, "base", "http://localhost:8080", "GraphDB base URL")
-	flag.StringVar(&cfg.readerURL, "reader-base", "", "optional GraphDB reader base URL for query load")
+	flag.StringVar(&cfg.baseURL, "base", "http://localhost:8080", "GGraphDB base URL")
+	flag.StringVar(&cfg.readerURL, "reader-base", "", "optional GGraphDB reader base URL for query load")
 	flag.StringVar(&cfg.tenant, "tenant", "loadtest", "tenant id")
 	flag.IntVar(&cfg.writers, "writers", 4, "concurrent ingestion writers")
 	flag.IntVar(&cfg.readers, "readers", 8, "concurrent query readers")
@@ -80,6 +88,7 @@ func parseConfig() config {
 	flag.DurationVar(&cfg.httpTimeout, "http-timeout", 2*time.Minute, "per-request HTTP timeout")
 	flag.DurationVar(&cfg.maintenanceTimeout, "maintenance-timeout", 10*time.Minute, "timeout for post-load maintenance calls")
 	flag.BoolVar(&cfg.allowWriteBackpressure, "allow-write-backpressure", false, "treat write 429 backpressure as expected load shedding")
+	flag.StringVar(&cfg.reportJSON, "report-json", "", "optional path for a machine-readable JSON report")
 	flag.Parse()
 	if cfg.writers < 1 {
 		cfg.writers = 1

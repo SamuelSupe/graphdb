@@ -107,6 +107,8 @@ func apiTraceRouteForRequest(r *http.Request) apiTraceRoute {
 	switch {
 	case path == "/v1/health":
 		return apiTraceRoute{"health", "GET /v1/health"}
+	case path == "/v1/readiness":
+		return apiTraceRoute{"readiness", "GET /v1/readiness"}
 	case path == "/v1/tenant-usage":
 		return apiTraceRoute{"tenant_usage", "GET /v1/tenant-usage"}
 	case path == "/v1/tenants":
@@ -142,8 +144,19 @@ func apiTraceRouteForRequest(r *http.Request) apiTraceRoute {
 		return apiTraceRoute{"snapshot.export_stream", "GET /v1/export/snapshot/stream"}
 	case path == "/v1/ci-types":
 		return apiTraceRoute{"ci_type.list", "GET /v1/ci-types"}
+	case path == "/v1/entity-types":
+		return apiTraceRoute{"entity_type.list", "GET /v1/entity-types"}
 	case path == "/v1/relation-types":
 		return apiTraceRoute{"relation_type.list", "GET /v1/relation-types"}
+	case path == "/v1/relation-schemas":
+		return apiTraceRoute{"relation_schema.list", "GET /v1/relation-schemas"}
+	case strings.HasPrefix(path, "/v1/relation-schemas/"):
+		if method == http.MethodPut {
+			return apiTraceRoute{"relation_schema.update", "PUT /v1/relation-schemas/{relation_type}"}
+		}
+		if method == http.MethodDelete {
+			return apiTraceRoute{"relation_schema.delete", "DELETE /v1/relation-schemas/{relation_type}"}
+		}
 	case path == "/v1/source-policy":
 		if method == http.MethodGet {
 			return apiTraceRoute{"source_policy.get", "GET /v1/source-policy"}
@@ -160,12 +173,16 @@ func apiTraceRouteForRequest(r *http.Request) apiTraceRoute {
 		}
 	case path == "/v1/query":
 		return apiTraceRoute{"query.execute", "POST /v1/query"}
+	case path == "/v1/imports":
+		return apiTraceRoute{"import.start", "POST /v1/imports"}
 	case path == "/v1/query/stream":
 		return apiTraceRoute{"query.stream", "POST /v1/query/stream"}
 	case path == "/v1/query/gql":
 		return apiTraceRoute{"query.gql", "POST /v1/query/gql"}
 	case path == "/v1/query/gql/stream":
 		return apiTraceRoute{"query.gql_stream", "POST /v1/query/gql/stream"}
+	case path == "/v1/query/graphql":
+		return apiTraceRoute{"query.graphql", "POST /v1/query/graphql"}
 	case path == "/v1/queries/running":
 		return apiTraceRoute{"running_query.list", "GET /v1/queries/running"}
 	case strings.HasPrefix(path, "/v1/queries/running/"):

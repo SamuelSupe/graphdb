@@ -68,35 +68,35 @@ func materializeFields(request Request) []string {
 	}
 	seen := map[string]struct{}{}
 	for _, field := range request.Project {
-		seen[field] = struct{}{}
+		addMaterializeField(seen, field)
 	}
 	for _, filter := range requestFilters(request) {
-		seen[filter.Field] = struct{}{}
+		addMaterializeField(seen, filter.Field)
 	}
 	addFilterExprFields(seen, request.WhereExpr)
 	for _, filter := range request.Path.EndWhere {
-		seen[filter.Field] = struct{}{}
+		addMaterializeField(seen, filter.Field)
 	}
 	addFilterExprFields(seen, request.Path.EndWhereExpr)
 	for _, step := range request.Path.Steps {
 		for _, filter := range step.Where {
-			seen[filter.Field] = struct{}{}
+			addMaterializeField(seen, filter.Field)
 		}
 		addFilterExprFields(seen, step.WhereExpr)
 	}
 	for _, sortSpec := range request.Sort {
-		seen[sortSpec.Field] = struct{}{}
+		addMaterializeField(seen, sortSpec.Field)
 	}
 	for _, aggregation := range request.Aggregate {
 		if aggregation.Field != "" {
-			seen[aggregation.Field] = struct{}{}
+			addMaterializeField(seen, aggregation.Field)
 		}
 	}
 	for _, field := range request.GroupBy {
-		seen[field] = struct{}{}
+		addMaterializeField(seen, field)
 	}
 	for _, filter := range request.Having {
-		seen[filter.Field] = struct{}{}
+		addMaterializeField(seen, filter.Field)
 	}
 	addFilterExprFields(seen, request.HavingExpr)
 	fields := make([]string, 0, len(seen))
@@ -114,16 +114,25 @@ func addFilterExprFields(seen map[string]struct{}, expr *FilterExpr) {
 		return
 	}
 	if expr.Field != "" {
-		seen[expr.Field] = struct{}{}
+		addMaterializeField(seen, expr.Field)
 	}
 	for i := range expr.Children {
 		addFilterExprFields(seen, &expr.Children[i])
 	}
 }
 
+func addMaterializeField(seen map[string]struct{}, field string) {
+	if field == "labels" {
+		seen[graph.ReservedLabelsField] = struct{}{}
+		seen["labels"] = struct{}{}
+		return
+	}
+	seen[field] = struct{}{}
+}
+
 func pathResultQuery(request Request) bool {
 	switch request.Op {
-	case "traverse", "impact", "shortest_path":
+	case "pattern", "traverse", "impact", "shortest_path":
 		return true
 	default:
 		return false

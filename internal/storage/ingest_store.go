@@ -321,6 +321,23 @@ func (s *TenantStore) GetCollectorStatus(ctx context.Context, tenantID string, s
 	if source == "" || collectorID == "" {
 		return CollectorStatus{}, fmt.Errorf("source and collector_id are required")
 	}
+	if s.coordinated() {
+		state, exists, err := s.Coordinator.CollectorState(ctx, tenantID, source, collectorID)
+		if err != nil {
+			return CollectorStatus{}, err
+		}
+		if !exists {
+			return CollectorStatus{}, ErrNotFound
+		}
+		return CollectorStatus{
+			TenantID:    tenantID,
+			Source:      state.Source,
+			CollectorID: state.CollectorID,
+			LastBatchID: state.BatchID,
+			LastCursor:  state.Cursor,
+			LastVersion: state.Version,
+		}, nil
+	}
 	key := s.collectorStatusKey(tenantID, source, collectorID)
 	if status, _, ok := s.getCachedCollectorStatus(key); ok {
 		return status, nil

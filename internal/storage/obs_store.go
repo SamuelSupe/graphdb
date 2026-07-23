@@ -14,8 +14,61 @@ import (
 )
 
 type huaweiOBSClient struct {
-	client *obs.ObsClient
-	bucket string
+	client    *obs.ObsClient
+	endpoint  string
+	bucket    string
+	region    string
+	accessKey string
+	secretKey string
+	pathStyle bool
+
+	probeHTTPClient *http.Client
+}
+
+func (c *huaweiOBSClient) Probe(ctx context.Context) error {
+	if err := objectContextErr(ctx); err != nil {
+		return err
+	}
+	client, err := c.newProbeClient(ctx)
+	if err != nil {
+		return fmt.Errorf("create huawei obs probe client: %w", err)
+	}
+	defer client.Close()
+	_, err = client.ListObjects(&obs.ListObjectsInput{
+		ListObjsInput: obs.ListObjsInput{MaxKeys: 1},
+		Bucket:        c.bucket,
+	})
+	if err != nil {
+		return normalizeHuaweiOBSError(err, false)
+	}
+	return objectContextErr(ctx)
+}
+
+func (c *huaweiOBSClient) newProbeClient(ctx context.Context) (*obs.ObsClient, error) {
+	if c.probeHTTPClient != nil {
+		return obs.New(
+			c.accessKey,
+			c.secretKey,
+			c.endpoint,
+			obs.WithPathStyle(c.pathStyle),
+			obs.WithRegion(c.region),
+			obs.WithRequestContext(ctx),
+			obs.WithMaxRetryCount(0),
+			obs.WithHttpClient(c.probeHTTPClient),
+		)
+	}
+	return obs.New(
+		c.accessKey,
+		c.secretKey,
+		c.endpoint,
+		obs.WithPathStyle(c.pathStyle),
+		obs.WithRegion(c.region),
+		obs.WithRequestContext(ctx),
+		obs.WithConnectTimeout(5),
+		obs.WithSocketTimeout(5),
+		obs.WithHeaderTimeout(5),
+		obs.WithMaxRetryCount(0),
+	)
 }
 
 func NewHuaweiOBSStore(endpoint, bucket, region, accessKey, secretKey string, options S3Options) (*NativeObjectStore, error) {
@@ -23,11 +76,25 @@ func NewHuaweiOBSStore(endpoint, bucket, region, accessKey, secretKey string, op
 	if err != nil {
 		return nil, err
 	}
-	client, err := obs.New(config.accessKey, config.secretKey, config.endpoint, obs.WithPathStyle(config.pathStyle), obs.WithRegion(config.region))
+	client, err := obs.New(
+		config.accessKey,
+		config.secretKey,
+		config.endpoint,
+		obs.WithPathStyle(config.pathStyle),
+		obs.WithRegion(config.region),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create huawei obs client: %w", err)
 	}
-	return newNativeObjectStore(&huaweiOBSClient{client: client, bucket: config.bucket}), nil
+	return newNativeObjectStore(&huaweiOBSClient{
+		client:    client,
+		endpoint:  config.endpoint,
+		bucket:    config.bucket,
+		region:    config.region,
+		accessKey: config.accessKey,
+		secretKey: config.secretKey,
+		pathStyle: config.pathStyle,
+	}), nil
 }
 
 func (c *huaweiOBSClient) Get(ctx context.Context, key string) ([]byte, ObjectMeta, error) {

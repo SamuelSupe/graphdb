@@ -169,7 +169,6 @@ func (t *mutationFingerprintTracker) finish(report *ApplyReport) error {
 		return t.err
 	}
 	t.graph.contentFingerprintMu.Lock()
-	defer t.graph.contentFingerprintMu.Unlock()
 	changed := false
 	apply := func(before trackedFingerprint, after trackedFingerprint) {
 		if before == after {
@@ -208,10 +207,15 @@ func (t *mutationFingerprintTracker) finish(report *ApplyReport) error {
 		}
 	}
 	if t.err != nil {
+		t.graph.contentFingerprintMu.Unlock()
 		return t.err
 	}
 	report.Changed = changed
 	report.ContentFingerprint = hex.EncodeToString(t.graph.contentFingerprint[:])
+	t.graph.contentFingerprintMu.Unlock()
+	if changed {
+		return t.graph.refreshLogicalHashCache(t)
+	}
 	return nil
 }
 

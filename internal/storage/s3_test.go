@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,49 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+func TestS3BatchDelete(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/bucket" {
+			http.Error(w, fmt.Sprintf("unexpected %s %s", r.Method, r.URL.Path), http.StatusBadRequest)
+			return
+		}
+		if _, ok := r.URL.Query()["delete"]; !ok {
+			http.Error(w, "missing delete query", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Content-MD5") == "" || r.Header.Get("Content-Type") != "application/xml" {
+			http.Error(w, "missing batch delete headers", http.StatusBadRequest)
+			return
+		}
+		var request deleteObjectsRequest
+		if err := xml.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(request.Objects) == 0 || len(request.Objects) > s3DeleteBatchLimit {
+			http.Error(w, "invalid batch size", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte("<DeleteResult/>"))
+	}))
+	defer server.Close()
+
+	store := newTestS3Store(t, server)
+	keys := make([]string, s3DeleteBatchLimit+1)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("objects/%04d", i)
+	}
+	if err := store.DeleteBatch(context.Background(), keys); err != nil {
+		t.Fatalf("batch delete: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("batch delete calls = %d, want 2", calls.Load())
+	}
+}
 
 func TestS3StoreDefaultsToVirtualHostedStyle(t *testing.T) {
 	store, err := NewS3Store("https://tos.example.com/proxy", "bucket", "us-east-1", "access", "secret")

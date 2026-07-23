@@ -213,10 +213,12 @@ func (s *TenantStore) restoreDrillBackupInput(ctx context.Context, task Task) (t
 }
 
 func (s *TenantStore) createRestoreDrillBackup(ctx context.Context, tenantID string, backupID string) (tenantBackupInput, string, BackupManifestStats, error) {
-	g, manifest, err := s.Load(ctx, tenantID)
+	loaded, err := s.loadWithMeta(ctx, tenantID)
 	if err != nil {
 		return tenantBackupInput{}, "", BackupManifestStats{}, err
 	}
+	g := loaded.Graph
+	manifest := loaded.Manifest
 	metadata, configured, _, err := s.getTenantMetadataWithMeta(ctx, tenantID)
 	if err != nil {
 		return tenantBackupInput{}, "", BackupManifestStats{}, err
@@ -239,7 +241,9 @@ func (s *TenantStore) createRestoreDrillBackup(ctx context.Context, tenantID str
 	if err := s.putTaskResult(ctx, tenantID, backupID, taskResult(record)); err != nil {
 		return tenantBackupInput{}, "", BackupManifestStats{}, err
 	}
-	backupManifest, err := s.buildBackupManifest(ctx, tenantID, backupID, record, resultKey, manifest)
+	backupManifest, err := s.buildBackupManifest(
+		ctx, tenantID, backupID, record, resultKey, manifest, loaded.Meta.Key,
+	)
 	if err != nil {
 		return tenantBackupInput{}, "", BackupManifestStats{}, err
 	}

@@ -2,16 +2,17 @@
 
 [English](sdk.md)
 
-GraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务端
+GGraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务端
 `internal` 包，可以安全地 vendoring 到采集器、内部服务和运维工具。
 
 SDK 覆盖：
 
 - 租户生命周期基础操作；
-- 直接 commit 和批量 ingest；
+- 直接 commit、批量 ingest 和 CSV/JSONL 导入；
+- 实体类型别名和关系属性 schema；
 - source policy 和 tenant config；
 - 实体查询、实体/边列表和导出流；
-- JSON Query DSL 和 GQL；
+- GraphQL 和 JSON Query DSL；
 - saved query 和运行中查询控制；
 - task、索引健康/重建、reader freshness、writer lease、审计/修复；
 - 带错误码和重试提示的结构化 API 错误。
@@ -28,8 +29,9 @@ import graphdb "gitlab.jiagouyun.com/guance/graphdb/sdk/go/graphdb"
 
 ```go
 client, err := graphdb.NewClient(
-    "http://127.0.0.1:38080",
+    "https://graphdb.example.com",
     graphdb.WithTenant("demo"),
+    graphdb.WithBearerToken(token),
 )
 if err != nil {
     return err
@@ -47,7 +49,7 @@ reader, _ := graphdb.NewClient("http://127.0.0.1:38081", graphdb.WithTenant("dem
 
 ```go
 result, err := writer.Commit(ctx, graphdb.Mutations{
-    UpsertCITypes: []graphdb.CIType{{
+    UpsertEntityTypes: []graphdb.EntityType{{
         Name: "host",
         Fields: map[string]graphdb.FieldSpec{
             "tags": {Type: "array", MergeStrategy: "append_unique"},
@@ -57,7 +59,7 @@ result, err := writer.Commit(ctx, graphdb.Mutations{
         Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true,
     }},
     UpsertEntities: []graphdb.Entity{
-        {ID: "host:1", Kind: "host", Source: "agent", Fields: graphdb.Fields{"hostname": "app-01", "tags": []any{"agent"}}},
+        {ID: "host:1", Kind: "host", Labels: []string{"asset"}, Source: "agent", Fields: graphdb.Fields{"hostname": "app-01", "tags": []any{"agent"}}},
         {ID: "service:api", Kind: "service", Source: "manual", Fields: graphdb.Fields{"name": "api"}},
     },
     UpsertEdges: []graphdb.Edge{{
@@ -98,6 +100,30 @@ result, err := writer.Ingest(ctx, graphdb.IngestRequest{
 })
 ```
 
+### Go：1.1 Schema 与文件导入
+
+```go
+catalog, err := writer.PutRelationSchema(ctx, graphdb.RelationSchema{
+    RelationType: "cites",
+    Strict: true,
+    Fields: map[string]graphdb.FieldSpec{
+        "confidence": {Type: "number", Required: true},
+    },
+})
+if err != nil {
+    return err
+}
+fmt.Println(catalog.Revision)
+
+task, err := writer.StartImport(ctx, strings.NewReader(jsonl), graphdb.ImportOptions{
+    Format: "jsonl", Source: "knowledge-base", CollectorID: "files",
+    BatchSize: 500, OnError: "continue",
+})
+```
+
+使用 `ListEntityTypes`、`ListRelationSchemas` 和普通 task 方法查看类型元数据、
+schema 和导入进度。
+
 ### Go：查询
 
 ```go
@@ -110,13 +136,22 @@ response, err := reader.Query(ctx, graphdb.QueryRequest{
 })
 ```
 
-GQL：
+GraphQL：
 
 ```go
-response, err := reader.GQL(ctx, `FIND host WHERE hostname PREFIX "app-" LIMIT 100`)
+response, err := reader.GraphQL(ctx, graphdb.GraphQLRequest{
+    Query: `query Find($request: QueryRequest!) {
+        graph(request: $request) { version results stats }
+    }`,
+    OperationName: "Find",
+    Variables: map[string]any{
+        "request": map[string]any{"op": "match", "kind": "host", "limit": 100},
+    },
+})
 ```
 
-流式：
+已弃用的 `GQL` 和 `GQLStream` 方法保留 1.0 `FIND`/`MATCH` 文本 DSL，
+它们不是 GraphQL。旧 NDJSON 示例：
 
 ```go
 stream, err := reader.GQLStream(ctx, `FIND host LIMIT 1000`)
@@ -162,8 +197,8 @@ python3 -m pip install -e sdk/python
 ```python
 from graphdb_sdk import GraphDBClient
 
-writer = GraphDBClient("http://127.0.0.1:38080", tenant_id="demo")
-reader = GraphDBClient("http://127.0.0.1:38081", tenant_id="demo")
+writer = GraphDBClient("https://graphdb.example.com", tenant_id="demo", bearer_token=token)
+reader = GraphDBClient("https://graphdb.example.com", tenant_id="demo", bearer_token=token)
 ```
 
 ### Python：直接 Commit
@@ -171,10 +206,12 @@ reader = GraphDBClient("http://127.0.0.1:38081", tenant_id="demo")
 ```python
 result = writer.commit(
     {
+        "upsert_entity_types": [{"name": "host"}],
         "upsert_entities": [
             {
                 "id": "host:1",
                 "kind": "host",
+                "labels": ["asset"],
                 "source": "agent",
                 "fields": {"hostname": "app-01"},
             }
@@ -207,6 +244,27 @@ result = writer.ingest({
 })
 ```
 
+### Python：1.1 Schema 与文件导入
+
+```python
+catalog = writer.put_relation_schema("cites", {
+    "strict": True,
+    "fields": {"confidence": {"type": "number", "required": True}},
+})
+
+task = writer.start_import(
+    jsonl_data,
+    "jsonl",
+    source="knowledge-base",
+    collector_id="files",
+    batch_size=500,
+    on_error="continue",
+)
+```
+
+使用 `list_entity_types()`、`list_relation_schemas()` 和
+`get_task(task["id"])` 查看元数据和导入进度。
+
 ### Python：查询
 
 ```python
@@ -220,13 +278,17 @@ response = reader.query({
 })
 ```
 
-GQL：
+GraphQL：
 
 ```python
-response = reader.gql('FIND host WHERE hostname PREFIX "app-" LIMIT 100')
+response = reader.graphql(
+    "query Find($request: QueryRequest!) { graph(request: $request) { version results stats } }",
+    {"request": {"op": "match", "kind": "host", "limit": 100}},
+    "Find",
+)
 ```
 
-流式：
+已弃用的 `gql` 和 `stream_gql` 方法保留 1.0 文本 DSL。旧 NDJSON 示例：
 
 ```python
 with reader.stream_gql("FIND host LIMIT 1000") as stream:

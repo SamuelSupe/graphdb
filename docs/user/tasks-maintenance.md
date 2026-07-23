@@ -54,6 +54,12 @@ Supported task types:
 - `tenant_backup`
 - `tenant_restore`
 - `tenant_restore_drill`
+- `bulk_import`
+
+Create `bulk_import` tasks through `POST /v1/imports`; the upload endpoint stages
+the tenant-scoped source and constructs the task parameters safely. The task
+checkpoint records source position, batch number, counts, and sampled issues so
+retry can resume without changing stable batch identities.
 
 ## Compact
 

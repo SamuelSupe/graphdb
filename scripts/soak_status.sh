@@ -69,7 +69,7 @@ if [[ -f "$EVENTS" ]]; then
     }
   ' "$EVENTS"
   echo "partial_report:"
-  GOCACHE="${GOCACHE:-$ROOT/.gocache}" go run ./tools/soakreport \
+  GOCACHE="${GOCACHE:-$ROOT/.gocache}" go run -mod=readonly ./tools/soakreport \
     -in "$EVENTS" \
     -warmup "${SOAK_STATUS_WARMUP:-45m}" \
     -require-compact=false \

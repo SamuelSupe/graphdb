@@ -38,31 +38,40 @@ func normalizeCIType(ciType CIType) (CIType, error) {
 }
 
 func normalizeFieldSpecs(ciTypeName string, specs map[string]FieldSpec) (map[string]FieldSpec, error) {
+	return normalizeNamedFieldSpecs("ci type", ciTypeName, specs)
+}
+
+// NormalizePropertyFieldSpecs validates and copies reusable property schema fields.
+func NormalizePropertyFieldSpecs(schemaName string, specs map[string]FieldSpec) (map[string]FieldSpec, error) {
+	return normalizeNamedFieldSpecs("property schema", schemaName, specs)
+}
+
+func normalizeNamedFieldSpecs(resourceKind string, resourceName string, specs map[string]FieldSpec) (map[string]FieldSpec, error) {
 	fields := make(map[string]FieldSpec, len(specs))
 	for name, spec := range specs {
 		fieldName := strings.TrimSpace(name)
 		if fieldName == "" {
-			return nil, fmt.Errorf("ci type %q has empty field name", ciTypeName)
+			return nil, fmt.Errorf("%s %q has empty field name", resourceKind, resourceName)
 		}
 		if spec.Type == "" {
 			spec.Type = "any"
 		}
 		if !validFieldType(spec.Type) {
-			return nil, fmt.Errorf("ci type %q field %q has unsupported type %q", ciTypeName, fieldName, spec.Type)
+			return nil, fmt.Errorf("%s %q field %q has unsupported type %q", resourceKind, resourceName, fieldName, spec.Type)
 		}
 		spec.MergeStrategy = strings.TrimSpace(spec.MergeStrategy)
 		if spec.MergeStrategy != "" && spec.MergeStrategy != FieldMergeReplace && spec.MergeStrategy != FieldMergeAppendUnique {
-			return nil, fmt.Errorf("ci type %q field %q has unsupported merge_strategy %q", ciTypeName, fieldName, spec.MergeStrategy)
+			return nil, fmt.Errorf("%s %q field %q has unsupported merge_strategy %q", resourceKind, resourceName, fieldName, spec.MergeStrategy)
 		}
 		if spec.MergeStrategy == FieldMergeAppendUnique && spec.Type != "array" {
-			return nil, fmt.Errorf("ci type %q field %q append_unique merge_strategy requires array type", ciTypeName, fieldName)
+			return nil, fmt.Errorf("%s %q field %q append_unique merge_strategy requires array type", resourceKind, resourceName, fieldName)
 		}
 		if spec.Default != nil && !valueMatchesType(spec.Default, spec.Type) {
-			return nil, fmt.Errorf("ci type %q field %q default does not match type %q", ciTypeName, fieldName, spec.Type)
+			return nil, fmt.Errorf("%s %q field %q default does not match type %q", resourceKind, resourceName, fieldName, spec.Type)
 		}
 		for _, value := range spec.Enum {
 			if !valueMatchesType(value, spec.Type) {
-				return nil, fmt.Errorf("ci type %q field %q enum value does not match type %q", ciTypeName, fieldName, spec.Type)
+				return nil, fmt.Errorf("%s %q field %q enum value does not match type %q", resourceKind, resourceName, fieldName, spec.Type)
 			}
 		}
 		spec.Default = copyAny(spec.Default)

@@ -18,6 +18,14 @@ type tencentCOSClient struct {
 	client *cos.Client
 }
 
+func (c *tencentCOSClient) Probe(ctx context.Context) error {
+	_, response, err := c.client.Bucket.Get(ctx, &cos.BucketGetOptions{MaxKeys: 1})
+	if response != nil {
+		closeCOSResponse(response)
+	}
+	return normalizeTencentCOSError(err, false)
+}
+
 func NewTencentCOSStore(endpoint, bucket, region, accessKey, secretKey string, options S3Options) (*NativeObjectStore, error) {
 	config, err := newNativeStoreOptions(endpoint, bucket, region, accessKey, secretKey, options)
 	if err != nil {

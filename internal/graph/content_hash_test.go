@@ -58,6 +58,47 @@ func TestContentMD5MatchesSnapshotBasedEncodingForRichMetadata(t *testing.T) {
 	assertContentMD5MatchesSnapshotBasedEncoding(t, g)
 }
 
+func TestContentMD5CacheTracksStorageMutations(t *testing.T) {
+	g := New()
+	if err := g.ApplyCommit(Commit{
+		ID: "seed", Version: 1,
+		Mutations: Mutations{UpsertEntities: []Entity{
+			{ID: "host:b", Kind: "host"},
+			{ID: "host:d", Kind: "host"},
+		}},
+	}); err != nil {
+		t.Fatalf("seed graph: %v", err)
+	}
+	if _, err := g.ContentMD5(); err != nil {
+		t.Fatalf("prime content cache: %v", err)
+	}
+	next, _, err := g.ApplyCommitStorageCopyWithOptions(Commit{
+		ID: "copy", Version: 2,
+		Mutations: Mutations{
+			DeleteEntities: []string{"host:b"},
+			UpsertEntities: []Entity{
+				{ID: "host:a", Kind: "host"},
+				{ID: "host:d", Kind: "host", Fields: Fields{"state": "ready"}},
+			},
+		},
+	}, ApplyOptions{})
+	if err != nil {
+		t.Fatalf("apply storage copy: %v", err)
+	}
+	assertContentMD5MatchesSnapshotBasedEncoding(t, next)
+	if err := next.ApplyCommitInPlaceForStorage(Commit{
+		ID: "replay", Version: 3,
+		Mutations: Mutations{
+			DeleteEntities: []string{"host:d"},
+			UpsertEntities: []Entity{{ID: "host:c", Kind: "host"}},
+		},
+	}); err != nil {
+		t.Fatalf("apply in-place replay: %v", err)
+	}
+	assertContentMD5MatchesSnapshotBasedEncoding(t, next)
+	assertContentMD5MatchesSnapshotBasedEncoding(t, g)
+}
+
 func assertContentMD5MatchesSnapshotBasedEncoding(t *testing.T, g *Graph) {
 	t.Helper()
 	got, logicalBytes, err := g.ContentMD5WithLogicalSize()

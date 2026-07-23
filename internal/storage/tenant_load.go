@@ -29,14 +29,20 @@ func (s *TenantStore) LoadAtLeast(ctx context.Context, tenantID string, minVersi
 func (s *TenantStore) loadAtLeast(ctx context.Context, tenantID string, minVersion int64) (*graph.Graph, Manifest, error) {
 	if cached, ok := s.getWriteCache(tenantID); ok {
 		if cached.Manifest.Version >= minVersion {
-			if minVersion > 0 {
+			if minVersion > 0 && !s.coordinated() {
 				return cloneLoadedGraph(cached)
 			}
-			manifest, _, err := s.getManifest(ctx, tenantID)
+			manifest, meta, err := s.getManifest(ctx, tenantID)
 			if err != nil {
+				if s.coordinated() && errors.Is(err, ErrCoordinatorUnavailable) {
+					return cloneLoadedGraph(cached)
+				}
 				return nil, Manifest{}, err
 			}
-			if cached.Manifest.Version >= manifest.Version {
+			if s.coordinated() && cachedManifestMatches(cached, manifest, meta) {
+				return cloneLoadedGraph(cached)
+			}
+			if !s.coordinated() && cached.Manifest.Version >= manifest.Version {
 				return cloneLoadedGraph(cached)
 			}
 		}

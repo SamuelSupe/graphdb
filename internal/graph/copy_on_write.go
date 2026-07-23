@@ -13,6 +13,7 @@ type copyOnWriteState struct {
 
 func (g *Graph) cloneForStorageMutation() *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
+	logicalHashCache := g.cloneLogicalHashCache()
 	return &Graph{
 		Version:                 g.Version,
 		CITypes:                 shallowCopyMap(g.CITypes),
@@ -25,6 +26,7 @@ func (g *Graph) cloneForStorageMutation() *Graph {
 		identityIndex:           shallowCopyMap(g.identityIndex),
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
+		logicalHashCache:        logicalHashCache,
 		cow: &copyOnWriteState{
 			outNodes:      map[string]struct{}{},
 			inNodes:       map[string]struct{}{},

@@ -118,6 +118,9 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
 		return IngestResult{}, err
 	}
+	if s.coordinated() {
+		return s.ingestCoordinated(ctx, tenantID, request, saveFailures)
+	}
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return IngestResult{}, err

@@ -1,4 +1,4 @@
-# GraphDB Python SDK
+# GGraphDB Python SDK
 
 Install locally:
 

@@ -9,12 +9,13 @@ This is a user-facing endpoint map. The detailed schema contract is
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/health` | Process health and mode. |
+| `GET` | `/v1/health` | Process liveness, mode, and coordinator status; remains HTTP 200 when degraded. |
+| `GET` | `/v1/readiness` | Traffic readiness; returns HTTP 503 when the object store or PostgreSQL coordinator is unavailable. |
 | `GET` | `/metrics` | Prometheus metrics. |
 | `GET` | `/openapi.yaml` | OpenAPI contract. |
-| `GET` | `/debug/pprof/` | Go runtime profiling index; serves heap, goroutine, block, mutex, and other profiles. |
-| `GET` | `/debug/pprof/profile?seconds=30` | CPU profile for the requested duration. |
-| `GET` | `/debug/pprof/trace?seconds=1` | Go execution trace for the requested duration. |
+| `GET` | `/debug/pprof/` | Optional admin-listener-only profiling index; disabled by default. |
+| `GET` | `/debug/pprof/profile?seconds=30` | Optional admin-listener-only CPU profile. |
+| `GET` | `/debug/pprof/trace?seconds=1` | Optional admin-listener-only execution trace. |
 
 ## Tenant Lifecycle
 
@@ -39,11 +40,14 @@ This is a user-facing endpoint map. The detailed schema contract is
 | --- | --- | --- |
 | `POST` | `/v1/commits` | Atomic graph mutation commit. |
 | `POST` | `/v1/ingest/batches` | Collector ingestion batch. |
+| `POST` | `/v1/imports` | Queue a resumable CSV or JSONL bulk import. |
 | `GET` | `/v1/ingest/collectors/{source}/{collector_id}` | Collector status. |
 | `GET` | `/v1/ingest/deadletters/{source}` | List dead letters. |
 | `POST` | `/v1/ingest/deadletters/{source}/replay` | Replay dead letters. |
 | `GET` | `/v1/source-policy` | Get tenant source policy. |
 | `PUT` | `/v1/source-policy` | Update tenant source policy. |
+| `PUT` | `/v1/relation-schemas/{relation_type}` | Create or replace a relation property schema. |
+| `DELETE` | `/v1/relation-schemas/{relation_type}` | Delete a relation property schema. |
 | `GET` | `/v1/tenant-config` | Get tenant config. |
 | `PUT` | `/v1/tenant-config` | Update tenant config. |
 | `GET` | `/v1/tenant-usage` | Tenant object and byte usage. |
@@ -53,12 +57,15 @@ This is a user-facing endpoint map. The detailed schema contract is
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/entities/{id}` | Get entity by id. |
-| `GET` | `/v1/ci-types` | List CI types. |
+| `GET` | `/v1/entity-types` | List domain-neutral entity types. |
+| `GET` | `/v1/ci-types` | List entity types through the 1.0 compatibility route. |
 | `GET` | `/v1/relation-types` | List relation types. |
+| `GET` | `/v1/relation-schemas` | List relation property schemas. |
 | `POST` | `/v1/query` | JSON Query DSL. |
 | `POST` | `/v1/query/stream` | JSON Query DSL NDJSON stream. |
-| `POST` | `/v1/query/gql` | GQL text query. |
-| `POST` | `/v1/query/gql/stream` | GQL NDJSON stream. |
+| `POST` | `/v1/query/graphql` | Execute a GraphQL document with variables. |
+| `POST` | `/v1/query/gql` | Deprecated 1.0 `FIND`/`MATCH` text DSL. |
+| `POST` | `/v1/query/gql/stream` | Deprecated text DSL NDJSON stream. |
 | `GET` | `/v1/queries/running` | List in-process running queries. |
 | `DELETE` | `/v1/queries/running/{query_id}` | Cancel running query. |
 | `GET` | `/v1/query/templates` | List saved queries. |

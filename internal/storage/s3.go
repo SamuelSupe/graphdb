@@ -3,6 +3,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -34,6 +36,7 @@ const (
 	defaultS3RequestTimeout = 2 * time.Minute
 	defaultS3MaxAttempts    = 3
 	defaultS3MaxConns       = 64
+	s3DeleteBatchLimit      = 1000
 )
 
 func NewS3Store(endpoint, bucket, region, accessKey, secretKey string) (*S3Store, error) {
@@ -221,6 +224,64 @@ func (s *S3Store) DeleteConditional(ctx context.Context, key string, condition P
 	return nil
 }
 
+func (s *S3Store) DeleteBatch(ctx context.Context, keys []string) error {
+	for _, key := range keys {
+		if err := validateObjectKey(key); err != nil {
+			return err
+		}
+	}
+	for start := 0; start < len(keys); start += s3DeleteBatchLimit {
+		end := min(start+s3DeleteBatchLimit, len(keys))
+		if err := s.deleteBatch(ctx, keys[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *S3Store) deleteBatch(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	request := deleteObjectsRequest{
+		XMLNS: "http://s3.amazonaws.com/doc/2006-03-01/",
+		Quiet: true,
+	}
+	request.Objects = make([]deleteObjectIdentifier, 0, len(keys))
+	for _, key := range keys {
+		request.Objects = append(request.Objects, deleteObjectIdentifier{Key: key})
+	}
+	body, err := xml.Marshal(request)
+	if err != nil {
+		return err
+	}
+	sum := md5.Sum(body)
+	headers := http.Header{}
+	headers.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
+	headers.Set("Content-Type", "application/xml")
+	query := url.Values{"delete": {""}}
+	resp, err := s.doWithHeaders(ctx, http.MethodPost, "", query, body, headers)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return readS3Error(resp)
+	}
+	var result deleteObjectsResult
+	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if len(result.Errors) > 0 {
+		item := result.Errors[0]
+		return fmt.Errorf(
+			"s3 batch delete failed for %d objects; first error key=%q code=%q message=%q",
+			len(result.Errors), item.Key, item.Code, item.Message,
+		)
+	}
+	return nil
+}
+
 func (s *S3Store) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	items := make([]ObjectInfo, 0)
 	var token string
@@ -306,6 +367,11 @@ func (s *S3Store) ListPage(ctx context.Context, prefix string, after string, lim
 	return items, items[len(items)-1].Key, nil
 }
 
+func (s *S3Store) Probe(ctx context.Context) error {
+	_, _, err := s.ListPage(ctx, "", "", 1)
+	return err
+}
+
 func (s *S3Store) do(ctx context.Context, method, key string, query url.Values, body []byte) (*http.Response, error) {
 	return s.doWithHeaders(ctx, method, key, query, body, nil)
 }
@@ -338,6 +404,7 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 			req.Header.Set("Content-Type", "application/octet-stream")
 		}
 		for key, values := range headers {
+			req.Header.Del(key)
 			for _, value := range values {
 				req.Header.Add(key, value)
 			}
@@ -435,4 +502,23 @@ type listBucketResult struct {
 		Size int64  `xml:"Size"`
 		ETag string `xml:"ETag"`
 	} `xml:"Contents"`
+}
+
+type deleteObjectsRequest struct {
+	XMLName xml.Name                 `xml:"Delete"`
+	XMLNS   string                   `xml:"xmlns,attr,omitempty"`
+	Objects []deleteObjectIdentifier `xml:"Object"`
+	Quiet   bool                     `xml:"Quiet"`
+}
+
+type deleteObjectIdentifier struct {
+	Key string `xml:"Key"`
+}
+
+type deleteObjectsResult struct {
+	Errors []struct {
+		Key     string `xml:"Key"`
+		Code    string `xml:"Code"`
+		Message string `xml:"Message"`
+	} `xml:"Error"`
 }

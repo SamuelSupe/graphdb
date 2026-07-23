@@ -451,7 +451,7 @@ func (s *Server) queryOptions(ctx context.Context, tenantID string, version int6
 	if err != nil || catalog.Version != version {
 		return query.ExecuteOptions{}
 	}
-	return s.queryOptionsForCatalog(tenantID, catalog)
+	return s.queryOptionsForCatalog(ctx, tenantID, catalog)
 }
 
 func (s *Server) lazyQueryOptions(ctx context.Context, tenantID string, maxVersion int64) (query.ExecuteOptions, int64, bool) {
@@ -463,13 +463,24 @@ func (s *Server) lazyQueryOptions(ctx context.Context, tenantID string, maxVersi
 	if err != nil || catalog.Version <= 0 || catalog.Version > maxVersion {
 		return query.ExecuteOptions{}, 0, false
 	}
-	return s.queryOptionsForCatalog(tenantID, catalog), catalog.Version, true
+	return s.queryOptionsForCatalog(ctx, tenantID, catalog), catalog.Version, true
 }
 
-func (s *Server) queryOptionsForCatalog(tenantID string, catalog storage.IndexCatalog) query.ExecuteOptions {
+func (s *Server) queryOptionsForCatalog(ctx context.Context, tenantID string, catalog storage.IndexCatalog) query.ExecuteOptions {
 	lookup := &storage.PersistedIndexLookup{Store: s.Store, TenantID: tenantID, Version: catalog.Version, Catalog: catalog}
+	stats := catalog.PlannerStats()
+	if reverse, err := s.Store.GetReverseIndexCatalog(ctx, tenantID, catalog.Version); err == nil {
+		lookup.ReverseCatalog = &reverse
+		for _, shard := range reverse.EdgeShards {
+			stats.ReverseEdgeShards = append(stats.ReverseEdgeShards, query.PlannerEdgeStat{
+				RelationType: shard.RelationType,
+				Shard:        shard.Shard,
+				EdgeCount:    shard.EdgeCount,
+			})
+		}
+	}
 	return query.ExecuteOptions{
-		PlannerStats: catalog.PlannerStats(),
+		PlannerStats: stats,
 		IndexLookup:  lookup,
 		EntityLookup: lookup,
 	}

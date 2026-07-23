@@ -1,4 +1,4 @@
-# GraphDB Go SDK
+# GGraphDB Go SDK
 
 Import path inside this repository:
 

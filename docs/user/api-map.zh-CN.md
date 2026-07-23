@@ -9,12 +9,13 @@
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| `GET` | `/v1/health` | 进程健康状态和运行模式。 |
+| `GET` | `/v1/health` | 进程存活、运行模式和 coordinator 状态；降级时仍返回 HTTP 200。 |
+| `GET` | `/v1/readiness` | 流量就绪状态；对象存储或 PostgreSQL coordinator 不可用时返回 HTTP 503。 |
 | `GET` | `/metrics` | Prometheus 指标。 |
 | `GET` | `/openapi.yaml` | OpenAPI 合同。 |
-| `GET` | `/debug/pprof/` | Go 运行时 profiling 入口。 |
-| `GET` | `/debug/pprof/profile?seconds=30` | 指定时长 CPU profile。 |
-| `GET` | `/debug/pprof/trace?seconds=1` | Go 执行 trace。 |
+| `GET` | `/debug/pprof/` | 可选的仅管理 listener profiling 入口，默认关闭。 |
+| `GET` | `/debug/pprof/profile?seconds=30` | 可选的仅管理 listener CPU profile。 |
+| `GET` | `/debug/pprof/trace?seconds=1` | 可选的仅管理 listener execution trace。 |
 
 ## 租户生命周期
 
@@ -39,11 +40,14 @@
 | --- | --- | --- |
 | `POST` | `/v1/commits` | 原子图变更提交。 |
 | `POST` | `/v1/ingest/batches` | 采集批次写入。 |
+| `POST` | `/v1/imports` | 提交可恢复的 CSV 或 JSONL 批量导入。 |
 | `GET` | `/v1/ingest/collectors/{source}/{collector_id}` | 采集器状态。 |
 | `GET` | `/v1/ingest/deadletters/{source}` | 列出死信。 |
 | `POST` | `/v1/ingest/deadletters/{source}/replay` | 重放死信。 |
 | `GET` | `/v1/source-policy` | 获取租户 source policy。 |
 | `PUT` | `/v1/source-policy` | 更新租户 source policy。 |
+| `PUT` | `/v1/relation-schemas/{relation_type}` | 创建或替换关系属性 schema。 |
+| `DELETE` | `/v1/relation-schemas/{relation_type}` | 删除关系属性 schema。 |
 | `GET` | `/v1/tenant-config` | 获取租户配置。 |
 | `PUT` | `/v1/tenant-config` | 更新租户配置。 |
 | `GET` | `/v1/tenant-usage` | 租户对象和字节用量。 |
@@ -53,12 +57,15 @@
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `GET` | `/v1/entities/{id}` | 按 ID 获取实体。 |
-| `GET` | `/v1/ci-types` | 列出 CI type。 |
+| `GET` | `/v1/entity-types` | 列出领域中立的实体类型。 |
+| `GET` | `/v1/ci-types` | 通过 1.0 兼容路由列出实体类型。 |
 | `GET` | `/v1/relation-types` | 列出关系类型。 |
+| `GET` | `/v1/relation-schemas` | 列出关系属性 schema。 |
 | `POST` | `/v1/query` | JSON Query DSL。 |
 | `POST` | `/v1/query/stream` | JSON Query DSL NDJSON 流。 |
-| `POST` | `/v1/query/gql` | GQL 文本查询。 |
-| `POST` | `/v1/query/gql/stream` | GQL NDJSON 流。 |
+| `POST` | `/v1/query/graphql` | 执行带变量的 GraphQL document。 |
+| `POST` | `/v1/query/gql` | 已弃用的 1.0 `FIND`/`MATCH` 文本 DSL。 |
+| `POST` | `/v1/query/gql/stream` | 已弃用文本 DSL 的 NDJSON 流。 |
 | `GET` | `/v1/queries/running` | 列出进程内运行中的查询。 |
 | `DELETE` | `/v1/queries/running/{query_id}` | 取消运行中的查询。 |
 | `GET` | `/v1/query/templates` | 列出保存的查询。 |

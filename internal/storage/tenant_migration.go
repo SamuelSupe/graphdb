@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -97,6 +98,18 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		report.FinishedAt = time.Now().UTC()
 		return report, nil
 	}
+	if target.coordinated() {
+		return copyTenantObjectsCoordinated(
+			ctx,
+			source,
+			sourceTenantID,
+			target,
+			targetTenantID,
+			options,
+			report,
+			sourceObjects,
+		)
+	}
 	targetCtx, err := target.acquireAndBindWriterFence(ctx, targetTenantID)
 	if err != nil {
 		return report, err
@@ -106,7 +119,9 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		return report, fmt.Errorf("%w: target tenant %q has no active writer fence", ErrLeaseHeld, targetTenantID)
 	}
 	targetFence := writerFenceRef{ownerID: lease.OwnerID, token: lease.FenceToken, epoch: lease.FenceEpoch}
-	rewrites, err := source.prepareTenantMigrationRewrites(ctx, sourceTenantID, targetTenantID, sourceObjects, targetPrefix, targetFence)
+	rewrites, _, err := source.prepareTenantMigrationRewrites(
+		ctx, sourceTenantID, targetTenantID, sourceObjects, targetPrefix, targetFence,
+	)
 	if err != nil {
 		return report, err
 	}
@@ -168,7 +183,14 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	return report, nil
 }
 
-func (s *TenantStore) prepareTenantMigrationRewrites(ctx context.Context, tenantID string, targetTenantID string, objects []ObjectInfo, targetPrefix string, targetFence writerFenceRef) (map[string][]byte, error) {
+func (s *TenantStore) prepareTenantMigrationRewrites(
+	ctx context.Context,
+	tenantID string,
+	targetTenantID string,
+	objects []ObjectInfo,
+	targetPrefix string,
+	targetFence writerFenceRef,
+) (map[string][]byte, map[string]string, error) {
 	sourcePrefix := s.tenantObjectPrefix(tenantID)
 	rewrites := map[string][]byte{}
 	segmentHashes := map[string]string{}
@@ -179,11 +201,11 @@ func (s *TenantStore) prepareTenantMigrationRewrites(ctx context.Context, tenant
 		}
 		data, err := s.Objects.Get(ctx, object.Key)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		rewritten, hash, err := rewriteCommitSegmentObject(ctx, data, tenantID, sourcePrefix, targetPrefix)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		rewrites[object.Key] = rewritten
 		segmentHashes[object.Key] = hash
@@ -194,17 +216,17 @@ func (s *TenantStore) prepareTenantMigrationRewrites(ctx context.Context, tenant
 		}
 		data, err := s.Objects.Get(ctx, object.Key)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		rewritten, changed, err := s.rewriteTenantMigrationObject(ctx, data, object.Key, tenantID, targetTenantID, sourcePrefix, targetPrefix, segmentHashes, targetFence)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if changed {
 			rewrites[object.Key] = rewritten
 		}
 	}
-	return rewrites, nil
+	return rewrites, segmentHashes, nil
 }
 
 func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []byte, key string, tenantID string, targetTenantID string, sourcePrefix string, targetPrefix string, segmentHashes map[string]string, targetFence writerFenceRef) ([]byte, bool, error) {
@@ -215,21 +237,14 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 		if err != nil {
 			return nil, false, err
 		}
-		manifest.TenantID = targetTenantID
-		manifest.WriterFence = targetFence.token
-		manifest.WriterFenceEpoch = targetFence.epoch
-		manifest.SnapshotKey = rewriteTenantObjectKey(manifest.SnapshotKey, sourcePrefix, targetPrefix)
-		manifest.SnapshotCatalogKey = rewriteTenantObjectKey(manifest.SnapshotCatalogKey, sourcePrefix, targetPrefix)
-		for i := range manifest.CommitKeys {
-			manifest.CommitKeys[i] = rewriteTenantObjectKey(manifest.CommitKeys[i], sourcePrefix, targetPrefix)
-		}
-		for i := range manifest.CommitSegments {
-			oldKey := manifest.CommitSegments[i].Key
-			manifest.CommitSegments[i].Key = rewriteTenantObjectKey(oldKey, sourcePrefix, targetPrefix)
-			if hash := segmentHashes[oldKey]; hash != "" {
-				manifest.CommitSegments[i].ContentHash = hash
-			}
-		}
+		rewriteTenantMigrationManifest(
+			&manifest,
+			targetTenantID,
+			sourcePrefix,
+			targetPrefix,
+			targetFence,
+			segmentHashes,
+		)
 		rewritten, err := marshalParquetManifest(ctx, manifest)
 		return rewritten, true, err
 	case strings.HasPrefix(relative, "snapshots/sharded/") && strings.HasSuffix(relative, "/catalog.parquet"):
@@ -271,6 +286,19 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 		}
 		rewritten, err := marshalParquetIndexCatalog(ctx, catalog)
 		return rewritten, true, err
+	case relative == "extensions/v1.1/reverse-index/catalog.json":
+		var catalog ReverseIndexCatalog
+		if err := json.Unmarshal(data, &catalog); err != nil {
+			return nil, false, err
+		}
+		catalog.TenantID = targetTenantID
+		for i := range catalog.EdgeShards {
+			for j := range catalog.EdgeShards[i].Objects {
+				catalog.EdgeShards[i].Objects[j].Key = rewriteTenantObjectKey(catalog.EdgeShards[i].Objects[j].Key, sourcePrefix, targetPrefix)
+			}
+		}
+		rewritten, err := json.Marshal(catalog)
+		return rewritten, true, err
 	case strings.HasPrefix(relative, "indexes/entities/by-id/"):
 		id, _, err := s.entityIDFromRecordKey(tenantID, key)
 		if err != nil {
@@ -303,6 +331,37 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 		return rewritten, true, err
 	default:
 		return nil, false, nil
+	}
+}
+
+func rewriteTenantMigrationManifest(
+	manifest *Manifest,
+	targetTenantID string,
+	sourcePrefix string,
+	targetPrefix string,
+	targetFence writerFenceRef,
+	segmentHashes map[string]string,
+) {
+	manifest.TenantID = targetTenantID
+	manifest.WriterFence = targetFence.token
+	manifest.WriterFenceEpoch = targetFence.epoch
+	manifest.SnapshotKey = rewriteTenantObjectKey(manifest.SnapshotKey, sourcePrefix, targetPrefix)
+	manifest.SnapshotCatalogKey = rewriteTenantObjectKey(
+		manifest.SnapshotCatalogKey, sourcePrefix, targetPrefix,
+	)
+	for i := range manifest.CommitKeys {
+		manifest.CommitKeys[i] = rewriteTenantObjectKey(
+			manifest.CommitKeys[i], sourcePrefix, targetPrefix,
+		)
+	}
+	for i := range manifest.CommitSegments {
+		oldKey := manifest.CommitSegments[i].Key
+		manifest.CommitSegments[i].Key = rewriteTenantObjectKey(
+			oldKey, sourcePrefix, targetPrefix,
+		)
+		if hash := segmentHashes[oldKey]; hash != "" {
+			manifest.CommitSegments[i].ContentHash = hash
+		}
 	}
 }
 

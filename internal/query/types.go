@@ -98,6 +98,7 @@ type PathFilter struct {
 }
 
 type PathStep struct {
+	Direction     string      `json:"direction,omitempty"`
 	RelationTypes []string    `json:"relation_types,omitempty"`
 	NodeKinds     []string    `json:"node_kinds,omitempty"`
 	Where         []Filter    `json:"where,omitempty"`
@@ -151,6 +152,10 @@ type IndexLookup interface {
 	OutEdges(ctx context.Context, from string, allowedRelationTypes map[string]struct{}) ([]graph.Edge, bool, error)
 }
 
+type ReverseIndexLookup interface {
+	InEdges(ctx context.Context, to string, allowedRelationTypes map[string]struct{}) ([]graph.Edge, bool, error)
+}
+
 type FieldIndexScanLookup interface {
 	ScanFieldIndex(ctx context.Context, kind string, field string) (map[string][]string, bool, error)
 }
@@ -172,10 +177,11 @@ type EntityPageLookup interface {
 }
 
 type PlannerStats struct {
-	Version     int64                   `json:"version,omitempty"`
-	Indexes     []PlannerIndexStat      `json:"indexes,omitempty"`
-	EdgeShards  []PlannerEdgeStat       `json:"edge_shards,omitempty"`
-	EntityPages []PlannerEntityPageStat `json:"entity_pages,omitempty"`
+	Version           int64                   `json:"version,omitempty"`
+	Indexes           []PlannerIndexStat      `json:"indexes,omitempty"`
+	EdgeShards        []PlannerEdgeStat       `json:"edge_shards,omitempty"`
+	ReverseEdgeShards []PlannerEdgeStat       `json:"reverse_edge_shards,omitempty"`
+	EntityPages       []PlannerEntityPageStat `json:"entity_pages,omitempty"`
 }
 
 type PlannerIndexStat struct {

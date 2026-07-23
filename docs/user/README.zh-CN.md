@@ -1,20 +1,21 @@
-# GraphDB 用户指南
+# GGraphDB 用户指南
 
 [English](README.md)
 
-本指南面向服务负责人、写入客户端作者和运维人员，介绍如何使用 GraphDB
+本指南面向服务负责人、写入客户端作者和运维人员，介绍如何使用 GGraphDB
 作为通用图数据库。CMDB 只是一个支持的场景，同一套实体、关系、查询和存储
 API 也可以服务其他实体关系应用。
 
-## GraphDB 提供什么
+## GGraphDB 提供什么
 
 - 通过 `X-Tenant-ID` 隔离多租户图数据；
 - 无模式实体和可选类型定义，其中 CI type 适合 CMDB 风格的建模；
 - 以 `(type, from, to)` 作为规范身份的有向类型化边；
-- 每租户一个活跃 writer，reader 独立从对象存储重新加载；
+- 每租户一个本地 writer，或 2–8 个 PostgreSQL 协调的乐观并发 writer；
+  reader 独立从对象存储重新加载不可变图对象；
 - 基于 Parquet manifest、commit、snapshot、entity page、edge shard 和索引
   对象的对象存储持久化；
-- JSON Query DSL、文本 GQL、scan/export、saved query 和运行中查询控制；
+- GraphQL、JSON Query DSL、scan/export、saved query 和运行中查询控制；
 - 可选的实体字段、边字段和边存在性 source priority 治理；
 - 租户生命周期、source policy、tenant config、索引、统一 task、维护、
   完整性审计和 reader freshness。
@@ -67,7 +68,8 @@ export BASE=http://127.0.0.1:8080
 
 参考文档：
 
-- [GQL](../gql.md)
+- [GraphQL](../graphql.zh-CN.md) · [English](../graphql.md)
+- [旧文本 DSL 兼容入口](../gql.md)
 - [查询能力](../query_capabilities.md)
 - [错误码](../error_codes.md)
 - [OpenAPI](../openapi.yaml)

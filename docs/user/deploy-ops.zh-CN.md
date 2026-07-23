@@ -12,9 +12,11 @@ GRAPHDB_MODE=all|writer|reader
 - `writer`：生产写入和控制进程。
 - `reader`：读取和查询进程。
 
-生产环境每个租户只能有一个活跃 writer。writer lease 和 manifest CAS
-用于防止重复或陈旧 writer，不是多 writer 调度器。reader 相互独立，维护
-本地缓存，但对象存储仍是事实来源。
+默认 `GRAPHDB_COORDINATION=local` 时，生产环境每个租户只能有一个活跃
+writer，writer lease 和 manifest CAS 用于防止重复或陈旧 writer。
+`GRAPHDB_COORDINATION=postgres` 改用 PostgreSQL head CAS，支持每租户
+2–8 个乐观并发 writer。reader 相互独立；本地模式以对象存储为权威，
+PostgreSQL 模式以 PG head 为权威。
 
 ## 对象存储
 
@@ -49,6 +51,8 @@ GRAPHDB_PREFIX=graphdb
 服务：
 
 - `GRAPHDB_ADDR=:8080`
+- `GRAPHDB_ADMIN_ADDR=`（空值保持 1.0 兼容的合并 listener）
+- `GRAPHDB_PPROF_ENABLED=false`（启用时必须使用独立管理 listener）
 - `GRAPHDB_PREFIX=graphdb`
 - `GRAPHDB_POLL_INTERVAL=2s`
 - `GRAPHDB_INSTANCE_ID=<stable-instance-name>`
@@ -76,15 +80,44 @@ GRAPHDB_PREFIX=graphdb
 - `GRAPHDB_WRITE_MAX_PER_TENANT=1`
 - `GRAPHDB_WRITE_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_WRITE_EXECUTION_TIMEOUT=90s`
-- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=300`
+- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=1500`
 - `GRAPHDB_WRITE_CACHE_MAX_BYTES=512MiB`
 - `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
+- `GRAPHDB_COORDINATION=local|postgres`
+- `GRAPHDB_POSTGRES_DSN=<dsn>`
+- `GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination`
+- `GRAPHDB_COORDINATOR_NAMESPACE=<stable-cluster-id>`
+- `GRAPHDB_WRITE_CAS_MAX_RETRIES=8`
+- `GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION=24h`
+- `GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL=3m`（必须大于 `GRAPHDB_WRITE_EXECUTION_TIMEOUT`）
+- `GRAPHDB_COORDINATOR_OUTBOX_RETENTION=1h`
+- `GRAPHDB_COORDINATOR_CLEANUP_INTERVAL=1m`
+- `GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE=5000`
+- `GRAPHDB_READINESS_TIMEOUT=2s`
 
 严格串行写入时保持 `GRAPHDB_WRITE_MAX_PER_TENANT=1`。设为 `2`-`4`
 可以有限流水化准入检查和提交后的元数据收尾，但 manifest 发布仍受每租户
-单 writer 锁保护。`0` 会关闭这一准入维度，只适合受控测试。
+本地单 writer 锁或 PostgreSQL head CAS 保护。`0` 会关闭这一准入维度，
+只适合受控测试。
+
+PostgreSQL 协调还要求 `GRAPHDB_STORAGE=s3`、
+`S3_PROVIDER=generic-s3` 和 `GRAPHDB_WRITER_TOPOLOGY=cas`。启动 writer
+前先执行 `graphdb coordinator migrate` 和
+`graphdb coordinator bootstrap --apply`；上线与回滚顺序见发行版部署文档。
+
+已提交幂等记录和被遗弃的 pending reservation 只保留到配置的幂等窗口，
+重放去重也只在该窗口内保证。`GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL`
+必须大于 `GRAPHDB_WRITE_EXECUTION_TIMEOUT`，pending 记录在 ownership TTL
+以内绝不会被清理。已完成的 legacy manifest 任务只有在超过保留时间、且
+租户镜像水位已经到达该 revision 后才会删除。对应 retention 设为 `0`
+会关闭自动清理，只应在另有归档和清理流程时使用。
+
+`/v1/readiness` 会执行有界 bucket list（`max-keys=1`），因此 reader 和
+writer 使用的对象存储身份都必须具备 bucket list 权限。`/v1/health` 和
+`/metrics` 只读取后台采样的 coordinator 状态，不在请求路径同步访问
+PostgreSQL；readiness 仍然是主动依赖探测。
 
 可观测性：
 
@@ -99,7 +132,7 @@ GRAPHDB_PREFIX=graphdb
 docker compose up --build
 ```
 
-这会启动 MinIO、创建 `graphdb` bucket，并以 `all` 模式启动 GraphDB。
+这会启动 MinIO、创建 `graphdb` bucket，并以 `all` 模式启动 GGraphDB。
 
 ## RustFS Writer/Reader 栈
 
@@ -149,17 +182,21 @@ curl -sS "$READER/v1/control/reader-traffic-gate?min_ready=1" \
 指标：
 
 ```sh
-curl -sS "$BASE/metrics"
+curl -sS "$ADMIN/metrics"
 ```
 
 重点指标包括 HTTP/查询延迟、写入背压、对象存储延迟、CAS 冲突、commit
-tail 长度、reader 可见版本和索引健康。日志以 JSON 行输出，覆盖 HTTP
+tail 长度、reader 可见版本、coordinator 可用性/head revision/mirror lag
+和索引健康。日志以 JSON 行输出，覆盖 HTTP
 访问、写入/控制审计、采集、索引重建、慢查询和背压事件。设置
 `GRAPHDB_OTLP_ENDPOINT` 后通过 OTLP/HTTP 导出 trace。
+listener 分离、网关租户绑定、RBAC 与 TLS 见
+[生产安全边界](../security-deployment.zh-CN.md)。
 
 ## 生产运行规则
 
-- 每个租户保持恰好一个活跃 writer。
+- 本地协调每租户保持恰好一个活跃 writer；只有完成 PostgreSQL bootstrap
+  后才扩到 2–8 个，并且绝不能混入 1.0 writer。
 - 多个 reader 从同一对象存储前缀独立运行。
 - 需要新鲜度时使用 `min_version`。
 - 关注 commit tail 并保持自动 compact。

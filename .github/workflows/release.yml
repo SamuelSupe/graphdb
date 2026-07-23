@@ -1,4 +1,4 @@
-name: Build GraphDB release
+name: Build GGraphDB release
 
 on:
   push:
@@ -10,8 +10,29 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and publish release assets
+  verify:
+    name: Unit, vet, race, and v1.0 compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run static release gate
+        run: RELEASE_GATE_VERIFY_ONLY=1 scripts/release_gate.sh
+
+      - name: Test Python SDK
+        run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
+
+  integration:
+    name: RustFS, PostgreSQL CAS, load, and restore
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -25,29 +46,143 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Run integration release gate
+        run: RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
+
+  cas-soak:
+    name: PostgreSQL CAS 2-active-writer 20 QPS 30-minute soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run PostgreSQL/RustFS CAS soak
+        env:
+          GRAPHDB_TEST_CAS_STRESS_REPORT: artifacts/cas-stress.json
+          GRAPHDB_TEST_BUILD_COMMIT: ${{ github.sha }}
+        run: scripts/postgres_cas_gate.sh soak
+
+      - name: Upload CAS stress evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-cas-stress
+          path: artifacts/cas-stress.json
+
+  rollback:
+    name: PostgreSQL to local formal rollback drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run formal rollback drill
+        env:
+          GRAPHDB_TEST_ROLLBACK_REPORT: artifacts/rollback-drill.json
+          GRAPHDB_TEST_BUILD_COMMIT: ${{ github.sha }}
+        run: scripts/postgres_cas_gate.sh rollback
+
+      - name: Upload rollback evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-rollback-drill
+          path: artifacts/rollback-drill.json
+
+  release:
+    name: Build and publish release assets
+    needs: [verify, integration, cas-soak, rollback]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download CAS stress evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: postgres-cas-stress
+          path: artifacts
+
+      - name: Download rollback evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: postgres-rollback-drill
+          path: artifacts
+
       - name: Build release package
         shell: bash
         run: |
           set -euo pipefail
 
           tag="${GITHUB_REF_NAME}"
+          commit="${GITHUB_SHA}"
+          evidence_commit="$(python3 -c 'import json; report=json.load(open("artifacts/cas-stress.json")); assert report["schema_version"] == 2; assert report["success"] is True; assert report["legacy_v1_binary_validated"] is True; print(report["commit"])')"
+          test "$evidence_commit" = "$commit"
+          rollback_commit="$(python3 -c 'import json; report=json.load(open("artifacts/rollback-drill.json")); assert report["schema_version"] == 1; assert report["success"] is True; assert report["outbox_backlog"] == 0; assert report["legacy_mirror_lag"] == 0; assert report["marker_removed"] is True; assert report["postgres_writer_fenced"] is True; assert report["local_writer_succeeded"] is True; print(report["commit"])')"
+          test "$rollback_commit" = "$commit"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           root="dist/${tag}"
-          mkdir -p "$root/bin" "$root/docs" "$root/examples"
+          buildinfo_package="gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
+          ldflags="-s -w -X ${buildinfo_package}.Version=${tag} -X ${buildinfo_package}.Commit=${commit} -X ${buildinfo_package}.Date=${build_date}"
+          mkdir -p "$root/bin" "$root/docs" "$root/examples" "$root/scripts" \
+            "$root/deploy/nginx" "$root/release/evidence"
 
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             os="${target%/*}"
             arch="${target#*/}"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -mod=mod -trimpath -ldflags="-s -w" \
+              go build -mod=readonly -trimpath -ldflags="$ldflags" \
               -o "$root/bin/graphdb-${os}-${arch}" ./cmd/graphdb
           done
 
-          cp README.md README.zh-CN.md Dockerfile docker-compose.yml docker-compose.rustfs.yml "$root/"
+          cp README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md LICENSE SECURITY.md \
+            Dockerfile docker-compose.yml docker-compose.rustfs.yml docker-compose.postgres.yml \
+            go.mod go.sum "$root/"
           cp docs/README.md docs/README.zh-CN.md docs/database-introduction.md docs/database-introduction.zh-CN.md \
-            docs/openapi.yaml docs/query_capabilities.md docs/gql.md docs/error_codes.md "$root/docs/"
+            docs/openapi.yaml docs/query_capabilities.md docs/graphql.md docs/graphql.zh-CN.md \
+            docs/gql.md docs/naming-and-compatibility.md docs/naming-and-compatibility.zh-CN.md \
+            docs/error_codes.md \
+            docs/capacity.md docs/capacity.zh-CN.md docs/security-deployment.md docs/security-deployment.zh-CN.md \
+            docs/release-checklist.md \
+            "$root/docs/"
           cp -R docs/user "$root/docs/"
           cp -R examples/. "$root/examples/"
+          cp -R sdk "$root/"
+          cp deploy/nginx/graphdb.conf.example "$root/deploy/nginx/"
+          cp release/capacity-envelope.yaml release/freeze-1.1.yaml "$root/release/"
+          cp artifacts/cas-stress.json "$root/release/evidence/cas-stress-${tag}.json"
+          cp artifacts/rollback-drill.json "$root/release/evidence/rollback-drill-${tag}.json"
+          cp scripts/capacity_baseline.sh scripts/compatibility_v1_0_v1_1.sh \
+            scripts/check_release_freeze.sh scripts/postgres_cas_gate.sh \
+            scripts/release_gate.sh "$root/scripts/"
           printf '%s\n' "$tag" > "$root/VERSION"
+          printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
+            "$tag" "$commit" "$build_date" "$(go version | cut -d' ' -f3)" > "$root/BUILD-METADATA.json"
+          (cd "$root" && sha256sum bin/* > SHA256SUMS)
 
           tar -C dist -czf "dist/graphdb-${tag}.tar.gz" "$tag"
           (cd dist && sha256sum "graphdb-${tag}.tar.gz" > "graphdb-${tag}.tar.gz.sha256")
@@ -58,7 +193,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "GraphDB $GITHUB_REF_NAME" \
+            --title "GGraphDB $GITHUB_REF_NAME" \
             --generate-notes \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz.sha256"

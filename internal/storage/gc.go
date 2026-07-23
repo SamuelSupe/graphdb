@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,6 +12,7 @@ import (
 )
 
 const defaultGCReaderMaxAge = 5 * time.Minute
+const coordinatorCandidateGracePeriod = time.Hour
 
 type GCOptions struct {
 	KeepSnapshots           int
@@ -26,24 +28,28 @@ type GCOptions struct {
 }
 
 type GCReport struct {
-	TenantID                   string        `json:"tenant_id"`
-	ManifestVersion            int64         `json:"manifest_version"`
-	DeletedSnapshots           int           `json:"deleted_snapshots"`
-	DeletedDeadLetters         int           `json:"deleted_deadletters"`
-	DeletedTasks               int           `json:"deleted_tasks"`
-	DeletedTaskResults         int           `json:"deleted_task_results"`
-	DeletedIndexTasks          int           `json:"deleted_index_tasks"`
-	DeletedEntityRecords       int           `json:"deleted_entity_records"`
-	ReaderWatermarkVersion     int64         `json:"reader_watermark_version,omitempty"`
-	ReaderWatermarkReaders     int           `json:"reader_watermark_readers,omitempty"`
-	ReaderWatermarkIgnored     int           `json:"reader_watermark_ignored,omitempty"`
-	IndexCleanupAttempt        bool          `json:"index_cleanup_attempt"`
-	CommitCleanupSkippedReason string        `json:"commit_cleanup_skipped_reason,omitempty"`
-	IndexCleanupSkippedReason  string        `json:"index_cleanup_skipped_reason,omitempty"`
-	IndexCleanupError          string        `json:"index_cleanup_error,omitempty"`
-	CommitCleanup              CleanupReport `json:"commit_cleanup"`
-	DeletedKeys                []string      `json:"deleted_keys,omitempty"`
-	Checkpoint                 GCCheckpoint  `json:"checkpoint,omitempty"`
+	TenantID                     string        `json:"tenant_id"`
+	ManifestVersion              int64         `json:"manifest_version"`
+	DeletedSnapshots             int           `json:"deleted_snapshots"`
+	DeletedDeadLetters           int           `json:"deleted_deadletters"`
+	DeletedTasks                 int           `json:"deleted_tasks"`
+	DeletedTaskResults           int           `json:"deleted_task_results"`
+	DeletedImportSources         int           `json:"deleted_import_sources"`
+	DeletedIndexTasks            int           `json:"deleted_index_tasks"`
+	DeletedEntityRecords         int           `json:"deleted_entity_records"`
+	DeletedCoordinatorManifests  int           `json:"deleted_coordinator_manifests"`
+	DeletedWriteContexts         int           `json:"deleted_write_contexts"`
+	ReaderWatermarkVersion       int64         `json:"reader_watermark_version,omitempty"`
+	ReaderWatermarkReaders       int           `json:"reader_watermark_readers,omitempty"`
+	ReaderWatermarkIgnored       int           `json:"reader_watermark_ignored,omitempty"`
+	IndexCleanupAttempt          bool          `json:"index_cleanup_attempt"`
+	CommitCleanupSkippedReason   string        `json:"commit_cleanup_skipped_reason,omitempty"`
+	IndexCleanupSkippedReason    string        `json:"index_cleanup_skipped_reason,omitempty"`
+	SnapshotCleanupSkippedReason string        `json:"snapshot_cleanup_skipped_reason,omitempty"`
+	IndexCleanupError            string        `json:"index_cleanup_error,omitempty"`
+	CommitCleanup                CleanupReport `json:"commit_cleanup"`
+	DeletedKeys                  []string      `json:"deleted_keys,omitempty"`
+	Checkpoint                   GCCheckpoint  `json:"checkpoint,omitempty"`
 }
 
 type GCCheckpoint struct {
@@ -110,7 +116,18 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	report.ReaderWatermarkVersion = protection.Watermark
 	report.ReaderWatermarkReaders = protection.Active
 	report.ReaderWatermarkIgnored = protection.Ignored
-	if protection.activeReaderBehind(manifest.Version) {
+	coordinatorMirrorPending := false
+	var coordinatorRoots CoordinatorReachability
+	if s.coordinated() {
+		coordinatorRoots, err = s.Coordinator.Reachability(ctx, tenantID)
+		if err != nil {
+			return finish(err)
+		}
+		coordinatorMirrorPending = coordinatorRoots.PendingLegacy > 0
+	}
+	if coordinatorMirrorPending {
+		report.CommitCleanupSkippedReason = "PostgreSQL legacy manifest outbox still has reachable manifests"
+	} else if protection.activeReaderBehind(manifest.Version) {
 		report.CommitCleanupSkippedReason = fmt.Sprintf("active reader watermark %d is behind manifest version %d", protection.Watermark, manifest.Version)
 	} else {
 		commitReport, err := s.cleanupCommitsLocked(ctx, tenantID, manifest, checkpoint)
@@ -139,11 +156,15 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return finish(err)
 		}
 	}
-	deleted, keys, err = s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, protection, checkpoint)
-	report.DeletedSnapshots = deleted
-	report.DeletedKeys = append(report.DeletedKeys, keys...)
-	if err != nil {
-		return finish(err)
+	if coordinatorMirrorPending {
+		report.SnapshotCleanupSkippedReason = "PostgreSQL legacy manifest outbox still has reachable snapshots"
+	} else {
+		deleted, keys, err = s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, protection, checkpoint)
+		report.DeletedSnapshots = deleted
+		report.DeletedKeys = append(report.DeletedKeys, keys...)
+		if err != nil {
+			return finish(err)
+		}
 	}
 	if options.TaskMaxAge > 0 {
 		cutoff := time.Now().UTC().Add(-options.TaskMaxAge)
@@ -151,6 +172,7 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		err := s.cleanupUnifiedTasksLocked(ctx, tenantID, cutoff, &taskReport, checkpoint)
 		report.DeletedTasks = taskReport.DeletedTasks
 		report.DeletedTaskResults = taskReport.DeletedTaskResults
+		report.DeletedImportSources = taskReport.DeletedImportSources
 		report.DeletedKeys = append(report.DeletedKeys, taskReport.DeletedKeys...)
 		if err != nil {
 			return finish(err)
@@ -176,7 +198,99 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			}
 		}
 	}
+	if s.coordinated() {
+		manifests, contexts, keys, err := s.cleanupCoordinatorCandidatesLocked(
+			ctx, tenantID, coordinatorRoots, checkpoint,
+		)
+		report.DeletedCoordinatorManifests = manifests
+		report.DeletedWriteContexts = contexts
+		report.DeletedKeys = append(report.DeletedKeys, keys...)
+		if err != nil {
+			return finish(err)
+		}
+	}
 	return finish(nil)
+}
+
+func (s *TenantStore) cleanupCoordinatorCandidatesLocked(
+	ctx context.Context,
+	tenantID string,
+	roots CoordinatorReachability,
+	checkpoint *gcCheckpointRunner,
+) (int, int, []string, error) {
+	cutoff := time.Now().UTC().Add(-coordinatorCandidateGracePeriod)
+	manifestPrefix := s.coordinatorManifestPrefix(tenantID)
+	contextPrefix := s.coordinatorWriteContextPrefix(tenantID)
+	manifestCount, manifestKeys, err := s.cleanupCoordinatorCandidatePrefix(
+		ctx, manifestPrefix, roots.ManifestKeys, cutoff, checkpoint, coordinatorManifestUpdatedAt,
+	)
+	if err != nil {
+		return manifestCount, 0, manifestKeys, err
+	}
+	contextCount, contextKeys, err := s.cleanupCoordinatorCandidatePrefix(
+		ctx, contextPrefix, roots.WriteContextKeys, cutoff, checkpoint, coordinatorWriteContextUpdatedAt,
+	)
+	return manifestCount, contextCount, append(manifestKeys, contextKeys...), err
+}
+
+func (s *TenantStore) cleanupCoordinatorCandidatePrefix(
+	ctx context.Context,
+	prefix string,
+	roots map[string]struct{},
+	cutoff time.Time,
+	checkpoint *gcCheckpointRunner,
+	updatedAt func(context.Context, []byte) (time.Time, error),
+) (int, []string, error) {
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
+	if err != nil || skip {
+		return 0, nil, err
+	}
+	deleted := 0
+	keys := make([]string, 0)
+	for _, object := range objects {
+		if _, reachable := roots[object.Key]; reachable {
+			continue
+		}
+		data, err := s.Objects.Get(ctx, object.Key)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return deleted, keys, err
+		}
+		updated, err := updatedAt(ctx, data)
+		if err != nil || updated.IsZero() || updated.After(cutoff) {
+			continue
+		}
+		removed, err := checkpoint.deleteKey(ctx, s.Objects, object.Key)
+		if err != nil {
+			return deleted, keys, err
+		}
+		if removed {
+			deleted++
+			keys = append(keys, object.Key)
+		}
+	}
+	if err := checkpoint.pauseAfterPage(next); err != nil {
+		return deleted, keys, err
+	}
+	return deleted, keys, nil
+}
+
+func coordinatorManifestUpdatedAt(ctx context.Context, data []byte) (time.Time, error) {
+	if !isParquetBytes(data) {
+		return time.Time{}, fmt.Errorf("coordinator manifest is not parquet")
+	}
+	manifest, err := decodeParquetManifest(ctx, data)
+	return manifest.UpdatedAt, err
+}
+
+func coordinatorWriteContextUpdatedAt(_ context.Context, data []byte) (time.Time, error) {
+	var snapshot WriteContextSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return time.Time{}, err
+	}
+	return snapshot.UpdatedAt, nil
 }
 
 func (s *TenantStore) validateGCSnapshotCursor(tenantID string, manifest Manifest, cursor string) error {
@@ -259,6 +373,12 @@ func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string,
 	}
 	report.InvalidKeys = scan.InvalidKeys
 	for _, item := range scan.Items {
+		if s.coordinated() && !item.Commit.CreatedAt.IsZero() &&
+			item.Commit.CreatedAt.After(time.Now().UTC().Add(-coordinatorCandidateGracePeriod)) {
+			report.KeptFuture++
+			report.FutureKeys = append(report.FutureKeys, item.Key)
+			continue
+		}
 		if item.Commit.Version > manifest.Version {
 			report.KeptFuture++
 			report.FutureKeys = append(report.FutureKeys, item.Key)
@@ -513,13 +633,15 @@ func (s *TenantStore) cleanupDeadLettersLocked(ctx context.Context, tenantID str
 
 func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID string) error {
 	catalog, err := s.GetIndexCatalog(ctx, tenantID)
-	if errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	return s.cleanupObsoleteIndexObjects(ctx, tenantID, IndexCatalog{}, catalog)
+	if err == nil {
+		if err := s.cleanupObsoleteIndexObjects(ctx, tenantID, IndexCatalog{}, catalog); err != nil {
+			return err
+		}
+	}
+	return s.cleanupReverseIndexOrphans(ctx, tenantID)
 }
 
 func (s *TenantStore) cleanupEntityRecordsLocked(ctx context.Context, tenantID string) (int, []string, error) {
@@ -545,10 +667,11 @@ func (s *TenantStore) cleanupEntityRecordsLocked(ctx context.Context, tenantID s
 }
 
 type taskCleanupReport struct {
-	DeletedTasks       int
-	DeletedTaskResults int
-	DeletedIndexTasks  int
-	DeletedKeys        []string
+	DeletedTasks         int
+	DeletedTaskResults   int
+	DeletedImportSources int
+	DeletedIndexTasks    int
+	DeletedKeys          []string
 }
 
 func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID string, cutoff time.Time, report *taskCleanupReport, checkpoint *gcCheckpointRunner) error {
@@ -585,6 +708,22 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 		}
 		if task.TenantID != tenantID || task.ID != taskID || taskStillActive(task) || !taskExpired(task.StartedAt, task.UpdatedAt, task.FinishedAt, cutoff) {
 			continue
+		}
+		if task.Type == TaskTypeBulkImport {
+			sourceKey := stringTaskParam(task.Params, "source_key")
+			if sourceKey != "" {
+				if err := s.validateImportSourceKey(tenantID, sourceKey); err != nil {
+					return err
+				}
+				deleted, err := checkpoint.deleteKey(ctx, s.Objects, sourceKey)
+				if err != nil && !errors.Is(err, ErrNotFound) {
+					return err
+				}
+				if deleted {
+					report.DeletedImportSources++
+					report.DeletedKeys = append(report.DeletedKeys, sourceKey)
+				}
+			}
 		}
 		if task.ResultKey != "" {
 			if err := s.validateTenantObjectKey(tenantID, task.ResultKey); err != nil {

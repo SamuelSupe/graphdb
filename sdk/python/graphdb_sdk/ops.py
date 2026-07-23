@@ -2,6 +2,39 @@ from __future__ import annotations
 
 
 class OpsMixin:
+    def start_import(
+        self,
+        data: bytes | str,
+        format: str,
+        *,
+        source: str | None = None,
+        collector_id: str | None = None,
+        batch_size: int | None = None,
+        on_error: str | None = None,
+    ) -> dict:
+        format = format.strip().lower()
+        if format in ("jsonl", "ndjson"):
+            format, content_type = "jsonl", "application/x-ndjson"
+        elif format == "csv":
+            content_type = "text/csv"
+        else:
+            raise ValueError("import format must be jsonl or csv")
+        payload = data.encode("utf-8") if isinstance(data, str) else data
+        query = {
+            "format": format,
+            "source": source,
+            "collector_id": collector_id,
+            "batch_size": batch_size,
+            "on_error": on_error,
+        }
+        return self._raw_json("POST", "/v1/imports", payload, content_type, query=query)
+
+    def put_relation_schema(self, relation_type: str, schema: dict) -> dict:
+        return self._json("PUT", f"/v1/relation-schemas/{self._escape(relation_type)}", body=schema)
+
+    def delete_relation_schema(self, relation_type: str) -> dict:
+        return self._json("DELETE", f"/v1/relation-schemas/{self._escape(relation_type)}")
+
     def start_task(self, task_type: str, params: dict | None = None) -> dict:
         body = {"type": task_type}
         if params is not None:

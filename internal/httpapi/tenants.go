@@ -351,6 +351,17 @@ func (s *Server) tenantLifecycleGate(next http.Handler) http.Handler {
 		setAPITraceTenant(ctx, tenantID)
 		status, err := s.Store.TenantStatus(ctx, tenantID)
 		if err != nil {
+			if errors.Is(err, storage.ErrCoordinatorUnavailable) && !tenantMutationRequest(r) {
+				if span != nil {
+					span.SetAttributes(
+						attribute.String("graphdb.tenant", tenantID),
+						attribute.String("graphdb.tenant_gate.result", "coordinator_unavailable_read_fallback"),
+					)
+				}
+				endHTTPSpan(span, nil)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			endHTTPSpan(span, err)
 			writeTenantLifecycleError(w, err)
 			return
@@ -386,6 +397,8 @@ func tenantMutationRequest(r *http.Request) bool {
 	path := r.URL.Path
 	return path == "/v1/commits" ||
 		path == "/v1/ingest/batches" ||
+		path == "/v1/imports" ||
+		strings.HasPrefix(path, "/v1/relation-schemas/") ||
 		strings.HasPrefix(path, "/v1/ingest/deadletters/") ||
 		path == "/v1/source-policy" ||
 		path == "/v1/tenant-config" ||
@@ -432,6 +445,11 @@ func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int
 
 func writeTenantLifecycleError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, storage.ErrCoordinatorUnavailable),
+		errors.Is(err, storage.ErrWriteConflict),
+		errors.Is(err, storage.ErrVersionConflict),
+		errors.Is(err, storage.ErrIdempotencyInProgress):
+		writeStorageError(w, err)
 	case errors.Is(err, storage.ErrNotFound):
 		writeErrorErr(w, http.StatusNotFound, err)
 	case errors.Is(err, storage.ErrTenantDisabled):

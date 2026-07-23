@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,6 +29,7 @@ type ReaderCacheObserver interface {
 type cacheEntry struct {
 	graph      *graph.Graph
 	manifest   Manifest
+	meta       ObjectMeta
 	cachedAt   time.Time
 	expiresAt  time.Time
 	lastAccess time.Time
@@ -112,8 +115,19 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 		startGen := c.gens[tenantID]
 		c.mu.RUnlock()
 
-		manifest, _, err := c.Store.getManifest(ctx, tenantID)
+		manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
 		if err != nil {
+			c.mu.RLock()
+			fallback, fallbackOK := c.entries[tenantID]
+			c.mu.RUnlock()
+			if errors.Is(err, ErrCoordinatorUnavailable) &&
+				fallbackOK &&
+				fallback.manifest.Version >= minVersion {
+				c.touch(tenantID)
+				c.recordCache(tenantID, "stale_coordinator_unavailable")
+				c.recordVisible(tenantID, fallback.manifest.Version)
+				return cacheEntryGraph(fallback, shared)
+			}
 			return nil, Manifest{}, err
 		}
 		c.mu.Lock()
@@ -131,7 +145,9 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			return cacheEntryGraph(entry, shared)
 		}
 		startGen = c.gens[tenantID]
-		if ok && manifest.Version == entry.manifest.Version && entry.manifest.Version >= minVersion {
+		if ok &&
+			cacheEntryMatchesManifest(entry, manifest, manifestMeta) &&
+			entry.manifest.Version >= minVersion {
 			if entry.cachedAt.IsZero() {
 				entry.cachedAt = now
 			}
@@ -154,7 +170,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			continue
 		}
 		c.recordCache(tenantID, "miss")
-		g, loaded, err := c.Store.LoadAtLeast(ctx, tenantID, minVersion)
+		loaded, err := c.loadStoreAtLeast(ctx, tenantID, minVersion)
 		if err != nil {
 			c.finishLoad(tenantID, load)
 			c.recordCache(tenantID, "miss_error")
@@ -162,7 +178,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 		}
 		c.mu.Lock()
 		entry, ok = c.entries[tenantID]
-		if ok && entry.manifest.Version > loaded.Version && entry.manifest.Version >= minVersion {
+		if ok && cacheEntryNewerThanLoaded(entry, loaded) && entry.manifest.Version >= minVersion {
 			c.mu.Unlock()
 			c.finishLoad(tenantID, load)
 			c.recordCache(tenantID, "hit_newer")
@@ -178,16 +194,55 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			continue
 		}
 		now = time.Now()
-		cachedGraph := g
+		cachedGraph := loaded.Graph
 		if !shared {
-			cachedGraph = g.Clone()
+			cachedGraph = loaded.Graph.Clone()
 		}
-		c.entries[tenantID] = cacheEntry{graph: cachedGraph, manifest: loaded, cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: now}
+		c.entries[tenantID] = cacheEntry{
+			graph: cachedGraph, manifest: loaded.Manifest, meta: loaded.Meta,
+			cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: now,
+		}
 		c.mu.Unlock()
 		c.finishLoad(tenantID, load)
-		c.recordVisible(tenantID, loaded.Version)
-		return g, loaded, nil
+		c.recordVisible(tenantID, loaded.Manifest.Version)
+		return loaded.Graph, loaded.Manifest, nil
 	}
+}
+
+func (c *ReaderCache) loadStoreAtLeast(
+	ctx context.Context,
+	tenantID string,
+	minVersion int64,
+) (loadedGraph, error) {
+	loaded, err := c.Store.loadWithMeta(ctx, tenantID)
+	if err != nil {
+		return loadedGraph{}, err
+	}
+	if minVersion > 0 && loaded.Manifest.Version < minVersion {
+		return loadedGraph{}, fmt.Errorf(
+			"loaded graph version %d is below required version %d",
+			loaded.Manifest.Version,
+			minVersion,
+		)
+	}
+	return loaded, nil
+}
+
+func cacheEntryMatchesManifest(entry cacheEntry, manifest Manifest, meta ObjectMeta) bool {
+	return cachedManifestMatches(
+		loadedGraph{Manifest: entry.manifest, Meta: entry.meta},
+		manifest,
+		meta,
+	)
+}
+
+func cacheEntryNewerThanLoaded(entry cacheEntry, loaded loadedGraph) bool {
+	entryRevision := coordinatedMetaRevision(entry.meta)
+	loadedRevision := coordinatedMetaRevision(loaded.Meta)
+	if entryRevision > 0 || loadedRevision > 0 {
+		return entryRevision > loadedRevision
+	}
+	return entry.manifest.Version > loaded.Manifest.Version
 }
 
 func (c *ReaderCache) recordCache(tenantID string, status string) {
@@ -270,7 +325,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	c.mu.RLock()
 	startGen := c.gens[tenantID]
 	c.mu.RUnlock()
-	manifest, _, err := c.Store.getManifest(ctx, tenantID)
+	manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
 	if err != nil {
 		return nil, Manifest{}, err
 	}
@@ -280,7 +335,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	if !ok && !markAccess {
 		return nil, Manifest{}, nil
 	}
-	if ok && manifest.Version == entry.manifest.Version {
+	if ok && cacheEntryMatchesManifest(entry, manifest, manifestMeta) {
 		now := time.Now()
 		if entry.cachedAt.IsZero() {
 			entry.cachedAt = now
@@ -308,7 +363,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		}
 		return c.Load(ctx, tenantID)
 	}
-	g, loaded, err := c.Store.Load(ctx, tenantID)
+	loaded, err := c.loadStoreAtLeast(ctx, tenantID, 0)
 	if err != nil {
 		c.finishLoad(tenantID, load)
 		return nil, Manifest{}, err
@@ -324,14 +379,17 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	if ok && !markAccess {
 		lastAccess = entry.lastAccess
 	}
-	cachedGraph := g
+	cachedGraph := loaded.Graph
 	if markAccess {
-		cachedGraph = g.Clone()
+		cachedGraph = loaded.Graph.Clone()
 	}
-	c.entries[tenantID] = cacheEntry{graph: cachedGraph, manifest: loaded, cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: lastAccess}
+	c.entries[tenantID] = cacheEntry{
+		graph: cachedGraph, manifest: loaded.Manifest, meta: loaded.Meta,
+		cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: lastAccess,
+	}
 	c.mu.Unlock()
 	c.finishLoad(tenantID, load)
-	return g, loaded, nil
+	return loaded.Graph, loaded.Manifest, nil
 }
 
 func (c *ReaderCache) touch(tenantID string) {

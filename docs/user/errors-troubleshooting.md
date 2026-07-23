@@ -36,13 +36,17 @@ Full contract: [../error_codes.md](../error_codes.md).
 | `index_rebuild_running` | Index rebuild blocks writes | Wait or cancel task if appropriate. |
 | `quota_exceeded` | Tenant quota would be exceeded | Raise quota or delete data. |
 | `idempotency_conflict` | Same key, different payload | Use a new key or resend exact original body. |
-| `lease_held` | Duplicate/stale writer protection | Ensure only one active writer per tenant. |
+| `idempotency_in_progress` | Another writer owns the same key | Retry the exact request with the same key after backoff. |
+| `write_conflict` | PG head changed through the retry budget | Retry with the same idempotency key; inspect CAS conflict rate if sustained. |
+| `version_conflict` | `expected_version` no longer matches | Reload the head and resolve the caller's precondition; do not blind-retry. |
+| `coordinator_unavailable` | PostgreSQL coordinator unavailable | Restore PG connectivity; writes never fall back to local mode. |
+| `lease_held` | Duplicate/stale local writer protection | Ensure only one local-coordination writer per tenant. |
 | `index_stale` | Index missing/stale | Rebuild indexes or allow fallback where supported. |
 | `repair_required` | Integrity issue blocks operation | Run audit and repair. |
 
 ## 429 Handling
 
-GraphDB uses 429 for admission and backpressure. Clients should:
+GGraphDB uses 429 for admission and backpressure. Clients should:
 
 1. Read `Retry-After` and `retry_after_ms`.
 2. Retry with the same `idempotency_key`.
@@ -56,7 +60,7 @@ Example body:
   "code": "write_backpressure",
   "retry_after_ms": 2000,
   "reasons": [
-    {"code": "commit_tail_too_long", "current": 301, "threshold": 300}
+    {"code": "commit_tail_too_long", "current": 1501, "threshold": 1500}
   ]
 }
 ```

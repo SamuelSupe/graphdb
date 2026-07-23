@@ -18,7 +18,12 @@ func TestCopyTenantObjectsDryRunAndCopy(t *testing.T) {
 		t.Fatalf("create tenant: %v", err)
 	}
 	if _, err := source.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"name": "a"}}},
+		UpsertRelationTypes: []graph.RelationType{{Name: "links", FromKind: "host", ToKind: "host", Directed: true}},
+		UpsertEntities: []graph.Entity{
+			{ID: "host:a", Kind: "host", Fields: graph.Fields{"name": "a"}},
+			{ID: "host:z", Kind: "host", Fields: graph.Fields{"name": "z"}},
+		},
+		UpsertEdges: []graph.Edge{{Type: "links", From: "host:a", To: "host:z"}},
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -60,6 +65,19 @@ func TestCopyTenantObjectsDryRunAndCopy(t *testing.T) {
 	}
 	if _, ok := g.GetEntity("host:a"); !ok {
 		t.Fatalf("migrated graph missing entity")
+	}
+	indexCatalog, err := target.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("get migrated index catalog: %v", err)
+	}
+	reverseCatalog, err := target.GetReverseIndexCatalog(ctx, "tenant-a", indexCatalog.Version)
+	if err != nil {
+		t.Fatalf("get migrated reverse catalog: %v", err)
+	}
+	lookup := &PersistedIndexLookup{Store: target, TenantID: "tenant-a", Version: indexCatalog.Version, Catalog: indexCatalog, ReverseCatalog: &reverseCatalog}
+	incoming, ok, err := lookup.InEdges(ctx, "host:z", map[string]struct{}{"links": {}})
+	if err != nil || !ok || len(incoming) != 1 || incoming[0].From != "host:a" {
+		t.Fatalf("migrated reverse edges=%#v ok=%v err=%v", incoming, ok, err)
 	}
 	if _, err := target.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},

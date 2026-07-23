@@ -4,12 +4,12 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/pprof"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
@@ -30,6 +30,7 @@ type Server struct {
 	WriteAdmission        *WriteAdmission
 	WriteExecutionTimeout time.Duration
 	ReaderCatchupTimeout  time.Duration
+	ReadinessTimeout      time.Duration
 	QueryRegistry         *RunningQueryRegistry
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration
@@ -44,79 +45,6 @@ type CommitRequest struct {
 	Mutations       graph.Mutations `json:"mutations"`
 }
 
-func (s *Server) Handler() http.Handler {
-	s.maintenanceRuntime()
-	if s.QueryRegistry == nil {
-		s.QueryRegistry = NewRunningQueryRegistry()
-	}
-	if s.Observability == nil {
-		s.Observability = observability.New(io.Discard, 500*time.Millisecond)
-	}
-	if s.usageCache == nil {
-		s.usageCache = newTenantUsageCache(s.tenantUsageCacheTTL())
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", s.health)
-	mux.HandleFunc("GET /metrics", s.metrics)
-	mux.HandleFunc("GET /openapi.yaml", s.openAPI)
-	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
-	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
-	mux.HandleFunc("/v1/tenants", s.tenantLifecycle)
-	mux.HandleFunc("/v1/tenants/", s.tenantLifecycle)
-	mux.HandleFunc("GET /v1/tenant-usage", s.tenantUsage)
-	mux.HandleFunc("POST /v1/commits", s.commit)
-	mux.HandleFunc("POST /v1/ingest/batches", s.ingest)
-	mux.HandleFunc("GET /v1/ingest/collectors/", s.collectorStatus)
-	mux.HandleFunc("GET /v1/ingest/deadletters/", s.listDeadLetters)
-	mux.HandleFunc("POST /v1/ingest/deadletters/", s.replayDeadLetters)
-	mux.HandleFunc("GET /v1/entities", s.listEntities)
-	mux.HandleFunc("GET /v1/entities/stream", s.streamEntities)
-	mux.HandleFunc("GET /v1/entities/", s.entity)
-	mux.HandleFunc("GET /v1/edges", s.listEdges)
-	mux.HandleFunc("GET /v1/edges/stream", s.streamEdges)
-	mux.HandleFunc("GET /v1/export/snapshot", s.exportSnapshot)
-	mux.HandleFunc("GET /v1/export/snapshot/stream", s.streamSnapshot)
-	mux.HandleFunc("GET /v1/ci-types", s.ciTypes)
-	mux.HandleFunc("GET /v1/relation-types", s.relationTypes)
-	mux.HandleFunc("/v1/source-policy", s.sourcePolicy)
-	mux.HandleFunc("/v1/tenant-config", s.tenantConfig)
-	mux.HandleFunc("POST /v1/query", s.query)
-	mux.HandleFunc("POST /v1/query/stream", s.queryStream)
-	mux.HandleFunc("POST /v1/query/gql", s.queryGQL)
-	mux.HandleFunc("POST /v1/query/gql/stream", s.queryGQLStream)
-	mux.HandleFunc("GET /v1/queries/running", s.listRunningQueries)
-	mux.HandleFunc("DELETE /v1/queries/running/", s.killRunningQuery)
-	mux.HandleFunc("GET /v1/query/templates", s.listQueryTemplates)
-	mux.HandleFunc("POST /v1/query/templates", s.saveQueryTemplate)
-	mux.HandleFunc("POST /v1/query/templates/", s.runQueryTemplate)
-	mux.HandleFunc("GET /v1/tasks", s.listTasks)
-	mux.HandleFunc("POST /v1/tasks", s.startTask)
-	mux.HandleFunc("GET /v1/tasks/", s.task)
-	mux.HandleFunc("POST /v1/tasks/", s.taskAction)
-	mux.HandleFunc("GET /v1/indexes", s.indexCatalog)
-	mux.HandleFunc("POST /v1/indexes", s.createIndex)
-	mux.HandleFunc("GET /v1/indexes/definitions", s.indexDefinitions)
-	mux.HandleFunc("DELETE /v1/indexes/definitions/", s.dropIndex)
-	mux.HandleFunc("GET /v1/indexes/health", s.indexHealth)
-	mux.HandleFunc("GET /v1/indexes/tasks/", s.indexTask)
-	mux.HandleFunc("POST /v1/indexes/rebuild", s.rebuildIndexes)
-	mux.HandleFunc("GET /v1/control/writer-lease", s.writerLease)
-	mux.HandleFunc("GET /v1/control/reader-lag", s.readerLag)
-	mux.HandleFunc("GET /v1/control/reader-freshness", s.readerLag)
-	mux.HandleFunc("GET /v1/control/reader-fleet-readiness", s.readerFleetReadiness)
-	mux.HandleFunc("GET /v1/control/reader-traffic-gate", s.readerTrafficGate)
-	mux.HandleFunc("GET /v1/control/integrity-audit", s.integrityAudit)
-	mux.HandleFunc("POST /v1/control/recover", s.recoverTenant)
-	mux.HandleFunc("POST /v1/control/repair", s.repairTenant)
-	mux.HandleFunc("POST /v1/control/cleanup-commits", s.cleanupCommits)
-	mux.HandleFunc("POST /v1/control/gc", s.runGC)
-	mux.HandleFunc("POST /v1/compact", s.compact)
-	return s.observeHTTP(s.tenantLifecycleGate(mux))
-}
-
 func (s *Server) tenantUsageCacheTTL() time.Duration {
 	if s.UsageCacheTTL != 0 {
 		return s.UsageCacheTTL
@@ -124,11 +52,79 @@ func (s *Server) tenantUsageCacheTTL() time.Duration {
 	return defaultTenantUsageCacheTTL
 }
 
-func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "mode": s.Mode})
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	coordinator := s.Store.CachedCoordinatorStatus()
+	status := "ok"
+	if !coordinator.Available {
+		status = "degraded"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": status, "mode": s.Mode, "coordination": coordinator, "build": buildinfo.Current(),
+	})
 }
 
-func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) readiness(w http.ResponseWriter, r *http.Request) {
+	timeout := s.ReadinessTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	coordinator, objectStore := s.readinessDependencies(ctx)
+	status := "ready"
+	code := http.StatusOK
+	if !coordinator.Available || !objectStore.Available {
+		status = "not_ready"
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, map[string]any{
+		"status": status, "mode": s.Mode, "coordination": coordinator,
+		"object_store": objectStore, "build": buildinfo.Current(),
+	})
+}
+
+func (s *Server) readinessDependencies(ctx context.Context) (storage.CoordinatorStatus, storage.ObjectStoreStatus) {
+	coordinatorResult := make(chan storage.CoordinatorStatus, 1)
+	objectStoreResult := make(chan storage.ObjectStoreStatus, 1)
+	go func() {
+		coordinatorResult <- s.Store.CoordinatorStatus(ctx)
+	}()
+	go func() {
+		objectStoreResult <- s.Store.ObjectStoreStatus(ctx)
+	}()
+	coordinator := storage.CoordinatorStatus{}
+	select {
+	case coordinator = <-coordinatorResult:
+	case <-ctx.Done():
+		coordinator = storage.CoordinatorStatus{
+			Backend:   s.Store.CoordinationBackend(),
+			Available: false,
+			CheckedAt: time.Now().UTC(),
+			LastError: ctx.Err().Error(),
+		}
+	}
+	objectStore := storage.ObjectStoreStatus{}
+	select {
+	case objectStore = <-objectStoreResult:
+	case <-ctx.Done():
+		objectStore = storage.ObjectStoreStatus{
+			Available: false,
+			CheckedAt: time.Now().UTC(),
+			LastError: ctx.Err().Error(),
+		}
+	}
+	return coordinator, objectStore
+}
+
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
+	status := s.Store.CachedCoordinatorStatus()
+	s.obs().Metrics.RecordCoordinatorStatus(
+		status.Backend,
+		status.Available,
+		status.MaxMirrorLag,
+		status.OutboxBacklog,
+		status.DerivedBacklog,
+	)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = w.Write(s.obs().Metrics.SnapshotPrometheus())
 }
@@ -215,7 +211,7 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 		}
 		s.auditError("commit_failed", tenantID, err, map[string]any{})
 		span.SetAttributes(attribute.String("graphdb.commit.result", "failed"))
-		writeErrorErr(w, http.StatusBadRequest, err)
+		writeStorageError(w, err)
 		return
 	}
 
@@ -328,32 +324,7 @@ func escapedPathParts(r *http.Request, prefix string, count int) ([]string, erro
 }
 
 func (s *Server) ciTypes(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := tenantFromRequest(w, r)
-	if !ok {
-		return
-	}
-	release, ok := s.enterRead(w, r, tenantID)
-	if !ok {
-		return
-	}
-	defer release()
-	target, err := s.readTarget(r, tenantID, readFreshness{})
-	if err != nil {
-		writeReadError(w, err)
-		return
-	}
-	var items []graph.CIType
-	var version int64
-	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
-		items = g.ListCITypes()
-		version = manifest.Version
-		return nil
-	})
-	if err != nil {
-		writeReadError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": version, "ci_types": items})
+	s.listEntityTypes(w, r, "ci_types")
 }
 
 func (s *Server) relationTypes(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +368,7 @@ func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 	manifest, err := s.Store.Compact(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("compact_failed", tenantID, err, map[string]any{})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.invalidate(tenantID)
@@ -524,6 +495,8 @@ func observedRoute(r *http.Request) string {
 		return "POST /v1/ingest/deadletters/{source}/replay"
 	case strings.HasPrefix(path, "/v1/ingest/deadletters/"):
 		return "GET /v1/ingest/deadletters/{source}"
+	case path == "/v1/imports":
+		return "POST /v1/imports"
 	case strings.HasPrefix(path, "/v1/query/templates/"):
 		return "POST /v1/query/templates/{name}/run"
 	case path == "/v1/queries/running":

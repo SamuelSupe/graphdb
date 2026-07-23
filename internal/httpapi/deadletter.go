@@ -14,7 +14,7 @@ func (s *Server) listDeadLetters(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.Store.ListDeadLetters(r.Context(), tenantID, source)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deadletters": items})
@@ -39,7 +39,7 @@ func (s *Server) replayDeadLetters(w http.ResponseWriter, r *http.Request) {
 			s.invalidate(tenantID)
 		}
 		s.auditError("deadletter_replay_failed", tenantID, err, map[string]any{"source": source, "limit": limit})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	if replayReportChangedData(report) {

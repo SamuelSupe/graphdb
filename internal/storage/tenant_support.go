@@ -23,6 +23,9 @@ func ValidateTenantID(tenantID string) error {
 }
 
 func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (Manifest, ObjectMeta, error) {
+	if s.coordinated() {
+		return s.getCoordinatedManifest(ctx, tenantID)
+	}
 	var manifest Manifest
 	key := s.manifestKey(tenantID)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
@@ -51,6 +54,9 @@ func (s *TenantStore) putManifest(ctx context.Context, tenantID string, manifest
 }
 
 func (s *TenantStore) putManifestMeta(ctx context.Context, tenantID string, manifest Manifest, meta ObjectMeta) (ObjectMeta, error) {
+	if s.coordinated() {
+		return s.putCoordinatedManifest(ctx, tenantID, manifest, meta, nil)
+	}
 	lease, _, ok := s.getCachedWriterLeaseAny(tenantID)
 	if !ok {
 		if err := s.acquireWriterLease(ctx, tenantID); err != nil {
@@ -99,6 +105,9 @@ func (s *TenantStore) putManifestMetaUnchecked(ctx context.Context, tenantID str
 }
 
 func (s *TenantStore) publishWriterFence(ctx context.Context, tenantID string, lease WriterLease) error {
+	if s.coordinated() {
+		return nil
+	}
 	if lease.FenceToken == "" || lease.FenceEpoch <= 0 {
 		return fmt.Errorf("writer fence token is required")
 	}
@@ -228,6 +237,22 @@ func (s *TenantStore) sourcePolicyKey(tenantID string) string {
 
 func (s *TenantStore) tenantConfigKey(tenantID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "config", "tenant-config.parquet")
+}
+
+func (s *TenantStore) relationSchemaCatalogKey(tenantID string) string {
+	return path.Join(s.Prefix, "tenants", tenantID, "extensions", "v1.1", "relation-schemas.json")
+}
+
+func (s *TenantStore) reverseIndexCatalogKey(tenantID string) string {
+	return path.Join(s.Prefix, "tenants", tenantID, "extensions", "v1.1", "reverse-index", "catalog.json")
+}
+
+func (s *TenantStore) reverseIndexPrefix(tenantID string) string {
+	return path.Join(s.Prefix, "tenants", tenantID, "extensions", "v1.1", "reverse-index") + "/"
+}
+
+func (s *TenantStore) reverseEdgeShardVersionKey(tenantID string, version int64, relationType string, shard string) string {
+	return path.Join(s.Prefix, "tenants", tenantID, "extensions", "v1.1", "reverse-index", "v"+strconv.FormatInt(version, 10), objectSegment(relationType), objectSegment(shard)+".parquet")
 }
 
 func (s *TenantStore) ingestBatchKey(tenantID string, source string, collectorID string, batchID string) string {

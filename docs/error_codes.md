@@ -38,6 +38,9 @@ The following top-level `code` values are stable:
 | `repair_required` | 409 | no | Operation requires repair before it can proceed. |
 | `version_conflict` | 409 | no | Expected version precondition failed. |
 | `idempotency_conflict` | 409 | no | Idempotency key belongs to a different request. |
+| `idempotency_in_progress` | 409 | yes | Another writer is still processing the same idempotency key. |
+| `write_conflict` | 409 | yes | The tenant head changed until the optimistic retry budget was exhausted. |
+| `coordinator_unavailable` | 503 | yes | The configured external write coordinator is unavailable. |
 | `commit_tail_too_long` | 429 | yes | Commit tail is above the write threshold. |
 | `index_rebuild_running` | 429 | yes | Index rebuild is running for this tenant. |
 | `maintenance_task_running` | 429 | yes | Maintenance work is blocking ordinary writes. |

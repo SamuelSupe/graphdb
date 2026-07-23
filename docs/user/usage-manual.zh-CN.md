@@ -1,4 +1,4 @@
-# GraphDB 使用手册
+# GGraphDB 使用手册
 
 [English](usage-manual.md)
 
@@ -100,13 +100,13 @@ curl -fsS -X POST "$BASE/v1/query" \
   --data @examples/query-match.json
 ```
 
-GQL 文本查询：
+GraphQL：
 
 ```sh
-curl -fsS -X POST "$BASE/v1/query/gql" \
+curl -fsS -X POST "$BASE/v1/query/graphql" \
   -H "$TENANT_HEADER" \
-  -H 'Content-Type: text/plain' \
-  --data-binary 'FIND person WHERE name = "Alice" LIMIT 10'
+  -H 'Content-Type: application/json' \
+  -d '{"query":"query Find($request: QueryRequest!) { graph(request: $request) { version results } }","variables":{"request":{"op":"match","kind":"person","limit":10}}}'
 ```
 
 常见查询类型：

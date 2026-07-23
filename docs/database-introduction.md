@@ -1,13 +1,14 @@
-# GraphDB Database Introduction
+# GGraphDB Database Introduction
 
 [中文](database-introduction.zh-CN.md)
 
-GraphDB is a lightweight, general-purpose Go graph database for
-entity-relationship data. It organizes entities and their relationships as a
-graph and uses local files or S3-compatible object storage as the persistence
-backend. CMDB is one supported application scenario, alongside asset
-relationships, service dependencies, topology, lineage, and other graph-shaped
-workloads. It supports multi-tenancy, ingestion, graph queries, and operations.
+GGraphDB is a lightweight, general-purpose Go current-state property knowledge
+graph for entity-relationship data. It organizes entities and their
+relationships as a graph and uses local files or S3-compatible object storage
+as the persistence backend. Knowledge bases and CMDB are supported application
+scenarios alongside asset relationships, service dependencies, topology,
+lineage, and other graph-shaped workloads. It does not implement RDF/OWL,
+SPARQL, ontology reasoning, or historical graph queries.
 
 ## Core capabilities
 
@@ -16,9 +17,9 @@ workloads. It supports multi-tenancy, ingestion, graph queries, and operations.
   other application-defined links.
 - **Tenant isolation**: each tenant uses an independent data prefix; data APIs
   select the tenant with `X-Tenant-ID`.
-- **Flexible data shape**: entity fields can be schemaless or described with
-  optional type metadata such as `CIType` field types,
-  required/default/unique/index properties.
+- **Flexible data shape**: entity fields can be schemaless or described by an
+  optional `EntityType` (`CIType` in 1.0); labels classify entities, and
+  optional relation property schemas validate/default edge fields.
 - **Optional identity and source governance**: applications can use
   `IdentityKey` rules to reconcile duplicates, while source priority,
   confidence, and write time resolve field and relation conflicts.
@@ -26,14 +27,17 @@ workloads. It supports multi-tenancy, ingestion, graph queries, and operations.
   immutable commits, Parquet snapshots, and rebuildable indexes persist data.
   Manifest CAS prevents stale writers from overwriting newer versions.
 - **Read/write modes**: one binary supports `all`, `writer`, and `reader`.
-  The current boundary is one active writer per tenant; readers load from
-  object storage.
-- **Query options**: JSON Query DSL, GQL, streaming queries, current-state
-  scans, and snapshot export.
+  Local coordination uses one active writer per tenant; optional PostgreSQL
+  head CAS supports 2–8 optimistic writers. Readers load immutable graph
+  objects from object storage.
+- **Query options**: GraphQL, JSON Query DSL, 1-8 step bounded pattern matching,
+  indexed bidirectional traversal, streaming queries, current-state scans, and
+  snapshot export.
+- **Bulk import**: task-backed CSV and JSONL ingestion with checkpoints.
 
 ## What it is useful for
 
-GraphDB can serve as the data layer for general entity-relationship
+GGraphDB can serve as the data layer for general entity-relationship
 applications, including CMDB and resource relationship graphs:
 
 - model domain objects and typed relationships with flexible properties;
@@ -51,8 +55,9 @@ applications, including CMDB and resource relationship graphs:
 Tenant
  ├── Entity       resource, such as host, service, or database
  ├── Edge         relationship, such as runs_on or depends_on
- ├── CIType       optional entity type definition and identity rules
- └── RelationType relationship type, direction, and cardinality
+ ├── EntityType   optional entity type definition and identity rules
+ ├── RelationType relationship type, direction, and cardinality
+ └── RelationSchema optional edge property constraints and defaults
 ```
 
 A small graph may look like:
@@ -68,6 +73,7 @@ Entity fields remain flexible:
 {
   "id": "host:app-01",
   "kind": "host",
+  "labels": ["asset", "production"],
   "source": "agent",
   "external_id": "app-01",
   "fields": {
@@ -81,9 +87,10 @@ Entity fields remain flexible:
 
 ```mermaid
 flowchart LR
-  Client["Graph applications / ingest clients / operations tools"] --> API["GraphDB HTTP API or CLI"]
+  Client["Graph applications / ingest clients / operations tools"] --> API["GGraphDB HTTP API or CLI"]
   API --> Graph["Graph model and query execution"]
   Graph --> Store["Tenant Store\nmanifest / commit / snapshot / index"]
+  Store -. optional head CAS .-> PG["PostgreSQL coordination"]
   Store --> Object["Local files or S3-compatible object storage"]
 ```
 
@@ -136,7 +143,7 @@ X-Tenant-ID: demo
 | --- | --- |
 | `cmd/graphdb` | CLI commands and service startup |
 | `internal/graph` | entities, relations, types, validation, reconciliation, and source governance |
-| `internal/query` | query DSL, GQL, planning, execution, traversal, and streaming |
+| `internal/query` | GraphQL adapter, query DSL, planning, execution, traversal, and streaming |
 | `internal/storage` | object storage, manifests, commits, snapshots, indexes, and ingestion metadata |
 | `internal/httpapi` | HTTP routes, modes, rate limits, tenant routing, and operations APIs |
 | `internal/config` | environment variables and runtime configuration |
@@ -144,9 +151,9 @@ X-Tenant-ID: demo
 
 ## Current boundaries
 
-- Each tenant currently supports one active writer. Writer leases and manifest
-  CAS prevent stale or duplicate writes; they are not a distributed transaction
-  coordinator.
+- Local coordination supports one active writer per tenant. PostgreSQL
+  coordination optionally supports 2–8 optimistic writers and does not provide
+  cross-tenant transactions.
 - Readers use manifests, snapshots, and commits from object storage. Use
   `min_version` for read-after-write consistency and `allow_stale` when
   eventual consistency is acceptable.

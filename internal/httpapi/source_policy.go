@@ -29,7 +29,7 @@ func (s *Server) getSourcePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	policy, configured, err := s.Store.GetSourcePolicy(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, SourcePolicyResponse{Configured: configured, Policy: policy})
@@ -51,7 +51,7 @@ func (s *Server) putSourcePolicy(w http.ResponseWriter, r *http.Request) {
 	policy, err := s.Store.PutSourcePolicy(r.Context(), tenantID, policy)
 	if err != nil {
 		s.auditError("source_policy_update_failed", tenantID, err, map[string]any{})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("source_policy_updated", tenantID, map[string]any{"sources": len(policy.Sources), "default_priority": policy.DefaultPriority})

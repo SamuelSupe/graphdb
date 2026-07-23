@@ -18,6 +18,14 @@ type aliyunOSSClient struct {
 	bucket string
 }
 
+func (c *aliyunOSSClient) Probe(ctx context.Context) error {
+	_, err := c.client.ListObjectsV2(ctx, &oss.ListObjectsV2Request{
+		Bucket:  nativeStringRef(c.bucket),
+		MaxKeys: 1,
+	})
+	return normalizeAliyunOSSError(err, false)
+}
+
 func NewAliyunOSSStore(endpoint, bucket, region, accessKey, secretKey string, options S3Options) (*NativeObjectStore, error) {
 	config, err := newNativeStoreOptions(endpoint, bucket, region, accessKey, secretKey, options)
 	if err != nil {

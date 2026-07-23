@@ -1,6 +1,6 @@
 # 查询能力说明
 
-本文说明当前 GraphDB 的用户侧查询能力。查询对象是租户当前可见快照，不提供历史版本查询；读一致性通过 `min_version` 和 `allow_stale` 控制。
+本文说明当前 GGraphDB 的用户侧查询能力。查询对象是租户当前可见快照，不提供历史版本查询；读一致性通过 `min_version` 和 `allow_stale` 控制。
 
 ## 入口
 
@@ -8,12 +8,15 @@ HTTP 查询入口：
 
 - `POST /v1/query`: 返回 JSON 结果页。
 - `POST /v1/query/stream`: 返回 `application/x-ndjson`，先输出 meta，再输出结果行，最后输出 done meta。
-- `POST /v1/query/gql`: 执行文本 GQL 查询，先编译成 JSON DSL。语法见 [gql.md](gql.md)。
-- `POST /v1/query/gql/stream`: 执行文本 GQL 查询并返回 NDJSON。
+- `POST /v1/query/graphql`: 执行 GraphQL document，schema 和 envelope 见
+  [graphql.zh-CN.md](graphql.zh-CN.md)。
+- `POST /v1/query/gql`: 执行已弃用的 1.0 `FIND`/`MATCH` 文本 DSL，先编译成
+  JSON DSL。兼容语法见 [gql.md](gql.md)。
+- `POST /v1/query/gql/stream`: 执行旧文本 DSL 并返回 NDJSON。
 - `GET /v1/queries/running`: 列出当前进程内该租户正在执行的查询。
 - `DELETE /v1/queries/running/{query_id}`: 取消当前进程内指定查询。
 
-已实现但 OpenAPI 合同还需要补齐的模板入口：
+OpenAPI 1.1 合同已覆盖的模板入口：
 
 - `GET /v1/query/templates`: 列出 saved query。
 - `POST /v1/query/templates`: 保存 saved query。reader mode 禁止写。
@@ -58,7 +61,7 @@ HTTP 查询入口：
 
 通用字段：
 
-- `op`: 查询操作。支持 `match`、`neighbors`、`traverse`、`impact`、`shortest_path`、`explain`、`profile`。
+- `op`: 查询操作。支持 `match`、`pattern`、`neighbors`、`traverse`、`impact`、`shortest_path`、`explain`、`profile`。
 - `kind`: entity kind，主要用于 `match`。
 - `filters`: 兼容字段，等价于多个 `eq` 条件。
 - `where`: 结构化过滤条件。
@@ -67,7 +70,8 @@ HTTP 查询入口：
 - `edge_where_expr`: edge 布尔过滤表达式。
 - `id`: 起点 entity id，用于 `neighbors`、`traverse`、`impact`、`shortest_path`。
 - `target_id`: 终点 entity id，用于 `shortest_path`。
-- `direction`: `out`、`in`、`both`；未传时按 `both`。
+- `direction`: `out`、`in`、`both`；普通图操作未传时按 `both`，`pattern`
+  未传时按 `out`。
 - `direction_strategy`: 当前支持 `impact`，用于按关系影响方向展开。
 - `relation_type`: 单个关系类型。
 - `relation_types`: 多个关系类型。
@@ -209,6 +213,44 @@ path 排序支持：
 - `kind + gt/gte/lt/lte/prefix/exists(true)` 可使用 field index scan。
 - 无可用索引时回退到 kind scan；未传 `kind` 会扫描所有实体。
 
+### pattern
+
+从一种起点实体开始，按 1 到 8 个 step 做固定长度图模式匹配：
+
+```json
+{
+  "op": "pattern",
+  "kind": "document",
+  "where": [{"field": "labels", "op": "contains", "value": "article"}],
+  "path": {
+    "steps": [
+      {
+        "direction": "out",
+        "relation_types": ["cites"],
+        "node_kinds": ["document"],
+        "where": [{"field": "status", "op": "eq", "value": "published"}],
+        "edge_where": [{"field": "confidence", "op": "gte", "value": 0.8}]
+      },
+      {
+        "direction": "in",
+        "relation_types": ["authored_by"],
+        "node_kinds": ["person"]
+      }
+    ],
+    "max_paths": 100
+  },
+  "limit": 20
+}
+```
+
+说明：
+
+- `kind` 和至少一个 `path.steps` 必填；返回完整 path。
+- 每个 step 可独立指定方向、关系类型、目标节点 kind/字段和 edge 字段。
+- 匹配精确 step 数；不做无界重复、变量绑定、optional pattern 或 join。
+- 起点可以复用 `match` 的字段索引，`in`/`both` step 可以使用持久化反向
+  邻接 shard。
+
 ### neighbors
 
 查询一个实体的一跳邻居。
@@ -241,7 +283,8 @@ path 排序支持：
 执行策略：
 
 - `direction=out` 且有 edge shard/index 时，优先走 persisted out-edge shard。
-- `direction=in` 或 `both` 当前可能需要内存图或快照回退路径。
+- `direction=in` 使用 persisted reverse-edge shard；`both` 合并正向和反向
+  shard。对应 sidecar 不可用时回退内存图或 snapshot 路径。
 
 ### traverse
 
@@ -435,13 +478,14 @@ path 排序支持：
 当 persisted index catalog 与目标版本一致时，查询可以走 lazy read：
 
 - `match` 可通过 field index 或 entity page 找到候选 ID，再按需 materialize entity。
-- `neighbors/traverse/impact/shortest_path` 在 `direction=out` 时可以读取 edge shard，再按需拉取目标 entity。
+- `pattern` 可以用起点字段索引，并按每一步方向读取正向或反向 edge shard。
+- `neighbors/traverse/shortest_path` 可以按 `out`、`in`、`both` 读取正向、
+  反向或两类 edge shard，再按需拉取目标 entity；`impact` 保持其传播语义。
 - `project`、`where`、`sort`、`aggregate`、`group_by` 相关字段会参与 materialize field 集合，减少 entity page 反序列化范围。
 - 如果 lazy read 所需 index/page/shard 不可用，系统会回退到加载图快照；纯 lazy 场景下缺必要对象会返回 `persisted index unavailable`。
 
 当前不会完全下推的场景：
 
-- `direction=in` 和 `direction=both` 的复杂遍历。
 - path 结果的字段级 projection。
 - `contains/fuzzy/neq` 这类过滤通常需要候选 materialize 后再判断。
 
@@ -467,12 +511,13 @@ path 排序支持：
 
 限制：
 
-- 不支持 Cypher/Gremlin。
+- 只支持有界 `pattern`，不支持完整 Cypher/Gremlin。
 - 不支持跨租户查询。
 - 不支持历史版本查询。
 - 不支持 join、子查询、复杂表达式计算。
 - 单页最大 `limit=1000`。
 - `depth` 最大 16。
+- `pattern.path.steps` 最大 8。
 
 ## CMDB 场景示例
 

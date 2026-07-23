@@ -35,13 +35,17 @@
 | `index_rebuild_running` | 索引重建阻塞写入 | 等待，或在合适时取消任务。 |
 | `quota_exceeded` | 将超过租户配额 | 提高配额或删除数据。 |
 | `idempotency_conflict` | 相同 key 对应不同 payload | 使用新 key，或重发完全相同 body。 |
-| `lease_held` | 重复/陈旧 writer 保护 | 确保每租户只有一个活跃 writer。 |
+| `idempotency_in_progress` | 另一个 writer 正在处理相同 key | 退避后用相同 key 重试完全相同的请求。 |
+| `write_conflict` | PG head 在重试预算内持续变化 | 用相同幂等键重试；持续出现时检查 CAS 冲突率。 |
+| `version_conflict` | `expected_version` 已不匹配 | 重新读取 head 并处理调用方前置条件，不要盲目重试。 |
+| `coordinator_unavailable` | PostgreSQL coordinator 不可用 | 恢复 PG 连接；写入绝不会回退到 local 模式。 |
+| `lease_held` | 本地模式重复/陈旧 writer 保护 | 确保每租户只有一个本地协调 writer。 |
 | `index_stale` | 索引缺失或过期 | 重建索引，或在支持时允许 fallback。 |
 | `repair_required` | 完整性问题阻断操作 | 执行 audit 和 repair。 |
 
 ## 429 处理
 
-GraphDB 使用 429 表示准入或背压。客户端应：
+GGraphDB 使用 429 表示准入或背压。客户端应：
 
 1. 读取 `Retry-After` 和 `retry_after_ms`；
 2. 使用相同 `idempotency_key` 重试；
@@ -55,7 +59,7 @@ GraphDB 使用 429 表示准入或背压。客户端应：
   "code": "write_backpressure",
   "retry_after_ms": 2000,
   "reasons": [
-    {"code": "commit_tail_too_long", "current": 301, "threshold": 300}
+    {"code": "commit_tail_too_long", "current": 1501, "threshold": 1500}
   ]
 }
 ```

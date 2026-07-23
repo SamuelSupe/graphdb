@@ -80,6 +80,24 @@ func (s *Server) readTarget(r *http.Request, tenantID string, body readFreshness
 	}
 	manifest, err := s.currentQueryManifest(r.Context(), tenantID)
 	if err != nil {
+		if errors.Is(err, storage.ErrCoordinatorUnavailable) && s.Cache != nil {
+			if visible, ok := s.Cache.CachedVersion(tenantID); ok {
+				if freshness.MinVersion > visible {
+					return readTarget{}, s.readerNotFresh(
+						tenantID, visible, freshness.MinVersion, "coordinator_unavailable", err,
+					)
+				}
+				targetVersion := visible
+				if freshness.AllowStale {
+					targetVersion = freshness.MinVersion
+				}
+				return readTarget{
+					ManifestVersion: visible,
+					TargetVersion:   targetVersion,
+					AllowStale:      freshness.AllowStale,
+				}, nil
+			}
+		}
 		return readTarget{}, err
 	}
 	if freshness.MinVersion > manifest.Version {

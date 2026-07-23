@@ -49,7 +49,7 @@ func (c *Client) doText(ctx context.Context, method string, path string, tenantI
 
 func (c *Client) do(ctx context.Context, method string, path string, tenantID string, query url.Values, body io.Reader, contentType string) (*http.Response, error) {
 	if c == nil {
-		return nil, errors.New("nil GraphDB client")
+		return nil, errors.New("nil GGraphDB client")
 	}
 	requestURL, err := c.url(path, query)
 	if err != nil {
