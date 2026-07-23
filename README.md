@@ -89,16 +89,46 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/query \
   -H 'Content-Type: application/json' \
   --data @examples/query-match.json
 
-# 4. Query with GQL
+# 4. Query the generic graph with GQL
 curl -fsS -X POST http://127.0.0.1:8080/v1/query/gql \
   -H 'X-Tenant-ID: demo' \
   -H 'Content-Type: text/plain' \
-  --data-binary 'FIND person WHERE name = "Alice" LIMIT 10'
+  --data-binary 'FIND person WHERE name = "Alice" PROJECT id, name LIMIT 10'
 ```
 
 The write response's `version` can be passed as `min_version` to a reader when
 the query must observe that write. Use `allow_stale=true` only when eventual
 consistency is acceptable.
+
+## Generic graph queries with GQL
+
+The `examples/commit.json` dataset contains a non-CMDB graph: `person:alice`
+works at `company:acme`. GQL queries application-defined entity kinds, fields,
+and relation types, so the same syntax works for organization graphs, project
+dependencies, data lineage, and other graph-shaped data.
+
+Find an entity by a property:
+
+```sql
+FIND person
+WHERE name = "Alice"
+PROJECT id, name
+LIMIT 10
+```
+
+Follow a typed relationship to one-hop neighbors:
+
+```sql
+NEIGHBORS person:alice OUT
+REL works_at
+PROJECT id, name
+LIMIT 10
+```
+
+`FIND` maps to entity matching, while `NEIGHBORS` and `TRAVERSE` support
+relationship traversal. GQL is compiled to the same JSON Query DSL and query
+planner; see the [GQL guide](docs/gql.md) for filters, paths, pagination,
+`EXPLAIN`, and `PROFILE`.
 
 ## Deployment modes
 
