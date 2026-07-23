@@ -164,6 +164,21 @@ func (s *TenantStore) deleteWriteCache(tenantID string) {
 	s.removeWriteCacheLocked(tenantID)
 }
 
+func (s *TenantStore) handleManifestPublishFailureCache(
+	tenantID string,
+	loaded loadedGraph,
+	publishErr error,
+) {
+	if s.coordinated() && errors.Is(publishErr, ErrConflict) {
+		// The candidate never became authoritative, but its loaded base still
+		// is. Keep that base so the retry can apply only the winning commits
+		// instead of reconstructing the whole graph from object storage.
+		s.setWriteCache(tenantID, loaded)
+		return
+	}
+	s.deleteWriteCache(tenantID)
+}
+
 func (s *TenantStore) removeWriteCacheLocked(tenantID string) {
 	if cached, ok := s.writeCache[tenantID]; ok {
 		s.writeCacheBytes -= cached.CacheBytes

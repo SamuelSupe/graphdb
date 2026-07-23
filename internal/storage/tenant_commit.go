@@ -227,7 +227,9 @@ func (s *TenantStore) commitWithRetryLocked(ctx context.Context, tenantID string
 		if s.coordinated() && opts.ExpectedVersion != nil {
 			return CommitResult{}, fmt.Errorf("%w: expected version %d changed while publishing", ErrVersionConflict, *opts.ExpectedVersion)
 		}
-		s.deleteWriteCache(tenantID)
+		if !s.coordinated() {
+			s.deleteWriteCache(tenantID)
+		}
 		if attempt+1 >= attempts {
 			break
 		}
@@ -505,7 +507,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	meta, err := s.putManifestForCommit(putManifestCtx, tenantID, manifest, loaded.Meta, opts.directCommit)
 	endStorageSpan(putManifestSpan, err)
 	if err != nil {
-		s.deleteWriteCache(tenantID)
+		s.handleManifestPublishFailureCache(tenantID, loaded, err)
 		return CommitResult{}, err
 	}
 	commitPublished = true

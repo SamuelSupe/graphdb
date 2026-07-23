@@ -57,3 +57,46 @@ func BenchmarkContentMD5(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkStorageCopyAndContentMD5Scale(b *testing.B) {
+	for _, size := range []int{10_000, 30_000, 36_000} {
+		g := New()
+		entities := make([]Entity, size)
+		for i := range entities {
+			entities[i] = Entity{
+				ID:     fmt.Sprintf("sample:%d", i),
+				Kind:   "sample",
+				Fields: Fields{"writer": i % 2, "sequence": i},
+			}
+		}
+		if err := g.ApplyCommit(Commit{
+			ID: "seed", Version: 1,
+			Mutations: Mutations{UpsertEntities: entities},
+		}); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := g.ContentMD5(); err != nil {
+			b.Fatal(err)
+		}
+
+		b.Run(fmt.Sprintf("entities-%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				next, _, err := g.ApplyCommitStorageCopyWithOptions(Commit{
+					ID:      fmt.Sprintf("insert-%d", i),
+					Version: 2,
+					Mutations: Mutations{UpsertEntities: []Entity{{
+						ID: fmt.Sprintf("sample:new-%d", i), Kind: "sample",
+						Fields: Fields{"writer": i % 2, "sequence": size + i},
+					}}},
+				}, ApplyOptions{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := next.ContentMD5(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

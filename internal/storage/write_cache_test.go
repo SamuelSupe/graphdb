@@ -44,6 +44,52 @@ func TestDeleteWriteCacheRemovesLRUState(t *testing.T) {
 	}
 }
 
+func TestCoordinatedManifestConflictRetainsLoadedWriteBase(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.Coordinator = postgresWriteCacheTestCoordinator{}
+	loaded := cachedGraph(7)
+	loaded.Meta = coordinatedManifestMeta("manifest-v7", CoordinationHead{
+		Revision: 7, Generation: 1, WriteContextRevision: 1,
+	})
+	store.setWriteCache("tenant-a", loaded)
+
+	store.handleManifestPublishFailureCache("tenant-a", loaded, ErrConflict)
+
+	cached, ok := store.getWriteCache("tenant-a")
+	if !ok || cached.Graph != loaded.Graph || cached.Manifest.Version != 7 {
+		t.Fatalf("retained cache = %#v exists=%v, want loaded version 7", cached.Manifest, ok)
+	}
+}
+
+func TestCoordinatedManifestConflictDoesNotReplaceNewerWriteCache(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.Coordinator = postgresWriteCacheTestCoordinator{}
+	loaded := cachedGraph(7)
+	loaded.Meta = coordinatedManifestMeta("manifest-v7", CoordinationHead{
+		Revision: 7, Generation: 1, WriteContextRevision: 1,
+	})
+	newer := cachedGraph(8)
+	newer.Meta = coordinatedManifestMeta("manifest-v8", CoordinationHead{
+		Revision: 8, Generation: 1, WriteContextRevision: 1,
+	})
+	store.setWriteCache("tenant-a", newer)
+
+	store.handleManifestPublishFailureCache("tenant-a", loaded, ErrConflict)
+
+	cached, ok := store.getWriteCache("tenant-a")
+	if !ok || cached.Graph != newer.Graph || cached.Manifest.Version != 8 {
+		t.Fatalf("cache after stale conflict = %#v exists=%v, want newer version 8", cached.Manifest, ok)
+	}
+}
+
+type postgresWriteCacheTestCoordinator struct {
+	WriteCoordinator
+}
+
+func (postgresWriteCacheTestCoordinator) Backend() string {
+	return CoordinationPostgres
+}
+
 func TestWriteCacheEvictsLeastRecentlyUsedTenantByMemory(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	store.MaxWriteCacheTenants = 10
