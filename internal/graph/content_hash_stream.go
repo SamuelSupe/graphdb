@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"bufio"
 	"crypto/md5"
 	"encoding/hex"
 	"hash"
@@ -34,7 +35,8 @@ func (g *Graph) ContentMD5WithLogicalSize() (string, int64, error) {
 	}
 
 	digest := &countingHash{Hash: md5.New()}
-	_, _ = io.WriteString(digest, "{")
+	buffered := bufio.NewWriterSize(digest, 64*1024)
+	_, _ = io.WriteString(buffered, "{")
 	firstField := true
 	cache := g.logicalHashCache
 	for _, field := range []struct {
@@ -46,10 +48,13 @@ func (g *Graph) ContentMD5WithLogicalSize() (string, int64, error) {
 		{name: "relation_types", category: cache.relationTypes},
 		{name: "edges", category: cache.edges},
 	} {
-		writeLogicalHashArray(digest, &firstField, field.name, field.category)
+		writeLogicalHashArray(buffered, &firstField, field.name, field.category)
 	}
 
-	_, _ = io.WriteString(digest, "}")
+	_, _ = io.WriteString(buffered, "}")
+	if err := buffered.Flush(); err != nil {
+		return "", 0, err
+	}
 	cache.digest = hex.EncodeToString(digest.Sum(nil))
 	cache.logicalBytes = digest.written
 	cache.finalReady = true
@@ -67,7 +72,7 @@ func (h *countingHash) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func writeLogicalHashArray(digest hash.Hash, firstField *bool, name string, category logicalHashCategory) {
+func writeLogicalHashArray(digest io.Writer, firstField *bool, name string, category logicalHashCategory) {
 	if len(category.keys) == 0 {
 		return
 	}

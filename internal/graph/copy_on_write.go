@@ -1,5 +1,7 @@
 package graph
 
+import "maps"
+
 // copyOnWriteState tracks index buckets shared with the source graph by a
 // storage-only mutation copy. Public graph copies continue to be fully deep.
 type copyOnWriteState struct {
@@ -39,11 +41,10 @@ func (g *Graph) cloneForStorageMutation() *Graph {
 }
 
 func shallowCopyMap[K comparable, V any](source map[K]V) map[K]V {
-	copy := make(map[K]V, len(source))
-	for key, value := range source {
-		copy[key] = value
+	if source == nil {
+		return map[K]V{}
 	}
-	return copy
+	return maps.Clone(source)
 }
 
 func copyStringSet(source map[string]struct{}) map[string]struct{} {

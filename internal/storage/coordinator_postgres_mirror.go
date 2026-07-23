@@ -131,7 +131,8 @@ func (c *PostgresCoordinator) CompleteLegacyManifest(ctx context.Context, job Le
 		`UPDATE `+c.table("legacy_manifest_outbox")+`
 		 SET status = 'done', owner_token = '', lease_until = NULL,
 		     last_error = '', updated_at = now()
-		 WHERE namespace = $1 AND tenant_id = $2 AND head_revision <= $3`,
+		 WHERE namespace = $1 AND tenant_id = $2 AND head_revision <= $3
+		   AND status <> 'done'`,
 		c.namespace, job.TenantID, job.HeadRevision,
 	)
 	if err != nil {

@@ -253,21 +253,24 @@ func (f *postgresS3Fixture) newWriter(t *testing.T, writerID int) *TenantStore {
 
 func (f *postgresS3Fixture) cleanup(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	objects, err := f.objects.List(ctx, f.prefix+"/")
+	objectCtx, cancelObjects := context.WithTimeout(context.Background(), 5*time.Minute)
+	objects, err := f.objects.List(objectCtx, f.prefix+"/")
 	if err == nil {
 		keys := make([]string, 0, len(objects))
 		for _, object := range objects {
 			keys = append(keys, object.Key)
 		}
-		if deleteErr := f.objects.DeleteBatch(ctx, keys); deleteErr != nil {
+		if deleteErr := f.objects.DeleteBatch(objectCtx, keys); deleteErr != nil {
 			t.Errorf("delete %d S3 integration objects: %v", len(keys), deleteErr)
 		}
 	} else {
 		t.Errorf("list S3 integration objects for cleanup: %v", err)
 	}
-	if _, err := f.coordinator.pool.Exec(ctx, `DROP SCHEMA IF EXISTS "`+f.schema+`" CASCADE`); err != nil {
+	cancelObjects()
+
+	dropCtx, cancelDrop := context.WithTimeout(context.Background(), time.Minute)
+	defer cancelDrop()
+	if _, err := f.coordinator.pool.Exec(dropCtx, `DROP SCHEMA IF EXISTS "`+f.schema+`" CASCADE`); err != nil {
 		t.Errorf("drop PostgreSQL integration schema: %v", err)
 	}
 	f.coordinator.Close()
