@@ -42,7 +42,11 @@ func TestPostgresCoordinatorCommitReservationRenewsWhileWriting(t *testing.T) {
 	}
 	defer objects.unblock()
 	store := NewTenantStore(objects, "test")
-	store.SetCoordinator(coordinator)
+	renewed := make(chan struct{}, 16)
+	store.SetCoordinator(commitRenewalObserver{
+		WriteCoordinator: coordinator,
+		renewed:          renewed,
+	})
 	store.CoordinatorPendingTTL = 500 * time.Millisecond
 	mutations := graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
@@ -59,7 +63,15 @@ func TestPostgresCoordinatorCommitReservationRenewsWhileWriting(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("commit did not reach the blocked object write")
 	}
-	time.Sleep(1200 * time.Millisecond)
+	for count := 0; count < 7; count++ {
+		select {
+		case <-renewed:
+		case err := <-result:
+			t.Fatalf("commit ended before reservation renewal %d: %v", count+1, err)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("reservation renewal %d did not complete", count+1)
+		}
+	}
 	requestJSON, err := json.Marshal(directCommitRequest(mutations, options))
 	if err != nil {
 		t.Fatal(err)
@@ -92,6 +104,27 @@ func TestPostgresCoordinatorCommitReservationRenewsWhileWriting(t *testing.T) {
 	if !replay.IdempotentReplay || replay.Version != 1 {
 		t.Fatalf("replay = %#v, want committed version 1", replay)
 	}
+}
+
+type commitRenewalObserver struct {
+	WriteCoordinator
+	renewed chan<- struct{}
+}
+
+func (c commitRenewalObserver) RenewCommit(
+	ctx context.Context,
+	tenantID, key, requestHash, ownerToken string,
+) (bool, error) {
+	ok, err := c.WriteCoordinator.RenewCommit(
+		ctx, tenantID, key, requestHash, ownerToken,
+	)
+	if ok && err == nil {
+		select {
+		case c.renewed <- struct{}{}:
+		default:
+		}
+	}
+	return ok, err
 }
 
 type blockingCommitPutStore struct {
