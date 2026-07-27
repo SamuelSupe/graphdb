@@ -59,6 +59,15 @@ wait_postgres() {
 }
 
 cd "$ROOT"
+if [[ -n "${GRAPHDB_TEST_CAS_STRESS_REPORT:-}" &&
+  "$GRAPHDB_TEST_CAS_STRESS_REPORT" != /* ]]; then
+  export GRAPHDB_TEST_CAS_STRESS_REPORT="$ROOT/$GRAPHDB_TEST_CAS_STRESS_REPORT"
+fi
+if [[ -n "${GRAPHDB_TEST_ROLLBACK_REPORT:-}" &&
+  "$GRAPHDB_TEST_ROLLBACK_REPORT" != /* ]]; then
+  export GRAPHDB_TEST_ROLLBACK_REPORT="$ROOT/$GRAPHDB_TEST_ROLLBACK_REPORT"
+fi
+
 case "$MODE" in
   integration | soak | rollback) ;;
   *)
