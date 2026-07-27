@@ -39,7 +39,8 @@ func (s *TenantStore) runCommitReservationRenewal(
 	renewal *commitReservationRenewal,
 ) {
 	ttl := s.coordinatorPendingReservationTTL()
-	ticker := time.NewTicker(max(ttl/3, 10*time.Millisecond))
+	interval := max(ttl/3, 10*time.Millisecond)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -54,7 +55,7 @@ func (s *TenantStore) runCommitReservationRenewal(
 			}
 			return
 		case <-ticker.C:
-			timeout := max(min(ttl/2, 5*time.Second), 10*time.Millisecond)
+			timeout := max(min(ttl-interval, 5*time.Second), 10*time.Millisecond)
 			renewCtx, cancel := context.WithTimeout(ctx, timeout)
 			ok, err := s.Coordinator.RenewCommit(
 				renewCtx,
