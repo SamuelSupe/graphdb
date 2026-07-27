@@ -59,7 +59,7 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 	report := RecoveryReport{TenantID: tenantID, StartVersion: loaded.Manifest.Version}
 	referenced := referencedCommits(loaded.Manifest)
 	report.ReferencedKeys = len(referenced)
-	scan, err := s.loadCommitObjects(ctx, tenantID, referenced)
+	scan, err := s.loadCommitObjects(ctx, tenantID, referenced, 0)
 	if err != nil {
 		return report, err
 	}
@@ -140,8 +140,44 @@ type commitObjectScan struct {
 	Truncated   bool
 }
 
-func (s *TenantStore) loadCommitObjects(ctx context.Context, tenantID string, referenced map[string]struct{}) (commitObjectScan, error) {
-	return s.loadCommitObjectsPage(ctx, tenantID, referenced, "", 0)
+func (s *TenantStore) loadCommitObjects(
+	ctx context.Context,
+	tenantID string,
+	referenced map[string]struct{},
+	afterVersion int64,
+) (commitObjectScan, error) {
+	scan := commitObjectScan{}
+	err := scanObjectPrefixFresh(
+		ctx,
+		s.Objects,
+		s.commitPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				if strings.HasPrefix(
+					object.Key,
+					s.commitSegmentPrefix(tenantID),
+				) {
+					continue
+				}
+				if err := s.appendCommitObject(
+					ctx,
+					tenantID,
+					object,
+					referenced,
+					afterVersion,
+					&scan,
+				); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return commitObjectScan{}, err
+	}
+	sortCommitObjectScan(&scan)
+	return scan, nil
 }
 
 func (s *TenantStore) loadCommitObjectsPage(ctx context.Context, tenantID string, referenced map[string]struct{}, cursor string, limit int) (commitObjectScan, error) {
@@ -164,30 +200,16 @@ func (s *TenantStore) loadCommitObjectsPage(ctx context.Context, tenantID string
 			continue
 		}
 		scan.NextCursor = object.Key
-		if _, ok := referenced[object.Key]; ok {
-			continue
-		}
-		data, err := s.Objects.Get(ctx, object.Key)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
+		if err := s.appendCommitObject(
+			ctx,
+			tenantID,
+			object,
+			referenced,
+			0,
+			&scan,
+		); err != nil {
 			return commitObjectScan{}, err
 		}
-		commit, err := unmarshalCommitObject(data)
-		if err != nil {
-			scan.InvalidKeys = append(scan.InvalidKeys, object.Key)
-			continue
-		}
-		if commit.TenantID != tenantID {
-			scan.InvalidKeys = append(scan.InvalidKeys, object.Key)
-			continue
-		}
-		if err := validateCommitObjectIdentity(object.Key, commit); err != nil {
-			scan.InvalidKeys = append(scan.InvalidKeys, object.Key)
-			continue
-		}
-		scan.Items = append(scan.Items, commitObject{Key: object.Key, Commit: commit})
 	}
 	scan.Truncated = nextCursor != "" && !reachedSegments
 	if scan.Truncated {
@@ -195,6 +217,45 @@ func (s *TenantStore) loadCommitObjectsPage(ctx context.Context, tenantID string
 	} else {
 		scan.NextCursor = ""
 	}
+	sortCommitObjectScan(&scan)
+	return scan, nil
+}
+
+func (s *TenantStore) appendCommitObject(
+	ctx context.Context,
+	tenantID string,
+	object ObjectInfo,
+	referenced map[string]struct{},
+	afterVersion int64,
+	scan *commitObjectScan,
+) error {
+	if _, ok := referenced[object.Key]; ok {
+		return nil
+	}
+	if version, _, ok := commitIdentityFromKey(object.Key); afterVersion > 0 && ok &&
+		version <= afterVersion {
+		return nil
+	}
+	data, err := s.Objects.Get(ctx, object.Key)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	commit, err := unmarshalCommitObject(data)
+	if err != nil || commit.TenantID != tenantID ||
+		validateCommitObjectIdentity(object.Key, commit) != nil {
+		scan.InvalidKeys = append(scan.InvalidKeys, object.Key)
+		return nil
+	}
+	scan.Items = append(scan.Items, commitObject{
+		Key: object.Key, Commit: commit,
+	})
+	return nil
+}
+
+func sortCommitObjectScan(scan *commitObjectScan) {
 	sort.Slice(scan.Items, func(i, j int) bool {
 		if scan.Items[i].Commit.Version == scan.Items[j].Commit.Version {
 			return scan.Items[i].Key < scan.Items[j].Key
@@ -202,7 +263,6 @@ func (s *TenantStore) loadCommitObjectsPage(ctx context.Context, tenantID string
 		return scan.Items[i].Commit.Version < scan.Items[j].Commit.Version
 	})
 	sort.Strings(scan.InvalidKeys)
-	return scan, nil
 }
 
 func validateCommitObjectIdentity(key string, commit graph.Commit) error {
@@ -246,6 +306,28 @@ func commitIdentityFromKey(key string) (int64, string, bool) {
 		return 0, "", false
 	}
 	return version, id, true
+}
+
+func commitSegmentIdentityFromKey(key string) (int64, int64, bool) {
+	name := path.Base(key)
+	const suffix = ".parquet"
+	if !strings.HasSuffix(name, suffix) {
+		return 0, 0, false
+	}
+	base := strings.TrimSuffix(name, suffix)
+	if len(base) < 43 || base[20] != '-' || base[41] != '-' ||
+		base[42:] == "" {
+		return 0, 0, false
+	}
+	first, err := strconv.ParseInt(base[:20], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	last, err := strconv.ParseInt(base[21:41], 10, 64)
+	if err != nil || last < first {
+		return 0, 0, false
+	}
+	return first, last, true
 }
 
 func snapshotIdentityFromKey(key string) (int64, bool) {

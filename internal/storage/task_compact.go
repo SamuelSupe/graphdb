@@ -83,13 +83,6 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	if err := s.EnsureTenantWritable(ctx, task.TenantID); err != nil {
 		return nil, "", err
 	}
-	current, currentMeta, err := s.getManifest(ctx, task.TenantID)
-	if err != nil {
-		return nil, "", err
-	}
-	if !cachedManifestMatches(loaded, current, currentMeta) {
-		return nil, "", fmt.Errorf("%w: manifest changed while compacting tenant %q", ErrConflict, task.TenantID)
-	}
 	manifest := Manifest{
 		LayoutVersion:      CurrentObjectLayoutVersion,
 		TenantID:           task.TenantID,
@@ -107,7 +100,26 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	}, map[string]any{"version": manifest.Version, "snapshot_key": manifest.SnapshotKey, "snapshot_catalog_key": manifest.SnapshotCatalogKey}); err != nil {
 		return nil, "", err
 	}
-	meta, err := s.putManifestMeta(ctx, task.TenantID, manifest, currentMeta)
+	var meta ObjectMeta
+	if s.coordinated() {
+		manifest, meta, err = s.publishCoordinatedCompaction(
+			ctx,
+			task.TenantID,
+			loaded,
+			snapshotKey,
+			catalog.Key,
+			dataMD5,
+		)
+	} else {
+		current, currentMeta, currentErr := s.getManifest(ctx, task.TenantID)
+		if currentErr != nil {
+			return nil, "", currentErr
+		}
+		if !cachedManifestMatches(loaded, current, currentMeta) {
+			return nil, "", fmt.Errorf("%w: manifest changed while compacting tenant %q", ErrConflict, task.TenantID)
+		}
+		meta, err = s.putManifestMeta(ctx, task.TenantID, manifest, currentMeta)
+	}
 	if err != nil {
 		s.deleteWriteCache(task.TenantID)
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "compact_publish_manifest", total-1, total, taskActionUpdate{
@@ -116,7 +128,14 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		}, nil)
 		return nil, "", err
 	}
-	s.setWriteCache(task.TenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5, CacheBytes: loaded.CacheBytes})
+	if manifest.Version == snapshot.Version {
+		s.setWriteCache(task.TenantID, loadedGraph{
+			Graph: g, Manifest: manifest, Meta: meta,
+			DataMD5:    dataMD5,
+			CommitTail: emptyCommitTailCache(),
+			CacheBytes: writeCacheBytesWithoutCommitTail(loaded),
+		})
+	}
 	unlock()
 	lockHeld = false
 	_ = s.updateTaskActionProgress(ctx, task, "compact_done", total, total, taskActionUpdate{

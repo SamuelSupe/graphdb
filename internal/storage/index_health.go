@@ -76,8 +76,17 @@ func (s *TenantStore) IndexHealthWithOptions(ctx context.Context, tenantID strin
 	if err != nil {
 		return IndexHealth{}, err
 	}
+	if err := checkIndexCatalogCoverage(
+		loaded.Graph,
+		catalog,
+		definitions,
+		&health,
+	); err != nil {
+		return IndexHealth{}, err
+	}
 	s.checkFieldIndexObjects(ctx, tenantID, catalog, loaded.Graph, definitions, &health)
 	s.checkEdgeShardObjects(ctx, tenantID, catalog, loaded.Graph, &health)
+	s.checkReverseIndexObjects(ctx, tenantID, catalog.Version, loaded.Graph, &health)
 	s.checkEntityPageObjects(ctx, tenantID, catalog, loaded.Graph, &health)
 	s.checkOrphanIndexObjects(ctx, tenantID, catalog, &health)
 	if hasBlockingIndexHealthIssue(health.Issues) && health.Status == "ready" {
@@ -504,48 +513,75 @@ func secondaryIndexCounts(index SecondaryIndex) (entryCount int, distinctValues 
 }
 
 func (s *TenantStore) checkEntityRecords(ctx context.Context, tenantID string, catalogVersion int64, expected map[string]entityRecordExpectation, health *IndexHealth) {
-	objects, err := s.Objects.List(ctx, s.entityRecordPrefix(tenantID))
+	err := scanObjectPrefix(
+		ctx,
+		s.Objects,
+		s.entityRecordPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				entityID, ok, err := s.entityIDFromRecordKey(
+					tenantID, object.Key,
+				)
+				if err != nil {
+					health.Issues = append(health.Issues, err.Error())
+					continue
+				}
+				if !ok {
+					continue
+				}
+				record, err := s.loadEntityRecordKey(
+					ctx, tenantID, object.Key,
+				)
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				if err != nil {
+					if strings.Contains(err.Error(), "tenant mismatch") {
+						health.Issues = append(
+							health.Issues,
+							"entity record "+entityID+" tenant mismatch",
+						)
+						continue
+					}
+					health.Issues = append(
+						health.Issues,
+						"invalid entity record "+object.Key,
+					)
+					continue
+				}
+				if !indexTenantMatches(record.TenantID, tenantID) {
+					health.Issues = append(
+						health.Issues,
+						"entity record "+object.Key+" tenant mismatch",
+					)
+					continue
+				}
+				expectedRecord, live := expected[record.ID]
+				if record.Deleted {
+					if live {
+						health.Issues = append(
+							health.Issues,
+							"entity record "+record.ID+" is deleted",
+						)
+					}
+					continue
+				}
+				if !live {
+					health.Issues = append(
+						health.Issues,
+						"stale entity record "+record.ID,
+					)
+					continue
+				}
+				checkEntityRecordContent(
+					record, expectedRecord, catalogVersion, health,
+				)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		health.Issues = append(health.Issues, err.Error())
-		return
-	}
-	for _, object := range objects {
-		entityID, ok, err := s.entityIDFromRecordKey(tenantID, object.Key)
-		if err != nil {
-			health.Issues = append(health.Issues, err.Error())
-			continue
-		}
-		if !ok {
-			continue
-		}
-		record, err := s.loadEntityRecordKey(ctx, tenantID, object.Key)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			if strings.Contains(err.Error(), "tenant mismatch") {
-				health.Issues = append(health.Issues, "entity record "+entityID+" tenant mismatch")
-				continue
-			}
-			health.Issues = append(health.Issues, "invalid entity record "+object.Key)
-			continue
-		}
-		if !indexTenantMatches(record.TenantID, tenantID) {
-			health.Issues = append(health.Issues, "entity record "+object.Key+" tenant mismatch")
-			continue
-		}
-		expectedRecord, live := expected[record.ID]
-		if record.Deleted {
-			if live {
-				health.Issues = append(health.Issues, "entity record "+record.ID+" is deleted")
-			}
-			continue
-		}
-		if !live {
-			health.Issues = append(health.Issues, "stale entity record "+record.ID)
-			continue
-		}
-		checkEntityRecordContent(record, expectedRecord, catalogVersion, health)
 	}
 }
 

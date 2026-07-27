@@ -57,5 +57,22 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 	if err := s.ensureIncrementalIndexCurrent(ctx, tenantID, version); err != nil {
 		return err
 	}
+	if err := s.refreshReverseIndexAfterCommit(
+		ctx,
+		tenantID,
+		before,
+		g,
+		report.AffectedEdgeIDs,
+		version,
+	); err != nil {
+		if err := s.rebuildReverseIndex(
+			ctx,
+			tenantID,
+			g,
+			version,
+		); err != nil {
+			return fmt.Errorf("refresh reverse index: %w", err)
+		}
+	}
 	return nil
 }

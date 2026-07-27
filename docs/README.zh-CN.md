@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-用户帮助文档位于 [user/](user/README.zh-CN.md)，覆盖 GraphDB 的启动、写入、
+用户帮助文档位于 [user/](user/README.zh-CN.md)，覆盖 GGraphDB 的启动、写入、
 查询、部署和运维。每份用户指南都有英文默认文件和对应的
 `.zh-CN.md` 中文文件，文档顶部提供语言切换。
 
@@ -26,7 +26,9 @@
 ## 参考文档
 
 - [数据库简介](database-introduction.zh-CN.md) · [English](database-introduction.md)
-- [GQL](gql.md)
+- [GraphQL](graphql.zh-CN.md) · [English](graphql.md)
+- [旧文本 DSL 兼容入口](gql.md)
+- [命名与兼容](naming-and-compatibility.zh-CN.md) · [English](naming-and-compatibility.md)
 - [查询能力](query_capabilities.md)
 - [错误码](error_codes.md)
 - [整体架构](architecture.md)

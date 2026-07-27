@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,39 @@ type FileStore struct {
 	root        string
 	lockMu      sync.Mutex
 	objectLocks map[string]*fileObjectLock
+}
+
+func (s *FileStore) Probe(ctx context.Context) error {
+	if err := objectContextErr(ctx); err != nil {
+		return err
+	}
+	root, err := s.path("")
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("object directory %q is a symlink", root)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("object root %q is not a directory", root)
+	}
+	dir, err := os.Open(root)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	_, err = dir.Readdirnames(1)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
 }
 
 func NewFileStore(root string) *FileStore {

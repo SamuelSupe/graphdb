@@ -45,6 +45,36 @@ func (r *gcCheckpointRunner) deleteKeyIgnoringCursor(ctx context.Context, object
 	return r.deleteKeyWithCursor(ctx, objects, key, false)
 }
 
+func (r *gcCheckpointRunner) deleteExistingKeyIgnoringCursor(
+	ctx context.Context,
+	objects ObjectStore,
+	key string,
+) (bool, error) {
+	if _, err := objectMeta(ctx, objects, key); errors.Is(err, ErrNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return r.deleteKeyIgnoringCursor(ctx, objects, key)
+}
+
+func (r *gcCheckpointRunner) planExistingKeyIgnoringLimit(
+	ctx context.Context,
+	objects ObjectStore,
+	key string,
+) error {
+	if _, err := objectMeta(ctx, objects, key); errors.Is(err, ErrNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	r.checkpoint.ScannedKeys++
+	r.checkpoint.LastKey = key
+	r.checkpoint.Planned++
+	r.checkpoint.PlannedKeys = append(r.checkpoint.PlannedKeys, key)
+	return objectContextErr(ctx)
+}
+
 func (r *gcCheckpointRunner) deleteKeyWithCursor(ctx context.Context, objects ObjectStore, key string, honorCursor bool) (bool, error) {
 	if key == "" {
 		return false, nil
@@ -100,6 +130,17 @@ func (r *gcCheckpointRunner) pauseAt(key string) {
 	}
 	r.checkpoint.LastKey = key
 	r.checkpoint.NextCursor = key
+	r.checkpoint.Paused = true
+}
+
+func (r *gcCheckpointRunner) pauseBeforeObject(key string) {
+	if key == "" {
+		return
+	}
+	// Listing cursors are exclusive. A strict prefix of the current key makes
+	// that task visible again without rescanning previously completed tasks.
+	cursor := key[:len(key)-1]
+	r.checkpoint.NextCursor = cursor
 	r.checkpoint.Paused = true
 }
 

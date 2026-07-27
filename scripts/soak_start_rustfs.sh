@@ -101,7 +101,7 @@ container_id="$(docker run -d \
     apk add --no-cache docker-cli >/tmp/soak-apk.log 2>&1
     export GOCACHE=/src/.gocache
     {
-      go run ./tools/soaktest \
+      go run -mod=readonly ./tools/soaktest \
         -writer http://graphdb:8080 \
         -reader http://graphdb-reader:8080 \
         -tenant "$SOAK_TENANT" \
@@ -126,7 +126,7 @@ container_id="$(docker run -d \
         -reader-restart-grace "$SOAK_READER_RESTART_GRACE" \
         -reader-restart-command "$SOAK_READER_RESTART_COMMAND" \
         -out "$SOAK_OUT"
-      go run ./tools/soakreport \
+      go run -mod=readonly ./tools/soakreport \
         -in "$SOAK_OUT" \
         -min-duration "$SOAK_MIN_DURATION" \
         -warmup "$SOAK_REPORT_WARMUP" \

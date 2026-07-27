@@ -1,10 +1,13 @@
-# GQL 完整用例测试报告
+# 旧文本查询 DSL 兼容性测试报告
 
-日期：2026-06-29
+日期：2026-07-23
 
 ## 目标
 
-验证当前 GQL 作为通用图查询语言的可靠性。测试数据使用 CMDB 典型的实体、关系和来源治理作为一个覆盖场景；测试覆盖数据写入、GQL 解析、JSON DSL 映射、查询执行、HTTP/CLI 入口、stream、分页、一致性和错误边界。
+验证 1.0 `FIND`/`MATCH` 文本 DSL 兼容入口的可靠性。该入口过去称为
+`GQL`，但不是 GraphQL。测试数据使用 CMDB 典型的实体、关系和来源治理作为
+一个覆盖场景；测试覆盖数据写入、旧文本 DSL 解析、JSON DSL 映射、查询执行、
+HTTP/CLI 入口、stream、分页、一致性和错误边界。
 
 ## 测试数据集
 
@@ -26,9 +29,10 @@
 
 ## 覆盖点
 
-核心 GQL 操作：
+核心 旧文本 DSL 操作：
 
 - `FIND`
+- `MATCH`（1-8 步有界 pattern，每步独立方向/关系/节点/边条件）
 - `NEIGHBORS`
 - `TRAVERSE`
 - `IMPACT`
@@ -83,7 +87,7 @@
 - `LIMIT`
 - `cursor` 分页
 - `profile=true`
-- GQL stream meta 中的 `groups`
+- 旧文本 DSL stream meta 中的 `groups`
 
 入口和边界：
 
@@ -94,7 +98,7 @@
 - `Content-Type: application/gql`
 - CLI `graphdb gql <tenant-id> <query.gql>`
 - `min_version` reader freshness
-- invalid GQL syntax
+- invalid 旧文本 DSL syntax
 - `cost_limit`
 - invalid `timeout_ms`
 
@@ -109,11 +113,11 @@
 
 ## 本轮发现和修复
 
-1. GQL HTTP body 原来没有 `cursor` 字段，无法完整验证 GQL 分页。
+1. 旧文本 DSL HTTP body 原来没有 `cursor` 字段，无法完整验证 旧文本 DSL 分页。
    - 修复：`GQLQueryRequest` 增加 `cursor`，并映射到 `query.Request.Cursor`。
    - 文档和 OpenAPI 已同步。
 
-2. GQL stream 需要覆盖分组结果。
+2. 旧文本 DSL stream 需要覆盖分组结果。
    - 修复：新增 `POST /v1/query/gql/stream`。
    - stream meta 现在携带 `aggregates` 和 `groups`。
 
@@ -124,17 +128,17 @@
 
 ```bash
 go test ./...
-go test -race ./internal/query ./internal/httpapi
+go test -race ./internal/graph ./internal/query ./internal/storage ./internal/httpapi
 ```
 
 当前结果：
 
 - `go test ./...` 通过。
-- `go test -race ./internal/query ./internal/httpapi` 通过。
+- `go test -race ./internal/graph ./internal/query ./internal/storage ./internal/httpapi` 通过。
 
 ## 结论
 
-当前 GQL 已覆盖通用图查询能力，并以内部 CMDB 常用查询作为一组验证样例：
+当前 旧文本 DSL 已覆盖通用图查询能力，并以内部 CMDB 常用查询作为一组验证样例：
 
 - 当前态实体查询
 - 一跳邻居查询
@@ -144,6 +148,7 @@ go test -race ./internal/query ./internal/httpapi
 - 复杂布尔过滤
 - edge 字段过滤
 - 分步路径约束
+- 有界 `MATCH`、标签条件和逐步 `OUT`/`IN`/`BOTH`
 - 分组聚合和 having
 - 分页和 stream
 - HTTP/CLI 双入口
@@ -151,7 +156,7 @@ go test -race ./internal/query ./internal/httpapi
 
 剩余不在当前边界内的能力：
 
-- Cypher/Gremlin 图模式语言
+- 完整 Cypher/Gremlin（当前只承诺 1-8 步有界 `MATCH`）
 - 子查询
 - join
 - 用户自定义函数

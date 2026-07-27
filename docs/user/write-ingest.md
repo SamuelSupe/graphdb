@@ -2,13 +2,15 @@
 
 [中文](write-ingest.zh-CN.md)
 
-GraphDB has two write paths:
+GGraphDB has three write paths:
 
 - `POST /v1/commits`: direct atomic graph mutation.
 - `POST /v1/ingest/batches`: collector-oriented batch ingestion with source,
   cursor, idempotency, partial failure, dead-letter, and collector status.
+- `POST /v1/imports`: asynchronous CSV or JSONL bulk import built on ingestion
+  batches, with task checkpoints and resumability.
 
-Both require `X-Tenant-ID`. In reader mode both return `405`.
+All three require `X-Tenant-ID`. In reader mode they return `405`.
 
 These are general graph write APIs. The request and file examples below use
 CMDB-style collector data where that makes the ingestion and reconciliation
@@ -23,7 +25,7 @@ Request shape:
   "expected_version": 0,
   "idempotency_key": "cmdb-sync-001",
   "mutations": {
-    "upsert_ci_types": [],
+    "upsert_entity_types": [],
     "upsert_relation_types": [],
     "upsert_entities": [],
     "upsert_edges": [],
@@ -34,6 +36,10 @@ Request shape:
   }
 }
 ```
+
+`upsert_entity_types` and `delete_entity_types` are the domain-neutral 1.1
+names. The 1.0 names `upsert_ci_types` and `delete_ci_types` remain accepted and
+use the same persisted structures. Do not send both names for the same mutation.
 
 `expected_version` is optional. When set, the commit is accepted only if the
 tenant manifest is currently at that version.
@@ -76,17 +82,21 @@ Example:
 {
   "id": "host:aws:i-001",
   "kind": "host",
+  "labels": ["asset", "production"],
   "source": "aws",
   "external_id": "i-001",
   "confidence": 0.9,
   "fields": {
     "hostname": "app-01",
     "region": "us-east-1",
-    "tags": ["prod"],
-    "labels!": ["owned"]
+    "tags!": ["prod"]
   }
 }
 ```
+
+`labels` is a top-level 1.1 convenience field. GGraphDB normalizes and stores it
+inside the 1.0-compatible fields map, so it can be queried with `labels
+CONTAINS "production"` without changing the persisted entity layout.
 
 ## Relation Types And Edges
 
@@ -99,7 +109,7 @@ Relation type fields:
 - `impact_direction`: used by impact queries.
 
 Edges use `(type, from, to)` as canonical identity. Incoming `edge.id` is kept
-as source alias; GraphDB rewrites the stored edge id to a stable canonical id.
+as source alias; GGraphDB rewrites the stored edge id to a stable canonical id.
 
 Example:
 
@@ -118,6 +128,25 @@ Example:
 
 To move an edge endpoint, delete the old `(type, from, to)` and create a new
 edge. Endpoint fields are identity, not mutable fields.
+
+Optional relation property schemas are managed separately from relation types:
+
+```sh
+curl -sS -X PUT "$WRITER/v1/relation-schemas/cites" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "strict": true,
+    "fields": {
+      "confidence": {"type": "number", "required": true},
+      "source": {"type": "string", "default": "unknown"}
+    }
+  }'
+```
+
+The referenced relation type must already exist. Defaults and validation apply
+to direct commits, ingestion batches, and file-import batches. Delete its
+property schema before deleting the relation type.
 
 ## Source Policy
 
@@ -231,6 +260,7 @@ Supported item payloads:
 - `delete_edge`
 - `relation_type`
 - `ci_type`
+- `entity_type` (1.1 alias of `ci_type`)
 
 Response fields:
 
@@ -271,10 +301,55 @@ curl -sS "$WRITER/v1/ingest/deadletters/aws" -H 'X-Tenant-ID: demo'
 curl -sS -X POST "$WRITER/v1/ingest/deadletters/aws/replay?limit=10" -H 'X-Tenant-ID: demo'
 ```
 
+## CSV And JSONL Import
+
+JSONL contains one existing ingestion item per non-empty line:
+
+```jsonl
+{"external_id":"doc-1","entity":{"id":"document:1","kind":"document","labels":["article"],"fields":{"title":"Graph Storage"}}}
+{"external_id":"cite-1","edge":{"type":"cites","from":"document:1","to":"document:2","fields":{"confidence":0.95}}}
+```
+
+```sh
+curl -sS -X POST \
+  "$WRITER/v1/imports?source=knowledge-base&collector_id=files&batch_size=500&on_error=continue" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/x-ndjson' \
+  --data-binary @graph.jsonl
+```
+
+CSV requires `record_type`. Entity/node and edge/relationship rows use the
+reserved columns below; any other non-empty column becomes a typed property.
+`labels` accepts a JSON string array or pipe-delimited text.
+
+```csv
+record_type,id,entity_type,labels,relation_type,from,to,title,confidence
+entity,document:1,document,article|published,,,,Graph Storage,
+edge,,,,cites,document:1,document:2,,0.95
+```
+
+```sh
+curl -sS -X POST "$WRITER/v1/imports?format=csv&on_error=abort" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: text/csv' \
+  --data-binary @graph.csv
+```
+
+Supported CSV `record_type` values are `entity`/`node`, `edge`/`relationship`,
+`delete_entity`/`delete_node`, `delete_edge`/`delete_relationship`,
+`entity_type`, and `relation_type`. Type-definition rows carry their JSON in a
+`payload` or `definition` column.
+
+The endpoint returns `202` with a normal `bulk_import` task and a `Location`
+header. Poll `/v1/tasks/{id}` for checkpoint, progress, issue samples, and the
+final counts. `format` can be inferred from JSONL/CSV content type; `batch_size`
+defaults to 500 and is capped at 5000; `on_error` is `abort` or `continue`.
+The current upload limit is 32 MiB and only one bulk import runs per tenant.
+
 ## MD5 Skip
 
 Commits and ingestion apply mutations to the current graph. If the resulting
-data MD5 matches the stored current graph, GraphDB skips writing a new commit
+data MD5 matches the stored current graph, GGraphDB skips writing a new commit
 and returns `skipped=true`. This avoids commit tail growth for repeated
 collector payloads.
 
@@ -291,7 +366,7 @@ Write admission can return `429` with structured reasons:
     {
       "code": "commit_tail_too_long",
       "current": 301,
-      "threshold": 300,
+      "threshold": 1500,
       "message": "compact required"
     }
   ]

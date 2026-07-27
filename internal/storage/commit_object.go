@@ -14,11 +14,25 @@ func (s *TenantStore) putCommitObjectIfAbsent(ctx context.Context, key string, c
 }
 
 func (s *TenantStore) putCommitObjectIfAbsentMeta(ctx context.Context, key string, commit graph.Commit) (ObjectMeta, error) {
-	data, err := marshalParquetCommitObject(ctx, commit)
+	meta, _, err := s.putCommitObjectIfAbsentMetaNormalized(
+		ctx, key, commit,
+	)
+	return meta, err
+}
+
+func (s *TenantStore) putCommitObjectIfAbsentMetaNormalized(
+	ctx context.Context,
+	key string,
+	commit graph.Commit,
+) (ObjectMeta, graph.Commit, error) {
+	data, normalized, err := marshalParquetCommitObjectNormalized(ctx, commit)
 	if err != nil {
-		return ObjectMeta{}, err
+		return ObjectMeta{}, graph.Commit{}, err
 	}
-	return s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+	meta, err := s.Objects.PutConditional(
+		ctx, key, data, PutCondition{IfNoneMatch: true},
+	)
+	return meta, normalized, err
 }
 
 func (s *TenantStore) getCommitObject(ctx context.Context, key string) (graph.Commit, error) {
@@ -58,5 +72,5 @@ func commitPayloadHash(commit graph.Commit) (string, error) {
 
 func commitPayloadJSON(commit graph.Commit) ([]byte, error) {
 	commit.LayoutVersion = CurrentObjectLayoutVersion
-	return json.Marshal(commit)
+	return json.Marshal(legacyCommitWire(commit))
 }

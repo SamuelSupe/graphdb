@@ -1060,7 +1060,15 @@ func (s *TenantStore) loadParquetEntityPageObjectBytes(ctx context.Context, tena
 func (s *TenantStore) inspectParquetObject(ctx context.Context, data []byte, tenantID string, object IndexObject, item *IndexInspectionObject) {
 	switch object.Codec {
 	case parquetSecondaryIndexCodec:
-		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, "", "", 0, false)
+		index, err := decodeParquetSecondaryIndex(
+			ctx,
+			data,
+			tenantID,
+			object.inspectKind,
+			object.inspectField,
+			0,
+			object.inspectUnique,
+		)
 		if err != nil {
 			item.InspectionError = err.Error()
 			return

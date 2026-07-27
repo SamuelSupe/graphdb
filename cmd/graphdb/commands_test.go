@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -42,4 +43,33 @@ func TestRunHTTPServerStopsOnContextCancellation(t *testing.T) {
 	if err := runHTTPServer(ctx, server, time.Second); err != nil {
 		t.Fatalf("runHTTPServer err = %v, want nil graceful shutdown", err)
 	}
+}
+
+func TestNewSeparateHTTPServersUseExpectedHandlers(t *testing.T) {
+	cfg := config.Config{
+		Addr:         "127.0.0.1:0",
+		AdminAddr:    "127.0.0.1:0",
+		PprofEnabled: true,
+		Mode:         "all",
+	}
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	api := &httpapi.Server{Store: store, Mode: cfg.Mode}
+
+	data := newDataHTTPServer(cfg, api)
+	metrics := httptestResponse(data.Handler, http.MethodGet, "/metrics")
+	if metrics.Code != http.StatusNotFound {
+		t.Fatalf("data metrics status=%d, want 404", metrics.Code)
+	}
+
+	admin := newAdminHTTPServer(cfg, api)
+	pprof := httptestResponse(admin.Handler, http.MethodGet, "/debug/pprof/")
+	if pprof.Code != http.StatusOK {
+		t.Fatalf("admin pprof status=%d, want 200", pprof.Code)
+	}
+}
+
+func httptestResponse(handler http.Handler, method, path string) *httptest.ResponseRecorder {
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(method, path, nil))
+	return response
 }

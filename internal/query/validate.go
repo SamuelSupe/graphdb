@@ -8,7 +8,7 @@ import (
 
 func validateRequest(request Request) error {
 	switch request.Op {
-	case "match", "neighbors", "traverse", "impact", "shortest_path":
+	case "match", "pattern", "neighbors", "traverse", "impact", "shortest_path":
 	default:
 		return fmt.Errorf("%w: unsupported op %q", ErrInvalid, request.Op)
 	}
@@ -33,6 +33,9 @@ func validateRequest(request Request) error {
 		return err
 	}
 	for _, step := range request.Path.Steps {
+		if err := validateDirection(step.Direction); err != nil {
+			return err
+		}
 		for _, filter := range append(step.Where, step.EdgeWhere...) {
 			if err := validateFilter(filter); err != nil {
 				return err
@@ -56,6 +59,20 @@ func validateRequest(request Request) error {
 	for _, aggregation := range request.Aggregate {
 		if err := validateAggregation(aggregation); err != nil {
 			return err
+		}
+	}
+	if request.Op == "pattern" {
+		if request.Kind == "" {
+			return fmt.Errorf("%w: pattern requires a start kind", ErrInvalid)
+		}
+		if len(request.Path.Steps) == 0 {
+			return fmt.Errorf("%w: pattern requires at least one path step", ErrInvalid)
+		}
+		if len(request.Path.Steps) > 8 {
+			return fmt.Errorf("%w: pattern supports at most 8 path steps", ErrInvalid)
+		}
+		if request.Depth != 0 && request.Depth != len(request.Path.Steps) {
+			return fmt.Errorf("%w: pattern depth must equal its path step count", ErrInvalid)
 		}
 	}
 	return nil

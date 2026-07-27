@@ -64,6 +64,6 @@ func (s *TenantStore) invalidateWriterTakeoverState(tenantID string) {
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {
 		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))
-		cache.ClearPrefix(s.tenantPurgeTombstoneKey(tenantID))
 	}
+	s.clearWriterObjectKey(s.tenantPurgeTombstoneKey(tenantID))
 }

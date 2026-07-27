@@ -47,6 +47,17 @@ func (s *putCountingStore) Get(ctx context.Context, key string) ([]byte, error) 
 	return s.ObjectStore.Get(ctx, key)
 }
 
+func (s *putCountingStore) GetWithMeta(
+	ctx context.Context,
+	key string,
+) ([]byte, ObjectMeta, error) {
+	s.gets++
+	if strings.Contains(key, "/control/readers/") {
+		s.heartbeatGets++
+	}
+	return s.ObjectStore.GetWithMeta(ctx, key)
+}
+
 func (s *putCountingStore) Delete(ctx context.Context, key string) error {
 	s.deletes++
 	if strings.Contains(key, "/control/readers/") {
@@ -175,6 +186,8 @@ func TestGCFailsClosedWhenHeartbeatInventoryExceedsScanBudget(t *testing.T) {
 	}
 	objects.gets = 0
 	objects.deletes = 0
+	objects.heartbeatGets = 0
+	objects.heartbeatDeletes = 0
 	_, err := store.RunGC(ctx, "tenant-a", GCOptions{ReaderMaxAge: time.Minute, ReaderScanLimit: 64, MaxDeletes: 1})
 	if !errors.Is(err, errReaderHeartbeatScanIncomplete) {
 		t.Fatalf("gc err = %v, want incomplete heartbeat scan", err)

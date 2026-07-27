@@ -69,6 +69,7 @@ func (s *TenantStore) RebuildTenantRegistry(ctx context.Context) ([]string, erro
 		return nil, err
 	}
 	key := s.tenantRegistryKey()
+	s.clearCoordinatedWriterObjectKey(key)
 	_, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		meta = ObjectMeta{Key: key}
@@ -84,24 +85,28 @@ func (s *TenantStore) RebuildTenantRegistry(ctx context.Context) ([]string, erro
 
 func (s *TenantStore) listTenantsByPrefix(ctx context.Context) ([]string, error) {
 	prefix := path.Join(s.Prefix, "tenants") + "/"
-	objects, err := s.Objects.List(ctx, prefix)
+	seen := map[string]struct{}{}
+	err := scanObjectPrefix(
+		ctx, s.Objects, prefix,
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				rest := strings.TrimPrefix(object.Key, prefix)
+				tenantID, tenantKey, ok := strings.Cut(rest, "/")
+				if !ok || tenantID == "" {
+					continue
+				}
+				if err := ValidateTenantID(tenantID); err != nil {
+					continue
+				}
+				if tenantDataObject(tenantKey) {
+					seen[tenantID] = struct{}{}
+				}
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, err
-	}
-	seen := map[string]struct{}{}
-	for _, object := range objects {
-		rest := strings.TrimPrefix(object.Key, prefix)
-		tenantID, tenantKey, ok := strings.Cut(rest, "/")
-		if !ok || tenantID == "" {
-			continue
-		}
-		if err := ValidateTenantID(tenantID); err != nil {
-			continue
-		}
-		if !tenantDataObject(tenantKey) {
-			continue
-		}
-		seen[tenantID] = struct{}{}
 	}
 	tenants := make([]string, 0, len(seen))
 	for tenantID := range seen {
@@ -112,7 +117,25 @@ func (s *TenantStore) listTenantsByPrefix(ctx context.Context) ([]string, error)
 }
 
 func (s *TenantStore) addTenantToRegistry(ctx context.Context, tenantID string) error {
-	if s.isRegisteredTenantCached(tenantID) {
+	var expectedGeneration int64
+	var expectedStatus string
+	if s.coordinated() {
+		head, exists, err := s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			expectedGeneration = head.Generation
+			expectedStatus = head.Status
+			if s.isRegisteredTenantGenerationCached(
+				tenantID,
+				expectedGeneration,
+				expectedStatus,
+			) {
+				return nil
+			}
+		}
+	} else if s.isRegisteredTenantCached(tenantID) {
 		return nil
 	}
 	if err := s.updateTenantRegistry(ctx, func(seen map[string]struct{}) bool {
@@ -123,6 +146,26 @@ func (s *TenantStore) addTenantToRegistry(ctx context.Context, tenantID string) 
 		return true
 	}); err != nil {
 		return err
+	}
+	if expectedGeneration > 0 {
+		head, exists, err := s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if !exists ||
+			head.Status != expectedStatus ||
+			head.Generation != expectedGeneration {
+			return fmt.Errorf(
+				"%w: tenant %q generation changed while updating registry",
+				ErrConflict, tenantID,
+			)
+		}
+		s.setRegisteredTenantGenerationCached(
+			tenantID,
+			expectedGeneration,
+			expectedStatus,
+		)
+		return nil
 	}
 	s.setRegisteredTenantCached(tenantID)
 	return nil
@@ -171,6 +214,7 @@ func (s *TenantStore) updateTenantRegistry(ctx context.Context, update func(map[
 
 func (s *TenantStore) updateTenantRegistryOnce(ctx context.Context, update func(map[string]struct{}) bool) error {
 	key := s.tenantRegistryKey()
+	s.clearCoordinatedWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	registry := tenantRegistry{}
 	if errors.Is(err, ErrNotFound) {
@@ -205,7 +249,9 @@ func (s *TenantStore) updateTenantRegistryOnce(ctx context.Context, update func(
 }
 
 func (s *TenantStore) getTenantRegistry(ctx context.Context) ([]string, bool, error) {
-	data, _, err := s.Objects.GetWithMeta(ctx, s.tenantRegistryKey())
+	key := s.tenantRegistryKey()
+	s.clearCoordinatedWriterObjectKey(key)
+	data, _, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return nil, false, nil
 	}

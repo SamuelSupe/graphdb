@@ -29,7 +29,7 @@ func (s *Server) getTenantConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	config, configured, err := s.Store.GetTenantConfig(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, TenantConfigResponse{Configured: configured, Config: config})
@@ -51,7 +51,7 @@ func (s *Server) putTenantConfig(w http.ResponseWriter, r *http.Request) {
 	config, err := s.Store.PutTenantConfig(r.Context(), tenantID, config)
 	if err != nil {
 		s.auditError("tenant_config_update_failed", tenantID, err, map[string]any{})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("tenant_config_updated", tenantID, map[string]any{})

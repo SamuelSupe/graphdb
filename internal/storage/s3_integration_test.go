@@ -31,6 +31,9 @@ func TestS3StoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s3.Probe(context.Background()); err != nil {
+		t.Fatalf("probe bucket: %v", err)
+	}
 	store := NewTenantStore(s3, "graphdb-integration-test")
 	ctx := context.Background()
 	tenant := fmt.Sprintf("it-tenant-%d", time.Now().UnixNano())
@@ -57,6 +60,17 @@ func TestS3StoreIntegration(t *testing.T) {
 	}
 	if _, ok := loaded.GetEntity("person:alice"); !ok {
 		t.Fatal("entity missing after S3 reload")
+	}
+	catalog, err := store.RebuildIndexes(ctx, tenant)
+	if err != nil {
+		t.Fatalf("rebuild indexes with escaped entity ID: %v", err)
+	}
+	lookup := &PersistedIndexLookup{
+		Store: store, TenantID: tenant,
+		Version: catalog.Version, Catalog: catalog,
+	}
+	if entity, ok, err := lookup.GetEntity(ctx, "person:alice", nil); err != nil || !ok || entity.ID != "person:alice" {
+		t.Fatalf("indexed entity lookup entity=%#v ok=%v err=%v", entity, ok, err)
 	}
 	if _, err := store.SetTenantStatus(ctx, tenant, TenantStatusDeleted); err != nil {
 		t.Fatalf("soft delete: %v", err)
@@ -92,8 +106,17 @@ func TestS3StoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get new meta: %v", err)
 	}
-	if err := s3.DeleteConditional(ctx, key, PutCondition{IfMatch: newMeta.ETag}); err != nil {
-		t.Fatalf("matching conditional delete: %v", err)
+	deleteErr := s3.DeleteConditional(ctx, key, PutCondition{IfMatch: newMeta.ETag})
+	if errors.Is(deleteErr, ErrConditionalDeleteUnsupported) {
+		data, err := s3.Get(ctx, key)
+		if err != nil || string(data) != "new" {
+			t.Fatalf("unsupported conditional delete changed object, data=%q err=%v", data, err)
+		}
+		if err := s3.Delete(ctx, key); err != nil {
+			t.Fatalf("clean up provider without conditional delete: %v", err)
+		}
+	} else if deleteErr != nil {
+		t.Fatalf("matching conditional delete: %v", deleteErr)
 	}
 	if _, err := s3.Get(ctx, key); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("conditionally deleted object err = %v, want ErrNotFound", err)

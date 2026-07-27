@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// ParseGQL compiles the text GQL syntax into the existing JSON query request.
+// ParseGQL compiles the legacy FIND/MATCH text syntax into a JSON query request.
 func ParseGQL(input string) (Request, error) {
 	tokens, err := tokenizeGQL(input)
 	if err != nil {
@@ -50,6 +50,13 @@ func (p *gqlParser) parseWrapper(op string) (Request, error) {
 
 func (p *gqlParser) parsePrimary() (Request, error) {
 	switch {
+	case p.matchKeyword("MATCH"):
+		kind, err := p.expectValueToken("start entity kind")
+		if err != nil {
+			return Request{}, err
+		}
+		request := Request{Op: "pattern", Kind: kind, Direction: "out"}
+		return request, p.parseClauses(&request)
 	case p.matchKeyword("FIND"):
 		kind, err := p.expectValueToken("entity kind")
 		if err != nil {
@@ -97,7 +104,7 @@ func (p *gqlParser) parsePrimary() (Request, error) {
 		p.parseOptionalDirection(&request)
 		return request, p.parseClauses(&request)
 	default:
-		return Request{}, fmt.Errorf("%w: expected FIND, NEIGHBORS, TRAVERSE, IMPACT, SHORTEST, EXPLAIN, or PROFILE", ErrInvalid)
+		return Request{}, fmt.Errorf("%w: expected MATCH, FIND, NEIGHBORS, TRAVERSE, IMPACT, SHORTEST, EXPLAIN, or PROFILE", ErrInvalid)
 	}
 }
 
@@ -253,6 +260,14 @@ func (p *gqlParser) parsePathClause(request *Request) error {
 
 func (p *gqlParser) parsePathStep() (PathStep, error) {
 	step := PathStep{}
+	switch {
+	case p.matchKeyword("OUT"):
+		step.Direction = "out"
+	case p.matchKeyword("IN"):
+		step.Direction = "in"
+	case p.matchKeyword("BOTH"):
+		step.Direction = "both"
+	}
 	for !p.atEnd() && !p.peekKeyword("STEP") && !p.peekPathStepBoundary() {
 		switch {
 		case p.matchKeyword("REL"), p.matchKeyword("RELATIONS"), p.matchKeyword("RELATION_TYPES"):
@@ -487,7 +502,7 @@ func (p *gqlParser) parseFilterOp() (string, error) {
 	case "FUZZY":
 		return "fuzzy", nil
 	default:
-		return "", fmt.Errorf("%w: unsupported GQL filter operator %q", ErrInvalid, token.value)
+		return "", fmt.Errorf("%w: unsupported legacy text filter operator %q", ErrInvalid, token.value)
 	}
 }
 

@@ -14,13 +14,14 @@ import (
 )
 
 type TenantBackupRecord struct {
-	TenantID     string              `json:"tenant_id"`
-	Version      int64               `json:"version"`
-	CreatedAt    time.Time           `json:"created_at"`
-	Metadata     TenantMetadata      `json:"metadata,omitempty"`
-	Config       *TenantConfig       `json:"config,omitempty"`
-	SourcePolicy *graph.SourcePolicy `json:"source_policy,omitempty"`
-	Snapshot     graph.Snapshot      `json:"snapshot"`
+	TenantID        string              `json:"tenant_id"`
+	Version         int64               `json:"version"`
+	CreatedAt       time.Time           `json:"created_at"`
+	Metadata        TenantMetadata      `json:"metadata,omitempty"`
+	Config          *TenantConfig       `json:"config,omitempty"`
+	SourcePolicy    *graph.SourcePolicy `json:"source_policy,omitempty"`
+	RelationSchemas []RelationSchema    `json:"relation_schemas,omitempty"`
+	Snapshot        graph.Snapshot      `json:"snapshot"`
 }
 
 type TenantRestoreReport struct {
@@ -61,11 +62,12 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 	}, nil); err != nil {
 		return nil, "", err
 	}
-	g, manifest, err := s.Load(ctx, task.TenantID)
+	loaded, record, _, err := s.captureTenantBackup(ctx, task.TenantID)
 	if err != nil {
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_load_snapshot", 1, total, taskActionUpdate{ID: "load_snapshot_metadata", Err: err}, nil)
 		return nil, "", err
 	}
+	manifest := loaded.Manifest
 	if err := s.updateTaskActionProgress(ctx, task, "backup_load_metadata", 2, total, taskActionUpdate{
 		ID:     "load_snapshot_metadata",
 		Status: "completed",
@@ -73,35 +75,11 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 			"version":              manifest.Version,
 			"snapshot_key":         manifest.SnapshotKey,
 			"snapshot_catalog_key": manifest.SnapshotCatalogKey,
-			"entities":             len(g.Snapshot().Entities),
-			"edges":                len(g.Snapshot().Edges),
+			"entities":             len(record.Snapshot.Entities),
+			"edges":                len(record.Snapshot.Edges),
 		},
 	}, map[string]any{"phase": "backup_load_metadata", "version": manifest.Version, "source_manifest_version": manifest.Version, "source_snapshot_key": manifest.SnapshotKey, "source_snapshot_catalog_key": manifest.SnapshotCatalogKey}); err != nil {
 		return nil, "", err
-	}
-	metadata, configured, _, err := s.getTenantMetadataWithMeta(ctx, task.TenantID)
-	if err != nil {
-		return nil, "", err
-	}
-	if !configured {
-		metadata = legacyTenantMetadata(task.TenantID)
-	}
-	record := TenantBackupRecord{
-		TenantID:  task.TenantID,
-		Version:   manifest.Version,
-		CreatedAt: time.Now().UTC(),
-		Metadata:  metadata,
-		Snapshot:  g.Snapshot(),
-	}
-	if config, ok, err := s.GetTenantConfig(ctx, task.TenantID); err != nil {
-		return nil, "", err
-	} else if ok {
-		record.Config = &config
-	}
-	if policy, ok, err := s.GetSourcePolicy(ctx, task.TenantID); err != nil {
-		return nil, "", err
-	} else if ok {
-		record.SourcePolicy = &policy
 	}
 	resultKey := s.taskResultKey(task.TenantID, task.ID)
 	backupRecordReady := false
@@ -161,7 +139,9 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 		}
 	}
 	if backupManifestKey == "" {
-		backupManifest, err = s.buildBackupManifest(ctx, task.TenantID, task.ID, record, resultKey, manifest)
+		backupManifest, err = s.buildBackupManifest(
+			ctx, task.TenantID, task.ID, record, resultKey, manifest, loaded.Meta.Key,
+		)
 		if err != nil {
 			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_write_manifest", 4, total, taskActionUpdate{ID: "write_backup_manifest", Err: err}, nil)
 			return nil, "", err
@@ -240,6 +220,7 @@ func tenantBackupTaskSummary(record TenantBackupRecord, resultKey string, manife
 		"edges":                 len(record.Snapshot.Edges),
 		"has_config":            record.Config != nil,
 		"has_policy":            record.SourcePolicy != nil,
+		"relation_schemas":      len(record.RelationSchemas),
 		"result_key":            resultKey,
 		"backup_key":            resultKey,
 		"backup_manifest_key":   manifestKey,
@@ -328,7 +309,13 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 	if input.Integrity.Status == "error" {
 		return TenantRestoreReport{}, fmt.Errorf("backup integrity failed: %s", strings.Join(input.Integrity.Issues, "; "))
 	}
-	snapshotWritten := taskCheckpointBool(task, "snapshot_written") && s.restoreSnapshotMatches(ctx, task.TenantID, record.Version)
+	restoreContext, restoreDataMD5, err := prepareTenantRestoreContext(
+		record, task.TenantID,
+	)
+	if err != nil {
+		return TenantRestoreReport{}, fmt.Errorf("invalid backup restore input: %w", err)
+	}
+	snapshotWritten := s.restoreSnapshotCanResume(ctx, task, backupKey, record)
 	if exists && !snapshotWritten {
 		if !overwrite {
 			return TenantRestoreReport{}, fmt.Errorf("%w: target tenant %q already exists", ErrConflict, task.TenantID)
@@ -361,7 +348,12 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		}
 	}
 	snapshot := record.Snapshot
-	manifest := Manifest{TenantID: task.TenantID, Version: snapshot.Version, SnapshotVersion: snapshot.Version}
+	manifest := Manifest{
+		TenantID:        task.TenantID,
+		Version:         snapshot.Version,
+		SnapshotVersion: snapshot.Version,
+		DataMD5:         restoreDataMD5,
+	}
 	if !snapshotWritten {
 		if err := s.updateTaskActionProgress(ctx, task, "restore_write_snapshot", 3, total, taskActionUpdate{
 			ID:     "write_snapshot",
@@ -369,6 +361,28 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			Input:  map[string]any{"source_tenant_id": record.TenantID, "version": record.Version, "entities": len(snapshot.Entities), "edges": len(snapshot.Edges)},
 		}, map[string]any{"phase": "restore_write_snapshot", "backup_key": backupKey, "source_tenant_id": record.TenantID, "version": record.Version}); err != nil {
 			return TenantRestoreReport{}, err
+		}
+		coordinatedMeta := ObjectMeta{}
+		if s.coordinated() {
+			coordinatedMeta, err = s.pinCoordinatedRestoreContext(
+				ctx, task.TenantID, 0, restoreContext,
+			)
+			if err != nil {
+				return TenantRestoreReport{}, err
+			}
+			token, err := parseCoordinatedHeadToken(coordinatedMeta)
+			if err != nil {
+				return TenantRestoreReport{}, err
+			}
+			if err := s.updateTaskActionProgress(ctx, task, "restore_write_snapshot", 3, total, taskActionUpdate{
+				ID:     "write_snapshot",
+				Status: "running",
+				Verification: map[string]any{
+					"write_context_revision": token.ContextRevision,
+				},
+			}, map[string]any{"write_context_written": true}); err != nil {
+				return TenantRestoreReport{}, err
+			}
 		}
 		unlock := s.lockTenant(task.TenantID)
 		boundCtx, err := s.acquireAndBindWriterFence(ctx, task.TenantID)
@@ -395,13 +409,29 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			SnapshotKey:        snapshotKey,
 			SnapshotCatalogKey: catalog.Key,
 			SnapshotVersion:    snapshot.Version,
+			DataMD5:            restoreDataMD5,
 			UpdatedAt:          time.Now().UTC(),
 		}
-		if _, err := s.putManifestMeta(ctx, task.TenantID, manifest, ObjectMeta{Key: s.manifestKey(task.TenantID)}); err != nil {
+		currentMeta := coordinatedMeta
+		if s.coordinated() {
+			currentMeta.Key = s.manifestKey(task.TenantID)
+		} else {
+			_, currentMeta, err = s.getManifest(ctx, task.TenantID)
+		}
+		if err != nil {
+			unlock()
+			return TenantRestoreReport{}, err
+		}
+		if _, err := s.putManifestMeta(ctx, task.TenantID, manifest, currentMeta); err != nil {
 			unlock()
 			return TenantRestoreReport{}, err
 		}
 		unlock()
+		if s.coordinated() {
+			if err := s.mirrorLatestWriteContext(ctx, task.TenantID); err != nil {
+				return TenantRestoreReport{}, err
+			}
+		}
 		if err := s.updateTaskActionProgress(ctx, task, "restore_snapshot_done", 3, total, taskActionUpdate{
 			ID:     "write_snapshot",
 			Status: "completed",
@@ -409,7 +439,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			Verification: map[string]any{
 				"snapshot_matches": s.restoreSnapshotMatches(ctx, task.TenantID, record.Version),
 			},
-		}, map[string]any{"phase": "restore_snapshot_done", "backup_key": backupKey, "version": manifest.Version, "snapshot_key": manifest.SnapshotKey, "snapshot_catalog_key": manifest.SnapshotCatalogKey, "snapshot_written": true}); err != nil {
+		}, map[string]any{"phase": "restore_snapshot_done", "backup_key": backupKey, "version": manifest.Version, "snapshot_key": manifest.SnapshotKey, "snapshot_catalog_key": manifest.SnapshotCatalogKey, "snapshot_written": true, "write_context_written": s.coordinated()}); err != nil {
 			return TenantRestoreReport{}, err
 		}
 	} else {
@@ -418,6 +448,11 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			return TenantRestoreReport{}, err
 		}
 		manifest = current
+		if s.coordinated() {
+			if err := s.mirrorLatestWriteContext(ctx, task.TenantID); err != nil {
+				return TenantRestoreReport{}, err
+			}
+		}
 		if err := s.updateTaskActionProgress(ctx, task, "restore_snapshot_done", 3, total, taskActionUpdate{
 			ID:     "write_snapshot",
 			Status: "completed",
@@ -429,11 +464,34 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			return TenantRestoreReport{}, err
 		}
 	}
+	if s.coordinated() {
+		currentTask := s.taskStateOrLocal(ctx, task)
+		if !taskCheckpointBool(currentTask, "write_context_written") {
+			if _, err := s.pinCoordinatedRestoreContext(
+				ctx, task.TenantID, record.Version, restoreContext,
+			); err != nil {
+				return TenantRestoreReport{}, err
+			}
+			if err := s.mirrorLatestWriteContext(ctx, task.TenantID); err != nil {
+				return TenantRestoreReport{}, err
+			}
+			if err := s.updateTaskProgress(
+				ctx,
+				currentTask,
+				"restore_snapshot_done",
+				3,
+				total,
+				map[string]any{"write_context_written": true},
+			); err != nil {
+				return TenantRestoreReport{}, err
+			}
+		}
+	}
 	if !taskCheckpointBool(task, "metadata_written") {
 		if err := s.updateTaskActionProgress(ctx, task, "restore_write_metadata", 4, total, taskActionUpdate{
 			ID:     "write_metadata",
 			Status: "running",
-			Input:  map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil},
+			Input:  map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil, "relation_schemas": len(record.RelationSchemas)},
 		}, map[string]any{"phase": "restore_write_metadata", "backup_key": backupKey, "version": manifest.Version}); err != nil {
 			return TenantRestoreReport{}, err
 		}
@@ -441,26 +499,12 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		if err := s.putTenantMetadata(ctx, task.TenantID, metadata); err != nil {
 			return TenantRestoreReport{}, err
 		}
-		if record.Config != nil {
-			if err := validateTenantConfig(*record.Config); err != nil {
+		if !s.coordinated() {
+			if err := s.putLocalLifecycleWriteContext(
+				ctx, task.TenantID, record, manifest.Version,
+			); err != nil {
 				return TenantRestoreReport{}, err
 			}
-			meta, err := s.putTenantConfigRecordWithMeta(ctx, task.TenantID, tenantConfigRecord{TenantID: task.TenantID, Config: *record.Config}, ObjectMeta{Key: s.tenantConfigKey(task.TenantID)})
-			if err != nil {
-				return TenantRestoreReport{}, err
-			}
-			s.setCachedTenantConfig(task.TenantID, *record.Config, true, meta)
-		}
-		if record.SourcePolicy != nil {
-			normalized, err := graph.NormalizeSourcePolicy(*record.SourcePolicy)
-			if err != nil {
-				return TenantRestoreReport{}, err
-			}
-			meta, err := s.putSourcePolicyRecordWithMeta(ctx, task.TenantID, sourcePolicyRecord{TenantID: task.TenantID, SourcePolicy: normalized}, ObjectMeta{Key: s.sourcePolicyKey(task.TenantID)})
-			if err != nil {
-				return TenantRestoreReport{}, err
-			}
-			s.setCachedSourcePolicy(task.TenantID, normalized, true, meta)
 		}
 		if err := s.addTenantToRegistry(ctx, task.TenantID); err != nil {
 			return TenantRestoreReport{}, err
@@ -468,7 +512,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		if err := s.updateTaskActionProgress(ctx, task, "restore_metadata_done", 4, total, taskActionUpdate{
 			ID:     "write_metadata",
 			Status: "completed",
-			Output: map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil},
+			Output: map[string]any{"tenant_id": task.TenantID, "has_config": record.Config != nil, "has_policy": record.SourcePolicy != nil, "relation_schemas": len(record.RelationSchemas)},
 			Verification: map[string]any{
 				"metadata_written": true,
 			},
@@ -517,6 +561,31 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		}, map[string]any{"phase": "restore_indexes_done", "backup_key": backupKey, "version": manifest.Version, "index_catalog_version": catalogIndex.Version, "indexes_rebuilt": true})
 	}
 	restoreIntegrity := s.restoreIntegrityReport(ctx, task.TenantID)
+	baseReport.Version = manifest.Version
+	baseReport.IndexCatalogVersion = catalogIndex.Version
+	baseReport.Overwrote = exists
+	baseReport.RestoreIntegrity = restoreIntegrity
+	baseReport.RestoredAt = time.Now().UTC()
+	if integrityErr := restoreIntegrityError(restoreIntegrity); integrityErr != nil {
+		_ = s.updateTaskActionProgress(
+			context.WithoutCancel(ctx),
+			task,
+			"restore_verify_failed",
+			total-1,
+			total,
+			taskActionUpdate{
+				ID:     "verify_restore",
+				Err:    integrityErr,
+				Output: map[string]any{"version": manifest.Version, "index_catalog_version": catalogIndex.Version},
+				Verification: map[string]any{
+					"restore_integrity": restoreIntegrity.Status,
+					"issues":            len(restoreIntegrity.Issues),
+				},
+			},
+			map[string]any{"phase": "restore_verify_failed", "backup_key": backupKey, "version": manifest.Version, "index_catalog_version": catalogIndex.Version, "restore_integrity": restoreIntegrity.Status},
+		)
+		return baseReport, integrityErr
+	}
 	_ = s.updateTaskActionProgress(ctx, task, "restore_done", total, total, taskActionUpdate{
 		ID:     "verify_restore",
 		Status: "completed",
@@ -526,11 +595,6 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			"issues":            len(restoreIntegrity.Issues),
 		},
 	}, map[string]any{"phase": "restore_done", "backup_key": backupKey, "version": manifest.Version, "index_catalog_version": catalogIndex.Version, "restore_integrity": restoreIntegrity.Status})
-	baseReport.Version = manifest.Version
-	baseReport.IndexCatalogVersion = catalogIndex.Version
-	baseReport.Overwrote = exists
-	baseReport.RestoreIntegrity = restoreIntegrity
-	baseReport.RestoredAt = time.Now().UTC()
 	return baseReport, nil
 }
 

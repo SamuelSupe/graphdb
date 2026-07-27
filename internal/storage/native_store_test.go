@@ -3,12 +3,14 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
 type memoryNativeClient struct {
 	objects         *MemoryStore
 	createOnlyCalls []bool
+	listPageCalls   int
 }
 
 func newMemoryNativeClient() *memoryNativeClient {
@@ -35,6 +37,16 @@ func (c *memoryNativeClient) Delete(ctx context.Context, key string) error {
 
 func (c *memoryNativeClient) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	return c.objects.List(ctx, prefix)
+}
+
+func (c *memoryNativeClient) ListPage(
+	ctx context.Context,
+	prefix string,
+	after string,
+	limit int,
+) ([]ObjectInfo, string, error) {
+	c.listPageCalls++
+	return listObjectPage(ctx, c.objects, prefix, after, limit)
 }
 
 func TestNativeObjectStoreUsesCreateOnlyAndRejectsRemoteCAS(t *testing.T) {
@@ -88,6 +100,36 @@ func TestSingleWriterObjectStoreEmulatesETagCAS(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, "objects/current"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("get after delete err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestNativeObjectStoreUsesBoundedPages(t *testing.T) {
+	ctx := context.Background()
+	client := newMemoryNativeClient()
+	store := newNativeObjectStore(client)
+	const objectCount = objectPrefixScanPageSize + 1
+	for index := range objectCount {
+		key := fmt.Sprintf("objects/%04d", index)
+		if err := store.Put(ctx, key, []byte(key)); err != nil {
+			t.Fatalf("put %q: %v", key, err)
+		}
+	}
+	var keys []string
+	if err := scanObjectPrefix(ctx, store, "objects/", func(
+		items []ObjectInfo,
+	) error {
+		for _, item := range items {
+			keys = append(keys, item.Key)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(keys) != objectCount {
+		t.Fatalf("key count = %d, want %d", len(keys), objectCount)
+	}
+	if client.listPageCalls != 2 {
+		t.Fatalf("ListPage calls = %d, want 2", client.listPageCalls)
 	}
 }
 

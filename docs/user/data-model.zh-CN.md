@@ -2,12 +2,13 @@
 
 [English](data-model.md)
 
-GraphDB 为每个租户保存一张当前图，不提供历史版本查询；每次读取观察一个
-manifest snapshot 版本。
+GGraphDB 为每个租户保存一张当前态属性知识图谱，不提供历史版本查询；每次
+读取观察一个 manifest snapshot 版本。GGraphDB 1.1 不提供 RDF/OWL 存储、
+SPARQL、本体推理或向量检索。
 
-核心模型与具体领域无关：应用可以只使用无模式实体和类型化边，不必定义 CI
-type。`CIType` 和 source governance 都是可选的领域元数据，适合需要采集合并
-和身份治理的 CMDB 等场景。
+核心模型与具体领域无关：应用可以只使用无模式实体和类型化边，不必定义实体
+类型。`EntityType`（1.0 名称为 `CIType`）和 source governance 都是可选
+领域元数据，用于需要采集合并和身份治理的场景。
 
 ## Tenant
 
@@ -21,10 +22,11 @@ type。`CIType` 和 source governance 都是可选的领域元数据，适合需
 - source policy、tenant config、saved query、task、dead letter 和 reader
   heartbeat。
 
-## CI Type
+## 实体类型（`CIType` 兼容别名）
 
-`CIType` 为实体提供可选的 kind 级元数据，尤其适合需要字段规则和身份合并的
-CMDB 风格实体：
+`EntityType` 是 1.1 对可选 kind 级元数据的领域中立命名；它与 1.0 的
+`CIType` 是同一个持久化对象，`CIType` 继续作为兼容别名。实体需要字段规则
+和身份合并时可以定义实体类型：
 
 ```json
 {
@@ -56,6 +58,7 @@ CMDB 风格实体：
 {
   "id": "host:aws:i-001",
   "kind": "host",
+  "labels": ["asset", "production"],
   "source": "aws",
   "external_id": "i-001",
   "confidence": 0.9,
@@ -71,11 +74,13 @@ CMDB 风格实体：
 
 - `id`：稳定的内部 ID；
 - `kind`：实体类型；
+- `labels`：可选的领域中立分类；`labels CONTAINS "production"` 执行标签
+  成员过滤；
 - `fields`：无模式 JSON 对象；
 - `source`、`external_id`：上游身份；
 - `confidence`：source priority 相同的平局决胜值；
 - `source_priority`：没有租户 source policy 覆盖时使用；
-- `field_sources`：GraphDB 记录的字段归属；
+- `field_sources`：GGraphDB 记录的字段归属；
 - `sources`：累积的来源观察记录。
 
 ## Relation Type
@@ -101,6 +106,27 @@ CMDB 风格实体：
 - `one_to_one`
 
 `impact_direction` 控制该关系类型在影响查询中的传播。
+
+## 关系属性 Schema
+
+GGraphDB 1.1 可以为已有关系类型选择性定义边属性校验和默认值：
+
+```json
+{
+  "relation_type": "cites",
+  "strict": true,
+  "fields": {
+    "confidence": {"type": "number", "required": true},
+    "source": {"type": "string", "default": "unknown"},
+    "status": {"type": "string", "enum": ["draft", "verified"]}
+  }
+}
+```
+
+通过 `PUT /v1/relation-schemas/cites` 创建或替换。Schema 必须引用已存在的
+关系类型，支持 `type`、`required`、`enum`、`default`；`strict=true` 会拒绝
+未声明的边属性。发布 schema 前，已有边也必须满足它。
+删除关系类型前应先删除对应的属性 schema。
 
 ## Edge
 
@@ -162,5 +188,20 @@ edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
 每个可见 commit 都会增加租户 manifest 的 `version`。读响应包含其观察到的
 版本；读后写场景使用 `min_version`。
 
-如果写入后的 MD5 与当前图一致，GraphDB 返回 `skipped=true`，不会发布
+如果写入后的 MD5 与当前图一致，GGraphDB 返回 `skipped=true`，不会发布
 新 commit。
+
+## 1.0 数据兼容性
+
+1.1 保持核心 manifest、snapshot、commit、entity、edge 和 Parquet 的对象
+布局版本为 2：
+
+- `EntityType` 只是已有 `CIType` 对象的 API/代码别名；
+- 标签编码在普通实体字段 `fields.__graphdb_labels` 中，1.1 API 同时以顶层
+  `labels` 便捷字段暴露；
+- 关系属性 schema 和反向邻接产物放在
+  `tenants/<tenant>/extensions/v1.1/` 下。
+
+因此 1.0 reader 可以继续读取核心图，并忽略保留字段和扩展 sidecar。1.0
+writer 不会执行 1.1 关系属性校验，所以受 schema 管理的边应继续由 1.1
+writer 写入。

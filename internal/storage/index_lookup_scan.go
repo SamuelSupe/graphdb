@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -70,6 +71,10 @@ func (l *PersistedIndexLookup) ListEntities(ctx context.Context, kind string, fi
 		return true, nil
 	})
 	return entities, ok, err
+}
+
+func (l *PersistedIndexLookup) EntityPageOrder() string {
+	return query.EntityPageOrderShard
 }
 
 func (l *PersistedIndexLookup) VisitEntities(ctx context.Context, kind string, fields []string, afterID string, visit func(graph.Entity) (bool, error)) (available bool, err error) {

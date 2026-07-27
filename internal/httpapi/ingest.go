@@ -52,7 +52,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		s.auditError("ingest_failed", tenantID, err, map[string]any{
 			"source": request.Source, "collector_id": request.CollectorID, "batch_id": request.BatchID,
 		})
-		writeErrorErr(w, http.StatusBadRequest, err)
+		writeStorageError(w, err)
 		return
 	}
 	if result.Applied > 0 && !result.Skipped {
@@ -103,7 +103,7 @@ func (s *Server) collectorStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := s.Store.GetCollectorStatus(r.Context(), tenantID, parts[0], parts[1])
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)

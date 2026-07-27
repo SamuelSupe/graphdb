@@ -146,6 +146,9 @@ func (s *TenantStore) catalogInspectionObjects(tenantID string, catalog IndexCat
 	for _, index := range catalog.Indexes {
 		if len(index.Objects) > 0 {
 			for _, object := range index.Objects {
+				object.inspectKind = index.Kind
+				object.inspectField = index.Field
+				object.inspectUnique = secondaryIndexSpecUnique(index)
 				add(object, object.Key)
 			}
 		}

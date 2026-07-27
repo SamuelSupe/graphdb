@@ -24,6 +24,7 @@ curl -sS "$READER/v1/entities/host:aws:i-001?min_version=12" \
 支持的 `op`：
 
 - `match`
+- `pattern`
 - `neighbors`
 - `traverse`
 - `impact`
@@ -62,9 +63,28 @@ curl -sS "$READER/v1/entities/host:aws:i-001?min_version=12" \
 
 完整 JSON DSL 见 [query_capabilities.md](../query_capabilities.md)。
 
-## GQL
+## GraphQL
 
-GQL 是会编译为 JSON DSL 的文本查询语言：
+GraphQL 接收标准 document 和 `QueryRequest` 变量：
+
+```sh
+curl -sS -X POST "$READER/v1/query/graphql" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query":"query Find($request: QueryRequest!) { graph(request: $request) { version results stats nextCursor } }",
+    "operationName":"Find",
+    "variables":{"request":{"op":"match","kind":"host","limit":100}}
+  }'
+```
+
+schema、响应 envelope、错误、fragment 和 1.1 边界见
+[graphql.zh-CN.md](../graphql.zh-CN.md)。
+
+## 旧文本 DSL
+
+1.0 `FIND`/`MATCH` 文本 DSL 会编译为 JSON DSL。它过去使用的 `GQL` 名称
+已经弃用；该入口不是 GraphQL。
 
 ```sql
 FIND host
@@ -89,9 +109,39 @@ CLI：
 go run ./cmd/graphdb gql demo query.gql
 ```
 
-完整语法见 [gql.md](../gql.md)。
+兼容语法见 [gql.md](../gql.md)。
 
 ## 图操作
+
+有界图模式（本例精确匹配两步）：
+
+```json
+{
+  "op": "pattern",
+  "kind": "document",
+  "where": [{"field": "labels", "op": "contains", "value": "article"}],
+  "path": {
+    "steps": [
+      {
+        "direction": "out",
+        "relation_types": ["cites"],
+        "node_kinds": ["document"],
+        "where": [{"field": "status", "op": "eq", "value": "published"}]
+      },
+      {
+        "direction": "in",
+        "relation_types": ["authored_by"],
+        "node_kinds": ["person"]
+      }
+    ]
+  },
+  "limit": 20
+}
+```
+
+`pattern` 必须包含 1 到 8 步，返回精确满足该步数的完整路径。每一步可以
+独立限制方向、关系类型、目标实体类型/属性和边属性；不支持无界重复、变量
+绑定、可选模式或 join。
 
 邻居：
 
@@ -146,6 +196,9 @@ go run ./cmd/graphdb gql demo query.gql
 }
 ```
 
+当索引 catalog 与可见图版本一致时，持久化正向和反向邻接 shard 让 lazy
+read 可以执行 `out`、`in`、`both` 三种方向，而不必加载整张图。
+
 ## 过滤、投影、排序和聚合
 
 支持：
@@ -197,7 +250,8 @@ curl -sS -X POST "$READER/v1/query" \
 ```
 
 cursor 绑定查询结构和 snapshot 版本。使用不同查询或不兼容版本复用 cursor
-会被拒绝。
+会被拒绝。无显式排序的 match cursor 还会绑定内部扫描顺序，客户端必须将
+cursor 视为不透明值。
 
 ## 流式查询
 

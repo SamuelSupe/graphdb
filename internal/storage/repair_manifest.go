@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -97,11 +98,15 @@ func (s *TenantStore) reconstructManifestFromObjects(ctx context.Context, tenant
 		manifest.SnapshotKey = snapshotKey
 		manifest.SnapshotVersion = base.Version
 	}
-	scan, err := s.loadCommitObjects(ctx, tenantID, nil)
+	scan, err := s.loadCommitObjects(
+		ctx, tenantID, nil, manifest.Version,
+	)
 	if err != nil {
 		return loadedGraph{}, err
 	}
-	segments, _, err := s.loadCommitSegmentObjects(ctx, tenantID, nil)
+	segments, _, err := s.loadCommitSegmentObjects(
+		ctx, tenantID, nil, manifest.Version,
+	)
 	if err != nil {
 		return loadedGraph{}, err
 	}
@@ -178,46 +183,69 @@ func applyReconstructedSegment(g *graph.Graph, segment commitSegmentObject) (*gr
 }
 
 func (s *TenantStore) latestValidSnapshot(ctx context.Context, tenantID string) (*graph.Snapshot, string, error) {
-	objects, err := s.Objects.List(ctx, s.snapshotPrefix(tenantID))
+	type candidate struct {
+		key     string
+		version int64
+	}
+	candidates := make([]candidate, 0)
+	err := scanObjectPrefixFresh(
+		ctx,
+		s.Objects,
+		s.snapshotPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				version, ok := snapshotIdentityFromKey(object.Key)
+				if ok {
+					candidates = append(candidates, candidate{
+						key:     object.Key,
+						version: version,
+					})
+				}
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, "", err
 	}
-	var best *graph.Snapshot
-	bestKey := ""
-	for _, object := range objects {
-		version, ok := snapshotIdentityFromKey(object.Key)
-		if !ok {
-			continue
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].version == candidates[j].version {
+			return candidates[i].key < candidates[j].key
 		}
-		record, err := s.loadSnapshotRecord(ctx, object.Key)
+		return candidates[i].version > candidates[j].version
+	})
+	for _, candidate := range candidates {
+		record, err := s.loadSnapshotRecord(ctx, candidate.key)
 		if err != nil {
 			continue
 		}
 		if record.TenantID != "" && record.TenantID != tenantID {
 			continue
 		}
-		if record.Snapshot.Version != version {
+		if record.Snapshot.Version != candidate.version {
 			continue
 		}
 		if _, err := graph.FromSnapshot(record.Snapshot); err != nil {
 			continue
 		}
-		if best == nil || record.Snapshot.Version > best.Version {
-			snapshot := record.Snapshot
-			best = &snapshot
-			bestKey = object.Key
-		}
+		snapshot := record.Snapshot
+		return &snapshot, candidate.key, nil
 	}
-	return best, bestKey, nil
+	return nil, "", nil
 }
 
 func (s *TenantStore) tenantGraphObjectsExist(ctx context.Context, tenantID string) (bool, error) {
 	for _, prefix := range []string{s.snapshotPrefix(tenantID), s.commitPrefix(tenantID)} {
-		objects, err := s.Objects.List(ctx, prefix)
+		exists, err := objectPrefixMatches(
+			ctx,
+			s.Objects,
+			prefix,
+			func(ObjectInfo) bool { return true },
+		)
 		if err != nil {
 			return false, err
 		}
-		if len(objects) > 0 {
+		if exists {
 			return true, nil
 		}
 	}

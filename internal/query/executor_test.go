@@ -88,7 +88,7 @@ func TestProfileIncludesOperators(t *testing.T) {
 	}
 }
 
-func TestMatchWithoutSortStopsAfterPageBoundary(t *testing.T) {
+func TestMaterializedMatchWithoutSortReportsFullMapScan(t *testing.T) {
 	g := seedPruneGraph(t, 50)
 	response, err := Execute(g, Request{Op: "match", Kind: "host", Limit: 5})
 	if err != nil {
@@ -97,8 +97,8 @@ func TestMatchWithoutSortStopsAfterPageBoundary(t *testing.T) {
 	if len(response.Results) != 5 || response.NextCursor == "" {
 		t.Fatalf("response = %#v", response)
 	}
-	if response.Stats.Scanned != 6 {
-		t.Fatalf("scanned = %d, want limit+1", response.Stats.Scanned)
+	if response.Stats.Scanned != len(g.Entities) {
+		t.Fatalf("scanned = %d, want full materialized map size %d", response.Stats.Scanned, len(g.Entities))
 	}
 }
 
@@ -247,13 +247,13 @@ func TestStableCursorRejectsChangedFilterWithSameResultSetAnchor(t *testing.T) {
 func TestBlockingSortAddsCandidateCost(t *testing.T) {
 	g := seedPruneGraph(t, 50)
 	plan := PlanQuery(g, Request{Op: "match", Kind: "host", Sort: []SortSpec{{Field: "id"}}})
-	if plan.EstimatedRows != 50 {
+	if plan.EstimatedRows != len(g.Entities) {
 		t.Fatalf("estimated rows = %d", plan.EstimatedRows)
 	}
 	if plan.EstimatedCost <= plan.EstimatedRows {
 		t.Fatalf("estimated cost = %d, want sort cost included", plan.EstimatedCost)
 	}
-	if plan.Steps[len(plan.Steps)-1].Name != "sort" || plan.Steps[len(plan.Steps)-1].Cost != 50 {
+	if plan.Steps[len(plan.Steps)-1].Name != "sort" || plan.Steps[len(plan.Steps)-1].Cost != len(g.Entities) {
 		t.Fatalf("sort step = %#v", plan.Steps[len(plan.Steps)-1])
 	}
 }
@@ -293,8 +293,79 @@ func TestPlannerFanoutEstimateUsesPersistedEdgeShardStats(t *testing.T) {
 		Direction:    "out",
 		RelationType: "runs_on",
 	}, stats)
-	if plan.EstimatedRows != 500 || plan.EstimatedCost != 501 {
-		t.Fatalf("plan = %#v, want edge shard fanout estimate", plan)
+	if plan.EstimatedRows != 101 || plan.EstimatedCost != 102 {
+		t.Fatalf("plan = %#v, want one page plus lookahead estimate", plan)
+	}
+}
+
+func TestPlannerCapsPageableOutNeighborShardEstimate(t *testing.T) {
+	g := graph.New()
+	g.Version = 7
+	plan := PlanQueryWithStats(g, Request{
+		Op:           "neighbors",
+		ID:           "service:api",
+		Direction:    "out",
+		RelationType: "runs_on",
+		Limit:        10,
+	}, PlannerStats{
+		Version: 7,
+		EdgeShards: []PlannerEdgeStat{{
+			RelationType: "runs_on",
+			Shard:        plannerEdgeShardID("service:api"),
+			EdgeCount:    1_000_000,
+		}},
+	})
+	if plan.EstimatedRows != 11 || plan.EstimatedCost != 12 {
+		t.Fatalf("plan = %#v, want page boundary cost 12", plan)
+	}
+}
+
+func TestPlannerCapsPageableInNeighborShardEstimate(t *testing.T) {
+	g := graph.New()
+	g.Version = 7
+	plan := PlanQueryWithStats(g, Request{
+		Op:           "neighbors",
+		ID:           "host:app",
+		Direction:    "in",
+		RelationType: "runs_on",
+		Limit:        10,
+	}, PlannerStats{
+		Version: 7,
+		ReverseEdgeShards: []PlannerEdgeStat{{
+			RelationType: "runs_on",
+			Shard:        plannerEdgeShardID("host:app"),
+			EdgeCount:    1_000_000,
+		}},
+	})
+	if plan.EstimatedRows != 11 || plan.EstimatedCost != 12 {
+		t.Fatalf("plan = %#v, want page boundary cost 12", plan)
+	}
+}
+
+func TestPlannerCapsPageableBothNeighborShardEstimate(t *testing.T) {
+	g := graph.New()
+	g.Version = 7
+	plan := PlanQueryWithStats(g, Request{
+		Op:           "neighbors",
+		ID:           "service:api",
+		Direction:    "both",
+		RelationType: "links",
+		Limit:        10,
+	}, PlannerStats{
+		Version: 7,
+		EdgeShards: []PlannerEdgeStat{{
+			RelationType: "links",
+			Shard:        plannerEdgeShardID("service:api"),
+			EdgeCount:    1_000_000,
+		}},
+		ReverseEdgeShards: []PlannerEdgeStat{{
+			RelationType: "links",
+			Shard:        plannerEdgeShardID("service:api"),
+			EdgeCount:    1_000_000,
+		}},
+	})
+	if plan.EstimatedRows != 11 || plan.EstimatedCost != 12 {
+		t.Fatalf("plan = %#v, want page boundary cost 12", plan)
 	}
 }
 
@@ -327,6 +398,59 @@ func TestAdmissionRejectsLazyEdgeQueryFromPersistedShardStats(t *testing.T) {
 	}, options)
 	if !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("traverse err = %v, want ErrLimitExceeded", err)
+	}
+}
+
+func TestPlannerUsesEachTraversalStepDirectionAndRelation(t *testing.T) {
+	g := graph.New()
+	g.Version = 7
+	shard := plannerEdgeShardID("node:start")
+	stats := PlannerStats{
+		Version: 7,
+		EdgeShards: []PlannerEdgeStat{{
+			RelationType: "forward_link",
+			Shard:        shard,
+			EdgeCount:    1,
+		}},
+		ReverseEdgeShards: []PlannerEdgeStat{{
+			RelationType: "reverse_link",
+			Shard:        shard,
+			EdgeCount:    1000,
+		}},
+	}
+	request := Request{
+		Op:        "shortest_path",
+		ID:        "node:start",
+		TargetID:  "node:target",
+		Direction: "out",
+		Depth:     2,
+		Path: PathFilter{Steps: []PathStep{
+			{
+				Direction:     "out",
+				RelationTypes: []string{"forward_link"},
+			},
+			{
+				Direction:     "in",
+				RelationTypes: []string{"reverse_link"},
+			},
+		}},
+	}
+	plan := PlanQueryWithStats(g, request, stats)
+	if plan.EstimatedRows != 1001 || plan.EstimatedCost != 1001 {
+		t.Fatalf(
+			"plan rows/cost = %d/%d, want 1001/1001",
+			plan.EstimatedRows, plan.EstimatedCost,
+		)
+	}
+	request.CostLimit = 100
+	_, err := ExecuteContextWithOptions(
+		context.Background(),
+		g,
+		request,
+		ExecuteOptions{PlannerStats: stats},
+	)
+	if !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("admission err = %v, want ErrLimitExceeded", err)
 	}
 }
 

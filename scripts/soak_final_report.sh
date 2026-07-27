@@ -26,7 +26,7 @@ fi
 
 REQUIRED_OPERATIONS="${SOAK_REQUIRED_OPERATIONS:-profile-indexed-match,indexed-match-min-version,indexed-match-allow-stale,range-aggregate-match,fuzzy-service-match,cmdb-service-to-database-path,impact-service,stream-large-indexed-hosts-min-version,scan-entities-min-version,scan-entities-allow-stale,scan-edges-allow-stale,export-snapshot-stream,saved-service-impact}"
 
-GOCACHE="${GOCACHE:-$ROOT/.gocache}" go run ./tools/soakreport \
+GOCACHE="${GOCACHE:-$ROOT/.gocache}" go run -mod=readonly ./tools/soakreport \
   -in "$EVENTS" \
   -min-duration "${SOAK_MIN_DURATION:-${META_DURATION:-24h}}" \
   -warmup "${SOAK_REPORT_WARMUP:-45m}" \

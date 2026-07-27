@@ -80,7 +80,7 @@ func snapshotRecordPayloadJSON(record snapshotRecord) ([]byte, error) {
 	if record.Snapshot.Edges == nil {
 		record.Snapshot.Edges = []graph.Edge{}
 	}
-	return json.Marshal(record)
+	return json.Marshal(legacySnapshotRecordWire(record))
 }
 
 func snapshotRecordContentHash(record snapshotRecord) (string, error) {

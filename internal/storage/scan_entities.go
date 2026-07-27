@@ -28,13 +28,13 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 		return EntityScanResult{}, err
 	}
 	manifestCtx, manifestSpan := startStorageSpan(ctx, "graphdb.storage.scan.entities.get_manifest", tenantTraceAttr(tenantID))
-	manifest, _, manifestErr := s.getManifest(manifestCtx, tenantID)
-	manifestSpan.SetAttributes(attribute.Int64("graphdb.scan.manifest_version", manifest.Version))
+	manifestVersion, manifestErr := s.CurrentVersion(manifestCtx, tenantID)
+	manifestSpan.SetAttributes(attribute.Int64("graphdb.scan.manifest_version", manifestVersion))
 	endStorageSpan(manifestSpan, manifestErr)
 	if manifestErr != nil {
 		return EntityScanResult{}, manifestErr
 	}
-	stats.manifestVersion = manifest.Version
+	stats.manifestVersion = manifestVersion
 	if hasCursorVersion {
 		if options.MinVersion > 0 && cursorVersion < options.MinVersion {
 			return EntityScanResult{}, fmt.Errorf("cursor version %d is below required version %d", cursorVersion, options.MinVersion)
@@ -72,15 +72,15 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 		} else if !errors.Is(catalogErr, ErrNotFound) {
 			return EntityScanResult{}, catalogErr
 		}
-		if manifest.Version != cursorVersion {
+		if manifestVersion != cursorVersion {
 			return EntityScanResult{}, fmt.Errorf("cursor version %d is no longer available", cursorVersion)
 		}
 	}
 	catalogCtx, catalogSpan := startStorageSpan(ctx, "graphdb.storage.scan.entities.get_catalog",
 		tenantTraceAttr(tenantID),
-		attribute.Int64("graphdb.scan.max_version", manifest.Version),
+		attribute.Int64("graphdb.scan.max_version", manifestVersion),
 	)
-	catalog, indexedRead, catalogErr := s.scanCatalog(catalogCtx, tenantID, manifest.Version)
+	catalog, indexedRead, catalogErr := s.scanCatalog(catalogCtx, tenantID, manifestVersion)
 	catalogSpan.SetAttributes(
 		attribute.Bool("graphdb.scan.catalog_indexed", indexedRead),
 		attribute.Int64("graphdb.scan.catalog_version", catalog.Version),
@@ -92,7 +92,7 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 	}
 	stats.catalogVersion = catalog.Version
 	stats.catalogPages = len(catalog.EntityPages)
-	scanVersion := manifest.Version
+	scanVersion := manifestVersion
 	if indexedRead {
 		scanVersion = catalog.Version
 	} else if stats.fallbackReason == "" {
@@ -100,7 +100,7 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 	}
 	if options.MinVersion > 0 && scanVersion < options.MinVersion {
 		indexedRead = false
-		scanVersion = manifest.Version
+		scanVersion = manifestVersion
 		stats.fallbackReason = "catalog_below_min_version"
 	}
 	cursor, err := parseScanCursor(options.Cursor, scanVersion, entityScanQueryHash(options))
@@ -119,7 +119,7 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 		stats.fallbackReason = "index_page_unavailable"
 	}
 	stats.path = "graph_fallback"
-	minVersion := manifest.Version
+	minVersion := manifestVersion
 	if options.MinVersion > minVersion {
 		minVersion = options.MinVersion
 	}

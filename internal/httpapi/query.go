@@ -236,7 +236,10 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 		writeQueryError(w, err)
 		return true, err
 	}
-	options, version, ok := s.lazyQueryOptions(r.Context(), tenantID, target.ManifestVersion)
+	options, version, ok := s.lazyQueryOptions(
+		r.Context(), tenantID, target.ManifestVersion,
+		query.RequiresReverseIndex(request),
+	)
 	if !ok || !target.requiresVersion(version) || !query.SupportsLazyRead(request, options.PlannerStats) {
 		return false, nil
 	}
@@ -396,7 +399,10 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 	if err != nil {
 		return query.Response{}, err
 	}
-	options, version, ok := s.lazyQueryOptions(r.Context(), tenantID, target.ManifestVersion)
+	options, version, ok := s.lazyQueryOptions(
+		r.Context(), tenantID, target.ManifestVersion,
+		query.RequiresReverseIndex(request),
+	)
 	if ok && target.requiresVersion(version) && query.SupportsLazyRead(request, options.PlannerStats) {
 		if span != nil {
 			span.SetAttributes(attribute.String("graphdb.query.execution_path", "lazy_index"))
@@ -415,7 +421,10 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		span.SetAttributes(attribute.String("graphdb.query.execution_path", "materialized_graph"))
 	}
 	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
-		options = s.queryOptions(r.Context(), tenantID, manifest.Version)
+		options = s.queryOptions(
+			r.Context(), tenantID, manifest.Version,
+			query.RequiresReverseIndex(request),
+		)
 		var executeErr error
 		response, executeErr = query.ExecuteContextWithOptions(r.Context(), g, request, options)
 		return executeErr
@@ -446,15 +455,25 @@ func queryReadFreshness(request query.Request) readFreshness {
 	return readFreshness{MinVersion: request.MinVersion, AllowStale: request.AllowStale}
 }
 
-func (s *Server) queryOptions(ctx context.Context, tenantID string, version int64) query.ExecuteOptions {
+func (s *Server) queryOptions(
+	ctx context.Context,
+	tenantID string,
+	version int64,
+	includeReverse bool,
+) query.ExecuteOptions {
 	catalog, err := s.currentQueryCatalog(ctx, tenantID, version)
 	if err != nil || catalog.Version != version {
 		return query.ExecuteOptions{}
 	}
-	return s.queryOptionsForCatalog(tenantID, catalog)
+	return s.queryOptionsForCatalog(ctx, tenantID, catalog, includeReverse)
 }
 
-func (s *Server) lazyQueryOptions(ctx context.Context, tenantID string, maxVersion int64) (query.ExecuteOptions, int64, bool) {
+func (s *Server) lazyQueryOptions(
+	ctx context.Context,
+	tenantID string,
+	maxVersion int64,
+	includeReverse bool,
+) (query.ExecuteOptions, int64, bool) {
 	expectedVersion := maxVersion
 	if maxVersion == unconstrainedVersion {
 		expectedVersion = 0
@@ -463,13 +482,38 @@ func (s *Server) lazyQueryOptions(ctx context.Context, tenantID string, maxVersi
 	if err != nil || catalog.Version <= 0 || catalog.Version > maxVersion {
 		return query.ExecuteOptions{}, 0, false
 	}
-	return s.queryOptionsForCatalog(tenantID, catalog), catalog.Version, true
+	return s.queryOptionsForCatalog(
+		ctx, tenantID, catalog, includeReverse,
+	), catalog.Version, true
 }
 
-func (s *Server) queryOptionsForCatalog(tenantID string, catalog storage.IndexCatalog) query.ExecuteOptions {
+func (s *Server) queryOptionsForCatalog(
+	ctx context.Context,
+	tenantID string,
+	catalog storage.IndexCatalog,
+	includeReverse bool,
+) query.ExecuteOptions {
 	lookup := &storage.PersistedIndexLookup{Store: s.Store, TenantID: tenantID, Version: catalog.Version, Catalog: catalog}
+	stats := catalog.PlannerStats()
+	if includeReverse {
+		reverse, err := s.currentQueryReverseCatalog(
+			ctx, tenantID, catalog.Version,
+		)
+		if err == nil {
+			lookup.ReverseCatalog = &reverse
+			stats.ReverseEdgeIndexAvailable = true
+			for _, shard := range reverse.EdgeShards {
+				stats.ReverseEdgeShards = append(stats.ReverseEdgeShards, query.PlannerEdgeStat{
+					RelationType:    shard.RelationType,
+					ImpactDirection: shard.ImpactDirection,
+					Shard:           shard.Shard,
+					EdgeCount:       shard.EdgeCount,
+				})
+			}
+		}
+	}
 	return query.ExecuteOptions{
-		PlannerStats: catalog.PlannerStats(),
+		PlannerStats: stats,
 		IndexLookup:  lookup,
 		EntityLookup: lookup,
 	}

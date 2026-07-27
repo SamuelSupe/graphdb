@@ -69,19 +69,44 @@ func TestHTTPOpenAPIContractRoute(t *testing.T) {
 	}
 }
 
-func TestHTTPPprofEndpoints(t *testing.T) {
+func TestHTTPPprofDisabledOnCombinedHandler(t *testing.T) {
 	handler := (&Server{Mode: "all"}).Handler()
 
 	index := httptest.NewRecorder()
 	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
-	if index.Code != http.StatusOK || !strings.Contains(index.Body.String(), "Types of profiles available") {
-		t.Fatalf("pprof index status=%d body=%s", index.Code, index.Body.String())
+	if index.Code != http.StatusNotFound {
+		t.Fatalf("pprof index status=%d, want 404", index.Code)
 	}
+}
 
+func TestHTTPPprofEnabledOnlyOnAdminHandler(t *testing.T) {
+	handler := (&Server{Mode: "all"}).AdminHandler(true)
 	heap := httptest.NewRecorder()
 	handler.ServeHTTP(heap, httptest.NewRequest(http.MethodGet, "/debug/pprof/heap?debug=1", nil))
 	if heap.Code != http.StatusOK || !strings.Contains(heap.Body.String(), "heap profile:") {
 		t.Fatalf("pprof heap status=%d body=%s", heap.Code, heap.Body.String())
+	}
+	symbol := httptest.NewRecorder()
+	handler.ServeHTTP(symbol, httptest.NewRequest(http.MethodPost, "/debug/pprof/symbol", strings.NewReader("")))
+	if symbol.Code != http.StatusOK {
+		t.Fatalf("pprof symbol status=%d, want 200", symbol.Code)
+	}
+}
+
+func TestHTTPDataAndAdminRouteSeparation(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	api := &Server{Store: store, Mode: "all"}
+
+	dataMetrics := httptest.NewRecorder()
+	api.DataHandler().ServeHTTP(dataMetrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if dataMetrics.Code != http.StatusNotFound {
+		t.Fatalf("data metrics status=%d, want 404", dataMetrics.Code)
+	}
+
+	adminCommit := httptest.NewRecorder()
+	api.AdminHandler(false).ServeHTTP(adminCommit, httptest.NewRequest(http.MethodPost, "/v1/commits", nil))
+	if adminCommit.Code != http.StatusNotFound {
+		t.Fatalf("admin commit status=%d, want 404", adminCommit.Code)
 	}
 }
 
@@ -217,7 +242,7 @@ func TestHTTPCommitIdempotencyReplayAndConflict(t *testing.T) {
 	if err := json.Unmarshal(conflict.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode conflict: %v body=%s", err, conflict.Body.String())
 	}
-	if conflict.Code != http.StatusBadRequest || body.Code != "idempotency_conflict" || !strings.Contains(body.Message, "idempotency conflict") {
+	if conflict.Code != http.StatusConflict || body.Code != "idempotency_conflict" || !strings.Contains(body.Message, "idempotency conflict") {
 		t.Fatalf("conflict status = %d body=%#v raw=%s", conflict.Code, body, conflict.Body.String())
 	}
 }

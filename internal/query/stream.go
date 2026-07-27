@@ -35,7 +35,10 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	}
 	profiler := newProfiler(request.Profile)
 	plan := measureQueryPlan(ctx, g, request, options.PlannerStats, profiler)
-	budget, cancel := newBudget(ctx, request, profiler, options.IndexLookup, options.EntityLookup)
+	budget, cancel := newBudget(
+		ctx, request, profiler, options.IndexLookup, options.EntityLookup,
+		options.PlannerStats,
+	)
 	defer cancel()
 	if err := budget.measure("admission", "", plan.EstimatedCost, func() (int, error) {
 		return 0, admitQuery(plan, budget)
@@ -62,6 +65,9 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	if ok {
 		results, nextCursor, err = streamLazyMatch(g, request, cursor, budget, ids)
 	} else if lazyKindScanAvailable(g, request, plan, budget) {
+		if cursor.Order != "" && cursor.Order != lazyEntityPageOrder(budget) {
+			return true, ErrIndexUnavailable
+		}
 		results, nextCursor, err = streamLazyKindMatch(g, request, cursor, budget)
 	} else {
 		return true, ErrIndexUnavailable
@@ -99,6 +105,8 @@ func canStreamLazyMatch(request Request, options ExecuteOptions) bool {
 }
 
 func streamLazyMatch(g *graph.Graph, request Request, cursor cursorState, budget *budget, ids []string) ([]Result, string, error) {
+	order := matchPageOrder(cursor, EntityPageOrderIdentity)
+	ids = orderEntityIDs(ids, order)
 	limit := normalizedLimit(request.Limit)
 	results := make([]Result, 0, limit)
 	seen := 0
@@ -143,7 +151,12 @@ func streamLazyMatch(g *graph.Graph, request Request, cursor cursorState, budget
 		if len(results) >= limit {
 			budget.returned = len(results)
 			budget.truncated = last != ""
-			return results, encodeCursor(cursorState{Version: g.Version, After: last, Query: cursorQueryHash(request)}), nil
+			return results, encodeCursor(cursorState{
+				Version: g.Version,
+				After:   last,
+				Query:   cursorQueryHash(request),
+				Order:   order,
+			}), nil
 		}
 		applyProjection(&result, request.Project)
 		results = append(results, result)
@@ -158,6 +171,7 @@ func streamLazyMatch(g *graph.Graph, request Request, cursor cursorState, budget
 }
 
 func streamLazyKindMatch(g *graph.Graph, request Request, cursor cursorState, budget *budget) ([]Result, string, error) {
+	order := lazyEntityPageOrder(budget)
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	afterID, _ := cursorEntityID(cursor)
@@ -179,7 +193,12 @@ func streamLazyKindMatch(g *graph.Graph, request Request, cursor cursorState, bu
 	}
 	next := ""
 	if state.hasNext && len(results) > 0 {
-		next = encodeCursor(cursorState{Version: g.Version, After: resultIdentity(results[len(results)-1]), Query: cursorQueryHash(request)})
+		next = encodeCursor(cursorState{
+			Version: g.Version,
+			After:   resultIdentity(results[len(results)-1]),
+			Query:   cursorQueryHash(request),
+			Order:   order,
+		})
 	}
 	budget.returned = len(results)
 	budget.truncated = next != ""

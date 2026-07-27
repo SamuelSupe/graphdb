@@ -110,10 +110,10 @@ func entityPageContentHash(page EntityPageData) string {
 	}
 	return indexContentHash(struct {
 		Shard    string         `json:"shard"`
-		Entities []graph.Entity `json:"entities"`
+		Entities []legacyEntity `json:"entities"`
 	}{
 		Shard:    page.Shard,
-		Entities: entities,
+		Entities: legacyEntities(entities),
 	})
 }
 

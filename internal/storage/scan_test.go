@@ -87,6 +87,73 @@ func TestListEntitiesCursorUsesPinnedCatalogAfterManifestAdvance(t *testing.T) {
 	}
 }
 
+func TestListEntitiesCursorSurvivesSameVersionCatalogGC(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	seedScanTenant(t, ctx, store)
+	previous, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	first, err := store.ListEntities(
+		ctx,
+		"tenant-a",
+		EntityScanOptions{Kind: "host", Limit: 1},
+	)
+	if err != nil || first.NextCursor == "" {
+		t.Fatalf("first page = %#v, err %v", first, err)
+	}
+	previousHash := scanCatalogContentHash(previous)
+	previousKey := store.indexCatalogVersionHashKey(
+		"tenant-a", previous.Version, previousHash,
+	)
+
+	current, meta, err := store.getIndexCatalogWithMeta(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("get current catalog: %v", err)
+	}
+	current.Indexes = append(current.Indexes, IndexSpec{
+		Name:   "host.hostname",
+		Kind:   "host",
+		Field:  "hostname",
+		Type:   "string",
+		Status: "ready",
+	})
+	if _, err := store.putIndexCatalogWithMeta(
+		ctx, "tenant-a", current, meta,
+	); err != nil {
+		t.Fatalf("publish same-version catalog: %v", err)
+	}
+	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{
+		KeepSnapshots:       1,
+		CleanupIndexOrphans: true,
+	}); err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if _, err := store.Objects.Get(ctx, previousKey); err != nil {
+		t.Fatalf("pinned catalog removed by GC: %v", err)
+	}
+
+	second, err := store.ListEntities(
+		ctx,
+		"tenant-a",
+		EntityScanOptions{
+			Kind: "host", Limit: 1, Cursor: first.NextCursor,
+		},
+	)
+	if err != nil {
+		t.Fatalf("list second page after same-version GC: %v", err)
+	}
+	if second.Version != previous.Version ||
+		len(second.Entities) != 1 ||
+		second.NextCursor != "" {
+		t.Fatalf(
+			"second page = %#v, want stable final page at version %d",
+			second, previous.Version,
+		)
+	}
+}
+
 func TestListEdgesUsesShardsWithFilters(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

@@ -57,6 +57,62 @@ func TestTenantStoreSegmentsCommitTailAndLoadsAfterLooseCleanup(t *testing.T) {
 	}
 }
 
+func TestCommitTailSegmentationReusesDecodedWriterTail(t *testing.T) {
+	ctx := context.Background()
+	objects := newCountingReadStore(NewMemoryStore())
+	store := NewTenantStore(objects, "test")
+	for i := 0; i < commitSegmentTargetCount-1; i++ {
+		if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{
+				ID: fmt.Sprintf("host:%03d", i), Kind: "host",
+			}},
+		}, CommitOptions{}); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+	}
+	objects.Reset()
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{
+			ID: "host:boundary", Kind: "host",
+		}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("segment boundary commit: %v", err)
+	}
+	if got := objects.CountContains("/commits/"); got != 0 {
+		t.Fatalf("segment boundary reread %d loose commit objects, want 0", got)
+	}
+}
+
+func TestCommitTailSegmentationReusesTailLoadedAfterCacheMiss(t *testing.T) {
+	ctx := context.Background()
+	objects := newCountingReadStore(NewMemoryStore())
+	store := NewTenantStore(objects, "test")
+	for i := 0; i < commitSegmentTargetCount-1; i++ {
+		if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{
+				ID: fmt.Sprintf("host:%03d", i), Kind: "host",
+			}},
+		}, CommitOptions{}); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+	}
+	store.deleteWriteCache("tenant-a")
+	objects.Reset()
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{
+			ID: "host:boundary", Kind: "host",
+		}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("segment boundary commit: %v", err)
+	}
+	if got := objects.CountContains("/commits/"); got != commitSegmentTargetCount-1 {
+		t.Fatalf(
+			"cache-miss boundary read %d loose commit objects, want one load of %d",
+			got, commitSegmentTargetCount-1,
+		)
+	}
+}
+
 func TestNonParquetCommitSegmentIsRejected(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

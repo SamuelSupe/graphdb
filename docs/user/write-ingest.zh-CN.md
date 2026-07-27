@@ -2,15 +2,17 @@
 
 [English](write-ingest.md)
 
-GraphDB 有两条写入路径：
+GGraphDB 有三条写入路径：
 
 - `POST /v1/commits`：直接原子图变更。
 - `POST /v1/ingest/batches`：面向采集器的批量写入，支持 source、cursor、
   幂等、部分失败、死信和采集器状态。
+- `POST /v1/imports`：基于 ingest batch 的异步 CSV/JSONL 批量导入，支持
+  task checkpoint 和恢复。
 
-两者都需要 `X-Tenant-ID`；在 reader 模式都返回 `405`。
+三者都需要 `X-Tenant-ID`；在 reader 模式都返回 `405`。
 
-这两条都是通用图数据写入接口。下面的请求和文件示例在需要具体说明采集与
+这些都是通用图数据写入接口。下面的请求和文件示例在需要具体说明采集与
 身份合并时使用 CMDB 风格数据；其他领域可以不使用 CI type 和 source governance。
 
 ## 直接提交
@@ -22,7 +24,7 @@ GraphDB 有两条写入路径：
   "expected_version": 0,
   "idempotency_key": "cmdb-sync-001",
   "mutations": {
-    "upsert_ci_types": [],
+    "upsert_entity_types": [],
     "upsert_relation_types": [],
     "upsert_entities": [],
     "upsert_edges": [],
@@ -33,6 +35,10 @@ GraphDB 有两条写入路径：
   }
 }
 ```
+
+`upsert_entity_types`、`delete_entity_types` 是领域中立的 1.1 名称；1.0 的
+`upsert_ci_types`、`delete_ci_types` 仍然可用，并操作相同持久化结构。同一
+mutation 不要同时发送两种名称。
 
 `expected_version` 可选；设置后只有租户 manifest 仍处于该版本时才接受
 提交。`idempotency_key` 可选但建议使用。相同 key 和相同 payload 会返回
@@ -68,17 +74,21 @@ curl -sS -X POST "$WRITER/v1/commits" \
 {
   "id": "host:aws:i-001",
   "kind": "host",
+  "labels": ["asset", "production"],
   "source": "aws",
   "external_id": "i-001",
   "confidence": 0.9,
   "fields": {
     "hostname": "app-01",
     "region": "us-east-1",
-    "tags": ["prod"],
-    "labels!": ["owned"]
+    "tags!": ["prod"]
   }
 }
 ```
+
+`labels` 是 1.1 的顶层便捷字段。GGraphDB 会规范化标签并保存在兼容 1.0 的
+fields map 内，因此不改变持久化实体布局，也可以使用 `labels CONTAINS
+"production"` 查询。
 
 ## 关系类型和边
 
@@ -92,7 +102,7 @@ curl -sS -X POST "$WRITER/v1/commits" \
 - `impact_direction`：影响分析的传播方向。
 
 边以 `(type, from, to)` 作为规范身份。输入的 `edge.id` 作为来源别名
-保留；GraphDB 会将保存的边 ID 改写为稳定的规范 ID。
+保留；GGraphDB 会将保存的边 ID 改写为稳定的规范 ID。
 
 ```json
 {
@@ -109,6 +119,24 @@ curl -sS -X POST "$WRITER/v1/commits" \
 
 移动边端点时，应删除旧的 `(type, from, to)`，再创建新边。端点是身份，
 不是可变字段。
+
+关系属性 schema 与关系类型分开管理：
+
+```sh
+curl -sS -X PUT "$WRITER/v1/relation-schemas/cites" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "strict": true,
+    "fields": {
+      "confidence": {"type": "number", "required": true},
+      "source": {"type": "string", "default": "unknown"}
+    }
+  }'
+```
+
+被引用的关系类型必须已存在。默认值和校验同时作用于 direct commit、ingest
+batch 和文件导入批次；删除关系类型前先删除对应属性 schema。
 
 ## Source Policy
 
@@ -216,6 +244,7 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `delete_edge`
 - `relation_type`
 - `ci_type`
+- `entity_type`（`ci_type` 的 1.1 别名）
 
 响应字段：
 
@@ -252,9 +281,54 @@ curl -sS "$WRITER/v1/ingest/deadletters/aws" -H 'X-Tenant-ID: demo'
 curl -sS -X POST "$WRITER/v1/ingest/deadletters/aws/replay?limit=10" -H 'X-Tenant-ID: demo'
 ```
 
+## CSV 与 JSONL 导入
+
+JSONL 的每个非空行都是一个已有的 ingestion item：
+
+```jsonl
+{"external_id":"doc-1","entity":{"id":"document:1","kind":"document","labels":["article"],"fields":{"title":"Graph Storage"}}}
+{"external_id":"cite-1","edge":{"type":"cites","from":"document:1","to":"document:2","fields":{"confidence":0.95}}}
+```
+
+```sh
+curl -sS -X POST \
+  "$WRITER/v1/imports?source=knowledge-base&collector_id=files&batch_size=500&on_error=continue" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/x-ndjson' \
+  --data-binary @graph.jsonl
+```
+
+CSV 必须包含 `record_type`。entity/node 和 edge/relationship 行使用下方保留
+列，其他非空列会成为带类型的属性；`labels` 支持 JSON 字符串数组或 `|`
+分隔文本。
+
+```csv
+record_type,id,entity_type,labels,relation_type,from,to,title,confidence
+entity,document:1,document,article|published,,,,Graph Storage,
+edge,,,,cites,document:1,document:2,,0.95
+```
+
+```sh
+curl -sS -X POST "$WRITER/v1/imports?format=csv&on_error=abort" \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: text/csv' \
+  --data-binary @graph.csv
+```
+
+CSV `record_type` 支持 `entity`/`node`、`edge`/`relationship`、
+`delete_entity`/`delete_node`、`delete_edge`/`delete_relationship`、
+`entity_type`、`relation_type`。类型定义行把 JSON 放在 `payload` 或
+`definition` 列。
+
+接口返回 `202`、普通 `bulk_import` task 和 `Location` header。轮询
+`/v1/tasks/{id}` 获取 checkpoint、进度、问题样本和最终计数。`format` 可由
+JSONL/CSV Content-Type 推断；`batch_size` 默认 500、最大 5000；`on_error`
+为 `abort` 或 `continue`。当前上传上限是 32 MiB，每个租户同时只运行一个
+bulk import。
+
 ## MD5 Skip
 
-commit 和 ingest 作用于当前图。如果结果 MD5 与当前已存图相同，GraphDB
+commit 和 ingest 作用于当前图。如果结果 MD5 与当前已存图相同，GGraphDB
 会跳过新 commit 并返回 `skipped=true`，避免重复采集导致 commit tail
 增长。
 
@@ -271,7 +345,7 @@ commit 和 ingest 作用于当前图。如果结果 MD5 与当前已存图相同
     {
       "code": "commit_tail_too_long",
       "current": 301,
-      "threshold": 300,
+      "threshold": 1500,
       "message": "compact required"
     }
   ]

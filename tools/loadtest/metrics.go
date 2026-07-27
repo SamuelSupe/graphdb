@@ -20,6 +20,17 @@ type metric struct {
 	latency  []time.Duration
 }
 
+type metricReport struct {
+	Name     string      `json:"name"`
+	Count    int         `json:"count"`
+	Errors   int         `json:"errors"`
+	Statuses map[int]int `json:"statuses,omitempty"`
+	P50MS    int64       `json:"p50_ms"`
+	P95MS    int64       `json:"p95_ms"`
+	P99MS    int64       `json:"p99_ms"`
+	MaxMS    int64       `json:"max_ms"`
+}
+
 func newRegistry() *registry {
 	return &registry{data: map[string]*metric{}}
 }
@@ -54,6 +65,18 @@ func (r *registry) hasErrors() bool {
 }
 
 func (r *registry) print(w io.Writer) {
+	for _, report := range r.snapshot() {
+		fmt.Fprintf(w, "%-16s count=%-5d errors=%-4d p50=%-8s p95=%-8s p99=%-8s max=%-8s statuses=%v\n",
+			report.Name, report.Count, report.Errors,
+			time.Duration(report.P50MS)*time.Millisecond,
+			time.Duration(report.P95MS)*time.Millisecond,
+			time.Duration(report.P99MS)*time.Millisecond,
+			time.Duration(report.MaxMS)*time.Millisecond,
+			report.Statuses)
+	}
+}
+
+func (r *registry) snapshot() []metricReport {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.data))
@@ -61,12 +84,27 @@ func (r *registry) print(w io.Writer) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	reports := make([]metricReport, 0, len(names))
 	for _, name := range names {
 		m := r.data[name]
-		sort.Slice(m.latency, func(i, j int) bool { return m.latency[i] < m.latency[j] })
-		fmt.Fprintf(w, "%-16s count=%-5d errors=%-4d p50=%-8s p95=%-8s p99=%-8s max=%-8s statuses=%v\n",
-			name, m.count, m.errors, pct(m.latency, 50), pct(m.latency, 95), pct(m.latency, 99), pct(m.latency, 100), m.statuses)
+		latency := append([]time.Duration(nil), m.latency...)
+		sort.Slice(latency, func(i, j int) bool { return latency[i] < latency[j] })
+		statuses := make(map[int]int, len(m.statuses))
+		for status, count := range m.statuses {
+			statuses[status] = count
+		}
+		reports = append(reports, metricReport{
+			Name:     name,
+			Count:    m.count,
+			Errors:   m.errors,
+			Statuses: statuses,
+			P50MS:    pct(latency, 50).Milliseconds(),
+			P95MS:    pct(latency, 95).Milliseconds(),
+			P99MS:    pct(latency, 99).Milliseconds(),
+			MaxMS:    pct(latency, 100).Milliseconds(),
+		})
 	}
+	return reports
 }
 
 func pct(values []time.Duration, percentile int) time.Duration {

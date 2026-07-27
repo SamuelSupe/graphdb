@@ -1,6 +1,6 @@
 <div align="center">
 
-# GraphDB
+# GGraphDB
 
 **面向实体、关系与拓扑的通用对象存储图数据库**
 
@@ -12,20 +12,23 @@
 
 </div>
 
-GraphDB 是一个 Go 实现的 v1 通用图数据库，面向实体关系数据。CMDB、资产
-关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。它把租户数据持久化
-到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest CAS、快照和提交回放，
-提供可追踪的写入版本与可控的新鲜度。
+GGraphDB 1.1 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
+它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
+CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
+SPARQL、本体推理或历史图引擎。
 
 ## 核心能力
 
 | 能力 | 说明 |
 | --- | --- |
 | 多租户图数据 | 通过 `X-Tenant-ID` 隔离租户前缀、实体、边和索引。 |
-| 可选领域建模 | 类型元数据、字段约束、identity reconciliation、source priority 和人工合并/拆分，适合 CMDB 等采集密集型领域。 |
-| 图查询 | JSON Query DSL、GQL、match、neighbors、traverse、impact、shortest path。 |
+| 可选领域建模 | 实体类型、标签、关系属性 schema、identity reconciliation、source priority 和人工合并/拆分。 |
+| 图查询 | GraphQL、JSON Query DSL、有界 pattern match、双向遍历、impact、shortest path。 |
+| 批量导入 | task 驱动、可恢复的 JSONL 和 CSV ingest。 |
 | 对象存储持久化 | Parquet manifest、commit、snapshot、entity page、edge shard 和 index object。 |
 | 读写分离 | 同一二进制支持 `all`、`writer`、`reader`，通过部署拓扑分流。 |
+| 可选多写协调 | PostgreSQL head CAS 支持每租户 2–8 个乐观并发 writer，本地协调仍为默认。 |
 | 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
 
 ## 架构一览
@@ -33,9 +36,10 @@ GraphDB 是一个 Go 实现的 v1 通用图数据库，面向实体关系数据�
 ```mermaid
 flowchart LR
   A[采集器 / API] --> W[Writer\\nGRAPHDB_MODE=writer]
+  W -. 可选 head CAS .-> P[(PostgreSQL\\n协调状态)]
   W --> O[(S3 / RustFS\\nParquet + Manifest)]
   O --> R[Reader 集群\\nGRAPHDB_MODE=reader]
-  R --> Q[JSON DSL / GQL 查询]
+  R --> Q[GraphQL / JSON DSL 查询]
   A --> A1[all 模式\\n本地开发]
   A1 --> O
 ```
@@ -87,70 +91,74 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/query \
   -H 'Content-Type: application/json' \
   --data @examples/query-match.json
 
-# 4. 使用 GQL 查询通用图数据
-curl -fsS -X POST http://127.0.0.1:8080/v1/query/gql \
+# 4. 使用 GraphQL 查询通用图数据
+curl -fsS -X POST http://127.0.0.1:8080/v1/query/graphql \
   -H 'X-Tenant-ID: demo' \
-  -H 'Content-Type: text/plain' \
-  --data-binary 'FIND person WHERE name = "Alice" PROJECT id, name LIMIT 10'
+  -H 'Content-Type: application/json' \
+  -d '{"query":"query Find($request: QueryRequest!) { graph(request: $request) { version results stats } }","operationName":"Find","variables":{"request":{"op":"match","kind":"person","where":[{"field":"name","op":"eq","value":"Alice"}],"project":["id","name"],"limit":10}}}'
 ```
 
 写入响应中的 `version` 可以作为 reader 查询的 `min_version`，保证读到指定
 版本；只有在明确接受最终一致性时才使用 `allow_stale=true`。
 
-## 通用图场景：使用 GQL 查询
+## 通用图场景：使用 GraphQL 查询
 
 `examples/commit.json` 包含一个非 CMDB 的通用图：`person:alice` 通过
-`works_at` 关系连接到 `company:acme`。GQL 面向应用自定义的实体类型、字段
-和关系类型，因此同一套语法也适用于组织关系、项目依赖、数据血缘和其他图结构数据。
+`works_at` 关系连接到 `company:acme`。GraphQL 通过 `QueryRequest` 变量接收
+通用 JSON Query DSL，因此应用自定义的实体类型、字段和关系类型同样适用于
+组织关系、项目依赖、数据血缘和其他图结构数据。
 
-按属性查询实体：
+GraphQL document：
 
-```sql
-FIND person
-WHERE name = "Alice"
-PROJECT id, name
-LIMIT 10
+```graphql
+query FindPerson($request: QueryRequest!) {
+  graph(request: $request) {
+    version
+    results
+    stats
+  }
+}
 ```
 
-沿类型化关系查询一跳邻居：
+变量使用 `{"op":"match","kind":"person",...}`；要沿关系查询一跳邻居，可改为
+`{"op":"neighbors","id":"person:alice","relation_types":["works_at"]}`。
 
-```sql
-NEIGHBORS person:alice OUT
-REL works_at
-PROJECT id, name
-LIMIT 10
-```
-
-`FIND` 对应实体匹配，`NEIGHBORS` 和 `TRAVERSE` 用于关系遍历。GQL 会编译
-到同一套 JSON Query DSL 和查询 planner；过滤、路径、分页、`EXPLAIN`、
-`PROFILE` 等完整语法见 [GQL 文档](docs/gql.md)。
+schema、错误、alias、fragment 和 1.1 边界见
+[GraphQL 文档](docs/graphql.zh-CN.md)。旧 `FIND`/`MATCH` 文本 DSL 仅在
+`/v1/query/gql` 保留 1.0 兼容，不是 GraphQL。
 
 ## 部署模式
 
 | 模式 | 适用场景 | 行为 |
 | --- | --- | --- |
 | `all` | 本地开发、小规模单进程部署 | 同一进程处理写入和查询。 |
-| `writer` | 生产写入入口 | 写入和控制 API；每个租户保持一个活跃 writer。 |
+| `writer` | 生产写入入口 | 写入和控制 API；本地单 writer 或 PostgreSQL 协调的 writer 集群。 |
 | `reader` | 查询集群 | 从共享对象存储加载数据，提供查询和导出。 |
 
-生产部署建议使用共享 S3/RustFS、每个租户一个 writer、多个 reader，并以
-reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由标识，
-不是认证机制；认证、授权、TLS 和限流应由网关或服务网格提供。
+生产部署建议使用共享 S3/RustFS 和多个 reader。默认
+`GRAPHDB_COORDINATION=local` 时每租户保持一个 writer；需要 2–8 个乐观并发
+writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍以
+进程 readiness 主动探测对象存储，PostgreSQL 模式按保留窗口清理已完成的
+协调记录；租户流量仍以 reader fleet readiness 作为接入条件。
+`X-Tenant-ID` 是租户路由标识，不是认证机制；认证、授权、TLS 和限流应由
+网关或服务网格提供。
 
 ## 发行版
 
-当前发行版为 GraphDB 1.0：
-[**v1.0.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.0.0)。
+最新已发布版本为 GGraphDB 1.1：
+[**v1.1.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.0)。
+发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
+正式回滚演练全部通过后才会发布。
 
 发行包包含：
 
 - Linux amd64、Linux arm64、macOS arm64 静态二进制；
-- Dockerfile、MinIO/RustFS Compose 文件和 examples；
-- 部署、使用、API、查询和 SDK 文档；
+- Dockerfile、MinIO/RustFS/PostgreSQL Compose 文件和 examples；
+- 部署、安全、容量、API、查询、SDK、changelog 和构建元数据；
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.0.0` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.1.0` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 
@@ -161,8 +169,10 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 | [数据库简介](docs/database-introduction.zh-CN.md) · [English](docs/database-introduction.md) | 产品定位、数据模型、架构和当前边界。 |
 | [使用手册](docs/user/usage-manual.zh-CN.md) · [English](docs/user/usage-manual.md) | 租户、写入、查询、可选的 CMDB 场景能力、索引、维护和 SDK。 |
 | [部署与运维](docs/user/deploy-ops.zh-CN.md) · [English](docs/user/deploy-ops.md) | `all`/`writer`/`reader`、S3、RustFS、健康检查和生产规则。 |
+| [安全边界](docs/security-deployment.zh-CN.md) · [English](docs/security-deployment.md) | 数据/管理 listener、网关认证、租户绑定、RBAC 与 TLS。 |
+| [容量边界](docs/capacity.zh-CN.md) · [English](docs/capacity.md) | 发行 CAS 门禁、可复现基线和推荐拓扑。 |
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
-| [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | JSON DSL、GQL、分页、流式、explain 和 profile。 |
+| [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | GraphQL、JSON DSL、分页、流式、explain 和 profile。 |
 | [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
 | [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
@@ -172,10 +182,10 @@ reader fleet readiness 作为流量接入条件。`X-Tenant-ID` 是租户路由�
 
 ## 当前边界
 
-GraphDB v1 目前明确保持以下边界：
+GGraphDB v1 目前明确保持以下边界：
 
 - 通用实体关系图内核，CMDB 数据治理作为可选的领域 profile；
-- 每个租户一个活跃 writer，不提供分布式事务协调器；
+- 本地协调默认每租户一个活跃 writer；可选 PostgreSQL 协调提供乐观多 writer head CAS；
 - 对象存储是生产持久化的推荐来源；
 - 强读场景通过显式 reader freshness 控制；
 - 认证和授权由部署边界负责。
@@ -186,7 +196,7 @@ GraphDB v1 目前明确保持以下边界：
 
 ```sh
 # 单元测试和包测试
-go test -mod=mod ./...
+go test -mod=readonly ./...
 
 # 校验两种部署拓扑
 docker compose config
@@ -199,5 +209,6 @@ reader freshness、恢复和发行版门禁工具。运行长时间或有影响�
 
 ## 贡献与许可证
 
-欢迎通过 issue 或 pull request 提交 bug、部署反馈和功能建议。请勿将租户
-数据、凭据和本地生成状态提交到仓库。
+详见 [CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md) 和
+[LICENSE](LICENSE)。当前许可证为 rights-reserved；源码公开不代表授予
+生产使用或再分发权利。

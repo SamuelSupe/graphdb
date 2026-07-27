@@ -33,31 +33,43 @@ func (s *TenantStore) repairCachedCollectorStatusFromBatches(ctx context.Context
 
 func (s *TenantStore) deriveCollectorStatusFromBatches(ctx context.Context, tenantID string, source string, collectorID string) (CollectorStatus, error) {
 	status := CollectorStatus{TenantID: tenantID, Source: source, CollectorID: collectorID}
-	objects, err := s.Objects.List(ctx, s.ingestBatchPrefix(tenantID, source, collectorID))
-	if err != nil {
-		return status, err
-	}
 	var latest IngestBatchRecord
 	hasLatest := false
 	appliedTotal := 0
 	failedTotal := 0
-	for _, object := range objects {
-		record, _, err := s.loadIngestRecordWithMeta(ctx, object.Key)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return status, err
-		}
-		if !collectorStatusRecordMatches(record, tenantID, source, collectorID) {
-			continue
-		}
-		appliedTotal += record.Result.Applied
-		failedTotal += record.Result.Failed
-		if !hasLatest || collectorStatusRecordAfter(record, latest) {
-			latest = record
-			hasLatest = true
-		}
+	err := scanObjectPrefix(
+		ctx,
+		s.Objects,
+		s.ingestBatchPrefix(tenantID, source, collectorID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				record, _, err := s.loadIngestRecordWithMeta(
+					ctx, object.Key,
+				)
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				if !collectorStatusRecordMatches(
+					record, tenantID, source, collectorID,
+				) {
+					continue
+				}
+				appliedTotal += record.Result.Applied
+				failedTotal += record.Result.Failed
+				if !hasLatest ||
+					collectorStatusRecordAfter(record, latest) {
+					latest = record
+					hasLatest = true
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return status, err
 	}
 	if hasLatest {
 		applyCollectorStatusResult(&status, tenantID, latest.Request, latest.Result, latest.StartedAt, latest.FinishedAt)

@@ -24,6 +24,26 @@ func TestIntegrityAuditValidatesCurrentObjectChain(t *testing.T) {
 	}
 }
 
+func TestIntegrityAuditAllowsDisabledOptionalEntityRecords(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	store.WriteEntityRecords = false
+	seedIntegrityTenant(t, ctx, store)
+
+	report, err := store.AuditIntegrity(
+		ctx, "tenant-a", IntegrityAuditOptions{Deep: true},
+	)
+	if err != nil {
+		t.Fatalf("audit integrity: %v", err)
+	}
+	if report.Status != "ok" || len(report.Issues) != 0 {
+		t.Fatalf("audit report = %#v", report)
+	}
+	if hasIntegrityCheck(report.Checks, "entity_record") {
+		t.Fatalf("unexpected entity record check: %#v", report.Checks)
+	}
+}
+
 func TestIntegrityAuditReportsCorruptSnapshotPage(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")

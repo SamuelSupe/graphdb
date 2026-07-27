@@ -28,6 +28,19 @@ type tenantGenerationRef struct {
 }
 
 func (s *TenantStore) prepareTenantWrite(ctx context.Context, tenantID string) (writerFenceRef, error) {
+	if s.coordinated() {
+		head, exists, err := s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return writerFenceRef{}, err
+		}
+		if !exists {
+			return writerFenceRef{}, ErrCoordinatorHeadMissing
+		}
+		if head.Status != TenantStatusActive {
+			return writerFenceRef{}, ErrTenantDeleted
+		}
+		return writerFenceRef{epoch: head.Generation}, nil
+	}
 	if bound, ok := s.writerFenceFromContext(ctx, tenantID); ok {
 		if err := s.ensureBoundWriterLease(ctx, tenantID, bound.fence); err != nil {
 			return writerFenceRef{}, err
@@ -55,6 +68,9 @@ func (s *TenantStore) bindCurrentWriterFence(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) rebindCurrentWriterFence(ctx context.Context, tenantID string) (context.Context, error) {
+	if s.coordinated() {
+		return ctx, nil
+	}
 	lease, _, ok := s.getCachedWriterLeaseAny(tenantID)
 	if !ok || lease.FenceToken == "" || lease.FenceEpoch <= 0 {
 		return nil, fmt.Errorf("%w: tenant %q has no active writer fence", ErrLeaseHeld, tenantID)
@@ -73,6 +89,9 @@ func (s *TenantStore) rebindCurrentWriterFence(ctx context.Context, tenantID str
 }
 
 func (s *TenantStore) acquireAndBindWriterFence(ctx context.Context, tenantID string) (context.Context, error) {
+	if s.coordinated() {
+		return ctx, nil
+	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return nil, err
 	}
@@ -80,6 +99,10 @@ func (s *TenantStore) acquireAndBindWriterFence(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) prepareCreateAndBindWriterFence(ctx context.Context, tenantID string) (context.Context, error) {
+	if s.coordinated() {
+		_, err := s.ensureCoordinatedTenantHeadForCreate(ctx, tenantID)
+		return ctx, err
+	}
 	if err := s.prepareTenantCreateLease(ctx, tenantID); err != nil {
 		return nil, err
 	}
@@ -105,9 +128,7 @@ func (s *TenantStore) putTenantConditionalIfBound(ctx context.Context, tenantID 
 
 func (s *TenantStore) writerFenceStillCurrent(ctx context.Context, tenantID string, expected writerFenceRef) error {
 	key := s.writerLeaseKey(tenantID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	lease, _, err := s.getWriterLease(ctx, tenantID, key)
 	if errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("%w: tenant %q writer fence was removed", ErrLeaseHeld, tenantID)
@@ -127,9 +148,7 @@ func (s *TenantStore) ensureBoundWriterLease(ctx context.Context, tenantID strin
 		return nil
 	}
 	key := s.writerLeaseKey(tenantID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	lease, meta, err := s.getWriterLease(ctx, tenantID, key)
 	if errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("%w: tenant %q writer fence was removed", ErrLeaseHeld, tenantID)
@@ -162,6 +181,9 @@ func writerLeaseMatchesFence(lease WriterLease, expected writerFenceRef) bool {
 }
 
 func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if s.coordinated() {
+		return s.putTenantGenerationConditional(ctx, tenantID, key, data, condition)
+	}
 	fence, err := s.prepareTenantWrite(ctx, tenantID)
 	if err != nil {
 		return ObjectMeta{}, err
@@ -210,6 +232,19 @@ func (s *TenantStore) putTenantGenerationConditional(ctx context.Context, tenant
 }
 
 func (s *TenantStore) currentTenantGeneration(ctx context.Context, tenantID string) (tenantGenerationRef, error) {
+	if s.coordinated() {
+		head, exists, err := s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return tenantGenerationRef{}, err
+		}
+		if !exists {
+			return tenantGenerationRef{}, ErrCoordinatorHeadMissing
+		}
+		if head.Status != TenantStatusActive {
+			return tenantGenerationRef{}, ErrTenantDeleted
+		}
+		return tenantGenerationRef{fenceEpoch: head.Generation, protected: true}, nil
+	}
 	manifest, meta, err := s.getManifest(ctx, tenantID)
 	if err != nil {
 		return tenantGenerationRef{}, err
@@ -226,6 +261,17 @@ func (s *TenantStore) currentTenantGeneration(ctx context.Context, tenantID stri
 }
 
 func (s *TenantStore) tenantGenerationStillCurrent(ctx context.Context, tenantID string, expected tenantGenerationRef) error {
+	if s.coordinated() {
+		head, exists, err := s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if !exists || head.Status != TenantStatusActive ||
+			!expected.protected || head.Generation != expected.fenceEpoch {
+			return ErrTenantDeleted
+		}
+		return nil
+	}
 	manifest, meta, err := s.getManifest(ctx, tenantID)
 	if err != nil {
 		return err

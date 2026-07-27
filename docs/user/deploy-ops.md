@@ -12,12 +12,15 @@ GRAPHDB_MODE=all|writer|reader
 - `writer`: production write/control process.
 - `reader`: read/query process.
 
-Production write boundary is one active writer process per tenant. Writer lease
-and manifest CAS protect against accidental duplicate or stale writer processes;
-they are not a multi-writer scheduler.
+`GRAPHDB_COORDINATION=local` is the default and keeps one active writer process
+per tenant. Writer lease and manifest CAS protect against accidental duplicate
+or stale writer processes. `GRAPHDB_COORDINATION=postgres` replaces that
+visibility boundary with PostgreSQL head CAS and supports 2–8 optimistic
+writers per tenant.
 
-Readers are independent. They keep local cache but object storage remains the
-source of truth.
+Readers are independent. In local mode object storage is authoritative; in
+PostgreSQL mode the PG head is authoritative and object storage holds immutable
+graph objects plus the eventual 1.0 manifest mirror.
 
 ## Object Storage
 
@@ -52,6 +55,8 @@ Each tenant is stored under:
 Server:
 
 - `GRAPHDB_ADDR=:8080`
+- `GRAPHDB_ADMIN_ADDR=` (empty keeps the 1.0-compatible combined listener)
+- `GRAPHDB_PPROF_ENABLED=false` (requires a separate admin listener)
 - `GRAPHDB_PREFIX=graphdb`
 - `GRAPHDB_POLL_INTERVAL=2s`
 - `GRAPHDB_INSTANCE_ID=<stable-instance-name>`
@@ -79,17 +84,49 @@ Write path:
 - `GRAPHDB_WRITE_MAX_PER_TENANT=1`
 - `GRAPHDB_WRITE_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_WRITE_EXECUTION_TIMEOUT=90s`
-- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=300`
+- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=1500`
 - `GRAPHDB_WRITE_CACHE_MAX_BYTES=512MiB`
 - `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
+- `GRAPHDB_COORDINATION=local|postgres`
+- `GRAPHDB_POSTGRES_DSN=<dsn>`
+- `GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination`
+- `GRAPHDB_COORDINATOR_NAMESPACE=<stable-cluster-id>`
+- `GRAPHDB_WRITE_CAS_MAX_RETRIES=8`
+- `GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION=24h`
+- `GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL=3m` (must be greater than `GRAPHDB_WRITE_EXECUTION_TIMEOUT`)
+- `GRAPHDB_COORDINATOR_OUTBOX_RETENTION=1h`
+- `GRAPHDB_COORDINATOR_CLEANUP_INTERVAL=1m`
+- `GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE=5000`
+- `GRAPHDB_READINESS_TIMEOUT=2s`
 
 Keep `GRAPHDB_WRITE_MAX_PER_TENANT=1` for strict request serialization. Values
 such as `2`-`4` allow bounded pipelining of backpressure checks and post-commit
 metadata finalization; manifest publication remains protected by the per-tenant
-single-writer lock. `0` disables that admission dimension and should only be
-used for controlled testing.
+single-writer lock in local mode or PG head CAS in PostgreSQL mode. `0` disables
+that admission dimension and should only be used for controlled testing.
+
+PostgreSQL coordination additionally requires `GRAPHDB_STORAGE=s3`,
+`S3_PROVIDER=generic-s3`, and `GRAPHDB_WRITER_TOPOLOGY=cas`. Run
+`graphdb coordinator migrate` and `graphdb coordinator bootstrap --apply`
+before starting writers. See the release deployment guide for rollout and
+rollback sequencing.
+
+Committed idempotency rows and abandoned pending reservations are retained for
+the configured idempotency window; replay protection is guaranteed only inside
+that window. `GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL` must be greater than
+`GRAPHDB_WRITE_EXECUTION_TIMEOUT`, and pending rows are never removed before
+that ownership TTL. Completed legacy manifest jobs are deleted only after their
+retention window and only when the tenant mirror watermark has reached the job
+revision. A retention value of `0` disables that cleanup and should only be used
+with an external archival and pruning procedure.
+
+`/v1/readiness` performs a bounded bucket list (`max-keys=1`) and therefore the
+runtime object-store identity must have bucket-list permission in reader and
+writer modes. `/v1/health` and `/metrics` use the background-sampled coordinator
+status instead of querying PostgreSQL on the request path; readiness remains the
+active dependency probe.
 
 Observability:
 
@@ -104,7 +141,7 @@ Observability:
 docker compose up --build
 ```
 
-This starts MinIO, creates bucket `graphdb`, and starts GraphDB in `all` mode.
+This starts MinIO, creates bucket `graphdb`, and starts GGraphDB in `all` mode.
 
 ## RustFS Writer And Reader Stack
 
@@ -156,21 +193,25 @@ check.
 Metrics:
 
 ```sh
-curl -sS "$BASE/metrics"
+curl -sS "$ADMIN/metrics"
 ```
 
 Important metric families include HTTP latency, query latency, write
 backpressure, object store latency, CAS conflicts, commit tail length, reader
-visible version, and index health.
+visible version, coordinator availability/head revision/mirror lag, and index
+health.
 
 Logs are JSON lines on stdout for HTTP access, write/control audit, ingestion,
 index rebuild, slow query, and backpressure events.
 
 Traces are exported over OTLP/HTTP when `GRAPHDB_OTLP_ENDPOINT` is set.
+See [Production Security Boundary](../security-deployment.md) for listener
+separation, gateway tenant binding, RBAC, and TLS.
 
 ## Production Operating Rules
 
-- Keep exactly one active writer per tenant.
+- Keep exactly one active writer per tenant in local coordination; scale to
+  2–8 only after PostgreSQL bootstrap and never mix in a 1.0 writer.
 - Run multiple readers independently from the same object storage prefix.
 - Use `min_version` for read-after-write flows that need freshness.
 - Watch commit tail and keep auto compact enabled.

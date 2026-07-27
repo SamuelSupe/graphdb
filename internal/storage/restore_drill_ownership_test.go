@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -150,6 +151,101 @@ func TestRestoreDrillOwnedCleanupRemovesOnlyTargetTenant(t *testing.T) {
 	}
 }
 
+func TestRestoreDrillCleansOwnedTargetAfterPostRestoreFailure(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := &failNthTargetListStore{
+		ObjectStore: base,
+		prefix:      "drill/tenants/tenant-cleanup/",
+		failAt:      5,
+	}
+	source := NewTenantStore(objects, "test")
+	seedRestoreDrillTenant(t, ctx, source, "tenant-a", "host:source")
+
+	task, err := source.StartTask(ctx, "tenant-a", TaskTypeTenantRestoreDrill, map[string]any{
+		"target_prefix":    "drill",
+		"target_tenant_id": "tenant-cleanup",
+		"cleanup":          true,
+	})
+	if err != nil {
+		t.Fatalf("start restore drill: %v", err)
+	}
+	task = waitForRestoreDrillTerminalTask(t, ctx, source, "tenant-a", task.ID)
+	if task.Status != TaskStatusFailed ||
+		!strings.Contains(task.Error, "injected restored usage failure") {
+		t.Fatalf("restore drill task = %#v", task)
+	}
+
+	target := NewTenantStore(base, "drill")
+	remaining, err := base.List(ctx, target.tenantObjectPrefix("tenant-cleanup"))
+	if err != nil {
+		t.Fatalf("list cleaned target: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("failed restore drill left target objects: %#v", remaining)
+	}
+	purged, err := target.tenantPurgeTombstoneExists(ctx, "tenant-cleanup")
+	if err != nil || purged {
+		t.Fatalf("cleanup tombstone exists=%v err=%v", purged, err)
+	}
+}
+
+func TestRestoreDrillCleansClaimedTargetAfterPartialRestoreFailure(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := &failTargetManifestPutStore{
+		ObjectStore: base,
+		key:         "drill/tenants/tenant-cleanup/manifest.parquet",
+	}
+	source := NewTenantStore(objects, "test")
+	seedRestoreDrillTenant(t, ctx, source, "tenant-a", "host:source")
+
+	task, err := source.StartTask(ctx, "tenant-a", TaskTypeTenantRestoreDrill, map[string]any{
+		"target_prefix":    "drill",
+		"target_tenant_id": "tenant-cleanup",
+		"cleanup":          true,
+	})
+	if err != nil {
+		t.Fatalf("start restore drill: %v", err)
+	}
+	task = waitForRestoreDrillTerminalTask(t, ctx, source, "tenant-a", task.ID)
+	if task.Status != TaskStatusFailed ||
+		!strings.Contains(task.Error, "injected target manifest failure") {
+		t.Fatalf("restore drill task = %#v", task)
+	}
+	remaining, err := base.List(ctx, "drill/tenants/tenant-cleanup/")
+	if err != nil {
+		t.Fatalf("list cleaned target: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("partial restore left target objects: %#v", remaining)
+	}
+}
+
+func TestRestoreDrillClaimFailureReleasesWriterLease(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := &failNthTargetListStore{
+		ObjectStore: base,
+		prefix:      "drill/tenants/tenant-cleanup/",
+		failAt:      2,
+	}
+	target := NewTenantStore(objects, "drill")
+
+	if _, err := target.claimRestoreDrillTarget(
+		ctx, "tenant-cleanup",
+	); err == nil || !strings.Contains(err.Error(), "injected restored usage failure") {
+		t.Fatalf("claim restore drill target err = %v", err)
+	}
+	remaining, err := base.List(ctx, "drill/tenants/tenant-cleanup/")
+	if err != nil {
+		t.Fatalf("list failed claim target: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("failed claim left target objects: %#v", remaining)
+	}
+}
+
 func seedRestoreDrillTenant(t *testing.T, ctx context.Context, store *TenantStore, tenantID string, entityID string) {
 	t.Helper()
 	if _, err := store.CreateTenant(ctx, tenantID, TenantCreateOptions{}); err != nil {
@@ -177,4 +273,53 @@ func waitForRestoreDrillTerminalTask(t *testing.T, ctx context.Context, store *T
 	}
 	t.Fatalf("task %s did not finish", taskID)
 	return Task{}
+}
+
+type failNthTargetListStore struct {
+	ObjectStore
+	mu     sync.Mutex
+	prefix string
+	count  int
+	failAt int
+}
+
+func (s *failNthTargetListStore) List(
+	ctx context.Context,
+	prefix string,
+) ([]ObjectInfo, error) {
+	if prefix == s.prefix {
+		s.mu.Lock()
+		s.count++
+		fail := s.count == s.failAt
+		s.mu.Unlock()
+		if fail {
+			return nil, errors.New("injected restored usage failure")
+		}
+	}
+	return s.ObjectStore.List(ctx, prefix)
+}
+
+type failTargetManifestPutStore struct {
+	ObjectStore
+	mu     sync.Mutex
+	key    string
+	failed bool
+}
+
+func (s *failTargetManifestPutStore) PutConditional(
+	ctx context.Context,
+	key string,
+	data []byte,
+	condition PutCondition,
+) (ObjectMeta, error) {
+	if key == s.key {
+		s.mu.Lock()
+		fail := !s.failed
+		s.failed = true
+		s.mu.Unlock()
+		if fail {
+			return ObjectMeta{Key: key}, errors.New("injected target manifest failure")
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
 }

@@ -28,7 +28,7 @@ func (s *Server) indexDefinitions(w http.ResponseWriter, r *http.Request) {
 	}
 	definitions, err := s.Store.ListIndexDefinitions(r.Context(), tenantID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"indexes": definitions})
@@ -50,7 +50,7 @@ func (s *Server) createIndex(w http.ResponseWriter, r *http.Request) {
 	result, err := s.Store.CreateIndex(r.Context(), tenantID, definition)
 	if err != nil {
 		s.auditError("index_create_failed", tenantID, err, map[string]any{"name": definition.Name, "kind": definition.Kind, "field": definition.Field})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("index_created", tenantID, map[string]any{"name": result.Definition.Name, "kind": result.Definition.Kind, "field": result.Definition.Field, "task_id": result.Task.ID})
@@ -74,7 +74,7 @@ func (s *Server) dropIndex(w http.ResponseWriter, r *http.Request) {
 	result, err := s.Store.DropIndex(r.Context(), tenantID, name)
 	if err != nil {
 		s.auditError("index_drop_failed", tenantID, err, map[string]any{"name": name})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.auditInfo("index_dropped", tenantID, map[string]any{"name": result.Definition.Name, "task_id": result.Task.ID})
@@ -94,7 +94,7 @@ func (s *Server) rebuildIndexes(w http.ResponseWriter, r *http.Request) {
 		task, err := s.Store.StartIndexRebuild(r.Context(), tenantID)
 		if err != nil {
 			s.auditError("index_rebuild_start_failed", tenantID, err, map[string]any{"async": true})
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeStorageError(w, err)
 			return
 		}
 		s.auditInfo("index_rebuild_started", tenantID, map[string]any{"task_id": task.ID, "async": true})
@@ -108,7 +108,7 @@ func (s *Server) rebuildIndexes(w http.ResponseWriter, r *http.Request) {
 	catalog, err := s.Store.RebuildIndexes(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("index_rebuild_failed", tenantID, err, map[string]any{"async": false})
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.cleanupIndexOrphansAfterRebuild(r, tenantID, catalog.Version, false)
@@ -146,7 +146,7 @@ func (s *Server) indexHealth(w http.ResponseWriter, r *http.Request) {
 	deep := strings.EqualFold(r.URL.Query().Get("deep"), "true")
 	health, err := s.Store.IndexHealthWithOptions(r.Context(), tenantID, storage.IndexHealthOptions{Deep: deep})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	s.obs().Metrics.RecordIndexHealth(tenantID, health.Status, len(health.Issues))

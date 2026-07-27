@@ -1,0 +1,80 @@
+# Reference gateway contract. Replace upstreams, certificates, and auth backend.
+
+map $request_uri $graphdb_data_roles {
+    default                                      "reader,writer,operator,admin";
+    ~^/v1/commits(?:\?|$)                        "writer,operator,admin";
+    ~^/v1/ingest/batches(?:\?|$)                 "writer,operator,admin";
+    ~^/v1/imports(?:\?|$)                        "writer,operator,admin";
+}
+
+upstream graphdb_data {
+    server graphdb:8080;
+}
+
+upstream graphdb_admin {
+    server graphdb:8081;
+}
+
+upstream identity_provider {
+    server identity-provider:8080;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name graphdb.example.com;
+
+    ssl_certificate     /etc/nginx/tls/tls.crt;
+    ssl_certificate_key /etc/nginx/tls/tls.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # The identity provider must reject unauthorized requests and return
+    # X-GraphDB-Tenant-ID after validating the bearer token and tenant.
+    location = /_graphdb_auth {
+        internal;
+        proxy_pass http://identity_provider/verify;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-GraphDB-Required-Roles $graphdb_data_roles;
+    }
+
+    location = /_graphdb_admin_auth {
+        internal;
+        proxy_pass http://identity_provider/verify;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-GraphDB-Required-Roles "operator,admin";
+    }
+
+    # Public product API. GGraphDB's DataHandler makes admin routes return 404.
+    location / {
+        auth_request /_graphdb_auth;
+        auth_request_set $graphdb_tenant $upstream_http_x_graphdb_tenant_id;
+
+        proxy_set_header X-Tenant-ID "";
+        proxy_set_header X-Tenant-ID $graphdb_tenant;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_pass http://graphdb_data;
+    }
+
+    # Operator API is deliberately namespaced only at the gateway.
+    # /admin/v1/tasks becomes /v1/tasks on the private admin listener.
+    location /admin/ {
+        auth_request /_graphdb_admin_auth;
+        auth_request_set $graphdb_tenant $upstream_http_x_graphdb_tenant_id;
+
+        rewrite ^/admin/(.*)$ /$1 break;
+        proxy_set_header X-Tenant-ID "";
+        proxy_set_header X-Tenant-ID $graphdb_tenant;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_pass http://graphdb_admin;
+    }
+}

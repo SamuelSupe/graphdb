@@ -38,8 +38,8 @@ func (s *TenantStore) ensureIncrementalIndexCurrent(ctx context.Context, tenantI
 
 func canIncrementIndexes(mutations graph.Mutations) bool {
 	if len(mutations.UpsertCITypes) > 0 || len(mutations.DeleteCITypes) > 0 ||
-		len(mutations.UpsertRelationTypes) > 0 || len(mutations.DeleteRelationTypes) > 0 ||
-		len(mutations.MergeEntities) > 0 || len(mutations.SplitEntities) > 0 {
+		len(mutations.UpsertRelationTypes) > 0 ||
+		len(mutations.DeleteRelationTypes) > 0 {
 		return false
 	}
 	return true

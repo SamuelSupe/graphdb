@@ -70,16 +70,17 @@ func observedExternalIDSet(values []string) map[string]struct{} {
 }
 
 func entitySourceMissing(entity Entity, source string, observed map[string]struct{}) bool {
+	matched := false
 	for _, item := range entity.Sources {
 		if item.Source != source || item.ExternalID == "" {
 			continue
 		}
+		matched = true
 		if _, ok := observed[item.ExternalID]; ok {
 			return false
 		}
-		return true
 	}
-	return false
+	return matched
 }
 
 func markEntitySourceStale(entity *Entity, source string, version int64, staleAt time.Time) {

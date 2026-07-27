@@ -13,15 +13,21 @@ type Graph struct {
 	RelationTypes map[string]RelationType
 	Edges         map[string]Edge
 
-	out           map[string]map[string]struct{}
-	in            map[string]map[string]struct{}
-	fieldIndex    map[string]map[string]map[string]map[string]struct{}
-	identityIndex map[string]map[string]string
-	cow           *copyOnWriteState
+	out              map[string]map[string]struct{}
+	in               map[string]map[string]struct{}
+	edgeAliasIndex   map[string]map[string]struct{}
+	edgeTypeIndex    map[string]map[string]struct{}
+	entityAliasIndex map[string]map[string]struct{}
+	kindCounts       map[string]int
+	fieldIndex       map[string]map[string]map[string]map[string]struct{}
+	identityIndex    map[string]map[string]string
+	cow              *copyOnWriteState
 
 	contentFingerprint      [16]byte
 	contentFingerprintReady bool
 	contentFingerprintMu    sync.Mutex
+	logicalHashCache        *logicalHashCache
+	logicalHashMu           sync.Mutex
 }
 
 func New() *Graph {
@@ -88,6 +94,7 @@ func FromSnapshot(snapshot Snapshot) (*Graph, error) {
 
 func (g *Graph) Clone() *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
+	logicalHashCache := g.cloneLogicalHashCache()
 	clone := &Graph{
 		Version:                 g.Version,
 		CITypes:                 map[string]CIType{},
@@ -96,10 +103,15 @@ func (g *Graph) Clone() *Graph {
 		Edges:                   map[string]Edge{},
 		out:                     copySetMap(g.out),
 		in:                      copySetMap(g.in),
+		edgeAliasIndex:          copySetMap(g.edgeAliasIndex),
+		edgeTypeIndex:           copySetMap(g.edgeTypeIndex),
+		entityAliasIndex:        copySetMap(g.entityAliasIndex),
+		kindCounts:              shallowCopyMap(g.kindCounts),
 		fieldIndex:              copyFieldIndex(g.fieldIndex),
 		identityIndex:           copyStringMap(g.identityIndex),
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
+		logicalHashCache:        logicalHashCache,
 	}
 	for name, ciType := range g.CITypes {
 		clone.CITypes[name] = copyCIType(ciType)
@@ -187,19 +199,16 @@ func (g *Graph) ResolveEntityReference(id string) string {
 	if _, ok := g.Entities[id]; ok {
 		return id
 	}
-	resolved := ""
-	for entityID, entity := range g.Entities {
-		for _, alias := range entity.MergedFrom {
-			if alias != id {
-				continue
-			}
-			if resolved != "" && resolved != entityID {
-				return ""
-			}
-			resolved = entityID
+	matches := g.entityAliasIndex[id]
+	if len(matches) != 1 {
+		return ""
+	}
+	for entityID := range matches {
+		if _, ok := g.Entities[entityID]; ok {
+			return entityID
 		}
 	}
-	return resolved
+	return ""
 }
 
 func (g *Graph) ListCITypes() []CIType {

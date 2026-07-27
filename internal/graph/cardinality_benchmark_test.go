@@ -60,3 +60,50 @@ func BenchmarkApplySingleEntityStorageCopy(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkDeleteStaleEntitiesWithSparseEdges(b *testing.B) {
+	const staleEntities = 1000
+	const unrelatedEdges = 2000
+	g := New()
+	entities := make([]Entity, 0, staleEntities+unrelatedEdges*2)
+	edges := make([]Edge, 0, unrelatedEdges)
+	for i := 0; i < staleEntities; i++ {
+		id := fmt.Sprintf("host:stale:%04d", i)
+		entities = append(entities, Entity{
+			ID: id, Kind: "host", Source: "agent", ExternalID: id,
+		})
+	}
+	for i := 0; i < unrelatedEdges; i++ {
+		from := fmt.Sprintf("service:active:%04d", i)
+		to := fmt.Sprintf("host:active:%04d", i)
+		entities = append(entities,
+			Entity{ID: from, Kind: "service", Source: "manual", ExternalID: from},
+			Entity{ID: to, Kind: "host", Source: "manual", ExternalID: to},
+		)
+		edges = append(edges, Edge{Type: "runs_on", From: from, To: to})
+	}
+	if err := g.ApplyCommit(Commit{
+		ID:      "seed-stale-delete",
+		Version: 1,
+		Mutations: Mutations{
+			UpsertEntities: entities,
+			UpsertEdges:    edges,
+		},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, err := g.ApplyCommitStorageCopyWithOptions(Commit{
+			ID:      fmt.Sprintf("delete-stale-%d", i),
+			Version: 2,
+			Mutations: Mutations{MarkSourceStale: []SourceStaleRequest{{
+				Source: "agent",
+				Action: "delete",
+			}}},
+		}, ApplyOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}

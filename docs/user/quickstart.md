@@ -85,13 +85,13 @@ curl -sS -X POST http://127.0.0.1:8080/v1/query \
   -d @examples/query-match.json
 ```
 
-GQL:
+GraphQL:
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8080/v1/query/gql \
+curl -sS -X POST http://127.0.0.1:8080/v1/query/graphql \
   -H 'X-Tenant-ID: demo' \
-  -H 'Content-Type: text/plain' \
-  --data-binary 'FIND person WHERE name = "Alice" LIMIT 10'
+  -H 'Content-Type: application/json' \
+  -d '{"query":"query Find($request: QueryRequest!) { graph(request: $request) { version results } }","variables":{"request":{"op":"match","kind":"person","limit":10}}}'
 ```
 
 ## Read After Write

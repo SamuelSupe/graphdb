@@ -118,6 +118,9 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
 		return IngestResult{}, err
 	}
+	if s.coordinated() {
+		return s.ingestCoordinated(ctx, tenantID, request, saveFailures)
+	}
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return IngestResult{}, err
@@ -366,7 +369,10 @@ func buildIngestMutations(request IngestRequest) (IngestResult, graph.Mutations,
 			if entity.ExternalID == "" {
 				entity.ExternalID = firstValue(item.ExternalID, entity.ID)
 			}
-			if entity.ExternalID != "" {
+			if entity.ExternalID != "" &&
+				strings.TrimSpace(entity.Source) == request.Source &&
+				(request.StaleKind == "" ||
+					strings.TrimSpace(entity.Kind) == request.StaleKind) {
 				observed = append(observed, entity.ExternalID)
 			}
 			mutations.UpsertEntities = append(mutations.UpsertEntities, entity)
@@ -414,7 +420,7 @@ func buildIngestMutations(request IngestRequest) (IngestResult, graph.Mutations,
 			continue
 		}
 	}
-	if request.FullSync {
+	if request.FullSync && result.Failed == 0 {
 		mutations.MarkSourceStale = append(mutations.MarkSourceStale, graph.SourceStaleRequest{
 			Source:              request.Source,
 			Kind:                request.StaleKind,

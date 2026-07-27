@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const defaultUserAgent = "graphdb-go-sdk"
+const (
+	SDKVersion       = "1.1.0"
+	defaultUserAgent = "graphdb-go-sdk/" + SDKVersion
+)
 
 type Client struct {
 	baseURL    *url.URL
@@ -51,6 +54,14 @@ func WithHTTPClient(httpClient *http.Client) Option {
 func WithTenant(tenantID string) Option {
 	return func(client *Client) {
 		client.tenantID = strings.TrimSpace(tenantID)
+	}
+}
+
+func WithBearerToken(token string) Option {
+	return func(client *Client) {
+		if token = strings.TrimSpace(token); token != "" {
+			client.headers.Set("Authorization", "Bearer "+token)
+		}
 	}
 }
 

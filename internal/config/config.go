@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 
 type Config struct {
 	Addr                              string
+	AdminAddr                         string
+	PprofEnabled                      bool
 	Mode                              string
 	Prefix                            string
 	PollInterval                      time.Duration
@@ -52,6 +55,7 @@ type Config struct {
 	MaintenanceInterval               time.Duration
 	TenantUsageCacheTTL               time.Duration
 	ReaderCatchupTimeout              time.Duration
+	ReadinessTimeout                  time.Duration
 	ReaderIndexCacheEntries           int
 	ReaderIndexCacheMaxBytes          int64
 	ReaderIndexCacheDir               string
@@ -62,6 +66,16 @@ type Config struct {
 	OTLPInsecure                      bool
 	ServiceName                       string
 	InstanceID                        string
+	Coordination                      string
+	PostgresDSN                       string
+	PostgresSchema                    string
+	CoordinatorNamespace              string
+	WriteCASMaxRetries                int
+	CoordinatorIdempotencyRetention   time.Duration
+	CoordinatorPendingReservationTTL  time.Duration
+	CoordinatorOutboxRetention        time.Duration
+	CoordinatorCleanupInterval        time.Duration
+	CoordinatorCleanupBatchSize       int
 
 	S3Endpoint        string
 	S3Bucket          string
@@ -75,8 +89,10 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	cleanup := storage.DefaultCoordinatorCleanupConfig()
 	cfg := Config{
 		Addr:                              getenv("GRAPHDB_ADDR", ":8080"),
+		AdminAddr:                         strings.TrimSpace(os.Getenv("GRAPHDB_ADMIN_ADDR")),
 		Mode:                              getenv("GRAPHDB_MODE", "all"),
 		Prefix:                            getenv("GRAPHDB_PREFIX", "graphdb"),
 		PollInterval:                      2 * time.Second,
@@ -100,7 +116,7 @@ func Load() (Config, error) {
 		WriteObjectErrorThreshold:         1,
 		WriteCASConflictWindow:            30 * time.Second,
 		WriteCASConflictThreshold:         5,
-		WriteMaxCommitTail:                300,
+		WriteMaxCommitTail:                1500,
 		WriteCacheMaxBytes:                512 * 1024 * 1024,
 		WriterObjectCache:                 true,
 		WriterObjectCacheMaxBytes:         512 * 1024 * 1024,
@@ -112,6 +128,7 @@ func Load() (Config, error) {
 		MaintenanceInterval:               30 * time.Second,
 		TenantUsageCacheTTL:               60 * time.Second,
 		ReaderCatchupTimeout:              2 * time.Second,
+		ReadinessTimeout:                  2 * time.Second,
 		ReaderIndexCacheEntries:           4096,
 		ReaderIndexCacheMaxBytes:          256 * 1024 * 1024,
 		IndexEntityRecords:                false,
@@ -119,6 +136,16 @@ func Load() (Config, error) {
 		OTLPEndpoint:                      os.Getenv("GRAPHDB_OTLP_ENDPOINT"),
 		ServiceName:                       getenv("GRAPHDB_SERVICE_NAME", "graphdb"),
 		InstanceID:                        strings.TrimSpace(os.Getenv("GRAPHDB_INSTANCE_ID")),
+		Coordination:                      normalizeCoordination(os.Getenv("GRAPHDB_COORDINATION")),
+		PostgresDSN:                       strings.TrimSpace(os.Getenv("GRAPHDB_POSTGRES_DSN")),
+		PostgresSchema:                    getenv("GRAPHDB_POSTGRES_SCHEMA", "graphdb_coordination"),
+		CoordinatorNamespace:              strings.TrimSpace(os.Getenv("GRAPHDB_COORDINATOR_NAMESPACE")),
+		WriteCASMaxRetries:                8,
+		CoordinatorIdempotencyRetention:   cleanup.IdempotencyRetention,
+		CoordinatorPendingReservationTTL:  cleanup.PendingReservationTTL,
+		CoordinatorOutboxRetention:        cleanup.OutboxRetention,
+		CoordinatorCleanupInterval:        cleanup.Interval,
+		CoordinatorCleanupBatchSize:       cleanup.BatchSize,
 		S3Endpoint:                        os.Getenv("S3_ENDPOINT"),
 		S3Bucket:                          os.Getenv("S3_BUCKET"),
 		S3Region:                          getenv("S3_REGION", "us-east-1"),
@@ -129,6 +156,9 @@ func Load() (Config, error) {
 	cfg.S3AccessKeyID = firstNonEmpty(os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("AWS_ACCESS_KEY_ID"))
 	cfg.S3SecretAccessKey = firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
 	if err := loadBoolEnv("S3_PATH_STYLE", &cfg.S3PathStyle); err != nil {
+		return Config{}, err
+	}
+	if err := loadBoolEnv("GRAPHDB_PPROF_ENABLED", &cfg.PprofEnabled); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_POLL_INTERVAL", &cfg.PollInterval); err != nil {
@@ -188,6 +218,24 @@ func Load() (Config, error) {
 	if err := loadIntEnv("GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD", &cfg.WriteCASConflictThreshold); err != nil {
 		return Config{}, err
 	}
+	if err := loadIntEnv("GRAPHDB_WRITE_CAS_MAX_RETRIES", &cfg.WriteCASMaxRetries); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION", &cfg.CoordinatorIdempotencyRetention); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", &cfg.CoordinatorPendingReservationTTL); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_COORDINATOR_OUTBOX_RETENTION", &cfg.CoordinatorOutboxRetention); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_COORDINATOR_CLEANUP_INTERVAL", &cfg.CoordinatorCleanupInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE", &cfg.CoordinatorCleanupBatchSize); err != nil {
+		return Config{}, err
+	}
 	if err := loadIntEnv("GRAPHDB_WRITE_MAX_COMMIT_TAIL", &cfg.WriteMaxCommitTail); err != nil {
 		return Config{}, err
 	}
@@ -236,6 +284,9 @@ func Load() (Config, error) {
 	if err := loadDurationEnv("GRAPHDB_READER_CATCHUP_TIMEOUT", &cfg.ReaderCatchupTimeout); err != nil {
 		return Config{}, err
 	}
+	if err := loadDurationEnv("GRAPHDB_READINESS_TIMEOUT", &cfg.ReadinessTimeout); err != nil {
+		return Config{}, err
+	}
 	if err := loadIntEnv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", &cfg.ReaderIndexCacheEntries); err != nil {
 		return Config{}, err
 	}
@@ -278,7 +329,74 @@ func Load() (Config, error) {
 	if err := cfg.validateObjectStore(); err != nil {
 		return Config{}, err
 	}
+	if err := cfg.validateCoordination(); err != nil {
+		return Config{}, err
+	}
+	if cfg.PprofEnabled && cfg.AdminAddr == "" {
+		return Config{}, fmt.Errorf("GRAPHDB_ADMIN_ADDR is required when GRAPHDB_PPROF_ENABLED=true")
+	}
+	if cfg.AdminAddr != "" && cfg.AdminAddr == cfg.Addr {
+		return Config{}, fmt.Errorf("GRAPHDB_ADMIN_ADDR must differ from GRAPHDB_ADDR")
+	}
 	return cfg, nil
+}
+
+func NewCoordinator(ctx context.Context, cfg Config) (storage.WriteCoordinator, error) {
+	if cfg.coordinationMode() == storage.CoordinationLocal {
+		return nil, nil
+	}
+	return storage.NewPostgresCoordinator(
+		ctx,
+		cfg.PostgresDSN,
+		cfg.PostgresSchema,
+		cfg.CoordinatorNamespace,
+	)
+}
+
+func (cfg Config) validateCoordination() error {
+	switch cfg.coordinationMode() {
+	case storage.CoordinationLocal:
+		return nil
+	case storage.CoordinationPostgres:
+	default:
+		return fmt.Errorf("unsupported GRAPHDB_COORDINATION %q", cfg.Coordination)
+	}
+	if cfg.PostgresDSN == "" {
+		return fmt.Errorf("GRAPHDB_POSTGRES_DSN is required when GRAPHDB_COORDINATION=postgres")
+	}
+	if cfg.CoordinatorNamespace == "" {
+		return fmt.Errorf("GRAPHDB_COORDINATOR_NAMESPACE is required when GRAPHDB_COORDINATION=postgres")
+	}
+	if cfg.StoreKind != "s3" {
+		return fmt.Errorf("GRAPHDB_COORDINATION=postgres requires GRAPHDB_STORAGE=s3")
+	}
+	if cfg.objectProvider() != storage.ObjectProviderGenericS3 {
+		return fmt.Errorf("GRAPHDB_COORDINATION=postgres requires S3_PROVIDER=%s", storage.ObjectProviderGenericS3)
+	}
+	if cfg.writerTopology() != storage.WriterTopologyCAS {
+		return fmt.Errorf("GRAPHDB_COORDINATION=postgres requires GRAPHDB_WRITER_TOPOLOGY=%s", storage.WriterTopologyCAS)
+	}
+	if cfg.WriteExecutionTimeout <= 0 {
+		return fmt.Errorf("GRAPHDB_WRITE_EXECUTION_TIMEOUT must be > 0 when GRAPHDB_COORDINATION=postgres")
+	}
+	if cfg.CoordinatorPendingReservationTTL <= cfg.WriteExecutionTimeout {
+		return fmt.Errorf(
+			"GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL must be greater than GRAPHDB_WRITE_EXECUTION_TIMEOUT when GRAPHDB_COORDINATION=postgres",
+		)
+	}
+	return nil
+}
+
+func (cfg Config) coordinationMode() string {
+	return normalizeCoordination(cfg.Coordination)
+}
+
+func normalizeCoordination(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return storage.CoordinationLocal
+	}
+	return value
 }
 
 func (cfg Config) BackpressureConfig() storage.BackpressureConfig {
@@ -302,6 +420,16 @@ func (cfg Config) WriterObjectCacheConfig() storage.WriterObjectCacheConfig {
 		MaxBytes:    cfg.WriterObjectCacheMaxBytes,
 		MaxKeys:     cfg.WriterObjectCacheMaxKeys,
 		NegativeTTL: cfg.WriterObjectCacheNegativeTTL,
+	}
+}
+
+func (cfg Config) CoordinatorCleanupConfig() storage.CoordinatorCleanupConfig {
+	return storage.CoordinatorCleanupConfig{
+		IdempotencyRetention:  cfg.CoordinatorIdempotencyRetention,
+		PendingReservationTTL: cfg.CoordinatorPendingReservationTTL,
+		OutboxRetention:       cfg.CoordinatorOutboxRetention,
+		Interval:              cfg.CoordinatorCleanupInterval,
+		BatchSize:             cfg.CoordinatorCleanupBatchSize,
 	}
 }
 

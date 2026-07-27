@@ -23,6 +23,11 @@ type queryReadMemo struct {
 	catalog     storage.IndexCatalog
 	catalogErr  error
 	catalogSet  bool
+	catalogVer  int64
+	reverse     storage.ReverseIndexCatalog
+	reverseErr  error
+	reverseSet  bool
+	reverseVer  int64
 }
 
 func withQueryReadMemo(ctx context.Context) context.Context {
@@ -41,7 +46,8 @@ func (s *Server) currentQueryManifest(ctx context.Context, tenantID string) (man
 	}()
 	memo, _ := ctx.Value(queryReadMemoKey{}).(*queryReadMemo)
 	if memo == nil {
-		return s.Store.CurrentManifest(ctx, tenantID)
+		version, versionErr := s.Store.CurrentVersion(ctx, tenantID)
+		return storage.Manifest{TenantID: tenantID, Version: version}, versionErr
 	}
 	memo.mu.Lock()
 	defer memo.mu.Unlock()
@@ -51,7 +57,9 @@ func (s *Server) currentQueryManifest(ctx context.Context, tenantID string) (man
 		return memo.manifest, memo.manifestErr
 	}
 	memo.tenantID = tenantID
-	memo.manifest, memo.manifestErr = s.Store.CurrentManifest(ctx, tenantID)
+	version, versionErr := s.Store.CurrentVersion(ctx, tenantID)
+	memo.manifest = storage.Manifest{TenantID: tenantID, Version: version}
+	memo.manifestErr = versionErr
 	memo.manifestSet = true
 	return memo.manifest, memo.manifestErr
 }
@@ -80,14 +88,58 @@ func (s *Server) currentQueryCatalog(ctx context.Context, tenantID string, expec
 	memo.mu.Lock()
 	defer memo.mu.Unlock()
 	memo.resetForTenant(tenantID)
-	if memo.catalogSet && memo.tenantID == tenantID {
+	if memo.catalogSet &&
+		memo.tenantID == tenantID &&
+		(memo.catalogVer == expectedVersion ||
+			memo.catalogErr == nil &&
+				memo.catalog.Version == expectedVersion) {
 		cached = true
 		return memo.catalog, memo.catalogErr
 	}
 	memo.tenantID = tenantID
 	memo.catalog, memo.catalogErr = s.Store.GetIndexCatalogAtVersion(ctx, tenantID, expectedVersion)
 	memo.catalogSet = true
+	memo.catalogVer = expectedVersion
 	return memo.catalog, memo.catalogErr
+}
+
+func (s *Server) currentQueryReverseCatalog(
+	ctx context.Context,
+	tenantID string,
+	version int64,
+) (catalog storage.ReverseIndexCatalog, err error) {
+	ctx, span := startAPIPhase(ctx, "current_reverse_index_catalog",
+		attribute.String("graphdb.tenant", tenantID),
+		attribute.Int64("graphdb.index.expected_version", version),
+	)
+	cached := false
+	defer func() {
+		setReadMemoSpanAttributes(span, cached, catalog.Version)
+		spanErr := err
+		if errors.Is(err, storage.ErrNotFound) {
+			spanErr = nil
+		}
+		endHTTPSpan(span, spanErr)
+	}()
+	memo, _ := ctx.Value(queryReadMemoKey{}).(*queryReadMemo)
+	if memo == nil {
+		return s.Store.GetReverseIndexCatalog(ctx, tenantID, version)
+	}
+	memo.mu.Lock()
+	defer memo.mu.Unlock()
+	memo.resetForTenant(tenantID)
+	if memo.reverseSet &&
+		memo.tenantID == tenantID &&
+		memo.reverseVer == version {
+		cached = true
+		return memo.reverse, memo.reverseErr
+	}
+	memo.tenantID = tenantID
+	memo.reverse, memo.reverseErr =
+		s.Store.GetReverseIndexCatalog(ctx, tenantID, version)
+	memo.reverseSet = true
+	memo.reverseVer = version
+	return memo.reverse, memo.reverseErr
 }
 
 func setReadMemoSpanAttributes(span trace.Span, cached bool, version int64) {
@@ -110,4 +162,9 @@ func (m *queryReadMemo) resetForTenant(tenantID string) {
 	m.catalog = storage.IndexCatalog{}
 	m.catalogErr = nil
 	m.catalogSet = false
+	m.catalogVer = 0
+	m.reverse = storage.ReverseIndexCatalog{}
+	m.reverseErr = nil
+	m.reverseSet = false
+	m.reverseVer = 0
 }

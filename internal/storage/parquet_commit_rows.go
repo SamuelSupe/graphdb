@@ -238,28 +238,48 @@ type parquetCommitColumnSet struct {
 }
 
 func marshalParquetCommitItems(ctx context.Context, tenantID string, items []parquetCommitTableItem) ([]byte, error) {
+	normalized := make([]parquetCommitTableItem, 0, len(items))
+	for _, item := range items {
+		commit, hash, err := normalizeCommitForParquet(item.Commit)
+		if err != nil {
+			return nil, err
+		}
+		item.Commit = commit
+		if item.ContentHash == "" {
+			item.ContentHash = hash
+		}
+		normalized = append(normalized, item)
+	}
+	return marshalNormalizedParquetCommitItems(ctx, tenantID, normalized)
+}
+
+func marshalNormalizedParquetCommitItems(
+	ctx context.Context,
+	tenantID string,
+	items []parquetCommitTableItem,
+) ([]byte, error) {
 	schema := parquetCommitArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
 
 	for _, item := range items {
-		normalized, hash, err := normalizeCommitForParquet(item.Commit)
-		if err != nil {
-			return nil, err
-		}
-		if item.ContentHash == "" {
-			item.ContentHash = hash
-		}
-		rows, err := commitRows(normalized)
+		rows, err := commitRows(item.Commit)
 		if err != nil {
 			return nil, err
 		}
 		rowTenant := tenantID
 		if rowTenant == "" {
-			rowTenant = normalized.TenantID
+			rowTenant = item.Commit.TenantID
 		}
 		for _, row := range rows {
-			appendParquetCommitRow(builder, rowTenant, item.Key, normalized, item.ContentHash, row)
+			appendParquetCommitRow(
+				builder,
+				rowTenant,
+				item.Key,
+				item.Commit,
+				item.ContentHash,
+				row,
+			)
 		}
 	}
 

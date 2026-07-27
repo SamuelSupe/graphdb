@@ -3,7 +3,10 @@ package storage
 import "gitlab.jiagouyun.com/guance/graphdb/internal/query"
 
 func (catalog IndexCatalog) PlannerStats() query.PlannerStats {
-	stats := query.PlannerStats{Version: catalog.Version}
+	stats := query.PlannerStats{
+		Version:                   catalog.Version,
+		ForwardEdgeIndexAvailable: true,
+	}
 	for _, index := range catalog.Indexes {
 		stat := query.PlannerIndexStat{
 			Kind:           index.Kind,
@@ -19,9 +22,10 @@ func (catalog IndexCatalog) PlannerStats() query.PlannerStats {
 	}
 	for _, shard := range catalog.EdgeShards {
 		stats.EdgeShards = append(stats.EdgeShards, query.PlannerEdgeStat{
-			RelationType: shard.RelationType,
-			Shard:        shard.Shard,
-			EdgeCount:    shard.EdgeCount,
+			RelationType:    shard.RelationType,
+			ImpactDirection: shard.ImpactDirection,
+			Shard:           shard.Shard,
+			EdgeCount:       shard.EdgeCount,
 		})
 	}
 	for _, page := range catalog.EntityPages {

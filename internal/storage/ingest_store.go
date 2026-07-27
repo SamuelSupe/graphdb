@@ -93,8 +93,10 @@ func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, t
 
 func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantID string, record IngestBatchRecord, saveFailures bool) error {
 	var metadataErr error
-	if err := s.repairCollectorStatusAfterSkip(ctx, tenantID, record); err != nil {
-		metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
+	if !s.coordinated() {
+		if err := s.repairCollectorStatusAfterSkip(ctx, tenantID, record); err != nil {
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
+		}
 	}
 	if saveFailures && record.Result.Failed > 0 {
 		if err := s.ensureDeadLetterAfterSkip(ctx, tenantID, record.Request, record.Result); err != nil {
@@ -320,6 +322,23 @@ func (s *TenantStore) GetCollectorStatus(ctx context.Context, tenantID string, s
 	collectorID = strings.TrimSpace(collectorID)
 	if source == "" || collectorID == "" {
 		return CollectorStatus{}, fmt.Errorf("source and collector_id are required")
+	}
+	if s.coordinated() {
+		state, exists, err := s.Coordinator.CollectorState(ctx, tenantID, source, collectorID)
+		if err != nil {
+			return CollectorStatus{}, err
+		}
+		if !exists {
+			return CollectorStatus{}, ErrNotFound
+		}
+		return CollectorStatus{
+			TenantID:    tenantID,
+			Source:      state.Source,
+			CollectorID: state.CollectorID,
+			LastBatchID: state.BatchID,
+			LastCursor:  state.Cursor,
+			LastVersion: state.Version,
+		}, nil
 	}
 	key := s.collectorStatusKey(tenantID, source, collectorID)
 	if status, _, ok := s.getCachedCollectorStatus(key); ok {

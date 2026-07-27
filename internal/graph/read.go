@@ -73,13 +73,7 @@ func (g *Graph) KindCount(kind string) int {
 	if kind == "" {
 		return len(g.Entities)
 	}
-	count := 0
-	for _, entity := range g.Entities {
-		if entity.Kind == kind {
-			count++
-		}
-	}
-	return count
+	return g.kindCounts[kind]
 }
 
 func (g *Graph) matchCandidates(kind string, filters Fields) []Entity {

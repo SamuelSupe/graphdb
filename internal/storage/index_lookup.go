@@ -11,10 +11,11 @@ import (
 )
 
 type PersistedIndexLookup struct {
-	Store    *TenantStore
-	TenantID string
-	Version  int64
-	Catalog  IndexCatalog
+	Store          *TenantStore
+	TenantID       string
+	Version        int64
+	Catalog        IndexCatalog
+	ReverseCatalog *ReverseIndexCatalog
 
 	pageMu    sync.Mutex
 	pageCache map[string]EntityPageData
@@ -27,12 +28,14 @@ type PersistedIndexLookup struct {
 	edgeMu    sync.Mutex
 	edgeCache map[string]map[string][]graph.Edge
 
-	edgeCatalogMu        sync.Mutex
-	edgeCatalogByShard   map[string]edgeShardCatalog
-	entityCatalogMu      sync.Mutex
-	entityCatalogByShard map[string]EntityPageSpec
-	fieldCatalogMu       sync.Mutex
-	fieldCatalogByKey    map[string]IndexSpec
+	edgeCatalogMu         sync.Mutex
+	edgeCatalogByShard    map[string]edgeShardCatalog
+	reverseCatalogMu      sync.Mutex
+	reverseCatalogByShard map[string]edgeShardCatalog
+	entityCatalogMu       sync.Mutex
+	entityCatalogByShard  map[string]EntityPageSpec
+	fieldCatalogMu        sync.Mutex
+	fieldCatalogByKey     map[string]IndexSpec
 }
 
 func (l *PersistedIndexLookup) MatchFieldIndex(ctx context.Context, kind string, field string, values []any) ([]string, bool, error) {
@@ -78,6 +81,38 @@ func (l *PersistedIndexLookup) OutEdges(ctx context.Context, from string, allowe
 				continue
 			}
 			return nil, false, nil
+		}
+	}
+	edges = uniqueEdgesByID(edges)
+	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
+	return edges, true, nil
+}
+
+func (l *PersistedIndexLookup) InEdges(ctx context.Context, to string, allowed map[string]struct{}) ([]graph.Edge, bool, error) {
+	if l == nil || l.ReverseCatalog == nil || l.ReverseCatalog.Version != l.Version {
+		return nil, false, nil
+	}
+	edges := make([]graph.Edge, 0)
+	for _, shardID := range indexShardIDCandidates(to) {
+		relationTypes := l.reverseRelationTypesForShard(shardID, allowed)
+		for i, relationType := range relationTypes {
+			if i == 0 {
+				continue
+			}
+			if spec, ok := l.reverseEdgeShardSpec(relationType, shardID); ok && specFormat(spec.Format) == IndexFormatParquet {
+				l.Store.prefetchParquetEdgeShardObject(ctx, l.TenantID, l.Version, spec)
+			}
+		}
+		for _, relationType := range relationTypes {
+			spec, ok := l.reverseEdgeShardSpec(relationType, shardID)
+			if !ok || specFormat(spec.Format) != IndexFormatParquet {
+				return nil, false, nil
+			}
+			shardEdges, ok, err := l.inEdgesFromParquetShard(ctx, spec, to, allowed)
+			if err != nil || !ok {
+				return nil, ok, err
+			}
+			edges = append(edges, shardEdges...)
 		}
 	}
 	edges = uniqueEdgesByID(edges)

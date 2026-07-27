@@ -160,50 +160,66 @@ func entityShardID(id string) string {
 }
 
 func (s *TenantStore) tombstoneStaleEntityRecords(ctx context.Context, tenantID string, currentIDs map[string]struct{}, version int64) error {
-	objects, err := s.Objects.List(ctx, s.entityRecordPrefix(tenantID))
-	if err != nil {
-		return err
-	}
-	for _, object := range objects {
-		entityID, ok, err := s.entityIDFromRecordKey(tenantID, object.Key)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		if _, current := currentIDs[entityID]; current {
-			continue
-		}
-		data, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		current, decodeErr := decodeEntityRecordObject(ctx, data, object.Key, tenantID, entityID)
-		if decodeErr == nil && current.Version > version {
-			return fmt.Errorf("%w: entity record %q is newer than rebuild target", ErrConflict, object.Key)
-		}
-		if meta.ETag == "" {
-			return fmt.Errorf("entity record %q missing etag for safe stale cleanup", object.Key)
-		}
-		record := EntityRecord{
-			LayoutVersion: CurrentObjectLayoutVersion,
-			TenantID:      tenantID,
-			ID:            entityID,
-			Page:          entityShardID(entityID),
-			Deleted:       true,
-			Version:       version,
-			UpdatedAt:     time.Now().UTC(),
-		}
-		stampEntityRecordHash(&record)
-		if err := s.putEntityRecordWithMeta(ctx, object.Key, record, meta); err != nil {
-			return err
-		}
-	}
-	return nil
+	return scanObjectPrefixFresh(
+		ctx,
+		s.Objects,
+		s.entityRecordPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				s.clearCoordinatedWriterObjectKey(object.Key)
+				entityID, ok, err := s.entityIDFromRecordKey(
+					tenantID, object.Key,
+				)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					continue
+				}
+				if _, current := currentIDs[entityID]; current {
+					continue
+				}
+				data, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				current, decodeErr := decodeEntityRecordObject(
+					ctx, data, object.Key, tenantID, entityID,
+				)
+				if decodeErr == nil && current.Version > version {
+					return fmt.Errorf(
+						"%w: entity record %q is newer than rebuild target",
+						ErrConflict, object.Key,
+					)
+				}
+				if meta.ETag == "" {
+					return fmt.Errorf(
+						"entity record %q missing etag for safe stale cleanup",
+						object.Key,
+					)
+				}
+				record := EntityRecord{
+					LayoutVersion: CurrentObjectLayoutVersion,
+					TenantID:      tenantID,
+					ID:            entityID,
+					Page:          entityShardID(entityID),
+					Deleted:       true,
+					Version:       version,
+					UpdatedAt:     time.Now().UTC(),
+				}
+				stampEntityRecordHash(&record)
+				if err := s.putEntityRecordWithMeta(
+					ctx, object.Key, record, meta,
+				); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	)
 }
 
 func (s *TenantStore) entityIDFromRecordKey(tenantID string, key string) (string, bool, error) {

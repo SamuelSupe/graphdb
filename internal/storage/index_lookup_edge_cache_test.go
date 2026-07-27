@@ -7,7 +7,7 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func TestPersistedIndexLookupReusesDecodedEdgeShard(t *testing.T) {
+func TestPersistedIndexLookupReusesDecodedEdgeShardAcrossRequests(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	store := NewTenantStore(base, "test")
@@ -45,5 +45,25 @@ func TestPersistedIndexLookupReusesDecodedEdgeShard(t *testing.T) {
 	second, ok, err := lookup.OutEdges(ctx, from[1], nil)
 	if err != nil || !ok || len(second) != 1 || second[0].To != "host:edge-cache-b" {
 		t.Fatalf("cached lookup edges=%#v ok=%v err=%v", second, ok, err)
+	}
+	store.dropCachedIndexObject(
+		"edge_shard",
+		"tenant-a",
+		catalog.Version,
+		key,
+		spec.ContentHash,
+		spec.SchemaHash,
+	)
+	nextRequest := &PersistedIndexLookup{
+		Store: store, TenantID: "tenant-a",
+		Version: catalog.Version, Catalog: catalog,
+	}
+	third, ok, err := nextRequest.OutEdges(ctx, from[0], nil)
+	if err != nil || !ok || len(third) != 1 ||
+		third[0].To != "host:edge-cache-a" {
+		t.Fatalf(
+			"shared decoded lookup edges=%#v ok=%v err=%v",
+			third, ok, err,
+		)
 	}
 }

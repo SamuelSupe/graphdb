@@ -59,7 +59,7 @@ func (s *TenantStore) buildIncrementalSecondaryIndexes(ctx context.Context, tena
 						TenantID:      tenantID,
 						Kind:          spec.Kind,
 						Field:         spec.Field,
-						Unique:        spec.Type == "unique-field",
+						Unique:        secondaryIndexSpecUnique(spec),
 						Values:        map[string][]string{},
 					},
 				}
@@ -170,7 +170,7 @@ func (s *TenantStore) buildIncrementalSecondaryIndexes(ctx context.Context, tena
 				TenantID:      tenantID,
 				Kind:          spec.Kind,
 				Field:         spec.Field,
-				Unique:        spec.Type == "unique-field",
+				Unique:        secondaryIndexSpecUnique(spec),
 				Values:        map[string][]string{},
 				Version:       version,
 				UpdatedAt:     now,

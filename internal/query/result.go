@@ -1,6 +1,8 @@
 package query
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -67,13 +69,30 @@ func resultIdentity(result Result) string {
 		return "entity:" + result.Entity.ID
 	}
 	if result.Path != nil {
-		parts := make([]string, 0, len(result.Path.Edges)+1)
-		for _, edge := range result.Path.Edges {
-			parts = append(parts, edge.ID)
+		entityIDs := make([]string, 0, len(result.Path.Entities))
+		for _, entity := range result.Path.Entities {
+			entityIDs = append(entityIDs, entity.ID)
 		}
-		return "path:" + strings.Join(parts, ">")
+		encoded, _ := json.Marshal(entityIDs)
+		return legacyPathIdentity(*result.Path) + "\x1f" +
+			base64.RawURLEncoding.EncodeToString(encoded)
 	}
 	return "empty"
+}
+
+func legacyPathIdentity(path graph.Path) string {
+	parts := make([]string, 0, len(path.Edges))
+	for _, edge := range path.Edges {
+		parts = append(parts, edge.ID)
+	}
+	return "path:" + strings.Join(parts, ">")
+}
+
+func resultMatchesCursor(result Result, after string) bool {
+	if resultIdentity(result) == after {
+		return true
+	}
+	return result.Path != nil && legacyPathIdentity(*result.Path) == after
 }
 
 func compareAny(left, right any) int {
@@ -104,6 +123,11 @@ func applyProjection(result *Result, fields []string) {
 		if !ok {
 			continue
 		}
+		if field == "labels" {
+			if _, exists := result.Entity.Fields[graph.ReservedLabelsField]; !exists {
+				name = "labels"
+			}
+		}
 		if _, ok := result.Entity.Fields[name]; ok {
 			entityFields[name] = value
 		}
@@ -115,6 +139,9 @@ func applyProjection(result *Result, fields []string) {
 }
 
 func projectionEntityFieldName(field string) (string, bool) {
+	if field == "labels" {
+		return graph.ReservedLabelsField, true
+	}
 	switch field {
 	case "", "id", "kind", "source", "external_id", "confidence", "source_priority", "created_at", "updated_at":
 		return "", false

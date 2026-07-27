@@ -1,9 +1,9 @@
 package graph
 
 import (
+	"bufio"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	"hash"
 	"io"
 	"sort"
@@ -21,65 +21,44 @@ func (g *Graph) ContentMD5() (string, error) {
 // writer cache uses that stable count as the basis for a conservative memory
 // weight without walking or encoding the graph a second time.
 func (g *Graph) ContentMD5WithLogicalSize() (string, int64, error) {
+	g.logicalHashMu.Lock()
+	defer g.logicalHashMu.Unlock()
+	if g.logicalHashCache == nil {
+		cache, err := buildLogicalHashCache(g)
+		if err != nil {
+			return "", 0, err
+		}
+		g.logicalHashCache = cache
+	}
+	if g.logicalHashCache.finalReady {
+		return g.logicalHashCache.digest, g.logicalHashCache.logicalBytes, nil
+	}
+
 	digest := &countingHash{Hash: md5.New()}
-	encoder := json.NewEncoder(trimJSONNewlineWriter{digest: digest})
-	_, _ = io.WriteString(digest, "{")
+	buffered := bufio.NewWriterSize(digest, 64*1024)
+	_, _ = io.WriteString(buffered, "{")
 	firstField := true
-
-	ciTypeKeys := make([]string, 0, len(g.CITypes))
-	for key := range g.CITypes {
-		ciTypeKeys = append(ciTypeKeys, key)
+	cache := g.logicalHashCache
+	for _, field := range []struct {
+		name     string
+		category logicalHashCategory
+	}{
+		{name: "ci_types", category: cache.ciTypes},
+		{name: "entities", category: cache.entities},
+		{name: "relation_types", category: cache.relationTypes},
+		{name: "edges", category: cache.edges},
+	} {
+		writeLogicalHashArray(buffered, &firstField, field.name, field.category)
 	}
-	sort.Slice(ciTypeKeys, func(i, j int) bool {
-		return g.CITypes[ciTypeKeys[i]].Name < g.CITypes[ciTypeKeys[j]].Name
-	})
-	if err := writeLogicalHashArray(digest, &firstField, "ci_types", ciTypeKeys, func(key string) error {
-		return encoder.Encode(g.CITypes[key])
-	}); err != nil {
+
+	_, _ = io.WriteString(buffered, "}")
+	if err := buffered.Flush(); err != nil {
 		return "", 0, err
 	}
-
-	entityKeys := make([]string, 0, len(g.Entities))
-	for key := range g.Entities {
-		entityKeys = append(entityKeys, key)
-	}
-	sort.Slice(entityKeys, func(i, j int) bool {
-		return g.Entities[entityKeys[i]].ID < g.Entities[entityKeys[j]].ID
-	})
-	if err := writeLogicalHashArray(digest, &firstField, "entities", entityKeys, func(key string) error {
-		return encoder.Encode(logicalEntityForHash(g.Entities[key]))
-	}); err != nil {
-		return "", 0, err
-	}
-
-	relationTypeKeys := make([]string, 0, len(g.RelationTypes))
-	for key := range g.RelationTypes {
-		relationTypeKeys = append(relationTypeKeys, key)
-	}
-	sort.Slice(relationTypeKeys, func(i, j int) bool {
-		return g.RelationTypes[relationTypeKeys[i]].Name < g.RelationTypes[relationTypeKeys[j]].Name
-	})
-	if err := writeLogicalHashArray(digest, &firstField, "relation_types", relationTypeKeys, func(key string) error {
-		return encoder.Encode(g.RelationTypes[key])
-	}); err != nil {
-		return "", 0, err
-	}
-
-	edgeKeys := make([]string, 0, len(g.Edges))
-	for key := range g.Edges {
-		edgeKeys = append(edgeKeys, key)
-	}
-	sort.Slice(edgeKeys, func(i, j int) bool {
-		return g.Edges[edgeKeys[i]].ID < g.Edges[edgeKeys[j]].ID
-	})
-	if err := writeLogicalHashArray(digest, &firstField, "edges", edgeKeys, func(key string) error {
-		return encoder.Encode(logicalEdgeForHash(g.Edges[key]))
-	}); err != nil {
-		return "", 0, err
-	}
-
-	_, _ = io.WriteString(digest, "}")
-	return hex.EncodeToString(digest.Sum(nil)), digest.written, nil
+	cache.digest = hex.EncodeToString(digest.Sum(nil))
+	cache.logicalBytes = digest.written
+	cache.finalReady = true
+	return cache.digest, cache.logicalBytes, nil
 }
 
 type countingHash struct {
@@ -93,9 +72,9 @@ func (h *countingHash) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func writeLogicalHashArray(digest hash.Hash, firstField *bool, name string, keys []string, encode func(string) error) error {
-	if len(keys) == 0 {
-		return nil
+func writeLogicalHashArray(digest io.Writer, firstField *bool, name string, category logicalHashCategory) {
+	if len(category.keys) == 0 {
+		return
 	}
 	if !*firstField {
 		_, _ = io.WriteString(digest, ",")
@@ -103,31 +82,13 @@ func writeLogicalHashArray(digest hash.Hash, firstField *bool, name string, keys
 	*firstField = false
 	_, _ = io.WriteString(digest, `"`+name+`":`)
 	_, _ = io.WriteString(digest, "[")
-	for i, key := range keys {
+	for i, value := range category.encoded {
 		if i > 0 {
 			_, _ = io.WriteString(digest, ",")
 		}
-		if err := encode(key); err != nil {
-			return err
-		}
+		_, _ = digest.Write(value)
 	}
 	_, _ = io.WriteString(digest, "]")
-	return nil
-}
-
-// json.Encoder matches json.Marshal's compact encoding but appends one newline.
-// The wrapper removes only that framing byte while reporting the full write.
-type trimJSONNewlineWriter struct {
-	digest hash.Hash
-}
-
-func (w trimJSONNewlineWriter) Write(data []byte) (int, error) {
-	if len(data) > 0 && data[len(data)-1] == '\n' {
-		_, _ = w.digest.Write(data[:len(data)-1])
-		return len(data), nil
-	}
-	_, _ = w.digest.Write(data)
-	return len(data), nil
 }
 
 func logicalEntityForHash(entity Entity) logicalEntity {

@@ -167,6 +167,42 @@ func TestWriterObjectCacheConflictInvalidatesStaleEntry(t *testing.T) {
 	}
 }
 
+func TestWriterObjectCacheKeyInvalidationRefreshesLists(t *testing.T) {
+	ctx := context.Background()
+	memory := NewMemoryStore()
+	if err := memory.Put(ctx, "objects/a.json", []byte("a")); err != nil {
+		t.Fatalf("put a: %v", err)
+	}
+	if err := memory.Put(ctx, "objects/b.json", []byte("b")); err != nil {
+		t.Fatalf("put b: %v", err)
+	}
+	base := newCountingObjectStore(memory)
+	cache := NewWriterObjectCache(base, WriterObjectCacheConfig{
+		MaxBytes:    1 << 20,
+		MaxKeys:     100,
+		NegativeTTL: time.Minute,
+	})
+	if _, err := cache.List(ctx, "objects/"); err != nil {
+		t.Fatalf("prime list: %v", err)
+	}
+	base.reset()
+
+	cache.invalidateKey("objects/a.json")
+	items, err := cache.List(ctx, "objects/")
+	if err != nil {
+		t.Fatalf("list after key invalidation: %v", err)
+	}
+	if !reflect.DeepEqual(
+		keysOf(items),
+		[]string{"objects/a.json", "objects/b.json"},
+	) {
+		t.Fatalf("items = %#v, want a,b", items)
+	}
+	if base.listCalls != 1 {
+		t.Fatalf("underlying list calls = %d, want 1", base.listCalls)
+	}
+}
+
 func keysOf(items []ObjectInfo) []string {
 	keys := make([]string, 0, len(items))
 	for _, item := range items {

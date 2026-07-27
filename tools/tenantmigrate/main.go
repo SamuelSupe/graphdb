@@ -75,7 +75,7 @@ func run() error {
 
 func addStoreFlags(prefix string, target *storeFlags) {
 	flag.StringVar(&target.kind, prefix+"-storage", "local", "object store kind: local or s3")
-	flag.StringVar(&target.prefix, prefix+"-prefix", "graphdb", "GraphDB object prefix")
+	flag.StringVar(&target.prefix, prefix+"-prefix", "graphdb", "GGraphDB object prefix")
 	flag.StringVar(&target.dataDir, prefix+"-data-dir", ".graphdb", "local object store directory")
 	flag.StringVar(&target.endpoint, prefix+"-s3-endpoint", "", "S3 endpoint URL")
 	flag.StringVar(&target.bucket, prefix+"-s3-bucket", "", "S3 bucket")

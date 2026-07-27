@@ -20,6 +20,8 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_WRITE_MAX_PER_TENANT",
 		"GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD",
 		"GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD",
+		"GRAPHDB_WRITE_CAS_MAX_RETRIES",
+		"GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE",
 		"GRAPHDB_WRITE_MAX_COMMIT_TAIL",
 		"GRAPHDB_WRITE_MAX_OBJECTS_PER_TENANT",
 		"GRAPHDB_WRITE_MAX_BYTES_PER_TENANT",
@@ -41,6 +43,43 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 				t.Fatalf("Load err = %v, want %s validation", err, key)
 			}
 		})
+	}
+}
+
+func TestLoadKeepsPprofDisabledByDefault(t *testing.T) {
+	setLocalConfigEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PprofEnabled || cfg.AdminAddr != "" {
+		t.Fatalf("admin defaults = addr %q pprof %t, want empty/false", cfg.AdminAddr, cfg.PprofEnabled)
+	}
+}
+
+func TestLoadRequiresSeparateAdminListenerForPprof(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_PPROF_ENABLED", "true")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GRAPHDB_ADMIN_ADDR is required") {
+		t.Fatalf("Load err = %v, want admin addr validation", err)
+	}
+
+	t.Setenv("GRAPHDB_ADMIN_ADDR", "127.0.0.1:8081")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PprofEnabled || cfg.AdminAddr != "127.0.0.1:8081" {
+		t.Fatalf("admin config = addr %q pprof %t", cfg.AdminAddr, cfg.PprofEnabled)
+	}
+}
+
+func TestLoadRejectsSharedDataAndAdminListener(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_ADDR", "127.0.0.1:8080")
+	t.Setenv("GRAPHDB_ADMIN_ADDR", "127.0.0.1:8080")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("Load err = %v, want distinct listener validation", err)
 	}
 }
 
@@ -87,6 +126,11 @@ func TestLoadRejectsNegativeDurations(t *testing.T) {
 		"GRAPHDB_MAINTENANCE_INTERVAL",
 		"GRAPHDB_TENANT_USAGE_CACHE_TTL",
 		"GRAPHDB_READER_CATCHUP_TIMEOUT",
+		"GRAPHDB_READINESS_TIMEOUT",
+		"GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION",
+		"GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL",
+		"GRAPHDB_COORDINATOR_OUTBOX_RETENTION",
+		"GRAPHDB_COORDINATOR_CLEANUP_INTERVAL",
 		"GRAPHDB_FAULT_OBJECT_READ_DELAY",
 		"GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL",
 	}
@@ -216,6 +260,114 @@ func TestLoadAllowsWriteRequestPipeliningPerTenant(t *testing.T) {
 	}
 	if cfg.WriteMaxPerTenant != 4 {
 		t.Fatalf("WriteMaxPerTenant = %d, want 4", cfg.WriteMaxPerTenant)
+	}
+}
+
+func TestLoadPostgresCoordinationRequirements(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_COORDINATION", "postgres")
+	t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
+	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")
+	t.Setenv("GRAPHDB_STORAGE", "s3")
+	t.Setenv("S3_PROVIDER", storage.ObjectProviderGenericS3)
+	t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
+	t.Setenv("GRAPHDB_WRITE_CAS_MAX_RETRIES", "12")
+	t.Setenv("GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION", "48h")
+	t.Setenv("GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", "4m")
+	t.Setenv("GRAPHDB_COORDINATOR_OUTBOX_RETENTION", "2h")
+	t.Setenv("GRAPHDB_COORDINATOR_CLEANUP_INTERVAL", "30s")
+	t.Setenv("GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE", "7000")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Coordination != storage.CoordinationPostgres ||
+		cfg.PostgresSchema != "graphdb_coordination" ||
+		cfg.CoordinatorNamespace != "production" ||
+		cfg.WriteCASMaxRetries != 12 ||
+		cfg.CoordinatorIdempotencyRetention != 48*time.Hour ||
+		cfg.CoordinatorPendingReservationTTL != 4*time.Minute ||
+		cfg.CoordinatorOutboxRetention != 2*time.Hour ||
+		cfg.CoordinatorCleanupInterval != 30*time.Second ||
+		cfg.CoordinatorCleanupBatchSize != 7000 {
+		t.Fatalf("coordination config = %#v", cfg)
+	}
+}
+
+func TestLoadRejectsUnsafePostgresReservationTTL(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		writeTimeout string
+		pendingTTL   string
+	}{
+		{name: "unbounded write", writeTimeout: "0", pendingTTL: "3m"},
+		{name: "equal ttl", writeTimeout: "3m", pendingTTL: "3m"},
+		{name: "short ttl", writeTimeout: "4m", pendingTTL: "3m"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			setPostgresConfigEnv(t)
+			t.Setenv("GRAPHDB_WRITE_EXECUTION_TIMEOUT", test.writeTimeout)
+			t.Setenv("GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", test.pendingTTL)
+			if _, err := Load(); err == nil ||
+				!strings.Contains(err.Error(), "GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL") &&
+					!strings.Contains(err.Error(), "GRAPHDB_WRITE_EXECUTION_TIMEOUT") {
+				t.Fatalf("Load err = %v, want reservation/write timeout validation", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnsafePostgresCoordination(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(*testing.T)
+		want string
+	}{
+		{
+			name: "missing dsn",
+			set:  func(t *testing.T) { t.Setenv("GRAPHDB_POSTGRES_DSN", "") },
+			want: "GRAPHDB_POSTGRES_DSN",
+		},
+		{
+			name: "missing namespace",
+			set:  func(t *testing.T) { t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "") },
+			want: "GRAPHDB_COORDINATOR_NAMESPACE",
+		},
+		{
+			name: "local object store",
+			set:  func(t *testing.T) { t.Setenv("GRAPHDB_STORAGE", "local") },
+			want: "GRAPHDB_STORAGE=s3",
+		},
+		{
+			name: "native provider",
+			set: func(t *testing.T) {
+				t.Setenv("S3_PROVIDER", storage.ObjectProviderAliyunOSS)
+				t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologySingle)
+				t.Setenv("S3_VERSIONING", storage.BucketVersioningDisabled)
+			},
+			want: "S3_PROVIDER=generic-s3",
+		},
+		{
+			name: "single topology",
+			set:  func(t *testing.T) { t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologySingle) },
+			want: "GRAPHDB_WRITER_TOPOLOGY=cas",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setLocalConfigEnv(t)
+			t.Setenv("GRAPHDB_COORDINATION", "postgres")
+			t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
+			t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")
+			t.Setenv("GRAPHDB_STORAGE", "s3")
+			t.Setenv("S3_PROVIDER", storage.ObjectProviderGenericS3)
+			t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
+			test.set(t)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load err=%v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -550,6 +702,9 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("GRAPHDB_STORAGE", "local")
 	t.Setenv("GRAPHDB_MODE", "all")
+	t.Setenv("GRAPHDB_ADDR", "")
+	t.Setenv("GRAPHDB_ADMIN_ADDR", "")
+	t.Setenv("GRAPHDB_PPROF_ENABLED", "")
 	t.Setenv("GRAPHDB_PREFIX", "")
 	t.Setenv("GRAPHDB_QUERY_MAX_CONCURRENT", "")
 	t.Setenv("GRAPHDB_QUERY_MAX_PER_TENANT", "")
@@ -569,6 +724,12 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD", "")
 	t.Setenv("GRAPHDB_WRITE_CAS_CONFLICT_WINDOW", "")
 	t.Setenv("GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD", "")
+	t.Setenv("GRAPHDB_WRITE_CAS_MAX_RETRIES", "")
+	t.Setenv("GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION", "")
+	t.Setenv("GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", "")
+	t.Setenv("GRAPHDB_COORDINATOR_OUTBOX_RETENTION", "")
+	t.Setenv("GRAPHDB_COORDINATOR_CLEANUP_INTERVAL", "")
+	t.Setenv("GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_COMMIT_TAIL", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_OBJECTS_PER_TENANT", "")
 	t.Setenv("GRAPHDB_WRITE_MAX_BYTES_PER_TENANT", "")
@@ -586,6 +747,7 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_MAINTENANCE_INTERVAL", "")
 	t.Setenv("GRAPHDB_TENANT_USAGE_CACHE_TTL", "")
 	t.Setenv("GRAPHDB_READER_CATCHUP_TIMEOUT", "")
+	t.Setenv("GRAPHDB_READINESS_TIMEOUT", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "")
@@ -596,8 +758,23 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_OTLP_INSECURE", "")
 	t.Setenv("GRAPHDB_SERVICE_NAME", "")
 	t.Setenv("GRAPHDB_INSTANCE_ID", "")
+	t.Setenv("GRAPHDB_COORDINATION", "")
+	t.Setenv("GRAPHDB_POSTGRES_DSN", "")
+	t.Setenv("GRAPHDB_POSTGRES_SCHEMA", "")
+	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "")
 	t.Setenv("S3_PATH_STYLE", "")
 	t.Setenv("S3_PROVIDER", "")
 	t.Setenv("S3_VERSIONING", "")
 	t.Setenv("GRAPHDB_WRITER_TOPOLOGY", "")
+}
+
+func setPostgresConfigEnv(t *testing.T) {
+	t.Helper()
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_COORDINATION", "postgres")
+	t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
+	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")
+	t.Setenv("GRAPHDB_STORAGE", "s3")
+	t.Setenv("S3_PROVIDER", storage.ObjectProviderGenericS3)
+	t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
 }

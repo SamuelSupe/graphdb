@@ -13,6 +13,28 @@ func marshalParquetCommitSegment(ctx context.Context, tenantID string, items []c
 	return marshalParquetCommitItems(ctx, tenantID, parquetItems)
 }
 
+func marshalNormalizedParquetCommitSegment(
+	ctx context.Context,
+	tenantID string,
+	items []commitSegmentItem,
+) ([]byte, error) {
+	parquetItems := make([]parquetCommitTableItem, 0, len(items))
+	for _, item := range items {
+		hash, err := commitPayloadHash(item.Commit)
+		if err != nil {
+			return nil, err
+		}
+		parquetItems = append(parquetItems, parquetCommitTableItem{
+			Key:         item.Key,
+			Commit:      item.Commit,
+			ContentHash: hash,
+		})
+	}
+	return marshalNormalizedParquetCommitItems(
+		ctx, tenantID, parquetItems,
+	)
+}
+
 func decodeParquetCommitSegmentObject(ctx context.Context, data []byte, tenantID string, ref CommitSegmentRef) (storedCommitSegment, []commitSegmentItem, error) {
 	parquetItems, err := decodeParquetCommitItems(ctx, data)
 	if err != nil {

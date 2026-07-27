@@ -1,22 +1,23 @@
-# GraphDB User Guide
+# GGraphDB User Guide
 
 [中文](README.zh-CN.md)
 
 This guide is for service owners, ingest-client authors, and operators using
-GraphDB as a general-purpose graph database. CMDB is one supported scenario;
+GGraphDB as a general-purpose graph database. CMDB is one supported scenario;
 the same entity, relationship, query, and storage APIs can serve other
 entity-relationship applications.
 
-## What GraphDB provides
+## What GGraphDB provides
 
 - Multi-tenant graph data isolated by `X-Tenant-ID`.
 - Schemaless entities with optional type definitions, including CI types for
   CMDB-style modeling.
 - Typed directed edges with `(type, from, to)` canonical identity.
-- One active writer per tenant; readers independently reload from object storage.
+- One local writer or 2–8 PostgreSQL-coordinated optimistic writers per tenant;
+  readers independently reload immutable graph objects from object storage.
 - Object-storage persistence using Parquet manifests, commits, snapshots, entity
   pages, edge shards, and index objects.
-- JSON Query DSL, text GQL, scan/export APIs, saved queries, and running-query
+- GraphQL, JSON Query DSL, scan/export APIs, saved queries, and running-query
   control.
 - Optional source-priority governance for entity fields, edge fields, and edge
   existence.
@@ -72,7 +73,8 @@ export BASE=http://127.0.0.1:8080
 
 Reference documents:
 
-- [GQL](../gql.md)
+- [GraphQL](../graphql.md) · [中文](../graphql.zh-CN.md)
+- [Legacy text DSL compatibility](../gql.md)
 - [Query capabilities](../query_capabilities.md)
 - [Error codes](../error_codes.md)
 - [OpenAPI](../openapi.yaml)

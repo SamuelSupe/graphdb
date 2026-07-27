@@ -13,6 +13,7 @@ func executeLazyKindPage(g *graph.Graph, request Request, plan Plan, cursor curs
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	afterID, _ := cursorEntityID(cursor)
+	order := lazyEntityPageOrder(budget)
 	err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
 		startScanned := budget.scanned
 		ok, err := visitLazyKindScanEntities(request, budget, afterID, func(entity graph.Entity) (bool, error) {
@@ -30,17 +31,22 @@ func executeLazyKindPage(g *graph.Graph, request Request, plan Plan, cursor curs
 	if err := validatePageCursor(cursor, state); err != nil {
 		return Response{}, err
 	}
-	return pageResponse(g.Version, results, state.hasNext, request, budget), nil
+	return matchPageResponse(
+		g.Version, results, state.hasNext, request, budget, order,
+	), nil
 }
 
 func executeLazyKindMaterialized(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
 	acc := newAggregateAccumulator(request.Aggregate)
 	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
 	bounded := canBuildBoundedMatchPage(request, cursor)
-	keep := normalizedLimit(request.Limit) + 1
+	keep := boundedMatchPageLimit(request, cursor)
+	if bounded && len(request.Sort) == 0 {
+		cursor.Order = matchPageOrder(cursor, EntityPageOrderIdentity)
+	}
 	results := make([]Result, 0, keep)
 	var sorted *boundedResults
-	if bounded && len(request.Sort) > 0 {
+	if bounded {
 		sorted = newBoundedResults(request.Sort, keep)
 	}
 	err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {

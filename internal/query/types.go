@@ -11,6 +11,11 @@ var ErrInvalid = errors.New("invalid query")
 var ErrLimitExceeded = errors.New("query limit exceeded")
 var ErrIndexUnavailable = errors.New("persisted index unavailable")
 
+const (
+	EntityPageOrderIdentity = "identity"
+	EntityPageOrderShard    = "entity-shard"
+)
+
 type Request struct {
 	Op                string        `json:"op"`
 	TargetOp          string        `json:"target_op,omitempty"`
@@ -98,6 +103,7 @@ type PathFilter struct {
 }
 
 type PathStep struct {
+	Direction     string      `json:"direction,omitempty"`
 	RelationTypes []string    `json:"relation_types,omitempty"`
 	NodeKinds     []string    `json:"node_kinds,omitempty"`
 	Where         []Filter    `json:"where,omitempty"`
@@ -151,6 +157,40 @@ type IndexLookup interface {
 	OutEdges(ctx context.Context, from string, allowedRelationTypes map[string]struct{}) ([]graph.Edge, bool, error)
 }
 
+type ReverseIndexLookup interface {
+	InEdges(ctx context.Context, to string, allowedRelationTypes map[string]struct{}) ([]graph.Edge, bool, error)
+}
+
+type OutEdgeVisitLookup interface {
+	VisitOutEdges(
+		ctx context.Context,
+		from string,
+		allowedRelationTypes map[string]struct{},
+		startEdgeID string,
+		visit func(graph.Edge) (bool, error),
+	) (bool, error)
+}
+
+type InEdgeVisitLookup interface {
+	VisitInEdges(
+		ctx context.Context,
+		to string,
+		allowedRelationTypes map[string]struct{},
+		startEdgeID string,
+		visit func(graph.Edge) (bool, error),
+	) (bool, error)
+}
+
+type BothEdgeVisitLookup interface {
+	VisitBothEdges(
+		ctx context.Context,
+		entityID string,
+		allowedRelationTypes map[string]struct{},
+		startEdgeID string,
+		visit func(graph.Edge, string) (bool, error),
+	) (bool, error)
+}
+
 type FieldIndexScanLookup interface {
 	ScanFieldIndex(ctx context.Context, kind string, field string) (map[string][]string, bool, error)
 }
@@ -171,11 +211,18 @@ type EntityPageLookup interface {
 	VisitEntities(ctx context.Context, kind string, fields []string, afterID string, visit func(graph.Entity) (bool, error)) (bool, error)
 }
 
+type EntityPageOrderLookup interface {
+	EntityPageOrder() string
+}
+
 type PlannerStats struct {
-	Version     int64                   `json:"version,omitempty"`
-	Indexes     []PlannerIndexStat      `json:"indexes,omitempty"`
-	EdgeShards  []PlannerEdgeStat       `json:"edge_shards,omitempty"`
-	EntityPages []PlannerEntityPageStat `json:"entity_pages,omitempty"`
+	Version                   int64                   `json:"version,omitempty"`
+	ForwardEdgeIndexAvailable bool                    `json:"forward_edge_index_available,omitempty"`
+	ReverseEdgeIndexAvailable bool                    `json:"reverse_edge_index_available,omitempty"`
+	Indexes                   []PlannerIndexStat      `json:"indexes,omitempty"`
+	EdgeShards                []PlannerEdgeStat       `json:"edge_shards,omitempty"`
+	ReverseEdgeShards         []PlannerEdgeStat       `json:"reverse_edge_shards,omitempty"`
+	EntityPages               []PlannerEntityPageStat `json:"entity_pages,omitempty"`
 }
 
 type PlannerIndexStat struct {
@@ -193,9 +240,10 @@ type PlannerValueStat struct {
 }
 
 type PlannerEdgeStat struct {
-	RelationType string `json:"relation_type"`
-	Shard        string `json:"shard"`
-	EdgeCount    int    `json:"edge_count"`
+	RelationType    string `json:"relation_type"`
+	ImpactDirection string `json:"impact_direction,omitempty"`
+	Shard           string `json:"shard"`
+	EdgeCount       int    `json:"edge_count"`
 }
 
 type PlannerEntityPageStat struct {

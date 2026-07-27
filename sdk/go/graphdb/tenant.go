@@ -42,9 +42,10 @@ type TenantCloneRequest struct {
 }
 
 type TenantPurgeReport struct {
-	TenantID    string   `json:"tenant_id"`
-	Deleted     int      `json:"deleted"`
-	DeletedKeys []string `json:"deleted_keys,omitempty"`
+	TenantID             string   `json:"tenant_id"`
+	Deleted              int      `json:"deleted"`
+	DeletedKeys          []string `json:"deleted_keys,omitempty"`
+	DeletedKeysTruncated bool     `json:"deleted_keys_truncated,omitempty"`
 }
 
 func (c *Client) ListTenants(ctx context.Context, includeLegacy bool) ([]TenantInfo, error) {

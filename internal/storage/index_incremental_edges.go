@@ -10,15 +10,51 @@ import (
 )
 
 func (s *TenantStore) buildIncrementalEdgeShards(ctx context.Context, tenantID string, previousVersion int64, previous []EdgeShard, before *graph.Graph, after *graph.Graph, edgeIDs []string, version int64, now time.Time) ([]EdgeShardData, []EdgeShard, error) {
+	return s.buildIncrementalEdgeShardsFor(
+		ctx,
+		tenantID,
+		previousVersion,
+		previous,
+		before,
+		after,
+		edgeIDs,
+		version,
+		now,
+		func(edge graph.Edge) string {
+			return edgeShardID(edge.From)
+		},
+		func(catalog *IndexCatalog) {
+			s.decorateIndexCatalog(
+				catalog,
+				tenantID,
+				IndexFormatParquet,
+			)
+		},
+	)
+}
+
+func (s *TenantStore) buildIncrementalEdgeShardsFor(
+	ctx context.Context,
+	tenantID string,
+	previousVersion int64,
+	previous []EdgeShard,
+	before *graph.Graph,
+	after *graph.Graph,
+	edgeIDs []string,
+	version int64,
+	now time.Time,
+	shardIDFor func(graph.Edge) string,
+	decorate func(*IndexCatalog),
+) ([]EdgeShardData, []EdgeShard, error) {
 	previousByKey := edgeShardSpecMap(IndexCatalog{EdgeShards: previous})
 	changedByKey := map[string][]string{}
 	for _, edgeID := range edgeIDs {
 		if edge, ok := before.Edges[edgeID]; ok {
-			key := edgeShardTargetKey(edge.Type, edgeShardID(edge.From))
+			key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
 			changedByKey[key] = append(changedByKey[key], edgeID)
 		}
 		if edge, ok := after.Edges[edgeID]; ok {
-			key := edgeShardTargetKey(edge.Type, edgeShardID(edge.From))
+			key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
 			changedByKey[key] = append(changedByKey[key], edgeID)
 		}
 	}
@@ -46,10 +82,14 @@ func (s *TenantStore) buildIncrementalEdgeShards(ctx context.Context, tenantID s
 		}
 		for _, edgeID := range changedByKey[key] {
 			delete(edges, edgeID)
-			if edge, ok := after.Edges[edgeID]; ok && edge.Type == relationType && edgeShardID(edge.From) == shardID {
+			if edge, ok := after.Edges[edgeID]; ok &&
+				edge.Type == relationType &&
+				shardIDFor(edge) == shardID {
 				edges[edgeID] = graph.CopyEdge(edge)
 			} else if !existed {
-				if old, ok := before.Edges[edgeID]; ok && old.Type == relationType && edgeShardID(old.From) == shardID {
+				if old, ok := before.Edges[edgeID]; ok &&
+					old.Type == relationType &&
+					shardIDFor(old) == shardID {
 					return nil, nil, fmt.Errorf("incremental edge shard %s/%s is missing from the previous catalog", relationType, shardID)
 				}
 			}
@@ -74,16 +114,17 @@ func (s *TenantStore) buildIncrementalEdgeShards(ctx context.Context, tenantID s
 		shard.logicalContentHash = edgeShardContentHash(shard)
 		shards = append(shards, shard)
 		rawSpecs = append(rawSpecs, EdgeShard{
-			RelationType: relationType,
-			Shard:        shardID,
-			EdgeCount:    len(shard.Edges),
-			ContentHash:  shard.logicalContentHash,
-			UpdatedAt:    now,
+			RelationType:    relationType,
+			ImpactDirection: relationImpactDirection(after, relationType),
+			Shard:           shardID,
+			EdgeCount:       len(shard.Edges),
+			ContentHash:     shard.logicalContentHash,
+			UpdatedAt:       now,
 		})
 	}
 
 	mini := IndexCatalog{Version: version, EdgeShards: rawSpecs}
-	s.decorateIndexCatalog(&mini, tenantID, IndexFormatParquet)
+	decorate(&mini)
 	decorated := edgeShardSpecMap(mini)
 	next := make([]EdgeShard, 0, len(previous)+len(decorated))
 	for _, spec := range previous {

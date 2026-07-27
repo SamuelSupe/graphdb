@@ -43,27 +43,29 @@ func (s *TenantStore) TenantUsage(ctx context.Context, tenantID string) (TenantU
 		return TenantUsageReport{}, err
 	}
 	prefix := s.tenantObjectPrefix(tenantID)
-	objects, err := s.Objects.List(ctx, prefix)
-	if err != nil {
-		return TenantUsageReport{}, err
-	}
 	report := TenantUsageReport{
 		TenantID:  tenantID,
 		Prefix:    prefix,
 		CheckedAt: time.Now().UTC(),
 	}
 	categories := map[string]*TenantUsageCategory{}
-	for _, object := range objects {
-		name := tenantUsageCategory(prefix, object.Key)
-		category := categories[name]
-		if category == nil {
-			category = &TenantUsageCategory{Name: name}
-			categories[name] = category
+	err := scanObjectPrefix(ctx, s.Objects, prefix, func(objects []ObjectInfo) error {
+		for _, object := range objects {
+			name := tenantUsageCategory(prefix, object.Key)
+			category := categories[name]
+			if category == nil {
+				category = &TenantUsageCategory{Name: name}
+				categories[name] = category
+			}
+			category.ObjectCount++
+			category.Bytes += object.Size
+			report.ObjectCount++
+			report.TotalBytes += object.Size
 		}
-		category.ObjectCount++
-		category.Bytes += object.Size
-		report.ObjectCount++
-		report.TotalBytes += object.Size
+		return nil
+	})
+	if err != nil {
+		return TenantUsageReport{}, err
 	}
 	report.Categories = sortedUsageCategories(categories)
 	if manifest, _, err := s.getManifest(ctx, tenantID); err == nil {

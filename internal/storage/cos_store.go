@@ -18,6 +18,14 @@ type tencentCOSClient struct {
 	client *cos.Client
 }
 
+func (c *tencentCOSClient) Probe(ctx context.Context) error {
+	_, response, err := c.client.Bucket.Get(ctx, &cos.BucketGetOptions{MaxKeys: 1})
+	if response != nil {
+		closeCOSResponse(response)
+	}
+	return normalizeTencentCOSError(err, false)
+}
+
 func NewTencentCOSStore(endpoint, bucket, region, accessKey, secretKey string, options S3Options) (*NativeObjectStore, error) {
 	config, err := newNativeStoreOptions(endpoint, bucket, region, accessKey, secretKey, options)
 	if err != nil {
@@ -114,29 +122,40 @@ func (c *tencentCOSClient) Delete(ctx context.Context, key string) error {
 }
 
 func (c *tencentCOSClient) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	items := make([]ObjectInfo, 0)
-	var marker string
-	for {
-		result, response, err := c.client.Bucket.Get(ctx, &cos.BucketGetOptions{Prefix: prefix, Marker: marker, MaxKeys: 1000})
-		if response != nil {
-			closeCOSResponse(response)
-		}
-		if err != nil {
-			return nil, normalizeTencentCOSError(err, false)
-		}
-		for _, object := range result.Contents {
-			items = append(items, ObjectInfo{Key: object.Key, Size: object.Size, ETag: cleanETag(object.ETag)})
-		}
-		if !result.IsTruncated {
-			break
-		}
-		if result.NextMarker == "" || result.NextMarker == marker {
-			return nil, fmt.Errorf("cos list response for prefix %q was truncated without a new marker", prefix)
-		}
-		marker = result.NextMarker
+	return collectNativeObjectPages(ctx, prefix, c.ListPage)
+}
+
+func (c *tencentCOSClient) ListPage(
+	ctx context.Context,
+	prefix string,
+	after string,
+	limit int,
+) ([]ObjectInfo, string, error) {
+	result, response, err := c.client.Bucket.Get(ctx, &cos.BucketGetOptions{
+		Prefix: prefix, Marker: after, MaxKeys: nativeObjectPageLimit(limit),
+	})
+	if response != nil {
+		closeCOSResponse(response)
+	}
+	if err != nil {
+		return nil, "", normalizeTencentCOSError(err, false)
+	}
+	items := make([]ObjectInfo, 0, len(result.Contents))
+	for _, object := range result.Contents {
+		items = append(items, ObjectInfo{
+			Key: object.Key, Size: object.Size, ETag: cleanETag(object.ETag),
+		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
-	return items, nil
+	if !result.IsTruncated {
+		return items, "", nil
+	}
+	if len(items) == 0 {
+		return nil, "", fmt.Errorf(
+			"cos list page for prefix %q was truncated without objects", prefix,
+		)
+	}
+	return items, items[len(items)-1].Key, nil
 }
 
 func normalizeTencentCOSError(err error, createOnly bool) error {

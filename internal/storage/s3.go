@@ -3,6 +3,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,6 +27,9 @@ type S3Store struct {
 	secretKey string
 	pathStyle bool
 	client    *http.Client
+
+	conditionalDeleteMu    sync.Mutex
+	conditionalDeleteState s3ConditionalDeleteState
 }
 
 type S3Options struct {
@@ -34,6 +40,7 @@ const (
 	defaultS3RequestTimeout = 2 * time.Minute
 	defaultS3MaxAttempts    = 3
 	defaultS3MaxConns       = 64
+	s3DeleteBatchLimit      = 1000
 )
 
 func NewS3Store(endpoint, bucket, region, accessKey, secretKey string) (*S3Store, error) {
@@ -135,13 +142,10 @@ func (s *S3Store) PutConditional(ctx context.Context, key string, data []byte, c
 	if err := validateObjectKey(key); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
+	if requiresReturnedETag(condition) {
+		return s.putConditionalResolved(ctx, key, data, condition)
+	}
 	headers := http.Header{}
-	if condition.IfNoneMatch {
-		headers.Set("If-None-Match", "*")
-	}
-	if condition.IfMatch != "" {
-		headers.Set("If-Match", quoteETag(condition.IfMatch))
-	}
 	resp, err := s.doWithHeaders(ctx, http.MethodPut, key, nil, data, headers)
 	if err != nil {
 		return ObjectMeta{}, err
@@ -153,18 +157,7 @@ func (s *S3Store) PutConditional(ctx context.Context, key string, data []byte, c
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ObjectMeta{}, readS3Error(resp)
 	}
-	meta := ObjectMeta{Key: key, ETag: cleanETag(resp.Header.Get("ETag")), Exists: true}
-	if meta.ETag == "" && requiresReturnedETag(condition) {
-		fetched, err := s.Head(ctx, key)
-		if err != nil {
-			return ObjectMeta{}, err
-		}
-		if fetched.ETag == "" {
-			return ObjectMeta{}, fmt.Errorf("s3 conditional put %q completed without returned etag", key)
-		}
-		meta = fetched
-	}
-	return meta, nil
+	return ObjectMeta{Key: key, ETag: cleanETag(resp.Header.Get("ETag")), Exists: true}, nil
 }
 
 func requiresReturnedETag(condition PutCondition) bool {
@@ -194,10 +187,27 @@ func (s *S3Store) DeleteConditional(ctx context.Context, key string, condition P
 		}
 		return ErrConflict
 	}
-	headers := http.Header{}
 	if condition.IfMatch != "" {
-		headers.Set("If-Match", quoteETag(condition.IfMatch))
+		supported, err := s.supportsConditionalDelete(ctx, key)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			meta, err := s.Head(ctx, key)
+			if errors.Is(err, ErrNotFound) {
+				return ErrConflict
+			}
+			if err != nil {
+				return err
+			}
+			if cleanETag(meta.ETag) != cleanETag(condition.IfMatch) {
+				return ErrConflict
+			}
+			return ErrConditionalDeleteUnsupported
+		}
+		return s.deleteConditionalResolved(ctx, key, condition.IfMatch)
 	}
+	headers := http.Header{}
 	resp, err := s.doWithHeaders(ctx, http.MethodDelete, key, nil, nil, headers)
 	if err != nil {
 		return err
@@ -217,6 +227,64 @@ func (s *S3Store) DeleteConditional(ctx context.Context, key string, condition P
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return readS3Error(resp)
+	}
+	return nil
+}
+
+func (s *S3Store) DeleteBatch(ctx context.Context, keys []string) error {
+	for _, key := range keys {
+		if err := validateObjectKey(key); err != nil {
+			return err
+		}
+	}
+	for start := 0; start < len(keys); start += s3DeleteBatchLimit {
+		end := min(start+s3DeleteBatchLimit, len(keys))
+		if err := s.deleteBatch(ctx, keys[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *S3Store) deleteBatch(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	request := deleteObjectsRequest{
+		XMLNS: "http://s3.amazonaws.com/doc/2006-03-01/",
+		Quiet: true,
+	}
+	request.Objects = make([]deleteObjectIdentifier, 0, len(keys))
+	for _, key := range keys {
+		request.Objects = append(request.Objects, deleteObjectIdentifier{Key: key})
+	}
+	body, err := xml.Marshal(request)
+	if err != nil {
+		return err
+	}
+	sum := md5.Sum(body)
+	headers := http.Header{}
+	headers.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
+	headers.Set("Content-Type", "application/xml")
+	query := url.Values{"delete": {""}}
+	resp, err := s.doWithHeaders(ctx, http.MethodPost, "", query, body, headers)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return readS3Error(resp)
+	}
+	var result deleteObjectsResult
+	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if len(result.Errors) > 0 {
+		item := result.Errors[0]
+		return fmt.Errorf(
+			"s3 batch delete failed for %d objects; first error key=%q code=%q message=%q",
+			len(result.Errors), item.Key, item.Code, item.Message,
+		)
 	}
 	return nil
 }
@@ -306,16 +374,32 @@ func (s *S3Store) ListPage(ctx context.Context, prefix string, after string, lim
 	return items, items[len(items)-1].Key, nil
 }
 
+func (s *S3Store) Probe(ctx context.Context) error {
+	_, _, err := s.ListPage(ctx, "", "", 1)
+	return err
+}
+
 func (s *S3Store) do(ctx context.Context, method, key string, query url.Values, body []byte) (*http.Response, error) {
 	return s.doWithHeaders(ctx, method, key, query, body, nil)
 }
 
 func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query url.Values, body []byte, headers http.Header) (*http.Response, error) {
+	return s.doWithHeadersAttempts(ctx, method, key, query, body, headers, defaultS3MaxAttempts)
+}
+
+func (s *S3Store) doWithHeadersOnce(ctx context.Context, method, key string, query url.Values, body []byte, headers http.Header) (*http.Response, error) {
+	return s.doWithHeadersAttempts(ctx, method, key, query, body, headers, 1)
+}
+
+func (s *S3Store) doWithHeadersAttempts(ctx context.Context, method, key string, query url.Values, body []byte, headers http.Header, maxAttempts int) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if query == nil {
 		query = url.Values{}
+	}
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 	u := s.requestURL(key, query)
 
@@ -323,7 +407,7 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 	now := time.Now().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	date := now.Format("20060102")
-	for attempt := 0; attempt < defaultS3MaxAttempts; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var reader io.Reader
 		if body != nil {
 			reader = bytes.NewReader(body)
@@ -338,19 +422,28 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 			req.Header.Set("Content-Type", "application/octet-stream")
 		}
 		for key, values := range headers {
+			req.Header.Del(key)
 			for _, value := range values {
 				req.Header.Add(key, value)
 			}
 		}
-		req.Header.Set("Authorization", s.authorization(method, u.EscapedPath(), u.RawQuery, req.URL.Host, payloadHash, amzDate, date))
+		req.Header.Set("Authorization", s.authorization(method, awsURIPathEscape(u.Path), u.RawQuery, req.URL.Host, payloadHash, amzDate, date))
 		resp, err := s.client.Do(req)
 		if err == nil {
-			return resp, nil
+			if !retryableS3Status(resp.StatusCode) ||
+				attempt+1 >= maxAttempts {
+				return resp, nil
+			}
+			drainAndClose(resp.Body)
+			if delayErr := retryDelay(ctx, attempt); delayErr != nil {
+				return nil, delayErr
+			}
+			continue
 		}
 		if !retryableS3TransportError(ctx, err) {
 			return nil, err
 		}
-		if attempt+1 < defaultS3MaxAttempts {
+		if attempt+1 < maxAttempts {
 			if delayErr := retryDelay(ctx, attempt); delayErr != nil {
 				return nil, delayErr
 			}
@@ -359,6 +452,20 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 		return nil, fmt.Errorf("%w: %v", ErrObjectStoreUnavailable, err)
 	}
 	return nil, fmt.Errorf("%w: request exhausted retries", ErrObjectStoreUnavailable)
+}
+
+func retryableS3Status(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *S3Store) requestURL(key string, query url.Values) url.URL {
@@ -416,7 +523,7 @@ func readS3Error(resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	_, _ = io.Copy(io.Discard, resp.Body)
 	err := fmt.Errorf("s3 request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	if resp.StatusCode >= 500 {
+	if retryableS3Status(resp.StatusCode) {
 		return fmt.Errorf("%w: %v", ErrObjectStoreUnavailable, err)
 	}
 	return err
@@ -435,4 +542,23 @@ type listBucketResult struct {
 		Size int64  `xml:"Size"`
 		ETag string `xml:"ETag"`
 	} `xml:"Contents"`
+}
+
+type deleteObjectsRequest struct {
+	XMLName xml.Name                 `xml:"Delete"`
+	XMLNS   string                   `xml:"xmlns,attr,omitempty"`
+	Objects []deleteObjectIdentifier `xml:"Object"`
+	Quiet   bool                     `xml:"Quiet"`
+}
+
+type deleteObjectIdentifier struct {
+	Key string `xml:"Key"`
+}
+
+type deleteObjectsResult struct {
+	Errors []struct {
+		Key     string `xml:"Key"`
+		Code    string `xml:"Code"`
+		Message string `xml:"Message"`
+	} `xml:"Error"`
 }

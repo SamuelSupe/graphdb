@@ -28,15 +28,17 @@ func (s *TenantStore) CurrentScanCatalog(ctx context.Context, tenantID string) (
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
-	manifest, _, err := s.getManifest(ctx, tenantID)
+	manifestVersion, err := s.CurrentVersion(ctx, tenantID)
 	if err != nil {
 		return IndexCatalog{}, err
 	}
-	catalog, err = s.GetIndexCatalog(ctx, tenantID)
+	catalog, err = s.GetIndexCatalogAtVersion(
+		ctx, tenantID, manifestVersion,
+	)
 	if err != nil {
 		return IndexCatalog{}, err
 	}
-	if catalog.Version <= 0 || catalog.Version > manifest.Version {
+	if catalog.Version <= 0 || catalog.Version > manifestVersion {
 		return IndexCatalog{}, ErrNotFound
 	}
 	return catalog, nil

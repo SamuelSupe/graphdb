@@ -4,7 +4,15 @@ import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 
 func executeMatch(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
 	if lazyKindScanAvailable(g, request, plan, budget) {
+		if canPageMatchEarly(request) &&
+			cursor.Order != "" &&
+			cursor.Order != lazyEntityPageOrder(budget) {
+			return Response{}, ErrIndexUnavailable
+		}
 		return executeLazyKindScan(g, request, plan, cursor, budget)
+	}
+	if materializedKindPageAvailable(g, request, plan) {
+		return executeMaterializedKindPage(g, request, plan, cursor, budget)
 	}
 	if canPageMatchEarly(request) {
 		return executeMatchPage(g, request, plan, cursor, budget)
@@ -50,13 +58,29 @@ func executeMatch(g *graph.Graph, request Request, plan Plan, cursor cursorState
 }
 
 func canBuildBoundedMatchPage(request Request, cursor cursorState) bool {
-	return !cursor.Legacy && cursor.After == "" && cursor.Offset == 0 && (len(request.Sort) > 0 || len(request.Aggregate) > 0 || len(request.GroupBy) > 0)
+	hasBoundedCursor := cursor.After == "" || cursor.Offset > 0
+	return !cursor.Legacy && hasBoundedCursor &&
+		(len(request.Sort) > 0 ||
+			len(request.Aggregate) > 0 ||
+			len(request.GroupBy) > 0)
+}
+
+func boundedMatchPageLimit(request Request, cursor cursorState) int {
+	required := cursor.Offset + normalizedLimit(request.Limit) + 1
+	if required < cursor.Offset || required > costResultLimit(request) {
+		return costResultLimit(request)
+	}
+	return required
 }
 
 func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.Entity, cursor cursorState, budget *budget) (Response, error) {
 	acc := newAggregateAccumulator(request.Aggregate)
 	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
-	keep := normalizedLimit(request.Limit) + 1
+	keep := boundedMatchPageLimit(request, cursor)
+	if len(request.Sort) == 0 {
+		cursor.Order = matchPageOrder(cursor, EntityPageOrderIdentity)
+		entities = orderEntities(entities, cursor.Order)
+	}
 	results := make([]Result, 0, keep)
 	var sorted *boundedResults
 	if len(request.Sort) > 0 {
@@ -158,7 +182,17 @@ func matchCandidatesForPlan(g *graph.Graph, request Request, plan Plan, budget *
 				return nil, ErrIndexUnavailable
 			}
 		}
-		return g.MatchEntities(request.Kind, nil), nil
+		ids, err := scanRuntimeFieldIndexIDs(
+			budget.ctx,
+			g,
+			request.Kind,
+			plan.IndexField,
+			requestFilters(request),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return materializeEntities(g, ids, request, budget)
 	default:
 		if lazyExecution(g, budget) {
 			return nil, ErrIndexUnavailable

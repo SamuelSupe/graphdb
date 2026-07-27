@@ -6,10 +6,16 @@ func (g *Graph) rebuildIndexes() {
 	g.cow = nil
 	g.out = map[string]map[string]struct{}{}
 	g.in = map[string]map[string]struct{}{}
+	g.edgeAliasIndex = map[string]map[string]struct{}{}
+	g.edgeTypeIndex = map[string]map[string]struct{}{}
+	g.entityAliasIndex = map[string]map[string]struct{}{}
+	g.kindCounts = map[string]int{}
 	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
 	g.identityIndex = map[string]map[string]string{}
 
 	for id, entity := range g.Entities {
+		g.kindCounts[entity.Kind]++
+		g.addEntityAliasesToIndex(id, entity)
 		if g.identityIndex[entity.Kind] == nil {
 			g.identityIndex[entity.Kind] = map[string]string{}
 		}
@@ -41,18 +47,27 @@ func (g *Graph) rebuildIndexes() {
 	}
 
 	for id, edge := range g.Edges {
-		if g.out[edge.From] == nil {
-			g.out[edge.From] = map[string]struct{}{}
-		}
-		g.out[edge.From][id] = struct{}{}
-		if g.in[edge.To] == nil {
-			g.in[edge.To] = map[string]struct{}{}
-		}
-		g.in[edge.To][id] = struct{}{}
+		g.addEdgeToIndexes(id, edge)
 	}
 }
 
 func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
+	if count := g.kindCounts[entity.Kind]; count <= 1 {
+		delete(g.kindCounts, entity.Kind)
+	} else {
+		g.kindCounts[entity.Kind] = count - 1
+	}
+	for _, alias := range entityAliasValues(entity) {
+		entityIDs := g.entityAliasIndex[alias]
+		if entityIDs == nil {
+			continue
+		}
+		entityIDs = g.writableEntityAlias(alias)
+		delete(entityIDs, id)
+		if len(entityIDs) == 0 {
+			delete(g.entityAliasIndex, alias)
+		}
+	}
 	for _, signature := range g.identitySignatures(entity) {
 		if identities := g.identityIndex[entity.Kind]; identities != nil && identities[signature.Value] == id {
 			delete(g.writableIdentityKind(entity.Kind), signature.Value)
@@ -76,6 +91,8 @@ func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
 }
 
 func (g *Graph) addEntityToIndexes(id string, entity Entity) {
+	g.kindCounts[entity.Kind]++
+	g.addEntityAliasesToIndex(id, entity)
 	for _, signature := range g.identitySignatures(entity) {
 		g.writableIdentityKind(entity.Kind)[signature.Value] = id
 	}
@@ -86,6 +103,22 @@ func (g *Graph) addEntityToIndexes(id string, entity Entity) {
 		}
 		g.writableFieldValue(entity.Kind, field, key)[id] = struct{}{}
 	}
+}
+
+func (g *Graph) addEntityAliasesToIndex(id string, entity Entity) {
+	for _, alias := range entityAliasValues(entity) {
+		g.writableEntityAlias(alias)[id] = struct{}{}
+	}
+}
+
+func entityAliasValues(entity Entity) []string {
+	aliases := make([]string, 0, len(entity.MergedFrom))
+	for _, alias := range entity.MergedFrom {
+		if alias != "" {
+			aliases = append(aliases, alias)
+		}
+	}
+	return aliases
 }
 
 func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
@@ -103,11 +136,53 @@ func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
 			delete(g.in, edge.To)
 		}
 	}
+	for _, alias := range edgeAliasValues(edge) {
+		edgeIDs := g.edgeAliasIndex[alias]
+		if edgeIDs == nil {
+			continue
+		}
+		edgeIDs = g.writableEdgeAlias(alias)
+		delete(edgeIDs, id)
+		if len(edgeIDs) == 0 {
+			delete(g.edgeAliasIndex, alias)
+		}
+	}
+	if edgeIDs := g.edgeTypeIndex[edge.Type]; edgeIDs != nil {
+		edgeIDs = g.writableEdgeType(edge.Type)
+		delete(edgeIDs, id)
+		if len(edgeIDs) == 0 {
+			delete(g.edgeTypeIndex, edge.Type)
+		}
+	}
 }
 
 func (g *Graph) addEdgeToIndexes(id string, edge Edge) {
 	g.writableOut(edge.From)[id] = struct{}{}
 	g.writableIn(edge.To)[id] = struct{}{}
+	g.addEdgeAliasesToIndex(id, edge)
+	g.writableEdgeType(edge.Type)[id] = struct{}{}
+}
+
+func (g *Graph) addEdgeAliasesToIndex(id string, edge Edge) {
+	for _, alias := range edgeAliasValues(edge) {
+		g.writableEdgeAlias(alias)[id] = struct{}{}
+	}
+}
+
+func edgeAliasValues(edge Edge) []string {
+	aliases := make([]string, 0, 1+len(edge.Sources)*2)
+	if edge.ExternalID != "" {
+		aliases = append(aliases, edge.ExternalID)
+	}
+	for _, source := range edge.Sources {
+		if source.EdgeID != "" {
+			aliases = append(aliases, source.EdgeID)
+		}
+		if source.ExternalID != "" {
+			aliases = append(aliases, source.ExternalID)
+		}
+	}
+	return aliases
 }
 
 func (g *Graph) indexSnapshot() IndexSnapshot {
@@ -147,6 +222,10 @@ func (g *Graph) loadIndexSnapshot(snapshot IndexSnapshot) {
 	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
 	g.out = map[string]map[string]struct{}{}
 	g.in = map[string]map[string]struct{}{}
+	g.edgeAliasIndex = map[string]map[string]struct{}{}
+	g.edgeTypeIndex = map[string]map[string]struct{}{}
+	g.entityAliasIndex = map[string]map[string]struct{}{}
+	g.kindCounts = map[string]int{}
 	g.identityIndex = map[string]map[string]string{}
 	for kind, byField := range snapshot.Field {
 		g.fieldIndex[kind] = map[string]map[string]map[string]struct{}{}
@@ -168,6 +247,14 @@ func (g *Graph) loadIndexSnapshot(snapshot IndexSnapshot) {
 		for signature, id := range identities {
 			g.identityIndex[kind][signature] = id
 		}
+	}
+	for id, edge := range g.Edges {
+		g.addEdgeAliasesToIndex(id, edge)
+		g.writableEdgeType(edge.Type)[id] = struct{}{}
+	}
+	for id, entity := range g.Entities {
+		g.kindCounts[entity.Kind]++
+		g.addEntityAliasesToIndex(id, entity)
 	}
 }
 

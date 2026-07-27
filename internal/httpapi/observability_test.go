@@ -28,6 +28,7 @@ func TestMetricsEndpointRecordsHTTPQueryAndSuppressedConflicts(t *testing.T) {
 		t.Fatalf("source policy: %v", err)
 	}
 	obs := observability.New(io.Discard, 0)
+	obs.Metrics.RecordCoordinatorCleanup("ok", 3, 0)
 	handler := (&Server{Store: store, Mode: "all", Observability: obs, ReadAdmission: NewQueryAdmission(1, 1, 0)}).Handler()
 	if rr := serveJSON(handler, http.MethodPost, "/v1/commits", "tenant-a", CommitRequest{Mutations: graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Source: "manual", Fields: graph.Fields{"region": "manual"}}},
@@ -60,6 +61,9 @@ func TestMetricsEndpointRecordsHTTPQueryAndSuppressedConflicts(t *testing.T) {
 		`graphdb_reader_not_fresh_total{tenant="tenant-a",reason="manifest_behind"} 1`,
 		`graphdb_reader_visible_version{tenant="tenant-a"} 1`,
 		`graphdb_reader_catchup_total{tenant="tenant-a",status="ok"} 1`,
+		`graphdb_coordinator_status{backend="local",metric="available"} 1`,
+		`graphdb_coordinator_cleanup_deleted_total{table="commit_idempotency"} 3`,
+		`graphdb_coordinator_cleanup_runs_total{status="ok"} 1`,
 		`graphdb_http_requests_total{method="POST",route="POST /v1/query",status="200"} 1`,
 	} {
 		if !strings.Contains(body, want) {

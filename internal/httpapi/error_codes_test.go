@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -84,6 +85,33 @@ func TestHTTPErrorCodeContractMapsProductErrors(t *testing.T) {
 			decodeResponse(t, rr, &body)
 			if body.Code != tt.wantCode || body.Retryable != tt.retryable {
 				t.Fatalf("body = %#v, want code=%s retryable=%v", body, tt.wantCode, tt.retryable)
+			}
+		})
+	}
+}
+
+func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   ErrorCode
+	}{
+		{name: "object store", err: storage.ErrObjectStoreUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeObjectStoreUnavailable},
+		{name: "coordinator", err: storage.ErrCoordinatorUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeCoordinatorUnavailable},
+		{name: "write conflict", err: storage.ErrWriteConflict, wantStatus: http.StatusConflict, wantCode: ErrorCodeWriteConflict},
+		{name: "task lease", err: storage.ErrTaskLeaseHeld, wantStatus: http.StatusConflict, wantCode: ErrorCodeTaskConflict},
+		{name: "timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
+		{name: "validation", err: fmt.Errorf("invalid field"), wantStatus: http.StatusBadRequest, wantCode: ErrorCodeBadRequest},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			writeStorageError(rr, tt.err)
+			var body ErrorResponse
+			decodeResponse(t, rr, &body)
+			if rr.Code != tt.wantStatus || body.Code != tt.wantCode {
+				t.Fatalf("status/code = %d/%s, want %d/%s", rr.Code, body.Code, tt.wantStatus, tt.wantCode)
 			}
 		})
 	}

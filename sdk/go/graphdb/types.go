@@ -7,6 +7,7 @@ type Fields map[string]any
 type Entity struct {
 	ID             string                 `json:"id"`
 	Kind           string                 `json:"kind"`
+	Labels         []string               `json:"labels,omitempty"`
 	Fields         Fields                 `json:"fields,omitempty"`
 	FieldSources   map[string]FieldSource `json:"field_sources,omitempty"`
 	Source         string                 `json:"source,omitempty"`
@@ -52,6 +53,9 @@ type CIType struct {
 	IdentityKeys []IdentityKey        `json:"identity_keys,omitempty"`
 }
 
+// EntityType is the domain-neutral GGraphDB 1.1 name for CIType.
+type EntityType = CIType
+
 type FieldSpec struct {
 	Type          string `json:"type,omitempty"`
 	MergeStrategy string `json:"merge_strategy,omitempty"`
@@ -84,9 +88,27 @@ type RelationType struct {
 	Standard        bool     `json:"standard,omitempty"`
 }
 
+type RelationSchema struct {
+	RelationType string               `json:"relation_type"`
+	Description  string               `json:"description,omitempty"`
+	Fields       map[string]FieldSpec `json:"fields,omitempty"`
+	Strict       bool                 `json:"strict,omitempty"`
+}
+
+type RelationSchemaCatalog struct {
+	LayoutVersion   int              `json:"layout_version"`
+	TenantID        string           `json:"tenant_id"`
+	Revision        int64            `json:"revision"`
+	GraphVersion    int64            `json:"graph_version"`
+	UpdatedAt       time.Time        `json:"updated_at,omitempty"`
+	RelationSchemas []RelationSchema `json:"relation_schemas"`
+}
+
 type Mutations struct {
 	UpsertCITypes        []CIType              `json:"upsert_ci_types,omitempty"`
 	DeleteCITypes        []string              `json:"delete_ci_types,omitempty"`
+	UpsertEntityTypes    []EntityType          `json:"upsert_entity_types,omitempty"`
+	DeleteEntityTypes    []string              `json:"delete_entity_types,omitempty"`
 	UpsertRelationTypes  []RelationType        `json:"upsert_relation_types,omitempty"`
 	DeleteRelationTypes  []string              `json:"delete_relation_types,omitempty"`
 	UpsertEntities       []Entity              `json:"upsert_entities,omitempty"`

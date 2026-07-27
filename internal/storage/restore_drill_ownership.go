@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 )
 
 type restoreDrillOwnership struct {
 	taskID  string
 	objects map[string]string
+}
+
+type restoreDrillClaim struct {
+	fence writerFenceRef
 }
 
 func (s *TenantStore) validateRestoreDrillTarget(targetPrefix string, targetTenantID string) error {
@@ -26,24 +31,57 @@ func (s *TenantStore) validateRestoreDrillTarget(targetPrefix string, targetTena
 	return nil
 }
 
-func (s *TenantStore) claimRestoreDrillTarget(ctx context.Context, tenantID string) error {
+func (s *TenantStore) claimRestoreDrillTarget(
+	ctx context.Context,
+	tenantID string,
+) (claim restoreDrillClaim, returnErr error) {
 	if err := s.requireEmptyRestoreDrillTarget(ctx, tenantID); err != nil {
-		return err
+		return restoreDrillClaim{}, err
 	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
-		return err
+		return restoreDrillClaim{}, err
+	}
+	defer func() {
+		if returnErr == nil {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), 5*time.Second,
+		)
+		defer cancel()
+		if err := s.releaseWriterLeaseForPurge(releaseCtx, tenantID); err != nil {
+			returnErr = errors.Join(
+				returnErr,
+				fmt.Errorf("release failed restore drill claim: %w", err),
+			)
+		}
+	}()
+	lease, _, ok := s.getCachedWriterLeaseAny(tenantID)
+	if !ok || lease.FenceToken == "" || lease.FenceEpoch <= 0 {
+		return restoreDrillClaim{}, fmt.Errorf(
+			"%w: restore drill target tenant %q has no writer fence",
+			ErrLeaseHeld, tenantID,
+		)
 	}
 	objects, err := s.listRestoreDrillTargetObjects(ctx, tenantID)
 	if err != nil {
-		return err
+		return restoreDrillClaim{}, err
 	}
 	leaseKey := s.writerLeaseKey(tenantID)
 	for _, object := range objects {
 		if object.Key != leaseKey {
-			return fmt.Errorf("%w: restore drill target tenant %q changed while claiming ownership", ErrConflict, tenantID)
+			return restoreDrillClaim{}, fmt.Errorf(
+				"%w: restore drill target tenant %q changed while claiming ownership",
+				ErrConflict, tenantID,
+			)
 		}
 	}
-	return nil
+	claim = restoreDrillClaim{fence: writerFenceRef{
+		ownerID: lease.OwnerID,
+		token:   lease.FenceToken,
+		epoch:   lease.FenceEpoch,
+	}}
+	return claim, nil
 }
 
 func (s *TenantStore) requireEmptyRestoreDrillTarget(ctx context.Context, tenantID string) error {
@@ -107,6 +145,55 @@ func (s *TenantStore) cleanupRestoreDrillTarget(ctx context.Context, tenantID st
 	}
 	if err := s.clearTenantPurgeTombstone(ctx, tenantID); err != nil {
 		return report, err
+	}
+	return report, nil
+}
+
+func (s *TenantStore) cleanupClaimedRestoreDrillTarget(
+	ctx context.Context,
+	tenantID string,
+	claim restoreDrillClaim,
+) (TenantPurgeReport, error) {
+	unlock := s.lockTenant(tenantID)
+	defer unlock()
+	s.deleteCachedWriterLease(tenantID)
+	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+		return TenantPurgeReport{}, err
+	}
+	if err := s.ensureBoundWriterLease(ctx, tenantID, claim.fence); err != nil {
+		return TenantPurgeReport{}, err
+	}
+	objects, err := s.listRestoreDrillTargetObjects(ctx, tenantID)
+	if err != nil {
+		return TenantPurgeReport{}, err
+	}
+	report := TenantPurgeReport{TenantID: tenantID}
+	leaseKey := s.writerLeaseKey(tenantID)
+	for _, object := range objects {
+		if object.Key == leaseKey {
+			continue
+		}
+		if err := s.Objects.Delete(ctx, object.Key); err != nil {
+			return report, err
+		}
+		report.Deleted++
+		report.DeletedKeys = append(report.DeletedKeys, object.Key)
+	}
+	if err := s.removeTenantFromRegistry(ctx, tenantID); err != nil {
+		return report, err
+	}
+	if err := s.releaseWriterLeaseForPurge(ctx, tenantID); err != nil {
+		return report, err
+	}
+	s.deleteWriteCache(tenantID)
+	s.deleteCachedTenantMetadata(tenantID)
+	s.deleteCachedTenantConfig(tenantID)
+	s.deleteCachedSourcePolicy(tenantID)
+	s.deleteCachedIndexCatalog(tenantID)
+	s.deleteCachedTenantPurgeTombstone(tenantID)
+	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))
 	}
 	return report, nil
 }

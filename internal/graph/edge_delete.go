@@ -30,14 +30,17 @@ func (g *Graph) resolveEdgeReference(id string) (string, error) {
 	if _, ok := g.Edges[id]; ok {
 		return id, nil
 	}
-	resolved := ""
-	for edgeID, edge := range g.Edges {
-		if edgeSourceAliasMatches(edge, id) {
-			if resolved != "" && resolved != edgeID {
-				return "", fmt.Errorf("edge reference %q is ambiguous; use canonical id or type/from/to", id)
-			}
-			resolved = edgeID
+	matches := g.edgeAliasIndex[id]
+	if len(matches) > 1 {
+		return "", fmt.Errorf(
+			"edge reference %q is ambiguous; use canonical id or type/from/to",
+			id,
+		)
+	}
+	for edgeID := range matches {
+		if _, ok := g.Edges[edgeID]; ok {
+			return edgeID, nil
 		}
 	}
-	return resolved, nil
+	return "", nil
 }

@@ -27,6 +27,12 @@ class TransportMixin:
         with self._open(method, path, "", None, text.encode("utf-8"), headers) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _raw_json(self, method: str, path: str, data: bytes, content_type: str, query: dict | None = None) -> dict:
+        headers = {"Accept": "application/json", "Content-Type": content_type}
+        with self._open(method, path, "", query, data, headers) as response:
+            payload = response.read()
+        return json.loads(payload.decode("utf-8")) if payload else {}
+
     def _stream(self, method: str, path: str, body: Any = None, text: str | None = None) -> NDJSONStream:
         headers = {"Accept": "application/x-ndjson"}
         data = None

@@ -34,6 +34,7 @@ type cachedIndexCatalog struct {
 	catalog     IndexCatalog
 	meta        ObjectMeta
 	contentHash string
+	checkedAt   time.Time
 }
 
 func (s *TenantStore) getCachedSourcePolicy(tenantID string) (graph.SourcePolicy, bool, ObjectMeta, bool) {
@@ -154,7 +155,7 @@ func (s *TenantStore) getCachedIndexCatalog(tenantID string) (IndexCatalog, Obje
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
 	cached, ok := s.indexCatalogCache[tenantID]
-	if !ok {
+	if !ok || !cached.meta.Exists {
 		return IndexCatalog{}, ObjectMeta{}, false
 	}
 	return copyIndexCatalog(cached.catalog), cached.meta, true
@@ -172,8 +173,20 @@ func (s *TenantStore) setCachedIndexCatalogWithHash(tenantID string, catalog Ind
 	catalog.contentHash = contentHash
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
+	s.setCachedIndexCatalogEntryLocked(tenantID, cachedIndexCatalog{
+		catalog:     copyIndexCatalog(catalog),
+		meta:        meta,
+		contentHash: contentHash,
+		checkedAt:   time.Now(),
+	})
+}
+
+func (s *TenantStore) setCachedIndexCatalogEntryLocked(
+	tenantID string,
+	entry cachedIndexCatalog,
+) {
 	evictOneCacheEntry(s.indexCatalogCache, tenantID, maxIndexCatalogCacheEntries)
-	s.indexCatalogCache[tenantID] = cachedIndexCatalog{catalog: copyIndexCatalog(catalog), meta: meta, contentHash: contentHash}
+	s.indexCatalogCache[tenantID] = entry
 }
 
 func (s *TenantStore) getCachedIndexCatalogSnapshot(tenantID string, version int64, contentHash string) (IndexCatalog, bool) {
@@ -200,6 +213,7 @@ func (s *TenantStore) deleteCachedIndexCatalog(tenantID string) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
 	delete(s.indexCatalogCache, tenantID)
+	delete(s.reverseIndexCatalogCache, tenantID)
 }
 
 func copyIndexCatalog(catalog IndexCatalog) IndexCatalog {

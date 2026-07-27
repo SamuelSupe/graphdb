@@ -32,12 +32,29 @@ func (g *Graph) resolveEntityID(entity Entity) (string, error) {
 
 func (g *Graph) findEntityByIdentity(entity Entity) (string, identitySignature, error) {
 	signatures := g.lookupIdentitySignatures(entity)
+	ownerID := ""
+	var ownerSignature identitySignature
 	for _, signature := range signatures {
-		if id := g.identityIndex[entity.Kind][signature.Value]; id != "" {
-			return id, signature, nil
+		id := g.identityIndex[entity.Kind][signature.Value]
+		if id == "" {
+			continue
+		}
+		if ownerID != "" && ownerID != id {
+			return "", identitySignature{}, fmt.Errorf(
+				"entity kind %q identities %q and %q resolve to conflicting owners %q and %q",
+				entity.Kind,
+				ownerSignature.Value,
+				signature.Value,
+				ownerID,
+				id,
+			)
+		}
+		if ownerID == "" || signature.Strategy == "reject" {
+			ownerID = id
+			ownerSignature = signature
 		}
 	}
-	return "", identitySignature{}, nil
+	return ownerID, ownerSignature, nil
 }
 
 type identitySignature struct {

@@ -39,8 +39,8 @@ func measuredCandidateIDs(g *graph.Graph, request Request, plan Plan, budget *bu
 		if lazyExecution(g, budget) {
 			return 0, ErrIndexUnavailable
 		}
-		ids, ok = runtimeCandidateIDs(g, request, plan)
-		return len(ids), nil
+		ids, ok, err = runtimeCandidateIDs(g, request, plan, budget)
+		return len(ids), err
 	})
 	return ids, ok, err
 }
@@ -55,18 +55,34 @@ func measuredCandidateEntities(g *graph.Graph, request Request, plan Plan, budge
 	return entities, err
 }
 
-func runtimeCandidateIDs(g *graph.Graph, request Request, plan Plan) ([]string, bool) {
+func runtimeCandidateIDs(
+	g *graph.Graph,
+	request Request,
+	plan Plan,
+	budget *budget,
+) ([]string, bool, error) {
 	switch plan.Strategy {
 	case "field-index":
-		return g.MatchFieldIndexIDs(request.Kind, plan.IndexField, plan.IndexValues), true
+		return g.MatchFieldIndexIDs(request.Kind, plan.IndexField, plan.IndexValues), true, nil
+	case "field-index-scan":
+		ids, err := scanRuntimeFieldIndexIDs(
+			budget.ctx,
+			g,
+			request.Kind,
+			plan.IndexField,
+			requestFilters(request),
+		)
+		return ids, true, err
 	case "kind-scan":
-		return g.MatchEntityIDs(request.Kind), true
+		return g.MatchEntityIDs(request.Kind), true, nil
 	default:
-		return nil, false
+		return nil, false, nil
 	}
 }
 
 func pageMatchedIDs(g *graph.Graph, request Request, cursor cursorState, budget *budget, ids []string) (Response, error) {
+	order := matchPageOrder(cursor, EntityPageOrderIdentity)
+	ids = orderEntityIDs(ids, order)
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	cursorID, skipByID := cursorEntityID(cursor)
@@ -106,7 +122,9 @@ func pageMatchedIDs(g *graph.Graph, request Request, cursor cursorState, budget 
 	if err := validatePageCursor(cursor, state); err != nil {
 		return Response{}, err
 	}
-	return pageResponse(g.Version, results, state.hasNext, request, budget), nil
+	return matchPageResponse(
+		g.Version, results, state.hasNext, request, budget, order,
+	), nil
 }
 
 func confirmCursorEntity(g *graph.Graph, id string, request Request, cursor cursorState, budget *budget) error {
@@ -131,6 +149,8 @@ func confirmCursorEntity(g *graph.Graph, id string, request Request, cursor curs
 }
 
 func pageMatchedEntities(g *graph.Graph, request Request, cursor cursorState, budget *budget, entities []graph.Entity) (Response, error) {
+	order := matchPageOrder(cursor, EntityPageOrderIdentity)
+	entities = orderEntities(entities, order)
 	results := make([]Result, 0, normalizedLimit(request.Limit))
 	state := newMatchPageState(cursor)
 	err := budget.measure("filter-project", "", len(entities), func() (int, error) {
@@ -149,7 +169,9 @@ func pageMatchedEntities(g *graph.Graph, request Request, cursor cursorState, bu
 	if err := validatePageCursor(cursor, state); err != nil {
 		return Response{}, err
 	}
-	return pageResponse(g.Version, results, state.hasNext, request, budget), nil
+	return matchPageResponse(
+		g.Version, results, state.hasNext, request, budget, order,
+	), nil
 }
 
 func newMatchPageState(cursor cursorState) *matchPageState {
@@ -200,9 +222,40 @@ func validatePageCursor(cursor cursorState, state *matchPageState) error {
 }
 
 func pageResponse(version int64, results []Result, hasNext bool, request Request, budget *budget) Response {
+	return pageResponseWithOrder(
+		version, results, hasNext, request, budget, "",
+	)
+}
+
+func matchPageResponse(
+	version int64,
+	results []Result,
+	hasNext bool,
+	request Request,
+	budget *budget,
+	order string,
+) Response {
+	return pageResponseWithOrder(
+		version, results, hasNext, request, budget, order,
+	)
+}
+
+func pageResponseWithOrder(
+	version int64,
+	results []Result,
+	hasNext bool,
+	request Request,
+	budget *budget,
+	order string,
+) Response {
 	next := ""
 	if hasNext && len(results) > 0 {
-		next = encodeCursor(cursorState{Version: version, After: resultIdentity(results[len(results)-1]), Query: cursorQueryHash(request)})
+		next = encodeCursor(cursorState{
+			Version: version,
+			After:   resultIdentity(results[len(results)-1]),
+			Query:   cursorQueryHash(request),
+			Order:   order,
+		})
 	}
 	budget.returned = len(results)
 	budget.truncated = next != ""

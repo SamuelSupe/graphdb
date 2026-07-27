@@ -18,6 +18,14 @@ type aliyunOSSClient struct {
 	bucket string
 }
 
+func (c *aliyunOSSClient) Probe(ctx context.Context) error {
+	_, err := c.client.ListObjectsV2(ctx, &oss.ListObjectsV2Request{
+		Bucket:  nativeStringRef(c.bucket),
+		MaxKeys: 1,
+	})
+	return normalizeAliyunOSSError(err, false)
+}
+
 func NewAliyunOSSStore(endpoint, bucket, region, accessKey, secretKey string, options S3Options) (*NativeObjectStore, error) {
 	config, err := newNativeStoreOptions(endpoint, bucket, region, accessKey, secretKey, options)
 	if err != nil {
@@ -86,32 +94,42 @@ func (c *aliyunOSSClient) Delete(ctx context.Context, key string) error {
 }
 
 func (c *aliyunOSSClient) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	items := make([]ObjectInfo, 0)
-	var token string
-	for {
-		result, err := c.client.ListObjectsV2(ctx, &oss.ListObjectsV2Request{
-			Bucket:            nativeStringRef(c.bucket),
-			Prefix:            nativeStringRef(prefix),
-			ContinuationToken: nativeStringRef(token),
-			MaxKeys:           1000,
+	return collectNativeObjectPages(ctx, prefix, c.ListPage)
+}
+
+func (c *aliyunOSSClient) ListPage(
+	ctx context.Context,
+	prefix string,
+	after string,
+	limit int,
+) ([]ObjectInfo, string, error) {
+	result, err := c.client.ListObjectsV2(ctx, &oss.ListObjectsV2Request{
+		Bucket:     nativeStringRef(c.bucket),
+		Prefix:     nativeStringRef(prefix),
+		StartAfter: nativeStringRef(after),
+		MaxKeys:    int32(nativeObjectPageLimit(limit)),
+	})
+	if err != nil {
+		return nil, "", normalizeAliyunOSSError(err, false)
+	}
+	items := make([]ObjectInfo, 0, len(result.Contents))
+	for _, object := range result.Contents {
+		items = append(items, ObjectInfo{
+			Key:  nativeStringValue(object.Key),
+			Size: object.Size,
+			ETag: cleanETag(nativeStringValue(object.ETag)),
 		})
-		if err != nil {
-			return nil, normalizeAliyunOSSError(err, false)
-		}
-		for _, object := range result.Contents {
-			items = append(items, ObjectInfo{Key: nativeStringValue(object.Key), Size: object.Size, ETag: cleanETag(nativeStringValue(object.ETag))})
-		}
-		if !result.IsTruncated {
-			break
-		}
-		next := nativeStringValue(result.NextContinuationToken)
-		if next == "" || next == token {
-			return nil, fmt.Errorf("oss list response for prefix %q was truncated without a new continuation token", prefix)
-		}
-		token = next
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
-	return items, nil
+	if !result.IsTruncated {
+		return items, "", nil
+	}
+	if len(items) == 0 {
+		return nil, "", fmt.Errorf(
+			"oss list page for prefix %q was truncated without objects", prefix,
+		)
+	}
+	return items, items[len(items)-1].Key, nil
 }
 
 func normalizeAliyunOSSError(err error, createOnly bool) error {

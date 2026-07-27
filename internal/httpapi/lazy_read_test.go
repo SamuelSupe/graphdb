@@ -152,6 +152,48 @@ func TestHTTPImpactOutUsesLazyEdgeShardWithoutLoadingGraph(t *testing.T) {
 	}
 }
 
+func TestHTTPNeighborsUsesAuthoritativeEmptyEdgeIndexes(t *testing.T) {
+	objects := storage.NewMemoryStore()
+	writer := storage.NewTenantStore(objects, "test")
+	if _, err := writer.Commit(
+		context.Background(),
+		"tenant-a",
+		graph.Mutations{UpsertEntities: []graph.Entity{{
+			ID: "host:app-01", Kind: "host",
+		}}},
+		storage.CommitOptions{},
+	); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := writer.RebuildIndexes(
+		context.Background(), "tenant-a",
+	); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	reader := storage.NewTenantStore(
+		&denyGraphLoadStore{base: objects}, "test",
+	)
+	handler := (&Server{Store: reader, Mode: "reader"}).Handler()
+
+	for _, direction := range []string{"out", "in", "both"} {
+		rr := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{
+			Op:        "neighbors",
+			ID:        "host:app-01",
+			Direction: direction,
+			Limit:     10,
+		})
+		if rr.Code != http.StatusOK ||
+			!strings.Contains(rr.Body.String(), `"results":[]`) {
+			t.Fatalf(
+				"%s neighbors = %d body=%s",
+				direction,
+				rr.Code,
+				rr.Body.String(),
+			)
+		}
+	}
+}
+
 func TestHTTPQueryStreamLazyUsesAdmission(t *testing.T) {
 	admission := NewQueryAdmission(1, 1, time.Millisecond)
 	release, err := admission.Acquire(context.Background(), "tenant-a")
@@ -263,7 +305,10 @@ func lazyReadHandlerWithOptions(t *testing.T, admission *QueryAdmission, staleCa
 			Name:   "host",
 			Fields: map[string]graph.FieldSpec{"hostname": {Type: "string", Indexed: true}, "region": {Type: "string"}},
 		}},
-		UpsertRelationTypes: []graph.RelationType{{Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true}},
+		UpsertRelationTypes: []graph.RelationType{{
+			Name: "runs_on", FromKind: "service", ToKind: "host",
+			Directed: true, ImpactDirection: "forward",
+		}},
 		UpsertEntities: []graph.Entity{
 			{ID: "service:api", Kind: "service", Fields: graph.Fields{"name": "api"}},
 			{ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": "app-01", "region": "us-east-1"}},

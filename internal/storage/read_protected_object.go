@@ -20,10 +20,11 @@ type ReadProtectedObjectStore struct {
 }
 
 type readObjectCall struct {
-	done chan struct{}
-	data []byte
-	meta ObjectMeta
-	err  error
+	done     chan struct{}
+	data     []byte
+	meta     ObjectMeta
+	err      error
+	canceled bool
 }
 
 func NewReadProtectedObjectStore(inner ObjectStore, config ReadProtectionConfig) *ReadProtectedObjectStore {
@@ -88,21 +89,27 @@ func (s *ReadProtectedObjectStore) getWithMeta(ctx context.Context, key string) 
 	if !s.singleflight {
 		return s.loadWithMeta(ctx, key)
 	}
-	call, owner, err := s.beginRead(ctx, key)
-	if err != nil {
-		return nil, ObjectMeta{Key: key}, err
-	}
-	if !owner {
-		select {
-		case <-call.done:
-			return cloneReadCall(call)
-		case <-ctx.Done():
-			return nil, ObjectMeta{Key: key}, ctx.Err()
+	for {
+		call, owner, err := s.beginRead(ctx, key)
+		if err != nil {
+			return nil, ObjectMeta{Key: key}, err
 		}
+		if !owner {
+			select {
+			case <-call.done:
+				if call.canceled && ctx.Err() == nil {
+					continue
+				}
+				return cloneReadCall(call)
+			case <-ctx.Done():
+				return nil, ObjectMeta{Key: key}, ctx.Err()
+			}
+		}
+		call.data, call.meta, call.err = s.loadWithMeta(ctx, key)
+		call.canceled = loadCanceledByContext(ctx, call.err)
+		s.finishRead(key, call)
+		return cloneReadCall(call)
 	}
-	call.data, call.meta, call.err = s.loadWithMeta(ctx, key)
-	s.finishRead(key, call)
-	return cloneReadCall(call)
 }
 
 func (s *ReadProtectedObjectStore) loadWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {

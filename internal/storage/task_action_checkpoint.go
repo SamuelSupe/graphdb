@@ -120,12 +120,16 @@ func taskCheckpointActions(checkpoint map[string]any) []map[string]any {
 }
 
 func taskActionCompleted(task Task, id string) bool {
+	return taskActionStatus(task, id) == "completed"
+}
+
+func taskActionStatus(task Task, id string) string {
 	for _, action := range taskCheckpointActions(task.Checkpoint) {
-		if actionID(action) == id && stringValue(action["status"]) == "completed" {
-			return true
+		if actionID(action) == id {
+			return stringValue(action["status"])
 		}
 	}
-	return false
+	return ""
 }
 
 func actionID(action map[string]any) string {

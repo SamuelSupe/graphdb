@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -43,6 +44,61 @@ func TestReadProtectedObjectStoreSingleflightSameKey(t *testing.T) {
 	}
 	if inner.startedReads() != 1 {
 		t.Fatalf("inner reads = %d, want 1", inner.startedReads())
+	}
+}
+
+func TestReadProtectedObjectStoreWaiterRetriesCanceledLeader(t *testing.T) {
+	base := NewMemoryStore()
+	if err := base.Put(
+		context.Background(), "objects/a", []byte("value-a"),
+	); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	inner := &blockingReadStore{
+		ObjectStore: base,
+		block:       make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(inner.block) }) }
+	t.Cleanup(release)
+	store := NewReadProtectedObjectStore(
+		inner,
+		ReadProtectionConfig{MaxConcurrent: 4, Singleflight: true},
+	)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, _, err := store.GetWithMeta(leaderCtx, "objects/a")
+		leaderDone <- err
+	}()
+	waitForStartedReads(t, inner, 1)
+
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	waiterDone := make(chan readResult, 1)
+	go func() {
+		data, _, err := store.GetWithMeta(
+			context.Background(), "objects/a",
+		)
+		waiterDone <- readResult{data: data, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancelLeader()
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader error = %v, want context canceled", err)
+	}
+
+	waitForStartedReads(t, inner, 2)
+	release()
+	result := <-waiterDone
+	if result.err != nil || string(result.data) != "value-a" {
+		t.Fatalf("waiter data=%q err=%v", result.data, result.err)
+	}
+	if reads := inner.startedReads(); reads != 2 {
+		t.Fatalf("inner reads = %d, want canceled leader plus retry", reads)
 	}
 }
 
