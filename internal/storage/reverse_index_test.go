@@ -2,8 +2,6 @@ package storage
 
 import (
 	"context"
-	"strconv"
-	"strings"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -14,12 +12,19 @@ func TestPersistedReverseIndexSupportsLazyBidirectionalTraversal(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertRelationTypes: []graph.RelationType{{Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true}},
+		UpsertRelationTypes: []graph.RelationType{
+			{Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true, ImpactDirection: "forward"},
+			{Name: "owned_by", FromKind: "service", ToKind: "team", Directed: true, ImpactDirection: "reverse"},
+		},
 		UpsertEntities: []graph.Entity{
 			{ID: "service:api", Kind: "service"},
 			{ID: "host:app", Kind: "host"},
+			{ID: "team:platform", Kind: "team"},
 		},
-		UpsertEdges: []graph.Edge{{Type: "runs_on", From: "service:api", To: "host:app"}},
+		UpsertEdges: []graph.Edge{
+			{Type: "runs_on", From: "service:api", To: "host:app"},
+			{Type: "owned_by", From: "service:api", To: "team:platform"},
+		},
 	}, CommitOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +48,12 @@ func TestPersistedReverseIndexSupportsLazyBidirectionalTraversal(t *testing.T) {
 
 	stats := catalog.PlannerStats()
 	for _, shard := range reverse.EdgeShards {
-		stats.ReverseEdgeShards = append(stats.ReverseEdgeShards, query.PlannerEdgeStat{RelationType: shard.RelationType, Shard: shard.Shard, EdgeCount: shard.EdgeCount})
+		stats.ReverseEdgeShards = append(stats.ReverseEdgeShards, query.PlannerEdgeStat{
+			RelationType:    shard.RelationType,
+			ImpactDirection: shard.ImpactDirection,
+			Shard:           shard.Shard,
+			EdgeCount:       shard.EdgeCount,
+		})
 	}
 	empty := graph.New()
 	empty.Version = catalog.Version
@@ -59,6 +69,13 @@ func TestPersistedReverseIndexSupportsLazyBidirectionalTraversal(t *testing.T) {
 	}, options)
 	if err != nil || len(response.Results) != 1 || response.Results[0].Path == nil {
 		t.Fatalf("lazy impact response=%#v err=%v", response, err)
+	}
+	response, err = query.ExecuteContextWithOptions(ctx, empty, query.Request{
+		Op: "impact", ID: "team:platform", Direction: "out", RelationType: "owned_by", Depth: 1, Limit: 10,
+	}, options)
+	if err != nil || len(response.Results) != 1 || response.Results[0].Path == nil ||
+		response.Results[0].Path.Entities[1].ID != "service:api" {
+		t.Fatalf("lazy reverse impact response=%#v err=%v", response, err)
 	}
 	response, err = query.ExecuteContextWithOptions(ctx, empty, query.Request{
 		Op: "traverse", ID: "host:app", Direction: "in", RelationType: "runs_on", Depth: 1, Limit: 10,
@@ -108,13 +125,17 @@ func TestPersistedReverseIndexSupportsLazyBidirectionalTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	versionFragment := "/v" + strconv.FormatInt(updatedCatalog.Version, 10) + "/"
-	for _, object := range objects {
-		if object.Key == store.reverseIndexCatalogKey("tenant-a") {
-			continue
+	referenced := map[string]struct{}{
+		store.reverseIndexCatalogKey("tenant-a"): {},
+	}
+	for _, spec := range updatedReverse.EdgeShards {
+		for _, object := range spec.Objects {
+			referenced[object.Key] = struct{}{}
 		}
-		if !strings.Contains(object.Key, versionFragment) {
-			t.Fatalf("obsolete reverse index object remains: %s", object.Key)
+	}
+	for _, object := range objects {
+		if _, ok := referenced[object.Key]; !ok {
+			t.Fatalf("unreferenced reverse index object remains: %s", object.Key)
 		}
 	}
 }

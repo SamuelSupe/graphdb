@@ -22,7 +22,10 @@ type ReverseIndexCatalog struct {
 }
 
 func (s *TenantStore) GetReverseIndexCatalog(ctx context.Context, tenantID string, version int64) (ReverseIndexCatalog, error) {
-	catalog, _, err := s.getReverseIndexCatalogWithMeta(ctx, tenantID)
+	if err := ValidateTenantID(tenantID); err != nil {
+		return ReverseIndexCatalog{}, err
+	}
+	catalog, _, err := s.loadReverseIndexCatalog(ctx, tenantID)
 	if err != nil {
 		return ReverseIndexCatalog{}, err
 	}
@@ -51,10 +54,11 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 			return err
 		}
 		catalog.EdgeShards = append(catalog.EdgeShards, EdgeShard{
-			RelationType: shard.RelationType,
-			Shard:        shard.Shard,
-			Format:       IndexFormatParquet,
-			Codec:        parquetEdgeShardCodec,
+			RelationType:    shard.RelationType,
+			ImpactDirection: relationImpactDirection(g, shard.RelationType),
+			Shard:           shard.Shard,
+			Format:          IndexFormatParquet,
+			Codec:           parquetEdgeShardCodec,
 			Objects: []IndexObject{{
 				Role:        "reverse_shard",
 				Key:         key,
@@ -81,6 +85,20 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
+	return s.putReverseIndexCatalogWithMeta(
+		ctx,
+		tenantID,
+		catalog,
+		meta,
+	)
+}
+
+func (s *TenantStore) putReverseIndexCatalogWithMeta(
+	ctx context.Context,
+	tenantID string,
+	catalog ReverseIndexCatalog,
+	meta ObjectMeta,
+) error {
 	data, err := json.Marshal(catalog)
 	if err != nil {
 		return err
@@ -88,13 +106,17 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 	// Callers already hold the tenant writer fence, matching the core index
 	// catalog hot path and avoiding another fixed metadata round trip.
 	key := s.reverseIndexCatalogKey(tenantID)
+	var nextMeta ObjectMeta
 	if s.coordinated() {
-		_, err = s.putTenantGenerationConditional(ctx, tenantID, key, data, PutCondition{
+		nextMeta, err = s.putTenantGenerationConditional(ctx, tenantID, key, data, PutCondition{
 			IfNoneMatch: !meta.Exists,
 			IfMatch:     meta.ETag,
 		})
 	} else {
-		_, err = s.putBytesWithMetaResult(ctx, key, data, meta)
+		nextMeta, err = s.putBytesWithMetaResult(ctx, key, data, meta)
+	}
+	if err == nil {
+		s.setCachedReverseIndexCatalog(tenantID, catalog, nextMeta)
 	}
 	return err
 }
@@ -104,6 +126,7 @@ func (s *TenantStore) getReverseIndexCatalogWithMeta(ctx context.Context, tenant
 		return ReverseIndexCatalog{}, ObjectMeta{}, err
 	}
 	key := s.reverseIndexCatalogKey(tenantID)
+	s.clearCoordinatedWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return ReverseIndexCatalog{}, ObjectMeta{Key: key}, ErrNotFound
@@ -125,11 +148,23 @@ func (s *TenantStore) getReverseIndexCatalogWithMeta(ctx context.Context, tenant
 		if shard.RelationType == "" || shard.Shard == "" || shard.EdgeCount < 0 || shard.ContentHash == "" || len(shard.Objects) != 1 {
 			return ReverseIndexCatalog{}, ObjectMeta{}, fmt.Errorf("invalid reverse edge shard catalog entry")
 		}
+		if shard.ImpactDirection != "" && !validImpactDirection(shard.ImpactDirection) {
+			return ReverseIndexCatalog{}, ObjectMeta{}, fmt.Errorf("invalid reverse edge shard impact direction %q", shard.ImpactDirection)
+		}
 		if err := s.validateTenantObjectKey(tenantID, shard.Objects[0].Key); err != nil {
 			return ReverseIndexCatalog{}, ObjectMeta{}, err
 		}
 	}
 	return catalog, meta, nil
+}
+
+func validImpactDirection(direction string) bool {
+	switch direction {
+	case "none", "forward", "reverse", "both":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildReverseEdgeShards(g *graph.Graph, version int64) []EdgeShardData {

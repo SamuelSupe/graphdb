@@ -9,6 +9,13 @@ func (g *Graph) applyEntitySchema(entity *Entity) error {
 	if err != nil {
 		return err
 	}
+	return g.applyEntitySchemaWithSpecs(entity, specs)
+}
+
+func (g *Graph) applyEntitySchemaWithSpecs(
+	entity *Entity,
+	specs map[string]FieldSpec,
+) error {
 	for name, spec := range specs {
 		value, exists := entity.Fields[name]
 		if !exists && spec.Default != nil {
@@ -38,10 +45,33 @@ func (g *Graph) applyEntitySchema(entity *Entity) error {
 	return nil
 }
 
-func (g *Graph) effectiveFields(kind string, seen map[string]struct{}) (map[string]FieldSpec, error) {
+func (g *Graph) effectiveFieldsCached(
+	kind string,
+	cache map[string]map[string]FieldSpec,
+) (map[string]FieldSpec, error) {
+	if fields, ok := cache[kind]; ok {
+		return fields, nil
+	}
+	return g.effectiveFields(
+		kind,
+		map[string]struct{}{},
+		cache,
+	)
+}
+
+func (g *Graph) effectiveFields(
+	kind string,
+	seen map[string]struct{},
+	cache map[string]map[string]FieldSpec,
+) (map[string]FieldSpec, error) {
+	if fields, ok := cache[kind]; ok {
+		return fields, nil
+	}
 	ciType, ok := g.CITypes[kind]
 	if !ok {
-		return map[string]FieldSpec{}, nil
+		fields := map[string]FieldSpec{}
+		cache[kind] = fields
+		return fields, nil
 	}
 	if _, loop := seen[kind]; loop {
 		return nil, fmt.Errorf("ci type %q has inheritance cycle", kind)
@@ -53,7 +83,7 @@ func (g *Graph) effectiveFields(kind string, seen map[string]struct{}) (map[stri
 		if _, ok := g.CITypes[parent]; !ok {
 			return nil, fmt.Errorf("ci type %q extends missing parent %q", kind, parent)
 		}
-		parentFields, err := g.effectiveFields(parent, seen)
+		parentFields, err := g.effectiveFields(parent, seen, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -64,30 +94,129 @@ func (g *Graph) effectiveFields(kind string, seen map[string]struct{}) (map[stri
 	for name, spec := range ciType.Fields {
 		fields[name] = spec
 	}
+	cache[kind] = fields
 	return fields, nil
 }
 
 func (g *Graph) EffectiveFields(kind string) (map[string]FieldSpec, error) {
-	return g.effectiveFields(kind, map[string]struct{}{})
+	return g.effectiveFields(
+		kind,
+		map[string]struct{}{},
+		map[string]map[string]FieldSpec{},
+	)
 }
 
 func (g *Graph) validateCITypes() error {
-	for kind := range g.CITypes {
-		if _, err := g.EffectiveFields(kind); err != nil {
-			return err
+	children := make(map[string][]string, len(g.CITypes))
+	parentCounts := make(map[string]int, len(g.CITypes))
+	queue := make([]string, 0, len(g.CITypes))
+	for kind, ciType := range g.CITypes {
+		parentCounts[kind] = len(ciType.Extends)
+		if len(ciType.Extends) == 0 {
+			queue = append(queue, kind)
+		}
+		for _, parent := range ciType.Extends {
+			if _, ok := g.CITypes[parent]; !ok {
+				return fmt.Errorf(
+					"ci type %q extends missing parent %q",
+					kind,
+					parent,
+				)
+			}
+			children[parent] = append(children[parent], kind)
+		}
+	}
+	visited := 0
+	for index := 0; index < len(queue); index++ {
+		parent := queue[index]
+		visited++
+		for _, child := range children[parent] {
+			parentCounts[child]--
+			if parentCounts[child] == 0 {
+				queue = append(queue, child)
+			}
+		}
+	}
+	if visited != len(g.CITypes) {
+		for kind, remaining := range parentCounts {
+			if remaining > 0 {
+				return fmt.Errorf(
+					"ci type %q has inheritance cycle",
+					kind,
+				)
+			}
 		}
 	}
 	return nil
 }
 
 func (g *Graph) validateEntitiesAgainstCITypes() error {
+	return g.validateEntitiesAgainstCITypesForKinds(nil)
+}
+
+func (g *Graph) validateEntitiesAgainstCITypesForKinds(
+	kinds map[string]struct{},
+) error {
+	if kinds == nil {
+		kinds = entityKindSet(g.Entities)
+	}
+	fieldsByKind := make(map[string]map[string]FieldSpec, len(kinds))
+	for kind := range kinds {
+		fields, err := g.effectiveFieldsCached(kind, fieldsByKind)
+		if err != nil {
+			return err
+		}
+		fieldsByKind[kind] = fields
+	}
+	uniqueValidator, err := newUniqueEntityValidator(g, kinds)
+	if err != nil {
+		return err
+	}
+	identityOwners := map[string]map[string]string{}
 	for _, entity := range g.Entities {
-		if err := g.validateEntityFields(entity); err != nil {
+		if _, affected := kinds[entity.Kind]; !affected {
+			continue
+		}
+		if err := validateEntityFieldsWithSpecs(
+			entity,
+			fieldsByKind[entity.Kind],
+		); err != nil {
 			return err
 		}
-		if err := g.validateUniqueEntity(entity); err != nil {
+		if err := uniqueValidator.validate(entity); err != nil {
 			return err
 		}
+		if err := g.validateCIIdentityOwners(entity, identityOwners); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Graph) validateCIIdentityOwners(
+	entity Entity,
+	ownersByKind map[string]map[string]string,
+) error {
+	signatures := g.ciIdentitySignatures(entity, entityConfidence(entity))
+	if len(signatures) == 0 {
+		return nil
+	}
+	owners := ownersByKind[entity.Kind]
+	if owners == nil {
+		owners = map[string]string{}
+		ownersByKind[entity.Kind] = owners
+	}
+	for _, signature := range signatures {
+		if owner := owners[signature.Value]; owner != "" && owner != entity.ID {
+			return fmt.Errorf(
+				"ci type %q identity %q is shared by entities %q and %q",
+				entity.Kind,
+				signature.Value,
+				owner,
+				entity.ID,
+			)
+		}
+		owners[signature.Value] = entity.ID
 	}
 	return nil
 }
@@ -97,6 +226,13 @@ func (g *Graph) validateEntityFields(entity Entity) error {
 	if err != nil {
 		return err
 	}
+	return validateEntityFieldsWithSpecs(entity, specs)
+}
+
+func validateEntityFieldsWithSpecs(
+	entity Entity,
+	specs map[string]FieldSpec,
+) error {
 	for name, spec := range specs {
 		value, exists := entity.Fields[name]
 		if spec.Required && !exists {
@@ -110,35 +246,6 @@ func (g *Graph) validateEntityFields(entity Entity) error {
 		}
 		if len(spec.Enum) > 0 && !valueInEnum(value, spec.Enum) {
 			return fmt.Errorf("entity %q field %q value is not in enum", entity.ID, name)
-		}
-	}
-	return nil
-}
-
-func (g *Graph) validateUniqueEntity(entity Entity) error {
-	specs, err := g.EffectiveFields(entity.Kind)
-	if err != nil {
-		return err
-	}
-	for field, spec := range specs {
-		if !spec.Unique {
-			continue
-		}
-		value, ok := entity.Fields[field]
-		if !ok {
-			continue
-		}
-		for id, existing := range g.Entities {
-			if id == entity.ID || existing.Kind != entity.Kind {
-				continue
-			}
-			existingValue, exists := existing.Fields[field]
-			if !exists {
-				continue
-			}
-			if fieldValuesEqual(existingValue, value) {
-				return fmt.Errorf("entity %q violates unique field %q for kind %q", entity.ID, field, entity.Kind)
-			}
 		}
 	}
 	return nil

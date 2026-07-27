@@ -83,8 +83,33 @@ func (s *TenantStore) putLegacyMirrorObject(
 	data []byte,
 	expected CoordinationHead,
 ) error {
+	return s.putLegacyMirrorObjectChecked(
+		ctx, tenantID, key, data, expected, s.ensureMirrorHeadCurrent,
+	)
+}
+
+func (s *TenantStore) putLegacyLifecycleMirrorObject(
+	ctx context.Context,
+	tenantID string,
+	key string,
+	data []byte,
+	expected CoordinationHead,
+) error {
+	return s.putLegacyMirrorObjectChecked(
+		ctx, tenantID, key, data, expected, s.ensureLifecycleMirrorHeadCurrent,
+	)
+}
+
+func (s *TenantStore) putLegacyMirrorObjectChecked(
+	ctx context.Context,
+	tenantID string,
+	key string,
+	data []byte,
+	expected CoordinationHead,
+	check func(context.Context, string, CoordinationHead) error,
+) error {
 	for attempt := 0; attempt < 8; attempt++ {
-		if err := s.ensureMirrorHeadCurrent(ctx, tenantID, expected); err != nil {
+		if err := check(ctx, tenantID, expected); err != nil {
 			return err
 		}
 		_, meta, err := s.Objects.GetWithMeta(ctx, key)
@@ -96,7 +121,7 @@ func (s *TenantStore) putLegacyMirrorObject(
 		}
 		next, err := s.Objects.PutConditional(ctx, key, data, condition)
 		if err == nil {
-			if fenceErr := s.ensureMirrorHeadCurrent(ctx, tenantID, expected); fenceErr == nil {
+			if fenceErr := check(ctx, tenantID, expected); fenceErr == nil {
 				return nil
 			} else {
 				rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -136,6 +161,27 @@ func (s *TenantStore) ensureMirrorHeadCurrent(
 		current.WriteContextRevision != expected.WriteContextRevision ||
 		current.Status != expected.Status {
 		return fmt.Errorf("%w: tenant %q changed while mirroring compatibility metadata", ErrConflict, tenantID)
+	}
+	return nil
+}
+
+func (s *TenantStore) ensureLifecycleMirrorHeadCurrent(
+	ctx context.Context,
+	tenantID string,
+	expected CoordinationHead,
+) error {
+	current, exists, err := s.Coordinator.Head(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if !exists ||
+		current.Generation != expected.Generation ||
+		current.Status != expected.Status ||
+		current.Revision < expected.Revision {
+		return fmt.Errorf(
+			"%w: tenant %q lifecycle changed while mirroring compatibility metadata",
+			ErrConflict, tenantID,
+		)
 	}
 	return nil
 }

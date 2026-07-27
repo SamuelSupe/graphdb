@@ -3,9 +3,8 @@
 [中文](release-deployment.zh-CN.md)
 
 This guide is for service owners who need to download, deploy, upgrade, and
-roll back GGraphDB 1.1. Examples use the prospective `v1.1.0` tag; the latest
-published 1.0 release remains available at
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.0.0>.
+roll back GGraphDB 1.1. Examples use the released `v1.1.0` tag, available at
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.0>.
 
 ## 1. Download and verify
 

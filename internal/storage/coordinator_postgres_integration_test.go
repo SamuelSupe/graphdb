@@ -362,8 +362,10 @@ func TestPostgresCoordinatorDerivedTaskLeaseRenews(t *testing.T) {
 	}
 }
 
-func TestPostgresCoordinatorDerivedTaskSupersedeDebouncesRetry(t *testing.T) {
-	ctx, coordinator := newPostgresIntegrationCoordinator(t, "derived-debounce")
+func TestPostgresCoordinatorDerivedTaskSupersedePreservesRunningLease(
+	t *testing.T,
+) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(t, "derived-coalesce")
 	_, err := coordinator.pool.Exec(ctx,
 		`INSERT INTO `+coordinator.table("derived_tasks")+` (
 			namespace, tenant_id, task_type, target_version, next_attempt_at
@@ -373,29 +375,37 @@ func TestPostgresCoordinatorDerivedTaskSupersedeDebouncesRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert derived task: %v", err)
 	}
-	first, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-a", time.Second)
+	first, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-a", 5*time.Second)
 	if err != nil || !claimed {
 		t.Fatalf("first claim claimed=%v err=%v", claimed, err)
 	}
 	if err := coordinator.enqueueDerivedIndexes(ctx, nil, "tenant-a", 1); err != nil {
 		t.Fatalf("enqueue same derived target: %v", err)
 	}
-	if renewed, err := coordinator.RenewDerivedTask(ctx, first, time.Second); err != nil || !renewed {
+	if renewed, err := coordinator.RenewDerivedTask(
+		ctx, first, 5*time.Second,
+	); err != nil || !renewed {
 		t.Fatalf("same-target enqueue revoked owner renewed=%v err=%v", renewed, err)
 	}
 	if err := coordinator.enqueueDerivedIndexes(ctx, nil, "tenant-a", 2); err != nil {
 		t.Fatalf("supersede derived task: %v", err)
 	}
-	if _, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-b", time.Second); err != nil || claimed {
-		t.Fatalf("claim during supersede debounce claimed=%v err=%v", claimed, err)
+	if renewed, err := coordinator.RenewDerivedTask(
+		ctx, first, 5*time.Second,
+	); err != nil || !renewed {
+		t.Fatalf("supersede revoked active owner renewed=%v err=%v", renewed, err)
 	}
-	time.Sleep(2*derivedTaskDebounce + 100*time.Millisecond)
+	if _, claimed, err := coordinator.ClaimDerivedTask(
+		ctx, "worker-b", time.Second,
+	); err != nil || claimed {
+		t.Fatalf("claim while first rebuild runs claimed=%v err=%v", claimed, err)
+	}
+	if err := coordinator.CompleteDerivedTask(ctx, first, 1); err != nil {
+		t.Fatalf("complete first derived task: %v", err)
+	}
 	second, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-b", time.Second)
 	if err != nil || !claimed || second.TargetVersion != 2 {
-		t.Fatalf("claim after supersede debounce job=%#v claimed=%v err=%v", second, claimed, err)
-	}
-	if renewed, err := coordinator.RenewDerivedTask(ctx, first, time.Second); err != nil || renewed {
-		t.Fatalf("superseded owner renewed=%v err=%v", renewed, err)
+		t.Fatalf("claim coalesced follow-up job=%#v claimed=%v err=%v", second, claimed, err)
 	}
 }
 
@@ -422,11 +432,29 @@ func TestPostgresCoordinatorTaskLeaseFencing(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("first lease acquired=%v err=%v", acquired, err)
 	}
+	current, exists, err := coordinator.TaskLease(
+		ctx, "tenant-a", "compact",
+	)
+	if err != nil || !exists ||
+		current.OwnerToken != first.OwnerToken ||
+		current.FenceEpoch != first.FenceEpoch {
+		t.Fatalf(
+			"read first lease exists=%v lease=%#v err=%v",
+			exists,
+			current,
+			err,
+		)
+	}
 	if _, acquired, err := coordinator.AcquireTaskLease(ctx, "tenant-a", "compact", "writer-b", time.Second); err != nil || acquired {
 		t.Fatalf("competing lease acquired=%v err=%v", acquired, err)
 	}
 	if err := coordinator.ReleaseTaskLease(ctx, first); err != nil {
 		t.Fatalf("release lease: %v", err)
+	}
+	if _, exists, err := coordinator.TaskLease(
+		ctx, "tenant-a", "compact",
+	); err != nil || exists {
+		t.Fatalf("released lease exists=%v err=%v", exists, err)
 	}
 	second, acquired, err := coordinator.AcquireTaskLease(ctx, "tenant-a", "compact", "writer-b", time.Second)
 	if err != nil || !acquired || second.FenceEpoch <= first.FenceEpoch {

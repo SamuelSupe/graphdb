@@ -2,9 +2,9 @@
 
 [English](release-deployment.md)
 
-本文档面向需要下载、部署和升级 GGraphDB 1.1 的服务负责人。示例使用待发布
-的 `v1.1.0`；最新已发布 1.0 仍位于
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.0.0>。
+本文档面向需要下载、部署和升级 GGraphDB 1.1 的服务负责人。示例使用已发布
+的 `v1.1.0`，发行页位于
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.0>。
 
 ## 1. 下载与校验
 

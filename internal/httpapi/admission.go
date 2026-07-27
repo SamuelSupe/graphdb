@@ -104,8 +104,21 @@ func acquireSlot(ctx context.Context, slot chan struct{}) error {
 	if slot == nil {
 		return nil
 	}
+	if ctx.Err() != nil {
+		return fmt.Errorf(
+			"%w: query admission queue timeout",
+			query.ErrLimitExceeded,
+		)
+	}
 	select {
 	case slot <- struct{}{}:
+		if ctx.Err() != nil {
+			releaseSlot(slot)
+			return fmt.Errorf(
+				"%w: query admission queue timeout",
+				query.ErrLimitExceeded,
+			)
+		}
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("%w: query admission queue timeout", query.ErrLimitExceeded)

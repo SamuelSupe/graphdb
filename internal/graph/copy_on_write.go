@@ -5,17 +5,23 @@ import "maps"
 // copyOnWriteState tracks index buckets shared with the source graph by a
 // storage-only mutation copy. Public graph copies continue to be fully deep.
 type copyOnWriteState struct {
-	outNodes      map[string]struct{}
-	inNodes       map[string]struct{}
-	identityKinds map[string]struct{}
-	fieldKinds    map[string]struct{}
-	fieldNames    map[string]map[string]struct{}
-	fieldValues   map[string]map[string]map[string]struct{}
+	outNodes        map[string]struct{}
+	inNodes         map[string]struct{}
+	edgeAliases     map[string]struct{}
+	edgeAliasCopy   bool
+	edgeTypes       map[string]struct{}
+	edgeTypeCopy    bool
+	entityAliases   map[string]struct{}
+	entityAliasCopy bool
+	identityKinds   map[string]struct{}
+	fieldKinds      map[string]struct{}
+	fieldNames      map[string]map[string]struct{}
+	fieldValues     map[string]map[string]map[string]struct{}
 }
 
 func (g *Graph) cloneForStorageMutation() *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
-	logicalHashCache := g.cloneLogicalHashCache()
+	logicalHashCache := g.shareLogicalHashCache()
 	return &Graph{
 		Version:                 g.Version,
 		CITypes:                 shallowCopyMap(g.CITypes),
@@ -24,6 +30,10 @@ func (g *Graph) cloneForStorageMutation() *Graph {
 		Edges:                   shallowCopyMap(g.Edges),
 		out:                     shallowCopyMap(g.out),
 		in:                      shallowCopyMap(g.in),
+		edgeAliasIndex:          g.edgeAliasIndex,
+		edgeTypeIndex:           g.edgeTypeIndex,
+		entityAliasIndex:        g.entityAliasIndex,
+		kindCounts:              shallowCopyMap(g.kindCounts),
 		fieldIndex:              shallowCopyMap(g.fieldIndex),
 		identityIndex:           shallowCopyMap(g.identityIndex),
 		contentFingerprint:      fingerprint,
@@ -32,6 +42,9 @@ func (g *Graph) cloneForStorageMutation() *Graph {
 		cow: &copyOnWriteState{
 			outNodes:      map[string]struct{}{},
 			inNodes:       map[string]struct{}{},
+			edgeAliases:   map[string]struct{}{},
+			edgeTypes:     map[string]struct{}{},
+			entityAliases: map[string]struct{}{},
 			identityKinds: map[string]struct{}{},
 			fieldKinds:    map[string]struct{}{},
 			fieldNames:    map[string]map[string]struct{}{},
@@ -83,6 +96,84 @@ func (g *Graph) writableIn(node string) map[string]struct{} {
 		g.in[node] = map[string]struct{}{}
 	}
 	return g.in[node]
+}
+
+func (g *Graph) writableEntityAlias(alias string) map[string]struct{} {
+	if g.cow == nil {
+		if g.entityAliasIndex == nil {
+			g.entityAliasIndex = map[string]map[string]struct{}{}
+		}
+		if g.entityAliasIndex[alias] == nil {
+			g.entityAliasIndex[alias] = map[string]struct{}{}
+		}
+		return g.entityAliasIndex[alias]
+	}
+	if !g.cow.entityAliasCopy {
+		g.entityAliasIndex = shallowCopyMap(g.entityAliasIndex)
+		g.cow.entityAliasCopy = true
+	}
+	if _, ok := g.cow.entityAliases[alias]; !ok {
+		g.entityAliasIndex[alias] = copyStringSet(
+			g.entityAliasIndex[alias],
+		)
+		g.cow.entityAliases[alias] = struct{}{}
+	}
+	if g.entityAliasIndex[alias] == nil {
+		g.entityAliasIndex[alias] = map[string]struct{}{}
+	}
+	return g.entityAliasIndex[alias]
+}
+
+func (g *Graph) writableEdgeAlias(alias string) map[string]struct{} {
+	if g.cow == nil {
+		if g.edgeAliasIndex == nil {
+			g.edgeAliasIndex = map[string]map[string]struct{}{}
+		}
+		if g.edgeAliasIndex[alias] == nil {
+			g.edgeAliasIndex[alias] = map[string]struct{}{}
+		}
+		return g.edgeAliasIndex[alias]
+	}
+	if !g.cow.edgeAliasCopy {
+		g.edgeAliasIndex = shallowCopyMap(g.edgeAliasIndex)
+		g.cow.edgeAliasCopy = true
+	}
+	if _, ok := g.cow.edgeAliases[alias]; !ok {
+		g.edgeAliasIndex[alias] = copyStringSet(
+			g.edgeAliasIndex[alias],
+		)
+		g.cow.edgeAliases[alias] = struct{}{}
+	}
+	if g.edgeAliasIndex[alias] == nil {
+		g.edgeAliasIndex[alias] = map[string]struct{}{}
+	}
+	return g.edgeAliasIndex[alias]
+}
+
+func (g *Graph) writableEdgeType(edgeType string) map[string]struct{} {
+	if g.cow == nil {
+		if g.edgeTypeIndex == nil {
+			g.edgeTypeIndex = map[string]map[string]struct{}{}
+		}
+		if g.edgeTypeIndex[edgeType] == nil {
+			g.edgeTypeIndex[edgeType] = map[string]struct{}{}
+		}
+		return g.edgeTypeIndex[edgeType]
+	}
+	if !g.cow.edgeTypeCopy {
+		g.edgeTypeIndex = shallowCopyMap(g.edgeTypeIndex)
+		g.cow.edgeTypeCopy = true
+	}
+	if _, ok := g.cow.edgeTypes[edgeType]; !ok {
+		g.edgeTypeIndex[edgeType] = copyStringSet(
+			g.edgeTypeIndex[edgeType],
+		)
+		g.cow.edgeTypes[edgeType] = struct{}{}
+	}
+	if g.edgeTypeIndex[edgeType] == nil {
+		g.edgeTypeIndex[edgeType] = map[string]struct{}{}
+	}
+	return g.edgeTypeIndex[edgeType]
 }
 
 func (g *Graph) writableIdentityKind(kind string) map[string]string {

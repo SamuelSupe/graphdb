@@ -187,7 +187,7 @@ func (s *Server) autoCompactDecision(ctx context.Context, tenantID string, manif
 	if objectThreshold <= 0 && bytesThreshold <= 0 && (smallObjectThreshold <= 0 || smallBytesThreshold <= 0) {
 		return autoCompactDecision{}
 	}
-	usage, err := s.Store.TenantUsage(ctx, tenantID)
+	usage, err := s.cachedTenantUsage(ctx, tenantID, time.Now().UTC())
 	if err != nil {
 		report.addError(tenantID, "tenant_usage", err)
 		s.auditError("maintenance_usage_failed", tenantID, err, map[string]any{})

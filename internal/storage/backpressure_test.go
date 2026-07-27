@@ -188,6 +188,107 @@ func TestCommitBackpressureRejectsLongCommitTail(t *testing.T) {
 	assertBackpressureReason(t, err, "commit_tail_too_long")
 }
 
+func TestCoordinatedBackpressureDoesNotTrustStaleWriteCacheTail(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	current := Manifest{
+		LayoutVersion: CurrentObjectLayoutVersion,
+		TenantID:      "tenant-a",
+		Version:       3,
+		CommitKeys:    []string{"commit-2", "commit-3"},
+	}
+	data, err := marshalParquetManifest(ctx, current)
+	if err != nil {
+		t.Fatalf("marshal current manifest: %v", err)
+	}
+	key := "test/tenants/tenant-a/coordination/manifests/current.parquet"
+	if err := objects.Put(ctx, key, data); err != nil {
+		t.Fatalf("put current manifest: %v", err)
+	}
+	head := CoordinationHead{
+		TenantID:     "tenant-a",
+		Status:       TenantStatusActive,
+		Generation:   1,
+		Revision:     3,
+		GraphVersion: 3,
+		ManifestKey:  key,
+		ManifestHash: objectContentHash(data),
+	}
+	store := NewTenantStore(objects, "test")
+	store.SetCoordinator(&mutableHeadCoordinator{head: head})
+	store.Backpressure = NewWritePressure(BackpressureConfig{MaxCommitTail: 1})
+	stale := cachedGraph(1)
+	stale.Manifest.TenantID = "tenant-a"
+	stale.Manifest.CommitKeys = []string{"commit-1"}
+	stale.Meta = coordinatedManifestMeta("stale.parquet", CoordinationHead{
+		Generation: 1, Revision: 1,
+	})
+	store.setWriteCache("tenant-a", stale)
+
+	err = store.CheckWriteBackpressure(ctx, "tenant-a")
+	assertBackpressureReason(t, err, "commit_tail_too_long")
+}
+
+func TestCoordinatedBackpressureCurrentHeadKeepsCacheHit(t *testing.T) {
+	head := CoordinationHead{
+		TenantID:             "tenant-a",
+		Status:               TenantStatusActive,
+		Generation:           2,
+		Revision:             7,
+		GraphVersion:         5,
+		WriteContextRevision: 3,
+		ManifestKey:          "current.parquet",
+	}
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.SetCoordinator(&mutableHeadCoordinator{head: head})
+	current := cachedGraph(5)
+	current.Manifest.TenantID = "tenant-a"
+	current.Meta = coordinatedManifestMeta(head.ManifestKey, head)
+	store.setWriteCache("tenant-a", current)
+
+	manifest, err := store.currentManifestForWriteAdmission(
+		context.Background(), "tenant-a",
+	)
+	if err != nil {
+		t.Fatalf("current manifest: %v", err)
+	}
+	if manifest.Version != 5 {
+		t.Fatalf("manifest version = %d, want 5", manifest.Version)
+	}
+}
+
+func TestLocalBackpressureDoesNotTrustCacheAfterWriterTakeover(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	original := NewTenantStore(objects, "test")
+	if _, err := original.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("commit original version: %v", err)
+	}
+	if err := expireWriterLeaseForTakeover(ctx, objects, "tenant-a"); err != nil {
+		t.Fatalf("expire original writer lease: %v", err)
+	}
+	replacement := NewTenantStore(objects, "test")
+	if _, err := replacement.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("commit replacement version: %v", err)
+	}
+	lease, meta, ok := original.getCachedWriterLeaseAny("tenant-a")
+	if !ok {
+		t.Fatal("original writer lease was not cached")
+	}
+	lease.ExpiresAt = time.Now().UTC().Add(-time.Second)
+	original.setCachedWriterLease("tenant-a", lease, meta)
+	original.Backpressure = NewWritePressure(
+		BackpressureConfig{MaxCommitTail: 1},
+	)
+
+	err := original.CheckWriteBackpressure(ctx, "tenant-a")
+	assertBackpressureReason(t, err, "commit_tail_too_long")
+}
+
 func TestCommitBackpressureQuotaBlocksGrowthButAllowsReduction(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

@@ -32,15 +32,9 @@ func (s *TenantStore) prepareTenantCreateLease(ctx context.Context, tenantID str
 }
 
 func (s *TenantStore) tenantResidualObjectsExist(ctx context.Context, tenantID string) (bool, error) {
-	objects, err := s.Objects.List(ctx, s.tenantObjectPrefix(tenantID))
-	if err != nil {
-		return false, err
-	}
 	leaseKey := s.writerLeaseKey(tenantID)
-	for _, object := range objects {
-		if object.Key != leaseKey {
-			return true, nil
-		}
-	}
-	return false, nil
+	return objectPrefixMatches(
+		ctx, s.Objects, s.tenantObjectPrefix(tenantID),
+		func(object ObjectInfo) bool { return object.Key != leaseKey },
+	)
 }

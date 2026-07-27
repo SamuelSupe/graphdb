@@ -8,6 +8,27 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func (c *PostgresCoordinator) TaskLease(
+	ctx context.Context,
+	tenantID string,
+	taskType string,
+) (CoordinatorTaskLease, bool, error) {
+	lease, err := scanCoordinatorTaskLease(c.pool.QueryRow(ctx,
+		`SELECT tenant_id, task_type, owner_token, fence_epoch, expires_at
+		 FROM `+c.table("task_leases")+`
+		 WHERE namespace = $1 AND tenant_id = $2 AND task_type = $3
+		   AND owner_token <> '' AND expires_at > now()`,
+		c.namespace, tenantID, taskType,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CoordinatorTaskLease{}, false, nil
+	}
+	if err != nil {
+		return CoordinatorTaskLease{}, false, coordinatorUnavailable(err)
+	}
+	return lease, true, nil
+}
+
 func (c *PostgresCoordinator) AcquireTaskLease(
 	ctx context.Context,
 	tenantID string,

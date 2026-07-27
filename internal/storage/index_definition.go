@@ -138,6 +138,7 @@ func (s *TenantStore) getIndexDefinitionsWithMeta(ctx context.Context, tenantID 
 		return IndexDefinitionRecord{}, ObjectMeta{}, err
 	}
 	key := s.indexDefinitionsKey(tenantID)
+	s.clearCoordinatedWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return IndexDefinitionRecord{TenantID: tenantID}, ObjectMeta{Key: key}, nil

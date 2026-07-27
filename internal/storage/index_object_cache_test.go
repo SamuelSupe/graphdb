@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,46 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func TestIndexObjectPrefetchesHaveBoundedConcurrency(t *testing.T) {
+	cache := newIndexObjectCache(maxIndexObjectPrefetches + 1)
+	for index := 0; index < maxIndexObjectPrefetches; index++ {
+		key := "prefetch-" + strconv.Itoa(index)
+		if !cache.beginPrefetch(key) {
+			t.Fatalf("prefetch %d was rejected before reaching limit", index)
+		}
+	}
+	if cache.beginPrefetch("overflow") {
+		t.Fatal("prefetch above concurrency limit was accepted")
+	}
+	cache.finishPrefetch("prefetch-0")
+	if !cache.beginPrefetch("replacement") {
+		t.Fatal("prefetch slot was not reusable after completion")
+	}
+}
+
+func TestDisabledIndexObjectCacheDoesNotPrefetch(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	key := "indexes/disabled-cache.parquet"
+	if err := base.Put(ctx, key, []byte("index")); err != nil {
+		t.Fatalf("seed index object: %v", err)
+	}
+	objects := &countingMetaReadStore{ObjectStore: base}
+	store := NewTenantStore(objects, "test")
+	store.ConfigureIndexObjectCache(IndexObjectCacheConfig{MaxEntries: 0})
+
+	store.prefetchIndexObject(
+		ctx, "edge_shard", "tenant-a", 1, key, "content", "schema",
+	)
+	time.Sleep(50 * time.Millisecond)
+	if got := objects.GetWithMetaCount(key); got != 0 {
+		t.Fatalf(
+			"disabled index cache performed %d unusable prefetch reads",
+			got,
+		)
+	}
+}
 
 func TestIndexObjectCacheAvoidsRepeatedFieldIndexReads(t *testing.T) {
 	ctx := context.Background()

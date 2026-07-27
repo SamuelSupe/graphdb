@@ -31,3 +31,28 @@ func (g *Graph) MatchFieldIndexIDs(kind string, field string, values []any) []st
 	sort.Strings(ids)
 	return ids
 }
+
+func (g *Graph) ScanFieldIndexIDs(
+	kind string,
+	field string,
+	match func(string) (bool, error),
+) ([]string, error) {
+	if match == nil {
+		return nil, nil
+	}
+	ids := make([]string, 0)
+	for value, valueIDs := range g.fieldIndex[kind][field] {
+		matched, err := match(value)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			continue
+		}
+		for id := range valueIDs {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}

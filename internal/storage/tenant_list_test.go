@@ -70,6 +70,18 @@ func TestCommitRegistersManagedTenant(t *testing.T) {
 	}
 }
 
+func TestInitTenantReportsRegistryFailure(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(
+		tenantRegistryFailStore{ObjectStore: NewMemoryStore()},
+		"test",
+	)
+
+	if _, err := store.InitTenant(ctx, "tenant-a"); !errors.Is(err, errTenantRegistryUnavailable) {
+		t.Fatalf("InitTenant error = %v, want %v", err, errTenantRegistryUnavailable)
+	}
+}
+
 func TestTenantRegistryUpdateRetriesCASConflict(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
@@ -85,6 +97,75 @@ func TestTenantRegistryUpdateRetriesCASConflict(t *testing.T) {
 	tenants, err := store.ListManagedTenants(ctx)
 	if err != nil {
 		t.Fatalf("ListManagedTenants: %v", err)
+	}
+	if want := []string{"tenant-a"}; !reflect.DeepEqual(tenants, want) {
+		t.Fatalf("tenants = %#v, want %#v", tenants, want)
+	}
+}
+
+func TestCoordinatedTenantRegistrySkipsSameGenerationReload(t *testing.T) {
+	ctx := context.Background()
+	objects := &tenantRegistryReadStore{ObjectStore: NewMemoryStore()}
+	coordinator := &tenantRegistryHeadCoordinator{
+		head: CoordinationHead{
+			TenantID:   "tenant-a",
+			Generation: 1,
+			Status:     TenantStatusActive,
+		},
+	}
+	store := NewTenantStore(objects, "test")
+	store.SetCoordinator(coordinator)
+
+	if err := store.addTenantToRegistry(ctx, "tenant-a"); err != nil {
+		t.Fatalf("first addTenantToRegistry: %v", err)
+	}
+	if err := store.addTenantToRegistry(ctx, "tenant-a"); err != nil {
+		t.Fatalf("second addTenantToRegistry: %v", err)
+	}
+	if reads := objects.registryReads(); reads != 1 {
+		t.Fatalf("tenant registry reads = %d, want one for a stable generation", reads)
+	}
+}
+
+func TestCoordinatedTenantRegistryReloadsAfterGenerationChange(t *testing.T) {
+	ctx := context.Background()
+	objects := &tenantRegistryReadStore{ObjectStore: NewMemoryStore()}
+	coordinator := &tenantRegistryHeadCoordinator{
+		head: CoordinationHead{
+			TenantID:   "tenant-a",
+			Generation: 1,
+			Status:     TenantStatusActive,
+		},
+	}
+	store := NewTenantStore(objects, "test")
+	store.SetCoordinator(coordinator)
+	if err := store.addTenantToRegistry(ctx, "tenant-a"); err != nil {
+		t.Fatalf("add generation 1 tenant: %v", err)
+	}
+
+	peer := NewTenantStore(objects, "test")
+	if err := peer.updateTenantRegistry(ctx, func(seen map[string]struct{}) bool {
+		delete(seen, "tenant-a")
+		return true
+	}); err != nil {
+		t.Fatalf("remove tenant through peer: %v", err)
+	}
+	readsBeforeRecreate := objects.registryReads()
+	coordinator.setGeneration(2)
+
+	if err := store.addTenantToRegistry(ctx, "tenant-a"); err != nil {
+		t.Fatalf("add generation 2 tenant: %v", err)
+	}
+	if reads := objects.registryReads(); reads != readsBeforeRecreate+1 {
+		t.Fatalf(
+			"tenant registry reads after generation change = %d, want %d",
+			reads,
+			readsBeforeRecreate+1,
+		)
+	}
+	tenants, ok, err := store.getTenantRegistry(ctx)
+	if err != nil || !ok {
+		t.Fatalf("get tenant registry: tenants=%v ok=%v err=%v", tenants, ok, err)
 	}
 	if want := []string{"tenant-a"}; !reflect.DeepEqual(tenants, want) {
 		t.Fatalf("tenants = %#v, want %#v", tenants, want)
@@ -133,6 +214,22 @@ func (s noListTenantObjectStore) List(context.Context, string) ([]ObjectInfo, er
 	return nil, errors.New("list should not be used")
 }
 
+var errTenantRegistryUnavailable = errors.New("tenant registry unavailable")
+
+type tenantRegistryFailStore struct {
+	ObjectStore
+}
+
+func (s tenantRegistryFailStore) GetWithMeta(
+	ctx context.Context,
+	key string,
+) ([]byte, ObjectMeta, error) {
+	if strings.HasSuffix(key, "/_registry.parquet") {
+		return nil, ObjectMeta{Key: key}, errTenantRegistryUnavailable
+	}
+	return s.ObjectStore.GetWithMeta(ctx, key)
+}
+
 type tenantRegistryConflictOnceStore struct {
 	ObjectStore
 	mu        sync.Mutex
@@ -156,4 +253,57 @@ func (s *tenantRegistryConflictOnceStore) conflictCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conflicts
+}
+
+type tenantRegistryReadStore struct {
+	ObjectStore
+	mu    sync.Mutex
+	reads int
+}
+
+func (s *tenantRegistryReadStore) GetWithMeta(
+	ctx context.Context,
+	key string,
+) ([]byte, ObjectMeta, error) {
+	if strings.HasSuffix(key, "/_registry.parquet") {
+		s.mu.Lock()
+		s.reads++
+		s.mu.Unlock()
+	}
+	return s.ObjectStore.GetWithMeta(ctx, key)
+}
+
+func (s *tenantRegistryReadStore) registryReads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads
+}
+
+type tenantRegistryHeadCoordinator struct {
+	WriteCoordinator
+	mu   sync.Mutex
+	head CoordinationHead
+}
+
+func (c *tenantRegistryHeadCoordinator) Backend() string {
+	return CoordinationPostgres
+}
+
+func (c *tenantRegistryHeadCoordinator) Namespace() string {
+	return "test"
+}
+
+func (c *tenantRegistryHeadCoordinator) Head(
+	context.Context,
+	string,
+) (CoordinationHead, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.head, true, nil
+}
+
+func (c *tenantRegistryHeadCoordinator) setGeneration(generation int64) {
+	c.mu.Lock()
+	c.head.Generation = generation
+	c.mu.Unlock()
 }

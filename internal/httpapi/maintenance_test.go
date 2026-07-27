@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,6 +146,43 @@ func TestAutoCompactSkipsUsageForAlreadyCompactedManifest(t *testing.T) {
 	}, report)
 	if decision.Compact || len(report.Errors) != 0 {
 		t.Fatalf("auto compact decision = %#v report=%#v", decision, report)
+	}
+}
+
+func TestMaintenanceReusesTenantUsageHTTPCache(t *testing.T) {
+	ctx := context.Background()
+	objects := &maintenanceCountingListStore{
+		ObjectStore: storage.NewMemoryStore(),
+		counts:      map[string]int{},
+	}
+	store := storage.NewTenantStore(objects, "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	server := &Server{Store: store, Mode: "all"}
+	handler := server.Handler()
+	prefix := "test/tenants/tenant-a/"
+	objects.reset()
+
+	usage := serveJSON(handler, http.MethodGet, "/v1/tenant-usage", "tenant-a", nil)
+	if usage.Code != http.StatusOK {
+		t.Fatalf("tenant usage status=%d body=%s", usage.Code, usage.Body.String())
+	}
+	manifest, err := store.CurrentManifest(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	objectThreshold := 1
+	decision := server.autoCompactDecision(ctx, "tenant-a", manifest, storage.TenantMaintenanceConfig{
+		CompactObjectCountThreshold: &objectThreshold,
+	}, &MaintenanceReport{})
+	if !decision.Compact || decision.Reason != "object_count" {
+		t.Fatalf("decision=%#v, want object_count compaction", decision)
+	}
+	if calls := objects.count(prefix); calls != 1 {
+		t.Fatalf("tenant object list calls=%d, want shared cached call", calls)
 	}
 }
 
@@ -402,4 +441,32 @@ func hasStorageFinding(findings []StorageLayoutFinding, code string) bool {
 		}
 	}
 	return false
+}
+
+type maintenanceCountingListStore struct {
+	storage.ObjectStore
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (s *maintenanceCountingListStore) List(
+	ctx context.Context,
+	prefix string,
+) ([]storage.ObjectInfo, error) {
+	s.mu.Lock()
+	s.counts[prefix]++
+	s.mu.Unlock()
+	return s.ObjectStore.List(ctx, prefix)
+}
+
+func (s *maintenanceCountingListStore) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counts = map[string]int{}
+}
+
+func (s *maintenanceCountingListStore) count(prefix string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[prefix]
 }

@@ -21,20 +21,38 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 		endStorageSpan(span, err)
 	}()
 	if s.coordinated() {
-		manifest, meta, manifestErr := s.getManifest(ctx, tenantID)
-		if manifestErr != nil {
-			return loadedGraph{}, manifestErr
-		}
-		if cached, ok := s.getWriteCache(tenantID); ok {
-			if cachedManifestMatches(cached, manifest, meta) {
+		cached, cacheFound := s.getWriteCache(tenantID)
+		var manifest Manifest
+		var meta ObjectMeta
+		var manifestErr error
+		if cacheFound {
+			head, exists, headErr := s.Coordinator.Head(ctx, tenantID)
+			if headErr != nil {
+				return loadedGraph{}, headErr
+			}
+			if exists && writeCacheMatchesCoordinatorHead(cached, head) {
 				span.SetAttributes(
 					attribute.Bool("graphdb.write_cache.found", true),
 					attribute.Bool("graphdb.write_cache.hit", true),
 					attribute.Int64("graphdb.write_cache.version", cached.Manifest.Version),
-					attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
+					attribute.Int64("graphdb.write_cache.current_manifest_version", head.GraphVersion),
 				)
 				return cached, nil
 			}
+			if exists {
+				manifest, meta, manifestErr = s.getCoordinatedManifestAtHead(
+					ctx, tenantID, head,
+				)
+			} else {
+				manifest, meta, manifestErr = s.getManifest(ctx, tenantID)
+			}
+		} else {
+			manifest, meta, manifestErr = s.getManifest(ctx, tenantID)
+		}
+		if manifestErr != nil {
+			return loadedGraph{}, manifestErr
+		}
+		if cacheFound {
 			caughtUp, applied, catchupErr := s.catchUpWriteCache(
 				ctx, tenantID, cached, manifest, meta,
 			)
@@ -54,7 +72,7 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 			}
 		}
 		span.SetAttributes(
-			attribute.Bool("graphdb.write_cache.found", false),
+			attribute.Bool("graphdb.write_cache.found", cacheFound),
 			attribute.Bool("graphdb.write_cache.hit", false),
 			attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
 		)
@@ -221,7 +239,9 @@ func normalizedWriteCacheBytes(loaded loadedGraph) int64 {
 	if err != nil {
 		return int64(^uint64(0) >> 1)
 	}
-	return writeCacheBytesForGraph(loaded.Graph, logicalBytes)
+	return writeCacheBytesForGraphWithCommitTail(
+		loaded.Graph, logicalBytes, loaded.CommitTail,
+	)
 }
 
 func writeCacheBytesFromLogicalSize(logicalBytes int64) int64 {
@@ -261,4 +281,29 @@ func writeCacheBytesForGraph(g *graph.Graph, logicalBytes int64) int64 {
 		return structuralWeight
 	}
 	return variableWeight
+}
+
+func writeCacheBytesForGraphWithCommitTail(
+	g *graph.Graph,
+	logicalBytes int64,
+	tail commitTailCache,
+) int64 {
+	return addWriteCacheBytes(
+		writeCacheBytesForGraph(g, logicalBytes), tail.bytes,
+	)
+}
+
+func addWriteCacheBytes(left, right int64) int64 {
+	maxInt64 := int64(^uint64(0) >> 1)
+	if left < 0 || right < 0 || left > maxInt64-right {
+		return maxInt64
+	}
+	return left + right
+}
+
+func writeCacheBytesWithoutCommitTail(loaded loadedGraph) int64 {
+	if loaded.CacheBytes <= loaded.CommitTail.bytes {
+		return 0
+	}
+	return loaded.CacheBytes - loaded.CommitTail.bytes
 }

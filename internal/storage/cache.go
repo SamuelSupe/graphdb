@@ -115,19 +115,41 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 		startGen := c.gens[tenantID]
 		c.mu.RUnlock()
 
-		manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
+		load, acquired, err := c.beginLoad(ctx, tenantID)
 		if err != nil {
-			c.mu.RLock()
-			fallback, fallbackOK := c.entries[tenantID]
-			c.mu.RUnlock()
-			if errors.Is(err, ErrCoordinatorUnavailable) &&
-				fallbackOK &&
-				fallback.manifest.Version >= minVersion {
-				c.touch(tenantID)
-				c.recordCache(tenantID, "stale_coordinator_unavailable")
-				c.recordVisible(tenantID, fallback.manifest.Version)
-				return cacheEntryGraph(fallback, shared)
+			return nil, Manifest{}, err
+		}
+		if !acquired {
+			c.recordCache(tenantID, "wait")
+			continue
+		}
+		entry, ok, startGen, fresh := c.cacheEntryAfterLoadAcquire(
+			tenantID,
+			minVersion,
+		)
+		if fresh {
+			c.finishLoad(tenantID, load)
+			c.recordCache(tenantID, "hit")
+			c.recordVisible(tenantID, entry.manifest.Version)
+			return cacheEntryGraph(entry, shared)
+		}
+		manifest, manifestMeta, err := c.manifestForCacheEntry(
+			ctx, tenantID, entry, ok,
+		)
+		if err != nil {
+			if errors.Is(err, ErrCoordinatorUnavailable) {
+				fallback, fallbackOK := c.extendStaleEntry(
+					tenantID, minVersion, true,
+				)
+				c.finishLoad(tenantID, load)
+				if fallbackOK {
+					c.recordCache(tenantID, "stale_coordinator_unavailable")
+					c.recordVisible(tenantID, fallback.manifest.Version)
+					return cacheEntryGraph(fallback, shared)
+				}
+				return nil, Manifest{}, err
 			}
+			c.finishLoad(tenantID, load)
 			return nil, Manifest{}, err
 		}
 		c.mu.Lock()
@@ -140,6 +162,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			entry.lastAccess = now
 			c.entries[tenantID] = entry
 			c.mu.Unlock()
+			c.finishLoad(tenantID, load)
 			c.recordCache(tenantID, "hit")
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
@@ -155,20 +178,13 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			entry.lastAccess = now
 			c.entries[tenantID] = entry
 			c.mu.Unlock()
+			c.finishLoad(tenantID, load)
 			c.recordCache(tenantID, "revalidated")
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
 		}
 		c.mu.Unlock()
 
-		load, ok, err := c.beginLoad(ctx, tenantID)
-		if err != nil {
-			return nil, Manifest{}, err
-		}
-		if !ok {
-			c.recordCache(tenantID, "wait")
-			continue
-		}
 		c.recordCache(tenantID, "miss")
 		loaded, err := c.loadStoreAtLeast(ctx, tenantID, minVersion)
 		if err != nil {
@@ -300,23 +316,6 @@ func cacheEntryFresh(entry cacheEntry, now time.Time, minVersion int64) bool {
 	return minVersion <= 0 || entry.manifest.Version >= minVersion
 }
 
-func (c *ReaderCache) RefreshCached(ctx context.Context) {
-	now := time.Now()
-	c.mu.Lock()
-	tenantIDs := make([]string, 0, len(c.entries))
-	for tenantID, entry := range c.entries {
-		if cacheEntryIdle(entry, now, c.TTL) {
-			delete(c.entries, tenantID)
-			continue
-		}
-		tenantIDs = append(tenantIDs, tenantID)
-	}
-	c.mu.Unlock()
-	for _, tenantID := range tenantIDs {
-		_, _, _ = c.refresh(ctx, tenantID, false)
-	}
-}
-
 func (c *ReaderCache) Refresh(ctx context.Context, tenantID string) (*graph.Graph, Manifest, error) {
 	return c.refresh(ctx, tenantID, true)
 }
@@ -324,15 +323,36 @@ func (c *ReaderCache) Refresh(ctx context.Context, tenantID string) (*graph.Grap
 func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess bool) (*graph.Graph, Manifest, error) {
 	c.mu.RLock()
 	startGen := c.gens[tenantID]
+	revalidationEntry, revalidationOK := c.entries[tenantID]
 	c.mu.RUnlock()
-	manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
+	if !revalidationOK && !markAccess {
+		return nil, Manifest{}, nil
+	}
+	load, acquired, err := c.beginLoad(ctx, tenantID)
 	if err != nil {
+		return nil, Manifest{}, err
+	}
+	if !acquired {
+		if !markAccess {
+			return nil, Manifest{}, nil
+		}
+		return c.Load(ctx, tenantID)
+	}
+	manifest, manifestMeta, err := c.manifestForCacheEntry(
+		ctx, tenantID, revalidationEntry, revalidationOK,
+	)
+	if err != nil {
+		if errors.Is(err, ErrCoordinatorUnavailable) {
+			_, _ = c.extendStaleEntry(tenantID, 0, markAccess)
+		}
+		c.finishLoad(tenantID, load)
 		return nil, Manifest{}, err
 	}
 	c.mu.RLock()
 	entry, ok := c.entries[tenantID]
 	c.mu.RUnlock()
 	if !ok && !markAccess {
+		c.finishLoad(tenantID, load)
 		return nil, Manifest{}, nil
 	}
 	if ok && cacheEntryMatchesManifest(entry, manifest, manifestMeta) {
@@ -347,21 +367,13 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		c.mu.Lock()
 		if c.gens[tenantID] != startGen {
 			c.mu.Unlock()
+			c.finishLoad(tenantID, load)
 			return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 		}
 		c.entries[tenantID] = entry
 		c.mu.Unlock()
+		c.finishLoad(tenantID, load)
 		return cacheEntryGraph(entry, !markAccess)
-	}
-	load, acquired, err := c.beginLoad(ctx, tenantID)
-	if err != nil {
-		return nil, Manifest{}, err
-	}
-	if !acquired {
-		if !markAccess {
-			return nil, Manifest{}, nil
-		}
-		return c.Load(ctx, tenantID)
 	}
 	loaded, err := c.loadStoreAtLeast(ctx, tenantID, 0)
 	if err != nil {

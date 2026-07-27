@@ -3,6 +3,7 @@ package graph
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"time"
 )
@@ -106,21 +107,6 @@ func sortedEntityIDs(entities map[string]Entity) []string {
 	for id := range entities {
 		ids = append(ids, id)
 	}
-	sortStrings(ids)
+	sort.Strings(ids)
 	return ids
-}
-
-func sortStrings(values []string) {
-	if len(values) < 2 {
-		return
-	}
-	for i := 1; i < len(values); i++ {
-		value := values[i]
-		j := i - 1
-		for j >= 0 && values[j] > value {
-			values[j+1] = values[j]
-			j--
-		}
-		values[j+1] = value
-	}
 }

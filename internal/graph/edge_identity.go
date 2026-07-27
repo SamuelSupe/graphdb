@@ -178,10 +178,6 @@ func setEdgeFieldSource(edge *Edge, field string, source FieldSource) {
 	edge.FieldSources[field] = source
 }
 
-func edgeSourceAliasMatches(edge Edge, id string) bool {
-	return EdgeSourceAliasMatches(edge, id)
-}
-
 func EdgeSourceAliasMatches(edge Edge, id string) bool {
 	if id == "" {
 		return false

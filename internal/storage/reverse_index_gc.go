@@ -18,17 +18,20 @@ func (s *TenantStore) cleanupReverseIndexOrphans(ctx context.Context, tenantID s
 			}
 		}
 	}
-	objects, err := s.Objects.List(ctx, s.reverseIndexPrefix(tenantID))
-	if err != nil {
-		return err
-	}
-	for _, object := range objects {
-		if _, keep := referenced[object.Key]; keep {
-			continue
-		}
-		if err := s.deleteListedObject(ctx, object); err != nil {
-			return err
-		}
-	}
-	return nil
+	return scanObjectPrefix(
+		ctx,
+		s.Objects,
+		s.reverseIndexPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				if _, keep := referenced[object.Key]; keep {
+					continue
+				}
+				if err := s.deleteListedObject(ctx, object); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	)
 }

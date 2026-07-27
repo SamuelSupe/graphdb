@@ -61,3 +61,46 @@ func TestPostgresCoordinatorLegacyCompletionDoesNotRewriteDoneRows(t *testing.T)
 		t.Fatalf("completed mirror rows rewritten = %d, want 0", rewritten)
 	}
 }
+
+func TestPostgresCoordinatorRenewsLegacyManifestLease(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(t, "mirror-renew")
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.SetCoordinator(coordinator)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	job, ok, err := coordinator.ClaimLegacyManifest(
+		ctx,
+		"owner-a",
+		30*time.Millisecond,
+	)
+	if err != nil || !ok {
+		t.Fatalf("claim mirror job: ok=%v err=%v", ok, err)
+	}
+	stale := job
+	stale.OwnerToken = "owner-b"
+	if renewed, err := coordinator.RenewLegacyManifest(
+		ctx,
+		stale,
+		250*time.Millisecond,
+	); err != nil || renewed {
+		t.Fatalf("renew stale owner: renewed=%v err=%v", renewed, err)
+	}
+	if renewed, err := coordinator.RenewLegacyManifest(
+		ctx,
+		job,
+		250*time.Millisecond,
+	); err != nil || !renewed {
+		t.Fatalf("renew owner: renewed=%v err=%v", renewed, err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if _, claimed, err := coordinator.ClaimLegacyManifest(
+		ctx,
+		"owner-b",
+		time.Second,
+	); err != nil || claimed {
+		t.Fatalf("claim renewed mirror job: claimed=%v err=%v", claimed, err)
+	}
+}

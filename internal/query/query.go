@@ -43,7 +43,10 @@ func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Requ
 	}
 	profiler := newProfiler(request.Profile)
 	plan := measureQueryPlan(ctx, g, request, options.PlannerStats, profiler)
-	budget, cancel := newBudget(ctx, request, profiler, options.IndexLookup, options.EntityLookup)
+	budget, cancel := newBudget(
+		ctx, request, profiler, options.IndexLookup, options.EntityLookup,
+		options.PlannerStats,
+	)
 	defer cancel()
 	if err := budget.measure("admission", "", plan.EstimatedCost, func() (int, error) {
 		return 0, admitQuery(plan, budget)

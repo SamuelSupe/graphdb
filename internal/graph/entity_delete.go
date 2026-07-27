@@ -31,11 +31,13 @@ func (g *Graph) deleteEntityForce(entityID string) {
 		g.removeEntityFromIndexes(entityID, existing)
 	}
 	delete(g.Entities, entityID)
-	for edgeID, edge := range g.Edges {
-		if edge.From == entityID || edge.To == entityID {
-			g.removeEdgeFromIndexes(edgeID, edge)
-			delete(g.Edges, edgeID)
+	for _, edgeID := range g.incidentEdgeIDs(entityID) {
+		edge, ok := g.Edges[edgeID]
+		if !ok {
+			continue
 		}
+		g.removeEdgeFromIndexes(edgeID, edge)
+		delete(g.Edges, edgeID)
 	}
 }
 

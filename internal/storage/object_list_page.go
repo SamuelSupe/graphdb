@@ -13,15 +13,6 @@ type objectPageLister interface {
 // callers to stop after one bounded page. Stores without native paging use a
 // sorted compatibility fallback.
 func listObjectPage(ctx context.Context, objects ObjectStore, prefix string, after string, limit int) ([]ObjectInfo, string, error) {
-	if limit <= 0 {
-		items, err := objects.List(ctx, prefix)
-		if err != nil {
-			return nil, "", err
-		}
-		sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
-		start := sort.Search(len(items), func(i int) bool { return items[i].Key > after })
-		return items[start:], "", nil
-	}
 	switch store := objects.(type) {
 	case *WriterObjectCache:
 		return listObjectPage(ctx, store.Inner, prefix, after, limit)
@@ -42,6 +33,17 @@ func listObjectPage(ctx context.Context, objects ObjectStore, prefix string, aft
 			return nil, "", err
 		}
 		return listObjectPage(ctx, store.Inner, prefix, after, limit)
+	case *SingleWriterObjectStore:
+		return listObjectPage(ctx, store.Inner, prefix, after, limit)
+	}
+	if limit <= 0 {
+		items, err := objects.List(ctx, prefix)
+		if err != nil {
+			return nil, "", err
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+		start := sort.Search(len(items), func(i int) bool { return items[i].Key > after })
+		return items[start:], "", nil
 	}
 	if paged, ok := objects.(objectPageLister); ok {
 		return paged.ListPage(ctx, prefix, after, limit)

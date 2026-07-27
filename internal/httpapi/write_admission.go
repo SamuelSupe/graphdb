@@ -103,8 +103,15 @@ func acquireWriteSlot(ctx context.Context, slot chan struct{}) error {
 	if slot == nil {
 		return nil
 	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("write admission queue timeout")
+	}
 	select {
 	case slot <- struct{}{}:
+		if ctx.Err() != nil {
+			releaseSlot(slot)
+			return fmt.Errorf("write admission queue timeout")
+		}
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("write admission queue timeout")

@@ -17,42 +17,50 @@ type objectStoreProber interface {
 }
 
 type objectStoreProbeCall struct {
-	done   chan struct{}
-	status ObjectStoreStatus
+	done     chan struct{}
+	status   ObjectStoreStatus
+	canceled bool
 }
 
 func (s *TenantStore) ObjectStoreStatus(ctx context.Context) ObjectStoreStatus {
-	s.objectProbeMu.Lock()
-	if active := s.objectProbeActive; active != nil {
-		s.objectProbeMu.Unlock()
-		select {
-		case <-active.done:
-			return active.status
-		case <-ctx.Done():
-			return ObjectStoreStatus{
-				Available: false,
-				CheckedAt: time.Now().UTC(),
-				LastError: ctx.Err().Error(),
+	for {
+		s.objectProbeMu.Lock()
+		if active := s.objectProbeActive; active != nil {
+			s.objectProbeMu.Unlock()
+			select {
+			case <-active.done:
+				if active.canceled && ctx.Err() == nil {
+					continue
+				}
+				return active.status
+			case <-ctx.Done():
+				return ObjectStoreStatus{
+					Available: false,
+					CheckedAt: time.Now().UTC(),
+					LastError: ctx.Err().Error(),
+				}
 			}
 		}
-	}
-	active := &objectStoreProbeCall{done: make(chan struct{})}
-	s.objectProbeActive = active
-	s.objectProbeMu.Unlock()
+		active := &objectStoreProbeCall{done: make(chan struct{})}
+		s.objectProbeActive = active
+		s.objectProbeMu.Unlock()
 
-	status := ObjectStoreStatus{Available: true, CheckedAt: time.Now().UTC()}
-	if err := probeObjectStore(ctx, s.Objects, s.Prefix); err != nil {
-		status.Available = false
-		status.LastError = err.Error()
+		status := ObjectStoreStatus{Available: true, CheckedAt: time.Now().UTC()}
+		err := probeObjectStore(ctx, s.Objects, s.Prefix)
+		if err != nil {
+			status.Available = false
+			status.LastError = err.Error()
+		}
+		s.objectProbeMu.Lock()
+		active.status = status
+		active.canceled = loadCanceledByContext(ctx, err)
+		if s.objectProbeActive == active {
+			s.objectProbeActive = nil
+		}
+		close(active.done)
+		s.objectProbeMu.Unlock()
+		return status
 	}
-	s.objectProbeMu.Lock()
-	active.status = status
-	if s.objectProbeActive == active {
-		s.objectProbeActive = nil
-	}
-	close(active.done)
-	s.objectProbeMu.Unlock()
-	return status
 }
 
 func probeObjectStore(ctx context.Context, objects ObjectStore, prefix string) error {

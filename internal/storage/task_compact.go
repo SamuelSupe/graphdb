@@ -131,7 +131,9 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	if manifest.Version == snapshot.Version {
 		s.setWriteCache(task.TenantID, loadedGraph{
 			Graph: g, Manifest: manifest, Meta: meta,
-			DataMD5: dataMD5, CacheBytes: loaded.CacheBytes,
+			DataMD5:    dataMD5,
+			CommitTail: emptyCommitTailCache(),
+			CacheBytes: writeCacheBytesWithoutCommitTail(loaded),
 		})
 	}
 	unlock()

@@ -48,6 +48,7 @@ type nativeObjectClient interface {
 	Put(ctx context.Context, key string, data []byte, createOnly bool) (ObjectMeta, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
+	ListPage(ctx context.Context, prefix string, after string, limit int) ([]ObjectInfo, string, error)
 }
 
 type nativeObjectProber interface {
@@ -168,6 +169,51 @@ func (s *NativeObjectStore) List(ctx context.Context, prefix string) ([]ObjectIn
 		return nil, err
 	}
 	return s.client.List(nativeContext(ctx), prefix)
+}
+
+func (s *NativeObjectStore) ListPage(
+	ctx context.Context,
+	prefix string,
+	after string,
+	limit int,
+) ([]ObjectInfo, string, error) {
+	if err := objectContextErr(ctx); err != nil {
+		return nil, "", err
+	}
+	return s.client.ListPage(nativeContext(ctx), prefix, after, limit)
+}
+
+func collectNativeObjectPages(
+	ctx context.Context,
+	prefix string,
+	listPage func(context.Context, string, string, int) ([]ObjectInfo, string, error),
+) ([]ObjectInfo, error) {
+	items := make([]ObjectInfo, 0)
+	after := ""
+	for {
+		page, next, err := listPage(ctx, prefix, after, 1000)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, page...)
+		if next == "" {
+			return items, nil
+		}
+		if next <= after {
+			return nil, fmt.Errorf(
+				"native object list cursor did not advance for prefix %q",
+				prefix,
+			)
+		}
+		after = next
+	}
+}
+
+func nativeObjectPageLimit(limit int) int {
+	if limit <= 0 || limit > 1000 {
+		return 1000
+	}
+	return limit
 }
 
 func validateNativeCondition(condition PutCondition) error {

@@ -8,6 +8,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+const defaultQueryCostLimit = 100000
+
 type budget struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -21,20 +23,28 @@ type budget struct {
 	profiler  *profiler
 	lookup    IndexLookup
 	entities  EntityLookup
+	planner   PlannerStats
 }
 
-func newBudget(parent context.Context, request Request, profiler *profiler, lookup IndexLookup, entities EntityLookup) (*budget, context.CancelFunc) {
+func newBudget(parent context.Context, request Request, profiler *profiler, lookup IndexLookup, entities EntityLookup, planner PlannerStats) (*budget, context.CancelFunc) {
 	ctx := parent
 	cancel := func() {}
 	if request.TimeoutMS > 0 {
 		ctx, cancel = context.WithTimeout(parent, time.Duration(request.TimeoutMS)*time.Millisecond)
 	}
-	limit := request.CostLimit
-	if limit <= 0 {
-		limit = 100000
+	limit := normalizedCostLimit(request.CostLimit)
+	b := &budget{
+		ctx: ctx, cancel: cancel, limit: limit, profiler: profiler,
+		lookup: lookup, entities: entities, planner: planner,
 	}
-	b := &budget{ctx: ctx, cancel: cancel, limit: limit, profiler: profiler, lookup: lookup, entities: entities}
 	return b, cancel
+}
+
+func normalizedCostLimit(limit int) int {
+	if limit <= 0 {
+		return defaultQueryCostLimit
+	}
+	return limit
 }
 
 func (b *budget) add(cost int) error {
@@ -54,6 +64,25 @@ func (b *budget) check() error {
 		b.timedOut = true
 		return fmt.Errorf("%w: query timeout or cancellation", ErrLimitExceeded)
 	default:
+	}
+	return nil
+}
+
+func (b *budget) checkAdditionalCost(cost int) error {
+	if err := b.check(); err != nil {
+		return err
+	}
+	if cost <= 0 {
+		return nil
+	}
+	remaining := b.limit - b.cost
+	if remaining < 0 || cost > remaining {
+		return fmt.Errorf(
+			"%w: additional cost %d exceeds remaining limit %d",
+			ErrLimitExceeded,
+			cost,
+			max(remaining, 0),
+		)
 	}
 	return nil
 }

@@ -58,6 +58,10 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 	if !pathAllowsKind(start.Kind, request.Path) {
 		return graph.Path{}, false, nil
 	}
+	if start.ID == target.ID &&
+		shortestTargetAllows(start, 0, request.Path) {
+		return graph.Path{Entities: []graph.Entity{start}}, true, nil
+	}
 	startState := shortestState{id: start.ID}
 	queue := []shortestState{startState}
 	stepped := len(request.Path.Steps) > 0
@@ -78,41 +82,73 @@ func shortestPath(g *graph.Graph, start graph.Entity, target graph.Entity, reque
 		if current.depth >= depth {
 			continue
 		}
-		neighbors, err := neighborsForBudget(g, current.id, request, budget)
-		if err != nil {
-			return graph.Path{}, false, err
-		}
-		for _, neighbor := range neighbors {
+		levelRequest := requestForPathLevel(request, current.depth)
+		var result graph.Path
+		targetFound := false
+		processNeighbor := func(
+			neighbor graph.Neighbor,
+		) (bool, error) {
 			budget.visited++
 			if shortestPathContains(current, neighbor.Entity.ID, previous) || !shortestStepAllows(current.depth, neighbor, request.Path) {
-				continue
+				return true, nil
 			}
 			next := shortestState{id: neighbor.Entity.ID, depth: current.depth + 1, serial: nextSerial}
 			nextSerial++
 			isTarget := neighbor.Entity.ID == target.ID
 			if isTarget && !shortestTargetAllows(neighbor.Entity, next.depth, request.Path) {
-				continue
+				return true, nil
 			}
 			previous[next] = shortestPredecessor{state: current, edge: neighbor.Edge}
 			entities[next] = neighbor.Entity
 			if isTarget {
-				return rebuildShortestPath(startState, next, previous, entities), true, nil
+				result = rebuildShortestPath(
+					startState, next, previous, entities,
+				)
+				targetFound = true
+				return false, nil
 			}
 			if stepped {
 				if !retainSteppedShortestState(next, current, previous, frontiers, active) {
 					delete(previous, next)
 					delete(entities, next)
-					continue
+					return true, nil
 				}
 			} else {
 				if _, ok := seen[next.id]; ok {
 					delete(previous, next)
 					delete(entities, next)
-					continue
+					return true, nil
 				}
 				seen[next.id] = struct{}{}
 			}
 			queue = append(queue, next)
+			return true, nil
+		}
+		used, err := visitIndexedPathNeighbors(
+			g, current.id, levelRequest, budget, processNeighbor,
+		)
+		if err != nil {
+			return graph.Path{}, false, err
+		}
+		if !used {
+			neighbors, err := neighborsForBudget(
+				g, current.id, levelRequest, budget,
+			)
+			if err != nil {
+				return graph.Path{}, false, err
+			}
+			for _, neighbor := range neighbors {
+				keepGoing, err := processNeighbor(neighbor)
+				if err != nil {
+					return graph.Path{}, false, err
+				}
+				if !keepGoing {
+					break
+				}
+			}
+		}
+		if targetFound {
+			return result, true, nil
 		}
 	}
 	return graph.Path{}, false, nil

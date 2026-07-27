@@ -19,16 +19,24 @@ func (s *TenantStore) cleanupObsoleteIndexObjects(ctx context.Context, tenantID 
 		}
 	}
 	for _, prefix := range []string{s.secondaryIndexPrefix(tenantID), s.edgeShardPrefix(tenantID), s.entityPagePrefix(tenantID), s.parquetVersionRootPrefix(tenantID)} {
-		objects, err := s.Objects.List(ctx, prefix)
+		err := scanObjectPrefix(
+			ctx, s.Objects, prefix,
+			func(objects []ObjectInfo) error {
+				for _, object := range objects {
+					if _, ok := keep[object.Key]; ok {
+						continue
+					}
+					if err := s.deleteListedObsoleteIndexObjectIfSafe(
+						ctx, tenantID, object.Key, current.Version,
+					); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		)
 		if err != nil {
 			return err
-		}
-		for _, object := range objects {
-			if _, ok := keep[object.Key]; !ok {
-				if err := s.deleteListedObsoleteIndexObjectIfSafe(ctx, tenantID, object.Key, current.Version); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return nil
@@ -55,6 +63,7 @@ type indexObjectTarget struct {
 	TenantID     string
 	Kind         string
 	Field        string
+	Unique       bool
 	RelationType string
 	Shard        string
 	ContentHash  string
@@ -66,7 +75,7 @@ func indexObjectTargets(s *TenantStore, tenantID string, catalog IndexCatalog) m
 		if specFormat(index.Format) == IndexFormatParquet && len(index.Objects) > 0 {
 			for _, object := range index.Objects {
 				_, immutable := s.parquetVersionFromKey(tenantID, object.Key)
-				targets[object.Key] = indexObjectTarget{Key: object.Key, Type: "parquet_secondary_index", Immutable: immutable, TenantID: tenantID, Kind: index.Kind, Field: index.Field, ContentHash: object.ContentHash}
+				targets[object.Key] = indexObjectTarget{Key: object.Key, Type: "parquet_secondary_index", Immutable: immutable, TenantID: tenantID, Kind: index.Kind, Field: index.Field, Unique: secondaryIndexSpecUnique(index), ContentHash: object.ContentHash}
 			}
 		}
 	}
@@ -165,26 +174,30 @@ func obsoleteIndexObjectSafeToDelete(data []byte, target indexObjectTarget, curr
 		if err != nil {
 			return false
 		}
-		if !indexTenantMatches(catalog.TenantID, target.TenantID) || catalog.Version > currentVersion {
+		if !indexTenantMatches(catalog.TenantID, target.TenantID) ||
+			!indexObjectVersionSafeToDelete(catalog.Version, currentVersion, target.Immutable) {
 			return false
 		}
 		hash, err := indexCatalogContentHash(catalog)
 		return err == nil && target.ContentHash != "" && hash == target.ContentHash
 	case "parquet_secondary_index_pack":
-		index, err := decodeParquetSecondaryIndex(context.Background(), data, target.TenantID, target.Kind, target.Field, 0, false)
+		index, err := decodeParquetSecondaryIndex(context.Background(), data, target.TenantID, target.Kind, target.Field, 0, target.Unique)
 		if err != nil {
 			return false
 		}
-		if !indexTenantMatches(index.TenantID, target.TenantID) || index.Version > currentVersion || index.Kind != target.Kind || index.Field != target.Field {
+		if !indexTenantMatches(index.TenantID, target.TenantID) ||
+			!indexObjectVersionSafeToDelete(index.Version, currentVersion, target.Immutable) ||
+			index.Kind != target.Kind || index.Field != target.Field {
 			return false
 		}
 		return target.ContentHash != "" && secondaryIndexContentHash(index) == target.ContentHash
 	case "parquet_secondary_index":
-		index, err := decodeParquetSecondaryIndex(context.Background(), data, target.TenantID, target.Kind, target.Field, 0, false)
+		index, err := decodeParquetSecondaryIndex(context.Background(), data, target.TenantID, target.Kind, target.Field, 0, target.Unique)
 		if err != nil {
 			return false
 		}
-		if !indexTenantMatches(index.TenantID, target.TenantID) || index.Version > currentVersion {
+		if !indexTenantMatches(index.TenantID, target.TenantID) ||
+			!indexObjectVersionSafeToDelete(index.Version, currentVersion, target.Immutable) {
 			return false
 		}
 		if index.Kind != target.Kind || index.Field != target.Field {
@@ -196,7 +209,9 @@ func obsoleteIndexObjectSafeToDelete(data []byte, target indexObjectTarget, curr
 		if err != nil {
 			return false
 		}
-		if !indexTenantMatches(shard.TenantID, target.TenantID) || shard.Version > currentVersion || shard.RelationType != target.RelationType {
+		if !indexTenantMatches(shard.TenantID, target.TenantID) ||
+			!indexObjectVersionSafeToDelete(shard.Version, currentVersion, target.Immutable) ||
+			shard.RelationType != target.RelationType {
 			return false
 		}
 		return target.ContentHash != "" && edgeShardContentHash(shard) == target.ContentHash
@@ -205,7 +220,8 @@ func obsoleteIndexObjectSafeToDelete(data []byte, target indexObjectTarget, curr
 		if err != nil {
 			return false
 		}
-		if !indexTenantMatches(shard.TenantID, target.TenantID) || shard.Version > currentVersion {
+		if !indexTenantMatches(shard.TenantID, target.TenantID) ||
+			!indexObjectVersionSafeToDelete(shard.Version, currentVersion, target.Immutable) {
 			return false
 		}
 		if shard.RelationType != target.RelationType || shard.Shard != target.Shard {
@@ -217,7 +233,8 @@ func obsoleteIndexObjectSafeToDelete(data []byte, target indexObjectTarget, curr
 		if err != nil {
 			return false
 		}
-		if !indexTenantMatches(page.TenantID, target.TenantID) || page.Version > currentVersion {
+		if !indexTenantMatches(page.TenantID, target.TenantID) ||
+			!indexObjectVersionSafeToDelete(page.Version, currentVersion, target.Immutable) {
 			return false
 		}
 		return target.ContentHash != "" && entityPageContentHash(page) == target.ContentHash
@@ -229,13 +246,21 @@ func obsoleteIndexObjectSafeToDelete(data []byte, target indexObjectTarget, curr
 		if !indexTenantMatches(page.TenantID, target.TenantID) {
 			return false
 		}
-		if page.Version > currentVersion || page.Shard != target.Shard {
+		if !indexObjectVersionSafeToDelete(page.Version, currentVersion, target.Immutable) ||
+			page.Shard != target.Shard {
 			return false
 		}
 		return target.ContentHash != "" && entityPageContentHash(page) == target.ContentHash
 	default:
 		return false
 	}
+}
+
+func indexObjectVersionSafeToDelete(version int64, currentVersion int64, immutable bool) bool {
+	if version > currentVersion {
+		return false
+	}
+	return !immutable || version < currentVersion
 }
 
 func (s *TenantStore) indexObjectTargetFromContent(tenantID string, key string, data []byte, currentVersion int64) (indexObjectTarget, bool) {
@@ -264,7 +289,8 @@ func (s *TenantStore) versionedParquetObjectTarget(tenantID string, key string, 
 		}
 		return indexObjectTarget{Key: key, Type: "parquet_index_catalog", Immutable: true, TenantID: tenantID, ContentHash: hash}, true
 	}
-	if index, err := decodeParquetSecondaryIndex(context.Background(), data, tenantID, "", "", version, false); err == nil && index.Kind != "" && index.Field != "" {
+	kind, field, _ := s.parquetSecondaryIndexIdentityFromKey(tenantID, key)
+	if index, err := decodeParquetSecondaryIndex(context.Background(), data, tenantID, kind, field, version, false); err == nil && index.Kind != "" && index.Field != "" {
 		if !indexTenantMatches(index.TenantID, tenantID) || index.Version > currentVersion {
 			return indexObjectTarget{}, false
 		}
@@ -272,7 +298,7 @@ func (s *TenantStore) versionedParquetObjectTarget(tenantID string, key string, 
 		if strings.Contains(key, "/shards/pack_") {
 			targetType = "parquet_secondary_index_pack"
 		}
-		return indexObjectTarget{Key: key, Type: targetType, Immutable: true, TenantID: tenantID, Kind: index.Kind, Field: index.Field, ContentHash: secondaryIndexContentHash(index)}, true
+		return indexObjectTarget{Key: key, Type: targetType, Immutable: true, TenantID: tenantID, Kind: index.Kind, Field: index.Field, Unique: index.Unique, ContentHash: secondaryIndexContentHash(index)}, true
 	}
 	if shard, err := decodeParquetEdgeShard(context.Background(), data, tenantID, "", "", version); err == nil && shard.RelationType != "" && shard.Shard != "" {
 		if !indexTenantMatches(shard.TenantID, tenantID) || shard.Version > currentVersion {

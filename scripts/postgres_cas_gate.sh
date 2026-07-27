@@ -39,10 +39,18 @@ wait_rustfs() {
 }
 
 wait_postgres() {
+  local ready_streak=0
+  local probe=""
   for _ in $(seq 1 90); do
-    if docker compose -p "$PROJECT" -f docker-compose.postgres.yml exec -T postgres \
-      pg_isready -U graphdb -d graphdb >/dev/null 2>&1; then
-      return 0
+    probe="$(docker compose -p "$PROJECT" -f docker-compose.postgres.yml exec -T postgres \
+      psql -U graphdb -d graphdb -Atqc 'SELECT 1' 2>/dev/null || true)"
+    if [[ "$probe" == "1" ]]; then
+      ready_streak=$((ready_streak + 1))
+      if [[ "$ready_streak" -ge 3 ]]; then
+        return 0
+      fi
+    else
+      ready_streak=0
     fi
     sleep 1
   done

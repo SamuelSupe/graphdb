@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -12,6 +13,7 @@ import (
 )
 
 const defaultRestoreDrillQueryTimeout = 30 * time.Second
+const defaultRestoreDrillCleanupTimeout = 30 * time.Second
 
 type TenantRestoreDrillReport struct {
 	TenantID            string                            `json:"tenant_id"`
@@ -75,7 +77,10 @@ type TenantRestoreProofCheck struct {
 	Message  string `json:"message,omitempty"`
 }
 
-func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (TenantRestoreDrillReport, error) {
+func (s *TenantStore) tenantRestoreDrillTask(
+	ctx context.Context,
+	task Task,
+) (report TenantRestoreDrillReport, returnErr error) {
 	total := taskProgressTotal(task.Type)
 	targetTenantID := restoreDrillTargetTenantID(task)
 	if err := ValidateTenantID(targetTenantID); err != nil {
@@ -90,7 +95,7 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 			return TenantRestoreDrillReport{}, err
 		}
 	}
-	report := TenantRestoreDrillReport{
+	report = TenantRestoreDrillReport{
 		TenantID:       task.TenantID,
 		TargetTenantID: targetTenantID,
 		TargetPrefix:   cleanPrefix(targetPrefix),
@@ -121,8 +126,37 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 		_ = s.updateTaskProgress(ctx, task, "restore_drill_dry_run_done", total, total, map[string]any{"phase": "restore_drill_dry_run_done", "backup_key": report.BackupKey, "backup_manifest_key": report.BackupManifestKey, "recoverable": report.Recoverable})
 		return report, nil
 	}
-	if err := targetStore.claimRestoreDrillTarget(ctx, targetTenantID); err != nil {
+	claim, err := targetStore.claimRestoreDrillTarget(ctx, targetTenantID)
+	if err != nil {
 		return report, err
+	}
+	cleanupAttempted := false
+	cleanupOperation := func(cleanupCtx context.Context) (TenantPurgeReport, error) {
+		return targetStore.cleanupClaimedRestoreDrillTarget(
+			cleanupCtx, targetTenantID, claim,
+		)
+	}
+	cleanupTarget := func(cleanupCtx context.Context) error {
+		cleanupAttempted = true
+		return applyRestoreDrillCleanup(cleanupCtx, cleanupOperation, &report)
+	}
+	if cleanup {
+		defer func() {
+			if cleanupAttempted {
+				return
+			}
+			cleanupCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), defaultRestoreDrillCleanupTimeout,
+			)
+			defer cancel()
+			if cleanupErr := cleanupTarget(cleanupCtx); cleanupErr != nil {
+				returnErr = errors.Join(
+					returnErr,
+					fmt.Errorf("cleanup restore drill target: %w", cleanupErr),
+				)
+			}
+			report.finish()
+		}()
 	}
 	if err := s.updateTaskProgress(ctx, task, "restore_drill_restore", 2, total, map[string]any{"phase": "restore_drill_restore", "backup_key": report.BackupKey}); err != nil {
 		return report, err
@@ -149,6 +183,11 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 	ownership, err := targetStore.captureRestoreDrillOwnership(ctx, targetTenantID, restoreTask.ID)
 	if err != nil {
 		return report, err
+	}
+	cleanupOperation = func(cleanupCtx context.Context) (TenantPurgeReport, error) {
+		return targetStore.cleanupRestoreDrillTarget(
+			cleanupCtx, targetTenantID, ownership,
+		)
 	}
 	report.Restore = &restoreReport
 	if err := s.updateTaskProgress(ctx, task, "restore_drill_audit", 3, total, map[string]any{"phase": "restore_drill_audit", "version": restoreReport.Version}); err != nil {
@@ -181,15 +220,7 @@ func (s *TenantStore) tenantRestoreDrillTask(ctx context.Context, task Task) (Te
 		if err := s.updateTaskProgress(ctx, task, "restore_drill_cleanup", 6, total, map[string]any{"phase": "restore_drill_cleanup"}); err != nil {
 			return report, err
 		}
-		purge, err := targetStore.cleanupRestoreDrillTarget(ctx, targetTenantID, ownership)
-		if err != nil {
-			report.CleanupError = err.Error()
-			report.Proof.Checks = append(report.Proof.Checks, TenantRestoreProofCheck{Name: "cleanup", Status: "error", Required: true, Message: err.Error()})
-		} else {
-			report.CleanupDeleted = purge.Deleted
-			report.Proof.Checks = append(report.Proof.Checks, TenantRestoreProofCheck{Name: "cleanup", Status: "ok", Required: true, Message: fmt.Sprintf("deleted %d drill objects", purge.Deleted)})
-		}
-		report.Proof.finish()
+		_ = cleanupTarget(ctx)
 	}
 	report.finish()
 	_ = s.updateTaskProgress(ctx, task, "restore_drill_done", total, total, map[string]any{"phase": "restore_drill_done", "recoverable": report.Recoverable, "status": report.Status})

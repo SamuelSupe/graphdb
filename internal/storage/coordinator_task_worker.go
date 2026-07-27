@@ -7,17 +7,39 @@ import (
 	"time"
 )
 
+const coordinatorLifecycleTaskType = "tenant_lifecycle"
+
+type coordinatorLeaseContextKey struct{}
+
+type coordinatorLeaseContext struct {
+	tenantID string
+	taskType string
+}
+
 func (s *TenantStore) startCoordinatorTaskLease(
+	ctx context.Context,
 	task Task,
 	cancel context.CancelFunc,
-) (func(), error) {
-	return s.startCoordinatorLease(
-		context.Background(),
+) (context.Context, func(), error) {
+	taskType := coordinatorTaskLeaseType(task)
+	if coordinatorLeaseContextMatches(
+		ctx,
 		task.TenantID,
-		task.Type,
+		taskType,
+	) {
+		return ctx, func() {}, nil
+	}
+	stop, err := s.startCoordinatorLease(
+		ctx,
+		task.TenantID,
+		taskType,
 		s.InstanceID+"/"+task.ID,
 		cancel,
 	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return bindCoordinatorLeaseContext(ctx, task.TenantID, taskType), stop, nil
 }
 
 func (s *TenantStore) startCoordinatorOperationLease(
@@ -26,6 +48,10 @@ func (s *TenantStore) startCoordinatorOperationLease(
 	taskType string,
 ) (context.Context, func(), error) {
 	if !s.coordinated() {
+		return ctx, func() {}, nil
+	}
+	taskType = coordinatorLeaseTaskType(taskType)
+	if coordinatorLeaseContextMatches(ctx, tenantID, taskType) {
 		return ctx, func() {}, nil
 	}
 	operationID, err := newCommitID()
@@ -44,10 +70,50 @@ func (s *TenantStore) startCoordinatorOperationLease(
 		cancel()
 		return nil, nil, err
 	}
+	operationCtx = bindCoordinatorLeaseContext(operationCtx, tenantID, taskType)
 	return operationCtx, func() {
 		stop()
 		cancel()
 	}, nil
+}
+
+func coordinatorTaskLeaseType(task Task) string {
+	if task.Type == TaskTypeRepair &&
+		!boolTaskParam(task.Params, "apply") {
+		return TaskTypeRepair
+	}
+	return coordinatorLeaseTaskType(task.Type)
+}
+
+func coordinatorLeaseTaskType(taskType string) string {
+	switch taskType {
+	case "create", "clone", "migration", "purge", "status",
+		TaskTypeCompact, TaskTypeGC, TaskTypeRepair, TaskTypeIndexRebuild,
+		TaskTypeTenantRestore:
+		return coordinatorLifecycleTaskType
+	default:
+		return taskType
+	}
+}
+
+func bindCoordinatorLeaseContext(
+	ctx context.Context,
+	tenantID string,
+	taskType string,
+) context.Context {
+	return context.WithValue(ctx, coordinatorLeaseContextKey{}, coordinatorLeaseContext{
+		tenantID: tenantID,
+		taskType: taskType,
+	})
+}
+
+func coordinatorLeaseContextMatches(
+	ctx context.Context,
+	tenantID string,
+	taskType string,
+) bool {
+	current, ok := ctx.Value(coordinatorLeaseContextKey{}).(coordinatorLeaseContext)
+	return ok && current.tenantID == tenantID && current.taskType == taskType
 }
 
 func (s *TenantStore) startCoordinatorLease(
@@ -73,15 +139,26 @@ func (s *TenantStore) startCoordinatorLease(
 	done := make(chan struct{})
 	var once sync.Once
 	go func() {
-		ticker := time.NewTicker(max(ttl/3, time.Second))
+		ticker := time.NewTicker(max(ttl/3, 10*time.Millisecond))
 		defer ticker.Stop()
 		current := lease
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			select {
 			case <-done:
 				return
+			case <-ctx.Done():
+				return
 			case <-ticker.C:
-				renewCtx, renewCancel := context.WithTimeout(context.Background(), min(ttl/2, 5*time.Second))
+				if ctx.Err() != nil {
+					return
+				}
+				renewTimeout := max(min(ttl/2, 5*time.Second), 10*time.Millisecond)
+				renewCtx, renewCancel := context.WithTimeout(
+					context.Background(), renewTimeout,
+				)
 				next, ok, renewErr := s.Coordinator.RenewTaskLease(renewCtx, current, ttl)
 				renewCancel()
 				if renewErr != nil || !ok {

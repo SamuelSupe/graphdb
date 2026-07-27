@@ -69,36 +69,15 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		Overwrite:      options.Overwrite,
 		StartedAt:      started,
 	}
-
-	sourceObjects, err := source.Objects.List(ctx, sourcePrefix)
-	if err != nil {
-		return report, err
+	if !options.DryRun && sameTenantMigrationLocation(
+		source.Objects, sourcePrefix, target.Objects, targetPrefix,
+	) {
+		return report, fmt.Errorf(
+			"%w: source and target tenant locations are identical",
+			ErrConflict,
+		)
 	}
-	if len(sourceObjects) == 0 {
-		return report, ErrNotFound
-	}
-	targetObjects, err := target.Objects.List(ctx, targetPrefix)
-	if err != nil {
-		return report, err
-	}
-	report.TargetExists = len(targetObjects) > 0
-	if report.TargetExists && !options.Overwrite && !options.DryRun {
-		return report, fmt.Errorf("%w: target tenant %q already exists", ErrConflict, targetTenantID)
-	}
-	if options.DryRun {
-		for _, object := range sourceObjects {
-			report.Objects++
-			report.Bytes += object.Size
-			report.Skipped++
-			if len(report.Samples) < tenantMigrationSampleLimit {
-				relative := strings.TrimPrefix(object.Key, sourcePrefix)
-				report.Samples = append(report.Samples, TenantMigrationObject{SourceKey: object.Key, TargetKey: targetPrefix + relative, Bytes: object.Size, ETag: object.ETag})
-			}
-		}
-		report.FinishedAt = time.Now().UTC()
-		return report, nil
-	}
-	if target.coordinated() {
+	if target.coordinated() && !options.DryRun {
 		return copyTenantObjectsCoordinated(
 			ctx,
 			source,
@@ -107,36 +86,96 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 			targetTenantID,
 			options,
 			report,
-			sourceObjects,
+		)
+	}
+
+	if options.DryRun {
+		found := false
+		err := scanObjectPrefix(ctx, source.Objects, sourcePrefix, func(
+			objects []ObjectInfo,
+		) error {
+			for _, object := range objects {
+				found = true
+				report.Objects++
+				report.Bytes += object.Size
+				report.Skipped++
+				if len(report.Samples) < tenantMigrationSampleLimit {
+					relative := strings.TrimPrefix(object.Key, sourcePrefix)
+					report.Samples = append(report.Samples, TenantMigrationObject{
+						SourceKey: object.Key,
+						TargetKey: targetPrefix + relative,
+						Bytes:     object.Size,
+						ETag:      object.ETag,
+					})
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return report, err
+		}
+		if !found {
+			return report, ErrNotFound
+		}
+		report.FinishedAt = time.Now().UTC()
+		return report, nil
+	}
+	sourceManifest, meta, err := source.getManifest(ctx, sourceTenantID)
+	if err != nil {
+		return report, err
+	}
+	if !meta.Exists {
+		return report, ErrNotFound
+	}
+	report.TargetExists, err = target.tenantDataExists(ctx, targetTenantID)
+	if err != nil {
+		return report, err
+	}
+	if report.TargetExists && !options.Overwrite {
+		return report, fmt.Errorf(
+			"%w: target tenant %q already exists",
+			ErrConflict, targetTenantID,
 		)
 	}
 	targetCtx, err := target.acquireAndBindWriterFence(ctx, targetTenantID)
 	if err != nil {
 		return report, err
 	}
+	report.TargetExists, err = target.tenantDataExists(targetCtx, targetTenantID)
+	if err != nil {
+		return report, err
+	}
+	if report.TargetExists && !options.Overwrite {
+		return report, fmt.Errorf(
+			"%w: target tenant %q already exists",
+			ErrConflict,
+			targetTenantID,
+		)
+	}
 	lease, _, ok := target.getCachedWriterLeaseAny(targetTenantID)
 	if !ok {
 		return report, fmt.Errorf("%w: target tenant %q has no active writer fence", ErrLeaseHeld, targetTenantID)
 	}
 	targetFence := writerFenceRef{ownerID: lease.OwnerID, token: lease.FenceToken, epoch: lease.FenceEpoch}
-	rewrites, _, err := source.prepareTenantMigrationRewrites(
-		ctx, sourceTenantID, targetTenantID, sourceObjects, targetPrefix, targetFence,
-	)
-	if err != nil {
-		return report, err
-	}
 	if report.TargetExists && options.Overwrite {
-		targetObjects, err = target.Objects.List(targetCtx, targetPrefix)
+		err := scanObjectPrefix(
+			targetCtx, target.Objects, targetPrefix,
+			func(objects []ObjectInfo) error {
+				for _, object := range objects {
+					if object.Key == target.writerLeaseKey(targetTenantID) {
+						continue
+					}
+					if err := target.deleteTenantObject(
+						targetCtx, targetTenantID, object.Key,
+					); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		)
 		if err != nil {
 			return report, err
-		}
-		for _, object := range targetObjects {
-			if object.Key == target.writerLeaseKey(targetTenantID) {
-				continue
-			}
-			if err := target.deleteTenantObject(targetCtx, targetTenantID, object.Key); err != nil {
-				return report, err
-			}
 		}
 		target.deleteWriteCache(targetTenantID)
 		target.deleteCachedTenantMetadata(targetTenantID)
@@ -145,36 +184,119 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		target.deleteCachedIndexCatalog(targetTenantID)
 		target.clearObjectKeyPrefix(targetPrefix)
 	}
-
-	for _, object := range sourceObjects {
-		if err := objectContextErr(ctx); err != nil {
-			return report, err
+	writeObject := func(writeCtx context.Context, key string, data []byte) error {
+		return target.putTenantObject(writeCtx, targetTenantID, key, data)
+	}
+	segmentHashes, segmentObjectHashes, err := source.copyTenantMigrationSegments(
+		targetCtx,
+		sourceTenantID,
+		targetPrefix,
+		sourceManifest,
+		writeObject,
+	)
+	if err != nil {
+		return report, err
+	}
+	found := false
+	manifestFound := false
+	manifestSample := -1
+	err = scanObjectPrefix(ctx, source.Objects, sourcePrefix, func(
+		objects []ObjectInfo,
+	) error {
+		pending := make([]tenantMigrationPendingObject, 0, len(objects))
+		for _, object := range objects {
+			if err := objectContextErr(ctx); err != nil {
+				return err
+			}
+			found = true
+			relative := strings.TrimPrefix(object.Key, sourcePrefix)
+			report.Objects++
+			report.Bytes += object.Size
+			if relative == "control/writer-lease.parquet" ||
+				strings.HasPrefix(relative, "coordination/") {
+				report.Skipped++
+				continue
+			}
+			targetKey := targetPrefix + relative
+			sampleIndex := -1
+			if len(report.Samples) < tenantMigrationSampleLimit {
+				report.Samples = append(report.Samples, TenantMigrationObject{
+					SourceKey: object.Key,
+					TargetKey: targetKey,
+					Bytes:     object.Size,
+					ETag:      object.ETag,
+				})
+				sampleIndex = len(report.Samples) - 1
+			}
+			if relative == "manifest.parquet" {
+				manifestFound = true
+				manifestSample = sampleIndex
+				continue
+			}
+			if strings.HasPrefix(relative, "commits/segments/") {
+				hash, copied := segmentObjectHashes[object.Key]
+				if !copied {
+					report.Skipped++
+					continue
+				}
+				report.Copied++
+				if sampleIndex >= 0 {
+					report.Samples[sampleIndex].SHA256 = hash
+				}
+				continue
+			}
+			pending = append(pending, tenantMigrationPendingObject{
+				object: object, targetKey: targetKey, sampleIndex: sampleIndex,
+			})
 		}
-		relative := strings.TrimPrefix(object.Key, sourcePrefix)
-		targetKey := targetPrefix + relative
-		report.Objects++
-		report.Bytes += object.Size
-		if relative == "control/writer-lease.parquet" {
-			report.Skipped++
-			continue
-		}
-		if len(report.Samples) < tenantMigrationSampleLimit {
-			report.Samples = append(report.Samples, TenantMigrationObject{SourceKey: object.Key, TargetKey: targetKey, Bytes: object.Size, ETag: object.ETag})
-		}
-		data := rewrites[object.Key]
-		if len(data) == 0 {
-			data, err = source.Objects.Get(ctx, object.Key)
-			if err != nil {
-				return report, err
+		hashes, copied, err := source.copyTenantMigrationPage(
+			targetCtx,
+			sourceTenantID,
+			targetTenantID,
+			targetPrefix,
+			segmentHashes,
+			targetFence,
+			pending,
+			writeObject,
+		)
+		for index, ok := range copied {
+			if !ok {
+				continue
+			}
+			report.Copied++
+			if sampleIndex := pending[index].sampleIndex; sampleIndex >= 0 {
+				report.Samples[sampleIndex].SHA256 = hashes[index]
 			}
 		}
-		if err := target.putTenantObject(targetCtx, targetTenantID, targetKey, data); err != nil {
-			return report, err
-		}
-		report.Copied++
-		if len(report.Samples) > 0 && report.Samples[len(report.Samples)-1].SourceKey == object.Key {
-			report.Samples[len(report.Samples)-1].SHA256 = objectContentHash(data)
-		}
+		return err
+	})
+	if err != nil {
+		return report, err
+	}
+	if !found || !manifestFound {
+		return report, fmt.Errorf("source tenant %q has no manifest object", sourceTenantID)
+	}
+	manifest := cloneTenantMigrationManifest(sourceManifest)
+	rewriteTenantMigrationManifest(
+		&manifest,
+		targetTenantID,
+		sourcePrefix,
+		targetPrefix,
+		targetFence,
+		segmentHashes,
+	)
+	manifestData, err := marshalParquetManifest(ctx, manifest)
+	if err != nil {
+		return report, err
+	}
+	if err := writeObject(
+		targetCtx, target.manifestKey(targetTenantID), manifestData,
+	); err != nil {
+		return report, err
+	}
+	report.Copied++
+	if manifestSample >= 0 {
+		report.Samples[manifestSample].SHA256 = objectContentHash(manifestData)
 	}
 	if err := target.addTenantToRegistry(targetCtx, targetTenantID); err != nil {
 		return report, err
@@ -183,50 +305,23 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	return report, nil
 }
 
-func (s *TenantStore) prepareTenantMigrationRewrites(
-	ctx context.Context,
-	tenantID string,
-	targetTenantID string,
-	objects []ObjectInfo,
-	targetPrefix string,
-	targetFence writerFenceRef,
-) (map[string][]byte, map[string]string, error) {
-	sourcePrefix := s.tenantObjectPrefix(tenantID)
-	rewrites := map[string][]byte{}
-	segmentHashes := map[string]string{}
-	for _, object := range objects {
-		relative := strings.TrimPrefix(object.Key, sourcePrefix)
-		if !strings.HasPrefix(relative, "commits/segments/") {
-			continue
-		}
-		data, err := s.Objects.Get(ctx, object.Key)
-		if err != nil {
-			return nil, nil, err
-		}
-		rewritten, hash, err := rewriteCommitSegmentObject(ctx, data, tenantID, sourcePrefix, targetPrefix)
-		if err != nil {
-			return nil, nil, err
-		}
-		rewrites[object.Key] = rewritten
-		segmentHashes[object.Key] = hash
-	}
-	for _, object := range objects {
-		if _, ok := rewrites[object.Key]; ok {
-			continue
-		}
-		data, err := s.Objects.Get(ctx, object.Key)
-		if err != nil {
-			return nil, nil, err
-		}
-		rewritten, changed, err := s.rewriteTenantMigrationObject(ctx, data, object.Key, tenantID, targetTenantID, sourcePrefix, targetPrefix, segmentHashes, targetFence)
-		if err != nil {
-			return nil, nil, err
-		}
-		if changed {
-			rewrites[object.Key] = rewritten
-		}
-	}
-	return rewrites, segmentHashes, nil
+func cloneTenantMigrationManifest(manifest Manifest) Manifest {
+	manifest.CommitKeys = append([]string(nil), manifest.CommitKeys...)
+	manifest.CommitSegments = append(
+		[]CommitSegmentRef(nil), manifest.CommitSegments...,
+	)
+	return manifest
+}
+
+func tenantMigrationObjectNeedsRewrite(relative string) bool {
+	return relative == "manifest.parquet" ||
+		relative == "indexes/catalog.parquet" ||
+		relative == "extensions/v1.1/reverse-index/catalog.json" ||
+		strings.HasPrefix(relative, "indexes/entities/by-id/") ||
+		strings.HasPrefix(relative, "snapshots/sharded/") &&
+			strings.HasSuffix(relative, "/catalog.parquet") ||
+		strings.HasPrefix(relative, "backups/") &&
+			strings.HasSuffix(relative, "/manifest.parquet")
 }
 
 func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []byte, key string, tenantID string, targetTenantID string, sourcePrefix string, targetPrefix string, segmentHashes map[string]string, targetFence writerFenceRef) ([]byte, bool, error) {

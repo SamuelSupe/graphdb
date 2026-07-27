@@ -28,6 +28,12 @@ func PlanQueryWithStats(g *graph.Graph, request Request, stats PlannerStats) Pla
 		plan.Index = "edge_adjacency"
 		plan.Steps = append(plan.Steps, PlanStep{Name: "load-start", Detail: request.ID, Cost: 1})
 		cost := estimateFanout(g, request, stats)
+		if (request.Direction == "out" || request.Direction == "in" ||
+			request.Direction == "both" || request.Direction == "") &&
+			request.DirectionStrategy != "impact" &&
+			canPageNeighborsEarly(request) {
+			cost = min(cost, normalizedLimit(request.Limit)+1)
+		}
 		plan.Steps = append(plan.Steps, PlanStep{Name: "expand-neighbors", Detail: directionDetail(request), Cost: cost})
 		plan.EstimatedRows = cost
 		plan.EstimatedCost = cost + 1
@@ -164,12 +170,43 @@ func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) 
 		return
 	}
 	plan.Strategy = "kind-scan"
-	plan.EstimatedRows = g.KindCount(request.Kind)
+	plan.EstimatedRows = estimatedKindScanRows(g, request, stats)
+	if len(g.Entities) == 0 && stats.Version == g.Version && len(stats.EntityPages) > 0 {
+		plan.StatsSource = "persisted-catalog"
+	}
 	plan.Steps = append(plan.Steps, PlanStep{Name: "scan-entities", Detail: request.Kind, Cost: plan.EstimatedRows})
 	plan.EstimatedCost = plan.EstimatedRows
 	if request.Kind == "" {
 		plan.Warnings = append(plan.Warnings, "match without kind scans all entities")
 	}
+}
+
+func estimatedKindScanRows(g *graph.Graph, request Request, stats PlannerStats) int {
+	rows := len(g.Entities)
+	lazyPageScan := len(g.Entities) == 0 && stats.Version == g.Version
+	if lazyPageScan {
+		rows = estimateEntityPageTotal(stats)
+	}
+	if lazyPageScan &&
+		request.Op == "match" &&
+		canPageMatchEarly(request) &&
+		len(requestFilters(request)) == 0 &&
+		request.WhereExpr == nil {
+		rows = min(rows, normalizedLimit(request.Limit)+1)
+	}
+	return rows
+}
+
+func estimateEntityPageTotal(stats PlannerStats) int {
+	total := 0
+	for _, page := range stats.EntityPages {
+		count := max(page.EntityCount, 0)
+		if count > math.MaxInt-total {
+			return math.MaxInt
+		}
+		total += count
+	}
+	return total
 }
 
 type indexChoice struct {
@@ -206,9 +243,6 @@ func indexScanFilterSupported(filter Filter) bool {
 	switch op {
 	case "gt", "gte", "lt", "lte", "prefix":
 		return len(filterValues(filter)) == 1 && indexKeyComparableValue(filter.Value)
-	case "exists":
-		value, ok := filter.Value.(bool)
-		return !ok || value
 	default:
 		return false
 	}
@@ -255,14 +289,23 @@ func estimateFanout(g *graph.Graph, request Request, stats PlannerStats) int {
 
 func estimateTraversalCost(g *graph.Graph, request Request, stats PlannerStats) int {
 	depth := normalizedDepth(request.Depth)
-	fanout := estimateFanout(g, request, stats)
-	if fanout < 1 {
-		return 1
+	edgeCap := estimateEdgeCap(
+		g, stats, traversalEdgeDirection(request, depth),
+	)
+	if request.Op == "impact" ||
+		request.DirectionStrategy == "impact" {
+		if impactCap, ok := estimateImpactEdgeCap(request, stats); ok {
+			edgeCap = max(impactCap, 1)
+		}
 	}
-	edgeCap := estimateEdgeCap(g, stats)
 	cost := 0
 	level := 1
 	for i := 0; i < depth; i++ {
+		levelRequest := requestForPathLevel(request, i)
+		fanout := estimateFanout(g, levelRequest, stats)
+		if fanout < 1 {
+			break
+		}
 		if level > edgeCap/fanout {
 			return edgeCap
 		}
@@ -275,36 +318,125 @@ func estimateTraversalCost(g *graph.Graph, request Request, stats PlannerStats) 
 	return max(cost, 1)
 }
 
+func traversalEdgeDirection(request Request, depth int) string {
+	if request.Op == "impact" ||
+		request.DirectionStrategy == "impact" {
+		return "both"
+	}
+	out := false
+	in := false
+	for level := 0; level < depth; level++ {
+		switch requestForPathLevel(request, level).Direction {
+		case "out":
+			out = true
+		case "in":
+			in = true
+		case "both", "":
+			out = true
+			in = true
+		}
+	}
+	switch {
+	case out && in:
+		return "both"
+	case in:
+		return "in"
+	default:
+		return "out"
+	}
+}
+
 func estimateFanoutFromStats(g *graph.Graph, request Request, stats PlannerStats) (int, bool) {
-	if stats.Version == 0 || stats.Version != g.Version || len(stats.EdgeShards) == 0 {
+	if stats.Version == 0 || stats.Version != g.Version {
 		return 0, false
 	}
 	if request.Op == "impact" || request.DirectionStrategy == "impact" {
-		return 0, false
+		return estimateImpactFanoutFromStats(request, stats)
 	}
-	if request.ID == "" {
-		return estimateEdgeShardTotal(stats, relationTypeSet(request)), true
+	shardID := ""
+	if request.ID != "" {
+		shardID = plannerEdgeShardID(request.ID)
 	}
-	if request.Direction != "out" {
-		return 0, false
-	}
-	shardID := plannerEdgeShardID(request.ID)
 	allowed := relationTypeSet(request)
+	switch request.Direction {
+	case "out":
+		return estimateDirectionalFanout(
+			stats.EdgeShards, shardID, allowed,
+		)
+	case "in":
+		return estimateDirectionalFanout(
+			stats.ReverseEdgeShards, shardID, allowed,
+		)
+	case "both", "":
+		out, outOK := estimateDirectionalFanout(
+			stats.EdgeShards, shardID, allowed,
+		)
+		in, inOK := estimateDirectionalFanout(
+			stats.ReverseEdgeShards, shardID, allowed,
+		)
+		if !outOK || !inOK {
+			return 0, false
+		}
+		return out + in, true
+	default:
+		return 0, false
+	}
+}
+
+func estimateDirectionalFanout(
+	shards []PlannerEdgeStat,
+	shardID string,
+	allowed map[string]struct{},
+) (int, bool) {
+	if len(shards) == 0 {
+		return 0, false
+	}
 	count := 0
 	matched := false
-	for _, shard := range stats.EdgeShards {
-		if shard.Shard != shardID || !relationAllowed(shard.RelationType, allowed) {
+	for _, shard := range shards {
+		if (shardID != "" && shard.Shard != shardID) ||
+			!relationAllowed(shard.RelationType, allowed) {
 			continue
 		}
 		matched = true
 		count += max(shard.EdgeCount, 0)
 	}
+	if shardID == "" {
+		matched = true
+	}
 	return count, matched
 }
 
-func estimateEdgeCap(g *graph.Graph, stats PlannerStats) int {
-	if stats.Version != 0 && stats.Version == g.Version && len(stats.EdgeShards) > 0 {
-		return max(estimateEdgeShardTotal(stats, nil), 1)
+func estimateEdgeCap(
+	g *graph.Graph,
+	stats PlannerStats,
+	direction string,
+) int {
+	if stats.Version != 0 && stats.Version == g.Version {
+		switch direction {
+		case "in":
+			if count, ok := estimateDirectionalFanout(
+				stats.ReverseEdgeShards, "", nil,
+			); ok {
+				return max(count, 1)
+			}
+		case "both", "":
+			out, outOK := estimateDirectionalFanout(
+				stats.EdgeShards, "", nil,
+			)
+			in, inOK := estimateDirectionalFanout(
+				stats.ReverseEdgeShards, "", nil,
+			)
+			if outOK && inOK {
+				return max(out+in, 1)
+			}
+		default:
+			if count, ok := estimateDirectionalFanout(
+				stats.EdgeShards, "", nil,
+			); ok {
+				return max(count, 1)
+			}
+		}
 	}
 	return max(len(g.Edges), 1)
 }

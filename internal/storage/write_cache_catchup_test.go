@@ -58,10 +58,27 @@ func TestCatchUpWriteCacheReusesGraphForHeadOnlyRevision(t *testing.T) {
 	cached.Meta = coordinatedManifestMeta("manifest-v7-r7", CoordinationHead{
 		Revision: 7, Generation: 2, WriteContextRevision: 1,
 	})
+	const graphCacheBytes = int64(2048)
+	tailKey := "tenants/tenant-a/commits/7-tail.parquet"
+	cached.Manifest.CommitKeys = []string{tailKey}
+	cached.CommitTail = buildCommitTailCache(
+		[]commitSegmentItem{{
+			Key: tailKey,
+			Commit: graph.Commit{
+				ID: "tail", TenantID: "tenant-a", Version: 7,
+			},
+		}},
+		cached.Manifest.CommitKeys,
+	)
+	if !cached.CommitTail.matches(cached.Manifest.CommitKeys) {
+		t.Fatal("test fixture did not build a complete commit tail")
+	}
+	cached.CacheBytes = graphCacheBytes + cached.CommitTail.bytes
 	manifest := cached.Manifest
 	manifest.SnapshotVersion = 7
 	manifest.SnapshotKey = "snapshot-v7"
 	manifest.SnapshotCatalogKey = "catalog-v7"
+	manifest.CommitKeys = nil
 	meta := coordinatedManifestMeta("manifest-v7-r8", CoordinationHead{
 		Revision: 8, Generation: 2, WriteContextRevision: 1,
 	})
@@ -74,6 +91,12 @@ func TestCatchUpWriteCacheReusesGraphForHeadOnlyRevision(t *testing.T) {
 	}
 	if !applied || caughtUp.Graph != cached.Graph || caughtUp.Meta.ETag != meta.ETag {
 		t.Fatalf("head-only catch up applied=%v graph_reused=%v meta=%#v", applied, caughtUp.Graph == cached.Graph, caughtUp.Meta)
+	}
+	if !caughtUp.CommitTail.matches(nil) {
+		t.Fatalf("commit tail after compaction = %#v, want empty complete tail", caughtUp.CommitTail)
+	}
+	if caughtUp.CacheBytes != graphCacheBytes {
+		t.Fatalf("cache bytes after compaction = %d, want %d", caughtUp.CacheBytes, graphCacheBytes)
 	}
 }
 

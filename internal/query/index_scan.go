@@ -3,8 +3,8 @@ package query
 import (
 	"context"
 	"sort"
-	"strconv"
-	"strings"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func scanFieldIndexIDs(ctx context.Context, scanner FieldIndexScanLookup, kind string, field string, filters []Filter) ([]string, bool, error) {
@@ -20,13 +20,13 @@ func scanFieldIndexIDs(ctx context.Context, scanner FieldIndexScanLookup, kind s
 	if err != nil || !ok {
 		return nil, ok, err
 	}
+	matchesKey := newIndexScanKeyMatcher(fieldFilters)
 	seen := map[string]struct{}{}
 	for key, ids := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
 		}
-		value, comparable := indexKeyValue(key)
-		if !comparable || !indexValueMatchesFilters(value, fieldFilters) {
+		if !matchesKey(key) {
 			continue
 		}
 		for _, id := range ids {
@@ -41,6 +41,23 @@ func scanFieldIndexIDs(ctx context.Context, scanner FieldIndexScanLookup, kind s
 	return out, true, nil
 }
 
+func scanRuntimeFieldIndexIDs(
+	ctx context.Context,
+	g *graph.Graph,
+	kind string,
+	field string,
+	filters []Filter,
+) ([]string, error) {
+	fieldFilters := filtersForIndexField(field, filters)
+	matchesKey := newIndexScanKeyMatcher(fieldFilters)
+	return g.ScanFieldIndexIDs(kind, field, func(key string) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		return matchesKey(key), nil
+	})
+}
+
 func filtersForIndexField(field string, filters []Filter) []Filter {
 	out := make([]Filter, 0)
 	for _, filter := range filters {
@@ -52,38 +69,11 @@ func filtersForIndexField(field string, filters []Filter) []Filter {
 	return out
 }
 
-func indexValueMatchesFilters(value any, filters []Filter) bool {
-	for _, filter := range filters {
-		if !filterMatches(value, true, filter) {
-			return false
-		}
-	}
-	return true
-}
-
 func indexKeyComparableValue(value any) bool {
 	switch value.(type) {
 	case string, bool, float64, int, int64:
 		return true
 	default:
 		return false
-	}
-}
-
-func indexKeyValue(key string) (any, bool) {
-	switch {
-	case key == "null":
-		return nil, true
-	case strings.HasPrefix(key, "s:"):
-		return strings.TrimPrefix(key, "s:"), true
-	case key == "b:true":
-		return true, true
-	case key == "b:false":
-		return false, true
-	case strings.HasPrefix(key, "n:"):
-		value, err := strconv.ParseFloat(strings.TrimPrefix(key, "n:"), 64)
-		return value, err == nil
-	default:
-		return nil, false
 	}
 }

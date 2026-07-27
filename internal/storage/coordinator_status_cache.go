@@ -5,19 +5,72 @@ import (
 	"time"
 )
 
+type coordinatorStatusCall struct {
+	done     chan struct{}
+	status   CoordinatorStatus
+	canceled bool
+}
+
 func (s *TenantStore) CoordinatorStatus(ctx context.Context) CoordinatorStatus {
 	if !s.coordinated() {
 		return localCoordinatorStatus()
 	}
-	status, err := s.Coordinator.Status(ctx)
+	for {
+		s.coordinatorStatusMu.Lock()
+		if active := s.coordinatorStatusActive; active != nil {
+			s.coordinatorStatusMu.Unlock()
+			select {
+			case <-active.done:
+				if active.canceled && ctx.Err() == nil {
+					continue
+				}
+				return active.status
+			case <-ctx.Done():
+				return unavailableCoordinatorStatus(
+					s.Coordinator, ctx.Err(),
+				)
+			}
+		}
+		active := &coordinatorStatusCall{done: make(chan struct{})}
+		s.coordinatorStatusActive = active
+		s.coordinatorStatusMu.Unlock()
+
+		status, err := s.Coordinator.Status(ctx)
+		if err != nil {
+			status = unavailableCoordinatorStatus(s.Coordinator, err)
+		}
+		active.status = status
+		active.canceled = loadCanceledByContext(ctx, err)
+
+		s.coordinatorStatusMu.Lock()
+		if !active.canceled {
+			s.coordinatorStatusCache = status
+		}
+		if s.coordinatorStatusActive == active {
+			s.coordinatorStatusActive = nil
+		}
+		close(active.done)
+		s.coordinatorStatusMu.Unlock()
+		return status
+	}
+}
+
+func unavailableCoordinatorStatus(
+	coordinator WriteCoordinator,
+	err error,
+) CoordinatorStatus {
+	status := CoordinatorStatus{
+		Backend:   CoordinationPostgres,
+		Available: false,
+		CheckedAt: time.Now().UTC(),
+	}
+	if coordinator != nil {
+		status.Backend = coordinator.Backend()
+		status.Namespace = coordinator.Namespace()
+	}
 	if err != nil {
-		status.Backend = CoordinationPostgres
-		status.Available = false
-		status.Namespace = s.Coordinator.Namespace()
-		status.CheckedAt = time.Now().UTC()
 		status.LastError = err.Error()
 	}
-	s.cacheCoordinatorStatus(status)
 	return status
 }
 

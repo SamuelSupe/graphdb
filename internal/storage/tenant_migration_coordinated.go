@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const coordinatorMigrationTaskType = "migration"
+const coordinatorMigrationTaskType = coordinatorLifecycleTaskType
 
 type tenantMigrationContext struct {
 	config          TenantConfig
@@ -26,7 +26,6 @@ func copyTenantObjectsCoordinated(
 	targetTenantID string,
 	options TenantMigrationOptions,
 	report TenantMigrationReport,
-	sourceObjects []ObjectInfo,
 ) (TenantMigrationReport, error) {
 	leaseCtx, stopLease, err := target.startCoordinatorOperationLease(
 		ctx, targetTenantID, coordinatorMigrationTaskType,
@@ -37,74 +36,127 @@ func copyTenantObjectsCoordinated(
 	defer stopLease()
 	ctx = leaseCtx
 
-	sourceManifest, _, err := source.getManifest(ctx, sourceTenantID)
+	sourceManifest, writeContext, err :=
+		captureTenantMigrationSource(ctx, source, sourceTenantID)
 	if err != nil {
 		return report, err
 	}
-	writeContext, err := loadTenantMigrationContext(ctx, source, sourceTenantID)
-	if err != nil {
-		return report, err
-	}
-	targetExists, err := prepareCoordinatedMigrationTarget(
-		ctx, target, targetTenantID, options.Overwrite,
+	candidate := newCoordinatedTenantCandidate(
+		"migration",
+		sourceTenantID,
+		source.tenantObjectPrefix(sourceTenantID),
+		targetTenantID,
+	)
+	targetExists, alreadyActivated, err := prepareCoordinatedMigrationTarget(
+		ctx,
+		target,
+		targetTenantID,
+		options.Overwrite,
+		candidate,
 	)
 	if err != nil {
 		return report, err
 	}
 	report.TargetExists = targetExists
+	if alreadyActivated {
+		if err := target.mirrorLatestWriteContext(ctx, targetTenantID); err != nil {
+			return report, err
+		}
+		if err := target.addTenantToRegistry(ctx, targetTenantID); err != nil {
+			return report, err
+		}
+		if err := target.completeCoordinatedTenantCandidate(
+			ctx, targetTenantID, candidate,
+		); err != nil {
+			return report, err
+		}
+		report.FinishedAt = time.Now().UTC()
+		return report, nil
+	}
 
-	filtered := coordinatorMigrationObjects(
-		sourceObjects, source.tenantObjectPrefix(sourceTenantID),
-	)
-	rewrites, segmentHashes, err := source.prepareTenantMigrationRewrites(
+	writeObject := func(ctx context.Context, key string, data []byte) error {
+		return target.putCoordinatedCandidateObject(ctx, key, data)
+	}
+	segmentHashes, segmentObjectHashes, err := source.copyTenantMigrationSegments(
 		ctx,
 		sourceTenantID,
-		targetTenantID,
-		filtered,
 		report.TargetPrefix,
-		writerFenceRef{},
+		sourceManifest,
+		writeObject,
 	)
 	if err != nil {
 		return report, err
 	}
-	for _, object := range sourceObjects {
-		if err := objectContextErr(ctx); err != nil {
-			return report, err
-		}
-		relative := strings.TrimPrefix(object.Key, report.SourcePrefix)
-		report.Objects++
-		report.Bytes += object.Size
-		if skipCoordinatorMigrationObject(relative) {
-			report.Skipped++
-			continue
-		}
-		targetKey := report.TargetPrefix + relative
-		sampleIndex := -1
-		if len(report.Samples) < tenantMigrationSampleLimit {
-			report.Samples = append(report.Samples, TenantMigrationObject{
-				SourceKey: object.Key,
-				TargetKey: targetKey,
-				Bytes:     object.Size,
-				ETag:      object.ETag,
+	found := false
+	err = scanObjectPrefix(ctx, source.Objects, report.SourcePrefix, func(
+		objects []ObjectInfo,
+	) error {
+		pending := make([]tenantMigrationPendingObject, 0, len(objects))
+		for _, object := range objects {
+			if err := objectContextErr(ctx); err != nil {
+				return err
+			}
+			found = true
+			relative := strings.TrimPrefix(object.Key, report.SourcePrefix)
+			report.Objects++
+			report.Bytes += object.Size
+			if skipCoordinatorMigrationObject(relative) {
+				report.Skipped++
+				continue
+			}
+			targetKey := report.TargetPrefix + relative
+			sampleIndex := -1
+			if len(report.Samples) < tenantMigrationSampleLimit {
+				report.Samples = append(report.Samples, TenantMigrationObject{
+					SourceKey: object.Key,
+					TargetKey: targetKey,
+					Bytes:     object.Size,
+					ETag:      object.ETag,
+				})
+				sampleIndex = len(report.Samples) - 1
+			}
+			if strings.HasPrefix(relative, "commits/segments/") {
+				hash, copied := segmentObjectHashes[object.Key]
+				if !copied {
+					report.Skipped++
+					continue
+				}
+				report.Copied++
+				if sampleIndex >= 0 {
+					report.Samples[sampleIndex].SHA256 = hash
+				}
+				continue
+			}
+			pending = append(pending, tenantMigrationPendingObject{
+				object: object, targetKey: targetKey, sampleIndex: sampleIndex,
 			})
-			sampleIndex = len(report.Samples) - 1
 		}
-		data := rewrites[object.Key]
-		if len(data) == 0 {
-			data, err = source.Objects.Get(ctx, object.Key)
-			if err != nil {
-				return report, err
+		hashes, copied, err := source.copyTenantMigrationPage(
+			ctx,
+			sourceTenantID,
+			targetTenantID,
+			report.TargetPrefix,
+			segmentHashes,
+			writerFenceRef{},
+			pending,
+			writeObject,
+		)
+		for index, ok := range copied {
+			if !ok {
+				continue
+			}
+			report.Copied++
+			if sampleIndex := pending[index].sampleIndex; sampleIndex >= 0 {
+				report.Samples[sampleIndex].SHA256 = hashes[index]
 			}
 		}
-		if _, err := target.Objects.PutConditional(
-			ctx, targetKey, data, PutCondition{IfNoneMatch: true},
-		); err != nil {
-			return report, err
-		}
-		report.Copied++
-		if sampleIndex >= 0 {
-			report.Samples[sampleIndex].SHA256 = objectContentHash(data)
-		}
+		return err
+	})
+	if err != nil {
+		return report, err
+	}
+	if !found {
+		return report, ErrNotFound
 	}
 
 	rewriteTenantMigrationManifest(
@@ -116,20 +168,31 @@ func copyTenantObjectsCoordinated(
 		segmentHashes,
 	)
 	sourceManifest.UpdatedAt = time.Now().UTC()
-	if _, err := target.putManifestMeta(
+	activationContext := writeContext.coordinatedSnapshot(
+		targetTenantID,
+		sourceManifest.Version,
+	)
+	if _, err := target.putCoordinatedManifest(
 		ctx,
 		targetTenantID,
 		sourceManifest,
 		ObjectMeta{Key: target.manifestKey(targetTenantID)},
+		nil,
+		activationContext,
 	); err != nil {
 		return report, err
 	}
-	if err := applyTenantMigrationContext(
-		ctx, target, targetTenantID, sourceManifest.Version, writeContext,
-	); err != nil {
-		return report, err
+	if activationContext != nil {
+		if err := target.mirrorLatestWriteContext(ctx, targetTenantID); err != nil {
+			return report, err
+		}
 	}
 	if err := target.addTenantToRegistry(ctx, targetTenantID); err != nil {
+		return report, err
+	}
+	if err := target.completeCoordinatedTenantCandidate(
+		ctx, targetTenantID, candidate,
+	); err != nil {
 		return report, err
 	}
 	report.FinishedAt = time.Now().UTC()
@@ -141,66 +204,54 @@ func prepareCoordinatedMigrationTarget(
 	target *TenantStore,
 	tenantID string,
 	overwrite bool,
-) (bool, error) {
+	candidate coordinatedTenantCandidate,
+) (bool, bool, error) {
 	head, headExists, err := target.Coordinator.Head(ctx, tenantID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	dataExists, err := target.tenantDataExists(ctx, tenantID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
+	currentCandidate, candidateExists, _, err :=
+		target.getCoordinatedTenantCandidate(ctx, tenantID)
+	if err != nil {
+		return false, false, err
+	}
+	resumable := candidateExists && currentCandidate == candidate
 	targetExists := dataExists || (headExists && head.Status != TenantStatusDeleted)
-	if targetExists && !overwrite {
-		return targetExists, fmt.Errorf(
+	if headExists && head.Status == TenantStatusActive && resumable {
+		if _, _, err := target.getCoordinatedManifest(ctx, tenantID); err != nil {
+			return targetExists, false, err
+		}
+		return targetExists, true, nil
+	}
+	if targetExists && !overwrite &&
+		(!resumable || (headExists && head.Status != TenantStatusDeleted)) {
+		return targetExists, false, fmt.Errorf(
 			"%w: target tenant %q already exists", ErrConflict, tenantID,
 		)
 	}
+	if resumable && (!headExists || head.Status == TenantStatusDeleted) {
+		return targetExists, false, nil
+	}
 	if dataExists && !headExists {
-		return targetExists, fmt.Errorf(
-			"%w: bootstrap target tenant %q before PostgreSQL migration",
+		return targetExists, false, fmt.Errorf(
+			"%w: target tenant %q has unowned data",
 			ErrCoordinatorHeadMissing,
 			tenantID,
 		)
 	}
-	if !headExists {
-		head, err = target.ensureCoordinatedTenantHeadForCreate(ctx, tenantID)
-		if err != nil {
-			return targetExists, err
-		}
-		headExists = true
-	}
-	if !dataExists {
-		head, err = target.Coordinator.TransitionTenant(
-			ctx, tenantID, TenantStatusDeleted, true,
-		)
-		if err != nil {
-			return targetExists, err
-		}
-		if err := target.Coordinator.FinalizeTenantPurge(
-			ctx, tenantID, head.Generation,
-		); err != nil {
-			return targetExists, err
-		}
-		target.deleteWriteCache(tenantID)
-		return targetExists, nil
-	}
-	_, err = target.PurgeTenant(ctx, tenantID, true)
-	return targetExists, err
-}
-
-func coordinatorMigrationObjects(
-	objects []ObjectInfo,
-	sourcePrefix string,
-) []ObjectInfo {
-	filtered := make([]ObjectInfo, 0, len(objects))
-	for _, object := range objects {
-		relative := strings.TrimPrefix(object.Key, sourcePrefix)
-		if !skipCoordinatorMigrationObject(relative) {
-			filtered = append(filtered, object)
+	if headExists && (dataExists || head.Status != TenantStatusDeleted) {
+		if _, err := target.PurgeTenant(ctx, tenantID, true); err != nil {
+			return targetExists, false, err
 		}
 	}
-	return filtered
+	_, err = target.prepareCoordinatedTenantCandidate(
+		ctx, tenantID, candidate,
+	)
+	return targetExists, false, err
 }
 
 func skipCoordinatorMigrationObject(relative string) bool {
@@ -235,26 +286,23 @@ func loadTenantMigrationContext(
 	return out, nil
 }
 
-func applyTenantMigrationContext(
-	ctx context.Context,
-	target *TenantStore,
+func (c tenantMigrationContext) coordinatedSnapshot(
 	tenantID string,
 	graphVersion int64,
-	writeContext tenantMigrationContext,
-) error {
-	if writeContext.hasConfig {
-		if _, err := target.PutTenantConfig(ctx, tenantID, writeContext.config); err != nil {
-			return err
-		}
+) *WriteContextSnapshot {
+	if !c.hasConfig && !c.hasSourcePolicy && len(c.relationSchemas) == 0 {
+		return nil
 	}
-	if writeContext.hasSourcePolicy {
-		if _, err := target.PutSourcePolicy(
-			ctx, tenantID, writeContext.sourcePolicy.SourcePolicy,
-		); err != nil {
-			return err
-		}
-	}
-	return target.putRelationSchemasForLifecycle(
-		ctx, tenantID, writeContext.relationSchemas, graphVersion,
+	snapshot := emptyWriteContext(tenantID)
+	snapshot.TenantConfig = c.config
+	snapshot.TenantConfigConfigured = c.hasConfig
+	snapshot.SourcePolicy = c.sourcePolicy.SourcePolicy
+	snapshot.SourcePolicyConfigured = c.hasSourcePolicy
+	snapshot.RelationSchemas.RelationSchemas = append(
+		[]RelationSchema(nil), c.relationSchemas...,
 	)
+	if len(c.relationSchemas) > 0 {
+		snapshot.RelationSchemas.GraphVersion = graphVersion
+	}
+	return &snapshot
 }

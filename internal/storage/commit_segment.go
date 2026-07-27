@@ -52,16 +52,36 @@ func ManifestCommitTailLength(manifest Manifest) int {
 	return manifestCommitTailLength(manifest)
 }
 
-func (s *TenantStore) segmentCommitTailIfNeeded(ctx context.Context, tenantID string, manifest *Manifest) error {
+func (s *TenantStore) segmentCommitTailIfNeeded(
+	ctx context.Context,
+	tenantID string,
+	manifest *Manifest,
+	tail *commitTailCache,
+) error {
 	if len(manifest.CommitKeys) < commitSegmentTargetCount {
 		return nil
 	}
-	ref, err := s.putCommitSegmentFromKeys(ctx, tenantID, manifest.CommitKeys)
+	var (
+		ref CommitSegmentRef
+		err error
+	)
+	if tail != nil && tail.matches(manifest.CommitKeys) {
+		ref, err = s.putNormalizedCommitSegment(
+			ctx, tenantID, tail.items,
+		)
+	} else {
+		ref, err = s.putCommitSegmentFromKeys(
+			ctx, tenantID, manifest.CommitKeys,
+		)
+	}
 	if err != nil {
 		return err
 	}
 	manifest.CommitSegments = append(append([]CommitSegmentRef(nil), manifest.CommitSegments...), ref)
 	manifest.CommitKeys = nil
+	if tail != nil {
+		*tail = emptyCommitTailCache()
+	}
 	return nil
 }
 
@@ -87,6 +107,27 @@ func (s *TenantStore) putCommitSegmentFromKeys(ctx context.Context, tenantID str
 }
 
 func (s *TenantStore) putCommitSegment(ctx context.Context, tenantID string, items []commitSegmentItem) (CommitSegmentRef, error) {
+	return s.putCommitSegmentWithNormalization(
+		ctx, tenantID, items, true,
+	)
+}
+
+func (s *TenantStore) putNormalizedCommitSegment(
+	ctx context.Context,
+	tenantID string,
+	items []commitSegmentItem,
+) (CommitSegmentRef, error) {
+	return s.putCommitSegmentWithNormalization(
+		ctx, tenantID, items, false,
+	)
+}
+
+func (s *TenantStore) putCommitSegmentWithNormalization(
+	ctx context.Context,
+	tenantID string,
+	items []commitSegmentItem,
+	normalize bool,
+) (CommitSegmentRef, error) {
 	if len(items) == 0 {
 		return CommitSegmentRef{}, fmt.Errorf("empty commit segment")
 	}
@@ -97,7 +138,14 @@ func (s *TenantStore) putCommitSegment(ctx context.Context, tenantID string, ite
 	hash := objectContentHash(logicalPayload)
 	first, last := items[0].Commit.Version, items[len(items)-1].Commit.Version
 	key := s.commitSegmentKey(tenantID, first, last, hash)
-	data, err := marshalParquetCommitSegment(ctx, tenantID, items)
+	var data []byte
+	if normalize {
+		data, err = marshalParquetCommitSegment(ctx, tenantID, items)
+	} else {
+		data, err = marshalNormalizedParquetCommitSegment(
+			ctx, tenantID, items,
+		)
+	}
 	if err != nil {
 		return CommitSegmentRef{}, err
 	}
@@ -125,30 +173,56 @@ func (s *TenantStore) loadCommitSegment(ctx context.Context, tenantID string, re
 	return items, err
 }
 
-func (s *TenantStore) loadCommitSegmentObjects(ctx context.Context, tenantID string, referenced map[string]struct{}) ([]commitSegmentObject, []string, error) {
-	objects, err := s.Objects.List(ctx, s.commitSegmentPrefix(tenantID))
+func (s *TenantStore) loadCommitSegmentObjects(
+	ctx context.Context,
+	tenantID string,
+	referenced map[string]struct{},
+	afterVersion int64,
+) ([]commitSegmentObject, []string, error) {
+	out := make([]commitSegmentObject, 0)
+	invalid := []string{}
+	err := scanObjectPrefixFresh(
+		ctx,
+		s.Objects,
+		s.commitSegmentPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				if _, ok := referenced[object.Key]; ok {
+					continue
+				}
+				if _, last, ok := commitSegmentIdentityFromKey(
+					object.Key,
+				); afterVersion > 0 && ok && last <= afterVersion {
+					continue
+				}
+				data, err := s.Objects.Get(ctx, object.Key)
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				segment, items, err := decodeCommitSegmentObject(
+					ctx,
+					data,
+					tenantID,
+					CommitSegmentRef{Key: object.Key},
+					s,
+				)
+				if err != nil {
+					invalid = append(invalid, object.Key)
+					continue
+				}
+				out = append(out, commitSegmentObject{
+					Ref:   commitSegmentRefFromObject(object.Key, segment),
+					Items: items,
+				})
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, nil, err
-	}
-	out := make([]commitSegmentObject, 0, len(objects))
-	invalid := []string{}
-	for _, object := range objects {
-		if _, ok := referenced[object.Key]; ok {
-			continue
-		}
-		data, err := s.Objects.Get(ctx, object.Key)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		segment, items, err := decodeCommitSegmentObject(ctx, data, tenantID, CommitSegmentRef{Key: object.Key}, s)
-		if err != nil {
-			invalid = append(invalid, object.Key)
-			continue
-		}
-		out = append(out, commitSegmentObject{Ref: commitSegmentRefFromObject(object.Key, segment), Items: items})
 	}
 	sortCommitSegmentObjects(out)
 	sort.Strings(invalid)

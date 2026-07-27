@@ -9,21 +9,54 @@ func SupportsLazyRead(request Request, stats PlannerStats) bool {
 	case "match":
 		return lazyMatchSupported(target, stats)
 	case "pattern":
-		return lazyMatchSupported(target, stats) && lazyPatternDirectionsSupported(target, stats)
-	case "neighbors", "traverse", "impact", "shortest_path":
-		if target.Op == "impact" && target.Direction != "out" {
-			return false
-		}
+		return lazyMatchSupported(target, stats) &&
+			lazyPathDirectionsSupported(target, stats)
+	case "traverse", "shortest_path":
+		return target.ID != "" &&
+			lazyPathDirectionsSupported(target, stats)
+	case "neighbors":
 		return target.ID != "" && lazyDirectionSupported(target.Direction, stats)
+	case "impact":
+		return lazyImpactSupported(target, stats)
 	default:
 		return false
 	}
 }
 
-func lazyPatternDirectionsSupported(request Request, stats PlannerStats) bool {
+func RequiresReverseIndex(request Request) bool {
+	target := lazyTarget(request)
+	if target.Op == "impact" || target.DirectionStrategy == "impact" {
+		return true
+	}
+	switch target.Op {
+	case "match":
+		return false
+	case "neighbors":
+		return target.Direction != "out"
+	case "pattern":
+		target.Depth = len(target.Path.Steps)
+		if target.Direction == "" {
+			target.Direction = "out"
+		}
+	case "traverse", "shortest_path":
+	default:
+		return false
+	}
+	for level := 0; level < normalizedDepth(target.Depth); level++ {
+		if requestForPathLevel(target, level).Direction != "out" {
+			return true
+		}
+	}
+	return false
+}
+
+func lazyPathDirectionsSupported(request Request, stats PlannerStats) bool {
 	direction := request.Direction
-	if direction == "" {
+	if direction == "" && request.Op == "pattern" {
 		direction = "out"
+	}
+	if len(request.Path.Steps) == 0 {
+		return lazyDirectionSupported(direction, stats)
 	}
 	for _, step := range request.Path.Steps {
 		stepDirection := step.Direction
@@ -40,14 +73,24 @@ func lazyPatternDirectionsSupported(request Request, stats PlannerStats) bool {
 func lazyDirectionSupported(direction string, stats PlannerStats) bool {
 	switch direction {
 	case "out":
-		return len(stats.EdgeShards) > 0
+		return forwardEdgeIndexAvailable(stats)
 	case "in":
-		return len(stats.ReverseEdgeShards) > 0
+		return reverseEdgeIndexAvailable(stats)
 	case "both", "":
-		return len(stats.EdgeShards) > 0 && len(stats.ReverseEdgeShards) > 0
+		return forwardEdgeIndexAvailable(stats) &&
+			reverseEdgeIndexAvailable(stats)
 	default:
 		return false
 	}
+}
+
+func forwardEdgeIndexAvailable(stats PlannerStats) bool {
+	return stats.ForwardEdgeIndexAvailable || len(stats.EdgeShards) > 0
+}
+
+func reverseEdgeIndexAvailable(stats PlannerStats) bool {
+	return stats.ReverseEdgeIndexAvailable ||
+		len(stats.ReverseEdgeShards) > 0
 }
 
 func lazyTarget(request Request) Request {

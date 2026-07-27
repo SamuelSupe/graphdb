@@ -55,7 +55,9 @@ func (s *TenantStore) putManifest(ctx context.Context, tenantID string, manifest
 
 func (s *TenantStore) putManifestMeta(ctx context.Context, tenantID string, manifest Manifest, meta ObjectMeta) (ObjectMeta, error) {
 	if s.coordinated() {
-		return s.putCoordinatedManifest(ctx, tenantID, manifest, meta, nil)
+		return s.putCoordinatedManifest(
+			ctx, tenantID, manifest, meta, nil, nil,
+		)
 	}
 	lease, _, ok := s.getCachedWriterLeaseAny(tenantID)
 	if !ok {
@@ -113,9 +115,7 @@ func (s *TenantStore) publishWriterFence(ctx context.Context, tenantID string, l
 	}
 	key := s.manifestKey(tenantID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
-		if cache := FindWriterObjectCache(s.Objects); cache != nil {
-			cache.ClearPrefix(key)
-		}
+		s.clearWriterObjectKey(key)
 		manifest, meta, err := s.getManifest(ctx, tenantID)
 		if err != nil {
 			return err

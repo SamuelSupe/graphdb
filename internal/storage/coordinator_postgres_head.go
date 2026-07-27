@@ -186,12 +186,16 @@ func (c *PostgresCoordinator) PublishHead(ctx context.Context, request HeadPubli
 func (c *PostgresCoordinator) publishHeadTx(ctx context.Context, tx pgx.Tx, request HeadPublishRequest) (CoordinationHead, bool, error) {
 	now := time.Now().UTC()
 	if request.ExpectedRevision == 0 {
+		contextRevision, err := initialHeadWriteContextRevision(request)
+		if err != nil {
+			return CoordinationHead{}, false, err
+		}
 		head, err := scanCoordinationHead(tx.QueryRow(ctx,
 			`INSERT INTO `+c.table("tenant_heads")+` (
 				namespace, tenant_id, generation, status, head_revision, graph_version,
 				manifest_key, manifest_hash, commit_id, write_context_revision,
 				write_context_key, write_context_hash, legacy_manifest_revision, updated_at
-			) VALUES ($1,$2,1,'active',1,$3,$4,$5,$6,0,'','',0,$7)
+			) VALUES ($1,$2,1,'active',1,$3,$4,$5,$6,$7,$8,$9,0,$10)
 			ON CONFLICT (namespace, tenant_id) DO NOTHING
 			RETURNING `+coordinatorHeadColumns,
 			c.namespace,
@@ -200,6 +204,9 @@ func (c *PostgresCoordinator) publishHeadTx(ctx context.Context, tx pgx.Tx, requ
 			request.ManifestKey,
 			request.ManifestHash,
 			request.CommitID,
+			contextRevision,
+			request.InitialWriteContextKey,
+			request.InitialWriteContextHash,
 			now,
 		))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -209,6 +216,12 @@ func (c *PostgresCoordinator) publishHeadTx(ctx context.Context, tx pgx.Tx, requ
 			return CoordinationHead{}, false, coordinatorUnavailable(err)
 		}
 		return head, true, nil
+	}
+	if request.InitialWriteContextKey != "" ||
+		request.InitialWriteContextHash != "" {
+		return CoordinationHead{}, false, fmt.Errorf(
+			"initial write-context is only valid for a new tenant head",
+		)
 	}
 
 	head, err := scanCoordinationHead(tx.QueryRow(ctx,
@@ -243,6 +256,22 @@ func (c *PostgresCoordinator) publishHeadTx(ctx context.Context, tx pgx.Tx, requ
 		return CoordinationHead{}, false, coordinatorUnavailable(err)
 	}
 	return head, true, nil
+}
+
+func initialHeadWriteContextRevision(
+	request HeadPublishRequest,
+) (int64, error) {
+	hasKey := request.InitialWriteContextKey != ""
+	hasHash := request.InitialWriteContextHash != ""
+	if hasKey != hasHash {
+		return 0, fmt.Errorf(
+			"initial write-context key and hash must be provided together",
+		)
+	}
+	if hasKey {
+		return 1, nil
+	}
+	return 0, nil
 }
 
 func (c *PostgresCoordinator) insertLegacyManifestJob(

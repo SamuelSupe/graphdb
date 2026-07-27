@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,6 +83,16 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	if err := ValidateTenantID(tenantID); err != nil {
 		return GCReport{}, err
 	}
+	if s.coordinated() {
+		operationCtx, stop, err := s.startCoordinatorOperationLease(
+			ctx, tenantID, TaskTypeGC,
+		)
+		if err != nil {
+			return GCReport{}, err
+		}
+		defer stop()
+		ctx = operationCtx
+	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
@@ -133,6 +144,17 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		commitReport, err := s.cleanupCommitsLocked(ctx, tenantID, manifest, checkpoint)
 		report.CommitCleanup = commitReport
 		report.DeletedKeys = append(report.DeletedKeys, commitReport.DeletedKeys...)
+		if err != nil {
+			return finish(err)
+		}
+	}
+	if s.coordinated() {
+		manifests, contexts, keys, err := s.cleanupCoordinatorCandidatesLocked(
+			ctx, tenantID, coordinatorRoots, checkpoint,
+		)
+		report.DeletedCoordinatorManifests = manifests
+		report.DeletedWriteContexts = contexts
+		report.DeletedKeys = append(report.DeletedKeys, keys...)
 		if err != nil {
 			return finish(err)
 		}
@@ -198,17 +220,6 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			}
 		}
 	}
-	if s.coordinated() {
-		manifests, contexts, keys, err := s.cleanupCoordinatorCandidatesLocked(
-			ctx, tenantID, coordinatorRoots, checkpoint,
-		)
-		report.DeletedCoordinatorManifests = manifests
-		report.DeletedWriteContexts = contexts
-		report.DeletedKeys = append(report.DeletedKeys, keys...)
-		if err != nil {
-			return finish(err)
-		}
-	}
 	return finish(nil)
 }
 
@@ -222,13 +233,27 @@ func (s *TenantStore) cleanupCoordinatorCandidatesLocked(
 	manifestPrefix := s.coordinatorManifestPrefix(tenantID)
 	contextPrefix := s.coordinatorWriteContextPrefix(tenantID)
 	manifestCount, manifestKeys, err := s.cleanupCoordinatorCandidatePrefix(
-		ctx, manifestPrefix, roots.ManifestKeys, cutoff, checkpoint, coordinatorManifestUpdatedAt,
+		ctx,
+		manifestPrefix,
+		roots.ManifestKeys,
+		cutoff,
+		checkpoint,
+		roots.Head.Revision,
+		coordinatorManifestRevisionFromKey,
+		coordinatorManifestUpdatedAt,
 	)
 	if err != nil {
 		return manifestCount, 0, manifestKeys, err
 	}
 	contextCount, contextKeys, err := s.cleanupCoordinatorCandidatePrefix(
-		ctx, contextPrefix, roots.WriteContextKeys, cutoff, checkpoint, coordinatorWriteContextUpdatedAt,
+		ctx,
+		contextPrefix,
+		roots.WriteContextKeys,
+		cutoff,
+		checkpoint,
+		roots.Head.WriteContextRevision,
+		coordinatorWriteContextRevisionFromKey,
+		coordinatorWriteContextUpdatedAt,
 	)
 	return manifestCount, contextCount, append(manifestKeys, contextKeys...), err
 }
@@ -239,6 +264,8 @@ func (s *TenantStore) cleanupCoordinatorCandidatePrefix(
 	roots map[string]struct{},
 	cutoff time.Time,
 	checkpoint *gcCheckpointRunner,
+	maxResolvedRevision int64,
+	revisionFromKey func(string) (int64, bool),
 	updatedAt func(context.Context, []byte) (time.Time, error),
 ) (int, []string, error) {
 	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
@@ -249,6 +276,10 @@ func (s *TenantStore) cleanupCoordinatorCandidatePrefix(
 	keys := make([]string, 0)
 	for _, object := range objects {
 		if _, reachable := roots[object.Key]; reachable {
+			continue
+		}
+		revision, ok := revisionFromKey(object.Key)
+		if !ok || revision > maxResolvedRevision {
 			continue
 		}
 		data, err := s.Objects.Get(ctx, object.Key)
@@ -275,6 +306,25 @@ func (s *TenantStore) cleanupCoordinatorCandidatePrefix(
 		return deleted, keys, err
 	}
 	return deleted, keys, nil
+}
+
+func coordinatorManifestRevisionFromKey(key string) (int64, bool) {
+	name := strings.TrimSuffix(path.Base(key), ".parquet")
+	parts := strings.Split(name, "-")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	revision, err := strconv.ParseInt(parts[1], 10, 64)
+	return revision, err == nil && revision > 0
+}
+
+func coordinatorWriteContextRevisionFromKey(key string) (int64, bool) {
+	parts := strings.Split(path.Base(key), "-")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	revision, err := strconv.ParseInt(parts[0], 10, 64)
+	return revision, err == nil && revision > 0
 }
 
 func coordinatorManifestUpdatedAt(ctx context.Context, data []byte) (time.Time, error) {
@@ -645,23 +695,32 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) cleanupEntityRecordsLocked(ctx context.Context, tenantID string) (int, []string, error) {
-	objects, err := s.Objects.List(ctx, s.entityRecordPrefix(tenantID))
-	if err != nil {
-		return 0, nil, err
-	}
 	deleted := 0
 	keys := make([]string, 0)
-	for _, object := range objects {
-		if _, ok, err := s.entityIDFromRecordKey(tenantID, object.Key); err != nil {
-			return deleted, keys, err
-		} else if !ok {
-			continue
-		}
-		if err := s.deleteListedObject(ctx, object); err != nil {
-			return deleted, keys, err
-		}
-		deleted++
-		keys = append(keys, object.Key)
+	err := scanObjectPrefix(
+		ctx,
+		s.Objects,
+		s.entityRecordPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				if _, ok, err := s.entityIDFromRecordKey(
+					tenantID, object.Key,
+				); err != nil {
+					return err
+				} else if !ok {
+					continue
+				}
+				if err := s.deleteListedObject(ctx, object); err != nil {
+					return err
+				}
+				deleted++
+				keys = append(keys, object.Key)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return deleted, keys, err
 	}
 	return deleted, keys, nil
 }
@@ -706,7 +765,27 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 		if err != nil {
 			continue
 		}
-		if task.TenantID != tenantID || task.ID != taskID || taskStillActive(task) || !taskExpired(task.StartedAt, task.UpdatedAt, task.FinishedAt, cutoff) {
+		if task.TenantID != tenantID ||
+			task.ID != taskID ||
+			(taskStillActive(task) &&
+				!s.taskOwnerStopped(ctx, task, time.Now().UTC())) ||
+			!taskExpired(
+				task.StartedAt,
+				task.UpdatedAt,
+				task.FinishedAt,
+				cutoff,
+			) {
+			continue
+		}
+		if checkpoint.options.DryRun {
+			if err := s.planExpiredTaskGroup(
+				ctx, tenantID, task, object.Key, checkpoint,
+			); err != nil {
+				return err
+			}
+			if checkpoint.checkpoint.Paused {
+				return errGCPaused
+			}
 			continue
 		}
 		if task.Type == TaskTypeBulkImport {
@@ -715,7 +794,13 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 				if err := s.validateImportSourceKey(tenantID, sourceKey); err != nil {
 					return err
 				}
-				deleted, err := checkpoint.deleteKey(ctx, s.Objects, sourceKey)
+				deleted, err := checkpoint.deleteExistingKeyIgnoringCursor(
+					ctx, s.Objects, sourceKey,
+				)
+				if gcPaused(err) || checkpoint.checkpoint.Paused {
+					checkpoint.pauseBeforeObject(object.Key)
+					return errGCPaused
+				}
 				if err != nil && !errors.Is(err, ErrNotFound) {
 					return err
 				}
@@ -729,7 +814,13 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 			if err := s.validateTenantObjectKey(tenantID, task.ResultKey); err != nil {
 				return err
 			}
-			deleted, err := checkpoint.deleteKey(ctx, s.Objects, task.ResultKey)
+			deleted, err := checkpoint.deleteExistingKeyIgnoringCursor(
+				ctx, s.Objects, task.ResultKey,
+			)
+			if gcPaused(err) || checkpoint.checkpoint.Paused {
+				checkpoint.pauseBeforeObject(object.Key)
+				return errGCPaused
+			}
 			if err != nil && !errors.Is(err, ErrNotFound) {
 				return err
 			}
@@ -738,13 +829,18 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 				report.DeletedKeys = append(report.DeletedKeys, task.ResultKey)
 			}
 		}
-		deleted, err := checkpoint.deleteKey(ctx, s.Objects, object.Key)
+		deleted, err := checkpoint.deleteKeyIgnoringCursor(
+			ctx, s.Objects, object.Key,
+		)
 		if err != nil {
 			return err
 		}
 		if deleted {
 			report.DeletedTasks++
 			report.DeletedKeys = append(report.DeletedKeys, object.Key)
+		}
+		if checkpoint.checkpoint.Paused {
+			return errGCPaused
 		}
 	}
 	return checkpoint.pauseAfterPage(next)
@@ -764,14 +860,37 @@ func (s *TenantStore) cleanupIndexTasksLocked(ctx context.Context, tenantID stri
 		if !ok {
 			continue
 		}
-		task, err := s.GetIndexTask(ctx, tenantID, taskID)
+		task, _, err := s.getIndexTaskObjectWithMeta(
+			ctx,
+			tenantID,
+			taskID,
+		)
 		if errors.Is(err, ErrNotFound) || errors.Is(err, errInvalidIndexTask) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if indexTaskStillActive(task) || !taskExpired(task.StartedAt, task.UpdatedAt, task.FinishedAt, cutoff) {
+		if indexTaskStillActive(task) {
+			active, err := s.indexTaskActive(
+				ctx,
+				tenantID,
+				task,
+				time.Now().UTC(),
+			)
+			if err != nil {
+				return err
+			}
+			if active {
+				continue
+			}
+		}
+		if !taskExpired(
+			task.StartedAt,
+			task.UpdatedAt,
+			task.FinishedAt,
+			cutoff,
+		) {
 			continue
 		}
 		deleted, err := checkpoint.deleteKey(ctx, s.Objects, object.Key)

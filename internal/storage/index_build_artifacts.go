@@ -57,11 +57,12 @@ func buildIndexArtifactsWithDefinitions(g *graph.Graph, version int64, definitio
 	}
 	for _, shard := range edgeShards {
 		catalog.EdgeShards = append(catalog.EdgeShards, EdgeShard{
-			RelationType: shard.RelationType,
-			Shard:        shard.Shard,
-			EdgeCount:    len(shard.Edges),
-			ContentHash:  edgeShardContentHash(shard),
-			UpdatedAt:    now,
+			RelationType:    shard.RelationType,
+			ImpactDirection: relationImpactDirection(g, shard.RelationType),
+			Shard:           shard.Shard,
+			EdgeCount:       len(shard.Edges),
+			ContentHash:     edgeShardContentHash(shard),
+			UpdatedAt:       now,
 		})
 	}
 	for _, page := range entityPages {
@@ -80,6 +81,17 @@ func buildIndexArtifactsWithDefinitions(g *graph.Graph, version int64, definitio
 		EdgeShards:  edgeShards,
 		EntityPages: entityPages,
 	}, nil
+}
+
+func relationImpactDirection(g *graph.Graph, relationType string) string {
+	if g == nil {
+		return ""
+	}
+	relation, ok := g.RelationTypes[relationType]
+	if !ok {
+		return ""
+	}
+	return relation.ImpactDirection
 }
 
 func prepareSecondaryIndexArtifact(index *SecondaryIndex) {

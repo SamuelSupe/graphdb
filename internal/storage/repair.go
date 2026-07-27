@@ -53,6 +53,19 @@ type RepairPlanStep struct {
 type RepairProgressFunc func(ctx context.Context, action RepairAction, completed int, total int) error
 
 func (s *TenantStore) RepairTenant(ctx context.Context, tenantID string, options RepairOptions) (RepairReport, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return RepairReport{}, err
+	}
+	if options.Apply && s.coordinated() {
+		operationCtx, stop, err := s.startCoordinatorOperationLease(
+			ctx, tenantID, TaskTypeRepair,
+		)
+		if err != nil {
+			return RepairReport{}, err
+		}
+		defer stop()
+		ctx = operationCtx
+	}
 	report, err := s.inspectTenantRepair(ctx, tenantID)
 	if err != nil {
 		return RepairReport{}, err

@@ -5,7 +5,7 @@
 
 ## 当前定位
 
-GGraphDB 1.1 已具备 release candidate 所需的核心闭环：
+GGraphDB 1.1 已具备 GA 所需的核心闭环：
 
 - 通用 EntityType/RelationType、labels、关系属性 schema，以及 1.0
   CIType 和 layout version 2 兼容；
@@ -20,10 +20,10 @@ GGraphDB 1.1 已具备 release candidate 所需的核心闭环：
 - local 单 writer 与 PostgreSQL CAS 2–8 writer 两种协调模式；
 - 真实 1.0/1.1 双向二进制兼容门禁、结构化错误码、OpenAPI 和双 SDK。
 
-这意味着产品已经越过 demo 和“只有内核”的阶段，但 GA 仍取决于发行证据，
-不是仅凭功能数量判定。
+这意味着产品已经越过 demo 和“只有内核”的阶段；GA tag 仍必须由发行证据
+认证，不能仅凭功能数量判定。
 
-## GA 阻断项
+## GA 发布门禁
 
 ### 1. 发行证据
 

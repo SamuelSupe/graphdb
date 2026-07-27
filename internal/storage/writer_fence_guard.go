@@ -128,9 +128,7 @@ func (s *TenantStore) putTenantConditionalIfBound(ctx context.Context, tenantID 
 
 func (s *TenantStore) writerFenceStillCurrent(ctx context.Context, tenantID string, expected writerFenceRef) error {
 	key := s.writerLeaseKey(tenantID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	lease, _, err := s.getWriterLease(ctx, tenantID, key)
 	if errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("%w: tenant %q writer fence was removed", ErrLeaseHeld, tenantID)
@@ -150,9 +148,7 @@ func (s *TenantStore) ensureBoundWriterLease(ctx context.Context, tenantID strin
 		return nil
 	}
 	key := s.writerLeaseKey(tenantID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	lease, meta, err := s.getWriterLease(ctx, tenantID, key)
 	if errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("%w: tenant %q writer fence was removed", ErrLeaseHeld, tenantID)

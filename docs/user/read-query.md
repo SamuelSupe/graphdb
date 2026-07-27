@@ -252,7 +252,8 @@ For the next page, submit the same query with returned `cursor`:
 ```
 
 Cursors are tied to query shape and snapshot version. Reusing a cursor with a
-different query or incompatible version is rejected.
+different query or incompatible version is rejected. Match cursors without an
+explicit sort also bind the internal scan order and must be treated as opaque.
 
 ## Streaming
 

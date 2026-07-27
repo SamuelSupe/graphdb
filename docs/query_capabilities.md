@@ -210,7 +210,8 @@ path 排序支持：
 
 - `where id eq ...` 使用 entity id lookup。
 - `kind + eq/in` 字段过滤优先使用 persisted field index。
-- `kind + gt/gte/lt/lte/prefix/exists(true)` 可使用 field index scan。
+- `kind + gt/gte/lt/lte/prefix` 可使用 field index scan；`exists`
+  需要覆盖索引未保存的对象和数组值，因此走 entity page scan。
 - 无可用索引时回退到 kind scan；未传 `kind` 会扫描所有实体。
 
 ### pattern
@@ -455,6 +456,7 @@ path 排序支持：
 游标特性：
 
 - 新游标包含快照 `version`、上一条结果 identity 和查询 hash。
+- 无显式排序的 `match` 游标还会绑定内部扫描顺序；调用方必须将游标视为不透明值。
 - 如果请求条件变化，游标会报错。
 - 如果 reader 当前版本与游标版本不一致，游标会报错。
 - 旧式数字 offset cursor 仍兼容，但不建议新调用方使用。

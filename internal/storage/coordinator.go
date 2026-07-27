@@ -57,6 +57,8 @@ type HeadPublishRequest struct {
 	ManifestKey                  string
 	ManifestHash                 string
 	CommitID                     string
+	InitialWriteContextKey       string
+	InitialWriteContextHash      string
 	IdempotencyKey               string
 	RequestHash                  string
 	OwnerToken                   string
@@ -187,6 +189,23 @@ type WriteCoordinator interface {
 	Reachability(context.Context, string) (CoordinatorReachability, error)
 	Status(context.Context) (CoordinatorStatus, error)
 	Close()
+}
+
+type CoordinatorTaskLeaseReader interface {
+	TaskLease(
+		context.Context,
+		string,
+		string,
+	) (CoordinatorTaskLease, bool, error)
+}
+
+type CoordinatorDerivedTaskAcknowledger interface {
+	AcknowledgeDerivedTaskVersion(
+		context.Context,
+		string,
+		string,
+		int64,
+	) error
 }
 
 // CoordinatorModeController provides the namespace fence used by an

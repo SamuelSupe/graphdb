@@ -177,9 +177,7 @@ func (s *TenantStore) abandonGCRunningMarker(ctx context.Context, task Task) {
 
 func (s *TenantStore) getGCRunningMarker(ctx context.Context, tenantID string) (Task, ObjectMeta, error) {
 	key := s.gcRunningTaskKey(tenantID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return Task{}, meta, err
@@ -239,11 +237,15 @@ func (s *TenantStore) taskMarkerTTL() time.Duration {
 	return s.TaskMarkerTTL
 }
 
-func (s *TenantStore) startGCTaskHeartbeat(ctx context.Context, task Task, cancel context.CancelFunc) func() {
+func (s *TenantStore) startGCTaskHeartbeat(
+	ctx context.Context,
+	task Task,
+	cancelTask context.CancelFunc,
+) func() {
 	if task.Type != TaskTypeGC {
 		return func() {}
 	}
-	done := make(chan struct{})
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	interval := s.taskMarkerTTL() / 3
 	if interval < time.Millisecond {
 		interval = time.Millisecond
@@ -253,16 +255,16 @@ func (s *TenantStore) startGCTaskHeartbeat(ctx context.Context, task Task, cance
 		defer ticker.Stop()
 		for {
 			select {
-			case <-done:
+			case <-heartbeatCtx.Done():
 				return
 			case <-ticker.C:
 				task.UpdatedAt = time.Now().UTC()
-				if err := s.refreshGCRunningMarker(context.WithoutCancel(ctx), task); err != nil {
-					cancel()
+				if err := s.refreshGCRunningMarker(heartbeatCtx, task); err != nil {
+					cancelTask()
 					return
 				}
 			}
 		}
 	}()
-	return func() { close(done) }
+	return stopHeartbeat
 }

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"strconv"
 	"testing"
 )
@@ -21,5 +22,39 @@ func TestObjectKeyCacheResetsAtCapacity(t *testing.T) {
 	}
 	if _, ok := store.objectKeyCache["objects/new.parquet"]; !ok {
 		t.Fatal("new object key missing after cache reset")
+	}
+}
+
+func TestObjectKeyMayExistUsesExactProbeWithoutNegativePrefixCache(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := newCountingObjectStore(base)
+	store := NewTenantStore(objects, "test")
+	key := "objects/item.parquet"
+
+	exists, err := store.objectKeyMayExist(ctx, key)
+	if err != nil || exists {
+		t.Fatalf("missing key exists=%v err=%v", exists, err)
+	}
+	if objects.headCalls != 1 || objects.listCalls != 0 {
+		t.Fatalf(
+			"missing probe head=%d list=%d, want one exact HEAD",
+			objects.headCalls, objects.listCalls,
+		)
+	}
+	if err := base.Put(ctx, key, []byte("created-by-another-writer")); err != nil {
+		t.Fatalf("put external object: %v", err)
+	}
+	exists, err = store.objectKeyMayExist(ctx, key)
+	if err != nil || !exists {
+		t.Fatalf("external key exists=%v err=%v", exists, err)
+	}
+	if objects.headCalls != 2 || objects.listCalls != 0 {
+		t.Fatalf(
+			"external probe head=%d list=%d, want exact HEAD without listing",
+			objects.headCalls, objects.listCalls,
+		)
 	}
 }

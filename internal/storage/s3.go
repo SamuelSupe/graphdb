@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,9 @@ type S3Store struct {
 	secretKey string
 	pathStyle bool
 	client    *http.Client
+
+	conditionalDeleteMu    sync.Mutex
+	conditionalDeleteState s3ConditionalDeleteState
 }
 
 type S3Options struct {
@@ -138,13 +142,10 @@ func (s *S3Store) PutConditional(ctx context.Context, key string, data []byte, c
 	if err := validateObjectKey(key); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
+	if requiresReturnedETag(condition) {
+		return s.putConditionalResolved(ctx, key, data, condition)
+	}
 	headers := http.Header{}
-	if condition.IfNoneMatch {
-		headers.Set("If-None-Match", "*")
-	}
-	if condition.IfMatch != "" {
-		headers.Set("If-Match", quoteETag(condition.IfMatch))
-	}
 	resp, err := s.doWithHeaders(ctx, http.MethodPut, key, nil, data, headers)
 	if err != nil {
 		return ObjectMeta{}, err
@@ -156,18 +157,7 @@ func (s *S3Store) PutConditional(ctx context.Context, key string, data []byte, c
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ObjectMeta{}, readS3Error(resp)
 	}
-	meta := ObjectMeta{Key: key, ETag: cleanETag(resp.Header.Get("ETag")), Exists: true}
-	if meta.ETag == "" && requiresReturnedETag(condition) {
-		fetched, err := s.Head(ctx, key)
-		if err != nil {
-			return ObjectMeta{}, err
-		}
-		if fetched.ETag == "" {
-			return ObjectMeta{}, fmt.Errorf("s3 conditional put %q completed without returned etag", key)
-		}
-		meta = fetched
-	}
-	return meta, nil
+	return ObjectMeta{Key: key, ETag: cleanETag(resp.Header.Get("ETag")), Exists: true}, nil
 }
 
 func requiresReturnedETag(condition PutCondition) bool {
@@ -197,10 +187,27 @@ func (s *S3Store) DeleteConditional(ctx context.Context, key string, condition P
 		}
 		return ErrConflict
 	}
-	headers := http.Header{}
 	if condition.IfMatch != "" {
-		headers.Set("If-Match", quoteETag(condition.IfMatch))
+		supported, err := s.supportsConditionalDelete(ctx, key)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			meta, err := s.Head(ctx, key)
+			if errors.Is(err, ErrNotFound) {
+				return ErrConflict
+			}
+			if err != nil {
+				return err
+			}
+			if cleanETag(meta.ETag) != cleanETag(condition.IfMatch) {
+				return ErrConflict
+			}
+			return ErrConditionalDeleteUnsupported
+		}
+		return s.deleteConditionalResolved(ctx, key, condition.IfMatch)
 	}
+	headers := http.Header{}
 	resp, err := s.doWithHeaders(ctx, http.MethodDelete, key, nil, nil, headers)
 	if err != nil {
 		return err
@@ -377,11 +384,22 @@ func (s *S3Store) do(ctx context.Context, method, key string, query url.Values, 
 }
 
 func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query url.Values, body []byte, headers http.Header) (*http.Response, error) {
+	return s.doWithHeadersAttempts(ctx, method, key, query, body, headers, defaultS3MaxAttempts)
+}
+
+func (s *S3Store) doWithHeadersOnce(ctx context.Context, method, key string, query url.Values, body []byte, headers http.Header) (*http.Response, error) {
+	return s.doWithHeadersAttempts(ctx, method, key, query, body, headers, 1)
+}
+
+func (s *S3Store) doWithHeadersAttempts(ctx context.Context, method, key string, query url.Values, body []byte, headers http.Header, maxAttempts int) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if query == nil {
 		query = url.Values{}
+	}
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 	u := s.requestURL(key, query)
 
@@ -389,7 +407,7 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 	now := time.Now().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	date := now.Format("20060102")
-	for attempt := 0; attempt < defaultS3MaxAttempts; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var reader io.Reader
 		if body != nil {
 			reader = bytes.NewReader(body)
@@ -409,15 +427,23 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 				req.Header.Add(key, value)
 			}
 		}
-		req.Header.Set("Authorization", s.authorization(method, u.EscapedPath(), u.RawQuery, req.URL.Host, payloadHash, amzDate, date))
+		req.Header.Set("Authorization", s.authorization(method, awsURIPathEscape(u.Path), u.RawQuery, req.URL.Host, payloadHash, amzDate, date))
 		resp, err := s.client.Do(req)
 		if err == nil {
-			return resp, nil
+			if !retryableS3Status(resp.StatusCode) ||
+				attempt+1 >= maxAttempts {
+				return resp, nil
+			}
+			drainAndClose(resp.Body)
+			if delayErr := retryDelay(ctx, attempt); delayErr != nil {
+				return nil, delayErr
+			}
+			continue
 		}
 		if !retryableS3TransportError(ctx, err) {
 			return nil, err
 		}
-		if attempt+1 < defaultS3MaxAttempts {
+		if attempt+1 < maxAttempts {
 			if delayErr := retryDelay(ctx, attempt); delayErr != nil {
 				return nil, delayErr
 			}
@@ -426,6 +452,20 @@ func (s *S3Store) doWithHeaders(ctx context.Context, method, key string, query u
 		return nil, fmt.Errorf("%w: %v", ErrObjectStoreUnavailable, err)
 	}
 	return nil, fmt.Errorf("%w: request exhausted retries", ErrObjectStoreUnavailable)
+}
+
+func retryableS3Status(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *S3Store) requestURL(key string, query url.Values) url.URL {
@@ -483,7 +523,7 @@ func readS3Error(resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	_, _ = io.Copy(io.Discard, resp.Body)
 	err := fmt.Errorf("s3 request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	if resp.StatusCode >= 500 {
+	if retryableS3Status(resp.StatusCode) {
 		return fmt.Errorf("%w: %v", ErrObjectStoreUnavailable, err)
 	}
 	return err

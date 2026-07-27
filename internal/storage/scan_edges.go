@@ -23,7 +23,7 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 	if err != nil {
 		return EdgeScanResult{}, err
 	}
-	manifest, _, err := s.getManifest(ctx, tenantID)
+	manifestVersion, err := s.CurrentVersion(ctx, tenantID)
 	if err != nil {
 		return EdgeScanResult{}, err
 	}
@@ -46,21 +46,21 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 		} else if !errors.Is(err, ErrNotFound) {
 			return EdgeScanResult{}, err
 		}
-		if manifest.Version != cursorVersion {
+		if manifestVersion != cursorVersion {
 			return EdgeScanResult{}, fmt.Errorf("cursor version %d is no longer available", cursorVersion)
 		}
 	}
-	catalog, indexedRead, err := s.scanCatalog(ctx, tenantID, manifest.Version)
+	catalog, indexedRead, err := s.scanCatalog(ctx, tenantID, manifestVersion)
 	if err != nil {
 		return EdgeScanResult{}, err
 	}
-	scanVersion := manifest.Version
+	scanVersion := manifestVersion
 	if indexedRead {
 		scanVersion = catalog.Version
 	}
 	if options.MinVersion > 0 && scanVersion < options.MinVersion {
 		indexedRead = false
-		scanVersion = manifest.Version
+		scanVersion = manifestVersion
 	}
 	cursor, err := parseScanCursor(options.Cursor, scanVersion, edgeScanQueryHash(options))
 	if err != nil {
@@ -75,7 +75,7 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 			return result, nil
 		}
 	}
-	minVersion := manifest.Version
+	minVersion := manifestVersion
 	if options.MinVersion > minVersion {
 		minVersion = options.MinVersion
 	}

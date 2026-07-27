@@ -75,9 +75,17 @@ func canonicalQuery(values url.Values) string {
 }
 
 func awsPathEscape(value string) string {
+	return awsEscape(value, false)
+}
+
+func awsURIPathEscape(value string) string {
+	return awsEscape(value, true)
+}
+
+func awsEscape(value string, preserveSlash bool) string {
 	var builder strings.Builder
 	for _, b := range []byte(value) {
-		if awsUnreserved(b) {
+		if awsUnreserved(b) || preserveSlash && b == '/' {
 			builder.WriteByte(b)
 			continue
 		}

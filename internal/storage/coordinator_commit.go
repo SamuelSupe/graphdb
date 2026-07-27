@@ -10,7 +10,9 @@ func (s *TenantStore) putManifestForCommit(
 	reservation *directCommitReservation,
 ) (ObjectMeta, error) {
 	if s.coordinated() {
-		return s.putCoordinatedManifest(ctx, tenantID, manifest, meta, reservation)
+		return s.putCoordinatedManifest(
+			ctx, tenantID, manifest, meta, reservation, nil,
+		)
 	}
 	return s.putManifestMeta(ctx, tenantID, manifest, meta)
 }

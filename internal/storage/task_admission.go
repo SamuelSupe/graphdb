@@ -59,6 +59,8 @@ func (s *TenantStore) releaseTaskAdmission(task Task) {
 func (s *TenantStore) runTaskAdmitted(ctx context.Context, cancel context.CancelFunc, task Task) {
 	defer s.releaseTaskAdmission(task)
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
+	stopWatch := s.watchTaskCancellation(task, cancel)
+	defer stopWatch()
 	if !acquireTaskSlot(ctx, s.taskTenantSlot(task.TenantID)) {
 		s.persistQueuedTaskCancellation(ctx, task)
 		return
@@ -87,20 +89,6 @@ func (s *TenantStore) persistQueuedTaskCancellation(ctx context.Context, task Ta
 	s.trySaveTask(writeCtx, current)
 }
 
-func (s *TenantStore) runIndexTaskAdmitted(ctx context.Context, tenantID string, task IndexTask) {
-	defer s.releaseQueuedTask()
-	tenantSlot := s.taskTenantSlot(tenantID)
-	if !acquireTaskSlot(ctx, tenantSlot) {
-		return
-	}
-	defer releaseTaskSlot(tenantSlot)
-	if !acquireTaskSlot(ctx, s.taskExecutionSlots) {
-		return
-	}
-	defer releaseTaskSlot(s.taskExecutionSlots)
-	s.runIndexRebuildTask(ctx, tenantID, task)
-}
-
 func (s *TenantStore) reserveQueuedTask() bool {
 	select {
 	case s.taskQueueSlots <- struct{}{}:
@@ -118,17 +106,38 @@ func (s *TenantStore) releaseQueuedTask() {
 }
 
 func (s *TenantStore) taskTenantSlot(tenantID string) chan struct{} {
+	return s.taskTenantSlots[taskTenantStripe(
+		tenantID,
+		len(s.taskTenantSlots),
+	)]
+}
+
+func (s *TenantStore) indexTaskStartSlot(tenantID string) chan struct{} {
+	return s.indexTaskStartSlots[taskTenantStripe(
+		tenantID,
+		len(s.indexTaskStartSlots),
+	)]
+}
+
+func taskTenantStripe(tenantID string, stripes int) int {
 	var hash uint32 = 2166136261
 	for i := 0; i < len(tenantID); i++ {
 		hash ^= uint32(tenantID[i])
 		hash *= 16777619
 	}
-	return s.taskTenantSlots[int(hash%uint32(len(s.taskTenantSlots)))]
+	return int(hash % uint32(stripes))
 }
 
 func acquireTaskSlot(ctx context.Context, slot chan struct{}) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	select {
 	case slot <- struct{}{}:
+		if ctx.Err() != nil {
+			releaseTaskSlot(slot)
+			return false
+		}
 		return true
 	case <-ctx.Done():
 		return false

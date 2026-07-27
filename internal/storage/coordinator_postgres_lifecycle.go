@@ -42,7 +42,7 @@ func (c *PostgresCoordinator) TransitionTenant(
 		return CoordinationHead{}, coordinatorUnavailable(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return CoordinationHead{}, coordinatorUnavailable(err)
+		return c.resolveAmbiguousTenantTransition(head, advanceGeneration)
 	}
 	return head, nil
 }
@@ -86,13 +86,20 @@ func (c *PostgresCoordinator) FinalizeTenantPurge(
 			return coordinatorUnavailable(err)
 		}
 	}
-	return coordinatorUnavailable(tx.Commit(ctx))
+	if err := tx.Commit(ctx); err != nil {
+		return c.resolveAmbiguousTenantPurge(tenantID, generation)
+	}
+	return nil
 }
 
 func (c *PostgresCoordinator) ActivateTenantHead(
 	ctx context.Context,
 	request HeadPublishRequest,
 ) (CoordinationHead, bool, error) {
+	contextRevision, err := initialHeadWriteContextRevision(request)
+	if err != nil {
+		return CoordinationHead{}, false, err
+	}
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return CoordinationHead{}, false, coordinatorUnavailable(err)
@@ -110,10 +117,10 @@ func (c *PostgresCoordinator) ActivateTenantHead(
 		     manifest_key = $5,
 		     manifest_hash = $6,
 		     commit_id = $7,
-		     write_context_revision = 0,
-		     write_context_key = '',
-		     write_context_hash = '',
-		     updated_at = $8
+		     write_context_revision = $8,
+		     write_context_key = $9,
+		     write_context_hash = $10,
+		     updated_at = $11
 		 WHERE namespace = $1 AND tenant_id = $2
 		   AND generation = $3 AND status = 'deleted'
 		 RETURNING `+coordinatorHeadColumns,
@@ -124,9 +131,13 @@ func (c *PostgresCoordinator) ActivateTenantHead(
 		request.ManifestKey,
 		request.ManifestHash,
 		request.CommitID,
+		contextRevision,
+		request.InitialWriteContextKey,
+		request.InitialWriteContextHash,
 		time.Now().UTC(),
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
+		_ = tx.Rollback(ctx)
 		current, _, headErr := c.Head(ctx, request.TenantID)
 		return current, false, headErr
 	}

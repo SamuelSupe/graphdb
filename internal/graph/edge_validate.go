@@ -7,8 +7,64 @@ func (g *Graph) validateAllEdges() error {
 		if err := g.validateEdge(edge); err != nil {
 			return err
 		}
-		if err := g.validateCardinality(edge); err != nil {
-			return err
+	}
+	return g.validateAllCardinalities()
+}
+
+func (g *Graph) validateRelationTypeEdges(
+	relationTypes map[string]struct{},
+) error {
+	for relationType := range relationTypes {
+		for edgeID := range g.edgeTypeIndex[relationType] {
+			edge, ok := g.Edges[edgeID]
+			if !ok {
+				continue
+			}
+			if err := g.validateEdge(edge); err != nil {
+				return err
+			}
+			if err := g.validateCardinality(edge); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type cardinalityEndpoint struct {
+	entityID     string
+	relationType string
+}
+
+func (g *Graph) validateAllCardinalities() error {
+	outgoing := make(map[cardinalityEndpoint]struct{})
+	incoming := make(map[cardinalityEndpoint]struct{})
+	for _, edge := range g.Edges {
+		relationType := g.RelationTypes[edge.Type]
+		outKey := cardinalityEndpoint{entityID: edge.From, relationType: edge.Type}
+		inKey := cardinalityEndpoint{entityID: edge.To, relationType: edge.Type}
+		switch relationType.Cardinality {
+		case "", ManyToMany:
+			continue
+		case OneToOne:
+			if _, exists := outgoing[outKey]; exists {
+				return fmt.Errorf("edge %q violates one_to_one cardinality for relation %q", edge.ID, edge.Type)
+			}
+			if _, exists := incoming[inKey]; exists {
+				return fmt.Errorf("edge %q violates one_to_one cardinality for relation %q", edge.ID, edge.Type)
+			}
+			outgoing[outKey] = struct{}{}
+			incoming[inKey] = struct{}{}
+		case OneToMany:
+			if _, exists := incoming[inKey]; exists {
+				return fmt.Errorf("edge %q violates one_to_many cardinality for relation %q", edge.ID, edge.Type)
+			}
+			incoming[inKey] = struct{}{}
+		case ManyToOne:
+			if _, exists := outgoing[outKey]; exists {
+				return fmt.Errorf("edge %q violates many_to_one cardinality for relation %q", edge.ID, edge.Type)
+			}
+			outgoing[outKey] = struct{}{}
 		}
 	}
 	return nil

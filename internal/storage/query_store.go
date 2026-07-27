@@ -74,6 +74,7 @@ func (s *TenantStore) getSavedQueryWithMeta(ctx context.Context, tenantID string
 		return SavedQuery{}, false, ObjectMeta{}, errors.New("saved query name is required")
 	}
 	key := s.savedQueryKey(tenantID, name)
+	s.clearCoordinatedWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return SavedQuery{}, false, ObjectMeta{Key: key}, ErrNotFound
@@ -104,37 +105,47 @@ func (s *TenantStore) ListSavedQueries(ctx context.Context, tenantID string) ([]
 	if err := ValidateTenantID(tenantID); err != nil {
 		return nil, err
 	}
-	objects, err := s.Objects.List(ctx, s.savedQueryPrefix(tenantID))
+	prefix := s.savedQueryPrefix(tenantID)
+	items := make([]SavedQuery, 0)
+	err := scanObjectPrefixFresh(
+		ctx,
+		s.Objects,
+		prefix,
+		func(objects []ObjectInfo) error {
+			for _, object := range objects {
+				s.clearCoordinatedWriterObjectKey(object.Key)
+				data, err := s.Objects.Get(ctx, object.Key)
+				if err != nil {
+					if errors.Is(err, ErrNotFound) {
+						continue
+					}
+					return err
+				}
+				if !isParquetBytes(data) {
+					continue
+				}
+				saved, err := decodeParquetSavedQuery(ctx, data)
+				if err != nil {
+					continue
+				}
+				saved.Name = strings.TrimSpace(saved.Name)
+				if saved.Name == "" ||
+					object.Key != s.savedQueryKey(tenantID, saved.Name) {
+					continue
+				}
+				if saved.TenantID != "" && saved.TenantID != tenantID {
+					continue
+				}
+				if saved.TenantID == "" {
+					saved.TenantID = tenantID
+				}
+				items = append(items, saved)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return nil, err
-	}
-	items := make([]SavedQuery, 0, len(objects))
-	for _, object := range objects {
-		data, err := s.Objects.Get(ctx, object.Key)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		if !isParquetBytes(data) {
-			continue
-		}
-		saved, err := decodeParquetSavedQuery(ctx, data)
-		if err != nil {
-			continue
-		}
-		saved.Name = strings.TrimSpace(saved.Name)
-		if saved.Name == "" || object.Key != s.savedQueryKey(tenantID, saved.Name) {
-			continue
-		}
-		if saved.TenantID != "" && saved.TenantID != tenantID {
-			continue
-		}
-		if saved.TenantID == "" {
-			saved.TenantID = tenantID
-		}
-		items = append(items, saved)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items, nil

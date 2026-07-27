@@ -14,6 +14,7 @@ type cursorState struct {
 	After   string `json:"after,omitempty"`
 	Offset  int    `json:"offset,omitempty"`
 	Query   string `json:"query,omitempty"`
+	Order   string `json:"order,omitempty"`
 	Legacy  bool   `json:"-"`
 }
 
@@ -38,6 +39,11 @@ func parseCursor(raw string) (cursorState, error) {
 	if cursor.After != "" && cursor.Version <= 0 {
 		return cursorState{}, fmt.Errorf("%w: cursor version is required", ErrInvalid)
 	}
+	if cursor.Order != "" {
+		if cursor.After == "" || !validCursorOrder(cursor.Order) {
+			return cursorState{}, fmt.Errorf("%w: invalid cursor order", ErrInvalid)
+		}
+	}
 	return cursor, nil
 }
 
@@ -48,7 +54,14 @@ func validateCursor(cursor cursorState, version int64, request Request) error {
 	if cursor.Query != "" && cursor.Query != cursorQueryHash(request) {
 		return fmt.Errorf("%w: cursor query does not match request", ErrInvalid)
 	}
+	if cursor.Order != "" && request.Op != "match" {
+		return fmt.Errorf("%w: cursor order does not match request", ErrInvalid)
+	}
 	return nil
+}
+
+func validCursorOrder(order string) bool {
+	return order == EntityPageOrderIdentity || order == EntityPageOrderShard
 }
 
 func paginate(version int64, results []Result, request Request, cursor cursorState) ([]Result, string, error) {
@@ -57,11 +70,18 @@ func paginate(version int64, results []Result, request Request, cursor cursorSta
 	if !cursor.Legacy && cursor.After != "" {
 		start = len(results)
 		found := false
-		for i, result := range results {
-			if resultIdentity(result) == cursor.After {
-				start = i + 1
-				found = true
-				break
+		if cursor.Offset > 0 && cursor.Offset <= len(results) &&
+			resultMatchesCursor(results[cursor.Offset-1], cursor.After) {
+			start = cursor.Offset
+			found = true
+		}
+		if !found {
+			for i, result := range results {
+				if resultMatchesCursor(result, cursor.After) {
+					start = i + 1
+					found = true
+					break
+				}
 			}
 		}
 		if !found {
@@ -79,7 +99,13 @@ func paginate(version int64, results []Result, request Request, cursor cursorSta
 	if end >= len(results) || len(page) == 0 {
 		return page, "", nil
 	}
-	return page, encodeCursor(cursorState{Version: version, After: resultIdentity(page[len(page)-1]), Query: cursorQueryHash(request)}), nil
+	return page, encodeCursor(cursorState{
+		Version: version,
+		After:   resultIdentity(page[len(page)-1]),
+		Offset:  end,
+		Query:   cursorQueryHash(request),
+		Order:   cursor.Order,
+	}), nil
 }
 
 func encodeCursor(cursor cursorState) string {
@@ -108,13 +134,5 @@ func cursorEntityID(cursor cursorState) (string, bool) {
 		return "", false
 	}
 	id, ok := strings.CutPrefix(cursor.After, "entity:")
-	return id, ok && id != ""
-}
-
-func cursorOutEdgeID(cursor cursorState) (string, bool) {
-	if cursor.Legacy || cursor.After == "" {
-		return "", false
-	}
-	id, ok := strings.CutPrefix(cursor.After, "edge:out:")
 	return id, ok && id != ""
 }

@@ -33,6 +33,10 @@ func (g *Graph) replaceState(next *Graph) {
 	g.Edges = next.Edges
 	g.out = next.out
 	g.in = next.in
+	g.edgeAliasIndex = next.edgeAliasIndex
+	g.edgeTypeIndex = next.edgeTypeIndex
+	g.entityAliasIndex = next.entityAliasIndex
+	g.kindCounts = next.kindCounts
 	g.fieldIndex = next.fieldIndex
 	g.identityIndex = next.identityIndex
 	g.cow = next.cow
@@ -108,7 +112,6 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	indexesDirty := false
 	for _, edgeID := range commit.Mutations.DeleteEdges {
 		if edgeID == "" {
 			return ApplyReport{}, fmt.Errorf("delete edge id is required")
@@ -191,77 +194,62 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		g.deleteEntityForce(resolved)
 		affected.add(resolved)
 	}
-	for _, relationName := range commit.Mutations.DeleteRelationTypes {
-		if relationName == "" {
-			return ApplyReport{}, fmt.Errorf("delete relation type name is required")
-		}
-		tracker.touchRelationType(relationName)
-		delete(g.RelationTypes, relationName)
-		for edgeID, edge := range g.Edges {
-			if edge.Type == relationName {
-				tracker.touchEdge(edgeID)
-				affectedEdges.add(edgeID)
-				g.removeEdgeFromIndexes(edgeID, edge)
-				delete(g.Edges, edgeID)
-			}
-		}
+	if err := g.applyRelationTypeDeletes(
+		commit.Mutations.DeleteRelationTypes,
+		tracker,
+		affectedEdges,
+	); err != nil {
+		return ApplyReport{}, err
 	}
-	for _, ciTypeName := range commit.Mutations.DeleteCITypes {
-		if ciTypeName == "" {
-			return ApplyReport{}, fmt.Errorf("delete ci type name is required")
-		}
-		for _, entity := range g.Entities {
-			if entity.Kind == ciTypeName {
-				return ApplyReport{}, fmt.Errorf("cannot delete ci type %q while entities of that kind exist", ciTypeName)
-			}
-		}
-		tracker.touchCIType(ciTypeName)
-		delete(g.CITypes, ciTypeName)
-		indexesDirty = true
+	if err := g.applyCITypeMutations(
+		commit.Mutations.DeleteCITypes,
+		commit.Mutations.UpsertCITypes,
+		tracker,
+	); err != nil {
+		return ApplyReport{}, err
 	}
-	for _, ciType := range commit.Mutations.UpsertCITypes {
-		normalized, err := normalizeCIType(ciType)
-		if err != nil {
-			return ApplyReport{}, err
-		}
-		tracker.touchCIType(normalized.Name)
-		g.CITypes[normalized.Name] = normalized
-		indexesDirty = true
+	if err := g.applyRelationTypeUpserts(
+		commit.Mutations.UpsertRelationTypes,
+		tracker,
+	); err != nil {
+		return ApplyReport{}, err
 	}
-	if indexesDirty {
-		if err := g.validateCITypes(); err != nil {
-			return ApplyReport{}, err
-		}
-		if err := g.validateEntitiesAgainstCITypes(); err != nil {
-			return ApplyReport{}, err
-		}
+	uniqueValidator, err := newUniqueEntityValidator(
+		g,
+		entityMutationKinds(g, commit.Mutations),
+	)
+	if err != nil {
+		return ApplyReport{}, err
 	}
-	for _, relationType := range commit.Mutations.UpsertRelationTypes {
-		normalized, err := normalizeRelationType(relationType)
-		if err != nil {
-			return ApplyReport{}, err
-		}
-		tracker.touchRelationType(normalized.Name)
-		g.RelationTypes[normalized.Name] = normalized
-		if err := g.validateAllEdges(); err != nil {
-			return ApplyReport{}, err
-		}
-	}
-	if indexesDirty {
-		g.rebuildIndexes()
-	}
+	fieldSpecsByKind := make(map[string]map[string]FieldSpec)
 	for _, entity := range commit.Mutations.UpsertEntities {
 		normalized, err := normalizeEntity(entity)
 		if err != nil {
 			return ApplyReport{}, err
 		}
 		sanitizeIncomingEntitySources(&normalized)
-		if err := g.applyEntitySchema(&normalized); err != nil {
+		fields, err := g.effectiveFieldsCached(
+			normalized.Kind,
+			fieldSpecsByKind,
+		)
+		if err != nil {
+			return ApplyReport{}, err
+		}
+		if err := g.applyEntitySchemaWithSpecs(
+			&normalized,
+			fields,
+		); err != nil {
 			return ApplyReport{}, err
 		}
 		incomingID := normalized.ID
 		targetID, err := g.resolveEntityID(normalized)
 		if err != nil {
+			return ApplyReport{}, err
+		}
+		if err := g.validateResolvedEntityTarget(
+			incomingID,
+			targetID,
+		); err != nil {
 			return ApplyReport{}, err
 		}
 		tracker.touchEntity(targetID)
@@ -275,10 +263,6 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 			}
 			normalized.ID = incomingID
 			var mergeReport ApplyReport
-			fields, err := g.EffectiveFields(previous.Kind)
-			if err != nil {
-				return ApplyReport{}, err
-			}
 			normalized, mergeReport = mergeEntityForUpsert(previous, normalized, targetID, fields, commit.Version, now)
 			report.Suppressed = append(report.Suppressed, mergeReport.Suppressed...)
 			if !previous.CreatedAt.IsZero() {
@@ -292,7 +276,10 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		}
 		normalized.UpdatedAt = now
 		normalized.Version = commit.Version
-		if err := g.validateUniqueEntity(normalized); err != nil {
+		if err := uniqueValidator.validate(normalized); err != nil {
+			return ApplyReport{}, err
+		}
+		if err := g.validateIdentityIndexAvailable(normalized); err != nil {
 			return ApplyReport{}, err
 		}
 		if previous, ok := g.Entities[normalized.ID]; ok {
@@ -301,6 +288,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		clearEntityWriteMetadata(&normalized)
 		g.Entities[normalized.ID] = normalized
 		g.addEntityToIndexes(normalized.ID, normalized)
+		uniqueValidator.add(normalized)
 		affected.add(normalized.ID)
 	}
 	for _, request := range commit.Mutations.MarkSourceStale {
@@ -314,16 +302,32 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 	}
 	for _, merge := range commit.Mutations.MergeEntities {
 		tracker.touchMerge(merge)
-		if err := g.applyMerge(merge, commit.Version, now); err != nil {
+		if err := g.applyMerge(
+			merge,
+			commit.Version,
+			now,
+			uniqueValidator,
+			fieldSpecsByKind,
+			tracker,
+			affected,
+			affectedEdges,
+		); err != nil {
 			return ApplyReport{}, err
 		}
 	}
 	for _, split := range commit.Mutations.SplitEntities {
 		tracker.touchSplit(split)
-		if err := g.applySplit(split, commit.Version, now); err != nil {
+		if err := g.applySplit(
+			split,
+			commit.Version,
+			now,
+			uniqueValidator,
+			fieldSpecsByKind,
+			affected,
+			affectedEdges,
+		); err != nil {
 			return ApplyReport{}, err
 		}
-		g.rebuildIndexes()
 	}
 	for _, edge := range commit.Mutations.UpsertEdges {
 		normalized, err := normalizeEdge(edge)

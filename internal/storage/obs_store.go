@@ -179,33 +179,45 @@ func (c *huaweiOBSClient) Delete(ctx context.Context, key string) error {
 }
 
 func (c *huaweiOBSClient) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	items := make([]ObjectInfo, 0)
-	var marker string
-	for {
-		if err := objectContextErr(ctx); err != nil {
-			return nil, err
-		}
-		result, err := c.client.ListObjects(&obs.ListObjectsInput{
-			ListObjsInput: obs.ListObjsInput{Prefix: prefix, MaxKeys: 1000},
-			Bucket:        c.bucket,
-			Marker:        marker,
+	return collectNativeObjectPages(ctx, prefix, c.ListPage)
+}
+
+func (c *huaweiOBSClient) ListPage(
+	ctx context.Context,
+	prefix string,
+	after string,
+	limit int,
+) ([]ObjectInfo, string, error) {
+	if err := objectContextErr(ctx); err != nil {
+		return nil, "", err
+	}
+	result, err := c.client.ListObjects(&obs.ListObjectsInput{
+		ListObjsInput: obs.ListObjsInput{
+			Prefix:  prefix,
+			MaxKeys: nativeObjectPageLimit(limit),
+		},
+		Bucket: c.bucket,
+		Marker: after,
+	})
+	if err != nil {
+		return nil, "", normalizeHuaweiOBSError(err, false)
+	}
+	items := make([]ObjectInfo, 0, len(result.Contents))
+	for _, object := range result.Contents {
+		items = append(items, ObjectInfo{
+			Key: object.Key, Size: object.Size, ETag: cleanETag(object.ETag),
 		})
-		if err != nil {
-			return nil, normalizeHuaweiOBSError(err, false)
-		}
-		for _, object := range result.Contents {
-			items = append(items, ObjectInfo{Key: object.Key, Size: object.Size, ETag: cleanETag(object.ETag)})
-		}
-		if !result.IsTruncated {
-			break
-		}
-		if result.NextMarker == "" || result.NextMarker == marker {
-			return nil, fmt.Errorf("obs list response for prefix %q was truncated without a new marker", prefix)
-		}
-		marker = result.NextMarker
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
-	return items, nil
+	if !result.IsTruncated {
+		return items, "", objectContextErr(ctx)
+	}
+	if len(items) == 0 {
+		return nil, "", fmt.Errorf(
+			"obs list page for prefix %q was truncated without objects", prefix,
+		)
+	}
+	return items, items[len(items)-1].Key, objectContextErr(ctx)
 }
 
 func normalizeHuaweiOBSError(err error, createOnly bool) error {

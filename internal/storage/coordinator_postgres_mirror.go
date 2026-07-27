@@ -91,6 +91,31 @@ func (c *PostgresCoordinator) ClaimLegacyManifest(ctx context.Context, ownerToke
 	return job, true, nil
 }
 
+func (c *PostgresCoordinator) RenewLegacyManifest(
+	ctx context.Context,
+	job LegacyManifestJob,
+	leaseTTL time.Duration,
+) (bool, error) {
+	if leaseTTL <= 0 {
+		leaseTTL = 30 * time.Second
+	}
+	tag, err := c.pool.Exec(ctx,
+		`UPDATE `+c.table("legacy_manifest_outbox")+`
+		 SET lease_until = now() + $5::interval
+		 WHERE namespace = $1 AND tenant_id = $2 AND head_revision = $3
+		   AND owner_token = $4 AND status = 'running'`,
+		c.namespace,
+		job.TenantID,
+		job.HeadRevision,
+		job.OwnerToken,
+		postgresInterval(leaseTTL),
+	)
+	if err != nil {
+		return false, coordinatorUnavailable(err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (c *PostgresCoordinator) CompleteLegacyManifest(ctx context.Context, job LegacyManifestJob) error {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {

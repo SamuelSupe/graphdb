@@ -268,6 +268,9 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.commit.once", append([]attribute.KeyValue{
 		tenantTraceAttr(tenantID),
 	}, append(commitOptionTraceAttrs(opts), mutationTraceAttrs(mutations)...)...)...)
+	if s.coordinated() {
+		ctx = withFreshCoordinatedWriteContextMemo(ctx)
+	}
 	defer func() {
 		span.SetAttributes(
 			attribute.Int64("graphdb.commit.version", result.Version),
@@ -326,7 +329,11 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	)
 	nextGraph, report, err := loaded.Graph.ApplyCommitStorageCopyWithOptions(commit, graph.ApplyOptions{})
 	if err == nil {
-		if relationSchemas.GraphVersion == loaded.Manifest.Version {
+		if relationSchemaCommitCanValidateIncrementally(
+			s.coordinated(),
+			relationSchemas,
+			loaded.Manifest.Version,
+		) {
 			err = validateRelationSchemaCommit(nextGraph, relationSchemas, report.AffectedEdgeIDs)
 		} else {
 			err = validateRelationSchemaGraph(nextGraph, relationSchemas)
@@ -356,8 +363,18 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	fingerprintSpan.SetAttributes(attribute.Bool("graphdb.commit.content_changed", report.Changed))
 	endStorageSpan(fingerprintSpan, nil)
 	if !report.Changed {
-		if err := s.ensureCoordinationPointCurrent(ctx, tenantID, loaded.Meta); err != nil {
+		noopToken, err := s.prepareCoordinatedNoop(
+			ctx, tenantID, loaded.Meta,
+		)
+		if err != nil {
 			return CommitResult{}, err
+		}
+		if s.coordinated() && noopToken.Revision == 0 {
+			manifest.LayoutVersion = CurrentObjectLayoutVersion
+			manifest.TenantID = tenantID
+			if manifest.UpdatedAt.IsZero() {
+				manifest.UpdatedAt = time.Now().UTC()
+			}
 		}
 		previousMD5 := loaded.DataMD5
 		if previousMD5 == "" {
@@ -391,34 +408,22 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		if err := s.prepareDirectCommit(ctx, opts.directCommit, result, time.Now().UTC()); err != nil {
 			return CommitResult{}, err
 		}
-		if s.coordinated() && opts.directCommit != nil {
-			token, err := parseCoordinatedHeadToken(loaded.Meta)
+		if s.coordinated() {
+			meta, err := s.completeCoordinatedNoop(
+				ctx,
+				tenantID,
+				manifest,
+				loaded.Meta,
+				noopToken,
+				opts.directCommit,
+				result,
+			)
 			if err != nil {
 				return CommitResult{}, err
 			}
-			request := HeadPublishRequest{
-				TenantID:                     tenantID,
-				ExpectedRevision:             token.Revision,
-				ExpectedGeneration:           token.Generation,
-				ExpectedWriteContextRevision: token.ContextRevision,
-				CommitID:                     manifest.HeadCommitID,
-			}
-			if err := attachCoordinatorCommitMetadata(
-				&request, opts.directCommit, result, manifest.Version,
-			); err != nil {
-				return CommitResult{}, err
-			}
-			committed, err := s.Coordinator.CompleteNoop(ctx, request)
-			if err != nil {
-				s.observeCoordinatorCAS(tenantID, "error", 0)
-				return CommitResult{}, err
-			}
-			if !committed {
-				s.observeCoordinatorCAS(tenantID, "conflict", 0)
-				return CommitResult{}, fmt.Errorf("%w: tenant %q changed while completing no-op commit", ErrConflict, tenantID)
-			}
-			s.observeCoordinatorCAS(tenantID, "committed", token.Revision)
+			loaded.Meta = meta
 		}
+		loaded.Manifest = manifest
 		s.setWriteCache(tenantID, loaded)
 		return result, nil
 	}
@@ -433,7 +438,10 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		tenantTraceAttr(tenantID),
 		attribute.Int64("graphdb.commit.version", version),
 	)
-	commitMeta, putErr := s.putCommitObjectIfAbsentMeta(putCommitCtx, commitKey, commit)
+	commitMeta, normalizedCommit, putErr :=
+		s.putCommitObjectIfAbsentMetaNormalized(
+			putCommitCtx, commitKey, commit,
+		)
 	err = putErr
 	endStorageSpan(putCommitSpan, err)
 	if err != nil {
@@ -463,12 +471,19 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	manifest.CommitKeys = append(append([]string(nil), manifest.CommitKeys...), commitKey)
 	manifest.UpdatedAt = commit.CreatedAt
 	manifest.DataMD5 = nextMD5
+	commitTail := appendCommitTailCache(
+		loaded.CommitTail,
+		loaded.Manifest.CommitKeys,
+		commitSegmentItem{Key: commitKey, Commit: normalizedCommit},
+	)
 	segmentCtx, segmentSpan := startStorageSpan(ctx, "graphdb.storage.commit.segment_tail",
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.commit_tail.length_before", manifestCommitTailLength(manifest)),
 		attribute.Int("graphdb.commit_keys.before_segment", len(manifest.CommitKeys)),
 	)
-	err = s.segmentCommitTailIfNeeded(segmentCtx, tenantID, &manifest)
+	err = s.segmentCommitTailIfNeeded(
+		segmentCtx, tenantID, &manifest, &commitTail,
+	)
 	segmentSpan.SetAttributes(
 		attribute.Int("graphdb.commit_tail.length_after", manifestCommitTailLength(manifest)),
 		attribute.Int("graphdb.commit_segments.after", len(manifest.CommitSegments)),
@@ -513,7 +528,10 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	commitPublished = true
 	s.setWriteCache(tenantID, loadedGraph{
 		Graph: nextGraph, Manifest: manifest, Meta: meta, DataMD5: nextMD5,
-		CacheBytes: writeCacheBytesForGraph(nextGraph, logicalBytes),
+		CommitTail: commitTail,
+		CacheBytes: writeCacheBytesForGraphWithCommitTail(
+			nextGraph, logicalBytes, commitTail,
+		),
 	})
 	if schemaErr := s.advanceRelationSchemaValidation(ctx, tenantID, relationSchemas, relationSchemaMeta, version); schemaErr != nil {
 		result.IndexWarnings = append(result.IndexWarnings, "relation schema validation checkpoint update failed: "+schemaErr.Error())

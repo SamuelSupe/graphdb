@@ -61,7 +61,13 @@ func (s *TenantStore) saveDeadLetter(ctx context.Context, tenantID string, reque
 }
 
 func (s *TenantStore) ensureDeadLetterAfterSkip(ctx context.Context, tenantID string, request IngestRequest, result IngestResult) error {
-	_, _, err := s.Objects.GetWithMeta(ctx, s.deadLetterKey(tenantID, request.Source, deadLetterID(request)))
+	key := s.deadLetterKey(
+		tenantID,
+		request.Source,
+		deadLetterID(request),
+	)
+	s.clearCoordinatedWriterObjectKey(key)
+	_, _, err := s.Objects.GetWithMeta(ctx, key)
 	if err == nil {
 		return nil
 	}
@@ -85,38 +91,16 @@ func (s *TenantStore) ListDeadLetters(ctx context.Context, tenantID string, sour
 		return nil, err
 	}
 	source = normalizedSource
-	objects, err := s.Objects.List(ctx, s.deadLetterPrefix(tenantID, source))
-	if err != nil {
+	items := make([]DeadLetter, 0)
+	if err := s.scanDeadLetters(ctx, tenantID, source, func(item DeadLetter) error {
+		items = append(items, item)
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	items := make([]DeadLetter, 0, len(objects))
-	for _, object := range objects {
-		var item DeadLetter
-		data, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !isParquetBytes(data) {
-			items = append(items, invalidDeadLetter(tenantID, source, object.Key, fmt.Errorf("unsupported deadletter object: only parquet deadletters are readable")))
-			continue
-		}
-		item, err = decodeParquetDeadLetter(ctx, data)
-		if err != nil {
-			items = append(items, invalidDeadLetter(tenantID, source, object.Key, err))
-			continue
-		}
-		item.objectKey = object.Key
-		item.objectMeta = meta
-		if err := validateDeadLetterRecord(tenantID, source, item); err != nil {
-			items = append(items, invalidDeadLetter(tenantID, source, object.Key, err))
-			continue
-		}
-		items = append(items, item)
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.Before(items[j].CreatedAt) })
+	sort.Slice(items, func(i, j int) bool {
+		return deadLetterBefore(items[i], items[j])
+	})
 	return items, nil
 }
 
@@ -137,7 +121,7 @@ func (s *TenantStore) ReplayDeadLetters(ctx context.Context, tenantID string, so
 	if limit < 0 {
 		return ReplayReport{}, fmt.Errorf("limit must be a non-negative integer")
 	}
-	letters, err := s.ListDeadLetters(ctx, tenantID, source)
+	letters, err := s.deadLettersForReplay(ctx, tenantID, source, limit)
 	if err != nil {
 		return ReplayReport{}, err
 	}

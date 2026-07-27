@@ -123,6 +123,57 @@ func TestObjectStoreStatusCoalescesConcurrentProbes(t *testing.T) {
 	wg.Wait()
 }
 
+func TestObjectStoreStatusWaiterRetriesCanceledLeader(t *testing.T) {
+	probe := &cancelFirstProbeStore{
+		ObjectStore: NewMemoryStore(),
+		started:     make(chan struct{}),
+	}
+	store := NewTenantStore(probe, "test")
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan ObjectStoreStatus, 1)
+	go func() {
+		leaderDone <- store.ObjectStoreStatus(leaderCtx)
+	}()
+	select {
+	case <-probe.started:
+	case <-time.After(time.Second):
+		t.Fatal("leader probe did not start")
+	}
+
+	waiterCtx := &doneObservedContext{
+		Context:  context.Background(),
+		observed: make(chan struct{}),
+	}
+	waiterDone := make(chan ObjectStoreStatus, 1)
+	go func() {
+		waiterDone <- store.ObjectStoreStatus(waiterCtx)
+	}()
+	select {
+	case <-waiterCtx.observed:
+	case <-time.After(time.Second):
+		t.Fatal("healthy waiter did not join active probe")
+	}
+	cancelLeader()
+	if status := <-leaderDone; status.Available ||
+		status.LastError != context.Canceled.Error() {
+		t.Fatalf("leader status = %#v", status)
+	}
+	select {
+	case status := <-waiterDone:
+		if !status.Available || status.LastError != "" {
+			t.Fatalf("healthy waiter inherited canceled status: %#v", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("healthy waiter did not retry canceled probe")
+	}
+	probe.mu.Lock()
+	calls := probe.calls
+	probe.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("backend probe calls = %d, want canceled load plus retry", calls)
+	}
+}
+
 func TestHuaweiOBSProbeHonorsContext(t *testing.T) {
 	requestCanceled := make(chan struct{}, 1)
 	client := &huaweiOBSClient{
@@ -167,6 +218,25 @@ type blockingProbeStore struct {
 	once    sync.Once
 }
 
+type cancelFirstProbeStore struct {
+	ObjectStore
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	once    sync.Once
+}
+
+type doneObservedContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *doneObservedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
+}
+
 func (s *blockingProbeStore) Probe(context.Context) error {
 	s.mu.Lock()
 	s.calls++
@@ -174,6 +244,19 @@ func (s *blockingProbeStore) Probe(context.Context) error {
 	s.once.Do(func() { close(s.started) })
 	<-s.release
 	return nil
+}
+
+func (s *cancelFirstProbeStore) Probe(ctx context.Context) error {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call != 1 {
+		return nil
+	}
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (s *switchableProbeStore) Probe(context.Context) error {

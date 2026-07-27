@@ -37,6 +37,16 @@ func (s *TenantStore) loadCoordinatedWriteContext(
 	ctx context.Context,
 	tenantID string,
 ) (WriteContextSnapshot, CoordinationHead, error) {
+	if memo := coordinatedWriteContextMemoFrom(ctx); memo != nil {
+		return memo.load(ctx, s, tenantID)
+	}
+	return s.loadCoordinatedWriteContextFresh(ctx, tenantID)
+}
+
+func (s *TenantStore) loadCoordinatedWriteContextFresh(
+	ctx context.Context,
+	tenantID string,
+) (WriteContextSnapshot, CoordinationHead, error) {
 	head, exists, err := s.Coordinator.Head(ctx, tenantID)
 	if err != nil {
 		return WriteContextSnapshot{}, CoordinationHead{}, err
@@ -101,24 +111,10 @@ func (s *TenantStore) publishCoordinatedWriteContext(
 	head CoordinationHead,
 	snapshot WriteContextSnapshot,
 ) (CoordinationHead, bool, error) {
-	snapshot.LayoutVersion = writeContextLayoutVersion
-	snapshot.TenantID = head.TenantID
-	snapshot.Revision = head.WriteContextRevision + 1
-	snapshot.UpdatedAt = time.Now().UTC()
-	snapshot.RelationSchemas.LayoutVersion = relationSchemaLayoutVersion
-	snapshot.RelationSchemas.TenantID = head.TenantID
-	normalized, err := normalizeRelationSchemaCatalog(snapshot.RelationSchemas)
+	key, hash, err := s.putCoordinatedWriteContextSnapshot(
+		ctx, head.TenantID, head.WriteContextRevision+1, snapshot,
+	)
 	if err != nil {
-		return CoordinationHead{}, false, err
-	}
-	snapshot.RelationSchemas = normalized
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		return CoordinationHead{}, false, err
-	}
-	hash := objectContentHash(data)
-	key := s.coordinatorWriteContextKey(head.TenantID, snapshot.Revision, hash)
-	if err := s.putImmutableCoordinatorObject(ctx, key, data); err != nil {
 		return CoordinationHead{}, false, err
 	}
 	return s.Coordinator.PublishWriteContext(ctx, WriteContextPublishRequest{
@@ -129,6 +125,35 @@ func (s *TenantStore) publishCoordinatedWriteContext(
 		WriteContextKey:    key,
 		WriteContextHash:   hash,
 	})
+}
+
+func (s *TenantStore) putCoordinatedWriteContextSnapshot(
+	ctx context.Context,
+	tenantID string,
+	revision int64,
+	snapshot WriteContextSnapshot,
+) (string, string, error) {
+	snapshot.LayoutVersion = writeContextLayoutVersion
+	snapshot.TenantID = tenantID
+	snapshot.Revision = revision
+	snapshot.UpdatedAt = time.Now().UTC()
+	snapshot.RelationSchemas.LayoutVersion = relationSchemaLayoutVersion
+	snapshot.RelationSchemas.TenantID = tenantID
+	normalized, err := normalizeRelationSchemaCatalog(snapshot.RelationSchemas)
+	if err != nil {
+		return "", "", err
+	}
+	snapshot.RelationSchemas = normalized
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", "", err
+	}
+	hash := objectContentHash(data)
+	key := s.coordinatorWriteContextKey(tenantID, snapshot.Revision, hash)
+	if err := s.putImmutableCoordinatorObject(ctx, key, data); err != nil {
+		return "", "", err
+	}
+	return key, hash, nil
 }
 
 func (s *TenantStore) coordinatorWriteContextKey(tenantID string, revision int64, hash string) string {
@@ -190,6 +215,16 @@ func (s *TenantStore) publishEmptyCoordinatedTenantHead(
 	ctx context.Context,
 	tenantID string,
 ) (CoordinationHead, error) {
+	if _, exists, _, err := s.getCoordinatedTenantCandidate(
+		ctx, tenantID,
+	); err != nil {
+		return CoordinationHead{}, err
+	} else if exists {
+		return CoordinationHead{}, fmt.Errorf(
+			"%w: tenant %q has an unfinished lifecycle candidate",
+			ErrConflict, tenantID,
+		)
+	}
 	manifest := Manifest{
 		LayoutVersion: CurrentObjectLayoutVersion,
 		TenantID:      tenantID,
@@ -199,7 +234,7 @@ func (s *TenantStore) publishEmptyCoordinatedTenantHead(
 		manifest.DataMD5 = dataMD5
 	}
 	_, err := s.putCoordinatedManifest(
-		ctx, tenantID, manifest, ObjectMeta{Key: s.manifestKey(tenantID)}, nil,
+		ctx, tenantID, manifest, ObjectMeta{Key: s.manifestKey(tenantID)}, nil, nil,
 	)
 	if err != nil && !errors.Is(err, ErrConflict) {
 		return CoordinationHead{}, err

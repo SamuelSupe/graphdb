@@ -1093,6 +1093,14 @@ func (s *countingReadStore) GetWithMeta(ctx context.Context, key string) ([]byte
 	return s.ObjectStore.GetWithMeta(ctx, key)
 }
 
+func (s *countingReadStore) Head(ctx context.Context, key string) (ObjectMeta, error) {
+	if head, ok := s.ObjectStore.(objectHeadStore); ok {
+		return head.Head(ctx, key)
+	}
+	_, meta, err := s.ObjectStore.GetWithMeta(ctx, key)
+	return meta, err
+}
+
 func (s *countingReadStore) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

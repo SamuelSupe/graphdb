@@ -21,22 +21,39 @@ func (c *PostgresCoordinator) enqueueDerivedIndexes(
 			ON CONFLICT (namespace, tenant_id, task_type) DO UPDATE
 			SET target_version = GREATEST(current.target_version, EXCLUDED.target_version),
 			    status = CASE
-			        WHEN EXCLUDED.target_version > current.target_version
-			        THEN 'pending'
+			        WHEN EXCLUDED.target_version > current.target_version THEN
+			            CASE
+			                WHEN current.status = 'running'
+			                  AND COALESCE(current.lease_until > now(), false)
+			                THEN current.status
+			                ELSE 'pending'
+			            END
 			        ELSE current.status
 			    END,
 			    owner_token = CASE
 			        WHEN EXCLUDED.target_version > current.target_version
+			          AND NOT (
+			              current.status = 'running'
+			              AND COALESCE(current.lease_until > now(), false)
+			          )
 			        THEN ''
 			        ELSE current.owner_token
 			    END,
 			    lease_until = CASE
 			        WHEN EXCLUDED.target_version > current.target_version
+			          AND NOT (
+			              current.status = 'running'
+			              AND COALESCE(current.lease_until > now(), false)
+			          )
 			        THEN NULL
 			        ELSE current.lease_until
 			    END,
 			    next_attempt_at = CASE
 			        WHEN EXCLUDED.target_version > current.target_version
+			          AND NOT (
+			              current.status = 'running'
+			              AND COALESCE(current.lease_until > now(), false)
+			          )
 			        THEN now() + (
 			            $5::interval * power(2, LEAST(current.attempts, 7))::double precision
 			        )
@@ -156,6 +173,29 @@ func (c *PostgresCoordinator) CompleteDerivedTask(
 		return ErrConflict
 	}
 	return nil
+}
+
+func (c *PostgresCoordinator) AcknowledgeDerivedTaskVersion(
+	ctx context.Context,
+	tenantID string,
+	taskType string,
+	processedVersion int64,
+) error {
+	_, err := c.pool.Exec(ctx,
+		`UPDATE `+c.table("derived_tasks")+`
+		 SET processed_version = GREATEST(processed_version, $4),
+		     status = CASE WHEN target_version <= $4 THEN 'done' ELSE 'pending' END,
+		     owner_token = '', lease_until = NULL, last_error = '',
+		     attempts = CASE WHEN target_version <= $4 THEN 0 ELSE attempts END,
+		     next_attempt_at = now(), updated_at = now()
+		 WHERE namespace = $1 AND tenant_id = $2 AND task_type = $3
+		   AND (
+		       status <> 'running'
+		       OR COALESCE(lease_until <= now(), true)
+		   )`,
+		c.namespace, tenantID, taskType, processedVersion,
+	)
+	return coordinatorUnavailable(err)
 }
 
 func (c *PostgresCoordinator) FailDerivedTask(

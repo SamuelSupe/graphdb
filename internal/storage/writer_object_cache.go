@@ -460,15 +460,8 @@ func (s *WriterObjectCache) invalidateKey(key string) {
 	defer s.mu.Unlock()
 	s.removeObjectLocked(key)
 	for _, prefix := range writerObjectListPrefixes(key) {
-		entry := s.lists[prefix]
-		if entry == nil {
-			continue
-		}
-		if previous, ok := entry.items[key]; ok {
-			delete(entry.items, key)
-			delta := writerObjectInfoCacheSize(previous)
-			entry.size -= delta
-			s.listBytes -= delta
+		if s.lists[prefix] != nil {
+			s.removeListLocked(prefix)
 		}
 	}
 }

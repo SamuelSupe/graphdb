@@ -17,7 +17,7 @@ type logicalHashCache struct {
 
 type logicalHashCategory struct {
 	keys    []string
-	encoded map[string][]byte
+	encoded [][]byte
 }
 
 func buildLogicalHashCache(g *Graph) (*logicalHashCache, error) {
@@ -55,19 +55,29 @@ func buildLogicalHashCategory[T any](
 	values map[string]T,
 	logicalValue func(T) any,
 ) (logicalHashCategory, error) {
-	category := logicalHashCategory{
-		keys:    make([]string, 0, len(values)),
-		encoded: make(map[string][]byte, len(values)),
+	type logicalItem struct {
+		key     string
+		encoded []byte
 	}
+	items := make([]logicalItem, 0, len(values))
 	for key, value := range values {
 		data, err := json.Marshal(logicalValue(value))
 		if err != nil {
 			return logicalHashCategory{}, err
 		}
-		category.keys = append(category.keys, key)
-		category.encoded[key] = data
+		items = append(items, logicalItem{key: key, encoded: data})
 	}
-	sort.Strings(category.keys)
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].key < items[j].key
+	})
+	category := logicalHashCategory{
+		keys:    make([]string, len(items)),
+		encoded: make([][]byte, len(items)),
+	}
+	for i, item := range items {
+		category.keys[i] = item.key
+		category.encoded[i] = item.encoded
+	}
 	return category, nil
 }
 
@@ -89,10 +99,20 @@ func (g *Graph) cloneLogicalHashCache() *logicalHashCache {
 	}
 }
 
+func (g *Graph) shareLogicalHashCache() *logicalHashCache {
+	g.logicalHashMu.Lock()
+	defer g.logicalHashMu.Unlock()
+	if g.logicalHashCache == nil {
+		return nil
+	}
+	shared := *g.logicalHashCache
+	return &shared
+}
+
 func cloneLogicalHashCategory(source logicalHashCategory) logicalHashCategory {
 	return logicalHashCategory{
 		keys:    append([]string(nil), source.keys...),
-		encoded: shallowCopyMap(source.encoded),
+		encoded: append([][]byte(nil), source.encoded...),
 	}
 }
 
@@ -103,76 +123,52 @@ func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) err
 		return nil
 	}
 	cache := g.logicalHashCache
-	for key := range tracker.ciTypes {
-		value, exists := g.CITypes[key]
-		if err := updateLogicalHashCategory(&cache.ciTypes, key, value, exists); err != nil {
-			return err
-		}
+	if err := updateLogicalHashCategoryBatch(
+		&cache.ciTypes,
+		tracker.ciTypes,
+		func(key string) (any, bool) {
+			value, exists := g.CITypes[key]
+			return value, exists
+		},
+	); err != nil {
+		return err
 	}
-	for key := range tracker.entities {
-		value, exists := g.Entities[key]
-		if err := updateLogicalHashCategory(
-			&cache.entities, key, logicalEntityForHash(value), exists,
-		); err != nil {
-			return err
-		}
+	if err := updateLogicalHashCategoryBatch(
+		&cache.entities,
+		tracker.entities,
+		func(key string) (any, bool) {
+			value, exists := g.Entities[key]
+			if !exists {
+				return nil, false
+			}
+			return logicalEntityForHash(value), true
+		},
+	); err != nil {
+		return err
 	}
-	for key := range tracker.relationTypes {
-		value, exists := g.RelationTypes[key]
-		if err := updateLogicalHashCategory(&cache.relationTypes, key, value, exists); err != nil {
-			return err
-		}
+	if err := updateLogicalHashCategoryBatch(
+		&cache.relationTypes,
+		tracker.relationTypes,
+		func(key string) (any, bool) {
+			value, exists := g.RelationTypes[key]
+			return value, exists
+		},
+	); err != nil {
+		return err
 	}
-	for key := range tracker.edges {
-		value, exists := g.Edges[key]
-		if err := updateLogicalHashCategory(
-			&cache.edges, key, logicalEdgeForHash(value), exists,
-		); err != nil {
-			return err
-		}
+	if err := updateLogicalHashCategoryBatch(
+		&cache.edges,
+		tracker.edges,
+		func(key string) (any, bool) {
+			value, exists := g.Edges[key]
+			if !exists {
+				return nil, false
+			}
+			return logicalEdgeForHash(value), true
+		},
+	); err != nil {
+		return err
 	}
 	cache.finalReady = false
 	return nil
-}
-
-func updateLogicalHashCategory(
-	category *logicalHashCategory,
-	key string,
-	value any,
-	exists bool,
-) error {
-	_, previouslyExisted := category.encoded[key]
-	if !exists {
-		delete(category.encoded, key)
-		if previouslyExisted {
-			category.keys = removeSortedKey(category.keys, key)
-		}
-		return nil
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	category.encoded[key] = data
-	if !previouslyExisted {
-		category.keys = insertSortedKey(category.keys, key)
-	}
-	return nil
-}
-
-func insertSortedKey(keys []string, key string) []string {
-	index := sort.SearchStrings(keys, key)
-	keys = append(keys, "")
-	copy(keys[index+1:], keys[index:])
-	keys[index] = key
-	return keys
-}
-
-func removeSortedKey(keys []string, key string) []string {
-	index := sort.SearchStrings(keys, key)
-	if index == len(keys) || keys[index] != key {
-		return keys
-	}
-	copy(keys[index:], keys[index+1:])
-	return keys[:len(keys)-1]
 }

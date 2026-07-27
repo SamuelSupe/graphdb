@@ -17,6 +17,11 @@ func materializeEntity(g *graph.Graph, id string, request Request, budget *budge
 }
 
 func materializeEntities(g *graph.Graph, ids []string, request Request, budget *budget) ([]graph.Entity, error) {
+	if budget != nil {
+		if err := budget.checkAdditionalCost(len(ids)); err != nil {
+			return nil, err
+		}
+	}
 	if lazyExecution(g, budget) {
 		if batch, ok := budget.entities.(EntityBatchLookup); ok {
 			entities, ok, err := batch.GetEntities(budget.ctx, ids, materializeFields(request))

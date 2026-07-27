@@ -102,7 +102,7 @@ func edgeScanResultTraceAttrs(result EdgeScanResult) []attribute.KeyValue {
 }
 
 func (s *TenantStore) scanCatalog(ctx context.Context, tenantID string, maxVersion int64) (IndexCatalog, bool, error) {
-	catalog, err := s.GetIndexCatalog(ctx, tenantID)
+	catalog, err := s.GetIndexCatalogAtVersion(ctx, tenantID, maxVersion)
 	if errors.Is(err, ErrNotFound) {
 		return IndexCatalog{}, false, nil
 	}

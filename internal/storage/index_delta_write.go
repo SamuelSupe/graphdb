@@ -295,6 +295,7 @@ func (s *TenantStore) tombstoneDeletedEntityRecords(ctx context.Context, tenantI
 			continue
 		}
 		key := s.entityRecordKey(tenantID, id)
+		s.clearCoordinatedWriterObjectKey(key)
 		meta, err := objectMeta(ctx, s.Objects, key)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {

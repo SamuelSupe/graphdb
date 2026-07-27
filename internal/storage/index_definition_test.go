@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -56,8 +57,20 @@ func TestCreateIndexBackfillsSchemalessFieldAndDropRemovesIt(t *testing.T) {
 	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true}); err != nil {
 		t.Fatalf("gc: %v", err)
 	}
-	if _, err := store.Objects.Get(ctx, droppedKey); err == nil {
-		t.Fatal("dropped secondary index object still exists after GC")
+	if _, err := store.Objects.Get(ctx, droppedKey); err != nil {
+		t.Fatalf("current-version index object needed by cursors was removed: %v", err)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:3", Kind: "host", Fields: graph.Fields{"owner": "platform"},
+	}}}, CommitOptions{}); err != nil {
+		t.Fatalf("advance graph version: %v", err)
+	}
+	waitIndexCatalog(t, store, "tenant-a", 2)
+	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true}); err != nil {
+		t.Fatalf("gc after version advance: %v", err)
+	}
+	if _, err := store.Objects.Get(ctx, droppedKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old secondary index object after version advance = %v, want ErrNotFound", err)
 	}
 }
 

@@ -38,6 +38,9 @@ type IndexObject struct {
 	ContentHash string `json:"content_hash,omitempty"`
 	SchemaHash  string `json:"schema_hash,omitempty"`
 
+	inspectKind         string
+	inspectField        string
+	inspectUnique       bool
 	inspectRelationType string
 	inspectShard        string
 }
@@ -48,16 +51,17 @@ type IndexValueStat struct {
 }
 
 type EdgeShard struct {
-	RelationType string        `json:"relation_type"`
-	Shard        string        `json:"shard"`
-	Format       string        `json:"format,omitempty"`
-	Codec        string        `json:"codec,omitempty"`
-	Objects      []IndexObject `json:"objects,omitempty"`
-	RowCount     int           `json:"row_count,omitempty"`
-	EdgeCount    int           `json:"edge_count"`
-	ContentHash  string        `json:"content_hash,omitempty"`
-	SchemaHash   string        `json:"schema_hash,omitempty"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	RelationType    string        `json:"relation_type"`
+	ImpactDirection string        `json:"impact_direction,omitempty"`
+	Shard           string        `json:"shard"`
+	Format          string        `json:"format,omitempty"`
+	Codec           string        `json:"codec,omitempty"`
+	Objects         []IndexObject `json:"objects,omitempty"`
+	RowCount        int           `json:"row_count,omitempty"`
+	EdgeCount       int           `json:"edge_count"`
+	ContentHash     string        `json:"content_hash,omitempty"`
+	SchemaHash      string        `json:"schema_hash,omitempty"`
+	UpdatedAt       time.Time     `json:"updated_at"`
 }
 
 type EntityPageSpec struct {
@@ -147,6 +151,16 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
+	if s.coordinated() {
+		operationCtx, stop, err := s.startCoordinatorOperationLease(
+			ctx, tenantID, TaskTypeIndexRebuild,
+		)
+		if err != nil {
+			return IndexCatalog{}, err
+		}
+		defer stop()
+		ctx = operationCtx
+	}
 	format, err := s.effectiveIndexFormat(opts.Format)
 	if err != nil {
 		return IndexCatalog{}, err
@@ -225,6 +239,16 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	if err := s.rebuildReverseIndex(ctx, tenantID, g, manifest.Version); err != nil {
 		return IndexCatalog{}, fmt.Errorf("rebuild reverse index: %w", err)
 	}
+	if acknowledger, ok := s.Coordinator.(CoordinatorDerivedTaskAcknowledger); ok {
+		if err := acknowledger.AcknowledgeDerivedTaskVersion(
+			ctx,
+			tenantID,
+			derivedTaskIndexes,
+			catalog.Version,
+		); err != nil {
+			return IndexCatalog{}, fmt.Errorf("acknowledge derived indexes: %w", err)
+		}
+	}
 	return catalog, nil
 }
 
@@ -267,27 +291,15 @@ func (s *TenantStore) GetIndexCatalog(ctx context.Context, tenantID string) (Ind
 	return catalog, err
 }
 
-// GetIndexCatalogAtVersion reuses a decoded catalog only when the caller has
-// already established the matching manifest version. A same-version catalog
-// rebuild can change index availability, but cannot expose different graph
-// data, so this cache does not weaken the manifest visibility boundary.
+// GetIndexCatalogAtVersion uses a short-lived decoded catalog cache. Catalog
+// rebuilds can publish new indexes at the same graph version, so readers must
+// periodically revalidate even when the requested version already matches.
 func (s *TenantStore) GetIndexCatalogAtVersion(ctx context.Context, tenantID string, version int64) (IndexCatalog, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
-	if cached, _, ok := s.getCachedIndexCatalog(tenantID); ok {
-		if version <= 0 || cached.Version == version {
-			return cached, nil
-		}
-	}
-	catalog, meta, err := s.getIndexCatalogWithMeta(ctx, tenantID)
-	if err != nil {
-		return IndexCatalog{}, err
-	}
-	if version <= 0 || catalog.Version == version {
-		s.setCachedIndexCatalog(tenantID, catalog, meta)
-	}
-	return catalog, nil
+	catalog, _, err := s.loadIndexCatalog(ctx, tenantID)
+	return catalog, err
 }
 
 func (s *TenantStore) GetIndexCatalogVersion(ctx context.Context, tenantID string, version int64) (IndexCatalog, error) {
@@ -350,6 +362,7 @@ func (s *TenantStore) GetIndexCatalogSnapshot(ctx context.Context, tenantID stri
 
 func (s *TenantStore) getIndexCatalogWithMeta(ctx context.Context, tenantID string) (IndexCatalog, ObjectMeta, error) {
 	key := s.indexCatalogKey(tenantID)
+	s.clearCoordinatedWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return IndexCatalog{}, meta, err

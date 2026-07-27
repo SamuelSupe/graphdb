@@ -93,8 +93,10 @@ func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, t
 
 func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantID string, record IngestBatchRecord, saveFailures bool) error {
 	var metadataErr error
-	if err := s.repairCollectorStatusAfterSkip(ctx, tenantID, record); err != nil {
-		metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
+	if !s.coordinated() {
+		if err := s.repairCollectorStatusAfterSkip(ctx, tenantID, record); err != nil {
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
+		}
 	}
 	if saveFailures && record.Result.Failed > 0 {
 		if err := s.ensureDeadLetterAfterSkip(ctx, tenantID, record.Request, record.Result); err != nil {

@@ -56,8 +56,9 @@ func (s *TenantStore) syncDerivedTasks(ctx context.Context, limit int) (int, err
 		return 0, nil
 	}
 	processed := 0
+	claimed := 0
 	for {
-		if limit > 0 && processed >= limit {
+		if limit > 0 && claimed >= limit {
 			return processed, nil
 		}
 		ownerToken, err := newCommitID()
@@ -73,13 +74,22 @@ func (s *TenantStore) syncDerivedTasks(ctx context.Context, limit int) (int, err
 		if !ok {
 			return processed, nil
 		}
+		claimed++
 		jobCtx, stopLease := s.startDerivedTaskLease(ctx, job)
 		version, err := s.runDerivedTask(jobCtx, job)
 		if leaseErr := stopLease(); err == nil {
 			err = leaseErr
 		}
 		if err != nil {
-			_ = s.Coordinator.FailDerivedTask(ctx, job, err)
+			if failErr := s.Coordinator.FailDerivedTask(ctx, job, err); failErr != nil {
+				return processed, errors.Join(
+					err,
+					fmt.Errorf("release failed derived task: %w", failErr),
+				)
+			}
+			if errors.Is(err, ErrTenantDisabled) {
+				continue
+			}
 			return processed, err
 		}
 		if err := s.Coordinator.CompleteDerivedTask(ctx, job, version); err != nil {
@@ -96,8 +106,17 @@ func (s *TenantStore) runDerivedTask(ctx context.Context, job DerivedTaskJob) (i
 		if err != nil {
 			return 0, err
 		}
-		if !exists || head.Status != TenantStatusActive {
+		if !exists || head.Status == TenantStatusDeleted {
 			return max(job.TargetVersion, head.GraphVersion), nil
+		}
+		if head.Status == TenantStatusDisabled {
+			return 0, ErrTenantDisabled
+		}
+		if head.Status != TenantStatusActive {
+			return 0, fmt.Errorf(
+				"unsupported tenant status %q for derived indexes",
+				head.Status,
+			)
 		}
 		catalog, err := s.RebuildIndexes(ctx, job.TenantID)
 		if err != nil {
@@ -133,9 +152,16 @@ func (s *TenantStore) syncLegacyManifests(ctx context.Context, limit int) (int, 
 		if !ok {
 			return synced, nil
 		}
-		if err := s.syncLegacyManifestJob(ctx, job); err != nil {
-			_ = s.Coordinator.FailLegacyManifest(ctx, job, err)
-			return synced, err
+		jobCtx, stopLease := s.startLegacyManifestLease(
+			ctx, job, legacyManifestLeaseTTL,
+		)
+		jobErr := s.syncLegacyManifestJob(jobCtx, job)
+		if leaseErr := stopLease(); jobErr == nil {
+			jobErr = leaseErr
+		}
+		if jobErr != nil {
+			_ = s.Coordinator.FailLegacyManifest(ctx, job, jobErr)
+			return synced, jobErr
 		}
 		if err := s.Coordinator.CompleteLegacyManifest(ctx, job); err != nil {
 			return synced, err

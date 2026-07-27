@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +15,7 @@ const (
 	defaultIndexDiskCacheMaxBytes = 4 << 30
 	defaultIndexDiskCacheTTL      = 7 * 24 * time.Hour
 	defaultIndexRevalidateTTL     = 30 * time.Second
+	maxIndexObjectPrefetches      = 16
 )
 
 type IndexObjectCacheConfig struct {
@@ -38,9 +40,10 @@ type indexObjectCache struct {
 }
 
 type indexObjectMemoryEntry struct {
-	value cachedIndexObject
-	size  int64
-	elem  *list.Element
+	value           cachedIndexObject
+	size            int64
+	elem            *list.Element
+	verifiedContent map[string]struct{}
 }
 
 type cachedIndexObject struct {
@@ -99,6 +102,9 @@ func (s *TenantStore) ConfigureIndexObjectCache(config IndexObjectCacheConfig) {
 	}
 	s.indexCache = cache
 	s.entityPageCache = newConfiguredEntityPageCache(config.MaxEntries)
+	s.edgeLookupCache = configuredEdgeLookupCache(
+		config.MaxEntries, config.MaxBytes,
+	)
 }
 
 func (s *TenantStore) cachedIndexObject(ctx context.Context, kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) ([]byte, ObjectMeta, bool, error) {
@@ -111,7 +117,7 @@ func (s *TenantStore) cachedIndexObjectWithVerification(ctx context.Context, kin
 		return nil, ObjectMeta{}, false, false, nil
 	}
 	cacheKey := indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash)
-	entry, ok, err := s.indexCache.get(ctx, cacheKey, objectKey)
+	entry, ok, err := s.indexCache.getForContent(ctx, cacheKey, objectKey, contentHash)
 	s.recordIndexCache(tenantID, kind, cacheStatus(ok, err))
 	if err != nil || !ok {
 		return nil, ObjectMeta{}, false, ok, err
@@ -132,11 +138,9 @@ func (s *TenantStore) cachedIndexObjectWithVerification(ctx context.Context, kin
 		entry.validatedAt = time.Now()
 		if cachedETag == "" || meta.ETag == "" {
 			entry.verified = false
-		}
-		s.indexCache.markValidated(cacheKey, meta, entry.validatedAt)
-		if !entry.verified {
 			s.indexCache.markContentUnverified(cacheKey)
 		}
+		s.indexCache.markValidated(cacheKey, meta, entry.validatedAt)
 	}
 	return entry.data, entry.meta, entry.verified, true, nil
 }
@@ -170,14 +174,17 @@ func (s *TenantStore) putCachedIndexObjectState(kind string, tenantID string, ve
 		return
 	}
 	cacheKey := indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash)
-	s.indexCache.put(cacheKey, cachedIndexObject{data: data, meta: meta, validatedAt: time.Now(), verified: verified})
+	s.indexCache.putForContent(cacheKey, contentHash, cachedIndexObject{data: data, meta: meta, validatedAt: time.Now(), verified: verified})
 }
 
 func (s *TenantStore) markCachedIndexObjectVerified(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
 	if s.indexCache == nil {
 		return
 	}
-	s.indexCache.markContentVerified(indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash))
+	s.indexCache.markContentVerified(
+		indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash),
+		contentHash,
+	)
 }
 
 func (s *TenantStore) dropCachedIndexObject(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
@@ -188,11 +195,16 @@ func (s *TenantStore) dropCachedIndexObject(kind string, tenantID string, versio
 }
 
 func (s *TenantStore) prefetchIndexObject(ctx context.Context, kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
-	if s.indexCache == nil || contentHash == "" || schemaHash == "" || objectKey == "" {
+	if s.indexCache == nil || s.indexCache.max == 0 ||
+		contentHash == "" || schemaHash == "" || objectKey == "" {
 		return
 	}
 	cacheKey := indexObjectCacheKey(kind, tenantID, version, objectKey, contentHash, schemaHash)
-	if s.indexCache.has(cacheKey) || !s.indexCache.beginPrefetch(cacheKey) {
+	if !s.indexCache.beginPrefetch(cacheKey) {
+		return
+	}
+	if s.indexCache.has(cacheKey) {
+		s.indexCache.finishPrefetch(cacheKey)
 		return
 	}
 	go func() {
@@ -215,10 +227,17 @@ func (s *TenantStore) prefetchParquetEdgeShardObject(ctx context.Context, tenant
 }
 
 func indexObjectCacheKey(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) string {
+	if strings.Contains(objectKey, "/packs/") {
+		contentHash = ""
+	}
 	return kind + "\x00" + tenantID + "\x00" + strconv.FormatInt(version, 10) + "\x00" + objectKey + "\x00" + contentHash + "\x00" + schemaHash
 }
 
 func (c *indexObjectCache) get(ctx context.Context, cacheKey string, objectKey string) (cachedIndexObject, bool, error) {
+	return c.getForContent(ctx, cacheKey, objectKey, "")
+}
+
+func (c *indexObjectCache) getForContent(ctx context.Context, cacheKey string, objectKey string, contentHash string) (cachedIndexObject, bool, error) {
 	if err := objectContextErr(ctx); err != nil {
 		return cachedIndexObject{}, false, err
 	}
@@ -226,6 +245,7 @@ func (c *indexObjectCache) get(ctx context.Context, cacheKey string, objectKey s
 	if entry := c.data[cacheKey]; entry != nil {
 		c.lru.MoveToFront(entry.elem)
 		value := entry.value
+		_, value.verified = entry.verifiedContent[contentHash]
 		c.mu.Unlock()
 		// Cache payloads are immutable after insertion. All callers are internal
 		// decoders, so lending the slice avoids a full Parquet copy on every hit.
@@ -241,47 +261,80 @@ func (c *indexObjectCache) get(ctx context.Context, cacheKey string, objectKey s
 	if err != nil || !ok {
 		return cachedIndexObject{}, ok, err
 	}
-	c.putMemory(cacheKey, entry)
+	c.putMemoryForContent(cacheKey, contentHash, entry)
 	return entry, true, objectContextErr(ctx)
 }
 
 func (c *indexObjectCache) put(cacheKey string, entry cachedIndexObject) {
+	c.putForContent(cacheKey, "", entry)
+}
+
+func (c *indexObjectCache) putForContent(cacheKey string, contentHash string, entry cachedIndexObject) {
 	if c == nil || len(entry.data) == 0 {
 		return
 	}
-	c.putMemory(cacheKey, entry)
+	changed := c.putMemoryForContent(cacheKey, contentHash, entry)
 	c.mu.Lock()
 	disk := c.disk
 	c.mu.Unlock()
-	if disk != nil {
+	if changed && disk != nil {
 		_ = disk.put(cacheKey, entry)
 	}
 }
 
 func (c *indexObjectCache) putMemory(cacheKey string, entry cachedIndexObject) {
+	c.putMemoryForContent(cacheKey, "", entry)
+}
+
+func (c *indexObjectCache) putMemoryForContent(cacheKey string, contentHash string, entry cachedIndexObject) bool {
 	if c.max == 0 || len(entry.data) == 0 {
-		return
+		return false
 	}
+	c.mu.Lock()
+	if existing := c.data[cacheKey]; reuseCachedIndexObject(existing, contentHash, entry) {
+		c.lru.MoveToFront(existing.elem)
+		c.mu.Unlock()
+		return false
+	}
+	c.mu.Unlock()
+
+	verified := entry.verified
+	entry.verified = false
 	entry.data = append([]byte(nil), entry.data...)
 	size := int64(len(entry.data) + len(cacheKey) + len(entry.meta.Key) + len(entry.meta.ETag) + 96)
 	if c.maxBytes > 0 && size > c.maxBytes {
-		return
+		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if existing := c.data[cacheKey]; reuseCachedIndexObject(existing, contentHash, entry) {
+		if verified {
+			markCachedIndexContentVerified(existing, contentHash)
+		}
+		c.lru.MoveToFront(existing.elem)
+		return false
+	}
+	verifiedContent := map[string]struct{}{}
+	if verified {
+		verifiedContent[contentHash] = struct{}{}
+	}
 	if existing := c.data[cacheKey]; existing != nil {
 		c.bytes -= existing.size
 		existing.value = entry
 		existing.size = size
+		existing.verifiedContent = verifiedContent
 		c.bytes += size
 		c.lru.MoveToFront(existing.elem)
 	} else {
-		memoryEntry := &indexObjectMemoryEntry{value: entry, size: size}
+		memoryEntry := &indexObjectMemoryEntry{
+			value: entry, size: size, verifiedContent: verifiedContent,
+		}
 		memoryEntry.elem = c.lru.PushFront(cacheKey)
 		c.data[cacheKey] = memoryEntry
 		c.bytes += size
 	}
 	c.evictMemoryLocked()
+	return true
 }
 
 func (c *indexObjectCache) needsRevalidation(validatedAt time.Time) bool {
@@ -297,11 +350,11 @@ func (c *indexObjectCache) markValidated(cacheKey string, meta ObjectMeta, at ti
 	}
 }
 
-func (c *indexObjectCache) markContentVerified(cacheKey string) {
+func (c *indexObjectCache) markContentVerified(cacheKey string, contentHash string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if entry := c.data[cacheKey]; entry != nil {
-		entry.value.verified = true
+		markCachedIndexContentVerified(entry, contentHash)
 	}
 }
 
@@ -309,7 +362,7 @@ func (c *indexObjectCache) markContentUnverified(cacheKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if entry := c.data[cacheKey]; entry != nil {
-		entry.value.verified = false
+		entry.verifiedContent = nil
 	}
 }
 
@@ -360,6 +413,9 @@ func (c *indexObjectCache) beginPrefetch(cacheKey string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.prefetching[cacheKey]; ok {
+		return false
+	}
+	if len(c.prefetching) >= maxIndexObjectPrefetches {
 		return false
 	}
 	c.prefetching[cacheKey] = struct{}{}

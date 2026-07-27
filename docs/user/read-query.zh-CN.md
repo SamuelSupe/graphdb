@@ -250,7 +250,8 @@ curl -sS -X POST "$READER/v1/query" \
 ```
 
 cursor 绑定查询结构和 snapshot 版本。使用不同查询或不兼容版本复用 cursor
-会被拒绝。
+会被拒绝。无显式排序的 match cursor 还会绑定内部扫描顺序，客户端必须将
+cursor 视为不透明值。
 
 ## 流式查询
 

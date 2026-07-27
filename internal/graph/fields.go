@@ -4,31 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 )
-
-func normalizeFields(fields Fields) (Fields, error) {
-	if fields == nil {
-		return Fields{}, nil
-	}
-	data, err := json.Marshal(fields)
-	if err != nil {
-		return nil, err
-	}
-	var decoded Fields
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return nil, err
-	}
-	if decoded == nil {
-		return Fields{}, nil
-	}
-	for field := range decoded {
-		if strings.TrimSpace(field) == "" {
-			return nil, fmt.Errorf("field name is required")
-		}
-	}
-	return decoded, nil
-}
 
 func scalarKey(value any) (string, bool) {
 	switch v := value.(type) {

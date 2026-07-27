@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -307,6 +309,11 @@ func TestPostgresCoordinatorGCRemovesOnlyUnreachableCandidates(t *testing.T) {
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
+	if _, err := store.PutSourcePolicy(ctx, "tenant-a", graph.SourcePolicy{
+		Sources: []graph.SourcePolicyItem{{Name: "gc-test", Priority: 1}},
+	}); err != nil {
+		t.Fatalf("seed write context: %v", err)
+	}
 	if _, err := store.SyncLegacyManifests(ctx); err != nil {
 		t.Fatalf("sync legacy manifest: %v", err)
 	}
@@ -326,13 +333,13 @@ func TestPostgresCoordinatorGCRemovesOnlyUnreachableCandidates(t *testing.T) {
 	}
 	candidateHash := objectContentHash(candidateData)
 	candidateKey := store.coordinatorManifestKey(
-		"tenant-a", candidate.Version, head.Revision+1, candidateHash,
+		"tenant-a", candidate.Version, head.Revision, candidateHash,
 	)
 	if err := store.putImmutableCoordinatorObject(ctx, candidateKey, candidateData); err != nil {
 		t.Fatalf("write candidate manifest: %v", err)
 	}
 	contextCandidate := emptyWriteContext("tenant-a")
-	contextCandidate.Revision = 99
+	contextCandidate.Revision = head.WriteContextRevision
 	contextCandidate.UpdatedAt = time.Now().UTC().Add(-2 * coordinatorCandidateGracePeriod)
 	contextData, err := json.Marshal(contextCandidate)
 	if err != nil {
@@ -342,6 +349,29 @@ func TestPostgresCoordinatorGCRemovesOnlyUnreachableCandidates(t *testing.T) {
 	contextKey := store.coordinatorWriteContextKey("tenant-a", contextCandidate.Revision, contextHash)
 	if err := store.putImmutableCoordinatorObject(ctx, contextKey, contextData); err != nil {
 		t.Fatalf("write context candidate: %v", err)
+	}
+	futureManifestKey := store.coordinatorManifestKey(
+		"tenant-a", candidate.Version, head.Revision+1, candidateHash,
+	)
+	if err := store.putImmutableCoordinatorObject(
+		ctx, futureManifestKey, candidateData,
+	); err != nil {
+		t.Fatalf("write future manifest candidate: %v", err)
+	}
+	futureContext := contextCandidate
+	futureContext.Revision = head.WriteContextRevision + 1
+	futureContextData, err := json.Marshal(futureContext)
+	if err != nil {
+		t.Fatalf("marshal future context candidate: %v", err)
+	}
+	futureContextHash := objectContentHash(futureContextData)
+	futureContextKey := store.coordinatorWriteContextKey(
+		"tenant-a", futureContext.Revision, futureContextHash,
+	)
+	if err := store.putImmutableCoordinatorObject(
+		ctx, futureContextKey, futureContextData,
+	); err != nil {
+		t.Fatalf("write future context candidate: %v", err)
 	}
 
 	report, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1})
@@ -356,6 +386,12 @@ func TestPostgresCoordinatorGCRemovesOnlyUnreachableCandidates(t *testing.T) {
 	}
 	if _, err := objects.Get(ctx, contextKey); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("candidate write-context remains: %v", err)
+	}
+	if _, err := objects.Get(ctx, futureManifestKey); err != nil {
+		t.Fatalf("GC removed publishable future manifest: %v", err)
+	}
+	if _, err := objects.Get(ctx, futureContextKey); err != nil {
+		t.Fatalf("GC removed publishable future write-context: %v", err)
 	}
 	if _, err := objects.Get(ctx, head.ManifestKey); err != nil {
 		t.Fatalf("gc removed authoritative head manifest: %v", err)
@@ -398,7 +434,8 @@ func TestPostgresCoordinatorCloneAndRestorePublishAuthoritativeHeads(t *testing.
 	}
 	if clone.ManifestVersion != 2 ||
 		cloneHead.GraphVersion != 2 ||
-		cloneHead.Status != TenantStatusActive {
+		cloneHead.Status != TenantStatusActive ||
+		cloneHead.WriteContextRevision != 1 {
 		t.Fatalf("clone=%#v head=%#v", clone, cloneHead)
 	}
 	cloneGraph, _, err := store.Load(ctx, "tenant-clone")
@@ -439,7 +476,9 @@ func TestPostgresCoordinatorCloneAndRestorePublishAuthoritativeHeads(t *testing.
 	if err != nil || !exists {
 		t.Fatalf("restored head exists=%v err=%v", exists, err)
 	}
-	if restoredHead.GraphVersion != 2 || restoredHead.Status != TenantStatusActive {
+	if restoredHead.GraphVersion != 2 ||
+		restoredHead.Status != TenantStatusActive ||
+		restoredHead.WriteContextRevision != 1 {
 		t.Fatalf("restored head=%#v", restoredHead)
 	}
 	restoredGraph, _, err := store.Load(ctx, "tenant-restored")
@@ -476,7 +515,8 @@ func TestPostgresCoordinatorCloneAndRestorePublishAuthoritativeHeads(t *testing.
 	}
 	if afterOverwrite.Generation <= beforeOverwrite.Generation ||
 		afterOverwrite.GraphVersion != 2 ||
-		afterOverwrite.Status != TenantStatusActive {
+		afterOverwrite.Status != TenantStatusActive ||
+		afterOverwrite.WriteContextRevision != 1 {
 		t.Fatalf("head before=%#v after=%#v", beforeOverwrite, afterOverwrite)
 	}
 	restoredGraph, _, err = store.Load(ctx, "tenant-restored")
@@ -499,6 +539,184 @@ func TestPostgresCoordinatorCloneAndRestorePublishAuthoritativeHeads(t *testing.
 		t.Fatalf("legacy manifest version=%d head version=%d",
 			legacyManifest.Version, afterOverwrite.GraphVersion)
 	}
+}
+
+func TestPostgresCoordinatorCloneActivatesAfterSnapshotIsComplete(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(
+		t, "clone-atomic-activation",
+	)
+	objects := &blockingCloneSnapshotStore{
+		ObjectStore: NewMemoryStore(),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	store := NewTenantStore(objects, "test")
+	store.SetCoordinator(coordinator)
+	quota := 10
+	if _, err := store.CreateTenant(
+		ctx,
+		"tenant-source",
+		TenantCreateOptions{
+			Config: &TenantConfig{
+				Quota: TenantQuotaConfig{MaxEntitiesPerTenant: &quota},
+			},
+		},
+	); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if _, err := store.Commit(ctx, "tenant-source", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	objects.arm("test/tenants/tenant-clone/snapshots/sharded/")
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := store.CloneTenant(ctx, "tenant-source", TenantCloneOptions{
+			TargetTenantID: "tenant-clone",
+		})
+		result <- err
+	}()
+	select {
+	case <-objects.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("clone did not reach snapshot publication")
+	}
+	if head, exists, err := coordinator.Head(
+		ctx, "tenant-clone",
+	); err != nil {
+		t.Fatalf("load target head during clone: %v", err)
+	} else if exists && head.Status == TenantStatusActive {
+		t.Fatalf("clone exposed active target before snapshot completion: %#v", head)
+	}
+	close(objects.release)
+	if err := <-result; err != nil {
+		t.Fatalf("clone tenant: %v", err)
+	}
+
+	head, exists, err := coordinator.Head(ctx, "tenant-clone")
+	if err != nil || !exists {
+		t.Fatalf("clone head exists=%v err=%v", exists, err)
+	}
+	if head.Status != TenantStatusActive ||
+		head.GraphVersion != 1 ||
+		head.WriteContextRevision != 1 {
+		t.Fatalf("clone head=%#v", head)
+	}
+	g, _, err := store.Load(ctx, "tenant-clone")
+	if err != nil {
+		t.Fatalf("load clone: %v", err)
+	}
+	if _, ok := g.GetEntity("host:source"); !ok {
+		t.Fatal("clone is missing source data")
+	}
+	if config, configured, err := store.GetTenantConfig(
+		ctx, "tenant-clone",
+	); err != nil || !configured ||
+		config.Quota.MaxEntitiesPerTenant == nil ||
+		*config.Quota.MaxEntitiesPerTenant != quota {
+		t.Fatalf("clone config=%#v configured=%v err=%v", config, configured, err)
+	}
+}
+
+func TestPostgresCoordinatorCreateActivatesWithWriteContext(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(
+		t, "create-atomic-context",
+	)
+	objects := &blockingCloneSnapshotStore{
+		ObjectStore: NewMemoryStore(),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	store := NewTenantStore(objects, "test")
+	store.SetCoordinator(coordinator)
+	quota := 10
+	objects.arm("test/tenants/tenant-a/coordination/write-contexts/")
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := store.CreateTenant(
+			ctx,
+			"tenant-a",
+			TenantCreateOptions{
+				Config: &TenantConfig{
+					Quota: TenantQuotaConfig{
+						MaxEntitiesPerTenant: &quota,
+					},
+				},
+			},
+		)
+		result <- err
+	}()
+	select {
+	case <-objects.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("create did not reach write-context publication")
+	}
+	if head, exists, err := coordinator.Head(ctx, "tenant-a"); err != nil {
+		t.Fatalf("load target head during create: %v", err)
+	} else if exists {
+		t.Fatalf("create exposed head before write-context completion: %#v", head)
+	}
+	close(objects.release)
+	if err := <-result; err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	head, exists, err := coordinator.Head(ctx, "tenant-a")
+	if err != nil || !exists {
+		t.Fatalf("created head exists=%v err=%v", exists, err)
+	}
+	if head.Status != TenantStatusActive || head.WriteContextRevision != 1 {
+		t.Fatalf("created head=%#v", head)
+	}
+	config, configured, err := store.GetTenantConfig(ctx, "tenant-a")
+	if err != nil || !configured ||
+		config.Quota.MaxEntitiesPerTenant == nil ||
+		*config.Quota.MaxEntitiesPerTenant != quota {
+		t.Fatalf("created config=%#v configured=%v err=%v", config, configured, err)
+	}
+}
+
+type blockingCloneSnapshotStore struct {
+	ObjectStore
+	mu      sync.Mutex
+	prefix  string
+	armed   bool
+	blocked bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingCloneSnapshotStore) arm(prefix string) {
+	s.mu.Lock()
+	s.prefix = prefix
+	s.armed = true
+	s.mu.Unlock()
+}
+
+func (s *blockingCloneSnapshotStore) PutConditional(
+	ctx context.Context,
+	key string,
+	data []byte,
+	condition PutCondition,
+) (ObjectMeta, error) {
+	s.mu.Lock()
+	block := s.armed && !s.blocked && strings.HasPrefix(key, s.prefix)
+	if block {
+		s.blocked = true
+	}
+	s.mu.Unlock()
+	if block {
+		close(s.entered)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ObjectMeta{Key: key}, ctx.Err()
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
 }
 
 func TestPostgresCoordinatorTenantMigrationIsFencedAndPublishesHead(t *testing.T) {
@@ -553,7 +771,7 @@ func TestPostgresCoordinatorTenantMigrationIsFencedAndPublishesHead(t *testing.T
 	}
 	if head.Status != TenantStatusActive ||
 		head.GraphVersion != 1 ||
-		head.Generation < 3 {
+		head.Generation != 1 {
 		t.Fatalf("migration head=%#v", head)
 	}
 	g, manifest, err := target.Load(ctx, "tenant-a")

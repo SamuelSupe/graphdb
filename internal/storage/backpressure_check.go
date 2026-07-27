@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 
@@ -118,6 +119,40 @@ func (s *TenantStore) currentManifestForWriteAdmission(ctx context.Context, tena
 		endStorageSpan(span, err)
 	}()
 	if loaded, ok := s.getWriteCache(tenantID); ok {
+		if !s.coordinated() {
+			if _, _, leaseOK := s.getCachedWriterLease(
+				tenantID, time.Now().UTC(),
+			); !leaseOK {
+				span.SetAttributes(
+					attribute.Bool("graphdb.write_cache.found", true),
+					attribute.Bool("graphdb.write_cache.hit", false),
+				)
+				return s.currentManifestWithoutWriteCache(ctx, tenantID)
+			}
+		} else {
+			head, exists, headErr := s.Coordinator.Head(ctx, tenantID)
+			if headErr != nil {
+				return Manifest{}, headErr
+			}
+			if !exists {
+				span.SetAttributes(
+					attribute.Bool("graphdb.write_cache.found", true),
+					attribute.Bool("graphdb.write_cache.hit", false),
+				)
+				return s.currentManifestWithoutWriteCache(ctx, tenantID)
+			}
+			if !writeCacheMatchesCoordinatorHead(loaded, head) {
+				manifest, _, err = s.getCoordinatedManifestAtHead(
+					ctx, tenantID, head,
+				)
+				span.SetAttributes(
+					attribute.Bool("graphdb.write_cache.found", true),
+					attribute.Bool("graphdb.write_cache.hit", false),
+					attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
+				)
+				return manifest, err
+			}
+		}
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_cache.found", true),
 			attribute.Bool("graphdb.write_cache.hit", true),
@@ -129,8 +164,24 @@ func (s *TenantStore) currentManifestForWriteAdmission(ctx context.Context, tena
 		attribute.Bool("graphdb.write_cache.found", false),
 		attribute.Bool("graphdb.write_cache.hit", false),
 	)
-	manifest, _, err = s.getManifest(ctx, tenantID)
+	return s.currentManifestWithoutWriteCache(ctx, tenantID)
+}
+
+func (s *TenantStore) currentManifestWithoutWriteCache(
+	ctx context.Context,
+	tenantID string,
+) (Manifest, error) {
+	manifest, _, err := s.getManifest(ctx, tenantID)
 	return manifest, err
+}
+
+func writeCacheMatchesCoordinatorHead(
+	loaded loadedGraph,
+	head CoordinationHead,
+) bool {
+	return loaded.Graph != nil &&
+		loaded.Graph.Version == head.GraphVersion &&
+		manifestMetaMatchesCoordinatorHead(loaded.Manifest, loaded.Meta, head)
 }
 
 func objectStoreUnavailableBackpressureReason(err error) (BackpressureReason, bool) {

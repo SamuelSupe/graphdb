@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -59,6 +60,31 @@ func TestTenantUsageReportsObjectCategoriesAndRetention(t *testing.T) {
 		if categories[name].ObjectCount == 0 {
 			t.Fatalf("category %q missing from %#v", name, report.Categories)
 		}
+	}
+}
+
+func TestTenantUsageUsesBoundedObjectPages(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	paged := &pagingOnlyStore{ObjectStore: base}
+	store := NewTenantStore(paged, "test")
+	prefix := store.tenantObjectPrefix("tenant-a")
+	for i := 0; i < objectPrefixScanPageSize+1; i++ {
+		key := fmt.Sprintf("%scommits/item-%04d.parquet", prefix, i)
+		if err := base.Put(ctx, key, []byte("x")); err != nil {
+			t.Fatalf("put usage object: %v", err)
+		}
+	}
+
+	report, err := store.TenantUsage(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("tenant usage: %v", err)
+	}
+	if report.ObjectCount != objectPrefixScanPageSize+1 {
+		t.Fatalf("object count=%d, want %d", report.ObjectCount, objectPrefixScanPageSize+1)
+	}
+	if paged.listCalls != 0 || paged.pageCalls != 2 {
+		t.Fatalf("list calls=%d page calls=%d, want 0 and 2", paged.listCalls, paged.pageCalls)
 	}
 }
 

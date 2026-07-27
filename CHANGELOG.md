@@ -3,7 +3,7 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [1.1.0] - Unreleased
+## [1.1.0] - 2026-07-27
 
 ### Added
 

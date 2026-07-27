@@ -127,9 +127,7 @@ func (s *TenantStore) releaseWriterLeaseForPurge(ctx context.Context, tenantID s
 		return nil
 	}
 	key := s.writerLeaseKey(tenantID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	lease, meta, err := s.getWriterLease(ctx, tenantID, key)
 	if errors.Is(err, ErrNotFound) {
 		s.deleteCachedWriterLease(tenantID)

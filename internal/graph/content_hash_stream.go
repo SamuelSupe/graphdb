@@ -82,11 +82,11 @@ func writeLogicalHashArray(digest io.Writer, firstField *bool, name string, cate
 	*firstField = false
 	_, _ = io.WriteString(digest, `"`+name+`":`)
 	_, _ = io.WriteString(digest, "[")
-	for i, key := range category.keys {
+	for i, value := range category.encoded {
 		if i > 0 {
 			_, _ = io.WriteString(digest, ",")
 		}
-		_, _ = digest.Write(category.encoded[key])
+		_, _ = digest.Write(value)
 	}
 	_, _ = io.WriteString(digest, "]")
 }

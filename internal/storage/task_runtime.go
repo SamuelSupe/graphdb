@@ -97,24 +97,27 @@ func (s *TenantStore) taskCancelRequested(ctx context.Context, task Task) bool {
 	return err == nil && current.Status == TaskStatusCanceled
 }
 
-func (s *TenantStore) watchTaskCancellation(task Task, cancel context.CancelFunc) func() {
-	done := make(chan struct{})
+func (s *TenantStore) watchTaskCancellation(
+	task Task,
+	cancelTask context.CancelFunc,
+) func() {
+	watchCtx, stop := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(taskCancelPollInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-done:
+			case <-watchCtx.Done():
 				return
 			case <-ticker.C:
-				if s.taskCancelRequested(context.Background(), task) {
-					cancel()
+				if s.taskCancelRequested(watchCtx, task) {
+					cancelTask()
 					return
 				}
 			}
 		}
 	}()
-	return func() { close(done) }
+	return stop
 }
 
 func mergeTaskMap(base map[string]any, update map[string]any) map[string]any {

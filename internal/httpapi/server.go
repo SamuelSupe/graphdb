@@ -261,7 +261,9 @@ func (s *Server) entity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if target.ManifestVersion > 0 {
-		options, version, ok := s.lazyQueryOptions(r.Context(), tenantID, target.ManifestVersion)
+		options, version, ok := s.lazyQueryOptions(
+			r.Context(), tenantID, target.ManifestVersion, false,
+		)
 		if ok && target.requiresVersion(version) && options.EntityLookup != nil {
 			entity, ok, err := options.EntityLookup.GetEntity(r.Context(), id, nil)
 			if err != nil {

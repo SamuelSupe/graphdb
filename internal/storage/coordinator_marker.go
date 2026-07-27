@@ -37,6 +37,13 @@ func (s *TenantStore) coordinationMarkerKey() string {
 }
 
 func (s *TenantStore) PutCoordinationMarker(ctx context.Context, backend, namespace string) error {
+	if backend == CoordinationPostgres {
+		if err := requireS3ConditionalDelete(
+			ctx, s.Objects, s.coordinationMarkerKey(),
+		); err != nil {
+			return err
+		}
+	}
 	marker := coordinationMarker{
 		LayoutVersion: coordinationMarkerLayoutVersion,
 		Backend:       backend,

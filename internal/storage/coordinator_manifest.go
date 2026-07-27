@@ -24,6 +24,17 @@ func (s *TenantStore) getCoordinatedManifest(ctx context.Context, tenantID strin
 		return Manifest{}, ObjectMeta{}, err
 	}
 	if !exists {
+		_, candidateExists, _, candidateErr :=
+			s.getCoordinatedTenantCandidate(ctx, tenantID)
+		if candidateErr != nil {
+			return Manifest{}, ObjectMeta{}, candidateErr
+		}
+		if candidateExists {
+			return Manifest{}, ObjectMeta{}, fmt.Errorf(
+				"%w: tenant %q has an unfinished lifecycle candidate",
+				ErrConflict, tenantID,
+			)
+		}
 		_, legacyMeta, legacyErr := s.Objects.GetWithMeta(ctx, s.manifestKey(tenantID))
 		switch {
 		case legacyErr == nil && legacyMeta.Exists:
@@ -34,6 +45,14 @@ func (s *TenantStore) getCoordinatedManifest(ctx context.Context, tenantID strin
 			return Manifest{TenantID: tenantID}, ObjectMeta{Key: s.manifestKey(tenantID)}, nil
 		}
 	}
+	return s.getCoordinatedManifestAtHead(ctx, tenantID, head)
+}
+
+func (s *TenantStore) getCoordinatedManifestAtHead(
+	ctx context.Context,
+	tenantID string,
+	head CoordinationHead,
+) (Manifest, ObjectMeta, error) {
 	data, err := s.Objects.Get(ctx, head.ManifestKey)
 	if err != nil {
 		return Manifest{}, ObjectMeta{}, fmt.Errorf("load coordinator manifest %q: %w", head.ManifestKey, err)
@@ -63,10 +82,23 @@ func (s *TenantStore) putCoordinatedManifest(
 	manifest Manifest,
 	meta ObjectMeta,
 	reservation *directCommitReservation,
+	activationContext *WriteContextSnapshot,
 ) (ObjectMeta, error) {
 	expected, err := parseCoordinatedHeadToken(meta)
 	if err != nil {
 		return ObjectMeta{}, err
+	}
+	if expected.Revision == 0 &&
+		!coordinatorLeaseContextMatches(
+			ctx, tenantID, coordinatorLifecycleTaskType,
+		) {
+		publicationCtx, stop, publicationErr :=
+			s.startCoordinatedHeadPublication(ctx, tenantID)
+		if publicationErr != nil {
+			return ObjectMeta{}, publicationErr
+		}
+		defer stop()
+		ctx = publicationCtx
 	}
 	var activationHead CoordinationHead
 	activate := false
@@ -112,6 +144,21 @@ func (s *TenantStore) putCoordinatedManifest(
 		ManifestKey:                  key,
 		ManifestHash:                 hash,
 		CommitID:                     manifest.HeadCommitID,
+	}
+	if activationContext != nil {
+		if expected.Revision != 0 {
+			return ObjectMeta{}, fmt.Errorf(
+				"activation write-context requires a new or deleted tenant head",
+			)
+		}
+		key, contextHash, contextErr := s.putCoordinatedWriteContextSnapshot(
+			ctx, tenantID, 1, *activationContext,
+		)
+		if contextErr != nil {
+			return ObjectMeta{}, contextErr
+		}
+		request.InitialWriteContextKey = key
+		request.InitialWriteContextHash = contextHash
 	}
 	if activate {
 		request.ExpectedGeneration = activationHead.Generation
@@ -189,6 +236,20 @@ func coordinatedManifestMeta(key string, head CoordinationHead) ObjectMeta {
 			"-context-" + strconv.FormatInt(head.WriteContextRevision, 10),
 		Exists: head.Revision > 0,
 	}
+}
+
+func manifestMetaMatchesCoordinatorHead(
+	manifest Manifest,
+	meta ObjectMeta,
+	head CoordinationHead,
+) bool {
+	token, err := parseCoordinatedHeadToken(meta)
+	return err == nil &&
+		token.Revision == head.Revision &&
+		token.Generation == head.Generation &&
+		token.ContextRevision == head.WriteContextRevision &&
+		meta.Key == head.ManifestKey &&
+		manifest.Version == head.GraphVersion
 }
 
 func parseCoordinatedRevision(meta ObjectMeta) (int64, error) {

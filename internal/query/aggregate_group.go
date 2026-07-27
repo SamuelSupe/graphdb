@@ -1,6 +1,7 @@
 package query
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 )
@@ -70,13 +71,17 @@ func aggregateGroups(results []Result, groupBy []string, specs []Aggregation, ha
 
 func aggregateGroupKey(result Result, fields []string) (map[string]any, string) {
 	key := make(map[string]any, len(fields))
-	identity := ""
+	identityParts := make([]any, 0, len(fields)*2)
 	for _, field := range fields {
 		value := resultValue(result, field)
 		key[field] = value
-		identity += field + "=" + fmt.Sprint(value) + "\x00"
+		identityParts = append(identityParts, field, value)
 	}
-	return key, identity
+	identity, err := json.Marshal(identityParts)
+	if err != nil {
+		return key, fmt.Sprintf("%#v", identityParts)
+	}
+	return key, string(identity)
 }
 
 func aggregateGroupMatches(group AggregateGroup, filters []Filter, expr *FilterExpr) bool {

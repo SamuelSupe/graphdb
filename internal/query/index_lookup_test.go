@@ -209,8 +209,34 @@ func (l *driftingEdgeLookup) GetEntity(_ context.Context, id string, _ []string)
 }
 
 type countingOutEdgeLookup struct {
-	edges []graph.Edge
-	calls []string
+	edges       []graph.Edge
+	calls       []string
+	outCalls    int
+	visitStarts []string
+	visited     int
+}
+
+type countingInEdgeLookup struct {
+	edges       []graph.Edge
+	calls       []string
+	inCalls     int
+	visitStarts []string
+	visited     int
+}
+
+type bidirectionalNeighborLookup struct {
+	entities map[string]graph.Entity
+	out      []graph.Edge
+	in       []graph.Edge
+}
+
+type countingBothEdgeLookup struct {
+	entities    map[string]graph.Entity
+	neighbors   []graph.Neighbor
+	outCalls    int
+	inCalls     int
+	visitStarts []string
+	visited     int
 }
 
 type adjacencyLookup struct {
@@ -241,7 +267,29 @@ func (l *countingOutEdgeLookup) MatchFieldIndex(context.Context, string, string,
 }
 
 func (l *countingOutEdgeLookup) OutEdges(context.Context, string, map[string]struct{}) ([]graph.Edge, bool, error) {
+	l.outCalls++
 	return append([]graph.Edge(nil), l.edges...), true, nil
+}
+
+func (l *countingOutEdgeLookup) VisitOutEdges(
+	_ context.Context,
+	_ string,
+	_ map[string]struct{},
+	startEdgeID string,
+	visit func(graph.Edge) (bool, error),
+) (bool, error) {
+	l.visitStarts = append(l.visitStarts, startEdgeID)
+	for _, edge := range l.edges {
+		if startEdgeID != "" && edge.ID < startEdgeID {
+			continue
+		}
+		l.visited++
+		keepGoing, err := visit(edge)
+		if err != nil || !keepGoing {
+			return true, err
+		}
+	}
+	return true, nil
 }
 
 func (l *countingOutEdgeLookup) GetEntity(_ context.Context, id string, _ []string) (graph.Entity, bool, error) {
@@ -250,6 +298,137 @@ func (l *countingOutEdgeLookup) GetEntity(_ context.Context, id string, _ []stri
 		return graph.Entity{ID: id, Kind: "service"}, true, nil
 	}
 	return graph.Entity{ID: id, Kind: "host"}, true, nil
+}
+
+func (l *countingInEdgeLookup) MatchFieldIndex(
+	context.Context, string, string, []any,
+) ([]string, bool, error) {
+	return nil, false, nil
+}
+
+func (l *countingInEdgeLookup) OutEdges(
+	context.Context, string, map[string]struct{},
+) ([]graph.Edge, bool, error) {
+	return nil, false, nil
+}
+
+func (l *countingInEdgeLookup) InEdges(
+	context.Context, string, map[string]struct{},
+) ([]graph.Edge, bool, error) {
+	l.inCalls++
+	return append([]graph.Edge(nil), l.edges...), true, nil
+}
+
+func (l *countingInEdgeLookup) VisitInEdges(
+	_ context.Context,
+	_ string,
+	_ map[string]struct{},
+	startEdgeID string,
+	visit func(graph.Edge) (bool, error),
+) (bool, error) {
+	l.visitStarts = append(l.visitStarts, startEdgeID)
+	for _, edge := range l.edges {
+		if startEdgeID != "" && edge.ID < startEdgeID {
+			continue
+		}
+		l.visited++
+		keepGoing, err := visit(edge)
+		if err != nil || !keepGoing {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
+func (l *countingInEdgeLookup) GetEntity(
+	_ context.Context,
+	id string,
+	_ []string,
+) (graph.Entity, bool, error) {
+	l.calls = append(l.calls, id)
+	if id == "host:start" {
+		return graph.Entity{ID: id, Kind: "host"}, true, nil
+	}
+	return graph.Entity{ID: id, Kind: "service"}, true, nil
+}
+
+func (l *bidirectionalNeighborLookup) MatchFieldIndex(
+	context.Context, string, string, []any,
+) ([]string, bool, error) {
+	return nil, false, nil
+}
+
+func (l *bidirectionalNeighborLookup) OutEdges(
+	context.Context, string, map[string]struct{},
+) ([]graph.Edge, bool, error) {
+	return append([]graph.Edge(nil), l.out...), true, nil
+}
+
+func (l *bidirectionalNeighborLookup) InEdges(
+	context.Context, string, map[string]struct{},
+) ([]graph.Edge, bool, error) {
+	return append([]graph.Edge(nil), l.in...), true, nil
+}
+
+func (l *bidirectionalNeighborLookup) GetEntity(
+	_ context.Context,
+	id string,
+	_ []string,
+) (graph.Entity, bool, error) {
+	entity, ok := l.entities[id]
+	return entity, ok, nil
+}
+
+func (l *countingBothEdgeLookup) MatchFieldIndex(
+	context.Context, string, string, []any,
+) ([]string, bool, error) {
+	return nil, false, nil
+}
+
+func (l *countingBothEdgeLookup) OutEdges(
+	context.Context, string, map[string]struct{},
+) ([]graph.Edge, bool, error) {
+	l.outCalls++
+	return nil, true, nil
+}
+
+func (l *countingBothEdgeLookup) InEdges(
+	context.Context, string, map[string]struct{},
+) ([]graph.Edge, bool, error) {
+	l.inCalls++
+	return nil, true, nil
+}
+
+func (l *countingBothEdgeLookup) VisitBothEdges(
+	_ context.Context,
+	_ string,
+	_ map[string]struct{},
+	startEdgeID string,
+	visit func(graph.Edge, string) (bool, error),
+) (bool, error) {
+	l.visitStarts = append(l.visitStarts, startEdgeID)
+	for _, neighbor := range l.neighbors {
+		if startEdgeID != "" && neighbor.Edge.ID < startEdgeID {
+			continue
+		}
+		l.visited++
+		keepGoing, err := visit(
+			neighbor.Edge, neighbor.Direction,
+		)
+		if err != nil || !keepGoing {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
+func (l *countingBothEdgeLookup) GetEntity(
+	_ context.Context,
+	id string,
+	_ []string,
+) (graph.Entity, bool, error) {
+	entity, ok := l.entities[id]
+	return entity, ok, nil
 }
 
 func TestExecutorUsesExternalFieldIndexLookup(t *testing.T) {
@@ -653,6 +832,245 @@ func TestLazyOutNeighborsCursorSkipsPrefixEdgesBeforeMaterialization(t *testing.
 	}
 	if got, want := fmt.Sprint(lookup.calls), "[service:start host:03 host:04 host:05]"; got != want {
 		t.Fatalf("materialized ids = %s, want %s", got, want)
+	}
+	if lookup.outCalls != 0 ||
+		fmt.Sprint(lookup.visitStarts) != "[edge:03]" ||
+		lookup.visited != 3 {
+		t.Fatalf(
+			"out calls=%d visit starts=%v visited=%d, want visitor range only",
+			lookup.outCalls, lookup.visitStarts, lookup.visited,
+		)
+	}
+}
+
+func TestLazyInNeighborsCursorSkipsPrefixEdgesBeforeMaterialization(t *testing.T) {
+	g := graph.New()
+	g.Version = 1
+	edges := make([]graph.Edge, 0, 6)
+	for i := 0; i < 6; i++ {
+		edges = append(edges, graph.Edge{
+			ID:   fmt.Sprintf("edge:%02d", i),
+			Type: "runs_on",
+			From: fmt.Sprintf("service:%02d", i),
+			To:   "host:start",
+		})
+	}
+	lookup := &countingInEdgeLookup{edges: edges}
+	request := Request{
+		Op:           "neighbors",
+		ID:           "host:start",
+		Direction:    "in",
+		RelationType: "runs_on",
+		Limit:        1,
+	}
+	request.Cursor = encodeCursor(cursorState{
+		Version: 1,
+		After:   "edge:in:edge:03",
+		Query:   cursorQueryHash(request),
+	})
+	response, err := ExecuteContextWithOptions(
+		context.Background(),
+		g,
+		request,
+		ExecuteOptions{
+			PlannerStats: PlannerStats{
+				Version: 1,
+				ReverseEdgeShards: []PlannerEdgeStat{{
+					RelationType: "runs_on",
+					Shard:        plannerEdgeShardID("host:start"),
+					EdgeCount:    len(edges),
+				}},
+				EntityPages: []PlannerEntityPageStat{{
+					Shard: "68", EntityCount: len(edges) + 1,
+				}},
+			},
+			IndexLookup:  lookup,
+			EntityLookup: lookup,
+		},
+	)
+	if err != nil {
+		t.Fatalf("neighbors: %v", err)
+	}
+	if len(response.Results) != 1 ||
+		response.Results[0].Entity.ID != "service:04" {
+		t.Fatalf("results = %#v, want service:04", response.Results)
+	}
+	if got, want := fmt.Sprint(lookup.calls),
+		"[host:start service:03 service:04 service:05]"; got != want {
+		t.Fatalf("materialized ids = %s, want %s", got, want)
+	}
+	if lookup.inCalls != 0 ||
+		fmt.Sprint(lookup.visitStarts) != "[edge:03]" ||
+		lookup.visited != 3 {
+		t.Fatalf(
+			"in calls=%d visit starts=%v visited=%d, want visitor range only",
+			lookup.inCalls, lookup.visitStarts, lookup.visited,
+		)
+	}
+}
+
+func TestIndexedBothNeighborsPreserveOrderAndSelfLoopDirections(t *testing.T) {
+	g := graph.New()
+	g.Version = 1
+	lookup := &bidirectionalNeighborLookup{
+		entities: map[string]graph.Entity{
+			"node:start": {ID: "node:start", Kind: "node"},
+			"node:in":    {ID: "node:in", Kind: "node"},
+			"node:out":   {ID: "node:out", Kind: "node"},
+		},
+		out: []graph.Edge{
+			{ID: "edge:02", Type: "links", From: "node:start", To: "node:out"},
+			{ID: "edge:03", Type: "links", From: "node:start", To: "node:start"},
+		},
+		in: []graph.Edge{
+			{ID: "edge:01", Type: "links", From: "node:in", To: "node:start"},
+			{ID: "edge:03", Type: "links", From: "node:start", To: "node:start"},
+		},
+	}
+	response, err := ExecuteContextWithOptions(
+		context.Background(),
+		g,
+		Request{
+			Op: "neighbors", ID: "node:start",
+			Direction: "both", RelationType: "links", Limit: 10,
+		},
+		ExecuteOptions{
+			PlannerStats: PlannerStats{
+				Version: 1,
+				EdgeShards: []PlannerEdgeStat{{
+					RelationType: "links", Shard: "00", EdgeCount: 2,
+				}},
+				ReverseEdgeShards: []PlannerEdgeStat{{
+					RelationType: "links", Shard: "00", EdgeCount: 2,
+				}},
+				EntityPages: []PlannerEntityPageStat{{
+					Shard: "00", EntityCount: 3,
+				}},
+			},
+			IndexLookup:  lookup,
+			EntityLookup: lookup,
+		},
+	)
+	if err != nil {
+		t.Fatalf("neighbors: %v", err)
+	}
+	identities := make([]string, 0, len(response.Results))
+	for _, result := range response.Results {
+		identities = append(identities, resultIdentity(result))
+	}
+	want := []string{
+		"edge:in:edge:01",
+		"edge:out:edge:02",
+		"edge:in:edge:03",
+		"edge:out:edge:03",
+	}
+	if fmt.Sprint(identities) != fmt.Sprint(want) {
+		t.Fatalf("identities=%v, want %v", identities, want)
+	}
+}
+
+func TestLazyBothNeighborsCursorUsesMergedVisitorRange(t *testing.T) {
+	g := graph.New()
+	g.Version = 1
+	lookup := &countingBothEdgeLookup{
+		entities: map[string]graph.Entity{
+			"node:start": {ID: "node:start", Kind: "node"},
+			"node:in":    {ID: "node:in", Kind: "node"},
+			"node:out":   {ID: "node:out", Kind: "node"},
+			"node:later": {ID: "node:later", Kind: "node"},
+		},
+		neighbors: []graph.Neighbor{
+			{
+				Edge: graph.Edge{
+					ID: "edge:01", Type: "links",
+					From: "node:in", To: "node:start",
+				},
+				Direction: "in",
+			},
+			{
+				Edge: graph.Edge{
+					ID: "edge:02", Type: "links",
+					From: "node:start", To: "node:out",
+				},
+				Direction: "out",
+			},
+			{
+				Edge: graph.Edge{
+					ID: "edge:03", Type: "links",
+					From: "node:start", To: "node:start",
+				},
+				Direction: "in",
+			},
+			{
+				Edge: graph.Edge{
+					ID: "edge:03", Type: "links",
+					From: "node:start", To: "node:start",
+				},
+				Direction: "out",
+			},
+			{
+				Edge: graph.Edge{
+					ID: "edge:04", Type: "links",
+					From: "node:later", To: "node:start",
+				},
+				Direction: "in",
+			},
+		},
+	}
+	request := Request{
+		Op: "neighbors", ID: "node:start",
+		Direction: "both", RelationType: "links", Limit: 1,
+	}
+	request.Cursor = encodeCursor(cursorState{
+		Version: 1,
+		After:   "edge:in:edge:03",
+		Query:   cursorQueryHash(request),
+	})
+	response, err := ExecuteContextWithOptions(
+		context.Background(),
+		g,
+		request,
+		ExecuteOptions{
+			PlannerStats: PlannerStats{
+				Version: 1,
+				EdgeShards: []PlannerEdgeStat{{
+					RelationType: "links",
+					Shard:        plannerEdgeShardID("node:start"),
+					EdgeCount:    3,
+				}},
+				ReverseEdgeShards: []PlannerEdgeStat{{
+					RelationType: "links",
+					Shard:        plannerEdgeShardID("node:start"),
+					EdgeCount:    3,
+				}},
+				EntityPages: []PlannerEntityPageStat{{
+					Shard: "00", EntityCount: 4,
+				}},
+			},
+			IndexLookup:  lookup,
+			EntityLookup: lookup,
+		},
+	)
+	if err != nil {
+		t.Fatalf("neighbors: %v", err)
+	}
+	if len(response.Results) != 1 ||
+		resultIdentity(response.Results[0]) != "edge:out:edge:03" {
+		t.Fatalf(
+			"results=%#v, want outgoing self-loop after cursor",
+			response.Results,
+		)
+	}
+	if lookup.outCalls != 0 || lookup.inCalls != 0 ||
+		fmt.Sprint(lookup.visitStarts) != "[edge:03]" ||
+		lookup.visited != 3 {
+		t.Fatalf(
+			"out=%d in=%d starts=%v visited=%d, want merged range only",
+			lookup.outCalls,
+			lookup.inCalls,
+			lookup.visitStarts,
+			lookup.visited,
+		)
 	}
 }
 

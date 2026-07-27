@@ -103,6 +103,7 @@ func (s *TenantStore) ListReaderHeartbeatsWithOptions(ctx context.Context, tenan
 	}
 	items := make([]ReaderHeartbeat, 0, min(256, options.Limit))
 	now := time.Now().UTC()
+	prefix := s.readerHeartbeatPrefix(tenantID)
 	cursor := ""
 	scanned := 0
 	for {
@@ -110,7 +111,13 @@ func (s *TenantStore) ListReaderHeartbeatsWithOptions(ctx context.Context, tenan
 		if pageLimit <= 0 {
 			return nil, fmt.Errorf("%w after %d records for tenant %q", errReaderHeartbeatScanIncomplete, scanned, tenantID)
 		}
-		objects, next, err := listObjectPage(ctx, s.Objects, s.readerHeartbeatPrefix(tenantID), cursor, pageLimit)
+		objects, next, err := listObjectPage(
+			ctx,
+			s.Objects,
+			prefix,
+			cursor,
+			pageLimit,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -120,7 +127,8 @@ func (s *TenantStore) ListReaderHeartbeatsWithOptions(ctx context.Context, tenan
 			if !ok {
 				continue
 			}
-			data, err := s.Objects.Get(ctx, s.readerHeartbeatKey(tenantID, readerID))
+			s.clearWriterObjectKey(object.Key)
+			data, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
 			if errors.Is(err, ErrNotFound) {
 				continue
 			}
@@ -142,7 +150,11 @@ func (s *TenantStore) ListReaderHeartbeatsWithOptions(ctx context.Context, tenan
 			}
 			expired := options.MaxAge > 0 && !heartbeat.LastSeenAt.IsZero() && now.Sub(heartbeat.LastSeenAt) > options.MaxAge
 			if expired && options.DeleteExpired {
-				err := s.Objects.DeleteConditional(ctx, object.Key, PutCondition{IfMatch: object.ETag})
+				err := s.Objects.DeleteConditional(
+					ctx,
+					object.Key,
+					PutCondition{IfMatch: meta.ETag},
+				)
 				if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) && !errors.Is(err, ErrConditionalDeleteUnsupported) {
 					return nil, err
 				}

@@ -222,6 +222,10 @@ func secondaryIndexType(index SecondaryIndex) string {
 	return "secondary-field"
 }
 
+func secondaryIndexSpecUnique(spec IndexSpec) bool {
+	return spec.Type == "unique-field"
+}
+
 func fieldIndexType(spec graph.FieldSpec) string {
 	if spec.Unique {
 		return "unique-field"

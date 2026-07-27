@@ -29,7 +29,11 @@ func (s *TenantStore) tenantPurgeTombstoneKey(tenantID string) string {
 	return path.Join(s.Prefix, "control", "tenant-purges", objectSegment(tenantID)+".parquet")
 }
 
-func (s *TenantStore) beginTenantPurge(ctx context.Context, tenantID string) (string, bool, error) {
+func (s *TenantStore) beginTenantPurge(
+	ctx context.Context,
+	tenantID string,
+	replaceRunning bool,
+) (string, bool, error) {
 	operationID, err := newCommitID()
 	if err != nil {
 		return "", false, err
@@ -42,7 +46,7 @@ func (s *TenantStore) beginTenantPurge(ctx context.Context, tenantID string) (st
 		phase, existingOperation := tenantPurgeState(metadata, exists)
 		switch phase {
 		case tenantPurgePhaseRunning:
-			if existingOperation != "" {
+			if existingOperation != "" && !replaceRunning {
 				return existingOperation, false, nil
 			}
 		case tenantPurgePhaseComplete:
@@ -208,9 +212,7 @@ func tenantPurgeFenceEpoch(metadata TenantMetadata) int64 {
 
 func (s *TenantStore) getTenantPurgeTombstone(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
 	key := s.tenantPurgeTombstoneKey(tenantID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return TenantMetadata{}, false, ObjectMeta{Key: key}, nil

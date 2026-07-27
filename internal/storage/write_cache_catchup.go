@@ -32,6 +32,20 @@ func (s *TenantStore) catchUpWriteCache(
 		return loadedGraph{}, false, nil
 	}
 	if cached.Manifest.Version == manifest.Version {
+		previousTailBytes := cached.CommitTail.bytes
+		if !cached.CommitTail.matches(manifest.CommitKeys) {
+			if len(manifest.CommitKeys) == 0 {
+				cached.CommitTail = emptyCommitTailCache()
+			} else {
+				cached.CommitTail = commitTailCache{}
+			}
+		}
+		if cached.CacheBytes >= previousTailBytes {
+			cached.CacheBytes = addWriteCacheBytes(
+				cached.CacheBytes-previousTailBytes,
+				cached.CommitTail.bytes,
+			)
+		}
 		cached.Manifest = manifest
 		cached.Meta = meta
 		cached.DataMD5 = manifest.DataMD5
@@ -40,6 +54,23 @@ func (s *TenantStore) catchUpWriteCache(
 
 	next := cached.Graph
 	copied := false
+	tailItems := map[string]commitSegmentItem{}
+	tailKeys := make(map[string]struct{}, len(manifest.CommitKeys))
+	for _, key := range manifest.CommitKeys {
+		tailKeys[key] = struct{}{}
+	}
+	if cached.CommitTail.matches(cached.Manifest.CommitKeys) {
+		for _, item := range cached.CommitTail.items {
+			if _, wanted := tailKeys[item.Key]; wanted {
+				tailItems[item.Key] = item
+			}
+		}
+	}
+	rememberTail := func(item commitSegmentItem) {
+		if _, wanted := tailKeys[item.Key]; wanted {
+			tailItems[item.Key] = item
+		}
+	}
 	apply := func(key string, commit graph.Commit) error {
 		if err := validateCommitObjectIdentity(key, commit); err != nil {
 			return err
@@ -80,6 +111,7 @@ func (s *TenantStore) catchUpWriteCache(
 			if err := apply(item.Key, item.Commit); err != nil {
 				return loadedGraph{}, false, err
 			}
+			rememberTail(item)
 		}
 	}
 	for _, key := range manifest.CommitKeys {
@@ -102,13 +134,35 @@ func (s *TenantStore) catchUpWriteCache(
 		if err := apply(key, commit); err != nil {
 			return loadedGraph{}, false, err
 		}
+		rememberTail(commitSegmentItem{Key: key, Commit: commit})
 	}
 	if next.Version != manifest.Version {
 		return loadedGraph{}, false, nil
 	}
-	cacheBytes := max(cached.CacheBytes, writeCacheBytesForGraph(next, 0))
+	looseCommits := make(
+		[]commitSegmentItem, 0, len(manifest.CommitKeys),
+	)
+	for _, key := range manifest.CommitKeys {
+		if item, ok := tailItems[key]; ok {
+			looseCommits = append(looseCommits, item)
+		}
+	}
+	commitTail := buildCommitTailCache(
+		looseCommits, manifest.CommitKeys,
+	)
+	graphCacheBytes := cached.CacheBytes
+	if graphCacheBytes >= cached.CommitTail.bytes {
+		graphCacheBytes -= cached.CommitTail.bytes
+	}
+	graphCacheBytes = max(
+		graphCacheBytes, writeCacheBytesForGraph(next, 0),
+	)
 	return loadedGraph{
 		Graph: next, Manifest: manifest, Meta: meta,
-		DataMD5: manifest.DataMD5, CacheBytes: cacheBytes,
+		DataMD5:    manifest.DataMD5,
+		CommitTail: commitTail,
+		CacheBytes: addWriteCacheBytes(
+			graphCacheBytes, commitTail.bytes,
+		),
 	}, true, nil
 }

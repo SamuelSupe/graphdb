@@ -443,7 +443,7 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 	if data, _, verified, ok, err := s.cachedIndexObjectWithVerification(ctx, "secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash); err != nil {
 		return SecondaryIndex{}, false, err
 	} else if ok {
-		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, spec.Type == "unique")
+		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, secondaryIndexSpecUnique(spec))
 		index.cacheVerified = verified
 		if err == nil && secondaryIndexObjectMatches(index, tenantID, version, spec, object.ContentHash) {
 			if !verified {
@@ -461,7 +461,7 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 	if err != nil {
 		return SecondaryIndex{}, false, err
 	}
-	index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, spec.Type == "unique")
+	index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, secondaryIndexSpecUnique(spec))
 	if err != nil {
 		return SecondaryIndex{}, false, err
 	}

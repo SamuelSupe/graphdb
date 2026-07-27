@@ -19,6 +19,7 @@ func (s *TenantStore) loadEntityRecord(ctx context.Context, tenantID string, id 
 }
 
 func (s *TenantStore) loadEntityRecordKey(ctx context.Context, tenantID string, key string) (EntityRecord, error) {
+	s.clearCoordinatedWriterObjectKey(key)
 	data, err := s.Objects.Get(ctx, key)
 	if err != nil {
 		return EntityRecord{}, err
@@ -95,6 +96,7 @@ wait:
 }
 
 func (s *TenantStore) putEntityRecordIfChanged(ctx context.Context, job entityRecordWriteJob) error {
+	s.clearCoordinatedWriterObjectKey(job.Key)
 	mayExist, err := s.objectKeyMayExist(ctx, job.Key)
 	if err != nil {
 		return err

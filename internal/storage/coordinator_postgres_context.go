@@ -42,6 +42,7 @@ func (c *PostgresCoordinator) PublishWriteContext(
 		time.Now().UTC(),
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
+		_ = tx.Rollback(ctx)
 		current, _, headErr := c.Head(ctx, request.TenantID)
 		return current, false, headErr
 	}
@@ -49,7 +50,7 @@ func (c *PostgresCoordinator) PublishWriteContext(
 		return CoordinationHead{}, false, coordinatorUnavailable(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return CoordinationHead{}, false, coordinatorUnavailable(err)
+		return c.resolveAmbiguousWriteContext(head)
 	}
 	return head, true, nil
 }

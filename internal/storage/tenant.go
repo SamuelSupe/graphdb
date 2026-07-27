@@ -69,6 +69,7 @@ type TenantStore struct {
 	Prefix                     string
 	coordinatorStatusMu        sync.RWMutex
 	coordinatorStatusCache     CoordinatorStatus
+	coordinatorStatusActive    *coordinatorStatusCall
 	objectProbeMu              sync.Mutex
 	objectProbeActive          *objectStoreProbeCall
 	lockMu                     sync.Mutex
@@ -78,19 +79,22 @@ type TenantStore struct {
 	writeCacheOrder            []string
 	writeCacheBytes            int64
 	writerLeaseCache           map[string]cachedWriterLease
-	registeredTenantCache      map[string]struct{}
+	registeredTenantCache      map[string]registeredTenantCacheEntry
 	collectorStatusCache       map[string]cachedCollectorStatus
 	readerHeartbeatCache       map[string]cachedReaderHeartbeat
 	objectKeyCache             map[string]struct{}
-	objectPrefixCache          map[string]struct{}
 	tenantMetadataCache        map[string]cachedTenantMetadata
 	purgeTombstoneCache        map[string]cachedTenantPurgeTombstone
 	sourcePolicyCache          map[string]cachedSourcePolicy
 	tenantConfigCache          map[string]cachedTenantConfig
 	indexCatalogCache          map[string]cachedIndexCatalog
+	indexCatalogLoads          map[string]*indexCatalogLoad
+	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
+	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
 	compiledScanCatalogCache   map[string]*compiledScanCatalog
 	indexCache                 *indexObjectCache
 	entityPageCache            *entityPageCache
+	edgeLookupCache            *edgeLookupCache
 	taskMu                     sync.Mutex
 	indexTasks                 map[string]IndexTask
 	taskCancels                map[string]context.CancelFunc
@@ -98,6 +102,7 @@ type TenantStore struct {
 	taskQueueSlots             chan struct{}
 	taskExecutionSlots         chan struct{}
 	taskTenantSlots            []chan struct{}
+	indexTaskStartSlots        []chan struct{}
 	InstanceID                 string
 	ReaderID                   string
 	LeaseTTL                   time.Duration
@@ -125,6 +130,7 @@ type loadedGraph struct {
 	Manifest   Manifest
 	Meta       ObjectMeta
 	DataMD5    string
+	CommitTail commitTailCache
 	CacheBytes int64
 }
 
@@ -139,25 +145,29 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		tenantLocks:                map[string]*tenantLock{},
 		writeCache:                 map[string]loadedGraph{},
 		writerLeaseCache:           map[string]cachedWriterLease{},
-		registeredTenantCache:      map[string]struct{}{},
+		registeredTenantCache:      map[string]registeredTenantCacheEntry{},
 		collectorStatusCache:       map[string]cachedCollectorStatus{},
 		readerHeartbeatCache:       map[string]cachedReaderHeartbeat{},
 		objectKeyCache:             map[string]struct{}{},
-		objectPrefixCache:          map[string]struct{}{},
 		tenantMetadataCache:        map[string]cachedTenantMetadata{},
 		purgeTombstoneCache:        map[string]cachedTenantPurgeTombstone{},
 		sourcePolicyCache:          map[string]cachedSourcePolicy{},
 		tenantConfigCache:          map[string]cachedTenantConfig{},
 		indexCatalogCache:          map[string]cachedIndexCatalog{},
+		indexCatalogLoads:          map[string]*indexCatalogLoad{},
+		reverseIndexCatalogCache:   map[string]cachedReverseIndexCatalog{},
+		reverseIndexCatalogLoads:   map[string]*reverseIndexCatalogLoad{},
 		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},
 		indexCache:                 newIndexObjectCache(4096),
 		entityPageCache:            newEntityPageCache(2048),
+		edgeLookupCache:            newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
 		indexTasks:                 map[string]IndexTask{},
 		taskCancels:                map[string]context.CancelFunc{},
 		taskActive:                 map[string]Task{},
 		taskQueueSlots:             make(chan struct{}, defaultTaskQueueLimit),
 		taskExecutionSlots:         make(chan struct{}, defaultTaskExecutionLimit),
 		taskTenantSlots:            newTaskTenantSlots(defaultTaskTenantStripes),
+		indexTaskStartSlots:        newTaskTenantSlots(defaultTaskTenantStripes),
 		InstanceID:                 instanceID,
 		ReaderID:                   instanceID,
 		LeaseTTL:                   30 * time.Second,
@@ -192,11 +202,19 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 	}
 	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataMD5: dataMD5}
 	meta, err := s.putManifestMeta(ctx, tenantID, manifest, ObjectMeta{Key: s.manifestKey(tenantID)})
-	if err == nil {
-		_ = s.addTenantToRegistry(ctx, tenantID)
-		s.setWriteCache(tenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5, CacheBytes: cacheBytes})
+	if err != nil {
+		return manifest, err
 	}
-	return manifest, err
+	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
+		return manifest, fmt.Errorf("register tenant %q: %w", tenantID, err)
+	}
+	s.setWriteCache(tenantID, loadedGraph{
+		Graph: g, Manifest: manifest, Meta: meta,
+		DataMD5:    dataMD5,
+		CommitTail: emptyCommitTailCache(),
+		CacheBytes: cacheBytes,
+	})
+	return manifest, nil
 }
 
 func newEmptyTenantGraph() (*graph.Graph, string, int64, error) {
@@ -294,7 +312,11 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 		if manifest.Version == loaded.Manifest.Version {
 			s.setWriteCache(tenantID, loadedGraph{
 				Graph: g, Manifest: manifest, Meta: meta,
-				DataMD5: dataMD5, CacheBytes: loaded.CacheBytes,
+				DataMD5:    dataMD5,
+				CommitTail: emptyCommitTailCache(),
+				CacheBytes: writeCacheBytesWithoutCommitTail(
+					loaded,
+				),
 			})
 		}
 		return manifest, nil
@@ -324,6 +346,11 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 		s.deleteWriteCache(tenantID)
 		return Manifest{}, err
 	}
-	s.setWriteCache(tenantID, loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: dataMD5, CacheBytes: loaded.CacheBytes})
+	s.setWriteCache(tenantID, loadedGraph{
+		Graph: g, Manifest: manifest, Meta: meta,
+		DataMD5:    dataMD5,
+		CommitTail: emptyCommitTailCache(),
+		CacheBytes: writeCacheBytesWithoutCommitTail(loaded),
+	})
 	return manifest, nil
 }

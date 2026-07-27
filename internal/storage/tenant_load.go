@@ -29,21 +29,29 @@ func (s *TenantStore) LoadAtLeast(ctx context.Context, tenantID string, minVersi
 func (s *TenantStore) loadAtLeast(ctx context.Context, tenantID string, minVersion int64) (*graph.Graph, Manifest, error) {
 	if cached, ok := s.getWriteCache(tenantID); ok {
 		if cached.Manifest.Version >= minVersion {
-			if minVersion > 0 && !s.coordinated() {
-				return cloneLoadedGraph(cached)
-			}
-			manifest, meta, err := s.getManifest(ctx, tenantID)
-			if err != nil {
-				if s.coordinated() && errors.Is(err, ErrCoordinatorUnavailable) {
+			if s.coordinated() {
+				head, exists, err := s.Coordinator.Head(ctx, tenantID)
+				if err != nil {
+					if errors.Is(err, ErrCoordinatorUnavailable) {
+						return cloneLoadedGraph(cached)
+					}
+					return nil, Manifest{}, err
+				}
+				if exists && writeCacheMatchesCoordinatorHead(cached, head) {
 					return cloneLoadedGraph(cached)
 				}
-				return nil, Manifest{}, err
-			}
-			if s.coordinated() && cachedManifestMatches(cached, manifest, meta) {
-				return cloneLoadedGraph(cached)
-			}
-			if !s.coordinated() && cached.Manifest.Version >= manifest.Version {
-				return cloneLoadedGraph(cached)
+			} else {
+				manifest, meta, err := s.getManifest(ctx, tenantID)
+				if err != nil {
+					return nil, Manifest{}, err
+				}
+				if cachedManifestMatches(cached, manifest, meta) {
+					return cloneLoadedGraph(cached)
+				}
+				// Versions restart after a tenant is purged and recreated.
+				// Discard a cache entry whose manifest identity changed even
+				// when its version is equal to or above the current manifest.
+				s.deleteWriteCache(tenantID)
 			}
 		}
 	}
@@ -71,6 +79,23 @@ func (s *TenantStore) CurrentManifest(ctx context.Context, tenantID string) (Man
 	}
 	manifest, _, err := s.getManifest(ctx, tenantID)
 	return manifest, err
+}
+
+func (s *TenantStore) CurrentVersion(ctx context.Context, tenantID string) (int64, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return 0, err
+	}
+	if s.coordinated() {
+		head, exists, err := s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return 0, err
+		}
+		if exists {
+			return head.GraphVersion, nil
+		}
+	}
+	manifest, _, err := s.getManifest(ctx, tenantID)
+	return manifest.Version, err
 }
 
 func (s *TenantStore) loadWithMeta(ctx context.Context, tenantID string) (loaded loadedGraph, err error) {
@@ -249,6 +274,9 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 		attribute.Int("graphdb.commit_keys.count", len(manifest.CommitKeys)),
 	)
 	appliedCommits := 0
+	looseCommits := make(
+		[]commitSegmentItem, 0, len(manifest.CommitKeys),
+	)
 	for _, commitKey := range manifest.CommitKeys {
 		if err := s.validateTenantObjectKey(tenantID, commitKey); err != nil {
 			commitsSpan.SetAttributes(attribute.Int("graphdb.commit_keys.applied", appliedCommits))
@@ -273,6 +301,9 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 			endStorageSpan(commitsSpan, err)
 			return loadedGraph{}, err
 		}
+		looseCommits = append(looseCommits, commitSegmentItem{
+			Key: commitKey, Commit: commit,
+		})
 		appliedCommits++
 	}
 	commitsSpan.SetAttributes(attribute.Int("graphdb.commit_keys.applied", appliedCommits))
@@ -284,7 +315,13 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 	if _, err := g.ContentFingerprint(); err != nil {
 		return loadedGraph{}, err
 	}
-	return loadedGraph{Graph: g, Manifest: manifest, Meta: meta, DataMD5: manifest.DataMD5}, nil
+	return loadedGraph{
+		Graph: g, Manifest: manifest, Meta: meta,
+		DataMD5: manifest.DataMD5,
+		CommitTail: buildCommitTailCache(
+			looseCommits, manifest.CommitKeys,
+		),
+	}, nil
 }
 
 func sameManifestReadSet(a, b Manifest) bool {

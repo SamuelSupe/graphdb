@@ -4,6 +4,7 @@ import "time"
 
 func (s *TenantStore) SetCoordinator(coordinator WriteCoordinator) {
 	s.Coordinator = coordinator
+	s.clearRegisteredTenantCache()
 	if coordinator != nil {
 		s.cacheCoordinatorStatus(CoordinatorStatus{
 			Backend:   coordinator.Backend(),

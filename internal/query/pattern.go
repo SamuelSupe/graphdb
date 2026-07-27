@@ -12,8 +12,25 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 	if traversal.Direction == "" {
 		traversal.Direction = "out"
 	}
+	complete := requiresCompletePathScan(request) ||
+		plan.Strategy != "entity-id"
 	collectionLimit := patternCollectionLimit(request)
-	paths := make([]graph.Path, 0, collectionLimit)
+	if complete {
+		collectionLimit = completePathScanLimit(request)
+	}
+	paths := make([]graph.Path, 0, min(collectionLimit, maxQueryLimit+1))
+	var collector *pathResultCollector
+	if complete {
+		collector = newPathResultCollector(request)
+	}
+	emit := func(path graph.Path) error {
+		if collector != nil {
+			return collector.add(path)
+		}
+		paths = append(paths, path)
+		return nil
+	}
+	matchedTotal := 0
 	processStart := func(entity graph.Entity) (bool, error) {
 		if err := budget.add(1); err != nil {
 			return false, err
@@ -22,16 +39,21 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 		if !requestEntityMatches(request, entity) {
 			return true, nil
 		}
-		remaining := collectionLimit - len(paths)
-		if remaining <= 0 {
+		remaining := 0
+		if collectionLimit > 0 {
+			remaining = collectionLimit - matchedTotal
+		}
+		if collectionLimit > 0 && remaining <= 0 {
 			return false, nil
 		}
-		matched, err := collectPaths(g, entity, traversal, remaining, budget)
+		matched, err := visitPaths(
+			g, entity, traversal, remaining, budget, emit,
+		)
 		if err != nil {
 			return false, err
 		}
-		paths = append(paths, matched...)
-		return len(paths) < collectionLimit, nil
+		matchedTotal += matched
+		return collectionLimit == 0 || matchedTotal < collectionLimit, nil
 	}
 
 	if lazyKindScanAvailable(g, request, plan, budget) {
@@ -58,14 +80,39 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 		}
 	}
 
-	results := pathResults(paths, request.Project)
-	if err := budget.measure("sort", "", len(results), func() (int, error) {
-		sortResults(results, request.Sort)
+	var results []Result
+	sortCost := len(paths)
+	if collector != nil {
+		sortCost = collector.count
+	}
+	if err := budget.measure("sort", "", sortCost, func() (int, error) {
+		if collector != nil {
+			results = collector.results()
+		} else {
+			results = pathResults(paths, request.Project)
+			sortResults(results, request.Sort)
+		}
 		return len(results), nil
 	}); err != nil {
 		return Response{}, err
 	}
-	response, err := buildResponse(g.Version, results, request, cursor, budget)
+	var response Response
+	var err error
+	if collector != nil {
+		response, err = buildResponseWithAggregatesAndGroups(
+			g.Version,
+			results,
+			request,
+			cursor,
+			budget,
+			collector.aggregates(),
+			collector.aggregateGroups(),
+		)
+	} else {
+		response, err = buildResponse(
+			g.Version, results, request, cursor, budget,
+		)
+	}
 	if err != nil {
 		return Response{}, fmt.Errorf("build pattern response: %w", err)
 	}
@@ -73,8 +120,5 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 }
 
 func patternCollectionLimit(request Request) int {
-	if request.Path.MaxPaths > 0 {
-		return maxPathResults(request)
-	}
-	return maxQueryLimit + 1
+	return maxPathResults(request)
 }

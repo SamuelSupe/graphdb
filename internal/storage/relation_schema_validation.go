@@ -41,6 +41,19 @@ func (s *TenantStore) advanceRelationSchemaValidation(ctx context.Context, tenan
 	return s.putRelationSchemaCatalog(ctx, tenantID, catalog, meta)
 }
 
+func relationSchemaCommitCanValidateIncrementally(
+	coordinated bool,
+	catalog RelationSchemaCatalog,
+	currentGraphVersion int64,
+) bool {
+	if catalog.GraphVersion == currentGraphVersion {
+		return true
+	}
+	return coordinated &&
+		catalog.GraphVersion > 0 &&
+		catalog.GraphVersion < currentGraphVersion
+}
+
 func validateRelationSchemaGraph(g *graph.Graph, catalog RelationSchemaCatalog) error {
 	if g == nil || len(catalog.RelationSchemas) == 0 {
 		return nil

@@ -24,11 +24,13 @@ func (s *TenantStore) replayDeadLettersTask(ctx context.Context, task Task) (Rep
 		return ReplayReport{}, fmt.Errorf("limit must be a non-negative integer")
 	}
 	cursor := stringTaskParam(task.Params, "cursor")
-	letters, err := s.ListDeadLetters(ctx, task.TenantID, source)
+	candidateTotal, windowEnd, err := s.replayTaskWindow(
+		ctx, task.TenantID, source, cursor, limit,
+	)
 	if err != nil {
 		return ReplayReport{}, err
 	}
-	total := replayCandidateCount(s, task.TenantID, source, letters, cursor, limit)
+	total := candidateTotal
 	if total < 1 {
 		total = 1
 	}
@@ -37,35 +39,49 @@ func (s *TenantStore) replayDeadLettersTask(ctx context.Context, task Task) (Rep
 	if err := s.updateTaskProgress(ctx, task, "replay_deadletters", 0, total, taskResult(checkpoint)); err != nil {
 		return ReplayReport{}, err
 	}
-	for _, letter := range letters {
-		key := deadLetterObjectKey(s, task.TenantID, source, letter)
-		if cursor != "" && key <= cursor {
-			continue
-		}
-		if limit > 0 && report.Scanned >= limit {
-			break
-		}
-		if letter.Status == "resolved" || letter.Status == "invalid" {
-			continue
-		}
-		if err := s.updateTaskProgress(ctx, task, "replay_deadletters", report.Scanned, total, taskResult(checkpoint)); err != nil {
-			return report, err
-		}
-		report.Scanned++
-		result, replayed, err := s.replayDeadLetter(ctx, task.TenantID, source, letter)
-		if replayed {
-			recordReplayResult(&report, result)
-		}
-		checkpoint.LastKey = key
-		checkpoint.NextCursor = key
-		checkpoint.Scanned = report.Scanned
-		if err := s.updateTaskProgress(ctx, task, "replay_deadletters", report.Scanned, total, taskResult(checkpoint)); err != nil {
-			return report, err
-		}
-		if err != nil {
-			report.Checkpoint = checkpoint
-			return report, err
-		}
+	if candidateTotal > 0 {
+		err = s.walkDeadLettersByKey(
+			ctx,
+			task.TenantID,
+			source,
+			cursor,
+			func(letter DeadLetter) (bool, error) {
+				if limit > 0 && report.Scanned >= limit {
+					return false, nil
+				}
+				key := deadLetterObjectKey(s, task.TenantID, source, letter)
+				if key > windowEnd {
+					return false, nil
+				}
+				if letter.Status == "resolved" || letter.Status == "invalid" {
+					return true, nil
+				}
+				if err := s.updateTaskProgress(ctx, task, "replay_deadletters", report.Scanned, total, taskResult(checkpoint)); err != nil {
+					return false, err
+				}
+				report.Scanned++
+				result, replayed, err := s.replayDeadLetter(ctx, task.TenantID, source, letter)
+				if replayed {
+					recordReplayResult(&report, result)
+				}
+				checkpoint.Scanned = report.Scanned
+				if err == nil {
+					checkpoint.LastKey = key
+					checkpoint.NextCursor = key
+				}
+				if err := s.updateTaskProgress(ctx, task, "replay_deadletters", report.Scanned, total, taskResult(checkpoint)); err != nil {
+					return false, err
+				}
+				if err != nil {
+					return false, err
+				}
+				return true, nil
+			},
+		)
+	}
+	if err != nil {
+		report.Checkpoint = checkpoint
+		return report, err
 	}
 	checkpoint.Completed = true
 	report.Checkpoint = checkpoint
@@ -73,20 +89,28 @@ func (s *TenantStore) replayDeadLettersTask(ctx context.Context, task Task) (Rep
 	return report, nil
 }
 
-func replayCandidateCount(s *TenantStore, tenantID string, source string, letters []DeadLetter, cursor string, limit int) int {
+func (s *TenantStore) replayTaskWindow(
+	ctx context.Context,
+	tenantID string,
+	source string,
+	cursor string,
+	limit int,
+) (int, string, error) {
 	total := 0
-	for _, letter := range letters {
-		key := deadLetterObjectKey(s, tenantID, source, letter)
-		if cursor != "" && key <= cursor {
-			continue
-		}
-		if letter.Status == "resolved" || letter.Status == "invalid" {
-			continue
-		}
-		total++
-		if limit > 0 && total >= limit {
-			return total
-		}
-	}
-	return total
+	windowEnd := ""
+	err := s.walkDeadLettersByKey(
+		ctx,
+		tenantID,
+		source,
+		cursor,
+		func(letter DeadLetter) (bool, error) {
+			if letter.Status == "resolved" || letter.Status == "invalid" {
+				return true, nil
+			}
+			total++
+			windowEnd = deadLetterObjectKey(s, tenantID, source, letter)
+			return limit <= 0 || total < limit, nil
+		},
+	)
+	return total, windowEnd, err
 }

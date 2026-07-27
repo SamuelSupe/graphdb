@@ -77,3 +77,52 @@ func (c *PostgresCoordinator) resolveAmbiguousPublish(
 		ErrCoordinatorUnavailable,
 	)
 }
+
+func (c *PostgresCoordinator) resolveAmbiguousWriteContext(
+	candidate CoordinationHead,
+) (CoordinationHead, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	current, exists, err := c.Head(ctx, candidate.TenantID)
+	if err != nil {
+		return CoordinationHead{}, false, err
+	}
+	if exists &&
+		current.Generation == candidate.Generation &&
+		current.Status == candidate.Status &&
+		current.Revision >= candidate.Revision &&
+		current.WriteContextRevision == candidate.WriteContextRevision &&
+		current.WriteContextKey == candidate.WriteContextKey &&
+		current.WriteContextHash == candidate.WriteContextHash {
+		return current, true, nil
+	}
+	return CoordinationHead{}, false, fmt.Errorf(
+		"%w: PostgreSQL write-context outcome is unknown",
+		ErrCoordinatorUnavailable,
+	)
+}
+
+func (c *PostgresCoordinator) resolveAmbiguousTenantTransition(
+	candidate CoordinationHead,
+	advancedGeneration bool,
+) (CoordinationHead, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	current, exists, err := c.Head(ctx, candidate.TenantID)
+	if err != nil {
+		return CoordinationHead{}, err
+	}
+	applied := exists &&
+		current.Generation == candidate.Generation &&
+		current.Status == candidate.Status
+	if !advancedGeneration {
+		applied = applied && current.UpdatedAt.Equal(candidate.UpdatedAt)
+	}
+	if applied {
+		return current, nil
+	}
+	return CoordinationHead{}, fmt.Errorf(
+		"%w: PostgreSQL tenant transition outcome is unknown",
+		ErrCoordinatorUnavailable,
+	)
+}

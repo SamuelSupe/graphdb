@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -50,6 +51,39 @@ func TestTenantLifecycleDisableDeletePurge(t *testing.T) {
 	}
 	if _, err := store.GetTenantInfo(ctx, "tenant-a"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("tenant after purge err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPurgeTenantUsesBoundedPagesAndCapsDeletedKeySamples(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := &pagingOnlyStore{ObjectStore: base}
+	store := NewTenantStore(objects, "test")
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatalf("init tenant: %v", err)
+	}
+	prefix := store.tenantObjectPrefix("tenant-a")
+	for index := 0; index < objectPrefixScanPageSize+10; index++ {
+		key := fmt.Sprintf("%sbulk/object-%04d.parquet", prefix, index)
+		if err := base.Put(ctx, key, []byte("data")); err != nil {
+			t.Fatalf("put object %d: %v", index, err)
+		}
+	}
+
+	report, err := store.PurgeTenant(ctx, "tenant-a", true)
+	if err != nil {
+		t.Fatalf("purge tenant: %v", err)
+	}
+	if objects.listCalls != 0 || objects.pageCalls < 2 {
+		t.Fatalf(
+			"list calls=%d page calls=%d",
+			objects.listCalls, objects.pageCalls,
+		)
+	}
+	if report.Deleted <= tenantPurgeDeletedKeySampleLimit ||
+		len(report.DeletedKeys) != tenantPurgeDeletedKeySampleLimit ||
+		!report.DeletedKeysTruncated {
+		t.Fatalf("purge report=%#v", report)
 	}
 }
 
@@ -376,6 +410,65 @@ func TestTenantRestoreRetrySkipsCheckpointedSnapshot(t *testing.T) {
 	assertTaskActionCompleted(t, retry, "write_snapshot")
 	assertTaskActionCompleted(t, retry, "write_metadata")
 	assertTaskActionCompleted(t, retry, "rebuild_indexes")
+	assertTaskActionCompleted(t, retry, "verify_restore")
+}
+
+func TestTenantRestoreRetryRecoversPublishedSnapshotBeforeCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	backup, err := store.StartTask(ctx, "tenant-a", TaskTypeTenantBackup, nil)
+	if err != nil {
+		t.Fatalf("start backup: %v", err)
+	}
+	backup = waitForTask(t, ctx, store, "tenant-a", backup.ID)
+	backupManifestKey, _ := backup.Result["backup_manifest_key"].(string)
+	restore, err := store.StartTask(ctx, "tenant-c", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey})
+	if err != nil {
+		t.Fatalf("start restore: %v", err)
+	}
+	restore = waitForTask(t, ctx, store, "tenant-c", restore.ID)
+	if restore.Status != TaskStatusSucceeded {
+		t.Fatalf("restore = %#v", restore)
+	}
+
+	now := time.Now().UTC()
+	failed := Task{
+		ID:        "restore-after-publish",
+		TenantID:  "tenant-c",
+		Type:      TaskTypeTenantRestore,
+		Status:    TaskStatusFailed,
+		Phase:     TaskStatusFailed,
+		Params:    map[string]any{"backup_key": backupManifestKey},
+		StartedAt: now,
+		UpdatedAt: now,
+		Checkpoint: map[string]any{
+			"phase":            "restore_write_snapshot",
+			"backup_key":       backupManifestKey,
+			"source_tenant_id": "tenant-a",
+			"version":          int64(1),
+			"actions": []map[string]any{{
+				"id":     "write_snapshot",
+				"status": "running",
+			}},
+		},
+	}
+	if err := store.saveTask(ctx, failed); err != nil {
+		t.Fatalf("save failed restore: %v", err)
+	}
+	retry, err := store.RetryTask(ctx, "tenant-c", failed.ID)
+	if err != nil {
+		t.Fatalf("retry restore: %v", err)
+	}
+	retry = waitForTask(t, ctx, store, "tenant-c", retry.ID)
+	if retry.Status != TaskStatusSucceeded {
+		t.Fatalf("retry restore = %#v", retry)
+	}
+	assertTaskActionCompleted(t, retry, "write_snapshot")
 	assertTaskActionCompleted(t, retry, "verify_restore")
 }
 

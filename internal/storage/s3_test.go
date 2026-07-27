@@ -192,6 +192,34 @@ func TestS3StoreRetriesTransientTransportErrors(t *testing.T) {
 	}
 }
 
+func TestS3StoreRetriesTransientHTTPResponses(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/bucket/indexes/page.parquet" {
+			http.Error(w, fmt.Sprintf("unexpected %s %s", r.Method, r.URL.Path), http.StatusNotFound)
+			return
+		}
+		if attempts.Add(1) < defaultS3MaxAttempts {
+			http.Error(w, "slow down", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	store := newTestS3Store(t, server)
+	data, err := store.Get(context.Background(), "indexes/page.parquet")
+	if err != nil {
+		t.Fatalf("get after status retry: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("data = %q, want ok", data)
+	}
+	if got := attempts.Load(); got != defaultS3MaxAttempts {
+		t.Fatalf("attempts = %d, want %d", got, defaultS3MaxAttempts)
+	}
+}
+
 func TestS3StoreRetriesClientTimeoutWhenCallerContextAlive(t *testing.T) {
 	var serverCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -570,6 +598,7 @@ func newTestS3Store(t *testing.T, server *httptest.Server) *S3Store {
 		t.Fatalf("new s3 store: %v", err)
 	}
 	store.client = server.Client()
+	store.conditionalDeleteState = s3ConditionalDeleteAvailable
 	return store
 }
 

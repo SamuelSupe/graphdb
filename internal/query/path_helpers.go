@@ -126,17 +126,20 @@ func pathAllowsKind(kind string, filter PathFilter) bool {
 func pathResults(paths []graph.Path, projection []string) []Result {
 	results := make([]Result, 0, len(paths))
 	for _, path := range paths {
-		path := path
-		result := Result{Path: &path}
-		if len(path.Entities) > 0 {
-			entity := pathEnd(path)
-			result.Entity = &entity
-			applyProjection(&result, projection)
-			result.Entity = nil
-		}
-		results = append(results, result)
+		results = append(results, pathResult(path, projection))
 	}
 	return results
+}
+
+func pathResult(path graph.Path, projection []string) Result {
+	result := Result{Path: &path}
+	if len(path.Entities) > 0 {
+		entity := pathEnd(path)
+		result.Entity = &entity
+		applyProjection(&result, projection)
+		result.Entity = nil
+	}
+	return result
 }
 
 func maxPathResults(request Request) int {
@@ -146,7 +149,41 @@ func maxPathResults(request Request) int {
 		}
 		return request.Path.MaxPaths
 	}
-	return normalizedLimit(request.Limit) + 1
+	if requiresCompletePathScan(request) {
+		return costResultLimit(request)
+	}
+	return pathPageResultLimit(request)
+}
+
+func pathPageResultLimit(request Request) int {
+	page := normalizedLimit(request.Limit)
+	if request.Cursor == "" {
+		return page + 1
+	}
+	cursor, err := parseCursor(request.Cursor)
+	if err != nil {
+		return page + 1
+	}
+	offset := cursor.Offset
+	if offset <= 0 && !cursor.Legacy {
+		// Stable cursors emitted before offsets were added can only point into
+		// the first maximum-sized page.
+		offset = maxQueryLimit
+	}
+	required := offset + page + 1
+	if required < offset || required > costResultLimit(request) {
+		return costResultLimit(request)
+	}
+	return required
+}
+
+func costResultLimit(request Request) int {
+	limit := normalizedCostLimit(request.CostLimit)
+	maxInt := int(^uint(0) >> 1)
+	if limit >= maxInt {
+		return maxInt
+	}
+	return limit + 1
 }
 
 func normalizedDepth(depth int) int {

@@ -50,6 +50,11 @@ func (s *TenantStore) ingestCoordinated(
 			} else if ok {
 				replayed := previous.Result
 				replayed.Skipped = true
+				if err := s.repairIngestMetadataAfterSkip(
+					ctx, tenantID, previous, saveFailures,
+				); err != nil {
+					return replayed, err
+				}
 				return replayed, nil
 			}
 		}

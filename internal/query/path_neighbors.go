@@ -1,6 +1,10 @@
 package query
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import (
+	"sort"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+)
 
 func neighborsFor(g *graph.Graph, entityID string, request Request) []graph.Neighbor {
 	neighbors, _ := neighborsForBudget(g, entityID, request, nil)
@@ -29,58 +33,99 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 	if budget == nil || budget.lookup == nil {
 		return nil, false, nil
 	}
-	if request.DirectionStrategy == "impact" && request.Direction != "out" {
-		return nil, false, nil
-	}
 	allowed := relationTypeSet(request)
-	var edges []graph.Edge
-	switch request.Direction {
-	case "out":
-		out, ok, err := budget.lookup.OutEdges(budget.ctx, entityID, allowed)
-		if err != nil || !ok {
-			return shardUnavailable(g, budget, ok, err)
-		}
-		edges = out
-	case "in":
-		reverse, ok := budget.lookup.(ReverseIndexLookup)
+	var edges []directedNeighborEdge
+	if request.DirectionStrategy == "impact" {
+		directions, ok := impactDirectionsForRequest(request, budget.planner)
 		if !ok {
 			return shardUnavailable(g, budget, false, nil)
 		}
-		incoming, found, err := reverse.InEdges(budget.ctx, entityID, allowed)
-		if err != nil || !found {
-			return shardUnavailable(g, budget, found, err)
+		outAllowed, inAllowed := impactIndexRelations(directions)
+		if len(outAllowed) > 0 {
+			out, found, err := budget.lookup.OutEdges(
+				budget.ctx, entityID, outAllowed,
+			)
+			if err != nil || !found {
+				return shardUnavailable(g, budget, found, err)
+			}
+			edges = appendDirectedNeighborEdges(edges, out, "out")
 		}
-		edges = incoming
-	case "both", "":
-		reverse, ok := budget.lookup.(ReverseIndexLookup)
-		if !ok {
-			return shardUnavailable(g, budget, false, nil)
+		if len(inAllowed) > 0 {
+			reverse, reverseOK := budget.lookup.(ReverseIndexLookup)
+			if !reverseOK {
+				return shardUnavailable(g, budget, false, nil)
+			}
+			incoming, found, err := reverse.InEdges(
+				budget.ctx, entityID, inAllowed,
+			)
+			if err != nil || !found {
+				return shardUnavailable(g, budget, found, err)
+			}
+			edges = appendDirectedNeighborEdges(edges, incoming, "in")
 		}
-		out, outOK, err := budget.lookup.OutEdges(budget.ctx, entityID, allowed)
-		if err != nil || !outOK {
-			return shardUnavailable(g, budget, outOK, err)
+	} else {
+		switch request.Direction {
+		case "out":
+			out, ok, err := budget.lookup.OutEdges(budget.ctx, entityID, allowed)
+			if err != nil || !ok {
+				return shardUnavailable(g, budget, ok, err)
+			}
+			edges = appendDirectedNeighborEdges(edges, out, "out")
+		case "in":
+			reverse, ok := budget.lookup.(ReverseIndexLookup)
+			if !ok {
+				return shardUnavailable(g, budget, false, nil)
+			}
+			incoming, found, err := reverse.InEdges(budget.ctx, entityID, allowed)
+			if err != nil || !found {
+				return shardUnavailable(g, budget, found, err)
+			}
+			edges = appendDirectedNeighborEdges(edges, incoming, "in")
+		case "both", "":
+			reverse, ok := budget.lookup.(ReverseIndexLookup)
+			if !ok {
+				return shardUnavailable(g, budget, false, nil)
+			}
+			out, outOK, err := budget.lookup.OutEdges(budget.ctx, entityID, allowed)
+			if err != nil || !outOK {
+				return shardUnavailable(g, budget, outOK, err)
+			}
+			incoming, inOK, err := reverse.InEdges(budget.ctx, entityID, allowed)
+			if err != nil || !inOK {
+				return shardUnavailable(g, budget, inOK, err)
+			}
+			edges = appendDirectedNeighborEdges(edges, out, "out")
+			edges = appendDirectedNeighborEdges(edges, incoming, "in")
+		default:
+			return nil, false, nil
 		}
-		incoming, inOK, err := reverse.InEdges(budget.ctx, entityID, allowed)
-		if err != nil || !inOK {
-			return shardUnavailable(g, budget, inOK, err)
-		}
-		edges = append(out, incoming...)
-	default:
-		return nil, false, nil
 	}
-	edges = uniqueNeighborEdges(edges)
+	edges = uniqueDirectedNeighborEdges(edges)
+	sort.Slice(edges, func(left, right int) bool {
+		if edges[left].edge.ID != edges[right].edge.ID {
+			return edges[left].edge.ID < edges[right].edge.ID
+		}
+		leftEntity := directedNeighborID(
+			edges[left].edge, edges[left].direction,
+		)
+		rightEntity := directedNeighborID(
+			edges[right].edge, edges[right].direction,
+		)
+		if leftEntity != rightEntity {
+			return leftEntity < rightEntity
+		}
+		return edges[left].direction < edges[right].direction
+	})
 	neighbors := make([]graph.Neighbor, 0, len(edges))
-	for _, edge := range edges {
+	for _, candidate := range edges {
+		edge := candidate.edge
 		if !requestEdgeMatches(request, edge) {
 			continue
 		}
 		if err := budget.add(1); err != nil {
 			return nil, false, err
 		}
-		neighborID, direction := edge.To, "out"
-		if edge.To == entityID && request.Direction != "out" {
-			neighborID, direction = edge.From, "in"
-		}
+		neighborID := directedNeighborID(edge, candidate.direction)
 		entity, ok, err := materializeEntity(g, neighborID, request, budget)
 		if err != nil {
 			return nil, false, err
@@ -94,7 +139,9 @@ func shardNeighbors(g *graph.Graph, entityID string, request Request, budget *bu
 		if !pathAllowsKind(entity.Kind, request.Path) {
 			continue
 		}
-		neighbors = append(neighbors, graph.Neighbor{Entity: entity, Edge: edge, Direction: direction})
+		neighbors = append(neighbors, graph.Neighbor{
+			Entity: entity, Edge: edge, Direction: candidate.direction,
+		})
 	}
 	return neighbors, true, nil
 }
@@ -106,14 +153,35 @@ func shardUnavailable(g *graph.Graph, budget *budget, ok bool, err error) ([]gra
 	return nil, false, err
 }
 
-func uniqueNeighborEdges(edges []graph.Edge) []graph.Edge {
+type directedNeighborEdge struct {
+	edge      graph.Edge
+	direction string
+}
+
+func appendDirectedNeighborEdges(
+	target []directedNeighborEdge,
+	edges []graph.Edge,
+	direction string,
+) []directedNeighborEdge {
+	for _, edge := range edges {
+		target = append(target, directedNeighborEdge{
+			edge: edge, direction: direction,
+		})
+	}
+	return target
+}
+
+func uniqueDirectedNeighborEdges(
+	edges []directedNeighborEdge,
+) []directedNeighborEdge {
 	seen := make(map[string]struct{}, len(edges))
 	out := edges[:0]
 	for _, edge := range edges {
-		if _, exists := seen[edge.ID]; exists {
+		key := edge.direction + "\x00" + edge.edge.ID
+		if _, exists := seen[key]; exists {
 			continue
 		}
-		seen[edge.ID] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, edge)
 	}
 	return out

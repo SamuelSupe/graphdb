@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"time"
 )
@@ -70,7 +69,10 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 			}
 		}
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return Task{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -115,16 +117,42 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 			return active, nil
 		}
 	}
-	if err := s.saveTask(ctx, task); err != nil {
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopQueueLease, active, reused, err := s.claimCoordinatorQueuedTask(
+		ctx,
+		task,
+		cancel,
+	)
+	if err != nil {
+		cancel()
 		if task.Type == TaskTypeGC {
 			s.abandonGCRunningMarker(ctx, task)
 		}
 		s.releaseTaskAdmission(task)
 		return Task{}, err
 	}
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if reused {
+		cancel()
+		if task.Type == TaskTypeGC {
+			s.abandonGCRunningMarker(ctx, task)
+		}
+		s.releaseTaskAdmission(task)
+		return active, nil
+	}
+	if err := s.saveTask(ctx, task); err != nil {
+		stopQueueLease()
+		cancel()
+		if task.Type == TaskTypeGC {
+			s.abandonGCRunningMarker(ctx, task)
+		}
+		s.releaseTaskAdmission(task)
+		return Task{}, err
+	}
 	s.registerTaskCancel(tenantID, id, cancel)
-	go s.runTaskAdmitted(runCtx, cancel, task)
+	go func() {
+		defer stopQueueLease()
+		s.runTaskAdmitted(runCtx, cancel, task)
+	}()
 	return task, nil
 }
 
@@ -153,50 +181,20 @@ func (s *TenantStore) GetTask(ctx context.Context, tenantID string, taskID strin
 	if task.ID != taskID {
 		return Task{}, fmt.Errorf("task id mismatch: path task %q contains task %q", taskID, task.ID)
 	}
-	return task, nil
+	return s.reconcileInactiveTask(ctx, task), nil
 }
 
 func (s *TenantStore) ListTasks(ctx context.Context, tenantID string, options TaskListOptions) ([]Task, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return nil, err
 	}
-	tasks, err := s.listStoredTasks(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	indexTasks, err := s.listIndexTasksAsTasks(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	tasks = append(tasks, indexTasks...)
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].StartedAt.Equal(tasks[j].StartedAt) {
-			return tasks[i].ID > tasks[j].ID
-		}
-		return tasks[i].StartedAt.After(tasks[j].StartedAt)
-	})
-	filtered := make([]Task, 0, len(tasks))
-	for _, task := range tasks {
-		if options.Type != "" && task.Type != options.Type {
-			continue
-		}
-		if options.Status != "" && task.Status != options.Status {
-			continue
-		}
-		filtered = append(filtered, task)
-		if options.Limit > 0 && len(filtered) >= options.Limit {
-			break
-		}
-	}
-	return filtered, nil
+	return s.listTasks(ctx, tenantID, options)
 }
 
 func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, task Task) {
 	writeCtx := context.WithoutCancel(ctx)
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
-	stopWatch := s.watchTaskCancellation(task, cancel)
-	defer stopWatch()
-	stopHeartbeat := s.startGCTaskHeartbeat(writeCtx, task, cancel)
+	stopHeartbeat := s.startGCTaskHeartbeat(ctx, task, cancel)
 	defer stopHeartbeat()
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -208,10 +206,15 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 			s.trySaveTask(writeCtx, task)
 		}
 	}()
-	if s.taskCancelRequested(context.Background(), task) {
+	if ctx.Err() != nil {
 		return
 	}
-	stopCoordinatorLease, leaseErr := s.startCoordinatorTaskLease(task, cancel)
+	if s.taskCancelRequested(ctx, task) || ctx.Err() != nil {
+		return
+	}
+	leaseCtx, stopCoordinatorLease, leaseErr := s.startCoordinatorTaskLease(
+		ctx, task, cancel,
+	)
 	if leaseErr != nil {
 		task.Status = TaskStatusFailed
 		task.Phase = TaskStatusFailed
@@ -222,6 +225,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 		return
 	}
 	defer stopCoordinatorLease()
+	ctx = leaseCtx
 	task.Status = "running"
 	task.Phase = "running"
 	task.ProgressTotal = taskProgressTotal(task.Type)
@@ -407,57 +411,6 @@ func (s *TenantStore) exportSnapshotTask(ctx context.Context, task Task) (map[st
 		"edges":          len(snapshot.Edges),
 		"result_key":     resultKey,
 	}, resultKey, nil
-}
-
-func (s *TenantStore) listStoredTasks(ctx context.Context, tenantID string) ([]Task, error) {
-	objects, err := s.Objects.List(ctx, s.taskPrefix(tenantID))
-	if err != nil {
-		return nil, err
-	}
-	tasks := make([]Task, 0, len(objects))
-	prefix := s.taskPrefix(tenantID)
-	for _, object := range objects {
-		rest := strings.TrimPrefix(object.Key, prefix)
-		if strings.Contains(rest, "/") {
-			continue
-		}
-		taskID, ok := taskIDFromKey(object.Key)
-		if !ok {
-			continue
-		}
-		task, err := s.GetTask(ctx, tenantID, taskID)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, task)
-	}
-	return tasks, nil
-}
-
-func (s *TenantStore) listIndexTasksAsTasks(ctx context.Context, tenantID string) ([]Task, error) {
-	objects, err := s.Objects.List(ctx, s.indexTaskPrefix(tenantID))
-	if err != nil {
-		return nil, err
-	}
-	tasks := make([]Task, 0, len(objects))
-	for _, object := range objects {
-		taskID, ok := indexTaskIDFromKey(object.Key)
-		if !ok {
-			continue
-		}
-		task, err := s.GetIndexTask(ctx, tenantID, taskID)
-		if errors.Is(err, ErrNotFound) || errors.Is(err, errInvalidIndexTask) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, taskFromIndexTask(task))
-	}
-	return tasks, nil
 }
 
 func (s *TenantStore) saveTask(ctx context.Context, task Task) error {
@@ -684,9 +637,7 @@ func (s *TenantStore) getTaskObject(ctx context.Context, tenantID string, taskID
 
 func (s *TenantStore) getTaskObjectWithMeta(ctx context.Context, tenantID string, taskID string) (Task, ObjectMeta, error) {
 	key := s.taskKey(tenantID, taskID)
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(key)
-	}
+	s.clearWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return Task{}, meta, err

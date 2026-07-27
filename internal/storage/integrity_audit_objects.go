@@ -154,7 +154,7 @@ func (s *TenantStore) auditSecondaryIndexObjects(ctx context.Context, tenantID s
 		if !ok {
 			continue
 		}
-		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, spec.Type == "unique")
+		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, spec.Kind, spec.Field, 0, secondaryIndexSpecUnique(spec))
 		if err != nil {
 			report.addIssue("secondary_index_decode_failed", "error", "secondary_index", spec.Name, object.Key, err.Error())
 			continue
@@ -222,12 +222,30 @@ func (s *TenantStore) auditIndexEntityPageObjects(ctx context.Context, tenantID 
 }
 
 func (s *TenantStore) auditEntityRecords(ctx context.Context, tenantID string, catalogVersion int64, expected map[string]entityRecordExpectation, report *IntegrityAuditReport) {
-	objects, err := s.Objects.List(ctx, s.entityRecordPrefix(tenantID))
+	err := scanObjectPrefix(
+		ctx,
+		s.Objects,
+		s.entityRecordPrefix(tenantID),
+		func(objects []ObjectInfo) error {
+			s.auditEntityRecordPage(
+				ctx, tenantID, catalogVersion, expected, objects, report,
+			)
+			return nil
+		},
+	)
 	if err != nil {
 		report.addIssue("entity_record_list_failed", "error", "entity_record", "", s.entityRecordPrefix(tenantID), err.Error())
-		return
 	}
-	seen := map[string]bool{}
+}
+
+func (s *TenantStore) auditEntityRecordPage(
+	ctx context.Context,
+	tenantID string,
+	catalogVersion int64,
+	expected map[string]entityRecordExpectation,
+	objects []ObjectInfo,
+	report *IntegrityAuditReport,
+) {
 	for _, object := range objects {
 		entityID, ok, err := s.entityIDFromRecordKey(tenantID, object.Key)
 		if err != nil {
@@ -257,13 +275,7 @@ func (s *TenantStore) auditEntityRecords(ctx context.Context, tenantID string, c
 			ContentHash: entityRecordContentHash(record),
 			SchemaHash:  parquetEntityRecordSchemaHash(),
 		})
-		seen[record.ID] = true
 		s.auditEntityRecordContent(record, object.Key, catalogVersion, expected, report)
-	}
-	for entityID := range expected {
-		if !seen[entityID] {
-			report.addIssue("entity_record_missing", "error", "entity_record", entityID, s.entityRecordKey(tenantID, entityID), "entity page has no by-id record")
-		}
 	}
 }
 
