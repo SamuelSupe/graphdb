@@ -203,7 +203,14 @@ func TestIngestMarksSkippedWhenCommitContentUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second ingest: %v", err)
 	}
-	if !second.Skipped || second.Version != 1 || second.Failed != 0 {
+	if !second.Skipped || second.SkipReason != IngestSkipReasonLogicalNoop || second.Version != 1 || second.Failed != 0 {
 		t.Fatalf("second ingest = %#v, want skipped current version", second)
+	}
+	replayed, err := store.Ingest(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatalf("replay ingest: %v", err)
+	}
+	if !replayed.Skipped || replayed.SkipReason != IngestSkipReasonIdempotentReplay || replayed.Version != second.Version {
+		t.Fatalf("replayed ingest = %#v, want idempotent replay", replayed)
 	}
 }

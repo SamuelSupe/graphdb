@@ -152,7 +152,7 @@ authorization, TLS, and rate limiting at the gateway or service mesh.
 ## Release
 
 The latest published release is GGraphDB 1.1:
-[**v1.1.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.0).
+[**v1.1.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.1).
 The release workflow publishes the tag only after its release checklist,
 30-minute PostgreSQL CAS gate, and formal rollback drill pass.
 
@@ -165,7 +165,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.1.0` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.1.1` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 

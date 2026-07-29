@@ -85,6 +85,7 @@ type IngestResult struct {
 	Failed     int              `json:"failed"`
 	Suppressed int              `json:"suppressed,omitempty"`
 	Skipped    bool             `json:"skipped"`
+	SkipReason string           `json:"skip_reason,omitempty"`
 	Cursor     string           `json:"cursor,omitempty"`
 	Failures   []IngestFailure  `json:"failures,omitempty"`
 	Conflicts  []IngestConflict `json:"conflicts,omitempty"`

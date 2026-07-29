@@ -7,49 +7,140 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
+const ingestRecordProbeConcurrency = 4
+
+type ingestRecordLookupCandidate struct {
+	key         string
+	idempotency bool
+}
+
+type ingestRecordKeyProbe struct {
+	mayExist bool
+	err      error
+}
+
 func (s *TenantStore) loadIngestRecord(ctx context.Context, tenantID string, request IngestRequest) (IngestBatchRecord, bool, error) {
+	candidates := make([]ingestRecordLookupCandidate, 0, 6)
 	if request.IdempotencyKey != "" {
-		keys := []string{
-			s.ingestIdempotencyKey(tenantID, request.Source, request.CollectorID, request.IdempotencyKey),
-			s.legacyIngestIdempotencyKey(tenantID, request.Source, request.IdempotencyKey),
-		}
+		candidates = append(candidates,
+			ingestRecordLookupCandidate{
+				key:         s.ingestIdempotencyKey(tenantID, request.Source, request.CollectorID, request.IdempotencyKey),
+				idempotency: true,
+			},
+			ingestRecordLookupCandidate{
+				key:         s.legacyIngestIdempotencyKey(tenantID, request.Source, request.IdempotencyKey),
+				idempotency: true,
+			},
+		)
 		if request.BatchID != request.IdempotencyKey {
-			keys = append(keys,
-				s.ingestBatchKey(tenantID, request.Source, request.CollectorID, request.IdempotencyKey),
-				s.legacyIngestBatchKey(tenantID, request.Source, request.IdempotencyKey),
+			candidates = append(candidates,
+				ingestRecordLookupCandidate{
+					key:         s.ingestBatchKey(tenantID, request.Source, request.CollectorID, request.IdempotencyKey),
+					idempotency: true,
+				},
+				ingestRecordLookupCandidate{
+					key:         s.legacyIngestBatchKey(tenantID, request.Source, request.IdempotencyKey),
+					idempotency: true,
+				},
 			)
-		}
-		for _, key := range keys {
-			record, ok, err := s.loadMatchingIngestIdempotencyRecord(ctx, tenantID, key, request)
-			if err != nil || ok {
-				return record, ok, err
-			}
 		}
 	}
 	if request.BatchID != "" {
-		for _, key := range []string{
-			s.ingestBatchKey(tenantID, request.Source, request.CollectorID, request.BatchID),
-			s.legacyIngestBatchKey(tenantID, request.Source, request.BatchID),
-		} {
-			record, ok, err := s.loadMatchingIngestRecord(ctx, tenantID, key, request)
-			if err != nil || ok {
-				return record, ok, err
-			}
+		candidates = append(candidates,
+			ingestRecordLookupCandidate{
+				key: s.ingestBatchKey(tenantID, request.Source, request.CollectorID, request.BatchID),
+			},
+			ingestRecordLookupCandidate{
+				key: s.legacyIngestBatchKey(tenantID, request.Source, request.BatchID),
+			},
+		)
+	}
+	if len(candidates) == 0 {
+		return IngestBatchRecord{}, false, nil
+	}
+
+	record, ok, err := s.loadIngestRecordCandidate(
+		ctx, tenantID, candidates[0], request, false,
+	)
+	if err != nil || ok || len(candidates) == 1 {
+		return record, ok, err
+	}
+
+	// Keep the current-format primary lookup latency unchanged for replays.
+	// Only the independent compatibility fallbacks are probed concurrently.
+	probes := s.probeIngestRecordKeys(ctx, candidates[1:])
+	for i, candidate := range candidates[1:] {
+		probe := probes[i]
+		if probe.err != nil {
+			return IngestBatchRecord{}, false, probe.err
+		}
+		if !probe.mayExist {
+			continue
+		}
+		record, ok, err := s.loadIngestRecordCandidate(
+			ctx, tenantID, candidate, request, true,
+		)
+		if err != nil || ok {
+			return record, ok, err
 		}
 	}
 	return IngestBatchRecord{}, false, nil
 }
 
-func (s *TenantStore) loadMatchingIngestRecord(ctx context.Context, tenantID string, key string, request IngestRequest) (IngestBatchRecord, bool, error) {
-	mayExist, err := s.objectKeyMayExist(ctx, key)
-	if err != nil {
-		return IngestBatchRecord{}, false, err
+func (s *TenantStore) probeIngestRecordKeys(ctx context.Context, candidates []ingestRecordLookupCandidate) []ingestRecordKeyProbe {
+	probes := make([]ingestRecordKeyProbe, len(candidates))
+	jobs := make(chan int, len(candidates))
+	for i := range candidates {
+		jobs <- i
 	}
-	if !mayExist {
-		return IngestBatchRecord{}, false, nil
+	close(jobs)
+
+	workers := min(ingestRecordProbeConcurrency, len(candidates))
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			for i := range jobs {
+				probes[i].mayExist, probes[i].err =
+					s.objectKeyMayExist(ctx, candidates[i].key)
+			}
+		}()
+	}
+	wait.Wait()
+	return probes
+}
+
+func (s *TenantStore) loadIngestRecordCandidate(
+	ctx context.Context,
+	tenantID string,
+	candidate ingestRecordLookupCandidate,
+	request IngestRequest,
+	knownToExist bool,
+) (IngestBatchRecord, bool, error) {
+	if candidate.idempotency {
+		return s.loadMatchingIngestIdempotencyRecord(
+			ctx, tenantID, candidate.key, request, knownToExist,
+		)
+	}
+	return s.loadMatchingIngestRecord(
+		ctx, tenantID, candidate.key, request, knownToExist,
+	)
+}
+
+func (s *TenantStore) loadMatchingIngestRecord(ctx context.Context, tenantID string, key string, request IngestRequest, knownToExist bool) (IngestBatchRecord, bool, error) {
+	if !knownToExist {
+		mayExist, err := s.objectKeyMayExist(ctx, key)
+		if err != nil {
+			return IngestBatchRecord{}, false, err
+		}
+		if !mayExist {
+			return IngestBatchRecord{}, false, nil
+		}
 	}
 	record, _, err := s.loadIngestRecordWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
@@ -67,13 +158,15 @@ func (s *TenantStore) loadMatchingIngestRecord(ctx context.Context, tenantID str
 	return record, true, nil
 }
 
-func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, tenantID string, key string, request IngestRequest) (IngestBatchRecord, bool, error) {
-	mayExist, err := s.objectKeyMayExist(ctx, key)
-	if err != nil {
-		return IngestBatchRecord{}, false, err
-	}
-	if !mayExist {
-		return IngestBatchRecord{}, false, nil
+func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, tenantID string, key string, request IngestRequest, knownToExist bool) (IngestBatchRecord, bool, error) {
+	if !knownToExist {
+		mayExist, err := s.objectKeyMayExist(ctx, key)
+		if err != nil {
+			return IngestBatchRecord{}, false, err
+		}
+		if !mayExist {
+			return IngestBatchRecord{}, false, nil
+		}
 	}
 	record, _, err := s.loadIngestRecordWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
@@ -108,26 +201,52 @@ func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantI
 
 func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, record IngestBatchRecord) error {
 	record.TenantID = tenantID
-	var result error
-	if record.Request.IdempotencyKey != "" && record.Request.IdempotencyKey != record.Result.BatchID {
-		key := s.ingestIdempotencyKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Request.IdempotencyKey)
-		if err := s.saveIngestRecord(ctx, tenantID, key, record); err != nil {
-			result = errors.Join(result, fmt.Errorf("save idempotency record: %w", err))
+	data, err := marshalParquetIngestRecord(ctx, record)
+	if err != nil {
+		if record.Request.IdempotencyKey != "" &&
+			record.Request.IdempotencyKey != record.Result.BatchID {
+			return fmt.Errorf("save idempotency record: %w", err)
 		}
+		return fmt.Errorf("save batch record: %w", err)
 	}
-	key := s.ingestBatchKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Result.BatchID)
-	if err := s.saveIngestRecord(ctx, tenantID, key, record); err != nil {
-		result = errors.Join(result, fmt.Errorf("save batch record: %w", err))
+
+	batchKey := s.ingestBatchKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Result.BatchID)
+	if record.Request.IdempotencyKey == "" || record.Request.IdempotencyKey == record.Result.BatchID {
+		if err := s.saveEncodedIngestRecord(ctx, tenantID, batchKey, data, record); err != nil {
+			return fmt.Errorf("save batch record: %w", err)
+		}
+		return nil
+	}
+
+	idempotencyKey := s.ingestIdempotencyKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Request.IdempotencyKey)
+	var (
+		idempotencyErr error
+		batchErr       error
+		wait           sync.WaitGroup
+	)
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		idempotencyErr = s.saveEncodedIngestRecord(ctx, tenantID, idempotencyKey, data, record)
+	}()
+	go func() {
+		defer wait.Done()
+		batchErr = s.saveEncodedIngestRecord(ctx, tenantID, batchKey, data, record)
+	}()
+	wait.Wait()
+
+	var result error
+	if idempotencyErr != nil {
+		result = errors.Join(result, fmt.Errorf("save idempotency record: %w", idempotencyErr))
+	}
+	if batchErr != nil {
+		result = errors.Join(result, fmt.Errorf("save batch record: %w", batchErr))
 	}
 	return result
 }
 
-func (s *TenantStore) saveIngestRecord(ctx context.Context, tenantID string, key string, record IngestBatchRecord) error {
-	data, err := marshalParquetIngestRecord(ctx, record)
-	if err != nil {
-		return err
-	}
-	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
+func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID string, key string, data []byte, record IngestBatchRecord) error {
+	_, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
 	if err == nil {
 		s.markObjectKeyCached(key)
 		return nil
@@ -181,6 +300,8 @@ func ingestRecordSameResult(stored IngestBatchRecord, incoming IngestBatchRecord
 	if !ingestRecordRequestEqual(stored.Request, incoming.Request) {
 		return false
 	}
+	stored.Result.SkipReason = ""
+	incoming.Result.SkipReason = ""
 	storedResult, err := json.Marshal(stored.Result)
 	if err != nil {
 		return false

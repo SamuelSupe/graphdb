@@ -251,7 +251,9 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `applied`：已纳入 commit 的 item；
 - `failed`：无效 item 或提交失败；
 - `suppressed`：低优先级字段/删除冲突；
-- `skipped`：幂等重放或 MD5 相同的图写入；
+- `skipped`：该批次未创建图数据 commit；
+- `skip_reason`：`logical_noop` 表示应用后的逻辑图未变化，
+  `idempotent_replay` 表示返回此前批次的幂等重放结果；
 - `cursor`：返回的采集器 cursor；
 - `failures`：item 级错误；
 - `conflicts`：被抑制冲突和提交失败原因。

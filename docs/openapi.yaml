@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.1.0
+  version: 1.1.1
   description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.1 preserves the 1.0 core data layout.
 servers:
   - url: http://localhost:8080
@@ -2175,6 +2175,9 @@ components:
           type: integer
         skipped:
           type: boolean
+        skip_reason:
+          type: string
+          enum: [logical_noop, idempotent_replay]
         cursor:
           type: string
         failures:

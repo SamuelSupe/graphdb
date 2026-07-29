@@ -267,7 +267,9 @@ Response fields:
 - `applied`: items included in a commit.
 - `failed`: invalid items or commit failures.
 - `suppressed`: lower-priority field/delete conflicts.
-- `skipped`: idempotent replay or MD5-identical graph write.
+- `skipped`: the batch did not create a graph-data commit.
+- `skip_reason`: `logical_noop` when the resulting logical graph is unchanged,
+  or `idempotent_replay` when an earlier batch result is replayed.
 - `cursor`: returned collector cursor.
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.

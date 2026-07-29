@@ -41,10 +41,16 @@ type IngestResult struct {
 	Failed     int              `json:"failed"`
 	Suppressed int              `json:"suppressed,omitempty"`
 	Skipped    bool             `json:"skipped"`
+	SkipReason string           `json:"skip_reason,omitempty"`
 	Cursor     string           `json:"cursor,omitempty"`
 	Failures   []IngestFailure  `json:"failures,omitempty"`
 	Conflicts  []IngestConflict `json:"conflicts,omitempty"`
 }
+
+const (
+	IngestSkipReasonIdempotentReplay = "idempotent_replay"
+	IngestSkipReasonLogicalNoop      = "logical_noop"
+)
 
 type IngestFailure struct {
 	Index      int    `json:"index"`
@@ -152,6 +158,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	} else if ok {
 		previous := previousRecord.Result
 		previous.Skipped = true
+		previous.SkipReason = IngestSkipReasonIdempotentReplay
 		if err := s.repairIngestMetadataAfterSkip(ctx, tenantID, previousRecord, saveFailures); err != nil {
 			return previous, err
 		}
@@ -179,6 +186,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 		} else {
 			result.Version = commitResult.Version
 			result.Skipped = commitResult.Skipped
+			result.SkipReason = ingestSkipReasonForCommit(commitResult)
 			result.Suppressed = len(commitResult.Suppressed)
 			result.Conflicts = append(result.Conflicts, ingestConflicts(request, commitResult.Suppressed)...)
 		}
@@ -215,10 +223,25 @@ func normalizeIngestRequest(request IngestRequest) IngestRequest {
 	return request
 }
 
+func ingestSkipReasonForCommit(result CommitResult) string {
+	if result.IdempotentReplay {
+		return IngestSkipReasonIdempotentReplay
+	}
+	if result.Skipped {
+		return IngestSkipReasonLogicalNoop
+	}
+	return ""
+}
+
 func ingestConflicts(request IngestRequest, suppressed []graph.FieldConflict) []IngestConflict {
 	out := make([]IngestConflict, 0, len(suppressed))
+	var itemIndex *ingestConflictItemIndex
+	if len(suppressed) > 1 {
+		index := newIngestConflictItemIndex(request.Items)
+		itemIndex = &index
+	}
 	for _, conflict := range suppressed {
-		index, externalID, _ := findIngestConflictItem(request, conflict)
+		index, externalID, _ := findIngestConflictItem(request.Items, itemIndex, conflict)
 		out = append(out, IngestConflict{
 			ResourceType:     conflict.ResourceType,
 			Index:            index,
@@ -241,8 +264,114 @@ func ingestConflicts(request IngestRequest, suppressed []graph.FieldConflict) []
 	return out
 }
 
-func findIngestConflictItem(request IngestRequest, conflict graph.FieldConflict) (int, string, bool) {
-	for index, item := range request.Items {
+// ingestConflictItemIndex keeps the earliest input item for every identifier
+// that a conflict can use. A batch can produce one suppression per field, so
+// scanning the entire batch for each conflict makes the response path O(n*m).
+type ingestConflictItemIndex struct {
+	items []IngestItem
+
+	entityIncoming map[string]int
+	entityIDs      map[string]int
+
+	edgeUpsertIncoming  map[string]int
+	edgeUpsertCanonical map[string]int
+	edgeDeleteIncoming  map[string]int
+	edgeDeleteCanonical map[string]int
+}
+
+func newIngestConflictItemIndex(items []IngestItem) ingestConflictItemIndex {
+	index := ingestConflictItemIndex{
+		items: items,
+	}
+	for itemIndex, item := range items {
+		index.addEntityItem(itemIndex, item)
+		index.addEdgeItem(itemIndex, item)
+	}
+	return index
+}
+
+func (index *ingestConflictItemIndex) addEntityItem(itemIndex int, item IngestItem) {
+	if item.Entity != nil {
+		index.addEntityIdentifiers(itemIndex, item.ExternalID, item.Entity.ID, item.Entity.ExternalID)
+		return
+	}
+	if item.DeleteEntity != nil {
+		index.addEntityIdentifiers(itemIndex, item.ExternalID, item.DeleteEntity.ID, item.DeleteEntity.ExternalID)
+	}
+}
+
+func (index *ingestConflictItemIndex) addEntityIdentifiers(itemIndex int, itemExternalID string, entityID string, entityExternalID string) {
+	index.add(&index.entityIncoming, entityExternalID, itemIndex)
+	index.add(&index.entityIncoming, itemExternalID, itemIndex)
+	index.add(&index.entityIncoming, entityID, itemIndex)
+	index.add(&index.entityIDs, entityID, itemIndex)
+}
+
+func (index *ingestConflictItemIndex) addEdgeItem(itemIndex int, item IngestItem) {
+	if item.Edge != nil {
+		index.add(&index.edgeUpsertIncoming, firstTrimmed(item.Edge.ID, item.Edge.ExternalID, item.ExternalID), itemIndex)
+		if canonicalID, ok := canonicalEdgeIDFromParts(item.Edge.Type, item.Edge.From, item.Edge.To); ok {
+			index.add(&index.edgeUpsertCanonical, canonicalID, itemIndex)
+		}
+	}
+	if item.DeleteEdge != nil {
+		index.add(&index.edgeDeleteIncoming, firstTrimmed(item.DeleteEdge.ID, item.ExternalID), itemIndex)
+		if canonicalID, ok := canonicalEdgeIDFromParts(item.DeleteEdge.Type, item.DeleteEdge.From, item.DeleteEdge.To); ok {
+			index.add(&index.edgeDeleteCanonical, canonicalID, itemIndex)
+		}
+	}
+}
+
+func (index *ingestConflictItemIndex) add(items *map[string]int, identifier string, itemIndex int) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return
+	}
+	if *items == nil {
+		*items = make(map[string]int, len(index.items))
+	}
+	if _, exists := (*items)[identifier]; !exists {
+		(*items)[identifier] = itemIndex
+	}
+}
+
+func findIngestConflictItem(items []IngestItem, itemIndex *ingestConflictItemIndex, conflict graph.FieldConflict) (int, string, bool) {
+	if itemIndex != nil {
+		if index, ok := itemIndex.find(conflict); ok {
+			return index, items[index].ExternalID, true
+		}
+	}
+	return findIngestConflictItemLinear(items, conflict)
+}
+
+func (index *ingestConflictItemIndex) find(conflict graph.FieldConflict) (int, bool) {
+	candidate := -1
+	consider := func(items map[string]int, identifier string) {
+		if itemIndex, ok := items[identifier]; ok && (candidate < 0 || itemIndex < candidate) {
+			candidate = itemIndex
+		}
+	}
+	if conflict.ResourceType == "edge" {
+		consider(index.edgeUpsertIncoming, conflict.IncomingID)
+		consider(index.edgeDeleteIncoming, conflict.IncomingID)
+		consider(index.edgeDeleteCanonical, conflict.IncomingID)
+		consider(index.edgeUpsertCanonical, conflict.CanonicalID)
+		consider(index.edgeDeleteCanonical, conflict.CanonicalID)
+		consider(index.edgeUpsertCanonical, conflict.EdgeID)
+		consider(index.edgeDeleteCanonical, conflict.EdgeID)
+	} else if conflict.IncomingID != "" {
+		consider(index.entityIncoming, conflict.IncomingID)
+	} else {
+		consider(index.entityIDs, conflict.EntityID)
+	}
+	if candidate < 0 || !ingestConflictMatchesItem(conflict, index.items[candidate]) {
+		return 0, false
+	}
+	return candidate, true
+}
+
+func findIngestConflictItemLinear(items []IngestItem, conflict graph.FieldConflict) (int, string, bool) {
+	for index, item := range items {
 		if ingestConflictMatchesItem(conflict, item) {
 			return index, item.ExternalID, true
 		}

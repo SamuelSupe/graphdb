@@ -58,13 +58,16 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	if result.Applied > 0 && !result.Skipped {
 		s.invalidate(tenantID)
 	}
+	if result.Skipped {
+		s.obs().Metrics.RecordIngestSkipped(tenantID, request.Source, result.SkipReason)
+	}
 	if result.Suppressed > 0 {
 		s.obs().Metrics.RecordIngestSuppressed(tenantID, request.Source, result.Suppressed)
 		s.recordIngestConflictResources(tenantID, result.Conflicts)
 	}
 	s.auditInfo("ingest_completed", tenantID, map[string]any{
 		"source": request.Source, "collector_id": request.CollectorID, "batch_id": result.BatchID,
-		"applied": result.Applied, "failed": result.Failed, "suppressed": result.Suppressed, "skipped": result.Skipped,
+		"applied": result.Applied, "failed": result.Failed, "suppressed": result.Suppressed, "skipped": result.Skipped, "skip_reason": result.SkipReason,
 	})
 	status := http.StatusOK
 	if result.Failed > 0 {
