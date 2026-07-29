@@ -3,6 +3,27 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.1.1] - 2026-07-30
+
+### Fixed
+
+- Treat ingest batches whose resulting logical graph is unchanged as no-op
+  writes, while distinguishing `logical_noop` from `idempotent_replay` in the
+  API, Go SDK, metrics, and audit output.
+- Copy only graph maps affected by a storage mutation instead of cloning
+  unrelated entity, edge, schema, and index maps before every commit.
+- Build conflict-to-item associations with a batch index instead of repeatedly
+  scanning large ingest requests.
+- Encode dual-key ingest metadata once, publish the idempotency and batch
+  records concurrently, and probe legacy compatibility keys with bounded
+  concurrency while retaining current-key precedence.
+
+### Compatibility
+
+- The object layout and stored ingest record contract remain compatible with
+  GGraphDB 1.1.0. `skip_reason` is an additive response field and is not
+  persisted as idempotency state.
+
 ## [1.1.0] - 2026-07-27
 
 ### Added

@@ -65,7 +65,7 @@ func (g *Graph) ApplyCommitStorageCopyWithOptions(commit Commit, options ApplyOp
 	if err := g.ensureContentFingerprint(); err != nil {
 		return nil, ApplyReport{}, err
 	}
-	return g.applyCommitToCopy(g.cloneForStorageMutation(), commit, options)
+	return g.applyCommitToCopy(g.cloneForStorageMutation(commit.Mutations), commit, options)
 }
 
 // ApplyCommitInPlaceForStorage replays a commit into a private graph being

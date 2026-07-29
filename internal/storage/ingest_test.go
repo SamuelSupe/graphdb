@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
@@ -51,7 +52,7 @@ func TestIngestBatchPartialFailureIdempotencyAndCollectorStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay ingest: %v", err)
 	}
-	if !replayed.Skipped || replayed.Version != result.Version {
+	if !replayed.Skipped || replayed.SkipReason != IngestSkipReasonIdempotentReplay || replayed.Version != result.Version {
 		t.Fatalf("replayed = %#v, want skipped previous result", replayed)
 	}
 	status, err := store.GetCollectorStatus(ctx, "tenant-a", "aws", "collector-a")
@@ -1338,6 +1339,150 @@ func TestIngestCollectorStatusCASRetryPreservesConcurrentTotals(t *testing.T) {
 	}
 }
 
+func TestLoadIngestRecordProbesCompatibilityKeysConcurrently(t *testing.T) {
+	release := make(chan struct{})
+	objects := &blockingCompatibilityProbeStore{
+		ObjectStore: NewMemoryStore(),
+		started:     make(chan string, 6),
+		release:     release,
+	}
+	store := NewTenantStore(objects, "test")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, found, err := store.loadIngestRecord(ctx, "tenant-a", IngestRequest{
+			Source:         "loadtest",
+			CollectorID:    "collector-a",
+			BatchID:        "batch-a",
+			IdempotencyKey: "idempotency-a",
+		})
+		if err == nil && found {
+			err = errors.New("unexpected ingest record")
+		}
+		done <- err
+	}()
+
+	for range ingestRecordProbeConcurrency {
+		select {
+		case <-objects.started:
+		case <-ctx.Done():
+			t.Fatal("compatibility key probes did not run concurrently")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("load ingest record: %v", err)
+	}
+}
+
+func TestSaveIngestBatchWritesDualKeysConcurrently(t *testing.T) {
+	release := make(chan struct{})
+	objects := &blockingIngestPutStore{
+		ObjectStore: NewMemoryStore(),
+		started:     make(chan string, 2),
+		release:     release,
+	}
+	store := NewTenantStore(objects, "test")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	record := IngestBatchRecord{
+		Request: IngestRequest{
+			Source:         "loadtest",
+			CollectorID:    "collector-a",
+			BatchID:        "batch-a",
+			IdempotencyKey: "idempotency-a",
+		},
+		Result: IngestResult{BatchID: "batch-a"},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- store.saveIngestBatch(ctx, "tenant-a", record)
+	}()
+
+	keys := make(map[string]struct{}, 2)
+	for range 2 {
+		select {
+		case key := <-objects.started:
+			keys[key] = struct{}{}
+		case <-ctx.Done():
+			t.Fatal("dual ingest record writes did not run concurrently")
+		}
+	}
+	if len(keys) != 2 {
+		t.Fatalf("started keys = %v, want distinct idempotency and batch keys", keys)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("save ingest batch: %v", err)
+	}
+}
+
+type blockingCompatibilityProbeStore struct {
+	ObjectStore
+	mu      sync.Mutex
+	calls   int
+	started chan string
+	release chan struct{}
+}
+
+func (s *blockingCompatibilityProbeStore) Head(ctx context.Context, key string) (ObjectMeta, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		return ObjectMeta{Key: key}, ErrNotFound
+	}
+	select {
+	case s.started <- key:
+	case <-ctx.Done():
+		return ObjectMeta{Key: key}, ctx.Err()
+	}
+	select {
+	case <-s.release:
+		return ObjectMeta{Key: key}, ErrNotFound
+	case <-ctx.Done():
+		return ObjectMeta{Key: key}, ctx.Err()
+	}
+}
+
+type blockingIngestPutStore struct {
+	ObjectStore
+	started chan string
+	release chan struct{}
+}
+
+func (s *blockingIngestPutStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	select {
+	case s.started <- key:
+	case <-ctx.Done():
+		return ObjectMeta{Key: key}, ctx.Err()
+	}
+	select {
+	case <-s.release:
+		return s.ObjectStore.PutConditional(ctx, key, data, condition)
+	case <-ctx.Done():
+		return ObjectMeta{Key: key}, ctx.Err()
+	}
+}
+
 func concurrentIngestRequest(batch int) IngestRequest {
 	id := fmt.Sprintf("host:%03d", batch)
 	return IngestRequest{
@@ -1403,6 +1548,36 @@ func (s *failPutOnceStore) shouldFail(key string) bool {
 	}
 	s.failed = true
 	return true
+}
+
+func TestIngestConflictItemIndexMatchesLinearLookup(t *testing.T) {
+	deleteCanonical := graph.CanonicalEdgeIDParts("links", "service:b", "host:b")
+	upsertCanonical := graph.CanonicalEdgeIDParts("links", "service:a", "host:a")
+	request := IngestRequest{Items: []IngestItem{
+		{ExternalID: "entity-first", Entity: &graph.Entity{ID: "host:shared", ExternalID: "entity-alias"}},
+		{ExternalID: "entity-deleted", DeleteEntity: &graph.EntityDeleteRequest{ID: "host:deleted", ExternalID: "delete-alias"}},
+		{ExternalID: "edge-upsert", Edge: &graph.Edge{ID: "edge-opaque", Type: "links", From: "service:a", To: "host:a"}},
+		{ExternalID: "edge-delete", DeleteEdge: &graph.EdgeDeleteRequest{Type: "links", From: "service:b", To: "host:b"}},
+		{ExternalID: "edge-late", Edge: &graph.Edge{ID: deleteCanonical, Type: "other", From: "service:c", To: "host:c"}},
+		{ExternalID: "entity-late", Entity: &graph.Entity{ID: "host:later", ExternalID: "entity-alias"}},
+	}}
+	conflicts := []graph.FieldConflict{
+		{ResourceType: "entity", IncomingID: "entity-alias"},
+		{ResourceType: "entity", EntityID: "host:deleted"},
+		{ResourceType: "edge", IncomingID: "edge-opaque"},
+		{ResourceType: "edge", CanonicalID: upsertCanonical},
+		{ResourceType: "edge", IncomingID: deleteCanonical},
+		{ResourceType: "edge", EdgeID: deleteCanonical},
+		{ResourceType: "entity", IncomingID: "missing"},
+	}
+	index := newIngestConflictItemIndex(request.Items)
+	for _, conflict := range conflicts {
+		wantIndex, wantExternalID, wantFound := findIngestConflictItemLinear(request.Items, conflict)
+		gotIndex, gotExternalID, gotFound := findIngestConflictItem(request.Items, &index, conflict)
+		if gotIndex != wantIndex || gotExternalID != wantExternalID || gotFound != wantFound {
+			t.Fatalf("conflict %#v lookup=%d/%q/%t, want %d/%q/%t", conflict, gotIndex, gotExternalID, gotFound, wantIndex, wantExternalID, wantFound)
+		}
+	}
 }
 
 func putIngestRecordFixture(ctx context.Context, store *TenantStore, key string, record IngestBatchRecord) error {

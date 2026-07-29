@@ -43,6 +43,7 @@ type Metrics struct {
 
 	suppressed        map[string]float64
 	ingestSuppressed  map[string]float64
+	ingestSkipped     map[string]float64
 	indexHealthChecks map[string]float64
 	indexHealthStatus map[string]string
 	indexHealthIssues map[string]float64
@@ -80,6 +81,7 @@ func NewMetrics() *Metrics {
 		coordinatorStatus:      map[string]float64{},
 		suppressed:             map[string]float64{},
 		ingestSuppressed:       map[string]float64{},
+		ingestSkipped:          map[string]float64{},
 		indexHealthChecks:      map[string]float64{},
 		indexHealthStatus:      map[string]string{},
 		indexHealthIssues:      map[string]float64{},
@@ -268,6 +270,15 @@ func (m *Metrics) RecordIngestSuppressed(tenantID string, source string, count i
 	m.ingestSuppressed[labelKey(tenantID, source)] += float64(count)
 }
 
+func (m *Metrics) RecordIngestSkipped(tenantID string, source string, reason string) {
+	if m == nil || reason == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestSkipped[labelKey(tenantID, source, reason)]++
+}
+
 func (m *Metrics) RecordIndexHealth(tenantID string, status string, issues int) {
 	if m == nil {
 		return
@@ -309,6 +320,7 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeGaugeValues(&b, "graphdb_commit_tail_length", "Latest commit tail length by tenant.", []string{"tenant"}, m.commitTailLength)
 	writeCounter(&b, "graphdb_write_suppressed_conflicts_total", "Suppressed write conflicts by tenant and resource type.", []string{"tenant", "resource_type"}, m.suppressed)
 	writeCounter(&b, "graphdb_ingest_suppressed_conflicts_total", "Suppressed ingest conflicts by tenant and source.", []string{"tenant", "source"}, m.ingestSuppressed)
+	writeCounter(&b, "graphdb_ingest_skipped_total", "Ingestion batches skipped by tenant, source and reason.", []string{"tenant", "source", "reason"}, m.ingestSkipped)
 	writeCounter(&b, "graphdb_index_health_checks_total", "Index health checks by tenant and status.", []string{"tenant", "status"}, m.indexHealthChecks)
 	writeGaugeStrings(&b, "graphdb_index_health_status", "Latest index health status by tenant.", m.indexHealthStatus)
 	writeGaugeValues(&b, "graphdb_index_health_issues", "Latest index health issue count by tenant.", []string{"tenant"}, m.indexHealthIssues)

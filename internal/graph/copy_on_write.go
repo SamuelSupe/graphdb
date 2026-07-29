@@ -19,23 +19,57 @@ type copyOnWriteState struct {
 	fieldValues     map[string]map[string]map[string]struct{}
 }
 
-func (g *Graph) cloneForStorageMutation() *Graph {
+type storageMutationImpact struct {
+	ciTypes       bool
+	entities      bool
+	relationTypes bool
+	edges         bool
+}
+
+func storageMutationImpactFor(mutations Mutations) storageMutationImpact {
+	entityChanges := len(mutations.UpsertEntities) > 0 ||
+		len(mutations.DeleteEntities) > 0 ||
+		len(mutations.DeleteEntityRequests) > 0 ||
+		len(mutations.MarkSourceStale) > 0 ||
+		len(mutations.MergeEntities) > 0 ||
+		len(mutations.SplitEntities) > 0
+	edgeChanges := len(mutations.UpsertEdges) > 0 ||
+		len(mutations.DeleteEdges) > 0 ||
+		len(mutations.DeleteEdgeRequests) > 0 ||
+		len(mutations.DeleteRelationTypes) > 0 ||
+		len(mutations.DeleteEntities) > 0 ||
+		len(mutations.DeleteEntityRequests) > 0 ||
+		len(mutations.MarkSourceStale) > 0 ||
+		len(mutations.MergeEntities) > 0 ||
+		len(mutations.SplitEntities) > 0
+	return storageMutationImpact{
+		ciTypes: len(mutations.UpsertCITypes) > 0 ||
+			len(mutations.DeleteCITypes) > 0,
+		entities: entityChanges,
+		relationTypes: len(mutations.UpsertRelationTypes) > 0 ||
+			len(mutations.DeleteRelationTypes) > 0,
+		edges: edgeChanges,
+	}
+}
+
+func (g *Graph) cloneForStorageMutation(mutations Mutations) *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
 	logicalHashCache := g.shareLogicalHashCache()
+	impact := storageMutationImpactFor(mutations)
 	return &Graph{
 		Version:                 g.Version,
-		CITypes:                 shallowCopyMap(g.CITypes),
-		Entities:                shallowCopyMap(g.Entities),
-		RelationTypes:           shallowCopyMap(g.RelationTypes),
-		Edges:                   shallowCopyMap(g.Edges),
-		out:                     shallowCopyMap(g.out),
-		in:                      shallowCopyMap(g.in),
+		CITypes:                 storageMutationMap(g.CITypes, impact.ciTypes),
+		Entities:                storageMutationMap(g.Entities, impact.entities),
+		RelationTypes:           storageMutationMap(g.RelationTypes, impact.relationTypes),
+		Edges:                   storageMutationMap(g.Edges, impact.edges),
+		out:                     storageMutationMap(g.out, impact.edges),
+		in:                      storageMutationMap(g.in, impact.edges),
 		edgeAliasIndex:          g.edgeAliasIndex,
 		edgeTypeIndex:           g.edgeTypeIndex,
 		entityAliasIndex:        g.entityAliasIndex,
-		kindCounts:              shallowCopyMap(g.kindCounts),
-		fieldIndex:              shallowCopyMap(g.fieldIndex),
-		identityIndex:           shallowCopyMap(g.identityIndex),
+		kindCounts:              storageMutationMap(g.kindCounts, impact.entities),
+		fieldIndex:              storageMutationMap(g.fieldIndex, impact.entities),
+		identityIndex:           storageMutationMap(g.identityIndex, impact.entities || impact.ciTypes),
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
 		logicalHashCache:        logicalHashCache,
@@ -51,6 +85,13 @@ func (g *Graph) cloneForStorageMutation() *Graph {
 			fieldValues:   map[string]map[string]map[string]struct{}{},
 		},
 	}
+}
+
+func storageMutationMap[K comparable, V any](source map[K]V, writable bool) map[K]V {
+	if !writable {
+		return source
+	}
+	return shallowCopyMap(source)
 }
 
 func shallowCopyMap[K comparable, V any](source map[K]V) map[K]V {

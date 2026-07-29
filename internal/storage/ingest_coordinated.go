@@ -50,6 +50,7 @@ func (s *TenantStore) ingestCoordinated(
 			} else if ok {
 				replayed := previous.Result
 				replayed.Skipped = true
+				replayed.SkipReason = IngestSkipReasonIdempotentReplay
 				if err := s.repairIngestMetadataAfterSkip(
 					ctx, tenantID, previous, saveFailures,
 				); err != nil {
@@ -60,6 +61,7 @@ func (s *TenantStore) ingestCoordinated(
 		}
 		result.Version = commitResult.Version
 		result.Skipped = commitResult.Skipped || commitResult.IdempotentReplay
+		result.SkipReason = ingestSkipReasonForCommit(commitResult)
 		result.Suppressed = len(commitResult.Suppressed)
 		result.Conflicts = append(result.Conflicts, ingestConflicts(request, commitResult.Suppressed)...)
 	}
