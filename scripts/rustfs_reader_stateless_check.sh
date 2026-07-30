@@ -5,10 +5,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 PROJECT="${GRAPHDB_COLD_READER_PROJECT:-graphdb-cold-readers}"
-export GRAPHDB_PORT="${GRAPHDB_PORT:-38880}"
-export GRAPHDB_READER_PORT="${GRAPHDB_READER_PORT:-38881}"
-export GRAPHDB_READER2_PORT="${GRAPHDB_READER2_PORT:-38882}"
-export GRAPHDB_READER3_PORT="${GRAPHDB_READER3_PORT:-38883}"
+read -r AUTO_GRAPHDB_PORT AUTO_READER_PORT AUTO_READER2_PORT AUTO_READER3_PORT < <(
+  python3 - <<'PY'
+import socket
+
+sockets = [socket.socket() for _ in range(4)]
+for sock in sockets:
+    sock.bind(("127.0.0.1", 0))
+print(*(sock.getsockname()[1] for sock in sockets))
+for sock in sockets:
+    sock.close()
+PY
+)
+export GRAPHDB_PORT="${GRAPHDB_PORT:-$AUTO_GRAPHDB_PORT}"
+export GRAPHDB_READER_PORT="${GRAPHDB_READER_PORT:-$AUTO_READER_PORT}"
+export GRAPHDB_READER2_PORT="${GRAPHDB_READER2_PORT:-$AUTO_READER2_PORT}"
+export GRAPHDB_READER3_PORT="${GRAPHDB_READER3_PORT:-$AUTO_READER3_PORT}"
 # This check reaches RustFS through the Compose network, so no fixed host port is needed.
 export RUSTFS_API_PORT="${RUSTFS_API_PORT:-0}"
 export GRAPHDB_READER_CATCHUP_TIMEOUT="${GRAPHDB_READER_CATCHUP_TIMEOUT:-10s}"
