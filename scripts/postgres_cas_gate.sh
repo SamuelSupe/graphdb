@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-integration}"
 PROJECT="${GRAPHDB_CAS_COMPOSE_PROJECT:-graphdb-cas-gate}"
-POSTGRES_PORT="${GRAPHDB_POSTGRES_PORT:-35432}"
+POSTGRES_PORT="${GRAPHDB_POSTGRES_PORT:-}"
 RUSTFS_PORT="${RUSTFS_API_PORT:-39000}"
 RUSTFS_URL="${RUSTFS_URL:-http://127.0.0.1:$RUSTFS_PORT}"
 USE_EXISTING_RUSTFS="${GRAPHDB_CAS_USE_EXISTING_RUSTFS:-0}"
@@ -59,6 +59,13 @@ wait_postgres() {
 }
 
 cd "$ROOT"
+if [[ -z "$POSTGRES_PORT" ]]; then
+  POSTGRES_PORT="$(
+    python3 -c 'import socket; sock = socket.socket(); sock.bind(("127.0.0.1", 0)); print(sock.getsockname()[1]); sock.close()'
+  )"
+fi
+export GRAPHDB_POSTGRES_PORT="$POSTGRES_PORT"
+
 if [[ -n "${GRAPHDB_TEST_CAS_STRESS_REPORT:-}" &&
   "$GRAPHDB_TEST_CAS_STRESS_REPORT" != /* ]]; then
   export GRAPHDB_TEST_CAS_STRESS_REPORT="$ROOT/$GRAPHDB_TEST_CAS_STRESS_REPORT"

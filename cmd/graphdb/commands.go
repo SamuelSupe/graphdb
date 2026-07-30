@@ -53,6 +53,7 @@ func run(args []string) error {
 	store.UseEntityRecordsForRead = cfg.IndexEntityRecords
 	store.EntityPagePackMaxBytes = cfg.EntityPagePackMaxBytes
 	store.MaterializeCollectorStatus = cfg.IngestCollectorStatusMaterialized
+	store.IngestMetadataMode = cfg.IngestMetadataMode
 	store.ConfigureIndexObjectCache(storage.IndexObjectCacheConfig{
 		MaxEntries: cfg.ReaderIndexCacheEntries,
 		MaxBytes:   cfg.ReaderIndexCacheMaxBytes,
@@ -300,9 +301,10 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
 		"mode": cfg.Mode, "storage": cfg.StoreKind, "prefix": cfg.Prefix,
-		"coordination": store.CoordinationBackend(),
-		"ingest_mode":  cfg.IngestMode,
-		"otlp_enabled": cfg.OTLPEndpoint != "",
+		"coordination":         store.CoordinationBackend(),
+		"ingest_mode":          cfg.IngestMode,
+		"ingest_metadata_mode": cfg.IngestMetadataMode,
+		"otlp_enabled":         cfg.OTLPEndpoint != "",
 	})
 	serverErr := runHTTPServers(ctx, servers, httpShutdownTimeout)
 	if ingestService == nil {

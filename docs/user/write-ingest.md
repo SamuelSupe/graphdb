@@ -305,6 +305,49 @@ Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
 `GRAPHDB_INGEST_FLUSH_WORKERS=1`, and
 `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
 
+#### 1.1.3 metadata segment mode
+
+GGraphDB 1.1.3 adds explicitly enabled metadata batching on top of local WAL
+ingest:
+
+```ini
+GRAPHDB_INGEST_MODE=wal
+GRAPHDB_COORDINATION=local
+GRAPHDB_INGEST_METADATA_MODE=segment
+GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=30s
+GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
+GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
+GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=1
+```
+
+`legacy` remains the default. Segment mode stores full requests, results,
+digests, and final collector snapshots from graph flushes of the same tenant in
+one content-addressed Parquet segment, then publishes it with one independent
+ingest-manifest CAS. Batch and idempotency identities point to the same segment
+row, so a normal 256-request window creates no per-request batch, idempotency,
+or collector-status objects.
+
+The manifest keeps 32 recent segment references. Older references move into
+tiered catalogs with at most eight catalogs per level. Catalog compaction
+rewrites only references and Bloom filters, never historical payload segments.
+Lookup order is active WAL, segment/index, then legacy objects. Existing history
+is neither migrated nor deleted; the first segment collector snapshot is seeded
+from legacy status or legacy batch records.
+
+A request becomes `published` after graph-manifest publication and `committed`
+only after the metadata manifest is durable. `Prefer: wait=committed` forces the
+current tenant metadata window; normal `202` requests may wait for a threshold
+or the 30-second interval. The WAL persists a metadata flush ID, LSN range, and
+content identity so crashes between segment PUT, manifest CAS, and `FINALIZED`
+do not duplicate graph versions, collector totals, or results.
+
+Upgrade all readers and writers to 1.1.3 in `legacy` mode before enabling
+`segment`. After a tenant has a segment manifest, a 1.1.3 legacy writer refuses
+old-format ingest. Do not run a 1.1.2 writer after activation; stop writes and
+export or convert with 1.1.3-compatible tooling before rollback. Direct mode,
+graph commits, logical versions, FIFO order, tenant isolation, and dead-letter
+object layout are unchanged.
+
 Recovery finishes before HTTP starts and holds an exclusive process lock on the
 WAL directory. Middle corruption fails closed; only an incomplete final record
 in the last segment is truncated. A durable accepted request continues after
@@ -313,18 +356,23 @@ graph version when recovering a manifest published before ingest metadata was
 finalized. The first flush that encounters a historical loose-commit tail folds
 it into the segment; later flushes do not pay that migration cost again.
 
-`/metrics` exposes `graphdb_ingest_wal_*`, `graphdb_ingest_queue_*`, and
-`graphdb_ingest_flush_*` metrics for append/fsync activity, WAL memory and disk
+`/metrics` exposes `graphdb_ingest_wal_*`, `graphdb_ingest_queue_*`,
+`graphdb_ingest_flush_*`, and `graphdb_ingest_metadata_*` metrics for
+append/fsync activity, WAL memory and disk
 usage, written/durable LSNs, pending work and oldest age, status-cache
-hits/evictions, flush latency and request/commit/segment/manifest counts, and
-recovery results. These metrics use only fixed status labels; tenant, source,
+hits/evictions, flush latency, logical and physical segment/object counts,
+manifest conflicts, Bloom candidates, replay bytes, and recovery results.
+These metrics use only fixed status labels; tenant, source,
 collector, and batch identifiers are deliberately excluded.
 
 JSON logs include `ingest_wal_recovery`, `ingest_wal_accepted`,
-`ingest_flush_started`, `ingest_flush_completed`, WAL rotate/prune/fsync
+`ingest_flush_started`, `ingest_flush_completed`,
+`ingest_metadata_flush_started`, `ingest_metadata_segment_completed`,
+`ingest_metadata_manifest_published`, WAL rotate/prune/fsync
 failures, and shutdown events. Tenant, batch, LSN, flush ID, latency, and error
 details remain in logs. When `GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
-append/group write, flush, batch apply, publish, and metadata-finalization spans
+append/group write, flush, batch apply, publish, metadata encode/PUT, manifest
+CAS, and Bloom/index lookup spans
 are exported over OTLP/HTTP. Asynchronous group writes and flushes use OTel
 links to the originating request span. Accepted records persist that trace
 context, so recovery can retain the association after a restart.

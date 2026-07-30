@@ -119,6 +119,9 @@ type TenantStore struct {
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool
+	IngestMetadataMode         string
+	IngestObserver             IngestObserver
+	IngestLogger               IngestLogger
 	Backpressure               *WritePressure
 	BackpressureObserver       BackpressureObserver
 	CacheObserver              ReaderCacheObserver
@@ -150,6 +153,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		collectorStatusCache:       map[string]cachedCollectorStatus{},
 		readerHeartbeatCache:       map[string]cachedReaderHeartbeat{},
 		objectKeyCache:             map[string]struct{}{},
+		IngestMetadataMode:         IngestMetadataModeLegacy,
 		tenantMetadataCache:        map[string]cachedTenantMetadata{},
 		purgeTombstoneCache:        map[string]cachedTenantPurgeTombstone{},
 		sourcePolicyCache:          map[string]cachedSourcePolicy{},

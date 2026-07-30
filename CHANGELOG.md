@@ -3,6 +3,42 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.1.3] - 2026-07-30
+
+### Added
+
+- Add the opt-in `GRAPHDB_INGEST_METADATA_MODE=segment` format for local WAL
+  writers. Requests published across multiple graph flushes share one
+  content-addressed Parquet metadata segment and one ingest-manifest CAS.
+- Add batch, idempotency, and collector Bloom indexes, 32 recent segment
+  references, and tiered reference-only catalogs with at most eight catalogs
+  per level. Historical payload segments are never rewritten.
+- Export fixed-cardinality metadata queue, segment/object-write, manifest CAS,
+  lookup, and replay metrics together with structured lifecycle logs and OTel
+  spans linked to the accepted requests.
+
+### Changed
+
+- Keep `PUBLISHED` WAL records until their metadata manifest is durable, then
+  append batched `FINALIZED` state and reclaim the WAL.
+- Make `Prefer: wait=committed` force the tenant's current metadata window while
+  normal `202` requests may remain `published` until the metadata threshold or
+  interval is reached.
+- Read ingest identities in active-WAL, segment/index, then legacy-object order.
+  Collector totals are seeded from legacy state when a tenant first enables
+  segment metadata.
+
+### Compatibility
+
+- `legacy` remains the default. Segment metadata is limited to
+  `GRAPHDB_COORDINATION=local` plus `GRAPHDB_INGEST_MODE=wal`.
+- After a tenant has a segment manifest, a 1.1.3 legacy writer refuses further
+  ingest for that tenant. All readers and writers must be upgraded before
+  enabling the new mode; a 1.1.2 writer must not be used after activation.
+- Graph commits, direct ingest, dead-letter objects, logical versions, FIFO
+  ordering, and tenant isolation are unchanged. Legacy metadata is retained and
+  remains readable without migration.
+
 ## [1.1.2] - 2026-07-30
 
 ### Added

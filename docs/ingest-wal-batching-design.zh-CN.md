@@ -2,8 +2,9 @@
 
 ## 1. 文档状态
 
-- 状态：最终设计方案，尚未实现。
-- 目标版本：1.1.2 后续实现候选。
+- 状态：1.1.2 WAL/graph batching 基线已实现；1.1.3 metadata segment
+  扩展已实现。
+- 目标版本：1.1.2 基线、1.1.3 metadata 写放大压缩。
 - 目标部署：
   - `GRAPHDB_COORDINATION=local`；
   - 单个活动 writer 进程；
@@ -885,3 +886,43 @@ readiness 至少检查：
 
 第一版 ingest metadata object 仍近似随请求数增长，因此最终收益必须同时观察
 graph 数据对象和 ingest metadata 两类 PUT，不能只统计 manifest。
+
+## 25. 1.1.3 metadata segment 扩展
+
+1.1.3 以显式配置 `GRAPHDB_INGEST_METADATA_MODE=segment` 关闭上一节保留的
+逐请求 metadata 写放大。该模式只允许 local coordination + WAL ingest。
+
+graph manifest 发布后，worker 将同一 graph flush 的请求一次性追加为
+`PUBLISHED` WAL 状态。独立的全局 metadata deadline heap 再按租户跨 graph
+flush 攒批；达到 30 秒、256 请求、8 MiB、shutdown 或
+`Prefer: wait=committed` 时：
+
+1. 用一个批量 `PUBLISHED` WAL 记录固化 metadata flush ID 和精确请求边界；
+2. 编码并条件创建内容寻址 Parquet metadata segment；
+3. CAS 发布独立 ingest metadata manifest；
+4. 批量追加 `FINALIZED`，完成请求并允许 WAL prune。
+
+segment 保存完整 request/result、请求摘要、accepted LSN、原请求 trace context
+以及每个触达 collector 的窗口最终累计状态。batch、idempotency 和 collector
+分别使用固定宽度 Bloom；同一记录同时建立 batch/idempotency identity，不再
+复制 payload。
+
+manifest 直接保存 32 个最近引用。溢出的引用写到 level-0 目录；同层超过 8
+个目录时，把目录内的 segment 引用和 Bloom 合并到下一层。目录是内容寻址
+Parquet 对象，只包含引用，不包含或重写历史 ingest payload。查询按 recent
+segment、从新到旧的目录、legacy 对象顺序精确验证 Bloom 候选。
+
+segment key 由 tenant、first/last accepted LSN 和规范 payload hash 决定。
+metadata flush ID 在任何对象 PUT 前 fsync；因此 segment PUT 后、manifest CAS
+前后或部分 `FINALIZED` 后崩溃，恢复仍使用相同边界和 key。manifest 已含引用
+时直接 finalize；只有 segment 未被发布时才继续 CAS。
+
+首次 segment collector 状态优先读取新 segment 历史，然后读取现有 materialized
+collector status；若该对象不存在，则扫描 legacy batch 对象恢复累计值。旧对象
+不迁移、不删除。存在 segment manifest 是不可逆的 writer marker：1.1.3 legacy
+writer 会拒绝该租户，1.1.2 writer 在启用后不再是安全回退目标。
+
+该扩展不改变 graph commit segment、逻辑 version、commit tail 计数、direct
+模式或 deadletter 对象。`graphdb_ingest_metadata_*` 指标单独报告物理 segment
+PUT、manifest publish、目录 PUT、编码字节、CAS 冲突、Bloom 候选和 WAL replay
+字节，避免用逻辑 commit 数推断物理写放大。

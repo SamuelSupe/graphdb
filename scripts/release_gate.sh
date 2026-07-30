@@ -130,6 +130,16 @@ S3_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID:-graphdbadmin}" \
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-graphdbsecret}" \
 go test -mod=readonly ./internal/storage -run TestS3StoreIntegration -count=1
 
+log "WAL metadata segment capacity matrix against RustFS"
+GRAPHDB_INGEST_METADATA_CAPACITY=1 \
+S3_ENDPOINT="$RUSTFS_URL" \
+S3_BUCKET="${S3_BUCKET:-graphdb}" \
+S3_PATH_STYLE=true \
+S3_REGION="${S3_REGION:-us-east-1}" \
+S3_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID:-graphdbadmin}" \
+S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-graphdbsecret}" \
+go test -mod=readonly ./internal/storage -run TestIngestMetadataCapacityRustFS -count=1 -v
+
 if [[ "${RUN_EXTERNAL_S3:-0}" == "1" ]]; then
   log "S3 compatibility against external endpoint"
   GRAPHDB_MINIO_INTEGRATION=1 go test -mod=readonly ./internal/storage -run TestS3StoreIntegration -count=1

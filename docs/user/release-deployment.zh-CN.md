@@ -3,22 +3,22 @@
 [English](release-deployment.md)
 
 本文档面向需要下载、部署和升级 GGraphDB 1.1 的服务负责人。示例使用已发布
-的 `v1.1.2`，发行页位于
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.2>。
+的 `v1.1.3`，发行页位于
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.3>。
 
 ## 1. 下载与校验
 
 发行页提供以下资产：
 
-- `graphdb-v1.1.2.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
-- `graphdb-v1.1.2.tar.gz.sha256`：SHA-256 校验文件。
+- `graphdb-v1.1.3.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
+- `graphdb-v1.1.3.tar.gz.sha256`：SHA-256 校验文件。
 
 下载后校验并解包：
 
 ```sh
-sha256sum -c graphdb-v1.1.2.tar.gz.sha256
-tar -xzf graphdb-v1.1.2.tar.gz
-cd graphdb-v1.1.2
+sha256sum -c graphdb-v1.1.3.tar.gz.sha256
+tar -xzf graphdb-v1.1.3.tar.gz
+cd graphdb-v1.1.3
 ```
 
 压缩包包含：

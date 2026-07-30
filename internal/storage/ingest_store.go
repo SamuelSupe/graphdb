@@ -33,6 +33,13 @@ func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, sourc
 	if source == "" || collectorID == "" || batchID == "" {
 		return IngestBatchRecord{}, fmt.Errorf("source, collector_id, and batch_id are required")
 	}
+	if record, ok, err := s.findIngestMetadataRecord(ctx, tenantID, ingestMetadataLookup{
+		kind: ingestMetadataLookupBatch, source: source, collectorID: collectorID, value: batchID,
+	}); err != nil {
+		return IngestBatchRecord{}, err
+	} else if ok {
+		return record, nil
+	}
 	keys := []string{
 		s.ingestBatchKey(tenantID, source, collectorID, batchID),
 		s.legacyIngestBatchKey(tenantID, source, batchID),
@@ -56,6 +63,34 @@ func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, sourc
 }
 
 func (s *TenantStore) loadIngestRecord(ctx context.Context, tenantID string, request IngestRequest) (IngestBatchRecord, bool, error) {
+	if request.IdempotencyKey != "" {
+		record, ok, err := s.findIngestMetadataRecord(ctx, tenantID, ingestMetadataLookup{
+			kind: ingestMetadataLookupIdempotency, source: request.Source, collectorID: request.CollectorID, value: request.IdempotencyKey,
+		})
+		if err != nil {
+			return IngestBatchRecord{}, false, err
+		}
+		if ok {
+			if !ingestRecordRequestEqualIgnoringBatch(record.Request, request) {
+				return IngestBatchRecord{}, false, fmt.Errorf("ingest record conflict for source %q collector %q batch %q idempotency %q: stored request differs from incoming request", request.Source, request.CollectorID, request.BatchID, request.IdempotencyKey)
+			}
+			return record, true, nil
+		}
+	}
+	if request.BatchID != "" {
+		record, ok, err := s.findIngestMetadataRecord(ctx, tenantID, ingestMetadataLookup{
+			kind: ingestMetadataLookupBatch, source: request.Source, collectorID: request.CollectorID, value: request.BatchID,
+		})
+		if err != nil {
+			return IngestBatchRecord{}, false, err
+		}
+		if ok {
+			if !ingestRecordRequestEqual(record.Request, request) {
+				return IngestBatchRecord{}, false, fmt.Errorf("ingest record conflict for source %q collector %q batch %q idempotency %q: stored request differs from incoming request", request.Source, request.CollectorID, request.BatchID, request.IdempotencyKey)
+			}
+			return record, true, nil
+		}
+	}
 	candidates := make([]ingestRecordLookupCandidate, 0, 6)
 	if request.IdempotencyKey != "" {
 		candidates = append(candidates,
@@ -218,7 +253,7 @@ func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, t
 
 func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantID string, record IngestBatchRecord, saveFailures bool) error {
 	var metadataErr error
-	if !s.coordinated() {
+	if !s.coordinated() && s.IngestMetadataMode != IngestMetadataModeSegment {
 		if err := s.repairCollectorStatusAfterSkip(ctx, tenantID, record); err != nil {
 			metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
 		}
@@ -492,6 +527,13 @@ func (s *TenantStore) GetCollectorStatus(ctx context.Context, tenantID string, s
 			LastCursor:  state.Cursor,
 			LastVersion: state.Version,
 		}, nil
+	}
+	if status, found, err := s.findIngestMetadataCollector(ctx, tenantID, source, collectorID); err != nil {
+		return CollectorStatus{}, err
+	} else if found {
+		key := s.collectorStatusKey(tenantID, source, collectorID)
+		s.setCachedCollectorStatus(key, status, ObjectMeta{Key: key})
+		return status, nil
 	}
 	key := s.collectorStatusKey(tenantID, source, collectorID)
 	if status, _, ok := s.getCachedCollectorStatus(key); ok {

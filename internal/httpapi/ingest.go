@@ -105,7 +105,7 @@ func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantI
 	statusPath := ingestBatchStatusPath(accepted.Source, accepted.CollectorID, accepted.BatchID)
 	w.Header().Set("Location", statusPath)
 	if preferCommitted(r.Header.Get("Prefer")) {
-		result, waitErr := s.IngestService.Wait(r.Context(), accepted)
+		result, waitErr := s.IngestService.WaitCommitted(r.Context(), accepted)
 		if waitErr != nil {
 			writeRequestError(w, waitErr)
 			return
