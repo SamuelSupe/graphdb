@@ -83,6 +83,27 @@ func benchmarkSingleEntityIndexedCommit(b *testing.B, writeEntityRecords bool) {
 	}
 }
 
+func BenchmarkSingleEntityIndexedNoopCommit(b *testing.B) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "bench")
+	seedBenchmarkEntities(b, ctx, store)
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:00000", Kind: "host", Fields: graph.Fields{"state": "ready"},
+	}}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !result.Skipped {
+			b.Fatal("identical entity commit was not skipped")
+		}
+	}
+}
+
 func BenchmarkIngestConflictAssociationLargeBatch(b *testing.B) {
 	const itemCount = 10_000
 	request := IngestRequest{Items: make([]IngestItem, itemCount)}

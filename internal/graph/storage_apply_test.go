@@ -1,8 +1,10 @@
 package graph
 
 import (
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestAffectedEntityIDsRemainUniqueInInsertionOrder(t *testing.T) {
@@ -272,5 +274,63 @@ func TestApplyCommitInPlaceForStorageReplaysPrivateGraph(t *testing.T) {
 	}
 	if _, ok := g.GetEntity("host:a"); !ok {
 		t.Fatal("replayed entity missing")
+	}
+}
+
+func TestApplyCommitBatchStorageCopyWithOptionsPreservesOrder(t *testing.T) {
+	source := New()
+	next, reports, err := source.ApplyCommitBatchStorageCopyWithOptions([]Commit{
+		{
+			ID:        "upsert",
+			Version:   1,
+			CreatedAt: time.Unix(1, 0).UTC(),
+			Mutations: Mutations{UpsertEntities: []Entity{{ID: "host:1", Kind: "host"}}},
+		},
+		{
+			ID:        "delete",
+			Version:   2,
+			CreatedAt: time.Unix(2, 0).UTC(),
+			Mutations: Mutations{DeleteEntities: []string{"host:1"}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Version != 2 || len(reports) != 2 || !reports[0].Changed || !reports[1].Changed {
+		t.Fatalf("batch result version/reports = %d/%#v", next.Version, reports)
+	}
+	if _, ok := next.GetEntity("host:1"); ok {
+		t.Fatal("upsert then delete was reordered")
+	}
+	if source.Version != 0 || len(source.Entities) != 0 {
+		t.Fatal("batch apply mutated the source graph")
+	}
+}
+
+func TestApplyCommitBatchStorageCopyRequiresIsolationForNoop(t *testing.T) {
+	source := New()
+	if err := source.ApplyCommit(Commit{
+		ID:        "seed",
+		Version:   1,
+		CreatedAt: time.Unix(1, 0).UTC(),
+		Mutations: Mutations{UpsertEntities: []Entity{{
+			ID: "host:1", Kind: "host", Fields: Fields{"name": "app"},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := source.ApplyCommitBatchStorageCopyWithOptions([]Commit{{
+		ID:        "noop",
+		Version:   2,
+		CreatedAt: time.Unix(2, 0).UTC(),
+		Mutations: Mutations{UpsertEntities: []Entity{{
+			ID: "host:1", Kind: "host", Fields: Fields{"name": "app"},
+		}}},
+	}}, nil)
+	if !errors.Is(err, ErrBatchApplyRequiresIsolation) {
+		t.Fatalf("batch err = %v, want ErrBatchApplyRequiresIsolation", err)
+	}
+	if source.Version != 1 {
+		t.Fatalf("source version = %d, want 1", source.Version)
 	}
 }

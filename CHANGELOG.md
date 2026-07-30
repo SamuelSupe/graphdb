@@ -3,6 +3,35 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.1.2] - 2026-07-30
+
+### Added
+
+- Add an opt-in process-local segmented WAL for
+  `GRAPHDB_COORDINATION=local` single-writer deployments, with durable
+  `202 Accepted` responses, batch status lookup, `Prefer: wait=committed`,
+  crash recovery, bounded memory/disk queues, and graceful drain on shutdown.
+- Batch per-tenant FIFO requests through one graph apply, one Parquet commit
+  segment, and one manifest publication while sharing group fsync across
+  tenants.
+- Export low-cardinality WAL, queue, flush, deduplication, and recovery
+  metrics; structured lifecycle logs; and OpenTelemetry spans and links that
+  retain accepted-request context across WAL recovery.
+
+### Changed
+
+- Detect exact entity upserts before storage copy-on-write and reuse the same
+  entity preparation path during normal and batched apply.
+- Keep direct ingest as the default while allowing the WAL mode to coordinate
+  direct commits, compaction, clone, disable, delete, and purge through a
+  per-tenant flush barrier.
+
+### Compatibility
+
+- Object layout version 2, existing commit/manifest readers, and the default
+  synchronous direct-ingest API remain unchanged. WAL mode is explicitly
+  enabled and is limited to local single-writer coordination.
+
 ## [1.1.1] - 2026-07-30
 
 ### Fixed

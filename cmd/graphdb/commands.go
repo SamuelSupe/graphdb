@@ -240,6 +240,16 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		_ = shutdownTrace(shutdownCtx)
 	}()
 	obs := observability.New(os.Stdout, cfg.SlowQueryThreshold)
+	var ingestService *storage.IngestService
+	if cfg.IngestMode == "wal" {
+		ingestConfig := cfg.IngestServiceConfig()
+		ingestConfig.Observer = obs.Metrics
+		ingestConfig.Logger = obs.Logger
+		ingestService, err = storage.OpenIngestService(store, ingestConfig)
+		if err != nil {
+			return fmt.Errorf("open ingest WAL service: %w", err)
+		}
+	}
 	if metered := storage.FindMeteredObjectStore(store.Objects); metered != nil {
 		metered.Observer = obs.Metrics
 	}
@@ -270,6 +280,7 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		WriteExecutionTimeout: cfg.WriteExecutionTimeout,
 		ReaderCatchupTimeout:  cfg.ReaderCatchupTimeout,
 		ReadinessTimeout:      cfg.ReadinessTimeout,
+		IngestService:         ingestService,
 		Observability:         obs,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
 	}
@@ -290,9 +301,16 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
 		"mode": cfg.Mode, "storage": cfg.StoreKind, "prefix": cfg.Prefix,
 		"coordination": store.CoordinationBackend(),
+		"ingest_mode":  cfg.IngestMode,
 		"otlp_enabled": cfg.OTLPEndpoint != "",
 	})
-	return runHTTPServers(ctx, servers, httpShutdownTimeout)
+	serverErr := runHTTPServers(ctx, servers, httpShutdownTimeout)
+	if ingestService == nil {
+		return serverErr
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.IngestShutdownTimeout)
+	defer cancel()
+	return errors.Join(serverErr, ingestService.Close(shutdownCtx))
 }
 
 func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
@@ -460,6 +478,18 @@ Environment:
   GRAPHDB_WRITE_MAX_COMMIT_TAIL=300
   GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT=0
   GRAPHDB_WRITE_MAX_EDGES_PER_TENANT=0
+  GRAPHDB_INGEST_MODE=direct|wal
+  GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest
+  GRAPHDB_INGEST_WAL_DURABILITY=sync|os
+  GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB
+  GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms
+  GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB
+  GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB
+  GRAPHDB_INGEST_FLUSH_INTERVAL=10s
+  GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256
+  GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB
+  GRAPHDB_INGEST_FLUSH_WORKERS=1
+  GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s
   GRAPHDB_SLOW_QUERY_THRESHOLD=500ms
   GRAPHDB_INDEX_HEALTH_INTERVAL=30s
   GRAPHDB_MAINTENANCE_INTERVAL=30s

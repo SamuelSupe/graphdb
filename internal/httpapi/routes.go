@@ -62,6 +62,7 @@ func (s *Server) registerCommonRoutes(mux *http.ServeMux) {
 func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/commits", s.commit)
 	mux.HandleFunc("POST /v1/ingest/batches", s.ingest)
+	mux.HandleFunc("GET /v1/ingest/batches/", s.ingestBatchStatus)
 	mux.HandleFunc("POST /v1/imports", s.startImport)
 	mux.HandleFunc("GET /v1/entities", s.listEntities)
 	mux.HandleFunc("GET /v1/entities/stream", s.streamEntities)
