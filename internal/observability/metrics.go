@@ -13,6 +13,8 @@ import (
 var httpBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 var queryBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 var writeBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
+var ingestGroupBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 128, 256}
+var ingestSegmentBuckets = []float64{0, 1, 2, 4, 8}
 
 type Metrics struct {
 	mu sync.Mutex
@@ -41,12 +43,36 @@ type Metrics struct {
 	coordinatorHeads       map[string]float64
 	coordinatorStatus      map[string]float64
 
-	suppressed        map[string]float64
-	ingestSuppressed  map[string]float64
-	ingestSkipped     map[string]float64
-	indexHealthChecks map[string]float64
-	indexHealthStatus map[string]string
-	indexHealthIssues map[string]float64
+	suppressed         map[string]float64
+	ingestSuppressed   map[string]float64
+	ingestSkipped      map[string]float64
+	ingestWALAppend    map[string]float64
+	ingestWALBytes     float64
+	ingestWALSync      map[string]float64
+	ingestWALSyncTime  map[string]*histogram
+	ingestWALGroups    map[string]*histogram
+	ingestWALBuffer    float64
+	ingestWALDisk      float64
+	ingestWALWritten   float64
+	ingestWALDurable   float64
+	ingestQueue        float64
+	ingestQueueBytes   float64
+	ingestQueueMemory  float64
+	ingestQueueOldest  float64
+	ingestQueueCache   map[string]float64
+	ingestFlush        map[string]float64
+	ingestFlushTime    map[string]*histogram
+	ingestFlushReqs    map[string]*histogram
+	ingestFlushCommit  map[string]*histogram
+	ingestFlushSegs    map[string]*histogram
+	ingestFlushPub     map[string]*histogram
+	ingestFlushDedup   float64
+	ingestFlushFall    float64
+	ingestRecovery     map[string]float64
+	ingestRecoveryTime map[string]*histogram
+	indexHealthChecks  map[string]float64
+	indexHealthStatus  map[string]string
+	indexHealthIssues  map[string]float64
 }
 
 type histogram struct {
@@ -82,6 +108,19 @@ func NewMetrics() *Metrics {
 		suppressed:             map[string]float64{},
 		ingestSuppressed:       map[string]float64{},
 		ingestSkipped:          map[string]float64{},
+		ingestWALAppend:        map[string]float64{},
+		ingestWALSync:          map[string]float64{},
+		ingestWALSyncTime:      map[string]*histogram{},
+		ingestWALGroups:        map[string]*histogram{},
+		ingestQueueCache:       map[string]float64{},
+		ingestFlush:            map[string]float64{},
+		ingestFlushTime:        map[string]*histogram{},
+		ingestFlushReqs:        map[string]*histogram{},
+		ingestFlushCommit:      map[string]*histogram{},
+		ingestFlushSegs:        map[string]*histogram{},
+		ingestFlushPub:         map[string]*histogram{},
+		ingestRecovery:         map[string]float64{},
+		ingestRecoveryTime:     map[string]*histogram{},
 		indexHealthChecks:      map[string]float64{},
 		indexHealthStatus:      map[string]string{},
 		indexHealthIssues:      map[string]float64{},
@@ -279,6 +318,102 @@ func (m *Metrics) RecordIngestSkipped(tenantID string, source string, reason str
 	m.ingestSkipped[labelKey(tenantID, source, reason)]++
 }
 
+func (m *Metrics) RecordIngestWALAppend(recordType string, status string, bytes int, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestWALAppend[labelKey(recordType, status)]++
+	if status == "ok" {
+		m.ingestWALBytes += float64(bytes)
+	}
+}
+
+func (m *Metrics) RecordIngestWALSync(status string, records int, bytes int, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := labelKey(status)
+	m.ingestWALSync[key]++
+	m.observe(m.ingestWALSyncTime, key, writeBuckets, duration.Seconds())
+	m.observe(m.ingestWALGroups, key, ingestGroupBuckets, float64(records))
+}
+
+func (m *Metrics) RecordIngestWALState(bufferBytes int, diskBytes int64, writtenLSN uint64, durableLSN uint64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestWALBuffer = float64(bufferBytes)
+	m.ingestWALDisk = float64(diskBytes)
+	m.ingestWALWritten = float64(writtenLSN)
+	m.ingestWALDurable = float64(durableLSN)
+}
+
+func (m *Metrics) RecordIngestQueue(pending int, bytes int64, oldest time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestQueue = float64(pending)
+	m.ingestQueueBytes = float64(bytes)
+	m.ingestQueueMemory = float64(bytes)
+	m.ingestQueueOldest = max(0, oldest.Seconds())
+}
+
+func (m *Metrics) RecordIngestQueueCache(event string) {
+	if m == nil || (event != "hit" && event != "eviction") {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestQueueCache[event]++
+}
+
+func (m *Metrics) RecordIngestFlush(
+	status string,
+	duration time.Duration,
+	requests int,
+	logicalCommits int,
+	segments int,
+	manifestPublishes int,
+	exactDedup int,
+	fallback bool,
+) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := labelKey(status)
+	m.ingestFlush[key]++
+	m.observe(m.ingestFlushTime, key, queryBuckets, duration.Seconds())
+	m.observe(m.ingestFlushReqs, key, ingestGroupBuckets, float64(requests))
+	m.observe(m.ingestFlushCommit, key, ingestGroupBuckets, float64(logicalCommits))
+	m.observe(m.ingestFlushSegs, key, ingestSegmentBuckets, float64(segments))
+	m.observe(m.ingestFlushPub, key, ingestSegmentBuckets, float64(manifestPublishes))
+	m.ingestFlushDedup += float64(exactDedup)
+	if fallback {
+		m.ingestFlushFall++
+	}
+}
+
+func (m *Metrics) RecordIngestRecovery(status string, records int, pending int, prepared int, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := labelKey(status)
+	m.ingestRecovery[key]++
+	m.observe(m.ingestRecoveryTime, key, queryBuckets, duration.Seconds())
+}
+
 func (m *Metrics) RecordIndexHealth(tenantID string, status string, issues int) {
 	if m == nil {
 		return
@@ -321,10 +456,40 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeCounter(&b, "graphdb_write_suppressed_conflicts_total", "Suppressed write conflicts by tenant and resource type.", []string{"tenant", "resource_type"}, m.suppressed)
 	writeCounter(&b, "graphdb_ingest_suppressed_conflicts_total", "Suppressed ingest conflicts by tenant and source.", []string{"tenant", "source"}, m.ingestSuppressed)
 	writeCounter(&b, "graphdb_ingest_skipped_total", "Ingestion batches skipped by tenant, source and reason.", []string{"tenant", "source", "reason"}, m.ingestSkipped)
+	writeCounter(&b, "graphdb_ingest_wal_append_total", "Ingest WAL append attempts by record type and status.", []string{"record_type", "status"}, m.ingestWALAppend)
+	writeScalar(&b, "graphdb_ingest_wal_append_bytes_total", "Bytes successfully appended to the ingest WAL.", "counter", m.ingestWALBytes)
+	writeCounter(&b, "graphdb_ingest_wal_fsync_total", "Ingest WAL write and sync groups by status.", []string{"status"}, m.ingestWALSync)
+	writeHistogram(&b, "graphdb_ingest_wal_fsync_duration_seconds", "Ingest WAL write and sync group latency.", []string{"status"}, m.ingestWALSyncTime)
+	writeHistogram(&b, "graphdb_ingest_wal_group_records", "Records written in each ingest WAL group.", []string{"status"}, m.ingestWALGroups)
+	writeScalar(&b, "graphdb_ingest_wal_buffer_bytes", "Bytes currently buffered for an ingest WAL write group.", "gauge", m.ingestWALBuffer)
+	writeScalar(&b, "graphdb_ingest_wal_disk_bytes", "Bytes occupied by ingest WAL segments.", "gauge", m.ingestWALDisk)
+	writeScalar(&b, "graphdb_ingest_wal_written_lsn", "Highest ingest WAL LSN written to the operating system.", "gauge", m.ingestWALWritten)
+	writeScalar(&b, "graphdb_ingest_wal_durable_lsn", "Highest ingest WAL LSN confirmed durable.", "gauge", m.ingestWALDurable)
+	writeScalar(&b, "graphdb_ingest_queue_pending_requests", "Durable ingest requests awaiting finalization.", "gauge", m.ingestQueue)
+	writeScalar(&b, "graphdb_ingest_queue_pending_bytes", "Encoded bytes represented by pending ingest requests.", "gauge", m.ingestQueueBytes)
+	writeScalar(&b, "graphdb_ingest_queue_memory_bytes", "Memory budget charged to pending ingest requests.", "gauge", m.ingestQueueMemory)
+	writeScalar(&b, "graphdb_ingest_queue_oldest_seconds", "Age of the oldest pending ingest request.", "gauge", m.ingestQueueOldest)
+	writeScalar(&b, "graphdb_ingest_queue_cache_hits_total", "Pending ingest status lookups served from memory.", "counter", m.ingestQueueCache["hit"])
+	writeScalar(&b, "graphdb_ingest_queue_cache_evictions_total", "Completed ingest requests evicted from the in-memory status index.", "counter", m.ingestQueueCache["eviction"])
+	writeCounter(&b, "graphdb_ingest_flush_total", "Tenant ingest flushes by status.", []string{"status"}, m.ingestFlush)
+	writeHistogram(&b, "graphdb_ingest_flush_duration_seconds", "Tenant ingest flush latency.", []string{"status"}, m.ingestFlushTime)
+	writeHistogram(&b, "graphdb_ingest_flush_requests", "Requests processed by each tenant ingest flush.", []string{"status"}, m.ingestFlushReqs)
+	writeHistogram(&b, "graphdb_ingest_flush_logical_commits", "Logical graph commits emitted by each tenant ingest flush.", []string{"status"}, m.ingestFlushCommit)
+	writeHistogram(&b, "graphdb_ingest_flush_segments", "Commit segments emitted by each tenant ingest flush.", []string{"status"}, m.ingestFlushSegs)
+	writeHistogram(&b, "graphdb_ingest_flush_manifest_publishes", "Manifest publications completed by each ingest flush.", []string{"status"}, m.ingestFlushPub)
+	writeScalar(&b, "graphdb_ingest_flush_exact_dedup_total", "Logical no-op requests eliminated by ingest flushes.", "counter", m.ingestFlushDedup)
+	writeScalar(&b, "graphdb_ingest_flush_fallback_total", "Ingest flushes that required isolated per-request apply.", "counter", m.ingestFlushFall)
+	writeCounter(&b, "graphdb_ingest_wal_recovery_total", "Ingest WAL recovery attempts by status.", []string{"status"}, m.ingestRecovery)
+	writeHistogram(&b, "graphdb_ingest_wal_recovery_duration_seconds", "Ingest WAL scan and active-state recovery latency.", []string{"status"}, m.ingestRecoveryTime)
 	writeCounter(&b, "graphdb_index_health_checks_total", "Index health checks by tenant and status.", []string{"tenant", "status"}, m.indexHealthChecks)
 	writeGaugeStrings(&b, "graphdb_index_health_status", "Latest index health status by tenant.", m.indexHealthStatus)
 	writeGaugeValues(&b, "graphdb_index_health_issues", "Latest index health issue count by tenant.", []string{"tenant"}, m.indexHealthIssues)
 	return b.Bytes()
+}
+
+func writeScalar(b *bytes.Buffer, name string, help string, metricType string, value float64) {
+	writeMetricHeader(b, name, help, metricType)
+	fmt.Fprintf(b, "%s %g\n", name, value)
 }
 
 func (m *Metrics) observe(values map[string]*histogram, key string, buckets []float64, value float64) {

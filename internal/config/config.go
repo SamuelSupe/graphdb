@@ -50,6 +50,20 @@ type Config struct {
 	WriterObjectCacheMaxKeys          int
 	WriterObjectCacheNegativeTTL      time.Duration
 	IngestCollectorStatusMaterialized bool
+	IngestMode                        string
+	IngestWALDir                      string
+	IngestWALDurability               string
+	IngestWALBufferBytes              int64
+	IngestWALFsyncInterval            time.Duration
+	IngestWALMaxBytes                 int64
+	IngestWALSegmentBytes             int64
+	IngestWALAppendQueue              int
+	IngestQueueMemoryBytes            int64
+	IngestFlushInterval               time.Duration
+	IngestFlushMaxRequests            int
+	IngestFlushMaxBytes               int64
+	IngestFlushWorkers                int
+	IngestShutdownTimeout             time.Duration
 	SlowQueryThreshold                time.Duration
 	IndexHealthInterval               time.Duration
 	MaintenanceInterval               time.Duration
@@ -123,6 +137,19 @@ func Load() (Config, error) {
 		WriterObjectCacheMaxKeys:          200000,
 		WriterObjectCacheNegativeTTL:      5 * time.Minute,
 		IngestCollectorStatusMaterialized: true,
+		IngestMode:                        strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_MODE", "direct"))),
+		IngestWALDurability:               strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_WAL_DURABILITY", storage.IngestWALDurabilitySync))),
+		IngestWALBufferBytes:              4 * 1024 * 1024,
+		IngestWALFsyncInterval:            5 * time.Millisecond,
+		IngestWALMaxBytes:                 10 * 1024 * 1024 * 1024,
+		IngestWALSegmentBytes:             256 * 1024 * 1024,
+		IngestWALAppendQueue:              4096,
+		IngestQueueMemoryBytes:            256 * 1024 * 1024,
+		IngestFlushInterval:               10 * time.Second,
+		IngestFlushMaxRequests:            256,
+		IngestFlushMaxBytes:               8 * 1024 * 1024,
+		IngestFlushWorkers:                1,
+		IngestShutdownTimeout:             30 * time.Second,
 		SlowQueryThreshold:                500 * time.Millisecond,
 		IndexHealthInterval:               30 * time.Second,
 		MaintenanceInterval:               30 * time.Second,
@@ -269,6 +296,40 @@ func Load() (Config, error) {
 	if err := loadBoolEnv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", &cfg.IngestCollectorStatusMaterialized); err != nil {
 		return Config{}, err
 	}
+	cfg.IngestWALDir = strings.TrimSpace(os.Getenv("GRAPHDB_INGEST_WAL_DIR"))
+	if err := loadBytesEnv("GRAPHDB_INGEST_WAL_BUFFER_BYTES", &cfg.IngestWALBufferBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_INGEST_WAL_FSYNC_INTERVAL", &cfg.IngestWALFsyncInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_WAL_MAX_BYTES", &cfg.IngestWALMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_WAL_SEGMENT_BYTES", &cfg.IngestWALSegmentBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_WAL_APPEND_QUEUE", &cfg.IngestWALAppendQueue); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", &cfg.IngestQueueMemoryBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_INGEST_FLUSH_INTERVAL", &cfg.IngestFlushInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_FLUSH_MAX_REQUESTS", &cfg.IngestFlushMaxRequests); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_FLUSH_MAX_BYTES", &cfg.IngestFlushMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_FLUSH_WORKERS", &cfg.IngestFlushWorkers); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", &cfg.IngestShutdownTimeout); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_SLOW_QUERY_THRESHOLD", &cfg.SlowQueryThreshold); err != nil {
 		return Config{}, err
 	}
@@ -321,6 +382,9 @@ func Load() (Config, error) {
 	if cfg.ReaderIndexCacheDir == "" && cfg.DataDir != "" {
 		cfg.ReaderIndexCacheDir = filepath.Join(cfg.DataDir, "cache", "index-objects")
 	}
+	if cfg.IngestWALDir == "" && cfg.DataDir != "" {
+		cfg.IngestWALDir = filepath.Join(cfg.DataDir, "wal", "ingest")
+	}
 	switch cfg.Mode {
 	case "all", "writer", "reader":
 	default:
@@ -332,6 +396,9 @@ func Load() (Config, error) {
 	if err := cfg.validateCoordination(); err != nil {
 		return Config{}, err
 	}
+	if err := cfg.validateIngest(); err != nil {
+		return Config{}, err
+	}
 	if cfg.PprofEnabled && cfg.AdminAddr == "" {
 		return Config{}, fmt.Errorf("GRAPHDB_ADMIN_ADDR is required when GRAPHDB_PPROF_ENABLED=true")
 	}
@@ -339,6 +406,44 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("GRAPHDB_ADMIN_ADDR must differ from GRAPHDB_ADDR")
 	}
 	return cfg, nil
+}
+
+func (cfg Config) validateIngest() error {
+	switch cfg.IngestMode {
+	case "direct":
+		return nil
+	case "wal":
+	default:
+		return fmt.Errorf("unsupported GRAPHDB_INGEST_MODE %q", cfg.IngestMode)
+	}
+	if cfg.coordinationMode() != storage.CoordinationLocal {
+		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal requires GRAPHDB_COORDINATION=local")
+	}
+	if cfg.Mode == "reader" {
+		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal is unavailable in reader mode")
+	}
+	return cfg.IngestServiceConfig().Validate()
+}
+
+func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
+	return storage.IngestServiceConfig{
+		WAL: storage.IngestWALConfig{
+			Dir:           cfg.IngestWALDir,
+			Durability:    cfg.IngestWALDurability,
+			BufferBytes:   int(cfg.IngestWALBufferBytes),
+			FsyncInterval: cfg.IngestWALFsyncInterval,
+			MaxBytes:      cfg.IngestWALMaxBytes,
+			SegmentBytes:  cfg.IngestWALSegmentBytes,
+			AppendQueue:   cfg.IngestWALAppendQueue,
+		},
+		QueueMemoryBytes: cfg.IngestQueueMemoryBytes,
+		FlushInterval:    cfg.IngestFlushInterval,
+		FlushMaxRequests: cfg.IngestFlushMaxRequests,
+		FlushMaxBytes:    cfg.IngestFlushMaxBytes,
+		FlushWorkers:     cfg.IngestFlushWorkers,
+		FlushTimeout:     cfg.WriteExecutionTimeout,
+		RetryInterval:    time.Second,
+	}
 }
 
 func NewCoordinator(ctx context.Context, cfg Config) (storage.WriteCoordinator, error) {

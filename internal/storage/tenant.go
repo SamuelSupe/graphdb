@@ -123,6 +123,7 @@ type TenantStore struct {
 	BackpressureObserver       BackpressureObserver
 	CacheObserver              ReaderCacheObserver
 	CoordinatorObserver        CoordinatorObserver
+	IngestBarrier              func(context.Context, string) error
 }
 
 type loadedGraph struct {
@@ -234,6 +235,11 @@ func (s *TenantStore) Commit(ctx context.Context, tenantID string, mutations gra
 func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
+	}
+	if s.IngestBarrier != nil {
+		if err := s.IngestBarrier(ctx, tenantID); err != nil {
+			return Manifest{}, err
+		}
 	}
 	if s.coordinated() {
 		operationCtx, stop, err := s.startCoordinatorOperationLease(

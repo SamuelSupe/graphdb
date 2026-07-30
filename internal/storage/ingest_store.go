@@ -23,6 +23,38 @@ type ingestRecordKeyProbe struct {
 	err      error
 }
 
+func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, source string, collectorID string, batchID string) (IngestBatchRecord, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return IngestBatchRecord{}, err
+	}
+	source = strings.TrimSpace(source)
+	collectorID = strings.TrimSpace(collectorID)
+	batchID = strings.TrimSpace(batchID)
+	if source == "" || collectorID == "" || batchID == "" {
+		return IngestBatchRecord{}, fmt.Errorf("source, collector_id, and batch_id are required")
+	}
+	keys := []string{
+		s.ingestBatchKey(tenantID, source, collectorID, batchID),
+		s.legacyIngestBatchKey(tenantID, source, batchID),
+	}
+	for _, key := range keys {
+		record, _, err := s.loadIngestRecordWithMeta(ctx, key)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return IngestBatchRecord{}, err
+		}
+		if (record.TenantID == "" || record.TenantID == tenantID) &&
+			record.Request.Source == source &&
+			record.Request.CollectorID == collectorID &&
+			record.Result.BatchID == batchID {
+			return record, nil
+		}
+	}
+	return IngestBatchRecord{}, ErrNotFound
+}
+
 func (s *TenantStore) loadIngestRecord(ctx context.Context, tenantID string, request IngestRequest) (IngestBatchRecord, bool, error) {
 	candidates := make([]ingestRecordLookupCandidate, 0, 6)
 	if request.IdempotencyKey != "" {

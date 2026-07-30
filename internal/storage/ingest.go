@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -101,10 +102,16 @@ type IngestBatchRecord struct {
 }
 
 func (s *TenantStore) Ingest(ctx context.Context, tenantID string, request IngestRequest) (IngestResult, error) {
-	return s.ingest(ctx, tenantID, request, true)
+	return s.ingest(ctx, tenantID, request, true, false)
 }
 
-func (s *TenantStore) ingest(ctx context.Context, tenantID string, request IngestRequest, saveFailures bool) (IngestResult, error) {
+// IngestDurable gives a WAL-replayed request a storage-side idempotency fence.
+// It closes the crash window between manifest publication and ingest metadata.
+func (s *TenantStore) IngestDurable(ctx context.Context, tenantID string, request IngestRequest) (IngestResult, error) {
+	return s.ingest(ctx, tenantID, request, true, true)
+}
+
+func (s *TenantStore) ingest(ctx context.Context, tenantID string, request IngestRequest, saveFailures bool, durableCommit bool) (IngestResult, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IngestResult{}, err
 	}
@@ -169,7 +176,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	result.Cursor = request.Cursor
 	pendingApplied := result.Applied
 	if pendingApplied > 0 {
-		commitResult, err := s.commitWithRetryLocked(ctx, tenantID, mutations, CommitOptions{})
+		commitResult, err := s.commitIngestMutationsLocked(ctx, tenantID, request, mutations, durableCommit)
 		if err != nil {
 			if errors.Is(err, ErrBackpressure) {
 				return IngestResult{}, err
@@ -192,6 +199,25 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 		}
 	}
 	finished := time.Now().UTC()
+	metadataErr := s.saveIngestResultMetadata(ctx, tenantID, request, result, started, finished, saveFailures)
+	if metadataErr != nil {
+		return result, metadataErr
+	}
+	if result.Failed > 0 {
+		return result, nil
+	}
+	return result, nil
+}
+
+func (s *TenantStore) saveIngestResultMetadata(
+	ctx context.Context,
+	tenantID string,
+	request IngestRequest,
+	result IngestResult,
+	started time.Time,
+	finished time.Time,
+	saveFailures bool,
+) error {
 	var metadataErr error
 	if err := s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{Request: request, Result: result, StartedAt: started, FinishedAt: finished}); err != nil {
 		metadataErr = errors.Join(metadataErr, fmt.Errorf("save ingest batch: %w", err))
@@ -204,13 +230,66 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 			metadataErr = errors.Join(metadataErr, fmt.Errorf("save dead letter: %w", err))
 		}
 	}
-	if metadataErr != nil {
-		return result, metadataErr
+	return metadataErr
+}
+
+func (s *TenantStore) commitIngestMutationsLocked(
+	ctx context.Context,
+	tenantID string,
+	request IngestRequest,
+	mutations graph.Mutations,
+	durable bool,
+) (CommitResult, error) {
+	if !durable {
+		return s.commitWithRetryLocked(ctx, tenantID, mutations, CommitOptions{})
 	}
-	if result.Failed > 0 {
-		return result, nil
+	commitRequest := DirectCommitRequest{
+		IdempotencyKey: durableIngestCommitKey(tenantID, request),
+		Mutations:      mutations,
+	}
+	reservation, replay, err := s.beginDirectCommit(ctx, tenantID, commitRequest, time.Now().UTC())
+	if err != nil {
+		return CommitResult{}, err
+	}
+	if replay != nil {
+		return *replay, nil
+	}
+	result, err := s.commitWithRetryLocked(ctx, tenantID, mutations, CommitOptions{directCommit: reservation})
+	if err != nil {
+		return CommitResult{}, err
+	}
+	if err := s.completeDirectCommit(ctx, reservation, result, time.Now().UTC()); err != nil {
+		return result, fmt.Errorf("complete durable ingest commit: %w", err)
 	}
 	return result, nil
+}
+
+func durableIngestCommitKey(tenantID string, request IngestRequest) string {
+	identity := tenantID + "\x00" + request.Source + "\x00" + request.CollectorID + "\x00"
+	if request.IdempotencyKey != "" {
+		identity += "idempotency\x00" + request.IdempotencyKey
+	} else {
+		identity += "batch\x00" + request.BatchID
+	}
+	sum := sha256.Sum256([]byte(identity))
+	return "ingest-wal-" + hex.EncodeToString(sum[:])
+}
+
+func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return IngestRequest{}, err
+	}
+	request = normalizeIngestRequest(request)
+	if request.Source == "" || request.CollectorID == "" {
+		return IngestRequest{}, fmt.Errorf("source and collector_id are required")
+	}
+	if request.BatchID == "" {
+		request.BatchID = defaultIngestBatchID(request)
+	}
+	if _, err := json.Marshal(request); err != nil {
+		return IngestRequest{}, fmt.Errorf("encode ingest request: %w", err)
+	}
+	return request, nil
 }
 
 func normalizeIngestRequest(request IngestRequest) IngestRequest {

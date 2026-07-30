@@ -279,6 +279,8 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeIdempotencyInProgress, true
 	case errors.Is(err, storage.ErrTaskLeaseHeld):
 		return ErrorCodeTaskConflict, false
+	case errors.Is(err, storage.ErrIngestRepairRequired):
+		return ErrorCodeRepairRequired, false
 	case errors.Is(err, storage.ErrTenantDisabled):
 		return ErrorCodeTenantDisabled, false
 	case errors.Is(err, storage.ErrTenantDeleted):

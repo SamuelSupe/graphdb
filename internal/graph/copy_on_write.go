@@ -53,9 +53,12 @@ func storageMutationImpactFor(mutations Mutations) storageMutationImpact {
 }
 
 func (g *Graph) cloneForStorageMutation(mutations Mutations) *Graph {
+	return g.cloneForStorageImpact(storageMutationImpactFor(mutations))
+}
+
+func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
 	logicalHashCache := g.shareLogicalHashCache()
-	impact := storageMutationImpactFor(mutations)
 	return &Graph{
 		Version:                 g.Version,
 		CITypes:                 storageMutationMap(g.CITypes, impact.ciTypes),

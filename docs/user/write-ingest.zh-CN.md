@@ -258,6 +258,70 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `failures`：item 级错误；
 - `conflicts`：被抑制冲突和提交失败原因。
 
+### 本地 WAL 模式（1.1.2）
+
+默认 `GRAPHDB_INGEST_MODE=direct` 保持原来的同步 `200/207` 行为。单 writer、
+`GRAPHDB_COORDINATION=local` 部署可以显式设置
+`GRAPHDB_INGEST_MODE=wal`。该模式会先把请求追加到进程级分段 WAL；不同租户
+可共享一次 group-fsync，而后台默认只使用一个 graph write worker，并保持
+同租户 FIFO 顺序。同一租户的一次 flush 保留每个请求的逻辑 commit 顺序，
+但把这些 commit 写入一个 Parquet commit segment，并只发布一次 manifest。
+
+同步耐久模式在 WAL fsync 后返回 `202 Accepted`、`Location` 和状态 URL：
+
+```json
+{
+  "batch_id": "aws-batch-001",
+  "state": "accepted",
+  "durability": "durable",
+  "accepted_at": "2026-07-30T00:00:00Z",
+  "estimated_flush_at": "2026-07-30T00:00:10Z",
+  "status_url": "/v1/ingest/batches/aws/collector-a/aws-batch-001"
+}
+```
+
+需要等待最终结果的兼容调用方可以发送 `Prefer: wait=committed`。查询状态：
+
+```sh
+curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
+  -H 'X-Tenant-ID: demo'
+```
+
+主要配置：
+
+- `GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest`
+- `GRAPHDB_INGEST_WAL_DURABILITY=sync|os`（默认 `sync`）
+- `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`
+- `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`
+- `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`
+- `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`
+- `GRAPHDB_INGEST_FLUSH_INTERVAL=10s`
+- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`
+- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`
+- `GRAPHDB_INGEST_FLUSH_WORKERS=1`
+- `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
+
+WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记录会阻止启动；
+只有最后一个 segment 的不完整尾记录会被截断。已经 durable accepted 的
+请求即使客户端断开也会继续写入；manifest 已发布但 ingest metadata 尚未
+完成的请求会用 WAL 中已 fsync 的 PREPARED 提交计划恢复，不会重复增加
+graph version。首次遇到历史 loose commit 尾部时会将其并入 segment；该租户
+随后不再承担这次迁移成本。
+
+`/metrics` 提供 `graphdb_ingest_wal_*`、`graphdb_ingest_queue_*` 和
+`graphdb_ingest_flush_*` 指标，包括 append/fsync、WAL 内存与磁盘占用、
+written/durable LSN、待处理请求与最老等待时间、状态缓存命中/淘汰、flush
+延迟与请求/commit/segment/manifest 数，以及 recovery 结果。这些指标只有
+固定状态类标签，不包含 tenant、source、collector 或 batch 等高基数标签。
+
+进程日志会输出 `ingest_wal_recovery`、`ingest_wal_accepted`、
+`ingest_flush_started`、`ingest_flush_completed`、WAL rotate/prune/fsync
+失败和 shutdown 等 JSON 事件；租户、batch、LSN、flush ID、耗时和错误原因
+留在日志中。设置 `GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
+write、flush、batch apply、publish 和 metadata finalize 会通过 OTLP/HTTP
+导出。异步 group write 和 flush 使用 OTel links 关联原请求 span；accepted
+记录还会保存 trace context，因此进程恢复后仍可关联原始写入请求。
+
 CMDB 采集场景的批次建议：
 
 - 从每批 200 个逻辑 CMDB 组开始，对象存储和 writer 超时稳定后再接近 500；

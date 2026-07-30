@@ -146,7 +146,7 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 ## 发行版
 
 最新已发布版本为 GGraphDB 1.1：
-[**v1.1.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.1)。
+[**v1.1.2**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.2)。
 发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
 正式回滚演练全部通过后才会发布。
 
@@ -158,7 +158,7 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.1.1` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.1.2` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 

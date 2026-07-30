@@ -204,6 +204,11 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 	if s.coordinated() {
 		return s.setCoordinatedTenantStatus(ctx, tenantID, status)
 	}
+	if status != TenantStatusActive && s.IngestBarrier != nil {
+		if err := s.IngestBarrier(ctx, tenantID); err != nil {
+			return TenantInfo{}, err
+		}
+	}
 	return s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
 		now := time.Now().UTC()
 		metadata.Status = status
@@ -222,6 +227,11 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantPurgeReport{}, err
+	}
+	if s.IngestBarrier != nil {
+		if err := s.IngestBarrier(ctx, tenantID); err != nil {
+			return TenantPurgeReport{}, err
+		}
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
@@ -391,6 +401,11 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 	}
 	if sourceTenantID == targetTenantID {
 		return TenantInfo{}, fmt.Errorf("target tenant must differ from source tenant")
+	}
+	if s.IngestBarrier != nil {
+		if err := s.IngestBarrier(ctx, sourceTenantID); err != nil {
+			return TenantInfo{}, err
+		}
 	}
 	sourceInfo, err := s.GetTenantInfo(ctx, sourceTenantID)
 	if err != nil {

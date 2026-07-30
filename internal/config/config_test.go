@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,48 @@ func TestLoadKeepsPprofDisabledByDefault(t *testing.T) {
 	if cfg.PprofEnabled || cfg.AdminAddr != "" {
 		t.Fatalf("admin defaults = addr %q pprof %t, want empty/false", cfg.AdminAddr, cfg.PprofEnabled)
 	}
+}
+
+func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
+	setLocalConfigEnv(t)
+	dataDir := t.TempDir()
+	t.Setenv("GRAPHDB_DATA_DIR", dataDir)
+	t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IngestWALDir != filepath.Join(dataDir, "wal", "ingest") ||
+		cfg.IngestWALDurability != storage.IngestWALDurabilitySync ||
+		cfg.IngestWALBufferBytes != 4*1024*1024 ||
+		cfg.IngestFlushWorkers != 1 ||
+		cfg.IngestFlushInterval != 10*time.Second {
+		t.Fatalf("WAL defaults = %#v", cfg.IngestServiceConfig())
+	}
+
+	t.Run("postgres", func(t *testing.T) {
+		setPostgresConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "requires GRAPHDB_COORDINATION=local") {
+			t.Fatalf("Load err = %v, want local coordination boundary", err)
+		}
+	})
+	t.Run("reader", func(t *testing.T) {
+		setLocalConfigEnv(t)
+		t.Setenv("GRAPHDB_MODE", "reader")
+		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "unavailable in reader mode") {
+			t.Fatalf("Load err = %v, want reader boundary", err)
+		}
+	})
+	t.Run("durability", func(t *testing.T) {
+		setLocalConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		t.Setenv("GRAPHDB_INGEST_WAL_DURABILITY", "invalid")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "durability") {
+			t.Fatalf("Load err = %v, want durability validation", err)
+		}
+	})
 }
 
 func TestLoadRequiresSeparateAdminListenerForPprof(t *testing.T) {
@@ -741,6 +784,20 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_MAX_KEYS", "")
 	t.Setenv("GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL", "")
 	t.Setenv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", "")
+	t.Setenv("GRAPHDB_INGEST_MODE", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_DIR", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_DURABILITY", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_BUFFER_BYTES", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_FSYNC_INTERVAL", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_MAX_BYTES", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_SEGMENT_BYTES", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_APPEND_QUEUE", "")
+	t.Setenv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", "")
+	t.Setenv("GRAPHDB_INGEST_FLUSH_INTERVAL", "")
+	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_REQUESTS", "")
+	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_BYTES", "")
+	t.Setenv("GRAPHDB_INGEST_FLUSH_WORKERS", "")
+	t.Setenv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", "")
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "")
 	t.Setenv("GRAPHDB_SLOW_QUERY_THRESHOLD", "")
 	t.Setenv("GRAPHDB_INDEX_HEALTH_INTERVAL", "")
