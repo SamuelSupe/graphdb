@@ -1,0 +1,17 @@
+{
+  "name": "ggraphdb-pages",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@primer/css": "22.3.0"
+  },
+  "devDependencies": {
+    "vite": "8.1.5"
+  }
+}

@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="GGraphDB is an object-storage-native property graph database for entities, relationships, topology, and impact analysis."
+    />
+    <meta name="theme-color" content="#0d1117" />
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="GGraphDB | Operational property graphs" />
+    <meta
+      property="og:description"
+      content="Model entities, traverse relationships, and scale readers over S3-compatible storage."
+    />
+    <meta
+      property="og:image"
+      content="https://samuelsupe.github.io/graphdb/assets/graph-topology.webp"
+    />
+    <meta property="og:url" content="https://samuelsupe.github.io/graphdb/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <title>GGraphDB | Operational property graphs</title>
+    <script>
+      document.documentElement.classList.add("js");
+      try {
+        const savedTheme = localStorage.getItem("ggraphdb-theme");
+        if (savedTheme === "light" || savedTheme === "dark") {
+          document.documentElement.dataset.theme = savedTheme;
+        }
+      } catch {}
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": "GGraphDB",
+        "description": "An object-storage-native property graph database for entities, relationships, and topology.",
+        "codeRepository": "https://github.com/SamuelSupe/graphdb",
+        "programmingLanguage": "Go",
+        "runtimePlatform": "Linux, macOS, Docker"
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="nav-shell">
+        <a class="wordmark" href="#top" aria-label="GGraphDB home">
+          <span class="wordmark-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span>GGraphDB</span>
+        </a>
+
+        <button
+          class="nav-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="primary-nav"
+        >
+          Menu
+        </button>
+
+        <nav class="primary-nav" id="primary-nav" aria-label="Primary navigation">
+          <a href="#capabilities">Capabilities</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#queries">Queries</a>
+          <a href="#quick-start">Quick start</a>
+          <button class="theme-toggle" type="button" data-theme-toggle>
+            Light mode
+          </button>
+          <a
+            class="btn btn-secondary nav-github"
+            href="https://github.com/SamuelSupe/graphdb"
+          >
+            View on GitHub
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow">Object-storage-native property graph</p>
+          <h1>Build graphs that stay operational.</h1>
+          <p class="hero-lede">
+            Model entities, traverse relationships, and scale readers over
+            S3-compatible storage.
+          </p>
+          <div class="hero-actions">
+            <a
+              class="btn btn-primary cta-primary"
+              href="https://github.com/SamuelSupe/graphdb/blob/main/docs/user/README.md"
+            >
+              Read the docs
+            </a>
+            <a
+              class="btn btn-secondary cta-secondary"
+              href="https://github.com/SamuelSupe/graphdb"
+            >
+              View on GitHub
+            </a>
+          </div>
+        </div>
+
+        <figure class="hero-visual">
+          <img
+            src="./assets/graph-topology.webp"
+            width="1440"
+            height="901"
+            alt="Abstract property graph suspended over durable storage layers."
+            fetchpriority="high"
+          />
+        </figure>
+      </section>
+
+      <section class="proof-strip" aria-label="Core product characteristics">
+        <div>
+          <span>Query</span>
+          <strong>GraphQL + JSON DSL</strong>
+        </div>
+        <div>
+          <span>Persist</span>
+          <strong>Local or S3-compatible</strong>
+        </div>
+        <div>
+          <span>Operate</span>
+          <strong>Writer and reader fleets</strong>
+        </div>
+        <div>
+          <span>Build</span>
+          <strong>One Go binary</strong>
+        </div>
+      </section>
+
+      <section class="section-shell capabilities" id="capabilities">
+        <header class="section-heading reveal">
+          <h2>A graph core shaped for production.</h2>
+          <p>
+            Flexible entity modeling meets bounded queries, explicit freshness,
+            and the controls needed to run the database.
+          </p>
+        </header>
+
+        <div class="capability-grid">
+          <article class="feature feature-storage reveal">
+            <div class="feature-copy">
+              <span class="feature-index">Storage</span>
+              <h3>Durable data without a storage cluster.</h3>
+              <p>
+                Persist Parquet snapshots, commits, manifests, and indexes on
+                local disk or S3-compatible object storage.
+              </p>
+            </div>
+            <img
+              src="./assets/immutable-layers.webp"
+              width="1200"
+              height="900"
+              alt="Layered graph segments linked by a single durable path."
+              loading="lazy"
+            />
+          </article>
+
+          <article class="feature feature-query reveal">
+            <span class="feature-index">Query</span>
+            <h3>Bound every graph walk.</h3>
+            <p>
+              Match, traverse, inspect impact, and find shortest paths with
+              explicit limits.
+            </p>
+            <div class="operator-cloud" aria-label="Supported query operations">
+              <span>match</span>
+              <span>pattern</span>
+              <span>neighbors</span>
+              <span>traverse</span>
+              <span>impact</span>
+              <span>shortest_path</span>
+            </div>
+          </article>
+
+          <article class="feature feature-freshness reveal">
+            <span class="feature-index">Freshness</span>
+            <h3>Make read visibility explicit.</h3>
+            <p>
+              Carry a committed version into the next query when a workflow
+              must observe its own write.
+            </p>
+            <code class="inline-contract">min_version: committed_version</code>
+          </article>
+
+          <article class="feature feature-ingest reveal">
+            <span class="feature-index">Ingest</span>
+            <h3>Protect every tenant boundary.</h3>
+            <p>
+              Isolate entity data, indexes, cursors, and write pressure by
+              tenant while preserving idempotent ingestion.
+            </p>
+            <div class="tenant-sample">
+              <div>
+                <small>Request header</small>
+                <code>X-Tenant-ID: catalog</code>
+              </div>
+              <div>
+                <small>Write identity</small>
+                <code>Idempotency-Key: sync-1842</code>
+              </div>
+            </div>
+          </article>
+
+          <article class="feature feature-operations reveal">
+            <span class="feature-index">Operations</span>
+            <h3>Keep the graph inspectable.</h3>
+            <p>
+              Compact, audit, repair, back up, restore, and inspect index health
+              through supported operational paths.
+            </p>
+            <div class="operations-list" aria-label="Operational capabilities">
+              <span>Integrity audit</span>
+              <span>Backup and restore</span>
+              <span>Index health</span>
+              <span>Metrics and traces</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-shell architecture" id="architecture">
+        <header class="section-heading reveal">
+          <h2>Separate writes from reads.</h2>
+          <p>
+            Run one binary in all, writer, or reader mode. Shared object storage
+            connects the topology.
+          </p>
+        </header>
+
+        <div class="architecture-board reveal" aria-label="GGraphDB deployment architecture">
+          <div class="architecture-flow">
+            <div class="architecture-node">
+              <small>Clients</small>
+              <strong>Applications and collectors</strong>
+            </div>
+            <span class="flow-link" aria-hidden="true"></span>
+            <div class="architecture-node architecture-node-accent">
+              <small>Write plane</small>
+              <strong>Writer API</strong>
+              <code>GRAPHDB_MODE=writer</code>
+            </div>
+            <span class="flow-link" aria-hidden="true"></span>
+            <div class="architecture-node architecture-node-storage">
+              <small>Durable state</small>
+              <strong>S3, RustFS, or local</strong>
+              <code>Parquet + manifest</code>
+            </div>
+            <span class="flow-link" aria-hidden="true"></span>
+            <div class="architecture-node">
+              <small>Read plane</small>
+              <strong>Reader fleet</strong>
+              <code>GRAPHDB_MODE=reader</code>
+            </div>
+          </div>
+
+          <div class="coordination-branch">
+            <span class="branch-line" aria-hidden="true"></span>
+            <div>
+              <small>Optional coordination</small>
+              <strong>PostgreSQL head CAS</strong>
+              <p>Use optimistic multi-writer coordination when one writer is not enough.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-shell queries" id="queries">
+        <div class="query-intro reveal">
+          <h2>Query the same graph at the right level.</h2>
+          <p>
+            Use GraphQL or JSON DSL for new integrations. The text DSL remains
+            available for 1.0 compatibility.
+          </p>
+          <a
+            class="text-link"
+            href="https://github.com/SamuelSupe/graphdb/blob/main/docs/user/read-query.md"
+          >
+            Read the query guide
+          </a>
+        </div>
+
+        <div class="code-workbench reveal">
+          <div class="code-toolbar">
+            <div class="code-tabs" role="tablist" aria-label="Query examples">
+              <button type="button" role="tab" aria-selected="true" data-code-tab="graphql">
+                GraphQL
+              </button>
+              <button type="button" role="tab" aria-selected="false" data-code-tab="json">
+                JSON DSL
+              </button>
+              <button type="button" role="tab" aria-selected="false" data-code-tab="legacy">
+                Text DSL
+              </button>
+            </div>
+            <button class="copy-button" type="button" data-copy-code>Copy</button>
+          </div>
+          <pre tabindex="0"><code data-code-output></code></pre>
+          <p class="copy-status" aria-live="polite" data-copy-status></p>
+        </div>
+      </section>
+
+      <section class="section-shell quick-start" id="quick-start">
+        <div class="quick-start-copy reveal">
+          <h2>Start locally. Keep the same data model in production.</h2>
+          <p>
+            Run the Go binary directly, or start the bundled Docker Compose
+            topology.
+          </p>
+        </div>
+        <div class="command-card reveal">
+          <div class="command-heading">
+            <span>Terminal</span>
+            <button class="copy-button" type="button" data-copy-command>Copy</button>
+          </div>
+          <pre tabindex="0"><code data-command>go run ./cmd/graphdb serve
+curl -fsS http://127.0.0.1:8080/v1/health</code></pre>
+          <p class="copy-status" aria-live="polite" data-command-status></p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <a class="wordmark footer-wordmark" href="#top">GGraphDB</a>
+        <p>General-purpose property graphs on durable object storage.</p>
+      </div>
+      <div class="footer-links" aria-label="Project links">
+        <a href="https://github.com/SamuelSupe/graphdb">Repository</a>
+        <a href="https://github.com/SamuelSupe/graphdb/releases">Releases</a>
+        <a href="https://github.com/SamuelSupe/graphdb/tree/main/docs">Documentation</a>
+        <a href="https://github.com/SamuelSupe/graphdb/blob/main/LICENSE">License</a>
+      </div>
+      <p class="footer-meta">Copyright <span data-year></span> GGraphDB.</p>
+    </footer>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
