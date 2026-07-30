@@ -279,6 +279,28 @@ func (s *TenantStore) collectorStatusKey(tenantID string, source string, collect
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "collectors", objectSegment(collectorID)+".parquet")
 }
 
+func (s *TenantStore) ingestMetadataManifestKey(tenantID string) string {
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", "metadata", "manifest.parquet")
+}
+
+func (s *TenantStore) ingestMetadataSegmentKey(tenantID string, firstLSN uint64, lastLSN uint64, contentHash string) string {
+	hash := contentHash
+	if len(hash) > 16 {
+		hash = hash[:16]
+	}
+	name := fmt.Sprintf("%020d-%020d-%s.parquet", firstLSN, lastLSN, hash)
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", "metadata", "segments", name)
+}
+
+func (s *TenantStore) ingestMetadataIndexKey(tenantID string, level int, firstLSN uint64, lastLSN uint64, contentHash string) string {
+	hash := contentHash
+	if len(hash) > 16 {
+		hash = hash[:16]
+	}
+	name := fmt.Sprintf("%020d-%020d-%s.parquet", firstLSN, lastLSN, hash)
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", "metadata", "index", fmt.Sprintf("l%d", level), name)
+}
+
 func (s *TenantStore) deadLetterPrefix(tenantID string, source string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "deadletters") + "/"
 }

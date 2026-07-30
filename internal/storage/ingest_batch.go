@@ -16,6 +16,7 @@ var ErrIngestRepairRequired = errors.New("ingest WAL repair required")
 type IngestBatchEntry struct {
 	Request    IngestRequest
 	AcceptedAt time.Time
+	FinishedAt time.Time
 	Prepared   *IngestPreparedRequest
 }
 
@@ -32,8 +33,10 @@ type IngestPreparedRequest struct {
 }
 
 type IngestBatchHooks struct {
-	Prepared func(context.Context, []*IngestPreparedRequest) error
-	Stats    func(IngestBatchStats)
+	Prepared      func(context.Context, []*IngestPreparedRequest) error
+	Published     func(context.Context, []IngestPublishedRecord) error
+	DeferMetadata bool
+	Stats         func(IngestBatchStats)
 }
 
 type IngestBatchStats struct {
@@ -89,6 +92,9 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	}
 	if s.coordinated() {
 		return nil, fmt.Errorf("durable ingest batching requires local coordination")
+	}
+	if err := s.ensureIngestMetadataWriteMode(ctx, tenantID); err != nil {
+		return nil, err
 	}
 	preparedEntries := make([]IngestBatchEntry, len(entries))
 	for index, entry := range entries {
@@ -265,15 +271,41 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		hooks.Stats(stats)
 	}
 
+	published := make([]IngestPublishedRecord, 0, len(candidates))
+	for _, candidate := range candidates {
+		results[candidate.index] = candidate.result
+		finishedAt := preparedEntries[candidate.index].FinishedAt
+		if finishedAt.IsZero() {
+			finishedAt = time.Now().UTC()
+		}
+		published = append(published, IngestPublishedRecord{
+			Index: candidate.index,
+			Record: IngestBatchRecord{
+				TenantID:   tenantID,
+				Request:    candidate.request,
+				Result:     candidate.result,
+				StartedAt:  candidate.started,
+				FinishedAt: finishedAt,
+			},
+		})
+	}
+	if hooks.Published != nil {
+		if err := hooks.Published(ctx, published); err != nil {
+			return results, err
+		}
+	}
+	if hooks.DeferMetadata {
+		return results, nil
+	}
+
 	metadataCtx, metadataSpan := startStorageSpan(ctx, "graphdb.storage.ingest.finalize_metadata",
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.ingest.metadata.requests", len(candidates)),
 	)
 	var metadataErr error
-	for _, candidate := range candidates {
-		results[candidate.index] = candidate.result
-		finished := time.Now().UTC()
-		if err := s.saveIngestResultMetadata(metadataCtx, tenantID, candidate.request, candidate.result, candidate.started, finished, true); err != nil {
+	for _, item := range published {
+		record := item.Record
+		if err := s.saveIngestResultMetadata(metadataCtx, tenantID, record.Request, record.Result, record.StartedAt, record.FinishedAt, true); err != nil {
 			metadataErr = errors.Join(metadataErr, err)
 		}
 	}

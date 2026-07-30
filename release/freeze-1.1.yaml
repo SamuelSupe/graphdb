@@ -27,6 +27,7 @@ allowed_after_freeze:
   - backward_compatibility_fixes
   - test_and_gate_repairs
   - documentation_and_operations_corrections
+  - approved_1_1_3_local_wal_metadata_segmentation
 
 blocked_after_freeze:
   - new_public_features

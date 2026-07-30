@@ -63,6 +63,11 @@ type Config struct {
 	IngestFlushMaxRequests            int
 	IngestFlushMaxBytes               int64
 	IngestFlushWorkers                int
+	IngestMetadataMode                string
+	IngestMetadataFlushInterval       time.Duration
+	IngestMetadataMaxRequests         int
+	IngestMetadataMaxBytes            int64
+	IngestMetadataFlushWorkers        int
 	IngestShutdownTimeout             time.Duration
 	SlowQueryThreshold                time.Duration
 	IndexHealthInterval               time.Duration
@@ -149,6 +154,11 @@ func Load() (Config, error) {
 		IngestFlushMaxRequests:            256,
 		IngestFlushMaxBytes:               8 * 1024 * 1024,
 		IngestFlushWorkers:                1,
+		IngestMetadataMode:                storage.IngestMetadataModeLegacy,
+		IngestMetadataFlushInterval:       30 * time.Second,
+		IngestMetadataMaxRequests:         256,
+		IngestMetadataMaxBytes:            8 * 1024 * 1024,
+		IngestMetadataFlushWorkers:        1,
 		IngestShutdownTimeout:             30 * time.Second,
 		SlowQueryThreshold:                500 * time.Millisecond,
 		IndexHealthInterval:               30 * time.Second,
@@ -327,6 +337,19 @@ func Load() (Config, error) {
 	if err := loadIntEnv("GRAPHDB_INGEST_FLUSH_WORKERS", &cfg.IngestFlushWorkers); err != nil {
 		return Config{}, err
 	}
+	cfg.IngestMetadataMode = strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_METADATA_MODE", storage.IngestMetadataModeLegacy)))
+	if err := loadDurationEnv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", &cfg.IngestMetadataFlushInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_METADATA_MAX_REQUESTS", &cfg.IngestMetadataMaxRequests); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_METADATA_MAX_BYTES", &cfg.IngestMetadataMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", &cfg.IngestMetadataFlushWorkers); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", &cfg.IngestShutdownTimeout); err != nil {
 		return Config{}, err
 	}
@@ -409,6 +432,15 @@ func Load() (Config, error) {
 }
 
 func (cfg Config) validateIngest() error {
+	switch cfg.IngestMetadataMode {
+	case storage.IngestMetadataModeLegacy:
+	case storage.IngestMetadataModeSegment:
+		if cfg.IngestMode != "wal" {
+			return fmt.Errorf("GRAPHDB_INGEST_METADATA_MODE=segment requires GRAPHDB_INGEST_MODE=wal")
+		}
+	default:
+		return fmt.Errorf("unsupported GRAPHDB_INGEST_METADATA_MODE %q", cfg.IngestMetadataMode)
+	}
 	switch cfg.IngestMode {
 	case "direct":
 		return nil
@@ -441,8 +473,15 @@ func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 		FlushMaxRequests: cfg.IngestFlushMaxRequests,
 		FlushMaxBytes:    cfg.IngestFlushMaxBytes,
 		FlushWorkers:     cfg.IngestFlushWorkers,
-		FlushTimeout:     cfg.WriteExecutionTimeout,
-		RetryInterval:    time.Second,
+		Metadata: storage.IngestMetadataConfig{
+			Mode:          cfg.IngestMetadataMode,
+			FlushInterval: cfg.IngestMetadataFlushInterval,
+			MaxRequests:   cfg.IngestMetadataMaxRequests,
+			MaxBytes:      cfg.IngestMetadataMaxBytes,
+			FlushWorkers:  cfg.IngestMetadataFlushWorkers,
+		},
+		FlushTimeout:  cfg.WriteExecutionTimeout,
+		RetryInterval: time.Second,
 	}
 }
 

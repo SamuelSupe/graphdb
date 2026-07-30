@@ -71,9 +71,42 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 		cfg.IngestWALDurability != storage.IngestWALDurabilitySync ||
 		cfg.IngestWALBufferBytes != 4*1024*1024 ||
 		cfg.IngestFlushWorkers != 1 ||
-		cfg.IngestFlushInterval != 10*time.Second {
+		cfg.IngestFlushInterval != 10*time.Second ||
+		cfg.IngestMetadataMode != storage.IngestMetadataModeLegacy ||
+		cfg.IngestMetadataFlushInterval != 30*time.Second ||
+		cfg.IngestMetadataMaxRequests != 256 ||
+		cfg.IngestMetadataMaxBytes != 8*1024*1024 ||
+		cfg.IngestMetadataFlushWorkers != 1 {
 		t.Fatalf("WAL defaults = %#v", cfg.IngestServiceConfig())
 	}
+
+	t.Run("segment", func(t *testing.T) {
+		setLocalConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "segment")
+		t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", "17s")
+		t.Setenv("GRAPHDB_INGEST_METADATA_MAX_REQUESTS", "31")
+		t.Setenv("GRAPHDB_INGEST_METADATA_MAX_BYTES", "3MiB")
+		t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", "2")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.IngestMetadataMode != storage.IngestMetadataModeSegment ||
+			cfg.IngestMetadataFlushInterval != 17*time.Second ||
+			cfg.IngestMetadataMaxRequests != 31 ||
+			cfg.IngestMetadataMaxBytes != 3*1024*1024 ||
+			cfg.IngestMetadataFlushWorkers != 2 {
+			t.Fatalf("segment metadata config = %#v", cfg.IngestServiceConfig().Metadata)
+		}
+	})
+	t.Run("segment requires wal", func(t *testing.T) {
+		setLocalConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "segment")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "requires GRAPHDB_INGEST_MODE=wal") {
+			t.Fatalf("Load err = %v, want WAL boundary", err)
+		}
+	})
 
 	t.Run("postgres", func(t *testing.T) {
 		setPostgresConfigEnv(t)
@@ -797,6 +830,11 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_REQUESTS", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_WORKERS", "")
+	t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "")
+	t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", "")
+	t.Setenv("GRAPHDB_INGEST_METADATA_MAX_REQUESTS", "")
+	t.Setenv("GRAPHDB_INGEST_METADATA_MAX_BYTES", "")
+	t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", "")
 	t.Setenv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", "")
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "")
 	t.Setenv("GRAPHDB_SLOW_QUERY_THRESHOLD", "")

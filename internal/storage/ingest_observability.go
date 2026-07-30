@@ -19,6 +19,19 @@ type IngestObserver interface {
 		fallback bool,
 	)
 	RecordIngestRecovery(status string, records int, pending int, prepared int, duration time.Duration)
+	RecordIngestMetadataQueue(pending int, bytes int64, oldest time.Duration)
+	RecordIngestMetadataFlush(
+		status string,
+		duration time.Duration,
+		requests int,
+		segmentBytes int,
+		segmentPuts int,
+		manifestPublishes int,
+		manifestConflicts int,
+		indexPublishes int,
+	)
+	RecordIngestMetadataLookup(kind string, outcome string, candidates int, duration time.Duration)
+	RecordIngestMetadataReplay(bytes int64)
 }
 
 type IngestLogger interface {

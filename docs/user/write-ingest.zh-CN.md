@@ -301,6 +301,48 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
 - `GRAPHDB_INGEST_FLUSH_WORKERS=1`
 - `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
 
+#### 1.1.3 metadata segment 模式
+
+1.1.3 在本地 WAL 模式上增加显式启用的 metadata 攒批：
+
+```ini
+GRAPHDB_INGEST_MODE=wal
+GRAPHDB_COORDINATION=local
+GRAPHDB_INGEST_METADATA_MODE=segment
+GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=30s
+GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
+GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
+GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=1
+```
+
+默认仍为 `GRAPHDB_INGEST_METADATA_MODE=legacy`。segment 模式把同一租户跨
+graph flush 的完整请求、结果、摘要和本窗口最终 collector status 写入一个
+内容寻址 Parquet segment，再用一次独立 ingest manifest CAS 发布。batch 和
+idempotency identity 可以同时指向 segment 内同一条记录；正常 256 请求窗口
+不再创建逐请求 batch/idempotency 对象或 collector status 对象。
+
+manifest 直接保存最近 32 个 segment 引用，更早的引用进入分层索引目录；
+每层最多 8 个目录对象。目录合并只重写引用和 Bloom，不重写或删除历史 payload
+segment。点查顺序为活跃 WAL、新 segment/index、旧 batch/idempotency 对象。
+旧历史不迁移也不删除，首次新格式 collector 状态会从旧状态或旧 batch 记录
+初始化累计值。
+
+graph manifest 发布后请求进入 `published`；metadata manifest 发布后才进入
+`committed` 并允许 WAL 回收。`Prefer: wait=committed` 会立即 flush 当前租户
+metadata 窗口，普通 `202` 允许等待阈值或 30 秒窗口。segment PUT、manifest
+CAS 和 `FINALIZED` 之间崩溃时，WAL 中持久化的 metadata flush ID、LSN 范围
+和内容哈希保证恢复不会重复 graph version、collector totals 或结果。
+
+升级必须分两步：
+
+1. 所有 reader 和 writer 先升级到 1.1.3，继续使用 `legacy`；
+2. 再停止写入、确认没有 1.1.2 writer 后显式切换到 `segment`。
+
+租户一旦存在 segment manifest，1.1.3 legacy writer 会拒绝继续旧格式写入。
+此后不能直接回退到 1.1.2 writer；回退前必须停止写入并用 1.1.3
+legacy-compatible 工具导出或转换。direct 模式、graph commit 格式、逻辑
+version、FIFO、租户隔离和 deadletter 对象布局不变。
+
 WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记录会阻止启动；
 只有最后一个 segment 的不完整尾记录会被截断。已经 durable accepted 的
 请求即使客户端断开也会继续写入；manifest 已发布但 ingest metadata 尚未
@@ -308,17 +350,22 @@ WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记�
 graph version。首次遇到历史 loose commit 尾部时会将其并入 segment；该租户
 随后不再承担这次迁移成本。
 
-`/metrics` 提供 `graphdb_ingest_wal_*`、`graphdb_ingest_queue_*` 和
-`graphdb_ingest_flush_*` 指标，包括 append/fsync、WAL 内存与磁盘占用、
+`/metrics` 提供 `graphdb_ingest_wal_*`、`graphdb_ingest_queue_*`、
+`graphdb_ingest_flush_*` 和 `graphdb_ingest_metadata_*` 指标，包括
+append/fsync、WAL 内存与磁盘占用、
 written/durable LSN、待处理请求与最老等待时间、状态缓存命中/淘汰、flush
-延迟与请求/commit/segment/manifest 数，以及 recovery 结果。这些指标只有
+延迟与请求/commit/segment/manifest 数、metadata 物理 PUT/字节、manifest
+冲突、Bloom 候选和恢复重放字节，以及 recovery 结果。这些指标只有
 固定状态类标签，不包含 tenant、source、collector 或 batch 等高基数标签。
 
 进程日志会输出 `ingest_wal_recovery`、`ingest_wal_accepted`、
-`ingest_flush_started`、`ingest_flush_completed`、WAL rotate/prune/fsync
+`ingest_flush_started`、`ingest_flush_completed`、
+`ingest_metadata_flush_started`、`ingest_metadata_segment_completed`、
+`ingest_metadata_manifest_published`、WAL rotate/prune/fsync
 失败和 shutdown 等 JSON 事件；租户、batch、LSN、flush ID、耗时和错误原因
 留在日志中。设置 `GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
-write、flush、batch apply、publish 和 metadata finalize 会通过 OTLP/HTTP
+write、flush、batch apply、publish、metadata encode/PUT、manifest CAS 和
+Bloom/index lookup 会通过 OTLP/HTTP
 导出。异步 group write 和 flush 使用 OTel links 关联原请求 span；accepted
 记录还会保存 trace context，因此进程恢复后仍可关联原始写入请求。
 

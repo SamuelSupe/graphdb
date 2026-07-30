@@ -115,6 +115,9 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IngestResult{}, err
 	}
+	if err := s.ensureIngestMetadataWriteMode(ctx, tenantID); err != nil {
+		return IngestResult{}, err
+	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
 			return IngestResult{}, pressure

@@ -43,36 +43,52 @@ type Metrics struct {
 	coordinatorHeads       map[string]float64
 	coordinatorStatus      map[string]float64
 
-	suppressed         map[string]float64
-	ingestSuppressed   map[string]float64
-	ingestSkipped      map[string]float64
-	ingestWALAppend    map[string]float64
-	ingestWALBytes     float64
-	ingestWALSync      map[string]float64
-	ingestWALSyncTime  map[string]*histogram
-	ingestWALGroups    map[string]*histogram
-	ingestWALBuffer    float64
-	ingestWALDisk      float64
-	ingestWALWritten   float64
-	ingestWALDurable   float64
-	ingestQueue        float64
-	ingestQueueBytes   float64
-	ingestQueueMemory  float64
-	ingestQueueOldest  float64
-	ingestQueueCache   map[string]float64
-	ingestFlush        map[string]float64
-	ingestFlushTime    map[string]*histogram
-	ingestFlushReqs    map[string]*histogram
-	ingestFlushCommit  map[string]*histogram
-	ingestFlushSegs    map[string]*histogram
-	ingestFlushPub     map[string]*histogram
-	ingestFlushDedup   float64
-	ingestFlushFall    float64
-	ingestRecovery     map[string]float64
-	ingestRecoveryTime map[string]*histogram
-	indexHealthChecks  map[string]float64
-	indexHealthStatus  map[string]string
-	indexHealthIssues  map[string]float64
+	suppressed                      map[string]float64
+	ingestSuppressed                map[string]float64
+	ingestSkipped                   map[string]float64
+	ingestWALAppend                 map[string]float64
+	ingestWALBytes                  float64
+	ingestWALSync                   map[string]float64
+	ingestWALSyncTime               map[string]*histogram
+	ingestWALGroups                 map[string]*histogram
+	ingestWALBuffer                 float64
+	ingestWALDisk                   float64
+	ingestWALWritten                float64
+	ingestWALDurable                float64
+	ingestQueue                     float64
+	ingestQueueBytes                float64
+	ingestQueueMemory               float64
+	ingestQueueOldest               float64
+	ingestQueueCache                map[string]float64
+	ingestFlush                     map[string]float64
+	ingestFlushTime                 map[string]*histogram
+	ingestFlushReqs                 map[string]*histogram
+	ingestFlushCommit               map[string]*histogram
+	ingestFlushSegs                 map[string]*histogram
+	ingestFlushPub                  map[string]*histogram
+	ingestFlushDedup                float64
+	ingestFlushFall                 float64
+	ingestRecovery                  map[string]float64
+	ingestRecoveryTime              map[string]*histogram
+	ingestMetadataQueue             float64
+	ingestMetadataQueueBytes        float64
+	ingestMetadataQueueOldest       float64
+	ingestMetadataFlush             map[string]float64
+	ingestMetadataFlushTime         map[string]*histogram
+	ingestMetadataFlushReqs         map[string]*histogram
+	ingestMetadataSegmentBytes      float64
+	ingestMetadataRequests          float64
+	ingestMetadataSegmentPuts       float64
+	ingestMetadataManifestPuts      float64
+	ingestMetadataManifestConflicts float64
+	ingestMetadataIndexPuts         float64
+	ingestMetadataLookup            map[string]float64
+	ingestMetadataLookupTime        map[string]*histogram
+	ingestMetadataLookupCandidates  map[string]*histogram
+	ingestMetadataReplayBytes       float64
+	indexHealthChecks               map[string]float64
+	indexHealthStatus               map[string]string
+	indexHealthIssues               map[string]float64
 }
 
 type histogram struct {
@@ -84,46 +100,52 @@ type histogram struct {
 
 func NewMetrics() *Metrics {
 	return &Metrics{
-		httpRequests:           map[string]float64{},
-		httpDuration:           map[string]*histogram{},
-		objectDuration:         map[string]*histogram{},
-		queries:                map[string]float64{},
-		queryDuration:          map[string]*histogram{},
-		slowQueries:            map[string]float64{},
-		readAdmission:          map[string]*histogram{},
-		readerNotFresh:         map[string]float64{},
-		readerVisibleVersion:   map[string]float64{},
-		readerCatchup:          map[string]float64{},
-		readerCatchupLatency:   map[string]*histogram{},
-		readerCache:            map[string]float64{},
-		writeBackpressure:      map[string]float64{},
-		writeAdmission:         map[string]*histogram{},
-		manifestConflicts:      map[string]float64{},
-		commitTailLength:       map[string]float64{},
-		coordinatorCAS:         map[string]float64{},
-		coordinatorCleanup:     map[string]float64{},
-		coordinatorCleanupRuns: map[string]float64{},
-		coordinatorHeads:       map[string]float64{},
-		coordinatorStatus:      map[string]float64{},
-		suppressed:             map[string]float64{},
-		ingestSuppressed:       map[string]float64{},
-		ingestSkipped:          map[string]float64{},
-		ingestWALAppend:        map[string]float64{},
-		ingestWALSync:          map[string]float64{},
-		ingestWALSyncTime:      map[string]*histogram{},
-		ingestWALGroups:        map[string]*histogram{},
-		ingestQueueCache:       map[string]float64{},
-		ingestFlush:            map[string]float64{},
-		ingestFlushTime:        map[string]*histogram{},
-		ingestFlushReqs:        map[string]*histogram{},
-		ingestFlushCommit:      map[string]*histogram{},
-		ingestFlushSegs:        map[string]*histogram{},
-		ingestFlushPub:         map[string]*histogram{},
-		ingestRecovery:         map[string]float64{},
-		ingestRecoveryTime:     map[string]*histogram{},
-		indexHealthChecks:      map[string]float64{},
-		indexHealthStatus:      map[string]string{},
-		indexHealthIssues:      map[string]float64{},
+		httpRequests:                   map[string]float64{},
+		httpDuration:                   map[string]*histogram{},
+		objectDuration:                 map[string]*histogram{},
+		queries:                        map[string]float64{},
+		queryDuration:                  map[string]*histogram{},
+		slowQueries:                    map[string]float64{},
+		readAdmission:                  map[string]*histogram{},
+		readerNotFresh:                 map[string]float64{},
+		readerVisibleVersion:           map[string]float64{},
+		readerCatchup:                  map[string]float64{},
+		readerCatchupLatency:           map[string]*histogram{},
+		readerCache:                    map[string]float64{},
+		writeBackpressure:              map[string]float64{},
+		writeAdmission:                 map[string]*histogram{},
+		manifestConflicts:              map[string]float64{},
+		commitTailLength:               map[string]float64{},
+		coordinatorCAS:                 map[string]float64{},
+		coordinatorCleanup:             map[string]float64{},
+		coordinatorCleanupRuns:         map[string]float64{},
+		coordinatorHeads:               map[string]float64{},
+		coordinatorStatus:              map[string]float64{},
+		suppressed:                     map[string]float64{},
+		ingestSuppressed:               map[string]float64{},
+		ingestSkipped:                  map[string]float64{},
+		ingestWALAppend:                map[string]float64{},
+		ingestWALSync:                  map[string]float64{},
+		ingestWALSyncTime:              map[string]*histogram{},
+		ingestWALGroups:                map[string]*histogram{},
+		ingestQueueCache:               map[string]float64{},
+		ingestFlush:                    map[string]float64{},
+		ingestFlushTime:                map[string]*histogram{},
+		ingestFlushReqs:                map[string]*histogram{},
+		ingestFlushCommit:              map[string]*histogram{},
+		ingestFlushSegs:                map[string]*histogram{},
+		ingestFlushPub:                 map[string]*histogram{},
+		ingestRecovery:                 map[string]float64{},
+		ingestRecoveryTime:             map[string]*histogram{},
+		ingestMetadataFlush:            map[string]float64{},
+		ingestMetadataFlushTime:        map[string]*histogram{},
+		ingestMetadataFlushReqs:        map[string]*histogram{},
+		ingestMetadataLookup:           map[string]float64{},
+		ingestMetadataLookupTime:       map[string]*histogram{},
+		ingestMetadataLookupCandidates: map[string]*histogram{},
+		indexHealthChecks:              map[string]float64{},
+		indexHealthStatus:              map[string]string{},
+		indexHealthIssues:              map[string]float64{},
 	}
 }
 
@@ -414,6 +436,69 @@ func (m *Metrics) RecordIngestRecovery(status string, records int, pending int, 
 	m.observe(m.ingestRecoveryTime, key, queryBuckets, duration.Seconds())
 }
 
+func (m *Metrics) RecordIngestMetadataQueue(pending int, bytes int64, oldest time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestMetadataQueue = float64(pending)
+	m.ingestMetadataQueueBytes = float64(bytes)
+	m.ingestMetadataQueueOldest = max(0, oldest.Seconds())
+}
+
+func (m *Metrics) RecordIngestMetadataFlush(
+	status string,
+	duration time.Duration,
+	requests int,
+	segmentBytes int,
+	segmentPuts int,
+	manifestPublishes int,
+	manifestConflicts int,
+	indexPublishes int,
+) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := labelKey(status)
+	m.ingestMetadataFlush[key]++
+	m.observe(m.ingestMetadataFlushTime, key, queryBuckets, duration.Seconds())
+	m.observe(m.ingestMetadataFlushReqs, key, ingestGroupBuckets, float64(requests))
+	if segmentPuts > 0 {
+		m.ingestMetadataSegmentBytes += float64(segmentBytes)
+	}
+	if status == "ok" {
+		m.ingestMetadataRequests += float64(requests)
+	}
+	m.ingestMetadataSegmentPuts += float64(segmentPuts)
+	m.ingestMetadataManifestPuts += float64(manifestPublishes)
+	m.ingestMetadataManifestConflicts += float64(manifestConflicts)
+	m.ingestMetadataIndexPuts += float64(indexPublishes)
+}
+
+func (m *Metrics) RecordIngestMetadataLookup(kind string, outcome string, candidates int, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := labelKey(kind, outcome)
+	m.ingestMetadataLookup[key]++
+	m.observe(m.ingestMetadataLookupTime, key, queryBuckets, duration.Seconds())
+	m.observe(m.ingestMetadataLookupCandidates, key, ingestGroupBuckets, float64(candidates))
+}
+
+func (m *Metrics) RecordIngestMetadataReplay(bytes int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestMetadataReplayBytes += float64(bytes)
+}
+
 func (m *Metrics) RecordIndexHealth(tenantID string, status string, issues int) {
 	if m == nil {
 		return
@@ -481,6 +566,23 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeScalar(&b, "graphdb_ingest_flush_fallback_total", "Ingest flushes that required isolated per-request apply.", "counter", m.ingestFlushFall)
 	writeCounter(&b, "graphdb_ingest_wal_recovery_total", "Ingest WAL recovery attempts by status.", []string{"status"}, m.ingestRecovery)
 	writeHistogram(&b, "graphdb_ingest_wal_recovery_duration_seconds", "Ingest WAL scan and active-state recovery latency.", []string{"status"}, m.ingestRecoveryTime)
+	writeScalar(&b, "graphdb_ingest_metadata_queue_pending_requests", "Published ingest requests awaiting metadata publication.", "gauge", m.ingestMetadataQueue)
+	writeScalar(&b, "graphdb_ingest_metadata_queue_pending_bytes", "Bytes represented by the metadata publication queue.", "gauge", m.ingestMetadataQueueBytes)
+	writeScalar(&b, "graphdb_ingest_metadata_queue_oldest_seconds", "Age of the oldest published request awaiting metadata.", "gauge", m.ingestMetadataQueueOldest)
+	writeCounter(&b, "graphdb_ingest_metadata_flush_total", "Ingest metadata flushes by status.", []string{"status"}, m.ingestMetadataFlush)
+	writeHistogram(&b, "graphdb_ingest_metadata_flush_duration_seconds", "Ingest metadata flush latency.", []string{"status"}, m.ingestMetadataFlushTime)
+	writeHistogram(&b, "graphdb_ingest_metadata_flush_requests", "Requests represented by each metadata flush.", []string{"status"}, m.ingestMetadataFlushReqs)
+	writeScalar(&b, "graphdb_ingest_metadata_segment_bytes_total", "Encoded metadata segment bytes published.", "counter", m.ingestMetadataSegmentBytes)
+	writeScalar(&b, "graphdb_ingest_metadata_requests_total", "Ingest requests finalized through metadata flushes.", "counter", m.ingestMetadataRequests)
+	writeScalar(&b, "graphdb_ingest_metadata_segment_put_total", "Physical metadata segment PUT operations.", "counter", m.ingestMetadataSegmentPuts)
+	writeScalar(&b, "graphdb_ingest_metadata_manifest_publish_total", "Physical ingest metadata manifest publications.", "counter", m.ingestMetadataManifestPuts)
+	writeScalar(&b, "graphdb_ingest_metadata_manifest_conflicts_total", "Ingest metadata manifest CAS conflicts.", "counter", m.ingestMetadataManifestConflicts)
+	writeScalar(&b, "graphdb_ingest_metadata_index_put_total", "Physical ingest metadata index catalog PUT operations.", "counter", m.ingestMetadataIndexPuts)
+	writeCounter(&b, "graphdb_ingest_metadata_lookup_total", "Metadata lookups by identity kind and outcome.", []string{"kind", "outcome"}, m.ingestMetadataLookup)
+	writeHistogram(&b, "graphdb_ingest_metadata_lookup_duration_seconds", "Metadata lookup latency by identity kind and outcome.", []string{"kind", "outcome"}, m.ingestMetadataLookupTime)
+	writeHistogram(&b, "graphdb_ingest_metadata_lookup_candidates", "Candidate segments loaded per metadata lookup.", []string{"kind", "outcome"}, m.ingestMetadataLookupCandidates)
+	writeScalar(&b, "graphdb_ingest_metadata_replay_bytes_total", "Published WAL payload bytes replayed into metadata queues.", "counter", m.ingestMetadataReplayBytes)
+	writeScalar(&b, "graphdb_ingest_metadata_object_puts_per_request", "Cumulative metadata segment, manifest, and index PUTs per finalized request.", "gauge", safeRatio(m.ingestMetadataSegmentPuts+m.ingestMetadataManifestPuts+m.ingestMetadataIndexPuts, m.ingestMetadataRequests))
 	writeCounter(&b, "graphdb_index_health_checks_total", "Index health checks by tenant and status.", []string{"tenant", "status"}, m.indexHealthChecks)
 	writeGaugeStrings(&b, "graphdb_index_health_status", "Latest index health status by tenant.", m.indexHealthStatus)
 	writeGaugeValues(&b, "graphdb_index_health_issues", "Latest index health issue count by tenant.", []string{"tenant"}, m.indexHealthIssues)
@@ -490,6 +592,13 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 func writeScalar(b *bytes.Buffer, name string, help string, metricType string, value float64) {
 	writeMetricHeader(b, name, help, metricType)
 	fmt.Fprintf(b, "%s %g\n", name, value)
+}
+
+func safeRatio(numerator float64, denominator float64) float64 {
+	if denominator <= 0 {
+		return 0
+	}
+	return numerator / denominator
 }
 
 func (m *Metrics) observe(values map[string]*histogram, key string, buckets []float64, value float64) {

@@ -38,6 +38,7 @@ type IngestServiceConfig struct {
 	FlushWorkers     int
 	FlushTimeout     time.Duration
 	RetryInterval    time.Duration
+	Metadata         IngestMetadataConfig
 	Observer         IngestObserver
 	Logger           IngestLogger
 }
@@ -52,6 +53,7 @@ func DefaultIngestServiceConfig(walDir string) IngestServiceConfig {
 		FlushWorkers:     1,
 		FlushTimeout:     90 * time.Second,
 		RetryInterval:    time.Second,
+		Metadata:         DefaultIngestMetadataConfig(),
 	}
 }
 
@@ -62,6 +64,9 @@ func (c IngestServiceConfig) validate() error {
 	if c.QueueMemoryBytes <= 0 || c.FlushInterval <= 0 || c.FlushMaxRequests <= 0 ||
 		c.FlushMaxBytes <= 0 || c.FlushWorkers <= 0 || c.FlushTimeout <= 0 || c.RetryInterval <= 0 {
 		return fmt.Errorf("ingest WAL queue and flush limits must be positive")
+	}
+	if err := c.Metadata.validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -78,6 +83,7 @@ type IngestAcceptance struct {
 	Durability     string    `json:"durability"`
 	AcceptedAt     time.Time `json:"accepted_at"`
 	EstimatedFlush time.Time `json:"estimated_flush_at"`
+	tenantID       string
 	acceptedLSN    uint64
 	recordID       string
 	completion     <-chan struct{}
@@ -111,18 +117,19 @@ type IngestServiceReadiness struct {
 }
 
 type walIngestEnvelope struct {
-	RecordID    string                 `json:"record_id"`
-	TenantID    string                 `json:"tenant_id"`
-	Request     IngestRequest          `json:"request"`
-	Digest      string                 `json:"digest"`
-	AcceptedAt  time.Time              `json:"accepted_at"`
-	AcceptedLSN uint64                 `json:"accepted_lsn,omitempty"`
-	State       string                 `json:"state"`
-	Result      *IngestResult          `json:"result,omitempty"`
-	Prepared    *IngestPreparedRequest `json:"prepared,omitempty"`
-	Trace       walTraceContext        `json:"trace,omitempty"`
-	Error       string                 `json:"error,omitempty"`
-	FinishedAt  time.Time              `json:"finished_at,omitempty"`
+	RecordID        string                 `json:"record_id"`
+	TenantID        string                 `json:"tenant_id"`
+	Request         IngestRequest          `json:"request"`
+	Digest          string                 `json:"digest"`
+	AcceptedAt      time.Time              `json:"accepted_at"`
+	AcceptedLSN     uint64                 `json:"accepted_lsn,omitempty"`
+	State           string                 `json:"state"`
+	Result          *IngestResult          `json:"result,omitempty"`
+	Prepared        *IngestPreparedRequest `json:"prepared,omitempty"`
+	Trace           walTraceContext        `json:"trace,omitempty"`
+	Error           string                 `json:"error,omitempty"`
+	FinishedAt      time.Time              `json:"finished_at,omitempty"`
+	MetadataFlushID string                 `json:"metadata_flush_id,omitempty"`
 }
 
 type walPreparedBatchEnvelope struct {
@@ -130,16 +137,17 @@ type walPreparedBatchEnvelope struct {
 }
 
 type ingestPending struct {
-	envelope      walIngestEnvelope
-	acceptedLSN   uint64
-	estimated     time.Time
-	bytes         int64
-	state         string
-	result        IngestResult
-	err           error
-	finishedAt    time.Time
-	done          chan struct{}
-	completedOnce sync.Once
+	envelope       walIngestEnvelope
+	acceptedLSN    uint64
+	estimated      time.Time
+	bytes          int64
+	state          string
+	result         IngestResult
+	err            error
+	finishedAt     time.Time
+	metadataRecord *IngestBatchRecord
+	done           chan struct{}
+	completedOnce  sync.Once
 }
 
 type ingestAcceptFlight struct {
@@ -164,16 +172,23 @@ type IngestService struct {
 	lastError      string
 	oldestPending  time.Time
 
-	enqueueCh   chan *ingestPending
-	forceCh     chan ingestForceRequest
-	completeCh  chan ingestWorkerCompletion
-	shutdownCh  chan struct{}
-	schedulerOK chan struct{}
-	readyCh     chan ingestTenantFlush
-	runCtx      context.Context
-	cancel      context.CancelFunc
-	workers     sync.WaitGroup
-	closeOnce   sync.Once
+	enqueueCh           chan *ingestPending
+	forceCh             chan ingestForceRequest
+	completeCh          chan ingestWorkerCompletion
+	shutdownCh          chan struct{}
+	schedulerOK         chan struct{}
+	readyCh             chan ingestTenantFlush
+	metadataEnqueueCh   chan *ingestPending
+	metadataForceCh     chan ingestForceRequest
+	metadataCompleteCh  chan ingestWorkerCompletion
+	metadataShutdownCh  chan struct{}
+	metadataSchedulerOK chan struct{}
+	metadataReadyCh     chan ingestTenantFlush
+	runCtx              context.Context
+	cancel              context.CancelFunc
+	workers             sync.WaitGroup
+	metadataWorkers     sync.WaitGroup
+	closeOnce           sync.Once
 }
 
 func OpenIngestService(store *TenantStore, config IngestServiceConfig) (*IngestService, error) {
@@ -187,6 +202,9 @@ func OpenIngestService(store *TenantStore, config IngestServiceConfig) (*IngestS
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
+	store.IngestMetadataMode = config.Metadata.Mode
+	store.IngestObserver = config.Observer
+	store.IngestLogger = config.Logger
 	_, recoverySpan := startStorageSpan(
 		context.Background(),
 		"graphdb.storage.ingest.recovery",
@@ -201,20 +219,26 @@ func OpenIngestService(store *TenantStore, config IngestServiceConfig) (*IngestS
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	service := &IngestService{
-		store:          store,
-		wal:            wal,
-		config:         config,
-		active:         map[string]*ingestPending{},
-		activeByStatus: map[string]*ingestPending{},
-		accepting:      map[string]*ingestAcceptFlight{},
-		enqueueCh:      make(chan *ingestPending, config.WAL.AppendQueue),
-		forceCh:        make(chan ingestForceRequest),
-		completeCh:     make(chan ingestWorkerCompletion, config.FlushWorkers*2),
-		shutdownCh:     make(chan struct{}),
-		schedulerOK:    make(chan struct{}),
-		readyCh:        make(chan ingestTenantFlush, config.FlushWorkers*2),
-		runCtx:         runCtx,
-		cancel:         cancel,
+		store:               store,
+		wal:                 wal,
+		config:              config,
+		active:              map[string]*ingestPending{},
+		activeByStatus:      map[string]*ingestPending{},
+		accepting:           map[string]*ingestAcceptFlight{},
+		enqueueCh:           make(chan *ingestPending, config.WAL.AppendQueue),
+		forceCh:             make(chan ingestForceRequest),
+		completeCh:          make(chan ingestWorkerCompletion, config.FlushWorkers*2),
+		shutdownCh:          make(chan struct{}),
+		schedulerOK:         make(chan struct{}),
+		readyCh:             make(chan ingestTenantFlush, config.FlushWorkers*2),
+		metadataEnqueueCh:   make(chan *ingestPending, config.WAL.AppendQueue),
+		metadataForceCh:     make(chan ingestForceRequest),
+		metadataCompleteCh:  make(chan ingestWorkerCompletion, config.Metadata.FlushWorkers*2),
+		metadataShutdownCh:  make(chan struct{}),
+		metadataSchedulerOK: make(chan struct{}),
+		metadataReadyCh:     make(chan ingestTenantFlush, config.Metadata.FlushWorkers*2),
+		runCtx:              runCtx,
+		cancel:              cancel,
 	}
 	recovered, err := service.recover(records)
 	if err != nil {
@@ -236,8 +260,28 @@ func OpenIngestService(store *TenantStore, config IngestServiceConfig) (*IngestS
 		service.workers.Add(1)
 		go service.runWorker()
 	}
+	if config.Metadata.Mode == IngestMetadataModeSegment {
+		go service.scheduleMetadata()
+		for range config.Metadata.FlushWorkers {
+			service.metadataWorkers.Add(1)
+			go service.runMetadataWorker()
+		}
+	}
 	for _, pending := range recovered {
-		service.enqueueCh <- pending
+		if config.Metadata.Mode == IngestMetadataModeSegment && pending.state == IngestStatePublished {
+			service.metadataEnqueueCh <- pending
+		} else {
+			service.enqueueCh <- pending
+		}
+	}
+	if config.Observer != nil && config.Metadata.Mode == IngestMetadataModeSegment {
+		var replayBytes int64
+		for _, pending := range recovered {
+			if pending.state == IngestStatePublished {
+				replayBytes += pending.bytes
+			}
+		}
+		config.Observer.RecordIngestMetadataReplay(replayBytes)
 	}
 	prepared := 0
 	for _, pending := range recovered {
@@ -510,6 +554,9 @@ func (s *IngestService) FlushTenant(ctx context.Context, tenantID string) error 
 	case <-s.runCtx.Done():
 		return ErrIngestWALClosed
 	}
+	if err := s.forceMetadataThrough(ctx, tenantID, throughLSN); err != nil {
+		return err
+	}
 	for _, item := range pending {
 		select {
 		case <-item.done:
@@ -546,6 +593,17 @@ func (s *IngestService) Close(ctx context.Context) error {
 			<-s.schedulerOK
 		}
 		s.workers.Wait()
+		if s.config.Metadata.Mode == IngestMetadataModeSegment {
+			close(s.metadataShutdownCh)
+			select {
+			case <-s.metadataSchedulerOK:
+			case <-ctx.Done():
+				closeErr = errors.Join(closeErr, ctx.Err())
+				s.cancel()
+				<-s.metadataSchedulerOK
+			}
+			s.metadataWorkers.Wait()
+		}
 		s.cancel()
 		if closeErr == nil {
 			if err := s.prune(context.Background()); err != nil {
@@ -574,16 +632,32 @@ func (s *IngestService) Close(ctx context.Context) error {
 func (s *IngestService) recover(records []IngestWALRecord) ([]*ingestPending, error) {
 	recovered := map[string]*ingestPending{}
 	for _, record := range records {
-		if record.Type == IngestWALPrepared {
+		if record.Type == IngestWALPrepared || record.Type == IngestWALPublished ||
+			record.Type == IngestWALFinalized || record.Type == IngestWALFailed {
 			var batch walPreparedBatchEnvelope
 			if err := json.Unmarshal(record.Payload, &batch); err == nil && len(batch.Items) > 0 {
 				for _, envelope := range batch.Items {
 					pending := recovered[envelope.RecordID]
-					if pending == nil || envelope.Prepared == nil {
-						return nil, fmt.Errorf("%w: incomplete prepared batch at LSN %d", ErrIngestWALCorrupt, record.LSN)
+					if pending == nil {
+						return nil, fmt.Errorf("%w: state for unknown ingest record at LSN %d", ErrIngestWALCorrupt, record.LSN)
 					}
-					pending.envelope = envelope
-					pending.state = IngestStatePrepared
+					switch record.Type {
+					case IngestWALPrepared:
+						if envelope.Prepared == nil {
+							return nil, fmt.Errorf("%w: incomplete prepared batch at LSN %d", ErrIngestWALCorrupt, record.LSN)
+						}
+						pending.envelope = envelope
+						pending.state = IngestStatePrepared
+					case IngestWALPublished:
+						pending.envelope = envelope
+						pending.state = IngestStatePublished
+						if envelope.Result != nil {
+							pending.result = *envelope.Result
+						}
+						pending.finishedAt = envelope.FinishedAt
+					case IngestWALFinalized, IngestWALFailed:
+						delete(recovered, envelope.RecordID)
+					}
 				}
 				s.highestLSN = max(s.highestLSN, record.LSN)
 				continue
@@ -852,7 +926,12 @@ func (s *IngestService) flushTenant(items []*ingestPending) []*ingestPending {
 }
 
 func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPending {
-	tenantID := items[0].envelope.TenantID
+	firstEnvelope := items[0].envelope
+	tenantID := firstEnvelope.TenantID
+	flushID := ""
+	if firstEnvelope.Prepared != nil {
+		flushID = firstEnvelope.Prepared.FlushID
+	}
 	firstLSN, lastLSN := ingestPendingLSNRange(items)
 	started := time.Now()
 	flushCtx, span := startIngestFlushSpan(s.runCtx, tenantID, items)
@@ -861,7 +940,7 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		flushErr error
 	)
 	if s.config.Logger != nil {
-		fields := ingestTraceLogFields(items[0].envelope)
+		fields := ingestTraceLogFields(firstEnvelope)
 		if span.SpanContext().IsValid() {
 			fields["flush_trace_id"] = span.SpanContext().TraceID().String()
 			fields["flush_span_id"] = span.SpanContext().SpanID().String()
@@ -870,7 +949,7 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		fields["requests"] = len(items)
 		fields["first_lsn"] = firstLSN
 		fields["last_lsn"] = lastLSN
-		fields["oldest_ms"] = float64(time.Since(items[0].envelope.AcceptedAt).Microseconds()) / 1000
+		fields["oldest_ms"] = float64(time.Since(firstEnvelope.AcceptedAt).Microseconds()) / 1000
 		s.config.Logger.Info("ingest_flush_started", fields)
 	}
 	defer func() {
@@ -887,8 +966,8 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 			attribute.Int("graphdb.ingest.flush.exact_dedup", stats.ExactDedup),
 			attribute.Bool("graphdb.ingest.flush.fallback", stats.Fallback),
 		)
-		if items[0].envelope.Prepared != nil {
-			span.SetAttributes(attribute.String("graphdb.ingest.flush.id", items[0].envelope.Prepared.FlushID))
+		if flushID != "" {
+			span.SetAttributes(attribute.String("graphdb.ingest.flush.id", flushID))
 		}
 		endStorageSpan(span, flushErr)
 		if s.config.Observer != nil {
@@ -904,7 +983,7 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 			)
 		}
 		if s.config.Logger != nil {
-			fields := ingestTraceLogFields(items[0].envelope)
+			fields := ingestTraceLogFields(firstEnvelope)
 			if span.SpanContext().IsValid() {
 				fields["flush_trace_id"] = span.SpanContext().TraceID().String()
 				fields["flush_span_id"] = span.SpanContext().SpanID().String()
@@ -920,8 +999,8 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 			fields["exact_dedup"] = stats.ExactDedup
 			fields["fallback"] = stats.Fallback
 			fields["duration_ms"] = float64(duration.Microseconds()) / 1000
-			if items[0].envelope.Prepared != nil {
-				fields["flush_id"] = items[0].envelope.Prepared.FlushID
+			if flushID != "" {
+				fields["flush_id"] = flushID
 			}
 			if flushErr != nil {
 				fields["error"] = flushErr.Error()
@@ -937,9 +1016,11 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		entries[index] = IngestBatchEntry{
 			Request:    pending.envelope.Request,
 			AcceptedAt: pending.envelope.AcceptedAt,
+			FinishedAt: pending.envelope.FinishedAt,
 			Prepared:   pending.envelope.Prepared,
 		}
 	}
+	var publishedRecords []IngestPublishedRecord
 	flushCtx, cancel := context.WithTimeout(flushCtx, s.config.FlushTimeout)
 	results, err := s.store.IngestDurableBatchWithHooks(
 		flushCtx,
@@ -947,8 +1028,19 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		entries,
 		IngestBatchHooks{
 			Prepared: func(ctx context.Context, plans []*IngestPreparedRequest) error {
+				for _, plan := range plans {
+					if plan != nil {
+						flushID = plan.FlushID
+						break
+					}
+				}
 				return s.appendPreparedBatchState(ctx, items, plans)
 			},
+			Published: func(_ context.Context, records []IngestPublishedRecord) error {
+				publishedRecords = append([]IngestPublishedRecord(nil), records...)
+				return nil
+			},
+			DeferMetadata: s.config.Metadata.Mode == IngestMetadataModeSegment,
 			Stats: func(batchStats IngestBatchStats) {
 				stats = batchStats
 			},
@@ -961,6 +1053,41 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 			s.setPendingRetry(pending, err)
 		}
 		return items
+	}
+	if s.config.Metadata.Mode == IngestMetadataModeSegment {
+		if err := s.appendPublishedBatchState(items, results, publishedRecords); err != nil {
+			flushErr = err
+			s.recordError(err)
+			return items
+		}
+		required := make(map[int]IngestBatchRecord, len(publishedRecords))
+		for _, item := range publishedRecords {
+			required[item.Index] = item.Record
+		}
+		finalizeNow := make([]*ingestPending, 0)
+		for index, pending := range items {
+			s.setPendingState(pending, IngestStatePublished)
+			record, ok := required[index]
+			if !ok {
+				finalizeNow = append(finalizeNow, pending)
+				continue
+			}
+			pending.metadataRecord = &record
+			select {
+			case s.metadataEnqueueCh <- pending:
+			case <-s.runCtx.Done():
+				flushErr = ErrIngestWALClosed
+				return items[index:]
+			}
+		}
+		if len(finalizeNow) > 0 {
+			if err := s.finalizeMetadataItems(finalizeNow); err != nil {
+				flushErr = err
+				s.recordError(err)
+				return finalizeNow
+			}
+		}
+		return nil
 	}
 	for index, pending := range items {
 		result := results[index]
@@ -1038,6 +1165,93 @@ func (s *IngestService) appendPreparedBatchState(
 	return nil
 }
 
+func (s *IngestService) appendPublishedBatchState(
+	items []*ingestPending,
+	results []IngestResult,
+	records []IngestPublishedRecord,
+) error {
+	byIndex := make(map[int]IngestBatchRecord, len(records))
+	for _, item := range records {
+		byIndex[item.Index] = item.Record
+	}
+	envelopes := make([]walIngestEnvelope, len(items))
+	now := time.Now().UTC()
+	for index, pending := range items {
+		envelope := pending.envelope
+		envelope.AcceptedLSN = pending.acceptedLSN
+		envelope.State = IngestStatePublished
+		envelope.Result = &results[index]
+		envelope.Error = ""
+		if record, ok := byIndex[index]; ok {
+			envelope.FinishedAt = record.FinishedAt
+		} else if envelope.FinishedAt.IsZero() {
+			envelope.FinishedAt = now
+		}
+		envelopes[index] = envelope
+	}
+	if err := s.appendIngestStateBatch(IngestWALPublished, envelopes); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	for index, pending := range items {
+		pending.envelope = envelopes[index]
+		pending.state = IngestStatePublished
+		pending.result = results[index]
+		pending.finishedAt = envelopes[index].FinishedAt
+		pending.err = nil
+	}
+	s.observeQueueLocked()
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *IngestService) appendIngestStateBatch(
+	kind IngestWALRecordType,
+	envelopes []walIngestEnvelope,
+) error {
+	if len(envelopes) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(walPreparedBatchEnvelope{Items: envelopes})
+	if err != nil {
+		return err
+	}
+	appendResult, err := s.wal.Append(s.runCtx, kind, payload)
+	if errors.Is(err, ErrIngestWALFull) {
+		if pruneErr := s.prune(s.runCtx); pruneErr == nil {
+			appendResult, err = s.wal.Append(s.runCtx, kind, payload)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.highestLSN = max(s.highestLSN, appendResult.LSN)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *IngestService) finalizeMetadataItems(items []*ingestPending) error {
+	envelopes := make([]walIngestEnvelope, len(items))
+	for index, pending := range items {
+		envelope := pending.envelope
+		envelope.AcceptedLSN = pending.acceptedLSN
+		envelope.State = IngestStateCommitted
+		envelope.Error = ""
+		if envelope.FinishedAt.IsZero() {
+			envelope.FinishedAt = time.Now().UTC()
+		}
+		envelopes[index] = envelope
+	}
+	if err := s.appendIngestStateBatch(IngestWALFinalized, envelopes); err != nil {
+		return err
+	}
+	for _, pending := range items {
+		s.completePending(pending, pending.result, nil)
+	}
+	return nil
+}
+
 func (s *IngestService) appendPendingState(pending *ingestPending, kind IngestWALRecordType, state string, result *IngestResult, errorMessage string) error {
 	envelope := pending.envelope
 	envelope.AcceptedLSN = pending.acceptedLSN
@@ -1076,6 +1290,7 @@ func (s *IngestService) setPendingRetry(pending *ingestPending, err error) {
 	s.mu.Lock()
 	pending.state = IngestStateRetrying
 	pending.err = err
+	s.observeQueueLocked()
 	s.mu.Unlock()
 }
 
@@ -1153,6 +1368,30 @@ func (s *IngestService) observeQueueLocked() {
 		oldest = time.Since(s.oldestPending)
 	}
 	s.config.Observer.RecordIngestQueue(len(s.active), s.pendingBytes, oldest)
+	if s.config.Metadata.Mode == IngestMetadataModeSegment {
+		metadataPending := 0
+		var metadataBytes int64
+		var metadataOldest time.Time
+		for _, pending := range s.active {
+			if pending.state != IngestStatePublished && !(pending.state == IngestStateRetrying && pending.envelope.State == IngestStatePublished) {
+				continue
+			}
+			metadataPending++
+			metadataBytes += pending.bytes
+			publishedAt := pending.envelope.FinishedAt
+			if publishedAt.IsZero() {
+				publishedAt = pending.envelope.AcceptedAt
+			}
+			if metadataOldest.IsZero() || publishedAt.Before(metadataOldest) {
+				metadataOldest = publishedAt
+			}
+		}
+		metadataAge := time.Duration(0)
+		if !metadataOldest.IsZero() {
+			metadataAge = time.Since(metadataOldest)
+		}
+		s.config.Observer.RecordIngestMetadataQueue(metadataPending, metadataBytes, metadataAge)
+	}
 }
 
 func recordIngestRecovery(
@@ -1199,6 +1438,7 @@ func acceptanceFromPending(pending *ingestPending, durability string) IngestAcce
 		Durability:     reportedDurability,
 		AcceptedAt:     pending.envelope.AcceptedAt,
 		EstimatedFlush: pending.estimated,
+		tenantID:       pending.envelope.TenantID,
 		acceptedLSN:    pending.acceptedLSN,
 		recordID:       pending.envelope.RecordID,
 		completion:     pending.done,

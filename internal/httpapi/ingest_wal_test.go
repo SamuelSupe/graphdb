@@ -127,6 +127,8 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	config.WAL.SegmentBytes = 1024 * 1024
 	config.FlushInterval = time.Hour
 	config.FlushMaxRequests = 2
+	config.Metadata.Mode = storage.IngestMetadataModeSegment
+	config.Metadata.FlushInterval = time.Hour
 	config.FlushTimeout = 5 * time.Second
 	config.Observer = obs.Metrics
 	config.Logger = obs.Logger
@@ -206,6 +208,12 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 		`graphdb_ingest_flush_total{status="ok"} 1`,
 		`graphdb_ingest_flush_manifest_publishes_count{status="ok"} 1`,
 		`graphdb_ingest_wal_recovery_total{status="ok"} 1`,
+		`graphdb_ingest_metadata_queue_pending_requests 0`,
+		`graphdb_ingest_metadata_flush_total{status="ok"} 1`,
+		`graphdb_ingest_metadata_segment_put_total 1`,
+		`graphdb_ingest_metadata_manifest_publish_total 1`,
+		`graphdb_ingest_metadata_lookup_total{kind="collector",outcome="miss"} 1`,
+		`graphdb_ingest_metadata_lookup_duration_seconds_count{kind="collector",outcome="miss"} 1`,
 	} {
 		if !strings.Contains(metrics, want) {
 			t.Fatalf("metrics missing %q:\n%s", want, metrics)
@@ -214,7 +222,8 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	for _, line := range strings.Split(metrics, "\n") {
 		if (strings.HasPrefix(line, "graphdb_ingest_wal_") ||
 			strings.HasPrefix(line, "graphdb_ingest_queue_") ||
-			strings.HasPrefix(line, "graphdb_ingest_flush_")) &&
+			strings.HasPrefix(line, "graphdb_ingest_flush_") ||
+			strings.HasPrefix(line, "graphdb_ingest_metadata_")) &&
 			strings.Contains(line, "tenant=") {
 			t.Fatalf("ingest WAL metric has high-cardinality tenant label: %s", line)
 		}
@@ -226,6 +235,10 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 		`"event":"ingest_wal_accepted"`,
 		`"event":"ingest_flush_started"`,
 		`"event":"ingest_flush_completed"`,
+		`"event":"ingest_metadata_flush_started"`,
+		`"event":"ingest_metadata_segment_completed"`,
+		`"event":"ingest_metadata_manifest_published"`,
+		`"event":"ingest_metadata_flush_completed"`,
 		`"event":"ingest_wal_shutdown_completed"`,
 		`"tenant":"tenant-observed"`,
 		`"trace_id":`,
@@ -248,7 +261,11 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	flushSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.flush")
 	batchSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.batch")
 	publishSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.publish")
-	metadataSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.finalize_metadata")
+	metadataSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.metadata_flush")
+	metadataEncodeSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.metadata_segment.encode")
+	metadataPutSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.metadata_segment.put")
+	metadataManifestSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.metadata_manifest.cas")
+	metadataLookupSpan := requireRecordedSpan(t, spans, "graphdb.storage.ingest.metadata_lookup")
 
 	if acceptSpan.Parent().SpanID() != apiSpan.SpanContext().SpanID() {
 		t.Fatalf("accept parent = %s, want API span %s", acceptSpan.Parent().SpanID(), apiSpan.SpanContext().SpanID())
@@ -262,8 +279,11 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	if publishSpan.Parent().SpanID() != batchSpan.SpanContext().SpanID() {
 		t.Fatalf("publish parent = %s, want batch span %s", publishSpan.Parent().SpanID(), batchSpan.SpanContext().SpanID())
 	}
-	if metadataSpan.Parent().SpanID() != batchSpan.SpanContext().SpanID() {
-		t.Fatalf("metadata parent = %s, want batch span %s", metadataSpan.Parent().SpanID(), batchSpan.SpanContext().SpanID())
+	if metadataEncodeSpan.Parent().SpanID() == (trace.SpanID{}) ||
+		metadataPutSpan.Parent().SpanID() == (trace.SpanID{}) ||
+		metadataManifestSpan.Parent().SpanID() == (trace.SpanID{}) ||
+		metadataLookupSpan.Parent().SpanID() == (trace.SpanID{}) {
+		t.Fatal("metadata child span is missing its flush/segment parent")
 	}
 	assertSpanAttribute(t, flushSpan, "graphdb.ingest.flush.first_lsn", int64(1))
 	assertSpanAttribute(t, flushSpan, "graphdb.ingest.flush.last_lsn", int64(1))
@@ -280,6 +300,9 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	}
 	if !spanHasLink(flushSpan, acceptSpan.SpanContext().SpanID()) {
 		t.Fatalf("flush span does not link accepted request span %s", acceptSpan.SpanContext().SpanID())
+	}
+	if !spanHasLink(metadataSpan, acceptSpan.SpanContext().SpanID()) {
+		t.Fatalf("metadata flush span does not link accepted request span %s", acceptSpan.SpanContext().SpanID())
 	}
 	if !spanHasLink(groupSpan, appendSpan.SpanContext().SpanID()) {
 		t.Fatalf("WAL write group does not link append span %s", appendSpan.SpanContext().SpanID())
