@@ -35,7 +35,7 @@ func DefaultIngestMetadataConfig() IngestMetadataConfig {
 		FlushInterval: 30 * time.Second,
 		MaxRequests:   256,
 		MaxBytes:      8 * 1024 * 1024,
-		FlushWorkers:  1,
+		FlushWorkers:  4,
 	}
 }
 
@@ -132,7 +132,7 @@ func (s *TenantStore) ensureIngestMetadataWriteMode(ctx context.Context, tenantI
 	if s.IngestMetadataMode != IngestMetadataModeLegacy {
 		return nil
 	}
-	_, _, err := s.loadIngestMetadataManifest(ctx, tenantID)
+	_, _, _, err := s.loadIngestMetadataManifestDirect(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
@@ -211,6 +211,13 @@ func (s *TenantStore) publishIngestMetadataSegment(
 		segmentErr = err
 		return stats, err
 	}
+	s.ingestMetadataCache.store(
+		ref.Key,
+		segment,
+		ObjectMeta{Key: ref.Key, Exists: true},
+		int64(len(data)),
+		ingestMetadataImmutableTTL,
+	)
 	for _, status := range segment.Collectors {
 		key := s.collectorStatusKey(tenantID, status.Source, status.CollectorID)
 		s.setCachedCollectorStatus(key, status, ObjectMeta{Key: key})

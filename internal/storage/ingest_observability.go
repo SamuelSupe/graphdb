@@ -30,8 +30,11 @@ type IngestObserver interface {
 		manifestConflicts int,
 		indexPublishes int,
 	)
+	RecordIngestMetadataDispatch(deadlineOvershoot time.Duration)
 	RecordIngestMetadataLookup(kind string, outcome string, candidates int, duration time.Duration)
+	RecordIngestMetadataCache(kind string, outcome string)
 	RecordIngestMetadataReplay(bytes int64)
+	RecordIngestWALCheckpoint(outcome string, scannedBytes int64, duration time.Duration)
 }
 
 type IngestLogger interface {

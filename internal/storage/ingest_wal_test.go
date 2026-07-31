@@ -226,6 +226,134 @@ func TestIngestWALReopensAtCapacityForRecovery(t *testing.T) {
 	}
 }
 
+func TestIngestWALCheckpointRecoversOnlyActiveTail(t *testing.T) {
+	config := testIngestWALConfig(t)
+	wal, _, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make([]IngestWALAppendResult, 4)
+	for index := range results {
+		result, appendErr := wal.Append(
+			context.Background(),
+			IngestWALAccepted,
+			[]byte{byte(index + 1)},
+		)
+		if appendErr != nil {
+			t.Fatal(appendErr)
+		}
+		results[index] = result
+	}
+	if err := wal.pruneFrom(
+		context.Background(),
+		results[2].LSN,
+		results[2].Segment,
+		results[2].Offset,
+	); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := loadIngestWALCheckpoint(config.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.NextLSN != results[2].LSN || checkpoint.Segment != results[2].Segment || checkpoint.Offset != results[2].Offset {
+		t.Fatalf("checkpoint = %#v, want LSN %d at %s:%d", checkpoint, results[2].LSN, results[2].Segment, results[2].Offset)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, records, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(records) != 2 || records[0].LSN != results[2].LSN || records[1].LSN != results[3].LSN {
+		t.Fatalf("checkpoint recovery records = %#v, want LSNs %d,%d", records, results[2].LSN, results[3].LSN)
+	}
+}
+
+func TestIngestWALCorruptCheckpointFallsBackToFullRecovery(t *testing.T) {
+	config := testIngestWALConfig(t)
+	wal, _, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range 3 {
+		if _, err := wal.Append(context.Background(), IngestWALAccepted, []byte{byte(index + 1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Dir, ingestWALCheckpointFile), []byte("{invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, records, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(records) != 3 {
+		t.Fatalf("fallback recovery records = %#v, want all records", records)
+	}
+	for index, record := range records {
+		if record.LSN != uint64(index+1) {
+			t.Fatalf("fallback record[%d] = %#v", index, record)
+		}
+	}
+}
+
+func TestIngestWALCorruptCheckpointFallsBackAfterPrunedSegments(t *testing.T) {
+	config := testIngestWALConfig(t)
+	config.SegmentBytes = 96
+	wal, _, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 32)
+	for index := range 4 {
+		payload[0] = byte(index + 1)
+		if _, err := wal.Append(context.Background(), IngestWALAccepted, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wal.Prune(context.Background(), 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := filepath.Glob(filepath.Join(config.Dir, "*"+ingestWALFileExtension))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || filepath.Base(entries[0]) != ingestWALSegmentName(3) {
+		t.Fatalf("WAL segments after prune = %v, want segments starting at LSN 3", entries)
+	}
+	if err := os.WriteFile(filepath.Join(config.Dir, ingestWALCheckpointFile), []byte("{invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, records, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(records) != 2 || records[0].LSN != 3 || records[1].LSN != 4 {
+		t.Fatalf("fallback recovery records = %#v, want LSNs 3,4", records)
+	}
+	result, err := reopened.Append(context.Background(), IngestWALAccepted, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LSN != 5 {
+		t.Fatalf("LSN after fallback recovery = %d, want 5", result.LSN)
+	}
+}
+
 func testIngestWALConfig(t *testing.T) IngestWALConfig {
 	t.Helper()
 	config := DefaultIngestWALConfig(t.TempDir())

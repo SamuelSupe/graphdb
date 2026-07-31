@@ -15,6 +15,14 @@ var queryBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5
 var writeBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 var ingestGroupBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 128, 256}
 var ingestSegmentBuckets = []float64{0, 1, 2, 4, 8}
+var ingestByteBuckets = []float64{
+	4 * 1024,
+	64 * 1024,
+	1024 * 1024,
+	16 * 1024 * 1024,
+	256 * 1024 * 1024,
+	1024 * 1024 * 1024,
+}
 
 type Metrics struct {
 	mu sync.Mutex
@@ -82,10 +90,15 @@ type Metrics struct {
 	ingestMetadataManifestPuts      float64
 	ingestMetadataManifestConflicts float64
 	ingestMetadataIndexPuts         float64
+	ingestMetadataDispatch          map[string]*histogram
 	ingestMetadataLookup            map[string]float64
 	ingestMetadataLookupTime        map[string]*histogram
 	ingestMetadataLookupCandidates  map[string]*histogram
+	ingestMetadataCache             map[string]float64
 	ingestMetadataReplayBytes       float64
+	ingestWALCheckpoint             map[string]float64
+	ingestWALCheckpointBytes        map[string]*histogram
+	ingestWALCheckpointTime         map[string]*histogram
 	indexHealthChecks               map[string]float64
 	indexHealthStatus               map[string]string
 	indexHealthIssues               map[string]float64
@@ -140,9 +153,14 @@ func NewMetrics() *Metrics {
 		ingestMetadataFlush:            map[string]float64{},
 		ingestMetadataFlushTime:        map[string]*histogram{},
 		ingestMetadataFlushReqs:        map[string]*histogram{},
+		ingestMetadataDispatch:         map[string]*histogram{},
 		ingestMetadataLookup:           map[string]float64{},
 		ingestMetadataLookupTime:       map[string]*histogram{},
 		ingestMetadataLookupCandidates: map[string]*histogram{},
+		ingestMetadataCache:            map[string]float64{},
+		ingestWALCheckpoint:            map[string]float64{},
+		ingestWALCheckpointBytes:       map[string]*histogram{},
+		ingestWALCheckpointTime:        map[string]*histogram{},
 		indexHealthChecks:              map[string]float64{},
 		indexHealthStatus:              map[string]string{},
 		indexHealthIssues:              map[string]float64{},
@@ -490,6 +508,29 @@ func (m *Metrics) RecordIngestMetadataLookup(kind string, outcome string, candid
 	m.observe(m.ingestMetadataLookupCandidates, key, ingestGroupBuckets, float64(candidates))
 }
 
+func (m *Metrics) RecordIngestMetadataDispatch(deadlineOvershoot time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.observe(
+		m.ingestMetadataDispatch,
+		"ready",
+		queryBuckets,
+		max(0, deadlineOvershoot.Seconds()),
+	)
+}
+
+func (m *Metrics) RecordIngestMetadataCache(kind string, outcome string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestMetadataCache[labelKey(kind, outcome)]++
+}
+
 func (m *Metrics) RecordIngestMetadataReplay(bytes int64) {
 	if m == nil {
 		return
@@ -497,6 +538,22 @@ func (m *Metrics) RecordIngestMetadataReplay(bytes int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ingestMetadataReplayBytes += float64(bytes)
+}
+
+func (m *Metrics) RecordIngestWALCheckpoint(
+	outcome string,
+	scannedBytes int64,
+	duration time.Duration,
+) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := labelKey(outcome)
+	m.ingestWALCheckpoint[key]++
+	m.observe(m.ingestWALCheckpointBytes, key, ingestByteBuckets, float64(scannedBytes))
+	m.observe(m.ingestWALCheckpointTime, key, queryBuckets, duration.Seconds())
 }
 
 func (m *Metrics) RecordIndexHealth(tenantID string, status string, issues int) {
@@ -550,6 +607,9 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeScalar(&b, "graphdb_ingest_wal_disk_bytes", "Bytes occupied by ingest WAL segments.", "gauge", m.ingestWALDisk)
 	writeScalar(&b, "graphdb_ingest_wal_written_lsn", "Highest ingest WAL LSN written to the operating system.", "gauge", m.ingestWALWritten)
 	writeScalar(&b, "graphdb_ingest_wal_durable_lsn", "Highest ingest WAL LSN confirmed durable.", "gauge", m.ingestWALDurable)
+	writeCounter(&b, "graphdb_ingest_wal_checkpoint_total", "Ingest WAL checkpoint recovery and persistence events by outcome.", []string{"outcome"}, m.ingestWALCheckpoint)
+	writeHistogram(&b, "graphdb_ingest_wal_checkpoint_scanned_bytes", "WAL bytes scanned after checkpoint selection.", []string{"outcome"}, m.ingestWALCheckpointBytes)
+	writeHistogram(&b, "graphdb_ingest_wal_checkpoint_duration_seconds", "WAL checkpoint recovery and persistence latency.", []string{"outcome"}, m.ingestWALCheckpointTime)
 	writeScalar(&b, "graphdb_ingest_queue_pending_requests", "Durable ingest requests awaiting finalization.", "gauge", m.ingestQueue)
 	writeScalar(&b, "graphdb_ingest_queue_pending_bytes", "Encoded bytes represented by pending ingest requests.", "gauge", m.ingestQueueBytes)
 	writeScalar(&b, "graphdb_ingest_queue_memory_bytes", "Memory budget charged to pending ingest requests.", "gauge", m.ingestQueueMemory)
@@ -578,9 +638,11 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeScalar(&b, "graphdb_ingest_metadata_manifest_publish_total", "Physical ingest metadata manifest publications.", "counter", m.ingestMetadataManifestPuts)
 	writeScalar(&b, "graphdb_ingest_metadata_manifest_conflicts_total", "Ingest metadata manifest CAS conflicts.", "counter", m.ingestMetadataManifestConflicts)
 	writeScalar(&b, "graphdb_ingest_metadata_index_put_total", "Physical ingest metadata index catalog PUT operations.", "counter", m.ingestMetadataIndexPuts)
+	writeHistogram(&b, "graphdb_ingest_metadata_deadline_overshoot_seconds", "Delay between a metadata flush deadline and worker dispatch.", []string{"state"}, m.ingestMetadataDispatch)
 	writeCounter(&b, "graphdb_ingest_metadata_lookup_total", "Metadata lookups by identity kind and outcome.", []string{"kind", "outcome"}, m.ingestMetadataLookup)
 	writeHistogram(&b, "graphdb_ingest_metadata_lookup_duration_seconds", "Metadata lookup latency by identity kind and outcome.", []string{"kind", "outcome"}, m.ingestMetadataLookupTime)
 	writeHistogram(&b, "graphdb_ingest_metadata_lookup_candidates", "Candidate segments loaded per metadata lookup.", []string{"kind", "outcome"}, m.ingestMetadataLookupCandidates)
+	writeCounter(&b, "graphdb_ingest_metadata_cache_total", "Metadata manifest, index and segment cache events.", []string{"kind", "outcome"}, m.ingestMetadataCache)
 	writeScalar(&b, "graphdb_ingest_metadata_replay_bytes_total", "Published WAL payload bytes replayed into metadata queues.", "counter", m.ingestMetadataReplayBytes)
 	writeScalar(&b, "graphdb_ingest_metadata_object_puts_per_request", "Cumulative metadata segment, manifest, and index PUTs per finalized request.", "gauge", safeRatio(m.ingestMetadataSegmentPuts+m.ingestMetadataManifestPuts+m.ingestMetadataIndexPuts, m.ingestMetadataRequests))
 	writeCounter(&b, "graphdb_index_health_checks_total", "Index health checks by tenant and status.", []string{"tenant", "status"}, m.indexHealthChecks)

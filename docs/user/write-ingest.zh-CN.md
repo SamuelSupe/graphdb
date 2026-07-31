@@ -258,7 +258,7 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `failures`：item 级错误；
 - `conflicts`：被抑制冲突和提交失败原因。
 
-### 本地 WAL 模式（1.1.2）
+### 本地 WAL 模式
 
 默认 `GRAPHDB_INGEST_MODE=direct` 保持原来的同步 `200/207` 行为。单 writer、
 `GRAPHDB_COORDINATION=local` 部署可以显式设置
@@ -301,7 +301,7 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
 - `GRAPHDB_INGEST_FLUSH_WORKERS=1`
 - `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
 
-#### 1.1.3 metadata segment 模式
+#### metadata segment 模式（1.1.3+）
 
 1.1.3 在本地 WAL 模式上增加显式启用的 metadata 攒批：
 
@@ -312,7 +312,7 @@ GRAPHDB_INGEST_METADATA_MODE=segment
 GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=30s
 GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
 GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
-GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=1
+GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=4
 ```
 
 默认仍为 `GRAPHDB_INGEST_METADATA_MODE=legacy`。segment 模式把同一租户跨
@@ -350,12 +350,41 @@ WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记�
 graph version。首次遇到历史 loose commit 尾部时会将其并入 segment；该租户
 随后不再承担这次迁移成本。
 
+#### 1.1.4 稀疏多租户运行保障
+
+metadata flush worker 与 graph write worker 独立，默认值为 `4`。数百个以
+稀疏写入为主的租户可根据对象存储 p95 延迟和 metadata deadline-overshoot 指标
+继续调优。同一租户始终最多只有一个进行中的 metadata flush，metadata segment
+也绝不跨租户混装；提高 worker 数只改善公平性，不改变顺序或隔离语义。
+
+每个 writer 在进程内维护有界 LRU，缓存 ingest metadata manifest、目录和
+不可变 segment：最多 1,024 个对象、64 MiB 编码后数据。manifest 条目 TTL 为
+1 秒，不可变 index 和 segment 条目 TTL 为 15 分钟。同一个对象的并发冷读会合并
+为一次对象存储请求；热查不会再发起 GET。该缓存可随进程丢弃并在重启后重建；
+成功的 metadata manifest CAS 会替换本地 manifest 条目，它不是跨 writer 的
+一致性机制。
+
+WAL prune 推进到已知安全位置时，writer 会在
+`GRAPHDB_INGEST_WAL_DIR` 原子写入 `checkpoint.json`。启动时优先从有效
+checkpoint 恢复，只扫描活跃尾部；缺失、截断或无效 checkpoint 会回退为完整
+WAL 扫描，WAL 本身损坏仍会阻止启动。不要手工修改 checkpoint，也不要脱离
+对应 WAL 目录单独复制或恢复它；它只是恢复加速记录，不能替代 WAL 或对象存储
+备份。
+
+使用 `graphdb_ingest_metadata_deadline_overshoot_seconds`、
+`graphdb_ingest_metadata_cache_total` 和
+`graphdb_ingest_wal_checkpoint_{total,scanned_bytes,duration_seconds}` 分别观察
+worker 饱和、点查压力和恢复成本。JSON 日志新增
+`ingest_wal_checkpoint_written`、`ingest_wal_checkpoint_recovery`；相应结果为
+`used`、`miss`、`fallback`、`written` 或 `error`。
+
 `/metrics` 提供 `graphdb_ingest_wal_*`、`graphdb_ingest_queue_*`、
 `graphdb_ingest_flush_*` 和 `graphdb_ingest_metadata_*` 指标，包括
 append/fsync、WAL 内存与磁盘占用、
 written/durable LSN、待处理请求与最老等待时间、状态缓存命中/淘汰、flush
 延迟与请求/commit/segment/manifest 数、metadata 物理 PUT/字节、manifest
-冲突、Bloom 候选和恢复重放字节，以及 recovery 结果。这些指标只有
+冲突、Bloom 候选、metadata cache 结果、checkpoint 扫描成本、恢复重放字节，
+以及 recovery 结果。这些指标只有
 固定状态类标签，不包含 tenant、source、collector 或 batch 等高基数标签。
 
 进程日志会输出 `ingest_wal_recovery`、`ingest_wal_accepted`、

@@ -89,6 +89,7 @@ type TenantStore struct {
 	tenantConfigCache          map[string]cachedTenantConfig
 	indexCatalogCache          map[string]cachedIndexCatalog
 	indexCatalogLoads          map[string]*indexCatalogLoad
+	ingestMetadataCache        *ingestMetadataObjectCache
 	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
 	compiledScanCatalogCache   map[string]*compiledScanCatalog
@@ -160,6 +161,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		tenantConfigCache:          map[string]cachedTenantConfig{},
 		indexCatalogCache:          map[string]cachedIndexCatalog{},
 		indexCatalogLoads:          map[string]*indexCatalogLoad{},
+		ingestMetadataCache:        newIngestMetadataObjectCache(),
 		reverseIndexCatalogCache:   map[string]cachedReverseIndexCatalog{},
 		reverseIndexCatalogLoads:   map[string]*reverseIndexCatalogLoad{},
 		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},

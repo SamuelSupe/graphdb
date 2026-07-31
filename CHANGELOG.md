@@ -3,6 +3,32 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.1.4] - 2026-07-31
+
+### Added
+
+- Add a bounded process-local metadata manifest/index/segment cache with
+  singleflight cold loads and short negative caching for local WAL writers.
+- Add atomic local-WAL `checkpoint.json` recovery hints. A valid checkpoint
+  scans only the active tail; invalid or missing hints safely fall back to a
+  full WAL scan.
+- Export metadata dispatch overshoot, cache, and WAL checkpoint metrics with
+  corresponding structured logs and OpenTelemetry spans.
+
+### Changed
+
+- Raise the default `GRAPHDB_INGEST_METADATA_FLUSH_WORKERS` from 1 to 4 and
+  avoid scheduler blocking when the metadata worker queue is saturated.
+- Preserve one in-flight metadata flush per tenant while allowing independent
+  tenants to make progress concurrently.
+
+### Compatibility
+
+- No graph commit, ingest metadata segment, dead-letter, logical-version, or
+  tenant-isolation format changes. `legacy` remains the default metadata mode.
+- Checkpoints and caches are disposable local accelerators; they neither
+  replace the WAL nor change the existing segment activation/rollback fence.
+
 ## [1.1.3] - 2026-07-30
 
 ### Added

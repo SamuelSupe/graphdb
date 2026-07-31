@@ -137,17 +137,19 @@ type walPreparedBatchEnvelope struct {
 }
 
 type ingestPending struct {
-	envelope       walIngestEnvelope
-	acceptedLSN    uint64
-	estimated      time.Time
-	bytes          int64
-	state          string
-	result         IngestResult
-	err            error
-	finishedAt     time.Time
-	metadataRecord *IngestBatchRecord
-	done           chan struct{}
-	completedOnce  sync.Once
+	envelope        walIngestEnvelope
+	acceptedLSN     uint64
+	acceptedSegment string
+	acceptedOffset  int64
+	estimated       time.Time
+	bytes           int64
+	state           string
+	result          IngestResult
+	err             error
+	finishedAt      time.Time
+	metadataRecord  *IngestBatchRecord
+	done            chan struct{}
+	completedOnce   sync.Once
 }
 
 type ingestAcceptFlight struct {
@@ -405,12 +407,14 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		}
 		envelope.AcceptedLSN = appendResult.LSN
 		pending := &ingestPending{
-			envelope:    envelope,
-			acceptedLSN: appendResult.LSN,
-			estimated:   acceptedAt.Add(s.config.FlushInterval),
-			bytes:       recordBytes,
-			state:       IngestStateAccepted,
-			done:        make(chan struct{}),
+			envelope:        envelope,
+			acceptedLSN:     appendResult.LSN,
+			acceptedSegment: appendResult.Segment,
+			acceptedOffset:  appendResult.Offset,
+			estimated:       acceptedAt.Add(s.config.FlushInterval),
+			bytes:           recordBytes,
+			state:           IngestStateAccepted,
+			done:            make(chan struct{}),
 		}
 		if request.FullSync {
 			pending.estimated = acceptedAt
@@ -631,6 +635,13 @@ func (s *IngestService) Close(ctx context.Context) error {
 
 func (s *IngestService) recover(records []IngestWALRecord) ([]*ingestPending, error) {
 	recovered := map[string]*ingestPending{}
+	var recoveryFloor uint64
+	for _, record := range records {
+		if record.Type == IngestWALAccepted {
+			recoveryFloor = record.LSN
+			break
+		}
+	}
 	for _, record := range records {
 		if record.Type == IngestWALPrepared || record.Type == IngestWALPublished ||
 			record.Type == IngestWALFinalized || record.Type == IngestWALFailed {
@@ -639,6 +650,13 @@ func (s *IngestService) recover(records []IngestWALRecord) ([]*ingestPending, er
 				for _, envelope := range batch.Items {
 					pending := recovered[envelope.RecordID]
 					if pending == nil {
+						// A checkpoint starts at the oldest still-active ACCEPTED
+						// record. Later state batches may still mention older
+						// requests that were finalized before that checkpoint.
+						if recoveryFloor > 0 &&
+							envelope.AcceptedLSN < recoveryFloor {
+							continue
+						}
 						return nil, fmt.Errorf("%w: state for unknown ingest record at LSN %d", ErrIngestWALCorrupt, record.LSN)
 					}
 					switch record.Type {
@@ -675,12 +693,14 @@ func (s *IngestService) recover(records []IngestWALRecord) ([]*ingestPending, er
 		case IngestWALAccepted:
 			envelope.AcceptedLSN = record.LSN
 			pending := &ingestPending{
-				envelope:    envelope,
-				acceptedLSN: record.LSN,
-				estimated:   time.Now().UTC(),
-				bytes:       int64(len(record.Payload) + ingestWALHeaderBytes + ingestWALChecksumBytes),
-				state:       IngestStateAccepted,
-				done:        make(chan struct{}),
+				envelope:        envelope,
+				acceptedLSN:     record.LSN,
+				acceptedSegment: record.Segment,
+				acceptedOffset:  record.Offset,
+				estimated:       time.Now().UTC(),
+				bytes:           int64(len(record.Payload) + ingestWALHeaderBytes + ingestWALChecksumBytes),
+				state:           IngestStateAccepted,
+				done:            make(chan struct{}),
 			}
 			recovered[envelope.RecordID] = pending
 		case IngestWALPrepared, IngestWALPublished:
@@ -719,6 +739,7 @@ func (s *IngestService) recover(records []IngestWALRecord) ([]*ingestPending, er
 type ingestTenantFlush struct {
 	tenantID string
 	items    []*ingestPending
+	deadline time.Time
 }
 
 type ingestWorkerCompletion struct {
@@ -732,11 +753,12 @@ type ingestForceRequest struct {
 }
 
 type ingestTenantQueue struct {
-	tenantID string
-	items    []*ingestPending
-	bytes    int64
-	deadline time.Time
-	index    int
+	tenantID      string
+	items         []*ingestPending
+	bytes         int64
+	deadline      time.Time
+	flushDeadline time.Time
+	index         int
 }
 
 type ingestDeadlineHeap []*ingestTenantQueue
@@ -760,6 +782,51 @@ func (h *ingestDeadlineHeap) Pop() any {
 	queue.index = -1
 	*h = old[:last]
 	return queue
+}
+
+func dispatchReadyIngestQueues(
+	now time.Time,
+	draining bool,
+	deadlines *ingestDeadlineHeap,
+	queues map[string]*ingestTenantQueue,
+	busy map[string]bool,
+	ready chan<- ingestTenantFlush,
+) {
+	deferred := make([]*ingestTenantQueue, 0)
+	defer func() {
+		for _, queue := range deferred {
+			heap.Push(deadlines, queue)
+		}
+	}()
+	for deadlines.Len() > 0 {
+		queue := (*deadlines)[0]
+		if !draining && queue.deadline.After(now) {
+			return
+		}
+		heap.Pop(deadlines)
+		if busy[queue.tenantID] {
+			queue.deadline = now.Add(10 * time.Millisecond)
+			deferred = append(deferred, queue)
+			continue
+		}
+		flushDeadline := queue.flushDeadline
+		if flushDeadline.IsZero() {
+			flushDeadline = queue.deadline
+		}
+		select {
+		case ready <- ingestTenantFlush{
+			tenantID: queue.tenantID,
+			items:    queue.items,
+			deadline: flushDeadline,
+		}:
+			delete(queues, queue.tenantID)
+			busy[queue.tenantID] = true
+		default:
+			queue.deadline = now.Add(time.Millisecond)
+			deferred = append(deferred, queue)
+			return
+		}
+	}
 }
 
 func (s *IngestService) schedule() {
@@ -797,21 +864,7 @@ func (s *IngestService) schedule() {
 		}
 	}
 	dispatch := func(now time.Time) {
-		for deadlines.Len() > 0 {
-			queue := deadlines[0]
-			if !draining && queue.deadline.After(now) {
-				return
-			}
-			heap.Pop(&deadlines)
-			if busy[queue.tenantID] {
-				queue.deadline = now.Add(10 * time.Millisecond)
-				heap.Push(&deadlines, queue)
-				continue
-			}
-			delete(queues, queue.tenantID)
-			busy[queue.tenantID] = true
-			s.readyCh <- ingestTenantFlush{tenantID: queue.tenantID, items: queue.items}
-		}
+		dispatchReadyIngestQueues(now, draining, &deadlines, queues, busy, s.readyCh)
 	}
 
 	for {
@@ -826,13 +879,17 @@ func (s *IngestService) schedule() {
 			tenantID := pending.envelope.TenantID
 			queue := queues[tenantID]
 			if queue == nil {
+				deadline := pending.envelope.AcceptedAt.Add(s.config.FlushInterval)
 				queue = &ingestTenantQueue{
-					tenantID: tenantID,
-					deadline: pending.envelope.AcceptedAt.Add(s.config.FlushInterval),
-					index:    -1,
+					tenantID:      tenantID,
+					deadline:      deadline,
+					flushDeadline: deadline,
+					index:         -1,
 				}
 				if draining || pending.envelope.Request.FullSync {
-					queue.deadline = time.Now()
+					now := time.Now()
+					queue.deadline = now
+					queue.flushDeadline = now
 				}
 				queues[tenantID] = queue
 				heap.Push(&deadlines, queue)
@@ -843,13 +900,17 @@ func (s *IngestService) schedule() {
 				queue.bytes >= s.config.FlushMaxBytes ||
 				pending.envelope.Request.FullSync ||
 				pending.acceptedLSN <= forceThrough[tenantID] {
-				queue.deadline = time.Now()
+				now := time.Now()
+				queue.deadline = now
+				queue.flushDeadline = now
 				heap.Fix(&deadlines, queue.index)
 			}
 		case force := <-s.forceCh:
 			forceThrough[force.tenantID] = max(forceThrough[force.tenantID], force.throughLSN)
 			if queue := queues[force.tenantID]; queue != nil {
-				queue.deadline = time.Now()
+				now := time.Now()
+				queue.deadline = now
+				queue.flushDeadline = now
 				heap.Fix(&deadlines, queue.index)
 			}
 		case completion := <-s.completeCh:
@@ -857,10 +918,12 @@ func (s *IngestService) schedule() {
 			if len(completion.retry) > 0 {
 				queue := queues[completion.tenantID]
 				if queue == nil {
+					deadline := time.Now().Add(s.config.RetryInterval)
 					queue = &ingestTenantQueue{
-						tenantID: completion.tenantID,
-						deadline: time.Now().Add(s.config.RetryInterval),
-						index:    -1,
+						tenantID:      completion.tenantID,
+						deadline:      deadline,
+						flushDeadline: deadline,
+						index:         -1,
 					}
 					queues[completion.tenantID] = queue
 					heap.Push(&deadlines, queue)
@@ -870,7 +933,9 @@ func (s *IngestService) schedule() {
 					queue.bytes += pending.bytes
 				}
 				if draining {
-					queue.deadline = time.Now()
+					now := time.Now()
+					queue.deadline = now
+					queue.flushDeadline = now
 					heap.Fix(&deadlines, queue.index)
 				}
 			}
@@ -879,7 +944,9 @@ func (s *IngestService) schedule() {
 			draining = true
 			shutdownCh = nil
 			for _, queue := range queues {
-				queue.deadline = time.Now()
+				now := time.Now()
+				queue.deadline = now
+				queue.flushDeadline = now
 			}
 			heap.Init(&deadlines)
 		case <-s.runCtx.Done():
@@ -1341,13 +1408,17 @@ func (s *IngestService) completePending(pending *ingestPending, result IngestRes
 func (s *IngestService) prune(ctx context.Context) error {
 	s.mu.Lock()
 	before := s.highestLSN + 1
+	segment := ""
+	var offset int64
 	for _, pending := range s.active {
 		if pending.acceptedLSN < before {
 			before = pending.acceptedLSN
+			segment = pending.acceptedSegment
+			offset = pending.acceptedOffset
 		}
 	}
 	s.mu.Unlock()
-	return s.wal.Prune(ctx, before)
+	return s.wal.pruneFrom(ctx, before, segment, offset)
 }
 
 func (s *IngestService) recordError(err error) {
