@@ -76,7 +76,7 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 		cfg.IngestMetadataFlushInterval != 30*time.Second ||
 		cfg.IngestMetadataMaxRequests != 256 ||
 		cfg.IngestMetadataMaxBytes != 8*1024*1024 ||
-		cfg.IngestMetadataFlushWorkers != 1 {
+		cfg.IngestMetadataFlushWorkers != 4 {
 		t.Fatalf("WAL defaults = %#v", cfg.IngestServiceConfig())
 	}
 

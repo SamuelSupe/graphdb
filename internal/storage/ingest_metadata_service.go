@@ -45,21 +45,14 @@ func (s *IngestService) scheduleMetadata() {
 		}
 	}
 	dispatch := func(now time.Time) {
-		for deadlines.Len() > 0 {
-			queue := deadlines[0]
-			if !draining && queue.deadline.After(now) {
-				return
-			}
-			heap.Pop(&deadlines)
-			if busy[queue.tenantID] {
-				queue.deadline = now.Add(10 * time.Millisecond)
-				heap.Push(&deadlines, queue)
-				continue
-			}
-			delete(queues, queue.tenantID)
-			busy[queue.tenantID] = true
-			s.metadataReadyCh <- ingestTenantFlush{tenantID: queue.tenantID, items: queue.items}
-		}
+		dispatchReadyIngestQueues(
+			now,
+			draining,
+			&deadlines,
+			queues,
+			busy,
+			s.metadataReadyCh,
+		)
 	}
 
 	for {
@@ -78,13 +71,17 @@ func (s *IngestService) scheduleMetadata() {
 				if publishedAt.IsZero() {
 					publishedAt = time.Now().UTC()
 				}
+				deadline := publishedAt.Add(s.config.Metadata.FlushInterval)
 				queue = &ingestTenantQueue{
-					tenantID: tenantID,
-					deadline: publishedAt.Add(s.config.Metadata.FlushInterval),
-					index:    -1,
+					tenantID:      tenantID,
+					deadline:      deadline,
+					flushDeadline: deadline,
+					index:         -1,
 				}
 				if draining || pending.envelope.Request.FullSync {
-					queue.deadline = time.Now()
+					now := time.Now()
+					queue.deadline = now
+					queue.flushDeadline = now
 				}
 				queues[tenantID] = queue
 				heap.Push(&deadlines, queue)
@@ -95,13 +92,17 @@ func (s *IngestService) scheduleMetadata() {
 				queue.bytes >= s.config.Metadata.MaxBytes ||
 				pending.envelope.Request.FullSync ||
 				pending.acceptedLSN <= forceThrough[tenantID] {
-				queue.deadline = time.Now()
+				now := time.Now()
+				queue.deadline = now
+				queue.flushDeadline = now
 				heap.Fix(&deadlines, queue.index)
 			}
 		case force := <-s.metadataForceCh:
 			forceThrough[force.tenantID] = max(forceThrough[force.tenantID], force.throughLSN)
 			if queue := queues[force.tenantID]; queue != nil {
-				queue.deadline = time.Now()
+				now := time.Now()
+				queue.deadline = now
+				queue.flushDeadline = now
 				heap.Fix(&deadlines, queue.index)
 			}
 		case completion := <-s.metadataCompleteCh:
@@ -109,10 +110,12 @@ func (s *IngestService) scheduleMetadata() {
 			if len(completion.retry) > 0 {
 				queue := queues[completion.tenantID]
 				if queue == nil {
+					deadline := time.Now().Add(s.config.RetryInterval)
 					queue = &ingestTenantQueue{
-						tenantID: completion.tenantID,
-						deadline: time.Now().Add(s.config.RetryInterval),
-						index:    -1,
+						tenantID:      completion.tenantID,
+						deadline:      deadline,
+						flushDeadline: deadline,
+						index:         -1,
 					}
 					queues[completion.tenantID] = queue
 					heap.Push(&deadlines, queue)
@@ -122,7 +125,9 @@ func (s *IngestService) scheduleMetadata() {
 					queue.bytes += pending.bytes
 				}
 				if draining {
-					queue.deadline = time.Now()
+					now := time.Now()
+					queue.deadline = now
+					queue.flushDeadline = now
 					heap.Fix(&deadlines, queue.index)
 				}
 			}
@@ -131,7 +136,9 @@ func (s *IngestService) scheduleMetadata() {
 			draining = true
 			shutdownCh = nil
 			for _, queue := range queues {
-				queue.deadline = time.Now()
+				now := time.Now()
+				queue.deadline = now
+				queue.flushDeadline = now
 			}
 			heap.Init(&deadlines)
 		case <-s.runCtx.Done():
@@ -143,7 +150,11 @@ func (s *IngestService) scheduleMetadata() {
 func (s *IngestService) runMetadataWorker() {
 	defer s.metadataWorkers.Done()
 	for flush := range s.metadataReadyCh {
-		retry := s.flushMetadata(flush.tenantID, flush.items)
+		overshoot := max(time.Duration(0), time.Since(flush.deadline))
+		if s.config.Observer != nil {
+			s.config.Observer.RecordIngestMetadataDispatch(overshoot)
+		}
+		retry := s.flushMetadata(flush.tenantID, flush.items, overshoot)
 		select {
 		case s.metadataCompleteCh <- ingestWorkerCompletion{tenantID: flush.tenantID, retry: retry}:
 		case <-s.runCtx.Done():
@@ -152,14 +163,18 @@ func (s *IngestService) runMetadataWorker() {
 	}
 }
 
-func (s *IngestService) flushMetadata(tenantID string, items []*ingestPending) []*ingestPending {
+func (s *IngestService) flushMetadata(
+	tenantID string,
+	items []*ingestPending,
+	deadlineOvershoot time.Duration,
+) []*ingestPending {
 	for start := 0; start < len(items); {
 		end := start + 1
 		groupID := items[start].envelope.MetadataFlushID
 		for end < len(items) && items[end].envelope.MetadataFlushID == groupID {
 			end++
 		}
-		retry := s.flushMetadataGroup(tenantID, items[start:end])
+		retry := s.flushMetadataGroup(tenantID, items[start:end], deadlineOvershoot)
 		if len(retry) > 0 {
 			return append(retry, items[end:]...)
 		}
@@ -168,7 +183,11 @@ func (s *IngestService) flushMetadata(tenantID string, items []*ingestPending) [
 	return nil
 }
 
-func (s *IngestService) flushMetadataGroup(tenantID string, items []*ingestPending) []*ingestPending {
+func (s *IngestService) flushMetadataGroup(
+	tenantID string,
+	items []*ingestPending,
+	deadlineOvershoot time.Duration,
+) []*ingestPending {
 	ctx, span := startIngestMetadataFlushSpan(s.runCtx, tenantID, items)
 	started := time.Now()
 	var flushErr error
@@ -188,6 +207,10 @@ func (s *IngestService) flushMetadataGroup(tenantID string, items []*ingestPendi
 		span.SetAttributes(
 			attribute.String("graphdb.ingest.metadata.status", status),
 			attribute.Int("graphdb.ingest.metadata.requests", len(items)),
+			attribute.Float64(
+				"graphdb.ingest.metadata.deadline_overshoot_ms",
+				float64(deadlineOvershoot.Microseconds())/1000,
+			),
 		)
 		endStorageSpan(span, flushErr)
 		if s.config.Observer != nil {
@@ -211,7 +234,8 @@ func (s *IngestService) flushMetadataGroup(tenantID string, items []*ingestPendi
 			fields := map[string]any{
 				"tenant": tenantID, "status": status, "requests": len(items),
 				"first_lsn": firstLSN, "last_lsn": lastLSN,
-				"duration_ms": float64(time.Since(started).Microseconds()) / 1000,
+				"duration_ms":           float64(time.Since(started).Microseconds()) / 1000,
+				"deadline_overshoot_ms": float64(deadlineOvershoot.Microseconds()) / 1000,
 			}
 			if flushErr != nil {
 				fields["error"] = flushErr.Error()

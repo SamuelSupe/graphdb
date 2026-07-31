@@ -207,20 +207,43 @@ func (s *TenantStore) loadIngestMetadataSegment(
 	tenantID string,
 	ref ingestMetadataSegmentRef,
 ) (ingestMetadataSegment, error) {
-	data, err := s.Objects.Get(ctx, ref.Key)
+	object, err := s.loadCachedIngestMetadataObject(
+		ctx,
+		ref.Key,
+		"segment",
+		ingestMetadataImmutableTTL,
+		func(loadCtx context.Context) (ingestMetadataCacheObject, error) {
+			data, err := s.Objects.Get(loadCtx, ref.Key)
+			if err != nil {
+				return ingestMetadataCacheObject{}, err
+			}
+			var segment ingestMetadataSegment
+			hash, err := decodeParquetIngestMetadataDocument(
+				loadCtx,
+				data,
+				ingestMetadataSegmentCodec,
+				&segment,
+			)
+			if err != nil {
+				return ingestMetadataCacheObject{}, err
+			}
+			if hash != ref.ContentHash || segment.TenantID != tenantID ||
+				segment.FirstLSN != ref.FirstLSN || segment.LastLSN != ref.LastLSN {
+				return ingestMetadataCacheObject{}, fmt.Errorf(
+					"ingest metadata segment identity mismatch for %q",
+					ref.Key,
+				)
+			}
+			return ingestMetadataCacheObject{
+				value: segment,
+				bytes: int64(len(data)),
+			}, nil
+		},
+	)
 	if err != nil {
 		return ingestMetadataSegment{}, err
 	}
-	var segment ingestMetadataSegment
-	hash, err := decodeParquetIngestMetadataDocument(ctx, data, ingestMetadataSegmentCodec, &segment)
-	if err != nil {
-		return ingestMetadataSegment{}, err
-	}
-	if hash != ref.ContentHash || segment.TenantID != tenantID ||
-		segment.FirstLSN != ref.FirstLSN || segment.LastLSN != ref.LastLSN {
-		return ingestMetadataSegment{}, fmt.Errorf("ingest metadata segment identity mismatch for %q", ref.Key)
-	}
-	return segment, nil
+	return object.value.(ingestMetadataSegment), nil
 }
 
 func ingestMetadataSegmentMatches(segment ingestMetadataSegment, query ingestMetadataLookup) bool {

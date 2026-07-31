@@ -15,21 +15,65 @@ func (s *TenantStore) loadIngestMetadataManifest(
 	tenantID string,
 ) (ingestMetadataManifest, ObjectMeta, error) {
 	key := s.ingestMetadataManifestKey(tenantID)
+	object, err := s.loadCachedIngestMetadataObject(
+		ctx,
+		key,
+		"manifest",
+		ingestMetadataManifestTTL,
+		func(loadCtx context.Context) (ingestMetadataCacheObject, error) {
+			manifest, meta, bytes, err := s.loadIngestMetadataManifestDirect(
+				loadCtx,
+				tenantID,
+			)
+			if err != nil {
+				return ingestMetadataCacheObject{meta: meta}, err
+			}
+			return ingestMetadataCacheObject{
+				value: manifest,
+				meta:  meta,
+				bytes: bytes,
+			}, nil
+		},
+	)
+	if err != nil {
+		return ingestMetadataManifest{}, object.meta, err
+	}
+	manifest := object.value.(ingestMetadataManifest)
+	return cloneIngestMetadataManifest(manifest), object.meta, nil
+}
+
+func (s *TenantStore) loadIngestMetadataManifestDirect(
+	ctx context.Context,
+	tenantID string,
+) (ingestMetadataManifest, ObjectMeta, int64, error) {
+	key := s.ingestMetadataManifestKey(tenantID)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
-		return ingestMetadataManifest{}, meta, err
+		return ingestMetadataManifest{}, meta, 0, err
 	}
 	if !isParquetBytes(data) {
-		return ingestMetadataManifest{}, meta, fmt.Errorf("unsupported ingest metadata manifest %q", key)
+		return ingestMetadataManifest{}, meta, 0, fmt.Errorf(
+			"unsupported ingest metadata manifest %q",
+			key,
+		)
 	}
 	var manifest ingestMetadataManifest
-	if _, err := decodeParquetIngestMetadataDocument(ctx, data, ingestMetadataManifestCodec, &manifest); err != nil {
-		return ingestMetadataManifest{}, meta, err
+	if _, err := decodeParquetIngestMetadataDocument(
+		ctx,
+		data,
+		ingestMetadataManifestCodec,
+		&manifest,
+	); err != nil {
+		return ingestMetadataManifest{}, meta, 0, err
 	}
-	if manifest.FormatVersion != ingestMetadataFormatVersion || manifest.TenantID != tenantID {
-		return ingestMetadataManifest{}, meta, fmt.Errorf("ingest metadata manifest identity mismatch for tenant %q", tenantID)
+	if manifest.FormatVersion != ingestMetadataFormatVersion ||
+		manifest.TenantID != tenantID {
+		return ingestMetadataManifest{}, meta, 0, fmt.Errorf(
+			"ingest metadata manifest identity mismatch for tenant %q",
+			tenantID,
+		)
 	}
-	return manifest, meta, nil
+	return manifest, meta, int64(len(data)), nil
 }
 
 func (s *TenantStore) publishIngestMetadataManifest(
@@ -81,8 +125,15 @@ func (s *TenantStore) publishIngestMetadataManifest(
 			return err
 		}
 		condition := PutCondition{IfNoneMatch: !meta.Exists, IfMatch: meta.ETag}
-		if _, err := s.Objects.PutConditional(ctx, meta.Key, data, condition); err == nil {
+		if publishedMeta, err := s.Objects.PutConditional(ctx, meta.Key, data, condition); err == nil {
 			stats.ManifestPublishes++
+			s.ingestMetadataCache.store(
+				meta.Key,
+				cloneIngestMetadataManifest(manifest),
+				publishedMeta,
+				int64(len(data)),
+				ingestMetadataManifestTTL,
+			)
 			if s.IngestLogger != nil {
 				s.IngestLogger.Info("ingest_metadata_manifest_published", map[string]any{
 					"tenant": tenantID, "first_lsn": segment.FirstLSN,
@@ -93,6 +144,7 @@ func (s *TenantStore) publishIngestMetadataManifest(
 		} else if !errors.Is(err, ErrConflict) {
 			return fmt.Errorf("publish ingest metadata manifest: %w", err)
 		}
+		s.ingestMetadataCache.invalidate(meta.Key)
 		stats.ManifestConflicts++
 		if s.IngestLogger != nil {
 			s.IngestLogger.Info("ingest_metadata_manifest_conflict", map[string]any{
@@ -187,9 +239,17 @@ func (s *TenantStore) putIngestMetadataIndex(
 		return ingestMetadataIndexRef{}, err
 	}
 	ref := ingestMetadataIndexReference(s, tenantID, index, hash)
-	if _, err := s.Objects.PutConditional(ctx, ref.Key, data, PutCondition{IfNoneMatch: true}); err != nil && !errors.Is(err, ErrConflict) {
+	meta, err := s.Objects.PutConditional(ctx, ref.Key, data, PutCondition{IfNoneMatch: true})
+	if err != nil && !errors.Is(err, ErrConflict) {
 		return ingestMetadataIndexRef{}, fmt.Errorf("put ingest metadata index: %w", err)
 	}
+	s.ingestMetadataCache.store(
+		ref.Key,
+		index,
+		meta,
+		int64(len(data)),
+		ingestMetadataImmutableTTL,
+	)
 	return ref, nil
 }
 
@@ -198,19 +258,54 @@ func (s *TenantStore) loadIngestMetadataIndex(
 	tenantID string,
 	ref ingestMetadataIndexRef,
 ) (ingestMetadataIndex, error) {
-	data, err := s.Objects.Get(ctx, ref.Key)
+	object, err := s.loadCachedIngestMetadataObject(
+		ctx,
+		ref.Key,
+		"index",
+		ingestMetadataImmutableTTL,
+		func(loadCtx context.Context) (ingestMetadataCacheObject, error) {
+			data, err := s.Objects.Get(loadCtx, ref.Key)
+			if err != nil {
+				return ingestMetadataCacheObject{}, err
+			}
+			var index ingestMetadataIndex
+			hash, err := decodeParquetIngestMetadataDocument(
+				loadCtx,
+				data,
+				ingestMetadataIndexCodec,
+				&index,
+			)
+			if err != nil {
+				return ingestMetadataCacheObject{}, err
+			}
+			if hash != ref.ContentHash || index.TenantID != tenantID ||
+				index.Level != ref.Level {
+				return ingestMetadataCacheObject{}, fmt.Errorf(
+					"ingest metadata index identity mismatch for %q",
+					ref.Key,
+				)
+			}
+			return ingestMetadataCacheObject{
+				value: index,
+				bytes: int64(len(data)),
+			}, nil
+		},
+	)
 	if err != nil {
 		return ingestMetadataIndex{}, err
 	}
-	var index ingestMetadataIndex
-	hash, err := decodeParquetIngestMetadataDocument(ctx, data, ingestMetadataIndexCodec, &index)
-	if err != nil {
-		return ingestMetadataIndex{}, err
-	}
-	if hash != ref.ContentHash || index.TenantID != tenantID || index.Level != ref.Level {
-		return ingestMetadataIndex{}, fmt.Errorf("ingest metadata index identity mismatch for %q", ref.Key)
-	}
-	return index, nil
+	return cloneIngestMetadataIndex(object.value.(ingestMetadataIndex)), nil
+}
+
+func cloneIngestMetadataManifest(manifest ingestMetadataManifest) ingestMetadataManifest {
+	manifest.Recent = append([]ingestMetadataSegmentRef(nil), manifest.Recent...)
+	manifest.Indexes = append([]ingestMetadataIndexRef(nil), manifest.Indexes...)
+	return manifest
+}
+
+func cloneIngestMetadataIndex(index ingestMetadataIndex) ingestMetadataIndex {
+	index.Segments = append([]ingestMetadataSegmentRef(nil), index.Segments...)
+	return index
 }
 
 func ingestMetadataIndexReference(

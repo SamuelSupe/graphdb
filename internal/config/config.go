@@ -158,7 +158,7 @@ func Load() (Config, error) {
 		IngestMetadataFlushInterval:       30 * time.Second,
 		IngestMetadataMaxRequests:         256,
 		IngestMetadataMaxBytes:            8 * 1024 * 1024,
-		IngestMetadataFlushWorkers:        1,
+		IngestMetadataFlushWorkers:        4,
 		IngestShutdownTimeout:             30 * time.Second,
 		SlowQueryThreshold:                500 * time.Millisecond,
 		IndexHealthInterval:               30 * time.Second,

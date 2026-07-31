@@ -274,7 +274,7 @@ Response fields:
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.
 
-### Local WAL mode (1.1.2)
+### Local WAL mode
 
 `GRAPHDB_INGEST_MODE=direct` remains the default synchronous `200/207`
 behavior. A single-writer deployment using `GRAPHDB_COORDINATION=local` can
@@ -305,7 +305,7 @@ Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
 `GRAPHDB_INGEST_FLUSH_WORKERS=1`, and
 `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
 
-#### 1.1.3 metadata segment mode
+#### Metadata segment mode (1.1.3+)
 
 GGraphDB 1.1.3 adds explicitly enabled metadata batching on top of local WAL
 ingest:
@@ -317,7 +317,7 @@ GRAPHDB_INGEST_METADATA_MODE=segment
 GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=30s
 GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
 GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
-GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=1
+GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=4
 ```
 
 `legacy` remains the default. Segment mode stores full requests, results,
@@ -356,12 +356,46 @@ graph version when recovering a manifest published before ingest metadata was
 finalized. The first flush that encounters a historical loose-commit tail folds
 it into the segment; later flushes do not pay that migration cost again.
 
+#### 1.1.4 sparse-tenant operation
+
+Metadata flush workers are independent of graph write workers. The default is
+four. For hundreds of mostly sparse tenants, tune that value against
+object-store p95 latency and the metadata deadline-overshoot metric. A tenant
+still has at most one in-flight metadata flush, and metadata segments never
+mix tenants; more workers therefore improve fairness rather than changing
+ordering or isolation.
+
+Each writer keeps a bounded, process-local LRU for ingest metadata manifests,
+catalogs, and immutable segments: at most 1,024 objects and 64 MiB of encoded
+data. Manifest entries expire after one second; immutable index and segment
+entries expire after 15 minutes. Concurrent cold reads of one object share a
+single object-store request; a warm lookup does not issue another GET. The
+cache is disposable and is rebuilt after restart. A successful metadata
+manifest CAS replaces the local manifest entry; it is not a cross-writer
+coherence mechanism.
+
+When WAL pruning advances past a known-safe position, the writer atomically
+records `checkpoint.json` in `GRAPHDB_INGEST_WAL_DIR`. Startup resumes from a
+valid checkpoint, scanning only the active tail. Missing, torn, or invalid
+checkpoint files fall back to a full WAL scan; corruption in the WAL itself
+continues to fail startup. Do not edit, copy independently, or restore a
+checkpoint without its corresponding WAL directory. It is an acceleration
+record, not a replacement for the WAL or object-store backup.
+
+Use `graphdb_ingest_metadata_deadline_overshoot_seconds`,
+`graphdb_ingest_metadata_cache_total`, and
+`graphdb_ingest_wal_checkpoint_{total,scanned_bytes,duration_seconds}` to
+separate worker saturation, lookup pressure, and recovery cost. JSON logs add
+`ingest_wal_checkpoint_written` and `ingest_wal_checkpoint_recovery`; their
+outcomes are `used`, `miss`, `fallback`, `written`, or `error` as applicable.
+
 `/metrics` exposes `graphdb_ingest_wal_*`, `graphdb_ingest_queue_*`,
 `graphdb_ingest_flush_*`, and `graphdb_ingest_metadata_*` metrics for
 append/fsync activity, WAL memory and disk
 usage, written/durable LSNs, pending work and oldest age, status-cache
 hits/evictions, flush latency, logical and physical segment/object counts,
-manifest conflicts, Bloom candidates, replay bytes, and recovery results.
+manifest conflicts, Bloom candidates, metadata cache results, checkpoint scan
+cost, replay bytes, and recovery results.
 These metrics use only fixed status labels; tenant, source,
 collector, and batch identifiers are deliberately excluded.
 
