@@ -110,6 +110,12 @@ if [[ "${RELEASE_GATE_VERIFY_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
+if [[ "${RUN_WAL_RELEASE_GATE:-1}" == "1" ]]; then
+  log "real-process WAL and metadata segment recovery gate"
+  GRAPHDB_TEST_WAL_RELEASE_REPORT="${GRAPHDB_TEST_WAL_RELEASE_REPORT:-artifacts/wal-recovery.json}" \
+    scripts/wal_release_gate.sh
+fi
+
 log "start RustFS release stack"
 if [[ "${GRAPHDB_RELEASE_USE_PREBUILT_IMAGE:-0}" == "1" ]]; then
   docker compose -f docker-compose.rustfs.yml up -d --no-build

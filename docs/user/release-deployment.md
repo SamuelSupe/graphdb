@@ -3,22 +3,22 @@
 [中文](release-deployment.zh-CN.md)
 
 This guide is for service owners who need to download, deploy, upgrade, and
-roll back GGraphDB 1.1. Examples use the released `v1.1.4` tag, available at
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.4>.
+roll back GGraphDB 1.1. Examples use the released `v1.1.5` tag, available at
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.5>.
 
 ## 1. Download and verify
 
 The release page provides:
 
-- `graphdb-v1.1.4.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
-- `graphdb-v1.1.4.tar.gz.sha256`: SHA-256 checksum.
+- `graphdb-v1.1.5.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
+- `graphdb-v1.1.5.tar.gz.sha256`: SHA-256 checksum.
 
 Verify and unpack:
 
 ```sh
-sha256sum -c graphdb-v1.1.4.tar.gz.sha256
-tar -xzf graphdb-v1.1.4.tar.gz
-cd graphdb-v1.1.4
+sha256sum -c graphdb-v1.1.5.tar.gz.sha256
+tar -xzf graphdb-v1.1.5.tar.gz
+cd graphdb-v1.1.5
 ```
 
 The archive contains:
@@ -247,6 +247,16 @@ workflows. `X-Tenant-ID` is routing metadata, not authentication; production
 must configure auth, authorization, TLS, and rate limiting at the gateway or
 service mesh.
 
+For a local WAL writer, a transient object-store or metadata-flush failure keeps
+readiness at `503` while retry work is pending. Once the dependency is healthy
+and the retry succeeds, the writer clears the stale error and readiness returns
+to `200` without a process restart. A fatal local WAL append, short-write,
+rotation, or fsync error fences the writer: readiness reports it as not
+writable, subsequent ingest requests are rejected with the stable
+`ingest_wal_unavailable` (`503`, `retryable=true`) error, and no new LSN is
+assigned. Preserve the WAL directory and repair or replace the failed storage
+before restarting; do not delete the tail to make the process start.
+
 ## 7. Upgrade, rollback, and data safety
 
 ### GGraphDB 1.1 compatibility
@@ -328,6 +338,18 @@ and reads the winning mirror with the tagged 1.0 binary. Its JSON evidence is
 bound to the tested commit and is packaged by the release job. The gate fails
 on lost or duplicate graph versions, stale maintenance state, 1.0 read failure,
 or throughput below 90% of the target.
+
+v1.1.5 also requires commit-bound, process-level WAL recovery evidence:
+
+```sh
+GRAPHDB_TEST_WAL_RELEASE_REPORT=/path/to/wal-recovery.json \
+scripts/wal_release_gate.sh
+```
+
+The gate runs the real binary with `GRAPHDB_INGEST_MODE=wal`,
+`GRAPHDB_INGEST_METADATA_MODE=segment`, and local coordination; it exercises a
+durable `202 Accepted` batch across restart and an object-store interruption,
+then records the tested commit in the JSON report before promotion.
 
 The release commit also has a separate formal PostgreSQL-to-local rollback
 gate:

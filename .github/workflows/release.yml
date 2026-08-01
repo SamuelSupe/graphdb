@@ -35,9 +35,9 @@ jobs:
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
   integration:
-    name: RustFS, PostgreSQL CAS, load, and restore
+    name: RustFS, WAL recovery, PostgreSQL CAS, load, and restore
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,7 +53,15 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Run integration release gate
+        env:
+          GRAPHDB_TEST_WAL_RELEASE_REPORT: artifacts/wal-recovery.json
         run: RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
+
+      - name: Upload WAL recovery evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wal-recovery
+          path: artifacts/wal-recovery.json
 
   cas-soak:
     name: PostgreSQL CAS 2-active-writer 20 QPS 30-minute soak
@@ -148,6 +156,12 @@ jobs:
           name: postgres-rollback-drill
           path: artifacts
 
+      - name: Download WAL recovery evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wal-recovery
+          path: artifacts
+
       - name: Build release package
         shell: bash
         run: |
@@ -159,6 +173,8 @@ jobs:
           test "$evidence_commit" = "$commit"
           rollback_commit="$(python3 -c 'import json; report=json.load(open("artifacts/rollback-drill.json")); assert report["schema_version"] == 1; assert report["success"] is True; assert report["outbox_backlog"] == 0; assert report["legacy_mirror_lag"] == 0; assert report["marker_removed"] is True; assert report["postgres_writer_fenced"] is True; assert report["local_writer_succeeded"] is True; print(report["commit"])')"
           test "$rollback_commit" = "$commit"
+          wal_commit="$(python3 -c 'import json; report=json.load(open("artifacts/wal-recovery.json")); cfg=report["configuration"]; counts=report["counts"]; windows={item["name"]: item for item in report["windows"]}; crash=windows["durable_202_sigkill_restart"]; published=windows["published_to_finalized_sigkill_restart"]; outage=windows["object_store_outage"]; assert report["schema_version"] == 1; assert report["kind"] == "wal_metadata_segment_process_recovery"; assert report["success"] is True; assert cfg["ingest_mode"] == "wal"; assert cfg["metadata_mode"] == "segment"; assert cfg["coordination"] == "local"; assert counts["expected_applied"] == counts["collector_applied_total"] == counts["final_graph_version"] == 5; assert counts["published_windows_observed"] == 1; assert all(window.get("passed") is True for window in report["windows"]); assert crash["pre_kill_state"] == "accepted"; assert published["published_observed"] is True and published["recovered_state"] == "committed"; assert outage["durable_202_before_outage"] is True and outage["recovered_across_outage"] is True; assert outage["readiness_during_outage"] == 503 and outage["ingest_wal_ready_during_outage"] is False and outage["ingest_wal_writable_during_outage"] is True and outage["ingest_wal_pending_during_outage"] > 0; assert outage["readiness_recovered"] is True and outage["recovered_state"] == "committed"; assert report["recovery"]["no_loss"] is True; assert report["recovery"]["no_duplicate_graph_versions"] is True; assert report["recovery"]["fifo_preserved"] is True; assert report["recovery"]["metadata_outage_readiness_recovered"] is True; print(report["commit"])')"
+          test "$wal_commit" = "$commit"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           root="dist/${tag}"
           buildinfo_package="gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
@@ -191,9 +207,10 @@ jobs:
           cp release/capacity-envelope.yaml release/freeze-1.1.yaml "$root/release/"
           cp artifacts/cas-stress.json "$root/release/evidence/cas-stress-${tag}.json"
           cp artifacts/rollback-drill.json "$root/release/evidence/rollback-drill-${tag}.json"
+          cp artifacts/wal-recovery.json "$root/release/evidence/wal-recovery-${tag}.json"
           cp scripts/capacity_baseline.sh scripts/compatibility_v1_0_v1_1.sh \
             scripts/check_release_freeze.sh scripts/postgres_cas_gate.sh \
-            scripts/release_gate.sh "$root/scripts/"
+            scripts/wal_release_gate.sh scripts/release_gate.sh "$root/scripts/"
           printf '%s\n' "$tag" > "$root/VERSION"
           printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
             "$tag" "$commit" "$build_date" "$(go version | cut -d' ' -f3)" > "$root/BUILD-METADATA.json"

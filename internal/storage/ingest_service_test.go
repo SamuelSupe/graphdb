@@ -265,6 +265,55 @@ func TestIngestServiceDirectCommitBarrierFlushesAcceptedTenantQueue(t *testing.T
 	}
 }
 
+func TestIngestServiceReadinessClearsTransientRetryError(t *testing.T) {
+	config := testIngestServiceConfig(t)
+	service := &IngestService{
+		wal:            &IngestWAL{config: config.WAL},
+		config:         config,
+		active:         map[string]*ingestPending{},
+		activeByStatus: map[string]*ingestPending{},
+	}
+	pending := &ingestPending{state: IngestStateAccepted}
+	service.active["record-1"] = pending
+
+	transientErr := errors.New("temporary metadata outage")
+	service.setPendingRetry(pending, transientErr)
+	status := service.Readiness()
+	if status.Ready || !status.Writable || status.LastError != transientErr.Error() {
+		t.Fatalf("readiness during retry = %#v, want not ready but writable with transient error", status)
+	}
+
+	service.setPendingState(pending, IngestStatePublished)
+	status = service.Readiness()
+	if !status.Ready || !status.Writable || status.LastError != "" {
+		t.Fatalf("readiness after retry recovery = %#v, want ready with no error", status)
+	}
+}
+
+func TestIngestServiceRejectsAcceptAfterFatalWALFence(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	service, err := OpenIngestService(store, testIngestServiceConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.wal.fence(errors.New("injected WAL fsync failure"))
+	beforeLSN := service.highestLSN
+	_, err = service.Accept(context.Background(), "tenant-a", ingestEntityRequest("batch-fenced", "host:fenced"))
+	if !errors.Is(err, ErrIngestWALFenced) {
+		t.Fatalf("accept after WAL fence = %v, want ErrIngestWALFenced", err)
+	}
+	if service.highestLSN != beforeLSN {
+		t.Fatalf("highest LSN after fenced accept = %d, want %d", service.highestLSN, beforeLSN)
+	}
+	status := service.Readiness()
+	if status.Ready || status.Writable || !strings.Contains(status.LastError, ErrIngestWALFenced.Error()) {
+		t.Fatalf("readiness after WAL fence = %#v, want not ready/writable with fatal error", status)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = service.Close(ctx)
+}
+
 func TestIngestDurableRetriesMetadataFailureWithoutDuplicateVersion(t *testing.T) {
 	objects := &failIngestRecordOnceStore{ObjectStore: NewMemoryStore()}
 	store := NewTenantStore(objects, "test")
@@ -898,7 +947,7 @@ func TestIngestMetadataRecoversSegmentPutBeforeManifest(t *testing.T) {
 	deadline = time.Now().Add(5 * time.Second)
 	for {
 		status, statusErr := service.Status(context.Background(), "tenant-a", secondRequest.Source, secondRequest.CollectorID, secondRequest.BatchID)
-		if statusErr == nil && status.State == IngestStatePublished {
+		if statusErr == nil && (status.State == IngestStatePublished || status.State == IngestStateCommitted) {
 			break
 		}
 		if time.Now().After(deadline) {

@@ -68,7 +68,7 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		var lastSnapshot int64
 		for range compactSignals {
 			for {
-				manifest, err := compactor.Compact(fixture.ctx, "tenant-a")
+				manifest, err := compactCASStressTenant(fixture.ctx, compactor)
 				if err != nil {
 					compactErr <- err
 					return
@@ -183,7 +183,7 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		return
 	}
 
-	finalManifest, err := compactor.Compact(fixture.ctx, "tenant-a")
+	finalManifest, err := compactCASStressTenant(fixture.ctx, compactor)
 	if err != nil {
 		t.Fatalf("final compact: %v", err)
 	}
@@ -390,6 +390,21 @@ func stressClientRetryDelay(ctx context.Context, attempt int) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
+	}
+}
+
+func compactCASStressTenant(
+	ctx context.Context,
+	store *TenantStore,
+) (Manifest, error) {
+	for attempt := 0; ; attempt++ {
+		manifest, err := store.Compact(ctx, "tenant-a")
+		if err == nil || !errors.Is(err, ErrTaskLeaseHeld) {
+			return manifest, err
+		}
+		if err := stressClientRetryDelay(ctx, attempt); err != nil {
+			return Manifest{}, err
+		}
 	}
 }
 

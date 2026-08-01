@@ -183,7 +183,7 @@ func TestHTTPIngestTimeoutAfterApplyReturnsGatewayTimeout(t *testing.T) {
 		contains:    "/ingest/",
 	}, "test")
 	handler := (&Server{
-		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second), WriteExecutionTimeout: 50 * time.Millisecond,
+		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second), WriteExecutionTimeout: 2 * time.Second,
 	}).Handler()
 
 	rr := serveJSON(handler, httpMethodPost, "/v1/ingest/batches", "tenant-a", storage.IngestRequest{

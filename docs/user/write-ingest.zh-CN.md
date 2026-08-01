@@ -398,6 +398,23 @@ Bloom/index lookup 会通过 OTLP/HTTP
 导出。异步 group write 和 flush 使用 OTel links 关联原请求 span；accepted
 记录还会保存 trace context，因此进程恢复后仍可关联原始写入请求。
 
+#### 1.1.5 WAL 故障处理
+
+瞬态对象存储或 metadata flush 错误会进入重试。重试尚未完成时，readiness
+保持不可用；重试成功后 writer 清除 last error，无需重启即可恢复就绪。这不会
+改变 durable `202` 的契约。
+
+本地 WAL 的 append、短写、rotate 或 fsync 发生致命错误时，writer 会被 fence。
+新的 ingest append 返回 `503` 和稳定错误码 `ingest_wal_unavailable`
+（`retryable=true`），不会分配新的 LSN；已经 durable accepted 的记录仍以 WAL
+作为恢复事实来源。请保留 WAL 目录，先修复或替换故障存储，确认原因后再重启。
+被 fence 的 writer 不得继续向可能损坏的尾部追加。
+
+v1.1.5 发行门禁使用真实二进制、`GRAPHDB_INGEST_MODE=wal`、
+`GRAPHDB_COORDINATION=local` 和显式 `GRAPHDB_INGEST_METADATA_MODE=segment`
+验证上述行为。提交绑定的证据覆盖 durable accepted 批次跨进程重启和对象存储
+中断；direct ingest 与 `legacy` metadata 仍是默认值。
+
 CMDB 采集场景的批次建议：
 
 - 从每批 200 个逻辑 CMDB 组开始，对象存储和 writer 超时稳定后再接近 500；

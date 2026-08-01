@@ -25,6 +25,17 @@
       release commit, and is included in the release archive.
 - [ ] Formal rollback JSON is schema 1, reports `success=true`, is bound to the
       release commit, and is included in the release archive.
+- [ ] Real-process WAL recovery evidence is schema 1, reports
+      `kind=wal_metadata_segment_process_recovery` and `success=true`, is bound
+      to the release commit, and proves `wal + metadata segment + local`
+      configuration against RustFS.
+- [ ] WAL evidence covers a durable `202` followed by SIGKILL/restart,
+      idempotency replay without a new graph version, same-tenant FIFO and
+      collector totals, plus a durable `202` accepted before a RustFS outage,
+      pending/error WAL readiness at `503`, and recovery to `200`/committed.
+- [ ] The WAL evidence JSON is archived as
+      `release/evidence/wal-recovery-<tag>.json` and is a hard dependency of
+      the GitHub release job.
 
 ## Security
 

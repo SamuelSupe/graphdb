@@ -3,6 +3,32 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.1.5] - 2026-08-01
+
+### Fixed
+
+- Recover readiness after a transient object-store or metadata flush error once
+  the retry succeeds, instead of retaining a stale `last_error` and rejecting
+  traffic after the dependency is healthy again.
+- Fence a WAL writer after a fatal append, short-write, rotate, or fsync error.
+  Subsequent writes are rejected without advancing the LSN, preserving a
+  deterministic recovery boundary for the damaged WAL tail.
+
+### Release evidence
+
+- Add real process-level WAL recovery evidence for durable `202 Accepted`
+  batches across restart and object-store interruption with explicit local WAL
+  mode and segment metadata enabled. The evidence records the tested commit and
+  verifies recovery before release.
+
+### Compatibility
+
+- Request/response shapes, WAL and metadata formats, object layout, and default
+  modes are unchanged. The additive `ingest_wal_unavailable` error code is
+  backward-compatible. `direct` ingest, `legacy` metadata, and local
+  single-writer coordination remain the defaults; v1.1.4 WAL/checkpoint data is
+  readable by this release.
+
 ## [1.1.4] - 2026-07-31
 
 ### Added

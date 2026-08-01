@@ -40,6 +40,11 @@ var (
 	ErrIngestWALFull    = errors.New("ingest WAL disk limit reached")
 	ErrIngestWALLocked  = errors.New("ingest WAL is locked by another process")
 	ErrIngestWALCorrupt = errors.New("ingest WAL is corrupt")
+	// ErrIngestWALFenced means the writer observed an I/O failure whose
+	// outcome cannot be made safe to retry in-process. A fenced WAL must be
+	// reopened (after the underlying storage issue is repaired) before writes
+	// can resume.
+	ErrIngestWALFenced = errors.New("ingest WAL is fenced after fatal I/O error")
 )
 
 type IngestWALRecordType uint8
@@ -161,7 +166,12 @@ type IngestWAL struct {
 	closeCh  chan struct{}
 	done     chan struct{}
 
-	closeOnce sync.Once
+	closeOnce       sync.Once
+	closeResultOnce sync.Once
+	errMu           sync.Mutex
+	fatalErr        error
+	runErr          error
+	closeErr        error
 }
 
 func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error) {
@@ -278,6 +288,9 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 	if len(payload) > ingestWALMaxPayload {
 		return IngestWALAppendResult{}, fmt.Errorf("ingest WAL payload is too large: %d bytes", len(payload))
 	}
+	if fatalErr := w.fatalError(); fatalErr != nil {
+		return IngestWALAppendResult{}, fatalErr
+	}
 	request := ingestWALAppendRequest{
 		ctx:     ctx,
 		kind:    kind,
@@ -314,6 +327,9 @@ func (w *IngestWAL) pruneFrom(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if fatalErr := w.fatalError(); fatalErr != nil {
+		return fatalErr
+	}
 	request := ingestWALPruneRequest{
 		ctx:       ctx,
 		beforeLSN: beforeLSN,
@@ -341,13 +357,60 @@ func (w *IngestWAL) pruneFrom(
 func (w *IngestWAL) Close() error {
 	w.closeOnce.Do(func() { close(w.closeCh) })
 	<-w.done
-	if w.lockFile == nil {
-		return nil
+	w.closeResultOnce.Do(func() {
+		w.errMu.Lock()
+		lockFile := w.lockFile
+		w.lockFile = nil
+		fatalErr := w.fatalErr
+		runErr := w.runErr
+		w.errMu.Unlock()
+		var lockErr error
+		if lockFile != nil {
+			lockErr = errors.Join(
+				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN),
+				lockFile.Close(),
+			)
+		}
+		w.errMu.Lock()
+		w.closeErr = errors.Join(fatalErr, runErr, lockErr)
+		w.errMu.Unlock()
+	})
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
+	return w.closeErr
+}
+
+func (w *IngestWAL) fatalError() error {
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
+	return w.fatalErr
+}
+
+func (w *IngestWAL) fence(err error) error {
+	if err == nil {
+		err = ErrIngestWALFenced
 	}
-	unlockErr := syscall.Flock(int(w.lockFile.Fd()), syscall.LOCK_UN)
-	closeErr := w.lockFile.Close()
-	w.lockFile = nil
-	return errors.Join(unlockErr, closeErr)
+	if !errors.Is(err, ErrIngestWALFenced) {
+		err = fmt.Errorf("%w: %w", ErrIngestWALFenced, err)
+	}
+	w.errMu.Lock()
+	if w.fatalErr == nil {
+		w.fatalErr = err
+	}
+	err = w.fatalErr
+	w.errMu.Unlock()
+	return err
+}
+
+func (w *IngestWAL) rememberRunError(err error) {
+	if err == nil {
+		return
+	}
+	w.errMu.Lock()
+	if w.runErr == nil {
+		w.runErr = err
+	}
+	w.errMu.Unlock()
 }
 
 func (w *IngestWAL) run(
@@ -366,19 +429,32 @@ func (w *IngestWAL) run(
 		durableLSN:        nextLSN - 1,
 		checkpointNextLSN: checkpointNextLSN,
 	}
-	if err := state.openCurrent(); err != nil {
-		state.failPending(err)
-		return
-	}
 	defer func() {
-		_ = state.syncAndClose()
-		state.failPending(ErrIngestWALClosed)
+		if err := state.syncAndClose(); err != nil {
+			w.rememberRunError(err)
+		}
+		pendingErr := ErrIngestWALClosed
+		if fatalErr := w.fatalError(); fatalErr != nil {
+			pendingErr = fatalErr
+		}
+		state.failPending(pendingErr)
 	}()
+	if err := state.openCurrent(); err != nil {
+		state.fence(err)
+	}
 	for {
 		select {
 		case first := <-w.appendCh:
+			if state.fenced {
+				first.done <- ingestWALAppendResponse{err: state.fatalError()}
+				continue
+			}
 			state.writeGroup(first)
 		case request := <-w.pruneCh:
+			if state.fenced {
+				request.done <- state.fatalError()
+				continue
+			}
 			request.done <- state.prune(request)
 		case <-w.closeCh:
 			return
@@ -396,6 +472,24 @@ type ingestWALWriterState struct {
 	writtenLSN        uint64
 	durableLSN        uint64
 	checkpointNextLSN uint64
+	fenced            bool
+}
+
+func (s *ingestWALWriterState) fatalError() error {
+	if err := s.wal.fatalError(); err != nil {
+		return err
+	}
+	return ErrIngestWALFenced
+}
+
+func (s *ingestWALWriterState) fence(err error) error {
+	s.fenced = true
+	// Do not leave an unacknowledged batch's tentative LSNs visible to any
+	// subsequent operation. The writer stops accepting work after fencing, but
+	// rolling the allocator back also keeps its state internally coherent while
+	// the process is shutting down or being inspected.
+	s.nextLSN = s.writtenLSN + 1
+	return s.wal.fence(err)
 }
 
 func (s *ingestWALWriterState) openCurrent() error {
@@ -457,6 +551,10 @@ collect:
 }
 
 func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) {
+	if s.fenced {
+		s.failRequests(requests, s.fatalError())
+		return
+	}
 	pending := make([]ingestWALAppendRequest, 0, len(requests))
 	results := make([]IngestWALAppendResult, 0, len(requests))
 	var buffer bytes.Buffer
@@ -480,6 +578,7 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 			err = io.ErrShortWrite
 		}
 		if err != nil {
+			err = s.fence(err)
 			s.observeSync("error", groupRecords, groupBytes, time.Since(groupStarted), err)
 			endStorageSpan(groupSpan, err)
 			return err
@@ -488,6 +587,7 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		s.totalBytes += int64(written)
 		if s.wal.config.Durability == IngestWALDurabilitySync {
 			if err := s.file.Sync(); err != nil {
+				err = s.fence(err)
 				s.observeSync("error", groupRecords, groupBytes, time.Since(groupStarted), err)
 				endStorageSpan(groupSpan, err)
 				return err
@@ -583,10 +683,10 @@ func (s *ingestWALWriterState) failRequests(requests []ingestWALAppendRequest, e
 
 func (s *ingestWALWriterState) rotate() error {
 	if err := s.syncAndClose(); err != nil {
-		return err
+		return s.fence(err)
 	}
 	if err := s.createSegment(s.nextLSN); err != nil {
-		return err
+		return s.fence(err)
 	}
 	if s.wal.config.Logger != nil {
 		s.wal.config.Logger.Info("ingest_wal_segment_rotated", map[string]any{
@@ -594,10 +694,16 @@ func (s *ingestWALWriterState) rotate() error {
 			"disk_bytes": s.totalBytes,
 		})
 	}
-	return s.openCurrent()
+	if err := s.openCurrent(); err != nil {
+		return s.fence(err)
+	}
+	return nil
 }
 
 func (s *ingestWALWriterState) prune(request ingestWALPruneRequest) error {
+	if s.fenced {
+		return s.fatalError()
+	}
 	if request.beforeLSN == 0 {
 		return nil
 	}

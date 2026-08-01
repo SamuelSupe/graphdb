@@ -3,22 +3,22 @@
 [English](release-deployment.md)
 
 本文档面向需要下载、部署和升级 GGraphDB 1.1 的服务负责人。示例使用已发布
-的 `v1.1.4`，发行页位于
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.4>。
+的 `v1.1.5`，发行页位于
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.5>。
 
 ## 1. 下载与校验
 
 发行页提供以下资产：
 
-- `graphdb-v1.1.4.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
-- `graphdb-v1.1.4.tar.gz.sha256`：SHA-256 校验文件。
+- `graphdb-v1.1.5.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
+- `graphdb-v1.1.5.tar.gz.sha256`：SHA-256 校验文件。
 
 下载后校验并解包：
 
 ```sh
-sha256sum -c graphdb-v1.1.4.tar.gz.sha256
-tar -xzf graphdb-v1.1.4.tar.gz
-cd graphdb-v1.1.4
+sha256sum -c graphdb-v1.1.5.tar.gz.sha256
+tar -xzf graphdb-v1.1.5.tar.gz
+cd graphdb-v1.1.5
 ```
 
 压缩包包含：
@@ -238,6 +238,13 @@ reader；允许最终一致读取时才使用 `allow_stale=true`。`X-Tenant-ID`
 租户路由标识，不是认证机制，生产环境必须在网关或服务网格中配置认证、
 授权、TLS 和限流。
 
+对于本地 WAL writer，瞬态对象存储或 metadata flush 故障会在重试完成前让
+readiness 保持 `503`。依赖恢复且重试成功后，writer 会清除旧错误，readiness
+无需重启即可回到 `200`。本地 WAL 的 append、短写、rotate 或 fsync 发生致命
+错误时，writer 会被 fence：readiness 报告不可写，后续 ingest 请求返回稳定
+错误码 `ingest_wal_unavailable`（`503`、`retryable=true`），且不会分配新的 LSN。
+请保留 WAL 目录，修复或替换故障存储后再重启；不要删除尾部数据来强行启动。
+
 ## 7. 升级、回滚与数据安全
 
 ### GGraphDB 1.1 兼容性
@@ -307,6 +314,18 @@ scripts/postgres_cas_gate.sh soak
 等待所有 backlog 清零，并用指定 tag 的真实 1.0 二进制读取获胜镜像。生成的
 JSON 证据绑定被测 commit，并由 release job 打包；版本丢失或重复、维护未追平、
 1.0 读取失败或吞吐低于目标的 90% 都会使门禁失败。
+
+v1.1.5 还要求提交绑定的真实进程级 WAL 恢复证据：
+
+```sh
+GRAPHDB_TEST_WAL_RELEASE_REPORT=/path/to/wal-recovery.json \
+scripts/wal_release_gate.sh
+```
+
+该门禁使用 `GRAPHDB_INGEST_MODE=wal`、
+`GRAPHDB_INGEST_METADATA_MODE=segment` 和 local coordination 启动真实二进制；
+让 durable `202 Accepted` 批次跨越进程重启和对象存储中断，再在发布前
+把被测 commit 写入 JSON 报告。
 
 发行 commit 还必须通过独立的 PostgreSQL 到 local 正式回滚门禁：
 
