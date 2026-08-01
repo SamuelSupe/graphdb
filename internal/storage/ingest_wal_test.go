@@ -170,6 +170,107 @@ func TestIngestWALRejectsLSNGaps(t *testing.T) {
 	}
 }
 
+func TestIngestWALWriterFencesAfterWriteFailure(t *testing.T) {
+	config := testIngestWALConfig(t)
+	wal := &IngestWAL{config: config}
+	file, err := os.CreateTemp(config.Dir, "closed-writer-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := ingestWALAppendRequest{
+		ctx:     context.Background(),
+		kind:    IngestWALAccepted,
+		payload: []byte("must-fence"),
+		done:    make(chan ingestWALAppendResponse, 1),
+	}
+	state := ingestWALWriterState{
+		wal:        wal,
+		file:       file,
+		segments:   []ingestWALSegment{{path: path, startLSN: 1}},
+		nextLSN:    1,
+		writtenLSN: 0,
+		durableLSN: 0,
+	}
+	state.writeRequests([]ingestWALAppendRequest{request})
+	response := <-request.done
+	if !errors.Is(response.err, ErrIngestWALFenced) {
+		t.Fatalf("write failure = %v, want ErrIngestWALFenced", response.err)
+	}
+	if !state.fenced {
+		t.Fatal("writer did not enter fenced state")
+	}
+	if state.nextLSN != 1 {
+		t.Fatalf("next LSN after failed write = %d, want 1", state.nextLSN)
+	}
+	if !errors.Is(wal.fatalError(), ErrIngestWALFenced) {
+		t.Fatalf("WAL fatal error = %v, want ErrIngestWALFenced", wal.fatalError())
+	}
+	second := ingestWALAppendRequest{
+		ctx:     context.Background(),
+		kind:    IngestWALAccepted,
+		payload: []byte("must-not-append"),
+		done:    make(chan ingestWALAppendResponse, 1),
+	}
+	state.writeRequests([]ingestWALAppendRequest{second})
+	if err := (<-second.done).err; !errors.Is(err, ErrIngestWALFenced) {
+		t.Fatalf("append after fence = %v, want ErrIngestWALFenced", err)
+	}
+	if state.nextLSN != 1 {
+		t.Fatalf("next LSN after append post-fence = %d, want 1", state.nextLSN)
+	}
+	if err := state.prune(ingestWALPruneRequest{beforeLSN: 2}); !errors.Is(err, ErrIngestWALFenced) {
+		t.Fatalf("prune after fence = %v, want ErrIngestWALFenced", err)
+	}
+}
+
+func TestIngestWALInitialOpenFailureFencesAndCloseReports(t *testing.T) {
+	config := testIngestWALConfig(t)
+	if err := os.Mkdir(filepath.Join(config.Dir, ingestWALSegmentName(1)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wal, _, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALAccepted, []byte("after-open-failure")); !errors.Is(err, ErrIngestWALFenced) {
+		t.Fatalf("append after initial open failure = %v, want ErrIngestWALFenced", err)
+	}
+	if err := wal.Close(); !errors.Is(err, ErrIngestWALFenced) {
+		t.Fatalf("close after initial open failure = %v, want ErrIngestWALFenced", err)
+	}
+	if err := wal.Close(); !errors.Is(err, ErrIngestWALFenced) {
+		t.Fatalf("second close after initial open failure = %v, want ErrIngestWALFenced", err)
+	}
+}
+
+func TestIngestWALConcurrentCloseIsIdempotent(t *testing.T) {
+	wal, _, err := OpenIngestWAL(testIngestWALConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const callers = 8
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	wait.Add(callers)
+	for range callers {
+		go func() {
+			defer wait.Done()
+			errs <- wal.Close()
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent close = %v, want nil", err)
+		}
+	}
+}
+
 func TestIngestWALPruneReclaimsCompletedSegments(t *testing.T) {
 	config := testIngestWALConfig(t)
 	config.SegmentBytes = 96

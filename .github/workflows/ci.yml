@@ -39,9 +39,9 @@ jobs:
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
   integration:
-    name: RustFS, PostgreSQL CAS, load, and restore
+    name: RustFS, WAL recovery, PostgreSQL CAS, load, and restore
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Check out full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -247,10 +247,7 @@ func (s *IngestService) flushMetadataGroup(
 	}()
 	if err := s.ensureMetadataFlushState(items); err != nil {
 		flushErr = err
-		for _, pending := range items {
-			s.setPendingRetry(pending, err)
-		}
-		return items
+		return s.retryIngestItems(items, err)
 	}
 
 	records := make([]ingestMetadataRecord, 0, len(items))
@@ -283,10 +280,7 @@ func (s *IngestService) flushMetadataGroup(
 		publishStats = stats
 		if err != nil {
 			flushErr = err
-			for _, pending := range items {
-				s.setPendingRetry(pending, err)
-			}
-			return items
+			return s.retryIngestItems(items, err)
 		}
 		span.SetAttributes(
 			attribute.Int("graphdb.ingest.metadata.segment_bytes", stats.SegmentBytes),
@@ -308,8 +302,7 @@ func (s *IngestService) flushMetadataGroup(
 	}
 	if err := s.finalizeMetadataItems(items); err != nil {
 		flushErr = err
-		s.recordError(err)
-		return items
+		return s.retryIngestItems(items, err)
 	}
 	return nil
 }

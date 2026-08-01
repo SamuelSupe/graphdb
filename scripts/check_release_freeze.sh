@@ -14,5 +14,6 @@ grep -F 'POST /v1/query/graphql' docs/graphql.md >/dev/null
 grep -F 'POST /v1/query/graphql' docs/graphql.zh-CN.md >/dev/null
 grep -F 'mux.HandleFunc("POST /v1/query/graphql"' internal/httpapi/routes.go >/dev/null
 grep -F '它不是 GraphQL' docs/gql.md >/dev/null
+grep -Fx '  - schema_1_wal_metadata_segment_process_recovery' release/freeze-1.1.yaml >/dev/null
 
 echo "GGraphDB 1.1 freeze contract verified"

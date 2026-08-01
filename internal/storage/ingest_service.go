@@ -171,7 +171,6 @@ type IngestService struct {
 	highestLSN     uint64
 	completedSince int
 	closed         bool
-	lastError      string
 	oldestPending  time.Time
 
 	enqueueCh           chan *ingestPending
@@ -333,6 +332,10 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		if s.closed {
 			s.mu.Unlock()
 			return IngestAcceptance{}, ErrIngestWALClosed
+		}
+		if fatalErr := s.wal.fatalError(); fatalErr != nil {
+			s.mu.Unlock()
+			return IngestAcceptance{}, fatalErr
 		}
 		if pending := s.active[identity]; pending != nil {
 			if pending.envelope.Digest != digest {
@@ -506,13 +509,16 @@ func (s *IngestService) Status(ctx context.Context, tenantID string, source stri
 func (s *IngestService) Readiness() IngestServiceReadiness {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	fatalErr := s.wal.fatalError()
 	status := IngestServiceReadiness{
-		Ready:        !s.closed && s.lastError == "",
-		Writable:     !s.closed,
+		Ready:        !s.closed && fatalErr == nil,
+		Writable:     !s.closed && fatalErr == nil,
 		Recovered:    true,
 		Pending:      len(s.active),
 		PendingBytes: s.pendingBytes,
-		LastError:    s.lastError,
+	}
+	if fatalErr != nil {
+		status.LastError = fatalErr.Error()
 	}
 	status.Oldest = s.oldestPending
 	for _, pending := range s.active {
@@ -1116,16 +1122,12 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 	cancel()
 	if err != nil {
 		flushErr = err
-		for _, pending := range items {
-			s.setPendingRetry(pending, err)
-		}
-		return items
+		return s.retryIngestItems(items, err)
 	}
 	if s.config.Metadata.Mode == IngestMetadataModeSegment {
 		if err := s.appendPublishedBatchState(items, results, publishedRecords); err != nil {
 			flushErr = err
-			s.recordError(err)
-			return items
+			return s.retryIngestItems(items, err)
 		}
 		required := make(map[int]IngestBatchRecord, len(publishedRecords))
 		for _, item := range publishedRecords {
@@ -1150,8 +1152,7 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		if len(finalizeNow) > 0 {
 			if err := s.finalizeMetadataItems(finalizeNow); err != nil {
 				flushErr = err
-				s.recordError(err)
-				return finalizeNow
+				return s.retryIngestItems(finalizeNow, err)
 			}
 		}
 		return nil
@@ -1160,14 +1161,12 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		result := results[index]
 		if err := s.appendPendingState(pending, IngestWALPublished, IngestStatePublished, &result, ""); err != nil {
 			flushErr = err
-			s.recordError(err)
-			return items[index:]
+			return s.retryIngestItems(items[index:], err)
 		}
 		s.setPendingState(pending, IngestStatePublished)
 		if err := s.appendPendingState(pending, IngestWALFinalized, IngestStateCommitted, &result, ""); err != nil {
 			flushErr = err
-			s.recordError(err)
-			return items[index:]
+			return s.retryIngestItems(items[index:], err)
 		}
 		s.completePending(pending, result, nil)
 	}
@@ -1361,6 +1360,19 @@ func (s *IngestService) setPendingRetry(pending *ingestPending, err error) {
 	s.mu.Unlock()
 }
 
+// retryIngestItems keeps failures visible on the affected work. Transient
+// failures return to the scheduler; a fenced WAL leaves the items active for
+// status and restart recovery without scheduling work that cannot progress.
+func (s *IngestService) retryIngestItems(items []*ingestPending, err error) []*ingestPending {
+	for _, pending := range items {
+		s.setPendingRetry(pending, err)
+	}
+	if errors.Is(err, ErrIngestWALFenced) {
+		return nil
+	}
+	return items
+}
+
 func (s *IngestService) completePending(pending *ingestPending, result IngestResult, err error) {
 	s.mu.Lock()
 	pending.state = IngestStateCommitted
@@ -1419,15 +1431,6 @@ func (s *IngestService) prune(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	return s.wal.pruneFrom(ctx, before, segment, offset)
-}
-
-func (s *IngestService) recordError(err error) {
-	if err == nil {
-		return
-	}
-	s.mu.Lock()
-	s.lastError = err.Error()
-	s.mu.Unlock()
 }
 
 func (s *IngestService) observeQueueLocked() {

@@ -104,7 +104,7 @@ class ClientTest(unittest.TestCase):
         headers_lower = {key.lower(): value for key, value in headers.items()}
         self.assertEqual((method, path), ("POST", "/v1/commits"))
         self.assertEqual(headers_lower["x-tenant-id"], "tenant-a")
-        self.assertEqual(headers_lower["user-agent"], "graphdb-python-sdk/1.1.4")
+        self.assertEqual(headers_lower["user-agent"], "graphdb-python-sdk/1.1.5")
         self.assertEqual(headers_lower["authorization"], "Bearer test-token")
         self.assertEqual(json.loads(body)["idempotency_key"], "idem-1")
 

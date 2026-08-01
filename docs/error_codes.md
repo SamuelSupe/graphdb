@@ -34,6 +34,7 @@ The following top-level `code` values are stable:
 | `manifest_cas_conflict` | 409 | yes | Manifest CAS publish failed; retry may succeed. |
 | `object_write_conflict` | 409 | yes | Object conditional write conflict. |
 | `object_store_unavailable` | 503 | yes | Object store is unavailable or timing out. |
+| `ingest_wal_unavailable` | 503 | yes | The local ingest WAL writer was fenced after fatal I/O; preserve the WAL, repair the underlying storage, and restart before retrying. Durable accepted records remain recoverable and no new LSN is assigned while fenced. |
 | `task_conflict` | 409 | no | Task state does not allow the requested operation. |
 | `repair_required` | 409 | no | Operation requires repair before it can proceed. |
 | `version_conflict` | 409 | no | Expected version precondition failed. |

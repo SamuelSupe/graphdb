@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.1.4
+  version: 1.1.5
   description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.1 preserves the 1.0 core data layout.
 servers:
   - url: http://localhost:8080
@@ -128,7 +128,7 @@ paths:
         '429':
           $ref: '#/components/responses/WriteBackpressure'
         '503':
-          $ref: '#/components/responses/CoordinatorUnavailable'
+          $ref: '#/components/responses/IngestUnavailable'
   /v1/ingest/batches/{source}/{collector_id}/{batch_id}:
     get:
       summary: Get an active WAL batch status or its finalized ingest record.
@@ -1736,6 +1736,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    IngestUnavailable:
+      description: Ingest is unavailable because its dependency or local WAL writer is unavailable. Use object_store_unavailable for an object-store dependency, coordinator_unavailable for a configured external coordinator, and ingest_wal_unavailable when a local WAL writer is fenced after fatal I/O; durable accepted records remain recoverable and no new LSN is assigned while fenced.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
     CoordinatorStatus:
       type: object
@@ -1847,6 +1853,7 @@ components:
             - manifest_cas_conflict
             - object_write_conflict
             - object_store_unavailable
+            - ingest_wal_unavailable
             - task_conflict
             - repair_required
             - version_conflict

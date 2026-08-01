@@ -42,6 +42,13 @@ func TestHTTPErrorCodeContractMapsProductErrors(t *testing.T) {
 			retryable: true,
 		},
 		{
+			name:      "ingest WAL unavailable",
+			status:    http.StatusBadRequest,
+			err:       fmt.Errorf("%w: short write", storage.ErrIngestWALFenced),
+			wantCode:  ErrorCodeIngestWALUnavailable,
+			retryable: true,
+		},
+		{
 			name:      "index stale",
 			status:    http.StatusBadRequest,
 			err:       fmt.Errorf("%w: catalog version mismatch", query.ErrIndexUnavailable),
@@ -98,6 +105,7 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 		wantCode   ErrorCode
 	}{
 		{name: "object store", err: storage.ErrObjectStoreUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeObjectStoreUnavailable},
+		{name: "ingest WAL", err: storage.ErrIngestWALFenced, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeIngestWALUnavailable},
 		{name: "coordinator", err: storage.ErrCoordinatorUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeCoordinatorUnavailable},
 		{name: "write conflict", err: storage.ErrWriteConflict, wantStatus: http.StatusConflict, wantCode: ErrorCodeWriteConflict},
 		{name: "task lease", err: storage.ErrTaskLeaseHeld, wantStatus: http.StatusConflict, wantCode: ErrorCodeTaskConflict},

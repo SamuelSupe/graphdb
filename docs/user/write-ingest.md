@@ -411,6 +411,27 @@ are exported over OTLP/HTTP. Asynchronous group writes and flushes use OTel
 links to the originating request span. Accepted records persist that trace
 context, so recovery can retain the association after a restart.
 
+#### 1.1.5 WAL fault handling
+
+Transient object-store or metadata-flush errors are retried. While retry work is
+pending, readiness remains unavailable; after a successful retry the writer
+clears its last error and becomes ready again without a restart. This does not
+change the durable `202` contract.
+
+A fatal WAL append, short-write, rotation, or fsync error fences the local WAL
+writer. New ingest appends are rejected with `503` and the stable
+`ingest_wal_unavailable` code (`retryable=true`), no new LSN is assigned, and the
+durable records already accepted in the WAL remain the recovery source of truth.
+Keep the WAL directory intact, repair or replace the failed storage, and restart
+only after the failure is understood. A fenced writer must not continue
+appending to a possibly damaged tail.
+
+The v1.1.5 release gate exercises this behavior with the real binary in
+`GRAPHDB_INGEST_MODE=wal`, `GRAPHDB_COORDINATION=local`, and explicit
+`GRAPHDB_INGEST_METADATA_MODE=segment`. Its commit-bound evidence covers a
+durable accepted batch across process restart and object-store interruption;
+direct ingest and `legacy` metadata remain the defaults.
+
 Collector batch sizing for CMDB workloads:
 
 - Start with 200 logical CMDB groups per batch, then move toward 500 when the
