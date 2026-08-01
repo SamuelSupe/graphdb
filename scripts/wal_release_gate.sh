@@ -382,8 +382,8 @@ cat > "$OVERRIDE" <<YAML
 services:
   graphdb:
     environment:
-      GRAPHDB_DATA_DIR: /tmp/graphdb-wal
-      GRAPHDB_INGEST_WAL_DIR: /tmp/graphdb-wal/wal/ingest
+      GRAPHDB_DATA_DIR: /var/lib/graphdb
+      GRAPHDB_INGEST_WAL_DIR: /var/lib/graphdb/wal/ingest
       GRAPHDB_INGEST_MODE: wal
       GRAPHDB_INGEST_METADATA_MODE: segment
       GRAPHDB_COORDINATION: local
@@ -394,6 +394,8 @@ services:
       GRAPHDB_INGEST_METADATA_FLUSH_WORKERS: "1"
       GRAPHDB_INGEST_FLUSH_WORKERS: "1"
       GRAPHDB_INGEST_SHUTDOWN_TIMEOUT: 10s
+    volumes:
+      - wal-data:/var/lib/graphdb
     ports:
       - "${WRITER_PORT}:8080"
   graphdb-reader:
@@ -404,6 +406,8 @@ services:
   rustfs:
     ports:
       - "${RUSTFS_PORT}:9000"
+volumes:
+  wal-data:
 YAML
 
 TENANT="wal-release-gate-$(date +%s)-$$"
