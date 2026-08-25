@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib import parse
 
 
 class WriteMixin:
@@ -13,7 +14,14 @@ class WriteMixin:
         return self._json("POST", "/v1/commits", body=body)
 
     def ingest(self, batch: dict) -> dict:
+        return self._json("POST", "/v1/ingest/batches", body=batch, headers={"Prefer": "wait=committed"})
+
+    def accept_ingest(self, batch: dict) -> dict:
         return self._json("POST", "/v1/ingest/batches", body=batch)
+
+    def get_ingest_batch_status(self, source: str, collector_id: str, batch_id: str) -> dict:
+        parts = (parse.quote(value, safe="") for value in (source, collector_id, batch_id))
+        return self._json("GET", "/v1/ingest/batches/" + "/".join(parts))
 
     def get_source_policy(self) -> dict:
         return self._json("GET", "/v1/source-policy")

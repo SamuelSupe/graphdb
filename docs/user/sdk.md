@@ -101,6 +101,10 @@ result, err := writer.Ingest(ctx, graphdb.IngestRequest{
 })
 ```
 
+`Ingest` sends `Prefer: wait=committed` and returns the query-visible result.
+For the performance-first asynchronous path, call `AcceptIngest`, retain its
+`StatusURL`, and poll `GetIngestBatchStatus` until `State == "committed"`.
+
 ### Go: 1.1 Schema And File Import
 
 ```go
@@ -244,6 +248,9 @@ result = writer.ingest({
     ],
 })
 ```
+
+`ingest()` waits for `committed`. Use `accept_ingest()` and then poll
+`get_ingest_batch_status()` for the default asynchronous WAL path.
 
 ### Python: 1.1 Schema And File Import
 

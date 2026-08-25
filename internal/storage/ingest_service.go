@@ -30,30 +30,38 @@ const (
 )
 
 type IngestServiceConfig struct {
-	WAL              IngestWALConfig
-	QueueMemoryBytes int64
-	FlushInterval    time.Duration
-	FlushMaxRequests int
-	FlushMaxBytes    int64
-	FlushWorkers     int
-	FlushTimeout     time.Duration
-	RetryInterval    time.Duration
-	Metadata         IngestMetadataConfig
-	Observer         IngestObserver
-	Logger           IngestLogger
+	WAL                IngestWALConfig
+	QueueMemoryBytes   int64
+	QueueHighWatermark int
+	WALHighWatermark   int
+	WALStopWatermark   int
+	MaxPendingAge      time.Duration
+	FlushInterval      time.Duration
+	FlushMaxRequests   int
+	FlushMaxBytes      int64
+	FlushWorkers       int
+	FlushTimeout       time.Duration
+	RetryInterval      time.Duration
+	Metadata           IngestMetadataConfig
+	Observer           IngestObserver
+	Logger             IngestLogger
 }
 
 func DefaultIngestServiceConfig(walDir string) IngestServiceConfig {
 	return IngestServiceConfig{
-		WAL:              DefaultIngestWALConfig(walDir),
-		QueueMemoryBytes: 256 * 1024 * 1024,
-		FlushInterval:    10 * time.Second,
-		FlushMaxRequests: 256,
-		FlushMaxBytes:    8 * 1024 * 1024,
-		FlushWorkers:     1,
-		FlushTimeout:     90 * time.Second,
-		RetryInterval:    time.Second,
-		Metadata:         DefaultIngestMetadataConfig(),
+		WAL:                DefaultIngestWALConfig(walDir),
+		QueueMemoryBytes:   256 * 1024 * 1024,
+		QueueHighWatermark: 80,
+		WALHighWatermark:   70,
+		WALStopWatermark:   85,
+		MaxPendingAge:      20 * time.Second,
+		FlushInterval:      10 * time.Second,
+		FlushMaxRequests:   256,
+		FlushMaxBytes:      8 * 1024 * 1024,
+		FlushWorkers:       1,
+		FlushTimeout:       90 * time.Second,
+		RetryInterval:      time.Second,
+		Metadata:           DefaultIngestMetadataConfig(),
 	}
 }
 
@@ -62,8 +70,14 @@ func (c IngestServiceConfig) validate() error {
 		return err
 	}
 	if c.QueueMemoryBytes <= 0 || c.FlushInterval <= 0 || c.FlushMaxRequests <= 0 ||
-		c.FlushMaxBytes <= 0 || c.FlushWorkers <= 0 || c.FlushTimeout <= 0 || c.RetryInterval <= 0 {
+		c.FlushMaxBytes <= 0 || c.FlushWorkers <= 0 || c.FlushTimeout < 0 || c.RetryInterval <= 0 {
 		return fmt.Errorf("ingest WAL queue and flush limits must be positive")
+	}
+	if c.QueueHighWatermark <= 0 || c.QueueHighWatermark > 100 ||
+		c.WALHighWatermark <= 0 || c.WALHighWatermark >= 100 ||
+		c.WALStopWatermark <= c.WALHighWatermark || c.WALStopWatermark > 100 ||
+		c.MaxPendingAge <= 0 {
+		return fmt.Errorf("ingest WAL admission watermarks and pending age must be valid")
 	}
 	if err := c.Metadata.validate(); err != nil {
 		return err
@@ -379,9 +393,12 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 			return IngestAcceptance{}, marshalErr
 		}
 		recordBytes := int64(len(payload) + ingestWALHeaderBytes + ingestWALChecksumBytes)
-		if s.pendingBytes+recordBytes > s.config.QueueMemoryBytes {
+		if reasons := s.acceptBackpressureReasonsLocked(recordBytes, acceptedAt); len(reasons) > 0 {
 			s.mu.Unlock()
-			return IngestAcceptance{}, ErrIngestQueueFull
+			return IngestAcceptance{}, &BackpressureError{
+				Reasons:    reasons,
+				RetryAfter: 2 * time.Second,
+			}
 		}
 		flight := &ingestAcceptFlight{digest: digest, done: make(chan struct{})}
 		s.accepting[identity] = flight
@@ -458,6 +475,57 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 	}
 }
 
+func (s *IngestService) acceptBackpressureReasonsLocked(recordBytes int64, now time.Time) []BackpressureReason {
+	reasons := make([]BackpressureReason, 0, 3)
+	queueThreshold := percentageBytes(s.config.QueueMemoryBytes, s.config.QueueHighWatermark)
+	projectedQueueBytes := s.pendingBytes + recordBytes
+	if projectedQueueBytes >= queueThreshold {
+		reasons = append(reasons, BackpressureReason{
+			Code:      "ingest_queue_high_watermark",
+			Current:   float64(projectedQueueBytes),
+			Threshold: float64(queueThreshold),
+			Message:   "ingest WAL memory queue reached its admission watermark",
+		})
+	}
+	walBytes := s.wal.DiskBytes()
+	walThreshold := percentageBytes(s.config.WAL.MaxBytes, s.config.WALHighWatermark)
+	walCode := "ingest_wal_high_watermark"
+	walMessage := "ingest WAL reached its admission watermark"
+	if stopThreshold := percentageBytes(s.config.WAL.MaxBytes, s.config.WALStopWatermark); walBytes >= stopThreshold {
+		walCode = "ingest_wal_stop_watermark"
+		walMessage = "ingest WAL reached its drain-only watermark"
+		walThreshold = stopThreshold
+	}
+	if walBytes >= walThreshold {
+		reasons = append(reasons, BackpressureReason{
+			Code:      walCode,
+			Current:   float64(walBytes),
+			Threshold: float64(walThreshold),
+			Message:   walMessage,
+		})
+	}
+	if !s.oldestPending.IsZero() {
+		age := now.Sub(s.oldestPending)
+		if age >= s.config.MaxPendingAge {
+			reasons = append(reasons, BackpressureReason{
+				Code:      "ingest_pending_too_old",
+				Current:   float64(age.Milliseconds()),
+				Threshold: float64(s.config.MaxPendingAge.Milliseconds()),
+				Message:   "oldest durable ingest request exceeded the admission age limit",
+			})
+		}
+	}
+	return reasons
+}
+
+func percentageBytes(total int64, percentage int) int64 {
+	threshold := total/100*int64(percentage) + total%100*int64(percentage)/100
+	if threshold < 1 {
+		return 1
+	}
+	return threshold
+}
+
 func (s *IngestService) Wait(ctx context.Context, acceptance IngestAcceptance) (IngestResult, error) {
 	if acceptance.completion == nil {
 		return IngestResult{}, fmt.Errorf("invalid ingest acceptance")
@@ -519,6 +587,11 @@ func (s *IngestService) Readiness() IngestServiceReadiness {
 	}
 	if fatalErr != nil {
 		status.LastError = fatalErr.Error()
+	}
+	if s.wal.DiskBytes() >= percentageBytes(s.config.WAL.MaxBytes, s.config.WALStopWatermark) {
+		status.Ready = false
+		status.Writable = false
+		status.LastError = "ingest WAL reached its drain-only watermark"
 	}
 	status.Oldest = s.oldestPending
 	for _, pending := range s.active {
@@ -1087,14 +1160,20 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 	entries := make([]IngestBatchEntry, len(items))
 	for index, pending := range items {
 		entries[index] = IngestBatchEntry{
-			Request:    pending.envelope.Request,
-			AcceptedAt: pending.envelope.AcceptedAt,
-			FinishedAt: pending.envelope.FinishedAt,
-			Prepared:   pending.envelope.Prepared,
+			Request:         pending.envelope.Request,
+			AcceptedAt:      pending.envelope.AcceptedAt,
+			FinishedAt:      pending.envelope.FinishedAt,
+			Prepared:        pending.envelope.Prepared,
+			requestPrepared: true,
 		}
 	}
 	var publishedRecords []IngestPublishedRecord
-	flushCtx, cancel := context.WithTimeout(flushCtx, s.config.FlushTimeout)
+	var cancel context.CancelFunc
+	if s.config.FlushTimeout > 0 {
+		flushCtx, cancel = context.WithTimeout(flushCtx, s.config.FlushTimeout)
+	} else {
+		flushCtx, cancel = context.WithCancel(flushCtx)
+	}
 	results, err := s.store.IngestDurableBatchWithHooks(
 		flushCtx,
 		tenantID,

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Real-process WAL/metadata-segment release gate. The base RustFS compose file
-# intentionally keeps the product defaults (direct/legacy); this gate overlays
-# the explicit 1.1 WAL mode so a release cannot accidentally pass with a direct
-# writer. The generated evidence is the contract consumed by release.yml.
+# Real-process WAL/metadata-segment release gate. The gate keeps every effective
+# mode explicit so the generated evidence proves the exact durability path
+# consumed by release.yml, independent of product-default changes.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

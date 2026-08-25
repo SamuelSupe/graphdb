@@ -2,23 +2,25 @@
 
 [English](release-deployment.md)
 
-本文档面向需要下载、部署和升级 GGraphDB 1.1 的服务负责人。示例使用已发布
-的 `v1.1.5`，发行页位于
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.5>。
+本文档面向需要下载、部署、升级和回滚 GGraphDB v1.2.0 的服务负责人。上一条
+受支持的 writer 版本是 v1.1.5；v1.1.5 到 v1.2.0 的数据升级是单向的。请使用
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0> 发行页，并在上线前
+核对精确 tag、校验和以及构建 commit。本说明描述的是发布契约，不表示
+v1.2.0 门禁已经通过。
 
 ## 1. 下载与校验
 
-发行页提供以下资产：
+v1.2.0 发行页提供以下资产：
 
-- `graphdb-v1.1.5.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
-- `graphdb-v1.1.5.tar.gz.sha256`：SHA-256 校验文件。
+- `graphdb-v1.2.0.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
+- `graphdb-v1.2.0.tar.gz.sha256`：归档文件的 SHA-256 校验文件。
 
 下载后校验并解包：
 
 ```sh
-sha256sum -c graphdb-v1.1.5.tar.gz.sha256
-tar -xzf graphdb-v1.1.5.tar.gz
-cd graphdb-v1.1.5
+sha256sum -c graphdb-v1.2.0.tar.gz.sha256
+tar -xzf graphdb-v1.2.0.tar.gz
+cd v1.2.0
 ```
 
 压缩包包含：
@@ -41,11 +43,12 @@ BUILD-METADATA.json
 VERSION
 ```
 
-二进制是静态构建，不需要在目标主机安装 Go。运行时仍需要可访问的本地
-磁盘或 S3 兼容对象存储；生产环境建议使用外部对象存储，不要把示例凭据
-直接用于生产。
-上线前执行 `bin/graphdb-linux-amd64 version`，并与
-`BUILD-METADATA.json` 中的 commit 对照。
+二进制是静态构建，不需要在目标主机安装 Go。请运行与目标架构匹配的二进制，
+例如 `bin/graphdb-linux-amd64 version`，并在上线前把它报告的 tag、commit、
+构建日期和 Go 版本与 `VERSION`、`BUILD-METADATA.json` 对照。归档校验和保护
+下载内容，内嵌构建元数据保护二进制与发行版本之间的对应关系。运行时仍需要
+可访问的本地磁盘或 S3 兼容对象存储；生产环境建议使用外部对象存储，不要把
+示例凭据直接用于生产。
 
 ## 2. 单机文件存储
 
@@ -61,8 +64,17 @@ export GRAPHDB_STORAGE=local
 export GRAPHDB_DATA_DIR=/var/lib/graphdb
 export GRAPHDB_PREFIX=graphdb
 export GRAPHDB_ADDR=:8080
+export GRAPHDB_COORDINATION=local
+export GRAPHDB_INGEST_MODE=wal
+export GRAPHDB_INGEST_METADATA_MODE=segment
+export GRAPHDB_INGEST_WAL_DURABILITY=sync
 graphdb serve
 ```
+
+这些是 v1.2.0 本地 writer 的默认值：local 协调、WAL 写入、segment ingest
+metadata 和同步 WAL 耐久性。请在服务 manifest 中显式设置它们，避免部署审查
+依赖隐式默认值。WAL 目录默认为 `${GRAPHDB_DATA_DIR}/wal/ingest`；必须把它与
+数据目录放在同一个持久化卷上。
 
 验证服务：
 
@@ -86,6 +98,10 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/tenants \
 docker compose up -d --build
 curl -fsS http://127.0.0.1:8080/v1/health
 ```
+
+提供的 `graphdb` 服务在 v1.2.0 中仍是本地 writer，会继承 WAL + segment + sync
+写入默认值。请保留 `graphdb-data` 命名卷；如果不带该卷替换容器，已经接收但
+尚未发布的 WAL 记录可能丢失。
 
 默认端口：
 
@@ -131,6 +147,10 @@ docker compose -f docker-compose.rustfs.yml \
 `S3_SECRET_ACCESS_KEY` 替换为真实对象存储配置，并通过 Secret、环境变量
 管理系统或密钥服务注入，不要提交到仓库。
 
+RustFS 的 `graphdb` 服务是 local 协调 writer，也会继承 v1.2.0 的 WAL +
+segment + sync 默认值。提供的 `graphdb-writer-data` 命名卷属于 writer 的耐久性
+边界；仍有 accepted 批次待处理时不要删除它。
+
 推荐的进程配置：
 
 ```text
@@ -175,11 +195,14 @@ GRAPHDB_PPROF_ENABLED=false
 ### 可选 PostgreSQL 多 writer 协调
 
 `GRAPHDB_COORDINATION=local` 仍是默认值，完整保留 1.0 的 writer lease 和
-对象 manifest CAS 行为。需要让同一租户由 2–8 个 writer 乐观并发写入时，
-所有 1.1 writer 和 reader 必须使用同一个 PostgreSQL namespace：
+对象 manifest CAS 行为。PostgreSQL 协调是显式选择的多 writer 路径，不是
+local WAL 的回退模式。需要让同一租户由 2–8 个 writer 乐观并发写入时，所有
+v1.2.0 writer 和 reader 必须使用同一个 PostgreSQL namespace，并且 writer 必须
+显式选择 direct ingest：
 
 ```sh
 GRAPHDB_COORDINATION=postgres
+GRAPHDB_INGEST_MODE=direct
 GRAPHDB_POSTGRES_DSN='postgres://graphdb:<password>@postgres:5432/graphdb'
 GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination
 GRAPHDB_COORDINATOR_NAMESPACE=production-a
@@ -195,9 +218,12 @@ S3_PROVIDER=generic-s3
 GRAPHDB_WRITER_TOPOLOGY=cas
 ```
 
-首版 PostgreSQL 协调只支持正确实现 `If-Match` 的 generic S3 兼容存储，
-包括 RustFS；原生 OSS/OBS/COS provider 继续使用本地单 writer 协调。
-PostgreSQL 故障不会自动回退到本地模式：写入返回
+v1.2.0 的 PostgreSQL 正确性和 direct 写入回归路径只有在上面显式设置
+`GRAPHDB_INGEST_MODE=direct` 时才有效。不要省略该设置，也不要让 PostgreSQL
+writer 使用 local WAL 默认值；项目尚未实现分布式 WAL。该 PostgreSQL 路径支持
+正确实现 `If-Match` 的 generic S3 兼容存储，包括 RustFS；原生 OSS/OBS/COS
+provider 继续使用本地单 writer 协调。PostgreSQL 故障不会自动回退到本地模式：
+写入返回
 `503 coordinator_unavailable`；reader 可以服务已有缓存，但无法满足
 `min_version` 时返回 `reader_not_fresh`。
 
@@ -212,9 +238,9 @@ graphdb coordinator sync-legacy-manifest
 graphdb coordinator rollback --dry-run
 ```
 
-bootstrap 会把每个租户当前 1.0 `manifest.parquet` 和写规则复制为不可变协调
-对象，建立 PostgreSQL head，最后写入对象存储 coordination marker。该 marker
-会阻止本地 writer 或 1.0 writer 对同一 prefix 启动写入。
+bootstrap 会把每个租户当前 legacy `manifest.parquet` 和写规则复制为不可变
+协调对象，建立 PostgreSQL head，最后写入对象存储 coordination marker。该
+marker 会阻止本地 writer 或协调前 writer 对同一 prefix 启动写入。
 
 完整配置见 [deploy-ops.md](deploy-ops.zh-CN.md) 和根目录 README 的
 Configuration 小节。
@@ -233,6 +259,28 @@ curl -fsS \
   -H 'X-Tenant-ID: demo'
 ```
 
+v1.2.0 本地 writer 的写入契约默认是异步的。向
+`POST /v1/ingest/batches` 提交请求后，只有在批次已经 fsync 到 WAL 后才会返回
+`202 Accepted`；`Location` 指向状态资源，`202` 不代表批次已经对查询可见：
+
+```sh
+curl -i -X POST http://127.0.0.1:38080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  --data-binary @batch.json
+```
+
+调用方需要在同一响应中拿到 committed 结果时，必须发送显式 preference。metadata
+segment 持久化后，响应为 `200` 或 `207`：
+
+```sh
+curl -i -X POST http://127.0.0.1:38080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Prefer: wait=committed' \
+  -H 'Content-Type: application/json' \
+  --data-binary @batch.json
+```
+
 需要读到刚提交版本时，把写入响应中的 `version` 作为 `min_version` 传给
 reader；允许最终一致读取时才使用 `allow_stale=true`。`X-Tenant-ID` 只是
 租户路由标识，不是认证机制，生产环境必须在网关或服务网格中配置认证、
@@ -247,7 +295,7 @@ readiness 保持 `503`。依赖恢复且重试成功后，writer 会清除旧错
 
 ## 7. 升级、回滚与数据安全
 
-### GGraphDB 1.1 兼容性
+### GGraphDB 1.1 数据模型与扩展历史
 
 GGraphDB 1.1 不会重写 1.0 核心图。manifest、snapshot、commit、entity、edge
 和 Parquet 对象仍使用对象布局版本 2，因此不需要离线数据迁移。新增数据都是
@@ -266,15 +314,49 @@ GGraphDB 1.1 不会重写 1.0 核心图。manifest、snapshot、commit、entity�
 继续使用 `upsert_ci_types`、`delete_ci_types` 和 `ci_type`，领域中立别名只由
 1.1 HTTP API 解码。
 
+### v1.1.5 到 v1.2.0 升级（单向）
+
+v1.2.0 可以打开已有的 v1.1.5 图数据，因为图模型、逻辑 commit/version 顺序
+和对象布局保持不变。但 writer 协议和物理 ingest metadata 已改变：v1.2.0
+本地 writer 默认使用 `wal + segment + sync`，一旦 v1.2.0 写入 segment
+manifest，就不能把 v1.1.5 writer 再指向同一 prefix。这不是反向兼容的 writer
+边界。
+
+原地向前升级按以下顺序执行：
+
+1. 备份完整对象存储 prefix 和本地 `GRAPHDB_DATA_DIR`，包括
+   `${GRAPHDB_DATA_DIR}/wal/ingest`，并记录 v1.1.5 二进制、tag 和备份时间。
+2. 排空写入流量。对每个已返回 `202` 的批次轮询其 `Location` 状态资源，直到
+   状态变为 `committed` 或明确处理为失败；不要带着未跟踪的 accepted 工作停止
+   writer。
+3. 更换二进制前停止全部 v1.1.5 writer。不要让新旧 writer 同时访问同一个本地
+   WAL 或对象 prefix。
+4. 安装 v1.2.0 二进制或镜像，保持 `GRAPHDB_DATA_DIR`、S3 prefix 和协调
+   namespace 不变。对本地 writer 显式设置
+   `GRAPHDB_INGEST_MODE=wal`、`GRAPHDB_INGEST_METADATA_MODE=segment`、
+   `GRAPHDB_INGEST_WAL_DURABILITY=sync` 和 `GRAPHDB_COORDINATION=local`。
+5. 启动一个 v1.2.0 writer，验证 `/v1/health`、`/v1/readiness`、WAL 恢复和
+   metrics、一个 `202` 加状态轮询、一个 `Prefer: wait=committed` 请求以及
+   一个真实租户查询。
+6. 只有这些检查通过后，才接入 reader 和更多流量。保留升级前备份直到发布
+   保留期结束。
+
+这是从 v1.1.5 到 v1.2.0 的单向数据升级，不是反向 writer 兼容承诺。如果
+v1.2.0 已写入 segment metadata 后必须中止发布，应停止并隔离 v1.2.0 部署；
+不要让 v1.1.5 writer 访问已修改的 prefix。把升级前的对象 prefix 和 WAL/数据
+目录恢复到隔离的 v1.1.5 部署中，先在那里验证，再切换流量。没有升级前备份时，
+不要声称原地回滚是安全的。
+
 启用 PostgreSQL 协调时采用更严格的上线顺序：
 
-1. 先迁移 PostgreSQL schema，停止全部 1.0 writer，并校验当前 legacy manifest。
+1. 先迁移 PostgreSQL schema，停止全部 v1.2.0 之前的 writer，并校验当前
+   legacy manifest。
 2. 执行 `coordinator bootstrap --dry-run`，确认后再执行 `--apply`。
-3. 先启动一个 1.1 PostgreSQL writer，验证真实读写、coordinator health、
-   CAS 指标和 mirror 状态。
+3. 先启动一个显式设置 `GRAPHDB_INGEST_MODE=direct` 的 v1.2.0 PostgreSQL
+   writer，验证真实读写、coordinator health、CAS 指标和 mirror 状态。
 4. 再扩容 writer；只有在 `max_legacy_mirror_lag=0` 且
    `outbox_backlog=0` 后，才让 1.0 reader 接流量。
-5. 永久撤销 1.0 writer 的路由与写凭据。1.0 reader 只看到最终一致镜像，
+5. 永久撤销 v1.2.0 之前 writer 的路由与写凭据。1.0 reader 只看到最终一致镜像，
    PostgreSQL head 始终是唯一权威状态。
 
 回滚必须使用 coordinator 命令，不能手工删除 coordination marker：
@@ -301,6 +383,25 @@ PostgreSQL head 的 hash、version 和 status，再切到 `local`，最后通过
 `graphdb_coordinator_cleanup_deleted_total`、`graphdb_coordinator_head_revision`
 和 `graphdb_coordinator_status`。
 
+### 发布门禁与 GitHub Action
+
+v1.2.0 的 release job 在固定 OrbStack 主机上的性能 job 通过前不得产出归档。
+[release workflow](../../.github/workflows/release.yml) 将发布 job 依赖于
+`performance` job，该 job 执行：
+
+```sh
+scripts/wal_performance_matrix.sh
+```
+
+该矩阵对 v1.1.5 基线和 v1.2.0 候选各运行 5 次、每次 30 分钟，并使用本地
+`wal + segment + sync` 配置。候选必须满足[发行 checklist](../release-checklist.md)
+中记录的吞吐、延迟、RSS、CPU、direct 写入和查询回归阈值，包括至少
+10,000 mutations/s、至少达到基线中位吞吐的 1.5 倍、运行离散不超过 5%，以及
+direct 写入或查询回归不超过 10%。release job 还会检查性能 JSON 的
+`success=true`、基线和候选各有 5 次有效运行，并在执行 `gh release create` 前
+核对报告绑定的是被打 tag 的 commit。因此，v1.2.0 必须等待 5 次 30 分钟运行及
+其门禁全部通过后才能发布；本文不表示这些门禁已经通过。
+
 PostgreSQL 与 generic S3 soak 是发布硬依赖。使用 OrbStack/Docker 时，下面
 命令会启动隔离的 PostgreSQL 与 RustFS；8 writer 并发正确性由 integration
 suite 验证，soak 使用 2 个活跃 writer 执行 30 分钟、20 commit/s 容量门禁：
@@ -315,17 +416,17 @@ scripts/postgres_cas_gate.sh soak
 JSON 证据绑定被测 commit，并由 release job 打包；版本丢失或重复、维护未追平、
 1.0 读取失败或吞吐低于目标的 90% 都会使门禁失败。
 
-v1.1.5 还要求提交绑定的真实进程级 WAL 恢复证据：
+v1.2.0 release 还要求针对本地默认路径提供提交绑定的真实进程级 WAL 恢复证据：
 
 ```sh
 GRAPHDB_TEST_WAL_RELEASE_REPORT=/path/to/wal-recovery.json \
 scripts/wal_release_gate.sh
 ```
 
-该门禁使用 `GRAPHDB_INGEST_MODE=wal`、
-`GRAPHDB_INGEST_METADATA_MODE=segment` 和 local coordination 启动真实二进制；
-让 durable `202 Accepted` 批次跨越进程重启和对象存储中断，再在发布前
-把被测 commit 写入 JSON 报告。
+该门禁使用真实 v1.2.0 二进制、`GRAPHDB_INGEST_MODE=wal`、
+`GRAPHDB_INGEST_METADATA_MODE=segment`、`GRAPHDB_INGEST_WAL_DURABILITY=sync`
+和 local coordination；让 durable `202 Accepted` 批次跨越进程重启和对象存储
+中断，再在发布前把被测 commit 写入 JSON 报告。
 
 发行 commit 还必须通过独立的 PostgreSQL 到 local 正式回滚门禁：
 
@@ -343,26 +444,29 @@ scripts/postgres_cas_gate.sh rollback
 [安全边界](../security-deployment.zh-CN.md)和
 [容量边界](../capacity.zh-CN.md)。
 
-writer 回滚到 1.0 在布局上安全，但 1.0 writer 不会执行关系属性 schema
-校验。回滚前先排空或取消 `bulk_import` task，并暂停受 schema 管理的边写入，
-直到恢复 1.1 writer。不要删除 `extensions/v1.1` 对象，重新升级后会继续复用。
-需要把关系 schema 恢复到新租户时应使用 1.1 backup/restore；1.0 backup 格式
+v1.2.0 segment metadata 激活后，不支持原地回滚到 v1.1.5 writer。需要回滚时，
+必须使用升级前备份和上面的隔离恢复流程；不要删除 `extensions/v1.1` 对象，
+也不要修改生产 prefix 来强行让旧 writer 启动。任何恢复前先排空或取消
+`bulk_import` task，并暂停受 schema 管理的边写入，直到恢复的 writer 验证通过。
+需要把关系 schema 恢复到新租户时仍应使用 1.1 backup/restore；1.0 backup 格式
 只认识核心图。
 
-升级前先确认对象存储快照、manifest 和最近备份可读，再执行：
+升级前先确认对象存储快照、manifest 和最近备份可读，并在停止旧 writer 前完成
+升级前备份。对于 RustFS Compose 部署，只有在旧 writer 已停止且保留 writer
+命名卷后，才拉取/构建 v1.2.0 镜像：
 
 ```sh
 docker compose -f docker-compose.rustfs.yml pull
 docker compose -f docker-compose.rustfs.yml up -d --build
 ```
 
-二进制部署则下载新 Release，停止旧进程后替换二进制并保留
-`GRAPHDB_DATA_DIR` 或 S3 前缀不变。升级后检查 `/v1/health`、reader 就绪、
-`/metrics` 和一个真实租户的读写链路。
+二进制部署则下载 v1.2.0，停止旧进程后替换二进制并保留
+`GRAPHDB_DATA_DIR` 或 S3 前缀不变。按上面的单向升级顺序操作，再检查
+`/v1/health`、reader 就绪、`/metrics` 和一个真实租户的读写链路。
 
-回滚时固定回滚二进制或镜像版本，不要删除对象存储中的 manifest、commit、
-snapshot 或 index 对象。涉及 schema 或存储格式变化时，先在副本 bucket
-执行恢复演练，再切换生产流量。
+回滚时只应在使用升级前备份恢复出的隔离部署中固定 v1.1.5 二进制或镜像版本。
+不要删除生产对象存储中的 manifest、commit、snapshot、segment 或 index 对象。
+涉及 schema 或存储格式变化时，先在副本 bucket 执行恢复演练，再切换生产流量。
 
 常用停止命令：
 

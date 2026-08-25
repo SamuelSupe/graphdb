@@ -21,5 +21,8 @@ result, err := client.Commit(ctx, graphdb.Mutations{
 }, &graphdb.CommitOptions{IdempotencyKey: "batch-001"})
 ```
 
+`Client.Ingest` waits for `committed`; use `Client.AcceptIngest` plus
+`Client.GetIngestBatchStatus` for the default asynchronous WAL path.
+
 See [../../docs/user/sdk.md](../../../docs/user/sdk.md) for the full user
 guide.

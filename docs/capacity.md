@@ -2,11 +2,33 @@
 
 [中文](capacity.zh-CN.md)
 
-GGraphDB 1.1 publishes a reproducible release envelope instead of an unbounded
+GGraphDB 1.2 publishes a reproducible release envelope instead of an unbounded
 “large graph” claim. The machine-readable contract is
 `release/capacity-envelope.yaml`.
 
-## 1.1 Release Gate
+## 1.2 Release Gates
+
+The primary write-throughput gate is one local writer using sync WAL and
+segment metadata on a fixed 8 CPU/8 GiB OrbStack container. It runs eight
+tenants and 16 collectors for 30 minutes, five times for v1.1.5 and five times
+for v1.2.0. Every candidate run must sustain at least 10,000 committed
+mutations/s; the candidate median must be at least 1.5x the baseline and its
+run-to-run spread at most 5%. Accepted p95/p99 are capped at 20/50 ms,
+committed p95/p99 at 8/15 seconds, RSS at 7 GiB and 110% of baseline, CPU per
+1,000 mutations at 75% of baseline, and direct-write/query regression at 10%.
+RSS is sampled from the writer process `VmRSS`; CPU is read from the writer
+container cgroup and normalized per 1,000 committed mutations.
+
+Run the complete commit-bound matrix with:
+
+```sh
+scripts/wal_performance_matrix.sh
+```
+
+The GitHub release job depends on a self-hosted `orbstack` runner and refuses
+to publish unless all five candidate runs and every relative gate pass.
+
+The PostgreSQL direct-write path remains a correctness and regression gate:
 
 For each release candidate, CI must pass:
 
@@ -24,8 +46,7 @@ For each release candidate, CI must pass:
   preserve concurrent commits without lowering the graph version;
 - legacy-mirror and derived-index workers run during the load, then converge to
   zero mirror lag and zero pending backlog;
-- the tagged 1.0 binary reads the final mirrored graph version;
-- both directions of the real 1.0/1.1 binary compatibility test.
+- the tagged 1.0 binary reads the final mirrored graph version.
 
 This is a concurrency and durability envelope, not the maximum supported graph
 size. A short 200-commit run is only a smoke test and cannot certify a release.
@@ -101,7 +122,7 @@ strategy.
 - Query result `limit` is capped at 1,000. Use scans/streams for bulk export.
 - Keep normal collector batches near 200–500 logical groups. Very small batches
   amplify commits, manifests, idempotency records, and collector state.
-- GGraphDB 1.1 supports 2–8 deployed writers and certifies about 20 commits/s
+- PostgreSQL direct mode supports 2–8 deployed writers and retains the 20 commits/s
   per hot tenant with two active contenders. Eight-way same-tenant concurrency
   remains a correctness gate, not a sustained-throughput claim. Higher
   throughput requires graph/entity partitioning and a new capacity envelope.

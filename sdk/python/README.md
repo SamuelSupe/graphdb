@@ -19,4 +19,7 @@ result = client.commit({
 }, idempotency_key="batch-001")
 ```
 
+`client.ingest()` waits for `committed`; use `client.accept_ingest()` plus
+`client.get_ingest_batch_status()` for the default asynchronous WAL path.
+
 See [../../docs/user/sdk.md](../../docs/user/sdk.md) for the full user guide.

@@ -4,10 +4,18 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type versionTracker struct {
 	value atomic.Int64
+}
+
+type runStats struct {
+	scheduledBatches     atomic.Int64
+	committedBatches     atomic.Int64
+	backpressuredBatches atomic.Int64
+	committedMutations   atomic.Int64
 }
 
 func (t *versionTracker) observe(version int64) {
@@ -26,30 +34,65 @@ func (t *versionTracker) latest() int64 {
 	return t.value.Load()
 }
 
-func runWriters(ctx context.Context, cfg config, client *apiClient, versions *versionTracker, metrics *registry, wg *sync.WaitGroup) {
+func runWriters(ctx context.Context, cfg config, client *apiClient, versions *versionTracker, metrics *registry, stats *runStats, wg *sync.WaitGroup) {
 	jobs := make(chan int)
 	for worker := 0; worker < cfg.writers; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for batch := range jobs {
-				version, err := client.ingest(ctx, metrics, batchRequest(batch, cfg.batchSize))
+				collector := collectorName(batch % cfg.collectors)
+				outcome, err := client.ingest(ctx, metrics, batchRequest(batch, cfg.batchSize, collector, cfg.workingSet))
 				if err == nil {
-					versions.observe(version)
+					if outcome.backpressured {
+						stats.backpressuredBatches.Add(1)
+						continue
+					}
+					versions.observe(outcome.version)
+					stats.committedBatches.Add(1)
+					stats.committedMutations.Add(outcome.applied)
 				}
 			}
 		}()
 	}
 	go func() {
 		defer close(jobs)
+		if cfg.duration > 0 {
+			timer := time.NewTimer(cfg.duration)
+			defer timer.Stop()
+			for batch := 0; ; batch++ {
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+					return
+				case jobs <- batch:
+					stats.scheduledBatches.Add(1)
+				}
+			}
+		}
 		for batch := 0; batch < cfg.batches; batch++ {
 			select {
 			case <-ctx.Done():
 				return
 			case jobs <- batch:
+				stats.scheduledBatches.Add(1)
 			}
 		}
 	}()
+}
+
+func (s *runStats) snapshot(elapsed time.Duration) loadResults {
+	result := loadResults{
+		ScheduledBatches:     s.scheduledBatches.Load(),
+		CommittedBatches:     s.committedBatches.Load(),
+		BackpressuredBatches: s.backpressuredBatches.Load(),
+		CommittedMutations:   s.committedMutations.Load(),
+	}
+	if elapsed > 0 {
+		result.MutationsPerSecond = float64(result.CommittedMutations) / elapsed.Seconds()
+	}
+	return result
 }
 
 func runReaders(ctx context.Context, cfg config, client *apiClient, versions *versionTracker, metrics *registry, wg *sync.WaitGroup) {

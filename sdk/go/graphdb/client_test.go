@@ -21,7 +21,7 @@ func TestCommitSetsTenantHeaderAndParsesResult(t *testing.T) {
 		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
 			t.Fatalf("tenant header = %q", got)
 		}
-		if got := r.Header.Get("User-Agent"); got != "graphdb-go-sdk/1.1.5" {
+		if got := r.Header.Get("User-Agent"); got != "graphdb-go-sdk/1.2.0" {
 			t.Fatalf("user agent = %q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
@@ -50,6 +50,42 @@ func TestCommitSetsTenantHeaderAndParsesResult(t *testing.T) {
 	}
 	if result.Version != 3 || result.ReadableVersion != 3 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestIngestSupportsCommittedAndAsynchronousWALCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/ingest/batches" && r.Header.Get("Prefer") == "wait=committed":
+			_ = json.NewEncoder(w).Encode(IngestResult{BatchID: "batch-1", Version: 7, Applied: 1})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/ingest/batches":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(IngestAccepted{BatchID: "batch-2", State: "accepted", Durability: "durable", StatusURL: "/v1/ingest/batches/agent/collector-a/batch-2"})
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/ingest/batches/agent/collector-a/batch-2":
+			_ = json.NewEncoder(w).Encode(IngestBatchStatus{BatchID: "batch-2", State: "committed", Result: &IngestResult{BatchID: "batch-2", Version: 8, Applied: 1}})
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.EscapedPath())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithTenant("tenant-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := IngestRequest{Source: "agent", CollectorID: "collector-a", BatchID: "batch-1"}
+	committed, err := client.Ingest(context.Background(), request)
+	if err != nil || committed.Version != 7 {
+		t.Fatalf("committed = %#v err=%v", committed, err)
+	}
+	request.BatchID = "batch-2"
+	accepted, err := client.AcceptIngest(context.Background(), request)
+	if err != nil || accepted.State != "accepted" || accepted.StatusURL == "" {
+		t.Fatalf("accepted = %#v err=%v", accepted, err)
+	}
+	status, err := client.GetIngestBatchStatus(context.Background(), "agent", "collector-a", "batch-2")
+	if err != nil || status.State != "committed" || status.Result == nil || status.Result.Version != 8 {
+		t.Fatalf("status = %#v err=%v", status, err)
 	}
 }
 

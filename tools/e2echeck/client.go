@@ -56,6 +56,9 @@ func (c *apiClient) doWithHeaders(ctx context.Context, method string, path strin
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if method == http.MethodPost && path == "/v1/ingest/batches" {
+		req.Header.Set("Prefer", "wait=committed")
+	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}

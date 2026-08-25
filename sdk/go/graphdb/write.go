@@ -1,6 +1,11 @@
 package graphdb
 
-import "context"
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+)
 
 type CommitOptions struct {
 	ExpectedVersion *int64
@@ -91,6 +96,31 @@ type IngestResult struct {
 	Conflicts  []IngestConflict `json:"conflicts,omitempty"`
 }
 
+type IngestAccepted struct {
+	BatchID          string    `json:"batch_id"`
+	State            string    `json:"state"`
+	Durability       string    `json:"durability"`
+	AcceptedAt       time.Time `json:"accepted_at"`
+	EstimatedFlushAt time.Time `json:"estimated_flush_at"`
+	StatusURL        string    `json:"status_url"`
+}
+
+type IngestBatchStatus struct {
+	TenantID        string        `json:"tenant_id"`
+	Source          string        `json:"source"`
+	CollectorID     string        `json:"collector_id"`
+	BatchID         string        `json:"batch_id"`
+	State           string        `json:"state"`
+	Durability      string        `json:"durability"`
+	AcceptedLSN     uint64        `json:"accepted_lsn,omitempty"`
+	AcceptedAt      time.Time     `json:"accepted_at,omitempty"`
+	EstimatedFlush  time.Time     `json:"estimated_flush_at,omitempty"`
+	FinishedAt      time.Time     `json:"finished_at,omitempty"`
+	Result          *IngestResult `json:"result,omitempty"`
+	LastError       string        `json:"last_error,omitempty"`
+	RecoveryPending bool          `json:"recovery_pending,omitempty"`
+}
+
 type IngestFailure struct {
 	Index      int    `json:"index"`
 	ExternalID string `json:"external_id,omitempty"`
@@ -118,7 +148,23 @@ type IngestConflict struct {
 }
 
 func (c *Client) Ingest(ctx context.Context, request IngestRequest) (out IngestResult, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/ingest/batches", "", nil, request, &out)
+	if c == nil {
+		return IngestResult{}, errors.New("nil GGraphDB client")
+	}
+	committed := c.ForTenant(c.tenantID)
+	committed.headers.Set("Prefer", "wait=committed")
+	err = committed.doJSON(ctx, http.MethodPost, "/v1/ingest/batches", "", nil, request, &out)
+	return out, err
+}
+
+func (c *Client) AcceptIngest(ctx context.Context, request IngestRequest) (out IngestAccepted, err error) {
+	err = c.doJSON(ctx, http.MethodPost, "/v1/ingest/batches", "", nil, request, &out)
+	return out, err
+}
+
+func (c *Client) GetIngestBatchStatus(ctx context.Context, source string, collectorID string, batchID string) (out IngestBatchStatus, err error) {
+	path := "/v1/ingest/batches/" + pathEscape(source) + "/" + pathEscape(collectorID) + "/" + pathEscape(batchID)
+	err = c.doJSON(ctx, http.MethodGet, path, "", nil, nil, &out)
 	return out, err
 }
 

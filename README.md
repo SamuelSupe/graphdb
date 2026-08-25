@@ -2,62 +2,102 @@
 
 # GGraphDB
 
-**A general-purpose object-storage-backed graph database for entities, relationships, and topology**
+**A general-purpose current-state property graph for entities, relationships, and topology**
 
-[![Latest Release](https://img.shields.io/github/v/release/SamuelSupe/graphdb?display_name=tag)](https://github.com/SamuelSupe/graphdb/releases)
-[![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Public Repository](https://img.shields.io/badge/repository-public-2ea44f)](https://github.com/SamuelSupe/graphdb)
+[![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
+[![Release target](https://img.shields.io/badge/release-v1.2.0--target-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
 
-[中文 README](README.zh-CN.md) · [Latest Release](https://github.com/SamuelSupe/graphdb/releases/latest)
+[中文 README](README.zh-CN.md) · [v1.2.0 release target](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [All releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
-GGraphDB 1.1 is a Go-based general-purpose current-state property knowledge graph
-for entity-relationship data. Knowledge bases, CMDB, asset relationships,
-service dependencies, topology, and impact analysis are supported application
-scenarios. It persists tenant data to local disk or S3-compatible object
-storage, using Parquet, manifest CAS, snapshots, and commit replay to provide
-versioned writes and explicit read-freshness control. It is not an RDF/OWL,
-SPARQL, ontology-reasoning, or historical graph engine.
+GGraphDB v1.2.0 is a Go-based, object-storage-backed property graph for
+current-state entity and relationship data. Knowledge bases, asset graphs,
+service dependencies, data lineage, topology, impact analysis, and CMDB are
+application scenarios—not separate storage engines. The graph model remains
+generic: application-defined kinds, fields, relation types, edges, optional
+type metadata, and tenant isolation.
+
+For local writers, v1.2.0 makes the performance-first path the default:
+one active writer per tenant, a process-wide segmented WAL with `sync`
+durability, and metadata segments. A durable ingest response is accepted only
+after WAL fsync. Shared object storage is the production persistence boundary;
+Parquet segments, manifests, snapshots, and indexes remain recoverable from it.
+
+> **Release status.** `v1.2.0` is the release identifier. A source checkout or
+> tag alone does not prove that the release gates passed. The authoritative
+> proof is the v1.2.0 GitHub Release assets together with their commit-bound
+> evidence; if the performance gate fails, no v1.2.0 Release archive is
+> produced.
+
+## v1.2.0 at a glance
+
+| Area | Contract |
+| --- | --- |
+| Local writer default | `GRAPHDB_INGEST_MODE=wal`, `GRAPHDB_INGEST_METADATA_MODE=segment`, and `GRAPHDB_INGEST_WAL_DURABILITY=sync`; graph flush defaults to a 1-second interval with four workers. |
+| Durable ingest | `POST /v1/ingest/batches` returns `202 Accepted` after the batch is fsynced to the local WAL, with `Location` and a status resource. |
+| Query-visible ingest | Send `Prefer: wait=committed` when the caller needs the final `200/207` result instead of asynchronous durable acceptance. |
+| Bounded admission | At queue 80%, WAL 70%, or pending age 20s, admission returns structured `429` with `Retry-After`; at 85% WAL usage readiness becomes drain-only. |
+| Performance gate | Fixed OrbStack host, 8 CPU/8 GiB, 8 tenants, 16 collectors, five 30-minute baseline runs and five candidate runs; thresholds are release gates, and results are authoritative only in commit-bound evidence packaged with the v1.2.0 Release. |
+| Compatibility boundary | The v1.1.5 → v1.2.0 data upgrade is forward-only after segment metadata is activated; PostgreSQL coordination must explicitly use direct ingest. |
 
 ## Highlights
 
 | Capability | Description |
 | --- | --- |
-| Multi-tenant graph data | Tenant prefixes, entities, edges, and indexes are isolated by `X-Tenant-ID`. |
-| Optional domain modeling | Entity types, labels, relation property schemas, identity reconciliation, source priority, and manual merge/split. |
-| Graph queries | GraphQL, JSON Query DSL, bounded pattern match, bidirectional traversal, impact, and shortest path. |
-| Bulk import | Resumable task-backed JSONL and CSV ingestion. |
-| Object-storage persistence | Parquet manifests, commits, snapshots, entity pages, edge shards, and index objects. |
-| Read/write topology | One binary supports `all`, `writer`, and `reader` deployment modes. |
-| Optional multi-writer coordination | PostgreSQL head CAS supports 2–8 optimistic writers per tenant while local coordination remains the default. |
-| Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
+| Multi-tenant graph data | Tenant prefixes, entities, edges, ingest identities, and indexes are isolated by `X-Tenant-ID`. |
+| Generic graph kernel | Schemaless entities, typed/directed edges, application-defined kinds and relation types, JSON fields, pagination, streaming, aggregation, bounded traversal, and impact queries. |
+| Optional domain modeling | CI/entity types, inheritance, field constraints, identity keys, relation schemas, source priority, and merge/split governance for profiles such as CMDB. |
+| Query APIs | GraphQL, JSON Query DSL, and the custom GQL text endpoint; query planning exposes bounded/admission controls rather than unbounded scans. |
+| Ingestion and import | Idempotent direct commits, durable WAL batches, resumable JSONL/CSV import, collector status, and structured retry errors. |
+| Object-storage persistence | Parquet commit and metadata segments, manifests, snapshots, entity pages, edge shards, and rebuildable indexes on local or S3-compatible storage. |
+| Operations | Health/readiness, compact, GC, backup/restore, repair, integrity audit, index health, metrics, and reader-freshness controls. |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  A[Collectors / API] --> W[Writer\\nGRAPHDB_MODE=writer]
-  W -. optional head CAS .-> P[(PostgreSQL\\ncoordination)]
-  W --> O[(S3 / RustFS\\nParquet + Manifest)]
-  O --> R[Reader fleet\\nGRAPHDB_MODE=reader]
-  R --> Q[GraphQL / JSON DSL queries]
-  A --> A1[all mode\\nlocal development]
-  A1 --> O
+  C[Collectors / API] --> W[Local writer<br/>WAL + sync]
+  W --> M[Graph flush<br/>metadata segment]
+  M --> O[(S3 / RustFS<br/>Parquet + manifest)]
+  O --> R[Reader fleet]
+  R --> Q[GraphQL / JSON DSL]
+  C -. optional .-> D[PostgreSQL direct writers<br/>head CAS]
+  P[(PostgreSQL<br/>head CAS)] --> D
+  D --> O
+  C --> A[all mode<br/>local development]
+  A --> W
 ```
+
+The default local topology keeps one active writer per tenant and uses the
+local WAL as the durable acceptance boundary. Readers load the shared object
+store independently. PostgreSQL coordination is an optional optimistic
+multi-writer head-CAS path; it does not provide a distributed WAL, so a
+PostgreSQL writer must set `GRAPHDB_INGEST_MODE=direct` explicitly.
 
 ## Quick start
 
 ### Local file storage
 
-Requires Go 1.25 or newer:
+Requires Go 1.25 or newer. The explicit environment below shows the v1.2.0
+local-writer defaults; keep `GRAPHDB_DATA_DIR` on persistent storage in a
+container deployment.
 
 ```sh
+GRAPHDB_MODE=all \
+GRAPHDB_STORAGE=local \
+GRAPHDB_DATA_DIR=.graphdb \
+GRAPHDB_INGEST_MODE=wal \
+GRAPHDB_INGEST_METADATA_MODE=segment \
+GRAPHDB_INGEST_WAL_DURABILITY=sync \
 go run ./cmd/graphdb serve
+
 curl -fsS http://127.0.0.1:8080/v1/health
 ```
 
 ### Docker Compose with MinIO
+
+The supplied profile persists the writer data directory in a named volume:
 
 ```sh
 docker compose up --build
@@ -104,6 +144,39 @@ The write response's `version` can be passed as `min_version` to a reader when
 the query must observe that write. Use `allow_stale=true` only when eventual
 consistency is acceptable.
 
+## Durable ingest and bounded backpressure
+
+The default batch endpoint acknowledges a durable WAL append before the graph
+flush completes:
+
+```sh
+curl -i -X POST http://127.0.0.1:8080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-batch-001' \
+  -d '{"source":"agent","collector_id":"collector-a","batch_id":"demo-batch-001","idempotency_key":"demo-batch-001","items":[]}'
+```
+
+In local WAL mode this returns durable `202 Accepted` after fsync, with a
+status URL. Poll that URL with the same tenant header, or request the final
+query-visible result directly:
+
+```sh
+curl -i -X POST http://127.0.0.1:8080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -H 'Prefer: wait=committed' \
+  -H 'Idempotency-Key: demo-batch-002' \
+  -d '{"source":"agent","collector_id":"collector-a","batch_id":"demo-batch-002","idempotency_key":"demo-batch-002","items":[]}'
+```
+
+`Prefer: wait=committed` waits for the durable metadata segment and returns
+the final `200` or `207` result. When admission is bounded, the writer returns
+`429` with `Retry-After`, `retry_after_ms`, and structured `reasons` for queue,
+WAL, or oldest-pending-age pressure. Retry the same `batch_id` and
+`idempotency_key` with backoff; do not create a new identity for the same
+source page.
+
 ## Generic graph queries with GraphQL
 
 The `examples/commit.json` dataset contains a non-CMDB graph: `person:alice`
@@ -128,49 +201,65 @@ Use `{"op":"match","kind":"person",...}` as the `request` variable. Follow a
 typed relationship by changing it to
 `{"op":"neighbors","id":"person:alice","relation_types":["works_at"]}`.
 
-See the [GraphQL guide](docs/graphql.md) for the schema, errors, aliases,
-fragments, and 1.1 boundaries. The old `FIND`/`MATCH` text DSL remains at
-`/v1/query/gql` only for 1.0 compatibility and is not GraphQL.
+See the [GraphQL guide](docs/graphql.md), [custom GQL guide](docs/gql.md), and
+[query capability map](docs/query_capabilities.md). `/v1/query/graphql` is
+GraphQL; `/v1/query/gql` is GGraphDB's custom `FIND`/`MATCH` text endpoint, not
+SPARQL.
+
+## Positioning and boundaries
+
+GGraphDB is a general current-state **property graph**. CMDB governance is an
+optional application profile, not the kernel's product limit. The v1.2.0
+contract does not claim RDF-native storage, lossless RDF round-tripping,
+SPARQL, OWL inference, named graphs, blank nodes, RDF multi-`rdf:type`,
+typed/language literals, historical graph queries, Cypher/Gremlin compatibility,
+subqueries, joins, UDFs, or expression computation. Use the property-graph
+model and the documented GraphQL/JSON/GQL APIs when those boundaries matter.
 
 ## Deployment modes
 
 | Mode | Use case | Behavior |
 | --- | --- | --- |
-| `all` | Local development and small single-process deployments | One process handles writes and queries. |
-| `writer` | Production write entry point | Write and control APIs; one local writer or a PostgreSQL-coordinated writer fleet. |
-| `reader` | Query fleet | Loads from shared object storage and serves queries and exports. |
+| `all` | Local development and small single-process deployments | One process handles writes and queries; local coordination uses the WAL defaults. |
+| `writer` | Production write entry point | Write and control APIs; one local writer per tenant, or explicit PostgreSQL-coordinated direct writers. |
+| `reader` | Query fleet | Loads from shared object storage and serves queries and exports; it does not accept writes. |
 
 For production, use shared S3/RustFS storage and multiple readers. Keep the
-default `GRAPHDB_COORDINATION=local` topology at one writer per tenant, or use
-`GRAPHDB_COORDINATION=postgres` with generic S3/RustFS for 2–8 optimistic
-writers. Process readiness actively probes object storage, and PostgreSQL mode
-prunes completed coordination rows with bounded retention. Reader-fleet
-readiness remains the tenant traffic admission gate.
-`X-Tenant-ID` is routing metadata, not authentication. Put authentication,
-authorization, TLS, and rate limiting at the gateway or service mesh.
+default `GRAPHDB_COORDINATION=local` topology at one writer per tenant. For
+PostgreSQL coordination, set `GRAPHDB_INGEST_MODE=direct`; two to eight
+optimistic writers are a separate correctness and CAS gate, not the local WAL
+path. `X-Tenant-ID` is routing metadata, not authentication. Put
+authentication, authorization, TLS, and rate limiting at the gateway or
+service mesh.
 
 ## Release
 
-The latest published release is GGraphDB 1.1:
-[**v1.1.5**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.5).
-The release workflow publishes the tag only after its release checklist,
-30-minute PostgreSQL CAS gate, and formal rollback drill pass.
-For v1.1.5, the release evidence also binds a real process-level WAL recovery
-run covering restart and object-store interruption in explicit WAL/segment
-mode.
+The current target is [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0).
+Pushing a semantic-version tag triggers [GitHub Actions](.github/workflows/release.yml),
+but the release job depends on the verification, RustFS/WAL recovery, CAS
+soak, rollback, and fixed-host performance jobs. Before packaging it verifies
+`artifacts/wal-performance/gate.json` with five baseline and five candidate
+runs, threshold results, and commit binding. A failed performance gate means
+no v1.2.0 release archive is produced.
 
-Each release archive contains:
+The performance contract is intentionally explicit rather than a benchmark
+claim: an 8 CPU/8 GiB OrbStack host runs eight tenants and 16 collectors for
+five 30-minute v1.1.5 baseline runs and five v1.2.0 candidate runs. Candidate
+thresholds include at least 10,000 committed mutations/s, a median throughput
+ratio of at least 1.5, no more than 5% run spread, accepted p95/p99 at most
+20/50 ms, committed p95/p99 at most 8/15 seconds, RSS at most 7 GiB and 110%
+of baseline, CPU per 1,000 mutations at most 75% of baseline, and direct-write
+and query regressions at most 10%. Treat these as release thresholds; measured
+results are authoritative only when the v1.2.0 GitHub Release packages the
+corresponding commit-bound matrix evidence.
 
-- static binaries for Linux amd64, Linux arm64, and macOS arm64;
-- Dockerfile, MinIO/RustFS/PostgreSQL Compose files, and examples;
-- deployment, security, capacity, API, query, SDK, changelog, and build metadata;
-- a `.sha256` checksum file.
-
-See the [release deployment guide](docs/user/release-deployment.md) or its
-[中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.1.5` triggers [GitHub Actions](.github/workflows/release.yml) to
-build and publish the archive automatically. Legacy `release_*` tags remain
-supported for older deployment workflows.
+See the [capacity envelope](docs/capacity.md),
+[release checklist](docs/release-checklist.md), and
+[release deployment guide](docs/user/release-deployment.md). Each release
+archive contains static binaries for Linux amd64, Linux arm64, and macOS arm64,
+checksums, Compose profiles, examples, SDKs, OpenAPI, and the release evidence
+accepted by the workflow. Legacy `release_*` tags remain supported for older
+deployment workflows.
 
 ## Documentation
 
@@ -180,43 +269,39 @@ supported for older deployment workflows.
 | [Usage manual](docs/user/usage-manual.md) · [中文](docs/user/usage-manual.zh-CN.md) | Tenants, writes, queries, optional CMDB scenario capabilities, indexes, maintenance, and SDKs. |
 | [Deployment and operations](docs/user/deploy-ops.md) · [中文](docs/user/deploy-ops.zh-CN.md) | `all`/`writer`/`reader`, S3, RustFS, health checks, and production rules. |
 | [Security boundary](docs/security-deployment.md) · [中文](docs/security-deployment.zh-CN.md) | Data/admin listeners, gateway auth, tenant binding, RBAC, and TLS. |
-| [Capacity envelope](docs/capacity.md) · [中文](docs/capacity.zh-CN.md) | Release CAS gate, reproducible baselines, and recommended topology. |
+| [Capacity envelope](docs/capacity.md) · [中文](docs/capacity.zh-CN.md) | Fixed-host release thresholds, reproducible baselines, and recommended topology. |
 | [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
 | [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | GraphQL, JSON DSL, pagination, streaming, explain, and profile. |
-| [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
+| [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Direct commits, WAL/segment ingest, durable `202`, `Prefer`, idempotency, and backpressure. |
 | [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, optional CI types, entities, relations, edges, and source governance. |
+| [API map](docs/user/api-map.md) · [中文](docs/user/api-map.zh-CN.md) | HTTP endpoints grouped by domain. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
-| [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |
+| [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, durable ingest, and retry guidance. |
 | [All user guides](docs/user/README.md) · [中文](docs/user/README.zh-CN.md) | Complete API, deployment, operations, and troubleshooting map. |
-
-## Project status and boundaries
-
-GGraphDB v1 is intentionally focused:
-
-- a general-purpose entity-relationship graph core, with CMDB governance as an optional domain profile;
-- local coordination defaults to one active writer per tenant; optional
-  PostgreSQL coordination provides optimistic multi-writer head CAS;
-- object storage as the recommended production persistence layer;
-- explicit reader freshness controls for strong-read workflows;
-- authentication and authorization delegated to the deployment boundary.
-
-See the [feature gap tracker](docs/product_function_gaps.md) for remaining
-product work.
 
 ## Development
 
 ```sh
-# Unit and package tests
+# Unit, vet, and race checks
 go test -mod=readonly ./...
+go vet -mod=readonly ./...
+go test -mod=readonly -race ./...
 
-# Validate both deployment topologies
+# Validate deployment topology syntax
 docker compose config
 docker compose -f docker-compose.rustfs.yml config
 ```
 
-The repository also contains black-box e2e, load, soak, reader-freshness,
-recovery, and release-gate tools under `tools/` and `scripts/`. Read the
-relevant operations document before running long or disruptive checks.
+The formal release-only matrix is intentionally long-running and requires a
+clean, commit-bound worktree plus a fixed OrbStack host:
+
+```sh
+scripts/wal_performance_matrix.sh
+```
+
+The repository also contains black-box e2e, load, soak, recovery, and release
+gate tools under `tools/` and `scripts/`. Read the relevant operations document
+before running long or disruptive checks.
 
 ## Contributing and license
 

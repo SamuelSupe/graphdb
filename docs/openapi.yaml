@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.1.5
-  description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.1 preserves the 1.0 core data layout.
+  version: 1.2.0
+  description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.2 defaults local writers to durable WAL ingestion and keeps the version 1 object layout.
 servers:
   - url: http://localhost:8080
 security:
@@ -89,6 +89,14 @@ paths:
   /v1/ingest/batches:
     post:
       summary: Apply a collector ingestion batch with idempotency and partial failure reporting.
+      parameters:
+        - name: Prefer
+          in: header
+          required: false
+          description: Send `wait=committed` to wait for the durable WAL batch to become query-visible and return its committed result.
+          schema:
+            type: string
+            enum: [wait=committed]
       requestBody:
         required: true
         content:
@@ -97,19 +105,19 @@ paths:
               $ref: '#/components/schemas/IngestRequest'
       responses:
         '200':
-          description: Batch accepted.
+          description: Batch committed synchronously in explicit direct mode, or when Prefer wait=committed is used.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestResult'
         '207':
-          description: Batch accepted with item failures.
+          description: Batch committed with item failures in explicit direct mode, or when Prefer wait=committed is used.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestResult'
         '202':
-          description: Batch durably appended to the local ingest WAL. Returned only when GRAPHDB_INGEST_MODE=wal.
+          description: Batch durably fsynced to the local ingest WAL. This is the default local-writer response in 1.2.0 and does not imply immediate query visibility.
           headers:
             Location:
               schema:
@@ -2252,7 +2260,7 @@ components:
           enum: [accepted]
         durability:
           type: string
-          enum: [durable, memory]
+          enum: [durable]
         accepted_at:
           type: string
           format: date-time
@@ -2278,7 +2286,7 @@ components:
           enum: [accepted, prepared, published, retrying, committed, failed]
         durability:
           type: string
-          enum: [durable, memory]
+          enum: [durable]
         accepted_lsn:
           type: integer
         accepted_at:

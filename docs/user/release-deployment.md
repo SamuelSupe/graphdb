@@ -3,22 +3,26 @@
 [中文](release-deployment.zh-CN.md)
 
 This guide is for service owners who need to download, deploy, upgrade, and
-roll back GGraphDB 1.1. Examples use the released `v1.1.5` tag, available at
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.5>.
+roll back GGraphDB v1.2.0. The previous supported writer line is v1.1.5;
+the v1.1.5 -> v1.2.0 data upgrade is one-way. Use the
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0> release page and
+verify the exact tag, checksum, and build commit before rollout. This guide
+describes the release contract; it does not assert that the v1.2.0 gates have
+already passed.
 
 ## 1. Download and verify
 
-The release page provides:
+The v1.2.0 release page provides:
 
-- `graphdb-v1.1.5.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
-- `graphdb-v1.1.5.tar.gz.sha256`: SHA-256 checksum.
+- `graphdb-v1.2.0.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
+- `graphdb-v1.2.0.tar.gz.sha256`: SHA-256 checksum for the archive.
 
 Verify and unpack:
 
 ```sh
-sha256sum -c graphdb-v1.1.5.tar.gz.sha256
-tar -xzf graphdb-v1.1.5.tar.gz
-cd graphdb-v1.1.5
+sha256sum -c graphdb-v1.2.0.tar.gz.sha256
+tar -xzf graphdb-v1.2.0.tar.gz
+cd v1.2.0
 ```
 
 The archive contains:
@@ -42,8 +46,11 @@ VERSION
 ```
 
 The binaries are statically built and do not require Go on the target host.
-Run `bin/graphdb-linux-amd64 version` and compare its commit with
-`BUILD-METADATA.json` before rollout.
+Run the binary matching the target architecture, for example
+`bin/graphdb-linux-amd64 version`, and compare its tag, commit, build date, and
+Go version with `VERSION` and `BUILD-METADATA.json` before rollout. The archive
+checksum protects the download; the embedded build metadata protects the
+binary-to-release mapping.
 Runtime still needs local disk or S3-compatible object storage. Production
 deployments should use external object storage and must not reuse example
 credentials.
@@ -63,8 +70,19 @@ export GRAPHDB_STORAGE=local
 export GRAPHDB_DATA_DIR=/var/lib/graphdb
 export GRAPHDB_PREFIX=graphdb
 export GRAPHDB_ADDR=:8080
+export GRAPHDB_COORDINATION=local
+export GRAPHDB_INGEST_MODE=wal
+export GRAPHDB_INGEST_METADATA_MODE=segment
+export GRAPHDB_INGEST_WAL_DURABILITY=sync
 graphdb serve
 ```
+
+These are the v1.2.0 local-writer defaults: local coordination, WAL ingest,
+segmented ingest metadata, and synchronous WAL durability. Set them explicitly
+in service manifests so a deployment review does not depend on implicit
+defaults. The WAL directory defaults to
+`${GRAPHDB_DATA_DIR}/wal/ingest`; keep it on the same persistent volume as the
+data directory.
 
 Check health:
 
@@ -88,6 +106,11 @@ This is the simplest object-storage deployment for local integration:
 docker compose up -d --build
 curl -fsS http://127.0.0.1:8080/v1/health
 ```
+
+The supplied `graphdb` service is still a local writer in v1.2.0: it inherits
+WAL + segment + sync ingest defaults. Keep the `graphdb-data` named volume;
+replacing the container without that volume can discard accepted-but-not-yet-
+published WAL records.
 
 Default ports:
 
@@ -132,6 +155,11 @@ docker compose -f docker-compose.rustfs.yml \
 Replace `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and
 `S3_SECRET_ACCESS_KEY` with real credentials. Inject them through Secrets,
 an environment manager, or a key service; never commit them.
+
+The RustFS `graphdb` service is a local-coordination writer and also inherits
+the v1.2.0 WAL + segment + sync defaults. The supplied `graphdb-writer-data`
+named volume is part of the writer durability boundary; do not remove it while
+accepted batches are pending.
 
 Recommended traffic layout:
 
@@ -179,11 +207,14 @@ Common runtime settings:
 ### Optional PostgreSQL multi-writer coordination
 
 `GRAPHDB_COORDINATION=local` remains the default and keeps the 1.0 writer lease
-and object-manifest CAS behavior. To run 2–8 optimistic writers for the same
-tenant, every 1.1 writer and reader must use one PostgreSQL namespace:
+and object-manifest CAS behavior. PostgreSQL coordination is an opt-in
+multi-writer path, not a fallback for local WAL. To run 2–8 optimistic writers
+for the same tenant, every v1.2.0 writer and reader must use one PostgreSQL
+namespace and the writer must explicitly select direct ingest:
 
 ```sh
 GRAPHDB_COORDINATION=postgres
+GRAPHDB_INGEST_MODE=direct
 GRAPHDB_POSTGRES_DSN='postgres://graphdb:<password>@postgres:5432/graphdb'
 GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination
 GRAPHDB_COORDINATOR_NAMESPACE=production-a
@@ -199,10 +230,13 @@ S3_PROVIDER=generic-s3
 GRAPHDB_WRITER_TOPOLOGY=cas
 ```
 
-The first PostgreSQL-coordinated release only supports generic S3-compatible
-storage with working `If-Match` semantics, including RustFS. Native
-OSS/OBS/COS providers remain in local single-writer coordination. PostgreSQL
-failure never falls back to local coordination: writes return
+The v1.2.0 PostgreSQL correctness and direct-write regression path is valid only
+with the explicit `GRAPHDB_INGEST_MODE=direct` setting above. Do not omit it and
+do not use the local WAL defaults for a PostgreSQL writer; distributed WAL is
+not implemented. The PostgreSQL path supports generic S3-compatible storage
+with working `If-Match` semantics, including RustFS. Native OSS/OBS/COS
+providers remain in local single-writer coordination. PostgreSQL failure never
+falls back to local coordination: writes return
 `503 coordinator_unavailable`; readers may serve a cached version, but return
 `reader_not_fresh` when it cannot satisfy `min_version`.
 
@@ -217,10 +251,10 @@ graphdb coordinator sync-legacy-manifest
 graphdb coordinator rollback --dry-run
 ```
 
-The bootstrap command copies each winning 1.0 `manifest.parquet` and its write
-rules to immutable coordination objects, creates the PostgreSQL head, and then
-writes an object-store coordination marker. That marker prevents a local or
-1.0 writer from starting against the same prefix.
+The bootstrap command copies each winning legacy `manifest.parquet` and its
+write rules to immutable coordination objects, creates the PostgreSQL head, and
+then writes an object-store coordination marker. That marker prevents a local
+or pre-coordination writer from starting against the same prefix.
 
 See [Deployment And Operations](deploy-ops.md) and the root README for the full
 configuration reference.
@@ -241,6 +275,30 @@ curl -fsS \
   -H 'X-Tenant-ID: demo'
 ```
 
+The v1.2.0 local-writer ingest contract is asynchronous by default. A request
+to `POST /v1/ingest/batches` returns `202 Accepted` only after the batch is
+fsynced to the WAL; `Location` points to its status resource and `202` does not
+mean that the batch is query-visible yet:
+
+```sh
+curl -i -X POST http://127.0.0.1:38080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  --data-binary @batch.json
+```
+
+When the caller needs the committed result in the same response, send the
+explicit preference. The response is `200` or `207` after the metadata segment
+is durable:
+
+```sh
+curl -i -X POST http://127.0.0.1:38080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Prefer: wait=committed' \
+  -H 'Content-Type: application/json' \
+  --data-binary @batch.json
+```
+
 When a query must observe a specific write, pass its response `version` as
 `min_version`. Use `allow_stale=true` only for explicitly eventual-consistent
 workflows. `X-Tenant-ID` is routing metadata, not authentication; production
@@ -259,7 +317,7 @@ before restarting; do not delete the tail to make the process start.
 
 ## 7. Upgrade, rollback, and data safety
 
-### GGraphDB 1.1 compatibility
+### GGraphDB 1.1 data model and extension history
 
 GGraphDB 1.1 does not rewrite the 1.0 core graph. Manifests, snapshots, commits,
 entities, edges, and Parquet objects remain at object layout version 2, so no
@@ -281,16 +339,56 @@ index-dependent traffic only to 1.1 readers. Mixed-version clients should keep
 using `upsert_ci_types`, `delete_ci_types`, and `ci_type`; the domain-neutral
 aliases are decoded only by the 1.1 HTTP API.
 
+### v1.1.5 to v1.2.0 upgrade (one-way)
+
+v1.2.0 can open existing v1.1.5 graph data because the graph model, logical
+commit/version order, and object layout remain unchanged. The writer protocol
+and physical ingest metadata do change: v1.2.0 defaults local writers to
+`wal + segment + sync`, and a v1.2.0 segment manifest is not a reverse-compatible
+writer boundary. Do not point a v1.1.5 writer at a prefix after v1.2.0 has
+activated segment metadata.
+
+Use this order for an in-place forward upgrade:
+
+1. Back up the complete object-storage prefix and the local
+   `GRAPHDB_DATA_DIR`, including `${GRAPHDB_DATA_DIR}/wal/ingest`. Record the
+   v1.1.5 binary, tag, and backup timestamp.
+2. Drain ingest traffic. For every accepted `202` batch, poll its `Location`
+   status resource until it is `committed` or the batch is explicitly handled
+   as failed; do not stop the writer with untracked accepted work.
+3. Stop every v1.1.5 writer before changing the binary. Do not run old and new
+   writers against the same local WAL or object prefix.
+4. Install the v1.2.0 binary or image without changing `GRAPHDB_DATA_DIR`, the
+   S3 prefix, or the coordination namespace. Set
+   `GRAPHDB_INGEST_MODE=wal`, `GRAPHDB_INGEST_METADATA_MODE=segment`,
+   `GRAPHDB_INGEST_WAL_DURABILITY=sync`, and
+   `GRAPHDB_COORDINATION=local` explicitly for a local writer.
+5. Start one v1.2.0 writer and verify `/v1/health`, `/v1/readiness`, WAL
+   recovery/metrics, one `202` plus status poll, one
+   `Prefer: wait=committed` request, and a real tenant query.
+6. Only after those checks pass should readers and additional traffic be
+   admitted. Keep the pre-upgrade backup until the release retention period
+   ends.
+
+This is a one-way data upgrade from v1.1.5 to v1.2.0, not a promise of reverse
+writer compatibility. If the rollout must be aborted after v1.2.0 has written
+segment metadata, stop and isolate the v1.2.0 deployment; do not start a
+v1.1.5 writer against the modified prefix. Restore the pre-upgrade object prefix
+and WAL/data directory into an isolated v1.1.5 deployment, validate it there,
+and route traffic only after that restore is verified. Without a pre-upgrade
+backup, do not claim that an in-place rollback is safe.
+
 When enabling PostgreSQL coordination, use this stricter rollout:
 
-1. Migrate the PostgreSQL schema, stop every 1.0 writer, and validate the
+1. Migrate the PostgreSQL schema, stop every pre-v1.2.0 writer, and validate the
    current legacy manifests.
 2. Run `coordinator bootstrap --dry-run`, then `--apply`.
-3. Start one 1.1 PostgreSQL writer and verify real reads/writes, coordinator
+3. Start one v1.2.0 PostgreSQL writer with explicit
+   `GRAPHDB_INGEST_MODE=direct` and verify real reads/writes, coordinator
    health, CAS metrics, and mirror status.
 4. Scale to the desired writer count. Admit 1.0 readers only when
    `max_legacy_mirror_lag=0` and `outbox_backlog=0`.
-5. Permanently remove 1.0 writer routes and write credentials. A 1.0 reader is
+5. Permanently remove pre-v1.2 writer routes and write credentials. A 1.0 reader is
    eventual-consistent; PostgreSQL remains the only authoritative head.
 
 Use the coordinator command for rollback; do not remove the coordination marker
@@ -322,6 +420,29 @@ Monitor `graphdb_coordinator_cas_total`,
 `graphdb_coordinator_head_revision`, and `graphdb_coordinator_status` alongside
 `GET /v1/health` and `graphdb coordinator status`.
 
+### Release gates and the GitHub Action
+
+The v1.2.0 release job must not publish an archive until the fixed-host
+OrbStack performance job has passed. The
+[release workflow](../../.github/workflows/release.yml) makes the publish job
+depend on the `performance` job, which runs:
+
+```sh
+scripts/wal_performance_matrix.sh
+```
+
+That matrix runs the v1.1.5 baseline and the v1.2.0 candidate five times each
+for 30 minutes, with local `wal + segment + sync` configuration. The candidate
+must meet the recorded throughput, latency, RSS, CPU, direct-write, and query
+regression thresholds in the [release checklist](../release-checklist.md),
+including at least 10,000 mutations/s, at least 1.5x baseline median
+throughput, no more than 5% run spread, and no more than 10% direct-write or
+query regression. The release job also checks that the performance JSON reports
+`success=true`, contains five valid baseline and candidate runs, and is bound
+to the tagged commit before `gh release create` runs. A v1.2.0 release must
+therefore wait for all five 30-minute runs and their gate to pass; this guide
+does not claim that they have passed.
+
 The PostgreSQL plus generic-S3 soak is a hard release dependency. With
 OrbStack/Docker it starts isolated PostgreSQL and RustFS services and runs the
 eight-writer correctness suite followed by the 30-minute, 20 commits/second
@@ -339,17 +460,19 @@ bound to the tested commit and is packaged by the release job. The gate fails
 on lost or duplicate graph versions, stale maintenance state, 1.0 read failure,
 or throughput below 90% of the target.
 
-v1.1.5 also requires commit-bound, process-level WAL recovery evidence:
+The v1.2.0 release also requires commit-bound, process-level WAL recovery
+evidence for its local default path:
 
 ```sh
 GRAPHDB_TEST_WAL_RELEASE_REPORT=/path/to/wal-recovery.json \
 scripts/wal_release_gate.sh
 ```
 
-The gate runs the real binary with `GRAPHDB_INGEST_MODE=wal`,
-`GRAPHDB_INGEST_METADATA_MODE=segment`, and local coordination; it exercises a
-durable `202 Accepted` batch across restart and an object-store interruption,
-then records the tested commit in the JSON report before promotion.
+The gate runs the real v1.2.0 binary with `GRAPHDB_INGEST_MODE=wal`,
+`GRAPHDB_INGEST_METADATA_MODE=segment`, `GRAPHDB_INGEST_WAL_DURABILITY=sync`,
+and local coordination; it exercises a durable `202 Accepted` batch across
+restart and an object-store interruption, then records the tested commit in the
+JSON report before promotion.
 
 The release commit also has a separate formal PostgreSQL-to-local rollback
 gate:
@@ -368,30 +491,34 @@ Use the [release checklist](../release-checklist.md),
 [security boundary](../security-deployment.md), and
 [capacity envelope](../capacity.md) as the approval record.
 
-Rolling the writer back to 1.0 is layout-safe, but a 1.0 writer does not enforce
-relation property schemas. Drain or cancel `bulk_import` tasks first, and pause
-schema-governed edge writes until the 1.1 writer is restored. Do not delete the
-`extensions/v1.1` objects; they are reused after re-upgrade. Use the 1.1
-backup/restore path when relation schemas must be carried into a new tenant;
-the 1.0 backup format only knows the core graph.
+Rolling the writer back in place to v1.1.5 is not supported after v1.2.0 segment
+metadata is active. If a rollback is required, use the pre-upgrade backup and
+the isolated restore procedure above; do not delete the `extensions/v1.1`
+objects or mutate the production prefix to force an older writer to start.
+Drain or cancel `bulk_import` tasks before any restore, and pause
+schema-governed edge writes until the restored writer is verified. The 1.1
+backup/restore path remains the way to carry relation schemas into a new
+tenant; the 1.0 backup format only knows the core graph.
 
 Before upgrading, confirm that snapshots, manifests, and recent backups are
-readable:
+readable, and complete the pre-upgrade backup before stopping the old writer.
+For the RustFS Compose deployment, pull/build the v1.2.0 image only after the
+old writer is stopped and the named writer volume is preserved:
 
 ```sh
 docker compose -f docker-compose.rustfs.yml pull
 docker compose -f docker-compose.rustfs.yml up -d --build
 ```
 
-For binary deployments, download the new release, stop the old process, replace
-the binary, and keep `GRAPHDB_DATA_DIR` or the S3 prefix unchanged. After the
-upgrade, check health, reader readiness, metrics, and one real tenant read/write
-flow.
+For binary deployments, download v1.2.0, stop the old process, replace the
+binary, and keep `GRAPHDB_DATA_DIR` or the S3 prefix unchanged. Follow the
+one-way upgrade order above, then check health, reader readiness, metrics, and
+one real tenant read/write flow.
 
-For rollback, pin the binary or image version. Do not delete manifests, commits,
-snapshots, or index objects from object storage. For storage-format changes,
-run a restore drill against a replica bucket before switching production
-traffic.
+For rollback, pin the v1.1.5 binary or image only in an isolated deployment
+restored from the pre-upgrade backup. Do not delete manifests, commits,
+snapshots, segment, or index objects from the production object store. Run a
+restore drill against a replica bucket before switching production traffic.
 
 Stop the RustFS stack:
 

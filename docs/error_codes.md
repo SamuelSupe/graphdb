@@ -53,3 +53,8 @@ The following top-level `code` values are stable:
 Write backpressure responses may include `reasons[]` with more specific reason
 codes. Those reason codes are intentionally scoped to the backpressure detail
 payload and do not replace the top-level contract above.
+
+Local WAL admission uses `ingest_queue_high_watermark`,
+`ingest_wal_high_watermark`, `ingest_wal_stop_watermark`, and
+`ingest_pending_too_old`. These responses include `Retry-After`; retry the same
+batch and idempotency identity rather than creating a new logical write.

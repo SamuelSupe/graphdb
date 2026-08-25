@@ -115,6 +115,52 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 	}
 }
 
+func TestHTTPIngestWALBackpressureBeforeCapacity(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	config := storage.DefaultIngestServiceConfig(t.TempDir())
+	config.WAL.FsyncInterval = time.Millisecond
+	config.WAL.BufferBytes = 1024
+	config.WAL.MaxBytes = 16 * 1024
+	config.WAL.SegmentBytes = 16 * 1024
+	config.WALHighWatermark = 1
+	config.WALStopWatermark = 99
+	config.FlushInterval = time.Hour
+	config.FlushTimeout = 5 * time.Second
+	service, err := storage.OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Fatalf("close ingest service: %v", err)
+		}
+	}()
+	handler := (&Server{Store: store, Mode: "all", IngestService: service}).Handler()
+	request := storage.IngestRequest{
+		Source:      "agent",
+		CollectorID: "collector-a",
+		BatchID:     "batch-1",
+		Items: []storage.IngestItem{{
+			Entity: &graph.Entity{ID: "host:1", Kind: "host"},
+		}},
+	}
+	accepted := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("accepted status = %d body=%s", accepted.Code, accepted.Body.String())
+	}
+	request.BatchID = "batch-2"
+	request.Items[0].Entity = &graph.Entity{ID: "host:2", Kind: "host"}
+	rejected := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+	body := rejected.Body.String()
+	if rejected.Code != http.StatusTooManyRequests || rejected.Header().Get("Retry-After") != "2" ||
+		!strings.Contains(body, `"code":"write_backpressure"`) ||
+		!strings.Contains(body, `"code":"ingest_wal_high_watermark"`) {
+		t.Fatalf("rejected status=%d retry=%q body=%s", rejected.Code, rejected.Header().Get("Retry-After"), body)
+	}
+}
+
 func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	recorder := installSpanRecorder(t)
 	var logs bytes.Buffer

@@ -32,6 +32,7 @@ services:
       GRAPHDB_ADDR: ":8080"
       GRAPHDB_MODE: writer
       GRAPHDB_INSTANCE_ID: graphdb-writer
+      GRAPHDB_DATA_DIR: /var/lib/graphdb
       GRAPHDB_STORAGE: s3
       GRAPHDB_PREFIX: graphdb
       GRAPHDB_MAINTENANCE_INTERVAL: ${GRAPHDB_MAINTENANCE_INTERVAL:-5m}
@@ -48,6 +49,8 @@ services:
       S3_SECRET_ACCESS_KEY: graphdbsecret
     ports:
       - "${GRAPHDB_PORT:-38080}:8080"
+    volumes:
+      - graphdb-writer-data:/var/lib/graphdb
 
   graphdb-reader:
     image: graphdb-rustfs:local
@@ -58,6 +61,7 @@ services:
       GRAPHDB_ADDR: ":8080"
       GRAPHDB_MODE: reader
       GRAPHDB_INSTANCE_ID: graphdb-reader
+      GRAPHDB_DATA_DIR: /var/lib/graphdb
       GRAPHDB_STORAGE: s3
       GRAPHDB_PREFIX: graphdb
       S3_ENDPOINT: http://rustfs:9000
@@ -86,6 +90,7 @@ services:
       GRAPHDB_ADDR: ":8080"
       GRAPHDB_MODE: reader
       GRAPHDB_INSTANCE_ID: graphdb-reader-2
+      GRAPHDB_DATA_DIR: /var/lib/graphdb
       GRAPHDB_STORAGE: s3
       GRAPHDB_PREFIX: graphdb
       S3_ENDPOINT: http://rustfs:9000
@@ -114,6 +119,7 @@ services:
       GRAPHDB_ADDR: ":8080"
       GRAPHDB_MODE: reader
       GRAPHDB_INSTANCE_ID: graphdb-reader-3
+      GRAPHDB_DATA_DIR: /var/lib/graphdb
       GRAPHDB_STORAGE: s3
       GRAPHDB_PREFIX: graphdb
       S3_ENDPOINT: http://rustfs:9000
@@ -134,3 +140,4 @@ services:
 
 volumes:
   rustfs-data:
+  graphdb-writer-data:

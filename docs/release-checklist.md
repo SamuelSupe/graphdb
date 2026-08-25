@@ -1,4 +1,4 @@
-# GGraphDB 1.1 Release Checklist
+# GGraphDB 1.2 Release Checklist
 
 ## Contract And Compatibility
 
@@ -9,14 +9,24 @@
 - [ ] `CHANGELOG.md` and API/error documentation match the tag.
 - [ ] `graphdb version` reports tag, commit, build date, and Go version.
 - [ ] Go and Python SDK versions match the release.
-- [ ] `scripts/compatibility_v1_0_v1_1.sh` passes both binary directions.
-- [ ] Object layout versions remain unchanged or have an approved migration.
+- [ ] The v1.1.5 to v1.2.0 data upgrade is documented as one-way; no reverse
+      writer compatibility is claimed.
+- [ ] Object layout remains unchanged or has an approved one-way migration.
 
 ## Verification
 
 - [ ] Unit, vet, race, Python SDK, and OpenAPI contract tests pass.
 - [ ] RustFS e2e, load, restart, freshness, outage, repair, and restore drill pass.
 - [ ] PostgreSQL coordinator and RustFS CAS integration tests pass.
+- [ ] Five 30-minute v1.1.5 and five 30-minute v1.2.0 local-WAL runs complete
+      on the fixed OrbStack host with 8 tenants and 16 collectors.
+- [ ] Every v1.2.0 run commits at least 10,000 mutations/s; median throughput is
+      at least 1.5x v1.1.5 and run spread is no more than 5%.
+- [ ] Accepted p95/p99 are at most 20/50 ms and committed p95/p99 are at most
+      8/15 seconds in every candidate run.
+- [ ] Candidate RSS is at most 7 GiB and 110% of baseline; CPU per 1,000
+      mutations is at most 75% of baseline.
+- [ ] Direct-write and query benchmark regressions are at most 10%.
 - [ ] 8-writer concurrency correctness gate passes with no loss or duplicate version.
 - [ ] 2-active-writer, 20 commit/s, 30-minute CAS soak passes at 90% or better throughput.
 - [ ] Soak finishes with mirror lag, legacy outbox, and derived-task backlog at zero.
@@ -36,6 +46,8 @@
 - [ ] The WAL evidence JSON is archived as
       `release/evidence/wal-recovery-<tag>.json` and is a hard dependency of
       the GitHub release job.
+- [ ] The commit-bound local-WAL performance matrix, regression report, and
+      final gate JSON are archived and are a hard dependency of the release job.
 
 ## Security
 

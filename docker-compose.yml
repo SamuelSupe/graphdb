@@ -29,6 +29,7 @@ services:
       GRAPHDB_ADDR: ":8080"
       GRAPHDB_MODE: all
       GRAPHDB_INSTANCE_ID: graphdb-all
+      GRAPHDB_DATA_DIR: /var/lib/graphdb
       GRAPHDB_STORAGE: s3
       GRAPHDB_PREFIX: graphdb
       S3_ENDPOINT: http://minio:9000
@@ -39,6 +40,9 @@ services:
       S3_SECRET_ACCESS_KEY: minioadmin
     ports:
       - "${GRAPHDB_PORT:-8080}:8080"
+    volumes:
+      - graphdb-data:/var/lib/graphdb
 
 volumes:
   minio-data:
+  graphdb-data:

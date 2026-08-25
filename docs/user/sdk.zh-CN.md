@@ -100,6 +100,10 @@ result, err := writer.Ingest(ctx, graphdb.IngestRequest{
 })
 ```
 
+`Ingest` 会发送 `Prefer: wait=committed` 并返回查询可见的最终结果。性能优先的
+异步路径使用 `AcceptIngest`，保留其 `StatusURL`，再通过
+`GetIngestBatchStatus` 轮询到 `State == "committed"`。
+
 ### Go：1.1 Schema 与文件导入
 
 ```go
@@ -243,6 +247,9 @@ result = writer.ingest({
     ],
 })
 ```
+
+`ingest()` 会等待 `committed`。默认异步 WAL 路径使用 `accept_ingest()`，
+再轮询 `get_ingest_batch_status()`。
 
 ### Python：1.1 Schema 与文件导入
 

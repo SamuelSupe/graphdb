@@ -21,6 +21,10 @@ class Handler(BaseHTTPRequestHandler):
         self.__class__.requests.append((self.command, self.path, dict(self.headers), body))
         if self.path == "/v1/commits":
             self._json({"version": 3, "readable_version": 3})
+        elif self.path == "/v1/ingest/batches" and self.headers.get("Prefer") == "wait=committed":
+            self._json({"batch_id": "batch-1", "version": 7, "applied": 1})
+        elif self.path == "/v1/ingest/batches":
+            self._json({"batch_id": "batch-2", "state": "accepted", "durability": "durable", "status_url": "/v1/ingest/batches/agent/collector-a/batch-2"}, status=202)
         elif self.path == "/v1/query/gql":
             self._json({"version": 9, "results": [], "stats": {"returned": 0}})
         elif self.path == "/v1/query/gql/stream":
@@ -56,14 +60,16 @@ class Handler(BaseHTTPRequestHandler):
         self.__class__.requests.append((self.command, self.path, dict(self.headers), b""))
         if self.path == "/v1/entities/host%3A1":
             self._json({"id": "host:1", "kind": "host", "fields": {"hostname": "app-01"}})
+        elif self.path == "/v1/ingest/batches/agent/collector-a/batch-2":
+            self._json({"batch_id": "batch-2", "state": "committed", "result": {"batch_id": "batch-2", "version": 8, "applied": 1}})
         else:
             self.send_error(404)
 
     def log_message(self, *_):
         pass
 
-    def _json(self, payload):
-        self.send_response(200)
+    def _json(self, payload, status=200):
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode("utf-8"))
@@ -104,7 +110,7 @@ class ClientTest(unittest.TestCase):
         headers_lower = {key.lower(): value for key, value in headers.items()}
         self.assertEqual((method, path), ("POST", "/v1/commits"))
         self.assertEqual(headers_lower["x-tenant-id"], "tenant-a")
-        self.assertEqual(headers_lower["user-agent"], "graphdb-python-sdk/1.1.5")
+        self.assertEqual(headers_lower["user-agent"], "graphdb-python-sdk/1.2.0")
         self.assertEqual(headers_lower["authorization"], "Bearer test-token")
         self.assertEqual(json.loads(body)["idempotency_key"], "idem-1")
 
@@ -112,6 +118,18 @@ class ClientTest(unittest.TestCase):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")
         entity = client.get_entity("host:1")
         self.assertEqual(entity["fields"]["hostname"], "app-01")
+
+    def test_ingest_supports_committed_and_asynchronous_wal_calls(self):
+        client = GraphDBClient(self.base_url, tenant_id="tenant-a")
+        batch = {"source": "agent", "collector_id": "collector-a", "batch_id": "batch-1", "items": []}
+        committed = client.ingest(batch)
+        self.assertEqual(committed["version"], 7)
+        self.assertEqual(Handler.requests[-1][2]["Prefer"], "wait=committed")
+        batch["batch_id"] = "batch-2"
+        accepted = client.accept_ingest(batch)
+        self.assertEqual(accepted["state"], "accepted")
+        status = client.get_ingest_batch_status("agent", "collector-a", "batch-2")
+        self.assertEqual(status["result"]["version"], 8)
 
     def test_api_error(self):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")

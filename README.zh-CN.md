@@ -2,60 +2,95 @@
 
 # GGraphDB
 
-**面向实体、关系与拓扑的通用对象存储图数据库**
+**面向实体、关系与拓扑的通用当前态属性图数据库**
 
-[![Latest Release](https://img.shields.io/github/v/release/SamuelSupe/graphdb?display_name=tag)](https://github.com/SamuelSupe/graphdb/releases)
-[![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Public Repository](https://img.shields.io/badge/repository-public-2ea44f)](https://github.com/SamuelSupe/graphdb)
+[![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
+[![Release target](https://img.shields.io/badge/release-v1.2.0--target-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
 
-[English README](README.md) · [最新发行版](https://github.com/SamuelSupe/graphdb/releases/latest)
+[English README](README.md) · [v1.2.0 发行目标](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [全部发行版](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
-GGraphDB 1.1 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
-知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
-它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
-CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
-SPARQL、本体推理或历史图引擎。
+GGraphDB v1.2.0 是一个 Go 实现、以对象存储为持久化边界的通用当前态属性图，
+用于实体和关系数据。知识库、资产图、服务依赖、数据血缘、拓扑、影响分析和
+CMDB 都是应用场景，而不是不同的存储引擎。图模型保持通用：应用自定义的
+kind、字段、关系类型、边、可选类型元数据以及租户隔离。
+
+v1.2.0 将性能优先路径设为本地 writer 的默认值：每个租户一个活跃 writer，
+进程级分段 WAL、`sync` 耐久性和 metadata segment。只有 WAL 完成 fsync 后，
+写入才会返回 durable ingest 响应。生产持久化建议使用共享对象存储；Parquet
+segment、manifest、snapshot 和 index 都可以从对象存储恢复。
+
+> **发行状态。** `v1.2.0` 是发行标识。源码工作区或 tag 本身不能证明发行门禁
+> 已通过。权威证据是 v1.2.0 GitHub Release 资产及其 commit-bound evidence；
+> 如果性能门禁失败，就不会产出 v1.2.0 Release 归档。
+
+## v1.2.0 一览
+
+| 领域 | 合同 |
+| --- | --- |
+| 本地 writer 默认值 | `GRAPHDB_INGEST_MODE=wal`、`GRAPHDB_INGEST_METADATA_MODE=segment`、`GRAPHDB_INGEST_WAL_DURABILITY=sync`；graph flush 默认 1 秒间隔、4 个 worker。 |
+| Durable ingest | `POST /v1/ingest/batches` 在 batch fsync 到本地 WAL 后返回 `202 Accepted`，并提供 `Location` 和状态资源。 |
+| 查询可见写入 | 调用方需要最终 `200/207` 结果时发送 `Prefer: wait=committed`，而不是只等待 durable 异步接收。 |
+| 有界准入 | 队列 80%、WAL 70% 或 pending age 20 秒时返回带 `Retry-After` 的结构化 `429`；WAL 使用率达到 85% 后 readiness 进入 drain-only。 |
+| 性能门禁 | 固定 OrbStack 主机，8 CPU/8 GiB，8 个租户、16 个采集器，v1.1.5 基线和候选各运行 5 次 30 分钟；阈值是发行门禁，结果只有在 v1.2.0 Release 打包 commit-bound evidence 后才具权威性。 |
+| 兼容边界 | v1.1.5 → v1.2.0 在启用 segment metadata 后是单向数据升级；PostgreSQL 协调必须显式使用 direct ingest。 |
 
 ## 核心能力
 
 | 能力 | 说明 |
 | --- | --- |
-| 多租户图数据 | 通过 `X-Tenant-ID` 隔离租户前缀、实体、边和索引。 |
-| 可选领域建模 | 实体类型、标签、关系属性 schema、identity reconciliation、source priority 和人工合并/拆分。 |
-| 图查询 | GraphQL、JSON Query DSL、有界 pattern match、双向遍历、impact、shortest path。 |
-| 批量导入 | task 驱动、可恢复的 JSONL 和 CSV ingest。 |
-| 对象存储持久化 | Parquet manifest、commit、snapshot、entity page、edge shard 和 index object。 |
-| 读写分离 | 同一二进制支持 `all`、`writer`、`reader`，通过部署拓扑分流。 |
-| 可选多写协调 | PostgreSQL head CAS 支持每租户 2–8 个乐观并发 writer，本地协调仍为默认。 |
-| 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
+| 多租户图数据 | 通过 `X-Tenant-ID` 隔离租户前缀、实体、边、ingest identity 和索引。 |
+| 通用图内核 | 无固定 schema 的实体、有类型/方向的边、应用自定义 kind 与 relation type、JSON 字段、分页、流式查询、聚合、有界遍历和影响查询。 |
+| 可选领域建模 | CI/entity type、继承、字段约束、identity key、关系 schema、source priority 以及适用于 CMDB 等 profile 的合并/拆分治理。 |
+| 查询 API | GraphQL、JSON Query DSL 和自定义 GQL 文本端点；查询计划提供有界与准入控制，不承诺无界扫描。 |
+| 写入与导入 | 幂等 direct commit、durable WAL batch、可恢复 JSONL/CSV 导入、collector 状态和结构化重试错误。 |
+| 对象存储持久化 | Parquet commit/metadata segment、manifest、snapshot、entity page、edge shard 和可重建 index，支持本地或 S3 兼容存储。 |
+| 运维能力 | health/readiness、compact、GC、backup/restore、repair、integrity audit、index health、metrics 和 reader freshness 控制。 |
 
 ## 架构一览
 
 ```mermaid
 flowchart LR
-  A[采集器 / API] --> W[Writer\\nGRAPHDB_MODE=writer]
-  W -. 可选 head CAS .-> P[(PostgreSQL\\n协调状态)]
-  W --> O[(S3 / RustFS\\nParquet + Manifest)]
-  O --> R[Reader 集群\\nGRAPHDB_MODE=reader]
-  R --> Q[GraphQL / JSON DSL 查询]
-  A --> A1[all 模式\\n本地开发]
-  A1 --> O
+  C[采集器 / API] --> W[本地 writer<br/>WAL + sync]
+  W --> M[Graph flush<br/>metadata segment]
+  M --> O[(S3 / RustFS<br/>Parquet + manifest)]
+  O --> R[Reader 集群]
+  R --> Q[GraphQL / JSON DSL]
+  C -. 可选 .-> D[PostgreSQL direct writer<br/>head CAS]
+  P[(PostgreSQL<br/>head CAS)] --> D
+  D --> O
+  C --> A[all 模式<br/>本地开发]
+  A --> W
 ```
+
+默认本地拓扑为每个租户一个活跃 writer，本地 WAL 是 durable acceptance 边界。
+Reader 独立从共享对象存储加载数据。PostgreSQL 协调是可选的乐观多 writer
+head-CAS 路径，不提供分布式 WAL；PostgreSQL writer 必须显式设置
+`GRAPHDB_INGEST_MODE=direct`。
 
 ## 快速开始
 
 ### 本地文件存储
 
-需要 Go 1.25 或更高版本：
+需要 Go 1.25 或更高版本。下面的显式环境变量展示 v1.2.0 本地 writer 默认值；
+容器部署时请把 `GRAPHDB_DATA_DIR` 放在持久化存储上。
 
 ```sh
+GRAPHDB_MODE=all \
+GRAPHDB_STORAGE=local \
+GRAPHDB_DATA_DIR=.graphdb \
+GRAPHDB_INGEST_MODE=wal \
+GRAPHDB_INGEST_METADATA_MODE=segment \
+GRAPHDB_INGEST_WAL_DURABILITY=sync \
 go run ./cmd/graphdb serve
+
 curl -fsS http://127.0.0.1:8080/v1/health
 ```
 
 ### Docker Compose + MinIO
+
+仓库提供的 profile 会把 writer 数据目录持久化到 named volume：
 
 ```sh
 docker compose up --build
@@ -101,6 +136,36 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/query/graphql \
 写入响应中的 `version` 可以作为 reader 查询的 `min_version`，保证读到指定
 版本；只有在明确接受最终一致性时才使用 `allow_stale=true`。
 
+## Durable ingest 与有界背压
+
+默认 batch endpoint 会先确认 durable WAL append，再完成 graph flush：
+
+```sh
+curl -i -X POST http://127.0.0.1:8080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-batch-001' \
+  -d '{"source":"agent","collector_id":"collector-a","batch_id":"demo-batch-001","idempotency_key":"demo-batch-001","items":[]}'
+```
+
+本地 WAL 模式会在 fsync 后返回 durable `202 Accepted`，并给出状态 URL。可以
+使用同一个租户 header 轮询该 URL；如果调用方需要最终查询可见结果，可以直接：
+
+```sh
+curl -i -X POST http://127.0.0.1:8080/v1/ingest/batches \
+  -H 'X-Tenant-ID: demo' \
+  -H 'Content-Type: application/json' \
+  -H 'Prefer: wait=committed' \
+  -H 'Idempotency-Key: demo-batch-002' \
+  -d '{"source":"agent","collector_id":"collector-a","batch_id":"demo-batch-002","idempotency_key":"demo-batch-002","items":[]}'
+```
+
+`Prefer: wait=committed` 会等待 durable metadata segment，并返回最终 `200` 或
+`207`。当准入受到限制时，writer 返回带 `Retry-After`、`retry_after_ms` 和
+结构化 `reasons` 的 `429`，原因可能是队列、WAL 或最老 pending 请求年龄。
+重试时复用相同的 `batch_id` 和 `idempotency_key` 并退避；不要为同一 source
+page 生成新的 identity。
+
 ## 通用图场景：使用 GraphQL 查询
 
 `examples/commit.json` 包含一个非 CMDB 的通用图：`person:alice` 通过
@@ -123,46 +188,53 @@ query FindPerson($request: QueryRequest!) {
 变量使用 `{"op":"match","kind":"person",...}`；要沿关系查询一跳邻居，可改为
 `{"op":"neighbors","id":"person:alice","relation_types":["works_at"]}`。
 
-schema、错误、alias、fragment 和 1.1 边界见
-[GraphQL 文档](docs/graphql.zh-CN.md)。旧 `FIND`/`MATCH` 文本 DSL 仅在
-`/v1/query/gql` 保留 1.0 兼容，不是 GraphQL。
+参见 [GraphQL 文档](docs/graphql.zh-CN.md)、[自定义 GQL 文档](docs/gql.md) 和
+[查询能力地图](docs/query_capabilities.md)。`/v1/query/graphql` 是 GraphQL；
+`/v1/query/gql` 是 GGraphDB 自定义的 `FIND`/`MATCH` 文本端点，不是 SPARQL。
+
+## 产品定位与边界
+
+GGraphDB 是通用的当前态**属性图**。CMDB 治理是可选的应用 profile，不是内核
+的产品上限。v1.2.0 不宣称 RDF 原生存储、RDF 无损往返、SPARQL、OWL 推理、
+named graph、blank node、RDF 多 `rdf:type`、typed/language literal、历史图
+查询、Cypher/Gremlin 兼容、subquery、join、UDF 或表达式计算。遇到这些边界时，
+请使用属性图模型以及文档化的 GraphQL/JSON/GQL API。
 
 ## 部署模式
 
 | 模式 | 适用场景 | 行为 |
 | --- | --- | --- |
-| `all` | 本地开发、小规模单进程部署 | 同一进程处理写入和查询。 |
-| `writer` | 生产写入入口 | 写入和控制 API；本地单 writer 或 PostgreSQL 协调的 writer 集群。 |
-| `reader` | 查询集群 | 从共享对象存储加载数据，提供查询和导出。 |
+| `all` | 本地开发、小规模单进程部署 | 同一进程处理写入和查询；local coordination 使用 WAL 默认值。 |
+| `writer` | 生产写入入口 | 写入和控制 API；每租户一个 local writer，或显式 PostgreSQL 协调的 direct writer。 |
+| `reader` | 查询集群 | 从共享对象存储加载数据，提供查询和导出；不接受写入。 |
 
 生产部署建议使用共享 S3/RustFS 和多个 reader。默认
-`GRAPHDB_COORDINATION=local` 时每租户保持一个 writer；需要 2–8 个乐观并发
-writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍以
-进程 readiness 主动探测对象存储，PostgreSQL 模式按保留窗口清理已完成的
-协调记录；租户流量仍以 reader fleet readiness 作为接入条件。
-`X-Tenant-ID` 是租户路由标识，不是认证机制；认证、授权、TLS 和限流应由
-网关或服务网格提供。
+`GRAPHDB_COORDINATION=local` 时每租户保持一个 writer。使用 PostgreSQL 协调时
+设置 `GRAPHDB_INGEST_MODE=direct`；2–8 个乐观 writer 是独立的正确性/CAS 门禁，
+不是本地 WAL 路径。`X-Tenant-ID` 是路由标识，不是认证机制；认证、授权、TLS
+和限流应由网关或服务网格提供。
 
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.1：
-[**v1.1.5**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.5)。
-发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
-正式回滚演练全部通过后才会发布。
-v1.1.5 的发行证据还绑定了真实进程级 WAL 恢复运行，覆盖显式 WAL/segment
-模式下的进程重启和对象存储中断。
+当前目标是 [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)。
+推送语义化版本 tag 会触发 [GitHub Actions](.github/workflows/release.yml)，但
+release job 依赖验证、RustFS/WAL 恢复、CAS soak、回滚和固定主机性能 job。打包
+前会校验 `artifacts/wal-performance/gate.json`，其中必须有 5 次基线、5 次候选、
+阈值结果和 commit 绑定。性能门禁失败就不会产出 v1.2.0 发行归档。
 
-发行包包含：
+性能合同是明确的门禁，不是本文的 benchmark 结果：固定 8 CPU/8 GiB OrbStack
+主机运行 8 个租户、16 个采集器，v1.1.5 基线和 v1.2.0 候选各 5 次 30 分钟。
+候选阈值包括至少 10,000 committed mutations/s，中位吞吐比至少 1.5，运行间
+离散不超过 5%，accepted p95/p99 不超过 20/50 ms，committed p95/p99 不超过
+8/15 秒，RSS 不超过 7 GiB 和基线的 110%，每 1,000 mutation 的 CPU 不超过
+基线 75%，direct 写入和查询回归不超过 10%。这些是发行阈值；测量结果只有在
+v1.2.0 GitHub Release 打包对应的 commit-bound 矩阵证据后才具权威性。
 
-- Linux amd64、Linux arm64、macOS arm64 静态二进制；
-- Dockerfile、MinIO/RustFS/PostgreSQL Compose 文件和 examples；
-- 部署、安全、容量、API、查询、SDK、changelog 和构建元数据；
-- `.sha256` 校验文件。
-
-详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.1.5` 的语义化版本
-标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
-归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
+详见[容量边界](docs/capacity.zh-CN.md)、[发行 checklist](docs/release-checklist.md)
+和[发行版部署文档](docs/user/release-deployment.zh-CN.md)。每个发行包包含 Linux
+amd64、Linux arm64、macOS arm64 静态二进制、校验和、Compose profile、examples、
+SDK、OpenAPI 以及 workflow 接受的发行证据。为兼容旧部署流程，`release_*` 标签
+仍然受支持。
 
 ## 文档入口
 
@@ -172,42 +244,38 @@ v1.1.5 的发行证据还绑定了真实进程级 WAL 恢复运行，覆盖显�
 | [使用手册](docs/user/usage-manual.zh-CN.md) · [English](docs/user/usage-manual.md) | 租户、写入、查询、可选的 CMDB 场景能力、索引、维护和 SDK。 |
 | [部署与运维](docs/user/deploy-ops.zh-CN.md) · [English](docs/user/deploy-ops.md) | `all`/`writer`/`reader`、S3、RustFS、健康检查和生产规则。 |
 | [安全边界](docs/security-deployment.zh-CN.md) · [English](docs/security-deployment.md) | 数据/管理 listener、网关认证、租户绑定、RBAC 与 TLS。 |
-| [容量边界](docs/capacity.zh-CN.md) · [English](docs/capacity.md) | 发行 CAS 门禁、可复现基线和推荐拓扑。 |
+| [容量边界](docs/capacity.zh-CN.md) · [English](docs/capacity.md) | 固定主机发行阈值、可复现基线和推荐拓扑。 |
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
 | [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | GraphQL、JSON DSL、分页、流式、explain 和 profile。 |
-| [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
+| [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | direct commit、WAL/segment ingest、durable `202`、`Prefer`、幂等和背压。 |
 | [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |
-| [Go/Python SDK](docs/user/sdk.zh-CN.md) · [English](docs/user/sdk.md) | SDK 初始化、读写、流式访问和重试指导。 |
+| [Go/Python SDK](docs/user/sdk.zh-CN.md) · [English](docs/user/sdk.md) | SDK 初始化、读写、流式、durable ingest 和重试指导。 |
 | [全部用户指南](docs/user/README.zh-CN.md) · [English](docs/user/README.md) | 完整 API、部署、运维和故障排查入口。 |
-
-## 当前边界
-
-GGraphDB v1 目前明确保持以下边界：
-
-- 通用实体关系图内核，CMDB 数据治理作为可选的领域 profile；
-- 本地协调默认每租户一个活跃 writer；可选 PostgreSQL 协调提供乐观多 writer head CAS；
-- 对象存储是生产持久化的推荐来源；
-- 强读场景通过显式 reader freshness 控制；
-- 认证和授权由部署边界负责。
-
-详细限制和成熟度缺口见[功能缺口跟踪](docs/product_function_gaps.md)。
 
 ## 开发
 
 ```sh
-# 单元测试和包测试
+# 单元、vet 和 race 检查
 go test -mod=readonly ./...
+go vet -mod=readonly ./...
+go test -mod=readonly -race ./...
 
-# 校验两种部署拓扑
+# 校验部署拓扑语法
 docker compose config
 docker compose -f docker-compose.rustfs.yml config
 ```
 
-仓库还包含位于 `tools/` 和 `scripts/` 下的黑盒 e2e、负载、soak、
-reader freshness、恢复和发行版门禁工具。运行长时间或有影响的检查前，
-请先阅读对应的运维文档。
+正式发行性能矩阵是长时间检查，只应在干净、commit-bound 的工作区和固定
+OrbStack 主机上运行：
+
+```sh
+scripts/wal_performance_matrix.sh
+```
+
+仓库还包含位于 `tools/` 和 `scripts/` 下的黑盒 e2e、负载、soak、恢复和发行版
+门禁工具。运行长时间或有影响的检查前，请先阅读对应的运维文档。
 
 ## 贡献与许可证
 

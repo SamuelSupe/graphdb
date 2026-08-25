@@ -14,10 +14,11 @@ import (
 var ErrIngestRepairRequired = errors.New("ingest WAL repair required")
 
 type IngestBatchEntry struct {
-	Request    IngestRequest
-	AcceptedAt time.Time
-	FinishedAt time.Time
-	Prepared   *IngestPreparedRequest
+	Request         IngestRequest
+	AcceptedAt      time.Time
+	FinishedAt      time.Time
+	Prepared        *IngestPreparedRequest
+	requestPrepared bool
 }
 
 type IngestPreparedRequest struct {
@@ -98,11 +99,13 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	}
 	preparedEntries := make([]IngestBatchEntry, len(entries))
 	for index, entry := range entries {
-		request, err := PrepareIngestRequest(tenantID, entry.Request)
-		if err != nil {
-			return nil, err
+		if !entry.requestPrepared {
+			request, err := PrepareIngestRequest(tenantID, entry.Request)
+			if err != nil {
+				return nil, err
+			}
+			entry.Request = request
 		}
-		entry.Request = request
 		if entry.AcceptedAt.IsZero() {
 			entry.AcceptedAt = time.Now().UTC()
 		}
@@ -209,12 +212,13 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	}
 
 	var (
-		loaded        loadedGraph
-		finalGraph    *graph.Graph
-		finalManifest Manifest
-		commitItems   []commitSegmentItem
-		logicalBytes  int64
-		fallback      bool
+		loaded          loadedGraph
+		finalGraph      *graph.Graph
+		finalManifest   Manifest
+		commitItems     []commitSegmentItem
+		logicalBytes    int64
+		fallback        bool
+		preparedSegment preparedCommitSegment
 	)
 	if len(mutationCandidates) > 0 {
 		loaded, err = s.loadForWriteLocked(ctx, tenantID)
@@ -239,7 +243,7 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		}
 		finalManifest = loaded.Manifest
 		if len(commitItems) > 0 {
-			finalManifest, logicalBytes, err = s.prepareIngestBatchManifest(ctx, tenantID, loaded, finalGraph, commitItems)
+			finalManifest, logicalBytes, preparedSegment, err = s.prepareIngestBatchManifest(ctx, tenantID, loaded, finalGraph, commitItems)
 			if err != nil {
 				return results, err
 			}
@@ -263,7 +267,7 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		}
 	}
 	if len(commitItems) > 0 {
-		if err := s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, commitItems, mutationCandidates, logicalBytes); err != nil {
+		if err := s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, preparedSegment, commitItems, mutationCandidates, logicalBytes); err != nil {
 			return results, err
 		}
 	}
@@ -534,18 +538,18 @@ func (s *TenantStore) prepareIngestBatchManifest(
 	loaded loadedGraph,
 	finalGraph *graph.Graph,
 	newItems []commitSegmentItem,
-) (Manifest, int64, error) {
+) (Manifest, int64, preparedCommitSegment, error) {
 	nextMD5, logicalBytes, err := finalGraph.ContentMD5WithLogicalSize()
 	if err != nil {
-		return Manifest{}, 0, err
+		return Manifest{}, 0, preparedCommitSegment{}, err
 	}
 	items, err := s.ingestBatchSegmentItems(ctx, tenantID, loaded, newItems)
 	if err != nil {
-		return Manifest{}, 0, err
+		return Manifest{}, 0, preparedCommitSegment{}, err
 	}
 	ref, err := s.commitSegmentRef(tenantID, items)
 	if err != nil {
-		return Manifest{}, 0, err
+		return Manifest{}, 0, preparedCommitSegment{}, err
 	}
 	last := newItems[len(newItems)-1].Commit
 	manifest := loaded.Manifest
@@ -557,7 +561,7 @@ func (s *TenantStore) prepareIngestBatchManifest(
 	manifest.CommitKeys = nil
 	manifest.UpdatedAt = last.CreatedAt
 	manifest.DataMD5 = nextMD5
-	return manifest, logicalBytes, nil
+	return manifest, logicalBytes, preparedCommitSegment{Ref: ref, Items: items}, nil
 }
 
 func (s *TenantStore) publishIngestBatch(
@@ -566,6 +570,7 @@ func (s *TenantStore) publishIngestBatch(
 	loaded loadedGraph,
 	finalGraph *graph.Graph,
 	manifest Manifest,
+	segment preparedCommitSegment,
 	newItems []commitSegmentItem,
 	candidates []*ingestBatchCandidate,
 	logicalBytes int64,
@@ -577,11 +582,7 @@ func (s *TenantStore) publishIngestBatch(
 		attribute.Int64("graphdb.ingest.publish.final_version", manifest.Version),
 	)
 	defer func() { endStorageSpan(span, err) }()
-	items, err := s.ingestBatchSegmentItems(ctx, tenantID, loaded, newItems)
-	if err != nil {
-		return err
-	}
-	ref, err := s.putCommitSegment(ctx, tenantID, items)
+	ref, err := s.putPreparedCommitSegment(ctx, tenantID, segment, true)
 	if err != nil {
 		return err
 	}
@@ -656,27 +657,6 @@ func (s *TenantStore) ingestBatchSegmentItems(
 	}
 	items = append(items, newItems...)
 	return items, nil
-}
-
-func (s *TenantStore) commitSegmentRef(tenantID string, items []commitSegmentItem) (CommitSegmentRef, error) {
-	if len(items) == 0 {
-		return CommitSegmentRef{}, fmt.Errorf("empty commit segment")
-	}
-	payload, err := marshalCommitSegmentPayload(items)
-	if err != nil {
-		return CommitSegmentRef{}, err
-	}
-	first := items[0].Commit.Version
-	last := items[len(items)-1].Commit.Version
-	hash := objectContentHash(payload)
-	return CommitSegmentRef{
-		Key:          s.commitSegmentKey(tenantID, first, last, hash),
-		Codec:        commitSegmentCodecParquet,
-		FirstVersion: first,
-		LastVersion:  last,
-		Count:        len(items),
-		ContentHash:  hash,
-	}, nil
 }
 
 func (s *TenantStore) preparedIngestPublished(

@@ -260,12 +260,16 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 
 ### 本地 WAL 模式
 
-默认 `GRAPHDB_INGEST_MODE=direct` 保持原来的同步 `200/207` 行为。单 writer、
-`GRAPHDB_COORDINATION=local` 部署可以显式设置
-`GRAPHDB_INGEST_MODE=wal`。该模式会先把请求追加到进程级分段 WAL；不同租户
-可共享一次 group-fsync，而后台默认只使用一个 graph write worker，并保持
+GGraphDB 1.2 的本地 writer 默认使用 `GRAPHDB_INGEST_MODE=wal`、
+`GRAPHDB_INGEST_METADATA_MODE=segment` 和 sync durability。请求会先追加到
+进程级分段 WAL；不同租户可共享一次 group-fsync，后台默认使用四个 graph
+write worker 并保持
 同租户 FIFO 顺序。同一租户的一次 flush 保留每个请求的逻辑 commit 顺序，
 但把这些 commit 写入一个 Parquet commit segment，并只发布一次 manifest。
+
+PostgreSQL coordination 不提供分布式 WAL。PostgreSQL writer 必须显式设置
+`GRAPHDB_INGEST_MODE=direct`，省略时启动会失败关闭。reader 不接收写入，因而
+自动选择 direct 模式。
 
 同步耐久模式在 WAL fsync 后返回 `202 Accepted`、`Location` 和状态 URL：
 
@@ -275,7 +279,7 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
   "state": "accepted",
   "durability": "durable",
   "accepted_at": "2026-07-30T00:00:00Z",
-  "estimated_flush_at": "2026-07-30T00:00:10Z",
+  "estimated_flush_at": "2026-07-30T00:00:01Z",
   "status_url": "/v1/ingest/batches/aws/collector-a/aws-batch-001"
 }
 ```
@@ -287,35 +291,47 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
 ```
 
+WAL 目录属于耐久性边界。容器部署必须把 `GRAPHDB_DATA_DIR` 挂载到持久化
+本地存储；仓库提供的 Compose profile 已为 writer 挂载 `/var/lib/graphdb`。
+
 主要配置：
 
 - `GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest`
-- `GRAPHDB_INGEST_WAL_DURABILITY=sync|os`（默认 `sync`）
+- `GRAPHDB_INGEST_WAL_DURABILITY=sync`
 - `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`
 - `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`
 - `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`
 - `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`
-- `GRAPHDB_INGEST_FLUSH_INTERVAL=10s`
+- `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
+- `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`
+- `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`
+- `GRAPHDB_INGEST_MAX_PENDING_AGE=20s`
+- `GRAPHDB_INGEST_FLUSH_INTERVAL=1s`
 - `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`
 - `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`
-- `GRAPHDB_INGEST_FLUSH_WORKERS=1`
+- `GRAPHDB_INGEST_FLUSH_WORKERS=4`
 - `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
+
+内存队列达到 80%、WAL 磁盘达到 70%，或最老待提交请求超过 20 秒时，writer
+返回带 `Retry-After` 的 `429`。WAL 磁盘达到 85% 后 readiness 进入 drain-only，
+直到已提交记录回收。调用方必须在建议延迟后复用原 batch/idempotency identity
+重试。
 
 #### metadata segment 模式（1.1.3+）
 
-1.1.3 在本地 WAL 模式上增加显式启用的 metadata 攒批：
+1.1.3 在本地 WAL 模式上引入 metadata 攒批；1.2 将其设为本地 writer 默认值：
 
 ```ini
 GRAPHDB_INGEST_MODE=wal
 GRAPHDB_COORDINATION=local
 GRAPHDB_INGEST_METADATA_MODE=segment
-GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=30s
+GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=5s
 GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
 GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
 GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=4
 ```
 
-默认仍为 `GRAPHDB_INGEST_METADATA_MODE=legacy`。segment 模式把同一租户跨
+direct 模式使用 `legacy`，本地 WAL 模式默认使用 `segment`。segment 模式把同一租户跨
 graph flush 的完整请求、结果、摘要和本窗口最终 collector status 写入一个
 内容寻址 Parquet segment，再用一次独立 ingest manifest CAS 发布。batch 和
 idempotency identity 可以同时指向 segment 内同一条记录；正常 256 请求窗口
@@ -329,7 +345,7 @@ segment。点查顺序为活跃 WAL、新 segment/index、旧 batch/idempotency 
 
 graph manifest 发布后请求进入 `published`；metadata manifest 发布后才进入
 `committed` 并允许 WAL 回收。`Prefer: wait=committed` 会立即 flush 当前租户
-metadata 窗口，普通 `202` 允许等待阈值或 30 秒窗口。segment PUT、manifest
+metadata 窗口，普通 `202` 允许等待阈值或 5 秒窗口。segment PUT、manifest
 CAS 和 `FINALIZED` 之间崩溃时，WAL 中持久化的 metadata flush ID、LSN 范围
 和内容哈希保证恢复不会重复 graph version、collector totals 或结果。
 
@@ -413,7 +429,20 @@ Bloom/index lookup 会通过 OTLP/HTTP
 v1.1.5 发行门禁使用真实二进制、`GRAPHDB_INGEST_MODE=wal`、
 `GRAPHDB_COORDINATION=local` 和显式 `GRAPHDB_INGEST_METADATA_MODE=segment`
 验证上述行为。提交绑定的证据覆盖 durable accepted 批次跨进程重启和对象存储
-中断；direct ingest 与 `legacy` metadata 仍是默认值。
+中断；这些模式在该门禁中均为显式配置。
+
+#### 1.2.0 性能优先默认值
+
+v1.1.5 到 v1.2.0 是单向数据升级：停止旧 writer，保留 WAL 与对象数据，再
+启动 v1.2.0；v1.2.0 激活 segment metadata 后不要再运行 v1.1.5 writer。
+发行门禁不提供反向兼容。图模型、逻辑 commit/version 顺序、FIFO 语义和对象
+布局保持不变，变化仅限物理攒批和默认运行策略。
+
+发行门禁在同一固定 OrbStack 主机上分别运行 v1.1.5、v1.2.0 各 5 次、每次
+30 分钟。v1.2.0 必须达到至少 10,000 committed mutations/s 和 v1.1.5 中位数
+的 1.5 倍；accepted p95/p99 不超过 20/50 ms，committed p95/p99 不超过
+8/15 秒；RSS 不超过 7 GiB 且不超过基线 110%；每 1,000 mutation 的 CPU
+至少下降 25%；吞吐离散不超过 5%；direct 写入与查询回归不超过 10%。
 
 CMDB 采集场景的批次建议：
 

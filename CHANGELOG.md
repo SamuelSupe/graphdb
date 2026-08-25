@@ -3,6 +3,43 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.2.0] - 2026-08-25
+
+### Changed
+
+- Make `wal + segment + sync` the default ingest path for local writers. The
+  default `POST /v1/ingest/batches` response is now durable `202 Accepted`;
+  callers that require immediate visibility can send `Prefer: wait=committed`.
+- Use a 1-second graph flush interval, four graph flush workers, a 5-second
+  metadata flush interval, and four metadata workers by default.
+- Reuse the request normalized at WAL acceptance during graph flush and reuse
+  the prepared commit-segment content identity during physical publication,
+  removing duplicate normalization, commit-tail loading, and logical JSON
+  encoding from the hot path without merging logical commits or versions.
+- Reject new ingest with `429` and `Retry-After` at bounded queue, WAL, or
+  pending-age admission watermarks. Readiness becomes non-writable at the WAL
+  drain-only watermark.
+- Require sync WAL durability for the public WAL mode so every `202` response
+  is fsynced and recoverable; the former OS-buffered acceptance mode is not a
+  v1.2.0 server option.
+- Mount the writer data directory on a named volume in the supplied Compose
+  profiles so durable accepted WAL records survive container replacement.
+
+### Release evidence
+
+- Add a fixed-host OrbStack gate with eight tenants, 16 collectors, sync WAL,
+  segment metadata, five 30-minute runs for v1.1.5 and v1.2.0, and commit-bound
+  accepted/committed latency, throughput, RSS, CPU, direct-write, and query
+  regression evidence. Any failed threshold blocks the release workflow.
+
+### Compatibility
+
+- This release intentionally changes the default ingest protocol and does not
+  provide a reverse-compatible writer rollback. Existing local data can be
+  opened by v1.2.0, but once segment metadata is active the supported path is
+  forward-only. PostgreSQL coordination must explicitly set
+  `GRAPHDB_INGEST_MODE=direct`; distributed WAL is not implemented.
+
 ## [1.1.5] - 2026-08-01
 
 ### Fixed

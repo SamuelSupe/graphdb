@@ -85,6 +85,12 @@ GRAPHDB_PREFIX=graphdb
 - `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
+- `GRAPHDB_INGEST_MODE=wal|direct`（本地 writer 默认 `wal`；PostgreSQL 必须显式 `direct`）
+- `GRAPHDB_INGEST_METADATA_MODE=segment|legacy`（WAL 默认 `segment`）
+- `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
+- `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`
+- `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`
+- `GRAPHDB_INGEST_MAX_PENDING_AGE=20s`
 - `GRAPHDB_COORDINATION=local|postgres`
 - `GRAPHDB_POSTGRES_DSN=<dsn>`
 - `GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination`
@@ -102,7 +108,7 @@ GRAPHDB_PREFIX=graphdb
 本地单 writer 锁或 PostgreSQL head CAS 保护。`0` 会关闭这一准入维度，
 只适合受控测试。
 
-PostgreSQL 协调还要求 `GRAPHDB_STORAGE=s3`、
+PostgreSQL 协调还要求 `GRAPHDB_INGEST_MODE=direct`、`GRAPHDB_STORAGE=s3`、
 `S3_PROVIDER=generic-s3` 和 `GRAPHDB_WRITER_TOPOLOGY=cas`。启动 writer
 前先执行 `graphdb coordinator migrate` 和
 `graphdb coordinator bootstrap --apply`；上线与回滚顺序见发行版部署文档。

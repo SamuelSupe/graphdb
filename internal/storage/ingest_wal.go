@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -172,6 +173,7 @@ type IngestWAL struct {
 	fatalErr        error
 	runErr          error
 	closeErr        error
+	diskBytes       atomic.Int64
 }
 
 func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error) {
@@ -245,6 +247,7 @@ func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error
 		closeCh:  make(chan struct{}),
 		done:     make(chan struct{}),
 	}
+	wal.diskBytes.Store(totalBytes)
 	go wal.run(
 		segments,
 		nextLSN,
@@ -252,6 +255,13 @@ func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error
 		recoveryStats.checkpointNextLSN,
 	)
 	return wal, records, nil
+}
+
+func (w *IngestWAL) DiskBytes() int64 {
+	if w == nil {
+		return 0
+	}
+	return w.diskBytes.Load()
 }
 
 func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payload []byte) (result IngestWALAppendResult, err error) {
@@ -884,6 +894,7 @@ func (s *ingestWALWriterState) observeSync(status string, records int, bytes int
 }
 
 func (s *ingestWALWriterState) observeState(bufferBytes int) {
+	s.wal.diskBytes.Store(s.totalBytes)
 	if s.wal.config.Observer != nil {
 		s.wal.config.Observer.RecordIngestWALState(
 			bufferBytes,

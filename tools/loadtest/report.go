@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const loadReportSchemaVersion = 1
+const loadReportSchemaVersion = 2
 
 type loadReport struct {
 	SchemaVersion int              `json:"schema_version"`
@@ -15,6 +15,7 @@ type loadReport struct {
 	ElapsedMS     int64            `json:"elapsed_ms"`
 	Workload      loadWorkload     `json:"workload"`
 	PlannedGraph  plannedGraphSize `json:"planned_graph"`
+	Results       loadResults      `json:"results"`
 	Metrics       []metricReport   `json:"metrics"`
 }
 
@@ -26,7 +27,18 @@ type loadWorkload struct {
 	Readers                int    `json:"readers"`
 	Batches                int    `json:"batches"`
 	BatchSize              int    `json:"batch_size"`
+	DurationMS             int64  `json:"duration_ms,omitempty"`
+	Collectors             int    `json:"collectors"`
+	WorkingSet             int    `json:"working_set"`
 	AllowWriteBackpressure bool   `json:"allow_write_backpressure"`
+}
+
+type loadResults struct {
+	ScheduledBatches     int64   `json:"scheduled_batches"`
+	CommittedBatches     int64   `json:"committed_batches"`
+	BackpressuredBatches int64   `json:"backpressured_batches"`
+	CommittedMutations   int64   `json:"committed_mutations"`
+	MutationsPerSecond   float64 `json:"mutations_per_second"`
 }
 
 type plannedGraphSize struct {
@@ -34,7 +46,11 @@ type plannedGraphSize struct {
 	Edges    int `json:"edges"`
 }
 
-func writeLoadReport(path string, cfg config, readerURL string, elapsed time.Duration, metrics *registry) error {
+func writeLoadReport(path string, cfg config, readerURL string, elapsed time.Duration, metrics *registry, results loadResults) error {
+	plannedGroups := int(results.ScheduledBatches) * cfg.batchSize
+	if cfg.workingSet > 0 && plannedGroups > cfg.workingSet {
+		plannedGroups = cfg.workingSet
+	}
 	report := loadReport{
 		SchemaVersion: loadReportSchemaVersion,
 		GeneratedAt:   time.Now().UTC(),
@@ -48,12 +64,16 @@ func writeLoadReport(path string, cfg config, readerURL string, elapsed time.Dur
 			Readers:                cfg.readers,
 			Batches:                cfg.batches,
 			BatchSize:              cfg.batchSize,
+			DurationMS:             cfg.duration.Milliseconds(),
+			Collectors:             cfg.collectors,
+			WorkingSet:             cfg.workingSet,
 			AllowWriteBackpressure: cfg.allowWriteBackpressure,
 		},
 		PlannedGraph: plannedGraphSize{
-			Entities: 2 + cfg.batches*cfg.batchSize*2,
-			Edges:    1 + cfg.batches*cfg.batchSize,
+			Entities: 2 + plannedGroups*2,
+			Edges:    1 + plannedGroups,
 		},
+		Results: results,
 		Metrics: metrics.snapshot(),
 	}
 	file, err := os.Create(path)

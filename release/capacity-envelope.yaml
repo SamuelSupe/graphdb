@@ -1,5 +1,5 @@
 schema_version: 1
-release: "1.1"
+release: "1.2"
 scope: per_tenant
 
 correctness_concurrency_gate:
@@ -26,10 +26,46 @@ postgres_cas_gate:
     terminal_errors: 0
 
 compatibility_gate:
-  v1_tag: release_20260722_01
-  required_directions:
-    - v1_writer_v11_reader
-    - v11_writer_v1_reader
+  data_upgrade_from: v1.1.5
+  reverse_compatibility_required: false
+
+local_wal_ingest_gate:
+  host:
+    runtime: orbstack
+    platform: linux/arm64
+    cpu_limit: 8
+    memory_limit_bytes: 8589934592
+  topology:
+    writers: 1
+    coordination: local
+    tenants: 8
+    collectors: 16
+    writer_pipelines_per_tenant: 32
+  workload:
+    logical_groups_per_batch: 200
+    mutations_per_group: 3
+    working_set_groups_per_tenant: 20000
+  duration: 30m
+  valid_runs: 5
+  maximum_run_throughput_variation: 0.05
+  minimum_committed_mutations_per_second: 10000
+  minimum_throughput_ratio_vs_v1_1_5: 1.50
+  accepted_latency:
+    p95_max: 20ms
+    p99_max: 50ms
+  committed_latency:
+    p95_max: 8s
+    p99_max: 15s
+  maximum_rss_bytes: 7516192768
+  maximum_rss_ratio_vs_v1_1_5: 1.10
+  maximum_cpu_per_1000_mutations_ratio_vs_v1_1_5: 0.75
+  overload:
+    response_status: 429
+    retry_after_required: true
+    queue_high_watermark_percent: 80
+    wal_high_watermark_percent: 70
+    wal_stop_watermark_percent: 85
+    maximum_pending_age: 20s
 
 query_contract:
   maximum_result_limit: 1000
@@ -44,6 +80,8 @@ topology_contract:
 
 notes:
   - This is a release gate, not a maximum supported graph size.
+  - The local WAL gate uses sync durability and segment metadata on one fixed OrbStack host.
+  - All five local WAL runs must pass; any failed absolute, relative, latency, RSS, CPU, or variation threshold blocks release.
   - Eight deployed writers are supported, but the sustained hot-tenant throughput gate uses two active contenders.
   - Client retries rotate across writers to verify cluster-wide idempotency instead of relying on process affinity.
   - Larger commit rates or graph sizes require a target-environment baseline.

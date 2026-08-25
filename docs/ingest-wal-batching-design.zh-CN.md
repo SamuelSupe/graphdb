@@ -2,9 +2,9 @@
 
 ## 1. 文档状态
 
-- 状态：1.1.2 WAL/graph batching 基线已实现；1.1.3 metadata segment
-  扩展已实现。
-- 目标版本：1.1.2 基线、1.1.3 metadata 写放大压缩。
+- 状态：1.1.2 WAL/graph batching 基线与 1.1.3 metadata segment 已实现；
+  1.2.0 已将该路径设为本地 writer 的性能优先默认值。
+- 目标版本：1.2.0 默认性能 profile。
 - 目标部署：
   - `GRAPHDB_COORDINATION=local`；
   - 单个活动 writer 进程；
@@ -21,7 +21,7 @@
 
 1. 一个进程级、分段、可恢复的本地 WAL，通过内存 buffer 和 group fsync
    合并多租户的小写入。
-2. WAL 持久化后，按租户进入独立 FIFO 队列；默认最大等待 10 秒，达到
+2. WAL 持久化后，按租户进入独立 FIFO 队列；默认最大等待 1 秒，达到
    请求数或字节阈值时提前 flush。
 3. 一次租户 flush 保留多个按请求顺序生成的逻辑 commit，不把异构请求
    粗暴拼成一个 `graph.Mutations`。
@@ -73,7 +73,7 @@ manifest、版本和恢复边界仍然独立。
 | 多请求合成一个 `graph.Commit` | `applyMutations` 按类型固定排序，可能把后到的 delete 排在先到的 upsert 前面 | 每个请求保留独立逻辑 commit，按 FIFO 顺序应用 |
 | 每个请求独立 commit object | 对象 PUT 和 manifest CAS 仍接近请求数 | 多个逻辑 commit 直接写一个 commit segment，manifest 只发布一次 |
 | 每租户独立 timer/goroutine | 大量租户产生 timer、goroutine 和 GC 压力 | 一个全局 deadline heap，加有界 flush worker |
-| 10 秒队列仍默认同步返回 | 低流量租户每次请求可能阻塞接近 10 秒 | WAL 模式默认 durable 202；需要同步结果时显式等待 committed |
+| 攒批队列仍默认同步返回 | 低流量租户每次请求会占用连接直到 flush | WAL 模式默认 durable 202；需要同步结果时显式等待 committed |
 | WAL 中使用 DATA/REF 内容引用 | 恢复和 segment GC 复杂，REF 可能长期钉住旧 segment | 第一版 WAL 保存完整请求；只对相同幂等身份共享待处理记录 |
 | 内存 append queue、WAL buffer、热缓存都保留 payload | 同一请求可能出现三份内存副本 | 每个阶段只保留一份所有权明确的 payload，落盘后释放 append buffer |
 | collector status、索引失败阻止 WAL 回收 | 可修复派生状态可能永久钉住 WAL | manifest 和 ingest batch record 为必需状态，派生状态异步修复 |
@@ -85,7 +85,7 @@ manifest、版本和恢复边界仍然独立。
 ### 5.1 目标
 
 - 已返回 durable accepted 的请求在进程崩溃后可恢复。
-- 默认 graph flush 最大等待时间为 10 秒。
+- 默认 graph flush 最大等待时间为 1 秒。
 - 保留同一租户请求的 FIFO 语义。
 - 保留每个有效、发生变化的请求对应的逻辑 graph version。
 - 相同幂等身份的重试只处理一次。
@@ -147,8 +147,9 @@ GRAPHDB_INGEST_MODE=direct|wal
 ### 7.1 `direct`
 
 - 保持当前同步行为和 200/207 响应。
-- 用于兼容升级和不希望改变版本可见性语义的调用方。
-- 发行升级时默认保持 `direct`，避免无配置升级改变现有客户端行为。
+- 用于 PostgreSQL 多 writer 回归验证，或明确需要同步可见性语义的调用方。
+- v1.2.0 不再把 `direct` 作为本地 writer 的兼容默认值；PostgreSQL writer
+  必须显式配置 `GRAPHDB_INGEST_MODE=direct`。
 
 ### 7.2 `wal`
 
@@ -263,15 +264,8 @@ durableLSN   已完成 file.Sync
 默认只有 `durableLSN >= requestLSN` 才能返回 durable accepted。内存 buffer
 减少 write syscall 和 fsync 次数，但不改变 durable 边界。
 
-可以保留显式的测试或低可靠模式：
-
-```ini
-GRAPHDB_INGEST_WAL_DURABILITY=async
-```
-
-该模式允许在 append queue 接收后返回，但必须明确报告
-`durability=memory`，并说明最多可能丢失一个 fsync 周期。生产默认必须为
-`sync`。
+v1.2.0 的公开 WAL server 模式只允许 `sync`。低于 fsync 的确认不能返回
+`202 Accepted`，也不属于可发布配置。
 
 ## 9. 内存模型
 
@@ -613,8 +607,9 @@ sequencer 建立屏障：
 建议第一版只暴露必要配置：
 
 ```ini
-# 兼容升级默认 direct；目标单 writer 部署显式设为 wal
-GRAPHDB_INGEST_MODE=direct
+# v1.2.0 本地 single writer 默认性能模式
+GRAPHDB_INGEST_MODE=wal
+GRAPHDB_INGEST_METADATA_MODE=segment
 
 GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest
 GRAPHDB_INGEST_WAL_DURABILITY=sync
@@ -623,15 +618,20 @@ GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms
 GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB
 
 GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB
-GRAPHDB_INGEST_FLUSH_INTERVAL=10s
+GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80
+GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70
+GRAPHDB_INGEST_WAL_STOP_WATERMARK=85
+GRAPHDB_INGEST_MAX_PENDING_AGE=20s
+GRAPHDB_INGEST_FLUSH_INTERVAL=1s
 GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256
 GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB
+GRAPHDB_INGEST_FLUSH_WORKERS=4
 GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s
 ```
 
 说明：
 
-- `FLUSH_INTERVAL=10s` 是最大驻留时间，不是固定轮询周期。
+- `FLUSH_INTERVAL=1s` 是最大驻留时间，不是固定轮询周期。
 - `WAL_FSYNC_INTERVAL` 与 graph flush interval 完全独立。
 - segment 目标大小第一版使用内部常量，不增加额外运维参数。
 - flush worker 数量复用现有 `GRAPHDB_WRITE_MAX_CONCURRENT`。
@@ -829,10 +829,10 @@ readiness 至少检查：
 - 所有内存和磁盘队列都有硬上限。
 - 多租户指标不引入 tenant 高基数标签。
 
-兼容性：
+部署边界：
 
-- `GRAPHDB_INGEST_MODE=direct` 保持当前 API 行为。
-- WAL 模式为显式启用。
+- 本地 writer 默认 `wal + segment + sync`，默认响应为 durable `202`。
+- `GRAPHDB_INGEST_MODE=direct` 仍保持同步 200/207 行为，但必须显式启用。
 - 现有 reader 无需理解 WAL，只读取原有 manifest 和 commit segment。
 - 现有 compact、GC、backup 和 recovery 必须能够处理新生成的短 commit
   segment。
@@ -848,7 +848,7 @@ readiness 至少检查：
 
 ### 阶段二：Commit segment 攒批
 
-- tenant queue、deadline heap、默认 10 秒；
+- tenant queue、deadline heap、默认 1 秒；
 - ordered logical commits；
 - 一次 manifest publish；
 - existing loose tail 合并；
@@ -865,9 +865,9 @@ readiness 至少检查：
 
 - OrbStack + RustFS 故障和 SIGKILL 矩阵；
 - 多租户 benchmark；
-- 先以 `GRAPHDB_INGEST_MODE=direct` 发布；
-- 单 writer 环境按租户或实例灰度启用 `wal`；
-- 指标满足验收标准后再作为目标部署 profile。
+- v1.2.0 以本地 `wal + segment + sync` 作为默认性能 profile；
+- PostgreSQL 多 writer 仅保留显式 `direct` 回归路径；
+- 5 次 30 分钟运行和回归门禁全部通过后才允许发布。
 
 ## 24. 收益边界
 

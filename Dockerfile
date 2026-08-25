@@ -18,6 +18,7 @@ FROM alpine:3.20
 RUN adduser -D -H graphdb
 RUN mkdir -p /usr/local/share/graphdb /var/lib/graphdb \
     && chown graphdb:graphdb /var/lib/graphdb
+ENV GRAPHDB_DATA_DIR=/var/lib/graphdb
 USER graphdb
 COPY --from=build /out/graphdb /usr/local/bin/graphdb
 COPY docs/openapi.yaml /usr/local/share/graphdb/openapi.yaml

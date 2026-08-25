@@ -59,6 +59,10 @@ type Config struct {
 	IngestWALSegmentBytes             int64
 	IngestWALAppendQueue              int
 	IngestQueueMemoryBytes            int64
+	IngestQueueHighWatermark          int
+	IngestWALHighWatermark            int
+	IngestWALStopWatermark            int
+	IngestMaxPendingAge               time.Duration
 	IngestFlushInterval               time.Duration
 	IngestFlushMaxRequests            int
 	IngestFlushMaxBytes               int64
@@ -109,10 +113,27 @@ type Config struct {
 
 func Load() (Config, error) {
 	cleanup := storage.DefaultCoordinatorCleanupConfig()
+	mode := getenv("GRAPHDB_MODE", "all")
+	ingestMode := strings.ToLower(strings.TrimSpace(os.Getenv("GRAPHDB_INGEST_MODE")))
+	if ingestMode == "" {
+		if mode == "reader" {
+			ingestMode = "direct"
+		} else {
+			ingestMode = "wal"
+		}
+	}
+	ingestMetadataMode := strings.ToLower(strings.TrimSpace(os.Getenv("GRAPHDB_INGEST_METADATA_MODE")))
+	if ingestMetadataMode == "" {
+		if ingestMode == "wal" {
+			ingestMetadataMode = storage.IngestMetadataModeSegment
+		} else {
+			ingestMetadataMode = storage.IngestMetadataModeLegacy
+		}
+	}
 	cfg := Config{
 		Addr:                              getenv("GRAPHDB_ADDR", ":8080"),
 		AdminAddr:                         strings.TrimSpace(os.Getenv("GRAPHDB_ADMIN_ADDR")),
-		Mode:                              getenv("GRAPHDB_MODE", "all"),
+		Mode:                              mode,
 		Prefix:                            getenv("GRAPHDB_PREFIX", "graphdb"),
 		PollInterval:                      2 * time.Second,
 		DataDir:                           getenv("GRAPHDB_DATA_DIR", ".graphdb"),
@@ -142,7 +163,7 @@ func Load() (Config, error) {
 		WriterObjectCacheMaxKeys:          200000,
 		WriterObjectCacheNegativeTTL:      5 * time.Minute,
 		IngestCollectorStatusMaterialized: true,
-		IngestMode:                        strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_MODE", "direct"))),
+		IngestMode:                        ingestMode,
 		IngestWALDurability:               strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_WAL_DURABILITY", storage.IngestWALDurabilitySync))),
 		IngestWALBufferBytes:              4 * 1024 * 1024,
 		IngestWALFsyncInterval:            5 * time.Millisecond,
@@ -150,12 +171,16 @@ func Load() (Config, error) {
 		IngestWALSegmentBytes:             256 * 1024 * 1024,
 		IngestWALAppendQueue:              4096,
 		IngestQueueMemoryBytes:            256 * 1024 * 1024,
-		IngestFlushInterval:               10 * time.Second,
+		IngestQueueHighWatermark:          80,
+		IngestWALHighWatermark:            70,
+		IngestWALStopWatermark:            85,
+		IngestMaxPendingAge:               20 * time.Second,
+		IngestFlushInterval:               time.Second,
 		IngestFlushMaxRequests:            256,
 		IngestFlushMaxBytes:               8 * 1024 * 1024,
-		IngestFlushWorkers:                1,
-		IngestMetadataMode:                storage.IngestMetadataModeLegacy,
-		IngestMetadataFlushInterval:       30 * time.Second,
+		IngestFlushWorkers:                4,
+		IngestMetadataMode:                ingestMetadataMode,
+		IngestMetadataFlushInterval:       5 * time.Second,
 		IngestMetadataMaxRequests:         256,
 		IngestMetadataMaxBytes:            8 * 1024 * 1024,
 		IngestMetadataFlushWorkers:        4,
@@ -325,6 +350,18 @@ func Load() (Config, error) {
 	if err := loadBytesEnv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", &cfg.IngestQueueMemoryBytes); err != nil {
 		return Config{}, err
 	}
+	if err := loadIntEnv("GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK", &cfg.IngestQueueHighWatermark); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_WAL_HIGH_WATERMARK", &cfg.IngestWALHighWatermark); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_WAL_STOP_WATERMARK", &cfg.IngestWALStopWatermark); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_INGEST_MAX_PENDING_AGE", &cfg.IngestMaxPendingAge); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_INGEST_FLUSH_INTERVAL", &cfg.IngestFlushInterval); err != nil {
 		return Config{}, err
 	}
@@ -337,7 +374,6 @@ func Load() (Config, error) {
 	if err := loadIntEnv("GRAPHDB_INGEST_FLUSH_WORKERS", &cfg.IngestFlushWorkers); err != nil {
 		return Config{}, err
 	}
-	cfg.IngestMetadataMode = strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_METADATA_MODE", storage.IngestMetadataModeLegacy)))
 	if err := loadDurationEnv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", &cfg.IngestMetadataFlushInterval); err != nil {
 		return Config{}, err
 	}
@@ -454,7 +490,13 @@ func (cfg Config) validateIngest() error {
 	if cfg.Mode == "reader" {
 		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal is unavailable in reader mode")
 	}
-	return cfg.IngestServiceConfig().Validate()
+	if err := cfg.IngestServiceConfig().Validate(); err != nil {
+		return err
+	}
+	if cfg.IngestWALDurability != storage.IngestWALDurabilitySync {
+		return fmt.Errorf("GRAPHDB_INGEST_WAL_DURABILITY=sync is required for durable 202 responses")
+	}
+	return nil
 }
 
 func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
@@ -468,11 +510,15 @@ func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 			SegmentBytes:  cfg.IngestWALSegmentBytes,
 			AppendQueue:   cfg.IngestWALAppendQueue,
 		},
-		QueueMemoryBytes: cfg.IngestQueueMemoryBytes,
-		FlushInterval:    cfg.IngestFlushInterval,
-		FlushMaxRequests: cfg.IngestFlushMaxRequests,
-		FlushMaxBytes:    cfg.IngestFlushMaxBytes,
-		FlushWorkers:     cfg.IngestFlushWorkers,
+		QueueMemoryBytes:   cfg.IngestQueueMemoryBytes,
+		QueueHighWatermark: cfg.IngestQueueHighWatermark,
+		WALHighWatermark:   cfg.IngestWALHighWatermark,
+		WALStopWatermark:   cfg.IngestWALStopWatermark,
+		MaxPendingAge:      cfg.IngestMaxPendingAge,
+		FlushInterval:      cfg.IngestFlushInterval,
+		FlushMaxRequests:   cfg.IngestFlushMaxRequests,
+		FlushMaxBytes:      cfg.IngestFlushMaxBytes,
+		FlushWorkers:       cfg.IngestFlushWorkers,
 		Metadata: storage.IngestMetadataConfig{
 			Mode:          cfg.IngestMetadataMode,
 			FlushInterval: cfg.IngestMetadataFlushInterval,

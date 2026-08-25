@@ -62,7 +62,6 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 	setLocalConfigEnv(t)
 	dataDir := t.TempDir()
 	t.Setenv("GRAPHDB_DATA_DIR", dataDir)
-	t.Setenv("GRAPHDB_INGEST_MODE", "wal")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -70,10 +69,15 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 	if cfg.IngestWALDir != filepath.Join(dataDir, "wal", "ingest") ||
 		cfg.IngestWALDurability != storage.IngestWALDurabilitySync ||
 		cfg.IngestWALBufferBytes != 4*1024*1024 ||
-		cfg.IngestFlushWorkers != 1 ||
-		cfg.IngestFlushInterval != 10*time.Second ||
-		cfg.IngestMetadataMode != storage.IngestMetadataModeLegacy ||
-		cfg.IngestMetadataFlushInterval != 30*time.Second ||
+		cfg.IngestMode != "wal" ||
+		cfg.IngestFlushWorkers != 4 ||
+		cfg.IngestFlushInterval != time.Second ||
+		cfg.IngestQueueHighWatermark != 80 ||
+		cfg.IngestWALHighWatermark != 70 ||
+		cfg.IngestWALStopWatermark != 85 ||
+		cfg.IngestMaxPendingAge != 20*time.Second ||
+		cfg.IngestMetadataMode != storage.IngestMetadataModeSegment ||
+		cfg.IngestMetadataFlushInterval != 5*time.Second ||
 		cfg.IngestMetadataMaxRequests != 256 ||
 		cfg.IngestMetadataMaxBytes != 8*1024*1024 ||
 		cfg.IngestMetadataFlushWorkers != 4 {
@@ -102,6 +106,7 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 	})
 	t.Run("segment requires wal", func(t *testing.T) {
 		setLocalConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_MODE", "direct")
 		t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "segment")
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "requires GRAPHDB_INGEST_MODE=wal") {
 			t.Fatalf("Load err = %v, want WAL boundary", err)
@@ -110,15 +115,31 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 
 	t.Run("postgres", func(t *testing.T) {
 		setPostgresConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		t.Setenv("GRAPHDB_INGEST_MODE", "")
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "requires GRAPHDB_COORDINATION=local") {
 			t.Fatalf("Load err = %v, want local coordination boundary", err)
+		}
+		t.Setenv("GRAPHDB_INGEST_MODE", "direct")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.IngestMode != "direct" || cfg.IngestMetadataMode != storage.IngestMetadataModeLegacy {
+			t.Fatalf("postgres ingest defaults = mode %q metadata %q", cfg.IngestMode, cfg.IngestMetadataMode)
 		}
 	})
 	t.Run("reader", func(t *testing.T) {
 		setLocalConfigEnv(t)
 		t.Setenv("GRAPHDB_MODE", "reader")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.IngestMode != "direct" || cfg.IngestMetadataMode != storage.IngestMetadataModeLegacy {
+			t.Fatalf("reader ingest defaults = mode %q metadata %q", cfg.IngestMode, cfg.IngestMetadataMode)
+		}
 		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "segment")
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "unavailable in reader mode") {
 			t.Fatalf("Load err = %v, want reader boundary", err)
 		}
@@ -129,6 +150,13 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 		t.Setenv("GRAPHDB_INGEST_WAL_DURABILITY", "invalid")
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "durability") {
 			t.Fatalf("Load err = %v, want durability validation", err)
+		}
+	})
+	t.Run("os durability is not a durable acceptance contract", func(t *testing.T) {
+		setLocalConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_WAL_DURABILITY", storage.IngestWALDurabilityOS)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "sync is required") {
+			t.Fatalf("Load err = %v, want durable 202 boundary", err)
 		}
 	})
 }
@@ -342,6 +370,7 @@ func TestLoadAllowsWriteRequestPipeliningPerTenant(t *testing.T) {
 func TestLoadPostgresCoordinationRequirements(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_COORDINATION", "postgres")
+	t.Setenv("GRAPHDB_INGEST_MODE", "direct")
 	t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
 	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")
 	t.Setenv("GRAPHDB_STORAGE", "s3")
@@ -826,6 +855,10 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_INGEST_WAL_SEGMENT_BYTES", "")
 	t.Setenv("GRAPHDB_INGEST_WAL_APPEND_QUEUE", "")
 	t.Setenv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", "")
+	t.Setenv("GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_HIGH_WATERMARK", "")
+	t.Setenv("GRAPHDB_INGEST_WAL_STOP_WATERMARK", "")
+	t.Setenv("GRAPHDB_INGEST_MAX_PENDING_AGE", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_INTERVAL", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_REQUESTS", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_BYTES", "")
@@ -866,6 +899,7 @@ func setLocalConfigEnv(t *testing.T) {
 func setPostgresConfigEnv(t *testing.T) {
 	t.Helper()
 	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_INGEST_MODE", "direct")
 	t.Setenv("GRAPHDB_COORDINATION", "postgres")
 	t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
 	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")

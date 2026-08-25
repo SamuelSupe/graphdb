@@ -89,6 +89,12 @@ Write path:
 - `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
+- `GRAPHDB_INGEST_MODE=wal|direct` (`wal` for local writers; PostgreSQL requires explicit `direct`)
+- `GRAPHDB_INGEST_METADATA_MODE=segment|legacy` (defaults to `segment` with WAL)
+- `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
+- `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`
+- `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`
+- `GRAPHDB_INGEST_MAX_PENDING_AGE=20s`
 - `GRAPHDB_COORDINATION=local|postgres`
 - `GRAPHDB_POSTGRES_DSN=<dsn>`
 - `GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination`
@@ -107,7 +113,7 @@ metadata finalization; manifest publication remains protected by the per-tenant
 single-writer lock in local mode or PG head CAS in PostgreSQL mode. `0` disables
 that admission dimension and should only be used for controlled testing.
 
-PostgreSQL coordination additionally requires `GRAPHDB_STORAGE=s3`,
+PostgreSQL coordination additionally requires `GRAPHDB_INGEST_MODE=direct`, `GRAPHDB_STORAGE=s3`,
 `S3_PROVIDER=generic-s3`, and `GRAPHDB_WRITER_TOPOLOGY=cas`. Run
 `graphdb coordinator migrate` and `graphdb coordinator bootstrap --apply`
 before starting writers. See the release deployment guide for rollout and

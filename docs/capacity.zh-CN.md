@@ -2,10 +2,31 @@
 
 [English](capacity.md)
 
-GGraphDB 1.1 发布的是可复现的发行容量边界，而不是没有条件的“大图”
+GGraphDB 1.2 发布的是可复现的发行容量边界，而不是没有条件的“大图”
 承诺。机器可读契约位于 `release/capacity-envelope.yaml`。
 
-## 1.1 发行门禁
+## 1.2 发行门禁
+
+主写入吞吐门禁在固定 8 CPU/8 GiB OrbStack 容器中运行一个 local writer，
+使用 sync WAL 与 segment metadata。8 个租户、16 个采集器持续 30 分钟，
+v1.1.5 与 v1.2.0 各跑 5 次。每次候选运行都必须达到至少 10,000 committed
+mutations/s；候选中位数至少为基线 1.5 倍，运行间离散不超过 5%。accepted
+p95/p99 不超过 20/50 ms，committed p95/p99 不超过 8/15 秒，RSS 不超过
+7 GiB 和基线 110%，每 1,000 mutation 的 CPU 不超过基线 75%，direct 写入
+和查询回归不超过 10%。
+RSS 从 writer 进程的 `VmRSS` 采样；CPU 读取 writer 容器 cgroup，并按每
+1,000 个 committed mutation 归一化。
+
+完整的提交绑定矩阵通过以下命令运行：
+
+```sh
+scripts/wal_performance_matrix.sh
+```
+
+GitHub release 依赖带 `orbstack` 标签的 self-hosted runner；任一候选运行或
+相对门禁失败都不会发布。
+
+PostgreSQL direct 路径继续作为正确性和回归门禁：
 
 每个候选版本必须在 CI 中满足：
 
@@ -21,8 +42,7 @@ GGraphDB 1.1 发布的是可复现的发行容量边界，而不是没有条件�
   降低 graph version；
 - 压测期间运行 legacy mirror 与派生索引 worker，结束后 mirror lag 和所有
   pending backlog 必须归零；
-- 指定 tag 的真实 1.0 二进制必须能读取最终镜像 graph version；
-- 真实 1.0/1.1 二进制双向兼容门禁通过。
+- 指定 tag 的真实 1.0 二进制必须能读取最终镜像 graph version。
 
 这是并发与持久性边界，不是最大图规模。200 个 commit 的短测只算 smoke，
 不能作为发行认证。
@@ -92,7 +112,7 @@ PostgreSQL 开始验证；这些是验证起点，不是支持保证。查询并
 - 查询 `limit` 上限为 1,000；批量导出应使用 scan/stream。
 - 采集 batch 建议保持 200–500 个逻辑组；过小 batch 会放大 commit、
   manifest、幂等记录和 collector state。
-- 1.1 支持部署 2–8 个 writer；已认证的热点租户容量为 2 个活跃竞争者、
+- PostgreSQL direct 模式支持部署 2–8 个 writer；已认证的热点租户容量为 2 个活跃竞争者、
   约 20 commit/s。8 路同租户并发仍是正确性门禁，不是持续吞吐承诺。
   更高吞吐需要图/实体分区并重新发布容量边界。
 - 发布的 20 commit/s 配置保持自动 compact 开启，compact 阈值为 1,000，

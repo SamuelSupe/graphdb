@@ -276,13 +276,18 @@ Response fields:
 
 ### Local WAL mode
 
-`GRAPHDB_INGEST_MODE=direct` remains the default synchronous `200/207`
-behavior. A single-writer deployment using `GRAPHDB_COORDINATION=local` can
-explicitly enable `GRAPHDB_INGEST_MODE=wal`. Requests are first appended to one
-process-wide segmented WAL, so tenants share group fsync while the default
-single graph-write worker preserves per-tenant FIFO order. One tenant flush
+GGraphDB 1.2 defaults local writers to `GRAPHDB_INGEST_MODE=wal`,
+`GRAPHDB_INGEST_METADATA_MODE=segment`, and sync durability. Requests are first
+appended to one process-wide segmented WAL, so tenants share group fsync while
+four graph-write workers process independent tenants and preserve per-tenant
+FIFO order. One tenant flush
 keeps the logical commit order of its requests, writes those commits to one
 Parquet commit segment, and publishes the manifest once.
+
+PostgreSQL coordination has no distributed WAL. Set
+`GRAPHDB_INGEST_MODE=direct` explicitly for PostgreSQL writers; startup fails
+closed when that choice is omitted. Reader processes select direct mode
+automatically because they do not accept writes.
 
 Sync durability returns `202 Accepted`, `Location`, and a status URL after the
 WAL fsync. Send `Prefer: wait=committed` to wait for the final `200/207` result,
@@ -293,34 +298,47 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
 ```
 
+The WAL directory is part of the durability boundary. Container deployments
+must mount `GRAPHDB_DATA_DIR` on persistent local storage; the provided Compose
+profiles mount `/var/lib/graphdb` for the writer.
+
 Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
-`${GRAPHDB_DATA_DIR}/wal/ingest`), `GRAPHDB_INGEST_WAL_DURABILITY=sync|os`,
+`${GRAPHDB_DATA_DIR}/wal/ingest`), `GRAPHDB_INGEST_WAL_DURABILITY=sync`,
 `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`,
 `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`,
 `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`,
 `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`,
-`GRAPHDB_INGEST_FLUSH_INTERVAL=10s`,
+`GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`,
+`GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`,
+`GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`,
+`GRAPHDB_INGEST_MAX_PENDING_AGE=20s`,
+`GRAPHDB_INGEST_FLUSH_INTERVAL=1s`,
 `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`,
 `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`,
-`GRAPHDB_INGEST_FLUSH_WORKERS=1`, and
+`GRAPHDB_INGEST_FLUSH_WORKERS=4`, and
 `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
+
+At the memory queue's 80% watermark, WAL disk's 70% watermark, or a 20-second
+old pending request, the writer returns `429` with `Retry-After`. At 85% WAL
+disk usage it enters drain-only readiness until committed work is reclaimed.
+Retry the same batch and idempotency identity after the advertised delay.
 
 #### Metadata segment mode (1.1.3+)
 
-GGraphDB 1.1.3 adds explicitly enabled metadata batching on top of local WAL
-ingest:
+GGraphDB 1.1.3 introduced metadata batching on top of local WAL ingest. It is
+the local-writer default in 1.2:
 
 ```ini
 GRAPHDB_INGEST_MODE=wal
 GRAPHDB_COORDINATION=local
 GRAPHDB_INGEST_METADATA_MODE=segment
-GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=30s
+GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=5s
 GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
 GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
 GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=4
 ```
 
-`legacy` remains the default. Segment mode stores full requests, results,
+Direct mode uses `legacy`; local WAL mode defaults to `segment`. Segment mode stores full requests, results,
 digests, and final collector snapshots from graph flushes of the same tenant in
 one content-addressed Parquet segment, then publishes it with one independent
 ingest-manifest CAS. Batch and idempotency identities point to the same segment
@@ -337,7 +355,7 @@ from legacy status or legacy batch records.
 A request becomes `published` after graph-manifest publication and `committed`
 only after the metadata manifest is durable. `Prefer: wait=committed` forces the
 current tenant metadata window; normal `202` requests may wait for a threshold
-or the 30-second interval. The WAL persists a metadata flush ID, LSN range, and
+or the 5-second interval. The WAL persists a metadata flush ID, LSN range, and
 content identity so crashes between segment PUT, manifest CAS, and `FINALIZED`
 do not duplicate graph versions, collector totals, or results.
 
@@ -430,7 +448,22 @@ The v1.1.5 release gate exercises this behavior with the real binary in
 `GRAPHDB_INGEST_MODE=wal`, `GRAPHDB_COORDINATION=local`, and explicit
 `GRAPHDB_INGEST_METADATA_MODE=segment`. Its commit-bound evidence covers a
 durable accepted batch across process restart and object-store interruption;
-direct ingest and `legacy` metadata remain the defaults.
+those explicitly selected modes.
+
+#### 1.2.0 performance-first defaults
+
+The v1.1.5 to v1.2.0 data upgrade is one-way. Stop the old writer, retain the
+WAL and object data, then start v1.2.0; do not run a v1.1.5 writer after v1.2.0
+has activated segment metadata. There is no reverse-compatibility release gate.
+The graph model, logical commit/version order, FIFO semantics, and object layout
+remain unchanged; only physical batching and default runtime policy change.
+
+The release gate runs v1.1.5 and v1.2.0 five times each for 30 minutes on one
+fixed OrbStack host. v1.2.0 must commit at least 10,000 mutations/s and reach
+1.5x the v1.1.5 median, with accepted p95/p99 at most 20/50 ms, committed
+p95/p99 at most 8/15 seconds, RSS at most 7 GiB and 110% of baseline, CPU per
+1,000 mutations at least 25% lower, throughput spread at most 5%, and direct
+write/query regression at most 10%.
 
 Collector batch sizing for CMDB workloads:
 

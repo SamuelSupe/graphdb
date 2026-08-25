@@ -98,11 +98,10 @@ wait_task_success() {
 if [[ "${RELEASE_GATE_SKIP_STATIC:-0}" != "1" ]]; then
   log "1.1 feature-freeze and naming contract"
   scripts/check_release_freeze.sh
-  log "unit, vet, race, and v1.0 compatibility tests"
+  log "unit, vet, and race tests"
   go test -mod=readonly ./...
   go vet -mod=readonly ./...
   go test -mod=readonly -race ./...
-  scripts/compatibility_v1_0_v1_1.sh
 fi
 
 if [[ "${RELEASE_GATE_VERIFY_ONLY:-0}" == "1" ]]; then

@@ -28,34 +28,41 @@ func schemaMutations() graph.Mutations {
 	}
 }
 
-func batchRequest(batch int, batchSize int) storage.IngestRequest {
+func batchRequest(batch int, batchSize int, collector string, workingSet int) storage.IngestRequest {
 	items := make([]storage.IngestItem, 0, batchSize*3)
 	for i := 0; i < batchSize; i++ {
 		n := batch*batchSize + i
+		if workingSet > 0 {
+			n %= workingSet
+		}
 		hostID := fmt.Sprintf("host:%06d", n)
 		serviceID := fmt.Sprintf("service:%06d", n)
 		items = append(items,
 			storage.IngestItem{ExternalID: hostID, Entity: &graph.Entity{
 				ID: hostID, Kind: "host", Confidence: 0.9, SourceRank: 10,
-				Fields: graph.Fields{"hostname": fmt.Sprintf("app-%06d", n), "region": regionName(n % 8)},
+				Fields: graph.Fields{"hostname": fmt.Sprintf("app-%06d", n), "region": regionName(n % 8), "generation": batch},
 			}},
 			storage.IngestItem{ExternalID: serviceID, Entity: &graph.Entity{
 				ID: serviceID, Kind: "service", Confidence: 0.9, SourceRank: 10,
-				Fields: graph.Fields{"name": fmt.Sprintf("svc-%06d", n)},
+				Fields: graph.Fields{"name": fmt.Sprintf("svc-%06d", n), "generation": batch},
 			}},
 			storage.IngestItem{ExternalID: "edge-" + serviceID, Edge: &graph.Edge{
-				ID: fmt.Sprintf("edge:%06d", n), Type: "runs_on", From: serviceID, To: hostID,
+				ID: fmt.Sprintf("edge:%06d", n), Type: "runs_on", From: serviceID, To: hostID, Fields: graph.Fields{"generation": batch},
 			}},
 		)
 	}
 	return storage.IngestRequest{
 		Source:         "loadtest",
-		CollectorID:    "collector-a",
+		CollectorID:    collector,
 		BatchID:        fmt.Sprintf("batch-%06d", batch),
 		IdempotencyKey: fmt.Sprintf("batch-%06d", batch),
 		Cursor:         fmt.Sprintf("cursor-%06d", batch),
 		Items:          items,
 	}
+}
+
+func collectorName(index int) string {
+	return fmt.Sprintf("collector-%02d", index)
 }
 
 func matchQuery(region string) query.Request {
