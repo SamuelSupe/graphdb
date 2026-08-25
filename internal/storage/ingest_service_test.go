@@ -117,6 +117,74 @@ func TestIngestServiceSharesActiveIdempotencyAndRejectsDifferentPayload(t *testi
 	}
 }
 
+func TestIngestRequestDigestOmitsGeneratedBatchIDWithoutRemarshal(t *testing.T) {
+	request, requestJSON, err := prepareIngestRequestJSON("tenant-a", IngestRequest{
+		Source:         "agent",
+		CollectorID:    "collector-a",
+		BatchID:        `batch-\"quoted\\path`,
+		IdempotencyKey: "idem-1",
+		Items: []IngestItem{{
+			Entity: &graph.Entity{ID: "host:1", Kind: "host"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := ingestRequestDigest(request, requestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRequest := request
+	legacyRequest.BatchID = ""
+	legacyJSON, err := json.Marshal(legacyRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256(legacyJSON)
+	if digest != want {
+		t.Fatalf("digest = %x, want %x", digest, want)
+	}
+}
+
+func TestIngestServiceDefersDerivedIndexRefresh(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	config := testIngestServiceConfig(t)
+	config.FlushMaxRequests = 1
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+
+	accepted, err := service.Accept(ctx, "tenant-a", ingestEntityRequest("batch-1", "host:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Wait(ctx, accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Version != 2 {
+		t.Fatalf("ingest version = %d, want 2", result.Version)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Version != 1 {
+		t.Fatalf("index catalog version = %d, want deferred version 1", catalog.Version)
+	}
+}
+
 func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 	recorder := installStorageSpanRecorder(t)
 	store := NewTenantStore(NewMemoryStore(), "test")
@@ -472,6 +540,8 @@ func TestIngestServiceRecoverySkipsCompletedStateBeforeCheckpointFloor(t *testin
 		FlushID: "flush-active",
 		Result:  IngestResult{BatchID: activeRequest.BatchID, Version: 2, Applied: 1},
 	}
+	preparedActive = compactIngestStateEnvelope(IngestWALPrepared, preparedActive)
+	publishedActive = compactIngestStateEnvelope(IngestWALPublished, publishedActive)
 	finalizedOld := old
 	finalizedOld.State = IngestStateCommitted
 
@@ -498,6 +568,10 @@ func TestIngestServiceRecoverySkipsCompletedStateBeforeCheckpointFloor(t *testin
 	}
 	if recovered[0].result.Version != 2 || service.highestLSN != 6 {
 		t.Fatalf("recovered result/highest LSN = %#v/%d", recovered[0].result, service.highestLSN)
+	}
+	if len(recovered[0].envelope.Request.Items) != len(activeRequest.Items) ||
+		recovered[0].envelope.Request.BatchID != activeRequest.BatchID {
+		t.Fatalf("recovered request = %#v, want accepted request retained", recovered[0].envelope.Request)
 	}
 }
 
@@ -810,6 +884,44 @@ func TestIngestMetadataLookupSharesColdSegmentReadAndCachesWarmRead(t *testing.T
 	}
 	if calls := objects.callsFor(segments[0].Key); calls != 1 {
 		t.Fatalf("warm segment reads = %d, want no additional object read", calls)
+	}
+}
+
+func TestIngestMetadataCacheAccountsForDecodedItems(t *testing.T) {
+	itemCount := ingestMetadataCacheMaxBytes/ingestMetadataCacheItemBytes + 1
+	segment := ingestMetadataSegment{Records: []ingestMetadataRecord{{
+		Batch: IngestBatchRecord{Request: IngestRequest{
+			Items: make([]IngestItem, itemCount),
+		}},
+	}}}
+	weight := ingestMetadataSegmentCacheBytes(segment, 1)
+	if weight <= ingestMetadataCacheMaxBytes {
+		t.Fatalf("decoded segment cache weight = %d, want above %d", weight, ingestMetadataCacheMaxBytes)
+	}
+	cache := newIngestMetadataObjectCache()
+	cache.put("large-segment", ingestMetadataCacheObject{value: segment, bytes: weight}, time.Minute)
+	if _, ok := cache.get("large-segment", time.Now()); ok {
+		t.Fatal("decoded segment above the cache byte limit was retained")
+	}
+}
+
+func TestIngestRecentStatusCacheIsBounded(t *testing.T) {
+	service := &IngestService{
+		recentByStatus:    map[string]IngestBatchStatus{},
+		recentStatusOrder: make([]string, 0, ingestRecentStatusLimit),
+	}
+	for index := 0; index <= ingestRecentStatusLimit; index++ {
+		key := fmt.Sprintf("status-%d", index)
+		service.cacheRecentStatusLocked(key, IngestBatchStatus{BatchID: key})
+	}
+	if len(service.recentByStatus) != ingestRecentStatusLimit || len(service.recentStatusOrder) != ingestRecentStatusLimit {
+		t.Fatalf("recent status cache size = %d/%d, want %d", len(service.recentByStatus), len(service.recentStatusOrder), ingestRecentStatusLimit)
+	}
+	if _, ok := service.recentByStatus["status-0"]; ok {
+		t.Fatal("oldest recent status was not evicted")
+	}
+	if status := service.recentByStatus[fmt.Sprintf("status-%d", ingestRecentStatusLimit)]; status.BatchID == "" {
+		t.Fatal("newest recent status is missing")
 	}
 }
 

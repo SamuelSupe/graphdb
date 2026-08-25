@@ -84,17 +84,26 @@ Write path:
 - `GRAPHDB_WRITE_MAX_PER_TENANT=1`
 - `GRAPHDB_WRITE_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_WRITE_EXECUTION_TIMEOUT=90s`
-- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=1500`
-- `GRAPHDB_WRITE_CACHE_MAX_BYTES=512MiB`
+- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000`
+- `GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB`
 - `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
 - `GRAPHDB_INGEST_MODE=wal|direct` (`wal` for local writers; PostgreSQL requires explicit `direct`)
+- `GRAPHDB_INGEST_WAL_DURABILITY=sync`
 - `GRAPHDB_INGEST_METADATA_MODE=segment|legacy` (defaults to `segment` with WAL)
 - `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
 - `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`
 - `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`
-- `GRAPHDB_INGEST_MAX_PENDING_AGE=20s`
+- `GRAPHDB_INGEST_MAX_PENDING_AGE=2m`
+- `GRAPHDB_INGEST_FLUSH_INTERVAL=250ms`
+- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8`
+- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB`
+- `GRAPHDB_INGEST_FLUSH_WORKERS=2`
+- `GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms`
+- `GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256`
+- `GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB`
+- `GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2`
 - `GRAPHDB_COORDINATION=local|postgres`
 - `GRAPHDB_POSTGRES_DSN=<dsn>`
 - `GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination`
@@ -112,6 +121,10 @@ such as `2`-`4` allow bounded pipelining of backpressure checks and post-commit
 metadata finalization; manifest publication remains protected by the per-tenant
 single-writer lock in local mode or PG head CAS in PostgreSQL mode. `0` disables
 that admission dimension and should only be used for controlled testing.
+
+Automatic compaction, GC, and index catch-up wait until a tenant has been ingest
+idle for one minute. Heavy background task execution is single-concurrency by
+default; increase concurrency only with an explicit workload-specific review.
 
 PostgreSQL coordination additionally requires `GRAPHDB_INGEST_MODE=direct`, `GRAPHDB_STORAGE=s3`,
 `S3_PROVIDER=generic-s3`, and `GRAPHDB_WRITER_TOPOLOGY=cas`. Run

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,15 +43,31 @@ func runWriters(ctx context.Context, cfg config, client *apiClient, versions *ve
 			defer wg.Done()
 			for batch := range jobs {
 				collector := collectorName(batch % cfg.collectors)
-				outcome, err := client.ingest(ctx, metrics, batchRequest(batch, cfg.batchSize, collector, cfg.workingSet))
-				if err == nil {
+				request, err := json.Marshal(batchRequest(batch, cfg.batchSize, collector, cfg.workingSet))
+				if err != nil {
+					metrics.add("ingest", 0, 0, err)
+					continue
+				}
+				for {
+					outcome, err := client.ingest(ctx, metrics, encodedJSON(request))
+					if err != nil {
+						break
+					}
 					if outcome.backpressured {
 						stats.backpressuredBatches.Add(1)
+						timer := time.NewTimer(outcome.retryAfter)
+						select {
+						case <-ctx.Done():
+							timer.Stop()
+							return
+						case <-timer.C:
+						}
 						continue
 					}
 					versions.observe(outcome.version)
 					stats.committedBatches.Add(1)
 					stats.committedMutations.Add(outcome.applied)
+					break
 				}
 			}
 		}()

@@ -323,8 +323,8 @@ deadline = firstAcceptedAt + flushInterval
 任一条件触发提前 flush：
 
 - deadline 到期；
-- 请求数达到上限；
-- 待 flush 请求字节数达到上限；
+- 请求数达到 flush trigger；
+- 待 flush 请求字节数达到 flush trigger；
 - direct commit 或租户生命周期屏障；
 - full-sync 屏障；
 - WAL 或内存进入压力状态；
@@ -584,7 +584,7 @@ sequencer 建立屏障：
 1. 热缓存超限：淘汰解码对象，保留 WAL offset。
 2. append queue 超限：等待 queue timeout。
 3. 等待超时：返回 429 和 `Retry-After`。
-4. flush batch 达到请求数或字节上限：提前 flush。
+4. flush batch 达到请求数或字节触发阈值：提前 flush。
 5. WAL 达到磁盘上限或剩余空间低于安全水位：停止接收新请求。
 6. 已 durable 请求继续 flush，释放 WAL 空间。
 
@@ -621,22 +621,33 @@ GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB
 GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80
 GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70
 GRAPHDB_INGEST_WAL_STOP_WATERMARK=85
-GRAPHDB_INGEST_MAX_PENDING_AGE=20s
-GRAPHDB_INGEST_FLUSH_INTERVAL=1s
-GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256
-GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB
-GRAPHDB_INGEST_FLUSH_WORKERS=4
+GRAPHDB_INGEST_MAX_PENDING_AGE=2m
+GRAPHDB_INGEST_FLUSH_INTERVAL=250ms
+GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8
+GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB
+GRAPHDB_INGEST_FLUSH_WORKERS=2
+GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms
+GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
+GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
+GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2
+GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB
+GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000
 GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s
 ```
 
 说明：
 
-- `FLUSH_INTERVAL=1s` 是最大驻留时间，不是固定轮询周期。
+- `FLUSH_INTERVAL=250ms` 是最大驻留时间，不是固定轮询周期；graph flush
+  trigger 为 8 个请求 / 2 MiB，忙租户可合并同一轮队列。
 - `WAL_FSYNC_INTERVAL` 与 graph flush interval 完全独立。
+- metadata flush 默认等待 500ms，以 256 个请求或 8 MiB 作为调度 trigger，并
+  使用 2 个 worker；同一租户仍保持单个进行中的 flush。
 - segment 目标大小第一版使用内部常量，不增加额外运维参数。
 - flush worker 数量复用现有 `GRAPHDB_WRITE_MAX_CONCURRENT`。
 - 配置为 `wal` 时必须校验 local coordination、single writer topology 和可写
   WAL 目录；不满足条件则启动失败。
+- 每租户自动 maintenance 要求 ingest 空闲 1 分钟；后台重型 task 默认单并发，
+  避免维护工作与写入在高峰期相互争抢。
 
 上述容量是初始建议值，必须通过实际请求大小、磁盘延迟和对象存储吞吐测试
 校准。
@@ -894,7 +905,7 @@ graph 数据对象和 ingest metadata 两类 PUT，不能只统计 manifest。
 
 graph manifest 发布后，worker 将同一 graph flush 的请求一次性追加为
 `PUBLISHED` WAL 状态。独立的全局 metadata deadline heap 再按租户跨 graph
-flush 攒批；达到 30 秒、256 请求、8 MiB、shutdown 或
+flush 攒批；达到 500ms、256 请求、8 MiB、shutdown 或
 `Prefer: wait=committed` 时：
 
 1. 用一个批量 `PUBLISHED` WAL 记录固化 metadata flush ID 和精确请求边界；

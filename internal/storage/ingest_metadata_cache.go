@@ -14,9 +14,24 @@ import (
 const (
 	ingestMetadataCacheMaxEntries = 1024
 	ingestMetadataCacheMaxBytes   = 64 * 1024 * 1024
-	ingestMetadataManifestTTL     = time.Second
-	ingestMetadataImmutableTTL    = 15 * time.Minute
+	// Parquet compression hides the heap retained by decoded graph objects.
+	// Charge each item conservatively so repetitive high-volume payloads cannot
+	// fill the cache while appearing small on disk.
+	ingestMetadataCacheItemBytes = 4 * 1024
+	ingestMetadataManifestTTL    = time.Second
+	ingestMetadataImmutableTTL   = 15 * time.Minute
 )
+
+func ingestMetadataSegmentCacheBytes(segment ingestMetadataSegment, encodedBytes int64) int64 {
+	bytes := max(encodedBytes, int64(1))
+	for _, record := range segment.Records {
+		bytes += 512 + int64(len(record.Batch.Request.Items))*ingestMetadataCacheItemBytes
+		if bytes > ingestMetadataCacheMaxBytes {
+			return bytes
+		}
+	}
+	return bytes
+}
 
 type ingestMetadataCacheObject struct {
 	value any

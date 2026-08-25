@@ -23,6 +23,7 @@ func TestUpdateLogicalHashCategoryBatchMergesInKeyOrder(t *testing.T) {
 	}
 	if err := updateLogicalHashCategoryBatch(
 		&category,
+		"entity",
 		touched,
 		func(key string) (any, bool) {
 			value, exists := values[key]

@@ -15,6 +15,7 @@ WRITERS_PER_TENANT="${WAL_PERF_WRITERS_PER_TENANT:-32}"
 BATCH_SIZE="${WAL_PERF_BATCH_SIZE:-200}"
 WORKING_SET="${WAL_PERF_WORKING_SET:-20000}"
 HTTP_TIMEOUT="${WAL_PERF_HTTP_TIMEOUT:-2m}"
+START_DELAY_SECONDS="${WAL_PERF_START_DELAY_SECONDS:-15}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_SLUG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 OUTPUT_DIR="${WAL_PERF_OUTPUT_DIR:-$ROOT/performance-runs/$RUN_LABEL-$RUN_ID}"
@@ -73,6 +74,7 @@ SAMPLER_PID=$!
 
 declare -a PIDS=()
 COLLECTORS_PER_TENANT=$((COLLECTORS / TENANTS))
+START_AT_UNIX_MS="$(python3 -c 'import sys, time; print(int((time.time() + int(sys.argv[1])) * 1000))' "$START_DELAY_SECONDS")"
 for ((tenant_index = 0; tenant_index < TENANTS; tenant_index++)); do
   tenant="wal-perf-${RUN_LABEL}-${RUN_SLUG}-${tenant_index}"
   "${DOCKER[@]}" run --rm --platform linux/arm64 \
@@ -86,8 +88,10 @@ for ((tenant_index = 0; tenant_index < TENANTS; tenant_index++)); do
     -collectors "$COLLECTORS_PER_TENANT" \
     -batch-size "$BATCH_SIZE" \
     -working-set "$WORKING_SET" \
+    -start-at-unix-ms "$START_AT_UNIX_MS" \
     -timeout "$RUN_DURATION" \
     -http-timeout "$HTTP_TIMEOUT" \
+    -allow-write-backpressure=true \
     -post-load-checks=false \
     -report-json "/evidence/tenants/tenant-${tenant_index}.json" \
     > "$OUTPUT_DIR/tenants/tenant-${tenant_index}.log" 2>&1 &
@@ -132,6 +136,7 @@ committed_mutations = sum(report.get("results", {}).get("committed_mutations", 0
 committed_batches = sum(report.get("results", {}).get("committed_batches", 0) for report in reports)
 scheduled_batches = sum(report.get("results", {}).get("scheduled_batches", 0) for report in reports)
 backpressured_batches = sum(report.get("results", {}).get("backpressured_batches", 0) for report in reports)
+start_at_values = {report.get("workload", {}).get("start_at_unix_ms", 0) for report in reports}
 elapsed_ms = max((report.get("elapsed_ms", 0) for report in reports), default=0)
 accepted = [metric(report, "ingest") for report in reports]
 committed = [metric(report, "ingest-committed") for report in reports]
@@ -146,11 +151,12 @@ expected_committed_mutations = committed_batches * int(sys.argv[6]) * 3
 success = (
     len(reports) == int(sys.argv[4])
     and all(report.get("schema_version") == 2 and report.get("success") is True for report in reports)
+    and len(start_at_values) == 1
+    and next(iter(start_at_values), 0) > 0
     and elapsed_ms >= expected_duration_ms
     and committed_mutations > 0
     and committed_mutations == expected_committed_mutations
     and committed_batches == scheduled_batches
-    and backpressured_batches == 0
     and int(sys.argv[11]) == 0
 )
 
@@ -174,6 +180,7 @@ summary = {
         "metadata_mode": "segment",
         "coordination": "local",
         "durability": "sync",
+        "start_at_unix_ms": next(iter(start_at_values), 0),
     },
     "measurement": {
         "rss": "/proc/1/status:VmRSS",

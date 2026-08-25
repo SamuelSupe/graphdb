@@ -279,9 +279,10 @@ Response fields:
 GGraphDB 1.2 defaults local writers to `GRAPHDB_INGEST_MODE=wal`,
 `GRAPHDB_INGEST_METADATA_MODE=segment`, and sync durability. Requests are first
 appended to one process-wide segmented WAL, so tenants share group fsync while
-four graph-write workers process independent tenants and preserve per-tenant
-FIFO order. One tenant flush
-keeps the logical commit order of its requests, writes those commits to one
+two graph-write workers process independent tenants and preserve per-tenant FIFO
+order. The graph flush trigger is 8 requests / 2 MiB; busy tenants may merge the
+same-round queue. One tenant flush keeps the logical commit order of its requests,
+writes those commits to one
 Parquet commit segment, and publishes the manifest once.
 
 PostgreSQL coordination has no distributed WAL. Set
@@ -311,14 +312,20 @@ Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
 `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`,
 `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`,
 `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`,
-`GRAPHDB_INGEST_MAX_PENDING_AGE=20s`,
-`GRAPHDB_INGEST_FLUSH_INTERVAL=1s`,
-`GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`,
-`GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`,
-`GRAPHDB_INGEST_FLUSH_WORKERS=4`, and
+`GRAPHDB_INGEST_MAX_PENDING_AGE=2m`,
+`GRAPHDB_INGEST_FLUSH_INTERVAL=250ms`,
+`GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8`,
+`GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB`,
+`GRAPHDB_INGEST_FLUSH_WORKERS=2`,
+`GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms`,
+`GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256`,
+`GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB`,
+`GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2`,
+`GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB`,
+`GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000`, and
 `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
 
-At the memory queue's 80% watermark, WAL disk's 70% watermark, or a 20-second
+At the memory queue's 80% watermark, WAL disk's 70% watermark, or a two-minute
 old pending request, the writer returns `429` with `Retry-After`. At 85% WAL
 disk usage it enters drain-only readiness until committed work is reclaimed.
 Retry the same batch and idempotency identity after the advertised delay.
@@ -332,10 +339,10 @@ the local-writer default in 1.2:
 GRAPHDB_INGEST_MODE=wal
 GRAPHDB_COORDINATION=local
 GRAPHDB_INGEST_METADATA_MODE=segment
-GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=5s
+GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms
 GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
 GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
-GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=4
+GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2
 ```
 
 Direct mode uses `legacy`; local WAL mode defaults to `segment`. Segment mode stores full requests, results,
@@ -355,7 +362,7 @@ from legacy status or legacy batch records.
 A request becomes `published` after graph-manifest publication and `committed`
 only after the metadata manifest is durable. `Prefer: wait=committed` forces the
 current tenant metadata window; normal `202` requests may wait for a threshold
-or the 5-second interval. The WAL persists a metadata flush ID, LSN range, and
+or the 500 ms interval. The WAL persists a metadata flush ID, LSN range, and
 content identity so crashes between segment PUT, manifest CAS, and `FINALIZED`
 do not duplicate graph versions, collector totals, or results.
 
@@ -377,15 +384,21 @@ it into the segment; later flushes do not pay that migration cost again.
 #### 1.1.4 sparse-tenant operation
 
 Metadata flush workers are independent of graph write workers. The default is
-four. For hundreds of mostly sparse tenants, tune that value against
+two, with 500 ms and 256 requests / 8 MiB as scheduling triggers. For hundreds
+of mostly sparse tenants, tune those values against
 object-store p95 latency and the metadata deadline-overshoot metric. A tenant
 still has at most one in-flight metadata flush, and metadata segments never
 mix tenants; more workers therefore improve fairness rather than changing
 ordering or isolation.
 
+Per-tenant automatic maintenance waits for one minute of ingest idleness before
+running compaction, GC, or index catch-up. Heavy background task execution is
+single-concurrency by default.
+
 Each writer keeps a bounded, process-local LRU for ingest metadata manifests,
-catalogs, and immutable segments: at most 1,024 objects and 64 MiB of encoded
-data. Manifest entries expire after one second; immutable index and segment
+catalogs, and immutable segments: at most 1,024 objects and 64 MiB of charged
+residency. A decoded segment is charged by the greater of its encoded bytes or
+4 KiB per retained item. Manifest entries expire after one second; immutable index and segment
 entries expire after 15 minutes. Concurrent cold reads of one object share a
 single object-store request; a warm lookup does not issue another GET. The
 cache is disposable and is rebuilt after restart. A successful metadata

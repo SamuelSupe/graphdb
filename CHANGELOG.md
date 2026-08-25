@@ -10,15 +10,38 @@ versioning; release tags and binaries expose the exact build commit and date.
 - Make `wal + segment + sync` the default ingest path for local writers. The
   default `POST /v1/ingest/batches` response is now durable `202 Accepted`;
   callers that require immediate visibility can send `Prefer: wait=committed`.
-- Use a 1-second graph flush interval, four graph flush workers, a 5-second
-  metadata flush interval, and four metadata workers by default.
+- Use a 250 ms graph flush interval with a trigger at 8 requests / 2 MiB and
+  two graph flush workers; metadata flush defaults to 500 ms with a trigger at
+  256 requests / 8 MiB and two metadata workers. Busy tenants may merge the
+  same-round queue.
 - Reuse the request normalized at WAL acceptance during graph flush and reuse
   the prepared commit-segment content identity during physical publication,
   removing duplicate normalization, commit-tail loading, and logical JSON
   encoding from the hot path without merging logical commits or versions.
 - Reject new ingest with `429` and `Retry-After` at bounded queue, WAL, or
   pending-age admission watermarks. Readiness becomes non-writable at the WAL
-  drain-only watermark.
+  drain-only watermark. The fixed-host performance client retries the same
+  batch after that delay, so saturation sheds load without dropping scheduled
+  work or creating an immediate 429 retry loop. The fixed-host matrix gives all
+  tenants one synchronized measured-workload start after seed and index setup.
+  Performance defaults use two graph and two metadata flush workers, the flush
+  triggers above, a 4 GiB write cache, a 20,000 commit-tail limit, and a
+  two-minute pending-age guard. Heavy background task execution is
+  single-concurrency by default.
+- Store the complete request only in its accepted WAL record. Prepared,
+  published, and finalized records carry compact state deltas, eliminating
+  repeated graph-item serialization during state changes. Prepared records
+  retain only the publish identity and result: recovery replays the accepted
+  request when the manifest is still at the base version, and recognizes the
+  final manifest without persisting a second copy of commit mutations.
+- Bound decoded ingest-metadata cache residency by the retained graph-item
+  footprint rather than compressed Parquet bytes, and serve immediate
+  post-commit status polling from a bounded recent-result ring.
+- Keep synchronous batch index updates correct when one flush advances multiple
+  logical graph versions. The default WAL path defers derived index refresh,
+  and per-tenant automatic maintenance requires a one-minute ingest-idle window
+  before compaction, GC, or index catch-up. The fixed-host gate initializes
+  indexes before timing.
 - Require sync WAL durability for the public WAL mode so every `202` response
   is fsynced and recoverable; the former OS-buffered acceptance mode is not a
   v1.2.0 server option.

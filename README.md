@@ -5,9 +5,10 @@
 **A general-purpose current-state property graph for entities, relationships, and topology**
 
 [![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Release target](https://img.shields.io/badge/release-v1.2.0--target-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
+[![Release v1.2.0](https://img.shields.io/badge/release-v1.2.0-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
+[![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-[中文 README](README.zh-CN.md) · [v1.2.0 release target](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [All releases](https://github.com/SamuelSupe/graphdb/releases)
+[中文 README](README.zh-CN.md) · [v1.2.0 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
@@ -30,14 +31,20 @@ Parquet segments, manifests, snapshots, and indexes remain recoverable from it.
 > evidence; if the performance gate fails, no v1.2.0 Release archive is
 > produced.
 
+> **v1.2.0 operating contract.** The performance-first local WAL path is the
+> default: durable `202 Accepted` only follows WAL fsync, bounded pressure
+> returns `429` with `Retry-After`, and release assets are published only with
+> commit-bound verification evidence.
+
 ## v1.2.0 at a glance
 
 | Area | Contract |
 | --- | --- |
-| Local writer default | `GRAPHDB_INGEST_MODE=wal`, `GRAPHDB_INGEST_METADATA_MODE=segment`, and `GRAPHDB_INGEST_WAL_DURABILITY=sync`; graph flush defaults to a 1-second interval with four workers. |
+| Local writer default | `GRAPHDB_INGEST_MODE=wal`, `GRAPHDB_INGEST_METADATA_MODE=segment`, and `GRAPHDB_INGEST_WAL_DURABILITY=sync`; graph flush is 250 ms with a trigger at 8 requests / 2 MiB and 2 workers, while metadata flush is 500 ms with a trigger at 256 requests / 8 MiB and 2 workers. Busy tenants may merge the same-round queue. |
 | Durable ingest | `POST /v1/ingest/batches` returns `202 Accepted` after the batch is fsynced to the local WAL, with `Location` and a status resource. |
 | Query-visible ingest | Send `Prefer: wait=committed` when the caller needs the final `200/207` result instead of asynchronous durable acceptance. |
-| Bounded admission | At queue 80%, WAL 70%, or pending age 20s, admission returns structured `429` with `Retry-After`; at 85% WAL usage readiness becomes drain-only. |
+| Bounded admission | At queue 80%, WAL 70%, or pending age 2m, admission returns structured `429` with `Retry-After`; at 85% WAL usage readiness becomes drain-only. |
+| Write and maintenance safety | The default write cache is 4 GiB, the commit-tail limit is 20,000, heavy background task execution is single-concurrency, and maintenance waits for 1m of tenant ingest idleness. |
 | Performance gate | Fixed OrbStack host, 8 CPU/8 GiB, 8 tenants, 16 collectors, five 30-minute baseline runs and five candidate runs; thresholds are release gates, and results are authoritative only in commit-bound evidence packaged with the v1.2.0 Release. |
 | Compatibility boundary | The v1.1.5 → v1.2.0 data upgrade is forward-only after segment metadata is activated; PostgreSQL coordination must explicitly use direct ingest. |
 
@@ -234,7 +241,7 @@ service mesh.
 
 ## Release
 
-The current target is [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0).
+The current release is [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0), with [latest releases](https://github.com/SamuelSupe/graphdb/releases) kept as the public release index.
 Pushing a semantic-version tag triggers [GitHub Actions](.github/workflows/release.yml),
 but the release job depends on the verification, RustFS/WAL recovery, CAS
 soak, rollback, and fixed-host performance jobs. Before packaging it verifies

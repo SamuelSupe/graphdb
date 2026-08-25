@@ -52,6 +52,7 @@ def validate_run(report, label, path, enforce_candidate_limits):
     check(config.get("batch_size") == 200 and config.get("mutations_per_group") == 3 and config.get("working_set") == 20_000, f"{label} {path}: workload must use 200 groups/batch, 3 mutations/group, and a 20000-group working set")
     check(config.get("ingest_mode") == "wal" and config.get("metadata_mode") == "segment", f"{label} {path}: WAL/segment mode required")
     check(config.get("coordination") == "local" and config.get("durability") == "sync", f"{label} {path}: local/sync required")
+    check(config.get("start_at_unix_ms", 0) > 0, f"{label} {path}: synchronized workload start is required")
     check(measurement.get("rss") == "/proc/1/status:VmRSS" and measurement.get("cpu") == "/sys/fs/cgroup/cpu.stat:usage_usec", f"{label} {path}: process RSS and cgroup CPU sources are required")
     check(result.get("backpressured_batches") == 0, f"{label} {path}: benchmark run observed 429")
     check(result.get("committed_batches") == result.get("scheduled_batches"), f"{label} {path}: not every scheduled batch committed")

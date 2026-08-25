@@ -46,6 +46,39 @@ func TestIngestDurableBatchPublishesOneSegmentAndManifest(t *testing.T) {
 	}
 }
 
+func TestIngestDurableBatchAdvancesIndexesAcrossLogicalCommits(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.IngestDurableBatch(ctx, "tenant-a", []IngestBatchEntry{
+		{Request: ingestEntityRequest("batch-1", "host:1")},
+		{Request: ingestEntityRequest("batch-2", "host:2")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Version != 3 {
+		t.Fatalf("index catalog version = %d, want 3", catalog.Version)
+	}
+	health, err := store.IndexHealthWithOptions(ctx, "tenant-a", IndexHealthOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "ready" {
+		t.Fatalf("index health = %#v, want ready", health)
+	}
+}
+
 func TestIngestDurableBatchMergesExistingLooseTail(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	if _, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{
@@ -239,7 +272,10 @@ func TestIngestDurableBatchReplaysPreparedPlanAfterManifestFailure(t *testing.T)
 		if plans[index] == nil {
 			t.Fatalf("prepared plan %d is nil", index)
 		}
-		entries[index].Prepared = plans[index]
+		compact := *plans[index]
+		compact.Commit = nil
+		compact.Replay = true
+		entries[index].Prepared = &compact
 	}
 	if plans[0].Result.Version != 1 || plans[1].Result.Version != 2 {
 		t.Fatalf("prepared results = %#v", plans)
@@ -264,6 +300,42 @@ func TestIngestDurableBatchReplaysPreparedPlanAfterManifestFailure(t *testing.T)
 	}
 	if len(segments) != 1 {
 		t.Fatalf("commit segment objects = %#v", segments)
+	}
+}
+
+func TestIngestDurableBatchReplaysCompactPlanBeforeSegmentPublish(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	entry := IngestBatchEntry{Request: ingestEntityRequest("batch-1", "host:1")}
+	var plan *IngestPreparedRequest
+	_, err := store.IngestDurableBatchWithHooks(
+		context.Background(),
+		"tenant-a",
+		[]IngestBatchEntry{entry},
+		IngestBatchHooks{Prepared: func(_ context.Context, prepared []*IngestPreparedRequest) error {
+			plan = prepared[0]
+			return context.Canceled
+		}},
+	)
+	if err == nil || plan == nil || plan.Segment == nil {
+		t.Fatalf("interrupted prepared plan = %#v / %v", plan, err)
+	}
+	compact := *plan
+	compact.Commit = nil
+	compact.Replay = true
+	entry.Prepared = &compact
+	results, err := store.IngestDurableBatch(context.Background(), "tenant-a", []IngestBatchEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Version != 1 {
+		t.Fatalf("replayed results = %#v", results)
+	}
+	segments, err := store.Objects.List(context.Background(), store.commitSegmentPrefix("tenant-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 1 {
+		t.Fatalf("commit segment objects = %#v, want one replayed segment", segments)
 	}
 }
 

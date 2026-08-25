@@ -18,6 +18,7 @@ type maintenanceState struct {
 const (
 	defaultMaintenanceGCMaxDeletes = 256
 	autoCompactObjectMinTail       = 16
+	ingestMaintenanceIdleWindow    = time.Minute
 )
 
 type MaintenanceReport struct {
@@ -123,6 +124,10 @@ func (s *Server) maintainTenant(ctx context.Context, tenantID string, now time.T
 		config = storage.DefaultTenantConfig()
 	} else {
 		config = storage.TenantConfigWithDefaults(config)
+	}
+	if s.IngestService != nil && s.IngestService.HasRecentTenantActivity(tenantID, now.Add(-ingestMaintenanceIdleWindow)) {
+		tenantReport.Skipped = "ingest_active"
+		return tenantReport
 	}
 	manifest = s.maybeAutoCompact(ctx, tenantID, manifest, config.Maintenance, report, &tenantReport)
 	s.maybeRunGC(ctx, tenantID, now, config.Maintenance, report, &tenantReport)

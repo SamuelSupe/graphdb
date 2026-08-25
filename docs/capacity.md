@@ -28,6 +28,22 @@ scripts/wal_performance_matrix.sh
 The GitHub release job depends on a self-hosted `orbstack` runner and refuses
 to publish unless all five candidate runs and every relative gate pass.
 
+### Local-WAL runtime defaults
+
+These are v1.2.0 local-writer defaults, separate from the fixed-host capacity
+profile and its intentionally stricter test thresholds:
+
+| Setting | Default |
+| --- | ---: |
+| WAL durability | `sync` |
+| Maximum pending age | `2m` |
+| Graph flush | `250ms`, flush trigger 8 requests / 2 MiB (busy tenants may merge the same-round queue), 2 workers |
+| Metadata flush | `500ms`, trigger 256 requests / 8 MiB, 2 workers |
+| Write cache | `4GiB` |
+| Commit-tail limit | `20,000` |
+| Heavy background task execution | 1 concurrent task |
+| Maintenance ingest-idle window | `1m` per tenant |
+
 The PostgreSQL direct-write path remains a correctness and regression gate:
 
 For each release candidate, CI must pass:

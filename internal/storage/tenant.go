@@ -185,7 +185,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		CoordinatorPendingTTL:      coordinatorPendingReservationTTL,
 		CoordinatorCleanup:         DefaultCoordinatorCleanupConfig(),
 		MaxWriteCacheTenants:       64,
-		MaxWriteCacheBytes:         512 * 1024 * 1024,
+		MaxWriteCacheBytes:         4 * 1024 * 1024 * 1024,
 		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,

@@ -26,6 +26,22 @@ scripts/wal_performance_matrix.sh
 GitHub release 依赖带 `orbstack` 标签的 self-hosted runner；任一候选运行或
 相对门禁失败都不会发布。
 
+### 本地 WAL 运行时默认值
+
+以下是 v1.2.0 本地 writer 的默认值，与固定主机容量 profile 及其有意更严格的
+测试阈值分开：
+
+| 设置 | 默认值 |
+| --- | ---: |
+| WAL 耐久性 | `sync` |
+| 最老 pending 上限 | `2m` |
+| Graph flush | `250ms`，flush trigger 为 8 请求 / 2 MiB（忙租户可合并同一轮队列），2 个 worker |
+| Metadata flush | `500ms`，trigger 为 256 请求 / 8 MiB，2 个 worker |
+| Write cache | `4GiB` |
+| Commit-tail 上限 | `20,000` |
+| 后台重型任务执行 | 1 个并发任务 |
+| Maintenance ingest 空闲窗口 | 每租户 `1m` |
+
 PostgreSQL direct 路径继续作为正确性和回归门禁：
 
 每个候选版本必须在 CI 中满足：

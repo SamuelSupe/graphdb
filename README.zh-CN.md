@@ -5,9 +5,10 @@
 **面向实体、关系与拓扑的通用当前态属性图数据库**
 
 [![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Release target](https://img.shields.io/badge/release-v1.2.0--target-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
+[![Release v1.2.0](https://img.shields.io/badge/release-v1.2.0-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
+[![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-[English README](README.md) · [v1.2.0 发行目标](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [全部发行版](https://github.com/SamuelSupe/graphdb/releases)
+[English README](README.md) · [v1.2.0 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
@@ -25,14 +26,19 @@ segment、manifest、snapshot 和 index 都可以从对象存储恢复。
 > 已通过。权威证据是 v1.2.0 GitHub Release 资产及其 commit-bound evidence；
 > 如果性能门禁失败，就不会产出 v1.2.0 Release 归档。
 
+> **v1.2.0 运行合同。** 性能优先的本地 WAL 路径是默认模式：只有 WAL fsync
+> 完成后才返回 durable `202 Accepted`；有界压力返回带 `Retry-After` 的
+> `429`；发行资产只有在通过 commit-bound 验证证据后才会发布。
+
 ## v1.2.0 一览
 
 | 领域 | 合同 |
 | --- | --- |
-| 本地 writer 默认值 | `GRAPHDB_INGEST_MODE=wal`、`GRAPHDB_INGEST_METADATA_MODE=segment`、`GRAPHDB_INGEST_WAL_DURABILITY=sync`；graph flush 默认 1 秒间隔、4 个 worker。 |
+| 本地 writer 默认值 | `GRAPHDB_INGEST_MODE=wal`、`GRAPHDB_INGEST_METADATA_MODE=segment`、`GRAPHDB_INGEST_WAL_DURABILITY=sync`；graph flush 为 250 ms，trigger 为 8 请求 / 2 MiB，使用 2 个 worker；metadata flush 为 500 ms，trigger 为 256 请求 / 8 MiB，使用 2 个 worker。忙租户可合并同一轮队列。 |
 | Durable ingest | `POST /v1/ingest/batches` 在 batch fsync 到本地 WAL 后返回 `202 Accepted`，并提供 `Location` 和状态资源。 |
 | 查询可见写入 | 调用方需要最终 `200/207` 结果时发送 `Prefer: wait=committed`，而不是只等待 durable 异步接收。 |
-| 有界准入 | 队列 80%、WAL 70% 或 pending age 20 秒时返回带 `Retry-After` 的结构化 `429`；WAL 使用率达到 85% 后 readiness 进入 drain-only。 |
+| 有界准入 | 队列 80%、WAL 70% 或 pending age 2 分钟时返回带 `Retry-After` 的结构化 `429`；WAL 使用率达到 85% 后 readiness 进入 drain-only。 |
+| 写入与维护安全 | 默认 write cache 为 4 GiB，commit-tail 上限为 20,000；后台重型任务默认单并发；每租户 ingest 空闲满 1 分钟后维护任务才会运行。 |
 | 性能门禁 | 固定 OrbStack 主机，8 CPU/8 GiB，8 个租户、16 个采集器，v1.1.5 基线和候选各运行 5 次 30 分钟；阈值是发行门禁，结果只有在 v1.2.0 Release 打包 commit-bound evidence 后才具权威性。 |
 | 兼容边界 | v1.1.5 → v1.2.0 在启用 segment metadata 后是单向数据升级；PostgreSQL 协调必须显式使用 direct ingest。 |
 
@@ -216,7 +222,7 @@ named graph、blank node、RDF 多 `rdf:type`、typed/language literal、历史�
 
 ## 发行版
 
-当前目标是 [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)。
+当前发行版是 [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)，[Latest releases](https://github.com/SamuelSupe/graphdb/releases) 是公开发行索引。
 推送语义化版本 tag 会触发 [GitHub Actions](.github/workflows/release.yml)，但
 release job 依赖验证、RustFS/WAL 恢复、CAS soak、回滚和固定主机性能 job。打包
 前会校验 `artifacts/wal-performance/gate.json`，其中必须有 5 次基线、5 次候选、

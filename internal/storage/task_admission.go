@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	defaultTaskExecutionLimit = 4
+	defaultTaskExecutionLimit = 1
 	defaultTaskQueueLimit     = 128
 	defaultTaskTenantStripes  = 64
 )

@@ -35,7 +35,7 @@ func DefaultIngestMetadataConfig() IngestMetadataConfig {
 		FlushInterval: 30 * time.Second,
 		MaxRequests:   256,
 		MaxBytes:      8 * 1024 * 1024,
-		FlushWorkers:  4,
+		FlushWorkers:  2,
 	}
 }
 
@@ -215,7 +215,7 @@ func (s *TenantStore) publishIngestMetadataSegment(
 		ref.Key,
 		segment,
 		ObjectMeta{Key: ref.Key, Exists: true},
-		int64(len(data)),
+		ingestMetadataSegmentCacheBytes(segment, int64(len(data))),
 		ingestMetadataImmutableTTL,
 	)
 	for _, status := range segment.Collectors {

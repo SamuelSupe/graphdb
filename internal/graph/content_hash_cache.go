@@ -16,30 +16,31 @@ type logicalHashCache struct {
 }
 
 type logicalHashCategory struct {
-	keys    []string
-	encoded [][]byte
+	keys         []string
+	encoded      [][]byte
+	fingerprints [][16]byte
 }
 
 func buildLogicalHashCache(g *Graph) (*logicalHashCache, error) {
-	ciTypes, err := buildLogicalHashCategory(g.CITypes, func(value CIType) any {
+	ciTypes, err := buildLogicalHashCategory(g.CITypes, "ci_type", func(value CIType) any {
 		return value
 	})
 	if err != nil {
 		return nil, err
 	}
-	entities, err := buildLogicalHashCategory(g.Entities, func(value Entity) any {
+	entities, err := buildLogicalHashCategory(g.Entities, "entity", func(value Entity) any {
 		return logicalEntityForHash(value)
 	})
 	if err != nil {
 		return nil, err
 	}
-	relationTypes, err := buildLogicalHashCategory(g.RelationTypes, func(value RelationType) any {
+	relationTypes, err := buildLogicalHashCategory(g.RelationTypes, "relation_type", func(value RelationType) any {
 		return value
 	})
 	if err != nil {
 		return nil, err
 	}
-	edges, err := buildLogicalHashCategory(g.Edges, func(value Edge) any {
+	edges, err := buildLogicalHashCategory(g.Edges, "edge", func(value Edge) any {
 		return logicalEdgeForHash(value)
 	})
 	if err != nil {
@@ -53,11 +54,13 @@ func buildLogicalHashCache(g *Graph) (*logicalHashCache, error) {
 
 func buildLogicalHashCategory[T any](
 	values map[string]T,
+	kind string,
 	logicalValue func(T) any,
 ) (logicalHashCategory, error) {
 	type logicalItem struct {
-		key     string
-		encoded []byte
+		key         string
+		encoded     []byte
+		fingerprint [16]byte
 	}
 	items := make([]logicalItem, 0, len(values))
 	for key, value := range values {
@@ -65,18 +68,23 @@ func buildLogicalHashCategory[T any](
 		if err != nil {
 			return logicalHashCategory{}, err
 		}
-		items = append(items, logicalItem{key: key, encoded: data})
+		items = append(items, logicalItem{
+			key: key, encoded: data,
+			fingerprint: contentFingerprintEntryJSON(kind, key, data),
+		})
 	}
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].key < items[j].key
 	})
 	category := logicalHashCategory{
-		keys:    make([]string, len(items)),
-		encoded: make([][]byte, len(items)),
+		keys:         make([]string, len(items)),
+		encoded:      make([][]byte, len(items)),
+		fingerprints: make([][16]byte, len(items)),
 	}
 	for i, item := range items {
 		category.keys[i] = item.key
 		category.encoded[i] = item.encoded
+		category.fingerprints[i] = item.fingerprint
 	}
 	return category, nil
 }
@@ -109,10 +117,17 @@ func (g *Graph) shareLogicalHashCache() *logicalHashCache {
 	return &shared
 }
 
+func (g *Graph) logicalHashCacheView() *logicalHashCache {
+	g.logicalHashMu.Lock()
+	defer g.logicalHashMu.Unlock()
+	return g.logicalHashCache
+}
+
 func cloneLogicalHashCategory(source logicalHashCategory) logicalHashCategory {
 	return logicalHashCategory{
-		keys:    append([]string(nil), source.keys...),
-		encoded: append([][]byte(nil), source.encoded...),
+		keys:         append([]string(nil), source.keys...),
+		encoded:      append([][]byte(nil), source.encoded...),
+		fingerprints: append([][16]byte(nil), source.fingerprints...),
 	}
 }
 
@@ -125,6 +140,7 @@ func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) err
 	cache := g.logicalHashCache
 	if err := updateLogicalHashCategoryBatch(
 		&cache.ciTypes,
+		"ci_type",
 		tracker.ciTypes,
 		func(key string) (any, bool) {
 			value, exists := g.CITypes[key]
@@ -135,6 +151,7 @@ func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) err
 	}
 	if err := updateLogicalHashCategoryBatch(
 		&cache.entities,
+		"entity",
 		tracker.entities,
 		func(key string) (any, bool) {
 			value, exists := g.Entities[key]
@@ -148,6 +165,7 @@ func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) err
 	}
 	if err := updateLogicalHashCategoryBatch(
 		&cache.relationTypes,
+		"relation_type",
 		tracker.relationTypes,
 		func(key string) (any, bool) {
 			value, exists := g.RelationTypes[key]
@@ -158,6 +176,7 @@ func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) err
 	}
 	if err := updateLogicalHashCategoryBatch(
 		&cache.edges,
+		"edge",
 		tracker.edges,
 		func(key string) (any, bool) {
 			value, exists := g.Edges[key]

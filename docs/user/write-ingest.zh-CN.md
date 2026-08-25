@@ -262,9 +262,9 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 
 GGraphDB 1.2 的本地 writer 默认使用 `GRAPHDB_INGEST_MODE=wal`、
 `GRAPHDB_INGEST_METADATA_MODE=segment` 和 sync durability。请求会先追加到
-进程级分段 WAL；不同租户可共享一次 group-fsync，后台默认使用四个 graph
-write worker 并保持
-同租户 FIFO 顺序。同一租户的一次 flush 保留每个请求的逻辑 commit 顺序，
+进程级分段 WAL；不同租户可共享一次 group-fsync，后台默认使用两个 graph
+write worker 并保持同租户 FIFO 顺序；graph flush trigger 为 8 个请求 / 2 MiB，
+忙租户可合并同一轮队列。同一租户的一次 flush 保留每个请求的逻辑 commit 顺序，
 但把这些 commit 写入一个 Parquet commit segment，并只发布一次 manifest。
 
 PostgreSQL coordination 不提供分布式 WAL。PostgreSQL writer 必须显式设置
@@ -305,14 +305,20 @@ WAL 目录属于耐久性边界。容器部署必须把 `GRAPHDB_DATA_DIR` 挂�
 - `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
 - `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`
 - `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`
-- `GRAPHDB_INGEST_MAX_PENDING_AGE=20s`
-- `GRAPHDB_INGEST_FLUSH_INTERVAL=1s`
-- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`
-- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`
-- `GRAPHDB_INGEST_FLUSH_WORKERS=4`
+- `GRAPHDB_INGEST_MAX_PENDING_AGE=2m`
+- `GRAPHDB_INGEST_FLUSH_INTERVAL=250ms`
+- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8`
+- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB`
+- `GRAPHDB_INGEST_FLUSH_WORKERS=2`
+- `GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms`
+- `GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256`
+- `GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB`
+- `GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2`
+- `GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB`
+- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000`
 - `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
 
-内存队列达到 80%、WAL 磁盘达到 70%，或最老待提交请求超过 20 秒时，writer
+内存队列达到 80%、WAL 磁盘达到 70%，或最老待提交请求超过 2 分钟时，writer
 返回带 `Retry-After` 的 `429`。WAL 磁盘达到 85% 后 readiness 进入 drain-only，
 直到已提交记录回收。调用方必须在建议延迟后复用原 batch/idempotency identity
 重试。
@@ -325,10 +331,10 @@ WAL 目录属于耐久性边界。容器部署必须把 `GRAPHDB_DATA_DIR` 挂�
 GRAPHDB_INGEST_MODE=wal
 GRAPHDB_COORDINATION=local
 GRAPHDB_INGEST_METADATA_MODE=segment
-GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=5s
+GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms
 GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
 GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
-GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=4
+GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2
 ```
 
 direct 模式使用 `legacy`，本地 WAL 模式默认使用 `segment`。segment 模式把同一租户跨
@@ -345,7 +351,7 @@ segment。点查顺序为活跃 WAL、新 segment/index、旧 batch/idempotency 
 
 graph manifest 发布后请求进入 `published`；metadata manifest 发布后才进入
 `committed` 并允许 WAL 回收。`Prefer: wait=committed` 会立即 flush 当前租户
-metadata 窗口，普通 `202` 允许等待阈值或 5 秒窗口。segment PUT、manifest
+metadata 窗口，普通 `202` 允许等待阈值或 500 ms 窗口。segment PUT、manifest
 CAS 和 `FINALIZED` 之间崩溃时，WAL 中持久化的 metadata flush ID、LSN 范围
 和内容哈希保证恢复不会重复 graph version、collector totals 或结果。
 
@@ -368,13 +374,18 @@ graph version。首次遇到历史 loose commit 尾部时会将其并入 segment
 
 #### 1.1.4 稀疏多租户运行保障
 
-metadata flush worker 与 graph write worker 独立，默认值为 `4`。数百个以
-稀疏写入为主的租户可根据对象存储 p95 延迟和 metadata deadline-overshoot 指标
-继续调优。同一租户始终最多只有一个进行中的 metadata flush，metadata segment
+metadata flush worker 与 graph write worker 独立，默认值为 `2`，500 ms 与
+256 个请求 / 8 MiB 是调度 trigger。数百个以稀疏写入为主的租户可根据对象存储
+p95 延迟和 metadata deadline-overshoot 指标继续调优。同一租户始终最多只有
+一个进行中的 metadata flush，metadata segment
 也绝不跨租户混装；提高 worker 数只改善公平性，不改变顺序或隔离语义。
 
+每租户自动 maintenance 会等待 ingest 空闲满 1 分钟，才运行 compact、GC 或
+索引追赶。后台重型任务默认单并发。
+
 每个 writer 在进程内维护有界 LRU，缓存 ingest metadata manifest、目录和
-不可变 segment：最多 1,024 个对象、64 MiB 编码后数据。manifest 条目 TTL 为
+不可变 segment：最多 1,024 个对象、64 MiB 计费驻留量。解码后的 segment 按
+编码字节数与每个保留 item 4 KiB 估算值中的较大者计费。manifest 条目 TTL 为
 1 秒，不可变 index 和 segment 条目 TTL 为 15 分钟。同一个对象的并发冷读会合并
 为一次对象存储请求；热查不会再发起 GET。该缓存可随进程丢弃并在重启后重建；
 成功的 metadata manifest CAS 会替换本地 manifest 条目，它不是跨 writer 的

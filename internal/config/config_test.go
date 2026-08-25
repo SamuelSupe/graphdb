@@ -67,20 +67,24 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.IngestWALDir != filepath.Join(dataDir, "wal", "ingest") ||
+		cfg.WriteCacheMaxBytes != 4*1024*1024*1024 ||
+		cfg.WriteMaxCommitTail != 20000 ||
 		cfg.IngestWALDurability != storage.IngestWALDurabilitySync ||
 		cfg.IngestWALBufferBytes != 4*1024*1024 ||
 		cfg.IngestMode != "wal" ||
-		cfg.IngestFlushWorkers != 4 ||
-		cfg.IngestFlushInterval != time.Second ||
+		cfg.IngestFlushWorkers != 2 ||
+		cfg.IngestFlushInterval != 250*time.Millisecond ||
+		cfg.IngestFlushMaxRequests != 8 ||
+		cfg.IngestFlushMaxBytes != 2*1024*1024 ||
 		cfg.IngestQueueHighWatermark != 80 ||
 		cfg.IngestWALHighWatermark != 70 ||
 		cfg.IngestWALStopWatermark != 85 ||
-		cfg.IngestMaxPendingAge != 20*time.Second ||
+		cfg.IngestMaxPendingAge != 2*time.Minute ||
 		cfg.IngestMetadataMode != storage.IngestMetadataModeSegment ||
-		cfg.IngestMetadataFlushInterval != 5*time.Second ||
+		cfg.IngestMetadataFlushInterval != 500*time.Millisecond ||
 		cfg.IngestMetadataMaxRequests != 256 ||
 		cfg.IngestMetadataMaxBytes != 8*1024*1024 ||
-		cfg.IngestMetadataFlushWorkers != 4 {
+		cfg.IngestMetadataFlushWorkers != 2 {
 		t.Fatalf("WAL defaults = %#v", cfg.IngestServiceConfig())
 	}
 
@@ -91,7 +95,7 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 		t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", "17s")
 		t.Setenv("GRAPHDB_INGEST_METADATA_MAX_REQUESTS", "31")
 		t.Setenv("GRAPHDB_INGEST_METADATA_MAX_BYTES", "3MiB")
-		t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", "2")
+		t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", "3")
 		cfg, err := Load()
 		if err != nil {
 			t.Fatal(err)
@@ -100,7 +104,7 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 			cfg.IngestMetadataFlushInterval != 17*time.Second ||
 			cfg.IngestMetadataMaxRequests != 31 ||
 			cfg.IngestMetadataMaxBytes != 3*1024*1024 ||
-			cfg.IngestMetadataFlushWorkers != 2 {
+			cfg.IngestMetadataFlushWorkers != 3 {
 			t.Fatalf("segment metadata config = %#v", cfg.IngestServiceConfig().Metadata)
 		}
 	})

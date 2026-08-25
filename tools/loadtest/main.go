@@ -20,6 +20,7 @@ type config struct {
 	duration               time.Duration
 	collectors             int
 	workingSet             int
+	startAtUnixMS          int64
 	timeout                time.Duration
 	httpTimeout            time.Duration
 	maintenanceTimeout     time.Duration
@@ -47,6 +48,10 @@ func main() {
 	seedVersion, err := seed(ctx, client, metrics)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "seed failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := waitForStart(ctx, cfg.startAtUnixMS); err != nil {
+		fmt.Fprintf(os.Stderr, "start barrier failed: %v\n", err)
 		os.Exit(1)
 	}
 	versions := &versionTracker{}
@@ -95,6 +100,7 @@ func parseConfig() config {
 	flag.DurationVar(&cfg.duration, "duration", 0, "run writers for this duration instead of a fixed batch count")
 	flag.IntVar(&cfg.collectors, "collectors", 1, "collector identities distributed across writer requests")
 	flag.IntVar(&cfg.workingSet, "working-set", 0, "reuse this many CMDB groups while changing their fields; zero grows unique groups")
+	flag.Int64Var(&cfg.startAtUnixMS, "start-at-unix-ms", 0, "wait until this Unix millisecond before starting the measured workload")
 	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Minute, "test timeout")
 	flag.DurationVar(&cfg.httpTimeout, "http-timeout", 2*time.Minute, "per-request HTTP timeout")
 	flag.DurationVar(&cfg.maintenanceTimeout, "maintenance-timeout", 10*time.Minute, "timeout for post-load maintenance calls")
@@ -123,9 +129,30 @@ func parseConfig() config {
 	return cfg
 }
 
+func waitForStart(ctx context.Context, startAtUnixMS int64) error {
+	if startAtUnixMS <= 0 {
+		return nil
+	}
+	delay := time.Until(time.UnixMilli(startAtUnixMS))
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func seed(ctx context.Context, client *apiClient, metrics *registry) (int64, error) {
 	version, err := client.commitSchema(ctx, metrics)
 	if err != nil {
+		return 0, err
+	}
+	if err := client.rebuildIndexes(ctx, metrics, 0); err != nil {
 		return 0, err
 	}
 	if err := client.query(ctx, metrics, "seed-query", matchQuery("region-0")); err != nil {

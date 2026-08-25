@@ -236,7 +236,7 @@ func (s *TenantStore) loadIngestMetadataSegment(
 			}
 			return ingestMetadataCacheObject{
 				value: segment,
-				bytes: int64(len(data)),
+				bytes: ingestMetadataSegmentCacheBytes(segment, int64(len(data))),
 			}, nil
 		},
 	)

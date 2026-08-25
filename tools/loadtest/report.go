@@ -30,6 +30,7 @@ type loadWorkload struct {
 	DurationMS             int64  `json:"duration_ms,omitempty"`
 	Collectors             int    `json:"collectors"`
 	WorkingSet             int    `json:"working_set"`
+	StartAtUnixMS          int64  `json:"start_at_unix_ms,omitempty"`
 	AllowWriteBackpressure bool   `json:"allow_write_backpressure"`
 }
 
@@ -67,6 +68,7 @@ func writeLoadReport(path string, cfg config, readerURL string, elapsed time.Dur
 			DurationMS:             cfg.duration.Milliseconds(),
 			Collectors:             cfg.collectors,
 			WorkingSet:             cfg.workingSet,
+			StartAtUnixMS:          cfg.startAtUnixMS,
 			AllowWriteBackpressure: cfg.allowWriteBackpressure,
 		},
 		PlannedGraph: plannedGraphSize{

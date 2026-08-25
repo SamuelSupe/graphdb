@@ -279,20 +279,26 @@ func durableIngestCommitKey(tenantID string, request IngestRequest) string {
 }
 
 func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest, error) {
+	request, _, err := prepareIngestRequestJSON(tenantID, request)
+	return request, err
+}
+
+func prepareIngestRequestJSON(tenantID string, request IngestRequest) (IngestRequest, []byte, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
-		return IngestRequest{}, err
+		return IngestRequest{}, nil, err
 	}
 	request = normalizeIngestRequest(request)
 	if request.Source == "" || request.CollectorID == "" {
-		return IngestRequest{}, fmt.Errorf("source and collector_id are required")
+		return IngestRequest{}, nil, fmt.Errorf("source and collector_id are required")
 	}
 	if request.BatchID == "" {
 		request.BatchID = defaultIngestBatchID(request)
 	}
-	if _, err := json.Marshal(request); err != nil {
-		return IngestRequest{}, fmt.Errorf("encode ingest request: %w", err)
+	data, err := json.Marshal(request)
+	if err != nil {
+		return IngestRequest{}, nil, fmt.Errorf("encode ingest request: %w", err)
 	}
-	return request, nil
+	return request, data, nil
 }
 
 func normalizeIngestRequest(request IngestRequest) IngestRequest {
