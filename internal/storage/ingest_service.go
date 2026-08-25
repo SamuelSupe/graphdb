@@ -415,6 +415,21 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 	identity := ingestRequestIdentity(tenantID, request)
 	recordID := ingestRecordID(identity)
 	statusKey := ingestStatusKey(tenantID, request.Source, request.CollectorID, request.BatchID)
+	acceptedAt := time.Now().UTC()
+	envelope := walIngestEnvelope{
+		RecordID:   recordID,
+		TenantID:   tenantID,
+		Request:    request,
+		Digest:     digest,
+		AcceptedAt: acceptedAt,
+		State:      IngestStateAccepted,
+		Trace:      captureWALTraceContext(ctx),
+	}
+	payload, err := marshalAcceptedIngestEnvelope(envelope, requestJSON)
+	if err != nil {
+		return IngestAcceptance{}, err
+	}
+	recordBytes := int64(len(payload) + ingestWALHeaderBytes + ingestWALChecksumBytes)
 
 	for {
 		s.mu.Lock()
@@ -452,22 +467,6 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 				return IngestAcceptance{}, ctx.Err()
 			}
 		}
-		acceptedAt := time.Now().UTC()
-		envelope := walIngestEnvelope{
-			RecordID:   recordID,
-			TenantID:   tenantID,
-			Request:    request,
-			Digest:     digest,
-			AcceptedAt: acceptedAt,
-			State:      IngestStateAccepted,
-			Trace:      captureWALTraceContext(ctx),
-		}
-		payload, marshalErr := marshalAcceptedIngestEnvelope(envelope, requestJSON)
-		if marshalErr != nil {
-			s.mu.Unlock()
-			return IngestAcceptance{}, marshalErr
-		}
-		recordBytes := int64(len(payload) + ingestWALHeaderBytes + ingestWALChecksumBytes)
 		if reasons := s.acceptBackpressureReasonsLocked(recordBytes, acceptedAt); len(reasons) > 0 {
 			s.mu.Unlock()
 			return IngestAcceptance{}, &BackpressureError{
@@ -521,7 +520,7 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		if s.oldestPending.IsZero() || acceptedAt.Before(s.oldestPending) {
 			s.oldestPending = acceptedAt
 		}
-		s.observeQueueLocked()
+		s.observeQueueDepthLocked()
 		close(flight.done)
 		accepted := acceptanceFromPending(pending, s.config.WAL.Durability)
 		s.mu.Unlock()
@@ -1647,6 +1646,35 @@ func (s *IngestService) prune(ctx context.Context) error {
 }
 
 func (s *IngestService) observeQueueLocked() {
+	s.observeQueueDepthLocked()
+	if s.config.Observer == nil || s.config.Metadata.Mode != IngestMetadataModeSegment {
+		return
+	}
+	metadataPending := 0
+	var metadataBytes int64
+	var metadataOldest time.Time
+	for _, pending := range s.active {
+		if pending.state != IngestStatePublished && !(pending.state == IngestStateRetrying && pending.envelope.State == IngestStatePublished) {
+			continue
+		}
+		metadataPending++
+		metadataBytes += pending.bytes
+		publishedAt := pending.envelope.FinishedAt
+		if publishedAt.IsZero() {
+			publishedAt = pending.envelope.AcceptedAt
+		}
+		if metadataOldest.IsZero() || publishedAt.Before(metadataOldest) {
+			metadataOldest = publishedAt
+		}
+	}
+	metadataAge := time.Duration(0)
+	if !metadataOldest.IsZero() {
+		metadataAge = time.Since(metadataOldest)
+	}
+	s.config.Observer.RecordIngestMetadataQueue(metadataPending, metadataBytes, metadataAge)
+}
+
+func (s *IngestService) observeQueueDepthLocked() {
 	if s.config.Observer == nil {
 		return
 	}
@@ -1655,30 +1683,6 @@ func (s *IngestService) observeQueueLocked() {
 		oldest = time.Since(s.oldestPending)
 	}
 	s.config.Observer.RecordIngestQueue(len(s.active), s.pendingBytes, oldest)
-	if s.config.Metadata.Mode == IngestMetadataModeSegment {
-		metadataPending := 0
-		var metadataBytes int64
-		var metadataOldest time.Time
-		for _, pending := range s.active {
-			if pending.state != IngestStatePublished && !(pending.state == IngestStateRetrying && pending.envelope.State == IngestStatePublished) {
-				continue
-			}
-			metadataPending++
-			metadataBytes += pending.bytes
-			publishedAt := pending.envelope.FinishedAt
-			if publishedAt.IsZero() {
-				publishedAt = pending.envelope.AcceptedAt
-			}
-			if metadataOldest.IsZero() || publishedAt.Before(metadataOldest) {
-				metadataOldest = publishedAt
-			}
-		}
-		metadataAge := time.Duration(0)
-		if !metadataOldest.IsZero() {
-			metadataAge = time.Since(metadataOldest)
-		}
-		s.config.Observer.RecordIngestMetadataQueue(metadataPending, metadataBytes, metadataAge)
-	}
 }
 
 func recordIngestRecovery(

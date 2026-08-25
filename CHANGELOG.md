@@ -24,9 +24,11 @@ versioning; release tags and binaries expose the exact build commit and date.
   batch after that delay, so saturation sheds load without dropping scheduled
   work or creating an immediate 429 retry loop. The fixed-host matrix gives all
   tenants one synchronized measured-workload start after seed and index setup.
-  Performance defaults use two graph and two metadata flush workers, the flush
-  triggers above, a 4 GiB write cache, a 20,000 commit-tail limit, and a
-  two-minute pending-age guard. Heavy background task execution is
+  Performance defaults use a 5 ms group-fsync window, two graph and two
+  metadata flush workers, the flush triggers above, a 4 GiB write cache, a
+  20,000 commit-tail limit, and a two-minute pending-age guard. The admission
+  path prepares durable envelopes outside the service lock and avoids rescanning
+  the unchanged metadata queue. Heavy background task execution is
   single-concurrency by default.
 - Store the complete request only in its accepted WAL record. Prepared,
   published, and finalized records carry compact state deltas, eliminating
