@@ -27,9 +27,12 @@ versioning; release tags and binaries expose the exact build commit and date.
   Performance defaults use a 5 ms group-fsync window, two graph and two
   metadata flush workers, the flush triggers above, a 4 GiB write cache, a
   20,000 commit-tail limit, and a two-minute pending-age guard. The admission
-  path prepares durable envelopes outside the service lock and avoids rescanning
-  the unchanged metadata queue. Heavy background task execution is
-  single-concurrency by default.
+  path prepares durable envelopes outside the service lock, transfers their
+  payload directly to the synchronous WAL append, and avoids rescanning the
+  unchanged metadata queue. Successful durable-acceptance logs retain the first
+  event and every 1,024th event while metrics, traces, failures, and WAL records
+  remain complete. Heavy background task execution is single-concurrency by
+  default.
 - Store the complete request only in its accepted WAL record. Prepared,
   published, and finalized records carry compact state deltas, eliminating
   repeated graph-item serialization during state changes. Prepared records

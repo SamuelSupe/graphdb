@@ -71,6 +71,7 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 		cfg.WriteMaxCommitTail != 20000 ||
 		cfg.IngestWALDurability != storage.IngestWALDurabilitySync ||
 		cfg.IngestWALBufferBytes != 4*1024*1024 ||
+		cfg.IngestWALFsyncInterval != 5*time.Millisecond ||
 		cfg.IngestMode != "wal" ||
 		cfg.IngestFlushWorkers != 2 ||
 		cfg.IngestFlushInterval != 250*time.Millisecond ||

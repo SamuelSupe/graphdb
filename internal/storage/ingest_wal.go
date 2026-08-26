@@ -264,6 +264,8 @@ func (w *IngestWAL) DiskBytes() int64 {
 	return w.diskBytes.Load()
 }
 
+// Append blocks until the WAL has consumed payload and does not retain it after
+// returning. Callers must not mutate payload while Append is in progress.
 func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payload []byte) (result IngestWALAppendResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -304,7 +306,7 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 	request := ingestWALAppendRequest{
 		ctx:     ctx,
 		kind:    kind,
-		payload: append([]byte(nil), payload...),
+		payload: payload,
 		done:    make(chan ingestWALAppendResponse, 1),
 	}
 	select {

@@ -414,12 +414,14 @@ written/durable LSN、待处理请求与最老等待时间、状态缓存命中/
 以及 recovery 结果。这些指标只有
 固定状态类标签，不包含 tenant、source、collector 或 batch 等高基数标签。
 
-进程日志会输出 `ingest_wal_recovery`、`ingest_wal_accepted`、
+进程日志会输出 `ingest_wal_recovery`、采样后的 `ingest_wal_accepted`
+（首个成功事件及之后每第 1,024 个成功事件）、
 `ingest_flush_started`、`ingest_flush_completed`、
 `ingest_metadata_flush_started`、`ingest_metadata_segment_completed`、
 `ingest_metadata_manifest_published`、WAL rotate/prune/fsync
 失败和 shutdown 等 JSON 事件；租户、batch、LSN、flush ID、耗时和错误原因
-留在日志中。设置 `GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
+留在日志中；指标、trace、失败日志和 WAL 记录不采样。设置
+`GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
 write、flush、batch apply、publish、metadata encode/PUT、manifest CAS 和
 Bloom/index lookup 会通过 OTLP/HTTP
 导出。异步 group write 和 flush 使用 OTel links 关联原请求 span；accepted

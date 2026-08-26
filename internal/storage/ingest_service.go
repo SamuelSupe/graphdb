@@ -29,6 +29,7 @@ const (
 	IngestStateRetrying     = "retrying"
 	IngestStateFailed       = "failed"
 	ingestRecentStatusLimit = 1024
+	ingestAcceptedLogEvery  = 1024
 )
 
 type IngestServiceConfig struct {
@@ -260,6 +261,7 @@ type IngestService struct {
 	accepting         map[string]*ingestAcceptFlight
 	pendingBytes      int64
 	highestLSN        uint64
+	acceptedLogCount  uint64
 	completedSince    int
 	closed            bool
 	oldestPending     time.Time
@@ -523,13 +525,15 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		s.observeQueueDepthLocked()
 		close(flight.done)
 		accepted := acceptanceFromPending(pending, s.config.WAL.Durability)
+		s.acceptedLogCount++
+		logAccepted := s.acceptedLogCount == 1 || s.acceptedLogCount%ingestAcceptedLogEvery == 0
 		s.mu.Unlock()
 		span.SetAttributes(
 			attribute.Int64("graphdb.ingest.wal.accepted_lsn", int64(appendResult.LSN)),
 			attribute.String("graphdb.ingest.wal.durability", accepted.Durability),
 			attribute.Int64("graphdb.ingest.wal.record_bytes", recordBytes),
 		)
-		if s.config.Logger != nil {
+		if logAccepted && s.config.Logger != nil {
 			fields := ingestTraceLogFields(envelope)
 			fields["tenant"] = tenantID
 			fields["source"] = request.Source

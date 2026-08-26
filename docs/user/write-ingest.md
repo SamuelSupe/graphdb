@@ -430,12 +430,14 @@ cost, replay bytes, and recovery results.
 These metrics use only fixed status labels; tenant, source,
 collector, and batch identifiers are deliberately excluded.
 
-JSON logs include `ingest_wal_recovery`, `ingest_wal_accepted`,
+JSON logs include `ingest_wal_recovery`, sampled `ingest_wal_accepted`
+(the first success and every 1,024th success),
 `ingest_flush_started`, `ingest_flush_completed`,
 `ingest_metadata_flush_started`, `ingest_metadata_segment_completed`,
 `ingest_metadata_manifest_published`, WAL rotate/prune/fsync
 failures, and shutdown events. Tenant, batch, LSN, flush ID, latency, and error
-details remain in logs. When `GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
+details remain in logs. Metrics, traces, failure logs, and WAL records are not
+sampled. When `GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
 append/group write, flush, batch apply, publish, metadata encode/PUT, manifest
 CAS, and Bloom/index lookup spans
 are exported over OTLP/HTTP. Asynchronous group writes and flushes use OTel
