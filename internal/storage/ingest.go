@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	json "github.com/goccy/go-json"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
@@ -59,6 +60,90 @@ func batchRequest(batch int, batchSize int, collector string, workingSet int) st
 		Cursor:         fmt.Sprintf("cursor-%06d", batch),
 		Items:          items,
 	}
+}
+
+func batchRequestJSON(batch int, batchSize int, collector string, workingSet int) encodedJSON {
+	return appendBatchRequestJSON(make([]byte, 0, batchRequestJSONCapacity(batchSize)), batch, batchSize, collector, workingSet)
+}
+
+func appendBatchRequestJSON(data []byte, batch int, batchSize int, collector string, workingSet int) encodedJSON {
+	data = append(data, `{"source":"loadtest","collector_id":`...)
+	data = strconv.AppendQuote(data, collector)
+	data = append(data, `,"batch_id":"batch-`...)
+	data = appendPaddedDecimal(data, batch, 6)
+	data = append(data, `","idempotency_key":"batch-`...)
+	data = appendPaddedDecimal(data, batch, 6)
+	data = append(data, `","cursor":"cursor-`...)
+	data = appendPaddedDecimal(data, batch, 6)
+	data = append(data, `","items":[`...)
+	for index := range batchSize {
+		if index > 0 {
+			data = append(data, ',')
+		}
+		n := batch*batchSize + index
+		if workingSet > 0 {
+			n %= workingSet
+		}
+		data = appendHostItemJSON(data, batch, n)
+		data = append(data, ',')
+		data = appendServiceItemJSON(data, batch, n)
+		data = append(data, ',')
+		data = appendEdgeItemJSON(data, batch, n)
+	}
+	return append(data, ']', '}')
+}
+
+func batchRequestJSONCapacity(batchSize int) int {
+	return batchSize*1600 + 256
+}
+
+func appendHostItemJSON(data []byte, batch int, n int) []byte {
+	data = append(data, `{"external_id":"host:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","entity":{"id":"host:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","kind":"host","fields":{"generation":`...)
+	data = strconv.AppendInt(data, int64(batch), 10)
+	data = append(data, `,"hostname":"app-`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","region":"region-`...)
+	data = strconv.AppendInt(data, int64(n%8), 10)
+	return append(data, `"},"confidence":0.9,"source_priority":10,"version":0,"created_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"}}`...)
+}
+
+func appendServiceItemJSON(data []byte, batch int, n int) []byte {
+	data = append(data, `{"external_id":"service:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","entity":{"id":"service:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","kind":"service","fields":{"generation":`...)
+	data = strconv.AppendInt(data, int64(batch), 10)
+	data = append(data, `,"name":"svc-`...)
+	data = appendPaddedDecimal(data, n, 6)
+	return append(data, `"},"confidence":0.9,"source_priority":10,"version":0,"created_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"}}`...)
+}
+
+func appendEdgeItemJSON(data []byte, batch int, n int) []byte {
+	data = append(data, `{"external_id":"edge-service:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","edge":{"id":"edge:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","type":"runs_on","from":"service:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","to":"host:`...)
+	data = appendPaddedDecimal(data, n, 6)
+	data = append(data, `","fields":{"generation":`...)
+	data = strconv.AppendInt(data, int64(batch), 10)
+	return append(data, `},"version":0,"created_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"}}`...)
+}
+
+func appendPaddedDecimal(data []byte, value int, width int) []byte {
+	var buffer [20]byte
+	digits := strconv.AppendInt(buffer[:0], int64(value), 10)
+	for padding := width - len(digits); padding > 0; padding-- {
+		data = append(data, '0')
+	}
+	return append(data, digits...)
 }
 
 func collectorName(index int) string {

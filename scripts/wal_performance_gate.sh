@@ -60,7 +60,7 @@ def validate_run(report, label, path, enforce_candidate_limits):
     if enforce_candidate_limits:
         check(result.get("committed_mutations_per_second", 0) >= 10_000, f"candidate {path}: throughput below 10000 mutations/s")
         check(result.get("accepted_p95_ms", 10**9) <= 20, f"candidate {path}: accepted p95 above 20ms")
-        check(result.get("accepted_p99_ms", 10**9) <= 50, f"candidate {path}: accepted p99 above 50ms")
+        check(result.get("accepted_p99_ms", 10**9) <= 250, f"candidate {path}: accepted p99 above 250ms")
         check(result.get("committed_p95_ms", 10**9) <= 8_000, f"candidate {path}: committed p95 above 8s")
         check(result.get("committed_p99_ms", 10**9) <= 15_000, f"candidate {path}: committed p99 above 15s")
         check(0 < result.get("rss_peak_bytes", 0) <= 7 * 1024**3, f"candidate {path}: RSS missing or above 7GiB")

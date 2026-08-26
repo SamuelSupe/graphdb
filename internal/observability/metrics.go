@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,10 +60,10 @@ type Metrics struct {
 	ingestWALSync                   map[string]float64
 	ingestWALSyncTime               map[string]*histogram
 	ingestWALGroups                 map[string]*histogram
-	ingestWALBuffer                 float64
-	ingestWALDisk                   float64
-	ingestWALWritten                float64
-	ingestWALDurable                float64
+	ingestWALBuffer                 atomic.Uint64
+	ingestWALDisk                   atomic.Uint64
+	ingestWALWritten                atomic.Uint64
+	ingestWALDurable                atomic.Uint64
 	ingestQueue                     float64
 	ingestQueueBytes                float64
 	ingestQueueMemory               float64
@@ -386,12 +387,10 @@ func (m *Metrics) RecordIngestWALState(bufferBytes int, diskBytes int64, written
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ingestWALBuffer = float64(bufferBytes)
-	m.ingestWALDisk = float64(diskBytes)
-	m.ingestWALWritten = float64(writtenLSN)
-	m.ingestWALDurable = float64(durableLSN)
+	m.ingestWALBuffer.Store(uint64(bufferBytes))
+	m.ingestWALDisk.Store(uint64(diskBytes))
+	m.ingestWALWritten.Store(writtenLSN)
+	m.ingestWALDurable.Store(durableLSN)
 }
 
 func (m *Metrics) RecordIngestQueue(pending int, bytes int64, oldest time.Duration) {
@@ -603,10 +602,10 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeCounter(&b, "graphdb_ingest_wal_fsync_total", "Ingest WAL write and sync groups by status.", []string{"status"}, m.ingestWALSync)
 	writeHistogram(&b, "graphdb_ingest_wal_fsync_duration_seconds", "Ingest WAL write and sync group latency.", []string{"status"}, m.ingestWALSyncTime)
 	writeHistogram(&b, "graphdb_ingest_wal_group_records", "Records written in each ingest WAL group.", []string{"status"}, m.ingestWALGroups)
-	writeScalar(&b, "graphdb_ingest_wal_buffer_bytes", "Bytes currently buffered for an ingest WAL write group.", "gauge", m.ingestWALBuffer)
-	writeScalar(&b, "graphdb_ingest_wal_disk_bytes", "Bytes occupied by ingest WAL segments.", "gauge", m.ingestWALDisk)
-	writeScalar(&b, "graphdb_ingest_wal_written_lsn", "Highest ingest WAL LSN written to the operating system.", "gauge", m.ingestWALWritten)
-	writeScalar(&b, "graphdb_ingest_wal_durable_lsn", "Highest ingest WAL LSN confirmed durable.", "gauge", m.ingestWALDurable)
+	writeScalar(&b, "graphdb_ingest_wal_buffer_bytes", "Bytes currently buffered for an ingest WAL write group.", "gauge", float64(m.ingestWALBuffer.Load()))
+	writeScalar(&b, "graphdb_ingest_wal_disk_bytes", "Bytes occupied by ingest WAL segments.", "gauge", float64(m.ingestWALDisk.Load()))
+	writeScalar(&b, "graphdb_ingest_wal_written_lsn", "Highest ingest WAL LSN written to the operating system.", "gauge", float64(m.ingestWALWritten.Load()))
+	writeScalar(&b, "graphdb_ingest_wal_durable_lsn", "Highest ingest WAL LSN confirmed durable.", "gauge", float64(m.ingestWALDurable.Load()))
 	writeCounter(&b, "graphdb_ingest_wal_checkpoint_total", "Ingest WAL checkpoint recovery and persistence events by outcome.", []string{"outcome"}, m.ingestWALCheckpoint)
 	writeHistogram(&b, "graphdb_ingest_wal_checkpoint_scanned_bytes", "WAL bytes scanned after checkpoint selection.", []string{"outcome"}, m.ingestWALCheckpointBytes)
 	writeHistogram(&b, "graphdb_ingest_wal_checkpoint_duration_seconds", "WAL checkpoint recovery and persistence latency.", []string{"outcome"}, m.ingestWALCheckpointTime)

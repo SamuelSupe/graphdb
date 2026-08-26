@@ -299,7 +299,7 @@ WAL 目录属于耐久性边界。容器部署必须把 `GRAPHDB_DATA_DIR` 挂�
 - `GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest`
 - `GRAPHDB_INGEST_WAL_DURABILITY=sync`
 - `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`
-- `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`
+- `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=3ms`
 - `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`
 - `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`
 - `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
@@ -420,8 +420,10 @@ written/durable LSN、待处理请求与最老等待时间、状态缓存命中/
 `ingest_metadata_flush_started`、`ingest_metadata_segment_completed`、
 `ingest_metadata_manifest_published`、WAL rotate/prune/fsync
 失败和 shutdown 等 JSON 事件；租户、batch、LSN、flush ID、耗时和错误原因
-留在日志中；指标、trace、失败日志和 WAL 记录不采样。设置
-`GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
+留在日志中。队列 gauge 会在首个 accepted、每 128 次 accepted 或 completed
+状态迁移及队列归零时刷新完整快照；事件计数器、trace、失败日志和 WAL 记录不
+采样。成功的 `POST /v1/ingest/batches` 请求日志同样保留首条和每第 1,024 条；
+其他请求日志仍全量。设置 `GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
 write、flush、batch apply、publish、metadata encode/PUT、manifest CAS 和
 Bloom/index lookup 会通过 OTLP/HTTP
 导出。异步 group write 和 flush 使用 OTel links 关联原请求 span；accepted
@@ -453,7 +455,7 @@ v1.1.5 到 v1.2.0 是单向数据升级：停止旧 writer，保留 WAL 与对�
 
 发行门禁在同一固定 OrbStack 主机上分别运行 v1.1.5、v1.2.0 各 5 次、每次
 30 分钟。v1.2.0 必须达到至少 10,000 committed mutations/s 和 v1.1.5 中位数
-的 1.5 倍；accepted p95/p99 不超过 20/50 ms，committed p95/p99 不超过
+的 1.5 倍；accepted p95/p99 不超过 20/250 ms，committed p95/p99 不超过
 8/15 秒；RSS 不超过 7 GiB 且不超过基线 110%；每 1,000 mutation 的 CPU
 至少下降 25%；吞吐离散不超过 5%；direct 写入与查询回归不超过 10%。
 

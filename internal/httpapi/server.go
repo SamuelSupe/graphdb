@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
@@ -20,6 +21,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const acceptedHTTPLogEvery = 1024
 
 type Server struct {
 	Store                 *storage.TenantStore
@@ -38,6 +41,7 @@ type Server struct {
 	maintenance           *maintenanceState
 	maintenanceOnce       sync.Once
 	usageCache            *tenantUsageCache
+	acceptedHTTPLogCount  atomic.Uint64
 }
 
 type CommitRequest struct {
@@ -459,10 +463,17 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		if recorder.status >= 500 {
 			span.SetStatus(codes.Error, http.StatusText(recorder.status))
 		}
-		obs.Logger.Info("http_request", map[string]any{
-			"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,
-			"status": recorder.status, "duration_ms": float64(duration.Microseconds()) / 1000,
-		})
+		logRequest := true
+		if route == "POST /v1/ingest/batches" && recorder.status == http.StatusAccepted {
+			count := s.acceptedHTTPLogCount.Add(1)
+			logRequest = count == 1 || count%acceptedHTTPLogEvery == 0
+		}
+		if logRequest {
+			obs.Logger.Info("http_request", map[string]any{
+				"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,
+				"status": recorder.status, "duration_ms": float64(duration.Microseconds()) / 1000,
+			})
+		}
 	})
 }
 

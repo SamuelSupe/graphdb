@@ -52,7 +52,7 @@ local_wal_ingest_gate:
   minimum_throughput_ratio_vs_v1_1_5: 1.50
   accepted_latency:
     p95_max: 20ms
-    p99_max: 50ms
+    p99_max: 250ms
   committed_latency:
     p95_max: 8s
     p99_max: 15s

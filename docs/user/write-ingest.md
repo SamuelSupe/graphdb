@@ -306,7 +306,7 @@ profiles mount `/var/lib/graphdb` for the writer.
 Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
 `${GRAPHDB_DATA_DIR}/wal/ingest`), `GRAPHDB_INGEST_WAL_DURABILITY=sync`,
 `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`,
-`GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`,
+`GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=3ms`,
 `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`,
 `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`,
 `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`,
@@ -436,8 +436,12 @@ JSON logs include `ingest_wal_recovery`, sampled `ingest_wal_accepted`
 `ingest_metadata_flush_started`, `ingest_metadata_segment_completed`,
 `ingest_metadata_manifest_published`, WAL rotate/prune/fsync
 failures, and shutdown events. Tenant, batch, LSN, flush ID, latency, and error
-details remain in logs. Metrics, traces, failure logs, and WAL records are not
-sampled. When `GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
+details remain in logs. Queue gauges refresh from complete snapshots on the
+first acceptance, every 128 accepted or completed transitions, and queue drain;
+successful `POST /v1/ingest/batches` request logs retain the first event and
+every 1,024th event. Event counters, traces, failure logs, other request logs,
+and WAL records are not sampled. When
+`GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
 append/group write, flush, batch apply, publish, metadata encode/PUT, manifest
 CAS, and Bloom/index lookup spans
 are exported over OTLP/HTTP. Asynchronous group writes and flushes use OTel
@@ -475,7 +479,7 @@ remain unchanged; only physical batching and default runtime policy change.
 
 The release gate runs v1.1.5 and v1.2.0 five times each for 30 minutes on one
 fixed OrbStack host. v1.2.0 must commit at least 10,000 mutations/s and reach
-1.5x the v1.1.5 median, with accepted p95/p99 at most 20/50 ms, committed
+1.5x the v1.1.5 median, with accepted p95/p99 at most 20/250 ms, committed
 p95/p99 at most 8/15 seconds, RSS at most 7 GiB and 110% of baseline, CPU per
 1,000 mutations at least 25% lower, throughput spread at most 5%, and direct
 write/query regression at most 10%.

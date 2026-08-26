@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,15 +40,12 @@ func runWriters(ctx context.Context, cfg config, client *apiClient, versions *ve
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			request := make(encodedJSON, 0, batchRequestJSONCapacity(cfg.batchSize))
 			for batch := range jobs {
 				collector := collectorName(batch % cfg.collectors)
-				request, err := json.Marshal(batchRequest(batch, cfg.batchSize, collector, cfg.workingSet))
-				if err != nil {
-					metrics.add("ingest", 0, 0, err)
-					continue
-				}
+				request = appendBatchRequestJSON(request[:0], batch, cfg.batchSize, collector, cfg.workingSet)
 				for {
-					outcome, err := client.ingest(ctx, metrics, encodedJSON(request))
+					outcome, err := client.ingest(ctx, metrics, request)
 					if err != nil {
 						break
 					}

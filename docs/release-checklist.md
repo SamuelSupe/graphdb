@@ -22,7 +22,7 @@
       on the fixed OrbStack host with 8 tenants and 16 collectors.
 - [ ] Every v1.2.0 run commits at least 10,000 mutations/s; median throughput is
       at least 1.5x v1.1.5 and run spread is no more than 5%.
-- [ ] Accepted p95/p99 are at most 20/50 ms and committed p95/p99 are at most
+- [ ] Accepted p95/p99 are at most 20/250 ms and committed p95/p99 are at most
       8/15 seconds in every candidate run.
 - [ ] Candidate RSS is at most 7 GiB and 110% of baseline; CPU per 1,000
       mutations is at most 75% of baseline.

@@ -2,11 +2,24 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WRITER_URL="${WRITER_URL:-http://host.docker.internal:38080}"
+WRITER_URL="${WRITER_URL:-http://127.0.0.1:8080}"
 WRITER_CONTAINER="${WRITER_CONTAINER:?set WRITER_CONTAINER to the GraphDB writer container}"
+CLIENT_NETWORK="${WAL_PERF_CLIENT_NETWORK:-container}"
 IMAGE="${GRAPHDB_GO_IMAGE:-golang:1.25-bookworm}"
 DOCKER_CONTEXT="${GRAPHDB_DOCKER_CONTEXT:-orbstack}"
 DOCKER=(docker --context "$DOCKER_CONTEXT")
+declare -a CLIENT_NETWORK_ARGS=()
+case "$CLIENT_NETWORK" in
+  container)
+    CLIENT_NETWORK_ARGS=(--network "container:$WRITER_CONTAINER")
+    ;;
+  bridge)
+    ;;
+  *)
+    echo "WAL_PERF_CLIENT_NETWORK must be container or bridge" >&2
+    exit 2
+    ;;
+esac
 RUN_LABEL="${RUN_LABEL:-candidate}"
 RUN_DURATION="${RUN_DURATION:-30m}"
 TENANTS="${WAL_PERF_TENANTS:-8}"
@@ -42,6 +55,7 @@ grep -Fx 'GRAPHDB_COORDINATION=local' "$OUTPUT_DIR/runtime-config.txt" >/dev/nul
 grep -Fx 'GRAPHDB_INGEST_WAL_DURABILITY=sync' "$OUTPUT_DIR/runtime-config.txt" >/dev/null
 grep -Fx 'DOCKER_NANO_CPUS=8000000000' "$OUTPUT_DIR/runtime-config.txt" >/dev/null
 grep -Fx 'DOCKER_MEMORY_BYTES=8589934592' "$OUTPUT_DIR/runtime-config.txt" >/dev/null
+printf 'CLIENT_NETWORK_MODE=%s\nWRITER_URL=%s\n' "$CLIENT_NETWORK" "$WRITER_URL" >> "$OUTPUT_DIR/runtime-config.txt"
 
 "${DOCKER[@]}" run --rm --platform linux/arm64 \
   --mount type=volume,source=graphdb-wal-perf-go-mod,destination=/go/pkg/mod \
@@ -78,6 +92,7 @@ START_AT_UNIX_MS="$(python3 -c 'import sys, time; print(int((time.time() + int(s
 for ((tenant_index = 0; tenant_index < TENANTS; tenant_index++)); do
   tenant="wal-perf-${RUN_LABEL}-${RUN_SLUG}-${tenant_index}"
   "${DOCKER[@]}" run --rm --platform linux/arm64 \
+    "${CLIENT_NETWORK_ARGS[@]}" \
     -v "$OUTPUT_DIR:/evidence" \
     "$IMAGE" /evidence/loadtest \
     -base "$WRITER_URL" \

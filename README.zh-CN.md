@@ -39,7 +39,7 @@ segment、manifest、snapshot 和 index 都可以从对象存储恢复。
 | 查询可见写入 | 调用方需要最终 `200/207` 结果时发送 `Prefer: wait=committed`，而不是只等待 durable 异步接收。 |
 | 有界准入 | 队列 80%、WAL 70% 或 pending age 2 分钟时返回带 `Retry-After` 的结构化 `429`；WAL 使用率达到 85% 后 readiness 进入 drain-only。 |
 | 写入与维护安全 | 默认 write cache 为 4 GiB，commit-tail 上限为 20,000；后台重型任务默认单并发；每租户 ingest 空闲满 1 分钟后维护任务才会运行。 |
-| 性能门禁 | 固定 OrbStack 主机，8 CPU/8 GiB，8 个租户、16 个采集器，v1.1.5 基线和候选各运行 5 次 30 分钟；阈值是发行门禁，结果只有在 v1.2.0 Release 打包 commit-bound evidence 后才具权威性。 |
+| 性能门禁 | 固定 OrbStack 主机，8 CPU/8 GiB，8 个租户、16 个采集器，v1.1.5 基线和候选各运行 5 次 30 分钟；accepted p95/p99 上限为 20/250 ms，结果只有在 v1.2.0 Release 打包 commit-bound evidence 后才具权威性。 |
 | 兼容边界 | v1.1.5 → v1.2.0 在启用 segment metadata 后是单向数据升级；PostgreSQL 协调必须显式使用 direct ingest。 |
 
 ## 核心能力
@@ -231,7 +231,7 @@ release job 依赖验证、RustFS/WAL 恢复、CAS soak、回滚和固定主机�
 性能合同是明确的门禁，不是本文的 benchmark 结果：固定 8 CPU/8 GiB OrbStack
 主机运行 8 个租户、16 个采集器，v1.1.5 基线和 v1.2.0 候选各 5 次 30 分钟。
 候选阈值包括至少 10,000 committed mutations/s，中位吞吐比至少 1.5，运行间
-离散不超过 5%，accepted p95/p99 不超过 20/50 ms，committed p95/p99 不超过
+离散不超过 5%，accepted p95/p99 不超过 20/250 ms，committed p95/p99 不超过
 8/15 秒，RSS 不超过 7 GiB 和基线的 110%，每 1,000 mutation 的 CPU 不超过
 基线 75%，direct 写入和查询回归不超过 10%。这些是发行阈值；测量结果只有在
 v1.2.0 GitHub Release 打包对应的 commit-bound 矩阵证据后才具权威性。

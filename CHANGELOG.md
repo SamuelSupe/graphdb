@@ -3,7 +3,7 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [1.2.0] - 2026-08-25
+## [1.2.0] - 2026-08-26
 
 ### Changed
 
@@ -24,15 +24,21 @@ versioning; release tags and binaries expose the exact build commit and date.
   batch after that delay, so saturation sheds load without dropping scheduled
   work or creating an immediate 429 retry loop. The fixed-host matrix gives all
   tenants one synchronized measured-workload start after seed and index setup.
-  Performance defaults use a 5 ms group-fsync window, two graph and two
+  Performance defaults use a 3 ms group-fsync window, two graph and two
   metadata flush workers, the flush triggers above, a 4 GiB write cache, a
   20,000 commit-tail limit, and a two-minute pending-age guard. The admission
   path prepares durable envelopes outside the service lock, transfers their
   payload directly to the synchronous WAL append, and avoids rescanning the
   unchanged metadata queue. Successful durable-acceptance logs retain the first
-  event and every 1,024th event while metrics, traces, failures, and WAL records
-  remain complete. Heavy background task execution is single-concurrency by
-  default.
+  event and every 1,024th event. Queue gauges refresh from complete snapshots on
+  the first acceptance, every 128 state transitions, and queue drain. Successful
+  ingest HTTP request logs use the same first-and-every-1,024 sampling policy.
+  The ingest HTTP decoder and accepted-envelope encoder use a byte-compatible
+  accelerated JSON path while preserving request-size errors. WAL progress
+  gauges update atomically so fsync completion never waits on the shared
+  metrics lock; event counters, traces, failures, and WAL records remain
+  complete. Heavy
+  background task execution is single-concurrency by default.
 - Store the complete request only in its accepted WAL record. Prepared,
   published, and finalized records carry compact state deltas, eliminating
   repeated graph-item serialization during state changes. Prepared records
@@ -58,7 +64,14 @@ versioning; release tags and binaries expose the exact build commit and date.
 - Add a fixed-host OrbStack gate with eight tenants, 16 collectors, sync WAL,
   segment metadata, five 30-minute runs for v1.1.5 and v1.2.0, and commit-bound
   accepted/committed latency, throughput, RSS, CPU, direct-write, and query
-  regression evidence. Any failed threshold blocks the release workflow.
+  regression evidence. Its load generator writes the canonical request JSON
+  into per-writer reusable buffers instead of allocating an equivalent
+  600-item object graph, and shares the writer network namespace instead of
+  routing timed requests through host NAT. These keep client GC and bridge
+  jitter out of accepted-latency measurements without changing request bytes,
+  concurrency, or server limits. The accepted-latency release ceiling is
+  20 ms at p95 and 250 ms at p99; any failed threshold blocks the release
+  workflow.
 
 ### Compatibility
 

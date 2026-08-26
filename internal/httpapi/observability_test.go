@@ -78,6 +78,33 @@ func TestMetricsEndpointRecordsHTTPQueryAndSuppressedConflicts(t *testing.T) {
 	}
 }
 
+func TestSuccessfulWALIngestHTTPLogsAreSampledButFailuresAreNot(t *testing.T) {
+	var logs bytes.Buffer
+	obs := observability.New(&logs, 0)
+	status := http.StatusAccepted
+	handler := (&Server{Observability: obs}).observeHTTP(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	}))
+
+	serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", nil)
+	serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", nil)
+	status = http.StatusInternalServerError
+	serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", nil)
+
+	if got := strings.Count(logs.String(), `"event":"http_request"`); got != 2 {
+		t.Fatalf("http request log count = %d, want first success and failure", got)
+	}
+	metrics := string(obs.Metrics.SnapshotPrometheus())
+	for _, want := range []string{
+		`graphdb_http_requests_total{method="POST",route="POST /v1/ingest/batches",status="202"} 2`,
+		`graphdb_http_requests_total{method="POST",route="POST /v1/ingest/batches",status="500"} 1`,
+	} {
+		if !strings.Contains(metrics, want) {
+			t.Fatalf("metrics missing %q in:\n%s", want, metrics)
+		}
+	}
+}
+
 func TestIngestLogicalNoopReportsReasonAndMetric(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	obs := observability.New(io.Discard, 0)

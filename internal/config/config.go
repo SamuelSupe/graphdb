@@ -166,7 +166,7 @@ func Load() (Config, error) {
 		IngestMode:                        ingestMode,
 		IngestWALDurability:               strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_WAL_DURABILITY", storage.IngestWALDurabilitySync))),
 		IngestWALBufferBytes:              4 * 1024 * 1024,
-		IngestWALFsyncInterval:            5 * time.Millisecond,
+		IngestWALFsyncInterval:            3 * time.Millisecond,
 		IngestWALMaxBytes:                 10 * 1024 * 1024 * 1024,
 		IngestWALSegmentBytes:             256 * 1024 * 1024,
 		IngestWALAppendQueue:              4096,

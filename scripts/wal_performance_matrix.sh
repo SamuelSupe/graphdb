@@ -94,7 +94,8 @@ run_profile() {
   RUN_LABEL="$profile-$run_index" \
   RUN_DURATION=30m \
   WRITER_CONTAINER="$CONTAINER" \
-  WRITER_URL="http://host.docker.internal:$PORT" \
+  WRITER_URL="http://127.0.0.1:8080" \
+  WAL_PERF_CLIENT_NETWORK=container \
   WAL_PERF_TENANTS=8 \
   WAL_PERF_COLLECTORS=16 \
   WAL_PERF_WRITERS_PER_TENANT=32 \

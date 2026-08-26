@@ -1,12 +1,12 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
+	json "github.com/goccy/go-json"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -26,14 +26,17 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any, maxBytes 
 		endHTTPSpan(span, spanErr)
 	}()
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-	decoder := json.NewDecoder(r.Body)
+	reader := &decodeErrorReader{Reader: r.Body}
+	decoder := json.NewDecoder(reader)
 	if err := decoder.Decode(value); err != nil {
+		err = reader.preferReadError(err)
 		spanErr = err
 		writeDecodeError(w, err)
 		return false
 	}
 	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
+	err := reader.preferReadError(decoder.Decode(&extra))
+	if err != io.EOF {
 		if err == nil {
 			spanErr = traceError("request body contains multiple JSON documents")
 			writeError(w, http.StatusBadRequest, "request body must contain a single JSON document")
@@ -44,6 +47,28 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any, maxBytes 
 		return false
 	}
 	return true
+}
+
+type decodeErrorReader struct {
+	io.Reader
+	err error
+}
+
+func (r *decodeErrorReader) Read(buffer []byte) (int, error) {
+	n, err := r.Reader.Read(buffer)
+	// The accelerated decoder turns source read errors into EOF. Retain the
+	// MaxBytesReader error so oversized requests keep their HTTP 413 contract.
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
+}
+
+func (r *decodeErrorReader) preferReadError(err error) error {
+	if r.err != nil {
+		return r.err
+	}
+	return err
 }
 
 func traceRequestAttributes(r *http.Request, maxBytes int64) []attribute.KeyValue {

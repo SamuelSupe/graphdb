@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	fastjson "github.com/goccy/go-json"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -30,6 +31,7 @@ const (
 	IngestStateFailed       = "failed"
 	ingestRecentStatusLimit = 1024
 	ingestAcceptedLogEvery  = 1024
+	ingestQueueObserveEvery = 128
 )
 
 type IngestServiceConfig struct {
@@ -175,10 +177,10 @@ func ingestRequestDigest(request IngestRequest, requestJSON []byte) ([sha256.Siz
 }
 
 func marshalAcceptedIngestEnvelope(envelope walIngestEnvelope, requestJSON []byte) ([]byte, error) {
-	return json.Marshal(struct {
+	return fastjson.Marshal(struct {
 		RecordID        string                 `json:"record_id"`
 		TenantID        string                 `json:"tenant_id"`
-		Request         json.RawMessage        `json:"request"`
+		Request         fastjson.RawMessage    `json:"request"`
 		Digest          string                 `json:"digest"`
 		AcceptedAt      time.Time              `json:"accepted_at"`
 		AcceptedLSN     uint64                 `json:"accepted_lsn,omitempty"`
@@ -522,10 +524,12 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		if s.oldestPending.IsZero() || acceptedAt.Before(s.oldestPending) {
 			s.oldestPending = acceptedAt
 		}
-		s.observeQueueDepthLocked()
 		close(flight.done)
 		accepted := acceptanceFromPending(pending, s.config.WAL.Durability)
 		s.acceptedLogCount++
+		if s.acceptedLogCount == 1 || s.acceptedLogCount%ingestQueueObserveEvery == 0 {
+			s.observeQueueDepthLocked()
+		}
 		logAccepted := s.acceptedLogCount == 1 || s.acceptedLogCount%ingestAcceptedLogEvery == 0
 		s.mu.Unlock()
 		span.SetAttributes(
@@ -1610,7 +1614,9 @@ func (s *IngestService) completePending(pending *ingestPending, result IngestRes
 		s.completedSince = 0
 	}
 	pending.completedOnce.Do(func() { close(pending.done) })
-	s.observeQueueLocked()
+	if shouldPrune || len(s.active) == 0 {
+		s.observeQueueLocked()
+	}
 	s.mu.Unlock()
 	if shouldPrune {
 		_ = s.prune(context.Background())

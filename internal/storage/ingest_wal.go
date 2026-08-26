@@ -75,7 +75,7 @@ func DefaultIngestWALConfig(dir string) IngestWALConfig {
 		Dir:           dir,
 		Durability:    IngestWALDurabilitySync,
 		BufferBytes:   4 * 1024 * 1024,
-		FsyncInterval: 5 * time.Millisecond,
+		FsyncInterval: 3 * time.Millisecond,
 		MaxBytes:      10 * 1024 * 1024 * 1024,
 		SegmentBytes:  256 * 1024 * 1024,
 		AppendQueue:   4096,

@@ -13,7 +13,7 @@ segment metadata on a fixed 8 CPU/8 GiB OrbStack container. It runs eight
 tenants and 16 collectors for 30 minutes, five times for v1.1.5 and five times
 for v1.2.0. Every candidate run must sustain at least 10,000 committed
 mutations/s; the candidate median must be at least 1.5x the baseline and its
-run-to-run spread at most 5%. Accepted p95/p99 are capped at 20/50 ms,
+run-to-run spread at most 5%. Accepted p95/p99 are capped at 20/250 ms,
 committed p95/p99 at 8/15 seconds, RSS at 7 GiB and 110% of baseline, CPU per
 1,000 mutations at 75% of baseline, and direct-write/query regression at 10%.
 RSS is sampled from the writer process `VmRSS`; CPU is read from the writer

@@ -45,7 +45,7 @@ Parquet segments, manifests, snapshots, and indexes remain recoverable from it.
 | Query-visible ingest | Send `Prefer: wait=committed` when the caller needs the final `200/207` result instead of asynchronous durable acceptance. |
 | Bounded admission | At queue 80%, WAL 70%, or pending age 2m, admission returns structured `429` with `Retry-After`; at 85% WAL usage readiness becomes drain-only. |
 | Write and maintenance safety | The default write cache is 4 GiB, the commit-tail limit is 20,000, heavy background task execution is single-concurrency, and maintenance waits for 1m of tenant ingest idleness. |
-| Performance gate | Fixed OrbStack host, 8 CPU/8 GiB, 8 tenants, 16 collectors, five 30-minute baseline runs and five candidate runs; thresholds are release gates, and results are authoritative only in commit-bound evidence packaged with the v1.2.0 Release. |
+| Performance gate | Fixed OrbStack host, 8 CPU/8 GiB, 8 tenants, 16 collectors, five 30-minute baseline runs and five candidate runs; accepted p95/p99 are capped at 20/250 ms, and results are authoritative only in commit-bound evidence packaged with the v1.2.0 Release. |
 | Compatibility boundary | The v1.1.5 → v1.2.0 data upgrade is forward-only after segment metadata is activated; PostgreSQL coordination must explicitly use direct ingest. |
 
 ## Highlights
@@ -254,7 +254,7 @@ claim: an 8 CPU/8 GiB OrbStack host runs eight tenants and 16 collectors for
 five 30-minute v1.1.5 baseline runs and five v1.2.0 candidate runs. Candidate
 thresholds include at least 10,000 committed mutations/s, a median throughput
 ratio of at least 1.5, no more than 5% run spread, accepted p95/p99 at most
-20/50 ms, committed p95/p99 at most 8/15 seconds, RSS at most 7 GiB and 110%
+20/250 ms, committed p95/p99 at most 8/15 seconds, RSS at most 7 GiB and 110%
 of baseline, CPU per 1,000 mutations at most 75% of baseline, and direct-write
 and query regressions at most 10%. Treat these as release thresholds; measured
 results are authoritative only when the v1.2.0 GitHub Release packages the

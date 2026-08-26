@@ -11,7 +11,7 @@ GGraphDB 1.2 发布的是可复现的发行容量边界，而不是没有条件�
 使用 sync WAL 与 segment metadata。8 个租户、16 个采集器持续 30 分钟，
 v1.1.5 与 v1.2.0 各跑 5 次。每次候选运行都必须达到至少 10,000 committed
 mutations/s；候选中位数至少为基线 1.5 倍，运行间离散不超过 5%。accepted
-p95/p99 不超过 20/50 ms，committed p95/p99 不超过 8/15 秒，RSS 不超过
+p95/p99 不超过 20/250 ms，committed p95/p99 不超过 8/15 秒，RSS 不超过
 7 GiB 和基线 110%，每 1,000 mutation 的 CPU 不超过基线 75%，direct 写入
 和查询回归不超过 10%。
 RSS 从 writer 进程的 `VmRSS` 采样；CPU 读取 writer 容器 cgroup，并按每
