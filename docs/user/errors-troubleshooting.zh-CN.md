@@ -29,6 +29,10 @@
 | `tenant_deleted` | 租户已软删除 | 恢复/克隆，或停止使用该租户。 |
 | `operation_disabled` | reader 模式尝试写入 | 把写入/配置/任务变更发送到 writer。 |
 | `reader_not_fresh` | reader 未追上所需版本 | 稍后重试，降低 `min_version` 或允许旧读。 |
+| `retrieval_not_ready` | 尚无完整 GraphRAG 快照 | 等待 retrieval worker 发布首个完整快照。 |
+| `index_not_fresh` | 检索快照低于 `minVersion` | 等待 retrieval worker 追平，或降低 `minVersion`。 |
+| `embedding_unavailable` | 查询 Embedding 端点不可用 | 恢复配置的 Embedding 端点后重试。 |
+| `retrieval_budget_exceeded` | 证据检索超过有界预算 | 降低候选数、图深度、seed 数或访问节点预算。 |
 | `write_admission_queue_timeout` | 写入队列已满 | 用相同幂等键重试并降低并发。 |
 | `write_backpressure` | 系统背压 | 遵守 `Retry-After` 并检查 `reasons`。 |
 | `commit_tail_too_long` | 可见 commit 过多 | 执行 compact 或等待自动 compact。 |

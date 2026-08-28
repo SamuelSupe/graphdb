@@ -2,6 +2,8 @@ package query
 
 import (
 	"testing"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/retrieval"
 )
 
 func TestParseGraphQLWithVariablesAndAliases(t *testing.T) {
@@ -81,5 +83,91 @@ func TestParseGraphQLRejectsUnknownRequestField(t *testing.T) {
 	})
 	if len(errs) == 0 {
 		t.Fatal("unknown graph request field was accepted")
+	}
+}
+
+func TestParseGraphQLEvidenceSearch(t *testing.T) {
+	plan, errs := ParseGraphQL(GraphQLRequest{
+		Query: `
+			query Evidence($input: EvidenceSearchInput!) {
+				answer: evidenceSearch(input: $input) {
+					version
+					retrievalRevision
+					embeddingGeneration
+					evidence
+					stats
+					plan
+				}
+			}`,
+		OperationName: "Evidence",
+		Variables: map[string]any{
+			"input": map[string]any{
+				"query":       "why is checkout failing?",
+				"kinds":       []any{"TextChunk"},
+				"vectorTopK":  120,
+				"lexicalTopK": 80,
+				"topK":        10,
+				"minVersion":  7,
+				"explain":     true,
+				"expansion": map[string]any{
+					"maxDepth":      1,
+					"direction":     "out",
+					"relationTypes": []any{"MENTIONS"},
+				},
+			},
+		},
+	})
+	if len(errs) > 0 {
+		t.Fatalf("ParseGraphQL: %v", errs)
+	}
+	request := plan.EvidenceRequest
+	if !plan.IsEvidenceSearch() ||
+		plan.RootName != "answer" ||
+		request.Query != "why is checkout failing?" ||
+		request.VectorTopK != 120 ||
+		request.LexicalTopK != 80 ||
+		request.TopK != 10 ||
+		request.MinVersion != 7 ||
+		!request.Explain ||
+		request.Expansion == nil ||
+		request.Expansion.Depth() != 1 ||
+		request.Expansion.Direction != "out" {
+		t.Fatalf("plan = %#v", plan)
+	}
+	data := plan.EvidenceData(retrieval.SearchResponse{
+		Version:             7,
+		RetrievalRevision:   9,
+		EmbeddingGeneration: "generation-2",
+		Evidence: []retrieval.Evidence{{
+			Rank:  1,
+			ID:    "chunk:1",
+			Score: 0.9,
+		}},
+		Stats: retrieval.SearchStats{Returned: 1},
+	})
+	root, ok := data["answer"].(map[string]any)
+	if !ok ||
+		root["version"] != int64(7) ||
+		root["retrievalRevision"] != int64(9) ||
+		root["embeddingGeneration"] != "generation-2" ||
+		root["evidence"] == nil ||
+		root["stats"] == nil {
+		t.Fatalf("data = %#v", data)
+	}
+}
+
+func TestParseGraphQLEvidenceSearchRejectsInvalidBounds(t *testing.T) {
+	_, errs := ParseGraphQL(GraphQLRequest{
+		Query: `{
+			evidenceSearch(input: {
+				query: "deep"
+				expansion: {maxDepth: 3}
+			}) {
+				version
+			}
+		}`,
+	})
+	if len(errs) == 0 {
+		t.Fatal("unbounded evidence expansion was accepted")
 	}
 }

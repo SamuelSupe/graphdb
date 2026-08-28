@@ -159,36 +159,76 @@ type CoordinatorTaskLease struct {
 	ExpiresAt  time.Time
 }
 
-type WriteCoordinator interface {
+type CoordinatorDescriptor interface {
 	Backend() string
 	Namespace() string
+}
+
+type CoordinatorSchema interface {
 	CheckSchema(context.Context) error
+	Close()
+}
+
+type CoordinatorHeadStore interface {
 	Head(context.Context, string) (CoordinationHead, bool, error)
 	BootstrapHead(context.Context, CoordinationHead, bool) error
+}
+
+type CoordinatorCommitStore interface {
 	ReserveCommit(context.Context, string, string, string, string, time.Duration) (CommitReservation, error)
 	RenewCommit(context.Context, string, string, string, string) (bool, error)
 	AbortCommit(context.Context, string, string, string, string) error
 	PublishHead(context.Context, HeadPublishRequest) (CoordinationHead, bool, error)
 	CompleteNoop(context.Context, HeadPublishRequest) (bool, error)
 	PublishWriteContext(context.Context, WriteContextPublishRequest) (CoordinationHead, bool, error)
+}
+
+type CoordinatorLifecycleStore interface {
 	TransitionTenant(context.Context, string, string, bool) (CoordinationHead, error)
 	ActivateTenantHead(context.Context, HeadPublishRequest) (CoordinationHead, bool, error)
 	FinalizeTenantPurge(context.Context, string, int64) error
+}
+
+type CoordinatorTaskStore interface {
 	AcquireTaskLease(context.Context, string, string, string, time.Duration) (CoordinatorTaskLease, bool, error)
 	RenewTaskLease(context.Context, CoordinatorTaskLease, time.Duration) (CoordinatorTaskLease, bool, error)
 	ReleaseTaskLease(context.Context, CoordinatorTaskLease) error
+}
+
+type CoordinatorDerivedTaskStore interface {
 	ClaimDerivedTask(context.Context, string, time.Duration) (DerivedTaskJob, bool, error)
 	RenewDerivedTask(context.Context, DerivedTaskJob, time.Duration) (bool, error)
 	CompleteDerivedTask(context.Context, DerivedTaskJob, int64) error
 	FailDerivedTask(context.Context, DerivedTaskJob, error) error
+}
+
+type CoordinatorCollectorStore interface {
 	CollectorState(context.Context, string, string, string) (CollectorStateUpdate, bool, error)
+}
+
+type CoordinatorLegacyManifestStore interface {
 	ClaimLegacyManifest(context.Context, string, time.Duration) (LegacyManifestJob, bool, error)
 	CompleteLegacyManifest(context.Context, LegacyManifestJob) error
 	FailLegacyManifest(context.Context, LegacyManifestJob, error) error
+}
+
+type CoordinatorMaintenanceStore interface {
 	Cleanup(context.Context, CoordinatorCleanupConfig) (CoordinatorCleanupReport, error)
 	Reachability(context.Context, string) (CoordinatorReachability, error)
 	Status(context.Context) (CoordinatorStatus, error)
-	Close()
+}
+
+type WriteCoordinator interface {
+	CoordinatorDescriptor
+	CoordinatorSchema
+	CoordinatorHeadStore
+	CoordinatorCommitStore
+	CoordinatorLifecycleStore
+	CoordinatorTaskStore
+	CoordinatorDerivedTaskStore
+	CoordinatorCollectorStore
+	CoordinatorLegacyManifestStore
+	CoordinatorMaintenanceStore
 }
 
 type CoordinatorTaskLeaseReader interface {

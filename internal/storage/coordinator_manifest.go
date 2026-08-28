@@ -191,12 +191,12 @@ func (s *TenantStore) putCoordinatedManifest(
 }
 
 func (s *TenantStore) observeCoordinatorCAS(tenantID string, status string, revision int64) {
-	if s.CoordinatorObserver == nil {
+	if s.coordinatorObserver == nil {
 		return
 	}
-	s.CoordinatorObserver.RecordCoordinatorCAS(tenantID, status)
+	s.coordinatorObserver.RecordCoordinatorCAS(tenantID, status)
 	if revision > 0 {
-		s.CoordinatorObserver.RecordCoordinatorHeadRevision(tenantID, revision)
+		s.coordinatorObserver.RecordCoordinatorHeadRevision(tenantID, revision)
 	}
 }
 

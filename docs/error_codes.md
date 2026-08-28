@@ -48,6 +48,10 @@ The following top-level `code` values are stable:
 | `write_backpressure` | 429 | yes | Generic write backpressure category. |
 | `request_timeout` | 504 | yes | Request execution timed out. |
 | `request_canceled` | 499 | no | Client or caller canceled the request. |
+| `retrieval_not_ready` | 503 | yes | No complete retrieval index snapshot is available. |
+| `index_not_fresh` | 503 | yes | The complete retrieval snapshot is older than the requested `minVersion`. |
+| `embedding_unavailable` | 503 | yes | The configured query embedding service is unavailable. |
+| `retrieval_budget_exceeded` | 429 | no | The requested evidence search exceeds a bounded retrieval budget. |
 
 Write backpressure responses may include `reasons[]` with more specific reason
 codes. Those reason codes are intentionally scoped to the backpressure detail

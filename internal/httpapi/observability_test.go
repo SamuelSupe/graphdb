@@ -78,6 +78,33 @@ func TestMetricsEndpointRecordsHTTPQueryAndSuppressedConflicts(t *testing.T) {
 	}
 }
 
+func TestIngestLogicalNoopReportsReasonAndMetric(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	obs := observability.New(io.Discard, 0)
+	handler := (&Server{Store: store, Mode: "all", Observability: obs}).Handler()
+	request := storage.IngestRequest{
+		Source:      "agent",
+		CollectorID: "collector-a",
+		BatchID:     "batch-1",
+		Items: []storage.IngestItem{{
+			ExternalID: "host-1",
+			Entity:     &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"hostname": "app-01"}},
+		}},
+	}
+	if rr := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request); rr.Code != http.StatusOK {
+		t.Fatalf("first ingest = %d body=%s", rr.Code, rr.Body.String())
+	}
+	request.BatchID = "batch-2"
+	rr := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"skip_reason":"logical_noop"`) {
+		t.Fatalf("logical no-op ingest = %d body=%s", rr.Code, rr.Body.String())
+	}
+	metrics := string(obs.Metrics.SnapshotPrometheus())
+	if !strings.Contains(metrics, `graphdb_ingest_skipped_total{tenant="tenant-a",source="agent",reason="logical_noop"} 1`) {
+		t.Fatalf("logical no-op metric missing:\n%s", metrics)
+	}
+}
+
 func TestSlowQueryWritesStructuredLog(t *testing.T) {
 	var log bytes.Buffer
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")

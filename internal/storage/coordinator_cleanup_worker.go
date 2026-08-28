@@ -31,12 +31,12 @@ func (s *TenantStore) CleanupCoordinator(ctx context.Context) (CoordinatorCleanu
 		return CoordinatorCleanupReport{}, nil
 	}
 	report, err := s.Coordinator.Cleanup(ctx, s.CoordinatorCleanup)
-	if s.CoordinatorObserver != nil {
+	if s.coordinatorObserver != nil {
 		status := "ok"
 		if err != nil {
 			status = "error"
 		}
-		s.CoordinatorObserver.RecordCoordinatorCleanup(
+		s.coordinatorObserver.RecordCoordinatorCleanup(
 			status,
 			report.IdempotencyDeleted,
 			report.OutboxDeleted,

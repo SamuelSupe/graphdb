@@ -29,6 +29,10 @@ func (s *Server) queryGraphQL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, graphQLResponse{Errors: requestErrors})
 		return
 	}
+	if plan.IsEvidenceSearch() {
+		s.queryGraphQLEvidence(w, r, tenantID, plan)
+		return
+	}
 	request := plan.Request
 	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(request)...)
 	ctx, queryID, finish := s.QueryRegistry.Start(

@@ -201,7 +201,9 @@ edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
   `labels` 便捷字段暴露；
 - 关系属性 schema 和反向邻接产物放在
   `tenants/<tenant>/extensions/v1.1/` 下。
+- 1.2 的检索 definition、不可变 catalog、检索 segment 和 CAS head 放在
+  `tenants/<tenant>/extensions/v1.2/retrieval/` 下。
 
-因此 1.0 reader 可以继续读取核心图，并忽略保留字段和扩展 sidecar。1.0
-writer 不会执行 1.1 关系属性校验，所以受 schema 管理的边应继续由 1.1
-writer 写入。
+因此 1.0 或 1.1 reader 可以继续读取核心图，并忽略保留字段和扩展
+sidecar。1.0 writer 不会执行 1.1 关系属性校验，所以受 schema 管理的边应
+继续由 1.1 或更高版本 writer 写入。

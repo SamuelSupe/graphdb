@@ -58,8 +58,8 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 		attribute.Int64("graphdb.write_backpressure.current_manifest_version", manifest.Version),
 	)
 	s.Backpressure.RecordCommitTail(tenantID, tailLength)
-	if s.BackpressureObserver != nil {
-		s.BackpressureObserver.RecordCommitTail(tenantID, tailLength)
+	if s.backpressureObserver != nil {
+		s.backpressureObserver.RecordCommitTail(tenantID, tailLength)
 	}
 	if config.MaxCommitTail > 0 && tailLength > config.MaxCommitTail {
 		reasons = append(reasons, BackpressureReason{
@@ -250,8 +250,8 @@ func (s *TenantStore) recordManifestCASConflict(tenantID string) {
 	if s.Backpressure != nil {
 		s.Backpressure.RecordManifestCASConflict(tenantID)
 	}
-	if s.BackpressureObserver != nil {
-		s.BackpressureObserver.RecordManifestCASConflict(tenantID)
+	if s.backpressureObserver != nil {
+		s.backpressureObserver.RecordManifestCASConflict(tenantID)
 	}
 }
 

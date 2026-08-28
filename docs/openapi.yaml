@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.1.0
-  description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.1 preserves the 1.0 core data layout.
+  version: 1.2.0
+  description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.2 preserves the 1.0 core data layout.
 servers:
   - url: http://localhost:8080
 security:
@@ -108,6 +108,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestResult'
+        '202':
+          description: Batch durably appended to the local ingest WAL. Returned only when GRAPHDB_INGEST_MODE=wal.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Batch status resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestAccepted'
         '400':
           $ref: '#/components/responses/BadRequest'
         '405':
@@ -118,6 +129,34 @@ paths:
           $ref: '#/components/responses/WriteBackpressure'
         '503':
           $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/ingest/batches/{source}/{collector_id}/{batch_id}:
+    get:
+      summary: Get an active WAL batch status or its finalized ingest record.
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collector_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active or finalized batch status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestBatchStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/imports:
     post:
       summary: Upload CSV or JSONL and start a resumable bulk import task.
@@ -1822,6 +1861,10 @@ components:
             - write_backpressure
             - request_timeout
             - request_canceled
+            - retrieval_not_ready
+            - index_not_fresh
+            - embedding_unavailable
+            - retrieval_budget_exceeded
         message:
           type: string
         retryable:
@@ -2175,6 +2218,9 @@ components:
           type: integer
         skipped:
           type: boolean
+        skip_reason:
+          type: string
+          enum: [logical_noop, idempotent_replay]
         cursor:
           type: string
         failures:
@@ -2192,6 +2238,61 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Conflict'
+    IngestAccepted:
+      type: object
+      required: [batch_id, state, durability, accepted_at, estimated_flush_at, status_url]
+      properties:
+        batch_id:
+          type: string
+        state:
+          type: string
+          enum: [accepted]
+        durability:
+          type: string
+          enum: [durable, memory]
+        accepted_at:
+          type: string
+          format: date-time
+        estimated_flush_at:
+          type: string
+          format: date-time
+        status_url:
+          type: string
+    IngestBatchStatus:
+      type: object
+      required: [tenant_id, source, collector_id, batch_id, state, durability]
+      properties:
+        tenant_id:
+          type: string
+        source:
+          type: string
+        collector_id:
+          type: string
+        batch_id:
+          type: string
+        state:
+          type: string
+          enum: [accepted, prepared, published, retrying, committed, failed]
+        durability:
+          type: string
+          enum: [durable, memory]
+        accepted_lsn:
+          type: integer
+        accepted_at:
+          type: string
+          format: date-time
+        estimated_flush_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+        recovery_pending:
+          type: boolean
+        result:
+          $ref: '#/components/schemas/IngestResult'
     CollectorStatus:
       type: object
       required: [tenant_id, source, collector_id, last_version, applied_total, failed_total]

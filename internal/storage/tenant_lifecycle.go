@@ -204,7 +204,12 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 	if s.coordinated() {
 		return s.setCoordinatedTenantStatus(ctx, tenantID, status)
 	}
-	return s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
+	if status != TenantStatusActive && s.ingestBarrier != nil {
+		if err := s.ingestBarrier(ctx, tenantID); err != nil {
+			return TenantInfo{}, err
+		}
+	}
+	info, err := s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
 		now := time.Now().UTC()
 		metadata.Status = status
 		metadata.UpdatedAt = now
@@ -217,11 +222,20 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 			metadata.DeletedAt = time.Time{}
 		}
 	})
+	if err == nil {
+		s.deleteCachedRetrievalSnapshot(tenantID)
+	}
+	return info, err
 }
 
 func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantPurgeReport{}, err
+	}
+	if s.ingestBarrier != nil {
+		if err := s.ingestBarrier(ctx, tenantID); err != nil {
+			return TenantPurgeReport{}, err
+		}
 	}
 	unlock := s.lockTenant(tenantID)
 	defer unlock()
@@ -238,6 +252,7 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 		ctx = purgeCtx
 		purgeGeneration = generation
 		s.deleteWriteCache(tenantID)
+		s.deleteCachedRetrievalSnapshot(tenantID)
 		if candidateOnly {
 			return s.purgeCoordinatedTenantCandidate(ctx, tenantID)
 		}
@@ -368,10 +383,12 @@ func (s *TenantStore) purgeTenantLockedAtGeneration(
 		return report, err
 	}
 	s.deleteWriteCache(tenantID)
+	s.deleteCachedRetrievalSnapshot(tenantID)
 	s.deleteCachedTenantMetadata(tenantID)
 	s.deleteCachedTenantConfig(tenantID)
 	s.deleteCachedSourcePolicy(tenantID)
 	s.deleteCachedIndexCatalog(tenantID)
+	s.deleteCachedRetrievalSnapshot(tenantID)
 	s.deleteCachedWriterLease(tenantID)
 	s.deleteCachedTenantPurgeTombstone(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
@@ -391,6 +408,11 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 	}
 	if sourceTenantID == targetTenantID {
 		return TenantInfo{}, fmt.Errorf("target tenant must differ from source tenant")
+	}
+	if s.ingestBarrier != nil {
+		if err := s.ingestBarrier(ctx, sourceTenantID); err != nil {
+			return TenantInfo{}, err
+		}
 	}
 	sourceInfo, err := s.GetTenantInfo(ctx, sourceTenantID)
 	if err != nil {

@@ -101,6 +101,7 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 		{name: "coordinator", err: storage.ErrCoordinatorUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeCoordinatorUnavailable},
 		{name: "write conflict", err: storage.ErrWriteConflict, wantStatus: http.StatusConflict, wantCode: ErrorCodeWriteConflict},
 		{name: "task lease", err: storage.ErrTaskLeaseHeld, wantStatus: http.StatusConflict, wantCode: ErrorCodeTaskConflict},
+		{name: "ingest repair", err: storage.ErrIngestRepairRequired, wantStatus: http.StatusConflict, wantCode: ErrorCodeRepairRequired},
 		{name: "timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
 		{name: "validation", err: fmt.Errorf("invalid field"), wantStatus: http.StatusBadRequest, wantCode: ErrorCodeBadRequest},
 	}

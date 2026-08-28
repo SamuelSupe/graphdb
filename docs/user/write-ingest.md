@@ -267,10 +267,67 @@ Response fields:
 - `applied`: items included in a commit.
 - `failed`: invalid items or commit failures.
 - `suppressed`: lower-priority field/delete conflicts.
-- `skipped`: idempotent replay or MD5-identical graph write.
+- `skipped`: the batch did not create a graph-data commit.
+- `skip_reason`: `logical_noop` when the resulting logical graph is unchanged,
+  or `idempotent_replay` when an earlier batch result is replayed.
 - `cursor`: returned collector cursor.
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.
+
+### Local WAL mode (1.1.2)
+
+`GRAPHDB_INGEST_MODE=direct` remains the default synchronous `200/207`
+behavior. A single-writer deployment using `GRAPHDB_COORDINATION=local` can
+explicitly enable `GRAPHDB_INGEST_MODE=wal`. Requests are first appended to one
+process-wide segmented WAL, so tenants share group fsync while the default
+single graph-write worker preserves per-tenant FIFO order. One tenant flush
+keeps the logical commit order of its requests, writes those commits to one
+Parquet commit segment, and publishes the manifest once.
+
+Sync durability returns `202 Accepted`, `Location`, and a status URL after the
+WAL fsync. Send `Prefer: wait=committed` to wait for the final `200/207` result,
+or query:
+
+```sh
+curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
+  -H 'X-Tenant-ID: demo'
+```
+
+Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
+`${GRAPHDB_DATA_DIR}/wal/ingest`), `GRAPHDB_INGEST_WAL_DURABILITY=sync|os`,
+`GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`,
+`GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`,
+`GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`,
+`GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`,
+`GRAPHDB_INGEST_FLUSH_INTERVAL=10s`,
+`GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`,
+`GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`,
+`GRAPHDB_INGEST_FLUSH_WORKERS=1`, and
+`GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
+
+Recovery finishes before HTTP starts and holds an exclusive process lock on the
+WAL directory. Middle corruption fails closed; only an incomplete final record
+in the last segment is truncated. A durable accepted request continues after
+client disconnect. The fsynced PREPARED commit plan in the WAL prevents another
+graph version when recovering a manifest published before ingest metadata was
+finalized. The first flush that encounters a historical loose-commit tail folds
+it into the segment; later flushes do not pay that migration cost again.
+
+`/metrics` exposes `graphdb_ingest_wal_*`, `graphdb_ingest_queue_*`, and
+`graphdb_ingest_flush_*` metrics for append/fsync activity, WAL memory and disk
+usage, written/durable LSNs, pending work and oldest age, status-cache
+hits/evictions, flush latency and request/commit/segment/manifest counts, and
+recovery results. These metrics use only fixed status labels; tenant, source,
+collector, and batch identifiers are deliberately excluded.
+
+JSON logs include `ingest_wal_recovery`, `ingest_wal_accepted`,
+`ingest_flush_started`, `ingest_flush_completed`, WAL rotate/prune/fsync
+failures, and shutdown events. Tenant, batch, LSN, flush ID, latency, and error
+details remain in logs. When `GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
+append/group write, flush, batch apply, publish, and metadata-finalization spans
+are exported over OTLP/HTTP. Asynchronous group writes and flushes use OTel
+links to the originating request span. Accepted records persist that trace
+context, so recovery can retain the association after a restart.
 
 Collector batch sizing for CMDB workloads:
 

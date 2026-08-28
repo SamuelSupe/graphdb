@@ -2,11 +2,11 @@
 
 [中文](capacity.zh-CN.md)
 
-GGraphDB 1.1 publishes a reproducible release envelope instead of an unbounded
+GGraphDB 1.2 publishes a reproducible release envelope instead of an unbounded
 “large graph” claim. The machine-readable contract is
 `release/capacity-envelope.yaml`.
 
-## 1.1 Release Gate
+## 1.2 Release Gate
 
 For each release candidate, CI must pass:
 
@@ -101,7 +101,7 @@ strategy.
 - Query result `limit` is capped at 1,000. Use scans/streams for bulk export.
 - Keep normal collector batches near 200–500 logical groups. Very small batches
   amplify commits, manifests, idempotency records, and collector state.
-- GGraphDB 1.1 supports 2–8 deployed writers and certifies about 20 commits/s
+- GGraphDB 1.2 supports 2–8 deployed writers and certifies about 20 commits/s
   per hot tenant with two active contenders. Eight-way same-tenant concurrency
   remains a correctness gate, not a sustained-throughput claim. Higher
   throughput requires graph/entity partitioning and a new capacity envelope.

@@ -56,7 +56,7 @@ func (s *TenantStore) CoordinatorStatus(ctx context.Context) CoordinatorStatus {
 }
 
 func unavailableCoordinatorStatus(
-	coordinator WriteCoordinator,
+	coordinator CoordinatorDescriptor,
 	err error,
 ) CoordinatorStatus {
 	status := CoordinatorStatus{

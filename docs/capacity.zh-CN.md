@@ -2,10 +2,10 @@
 
 [English](capacity.md)
 
-GGraphDB 1.1 发布的是可复现的发行容量边界，而不是没有条件的“大图”
+GGraphDB 1.2 发布的是可复现的发行容量边界，而不是没有条件的“大图”
 承诺。机器可读契约位于 `release/capacity-envelope.yaml`。
 
-## 1.1 发行门禁
+## 1.2 发行门禁
 
 每个候选版本必须在 CI 中满足：
 
@@ -92,7 +92,7 @@ PostgreSQL 开始验证；这些是验证起点，不是支持保证。查询并
 - 查询 `limit` 上限为 1,000；批量导出应使用 scan/stream。
 - 采集 batch 建议保持 200–500 个逻辑组；过小 batch 会放大 commit、
   manifest、幂等记录和 collector state。
-- 1.1 支持部署 2–8 个 writer；已认证的热点租户容量为 2 个活跃竞争者、
+- 1.2 支持部署 2–8 个 writer；已认证的热点租户容量为 2 个活跃竞争者、
   约 20 commit/s。8 路同租户并发仍是正确性门禁，不是持续吞吐承诺。
   更高吞吐需要图/实体分区并重新发布容量边界。
 - 发布的 20 commit/s 配置保持自动 compact 开启，compact 阈值为 1,000，

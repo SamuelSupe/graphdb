@@ -166,7 +166,7 @@ func (s *TenantStore) replayDeadLetter(ctx context.Context, tenantID string, sou
 	request := claimed.Request
 	request.BatchID = request.BatchID + "-replay-" + time.Now().UTC().Format("20060102150405.000000000")
 	request.IdempotencyKey = ""
-	result, err := s.ingest(ctx, tenantID, request, false)
+	result, err := s.ingest(ctx, tenantID, request, false, false)
 	claimed.LastResult = result
 	claimed.UpdatedAt = time.Now().UTC()
 	finalizeDeadLetterReplay(&claimed, result)

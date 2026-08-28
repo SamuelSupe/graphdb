@@ -12,7 +12,7 @@ grep -F '# GGraphDB' README.md >/dev/null
 grep -F 'title: GGraphDB API' docs/openapi.yaml >/dev/null
 grep -F 'POST /v1/query/graphql' docs/graphql.md >/dev/null
 grep -F 'POST /v1/query/graphql' docs/graphql.zh-CN.md >/dev/null
-grep -F 'mux.HandleFunc("POST /v1/query/graphql"' internal/httpapi/routes.go >/dev/null
+grep -F 'routeSpec{pattern: "POST /v1/query/graphql"' internal/httpapi/routes.go >/dev/null
 grep -F '它不是 GraphQL' docs/gql.md >/dev/null
 
 echo "GGraphDB 1.1 freeze contract verified"

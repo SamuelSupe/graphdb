@@ -14,41 +14,45 @@ import (
 )
 
 const (
-	ErrorCodeBadRequest             ErrorCode = "bad_request"
-	ErrorCodeInvalidTenant          ErrorCode = "invalid_tenant"
-	ErrorCodeTenantRequired         ErrorCode = "tenant_required"
-	ErrorCodeTenantDisabled         ErrorCode = "tenant_disabled"
-	ErrorCodeTenantDeleted          ErrorCode = "tenant_deleted"
-	ErrorCodeOperationDisabled      ErrorCode = "operation_disabled"
-	ErrorCodeNotFound               ErrorCode = "not_found"
-	ErrorCodeMethodNotAllowed       ErrorCode = "method_not_allowed"
-	ErrorCodeRequestTooLarge        ErrorCode = "request_too_large"
-	ErrorCodeTooManyRequests        ErrorCode = "too_many_requests"
-	ErrorCodeInternal               ErrorCode = "internal_error"
-	ErrorCodeInvalidJSON            ErrorCode = "invalid_json"
-	ErrorCodeInvalidQuery           ErrorCode = "invalid_query"
-	ErrorCodeQueryLimitExceeded     ErrorCode = "query_limit_exceeded"
-	ErrorCodeIndexStale             ErrorCode = "index_stale"
-	ErrorCodeReaderNotFresh         ErrorCode = "reader_not_fresh"
-	ErrorCodeQuotaExceeded          ErrorCode = "quota_exceeded"
-	ErrorCodeLeaseHeld              ErrorCode = "lease_held"
-	ErrorCodeManifestCASConflict    ErrorCode = "manifest_cas_conflict"
-	ErrorCodeObjectWriteConflict    ErrorCode = "object_write_conflict"
-	ErrorCodeObjectStoreUnavailable ErrorCode = "object_store_unavailable"
-	ErrorCodeTaskConflict           ErrorCode = "task_conflict"
-	ErrorCodeRepairRequired         ErrorCode = "repair_required"
-	ErrorCodeVersionConflict        ErrorCode = "version_conflict"
-	ErrorCodeIdempotencyConflict    ErrorCode = "idempotency_conflict"
-	ErrorCodeIdempotencyInProgress  ErrorCode = "idempotency_in_progress"
-	ErrorCodeWriteConflict          ErrorCode = "write_conflict"
-	ErrorCodeCoordinatorUnavailable ErrorCode = "coordinator_unavailable"
-	ErrorCodeCommitTailTooLong      ErrorCode = "commit_tail_too_long"
-	ErrorCodeIndexRebuildRunning    ErrorCode = "index_rebuild_running"
-	ErrorCodeMaintenanceTaskRunning ErrorCode = "maintenance_task_running"
-	ErrorCodeWriteAdmissionTimeout  ErrorCode = "write_admission_queue_timeout"
-	ErrorCodeWriteBackpressure      ErrorCode = "write_backpressure"
-	ErrorCodeRequestTimeout         ErrorCode = "request_timeout"
-	ErrorCodeRequestCanceled        ErrorCode = "request_canceled"
+	ErrorCodeBadRequest              ErrorCode = "bad_request"
+	ErrorCodeInvalidTenant           ErrorCode = "invalid_tenant"
+	ErrorCodeTenantRequired          ErrorCode = "tenant_required"
+	ErrorCodeTenantDisabled          ErrorCode = "tenant_disabled"
+	ErrorCodeTenantDeleted           ErrorCode = "tenant_deleted"
+	ErrorCodeOperationDisabled       ErrorCode = "operation_disabled"
+	ErrorCodeNotFound                ErrorCode = "not_found"
+	ErrorCodeMethodNotAllowed        ErrorCode = "method_not_allowed"
+	ErrorCodeRequestTooLarge         ErrorCode = "request_too_large"
+	ErrorCodeTooManyRequests         ErrorCode = "too_many_requests"
+	ErrorCodeInternal                ErrorCode = "internal_error"
+	ErrorCodeInvalidJSON             ErrorCode = "invalid_json"
+	ErrorCodeInvalidQuery            ErrorCode = "invalid_query"
+	ErrorCodeQueryLimitExceeded      ErrorCode = "query_limit_exceeded"
+	ErrorCodeIndexStale              ErrorCode = "index_stale"
+	ErrorCodeReaderNotFresh          ErrorCode = "reader_not_fresh"
+	ErrorCodeQuotaExceeded           ErrorCode = "quota_exceeded"
+	ErrorCodeLeaseHeld               ErrorCode = "lease_held"
+	ErrorCodeManifestCASConflict     ErrorCode = "manifest_cas_conflict"
+	ErrorCodeObjectWriteConflict     ErrorCode = "object_write_conflict"
+	ErrorCodeObjectStoreUnavailable  ErrorCode = "object_store_unavailable"
+	ErrorCodeTaskConflict            ErrorCode = "task_conflict"
+	ErrorCodeRepairRequired          ErrorCode = "repair_required"
+	ErrorCodeVersionConflict         ErrorCode = "version_conflict"
+	ErrorCodeIdempotencyConflict     ErrorCode = "idempotency_conflict"
+	ErrorCodeIdempotencyInProgress   ErrorCode = "idempotency_in_progress"
+	ErrorCodeWriteConflict           ErrorCode = "write_conflict"
+	ErrorCodeCoordinatorUnavailable  ErrorCode = "coordinator_unavailable"
+	ErrorCodeCommitTailTooLong       ErrorCode = "commit_tail_too_long"
+	ErrorCodeIndexRebuildRunning     ErrorCode = "index_rebuild_running"
+	ErrorCodeMaintenanceTaskRunning  ErrorCode = "maintenance_task_running"
+	ErrorCodeWriteAdmissionTimeout   ErrorCode = "write_admission_queue_timeout"
+	ErrorCodeWriteBackpressure       ErrorCode = "write_backpressure"
+	ErrorCodeRequestTimeout          ErrorCode = "request_timeout"
+	ErrorCodeRequestCanceled         ErrorCode = "request_canceled"
+	ErrorCodeRetrievalNotReady       ErrorCode = "retrieval_not_ready"
+	ErrorCodeIndexNotFresh           ErrorCode = "index_not_fresh"
+	ErrorCodeEmbeddingUnavailable    ErrorCode = "embedding_unavailable"
+	ErrorCodeRetrievalBudgetExceeded ErrorCode = "retrieval_budget_exceeded"
 )
 
 type ErrorCode string
@@ -89,6 +93,10 @@ var stableErrorCodes = []ErrorCode{
 	ErrorCodeWriteBackpressure,
 	ErrorCodeRequestTimeout,
 	ErrorCodeRequestCanceled,
+	ErrorCodeRetrievalNotReady,
+	ErrorCodeIndexNotFresh,
+	ErrorCodeEmbeddingUnavailable,
+	ErrorCodeRetrievalBudgetExceeded,
 }
 
 var stableErrorCodeSet = func() map[ErrorCode]struct{} {
@@ -279,6 +287,8 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeIdempotencyInProgress, true
 	case errors.Is(err, storage.ErrTaskLeaseHeld):
 		return ErrorCodeTaskConflict, false
+	case errors.Is(err, storage.ErrIngestRepairRequired):
+		return ErrorCodeRepairRequired, false
 	case errors.Is(err, storage.ErrTenantDisabled):
 		return ErrorCodeTenantDisabled, false
 	case errors.Is(err, storage.ErrTenantDeleted):

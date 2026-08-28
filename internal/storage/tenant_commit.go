@@ -28,6 +28,11 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	if err := ValidateTenantID(tenantID); err != nil {
 		return CommitResult{}, err
 	}
+	if s.ingestBarrier != nil {
+		if err := s.ingestBarrier(ctx, tenantID); err != nil {
+			return CommitResult{}, err
+		}
+	}
 
 	ensureCtx, ensureSpan := startStorageSpan(ctx, "graphdb.storage.commit.ensure_tenant_writable", tenantTraceAttr(tenantID))
 	err = s.EnsureTenantWritable(ensureCtx, tenantID)
@@ -327,7 +332,15 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		tenantTraceAttr(tenantID),
 		attribute.Int64("graphdb.commit.version", version),
 	)
-	nextGraph, report, err := loaded.Graph.ApplyCommitStorageCopyWithOptions(commit, graph.ApplyOptions{})
+	report, entityNoop, err := loaded.Graph.PreviewStorageEntityNoop(commit)
+	nextGraph := loaded.Graph
+	if err == nil && !entityNoop {
+		nextGraph, report, err = loaded.Graph.ApplyCommitStorageCopyWithOptions(
+			commit,
+			graph.ApplyOptions{},
+		)
+	}
+	applySpan.SetAttributes(attribute.Bool("graphdb.commit.entity_noop_fast_path", entityNoop))
 	if err == nil {
 		if relationSchemaCommitCanValidateIncrementally(
 			s.coordinated(),

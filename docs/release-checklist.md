@@ -1,4 +1,4 @@
-# GGraphDB 1.1 Release Checklist
+# GGraphDB 1.2 Release Checklist
 
 ## Contract And Compatibility
 
@@ -17,6 +17,7 @@
 - [ ] Unit, vet, race, Python SDK, and OpenAPI contract tests pass.
 - [ ] RustFS e2e, load, restart, freshness, outage, repair, and restore drill pass.
 - [ ] PostgreSQL coordinator and RustFS CAS integration tests pass.
+- [ ] Local WAL recovery, idempotency, FIFO, readiness, and shutdown tests pass.
 - [ ] 8-writer concurrency correctness gate passes with no loss or duplicate version.
 - [ ] 2-active-writer, 20 commit/s, 30-minute CAS soak passes at 90% or better throughput.
 - [ ] Soak finishes with mirror lag, legacy outbox, and derived-task backlog at zero.

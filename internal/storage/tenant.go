@@ -89,6 +89,9 @@ type TenantStore struct {
 	tenantConfigCache          map[string]cachedTenantConfig
 	indexCatalogCache          map[string]cachedIndexCatalog
 	indexCatalogLoads          map[string]*indexCatalogLoad
+	retrievalSnapshotCache     map[string]cachedRetrievalSnapshot
+	retrievalSnapshotLoads     map[string]*retrievalSnapshotLoad
+	retrievalSnapshotEpoch     map[string]uint64
 	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
 	compiledScanCatalogCache   map[string]*compiledScanCatalog
@@ -120,9 +123,10 @@ type TenantStore struct {
 	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool
 	Backpressure               *WritePressure
-	BackpressureObserver       BackpressureObserver
-	CacheObserver              ReaderCacheObserver
-	CoordinatorObserver        CoordinatorObserver
+	backpressureObserver       BackpressureObserver
+	cacheObserver              ReaderCacheObserver
+	coordinatorObserver        CoordinatorObserver
+	ingestBarrier              func(context.Context, string) error
 }
 
 type loadedGraph struct {
@@ -155,6 +159,9 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		tenantConfigCache:          map[string]cachedTenantConfig{},
 		indexCatalogCache:          map[string]cachedIndexCatalog{},
 		indexCatalogLoads:          map[string]*indexCatalogLoad{},
+		retrievalSnapshotCache:     map[string]cachedRetrievalSnapshot{},
+		retrievalSnapshotLoads:     map[string]*retrievalSnapshotLoad{},
+		retrievalSnapshotEpoch:     map[string]uint64{},
 		reverseIndexCatalogCache:   map[string]cachedReverseIndexCatalog{},
 		reverseIndexCatalogLoads:   map[string]*reverseIndexCatalogLoad{},
 		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},
@@ -234,6 +241,11 @@ func (s *TenantStore) Commit(ctx context.Context, tenantID string, mutations gra
 func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
+	}
+	if s.ingestBarrier != nil {
+		if err := s.ingestBarrier(ctx, tenantID); err != nil {
+			return Manifest{}, err
+		}
 	}
 	if s.coordinated() {
 		operationCtx, stop, err := s.startCoordinatorOperationLease(

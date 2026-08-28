@@ -1,9 +1,12 @@
 package graph
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+var ErrBatchApplyRequiresIsolation = errors.New("batch apply requires per-commit isolation")
 
 func (g *Graph) ApplyCommit(commit Commit) error {
 	_, err := g.ApplyCommitWithOptions(commit, ApplyOptions{})
@@ -65,7 +68,72 @@ func (g *Graph) ApplyCommitStorageCopyWithOptions(commit Commit, options ApplyOp
 	if err := g.ensureContentFingerprint(); err != nil {
 		return nil, ApplyReport{}, err
 	}
-	return g.applyCommitToCopy(g.cloneForStorageMutation(), commit, options)
+	return g.applyCommitToCopy(g.cloneForStorageMutation(commit.Mutations), commit, options)
+}
+
+// ApplyCommitBatchStorageCopyWithOptions applies an ordered batch to one
+// private storage COW graph. A no-op or invalid commit asks the caller to
+// discard the private graph and retry with per-commit isolation.
+func (g *Graph) ApplyCommitBatchStorageCopyWithOptions(commits []Commit, options []ApplyOptions) (*Graph, []ApplyReport, error) {
+	if len(commits) == 0 {
+		return g, nil, nil
+	}
+	if len(options) != 0 && len(options) != len(commits) {
+		return nil, nil, fmt.Errorf("batch apply options length %d does not match commits length %d", len(options), len(commits))
+	}
+	if err := g.ensureContentFingerprint(); err != nil {
+		return nil, nil, err
+	}
+	impact := storageMutationImpact{}
+	previousVersion := g.Version
+	for _, commit := range commits {
+		if commit.Version <= previousVersion {
+			return nil, nil, fmt.Errorf("commit version %d must be greater than graph version %d", commit.Version, previousVersion)
+		}
+		commitImpact := storageMutationImpactFor(commit.Mutations)
+		impact.ciTypes = impact.ciTypes || commitImpact.ciTypes
+		impact.entities = impact.entities || commitImpact.entities
+		impact.relationTypes = impact.relationTypes || commitImpact.relationTypes
+		impact.edges = impact.edges || commitImpact.edges
+		previousVersion = commit.Version
+	}
+	next := g.cloneForStorageImpact(impact)
+	reports := make([]ApplyReport, 0, len(commits))
+	for index, commit := range commits {
+		option := ApplyOptions{}
+		if len(options) != 0 {
+			option = options[index]
+		}
+		if option.SourcePolicy != nil {
+			var policyReport ApplyReport
+			var err error
+			commit.Mutations, policyReport, err = ApplySourcePolicy(commit.Mutations, *option.SourcePolicy)
+			if err != nil {
+				return nil, reports, fmt.Errorf("%w: commit %d: %v", ErrBatchApplyRequiresIsolation, index, err)
+			}
+			next.Version = commit.Version
+			report, err := next.applyMutations(commit, ApplyOptions{})
+			if err != nil {
+				return nil, reports, fmt.Errorf("%w: commit %d: %v", ErrBatchApplyRequiresIsolation, index, err)
+			}
+			report.Suppressed = append(policyReport.Suppressed, report.Suppressed...)
+			if !report.Changed {
+				return nil, reports, fmt.Errorf("%w: commit %d is a logical no-op", ErrBatchApplyRequiresIsolation, index)
+			}
+			reports = append(reports, report)
+			continue
+		}
+		next.Version = commit.Version
+		report, err := next.applyMutations(commit, ApplyOptions{})
+		if err != nil {
+			return nil, reports, fmt.Errorf("%w: commit %d: %v", ErrBatchApplyRequiresIsolation, index, err)
+		}
+		if !report.Changed {
+			return nil, reports, fmt.Errorf("%w: commit %d is a logical no-op", ErrBatchApplyRequiresIsolation, index)
+		}
+		reports = append(reports, report)
+	}
+	return next, reports, nil
 }
 
 // ApplyCommitInPlaceForStorage replays a commit into a private graph being
@@ -223,55 +291,20 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 	}
 	fieldSpecsByKind := make(map[string]map[string]FieldSpec)
 	for _, entity := range commit.Mutations.UpsertEntities {
-		normalized, err := normalizeEntity(entity)
-		if err != nil {
-			return ApplyReport{}, err
-		}
-		sanitizeIncomingEntitySources(&normalized)
-		fields, err := g.effectiveFieldsCached(
-			normalized.Kind,
+		prepared, err := g.prepareEntityUpsert(
+			entity,
 			fieldSpecsByKind,
+			commit.Version,
+			now,
 		)
 		if err != nil {
 			return ApplyReport{}, err
 		}
-		if err := g.applyEntitySchemaWithSpecs(
-			&normalized,
-			fields,
-		); err != nil {
-			return ApplyReport{}, err
-		}
-		incomingID := normalized.ID
-		targetID, err := g.resolveEntityID(normalized)
-		if err != nil {
-			return ApplyReport{}, err
-		}
-		if err := g.validateResolvedEntityTarget(
-			incomingID,
-			targetID,
-		); err != nil {
-			return ApplyReport{}, err
-		}
-		tracker.touchEntity(targetID)
-		report.CanonicalEntities = append(report.CanonicalEntities, entityCanonicalization(normalized, incomingID, targetID))
-		normalized.ID = targetID
-		report.Suppressed = append(report.Suppressed, entityFieldConflictsForTarget(normalized, targetID)...)
-		normalized.FieldConflicts = nil
-		if previous, ok := g.Entities[normalized.ID]; ok {
-			if previous.Kind != normalized.Kind {
-				return ApplyReport{}, fmt.Errorf("entity %q kind change from %q to %q is not allowed", normalized.ID, previous.Kind, normalized.Kind)
-			}
-			normalized.ID = incomingID
-			var mergeReport ApplyReport
-			normalized, mergeReport = mergeEntityForUpsert(previous, normalized, targetID, fields, commit.Version, now)
-			report.Suppressed = append(report.Suppressed, mergeReport.Suppressed...)
-			if !previous.CreatedAt.IsZero() {
-				normalized.CreatedAt = previous.CreatedAt
-			}
-		} else if normalized.CreatedAt.IsZero() {
-			normalized.CreatedAt = now
-		}
-		if _, ok := g.Entities[normalized.ID]; !ok {
+		normalized := prepared.entity
+		tracker.touchEntity(prepared.targetID)
+		report.CanonicalEntities = append(report.CanonicalEntities, prepared.canonical)
+		report.Suppressed = append(report.Suppressed, prepared.suppressed...)
+		if !prepared.existed {
 			stampFieldSources(&normalized, commit.Version, now)
 		}
 		normalized.UpdatedAt = now
@@ -282,8 +315,8 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if err := g.validateIdentityIndexAvailable(normalized); err != nil {
 			return ApplyReport{}, err
 		}
-		if previous, ok := g.Entities[normalized.ID]; ok {
-			g.removeEntityFromIndexes(normalized.ID, previous)
+		if prepared.existed {
+			g.removeEntityFromIndexes(normalized.ID, prepared.previous)
 		}
 		clearEntityWriteMetadata(&normalized)
 		g.Entities[normalized.ID] = normalized

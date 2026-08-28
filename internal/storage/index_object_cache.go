@@ -156,8 +156,8 @@ func cacheStatus(ok bool, err error) string {
 }
 
 func (s *TenantStore) recordIndexCache(tenantID string, kind string, status string) {
-	if s.CacheObserver != nil {
-		s.CacheObserver.RecordReaderCache(tenantID, kind+"_"+status)
+	if s.cacheObserver != nil {
+		s.cacheObserver.RecordReaderCache(tenantID, kind+"_"+status)
 	}
 }
 

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,6 +49,20 @@ type Config struct {
 	WriterObjectCacheMaxKeys          int
 	WriterObjectCacheNegativeTTL      time.Duration
 	IngestCollectorStatusMaterialized bool
+	IngestMode                        string
+	IngestWALDir                      string
+	IngestWALDurability               string
+	IngestWALBufferBytes              int64
+	IngestWALFsyncInterval            time.Duration
+	IngestWALMaxBytes                 int64
+	IngestWALSegmentBytes             int64
+	IngestWALAppendQueue              int
+	IngestQueueMemoryBytes            int64
+	IngestFlushInterval               time.Duration
+	IngestFlushMaxRequests            int
+	IngestFlushMaxBytes               int64
+	IngestFlushWorkers                int
+	IngestShutdownTimeout             time.Duration
 	SlowQueryThreshold                time.Duration
 	IndexHealthInterval               time.Duration
 	MaintenanceInterval               time.Duration
@@ -123,6 +136,19 @@ func Load() (Config, error) {
 		WriterObjectCacheMaxKeys:          200000,
 		WriterObjectCacheNegativeTTL:      5 * time.Minute,
 		IngestCollectorStatusMaterialized: true,
+		IngestMode:                        strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_MODE", "direct"))),
+		IngestWALDurability:               strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_WAL_DURABILITY", storage.IngestWALDurabilitySync))),
+		IngestWALBufferBytes:              4 * 1024 * 1024,
+		IngestWALFsyncInterval:            5 * time.Millisecond,
+		IngestWALMaxBytes:                 10 * 1024 * 1024 * 1024,
+		IngestWALSegmentBytes:             256 * 1024 * 1024,
+		IngestWALAppendQueue:              4096,
+		IngestQueueMemoryBytes:            256 * 1024 * 1024,
+		IngestFlushInterval:               10 * time.Second,
+		IngestFlushMaxRequests:            256,
+		IngestFlushMaxBytes:               8 * 1024 * 1024,
+		IngestFlushWorkers:                1,
+		IngestShutdownTimeout:             30 * time.Second,
 		SlowQueryThreshold:                500 * time.Millisecond,
 		IndexHealthInterval:               30 * time.Second,
 		MaintenanceInterval:               30 * time.Second,
@@ -269,6 +295,40 @@ func Load() (Config, error) {
 	if err := loadBoolEnv("GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED", &cfg.IngestCollectorStatusMaterialized); err != nil {
 		return Config{}, err
 	}
+	cfg.IngestWALDir = strings.TrimSpace(os.Getenv("GRAPHDB_INGEST_WAL_DIR"))
+	if err := loadBytesEnv("GRAPHDB_INGEST_WAL_BUFFER_BYTES", &cfg.IngestWALBufferBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_INGEST_WAL_FSYNC_INTERVAL", &cfg.IngestWALFsyncInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_WAL_MAX_BYTES", &cfg.IngestWALMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_WAL_SEGMENT_BYTES", &cfg.IngestWALSegmentBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_WAL_APPEND_QUEUE", &cfg.IngestWALAppendQueue); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", &cfg.IngestQueueMemoryBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_INGEST_FLUSH_INTERVAL", &cfg.IngestFlushInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_FLUSH_MAX_REQUESTS", &cfg.IngestFlushMaxRequests); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_INGEST_FLUSH_MAX_BYTES", &cfg.IngestFlushMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_INGEST_FLUSH_WORKERS", &cfg.IngestFlushWorkers); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", &cfg.IngestShutdownTimeout); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_SLOW_QUERY_THRESHOLD", &cfg.SlowQueryThreshold); err != nil {
 		return Config{}, err
 	}
@@ -321,6 +381,9 @@ func Load() (Config, error) {
 	if cfg.ReaderIndexCacheDir == "" && cfg.DataDir != "" {
 		cfg.ReaderIndexCacheDir = filepath.Join(cfg.DataDir, "cache", "index-objects")
 	}
+	if cfg.IngestWALDir == "" && cfg.DataDir != "" {
+		cfg.IngestWALDir = filepath.Join(cfg.DataDir, "wal", "ingest")
+	}
 	switch cfg.Mode {
 	case "all", "writer", "reader":
 	default:
@@ -332,6 +395,9 @@ func Load() (Config, error) {
 	if err := cfg.validateCoordination(); err != nil {
 		return Config{}, err
 	}
+	if err := cfg.validateIngest(); err != nil {
+		return Config{}, err
+	}
 	if cfg.PprofEnabled && cfg.AdminAddr == "" {
 		return Config{}, fmt.Errorf("GRAPHDB_ADMIN_ADDR is required when GRAPHDB_PPROF_ENABLED=true")
 	}
@@ -341,16 +407,42 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-func NewCoordinator(ctx context.Context, cfg Config) (storage.WriteCoordinator, error) {
-	if cfg.coordinationMode() == storage.CoordinationLocal {
-		return nil, nil
+func (cfg Config) validateIngest() error {
+	switch cfg.IngestMode {
+	case "direct":
+		return nil
+	case "wal":
+	default:
+		return fmt.Errorf("unsupported GRAPHDB_INGEST_MODE %q", cfg.IngestMode)
 	}
-	return storage.NewPostgresCoordinator(
-		ctx,
-		cfg.PostgresDSN,
-		cfg.PostgresSchema,
-		cfg.CoordinatorNamespace,
-	)
+	if cfg.coordinationMode() != storage.CoordinationLocal {
+		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal requires GRAPHDB_COORDINATION=local")
+	}
+	if cfg.Mode == "reader" {
+		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal is unavailable in reader mode")
+	}
+	return cfg.IngestServiceConfig().Validate()
+}
+
+func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
+	return storage.IngestServiceConfig{
+		WAL: storage.IngestWALConfig{
+			Dir:           cfg.IngestWALDir,
+			Durability:    cfg.IngestWALDurability,
+			BufferBytes:   int(cfg.IngestWALBufferBytes),
+			FsyncInterval: cfg.IngestWALFsyncInterval,
+			MaxBytes:      cfg.IngestWALMaxBytes,
+			SegmentBytes:  cfg.IngestWALSegmentBytes,
+			AppendQueue:   cfg.IngestWALAppendQueue,
+		},
+		QueueMemoryBytes: cfg.IngestQueueMemoryBytes,
+		FlushInterval:    cfg.IngestFlushInterval,
+		FlushMaxRequests: cfg.IngestFlushMaxRequests,
+		FlushMaxBytes:    cfg.IngestFlushMaxBytes,
+		FlushWorkers:     cfg.IngestFlushWorkers,
+		FlushTimeout:     cfg.WriteExecutionTimeout,
+		RetryInterval:    time.Second,
+	}
 }
 
 func (cfg Config) validateCoordination() error {
@@ -389,6 +481,10 @@ func (cfg Config) validateCoordination() error {
 
 func (cfg Config) coordinationMode() string {
 	return normalizeCoordination(cfg.Coordination)
+}
+
+func (cfg Config) CoordinationMode() string {
+	return cfg.coordinationMode()
 }
 
 func normalizeCoordination(value string) string {
@@ -544,43 +640,6 @@ func parseBytes(raw string) (int64, error) {
 	return strconv.ParseInt(value, 10, 64)
 }
 
-func NewObjectStore(cfg Config) (storage.ObjectStore, error) {
-	if err := cfg.validateObjectStore(); err != nil {
-		return nil, err
-	}
-	switch cfg.StoreKind {
-	case "local":
-		return storage.NewFileStore(cfg.DataDir), nil
-	case "s3":
-		options := storage.S3Options{PathStyle: cfg.S3PathStyle}
-		switch cfg.objectProvider() {
-		case storage.ObjectProviderGenericS3:
-			return storage.NewS3StoreWithOptions(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-		case storage.ObjectProviderAliyunOSS:
-			objects, err := storage.NewAliyunOSSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-			if err != nil {
-				return nil, err
-			}
-			return storage.NewSingleWriterObjectStore(objects), nil
-		case storage.ObjectProviderHuaweiOBS:
-			objects, err := storage.NewHuaweiOBSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-			if err != nil {
-				return nil, err
-			}
-			return storage.NewSingleWriterObjectStore(objects), nil
-		case storage.ObjectProviderTencentCOS:
-			objects, err := storage.NewTencentCOSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-			if err != nil {
-				return nil, err
-			}
-			return storage.NewSingleWriterObjectStore(objects), nil
-		}
-		return nil, fmt.Errorf("unsupported S3_PROVIDER %q", cfg.S3Provider)
-	default:
-		return nil, fmt.Errorf("unsupported GRAPHDB_STORAGE %q", cfg.StoreKind)
-	}
-}
-
 func (cfg Config) validateObjectStore() error {
 	if cfg.StoreKind != "s3" {
 		return nil
@@ -610,8 +669,16 @@ func (cfg Config) validateObjectStore() error {
 	return nil
 }
 
+func (cfg Config) ValidateObjectStore() error {
+	return cfg.validateObjectStore()
+}
+
 func (cfg Config) objectProvider() string {
 	return storage.NormalizeObjectProvider(cfg.S3Provider)
+}
+
+func (cfg Config) ObjectProvider() string {
+	return cfg.objectProvider()
 }
 
 func (cfg Config) writerTopology() string {

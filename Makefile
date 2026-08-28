@@ -12,7 +12,7 @@ IMAGE_CMD_DIR := ./image/cmd
 BUILDINFO_PACKAGE := gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo
 GO_BUILD_FLAGS := -mod=readonly -gcflags="-e" -ldflags="-w -s -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).Date=$(BUILD_DATE)"
 
-.PHONY: all build build-amd64 build-arm64 build-linux-amd64 build-linux-arm64 clean deps tidy gofmt lint fix_lint pub_registry_image pub_pubrepo_image pub_pubrepo_uos_image
+.PHONY: all build build-amd64 build-arm64 build-linux-amd64 build-linux-arm64 clean deps tidy gofmt lint fix_lint verify-hygiene pub_registry_image pub_pubrepo_image pub_pubrepo_uos_image
 
 all: build
 
@@ -69,6 +69,9 @@ fix_lint:
 	@truncate -s 0 lint.err
 	@golangci-lint --version | tee -a lint.err
 	@GO111MODULE=$(GO_MODULE) golangci-lint run --fix | tee -a lint.err
+
+verify-hygiene:
+	@scripts/check_workspace_hygiene.sh
 
 clean:
 	rm -rf $(IMAGE_CMD_DIR)

@@ -296,7 +296,7 @@ func (s *TenantStore) restoreDrillTargetStore(targetPrefix string) *TenantStore 
 	target.MaxRetries = s.MaxRetries
 	target.IndexFormat = s.IndexFormat
 	target.Backpressure = s.Backpressure
-	target.BackpressureObserver = s.BackpressureObserver
+	target.backpressureObserver = s.backpressureObserver
 	return target
 }
 

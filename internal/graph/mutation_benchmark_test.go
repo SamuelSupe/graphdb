@@ -39,3 +39,23 @@ func largeIsolatedMutationGraph(
 	}
 	return g
 }
+
+func BenchmarkUpdateEntityInEdgeHeavyGraph(b *testing.B) {
+	g := largeIsolatedMutationGraph(b, 10_000, 50_000)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := g.ApplyCommitStorageCopyWithOptions(Commit{
+			ID:      fmt.Sprintf("entity-update-%d", i),
+			Version: 2,
+			Mutations: Mutations{UpsertEntities: []Entity{{
+				ID:     "node:target",
+				Kind:   "node",
+				Fields: Fields{"state": i},
+			}}},
+		}, ApplyOptions{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -96,6 +96,8 @@ wait_task_success() {
 }
 
 if [[ "${RELEASE_GATE_SKIP_STATIC:-0}" != "1" ]]; then
+  log "workspace hygiene"
+  scripts/check_workspace_hygiene.sh
   log "1.1 feature-freeze and naming contract"
   scripts/check_release_freeze.sh
   log "unit, vet, race, and v1.0 compatibility tests"

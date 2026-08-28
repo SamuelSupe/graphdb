@@ -222,6 +222,7 @@ flowchart TB
   FieldIndexes["indexes/parquet/versions/v<version>/fields/<kind>/<field>.parquet"]
   EdgeShards["indexes/parquet/versions/v<version>/edges/<relation>/<from-shard>.parquet"]
   Extensions["extensions/v1.1/relation-schemas.json\nextensions/v1.1/reverse-index/"]
+  Retrieval["extensions/v1.2/retrieval/\ndefinitions.parquet\nhead.parquet\ncatalogs/*.parquet\ngenerations/*/versions/*"]
   EntityPages["indexes/parquet/versions/v<version>/entities/pages/<shard>.parquet"]
   EntityByID["indexes/entities/by-id/<entity-id>.parquet"]
   TenantRegistry["../_registry.parquet"]
@@ -246,6 +247,7 @@ flowchart TB
   IndexCatalog --> FieldIndexes
   IndexCatalog --> EdgeShards
   Tenant --> Extensions
+  Tenant --> Retrieval
   IndexCatalog --> EntityPages
   IndexCatalog --> EntityByID
   TenantRegistry --> Tenant
@@ -267,6 +269,10 @@ flowchart TB
 - `indexes/` 是可重建的读优化结构，不是最终真源；index definitions、catalog、secondary index、edge shard、entity page 和 by-id record 都使用 Parquet，非 Parquet index data 不会被解释为数据面对象。
 - `extensions/v1.1/` 保存不改变 1.0 核心布局的关系属性 schema 和可重建反向
   邻接 shard；1.0 进程可以忽略该目录。
+- `extensions/v1.2/retrieval/` 保存 GraphRAG definition、不可变 catalog、
+  vector/lexical/chunk segment 和 CAS head。head 只会指向已经完整校验的
+  Parquet 对象；该目录不修改 layout version 2 的 manifest、entity、edge
+  或 graph index catalog，1.0/1.1 reader 可以忽略。
 - reader 进程对 Parquet secondary index、edge shard、entity page 使用本地版本化 cache；cache key 包含 tenant、catalog version、object key、catalog content hash 和 schema hash，内存 LRU 可配，磁盘 cache 位于 `GRAPHDB_READER_INDEX_CACHE_DIR`。
 - tenant registry、tenant metadata、writer lease 已使用 Parquet。
 - source policy、tenant config、saved query、task、index task 和 task result 已使用 Parquet。

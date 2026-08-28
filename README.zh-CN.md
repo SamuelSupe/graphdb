@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.1 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.2 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -145,8 +145,8 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.1：
-[**v1.1.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.1.0)。
+最新已发布版本为 GGraphDB 1.2：
+[**v1.2.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)。
 发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
 正式回滚演练全部通过后才会发布。
 
@@ -158,7 +158,7 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.1.0` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.0` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 

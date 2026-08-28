@@ -393,6 +393,10 @@ func ingestRecordPayloadJSON(record IngestBatchRecord) ([]byte, error) {
 	if record.Request.Items == nil {
 		record.Request.Items = []IngestItem{}
 	}
+	// The reason describes this response attempt. A later idempotency replay has
+	// a different reason from the original logical no-op, so it is not durable
+	// ingest-record state.
+	record.Result.SkipReason = ""
 	return json.Marshal(record)
 }
 

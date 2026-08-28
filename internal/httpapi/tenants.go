@@ -328,10 +328,10 @@ func (s *Server) tenantLifecycle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) tenantLifecycleGate(next http.Handler) http.Handler {
+func (s *Server) tenantLifecycleGate(mutation bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, span := startAPIPhase(r.Context(), "tenant_lifecycle_gate")
-		if s.Store == nil || strings.HasPrefix(r.URL.Path, "/v1/tenants") {
+		if s.Store == nil {
 			if span != nil {
 				span.SetAttributes(attribute.String("graphdb.tenant_gate.result", "bypassed"))
 			}
@@ -351,7 +351,7 @@ func (s *Server) tenantLifecycleGate(next http.Handler) http.Handler {
 		setAPITraceTenant(ctx, tenantID)
 		status, err := s.Store.TenantStatus(ctx, tenantID)
 		if err != nil {
-			if errors.Is(err, storage.ErrCoordinatorUnavailable) && !tenantMutationRequest(r) {
+			if errors.Is(err, storage.ErrCoordinatorUnavailable) && !mutation {
 				if span != nil {
 					span.SetAttributes(
 						attribute.String("graphdb.tenant", tenantID),
@@ -377,7 +377,7 @@ func (s *Server) tenantLifecycleGate(next http.Handler) http.Handler {
 			writeErrorErr(w, http.StatusGone, storage.ErrTenantDeleted)
 			return
 		}
-		if status == storage.TenantStatusDisabled && tenantMutationRequest(r) {
+		if status == storage.TenantStatusDisabled && mutation {
 			endHTTPSpan(span, storage.ErrTenantDisabled)
 			writeErrorErr(w, http.StatusForbidden, storage.ErrTenantDisabled)
 			return
@@ -388,32 +388,6 @@ func (s *Server) tenantLifecycleGate(next http.Handler) http.Handler {
 		endHTTPSpan(span, nil)
 		next.ServeHTTP(w, r)
 	})
-}
-
-func tenantMutationRequest(r *http.Request) bool {
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return false
-	}
-	path := r.URL.Path
-	return path == "/v1/commits" ||
-		path == "/v1/ingest/batches" ||
-		path == "/v1/imports" ||
-		strings.HasPrefix(path, "/v1/relation-schemas/") ||
-		strings.HasPrefix(path, "/v1/ingest/deadletters/") ||
-		path == "/v1/source-policy" ||
-		path == "/v1/tenant-config" ||
-		path == "/v1/tasks" ||
-		strings.HasPrefix(path, "/v1/tasks/") ||
-		path == "/v1/indexes" ||
-		path == "/v1/indexes/rebuild" ||
-		strings.HasPrefix(path, "/v1/indexes/definitions/") ||
-		path == "/v1/compact" ||
-		path == "/v1/control/recover" ||
-		path == "/v1/control/repair" ||
-		path == "/v1/control/cleanup-commits" ||
-		path == "/v1/control/gc" ||
-		path == "/v1/query/templates" ||
-		strings.HasPrefix(path, "/v1/query/templates/")
 }
 
 func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int, message string) (string, bool) {

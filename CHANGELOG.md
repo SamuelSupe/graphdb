@@ -3,6 +3,37 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.2.0] - 2026-08-28
+
+### Added
+
+- Optional local durable-WAL ingest with acknowledged admission, tenant FIFO
+  batching, restart recovery, status/readiness reporting, and bounded queue and
+  WAL backpressure.
+- Persisted retrieval snapshots and a retrieval service boundary for lexical,
+  vector, and fused evidence queries.
+- GraphQL evidence responses with explicit freshness and retrieval metadata.
+
+### Improved
+
+- Entity upserts avoid publishing graph versions for semantic no-op writes and
+  reduce copy-on-write work on the mutation path.
+- HTTP routes and CLI commands declare mutation semantics next to their
+  handlers, keeping tenant lifecycle enforcement and local-writer fencing in
+  sync with registration.
+- Object-store, coordinator, cache, and tenant-store construction now lives in
+  a dedicated bootstrap layer; coordinator and ingest dependencies use smaller
+  capability interfaces.
+- Release hygiene rejects Finder-style duplicate files and incomplete vendor
+  trees before the release gate starts.
+
+### Compatibility
+
+- Local WAL ingest is opt-in, defaults to direct ingest, requires local
+  coordination, and is unavailable in reader mode.
+- Existing 1.0/1.1 core graph layout and retained technical identifiers remain
+  compatible; the release does not add RDF/OWL storage, SPARQL, or inference.
+
 ## [1.1.0] - 2026-07-27
 
 ### Added

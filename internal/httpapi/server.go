@@ -12,6 +12,7 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/retrieval"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 
 	"go.opentelemetry.io/otel"
@@ -32,11 +33,21 @@ type Server struct {
 	ReaderCatchupTimeout  time.Duration
 	ReadinessTimeout      time.Duration
 	QueryRegistry         *RunningQueryRegistry
+	RetrievalSearcher     retrieval.Searcher
+	IngestService         IngestService
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration
 	maintenance           *maintenanceState
 	maintenanceOnce       sync.Once
 	usageCache            *tenantUsageCache
+}
+
+type IngestService interface {
+	Accept(context.Context, string, storage.IngestRequest) (storage.IngestAcceptance, error)
+	Wait(context.Context, storage.IngestAcceptance) (storage.IngestResult, error)
+	Status(context.Context, string, string, string, string) (storage.IngestBatchStatus, error)
+	Readiness() storage.IngestServiceReadiness
+	ObserveMetrics()
 }
 
 type CommitRequest struct {
@@ -58,9 +69,13 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if !coordinator.Available {
 		status = "degraded"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"status": status, "mode": s.Mode, "coordination": coordinator, "build": buildinfo.Current(),
-	})
+	}
+	if s.IngestService != nil {
+		response["ingest_wal"] = s.IngestService.Readiness()
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) readiness(w http.ResponseWriter, r *http.Request) {
@@ -77,10 +92,19 @@ func (s *Server) readiness(w http.ResponseWriter, r *http.Request) {
 		status = "not_ready"
 		code = http.StatusServiceUnavailable
 	}
-	writeJSON(w, code, map[string]any{
+	response := map[string]any{
 		"status": status, "mode": s.Mode, "coordination": coordinator,
 		"object_store": objectStore, "build": buildinfo.Current(),
-	})
+	}
+	if s.IngestService != nil {
+		walStatus := s.IngestService.Readiness()
+		response["ingest_wal"] = walStatus
+		if !walStatus.Ready {
+			response["status"] = "not_ready"
+			code = http.StatusServiceUnavailable
+		}
+	}
+	writeJSON(w, code, response)
 }
 
 func (s *Server) readinessDependencies(ctx context.Context) (storage.CoordinatorStatus, storage.ObjectStoreStatus) {
@@ -117,6 +141,9 @@ func (s *Server) readinessDependencies(ctx context.Context) (storage.Coordinator
 }
 
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
+	if s.IngestService != nil {
+		s.IngestService.ObserveMetrics()
+	}
 	status := s.Store.CachedCoordinatorStatus()
 	s.obs().Metrics.RecordCoordinatorStatus(
 		status.Backend,

@@ -38,7 +38,7 @@ func TestIndexObjectCacheObserverRecordsHitMiss(t *testing.T) {
 	base := NewMemoryStore()
 	store := NewTenantStore(base, "test")
 	store.ConfigureIndexObjectCache(IndexObjectCacheConfig{MaxEntries: 16})
-	store.CacheObserver = &testCacheObserver{}
+	store.cacheObserver = &testCacheObserver{}
 	if _, err := store.Commit(ctx, "tenant-a", multiHostIndexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestIndexObjectCacheObserverRecordsHitMiss(t *testing.T) {
 	if _, ok, err := lookup.MatchFieldIndex(ctx, "host", "hostname", []any{"app-02"}); err != nil || !ok {
 		t.Fatalf("second lookup ok=%v err=%v", ok, err)
 	}
-	observer := store.CacheObserver.(*testCacheObserver)
+	observer := store.cacheObserver.(*testCacheObserver)
 	if observer.cache["tenant-a\x00secondary_index_miss"] < 1 || observer.cache["tenant-a\x00secondary_index_hit"] < 1 {
 		t.Fatalf("index cache events = %#v", observer.cache)
 	}

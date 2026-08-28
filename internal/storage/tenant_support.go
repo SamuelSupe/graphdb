@@ -314,6 +314,75 @@ func (s *TenantStore) indexDefinitionsKey(tenantID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "definitions.parquet")
 }
 
+func (s *TenantStore) retrievalExtensionPrefix(tenantID string) string {
+	return path.Join(
+		s.Prefix,
+		"tenants",
+		tenantID,
+		"extensions",
+		"v1.2",
+		"retrieval",
+	)
+}
+
+func (s *TenantStore) retrievalDefinitionsKey(tenantID string) string {
+	return path.Join(s.retrievalExtensionPrefix(tenantID), "definitions.parquet")
+}
+
+func (s *TenantStore) retrievalHeadKey(tenantID string) string {
+	return path.Join(s.retrievalExtensionPrefix(tenantID), "head.parquet")
+}
+
+func (s *TenantStore) retrievalCatalogKey(
+	tenantID string,
+	revision int64,
+	graphVersion int64,
+	hash string,
+) string {
+	if len(hash) > 16 {
+		hash = hash[:16]
+	}
+	name := fmt.Sprintf(
+		"r%020d-v%020d-%s.parquet",
+		revision,
+		graphVersion,
+		hash,
+	)
+	return path.Join(
+		s.retrievalExtensionPrefix(tenantID),
+		"catalogs",
+		name,
+	)
+}
+
+func (s *TenantStore) retrievalGenerationPrefix(
+	tenantID string,
+	generation string,
+	graphVersion int64,
+) string {
+	return path.Join(
+		s.retrievalExtensionPrefix(tenantID),
+		"generations",
+		objectSegment(generation),
+		"versions",
+		"v"+strconv.FormatInt(graphVersion, 10),
+	)
+}
+
+func (s *TenantStore) retrievalSegmentKey(
+	tenantID string,
+	generation string,
+	graphVersion int64,
+	kind string,
+	shard string,
+) string {
+	return path.Join(
+		s.retrievalGenerationPrefix(tenantID, generation, graphVersion),
+		objectSegment(kind),
+		objectSegment(shard)+".parquet",
+	)
+}
+
 func (s *TenantStore) indexTaskKey(tenantID string, taskID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "tasks", objectSegment(taskID)+".parquet")
 }
