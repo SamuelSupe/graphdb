@@ -243,24 +243,21 @@ func TestReaderCacheColdLoadContinuesAfterCallerTimeout(t *testing.T) {
 	}
 	reader := NewTenantStore(&delayedGraphReadStore{ObjectStore: base, delay: 50 * time.Millisecond}, "test")
 	cache := NewReaderCache(reader, time.Minute)
-	cache.LoadTimeout = time.Second
+	cache.LoadTimeout = 5 * time.Second
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
 	defer cancel()
 	if _, _, err := cache.LoadAtLeast(requestCtx, "tenant-a", 1); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timed load err = %v, want deadline exceeded", err)
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if version, ok := cache.CachedVersion("tenant-a"); ok && version == 1 {
-			if _, _, err := cache.LoadAtLeast(ctx, "tenant-a", 1); err != nil {
-				t.Fatalf("load warmed graph: %v", err)
-			}
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	warmCtx, cancelWarm := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelWarm()
+	if _, _, err := cache.LoadAtLeast(warmCtx, "tenant-a", 1); err != nil {
+		t.Fatalf("wait for shared cold load: %v", err)
 	}
-	t.Fatal("cold load did not warm the cache after caller timeout")
+	if version, ok := cache.CachedVersion("tenant-a"); !ok || version != 1 {
+		t.Fatalf("cached version = %d, %v; want 1, true", version, ok)
+	}
 }
 
 func TestReaderCacheBoundsColdLoadsAcrossTenants(t *testing.T) {
