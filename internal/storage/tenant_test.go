@@ -882,6 +882,7 @@ func TestReaderCacheRefreshCachedEvictsIdleTenants(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	cache := NewReaderCache(store, time.Minute)
+	cache.IdleTTL = time.Minute
 	if _, err := store.Commit(ctx, "tenant-a", sampleMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}

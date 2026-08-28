@@ -36,7 +36,11 @@ func TestMaintenanceAutoCompactsLongCommitTail(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put tenant config: %v", err)
 	}
-	server := &Server{Store: store, Mode: "all"}
+	cache := storage.NewReaderCache(store, time.Minute)
+	if _, _, err := cache.LoadAtLeast(ctx, "tenant-a", 2); err != nil {
+		t.Fatalf("warm reader cache: %v", err)
+	}
+	server := &Server{Store: store, Cache: cache, Mode: "all"}
 	report := server.runMaintenanceOnce(ctx, time.Now().UTC())
 	if report.Compacted != 1 || len(report.Errors) != 0 {
 		t.Fatalf("maintenance report = %#v", report)
@@ -50,6 +54,9 @@ func TestMaintenanceAutoCompactsLongCommitTail(t *testing.T) {
 	}
 	if len(report.Tenants) != 1 || report.Tenants[0].CompactReason != "commit_tail" {
 		t.Fatalf("tenant report = %#v", report.Tenants)
+	}
+	if status := cache.Status("tenant-a"); !status.Cached || status.Version != 2 {
+		t.Fatalf("reader cache was invalidated by logical compaction: %#v", status)
 	}
 }
 

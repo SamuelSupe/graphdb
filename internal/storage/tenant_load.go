@@ -248,26 +248,16 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 	segmentsCtx, segmentsSpan := startStorageSpan(ctx, "graphdb.storage.load_commit_segments",
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.commit_segments.count", len(manifest.CommitSegments)),
+		attribute.Int("graphdb.commit_segments.load_concurrency", min(commitSegmentLoadConcurrency, len(manifest.CommitSegments))),
 	)
-	segmentItems := 0
-	for _, segment := range manifest.CommitSegments {
-		items, err := s.loadCommitSegment(segmentsCtx, tenantID, segment)
-		if err != nil {
-			segmentsSpan.SetAttributes(attribute.Int("graphdb.commit_segments.items", segmentItems))
-			endStorageSpan(segmentsSpan, err)
-			return loadedGraph{}, err
-		}
-		segmentItems += len(items)
-		for _, item := range items {
-			if err := applyManifestCommit(g, item.Key, item.Commit); err != nil {
-				segmentsSpan.SetAttributes(attribute.Int("graphdb.commit_segments.items", segmentItems))
-				endStorageSpan(segmentsSpan, err)
-				return loadedGraph{}, err
-			}
-		}
-	}
+	segmentItems, err := s.applyCommitSegments(
+		segmentsCtx, tenantID, manifest.CommitSegments, g,
+	)
 	segmentsSpan.SetAttributes(attribute.Int("graphdb.commit_segments.items", segmentItems))
-	endStorageSpan(segmentsSpan, nil)
+	endStorageSpan(segmentsSpan, err)
+	if err != nil {
+		return loadedGraph{}, err
+	}
 
 	commitsCtx, commitsSpan := startStorageSpan(ctx, "graphdb.storage.load_commit_tail",
 		tenantTraceAttr(tenantID),

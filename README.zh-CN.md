@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.2.1 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -29,7 +29,23 @@ SPARQL、本体推理或历史图引擎。
 | 对象存储持久化 | Parquet manifest、commit、snapshot、entity page、edge shard 和 index object。 |
 | 读写分离 | 同一二进制支持 `all`、`writer`、`reader`，通过部署拓扑分流。 |
 | 可选多写协调 | PostgreSQL head CAS 支持每租户 2–8 个乐观并发 writer，本地协调仍为默认。 |
+| 有界读路径 | 冷图加载、查询准入、执行预算和缓存驻留分别设有独立边界。 |
 | 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
+
+### 1.2.1 性能更新
+
+- commit tail compact 与重新加载会复用已解码的图状态；持久化 commit segment
+  并发加载，并继续严格按版本顺序应用。
+- 完整图冷加载会在请求间共享，默认全局并发上限为 4；等待槽位超过有界时间
+  后直接拒绝，避免对象存储过载并拖慢无关的上游请求。
+- 查询校验提前到存储 I/O 之前，`timeout_ms` 统一覆盖准入、索引访问、图加载
+  和执行阶段。
+- 物化 kind 分页使用稳定 ID 顺序，取得 `limit + 1` 条匹配后立即停止；不可用
+  的惰性索引使用有界退避，避免每次请求重复打开失败索引。
+
+本版本除完整 Go 测试套件外，还覆盖了 match、索引 match、neighbors、pattern、
+traverse、impact 和 shortest path 查询。微基准结果会随数据与硬件变化，不作为
+生产延迟 SLO。
 
 ## 架构一览
 
@@ -145,8 +161,8 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.2：
-[**v1.2.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)。
+最新已发布版本为 GGraphDB 1.2.1：
+[**v1.2.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1)。
 发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
 正式回滚演练全部通过后才会发布。
 
@@ -158,7 +174,7 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.0` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.1` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 

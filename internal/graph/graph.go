@@ -22,6 +22,8 @@ type Graph struct {
 	fieldIndex       map[string]map[string]map[string]map[string]struct{}
 	identityIndex    map[string]map[string]string
 	cow              *copyOnWriteState
+	entityOrder      map[string][]string
+	entityOrderMu    sync.Mutex
 
 	contentFingerprint      [16]byte
 	contentFingerprintReady bool

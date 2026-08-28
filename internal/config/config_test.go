@@ -134,6 +134,7 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_MAX_PER_TENANT", "0")
 	t.Setenv("GRAPHDB_READ_OBJECT_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_WRITE_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "0")
 	t.Setenv("GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD", "0")
@@ -148,7 +149,7 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 	if cfg.QueryMaxConcurrent != 0 || cfg.QueryMaxPerTenant != 0 {
 		t.Fatalf("query limits = %d/%d, want 0/0", cfg.QueryMaxConcurrent, cfg.QueryMaxPerTenant)
 	}
-	if cfg.ReadMaxConcurrent != 0 || cfg.ReadMaxPerTenant != 0 || cfg.ReadObjectMaxConcurrent != 0 || cfg.ParquetDecodeMaxConcurrent != 0 {
+	if cfg.ReadMaxConcurrent != 0 || cfg.ReadMaxPerTenant != 0 || cfg.ReadObjectMaxConcurrent != 0 || cfg.ParquetDecodeMaxConcurrent != 0 || cfg.ReaderCacheLoadMaxConcurrent != 0 {
 		t.Fatalf("read limits = %#v, want zeros", cfg)
 	}
 	if cfg.WriteMaxConcurrent != 0 || cfg.WriteMaxPerTenant != 0 || cfg.WriteObjectErrorThreshold != 0 || cfg.WriteCASConflictThreshold != 0 || cfg.WriteMaxCommitTail != 0 || cfg.WriteMaxObjectsPerTenant != 0 || cfg.WriteMaxBytesPerTenant != 0 {
@@ -159,6 +160,9 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 func TestLoadRejectsNegativeDurations(t *testing.T) {
 	cases := []string{
 		"GRAPHDB_POLL_INTERVAL",
+		"GRAPHDB_READER_CACHE_IDLE_TTL",
+		"GRAPHDB_READER_CACHE_LOAD_TIMEOUT",
+		"GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT",
 		"GRAPHDB_QUERY_QUEUE_TIMEOUT",
 		"GRAPHDB_READ_QUEUE_TIMEOUT",
 		"GRAPHDB_WRITE_QUEUE_TIMEOUT",
@@ -192,6 +196,9 @@ func TestLoadRejectsNegativeDurations(t *testing.T) {
 func TestLoadAllowsZeroDurations(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_IDLE_TTL", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", "0")
 	t.Setenv("GRAPHDB_QUERY_QUEUE_TIMEOUT", "0")
 	t.Setenv("GRAPHDB_READ_QUEUE_TIMEOUT", "0")
 	t.Setenv("GRAPHDB_WRITE_QUEUE_TIMEOUT", "0")
@@ -208,8 +215,8 @@ func TestLoadAllowsZeroDurations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PollInterval != 0 || cfg.QueryQueueTimeout != 0 || cfg.ReadQueueTimeout != 0 {
-		t.Fatalf("durations = %s/%s/%s, want 0/0/0", cfg.PollInterval, cfg.QueryQueueTimeout, cfg.ReadQueueTimeout)
+	if cfg.PollInterval != 0 || cfg.ReaderCacheIdleTTL != 0 || cfg.ReaderCacheLoadTimeout != 0 || cfg.ReaderCacheLoadQueueTimeout != 0 || cfg.QueryQueueTimeout != 0 || cfg.ReadQueueTimeout != 0 {
+		t.Fatalf("read durations = %#v, want zeros", cfg)
 	}
 	if cfg.WriteQueueTimeout != 0 || cfg.WriteExecutionTimeout != 0 || cfg.WriteObjectLatencyThreshold != 0 || cfg.WriteObjectErrorWindow != 0 || cfg.WriteCASConflictWindow != 0 {
 		t.Fatalf("write durations = %s/%s/%s/%s/%s, want 0/0/0/0/0", cfg.WriteQueueTimeout, cfg.WriteExecutionTimeout, cfg.WriteObjectLatencyThreshold, cfg.WriteObjectErrorWindow, cfg.WriteCASConflictWindow)
@@ -231,6 +238,9 @@ func TestLoadAllowsZeroDurations(t *testing.T) {
 func TestLoadParsesPositiveDurations(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "500ms")
+	t.Setenv("GRAPHDB_READER_CACHE_IDLE_TTL", "12m")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", "40s")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", "175ms")
 	t.Setenv("GRAPHDB_QUERY_QUEUE_TIMEOUT", "3s")
 	t.Setenv("GRAPHDB_READ_QUEUE_TIMEOUT", "250ms")
 	t.Setenv("GRAPHDB_WRITE_QUEUE_TIMEOUT", "150ms")
@@ -247,8 +257,8 @@ func TestLoadParsesPositiveDurations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PollInterval != 500*time.Millisecond || cfg.QueryQueueTimeout != 3*time.Second || cfg.ReadQueueTimeout != 250*time.Millisecond {
-		t.Fatalf("durations = %s/%s/%s", cfg.PollInterval, cfg.QueryQueueTimeout, cfg.ReadQueueTimeout)
+	if cfg.PollInterval != 500*time.Millisecond || cfg.ReaderCacheIdleTTL != 12*time.Minute || cfg.ReaderCacheLoadTimeout != 40*time.Second || cfg.ReaderCacheLoadQueueTimeout != 175*time.Millisecond || cfg.QueryQueueTimeout != 3*time.Second || cfg.ReadQueueTimeout != 250*time.Millisecond {
+		t.Fatalf("read durations = %#v", cfg)
 	}
 	if cfg.WriteQueueTimeout != 150*time.Millisecond || cfg.WriteExecutionTimeout != 9*time.Second || cfg.WriteObjectLatencyThreshold != 750*time.Millisecond || cfg.WriteObjectErrorWindow != 6*time.Second || cfg.WriteCASConflictWindow != 4*time.Second {
 		t.Fatalf("write durations = %s/%s/%s/%s/%s", cfg.WriteQueueTimeout, cfg.WriteExecutionTimeout, cfg.WriteObjectLatencyThreshold, cfg.WriteObjectErrorWindow, cfg.WriteCASConflictWindow)
@@ -478,6 +488,7 @@ func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_OBJECT_MAX_CONCURRENT", "23")
 	t.Setenv("GRAPHDB_READ_OBJECT_SINGLEFLIGHT", "false")
 	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "7")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", "3")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "123")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", "48MiB")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "/tmp/graphdb-index-cache")
@@ -489,7 +500,7 @@ func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	if cfg.ReaderIndexCacheEntries != 123 || cfg.ReaderIndexCacheMaxBytes != 48*1024*1024 || cfg.ReaderIndexCacheDir != "/tmp/graphdb-index-cache" {
 		t.Fatalf("reader index cache config = %#v", cfg)
 	}
-	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight || cfg.ParquetDecodeMaxConcurrent != 7 {
+	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight || cfg.ParquetDecodeMaxConcurrent != 7 || cfg.ReaderCacheLoadMaxConcurrent != 3 {
 		t.Fatalf("reader read-path config = %#v", cfg)
 	}
 	if cfg.EntityPagePackMaxBytes != 12*1024*1024 {
@@ -766,6 +777,10 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_INGEST_FLUSH_WORKERS", "")
 	t.Setenv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", "")
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "")
+	t.Setenv("GRAPHDB_READER_CACHE_IDLE_TTL", "")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", "")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", "")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", "")
 	t.Setenv("GRAPHDB_SLOW_QUERY_THRESHOLD", "")
 	t.Setenv("GRAPHDB_INDEX_HEALTH_INTERVAL", "")
 	t.Setenv("GRAPHDB_MAINTENANCE_INTERVAL", "")

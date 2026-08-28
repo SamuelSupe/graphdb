@@ -11,15 +11,21 @@ import (
 )
 
 type ReaderCache struct {
-	Store    *TenantStore
-	TTL      time.Duration
-	Observer ReaderCacheObserver
+	Store            *TenantStore
+	TTL              time.Duration
+	IdleTTL          time.Duration
+	LoadTimeout      time.Duration
+	LoadQueueTimeout time.Duration
+	Observer         ReaderCacheObserver
 
-	mu      sync.RWMutex
-	entries map[string]cacheEntry
-	gens    map[string]uint64
-	loading map[string]*cacheLoad
+	mu        sync.RWMutex
+	entries   map[string]cacheEntry
+	gens      map[string]uint64
+	loading   map[string]*cacheLoad
+	loadSlots chan struct{}
 }
+
+var ErrReaderLoadBusy = errors.New("reader graph load admission timeout")
 
 type ReaderCacheObserver interface {
 	RecordReaderCache(tenantID string, status string)
@@ -37,6 +43,7 @@ type cacheEntry struct {
 
 type cacheLoad struct {
 	done chan struct{}
+	err  error
 }
 
 type ReaderCacheStatus struct {
@@ -48,6 +55,7 @@ type ReaderCacheStatus struct {
 	ExpiresAt  time.Time
 	LastAccess time.Time
 	TTL        time.Duration
+	IdleTTL    time.Duration
 }
 
 func NewReaderCache(store *TenantStore, ttl time.Duration) *ReaderCache {
@@ -55,12 +63,27 @@ func NewReaderCache(store *TenantStore, ttl time.Duration) *ReaderCache {
 		ttl = 2 * time.Second
 	}
 	return &ReaderCache{
-		Store:   store,
-		TTL:     ttl,
-		entries: map[string]cacheEntry{},
-		gens:    map[string]uint64{},
-		loading: map[string]*cacheLoad{},
+		Store:            store,
+		TTL:              ttl,
+		IdleTTL:          15 * time.Minute,
+		LoadTimeout:      time.Minute,
+		LoadQueueTimeout: 2 * time.Second,
+		entries:          map[string]cacheEntry{},
+		gens:             map[string]uint64{},
+		loading:          map[string]*cacheLoad{},
+		loadSlots:        make(chan struct{}, 4),
 	}
+}
+
+func (c *ReaderCache) ConfigureLoadAdmission(maxConcurrent int, queueTimeout time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.LoadQueueTimeout = queueTimeout
+	if maxConcurrent <= 0 {
+		c.loadSlots = nil
+		return
+	}
+	c.loadSlots = make(chan struct{}, maxConcurrent)
 }
 
 func (c *ReaderCache) Start(ctx context.Context) {
@@ -128,7 +151,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			minVersion,
 		)
 		if fresh {
-			c.finishLoad(tenantID, load)
+			c.finishLoad(tenantID, load, nil)
 			c.recordCache(tenantID, "hit")
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
@@ -141,15 +164,16 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 				fallback, fallbackOK := c.extendStaleEntry(
 					tenantID, minVersion, true,
 				)
-				c.finishLoad(tenantID, load)
 				if fallbackOK {
+					c.finishLoad(tenantID, load, nil)
 					c.recordCache(tenantID, "stale_coordinator_unavailable")
 					c.recordVisible(tenantID, fallback.manifest.Version)
 					return cacheEntryGraph(fallback, shared)
 				}
+				c.finishLoad(tenantID, load, err)
 				return nil, Manifest{}, err
 			}
-			c.finishLoad(tenantID, load)
+			c.finishLoad(tenantID, load, err)
 			return nil, Manifest{}, err
 		}
 		c.mu.Lock()
@@ -162,7 +186,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			entry.lastAccess = now
 			c.entries[tenantID] = entry
 			c.mu.Unlock()
-			c.finishLoad(tenantID, load)
+			c.finishLoad(tenantID, load, nil)
 			c.recordCache(tenantID, "hit")
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
@@ -178,50 +202,128 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			entry.lastAccess = now
 			c.entries[tenantID] = entry
 			c.mu.Unlock()
-			c.finishLoad(tenantID, load)
+			c.finishLoad(tenantID, load, nil)
 			c.recordCache(tenantID, "revalidated")
+			c.recordVisible(tenantID, entry.manifest.Version)
+			return cacheEntryGraph(entry, shared)
+		}
+		if ok &&
+			cacheEntryMatchesLogicalGraph(entry, manifest) &&
+			entry.manifest.Version >= minVersion {
+			if entry.cachedAt.IsZero() {
+				entry.cachedAt = now
+			}
+			entry.manifest = manifest
+			entry.meta = manifestMeta
+			entry.expiresAt = now.Add(c.TTL)
+			entry.lastAccess = now
+			c.entries[tenantID] = entry
+			c.mu.Unlock()
+			c.finishLoad(tenantID, load, nil)
+			c.recordCache(tenantID, "revalidated_logical_graph")
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
 		}
 		c.mu.Unlock()
 
 		c.recordCache(tenantID, "miss")
-		loaded, err := c.loadStoreAtLeast(ctx, tenantID, minVersion)
-		if err != nil {
-			c.finishLoad(tenantID, load)
-			c.recordCache(tenantID, "miss_error")
+		if err := c.startStoreLoad(ctx, tenantID, minVersion, startGen, load); err != nil {
+			return nil, Manifest{}, err
+		}
+		if err := waitCacheLoad(ctx, load); err != nil {
 			return nil, Manifest{}, err
 		}
 		c.mu.Lock()
 		entry, ok = c.entries[tenantID]
+		now = time.Now()
+		if ok && cacheEntryFresh(entry, now, minVersion) {
+			entry.lastAccess = now
+			c.entries[tenantID] = entry
+			c.mu.Unlock()
+			return cacheEntryGraph(entry, shared)
+		}
+		c.mu.Unlock()
+	}
+}
+
+func (c *ReaderCache) startStoreLoad(
+	parent context.Context,
+	tenantID string,
+	minVersion int64,
+	startGen uint64,
+	load *cacheLoad,
+) error {
+	release, err := c.acquireStoreLoad(parent)
+	if err != nil {
+		c.recordCache(tenantID, "miss_rejected")
+		c.finishLoad(tenantID, load, err)
+		return err
+	}
+	// A cold load is shared by later requests, so the first caller must not be
+	// able to abandon it after admission. LoadTimeout still bounds the work.
+	loadCtx := context.WithoutCancel(parent)
+	cancel := func() {}
+	if c.LoadTimeout > 0 {
+		loadCtx, cancel = context.WithTimeout(loadCtx, c.LoadTimeout)
+	}
+	go func() {
+		defer release()
+		defer cancel()
+		loaded, err := c.loadStoreAtLeast(loadCtx, tenantID, minVersion)
+		if err != nil {
+			c.recordCache(tenantID, "miss_error")
+			c.finishLoad(tenantID, load, err)
+			return
+		}
+
+		c.mu.Lock()
+		entry, ok := c.entries[tenantID]
 		if ok && cacheEntryNewerThanLoaded(entry, loaded) && entry.manifest.Version >= minVersion {
 			c.mu.Unlock()
-			c.finishLoad(tenantID, load)
 			c.recordCache(tenantID, "hit_newer")
 			c.recordVisible(tenantID, entry.manifest.Version)
-			return cacheEntryGraph(entry, shared)
+			c.finishLoad(tenantID, load, nil)
+			return
 		}
 		if c.gens[tenantID] != startGen {
 			c.mu.Unlock()
-			c.finishLoad(tenantID, load)
-			if err := ctx.Err(); err != nil {
-				return nil, Manifest{}, err
-			}
-			continue
+			c.finishLoad(tenantID, load, nil)
+			return
 		}
-		now = time.Now()
-		cachedGraph := loaded.Graph
-		if !shared {
-			cachedGraph = loaded.Graph.Clone()
-		}
+		now := time.Now()
 		c.entries[tenantID] = cacheEntry{
-			graph: cachedGraph, manifest: loaded.Manifest, meta: loaded.Meta,
+			graph: loaded.Graph, manifest: loaded.Manifest, meta: loaded.Meta,
 			cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: now,
 		}
 		c.mu.Unlock()
-		c.finishLoad(tenantID, load)
 		c.recordVisible(tenantID, loaded.Manifest.Version)
-		return loaded.Graph, loaded.Manifest, nil
+		c.finishLoad(tenantID, load, nil)
+	}()
+	return nil
+}
+
+func (c *ReaderCache) acquireStoreLoad(parent context.Context) (func(), error) {
+	c.mu.RLock()
+	slots := c.loadSlots
+	queueTimeout := c.LoadQueueTimeout
+	c.mu.RUnlock()
+	if slots == nil {
+		return func() {}, nil
+	}
+	ctx := parent
+	cancel := func() {}
+	if queueTimeout > 0 {
+		ctx, cancel = context.WithTimeout(parent, queueTimeout)
+	}
+	defer cancel()
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-ctx.Done():
+		if parent.Err() != nil {
+			return nil, parent.Err()
+		}
+		return nil, fmt.Errorf("%w after %s", ErrReaderLoadBusy, queueTimeout)
 	}
 }
 
@@ -250,6 +352,16 @@ func cacheEntryMatchesManifest(entry cacheEntry, manifest Manifest, meta ObjectM
 		manifest,
 		meta,
 	)
+}
+
+func cacheEntryMatchesLogicalGraph(entry cacheEntry, manifest Manifest) bool {
+	if entry.graph == nil || entry.graph.Version != manifest.Version ||
+		entry.manifest.TenantID != manifest.TenantID ||
+		entry.manifest.Version != manifest.Version ||
+		entry.manifest.HeadCommitID != manifest.HeadCommitID {
+		return false
+	}
+	return entry.manifest.DataMD5 != "" && entry.manifest.DataMD5 == manifest.DataMD5
 }
 
 func cacheEntryNewerThanLoaded(entry cacheEntry, loaded loadedGraph) bool {
@@ -294,14 +406,15 @@ func (c *ReaderCache) beginLoad(ctx context.Context, tenantID string) (*cacheLoa
 func waitCacheLoad(ctx context.Context, load *cacheLoad) error {
 	select {
 	case <-load.done:
-		return nil
+		return load.err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (c *ReaderCache) finishLoad(tenantID string, load *cacheLoad) {
+func (c *ReaderCache) finishLoad(tenantID string, load *cacheLoad, err error) {
 	c.mu.Lock()
+	load.err = err
 	if c.loading[tenantID] == load {
 		delete(c.loading, tenantID)
 	}
@@ -343,16 +456,19 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	)
 	if err != nil {
 		if errors.Is(err, ErrCoordinatorUnavailable) {
-			_, _ = c.extendStaleEntry(tenantID, 0, markAccess)
+			if _, ok := c.extendStaleEntry(tenantID, 0, markAccess); ok {
+				c.finishLoad(tenantID, load, nil)
+				return nil, Manifest{}, err
+			}
 		}
-		c.finishLoad(tenantID, load)
+		c.finishLoad(tenantID, load, err)
 		return nil, Manifest{}, err
 	}
 	c.mu.RLock()
 	entry, ok := c.entries[tenantID]
 	c.mu.RUnlock()
 	if !ok && !markAccess {
-		c.finishLoad(tenantID, load)
+		c.finishLoad(tenantID, load, nil)
 		return nil, Manifest{}, nil
 	}
 	if ok && cacheEntryMatchesManifest(entry, manifest, manifestMeta) {
@@ -367,23 +483,52 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		c.mu.Lock()
 		if c.gens[tenantID] != startGen {
 			c.mu.Unlock()
-			c.finishLoad(tenantID, load)
+			c.finishLoad(tenantID, load, nil)
 			return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 		}
 		c.entries[tenantID] = entry
 		c.mu.Unlock()
-		c.finishLoad(tenantID, load)
+		c.finishLoad(tenantID, load, nil)
 		return cacheEntryGraph(entry, !markAccess)
 	}
-	loaded, err := c.loadStoreAtLeast(ctx, tenantID, 0)
+	if ok && cacheEntryMatchesLogicalGraph(entry, manifest) {
+		now := time.Now()
+		if entry.cachedAt.IsZero() {
+			entry.cachedAt = now
+		}
+		entry.manifest = manifest
+		entry.meta = manifestMeta
+		entry.expiresAt = now.Add(c.TTL)
+		if markAccess {
+			entry.lastAccess = now
+		}
+		c.mu.Lock()
+		if c.gens[tenantID] != startGen {
+			c.mu.Unlock()
+			c.finishLoad(tenantID, load, nil)
+			return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
+		}
+		c.entries[tenantID] = entry
+		c.mu.Unlock()
+		c.finishLoad(tenantID, load, nil)
+		c.recordCache(tenantID, "revalidated_logical_graph")
+		return cacheEntryGraph(entry, !markAccess)
+	}
+	release, err := c.acquireStoreLoad(ctx)
 	if err != nil {
-		c.finishLoad(tenantID, load)
+		c.finishLoad(tenantID, load, err)
+		return nil, Manifest{}, err
+	}
+	loaded, err := c.loadStoreAtLeast(ctx, tenantID, 0)
+	release()
+	if err != nil {
+		c.finishLoad(tenantID, load, err)
 		return nil, Manifest{}, err
 	}
 	c.mu.Lock()
 	if c.gens[tenantID] != startGen {
 		c.mu.Unlock()
-		c.finishLoad(tenantID, load)
+		c.finishLoad(tenantID, load, nil)
 		return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 	}
 	now := time.Now()
@@ -400,7 +545,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: lastAccess,
 	}
 	c.mu.Unlock()
-	c.finishLoad(tenantID, load)
+	c.finishLoad(tenantID, load, nil)
 	return loaded.Graph, loaded.Manifest, nil
 }
 
@@ -474,7 +619,7 @@ func (c *ReaderCache) CachedAtLeast(tenantID string, minVersion int64) (*graph.G
 func (c *ReaderCache) Status(tenantID string) ReaderCacheStatus {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	status := ReaderCacheStatus{TTL: c.TTL}
+	status := ReaderCacheStatus{TTL: c.TTL, IdleTTL: c.IdleTTL}
 	if load := c.loading[tenantID]; load != nil {
 		status.Loading = true
 	}
@@ -492,7 +637,7 @@ func (c *ReaderCache) Status(tenantID string) ReaderCacheStatus {
 }
 
 func cacheEntryIdle(entry cacheEntry, now time.Time, ttl time.Duration) bool {
-	if entry.lastAccess.IsZero() {
+	if ttl <= 0 || entry.lastAccess.IsZero() {
 		return false
 	}
 	return !now.Before(entry.lastAccess.Add(ttl))

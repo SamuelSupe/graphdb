@@ -3,22 +3,22 @@
 [中文](release-deployment.zh-CN.md)
 
 This guide is for service owners who need to download, deploy, upgrade, and
-roll back GGraphDB 1.2. Examples use the released `v1.2.0` tag, available at
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0>.
+roll back GGraphDB 1.2. Examples use the released `v1.2.1` tag, available at
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1>.
 
 ## 1. Download and verify
 
 The release page provides:
 
-- `graphdb-v1.2.0.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
-- `graphdb-v1.2.0.tar.gz.sha256`: SHA-256 checksum.
+- `graphdb-v1.2.1.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
+- `graphdb-v1.2.1.tar.gz.sha256`: SHA-256 checksum.
 
 Verify and unpack:
 
 ```sh
-sha256sum -c graphdb-v1.2.0.tar.gz.sha256
-tar -xzf graphdb-v1.2.0.tar.gz
-cd graphdb-v1.2.0
+sha256sum -c graphdb-v1.2.1.tar.gz.sha256
+tar -xzf graphdb-v1.2.1.tar.gz
+cd graphdb-v1.2.1
 ```
 
 The archive contains:
@@ -169,6 +169,14 @@ GRAPHDB_PPROF_ENABLED=false
 Common runtime settings:
 
 - `GRAPHDB_POLL_INTERVAL`: interval for checking new manifests.
+- `GRAPHDB_READER_CACHE_IDLE_TTL`: how long an inactive tenant graph remains
+  resident independently of manifest polling.
+- `GRAPHDB_READER_CACHE_LOAD_TIMEOUT`: internal budget for a shared cold load;
+  the load may continue warming the cache after an individual request cancels.
+- `GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT`: global cap for concurrent full
+  graph loads across tenants (default `4`).
+- `GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT`: maximum wait for a full graph-load
+  slot before the request is rejected (default `2s`).
 - `GRAPHDB_READER_CATCHUP_TIMEOUT`: maximum wait for a reader to reach
   `min_version`.
 - `GRAPHDB_WRITE_MAX_PER_TENANT`: write admission per tenant; keep the

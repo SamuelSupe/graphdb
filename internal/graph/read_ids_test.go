@@ -25,6 +25,32 @@ func TestMatchEntityIDsAndFieldIndexIDsAreSorted(t *testing.T) {
 	}
 }
 
+func TestMatchEntityIDsOrderCacheInvalidatesAfterMutation(t *testing.T) {
+	g := New()
+	if err := g.ApplyCommit(Commit{
+		ID: "seed", Version: 1,
+		Mutations: Mutations{UpsertEntities: []Entity{
+			{ID: "host:b", Kind: "host"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ids := g.MatchEntityIDs("host"); !sameStrings(ids, []string{"host:b"}) {
+		t.Fatalf("initial ids = %#v", ids)
+	}
+	if err := g.ApplyCommit(Commit{
+		ID: "update", Version: 2,
+		Mutations: Mutations{UpsertEntities: []Entity{
+			{ID: "host:a", Kind: "host"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ids := g.MatchEntityIDs("host"); !sameStrings(ids, []string{"host:a", "host:b"}) {
+		t.Fatalf("updated ids = %#v", ids)
+	}
+}
+
 func sameStrings(left []string, right []string) bool {
 	if len(left) != len(right) {
 		return false

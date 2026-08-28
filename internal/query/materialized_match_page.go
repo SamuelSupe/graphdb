@@ -29,6 +29,11 @@ func executeMaterializedKindPage(
 		return Response{}, err
 	}
 	order := matchPageOrder(cursor, EntityPageOrderIdentity)
+	if !cursor.Legacy && order == EntityPageOrderIdentity {
+		return executeMaterializedIdentityPage(
+			g, request, plan, afterID, order, budget,
+		)
+	}
 	keep, start := materializedMatchWindow(request, cursor)
 	ids := maxEntityIDHeap{
 		values: make([]string, 0, keep),
@@ -88,6 +93,62 @@ func executeMaterializedKindPage(
 	}
 	return matchPageResponse(
 		g.Version, results, end < ids.Len(), request, budget, order,
+	), nil
+}
+
+func executeMaterializedIdentityPage(
+	g *graph.Graph,
+	request Request,
+	plan Plan,
+	afterID string,
+	order string,
+	budget *budget,
+) (Response, error) {
+	keep := normalizedLimit(request.Limit) + 1
+	matched := make([]graph.Entity, 0, keep)
+	err := budget.measure(
+		matchOperatorName(plan),
+		plan.Index,
+		plan.EstimatedCost,
+		func() (int, error) {
+			err := budget.measure(
+				"filter-project",
+				"",
+				g.KindCount(request.Kind),
+				func() (int, error) {
+					startScanned := budget.scanned
+					err := g.VisitEntitiesByID(request.Kind, afterID, func(entity graph.Entity) (bool, error) {
+						if err := budget.add(1); err != nil {
+							return false, err
+						}
+						budget.scanned++
+						if !requestEntityMatches(request, entity) {
+							return true, nil
+						}
+						matched = append(matched, graph.CopyEntity(entity))
+						return len(matched) < keep, nil
+					})
+					return budget.scanned - startScanned, err
+				},
+			)
+			return len(matched), err
+		},
+	)
+	if err != nil {
+		return Response{}, err
+	}
+	hasNext := len(matched) > normalizedLimit(request.Limit)
+	if hasNext {
+		matched = matched[:normalizedLimit(request.Limit)]
+	}
+	results := make([]Result, 0, len(matched))
+	for i := range matched {
+		result := Result{Entity: &matched[i]}
+		applyProjection(&result, request.Project)
+		results = append(results, result)
+	}
+	return matchPageResponse(
+		g.Version, results, hasNext, request, budget, order,
 	), nil
 }
 

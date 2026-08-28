@@ -119,6 +119,12 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		return health.Status, len(health.Issues), nil
 	})
 	cache := storage.NewReaderCache(store, cfg.PollInterval)
+	cache.IdleTTL = cfg.ReaderCacheIdleTTL
+	cache.LoadTimeout = cfg.ReaderCacheLoadTimeout
+	cache.ConfigureLoadAdmission(
+		cfg.ReaderCacheLoadMaxConcurrent,
+		cfg.ReaderCacheLoadQueueTimeout,
+	)
 	cache.Observer = obs.Metrics
 	cache.Start(ctx)
 	admission := httpapi.NewQueryAdmission(cfg.QueryMaxConcurrent, cfg.QueryMaxPerTenant, cfg.QueryQueueTimeout)
@@ -302,6 +308,10 @@ Environment:
   GRAPHDB_INDEX_HEALTH_INTERVAL=30s
   GRAPHDB_MAINTENANCE_INTERVAL=30s
   GRAPHDB_TENANT_USAGE_CACHE_TTL=60s
+  GRAPHDB_READER_CACHE_IDLE_TTL=15m
+  GRAPHDB_READER_CACHE_LOAD_TIMEOUT=1m
+  GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT=4
+  GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT=2s
   GRAPHDB_READER_CATCHUP_TIMEOUT=2s
   GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096
   GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB

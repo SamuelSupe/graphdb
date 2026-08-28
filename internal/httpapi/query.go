@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -26,6 +27,8 @@ type GQLQueryRequest struct {
 	CostLimit  int    `json:"cost_limit,omitempty"`
 	Profile    bool   `json:"profile,omitempty"`
 }
+
+const lazyUnavailableBackoff = 5 * time.Second
 
 func (s *Server) query(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantFromRequest(w, r)
@@ -157,20 +160,30 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, route, r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
-	r = r.WithContext(withQueryReadMemo(ctx))
 	start := time.Now()
+	if err := query.ValidateRequest(request); err != nil {
+		s.observeQuery(tenantID, request, query.Response{}, err, time.Since(start))
+		writeQueryError(w, err)
+		return
+	}
+	ctx, cancel := queryRequestContext(ctx, request)
+	defer cancel()
+	r = r.WithContext(withQueryReadMemo(ctx))
 	release, err := s.acquireQuery(r.Context(), tenantID)
 	if err != nil {
+		err = normalizeQueryExecutionError(r.Context(), request, err)
 		s.observeQuery(tenantID, request, query.Response{}, err, time.Since(start))
 		writeQueryError(w, err)
 		return
 	}
 	defer release()
 	if handled, streamErr := s.tryLazyQueryStreamAdmitted(w, r, tenantID, request); handled {
+		streamErr = normalizeQueryExecutionError(r.Context(), request, streamErr)
 		s.observeQuery(tenantID, request, query.Response{}, streamErr, time.Since(start))
 		return
 	}
 	response, err := s.executeQueryAdmitted(r, tenantID, request)
+	err = normalizeQueryExecutionError(r.Context(), request, err)
 	s.observeQuery(tenantID, request, response, err, time.Since(start))
 	if err != nil {
 		writeQueryError(w, err)
@@ -233,13 +246,22 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 
 	target, err := s.readTarget(r, tenantID, queryReadFreshness(request))
 	if err != nil {
+		err = normalizeQueryExecutionError(r.Context(), request, err)
 		writeQueryError(w, err)
 		return true, err
 	}
-	options, version, ok := s.lazyQueryOptions(
-		r.Context(), tenantID, target.ManifestVersion,
-		query.RequiresReverseIndex(request),
-	)
+	options := query.ExecuteOptions{}
+	version := int64(0)
+	ok := false
+	if !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
+		options, version, ok = s.lazyQueryOptions(
+			r.Context(), tenantID, target.ManifestVersion,
+			query.RequiresReverseIndex(request),
+		)
+	}
+	if ok && s.lazyQuerySuppressed(tenantID, version) {
+		return false, nil
+	}
 	if !ok || !target.requiresVersion(version) || !query.SupportsLazyRead(request, options.PlannerStats) {
 		return false, nil
 	}
@@ -260,11 +282,14 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		if !started {
 			if errors.Is(err, query.ErrIndexUnavailable) {
+				s.markLazyQueryUnavailable(tenantID, version)
 				return false, nil
 			}
+			err = normalizeQueryExecutionError(r.Context(), request, err)
 			writeQueryError(w, err)
 			return true, err
 		}
+		err = normalizeQueryExecutionError(r.Context(), request, err)
 		_ = encodeStreamItem(r.Context(), encoder, queryStreamError(err), flush)
 	}
 	return true, err
@@ -374,13 +399,19 @@ func queryTemplateNameFromPath(r *http.Request) (string, error) {
 }
 
 func (s *Server) executeQuery(r *http.Request, tenantID string, request query.Request) (query.Response, error) {
-	r = r.WithContext(withQueryReadMemo(r.Context()))
-	release, err := s.acquireQuery(r.Context(), tenantID)
-	if err != nil {
+	if err := query.ValidateRequest(request); err != nil {
 		return query.Response{}, err
 	}
+	ctx, cancel := queryRequestContext(r.Context(), request)
+	defer cancel()
+	r = r.WithContext(withQueryReadMemo(ctx))
+	release, err := s.acquireQuery(r.Context(), tenantID)
+	if err != nil {
+		return query.Response{}, normalizeQueryExecutionError(ctx, request, err)
+	}
 	defer release()
-	return s.executeQueryAdmitted(r, tenantID, request)
+	response, err := s.executeQueryAdmitted(r, tenantID, request)
+	return response, normalizeQueryExecutionError(ctx, request, err)
 }
 
 func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request query.Request) (response query.Response, err error) {
@@ -394,15 +425,27 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		}
 		endHTTPSpan(span, err)
 	}()
-
 	target, err := s.readTarget(r, tenantID, queryReadFreshness(request))
 	if err != nil {
 		return query.Response{}, err
 	}
-	options, version, ok := s.lazyQueryOptions(
-		r.Context(), tenantID, target.ManifestVersion,
-		query.RequiresReverseIndex(request),
-	)
+	options := query.ExecuteOptions{}
+	version := int64(0)
+	ok := false
+	if !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
+		options, version, ok = s.lazyQueryOptions(
+			r.Context(), tenantID, target.ManifestVersion,
+			query.RequiresReverseIndex(request),
+		)
+	} else if span != nil {
+		span.SetAttributes(attribute.Bool("graphdb.query.lazy_suppressed", true))
+	}
+	if ok && s.lazyQuerySuppressed(tenantID, version) {
+		ok = false
+		if span != nil {
+			span.SetAttributes(attribute.Bool("graphdb.query.lazy_suppressed", true))
+		}
+	}
 	if ok && target.requiresVersion(version) && query.SupportsLazyRead(request, options.PlannerStats) {
 		if span != nil {
 			span.SetAttributes(attribute.String("graphdb.query.execution_path", "lazy_index"))
@@ -413,6 +456,7 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		if err == nil || !errors.Is(err, query.ErrIndexUnavailable) {
 			return response, err
 		}
+		s.markLazyQueryUnavailable(tenantID, version)
 		if span != nil {
 			span.SetAttributes(attribute.Bool("graphdb.query.lazy_fallback", true))
 		}
@@ -420,16 +464,55 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 	if span != nil {
 		span.SetAttributes(attribute.String("graphdb.query.execution_path", "materialized_graph"))
 	}
-	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
-		options = s.queryOptions(
-			r.Context(), tenantID, manifest.Version,
-			query.RequiresReverseIndex(request),
-		)
+	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, _ storage.Manifest) error {
 		var executeErr error
-		response, executeErr = query.ExecuteContextWithOptions(r.Context(), g, request, options)
+		response, executeErr = query.ExecuteContextWithOptions(r.Context(), g, request, query.ExecuteOptions{})
 		return executeErr
 	})
 	return response, err
+}
+
+func queryRequestContext(parent context.Context, request query.Request) (context.Context, context.CancelFunc) {
+	if request.TimeoutMS <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, time.Duration(request.TimeoutMS)*time.Millisecond)
+}
+
+func normalizeQueryExecutionError(ctx context.Context, request query.Request, err error) error {
+	if request.TimeoutMS > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: query timeout or cancellation", query.ErrLimitExceeded)
+	}
+	return err
+}
+
+func (s *Server) lazyQuerySuppressed(tenantID string, version int64) bool {
+	if version <= 0 || version == unconstrainedVersion {
+		return false
+	}
+	key := fmt.Sprintf("%s\x00%d", tenantID, version)
+	value, ok := s.lazyUnavailable.Load(key)
+	if !ok {
+		return false
+	}
+	expiresAt, ok := value.(time.Time)
+	if !ok || !time.Now().Before(expiresAt) {
+		s.lazyUnavailable.Delete(key)
+		return false
+	}
+	return true
+}
+
+func (s *Server) markLazyQueryUnavailable(tenantID string, version int64) {
+	if version <= 0 || version == unconstrainedVersion {
+		return
+	}
+	key := fmt.Sprintf("%s\x00%d", tenantID, version)
+	expiresAt := time.Now().Add(lazyUnavailableBackoff)
+	s.lazyUnavailable.Store(key, expiresAt)
+	time.AfterFunc(lazyUnavailableBackoff, func() {
+		s.lazyUnavailable.CompareAndDelete(key, expiresAt)
+	})
 }
 
 func (s *Server) acquireQuery(ctx context.Context, tenantID string) (func(), error) {
@@ -453,19 +536,6 @@ func (s *Server) acquireQuery(ctx context.Context, tenantID string) (func(), err
 
 func queryReadFreshness(request query.Request) readFreshness {
 	return readFreshness{MinVersion: request.MinVersion, AllowStale: request.AllowStale}
-}
-
-func (s *Server) queryOptions(
-	ctx context.Context,
-	tenantID string,
-	version int64,
-	includeReverse bool,
-) query.ExecuteOptions {
-	catalog, err := s.currentQueryCatalog(ctx, tenantID, version)
-	if err != nil || catalog.Version != version {
-		return query.ExecuteOptions{}
-	}
-	return s.queryOptionsForCatalog(ctx, tenantID, catalog, includeReverse)
 }
 
 func (s *Server) lazyQueryOptions(
@@ -541,6 +611,9 @@ func queryErrorResponse(err error) (int, ErrorResponse) {
 		status = http.StatusUnprocessableEntity
 	}
 	if errors.Is(err, query.ErrLimitExceeded) {
+		status = http.StatusTooManyRequests
+	}
+	if errors.Is(err, storage.ErrReaderLoadBusy) {
 		status = http.StatusTooManyRequests
 	}
 	return status, errorResponseFor(status, err, "", nil)

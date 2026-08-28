@@ -20,6 +20,24 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
+type queryLoadDelayStore struct {
+	storage.ObjectStore
+	delay time.Duration
+}
+
+func (s *queryLoadDelayStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if strings.Contains(key, "/commits/") || strings.Contains(key, "/snapshots/") {
+		timer := time.NewTimer(s.delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return s.ObjectStore.Get(ctx, key)
+}
+
 func TestHTTPCommitGetAndTenantIsolation(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	handler := (&Server{Store: store, Mode: "all"}).Handler()
@@ -1177,6 +1195,34 @@ func TestHTTPQueryRejectsInvalidControlParameter(t *testing.T) {
 	}
 	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(body.Error, "timeout_ms must be >= 0") {
 		t.Fatalf("invalid control query = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPQueryTimeoutIncludesColdGraphLoad(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewMemoryStore()
+	writer := storage.NewTenantStore(base, "test")
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	reader := storage.NewTenantStore(&queryLoadDelayStore{
+		ObjectStore: base,
+		delay:       100 * time.Millisecond,
+	}, "test")
+	cache := storage.NewReaderCache(reader, time.Minute)
+	cache.LoadTimeout = time.Second
+	handler := (&Server{Store: reader, Cache: cache, Mode: "reader"}).Handler()
+	started := time.Now()
+	rr := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{
+		Op: "match", Kind: "host", Limit: 1, TimeoutMS: 10,
+	})
+	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), "query timeout") {
+		t.Fatalf("timed query = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed >= 80*time.Millisecond {
+		t.Fatalf("query timeout waited for cold graph load: %s", elapsed)
 	}
 }
 

@@ -79,6 +79,40 @@ func TestMaterializedKindPagePreservesFilteredCursorOrder(t *testing.T) {
 	}
 }
 
+func TestMaterializedKindPageStopsAfterRequestedKindWindow(t *testing.T) {
+	g := graph.New()
+	entities := make([]graph.Entity, 0, 1005)
+	for i := 0; i < 1000; i++ {
+		entities = append(entities, graph.Entity{
+			ID: fmt.Sprintf("service:%04d", i), Kind: "service",
+		})
+	}
+	for i := 0; i < 5; i++ {
+		entities = append(entities, graph.Entity{
+			ID: fmt.Sprintf("host:%04d", i), Kind: "host",
+		})
+	}
+	if err := g.ApplyCommit(graph.Commit{
+		ID: "seed", Version: 1,
+		Mutations: graph.Mutations{UpsertEntities: entities},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := Execute(g, Request{
+		Op: "match", Kind: "host", Limit: 2, CostLimit: 2000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resultEntityIDs(response.Results); len(got) != 2 ||
+		got[0] != "host:0000" || got[1] != "host:0001" {
+		t.Fatalf("results = %#v", got)
+	}
+	if response.Stats.Scanned != 3 {
+		t.Fatalf("scanned = %d, want one page plus lookahead", response.Stats.Scanned)
+	}
+}
+
 func TestMaterializedKindPageLegacyCursorPastEndIsEmpty(t *testing.T) {
 	g := graph.New()
 	g.Version = 1

@@ -40,6 +40,7 @@ type Server struct {
 	maintenance           *maintenanceState
 	maintenanceOnce       sync.Once
 	usageCache            *tenantUsageCache
+	lazyUnavailable       sync.Map
 }
 
 type IngestService interface {
@@ -400,7 +401,6 @@ func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	s.invalidate(tenantID)
 	s.auditInfo("compact_applied", tenantID, map[string]any{"version": manifest.Version})
 	writeJSON(w, http.StatusOK, manifest)
 }

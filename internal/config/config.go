@@ -18,6 +18,10 @@ type Config struct {
 	Mode                              string
 	Prefix                            string
 	PollInterval                      time.Duration
+	ReaderCacheIdleTTL                time.Duration
+	ReaderCacheLoadTimeout            time.Duration
+	ReaderCacheLoadMaxConcurrent      int
+	ReaderCacheLoadQueueTimeout       time.Duration
 	DataDir                           string
 	StoreKind                         string
 	QueryMaxConcurrent                int
@@ -109,6 +113,10 @@ func Load() (Config, error) {
 		Mode:                              getenv("GRAPHDB_MODE", "all"),
 		Prefix:                            getenv("GRAPHDB_PREFIX", "graphdb"),
 		PollInterval:                      2 * time.Second,
+		ReaderCacheIdleTTL:                15 * time.Minute,
+		ReaderCacheLoadTimeout:            time.Minute,
+		ReaderCacheLoadMaxConcurrent:      4,
+		ReaderCacheLoadQueueTimeout:       2 * time.Second,
 		DataDir:                           getenv("GRAPHDB_DATA_DIR", ".graphdb"),
 		StoreKind:                         os.Getenv("GRAPHDB_STORAGE"),
 		QueryMaxConcurrent:                64,
@@ -188,6 +196,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_POLL_INTERVAL", &cfg.PollInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_READER_CACHE_IDLE_TTL", &cfg.ReaderCacheIdleTTL); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", &cfg.ReaderCacheLoadTimeout); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", &cfg.ReaderCacheLoadMaxConcurrent); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", &cfg.ReaderCacheLoadQueueTimeout); err != nil {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_QUERY_MAX_CONCURRENT", &cfg.QueryMaxConcurrent); err != nil {

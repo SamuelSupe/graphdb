@@ -3,6 +3,35 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.2.1] - 2026-08-28
+
+### Improved
+
+- Commit-tail compaction and graph loading reuse decoded state, load persisted
+  commit segments concurrently, and preserve version-ordered application.
+- Reader graph caches retain active tenant graphs independently of manifest
+  polling and bound cold-load concurrency, queue wait, and background load time.
+- Query validation runs before storage I/O, while `timeout_ms` now covers
+  admission, index access, cold graph loading, and execution end to end.
+- Materialized kind pagination follows a cached stable ID order and stops at the
+  requested window; mutation batches invalidate that order once.
+- Materialized queries skip redundant persistent-index catalog reads, and lazy
+  index failures use a short bounded retry backoff.
+
+### Operations
+
+- Added `GRAPHDB_READER_CACHE_IDLE_TTL`,
+  `GRAPHDB_READER_CACHE_LOAD_TIMEOUT`,
+  `GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT`, and
+  `GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT`.
+- Added benchmarks covering materialized kind/index pagination plus match,
+  neighbors, pattern, traverse, impact, and shortest-path operations.
+
+### Compatibility
+
+- Storage formats, query request/response contracts, and existing deployment
+  modes are unchanged from 1.2.0. New reader load controls have bounded defaults.
+
 ## [1.2.0] - 2026-08-28
 
 ### Added

@@ -3,22 +3,22 @@
 [English](release-deployment.md)
 
 本文档面向需要下载、部署和升级 GGraphDB 1.2 的服务负责人。示例使用已发布
-的 `v1.2.0`，发行页位于
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0>。
+的 `v1.2.1`，发行页位于
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1>。
 
 ## 1. 下载与校验
 
 发行页提供以下资产：
 
-- `graphdb-v1.2.0.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
-- `graphdb-v1.2.0.tar.gz.sha256`：SHA-256 校验文件。
+- `graphdb-v1.2.1.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
+- `graphdb-v1.2.1.tar.gz.sha256`：SHA-256 校验文件。
 
 下载后校验并解包：
 
 ```sh
-sha256sum -c graphdb-v1.2.0.tar.gz.sha256
-tar -xzf graphdb-v1.2.0.tar.gz
-cd graphdb-v1.2.0
+sha256sum -c graphdb-v1.2.1.tar.gz.sha256
+tar -xzf graphdb-v1.2.1.tar.gz
+cd graphdb-v1.2.1
 ```
 
 压缩包包含：
@@ -167,6 +167,14 @@ GRAPHDB_PPROF_ENABLED=false
 常用运行参数：
 
 - `GRAPHDB_POLL_INTERVAL`：reader 检查对象存储新 manifest 的间隔。
+- `GRAPHDB_READER_CACHE_IDLE_TTL`：不活跃租户图的独立缓存驻留时间，不再与
+  manifest 轮询周期绑定。
+- `GRAPHDB_READER_CACHE_LOAD_TIMEOUT`：共享冷加载的内部预算；单个请求取消后，
+  加载仍可继续完成缓存预热。
+- `GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT`：跨租户完整图加载的全局并发上限，
+  默认 `4`。
+- `GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT`：完整图加载等待槽位的最长时间，
+  默认 `2s`，超时后拒绝请求。
 - `GRAPHDB_READER_CATCHUP_TIMEOUT`：reader 等待 `min_version` 的最长时间。
 - `GRAPHDB_WRITE_MAX_PER_TENANT`：每租户写入准入上限；生产默认保持 `1`。
 - `GRAPHDB_MAINTENANCE_INTERVAL`：compact、GC 和索引维护调度间隔。

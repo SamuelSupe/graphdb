@@ -147,7 +147,6 @@ func (s *Server) maybeAutoCompact(ctx context.Context, tenantID string, manifest
 		s.auditError("maintenance_compact_failed", tenantID, err, map[string]any{"reason": decision.Reason, "current": decision.Current, "threshold": decision.Threshold})
 		return manifest
 	}
-	s.invalidate(tenantID)
 	report.Compacted++
 	tenantReport.Compacted = true
 	tenantReport.CompactReason = decision.Reason

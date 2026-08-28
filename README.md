@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.2.1 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -31,7 +31,26 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Object-storage persistence | Parquet manifests, commits, snapshots, entity pages, edge shards, and index objects. |
 | Read/write topology | One binary supports `all`, `writer`, and `reader` deployment modes. |
 | Optional multi-writer coordination | PostgreSQL head CAS supports 2–8 optimistic writers per tenant while local coordination remains the default. |
+| Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
+
+### 1.2.1 performance update
+
+- Commit-tail compaction and reload reuse already-decoded graph state; persisted
+  commit segments load concurrently and are still applied in version order.
+- Cold full-graph loads are shared across requests, capped globally at four by
+  default, and rejected after a bounded queue wait instead of saturating object
+  storage and making unrelated upstream requests time out.
+- Query validation now runs before storage I/O, and `timeout_ms` covers
+  admission, index access, graph loading, and execution as one end-to-end budget.
+- Materialized kind pagination uses stable ID order and stops after `limit + 1`
+  matches; unavailable lazy indexes use bounded retry backoff instead of being
+  reopened on every request.
+
+The release was exercised across match, indexed match, neighbors, pattern,
+traverse, impact, and shortest-path queries, in addition to the complete Go test
+suite. Microbenchmark results are workload and hardware dependent and are not a
+production latency SLO.
 
 ## Architecture
 
@@ -151,8 +170,8 @@ authorization, TLS, and rate limiting at the gateway or service mesh.
 
 ## Release
 
-The latest published release is GGraphDB 1.2:
-[**v1.2.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0).
+The latest published release is GGraphDB 1.2.1:
+[**v1.2.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1).
 The release workflow publishes the tag only after its release checklist,
 30-minute PostgreSQL CAS gate, and formal rollback drill pass.
 
@@ -165,7 +184,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.2.0` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.2.1` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 

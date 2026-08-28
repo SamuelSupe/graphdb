@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
@@ -34,9 +37,6 @@ func TestQueryReadMemoAvoidsDuplicateManifestAndCatalogReads(t *testing.T) {
 	if _, _, ok := server.lazyQueryOptions(memoCtx, "tenant-a", 1, false); !ok {
 		t.Fatal("lazy query options unavailable")
 	}
-	if options := server.queryOptions(memoCtx, "tenant-a", 1, false); options.IndexLookup == nil {
-		t.Fatal("fallback query options unavailable")
-	}
 	secondRequestCtx := withQueryReadMemo(context.Background())
 	if _, _, ok := server.lazyQueryOptions(secondRequestCtx, "tenant-a", 1, false); !ok {
 		t.Fatal("cross-request lazy query options unavailable")
@@ -61,11 +61,6 @@ func TestQueryReadMemoAvoidsDuplicateManifestAndCatalogReads(t *testing.T) {
 		true,
 	); !ok {
 		t.Fatal("reverse query options unavailable")
-	}
-	if options := server.queryOptions(
-		reverseCtx, "tenant-a", 1, true,
-	); options.IndexLookup == nil {
-		t.Fatal("reverse fallback query options unavailable")
 	}
 	if got := objects.countContains("/reverse-index/catalog.json"); got != 1 {
 		t.Fatalf("incoming query reverse catalog reads = %d, want 1", got)
@@ -133,6 +128,62 @@ func TestQueryReadMemoKeysIndexCatalogByVersion(t *testing.T) {
 	}
 	if first.Version != 1 || second.Version != 2 {
 		t.Fatalf("catalog versions = %d, %d; want 1, 2", first.Version, second.Version)
+	}
+}
+
+func TestLazyIndexFailureBacksOffBeforeMaterializedRetry(t *testing.T) {
+	ctx := context.Background()
+	base := storage.NewMemoryStore()
+	writer := storage.NewTenantStore(base, "test")
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertCITypes:  []graph.CIType{{Name: "host"}},
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := writer.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	objects, err := base.List(ctx, "test/tenants/tenant-a/indexes/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := 0
+	for _, object := range objects {
+		if !strings.Contains(object.Key, "/entities/pages/") {
+			continue
+		}
+		if err := base.Delete(ctx, object.Key); err != nil {
+			t.Fatal(err)
+		}
+		deleted++
+	}
+	if deleted == 0 {
+		t.Fatal("no entity page objects were deleted")
+	}
+	counting := &queryCountingStore{ObjectStore: base}
+	reader := storage.NewTenantStore(counting, "test")
+	server := &Server{
+		Store: reader,
+		Cache: storage.NewReaderCache(reader, time.Minute),
+		Mode:  "reader",
+	}
+	handler := server.Handler()
+	request := query.Request{Op: "match", Kind: "host", Limit: 1}
+	first := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", request)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first fallback = %d body=%s", first.Code, first.Body.String())
+	}
+	pageReads := counting.countContains("/entities/pages/")
+	if pageReads == 0 {
+		t.Fatal("first query did not attempt the stale lazy index")
+	}
+	second := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", request)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second fallback = %d body=%s", second.Code, second.Body.String())
+	}
+	if got := counting.countContains("/entities/pages/"); got != pageReads {
+		t.Fatalf("entity page reads = %d, want %d during lazy backoff", got, pageReads)
 	}
 }
 

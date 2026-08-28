@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	SDKVersion       = "1.2.0"
+	SDKVersion       = "1.2.1"
 	defaultUserAgent = "graphdb-go-sdk/" + SDKVersion
 )
 
