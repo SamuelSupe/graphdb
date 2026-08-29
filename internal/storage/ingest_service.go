@@ -729,11 +729,11 @@ func (s *IngestService) schedule() {
 			}
 		}
 	}
-	dispatch := func(now time.Time) {
+	dispatch := func(now time.Time) bool {
 		for deadlines.Len() > 0 {
 			queue := deadlines[0]
 			if !draining && queue.deadline.After(now) {
-				return
+				return true
 			}
 			heap.Pop(&deadlines)
 			if busy[queue.tenantID] {
@@ -742,13 +742,20 @@ func (s *IngestService) schedule() {
 				continue
 			}
 			delete(queues, queue.tenantID)
-			busy[queue.tenantID] = true
-			s.readyCh <- ingestTenantFlush{tenantID: queue.tenantID, items: queue.items}
+			select {
+			case s.readyCh <- ingestTenantFlush{tenantID: queue.tenantID, items: queue.items}:
+				busy[queue.tenantID] = true
+			case <-s.runCtx.Done():
+				return false
+			}
 		}
+		return true
 	}
 
 	for {
-		dispatch(time.Now())
+		if !dispatch(time.Now()) {
+			return
+		}
 		if draining && len(queues) == 0 && len(busy) == 0 {
 			return
 		}

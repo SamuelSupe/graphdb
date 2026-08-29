@@ -130,19 +130,20 @@ func (s *TenantStore) tenantRestoreDrillTask(
 	if err != nil {
 		return report, err
 	}
-	cleanupAttempted := false
+	cleanupComplete := false
 	cleanupOperation := func(cleanupCtx context.Context) (TenantPurgeReport, error) {
 		return targetStore.cleanupClaimedRestoreDrillTarget(
 			cleanupCtx, targetTenantID, claim,
 		)
 	}
 	cleanupTarget := func(cleanupCtx context.Context) error {
-		cleanupAttempted = true
-		return applyRestoreDrillCleanup(cleanupCtx, cleanupOperation, &report)
+		err := applyRestoreDrillCleanup(cleanupCtx, cleanupOperation, &report)
+		cleanupComplete = err == nil
+		return err
 	}
 	if cleanup {
 		defer func() {
-			if cleanupAttempted {
+			if cleanupComplete {
 				return
 			}
 			cleanupCtx, cancel := context.WithTimeout(
@@ -179,15 +180,24 @@ func (s *TenantStore) tenantRestoreDrillTask(
 	if restoreReport.TargetExists || restoreReport.Overwrote {
 		return report, fmt.Errorf("%w: restore drill target was not exclusively created by this task", ErrConflict)
 	}
-	targetStore.finishSyntheticRestoreTask(targetTenantID, restoreTask.ID)
+	if err := targetStore.finishSyntheticRestoreTask(ctx, targetTenantID, restoreTask.ID); err != nil {
+		return report, err
+	}
 	ownership, err := targetStore.captureRestoreDrillOwnership(ctx, targetTenantID, restoreTask.ID)
 	if err != nil {
 		return report, err
 	}
+	cleanupOwnershipVerified := false
 	cleanupOperation = func(cleanupCtx context.Context) (TenantPurgeReport, error) {
-		return targetStore.cleanupRestoreDrillTarget(
-			cleanupCtx, targetTenantID, ownership,
+		cleanupReport, verified, cleanupErr := targetStore.cleanupOwnedRestoreDrillTarget(
+			cleanupCtx,
+			targetTenantID,
+			ownership,
+			claim,
+			!cleanupOwnershipVerified,
 		)
+		cleanupOwnershipVerified = cleanupOwnershipVerified || verified
+		return cleanupReport, cleanupErr
 	}
 	report.Restore = &restoreReport
 	if err := s.updateTaskProgress(ctx, task, "restore_drill_audit", 3, total, map[string]any{"phase": "restore_drill_audit", "version": restoreReport.Version}); err != nil {
@@ -220,7 +230,10 @@ func (s *TenantStore) tenantRestoreDrillTask(
 		if err := s.updateTaskProgress(ctx, task, "restore_drill_cleanup", 6, total, map[string]any{"phase": "restore_drill_cleanup"}); err != nil {
 			return report, err
 		}
-		_ = cleanupTarget(ctx)
+		if err := cleanupTarget(ctx); err != nil {
+			report.finish()
+			return report, fmt.Errorf("cleanup restore drill target: %w", err)
+		}
 	}
 	report.finish()
 	_ = s.updateTaskProgress(ctx, task, "restore_drill_done", total, total, map[string]any{"phase": "restore_drill_done", "recoverable": report.Recoverable, "status": report.Status})
@@ -293,6 +306,8 @@ func (s *TenantStore) restoreDrillTargetStore(targetPrefix string) *TenantStore 
 	target := NewTenantStore(s.Objects, targetPrefix)
 	target.InstanceID = s.InstanceID
 	target.LeaseTTL = s.LeaseTTL
+	target.TaskPersistenceTimeout = s.TaskPersistenceTimeout
+	target.IndexPrefetchTimeout = s.IndexPrefetchTimeout
 	target.MaxRetries = s.MaxRetries
 	target.IndexFormat = s.IndexFormat
 	target.Backpressure = s.Backpressure
@@ -300,10 +315,12 @@ func (s *TenantStore) restoreDrillTargetStore(targetPrefix string) *TenantStore 
 	return target
 }
 
-func (s *TenantStore) finishSyntheticRestoreTask(tenantID string, taskID string) {
-	task, err := s.GetTask(context.Background(), tenantID, taskID)
+func (s *TenantStore) finishSyntheticRestoreTask(ctx context.Context, tenantID string, taskID string) error {
+	writeCtx, cancel := s.taskPersistenceContext(ctx)
+	defer cancel()
+	task, err := s.GetTask(writeCtx, tenantID, taskID)
 	if err != nil {
-		return
+		return err
 	}
 	now := time.Now().UTC()
 	task.Status = TaskStatusSucceeded
@@ -314,7 +331,7 @@ func (s *TenantStore) finishSyntheticRestoreTask(tenantID string, taskID string)
 		task.Checkpoint = map[string]any{}
 	}
 	task.Checkpoint["completed"] = true
-	s.trySaveTask(context.Background(), task)
+	return s.saveTask(writeCtx, task)
 }
 
 func restoreDrillTargetTenantID(task Task) string {

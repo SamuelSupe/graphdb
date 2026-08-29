@@ -48,7 +48,10 @@ func (s *TenantStore) PublishRetrievalDefinitions(
 	if err != nil {
 		return RetrievalDefinitionRecord{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return RetrievalDefinitionRecord{}, err
+	}
 	defer unlock()
 	ctx, err = s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -319,7 +322,10 @@ func (s *TenantStore) PublishRetrievalCatalog(
 		return RetrievalHead{}, err
 	}
 
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return RetrievalHead{}, err
+	}
 	defer unlock()
 	ctx, err = s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

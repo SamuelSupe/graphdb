@@ -96,8 +96,12 @@ func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.E
 				continue
 			}
 			result := Result{Entity: &entity}
-			acc.add(result)
-			groupAcc.add(result)
+			if err := acc.add(result); err != nil {
+				return len(results) + sorted.Len(), err
+			}
+			if err := groupAcc.add(result); err != nil {
+				return len(results) + sorted.Len(), err
+			}
 			if sorted != nil {
 				sorted.Add(result)
 				continue

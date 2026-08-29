@@ -71,7 +71,10 @@ func (s *TenantStore) repairTenantMetadata(ctx context.Context, tenantID string)
 	if err := ValidateTenantID(tenantID); err != nil {
 		return err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

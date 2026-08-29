@@ -97,6 +97,23 @@ func TestHTTPPprofDisabledOnCombinedHandler(t *testing.T) {
 	}
 }
 
+func TestHTTPCompactRejectsWhenMaintenanceCapacityIsBusy(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	release, err := store.TryAcquireMaintenance("tenant-a")
+	if err != nil {
+		t.Fatalf("acquire maintenance: %v", err)
+	}
+	defer release()
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+
+	rr := serveJSON(handler, http.MethodPost, "/v1/compact", "tenant-a", nil)
+	if rr.Code != http.StatusTooManyRequests ||
+		rr.Header().Get("Retry-After") == "" ||
+		!strings.Contains(rr.Body.String(), `"code":"maintenance_task_running"`) {
+		t.Fatalf("compact busy = %d headers=%#v body=%s", rr.Code, rr.Header(), rr.Body.String())
+	}
+}
+
 func TestHTTPPprofEnabledOnlyOnAdminHandler(t *testing.T) {
 	handler := (&Server{Mode: "all"}).AdminHandler(true)
 	heap := httptest.NewRecorder()
@@ -1218,7 +1235,11 @@ func TestHTTPQueryTimeoutIncludesColdGraphLoad(t *testing.T) {
 	rr := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{
 		Op: "match", Kind: "host", Limit: 1, TimeoutMS: 10,
 	})
-	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), "query timeout") {
+	var errorBody ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &errorBody); err != nil {
+		t.Fatalf("decode timeout response: %v body=%s", err, rr.Body.String())
+	}
+	if rr.Code != http.StatusGatewayTimeout || errorBody.Code != ErrorCodeRequestTimeout {
 		t.Fatalf("timed query = %d body=%s", rr.Code, rr.Body.String())
 	}
 	if elapsed := time.Since(started); elapsed >= 80*time.Millisecond {
@@ -1631,7 +1652,7 @@ func TestHTTPRunningQueryListAndKill(t *testing.T) {
 	}
 	select {
 	case rr := <-done:
-		if rr.Code != http.StatusTooManyRequests && rr.Code != http.StatusBadRequest {
+		if rr.Code != statusClientClosedRequest || !strings.Contains(rr.Body.String(), `"code":"request_canceled"`) {
 			t.Fatalf("query after kill = %d body=%s", rr.Code, rr.Body.String())
 		}
 	case <-time.After(time.Second):

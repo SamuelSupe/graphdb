@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"testing"
@@ -8,6 +9,161 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func TestRollbackCoordinatorReportsModeRestoreFailure(t *testing.T) {
+	tests := []struct {
+		name           string
+		restoreChanged bool
+		restoreErr     error
+		wantConflict   bool
+	}{
+		{
+			name:           "restore error",
+			restoreChanged: false,
+			restoreErr:     errors.New("injected mode restore failure"),
+		},
+		{
+			name:           "restore conflict",
+			restoreChanged: false,
+			wantConflict:   true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewTenantStore(NewMemoryStore(), "test")
+			if err := store.PutCoordinationMarker(ctx, CoordinationPostgres, "test"); err != nil {
+				t.Fatalf("put coordination marker: %v", err)
+			}
+			syncErr := errors.New("injected legacy sync failure")
+			coordinator := &rollbackFailureCoordinator{
+				mode:           CoordinationPostgres,
+				syncErr:        syncErr,
+				restoreChanged: test.restoreChanged,
+				restoreErr:     test.restoreErr,
+			}
+
+			_, err := store.RollbackCoordinator(ctx, coordinator, false)
+			if !errors.Is(err, syncErr) {
+				t.Fatalf("rollback err = %v, want legacy sync failure", err)
+			}
+			if test.restoreErr != nil {
+				if err == nil || !errors.Is(err, coordinator.restoreErr) {
+					t.Fatalf("rollback err = %v, want mode restore failure", err)
+				}
+			} else if test.wantConflict && !errors.Is(err, ErrConflict) {
+				t.Fatalf("rollback err = %v, want restore conflict", err)
+			}
+			if coordinator.restoreAttempts != 1 {
+				t.Fatalf("restore attempts = %d, want 1", coordinator.restoreAttempts)
+			}
+		})
+	}
+}
+
+func TestRollbackCoordinatorRestoresPostgresModeWhenMarkerRemovalFails(t *testing.T) {
+	ctx := context.Background()
+	deleteErr := errors.New("injected marker removal failure")
+	objects := &failOnceDeleteKeyStore{
+		ObjectStore: NewMemoryStore(),
+		key:         "test/coordination/mode.json",
+		err:         deleteErr,
+	}
+	store := NewTenantStore(objects, "test")
+	if err := store.PutCoordinationMarker(ctx, CoordinationPostgres, "test"); err != nil {
+		t.Fatalf("put coordination marker: %v", err)
+	}
+	coordinator := &rollbackFailureCoordinator{
+		mode:           CoordinationPostgres,
+		restoreChanged: true,
+	}
+
+	report, err := store.RollbackCoordinator(ctx, coordinator, false)
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("rollback err = %v, want marker removal failure", err)
+	}
+	if coordinator.mode != CoordinationPostgres || report.ModeAfter != CoordinationPostgres {
+		t.Fatalf("coordinator mode/report = %q/%q, want postgres/postgres", coordinator.mode, report.ModeAfter)
+	}
+	if coordinator.restoreAttempts != 1 {
+		t.Fatalf("restore attempts = %d, want 1", coordinator.restoreAttempts)
+	}
+	if err := store.EnsureLocalWriterAllowed(ctx); err == nil {
+		t.Fatal("coordination marker disappeared after injected delete failure")
+	}
+}
+
+type rollbackFailureCoordinator struct {
+	WriteCoordinator
+	mode            string
+	syncErr         error
+	restoreChanged  bool
+	restoreErr      error
+	restoreAttempts int
+}
+
+func (*rollbackFailureCoordinator) Backend() string   { return CoordinationPostgres }
+func (*rollbackFailureCoordinator) Namespace() string { return "test" }
+
+func (c *rollbackFailureCoordinator) CoordinationMode(context.Context) (string, error) {
+	return c.mode, nil
+}
+
+func (c *rollbackFailureCoordinator) CompareAndSwapCoordinationMode(
+	_ context.Context,
+	from string,
+	to string,
+) (bool, error) {
+	if to == CoordinationPostgres && from != CoordinationPostgres {
+		c.restoreAttempts++
+		if c.restoreErr != nil {
+			return false, c.restoreErr
+		}
+		if !c.restoreChanged {
+			return false, nil
+		}
+	}
+	if c.mode != from {
+		return false, nil
+	}
+	c.mode = to
+	return true, nil
+}
+
+func (c *rollbackFailureCoordinator) ClaimLegacyManifest(
+	context.Context,
+	string,
+	time.Duration,
+) (LegacyManifestJob, bool, error) {
+	return LegacyManifestJob{}, false, c.syncErr
+}
+
+func (*rollbackFailureCoordinator) Status(context.Context) (CoordinatorStatus, error) {
+	return CoordinatorStatus{}, nil
+}
+
+func (*rollbackFailureCoordinator) ListHeads(context.Context) ([]CoordinationHead, error) {
+	return []CoordinationHead{}, nil
+}
+
+type failOnceDeleteKeyStore struct {
+	ObjectStore
+	key    string
+	err    error
+	failed bool
+}
+
+func (s *failOnceDeleteKeyStore) DeleteConditional(
+	ctx context.Context,
+	key string,
+	condition PutCondition,
+) error {
+	if key == s.key && !s.failed {
+		s.failed = true
+		return s.err
+	}
+	return s.ObjectStore.DeleteConditional(ctx, key, condition)
+}
 
 func TestPostgresCoordinatorS3RollbackDrill(t *testing.T) {
 	fixture := newPostgresS3Fixture(t, "s3-rollback", 3*time.Minute)

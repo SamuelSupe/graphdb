@@ -139,7 +139,10 @@ func (s *TenantStore) PutTenantConfig(ctx context.Context, tenantID string, conf
 	if s.coordinated() {
 		return s.putCoordinatedTenantConfig(ctx, tenantID, config)
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return TenantConfig{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

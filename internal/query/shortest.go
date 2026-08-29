@@ -251,10 +251,10 @@ func shortestStepAllows(stepIndex int, neighbor graph.Neighbor, filter PathFilte
 		return false
 	}
 	step := filter.Steps[stepIndex]
-	return relationAllowed(neighbor.Edge.Type, stringSet(step.RelationTypes)) &&
+	return stringSliceAllows(neighbor.Edge.Type, step.RelationTypes) &&
 		edgeMatches(neighbor.Edge, step.EdgeWhere) &&
 		edgeExprMatches(neighbor.Edge, step.EdgeWhereExpr) &&
-		stringAllowed(neighbor.Entity.Kind, stringSet(step.NodeKinds)) &&
+		stringSliceAllows(neighbor.Entity.Kind, step.NodeKinds) &&
 		entityMatches(neighbor.Entity, step.Where) &&
 		entityExprMatches(neighbor.Entity, step.WhereExpr)
 }

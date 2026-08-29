@@ -308,6 +308,51 @@ func TestReaderCacheBoundsColdLoadsAcrossTenants(t *testing.T) {
 	}
 }
 
+func TestReaderCacheRefreshLoadTimeoutReleasesAdmission(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	writer := NewTenantStore(base, "test")
+	for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+		if _, err := writer.Commit(ctx, tenantID, graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: "host:" + tenantID, Kind: "host"}},
+		}, CommitOptions{}); err != nil {
+			t.Fatalf("commit %s: %v", tenantID, err)
+		}
+	}
+	cache := NewReaderCache(NewTenantStore(base, "test"), time.Minute)
+	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
+		t.Fatalf("prime tenant-a: %v", err)
+	}
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:updated", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("advance tenant-a: %v", err)
+	}
+	blocked := &blockingGraphReadStore{
+		ObjectStore: base,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	cache.Store = NewTenantStore(blocked, "test")
+	cache.LoadTimeout = 20 * time.Millisecond
+	cache.ConfigureLoadAdmission(1, 10*time.Millisecond)
+
+	started := time.Now()
+	refreshCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, _, err := cache.Refresh(refreshCtx, "tenant-a"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("refresh err = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
+		t.Fatalf("refresh elapsed = %s, want load timeout before parent deadline", elapsed)
+	}
+
+	cache.Store = NewTenantStore(base, "test")
+	if _, _, err := cache.Load(ctx, "tenant-b"); err != nil {
+		t.Fatalf("tenant-b load after timed out refresh: %v", err)
+	}
+}
+
 func newExpiredCoordinatedReaderCache(
 	t *testing.T,
 ) (*ReaderCache, *TenantStore, CoordinationHead) {

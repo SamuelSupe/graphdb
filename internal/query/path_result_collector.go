@@ -26,8 +26,12 @@ func newPathResultCollector(request Request) *pathResultCollector {
 func (collector *pathResultCollector) add(path graph.Path) error {
 	result := pathResult(path, collector.request.Project)
 	collector.count++
-	collector.acc.add(result)
-	collector.groups.add(result)
+	if err := collector.acc.add(result); err != nil {
+		return err
+	}
+	if err := collector.groups.add(result); err != nil {
+		return err
+	}
 	collector.sorted.Add(result)
 	return nil
 }

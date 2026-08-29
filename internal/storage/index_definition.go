@@ -44,7 +44,10 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return IndexDefinitionResult{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -58,6 +61,7 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
+	previous := cloneIndexDefinitionRecord(record)
 	now := time.Now().UTC()
 	normalized.CreatedAt = now
 	normalized.UpdatedAt = now
@@ -69,12 +73,15 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 	record.TenantID = tenantID
 	record.Indexes = append(record.Indexes, normalized)
 	sortIndexDefinitions(record.Indexes)
-	if err := s.putIndexDefinitionsWithMeta(ctx, tenantID, record, meta); err != nil {
+	writtenMeta, err := s.putIndexDefinitionsWithMetaResult(ctx, tenantID, record, meta)
+	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
 	task, err := s.startIndexRebuildAfterDefinitionChangeLocked(ctx, tenantID)
 	if err != nil {
-		return IndexDefinitionResult{}, err
+		return IndexDefinitionResult{}, s.rollbackIndexDefinitionChange(
+			ctx, tenantID, previous, meta, writtenMeta, err,
+		)
 	}
 	return IndexDefinitionResult{Definition: normalized, Task: task}, nil
 }
@@ -87,7 +94,10 @@ func (s *TenantStore) DropIndex(ctx context.Context, tenantID string, name strin
 	if name == "" {
 		return IndexDefinitionResult{}, fmt.Errorf("index name is required")
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return IndexDefinitionResult{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -101,7 +111,8 @@ func (s *TenantStore) DropIndex(ctx context.Context, tenantID string, name strin
 	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
-	next := record.Indexes[:0]
+	previous := cloneIndexDefinitionRecord(record)
+	next := make([]IndexDefinition, 0, len(record.Indexes))
 	var removed IndexDefinition
 	for _, definition := range record.Indexes {
 		if definition.Name == name {
@@ -115,12 +126,15 @@ func (s *TenantStore) DropIndex(ctx context.Context, tenantID string, name strin
 	}
 	record.TenantID = tenantID
 	record.Indexes = next
-	if err := s.putIndexDefinitionsWithMeta(ctx, tenantID, record, meta); err != nil {
+	writtenMeta, err := s.putIndexDefinitionsWithMetaResult(ctx, tenantID, record, meta)
+	if err != nil {
 		return IndexDefinitionResult{}, err
 	}
 	task, err := s.startIndexRebuildAfterDefinitionChangeLocked(ctx, tenantID)
 	if err != nil {
-		return IndexDefinitionResult{}, err
+		return IndexDefinitionResult{}, s.rollbackIndexDefinitionChange(
+			ctx, tenantID, previous, meta, writtenMeta, err,
+		)
 	}
 	return IndexDefinitionResult{Definition: removed, Task: task}, nil
 }
@@ -171,17 +185,65 @@ func (s *TenantStore) getIndexDefinitionsWithMeta(ctx context.Context, tenantID 
 }
 
 func (s *TenantStore) putIndexDefinitionsWithMeta(ctx context.Context, tenantID string, record IndexDefinitionRecord, meta ObjectMeta) error {
+	_, err := s.putIndexDefinitionsWithMetaResult(ctx, tenantID, record, meta)
+	return err
+}
+
+func (s *TenantStore) putIndexDefinitionsWithMetaResult(ctx context.Context, tenantID string, record IndexDefinitionRecord, meta ObjectMeta) (ObjectMeta, error) {
 	record.TenantID = tenantID
 	key := s.indexDefinitionsKey(tenantID)
 	data, err := marshalParquetIndexDefinitions(ctx, record)
 	if err != nil {
-		return err
+		return ObjectMeta{}, err
 	}
 	writeMeta := meta
 	if writeMeta.Key != key {
 		writeMeta = ObjectMeta{Key: key}
 	}
-	return s.putBytesWithMeta(ctx, key, data, writeMeta)
+	return s.putBytesWithMetaResult(ctx, key, data, writeMeta)
+}
+
+func cloneIndexDefinitionRecord(record IndexDefinitionRecord) IndexDefinitionRecord {
+	record.Indexes = append([]IndexDefinition(nil), record.Indexes...)
+	return record
+}
+
+func (s *TenantStore) rollbackIndexDefinitionChange(
+	ctx context.Context,
+	tenantID string,
+	previous IndexDefinitionRecord,
+	previousMeta ObjectMeta,
+	writtenMeta ObjectMeta,
+	startErr error,
+) error {
+	rollbackCtx, cancel := s.taskFinalizationContext(ctx)
+	defer cancel()
+	key := s.indexDefinitionsKey(tenantID)
+	var rollbackErr error
+	if previousMeta.Exists {
+		data, err := marshalParquetIndexDefinitions(rollbackCtx, previous)
+		if err != nil {
+			rollbackErr = err
+		} else {
+			_, rollbackErr = s.Objects.PutConditional(
+				rollbackCtx, key, data, PutCondition{IfMatch: writtenMeta.ETag},
+			)
+		}
+	} else {
+		rollbackErr = s.Objects.DeleteConditional(
+			rollbackCtx, key, PutCondition{IfMatch: writtenMeta.ETag},
+		)
+		if errors.Is(rollbackErr, ErrNotFound) {
+			rollbackErr = nil
+		}
+	}
+	if rollbackErr != nil {
+		return errors.Join(
+			startErr,
+			fmt.Errorf("rollback index definition change: %w", rollbackErr),
+		)
+	}
+	return startErr
 }
 
 func normalizeIndexDefinition(definition IndexDefinition) (IndexDefinition, error) {

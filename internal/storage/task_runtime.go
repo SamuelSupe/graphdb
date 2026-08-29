@@ -8,6 +8,35 @@ import (
 
 const taskCancelPollInterval = 500 * time.Millisecond
 
+const defaultTaskPersistenceTimeout = 10 * time.Second
+
+func (s *TenantStore) taskPersistenceTimeout() time.Duration {
+	if s.TaskPersistenceTimeout > 0 {
+		return s.TaskPersistenceTimeout
+	}
+	return defaultTaskPersistenceTimeout
+}
+
+func (s *TenantStore) taskPersistenceContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, s.taskPersistenceTimeout())
+}
+
+func (s *TenantStore) taskFinalizationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), s.taskPersistenceTimeout())
+}
+
+func (s *TenantStore) trySaveTaskFinal(ctx context.Context, task Task) {
+	writeCtx, cancel := s.taskFinalizationContext(ctx)
+	defer cancel()
+	s.trySaveTask(writeCtx, task)
+}
+
 func taskProgressTotal(taskType string) int {
 	switch taskType {
 	case TaskTypeCompact:
@@ -36,10 +65,11 @@ func taskProgressTotal(taskType string) int {
 }
 
 func (s *TenantStore) updateTaskProgress(ctx context.Context, task Task, phase string, completed int, total int, checkpoint map[string]any) error {
-	if _, err := s.prepareTenantWrite(ctx, task.TenantID); err != nil {
+	writeCtx, cancel := s.taskPersistenceContext(ctx)
+	defer cancel()
+	if _, err := s.prepareTenantWrite(writeCtx, task.TenantID); err != nil {
 		return err
 	}
-	writeCtx := context.WithoutCancel(ctx)
 	update := func(current *Task) error {
 		if taskTerminal(current.Status) {
 			return context.Canceled

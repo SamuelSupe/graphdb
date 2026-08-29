@@ -508,7 +508,9 @@ path 排序支持：
 常见错误：
 
 - `422`: DSL 无效，例如未知 `op`、未知 filter op、缺少 `id`。
-- `429`: 查询 admission、timeout 或 cost limit 超限。
+- `429`: 查询 admission 或 cost limit 超限。
+- `499`: 调用方主动取消请求。
+- `504`: 查询 deadline 超时。
 - `503 reader_not_fresh`: reader 未达到要求版本。
 
 限制：
@@ -520,6 +522,11 @@ path 排序支持：
 - 单页最大 `limit=1000`。
 - `depth` 最大 16。
 - `pattern.path.steps` 最大 8。
+- `cost_limit` 默认 `100000`，服务端最大 `1000000`。
+- 单个查询最多包含 128 个谓词、1024 个 `in` 值和 256 个布尔表达式节点；表达式最大深度为 32。
+- `sort`/`aggregate`/`group_by` 分别最多 32 项，`project` 最多 256 项，路径 selector 合计最多 256 个值。
+- `group_by` 和 `count_by` 最多生成 10000 个 bucket，超过时返回 `query_limit_exceeded`。
+- legacy GQL 与 GraphQL document 最大 64 KiB；GraphQL 展开后的 selection 最多 256 个。
 
 ## CMDB 场景示例
 

@@ -69,7 +69,10 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 	if s.coordinated() {
 		return s.createCoordinatedTenant(ctx, tenantID, options)
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return TenantInfo{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.prepareCreateAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -237,7 +240,10 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 			return TenantPurgeReport{}, err
 		}
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return TenantPurgeReport{}, err
+	}
 	defer unlock()
 	var purgeGeneration int64
 	if s.coordinated() {
@@ -441,7 +447,10 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 			activationContext = &writeContext
 		}
 	}
-	targetLock := s.lockTenant(targetTenantID)
+	targetLock, err := s.lockTenantMaintenance(ctx, targetTenantID)
+	if err != nil {
+		return TenantInfo{}, err
+	}
 	defer targetLock()
 	leaseCtx, stopLease, err := s.startCoordinatorOperationLease(ctx, targetTenantID, "clone")
 	if err != nil {
@@ -671,7 +680,10 @@ func (s *TenantStore) mutateTenantMetadata(ctx context.Context, tenantID string,
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantInfo{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return TenantInfo{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

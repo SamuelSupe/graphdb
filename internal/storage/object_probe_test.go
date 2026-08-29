@@ -203,6 +203,51 @@ func TestHuaweiOBSProbeHonorsContext(t *testing.T) {
 	}
 }
 
+func TestHuaweiOBSDataRequestHonorsContext(t *testing.T) {
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{}, 1)
+	var once sync.Once
+	client := &huaweiOBSClient{
+		endpoint:  "https://obs.example.com",
+		bucket:    "bucket",
+		region:    "region",
+		accessKey: "access",
+		secretKey: "secret",
+		pathStyle: true,
+		requestHTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			once.Do(func() { close(requestStarted) })
+			<-r.Context().Done()
+			requestCanceled <- struct{}{}
+			return nil, r.Context().Err()
+		})},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := client.Get(ctx, "objects/a")
+		done <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Huawei OBS data request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Huawei OBS data request err = %v, want context canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Huawei OBS data request ignored context cancellation")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("Huawei OBS HTTP request did not observe context cancellation")
+	}
+}
+
 type switchableProbeStore struct {
 	ObjectStore
 	mu  sync.RWMutex

@@ -55,7 +55,10 @@ func (s *TenantStore) PutRelationSchema(ctx context.Context, tenantID string, sc
 	if s.coordinated() {
 		return s.putCoordinatedRelationSchema(ctx, tenantID, normalized)
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return RelationSchemaCatalog{}, err
+	}
 	defer unlock()
 	ctx, err = s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -100,9 +103,12 @@ func (s *TenantStore) DeleteRelationSchema(ctx context.Context, tenantID string,
 	if s.coordinated() {
 		return s.deleteCoordinatedRelationSchema(ctx, tenantID, relationType)
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return RelationSchemaCatalog{}, err
+	}
 	defer unlock()
-	ctx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	ctx, err = s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
 		return RelationSchemaCatalog{}, err
 	}

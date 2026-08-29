@@ -8,7 +8,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-const defaultQueryCostLimit = 100000
+const (
+	defaultQueryCostLimit = 100000
+	maxQueryCostLimit     = 1000000
+)
 
 type budget struct {
 	ctx       context.Context
@@ -62,7 +65,7 @@ func (b *budget) check() error {
 	select {
 	case <-b.ctx.Done():
 		b.timedOut = true
-		return fmt.Errorf("%w: query timeout or cancellation", ErrLimitExceeded)
+		return b.ctx.Err()
 	default:
 	}
 	return nil

@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -597,6 +598,40 @@ func TestInvalidQueryControlsReturnErrInvalid(t *testing.T) {
 		if _, err := Execute(g, request); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("request %#v err = %v, want ErrInvalid", request, err)
 		}
+	}
+}
+
+func TestQueryShapeLimitsRejectAmplification(t *testing.T) {
+	expression := &FilterExpr{Field: "region", Op: "eq", Value: "us-east-1"}
+	for range maxFilterExpressionDepth {
+		expression = &FilterExpr{Op: "not", Children: []FilterExpr{*expression}}
+	}
+	cases := []Request{
+		{
+			Op: "match", Kind: "host",
+			Where: []Filter{{Field: "region", Op: "in", Value: make([]string, maxInFilterValues+1)}},
+		},
+		{Op: "match", Kind: "host", Sort: make([]SortSpec, maxQuerySortSpecs+1)},
+		{Op: "match", Kind: "host", WhereExpr: expression},
+		{
+			Op: "match", Kind: "host",
+			WhereExpr: &FilterExpr{Field: "region", Op: "eq", Value: "us-east-1", Children: []FilterExpr{{Field: "owner", Op: "eq", Value: "team-a"}}},
+		},
+		{Op: "match", Kind: "host", CostLimit: maxQueryCostLimit + 1},
+	}
+	for _, request := range cases {
+		if err := ValidateRequest(request); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("request %#v err = %v, want ErrInvalid", request, err)
+		}
+	}
+}
+
+func TestExecuteContextPreservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ExecuteContext(ctx, seedCMDBGraph(t), Request{Op: "match", Kind: "host"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
 

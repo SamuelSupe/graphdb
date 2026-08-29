@@ -51,7 +51,10 @@ func (s *TenantStore) repairManifest(ctx context.Context, tenantID string) (Mani
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return Manifest{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

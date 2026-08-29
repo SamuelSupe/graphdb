@@ -262,6 +262,62 @@ func TestIngestServiceDirectCommitBarrierFlushesAcceptedTenantQueue(t *testing.T
 	}
 }
 
+func TestIngestSchedulerCancellationUnblocksFullDispatchQueue(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	service := &IngestService{
+		config: IngestServiceConfig{
+			FlushInterval: time.Hour,
+		},
+		enqueueCh:   make(chan *ingestPending, 2),
+		forceCh:     make(chan ingestForceRequest),
+		completeCh:  make(chan ingestWorkerCompletion),
+		shutdownCh:  make(chan struct{}),
+		schedulerOK: make(chan struct{}),
+		readyCh:     make(chan ingestTenantFlush, 1),
+		runCtx:      runCtx,
+		cancel:      cancel,
+	}
+	go service.schedule()
+
+	service.enqueueCh <- &ingestPending{
+		envelope: walIngestEnvelope{
+			TenantID:   "tenant-a",
+			AcceptedAt: time.Now().UTC(),
+			Request:    IngestRequest{FullSync: true},
+		},
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(service.readyCh) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("first tenant was not dispatched")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	service.enqueueCh <- &ingestPending{
+		envelope: walIngestEnvelope{
+			TenantID:   "tenant-b",
+			AcceptedAt: time.Now().UTC(),
+			Request:    IngestRequest{FullSync: true},
+		},
+	}
+	deadline = time.Now().Add(time.Second)
+	for len(service.enqueueCh) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("second tenant was not accepted by the scheduler")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-service.schedulerOK:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("scheduler did not stop after cancellation with a full dispatch queue")
+	}
+}
+
 func TestIngestDurableRetriesMetadataFailureWithoutDuplicateVersion(t *testing.T) {
 	objects := &failIngestRecordOnceStore{ObjectStore: NewMemoryStore()}
 	store := NewTenantStore(objects, "test")

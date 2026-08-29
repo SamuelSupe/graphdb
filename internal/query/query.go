@@ -140,11 +140,19 @@ func withPlan(response Response, err error, plan Plan, request Request) (Respons
 }
 
 func buildResponse(version int64, results []Result, request Request, cursor cursorState, budget *budget) (Response, error) {
-	return buildResponseWithAggregates(version, results, request, cursor, budget, aggregateResults(results, request.Aggregate))
+	aggregates, err := aggregateResults(results, request.Aggregate)
+	if err != nil {
+		return Response{}, err
+	}
+	return buildResponseWithAggregates(version, results, request, cursor, budget, aggregates)
 }
 
 func buildResponseWithAggregates(version int64, results []Result, request Request, cursor cursorState, budget *budget, aggregates map[string]any) (Response, error) {
-	return buildResponseWithAggregatesAndGroups(version, results, request, cursor, budget, aggregates, aggregateGroups(results, request.GroupBy, request.Aggregate, request.Having, request.HavingExpr))
+	groups, err := aggregateGroups(results, request.GroupBy, request.Aggregate, request.Having, request.HavingExpr)
+	if err != nil {
+		return Response{}, err
+	}
+	return buildResponseWithAggregatesAndGroups(version, results, request, cursor, budget, aggregates, groups)
 }
 
 func buildResponseWithAggregatesAndGroups(version int64, results []Result, request Request, cursor cursorState, budget *budget, aggregates map[string]any, groups []AggregateGroup) (Response, error) {

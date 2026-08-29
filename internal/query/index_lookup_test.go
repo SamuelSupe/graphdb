@@ -532,8 +532,8 @@ func TestLazyMaterializationStopsAfterContextCancellation(t *testing.T) {
 		Where: []Filter{{Field: "hostname", Op: "eq", Value: "app-01"}},
 		Sort:  []SortSpec{{Field: "id"}},
 	}, options)
-	if !errors.Is(err, ErrLimitExceeded) {
-		t.Fatalf("err = %v, want ErrLimitExceeded", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if lookup.calls != 1 {
 		t.Fatalf("entity materializations = %d, want stop after cancellation", lookup.calls)

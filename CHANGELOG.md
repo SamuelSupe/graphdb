@@ -3,6 +3,36 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.2.2] - 2026-08-29
+
+### Fixed
+
+- Query validation now rejects oversized nested filters, projections, sorts,
+  aggregates, traversal patterns, and cost budgets before storage work begins;
+  GraphQL selection and variable handling follow the same bounded contract.
+- Streaming and materialized query paths preserve cancellation and timeout
+  semantics while avoiding unnecessary graph materialization and repeated
+  index/object scans.
+- Server shutdown stops task admission, cancels active maintenance and index
+  workers, and waits for their terminal state; synchronous CLI operations now
+  wait for the task result instead of returning after queue admission.
+- Index rebuild admission and definition updates roll back cleanly when a task
+  cannot start, and terminal state is published only after capacity and leases
+  are released.
+- Restore-drill cleanup failures now fail the task, retry partial cleanup under
+  the original writer fence, and never report a failed required cleanup as a
+  successful drill.
+- PostgreSQL coordinator rollback reports mode-restoration failures and restores
+  PostgreSQL mode when marker removal fails, avoiding a hidden write outage.
+- The ingest WAL reports background writer startup and final sync/close errors;
+  concurrent close calls are idempotent and return the same result.
+
+### Compatibility
+
+- Storage layout, endpoint names, and deployment modes remain compatible with
+  1.2.1. Requests above the new documented query-shape limits are rejected;
+  Go and Python SDK user-agent versions advance to 1.2.2.
+
 ## [1.2.1] - 2026-08-28
 
 ### Improved

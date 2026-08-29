@@ -7,12 +7,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
+
+type blockingScanGraphStore struct {
+	storage.ObjectStore
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingScanGraphStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if strings.Contains(key, "/commits/") || strings.Contains(key, "/snapshots/") {
+		s.once.Do(func() { close(s.started) })
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-s.release:
+		}
+	}
+	return s.ObjectStore.Get(ctx, key)
+}
 
 func TestHTTPListEntitiesEdgesAndExportSnapshot(t *testing.T) {
 	ctx := context.Background()
@@ -304,6 +324,58 @@ func TestHTTPScanReadAdmissionReturns429(t *testing.T) {
 		!strings.Contains(rr.Body.String(), `"code":"too_many_requests"`) ||
 		!strings.Contains(rr.Body.String(), "read admission queue timeout") {
 		t.Fatalf("read admission = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPScanFallbackUsesReaderCacheLoadAdmission(t *testing.T) {
+	ctx := context.Background()
+	objects := storage.NewMemoryStore()
+	writer := storage.NewTenantStore(objects, "test")
+	for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+		if _, err := writer.Commit(ctx, tenantID, graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: "host:" + tenantID, Kind: "host"}},
+		}, storage.CommitOptions{}); err != nil {
+			t.Fatalf("commit %s: %v", tenantID, err)
+		}
+	}
+	blocked := &blockingScanGraphStore{
+		ObjectStore: objects,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(blocked.release)
+		}
+	}()
+	reader := storage.NewTenantStore(blocked, "test")
+	cache := storage.NewReaderCache(reader, time.Minute)
+	cache.ConfigureLoadAdmission(1, 10*time.Millisecond)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, err := cache.Load(ctx, "tenant-a")
+		firstDone <- err
+	}()
+	select {
+	case <-blocked.started:
+	case <-time.After(time.Second):
+		t.Fatal("first graph load did not start")
+	}
+
+	handler := (&Server{Store: reader, Cache: cache, Mode: "reader"}).Handler()
+	rr := serveJSON(handler, http.MethodGet, "/v1/entities?kind=host", "tenant-b", nil)
+	if rr.Code != http.StatusTooManyRequests ||
+		rr.Header().Get("Retry-After") == "" ||
+		!strings.Contains(rr.Body.String(), `"code":"too_many_requests"`) ||
+		!strings.Contains(rr.Body.String(), "reader graph load admission timeout") {
+		t.Fatalf("scan fallback admission = %d headers=%#v body=%s", rr.Code, rr.Header(), rr.Body.String())
+	}
+
+	close(blocked.release)
+	released = true
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first graph load: %v", err)
 	}
 }
 

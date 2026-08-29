@@ -395,6 +395,11 @@ func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	manifest, err := s.Store.Compact(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("compact_failed", tenantID, err, map[string]any{})

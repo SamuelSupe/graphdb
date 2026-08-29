@@ -7,6 +7,12 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
+const maxGraphQLSelections = 256
+
+type graphQLSelectionWalk struct {
+	visited int
+}
+
 func collectGraphQLRoots(
 	document *ast.QueryDocument,
 	selections ast.SelectionSet,
@@ -53,7 +59,25 @@ func walkGraphQLSelections(
 	variables map[string]any,
 	visit func(*ast.Field) error,
 ) error {
+	walk := graphQLSelectionWalk{}
+	return walk.walk(document, selections, variables, 1, visit)
+}
+
+func (w *graphQLSelectionWalk) walk(
+	document *ast.QueryDocument,
+	selections ast.SelectionSet,
+	variables map[string]any,
+	depth int,
+	visit func(*ast.Field) error,
+) error {
+	if depth > maxFilterExpressionDepth {
+		return fmt.Errorf("GraphQL selection depth exceeds %d", maxFilterExpressionDepth)
+	}
 	for _, selection := range selections {
+		w.visited++
+		if w.visited > maxGraphQLSelections {
+			return fmt.Errorf("GraphQL document expands to more than %d selections", maxGraphQLSelections)
+		}
 		switch item := selection.(type) {
 		case *ast.Field:
 			include, err := includeGraphQLSelection(item.Directives, variables)
@@ -77,7 +101,7 @@ func walkGraphQLSelections(
 			if fragment == nil {
 				return fmt.Errorf("unknown GraphQL fragment %q", item.Name)
 			}
-			if err := walkGraphQLSelections(document, fragment.SelectionSet, variables, visit); err != nil {
+			if err := w.walk(document, fragment.SelectionSet, variables, depth+1, visit); err != nil {
 				return err
 			}
 		case *ast.InlineFragment:
@@ -86,7 +110,7 @@ func walkGraphQLSelections(
 				return err
 			}
 			if include {
-				if err := walkGraphQLSelections(document, item.SelectionSet, variables, visit); err != nil {
+				if err := w.walk(document, item.SelectionSet, variables, depth+1, visit); err != nil {
 					return err
 				}
 			}

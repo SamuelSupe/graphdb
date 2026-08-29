@@ -102,6 +102,10 @@ type TenantStore struct {
 	indexTasks                 map[string]IndexTask
 	taskCancels                map[string]context.CancelFunc
 	taskActive                 map[string]Task
+	taskWorkers                sync.WaitGroup
+	taskClosing                bool
+	taskShutdownOnce           sync.Once
+	taskShutdownDone           chan struct{}
 	taskQueueSlots             chan struct{}
 	taskExecutionSlots         chan struct{}
 	taskTenantSlots            []chan struct{}
@@ -111,6 +115,7 @@ type TenantStore struct {
 	LeaseTTL                   time.Duration
 	LifecycleCacheTTL          time.Duration
 	TaskMarkerTTL              time.Duration
+	TaskPersistenceTimeout     time.Duration
 	MaxRetries                 int
 	CoordinatorRetryLimit      int
 	CoordinatorPendingTTL      time.Duration
@@ -118,6 +123,7 @@ type TenantStore struct {
 	MaxWriteCacheTenants       int
 	MaxWriteCacheBytes         int64
 	EntityPagePackMaxBytes     int64
+	IndexPrefetchTimeout       time.Duration
 	IndexFormat                string
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
@@ -180,6 +186,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		LeaseTTL:                   30 * time.Second,
 		LifecycleCacheTTL:          time.Second,
 		TaskMarkerTTL:              30 * time.Second,
+		TaskPersistenceTimeout:     10 * time.Second,
 		MaxRetries:                 3,
 		CoordinatorRetryLimit:      8,
 		CoordinatorPendingTTL:      coordinatorPendingReservationTTL,
@@ -187,6 +194,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
 		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
+		IndexPrefetchTimeout:       defaultIndexObjectPrefetchTimeout,
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,
 	}
@@ -196,7 +204,10 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return Manifest{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

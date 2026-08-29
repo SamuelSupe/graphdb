@@ -226,6 +226,41 @@ func TestIngestWALReopensAtCapacityForRecovery(t *testing.T) {
 	}
 }
 
+func TestIngestWALReportsBackgroundWriterStartupFailure(t *testing.T) {
+	config := testIngestWALConfig(t)
+	wal := &IngestWAL{
+		config:   config,
+		appendCh: make(chan ingestWALAppendRequest, 1),
+		pruneCh:  make(chan ingestWALPruneRequest),
+		closeCh:  make(chan struct{}),
+		done:     make(chan struct{}),
+		ready:    make(chan error, 1),
+	}
+	missing := filepath.Join(config.Dir, "missing", ingestWALSegmentName(1))
+	go wal.run([]ingestWALSegment{{path: missing, startLSN: 1}}, 1, 0)
+
+	if err := <-wal.ready; err == nil {
+		t.Fatal("background WAL writer startup unexpectedly succeeded")
+	}
+	const closers = 8
+	errs := make(chan error, closers)
+	for range closers {
+		go func() { errs <- wal.Close() }()
+	}
+	message := ""
+	for range closers {
+		closeErr := <-errs
+		if closeErr == nil {
+			t.Fatal("WAL close hid the background writer startup failure")
+		}
+		if message == "" {
+			message = closeErr.Error()
+		} else if closeErr.Error() != message {
+			t.Fatalf("concurrent close err = %v, want %q", closeErr, message)
+		}
+	}
+}
+
 func testIngestWALConfig(t *testing.T) IngestWALConfig {
 	t.Helper()
 	config := DefaultIngestWALConfig(t.TempDir())

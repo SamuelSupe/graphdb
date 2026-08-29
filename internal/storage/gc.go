@@ -93,7 +93,10 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		defer stop()
 		ctx = operationCtx
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return GCReport{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

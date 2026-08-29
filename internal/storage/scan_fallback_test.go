@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"testing"
@@ -18,7 +20,10 @@ func TestFallbackEntityPageMatchesFullSort(t *testing.T) {
 	}
 	options := EntityScanOptions{Kind: "host", Source: "agent", Limit: 17}
 	first, firstCursor := referenceEntityPage(entities, 7, options, scanCursor{})
-	actual, actualCursor := pageEntityMap(entities, 7, options, scanCursor{})
+	actual, actualCursor, err := pageEntityMap(context.Background(), entities, 7, options, scanCursor{})
+	if err != nil {
+		t.Fatalf("pageEntityMap: %v", err)
+	}
 	assertEntityPageEqual(t, actual, actualCursor, first, firstCursor)
 
 	after, err := parseScanCursor(firstCursor, 7, entityScanQueryHash(options))
@@ -26,7 +31,10 @@ func TestFallbackEntityPageMatchesFullSort(t *testing.T) {
 		t.Fatalf("parse cursor: %v", err)
 	}
 	want, wantCursor := referenceEntityPage(entities, 7, options, after)
-	actual, actualCursor = pageEntityMap(entities, 7, options, after)
+	actual, actualCursor, err = pageEntityMap(context.Background(), entities, 7, options, after)
+	if err != nil {
+		t.Fatalf("pageEntityMap after: %v", err)
+	}
 	assertEntityPageEqual(t, actual, actualCursor, want, wantCursor)
 }
 
@@ -42,7 +50,10 @@ func TestFallbackEdgePageMatchesFullSort(t *testing.T) {
 	}
 	options := EdgeScanOptions{Type: "depends_on", Source: "agent", Limit: 19}
 	want, wantCursor := referenceEdgePage(edges, 11, options, scanCursor{})
-	actual, actualCursor := pageEdgeMap(edges, 11, options, scanCursor{})
+	actual, actualCursor, err := pageEdgeMap(context.Background(), edges, 11, options, scanCursor{})
+	if err != nil {
+		t.Fatalf("pageEdgeMap: %v", err)
+	}
 	if actualCursor != wantCursor || len(actual) != len(want) {
 		t.Fatalf("edge page len/cursor = %d/%q, want %d/%q", len(actual), actualCursor, len(want), wantCursor)
 	}
@@ -50,6 +61,16 @@ func TestFallbackEdgePageMatchesFullSort(t *testing.T) {
 		if actual[i].ID != want[i].ID {
 			t.Fatalf("edge[%d] = %q, want %q", i, actual[i].ID, want[i].ID)
 		}
+	}
+}
+
+func TestFallbackScanStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := pageEntityMap(ctx, map[string]graph.Entity{
+		"host:a": {ID: "host:a", Kind: "host"},
+	}, 1, EntityScanOptions{}, scanCursor{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pageEntityMap err = %v, want context.Canceled", err)
 	}
 }
 
@@ -70,7 +91,7 @@ func BenchmarkFallbackEntityPage10K(b *testing.B) {
 	b.Run("bounded-heap", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			benchmarkFallbackEntities, _ = pageEntityMap(entities, 1, options, scanCursor{})
+			benchmarkFallbackEntities, _, _ = pageEntityMap(context.Background(), entities, 1, options, scanCursor{})
 		}
 	})
 }

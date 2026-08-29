@@ -519,7 +519,13 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		c.finishLoad(tenantID, load, err)
 		return nil, Manifest{}, err
 	}
-	loaded, err := c.loadStoreAtLeast(ctx, tenantID, 0)
+	loadCtx := ctx
+	cancel := func() {}
+	if c.LoadTimeout > 0 {
+		loadCtx, cancel = context.WithTimeout(ctx, c.LoadTimeout)
+	}
+	loaded, err := c.loadStoreAtLeast(loadCtx, tenantID, 0)
+	cancel()
 	release()
 	if err != nil {
 		c.finishLoad(tenantID, load, err)

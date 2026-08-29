@@ -18,20 +18,30 @@ func (s *TenantStore) runIndexTaskAdmitted(
 		s.failQueuedIndexTask(ctx, task)
 		return
 	}
-	defer releaseTaskSlot(tenantSlot)
 	if !acquireTaskSlot(ctx, s.taskExecutionSlots) {
+		releaseTaskSlot(tenantSlot)
 		s.failQueuedIndexTask(ctx, task)
 		return
 	}
-	defer releaseTaskSlot(s.taskExecutionSlots)
-	s.runIndexRebuildTask(ctx, tenantID, task)
+	released := false
+	releaseExecution := func() {
+		if released {
+			return
+		}
+		releaseTaskSlot(s.taskExecutionSlots)
+		releaseTaskSlot(tenantSlot)
+		released = true
+	}
+	defer releaseExecution()
+	s.runIndexRebuildTaskWithRelease(ctx, tenantID, task, releaseExecution)
 }
 
 func (s *TenantStore) failQueuedIndexTask(
 	ctx context.Context,
 	task IndexTask,
 ) {
-	writeCtx := context.WithoutCancel(ctx)
+	writeCtx, cancel := s.taskFinalizationContext(ctx)
+	defer cancel()
 	if current, err := s.GetIndexTask(
 		writeCtx,
 		task.TenantID,

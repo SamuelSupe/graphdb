@@ -3,7 +3,8 @@ package storage
 import "context"
 
 func (s *TenantStore) finishIndexRebuildTask(ctx context.Context, task IndexTask) {
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := s.taskFinalizationContext(ctx)
+	defer cancel()
 	data, err := marshalParquetIndexTask(ctx, task)
 	if err != nil {
 		return

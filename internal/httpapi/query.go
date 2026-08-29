@@ -40,11 +40,16 @@ func (s *Server) query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(request)...)
+	start := time.Now()
+	if err := query.ValidateRequest(request); err != nil {
+		s.observeQuery(tenantID, request, query.Response{}, err, time.Since(start))
+		writeQueryError(w, err)
+		return
+	}
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, "POST /v1/query", r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
 	r = r.WithContext(ctx)
-	start := time.Now()
 	response, err := s.executeQuery(r, tenantID, request)
 	s.observeQuery(tenantID, request, response, err, time.Since(start))
 	if err != nil {
@@ -64,11 +69,16 @@ func (s *Server) queryGQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(request)...)
+	start := time.Now()
+	if err := query.ValidateRequest(request); err != nil {
+		s.observeQuery(tenantID, request, query.Response{}, err, time.Since(start))
+		writeQueryError(w, err)
+		return
+	}
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, "POST /v1/query/gql", r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
 	r = r.WithContext(ctx)
-	start := time.Now()
 	response, err := s.executeQuery(r, tenantID, request)
 	s.observeQuery(tenantID, request, response, err, time.Since(start))
 	if err != nil {
@@ -157,33 +167,33 @@ func (s *Server) queryStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tenantID string, request query.Request, route string) {
-	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, route, r.RemoteAddr)
-	defer finish()
-	w.Header().Set("X-GraphDB-Query-ID", queryID)
 	start := time.Now()
 	if err := query.ValidateRequest(request); err != nil {
 		s.observeQuery(tenantID, request, query.Response{}, err, time.Since(start))
 		writeQueryError(w, err)
 		return
 	}
+	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, request, route, r.RemoteAddr)
+	defer finish()
+	w.Header().Set("X-GraphDB-Query-ID", queryID)
 	ctx, cancel := queryRequestContext(ctx, request)
 	defer cancel()
 	r = r.WithContext(withQueryReadMemo(ctx))
 	release, err := s.acquireQuery(r.Context(), tenantID)
 	if err != nil {
-		err = normalizeQueryExecutionError(r.Context(), request, err)
+		err = normalizeQueryExecutionError(r.Context(), err)
 		s.observeQuery(tenantID, request, query.Response{}, err, time.Since(start))
 		writeQueryError(w, err)
 		return
 	}
 	defer release()
 	if handled, streamErr := s.tryLazyQueryStreamAdmitted(w, r, tenantID, request); handled {
-		streamErr = normalizeQueryExecutionError(r.Context(), request, streamErr)
+		streamErr = normalizeQueryExecutionError(r.Context(), streamErr)
 		s.observeQuery(tenantID, request, query.Response{}, streamErr, time.Since(start))
 		return
 	}
 	response, err := s.executeQueryAdmitted(r, tenantID, request)
-	err = normalizeQueryExecutionError(r.Context(), request, err)
+	err = normalizeQueryExecutionError(r.Context(), err)
 	s.observeQuery(tenantID, request, response, err, time.Since(start))
 	if err != nil {
 		writeQueryError(w, err)
@@ -246,7 +256,7 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 
 	target, err := s.readTarget(r, tenantID, queryReadFreshness(request))
 	if err != nil {
-		err = normalizeQueryExecutionError(r.Context(), request, err)
+		err = normalizeQueryExecutionError(r.Context(), err)
 		writeQueryError(w, err)
 		return true, err
 	}
@@ -285,11 +295,11 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 				s.markLazyQueryUnavailable(tenantID, version)
 				return false, nil
 			}
-			err = normalizeQueryExecutionError(r.Context(), request, err)
+			err = normalizeQueryExecutionError(r.Context(), err)
 			writeQueryError(w, err)
 			return true, err
 		}
-		err = normalizeQueryExecutionError(r.Context(), request, err)
+		err = normalizeQueryExecutionError(r.Context(), err)
 		_ = encodeStreamItem(r.Context(), encoder, queryStreamError(err), flush)
 	}
 	return true, err
@@ -370,11 +380,16 @@ func (s *Server) runQueryTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setAPITraceAttributes(r.Context(), queryRequestTraceAttributes(saved.Request)...)
+	start := time.Now()
+	if err := query.ValidateRequest(saved.Request); err != nil {
+		s.observeQuery(tenantID, saved.Request, query.Response{}, err, time.Since(start))
+		writeQueryError(w, err)
+		return
+	}
 	ctx, queryID, finish := s.QueryRegistry.Start(r.Context(), tenantID, saved.Request, "POST /v1/query/templates/{name}/run", r.RemoteAddr)
 	defer finish()
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
 	r = r.WithContext(ctx)
-	start := time.Now()
 	response, err := s.executeQuery(r, tenantID, saved.Request)
 	s.observeQuery(tenantID, saved.Request, response, err, time.Since(start))
 	if err != nil {
@@ -407,11 +422,11 @@ func (s *Server) executeQuery(r *http.Request, tenantID string, request query.Re
 	r = r.WithContext(withQueryReadMemo(ctx))
 	release, err := s.acquireQuery(r.Context(), tenantID)
 	if err != nil {
-		return query.Response{}, normalizeQueryExecutionError(ctx, request, err)
+		return query.Response{}, normalizeQueryExecutionError(ctx, err)
 	}
 	defer release()
 	response, err := s.executeQueryAdmitted(r, tenantID, request)
-	return response, normalizeQueryExecutionError(ctx, request, err)
+	return response, normalizeQueryExecutionError(ctx, err)
 }
 
 func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request query.Request) (response query.Response, err error) {
@@ -479,9 +494,9 @@ func queryRequestContext(parent context.Context, request query.Request) (context
 	return context.WithTimeout(parent, time.Duration(request.TimeoutMS)*time.Millisecond)
 }
 
-func normalizeQueryExecutionError(ctx context.Context, request query.Request, err error) error {
-	if request.TimeoutMS > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%w: query timeout or cancellation", query.ErrLimitExceeded)
+func normalizeQueryExecutionError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
 	return err
 }
@@ -607,13 +622,15 @@ func queryErrorResponse(err error) (int, ErrorResponse) {
 		return http.StatusServiceUnavailable, buildErrorResponse(ErrorCodeReaderNotFresh, err.Error(), true, freshness.detail())
 	}
 	status := http.StatusBadRequest
-	if errors.Is(err, query.ErrInvalid) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		status = http.StatusGatewayTimeout
+	} else if errors.Is(err, context.Canceled) {
+		status = statusClientClosedRequest
+	} else if errors.Is(err, query.ErrInvalid) {
 		status = http.StatusUnprocessableEntity
-	}
-	if errors.Is(err, query.ErrLimitExceeded) {
+	} else if errors.Is(err, query.ErrLimitExceeded) {
 		status = http.StatusTooManyRequests
-	}
-	if errors.Is(err, storage.ErrReaderLoadBusy) {
+	} else if errors.Is(err, storage.ErrReaderLoadBusy) {
 		status = http.StatusTooManyRequests
 	}
 	return status, errorResponseFor(status, err, "", nil)

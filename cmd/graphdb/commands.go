@@ -19,7 +19,10 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
-const httpShutdownTimeout = 10 * time.Second
+const (
+	httpShutdownTimeout           = 10 * time.Second
+	backgroundTaskShutdownTimeout = 30 * time.Second
+)
 
 func run(args []string) error {
 	if len(args) == 0 {
@@ -170,12 +173,18 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		"otlp_enabled": cfg.OTLPEndpoint != "",
 	})
 	serverErr := runHTTPServers(ctx, servers, httpShutdownTimeout)
+	taskShutdownCtx, taskShutdownCancel := context.WithTimeout(
+		context.Background(),
+		backgroundTaskShutdownTimeout,
+	)
+	taskShutdownErr := store.ShutdownTasks(taskShutdownCtx)
+	taskShutdownCancel()
 	if ingestService == nil {
-		return serverErr
+		return errors.Join(serverErr, taskShutdownErr)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.IngestShutdownTimeout)
 	defer cancel()
-	return errors.Join(serverErr, ingestService.Close(shutdownCtx))
+	return errors.Join(serverErr, taskShutdownErr, ingestService.Close(shutdownCtx))
 }
 
 func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {

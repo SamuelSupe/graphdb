@@ -59,6 +59,7 @@ func entityScanQueryHash(options EntityScanOptions) string {
 	options.Cursor = ""
 	options.Limit = 0
 	options.MinVersion = 0
+	options.SkipGraphFallback = false
 	return scanQueryHash(options)
 }
 
@@ -66,6 +67,7 @@ func edgeScanQueryHash(options EdgeScanOptions) string {
 	options.Cursor = ""
 	options.Limit = 0
 	options.MinVersion = 0
+	options.SkipGraphFallback = false
 	return scanQueryHash(options)
 }
 

@@ -102,6 +102,9 @@ func ParseGraphQL(request GraphQLRequest) (GraphQLPlan, gqlerror.List) {
 	if request.Query == "" {
 		return GraphQLPlan{}, graphQLError(nil, "GraphQL query is required")
 	}
+	if err := validateGraphQLDocumentShape(request.Query); err != nil {
+		return GraphQLPlan{}, graphQLError(nil, "%v", err)
+	}
 	document, errs := gqlparser.LoadQuery(parsedGraphQLSchema, request.Query)
 	if len(errs) > 0 {
 		return GraphQLPlan{}, errs
@@ -170,6 +173,49 @@ func ParseGraphQL(request GraphQLRequest) (GraphQLPlan, gqlerror.List) {
 		return GraphQLPlan{}, graphQLError(root.Position, "unsupported GraphQL root field %q", root.Name)
 	}
 	return plan, nil
+}
+
+func validateGraphQLDocumentShape(document string) error {
+	if len(document) > maxTextQueryBytes {
+		return fmt.Errorf("GraphQL document exceeds %d bytes", maxTextQueryBytes)
+	}
+	depth := 0
+	for i := 0; i < len(document); i++ {
+		switch document[i] {
+		case '#':
+			for i+1 < len(document) && document[i+1] != '\n' && document[i+1] != '\r' {
+				i++
+			}
+		case '"':
+			if i+2 < len(document) && document[i:i+3] == `"""` {
+				i += 3
+				for i+2 < len(document) && document[i:i+3] != `"""` {
+					i++
+				}
+				i += 2
+				continue
+			}
+			for i++; i < len(document); i++ {
+				if document[i] == '\\' {
+					i++
+					continue
+				}
+				if document[i] == '"' {
+					break
+				}
+			}
+		case '{', '(', '[':
+			depth++
+			if depth > maxFilterExpressionDepth {
+				return fmt.Errorf("GraphQL document nesting exceeds %d", maxFilterExpressionDepth)
+			}
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 func (p GraphQLPlan) Data(response Response) map[string]any {
@@ -254,6 +300,9 @@ func decodeGraphQLQueryRequest(value any) (Request, error) {
 	if !ok {
 		return Request{}, fmt.Errorf("graph request must be an object")
 	}
+	if err := validateJSONValueShape(object); err != nil {
+		return Request{}, fmt.Errorf("graph request %v", err)
+	}
 	object = cloneGraphQLMap(object)
 	if err := normalizeGraphQLQueryRequest(object); err != nil {
 		return Request{}, err
@@ -276,6 +325,9 @@ func decodeGraphQLEvidenceRequest(value any) (retrieval.SearchRequest, error) {
 	if !ok {
 		return retrieval.SearchRequest{}, fmt.Errorf("evidence search input must be an object")
 	}
+	if err := validateJSONValueShape(object); err != nil {
+		return retrieval.SearchRequest{}, fmt.Errorf("evidence search input %v", err)
+	}
 	object = cloneGraphQLMap(object)
 	for camel, snake := range map[string]string{
 		"vectorTopK":  "vector_top_k",
@@ -288,6 +340,8 @@ func decodeGraphQLEvidenceRequest(value any) (retrieval.SearchRequest, error) {
 		}
 	}
 	if expansion, ok := object["expansion"].(map[string]any); ok {
+		expansion = cloneGraphQLMap(expansion)
+		object["expansion"] = expansion
 		for camel, snake := range map[string]string{
 			"maxDepth":      "max_depth",
 			"relationTypes": "relation_types",
@@ -339,6 +393,8 @@ func normalizeGraphQLQueryRequest(request map[string]any) error {
 		}
 	}
 	if pathValue, ok := request["path"].(map[string]any); ok {
+		pathValue = cloneGraphQLMap(pathValue)
+		request["path"] = pathValue
 		if err := normalizeGraphQLPath(pathValue); err != nil {
 			return err
 		}
@@ -359,12 +415,18 @@ func normalizeGraphQLPath(path map[string]any) error {
 			return err
 		}
 	}
-	steps, _ := path["steps"].([]any)
-	for _, rawStep := range steps {
+	steps, hasSteps := path["steps"].([]any)
+	if hasSteps {
+		steps = append([]any(nil), steps...)
+		path["steps"] = steps
+	}
+	for i, rawStep := range steps {
 		step, ok := rawStep.(map[string]any)
 		if !ok {
 			continue
 		}
+		step = cloneGraphQLMap(step)
+		steps[i] = step
 		for camel, snake := range map[string]string{
 			"relationTypes": "relation_types",
 			"nodeKinds":     "node_kinds",
@@ -396,22 +458,7 @@ func renameGraphQLKey(object map[string]any, source, target string) error {
 func cloneGraphQLMap(input map[string]any) map[string]any {
 	output := make(map[string]any, len(input))
 	for key, value := range input {
-		output[key] = cloneGraphQLValue(value)
+		output[key] = value
 	}
 	return output
-}
-
-func cloneGraphQLValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneGraphQLMap(typed)
-	case []any:
-		output := make([]any, len(typed))
-		for i := range typed {
-			output[i] = cloneGraphQLValue(typed[i])
-		}
-		return output
-	default:
-		return value
-	}
 }

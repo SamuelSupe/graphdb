@@ -27,17 +27,20 @@ func newGroupAccumulator(groupBy []string, specs []Aggregation) *groupAccumulato
 	return &groupAccumulator{groupBy: append([]string(nil), groupBy...), specs: append([]Aggregation(nil), specs...), groups: map[string]*aggregateGroupState{}}
 }
 
-func (a *groupAccumulator) add(result Result) {
+func (a *groupAccumulator) add(result Result) error {
 	if a == nil {
-		return
+		return nil
 	}
 	key, identity := aggregateGroupKey(result, a.groupBy)
 	group := a.groups[identity]
 	if group == nil {
+		if len(a.groups) >= maxAggregateBuckets {
+			return fmt.Errorf("%w: group_by supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
+		}
 		group = &aggregateGroupState{key: key, acc: newAggregateAccumulator(a.specs)}
 		a.groups[identity] = group
 	}
-	group.acc.add(result)
+	return group.acc.add(result)
 }
 
 func (a *groupAccumulator) results(having []Filter, havingExpr *FilterExpr) []AggregateGroup {
@@ -61,12 +64,14 @@ func (a *groupAccumulator) results(having []Filter, havingExpr *FilterExpr) []Ag
 	return out
 }
 
-func aggregateGroups(results []Result, groupBy []string, specs []Aggregation, having []Filter, havingExpr *FilterExpr) []AggregateGroup {
+func aggregateGroups(results []Result, groupBy []string, specs []Aggregation, having []Filter, havingExpr *FilterExpr) ([]AggregateGroup, error) {
 	acc := newGroupAccumulator(groupBy, specs)
 	for _, result := range results {
-		acc.add(result)
+		if err := acc.add(result); err != nil {
+			return nil, err
+		}
 	}
-	return acc.results(having, havingExpr)
+	return acc.results(having, havingExpr), nil
 }
 
 func aggregateGroupKey(result Result, fields []string) (map[string]any, string) {

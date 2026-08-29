@@ -81,9 +81,15 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 	}
 	now := time.Now().UTC()
 	task := IndexTask{ID: id, TenantID: tenantID, Type: "rebuild", Status: "running", Phase: "queued", ProgressTotal: 1, OwnerID: s.InstanceID, StartedAt: now, UpdatedAt: now}
-	if !s.reserveQueuedTask() {
-		return IndexTask{}, fmt.Errorf("task queue is full")
+	if err := s.admitIndexTaskWorker(); err != nil {
+		return IndexTask{}, err
 	}
+	launchPending := true
+	defer func() {
+		if launchPending {
+			s.taskWorkers.Done()
+		}
+	}()
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopQueueLease, active, reused, err :=
 		s.claimCoordinatorQueuedIndexTask(ctx, task, cancel)
@@ -109,7 +115,11 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 	s.taskMu.Lock()
 	s.indexTasks[tenantID] = task
 	s.taskMu.Unlock()
+	s.registerTaskCancel(tenantID, task.ID, cancel)
+	launchPending = false
 	go func() {
+		defer s.taskWorkers.Done()
+		defer s.unregisterTaskCancel(tenantID, task.ID)
 		defer stopQueueLease()
 		defer cancel()
 		s.runIndexTaskAdmitted(runCtx, tenantID, task)
@@ -465,51 +475,72 @@ func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenant
 }
 
 func (s *TenantStore) runIndexRebuildTask(ctx context.Context, tenantID string, task IndexTask) {
+	s.runIndexRebuildTaskWithRelease(ctx, tenantID, task, func() {})
+}
+
+func (s *TenantStore) runIndexRebuildTaskWithRelease(
+	ctx context.Context,
+	tenantID string,
+	task IndexTask,
+	releaseExecution func(),
+) {
 	operationCtx, stopLease, leaseErr := s.startIndexRebuildTaskLease(
 		ctx,
 		task,
 	)
-	writeCtx := context.WithoutCancel(ctx)
 	if leaseErr != nil {
+		releaseExecution()
 		task.FinishedAt = time.Now().UTC()
 		task.UpdatedAt = task.FinishedAt
 		task.Status = "failed"
 		task.Phase = "failed"
 		task.Error = leaseErr.Error()
-		s.finishIndexRebuildTask(writeCtx, task)
+		s.finishIndexRebuildTask(ctx, task)
 		return
 	}
 	ctx = operationCtx
-	defer stopLease()
+	leaseStopped := false
+	stopOperationLease := func() {
+		if leaseStopped {
+			return
+		}
+		leaseStopped = true
+		stopLease()
+	}
+	defer stopOperationLease()
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			stopOperationLease()
+			releaseExecution()
 			task.FinishedAt = time.Now().UTC()
 			task.UpdatedAt = task.FinishedAt
 			task.Status = "failed"
 			task.Phase = "failed"
 			task.Error = fmt.Sprintf("panic: %v", recovered)
-			s.finishIndexRebuildTask(writeCtx, task)
+			s.finishIndexRebuildTask(ctx, task)
 		}
 	}()
 	task.Phase = "backfill"
 	task.ProgressCompleted = 0
 	task.ProgressTotal = 1
 	task.UpdatedAt = time.Now().UTC()
-	s.trySaveIndexTask(writeCtx, task)
+	s.trySaveIndexTask(ctx, task)
 	catalog, err := s.RebuildIndexes(ctx, tenantID)
 	task.FinishedAt = time.Now().UTC()
 	task.UpdatedAt = task.FinishedAt
 	if err != nil {
+		stopOperationLease()
+		releaseExecution()
 		task.Status = "failed"
 		task.Phase = "failed"
 		task.Error = err.Error()
-		s.finishIndexRebuildTask(writeCtx, task)
+		s.finishIndexRebuildTask(ctx, task)
 		return
 	}
 	task.Phase = "cleanup"
 	task.CatalogVersion = catalog.Version
 	task.UpdatedAt = time.Now().UTC()
-	s.trySaveIndexTask(writeCtx, task)
+	s.trySaveIndexTask(ctx, task)
 	gcReport, cleanupErr := s.RunGC(ctx, tenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
 	task.Status = "succeeded"
 	task.Phase = "done"
@@ -523,7 +554,9 @@ func (s *TenantStore) runIndexRebuildTask(ctx context.Context, tenantID string, 
 	} else if gcReport.IndexCleanupSkippedReason != "" {
 		task.Error = "index cleanup skipped: " + gcReport.IndexCleanupSkippedReason
 	}
-	s.finishIndexRebuildTask(writeCtx, task)
+	stopOperationLease()
+	releaseExecution()
+	s.finishIndexRebuildTask(ctx, task)
 }
 
 func (s *TenantStore) clearIndexRebuildTask(tenantID string, taskID string) {

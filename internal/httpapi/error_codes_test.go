@@ -102,6 +102,7 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 		{name: "write conflict", err: storage.ErrWriteConflict, wantStatus: http.StatusConflict, wantCode: ErrorCodeWriteConflict},
 		{name: "task lease", err: storage.ErrTaskLeaseHeld, wantStatus: http.StatusConflict, wantCode: ErrorCodeTaskConflict},
 		{name: "ingest repair", err: storage.ErrIngestRepairRequired, wantStatus: http.StatusConflict, wantCode: ErrorCodeRepairRequired},
+		{name: "maintenance busy", err: storage.ErrMaintenanceBusy, wantStatus: http.StatusTooManyRequests, wantCode: ErrorCodeMaintenanceTaskRunning},
 		{name: "timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
 		{name: "validation", err: fmt.Errorf("invalid field"), wantStatus: http.StatusBadRequest, wantCode: ErrorCodeBadRequest},
 	}
@@ -113,6 +114,26 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 			decodeResponse(t, rr, &body)
 			if rr.Code != tt.wantStatus || body.Code != tt.wantCode {
 				t.Fatalf("status/code = %d/%s, want %d/%s", rr.Code, body.Code, tt.wantStatus, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestQueryErrorResponsePreservesContextCause(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   ErrorCode
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
+		{name: "canceled", err: context.Canceled, wantStatus: statusClientClosedRequest, wantCode: ErrorCodeRequestCanceled},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			status, response := queryErrorResponse(tt.err)
+			if status != tt.wantStatus || response.Code != tt.wantCode {
+				t.Fatalf("status/code = %d/%s, want %d/%s", status, response.Code, tt.wantStatus, tt.wantCode)
 			}
 		})
 	}

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.2.1
+  version: 1.2.2
   description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.2 preserves the 1.0 core data layout.
 servers:
   - url: http://localhost:8080
@@ -2411,6 +2411,7 @@ components:
           type: string
         relation_types:
           type: array
+          maxItems: 256
           items:
             type: string
         direction:
@@ -2423,6 +2424,7 @@ components:
           type: integer
         where:
           type: array
+          maxItems: 128
           items:
             type: object
             additionalProperties: true
@@ -2430,6 +2432,7 @@ components:
           $ref: '#/components/schemas/FilterExpr'
         edge_where:
           type: array
+          maxItems: 128
           items:
             type: object
             additionalProperties: true
@@ -2437,24 +2440,29 @@ components:
           $ref: '#/components/schemas/FilterExpr'
         project:
           type: array
+          maxItems: 256
           items:
             type: string
         sort:
           type: array
+          maxItems: 32
           items:
             type: object
             additionalProperties: true
         aggregate:
           type: array
+          maxItems: 32
           items:
             type: object
             additionalProperties: true
         group_by:
           type: array
+          maxItems: 32
           items:
             type: string
         having:
           type: array
+          maxItems: 128
           items:
             type: object
             additionalProperties: true
@@ -2471,8 +2479,11 @@ components:
           type: string
         timeout_ms:
           type: integer
+          minimum: 0
         cost_limit:
           type: integer
+          minimum: 0
+          maximum: 1000000
         profile:
           type: boolean
         min_version:
@@ -2487,12 +2498,14 @@ components:
       properties:
         node_kinds:
           type: array
+          maxItems: 256
           items:
             type: string
         end_kind:
           type: string
         end_where:
           type: array
+          maxItems: 128
           items:
             type: object
             additionalProperties: true
@@ -2500,6 +2513,7 @@ components:
           $ref: '#/components/schemas/FilterExpr'
         relation_types:
           type: array
+          maxItems: 256
           items:
             type: string
         steps:
@@ -2518,14 +2532,17 @@ components:
           enum: [out, in, both]
         relation_types:
           type: array
+          maxItems: 256
           items:
             type: string
         node_kinds:
           type: array
+          maxItems: 256
           items:
             type: string
         where:
           type: array
+          maxItems: 128
           items:
             type: object
             additionalProperties: true
@@ -2533,6 +2550,7 @@ components:
           $ref: '#/components/schemas/FilterExpr'
         edge_where:
           type: array
+          maxItems: 128
           items:
             type: object
             additionalProperties: true
@@ -2607,6 +2625,7 @@ components:
         cost_limit:
           type: integer
           minimum: 0
+          maximum: 1000000
         profile:
           type: boolean
           description: Attach plan and operator profile to the compiled query response.
@@ -2621,6 +2640,7 @@ components:
         value: {}
         children:
           type: array
+          maxItems: 256
           items:
             $ref: '#/components/schemas/FilterExpr'
     QueryResponse:

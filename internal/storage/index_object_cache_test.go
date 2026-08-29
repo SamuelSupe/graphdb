@@ -12,6 +12,26 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
+type blockingIndexPrefetchStore struct {
+	ObjectStore
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingIndexPrefetchStore) GetWithMeta(
+	ctx context.Context,
+	key string,
+) ([]byte, ObjectMeta, error) {
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-ctx.Done():
+		return nil, ObjectMeta{Key: key}, ctx.Err()
+	case <-s.release:
+		return s.ObjectStore.GetWithMeta(ctx, key)
+	}
+}
+
 func TestIndexObjectPrefetchesHaveBoundedConcurrency(t *testing.T) {
 	cache := newIndexObjectCache(maxIndexObjectPrefetches + 1)
 	for index := 0; index < maxIndexObjectPrefetches; index++ {
@@ -50,6 +70,45 @@ func TestDisabledIndexObjectCacheDoesNotPrefetch(t *testing.T) {
 			got,
 		)
 	}
+}
+
+func TestIndexObjectPrefetchReleasesSlotAfterTimeout(t *testing.T) {
+	objects := &blockingIndexPrefetchStore{
+		ObjectStore: NewMemoryStore(),
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	defer close(objects.release)
+	store := NewTenantStore(objects, "test")
+	store.ConfigureIndexObjectCache(IndexObjectCacheConfig{MaxEntries: 1})
+	store.IndexPrefetchTimeout = 20 * time.Millisecond
+	key := "indexes/blocked.parquet"
+	cacheKey := indexObjectCacheKey(
+		"edge_shard", "tenant-a", 1, key, "content", "schema",
+	)
+	store.prefetchIndexObject(
+		context.Background(),
+		"edge_shard",
+		"tenant-a",
+		1,
+		key,
+		"content",
+		"schema",
+	)
+	select {
+	case <-objects.started:
+	case <-time.After(time.Second):
+		t.Fatal("index prefetch did not reach object storage")
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if store.indexCache.beginPrefetch(cacheKey) {
+			store.indexCache.finishPrefetch(cacheKey)
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("index prefetch slot was not released after its timeout")
 }
 
 func TestIndexObjectCacheAvoidsRepeatedFieldIndexReads(t *testing.T) {

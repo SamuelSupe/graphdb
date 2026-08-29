@@ -105,6 +105,11 @@ func (s *Server) rebuildIndexes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "index rebuild format is fixed to parquet")
 		return
 	}
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	catalog, err := s.Store.RebuildIndexes(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("index_rebuild_failed", tenantID, err, map[string]any{"async": false})
@@ -144,6 +149,13 @@ func (s *Server) indexHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deep := strings.EqualFold(r.URL.Query().Get("deep"), "true")
+	if deep {
+		release, acquired := s.enterMaintenance(w, tenantID)
+		if !acquired {
+			return
+		}
+		defer release()
+	}
 	health, err := s.Store.IndexHealthWithOptions(r.Context(), tenantID, storage.IndexHealthOptions{Deep: deep})
 	if err != nil {
 		writeStorageError(w, err)

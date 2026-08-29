@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.1 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.2.2 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -34,7 +34,7 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
 
-### 1.2.1 performance update
+### 1.2.2 reliability and query update
 
 - Commit-tail compaction and reload reuse already-decoded graph state; persisted
   commit segments load concurrently and are still applied in version order.
@@ -46,6 +46,9 @@ SPARQL, ontology-reasoning, or historical graph engine.
 - Materialized kind pagination uses stable ID order and stops after `limit + 1`
   matches; unavailable lazy indexes use bounded retry backoff instead of being
   reopened on every request.
+- Query and GraphQL request shapes are bounded before storage I/O, and task
+  shutdown, index rebuild admission, restore-drill cleanup, coordinator
+  rollback, and WAL close paths now preserve explicit terminal errors.
 
 The release was exercised across match, indexed match, neighbors, pattern,
 traverse, impact, and shortest-path queries, in addition to the complete Go test
@@ -170,8 +173,8 @@ authorization, TLS, and rate limiting at the gateway or service mesh.
 
 ## Release
 
-The latest published release is GGraphDB 1.2.1:
-[**v1.2.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1).
+The latest published release is GGraphDB 1.2.2:
+[**v1.2.2**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.2).
 The release workflow publishes the tag only after its release checklist,
 30-minute PostgreSQL CAS gate, and formal rollback drill pass.
 
@@ -184,7 +187,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.2.1` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.2.2` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 

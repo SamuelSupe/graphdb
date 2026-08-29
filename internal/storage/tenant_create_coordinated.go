@@ -13,7 +13,10 @@ func (s *TenantStore) createCoordinatedTenant(
 	tenantID string,
 	options TenantCreateOptions,
 ) (TenantInfo, error) {
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return TenantInfo{}, err
+	}
 	defer unlock()
 	operationCtx, stopLease, err := s.startCoordinatorOperationLease(
 		ctx, tenantID, "create",

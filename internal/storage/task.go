@@ -106,6 +106,12 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	} else if reused {
 		return active, nil
 	}
+	launchPending := true
+	defer func() {
+		if launchPending {
+			s.taskWorkers.Done()
+		}
+	}()
 	if task.Type == TaskTypeGC {
 		active, reused, err := s.claimGCRunningMarker(ctx, task)
 		if err != nil {
@@ -149,7 +155,9 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 		return Task{}, err
 	}
 	s.registerTaskCancel(tenantID, id, cancel)
+	launchPending = false
 	go func() {
+		defer s.taskWorkers.Done()
 		defer stopQueueLease()
 		s.runTaskAdmitted(runCtx, cancel, task)
 	}()
@@ -192,7 +200,6 @@ func (s *TenantStore) ListTasks(ctx context.Context, tenantID string, options Ta
 }
 
 func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, task Task) {
-	writeCtx := context.WithoutCancel(ctx)
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
 	stopHeartbeat := s.startGCTaskHeartbeat(ctx, task, cancel)
 	defer stopHeartbeat()
@@ -203,7 +210,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 			task.Error = fmt.Sprintf("panic: %v", recovered)
 			task.FinishedAt = time.Now().UTC()
 			task.UpdatedAt = task.FinishedAt
-			s.trySaveTask(writeCtx, task)
+			s.trySaveTaskFinal(ctx, task)
 		}
 	}()
 	if ctx.Err() != nil {
@@ -221,7 +228,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 		task.Error = leaseErr.Error()
 		task.FinishedAt = time.Now().UTC()
 		task.UpdatedAt = task.FinishedAt
-		s.trySaveTask(writeCtx, task)
+		s.trySaveTaskFinal(ctx, task)
 		return
 	}
 	defer stopCoordinatorLease()
@@ -230,8 +237,10 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 	task.Phase = "running"
 	task.ProgressTotal = taskProgressTotal(task.Type)
 	task.UpdatedAt = time.Now().UTC()
-	s.trySaveTask(writeCtx, task)
+	s.trySaveTask(ctx, task)
 	result, resultKey, err := s.runTaskOperation(ctx, task)
+	writeCtx, writeCancel := s.taskFinalizationContext(ctx)
+	defer writeCancel()
 	if task.Type == TaskTypeTenantRestore {
 		current, stateErr := s.GetTask(writeCtx, task.TenantID, task.ID)
 		if stateErr == nil && current.OwnerID == task.OwnerID && taskCheckpointBool(current, "purged_existing") {

@@ -141,6 +141,11 @@ func (s *Server) maybeAutoCompact(ctx context.Context, tenantID string, manifest
 	if !decision.Compact {
 		return manifest
 	}
+	release, ok := s.enterScheduledMaintenance(tenantID, "compact", report, tenantReport)
+	if !ok {
+		return manifest
+	}
+	defer release()
 	next, err := s.Store.Compact(ctx, tenantID)
 	if err != nil {
 		report.addError(tenantID, "compact", err)
@@ -218,6 +223,11 @@ func (s *Server) maybeRunGC(ctx context.Context, tenantID string, now time.Time,
 	if !s.gcDue(tenantID, now, interval) {
 		return
 	}
+	release, ok := s.enterScheduledMaintenance(tenantID, "gc", report, tenantReport)
+	if !ok {
+		return
+	}
+	defer release()
 	keepSnapshots := intValue(config.KeepSnapshots, 1)
 	gcReport, err := s.Store.RunGC(ctx, tenantID, storage.GCOptions{
 		KeepSnapshots:       keepSnapshots,
@@ -270,6 +280,21 @@ func (s *Server) maybeRebuildIndexes(ctx context.Context, tenantID string, confi
 	tenantReport.IndexTaskID = task.ID
 	tenantReport.IndexTaskReused = task.Phase != "queued"
 	s.auditInfo("maintenance_index_rebuild_started", tenantID, map[string]any{"task_id": task.ID, "status": health.Status})
+}
+
+func (s *Server) enterScheduledMaintenance(tenantID string, action string, report *MaintenanceReport, tenantReport *TenantMaintenanceReport) (func(), bool) {
+	release, err := s.Store.TryAcquireMaintenance(tenantID)
+	if err == nil {
+		return release, true
+	}
+	if errors.Is(err, storage.ErrMaintenanceBusy) {
+		if tenantReport.Skipped == "" {
+			tenantReport.Skipped = "maintenance_busy"
+		}
+		return nil, false
+	}
+	report.addError(tenantID, action+"_admission", err)
+	return nil, false
 }
 
 func (s *Server) storageLayoutFindings(ctx context.Context, tenantID string, config storage.TenantMaintenanceConfig, report *MaintenanceReport) []StorageLayoutFinding {

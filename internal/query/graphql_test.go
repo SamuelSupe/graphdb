@@ -1,6 +1,8 @@
 package query
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/retrieval"
@@ -169,5 +171,37 @@ func TestParseGraphQLEvidenceSearchRejectsInvalidBounds(t *testing.T) {
 	})
 	if len(errs) == 0 {
 		t.Fatal("unbounded evidence expansion was accepted")
+	}
+}
+
+func TestParseGraphQLRejectsPathologicalDocuments(t *testing.T) {
+	if _, errs := ParseGraphQL(GraphQLRequest{Query: strings.Repeat("x", maxTextQueryBytes+1)}); len(errs) == 0 {
+		t.Fatal("oversized GraphQL document was accepted")
+	}
+	if _, errs := ParseGraphQL(GraphQLRequest{Query: strings.Repeat("{", maxFilterExpressionDepth+1)}); len(errs) == 0 {
+		t.Fatal("deeply nested GraphQL document was accepted")
+	}
+
+	var document strings.Builder
+	document.WriteString("query { ...F0 }\n")
+	for i := 0; i < 9; i++ {
+		fmt.Fprintf(&document, "fragment F%d on Query { ...F%d ...F%d }\n", i, i+1, i+1)
+	}
+	document.WriteString(`fragment F9 on Query { graph(request: {op: "match"}) { version } }`)
+	if _, errs := ParseGraphQL(GraphQLRequest{Query: document.String()}); len(errs) == 0 {
+		t.Fatal("exponentially expanding GraphQL fragments were accepted")
+	}
+
+	value := any("region")
+	for range maxFilterExpressionDepth {
+		value = map[string]any{"nested": value}
+	}
+	if _, errs := ParseGraphQL(GraphQLRequest{
+		Query: `query Find($request: QueryRequest!) { graph(request: $request) { version } }`,
+		Variables: map[string]any{
+			"request": map[string]any{"op": "match", "filters": map[string]any{"region": value}},
+		},
+	}); len(errs) == 0 {
+		t.Fatal("deeply nested GraphQL variable was accepted")
 	}
 }

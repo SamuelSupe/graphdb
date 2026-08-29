@@ -179,7 +179,7 @@ func storageErrorStatus(code ErrorCode) int {
 		return http.StatusForbidden
 	case ErrorCodeTenantDeleted:
 		return http.StatusGone
-	case ErrorCodeQuotaExceeded:
+	case ErrorCodeQuotaExceeded, ErrorCodeMaintenanceTaskRunning:
 		return http.StatusTooManyRequests
 	case ErrorCodeLeaseHeld,
 		ErrorCodeManifestCASConflict,
@@ -287,6 +287,8 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeIdempotencyInProgress, true
 	case errors.Is(err, storage.ErrTaskLeaseHeld):
 		return ErrorCodeTaskConflict, false
+	case errors.Is(err, storage.ErrMaintenanceBusy):
+		return ErrorCodeMaintenanceTaskRunning, true
 	case errors.Is(err, storage.ErrIngestRepairRequired):
 		return ErrorCodeRepairRequired, false
 	case errors.Is(err, storage.ErrTenantDisabled):

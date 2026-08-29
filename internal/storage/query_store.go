@@ -28,7 +28,10 @@ func (s *TenantStore) SaveQuery(ctx context.Context, tenantID string, saved Save
 	if saved.Name == "" {
 		return SavedQuery{}, errors.New("saved query name is required")
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return SavedQuery{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

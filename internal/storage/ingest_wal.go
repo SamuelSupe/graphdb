@@ -140,8 +140,10 @@ type IngestWAL struct {
 	pruneCh  chan ingestWALPruneRequest
 	closeCh  chan struct{}
 	done     chan struct{}
+	ready    chan error
 
 	closeOnce sync.Once
+	closeErr  error
 }
 
 func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error) {
@@ -175,8 +177,16 @@ func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error
 		pruneCh:  make(chan ingestWALPruneRequest),
 		closeCh:  make(chan struct{}),
 		done:     make(chan struct{}),
+		ready:    make(chan error, 1),
 	}
 	go wal.run(segments, nextLSN, totalBytes)
+	if err := <-wal.ready; err != nil {
+		closeErr := wal.Close()
+		if closeErr == nil {
+			closeErr = err
+		}
+		return nil, nil, fmt.Errorf("open ingest WAL writer: %w", closeErr)
+	}
 	return wal, records, nil
 }
 
@@ -260,15 +270,19 @@ func (w *IngestWAL) Prune(ctx context.Context, beforeLSN uint64) error {
 }
 
 func (w *IngestWAL) Close() error {
-	w.closeOnce.Do(func() { close(w.closeCh) })
-	<-w.done
-	if w.lockFile == nil {
-		return nil
-	}
-	unlockErr := syscall.Flock(int(w.lockFile.Fd()), syscall.LOCK_UN)
-	closeErr := w.lockFile.Close()
-	w.lockFile = nil
-	return errors.Join(unlockErr, closeErr)
+	w.closeOnce.Do(func() {
+		close(w.closeCh)
+		<-w.done
+		var unlockErr error
+		var lockCloseErr error
+		if w.lockFile != nil {
+			unlockErr = syscall.Flock(int(w.lockFile.Fd()), syscall.LOCK_UN)
+			lockCloseErr = w.lockFile.Close()
+			w.lockFile = nil
+		}
+		w.closeErr = errors.Join(w.closeErr, unlockErr, lockCloseErr)
+	})
+	return w.closeErr
 }
 
 func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes int64) {
@@ -282,12 +296,16 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 		durableLSN: nextLSN - 1,
 	}
 	if err := state.openCurrent(); err != nil {
+		w.closeErr = err
+		w.ready <- err
 		state.failPending(err)
 		return
 	}
+	w.ready <- nil
 	defer func() {
-		_ = state.syncAndClose()
-		state.failPending(ErrIngestWALClosed)
+		closeErr := state.syncAndClose()
+		w.closeErr = errors.Join(w.closeErr, closeErr)
+		state.failPending(errors.Join(ErrIngestWALClosed, closeErr))
 	}()
 	for {
 		select {

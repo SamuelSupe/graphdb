@@ -68,6 +68,26 @@ func TestNewSeparateHTTPServersUseExpectedHandlers(t *testing.T) {
 	}
 }
 
+func TestStartAndWaitTaskReturnsTerminalState(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.InitTenant(context.Background(), "tenant-a"); err != nil {
+		t.Fatalf("init tenant: %v", err)
+	}
+	task, err := startAndWaitTask(
+		context.Background(),
+		store,
+		"tenant-a",
+		storage.TaskTypeExportSnapshot,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("start and wait task: %v", err)
+	}
+	if task.Status != storage.TaskStatusSucceeded || task.ResultKey == "" {
+		t.Fatalf("terminal task = %#v", task)
+	}
+}
+
 func httptestResponse(handler http.Handler, method, path string) *httptest.ResponseRecorder {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(method, path, nil))
