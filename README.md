@@ -5,38 +5,49 @@
 **A general-purpose current-state property graph for entities, relationships, and topology**
 
 [![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Release v1.2.0](https://img.shields.io/badge/release-v1.2.0-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
+[![Release v1.2.1](https://img.shields.io/badge/release-v1.2.1-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1)
 [![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-[中文 README](README.zh-CN.md) · [v1.2.0 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
+[中文 README](README.zh-CN.md) · [v1.2.1 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
-GGraphDB v1.2.0 is a Go-based, object-storage-backed property graph for
+GGraphDB v1.2.1 is a Go-based, object-storage-backed property graph for
 current-state entity and relationship data. Knowledge bases, asset graphs,
 service dependencies, data lineage, topology, impact analysis, and CMDB are
 application scenarios—not separate storage engines. The graph model remains
 generic: application-defined kinds, fields, relation types, edges, optional
 type metadata, and tenant isolation.
 
-For local writers, v1.2.0 makes the performance-first path the default:
+For local writers, v1.2.0 introduced the performance-first default path:
 one active writer per tenant, a process-wide segmented WAL with `sync`
 durability, and metadata segments. A durable ingest response is accepted only
 after WAL fsync. Shared object storage is the production persistence boundary;
 Parquet segments, manifests, snapshots, and indexes remain recoverable from it.
 
-> **Release status.** `v1.2.0` is the release identifier. A source checkout or
-> tag alone does not prove that the release gates passed. The authoritative
-> proof is the v1.2.0 GitHub Release assets together with their commit-bound
-> evidence; if the performance gate fails, no v1.2.0 Release archive is
-> produced.
+> **Release status.** `v1.2.1` is the current release identifier. A source
+> checkout or tag alone does not prove that the release gates passed. The
+> authoritative proof is the v1.2.1 GitHub Release assets, successful release
+> workflow, and packaged commit-bound CAS and rollback evidence.
 
-> **v1.2.0 operating contract.** The performance-first local WAL path is the
+> **v1.2.0 base operating contract.** The performance-first local WAL path is the
 > default: durable `202 Accepted` only follows WAL fsync, bounded pressure
 > returns `429` with `Retry-After`, and release assets are published only with
 > commit-bound verification evidence.
 
-## v1.2.0 at a glance
+## v1.2.1 patch update
+
+| Area | Improvement |
+| --- | --- |
+| Commit tail and graph loading | Compaction and reload reuse decoded graph state; persisted commit segments load concurrently and remain version-ordered. |
+| Reader isolation | Cold full-graph loads are shared and bounded globally, with independent idle retention, load timeout, and queue timeout controls. |
+| Query latency | Validation runs before storage I/O; `timeout_ms` covers admission, index access, graph loading, and execution; materialized kind pagination stops after `limit + 1` matches. |
+| Release evidence | The published `v1.2.1` workflow passed unit/vet/race, Python SDK, v1 compatibility, RustFS/CAS/load/restore integration, a two-writer 20 QPS 30-minute CAS soak, and rollback. |
+
+See the [v1.2.1 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1)
+for the binaries, checksum, and commit-bound evidence.
+
+## v1.2.0 base at a glance
 
 | Area | Contract |
 | --- | --- |
@@ -241,13 +252,17 @@ service mesh.
 
 ## Release
 
-The current release is [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0), with [latest releases](https://github.com/SamuelSupe/graphdb/releases) kept as the public release index.
-Pushing a semantic-version tag triggers [GitHub Actions](.github/workflows/release.yml),
-but the release job depends on the verification, RustFS/WAL recovery, CAS
-soak, rollback, and fixed-host performance jobs. Before packaging it verifies
+The current release is [GGraphDB v1.2.1](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1), with [latest releases](https://github.com/SamuelSupe/graphdb/releases) kept as the public release index.
+Its published workflow passed verification, RustFS/CAS/load/restore integration,
+a two-writer 20 QPS 30-minute CAS soak, and rollback, then packaged evidence
+bound to commit `90155475`.
+
+The workflow on `main` retains the fixed-host local WAL performance gate for
+future tags. Before packaging it verifies
 `artifacts/wal-performance/gate.json` with five baseline and five candidate
 runs, threshold results, and commit binding. A failed performance gate means
-no v1.2.0 release archive is produced.
+no archive is produced. This is the v1.2.0 acceptance contract described below;
+it must not be presented as additional v1.2.1 evidence.
 
 The performance contract is intentionally explicit rather than a benchmark
 claim: an 8 CPU/8 GiB OrbStack host runs eight tenants and 16 collectors for
