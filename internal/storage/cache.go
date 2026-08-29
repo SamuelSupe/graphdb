@@ -266,10 +266,17 @@ func (c *ReaderCache) startStoreLoad(
 	if c.LoadTimeout > 0 {
 		loadCtx, cancel = context.WithTimeout(loadCtx, c.LoadTimeout)
 	}
+	releaseStoreLoad := sync.OnceFunc(func() {
+		cancel()
+		release()
+	})
 	go func() {
-		defer release()
-		defer cancel()
+		defer releaseStoreLoad()
 		loaded, err := c.loadStoreAtLeast(loadCtx, tenantID, minVersion)
+		// Publish completion only after the global load slot is reusable. This
+		// keeps a waiter from observing a finished load and immediately being
+		// rejected by admission for work that has already stopped.
+		releaseStoreLoad()
 		if err != nil {
 			c.recordCache(tenantID, "miss_error")
 			c.finishLoad(tenantID, load, err)

@@ -348,7 +348,10 @@ func TestReaderCacheRefreshLoadTimeoutReleasesAdmission(t *testing.T) {
 	}
 
 	cache.Store = NewTenantStore(base, "test")
-	if _, _, err := cache.Load(ctx, "tenant-b"); err != nil {
+	cache.LoadTimeout = 5 * time.Second
+	loadCtx, loadCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer loadCancel()
+	if _, _, err := cache.Load(loadCtx, "tenant-b"); err != nil {
 		t.Fatalf("tenant-b load after timed out refresh: %v", err)
 	}
 }
