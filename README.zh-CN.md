@@ -5,32 +5,44 @@
 **面向实体、关系与拓扑的通用当前态属性图数据库**
 
 [![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Release v1.2.0](https://img.shields.io/badge/release-v1.2.0-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)
+[![Release v1.2.1](https://img.shields.io/badge/release-v1.2.1-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1)
 [![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-[English README](README.md) · [v1.2.0 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
+[English README](README.md) · [v1.2.1 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
-GGraphDB v1.2.0 是一个 Go 实现、以对象存储为持久化边界的通用当前态属性图，
+GGraphDB v1.2.1 是一个 Go 实现、以对象存储为持久化边界的通用当前态属性图，
 用于实体和关系数据。知识库、资产图、服务依赖、数据血缘、拓扑、影响分析和
 CMDB 都是应用场景，而不是不同的存储引擎。图模型保持通用：应用自定义的
 kind、字段、关系类型、边、可选类型元数据以及租户隔离。
 
-v1.2.0 将性能优先路径设为本地 writer 的默认值：每个租户一个活跃 writer，
+v1.2.0 引入了本地 writer 的性能优先默认路径：每个租户一个活跃 writer，
 进程级分段 WAL、`sync` 耐久性和 metadata segment。只有 WAL 完成 fsync 后，
 写入才会返回 durable ingest 响应。生产持久化建议使用共享对象存储；Parquet
 segment、manifest、snapshot 和 index 都可以从对象存储恢复。
 
-> **发行状态。** `v1.2.0` 是发行标识。源码工作区或 tag 本身不能证明发行门禁
-> 已通过。权威证据是 v1.2.0 GitHub Release 资产及其 commit-bound evidence；
-> 如果性能门禁失败，就不会产出 v1.2.0 Release 归档。
+> **发行状态。** `v1.2.1` 是当前发行标识。源码工作区或 tag 本身不能证明发行
+> 门禁已通过。权威证据是 v1.2.1 GitHub Release 资产、成功的发布工作流，以及
+> 发行包中与 commit 绑定的 CAS 和回滚证据。
 
-> **v1.2.0 运行合同。** 性能优先的本地 WAL 路径是默认模式：只有 WAL fsync
+> **v1.2.0 基础运行合同。** 性能优先的本地 WAL 路径是默认模式：只有 WAL fsync
 > 完成后才返回 durable `202 Accepted`；有界压力返回带 `Retry-After` 的
 > `429`；发行资产只有在通过 commit-bound 验证证据后才会发布。
 
-## v1.2.0 一览
+## v1.2.1 补丁更新
+
+| 领域 | 改进 |
+| --- | --- |
+| Commit tail 与图加载 | compact 和重新加载复用已解码图状态；持久化 commit segment 并发加载，并继续按版本顺序应用。 |
+| Reader 隔离 | 完整图冷加载在请求间共享并设置全局边界；缓存空闲驻留、加载超时和队列超时分别控制。 |
+| 查询延迟 | 查询校验提前到存储 I/O 之前；`timeout_ms` 覆盖准入、索引访问、图加载和执行；物化 kind 分页取得 `limit + 1` 条匹配后停止。 |
+| 发行证据 | 已发布的 `v1.2.1` 工作流通过 unit/vet/race、Python SDK、v1 兼容、RustFS/CAS/load/restore integration、双 writer 20 QPS 30 分钟 CAS soak 和回滚。 |
+
+二进制、校验文件和 commit-bound evidence 见
+[v1.2.1 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1)。
+
+## v1.2.0 基础能力一览
 
 | 领域 | 合同 |
 | --- | --- |
@@ -222,11 +234,14 @@ named graph、blank node、RDF 多 `rdf:type`、typed/language literal、历史�
 
 ## 发行版
 
-当前发行版是 [GGraphDB v1.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.0)，[Latest releases](https://github.com/SamuelSupe/graphdb/releases) 是公开发行索引。
-推送语义化版本 tag 会触发 [GitHub Actions](.github/workflows/release.yml)，但
-release job 依赖验证、RustFS/WAL 恢复、CAS soak、回滚和固定主机性能 job。打包
-前会校验 `artifacts/wal-performance/gate.json`，其中必须有 5 次基线、5 次候选、
-阈值结果和 commit 绑定。性能门禁失败就不会产出 v1.2.0 发行归档。
+当前发行版是 [GGraphDB v1.2.1](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.1)，[Latest releases](https://github.com/SamuelSupe/graphdb/releases) 是公开发行索引。
+其已发布工作流通过验证、RustFS/CAS/load/restore integration、双 writer 20 QPS
+30 分钟 CAS soak 和回滚，并打包了绑定提交 `90155475` 的证据。
+
+`main` 上的工作流为未来 tag 保留固定主机本地 WAL 性能门禁。打包前会校验
+`artifacts/wal-performance/gate.json`，其中必须有 5 次基线、5 次候选、
+阈值结果和 commit 绑定。性能门禁失败就不会产出对应发行归档。
+这是下文记录的 v1.2.0 验收合同，不能把它表述成额外的 v1.2.1 证据。
 
 性能合同是明确的门禁，不是本文的 benchmark 结果：固定 8 CPU/8 GiB OrbStack
 主机运行 8 个租户、16 个采集器，v1.1.5 基线和 v1.2.0 候选各 5 次 30 分钟。
