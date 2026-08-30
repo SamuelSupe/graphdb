@@ -12,6 +12,7 @@ type soakRunner struct {
 	cfg                   config
 	writer                *apiClient
 	reader                *apiClient
+	admin                 *apiClient
 	metrics               *registry
 	events                *eventWriter
 	maintenanceMu         sync.Mutex
@@ -26,8 +27,8 @@ type soakRunner struct {
 	nextSnapshotExportAt  atomic.Int64
 }
 
-func newSoakRunner(cfg config, writer *apiClient, reader *apiClient, metrics *registry, events *eventWriter, seedVersion int64) *soakRunner {
-	r := &soakRunner{cfg: cfg, writer: writer, reader: reader, metrics: metrics, events: events}
+func newSoakRunner(cfg config, writer *apiClient, reader *apiClient, admin *apiClient, metrics *registry, events *eventWriter, seedVersion int64) *soakRunner {
+	r := &soakRunner{cfg: cfg, writer: writer, reader: reader, admin: admin, metrics: metrics, events: events}
 	r.nextBatch.Store(cfg.startBatch)
 	r.lastWrittenN.Store(maxInt64(cfg.startBatch*int64(cfg.batchSize)-1, 0))
 	r.observeVersion(seedVersion)
@@ -194,7 +195,7 @@ func (r *soakRunner) tryStartSnapshotExport(now time.Time) bool {
 
 func (r *soakRunner) sampleLoop(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	r.readerReady.Store(sampleState(ctx, r.writer, r.reader, r.metrics, r.events, !r.readerPaused()).readerReady)
+	r.readerReady.Store(sampleState(ctx, r.admin, r.reader, r.metrics, r.events, !r.readerPaused()).readerReady)
 	ticker := time.NewTicker(r.cfg.sampleInterval)
 	defer ticker.Stop()
 	for {
@@ -202,7 +203,7 @@ func (r *soakRunner) sampleLoop(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.readerReady.Store(sampleState(ctx, r.writer, r.reader, r.metrics, r.events, !r.readerPaused()).readerReady)
+			r.readerReady.Store(sampleState(ctx, r.admin, r.reader, r.metrics, r.events, !r.readerPaused()).readerReady)
 		}
 	}
 }

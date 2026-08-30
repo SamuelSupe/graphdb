@@ -81,6 +81,43 @@ func TestUnifiedTaskRunsCompactAndExportSnapshot(t *testing.T) {
 	}
 }
 
+func TestUnifiedIndexRebuildTaskAppliesWriteBackpressure(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	store.Backpressure = NewWritePressure(BackpressureConfig{})
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	blocking := &blockOncePutStore{
+		ObjectStore: base,
+		substring:   "/indexes/parquet/versions/",
+		paused:      make(chan struct{}),
+		resume:      make(chan struct{}),
+	}
+	store.Objects = blocking
+	task, err := store.StartTask(ctx, "tenant-a", TaskTypeIndexRebuild, nil)
+	if err != nil {
+		t.Fatalf("start index rebuild task: %v", err)
+	}
+	select {
+	case <-blocking.paused:
+	case <-time.After(time.Second):
+		t.Fatal("index rebuild did not reach blocked index write")
+	}
+
+	_, err = store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:blocked", Kind: "host"}},
+	}, CommitOptions{})
+	assertBackpressureReason(t, err, "index_rebuild_running")
+	close(blocking.resume)
+	task = waitForTask(t, ctx, store, "tenant-a", task.ID)
+	if task.Status != TaskStatusSucceeded {
+		t.Fatalf("index rebuild task = %#v", task)
+	}
+}
+
 func TestUnifiedTaskListIncludesLegacyIndexTasks(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

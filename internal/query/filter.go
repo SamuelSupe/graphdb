@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
@@ -18,8 +20,14 @@ func requestFilters(request Request) []Filter {
 }
 
 func requestEntityMatches(request Request, entity graph.Entity) bool {
-	if !entityMatches(entity, requestFilters(request)) {
+	if !entityMatches(entity, request.Where) {
 		return false
+	}
+	for field, expected := range request.Filters {
+		actual, exists := entityFilterValue(entity, field)
+		if !exists || !valuesEqual(actual, expected) {
+			return false
+		}
 	}
 	return entityExprMatches(entity, request.WhereExpr)
 }
@@ -176,7 +184,7 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 		}
 		return strings.Contains(strings.ToLower(fmt.Sprint(actual)), strings.ToLower(fmt.Sprint(filter.Value)))
 	case "fuzzy":
-		return fuzzyMatch(fmt.Sprint(actual), fmt.Sprint(filter.Value))
+		return fuzzyMatch(filterText(actual), filterText(filter.Value))
 	default:
 		return false
 	}
@@ -422,17 +430,29 @@ func asFloat(value any) (float64, bool) {
 }
 
 func fuzzyMatch(text, pattern string) bool {
-	text = strings.ToLower(text)
-	pattern = strings.ToLower(pattern)
 	if pattern == "" {
 		return true
 	}
-	patternRunes := []rune(pattern)
-	idx := 0
+	patternOffset := 0
+	want, size := utf8.DecodeRuneInString(pattern)
+	want = unicode.ToLower(want)
 	for _, ch := range text {
-		if idx < len(patternRunes) && ch == patternRunes[idx] {
-			idx++
+		if unicode.ToLower(ch) != want {
+			continue
 		}
+		patternOffset += size
+		if patternOffset == len(pattern) {
+			return true
+		}
+		want, size = utf8.DecodeRuneInString(pattern[patternOffset:])
+		want = unicode.ToLower(want)
 	}
-	return idx == len(patternRunes)
+	return false
+}
+
+func filterText(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprint(value)
 }

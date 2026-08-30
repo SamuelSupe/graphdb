@@ -131,6 +131,7 @@ func TestFuzzyFilterSupportsUnicodeText(t *testing.T) {
 			UpsertEntities: []graph.Entity{
 				{ID: "service:db", Kind: "service", Fields: graph.Fields{"name": "数据库服务"}},
 				{ID: "service:cache", Kind: "service", Fields: graph.Fields{"name": "缓存服务"}},
+				{ID: "service:api", Kind: "service", Fields: graph.Fields{"name": "APIService"}},
 			},
 		},
 	}); err != nil {
@@ -147,6 +148,18 @@ func TestFuzzyFilterSupportsUnicodeText(t *testing.T) {
 	}
 	if len(response.Results) != 1 || response.Results[0].Entity.ID != "service:db" {
 		t.Fatalf("results = %#v, want service:db only", response.Results)
+	}
+	response, err = Execute(g, Request{
+		Op:    "match",
+		Kind:  "service",
+		Where: []Filter{{Field: "name", Op: "fuzzy", Value: "apisvc"}},
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("case-insensitive fuzzy match: %v", err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Entity.ID != "service:api" {
+		t.Fatalf("case-insensitive results = %#v, want service:api only", response.Results)
 	}
 }
 
@@ -208,6 +221,39 @@ func TestProjectionDoesNotChangeSortOrAggregateInputs(t *testing.T) {
 	}
 	if response.Aggregates["avg_cpu"] != float64(12) {
 		t.Fatalf("avg_cpu = %#v, want 12", response.Aggregates["avg_cpu"])
+	}
+}
+
+func TestBoundedIndexedMatchReturnsOwnedEntities(t *testing.T) {
+	g := seedCMDBGraph(t)
+	response, err := Execute(g, Request{
+		Op:   "match",
+		Kind: "host",
+		Where: []Filter{
+			{Field: "region", Op: "eq", Value: "us-east-1"},
+			{Field: "cpu", Op: "gte", Value: 8},
+		},
+		Sort:      []SortSpec{{Field: "cpu", Desc: true}},
+		Aggregate: []Aggregation{{Op: "count"}},
+		Limit:     1,
+		Profile:   true,
+	})
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if response.Plan == nil || response.Plan.Strategy != "field-index" {
+		t.Fatalf("plan = %#v, want field-index", response.Plan)
+	}
+	if len(response.Results) != 1 || response.Results[0].Entity == nil {
+		t.Fatalf("results = %#v", response.Results)
+	}
+	response.Results[0].Entity.Fields["hostname"] = "mutated"
+	original, ok := g.GetEntity(response.Results[0].Entity.ID)
+	if !ok {
+		t.Fatalf("entity %q missing from graph", response.Results[0].Entity.ID)
+	}
+	if original.Fields["hostname"] == "mutated" {
+		t.Fatal("mutating the response changed the graph entity")
 	}
 }
 

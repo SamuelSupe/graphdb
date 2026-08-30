@@ -23,6 +23,13 @@ func TestMatchEntityIDsAndFieldIndexIDsAreSorted(t *testing.T) {
 	if ids := g.MatchFieldIndexIDs("host", "region", []any{"us-east-1", "us-east-1"}); !sameStrings(ids, []string{"host:b", "host:c"}) {
 		t.Fatalf("field index ids = %#v", ids)
 	}
+	values := []any{"us-east-1", "us-west-2", "us-east-1"}
+	if ids := g.MatchFieldIndexIDs("host", "region", values); !sameStrings(ids, []string{"host:a", "host:b", "host:c"}) {
+		t.Fatalf("multi-value field index ids = %#v", ids)
+	}
+	if count := g.FieldIndexCount("host", "region", values); count != 3 {
+		t.Fatalf("multi-value field index count = %d, want 3", count)
+	}
 }
 
 func TestMatchEntityIDsOrderCacheInvalidatesAfterMutation(t *testing.T) {

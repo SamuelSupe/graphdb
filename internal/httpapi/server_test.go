@@ -194,6 +194,93 @@ func TestHTTPCommitReturnsReadableVersionAndCanonicalEntities(t *testing.T) {
 	}
 }
 
+func TestHTTPDirectCommitPublishesReaderCache(t *testing.T) {
+	ctx := context.Background()
+	_, cache, handler := warmHTTPReaderCache(t, ctx)
+
+	commit := serveJSON(handler, http.MethodPost, "/v1/commits", "tenant-a", CommitRequest{Mutations: graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:new", Kind: "host"}},
+	}})
+	var result storage.CommitResult
+	if err := json.Unmarshal(commit.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode commit result: %v body=%s", err, commit.Body.String())
+	}
+	if commit.Code != http.StatusOK || result.Version != 2 {
+		t.Fatalf("commit = %d result=%#v body=%s", commit.Code, result, commit.Body.String())
+	}
+
+	assertHTTPReaderCacheQuery(t, cache, handler, "tenant-a", result.Version, "host:new")
+}
+
+func TestHTTPDirectIngestPublishesReaderCache(t *testing.T) {
+	ctx := context.Background()
+	_, cache, handler := warmHTTPReaderCache(t, ctx)
+
+	ingest := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", storage.IngestRequest{
+		Source:      "agent",
+		CollectorID: "collector-a",
+		BatchID:     "batch-2",
+		Items: []storage.IngestItem{{
+			ExternalID: "host-new",
+			Entity:     &graph.Entity{ID: "host:new", Kind: "host"},
+		}},
+	})
+	var result storage.IngestResult
+	if err := json.Unmarshal(ingest.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode ingest result: %v body=%s", err, ingest.Body.String())
+	}
+	if ingest.Code != http.StatusOK || result.Version != 2 || result.Applied != 1 || result.Failed != 0 {
+		t.Fatalf("ingest = %d result=%#v body=%s", ingest.Code, result, ingest.Body.String())
+	}
+
+	assertHTTPReaderCacheQuery(t, cache, handler, "tenant-a", result.Version, "host:new")
+}
+
+func warmHTTPReaderCache(t *testing.T, ctx context.Context) (*storage.TenantStore, *storage.ReaderCache, http.Handler) {
+	t.Helper()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:old", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	cache := storage.NewReaderCache(store, time.Hour)
+	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
+		t.Fatalf("warm reader cache: %v", err)
+	}
+	return store, cache, (&Server{Store: store, Cache: cache, Mode: "all"}).Handler()
+}
+
+func assertHTTPReaderCacheQuery(t *testing.T, cache *storage.ReaderCache, handler http.Handler, tenantID string, wantVersion int64, wantEntityID string) {
+	t.Helper()
+	status := cache.Status(tenantID)
+	if !status.Cached || status.Version != wantVersion {
+		t.Fatalf("reader cache status = %#v, want cached version %d", status, wantVersion)
+	}
+
+	queryResponse := serveJSON(handler, http.MethodPost, "/v1/query", tenantID, query.Request{
+		Op:         "match",
+		Kind:       "host",
+		MinVersion: wantVersion,
+	})
+	if queryResponse.Code != http.StatusOK {
+		t.Fatalf("strong query = %d body=%s", queryResponse.Code, queryResponse.Body.String())
+	}
+	var response query.Response
+	if err := json.Unmarshal(queryResponse.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode strong query: %v body=%s", err, queryResponse.Body.String())
+	}
+	if response.Version != wantVersion {
+		t.Fatalf("strong query version = %d, want %d", response.Version, wantVersion)
+	}
+	for _, result := range response.Results {
+		if result.Entity != nil && result.Entity.ID == wantEntityID {
+			return
+		}
+	}
+	t.Fatalf("strong query results = %#v, missing entity %q", response.Results, wantEntityID)
+}
+
 func TestHTTPCommitSkipsUnchangedContent(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	handler := (&Server{Store: store, Mode: "all"}).Handler()
@@ -624,6 +711,28 @@ func TestHTTPRejectsOversizedJSONBody(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "request body exceeds") {
 		t.Fatalf("status = %d body=%s, want 413 body limit", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPDecodeCanceledBodyUsesClientClosedStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/query",
+		strings.NewReader(`{"op":`),
+	).WithContext(ctx)
+	rr := httptest.NewRecorder()
+	var request query.Request
+	if decodeJSONBody(rr, req, &request, maxQueryRequestBytes) {
+		t.Fatal("canceled request body unexpectedly decoded")
+	}
+	var body ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode canceled response: %v body=%s", err, rr.Body.String())
+	}
+	if rr.Code != statusClientClosedRequest || body.Code != ErrorCodeRequestCanceled {
+		t.Fatalf("canceled decode status/code = %d/%s, want %d/%s", rr.Code, body.Code, statusClientClosedRequest, ErrorCodeRequestCanceled)
 	}
 }
 

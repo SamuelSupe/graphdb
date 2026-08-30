@@ -61,19 +61,29 @@ func (g *Graph) invalidateEntityOrder() {
 }
 
 func (g *Graph) MatchFieldIndexIDs(kind string, field string, values []any) []string {
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		key, ok := scalarKey(value)
+	if len(values) == 1 {
+		key, ok := scalarKey(values[0])
 		if !ok {
-			continue
+			return nil
 		}
-		for id := range g.fieldIndex[kind][field][key] {
-			seen[id] = struct{}{}
+		valueIDs := g.fieldIndex[kind][field][key]
+		ids := make([]string, 0, len(valueIDs))
+		for id := range valueIDs {
+			ids = append(ids, id)
 		}
+		sort.Strings(ids)
+		return ids
 	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
+	keys := distinctScalarKeys(values)
+	count := 0
+	for _, key := range keys {
+		count += len(g.fieldIndex[kind][field][key])
+	}
+	ids := make([]string, 0, count)
+	for _, key := range keys {
+		for id := range g.fieldIndex[kind][field][key] {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	return ids

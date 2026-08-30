@@ -1,6 +1,10 @@
 package query
 
-import "fmt"
+import (
+	"fmt"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+)
 
 const maxAggregateBuckets = 10000
 
@@ -97,6 +101,18 @@ func newAggregateAccumulator(specs []Aggregation) *aggregateAccumulator {
 }
 
 func (a *aggregateAccumulator) add(result Result) error {
+	return a.addValues(func(field string) any {
+		return resultValue(result, field)
+	})
+}
+
+func (a *aggregateAccumulator) addEntity(entity graph.Entity) error {
+	return a.addValues(func(field string) any {
+		return entityValue(entity, field)
+	})
+}
+
+func (a *aggregateAccumulator) addValues(valueFor func(string) any) error {
 	if a == nil {
 		return nil
 	}
@@ -109,13 +125,13 @@ func (a *aggregateAccumulator) add(result Result) error {
 			if state.counts == nil {
 				state.counts = map[string]int{}
 			}
-			key := fmt.Sprint(resultValue(result, spec.Field))
+			key := fmt.Sprint(valueFor(spec.Field))
 			if _, exists := state.counts[key]; !exists && len(state.counts) >= maxAggregateBuckets {
 				return fmt.Errorf("%w: aggregate supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
 			}
 			state.counts[key]++
 		case "sum", "avg", "min", "max":
-			value, ok := asFloat(resultValue(result, spec.Field))
+			value, ok := asFloat(valueFor(spec.Field))
 			if !ok {
 				continue
 			}

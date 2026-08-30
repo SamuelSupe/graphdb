@@ -344,36 +344,21 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 		}
 		return manifest, nil
 	}
-	current, currentMeta, err := s.getManifest(ctx, tenantID)
-	if err != nil {
-		return Manifest{}, err
-	}
-	if !cachedManifestMatches(loaded, current, currentMeta) {
-		return Manifest{}, fmt.Errorf("%w: manifest changed while compacting tenant %q", ErrConflict, tenantID)
-	}
 	if alreadyCompacted {
+		current, currentMeta, currentErr := s.getManifest(ctx, tenantID)
+		if currentErr != nil {
+			return Manifest{}, currentErr
+		}
+		if !cachedManifestMatches(loaded, current, currentMeta) {
+			return Manifest{}, fmt.Errorf(
+				"%w: manifest changed while compacting tenant %q",
+				ErrConflict, tenantID,
+			)
+		}
 		return current, nil
 	}
-	manifest = current
-	manifest.TenantID = tenantID
-	manifest.LayoutVersion = CurrentObjectLayoutVersion
-	manifest.SnapshotKey = snapshotKey
-	manifest.SnapshotCatalogKey = snapshotCatalog.Key
-	manifest.SnapshotVersion = manifest.Version
-	manifest.CommitSegments = nil
-	manifest.CommitKeys = nil
-	manifest.UpdatedAt = time.Now().UTC()
-	manifest.DataMD5 = dataMD5
-	meta, err := s.putManifestMeta(ctx, tenantID, manifest, currentMeta)
-	if err != nil {
-		s.deleteWriteCache(tenantID)
-		return Manifest{}, err
-	}
-	s.setWriteCache(tenantID, loadedGraph{
-		Graph: g, Manifest: manifest, Meta: meta,
-		DataMD5:    dataMD5,
-		CommitTail: emptyCommitTailCache(),
-		CacheBytes: writeCacheBytesWithoutCommitTail(loaded),
-	})
-	return manifest, nil
+	manifest, _, err = s.publishLocalCompaction(
+		ctx, tenantID, loaded, snapshotKey, snapshotCatalog.Key, dataMD5,
+	)
+	return manifest, err
 }

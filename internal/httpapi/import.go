@@ -37,7 +37,7 @@ func (s *Server) startImport(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxWriteRequestBytes)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeDecodeError(w, err)
+		writeDecodeError(w, r, err)
 		return
 	}
 	task, err := s.Store.StartImport(r.Context(), tenantID, data, storage.ImportOptions{

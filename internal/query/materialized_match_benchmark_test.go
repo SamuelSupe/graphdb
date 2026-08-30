@@ -82,6 +82,62 @@ func BenchmarkMaterializedFieldIndexRangePage(b *testing.B) {
 	}
 }
 
+func BenchmarkMaterializedFieldIndexAggregatePage(b *testing.B) {
+	const entityCount = 50000
+	g := graph.New()
+	entities := make([]graph.Entity, 0, entityCount)
+	for i := 0; i < entityCount; i++ {
+		entities = append(entities, graph.Entity{
+			ID:   fmt.Sprintf("node:%05d", i),
+			Kind: "node",
+			Fields: graph.Fields{
+				"environment": []string{"dev", "staging", "prod"}[i%3],
+				"score":       i,
+			},
+		})
+	}
+	if err := g.ApplyCommit(graph.Commit{
+		ID:      "seed",
+		Version: 1,
+		Mutations: graph.Mutations{
+			UpsertCITypes: []graph.CIType{{
+				Name: "node",
+				Fields: map[string]graph.FieldSpec{
+					"environment": {Type: "string", Indexed: true},
+					"score":       {Type: "number", Indexed: true},
+				},
+			}},
+			UpsertEntities: entities,
+		},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	request := Request{
+		Op:        "match",
+		Kind:      "node",
+		Limit:     10,
+		CostLimit: entityCount + 1,
+		Where: []Filter{
+			{Field: "environment", Op: "eq", Value: "prod"},
+			{Field: "score", Op: "gte", Value: entityCount / 2},
+		},
+		Sort:      []SortSpec{{Field: "score", Desc: true}},
+		Aggregate: []Aggregation{{Op: "count"}},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		response, err := Execute(g, request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(response.Results) != request.Limit || response.Aggregates["count"] == 0 {
+			b.Fatalf("response = %#v", response)
+		}
+	}
+}
+
 func BenchmarkMaterializedQueryOperations(b *testing.B) {
 	const entityCount = 2000
 	g := graph.New()

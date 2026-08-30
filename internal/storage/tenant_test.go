@@ -143,16 +143,20 @@ func TestCompactSnapshotBuildDoesNotBlockCommit(t *testing.T) {
 	if commitErr != nil {
 		t.Fatalf("commit was blocked by compact snapshot build: %v", commitErr)
 	}
-	if !errors.Is(compactErr, ErrConflict) {
-		t.Fatalf("stale compact err = %v, want ErrConflict", compactErr)
+	if compactErr != nil {
+		t.Fatalf("compact after concurrent commit: %v", compactErr)
 	}
 
+	store.deleteWriteCache("tenant-a")
 	g, manifest, err := store.Load(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("load after concurrent commit: %v", err)
 	}
 	if manifest.Version != 2 {
 		t.Fatalf("manifest version = %d, want 2", manifest.Version)
+	}
+	if manifest.SnapshotVersion != 1 || manifestCommitTailLength(manifest) != 1 {
+		t.Fatalf("manifest snapshot/tail = %d/%d, want 1/1", manifest.SnapshotVersion, manifestCommitTailLength(manifest))
 	}
 	if _, ok := g.GetEntity("person:bob"); !ok {
 		t.Fatal("concurrent commit entity missing")
@@ -849,6 +853,137 @@ func TestReaderCacheKeepsHotGraphAndRefreshesAfterTTL(t *testing.T) {
 	}
 	if _, ok := g.GetEntity("person:bob"); !ok {
 		t.Fatal("refreshed cache missing person:bob")
+	}
+}
+
+func TestReaderCachePublishFromWriteCacheSkipsObjectReads(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := newPathCountingStore(base)
+	store := NewTenantStore(objects, "test")
+	cache := NewReaderCache(store, time.Minute)
+	if _, err := store.Commit(ctx, "tenant-a", sampleMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("commit v1: %v", err)
+	}
+	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
+		t.Fatalf("warm cache: %v", err)
+	}
+	latest, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "person:bob", Kind: "person"}},
+	}, CommitOptions{})
+	if err != nil {
+		t.Fatalf("commit v2: %v", err)
+	}
+	objects.reset()
+
+	if !cache.PublishFromWriteCache("tenant-a") {
+		t.Fatal("publish from write cache returned false")
+	}
+	if version, ok := cache.CachedVersion("tenant-a"); !ok || version != latest.Version {
+		t.Fatalf("cached version = %d/%v, want %d/true", version, ok, latest.Version)
+	}
+	if err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", latest.Version, func(g *graph.Graph, manifest Manifest) error {
+		if g.Version != latest.Version || manifest.Version != latest.Version {
+			return fmt.Errorf("read-only view version = %d/%d, want %d", g.Version, manifest.Version, latest.Version)
+		}
+		if _, ok := g.GetEntity("person:bob"); !ok {
+			return fmt.Errorf("read-only view is missing person:bob")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read-only view: %v", err)
+	}
+	loaded, manifest, err := cache.LoadAtLeast(ctx, "tenant-a", latest.Version)
+	if err != nil {
+		t.Fatalf("load at least: %v", err)
+	}
+	if loaded.Version != latest.Version || manifest.Version != latest.Version {
+		t.Fatalf("load at least version = %d/%d, want %d", loaded.Version, manifest.Version, latest.Version)
+	}
+	if _, ok := loaded.GetEntity("person:bob"); !ok {
+		t.Fatal("load at least is missing person:bob")
+	}
+	if got := objects.countContains(store.manifestKey("tenant-a")); got != 0 {
+		t.Fatalf("manifest object reads after write-through = %d, want 0", got)
+	}
+	if got := objects.countContains(store.commitPrefix("tenant-a")); got != 0 {
+		t.Fatalf("commit object reads after write-through = %d, want 0", got)
+	}
+}
+
+func TestReaderCachePublishFromWriteCacheWinsOverOlderInFlightLoad(t *testing.T) {
+	ctx := context.Background()
+	oldObjects := NewMemoryStore()
+	oldWriter := NewTenantStore(oldObjects, "test")
+	if _, err := oldWriter.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:old", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("old commit: %v", err)
+	}
+
+	newObjects := NewMemoryStore()
+	writer := NewTenantStore(newObjects, "test")
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:old", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("writer commit v1: %v", err)
+	}
+	latest, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:new", Kind: "host"}},
+	}, CommitOptions{})
+	if err != nil {
+		t.Fatalf("writer commit v2: %v", err)
+	}
+	cached, ok := writer.getWriteCache("tenant-a")
+	if !ok {
+		t.Fatal("latest writer graph is not cached")
+	}
+
+	started := make(chan struct{})
+	slowObjects := &slowReadStore{
+		ObjectStore:     oldObjects,
+		delay:           100 * time.Millisecond,
+		notifySubstring: "/manifest.parquet",
+		started:         started,
+	}
+	reader := NewTenantStore(slowObjects, "test")
+	reader.setWriteCache("tenant-a", cached)
+	cache := NewReaderCache(reader, time.Minute)
+	type loadResult struct {
+		graph    *graph.Graph
+		manifest Manifest
+		err      error
+	}
+	done := make(chan loadResult, 1)
+	go func() {
+		g, manifest, err := cache.Load(ctx, "tenant-a")
+		done <- loadResult{graph: g, manifest: manifest, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("older load did not reach the delayed manifest read")
+	}
+
+	if !cache.PublishFromWriteCache("tenant-a") {
+		t.Fatal("publish from write cache returned false")
+	}
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("load after write-through: %v", result.err)
+		}
+		if result.manifest.Version != latest.Version || result.graph.Version != latest.Version {
+			t.Fatalf("loaded version = %d/%d, want %d", result.graph.Version, result.manifest.Version, latest.Version)
+		}
+		if _, ok := result.graph.GetEntity("host:new"); !ok {
+			t.Fatal("older in-flight load replaced the write-through graph")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("load did not finish after write-through")
+	}
+	if version, ok := cache.CachedVersion("tenant-a"); !ok || version != latest.Version {
+		t.Fatalf("cached version after older load = %d/%v, want %d/true", version, ok, latest.Version)
 	}
 }
 

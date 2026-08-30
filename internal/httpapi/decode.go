@@ -28,8 +28,7 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any, maxBytes 
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(value); err != nil {
-		spanErr = err
-		writeDecodeError(w, err)
+		spanErr = writeDecodeError(w, r, err)
 		return false
 	}
 	var extra any
@@ -39,8 +38,7 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any, maxBytes 
 			writeError(w, http.StatusBadRequest, "request body must contain a single JSON document")
 			return false
 		}
-		spanErr = err
-		writeDecodeError(w, err)
+		spanErr = writeDecodeError(w, r, err)
 		return false
 	}
 	return true
@@ -57,11 +55,16 @@ func traceRequestAttributes(r *http.Request, maxBytes int64) []attribute.KeyValu
 	return attrs
 }
 
-func writeDecodeError(w http.ResponseWriter, err error) {
+func writeDecodeError(w http.ResponseWriter, r *http.Request, err error) error {
+	if requestErr := r.Context().Err(); requestErr != nil {
+		writeRequestError(w, requestErr)
+		return requestErr
+	}
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
 		writeErrorDetail(w, http.StatusRequestEntityTooLarge, ErrorCodeRequestTooLarge, fmt.Sprintf("request body exceeds %d bytes", maxErr.Limit), false, map[string]any{"limit": maxErr.Limit})
-		return
+		return err
 	}
 	writeErrorDetail(w, http.StatusBadRequest, ErrorCodeInvalidJSON, err.Error(), false, nil)
+	return err
 }

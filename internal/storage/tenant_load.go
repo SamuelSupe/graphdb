@@ -262,42 +262,16 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 	commitsCtx, commitsSpan := startStorageSpan(ctx, "graphdb.storage.load_commit_tail",
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.commit_keys.count", len(manifest.CommitKeys)),
+		attribute.Int("graphdb.commit_keys.load_concurrency", min(commitTailLoadConcurrency, len(manifest.CommitKeys))),
 	)
-	appliedCommits := 0
-	looseCommits := make(
-		[]commitSegmentItem, 0, len(manifest.CommitKeys),
+	looseCommits, appliedCommits, err := s.applyCommitTail(
+		commitsCtx, tenantID, manifest.CommitKeys, g,
 	)
-	for _, commitKey := range manifest.CommitKeys {
-		if err := s.validateTenantObjectKey(tenantID, commitKey); err != nil {
-			commitsSpan.SetAttributes(attribute.Int("graphdb.commit_keys.applied", appliedCommits))
-			endStorageSpan(commitsSpan, err)
-			return loadedGraph{}, err
-		}
-		commit, err := s.getCommitObject(commitsCtx, commitKey)
-		if err != nil {
-			err = fmt.Errorf("load commit %q: %w", commitKey, err)
-			commitsSpan.SetAttributes(attribute.Int("graphdb.commit_keys.applied", appliedCommits))
-			endStorageSpan(commitsSpan, err)
-			return loadedGraph{}, err
-		}
-		if commit.TenantID != tenantID {
-			err := errTenantCommitMismatch(tenantID, commitKey, commit.TenantID)
-			commitsSpan.SetAttributes(attribute.Int("graphdb.commit_keys.applied", appliedCommits))
-			endStorageSpan(commitsSpan, err)
-			return loadedGraph{}, err
-		}
-		if err := applyManifestCommit(g, commitKey, commit); err != nil {
-			commitsSpan.SetAttributes(attribute.Int("graphdb.commit_keys.applied", appliedCommits))
-			endStorageSpan(commitsSpan, err)
-			return loadedGraph{}, err
-		}
-		looseCommits = append(looseCommits, commitSegmentItem{
-			Key: commitKey, Commit: commit,
-		})
-		appliedCommits++
-	}
 	commitsSpan.SetAttributes(attribute.Int("graphdb.commit_keys.applied", appliedCommits))
-	endStorageSpan(commitsSpan, nil)
+	endStorageSpan(commitsSpan, err)
+	if err != nil {
+		return loadedGraph{}, err
+	}
 
 	if g.Version != manifest.Version {
 		return loadedGraph{}, fmt.Errorf("manifest version mismatch: manifest version %d loaded graph version %d", manifest.Version, g.Version)

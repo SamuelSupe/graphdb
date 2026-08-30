@@ -69,15 +69,34 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 			Message:   "compact required",
 		})
 	}
-	if task, ok, _, err := s.findRunningIndexRebuildTask(ctx, tenantID); err != nil {
+	indexTask, indexTaskRunning, err := s.findRunningTask(
+		ctx, tenantID, TaskTypeIndexRebuild,
+	)
+	if err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
 			return newBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter)
 		}
 		return err
-	} else if ok {
+	}
+	var legacyIndexTask IndexTask
+	legacyIndexTaskRunning := false
+	if !indexTaskRunning {
+		legacyIndexTask, legacyIndexTaskRunning, _, err = s.findRunningIndexRebuildTask(ctx, tenantID)
+		if err != nil {
+			if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
+				return newBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter)
+			}
+			return err
+		}
+	}
+	if indexTaskRunning || legacyIndexTaskRunning {
+		taskID := indexTask.ID
+		if taskID == "" {
+			taskID = legacyIndexTask.ID
+		}
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_backpressure.index_rebuild_running", true),
-			attribute.String("graphdb.write_backpressure.index_rebuild_task_id", task.ID),
+			attribute.String("graphdb.write_backpressure.index_rebuild_task_id", taskID),
 		)
 		reasons = append(reasons, BackpressureReason{
 			Code:    "index_rebuild_running",
@@ -289,6 +308,21 @@ func (s *TenantStore) findRunningTask(ctx context.Context, tenantID string, task
 	}()
 	if taskType == TaskTypeGC {
 		return s.findRunningGCTask(ctx, tenantID)
+	}
+	if taskType == TaskTypeIndexRebuild {
+		s.taskMu.Lock()
+		active, ok := s.taskActive[taskActiveKey(tenantID, taskType)]
+		s.taskMu.Unlock()
+		if ok {
+			return active, true, nil
+		}
+		if s.coordinated() {
+			active, ok := s.findCoordinatorQueuedTask(ctx, Task{
+				TenantID: tenantID,
+				Type:     taskType,
+			})
+			return active, ok, nil
+		}
 	}
 	return Task{}, false, nil
 }

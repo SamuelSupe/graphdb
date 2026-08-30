@@ -8,6 +8,7 @@ import (
 type config struct {
 	writerURL              string
 	readerURL              string
+	adminURL               string
 	tenant                 string
 	duration               time.Duration
 	httpTimeout            time.Duration
@@ -40,6 +41,7 @@ func parseConfig() config {
 	cfg := config{}
 	flag.StringVar(&cfg.writerURL, "writer", "http://127.0.0.1:38080", "writer base URL")
 	flag.StringVar(&cfg.readerURL, "reader", "http://127.0.0.1:38081", "reader base URL")
+	flag.StringVar(&cfg.adminURL, "admin", "", "admin base URL; defaults to writer base URL")
 	flag.StringVar(&cfg.tenant, "tenant", "soaktest", "tenant id")
 	flag.DurationVar(&cfg.duration, "duration", 10*time.Minute, "soak duration, for example 24h or 72h")
 	flag.DurationVar(&cfg.httpTimeout, "http-timeout", 30*time.Second, "per-request HTTP timeout")
@@ -72,6 +74,9 @@ func parseConfig() config {
 }
 
 func normalizeConfig(cfg *config) {
+	if cfg.adminURL == "" {
+		cfg.adminURL = cfg.writerURL
+	}
 	if cfg.duration <= 0 {
 		cfg.duration = 10 * time.Minute
 	}

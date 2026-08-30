@@ -331,7 +331,7 @@ func (s *TenantStore) runTaskOperation(ctx context.Context, task Task) (map[stri
 		if err := s.updateTaskProgress(ctx, task, "index_rebuild", 1, total, map[string]any{"phase": "index_rebuild"}); err != nil {
 			return nil, "", err
 		}
-		catalog, err := s.RebuildIndexes(ctx, task.TenantID)
+		catalog, err := s.rebuildIndexesForTask(ctx, task.TenantID)
 		if err == nil {
 			_ = s.updateTaskProgress(ctx, task, "index_rebuild_done", total, total, map[string]any{"phase": "index_rebuild_done", "version": catalog.Version})
 		}
@@ -350,6 +350,23 @@ func (s *TenantStore) runTaskOperation(ctx context.Context, task Task) (map[stri
 	default:
 		return nil, "", fmt.Errorf("unsupported task type %q", task.Type)
 	}
+}
+
+func (s *TenantStore) rebuildIndexesForTask(ctx context.Context, tenantID string) (IndexCatalog, error) {
+	var catalog IndexCatalog
+	var err error
+	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		catalog, err = s.RebuildIndexes(ctx, tenantID)
+		if err == nil || !errors.Is(err, ErrConflict) {
+			return catalog, err
+		}
+		if attempt+1 < s.retryCount() {
+			if err := retryDelay(ctx, attempt); err != nil {
+				return IndexCatalog{}, err
+			}
+		}
+	}
+	return catalog, err
 }
 
 func (s *TenantStore) exportSnapshotTask(ctx context.Context, task Task) (map[string]any, string, error) {

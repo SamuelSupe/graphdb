@@ -139,6 +139,29 @@ func TestQueryErrorResponsePreservesContextCause(t *testing.T) {
 	}
 }
 
+func TestWriteReadErrorPreservesContextStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   ErrorCode
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
+		{name: "canceled", err: context.Canceled, wantStatus: statusClientClosedRequest, wantCode: ErrorCodeRequestCanceled},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			writeReadError(rr, tt.err)
+			var body ErrorResponse
+			decodeResponse(t, rr, &body)
+			if rr.Code != tt.wantStatus || body.Code != tt.wantCode {
+				t.Fatalf("status/code = %d/%s, want %d/%s", rr.Code, body.Code, tt.wantStatus, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestHTTPErrorCodeContractMapsProductMessages(t *testing.T) {
 	cases := []struct {
 		name      string

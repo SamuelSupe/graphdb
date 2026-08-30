@@ -250,7 +250,7 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 		attribute.Int("graphdb.commit.canonical_entities", len(result.CanonicalEntities)),
 		attribute.Int("graphdb.commit.canonical_edges", len(result.CanonicalEdges)),
 	))
-	s.invalidate(tenantID)
+	s.publishReadCacheAfterWrite(tenantID)
 	s.recordSuppressed(tenantID, result.Suppressed)
 	s.auditInfo("commit_applied", tenantID, map[string]any{
 		"version": result.Version, "suppressed": len(result.Suppressed), "canonical_entities": len(result.CanonicalEntities), "canonical_edges": len(result.CanonicalEdges),
@@ -432,6 +432,13 @@ func (s *Server) invalidate(tenantID string) {
 	if s.Cache != nil {
 		s.Cache.Invalidate(tenantID)
 	}
+}
+
+func (s *Server) publishReadCacheAfterWrite(tenantID string) {
+	if s.Cache != nil && s.Cache.PublishFromWriteCache(tenantID) {
+		return
+	}
+	s.invalidate(tenantID)
 }
 
 func (s *Server) obs() *observability.Observability {

@@ -604,6 +604,41 @@ func (c *ReaderCache) Invalidate(tenantID string) {
 	c.gens[tenantID]++
 }
 
+// PublishFromWriteCache makes an already-persisted copy-on-write graph visible
+// to readers without decoding the same manifest again. Public cache loads still
+// clone the graph, and shared callbacks retain their read-only contract.
+func (c *ReaderCache) PublishFromWriteCache(tenantID string) bool {
+	loaded, ok := c.Store.getWriteCache(tenantID)
+	if !ok || loaded.Graph == nil {
+		c.Invalidate(tenantID)
+		return false
+	}
+
+	now := time.Now()
+	c.mu.Lock()
+	if current, exists := c.entries[tenantID]; exists &&
+		current.manifest.Version > loaded.Manifest.Version {
+		c.mu.Unlock()
+		return true
+	}
+	if c.gens == nil {
+		c.gens = map[string]uint64{}
+	}
+	c.gens[tenantID]++
+	c.entries[tenantID] = cacheEntry{
+		graph:      loaded.Graph,
+		manifest:   loaded.Manifest,
+		meta:       loaded.Meta,
+		cachedAt:   now,
+		expiresAt:  now.Add(c.TTL),
+		lastAccess: now,
+	}
+	c.mu.Unlock()
+	c.recordCache(tenantID, "write_through")
+	c.recordVisible(tenantID, loaded.Manifest.Version)
+	return true
+}
+
 func (c *ReaderCache) CachedVersion(tenantID string) (int64, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

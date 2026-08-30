@@ -33,40 +33,48 @@ func (g *Graph) FieldIndexCount(kind string, field string, values []any) int {
 	if kind == "" || field == "" || len(values) == 0 {
 		return 0
 	}
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		key, ok := scalarKey(value)
+	if len(values) == 1 {
+		key, ok := scalarKey(values[0])
 		if !ok {
-			continue
+			return 0
 		}
-		for id := range g.fieldIndex[kind][field][key] {
-			seen[id] = struct{}{}
-		}
+		return len(g.fieldIndex[kind][field][key])
 	}
-	return len(seen)
+	count := 0
+	// Each entity contributes one scalar key per field, so distinct value sets
+	// cannot overlap. De-duplicating the small key list avoids an ID-sized map.
+	for _, key := range distinctScalarKeys(values) {
+		count += len(g.fieldIndex[kind][field][key])
+	}
+	return count
 }
 
 func (g *Graph) MatchFieldIndex(kind string, field string, values []any) []Entity {
-	ids := map[string]struct{}{}
-	for _, value := range values {
-		key, ok := scalarKey(value)
-		if !ok {
-			continue
-		}
-		for id := range g.fieldIndex[kind][field][key] {
-			ids[id] = struct{}{}
-		}
-	}
+	ids := g.MatchFieldIndexIDs(kind, field, values)
 	entities := make([]Entity, 0, len(ids))
-	for id := range ids {
+	for _, id := range ids {
 		if entity, ok := g.Entities[id]; ok {
 			entities = append(entities, copyEntity(entity))
 		}
 	}
-	sort.Slice(entities, func(i, j int) bool {
-		return entities[i].ID < entities[j].ID
-	})
 	return entities
+}
+
+func distinctScalarKeys(values []any) []string {
+	seen := make(map[string]struct{}, len(values))
+	keys := make([]string, 0, len(values))
+	for _, value := range values {
+		key, ok := scalarKey(value)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func (g *Graph) KindCount(kind string) int {

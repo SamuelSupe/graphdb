@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -111,14 +110,14 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 			dataMD5,
 		)
 	} else {
-		current, currentMeta, currentErr := s.getManifest(ctx, task.TenantID)
-		if currentErr != nil {
-			return nil, "", currentErr
-		}
-		if !cachedManifestMatches(loaded, current, currentMeta) {
-			return nil, "", fmt.Errorf("%w: manifest changed while compacting tenant %q", ErrConflict, task.TenantID)
-		}
-		meta, err = s.putManifestMeta(ctx, task.TenantID, manifest, currentMeta)
+		manifest, meta, err = s.publishLocalCompaction(
+			ctx,
+			task.TenantID,
+			loaded,
+			snapshotKey,
+			catalog.Key,
+			dataMD5,
+		)
 	}
 	if err != nil {
 		s.deleteWriteCache(task.TenantID)
@@ -128,7 +127,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		}, nil)
 		return nil, "", err
 	}
-	if manifest.Version == snapshot.Version {
+	if s.coordinated() && manifest.Version == snapshot.Version {
 		s.setWriteCache(task.TenantID, loadedGraph{
 			Graph: g, Manifest: manifest, Meta: meta,
 			DataMD5:    dataMD5,

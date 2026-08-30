@@ -6,7 +6,7 @@ import (
 )
 
 func TestSnapshotExportThrottle(t *testing.T) {
-	runner := newSoakRunner(config{snapshotExportInterval: 5 * time.Minute}, nil, nil, nil, nil, 0)
+	runner := newSoakRunner(config{snapshotExportInterval: 5 * time.Minute}, nil, nil, nil, nil, nil, 0)
 	now := time.Unix(100, 0)
 	if !runner.tryStartSnapshotExport(now) {
 		t.Fatal("first export was throttled")

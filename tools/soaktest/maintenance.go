@@ -11,13 +11,13 @@ func (r *soakRunner) startMaintenance(ctx context.Context, wg *sync.WaitGroup) {
 	if r.cfg.compactInterval > 0 {
 		wg.Add(1)
 		go r.periodic(ctx, wg, "compact", r.cfg.compactInterval, func(ctx context.Context, metrics *registry) error {
-			return r.writer.compactWithTimeout(ctx, metrics, r.cfg.maintenanceTimeout)
+			return r.admin.compactWithTimeout(ctx, metrics, r.cfg.maintenanceTimeout)
 		})
 	}
 	if r.cfg.gcInterval > 0 {
 		wg.Add(1)
 		go r.periodic(ctx, wg, "gc", r.cfg.gcInterval, func(ctx context.Context, metrics *registry) error {
-			return r.writer.gcWithTimeout(ctx, metrics, r.cfg.maintenanceTimeout)
+			return r.admin.gcWithTimeout(ctx, metrics, r.cfg.maintenanceTimeout)
 		})
 	}
 	if r.cfg.indexRebuildInterval > 0 {
@@ -61,7 +61,7 @@ func (r *soakRunner) rebuildLoop(ctx context.Context, wg *sync.WaitGroup) {
 			return
 		case <-ticker.C:
 			r.maintenanceMu.Lock()
-			err := r.writer.rebuildIndexesWithTimeout(ctx, r.metrics, r.cfg.maintenanceTimeout)
+			err := r.admin.rebuildIndexesWithTimeout(ctx, r.metrics, r.cfg.maintenanceTimeout)
 			r.maintenanceMu.Unlock()
 			if err != nil {
 				r.events.emit("index_rebuild_error", map[string]any{"error": err.Error()})
