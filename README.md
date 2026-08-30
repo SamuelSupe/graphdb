@@ -5,14 +5,14 @@
 **A general-purpose current-state property graph for entities, relationships, and topology**
 
 [![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Release v1.2.2](https://img.shields.io/badge/release-v1.2.2-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.2)
+[![Release v1.2.3](https://img.shields.io/badge/release-v1.2.3-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)
 [![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-[中文 README](README.zh-CN.md) · [v1.2.2 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.2) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
+[中文 README](README.zh-CN.md) · [v1.2.3 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
-GGraphDB v1.2.2 is a Go-based, object-storage-backed property graph for
+GGraphDB v1.2.3 is a Go-based, object-storage-backed property graph for
 current-state entity and relationship data. Knowledge bases, asset graphs,
 service dependencies, data lineage, topology, impact analysis, and CMDB are
 application scenarios—not separate storage engines. The graph model remains
@@ -25,28 +25,26 @@ durability, and metadata segments. A durable ingest response is accepted only
 after WAL fsync. Shared object storage is the production persistence boundary;
 Parquet segments, manifests, snapshots, and indexes remain recoverable from it.
 
-> **Release status.** `v1.2.2` is the current release identifier. A source
+> **Release status.** `v1.2.3` is the current release identifier. A source
 > checkout or tag alone does not prove that the release gates passed. The
-> authoritative proof is the v1.2.2 GitHub Release assets, successful release
-> workflow, and packaged commit-bound CAS and rollback evidence.
+> authoritative proof is the [v1.2.3 GitHub Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3),
+> its [successful workflow](https://github.com/SamuelSupe/graphdb/actions/runs/33298859067),
+> and packaged commit-bound evidence for `4a87717c`.
 
 > **v1.2.0 base operating contract.** The performance-first local WAL path is the
 > default: durable `202 Accepted` only follows WAL fsync, bounded pressure
 > returns `429` with `Retry-After`, and release assets are published only with
 > commit-bound verification evidence.
 
-## v1.2.2 reliability and query update
+## v1.2.3 read/write and query performance update
 
 | Area | Improvement |
 | --- | --- |
-| Commit tail and graph loading | Compaction and reload reuse decoded graph state; persisted commit segments load concurrently and remain version-ordered. |
-| Reader isolation | Cold full-graph loads are shared and bounded globally, with independent idle retention, load timeout, and queue timeout controls. Load admission is released before completion is published, so completed work cannot transiently block the next tenant. |
-| Query latency | Validation runs before storage I/O; `timeout_ms` covers admission, index access, graph loading, and execution; materialized kind pagination stops after `limit + 1` matches; unavailable lazy indexes use bounded retry backoff. |
-| Failure handling | Query shapes are bounded before storage I/O, while task shutdown, index rebuild admission, restore cleanup, coordinator rollback, and WAL close paths preserve explicit terminal errors. |
-| Release evidence | The published `v1.2.2` workflow passed unit/vet/race, Python SDK, v1 compatibility, RustFS/CAS/load/restore integration, a two-writer 20 QPS 30-minute CAS soak, and rollback. |
-
-See the [v1.2.2 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.2)
-for the binaries, checksum, and commit-bound evidence.
+| Commit tail and graph loading | Commit-tail replay is bounded and concurrent while preserving version order; when the head advances, compact retains the newer tail instead of conflicting with it. |
+| Reader memory and freshness | Arrow-backed entity-page strings are released promptly, and successful writes publish a write-through reader-cache update. |
+| Query allocations and bounds | Indexed range/aggregate paths use bounded top-K result collection; fuzzy matching avoids per-entity filters and string allocations. |
+| Fixed-environment evidence | Relative evidence, not a production SLO: storage tail-31 `-38.37%`, compact `-24.99%`, in-use heap `-43.75%`, and a 120s 8W/8R soak `PASS`; native query c64 range QPS `70.97→777.09` with p95 `1028.15→49.28 ms`, and fuzzy QPS `1251.31→2568.26` with p95 `48.955→12.305 ms`. |
+| Service-level boundary | HTTP, stream, saved-query, freshness, and mixed performance matrices remain `UNKNOWN`; the in-process and storage figures above do not claim those paths passed. |
 
 ## v1.2.0 base at a glance
 
@@ -253,17 +251,19 @@ service mesh.
 
 ## Release
 
-The current release is [GGraphDB v1.2.2](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.2), with [latest releases](https://github.com/SamuelSupe/graphdb/releases) kept as the public release index.
-Its published workflow passed verification, RustFS/CAS/load/restore integration,
-a two-writer 20 QPS 30-minute CAS soak, and rollback, then packaged evidence
-bound to commit `412a4999`.
+The current release is [GGraphDB v1.2.3](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3), with [latest releases](https://github.com/SamuelSupe/graphdb/releases) kept as the public release index.
+All CI release gates passed, including unit/vet/race, Python SDK, v1
+compatibility, and RustFS/CAS/load/restore integration. The 30-minute
+PostgreSQL CAS soak and rollback also passed; the packaged evidence is bound
+to commit `4a87717c`. See the [workflow run](https://github.com/SamuelSupe/graphdb/actions/runs/33298859067)
+and [v1.2.3 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3).
 
 The workflow on `main` retains the fixed-host local WAL performance gate for
 future tags. Before packaging it verifies
 `artifacts/wal-performance/gate.json` with five baseline and five candidate
 runs, threshold results, and commit binding. A failed performance gate means
 no archive is produced. This is the v1.2.0 acceptance contract described below;
-it must not be presented as additional v1.2.2 evidence.
+it must not be presented as additional v1.2.3 evidence.
 
 The performance contract is intentionally explicit rather than a benchmark
 claim: an 8 CPU/8 GiB OrbStack host runs eight tenants and 16 collectors for
