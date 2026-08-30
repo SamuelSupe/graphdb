@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.2 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.2.3 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -33,6 +33,25 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Optional multi-writer coordination | PostgreSQL head CAS supports 2–8 optimistic writers per tenant while local coordination remains the default. |
 | Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
+
+### 1.2.3 read/write and query performance update
+
+- Commit-tail replay is concurrent and bounded, while commits are still applied
+  by version; compact preserves a newly advanced tail instead of conflicting
+  with maintenance.
+- Entity-page decode releases Arrow payloads promptly. Heavy graph loads and
+  compact operations honor backpressure and timeout bounds.
+- Materialized range/aggregate paths copy only final results, use value top-K,
+  and deduplicate multi-value index keys. Fuzzy matching avoids per-entity
+  filters and string allocations.
+- Fixed-environment relative evidence, not a production SLO: tail-31
+  `157.146→96.849 ms`, compact `149.525→112.156 ms`, and in-use heap
+  `2218.06→1247.61 MB`; native in-process c64 range QPS
+  `70.97→777.09` with p95 `1028.15→49.28 ms` and
+  `49.763→0.890 MB/query`, and fuzzy QPS `1251.31→2568.26` with p95
+  `48.955→12.305 ms` and `1.235 MB→35.187 KB/query`.
+- HTTP, stream, saved-query, freshness, and mixed service-level matrices remain
+  `UNKNOWN`; these figures do not claim those paths passed.
 
 ### 1.2.2 reliability and query update
 
@@ -173,8 +192,8 @@ authorization, TLS, and rate limiting at the gateway or service mesh.
 
 ## Release
 
-The latest published release is GGraphDB 1.2.2:
-[**v1.2.2**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.2).
+The latest published release is GGraphDB 1.2.3:
+[**v1.2.3**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3).
 The release workflow publishes the tag only after its release checklist,
 30-minute PostgreSQL CAS gate, and formal rollback drill pass.
 
@@ -187,7 +206,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.2.2` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.2.3` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 

@@ -3,6 +3,36 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.2.3] - 2026-08-30
+
+### Improved
+
+- Commit-tail replay is concurrent and bounded while preserving version-ordered
+  application. Entity-page decode releases Arrow payloads promptly, and heavy
+  graph load/compact work is bounded by backpressure and timeout controls.
+- Materialized range/aggregate paths copy only final results, support value
+  top-K, and deduplicate multi-value index keys. Fuzzy matching avoids
+  per-entity filters and string allocations.
+- Fixed-environment relative evidence, not a production SLO: tail-31
+  `157.146→96.849 ms`, compact `149.525→112.156 ms`, and in-use heap
+  `2218.06→1247.61 MB`; native in-process c64 range QPS
+  `70.97→777.09`, p95 `1028.15→49.28 ms`, and
+  `49.763→0.890 MB/query`; fuzzy QPS `1251.31→2568.26`, p95
+  `48.955→12.305 ms`, and `1.235 MB→35.187 KB/query`.
+
+### Fixed
+
+- Compact keeps a newly advanced commit tail when the head moves, avoiding a
+  maintenance conflict while retaining the newer writes.
+
+### Compatibility
+
+- API and storage layout remain compatible with 1.2.2; deployment modes and
+  existing clients remain supported, while Go and Python SDK user-agent versions
+  advance to 1.2.3.
+- No HTTP, stream, saved-query, freshness, or mixed service-level performance
+  pass is claimed; that matrix remains `UNKNOWN`.
+
 ## [1.2.2] - 2026-08-29
 
 ### Fixed

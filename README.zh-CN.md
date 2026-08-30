@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.2 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.2.3 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -31,6 +31,22 @@ SPARQL、本体推理或历史图引擎。
 | 可选多写协调 | PostgreSQL head CAS 支持每租户 2–8 个乐观并发 writer，本地协调仍为默认。 |
 | 有界读路径 | 冷图加载、查询准入、执行预算和缓存驻留分别设有独立边界。 |
 | 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
+
+### 1.2.3 读写与查询性能更新
+
+- commit tail replay 支持有界并发，并继续按版本顺序应用；head 前进时 compact
+  保留新 tail，避免与维护过程冲突。
+- entity page 解码后及时释放 Arrow payload；重型 graph load 和 compact 受背压与
+  timeout 边界约束。
+- 物化 range/aggregate 路径只复制最终结果，支持 value top-K，多值索引按键去重；
+  fuzzy 避免逐实体过滤器和字符串分配。
+- 固定环境相对证据（不是生产 SLO）：tail-31 `157.146→96.849 ms`、compact
+  `149.525→112.156 ms`、in-use heap `2218.06→1247.61 MB`；native in-process
+  c64 range QPS `70.97→777.09`、p95 `1028.15→49.28 ms`、
+  `49.763→0.890 MB/query`；fuzzy QPS `1251.31→2568.26`、p95
+  `48.955→12.305 ms`、`1.235 MB→35.187 KB/query`。
+- HTTP、stream、saved query、freshness 和混合 service-level 矩阵仍为
+  `UNKNOWN`；以上数字不代表这些路径已通过。
 
 ### 1.2.2 可靠性与查询更新
 
@@ -163,8 +179,8 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.2.2：
-[**v1.2.2**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.2)。
+最新已发布版本为 GGraphDB 1.2.3：
+[**v1.2.3**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)。
 发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
 正式回滚演练全部通过后才会发布。
 
@@ -176,7 +192,7 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.2` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.3` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 
