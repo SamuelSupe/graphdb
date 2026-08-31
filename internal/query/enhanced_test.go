@@ -257,6 +257,36 @@ func TestBoundedIndexedMatchReturnsOwnedEntities(t *testing.T) {
 	}
 }
 
+func TestBoundedIndexedAggregateKeepsIdentityOrder(t *testing.T) {
+	g := seedCMDBGraph(t)
+	response, err := Execute(g, Request{
+		Op:   "match",
+		Kind: "host",
+		Where: []Filter{{
+			Field: "region", Op: "in",
+			Value: []any{"us-east-1", "eu-west-1"},
+		}},
+		Aggregate: []Aggregation{{Op: "count"}},
+		Limit:     1,
+		Profile:   true,
+	})
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if response.Plan == nil || response.Plan.Strategy != "field-index" {
+		t.Fatalf("plan = %#v, want field-index", response.Plan)
+	}
+	if len(response.Results) != 1 || response.Results[0].Entity.ID != "host:app-01" {
+		t.Fatalf("results = %#v, want first identity-ordered host", response.Results)
+	}
+	if response.Aggregates["count"] != 3 {
+		t.Fatalf("count = %#v, want 3", response.Aggregates["count"])
+	}
+	if response.NextCursor == "" {
+		t.Fatal("expected next cursor")
+	}
+}
+
 func TestProjectionTrimsFieldSources(t *testing.T) {
 	g := seedCMDBGraph(t)
 	response, err := Execute(g, Request{

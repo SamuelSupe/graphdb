@@ -47,6 +47,7 @@ func (g *Graph) replaceState(next *Graph) {
 	g.contentFingerprintReady = fingerprintReady
 	g.logicalHashCache = logicalHashCache
 	g.invalidateEntityOrder()
+	g.invalidateFieldIndexOrder()
 }
 
 func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) (*Graph, ApplyReport, error) {
@@ -174,6 +175,7 @@ func (g *Graph) applyCommitToCopy(clone *Graph, commit Commit, options ApplyOpti
 
 func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, error) {
 	g.invalidateEntityOrder()
+	g.invalidateFieldIndexOrder()
 	report := ApplyReport{}
 	tracker := newMutationFingerprintTracker(g)
 	affected := newUniqueStringCollector(&report.AffectedEntityIDs)

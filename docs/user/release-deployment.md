@@ -3,22 +3,22 @@
 [中文](release-deployment.zh-CN.md)
 
 This guide is for service owners who need to download, deploy, upgrade, and
-roll back GGraphDB 1.2.3. Examples use the released `v1.2.3` tag, available at
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3>.
+roll back GGraphDB 1.2.4. Examples use the released `v1.2.4` tag, available at
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4>.
 
 ## 1. Download and verify
 
 The release page provides:
 
-- `graphdb-v1.2.3.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
-- `graphdb-v1.2.3.tar.gz.sha256`: SHA-256 checksum.
+- `graphdb-v1.2.4.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
+- `graphdb-v1.2.4.tar.gz.sha256`: SHA-256 checksum.
 
 Verify and unpack:
 
 ```sh
-sha256sum -c graphdb-v1.2.3.tar.gz.sha256
-tar -xzf graphdb-v1.2.3.tar.gz
-cd graphdb-v1.2.3
+sha256sum -c graphdb-v1.2.4.tar.gz.sha256
+tar -xzf graphdb-v1.2.4.tar.gz
+cd graphdb-v1.2.4
 ```
 
 The archive contains:

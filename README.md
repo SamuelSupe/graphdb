@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.3 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.2.4 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -33,6 +33,22 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Optional multi-writer coordination | PostgreSQL head CAS supports 2–8 optimistic writers per tenant while local coordination remains the default. |
 | Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
+
+### 1.2.4 query performance update
+
+- Large-bucket field-index lookups use a snapshot-level ordered cache, and a
+  stable streaming merge keeps result order deterministic without materializing
+  all matches.
+- Aggregate and Top-K paths no longer allocate a complete candidate-ID list
+  before selecting and merging results.
+- OrbStack Go 1.25.14 linux/arm64 process-internal relative evidence
+  (baseline→1.2.4): the original benchmark median is
+  `7.133→6.058 ms/op` with `304,849→35,800 B/op`; on 50,000-entity range
+  aggregate c64 wave, `43.765→31.192 ms`, throughput
+  `1,462→2,052 queries/s`, p95 `35.25→14.79 ms`, p99 `53.89→32.18 ms`, and
+  `34,614,535→13,642,518 B/wave`.
+- These are process-internal relative measurements, not an HTTP,
+  object-storage, or mixed read/write production SLO.
 
 ### 1.2.3 read/write and query performance update
 
@@ -192,8 +208,8 @@ authorization, TLS, and rate limiting at the gateway or service mesh.
 
 ## Release
 
-The latest published release is GGraphDB 1.2.3:
-[**v1.2.3**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3).
+The latest published release is GGraphDB 1.2.4:
+[**v1.2.4**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4).
 The release workflow publishes the tag only after its release checklist,
 30-minute PostgreSQL CAS gate, and formal rollback drill pass.
 
@@ -206,7 +222,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.2.3` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.2.4` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 

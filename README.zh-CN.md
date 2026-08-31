@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.3 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.2.4 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -31,6 +31,18 @@ SPARQL、本体推理或历史图引擎。
 | 可选多写协调 | PostgreSQL head CAS 支持每租户 2–8 个乐观并发 writer，本地协调仍为默认。 |
 | 有界读路径 | 冷图加载、查询准入、执行预算和缓存驻留分别设有独立边界。 |
 | 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
+
+### 1.2.4 查询性能更新
+
+- 大 bucket 字段索引查询使用快照级有序缓存；稳定的流式归并保持结果顺序确定，
+  不需要先物化全部匹配项。
+- 聚合和 Top-K 路径不再为候选结果分配完整的候选 ID 列表，再进行选择和归并。
+- OrbStack Go 1.25.14 linux/arm64 进程内相对证据（基线→1.2.4）：原 benchmark
+  中位数 `7.133→6.058 ms/op`、分配 `304,849→35,800 B/op`；5 万实体
+  range aggregate c64 wave 为 `43.765→31.192 ms`，吞吐
+  `1,462→2,052 queries/s`，p95 `35.25→14.79 ms`，p99 `53.89→32.18 ms`，
+  `34,614,535→13,642,518 B/wave`。
+- 以上是进程内相对测量，不是 HTTP、对象存储或混合读写生产 SLO。
 
 ### 1.2.3 读写与查询性能更新
 
@@ -179,8 +191,8 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.2.3：
-[**v1.2.3**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)。
+最新已发布版本为 GGraphDB 1.2.4：
+[**v1.2.4**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4)。
 发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
 正式回滚演练全部通过后才会发布。
 
@@ -192,7 +204,7 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.3` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.4` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 

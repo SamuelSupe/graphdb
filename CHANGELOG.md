@@ -3,6 +3,28 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.2.4] - 2026-08-31
+
+### Improved
+
+- Large-bucket field-index lookups use a snapshot-level ordered cache and a
+  stable streaming merge; aggregate and Top-K paths no longer allocate a full
+  candidate-ID list before selecting and merging results.
+- OrbStack Go 1.25.14 linux/arm64 process-internal relative evidence improves
+  the original benchmark median from `7.133` to `6.058 ms/op` and allocation
+  from `304,849` to `35,800 B/op`. On a 50,000-entity range aggregate c64 wave,
+  latency is `43.765→31.192 ms`, throughput `1,462→2,052 queries/s`, p95
+  `35.25→14.79 ms`, p99 `53.89→32.18 ms`, and allocation
+  `34,614,535→13,642,518 B/wave`.
+
+### Compatibility
+
+- API and storage layout remain compatible with 1.2.3; existing deployment
+  modes and clients remain supported, while Go and Python SDK user-agent
+  versions advance to 1.2.4. The performance figures are process-internal
+  relative measurements, not HTTP, object-storage, or mixed read/write
+  production SLOs.
+
 ## [1.2.3] - 2026-08-30
 
 ### Improved

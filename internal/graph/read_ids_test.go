@@ -1,6 +1,9 @@
 package graph
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestMatchEntityIDsAndFieldIndexIDsAreSorted(t *testing.T) {
 	g := New()
@@ -32,29 +35,56 @@ func TestMatchEntityIDsAndFieldIndexIDsAreSorted(t *testing.T) {
 	}
 }
 
-func TestMatchEntityIDsOrderCacheInvalidatesAfterMutation(t *testing.T) {
+func TestReadOrderCachesInvalidateAfterMutation(t *testing.T) {
 	g := New()
+	eastIDs := make([]string, 0, minCachedFieldIndexOrder)
+	seedEntities := make([]Entity, 0, minCachedFieldIndexOrder)
+	for i := 0; i < minCachedFieldIndexOrder; i++ {
+		id := fmt.Sprintf("host:east-%02d", i)
+		eastIDs = append(eastIDs, id)
+		seedEntities = append(seedEntities, Entity{
+			ID: id, Kind: "host", Fields: Fields{"region": "us-east-1"},
+		})
+	}
 	if err := g.ApplyCommit(Commit{
 		ID: "seed", Version: 1,
-		Mutations: Mutations{UpsertEntities: []Entity{
-			{ID: "host:b", Kind: "host"},
-		}},
+		Mutations: Mutations{UpsertEntities: seedEntities},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if ids := g.MatchEntityIDs("host"); !sameStrings(ids, []string{"host:b"}) {
+	if ids := g.MatchEntityIDs("host"); !sameStrings(ids, eastIDs) {
 		t.Fatalf("initial ids = %#v", ids)
 	}
+	visited := make([]string, 0, len(eastIDs))
+	count, err := g.VisitFieldIndexIDs("host", "region", []any{"us-east-1"}, func(id string) error {
+		visited = append(visited, id)
+		return nil
+	})
+	if err != nil || count != len(eastIDs) || !sameStrings(visited, eastIDs) {
+		t.Fatalf("initial field index ids = %#v, err = %v", visited, err)
+	}
+	updatedEastIDs := append([]string(nil), eastIDs[1:]...)
+	updatedEastIDs = append(updatedEastIDs, "host:east-new")
+	updatedIDs := append([]string{"host:east-00"}, updatedEastIDs...)
 	if err := g.ApplyCommit(Commit{
 		ID: "update", Version: 2,
 		Mutations: Mutations{UpsertEntities: []Entity{
-			{ID: "host:a", Kind: "host"},
+			{ID: "host:east-00", Kind: "host", Fields: Fields{"region": "us-west-2"}},
+			{ID: "host:east-new", Kind: "host", Fields: Fields{"region": "us-east-1"}},
 		}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if ids := g.MatchEntityIDs("host"); !sameStrings(ids, []string{"host:a", "host:b"}) {
+	if ids := g.MatchEntityIDs("host"); !sameStrings(ids, updatedIDs) {
 		t.Fatalf("updated ids = %#v", ids)
+	}
+	visited = visited[:0]
+	count, err = g.VisitFieldIndexIDs("host", "region", []any{"us-east-1", "us-west-2"}, func(id string) error {
+		visited = append(visited, id)
+		return nil
+	})
+	if err != nil || count != len(updatedIDs) || !sameStrings(visited, updatedIDs) {
+		t.Fatalf("updated field index ids = %#v, err = %v", visited, err)
 	}
 }
 

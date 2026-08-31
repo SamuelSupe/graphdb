@@ -13,17 +13,19 @@ type Graph struct {
 	RelationTypes map[string]RelationType
 	Edges         map[string]Edge
 
-	out              map[string]map[string]struct{}
-	in               map[string]map[string]struct{}
-	edgeAliasIndex   map[string]map[string]struct{}
-	edgeTypeIndex    map[string]map[string]struct{}
-	entityAliasIndex map[string]map[string]struct{}
-	kindCounts       map[string]int
-	fieldIndex       map[string]map[string]map[string]map[string]struct{}
-	identityIndex    map[string]map[string]string
-	cow              *copyOnWriteState
-	entityOrder      map[string][]string
-	entityOrderMu    sync.Mutex
+	out               map[string]map[string]struct{}
+	in                map[string]map[string]struct{}
+	edgeAliasIndex    map[string]map[string]struct{}
+	edgeTypeIndex     map[string]map[string]struct{}
+	entityAliasIndex  map[string]map[string]struct{}
+	kindCounts        map[string]int
+	fieldIndex        map[string]map[string]map[string]map[string]struct{}
+	identityIndex     map[string]map[string]string
+	cow               *copyOnWriteState
+	entityOrder       map[string][]string
+	entityOrderMu     sync.Mutex
+	fieldIndexOrder   map[fieldIndexOrderKey][]string
+	fieldIndexOrderMu sync.Mutex
 
 	contentFingerprint      [16]byte
 	contentFingerprintReady bool
