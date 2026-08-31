@@ -263,7 +263,8 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 	options := query.ExecuteOptions{}
 	version := int64(0)
 	ok := false
-	if !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
+	useCachedGraph := s.cachedMaterializedQueryAvailable(tenantID, target)
+	if !useCachedGraph && !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
 		options, version, ok = s.lazyQueryOptions(
 			r.Context(), tenantID, target.ManifestVersion,
 			query.RequiresReverseIndex(request),
@@ -447,13 +448,16 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 	options := query.ExecuteOptions{}
 	version := int64(0)
 	ok := false
-	if !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
-		options, version, ok = s.lazyQueryOptions(
-			r.Context(), tenantID, target.ManifestVersion,
-			query.RequiresReverseIndex(request),
-		)
-	} else if span != nil {
-		span.SetAttributes(attribute.Bool("graphdb.query.lazy_suppressed", true))
+	useCachedGraph := s.cachedMaterializedQueryAvailable(tenantID, target)
+	if !useCachedGraph {
+		if !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
+			options, version, ok = s.lazyQueryOptions(
+				r.Context(), tenantID, target.ManifestVersion,
+				query.RequiresReverseIndex(request),
+			)
+		} else if span != nil {
+			span.SetAttributes(attribute.Bool("graphdb.query.lazy_suppressed", true))
+		}
 	}
 	if ok && s.lazyQuerySuppressed(tenantID, version) {
 		ok = false
@@ -477,7 +481,10 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		}
 	}
 	if span != nil {
-		span.SetAttributes(attribute.String("graphdb.query.execution_path", "materialized_graph"))
+		span.SetAttributes(
+			attribute.String("graphdb.query.execution_path", "materialized_graph"),
+			attribute.Bool("graphdb.query.materialized_cache_available", useCachedGraph),
+		)
 	}
 	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, _ storage.Manifest) error {
 		var executeErr error
@@ -485,6 +492,14 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		return executeErr
 	})
 	return response, err
+}
+
+func (s *Server) cachedMaterializedQueryAvailable(tenantID string, target readTarget) bool {
+	if s.Mode != "all" || s.Cache == nil {
+		return false
+	}
+	version, ok := s.Cache.CachedVersion(tenantID)
+	return ok && target.requiresVersion(version)
 }
 
 func queryRequestContext(parent context.Context, request query.Request) (context.Context, context.CancelFunc) {

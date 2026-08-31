@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.2.4
+  version: 1.2.5
   description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.2 preserves the 1.0 core data layout.
 servers:
   - url: http://localhost:8080

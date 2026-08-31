@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.4 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.2.5 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -33,6 +33,32 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Optional multi-writer coordination | PostgreSQL head CAS supports 2–8 optimistic writers per tenant while local coordination remains the default. |
 | Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
+
+### 1.2.5 mixed read/write query performance
+
+- Reproducible single-node `GRAPHDB_MODE=all` evidence on OrbStack
+  Linux/arm64 (8 CPUs, 8 GiB): 4 writers, 16 readers, 200 items per request,
+  and three duration-bound 45-second closed-loop rounds per comparison cohort.
+  It compares the identical prebuilt baseline with the warm materialized-reader
+  candidate: QPS
+  `62.586→106.278` (`+69.81%`), QPS/core `+62.72%`, and mean across
+  operation-level p95 `1308.0→386.3 ms` (`-70.46%`).
+- When `GRAPHDB_MODE=all` has a warm `ReaderCache` whose cached version
+  satisfies the requested freshness target, regular and stream queries use the
+  materialized graph. Reader mode and cold-cache requests retain the lazy
+  persisted-index path.
+- This is bounded fixed-environment evidence, not a production SLO or capacity
+  guarantee. Ingest p50 is effectively flat (`14097→13988 ms`, `-0.77%`), while
+  ingest p95 is `22291.7→23554.3 ms` (`+5.66%`, candidate CV `8.48%`), so the
+  write tail is `UNKNOWN`/not improved; completed counts were `10/9/9` versus
+  `10/9/8`. RSS decreased `9.76%` but is `UNKNOWN` because candidate CV was
+  `6.56%`.
+- Index health was transiently stale in some end samples, and integrity
+  snapshots reported `snapshot_catalog_missing` with maintenance disabled;
+  neither is a full integrity `PASS`. Snapshot export regressed: mean p95
+  `3744.3→5943.0 ms` and completed count `46.3→26.3`. The aggregate p95 has
+  sample variability, some hot saved-query and scan paths have p50 regressions,
+  and production capacity/full matrix coverage remain `UNKNOWN`.
 
 ### 1.2.4 query performance update
 
@@ -208,8 +234,8 @@ authorization, TLS, and rate limiting at the gateway or service mesh.
 
 ## Release
 
-The latest published release is GGraphDB 1.2.4:
-[**v1.2.4**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4).
+The latest published release is GGraphDB 1.2.5:
+[**v1.2.5**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.5).
 The release workflow publishes the tag only after its release checklist,
 30-minute PostgreSQL CAS gate, and formal rollback drill pass.
 
@@ -222,7 +248,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.2.4` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.2.5` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 

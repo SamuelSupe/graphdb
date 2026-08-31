@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
@@ -245,6 +246,117 @@ func TestLazyQueryNestsPersistedScanUnderQueryOperator(t *testing.T) {
 		t.Fatalf("persisted scan parent = %s, want entity scan %s", persistedScan.Parent().SpanID(), entityScan.SpanContext().SpanID())
 	}
 	assertSpanAttribute(t, persistedScan, "graphdb.index_lookup.physical_entities_examined", int64(1))
+}
+
+func TestQueryExecutionPathHonorsModeAndReaderCache(t *testing.T) {
+	store, cache := tracedQueryFixture(t)
+	tests := []struct {
+		name              string
+		mode              string
+		path              string
+		cache             *storage.ReaderCache
+		wantPath          string
+		wantCache         bool
+		wantPersistedScan bool
+	}{
+		{
+			name:              "all_warm_regular",
+			mode:              "all",
+			path:              "/v1/query",
+			cache:             cache,
+			wantPath:          "materialized_graph",
+			wantCache:         true,
+			wantPersistedScan: false,
+		},
+		{
+			name:              "all_warm_stream",
+			mode:              "all",
+			path:              "/v1/query/stream",
+			cache:             cache,
+			wantPath:          "materialized_graph",
+			wantCache:         true,
+			wantPersistedScan: false,
+		},
+		{
+			name:              "reader_warm_regular",
+			mode:              "reader",
+			path:              "/v1/query",
+			cache:             cache,
+			wantPath:          "lazy_index",
+			wantCache:         false,
+			wantPersistedScan: true,
+		},
+		{
+			name:              "all_without_cache_regular",
+			mode:              "all",
+			path:              "/v1/query",
+			wantPath:          "lazy_index",
+			wantCache:         false,
+			wantPersistedScan: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := installSpanRecorder(t)
+			handler := (&Server{
+				Store:     store,
+				Cache:     test.cache,
+				Mode:      test.mode,
+				Admission: NewQueryAdmission(1, 1, 0),
+			}).Handler()
+			request := query.Request{Op: "match", Kind: "host"}
+			rr := serveJSON(handler, http.MethodPost, test.path, "tenant-a", request)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("query = %d body=%s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), `"host:a"`) {
+				t.Fatalf("query body missing seeded entity: %s", rr.Body.String())
+			}
+
+			spans := recorder.Ended()
+			executeName := "graphdb.query.execute.execute_query"
+			if strings.HasSuffix(test.path, "/stream") {
+				executeName = "graphdb.query.stream.execute_query"
+			}
+			execute := requireRecordedSpan(t, spans, executeName)
+			assertSpanAttribute(t, execute, "graphdb.query.execution_path", test.wantPath)
+			if test.wantPath == "materialized_graph" {
+				assertSpanAttribute(t, execute, "graphdb.query.materialized_cache_available", test.wantCache)
+			}
+			persistedScan := hasRecordedSpan(spans, "graphdb.storage.index_lookup.visit_entities")
+			if persistedScan != test.wantPersistedScan {
+				t.Fatalf("persisted index scan present = %v, want %v", persistedScan, test.wantPersistedScan)
+			}
+		})
+	}
+}
+
+func tracedQueryFixture(t *testing.T) (*storage.TenantStore, *storage.ReaderCache) {
+	t.Helper()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := store.RebuildIndexes(context.Background(), "tenant-a"); err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	cache := storage.NewReaderCache(store, time.Hour)
+	if _, _, err := cache.Load(context.Background(), "tenant-a"); err != nil {
+		t.Fatalf("warm reader cache: %v", err)
+	}
+	return store, cache
+}
+
+func hasRecordedSpan(spans []sdktrace.ReadOnlySpan, name string) bool {
+	for _, span := range spans {
+		if span.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCommitKeepsExistingTraceNames(t *testing.T) {

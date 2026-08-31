@@ -3,6 +3,42 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.2.5] - 2026-08-31
+
+### Improved
+
+- When `GRAPHDB_MODE=all` has a warm `ReaderCache` whose cached version
+  satisfies the requested freshness target, regular and stream queries use the
+  materialized graph. Reader mode and cold-cache requests retain the lazy
+  persisted-index path.
+- Bounded single-node mixed read/write evidence on OrbStack Linux/arm64 (8 CPUs,
+  8 GiB; 4 writers, 16 readers, 200 items/request, three 45-second
+  duration-bound closed-loop rounds per comparison cohort) measured QPS
+  `62.586→106.278` (`+69.81%`),
+  QPS/core `+62.72%`, and mean operation-level p95
+  `1308.0→386.3 ms` (`-70.46%`).
+
+### Evidence boundaries
+
+- The operation-level p95 comparison has sample variability, and some hot
+  saved-query and scan paths have p50 regressions. Ingest p50 is effectively
+  flat (`14097→13988 ms`, `-0.77%`), while ingest p95 worsened from
+  `22291.7` to `23554.3 ms` (`+5.66%`, candidate CV `8.48%`); write-tail
+  improvement is `UNKNOWN`. RSS improvement is also `UNKNOWN`: the mean fell
+  `9.76%`, but candidate CV was `6.56%`.
+- Index health was transiently stale in some end samples, and integrity
+  snapshots reported `snapshot_catalog_missing` with maintenance disabled, so
+  no full integrity `PASS` is claimed. Snapshot export regressed from mean p95
+  `3744.3` to `5943.0 ms` and completed count `46.3` to `26.3`. Production
+  capacity and full matrix coverage remain `UNKNOWN`.
+
+### Compatibility
+
+- API and storage layout remain compatible with 1.2.4; existing deployment
+  modes and clients remain supported, while Go and Python SDK user-agent
+  versions advance to 1.2.5. The performance figures are bounded
+  fixed-environment evidence, not a production SLO or capacity guarantee.
+
 ## [1.2.4] - 2026-08-31
 
 ### Improved
