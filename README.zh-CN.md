@@ -5,14 +5,14 @@
 **面向实体、关系与拓扑的通用当前态属性图数据库**
 
 [![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Release v1.2.3](https://img.shields.io/badge/release-v1.2.3-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)
+[![Release v1.2.4](https://img.shields.io/badge/release-v1.2.4-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4)
 [![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-[English README](README.md) · [v1.2.3 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
+[English README](README.md) · [v1.2.4 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
-GGraphDB v1.2.3 是一个 Go 实现、以对象存储为持久化边界的通用当前态属性图，
+GGraphDB v1.2.4 是一个 Go 实现、以对象存储为持久化边界的通用当前态属性图，
 用于实体和关系数据。知识库、资产图、服务依赖、数据血缘、拓扑、影响分析和
 CMDB 都是应用场景，而不是不同的存储引擎。图模型保持通用：应用自定义的
 kind、字段、关系类型、边、可选类型元数据以及租户隔离。
@@ -22,14 +22,26 @@ v1.2.0 引入了本地 writer 的性能优先默认路径：每个租户一个�
 写入才会返回 durable ingest 响应。生产持久化建议使用共享对象存储；Parquet
 segment、manifest、snapshot 和 index 都可以从对象存储恢复。
 
-> **发行状态。** `v1.2.3` 是当前发行标识。源码工作区或 tag 本身不能证明发行
-> 门禁已通过。权威证据是 [v1.2.3 GitHub Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)、
-> [成功的发布工作流](https://github.com/SamuelSupe/graphdb/actions/runs/33298859067)，以及
-> 与 commit `4a87717c` 绑定的发行证据。
+> **发行状态。** `v1.2.4` 是当前发行标识。源码工作区或 tag 本身不能证明发行
+> 门禁已通过。权威证据是 [v1.2.4 GitHub Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4)、
+> [成功的发布工作流](https://github.com/SamuelSupe/graphdb/actions/runs/33353939412)，以及
+> 与 commit `c296adf6c62982c978718047613e00300cd4eb1e` 绑定的发行证据。
 
 > **v1.2.0 基础运行合同。** 性能优先的本地 WAL 路径是默认模式：只有 WAL fsync
 > 完成后才返回 durable `202 Accepted`；有界压力返回带 `Retry-After` 的
 > `429`；发行资产只有在通过 commit-bound 验证证据后才会发布。
+
+## v1.2.4 查询性能更新
+
+- 大 bucket 字段索引查询使用快照级有序缓存；稳定的流式归并保持结果顺序确定，
+  不需要先物化全部匹配项。
+- 聚合和 Top-K 路径不再为候选结果分配完整的候选 ID 列表，再进行选择和归并。
+- OrbStack Go 1.25.14 linux/arm64 进程内相对证据（基线→1.2.4）：原 benchmark
+  中位数 `7.133→6.058 ms/op`、分配 `304,849→35,800 B/op`；5 万实体
+  range aggregate c64 wave 为 `43.765→31.192 ms`，吞吐
+  `1,462→2,052 queries/s`，p95 `35.25→14.79 ms`，p99 `53.89→32.18 ms`，
+  `34,614,535→13,642,518 B/wave`。
+- 以上是进程内相对测量，不是 HTTP、对象存储或混合读写生产 SLO。
 
 ## v1.2.3 读写与查询性能更新
 
@@ -233,11 +245,11 @@ named graph、blank node、RDF 多 `rdf:type`、typed/language literal、历史�
 
 ## 发行版
 
-当前发行版是 [GGraphDB v1.2.3](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)，[Latest releases](https://github.com/SamuelSupe/graphdb/releases) 是公开发行索引。
+当前发行版是 [GGraphDB v1.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4)，[Latest releases](https://github.com/SamuelSupe/graphdb/releases) 是公开发行索引。
 所有 CI 发行门禁均已通过，包括 unit/vet/race、Python SDK、v1 兼容以及
 RustFS/CAS/load/restore integration；30 分钟 PostgreSQL CAS soak 和回滚也已通过。
-发行证据绑定提交 `4a87717c`，见[工作流运行](https://github.com/SamuelSupe/graphdb/actions/runs/33298859067)
-和 [v1.2.3 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)。
+发行证据绑定提交 `c296adf6c62982c978718047613e00300cd4eb1e`，见[工作流运行](https://github.com/SamuelSupe/graphdb/actions/runs/33353939412)
+和 [v1.2.4 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4)。
 
 `main` 上的工作流为未来 tag 保留固定主机本地 WAL 性能门禁。打包前会校验
 `artifacts/wal-performance/gate.json`，其中必须有 5 次基线、5 次候选、
