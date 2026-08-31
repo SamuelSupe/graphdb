@@ -3,8 +3,8 @@
 [中文](release-deployment.zh-CN.md)
 
 This guide is for service owners who need to download, deploy, upgrade, and
-roll back GGraphDB 1.2.4. Examples use the released `v1.2.4` tag, available at
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4>.
+roll back GGraphDB 1.2.5. Examples use the released `v1.2.5` tag, available at
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.5>.
 
 The 1.3 PostgreSQL-CAS multi-writer WAL profile is documented below as a
 release-gated workstream. No 1.3 archive or acceptance result is implied by
@@ -14,15 +14,15 @@ this guide until a 1.3 tag and commit-bound evidence are published.
 
 The release page provides:
 
-- `graphdb-v1.2.4.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
-- `graphdb-v1.2.4.tar.gz.sha256`: SHA-256 checksum.
+- `graphdb-v1.2.5.tar.gz`: binaries, SDKs, docs, examples, and Compose files.
+- `graphdb-v1.2.5.tar.gz.sha256`: SHA-256 checksum.
 
 Verify and unpack:
 
 ```sh
-sha256sum -c graphdb-v1.2.4.tar.gz.sha256
-tar -xzf graphdb-v1.2.4.tar.gz
-cd graphdb-v1.2.4
+sha256sum -c graphdb-v1.2.5.tar.gz.sha256
+tar -xzf graphdb-v1.2.5.tar.gz
+cd graphdb-v1.2.5
 ```
 
 The archive contains:

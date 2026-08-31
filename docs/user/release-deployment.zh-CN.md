@@ -2,9 +2,9 @@
 
 [English](release-deployment.md)
 
-本文档面向需要下载、部署和升级 GGraphDB 1.2.4 的服务负责人。示例使用已发布
-的 `v1.2.4`，发行页位于
-<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4>。
+本文档面向需要下载、部署和升级 GGraphDB 1.2.5 的服务负责人。示例使用已发布
+的 `v1.2.5`，发行页位于
+<https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.5>。
 
 下文的 1.3 PostgreSQL-CAS 多 writer WAL profile 仍是发行门禁中的工作流；在
 发布 1.3 tag 和 commit-bound 验收证据前，本文不暗示存在 1.3 发行包或验收结果。
@@ -13,15 +13,15 @@
 
 发行页提供以下资产：
 
-- `graphdb-v1.2.4.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
-- `graphdb-v1.2.4.tar.gz.sha256`：SHA-256 校验文件。
+- `graphdb-v1.2.5.tar.gz`：二进制、SDK、文档、示例和 Compose 文件。
+- `graphdb-v1.2.5.tar.gz.sha256`：SHA-256 校验文件。
 
 下载后校验并解包：
 
 ```sh
-sha256sum -c graphdb-v1.2.4.tar.gz.sha256
-tar -xzf graphdb-v1.2.4.tar.gz
-cd graphdb-v1.2.4
+sha256sum -c graphdb-v1.2.5.tar.gz.sha256
+tar -xzf graphdb-v1.2.5.tar.gz
+cd graphdb-v1.2.5
 ```
 
 压缩包包含：
