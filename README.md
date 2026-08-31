@@ -5,14 +5,14 @@
 **A general-purpose current-state property graph for entities, relationships, and topology**
 
 [![Release workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
-[![Release v1.2.3](https://img.shields.io/badge/release-v1.2.3-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3)
+[![Release v1.2.4](https://img.shields.io/badge/release-v1.2.4-2563eb)](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4)
 [![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-[中文 README](README.zh-CN.md) · [v1.2.3 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
+[中文 README](README.zh-CN.md) · [v1.2.4 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4) · [Latest releases](https://github.com/SamuelSupe/graphdb/releases)
 
 </div>
 
-GGraphDB v1.2.3 is a Go-based, object-storage-backed property graph for
+GGraphDB v1.2.4 is a Go-based, object-storage-backed property graph for
 current-state entity and relationship data. Knowledge bases, asset graphs,
 service dependencies, data lineage, topology, impact analysis, and CMDB are
 application scenarios—not separate storage engines. The graph model remains
@@ -25,16 +25,32 @@ durability, and metadata segments. A durable ingest response is accepted only
 after WAL fsync. Shared object storage is the production persistence boundary;
 Parquet segments, manifests, snapshots, and indexes remain recoverable from it.
 
-> **Release status.** `v1.2.3` is the current release identifier. A source
+> **Release status.** `v1.2.4` is the current release identifier. A source
 > checkout or tag alone does not prove that the release gates passed. The
-> authoritative proof is the [v1.2.3 GitHub Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3),
-> its [successful workflow](https://github.com/SamuelSupe/graphdb/actions/runs/33298859067),
-> and packaged commit-bound evidence for `4a87717c`.
+> authoritative proof is the [v1.2.4 GitHub Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4),
+> its [successful workflow](https://github.com/SamuelSupe/graphdb/actions/runs/33353939412),
+> and packaged commit-bound evidence for `c296adf6c62982c978718047613e00300cd4eb1e`.
 
 > **v1.2.0 base operating contract.** The performance-first local WAL path is the
 > default: durable `202 Accepted` only follows WAL fsync, bounded pressure
 > returns `429` with `Retry-After`, and release assets are published only with
 > commit-bound verification evidence.
+
+## v1.2.4 query performance update
+
+- Large-bucket field-index lookups use a snapshot-level ordered cache, and a
+  stable streaming merge keeps result order deterministic without materializing
+  all matches.
+- Aggregate and Top-K paths no longer allocate a complete candidate-ID list
+  before selecting and merging results.
+- OrbStack Go 1.25.14 linux/arm64 process-internal relative evidence
+  (baseline→1.2.4): the original benchmark median is
+  `7.133→6.058 ms/op` with `304,849→35,800 B/op`; on 50,000-entity range
+  aggregate c64 wave, `43.765→31.192 ms`, throughput
+  `1,462→2,052 queries/s`, p95 `35.25→14.79 ms`, p99 `53.89→32.18 ms`, and
+  `34,614,535→13,642,518 B/wave`.
+- These are process-internal relative measurements, not an HTTP,
+  object-storage, or mixed read/write production SLO.
 
 ## v1.2.3 read/write and query performance update
 
@@ -251,12 +267,12 @@ service mesh.
 
 ## Release
 
-The current release is [GGraphDB v1.2.3](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3), with [latest releases](https://github.com/SamuelSupe/graphdb/releases) kept as the public release index.
+The current release is [GGraphDB v1.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4), with [latest releases](https://github.com/SamuelSupe/graphdb/releases) kept as the public release index.
 All CI release gates passed, including unit/vet/race, Python SDK, v1
 compatibility, and RustFS/CAS/load/restore integration. The 30-minute
 PostgreSQL CAS soak and rollback also passed; the packaged evidence is bound
-to commit `4a87717c`. See the [workflow run](https://github.com/SamuelSupe/graphdb/actions/runs/33298859067)
-and [v1.2.3 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.3).
+to commit `c296adf6c62982c978718047613e00300cd4eb1e`. See the [workflow run](https://github.com/SamuelSupe/graphdb/actions/runs/33353939412)
+and [v1.2.4 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4).
 
 The workflow on `main` retains the fixed-host local WAL performance gate for
 future tags. Before packaging it verifies
