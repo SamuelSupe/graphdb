@@ -8,7 +8,20 @@ map $request_uri $graphdb_data_roles {
 }
 
 upstream graphdb_data {
+    # General data traffic. The owner-routed status locations below must not
+    # use this pool because it may contain a different writer.
     server graphdb:8080;
+}
+
+# 1.3 owner-routed WAL status targets. Add one upstream and one location for
+# every stable GRAPHDB_INSTANCE_ID in the writer fleet. Keep the IDs aligned
+# with the values embedded in each writer's status_url.
+upstream graphdb_writer_a {
+    server graphdb-writer-a:8080;
+}
+
+upstream graphdb_writer_b {
+    server graphdb-writer-b:8080;
 }
 
 upstream graphdb_admin {
@@ -48,6 +61,39 @@ server {
         proxy_set_header Authorization $http_authorization;
         proxy_set_header X-Original-URI $request_uri;
         proxy_set_header X-GraphDB-Required-Roles "operator,admin";
+    }
+
+    # Owner-routed 1.3 WAL status. These explicit locations prevent a status
+    # request from falling through to the general, randomly load-balanced
+    # writer pool. The request URI is preserved for the backend handler.
+    location ^~ /v1/ingest/writers/writer-a/ {
+        auth_request /_graphdb_auth;
+        auth_request_set $graphdb_tenant $upstream_http_x_graphdb_tenant_id;
+
+        proxy_set_header X-Tenant-ID "";
+        proxy_set_header X-Tenant-ID $graphdb_tenant;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_pass http://graphdb_writer_a;
+    }
+
+    location ^~ /v1/ingest/writers/writer-b/ {
+        auth_request /_graphdb_auth;
+        auth_request_set $graphdb_tenant $upstream_http_x_graphdb_tenant_id;
+
+        proxy_set_header X-Tenant-ID "";
+        proxy_set_header X-Tenant-ID $graphdb_tenant;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_pass http://graphdb_writer_b;
+    }
+
+    # An unknown owner must not be sent to a random writer. Provision an
+    # explicit location/upstream pair above before admitting a new writer ID.
+    location ^~ /v1/ingest/writers/ {
+        return 404;
     }
 
     # Public product API. GGraphDB's DataHandler makes admin routes return 404.

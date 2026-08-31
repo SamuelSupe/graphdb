@@ -1,6 +1,42 @@
-# GGraphDB 1.2 Release Checklist
+# GGraphDB 1.3 Release Checklist
 
-## Contract And Compatibility
+The checklist is intentionally unchecked until commit-bound evidence is
+available. The 1.3 PostgreSQL-CAS multi-writer WAL profile is release-gated;
+the historical 1.2 gates below remain compatibility inputs, not proof of 1.3.
+
+## 1.3 Contract And Durability
+
+- [ ] `GRAPHDB_COORDINATION=postgres`, `GRAPHDB_WRITER_TOPOLOGY=cas`, and
+      `GRAPHDB_INGEST_MODE=wal` accept a unique stable `GRAPHDB_INSTANCE_ID`.
+- [ ] Every writer uses an independent persistent WAL volume; no WAL directory
+      is shared between writers.
+- [ ] `POST /v1/ingest/batches` returns `202` only after local WAL `fsync`, and
+      the response contains `writer_id` plus an owner-routed `status_url`.
+- [ ] PostgreSQL schema v5 stores coordination metadata/head CAS only; payload,
+      WAL records, commit segments, and graph data stay in object storage.
+- [ ] PostgreSQL outage permits bounded local durable admission, then rejects
+      before another WAL payload when the high-water policy is reached.
+- [ ] CAS and temporary dependency failures rebase, back off, and shrink the
+      batch without terminally failing an accepted request.
+- [ ] Permanent semantic and lifecycle fencing errors are visible as final
+      batch failures; lifecycle fencing wins over unpublished WAL.
+- [ ] WAL recovery reports `recovery_pending` through the owner route and
+      recovers with the original volume and stable writer identity.
+
+## 1.3 Multi-Writer And Rolling Compatibility
+
+- [ ] Same-tenant 2-, 4-, and 8-writer runs preserve request effects, versions,
+      and cross-writer idempotency without loss or duplication.
+- [ ] Cross-tenant load demonstrates the intended horizontal scaling boundary;
+      no single-tenant linear-throughput claim is made.
+- [ ] 1.2 direct writers and 1.3 WAL writers coexist through schema v5 and the
+      existing object layout.
+- [ ] A WAL writer is not downgraded until new admission is stopped and its
+      pending WAL is finalized.
+- [ ] Permanent loss of a writer's WAL volume is documented as outside the
+      durability guarantee.
+
+## Historical 1.2 Contract And Compatibility Inputs
 
 - [ ] `release/freeze-1.1.yaml` is present and
       `scripts/check_release_freeze.sh` passes.
@@ -12,7 +48,7 @@
 - [ ] `scripts/compatibility_v1_0_v1_1.sh` passes both binary directions.
 - [ ] Object layout versions remain unchanged or have an approved migration.
 
-## Verification
+## Historical 1.2 Verification Inputs
 
 - [ ] Unit, vet, race, Python SDK, and OpenAPI contract tests pass.
 - [ ] RustFS e2e, load, restart, freshness, outage, repair, and restore drill pass.

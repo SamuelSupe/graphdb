@@ -274,7 +274,7 @@ Response fields:
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.
 
-### Local WAL mode (1.1.2)
+### Local WAL mode (1.2 compatibility profile)
 
 `GRAPHDB_INGEST_MODE=direct` remains the default synchronous `200/207`
 behavior. A single-writer deployment using `GRAPHDB_COORDINATION=local` can
@@ -328,6 +328,64 @@ append/group write, flush, batch apply, publish, and metadata-finalization spans
 are exported over OTLP/HTTP. Asynchronous group writes and flushes use OTel
 links to the originating request span. Accepted records persist that trace
 context, so recovery can retain the association after a restart.
+
+### PostgreSQL-CAS multi-writer WAL (1.3 contract)
+
+The 1.3 profile combines an independent local WAL on every writer with
+PostgreSQL head CAS. It is release-gated; the contract below does not claim
+that a particular build has passed the required multi-writer or crash matrix.
+Use the [1.3 design](../ingest-wal-multiwriter-design.md) for the complete
+protocol.
+
+Configure every writer with `GRAPHDB_COORDINATION=postgres`,
+`GRAPHDB_WRITER_TOPOLOGY=cas`, `GRAPHDB_INGEST_MODE=wal`, generic S3-compatible
+object storage, and a unique stable `GRAPHDB_INSTANCE_ID`. Each writer must
+mount its own persistent `GRAPHDB_INGEST_WAL_DIR`; two writers must never share
+one WAL directory or volume. PostgreSQL schema v5 stores coordination metadata
+only (tenant head/generation, idempotency reservations/results, collector state,
+and batch metadata). It does not store ingest payloads, WAL records, commit
+segments, or graph data. Object storage remains the graph-data authority.
+
+After static validation and local WAL `fsync`, the writer returns `202 Accepted`
+without requiring PostgreSQL to be reachable. The response includes
+`writer_id` and an owner-routed `status_url`. Route that status URL to the
+writer named by the stable instance ID; while that writer is recovering, status
+must remain available and may report `recovery_pending=true`. A `202` means
+durable takeover by that writer, not a committed graph version.
+
+The 1.3 owner route is:
+
+```text
+GET /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}
+```
+
+The legacy `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` status path
+remains available for compatibility, but an owner-routed URL must not be sent
+to a random writer.
+
+WAL flushes are bounded per-tenant batches. A writer preserves its local WAL
+FIFO; different writers are ordered by successful PostgreSQL head CAS, not by
+HTTP arrival time. CAS, PostgreSQL, and temporary object-store failures remain
+retryable: reload the newest head, rebase, apply exponential backoff with
+jitter, and shrink the batch prefix after repeated conflicts until one request
+remains. An accepted request cannot become terminally failed merely because a
+retry budget was exhausted. Deterministic semantic errors and lifecycle
+fencing (freeze/delete/restore) may finalize as `failed`; lifecycle fencing
+wins over unpublished WAL and never rolls back a version already published by
+CAS.
+
+The profile supports two to eight concurrent writers for one tenant. This is a
+correctness and availability boundary; the throughput scale target is across
+tenants, not linear single-tenant speed-up. PostgreSQL unavailability does not
+fall back to local coordination. A writer may accept locally durable requests
+until its WAL high-water policy is reached, then rejects new admission before
+writing another payload while it continues to drain and serve owner status.
+
+For rolling upgrade, first deploy the 1.3 binary in direct mode and validate
+the existing v5 coordination plane. Enable WAL writer by writer. Before a
+downgrade, stop new WAL admission and wait for that writer's WAL to finalize;
+a pending WAL is a downgrade blocker. The 1.2 direct and 1.3 WAL profiles may
+coexist only under the documented rollout and shared object layout.
 
 Collector batch sizing for CMDB workloads:
 

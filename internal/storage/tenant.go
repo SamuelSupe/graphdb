@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -66,7 +67,9 @@ type CommitOptions struct {
 type TenantStore struct {
 	Objects                    ObjectStore
 	Coordinator                WriteCoordinator
+	RequireCoordinationMarker  bool
 	Prefix                     string
+	coordinationMarkerVerified atomic.Bool
 	coordinatorStatusMu        sync.RWMutex
 	coordinatorStatusCache     CoordinatorStatus
 	coordinatorStatusActive    *coordinatorStatusCall

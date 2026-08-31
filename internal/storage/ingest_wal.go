@@ -55,10 +55,14 @@ type IngestWALConfig struct {
 	BufferBytes   int
 	FsyncInterval time.Duration
 	MaxBytes      int64
-	SegmentBytes  int64
-	AppendQueue   int
-	Observer      IngestObserver
-	Logger        IngestLogger
+	// ControlReserveBytes keeps disk space available for PREPARED and terminal
+	// records after client admission has stopped. OpenIngestService derives a
+	// bounded reserve when this is zero.
+	ControlReserveBytes int64
+	SegmentBytes        int64
+	AppendQueue         int
+	Observer            IngestObserver
+	Logger              IngestLogger
 }
 
 func DefaultIngestWALConfig(dir string) IngestWALConfig {
@@ -86,7 +90,26 @@ func (c IngestWALConfig) validate() error {
 	if c.SegmentBytes > c.MaxBytes {
 		return fmt.Errorf("ingest WAL segment size must not exceed the WAL disk limit")
 	}
+	if c.ControlReserveBytes < 0 || c.ControlReserveBytes >= c.MaxBytes {
+		return fmt.Errorf("ingest WAL control reserve must be non-negative and smaller than the WAL disk limit")
+	}
 	return nil
+}
+
+func (c IngestWALConfig) controlReserveBytes() int64 {
+	if c.ControlReserveBytes > 0 {
+		return c.ControlReserveBytes
+	}
+	return 0
+}
+
+func defaultIngestWALControlReserve(c IngestWALConfig) int64 {
+	reserve := c.MaxBytes / 10
+	if reserve > c.SegmentBytes {
+		reserve = c.SegmentBytes
+	}
+	reserve = max(reserve, int64(ingestWALHeaderBytes+ingestWALChecksumBytes+1))
+	return min(reserve, c.MaxBytes-1)
 }
 
 func (c IngestWALConfig) Validate() error {
@@ -467,7 +490,11 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 			request.done <- ingestWALAppendResponse{err: fmt.Errorf("ingest WAL record exceeds segment size")}
 			continue
 		}
-		if s.totalBytes+int64(buffer.Len())+frameBytes > s.wal.config.MaxBytes {
+		limit := s.wal.config.MaxBytes
+		if request.kind == IngestWALAccepted {
+			limit -= s.wal.config.controlReserveBytes()
+		}
+		if s.totalBytes+int64(buffer.Len())+frameBytes > limit {
 			request.done <- ingestWALAppendResponse{err: ErrIngestWALFull}
 			continue
 		}

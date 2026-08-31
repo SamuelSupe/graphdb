@@ -121,5 +121,6 @@ func (s *TenantStore) EnsurePostgresMarker(ctx context.Context) error {
 	if marker.Backend != CoordinationPostgres || marker.Namespace != s.Coordinator.Namespace() {
 		return fmt.Errorf("coordination marker mismatch: backend=%q namespace=%q", marker.Backend, marker.Namespace)
 	}
+	s.coordinationMarkerVerified.Store(true)
 	return nil
 }

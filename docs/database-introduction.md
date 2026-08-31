@@ -28,8 +28,13 @@ SPARQL, ontology reasoning, or historical graph queries.
   Manifest CAS prevents stale writers from overwriting newer versions.
 - **Read/write modes**: one binary supports `all`, `writer`, and `reader`.
   Local coordination uses one active writer per tenant; optional PostgreSQL
-  head CAS supports 2–8 optimistic writers. Readers load immutable graph
+  head CAS supports 2–8 optimistic writers. In the 1.3 WAL profile each writer
+  owns an independent persistent WAL volume, while readers load immutable graph
   objects from object storage.
+- **Coordination boundary**: PostgreSQL stores tenant-head/generation CAS,
+  idempotency and collector/batch coordination metadata. It never stores graph
+  payloads, WAL records, or commit segments; object storage remains the graph
+  data authority.
 - **Query options**: GraphQL, JSON Query DSL, 1-8 step bounded pattern matching,
   indexed bidirectional traversal, streaming queries, current-state scans, and
   snapshot export.
@@ -96,9 +101,11 @@ flowchart LR
 
 A write normally follows this path:
 
-1. accept a direct commit or ingestion batch;
+1. accept a direct commit or ingestion batch; in 1.3 coordinated WAL mode,
+   validate and fsync the batch to the owning writer's local WAL first;
 2. validate and reconcile entities, relations, identities, and source priority;
-3. write an immutable commit and publish a new version through the manifest;
+3. write immutable objects and publish a new version through the manifest,
+   using PostgreSQL head CAS when coordinated;
 4. let readers load the snapshot and replay visible commits, using persisted
    indexes when available.
 
@@ -153,7 +160,13 @@ X-Tenant-ID: demo
 
 - Local coordination supports one active writer per tenant. PostgreSQL
   coordination optionally supports 2–8 optimistic writers and does not provide
-  cross-tenant transactions.
+  cross-tenant transactions. The 1.3 WAL profile applies only to ingest batches,
+  uses one independent WAL volume per writer, and orders cross-writer commits by
+  successful head CAS.
+- PostgreSQL is coordination metadata/head CAS only; object storage remains the
+  graph-data authority. WAL durability covers process failure when the original
+  writer volume can be recovered, not permanent volume loss. A durable `202`
+  means takeover by the writer, not a committed graph version.
 - Readers use manifests, snapshots, and commits from object storage. Use
   `min_version` for read-after-write consistency and `allow_stale` when
   eventual consistency is acceptable.
@@ -169,5 +182,6 @@ X-Tenant-ID: demo
 - [Write And Ingest](user/write-ingest.md) · [中文](user/write-ingest.zh-CN.md)
 - [Read And Query](user/read-query.md) · [中文](user/read-query.zh-CN.md)
 - [Deployment And Operations](user/deploy-ops.md) · [中文](user/deploy-ops.zh-CN.md)
+- [1.3 PostgreSQL-CAS Multi-Writer WAL](ingest-wal-multiwriter-design.md) · [中文](ingest-wal-multiwriter-design.zh-CN.md)
 - [Architecture](architecture.md)
 - [OpenAPI](openapi.yaml)

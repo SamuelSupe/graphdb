@@ -1434,6 +1434,54 @@ func TestSaveIngestBatchWritesDualKeysConcurrently(t *testing.T) {
 	}
 }
 
+func TestSaveIngestBatchCanonicalizesReplayBeforePersisting(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	request := IngestRequest{
+		Source:         "agent",
+		CollectorID:    "collector-a",
+		BatchID:        "batch-replay-first",
+		IdempotencyKey: "idempotency-replay-first",
+		Items: []IngestItem{{
+			ExternalID: "host-1",
+			Entity:     &graph.Entity{ID: "host:1", Kind: "host"},
+		}},
+	}
+	replay := IngestBatchRecord{
+		Request: request,
+		Result: IngestResult{
+			BatchID:    request.BatchID,
+			Version:    7,
+			Applied:    1,
+			Skipped:    true,
+			SkipReason: IngestSkipReasonIdempotentReplay,
+		},
+	}
+	if err := store.saveIngestBatch(ctx, "tenant-a", replay); err != nil {
+		t.Fatalf("save replay-first ingest batch: %v", err)
+	}
+
+	for _, key := range []string{
+		store.ingestBatchKey("tenant-a", request.Source, request.CollectorID, request.BatchID),
+		store.ingestIdempotencyKey("tenant-a", request.Source, request.CollectorID, request.IdempotencyKey),
+	} {
+		stored, _, err := store.loadIngestRecordWithMeta(ctx, key)
+		if err != nil {
+			t.Fatalf("load persisted replay record %s: %v", key, err)
+		}
+		if stored.Result.Skipped || stored.Result.SkipReason != "" || stored.Result.Version != replay.Result.Version {
+			t.Fatalf("persisted replay record %s = %#v, want canonical result", key, stored.Result)
+		}
+	}
+
+	canonical := replay
+	canonical.Result.Skipped = false
+	canonical.Result.SkipReason = ""
+	if err := store.saveIngestBatch(ctx, "tenant-a", canonical); err != nil {
+		t.Fatalf("save canonical result after replay-first write: %v", err)
+	}
+}
+
 type blockingCompatibilityProbeStore struct {
 	ObjectStore
 	mu      sync.Mutex

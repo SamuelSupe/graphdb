@@ -1,9 +1,15 @@
-# Ingest WAL、攒批与精确去重最终方案
+# Ingest WAL、攒批与精确去重方案（1.2 本地单 writer）
+
+> 本文记录 1.2 的 local-coordination WAL 设计，仅适用于一个活动 writer
+> 进程。1.3 的 PostgreSQL-CAS 多 writer 合同已另行定义，见
+> [PostgreSQL-CAS 多 writer Ingest WAL（1.3）](ingest-wal-multiwriter-design.zh-CN.md)。
+> 本文中“不支持多个活动 writer”“不增加 PostgreSQL 依赖”等限制是 1.2
+> 的历史边界，不是 1.3 的目标合同。
 
 ## 1. 文档状态
 
-- 状态：GGraphDB 1.2.0 已实现。
-- 目标版本：1.2.0。
+- 状态：GGraphDB 1.2.0 已实现；保留作为历史设计记录。
+- 适用版本：1.2 local coordination + 单活动 writer。
 - 目标部署：
   - `GRAPHDB_COORDINATION=local`；
   - 单个活动 writer 进程；

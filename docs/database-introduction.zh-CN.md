@@ -18,7 +18,11 @@ GGraphDB 是一个使用 Go 编写的轻量级通用当前态属性知识图谱�
 - **对象存储持久化**：以 manifest 作为可见性边界，使用不可变提交、Parquet 快照和可重建索引保存数据；通过 manifest CAS 避免陈旧写入覆盖新版本。
 - **读写模式分离**：同一个程序支持 `all`、`writer` 和 `reader` 三种运行模式；
   本地协调每租户一个活动写入者，可选 PostgreSQL head CAS 支持 2–8 个乐观
-  并发 writer，读端从对象存储加载不可变图对象。
+  并发 writer；1.3 WAL profile 中每个 writer 拥有独立的持久 WAL 卷，读端从
+  对象存储加载不可变图对象。
+- **协调边界**：PostgreSQL 只保存 tenant head/generation CAS、幂等以及
+  collector/batch 协调元数据，不保存图 payload、WAL record 或 commit segment；
+  对象存储仍是图数据权威。
 - **多种查询方式**：提供 GraphQL、JSON Query DSL、1-8 步有界 pattern、索引化
   双向遍历、流式查询、当前态扫描和快照导出。
 - **批量导入**：task 驱动、带 checkpoint 的 CSV 和 JSONL ingest。
@@ -80,9 +84,11 @@ flowchart LR
 
 写入通常经过以下流程：
 
-1. 接收直接提交或采集批次；
+1. 接收直接提交或采集批次；1.3 协调 WAL 模式会先在所属 writer 的本地 WAL
+   中校验并 `fsync` 批次；
 2. 对实体、关系、身份和来源优先级进行校验与合并；
-3. 写入不可变 commit，并通过 manifest 发布新版本；
+3. 写入不可变对象，并在协调模式使用 PostgreSQL head CAS 通过 manifest
+   发布新版本；
 4. 读端加载快照并回放可见提交，必要时使用持久化索引加速查询。
 
 长时间运行后可以通过 compact 把提交尾部折叠为快照，并通过 GC、repair、index rebuild 等任务维护数据和索引。
@@ -134,7 +140,11 @@ X-Tenant-ID: demo
 ## 当前边界
 
 - 本地协调每租户只支持一个活动写入者；可选 PostgreSQL 协调支持 2–8 个
-  乐观并发 writer，但不提供跨租户事务。
+  乐观并发 writer，但不提供跨租户事务。1.3 WAL profile 只覆盖 ingest
+  batch；每个 writer 使用独立 WAL 卷，跨 writer 按成功 head CAS 排序。
+- PostgreSQL 只保存协调元数据和 head CAS；图数据权威仍是对象存储。WAL
+  持久性只覆盖原 writer 卷可恢复时的进程故障，不覆盖卷永久丢失；durable
+  `202` 表示 writer 已接管请求，不是图版本已经提交。
 - 读端以对象存储中的 manifest、快照和提交为准；需要读后写一致性时，可以使用 `min_version`，允许最终一致读取时可以使用 `allow_stale`。
 - 数据 API 的租户选择依赖 `X-Tenant-ID`；实际部署时应由网关或上游系统提供认证与授权。
 - 当前读取的是租户的最新可见图状态，不提供历史版本查询。
@@ -146,5 +156,6 @@ X-Tenant-ID: demo
 - [写入与采集](user/write-ingest.zh-CN.md)
 - [读取与查询](user/read-query.zh-CN.md)
 - [部署与运维](user/deploy-ops.zh-CN.md)
+- [1.3 PostgreSQL-CAS 多 writer WAL](ingest-wal-multiwriter-design.zh-CN.md)
 - [整体架构](architecture.md)
 - [OpenAPI](openapi.yaml)

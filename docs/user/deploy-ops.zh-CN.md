@@ -14,9 +14,10 @@ GRAPHDB_MODE=all|writer|reader
 
 默认 `GRAPHDB_COORDINATION=local` 时，生产环境每个租户只能有一个活跃
 writer，writer lease 和 manifest CAS 用于防止重复或陈旧 writer。
-`GRAPHDB_COORDINATION=postgres` 改用 PostgreSQL head CAS，支持每租户
-2–8 个乐观并发 writer。reader 相互独立；本地模式以对象存储为权威，
-PostgreSQL 模式以 PG head 为权威。
+`GRAPHDB_COORDINATION=postgres` 使用 PostgreSQL head CAS 协调租户 head，支持
+每租户 2–8 个乐观并发 writer。PostgreSQL 只保存协调元数据；不可变图对象和
+对象存储中已发布的 manifest 仍是图数据权威。reader 相互独立，从对象存储
+加载不可变图对象。
 
 ## 对象存储
 
@@ -90,6 +91,18 @@ GRAPHDB_PREFIX=graphdb
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
 - `GRAPHDB_COORDINATION=local|postgres`
+- `GRAPHDB_INGEST_MODE=direct|wal`
+- `GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest`
+- `GRAPHDB_INGEST_WAL_DURABILITY=sync|os`（durable 接收应使用 `sync`）
+- `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`
+- `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`
+- `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`
+- `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`
+- `GRAPHDB_INGEST_FLUSH_INTERVAL=10s`
+- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`
+- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`
+- `GRAPHDB_INGEST_FLUSH_WORKERS=1`
+- `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
 - `GRAPHDB_POSTGRES_DSN=<dsn>`
 - `GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination`
 - `GRAPHDB_COORDINATOR_NAMESPACE=<stable-cluster-id>`
@@ -110,6 +123,46 @@ PostgreSQL 协调还要求 `GRAPHDB_STORAGE=s3`、
 `S3_PROVIDER=generic-s3` 和 `GRAPHDB_WRITER_TOPOLOGY=cas`。启动 writer
 前先执行 `graphdb coordinator migrate` 和
 `graphdb coordinator bootstrap --apply`；上线与回滚顺序见发行版部署文档。
+
+### 1.3 PostgreSQL-CAS WAL profile
+
+1.3 WAL profile 只能用于协调的 generic-S3 writer 拓扑。每个 writer 必须有
+唯一且稳定的 `GRAPHDB_INSTANCE_ID`，并使用自己的持久读写 WAL 卷：
+
+```sh
+GRAPHDB_MODE=writer
+GRAPHDB_STORAGE=s3
+S3_PROVIDER=generic-s3
+GRAPHDB_COORDINATION=postgres
+GRAPHDB_WRITER_TOPOLOGY=cas
+GRAPHDB_COORDINATOR_NAMESPACE=production-a
+GRAPHDB_INSTANCE_ID=writer-a
+GRAPHDB_INGEST_MODE=wal
+GRAPHDB_INGEST_WAL_DIR=/var/lib/graphdb/wal/ingest
+GRAPHDB_INGEST_WAL_DURABILITY=sync
+```
+
+不同 writer 不能共享 WAL 目录或卷。durable `202` 表示该 writer 在本地 WAL
+`fsync` 后已经接管请求；它不等待 PostgreSQL，也不代表图版本已经提交。响应
+会返回 owner-routed `status_url` 和 `writer_id`。状态查询必须路由回该实例，
+包括它在 WAL 恢复期间报告 `recovery_pending` 时。
+
+启动时，如果 PostgreSQL 或对象存储 coordination marker 探测因暂时不可用或
+超时失败，WAL writer 可以以 degraded 模式启动。恢复本地 owner 身份和 WAL 后，
+在这些依赖暂时不可达期间仍可提供 owner status 并接收 durable `202`。但 required
+schema 缺失/不匹配或 coordination marker 缺失/不匹配都不是暂时错误；启动必须
+fail closed，不能在未经验证的协调平面上接受写入。
+
+WAL 按租户组成有界批次。单 writer 保持自己的 WAL FIFO，跨 writer 则按成功的
+PostgreSQL head CAS 排序。CAS、PostgreSQL 暂时故障和对象存储暂时故障都通过
+重新读取最新 head、重基和持续冲突后的缩批重试；已接收请求不能仅因为重试预算
+到达而进入终态失败。确定性的语义错误和生命周期 fencing 可以最终 `failed`。
+freeze/delete/restore fencing 优先于未发布 WAL，但不会回滚已经 CAS 发布的版本。
+
+PostgreSQL 故障期间可以继续本地 durable 接收，直到 WAL 高水位；达到高水位后，
+在写入新 payload 前拒绝准入，同时继续提供 owner status 和恢复能力。该 profile
+只保护原 WAL 卷仍可恢复时的进程故障，不保护 WAL 卷永久丢失。完整合同见
+[PostgreSQL-CAS 多 writer Ingest WAL](../ingest-wal-multiwriter-design.zh-CN.md)。
 
 已提交幂等记录和被遗弃的 pending reservation 只保留到配置的幂等窗口，
 重放去重也只在该窗口内保证。`GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL`
@@ -199,8 +252,9 @@ listener 分离、网关租户绑定、RBAC 与 TLS 见
 
 ## 生产运行规则
 
-- 本地协调每租户保持恰好一个活跃 writer；只有完成 PostgreSQL bootstrap
-  后才扩到 2–8 个，并且绝不能混入 1.0 writer。
+- 本地协调每租户保持恰好一个活跃 writer。1.3 PostgreSQL-CAS profile 允许
+  2–8 个 writer 接收同一租户；扩展目标是跨租户，不宣称单租户线性吞吐。
+  共享 prefix 中不能混入未接入协调的 1.0 writer。
 - 多个 reader 从同一对象存储前缀独立运行。
 - 需要新鲜度时使用 `min_version`。
 - 关注 commit tail 并保持自动 compact。
@@ -211,3 +265,6 @@ listener 分离、网关租户绑定、RBAC 与 TLS 见
   小批次会放大 commit、manifest、幂等和采集元数据对象写入。
 - 429 重试必须复用相同 `batch_id` 和 `idempotency_key`，使用指数退避
   和抖动。同一源页面的重试不能生成新幂等键。
+- 进程重启时保持 `GRAPHDB_INSTANCE_ID` 不变并重新挂载原 WAL 卷。WAL writer
+  降级为 direct 前，先停止新 WAL 准入并等待 pending WAL 全部 finalized；存在
+  pending WAL 时禁止降级。

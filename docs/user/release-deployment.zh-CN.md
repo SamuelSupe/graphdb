@@ -6,6 +6,9 @@
 的 `v1.2.4`，发行页位于
 <https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4>。
 
+下文的 1.3 PostgreSQL-CAS 多 writer WAL profile 仍是发行门禁中的工作流；在
+发布 1.3 tag 和 commit-bound 验收证据前，本文不暗示存在 1.3 发行包或验收结果。
+
 ## 1. 下载与校验
 
 发行页提供以下资产：
@@ -105,8 +108,9 @@ docker compose up -d --build
 ## 4. RustFS Writer/Reader 部署
 
 该拓扑使用同一个 GGraphDB 二进制，靠运行模式和流量路由区分 writer 与
-reader。一个租户同时只允许一个活跃 writer；reader 从共享对象存储加载
-数据并提供查询服务。
+reader。1.2 direct profile 每租户保持一个活跃 writer；1.3 PostgreSQL-CAS
+profile 允许 2–8 个 writer，但每个 writer 使用独立 WAL 卷。reader 从共享
+对象存储加载数据并提供查询服务。
 
 ```sh
 docker compose -f docker-compose.rustfs.yml up -d --build
@@ -180,7 +184,7 @@ GRAPHDB_PPROF_ENABLED=false
 - `GRAPHDB_MAINTENANCE_INTERVAL`：compact、GC 和索引维护调度间隔。
 - `GRAPHDB_OTLP_ENDPOINT`：可选的 OTLP/HTTP trace 接收地址。
 
-### 可选 PostgreSQL 多 writer 协调
+### PostgreSQL 多 writer 协调（1.2 direct profile）
 
 `GRAPHDB_COORDINATION=local` 仍是默认值，完整保留 1.0 的 writer lease 和
 对象 manifest CAS 行为。需要让同一租户由 2–8 个 writer 乐观并发写入时，
@@ -208,6 +212,55 @@ GRAPHDB_WRITER_TOPOLOGY=cas
 PostgreSQL 故障不会自动回退到本地模式：写入返回
 `503 coordinator_unavailable`；reader 可以服务已有缓存，但无法满足
 `min_version` 时返回 `reader_not_fresh`。
+
+### 1.3 PostgreSQL-CAS WAL profile（发行门禁中）
+
+1.3 profile 为 PostgreSQL-CAS 拓扑增加本地 durable ingest 准入，只覆盖
+`POST /v1/ingest/batches`；`/v1/commits`、schema、租户生命周期和维护写入继续
+使用现有路径与 fencing。每个 writer 必须设置唯一稳定的
+`GRAPHDB_INSTANCE_ID`，并挂载独立持久 WAL 卷；不同 writer 绝不能共享 WAL 目录。
+
+```sh
+GRAPHDB_MODE=writer
+GRAPHDB_STORAGE=s3
+S3_PROVIDER=generic-s3
+GRAPHDB_COORDINATION=postgres
+GRAPHDB_WRITER_TOPOLOGY=cas
+GRAPHDB_COORDINATOR_NAMESPACE=production-a
+GRAPHDB_INSTANCE_ID=writer-a
+GRAPHDB_INGEST_MODE=wal
+GRAPHDB_INGEST_WAL_DIR=/var/lib/graphdb/wal/ingest
+GRAPHDB_INGEST_WAL_DURABILITY=sync
+```
+
+完成请求静态校验并在本地 WAL `fsync` 后，writer 可以不等待 PostgreSQL 往返就
+返回 `202 Accepted`。响应包含稳定 `writer_id` 和 owner-routed `status_url`；
+状态查询必须路由到该 writer，包括它报告 `recovery_pending` 的恢复期间。`202`
+表示 writer 已持久接管，不是图版本已经提交。PostgreSQL schema v5 只保存
+head/generation CAS 和协调元数据，不保存 ingest payload、WAL record、commit
+segment 或图数据；图数据权威仍是对象存储。
+
+启动时，如果 PostgreSQL 或对象存储 coordination marker 探测只是暂时不可用或
+超时，WAL writer 可以 degraded 启动。它先恢复本地 owner 身份和 WAL，再在依赖
+不可达期间提供 owner status 并接收 durable `202`。required schema 或
+coordination marker 缺失/不匹配不是暂时错误；必须 fail closed，不能在未经验证
+的协调平面上接受写入。
+
+owner 状态接口为
+`GET /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}`。旧的
+`/v1/ingest/batches/{source}/{collector_id}/{batch_id}` 路径继续兼容，但 owner
+专属请求不能把它随机路由给任意 writer。
+
+同租户 writer 保持自己的本地 WAL FIFO；跨 writer 按成功 PostgreSQL head CAS
+顺序决定版本，不提供全局 HTTP 到达 FIFO。CAS、PostgreSQL 暂时错误和对象存储
+暂时错误通过重基、退避和缩批重试；已接收请求不能因为重试预算到达而进入终态
+失败。确定性的语义或生命周期 fencing 错误可以最终 `failed`。PostgreSQL 故障
+期间可以继续本地 durable 准入，直到 WAL 高水位在写入新 payload 前拒绝请求。
+
+目标拓扑是每租户 2–8 个 writer，扩展目标是跨租户，不宣称单租户线性吞吐。持久性
+边界覆盖原 writer 卷仍可恢复时的进程故障；卷永久丢失不在合同内。完整协议和待
+补证据见 [1.3 WAL 设计](../ingest-wal-multiwriter-design.zh-CN.md) 与
+[1.3 发行 checklist](../release-checklist.md)。
 
 初始化和检查协调平面：
 
@@ -276,7 +329,7 @@ GGraphDB 1.1 不会重写 1.0 核心图。manifest、snapshot、commit、entity�
 4. 再扩容 writer；只有在 `max_legacy_mirror_lag=0` 且
    `outbox_backlog=0` 后，才让 1.0 reader 接流量。
 5. 永久撤销 1.0 writer 的路由与写凭据。1.0 reader 只看到最终一致镜像，
-   PostgreSQL head 始终是唯一权威状态。
+   PostgreSQL head 只是协调 CAS 记录，图数据权威仍是对象存储。
 
 回滚必须使用 coordinator 命令，不能手工删除 coordination marker：
 
@@ -294,8 +347,9 @@ PostgreSQL head 的 hash、version 和 status，再切到 `local`，最后通过
 条件删除 `<GRAPHDB_PREFIX>/coordination/mode.json`。只有命令报告
 `applied=true`、`mode_after=local`、`marker_removed=true` 且 mirror lag/backlog
 均为零后，才可启动本地 writer。严禁两种 writer 模式并存。完整备份必须同时
-包含对象存储 prefix 和 PostgreSQL coordination schema，只有对象存储的备份
-不完整。
+包含对象存储 prefix 和 PostgreSQL coordination schema。1.3 WAL 存在 pending
+durable 记录时，还必须保留每个 writer 的 WAL 卷；对于已确认但尚未完成的请求，
+仅备份对象存储是不完整的。
 
 除 `GET /v1/health` 和 `graphdb coordinator status` 外，还应监控
 `graphdb_coordinator_cas_total`、`graphdb_coordinator_cleanup_runs_total`、
@@ -337,6 +391,11 @@ writer 回滚到 1.0 在布局上安全，但 1.0 writer 不会执行关系属�
 直到恢复 1.1 writer。不要删除 `extensions/v1.1` 对象，重新升级后会继续复用。
 需要把关系 schema 恢复到新租户时应使用 1.1 backup/restore；1.0 backup 格式
 只认识核心图。
+
+1.3 WAL writer 降级前，先停止新 WAL 准入，并等待 owner 路由的状态显示没有
+pending 记录且所有 durable 记录都已 finalized，再把该 writer 切回 direct。
+重启期间保持稳定的 `GRAPHDB_INSTANCE_ID` 并重新挂载原 WAL 卷；存在 pending
+WAL 时禁止降级。
 
 升级前先确认对象存储快照、manifest 和最近备份可读，再执行：
 

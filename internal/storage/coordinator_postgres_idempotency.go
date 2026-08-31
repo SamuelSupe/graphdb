@@ -43,6 +43,15 @@ func (c *PostgresCoordinator) ReserveCommit(
 	if reservation.Committed {
 		return reservation, nil
 	}
+	if reservation.OwnerToken == ownerToken {
+		ok, err := c.RenewCommit(ctx, tenantID, key, requestHash, ownerToken)
+		if err != nil {
+			return CommitReservation{}, err
+		}
+		if ok {
+			return reservation, nil
+		}
+	}
 	if pendingTTL <= 0 {
 		pendingTTL = coordinatorPendingReservationTTL
 	}

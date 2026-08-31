@@ -2,11 +2,36 @@
 
 [中文](capacity.zh-CN.md)
 
-GGraphDB 1.2 publishes a reproducible release envelope instead of an unbounded
-“large graph” claim. The machine-readable contract is
-`release/capacity-envelope.yaml`.
+GGraphDB 1.3 defines a release-gated multi-writer envelope instead of an
+unbounded “large graph” claim. The machine-readable contract is
+`release/capacity-envelope.yaml`. Historical 1.2 throughput numbers below are
+kept as historical evidence only and do not certify the 1.3 WAL profile.
 
-## 1.2 Release Gate
+## 1.3 Contract (evidence pending)
+
+The 1.3 PostgreSQL-CAS WAL profile requires evidence for:
+
+- 2, 4, and 8 writers concurrently receiving one tenant's ingest batches;
+- zero lost requests, duplicate graph versions, or duplicate effects for
+  cross-writer idempotency races;
+- successful CAS-order publication with batch rebase and repeated-conflict
+  shrinking, without terminal failure caused by a retry budget;
+- local durable acceptance during a temporary PostgreSQL outage until the WAL
+  high-water policy rejects new admission;
+- process-crash recovery from `ACCEPTED` through `FINALIZED` with the original
+  writer volume and stable `GRAPHDB_INSTANCE_ID`;
+- lifecycle fencing, owner-routed status, and `recovery_pending` behavior; and
+- rolling coexistence of 1.2 direct writers and 1.3 WAL writers, including
+  drain-before-downgrade.
+
+No 1.3 performance result is claimed until these runs produce commit-bound
+evidence. The supported durability boundary is process failure with the
+original WAL volume; permanent loss of that volume is outside the contract.
+The scaling target is across tenants. Eight same-tenant writers are a
+correctness and availability boundary, not a claim of linear single-tenant
+throughput.
+
+## Historical 1.2 Release Gate
 
 For each release candidate, CI must pass:
 
@@ -84,7 +109,7 @@ to the release evidence or performance system.
 | --- | --- | ---: | ---: | --- |
 | Development or evaluation | local files | 1 | 0 | `GRAPHDB_MODE=all`; no HA |
 | Small production | local + generic/native object store | 1 | 2+ | writer lease; readers scale independently |
-| Concurrent production | PostgreSQL + generic S3 | 2–8 | 2+ | Two active contenders per hot tenant in the published envelope; PG head is authoritative |
+| Concurrent production | PostgreSQL + generic S3 | 2–8 | 2+ | 1.3 WAL uses independent writer volumes and owner routing; PG provides coordination CAS while object storage remains graph authority |
 
 Starting validation resources—not support guarantees—are 4 vCPU/8 GiB for a
 writer, 2 vCPU/4 GiB for a reader, and an HA PostgreSQL service sized for the
@@ -101,10 +126,12 @@ strategy.
 - Query result `limit` is capped at 1,000. Use scans/streams for bulk export.
 - Keep normal collector batches near 200–500 logical groups. Very small batches
   amplify commits, manifests, idempotency records, and collector state.
-- GGraphDB 1.2 supports 2–8 deployed writers and certifies about 20 commits/s
-  per hot tenant with two active contenders. Eight-way same-tenant concurrency
-  remains a correctness gate, not a sustained-throughput claim. Higher
-  throughput requires graph/entity partitioning and a new capacity envelope.
+- The historical 1.2 envelope supports 2–8 deployed writers and measured about
+  20 commits/s per hot tenant with two active contenders. That result does not
+  certify 1.3 WAL. In 1.3, eight-way same-tenant concurrency remains a
+  correctness/availability boundary, not a sustained-throughput claim; the
+  throughput scale target is across tenants. Higher single-tenant throughput
+  requires graph/entity partitioning and a new capacity envelope.
 - The published 20 commits/s profile keeps automatic compaction enabled, uses
   a 1,000-entry compact threshold and a 1,500-entry write-backpressure limit,
   and runs maintenance at least every 30 seconds.

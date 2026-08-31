@@ -34,6 +34,22 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
 
+### 1.3 PostgreSQL-CAS multi-writer WAL contract
+
+The 1.3 implementation workstream defines an opt-in WAL profile for
+`POST /v1/ingest/batches`: every writer owns an independent local WAL and
+PostgreSQL performs tenant-head CAS plus coordination metadata updates. Object
+storage remains the graph-data authority; PostgreSQL never stores ingest
+payloads, WAL records, commit segments, or graph data. A `202` means durable
+takeover after local WAL `fsync`, not a committed graph version. CAS and
+temporary dependency failures are retried with rebase and batch shrinking.
+
+The profile supports 2–8 same-tenant writers in CAS order and is intended to
+scale across tenants. A stable `GRAPHDB_INSTANCE_ID` and owner-routed status URL
+are required. The contract is release-gated and this README does not claim
+that the current branch has passed its acceptance matrix; see the [1.3 design
+document](docs/ingest-wal-multiwriter-design.md).
+
 ### 1.2.4 query performance update
 
 - Large-bucket field-index lookups use a snapshot-level ordered cache, and a
@@ -95,7 +111,8 @@ production latency SLO.
 ```mermaid
 flowchart LR
   A[Collectors / API] --> W[Writer\\nGRAPHDB_MODE=writer]
-  W -. optional head CAS .-> P[(PostgreSQL\\ncoordination)]
+  W --> W1[Writer-local WAL\\n1.3 ingest only]
+  W -. optional head CAS .-> P[(PostgreSQL\\ncoordination metadata)]
   W --> O[(S3 / RustFS\\nParquet + Manifest)]
   O --> R[Reader fleet\\nGRAPHDB_MODE=reader]
   R --> Q[GraphQL / JSON DSL queries]
@@ -200,9 +217,11 @@ fragments, and 1.1 boundaries. The old `FIND`/`MATCH` text DSL remains at
 For production, use shared S3/RustFS storage and multiple readers. Keep the
 default `GRAPHDB_COORDINATION=local` topology at one writer per tenant, or use
 `GRAPHDB_COORDINATION=postgres` with generic S3/RustFS for 2–8 optimistic
-writers. Process readiness actively probes object storage, and PostgreSQL mode
-prunes completed coordination rows with bounded retention. Reader-fleet
-readiness remains the tenant traffic admission gate.
+writers. For the 1.3 WAL profile, give every writer a unique stable
+`GRAPHDB_INSTANCE_ID`, an independent persistent WAL volume, and route batch
+status requests back to that owner. Process readiness actively probes object
+storage, and PostgreSQL mode prunes completed coordination rows with bounded
+retention. Reader-fleet readiness remains the tenant traffic admission gate.
 `X-Tenant-ID` is routing metadata, not authentication. Put authentication,
 authorization, TLS, and rate limiting at the gateway or service mesh.
 
@@ -238,6 +257,7 @@ supported for older deployment workflows.
 | [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
 | [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | GraphQL, JSON DSL, pagination, streaming, explain, and profile. |
 | [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
+| [1.3 multi-writer WAL](docs/ingest-wal-multiwriter-design.md) · [中文](docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
 | [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, optional CI types, entities, relations, edges, and source governance. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
 | [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |
@@ -249,7 +269,8 @@ GGraphDB v1 is intentionally focused:
 
 - a general-purpose entity-relationship graph core, with CMDB governance as an optional domain profile;
 - local coordination defaults to one active writer per tenant; optional
-  PostgreSQL coordination provides optimistic multi-writer head CAS;
+  PostgreSQL coordination provides optimistic multi-writer head CAS. The 1.3
+  WAL profile adds independent writer-local durability only for ingest batches;
 - object storage as the recommended production persistence layer;
 - explicit reader freshness controls for strong-read workflows;
 - authentication and authorization delegated to the deployment boundary.

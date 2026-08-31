@@ -1,5 +1,6 @@
 schema_version: 1
-release: "1.2"
+release: "1.3"
+status: release_gated_evidence_pending
 scope: per_tenant
 
 correctness_concurrency_gate:
@@ -23,13 +24,34 @@ postgres_cas_gate:
   required_outcomes:
     lost_commits: 0
     duplicate_versions: 0
-    terminal_errors: 0
+    accepted_retryable_terminal_errors: 0
+    permanent_semantic_or_lifecycle_failures: allowed
+
+wal_contract:
+  ingest_endpoint_only: /v1/ingest/batches
+  durability: process_crash_with_original_writer_volume
+  permanent_writer_volume_loss: outside_contract
+  per_writer_wal: independent_persistent_volume
+  postgresql_schema: v5_coordination_metadata_only
+  postgresql_stores_payload: false
+  graph_authority: object_store_immutable_objects_and_manifest
+  accepted_response: durable_takeover_202
+  temporary_failure_policy: rebase_backoff_and_batch_shrink_without_terminal_failure
+  cross_writer_order: successful_head_cas
+  same_tenant_writers: 2-8
+  throughput_scale_target: across_tenants
+  owner_identity: GRAPHDB_INSTANCE_ID
+  owner_status: owner_routed_status_url_and_recovery_pending
+  lifecycle_policy: fencing_wins_over_unpublished_wal
+  downgrade_policy: drain_pending_wal_before_direct_mode
 
 compatibility_gate:
   v1_tag: release_20260722_01
   required_directions:
     - v1_writer_v11_reader
     - v11_writer_v1_reader
+    - v12_direct_writer_v13_wal_writer
+    - v13_wal_writer_v12_reader
 
 query_contract:
   maximum_result_limit: 1000
@@ -41,8 +63,11 @@ topology_contract:
     minimum_writers_per_tenant: 2
     maximum_writers_per_tenant: 8
     object_store_provider: generic-s3
+    graph_authority: object_store
+    wal_volume: one_persistent_volume_per_writer
 
 notes:
+  - The 1.3 WAL contract is not release evidence; all required correctness, recovery, and compatibility runs remain pending until commit-bound reports are produced.
   - This is a release gate, not a maximum supported graph size.
   - Eight deployed writers are supported, but the sustained hot-tenant throughput gate uses two active contenders.
   - Client retries rotate across writers to verify cluster-wide idempotency instead of relying on process affinity.

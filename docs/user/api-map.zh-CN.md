@@ -39,8 +39,10 @@
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `POST` | `/v1/commits` | 原子图变更提交。 |
-| `POST` | `/v1/ingest/batches` | 采集批次写入。 |
+| `POST` | `/v1/ingest/batches` | 采集批次写入；1.3 WAL 模式返回带 `writer_id` 和 owner 路由状态 URL 的 durable `202`。 |
+| `GET` | `/v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}` | 1.3 owner 路由的活跃/已完成采集状态。 |
 | `POST` | `/v1/imports` | 提交可恢复的 CSV 或 JSONL 批量导入。 |
+| `GET` | `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` | 活跃/已完成采集状态；1.3 WAL 状态必须路由给 owner writer。 |
 | `GET` | `/v1/ingest/collectors/{source}/{collector_id}` | 采集器状态。 |
 | `GET` | `/v1/ingest/deadletters/{source}` | 列出死信。 |
 | `POST` | `/v1/ingest/deadletters/{source}/replay` | 重放死信。 |

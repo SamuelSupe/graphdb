@@ -226,6 +226,45 @@ func TestIngestWALReopensAtCapacityForRecovery(t *testing.T) {
 	}
 }
 
+func TestIngestWALReservesControlStateCapacity(t *testing.T) {
+	config := testIngestWALConfig(t)
+	config.MaxBytes = 4096
+	config.SegmentBytes = config.MaxBytes
+	config.ControlReserveBytes = 512
+	acceptedPayload := make([]byte, 3560)
+	wal, _, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALAccepted, acceptedPayload); err != nil {
+		t.Fatalf("accepted payload: %v", err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALAccepted, nil); !errors.Is(err, ErrIngestWALFull) {
+		t.Fatalf("second accepted payload err = %v, want reserved capacity rejection", err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALPrepared, make([]byte, 400)); err != nil {
+		t.Fatalf("prepared state did not fit in reserved capacity: %v", err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALFinalized, make([]byte, 60)); err != nil {
+		t.Fatalf("finalized state did not fit in reserved capacity: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, records, err := OpenIngestWAL(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(records) != 3 {
+		t.Fatalf("recovered records = %d, want accepted/prepared/finalized", len(records))
+	}
+	if records[0].Type != IngestWALAccepted || records[1].Type != IngestWALPrepared || records[2].Type != IngestWALFinalized {
+		t.Fatalf("recovered record types = %#v", records)
+	}
+}
+
 func TestIngestWALReportsBackgroundWriterStartupFailure(t *testing.T) {
 	config := testIngestWALConfig(t)
 	wal := &IngestWAL{

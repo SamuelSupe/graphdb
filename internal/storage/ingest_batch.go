@@ -20,15 +20,18 @@ type IngestBatchEntry struct {
 }
 
 type IngestPreparedRequest struct {
-	FlushID           string        `json:"flush_id"`
-	BaseVersion       int64         `json:"base_version"`
-	BaseHeadCommitID  string        `json:"base_head_commit_id,omitempty"`
-	FinalVersion      int64         `json:"final_version"`
-	FinalHeadCommitID string        `json:"final_head_commit_id,omitempty"`
-	Result            IngestResult  `json:"result"`
-	Commit            *graph.Commit `json:"commit,omitempty"`
-	DataMD5           string        `json:"data_md5,omitempty"`
-	StartedAt         time.Time     `json:"started_at"`
+	FlushID                  string        `json:"flush_id"`
+	BaseVersion              int64         `json:"base_version"`
+	BaseHeadCommitID         string        `json:"base_head_commit_id,omitempty"`
+	BaseHeadRevision         int64         `json:"base_head_revision,omitempty"`
+	BaseGeneration           int64         `json:"base_generation,omitempty"`
+	BaseWriteContextRevision int64         `json:"base_write_context_revision,omitempty"`
+	FinalVersion             int64         `json:"final_version"`
+	FinalHeadCommitID        string        `json:"final_head_commit_id,omitempty"`
+	Result                   IngestResult  `json:"result"`
+	Commit                   *graph.Commit `json:"commit,omitempty"`
+	DataMD5                  string        `json:"data_md5,omitempty"`
+	StartedAt                time.Time     `json:"started_at"`
 }
 
 type IngestBatchHooks struct {
@@ -61,6 +64,7 @@ type ingestBatchCandidate struct {
 	resultManifest Manifest
 	prepared       bool
 	preparedPlan   *IngestPreparedRequest
+	reservation    *directCommitReservation
 }
 
 // IngestDurableBatch flushes one tenant queue under one tenant lock. Each
@@ -87,8 +91,10 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	if err := ValidateTenantID(tenantID); err != nil {
 		return nil, err
 	}
-	if s.coordinated() {
-		return nil, fmt.Errorf("durable ingest batching requires local coordination")
+	if s.coordinated() && s.RequireCoordinationMarker && !s.coordinationMarkerVerified.Load() {
+		if err := s.EnsurePostgresMarker(ctx); err != nil {
+			return nil, err
+		}
 	}
 	preparedEntries := make([]IngestBatchEntry, len(entries))
 	for index, entry := range entries {
@@ -108,17 +114,19 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
 		return nil, err
 	}
-	unlock, err := s.lockTenantForeground(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
-	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
-		return nil, err
-	}
-	ctx, err = s.bindCurrentWriterFence(ctx, tenantID)
-	if err != nil {
-		return nil, err
+	if !s.coordinated() {
+		unlock, err := s.lockTenantForeground(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+		if err := s.acquireWriterLease(ctx, tenantID); err != nil {
+			return nil, err
+		}
+		ctx, err = s.bindCurrentWriterFence(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return nil, err
@@ -134,17 +142,19 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	candidates := make([]*ingestBatchCandidate, 0, len(preparedEntries))
 	for index, entry := range preparedEntries {
 		request := entry.Request
-		if previous, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
-			return nil, err
-		} else if ok {
-			result := previous.Result
-			result.Skipped = true
-			result.SkipReason = IngestSkipReasonIdempotentReplay
-			results[index] = result
-			if err := s.repairIngestMetadataAfterSkip(ctx, tenantID, previous, true); err != nil {
-				return results, err
+		if !s.coordinated() {
+			if previous, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
+				return nil, err
+			} else if ok {
+				result := previous.Result
+				result.Skipped = true
+				result.SkipReason = IngestSkipReasonIdempotentReplay
+				results[index] = result
+				if err := s.repairIngestMetadataAfterSkip(ctx, tenantID, previous, true); err != nil {
+					return results, err
+				}
+				continue
 			}
-			continue
 		}
 		result, mutations, appliedIndices := buildIngestMutations(request)
 		result.BatchID = request.BatchID
@@ -162,19 +172,47 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 			if entry.Prepared.Result.BatchID != request.BatchID {
 				return results, fmt.Errorf("%w: prepared ingest batch identity changed", ErrIngestRepairRequired)
 			}
-			published, err := s.preparedIngestPublished(ctx, tenantID, *entry.Prepared)
-			if err != nil {
-				return results, err
+			stale := false
+			if s.coordinated() {
+				stale, err = s.coordinatedPreparedIngestStale(ctx, tenantID, *entry.Prepared)
+				if err != nil {
+					return results, err
+				}
 			}
-			if entry.Prepared.Commit == nil || published {
+			published := false
+			if !stale {
+				published, err = s.preparedIngestPublished(ctx, tenantID, *entry.Prepared)
+				if err != nil {
+					return results, err
+				}
+			}
+			if published {
 				candidate.result = entry.Prepared.Result
 				candidate.metadataOnly = true
-			} else {
+			} else if entry.Prepared.Commit != nil && !stale {
 				candidate.commit = *entry.Prepared.Commit
 				candidate.mutations = candidate.commit.Mutations
 				candidate.prepared = true
 			}
-			candidate.preparedPlan = entry.Prepared
+			if !stale {
+				candidate.preparedPlan = entry.Prepared
+			}
+		}
+		if s.coordinated() {
+			reservation, replay, err := s.reserveCoordinatedIngestCandidate(ctx, tenantID, candidate)
+			if err != nil {
+				return results, err
+			}
+			candidate.reservation = reservation
+			if replay != nil {
+				applyCommitResultToIngest(&candidate.result, request, *replay)
+				candidate.result.Skipped = true
+				candidate.result.SkipReason = IngestSkipReasonIdempotentReplay
+				candidate.metadataOnly = true
+				candidate.prepared = false
+				candidate.preparedPlan = nil
+				candidate.resultManifest = replay.Manifest
+			}
 		}
 		candidates = append(candidates, candidate)
 	}
@@ -210,7 +248,7 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		logicalBytes  int64
 		fallback      bool
 	)
-	if len(mutationCandidates) > 0 {
+	if len(mutationCandidates) > 0 || coordinatedBatchHasReservations(candidates) {
 		loaded, err = s.loadForWriteLocked(ctx, tenantID)
 		if err != nil {
 			return results, err
@@ -219,7 +257,11 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 			tenantTraceAttr(tenantID),
 			attribute.Int("graphdb.ingest.batch_apply.requests", len(mutationCandidates)),
 		)
-		finalGraph, commitItems, fallback, err = s.applyIngestBatchCandidates(applyCtx, tenantID, loaded, mutationCandidates)
+		finalGraph = loaded.Graph
+		finalManifest = loaded.Manifest
+		if len(mutationCandidates) > 0 {
+			finalGraph, commitItems, fallback, err = s.applyIngestBatchCandidates(applyCtx, tenantID, loaded, mutationCandidates)
+		}
 		applySpan.SetAttributes(
 			attribute.Int("graphdb.ingest.batch_apply.logical_commits", len(commitItems)),
 			attribute.Bool("graphdb.ingest.batch_apply.fallback", fallback),
@@ -231,13 +273,13 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		if err := s.checkIngestProjectedCommitTail(ctx, tenantID, loaded.Manifest, len(commitItems)); err != nil {
 			return results, err
 		}
-		finalManifest = loaded.Manifest
 		if len(commitItems) > 0 {
 			finalManifest, logicalBytes, err = s.prepareIngestBatchManifest(ctx, tenantID, loaded, finalGraph, commitItems)
 			if err != nil {
 				return results, err
 			}
 		}
+		prepareCoordinatedMetadataOnlyResults(loaded.Manifest, candidates)
 	}
 	stats := ingestBatchStats(candidates, commitItems, fallback)
 	span.SetAttributes(
@@ -248,7 +290,7 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		attribute.Bool("graphdb.ingest.batch.fallback", stats.Fallback),
 	)
 	if hooks.Prepared != nil {
-		plans, err := s.preparedIngestBatchPlans(ctx, tenantID, preparedEntries, candidates, loaded.Manifest, finalManifest)
+		plans, err := s.preparedIngestBatchPlans(ctx, tenantID, preparedEntries, candidates, loaded.Manifest, loaded.Meta, finalManifest)
 		if err != nil {
 			return results, err
 		}
@@ -257,7 +299,11 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		}
 	}
 	if len(commitItems) > 0 {
-		if err := s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, commitItems, mutationCandidates, logicalBytes); err != nil {
+		if err := s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, commitItems, candidates, logicalBytes); err != nil {
+			return results, err
+		}
+	} else if s.coordinated() && coordinatedBatchHasReservations(candidates) {
+		if err := s.completeCoordinatedIngestBatch(ctx, tenantID, loaded, candidates); err != nil {
 			return results, err
 		}
 	}
@@ -280,6 +326,9 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	endStorageSpan(metadataSpan, metadataErr)
 	if metadataErr != nil {
 		return results, metadataErr
+	}
+	if err := s.releaseFailedIngestReservations(candidates); err != nil {
+		return results, err
 	}
 	return results, nil
 }
@@ -557,7 +606,12 @@ func (s *TenantStore) publishIngestBatch(
 	if ref != expected {
 		return fmt.Errorf("prepared commit segment changed before publish")
 	}
-	meta, err := s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
+	var meta ObjectMeta
+	if s.coordinated() {
+		meta, err = s.putCoordinatedIngestBatchManifest(ctx, tenantID, manifest, loaded.Meta, candidates)
+	} else {
+		meta, err = s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
+	}
 	if err != nil {
 		s.deleteWriteCache(tenantID)
 		return err
@@ -702,6 +756,7 @@ func (s *TenantStore) preparedIngestBatchPlans(
 	entries []IngestBatchEntry,
 	candidates []*ingestBatchCandidate,
 	base Manifest,
+	baseMeta ObjectMeta,
 	final Manifest,
 ) ([]*IngestPreparedRequest, error) {
 	if base.TenantID == "" {
@@ -731,6 +786,9 @@ func (s *TenantStore) preparedIngestBatchPlans(
 		if existing.FlushID != candidate.preparedPlan.FlushID ||
 			existing.BaseVersion != candidate.preparedPlan.BaseVersion ||
 			existing.BaseHeadCommitID != candidate.preparedPlan.BaseHeadCommitID ||
+			existing.BaseHeadRevision != candidate.preparedPlan.BaseHeadRevision ||
+			existing.BaseGeneration != candidate.preparedPlan.BaseGeneration ||
+			existing.BaseWriteContextRevision != candidate.preparedPlan.BaseWriteContextRevision ||
 			existing.FinalVersion != candidate.preparedPlan.FinalVersion ||
 			existing.FinalHeadCommitID != candidate.preparedPlan.FinalHeadCommitID {
 			return nil, fmt.Errorf("%w: mixed prepared flush plans", ErrIngestRepairRequired)
@@ -764,6 +822,14 @@ func (s *TenantStore) preparedIngestBatchPlans(
 		}
 	}
 
+	baseToken := coordinatedHeadToken{}
+	if s.coordinated() {
+		var err error
+		baseToken, err = parseCoordinatedHeadToken(baseMeta)
+		if err != nil {
+			return nil, err
+		}
+	}
 	plans := make([]*IngestPreparedRequest, len(entries))
 	for _, candidate := range candidates {
 		if candidate.preparedPlan != nil {
@@ -774,14 +840,17 @@ func (s *TenantStore) preparedIngestBatchPlans(
 			continue
 		}
 		plan := &IngestPreparedRequest{
-			FlushID:           flushID,
-			BaseVersion:       base.Version,
-			BaseHeadCommitID:  base.HeadCommitID,
-			FinalVersion:      final.Version,
-			FinalHeadCommitID: final.HeadCommitID,
-			Result:            candidate.result,
-			DataMD5:           final.DataMD5,
-			StartedAt:         candidate.started,
+			FlushID:                  flushID,
+			BaseVersion:              base.Version,
+			BaseHeadCommitID:         base.HeadCommitID,
+			BaseHeadRevision:         baseToken.Revision,
+			BaseGeneration:           baseToken.Generation,
+			BaseWriteContextRevision: baseToken.ContextRevision,
+			FinalVersion:             final.Version,
+			FinalHeadCommitID:        final.HeadCommitID,
+			Result:                   candidate.result,
+			DataMD5:                  final.DataMD5,
+			StartedAt:                candidate.started,
 		}
 		if candidate.changed {
 			commit := candidate.commit

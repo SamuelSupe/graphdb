@@ -81,8 +81,9 @@ func (s *Server) registerCommonRoutes(mux *http.ServeMux) {
 func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 	s.registerRoutes(mux,
 		routeSpec{pattern: "POST /v1/commits", handler: s.commit, mutation: true},
-		routeSpec{pattern: "POST /v1/ingest/batches", handler: s.ingest, mutation: true},
-		routeSpec{pattern: "GET /v1/ingest/batches/", handler: s.ingestBatchStatus},
+		routeSpec{pattern: "POST /v1/ingest/batches", handler: s.ingest, mutation: true, bypassTenantLifecycle: true},
+		routeSpec{pattern: "GET /v1/ingest/batches/", handler: s.ingestBatchStatus, bypassTenantLifecycle: true},
+		routeSpec{pattern: "GET /v1/ingest/writers/", handler: s.ingestBatchStatus, bypassTenantLifecycle: true},
 		routeSpec{pattern: "POST /v1/imports", handler: s.startImport, mutation: true},
 		routeSpec{pattern: "GET /v1/entities", handler: s.listEntities},
 		routeSpec{pattern: "GET /v1/entities/stream", handler: s.streamEntities},

@@ -233,6 +233,7 @@ func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantI
 
 func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, record IngestBatchRecord) error {
 	record.TenantID = tenantID
+	record.Result = canonicalStoredIngestResult(record.Result)
 	data, err := marshalParquetIngestRecord(ctx, record)
 	if err != nil {
 		if record.Request.IdempotencyKey != "" &&
@@ -332,6 +333,8 @@ func ingestRecordSameResult(stored IngestBatchRecord, incoming IngestBatchRecord
 	if !ingestRecordRequestEqual(stored.Request, incoming.Request) {
 		return false
 	}
+	stored.Result = canonicalStoredIngestResult(stored.Result)
+	incoming.Result = canonicalStoredIngestResult(incoming.Result)
 	stored.Result.SkipReason = ""
 	incoming.Result.SkipReason = ""
 	storedResult, err := json.Marshal(stored.Result)
@@ -343,6 +346,14 @@ func ingestRecordSameResult(stored IngestBatchRecord, incoming IngestBatchRecord
 		return false
 	}
 	return bytes.Equal(storedResult, incomingResult)
+}
+
+func canonicalStoredIngestResult(result IngestResult) IngestResult {
+	if result.SkipReason == IngestSkipReasonIdempotentReplay {
+		result.Skipped = false
+		result.SkipReason = ""
+	}
+	return result
 }
 
 func ingestRecordMatchesRequest(record IngestBatchRecord, tenantID string, request IngestRequest) bool {

@@ -78,8 +78,20 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 	t.Run("postgres", func(t *testing.T) {
 		setPostgresConfigEnv(t)
 		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "requires GRAPHDB_COORDINATION=local") {
-			t.Fatalf("Load err = %v, want local coordination boundary", err)
+		t.Setenv("GRAPHDB_INSTANCE_ID", "writer-a")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load postgres+cas+wal: %v", err)
+		}
+		if cfg.CoordinationMode() != storage.CoordinationPostgres || cfg.WriterTopology != storage.WriterTopologyCAS || cfg.IngestMode != "wal" || cfg.InstanceID != "writer-a" || cfg.IngestServiceConfig().OwnerID != "writer-a" {
+			t.Fatalf("postgres+cas+wal config = %#v", cfg)
+		}
+	})
+	t.Run("postgres requires stable instance id", func(t *testing.T) {
+		setPostgresConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GRAPHDB_INSTANCE_ID") {
+			t.Fatalf("Load err = %v, want stable instance id validation", err)
 		}
 	})
 	t.Run("reader", func(t *testing.T) {

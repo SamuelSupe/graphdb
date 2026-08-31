@@ -39,8 +39,8 @@ The following top-level `code` values are stable:
 | `version_conflict` | 409 | no | Expected version precondition failed. |
 | `idempotency_conflict` | 409 | no | Idempotency key belongs to a different request. |
 | `idempotency_in_progress` | 409 | yes | Another writer is still processing the same idempotency key. |
-| `write_conflict` | 409 | yes | The tenant head changed until the optimistic retry budget was exhausted. |
-| `coordinator_unavailable` | 503 | yes | The configured external write coordinator is unavailable. |
+| `write_conflict` | 409 | yes | A direct/preconditioned write observed a changed tenant head. For a 1.3 WAL-accepted batch, CAS loss is an internal rebase/shrink retry condition rather than a terminal result. |
+| `coordinator_unavailable` | 503 | yes | The configured external write coordinator is unavailable for a synchronous operation; 1.3 WAL may continue local durable admission until its high-water policy is reached, without falling back to local coordination. |
 | `commit_tail_too_long` | 429 | yes | Commit tail is above the write threshold. |
 | `index_rebuild_running` | 429 | yes | Index rebuild is running for this tenant. |
 | `maintenance_task_running` | 429 | yes | Maintenance work is blocking ordinary writes. |

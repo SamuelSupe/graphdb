@@ -66,6 +66,20 @@ type HeadPublishRequest struct {
 	CollectorState               *CollectorStateUpdate
 }
 
+type IngestBatchCompletion struct {
+	IdempotencyKey string
+	RequestHash    string
+	OwnerToken     string
+	CommitID       string
+	Result         json.RawMessage
+	CollectorState *CollectorStateUpdate
+}
+
+type IngestBatchPublishRequest struct {
+	Head  HeadPublishRequest
+	Items []IngestBatchCompletion
+}
+
 type WriteContextPublishRequest struct {
 	TenantID           string
 	ExpectedRevision   int64
@@ -180,6 +194,8 @@ type CoordinatorCommitStore interface {
 	AbortCommit(context.Context, string, string, string, string) error
 	PublishHead(context.Context, HeadPublishRequest) (CoordinationHead, bool, error)
 	CompleteNoop(context.Context, HeadPublishRequest) (bool, error)
+	PublishIngestBatch(context.Context, IngestBatchPublishRequest) (CoordinationHead, bool, error)
+	CompleteIngestBatch(context.Context, IngestBatchPublishRequest) (bool, error)
 	PublishWriteContext(context.Context, WriteContextPublishRequest) (CoordinationHead, bool, error)
 }
 

@@ -56,12 +56,27 @@ func run(args []string) error {
 		return coordinatorCommand(args[1:], store, coordinator)
 	}
 	if coordinator != nil {
-		if err := coordinator.CheckSchema(context.Background()); err != nil {
-			return err
-		}
 		store.SetCoordinator(coordinator)
-		if err := store.EnsurePostgresMarker(context.Background()); err != nil {
-			return err
+		startupTimeout := cfg.ReadinessTimeout
+		if startupTimeout <= 0 {
+			startupTimeout = 2 * time.Second
+		}
+		startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+		schemaErr := coordinator.CheckSchema(startupCtx)
+		cancel()
+		walServe := command.kind == commandServe && cfg.IngestMode == "wal"
+		if schemaErr != nil && !(walServe &&
+			(errors.Is(schemaErr, storage.ErrCoordinatorUnavailable) ||
+				errors.Is(schemaErr, context.DeadlineExceeded))) {
+			return schemaErr
+		}
+		markerCtx, markerCancel := context.WithTimeout(context.Background(), startupTimeout)
+		markerErr := store.EnsurePostgresMarker(markerCtx)
+		markerCancel()
+		if markerErr != nil && !(walServe &&
+			(errors.Is(markerErr, storage.ErrObjectStoreUnavailable) ||
+				errors.Is(markerErr, context.DeadlineExceeded))) {
+			return markerErr
 		}
 	} else if command.mayWrite(cfg.Mode) {
 		if err := store.EnsureLocalWriterAllowed(context.Background()); err != nil {

@@ -32,6 +32,19 @@ SPARQL、本体推理或历史图引擎。
 | 有界读路径 | 冷图加载、查询准入、执行预算和缓存驻留分别设有独立边界。 |
 | 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
 
+### 1.3 PostgreSQL-CAS 多 writer WAL 合同
+
+1.3 实现工作流定义了一个可选的 `/v1/ingest/batches` WAL profile：每个
+writer 拥有独立本地 WAL，PostgreSQL 负责 tenant-head CAS 和协调元数据更新。
+对象存储仍是图数据权威；PostgreSQL 不保存 ingest payload、WAL record、commit
+segment 或图数据。`202` 表示本地 WAL `fsync` 后已持久接管，不是图版本已经提交。
+CAS 和依赖的暂时故障通过重基与缩批重试。
+
+该 profile 支持按 CAS 顺序进行同租户 2–8 writer 并发，扩展目标是跨租户。每个
+writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID` 和 owner-routed 状态 URL。该合同
+仍受发行门禁约束；本文不宣称当前分支已经通过验收矩阵，详见
+[1.3 设计文档](docs/ingest-wal-multiwriter-design.zh-CN.md)。
+
 ### 1.2.4 查询性能更新
 
 - 大 bucket 字段索引查询使用快照级有序缓存；稳定的流式归并保持结果顺序确定，
@@ -82,7 +95,8 @@ traverse、impact 和 shortest path 查询。微基准结果会随数据与硬�
 ```mermaid
 flowchart LR
   A[采集器 / API] --> W[Writer\\nGRAPHDB_MODE=writer]
-  W -. 可选 head CAS .-> P[(PostgreSQL\\n协调状态)]
+  W --> W1[Writer 本地 WAL\\n仅 1.3 ingest]
+  W -. 可选 head CAS .-> P[(PostgreSQL\\n协调元数据)]
   W --> O[(S3 / RustFS\\nParquet + Manifest)]
   O --> R[Reader 集群\\nGRAPHDB_MODE=reader]
   R --> Q[GraphQL / JSON DSL 查询]
@@ -183,9 +197,11 @@ schema、错误、alias、fragment 和 1.1 边界见
 
 生产部署建议使用共享 S3/RustFS 和多个 reader。默认
 `GRAPHDB_COORDINATION=local` 时每租户保持一个 writer；需要 2–8 个乐观并发
-writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍以
-进程 readiness 主动探测对象存储，PostgreSQL 模式按保留窗口清理已完成的
-协调记录；租户流量仍以 reader fleet readiness 作为接入条件。
+writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。1.3 WAL
+profile 下，每个 writer 还必须有唯一稳定的 `GRAPHDB_INSTANCE_ID`、独立持久
+WAL 卷，并把 batch status 请求路由回 owner。进程 readiness 主动探测对象存储，
+PostgreSQL 模式按保留窗口清理已完成的协调记录；租户流量仍以 reader fleet
+readiness 作为接入条件。
 `X-Tenant-ID` 是租户路由标识，不是认证机制；认证、授权、TLS 和限流应由
 网关或服务网格提供。
 
@@ -220,6 +236,7 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
 | [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | GraphQL、JSON DSL、分页、流式、explain 和 profile。 |
 | [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
+| [1.3 多 writer WAL](docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
 | [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |
@@ -231,7 +248,8 @@ writer 时，对 generic S3/RustFS 使用 `GRAPHDB_COORDINATION=postgres`。仍�
 GGraphDB v1 目前明确保持以下边界：
 
 - 通用实体关系图内核，CMDB 数据治理作为可选的领域 profile；
-- 本地协调默认每租户一个活跃 writer；可选 PostgreSQL 协调提供乐观多 writer head CAS；
+- 本地协调默认每租户一个活跃 writer；可选 PostgreSQL 协调提供乐观多 writer
+  head CAS；1.3 WAL profile 仅为 ingest batch 增加独立 writer 本地持久接管；
 - 对象存储是生产持久化的推荐来源；
 - 强读场景通过显式 reader freshness 控制；
 - 认证和授权由部署边界负责。

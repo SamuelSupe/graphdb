@@ -435,17 +435,18 @@ func (cfg Config) validateIngest() error {
 	default:
 		return fmt.Errorf("unsupported GRAPHDB_INGEST_MODE %q", cfg.IngestMode)
 	}
-	if cfg.coordinationMode() != storage.CoordinationLocal {
-		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal requires GRAPHDB_COORDINATION=local")
-	}
 	if cfg.Mode == "reader" {
 		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal is unavailable in reader mode")
+	}
+	if cfg.coordinationMode() == storage.CoordinationPostgres && cfg.InstanceID == "" {
+		return fmt.Errorf("GRAPHDB_INSTANCE_ID is required when GRAPHDB_INGEST_MODE=wal and GRAPHDB_COORDINATION=postgres")
 	}
 	return cfg.IngestServiceConfig().Validate()
 }
 
 func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 	return storage.IngestServiceConfig{
+		OwnerID: cfg.InstanceID,
 		WAL: storage.IngestWALConfig{
 			Dir:           cfg.IngestWALDir,
 			Durability:    cfg.IngestWALDurability,

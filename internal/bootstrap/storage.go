@@ -34,6 +34,7 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 	store := storage.NewTenantStoreWithOptions(objects, cfg.Prefix, storage.TenantStoreOptions{
 		InstanceID:                 cfg.InstanceID,
 		ReaderID:                   readerID(cfg),
+		RequireCoordinationMarker:  cfg.CoordinationMode() == storage.CoordinationPostgres,
 		MaxWriteCacheBytes:         cfg.WriteCacheMaxBytes,
 		WriteEntityRecords:         cfg.IndexEntityRecords,
 		UseEntityRecordsForRead:    cfg.IndexEntityRecords,

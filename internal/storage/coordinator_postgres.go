@@ -21,6 +21,25 @@ type PostgresCoordinator struct {
 }
 
 func NewPostgresCoordinator(ctx context.Context, dsn, schema, namespace string) (*PostgresCoordinator, error) {
+	coordinator, err := newPostgresCoordinator(ctx, dsn, schema, namespace)
+	if err != nil {
+		return nil, err
+	}
+	if err := coordinator.pool.Ping(ctx); err != nil {
+		coordinator.pool.Close()
+		return nil, coordinatorUnavailable(err)
+	}
+	return coordinator, nil
+}
+
+// NewPostgresCoordinatorLazy constructs a coordinator without requiring an
+// initial connection. WAL writers use it so recovered owner routes and local
+// admission can start while PostgreSQL is temporarily unavailable.
+func NewPostgresCoordinatorLazy(ctx context.Context, dsn, schema, namespace string) (*PostgresCoordinator, error) {
+	return newPostgresCoordinator(ctx, dsn, schema, namespace)
+}
+
+func newPostgresCoordinator(ctx context.Context, dsn, schema, namespace string) (*PostgresCoordinator, error) {
 	dsn = strings.TrimSpace(dsn)
 	namespace = strings.TrimSpace(namespace)
 	if dsn == "" {
@@ -37,10 +56,6 @@ func NewPostgresCoordinator(ctx context.Context, dsn, schema, namespace string) 
 	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		return nil, coordinatorUnavailable(err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
 		return nil, coordinatorUnavailable(err)
 	}
 	return &PostgresCoordinator{pool: pool, schema: schema, namespace: namespace}, nil

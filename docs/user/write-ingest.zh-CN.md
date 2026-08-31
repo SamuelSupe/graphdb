@@ -258,7 +258,7 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `failures`：item 级错误；
 - `conflicts`：被抑制冲突和提交失败原因。
 
-### 本地 WAL 模式（1.1.2）
+### 本地 WAL 模式（1.2 兼容 profile）
 
 默认 `GRAPHDB_INGEST_MODE=direct` 保持原来的同步 `200/207` 行为。单 writer、
 `GRAPHDB_COORDINATION=local` 部署可以显式设置
@@ -321,6 +321,54 @@ written/durable LSN、待处理请求与最老等待时间、状态缓存命中/
 write、flush、batch apply、publish 和 metadata finalize 会通过 OTLP/HTTP
 导出。异步 group write 和 flush 使用 OTel links 关联原请求 span；accepted
 记录还会保存 trace context，因此进程恢复后仍可关联原始写入请求。
+
+### PostgreSQL-CAS 多 writer WAL（1.3 合同）
+
+1.3 profile 把每个 writer 的独立本地 WAL 与 PostgreSQL head CAS 组合起来。
+该能力仍受发行门禁约束；以下内容是合同，不宣称某个构建已经通过多 writer
+或崩溃恢复矩阵。完整协议见
+[1.3 设计文档](../ingest-wal-multiwriter-design.zh-CN.md)。
+
+每个 writer 都必须配置 `GRAPHDB_COORDINATION=postgres`、
+`GRAPHDB_WRITER_TOPOLOGY=cas`、`GRAPHDB_INGEST_MODE=wal`、generic S3 兼容
+对象存储和唯一稳定的 `GRAPHDB_INSTANCE_ID`。每个 writer 必须挂载自己的持久
+`GRAPHDB_INGEST_WAL_DIR`；两个 writer 绝不能共享 WAL 目录或卷。PostgreSQL
+schema v5 只保存协调元数据（tenant head/generation、幂等 reservation/result、
+collector state 和 batch metadata），不保存 ingest payload、WAL record、commit
+segment 或图数据。图数据真源仍是对象存储。
+
+完成静态校验并在本地 WAL `fsync` 后，writer 可以不等待 PostgreSQL 可达就返回
+`202 Accepted`。响应包含 `writer_id` 和 owner-routed `status_url`。网关必须
+根据稳定实例 ID 把 status URL 路由给 WAL 所有者；该 writer 正在恢复时，状态
+仍须可查询，并可报告 `recovery_pending=true`。`202` 表示 writer 已持久接管，
+不是图版本已经提交。
+
+1.3 owner 路径为：
+
+```text
+GET /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}
+```
+
+旧的 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` 状态路径继续
+保留以兼容已有客户端，但 owner-routed URL 不能发送给随机 writer。
+
+WAL flush 按租户组成有界批次。单个 writer 保持本地 WAL FIFO；不同 writer 按
+成功的 PostgreSQL head CAS 排序，不按 HTTP 到达时间排序。CAS、PostgreSQL 和
+对象存储暂时错误都必须可重试：重新加载最新 head、重基、指数退避加抖动，并在
+持续冲突后缩小批次前缀，最终退化为单请求。已接收请求不能仅因重试预算耗尽而
+进入终态失败。确定性的语义错误和生命周期 fencing（freeze/delete/restore）可以
+最终 `failed`；生命周期 fencing 优先于未发布 WAL，但不会回滚已经 CAS 发布的
+版本。
+
+该 profile 支持同一租户 2–8 个并发 writer。这是正确性和可用性边界，吞吐扩展
+目标是跨租户，而不是单热点租户线性提速。PostgreSQL 不可用时不会回退到 local
+coordination。writer 可以继续接收本地已持久的请求，直到 WAL 高水位；达到高水位
+后，在再写入 payload 前拒绝新准入，同时继续排空 WAL 和提供 owner status。
+
+滚动升级先以 direct 模式部署 1.3 二进制并验证现有 v5 协调平面，再逐个 writer
+启用 WAL。降级前先停止新 WAL 准入，等待该 writer 的 WAL 全部 finalized，再切回
+direct；存在 pending WAL 时禁止降级。1.2 direct 与 1.3 WAL 只能在文档化的上线
+顺序和共享对象布局下混跑。
 
 CMDB 采集场景的批次建议：
 

@@ -12,6 +12,14 @@ func newCoordinator(ctx context.Context, cfg config.Config) (storage.WriteCoordi
 	if cfg.CoordinationMode() == storage.CoordinationLocal {
 		return nil, nil
 	}
+	if cfg.IngestMode == "wal" {
+		return storage.NewPostgresCoordinatorLazy(
+			ctx,
+			cfg.PostgresDSN,
+			cfg.PostgresSchema,
+			cfg.CoordinatorNamespace,
+		)
+	}
 	return storage.NewPostgresCoordinator(
 		ctx,
 		cfg.PostgresDSN,

@@ -15,6 +15,7 @@
 - [部署与运维](user/deploy-ops.zh-CN.md) · [English](user/deploy-ops.md)
 - [数据模型](user/data-model.zh-CN.md) · [English](user/data-model.md)
 - [写入与采集](user/write-ingest.zh-CN.md) · [English](user/write-ingest.md)
+- [1.3 PostgreSQL-CAS 多 writer WAL](ingest-wal-multiwriter-design.zh-CN.md) · [English](ingest-wal-multiwriter-design.md)
 - [读取与查询](user/read-query.zh-CN.md) · [English](user/read-query.md)
 - [扫描与导出](user/scan-export.zh-CN.md) · [English](user/scan-export.md)
 - [租户与配置](user/tenant-config.zh-CN.md) · [English](user/tenant-config.md)

@@ -3,6 +3,26 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [Unreleased] - 1.3 workstream
+
+### Contract
+
+- Define an opt-in PostgreSQL-CAS multi-writer WAL profile for
+  `POST /v1/ingest/batches`, with an independent persistent WAL per writer,
+  bounded same-tenant batch rebase/shrink, stable owner-routed status, and
+  `202` durable-takeover semantics.
+- Keep PostgreSQL as coordination metadata/head CAS only; object storage
+  remains the graph-data authority and stores immutable graph objects.
+- Define rolling compatibility between 1.2 direct writers and 1.3 WAL writers,
+  with drain-before-downgrade and a process-crash/original-volume durability
+  boundary.
+
+### Release status
+
+- The 1.3 contract is release-gated. No 1.3 performance, crash-recovery, or
+  multi-writer acceptance result is claimed until commit-bound evidence is
+  produced.
+
 ## [1.2.4] - 2026-08-31
 
 ### Improved

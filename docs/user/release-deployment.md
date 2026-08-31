@@ -6,6 +6,10 @@ This guide is for service owners who need to download, deploy, upgrade, and
 roll back GGraphDB 1.2.4. Examples use the released `v1.2.4` tag, available at
 <https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.4>.
 
+The 1.3 PostgreSQL-CAS multi-writer WAL profile is documented below as a
+release-gated workstream. No 1.3 archive or acceptance result is implied by
+this guide until a 1.3 tag and commit-bound evidence are published.
+
 ## 1. Download and verify
 
 The release page provides:
@@ -107,8 +111,9 @@ docker compose up -d --build
 ## 4. RustFS writer/reader deployment
 
 This topology uses one GGraphDB binary and separates writer and reader traffic
-through runtime modes and routing. Keep one active writer per tenant; readers
-load from shared object storage.
+through runtime modes and routing. The 1.2 direct profile keeps one active
+writer per tenant; the 1.3 PostgreSQL-CAS profile allows 2–8 writers with
+independent WAL volumes. Readers load from shared object storage.
 
 ```sh
 docker compose -f docker-compose.rustfs.yml up -d --build
@@ -184,7 +189,7 @@ Common runtime settings:
 - `GRAPHDB_MAINTENANCE_INTERVAL`: compact, GC, and index maintenance interval.
 - `GRAPHDB_OTLP_ENDPOINT`: optional OTLP/HTTP trace receiver.
 
-### Optional PostgreSQL multi-writer coordination
+### PostgreSQL multi-writer coordination (1.2 direct profile)
 
 `GRAPHDB_COORDINATION=local` remains the default and keeps the 1.0 writer lease
 and object-manifest CAS behavior. To run 2–8 optimistic writers for the same
@@ -213,6 +218,67 @@ OSS/OBS/COS providers remain in local single-writer coordination. PostgreSQL
 failure never falls back to local coordination: writes return
 `503 coordinator_unavailable`; readers may serve a cached version, but return
 `reader_not_fresh` when it cannot satisfy `min_version`.
+
+### 1.3 PostgreSQL-CAS WAL profile (release-gated)
+
+The 1.3 profile adds local durable ingest admission to the PostgreSQL-CAS
+topology. It applies only to `POST /v1/ingest/batches`; `/v1/commits`, schema,
+tenant lifecycle, and maintenance writes keep their existing paths and fencing.
+Each writer must set a unique stable `GRAPHDB_INSTANCE_ID` and mount an
+independent persistent WAL volume. Never share a WAL directory between writer
+instances.
+
+```sh
+GRAPHDB_MODE=writer
+GRAPHDB_STORAGE=s3
+S3_PROVIDER=generic-s3
+GRAPHDB_COORDINATION=postgres
+GRAPHDB_WRITER_TOPOLOGY=cas
+GRAPHDB_COORDINATOR_NAMESPACE=production-a
+GRAPHDB_INSTANCE_ID=writer-a
+GRAPHDB_INGEST_MODE=wal
+GRAPHDB_INGEST_WAL_DIR=/var/lib/graphdb/wal/ingest
+GRAPHDB_INGEST_WAL_DURABILITY=sync
+```
+
+After static request validation and local WAL `fsync`, a writer may return
+`202 Accepted` without a PostgreSQL round trip. The response contains a stable
+`writer_id` and an owner-routed `status_url`; route status requests to that
+writer, including while it reports `recovery_pending`. `202` means durable
+takeover by the writer, not a committed graph version. PostgreSQL schema v5
+stores head/generation CAS and coordination metadata only. It does not store
+ingest payloads, WAL records, commit segments, or graph data; object storage
+remains authoritative for the graph.
+
+On startup, a WAL writer may start degraded when PostgreSQL or the
+coordination-marker object-store probe returns a transient unavailable or
+timeout error. It restores the local owner identity and WAL first, then may
+serve owner status and accept durable `202` responses while those dependencies
+are unreachable. A missing or mismatched required schema or coordination marker
+is not transient; fail closed instead of accepting writes on an unverified
+coordination plane.
+
+The owner status endpoint is
+`GET /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}`. The
+legacy `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` path remains
+available for compatibility, but must not be used as a random-writer route for
+an owner-specific request.
+
+Same-tenant writers preserve their own local WAL FIFO. Across writers, the
+successful PostgreSQL head-CAS order determines version order; there is no
+global HTTP-arrival FIFO. CAS, temporary PostgreSQL, and temporary object-store
+errors are retried through rebase, backoff, and batch shrinking. Accepted
+requests are not terminally failed because a retry budget was reached.
+Deterministic semantic or lifecycle fencing errors may finalize as `failed`.
+During a PostgreSQL outage, local durable admission may continue until the WAL
+high-water policy rejects new payloads before writing them.
+
+The target topology is two to eight writers per tenant, with horizontal scale
+across tenants rather than a linear single-tenant throughput claim. The
+durability boundary covers process failure while the original writer volume
+can be recovered; permanent volume loss is outside the contract. For the
+complete protocol and pending evidence list, see the [1.3 WAL design](../ingest-wal-multiwriter-design.md)
+and [1.3 release checklist](../release-checklist.md).
 
 Initialize and inspect the coordination plane with:
 
@@ -289,7 +355,8 @@ When enabling PostgreSQL coordination, use this stricter rollout:
 4. Scale to the desired writer count. Admit 1.0 readers only when
    `max_legacy_mirror_lag=0` and `outbox_backlog=0`.
 5. Permanently remove 1.0 writer routes and write credentials. A 1.0 reader is
-   eventual-consistent; PostgreSQL remains the only authoritative head.
+   eventual-consistent; PostgreSQL remains the coordination CAS record while
+   object storage remains authoritative for graph data.
 
 Use the coordinator command for rollback; do not remove the coordination marker
 by hand:
@@ -311,8 +378,9 @@ PostgreSQL head, changes the mode to `local`, and removes
 writer is safe to start only after the command reports `applied=true`,
 `mode_after=local`, `marker_removed=true`, and zero mirror lag/backlog. Never
 run both writer modes. A complete backup of this topology contains both the
-object-store prefix and the PostgreSQL coordination schema; an object-only
-backup is incomplete.
+object-store prefix and the PostgreSQL coordination schema. While 1.3 WAL has
+pending durable records, also preserve each writer's WAL volume; an object-only
+backup is incomplete for in-flight acknowledged requests.
 
 Monitor `graphdb_coordinator_cas_total`,
 `graphdb_coordinator_cleanup_runs_total`,
@@ -360,6 +428,12 @@ schema-governed edge writes until the 1.1 writer is restored. Do not delete the
 `extensions/v1.1` objects; they are reused after re-upgrade. Use the 1.1
 backup/restore path when relation schemas must be carried into a new tenant;
 the 1.0 backup format only knows the core graph.
+
+For a 1.3 WAL writer downgrade, stop new WAL admission and wait until its
+owner-routed status shows no pending records and all durable records are
+finalized. Only then switch that writer to direct mode. Preserve its stable
+`GRAPHDB_INSTANCE_ID` and original WAL volume across restarts; a pending WAL is
+a downgrade blocker.
 
 Before upgrading, confirm that snapshots, manifests, and recent backups are
 readable:

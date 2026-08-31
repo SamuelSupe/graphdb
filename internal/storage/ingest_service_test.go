@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -118,6 +120,7 @@ func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 	recorder := installStorageSpanRecorder(t)
 	store := NewTenantStore(NewMemoryStore(), "test")
 	config := testIngestServiceConfig(t)
+	config.OwnerID = "writer-a"
 	traceCtx, acceptedSpan := otel.Tracer("graphdb/test").Start(context.Background(), "test.accepted_request")
 	acceptedSpanID := acceptedSpan.SpanContext().SpanID()
 	request, err := PrepareIngestRequest("tenant-a", IngestRequest{
@@ -177,6 +180,9 @@ func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if accepted.WriterID != config.OwnerID {
+		t.Fatalf("recovered acceptance writer ID = %q, want %q", accepted.WriterID, config.OwnerID)
+	}
 	result, err := service.Wait(context.Background(), accepted)
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +199,107 @@ func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 		}
 	}
 	t.Fatalf("recovered flush does not link persisted accepted span %s", acceptedSpanID)
+}
+
+func TestIngestServiceRejectsPendingWALOwnedByAnotherWriter(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.OwnerID = "writer-a"
+	request, err := PrepareIngestRequest("tenant-a", ingestEntityRequest("batch-owned-by-b", "host:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := walIngestEnvelope{
+		RecordID:   ingestRecordID(ingestRequestIdentity("tenant-a", request)),
+		WriterID:   "writer-b",
+		TenantID:   "tenant-a",
+		Request:    request,
+		Digest:     sha256Sum(requestJSON),
+		AcceptedAt: time.Now().UTC(),
+		State:      IngestStateAccepted,
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal, _, err := OpenIngestWAL(config.WAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALAccepted, payload); err != nil {
+		_ = wal.Close()
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := OpenIngestService(store, config); err == nil || !strings.Contains(err.Error(), "owner mismatch") {
+		t.Fatalf("open with another writer's pending WAL err = %v, want owner mismatch", err)
+	}
+}
+
+func TestIngestServiceClearsWALFullAfterShortCompletion(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.WAL.MaxBytes = 4096
+	config.WAL.SegmentBytes = config.WAL.MaxBytes
+	config.WAL.ControlReserveBytes = 512
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceClosed := false
+	defer func() {
+		if !serviceClosed {
+			crashIngestService(t, service)
+		}
+	}()
+
+	pending := make([]*ingestPending, 0)
+	for index := range 128 {
+		acceptance, acceptErr := service.Accept(context.Background(), "tenant-a", ingestEntityRequest(
+			fmt.Sprintf("batch-full-%d", index), fmt.Sprintf("host:%d", index),
+		))
+		if errors.Is(acceptErr, ErrIngestWALFull) {
+			break
+		}
+		if acceptErr != nil {
+			t.Fatalf("accept %d: %v", index, acceptErr)
+		}
+		pending = append(pending, acceptance.pending)
+	}
+	if len(pending) == 0 || len(pending) >= 128 || service.Readiness().Writable {
+		t.Fatalf("WAL did not enter full state with a short pending queue: pending=%d readiness=%#v", len(pending), service.Readiness())
+	}
+
+	for index, item := range pending {
+		service.completePendingState(item, IngestResult{
+			BatchID: item.envelope.Request.BatchID,
+			Version: int64(index + 1),
+			Applied: 1,
+		}, nil, IngestStateCommitted)
+	}
+	if readiness := service.Readiness(); !readiness.Writable {
+		t.Fatalf("readiness after %d completions = %#v, want writable after WAL prune", len(pending), readiness)
+	}
+
+	acceptance, err := service.Accept(context.Background(), "tenant-a", ingestEntityRequest("batch-after-prune", "host:after-prune"))
+	if err != nil {
+		t.Fatalf("accept after short completion = %v, want WAL capacity reclaimed", err)
+	}
+	service.completePendingState(acceptance.pending, IngestResult{
+		BatchID: acceptance.BatchID,
+		Version: int64(len(pending) + 1),
+		Applied: 1,
+	}, nil, IngestStateCommitted)
+	crashIngestService(t, service)
+	serviceClosed = true
 }
 
 func TestIngestServiceExactDuplicateDoesNotAdvanceVersion(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 type TenantStoreOptions struct {
 	InstanceID                 string
 	ReaderID                   string
+	RequireCoordinationMarker  bool
 	MaxWriteCacheBytes         int64
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
@@ -29,6 +30,7 @@ func NewTenantStoreWithOptions(objects ObjectStore, prefix string, options Tenan
 		store.ReaderID = options.ReaderID
 	}
 	store.MaxWriteCacheBytes = options.MaxWriteCacheBytes
+	store.RequireCoordinationMarker = options.RequireCoordinationMarker
 	store.WriteEntityRecords = options.WriteEntityRecords
 	store.UseEntityRecordsForRead = options.UseEntityRecordsForRead
 	store.EntityPagePackMaxBytes = options.EntityPagePackMaxBytes

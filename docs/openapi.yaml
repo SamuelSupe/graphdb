@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.2.4
-  description: Object-store backed multi-tenant current-state property knowledge graph API. Version 1.2 preserves the 1.0 core data layout.
+  version: 1.3.0-dev
+  description: Object-store backed multi-tenant current-state property knowledge graph API. The 1.3 development contract adds opt-in PostgreSQL-CAS multi-writer WAL for ingest batches; it is release-gated and preserves the existing graph/object layout.
 servers:
   - url: http://localhost:8080
 security:
@@ -88,7 +88,7 @@ paths:
           $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/ingest/batches:
     post:
-      summary: Apply a collector ingestion batch with idempotency and partial failure reporting.
+      summary: Apply a collector ingestion batch with idempotency and partial failure reporting. In 1.3 WAL mode, durable local takeover returns 202 with the WAL owner identity.
       requestBody:
         required: true
         content:
@@ -109,12 +109,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestResult'
         '202':
-          description: Batch durably appended to the local ingest WAL. Returned only when GRAPHDB_INGEST_MODE=wal.
+          description: Batch durably appended to this writer's local ingest WAL. Returned only when GRAPHDB_INGEST_MODE=wal; in the 1.3 PostgreSQL-CAS profile the response identifies the stable owner writer and does not require PostgreSQL to be reachable.
           headers:
             Location:
               schema:
                 type: string
-              description: Batch status resource.
+              description: Batch status resource. In 1.3 PostgreSQL-CAS WAL mode this is the owner-routed /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id} path.
           content:
             application/json:
               schema:
@@ -131,7 +131,7 @@ paths:
           $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/ingest/batches/{source}/{collector_id}/{batch_id}:
     get:
-      summary: Get an active WAL batch status or its finalized ingest record.
+      summary: Get an active WAL batch status or its finalized ingest record through the legacy-compatible status path.
       parameters:
         - name: source
           in: path
@@ -157,6 +157,49 @@ paths:
                 $ref: '#/components/schemas/IngestBatchStatus'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}:
+    get:
+      summary: Get an ingest batch status from its stable WAL owner.
+      description: The 1.3 owner-routed status endpoint. The writer_id must be the stable GRAPHDB_INSTANCE_ID returned with the durable 202 response. During WAL startup recovery, the endpoint returns 200 with recovery_pending=true instead of treating an owned batch as missing.
+      parameters:
+        - name: writer_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Stable GRAPHDB_INSTANCE_ID of the writer that owns the local WAL.
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collector_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active, recovering, retrying, or finalized batch status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestBatchStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/imports:
     post:
       summary: Upload CSV or JSONL and start a resumable bulk import task.
@@ -1720,13 +1763,13 @@ components:
           schema:
             $ref: '#/components/schemas/WriteBackpressureError'
     Conflict:
-      description: The expected version changed, another writer still owns the idempotency key, or the CAS retry budget was exhausted.
+      description: The expected version changed or another writer still owns the idempotency key. A 1.3 WAL-accepted request does not become terminally failed because an internal CAS retry budget was exhausted; it remains under owner recovery/retry.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     CoordinatorUnavailable:
-      description: A required coordinator or object-store dependency is unavailable; writes fail closed and never fall back to local coordination.
+      description: A required coordinator or object-store dependency is unavailable for the synchronous operation; writes never fall back to local coordination. In 1.3 WAL mode, locally durable ingest acceptance may continue until the WAL high-water policy is reached.
       headers:
         Retry-After:
           schema:
@@ -2240,7 +2283,7 @@ components:
             $ref: '#/components/schemas/Conflict'
     IngestAccepted:
       type: object
-      required: [batch_id, state, durability, accepted_at, estimated_flush_at, status_url]
+      required: [batch_id, state, durability, accepted_at, estimated_flush_at, status_url, writer_id]
       properties:
         batch_id:
           type: string
@@ -2258,6 +2301,10 @@ components:
           format: date-time
         status_url:
           type: string
+          description: Owner-routed status resource. In 1.3 PostgreSQL-CAS WAL mode this uses /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}.
+        writer_id:
+          type: string
+          description: Stable GRAPHDB_INSTANCE_ID of the writer that owns the local WAL. Required for 1.3 WAL responses; omitted by direct mode.
     IngestBatchStatus:
       type: object
       required: [tenant_id, source, collector_id, batch_id, state, durability]
@@ -2287,10 +2334,17 @@ components:
         finished_at:
           type: string
           format: date-time
+        status_url:
+          type: string
+          description: Optional owner-routed status resource. Clients must retain the status_url from the 202 response or Location header because a finalized status response may omit this convenience field.
+        writer_id:
+          type: string
+          description: Stable GRAPHDB_INSTANCE_ID of the WAL owner, when this batch was accepted through WAL.
         last_error:
           type: string
         recovery_pending:
           type: boolean
+          description: True while the owning writer is rebuilding WAL state; status remains queryable and the batch is not treated as missing.
         result:
           $ref: '#/components/schemas/IngestResult'
     CollectorStatus:
