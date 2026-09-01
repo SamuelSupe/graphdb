@@ -67,8 +67,38 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	var retryConflicts atomic.Int64
 	var taskLeaseRetries atomic.Int64
 	var casConflicts atomic.Int64
+	var compactRetries atomic.Int64
 	var compactions atomic.Int64
 	writerCommitted := make([]atomic.Int64, writerCount)
+	reportWritten := false
+	defer func() {
+		if reportWritten || os.Getenv("GRAPHDB_TEST_CAS_STRESS_REPORT") == "" {
+			return
+		}
+		writerCommittedReport := make([]int64, len(writerCommitted))
+		for writerID := range writerCommitted {
+			writerCommittedReport[writerID] = writerCommitted[writerID].Load()
+		}
+		writeCASStressReport(t, casStressReport{
+			SchemaVersion:    2,
+			Success:          false,
+			Writers:          writerCount,
+			TargetQPS:        qps,
+			Duration:         duration.String(),
+			TargetCommits:    targetCommits,
+			BatchSize:        batchSize,
+			TargetBatches:    targetBatches,
+			Committed:        int(completed.Load()),
+			WriterCommitted:  writerCommittedReport,
+			Publishes:        publishes.Load(),
+			Compactions:      compactions.Load(),
+			WriteConflicts:   writeConflicts.Load(),
+			RetryConflicts:   retryConflicts.Load(),
+			TaskLeaseRetries: taskLeaseRetries.Load(),
+			CASConflicts:     casConflicts.Load(),
+			CompactRetries:   compactRetries.Load(),
+		})
+	}()
 	var wg sync.WaitGroup
 	compactSignals := make(chan struct{}, 1)
 	compactErr := make(chan error, 1)
@@ -80,10 +110,22 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		var lastSnapshot int64
 		for range compactSignals {
 			for {
-				manifest, err := compactor.Compact(fixture.ctx, "tenant-a")
-				if err != nil {
-					compactErr <- err
-					return
+				var manifest Manifest
+				for compactAttempt := 0; ; compactAttempt++ {
+					var err error
+					manifest, err = compactor.Compact(fixture.ctx, "tenant-a")
+					if err == nil {
+						break
+					}
+					if !stressRetryableCASConflict(err) || compactAttempt >= clientRetries {
+						compactErr <- fmt.Errorf("compact through writer %d: %w", writerCount, err)
+						return
+					}
+					compactRetries.Add(1)
+					if err := stressClientRetryDelay(fixture.ctx, compactAttempt); err != nil {
+						compactErr <- fmt.Errorf("retry compact through writer %d: %w", writerCount, err)
+						return
+					}
 				}
 				if manifest.SnapshotVersion > lastSnapshot {
 					lastSnapshot = manifest.SnapshotVersion
@@ -146,10 +188,7 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 						}
 						break
 					}
-					retryable := errors.Is(err, ErrTaskLeaseHeld) ||
-						errors.Is(err, ErrWriteConflict) ||
-						errors.Is(err, ErrConflict)
-					if !retryable || clientAttempt >= clientRetries {
+					if !stressRetryableCASConflict(err) || clientAttempt >= clientRetries {
 						errs <- fmt.Errorf("batch [%d,%d) through writer %d: %w", batch.start, batch.end, attemptWriterID, err)
 						break
 					}
@@ -319,6 +358,7 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	)
 	throughput := float64(committed) / commitElapsed.Seconds()
 	minimumThroughput := float64(qps) * 0.9
+	reportWritten = true
 	writeCASStressReport(t, casStressReport{
 		SchemaVersion:       2,
 		Success:             throughput >= minimumThroughput,
@@ -336,6 +376,7 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		RetryConflicts:      retryConflicts.Load(),
 		TaskLeaseRetries:    taskLeaseRetries.Load(),
 		CASConflicts:        casConflicts.Load(),
+		CompactRetries:      compactRetries.Load(),
 		ElapsedMS:           commitElapsed.Milliseconds(),
 		Throughput:          throughput,
 		GraphVersion:        head.GraphVersion,
@@ -354,8 +395,8 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		LegacyV1Validated:   legacyV1Validated,
 	})
 	t.Logf(
-		"PostgreSQL/S3 CAS stress: writers=%d commits=%d batches=%d batch_size=%d writer_committed=%v compactions=%d retry_conflicts=%d task_lease_retries=%d write_conflicts=%d cas_conflicts=%d client_retry_limit=%d elapsed=%s throughput=%.2f commits/s",
-		writerCount, committed, publishes.Load(), batchSize, writerCommittedReport, compactions.Load(), retryConflicts.Load(), taskLeaseRetries.Load(), writeConflicts.Load(), casConflicts.Load(), clientRetries, commitElapsed.Round(time.Millisecond), throughput,
+		"PostgreSQL/S3 CAS stress: writers=%d commits=%d batches=%d batch_size=%d writer_committed=%v compactions=%d compact_retries=%d retry_conflicts=%d task_lease_retries=%d write_conflicts=%d cas_conflicts=%d client_retry_limit=%d elapsed=%s throughput=%.2f commits/s",
+		writerCount, committed, publishes.Load(), batchSize, writerCommittedReport, compactions.Load(), compactRetries.Load(), retryConflicts.Load(), taskLeaseRetries.Load(), writeConflicts.Load(), casConflicts.Load(), clientRetries, commitElapsed.Round(time.Millisecond), throughput,
 	)
 	if throughput < minimumThroughput {
 		t.Fatalf("commit throughput %.2f/s is below 90%% of target %d/s", throughput, qps)
@@ -464,6 +505,12 @@ func stressClientRetryDelay(ctx context.Context, attempt int) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func stressRetryableCASConflict(err error) bool {
+	return errors.Is(err, ErrTaskLeaseHeld) ||
+		errors.Is(err, ErrWriteConflict) ||
+		errors.Is(err, ErrConflict)
 }
 
 func stressPositiveInt(t *testing.T, key string, fallback int) int {

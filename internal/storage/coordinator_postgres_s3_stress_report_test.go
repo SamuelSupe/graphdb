@@ -27,6 +27,7 @@ type casStressReport struct {
 	RetryConflicts      int64     `json:"retry_conflicts"`
 	TaskLeaseRetries    int64     `json:"task_lease_retries"`
 	CASConflicts        int64     `json:"cas_conflicts"`
+	CompactRetries      int64     `json:"compact_retries"`
 	ElapsedMS           int64     `json:"elapsed_ms"`
 	Throughput          float64   `json:"throughput_commits_per_second"`
 	GraphVersion        int64     `json:"graph_version"`
