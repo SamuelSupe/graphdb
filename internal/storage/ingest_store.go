@@ -23,6 +23,28 @@ type ingestRecordKeyProbe struct {
 	err      error
 }
 
+// CaptureIngestWALGeneration returns the current coordinator generation that a
+// local WAL acceptance must remain bound to until terminalization.
+func (s *TenantStore) CaptureIngestWALGeneration(ctx context.Context, tenantID string) (int64, error) {
+	if !s.coordinated() {
+		return 0, nil
+	}
+	head, exists, err := s.Coordinator.Head(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	if !exists {
+		head, err = s.ensureCoordinatedTenantHead(ctx, tenantID)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if head.Generation <= 0 {
+		return 0, fmt.Errorf("tenant %q has invalid coordinator generation %d", tenantID, head.Generation)
+	}
+	return head.Generation, nil
+}
+
 func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, source string, collectorID string, batchID string) (IngestBatchRecord, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IngestBatchRecord{}, err
@@ -53,6 +75,161 @@ func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, sourc
 		}
 	}
 	return IngestBatchRecord{}, ErrNotFound
+}
+
+func (s *TenantStore) GetIngestAttemptFailure(
+	ctx context.Context,
+	ownerID string,
+	tenantID string,
+	source string,
+	collectorID string,
+	batchID string,
+) (IngestBatchRecord, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return IngestBatchRecord{}, err
+	}
+	source = strings.TrimSpace(source)
+	collectorID = strings.TrimSpace(collectorID)
+	batchID = strings.TrimSpace(batchID)
+	if source == "" || collectorID == "" || batchID == "" {
+		return IngestBatchRecord{}, fmt.Errorf("source, collector_id, and batch_id are required")
+	}
+	record, _, err := s.loadIngestRecordWithMeta(
+		ctx,
+		s.ingestAttemptFailureKey(tenantID, ownerID, source, collectorID, batchID),
+	)
+	if err != nil {
+		return IngestBatchRecord{}, err
+	}
+	if record.TenantID != tenantID ||
+		record.Request.Source != source ||
+		record.Request.CollectorID != collectorID ||
+		record.Result.BatchID != batchID ||
+		record.Result.Failed == 0 ||
+		record.Result.Applied != 0 {
+		return IngestBatchRecord{}, fmt.Errorf(
+			"ingest attempt failure identity mismatch for tenant %q source %q collector %q batch %q",
+			tenantID, source, collectorID, batchID,
+		)
+	}
+	return record, nil
+}
+
+func (s *TenantStore) PersistIngestAttemptFailure(
+	ctx context.Context,
+	ownerID string,
+	tenantID string,
+	request IngestRequest,
+	result IngestResult,
+	started time.Time,
+	finished time.Time,
+) error {
+	if result.Failed == 0 || result.Applied != 0 {
+		return fmt.Errorf("ingest attempt failure must be terminally failed")
+	}
+	record := IngestBatchRecord{
+		TenantID: tenantID,
+		Request: IngestRequest{
+			Source:         request.Source,
+			CollectorID:    request.CollectorID,
+			BatchID:        request.BatchID,
+			IdempotencyKey: request.IdempotencyKey,
+		},
+		Result:     compactIngestAttemptFailure(result),
+		StartedAt:  started,
+		FinishedAt: finished,
+	}
+	data, err := marshalParquetIngestRecord(ctx, record)
+	if err != nil {
+		return fmt.Errorf("encode ingest attempt failure: %w", err)
+	}
+	key := s.ingestAttemptFailureKey(
+		tenantID, ownerID, request.Source, request.CollectorID, request.BatchID,
+	)
+	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		existing, meta, loadErr := s.loadIngestRecordWithMeta(ctx, key)
+		if errors.Is(loadErr, ErrNotFound) {
+			meta = ObjectMeta{Key: key}
+		} else if loadErr != nil {
+			return loadErr
+		} else if !existing.FinishedAt.Before(finished) {
+			return nil
+		}
+		if _, err := s.putBytesWithMetaResult(ctx, key, data, meta); err == nil {
+			s.markObjectKeyCached(key)
+			return nil
+		} else if !errors.Is(err, ErrConflict) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: ingest attempt failure changed while publishing", ErrConflict)
+}
+
+func (s *TenantStore) ResolveIngestAttemptFailure(
+	ctx context.Context,
+	ownerID string,
+	tenantID string,
+	request IngestRequest,
+	result IngestResult,
+	started time.Time,
+	finished time.Time,
+) error {
+	if result.Failed > 0 && result.Applied == 0 {
+		return fmt.Errorf("resolved ingest attempt must not be terminally failed")
+	}
+	key := s.ingestAttemptFailureKey(
+		tenantID, ownerID, request.Source, request.CollectorID, request.BatchID,
+	)
+	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		existing, meta, loadErr := s.loadIngestRecordWithMeta(ctx, key)
+		if errors.Is(loadErr, ErrNotFound) {
+			return nil
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		if existing.TenantID != tenantID ||
+			existing.Request.Source != request.Source ||
+			existing.Request.CollectorID != request.CollectorID ||
+			existing.Result.BatchID != request.BatchID {
+			return fmt.Errorf(
+				"ingest attempt failure identity mismatch for tenant %q source %q collector %q batch %q",
+				tenantID, request.Source, request.CollectorID, request.BatchID,
+			)
+		}
+		if existing.FinishedAt.After(finished) {
+			return nil
+		}
+		deleteErr := s.Objects.DeleteConditional(ctx, key, PutCondition{IfMatch: meta.ETag})
+		if errors.Is(deleteErr, ErrConditionalDeleteUnsupported) {
+			// A stable owner ID has one WAL writer and serializes attempts for an
+			// identity, so stores without conditional DELETE can safely fall back.
+			deleteErr = s.Objects.Delete(ctx, key)
+		}
+		if deleteErr == nil || errors.Is(deleteErr, ErrNotFound) {
+			return nil
+		}
+		if !errors.Is(deleteErr, ErrConflict) {
+			return deleteErr
+		}
+	}
+	return fmt.Errorf("%w: ingest attempt failure changed while resolving", ErrConflict)
+}
+
+func compactIngestAttemptFailure(result IngestResult) IngestResult {
+	compact := result
+	compact.Failures = nil
+	if len(result.Failures) > 0 {
+		compact.Failures = []IngestFailure{{
+			Index: result.Failures[0].Index,
+			Error: result.Failures[0].Error,
+		}}
+	}
+	compact.Conflicts = nil
+	if len(result.Conflicts) > 0 {
+		compact.Conflicts = []IngestConflict{{Message: result.Conflicts[0].Message}}
+	}
+	return compact
 }
 
 func (s *TenantStore) loadIngestRecord(ctx context.Context, tenantID string, request IngestRequest) (IngestBatchRecord, bool, error) {
@@ -185,7 +362,14 @@ func (s *TenantStore) loadMatchingIngestRecord(ctx context.Context, tenantID str
 		return IngestBatchRecord{}, false, nil
 	}
 	if !ingestRecordRequestEqual(record.Request, request) {
-		return IngestBatchRecord{}, false, fmt.Errorf("ingest record conflict for source %q collector %q batch %q idempotency %q: stored request differs from incoming request", request.Source, request.CollectorID, request.BatchID, request.IdempotencyKey)
+		return IngestBatchRecord{}, false, fmt.Errorf(
+			"%w: ingest record conflict for source %q collector %q batch %q idempotency %q: stored request differs from incoming request",
+			ErrIngestIdentityConflict,
+			request.Source,
+			request.CollectorID,
+			request.BatchID,
+			request.IdempotencyKey,
+		)
 	}
 	return record, true, nil
 }
@@ -211,7 +395,14 @@ func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, t
 		return IngestBatchRecord{}, false, nil
 	}
 	if !ingestRecordRequestEqualIgnoringBatch(record.Request, request) {
-		return IngestBatchRecord{}, false, fmt.Errorf("ingest record conflict for source %q collector %q batch %q idempotency %q: stored request differs from incoming request", request.Source, request.CollectorID, request.BatchID, request.IdempotencyKey)
+		return IngestBatchRecord{}, false, fmt.Errorf(
+			"%w: ingest record conflict for source %q collector %q batch %q idempotency %q: stored request differs from incoming request",
+			ErrIngestIdentityConflict,
+			request.Source,
+			request.CollectorID,
+			request.BatchID,
+			request.IdempotencyKey,
+		)
 	}
 	return record, true, nil
 }
@@ -301,7 +492,39 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 	if ingestRecordSameResult(existing, record) {
 		return nil
 	}
-	if ingestRecordMatchesIdentity(existing, tenantID, record.Request) || ingestRecordMatchesIdempotencyIdentity(existing, tenantID, record.Request) {
+	if s.coordinated() && coordinatedIngestMayReplaceFailedRecord(existing, record) {
+		_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
+		if err == nil {
+			s.markObjectKeyCached(key)
+			return nil
+		}
+		if errors.Is(err, ErrConflict) {
+			return fmt.Errorf("%w: failed ingest record changed while publishing committed result", ErrConflict)
+		}
+		return err
+	}
+	if ingestRecordMatchesIdentity(existing, tenantID, record.Request) {
+		if !ingestRecordRequestEqual(existing.Request, record.Request) {
+			return fmt.Errorf(
+				"%w: ingest record for source %q collector %q batch %q changed payload",
+				ErrIngestIdentityConflict,
+				record.Request.Source,
+				record.Request.CollectorID,
+				record.Request.BatchID,
+			)
+		}
+		return fmt.Errorf("%w: ingest record for source %q collector %q batch %q idempotency %q changed while publishing", ErrConflict, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Request.IdempotencyKey)
+	}
+	if ingestRecordMatchesIdempotencyIdentity(existing, tenantID, record.Request) {
+		if !ingestRecordRequestEqualIgnoringBatch(existing.Request, record.Request) {
+			return fmt.Errorf(
+				"%w: ingest record for source %q collector %q idempotency %q changed payload",
+				ErrIngestIdentityConflict,
+				record.Request.Source,
+				record.Request.CollectorID,
+				record.Request.IdempotencyKey,
+			)
+		}
 		return fmt.Errorf("%w: ingest record for source %q collector %q batch %q idempotency %q changed while publishing", ErrConflict, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, record.Request.IdempotencyKey)
 	}
 	_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
@@ -312,6 +535,13 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 		return fmt.Errorf("%w: ingest record changed while repairing mismatched metadata", ErrConflict)
 	}
 	return err
+}
+
+func coordinatedIngestMayReplaceFailedRecord(stored IngestBatchRecord, incoming IngestBatchRecord) bool {
+	return stored.Result.Applied == 0 &&
+		stored.Result.Failed > 0 &&
+		incoming.Result.Failed == 0 &&
+		ingestRecordRequestEqual(stored.Request, incoming.Request)
 }
 
 func (s *TenantStore) loadIngestRecordWithMeta(ctx context.Context, key string) (IngestBatchRecord, ObjectMeta, error) {

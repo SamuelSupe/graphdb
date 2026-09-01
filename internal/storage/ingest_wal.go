@@ -33,10 +33,13 @@ const (
 )
 
 var (
-	ErrIngestWALClosed  = errors.New("ingest WAL is closed")
-	ErrIngestWALFull    = errors.New("ingest WAL disk limit reached")
-	ErrIngestWALLocked  = errors.New("ingest WAL is locked by another process")
-	ErrIngestWALCorrupt = errors.New("ingest WAL is corrupt")
+	ErrIngestWALClosed               = errors.New("ingest WAL is closed")
+	ErrIngestWALFull                 = errors.New("ingest WAL disk limit reached")
+	ErrIngestWALLocked               = errors.New("ingest WAL is locked by another process")
+	ErrIngestWALCorrupt              = errors.New("ingest WAL is corrupt")
+	ErrIngestWALFailed               = errors.New("ingest WAL writer failed")
+	ErrIngestWALRecordTooLarge       = errors.New("ingest WAL payload is too large")
+	ErrIngestWALRecordExceedsSegment = errors.New("ingest WAL record exceeds segment size")
 )
 
 type IngestWALRecordType uint8
@@ -63,6 +66,7 @@ type IngestWALConfig struct {
 	AppendQueue         int
 	Observer            IngestObserver
 	Logger              IngestLogger
+	openWriterFile      func(string) (ingestWALWriteFile, error)
 }
 
 func DefaultIngestWALConfig(dir string) IngestWALConfig {
@@ -143,6 +147,11 @@ type ingestWALAppendResponse struct {
 	err    error
 }
 
+type ingestWALBatchRecord struct {
+	kind    IngestWALRecordType
+	payload []byte
+}
+
 type ingestWALPruneRequest struct {
 	beforeLSN uint64
 	done      chan error
@@ -153,6 +162,12 @@ type ingestWALSegment struct {
 	startLSN uint64
 	maxLSN   uint64
 	size     int64
+}
+
+type ingestWALWriteFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
 }
 
 type IngestWAL struct {
@@ -166,6 +181,7 @@ type IngestWAL struct {
 	ready    chan error
 
 	closeOnce sync.Once
+	errMu     sync.Mutex
 	closeErr  error
 }
 
@@ -245,7 +261,7 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 		return IngestWALAppendResult{}, fmt.Errorf("unsupported ingest WAL record type %d", kind)
 	}
 	if len(payload) > ingestWALMaxPayload {
-		return IngestWALAppendResult{}, fmt.Errorf("ingest WAL payload is too large: %d bytes", len(payload))
+		return IngestWALAppendResult{}, fmt.Errorf("%w: %d bytes", ErrIngestWALRecordTooLarge, len(payload))
 	}
 	request := ingestWALAppendRequest{
 		ctx:     ctx,
@@ -258,14 +274,92 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 	case <-ctx.Done():
 		return IngestWALAppendResult{}, ctx.Err()
 	case <-w.done:
-		return IngestWALAppendResult{}, ErrIngestWALClosed
+		return IngestWALAppendResult{}, w.unavailableError()
 	}
 	select {
 	case response := <-request.done:
 		return response.result, response.err
 	case <-w.done:
-		return IngestWALAppendResult{}, ErrIngestWALClosed
+		return IngestWALAppendResult{}, w.unavailableError()
 	}
+}
+
+func (w *IngestWAL) appendBatch(ctx context.Context, records []ingestWALBatchRecord) []ingestWALAppendResponse {
+	responses := make([]ingestWALAppendResponse, len(records))
+	if len(records) == 0 {
+		return responses
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requests := make([]ingestWALAppendRequest, len(records))
+	for index, record := range records {
+		if !validIngestWALRecordType(record.kind) {
+			err := fmt.Errorf("unsupported ingest WAL record type %d", record.kind)
+			for responseIndex := range responses {
+				responses[responseIndex].err = err
+			}
+			return responses
+		}
+		if len(record.payload) > ingestWALMaxPayload {
+			err := fmt.Errorf("%w: %d bytes", ErrIngestWALRecordTooLarge, len(record.payload))
+			for responseIndex := range responses {
+				responses[responseIndex].err = err
+			}
+			return responses
+		}
+		requests[index] = ingestWALAppendRequest{
+			ctx:     ctx,
+			kind:    record.kind,
+			payload: append([]byte(nil), record.payload...),
+			done:    make(chan ingestWALAppendResponse, 1),
+		}
+	}
+
+	started := time.Now()
+	enqueued := 0
+	enqueueStopped := false
+	for index := range requests {
+		select {
+		case w.appendCh <- requests[index]:
+			enqueued++
+		case <-ctx.Done():
+			for remaining := index; remaining < len(responses); remaining++ {
+				responses[remaining].err = ctx.Err()
+			}
+			enqueueStopped = true
+		case <-w.done:
+			for remaining := index; remaining < len(responses); remaining++ {
+				responses[remaining].err = w.unavailableError()
+			}
+			enqueueStopped = true
+		}
+		if enqueueStopped {
+			break
+		}
+	}
+	for index := 0; index < enqueued; index++ {
+		select {
+		case responses[index] = <-requests[index].done:
+		case <-w.done:
+			responses[index].err = w.unavailableError()
+		}
+	}
+	for index, record := range records {
+		if w.config.Observer != nil {
+			status := "ok"
+			if responses[index].err != nil {
+				status = "error"
+			}
+			w.config.Observer.RecordIngestWALAppend(
+				ingestWALRecordTypeName(record.kind),
+				status,
+				len(record.payload)+ingestWALHeaderBytes+ingestWALChecksumBytes,
+				time.Since(started),
+			)
+		}
+	}
+	return responses
 }
 
 // Prune removes closed segments whose records are all older than beforeLSN.
@@ -280,7 +374,7 @@ func (w *IngestWAL) Prune(ctx context.Context, beforeLSN uint64) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-w.done:
-		return ErrIngestWALClosed
+		return w.unavailableError()
 	}
 	select {
 	case err := <-request.done:
@@ -288,7 +382,7 @@ func (w *IngestWAL) Prune(ctx context.Context, beforeLSN uint64) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-w.done:
-		return ErrIngestWALClosed
+		return w.unavailableError()
 	}
 }
 
@@ -303,9 +397,31 @@ func (w *IngestWAL) Close() error {
 			lockCloseErr = w.lockFile.Close()
 			w.lockFile = nil
 		}
-		w.closeErr = errors.Join(w.closeErr, unlockErr, lockCloseErr)
+		w.recordError(errors.Join(unlockErr, lockCloseErr))
 	})
+	return w.currentError()
+}
+
+func (w *IngestWAL) recordError(err error) {
+	if err == nil {
+		return
+	}
+	w.errMu.Lock()
+	w.closeErr = errors.Join(w.closeErr, err)
+	w.errMu.Unlock()
+}
+
+func (w *IngestWAL) currentError() error {
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
 	return w.closeErr
+}
+
+func (w *IngestWAL) unavailableError() error {
+	if err := w.currentError(); err != nil {
+		return errors.Join(ErrIngestWALClosed, err)
+	}
+	return ErrIngestWALClosed
 }
 
 func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes int64) {
@@ -319,7 +435,7 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 		durableLSN: nextLSN - 1,
 	}
 	if err := state.openCurrent(); err != nil {
-		w.closeErr = err
+		w.recordError(err)
 		w.ready <- err
 		state.failPending(err)
 		return
@@ -327,15 +443,25 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 	w.ready <- nil
 	defer func() {
 		closeErr := state.syncAndClose()
-		w.closeErr = errors.Join(w.closeErr, closeErr)
+		w.recordError(closeErr)
 		state.failPending(errors.Join(ErrIngestWALClosed, closeErr))
 	}()
 	for {
 		select {
 		case first := <-w.appendCh:
-			state.writeGroup(first)
+			if err := state.writeGroup(first); err != nil {
+				w.recordError(err)
+				state.failPending(err)
+				return
+			}
 		case request := <-w.pruneCh:
-			request.done <- state.prune(request.beforeLSN)
+			err := state.prune(request.beforeLSN)
+			request.done <- err
+			if errors.Is(err, ErrIngestWALFailed) {
+				w.recordError(err)
+				state.failPending(err)
+				return
+			}
 		case <-w.closeCh:
 			return
 		}
@@ -344,7 +470,7 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 
 type ingestWALWriterState struct {
 	wal        *IngestWAL
-	file       *os.File
+	file       ingestWALWriteFile
 	segments   []ingestWALSegment
 	current    int
 	nextLSN    uint64
@@ -361,7 +487,13 @@ func (s *ingestWALWriterState) openCurrent() error {
 	}
 	s.current = len(s.segments) - 1
 	path := s.segments[s.current].path
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	openWriterFile := s.wal.config.openWriterFile
+	if openWriterFile == nil {
+		openWriterFile = func(path string) (ingestWALWriteFile, error) {
+			return os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		}
+	}
+	file, err := openWriterFile(path)
 	if err != nil {
 		return fmt.Errorf("open ingest WAL segment %q: %w", path, err)
 	}
@@ -386,7 +518,7 @@ func (s *ingestWALWriterState) createSegment(startLSN uint64) error {
 	return nil
 }
 
-func (s *ingestWALWriterState) writeGroup(first ingestWALAppendRequest) {
+func (s *ingestWALWriterState) writeGroup(first ingestWALAppendRequest) error {
 	requests := []ingestWALAppendRequest{first}
 	payloadBytes := len(first.payload)
 	timer := time.NewTimer(s.wal.config.FsyncInterval)
@@ -408,10 +540,10 @@ collect:
 		default:
 		}
 	}
-	s.writeRequests(requests)
+	return s.writeRequests(requests)
 }
 
-func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) {
+func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) error {
 	pending := make([]ingestWALAppendRequest, 0, len(requests))
 	results := make([]IngestWALAppendResult, 0, len(requests))
 	var buffer bytes.Buffer
@@ -487,7 +619,12 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		}
 		frameBytes := int64(ingestWALHeaderBytes + len(request.payload) + ingestWALChecksumBytes)
 		if frameBytes > s.wal.config.SegmentBytes {
-			request.done <- ingestWALAppendResponse{err: fmt.Errorf("ingest WAL record exceeds segment size")}
+			request.done <- ingestWALAppendResponse{err: fmt.Errorf(
+				"%w: record=%d segment=%d",
+				ErrIngestWALRecordExceedsSegment,
+				frameBytes,
+				s.wal.config.SegmentBytes,
+			)}
 			continue
 		}
 		limit := s.wal.config.MaxBytes
@@ -500,13 +637,15 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		}
 		if s.segments[s.current].size+int64(buffer.Len())+frameBytes > s.wal.config.SegmentBytes {
 			if err := flush(); err != nil {
-				failPending(err)
-				s.failRequests(requests[index:], err)
-				return
+				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				failPending(fatalErr)
+				s.failRequests(requests[index:], fatalErr)
+				return fatalErr
 			}
 			if err := s.rotate(); err != nil {
-				s.failRequests(requests[index:], err)
-				return
+				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				s.failRequests(requests[index:], fatalErr)
+				return fatalErr
 			}
 		}
 		lsn := s.nextLSN
@@ -523,15 +662,19 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		})
 		if buffer.Len() >= s.wal.config.BufferBytes {
 			if err := flush(); err != nil {
-				failPending(err)
-				s.failRequests(requests[index+1:], err)
-				return
+				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				failPending(fatalErr)
+				s.failRequests(requests[index+1:], fatalErr)
+				return fatalErr
 			}
 		}
 	}
 	if err := flush(); err != nil {
-		failPending(err)
+		fatalErr := errors.Join(ErrIngestWALFailed, err)
+		failPending(fatalErr)
+		return fatalErr
 	}
+	return nil
 }
 
 func (s *ingestWALWriterState) failRequests(requests []ingestWALAppendRequest, err error) {
@@ -563,7 +706,7 @@ func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
 	current := s.segments[s.current]
 	if current.size > 0 && current.maxLSN < beforeLSN {
 		if err := s.rotate(); err != nil {
-			return err
+			return errors.Join(ErrIngestWALFailed, err)
 		}
 	}
 	kept := make([]ingestWALSegment, 0, len(s.segments))
@@ -672,6 +815,14 @@ func recoverIngestWAL(dir string) ([]IngestWALRecord, []ingestWALSegment, uint64
 	var totalBytes int64
 	for index, path := range paths {
 		startLSN, _ := parseIngestWALSegmentName(filepath.Base(path))
+		if index == 0 {
+			lastLSN = startLSN - 1
+		} else if startLSN != lastLSN+1 {
+			return nil, nil, 0, 0, fmt.Errorf(
+				"%w: segment %q starts at LSN %d after LSN %d",
+				ErrIngestWALCorrupt, path, startLSN, lastLSN,
+			)
+		}
 		isLast := index == len(paths)-1
 		segmentRecords, size, err := recoverIngestWALSegment(path, isLast, lastLSN)
 		if err != nil {

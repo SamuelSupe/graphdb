@@ -101,6 +101,33 @@ func TestCommitBackpressureRecordsManifestCASConflict(t *testing.T) {
 	assertBackpressureReason(t, err, "manifest_cas_conflicts_high")
 }
 
+func TestAcceptedWALBackpressureIgnoresCASConflictsButKeepsOtherReasons(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.SetCoordinator(&mutableHeadCoordinator{head: CoordinationHead{
+		TenantID: "tenant-a", Generation: 1, Status: TenantStatusActive, Revision: 1,
+	}})
+	pressure := NewWritePressure(BackpressureConfig{
+		CASConflictThreshold:     1,
+		ObjectLatencyThreshold:   time.Millisecond,
+		RetryAfter:               37 * time.Millisecond,
+	})
+	pressure.RecordManifestCASConflict("tenant-a")
+	pressure.RecordObjectLatency(2 * time.Millisecond)
+	store.Backpressure = pressure
+
+	err := store.checkAcceptedWALBackpressure(context.Background(), "tenant-a", false)
+	var backpressure *BackpressureError
+	if !errors.As(err, &backpressure) {
+		t.Fatalf("accepted WAL backpressure err = %v, want BackpressureError", err)
+	}
+	if backpressure.RetryAfter != 37*time.Millisecond {
+		t.Fatalf("retry after = %s, want 37ms", backpressure.RetryAfter)
+	}
+	if len(backpressure.Reasons) != 1 || backpressure.Reasons[0].Code != "object_store_latency_high" {
+		t.Fatalf("accepted WAL reasons = %#v, want only object_store_latency_high", backpressure.Reasons)
+	}
+}
+
 func TestCommitBackpressureRejectsDuringIndexRebuild(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

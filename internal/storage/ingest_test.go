@@ -778,7 +778,8 @@ func TestIngestDoesNotOverwriteRecordCreatedDuringPublish(t *testing.T) {
 		}},
 	}
 	result, err := store.Ingest(ctx, "tenant-a", request)
-	if err == nil || !strings.Contains(err.Error(), "save batch record") || !errors.Is(err, ErrConflict) {
+	if err == nil || !strings.Contains(err.Error(), "save batch record") ||
+		(!errors.Is(err, ErrConflict) && !errors.Is(err, ErrIngestIdentityConflict)) {
 		t.Fatalf("err = %v, want batch metadata conflict", err)
 	}
 	if result.Applied != 1 || result.Version != 1 {
@@ -826,7 +827,8 @@ func TestIngestDoesNotOverwriteIdempotencyRecordCreatedDuringPublish(t *testing.
 		}},
 	}
 	result, err := store.Ingest(ctx, "tenant-a", request)
-	if err == nil || !strings.Contains(err.Error(), "save idempotency record") || !errors.Is(err, ErrConflict) {
+	if err == nil || !strings.Contains(err.Error(), "save idempotency record") ||
+		(!errors.Is(err, ErrConflict) && !errors.Is(err, ErrIngestIdentityConflict)) {
 		t.Fatalf("err = %v, want idempotency metadata conflict", err)
 	}
 	if result.Applied != 1 || result.Version != 1 {
@@ -1479,6 +1481,43 @@ func TestSaveIngestBatchCanonicalizesReplayBeforePersisting(t *testing.T) {
 	canonical.Result.SkipReason = ""
 	if err := store.saveIngestBatch(ctx, "tenant-a", canonical); err != nil {
 		t.Fatalf("save canonical result after replay-first write: %v", err)
+	}
+}
+
+func TestCoordinatedSaveIngestBatchReplacesPriorLifecycleFailure(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	request := ingestEntityRequest("batch-lifecycle-retry", "host:retry")
+	failed := IngestBatchRecord{
+		Request: request,
+		Result: IngestResult{
+			BatchID: request.BatchID,
+			Failed:  1,
+			Failures: []IngestFailure{{
+				Index:      0,
+				ExternalID: request.Items[0].ExternalID,
+				Error:      ErrTenantDisabled.Error(),
+			}},
+		},
+	}
+	if err := store.saveIngestBatch(ctx, "tenant-a", failed); err != nil {
+		t.Fatalf("save lifecycle failure: %v", err)
+	}
+
+	store.Coordinator = postgresWriteCacheTestCoordinator{}
+	committed := IngestBatchRecord{
+		Request: request,
+		Result:  IngestResult{BatchID: request.BatchID, Version: 1, Applied: 1},
+	}
+	if err := store.saveIngestBatch(ctx, "tenant-a", committed); err != nil {
+		t.Fatalf("replace lifecycle failure with committed result: %v", err)
+	}
+	stored, ok, err := store.loadIngestRecord(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatalf("load replaced lifecycle result: %v", err)
+	}
+	if !ok || stored.Result.Version != 1 || stored.Result.Applied != 1 || stored.Result.Failed != 0 {
+		t.Fatalf("stored lifecycle retry result = %#v, want committed version 1", stored.Result)
 	}
 }
 

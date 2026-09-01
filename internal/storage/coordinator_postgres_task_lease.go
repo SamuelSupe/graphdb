@@ -66,6 +66,31 @@ func (c *PostgresCoordinator) AcquireTaskLease(
 	return lease, true, nil
 }
 
+func (c *PostgresCoordinator) AcquireIngestPublishSlot(
+	ctx context.Context,
+	tenantID string,
+	ownerToken string,
+	ttl time.Duration,
+) (CoordinatorTaskLease, CoordinationHead, bool, bool, error) {
+	lease, acquired, err := c.AcquireTaskLease(
+		ctx, tenantID, coordinatorIngestPublishTaskType, ownerToken, ttl,
+	)
+	if err != nil {
+		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, err
+	}
+	if !acquired {
+		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, nil
+	}
+	head, headExists, err := c.Head(ctx, tenantID)
+	if err != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = c.ReleaseTaskLease(releaseCtx, lease)
+		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, err
+	}
+	return lease, head, headExists, true, nil
+}
+
 func (c *PostgresCoordinator) RenewTaskLease(
 	ctx context.Context,
 	lease CoordinatorTaskLease,
@@ -105,6 +130,28 @@ func (c *PostgresCoordinator) ReleaseTaskLease(ctx context.Context, lease Coordi
 	}
 	if tag.RowsAffected() != 1 {
 		return ErrConflict
+	}
+	return nil
+}
+
+func (c *PostgresCoordinator) releaseTaskLeaseTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	lease CoordinatorTaskLease,
+) error {
+	tag, err := tx.Exec(ctx,
+		`UPDATE `+c.table("task_leases")+`
+		 SET owner_token = '', expires_at = now() - interval '1 microsecond', updated_at = now()
+		 WHERE namespace = $1 AND tenant_id = $2 AND task_type = $3
+		   AND owner_token = $4 AND fence_epoch = $5
+		   AND expires_at > clock_timestamp()`,
+		c.namespace, lease.TenantID, lease.TaskType, lease.OwnerToken, lease.FenceEpoch,
+	)
+	if err != nil {
+		return coordinatorUnavailable(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrTaskLeaseHeld
 	}
 	return nil
 }

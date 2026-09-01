@@ -235,19 +235,12 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantPurgeReport{}, err
 	}
-	if s.ingestBarrier != nil {
-		if err := s.ingestBarrier(ctx, tenantID); err != nil {
-			return TenantPurgeReport{}, err
-		}
-	}
-	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
-	if err != nil {
-		return TenantPurgeReport{}, err
-	}
-	defer unlock()
-	var purgeGeneration int64
+	var (
+		purgeGeneration int64
+		candidateOnly   bool
+	)
 	if s.coordinated() {
-		purgeCtx, generation, candidateOnly, stopLease, err :=
+		purgeCtx, generation, onlyCandidate, stopLease, err :=
 			s.startCoordinatedPurge(
 				ctx, tenantID, force,
 			)
@@ -257,11 +250,26 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 		defer stopLease()
 		ctx = purgeCtx
 		purgeGeneration = generation
+		candidateOnly = onlyCandidate
 		s.deleteWriteCache(tenantID)
 		s.deleteCachedRetrievalSnapshot(tenantID)
-		if candidateOnly {
-			return s.purgeCoordinatedTenantCandidate(ctx, tenantID)
+		if !candidateOnly && s.ingestBarrier != nil {
+			if err := s.ingestBarrier(ctx, tenantID); err != nil {
+				return TenantPurgeReport{}, err
+			}
 		}
+	} else if s.ingestBarrier != nil {
+		if err := s.ingestBarrier(ctx, tenantID); err != nil {
+			return TenantPurgeReport{}, err
+		}
+	}
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return TenantPurgeReport{}, err
+	}
+	defer unlock()
+	if candidateOnly {
+		return s.purgeCoordinatedTenantCandidate(ctx, tenantID)
 	}
 	if metadata, exists, _, err := s.getTenantPurgeTombstone(ctx, tenantID); err != nil {
 		return TenantPurgeReport{}, err
@@ -752,6 +760,12 @@ func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID st
 
 func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string) (string, error) {
 	if s.coordinated() {
+		if publishState, ok := coordinatorIngestPublishStateFromContext(ctx, tenantID); ok {
+			if !publishState.headExists {
+				return TenantStatusActive, nil
+			}
+			return publishState.head.Status, nil
+		}
 		head, exists, err := s.Coordinator.Head(ctx, tenantID)
 		if err != nil {
 			return "", err

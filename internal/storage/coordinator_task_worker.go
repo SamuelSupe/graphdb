@@ -4,16 +4,30 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-const coordinatorLifecycleTaskType = "tenant_lifecycle"
+const (
+	coordinatorLifecycleTaskType     = "tenant_lifecycle"
+	coordinatorIngestPublishTaskType = "ingest_publish"
+)
 
 type coordinatorLeaseContextKey struct{}
+
+type coordinatorIngestPublishContextKey struct{}
 
 type coordinatorLeaseContext struct {
 	tenantID string
 	taskType string
+}
+
+type coordinatorIngestPublishContext struct {
+	tenantID            string
+	lease               CoordinatorTaskLease
+	head                CoordinationHead
+	headExists          bool
+	releasedWithPublish *atomic.Bool
 }
 
 func (s *TenantStore) startCoordinatorTaskLease(
@@ -77,6 +91,91 @@ func (s *TenantStore) startCoordinatorOperationLease(
 	}, nil
 }
 
+func (s *TenantStore) startCoordinatorIngestPublishSlot(
+	ctx context.Context,
+	tenantID string,
+) (context.Context, func(), error) {
+	fast, ok := s.Coordinator.(CoordinatorIngestPublishSlot)
+	if !ok {
+		return s.startCoordinatorOperationLease(
+			ctx, tenantID, coordinatorIngestPublishTaskType,
+		)
+	}
+	operationID, err := newCommitID()
+	if err != nil {
+		return nil, nil, err
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	owner := s.InstanceID + "/" + operationID
+	lease, head, headExists, acquired, err := fast.AcquireIngestPublishSlot(
+		operationCtx, tenantID, owner, s.leaseTTL(),
+	)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	if !acquired {
+		cancel()
+		return nil, nil, fmt.Errorf(
+			"%w: tenant %q task type %q",
+			ErrTaskLeaseHeld, tenantID, coordinatorIngestPublishTaskType,
+		)
+	}
+	releasedWithPublish := &atomic.Bool{}
+	stop := s.maintainCoordinatorLeaseUntil(
+		operationCtx,
+		lease,
+		cancel,
+		func() bool { return releasedWithPublish.Load() },
+	)
+	operationCtx = bindCoordinatorLeaseContext(
+		operationCtx, tenantID, coordinatorIngestPublishTaskType,
+	)
+	operationCtx = context.WithValue(
+		operationCtx,
+		coordinatorIngestPublishContextKey{},
+		coordinatorIngestPublishContext{
+			tenantID:            tenantID,
+			lease:               lease,
+			head:                head,
+			headExists:          headExists,
+			releasedWithPublish: releasedWithPublish,
+		},
+	)
+	operationCtx = withFreshCoordinatedWriteContextMemo(operationCtx)
+	return operationCtx, func() {
+		stop()
+		cancel()
+	}, nil
+}
+
+func coordinatorIngestPublishStateFromContext(
+	ctx context.Context,
+	tenantID string,
+) (coordinatorIngestPublishContext, bool) {
+	current, ok := ctx.Value(coordinatorIngestPublishContextKey{}).(coordinatorIngestPublishContext)
+	return current, ok && current.tenantID == tenantID
+}
+
+func coordinatorIngestPublishLeaseFromContext(
+	ctx context.Context,
+	tenantID string,
+) *CoordinatorTaskLease {
+	current, ok := coordinatorIngestPublishStateFromContext(ctx, tenantID)
+	if !ok {
+		return nil
+	}
+	lease := current.lease
+	return &lease
+}
+
+func markCoordinatorIngestPublishLeaseReleased(ctx context.Context, tenantID string) {
+	current, ok := coordinatorIngestPublishStateFromContext(ctx, tenantID)
+	if ok && current.releasedWithPublish != nil {
+		current.releasedWithPublish.Store(true)
+	}
+}
+
 func coordinatorTaskLeaseType(task Task) string {
 	if task.Type == TaskTypeRepair &&
 		!boolTaskParam(task.Params, "apply") {
@@ -136,6 +235,24 @@ func (s *TenantStore) startCoordinatorLease(
 	if !acquired {
 		return nil, fmt.Errorf("%w: tenant %q task type %q", ErrTaskLeaseHeld, tenantID, taskType)
 	}
+	return s.maintainCoordinatorLease(ctx, lease, cancel), nil
+}
+
+func (s *TenantStore) maintainCoordinatorLease(
+	ctx context.Context,
+	lease CoordinatorTaskLease,
+	cancel context.CancelFunc,
+) func() {
+	return s.maintainCoordinatorLeaseUntil(ctx, lease, cancel, nil)
+}
+
+func (s *TenantStore) maintainCoordinatorLeaseUntil(
+	ctx context.Context,
+	lease CoordinatorTaskLease,
+	cancel context.CancelFunc,
+	released func() bool,
+) func() {
+	ttl := s.leaseTTL()
 	done := make(chan struct{})
 	var once sync.Once
 	go func() {
@@ -172,9 +289,12 @@ func (s *TenantStore) startCoordinatorLease(
 	return func() {
 		once.Do(func() {
 			close(done)
+			if released != nil && released() {
+				return
+			}
 			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer releaseCancel()
 			_ = s.Coordinator.ReleaseTaskLease(releaseCtx, lease)
 		})
-	}, nil
+	}
 }

@@ -43,6 +43,13 @@ func (c *PostgresCoordinator) PublishIngestBatch(
 	if err := c.enqueueDerivedIndexes(ctx, tx, head.TenantID, head.GraphVersion); err != nil {
 		return CoordinationHead{}, false, err
 	}
+	if request.PublishLease != nil {
+		if err := c.releaseIngestPublishLeaseTx(
+			ctx, tx, request.Head.TenantID, *request.PublishLease,
+		); err != nil {
+			return CoordinationHead{}, false, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return c.resolveAmbiguousIngestBatchPublish(request, head)
 	}
@@ -110,10 +117,29 @@ func (c *PostgresCoordinator) CompleteIngestBatch(
 	if err := c.completeIngestBatchItemsTx(ctx, tx, request.Head.TenantID, request.Items, head.GraphVersion); err != nil {
 		return false, err
 	}
+	if request.PublishLease != nil {
+		if err := c.releaseIngestPublishLeaseTx(
+			ctx, tx, request.Head.TenantID, *request.PublishLease,
+		); err != nil {
+			return false, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return c.resolveAmbiguousIngestBatchCompletion(request)
 	}
 	return true, nil
+}
+
+func (c *PostgresCoordinator) releaseIngestPublishLeaseTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	tenantID string,
+	lease CoordinatorTaskLease,
+) error {
+	if lease.TenantID != tenantID || lease.TaskType != coordinatorIngestPublishTaskType {
+		return fmt.Errorf("ingest publish lease does not match tenant %q", tenantID)
+	}
+	return c.releaseTaskLeaseTx(ctx, tx, lease)
 }
 
 func (c *PostgresCoordinator) completeIngestBatchItemsTx(

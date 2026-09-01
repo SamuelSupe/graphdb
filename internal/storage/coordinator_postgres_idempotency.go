@@ -38,7 +38,11 @@ func (c *PostgresCoordinator) ReserveCommit(
 		return CommitReservation{}, err
 	}
 	if reservation.RequestHash != requestHash {
-		return CommitReservation{}, fmt.Errorf("commit idempotency conflict for key %q: stored request differs from incoming request", key)
+		return CommitReservation{}, fmt.Errorf(
+			"%w for key %q: stored request differs from incoming request",
+			ErrIdempotencyConflict,
+			key,
+		)
 	}
 	if reservation.Committed {
 		return reservation, nil

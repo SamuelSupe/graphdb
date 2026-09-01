@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.5 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.3.0 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -28,24 +28,34 @@ SPARQL、本体推理或历史图引擎。
 | 批量导入 | task 驱动、可恢复的 JSONL 和 CSV ingest。 |
 | 对象存储持久化 | Parquet manifest、commit、snapshot、entity page、edge shard 和 index object。 |
 | 读写分离 | 同一二进制支持 `all`、`writer`、`reader`，通过部署拓扑分流。 |
-| 可选多写协调 | PostgreSQL head CAS 支持每租户 2–8 个乐观并发 writer，本地协调仍为默认。 |
+| 可选多写协调 | PostgreSQL head CAS 支持每租户 2–8 个乐观并发 writer；1.3 WAL profile 为 ingest 增加持久接管，本地协调仍为默认。 |
 | 有界读路径 | 冷图加载、查询准入、执行预算和缓存驻留分别设有独立边界。 |
 | 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
 
 ### 1.3 PostgreSQL-CAS 多 writer WAL 合同
 
-1.3 实现工作流定义了一个可选的 `/v1/ingest/batches` WAL profile：每个
+GGraphDB 1.3.0 提供一个可选的 `/v1/ingest/batches` WAL profile：每个
 writer 拥有独立本地 WAL，PostgreSQL 负责 tenant-head CAS 和协调元数据更新。
 对象存储仍是图数据权威；PostgreSQL 不保存 ingest payload、WAL record、commit
 segment 或图数据。`202` 表示本地 WAL `fsync` 后已持久接管，不是图版本已经提交。
-CAS 和依赖的暂时故障通过重基与缩批重试。
+CAS 和依赖的暂时故障仍通过重基与有界缩批重试；PostgreSQL 与对象存储同时故障
+时不会立即提交图版本。
 
-该 profile 支持按 CAS 顺序进行同租户 2–8 writer 并发，扩展目标是跨租户。每个
-writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID` 和 owner-routed 状态 URL。该合同
-仍受发行门禁约束；本文不宣称当前分支已经通过验收矩阵，详见
-[1.3 设计文档](docs/ingest-wal-multiwriter-design.zh-CN.md)。
+该 profile 支持按成功 CAS 顺序进行同租户 2–8 writer 并发，并支持跨租户横向
+扩展。每个 writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID`、独立持久 WAL 卷和
+owner-routed 状态 URL。批量发布使用有界 CAS/publish slot 和生命周期
+generation fence：租户 freeze、delete 或 recreate 后，旧 generation 的请求
+不能发布。完整合同见[1.3 设计文档](docs/ingest-wal-multiwriter-design.zh-CN.md)。
 
-### 1.2.5 混合读写查询性能
+发行证据覆盖完整 Go 测试、聚焦 race 和 vet，以及隔离 PostgreSQL 下的原子发布/回滚、
+跨 writer 幂等、同租户 2、4、8 writer 并发、四个独立租户、恢复和 owner 路由状态。
+这些是正确性与恢复结果，不是无界吞吐或 exactly-once 保证。持久性边界是进程
+故障且原 writer WAL 卷仍可恢复；WAL 卷永久丢失不在合同内。
+
+### 读缓存与性能证据
+
+本节测量来自 1.2.5 的固定环境基线，并在此作为对比参考；它们不是新的 1.3
+容量认证。
 
 - 可复现的单节点 `GRAPHDB_MODE=all` 证据运行于 OrbStack Linux/arm64（8 CPU、
   8 GiB）：4 个 writer、16 个 reader、每个请求 200 条数据，执行 3 轮、每轮
@@ -66,6 +76,10 @@ writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID` 和 owner-routed 状态 URL�
   Snapshot export 退化：p95 均值 `3744.3→5943.0 ms`，完成数
   `46.3→26.3`。聚合 p95 存在样本波动，部分热点 saved-query 和 scan 路径的
   p50 退化；生产 capacity 和完整矩阵覆盖仍为 `UNKNOWN`。
+- 1.3 capacity envelope 支持部署 2–8 个 writer，但同租户 8 路并发是正确性和
+  可用性边界，不代表热点租户吞吐线性增长。历史两 active writer、20 commit/s
+  结果属于 1.2 基线，不是 1.3 WAL 容量认证。设置生产上限前，请在目标部署中
+  重新运行[容量边界](docs/capacity.zh-CN.md)。
 
 ### 1.2.4 查询性能更新
 
@@ -227,12 +241,17 @@ readiness 作为接入条件。
 `X-Tenant-ID` 是租户路由标识，不是认证机制；认证、授权、TLS 和限流应由
 网关或服务网格提供。
 
+从 1.3 WAL profile 滚动降级时，必须先停止新的 WAL 准入，并等待该 writer 的
+owner 路由状态显示没有 pending durable record。切换 direct 模式、重新分配 WAL
+卷或运行旧二进制前，必须排空每个 writer 的 WAL；不支持无条件的原地降级。重启
+期间保留稳定 writer 身份和原 WAL 卷。
+
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.2.5：
-[**v1.2.5**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.5)。
-发布工作流只有在该 tag 的发行 checklist、30 分钟 PostgreSQL CAS 门禁和
-正式回滚演练全部通过后才会发布。
+最新已发布版本为 GGraphDB 1.3.0：
+[**v1.3.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.0)。
+该版本包含 PostgreSQL-CAS 多 writer WAL profile 及绑定到提交的正确性/恢复证据。
+下文固定环境的读缓存与查询测量仍是历史证据，不是生产 SLO。
 
 发行包包含：
 
@@ -242,7 +261,7 @@ readiness 作为接入条件。
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.2.5` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.3.0` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 
@@ -272,6 +291,7 @@ GGraphDB v1 目前明确保持以下边界：
 - 通用实体关系图内核，CMDB 数据治理作为可选的领域 profile；
 - 本地协调默认每租户一个活跃 writer；可选 PostgreSQL 协调提供乐观多 writer
   head CAS；1.3 WAL profile 仅为 ingest batch 增加独立 writer 本地持久接管；
+  direct commit 不会在 PostgreSQL 不可用时转为本地持久写入；
 - 对象存储是生产持久化的推荐来源；
 - 强读场景通过显式 reader freshness 控制；
 - 认证和授权由部署边界负责。

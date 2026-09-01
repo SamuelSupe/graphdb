@@ -21,6 +21,7 @@ var ErrCoordinatorHeadMissing = errors.New("coordinator tenant head is missing")
 var ErrCoordinatorFenced = errors.New("coordinator is fenced")
 var ErrWriteConflict = errors.New("write conflict")
 var ErrVersionConflict = errors.New("version conflict")
+var ErrIdempotencyConflict = errors.New("idempotency conflict")
 var ErrIdempotencyInProgress = errors.New("idempotency request is in progress")
 var ErrTaskLeaseHeld = errors.New("coordinator task lease is held")
 
@@ -76,8 +77,9 @@ type IngestBatchCompletion struct {
 }
 
 type IngestBatchPublishRequest struct {
-	Head  HeadPublishRequest
-	Items []IngestBatchCompletion
+	Head         HeadPublishRequest
+	Items        []IngestBatchCompletion
+	PublishLease *CoordinatorTaskLease
 }
 
 type WriteContextPublishRequest struct {
@@ -253,6 +255,15 @@ type CoordinatorTaskLeaseReader interface {
 		string,
 		string,
 	) (CoordinatorTaskLease, bool, error)
+}
+
+type CoordinatorIngestPublishSlot interface {
+	AcquireIngestPublishSlot(
+		context.Context,
+		string,
+		string,
+		time.Duration,
+	) (CoordinatorTaskLease, CoordinationHead, bool, bool, error)
 }
 
 type CoordinatorDerivedTaskAcknowledger interface {

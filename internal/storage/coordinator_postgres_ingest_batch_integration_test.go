@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestPostgresCoordinatorPublishesIngestBatchAtomically(t *testing.T) {
@@ -99,6 +100,236 @@ func TestPostgresCoordinatorPublishesIngestBatchAtomically(t *testing.T) {
 		`SELECT count(*) FROM `+coordinator.table("derived_tasks")+` WHERE namespace = $1 AND tenant_id = 'tenant-a' AND target_version = 2`,
 		1,
 	)
+}
+
+func TestPostgresCoordinatorFastIngestPublishSlotReturnsHeadAndReleasesOnCommit(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(t, "ingest-publish-slot")
+	seedCoordinatorHead(t, ctx, coordinator, "tenant-a")
+
+	wantHead, exists, err := coordinator.Head(ctx, "tenant-a")
+	if err != nil || !exists {
+		t.Fatalf("seed head exists=%v err=%v", exists, err)
+	}
+	first, head, headExists, acquired, err := coordinator.AcquireIngestPublishSlot(
+		ctx, "tenant-a", "writer-a", time.Second,
+	)
+	if err != nil || !acquired {
+		t.Fatalf("first publish slot acquired=%v err=%v", acquired, err)
+	}
+	if first.TaskType != coordinatorIngestPublishTaskType {
+		t.Fatalf("first publish slot task type = %q, want %q", first.TaskType, coordinatorIngestPublishTaskType)
+	}
+	if !headExists || head != wantHead {
+		t.Fatalf("fast acquire head exists=%v head=%#v, want exists=%v head=%#v", headExists, head, true, wantHead)
+	}
+	if _, competingHead, competingHeadExists, competing, err := coordinator.AcquireIngestPublishSlot(
+		ctx, "tenant-a", "writer-b", time.Second,
+	); err != nil {
+		t.Fatalf("competing publish slot: %v", err)
+	} else if competing || competingHeadExists || competingHead != (CoordinationHead{}) {
+		t.Fatalf("competing publish slot acquired=%v head exists=%v head=%#v, want no reservation", competing, competingHeadExists, competingHead)
+	}
+
+	updated, published, err := coordinator.PublishIngestBatch(ctx, IngestBatchPublishRequest{
+		Head: HeadPublishRequest{
+			TenantID:                     "tenant-a",
+			ExpectedRevision:             wantHead.Revision,
+			ExpectedGeneration:           wantHead.Generation,
+			ExpectedWriteContextRevision: wantHead.WriteContextRevision,
+			GraphVersion:                 wantHead.GraphVersion + 1,
+			ManifestKey:                  "manifest-1",
+			ManifestHash:                 "manifest-hash-1",
+			CommitID:                     "commit-1",
+		},
+		PublishLease: &first,
+	})
+	if err != nil || !published {
+		t.Fatalf("publish with slot lease published=%v err=%v", published, err)
+	}
+	if updated.Revision != wantHead.Revision+1 || updated.GraphVersion != wantHead.GraphVersion+1 {
+		t.Fatalf("updated head = %#v", updated)
+	}
+	second, _, _, acquired, err := coordinator.AcquireIngestPublishSlot(
+		ctx, "tenant-a", "writer-b", time.Second,
+	)
+	if err != nil || !acquired {
+		t.Fatalf("next owner after publish acquired=%v err=%v", acquired, err)
+	}
+	if second.OwnerToken != "writer-b" || second.FenceEpoch <= first.FenceEpoch {
+		t.Fatalf("next owner lease = %#v, first = %#v", second, first)
+	}
+	freshRequest := IngestBatchPublishRequest{
+		Head: HeadPublishRequest{
+			TenantID:                     "tenant-a",
+			ExpectedRevision:             updated.Revision,
+			ExpectedGeneration:           updated.Generation,
+			ExpectedWriteContextRevision: updated.WriteContextRevision,
+			GraphVersion:                 updated.GraphVersion + 1,
+			ManifestKey:                  "manifest-stale-lease",
+			ManifestHash:                 "manifest-hash-stale-lease",
+			CommitID:                     "commit-stale-lease",
+		},
+		PublishLease: &first,
+	}
+	if _, published, err := coordinator.PublishIngestBatch(ctx, freshRequest); published || !errors.Is(err, ErrTaskLeaseHeld) {
+		t.Fatalf("publish with stale lease published=%v err=%v, want ErrTaskLeaseHeld", published, err)
+	}
+	if current, _, err := coordinator.Head(ctx, "tenant-a"); err != nil || current != updated {
+		t.Fatalf("head after stale lease publish = %#v err=%v, want %#v", current, err, updated)
+	}
+	currentLease, active, err := coordinator.TaskLease(ctx, "tenant-a", coordinatorIngestPublishTaskType)
+	if err != nil || !active || currentLease.OwnerToken != second.OwnerToken || currentLease.FenceEpoch != second.FenceEpoch {
+		t.Fatalf("lease after stale publish active=%v lease=%#v err=%v, want %#v", active, currentLease, err, second)
+	}
+
+	staleRequest := IngestBatchPublishRequest{
+		Head: HeadPublishRequest{
+			TenantID:                     "tenant-a",
+			ExpectedRevision:             wantHead.Revision,
+			ExpectedGeneration:           wantHead.Generation,
+			ExpectedWriteContextRevision: wantHead.WriteContextRevision,
+			GraphVersion:                 updated.GraphVersion + 1,
+			ManifestKey:                  "manifest-stale",
+			ManifestHash:                 "manifest-hash-stale",
+			CommitID:                     "commit-stale",
+		},
+	}
+	for name, lease := range map[string]*CoordinatorTaskLease{
+		"other owner":   &first,
+		"current owner": &second,
+	} {
+		staleRequest.PublishLease = lease
+		if _, published, err := coordinator.PublishIngestBatch(ctx, staleRequest); err != nil || published {
+			t.Fatalf("CAS conflict with %s published=%v err=%v, want no publish", name, published, err)
+		}
+		current, active, err := coordinator.TaskLease(ctx, "tenant-a", coordinatorIngestPublishTaskType)
+		if err != nil || !active || current.OwnerToken != second.OwnerToken || current.FenceEpoch != second.FenceEpoch {
+			t.Fatalf("lease after %s CAS conflict active=%v lease=%#v err=%v, want current owner %#v", name, active, current, err, second)
+		}
+	}
+	if _, err := coordinator.pool.Exec(ctx,
+		`UPDATE `+coordinator.table("task_leases")+`
+		 SET expires_at = now() - interval '1 second'
+		 WHERE namespace = $1 AND tenant_id = 'tenant-a' AND task_type = $2`,
+		coordinator.namespace, coordinatorIngestPublishTaskType,
+	); err != nil {
+		t.Fatalf("expire current publish lease: %v", err)
+	}
+	freshRequest.PublishLease = &second
+	if _, published, err := coordinator.PublishIngestBatch(ctx, freshRequest); published || !errors.Is(err, ErrTaskLeaseHeld) {
+		t.Fatalf("publish with expired lease published=%v err=%v, want ErrTaskLeaseHeld", published, err)
+	}
+	if current, _, err := coordinator.Head(ctx, "tenant-a"); err != nil || current != updated {
+		t.Fatalf("head after expired lease publish = %#v err=%v, want %#v", current, err, updated)
+	}
+}
+
+func TestPostgresCoordinatorFastIngestPublishSlotReadsFreshHeadAfterLeaseWait(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(t, "ingest-publish-slot-lock")
+	seedCoordinatorHead(t, ctx, coordinator, "tenant-a")
+	if _, acquired, err := coordinator.AcquireTaskLease(
+		ctx, "tenant-a", coordinatorIngestPublishTaskType, "seed-owner", time.Minute,
+	); err != nil || !acquired {
+		t.Fatalf("seed publish slot acquired=%v err=%v", acquired, err)
+	}
+
+	tx, err := coordinator.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin blocker transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	tag, err := tx.Exec(ctx,
+		`UPDATE `+coordinator.table("task_leases")+`
+		 SET owner_token = 'blocker-owner', expires_at = now() - interval '1 second', updated_at = now()
+		 WHERE namespace = $1 AND tenant_id = 'tenant-a' AND task_type = $2`,
+		coordinator.namespace, coordinatorIngestPublishTaskType,
+	)
+	if err != nil {
+		t.Fatalf("lock publish slot row: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("locked publish slot rows = %d, want 1", tag.RowsAffected())
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+coordinator.table("tenant_heads")+`
+		 SET head_revision = 2, graph_version = 1,
+		     manifest_key = 'manifest-fresh', manifest_hash = 'manifest-hash-fresh',
+		     commit_id = 'commit-fresh', updated_at = now()
+		 WHERE namespace = $1 AND tenant_id = 'tenant-a'`,
+		coordinator.namespace,
+	); err != nil {
+		t.Fatalf("update blocked head: %v", err)
+	}
+
+	type acquireResult struct {
+		lease      CoordinatorTaskLease
+		head       CoordinationHead
+		headExists bool
+		acquired   bool
+		err        error
+	}
+	resultCh := make(chan acquireResult, 1)
+	go func() {
+		lease, head, headExists, acquired, err := coordinator.AcquireIngestPublishSlot(
+			ctx, "tenant-a", "contender-owner", time.Minute,
+		)
+		resultCh <- acquireResult{
+			lease: lease, head: head, headExists: headExists, acquired: acquired, err: err,
+		}
+	}()
+
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := waitForPostgresTaskLeaseLock(waitCtx, coordinator); err != nil {
+		t.Fatalf("waiting for contender task-lease row lock: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit blocker transaction: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil || !result.acquired {
+			t.Fatalf("contender publish slot acquired=%v err=%v", result.acquired, result.err)
+		}
+		if !result.headExists || result.head.Revision != 2 ||
+			result.head.GraphVersion != 1 || result.head.ManifestKey != "manifest-fresh" ||
+			result.head.ManifestHash != "manifest-hash-fresh" {
+			t.Fatalf("contender head = %#v, want fresh revision 2", result.head)
+		}
+		if err := coordinator.ReleaseTaskLease(ctx, result.lease); err != nil {
+			t.Fatalf("release contender publish slot: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("waiting for contender result: %v", ctx.Err())
+	}
+}
+
+func waitForPostgresTaskLeaseLock(ctx context.Context, coordinator *PostgresCoordinator) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		if err := coordinator.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND state = 'active'
+				  AND wait_event_type = 'Lock'
+				  AND query LIKE '%task_leases%'
+			)`).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestPostgresCoordinatorIngestBatchCompletionRollsBackHeadAndEarlierItems(t *testing.T) {

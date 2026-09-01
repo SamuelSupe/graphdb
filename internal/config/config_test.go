@@ -17,6 +17,8 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_READ_MAX_PER_TENANT",
 		"GRAPHDB_READ_OBJECT_MAX_CONCURRENT",
 		"GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT",
+		"GRAPHDB_READER_CACHE_MAX_TENANTS",
+		"GRAPHDB_READER_CACHE_MAX_BYTES",
 		"GRAPHDB_WRITE_MAX_CONCURRENT",
 		"GRAPHDB_WRITE_MAX_PER_TENANT",
 		"GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD",
@@ -44,6 +46,19 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 				t.Fatalf("Load err = %v, want %s validation", err, key)
 			}
 		})
+	}
+}
+
+func TestLoadParsesReaderCacheCapacity(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_READER_CACHE_MAX_TENANTS", "23")
+	t.Setenv("GRAPHDB_READER_CACHE_MAX_BYTES", "96MiB")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReaderCacheMaxTenants != 23 || cfg.ReaderCacheMaxBytes != 96*1024*1024 {
+		t.Fatalf("reader cache capacity = %d/%d", cfg.ReaderCacheMaxTenants, cfg.ReaderCacheMaxBytes)
 	}
 }
 

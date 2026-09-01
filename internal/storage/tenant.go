@@ -256,11 +256,10 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
-	if s.ingestBarrier != nil {
-		if err := s.ingestBarrier(ctx, tenantID); err != nil {
-			return Manifest{}, err
-		}
-	}
+	// Compaction is the recovery path for commit-tail backpressure, so it must
+	// not wait for WAL items that may themselves require compaction to proceed.
+	// Both publication paths preserve commits newer than the snapshot; lifecycle
+	// operations retain their separate ingest drain and fencing semantics.
 	if s.coordinated() {
 		operationCtx, stop, err := s.startCoordinatorOperationLease(
 			ctx, tenantID, TaskTypeCompact,

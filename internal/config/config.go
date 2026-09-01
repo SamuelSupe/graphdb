@@ -19,6 +19,8 @@ type Config struct {
 	Prefix                            string
 	PollInterval                      time.Duration
 	ReaderCacheIdleTTL                time.Duration
+	ReaderCacheMaxTenants             int
+	ReaderCacheMaxBytes               int64
 	ReaderCacheLoadTimeout            time.Duration
 	ReaderCacheLoadMaxConcurrent      int
 	ReaderCacheLoadQueueTimeout       time.Duration
@@ -114,6 +116,8 @@ func Load() (Config, error) {
 		Prefix:                            getenv("GRAPHDB_PREFIX", "graphdb"),
 		PollInterval:                      2 * time.Second,
 		ReaderCacheIdleTTL:                15 * time.Minute,
+		ReaderCacheMaxTenants:             64,
+		ReaderCacheMaxBytes:               512 * 1024 * 1024,
 		ReaderCacheLoadTimeout:            time.Minute,
 		ReaderCacheLoadMaxConcurrent:      4,
 		ReaderCacheLoadQueueTimeout:       2 * time.Second,
@@ -199,6 +203,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_READER_CACHE_IDLE_TTL", &cfg.ReaderCacheIdleTTL); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_READER_CACHE_MAX_TENANTS", &cfg.ReaderCacheMaxTenants); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_READER_CACHE_MAX_BYTES", &cfg.ReaderCacheMaxBytes); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", &cfg.ReaderCacheLoadTimeout); err != nil {

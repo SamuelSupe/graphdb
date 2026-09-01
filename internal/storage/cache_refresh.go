@@ -48,7 +48,7 @@ func (c *ReaderCache) cachedTenantsForRefresh() []string {
 	tenantIDs := make([]string, 0, len(c.entries))
 	for tenantID, entry := range c.entries {
 		if cacheEntryIdle(entry, now, c.IdleTTL) {
-			delete(c.entries, tenantID)
+			c.deleteEntryLocked(tenantID)
 			continue
 		}
 		tenantIDs = append(tenantIDs, tenantID)

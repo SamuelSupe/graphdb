@@ -58,7 +58,8 @@ func (s *TenantStore) putCoordinatedIngestBatchManifest(
 			ManifestHash:                 hash,
 			CommitID:                     manifest.HeadCommitID,
 		},
-		Items: items,
+		Items:        items,
+		PublishLease: coordinatorIngestPublishLeaseFromContext(ctx, tenantID),
 	}
 	next, published, err := s.Coordinator.PublishIngestBatch(ctx, request)
 	if err != nil {
@@ -76,6 +77,7 @@ func (s *TenantStore) putCoordinatedIngestBatchManifest(
 		}
 		return ObjectMeta{}, fmt.Errorf("%w: manifest for tenant %q changed while publishing", ErrConflict, tenantID)
 	}
+	markCoordinatorIngestPublishLeaseReleased(ctx, tenantID)
 	s.observeCoordinatorCAS(tenantID, "committed", next.Revision)
 	return coordinatedManifestMeta(next.ManifestKey, next), nil
 }

@@ -271,6 +271,23 @@ func (s *TenantStore) ingestIdempotencyKey(tenantID string, source string, colle
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "idempotency", objectSegment(collectorID), objectSegment(idempotencyKey)+".parquet")
 }
 
+func (s *TenantStore) ingestAttemptFailureKey(tenantID string, ownerID string, source string, collectorID string, batchID string) string {
+	if strings.TrimSpace(ownerID) == "" {
+		ownerID = "local"
+	}
+	return path.Join(
+		s.Prefix,
+		"tenants",
+		tenantID,
+		"ingest",
+		objectSegment(source),
+		"attempt-failures",
+		objectSegment(ownerID),
+		objectSegment(collectorID),
+		objectSegment(batchID)+".parquet",
+	)
+}
+
 func (s *TenantStore) legacyIngestIdempotencyKey(tenantID string, source string, idempotencyKey string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "idempotency", objectSegment(idempotencyKey)+".parquet")
 }

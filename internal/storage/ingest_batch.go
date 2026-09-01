@@ -11,12 +11,18 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-var ErrIngestRepairRequired = errors.New("ingest WAL repair required")
+var (
+	ErrIngestRepairRequired   = errors.New("ingest WAL repair required")
+	errIngestGenerationFenced = errors.New("ingest WAL tenant generation fenced")
+)
+
+const legacyUnboundIngestGeneration int64 = -1
 
 type IngestBatchEntry struct {
-	Request    IngestRequest
-	AcceptedAt time.Time
-	Prepared   *IngestPreparedRequest
+	Request            IngestRequest
+	AcceptedAt         time.Time
+	AcceptedGeneration int64
+	Prepared           *IngestPreparedRequest
 }
 
 type IngestPreparedRequest struct {
@@ -35,8 +41,9 @@ type IngestPreparedRequest struct {
 }
 
 type IngestBatchHooks struct {
-	Prepared func(context.Context, []*IngestPreparedRequest) error
-	Stats    func(IngestBatchStats)
+	Prepared  func(context.Context, []*IngestPreparedRequest) error
+	Published func()
+	Stats     func(IngestBatchStats)
 }
 
 type IngestBatchStats struct {
@@ -61,10 +68,32 @@ type ingestBatchCandidate struct {
 	report         graph.ApplyReport
 	changed        bool
 	metadataOnly   bool
+	skipMetadata   bool
 	resultManifest Manifest
 	prepared       bool
 	preparedPlan   *IngestPreparedRequest
 	reservation    *directCommitReservation
+}
+
+func ingestBatchAcceptedGeneration(entries []IngestBatchEntry) (int64, error) {
+	expected := normalizedIngestAcceptedGeneration(entries[0])
+	for _, entry := range entries[1:] {
+		generation := normalizedIngestAcceptedGeneration(entry)
+		if generation != expected {
+			return 0, fmt.Errorf("%w: mixed accepted tenant generations", ErrIngestRepairRequired)
+		}
+	}
+	return expected, nil
+}
+
+func normalizedIngestAcceptedGeneration(entry IngestBatchEntry) int64 {
+	if entry.AcceptedGeneration != 0 {
+		return entry.AcceptedGeneration
+	}
+	if entry.Prepared != nil && entry.Prepared.BaseGeneration > 0 {
+		return entry.Prepared.BaseGeneration
+	}
+	return 0
 }
 
 // IngestDurableBatch flushes one tenant queue under one tenant lock. Each
@@ -108,10 +137,19 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		}
 		preparedEntries[index] = entry
 	}
+	acceptedGeneration, err := ingestBatchAcceptedGeneration(preparedEntries)
+	if err != nil {
+		return nil, err
+	}
+	if s.coordinated() {
+		if err := s.validateCoordinatedIngestGeneration(ctx, tenantID, acceptedGeneration); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return nil, err
 	}
-	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
+	if err := s.checkAcceptedWALBackpressure(ctx, tenantID, false); err != nil {
 		return nil, err
 	}
 	if !s.coordinated() {
@@ -127,11 +165,11 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		if err != nil {
 			return nil, err
 		}
+		if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+			return nil, err
+		}
 	}
-	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
-		return nil, err
-	}
-	if err := s.checkWriteBackpressure(ctx, tenantID, true); err != nil {
+	if err := s.checkAcceptedWALBackpressure(ctx, tenantID, true); err != nil {
 		return nil, err
 	}
 	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
@@ -142,20 +180,6 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	candidates := make([]*ingestBatchCandidate, 0, len(preparedEntries))
 	for index, entry := range preparedEntries {
 		request := entry.Request
-		if !s.coordinated() {
-			if previous, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
-				return nil, err
-			} else if ok {
-				result := previous.Result
-				result.Skipped = true
-				result.SkipReason = IngestSkipReasonIdempotentReplay
-				results[index] = result
-				if err := s.repairIngestMetadataAfterSkip(ctx, tenantID, previous, true); err != nil {
-					return results, err
-				}
-				continue
-			}
-		}
 		result, mutations, appliedIndices := buildIngestMutations(request)
 		result.BatchID = request.BatchID
 		result.Cursor = request.Cursor
@@ -167,6 +191,27 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 			appliedIndices: appliedIndices,
 			mutations:      mutations,
 			metadataOnly:   result.Applied == 0,
+		}
+		if !s.coordinated() {
+			if previous, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
+				if errors.Is(err, ErrIngestIdentityConflict) {
+					markIngestCandidateFailure(candidate, err)
+					candidate.metadataOnly = true
+					candidate.skipMetadata = true
+					candidates = append(candidates, candidate)
+					continue
+				}
+				return nil, err
+			} else if ok {
+				result := previous.Result
+				result.Skipped = true
+				result.SkipReason = IngestSkipReasonIdempotentReplay
+				results[index] = result
+				if err := s.repairIngestMetadataAfterSkip(ctx, tenantID, previous, true); err != nil {
+					return results, err
+				}
+				continue
+			}
 		}
 		if entry.Prepared != nil {
 			if entry.Prepared.Result.BatchID != request.BatchID {
@@ -201,6 +246,13 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		if s.coordinated() {
 			reservation, replay, err := s.reserveCoordinatedIngestCandidate(ctx, tenantID, candidate)
 			if err != nil {
+				if errors.Is(err, ErrIdempotencyConflict) {
+					markIngestCandidateFailure(candidate, err)
+					candidate.metadataOnly = true
+					candidate.skipMetadata = true
+					candidates = append(candidates, candidate)
+					continue
+				}
 				return results, err
 			}
 			candidate.reservation = reservation
@@ -215,6 +267,31 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 			}
 		}
 		candidates = append(candidates, candidate)
+	}
+
+	batchCtx := ctx
+	var stopPublishSlot func()
+	if s.coordinated() && coordinatedBatchHasReservations(candidates) {
+		publishCtx, stop, err := s.startCoordinatorIngestPublishSlot(ctx, tenantID)
+		if err != nil {
+			return results, err
+		}
+		// The slot only avoids duplicate object-store work. PostgreSQL Head CAS
+		// remains authoritative so older writers can coexist during upgrades.
+		ctx = publishCtx
+		stopPublishSlot = stop
+		defer func() {
+			if stopPublishSlot != nil {
+				stopPublishSlot()
+			}
+		}()
+		if err := s.validateCoordinatedIngestGeneration(ctx, tenantID, acceptedGeneration); err != nil {
+			abortErr := s.abortCoordinatedIngestReservations(candidates, err)
+			return results, errors.Join(err, abortErr)
+		}
+		if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+			return results, err
+		}
 	}
 
 	mutationCandidates := make([]*ingestBatchCandidate, 0, len(candidates))
@@ -292,6 +369,10 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	if hooks.Prepared != nil {
 		plans, err := s.preparedIngestBatchPlans(ctx, tenantID, preparedEntries, candidates, loaded.Manifest, loaded.Meta, finalManifest)
 		if err != nil {
+			if errors.Is(err, ErrTenantDisabled) || errors.Is(err, ErrTenantDeleted) {
+				abortErr := s.abortCoordinatedIngestReservations(candidates, err)
+				return results, errors.Join(err, abortErr)
+			}
 			return results, err
 		}
 		if err := hooks.Prepared(ctx, plans); err != nil {
@@ -302,10 +383,27 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		if err := s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, commitItems, candidates, logicalBytes); err != nil {
 			return results, err
 		}
+		if hooks.Published != nil {
+			hooks.Published()
+		}
 	} else if s.coordinated() && coordinatedBatchHasReservations(candidates) {
 		if err := s.completeCoordinatedIngestBatch(ctx, tenantID, loaded, candidates); err != nil {
 			return results, err
 		}
+	}
+	if stopPublishSlot != nil {
+		releasePublishSlot := stopPublishSlot
+		stopPublishSlot = nil
+		if _, releasedWithPublish := coordinatorIngestPublishStateFromContext(ctx, tenantID); releasedWithPublish {
+			// PostgreSQL released the slot in the publication transaction, so this
+			// only stops renewal and can stay on the current goroutine.
+			releasePublishSlot()
+		} else {
+			// Older coordinator implementations still release through a separate
+			// call; keep that compatibility work off the successful flush path.
+			go releasePublishSlot()
+		}
+		ctx = batchCtx
 	}
 	if hooks.Stats != nil {
 		hooks.Stats(stats)
@@ -318,6 +416,9 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	var metadataErr error
 	for _, candidate := range candidates {
 		results[candidate.index] = candidate.result
+		if candidate.skipMetadata {
+			continue
+		}
 		finished := time.Now().UTC()
 		if err := s.saveIngestResultMetadata(metadataCtx, tenantID, candidate.request, candidate.result, candidate.started, finished, true); err != nil {
 			metadataErr = errors.Join(metadataErr, err)
@@ -613,7 +714,7 @@ func (s *TenantStore) publishIngestBatch(
 		meta, err = s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
 	}
 	if err != nil {
-		s.deleteWriteCache(tenantID)
+		s.handleManifestPublishFailureCache(tenantID, loaded, err)
 		return err
 	}
 	s.setWriteCache(tenantID, loadedGraph{
@@ -629,6 +730,9 @@ func (s *TenantStore) publishIngestBatch(
 		attribute.Int64("graphdb.ingest.publish.segment_first_version", ref.FirstVersion),
 		attribute.Int64("graphdb.ingest.publish.segment_last_version", ref.LastVersion),
 	)
+	if s.coordinated() {
+		return nil
+	}
 	aggregateMutations := graph.Mutations{}
 	aggregateReport := graph.ApplyReport{Changed: true}
 	for _, item := range newItems {
@@ -829,6 +933,22 @@ func (s *TenantStore) preparedIngestBatchPlans(
 		if err != nil {
 			return nil, err
 		}
+		acceptedGeneration, err := ingestBatchAcceptedGeneration(entries)
+		if err != nil {
+			return nil, err
+		}
+		if acceptedGeneration == legacyUnboundIngestGeneration && baseToken.Generation > 1 {
+			return nil, fmt.Errorf(
+				"%w: %w: tenant %q legacy WAL record is not bound to current generation %d",
+				ErrTenantDeleted, errIngestGenerationFenced, tenantID, baseToken.Generation,
+			)
+		}
+		if acceptedGeneration > 0 && baseToken.Generation != acceptedGeneration {
+			return nil, fmt.Errorf(
+				"%w: %w: tenant %q WAL generation changed from %d to %d",
+				ErrTenantDeleted, errIngestGenerationFenced, tenantID, acceptedGeneration, baseToken.Generation,
+			)
+		}
 	}
 	plans := make([]*IngestPreparedRequest, len(entries))
 	for _, candidate := range candidates {
@@ -893,6 +1013,9 @@ func markIngestCandidateFailure(candidate *ingestBatchCandidate, commitErr error
 	pendingApplied := candidate.result.Applied
 	candidate.result.Failed += pendingApplied
 	candidate.result.Applied = 0
+	if candidate.result.Failed == 0 {
+		candidate.result.Failed = 1
+	}
 	for _, index := range candidate.appliedIndices {
 		candidate.result.Failures = append(candidate.result.Failures, IngestFailure{
 			Index:      index,

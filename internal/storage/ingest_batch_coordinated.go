@@ -81,6 +81,73 @@ func coordinatedBatchHasReservations(candidates []*ingestBatchCandidate) bool {
 	return false
 }
 
+func (s *TenantStore) validateCoordinatedIngestGeneration(
+	ctx context.Context,
+	tenantID string,
+	expected int64,
+) error {
+	if expected == 0 {
+		return nil
+	}
+	publishState, cached := coordinatorIngestPublishStateFromContext(ctx, tenantID)
+	head := publishState.head
+	exists := publishState.headExists
+	if !cached {
+		var err error
+		head, exists, err = s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+	}
+	if !exists {
+		if expected == legacyUnboundIngestGeneration {
+			return nil
+		}
+		return fmt.Errorf(
+			"%w: %w: tenant %q coordinator head disappeared after WAL acceptance",
+			ErrTenantDeleted, errIngestGenerationFenced, tenantID,
+		)
+	}
+	if expected == legacyUnboundIngestGeneration {
+		if head.Generation > 1 {
+			return fmt.Errorf(
+				"%w: %w: tenant %q legacy WAL record is not bound to current generation %d",
+				ErrTenantDeleted, errIngestGenerationFenced, tenantID, head.Generation,
+			)
+		}
+	} else if head.Generation != expected {
+		return fmt.Errorf(
+			"%w: %w: tenant %q WAL generation changed from %d to %d",
+			ErrTenantDeleted, errIngestGenerationFenced, tenantID, expected, head.Generation,
+		)
+	}
+	switch head.Status {
+	case TenantStatusDisabled:
+		return ErrTenantDisabled
+	case TenantStatusDeleted:
+		return ErrTenantDeleted
+	}
+	return nil
+}
+
+func (s *TenantStore) abortCoordinatedIngestReservations(
+	candidates []*ingestBatchCandidate,
+	cause error,
+) error {
+	var result error
+	for _, candidate := range candidates {
+		if candidate.reservation == nil {
+			continue
+		}
+		if err := s.abortDirectCommit(candidate.reservation, cause); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		candidate.reservation = nil
+	}
+	return result
+}
+
 func prepareCoordinatedMetadataOnlyResults(manifest Manifest, candidates []*ingestBatchCandidate) {
 	for _, candidate := range candidates {
 		if candidate.reservation == nil || !candidate.metadataOnly || candidate.resultManifest.TenantID != "" {
@@ -215,7 +282,8 @@ func (s *TenantStore) completeCoordinatedIngestBatch(
 			ExpectedWriteContextRevision: token.ContextRevision,
 			CommitID:                     loaded.Manifest.HeadCommitID,
 		},
-		Items: items,
+		Items:        items,
+		PublishLease: coordinatorIngestPublishLeaseFromContext(ctx, tenantID),
 	})
 	if err != nil {
 		s.observeCoordinatorCAS(tenantID, "error", 0)
@@ -225,6 +293,7 @@ func (s *TenantStore) completeCoordinatedIngestBatch(
 		s.observeCoordinatorCAS(tenantID, "conflict", 0)
 		return fmt.Errorf("%w: tenant %q changed while completing ingest batch", ErrConflict, tenantID)
 	}
+	markCoordinatorIngestPublishLeaseReleased(ctx, tenantID)
 	s.observeCoordinatorCAS(tenantID, "committed", token.Revision)
 	return nil
 }

@@ -108,6 +108,89 @@ func TestPostgresCoordinatorCompactPurgeAndRecreate(t *testing.T) {
 	}
 }
 
+func TestPostgresCoordinatorCompactSkipsIngestBarrierDuringRecovery(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(
+		t, "compact-ingest-recovery",
+	)
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.SetCoordinator(coordinator)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+
+	barrierErr := errors.New("ingest barrier must not run during compact recovery")
+	barrierCalls := 0
+	store.SetIngestBarrier(func(context.Context, string) error {
+		barrierCalls++
+		return barrierErr
+	})
+
+	compacted, err := store.Compact(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("coordinated compact with pending ingest recovery: %v", err)
+	}
+	if barrierCalls != 0 {
+		t.Fatalf("ingest barrier calls = %d, want 0", barrierCalls)
+	}
+	if compacted.SnapshotVersion != 1 || manifestCommitTailLength(compacted) != 0 {
+		t.Fatalf(
+			"compacted snapshot/tail = %d/%d, want 1/0",
+			compacted.SnapshotVersion,
+			manifestCommitTailLength(compacted),
+		)
+	}
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load compacted tenant: %v", err)
+	}
+	if manifest.Version != 1 {
+		t.Fatalf("loaded version = %d, want 1", manifest.Version)
+	}
+	if _, ok := g.GetEntity("host:seed"); !ok {
+		t.Fatal("compacted graph is missing host:seed")
+	}
+}
+
+func TestPostgresCoordinatorForcePurgeFencesTenantBeforeIngestBarrier(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(t, "purge-lifecycle-priority")
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.SetCoordinator(coordinator)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+
+	barrierCalls := 0
+	store.SetIngestBarrier(func(barrierCtx context.Context, tenantID string) error {
+		barrierCalls++
+		head, exists, err := coordinator.Head(barrierCtx, tenantID)
+		if err != nil {
+			return err
+		}
+		if !exists || head.Status != TenantStatusDeleted {
+			return fmt.Errorf("ingest barrier observed unfenced head: exists=%v head=%#v", exists, head)
+		}
+		lockCtx, cancel := context.WithTimeout(barrierCtx, time.Second)
+		defer cancel()
+		unlock, err := store.lockTenantForeground(lockCtx, tenantID)
+		if err != nil {
+			return fmt.Errorf("ingest barrier blocked by purge maintenance lock: %w", err)
+		}
+		unlock()
+		return nil
+	})
+
+	if _, err := store.PurgeTenant(ctx, "tenant-a", true); err != nil {
+		t.Fatalf("force purge: %v", err)
+	}
+	if barrierCalls != 1 {
+		t.Fatalf("ingest barrier calls = %d, want 1", barrierCalls)
+	}
+}
+
 func TestPostgresCoordinatorBootstrapAndMarker(t *testing.T) {
 	ctx, coordinator := newPostgresIntegrationCoordinator(t, "bootstrap")
 	objects := NewMemoryStore()

@@ -3,25 +3,66 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [Unreleased] - 1.3 workstream
+## [1.3.0] - 2026-09-01
 
-### Contract
+### Added
 
-- Define an opt-in PostgreSQL-CAS multi-writer WAL profile for
-  `POST /v1/ingest/batches`, with an independent persistent WAL per writer,
-  bounded same-tenant batch rebase/shrink, stable owner-routed status, and
-  `202` durable-takeover semantics.
-- Keep PostgreSQL as coordination metadata/head CAS only; object storage
-  remains the graph-data authority and stores immutable graph objects.
-- Define rolling compatibility between 1.2 direct writers and 1.3 WAL writers,
-  with drain-before-downgrade and a process-crash/original-volume durability
-  boundary.
+- Added an opt-in PostgreSQL-CAS multi-writer WAL profile for
+  `POST /v1/ingest/batches`. Each writer has an independent persistent WAL;
+  PostgreSQL stores tenant-head CAS and coordination metadata only, while
+  immutable graph objects in object storage remain authoritative.
+- Added durable owner takeover semantics: `202` is returned only after the
+  writer's local WAL is synced and means that writer durably accepted
+  responsibility for the batch. It does not mean that a graph version is
+  committed. The response includes the stable `writer_id` and owner-routed
+  status URL, including during startup recovery.
+- Added bounded batch CAS/publish slots, per-writer WAL FIFO, successful
+  PostgreSQL CAS ordering across writers, rebase and repeated-conflict batch
+  shrinking, and cross-writer idempotency coordination.
+- Added lifecycle generation fencing so freeze, delete, and recreate take
+  precedence over unpublished WAL work; fenced work becomes a visible final
+  failure rather than publishing against a new tenant generation.
 
-### Release status
+### Supported topology and operations
 
-- The 1.3 contract is release-gated. No 1.3 performance, crash-recovery, or
-  multi-writer acceptance result is claimed until commit-bound evidence is
-  produced.
+- Supports 2–8 concurrent writers for one tenant, with horizontal scale across
+  tenants. Eight same-tenant writers are a correctness and availability
+  boundary, not a linear hot-tenant throughput claim.
+- Supports controlled coexistence of 1.2 direct writers and 1.3 WAL writers
+  through PostgreSQL coordination schema v5 and the existing graph/object
+  layout. Each writer must use a unique stable `GRAPHDB_INSTANCE_ID` and its
+  own persistent WAL volume.
+- Rolling downgrade requires stopping new WAL admission and draining every
+  writer WAL until no durable record remains pending. An unconditional
+  in-place downgrade, WAL-volume reassignment with pending records, or
+  recovery after permanent volume loss is outside the contract.
+
+### Verification and evidence
+
+- Full Go tests, focused race checks, `go vet`, OpenAPI/static release checks,
+  and isolated PostgreSQL checks passed for atomic publish/rollback,
+  cross-writer idempotency, same-tenant 2-, 4-, and 8-writer concurrency,
+  four independent tenants, recovery, and owner-routed status.
+- Reader-cache behavior remains bounded: a warm `ReaderCache` in `all` mode
+  can serve a fresh-enough materialized graph, while reader mode and cold-cache
+  requests retain the lazy persisted-index path.
+- Fixed-environment single-node read evidence (OrbStack Linux/arm64, 8 CPUs,
+  8 GiB; three 45-second rounds per cohort) measured QPS
+  `62.586→106.278` (`+69.81%`) and mean operation-level p95
+  `1308.0→386.3 ms` (`-70.46%`). These measurements are historical relative
+  evidence, not a production SLO or a 1.3 WAL capacity certification.
+
+### Compatibility and evidence boundaries
+
+- Direct commits and other mutations retain their existing synchronous paths;
+  the WAL profile covers ingest batches only. PostgreSQL or object-store
+  outages keep accepted batches retryable; a simultaneous outage does not
+  provide an immediate graph commit or exactly-once semantics.
+- The durability guarantee covers process failure when the original writer WAL
+  volume can be recovered. It does not cover permanent loss of that volume.
+- The release does not claim unbounded graph size, linear throughput from eight
+  writers on one hot tenant, or a production capacity guarantee. Re-run the
+  capacity envelope in the target deployment before setting limits.
 
 ## [1.2.5] - 2026-08-31
 

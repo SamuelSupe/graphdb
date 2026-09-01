@@ -232,6 +232,109 @@ func TestReaderCacheReusesLogicalGraphAfterCompaction(t *testing.T) {
 	}
 }
 
+func TestReaderCacheCoordinatedHeadCatchUpKeepsSharedGraphAndFallsBack(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		failIncremental bool
+	}{
+		{name: "incremental_catchup"},
+		{name: "full_load_after_incremental_failure", failIncremental: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cache, store, head := newExpiredCoordinatedReaderCache(t)
+			observer := &testCacheObserver{}
+			cache.Observer = observer
+			oldEntry := cache.entries["tenant-a"]
+			oldGraph := oldEntry.graph
+
+			commit := graph.Commit{
+				LayoutVersion: CurrentObjectLayoutVersion,
+				ID:            "commit-8",
+				TenantID:      "tenant-a",
+				Version:       8,
+				CreatedAt:     time.Now().UTC(),
+				Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{
+					ID: "host:new", Kind: "host",
+				}}},
+			}
+			commitKey := store.commitKey("tenant-a", commit.Version, commit.ID)
+			if err := store.putCommitObjectIfAbsent(ctx, commitKey, commit); err != nil {
+				t.Fatalf("seed commit: %v", err)
+			}
+			manifest := oldEntry.manifest
+			manifest.Version = commit.Version
+			manifest.HeadCommitID = commit.ID
+			manifest.CommitKeys = []string{commitKey}
+			manifest.CommitSegments = nil
+			manifest.UpdatedAt = commit.CreatedAt
+			if tc.failIncremental {
+				snapshotKey := store.snapshotKey("tenant-a", oldEntry.manifest.Version)
+				if err := store.putSnapshotRecordIfAbsentOrEquivalent(
+					ctx,
+					snapshotKey,
+					snapshotRecord{
+						TenantID: "tenant-a",
+						Snapshot: oldGraph.Snapshot(),
+					},
+				); err != nil {
+					t.Fatalf("seed fallback snapshot: %v", err)
+				}
+				manifest.SnapshotKey = snapshotKey
+				manifest.SnapshotVersion = oldEntry.manifest.Version
+			}
+			data, err := marshalParquetManifest(ctx, manifest)
+			if err != nil {
+				t.Fatalf("marshal current manifest: %v", err)
+			}
+			head.Revision++
+			head.GraphVersion = manifest.Version
+			head.CommitID = manifest.HeadCommitID
+			head.ManifestHash = objectContentHash(data)
+			head.ManifestKey = store.coordinatorManifestKey(
+				"tenant-a", manifest.Version, head.Revision, head.ManifestHash,
+			)
+			if err := store.Objects.Put(ctx, head.ManifestKey, data); err != nil {
+				t.Fatalf("seed current manifest: %v", err)
+			}
+
+			if tc.failIncremental {
+				store.Objects = newFaultMatrixStore(store.Objects, faultMatrixRule{
+					name:      "incremental-catchup-read",
+					op:        "get",
+					contains:  commitKey,
+					err:       errors.New("injected incremental catch-up read failure"),
+					remaining: 1,
+				})
+			}
+			store.SetCoordinator(fixedHeadCoordinator{head: head})
+			loaded, loadedManifest, err := cache.Load(ctx, "tenant-a")
+			if err != nil {
+				t.Fatalf("load after coordinated head advance: %v", err)
+			}
+			if loadedManifest.Version != manifest.Version || loaded.Version != manifest.Version {
+				t.Fatalf("loaded graph/manifest = %d/%d, want %d", loaded.Version, loadedManifest.Version, manifest.Version)
+			}
+			if _, ok := loaded.GetEntity("host:new"); !ok {
+				t.Fatal("loaded graph is missing the head-8 entity")
+			}
+			if oldGraph.Version != oldEntry.manifest.Version {
+				t.Fatalf("shared stale graph version = %d, want %d", oldGraph.Version, oldEntry.manifest.Version)
+			}
+			if _, ok := oldGraph.GetEntity("host:new"); ok {
+				t.Fatal("incremental catch-up mutated the shared stale graph")
+			}
+			if tc.failIncremental {
+				if observer.cache["tenant-a\x00incremental_catchup"] != 0 {
+					t.Fatalf("fallback observer events = %#v, want no incremental success", observer.cache)
+				}
+			} else if observer.cache["tenant-a\x00incremental_catchup"] != 1 {
+				t.Fatalf("catch-up observer events = %#v, want one incremental catch-up", observer.cache)
+			}
+		})
+	}
+}
+
 func TestReaderCacheColdLoadContinuesAfterCallerTimeout(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()

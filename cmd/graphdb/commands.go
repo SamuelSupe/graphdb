@@ -114,11 +114,24 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		_ = shutdownTrace(shutdownCtx)
 	}()
 	obs := observability.New(os.Stdout, cfg.SlowQueryThreshold)
+	cache := storage.NewReaderCache(store, cfg.PollInterval)
+	cache.IdleTTL = cfg.ReaderCacheIdleTTL
+	cache.ConfigureCapacity(cfg.ReaderCacheMaxTenants, cfg.ReaderCacheMaxBytes)
+	cache.LoadTimeout = cfg.ReaderCacheLoadTimeout
+	cache.ConfigureLoadAdmission(
+		cfg.ReaderCacheLoadMaxConcurrent,
+		cfg.ReaderCacheLoadQueueTimeout,
+	)
 	var ingestService *storage.IngestService
 	if cfg.IngestMode == "wal" {
 		ingestConfig := cfg.IngestServiceConfig()
 		ingestConfig.Observer = obs.Metrics
 		ingestConfig.Logger = obs.Logger
+		ingestConfig.OnGraphPublished = func(tenantID string) {
+			if !cache.PublishFromWriteCache(tenantID) {
+				cache.Invalidate(tenantID)
+			}
+		}
 		ingestService, err = storage.OpenIngestService(store, ingestConfig)
 		if err != nil {
 			return fmt.Errorf("open ingest WAL service: %w", err)
@@ -136,13 +149,6 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		}
 		return health.Status, len(health.Issues), nil
 	})
-	cache := storage.NewReaderCache(store, cfg.PollInterval)
-	cache.IdleTTL = cfg.ReaderCacheIdleTTL
-	cache.LoadTimeout = cfg.ReaderCacheLoadTimeout
-	cache.ConfigureLoadAdmission(
-		cfg.ReaderCacheLoadMaxConcurrent,
-		cfg.ReaderCacheLoadQueueTimeout,
-	)
 	cache.Observer = obs.Metrics
 	cache.Start(ctx)
 	admission := httpapi.NewQueryAdmission(cfg.QueryMaxConcurrent, cfg.QueryMaxPerTenant, cfg.QueryQueueTimeout)
@@ -333,6 +339,8 @@ Environment:
   GRAPHDB_MAINTENANCE_INTERVAL=30s
   GRAPHDB_TENANT_USAGE_CACHE_TTL=60s
   GRAPHDB_READER_CACHE_IDLE_TTL=15m
+  GRAPHDB_READER_CACHE_MAX_TENANTS=64
+  GRAPHDB_READER_CACHE_MAX_BYTES=512MiB
   GRAPHDB_READER_CACHE_LOAD_TIMEOUT=1m
   GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT=4
   GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT=2s

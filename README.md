@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.2.5 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.3.0 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -30,27 +30,43 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Bulk import | Resumable task-backed JSONL and CSV ingestion. |
 | Object-storage persistence | Parquet manifests, commits, snapshots, entity pages, edge shards, and index objects. |
 | Read/write topology | One binary supports `all`, `writer`, and `reader` deployment modes. |
-| Optional multi-writer coordination | PostgreSQL head CAS supports 2–8 optimistic writers per tenant while local coordination remains the default. |
+| Optional multi-writer coordination | PostgreSQL head CAS supports 2–8 optimistic writers per tenant; the 1.3 WAL profile adds durable ingest takeover while local coordination remains the default. |
 | Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
 
 ### 1.3 PostgreSQL-CAS multi-writer WAL contract
 
-The 1.3 implementation workstream defines an opt-in WAL profile for
+GGraphDB 1.3.0 ships an opt-in WAL profile for
 `POST /v1/ingest/batches`: every writer owns an independent local WAL and
 PostgreSQL performs tenant-head CAS plus coordination metadata updates. Object
 storage remains the graph-data authority; PostgreSQL never stores ingest
 payloads, WAL records, commit segments, or graph data. A `202` means durable
-takeover after local WAL `fsync`, not a committed graph version. CAS and
-temporary dependency failures are retried with rebase and batch shrinking.
+local takeover after WAL `fsync`, not a committed graph version. CAS and
+temporary dependency failures remain retryable through rebase and bounded batch
+shrinking; a simultaneous PostgreSQL and object-store outage does not produce
+an immediate graph commit.
 
-The profile supports 2–8 same-tenant writers in CAS order and is intended to
-scale across tenants. A stable `GRAPHDB_INSTANCE_ID` and owner-routed status URL
-are required. The contract is release-gated and this README does not claim
-that the current branch has passed its acceptance matrix; see the [1.3 design
+The profile supports 2–8 same-tenant writers in successful CAS order and scales
+horizontally across tenants. Every writer needs a stable
+`GRAPHDB_INSTANCE_ID`, an independent persistent WAL volume, and an owner-routed
+status URL. Batch publish uses a bounded CAS/publish slot and lifecycle
+generation fencing: a stale or fenced request cannot publish after a tenant
+freeze, delete, or recreate. The complete contract is in the [1.3 design
 document](docs/ingest-wal-multiwriter-design.md).
 
-### 1.2.5 mixed read/write query performance
+The release evidence covers full Go tests, focused race and vet checks, plus isolated
+PostgreSQL checks for atomic publish/rollback, cross-writer idempotency, 2-, 4-,
+and 8-writer same-tenant concurrency, four independent tenants, recovery, and
+owner-routed status. These are correctness and recovery results, not an
+unbounded throughput or exactly-once guarantee. The durable boundary is process
+failure with the original writer WAL volume available; permanent volume loss is
+outside the contract.
+
+### Read cache and performance evidence
+
+The measurements in this section were collected as the 1.2.5 fixed-environment
+baseline and are carried forward for comparison; they are not new 1.3 capacity
+certification.
 
 - Reproducible single-node `GRAPHDB_MODE=all` evidence on OrbStack
   Linux/arm64 (8 CPUs, 8 GiB): 4 writers, 16 readers, 200 items per request,
@@ -75,6 +91,12 @@ document](docs/ingest-wal-multiwriter-design.md).
   `3744.3→5943.0 ms` and completed count `46.3→26.3`. The aggregate p95 has
   sample variability, some hot saved-query and scan paths have p50 regressions,
   and production capacity/full matrix coverage remain `UNKNOWN`.
+- The 1.3 capacity envelope supports 2–8 deployed writers, but eight-way
+  same-tenant operation is a correctness and availability boundary rather than
+  a claim of linear hot-tenant throughput. The historical two-active-writer
+  20-commit/s result is a 1.2 baseline; it is not 1.3 WAL capacity
+  certification. Re-run the [capacity envelope](docs/capacity.md) in the target
+  deployment before setting production limits.
 
 ### 1.2.4 query performance update
 
@@ -251,12 +273,20 @@ retention. Reader-fleet readiness remains the tenant traffic admission gate.
 `X-Tenant-ID` is routing metadata, not authentication. Put authentication,
 authorization, TLS, and rate limiting at the gateway or service mesh.
 
+For a rolling downgrade from the 1.3 WAL profile, stop new WAL admission first
+and wait until the owner-routed status for that writer shows no pending durable
+records. Drain every writer WAL before switching to direct mode, reassigning its
+volume, or running an older binary; an unconditional in-place downgrade is not
+supported. Preserve the stable writer identity and original WAL volume across a
+restart.
+
 ## Release
 
-The latest published release is GGraphDB 1.2.5:
-[**v1.2.5**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.2.5).
-The release workflow publishes the tag only after its release checklist,
-30-minute PostgreSQL CAS gate, and formal rollback drill pass.
+The latest published release is GGraphDB 1.3.0:
+[**v1.3.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.0).
+The release includes the PostgreSQL-CAS multi-writer WAL profile and its
+commit-bound correctness/recovery evidence. The fixed-environment read-cache
+and query measurements below remain historical evidence, not production SLOs.
 
 Each release archive contains:
 
@@ -267,7 +297,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.2.5` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.3.0` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 
@@ -297,6 +327,7 @@ GGraphDB v1 is intentionally focused:
 - local coordination defaults to one active writer per tenant; optional
   PostgreSQL coordination provides optimistic multi-writer head CAS. The 1.3
   WAL profile adds independent writer-local durability only for ingest batches;
+  it does not make direct commits durable during a PostgreSQL outage;
 - object storage as the recommended production persistence layer;
 - explicit reader freshness controls for strong-read workflows;
 - authentication and authorization delegated to the deployment boundary.

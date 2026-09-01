@@ -265,6 +265,362 @@ func TestPostgresCoordinatedIngestCrossWriterIdempotency(t *testing.T) {
 	}
 }
 
+func TestPostgresCoordinatedIngestReactivatesLifecycleFailure(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(t, "ingest-lifecycle-retry")
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	store.InstanceID = "lifecycle-writer"
+	store.CoordinatorRetryLimit = 32
+	store.SetCoordinator(coordinator)
+	if _, err := store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatalf("create coordinated tenant: %v", err)
+	}
+
+	config := testIngestServiceConfig(t)
+	config.OwnerID = store.InstanceID
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 8
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatalf("open ingest service: %v", err)
+	}
+	defer closeIngestService(t, service)
+	flushTenant := func() {
+		flushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := service.FlushTenant(flushCtx, "tenant-a"); err != nil {
+			t.Fatalf("flush tenant: %v", err)
+		}
+	}
+
+	request := ingestEntityRequest("batch-lifecycle-retry", "host:lifecycle")
+	if _, err := store.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled); err != nil {
+		t.Fatalf("disable coordinated tenant: %v", err)
+	}
+	failed, err := service.Accept(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatalf("accept request while tenant disabled: %v", err)
+	}
+	flushTenant()
+	failedResult, err := service.Wait(ctx, failed)
+	if err != nil {
+		t.Fatalf("wait lifecycle failure: %v", err)
+	}
+	if failedResult.Failed != 1 || failedResult.Applied != 0 || failedResult.Version != 0 {
+		t.Fatalf("lifecycle failure result = %#v, want terminal failed result before CAS", failedResult)
+	}
+	failedRecord, err := store.GetIngestBatch(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID)
+	if err != nil {
+		t.Fatalf("load persisted lifecycle failure: %v", err)
+	}
+	if failedRecord.Result.Failed != 1 || failedRecord.Result.Applied != 0 {
+		t.Fatalf("persisted lifecycle failure = %#v", failedRecord.Result)
+	}
+
+	if _, err := store.SetTenantStatus(ctx, "tenant-a", TenantStatusActive); err != nil {
+		t.Fatalf("reactivate coordinated tenant: %v", err)
+	}
+	retry, err := service.Accept(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatalf("accept request after reactivation: %v", err)
+	}
+	flushTenant()
+	retryResult, err := service.Wait(ctx, retry)
+	if err != nil {
+		t.Fatalf("wait request after reactivation: %v", err)
+	}
+	if retryResult.Version != 1 || retryResult.Applied != 1 || retryResult.Failed != 0 {
+		t.Fatalf("reactivated request result = %#v, want successful CAS commit at version 1", retryResult)
+	}
+	committedRecord, err := store.GetIngestBatch(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID)
+	if err != nil {
+		t.Fatalf("load replaced lifecycle metadata: %v", err)
+	}
+	if committedRecord.Result.Version != 1 || committedRecord.Result.Applied != 1 || committedRecord.Result.Failed != 0 {
+		t.Fatalf("replaced lifecycle metadata = %#v, want committed result", committedRecord.Result)
+	}
+	head, exists, err := coordinator.Head(ctx, "tenant-a")
+	if err != nil || !exists || head.GraphVersion != 1 || head.Status != TenantStatusActive {
+		t.Fatalf("head after lifecycle retry = %#v exists=%v err=%v", head, exists, err)
+	}
+	loaded, _, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load graph after lifecycle retry: %v", err)
+	}
+	if _, ok := loaded.GetEntity("host:lifecycle"); !ok {
+		t.Fatal("reactivated lifecycle request did not publish its entity")
+	}
+}
+
+func TestPostgresCoordinatedIngestWALLifecycleGenerationFence(t *testing.T) {
+	ctx, writerCoordinator := newPostgresIntegrationCoordinator(
+		t, "ingest-wal-lifecycle-generation",
+	)
+	lifecycleCoordinator, err := NewPostgresCoordinator(
+		ctx,
+		postgresTestDSN(t),
+		writerCoordinator.schema,
+		writerCoordinator.namespace,
+	)
+	if err != nil {
+		t.Fatalf("new lifecycle coordinator: %v", err)
+	}
+	t.Cleanup(lifecycleCoordinator.Close)
+
+	objects := NewMemoryStore()
+	writerStore := NewTenantStore(objects, "test")
+	writerStore.InstanceID = "writer-service"
+	writerStore.CoordinatorRetryLimit = 32
+	writerStore.SetCoordinator(writerCoordinator)
+	lifecycleStore := NewTenantStore(objects, "test")
+	lifecycleStore.InstanceID = "lifecycle-writer"
+	lifecycleStore.CoordinatorRetryLimit = 32
+	lifecycleStore.SetCoordinator(lifecycleCoordinator)
+	if _, err := writerStore.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	config := testIngestServiceConfig(t)
+	config.OwnerID = writerStore.InstanceID
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 8
+	service, err := OpenIngestService(writerStore, config)
+	if err != nil {
+		t.Fatalf("open writer service: %v", err)
+	}
+	defer closeIngestService(t, service)
+
+	before, exists, err := writerCoordinator.Head(ctx, "tenant-a")
+	if err != nil || !exists {
+		t.Fatalf("head before accept exists=%v err=%v", exists, err)
+	}
+	request := ingestEntityRequest("batch-wal-generation-fence", "host:old-generation")
+	accepted, err := service.Accept(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatalf("accept pending WAL request: %v", err)
+	}
+	acceptedHead, _, err := writerCoordinator.Head(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("head after accept: %v", err)
+	}
+	if accepted.pending == nil || accepted.pending.envelope.AcceptedGeneration != before.Generation {
+		t.Fatalf("accepted WAL generation = %d, want %d", accepted.pending.envelope.AcceptedGeneration, before.Generation)
+	}
+	if acceptedHead != before {
+		t.Fatalf("head changed before lifecycle transition: before=%#v accepted=%#v", before, acceptedHead)
+	}
+
+	if _, err := lifecycleStore.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled); err != nil {
+		t.Fatalf("disable tenant: %v", err)
+	}
+	disabled, _, err := writerCoordinator.Head(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("head after disable: %v", err)
+	}
+	if disabled.Generation != before.Generation+1 || disabled.Status != TenantStatusDisabled ||
+		disabled.GraphVersion != before.GraphVersion {
+		t.Fatalf("disabled head = %#v, want generation %d and graph version %d", disabled, before.Generation+1, before.GraphVersion)
+	}
+	if _, err := lifecycleStore.SetTenantStatus(ctx, "tenant-a", TenantStatusActive); err != nil {
+		t.Fatalf("reactivate tenant: %v", err)
+	}
+	active, _, err := writerCoordinator.Head(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("head after reactivation: %v", err)
+	}
+	if active.Generation != before.Generation+2 || active.Status != TenantStatusActive ||
+		active.GraphVersion != before.GraphVersion {
+		t.Fatalf("active head = %#v, want generation %d and graph version %d", active, before.Generation+2, before.GraphVersion)
+	}
+
+	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	if err := service.FlushTenant(flushCtx, "tenant-a"); err != nil {
+		cancel()
+		t.Fatalf("flush old-generation WAL request: %v", err)
+	}
+	cancel()
+	result, err := service.Wait(ctx, accepted)
+	if err != nil {
+		t.Fatalf("wait old-generation WAL request: %v", err)
+	}
+	if result.Version != 0 || result.Applied != 0 || result.Failed != 1 {
+		t.Fatalf("old-generation WAL result = %#v, want terminal failed result", result)
+	}
+	status, err := service.Status(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID)
+	if err != nil {
+		t.Fatalf("status after generation fence: %v", err)
+	}
+	if status.State != IngestStateFailed || status.Result == nil || status.Result.Failed != 1 ||
+		status.Result.Applied != 0 {
+		t.Fatalf("status after generation fence = %#v, want failed terminal state", status)
+	}
+
+	after, _, err := writerCoordinator.Head(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("head after old-generation WAL flush: %v", err)
+	}
+	if after.Generation != active.Generation || after.GraphVersion != before.GraphVersion {
+		t.Fatalf("head after fenced WAL = %#v, want generation %d and graph version %d", after, active.Generation, before.GraphVersion)
+	}
+	loaded, manifest, err := writerStore.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load graph after generation fence: %v", err)
+	}
+	if manifest.Version != before.GraphVersion {
+		t.Fatalf("manifest after fenced WAL version = %d, want %d", manifest.Version, before.GraphVersion)
+	}
+	if _, ok := loaded.GetEntity("host:old-generation"); ok {
+		t.Fatal("old-generation WAL request published an entity after lifecycle transition")
+	}
+}
+
+func TestPostgresCoordinatedIngestLegacyWALGenerationBoundary(t *testing.T) {
+	ctx, writerCoordinator := newPostgresIntegrationCoordinator(
+		t, "ingest-wal-legacy-generation",
+	)
+	lifecycleCoordinator, err := NewPostgresCoordinator(
+		ctx,
+		postgresTestDSN(t),
+		writerCoordinator.schema,
+		writerCoordinator.namespace,
+	)
+	if err != nil {
+		t.Fatalf("new lifecycle coordinator: %v", err)
+	}
+	t.Cleanup(lifecycleCoordinator.Close)
+
+	objects := NewMemoryStore()
+	writerStore := NewTenantStore(objects, "test")
+	writerStore.InstanceID = "writer-service"
+	writerStore.CoordinatorRetryLimit = 32
+	writerStore.SetCoordinator(writerCoordinator)
+	lifecycleStore := NewTenantStore(objects, "test")
+	lifecycleStore.InstanceID = "lifecycle-writer"
+	lifecycleStore.CoordinatorRetryLimit = 32
+	lifecycleStore.SetCoordinator(lifecycleCoordinator)
+	if _, err := writerStore.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	t.Run("generation-one-recovers", func(t *testing.T) {
+		config := testIngestServiceConfig(t)
+		config.OwnerID = writerStore.InstanceID
+		config.FlushInterval = time.Hour
+		config.FlushMaxRequests = 1
+		request := writeLegacyAcceptedWAL(
+			t, config, "tenant-a",
+			ingestEntityRequest("batch-legacy-pg-generation-one", "host:legacy-pg-one"),
+		)
+		service, err := OpenIngestService(writerStore, config)
+		if err != nil {
+			t.Fatalf("open service from generation-one legacy WAL: %v", err)
+		}
+		defer closeIngestService(t, service)
+		accepted, err := service.Accept(ctx, "tenant-a", request)
+		if err != nil {
+			t.Fatalf("accept recovered generation-one legacy WAL: %v", err)
+		}
+		if got := service.pendingAcceptedGeneration(accepted.pending); got != legacyUnboundIngestGeneration {
+			t.Fatalf("legacy generation-one pending generation = %d, want %d", got, legacyUnboundIngestGeneration)
+		}
+		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := service.FlushTenant(flushCtx, "tenant-a"); err != nil {
+			t.Fatalf("flush generation-one legacy WAL: %v", err)
+		}
+		result, err := service.Wait(flushCtx, accepted)
+		if err != nil {
+			t.Fatalf("wait generation-one legacy WAL: %v", err)
+		}
+		if result.Version != 1 || result.Applied != 1 || result.Failed != 0 {
+			t.Fatalf("generation-one legacy WAL result = %#v, want successful version 1", result)
+		}
+		loaded, manifest, err := writerStore.Load(ctx, "tenant-a")
+		if err != nil {
+			t.Fatalf("load generation-one graph: %v", err)
+		}
+		if manifest.Version != 1 {
+			t.Fatalf("generation-one manifest version = %d, want 1", manifest.Version)
+		}
+		if _, ok := loaded.GetEntity("host:legacy-pg-one"); !ok {
+			t.Fatal("generation-one legacy WAL entity is not visible")
+		}
+	})
+
+	if _, err := lifecycleStore.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled); err != nil {
+		t.Fatalf("disable tenant before legacy generation fence: %v", err)
+	}
+	if _, err := lifecycleStore.SetTenantStatus(ctx, "tenant-a", TenantStatusActive); err != nil {
+		t.Fatalf("reactivate tenant before legacy generation fence: %v", err)
+	}
+	active, _, err := writerCoordinator.Head(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("head after lifecycle transition: %v", err)
+	}
+	if active.Generation != 3 || active.Status != TenantStatusActive || active.GraphVersion != 1 {
+		t.Fatalf("head after lifecycle transition = %#v, want generation 3 active graph version 1", active)
+	}
+
+	t.Run("generation-three-fences", func(t *testing.T) {
+		config := testIngestServiceConfig(t)
+		config.OwnerID = writerStore.InstanceID
+		config.FlushInterval = time.Hour
+		config.FlushMaxRequests = 1
+		request := writeLegacyAcceptedWAL(
+			t, config, "tenant-a",
+			ingestEntityRequest("batch-legacy-pg-generation-three", "host:legacy-pg-three"),
+		)
+		service, err := OpenIngestService(writerStore, config)
+		if err != nil {
+			t.Fatalf("open service from generation-three legacy WAL: %v", err)
+		}
+		defer closeIngestService(t, service)
+		accepted, err := service.Accept(ctx, "tenant-a", request)
+		if err != nil {
+			t.Fatalf("accept recovered generation-three legacy WAL: %v", err)
+		}
+		if got := service.pendingAcceptedGeneration(accepted.pending); got != legacyUnboundIngestGeneration {
+			t.Fatalf("legacy generation-three pending generation = %d, want %d", got, legacyUnboundIngestGeneration)
+		}
+		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := service.FlushTenant(flushCtx, "tenant-a"); err != nil {
+			t.Fatalf("flush generation-three legacy WAL: %v", err)
+		}
+		result, err := service.Wait(flushCtx, accepted)
+		if err != nil {
+			t.Fatalf("wait generation-three legacy WAL: %v", err)
+		}
+		if result.Version != 0 || result.Applied != 0 || result.Failed != 1 {
+			t.Fatalf("generation-three legacy WAL result = %#v, want lifecycle-fenced failure", result)
+		}
+		status, err := service.Status(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID)
+		if err != nil {
+			t.Fatalf("status after generation-three legacy WAL fence: %v", err)
+		}
+		if status.State != IngestStateFailed || status.Result == nil || status.Result.Failed != 1 || status.Result.Applied != 0 {
+			t.Fatalf("status after generation-three legacy WAL fence = %#v, want failed terminal state", status)
+		}
+		after, _, err := writerCoordinator.Head(ctx, "tenant-a")
+		if err != nil {
+			t.Fatalf("head after generation-three legacy WAL fence: %v", err)
+		}
+		if after.Generation != active.Generation || after.GraphVersion != active.GraphVersion {
+			t.Fatalf("head after generation-three legacy WAL fence = %#v, want generation %d graph version %d", after, active.Generation, active.GraphVersion)
+		}
+		loaded, manifest, err := writerStore.Load(ctx, "tenant-a")
+		if err != nil {
+			t.Fatalf("load generation-three graph: %v", err)
+		}
+		if manifest.Version != active.GraphVersion {
+			t.Fatalf("generation-three manifest version = %d, want %d", manifest.Version, active.GraphVersion)
+		}
+		if _, ok := loaded.GetEntity("host:legacy-pg-three"); ok {
+			t.Fatal("generation-three legacy WAL entity was published after lifecycle transition")
+		}
+	})
+}
+
 func postgresTestDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("GRAPHDB_TEST_POSTGRES_DSN")
@@ -296,6 +652,7 @@ func ingestDurableWithExplicitRetry(
 		if !errors.Is(err, ErrConflict) &&
 			!errors.Is(err, ErrWriteConflict) &&
 			!errors.Is(err, ErrIdempotencyInProgress) &&
+			!errors.Is(err, ErrTaskLeaseHeld) &&
 			!errors.Is(err, ErrCoordinatorUnavailable) {
 			return IngestResult{}, err
 		}

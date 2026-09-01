@@ -67,11 +67,69 @@ func TestIngestServiceShrinksCASConflictBatchWithoutTerminalFailure(t *testing.T
 	}
 }
 
+func TestIngestServiceKeepsBatchAfterFirstCASConflict(t *testing.T) {
+	service := &IngestService{store: &shrinkingCASIngestStore{}}
+	items := make([]*ingestPending, 8)
+	for index := range items {
+		items[index] = &ingestPending{casConflicts: 1}
+	}
+	if got := service.adaptiveFlushEnd(items, 0, len(items)); got != len(items) {
+		t.Fatalf("first-conflict batch end = %d, want %d", got, len(items))
+	}
+
+	items[0].casConflicts = 2
+	if got := service.adaptiveFlushEnd(items, 0, len(items)); got != 4 {
+		t.Fatalf("second-conflict batch end = %d, want 4", got)
+	}
+}
+
+func TestIngestServiceUsesShortBackoffForCASConflict(t *testing.T) {
+	service := &IngestService{
+		store:  &shrinkingCASIngestStore{},
+		config: IngestServiceConfig{RetryInterval: time.Hour},
+	}
+	pending := &ingestPending{err: ErrConflict, casConflicts: 1}
+	if got := service.ingestRetryDelay(pending); got != 5*time.Millisecond {
+		t.Fatalf("first CAS conflict retry delay = %s, want 5ms", got)
+	}
+	pending.casConflicts = 2
+	for sample := 0; sample < 20; sample++ {
+		got := service.ingestRetryDelay(pending)
+		if got < 5*time.Millisecond || got > 10*time.Millisecond {
+			t.Fatalf("second CAS conflict retry delay = %s, want [5ms,10ms]", got)
+		}
+	}
+}
+
+func TestIngestServicePublishSlotContentionKeepsBatchAndUsesShortBackoff(t *testing.T) {
+	service := &IngestService{
+		store:  &shrinkingCASIngestStore{},
+		config: IngestServiceConfig{RetryInterval: time.Hour},
+	}
+	pending := &ingestPending{}
+	service.setPendingRetry(pending, ErrTaskLeaseHeld)
+	if pending.retryAttempts != 1 || pending.casConflicts != 0 {
+		t.Fatalf("publish slot retry state = attempts %d CAS conflicts %d, want 1 and 0", pending.retryAttempts, pending.casConflicts)
+	}
+	items := make([]*ingestPending, 4)
+	items[0] = pending
+	for index := 1; index < len(items); index++ {
+		items[index] = &ingestPending{}
+	}
+	if got := service.adaptiveFlushEnd(items, 0, len(items)); got != len(items) {
+		t.Fatalf("publish slot retry batch end = %d, want %d", got, len(items))
+	}
+	if got := service.ingestRetryDelay(pending); got != 5*time.Millisecond {
+		t.Fatalf("publish slot retry delay = %s, want 5ms", got)
+	}
+}
+
 type shrinkingCASIngestStore struct {
 	IngestStore
-	mu    sync.Mutex
-	calls []int
-	depth int64
+	mu         sync.Mutex
+	calls      []int
+	depth      int64
+	generation int64
 }
 
 func (s *shrinkingCASIngestStore) CoordinationBackend() string {
@@ -80,8 +138,26 @@ func (s *shrinkingCASIngestStore) CoordinationBackend() string {
 
 func (s *shrinkingCASIngestStore) SetIngestBarrier(func(context.Context, string) error) {}
 
+func (s *shrinkingCASIngestStore) CaptureIngestWALGeneration(context.Context, string) (int64, error) {
+	if s.generation > 0 {
+		return s.generation, nil
+	}
+	return 1, nil
+}
+
 func (s *shrinkingCASIngestStore) GetIngestBatch(context.Context, string, string, string, string) (IngestBatchRecord, error) {
 	return IngestBatchRecord{}, ErrNotFound
+}
+
+func (s *shrinkingCASIngestStore) PersistIngestFailure(
+	context.Context,
+	string,
+	IngestRequest,
+	IngestResult,
+	time.Time,
+	time.Time,
+) error {
+	return nil
 }
 
 func (s *shrinkingCASIngestStore) IngestDurableBatchWithHooks(

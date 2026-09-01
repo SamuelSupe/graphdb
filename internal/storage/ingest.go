@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -218,19 +219,118 @@ func (s *TenantStore) saveIngestResultMetadata(
 	finished time.Time,
 	saveFailures bool,
 ) error {
-	var metadataErr error
-	if err := s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{Request: request, Result: result, StartedAt: started, FinishedAt: finished}); err != nil {
-		metadataErr = errors.Join(metadataErr, fmt.Errorf("save ingest batch: %w", err))
-	}
-	if err := s.saveCollectorStatus(ctx, tenantID, request, result, started, finished); err != nil {
-		metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
-	}
-	if saveFailures && result.Failed > 0 {
-		if err := s.saveDeadLetter(ctx, tenantID, request, result); err != nil {
-			metadataErr = errors.Join(metadataErr, fmt.Errorf("save dead letter: %w", err))
+	if !s.coordinated() {
+		var metadataErr error
+		if err := s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{
+			Request: request, Result: result, StartedAt: started, FinishedAt: finished,
+		}); err != nil {
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("save ingest batch: %w", err))
 		}
+		if err := s.saveCollectorStatus(ctx, tenantID, request, result, started, finished); err != nil {
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
+		}
+		if saveFailures && result.Failed > 0 {
+			if err := s.saveDeadLetter(ctx, tenantID, request, result); err != nil {
+				metadataErr = errors.Join(metadataErr, fmt.Errorf("save dead letter: %w", err))
+			}
+		}
+		return metadataErr
+	}
+
+	var batchErr, collectorErr, deadLetterErr error
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		batchErr = s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{
+			Request: request, Result: result, StartedAt: started, FinishedAt: finished,
+		})
+	}()
+	go func() {
+		defer wait.Done()
+		collectorErr = s.saveCollectorStatus(ctx, tenantID, request, result, started, finished)
+	}()
+	if saveFailures && result.Failed > 0 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			deadLetterErr = s.saveDeadLetter(ctx, tenantID, request, result)
+		}()
+	}
+	wait.Wait()
+	var metadataErr error
+	if batchErr != nil {
+		metadataErr = errors.Join(metadataErr, fmt.Errorf("save ingest batch: %w", batchErr))
+	}
+	if collectorErr != nil {
+		metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", collectorErr))
+	}
+	if deadLetterErr != nil {
+		metadataErr = errors.Join(metadataErr, fmt.Errorf("save dead letter: %w", deadLetterErr))
 	}
 	return metadataErr
+}
+
+func (s *TenantStore) PersistIngestFailure(
+	ctx context.Context,
+	tenantID string,
+	request IngestRequest,
+	result IngestResult,
+	started time.Time,
+	finished time.Time,
+) error {
+	return s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{
+		TenantID:   tenantID,
+		Request:    request,
+		Result:     result,
+		StartedAt:  started,
+		FinishedAt: finished,
+	})
+}
+
+func (s *TenantStore) ResolveIngestFailure(
+	ctx context.Context,
+	tenantID string,
+	request IngestRequest,
+	result IngestResult,
+	started time.Time,
+	finished time.Time,
+) (IngestResult, error) {
+	previous, ok, err := s.loadIngestRecord(ctx, tenantID, request)
+	if err != nil {
+		if errors.Is(err, ErrIngestIdentityConflict) || errors.Is(err, ErrIdempotencyConflict) {
+			return result, nil
+		}
+		return result, err
+	}
+	if ok {
+		return replayedIngestResult(previous.Result), nil
+	}
+	if err := s.PersistIngestFailure(ctx, tenantID, request, result, started, finished); err != nil {
+		if !errors.Is(err, ErrConflict) &&
+			!errors.Is(err, ErrIngestIdentityConflict) &&
+			!errors.Is(err, ErrIdempotencyConflict) {
+			return result, err
+		}
+		previous, ok, loadErr := s.loadIngestRecord(ctx, tenantID, request)
+		if loadErr != nil {
+			if errors.Is(loadErr, ErrIngestIdentityConflict) || errors.Is(loadErr, ErrIdempotencyConflict) {
+				return result, nil
+			}
+			return result, loadErr
+		}
+		if ok {
+			return replayedIngestResult(previous.Result), nil
+		}
+		return result, err
+	}
+	return result, nil
+}
+
+func replayedIngestResult(result IngestResult) IngestResult {
+	result.Skipped = true
+	result.SkipReason = IngestSkipReasonIdempotentReplay
+	return result
 }
 
 func (s *TenantStore) commitIngestMutationsLocked(
