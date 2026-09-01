@@ -45,7 +45,7 @@ CAS 和依赖的暂时故障仍通过重基与有界缩批重试；PostgreSQL �
 扩展。每个 writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID`、独立持久 WAL 卷和
 owner-routed 状态 URL。批量发布使用有界 CAS/publish slot 和生命周期
 generation fence：租户 freeze、delete 或 recreate 后，旧 generation 的请求
-不能发布。完整合同见[1.3 设计文档](docs/ingest-wal-multiwriter-design.zh-CN.md)。
+不能发布。完整合同见[1.3 设计文档](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.zh-CN.md)。
 
 发行证据覆盖完整 Go 测试、聚焦 race 和 vet，以及隔离 PostgreSQL 下的原子发布/回滚、
 跨 writer 幂等、同租户 2、4、8 writer 并发、四个独立租户、恢复和 owner 路由状态。
@@ -277,7 +277,7 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
 | [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | GraphQL、JSON DSL、分页、流式、explain 和 profile。 |
 | [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
-| [1.3 多 writer WAL](docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
+| [1.3 多 writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
 | [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |

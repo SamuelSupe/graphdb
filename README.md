@@ -52,7 +52,7 @@ horizontally across tenants. Every writer needs a stable
 status URL. Batch publish uses a bounded CAS/publish slot and lifecycle
 generation fencing: a stale or fenced request cannot publish after a tenant
 freeze, delete, or recreate. The complete contract is in the [1.3 design
-document](docs/ingest-wal-multiwriter-design.md).
+document](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.md).
 
 The release evidence covers full Go tests, focused race and vet checks, plus isolated
 PostgreSQL checks for atomic publish/rollback, cross-writer idempotency, 2-, 4-,
@@ -313,7 +313,7 @@ supported for older deployment workflows.
 | [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
 | [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | GraphQL, JSON DSL, pagination, streaming, explain, and profile. |
 | [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
-| [1.3 multi-writer WAL](docs/ingest-wal-multiwriter-design.md) · [中文](docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
+| [1.3 multi-writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.md) · [中文](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
 | [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, optional CI types, entities, relations, edges, and source governance. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
 | [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |
