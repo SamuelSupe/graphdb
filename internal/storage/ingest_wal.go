@@ -444,24 +444,24 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 	defer func() {
 		closeErr := state.syncAndClose()
 		w.recordError(closeErr)
-		state.failPending(errors.Join(ErrIngestWALClosed, closeErr))
+		state.failPending(w.unavailableError())
 	}()
 	for {
 		select {
 		case first := <-w.appendCh:
 			if err := state.writeGroup(first); err != nil {
-				w.recordError(err)
 				state.failPending(err)
 				return
 			}
 		case request := <-w.pruneCh:
 			err := state.prune(request.beforeLSN)
-			request.done <- err
 			if errors.Is(err, ErrIngestWALFailed) {
 				w.recordError(err)
+				request.done <- err
 				state.failPending(err)
 				return
 			}
+			request.done <- err
 		case <-w.closeCh:
 			return
 		}
@@ -638,12 +638,14 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		if s.segments[s.current].size+int64(buffer.Len())+frameBytes > s.wal.config.SegmentBytes {
 			if err := flush(); err != nil {
 				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				s.wal.recordError(fatalErr)
 				failPending(fatalErr)
 				s.failRequests(requests[index:], fatalErr)
 				return fatalErr
 			}
 			if err := s.rotate(); err != nil {
 				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				s.wal.recordError(fatalErr)
 				s.failRequests(requests[index:], fatalErr)
 				return fatalErr
 			}
@@ -663,6 +665,7 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		if buffer.Len() >= s.wal.config.BufferBytes {
 			if err := flush(); err != nil {
 				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				s.wal.recordError(fatalErr)
 				failPending(fatalErr)
 				s.failRequests(requests[index+1:], fatalErr)
 				return fatalErr
@@ -671,6 +674,7 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 	}
 	if err := flush(); err != nil {
 		fatalErr := errors.Join(ErrIngestWALFailed, err)
+		s.wal.recordError(fatalErr)
 		failPending(fatalErr)
 		return fatalErr
 	}
