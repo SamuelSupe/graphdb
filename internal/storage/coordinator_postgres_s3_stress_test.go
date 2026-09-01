@@ -18,6 +18,11 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
+type casStressBatch struct {
+	start int
+	end   int
+}
+
 func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	rawDuration := os.Getenv("GRAPHDB_TEST_CAS_STRESS_DURATION")
 	if rawDuration == "" {
@@ -29,18 +34,20 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	}
 	qps := stressPositiveInt(t, "GRAPHDB_TEST_CAS_STRESS_QPS", 20)
 	writerCount := stressPositiveInt(t, "GRAPHDB_TEST_CAS_STRESS_WRITERS", 2)
+	batchSize := stressPositiveInt(t, "GRAPHDB_TEST_CAS_STRESS_BATCH_SIZE", 10)
 	compactEvery := stressPositiveInt(t, "GRAPHDB_TEST_CAS_STRESS_COMPACT_EVERY", 1000)
 	clientRetries := stressPositiveInt(t, "GRAPHDB_TEST_CAS_STRESS_CLIENT_RETRIES", 64)
 	targetCommits := int(duration * time.Duration(qps) / time.Second)
 	if targetCommits < 1 {
 		targetCommits = 1
 	}
+	targetBatches := (targetCommits + batchSize - 1) / batchSize
 
 	fixtureTimeout := duration + 10*time.Minute
 	fixture := newPostgresS3Fixture(t, "s3-stress", fixtureTimeout)
 	t.Logf(
-		"PostgreSQL/S3 CAS stress start: writers=%d target_commits=%d qps=%d duration=%s fixture_timeout=%s",
-		writerCount, targetCommits, qps, duration, fixtureTimeout,
+		"PostgreSQL/S3 CAS stress start: writers=%d target_commits=%d target_batches=%d batch_size=%d qps=%d duration=%s fixture_timeout=%s",
+		writerCount, targetCommits, targetBatches, batchSize, qps, duration, fixtureTimeout,
 	)
 	writers := make([]*TenantStore, writerCount)
 	for writerID := range writers {
@@ -51,12 +58,17 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	for _, writer := range writers {
 		writer.StartCoordinatorMaintenance(maintenanceCtx, 250*time.Millisecond)
 	}
-	jobs := make(chan int, targetCommits)
+	jobs := make(chan casStressBatch, targetBatches)
 	errs := make(chan error, targetCommits)
 	committedVersions := make([]int64, targetCommits)
 	var completed atomic.Int64
+	var publishes atomic.Int64
 	var writeConflicts atomic.Int64
+	var retryConflicts atomic.Int64
+	var taskLeaseRetries atomic.Int64
+	var casConflicts atomic.Int64
 	var compactions atomic.Int64
+	writerCommitted := make([]atomic.Int64, writerCount)
 	var wg sync.WaitGroup
 	compactSignals := make(chan struct{}, 1)
 	compactErr := make(chan error, 1)
@@ -88,24 +100,45 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for sequence := range jobs {
-				mutations := graph.Mutations{UpsertEntities: []graph.Entity{{
-					ID:     fmt.Sprintf("sample:%d", sequence),
-					Kind:   "sample",
-					Fields: graph.Fields{"writer": writerID, "sequence": sequence},
-				}}}
+			for batch := range jobs {
+				entries := make([]IngestBatchEntry, batch.end-batch.start)
+				for index, sequence := 0, batch.start; sequence < batch.end; index, sequence = index+1, sequence+1 {
+					entries[index] = IngestBatchEntry{Request: IngestRequest{
+						Source:         "cas-stress",
+						CollectorID:    fmt.Sprintf("collector-%d", writerID),
+						BatchID:        fmt.Sprintf("stress-%d", sequence),
+						IdempotencyKey: fmt.Sprintf("stress-%d", sequence),
+						Cursor:         fmt.Sprintf("cursor-%d", sequence),
+						Items: []IngestItem{{
+							ExternalID: fmt.Sprintf("sample:%d", sequence),
+							Entity: &graph.Entity{
+								ID:     fmt.Sprintf("sample:%d", sequence),
+								Kind:   "sample",
+								Fields: graph.Fields{"writer": writerID, "sequence": sequence},
+							},
+						}},
+					}}
+				}
 				for clientAttempt := 0; ; clientAttempt++ {
-					attemptWriterID := (writerID + clientAttempt) % len(writers)
-					manifest, err := writers[attemptWriterID].Commit(
+					attemptWriterID := writerID
+					results, err := writers[attemptWriterID].IngestDurableBatchWithHooks(
 						fixture.ctx,
 						"tenant-a",
-						mutations,
-						CommitOptions{IdempotencyKey: fmt.Sprintf("stress-%d", sequence)},
+						entries,
+						IngestBatchHooks{Published: func() { publishes.Add(1) }},
 					)
 					if err == nil {
-						committedVersions[sequence] = manifest.Version
-						count := completed.Add(1)
-						if count%int64(compactEvery) == 0 {
+						if len(results) != len(entries) {
+							errs <- fmt.Errorf("batch [%d,%d) through writer %d returned %d results, want %d", batch.start, batch.end, attemptWriterID, len(results), len(entries))
+							break
+						}
+						for index, result := range results {
+							committedVersions[batch.start+index] = result.Version
+						}
+						writerCommitted[writerID].Add(int64(len(entries)))
+						count := completed.Add(int64(len(entries)))
+						previous := count - int64(len(entries))
+						if count/int64(compactEvery) > previous/int64(compactEvery) {
 							select {
 							case compactSignals <- struct{}{}:
 							default:
@@ -113,13 +146,24 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 						}
 						break
 					}
-					if !errors.Is(err, ErrWriteConflict) || clientAttempt >= clientRetries {
-						errs <- fmt.Errorf("commit %d through writer %d: %w", sequence, attemptWriterID, err)
+					retryable := errors.Is(err, ErrTaskLeaseHeld) ||
+						errors.Is(err, ErrWriteConflict) ||
+						errors.Is(err, ErrConflict)
+					if !retryable || clientAttempt >= clientRetries {
+						errs <- fmt.Errorf("batch [%d,%d) through writer %d: %w", batch.start, batch.end, attemptWriterID, err)
 						break
 					}
-					writeConflicts.Add(1)
+					retryConflicts.Add(1)
+					switch {
+					case errors.Is(err, ErrTaskLeaseHeld):
+						taskLeaseRetries.Add(1)
+					case errors.Is(err, ErrWriteConflict):
+						writeConflicts.Add(1)
+					case errors.Is(err, ErrConflict):
+						casConflicts.Add(1)
+					}
 					if err := stressClientRetryDelay(fixture.ctx, clientAttempt); err != nil {
-						errs <- fmt.Errorf("retry commit %d through writer %d: %w", sequence, attemptWriterID, err)
+						errs <- fmt.Errorf("retry batch [%d,%d) through writer %d: %w", batch.start, batch.end, attemptWriterID, err)
 						break
 					}
 				}
@@ -128,31 +172,39 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	}
 
 	started := time.Now()
-	interval := time.Second / time.Duration(qps)
+	interval := time.Second * time.Duration(batchSize) / time.Duration(qps)
+	if interval <= 0 {
+		interval = time.Nanosecond
+	}
 	progressEvery := qps * 5 * 60
 	ticker := time.NewTicker(interval)
-	for sequence := 0; sequence < targetCommits; sequence++ {
+	for batchStart := 0; batchStart < targetCommits; batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > targetCommits {
+			batchEnd = targetCommits
+		}
 		select {
-		case jobs <- sequence:
+		case jobs <- casStressBatch{start: batchStart, end: batchEnd}:
 		case <-fixture.ctx.Done():
 			t.Fatalf(
-				"schedule stress commits: scheduled=%d completed=%d queued=%d: %v",
-				sequence, completed.Load(), len(jobs), fixture.ctx.Err(),
+				"schedule stress batches: scheduled=%d completed=%d queued=%d: %v",
+				batchStart/batchSize, completed.Load(), len(jobs), fixture.ctx.Err(),
 			)
 		}
-		if progressEvery > 0 && (sequence+1)%progressEvery == 0 {
+		scheduled := batchEnd
+		if progressEvery > 0 && scheduled%progressEvery == 0 {
 			t.Logf(
 				"PostgreSQL/S3 CAS stress progress: scheduled=%d completed=%d queued=%d elapsed=%s",
-				sequence+1, completed.Load(), len(jobs), time.Since(started).Round(time.Second),
+				scheduled, completed.Load(), len(jobs), time.Since(started).Round(time.Second),
 			)
 		}
-		if sequence+1 < targetCommits {
+		if batchEnd < targetCommits {
 			select {
 			case <-ticker.C:
 			case <-fixture.ctx.Done():
 				t.Fatalf(
-					"pace stress commits: scheduled=%d completed=%d queued=%d: %v",
-					sequence+1, completed.Load(), len(jobs), fixture.ctx.Err(),
+					"pace stress batches: scheduled=%d completed=%d queued=%d: %v",
+					batchEnd, completed.Load(), len(jobs), fixture.ctx.Err(),
 				)
 			}
 		}
@@ -172,7 +224,7 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		terminalErrors++
 	}
 	if terminalErrors > 10 {
-		t.Errorf("%d additional terminal commit errors omitted", terminalErrors-10)
+		t.Errorf("%d additional terminal batch errors omitted", terminalErrors-10)
 	}
 	select {
 	case err := <-compactErr:
@@ -200,6 +252,20 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	if committed != targetCommits {
 		t.Fatalf("completed commits = %d, want %d", committed, targetCommits)
 	}
+	writerCommittedReport := make([]int64, len(writerCommitted))
+	for writerID := range writerCommitted {
+		writerCommittedReport[writerID] = writerCommitted[writerID].Load()
+	}
+	if targetBatches >= writerCount {
+		for writerID, count := range writerCommittedReport {
+			if count == 0 {
+				t.Fatalf("writer %d completed no logical requests despite %d scheduled batches", writerID, targetBatches)
+			}
+		}
+	}
+	if publishes.Load() != int64(targetBatches) {
+		t.Fatalf("successful batch publishes = %d, want %d", publishes.Load(), targetBatches)
+	}
 	seenVersions := make([]bool, targetCommits+1)
 	for sequence, version := range committedVersions {
 		if version < 1 || version > int64(targetCommits) {
@@ -214,9 +280,9 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 	if err != nil || !exists {
 		t.Fatalf("load stress head exists=%v err=%v", exists, err)
 	}
-	if head.GraphVersion != int64(targetCommits) || head.Revision < int64(targetCommits) {
-		t.Fatalf("stress head version/revision = %d/%d, want version %d and revision >= %d",
-			head.GraphVersion, head.Revision, targetCommits, targetCommits)
+	if head.GraphVersion != int64(targetCommits) || head.Revision < int64(targetBatches) {
+		t.Fatalf("stress head version/revision = %d/%d, want version %d and revision >= %d batch publishes",
+			head.GraphVersion, head.Revision, targetCommits, targetBatches)
 	}
 	graphData, manifest, err := writers[0].Load(fixture.ctx, "tenant-a")
 	if err != nil {
@@ -260,9 +326,16 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		TargetQPS:           qps,
 		Duration:            duration.String(),
 		TargetCommits:       targetCommits,
+		BatchSize:           batchSize,
+		TargetBatches:       targetBatches,
 		Committed:           committed,
+		WriterCommitted:     writerCommittedReport,
+		Publishes:           publishes.Load(),
 		Compactions:         compactions.Load(),
 		WriteConflicts:      writeConflicts.Load(),
+		RetryConflicts:      retryConflicts.Load(),
+		TaskLeaseRetries:    taskLeaseRetries.Load(),
+		CASConflicts:        casConflicts.Load(),
 		ElapsedMS:           commitElapsed.Milliseconds(),
 		Throughput:          throughput,
 		GraphVersion:        head.GraphVersion,
@@ -281,8 +354,8 @@ func TestPostgresCoordinatorS3CASStress(t *testing.T) {
 		LegacyV1Validated:   legacyV1Validated,
 	})
 	t.Logf(
-		"PostgreSQL/S3 CAS stress: writers=%d commits=%d compactions=%d write_conflicts=%d client_retry_limit=%d elapsed=%s throughput=%.2f commits/s",
-		writerCount, committed, compactions.Load(), writeConflicts.Load(), clientRetries, commitElapsed.Round(time.Millisecond), throughput,
+		"PostgreSQL/S3 CAS stress: writers=%d commits=%d batches=%d batch_size=%d writer_committed=%v compactions=%d retry_conflicts=%d task_lease_retries=%d write_conflicts=%d cas_conflicts=%d client_retry_limit=%d elapsed=%s throughput=%.2f commits/s",
+		writerCount, committed, publishes.Load(), batchSize, writerCommittedReport, compactions.Load(), retryConflicts.Load(), taskLeaseRetries.Load(), writeConflicts.Load(), casConflicts.Load(), clientRetries, commitElapsed.Round(time.Millisecond), throughput,
 	)
 	if throughput < minimumThroughput {
 		t.Fatalf("commit throughput %.2f/s is below 90%% of target %d/s", throughput, qps)
