@@ -56,6 +56,27 @@ objects, and commits one PostgreSQL transaction. That transaction must CAS the
 tenant head and complete all idempotency results, collector updates, legacy
 mirror outbox work, and derived-task metadata belonging to that batch.
 
+Within either local or PostgreSQL coordination, a contiguous run of at least
+two non-atomic mutation requests from one writer that carries the same
+`expected_version` is a CAS cohort. The writer evaluates the shared expected
+version and each request's preconditions once against the common loaded graph
+baseline. Accepted requests retain independent results and receive consecutive
+logical versions in local WAL order; the cohort is built with one copy-on-write
+apply, one commit segment, and one candidate manifest. An atomic request, a
+different expected version, or a preconditioned request without an expected
+version is an isolation barrier, so the batches before and after it remain
+eligible for their own cohort or ordinary fast path.
+
+For a stale shared expected version, every member of that writer's cohort is a
+terminal `version_conflict` and the cohort publishes no graph version. A
+PostgreSQL writer still has to win the tenant-head CAS for its complete
+candidate batch. Across writers, successful head CAS order determines which
+candidate becomes visible; a losing writer reloads the new head and retries
+only requests that remain retryable. It never merges or rebases an
+`expected_version` cohort from another writer. If that expected version is now
+stale, all members of the losing cohort terminate with `version_conflict`, and
+the losing candidate objects remain invisible.
+
 ## HTTP acknowledgement and status
 
 The 1.3 WAL response has the existing batch identity plus the owner identity:
@@ -116,11 +137,13 @@ The status response may report `accepted`, `prepared`, `retrying`, `published`,
    repair asynchronously and must not keep a safely finalized WAL record
    forever.
 
-An ordinary CAS loss is not corruption. The next attempt reloads the new head
-and rebases the batch. Repeated conflicts halve the publish prefix until a
-single request remains, with exponential backoff and jitter. Candidate
-objects that lose the race remain invisible and are eligible for safe,
-post-grace-period garbage collection.
+An ordinary CAS loss for an unguarded request is not corruption. The next
+attempt reloads the new head and rebases the batch. Repeated conflicts halve
+the publish prefix at request and cohort barriers, with exponential backoff and
+jitter. A guarded request whose expected version is no longer current follows
+the terminal cohort rule above rather than being rebased against a different
+version. Candidate objects that lose the race remain invisible and are
+eligible for safe, post-grace-period garbage collection.
 
 ## Failure and lifecycle rules
 
@@ -175,8 +198,9 @@ then return it to direct mode. A pending WAL is a downgrade blocker.
 ## Release evidence
 
 Before this profile is described as released, the acceptance matrix must cover
-2, 4, and 8 same-tenant writers; cross-writer duplicate identities; CAS
-rebase/shrink; PostgreSQL outage and WAL high-water admission; crash points
-from `ACCEPTED` through `FINALIZED`; lifecycle fencing; owner routing and
+2, 4, and 8 same-tenant writers; per-writer CAS cohorts and atomic barriers;
+cross-writer duplicate identities; CAS rebase/shrink and stale expected-version
+termination; PostgreSQL outage and WAL high-water admission; crash points from
+`ACCEPTED` through `FINALIZED`; lifecycle fencing; owner routing and
 `recovery_pending`; and mixed 1.2 direct/1.3 WAL operation. No performance
 number is implied until those runs produce commit-bound evidence.

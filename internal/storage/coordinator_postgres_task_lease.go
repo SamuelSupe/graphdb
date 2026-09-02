@@ -72,21 +72,70 @@ func (c *PostgresCoordinator) AcquireIngestPublishSlot(
 	ownerToken string,
 	ttl time.Duration,
 ) (CoordinatorTaskLease, CoordinationHead, bool, bool, error) {
-	lease, acquired, err := c.AcquireTaskLease(
-		ctx, tenantID, coordinatorIngestPublishTaskType, ownerToken, ttl,
-	)
-	if err != nil {
-		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, err
+	if ttl <= 0 {
+		ttl = 30 * time.Second
 	}
-	if !acquired {
+	// The head read must be a separate READ COMMITTED statement: lease takeover
+	// can wait for the previous publisher, whose head update must then be visible.
+	// SendBatch preserves that snapshot boundary without a second network trip.
+	batch := &pgx.Batch{}
+	batch.Queue(
+		`INSERT INTO `+c.table("task_leases")+` AS current (
+			namespace, tenant_id, task_type, owner_token, fence_epoch, expires_at, updated_at
+		) VALUES ($1,$2,$3,$4,1,now() + $5::interval,now())
+		ON CONFLICT (namespace, tenant_id, task_type) DO UPDATE
+		SET owner_token = EXCLUDED.owner_token,
+		    fence_epoch = CASE
+		        WHEN current.owner_token = EXCLUDED.owner_token
+		        THEN current.fence_epoch
+		        ELSE current.fence_epoch + 1
+		    END,
+		    expires_at = EXCLUDED.expires_at,
+		    updated_at = EXCLUDED.updated_at
+		WHERE current.owner_token = EXCLUDED.owner_token
+		   OR current.expires_at <= now()
+		RETURNING tenant_id, task_type, owner_token, fence_epoch, expires_at`,
+		c.namespace, tenantID, coordinatorIngestPublishTaskType, ownerToken,
+		postgresInterval(ttl),
+	)
+	batch.Queue(
+		`SELECT `+coordinatorHeadColumns+` FROM `+c.table("tenant_heads")+`
+		 WHERE namespace = $1 AND tenant_id = $2`,
+		c.namespace, tenantID,
+	)
+	batchResults := c.pool.SendBatch(ctx, batch)
+	lease, leaseErr := scanCoordinatorTaskLease(batchResults.QueryRow())
+	if errors.Is(leaseErr, pgx.ErrNoRows) {
+		_, headErr := scanCoordinationHead(batchResults.QueryRow())
+		if headErr != nil && !errors.Is(headErr, pgx.ErrNoRows) {
+			_ = batchResults.Close()
+			return CoordinatorTaskLease{}, CoordinationHead{}, false, false, coordinatorUnavailable(headErr)
+		}
+		if err := batchResults.Close(); err != nil {
+			return CoordinatorTaskLease{}, CoordinationHead{}, false, false, coordinatorUnavailable(err)
+		}
 		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, nil
 	}
-	head, headExists, err := c.Head(ctx, tenantID)
-	if err != nil {
+	if leaseErr != nil {
+		_ = batchResults.Close()
+		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, coordinatorUnavailable(leaseErr)
+	}
+	head, headErr := scanCoordinationHead(batchResults.QueryRow())
+	headExists := true
+	if errors.Is(headErr, pgx.ErrNoRows) {
+		head = CoordinationHead{}
+		headExists = false
+		headErr = nil
+	}
+	closeErr := batchResults.Close()
+	if headErr != nil || closeErr != nil {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = c.ReleaseTaskLease(releaseCtx, lease)
-		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, err
+		if headErr != nil {
+			return CoordinatorTaskLease{}, CoordinationHead{}, false, false, coordinatorUnavailable(headErr)
+		}
+		return CoordinatorTaskLease{}, CoordinationHead{}, false, false, coordinatorUnavailable(closeErr)
 	}
 	return lease, head, headExists, true, nil
 }

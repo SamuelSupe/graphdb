@@ -15,15 +15,18 @@ import (
 )
 
 type IngestRequest struct {
-	Source         string       `json:"source"`
-	CollectorID    string       `json:"collector_id"`
-	BatchID        string       `json:"batch_id,omitempty"`
-	IdempotencyKey string       `json:"idempotency_key,omitempty"`
-	Cursor         string       `json:"cursor,omitempty"`
-	FullSync       bool         `json:"full_sync,omitempty"`
-	StaleAction    string       `json:"stale_action,omitempty"`
-	StaleKind      string       `json:"stale_kind,omitempty"`
-	Items          []IngestItem `json:"items"`
+	Source          string               `json:"source"`
+	CollectorID     string               `json:"collector_id"`
+	BatchID         string               `json:"batch_id,omitempty"`
+	IdempotencyKey  string               `json:"idempotency_key,omitempty"`
+	Cursor          string               `json:"cursor,omitempty"`
+	FullSync        bool                 `json:"full_sync,omitempty"`
+	StaleAction     string               `json:"stale_action,omitempty"`
+	StaleKind       string               `json:"stale_kind,omitempty"`
+	ExpectedVersion *int64               `json:"expected_version,omitempty"`
+	FailureMode     string               `json:"failure_mode,omitempty"`
+	Preconditions   []IngestPrecondition `json:"preconditions,omitempty"`
+	Items           []IngestItem         `json:"items"`
 }
 
 type IngestItem struct {
@@ -41,6 +44,7 @@ type IngestResult struct {
 	Version    int64            `json:"version"`
 	Applied    int              `json:"applied"`
 	Failed     int              `json:"failed"`
+	ErrorCode  string           `json:"error_code,omitempty"`
 	Suppressed int              `json:"suppressed,omitempty"`
 	Skipped    bool             `json:"skipped"`
 	SkipReason string           `json:"skip_reason,omitempty"`
@@ -113,7 +117,8 @@ func (s *TenantStore) IngestDurable(ctx context.Context, tenantID string, reques
 }
 
 func (s *TenantStore) ingest(ctx context.Context, tenantID string, request IngestRequest, saveFailures bool, durableCommit bool) (IngestResult, error) {
-	if err := ValidateTenantID(tenantID); err != nil {
+	request, err := PrepareIngestRequest(tenantID, request)
+	if err != nil {
 		return IngestResult{}, err
 	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
@@ -121,13 +126,6 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 			return IngestResult{}, pressure
 		}
 		return IngestResult{}, err
-	}
-	request = normalizeIngestRequest(request)
-	if request.Source == "" || request.CollectorID == "" {
-		return IngestResult{}, fmt.Errorf("source and collector_id are required")
-	}
-	if request.BatchID == "" {
-		request.BatchID = defaultIngestBatchID(request)
 	}
 	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
 		return IngestResult{}, err
@@ -175,9 +173,17 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	result, mutations, appliedIndices := buildIngestMutations(request)
 	result.BatchID = request.BatchID
 	result.Cursor = request.Cursor
+	if ingestRequestAtomic(request) && result.Failed > 0 {
+		markIngestResultFailure(
+			&result,
+			request,
+			appliedIndices,
+			fmt.Errorf("%w: one or more ingest items are invalid", ErrIngestAtomicValidation),
+		)
+	}
 	pendingApplied := result.Applied
 	if pendingApplied > 0 {
-		commitResult, err := s.commitIngestMutationsLocked(ctx, tenantID, request, mutations, durableCommit)
+		commitResult, err := s.commitIngestMutationsLocked(ctx, tenantID, request, mutations, durableCommit, started)
 		if err != nil {
 			if errors.Is(err, ErrBackpressure) {
 				return IngestResult{}, err
@@ -185,12 +191,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 			if pressure := s.objectStoreBackpressureError(err); pressure != nil {
 				return IngestResult{}, pressure
 			}
-			result.Failed += pendingApplied
-			result.Applied = 0
-			for _, index := range appliedIndices {
-				result.Failures = append(result.Failures, IngestFailure{Index: index, ExternalID: request.Items[index].ExternalID, Error: err.Error()})
-			}
-			result.Conflicts = append(result.Conflicts, IngestConflict{Message: err.Error()})
+			markIngestResultFailure(&result, request, appliedIndices, err)
 		} else {
 			result.Version = commitResult.Version
 			result.Skipped = commitResult.Skipped
@@ -339,13 +340,21 @@ func (s *TenantStore) commitIngestMutationsLocked(
 	request IngestRequest,
 	mutations graph.Mutations,
 	durable bool,
+	acceptedAt time.Time,
 ) (CommitResult, error) {
+	opts := CommitOptions{
+		ExpectedVersion:     request.ExpectedVersion,
+		ingestPreconditions: request.Preconditions,
+		ingestAcceptedAt:    acceptedAt,
+		rejectSuppressed:    ingestRequestAtomic(request),
+	}
 	if !durable {
-		return s.commitWithRetryLocked(ctx, tenantID, mutations, CommitOptions{})
+		return s.commitWithRetryLocked(ctx, tenantID, mutations, opts)
 	}
 	commitRequest := DirectCommitRequest{
-		IdempotencyKey: durableIngestCommitKey(tenantID, request),
-		Mutations:      mutations,
+		ExpectedVersion: request.ExpectedVersion,
+		IdempotencyKey:  durableIngestCommitKey(tenantID, request),
+		Mutations:       mutations,
 	}
 	reservation, replay, err := s.beginDirectCommit(ctx, tenantID, commitRequest, time.Now().UTC())
 	if err != nil {
@@ -354,7 +363,8 @@ func (s *TenantStore) commitIngestMutationsLocked(
 	if replay != nil {
 		return *replay, nil
 	}
-	result, err := s.commitWithRetryLocked(ctx, tenantID, mutations, CommitOptions{directCommit: reservation})
+	opts.directCommit = reservation
+	result, err := s.commitWithRetryLocked(ctx, tenantID, mutations, opts)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -383,13 +393,39 @@ func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest
 	if request.Source == "" || request.CollectorID == "" {
 		return IngestRequest{}, fmt.Errorf("source and collector_id are required")
 	}
+	if err := normalizeIngestTransactionalOptions(&request); err != nil {
+		return IngestRequest{}, err
+	}
 	if request.BatchID == "" {
-		request.BatchID = defaultIngestBatchID(request)
+		batchID, err := defaultIngestBatchID(request)
+		if err != nil {
+			return IngestRequest{}, fmt.Errorf("generate ingest batch_id: %w", err)
+		}
+		request.BatchID = batchID
+	}
+	for _, identifier := range []struct {
+		name  string
+		value string
+	}{
+		{name: "source", value: request.Source},
+		{name: "collector_id", value: request.CollectorID},
+		{name: "batch_id", value: request.BatchID},
+	} {
+		if err := validateIngestStatusPathIdentifier(identifier.name, identifier.value); err != nil {
+			return IngestRequest{}, err
+		}
 	}
 	if _, err := json.Marshal(request); err != nil {
 		return IngestRequest{}, fmt.Errorf("encode ingest request: %w", err)
 	}
 	return request, nil
+}
+
+func validateIngestStatusPathIdentifier(name string, value string) error {
+	if value == "." || value == ".." {
+		return fmt.Errorf("%s must not be a dot path segment", name)
+	}
+	return nil
 }
 
 func normalizeIngestRequest(request IngestRequest) IngestRequest {
@@ -781,10 +817,14 @@ func firstValue(values ...string) string {
 	return ""
 }
 
-func defaultIngestBatchID(request IngestRequest) string {
+func defaultIngestBatchID(request IngestRequest) (string, error) {
 	if request.IdempotencyKey != "" {
 		sum := sha256.Sum256([]byte(request.Source + "\x00" + request.CollectorID + "\x00" + request.IdempotencyKey))
-		return request.Source + "-" + request.CollectorID + "-" + hex.EncodeToString(sum[:])[:16]
+		return request.Source + "-" + request.CollectorID + "-" + hex.EncodeToString(sum[:])[:16], nil
 	}
-	return request.Source + "-" + request.CollectorID + "-" + time.Now().UTC().Format("20060102150405.000000000")
+	nonce, err := newCommitID()
+	if err != nil {
+		return "", err
+	}
+	return request.Source + "-" + request.CollectorID + "-" + nonce, nil
 }

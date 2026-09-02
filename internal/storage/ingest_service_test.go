@@ -183,8 +183,8 @@ func TestIngestServiceTerminalBatchPublishesAndFinalizesInWALOrder(t *testing.T)
 		t.Fatalf("active terminal requests = %d, want 0", active)
 	}
 	syncs := observer.syncSnapshot()
-	if len(syncs)-before != 1 || syncs[before].status != "ok" || syncs[before].records != 4 {
-		t.Fatalf("terminal WAL sync observations = %#v, want one ok group of 4 records", syncs[before:])
+	if len(syncs)-before != 1 || syncs[before].status != "ok" || syncs[before].records != 2 {
+		t.Fatalf("terminal WAL sync observations = %#v, want one ok group of 2 records", syncs[before:])
 	}
 
 	if err := wal.Close(); err != nil {
@@ -196,13 +196,12 @@ func TestIngestServiceTerminalBatchPublishesAndFinalizesInWALOrder(t *testing.T)
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if len(recovered) != 6 {
-		t.Fatalf("recovered WAL records = %d, want 6 accepted/published/finalized records", len(recovered))
+	if len(recovered) != 4 {
+		t.Fatalf("recovered WAL records = %d, want 4 accepted/finalized records", len(recovered))
 	}
 	wantTypes := []IngestWALRecordType{
 		IngestWALAccepted, IngestWALAccepted,
-		IngestWALPublished, IngestWALFinalized,
-		IngestWALPublished, IngestWALFinalized,
+		IngestWALFinalized, IngestWALFinalized,
 	}
 	for index, record := range recovered {
 		if record.LSN != uint64(index+1) || record.Type != wantTypes[index] {
@@ -218,12 +217,8 @@ func TestIngestServiceTerminalBatchPublishesAndFinalizesInWALOrder(t *testing.T)
 		if err := json.Unmarshal(record.Payload, &envelope); err != nil {
 			t.Fatalf("decode terminal envelope %d: %v", index, err)
 		}
-		wantState := IngestStatePublished
-		if record.Type == IngestWALFinalized {
-			wantState = IngestStateCommitted
-		}
-		if envelope.State != wantState {
-			t.Fatalf("terminal envelope %d state=%q, want %q", index, envelope.State, wantState)
+		if envelope.State != IngestStateCommitted {
+			t.Fatalf("terminal envelope %d state=%q, want %q", index, envelope.State, IngestStateCommitted)
 		}
 	}
 	recovery := &IngestService{
@@ -237,6 +232,37 @@ func TestIngestServiceTerminalBatchPublishesAndFinalizesInWALOrder(t *testing.T)
 	}
 	if len(pending) != 0 {
 		t.Fatalf("pending after compact terminal recovery = %d, want 0", len(pending))
+	}
+
+	legacyAccepted := items[0].envelope
+	legacyAccepted.State = IngestStateAccepted
+	legacyAccepted.Prepared = nil
+	legacyAccepted.Result = nil
+	legacyAccepted.Error = ""
+	acceptedPayload, err := json.Marshal(legacyAccepted)
+	if err != nil {
+		t.Fatalf("marshal legacy accepted envelope: %v", err)
+	}
+	publishedPayload, err := pendingStatePayload(
+		items[0], IngestWALPublished, IngestStatePublished, &results[0], "",
+	)
+	if err != nil {
+		t.Fatalf("marshal legacy published state: %v", err)
+	}
+	legacyRecovery := &IngestService{
+		config:         config,
+		active:         map[string]*ingestPending{},
+		activeByStatus: map[string]*ingestPending{},
+	}
+	legacyPending, err := legacyRecovery.recover([]IngestWALRecord{
+		{LSN: 1, Type: IngestWALAccepted, Payload: acceptedPayload},
+		{LSN: 2, Type: IngestWALPublished, Payload: publishedPayload},
+	})
+	if err != nil {
+		t.Fatalf("recover legacy published terminal state: %v", err)
+	}
+	if len(legacyPending) != 1 || legacyPending[0].state != IngestStatePublished {
+		t.Fatalf("legacy published recovery = %#v, want one published pending request", legacyPending)
 	}
 }
 
@@ -271,6 +297,11 @@ func TestIngestServiceSharesActiveIdempotencyAndRejectsDifferentPayload(t *testi
 	}
 	if first.acceptedLSN != second.acceptedLSN {
 		t.Fatalf("shared request LSNs = %d and %d", first.acceptedLSN, second.acceptedLSN)
+	}
+	batchConflict := request
+	batchConflict.IdempotencyKey = "idem-2"
+	if _, err := service.Accept(context.Background(), "tenant-a", batchConflict); !errors.Is(err, ErrIngestIdentityConflict) {
+		t.Fatalf("same batch with different idempotency err = %v, want ErrIngestIdentityConflict", err)
 	}
 	conflict := request
 	conflict.Items = []IngestItem{{Entity: &graph.Entity{ID: "host:2", Kind: "host"}}}
@@ -695,7 +726,8 @@ func TestIngestServiceTerminalizesDurableIdentityConflictWithoutBlockingTenant(t
 			if err != nil {
 				t.Fatalf("wait durable identity conflict: %v", err)
 			}
-			if conflictResult.Applied != 0 || conflictResult.Failed != 1 || len(conflictResult.Failures) != 1 {
+			if conflictResult.Applied != 0 || conflictResult.Failed != 1 ||
+				conflictResult.ErrorCode != IngestErrorIdempotencyConflict || len(conflictResult.Failures) != 1 {
 				t.Fatalf("conflict result = %#v, want one failed item and no applied items", conflictResult)
 			}
 			status, err := service.Status(
@@ -708,7 +740,8 @@ func TestIngestServiceTerminalizesDurableIdentityConflictWithoutBlockingTenant(t
 			if err != nil {
 				t.Fatalf("status after durable identity conflict: %v", err)
 			}
-			if status.State != IngestStateFailed || status.Result == nil || status.Result.Failed != 1 {
+			if status.State != IngestStateFailed || status.Result == nil || status.Result.Failed != 1 ||
+				status.Result.ErrorCode != IngestErrorIdempotencyConflict {
 				t.Fatalf("status after durable identity conflict = %#v, want failed terminal state", status)
 			}
 			nextResult, err := service.Wait(context.Background(), next)
@@ -1009,6 +1042,51 @@ func TestIngestServiceFailsClosedAfterRuntimeWALFailure(t *testing.T) {
 	}
 }
 
+func TestIngestServiceFailsClosedWhenFlushRequiresRepair(t *testing.T) {
+	store := &repairRequiredIngestStore{
+		TenantStore: NewTenantStore(NewMemoryStore(), "test"),
+		called:      make(chan struct{}),
+	}
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 1
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+
+	if _, err := service.Accept(
+		context.Background(),
+		"tenant-a",
+		ingestEntityRequest("batch-repair", "host:repair"),
+	); err != nil {
+		t.Fatalf("accept repair-triggering request: %v", err)
+	}
+	select {
+	case <-store.called:
+	case <-time.After(time.Second):
+		t.Fatal("repair-triggering flush was not called")
+	}
+	select {
+	case <-service.runCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("ingest service did not fail closed after repair-required error")
+	}
+
+	readiness := service.Readiness()
+	if readiness.Ready || readiness.Writable || !strings.Contains(readiness.LastError, ErrIngestRepairRequired.Error()) {
+		t.Fatalf("readiness after repair-required error = %#v, want failed closed", readiness)
+	}
+	if _, err := service.Accept(
+		context.Background(),
+		"tenant-a",
+		ingestEntityRequest("batch-after-repair", "host:after-repair"),
+	); !errors.Is(err, ErrIngestRepairRequired) {
+		t.Fatalf("post-repair acceptance err = %v, want ErrIngestRepairRequired", err)
+	}
+}
+
 func TestIngestServiceDirectCommitBarrierFlushesAcceptedTenantQueue(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	config := testIngestServiceConfig(t)
@@ -1125,7 +1203,7 @@ func TestIngestDurableRetriesMetadataFailureWithoutDuplicateVersion(t *testing.T
 	}
 }
 
-func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *testing.T) {
+func TestIngestServiceRecoversPreparedCASCohortWithoutDuplicateVersion(t *testing.T) {
 	objects := &failIngestRecordOnceStore{ObjectStore: NewMemoryStore()}
 	store := NewTenantStore(objects, "test")
 	config := testIngestServiceConfig(t)
@@ -1137,6 +1215,9 @@ func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *t
 	}
 	first := ingestEntityRequest("batch-1", "host:1")
 	second := ingestEntityRequest("batch-2", "host:2")
+	expected := int64(0)
+	first.ExpectedVersion = &expected
+	second.ExpectedVersion = &expected
 	objects.failKey = store.ingestBatchKey("tenant-a", first.Source, first.CollectorID, first.BatchID)
 	firstAccepted, err := service.Accept(context.Background(), "tenant-a", first)
 	if err != nil {
@@ -1181,19 +1262,29 @@ func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *t
 	defer closeIngestService(t, recovered)
 
 	deadline = time.Now().Add(5 * time.Second)
+	var firstStatus, secondStatus IngestBatchStatus
 	for {
-		status, statusErr := recovered.Status(
+		var firstStatusErr, secondStatusErr error
+		firstStatus, firstStatusErr = recovered.Status(
 			context.Background(),
 			"tenant-a",
 			first.Source,
 			first.CollectorID,
 			first.BatchID,
 		)
-		if statusErr == nil && status.State == IngestStateCommitted {
+		secondStatus, secondStatusErr = recovered.Status(
+			context.Background(),
+			"tenant-a",
+			second.Source,
+			second.CollectorID,
+			second.BatchID,
+		)
+		if firstStatusErr == nil && secondStatusErr == nil &&
+			firstStatus.State == IngestStateCommitted && secondStatus.State == IngestStateCommitted {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("recovered request did not commit: status=%#v err=%v", status, statusErr)
+			t.Fatalf("recovered cohort did not commit: first=%#v second=%#v errors=%v/%v", firstStatus, secondStatus, firstStatusErr, secondStatusErr)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -1203,6 +1294,12 @@ func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *t
 	}
 	if manifest.Version != 2 || len(manifest.CommitSegments) != 1 {
 		t.Fatalf("manifest after recovery = %#v", manifest)
+	}
+	if firstStatus.Result == nil || firstStatus.Result.Version != 1 || firstStatus.Result.Applied != 1 || firstStatus.Result.Failed != 0 {
+		t.Fatalf("recovered first result = %#v, want version 1", firstStatus.Result)
+	}
+	if secondStatus.Result == nil || secondStatus.Result.Version != 2 || secondStatus.Result.Applied != 1 || secondStatus.Result.Failed != 0 {
+		t.Fatalf("recovered second result = %#v, want version 2", secondStatus.Result)
 	}
 }
 
@@ -1341,6 +1438,22 @@ type failIngestRecordOnceStore struct {
 	failed  bool
 }
 
+type repairRequiredIngestStore struct {
+	*TenantStore
+	called chan struct{}
+	once   sync.Once
+}
+
+func (s *repairRequiredIngestStore) IngestDurableBatchWithHooks(
+	context.Context,
+	string,
+	[]IngestBatchEntry,
+	IngestBatchHooks,
+) ([]IngestResult, error) {
+	s.once.Do(func() { close(s.called) })
+	return nil, fmt.Errorf("%w: injected prepared WAL mismatch", ErrIngestRepairRequired)
+}
+
 func (s *failIngestRecordOnceStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
 	s.mu.Lock()
 	if key == s.failKey && !s.failed {
@@ -1363,6 +1476,14 @@ func testIngestServiceConfig(t *testing.T) IngestServiceConfig {
 	config.FlushTimeout = 5 * time.Second
 	config.RetryInterval = 5 * time.Millisecond
 	return config
+}
+
+func TestIngestServiceConfigRejectsDotOwnerID(t *testing.T) {
+	config := DefaultIngestServiceConfig(t.TempDir())
+	config.OwnerID = ".."
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "owner ID") {
+		t.Fatalf("Validate error = %v, want owner path validation", err)
+	}
 }
 
 func closeIngestService(t *testing.T, service *IngestService) {

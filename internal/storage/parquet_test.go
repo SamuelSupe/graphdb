@@ -182,6 +182,89 @@ func TestParquetRebuildSkipsUnchangedObjectWrites(t *testing.T) {
 	}
 }
 
+func TestParquetIngestRecordRoundTripsTransactionalOptionsAndErrorCode(t *testing.T) {
+	ctx := context.Background()
+	expectedVersion := int64(7)
+	now := time.Date(2026, 9, 1, 1, 2, 3, 4, time.UTC)
+	record := IngestBatchRecord{
+		TenantID: "tenant-a",
+		Request: IngestRequest{
+			Source:          "agent",
+			CollectorID:     "collector-a",
+			BatchID:         "batch-transactional",
+			IdempotencyKey:  "idem-transactional",
+			Cursor:          "cursor-7",
+			FullSync:        true,
+			StaleAction:     "mark_stale",
+			StaleKind:       "host",
+			ExpectedVersion: &expectedVersion,
+			FailureMode:     IngestFailureModeAtomic,
+			Preconditions: []IngestPrecondition{
+				{ResourceType: "entity", ID: "host:1", Field: "state", Op: "eq", Value: "ready"},
+				{ResourceType: "edge", ID: "edge:1", Op: "exists"},
+				{ResourceType: "entity", ID: "host:1", Field: "delete_at", Op: "lte", ValueFrom: "accepted_at"},
+			},
+			Items: []IngestItem{{
+				ExternalID: "host-1",
+				Entity:     &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"state": "ready"}},
+			}},
+		},
+		Result: IngestResult{
+			BatchID:   "batch-transactional",
+			Version:   7,
+			Applied:   0,
+			Failed:    1,
+			ErrorCode: IngestErrorPreconditionFailed,
+			Failures: []IngestFailure{{
+				Index: 0, ExternalID: "host-1", Error: "ingest precondition failed",
+			}},
+			Conflicts: []IngestConflict{{
+				ResourceType: "entity", Index: 0, ExternalID: "host-1", EntityID: "host:1", Field: "state",
+				ExistingValue: "stale", IncomingValue: "ready", Message: "value is not equal",
+			}},
+			Cursor: "cursor-7",
+		},
+		StartedAt:  now,
+		FinishedAt: now.Add(time.Second),
+	}
+	data, err := marshalParquetIngestRecord(ctx, record)
+	if err != nil {
+		t.Fatalf("marshal ingest record: %v", err)
+	}
+	decoded, err := decodeParquetIngestRecord(ctx, data)
+	if err != nil {
+		t.Fatalf("decode ingest record: %v", err)
+	}
+	if decoded.TenantID != record.TenantID || decoded.Request.Source != record.Request.Source ||
+		decoded.Request.CollectorID != record.Request.CollectorID || decoded.Request.BatchID != record.Request.BatchID ||
+		decoded.Request.IdempotencyKey != record.Request.IdempotencyKey || decoded.Request.Cursor != record.Request.Cursor ||
+		!decoded.Request.FullSync || decoded.Request.StaleAction != record.Request.StaleAction || decoded.Request.StaleKind != record.Request.StaleKind {
+		t.Fatalf("decoded request metadata = %#v, want %#v", decoded.Request, record.Request)
+	}
+	if decoded.Request.ExpectedVersion == nil || *decoded.Request.ExpectedVersion != expectedVersion {
+		t.Fatalf("decoded expected_version = %#v, want %d", decoded.Request.ExpectedVersion, expectedVersion)
+	}
+	if decoded.Request.FailureMode != IngestFailureModeAtomic || len(decoded.Request.Preconditions) != 3 {
+		t.Fatalf("decoded transactional options = %#v, want atomic and three preconditions", decoded.Request)
+	}
+	if decoded.Request.Preconditions[0].ResourceType != "entity" || decoded.Request.Preconditions[0].Field != "state" ||
+		decoded.Request.Preconditions[0].Op != "eq" || decoded.Request.Preconditions[0].Value != "ready" {
+		t.Fatalf("decoded entity precondition = %#v", decoded.Request.Preconditions[0])
+	}
+	if decoded.Request.Preconditions[1].ResourceType != "edge" || decoded.Request.Preconditions[1].ID != "edge:1" || decoded.Request.Preconditions[1].Op != "exists" {
+		t.Fatalf("decoded edge precondition = %#v", decoded.Request.Preconditions[1])
+	}
+	if decoded.Request.Preconditions[2].Field != "delete_at" || decoded.Request.Preconditions[2].Op != "lte" || decoded.Request.Preconditions[2].ValueFrom != "accepted_at" {
+		t.Fatalf("decoded accepted_at precondition = %#v", decoded.Request.Preconditions[2])
+	}
+	if decoded.Result.ErrorCode != IngestErrorPreconditionFailed || decoded.Result.Failed != 1 || len(decoded.Result.Failures) != 1 || len(decoded.Result.Conflicts) != 1 {
+		t.Fatalf("decoded result = %#v, want error code and failure details", decoded.Result)
+	}
+	if decoded.Result.Conflicts[0].ExistingValue != "stale" || decoded.Result.Conflicts[0].IncomingValue != "ready" {
+		t.Fatalf("decoded conflict values = %#v", decoded.Result.Conflicts[0])
+	}
+}
+
 func TestParquetSchemasAvoidJSONPayloadColumns(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()

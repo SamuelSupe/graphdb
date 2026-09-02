@@ -62,6 +62,9 @@ type CommitOptions struct {
 	WriteBackpressureChecked bool
 	directCommit             *directCommitReservation
 	collectorState           *CollectorStateUpdate
+	ingestPreconditions      []IngestPrecondition
+	ingestAcceptedAt         time.Time
+	rejectSuppressed         bool
 }
 
 type TenantStore struct {

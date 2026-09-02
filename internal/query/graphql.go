@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/retrieval"
-
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
@@ -18,30 +16,8 @@ scalar JSON
 scalar Long
 scalar QueryRequest
 
-input EvidenceExpansionInput {
-  maxDepth: Int
-  direction: String
-  relationTypes: [String!]
-  nodeKinds: [String!]
-  maxSeeds: Int
-  maxVisited: Int
-}
-
-input EvidenceSearchInput {
-  query: String!
-  kinds: [String!]
-  filters: JSON
-  vectorTopK: Int
-  lexicalTopK: Int
-  topK: Int
-  minVersion: Long
-  explain: Boolean
-  expansion: EvidenceExpansionInput
-}
-
 type Query {
   graph(request: QueryRequest!): GraphQueryResult!
-  evidenceSearch(input: EvidenceSearchInput!): EvidenceSearchResult!
 }
 
 type GraphQueryResult {
@@ -55,14 +31,6 @@ type GraphQueryResult {
   profile: JSON
 }
 
-type EvidenceSearchResult {
-  version: Long!
-  retrievalRevision: Long!
-  embeddingGeneration: String!
-  evidence: JSON!
-  stats: JSON!
-  plan: JSON
-}
 `
 
 var parsedGraphQLSchema = gqlparser.MustLoadSchema(&ast.Source{
@@ -77,21 +45,12 @@ type GraphQLRequest struct {
 }
 
 type GraphQLPlan struct {
-	Request         Request
-	EvidenceRequest retrieval.SearchRequest
-	RootName        string
-	rootKind        graphQLRootKind
-	rootTypenames   []string
-	resultFields    []graphQLResultField
-	operationName   string
+	Request       Request
+	RootName      string
+	rootTypenames []string
+	resultFields  []graphQLResultField
+	operationName string
 }
-
-type graphQLRootKind string
-
-const (
-	graphQLRootGraph          graphQLRootKind = "graph"
-	graphQLRootEvidenceSearch graphQLRootKind = "evidenceSearch"
-)
 
 type graphQLResultField struct {
 	Name         string
@@ -140,13 +99,12 @@ func ParseGraphQL(request GraphQLRequest) (GraphQLPlan, gqlerror.List) {
 	}
 	plan := GraphQLPlan{
 		RootName:      responseName(root),
-		rootKind:      graphQLRootKind(root.Name),
 		rootTypenames: rootTypenames,
 		resultFields:  fields,
 		operationName: operation.Name,
 	}
 	switch root.Name {
-	case string(graphQLRootGraph):
+	case "graph":
 		rawRequest, err := root.Arguments.ForName("request").Value.Value(variables)
 		if err != nil {
 			return GraphQLPlan{}, graphQLErrorFrom(err)
@@ -159,16 +117,6 @@ func ParseGraphQL(request GraphQLRequest) (GraphQLPlan, gqlerror.List) {
 			return GraphQLPlan{}, graphQLError(root.Position, "%v", err)
 		}
 		plan.Request = queryRequest
-	case string(graphQLRootEvidenceSearch):
-		rawRequest, err := root.Arguments.ForName("input").Value.Value(variables)
-		if err != nil {
-			return GraphQLPlan{}, graphQLErrorFrom(err)
-		}
-		evidenceRequest, err := decodeGraphQLEvidenceRequest(rawRequest)
-		if err != nil {
-			return GraphQLPlan{}, graphQLError(root.Position, "%v", err)
-		}
-		plan.EvidenceRequest = evidenceRequest
 	default:
 		return GraphQLPlan{}, graphQLError(root.Position, "unsupported GraphQL root field %q", root.Name)
 	}
@@ -230,22 +178,6 @@ func (p GraphQLPlan) Data(response Response) map[string]any {
 	return data
 }
 
-func (p GraphQLPlan) EvidenceData(response retrieval.SearchResponse) map[string]any {
-	result := make(map[string]any, len(p.resultFields))
-	for _, field := range p.resultFields {
-		result[field.ResponseName] = graphQLEvidenceResultValue(response, field.Name)
-	}
-	data := map[string]any{p.RootName: result}
-	for _, alias := range p.rootTypenames {
-		data[alias] = "Query"
-	}
-	return data
-}
-
-func (p GraphQLPlan) IsEvidenceSearch() bool {
-	return p.rootKind == graphQLRootEvidenceSearch
-}
-
 func graphQLResultValue(response Response, field string) any {
 	switch field {
 	case "__typename":
@@ -274,27 +206,6 @@ func graphQLResultValue(response Response, field string) any {
 	}
 }
 
-func graphQLEvidenceResultValue(response retrieval.SearchResponse, field string) any {
-	switch field {
-	case "__typename":
-		return "EvidenceSearchResult"
-	case "version":
-		return response.Version
-	case "retrievalRevision":
-		return response.RetrievalRevision
-	case "embeddingGeneration":
-		return response.EmbeddingGeneration
-	case "evidence":
-		return response.Evidence
-	case "stats":
-		return response.Stats
-	case "plan":
-		return response.Plan
-	default:
-		return nil
-	}
-}
-
 func decodeGraphQLQueryRequest(value any) (Request, error) {
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -316,57 +227,6 @@ func decodeGraphQLQueryRequest(value any) (Request, error) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		return Request{}, fmt.Errorf("decode graph request: %w", err)
-	}
-	return request, nil
-}
-
-func decodeGraphQLEvidenceRequest(value any) (retrieval.SearchRequest, error) {
-	object, ok := value.(map[string]any)
-	if !ok {
-		return retrieval.SearchRequest{}, fmt.Errorf("evidence search input must be an object")
-	}
-	if err := validateJSONValueShape(object); err != nil {
-		return retrieval.SearchRequest{}, fmt.Errorf("evidence search input %v", err)
-	}
-	object = cloneGraphQLMap(object)
-	for camel, snake := range map[string]string{
-		"vectorTopK":  "vector_top_k",
-		"lexicalTopK": "lexical_top_k",
-		"topK":        "top_k",
-		"minVersion":  "min_version",
-	} {
-		if err := renameGraphQLKey(object, camel, snake); err != nil {
-			return retrieval.SearchRequest{}, err
-		}
-	}
-	if expansion, ok := object["expansion"].(map[string]any); ok {
-		expansion = cloneGraphQLMap(expansion)
-		object["expansion"] = expansion
-		for camel, snake := range map[string]string{
-			"maxDepth":      "max_depth",
-			"relationTypes": "relation_types",
-			"nodeKinds":     "node_kinds",
-			"maxSeeds":      "max_seeds",
-			"maxVisited":    "max_visited",
-		} {
-			if err := renameGraphQLKey(expansion, camel, snake); err != nil {
-				return retrieval.SearchRequest{}, err
-			}
-		}
-	}
-	data, err := json.Marshal(object)
-	if err != nil {
-		return retrieval.SearchRequest{}, fmt.Errorf("encode evidence search input: %w", err)
-	}
-	var request retrieval.SearchRequest
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		return retrieval.SearchRequest{}, fmt.Errorf("decode evidence search input: %w", err)
-	}
-	request, err = retrieval.NormalizeRequest(request)
-	if err != nil {
-		return retrieval.SearchRequest{}, err
 	}
 	return request, nil
 }

@@ -170,8 +170,19 @@ sequenceDiagram
   同租户请求组成有界批次，持续冲突时缩小发布前缀，最终退化为单请求；跨
   writer 的顺序由成功 CAS 决定，不提供全局 HTTP 到达 FIFO。
 - PG head CAS、批内幂等结果、collector cursor、legacy mirror outbox 和派生
-  索引任务在同一事务提交；`expected_version` 冲突不重放。PG 只保存协调元
-  数据，不保存 WAL record、commit segment 或 graph payload。
+  索引任务在同一事务提交；PostgreSQL 协调路径中的 `expected_version` 冲突
+  不重放。`local` 和 `postgres` 下，每个 writer 的同一 flush 都可把至少两个
+  非 atomic 且 `expected_version` 相同的请求组成 CAS cohort：版本和前置条件
+  针对共同基线只比较一次，成功请求按该 writer 的 WAL 顺序保留独立结果和连续
+  版本，并使用一次 COW、一个 commit segment 和一次 manifest 候选发布。没有
+  expected_version 且没有前置条件的普通请求仍走 fast batch；不同 expected
+  version 按 WAL 顺序切为不同 contiguous group，单个 CAS、atomic 或没有
+  expected_version 但带前置条件的请求作为隔离 barrier，barrier 前后不使整批
+  退化。共同 expected version 已过期时，cohort 成员全部得到 terminal
+  `version_conflict` 且不发布；PG writer 仍必须赢得 tenant head CAS，跨 writer
+  只按成功 CAS 排序，不交换或合并 payload，也不把败方 expected_version cohort
+  重基到新 head。PG 只保存协调元数据，不保存 WAL record、commit segment 或
+  graph payload。
 - 已提交幂等记录、超过窗口的遗留 pending reservation 和已完成 mirror
   outbox 按保留窗口分批清理；outbox 只有在 mirror watermark 已越过对应
   revision 后才能删除，outbox 的 pending/running 记录不清理。

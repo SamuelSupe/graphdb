@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.3.0 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.3.1 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -36,7 +36,7 @@ SPARQL, ontology-reasoning, or historical graph engine.
 
 ### 1.3 PostgreSQL-CAS multi-writer WAL contract
 
-GGraphDB 1.3.0 ships an opt-in WAL profile for
+GGraphDB 1.3.1 ships an opt-in WAL profile for
 `POST /v1/ingest/batches`: every writer owns an independent local WAL and
 PostgreSQL performs tenant-head CAS plus coordination metadata updates. Object
 storage remains the graph-data authority; PostgreSQL never stores ingest
@@ -52,7 +52,21 @@ horizontally across tenants. Every writer needs a stable
 status URL. Batch publish uses a bounded CAS/publish slot and lifecycle
 generation fencing: a stale or fenced request cannot publish after a tenant
 freeze, delete, or recreate. The complete contract is in the [1.3 design
-document](docs/ingest-wal-multiwriter-design.md).
+document](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.md).
+
+The 1.3.1 write path adds commit-equivalent `expected_version`, atomic failure,
+and entity/edge precondition semantics to both local and PostgreSQL-coordinated
+ingest. Compatible requests sharing a WAL flush baseline are evaluated and
+published as bounded CAS cohorts while retaining independent results and WAL
+order; payloads are never merged across writers. Recovery compaction is no
+longer blocked by stale ingest activity, and direct PostgreSQL ingest now
+reserves both idempotency and batch aliases.
+
+The 1.3.1 Go and Python SDKs preserve direct `200/207` results and expose WAL
+`202` acceptance, the `Location`/owner status resource, explicit polling/waiting,
+and ingest `expected_version`, `failure_mode`, and `preconditions`. GraphQL's
+public query contract is limited to the `graph` root; unsupported retrieval
+extensions are not product capabilities.
 
 The release evidence covers full Go tests, focused race and vet checks, plus isolated
 PostgreSQL checks for atomic publish/rollback, cross-writer idempotency, 2-, 4-,
@@ -251,8 +265,8 @@ typed relationship by changing it to
 `{"op":"neighbors","id":"person:alice","relation_types":["works_at"]}`.
 
 See the [GraphQL guide](docs/graphql.md) for the schema, errors, aliases,
-fragments, and 1.1 boundaries. The old `FIND`/`MATCH` text DSL remains at
-`/v1/query/gql` only for 1.0 compatibility and is not GraphQL.
+fragments, and compatibility boundaries. The old `FIND`/`MATCH` text DSL remains
+at `/v1/query/gql` only for 1.0 compatibility and is not GraphQL.
 
 ## Deployment modes
 
@@ -282,11 +296,13 @@ restart.
 
 ## Release
 
-The latest published release is GGraphDB 1.3.0:
-[**v1.3.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.0).
-The release includes the PostgreSQL-CAS multi-writer WAL profile and its
-commit-bound correctness/recovery evidence. The fixed-environment read-cache
-and query measurements below remain historical evidence, not production SLOs.
+The latest published release is GGraphDB 1.3.1:
+[**v1.3.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.1).
+The release hardens the PostgreSQL-CAS multi-writer WAL profile, adds
+commit-equivalent conditional and atomic ingest, updates both SDKs, and removes
+the unsupported Evidence Search GraphQL surface. The fixed-environment
+read-cache and query measurements below remain historical evidence, not
+production SLOs.
 
 Each release archive contains:
 
@@ -297,7 +313,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.3.0` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.3.1` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 
@@ -313,7 +329,7 @@ supported for older deployment workflows.
 | [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
 | [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | GraphQL, JSON DSL, pagination, streaming, explain, and profile. |
 | [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
-| [1.3 multi-writer WAL](docs/ingest-wal-multiwriter-design.md) · [中文](docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
+| [1.3 multi-writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.md) · [中文](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
 | [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, optional CI types, entities, relations, edges, and source governance. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
 | [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |

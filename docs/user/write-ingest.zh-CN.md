@@ -223,6 +223,12 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
   "batch_id": "aws-batch-001",
   "idempotency_key": "aws-batch-001",
   "cursor": "next-source-cursor",
+  "expected_version": 42,
+  "failure_mode": "best_effort",
+  "preconditions": [
+    {"resource_type": "entity", "id": "host:aws:i-001", "op": "exists"},
+    {"resource_type": "entity", "id": "host:aws:i-001", "field": "state", "op": "eq", "value": "ready"}
+  ],
   "items": [
     {
       "external_id": "i-001",
@@ -235,6 +241,23 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
   ]
 }
 ```
+
+事务选项会针对本次 mutation 使用的图快照进行判断。`expected_version` 是可选的
+租户版本 CAS 保护；`failure_mode` 默认是 `best_effort`，也可以设置为
+`atomic`；atomic 请求在 item 无效、前置条件失败或 source governance 抑制
+mutation 时不会发布任何图版本。`preconditions` 最多 256 条，可对 entity/edge
+做检查。不带 field 时使用 `exists` 或 `not_exists`；带 field 时可用 `eq`、
+`ne`、`lt`、`lte`、`gt`、`gte` 与 JSON `value` 比较。若要将 WAL 接收时间作为
+比较值，可用 `value_from: "accepted_at"` 代替 `value`；`value` 与
+`value_from` 不能同时出现。
+
+direct 模式成功返回 `200`；普通 item 级失败返回 `207`；过期的
+`expected_version` 返回 `409`；前置条件失败返回 `412`；atomic 校验或抑制
+分别返回 `422` 或 `409`。WAL 模式初始响应在本地 durable takeover 后返回
+`202`，上述终态通过状态资源的 `result` 返回（也可以使用
+`Prefer: wait=committed`）。终态结果在适用时包含 `error_code`：
+`version_conflict`、`precondition_failed`、`atomic_validation_failed` 或
+`atomic_suppressed`。
 
 支持的 item：
 
@@ -255,8 +278,23 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `skip_reason`：`logical_noop` 表示应用后的逻辑图未变化，
   `idempotent_replay` 表示返回此前批次的幂等重放结果；
 - `cursor`：返回的采集器 cursor；
+- `error_code`：版本、前置条件或 atomic 语义拒绝时的终态错误分类；
 - `failures`：item 级错误；
 - `conflicts`：被抑制冲突和提交失败原因。
+
+### 每个 writer 的 WAL CAS cohort
+
+在 `GRAPHDB_COORDINATION=local` 或 `GRAPHDB_COORDINATION=postgres` 下，同一
+writer 的一次 flush 中至少两个非 atomic mutation 请求存在且使用相同的
+`expected_version` 时，这些请求组成 CAS cohort。写入方只针对 flush 开始时的
+共同图快照比较一次该版本和各请求前置条件。每个请求仍保留独立结果；实际发生
+变化的请求按该 writer 的 WAL 顺序获得连续逻辑版本，变化后的 cohort 使用一次
+COW、一个 commit segment 和一个 manifest 候选发布。某个请求的前置条件失败只
+终止该请求；共同 expected version 已过期时，cohort 中每个请求都返回
+`version_conflict`（HTTP `409`），且不发布新的图版本。不同 expected version、
+atomic，或没有 expected version 但带前置条件的请求作为隔离 barrier；barrier
+前后的请求仍可分别形成 cohort 或走普通 fast batch。批量 apply 回退时复用已经
+完成的 cohort 预检，不会针对同一 flush 中此前产生的版本再次逐请求比较。
 
 ### 本地 WAL 模式（1.2 兼容 profile）
 
@@ -285,6 +323,41 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 ```sh
 curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
+```
+
+在 PostgreSQL-CAS profile 中，acceptance body 会返回稳定 owner；`Location`
+header 和 `status_url` 指向同一个 owner 路由资源：
+
+```http
+HTTP/1.1 202 Accepted
+Location: /v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001
+Content-Type: application/json
+
+{
+  "writer_id": "writer-a",
+  "batch_id": "aws-batch-001",
+  "state": "accepted",
+  "durability": "durable",
+  "accepted_at": "2026-07-30T00:00:00Z",
+  "estimated_flush_at": "2026-07-30T00:00:10Z",
+  "status_url": "/v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001"
+}
+```
+
+轮询返回的资源，直到 `state` 变为 `committed` 或 `failed`。终态 status 会嵌入
+最终结果；`recovery_pending=true` 表示 owner 正在重建 WAL 状态，批次仍可查询：
+
+```json
+{
+  "writer_id": "writer-a",
+  "tenant_id": "demo",
+  "source": "aws",
+  "collector_id": "collector-a",
+  "batch_id": "aws-batch-001",
+  "state": "committed",
+  "durability": "durable",
+  "result": {"batch_id": "aws-batch-001", "version": 43, "applied": 1, "failed": 0}
+}
 ```
 
 主要配置：
@@ -355,10 +428,13 @@ GET /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}
 WAL flush 按租户组成有界批次。单个 writer 保持本地 WAL FIFO；不同 writer 按
 成功的 PostgreSQL head CAS 排序，不按 HTTP 到达时间排序。CAS、PostgreSQL 和
 对象存储暂时错误都必须可重试：重新加载最新 head、重基、指数退避加抖动，并在
-持续冲突后缩小批次前缀，最终退化为单请求。已接收请求不能仅因重试预算耗尽而
-进入终态失败。确定性的语义错误和生命周期 fencing（freeze/delete/restore）可以
-最终 `failed`；生命周期 fencing 优先于未发布 WAL，但不会回滚已经 CAS 发布的
-版本。
+持续冲突后按请求/cohort barrier 缩小批次前缀。已接收请求不能仅因重试预算耗尽
+而进入终态失败。PostgreSQL head CAS 失败的候选保持不可见，败方 writer 必须
+重新加载新 head；败方 `expected_version` cohort 不与其他 writer 交换或合并
+payload，也不重基到另一个 expected version，若该版本已过期则 cohort 成员全部
+以 `version_conflict` 终止且不发布。确定性的语义错误和生命周期 fencing
+（freeze/delete/restore）可以最终 `failed`；生命周期 fencing 优先于未发布 WAL，
+但不会回滚已经 CAS 发布的版本。
 
 该 profile 支持同一租户 2–8 个并发 writer。这是正确性和可用性边界，吞吐扩展
 目标是跨租户，而不是单热点租户线性提速。PostgreSQL 不可用时不会回退到 local

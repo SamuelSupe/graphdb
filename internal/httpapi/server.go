@@ -12,7 +12,6 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/retrieval"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 
 	"go.opentelemetry.io/otel"
@@ -33,7 +32,6 @@ type Server struct {
 	ReaderCatchupTimeout  time.Duration
 	ReadinessTimeout      time.Duration
 	QueryRegistry         *RunningQueryRegistry
-	RetrievalSearcher     retrieval.Searcher
 	IngestService         IngestService
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration

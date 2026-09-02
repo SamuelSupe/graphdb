@@ -22,6 +22,14 @@ the historical 1.2 gates below remain compatibility inputs, not proof of 1.3.
       batch failures; lifecycle fencing wins over unpublished WAL.
 - [ ] WAL recovery reports `recovery_pending` through the owner route and
       recovers with the original volume and stable writer identity.
+- [ ] Ingest accepts `expected_version`, `failure_mode` (`best_effort` or
+      `atomic`), and bounded entity/edge `preconditions`; terminal results expose
+      the corresponding `error_code` when a request is rejected.
+- [ ] Go and Python SDKs are version `1.3.1` and preserve direct `200/207`
+      behavior while exposing WAL `202` acceptance, `Location`/owner status,
+      and explicit poll/wait helpers without hiding HTTP status.
+- [ ] GraphQL, OpenAPI, and user-facing documentation expose only the supported
+      `graph` query root; unsupported retrieval extensions are not advertised.
 
 ## 1.3 Multi-Writer And Rolling Compatibility
 
@@ -44,7 +52,7 @@ the historical 1.2 gates below remain compatibility inputs, not proof of 1.3.
       `/v1/query/graphql`; legacy technical identifiers remain compatible.
 - [ ] `CHANGELOG.md` and API/error documentation match the tag.
 - [ ] `graphdb version` reports tag, commit, build date, and Go version.
-- [ ] Go and Python SDK versions match the release.
+- [ ] Go and Python SDK versions match the historical compatibility release.
 - [ ] `scripts/compatibility_v1_0_v1_1.sh` passes both binary directions.
 - [ ] Object layout versions remain unchanged or have an approved migration.
 

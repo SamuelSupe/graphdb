@@ -3,6 +3,50 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.3.1] - 2026-09-02
+
+### Added
+
+- Added commit-equivalent ingest controls across direct, local-WAL, and
+  PostgreSQL-coordinated writers: `expected_version`, bounded entity/edge
+  preconditions, and `best_effort` or `atomic` failure modes now retain stable
+  terminal error codes through durable admission, retry, recovery, and status
+  polling.
+- Added blocking and non-blocking ingest support to the Go and Python SDKs,
+  including WAL `202` acceptance, owner-routed status polling, and explicit
+  terminal waiting. Both SDK package versions advance to 1.3.1.
+
+### Improved
+
+- Compatible requests in one writer WAL flush can share validation and one
+  copy-on-write candidate publication while retaining independent results,
+  consecutive logical versions, and FIFO order. PostgreSQL writers still
+  compete through tenant-head CAS; payloads are never merged across writers.
+- Conflict handling reuses prepared work and bounded CAS cohorts to reduce
+  repeated graph loads, commit objects, and manifest writes without weakening
+  lifecycle fencing or idempotency.
+
+### Fixed
+
+- Recovery compaction no longer remains blocked by stale ingest-active state,
+  and shutdown/recovery paths preserve terminal WAL ownership and failure
+  state.
+- Direct PostgreSQL ingest now reserves both the primary idempotency key and
+  the `batch_id` alias, preventing two writers from committing the same batch
+  identity with different keys.
+- Ingest path identifiers reject dot path segments consistently with the Go
+  and Python SDKs, so an accepted durable request always has a pollable owner
+  status URL.
+- Lifecycle fencing, partial-failure metadata, publisher leases, and batch CAS
+  completion remain atomic across retries and writer takeover.
+
+### Contract changes
+
+- Removed the unsupported Evidence Search GraphQL surface and its retrieval
+  error codes. The supported public GraphQL contract has the `graph` root only.
+- Expanded OpenAPI mutation and ingest schemas to match the implemented HTTP
+  contract, including conditional failures and canonicalization results.
+
 ## [1.3.0] - 2026-09-01
 
 ### Added

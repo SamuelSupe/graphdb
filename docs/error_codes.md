@@ -36,7 +36,10 @@ The following top-level `code` values are stable:
 | `object_store_unavailable` | 503 | yes | Object store is unavailable or timing out. |
 | `task_conflict` | 409 | no | Task state does not allow the requested operation. |
 | `repair_required` | 409 | no | Operation requires repair before it can proceed. |
-| `version_conflict` | 409 | no | Expected version precondition failed. |
+| `version_conflict` | 409 | no | Expected version precondition failed. In either local or PostgreSQL per-writer WAL CAS cohorts this is compared against the shared flush baseline; stale cohort members each receive this terminal result and no graph version is published. A PostgreSQL losing cohort is not merged or rebased onto another writer's payload. |
+| `precondition_failed` | 412 | no | An ingest entity or edge precondition did not match the graph snapshot selected for mutation. |
+| `atomic_validation_failed` | 422 | no | Atomic ingest contained an invalid item, so no item was published. |
+| `atomic_suppressed` | 409 | no | Source governance suppressed an atomic ingest mutation, so the whole request was rejected. |
 | `idempotency_conflict` | 409 | no | Idempotency key belongs to a different request. |
 | `idempotency_in_progress` | 409 | yes | Another writer is still processing the same idempotency key. |
 | `write_conflict` | 409 | yes | A direct/preconditioned write observed a changed tenant head. For a 1.3 WAL-accepted batch, CAS loss is an internal rebase/shrink retry condition rather than a terminal result. |
@@ -48,10 +51,6 @@ The following top-level `code` values are stable:
 | `write_backpressure` | 429 | yes | Generic write backpressure category. |
 | `request_timeout` | 504 | yes | Request execution timed out. |
 | `request_canceled` | 499 | no | Client or caller canceled the request. |
-| `retrieval_not_ready` | 503 | yes | No complete retrieval index snapshot is available. |
-| `index_not_fresh` | 503 | yes | The complete retrieval snapshot is older than the requested `minVersion`. |
-| `embedding_unavailable` | 503 | yes | The configured query embedding service is unavailable. |
-| `retrieval_budget_exceeded` | 429 | no | The requested evidence search exceeds a bounded retrieval budget. |
 
 Write backpressure responses may include `reasons[]` with more specific reason
 codes. Those reason codes are intentionally scoped to the backpressure detail

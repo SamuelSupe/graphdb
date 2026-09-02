@@ -23,6 +23,7 @@ const (
 	ingestRowItem          = "ingest_item"
 	ingestRowDeleteEntity  = "ingest_delete_entity"
 	ingestRowDeleteEdge    = "ingest_delete_edge"
+	ingestRowPrecondition  = "ingest_precondition"
 	ingestRowFailure       = "ingest_failure"
 	ingestRowConflict      = "ingest_conflict"
 	ingestRowConflictValue = "ingest_conflict_value"
@@ -148,10 +149,16 @@ func applyIngestRecordRow(record *IngestBatchRecord, build *commitBuild, deletes
 		record.Request.FullSync = row.Required
 		record.Request.StaleAction = row.Action
 		record.Request.StaleKind = row.KindName
+		record.Request.FailureMode = row.Strategy
+		if row.Unique {
+			expected := row.FieldSource.Version
+			record.Request.ExpectedVersion = &expected
+		}
 		record.Result.BatchID = row.To
 		record.Result.Version = row.VersionValue
 		record.Result.Applied = row.SourcePriority
 		record.Result.Failed = row.FieldSource.Priority
+		record.Result.ErrorCode = row.ComponentKind
 		record.Result.Suppressed = row.EdgeSource.Priority
 		record.Result.Skipped = row.Indexed
 		record.Result.Cursor = row.Reason
@@ -177,6 +184,23 @@ func applyIngestRecordRow(record *IngestBatchRecord, build *commitBuild, deletes
 		deletes.edges[row.ParentOrdinal] = graph.EdgeDeleteRequest{
 			ID: row.ID, Type: row.TypeName, From: row.From, To: row.To, Source: row.Source, SourceRank: row.SourcePriority, Confidence: row.Confidence, Reason: row.Reason,
 		}
+	case ingestRowPrecondition:
+		record.Request.Preconditions = ensureIngestPreconditionsLen(record.Request.Preconditions, row.ParentOrdinal)
+		condition := IngestPrecondition{
+			ResourceType: row.ComponentKind,
+			ID:           row.ID,
+			Field:        row.EntryKey,
+			Op:           row.Action,
+			ValueFrom:    row.Strategy,
+		}
+		if row.Required {
+			value, err := anyFromParquetValue(row.Value)
+			if err != nil {
+				return err
+			}
+			condition.Value = value
+		}
+		record.Request.Preconditions[row.ParentOrdinal] = condition
 	case ingestRowFailure:
 		record.Result.Failures = setIngestFailureAt(record.Result.Failures, row.ParentOrdinal, IngestFailure{
 			Index: row.ChildOrdinal, ExternalID: row.ExternalID, Error: row.Reason,
@@ -262,8 +286,11 @@ func ingestRecordRows(record IngestBatchRecord) ([]parquetCommitRow, error) {
 		SourceID:       record.Request.Cursor,
 		Required:       record.Request.FullSync,
 		Indexed:        record.Result.Skipped,
+		Unique:         record.Request.ExpectedVersion != nil,
 		Action:         record.Request.StaleAction,
 		KindName:       record.Request.StaleKind,
+		Strategy:       record.Request.FailureMode,
+		ComponentKind:  record.Result.ErrorCode,
 		To:             record.Result.BatchID,
 		Reason:         record.Result.Cursor,
 		SourcePriority: record.Result.Applied,
@@ -274,6 +301,29 @@ func ingestRecordRows(record IngestBatchRecord) ([]parquetCommitRow, error) {
 		FieldSource:    graph.FieldSource{Priority: record.Result.Failed},
 		EdgeSource:     graph.EdgeSource{Priority: record.Result.Suppressed},
 	}}
+	if record.Request.ExpectedVersion != nil {
+		rows[0].FieldSource.Version = *record.Request.ExpectedVersion
+	}
+	for i, condition := range record.Request.Preconditions {
+		row := parquetCommitRow{
+			Kind:          ingestRowPrecondition,
+			ParentOrdinal: i,
+			ComponentKind: condition.ResourceType,
+			ID:            condition.ID,
+			EntryKey:      condition.Field,
+			Action:        condition.Op,
+			Strategy:      condition.ValueFrom,
+			Required:      condition.Value != nil,
+		}
+		if condition.Value != nil {
+			value, err := parquetValueFromAny(condition.Value)
+			if err != nil {
+				return nil, err
+			}
+			row.Value = value
+		}
+		rows = append(rows, row)
+	}
 	for i, item := range record.Request.Items {
 		rows = append(rows, parquetCommitRow{Kind: ingestRowItem, ParentOrdinal: i, ExternalID: item.ExternalID})
 		if item.CIType != nil {
@@ -408,6 +458,13 @@ func ingestRecordContentHash(record IngestBatchRecord) (string, error) {
 func ensureIngestItemsLen(values []IngestItem, index int) []IngestItem {
 	for len(values) <= index {
 		values = append(values, IngestItem{})
+	}
+	return values
+}
+
+func ensureIngestPreconditionsLen(values []IngestPrecondition, index int) []IngestPrecondition {
+	for len(values) <= index {
+		values = append(values, IngestPrecondition{})
 	}
 	return values
 }

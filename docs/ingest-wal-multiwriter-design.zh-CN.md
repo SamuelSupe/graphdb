@@ -50,6 +50,21 @@ WAL 准入先做静态校验，写入完整请求并等待 `fsync`，再返回 `
 该事务必须同时 CAS tenant head，并完成该批次的所有幂等结果、collector 更新、
 legacy mirror outbox 和派生任务元数据。
 
+在 `local` 或 PostgreSQL 协调下，单个 writer 的一次 flush 中，连续至少两个
+非 atomic mutation 请求带有相同的 `expected_version` 时组成 CAS cohort。写入方
+针对共同加载的图基线只比较一次该 expected version 和每个请求的前置条件；通过
+的请求仍保留独立结果，并按该 writer 的 WAL 顺序获得连续逻辑版本。变化后的
+cohort 只做一次 COW apply，写一个 commit segment，并发布一个 manifest 候选。
+atomic、不同 expected version，或没有 expected version 但带前置条件的请求都是
+隔离 barrier，因此 barrier 前后的请求仍可各自组成 cohort 或走普通 fast path。
+
+共同 expected version 已过期时，该 writer 的 cohort 成员全部以 terminal
+`version_conflict` 结束且不发布图版本。PostgreSQL writer 仍必须让完整候选赢得
+tenant head CAS；跨 writer 只按成功的 head CAS 排序。败方重新加载新 head，但
+不会与其他 writer 交换或合并 payload，也不会把 expected-version cohort 重基到
+另一个 writer 的版本；若 expected version 已过期，败方 cohort 全部终止，候选
+对象保持不可见。
+
 ## HTTP 确认与状态
 
 1.3 WAL 响应在既有 batch 身份上增加 owner 身份：
@@ -103,9 +118,10 @@ Prefer: wait=committed
    `PUBLISHED`，并追加终态 `FINALIZED` 或 `FAILED`。派生索引、物化 collector
    view、trace 和 metrics 可以异步修复，不能永久阻止安全完成的 WAL 回收。
 
-普通 CAS 失败不是损坏。下一次 attempt 重新加载新 head 并重基；持续冲突时把发布
-前缀折半，最终退化到单请求，并使用指数退避和抖动。落败的候选对象保持不可见，
-经过安全宽限期后可由 GC 回收。
+没有 guard 的普通 CAS 失败不是损坏。下一次 attempt 重新加载新 head 并重基；持续
+冲突时在请求和 cohort barrier 处缩小发布前缀，并使用指数退避和抖动。expected
+version 已不再当前的 guarded 请求遵循上面的 cohort 终态规则，不会重基到另一个
+版本。落败的候选对象保持不可见，经过安全宽限期后可由 GC 回收。
 
 ## 故障与生命周期规则
 
@@ -151,8 +167,9 @@ WAL 目录挂载给两个 writer。滚动升级先用 direct 模式启动 1.3 �
 
 ## 发行证据
 
-在该 profile 宣布为正式发行能力前，验收矩阵必须覆盖同租户 2、4、8 writer，跨
-writer 相同幂等身份，CAS 重基/缩批，PostgreSQL 故障与 WAL 高水位准入，从
+在该 profile 宣布为正式发行能力前，验收矩阵必须覆盖同租户 2、4、8 writer，每个
+writer 的 CAS cohort 与 atomic barrier，跨 writer 相同幂等身份，CAS 重基/缩批和
+过期 expected-version 终止，PostgreSQL 故障与 WAL 高水位准入，从
 `ACCEPTED` 到 `FINALIZED` 的崩溃切点，生命周期 fencing，owner 路由与
 `recovery_pending`，以及 1.2 direct/1.3 WAL 混跑。没有 commit-bound 运行证据前，
 不暗示任何性能数字。

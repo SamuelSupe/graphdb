@@ -358,7 +358,7 @@ func (s *TenantStore) loadMatchingIngestRecord(ctx context.Context, tenantID str
 	if err != nil {
 		return IngestBatchRecord{}, false, err
 	}
-	if !ingestRecordMatchesIdentity(record, tenantID, request) {
+	if !ingestRecordMatchesBatchIdentity(record, tenantID, request) {
 		return IngestBatchRecord{}, false, nil
 	}
 	if !ingestRecordRequestEqual(record.Request, request) {
@@ -503,7 +503,7 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 		}
 		return err
 	}
-	if ingestRecordMatchesIdentity(existing, tenantID, record.Request) {
+	if ingestRecordMatchesBatchIdentity(existing, tenantID, record.Request) {
 		if !ingestRecordRequestEqual(existing.Request, record.Request) {
 			return fmt.Errorf(
 				"%w: ingest record for source %q collector %q batch %q changed payload",
@@ -591,11 +591,15 @@ func ingestRecordMatchesRequest(record IngestBatchRecord, tenantID string, reque
 }
 
 func ingestRecordMatchesIdentity(record IngestBatchRecord, tenantID string, request IngestRequest) bool {
+	return ingestRecordMatchesBatchIdentity(record, tenantID, request) &&
+		record.Request.IdempotencyKey == request.IdempotencyKey
+}
+
+func ingestRecordMatchesBatchIdentity(record IngestBatchRecord, tenantID string, request IngestRequest) bool {
 	return (record.TenantID == "" || record.TenantID == tenantID) &&
 		record.Request.Source == request.Source &&
 		record.Request.CollectorID == request.CollectorID &&
 		record.Request.BatchID == request.BatchID &&
-		record.Request.IdempotencyKey == request.IdempotencyKey &&
 		record.Result.BatchID == request.BatchID
 }
 
@@ -609,6 +613,12 @@ func ingestRecordMatchesIdempotencyIdentity(record IngestBatchRecord, tenantID s
 }
 
 func ingestRecordRequestEqual(stored IngestRequest, incoming IngestRequest) bool {
+	if stored.FailureMode == "" {
+		stored.FailureMode = IngestFailureModeBestEffort
+	}
+	if incoming.FailureMode == "" {
+		incoming.FailureMode = IngestFailureModeBestEffort
+	}
 	storedJSON, err := json.Marshal(stored)
 	if err != nil {
 		return false
@@ -641,7 +651,7 @@ func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, 
 				return err
 			}
 		}
-		if migrated || collectorStatusCoversResult(status, result) {
+		if migrated || collectorStatusCoversOrSupersedesResult(status, result, s.coordinated()) {
 			return nil
 		}
 		applyCollectorStatusResult(&status, tenantID, request, result, started, finished)
@@ -660,6 +670,80 @@ func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, 
 		}
 	}
 	return fmt.Errorf("%w: collector status for source %q collector %q changed while publishing", ErrConflict, request.Source, request.CollectorID)
+}
+
+type ingestCollectorStatusUpdate struct {
+	request  IngestRequest
+	result   IngestResult
+	started  time.Time
+	finished time.Time
+}
+
+func (s *TenantStore) saveCollectorStatusBatch(
+	ctx context.Context,
+	tenantID string,
+	updates []ingestCollectorStatusUpdate,
+) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	first := updates[0]
+	if !s.MaterializeCollectorStatus {
+		for _, update := range updates {
+			if err := s.saveCollectorStatus(ctx, tenantID, update.request, update.result, update.started, update.finished); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, update := range updates[1:] {
+		if update.request.Source != first.request.Source || update.request.CollectorID != first.request.CollectorID {
+			return fmt.Errorf("collector status batch contains multiple collectors")
+		}
+	}
+	key := s.collectorStatusKey(tenantID, first.request.Source, first.request.CollectorID)
+	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		status, meta, ok := s.getCachedCollectorStatus(key)
+		migrated := false
+		if !ok {
+			var err error
+			status, meta, migrated, err = s.ensureMaterializedCollectorStatus(ctx, tenantID, first.request.Source, first.request.CollectorID)
+			if err != nil {
+				return err
+			}
+		}
+		if migrated {
+			return nil
+		}
+		changed := false
+		for _, update := range updates {
+			if collectorStatusCoversOrSupersedesResult(status, update.result, s.coordinated()) {
+				continue
+			}
+			applyCollectorStatusResult(&status, tenantID, update.request, update.result, update.started, update.finished)
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		if nextMeta, err := s.putCollectorStatusWithMeta(ctx, key, status, meta); err == nil {
+			s.setCachedCollectorStatus(key, status, nextMeta)
+			return nil
+		} else if !errors.Is(err, ErrConflict) {
+			return err
+		}
+		s.deleteCachedCollectorStatus(key)
+		if attempt+1 >= s.retryCount() {
+			break
+		}
+		if err := retryDelay(ctx, attempt); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf(
+		"%w: collector status for source %q collector %q changed while publishing batch",
+		ErrConflict, first.request.Source, first.request.CollectorID,
+	)
 }
 
 func (s *TenantStore) repairCollectorStatusAfterSkip(ctx context.Context, tenantID string, record IngestBatchRecord) error {
@@ -696,6 +780,17 @@ func (s *TenantStore) repairCollectorStatusAfterSkip(ctx context.Context, tenant
 
 func collectorStatusCoversResult(status CollectorStatus, result IngestResult) bool {
 	return status.LastBatchID == result.BatchID && status.LastVersion == result.Version
+}
+
+func collectorStatusCoversOrSupersedesResult(
+	status CollectorStatus,
+	result IngestResult,
+	coordinated bool,
+) bool {
+	if collectorStatusCoversResult(status, result) {
+		return true
+	}
+	return coordinated && status.LastVersion > result.Version
 }
 
 func collectorStatusCanRepairSkippedResult(status CollectorStatus, meta ObjectMeta, result IngestResult) bool {

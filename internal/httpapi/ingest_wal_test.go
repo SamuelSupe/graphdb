@@ -58,14 +58,17 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 		t.Fatalf("Location = %q", location)
 	}
 	var acceptedBody struct {
-		State      string `json:"state"`
-		Durability string `json:"durability"`
-		StatusURL  string `json:"status_url"`
+		Source      string `json:"source"`
+		CollectorID string `json:"collector_id"`
+		State       string `json:"state"`
+		Durability  string `json:"durability"`
+		StatusURL   string `json:"status_url"`
 	}
 	if err := json.Unmarshal(accepted.Body.Bytes(), &acceptedBody); err != nil {
 		t.Fatal(err)
 	}
-	if acceptedBody.State != storage.IngestStateAccepted || acceptedBody.Durability != "durable" || acceptedBody.StatusURL != location {
+	if acceptedBody.Source != "agent" || acceptedBody.CollectorID != "collector-a" ||
+		acceptedBody.State != storage.IngestStateAccepted || acceptedBody.Durability != "durable" || acceptedBody.StatusURL != location {
 		t.Fatalf("accepted body = %#v", acceptedBody)
 	}
 
@@ -106,12 +109,320 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 	if waitResponse.Code != http.StatusOK {
 		t.Fatalf("wait status = %d body=%s", waitResponse.Code, waitResponse.Body.String())
 	}
+	if got := waitResponse.Header().Get("Preference-Applied"); got != "wait=committed" {
+		t.Fatalf("Preference-Applied = %q, want wait=committed", got)
+	}
 	var result storage.IngestResult
 	if err := json.Unmarshal(waitResponse.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
 	if result.Version != 2 {
 		t.Fatalf("wait result = %#v", result)
+	}
+}
+
+func TestHTTPIngestWALBatchIdentityConflictUsesStableErrorCode(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	config := storage.DefaultIngestServiceConfig(t.TempDir())
+	config.WAL.FsyncInterval = time.Millisecond
+	config.WAL.BufferBytes = 1024
+	config.WAL.MaxBytes = 16 * 1024 * 1024
+	config.WAL.SegmentBytes = 1024 * 1024
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 8
+	service, err := storage.OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Fatalf("close ingest service: %v", err)
+		}
+	}()
+	handler := (&Server{Store: store, Mode: "all", IngestService: service}).Handler()
+
+	request := storage.IngestRequest{
+		Source:         "agent",
+		CollectorID:    "collector-a",
+		BatchID:        "batch-conflict",
+		IdempotencyKey: "idem-a",
+		Items: []storage.IngestItem{{
+			Entity: &graph.Entity{ID: "host:1", Kind: "host"},
+		}},
+	}
+	accepted := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("accepted status = %d body=%s", accepted.Code, accepted.Body.String())
+	}
+	request.IdempotencyKey = "idem-b"
+	conflict := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+	var body ErrorResponse
+	if err := json.Unmarshal(conflict.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode conflict: %v body=%s", err, conflict.Body.String())
+	}
+	if conflict.Code != http.StatusConflict || body.Code != ErrorCodeIdempotencyConflict || body.Retryable {
+		t.Fatalf("conflict status = %d body=%#v", conflict.Code, body)
+	}
+}
+
+func TestWriteIngestResultMapsAsynchronousIdentityConflict(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeIngestResult(response, storage.IngestResult{
+		BatchID:   "batch-conflict",
+		Failed:    1,
+		ErrorCode: storage.IngestErrorIdempotencyConflict,
+		Failures: []storage.IngestFailure{{
+			Error: "ingest identity conflict",
+		}},
+	})
+	var body ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode conflict: %v body=%s", err, response.Body.String())
+	}
+	if response.Code != http.StatusConflict || body.Code != ErrorCodeIdempotencyConflict || body.Retryable {
+		t.Fatalf("conflict status = %d body=%#v", response.Code, body)
+	}
+}
+
+func TestHTTPIngestSingleNodeStrictFailureStatusMappings(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.PutSourcePolicy(ctx, "tenant-a", graph.SourcePolicy{
+		DefaultPriority: 0,
+		Sources: []graph.SourcePolicyItem{
+			{Name: "manual", Priority: 1000},
+			{Name: "agent", Priority: 100},
+		},
+	}); err != nil {
+		t.Fatalf("put source policy: %v", err)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:1", Kind: "host", Source: "manual", Fields: graph.Fields{"state": "ready", "owner": "platform"},
+	}}}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed entity: %v", err)
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	versionZero := int64(0)
+	cases := []struct {
+		name       string
+		request    storage.IngestRequest
+		wantStatus int
+		wantCode   ErrorCode
+	}{
+		{
+			name: "version conflict",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "http-version-conflict", ExpectedVersion: &versionZero,
+				Items: []storage.IngestItem{{ExternalID: "host-2", Entity: &graph.Entity{ID: "host:2", Kind: "host"}}},
+			},
+			wantStatus: http.StatusConflict, wantCode: ErrorCodeVersionConflict,
+		},
+		{
+			name: "precondition failure",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "http-precondition-failure",
+				Preconditions: []storage.IngestPrecondition{{ResourceType: "entity", ID: "host:1", Field: "state", Op: "eq", Value: "absent"}},
+				Items:         []storage.IngestItem{{ExternalID: "host-1", Entity: &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"state": "should-not-publish"}}}},
+			},
+			wantStatus: http.StatusPreconditionFailed, wantCode: ErrorCodePreconditionFailed,
+		},
+		{
+			name: "atomic validation failure",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "http-atomic-validation", FailureMode: storage.IngestFailureModeAtomic,
+				Items: []storage.IngestItem{
+					{ExternalID: "host-3", Entity: &graph.Entity{ID: "host:3", Kind: "host"}},
+					{ExternalID: "invalid"},
+				},
+			},
+			wantStatus: http.StatusUnprocessableEntity, wantCode: ErrorCodeAtomicValidationFailed,
+		},
+		{
+			name: "atomic source suppression",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "http-atomic-suppressed", FailureMode: storage.IngestFailureModeAtomic,
+				Items: []storage.IngestItem{
+					{ExternalID: "host-1", Entity: &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"owner": "collector"}}},
+					{ExternalID: "host-4", Entity: &graph.Entity{ID: "host:4", Kind: "host", Fields: graph.Fields{"owner": "collector"}}},
+				},
+			},
+			wantStatus: http.StatusConflict, wantCode: ErrorCodeAtomicSuppressed,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", testCase.request)
+			if response.Code != testCase.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", response.Code, response.Body.String(), testCase.wantStatus)
+			}
+			var body ErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Code != testCase.wantCode {
+				t.Fatalf("error code = %q body=%s, want %q", body.Code, response.Body.String(), testCase.wantCode)
+			}
+		})
+	}
+
+	bestEffort := storage.IngestRequest{
+		Source: "agent", CollectorID: "collector-a", BatchID: "http-best-effort",
+		Items: []storage.IngestItem{
+			{ExternalID: "host-5", Entity: &graph.Entity{ID: "host:5", Kind: "host"}},
+			{ExternalID: "invalid"},
+		},
+	}
+	response := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", bestEffort)
+	if response.Code != http.StatusMultiStatus {
+		t.Fatalf("best-effort status = %d body=%s, want 207", response.Code, response.Body.String())
+	}
+	var result storage.IngestResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode best-effort result: %v", err)
+	}
+	if result.Applied != 1 || result.Failed != 1 || result.Version == 0 {
+		t.Fatalf("best-effort result = %#v, want partial success", result)
+	}
+}
+
+func TestHTTPIngestWALPreferCommittedStrictFailureStatusMappings(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.PutSourcePolicy(ctx, "tenant-a", graph.SourcePolicy{
+		DefaultPriority: 0,
+		Sources: []graph.SourcePolicyItem{
+			{Name: "manual", Priority: 1000},
+			{Name: "agent", Priority: 100},
+		},
+	}); err != nil {
+		t.Fatalf("put source policy: %v", err)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:1", Kind: "host", Source: "manual", Fields: graph.Fields{"state": "ready", "owner": "platform"},
+	}}}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed entity: %v", err)
+	}
+	config := storage.DefaultIngestServiceConfig(t.TempDir())
+	config.WAL.FsyncInterval = time.Millisecond
+	config.WAL.BufferBytes = 1024
+	config.WAL.MaxBytes = 16 * 1024 * 1024
+	config.WAL.SegmentBytes = 1024 * 1024
+	config.FlushInterval = time.Millisecond
+	config.FlushMaxRequests = 1
+	config.FlushTimeout = 5 * time.Second
+	config.RetryInterval = time.Millisecond
+	service, err := storage.OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := service.Close(closeCtx); err != nil {
+			t.Fatalf("close ingest service: %v", err)
+		}
+	}()
+	handler := (&Server{Store: store, Mode: "all", IngestService: service}).Handler()
+	versionZero := int64(0)
+	cases := []struct {
+		name       string
+		request    storage.IngestRequest
+		wantStatus int
+		wantCode   ErrorCode
+	}{
+		{
+			name: "version conflict",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "wal-version-conflict", ExpectedVersion: &versionZero,
+				Items: []storage.IngestItem{{ExternalID: "host-2", Entity: &graph.Entity{ID: "host:2", Kind: "host"}}},
+			},
+			wantStatus: http.StatusConflict, wantCode: ErrorCodeVersionConflict,
+		},
+		{
+			name: "precondition failure",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "wal-precondition-failure",
+				Preconditions: []storage.IngestPrecondition{{ResourceType: "entity", ID: "host:1", Field: "state", Op: "eq", Value: "absent"}},
+				Items:         []storage.IngestItem{{ExternalID: "host-1", Entity: &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"state": "should-not-publish"}}}},
+			},
+			wantStatus: http.StatusPreconditionFailed, wantCode: ErrorCodePreconditionFailed,
+		},
+		{
+			name: "atomic validation failure",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "wal-atomic-validation", FailureMode: storage.IngestFailureModeAtomic,
+				Items: []storage.IngestItem{
+					{ExternalID: "host-3", Entity: &graph.Entity{ID: "host:3", Kind: "host"}},
+					{ExternalID: "invalid"},
+				},
+			},
+			wantStatus: http.StatusUnprocessableEntity, wantCode: ErrorCodeAtomicValidationFailed,
+		},
+		{
+			name: "atomic source suppression",
+			request: storage.IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: "wal-atomic-suppressed", FailureMode: storage.IngestFailureModeAtomic,
+				Items: []storage.IngestItem{
+					{ExternalID: "host-1", Entity: &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"owner": "collector"}}},
+					{ExternalID: "host-4", Entity: &graph.Entity{ID: "host:4", Kind: "host", Fields: graph.Fields{"owner": "collector"}}},
+				},
+			},
+			wantStatus: http.StatusConflict, wantCode: ErrorCodeAtomicSuppressed,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			requestJSON, err := json.Marshal(testCase.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", bytes.NewReader(requestJSON))
+			req.Header.Set("X-Tenant-ID", "tenant-a")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Prefer", "wait=committed")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != testCase.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", response.Code, response.Body.String(), testCase.wantStatus)
+			}
+			var body ErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Code != testCase.wantCode {
+				t.Fatalf("error code = %q body=%s, want %q", body.Code, response.Body.String(), testCase.wantCode)
+			}
+		})
+	}
+
+	request := storage.IngestRequest{
+		Source: "agent", CollectorID: "collector-a", BatchID: "wal-best-effort",
+		Items: []storage.IngestItem{
+			{ExternalID: "host-5", Entity: &graph.Entity{ID: "host:5", Kind: "host"}},
+			{ExternalID: "invalid"},
+		},
+	}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", bytes.NewReader(requestJSON))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Prefer", "wait=committed")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusMultiStatus {
+		t.Fatalf("best-effort status = %d body=%s, want 207", response.Code, response.Body.String())
+	}
+	var result storage.IngestResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode best-effort result: %v", err)
+	}
+	if result.Applied != 1 || result.Failed != 1 || result.Version == 0 {
+		t.Fatalf("best-effort result = %#v, want partial success", result)
 	}
 }
 

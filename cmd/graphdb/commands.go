@@ -15,7 +15,6 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/retrieval"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
@@ -168,7 +167,6 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		WriteExecutionTimeout: cfg.WriteExecutionTimeout,
 		ReaderCatchupTimeout:  cfg.ReaderCatchupTimeout,
 		ReadinessTimeout:      cfg.ReadinessTimeout,
-		RetrievalSearcher:     retrieval.NewService(store, nil),
 		IngestService:         apiIngestService,
 		Observability:         obs,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,

@@ -149,22 +149,101 @@ func (c *PostgresCoordinator) completeIngestBatchItemsTx(
 	items []IngestBatchCompletion,
 	defaultVersion int64,
 ) error {
+	keys := make([]string, 0, len(items))
+	hashes := make([]string, 0, len(items))
+	owners := make([]string, 0, len(items))
+	results := make([]string, 0, len(items))
+	commitIDs := make([]string, 0, len(items))
+	type collectorKey struct {
+		source      string
+		collectorID string
+	}
+	collectorUpdates := make(map[collectorKey]CollectorStateUpdate)
+	collectorOrder := make([]collectorKey, 0, len(items))
 	for _, item := range items {
-		request := HeadPublishRequest{
-			TenantID:       tenantID,
-			CommitID:       item.CommitID,
-			IdempotencyKey: item.IdempotencyKey,
-			RequestHash:    item.RequestHash,
-			OwnerToken:     item.OwnerToken,
-			Result:         item.Result,
-			CollectorState: item.CollectorState,
+		if item.IdempotencyKey != "" {
+			result := string(item.Result)
+			if result == "" {
+				result = `{}`
+			}
+			keys = append(keys, item.IdempotencyKey)
+			hashes = append(hashes, item.RequestHash)
+			owners = append(owners, item.OwnerToken)
+			results = append(results, result)
+			commitIDs = append(commitIDs, item.CommitID)
 		}
-		if err := c.completeIdempotencyTx(ctx, tx, request); err != nil {
-			return err
+		if item.CollectorState == nil {
+			continue
 		}
-		if err := c.upsertCollectorStateTx(ctx, tx, tenantID, item.CollectorState, defaultVersion); err != nil {
-			return err
+		update := *item.CollectorState
+		if update.Version <= 0 {
+			update.Version = defaultVersion
 		}
+		key := collectorKey{source: update.Source, collectorID: update.CollectorID}
+		current, exists := collectorUpdates[key]
+		if !exists {
+			collectorOrder = append(collectorOrder, key)
+		}
+		if !exists || update.Version >= current.Version {
+			collectorUpdates[key] = update
+		}
+	}
+	if len(keys) == 0 && len(collectorOrder) == 0 {
+		return nil
+	}
+	sources := make([]string, 0, len(collectorOrder))
+	collectors := make([]string, 0, len(collectorOrder))
+	batchIDs := make([]string, 0, len(collectorOrder))
+	cursors := make([]string, 0, len(collectorOrder))
+	versions := make([]int64, 0, len(collectorOrder))
+	for _, key := range collectorOrder {
+		update := collectorUpdates[key]
+		sources = append(sources, update.Source)
+		collectors = append(collectors, update.CollectorID)
+		batchIDs = append(batchIDs, update.BatchID)
+		cursors = append(cursors, update.Cursor)
+		versions = append(versions, update.Version)
+	}
+	var completed int64
+	err := tx.QueryRow(ctx,
+		`WITH completed_idempotency AS (
+			UPDATE `+c.table("commit_idempotency")+` AS current
+			SET status = 'committed', result_json = input.result_json::jsonb,
+			    candidate_commit_id = input.commit_id, updated_at = now()
+			FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+			     AS input(idempotency_key, request_hash, owner_token, result_json, commit_id)
+			WHERE current.namespace = $1 AND current.tenant_id = $2
+			  AND current.idempotency_key = input.idempotency_key
+			  AND current.request_hash = input.request_hash
+			  AND current.owner_token = input.owner_token
+			  AND current.status = 'pending'
+			RETURNING 1
+		), upserted_collectors AS (
+			INSERT INTO `+c.table("collector_state")+` AS current (
+				namespace, tenant_id, source, collector_id,
+				last_batch_id, last_cursor, last_version, updated_at
+			)
+			SELECT $1, $2, input.source, input.collector_id,
+			       input.batch_id, input.cursor, input.version, now()
+			FROM unnest($8::text[], $9::text[], $10::text[], $11::text[], $12::bigint[])
+			     AS input(source, collector_id, batch_id, cursor, version)
+			ON CONFLICT (namespace, tenant_id, source, collector_id) DO UPDATE
+			SET last_batch_id = EXCLUDED.last_batch_id,
+			    last_cursor = EXCLUDED.last_cursor,
+			    last_version = EXCLUDED.last_version,
+			    updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.last_version >= current.last_version
+			RETURNING 1
+		)
+		SELECT count(*) FROM completed_idempotency`,
+		c.namespace, tenantID, keys, hashes, owners, results, commitIDs,
+		sources, collectors, batchIDs, cursors, versions,
+	).Scan(&completed)
+	if err != nil {
+		return coordinatorUnavailable(err)
+	}
+	if completed != int64(len(keys)) {
+		return ErrIdempotencyInProgress
 	}
 	return nil
 }

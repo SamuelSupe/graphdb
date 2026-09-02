@@ -39,7 +39,7 @@ This is a user-facing endpoint map. The detailed schema contract is
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/commits` | Atomic graph mutation commit. |
-| `POST` | `/v1/ingest/batches` | Collector ingestion batch; 1.3 WAL mode returns durable `202` with `writer_id` and an owner-routed status URL. |
+| `POST` | `/v1/ingest/batches` | Collector ingestion batch with `expected_version`, `failure_mode`, and entity/edge `preconditions`; direct mode returns terminal `200/207`, while 1.3 WAL mode returns durable `202` with `writer_id` and an owner-routed status URL. |
 | `GET` | `/v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}` | 1.3 owner-routed active/finalized ingest status. |
 | `POST` | `/v1/imports` | Queue a resumable CSV or JSONL bulk import. |
 | `GET` | `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` | Active/finalized ingest status; route 1.3 WAL status to the owning writer. |

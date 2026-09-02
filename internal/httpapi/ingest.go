@@ -76,11 +76,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		"source": request.Source, "collector_id": request.CollectorID, "batch_id": result.BatchID,
 		"applied": result.Applied, "failed": result.Failed, "suppressed": result.Suppressed, "skipped": result.Skipped, "skip_reason": result.SkipReason,
 	})
-	status := http.StatusOK
-	if result.Failed > 0 {
-		status = http.StatusMultiStatus
-	}
-	writeJSON(w, status, result)
+	writeIngestResult(w, result)
 }
 
 func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantID string, request storage.IngestRequest) {
@@ -96,7 +92,7 @@ func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantI
 				RetryAfter: retryAfterFromStore(s.Store),
 			})
 		case errors.Is(err, storage.ErrIngestIdentityConflict):
-			writeError(w, http.StatusConflict, err.Error())
+			writeStorageError(w, err)
 		default:
 			writeStorageError(w, err)
 		}
@@ -105,6 +101,7 @@ func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantI
 	statusPath := ingestBatchStatusPath(accepted.WriterID, accepted.Source, accepted.CollectorID, accepted.BatchID)
 	w.Header().Set("Location", statusPath)
 	if preferCommitted(r.Header.Get("Prefer")) {
+		w.Header().Set("Preference-Applied", "wait=committed")
 		result, waitErr := s.IngestService.Wait(r.Context(), accepted)
 		if waitErr != nil {
 			writeRequestError(w, waitErr)
@@ -116,6 +113,8 @@ func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantI
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"writer_id":          accepted.WriterID,
 		"batch_id":           accepted.BatchID,
+		"source":             accepted.Source,
+		"collector_id":       accepted.CollectorID,
 		"state":              accepted.State,
 		"durability":         accepted.Durability,
 		"accepted_at":        accepted.AcceptedAt,
@@ -135,11 +134,44 @@ func (s *Server) writeCompletedIngest(w http.ResponseWriter, tenantID string, re
 		s.obs().Metrics.RecordIngestSuppressed(tenantID, request.Source, result.Suppressed)
 		s.recordIngestConflictResources(tenantID, result.Conflicts)
 	}
-	status := http.StatusOK
-	if result.Failed > 0 {
-		status = http.StatusMultiStatus
+	writeIngestResult(w, result)
+}
+
+func writeIngestResult(w http.ResponseWriter, result storage.IngestResult) {
+	if result.Failed == 0 {
+		writeJSON(w, http.StatusOK, result)
+		return
 	}
-	writeJSON(w, status, result)
+	status := http.StatusMultiStatus
+	code := ErrorCode("")
+	switch result.ErrorCode {
+	case storage.IngestErrorVersionConflict:
+		status = http.StatusConflict
+		code = ErrorCodeVersionConflict
+	case storage.IngestErrorPreconditionFailed:
+		status = http.StatusPreconditionFailed
+		code = ErrorCodePreconditionFailed
+	case storage.IngestErrorAtomicValidation:
+		status = http.StatusUnprocessableEntity
+		code = ErrorCodeAtomicValidationFailed
+	case storage.IngestErrorAtomicSuppressed:
+		status = http.StatusConflict
+		code = ErrorCodeAtomicSuppressed
+	case storage.IngestErrorIdempotencyConflict:
+		status = http.StatusConflict
+		code = ErrorCodeIdempotencyConflict
+	}
+	if code == "" {
+		writeJSON(w, status, result)
+		return
+	}
+	message := "ingest request failed"
+	if len(result.Conflicts) > 0 && result.Conflicts[len(result.Conflicts)-1].Message != "" {
+		message = result.Conflicts[len(result.Conflicts)-1].Message
+	} else if len(result.Failures) > 0 && result.Failures[0].Error != "" {
+		message = result.Failures[0].Error
+	}
+	writeErrorDetail(w, status, code, message, false, result)
 }
 
 func (s *Server) ingestBatchStatus(w http.ResponseWriter, r *http.Request) {

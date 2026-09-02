@@ -40,6 +40,11 @@ type commitSegmentObject struct {
 	Items []commitSegmentItem
 }
 
+type preparedCommitSegment struct {
+	ref  CommitSegmentRef
+	data []byte
+}
+
 func manifestCommitTailLength(manifest Manifest) int {
 	total := len(manifest.CommitKeys)
 	for _, segment := range manifest.CommitSegments {
@@ -128,12 +133,25 @@ func (s *TenantStore) putCommitSegmentWithNormalization(
 	items []commitSegmentItem,
 	normalize bool,
 ) (CommitSegmentRef, error) {
+	prepared, err := s.prepareCommitSegment(ctx, tenantID, items, normalize)
+	if err != nil {
+		return CommitSegmentRef{}, err
+	}
+	return s.putPreparedCommitSegment(ctx, tenantID, prepared)
+}
+
+func (s *TenantStore) prepareCommitSegment(
+	ctx context.Context,
+	tenantID string,
+	items []commitSegmentItem,
+	normalize bool,
+) (preparedCommitSegment, error) {
 	if len(items) == 0 {
-		return CommitSegmentRef{}, fmt.Errorf("empty commit segment")
+		return preparedCommitSegment{}, fmt.Errorf("empty commit segment")
 	}
 	logicalPayload, err := marshalCommitSegmentPayload(items)
 	if err != nil {
-		return CommitSegmentRef{}, err
+		return preparedCommitSegment{}, err
 	}
 	hash := objectContentHash(logicalPayload)
 	first, last := items[0].Commit.Version, items[len(items)-1].Commit.Version
@@ -147,18 +165,36 @@ func (s *TenantStore) putCommitSegmentWithNormalization(
 		)
 	}
 	if err != nil {
-		return CommitSegmentRef{}, err
+		return preparedCommitSegment{}, err
 	}
-	if _, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true}); err != nil {
+	return preparedCommitSegment{
+		ref: CommitSegmentRef{
+			Key: key, Codec: commitSegmentCodecParquet, FirstVersion: first,
+			LastVersion: last, Count: len(items), ContentHash: hash,
+		},
+		data: data,
+	}, nil
+}
+
+func (s *TenantStore) putPreparedCommitSegment(
+	ctx context.Context,
+	tenantID string,
+	prepared preparedCommitSegment,
+) (CommitSegmentRef, error) {
+	ref := prepared.ref
+	if ref.Key == "" || len(prepared.data) == 0 {
+		return CommitSegmentRef{}, fmt.Errorf("empty prepared commit segment")
+	}
+	if _, err := s.Objects.PutConditional(ctx, ref.Key, prepared.data, PutCondition{IfNoneMatch: true}); err != nil {
 		if !errors.Is(err, ErrConflict) {
 			return CommitSegmentRef{}, err
 		}
-		existing, loadErr := s.loadCommitSegment(ctx, tenantID, CommitSegmentRef{Key: key, ContentHash: hash, Count: len(items), FirstVersion: first, LastVersion: last, Codec: commitSegmentCodecParquet})
-		if loadErr != nil || len(existing) != len(items) {
+		existing, loadErr := s.loadCommitSegment(ctx, tenantID, ref)
+		if loadErr != nil || len(existing) != ref.Count {
 			return CommitSegmentRef{}, err
 		}
 	}
-	return CommitSegmentRef{Key: key, Codec: commitSegmentCodecParquet, FirstVersion: first, LastVersion: last, Count: len(items), ContentHash: hash}, nil
+	return ref, nil
 }
 
 func (s *TenantStore) loadCommitSegment(ctx context.Context, tenantID string, ref CommitSegmentRef) ([]commitSegmentItem, error) {

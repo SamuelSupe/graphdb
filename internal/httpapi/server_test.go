@@ -847,7 +847,12 @@ func TestHTTPIngestRejectsBatchIDReuseWithDifferentPayload(t *testing.T) {
 		Entity:     &graph.Entity{ID: "host:b", Kind: "host"},
 	}}
 	rr := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", second)
-	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "ingest record conflict") {
+	var conflict ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &conflict); err != nil {
+		t.Fatalf("decode conflict: %v body=%s", err, rr.Body.String())
+	}
+	if rr.Code != http.StatusConflict || conflict.Code != ErrorCodeIdempotencyConflict ||
+		!strings.Contains(conflict.Message, "ingest record conflict") {
 		t.Fatalf("second ingest = %d body=%s, want conflict", rr.Code, rr.Body.String())
 	}
 	g, manifest, err := store.Load(ctx, "tenant-a")

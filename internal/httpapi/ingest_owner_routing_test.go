@@ -36,14 +36,19 @@ func TestHTTPIngestAcceptanceCarriesStableOwnerAndStatusRecovery(t *testing.T) {
 		t.Fatalf("accept status = %d body=%s", body.Code, body.Body.String())
 	}
 	var accepted struct {
-		StatusURL string `json:"status_url"`
-		WriterID  string `json:"writer_id"`
+		StatusURL   string `json:"status_url"`
+		WriterID    string `json:"writer_id"`
+		Source      string `json:"source"`
+		CollectorID string `json:"collector_id"`
 	}
 	if err := json.Unmarshal(body.Body.Bytes(), &accepted); err != nil {
 		t.Fatal(err)
 	}
 	if accepted.WriterID != "writer-a" {
 		t.Fatalf("accepted writer_id = %q, want stable owner writer-a", accepted.WriterID)
+	}
+	if accepted.Source != "agent" || accepted.CollectorID != "collector-a" {
+		t.Fatalf("accepted source/collector = %q/%q, want agent/collector-a", accepted.Source, accepted.CollectorID)
 	}
 	if accepted.StatusURL != "/v1/ingest/writers/writer-a/agent/collector-a/batch-a" {
 		t.Fatalf("accepted status_url = %q", accepted.StatusURL)

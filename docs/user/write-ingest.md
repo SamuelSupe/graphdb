@@ -239,6 +239,12 @@ Request shape:
   "batch_id": "aws-batch-001",
   "idempotency_key": "aws-batch-001",
   "cursor": "next-source-cursor",
+  "expected_version": 42,
+  "failure_mode": "best_effort",
+  "preconditions": [
+    {"resource_type": "entity", "id": "host:aws:i-001", "op": "exists"},
+    {"resource_type": "entity", "id": "host:aws:i-001", "field": "state", "op": "eq", "value": "ready"}
+  ],
   "items": [
     {
       "external_id": "i-001",
@@ -251,6 +257,25 @@ Request shape:
   ]
 }
 ```
+
+Transactional options are evaluated against the graph snapshot used for the
+mutation. `expected_version` is an optional tenant-version CAS guard;
+`failure_mode` is `best_effort` by default and may be set to `atomic`; atomic
+requests publish no graph version when an item is invalid, a precondition fails,
+or source governance suppresses a mutation. `preconditions` accepts at most 256
+entity/edge checks. Use `exists` or `not_exists` without a field, or compare a
+field with `eq`, `ne`, `lt`, `lte`, `gt`, or `gte` and a JSON `value`. Set
+`value_from` to `accepted_at` instead of `value` when the comparison must use the
+WAL acceptance timestamp; `value` and `value_from` are mutually exclusive.
+
+In direct mode, successful requests return `200`; ordinary item-level failures
+return `207`, a stale `expected_version` returns `409`, a failed precondition
+returns `412`, and atomic validation or suppression returns `422` or `409`
+respectively. In WAL mode, the initial response is `202` after durable local
+takeover; these statuses are reported by the terminal `result` in the status
+resource (or by `Prefer: wait=committed`). The terminal result includes
+`error_code` (`version_conflict`, `precondition_failed`,
+`atomic_validation_failed`, or `atomic_suppressed`) when applicable.
 
 Supported item payloads:
 
@@ -271,8 +296,28 @@ Response fields:
 - `skip_reason`: `logical_noop` when the resulting logical graph is unchanged,
   or `idempotent_replay` when an earlier batch result is replayed.
 - `cursor`: returned collector cursor.
+- `error_code`: terminal request error classification, when the request is
+  rejected by version/precondition/atomic semantics.
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.
+
+### Per-writer WAL CAS cohorts
+
+For either `GRAPHDB_COORDINATION=local` or `GRAPHDB_COORDINATION=postgres`, a
+flush containing at least two non-atomic mutation requests from one writer with
+present, identical `expected_version` values is a CAS cohort. The writer
+compares that value and every request precondition once against the common graph
+snapshot at flush start. Each request keeps an independent result; changed
+requests receive consecutive logical versions in that writer's WAL order, while
+the changed cohort is built with one copy-on-write apply, one commit segment,
+and one candidate manifest. A request-local precondition failure only fails
+that request. If the shared expected version is stale, every cohort member
+returns `version_conflict` (HTTP `409`) and no graph version is published.
+Atomic requests, different expected-version values, and requests with
+preconditions but no expected version are isolation barriers; requests before
+and after a barrier can still form their own cohort or ordinary fast batch. A
+batch-apply fallback reuses the already-checked cohort guards rather than
+rechecking them against versions created earlier in the same flush.
 
 ### Local WAL mode (1.2 compatibility profile)
 
@@ -291,6 +336,42 @@ or query:
 ```sh
 curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
+```
+
+In the PostgreSQL-CAS profile the acceptance body identifies the stable owner;
+the `Location` header and `status_url` carry the same owner-routed resource:
+
+```http
+HTTP/1.1 202 Accepted
+Location: /v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001
+Content-Type: application/json
+
+{
+  "writer_id": "writer-a",
+  "batch_id": "aws-batch-001",
+  "state": "accepted",
+  "durability": "durable",
+  "accepted_at": "2026-07-30T00:00:00Z",
+  "estimated_flush_at": "2026-07-30T00:00:10Z",
+  "status_url": "/v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001"
+}
+```
+
+Poll the returned resource until `state` is `committed` or `failed`. A terminal
+status embeds the final result; `recovery_pending=true` means the owner is
+rebuilding WAL state and the batch remains queryable:
+
+```json
+{
+  "writer_id": "writer-a",
+  "tenant_id": "demo",
+  "source": "aws",
+  "collector_id": "collector-a",
+  "batch_id": "aws-batch-001",
+  "state": "committed",
+  "durability": "durable",
+  "result": {"batch_id": "aws-batch-001", "version": 43, "applied": 1, "failed": 0}
+}
 ```
 
 Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
@@ -367,12 +448,16 @@ WAL flushes are bounded per-tenant batches. A writer preserves its local WAL
 FIFO; different writers are ordered by successful PostgreSQL head CAS, not by
 HTTP arrival time. CAS, PostgreSQL, and temporary object-store failures remain
 retryable: reload the newest head, rebase, apply exponential backoff with
-jitter, and shrink the batch prefix after repeated conflicts until one request
-remains. An accepted request cannot become terminally failed merely because a
-retry budget was exhausted. Deterministic semantic errors and lifecycle
-fencing (freeze/delete/restore) may finalize as `failed`; lifecycle fencing
-wins over unpublished WAL and never rolls back a version already published by
-CAS.
+jitter, and shrink the batch prefix at request/cohort barriers after repeated
+conflicts. An accepted request cannot become terminally failed merely because a
+retry budget was exhausted. When a PostgreSQL writer loses head CAS, its
+candidate remains invisible and it reloads the new head. A losing
+`expected_version` cohort is not merged with another writer's payload or
+rebased to a different expected version; if the expected version is now stale,
+all of that cohort's members finalize as `version_conflict` without publication.
+Deterministic semantic errors and lifecycle fencing (freeze/delete/restore) may
+finalize as `failed`; lifecycle fencing wins over unpublished WAL and never
+rolls back a version already published by CAS.
 
 The profile supports two to eight concurrent writers for one tenant. This is a
 correctness and availability boundary; the throughput scale target is across

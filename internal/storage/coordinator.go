@@ -49,6 +49,17 @@ type CommitReservation struct {
 	Committed   bool
 }
 
+type CommitReservationRequest struct {
+	Key         string
+	RequestHash string
+	OwnerToken  string
+}
+
+type CommitReservationOutcome struct {
+	Reservation CommitReservation
+	Err         error
+}
+
 type HeadPublishRequest struct {
 	TenantID                     string
 	ExpectedRevision             int64
@@ -199,6 +210,11 @@ type CoordinatorCommitStore interface {
 	PublishIngestBatch(context.Context, IngestBatchPublishRequest) (CoordinationHead, bool, error)
 	CompleteIngestBatch(context.Context, IngestBatchPublishRequest) (bool, error)
 	PublishWriteContext(context.Context, WriteContextPublishRequest) (CoordinationHead, bool, error)
+}
+
+type CoordinatorCommitBatchStore interface {
+	ReserveCommitBatch(context.Context, string, []CommitReservationRequest, time.Duration) ([]CommitReservationOutcome, error)
+	AbortCommitBatch(context.Context, string, []CommitReservationRequest) error
 }
 
 type CoordinatorLifecycleStore interface {

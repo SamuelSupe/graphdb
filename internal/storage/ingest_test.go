@@ -68,6 +68,172 @@ func TestIngestBatchPartialFailureIdempotencyAndCollectorStatus(t *testing.T) {
 	assertParquetDeadLetter(t, ctx, store, store.deadLetterKey("tenant-a", "aws", "collector-a/batch-1"), "tenant-a", "aws", "collector-a/batch-1")
 }
 
+func TestIngestExpectedVersionIsCheckedBySingleNodeWriter(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	initialVersion := int64(0)
+	first, err := store.Ingest(ctx, "tenant-a", IngestRequest{
+		Source:          "agent",
+		CollectorID:     "collector-a",
+		BatchID:         "cas-1",
+		ExpectedVersion: &initialVersion,
+		Items: []IngestItem{{
+			ExternalID: "host-1",
+			Entity:     &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"state": "ready"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	if first.Applied != 1 || first.Failed != 0 || first.Version != 1 {
+		t.Fatalf("first result = %#v, want one commit at version 1", first)
+	}
+
+	staleVersion := int64(0)
+	second, err := store.Ingest(ctx, "tenant-a", IngestRequest{
+		Source:          "agent",
+		CollectorID:     "collector-a",
+		BatchID:         "cas-stale",
+		ExpectedVersion: &staleVersion,
+		Items: []IngestItem{{
+			ExternalID: "host-2",
+			Entity:     &graph.Entity{ID: "host:2", Kind: "host", Fields: graph.Fields{"state": "stale-write"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stale ingest returned transport error: %v", err)
+	}
+	if second.Applied != 0 || second.Failed != 1 || second.Version != 0 || second.ErrorCode != IngestErrorVersionConflict {
+		t.Fatalf("stale result = %#v, want terminal version conflict without commit", second)
+	}
+
+	loaded, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load after stale ingest: %v", err)
+	}
+	if manifest.Version != 1 || loaded.Version != 1 {
+		t.Fatalf("graph/manifest version = %d/%d, want unchanged version 1", loaded.Version, manifest.Version)
+	}
+	if _, ok := loaded.GetEntity("host:2"); ok {
+		t.Fatal("stale write published host:2")
+	}
+}
+
+func TestIngestAtomicRejectsInvalidItemWithoutPublishing(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	result, err := store.Ingest(ctx, "tenant-a", IngestRequest{
+		Source:      "agent",
+		CollectorID: "collector-a",
+		BatchID:     "atomic-invalid",
+		FailureMode: IngestFailureModeAtomic,
+		Items: []IngestItem{
+			{ExternalID: "valid", Entity: &graph.Entity{ID: "host:valid", Kind: "host"}},
+			{ExternalID: "invalid"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("atomic ingest: %v", err)
+	}
+	if result.Applied != 0 || result.Failed != 2 || result.Version != 0 || result.ErrorCode != IngestErrorAtomicValidation {
+		t.Fatalf("result = %#v, want whole request rejected at version 0", result)
+	}
+	loaded, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load after atomic rejection: %v", err)
+	}
+	if manifest.Version != 0 || loaded.Version != 0 {
+		t.Fatalf("graph/manifest version = %d/%d, want 0", loaded.Version, manifest.Version)
+	}
+	if _, ok := loaded.GetEntity("host:valid"); ok {
+		t.Fatal("valid item from rejected atomic request was published")
+	}
+}
+
+func TestIngestPreconditionsAreEvaluatedAgainstOneSingleNodeSnapshot(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	edgeID := graph.CanonicalEdgeIDParts("connects_to", "host:1", "host:2")
+	seed, err := store.Ingest(ctx, "tenant-a", IngestRequest{
+		Source:      "agent",
+		CollectorID: "collector-a",
+		BatchID:     "precondition-seed",
+		Items: []IngestItem{
+			{ExternalID: "host-1", Entity: &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{
+				"state":     "ready",
+				"delete_at": "2026-08-31T23:59:59.000000000Z",
+			}}},
+			{ExternalID: "host-2", Entity: &graph.Entity{ID: "host:2", Kind: "host"}},
+			{ExternalID: "edge-1", Edge: &graph.Edge{ID: edgeID, Type: "connects_to", From: "host:1", To: "host:2"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed ingest: %v", err)
+	}
+	if seed.Version != 1 {
+		t.Fatalf("seed result = %#v, want version 1", seed)
+	}
+
+	acceptedAt := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	passed, err := store.IngestDurableBatch(ctx, "tenant-a", []IngestBatchEntry{{
+		AcceptedAt: acceptedAt,
+		Request: IngestRequest{
+			Source:      "agent",
+			CollectorID: "collector-a",
+			BatchID:     "precondition-pass",
+			Preconditions: []IngestPrecondition{
+				{ResourceType: "entity", ID: "host:1", Field: "state", Op: "eq", Value: "ready"},
+				{ResourceType: "edge", ID: edgeID, Op: "exists"},
+				{ResourceType: "entity", ID: "host:1", Field: "delete_at", Op: "lte", ValueFrom: "accepted_at"},
+			},
+			Items: []IngestItem{{
+				ExternalID: "host-1",
+				Entity:     &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"state": "active"}},
+			}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("passing preconditions: %v", err)
+	}
+	if len(passed) != 1 || passed[0].Applied != 1 || passed[0].Failed != 0 || passed[0].Version != 2 {
+		t.Fatalf("passing result = %#v, want version 2", passed)
+	}
+
+	futureAcceptedAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	failed, err := store.IngestDurableBatch(ctx, "tenant-a", []IngestBatchEntry{{
+		AcceptedAt: futureAcceptedAt,
+		Request: IngestRequest{
+			Source:      "agent",
+			CollectorID: "collector-a",
+			BatchID:     "precondition-fail",
+			Preconditions: []IngestPrecondition{{
+				ResourceType: "entity", ID: "host:1", Field: "delete_at", Op: "lte", ValueFrom: "accepted_at",
+			}},
+			Items: []IngestItem{{
+				ExternalID: "host-1",
+				Entity:     &graph.Entity{ID: "host:1", Kind: "host", Fields: graph.Fields{"state": "should-not-publish"}},
+			}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("failing preconditions: %v", err)
+	}
+	if len(failed) != 1 || failed[0].Applied != 0 || failed[0].Failed != 1 || failed[0].Version != 0 || failed[0].ErrorCode != IngestErrorPreconditionFailed {
+		t.Fatalf("failing result = %#v, want terminal precondition failure", failed)
+	}
+	loaded, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load after failed precondition: %v", err)
+	}
+	if manifest.Version != 2 || loaded.Version != 2 {
+		t.Fatalf("graph/manifest version = %d/%d, want unchanged version 2", loaded.Version, manifest.Version)
+	}
+	entity, ok := loaded.GetEntity("host:1")
+	if !ok || entity.Fields["state"] != "active" {
+		t.Fatalf("entity after failed precondition = %#v, want state active", entity)
+	}
+}
+
 func TestIngestCollectorStatusCacheAvoidsHotStatusRead(t *testing.T) {
 	ctx := context.Background()
 	objects := newCountingReadStore(NewMemoryStore())
@@ -708,6 +874,43 @@ func TestIngestRejectsBatchIDReuseWithDifferentPayload(t *testing.T) {
 	}
 	if _, ok := g.GetEntity("host:b"); ok {
 		t.Fatal("conflicting replay committed host:b")
+	}
+}
+
+func TestIngestRejectsBatchIDReuseWithDifferentIdempotencyKey(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	first := IngestRequest{
+		Source:         "aws",
+		CollectorID:    "collector-a",
+		BatchID:        "batch-reused",
+		IdempotencyKey: "idem-a",
+		Items: []IngestItem{{
+			ExternalID: "i-1",
+			Entity:     &graph.Entity{ID: "host:a", Kind: "host"},
+		}},
+	}
+	if _, err := store.Ingest(ctx, "tenant-a", first); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	second := first
+	second.IdempotencyKey = "idem-b"
+	second.Items = []IngestItem{{
+		ExternalID: "i-2",
+		Entity:     &graph.Entity{ID: "host:b", Kind: "host"},
+	}}
+	if _, err := store.Ingest(ctx, "tenant-a", second); !errors.Is(err, ErrIngestIdentityConflict) {
+		t.Fatalf("second ingest err = %v, want ErrIngestIdentityConflict", err)
+	}
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if manifest.Version != 1 {
+		t.Fatalf("manifest version = %d, conflicting batch identity should not commit", manifest.Version)
+	}
+	if _, ok := g.GetEntity("host:b"); ok {
+		t.Fatal("conflicting batch identity committed host:b")
 	}
 }
 
@@ -1742,6 +1945,43 @@ type raceIngestRecordStore struct {
 	contains string
 	record   IngestBatchRecord
 	once     sync.Once
+}
+
+func TestPrepareIngestRequestRejectsDotStatusPathIdentifiers(t *testing.T) {
+	tests := []struct {
+		name    string
+		request IngestRequest
+		field   string
+	}{
+		{
+			name: "source",
+			request: IngestRequest{
+				Source: ".", CollectorID: "collector-a", BatchID: "batch-a",
+			},
+			field: "source",
+		},
+		{
+			name: "collector",
+			request: IngestRequest{
+				Source: "agent", CollectorID: "..", BatchID: "batch-a",
+			},
+			field: "collector_id",
+		},
+		{
+			name: "batch",
+			request: IngestRequest{
+				Source: "agent", CollectorID: "collector-a", BatchID: ".",
+			},
+			field: "batch_id",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := PrepareIngestRequest("tenant-a", test.request); err == nil || !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("PrepareIngestRequest error = %v, want %s path validation", err, test.field)
+			}
+		})
+	}
 }
 
 func (s *raceIngestRecordStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {

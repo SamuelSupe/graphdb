@@ -12,26 +12,43 @@ import (
 )
 
 func (c *Client) doJSON(ctx context.Context, method string, path string, tenantID string, query url.Values, body any, out any) error {
+	_, _, err := c.doJSONWithHeaders(ctx, method, path, tenantID, query, body, nil, out)
+	return err
+}
+
+func (c *Client) doJSONWithHeaders(
+	ctx context.Context,
+	method string,
+	path string,
+	tenantID string,
+	query url.Values,
+	body any,
+	requestHeaders http.Header,
+	out any,
+) (int, http.Header, error) {
 	var reader io.Reader
 	contentType := ""
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return 0, nil, err
 		}
 		reader = bytes.NewReader(data)
 		contentType = "application/json"
 	}
-	resp, err := c.do(ctx, method, path, tenantID, query, reader, contentType)
+	resp, err := c.doWithHeaders(ctx, method, path, tenantID, query, reader, contentType, requestHeaders)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
+		return resp.StatusCode, resp.Header.Clone(), nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return resp.StatusCode, resp.Header.Clone(), err
+	}
+	return resp.StatusCode, resp.Header.Clone(), nil
 }
 
 func (c *Client) doText(ctx context.Context, method string, path string, tenantID string, query url.Values, text string, out any) error {
@@ -48,6 +65,19 @@ func (c *Client) doText(ctx context.Context, method string, path string, tenantI
 }
 
 func (c *Client) do(ctx context.Context, method string, path string, tenantID string, query url.Values, body io.Reader, contentType string) (*http.Response, error) {
+	return c.doWithHeaders(ctx, method, path, tenantID, query, body, contentType, nil)
+}
+
+func (c *Client) doWithHeaders(
+	ctx context.Context,
+	method string,
+	path string,
+	tenantID string,
+	query url.Values,
+	body io.Reader,
+	contentType string,
+	requestHeaders http.Header,
+) (*http.Response, error) {
 	if c == nil {
 		return nil, errors.New("nil GGraphDB client")
 	}
@@ -60,6 +90,12 @@ func (c *Client) do(ctx context.Context, method string, path string, tenantID st
 		return nil, err
 	}
 	c.setHeaders(req, tenantID, contentType)
+	for key, values := range requestHeaders {
+		req.Header.Del(key)
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err

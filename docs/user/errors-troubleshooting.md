@@ -30,10 +30,6 @@ Full contract: [../error_codes.md](../error_codes.md).
 | `tenant_deleted` | Soft-deleted tenant | Restore/clone or stop using tenant. |
 | `operation_disabled` | Reader mode write attempt | Send write/config/task mutation to writer. |
 | `reader_not_fresh` | Reader cannot reach required version | Retry later, lower `min_version`, or allow stale read. |
-| `retrieval_not_ready` | No complete GraphRAG snapshot | Wait for the retrieval worker to publish its first complete snapshot. |
-| `index_not_fresh` | Retrieval snapshot is below `minVersion` | Retry after the retrieval worker catches up or lower `minVersion`. |
-| `embedding_unavailable` | Query embedding endpoint unavailable | Restore the configured embedding endpoint and retry. |
-| `retrieval_budget_exceeded` | Evidence search exceeds bounded work | Reduce candidate counts, graph depth, seeds, or visited-node budget. |
 | `write_admission_queue_timeout` | Write queue full | Retry with same idempotency key and reduce concurrency. |
 | `write_backpressure` | System pressure | Honor `Retry-After`; inspect `reasons`. |
 | `commit_tail_too_long` | Too many visible commits | Run compact or wait for auto compact. |

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.3.0-dev
+  version: 1.3.1
   description: Object-store backed multi-tenant current-state property knowledge graph API. The 1.3 development contract adds opt-in PostgreSQL-CAS multi-writer WAL for ingest batches; it is release-gated and preserves the existing graph/object layout.
 servers:
   - url: http://localhost:8080
@@ -89,6 +89,18 @@ paths:
   /v1/ingest/batches:
     post:
       summary: Apply a collector ingestion batch with idempotency and partial failure reporting. In 1.3 WAL mode, durable local takeover returns 202 with the WAL owner identity.
+      description: |
+        In either local or PostgreSQL coordination, a writer flush containing at least two non-atomic mutation candidates with present and identical `expected_version` values forms a per-writer CAS cohort. The writer compares the expected version and all request preconditions once against the common flush baseline. Each request retains an independent result; changed requests receive consecutive logical versions in that writer's WAL order, while the changed cohort uses one copy-on-write apply, one commit segment, and one candidate manifest.
+
+        A stale cohort gives every member a `409` `version_conflict` result and publishes no graph version. A request-local precondition failure only fails that request; other accepted cohort members may still publish. Requests without `expected_version` and without preconditions remain on the ordinary fast batch path. Contiguous requests with different expected versions form separate WAL-order groups; a single CAS request, an atomic request, or a no-`expected_version` request with preconditions is an isolation barrier. In PostgreSQL coordination, the complete candidate must still win the tenant-head CAS; across writers, successful CAS order decides visibility, and a losing expected-version cohort is reloaded and then terminates as a cohort if its expected version is stale. Writers never exchange or merge payloads across WALs.
+      parameters:
+        - name: Prefer
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: [wait=committed]
+          description: In WAL mode, wait for a terminal ingest result instead of returning after durable local takeover. Servers that cannot finish before the request context ends return a request error; clients may omit this preference and poll the 202 status_url instead.
       requestBody:
         required: true
         content:
@@ -97,13 +109,25 @@ paths:
               $ref: '#/components/schemas/IngestRequest'
       responses:
         '200':
-          description: Batch accepted.
+          description: Batch reached a successful terminal result.
+          headers:
+            Preference-Applied:
+              schema:
+                type: string
+                enum: [wait=committed]
+              description: Returned in WAL mode when the server honored Prefer wait=committed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestResult'
         '207':
-          description: Batch accepted with item failures.
+          description: Batch reached a terminal best-effort result with item failures.
+          headers:
+            Preference-Applied:
+              schema:
+                type: string
+                enum: [wait=committed]
+              description: Returned in WAL mode when the server honored Prefer wait=committed.
           content:
             application/json:
               schema:
@@ -125,6 +149,10 @@ paths:
           $ref: '#/components/responses/MethodNotAllowed'
         '409':
           $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
         '429':
           $ref: '#/components/responses/WriteBackpressure'
         '503':
@@ -1729,7 +1757,13 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Unprocessable:
-      description: Query parsed but cannot be executed.
+      description: Request parsed but cannot be executed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PreconditionFailed:
+      description: A request precondition did not match the graph version accepted for mutation.
       content:
         application/json:
           schema:
@@ -1893,6 +1927,9 @@ components:
             - task_conflict
             - repair_required
             - version_conflict
+            - precondition_failed
+            - atomic_validation_failed
+            - atomic_suppressed
             - idempotency_conflict
             - idempotency_in_progress
             - write_conflict
@@ -1904,10 +1941,6 @@ components:
             - write_backpressure
             - request_timeout
             - request_canceled
-            - retrieval_not_ready
-            - index_not_fresh
-            - embedding_unavailable
-            - retrieval_budget_exceeded
         message:
           type: string
         retryable:
@@ -1966,6 +1999,10 @@ components:
           type: string
         version:
           type: integer
+        head_commit_id:
+          type: string
+        snapshot_version:
+          type: integer
         readable_version:
           type: integer
         read_after_commit_id:
@@ -1981,6 +2018,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Conflict'
+        canonical_entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityCanonicalization'
+        canonical_edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeCanonicalization'
+        index_warnings:
+          type: array
+          items:
+            type: string
     Mutations:
       type: object
       properties:
@@ -2005,7 +2054,11 @@ components:
         upsert_relation_types:
           type: array
           items:
-            type: object
+            $ref: '#/components/schemas/RelationType'
+        delete_relation_types:
+          type: array
+          items:
+            type: string
         upsert_entities:
           type: array
           items:
@@ -2014,6 +2067,14 @@ components:
           type: array
           items:
             type: string
+        delete_entity_requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityDeleteRequest'
+        mark_source_stale:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceStaleRequest'
         upsert_edges:
           type: array
           items:
@@ -2025,7 +2086,15 @@ components:
         delete_edge_requests:
           type: array
           items:
-            type: object
+            $ref: '#/components/schemas/EdgeDeleteRequest'
+        merge_entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/MergeRequest'
+        split_entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/SplitRequest'
     CIType:
       type: object
       properties:
@@ -2165,6 +2234,84 @@ components:
           type: string
         allow_cross_kind:
           type: boolean
+        standard:
+          type: boolean
+    EntityDeleteRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        source:
+          type: string
+        external_id:
+          type: string
+        source_priority:
+          type: integer
+        confidence:
+          type: number
+        reason:
+          type: string
+    EdgeDeleteRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+        source:
+          type: string
+        source_priority:
+          type: integer
+        confidence:
+          type: number
+        reason:
+          type: string
+    SourceStaleRequest:
+      type: object
+      required: [source]
+      properties:
+        source:
+          type: string
+        kind:
+          type: string
+        observed_external_ids:
+          type: array
+          items:
+            type: string
+        action:
+          type: string
+        source_priority:
+          type: integer
+        confidence:
+          type: number
+        reason:
+          type: string
+    MergeRequest:
+      type: object
+      required: [target_id, source_ids]
+      properties:
+        target_id:
+          type: string
+        source_ids:
+          type: array
+          items:
+            type: string
+    SplitRequest:
+      type: object
+      required: [source_id, entities]
+      properties:
+        source_id:
+          type: string
+        entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entity'
     RelationSchema:
       type: object
       required: [relation_type]
@@ -2223,11 +2370,51 @@ components:
           type: string
         canonical_id:
           type: string
+        incoming_id:
+          type: string
         field:
           type: string
         alias_field:
           type: string
+        existing_source:
+          type: string
+        existing_priority:
+          type: integer
+        incoming_source:
+          type: string
+        incoming_priority:
+          type: integer
+        existing_value: {}
+        incoming_value: {}
         message:
+          type: string
+    EntityCanonicalization:
+      type: object
+      required: [canonical_id, kind]
+      properties:
+        canonical_id:
+          type: string
+        incoming_id:
+          type: string
+        kind:
+          type: string
+        source:
+          type: string
+        external_id:
+          type: string
+    EdgeCanonicalization:
+      type: object
+      required: [canonical_id, type, from, to]
+      properties:
+        canonical_id:
+          type: string
+        incoming_id:
+          type: string
+        type:
+          type: string
+        from:
+          type: string
+        to:
           type: string
     IngestRequest:
       type: object
@@ -2241,11 +2428,74 @@ components:
           type: string
         idempotency_key:
           type: string
+        expected_version:
+          type: integer
+          minimum: 0
+          description: Optional tenant graph version precondition, evaluated when the WAL request is committed rather than when its 202 response is returned. In local and PostgreSQL WAL modes, at least two contiguous non-atomic requests from one writer with the same value in one flush compare it once against the common flush baseline and receive independent consecutive versions in WAL order when changed. Requests with different values use separate WAL-order groups; a single CAS request, atomic request, or no-expected-version request with preconditions is isolated. A stale PostgreSQL losing cohort is terminally rejected as a cohort after head reload; it is not merged with another writer's payload.
+        failure_mode:
+          type: string
+          enum: [best_effort, atomic]
+          default: best_effort
+          description: Atomic mode publishes no graph version when an item is invalid, a request precondition fails, or source governance suppresses a mutation.
+        preconditions:
+          type: array
+          maxItems: 256
+          items:
+            $ref: '#/components/schemas/IngestPrecondition'
         items:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/IngestItem'
+    IngestItem:
+      type: object
+      description: Exactly one payload field must be present. entity_type is the domain-neutral alias of ci_type.
+      properties:
+        external_id:
+          type: string
+        entity:
+          $ref: '#/components/schemas/Entity'
+        edge:
+          $ref: '#/components/schemas/Edge'
+        delete_entity:
+          $ref: '#/components/schemas/EntityDeleteRequest'
+        delete_edge:
+          $ref: '#/components/schemas/EdgeDeleteRequest'
+        relation_type:
+          $ref: '#/components/schemas/RelationType'
+        ci_type:
+          $ref: '#/components/schemas/CIType'
+        entity_type:
+          $ref: '#/components/schemas/CIType'
+      oneOf:
+        - required: [entity]
+        - required: [edge]
+        - required: [delete_entity]
+        - required: [delete_edge]
+        - required: [relation_type]
+        - required: [ci_type]
+        - required: [entity_type]
+    IngestPrecondition:
+      type: object
+      required: [resource_type, id, op]
+      properties:
+        resource_type:
+          type: string
+          enum: [entity, edge]
+        id:
+          type: string
+          description: Canonical entity ID, or canonical edge ID when resource_type is edge.
+        field:
+          type: string
+          description: Entity or edge field. Omit only for resource-level exists/not_exists checks.
+        op:
+          type: string
+          enum: [eq, ne, exists, not_exists, lt, lte, gt, gte]
+        value:
+          description: Literal comparison value. Mutually exclusive with value_from.
+        value_from:
+          type: string
+          enum: [accepted_at]
+          description: Uses the WAL acceptance timestamp so retries and recovery evaluate the same value.
     IngestResult:
       type: object
       properties:
@@ -2257,6 +2507,9 @@ components:
           type: integer
         failed:
           type: integer
+        error_code:
+          type: string
+          enum: [version_conflict, precondition_failed, atomic_validation_failed, atomic_suppressed, idempotency_conflict]
         suppressed:
           type: integer
         skipped:
@@ -2283,8 +2536,15 @@ components:
             $ref: '#/components/schemas/Conflict'
     IngestAccepted:
       type: object
-      required: [batch_id, state, durability, accepted_at, estimated_flush_at, status_url, writer_id]
+      required: [writer_id, source, collector_id, batch_id, state, durability, accepted_at, estimated_flush_at, status_url]
       properties:
+        writer_id:
+          type: string
+          description: Stable GRAPHDB_INSTANCE_ID of the writer that owns the local WAL.
+        source:
+          type: string
+        collector_id:
+          type: string
         batch_id:
           type: string
         state:
@@ -2302,9 +2562,6 @@ components:
         status_url:
           type: string
           description: Owner-routed status resource. In 1.3 PostgreSQL-CAS WAL mode this uses /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}.
-        writer_id:
-          type: string
-          description: Stable GRAPHDB_INSTANCE_ID of the writer that owns the local WAL. Required for 1.3 WAL responses; omitted by direct mode.
     IngestBatchStatus:
       type: object
       required: [tenant_id, source, collector_id, batch_id, state, durability]

@@ -22,7 +22,7 @@ func collectGraphQLRoots(
 	var typenames []string
 	err := walkGraphQLSelections(document, selections, variables, func(field *ast.Field) error {
 		switch field.Name {
-		case "graph", "evidenceSearch":
+		case "graph":
 			roots = append(roots, field)
 		case "__typename":
 			typenames = append(typenames, responseName(field))

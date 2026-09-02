@@ -149,11 +149,14 @@ func TestPostgresCoordinatorFastIngestPublishSlotReturnsHeadAndReleasesOnCommit(
 	if updated.Revision != wantHead.Revision+1 || updated.GraphVersion != wantHead.GraphVersion+1 {
 		t.Fatalf("updated head = %#v", updated)
 	}
-	second, _, _, acquired, err := coordinator.AcquireIngestPublishSlot(
+	second, secondHead, secondHeadExists, acquired, err := coordinator.AcquireIngestPublishSlot(
 		ctx, "tenant-a", "writer-b", time.Second,
 	)
 	if err != nil || !acquired {
 		t.Fatalf("next owner after publish acquired=%v err=%v", acquired, err)
+	}
+	if !secondHeadExists || secondHead != updated {
+		t.Fatalf("next owner head exists=%v head=%#v, want latest published head %#v", secondHeadExists, secondHead, updated)
 	}
 	if second.OwnerToken != "writer-b" || second.FenceEpoch <= first.FenceEpoch {
 		t.Fatalf("next owner lease = %#v, first = %#v", second, first)
@@ -396,6 +399,69 @@ func TestPostgresCoordinatorIngestBatchCompletionRollsBackHeadAndEarlierItems(t 
 		`SELECT count(*) FROM `+coordinator.table("derived_tasks")+` WHERE namespace = $1 AND tenant_id = 'tenant-a' AND target_version = 1`,
 		0,
 	)
+}
+
+func TestPostgresCoordinatorIngestBatchCompletionHashMismatchDoesNotLeakCollector(t *testing.T) {
+	ctx, coordinator := newPostgresIntegrationCoordinator(t, "ingest-batch-hash-mismatch")
+	seedCoordinatorHead(t, ctx, coordinator, "tenant-a")
+	const (
+		key          = "ingest/agent/collector-mismatch/batch-1"
+		requestHash  = "hash-expected"
+		wrongHash    = "hash-wrong"
+		ownerToken   = "writer-a"
+		commitID     = "commit-mismatch"
+		manifestKey  = "manifest-mismatch"
+		manifestHash = "manifest-hash-mismatch"
+	)
+	if _, err := coordinator.ReserveCommit(ctx, "tenant-a", key, requestHash, ownerToken, 0); err != nil {
+		t.Fatalf("reserve hash-mismatch item: %v", err)
+	}
+	result, _ := json.Marshal(IngestResult{BatchID: "batch-1", Version: 1, Applied: 1})
+	_, published, err := coordinator.PublishIngestBatch(ctx, IngestBatchPublishRequest{
+		Head: HeadPublishRequest{
+			TenantID:                     "tenant-a",
+			ExpectedRevision:             1,
+			ExpectedGeneration:           1,
+			ExpectedWriteContextRevision: 0,
+			GraphVersion:                 1,
+			ManifestKey:                  manifestKey,
+			ManifestHash:                 manifestHash,
+			CommitID:                     commitID,
+		},
+		Items: []IngestBatchCompletion{{
+			IdempotencyKey: key,
+			RequestHash:    wrongHash,
+			OwnerToken:     ownerToken,
+			CommitID:       commitID,
+			Result:         result,
+			CollectorState: &CollectorStateUpdate{
+				Source: "agent", CollectorID: "collector-mismatch", BatchID: "batch-1", Cursor: "cursor-1", Version: 1,
+			},
+		}},
+	})
+	if published || !errors.Is(err, ErrIdempotencyInProgress) {
+		t.Fatalf("publish with hash mismatch published=%v err=%v, want rollback", published, err)
+	}
+
+	head, exists, err := coordinator.Head(ctx, "tenant-a")
+	if err != nil || !exists {
+		t.Fatalf("head after hash mismatch exists=%v err=%v", exists, err)
+	}
+	if head.Revision != 1 || head.GraphVersion != 0 || head.ManifestKey != "manifest-0" {
+		t.Fatalf("head after hash mismatch = %#v, want unchanged head", head)
+	}
+	reservation, err := coordinator.loadCommitReservation(ctx, "tenant-a", key)
+	if err != nil {
+		t.Fatalf("load reservation after hash mismatch: %v", err)
+	}
+	if reservation.Committed {
+		t.Fatalf("reservation after hash mismatch = %#v, want pending", reservation)
+	}
+	if _, exists, err := coordinator.CollectorState(ctx, "tenant-a", "agent", "collector-mismatch"); err != nil {
+		t.Fatalf("collector state after hash mismatch: %v", err)
+	} else if exists {
+		t.Fatal("collector state from hash-mismatched completion remains")
+	}
 }
 
 func seedCoordinatorHead(t *testing.T, ctx context.Context, coordinator *PostgresCoordinator, tenantID string) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,210 @@ func TestIngestServiceFinalizesLifecycleFenceAsFailed(t *testing.T) {
 	}
 }
 
+func TestIngestServiceGenerationCaptureSingleflight(t *testing.T) {
+	store := newGenerationCacheIngestStore(1)
+	store.block = true
+	service := newGenerationCacheTestService(store)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	type captureResult struct {
+		generation int64
+		err        error
+	}
+	first := make(chan captureResult, 1)
+	go func() {
+		generation, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+		first <- captureResult{generation: generation, err: err}
+	}()
+	select {
+	case <-store.started:
+	case <-ctx.Done():
+		t.Fatal("initial generation capture did not start")
+	}
+
+	const followerCount = 8
+	ready := make(chan struct{}, followerCount)
+	start := make(chan struct{})
+	followers := make(chan captureResult, followerCount)
+	for range followerCount {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			generation, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+			followers <- captureResult{generation: generation, err: err}
+		}()
+	}
+	for range followerCount {
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			t.Fatal("generation singleflight follower did not become ready")
+		}
+	}
+	close(start)
+	deadline := time.Now().Add(time.Second)
+	for store.captureCalls() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := store.captureCalls(); got != 1 {
+		t.Fatalf("generation capture calls while flight is blocked = %d, want 1", got)
+	}
+	close(store.release)
+
+	select {
+	case result := <-first:
+		if result.err != nil || result.generation != 1 {
+			t.Fatalf("initial generation result = %#v, want generation 1", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("initial generation capture did not finish")
+	}
+	for index := 0; index < followerCount; index++ {
+		select {
+		case result := <-followers:
+			if result.err != nil || result.generation != 1 {
+				t.Fatalf("singleflight follower result %d = %#v, want generation 1", index, result)
+			}
+		case <-ctx.Done():
+			t.Fatalf("singleflight follower %d did not finish", index)
+		}
+	}
+}
+
+func TestIngestServiceGenerationCaptureStaleRefreshReturnsCachedGeneration(t *testing.T) {
+	store := newGenerationCacheIngestStore(1)
+	service := newGenerationCacheTestService(store)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	generation, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+	if err != nil || generation != 1 {
+		t.Fatalf("initial generation = %d err=%v, want generation 1", generation, err)
+	}
+	if got := store.captureCalls(); got != 1 {
+		t.Fatalf("initial generation capture calls = %d, want 1", got)
+	}
+	select {
+	case <-store.started:
+	case <-ctx.Done():
+		t.Fatal("initial generation capture signal was not delivered")
+	}
+
+	service.generationMu.Lock()
+	service.generations["tenant-a"] = ingestGenerationCacheEntry{
+		generation: 1,
+		expiresAt:  time.Now().Add(-time.Second),
+	}
+	service.generationMu.Unlock()
+	store.setGeneration(2)
+	store.block = true
+
+	started := time.Now()
+	stale, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+	if err != nil || stale != 1 {
+		t.Fatalf("stale generation = %d err=%v, want cached generation 1", stale, err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("stale generation refresh blocked caller for %s", elapsed)
+	}
+	select {
+	case <-store.started:
+	case <-ctx.Done():
+		t.Fatal("stale generation refresh did not start")
+	}
+
+	secondStale, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+	if err != nil || secondStale != 1 {
+		t.Fatalf("concurrent stale generation = %d err=%v, want cached generation 1", secondStale, err)
+	}
+	if got := store.captureCalls(); got != 2 {
+		t.Fatalf("stale refresh capture calls = %d, want one refresh after initial load", got)
+	}
+
+	close(store.release)
+	deadline := time.Now().Add(time.Second)
+	for {
+		service.generationMu.Lock()
+		cached := service.generations["tenant-a"]
+		active := service.generationLoad["tenant-a"]
+		service.generationMu.Unlock()
+		if active == nil && cached.generation == 2 && time.Now().Before(cached.expiresAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stale generation refresh did not publish generation 2: cached=%#v active=%v", cached, active != nil)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	fresh, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+	if err != nil || fresh != 2 {
+		t.Fatalf("refreshed generation = %d err=%v, want generation 2", fresh, err)
+	}
+	if got := store.captureCalls(); got != 2 {
+		t.Fatalf("generation capture calls after fresh cache hit = %d, want 2", got)
+	}
+}
+
+func TestIngestServiceGenerationInvalidationDetachesOldRefresh(t *testing.T) {
+	store := newGenerationCacheIngestStore(1)
+	store.setBlock(true)
+	service := newGenerationCacheTestService(store)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	type captureResult struct {
+		generation int64
+		err        error
+	}
+	oldDone := make(chan captureResult, 1)
+	go func() {
+		generation, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+		oldDone <- captureResult{generation: generation, err: err}
+	}()
+	select {
+	case <-store.started:
+	case <-ctx.Done():
+		t.Fatal("old generation refresh did not start")
+	}
+
+	store.setGeneration(2)
+	service.invalidateIngestWALGeneration("tenant-a")
+	store.setBlock(false)
+	fresh, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+	if err != nil || fresh != 2 {
+		t.Fatalf("generation after lifecycle invalidation = %d err=%v, want generation 2", fresh, err)
+	}
+	if got := store.captureCalls(); got != 2 {
+		t.Fatalf("generation captures after invalidation = %d, want old and new flights", got)
+	}
+
+	close(store.release)
+	select {
+	case result := <-oldDone:
+		if result.err != nil || result.generation != 1 {
+			t.Fatalf("old generation flight result = %#v, want old generation 1", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("old generation flight did not finish")
+	}
+
+	service.generationMu.Lock()
+	cached := service.generations["tenant-a"]
+	active := service.generationLoad["tenant-a"]
+	service.generationMu.Unlock()
+	if cached.generation != 2 || !time.Now().Before(cached.expiresAt) || active != nil {
+		t.Fatalf("cache after detached old flight = %#v active=%v, want generation 2 and no active flight", cached, active != nil)
+	}
+	final, err := service.captureIngestWALGeneration(ctx, "tenant-a")
+	if err != nil || final != 2 {
+		t.Fatalf("generation after old flight completion = %d err=%v, want generation 2", final, err)
+	}
+	if got := store.captureCalls(); got != 2 {
+		t.Fatalf("generation captures after cache recheck = %d, want no stale overwrite", got)
+	}
+}
+
 func TestIngestServiceFencesOldGenerationBeforeDisabledStatus(t *testing.T) {
 	ctx, coordinator := newPostgresIntegrationCoordinator(t, "ingest-service-generation-disabled")
 	store := NewTenantStore(NewMemoryStore(), "test")
@@ -70,7 +275,7 @@ func TestIngestServiceFencesOldGenerationBeforeDisabledStatus(t *testing.T) {
 	config := testIngestServiceConfig(t)
 	config.OwnerID = store.InstanceID
 	config.FlushInterval = time.Hour
-	config.FlushMaxRequests = 1
+	config.FlushMaxRequests = 8
 	service, err := OpenIngestService(store, config)
 	if err != nil {
 		t.Fatalf("open ingest service: %v", err)
@@ -587,6 +792,72 @@ func (s *lifecycleFencingIngestStore) IngestDurableBatchWithHooks(
 		}
 	}
 	return results, nil
+}
+
+type generationCacheIngestStore struct {
+	*lifecycleFencingIngestStore
+	mu         sync.Mutex
+	calls      int
+	generation int64
+	started    chan struct{}
+	release    chan struct{}
+	block      bool
+}
+
+func newGenerationCacheIngestStore(generation int64) *generationCacheIngestStore {
+	return &generationCacheIngestStore{
+		lifecycleFencingIngestStore: &lifecycleFencingIngestStore{},
+		generation:                  generation,
+		started:                     make(chan struct{}, 1),
+		release:                     make(chan struct{}),
+	}
+}
+
+func (s *generationCacheIngestStore) CaptureIngestWALGeneration(ctx context.Context, _ string) (int64, error) {
+	s.mu.Lock()
+	s.calls++
+	generation := s.generation
+	block := s.block
+	s.mu.Unlock()
+	select {
+	case s.started <- struct{}{}:
+	default:
+	}
+	if block {
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return generation, nil
+}
+
+func (s *generationCacheIngestStore) setGeneration(generation int64) {
+	s.mu.Lock()
+	s.generation = generation
+	s.mu.Unlock()
+}
+
+func (s *generationCacheIngestStore) setBlock(block bool) {
+	s.mu.Lock()
+	s.block = block
+	s.mu.Unlock()
+}
+
+func (s *generationCacheIngestStore) captureCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func newGenerationCacheTestService(store *generationCacheIngestStore) *IngestService {
+	return &IngestService{
+		store:          store,
+		runCtx:         context.Background(),
+		generations:    map[string]ingestGenerationCacheEntry{},
+		generationLoad: map[string]*ingestGenerationFlight{},
+	}
 }
 
 func writeLegacyAcceptedWAL(

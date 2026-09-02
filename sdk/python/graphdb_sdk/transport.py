@@ -12,15 +12,39 @@ class TransportMixin:
     def health(self) -> dict:
         return self._json("GET", "/v1/health", tenant_id=None)
 
-    def _json(self, method: str, path: str, tenant_id: str | None = "", query: dict | None = None, body: Any = None) -> dict:
+    def _json(
+        self,
+        method: str,
+        path: str,
+        tenant_id: str | None = "",
+        query: dict | None = None,
+        body: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict:
+        payload, _, _ = self._json_with_meta(method, path, tenant_id, query, body, headers)
+        return payload
+
+    def _json_with_meta(
+        self,
+        method: str,
+        path: str,
+        tenant_id: str | None = "",
+        query: dict | None = None,
+        body: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[dict, int, dict[str, str]]:
         data = None
-        headers = {"Accept": "application/json"}
+        request_headers = {"Accept": "application/json"}
         if body is not None:
             data = json.dumps(body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        with self._open(method, path, tenant_id, query, data, headers) as response:
+            request_headers["Content-Type"] = "application/json"
+        request_headers.update(headers or {})
+        with self._open(method, path, tenant_id, query, data, request_headers) as response:
             payload = response.read()
-        return json.loads(payload.decode("utf-8")) if payload else {}
+            status = response.getcode()
+            response_headers = dict(response.headers.items())
+        decoded = json.loads(payload.decode("utf-8")) if payload else {}
+        return decoded, status, response_headers
 
     def _text_json(self, method: str, path: str, text: str) -> dict:
         headers = {"Accept": "application/json", "Content-Type": "text/plain"}

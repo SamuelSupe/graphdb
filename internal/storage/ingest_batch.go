@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -51,28 +52,31 @@ type IngestBatchStats struct {
 	Segments          int
 	ManifestPublishes int
 	ExactDedup        int
+	CASMerged         int
 	Fallback          bool
 }
 
 type ingestBatchCandidate struct {
-	index          int
-	request        IngestRequest
-	started        time.Time
-	result         IngestResult
-	appliedIndices []int
-	mutations      graph.Mutations
-	policyReport   graph.ApplyReport
-	relationSchema RelationSchemaCatalog
-	schemaMeta     ObjectMeta
-	commit         graph.Commit
-	report         graph.ApplyReport
-	changed        bool
-	metadataOnly   bool
-	skipMetadata   bool
-	resultManifest Manifest
-	prepared       bool
-	preparedPlan   *IngestPreparedRequest
-	reservation    *directCommitReservation
+	index            int
+	request          IngestRequest
+	started          time.Time
+	result           IngestResult
+	appliedIndices   []int
+	mutations        graph.Mutations
+	policyReport     graph.ApplyReport
+	relationSchema   RelationSchemaCatalog
+	schemaMeta       ObjectMeta
+	commit           graph.Commit
+	report           graph.ApplyReport
+	changed          bool
+	metadataOnly     bool
+	skipMetadata     bool
+	resultManifest   Manifest
+	prepared         bool
+	preparedPlan     *IngestPreparedRequest
+	reservation      *directCommitReservation
+	batchReservation *directCommitReservation
+	casMerged        bool
 }
 
 func ingestBatchAcceptedGeneration(entries []IngestBatchEntry) (int64, error) {
@@ -108,6 +112,16 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	tenantID string,
 	entries []IngestBatchEntry,
 	hooks IngestBatchHooks,
+) ([]IngestResult, error) {
+	return s.ingestDurableBatchWithHooks(ctx, tenantID, entries, hooks, true)
+}
+
+func (s *TenantStore) ingestDurableBatchWithHooks(
+	ctx context.Context,
+	tenantID string,
+	entries []IngestBatchEntry,
+	hooks IngestBatchHooks,
+	saveFailures bool,
 ) (results []IngestResult, err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.ingest.batch",
 		tenantTraceAttr(tenantID),
@@ -192,6 +206,16 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 			mutations:      mutations,
 			metadataOnly:   result.Applied == 0,
 		}
+		if ingestRequestAtomic(request) && candidate.result.Failed > 0 {
+			markIngestResultFailure(
+				&candidate.result,
+				request,
+				appliedIndices,
+				fmt.Errorf("%w: one or more ingest items are invalid", ErrIngestAtomicValidation),
+			)
+			candidate.mutations = graph.Mutations{}
+			candidate.metadataOnly = true
+		}
 		if !s.coordinated() {
 			if previous, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
 				if errors.Is(err, ErrIngestIdentityConflict) {
@@ -243,30 +267,12 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 				candidate.preparedPlan = entry.Prepared
 			}
 		}
-		if s.coordinated() {
-			reservation, replay, err := s.reserveCoordinatedIngestCandidate(ctx, tenantID, candidate)
-			if err != nil {
-				if errors.Is(err, ErrIdempotencyConflict) {
-					markIngestCandidateFailure(candidate, err)
-					candidate.metadataOnly = true
-					candidate.skipMetadata = true
-					candidates = append(candidates, candidate)
-					continue
-				}
-				return results, err
-			}
-			candidate.reservation = reservation
-			if replay != nil {
-				applyCommitResultToIngest(&candidate.result, request, *replay)
-				candidate.result.Skipped = true
-				candidate.result.SkipReason = IngestSkipReasonIdempotentReplay
-				candidate.metadataOnly = true
-				candidate.prepared = false
-				candidate.preparedPlan = nil
-				candidate.resultManifest = replay.Manifest
-			}
-		}
 		candidates = append(candidates, candidate)
+	}
+	if s.coordinated() {
+		if err := s.reserveCoordinatedIngestCandidates(ctx, tenantID, candidates); err != nil {
+			return results, err
+		}
 	}
 
 	batchCtx := ctx
@@ -318,12 +324,14 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 	}
 
 	var (
-		loaded        loadedGraph
-		finalGraph    *graph.Graph
-		finalManifest Manifest
-		commitItems   []commitSegmentItem
-		logicalBytes  int64
-		fallback      bool
+		loaded          loadedGraph
+		finalGraph      *graph.Graph
+		finalManifest   Manifest
+		commitItems     []commitSegmentItem
+		preparedSegment preparedCommitSegment
+		logicalBytes    int64
+		fallback        bool
+		indexUpdateDone <-chan error
 	)
 	if len(mutationCandidates) > 0 || coordinatedBatchHasReservations(candidates) {
 		loaded, err = s.loadForWriteLocked(ctx, tenantID)
@@ -351,7 +359,7 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 			return results, err
 		}
 		if len(commitItems) > 0 {
-			finalManifest, logicalBytes, err = s.prepareIngestBatchManifest(ctx, tenantID, loaded, finalGraph, commitItems)
+			finalManifest, logicalBytes, preparedSegment, err = s.prepareIngestBatchManifest(ctx, tenantID, loaded, finalGraph, commitItems)
 			if err != nil {
 				return results, err
 			}
@@ -364,6 +372,7 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		attribute.Int("graphdb.ingest.batch.segments", stats.Segments),
 		attribute.Int("graphdb.ingest.batch.manifest_publishes", stats.ManifestPublishes),
 		attribute.Int("graphdb.ingest.batch.exact_dedup", stats.ExactDedup),
+		attribute.Int("graphdb.ingest.batch.cas_merged", stats.CASMerged),
 		attribute.Bool("graphdb.ingest.batch.fallback", stats.Fallback),
 	)
 	if hooks.Prepared != nil {
@@ -380,7 +389,8 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		}
 	}
 	if len(commitItems) > 0 {
-		if err := s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, commitItems, candidates, logicalBytes); err != nil {
+		indexUpdateDone, err = s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, preparedSegment, commitItems, candidates, logicalBytes)
+		if err != nil {
 			return results, err
 		}
 		if hooks.Published != nil {
@@ -413,16 +423,12 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.ingest.metadata.requests", len(candidates)),
 	)
-	var metadataErr error
 	for _, candidate := range candidates {
 		results[candidate.index] = candidate.result
-		if candidate.skipMetadata {
-			continue
-		}
-		finished := time.Now().UTC()
-		if err := s.saveIngestResultMetadata(metadataCtx, tenantID, candidate.request, candidate.result, candidate.started, finished, true); err != nil {
-			metadataErr = errors.Join(metadataErr, err)
-		}
+	}
+	metadataErr := s.saveIngestBatchResultMetadataWithFailures(metadataCtx, tenantID, candidates, saveFailures)
+	if indexUpdateDone != nil {
+		<-indexUpdateDone
 	}
 	endStorageSpan(metadataSpan, metadataErr)
 	if metadataErr != nil {
@@ -432,6 +438,125 @@ func (s *TenantStore) IngestDurableBatchWithHooks(
 		return results, err
 	}
 	return results, nil
+}
+
+func (s *TenantStore) saveIngestBatchResultMetadata(
+	ctx context.Context,
+	tenantID string,
+	candidates []*ingestBatchCandidate,
+) error {
+	return s.saveIngestBatchResultMetadataWithFailures(ctx, tenantID, candidates, true)
+}
+
+func (s *TenantStore) saveIngestBatchResultMetadataWithFailures(
+	ctx context.Context,
+	tenantID string,
+	candidates []*ingestBatchCandidate,
+	saveFailures bool,
+) error {
+	type collectorKey struct {
+		source      string
+		collectorID string
+	}
+	type collectorMetadataGroup struct {
+		updates       []ingestCollectorStatusUpdate
+		records       sync.WaitGroup
+		recordsMu     sync.Mutex
+		recordsFailed bool
+	}
+	collectorOrder := make([]collectorKey, 0)
+	collectorGroups := make(map[collectorKey]*collectorMetadataGroup)
+	recordJobs := make([]func() error, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.skipMetadata {
+			continue
+		}
+		candidate := candidate
+		finished := time.Now().UTC()
+		key := collectorKey{source: candidate.request.Source, collectorID: candidate.request.CollectorID}
+		group := collectorGroups[key]
+		if group == nil {
+			group = &collectorMetadataGroup{}
+			collectorGroups[key] = group
+			collectorOrder = append(collectorOrder, key)
+		}
+		group.records.Add(1)
+		recordJobs = append(recordJobs, func() error {
+			defer group.records.Done()
+			var result error
+			if err := s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{
+				Request: candidate.request, Result: candidate.result,
+				StartedAt: candidate.started, FinishedAt: finished,
+			}); err != nil {
+				result = errors.Join(result, fmt.Errorf("save ingest batch: %w", err))
+			}
+			if saveFailures && candidate.result.Failed > 0 {
+				if err := s.saveDeadLetter(ctx, tenantID, candidate.request, candidate.result); err != nil {
+					result = errors.Join(result, fmt.Errorf("save dead letter: %w", err))
+				}
+			}
+			if result != nil {
+				group.recordsMu.Lock()
+				group.recordsFailed = true
+				group.recordsMu.Unlock()
+			}
+			return result
+		})
+		group.updates = append(group.updates, ingestCollectorStatusUpdate{
+			request: candidate.request, result: candidate.result,
+			started: candidate.started, finished: finished,
+		})
+	}
+	jobs := append(make([]func() error, 0, len(recordJobs)+len(collectorOrder)), recordJobs...)
+	for _, key := range collectorOrder {
+		group := collectorGroups[key]
+		jobs = append(jobs, func() error {
+			group.records.Wait()
+			group.recordsMu.Lock()
+			recordsFailed := group.recordsFailed
+			group.recordsMu.Unlock()
+			if recordsFailed {
+				return nil
+			}
+			if err := s.saveCollectorStatusBatch(ctx, tenantID, group.updates); err != nil {
+				return fmt.Errorf("save collector status: %w", err)
+			}
+			return nil
+		})
+	}
+	return runIngestMetadataJobs(jobs)
+}
+
+func runIngestMetadataJobs(jobs []func() error) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+	workerCount := min(len(jobs), 8)
+	jobCh := make(chan func() error)
+	errCh := make(chan error, len(jobs))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for job := range jobCh {
+				if err := job(); err != nil {
+					errCh <- err
+				}
+			}
+		}()
+	}
+	for _, job := range jobs {
+		jobCh <- job
+	}
+	close(jobCh)
+	workers.Wait()
+	close(errCh)
+	var result error
+	for err := range errCh {
+		result = errors.Join(result, err)
+	}
+	return result
 }
 
 func (s *TenantStore) checkIngestProjectedCommitTail(
@@ -473,6 +598,9 @@ func ingestBatchStats(
 		stats.ManifestPublishes = 1
 	}
 	for _, candidate := range candidates {
+		if candidate.casMerged && candidate.changed {
+			stats.CASMerged++
+		}
 		if candidate.preparedPlan == nil &&
 			candidate.result.Skipped &&
 			candidate.result.SkipReason == IngestSkipReasonLogicalNoop {
@@ -488,6 +616,88 @@ func (s *TenantStore) applyIngestBatchCandidates(
 	loaded loadedGraph,
 	candidates []*ingestBatchCandidate,
 ) (*graph.Graph, []commitSegmentItem, bool, error) {
+	groups := ingestApplyGroups(candidates)
+	if len(groups) == 1 {
+		return s.applyIngestBatchCandidateGroup(ctx, tenantID, loaded, candidates)
+	}
+
+	current := loaded.Graph
+	currentManifest := loaded.Manifest
+	items := make([]commitSegmentItem, 0, len(candidates))
+	fallback := false
+	for _, group := range groups {
+		groupLoaded := loaded
+		groupLoaded.Graph = current
+		groupLoaded.Manifest = currentManifest
+		next, groupItems, groupFallback, err := s.applyIngestBatchCandidateGroup(ctx, tenantID, groupLoaded, group)
+		if err != nil {
+			return nil, nil, fallback || groupFallback, err
+		}
+		current = next
+		items = append(items, groupItems...)
+		fallback = fallback || groupFallback
+		if len(groupItems) == 0 {
+			continue
+		}
+		last := groupItems[len(groupItems)-1].Commit
+		currentManifest.Version = last.Version
+		currentManifest.HeadCommitID = last.ID
+		currentManifest.UpdatedAt = last.CreatedAt
+	}
+	return current, items, fallback, nil
+}
+
+func ingestApplyGroups(candidates []*ingestBatchCandidate) [][]*ingestBatchCandidate {
+	groups := make([][]*ingestBatchCandidate, 0, len(candidates))
+	for start := 0; start < len(candidates); {
+		end := start + 1
+		request := candidates[start].request
+		switch {
+		case request.ExpectedVersion != nil && !ingestRequestAtomic(request):
+			expected := *request.ExpectedVersion
+			for end < len(candidates) {
+				next := candidates[end].request
+				if next.ExpectedVersion == nil || ingestRequestAtomic(next) || *next.ExpectedVersion != expected {
+					break
+				}
+				end++
+			}
+		case !ingestRequestNeedsIsolatedApply(request):
+			for end < len(candidates) && !ingestRequestNeedsIsolatedApply(candidates[end].request) {
+				end++
+			}
+		}
+		groups = append(groups, candidates[start:end])
+		start = end
+	}
+	return groups
+}
+
+func (s *TenantStore) applyIngestBatchCandidateGroup(
+	ctx context.Context,
+	tenantID string,
+	loaded loadedGraph,
+	candidates []*ingestBatchCandidate,
+) (*graph.Graph, []commitSegmentItem, bool, error) {
+	originalCandidates := candidates
+	casCohort := false
+	if merged, ok := s.prepareIngestCASCohort(loaded.Graph, candidates); ok {
+		candidates = merged
+		casCohort = true
+		if len(candidates) == 0 {
+			if err := validatePreparedIngestResults(originalCandidates); err != nil {
+				return nil, nil, false, err
+			}
+			return loaded.Graph, nil, false, nil
+		}
+	} else {
+		for _, candidate := range candidates {
+			if ingestRequestNeedsIsolatedApply(candidate.request) {
+				next, items, err := s.applyIngestBatchCandidatesIsolated(ctx, tenantID, loaded, candidates)
+				return next, items, true, err
+			}
+		}
+	}
 	commits := make([]graph.Commit, len(candidates))
 	nextVersion := loaded.Manifest.Version
 	for index, candidate := range candidates {
@@ -513,15 +723,11 @@ func (s *TenantStore) applyIngestBatchCandidates(
 		commits[index] = candidate.commit
 	}
 	if next, reports, err := loaded.Graph.ApplyCommitBatchStorageCopyWithOptions(commits, nil); err == nil {
-		valid := true
 		for index, candidate := range candidates {
-			if err := validateRelationSchemaGraph(next, candidate.relationSchema); err != nil {
-				valid = false
-				break
-			}
 			reports[index].Suppressed = append(candidate.policyReport.Suppressed, reports[index].Suppressed...)
 		}
-		if valid && s.checkQuotaAfterApply(ctx, tenantID, loaded.Graph, next) == nil {
+		if validateIngestBatchRelationSchemas(next, candidates, reports, s.coordinated(), loaded.Manifest.Version) == nil &&
+			s.checkQuotaAfterApply(ctx, tenantID, loaded.Graph, next) == nil {
 			items := make([]commitSegmentItem, 0, len(candidates))
 			for index, candidate := range candidates {
 				candidate.report = reports[index]
@@ -546,14 +752,173 @@ func (s *TenantStore) applyIngestBatchCandidates(
 					Commit: candidate.commit,
 				})
 			}
-			if err := validatePreparedIngestResults(candidates); err != nil {
+			if err := validatePreparedIngestResults(originalCandidates); err != nil {
 				return nil, nil, false, err
 			}
 			return next, items, false, nil
 		}
 	}
-	next, items, err := s.applyIngestBatchCandidatesIsolated(ctx, tenantID, loaded, candidates)
+	var next *graph.Graph
+	var items []commitSegmentItem
+	var err error
+	if casCohort {
+		next, items, err = s.applyIngestBatchCandidatesIsolatedPrevalidated(ctx, tenantID, loaded, candidates)
+	} else {
+		next, items, err = s.applyIngestBatchCandidatesIsolated(ctx, tenantID, loaded, candidates)
+	}
+	if err == nil {
+		err = validatePreparedIngestResults(originalCandidates)
+	}
 	return next, items, true, err
+}
+
+type ingestRelationSchemaVersion struct {
+	tenantID     string
+	revision     int64
+	graphVersion int64
+	etag         string
+}
+
+type ingestRelationSchemaValidation struct {
+	catalog     RelationSchemaCatalog
+	incremental bool
+	affected    []string
+	seen        map[string]struct{}
+}
+
+func validateIngestBatchRelationSchemas(
+	next *graph.Graph,
+	candidates []*ingestBatchCandidate,
+	reports []graph.ApplyReport,
+	coordinated bool,
+	baseVersion int64,
+) error {
+	validations := make([]ingestRelationSchemaValidation, 0)
+	byVersion := make(map[ingestRelationSchemaVersion]int)
+	for candidateIndex, candidate := range candidates {
+		catalog := candidate.relationSchema
+		if len(catalog.RelationSchemas) == 0 {
+			continue
+		}
+		version := ingestRelationSchemaVersion{
+			tenantID:     catalog.TenantID,
+			revision:     catalog.Revision,
+			graphVersion: catalog.GraphVersion,
+			etag:         candidate.schemaMeta.ETag,
+		}
+		index, ok := byVersion[version]
+		if !ok {
+			index = len(validations)
+			byVersion[version] = index
+			validations = append(validations, ingestRelationSchemaValidation{
+				catalog:     catalog,
+				incremental: relationSchemaCommitCanValidateIncrementally(coordinated, catalog, baseVersion),
+				seen:        make(map[string]struct{}),
+			})
+		}
+		validation := &validations[index]
+		for _, edgeID := range reports[candidateIndex].AffectedEdgeIDs {
+			if _, exists := validation.seen[edgeID]; exists {
+				continue
+			}
+			validation.seen[edgeID] = struct{}{}
+			validation.affected = append(validation.affected, edgeID)
+		}
+	}
+	for _, validation := range validations {
+		var err error
+		if validation.incremental {
+			err = validateRelationSchemaCommit(next, validation.catalog, validation.affected)
+		} else {
+			err = validateRelationSchemaGraph(next, validation.catalog)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *TenantStore) advanceIngestBatchRelationSchemaValidation(
+	ctx context.Context,
+	tenantID string,
+	candidates []*ingestBatchCandidate,
+	graphVersion int64,
+) {
+	if s.coordinated() {
+		return
+	}
+	advanced := make(map[ingestRelationSchemaVersion]struct{})
+	for _, candidate := range candidates {
+		catalog := candidate.relationSchema
+		if len(catalog.RelationSchemas) == 0 {
+			continue
+		}
+		version := ingestRelationSchemaVersion{
+			tenantID:     catalog.TenantID,
+			revision:     catalog.Revision,
+			graphVersion: catalog.GraphVersion,
+			etag:         candidate.schemaMeta.ETag,
+		}
+		if _, ok := advanced[version]; ok {
+			continue
+		}
+		if err := s.advanceRelationSchemaValidation(ctx, tenantID, catalog, candidate.schemaMeta, graphVersion); err != nil {
+			return
+		}
+		advanced[version] = struct{}{}
+	}
+}
+
+// prepareIngestCASCohort compares one writer's WAL cohort against its shared
+// base snapshot. The accepted requests retain WAL order and individual logical
+// versions, but can use the single-COW batch apply and one manifest publish.
+// A coordinated writer must still win the PostgreSQL head CAS before any
+// candidate in the cohort becomes visible.
+func (s *TenantStore) prepareIngestCASCohort(
+	base *graph.Graph,
+	candidates []*ingestBatchCandidate,
+) ([]*ingestBatchCandidate, bool) {
+	if len(candidates) < 2 {
+		return nil, false
+	}
+	expected := int64(0)
+	for index, candidate := range candidates {
+		if candidate.request.ExpectedVersion == nil || ingestRequestAtomic(candidate.request) {
+			return nil, false
+		}
+		if index == 0 {
+			expected = *candidate.request.ExpectedVersion
+			continue
+		}
+		if *candidate.request.ExpectedVersion != expected {
+			return nil, false
+		}
+	}
+
+	accepted := make([]*ingestBatchCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if expected != base.Version {
+			markIngestCandidateFailure(candidate, fmt.Errorf(
+				"%w: expected version %d, current version %d",
+				ErrVersionConflict,
+				expected,
+				base.Version,
+			))
+			continue
+		}
+		if err := evaluateIngestPreconditions(base, candidate.request.Preconditions, candidate.started); err != nil {
+			markIngestCandidateFailure(candidate, err)
+			continue
+		}
+		accepted = append(accepted, candidate)
+	}
+	if len(accepted) > 1 {
+		for _, candidate := range accepted {
+			candidate.casMerged = true
+		}
+	}
+	return accepted, true
 }
 
 func (s *TenantStore) applyIngestBatchCandidatesIsolated(
@@ -562,17 +927,63 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolated(
 	loaded loadedGraph,
 	candidates []*ingestBatchCandidate,
 ) (*graph.Graph, []commitSegmentItem, error) {
+	return s.applyIngestBatchCandidatesIsolatedWithGuards(ctx, tenantID, loaded, candidates, false)
+}
+
+func (s *TenantStore) applyIngestBatchCandidatesIsolatedPrevalidated(
+	ctx context.Context,
+	tenantID string,
+	loaded loadedGraph,
+	candidates []*ingestBatchCandidate,
+) (*graph.Graph, []commitSegmentItem, error) {
+	return s.applyIngestBatchCandidatesIsolatedWithGuards(ctx, tenantID, loaded, candidates, true)
+}
+
+func (s *TenantStore) applyIngestBatchCandidatesIsolatedWithGuards(
+	ctx context.Context,
+	tenantID string,
+	loaded loadedGraph,
+	candidates []*ingestBatchCandidate,
+	guardsPrevalidated bool,
+) (*graph.Graph, []commitSegmentItem, error) {
 	current := loaded.Graph
 	currentHeadID := loaded.Manifest.HeadCommitID
 	currentUpdatedAt := loaded.Manifest.UpdatedAt
 	items := make([]commitSegmentItem, 0, len(candidates))
 	for _, candidate := range candidates {
+		if !guardsPrevalidated && candidate.request.ExpectedVersion != nil && *candidate.request.ExpectedVersion != current.Version {
+			markIngestCandidateFailure(candidate, fmt.Errorf(
+				"%w: expected version %d, current version %d",
+				ErrVersionConflict,
+				*candidate.request.ExpectedVersion,
+				current.Version,
+			))
+			continue
+		}
+		if !guardsPrevalidated {
+			if err := evaluateIngestPreconditions(current, candidate.request.Preconditions, candidate.started); err != nil {
+				markIngestCandidateFailure(candidate, err)
+				continue
+			}
+		}
 		expectedVersion := current.Version + 1
 		if candidate.prepared {
 			if candidate.commit.Version != expectedVersion {
 				return nil, nil, fmt.Errorf("%w: prepared commit version is no longer contiguous", ErrIngestRepairRequired)
 			}
 		} else {
+			if candidate.commit.ID == "" {
+				commitID, err := newCommitID()
+				if err != nil {
+					return nil, nil, err
+				}
+				candidate.commit = graph.Commit{
+					LayoutVersion: CurrentObjectLayoutVersion,
+					ID:            commitID,
+					TenantID:      tenantID,
+					Mutations:     candidate.mutations,
+				}
+			}
 			candidate.commit.Version = expectedVersion
 			candidate.commit.CreatedAt = time.Now().UTC()
 		}
@@ -596,6 +1007,12 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolated(
 			continue
 		}
 		report.Suppressed = append(candidate.policyReport.Suppressed, report.Suppressed...)
+		if ingestRequestAtomic(candidate.request) && len(report.Suppressed) > 0 {
+			candidate.result.Suppressed = len(report.Suppressed)
+			candidate.result.Conflicts = append(candidate.result.Conflicts, ingestConflicts(candidate.request, report.Suppressed)...)
+			markIngestCandidateFailure(candidate, fmt.Errorf("%w: %d mutation conflicts", ErrIngestAtomicSuppressed, len(report.Suppressed)))
+			continue
+		}
 		candidate.report = report
 		if !report.Changed {
 			if candidate.prepared {
@@ -652,18 +1069,43 @@ func (s *TenantStore) prepareIngestBatchManifest(
 	loaded loadedGraph,
 	finalGraph *graph.Graph,
 	newItems []commitSegmentItem,
-) (Manifest, int64, error) {
-	nextMD5, logicalBytes, err := finalGraph.ContentMD5WithLogicalSize()
-	if err != nil {
-		return Manifest{}, 0, err
+) (Manifest, int64, preparedCommitSegment, error) {
+	type hashResult struct {
+		digest       string
+		logicalBytes int64
+		err          error
 	}
-	items, err := s.ingestBatchSegmentItems(ctx, tenantID, loaded, newItems)
-	if err != nil {
-		return Manifest{}, 0, err
+	type segmentResult struct {
+		prepared preparedCommitSegment
+		err      error
 	}
-	ref, err := s.commitSegmentRef(tenantID, items)
-	if err != nil {
-		return Manifest{}, 0, err
+	hashCh := make(chan hashResult, 1)
+	segmentCh := make(chan segmentResult, 1)
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		digest, logicalBytes, err := finalGraph.ContentMD5WithLogicalSize()
+		hashCh <- hashResult{digest: digest, logicalBytes: logicalBytes, err: err}
+	}()
+	go func() {
+		defer wait.Done()
+		items, err := s.ingestBatchSegmentItems(ctx, tenantID, loaded, newItems)
+		if err != nil {
+			segmentCh <- segmentResult{err: err}
+			return
+		}
+		prepared, err := s.prepareCommitSegment(ctx, tenantID, items, true)
+		segmentCh <- segmentResult{prepared: prepared, err: err}
+	}()
+	wait.Wait()
+	hashed := <-hashCh
+	segmented := <-segmentCh
+	if hashed.err != nil {
+		return Manifest{}, 0, preparedCommitSegment{}, hashed.err
+	}
+	if segmented.err != nil {
+		return Manifest{}, 0, preparedCommitSegment{}, segmented.err
 	}
 	last := newItems[len(newItems)-1].Commit
 	manifest := loaded.Manifest
@@ -671,11 +1113,11 @@ func (s *TenantStore) prepareIngestBatchManifest(
 	manifest.LayoutVersion = CurrentObjectLayoutVersion
 	manifest.Version = last.Version
 	manifest.HeadCommitID = last.ID
-	manifest.CommitSegments = append(append([]CommitSegmentRef(nil), manifest.CommitSegments...), ref)
+	manifest.CommitSegments = append(append([]CommitSegmentRef(nil), manifest.CommitSegments...), segmented.prepared.ref)
 	manifest.CommitKeys = nil
 	manifest.UpdatedAt = last.CreatedAt
-	manifest.DataMD5 = nextMD5
-	return manifest, logicalBytes, nil
+	manifest.DataMD5 = hashed.digest
+	return manifest, hashed.logicalBytes, segmented.prepared, nil
 }
 
 func (s *TenantStore) publishIngestBatch(
@@ -684,10 +1126,11 @@ func (s *TenantStore) publishIngestBatch(
 	loaded loadedGraph,
 	finalGraph *graph.Graph,
 	manifest Manifest,
+	preparedSegment preparedCommitSegment,
 	newItems []commitSegmentItem,
 	candidates []*ingestBatchCandidate,
 	logicalBytes int64,
-) (err error) {
+) (indexUpdateDone <-chan error, err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.ingest.publish",
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.ingest.publish.logical_commits", len(newItems)),
@@ -695,17 +1138,13 @@ func (s *TenantStore) publishIngestBatch(
 		attribute.Int64("graphdb.ingest.publish.final_version", manifest.Version),
 	)
 	defer func() { endStorageSpan(span, err) }()
-	items, err := s.ingestBatchSegmentItems(ctx, tenantID, loaded, newItems)
+	ref, err := s.putPreparedCommitSegment(ctx, tenantID, preparedSegment)
 	if err != nil {
-		return err
-	}
-	ref, err := s.putCommitSegment(ctx, tenantID, items)
-	if err != nil {
-		return err
+		return nil, err
 	}
 	expected := manifest.CommitSegments[len(manifest.CommitSegments)-1]
 	if ref != expected {
-		return fmt.Errorf("prepared commit segment changed before publish")
+		return nil, fmt.Errorf("prepared commit segment changed before publish")
 	}
 	var meta ObjectMeta
 	if s.coordinated() {
@@ -715,7 +1154,7 @@ func (s *TenantStore) publishIngestBatch(
 	}
 	if err != nil {
 		s.handleManifestPublishFailureCache(tenantID, loaded, err)
-		return err
+		return nil, err
 	}
 	s.setWriteCache(tenantID, loadedGraph{
 		Graph:      finalGraph,
@@ -725,13 +1164,14 @@ func (s *TenantStore) publishIngestBatch(
 		CommitTail: emptyCommitTailCache(),
 		CacheBytes: writeCacheBytesForGraphWithCommitTail(finalGraph, logicalBytes, emptyCommitTailCache()),
 	})
+	s.advanceIngestBatchRelationSchemaValidation(ctx, tenantID, candidates, manifest.Version)
 	span.SetAttributes(
 		attribute.Int("graphdb.ingest.publish.segment_commits", ref.Count),
 		attribute.Int64("graphdb.ingest.publish.segment_first_version", ref.FirstVersion),
 		attribute.Int64("graphdb.ingest.publish.segment_last_version", ref.LastVersion),
 	)
 	if s.coordinated() {
-		return nil
+		return nil, nil
 	}
 	aggregateMutations := graph.Mutations{}
 	aggregateReport := graph.ApplyReport{Changed: true}
@@ -748,13 +1188,14 @@ func (s *TenantStore) publishIngestBatch(
 		aggregateReport.AffectedEntityIDs = append(aggregateReport.AffectedEntityIDs, candidate.report.AffectedEntityIDs...)
 		aggregateReport.AffectedEdgeIDs = append(aggregateReport.AffectedEdgeIDs, candidate.report.AffectedEdgeIDs...)
 	}
-	indexErr := s.updateIndexesAfterCommit(ctx, tenantID, loaded.Graph, finalGraph, aggregateMutations, aggregateReport, manifest.Version)
-	if indexErr != nil {
-		// Indexes are derived state. The manifest remains authoritative and the
-		// regular repair path can rebuild them.
-		return nil
-	}
-	return nil
+	done := make(chan error, 1)
+	go func() {
+		done <- s.updateIndexesAfterCommit(
+			ctx, tenantID, loaded.Graph, finalGraph,
+			aggregateMutations, aggregateReport, manifest.Version,
+		)
+	}()
+	return done, nil
 }
 
 func (s *TenantStore) ingestBatchSegmentItems(
@@ -782,27 +1223,6 @@ func (s *TenantStore) ingestBatchSegmentItems(
 	}
 	items = append(items, newItems...)
 	return items, nil
-}
-
-func (s *TenantStore) commitSegmentRef(tenantID string, items []commitSegmentItem) (CommitSegmentRef, error) {
-	if len(items) == 0 {
-		return CommitSegmentRef{}, fmt.Errorf("empty commit segment")
-	}
-	payload, err := marshalCommitSegmentPayload(items)
-	if err != nil {
-		return CommitSegmentRef{}, err
-	}
-	first := items[0].Commit.Version
-	last := items[len(items)-1].Commit.Version
-	hash := objectContentHash(payload)
-	return CommitSegmentRef{
-		Key:          s.commitSegmentKey(tenantID, first, last, hash),
-		Codec:        commitSegmentCodecParquet,
-		FirstVersion: first,
-		LastVersion:  last,
-		Count:        len(items),
-		ContentHash:  hash,
-	}, nil
 }
 
 func (s *TenantStore) preparedIngestPublished(
@@ -1010,20 +1430,7 @@ func applyCommitResultToIngest(result *IngestResult, request IngestRequest, comm
 }
 
 func markIngestCandidateFailure(candidate *ingestBatchCandidate, commitErr error) {
-	pendingApplied := candidate.result.Applied
-	candidate.result.Failed += pendingApplied
-	candidate.result.Applied = 0
-	if candidate.result.Failed == 0 {
-		candidate.result.Failed = 1
-	}
-	for _, index := range candidate.appliedIndices {
-		candidate.result.Failures = append(candidate.result.Failures, IngestFailure{
-			Index:      index,
-			ExternalID: candidate.request.Items[index].ExternalID,
-			Error:      commitErr.Error(),
-		})
-	}
-	candidate.result.Conflicts = append(candidate.result.Conflicts, IngestConflict{Message: commitErr.Error()})
+	markIngestResultFailure(&candidate.result, candidate.request, candidate.appliedIndices, commitErr)
 }
 
 func appendGraphMutations(target *graph.Mutations, source graph.Mutations) {
