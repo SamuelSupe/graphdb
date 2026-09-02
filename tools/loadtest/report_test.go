@@ -20,8 +20,7 @@ func TestWriteLoadReport(t *testing.T) {
 		batches:   3,
 		batchSize: 10,
 	}
-	results := loadResults{ScheduledBatches: 3, CommittedBatches: 3, CommittedMutations: 90, MutationsPerSecond: 90}
-	if err := writeLoadReport(path, cfg, "http://reader", time.Second, metrics, results); err != nil {
+	if err := writeLoadReport(path, cfg, "http://reader", time.Second, metrics); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -32,7 +31,7 @@ func TestWriteLoadReport(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.SchemaVersion != 2 || !report.Success || report.PlannedGraph.Entities != 62 || report.PlannedGraph.Edges != 31 || report.Results.CommittedMutations != 90 {
+	if !report.Success || report.PlannedGraph.Entities != 62 || report.PlannedGraph.Edges != 31 {
 		t.Fatalf("report = %#v", report)
 	}
 	if len(report.Metrics) != 1 || report.Metrics[0].P95MS != 25 {

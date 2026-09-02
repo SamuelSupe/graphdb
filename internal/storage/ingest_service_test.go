@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"container/heap"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -78,6 +77,195 @@ func TestIngestServicePreservesTenantFIFOWithOneWriteWorker(t *testing.T) {
 	}
 }
 
+func TestIngestServiceTerminalBatchPublishesAndFinalizesInWALOrder(t *testing.T) {
+	observer := &ingestWALTestObserver{}
+	config := testIngestServiceConfig(t)
+	config.WAL.BufferBytes = 16 * 1024
+	config.WAL.Observer = observer
+	config.Observer = observer
+	wal, initial, err := OpenIngestWAL(config.WAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(initial) != 0 {
+		t.Fatalf("initial WAL records = %d, want 0", len(initial))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	service := &IngestService{
+		store:          NewTenantStore(NewMemoryStore(), "test"),
+		wal:            wal,
+		config:         config,
+		active:         map[string]*ingestPending{},
+		activeByStatus: map[string]*ingestPending{},
+		runCtx:         ctx,
+		cancel:         cancel,
+	}
+	closed := false
+	t.Cleanup(func() {
+		cancel()
+		if !closed {
+			_ = wal.Close()
+		}
+	})
+
+	items := make([]*ingestPending, 0, 2)
+	for index := range 2 {
+		request, err := PrepareIngestRequest(
+			"tenant-a",
+			ingestEntityRequest(fmt.Sprintf("batch-terminal-%d", index), fmt.Sprintf("host:terminal-%d", index)),
+		)
+		if err != nil {
+			t.Fatalf("prepare request %d: %v", index, err)
+		}
+		acceptedAt := time.Now().UTC()
+		envelope := walIngestEnvelope{
+			RecordID:   ingestRecordID(ingestRequestIdentity("tenant-a", request)),
+			TenantID:   "tenant-a",
+			Request:    request,
+			AcceptedAt: acceptedAt,
+			State:      IngestStateAccepted,
+		}
+		payload, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatalf("marshal accepted envelope %d: %v", index, err)
+		}
+		appendResult, err := wal.Append(ctx, IngestWALAccepted, payload)
+		if err != nil {
+			t.Fatalf("append accepted envelope %d: %v", index, err)
+		}
+		pending := &ingestPending{
+			envelope:    envelope,
+			acceptedLSN: appendResult.LSN,
+			estimated:   acceptedAt,
+			bytes:       int64(len(payload) + ingestWALHeaderBytes + ingestWALChecksumBytes),
+			state:       IngestStateAccepted,
+			done:        make(chan struct{}),
+		}
+		identity := ingestRequestIdentity("tenant-a", request)
+		service.active[identity] = pending
+		service.activeByStatus[ingestStatusKey("tenant-a", request.Source, request.CollectorID, request.BatchID)] = pending
+		service.pendingBytes += pending.bytes
+		items = append(items, pending)
+	}
+
+	before := len(observer.syncSnapshot())
+	results := []IngestResult{
+		{BatchID: items[0].envelope.Request.BatchID, Version: 1, Applied: 1},
+		{BatchID: items[1].envelope.Request.BatchID, Version: 2, Applied: 1},
+	}
+	if retryIndex, err := service.appendTerminalBatch(items, results); err != nil || retryIndex != len(items) {
+		t.Fatalf("append terminal batch retryIndex=%d err=%v, want %d and nil", retryIndex, err, len(items))
+	}
+	for index, pending := range items {
+		got, err := service.Wait(context.Background(), IngestAcceptance{
+			pending:     pending,
+			recordID:    pending.envelope.RecordID,
+			completion:  pending.done,
+			BatchID:     pending.envelope.Request.BatchID,
+			Source:      pending.envelope.Request.Source,
+			CollectorID: pending.envelope.Request.CollectorID,
+		})
+		if err != nil {
+			t.Fatalf("wait terminal item %d: %v", index, err)
+		}
+		if got.BatchID != results[index].BatchID || got.Version != results[index].Version ||
+			got.Applied != results[index].Applied || got.Failed != results[index].Failed {
+			t.Fatalf("terminal result %d = %#v, want %#v", index, got, results[index])
+		}
+		if pending.state != IngestStateCommitted {
+			t.Fatalf("terminal state %d = %q, want committed", index, pending.state)
+		}
+	}
+	service.mu.Lock()
+	active := len(service.active)
+	service.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("active terminal requests = %d, want 0", active)
+	}
+	syncs := observer.syncSnapshot()
+	if len(syncs)-before != 1 || syncs[before].status != "ok" || syncs[before].records != 2 {
+		t.Fatalf("terminal WAL sync observations = %#v, want one ok group of 2 records", syncs[before:])
+	}
+
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closed = true
+	reopened, recovered, err := OpenIngestWAL(config.WAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(recovered) != 4 {
+		t.Fatalf("recovered WAL records = %d, want 4 accepted/finalized records", len(recovered))
+	}
+	wantTypes := []IngestWALRecordType{
+		IngestWALAccepted, IngestWALAccepted,
+		IngestWALFinalized, IngestWALFinalized,
+	}
+	for index, record := range recovered {
+		if record.LSN != uint64(index+1) || record.Type != wantTypes[index] {
+			t.Fatalf("recovered record %d = %#v, want LSN/type %d/%d", index, record, index+1, wantTypes[index])
+		}
+		if index < 2 {
+			continue
+		}
+		if strings.Contains(string(record.Payload), `"result"`) || strings.Contains(string(record.Payload), `"request"`) {
+			t.Fatalf("terminal WAL record %d retained request/result payload: %s", index, record.Payload)
+		}
+		var envelope walIngestEnvelope
+		if err := json.Unmarshal(record.Payload, &envelope); err != nil {
+			t.Fatalf("decode terminal envelope %d: %v", index, err)
+		}
+		if envelope.State != IngestStateCommitted {
+			t.Fatalf("terminal envelope %d state=%q, want %q", index, envelope.State, IngestStateCommitted)
+		}
+	}
+	recovery := &IngestService{
+		config:         config,
+		active:         map[string]*ingestPending{},
+		activeByStatus: map[string]*ingestPending{},
+	}
+	pending, err := recovery.recover(recovered)
+	if err != nil {
+		t.Fatalf("recover compact terminal records: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending after compact terminal recovery = %d, want 0", len(pending))
+	}
+
+	legacyAccepted := items[0].envelope
+	legacyAccepted.State = IngestStateAccepted
+	legacyAccepted.Prepared = nil
+	legacyAccepted.Result = nil
+	legacyAccepted.Error = ""
+	acceptedPayload, err := json.Marshal(legacyAccepted)
+	if err != nil {
+		t.Fatalf("marshal legacy accepted envelope: %v", err)
+	}
+	publishedPayload, err := pendingStatePayload(
+		items[0], IngestWALPublished, IngestStatePublished, &results[0], "",
+	)
+	if err != nil {
+		t.Fatalf("marshal legacy published state: %v", err)
+	}
+	legacyRecovery := &IngestService{
+		config:         config,
+		active:         map[string]*ingestPending{},
+		activeByStatus: map[string]*ingestPending{},
+	}
+	legacyPending, err := legacyRecovery.recover([]IngestWALRecord{
+		{LSN: 1, Type: IngestWALAccepted, Payload: acceptedPayload},
+		{LSN: 2, Type: IngestWALPublished, Payload: publishedPayload},
+	})
+	if err != nil {
+		t.Fatalf("recover legacy published terminal state: %v", err)
+	}
+	if len(legacyPending) != 1 || legacyPending[0].state != IngestStatePublished {
+		t.Fatalf("legacy published recovery = %#v, want one published pending request", legacyPending)
+	}
+}
+
 func TestIngestServiceSharesActiveIdempotencyAndRejectsDifferentPayload(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	config := testIngestServiceConfig(t)
@@ -110,6 +298,11 @@ func TestIngestServiceSharesActiveIdempotencyAndRejectsDifferentPayload(t *testi
 	if first.acceptedLSN != second.acceptedLSN {
 		t.Fatalf("shared request LSNs = %d and %d", first.acceptedLSN, second.acceptedLSN)
 	}
+	batchConflict := request
+	batchConflict.IdempotencyKey = "idem-2"
+	if _, err := service.Accept(context.Background(), "tenant-a", batchConflict); !errors.Is(err, ErrIngestIdentityConflict) {
+		t.Fatalf("same batch with different idempotency err = %v, want ErrIngestIdentityConflict", err)
+	}
 	conflict := request
 	conflict.Items = []IngestItem{{Entity: &graph.Entity{ID: "host:2", Kind: "host"}}}
 	if _, err := service.Accept(context.Background(), "tenant-a", conflict); !errors.Is(err, ErrIngestIdentityConflict) {
@@ -117,78 +310,11 @@ func TestIngestServiceSharesActiveIdempotencyAndRejectsDifferentPayload(t *testi
 	}
 }
 
-func TestIngestRequestDigestOmitsGeneratedBatchIDWithoutRemarshal(t *testing.T) {
-	request, requestJSON, err := prepareIngestRequestJSON("tenant-a", IngestRequest{
-		Source:         "agent",
-		CollectorID:    "collector-a",
-		BatchID:        `batch-\"quoted\\path`,
-		IdempotencyKey: "idem-1",
-		Items: []IngestItem{{
-			Entity: &graph.Entity{ID: "host:1", Kind: "host"},
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest, err := ingestRequestDigest(request, requestJSON)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyRequest := request
-	legacyRequest.BatchID = ""
-	legacyJSON, err := json.Marshal(legacyRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := sha256.Sum256(legacyJSON)
-	if digest != want {
-		t.Fatalf("digest = %x, want %x", digest, want)
-	}
-}
-
-func TestIngestServiceDefersDerivedIndexRefresh(t *testing.T) {
-	ctx := context.Background()
-	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
-	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}},
-	}, CommitOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
-		t.Fatal(err)
-	}
-	config := testIngestServiceConfig(t)
-	config.FlushMaxRequests = 1
-	service, err := OpenIngestService(store, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeIngestService(t, service)
-
-	accepted, err := service.Accept(ctx, "tenant-a", ingestEntityRequest("batch-1", "host:1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := service.Wait(ctx, accepted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Version != 2 {
-		t.Fatalf("ingest version = %d, want 2", result.Version)
-	}
-	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if catalog.Version != 1 {
-		t.Fatalf("index catalog version = %d, want deferred version 1", catalog.Version)
-	}
-}
-
 func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 	recorder := installStorageSpanRecorder(t)
 	store := NewTenantStore(NewMemoryStore(), "test")
 	config := testIngestServiceConfig(t)
+	config.OwnerID = "writer-a"
 	traceCtx, acceptedSpan := otel.Tracer("graphdb/test").Start(context.Background(), "test.accepted_request")
 	acceptedSpanID := acceptedSpan.SpanContext().SpanID()
 	request, err := PrepareIngestRequest("tenant-a", IngestRequest{
@@ -248,6 +374,9 @@ func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if accepted.WriterID != config.OwnerID {
+		t.Fatalf("recovered acceptance writer ID = %q, want %q", accepted.WriterID, config.OwnerID)
+	}
 	result, err := service.Wait(context.Background(), accepted)
 	if err != nil {
 		t.Fatal(err)
@@ -264,6 +393,107 @@ func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 		}
 	}
 	t.Fatalf("recovered flush does not link persisted accepted span %s", acceptedSpanID)
+}
+
+func TestIngestServiceRejectsPendingWALOwnedByAnotherWriter(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.OwnerID = "writer-a"
+	request, err := PrepareIngestRequest("tenant-a", ingestEntityRequest("batch-owned-by-b", "host:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := walIngestEnvelope{
+		RecordID:   ingestRecordID(ingestRequestIdentity("tenant-a", request)),
+		WriterID:   "writer-b",
+		TenantID:   "tenant-a",
+		Request:    request,
+		Digest:     sha256Sum(requestJSON),
+		AcceptedAt: time.Now().UTC(),
+		State:      IngestStateAccepted,
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal, _, err := OpenIngestWAL(config.WAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALAccepted, payload); err != nil {
+		_ = wal.Close()
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := OpenIngestService(store, config); err == nil || !strings.Contains(err.Error(), "owner mismatch") {
+		t.Fatalf("open with another writer's pending WAL err = %v, want owner mismatch", err)
+	}
+}
+
+func TestIngestServiceClearsWALFullAfterShortCompletion(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.WAL.MaxBytes = 4096
+	config.WAL.SegmentBytes = config.WAL.MaxBytes
+	config.WAL.ControlReserveBytes = 512
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceClosed := false
+	defer func() {
+		if !serviceClosed {
+			crashIngestService(t, service)
+		}
+	}()
+
+	pending := make([]*ingestPending, 0)
+	for index := range 128 {
+		acceptance, acceptErr := service.Accept(context.Background(), "tenant-a", ingestEntityRequest(
+			fmt.Sprintf("batch-full-%d", index), fmt.Sprintf("host:%d", index),
+		))
+		if errors.Is(acceptErr, ErrIngestWALFull) {
+			break
+		}
+		if acceptErr != nil {
+			t.Fatalf("accept %d: %v", index, acceptErr)
+		}
+		pending = append(pending, acceptance.pending)
+	}
+	if len(pending) == 0 || len(pending) >= 128 || service.Readiness().Writable {
+		t.Fatalf("WAL did not enter full state with a short pending queue: pending=%d readiness=%#v", len(pending), service.Readiness())
+	}
+
+	for index, item := range pending {
+		service.completePendingState(item, IngestResult{
+			BatchID: item.envelope.Request.BatchID,
+			Version: int64(index + 1),
+			Applied: 1,
+		}, nil, IngestStateCommitted)
+	}
+	if readiness := service.Readiness(); !readiness.Writable {
+		t.Fatalf("readiness after %d completions = %#v, want writable after WAL prune", len(pending), readiness)
+	}
+
+	acceptance, err := service.Accept(context.Background(), "tenant-a", ingestEntityRequest("batch-after-prune", "host:after-prune"))
+	if err != nil {
+		t.Fatalf("accept after short completion = %v, want WAL capacity reclaimed", err)
+	}
+	service.completePendingState(acceptance.pending, IngestResult{
+		BatchID: acceptance.BatchID,
+		Version: int64(len(pending) + 1),
+		Applied: 1,
+	}, nil, IngestStateCommitted)
+	crashIngestService(t, service)
+	serviceClosed = true
 }
 
 func TestIngestServiceExactDuplicateDoesNotAdvanceVersion(t *testing.T) {
@@ -305,6 +535,558 @@ func TestIngestServiceExactDuplicateDoesNotAdvanceVersion(t *testing.T) {
 	}
 }
 
+func TestIngestServiceExactReplayAfterIdentityAttemptFailureStatusCommitted(t *testing.T) {
+	tests := []struct {
+		name   string
+		object ObjectStore
+	}{
+		{name: "conditional_delete", object: conditionalDeleteUnsupportedStore{ObjectStore: NewMemoryStore()}},
+		{name: "conditional_delete_supported", object: NewMemoryStore()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewTenantStore(test.object, "test")
+			config := testIngestServiceConfig(t)
+			config.FlushInterval = time.Hour
+			config.FlushMaxRequests = 8
+			service, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeIngestService(t, service)
+
+			flushTenant := func() {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+					t.Fatalf("flush tenant: %v", err)
+				}
+			}
+
+			payloadA := ingestEntityRequest("batch-attempt-marker", "host:a")
+			first, err := service.Accept(context.Background(), "tenant-a", payloadA)
+			if err != nil {
+				t.Fatalf("accept payload A: %v", err)
+			}
+			flushTenant()
+			firstResult, err := service.Wait(context.Background(), first)
+			if err != nil {
+				t.Fatalf("wait payload A: %v", err)
+			}
+			if firstResult.Version != 1 || firstResult.Applied != 1 || firstResult.Failed != 0 {
+				t.Fatalf("payload A result = %#v, want committed version 1", firstResult)
+			}
+
+			payloadB := payloadA
+			payloadB.Items = []IngestItem{{
+				ExternalID: "host:b",
+				Entity:     &graph.Entity{ID: "host:b", Kind: "host"},
+			}}
+			conflict, err := service.Accept(context.Background(), "tenant-a", payloadB)
+			if err != nil {
+				t.Fatalf("accept payload B: %v", err)
+			}
+			flushTenant()
+			conflictResult, err := service.Wait(context.Background(), conflict)
+			if err != nil {
+				t.Fatalf("wait payload B: %v", err)
+			}
+			if conflictResult.Applied != 0 || conflictResult.Failed != 1 {
+				t.Fatalf("payload B result = %#v, want one failed identity attempt", conflictResult)
+			}
+
+			replay, err := service.Accept(context.Background(), "tenant-a", payloadA)
+			if err != nil {
+				t.Fatalf("accept exact replay A: %v", err)
+			}
+			flushTenant()
+			replayResult, err := service.Wait(context.Background(), replay)
+			if err != nil {
+				t.Fatalf("wait exact replay A: %v", err)
+			}
+			if replayResult.Version != 1 || replayResult.Applied != 1 || replayResult.Failed != 0 ||
+				!replayResult.Skipped || replayResult.SkipReason != IngestSkipReasonIdempotentReplay {
+				t.Fatalf("exact replay A result = %#v, want successful idempotent replay", replayResult)
+			}
+
+			status, err := service.Status(
+				context.Background(), "tenant-a", payloadA.Source, payloadA.CollectorID, payloadA.BatchID,
+			)
+			if err != nil {
+				t.Fatalf("status after exact replay A: %v", err)
+			}
+			if status.State != IngestStateCommitted || status.Result == nil ||
+				status.Result.Version != 1 || status.Result.Applied != 1 || status.Result.Failed != 0 {
+				t.Fatalf("status after exact replay A = %#v, want committed replay result", status)
+			}
+			if _, err := store.GetIngestAttemptFailure(
+				context.Background(), config.OwnerID, "tenant-a", payloadA.Source, payloadA.CollectorID, payloadA.BatchID,
+			); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("attempt failure marker after exact replay = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+func TestIngestServiceTerminalizesDurableIdentityConflictWithoutBlockingTenant(t *testing.T) {
+	tests := []struct {
+		name          string
+		request       func() IngestRequest
+		conflict      func(IngestRequest) IngestRequest
+		statusBatchID func(IngestRequest) string
+	}{
+		{
+			name: "batch",
+			request: func() IngestRequest {
+				return ingestEntityRequest("batch-durable-conflict", "host:first")
+			},
+			conflict: func(request IngestRequest) IngestRequest {
+				request.Items = []IngestItem{{
+					ExternalID: "host:conflict",
+					Entity:     &graph.Entity{ID: "host:conflict", Kind: "host"},
+				}}
+				return request
+			},
+			statusBatchID: func(request IngestRequest) string { return request.BatchID },
+		},
+		{
+			name: "idempotency",
+			request: func() IngestRequest {
+				request := ingestEntityRequest("batch-durable-idempotency", "host:first")
+				request.IdempotencyKey = "idem-durable-conflict"
+				return request
+			},
+			conflict: func(request IngestRequest) IngestRequest {
+				request.BatchID = "batch-durable-idempotency-replay"
+				request.Items = []IngestItem{{
+					ExternalID: "host:conflict",
+					Entity:     &graph.Entity{ID: "host:conflict", Kind: "host"},
+				}}
+				return request
+			},
+			statusBatchID: func(request IngestRequest) string { return request.BatchID },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewTenantStore(NewMemoryStore(), "test")
+			config := testIngestServiceConfig(t)
+			config.FlushInterval = time.Hour
+			config.FlushMaxRequests = 8
+			service, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeIngestService(t, service)
+
+			flushTenant := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+					t.Fatalf("flush tenant: %v", err)
+				}
+			}
+
+			request := test.request()
+			first, err := service.Accept(context.Background(), "tenant-a", request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			flushTenant()
+			firstResult, err := service.Wait(context.Background(), first)
+			if err != nil {
+				t.Fatalf("wait first request: %v", err)
+			}
+			if firstResult.Version != 1 || firstResult.Applied != 1 || firstResult.Failed != 0 {
+				t.Fatalf("first result = %#v, want one applied mutation at version 1", firstResult)
+			}
+
+			conflictRequest := test.conflict(request)
+			conflict, err := service.Accept(context.Background(), "tenant-a", conflictRequest)
+			if err != nil {
+				t.Fatalf("accept durable identity conflict: %v", err)
+			}
+			if conflict.State != IngestStateAccepted {
+				t.Fatalf("conflict acceptance state = %q, want accepted WAL state", conflict.State)
+			}
+			next, err := service.Accept(
+				context.Background(),
+				"tenant-a",
+				ingestEntityRequest("batch-after-durable-conflict", "host:next"),
+			)
+			if err != nil {
+				t.Fatalf("accept request after durable identity conflict: %v", err)
+			}
+			// Keep the conflict and the valid request in one tenant flush. A
+			// request-local identity failure must not poison its FIFO neighbors.
+			flushTenant()
+			conflictResult, err := service.Wait(context.Background(), conflict)
+			if err != nil {
+				t.Fatalf("wait durable identity conflict: %v", err)
+			}
+			if conflictResult.Applied != 0 || conflictResult.Failed != 1 ||
+				conflictResult.ErrorCode != IngestErrorIdempotencyConflict || len(conflictResult.Failures) != 1 {
+				t.Fatalf("conflict result = %#v, want one failed item and no applied items", conflictResult)
+			}
+			status, err := service.Status(
+				context.Background(),
+				"tenant-a",
+				conflictRequest.Source,
+				conflictRequest.CollectorID,
+				test.statusBatchID(conflictRequest),
+			)
+			if err != nil {
+				t.Fatalf("status after durable identity conflict: %v", err)
+			}
+			if status.State != IngestStateFailed || status.Result == nil || status.Result.Failed != 1 ||
+				status.Result.ErrorCode != IngestErrorIdempotencyConflict {
+				t.Fatalf("status after durable identity conflict = %#v, want failed terminal state", status)
+			}
+			nextResult, err := service.Wait(context.Background(), next)
+			if err != nil {
+				t.Fatalf("wait request after durable identity conflict: %v", err)
+			}
+			if nextResult.Version != 2 || nextResult.Applied != 1 || nextResult.Failed != 0 {
+				t.Fatalf("next result = %#v, want version 2 with one applied mutation", nextResult)
+			}
+			loaded, _, err := store.Load(context.Background(), "tenant-a")
+			if err != nil {
+				t.Fatalf("load graph after durable identity conflict: %v", err)
+			}
+			if _, ok := loaded.GetEntity("host:next"); !ok {
+				t.Fatal("valid request after durable identity conflict was not committed")
+			}
+		})
+	}
+}
+
+func TestIngestServiceTerminalizesNonFullSyncEmptyItemsIdentityConflict(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 8
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+
+	flushTenant := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+			t.Fatalf("flush tenant: %v", err)
+		}
+	}
+
+	request := ingestEntityRequest("batch-empty-items-conflict", "host:first")
+	request.FullSync = false
+	first, err := service.Accept(context.Background(), "tenant-a", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flushTenant()
+	firstResult, err := service.Wait(context.Background(), first)
+	if err != nil {
+		t.Fatalf("wait first request: %v", err)
+	}
+	if firstResult.Version != 1 || firstResult.Applied != 1 || firstResult.Failed != 0 {
+		t.Fatalf("first result = %#v, want one applied mutation at version 1", firstResult)
+	}
+
+	conflictRequest := request
+	conflictRequest.Items = []IngestItem{}
+	conflictRequest.FullSync = false
+	conflict, err := service.Accept(context.Background(), "tenant-a", conflictRequest)
+	if err != nil {
+		t.Fatalf("accept empty-items identity conflict: %v", err)
+	}
+	flushTenant()
+	conflictResult, err := service.Wait(context.Background(), conflict)
+	if err != nil {
+		t.Fatalf("wait empty-items identity conflict: %v", err)
+	}
+	if conflictResult.Applied != 0 || conflictResult.Failed < 1 {
+		t.Fatalf("conflict result = %#v, want no applied items and at least one failure", conflictResult)
+	}
+
+	status, err := service.Status(
+		context.Background(),
+		"tenant-a",
+		conflictRequest.Source,
+		conflictRequest.CollectorID,
+		conflictRequest.BatchID,
+	)
+	if err != nil {
+		t.Fatalf("status after empty-items identity conflict: %v", err)
+	}
+	if status.State != IngestStateFailed || status.Result == nil || status.Result.Failed < 1 {
+		t.Fatalf("status after empty-items identity conflict = %#v, want failed terminal state", status)
+	}
+}
+
+func TestIngestServicePersistsIdentityConflictStatusAcrossRestart(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  func() IngestRequest
+		conflict func(IngestRequest) IngestRequest
+	}{
+		{
+			name: "batch",
+			request: func() IngestRequest {
+				return ingestEntityRequest("batch-restart-conflict", "host:first")
+			},
+			conflict: func(request IngestRequest) IngestRequest {
+				request.Items = []IngestItem{{
+					ExternalID: "host:conflict",
+					Entity:     &graph.Entity{ID: "host:conflict", Kind: "host"},
+				}}
+				return request
+			},
+		},
+		{
+			name: "idempotency",
+			request: func() IngestRequest {
+				request := ingestEntityRequest("batch-restart-idempotency", "host:first")
+				request.IdempotencyKey = "idem-restart-conflict"
+				return request
+			},
+			conflict: func(request IngestRequest) IngestRequest {
+				request.BatchID = "batch-restart-idempotency-replay"
+				request.Items = []IngestItem{{
+					ExternalID: "host:conflict",
+					Entity:     &graph.Entity{ID: "host:conflict", Kind: "host"},
+				}}
+				return request
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewTenantStore(NewMemoryStore(), "test")
+			config := testIngestServiceConfig(t)
+			config.FlushInterval = time.Hour
+			config.FlushMaxRequests = 8
+			service, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			defer func() {
+				if !closed {
+					closeIngestService(t, service)
+				}
+			}()
+
+			flushTenant := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+					t.Fatalf("flush tenant: %v", err)
+				}
+			}
+
+			request := test.request()
+			first, err := service.Accept(context.Background(), "tenant-a", request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			flushTenant()
+			firstResult, err := service.Wait(context.Background(), first)
+			if err != nil {
+				t.Fatalf("wait first request: %v", err)
+			}
+			if firstResult.Version != 1 || firstResult.Applied != 1 || firstResult.Failed != 0 {
+				t.Fatalf("first result = %#v, want one applied mutation at version 1", firstResult)
+			}
+
+			conflictRequest := test.conflict(request)
+			conflict, err := service.Accept(context.Background(), "tenant-a", conflictRequest)
+			if err != nil {
+				t.Fatalf("accept identity conflict: %v", err)
+			}
+			flushTenant()
+			conflictResult, err := service.Wait(context.Background(), conflict)
+			if err != nil {
+				t.Fatalf("wait identity conflict: %v", err)
+			}
+			if conflictResult.Applied != 0 || conflictResult.Failed < 1 {
+				t.Fatalf("conflict result = %#v, want no applied items and at least one failure", conflictResult)
+			}
+
+			status, err := service.Status(
+				context.Background(),
+				"tenant-a",
+				conflictRequest.Source,
+				conflictRequest.CollectorID,
+				conflictRequest.BatchID,
+			)
+			if err != nil {
+				t.Fatalf("status before restart: %v", err)
+			}
+			if status.State != IngestStateFailed || status.Result == nil || status.Result.Failed < 1 {
+				t.Fatalf("status before restart = %#v, want failed terminal state", status)
+			}
+
+			closeIngestService(t, service)
+			closed = true
+			reopened, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeIngestService(t, reopened)
+			status, err = reopened.Status(
+				context.Background(),
+				"tenant-a",
+				conflictRequest.Source,
+				conflictRequest.CollectorID,
+				conflictRequest.BatchID,
+			)
+			if err != nil {
+				t.Fatalf("status after restart: %v", err)
+			}
+			if status.State != IngestStateFailed || status.Result == nil ||
+				status.Result.Failed < 1 || status.Result.Applied != 0 {
+				t.Fatalf("status after restart = %#v, want persisted failed terminal state", status)
+			}
+		})
+	}
+}
+
+func TestIngestServiceFailsClosedAfterRuntimeWALFailure(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 8
+	fault := &ingestWALFaultFile{failAfterWrite: 1}
+	config.WAL.openWriterFile = ingestWALFaultOpener(fault)
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = service.Close(context.Background())
+		}
+	}()
+
+	prefixRequest := ingestEntityRequest("batch-wal-prefix", "host:prefix")
+	_, err = service.Accept(context.Background(), "tenant-a", prefixRequest)
+	if err != nil {
+		t.Fatalf("accept valid WAL prefix: %v", err)
+	}
+	readiness := service.Readiness()
+	if readiness.Pending != 1 {
+		t.Fatalf("readiness after valid prefix = %#v, want one pending request", readiness)
+	}
+
+	_, err = service.Accept(
+		context.Background(),
+		"tenant-a",
+		ingestEntityRequest("batch-wal-failure", "host:failure"),
+	)
+	if !errors.Is(err, ErrIngestWALFailed) {
+		t.Fatalf("runtime WAL failure acceptance err = %v, want ErrIngestWALFailed", err)
+	}
+	readiness = service.Readiness()
+	if readiness.Ready || readiness.Writable || readiness.LastError == "" {
+		t.Fatalf("readiness after runtime WAL failure = %#v, want not ready/writable with error", readiness)
+	}
+	_, err = service.Accept(
+		context.Background(),
+		"tenant-a",
+		ingestEntityRequest("batch-wal-after-failure", "host:after-failure"),
+	)
+	if !errors.Is(err, ErrIngestWALFailed) {
+		t.Fatalf("post-failure acceptance err = %v, want ErrIngestWALFailed", err)
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	started := time.Now()
+	closeErr := service.Close(closeCtx)
+	cancel()
+	closed = true
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("close with pending request took %s, want under one second", elapsed)
+	}
+	if !errors.Is(closeErr, ErrIngestWALFailed) {
+		t.Fatalf("close after runtime WAL failure err = %v, want ErrIngestWALFailed", closeErr)
+	}
+
+	recoveryConfig := config
+	recoveryConfig.WAL.openWriterFile = nil
+	reopened, err := OpenIngestService(store, recoveryConfig)
+	if err != nil {
+		t.Fatalf("reopen after runtime WAL failure: %v", err)
+	}
+	defer closeIngestService(t, reopened)
+	recovered, err := reopened.Accept(context.Background(), "tenant-a", prefixRequest)
+	if err != nil {
+		t.Fatalf("accept recovered prefix: %v", err)
+	}
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	if err := reopened.FlushTenant(flushCtx, "tenant-a"); err != nil {
+		t.Fatalf("flush recovered prefix: %v", err)
+	}
+	recoveredResult, err := reopened.Wait(flushCtx, recovered)
+	if err != nil {
+		t.Fatalf("wait recovered prefix: %v", err)
+	}
+	if recoveredResult.Version != 1 || recoveredResult.Applied != 1 || recoveredResult.Failed != 0 {
+		t.Fatalf("recovered prefix result = %#v, want one applied mutation at version 1", recoveredResult)
+	}
+}
+
+func TestIngestServiceFailsClosedWhenFlushRequiresRepair(t *testing.T) {
+	store := &repairRequiredIngestStore{
+		TenantStore: NewTenantStore(NewMemoryStore(), "test"),
+		called:      make(chan struct{}),
+	}
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 1
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+
+	if _, err := service.Accept(
+		context.Background(),
+		"tenant-a",
+		ingestEntityRequest("batch-repair", "host:repair"),
+	); err != nil {
+		t.Fatalf("accept repair-triggering request: %v", err)
+	}
+	select {
+	case <-store.called:
+	case <-time.After(time.Second):
+		t.Fatal("repair-triggering flush was not called")
+	}
+	select {
+	case <-service.runCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("ingest service did not fail closed after repair-required error")
+	}
+
+	readiness := service.Readiness()
+	if readiness.Ready || readiness.Writable || !strings.Contains(readiness.LastError, ErrIngestRepairRequired.Error()) {
+		t.Fatalf("readiness after repair-required error = %#v, want failed closed", readiness)
+	}
+	if _, err := service.Accept(
+		context.Background(),
+		"tenant-a",
+		ingestEntityRequest("batch-after-repair", "host:after-repair"),
+	); !errors.Is(err, ErrIngestRepairRequired) {
+		t.Fatalf("post-repair acceptance err = %v, want ErrIngestRepairRequired", err)
+	}
+}
+
 func TestIngestServiceDirectCommitBarrierFlushesAcceptedTenantQueue(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	config := testIngestServiceConfig(t)
@@ -333,53 +1115,60 @@ func TestIngestServiceDirectCommitBarrierFlushesAcceptedTenantQueue(t *testing.T
 	}
 }
 
-func TestIngestServiceReadinessClearsTransientRetryError(t *testing.T) {
-	config := testIngestServiceConfig(t)
+func TestIngestSchedulerCancellationUnblocksFullDispatchQueue(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	service := &IngestService{
-		wal:            &IngestWAL{config: config.WAL},
-		config:         config,
-		active:         map[string]*ingestPending{},
-		activeByStatus: map[string]*ingestPending{},
+		config: IngestServiceConfig{
+			FlushInterval: time.Hour,
+		},
+		enqueueCh:   make(chan *ingestPending, 2),
+		forceCh:     make(chan ingestForceRequest),
+		completeCh:  make(chan ingestWorkerCompletion),
+		shutdownCh:  make(chan struct{}),
+		schedulerOK: make(chan struct{}),
+		readyCh:     make(chan ingestTenantFlush, 1),
+		runCtx:      runCtx,
+		cancel:      cancel,
 	}
-	pending := &ingestPending{state: IngestStateAccepted}
-	service.active["record-1"] = pending
+	go service.schedule()
 
-	transientErr := errors.New("temporary metadata outage")
-	service.setPendingRetry(pending, transientErr)
-	status := service.Readiness()
-	if status.Ready || !status.Writable || status.LastError != transientErr.Error() {
-		t.Fatalf("readiness during retry = %#v, want not ready but writable with transient error", status)
+	service.enqueueCh <- &ingestPending{
+		envelope: walIngestEnvelope{
+			TenantID:   "tenant-a",
+			AcceptedAt: time.Now().UTC(),
+			Request:    IngestRequest{FullSync: true},
+		},
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(service.readyCh) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("first tenant was not dispatched")
+		}
+		time.Sleep(time.Millisecond)
 	}
 
-	service.setPendingState(pending, IngestStatePublished)
-	status = service.Readiness()
-	if !status.Ready || !status.Writable || status.LastError != "" {
-		t.Fatalf("readiness after retry recovery = %#v, want ready with no error", status)
+	service.enqueueCh <- &ingestPending{
+		envelope: walIngestEnvelope{
+			TenantID:   "tenant-b",
+			AcceptedAt: time.Now().UTC(),
+			Request:    IngestRequest{FullSync: true},
+		},
 	}
-}
+	deadline = time.Now().Add(time.Second)
+	for len(service.enqueueCh) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("second tenant was not accepted by the scheduler")
+		}
+		time.Sleep(time.Millisecond)
+	}
 
-func TestIngestServiceRejectsAcceptAfterFatalWALFence(t *testing.T) {
-	store := NewTenantStore(NewMemoryStore(), "test")
-	service, err := OpenIngestService(store, testIngestServiceConfig(t))
-	if err != nil {
-		t.Fatal(err)
+	cancel()
+	select {
+	case <-service.schedulerOK:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("scheduler did not stop after cancellation with a full dispatch queue")
 	}
-	service.wal.fence(errors.New("injected WAL fsync failure"))
-	beforeLSN := service.highestLSN
-	_, err = service.Accept(context.Background(), "tenant-a", ingestEntityRequest("batch-fenced", "host:fenced"))
-	if !errors.Is(err, ErrIngestWALFenced) {
-		t.Fatalf("accept after WAL fence = %v, want ErrIngestWALFenced", err)
-	}
-	if service.highestLSN != beforeLSN {
-		t.Fatalf("highest LSN after fenced accept = %d, want %d", service.highestLSN, beforeLSN)
-	}
-	status := service.Readiness()
-	if status.Ready || status.Writable || !strings.Contains(status.LastError, ErrIngestWALFenced.Error()) {
-		t.Fatalf("readiness after WAL fence = %#v, want not ready/writable with fatal error", status)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = service.Close(ctx)
 }
 
 func TestIngestDurableRetriesMetadataFailureWithoutDuplicateVersion(t *testing.T) {
@@ -414,7 +1203,7 @@ func TestIngestDurableRetriesMetadataFailureWithoutDuplicateVersion(t *testing.T
 	}
 }
 
-func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *testing.T) {
+func TestIngestServiceRecoversPreparedCASCohortWithoutDuplicateVersion(t *testing.T) {
 	objects := &failIngestRecordOnceStore{ObjectStore: NewMemoryStore()}
 	store := NewTenantStore(objects, "test")
 	config := testIngestServiceConfig(t)
@@ -426,6 +1215,9 @@ func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *t
 	}
 	first := ingestEntityRequest("batch-1", "host:1")
 	second := ingestEntityRequest("batch-2", "host:2")
+	expected := int64(0)
+	first.ExpectedVersion = &expected
+	second.ExpectedVersion = &expected
 	objects.failKey = store.ingestBatchKey("tenant-a", first.Source, first.CollectorID, first.BatchID)
 	firstAccepted, err := service.Accept(context.Background(), "tenant-a", first)
 	if err != nil {
@@ -470,19 +1262,29 @@ func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *t
 	defer closeIngestService(t, recovered)
 
 	deadline = time.Now().Add(5 * time.Second)
+	var firstStatus, secondStatus IngestBatchStatus
 	for {
-		status, statusErr := recovered.Status(
+		var firstStatusErr, secondStatusErr error
+		firstStatus, firstStatusErr = recovered.Status(
 			context.Background(),
 			"tenant-a",
 			first.Source,
 			first.CollectorID,
 			first.BatchID,
 		)
-		if statusErr == nil && status.State == IngestStateCommitted {
+		secondStatus, secondStatusErr = recovered.Status(
+			context.Background(),
+			"tenant-a",
+			second.Source,
+			second.CollectorID,
+			second.BatchID,
+		)
+		if firstStatusErr == nil && secondStatusErr == nil &&
+			firstStatus.State == IngestStateCommitted && secondStatus.State == IngestStateCommitted {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("recovered request did not commit: status=%#v err=%v", status, statusErr)
+			t.Fatalf("recovered cohort did not commit: first=%#v second=%#v errors=%v/%v", firstStatus, secondStatus, firstStatusErr, secondStatusErr)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -493,684 +1295,139 @@ func TestIngestServiceRecoversPreparedPublishedBatchWithoutDuplicateVersion(t *t
 	if manifest.Version != 2 || len(manifest.CommitSegments) != 1 {
 		t.Fatalf("manifest after recovery = %#v", manifest)
 	}
+	if firstStatus.Result == nil || firstStatus.Result.Version != 1 || firstStatus.Result.Applied != 1 || firstStatus.Result.Failed != 0 {
+		t.Fatalf("recovered first result = %#v, want version 1", firstStatus.Result)
+	}
+	if secondStatus.Result == nil || secondStatus.Result.Version != 2 || secondStatus.Result.Applied != 1 || secondStatus.Result.Failed != 0 {
+		t.Fatalf("recovered second result = %#v, want version 2", secondStatus.Result)
+	}
 }
 
-func TestIngestServiceRecoverySkipsCompletedStateBeforeCheckpointFloor(t *testing.T) {
-	oldRequest := ingestEntityRequest("batch-old", "host:old")
-	activeRequest := ingestEntityRequest("batch-active", "host:active")
-	old := walIngestEnvelope{
-		RecordID:    "old-record",
-		TenantID:    "tenant-a",
-		Request:     oldRequest,
-		AcceptedLSN: 1,
-		State:       IngestStatePrepared,
-		Prepared: &IngestPreparedRequest{
-			FlushID: "flush-old",
-			Result:  IngestResult{BatchID: oldRequest.BatchID, Version: 1, Applied: 1},
-		},
-	}
-	active := walIngestEnvelope{
-		RecordID:    "active-record",
-		TenantID:    "tenant-a",
-		Request:     activeRequest,
-		AcceptedLSN: 3,
-		State:       IngestStateAccepted,
-	}
-	encodeState := func(t *testing.T, kind IngestWALRecordType, lsn uint64, items ...walIngestEnvelope) IngestWALRecord {
-		t.Helper()
-		payload, err := json.Marshal(walPreparedBatchEnvelope{Items: items})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return IngestWALRecord{Type: kind, LSN: lsn, Payload: payload}
-	}
-	acceptedPayload, err := json.Marshal(active)
+func TestIngestServicePreparedWALDoesNotDuplicateAcceptedRequest(t *testing.T) {
+	const (
+		requestLimit = 32 << 20
+		sampleBytes  = 2 << 20
+	)
+	empty := ingestEntityRequest("batch-large", "host:large")
+	empty.Items[0].Entity.Fields = graph.Fields{"payload": ""}
+	preparedEmpty, err := PrepareIngestRequest("tenant-a", empty)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishedOld := old
-	publishedOld.State = IngestStatePublished
-	publishedOld.Result = &IngestResult{BatchID: oldRequest.BatchID, Version: 1, Applied: 1}
-	publishedActive := active
-	publishedActive.State = IngestStatePublished
-	publishedActive.Result = &IngestResult{BatchID: activeRequest.BatchID, Version: 2, Applied: 1}
-	preparedActive := active
-	preparedActive.State = IngestStatePrepared
-	preparedActive.Prepared = &IngestPreparedRequest{
-		FlushID: "flush-active",
-		Result:  IngestResult{BatchID: activeRequest.BatchID, Version: 2, Applied: 1},
+	emptyJSON, err := json.Marshal(preparedEmpty)
+	if err != nil {
+		t.Fatal(err)
 	}
-	preparedActive = compactIngestStateEnvelope(IngestWALPrepared, preparedActive)
-	publishedActive = compactIngestStateEnvelope(IngestWALPublished, publishedActive)
-	finalizedOld := old
-	finalizedOld.State = IngestStateCommitted
+	large := ingestEntityRequest("batch-large", "host:large")
+	large.Items[0].Entity.Fields = graph.Fields{
+		"payload": strings.Repeat("x", sampleBytes),
+	}
+	request, err := PrepareIngestRequest("tenant-a", large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(requestJSON) - len(emptyJSON); got != sampleBytes {
+		t.Fatalf("encoded payload growth = %d, want %d", got, sampleBytes)
+	}
 
-	service := &IngestService{
-		active:         map[string]*ingestPending{},
-		activeByStatus: map[string]*ingestPending{},
-	}
-	recovered, err := service.recover([]IngestWALRecord{
-		{
-			Type:    IngestWALAccepted,
-			LSN:     3,
-			Segment: ingestWALSegmentName(3),
-			Payload: acceptedPayload,
+	plan := &IngestPreparedRequest{
+		FlushID:      "flush-large",
+		FinalVersion: 1,
+		Result:       IngestResult{BatchID: request.BatchID, Version: 1, Applied: 1},
+		Commit: &graph.Commit{
+			LayoutVersion: CurrentObjectLayoutVersion,
+			ID:            "commit-large",
+			TenantID:      "tenant-a",
+			Version:       1,
+			Mutations: graph.Mutations{
+				UpsertEntities: []graph.Entity{*request.Items[0].Entity},
+			},
 		},
-		encodeState(t, IngestWALPrepared, 4, old, preparedActive),
-		encodeState(t, IngestWALPublished, 5, publishedOld, publishedActive),
-		encodeState(t, IngestWALFinalized, 6, finalizedOld),
+	}
+	oldPayload, err := json.Marshal(walIngestEnvelope{
+		RecordID: "record-large",
+		TenantID: "tenant-a",
+		Request:  request,
+		State:    IngestStatePrepared,
+		Prepared: plan,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recovered) != 1 || recovered[0].envelope.RecordID != active.RecordID || recovered[0].state != IngestStatePublished {
-		t.Fatalf("recovered pending = %#v, want only active published request", recovered)
-	}
-	if recovered[0].result.Version != 2 || service.highestLSN != 6 {
-		t.Fatalf("recovered result/highest LSN = %#v/%d", recovered[0].result, service.highestLSN)
-	}
-	if len(recovered[0].envelope.Request.Items) != len(activeRequest.Items) ||
-		recovered[0].envelope.Request.BatchID != activeRequest.BatchID {
-		t.Fatalf("recovered request = %#v, want accepted request retained", recovered[0].envelope.Request)
-	}
-}
-
-func TestIngestServiceRecoveryRejectsUnknownStateWithoutCheckpointFloor(t *testing.T) {
-	request := ingestEntityRequest("batch-unknown", "host:unknown")
-	payload, err := json.Marshal(walPreparedBatchEnvelope{Items: []walIngestEnvelope{{
-		RecordID:    "unknown-record",
-		TenantID:    "tenant-a",
-		Request:     request,
-		AcceptedLSN: 1,
-		State:       IngestStatePrepared,
-		Prepared: &IngestPreparedRequest{
-			FlushID: "flush-unknown",
-			Result:  IngestResult{BatchID: request.BatchID, Version: 1, Applied: 1},
-		},
+	compactPayload, err := json.Marshal(walPreparedBatchEnvelope{Items: []walPreparedEnvelope{{
+		RecordID: "record-large",
+		Prepared: plan,
 	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	maxFieldBytes := requestLimit - len(emptyJSON)
+	legacyAtRequestLimit := len(oldPayload) + 2*(maxFieldBytes-sampleBytes)
+	compactAtRequestLimit := len(compactPayload) + maxFieldBytes - sampleBytes
+	if legacyAtRequestLimit <= ingestWALMaxPayload {
+		t.Fatalf("projected legacy prepared payload bytes = %d, want > %d", legacyAtRequestLimit, ingestWALMaxPayload)
+	}
+	if compactAtRequestLimit > ingestWALMaxPayload {
+		t.Fatalf("projected compact prepared payload bytes = %d, want <= %d", compactAtRequestLimit, ingestWALMaxPayload)
+	}
+	if strings.Contains(string(compactPayload[:min(len(compactPayload), 4096)]), `"request"`) {
+		t.Fatal("compact prepared payload contains the accepted request")
+	}
+}
+
+func TestIngestServiceRecoversLegacyPreparedBatchEnvelope(t *testing.T) {
+	request, err := PrepareIngestRequest(
+		"tenant-a", ingestEntityRequest("batch-legacy-prepared", "host:legacy"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordID := ingestRecordID(ingestRequestIdentity("tenant-a", request))
+	accepted := walIngestEnvelope{
+		RecordID: recordID, WriterID: "writer-a", TenantID: "tenant-a",
+		Request: request, State: IngestStateAccepted, AcceptedAt: time.Now().UTC(),
+	}
+	acceptedPayload, err := json.Marshal(accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := &IngestPreparedRequest{
+		FlushID: "flush-legacy", FinalVersion: 1,
+		Result: IngestResult{BatchID: request.BatchID, Version: 1, Applied: 1},
+		Commit: &graph.Commit{
+			ID: "commit-legacy", TenantID: "tenant-a", Version: 1,
+			Mutations: graph.Mutations{UpsertEntities: []graph.Entity{*request.Items[0].Entity}},
+		},
+	}
+	legacyPrepared := accepted
+	legacyPrepared.State = IngestStatePrepared
+	legacyPrepared.Prepared = plan
+	legacyPrepared.Result = &plan.Result
+	legacyPayload, err := json.Marshal(struct {
+		Items []walIngestEnvelope `json:"items"`
+	}{Items: []walIngestEnvelope{legacyPrepared}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	service := &IngestService{
-		active:         map[string]*ingestPending{},
-		activeByStatus: map[string]*ingestPending{},
+		config: IngestServiceConfig{OwnerID: "writer-a"},
+		active: map[string]*ingestPending{}, activeByStatus: map[string]*ingestPending{},
 	}
-	if _, err := service.recover([]IngestWALRecord{{
-		Type:    IngestWALPrepared,
-		LSN:     1,
-		Payload: payload,
-	}}); !errors.Is(err, ErrIngestWALCorrupt) {
-		t.Fatalf("recover err = %v, want ErrIngestWALCorrupt", err)
-	}
-}
-
-func TestIngestMetadataSegmentCompressesBurstObjectWrites(t *testing.T) {
-	base := NewMemoryStore()
-	objects := &countingConditionalStore{ObjectStore: base, puts: map[string]int{}}
-	store := NewTenantStore(objects, "test")
-	config := testIngestServiceConfig(t)
-	config.Metadata.Mode = IngestMetadataModeSegment
-	config.FlushInterval = time.Hour
-	config.FlushMaxRequests = 256
-	config.Metadata.FlushInterval = time.Hour
-	config.Metadata.MaxRequests = 256
-	service, err := OpenIngestService(store, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeIngestService(t, service)
-
-	accepted := make([]IngestAcceptance, 0, 256)
-	for index := range 256 {
-		request := ingestEntityRequest(
-			fmt.Sprintf("batch-%03d", index),
-			fmt.Sprintf("host:%03d", index),
-		)
-		request.IdempotencyKey = fmt.Sprintf("idem-%03d", index)
-		item, err := service.Accept(context.Background(), "tenant-a", request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		accepted = append(accepted, item)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for _, item := range accepted {
-		if _, err := service.Wait(ctx, item); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	segments, err := objects.List(ctx, "test/tenants/tenant-a/ingest/metadata/segments/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(segments) != 1 {
-		t.Fatalf("metadata segments = %d, want 1", len(segments))
-	}
-	if got := objects.putCount(segments[0].Key); got != 1 {
-		t.Fatalf("metadata segment PUTs = %d, want 1", got)
-	}
-	if _, err := objects.Get(ctx, store.ingestMetadataManifestKey("tenant-a")); err != nil {
-		t.Fatalf("metadata manifest: %v", err)
-	}
-	if got := objects.putCount(store.ingestMetadataManifestKey("tenant-a")); got != 1 {
-		t.Fatalf("metadata manifest publishes = %d, want 1", got)
-	}
-	for _, prefix := range []string{
-		"test/tenants/tenant-a/ingest/agent/batches/",
-		"test/tenants/tenant-a/ingest/agent/idempotency/",
-		"test/tenants/tenant-a/ingest/agent/collectors/",
-	} {
-		items, err := objects.List(ctx, prefix)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(items) != 0 {
-			t.Fatalf("legacy metadata objects under %q = %d, want 0", prefix, len(items))
-		}
-	}
-	record, err := store.GetIngestBatch(ctx, "tenant-a", "agent", "collector-a", "batch-255")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Request.IdempotencyKey != "idem-255" || record.Result.Version != 256 {
-		t.Fatalf("segment batch lookup = %#v", record)
-	}
-	replay := ingestEntityRequest("batch-replay", "host:255")
-	replay.IdempotencyKey = "idem-255"
-	if replayRecord, ok, err := store.loadIngestRecord(ctx, "tenant-a", replay); err != nil || !ok || replayRecord.Result.BatchID != "batch-255" {
-		t.Fatalf("segment idempotency lookup = %#v, %v, %v", replayRecord, ok, err)
-	}
-	status, err := store.GetCollectorStatus(ctx, "tenant-a", "agent", "collector-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.AppliedTotal != 256 || status.LastVersion != 256 {
-		t.Fatalf("collector status = %#v", status)
-	}
-}
-
-func TestIngestMetadataFlushWorkersParallelizeTenantsAndPreserveTenantFIFO(t *testing.T) {
-	objects := newBlockingMetadataSegmentStore(NewMemoryStore(), "tenant-a")
-	store := NewTenantStore(objects, "test")
-	config := testIngestServiceConfig(t)
-	config.Metadata.Mode = IngestMetadataModeSegment
-	config.FlushInterval = time.Hour
-	config.FlushMaxRequests = 1
-	config.FlushWorkers = 2
-	config.Metadata.FlushInterval = time.Hour
-	config.Metadata.MaxRequests = 1
-	config.Metadata.FlushWorkers = 2
-	service, err := OpenIngestService(store, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeIngestService(t, service)
-	defer objects.releaseTenantAFlush()
-
-	firstA, err := service.Accept(context.Background(), "tenant-a", ingestEntityRequest("batch-a-1", "host:a-1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-objects.tenantAStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("tenant-a metadata segment PUT did not start")
-	}
-
-	secondA, err := service.Accept(context.Background(), "tenant-a", ingestEntityRequest("batch-a-2", "host:a-2"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstB, err := service.Accept(context.Background(), "tenant-b", ingestEntityRequest("batch-b-1", "host:b-1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-objects.otherTenantStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("a blocked tenant-a flush prevented tenant-b metadata progress")
-	}
-
-	objects.releaseTenantAFlush()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	firstAResult, err := service.Wait(ctx, firstA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondAResult, err := service.Wait(ctx, secondA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstBResult, err := service.Wait(ctx, firstB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstAResult.Version != 1 || secondAResult.Version != 2 || firstBResult.Version != 1 {
-		t.Fatalf("versions = tenant-a %d,%d tenant-b %d; want tenant-a 1,2 and tenant-b 1", firstAResult.Version, secondAResult.Version, firstBResult.Version)
-	}
-}
-
-func TestDispatchReadyIngestQueuesDefersWhenWorkerQueueIsFull(t *testing.T) {
-	testDeferral := func(t *testing.T, busy map[string]bool, fillReady bool, wantRetryAfter time.Duration) {
-		t.Helper()
-		now := time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC)
-		queue := &ingestTenantQueue{
-			tenantID:      "tenant-a",
-			deadline:      now,
-			flushDeadline: now,
-			index:         -1,
-		}
-		deadlines := ingestDeadlineHeap{queue}
-		heap.Init(&deadlines)
-		queues := map[string]*ingestTenantQueue{queue.tenantID: queue}
-		ready := make(chan ingestTenantFlush, 1)
-		if fillReady {
-			ready <- ingestTenantFlush{tenantID: "busy-worker"}
-		}
-
-		finished := make(chan struct{})
-		go func() {
-			dispatchReadyIngestQueues(now, false, &deadlines, queues, busy, ready)
-			close(finished)
-		}()
-		select {
-		case <-finished:
-		case <-time.After(time.Second):
-			t.Fatal("scheduler blocked on a deferred worker queue")
-		}
-		if queues[queue.tenantID] != queue || deadlines.Len() != 1 || deadlines[0] != queue {
-			t.Fatalf("deferred queue was lost: queues=%#v deadlines=%#v", queues, deadlines)
-		}
-		if want := now.Add(wantRetryAfter); !queue.deadline.Equal(want) {
-			t.Fatalf("internal retry deadline = %s, want %s", queue.deadline, want)
-		}
-		if !queue.flushDeadline.Equal(now) {
-			t.Fatalf("flush deadline = %s, want original %s", queue.flushDeadline, now)
-		}
-		if fillReady {
-			<-ready
-		}
-		delete(busy, queue.tenantID)
-		dispatchReadyIngestQueues(queue.deadline, false, &deadlines, queues, busy, ready)
-		select {
-		case flush := <-ready:
-			if !flush.deadline.Equal(now) {
-				t.Fatalf("worker flush deadline = %s, want original %s", flush.deadline, now)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("deferred queue was not sent to the worker")
-		}
-	}
-
-	t.Run("full ready channel", func(t *testing.T) {
-		testDeferral(t, map[string]bool{}, true, time.Millisecond)
+	pending, err := service.recover([]IngestWALRecord{
+		{LSN: 1, Type: IngestWALAccepted, Payload: acceptedPayload},
+		{LSN: 2, Type: IngestWALPrepared, Payload: legacyPayload},
 	})
-	t.Run("tenant worker busy", func(t *testing.T) {
-		testDeferral(t, map[string]bool{"tenant-a": true}, false, 10*time.Millisecond)
-	})
-}
-
-func TestIngestMetadataLookupSharesColdSegmentReadAndCachesWarmRead(t *testing.T) {
-	ctx := context.Background()
-	base := NewMemoryStore()
-	writer := NewTenantStore(base, "test")
-	writer.IngestMetadataMode = IngestMetadataModeSegment
-	request := ingestEntityRequest("batch-1", "host:1")
-	record := IngestBatchRecord{
-		TenantID:   "tenant-a",
-		Request:    request,
-		Result:     IngestResult{BatchID: request.BatchID, Version: 1, Applied: 1},
-		StartedAt:  time.Now().UTC(),
-		FinishedAt: time.Now().UTC(),
-	}
-	if _, err := writer.publishIngestMetadataSegment(ctx, "tenant-a", []ingestMetadataRecord{{
-		AcceptedLSN: 1,
-		Digest:      "digest-1",
-		Batch:       record,
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	segments, err := base.List(ctx, "test/tenants/tenant-a/ingest/metadata/segments/")
-	if err != nil || len(segments) != 1 {
-		t.Fatalf("metadata segments = %#v, err %v", segments, err)
-	}
-	objects := newBlockingMetadataObjectReadStore(base, segments[0].Key)
-	t.Cleanup(objects.releaseRead)
-	reader := NewTenantStore(objects, "test")
-	reader.IngestMetadataMode = IngestMetadataModeSegment
-
-	const readers = 16
-	start := make(chan struct{})
-	errs := make(chan error, readers)
-	var ready sync.WaitGroup
-	var done sync.WaitGroup
-	ready.Add(readers)
-	done.Add(readers)
-	for range readers {
-		go func() {
-			defer done.Done()
-			ready.Done()
-			<-start
-			loaded, loadErr := reader.GetIngestBatch(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID)
-			if loadErr == nil && loaded.Result.Version != 1 {
-				loadErr = fmt.Errorf("metadata lookup version = %d, want 1", loaded.Result.Version)
-			}
-			errs <- loadErr
-		}()
-	}
-	ready.Wait()
-	close(start)
-	select {
-	case <-objects.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("metadata segment read did not start")
-	}
-	objects.releaseRead()
-	done.Wait()
-	close(errs)
-	for loadErr := range errs {
-		if loadErr != nil {
-			t.Fatal(loadErr)
-		}
-	}
-	if calls := objects.callsFor(segments[0].Key); calls != 1 {
-		t.Fatalf("concurrent segment reads = %d, want one shared read", calls)
-	}
-	if _, err := reader.GetIngestBatch(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID); err != nil {
-		t.Fatal(err)
-	}
-	if calls := objects.callsFor(segments[0].Key); calls != 1 {
-		t.Fatalf("warm segment reads = %d, want no additional object read", calls)
-	}
-}
-
-func TestIngestMetadataCacheAccountsForDecodedItems(t *testing.T) {
-	itemCount := ingestMetadataCacheMaxBytes/ingestMetadataCacheItemBytes + 1
-	segment := ingestMetadataSegment{Records: []ingestMetadataRecord{{
-		Batch: IngestBatchRecord{Request: IngestRequest{
-			Items: make([]IngestItem, itemCount),
-		}},
-	}}}
-	weight := ingestMetadataSegmentCacheBytes(segment, 1)
-	if weight <= ingestMetadataCacheMaxBytes {
-		t.Fatalf("decoded segment cache weight = %d, want above %d", weight, ingestMetadataCacheMaxBytes)
-	}
-	cache := newIngestMetadataObjectCache()
-	cache.put("large-segment", ingestMetadataCacheObject{value: segment, bytes: weight}, time.Minute)
-	if _, ok := cache.get("large-segment", time.Now()); ok {
-		t.Fatal("decoded segment above the cache byte limit was retained")
-	}
-}
-
-func TestIngestRecentStatusCacheIsBounded(t *testing.T) {
-	service := &IngestService{
-		recentByStatus:    map[string]IngestBatchStatus{},
-		recentStatusOrder: make([]string, 0, ingestRecentStatusLimit),
-	}
-	for index := 0; index <= ingestRecentStatusLimit; index++ {
-		key := fmt.Sprintf("status-%d", index)
-		service.cacheRecentStatusLocked(key, IngestBatchStatus{BatchID: key})
-	}
-	if len(service.recentByStatus) != ingestRecentStatusLimit || len(service.recentStatusOrder) != ingestRecentStatusLimit {
-		t.Fatalf("recent status cache size = %d/%d, want %d", len(service.recentByStatus), len(service.recentStatusOrder), ingestRecentStatusLimit)
-	}
-	if _, ok := service.recentByStatus["status-0"]; ok {
-		t.Fatal("oldest recent status was not evicted")
-	}
-	if status := service.recentByStatus[fmt.Sprintf("status-%d", ingestRecentStatusLimit)]; status.BatchID == "" {
-		t.Fatal("newest recent status is missing")
-	}
-}
-
-func TestIngestMetadataBatchesAcrossGraphFlushesAndPreservesNoop(t *testing.T) {
-	objects := NewMemoryStore()
-	store := NewTenantStore(objects, "test")
-	config := testIngestServiceConfig(t)
-	config.Metadata.Mode = IngestMetadataModeSegment
-	config.FlushMaxRequests = 1
-	config.Metadata.FlushInterval = time.Hour
-	config.Metadata.MaxRequests = 2
-	service, err := OpenIngestService(store, config)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("recover legacy prepared batch: %v", err)
 	}
-	defer closeIngestService(t, service)
-
-	firstRequest := ingestEntityRequest("batch-1", "host:1")
-	first, err := service.Accept(context.Background(), "tenant-a", firstRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		status, statusErr := service.Status(context.Background(), "tenant-a", firstRequest.Source, firstRequest.CollectorID, firstRequest.BatchID)
-		if statusErr == nil && status.State == IngestStatePublished {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("first graph flush did not publish: status=%#v err=%v", status, statusErr)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	secondRequest := ingestEntityRequest("batch-2", "host:1")
-	second, err := service.Accept(context.Background(), "tenant-a", secondRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstResult, err := service.Wait(context.Background(), first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondResult, err := service.Wait(context.Background(), second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstResult.Version != 1 || secondResult.Version != 1 ||
-		!secondResult.Skipped || secondResult.SkipReason != IngestSkipReasonLogicalNoop {
-		t.Fatalf("cross-flush results = %#v / %#v", firstResult, secondResult)
-	}
-	segments, err := objects.List(context.Background(), "test/tenants/tenant-a/ingest/metadata/segments/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(segments) != 1 {
-		t.Fatalf("cross-flush metadata segments = %d, want 1", len(segments))
-	}
-}
-
-func TestIngestMetadataPublishedIsVisibleOnlyAfterManifest(t *testing.T) {
-	store := NewTenantStore(NewMemoryStore(), "test")
-	config := testIngestServiceConfig(t)
-	config.Metadata.Mode = IngestMetadataModeSegment
-	config.FlushInterval = time.Hour
-	config.FlushMaxRequests = 1
-	config.Metadata.FlushInterval = time.Hour
-	service, err := OpenIngestService(store, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeIngestService(t, service)
-
-	request := ingestEntityRequest("batch-1", "host:1")
-	accepted, err := service.Accept(context.Background(), "tenant-a", request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		status, statusErr := service.Status(context.Background(), "tenant-a", request.Source, request.CollectorID, request.BatchID)
-		if statusErr == nil && status.State == IngestStatePublished {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("request did not reach published: status=%#v err=%v", status, statusErr)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if _, err := store.GetIngestBatch(context.Background(), "tenant-a", request.Source, request.CollectorID, request.BatchID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("batch before metadata manifest err = %v, want ErrNotFound", err)
-	}
-	if _, err := service.WaitCommitted(context.Background(), accepted); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.GetIngestBatch(context.Background(), "tenant-a", request.Source, request.CollectorID, request.BatchID); err != nil {
-		t.Fatalf("batch after metadata manifest: %v", err)
-	}
-}
-
-func TestIngestMetadataRecoversSegmentPutBeforeManifest(t *testing.T) {
-	base := NewMemoryStore()
-	objects := &failConditionalKeyOnceStore{ObjectStore: base}
-	store := NewTenantStore(objects, "test")
-	config := testIngestServiceConfig(t)
-	config.Metadata.Mode = IngestMetadataModeSegment
-	config.FlushMaxRequests = 1
-	config.Metadata.MaxRequests = 1
-	config.RetryInterval = time.Hour
-	objects.failKey = store.ingestMetadataManifestKey("tenant-a")
-	service, err := OpenIngestService(store, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := ingestEntityRequest("batch-1", "host:1")
-	accepted, err := service.Accept(context.Background(), "tenant-a", request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		status, statusErr := service.Status(context.Background(), "tenant-a", request.Source, request.CollectorID, request.BatchID)
-		segments, _ := base.List(context.Background(), "test/tenants/tenant-a/ingest/metadata/segments/")
-		if statusErr == nil && status.State == IngestStateRetrying && len(segments) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("metadata failure not reached: status=%#v err=%v segments=%d", status, statusErr, len(segments))
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	secondRequest := ingestEntityRequest("batch-2", "host:2")
-	if _, err := service.Accept(context.Background(), "tenant-a", secondRequest); err != nil {
-		t.Fatal(err)
-	}
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		status, statusErr := service.Status(context.Background(), "tenant-a", secondRequest.Source, secondRequest.CollectorID, secondRequest.BatchID)
-		if statusErr == nil && (status.State == IngestStatePublished || status.State == IngestStateCommitted) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("second graph publication not reached: status=%#v err=%v", status, statusErr)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	crashIngestService(t, service)
-
-	recovery := config
-	recovery.RetryInterval = 5 * time.Millisecond
-	recovered, err := OpenIngestService(store, recovery)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeIngestService(t, recovered)
-	recoveredAcceptance, err := recovered.Accept(context.Background(), "tenant-a", request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := recovered.WaitCommitted(context.Background(), recoveredAcceptance)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Version != 1 {
-		t.Fatalf("recovered result = %#v", result)
-	}
-	secondAcceptance, err := recovered.Accept(context.Background(), "tenant-a", secondRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondResult, err := recovered.WaitCommitted(context.Background(), secondAcceptance)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if secondResult.Version != 2 {
-		t.Fatalf("second recovered result = %#v", secondResult)
-	}
-	segments, err := base.List(context.Background(), "test/tenants/tenant-a/ingest/metadata/segments/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(segments) != 2 {
-		t.Fatalf("recovery created %d metadata segments, want 2 without an orphan duplicate", len(segments))
-	}
-	manifest, err := store.CurrentManifest(context.Background(), "tenant-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Version != 2 {
-		t.Fatalf("graph version after metadata recovery = %d, want 2", manifest.Version)
-	}
-	_ = accepted
-}
-
-func TestIngestMetadataIndexKeepsArchivedHistoryReadable(t *testing.T) {
-	objects := NewMemoryStore()
-	store := NewTenantStore(objects, "test")
-	store.IngestMetadataMode = IngestMetadataModeSegment
-	ctx := context.Background()
-	for index := 1; index <= 41; index++ {
-		request := ingestEntityRequest(fmt.Sprintf("batch-%02d", index), fmt.Sprintf("host:%02d", index))
-		result := IngestResult{BatchID: request.BatchID, Version: int64(index), Applied: 1}
-		record := IngestBatchRecord{
-			TenantID: "tenant-a", Request: request, Result: result,
-			StartedAt: time.Unix(int64(index), 0).UTC(), FinishedAt: time.Unix(int64(index), 1).UTC(),
-		}
-		if _, err := store.publishIngestMetadataSegment(ctx, "tenant-a", []ingestMetadataRecord{{
-			AcceptedLSN: uint64(index), Digest: fmt.Sprintf("digest-%02d", index), Batch: record,
-		}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	manifest, _, err := store.loadIngestMetadataManifest(ctx, "tenant-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(manifest.Recent) != ingestMetadataRecentLimit {
-		t.Fatalf("recent refs = %d, want %d", len(manifest.Recent), ingestMetadataRecentLimit)
-	}
-	if len(manifest.Indexes) != 1 || manifest.Indexes[0].Level != 1 {
-		t.Fatalf("index refs = %#v, want one level-1 catalog", manifest.Indexes)
-	}
-	record, err := store.GetIngestBatch(ctx, "tenant-a", "agent", "collector-a", "batch-01")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Result.Version != 1 {
-		t.Fatalf("archived record = %#v", record)
-	}
-}
-
-func TestLegacyIngestRejectsTenantAfterSegmentActivation(t *testing.T) {
-	objects := NewMemoryStore()
-	segmentWriter := NewTenantStore(objects, "test")
-	segmentWriter.IngestMetadataMode = IngestMetadataModeSegment
-	request := ingestEntityRequest("batch-1", "host:1")
-	record := IngestBatchRecord{
-		TenantID: "tenant-a", Request: request,
-		Result:    IngestResult{BatchID: request.BatchID, Version: 1, Applied: 1},
-		StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(),
-	}
-	if _, err := segmentWriter.publishIngestMetadataSegment(context.Background(), "tenant-a", []ingestMetadataRecord{{
-		AcceptedLSN: 1, Digest: "digest", Batch: record,
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	legacy := NewTenantStore(objects, "test")
-	_, err := legacy.Ingest(context.Background(), "tenant-a", ingestEntityRequest("batch-2", "host:2"))
-	if !errors.Is(err, ErrIngestMetadataFormatActivated) {
-		t.Fatalf("legacy write err = %v, want ErrIngestMetadataFormatActivated", err)
+	if len(pending) != 1 || pending[0].state != IngestStatePrepared ||
+		pending[0].envelope.Prepared == nil || pending[0].envelope.Prepared.FlushID != plan.FlushID ||
+		pending[0].envelope.Request.BatchID != request.BatchID {
+		t.Fatalf("legacy prepared recovery = %#v", pending)
 	}
 }
 
@@ -1181,138 +1438,20 @@ type failIngestRecordOnceStore struct {
 	failed  bool
 }
 
-type failConditionalKeyOnceStore struct {
-	ObjectStore
-	mu      sync.Mutex
-	failKey string
-	failed  bool
+type repairRequiredIngestStore struct {
+	*TenantStore
+	called chan struct{}
+	once   sync.Once
 }
 
-type countingConditionalStore struct {
-	ObjectStore
-	mu   sync.Mutex
-	puts map[string]int
-}
-
-type blockingMetadataSegmentStore struct {
-	ObjectStore
-	tenantID           string
-	tenantAStarted     chan struct{}
-	otherTenantStarted chan struct{}
-	releaseTenantA     chan struct{}
-	tenantAOnce        sync.Once
-	otherTenantOnce    sync.Once
-	releaseOnce        sync.Once
-}
-
-func newBlockingMetadataSegmentStore(objects ObjectStore, tenantID string) *blockingMetadataSegmentStore {
-	return &blockingMetadataSegmentStore{
-		ObjectStore:        objects,
-		tenantID:           tenantID,
-		tenantAStarted:     make(chan struct{}),
-		otherTenantStarted: make(chan struct{}),
-		releaseTenantA:     make(chan struct{}),
-	}
-}
-
-func (s *blockingMetadataSegmentStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
-	if !strings.Contains(key, "/ingest/metadata/segments/") {
-		return s.ObjectStore.PutConditional(ctx, key, data, condition)
-	}
-	if strings.Contains(key, "/tenants/"+s.tenantID+"/") {
-		blocked := false
-		s.tenantAOnce.Do(func() {
-			blocked = true
-			close(s.tenantAStarted)
-		})
-		if blocked {
-			select {
-			case <-s.releaseTenantA:
-			case <-ctx.Done():
-				return ObjectMeta{Key: key}, ctx.Err()
-			}
-		}
-	} else {
-		s.otherTenantOnce.Do(func() { close(s.otherTenantStarted) })
-	}
-	return s.ObjectStore.PutConditional(ctx, key, data, condition)
-}
-
-func (s *blockingMetadataSegmentStore) releaseTenantAFlush() {
-	s.releaseOnce.Do(func() { close(s.releaseTenantA) })
-}
-
-type blockingMetadataObjectReadStore struct {
-	ObjectStore
-	key         string
-	started     chan struct{}
-	release     chan struct{}
-	startedOnce sync.Once
-	releaseOnce sync.Once
-	mu          sync.Mutex
-	calls       map[string]int
-}
-
-func newBlockingMetadataObjectReadStore(objects ObjectStore, key string) *blockingMetadataObjectReadStore {
-	return &blockingMetadataObjectReadStore{
-		ObjectStore: objects,
-		key:         key,
-		started:     make(chan struct{}),
-		release:     make(chan struct{}),
-		calls:       map[string]int{},
-	}
-}
-
-func (s *blockingMetadataObjectReadStore) Get(ctx context.Context, key string) ([]byte, error) {
-	s.mu.Lock()
-	s.calls[key]++
-	s.mu.Unlock()
-	if key == s.key {
-		s.startedOnce.Do(func() { close(s.started) })
-		select {
-		case <-s.release:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	return s.ObjectStore.Get(ctx, key)
-}
-
-func (s *blockingMetadataObjectReadStore) releaseRead() {
-	s.releaseOnce.Do(func() { close(s.release) })
-}
-
-func (s *blockingMetadataObjectReadStore) callsFor(key string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.calls[key]
-}
-
-func (s *countingConditionalStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
-	meta, err := s.ObjectStore.PutConditional(ctx, key, data, condition)
-	if err == nil {
-		s.mu.Lock()
-		s.puts[key]++
-		s.mu.Unlock()
-	}
-	return meta, err
-}
-
-func (s *countingConditionalStore) putCount(key string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.puts[key]
-}
-
-func (s *failConditionalKeyOnceStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
-	s.mu.Lock()
-	if key == s.failKey && !s.failed {
-		s.failed = true
-		s.mu.Unlock()
-		return ObjectMeta{Key: key}, errors.New("injected conditional write failure")
-	}
-	s.mu.Unlock()
-	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+func (s *repairRequiredIngestStore) IngestDurableBatchWithHooks(
+	context.Context,
+	string,
+	[]IngestBatchEntry,
+	IngestBatchHooks,
+) ([]IngestResult, error) {
+	s.once.Do(func() { close(s.called) })
+	return nil, fmt.Errorf("%w: injected prepared WAL mismatch", ErrIngestRepairRequired)
 }
 
 func (s *failIngestRecordOnceStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
@@ -1339,6 +1478,14 @@ func testIngestServiceConfig(t *testing.T) IngestServiceConfig {
 	return config
 }
 
+func TestIngestServiceConfigRejectsDotOwnerID(t *testing.T) {
+	config := DefaultIngestServiceConfig(t.TempDir())
+	config.OwnerID = ".."
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "owner ID") {
+		t.Fatalf("Validate error = %v, want owner path validation", err)
+	}
+}
+
 func closeIngestService(t *testing.T, service *IngestService) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1357,14 +1504,6 @@ func crashIngestService(t *testing.T, service *IngestService) {
 		t.Fatal("scheduler did not stop")
 	}
 	service.workers.Wait()
-	if service.config.Metadata.Mode == IngestMetadataModeSegment {
-		select {
-		case <-service.metadataSchedulerOK:
-		case <-time.After(5 * time.Second):
-			t.Fatal("metadata scheduler did not stop")
-		}
-		service.metadataWorkers.Wait()
-	}
 	if err := service.wal.Close(); err != nil {
 		t.Fatalf("close crashed WAL: %v", err)
 	}

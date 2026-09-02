@@ -1,10 +1,15 @@
-# Ingest WAL、攒批与精确去重最终方案
+# Ingest WAL、攒批与精确去重方案（1.2 本地单 writer）
+
+> 本文记录 1.2 的 local-coordination WAL 设计，仅适用于一个活动 writer
+> 进程。1.3 的 PostgreSQL-CAS 多 writer 合同已另行定义，见
+> [PostgreSQL-CAS 多 writer Ingest WAL（1.3）](ingest-wal-multiwriter-design.zh-CN.md)。
+> 本文中“不支持多个活动 writer”“不增加 PostgreSQL 依赖”等限制是 1.2
+> 的历史边界，不是 1.3 的目标合同。
 
 ## 1. 文档状态
 
-- 状态：1.1.2 WAL/graph batching 基线与 1.1.3 metadata segment 已实现；
-  1.2.0 已将该路径设为本地 writer 的性能优先默认值。
-- 目标版本：1.2.0 默认性能 profile。
+- 状态：GGraphDB 1.2.0 已实现；保留作为历史设计记录。
+- 适用版本：1.2 local coordination + 单活动 writer。
 - 目标部署：
   - `GRAPHDB_COORDINATION=local`；
   - 单个活动 writer 进程；
@@ -21,7 +26,7 @@
 
 1. 一个进程级、分段、可恢复的本地 WAL，通过内存 buffer 和 group fsync
    合并多租户的小写入。
-2. WAL 持久化后，按租户进入独立 FIFO 队列；默认最大等待 1 秒，达到
+2. WAL 持久化后，按租户进入独立 FIFO 队列；默认最大等待 10 秒，达到
    请求数或字节阈值时提前 flush。
 3. 一次租户 flush 保留多个按请求顺序生成的逻辑 commit，不把异构请求
    粗暴拼成一个 `graph.Mutations`。
@@ -73,7 +78,7 @@ manifest、版本和恢复边界仍然独立。
 | 多请求合成一个 `graph.Commit` | `applyMutations` 按类型固定排序，可能把后到的 delete 排在先到的 upsert 前面 | 每个请求保留独立逻辑 commit，按 FIFO 顺序应用 |
 | 每个请求独立 commit object | 对象 PUT 和 manifest CAS 仍接近请求数 | 多个逻辑 commit 直接写一个 commit segment，manifest 只发布一次 |
 | 每租户独立 timer/goroutine | 大量租户产生 timer、goroutine 和 GC 压力 | 一个全局 deadline heap，加有界 flush worker |
-| 攒批队列仍默认同步返回 | 低流量租户每次请求会占用连接直到 flush | WAL 模式默认 durable 202；需要同步结果时显式等待 committed |
+| 10 秒队列仍默认同步返回 | 低流量租户每次请求可能阻塞接近 10 秒 | WAL 模式默认 durable 202；需要同步结果时显式等待 committed |
 | WAL 中使用 DATA/REF 内容引用 | 恢复和 segment GC 复杂，REF 可能长期钉住旧 segment | 第一版 WAL 保存完整请求；只对相同幂等身份共享待处理记录 |
 | 内存 append queue、WAL buffer、热缓存都保留 payload | 同一请求可能出现三份内存副本 | 每个阶段只保留一份所有权明确的 payload，落盘后释放 append buffer |
 | collector status、索引失败阻止 WAL 回收 | 可修复派生状态可能永久钉住 WAL | manifest 和 ingest batch record 为必需状态，派生状态异步修复 |
@@ -85,7 +90,7 @@ manifest、版本和恢复边界仍然独立。
 ### 5.1 目标
 
 - 已返回 durable accepted 的请求在进程崩溃后可恢复。
-- 默认 graph flush 最大等待时间为 1 秒。
+- 默认 graph flush 最大等待时间为 10 秒。
 - 保留同一租户请求的 FIFO 语义。
 - 保留每个有效、发生变化的请求对应的逻辑 graph version。
 - 相同幂等身份的重试只处理一次。
@@ -147,9 +152,8 @@ GRAPHDB_INGEST_MODE=direct|wal
 ### 7.1 `direct`
 
 - 保持当前同步行为和 200/207 响应。
-- 用于 PostgreSQL 多 writer 回归验证，或明确需要同步可见性语义的调用方。
-- v1.2.0 不再把 `direct` 作为本地 writer 的兼容默认值；PostgreSQL writer
-  必须显式配置 `GRAPHDB_INGEST_MODE=direct`。
+- 用于兼容升级和不希望改变版本可见性语义的调用方。
+- 发行升级时默认保持 `direct`，避免无配置升级改变现有客户端行为。
 
 ### 7.2 `wal`
 
@@ -264,8 +268,15 @@ durableLSN   已完成 file.Sync
 默认只有 `durableLSN >= requestLSN` 才能返回 durable accepted。内存 buffer
 减少 write syscall 和 fsync 次数，但不改变 durable 边界。
 
-v1.2.0 的公开 WAL server 模式只允许 `sync`。低于 fsync 的确认不能返回
-`202 Accepted`，也不属于可发布配置。
+可以保留显式的测试或低可靠模式：
+
+```ini
+GRAPHDB_INGEST_WAL_DURABILITY=async
+```
+
+该模式允许在 append queue 接收后返回，但必须明确报告
+`durability=memory`，并说明最多可能丢失一个 fsync 周期。生产默认必须为
+`sync`。
 
 ## 9. 内存模型
 
@@ -323,8 +334,8 @@ deadline = firstAcceptedAt + flushInterval
 任一条件触发提前 flush：
 
 - deadline 到期；
-- 请求数达到 flush trigger；
-- 待 flush 请求字节数达到 flush trigger；
+- 请求数达到上限；
+- 待 flush 请求字节数达到上限；
 - direct commit 或租户生命周期屏障；
 - full-sync 屏障；
 - WAL 或内存进入压力状态；
@@ -584,7 +595,7 @@ sequencer 建立屏障：
 1. 热缓存超限：淘汰解码对象，保留 WAL offset。
 2. append queue 超限：等待 queue timeout。
 3. 等待超时：返回 429 和 `Retry-After`。
-4. flush batch 达到请求数或字节触发阈值：提前 flush。
+4. flush batch 达到请求数或字节上限：提前 flush。
 5. WAL 达到磁盘上限或剩余空间低于安全水位：停止接收新请求。
 6. 已 durable 请求继续 flush，释放 WAL 空间。
 
@@ -607,47 +618,30 @@ sequencer 建立屏障：
 建议第一版只暴露必要配置：
 
 ```ini
-# v1.2.0 本地 single writer 默认性能模式
-GRAPHDB_INGEST_MODE=wal
-GRAPHDB_INGEST_METADATA_MODE=segment
+# 兼容升级默认 direct；目标单 writer 部署显式设为 wal
+GRAPHDB_INGEST_MODE=direct
 
 GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest
 GRAPHDB_INGEST_WAL_DURABILITY=sync
 GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB
-GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=3ms
+GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms
 GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB
 
 GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB
-GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80
-GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70
-GRAPHDB_INGEST_WAL_STOP_WATERMARK=85
-GRAPHDB_INGEST_MAX_PENDING_AGE=2m
-GRAPHDB_INGEST_FLUSH_INTERVAL=250ms
-GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8
-GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB
-GRAPHDB_INGEST_FLUSH_WORKERS=2
-GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms
-GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
-GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
-GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2
-GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB
-GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000
+GRAPHDB_INGEST_FLUSH_INTERVAL=10s
+GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256
+GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB
 GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s
 ```
 
 说明：
 
-- `FLUSH_INTERVAL=250ms` 是最大驻留时间，不是固定轮询周期；graph flush
-  trigger 为 8 个请求 / 2 MiB，忙租户可合并同一轮队列。
+- `FLUSH_INTERVAL=10s` 是最大驻留时间，不是固定轮询周期。
 - `WAL_FSYNC_INTERVAL` 与 graph flush interval 完全独立。
-- metadata flush 默认等待 500ms，以 256 个请求或 8 MiB 作为调度 trigger，并
-  使用 2 个 worker；同一租户仍保持单个进行中的 flush。
 - segment 目标大小第一版使用内部常量，不增加额外运维参数。
 - flush worker 数量复用现有 `GRAPHDB_WRITE_MAX_CONCURRENT`。
 - 配置为 `wal` 时必须校验 local coordination、single writer topology 和可写
   WAL 目录；不满足条件则启动失败。
-- 每租户自动 maintenance 要求 ingest 空闲 1 分钟；后台重型 task 默认单并发，
-  避免维护工作与写入在高峰期相互争抢。
 
 上述容量是初始建议值，必须通过实际请求大小、磁盘延迟和对象存储吞吐测试
 校准。
@@ -840,10 +834,10 @@ readiness 至少检查：
 - 所有内存和磁盘队列都有硬上限。
 - 多租户指标不引入 tenant 高基数标签。
 
-部署边界：
+兼容性：
 
-- 本地 writer 默认 `wal + segment + sync`，默认响应为 durable `202`。
-- `GRAPHDB_INGEST_MODE=direct` 仍保持同步 200/207 行为，但必须显式启用。
+- `GRAPHDB_INGEST_MODE=direct` 保持当前 API 行为。
+- WAL 模式为显式启用。
 - 现有 reader 无需理解 WAL，只读取原有 manifest 和 commit segment。
 - 现有 compact、GC、backup 和 recovery 必须能够处理新生成的短 commit
   segment。
@@ -859,7 +853,7 @@ readiness 至少检查：
 
 ### 阶段二：Commit segment 攒批
 
-- tenant queue、deadline heap、默认 1 秒；
+- tenant queue、deadline heap、默认 10 秒；
 - ordered logical commits；
 - 一次 manifest publish；
 - existing loose tail 合并；
@@ -876,9 +870,9 @@ readiness 至少检查：
 
 - OrbStack + RustFS 故障和 SIGKILL 矩阵；
 - 多租户 benchmark；
-- v1.2.0 以本地 `wal + segment + sync` 作为默认性能 profile；
-- PostgreSQL 多 writer 仅保留显式 `direct` 回归路径；
-- 5 次 30 分钟运行和回归门禁全部通过后才允许发布。
+- 先以 `GRAPHDB_INGEST_MODE=direct` 发布；
+- 单 writer 环境按租户或实例灰度启用 `wal`；
+- 指标满足验收标准后再作为目标部署 profile。
 
 ## 24. 收益边界
 
@@ -897,43 +891,3 @@ readiness 至少检查：
 
 第一版 ingest metadata object 仍近似随请求数增长，因此最终收益必须同时观察
 graph 数据对象和 ingest metadata 两类 PUT，不能只统计 manifest。
-
-## 25. 1.1.3 metadata segment 扩展
-
-1.1.3 以显式配置 `GRAPHDB_INGEST_METADATA_MODE=segment` 关闭上一节保留的
-逐请求 metadata 写放大。该模式只允许 local coordination + WAL ingest。
-
-graph manifest 发布后，worker 将同一 graph flush 的请求一次性追加为
-`PUBLISHED` WAL 状态。独立的全局 metadata deadline heap 再按租户跨 graph
-flush 攒批；达到 500ms、256 请求、8 MiB、shutdown 或
-`Prefer: wait=committed` 时：
-
-1. 用一个批量 `PUBLISHED` WAL 记录固化 metadata flush ID 和精确请求边界；
-2. 编码并条件创建内容寻址 Parquet metadata segment；
-3. CAS 发布独立 ingest metadata manifest；
-4. 批量追加 `FINALIZED`，完成请求并允许 WAL prune。
-
-segment 保存完整 request/result、请求摘要、accepted LSN、原请求 trace context
-以及每个触达 collector 的窗口最终累计状态。batch、idempotency 和 collector
-分别使用固定宽度 Bloom；同一记录同时建立 batch/idempotency identity，不再
-复制 payload。
-
-manifest 直接保存 32 个最近引用。溢出的引用写到 level-0 目录；同层超过 8
-个目录时，把目录内的 segment 引用和 Bloom 合并到下一层。目录是内容寻址
-Parquet 对象，只包含引用，不包含或重写历史 ingest payload。查询按 recent
-segment、从新到旧的目录、legacy 对象顺序精确验证 Bloom 候选。
-
-segment key 由 tenant、first/last accepted LSN 和规范 payload hash 决定。
-metadata flush ID 在任何对象 PUT 前 fsync；因此 segment PUT 后、manifest CAS
-前后或部分 `FINALIZED` 后崩溃，恢复仍使用相同边界和 key。manifest 已含引用
-时直接 finalize；只有 segment 未被发布时才继续 CAS。
-
-首次 segment collector 状态优先读取新 segment 历史，然后读取现有 materialized
-collector status；若该对象不存在，则扫描 legacy batch 对象恢复累计值。旧对象
-不迁移、不删除。存在 segment manifest 是不可逆的 writer marker：1.1.3 legacy
-writer 会拒绝该租户，1.1.2 writer 在启用后不再是安全回退目标。
-
-该扩展不改变 graph commit segment、逻辑 version、commit tail 计数、direct
-模式或 deadletter 对象。`graphdb_ingest_metadata_*` 指标单独报告物理 segment
-PUT、manifest publish、目录 PUT、编码字节、CAS 冲突、Bloom 候选和 WAL replay
-字节，避免用逻辑 commit 数推断物理写放大。

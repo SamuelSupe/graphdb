@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitlab.jiagouyun.com/guance/graphdb/internal/bootstrap"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
@@ -17,207 +18,78 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
-const httpShutdownTimeout = 10 * time.Second
+const (
+	httpShutdownTimeout           = 10 * time.Second
+	backgroundTaskShutdownTimeout = 30 * time.Second
+)
 
 func run(args []string) error {
 	if len(args) == 0 {
 		printHelp()
 		return nil
 	}
-	if args[0] == "version" || args[0] == "--version" {
+	command, ok := findCommand(args[0])
+	if !ok {
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+	if command.kind == commandVersion {
 		printVersion()
+		return nil
+	}
+	if command.kind == commandHelp {
+		printHelp()
 		return nil
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	objects, err := config.NewObjectStore(cfg)
+	runtime, err := bootstrap.NewStorageRuntime(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
-	pressure := storage.NewWritePressure(cfg.BackpressureConfig())
-	objects = storage.NewDelayedReadObjectStore(objects, cfg.FaultObjectReadDelay)
-	objects = storage.NewReadProtectedObjectStore(objects, storage.ReadProtectionConfig{
-		MaxConcurrent: cfg.ReadObjectMaxConcurrent,
-		Singleflight:  cfg.ReadObjectSingleflight,
-	})
-	storage.ConfigureParquetDecodeMaxConcurrent(cfg.ParquetDecodeMaxConcurrent)
-	objects = storage.NewMeteredObjectStore(objects, pressure, nil)
-	if cfg.WriterObjectCache && (cfg.Mode == "all" || cfg.Mode == "writer") {
-		objects = storage.NewWriterObjectCache(objects, cfg.WriterObjectCacheConfig())
-	}
-	store := storage.NewTenantStore(objects, cfg.Prefix)
-	store.MaxWriteCacheBytes = cfg.WriteCacheMaxBytes
-	store.WriteEntityRecords = cfg.IndexEntityRecords
-	store.UseEntityRecordsForRead = cfg.IndexEntityRecords
-	store.EntityPagePackMaxBytes = cfg.EntityPagePackMaxBytes
-	store.MaterializeCollectorStatus = cfg.IngestCollectorStatusMaterialized
-	store.IngestMetadataMode = cfg.IngestMetadataMode
-	store.ConfigureIndexObjectCache(storage.IndexObjectCacheConfig{
-		MaxEntries: cfg.ReaderIndexCacheEntries,
-		MaxBytes:   cfg.ReaderIndexCacheMaxBytes,
-		DiskDir:    cfg.ReaderIndexCacheDir,
-	})
-	if cfg.InstanceID != "" {
-		store.InstanceID = cfg.InstanceID
-		store.ReaderID = cfg.InstanceID
-	} else if hostname, err := os.Hostname(); err == nil && hostname != "" {
-		store.ReaderID = fmt.Sprintf("%s|%s|%s|%s", hostname, cfg.Mode, cfg.Addr, cfg.Prefix)
-	}
-	store.Backpressure = pressure
-	store.CoordinatorRetryLimit = cfg.WriteCASMaxRetries
-	store.CoordinatorPendingTTL = cfg.CoordinatorPendingReservationTTL
-	store.CoordinatorCleanup = cfg.CoordinatorCleanupConfig()
-
-	coordinator, err := config.NewCoordinator(context.Background(), cfg)
-	if err != nil {
-		return err
-	}
-	if coordinator != nil {
-		defer coordinator.Close()
-	}
-	if args[0] == "coordinator" {
+	defer runtime.Close()
+	store := runtime.Store
+	coordinator := runtime.Coordinator
+	if command.kind == commandCoordinator {
 		return coordinatorCommand(args[1:], store, coordinator)
 	}
 	if coordinator != nil {
-		if err := coordinator.CheckSchema(context.Background()); err != nil {
-			return err
-		}
 		store.SetCoordinator(coordinator)
-		if err := store.EnsurePostgresMarker(context.Background()); err != nil {
-			return err
+		startupTimeout := cfg.ReadinessTimeout
+		if startupTimeout <= 0 {
+			startupTimeout = 2 * time.Second
 		}
-	} else if commandMayWrite(args[0], cfg.Mode) {
+		startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+		schemaErr := coordinator.CheckSchema(startupCtx)
+		cancel()
+		walServe := command.kind == commandServe && cfg.IngestMode == "wal"
+		if schemaErr != nil && !(walServe &&
+			(errors.Is(schemaErr, storage.ErrCoordinatorUnavailable) ||
+				errors.Is(schemaErr, context.DeadlineExceeded))) {
+			return schemaErr
+		}
+		markerCtx, markerCancel := context.WithTimeout(context.Background(), startupTimeout)
+		markerErr := store.EnsurePostgresMarker(markerCtx)
+		markerCancel()
+		if markerErr != nil && !(walServe &&
+			(errors.Is(markerErr, storage.ErrObjectStoreUnavailable) ||
+				errors.Is(markerErr, context.DeadlineExceeded))) {
+			return markerErr
+		}
+	} else if command.mayWrite(cfg.Mode) {
 		if err := store.EnsureLocalWriterAllowed(context.Background()); err != nil {
 			return err
 		}
 	}
 
-	switch args[0] {
-	case "serve":
+	if command.kind == commandServe {
 		return serve(cfg, store)
-	case "init-tenant":
-		return initTenant(args[1:], store)
-	case "list-tenants":
-		return listTenants(args[1:], store)
-	case "tenant":
-		return tenantInfo(args[1:], store)
-	case "create-tenant":
-		return createTenant(args[1:], store)
-	case "set-tenant-metadata":
-		return setTenantMetadata(args[1:], store)
-	case "disable-tenant":
-		return disableTenant(args[1:], store)
-	case "enable-tenant":
-		return enableTenant(args[1:], store)
-	case "delete-tenant":
-		return deleteTenant(args[1:], store)
-	case "purge-tenant":
-		return purgeTenant(args[1:], store)
-	case "clone-tenant":
-		return cloneTenant(args[1:], store)
-	case "backup-tenant":
-		return backupTenant(args[1:], store)
-	case "restore-tenant":
-		return restoreTenant(args[1:], store)
-	case "restore-drill-tenant":
-		return restoreDrillTenant(args[1:], store)
-	case "commit":
-		return commit(args[1:], store)
-	case "ingest":
-		return ingest(args[1:], store)
-	case "collector-status":
-		return collectorStatus(args[1:], store)
-	case "source-policy":
-		return sourcePolicy(args[1:], store)
-	case "set-source-policy":
-		return setSourcePolicy(args[1:], store)
-	case "tenant-config":
-		return tenantConfig(args[1:], store)
-	case "set-tenant-config":
-		return setTenantConfig(args[1:], store)
-	case "tenant-usage":
-		return tenantUsage(args[1:], store)
-	case "deadletters":
-		return deadLetters(args[1:], store)
-	case "replay-deadletters":
-		return replayDeadLetters(args[1:], store)
-	case "query":
-		return runQuery(args[1:], store)
-	case "graphql":
-		return runGraphQL(args[1:], store)
-	case "gql":
-		return runGQL(args[1:], store)
-	case "save-query":
-		return saveQuery(args[1:], store)
-	case "list-queries":
-		return listQueries(args[1:], store)
-	case "run-saved-query":
-		return runSavedQuery(args[1:], store)
-	case "start-task":
-		return startTask(args[1:], store)
-	case "list-tasks":
-		return listTasks(args[1:], store)
-	case "task":
-		return getTask(args[1:], store)
-	case "cancel-task":
-		return cancelTask(args[1:], store)
-	case "retry-task":
-		return retryTask(args[1:], store)
-	case "index-catalog":
-		return indexCatalog(args[1:], store)
-	case "index-inspect":
-		return indexInspect(args[1:], store)
-	case "index-definitions":
-		return indexDefinitions(args[1:], store)
-	case "create-index":
-		return createIndex(args[1:], store)
-	case "drop-index":
-		return dropIndex(args[1:], store)
-	case "index-health":
-		return indexHealth(args[1:], store)
-	case "integrity-audit":
-		return integrityAudit(args[1:], store)
-	case "rebuild-indexes":
-		return rebuildIndexes(args[1:], store)
-	case "writer-lease":
-		return writerLease(args[1:], store)
-	case "recover":
-		return recoverTenant(args[1:], store)
-	case "repair":
-		return repairTenant(args[1:], store)
-	case "cleanup-commits":
-		return cleanupCommits(args[1:], store)
-	case "gc":
-		return runGC(args[1:], store)
-	case "compact":
-		return compact(args[1:], store)
-	case "help", "-h", "--help":
-		printHelp()
-		return nil
-	default:
-		return fmt.Errorf("unknown command %q", args[0])
 	}
-}
-
-func commandMayWrite(command string, mode string) bool {
-	if command == "serve" {
-		return mode == "all" || mode == "writer"
+	if command.handler == nil {
+		return fmt.Errorf("command %q is not executable", command.name)
 	}
-	switch command {
-	case "init-tenant", "create-tenant", "set-tenant-metadata",
-		"disable-tenant", "enable-tenant", "delete-tenant", "purge-tenant",
-		"clone-tenant", "backup-tenant", "restore-tenant", "restore-drill-tenant",
-		"commit", "ingest",
-		"set-source-policy", "set-tenant-config", "replay-deadletters",
-		"save-query", "start-task", "cancel-task", "retry-task",
-		"create-index", "drop-index", "rebuild-indexes", "recover",
-		"repair", "cleanup-commits", "gc", "compact":
-		return true
-	default:
-		return false
-	}
+	return command.handler(args[1:], store)
 }
 
 func serve(cfg config.Config, store *storage.TenantStore) error {
@@ -241,11 +113,24 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		_ = shutdownTrace(shutdownCtx)
 	}()
 	obs := observability.New(os.Stdout, cfg.SlowQueryThreshold)
+	cache := storage.NewReaderCache(store, cfg.PollInterval)
+	cache.IdleTTL = cfg.ReaderCacheIdleTTL
+	cache.ConfigureCapacity(cfg.ReaderCacheMaxTenants, cfg.ReaderCacheMaxBytes)
+	cache.LoadTimeout = cfg.ReaderCacheLoadTimeout
+	cache.ConfigureLoadAdmission(
+		cfg.ReaderCacheLoadMaxConcurrent,
+		cfg.ReaderCacheLoadQueueTimeout,
+	)
 	var ingestService *storage.IngestService
 	if cfg.IngestMode == "wal" {
 		ingestConfig := cfg.IngestServiceConfig()
 		ingestConfig.Observer = obs.Metrics
 		ingestConfig.Logger = obs.Logger
+		ingestConfig.OnGraphPublished = func(tenantID string) {
+			if !cache.PublishFromWriteCache(tenantID) {
+				cache.Invalidate(tenantID)
+			}
+		}
 		ingestService, err = storage.OpenIngestService(store, ingestConfig)
 		if err != nil {
 			return fmt.Errorf("open ingest WAL service: %w", err)
@@ -254,9 +139,7 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 	if metered := storage.FindMeteredObjectStore(store.Objects); metered != nil {
 		metered.Observer = obs.Metrics
 	}
-	store.BackpressureObserver = obs.Metrics
-	store.CacheObserver = obs.Metrics
-	store.CoordinatorObserver = obs.Metrics
+	store.SetObservers(obs.Metrics, obs.Metrics, obs.Metrics)
 	store.StartCoordinatorStatusMonitor(ctx, cfg.PollInterval, cfg.ReadinessTimeout)
 	obs.StartIndexHealthMonitor(ctx, cfg.IndexHealthInterval, func(checkCtx context.Context, tenantID string) (string, int, error) {
 		health, err := store.IndexHealthWithOptions(checkCtx, tenantID, storage.IndexHealthOptions{})
@@ -265,12 +148,15 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		}
 		return health.Status, len(health.Issues), nil
 	})
-	cache := storage.NewReaderCache(store, cfg.PollInterval)
 	cache.Observer = obs.Metrics
 	cache.Start(ctx)
 	admission := httpapi.NewQueryAdmission(cfg.QueryMaxConcurrent, cfg.QueryMaxPerTenant, cfg.QueryQueueTimeout)
 	readAdmission := httpapi.NewQueryAdmission(cfg.ReadMaxConcurrent, cfg.ReadMaxPerTenant, cfg.ReadQueueTimeout)
 	writeAdmission := httpapi.NewWriteAdmission(cfg.WriteMaxConcurrent, cfg.WriteMaxPerTenant, cfg.WriteQueueTimeout)
+	var apiIngestService httpapi.IngestService
+	if ingestService != nil {
+		apiIngestService = ingestService
+	}
 	api := &httpapi.Server{
 		Store:                 store,
 		Cache:                 cache,
@@ -281,7 +167,7 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		WriteExecutionTimeout: cfg.WriteExecutionTimeout,
 		ReaderCatchupTimeout:  cfg.ReaderCatchupTimeout,
 		ReadinessTimeout:      cfg.ReadinessTimeout,
-		IngestService:         ingestService,
+		IngestService:         apiIngestService,
 		Observability:         obs,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
 	}
@@ -301,18 +187,23 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
 		"mode": cfg.Mode, "storage": cfg.StoreKind, "prefix": cfg.Prefix,
-		"coordination":         store.CoordinationBackend(),
-		"ingest_mode":          cfg.IngestMode,
-		"ingest_metadata_mode": cfg.IngestMetadataMode,
-		"otlp_enabled":         cfg.OTLPEndpoint != "",
+		"coordination": store.CoordinationBackend(),
+		"ingest_mode":  cfg.IngestMode,
+		"otlp_enabled": cfg.OTLPEndpoint != "",
 	})
 	serverErr := runHTTPServers(ctx, servers, httpShutdownTimeout)
+	taskShutdownCtx, taskShutdownCancel := context.WithTimeout(
+		context.Background(),
+		backgroundTaskShutdownTimeout,
+	)
+	taskShutdownErr := store.ShutdownTasks(taskShutdownCtx)
+	taskShutdownCancel()
 	if ingestService == nil {
-		return serverErr
+		return errors.Join(serverErr, taskShutdownErr)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.IngestShutdownTimeout)
 	defer cancel()
-	return errors.Join(serverErr, ingestService.Close(shutdownCtx))
+	return errors.Join(serverErr, taskShutdownErr, ingestService.Close(shutdownCtx))
 }
 
 func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
@@ -386,64 +277,13 @@ func printVersion() {
 }
 
 func printHelp() {
-	fmt.Println(`graphdb commands:
-  graphdb serve
-  graphdb version
-  graphdb coordinator migrate
-  graphdb coordinator bootstrap --dry-run|--apply
-  graphdb coordinator status
-  graphdb coordinator sync-legacy-manifest
-  graphdb coordinator rollback --dry-run
-  graphdb coordinator rollback --apply --writers-stopped
-  graphdb init-tenant <tenant-id>
-  graphdb list-tenants
-  graphdb tenant <tenant-id>
-  graphdb create-tenant <tenant-id> [metadata.json]
-  graphdb set-tenant-metadata <tenant-id> <metadata.json>
-  graphdb disable-tenant <tenant-id>
-  graphdb enable-tenant <tenant-id>
-  graphdb delete-tenant <tenant-id>
-  graphdb purge-tenant <tenant-id> [--force]
-  graphdb clone-tenant <source-tenant-id> <target-tenant-id> [metadata.json]
-  graphdb backup-tenant <tenant-id>
-  graphdb restore-tenant <tenant-id> <backup-key> [--overwrite] [--dry-run]
-  graphdb restore-drill-tenant <tenant-id> [params.json]
-  graphdb commit <tenant-id> <commit.json>
-  graphdb ingest <tenant-id> <ingest.json>
-  graphdb collector-status <tenant-id> <source> <collector-id>
-  graphdb source-policy <tenant-id>
-  graphdb set-source-policy <tenant-id> <policy.json>
-  graphdb tenant-config <tenant-id>
-  graphdb set-tenant-config <tenant-id> <config.json>
-  graphdb tenant-usage <tenant-id>
-  graphdb deadletters <tenant-id> <source>
-  graphdb replay-deadletters <tenant-id> <source> [limit]
-  graphdb query <tenant-id> <query.json>
-  graphdb graphql <tenant-id> <graphql-request.json>
-  graphdb gql <tenant-id> <legacy-query.gql> (deprecated legacy text DSL)
-  graphdb save-query <tenant-id> <saved-query.json>
-  graphdb list-queries <tenant-id>
-  graphdb run-saved-query <tenant-id> <name>
-  graphdb start-task <tenant-id> <type> [params.json]
-  graphdb list-tasks <tenant-id> [type] [status]
-  graphdb task <tenant-id> <task-id>
-  graphdb cancel-task <tenant-id> <task-id>
-  graphdb retry-task <tenant-id> <task-id>
-  graphdb index-catalog <tenant-id>
-  graphdb index-inspect <tenant-id>
-  graphdb index-definitions <tenant-id>
-  graphdb create-index <tenant-id> <kind> <field> [name]
-  graphdb drop-index <tenant-id> <name>
-  graphdb index-health <tenant-id>
-  graphdb integrity-audit <tenant-id> [--shallow]
-  graphdb rebuild-indexes <tenant-id>
-  graphdb writer-lease <tenant-id>
-  graphdb recover <tenant-id>
-  graphdb repair <tenant-id> [--apply]
-  graphdb cleanup-commits <tenant-id>
-  graphdb gc <tenant-id> [deadletter-max-age-seconds] [task-max-age-seconds]
-  graphdb compact <tenant-id>
-
+	fmt.Println("graphdb commands:")
+	for _, command := range commandSpecs {
+		for _, usage := range command.usage {
+			fmt.Printf("  %s\n", usage)
+		}
+	}
+	fmt.Println(`
 Environment:
   GRAPHDB_ADDR=:8080
   GRAPHDB_ADMIN_ADDR=127.0.0.1:8081 (optional separate admin listener)
@@ -477,33 +317,31 @@ Environment:
   GRAPHDB_WRITE_OBJECT_LATENCY_THRESHOLD=2s
   GRAPHDB_WRITE_CAS_CONFLICT_WINDOW=30s
   GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD=5
-  GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000
-  GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB
+  GRAPHDB_WRITE_MAX_COMMIT_TAIL=300
   GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT=0
   GRAPHDB_WRITE_MAX_EDGES_PER_TENANT=0
-  GRAPHDB_INGEST_MODE=wal|direct (default: wal for local writers; PostgreSQL requires explicit direct)
+  GRAPHDB_INGEST_MODE=direct|wal
   GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest
-  GRAPHDB_INGEST_WAL_DURABILITY=sync
+  GRAPHDB_INGEST_WAL_DURABILITY=sync|os
   GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB
-  GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=3ms
+  GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms
   GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB
   GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB
-  GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80
-  GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70
-  GRAPHDB_INGEST_WAL_STOP_WATERMARK=85
-  GRAPHDB_INGEST_MAX_PENDING_AGE=2m
-  GRAPHDB_INGEST_FLUSH_INTERVAL=250ms
-  GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8
-  GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB
-  GRAPHDB_INGEST_FLUSH_WORKERS=2
-  GRAPHDB_INGEST_METADATA_MODE=segment|legacy (default follows ingest mode)
-  GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms
-  GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2
+  GRAPHDB_INGEST_FLUSH_INTERVAL=10s
+  GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256
+  GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB
+  GRAPHDB_INGEST_FLUSH_WORKERS=1
   GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s
   GRAPHDB_SLOW_QUERY_THRESHOLD=500ms
   GRAPHDB_INDEX_HEALTH_INTERVAL=30s
   GRAPHDB_MAINTENANCE_INTERVAL=30s
   GRAPHDB_TENANT_USAGE_CACHE_TTL=60s
+  GRAPHDB_READER_CACHE_IDLE_TTL=15m
+  GRAPHDB_READER_CACHE_MAX_TENANTS=64
+  GRAPHDB_READER_CACHE_MAX_BYTES=512MiB
+  GRAPHDB_READER_CACHE_LOAD_TIMEOUT=1m
+  GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT=4
+  GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT=2s
   GRAPHDB_READER_CATCHUP_TIMEOUT=2s
   GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096
   GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB

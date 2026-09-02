@@ -336,52 +336,25 @@ func TestPostgresCoordinatorDerivedTaskLeaseRenews(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert derived task: %v", err)
 	}
-	first, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-a", time.Second)
+	ttl := 300 * time.Millisecond
+	first, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-a", ttl)
 	if err != nil || !claimed {
 		t.Fatalf("first claim claimed=%v err=%v", claimed, err)
 	}
-	var firstLeaseUntil time.Time
-	err = coordinator.pool.QueryRow(ctx,
-		`SELECT lease_until FROM `+coordinator.table("derived_tasks")+`
-		 WHERE namespace = $1 AND tenant_id = $2 AND task_type = $3`,
-		coordinator.namespace, first.TenantID, first.TaskType,
-	).Scan(&firstLeaseUntil)
-	if err != nil {
-		t.Fatalf("read first lease: %v", err)
-	}
-	if renewed, err := coordinator.RenewDerivedTask(ctx, first, 5*time.Second); err != nil || !renewed {
+	time.Sleep(150 * time.Millisecond)
+	if renewed, err := coordinator.RenewDerivedTask(ctx, first, ttl); err != nil || !renewed {
 		t.Fatalf("renewed=%v err=%v", renewed, err)
 	}
-	var renewedLeaseUntil time.Time
-	err = coordinator.pool.QueryRow(ctx,
-		`SELECT lease_until FROM `+coordinator.table("derived_tasks")+`
-		 WHERE namespace = $1 AND tenant_id = $2 AND task_type = $3`,
-		coordinator.namespace, first.TenantID, first.TaskType,
-	).Scan(&renewedLeaseUntil)
-	if err != nil {
-		t.Fatalf("read renewed lease: %v", err)
-	}
-	if renewedLeaseUntil.Sub(firstLeaseUntil) < 3*time.Second {
-		t.Fatalf("renewed lease did not advance: first=%s renewed=%s", firstLeaseUntil, renewedLeaseUntil)
-	}
-	if _, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-b", time.Second); err != nil || claimed {
+	time.Sleep(200 * time.Millisecond)
+	if _, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-b", ttl); err != nil || claimed {
 		t.Fatalf("claim during renewed lease claimed=%v err=%v", claimed, err)
 	}
-	tag, err := coordinator.pool.Exec(ctx,
-		`UPDATE `+coordinator.table("derived_tasks")+`
-		 SET lease_until = now() - interval '1 second'
-		 WHERE namespace = $1 AND tenant_id = $2 AND task_type = $3
-		   AND owner_token = $4`,
-		coordinator.namespace, first.TenantID, first.TaskType, first.OwnerToken,
-	)
-	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("expire renewed lease rows=%d err=%v", tag.RowsAffected(), err)
-	}
-	second, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-b", time.Second)
+	time.Sleep(200 * time.Millisecond)
+	second, claimed, err := coordinator.ClaimDerivedTask(ctx, "worker-b", ttl)
 	if err != nil || !claimed {
 		t.Fatalf("claim after renewed lease expiry claimed=%v err=%v", claimed, err)
 	}
-	if renewed, err := coordinator.RenewDerivedTask(ctx, first, time.Second); err != nil || renewed {
+	if renewed, err := coordinator.RenewDerivedTask(ctx, first, ttl); err != nil || renewed {
 		t.Fatalf("stale renew renewed=%v err=%v", renewed, err)
 	}
 	if err := coordinator.CompleteDerivedTask(ctx, second, second.TargetVersion); err != nil {

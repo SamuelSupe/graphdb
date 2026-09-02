@@ -8,15 +8,15 @@ type sampleResult struct {
 	readerReady bool
 }
 
-func sampleState(ctx context.Context, writer *apiClient, reader *apiClient, metrics *registry, events *eventWriter, includeReader bool) sampleResult {
+func sampleState(ctx context.Context, admin *apiClient, reader *apiClient, metrics *registry, events *eventWriter, includeReader bool) sampleResult {
 	result := sampleResult{}
-	if resp, err := writer.tenantUsage(ctx, metrics); err != nil {
+	if resp, err := admin.tenantUsage(ctx, metrics); err != nil {
 		events.emit("usage_sample_error", map[string]any{"error": err.Error()})
 	} else {
 		events.emit("usage_sample", usageFields(resp.json))
 	}
 	metrics.emit(events)
-	if resp, err := writer.indexCatalog(ctx, metrics); err != nil {
+	if resp, err := admin.indexCatalog(ctx, metrics); err != nil {
 		events.emit("index_catalog_sample_error", map[string]any{"error": err.Error(), "status": resp.status})
 	} else if resp.status == 200 {
 		events.emit("index_catalog_sample", indexCatalogFields(resp.json))
@@ -25,12 +25,12 @@ func sampleState(ctx context.Context, writer *apiClient, reader *apiClient, metr
 		events.emit("reader_checks_skipped", map[string]any{"reason": "reader_paused"})
 		return result
 	}
-	if resp, err := reader.indexHealth(ctx, metrics); err != nil {
+	if resp, err := admin.indexHealth(ctx, metrics); err != nil {
 		events.emit("index_health_sample_error", map[string]any{"error": err.Error(), "status": resp.status})
 	} else {
 		events.emit("index_health_sample", indexHealthFields(resp.json))
 	}
-	if resp, err := reader.readerFreshness(ctx, metrics); err != nil {
+	if resp, err := admin.readerFreshness(ctx, metrics); err != nil {
 		events.emit("reader_freshness_error", map[string]any{"error": err.Error(), "status": resp.status})
 	} else {
 		events.emit("reader_freshness", map[string]any{
@@ -43,7 +43,7 @@ func sampleState(ctx context.Context, writer *apiClient, reader *apiClient, metr
 		})
 	}
 	fleetReady := false
-	if resp, err := reader.fleetReadiness(ctx, metrics); err != nil {
+	if resp, err := admin.fleetReadiness(ctx, metrics); err != nil {
 		events.emit("reader_fleet_error", map[string]any{"error": err.Error(), "status": resp.status})
 	} else {
 		fleetReady = boolValue(resp.json["ready"])

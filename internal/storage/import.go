@@ -55,14 +55,20 @@ func (s *TenantStore) StartImport(ctx context.Context, tenantID string, data []b
 	}
 	task, err := s.StartTask(ctx, tenantID, TaskTypeBulkImport, params)
 	if err != nil {
-		_ = s.Objects.Delete(context.WithoutCancel(ctx), key)
+		s.cleanupImportSource(ctx, key)
 		return Task{}, err
 	}
 	if stringTaskParam(task.Params, "import_id") != importID {
-		_ = s.Objects.Delete(context.WithoutCancel(ctx), key)
+		s.cleanupImportSource(ctx, key)
 		return Task{}, fmt.Errorf("%w: another bulk import is already active", ErrConflict)
 	}
 	return task, nil
+}
+
+func (s *TenantStore) cleanupImportSource(ctx context.Context, key string) {
+	cleanupCtx, cancel := s.taskFinalizationContext(ctx)
+	defer cancel()
+	_ = s.Objects.Delete(cleanupCtx, key)
 }
 
 func normalizeImportOptions(options ImportOptions) (ImportOptions, error) {
@@ -98,7 +104,10 @@ func normalizeImportOptions(options ImportOptions) (ImportOptions, error) {
 }
 
 func (s *TenantStore) stageImportSource(ctx context.Context, tenantID string, key string, data []byte) error {
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

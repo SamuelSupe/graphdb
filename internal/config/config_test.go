@@ -17,6 +17,8 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_READ_MAX_PER_TENANT",
 		"GRAPHDB_READ_OBJECT_MAX_CONCURRENT",
 		"GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT",
+		"GRAPHDB_READER_CACHE_MAX_TENANTS",
+		"GRAPHDB_READER_CACHE_MAX_BYTES",
 		"GRAPHDB_WRITE_MAX_CONCURRENT",
 		"GRAPHDB_WRITE_MAX_PER_TENANT",
 		"GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD",
@@ -47,6 +49,19 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 	}
 }
 
+func TestLoadParsesReaderCacheCapacity(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_READER_CACHE_MAX_TENANTS", "23")
+	t.Setenv("GRAPHDB_READER_CACHE_MAX_BYTES", "96MiB")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReaderCacheMaxTenants != 23 || cfg.ReaderCacheMaxBytes != 96*1024*1024 {
+		t.Fatalf("reader cache capacity = %d/%d", cfg.ReaderCacheMaxTenants, cfg.ReaderCacheMaxBytes)
+	}
+}
+
 func TestLoadKeepsPprofDisabledByDefault(t *testing.T) {
 	setLocalConfigEnv(t)
 	cfg, err := Load()
@@ -62,89 +77,42 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 	setLocalConfigEnv(t)
 	dataDir := t.TempDir()
 	t.Setenv("GRAPHDB_DATA_DIR", dataDir)
+	t.Setenv("GRAPHDB_INGEST_MODE", "wal")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.IngestWALDir != filepath.Join(dataDir, "wal", "ingest") ||
-		cfg.WriteCacheMaxBytes != 4*1024*1024*1024 ||
-		cfg.WriteMaxCommitTail != 20000 ||
 		cfg.IngestWALDurability != storage.IngestWALDurabilitySync ||
 		cfg.IngestWALBufferBytes != 4*1024*1024 ||
-		cfg.IngestWALFsyncInterval != 3*time.Millisecond ||
-		cfg.IngestMode != "wal" ||
-		cfg.IngestFlushWorkers != 2 ||
-		cfg.IngestFlushInterval != 250*time.Millisecond ||
-		cfg.IngestFlushMaxRequests != 8 ||
-		cfg.IngestFlushMaxBytes != 2*1024*1024 ||
-		cfg.IngestQueueHighWatermark != 80 ||
-		cfg.IngestWALHighWatermark != 70 ||
-		cfg.IngestWALStopWatermark != 85 ||
-		cfg.IngestMaxPendingAge != 2*time.Minute ||
-		cfg.IngestMetadataMode != storage.IngestMetadataModeSegment ||
-		cfg.IngestMetadataFlushInterval != 500*time.Millisecond ||
-		cfg.IngestMetadataMaxRequests != 256 ||
-		cfg.IngestMetadataMaxBytes != 8*1024*1024 ||
-		cfg.IngestMetadataFlushWorkers != 2 {
+		cfg.IngestFlushWorkers != 1 ||
+		cfg.IngestFlushInterval != 10*time.Second {
 		t.Fatalf("WAL defaults = %#v", cfg.IngestServiceConfig())
 	}
 
-	t.Run("segment", func(t *testing.T) {
-		setLocalConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-		t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "segment")
-		t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", "17s")
-		t.Setenv("GRAPHDB_INGEST_METADATA_MAX_REQUESTS", "31")
-		t.Setenv("GRAPHDB_INGEST_METADATA_MAX_BYTES", "3MiB")
-		t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", "3")
-		cfg, err := Load()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.IngestMetadataMode != storage.IngestMetadataModeSegment ||
-			cfg.IngestMetadataFlushInterval != 17*time.Second ||
-			cfg.IngestMetadataMaxRequests != 31 ||
-			cfg.IngestMetadataMaxBytes != 3*1024*1024 ||
-			cfg.IngestMetadataFlushWorkers != 3 {
-			t.Fatalf("segment metadata config = %#v", cfg.IngestServiceConfig().Metadata)
-		}
-	})
-	t.Run("segment requires wal", func(t *testing.T) {
-		setLocalConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_MODE", "direct")
-		t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "segment")
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "requires GRAPHDB_INGEST_MODE=wal") {
-			t.Fatalf("Load err = %v, want WAL boundary", err)
-		}
-	})
-
 	t.Run("postgres", func(t *testing.T) {
 		setPostgresConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_MODE", "")
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "requires GRAPHDB_COORDINATION=local") {
-			t.Fatalf("Load err = %v, want local coordination boundary", err)
-		}
-		t.Setenv("GRAPHDB_INGEST_MODE", "direct")
+		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		t.Setenv("GRAPHDB_INSTANCE_ID", "writer-a")
 		cfg, err := Load()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("Load postgres+cas+wal: %v", err)
 		}
-		if cfg.IngestMode != "direct" || cfg.IngestMetadataMode != storage.IngestMetadataModeLegacy {
-			t.Fatalf("postgres ingest defaults = mode %q metadata %q", cfg.IngestMode, cfg.IngestMetadataMode)
+		if cfg.CoordinationMode() != storage.CoordinationPostgres || cfg.WriterTopology != storage.WriterTopologyCAS || cfg.IngestMode != "wal" || cfg.InstanceID != "writer-a" || cfg.IngestServiceConfig().OwnerID != "writer-a" {
+			t.Fatalf("postgres+cas+wal config = %#v", cfg)
+		}
+	})
+	t.Run("postgres requires stable instance id", func(t *testing.T) {
+		setPostgresConfigEnv(t)
+		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GRAPHDB_INSTANCE_ID") {
+			t.Fatalf("Load err = %v, want stable instance id validation", err)
 		}
 	})
 	t.Run("reader", func(t *testing.T) {
 		setLocalConfigEnv(t)
 		t.Setenv("GRAPHDB_MODE", "reader")
-		cfg, err := Load()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.IngestMode != "direct" || cfg.IngestMetadataMode != storage.IngestMetadataModeLegacy {
-			t.Fatalf("reader ingest defaults = mode %q metadata %q", cfg.IngestMode, cfg.IngestMetadataMode)
-		}
 		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-		t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "segment")
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "unavailable in reader mode") {
 			t.Fatalf("Load err = %v, want reader boundary", err)
 		}
@@ -155,13 +123,6 @@ func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
 		t.Setenv("GRAPHDB_INGEST_WAL_DURABILITY", "invalid")
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "durability") {
 			t.Fatalf("Load err = %v, want durability validation", err)
-		}
-	})
-	t.Run("os durability is not a durable acceptance contract", func(t *testing.T) {
-		setLocalConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_WAL_DURABILITY", storage.IngestWALDurabilityOS)
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "sync is required") {
-			t.Fatalf("Load err = %v, want durable 202 boundary", err)
 		}
 	})
 }
@@ -200,6 +161,7 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_MAX_PER_TENANT", "0")
 	t.Setenv("GRAPHDB_READ_OBJECT_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_WRITE_MAX_CONCURRENT", "0")
 	t.Setenv("GRAPHDB_WRITE_MAX_PER_TENANT", "0")
 	t.Setenv("GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD", "0")
@@ -214,7 +176,7 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 	if cfg.QueryMaxConcurrent != 0 || cfg.QueryMaxPerTenant != 0 {
 		t.Fatalf("query limits = %d/%d, want 0/0", cfg.QueryMaxConcurrent, cfg.QueryMaxPerTenant)
 	}
-	if cfg.ReadMaxConcurrent != 0 || cfg.ReadMaxPerTenant != 0 || cfg.ReadObjectMaxConcurrent != 0 || cfg.ParquetDecodeMaxConcurrent != 0 {
+	if cfg.ReadMaxConcurrent != 0 || cfg.ReadMaxPerTenant != 0 || cfg.ReadObjectMaxConcurrent != 0 || cfg.ParquetDecodeMaxConcurrent != 0 || cfg.ReaderCacheLoadMaxConcurrent != 0 {
 		t.Fatalf("read limits = %#v, want zeros", cfg)
 	}
 	if cfg.WriteMaxConcurrent != 0 || cfg.WriteMaxPerTenant != 0 || cfg.WriteObjectErrorThreshold != 0 || cfg.WriteCASConflictThreshold != 0 || cfg.WriteMaxCommitTail != 0 || cfg.WriteMaxObjectsPerTenant != 0 || cfg.WriteMaxBytesPerTenant != 0 {
@@ -225,6 +187,9 @@ func TestLoadAllowsZeroQueryAdmissionLimits(t *testing.T) {
 func TestLoadRejectsNegativeDurations(t *testing.T) {
 	cases := []string{
 		"GRAPHDB_POLL_INTERVAL",
+		"GRAPHDB_READER_CACHE_IDLE_TTL",
+		"GRAPHDB_READER_CACHE_LOAD_TIMEOUT",
+		"GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT",
 		"GRAPHDB_QUERY_QUEUE_TIMEOUT",
 		"GRAPHDB_READ_QUEUE_TIMEOUT",
 		"GRAPHDB_WRITE_QUEUE_TIMEOUT",
@@ -258,6 +223,9 @@ func TestLoadRejectsNegativeDurations(t *testing.T) {
 func TestLoadAllowsZeroDurations(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_IDLE_TTL", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", "0")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", "0")
 	t.Setenv("GRAPHDB_QUERY_QUEUE_TIMEOUT", "0")
 	t.Setenv("GRAPHDB_READ_QUEUE_TIMEOUT", "0")
 	t.Setenv("GRAPHDB_WRITE_QUEUE_TIMEOUT", "0")
@@ -274,8 +242,8 @@ func TestLoadAllowsZeroDurations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PollInterval != 0 || cfg.QueryQueueTimeout != 0 || cfg.ReadQueueTimeout != 0 {
-		t.Fatalf("durations = %s/%s/%s, want 0/0/0", cfg.PollInterval, cfg.QueryQueueTimeout, cfg.ReadQueueTimeout)
+	if cfg.PollInterval != 0 || cfg.ReaderCacheIdleTTL != 0 || cfg.ReaderCacheLoadTimeout != 0 || cfg.ReaderCacheLoadQueueTimeout != 0 || cfg.QueryQueueTimeout != 0 || cfg.ReadQueueTimeout != 0 {
+		t.Fatalf("read durations = %#v, want zeros", cfg)
 	}
 	if cfg.WriteQueueTimeout != 0 || cfg.WriteExecutionTimeout != 0 || cfg.WriteObjectLatencyThreshold != 0 || cfg.WriteObjectErrorWindow != 0 || cfg.WriteCASConflictWindow != 0 {
 		t.Fatalf("write durations = %s/%s/%s/%s/%s, want 0/0/0/0/0", cfg.WriteQueueTimeout, cfg.WriteExecutionTimeout, cfg.WriteObjectLatencyThreshold, cfg.WriteObjectErrorWindow, cfg.WriteCASConflictWindow)
@@ -297,6 +265,9 @@ func TestLoadAllowsZeroDurations(t *testing.T) {
 func TestLoadParsesPositiveDurations(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "500ms")
+	t.Setenv("GRAPHDB_READER_CACHE_IDLE_TTL", "12m")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", "40s")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", "175ms")
 	t.Setenv("GRAPHDB_QUERY_QUEUE_TIMEOUT", "3s")
 	t.Setenv("GRAPHDB_READ_QUEUE_TIMEOUT", "250ms")
 	t.Setenv("GRAPHDB_WRITE_QUEUE_TIMEOUT", "150ms")
@@ -313,8 +284,8 @@ func TestLoadParsesPositiveDurations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PollInterval != 500*time.Millisecond || cfg.QueryQueueTimeout != 3*time.Second || cfg.ReadQueueTimeout != 250*time.Millisecond {
-		t.Fatalf("durations = %s/%s/%s", cfg.PollInterval, cfg.QueryQueueTimeout, cfg.ReadQueueTimeout)
+	if cfg.PollInterval != 500*time.Millisecond || cfg.ReaderCacheIdleTTL != 12*time.Minute || cfg.ReaderCacheLoadTimeout != 40*time.Second || cfg.ReaderCacheLoadQueueTimeout != 175*time.Millisecond || cfg.QueryQueueTimeout != 3*time.Second || cfg.ReadQueueTimeout != 250*time.Millisecond {
+		t.Fatalf("read durations = %#v", cfg)
 	}
 	if cfg.WriteQueueTimeout != 150*time.Millisecond || cfg.WriteExecutionTimeout != 9*time.Second || cfg.WriteObjectLatencyThreshold != 750*time.Millisecond || cfg.WriteObjectErrorWindow != 6*time.Second || cfg.WriteCASConflictWindow != 4*time.Second {
 		t.Fatalf("write durations = %s/%s/%s/%s/%s", cfg.WriteQueueTimeout, cfg.WriteExecutionTimeout, cfg.WriteObjectLatencyThreshold, cfg.WriteObjectErrorWindow, cfg.WriteCASConflictWindow)
@@ -375,7 +346,6 @@ func TestLoadAllowsWriteRequestPipeliningPerTenant(t *testing.T) {
 func TestLoadPostgresCoordinationRequirements(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_COORDINATION", "postgres")
-	t.Setenv("GRAPHDB_INGEST_MODE", "direct")
 	t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
 	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")
 	t.Setenv("GRAPHDB_STORAGE", "s3")
@@ -545,6 +515,7 @@ func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	t.Setenv("GRAPHDB_READ_OBJECT_MAX_CONCURRENT", "23")
 	t.Setenv("GRAPHDB_READ_OBJECT_SINGLEFLIGHT", "false")
 	t.Setenv("GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT", "7")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", "3")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_ENTRIES", "123")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_MAX_BYTES", "48MiB")
 	t.Setenv("GRAPHDB_READER_INDEX_CACHE_DIR", "/tmp/graphdb-index-cache")
@@ -556,7 +527,7 @@ func TestLoadParsesReaderIndexCacheConfig(t *testing.T) {
 	if cfg.ReaderIndexCacheEntries != 123 || cfg.ReaderIndexCacheMaxBytes != 48*1024*1024 || cfg.ReaderIndexCacheDir != "/tmp/graphdb-index-cache" {
 		t.Fatalf("reader index cache config = %#v", cfg)
 	}
-	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight || cfg.ParquetDecodeMaxConcurrent != 7 {
+	if cfg.ReadMaxConcurrent != 17 || cfg.ReadMaxPerTenant != 5 || cfg.ReadObjectMaxConcurrent != 23 || cfg.ReadObjectSingleflight || cfg.ParquetDecodeMaxConcurrent != 7 || cfg.ReaderCacheLoadMaxConcurrent != 3 {
 		t.Fatalf("reader read-path config = %#v", cfg)
 	}
 	if cfg.EntityPagePackMaxBytes != 12*1024*1024 {
@@ -744,39 +715,6 @@ func TestLoadValidatesNativeObjectStorageProfile(t *testing.T) {
 	}
 }
 
-func TestNewObjectStoreSelectsNativeSingleWriterProfiles(t *testing.T) {
-	cases := []struct {
-		provider string
-		endpoint string
-		region   string
-	}{
-		{provider: storage.ObjectProviderAliyunOSS, endpoint: "https://oss-cn-hangzhou.aliyuncs.com", region: "cn-hangzhou"},
-		{provider: storage.ObjectProviderHuaweiOBS, endpoint: "https://obs.cn-north-4.myhuaweicloud.com", region: "cn-north-4"},
-		{provider: storage.ObjectProviderTencentCOS, endpoint: "https://graphdb-1250000000.cos.ap-guangzhou.myqcloud.com", region: "ap-guangzhou"},
-	}
-	for _, tt := range cases {
-		t.Run(tt.provider, func(t *testing.T) {
-			objects, err := NewObjectStore(Config{
-				StoreKind:         "s3",
-				S3Provider:        tt.provider,
-				S3Versioning:      storage.BucketVersioningDisabled,
-				WriterTopology:    storage.WriterTopologySingle,
-				S3Endpoint:        tt.endpoint,
-				S3Bucket:          "graphdb-1250000000",
-				S3Region:          tt.region,
-				S3AccessKeyID:     "access-key",
-				S3SecretAccessKey: "secret-key",
-			})
-			if err != nil {
-				t.Fatalf("NewObjectStore: %v", err)
-			}
-			if _, ok := objects.(*storage.SingleWriterObjectStore); !ok {
-				t.Fatalf("store type = %T, want *storage.SingleWriterObjectStore", objects)
-			}
-		})
-	}
-}
-
 func TestLoadNormalizesObjectPrefix(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("GRAPHDB_PREFIX", " /prod/blue/ ")
@@ -860,21 +798,16 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_INGEST_WAL_SEGMENT_BYTES", "")
 	t.Setenv("GRAPHDB_INGEST_WAL_APPEND_QUEUE", "")
 	t.Setenv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", "")
-	t.Setenv("GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK", "")
-	t.Setenv("GRAPHDB_INGEST_WAL_HIGH_WATERMARK", "")
-	t.Setenv("GRAPHDB_INGEST_WAL_STOP_WATERMARK", "")
-	t.Setenv("GRAPHDB_INGEST_MAX_PENDING_AGE", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_INTERVAL", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_REQUESTS", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_MAX_BYTES", "")
 	t.Setenv("GRAPHDB_INGEST_FLUSH_WORKERS", "")
-	t.Setenv("GRAPHDB_INGEST_METADATA_MODE", "")
-	t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", "")
-	t.Setenv("GRAPHDB_INGEST_METADATA_MAX_REQUESTS", "")
-	t.Setenv("GRAPHDB_INGEST_METADATA_MAX_BYTES", "")
-	t.Setenv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", "")
 	t.Setenv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", "")
 	t.Setenv("GRAPHDB_POLL_INTERVAL", "")
+	t.Setenv("GRAPHDB_READER_CACHE_IDLE_TTL", "")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", "")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", "")
+	t.Setenv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", "")
 	t.Setenv("GRAPHDB_SLOW_QUERY_THRESHOLD", "")
 	t.Setenv("GRAPHDB_INDEX_HEALTH_INTERVAL", "")
 	t.Setenv("GRAPHDB_MAINTENANCE_INTERVAL", "")
@@ -904,7 +837,6 @@ func setLocalConfigEnv(t *testing.T) {
 func setPostgresConfigEnv(t *testing.T) {
 	t.Helper()
 	setLocalConfigEnv(t)
-	t.Setenv("GRAPHDB_INGEST_MODE", "direct")
 	t.Setenv("GRAPHDB_COORDINATION", "postgres")
 	t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
 	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")

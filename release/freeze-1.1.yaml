@@ -27,7 +27,6 @@ allowed_after_freeze:
   - backward_compatibility_fixes
   - test_and_gate_repairs
   - documentation_and_operations_corrections
-  - approved_1_1_3_local_wal_metadata_segmentation
 
 blocked_after_freeze:
   - new_public_features
@@ -40,4 +39,3 @@ required_release_evidence:
   - schema_2_postgres_cas_30m
   - formal_postgres_to_local_rollback
   - v1_reader_legacy_manifest_compatibility
-  - schema_1_wal_metadata_segment_process_recovery

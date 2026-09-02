@@ -47,8 +47,8 @@ func (c *ReaderCache) cachedTenantsForRefresh() []string {
 	defer c.mu.Unlock()
 	tenantIDs := make([]string, 0, len(c.entries))
 	for tenantID, entry := range c.entries {
-		if cacheEntryIdle(entry, now, c.TTL) {
-			delete(c.entries, tenantID)
+		if cacheEntryIdle(entry, now, c.IdleTTL) {
+			c.deleteEntryLocked(tenantID)
 			continue
 		}
 		tenantIDs = append(tenantIDs, tenantID)

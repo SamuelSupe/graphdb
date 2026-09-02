@@ -5,7 +5,6 @@ go 1.25.0
 require (
 	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.5.3
 	github.com/apache/arrow-go/v18 v18.6.0
-	github.com/goccy/go-json v0.10.6
 	github.com/huaweicloud/huaweicloud-sdk-go-obs v3.26.6+incompatible
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.74
@@ -14,7 +13,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.37.0
 	go.opentelemetry.io/otel/sdk v1.40.0
 	go.opentelemetry.io/otel/trace v1.41.0
-	golang.org/x/sync v0.20.0
 )
 
 require (
@@ -26,6 +24,7 @@ require (
 	github.com/clbanning/mxj v1.8.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/go-querystring v1.0.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -46,6 +45,7 @@ require (
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/exp v0.0.0-20260209203927-2842357ff358 // indirect
 	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.4.0 // indirect

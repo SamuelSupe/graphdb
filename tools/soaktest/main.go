@@ -24,14 +24,15 @@ func main() {
 	metrics := newRegistry()
 	writer := newClient(cfg.writerURL, cfg.tenant, cfg)
 	reader := newClient(cfg.readerURL, cfg.tenant, cfg)
+	admin := newClient(cfg.adminURL, cfg.tenant, cfg)
 	events.emit("soak_start", map[string]any{
 		"tenant": cfg.tenant, "duration": cfg.duration.String(),
-		"writer": cfg.writerURL, "reader": cfg.readerURL,
+		"writer": cfg.writerURL, "reader": cfg.readerURL, "admin": cfg.adminURL,
 		"writers": cfg.writers, "readers": cfg.readers, "batch_size": cfg.batchSize,
 		"skip_setup": cfg.skipSetup,
 	})
 
-	seedVersion, err := setup(ctx, cfg, writer, reader, metrics, events)
+	seedVersion, err := setup(ctx, cfg, writer, reader, admin, metrics, events)
 	if err != nil {
 		events.emit("setup_failed", map[string]any{"error": err.Error()})
 		metrics.print(os.Stderr)
@@ -39,9 +40,9 @@ func main() {
 	}
 
 	start := time.Now()
-	runner := newSoakRunner(cfg, writer, reader, metrics, events, seedVersion)
+	runner := newSoakRunner(cfg, writer, reader, admin, metrics, events, seedVersion)
 	runner.run(ctx)
-	sampleState(context.Background(), writer, reader, metrics, events, true)
+	sampleState(context.Background(), admin, reader, metrics, events, true)
 	events.emit("soak_done", map[string]any{"elapsed_ms": time.Since(start).Milliseconds()})
 
 	fmt.Fprintf(os.Stderr, "soak finished tenant=%s elapsed=%s\n", cfg.tenant, time.Since(start).Round(time.Millisecond))
@@ -51,18 +52,23 @@ func main() {
 	}
 }
 
-func setup(ctx context.Context, cfg config, writer *apiClient, reader *apiClient, metrics *registry, events *eventWriter) (int64, error) {
+func setup(ctx context.Context, cfg config, writer *apiClient, reader *apiClient, admin *apiClient, metrics *registry, events *eventWriter) (int64, error) {
 	if err := writer.health(ctx, metrics); err != nil {
 		return 0, err
 	}
 	if err := reader.health(ctx, metrics); err != nil {
 		return 0, err
 	}
+	if admin.baseURL != writer.baseURL && admin.baseURL != reader.baseURL {
+		if err := admin.health(ctx, metrics); err != nil {
+			return 0, err
+		}
+	}
 	if cfg.skipSetup {
 		events.emit("setup_skipped", nil)
 		return 0, nil
 	}
-	if err := writer.createTenant(ctx, metrics); err != nil {
+	if err := admin.createTenant(ctx, metrics); err != nil {
 		return 0, err
 	}
 	version, err := writer.commitSchema(ctx, metrics)
@@ -70,11 +76,11 @@ func setup(ctx context.Context, cfg config, writer *apiClient, reader *apiClient
 		return 0, err
 	}
 	for name, request := range savedQueries() {
-		if err := writer.saveQuery(ctx, metrics, name, request); err != nil {
+		if err := admin.saveQuery(ctx, metrics, name, request); err != nil {
 			return 0, err
 		}
 	}
-	if err := writer.rebuildIndexes(ctx, metrics); err != nil {
+	if err := admin.rebuildIndexes(ctx, metrics); err != nil {
 		return 0, err
 	}
 	if _, err := reader.query(ctx, metrics, "warm-reader", indexedHostMatch("region-0", 10)); err != nil {

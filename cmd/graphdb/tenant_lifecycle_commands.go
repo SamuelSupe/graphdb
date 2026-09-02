@@ -116,11 +116,13 @@ func backupTenant(args []string, store *storage.TenantStore) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: graphdb backup-tenant <tenant-id>")
 	}
-	task, err := store.StartTask(context.Background(), args[0], storage.TaskTypeTenantBackup, nil)
+	task, err := startAndWaitTask(
+		context.Background(), store, args[0], storage.TaskTypeTenantBackup, nil,
+	)
 	if err != nil {
 		return err
 	}
-	return printJSON(task)
+	return printFinishedTask(task)
 }
 
 func restoreTenant(args []string, store *storage.TenantStore) error {
@@ -139,7 +141,7 @@ func restoreTenant(args []string, store *storage.TenantStore) error {
 			return fmt.Errorf("usage: graphdb restore-tenant <tenant-id> <backup-key> [--overwrite] [--dry-run]")
 		}
 	}
-	task, err := store.StartTask(context.Background(), args[0], storage.TaskTypeTenantRestore, map[string]any{
+	task, err := startAndWaitTask(context.Background(), store, args[0], storage.TaskTypeTenantRestore, map[string]any{
 		"backup_key": args[1],
 		"overwrite":  overwrite,
 		"dry_run":    dryRun,
@@ -147,7 +149,7 @@ func restoreTenant(args []string, store *storage.TenantStore) error {
 	if err != nil {
 		return err
 	}
-	return printJSON(task)
+	return printFinishedTask(task)
 }
 
 func restoreDrillTenant(args []string, store *storage.TenantStore) error {
@@ -160,11 +162,13 @@ func restoreDrillTenant(args []string, store *storage.TenantStore) error {
 			return err
 		}
 	}
-	task, err := store.StartTask(context.Background(), args[0], storage.TaskTypeTenantRestoreDrill, params)
+	task, err := startAndWaitTask(
+		context.Background(), store, args[0], storage.TaskTypeTenantRestoreDrill, params,
+	)
 	if err != nil {
 		return err
 	}
-	return printJSON(task)
+	return printFinishedTask(task)
 }
 
 func setTenantStatusCLI(args []string, store *storage.TenantStore, status string, command string) error {

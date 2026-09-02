@@ -34,14 +34,16 @@ The following top-level `code` values are stable:
 | `manifest_cas_conflict` | 409 | yes | Manifest CAS publish failed; retry may succeed. |
 | `object_write_conflict` | 409 | yes | Object conditional write conflict. |
 | `object_store_unavailable` | 503 | yes | Object store is unavailable or timing out. |
-| `ingest_wal_unavailable` | 503 | yes | The local ingest WAL writer was fenced after fatal I/O; preserve the WAL, repair the underlying storage, and restart before retrying. Durable accepted records remain recoverable and no new LSN is assigned while fenced. |
 | `task_conflict` | 409 | no | Task state does not allow the requested operation. |
 | `repair_required` | 409 | no | Operation requires repair before it can proceed. |
-| `version_conflict` | 409 | no | Expected version precondition failed. |
+| `version_conflict` | 409 | no | Expected version precondition failed. In either local or PostgreSQL per-writer WAL CAS cohorts this is compared against the shared flush baseline; stale cohort members each receive this terminal result and no graph version is published. A PostgreSQL losing cohort is not merged or rebased onto another writer's payload. |
+| `precondition_failed` | 412 | no | An ingest entity or edge precondition did not match the graph snapshot selected for mutation. |
+| `atomic_validation_failed` | 422 | no | Atomic ingest contained an invalid item, so no item was published. |
+| `atomic_suppressed` | 409 | no | Source governance suppressed an atomic ingest mutation, so the whole request was rejected. |
 | `idempotency_conflict` | 409 | no | Idempotency key belongs to a different request. |
 | `idempotency_in_progress` | 409 | yes | Another writer is still processing the same idempotency key. |
-| `write_conflict` | 409 | yes | The tenant head changed until the optimistic retry budget was exhausted. |
-| `coordinator_unavailable` | 503 | yes | The configured external write coordinator is unavailable. |
+| `write_conflict` | 409 | yes | A direct/preconditioned write observed a changed tenant head. For a 1.3 WAL-accepted batch, CAS loss is an internal rebase/shrink retry condition rather than a terminal result. |
+| `coordinator_unavailable` | 503 | yes | The configured external write coordinator is unavailable for a synchronous operation; 1.3 WAL may continue local durable admission until its high-water policy is reached, without falling back to local coordination. |
 | `commit_tail_too_long` | 429 | yes | Commit tail is above the write threshold. |
 | `index_rebuild_running` | 429 | yes | Index rebuild is running for this tenant. |
 | `maintenance_task_running` | 429 | yes | Maintenance work is blocking ordinary writes. |
@@ -53,8 +55,3 @@ The following top-level `code` values are stable:
 Write backpressure responses may include `reasons[]` with more specific reason
 codes. Those reason codes are intentionally scoped to the backpressure detail
 payload and do not replace the top-level contract above.
-
-Local WAL admission uses `ingest_queue_high_watermark`,
-`ingest_wal_high_watermark`, `ingest_wal_stop_watermark`, and
-`ingest_pending_too_old`. These responses include `Retry-After`; retry the same
-batch and idempotency identity rather than creating a new logical write.

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -15,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,22 +28,18 @@ const (
 	ingestWALMaxPayload     = 64 * 1024 * 1024
 	ingestWALFileExtension  = ".wal"
 	ingestWALLockFile       = ".lock"
-	ingestWALCheckpointFile = "checkpoint.json"
-	ingestWALCheckpointTemp = "checkpoint.json.tmp"
 	IngestWALDurabilitySync = "sync"
 	IngestWALDurabilityOS   = "os"
 )
 
 var (
-	ErrIngestWALClosed  = errors.New("ingest WAL is closed")
-	ErrIngestWALFull    = errors.New("ingest WAL disk limit reached")
-	ErrIngestWALLocked  = errors.New("ingest WAL is locked by another process")
-	ErrIngestWALCorrupt = errors.New("ingest WAL is corrupt")
-	// ErrIngestWALFenced means the writer observed an I/O failure whose
-	// outcome cannot be made safe to retry in-process. A fenced WAL must be
-	// reopened (after the underlying storage issue is repaired) before writes
-	// can resume.
-	ErrIngestWALFenced = errors.New("ingest WAL is fenced after fatal I/O error")
+	ErrIngestWALClosed               = errors.New("ingest WAL is closed")
+	ErrIngestWALFull                 = errors.New("ingest WAL disk limit reached")
+	ErrIngestWALLocked               = errors.New("ingest WAL is locked by another process")
+	ErrIngestWALCorrupt              = errors.New("ingest WAL is corrupt")
+	ErrIngestWALFailed               = errors.New("ingest WAL writer failed")
+	ErrIngestWALRecordTooLarge       = errors.New("ingest WAL payload is too large")
+	ErrIngestWALRecordExceedsSegment = errors.New("ingest WAL record exceeds segment size")
 )
 
 type IngestWALRecordType uint8
@@ -64,10 +58,15 @@ type IngestWALConfig struct {
 	BufferBytes   int
 	FsyncInterval time.Duration
 	MaxBytes      int64
-	SegmentBytes  int64
-	AppendQueue   int
-	Observer      IngestObserver
-	Logger        IngestLogger
+	// ControlReserveBytes keeps disk space available for PREPARED and terminal
+	// records after client admission has stopped. OpenIngestService derives a
+	// bounded reserve when this is zero.
+	ControlReserveBytes int64
+	SegmentBytes        int64
+	AppendQueue         int
+	Observer            IngestObserver
+	Logger              IngestLogger
+	openWriterFile      func(string) (ingestWALWriteFile, error)
 }
 
 func DefaultIngestWALConfig(dir string) IngestWALConfig {
@@ -75,7 +74,7 @@ func DefaultIngestWALConfig(dir string) IngestWALConfig {
 		Dir:           dir,
 		Durability:    IngestWALDurabilitySync,
 		BufferBytes:   4 * 1024 * 1024,
-		FsyncInterval: 3 * time.Millisecond,
+		FsyncInterval: 5 * time.Millisecond,
 		MaxBytes:      10 * 1024 * 1024 * 1024,
 		SegmentBytes:  256 * 1024 * 1024,
 		AppendQueue:   4096,
@@ -95,7 +94,26 @@ func (c IngestWALConfig) validate() error {
 	if c.SegmentBytes > c.MaxBytes {
 		return fmt.Errorf("ingest WAL segment size must not exceed the WAL disk limit")
 	}
+	if c.ControlReserveBytes < 0 || c.ControlReserveBytes >= c.MaxBytes {
+		return fmt.Errorf("ingest WAL control reserve must be non-negative and smaller than the WAL disk limit")
+	}
 	return nil
+}
+
+func (c IngestWALConfig) controlReserveBytes() int64 {
+	if c.ControlReserveBytes > 0 {
+		return c.ControlReserveBytes
+	}
+	return 0
+}
+
+func defaultIngestWALControlReserve(c IngestWALConfig) int64 {
+	reserve := c.MaxBytes / 10
+	if reserve > c.SegmentBytes {
+		reserve = c.SegmentBytes
+	}
+	reserve = max(reserve, int64(ingestWALHeaderBytes+ingestWALChecksumBytes+1))
+	return min(reserve, c.MaxBytes-1)
 }
 
 func (c IngestWALConfig) Validate() error {
@@ -129,11 +147,13 @@ type ingestWALAppendResponse struct {
 	err    error
 }
 
+type ingestWALBatchRecord struct {
+	kind    IngestWALRecordType
+	payload []byte
+}
+
 type ingestWALPruneRequest struct {
-	ctx       context.Context
 	beforeLSN uint64
-	segment   string
-	offset    int64
 	done      chan error
 }
 
@@ -144,18 +164,10 @@ type ingestWALSegment struct {
 	size     int64
 }
 
-type ingestWALCheckpoint struct {
-	FormatVersion int       `json:"format_version"`
-	Segment       string    `json:"segment"`
-	Offset        int64     `json:"offset"`
-	NextLSN       uint64    `json:"next_lsn"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
-
-type ingestWALRecoveryStats struct {
-	checkpointOutcome string
-	checkpointNextLSN uint64
-	scannedBytes      int64
+type ingestWALWriteFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
 }
 
 type IngestWAL struct {
@@ -166,14 +178,11 @@ type IngestWAL struct {
 	pruneCh  chan ingestWALPruneRequest
 	closeCh  chan struct{}
 	done     chan struct{}
+	ready    chan error
 
-	closeOnce       sync.Once
-	closeResultOnce sync.Once
-	errMu           sync.Mutex
-	fatalErr        error
-	runErr          error
-	closeErr        error
-	diskBytes       atomic.Int64
+	closeOnce sync.Once
+	errMu     sync.Mutex
+	closeErr  error
 }
 
 func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error) {
@@ -194,46 +203,7 @@ func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error
 		_ = lockFile.Close()
 		return nil, nil, fmt.Errorf("%w: %v", ErrIngestWALLocked, err)
 	}
-	recoveryStarted := time.Now()
-	recoveryCtx, recoverySpan := startStorageSpan(
-		context.Background(),
-		"graphdb.storage.ingest_wal.recover",
-	)
-	records, segments, nextLSN, totalBytes, recoveryStats, err := recoverIngestWAL(
-		recoveryCtx,
-		config.Dir,
-	)
-	recoverySpan.SetAttributes(
-		attribute.String(
-			"graphdb.ingest.wal.checkpoint_outcome",
-			recoveryStats.checkpointOutcome,
-		),
-		attribute.Int64(
-			"graphdb.ingest.wal.scanned_bytes",
-			recoveryStats.scannedBytes,
-		),
-	)
-	endStorageSpan(recoverySpan, err)
-	if config.Observer != nil {
-		config.Observer.RecordIngestWALCheckpoint(
-			recoveryStats.checkpointOutcome,
-			recoveryStats.scannedBytes,
-			time.Since(recoveryStarted),
-		)
-	}
-	if config.Logger != nil {
-		fields := map[string]any{
-			"outcome":       recoveryStats.checkpointOutcome,
-			"scanned_bytes": recoveryStats.scannedBytes,
-			"duration_ms":   float64(time.Since(recoveryStarted).Microseconds()) / 1000,
-		}
-		if err != nil {
-			fields["error"] = err.Error()
-			config.Logger.Error("ingest_wal_checkpoint_recovery", fields)
-		} else {
-			config.Logger.Info("ingest_wal_checkpoint_recovery", fields)
-		}
-	}
+	records, segments, nextLSN, totalBytes, err := recoverIngestWAL(config.Dir)
 	if err != nil {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
@@ -246,26 +216,19 @@ func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error
 		pruneCh:  make(chan ingestWALPruneRequest),
 		closeCh:  make(chan struct{}),
 		done:     make(chan struct{}),
+		ready:    make(chan error, 1),
 	}
-	wal.diskBytes.Store(totalBytes)
-	go wal.run(
-		segments,
-		nextLSN,
-		totalBytes,
-		recoveryStats.checkpointNextLSN,
-	)
+	go wal.run(segments, nextLSN, totalBytes)
+	if err := <-wal.ready; err != nil {
+		closeErr := wal.Close()
+		if closeErr == nil {
+			closeErr = err
+		}
+		return nil, nil, fmt.Errorf("open ingest WAL writer: %w", closeErr)
+	}
 	return wal, records, nil
 }
 
-func (w *IngestWAL) DiskBytes() int64 {
-	if w == nil {
-		return 0
-	}
-	return w.diskBytes.Load()
-}
-
-// Append blocks until the WAL has consumed payload and does not retain it after
-// returning. Callers must not mutate payload while Append is in progress.
 func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payload []byte) (result IngestWALAppendResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -298,15 +261,12 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 		return IngestWALAppendResult{}, fmt.Errorf("unsupported ingest WAL record type %d", kind)
 	}
 	if len(payload) > ingestWALMaxPayload {
-		return IngestWALAppendResult{}, fmt.Errorf("ingest WAL payload is too large: %d bytes", len(payload))
-	}
-	if fatalErr := w.fatalError(); fatalErr != nil {
-		return IngestWALAppendResult{}, fatalErr
+		return IngestWALAppendResult{}, fmt.Errorf("%w: %d bytes", ErrIngestWALRecordTooLarge, len(payload))
 	}
 	request := ingestWALAppendRequest{
 		ctx:     ctx,
 		kind:    kind,
-		payload: payload,
+		payload: append([]byte(nil), payload...),
 		done:    make(chan ingestWALAppendResponse, 1),
 	}
 	select {
@@ -314,47 +274,107 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 	case <-ctx.Done():
 		return IngestWALAppendResult{}, ctx.Err()
 	case <-w.done:
-		return IngestWALAppendResult{}, ErrIngestWALClosed
+		return IngestWALAppendResult{}, w.unavailableError()
 	}
 	select {
 	case response := <-request.done:
 		return response.result, response.err
 	case <-w.done:
-		return IngestWALAppendResult{}, ErrIngestWALClosed
+		return IngestWALAppendResult{}, w.unavailableError()
 	}
+}
+
+func (w *IngestWAL) appendBatch(ctx context.Context, records []ingestWALBatchRecord) []ingestWALAppendResponse {
+	responses := make([]ingestWALAppendResponse, len(records))
+	if len(records) == 0 {
+		return responses
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requests := make([]ingestWALAppendRequest, len(records))
+	for index, record := range records {
+		if !validIngestWALRecordType(record.kind) {
+			err := fmt.Errorf("unsupported ingest WAL record type %d", record.kind)
+			for responseIndex := range responses {
+				responses[responseIndex].err = err
+			}
+			return responses
+		}
+		if len(record.payload) > ingestWALMaxPayload {
+			err := fmt.Errorf("%w: %d bytes", ErrIngestWALRecordTooLarge, len(record.payload))
+			for responseIndex := range responses {
+				responses[responseIndex].err = err
+			}
+			return responses
+		}
+		requests[index] = ingestWALAppendRequest{
+			ctx:     ctx,
+			kind:    record.kind,
+			payload: append([]byte(nil), record.payload...),
+			done:    make(chan ingestWALAppendResponse, 1),
+		}
+	}
+
+	started := time.Now()
+	enqueued := 0
+	enqueueStopped := false
+	for index := range requests {
+		select {
+		case w.appendCh <- requests[index]:
+			enqueued++
+		case <-ctx.Done():
+			for remaining := index; remaining < len(responses); remaining++ {
+				responses[remaining].err = ctx.Err()
+			}
+			enqueueStopped = true
+		case <-w.done:
+			for remaining := index; remaining < len(responses); remaining++ {
+				responses[remaining].err = w.unavailableError()
+			}
+			enqueueStopped = true
+		}
+		if enqueueStopped {
+			break
+		}
+	}
+	for index := 0; index < enqueued; index++ {
+		select {
+		case responses[index] = <-requests[index].done:
+		case <-w.done:
+			responses[index].err = w.unavailableError()
+		}
+	}
+	for index, record := range records {
+		if w.config.Observer != nil {
+			status := "ok"
+			if responses[index].err != nil {
+				status = "error"
+			}
+			w.config.Observer.RecordIngestWALAppend(
+				ingestWALRecordTypeName(record.kind),
+				status,
+				len(record.payload)+ingestWALHeaderBytes+ingestWALChecksumBytes,
+				time.Since(started),
+			)
+		}
+	}
+	return responses
 }
 
 // Prune removes closed segments whose records are all older than beforeLSN.
 // The caller must only advance beforeLSN past requests that no longer need WAL recovery.
 func (w *IngestWAL) Prune(ctx context.Context, beforeLSN uint64) error {
-	return w.pruneFrom(ctx, beforeLSN, "", 0)
-}
-
-func (w *IngestWAL) pruneFrom(
-	ctx context.Context,
-	beforeLSN uint64,
-	segment string,
-	offset int64,
-) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if fatalErr := w.fatalError(); fatalErr != nil {
-		return fatalErr
-	}
-	request := ingestWALPruneRequest{
-		ctx:       ctx,
-		beforeLSN: beforeLSN,
-		segment:   segment,
-		offset:    offset,
-		done:      make(chan error, 1),
-	}
+	request := ingestWALPruneRequest{beforeLSN: beforeLSN, done: make(chan error, 1)}
 	select {
 	case w.pruneCh <- request:
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-w.done:
-		return ErrIngestWALClosed
+		return w.unavailableError()
 	}
 	select {
 	case err := <-request.done:
@@ -362,112 +382,86 @@ func (w *IngestWAL) pruneFrom(
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-w.done:
-		return ErrIngestWALClosed
+		return w.unavailableError()
 	}
 }
 
 func (w *IngestWAL) Close() error {
-	w.closeOnce.Do(func() { close(w.closeCh) })
-	<-w.done
-	w.closeResultOnce.Do(func() {
-		w.errMu.Lock()
-		lockFile := w.lockFile
-		w.lockFile = nil
-		fatalErr := w.fatalErr
-		runErr := w.runErr
-		w.errMu.Unlock()
-		var lockErr error
-		if lockFile != nil {
-			lockErr = errors.Join(
-				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN),
-				lockFile.Close(),
-			)
+	w.closeOnce.Do(func() {
+		close(w.closeCh)
+		<-w.done
+		var unlockErr error
+		var lockCloseErr error
+		if w.lockFile != nil {
+			unlockErr = syscall.Flock(int(w.lockFile.Fd()), syscall.LOCK_UN)
+			lockCloseErr = w.lockFile.Close()
+			w.lockFile = nil
 		}
-		w.errMu.Lock()
-		w.closeErr = errors.Join(fatalErr, runErr, lockErr)
-		w.errMu.Unlock()
+		w.recordError(errors.Join(unlockErr, lockCloseErr))
 	})
+	return w.currentError()
+}
+
+func (w *IngestWAL) recordError(err error) {
+	if err == nil {
+		return
+	}
+	w.errMu.Lock()
+	w.closeErr = errors.Join(w.closeErr, err)
+	w.errMu.Unlock()
+}
+
+func (w *IngestWAL) currentError() error {
 	w.errMu.Lock()
 	defer w.errMu.Unlock()
 	return w.closeErr
 }
 
-func (w *IngestWAL) fatalError() error {
-	w.errMu.Lock()
-	defer w.errMu.Unlock()
-	return w.fatalErr
+func (w *IngestWAL) unavailableError() error {
+	if err := w.currentError(); err != nil {
+		return errors.Join(ErrIngestWALClosed, err)
+	}
+	return ErrIngestWALClosed
 }
 
-func (w *IngestWAL) fence(err error) error {
-	if err == nil {
-		err = ErrIngestWALFenced
-	}
-	if !errors.Is(err, ErrIngestWALFenced) {
-		err = fmt.Errorf("%w: %w", ErrIngestWALFenced, err)
-	}
-	w.errMu.Lock()
-	if w.fatalErr == nil {
-		w.fatalErr = err
-	}
-	err = w.fatalErr
-	w.errMu.Unlock()
-	return err
-}
-
-func (w *IngestWAL) rememberRunError(err error) {
-	if err == nil {
-		return
-	}
-	w.errMu.Lock()
-	if w.runErr == nil {
-		w.runErr = err
-	}
-	w.errMu.Unlock()
-}
-
-func (w *IngestWAL) run(
-	segments []ingestWALSegment,
-	nextLSN uint64,
-	totalBytes int64,
-	checkpointNextLSN uint64,
-) {
+func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes int64) {
 	defer close(w.done)
 	state := ingestWALWriterState{
-		wal:               w,
-		segments:          segments,
-		nextLSN:           nextLSN,
-		totalBytes:        totalBytes,
-		writtenLSN:        nextLSN - 1,
-		durableLSN:        nextLSN - 1,
-		checkpointNextLSN: checkpointNextLSN,
+		wal:        w,
+		segments:   segments,
+		nextLSN:    nextLSN,
+		totalBytes: totalBytes,
+		writtenLSN: nextLSN - 1,
+		durableLSN: nextLSN - 1,
 	}
-	defer func() {
-		if err := state.syncAndClose(); err != nil {
-			w.rememberRunError(err)
-		}
-		pendingErr := ErrIngestWALClosed
-		if fatalErr := w.fatalError(); fatalErr != nil {
-			pendingErr = fatalErr
-		}
-		state.failPending(pendingErr)
-	}()
 	if err := state.openCurrent(); err != nil {
-		state.fence(err)
+		w.recordError(err)
+		w.ready <- err
+		state.failPending(err)
+		return
 	}
+	w.ready <- nil
+	defer func() {
+		closeErr := state.syncAndClose()
+		w.recordError(closeErr)
+		state.failPending(w.unavailableError())
+	}()
 	for {
 		select {
 		case first := <-w.appendCh:
-			if state.fenced {
-				first.done <- ingestWALAppendResponse{err: state.fatalError()}
-				continue
+			if err := state.writeGroup(first); err != nil {
+				state.failPending(err)
+				return
 			}
-			state.writeGroup(first)
 		case request := <-w.pruneCh:
-			if state.fenced {
-				request.done <- state.fatalError()
-				continue
+			err := state.prune(request.beforeLSN)
+			if errors.Is(err, ErrIngestWALFailed) {
+				w.recordError(err)
+				request.done <- err
+				state.failPending(err)
+				return
 			}
-			request.done <- state.prune(request)
+			request.done <- err
 		case <-w.closeCh:
 			return
 		}
@@ -475,33 +469,14 @@ func (w *IngestWAL) run(
 }
 
 type ingestWALWriterState struct {
-	wal               *IngestWAL
-	file              *os.File
-	segments          []ingestWALSegment
-	current           int
-	nextLSN           uint64
-	totalBytes        int64
-	writtenLSN        uint64
-	durableLSN        uint64
-	checkpointNextLSN uint64
-	fenced            bool
-}
-
-func (s *ingestWALWriterState) fatalError() error {
-	if err := s.wal.fatalError(); err != nil {
-		return err
-	}
-	return ErrIngestWALFenced
-}
-
-func (s *ingestWALWriterState) fence(err error) error {
-	s.fenced = true
-	// Do not leave an unacknowledged batch's tentative LSNs visible to any
-	// subsequent operation. The writer stops accepting work after fencing, but
-	// rolling the allocator back also keeps its state internally coherent while
-	// the process is shutting down or being inspected.
-	s.nextLSN = s.writtenLSN + 1
-	return s.wal.fence(err)
+	wal        *IngestWAL
+	file       ingestWALWriteFile
+	segments   []ingestWALSegment
+	current    int
+	nextLSN    uint64
+	totalBytes int64
+	writtenLSN uint64
+	durableLSN uint64
 }
 
 func (s *ingestWALWriterState) openCurrent() error {
@@ -512,7 +487,13 @@ func (s *ingestWALWriterState) openCurrent() error {
 	}
 	s.current = len(s.segments) - 1
 	path := s.segments[s.current].path
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	openWriterFile := s.wal.config.openWriterFile
+	if openWriterFile == nil {
+		openWriterFile = func(path string) (ingestWALWriteFile, error) {
+			return os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		}
+	}
+	file, err := openWriterFile(path)
 	if err != nil {
 		return fmt.Errorf("open ingest WAL segment %q: %w", path, err)
 	}
@@ -537,7 +518,7 @@ func (s *ingestWALWriterState) createSegment(startLSN uint64) error {
 	return nil
 }
 
-func (s *ingestWALWriterState) writeGroup(first ingestWALAppendRequest) {
+func (s *ingestWALWriterState) writeGroup(first ingestWALAppendRequest) error {
 	requests := []ingestWALAppendRequest{first}
 	payloadBytes := len(first.payload)
 	timer := time.NewTimer(s.wal.config.FsyncInterval)
@@ -559,14 +540,10 @@ collect:
 		default:
 		}
 	}
-	s.writeRequests(requests)
+	return s.writeRequests(requests)
 }
 
-func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) {
-	if s.fenced {
-		s.failRequests(requests, s.fatalError())
-		return
-	}
+func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) error {
 	pending := make([]ingestWALAppendRequest, 0, len(requests))
 	results := make([]IngestWALAppendResult, 0, len(requests))
 	var buffer bytes.Buffer
@@ -590,7 +567,6 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 			err = io.ErrShortWrite
 		}
 		if err != nil {
-			err = s.fence(err)
 			s.observeSync("error", groupRecords, groupBytes, time.Since(groupStarted), err)
 			endStorageSpan(groupSpan, err)
 			return err
@@ -599,7 +575,6 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		s.totalBytes += int64(written)
 		if s.wal.config.Durability == IngestWALDurabilitySync {
 			if err := s.file.Sync(); err != nil {
-				err = s.fence(err)
 				s.observeSync("error", groupRecords, groupBytes, time.Since(groupStarted), err)
 				endStorageSpan(groupSpan, err)
 				return err
@@ -644,22 +619,35 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		}
 		frameBytes := int64(ingestWALHeaderBytes + len(request.payload) + ingestWALChecksumBytes)
 		if frameBytes > s.wal.config.SegmentBytes {
-			request.done <- ingestWALAppendResponse{err: fmt.Errorf("ingest WAL record exceeds segment size")}
+			request.done <- ingestWALAppendResponse{err: fmt.Errorf(
+				"%w: record=%d segment=%d",
+				ErrIngestWALRecordExceedsSegment,
+				frameBytes,
+				s.wal.config.SegmentBytes,
+			)}
 			continue
 		}
-		if s.totalBytes+int64(buffer.Len())+frameBytes > s.wal.config.MaxBytes {
+		limit := s.wal.config.MaxBytes
+		if request.kind == IngestWALAccepted {
+			limit -= s.wal.config.controlReserveBytes()
+		}
+		if s.totalBytes+int64(buffer.Len())+frameBytes > limit {
 			request.done <- ingestWALAppendResponse{err: ErrIngestWALFull}
 			continue
 		}
 		if s.segments[s.current].size+int64(buffer.Len())+frameBytes > s.wal.config.SegmentBytes {
 			if err := flush(); err != nil {
-				failPending(err)
-				s.failRequests(requests[index:], err)
-				return
+				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				s.wal.recordError(fatalErr)
+				failPending(fatalErr)
+				s.failRequests(requests[index:], fatalErr)
+				return fatalErr
 			}
 			if err := s.rotate(); err != nil {
-				s.failRequests(requests[index:], err)
-				return
+				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				s.wal.recordError(fatalErr)
+				s.failRequests(requests[index:], fatalErr)
+				return fatalErr
 			}
 		}
 		lsn := s.nextLSN
@@ -676,15 +664,21 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		})
 		if buffer.Len() >= s.wal.config.BufferBytes {
 			if err := flush(); err != nil {
-				failPending(err)
-				s.failRequests(requests[index+1:], err)
-				return
+				fatalErr := errors.Join(ErrIngestWALFailed, err)
+				s.wal.recordError(fatalErr)
+				failPending(fatalErr)
+				s.failRequests(requests[index+1:], fatalErr)
+				return fatalErr
 			}
 		}
 	}
 	if err := flush(); err != nil {
-		failPending(err)
+		fatalErr := errors.Join(ErrIngestWALFailed, err)
+		s.wal.recordError(fatalErr)
+		failPending(fatalErr)
+		return fatalErr
 	}
+	return nil
 }
 
 func (s *ingestWALWriterState) failRequests(requests []ingestWALAppendRequest, err error) {
@@ -695,10 +689,10 @@ func (s *ingestWALWriterState) failRequests(requests []ingestWALAppendRequest, e
 
 func (s *ingestWALWriterState) rotate() error {
 	if err := s.syncAndClose(); err != nil {
-		return s.fence(err)
+		return err
 	}
 	if err := s.createSegment(s.nextLSN); err != nil {
-		return s.fence(err)
+		return err
 	}
 	if s.wal.config.Logger != nil {
 		s.wal.config.Logger.Info("ingest_wal_segment_rotated", map[string]any{
@@ -706,86 +700,24 @@ func (s *ingestWALWriterState) rotate() error {
 			"disk_bytes": s.totalBytes,
 		})
 	}
-	if err := s.openCurrent(); err != nil {
-		return s.fence(err)
-	}
-	return nil
+	return s.openCurrent()
 }
 
-func (s *ingestWALWriterState) prune(request ingestWALPruneRequest) error {
-	if s.fenced {
-		return s.fatalError()
-	}
-	if request.beforeLSN == 0 {
+func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
+	if beforeLSN == 0 {
 		return nil
 	}
 	current := s.segments[s.current]
-	if current.size > 0 && current.maxLSN < request.beforeLSN {
+	if current.size > 0 && current.maxLSN < beforeLSN {
 		if err := s.rotate(); err != nil {
-			return err
-		}
-	}
-	checkpoint, checkpointOK := s.checkpointForPrune(request)
-	if checkpointOK && checkpoint.NextLSN > s.checkpointNextLSN {
-		started := time.Now()
-		_, span := startStorageSpan(
-			request.ctx,
-			"graphdb.storage.ingest_wal.checkpoint",
-			attribute.Int64(
-				"graphdb.ingest.wal.checkpoint_next_lsn",
-				int64(checkpoint.NextLSN),
-			),
-			attribute.String(
-				"graphdb.ingest.wal.checkpoint_segment",
-				checkpoint.Segment,
-			),
-			attribute.Int64(
-				"graphdb.ingest.wal.checkpoint_offset",
-				checkpoint.Offset,
-			),
-		)
-		err := writeIngestWALCheckpoint(s.wal.config.Dir, checkpoint)
-		endStorageSpan(span, err)
-		outcome := "written"
-		if err != nil {
-			outcome = "error"
-		}
-		if s.wal.config.Observer != nil {
-			s.wal.config.Observer.RecordIngestWALCheckpoint(
-				outcome,
-				0,
-				time.Since(started),
-			)
-		}
-		if err != nil {
-			if s.wal.config.Logger != nil {
-				s.wal.config.Logger.Error("ingest_wal_checkpoint_written", map[string]any{
-					"outcome":  outcome,
-					"next_lsn": checkpoint.NextLSN,
-					"segment":  checkpoint.Segment,
-					"offset":   checkpoint.Offset,
-					"error":    err.Error(),
-				})
-			}
-			return err
-		}
-		s.checkpointNextLSN = checkpoint.NextLSN
-		if s.wal.config.Logger != nil {
-			s.wal.config.Logger.Info("ingest_wal_checkpoint_written", map[string]any{
-				"outcome":     outcome,
-				"next_lsn":    checkpoint.NextLSN,
-				"segment":     checkpoint.Segment,
-				"offset":      checkpoint.Offset,
-				"duration_ms": float64(time.Since(started).Microseconds()) / 1000,
-			})
+			return errors.Join(ErrIngestWALFailed, err)
 		}
 	}
 	kept := make([]ingestWALSegment, 0, len(s.segments))
 	removed := 0
 	var reclaimed int64
 	for index, segment := range s.segments {
-		if index == s.current || segment.maxLSN == 0 ||
-			segment.maxLSN >= request.beforeLSN {
+		if index == s.current || segment.maxLSN == 0 || segment.maxLSN >= beforeLSN {
 			kept = append(kept, segment)
 			continue
 		}
@@ -813,49 +745,10 @@ func (s *ingestWALWriterState) prune(request ingestWALPruneRequest) error {
 			"segments":        removed,
 			"reclaimed_bytes": reclaimed,
 			"disk_bytes":      s.totalBytes,
-			"before_lsn":      request.beforeLSN,
+			"before_lsn":      beforeLSN,
 		})
 	}
 	return nil
-}
-
-func (s *ingestWALWriterState) checkpointForPrune(
-	request ingestWALPruneRequest,
-) (ingestWALCheckpoint, bool) {
-	if request.segment != "" {
-		for _, segment := range s.segments {
-			if filepath.Base(segment.path) != request.segment ||
-				request.offset < 0 || request.offset > segment.size {
-				continue
-			}
-			if !validateIngestWALCheckpointTarget(
-				segment.path,
-				request.offset,
-				request.beforeLSN,
-			) {
-				return ingestWALCheckpoint{}, false
-			}
-			return ingestWALCheckpoint{
-				FormatVersion: 1,
-				Segment:       request.segment,
-				Offset:        request.offset,
-				NextLSN:       request.beforeLSN,
-				UpdatedAt:     time.Now().UTC(),
-			}, true
-		}
-		return ingestWALCheckpoint{}, false
-	}
-	if s.nextLSN != request.beforeLSN {
-		return ingestWALCheckpoint{}, false
-	}
-	current := s.segments[s.current]
-	return ingestWALCheckpoint{
-		FormatVersion: 1,
-		Segment:       filepath.Base(current.path),
-		Offset:        current.size,
-		NextLSN:       request.beforeLSN,
-		UpdatedAt:     time.Now().UTC(),
-	}, true
 }
 
 func (s *ingestWALWriterState) syncAndClose() error {
@@ -896,7 +789,6 @@ func (s *ingestWALWriterState) observeSync(status string, records int, bytes int
 }
 
 func (s *ingestWALWriterState) observeState(bufferBytes int) {
-	s.wal.diskBytes.Store(s.totalBytes)
 	if s.wal.config.Observer != nil {
 		s.wal.config.Observer.RecordIngestWALState(
 			bufferBytes,
@@ -907,22 +799,10 @@ func (s *ingestWALWriterState) observeState(bufferBytes int) {
 	}
 }
 
-func recoverIngestWAL(
-	ctx context.Context,
-	dir string,
-) (
-	[]IngestWALRecord,
-	[]ingestWALSegment,
-	uint64,
-	int64,
-	ingestWALRecoveryStats,
-	error,
-) {
+func recoverIngestWAL(dir string) ([]IngestWALRecord, []ingestWALSegment, uint64, int64, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, nil, 0, 0, ingestWALRecoveryStats{
-			checkpointOutcome: "error",
-		}, err
+		return nil, nil, 0, 0, err
 	}
 	paths := make([]string, 0)
 	for _, entry := range entries {
@@ -933,74 +813,24 @@ func recoverIngestWAL(
 		}
 	}
 	sort.Strings(paths)
-	checkpoint, checkpointErr := loadIngestWALCheckpoint(dir)
-	if checkpointErr == nil {
-		records, segments, nextLSN, totalBytes, scannedBytes, recoverErr :=
-			recoverIngestWALFromCheckpoint(paths, checkpoint)
-		if recoverErr == nil {
-			return records, segments, nextLSN, totalBytes, ingestWALRecoveryStats{
-				checkpointOutcome: "used",
-				checkpointNextLSN: checkpoint.NextLSN,
-				scannedBytes:      scannedBytes,
-			}, nil
-		}
-	}
-	outcome := "miss"
-	if checkpointErr != nil && !errors.Is(checkpointErr, os.ErrNotExist) {
-		outcome = "fallback"
-	} else if checkpointErr == nil {
-		outcome = "fallback"
-	}
-	records, segments, nextLSN, totalBytes, scannedBytes, err :=
-		recoverIngestWALFull(paths)
-	if err != nil {
-		return nil, nil, 0, 0, ingestWALRecoveryStats{
-			checkpointOutcome: "error",
-			scannedBytes:      scannedBytes,
-		}, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, nil, 0, 0, ingestWALRecoveryStats{
-			checkpointOutcome: "error",
-			scannedBytes:      scannedBytes,
-		}, err
-	}
-	return records, segments, nextLSN, totalBytes, ingestWALRecoveryStats{
-		checkpointOutcome: outcome,
-		scannedBytes:      scannedBytes,
-	}, nil
-}
-
-func recoverIngestWALFull(
-	paths []string,
-) (
-	[]IngestWALRecord,
-	[]ingestWALSegment,
-	uint64,
-	int64,
-	int64,
-	error,
-) {
 	records := make([]IngestWALRecord, 0)
 	segments := make([]ingestWALSegment, 0, len(paths))
 	var lastLSN uint64
 	var totalBytes int64
-	var scannedBytes int64
-	if len(paths) > 0 {
-		firstLSN, _ := parseIngestWALSegmentName(filepath.Base(paths[0]))
-		lastLSN = firstLSN - 1
-	}
 	for index, path := range paths {
 		startLSN, _ := parseIngestWALSegmentName(filepath.Base(path))
+		if index == 0 {
+			lastLSN = startLSN - 1
+		} else if startLSN != lastLSN+1 {
+			return nil, nil, 0, 0, fmt.Errorf(
+				"%w: segment %q starts at LSN %d after LSN %d",
+				ErrIngestWALCorrupt, path, startLSN, lastLSN,
+			)
+		}
 		isLast := index == len(paths)-1
-		segmentRecords, size, scanned, err := recoverIngestWALSegment(
-			path,
-			isLast,
-			lastLSN,
-			0,
-		)
+		segmentRecords, size, err := recoverIngestWALSegment(path, isLast, lastLSN)
 		if err != nil {
-			return nil, nil, 0, 0, scannedBytes + scanned, err
+			return nil, nil, 0, 0, err
 		}
 		segment := ingestWALSegment{path: path, startLSN: startLSN, size: size}
 		if len(segmentRecords) > 0 {
@@ -1010,123 +840,22 @@ func recoverIngestWALFull(
 		records = append(records, segmentRecords...)
 		segments = append(segments, segment)
 		totalBytes += size
-		scannedBytes += scanned
 	}
-	return records, segments, lastLSN + 1, totalBytes, scannedBytes, nil
+	return records, segments, lastLSN + 1, totalBytes, nil
 }
 
-func recoverIngestWALFromCheckpoint(
-	paths []string,
-	checkpoint ingestWALCheckpoint,
-) (
-	[]IngestWALRecord,
-	[]ingestWALSegment,
-	uint64,
-	int64,
-	int64,
-	error,
-) {
-	checkpointIndex := -1
-	for index, path := range paths {
-		if filepath.Base(path) == checkpoint.Segment {
-			checkpointIndex = index
-			break
-		}
-	}
-	if checkpointIndex < 0 {
-		return nil, nil, 0, 0, 0, fmt.Errorf(
-			"%w: checkpoint segment %q is missing",
-			ErrIngestWALCorrupt,
-			checkpoint.Segment,
-		)
-	}
-	records := make([]IngestWALRecord, 0)
-	segments := make([]ingestWALSegment, 0, len(paths))
-	var totalBytes int64
-	var scannedBytes int64
-	lastLSN := checkpoint.NextLSN - 1
-	for index, path := range paths {
-		startLSN, _ := parseIngestWALSegmentName(filepath.Base(path))
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, nil, 0, 0, scannedBytes, err
-		}
-		size := info.Size()
-		segment := ingestWALSegment{
-			path:     path,
-			startLSN: startLSN,
-			size:     size,
-		}
-		totalBytes += size
-		if index < checkpointIndex {
-			if index+1 < len(paths) {
-				nextStart, _ := parseIngestWALSegmentName(
-					filepath.Base(paths[index+1]),
-				)
-				segment.maxLSN = nextStart - 1
-			}
-			segments = append(segments, segment)
-			continue
-		}
-		startOffset := int64(0)
-		if index == checkpointIndex {
-			startOffset = checkpoint.Offset
-		}
-		segmentRecords, recoveredSize, scanned, err := recoverIngestWALSegment(
-			path,
-			index == len(paths)-1,
-			lastLSN,
-			startOffset,
-		)
-		if err != nil {
-			return nil, nil, 0, 0, scannedBytes + scanned, err
-		}
-		segment.size = recoveredSize
-		totalBytes += recoveredSize - size
-		scannedBytes += scanned
-		if len(segmentRecords) > 0 {
-			segment.maxLSN = segmentRecords[len(segmentRecords)-1].LSN
-			lastLSN = segment.maxLSN
-		} else if index+1 < len(paths) {
-			nextStart, _ := parseIngestWALSegmentName(
-				filepath.Base(paths[index+1]),
-			)
-			segment.maxLSN = nextStart - 1
-		}
-		records = append(records, segmentRecords...)
-		segments = append(segments, segment)
-	}
-	return records, segments, lastLSN + 1, totalBytes, scannedBytes, nil
-}
-
-func recoverIngestWALSegment(
-	path string,
-	isLast bool,
-	previousLSN uint64,
-	startOffset int64,
-) ([]IngestWALRecord, int64, int64, error) {
+func recoverIngestWALSegment(path string, isLast bool, previousLSN uint64) ([]IngestWALRecord, int64, error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, err
 	}
 	size := info.Size()
-	if startOffset < 0 || startOffset > size {
-		return nil, 0, 0, fmt.Errorf(
-			"%w: invalid checkpoint offset at %s:%d",
-			ErrIngestWALCorrupt,
-			path,
-			startOffset,
-		)
-	}
-	if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
-		return nil, 0, 0, err
-	}
-	offset := startOffset
+	var offset int64
 	var lastLSN = previousLSN
 	records := make([]IngestWALRecord, 0)
 	for offset < size {
@@ -1136,35 +865,35 @@ func recoverIngestWALSegment(
 		if readErr != nil {
 			if isLast && errors.Is(readErr, io.ErrUnexpectedEOF) {
 				truncatedSize, truncateErr := truncateIngestWALTail(file, path, recordOffset)
-				return records, truncatedSize, recordOffset - startOffset, truncateErr
+				return records, truncatedSize, truncateErr
 			}
-			return nil, 0, recordOffset - startOffset, fmt.Errorf("%w: read header at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
+			return nil, 0, fmt.Errorf("%w: read header at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
 		}
 		offset += int64(read)
 		if string(header[:4]) != ingestWALMagic || binary.BigEndian.Uint16(header[4:6]) != ingestWALFormatVersion {
-			return nil, 0, recordOffset - startOffset, fmt.Errorf("%w: invalid header at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return nil, 0, fmt.Errorf("%w: invalid header at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
 		}
 		kind := IngestWALRecordType(header[6])
 		lsn := binary.BigEndian.Uint64(header[8:16])
 		payloadBytes := binary.BigEndian.Uint32(header[16:20])
 		if !validIngestWALRecordType(kind) || payloadBytes > ingestWALMaxPayload || lsn != lastLSN+1 {
-			return nil, 0, recordOffset - startOffset, fmt.Errorf("%w: invalid record metadata at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return nil, 0, fmt.Errorf("%w: invalid record metadata at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
 		}
 		body := make([]byte, int(payloadBytes)+ingestWALChecksumBytes)
 		read, readErr = io.ReadFull(file, body)
 		if readErr != nil {
 			if isLast && errors.Is(readErr, io.ErrUnexpectedEOF) {
 				truncatedSize, truncateErr := truncateIngestWALTail(file, path, recordOffset)
-				return records, truncatedSize, recordOffset - startOffset, truncateErr
+				return records, truncatedSize, truncateErr
 			}
-			return nil, 0, recordOffset - startOffset, fmt.Errorf("%w: read payload at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
+			return nil, 0, fmt.Errorf("%w: read payload at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
 		}
 		offset += int64(read)
 		payload := body[:payloadBytes]
 		wantCRC := binary.BigEndian.Uint32(body[payloadBytes:])
 		checksumInput := append(append([]byte(nil), header...), payload...)
 		if crc32.Checksum(checksumInput, crc32.MakeTable(crc32.Castagnoli)) != wantCRC {
-			return nil, 0, recordOffset - startOffset, fmt.Errorf("%w: checksum mismatch at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return nil, 0, fmt.Errorf("%w: checksum mismatch at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
 		}
 		records = append(records, IngestWALRecord{
 			Type:    kind,
@@ -1175,7 +904,7 @@ func recoverIngestWALSegment(
 		})
 		lastLSN = lsn
 	}
-	return records, size, size - startOffset, nil
+	return records, size, nil
 }
 
 func truncateIngestWALTail(file *os.File, path string, size int64) (int64, error) {
@@ -1186,96 +915,6 @@ func truncateIngestWALTail(file *os.File, path string, size int64) (int64, error
 		return 0, err
 	}
 	return size, nil
-}
-
-func loadIngestWALCheckpoint(dir string) (ingestWALCheckpoint, error) {
-	path := filepath.Join(dir, ingestWALCheckpointFile)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ingestWALCheckpoint{}, err
-	}
-	var checkpoint ingestWALCheckpoint
-	if err := json.Unmarshal(data, &checkpoint); err != nil {
-		return ingestWALCheckpoint{}, fmt.Errorf(
-			"%w: decode WAL checkpoint: %v",
-			ErrIngestWALCorrupt,
-			err,
-		)
-	}
-	if checkpoint.FormatVersion != 1 || checkpoint.NextLSN == 0 ||
-		checkpoint.Offset < 0 {
-		return ingestWALCheckpoint{}, fmt.Errorf(
-			"%w: invalid WAL checkpoint metadata",
-			ErrIngestWALCorrupt,
-		)
-	}
-	if _, ok := parseIngestWALSegmentName(checkpoint.Segment); !ok {
-		return ingestWALCheckpoint{}, fmt.Errorf(
-			"%w: invalid WAL checkpoint segment %q",
-			ErrIngestWALCorrupt,
-			checkpoint.Segment,
-		)
-	}
-	return checkpoint, nil
-}
-
-func writeIngestWALCheckpoint(
-	dir string,
-	checkpoint ingestWALCheckpoint,
-) error {
-	data, err := json.Marshal(checkpoint)
-	if err != nil {
-		return err
-	}
-	tempPath := filepath.Join(dir, ingestWALCheckpointTemp)
-	file, err := os.OpenFile(
-		tempPath,
-		os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
-		0o600,
-	)
-	if err != nil {
-		return fmt.Errorf("open ingest WAL checkpoint temp file: %w", err)
-	}
-	writeErr := func() error {
-		if _, err := file.Write(data); err != nil {
-			return err
-		}
-		if err := file.Sync(); err != nil {
-			return err
-		}
-		return file.Close()
-	}()
-	if writeErr != nil {
-		_ = file.Close()
-		return fmt.Errorf("write ingest WAL checkpoint: %w", writeErr)
-	}
-	path := filepath.Join(dir, ingestWALCheckpointFile)
-	if err := os.Rename(tempPath, path); err != nil {
-		return fmt.Errorf("publish ingest WAL checkpoint: %w", err)
-	}
-	if err := syncDirectory(dir); err != nil {
-		return fmt.Errorf("sync ingest WAL checkpoint directory: %w", err)
-	}
-	return nil
-}
-
-func validateIngestWALCheckpointTarget(
-	path string,
-	offset int64,
-	nextLSN uint64,
-) bool {
-	file, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer file.Close()
-	header := make([]byte, ingestWALHeaderBytes)
-	if _, err := file.ReadAt(header, offset); err != nil {
-		return false
-	}
-	return string(header[:4]) == ingestWALMagic &&
-		binary.BigEndian.Uint16(header[4:6]) == ingestWALFormatVersion &&
-		binary.BigEndian.Uint64(header[8:16]) == nextLSN
 }
 
 func encodeIngestWALFrame(kind IngestWALRecordType, lsn uint64, payload []byte) []byte {

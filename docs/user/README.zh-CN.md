@@ -15,6 +15,8 @@ API 也可以服务其他实体关系应用。
   reader 独立从对象存储重新加载不可变图对象；
 - 基于 Parquet manifest、commit、snapshot、entity page、edge shard 和索引
   对象的对象存储持久化；
+- 1.3 协调 WAL profile 为每个 writer 使用独立持久 WAL；PostgreSQL 只保存
+  head CAS 和协调元数据，对象存储仍是图数据权威；
 - GraphQL、JSON Query DSL、scan/export、saved query 和运行中查询控制；
 - 可选的实体字段、边字段和边存在性 source priority 治理；
 - 租户生命周期、source policy、tenant config、索引、统一 task、维护、
@@ -57,6 +59,7 @@ export BASE=http://127.0.0.1:8080
 - [使用手册](usage-manual.zh-CN.md) · [English](usage-manual.md)
 - [数据模型](data-model.zh-CN.md) · [English](data-model.md)
 - [写入与采集](write-ingest.zh-CN.md) · [English](write-ingest.md)
+- [1.3 PostgreSQL-CAS 多 writer WAL](../ingest-wal-multiwriter-design.zh-CN.md) · [English](../ingest-wal-multiwriter-design.md)
 - [读取与查询](read-query.zh-CN.md) · [English](read-query.md)
 - [扫描与导出](scan-export.zh-CN.md) · [English](scan-export.md)
 - [租户与配置](tenant-config.zh-CN.md) · [English](tenant-config.md)

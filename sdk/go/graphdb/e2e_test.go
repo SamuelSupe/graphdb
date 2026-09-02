@@ -161,6 +161,9 @@ func TestGoSDKCompleteFlowAgainstRealServer(t *testing.T) {
 	if lease, err := client.WriterLease(ctx); err != nil || lease["owner_id"] == nil {
 		t.Fatalf("writer lease = %#v err=%v", lease, err)
 	}
+	// DropIndex is asynchronous. Read-only status endpoints remain available
+	// while it runs, but heavyweight maintenance must wait for its task slot.
+	waitForSDKTaskQuietly(ctx, client, 2*time.Second)
 	if audit, err := client.IntegrityAudit(ctx, false); err != nil || audit["status"] == nil {
 		t.Fatalf("integrity audit = %#v err=%v", audit, err)
 	}

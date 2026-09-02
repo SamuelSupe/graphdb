@@ -2,47 +2,29 @@
 
 [English](capacity.md)
 
-GGraphDB 1.2 发布的是可复现的发行容量边界，而不是没有条件的“大图”
-承诺。机器可读契约位于 `release/capacity-envelope.yaml`。
+GGraphDB 1.3 定义的是受发行门禁约束的多 writer 容量边界，而不是没有条件的
+“大图”承诺。机器可读契约位于 `release/capacity-envelope.yaml`。下文历史
+1.2 吞吐数据只作为历史证据保留，不能认证 1.3 WAL profile。
 
-## 1.2 发行门禁
+## 1.3 合同（证据待补）
 
-主写入吞吐门禁在固定 8 CPU/8 GiB OrbStack 容器中运行一个 local writer，
-使用 sync WAL 与 segment metadata。8 个租户、16 个采集器持续 30 分钟，
-v1.1.5 与 v1.2.0 各跑 5 次。每次候选运行都必须达到至少 10,000 committed
-mutations/s；候选中位数至少为基线 1.5 倍，运行间离散不超过 5%。accepted
-p95/p99 不超过 20/250 ms，committed p95/p99 不超过 8/15 秒，RSS 不超过
-7 GiB 和基线 110%，每 1,000 mutation 的 CPU 不超过基线 75%，direct 写入
-和查询回归不超过 10%。
-RSS 从 writer 进程的 `VmRSS` 采样；CPU 读取 writer 容器 cgroup，并按每
-1,000 个 committed mutation 归一化。
+1.3 PostgreSQL-CAS WAL profile 必须产生以下证据：
 
-完整的提交绑定矩阵通过以下命令运行：
+- 2、4、8 个 writer 同时接收同一租户的 ingest batch；
+- 跨 writer 幂等竞争中零请求丢失、零重复 graph version、零重复效果；
+- 按 CAS 成功顺序发布，支持批次重基和持续冲突缩批，不能因重试预算到达而
+  让已接收请求进入终态失败；
+- PostgreSQL 暂时故障期间继续本地 durable 接收，直到 WAL 高水位拒绝新准入；
+- 使用原 writer 卷和稳定 `GRAPHDB_INSTANCE_ID`，覆盖从 `ACCEPTED` 到
+  `FINALIZED` 的进程崩溃恢复；
+- 生命周期 fencing、owner 路由状态和 `recovery_pending` 行为；
+- 1.2 direct 与 1.3 WAL 滚动混跑，包括降级前排空。
 
-```sh
-scripts/wal_performance_matrix.sh
-```
+这些运行产生 commit-bound 证据前，不宣称任何 1.3 性能结果。持久性边界是
+原 WAL 卷仍可恢复时的进程故障；WAL 卷永久丢失不在合同内。扩展目标是跨租户；
+同租户 8 writer 是正确性和可用性边界，不是单租户线性吞吐承诺。
 
-GitHub release 依赖带 `orbstack` 标签的 self-hosted runner；任一候选运行或
-相对门禁失败都不会发布。
-
-### 本地 WAL 运行时默认值
-
-以下是 v1.2.0 本地 writer 的默认值，与固定主机容量 profile 及其有意更严格的
-测试阈值分开：
-
-| 设置 | 默认值 |
-| --- | ---: |
-| WAL 耐久性 | `sync` |
-| 最老 pending 上限 | `2m` |
-| Graph flush | `250ms`，flush trigger 为 8 请求 / 2 MiB（忙租户可合并同一轮队列），2 个 worker |
-| Metadata flush | `500ms`，trigger 为 256 请求 / 8 MiB，2 个 worker |
-| Write cache | `4GiB` |
-| Commit-tail 上限 | `20,000` |
-| 后台重型任务执行 | 1 个并发任务 |
-| Maintenance ingest 空闲窗口 | 每租户 `1m` |
-
-PostgreSQL direct 路径继续作为正确性和回归门禁：
+## 历史 1.2 发行门禁
 
 每个候选版本必须在 CI 中满足：
 
@@ -58,7 +40,8 @@ PostgreSQL direct 路径继续作为正确性和回归门禁：
   降低 graph version；
 - 压测期间运行 legacy mirror 与派生索引 worker，结束后 mirror lag 和所有
   pending backlog 必须归零；
-- 指定 tag 的真实 1.0 二进制必须能读取最终镜像 graph version。
+- 指定 tag 的真实 1.0 二进制必须能读取最终镜像 graph version；
+- 真实 1.0/1.1 二进制双向兼容门禁通过。
 
 这是并发与持久性边界，不是最大图规模。200 个 commit 的短测只算 smoke，
 不能作为发行认证。
@@ -113,7 +96,7 @@ CAPACITY_PROFILE=baseline scripts/capacity_baseline.sh
 | --- | --- | ---: | ---: | --- |
 | 开发/评估 | 本地文件 | 1 | 0 | `GRAPHDB_MODE=all`，无 HA |
 | 小型生产 | local + generic/native 对象存储 | 1 | 2+ | writer lease，reader 独立扩展 |
-| 并发生产 | PostgreSQL + generic S3 | 2–8 | 2+ | 已发布容量边界中每个热点租户使用 2 个活跃竞争者；PG head 权威 |
+| 并发生产 | PostgreSQL + generic S3 | 2–8 | 2+ | 1.3 WAL 使用独立 writer 卷和 owner 路由；PG 提供协调 CAS，对象存储仍是图数据权威 |
 
 建议从 writer 4 vCPU/8 GiB、reader 2 vCPU/4 GiB 和满足写入速率的 HA
 PostgreSQL 开始验证；这些是验证起点，不是支持保证。查询并发通过 reader
@@ -128,9 +111,10 @@ PostgreSQL 开始验证；这些是验证起点，不是支持保证。查询并
 - 查询 `limit` 上限为 1,000；批量导出应使用 scan/stream。
 - 采集 batch 建议保持 200–500 个逻辑组；过小 batch 会放大 commit、
   manifest、幂等记录和 collector state。
-- PostgreSQL direct 模式支持部署 2–8 个 writer；已认证的热点租户容量为 2 个活跃竞争者、
-  约 20 commit/s。8 路同租户并发仍是正确性门禁，不是持续吞吐承诺。
-  更高吞吐需要图/实体分区并重新发布容量边界。
+- 历史 1.2 边界支持部署 2–8 个 writer；2 个活跃竞争者的热点租户曾测得约
+  20 commit/s，但该结果不能认证 1.3 WAL。1.3 中 8 路同租户并发仍是
+  正确性/可用性边界，不是持续吞吐承诺；吞吐扩展目标是跨租户。更高的单租户
+  吞吐需要图/实体分区并重新发布容量边界。
 - 发布的 20 commit/s 配置保持自动 compact 开启，compact 阈值为 1,000，
   写入背压阈值为 1,500，维护循环间隔不超过 30 秒。
 - 对象存储延迟、PostgreSQL 延迟、字段宽度、索引数量和关系密度都会显著

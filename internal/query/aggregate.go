@@ -1,16 +1,24 @@
 package query
 
-import "fmt"
+import (
+	"fmt"
 
-func aggregateResults(results []Result, specs []Aggregation) map[string]any {
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+)
+
+const maxAggregateBuckets = 10000
+
+func aggregateResults(results []Result, specs []Aggregation) (map[string]any, error) {
 	if len(specs) == 0 {
-		return nil
+		return nil, nil
 	}
 	acc := newAggregateAccumulator(specs)
 	for _, result := range results {
-		acc.add(result)
+		if err := acc.add(result); err != nil {
+			return nil, err
+		}
 	}
-	return acc.results()
+	return acc.results(), nil
 }
 
 func aggregateOne(results []Result, spec Aggregation) any {
@@ -92,9 +100,21 @@ func newAggregateAccumulator(specs []Aggregation) *aggregateAccumulator {
 	return &aggregateAccumulator{specs: specs, states: make([]aggregateState, len(specs))}
 }
 
-func (a *aggregateAccumulator) add(result Result) {
+func (a *aggregateAccumulator) add(result Result) error {
+	return a.addValues(func(field string) any {
+		return resultValue(result, field)
+	})
+}
+
+func (a *aggregateAccumulator) addEntity(entity graph.Entity) error {
+	return a.addValues(func(field string) any {
+		return entityValue(entity, field)
+	})
+}
+
+func (a *aggregateAccumulator) addValues(valueFor func(string) any) error {
 	if a == nil {
-		return
+		return nil
 	}
 	for i, spec := range a.specs {
 		state := &a.states[i]
@@ -105,9 +125,13 @@ func (a *aggregateAccumulator) add(result Result) {
 			if state.counts == nil {
 				state.counts = map[string]int{}
 			}
-			state.counts[fmt.Sprint(resultValue(result, spec.Field))]++
+			key := fmt.Sprint(valueFor(spec.Field))
+			if _, exists := state.counts[key]; !exists && len(state.counts) >= maxAggregateBuckets {
+				return fmt.Errorf("%w: aggregate supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
+			}
+			state.counts[key]++
 		case "sum", "avg", "min", "max":
-			value, ok := asFloat(resultValue(result, spec.Field))
+			value, ok := asFloat(valueFor(spec.Field))
 			if !ok {
 				continue
 			}
@@ -121,6 +145,7 @@ func (a *aggregateAccumulator) add(result Result) {
 			state.count++
 		}
 	}
+	return nil
 }
 
 func (a *aggregateAccumulator) results() map[string]any {

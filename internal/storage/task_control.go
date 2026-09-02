@@ -113,11 +113,47 @@ func (s *TenantStore) registerTaskCancel(tenantID string, taskID string, cancel 
 		return
 	}
 	s.taskMu.Lock()
-	defer s.taskMu.Unlock()
+	if s.taskClosing {
+		s.taskMu.Unlock()
+		cancel()
+		return
+	}
 	if s.taskCancels == nil {
 		s.taskCancels = map[string]context.CancelFunc{}
 	}
 	s.taskCancels[taskRuntimeKey(tenantID, taskID)] = cancel
+	s.taskMu.Unlock()
+}
+
+func (s *TenantStore) ShutdownTasks(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.taskShutdownOnce.Do(func() {
+		s.taskMu.Lock()
+		s.taskClosing = true
+		s.taskShutdownDone = make(chan struct{})
+		cancels := make([]context.CancelFunc, 0, len(s.taskCancels))
+		for _, cancel := range s.taskCancels {
+			cancels = append(cancels, cancel)
+		}
+		done := s.taskShutdownDone
+		s.taskMu.Unlock()
+
+		for _, cancel := range cancels {
+			cancel()
+		}
+		go func() {
+			s.taskWorkers.Wait()
+			close(done)
+		}()
+	})
+	select {
+	case <-s.taskShutdownDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *TenantStore) unregisterTaskCancel(tenantID string, taskID string) {

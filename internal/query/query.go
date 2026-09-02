@@ -18,13 +18,24 @@ func ExecuteContext(ctx context.Context, g *graph.Graph, request Request) (Respo
 	return ExecuteContextWithOptions(ctx, g, request, ExecuteOptions{})
 }
 
+func ValidateRequest(request Request) error {
+	if request.Op != "explain" && request.Op != "profile" {
+		return validateRequest(request)
+	}
+	target, err := targetRequest(request)
+	if err != nil {
+		return err
+	}
+	return validateRequest(target)
+}
+
 func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Request, options ExecuteOptions) (Response, error) {
 	if request.Op == "explain" {
 		target, err := targetRequest(request)
 		if err != nil {
 			return Response{}, err
 		}
-		if err := validateRequest(target); err != nil {
+		if err := ValidateRequest(request); err != nil {
 			return Response{}, err
 		}
 		plan := measureQueryPlan(ctx, g, target, options.PlannerStats, newProfiler(false))
@@ -38,7 +49,7 @@ func ExecuteContextWithOptions(ctx context.Context, g *graph.Graph, request Requ
 		target.Profile = true
 		return ExecuteContextWithOptions(ctx, g, target, options)
 	}
-	if err := validateRequest(request); err != nil {
+	if err := ValidateRequest(request); err != nil {
 		return Response{}, err
 	}
 	profiler := newProfiler(request.Profile)
@@ -129,11 +140,19 @@ func withPlan(response Response, err error, plan Plan, request Request) (Respons
 }
 
 func buildResponse(version int64, results []Result, request Request, cursor cursorState, budget *budget) (Response, error) {
-	return buildResponseWithAggregates(version, results, request, cursor, budget, aggregateResults(results, request.Aggregate))
+	aggregates, err := aggregateResults(results, request.Aggregate)
+	if err != nil {
+		return Response{}, err
+	}
+	return buildResponseWithAggregates(version, results, request, cursor, budget, aggregates)
 }
 
 func buildResponseWithAggregates(version int64, results []Result, request Request, cursor cursorState, budget *budget, aggregates map[string]any) (Response, error) {
-	return buildResponseWithAggregatesAndGroups(version, results, request, cursor, budget, aggregates, aggregateGroups(results, request.GroupBy, request.Aggregate, request.Having, request.HavingExpr))
+	groups, err := aggregateGroups(results, request.GroupBy, request.Aggregate, request.Having, request.HavingExpr)
+	if err != nil {
+		return Response{}, err
+	}
+	return buildResponseWithAggregatesAndGroups(version, results, request, cursor, budget, aggregates, groups)
 }
 
 func buildResponseWithAggregatesAndGroups(version int64, results []Result, request Request, cursor cursorState, budget *budget, aggregates map[string]any, groups []AggregateGroup) (Response, error) {

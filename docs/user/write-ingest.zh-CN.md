@@ -223,6 +223,12 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
   "batch_id": "aws-batch-001",
   "idempotency_key": "aws-batch-001",
   "cursor": "next-source-cursor",
+  "expected_version": 42,
+  "failure_mode": "best_effort",
+  "preconditions": [
+    {"resource_type": "entity", "id": "host:aws:i-001", "op": "exists"},
+    {"resource_type": "entity", "id": "host:aws:i-001", "field": "state", "op": "eq", "value": "ready"}
+  ],
   "items": [
     {
       "external_id": "i-001",
@@ -235,6 +241,23 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
   ]
 }
 ```
+
+事务选项会针对本次 mutation 使用的图快照进行判断。`expected_version` 是可选的
+租户版本 CAS 保护；`failure_mode` 默认是 `best_effort`，也可以设置为
+`atomic`；atomic 请求在 item 无效、前置条件失败或 source governance 抑制
+mutation 时不会发布任何图版本。`preconditions` 最多 256 条，可对 entity/edge
+做检查。不带 field 时使用 `exists` 或 `not_exists`；带 field 时可用 `eq`、
+`ne`、`lt`、`lte`、`gt`、`gte` 与 JSON `value` 比较。若要将 WAL 接收时间作为
+比较值，可用 `value_from: "accepted_at"` 代替 `value`；`value` 与
+`value_from` 不能同时出现。
+
+direct 模式成功返回 `200`；普通 item 级失败返回 `207`；过期的
+`expected_version` 返回 `409`；前置条件失败返回 `412`；atomic 校验或抑制
+分别返回 `422` 或 `409`。WAL 模式初始响应在本地 durable takeover 后返回
+`202`，上述终态通过状态资源的 `result` 返回（也可以使用
+`Prefer: wait=committed`）。终态结果在适用时包含 `error_code`：
+`version_conflict`、`precondition_failed`、`atomic_validation_failed` 或
+`atomic_suppressed`。
 
 支持的 item：
 
@@ -255,21 +278,32 @@ suppressed conflict 会出现在 commit 和 ingest 响应中，不会进入死�
 - `skip_reason`：`logical_noop` 表示应用后的逻辑图未变化，
   `idempotent_replay` 表示返回此前批次的幂等重放结果；
 - `cursor`：返回的采集器 cursor；
+- `error_code`：版本、前置条件或 atomic 语义拒绝时的终态错误分类；
 - `failures`：item 级错误；
 - `conflicts`：被抑制冲突和提交失败原因。
 
-### 本地 WAL 模式
+### 每个 writer 的 WAL CAS cohort
 
-GGraphDB 1.2 的本地 writer 默认使用 `GRAPHDB_INGEST_MODE=wal`、
-`GRAPHDB_INGEST_METADATA_MODE=segment` 和 sync durability。请求会先追加到
-进程级分段 WAL；不同租户可共享一次 group-fsync，后台默认使用两个 graph
-write worker 并保持同租户 FIFO 顺序；graph flush trigger 为 8 个请求 / 2 MiB，
-忙租户可合并同一轮队列。同一租户的一次 flush 保留每个请求的逻辑 commit 顺序，
+在 `GRAPHDB_COORDINATION=local` 或 `GRAPHDB_COORDINATION=postgres` 下，同一
+writer 的一次 flush 中至少两个非 atomic mutation 请求存在且使用相同的
+`expected_version` 时，这些请求组成 CAS cohort。写入方只针对 flush 开始时的
+共同图快照比较一次该版本和各请求前置条件。每个请求仍保留独立结果；实际发生
+变化的请求按该 writer 的 WAL 顺序获得连续逻辑版本，变化后的 cohort 使用一次
+COW、一个 commit segment 和一个 manifest 候选发布。某个请求的前置条件失败只
+终止该请求；共同 expected version 已过期时，cohort 中每个请求都返回
+`version_conflict`（HTTP `409`），且不发布新的图版本。不同 expected version、
+atomic，或没有 expected version 但带前置条件的请求作为隔离 barrier；barrier
+前后的请求仍可分别形成 cohort 或走普通 fast batch。批量 apply 回退时复用已经
+完成的 cohort 预检，不会针对同一 flush 中此前产生的版本再次逐请求比较。
+
+### 本地 WAL 模式（1.2 兼容 profile）
+
+默认 `GRAPHDB_INGEST_MODE=direct` 保持原来的同步 `200/207` 行为。单 writer、
+`GRAPHDB_COORDINATION=local` 部署可以显式设置
+`GRAPHDB_INGEST_MODE=wal`。该模式会先把请求追加到进程级分段 WAL；不同租户
+可共享一次 group-fsync，而后台默认只使用一个 graph write worker，并保持
+同租户 FIFO 顺序。同一租户的一次 flush 保留每个请求的逻辑 commit 顺序，
 但把这些 commit 写入一个 Parquet commit segment，并只发布一次 manifest。
-
-PostgreSQL coordination 不提供分布式 WAL。PostgreSQL writer 必须显式设置
-`GRAPHDB_INGEST_MODE=direct`，省略时启动会失败关闭。reader 不接收写入，因而
-自动选择 direct 模式。
 
 同步耐久模式在 WAL fsync 后返回 `202 Accepted`、`Location` 和状态 URL：
 
@@ -279,7 +313,7 @@ PostgreSQL coordination 不提供分布式 WAL。PostgreSQL writer 必须显式�
   "state": "accepted",
   "durability": "durable",
   "accepted_at": "2026-07-30T00:00:00Z",
-  "estimated_flush_at": "2026-07-30T00:00:01Z",
+  "estimated_flush_at": "2026-07-30T00:00:10Z",
   "status_url": "/v1/ingest/batches/aws/collector-a/aws-batch-001"
 }
 ```
@@ -291,79 +325,54 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
 ```
 
-WAL 目录属于耐久性边界。容器部署必须把 `GRAPHDB_DATA_DIR` 挂载到持久化
-本地存储；仓库提供的 Compose profile 已为 writer 挂载 `/var/lib/graphdb`。
+在 PostgreSQL-CAS profile 中，acceptance body 会返回稳定 owner；`Location`
+header 和 `status_url` 指向同一个 owner 路由资源：
+
+```http
+HTTP/1.1 202 Accepted
+Location: /v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001
+Content-Type: application/json
+
+{
+  "writer_id": "writer-a",
+  "batch_id": "aws-batch-001",
+  "state": "accepted",
+  "durability": "durable",
+  "accepted_at": "2026-07-30T00:00:00Z",
+  "estimated_flush_at": "2026-07-30T00:00:10Z",
+  "status_url": "/v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001"
+}
+```
+
+轮询返回的资源，直到 `state` 变为 `committed` 或 `failed`。终态 status 会嵌入
+最终结果；`recovery_pending=true` 表示 owner 正在重建 WAL 状态，批次仍可查询：
+
+```json
+{
+  "writer_id": "writer-a",
+  "tenant_id": "demo",
+  "source": "aws",
+  "collector_id": "collector-a",
+  "batch_id": "aws-batch-001",
+  "state": "committed",
+  "durability": "durable",
+  "result": {"batch_id": "aws-batch-001", "version": 43, "applied": 1, "failed": 0}
+}
+```
 
 主要配置：
 
 - `GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest`
-- `GRAPHDB_INGEST_WAL_DURABILITY=sync`
+- `GRAPHDB_INGEST_WAL_DURABILITY=sync|os`（默认 `sync`）
 - `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`
-- `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=3ms`
+- `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`
 - `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`
 - `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`
-- `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
-- `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`
-- `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`
-- `GRAPHDB_INGEST_MAX_PENDING_AGE=2m`
-- `GRAPHDB_INGEST_FLUSH_INTERVAL=250ms`
-- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8`
-- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB`
-- `GRAPHDB_INGEST_FLUSH_WORKERS=2`
-- `GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms`
-- `GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256`
-- `GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB`
-- `GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2`
-- `GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB`
-- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000`
+- `GRAPHDB_INGEST_FLUSH_INTERVAL=10s`
+- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`
+- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`
+- `GRAPHDB_INGEST_FLUSH_WORKERS=1`
 - `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
-
-内存队列达到 80%、WAL 磁盘达到 70%，或最老待提交请求超过 2 分钟时，writer
-返回带 `Retry-After` 的 `429`。WAL 磁盘达到 85% 后 readiness 进入 drain-only，
-直到已提交记录回收。调用方必须在建议延迟后复用原 batch/idempotency identity
-重试。
-
-#### metadata segment 模式（1.1.3+）
-
-1.1.3 在本地 WAL 模式上引入 metadata 攒批；1.2 将其设为本地 writer 默认值：
-
-```ini
-GRAPHDB_INGEST_MODE=wal
-GRAPHDB_COORDINATION=local
-GRAPHDB_INGEST_METADATA_MODE=segment
-GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms
-GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
-GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
-GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2
-```
-
-direct 模式使用 `legacy`，本地 WAL 模式默认使用 `segment`。segment 模式把同一租户跨
-graph flush 的完整请求、结果、摘要和本窗口最终 collector status 写入一个
-内容寻址 Parquet segment，再用一次独立 ingest manifest CAS 发布。batch 和
-idempotency identity 可以同时指向 segment 内同一条记录；正常 256 请求窗口
-不再创建逐请求 batch/idempotency 对象或 collector status 对象。
-
-manifest 直接保存最近 32 个 segment 引用，更早的引用进入分层索引目录；
-每层最多 8 个目录对象。目录合并只重写引用和 Bloom，不重写或删除历史 payload
-segment。点查顺序为活跃 WAL、新 segment/index、旧 batch/idempotency 对象。
-旧历史不迁移也不删除，首次新格式 collector 状态会从旧状态或旧 batch 记录
-初始化累计值。
-
-graph manifest 发布后请求进入 `published`；metadata manifest 发布后才进入
-`committed` 并允许 WAL 回收。`Prefer: wait=committed` 会立即 flush 当前租户
-metadata 窗口，普通 `202` 允许等待阈值或 500 ms 窗口。segment PUT、manifest
-CAS 和 `FINALIZED` 之间崩溃时，WAL 中持久化的 metadata flush ID、LSN 范围
-和内容哈希保证恢复不会重复 graph version、collector totals 或结果。
-
-升级必须分两步：
-
-1. 所有 reader 和 writer 先升级到 1.1.3，继续使用 `legacy`；
-2. 再停止写入、确认没有 1.1.2 writer 后显式切换到 `segment`。
-
-租户一旦存在 segment manifest，1.1.3 legacy writer 会拒绝继续旧格式写入。
-此后不能直接回退到 1.1.2 writer；回退前必须停止写入并用 1.1.3
-legacy-compatible 工具导出或转换。direct 模式、graph commit 格式、逻辑
-version、FIFO、租户隔离和 deadletter 对象布局不变。
 
 WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记录会阻止启动；
 只有最后一个 segment 的不完整尾记录会被截断。已经 durable accepted 的
@@ -372,92 +381,70 @@ WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记�
 graph version。首次遇到历史 loose commit 尾部时会将其并入 segment；该租户
 随后不再承担这次迁移成本。
 
-#### 1.1.4 稀疏多租户运行保障
-
-metadata flush worker 与 graph write worker 独立，默认值为 `2`，500 ms 与
-256 个请求 / 8 MiB 是调度 trigger。数百个以稀疏写入为主的租户可根据对象存储
-p95 延迟和 metadata deadline-overshoot 指标继续调优。同一租户始终最多只有
-一个进行中的 metadata flush，metadata segment
-也绝不跨租户混装；提高 worker 数只改善公平性，不改变顺序或隔离语义。
-
-每租户自动 maintenance 会等待 ingest 空闲满 1 分钟，才运行 compact、GC 或
-索引追赶。后台重型任务默认单并发。
-
-每个 writer 在进程内维护有界 LRU，缓存 ingest metadata manifest、目录和
-不可变 segment：最多 1,024 个对象、64 MiB 计费驻留量。解码后的 segment 按
-编码字节数与每个保留 item 4 KiB 估算值中的较大者计费。manifest 条目 TTL 为
-1 秒，不可变 index 和 segment 条目 TTL 为 15 分钟。同一个对象的并发冷读会合并
-为一次对象存储请求；热查不会再发起 GET。该缓存可随进程丢弃并在重启后重建；
-成功的 metadata manifest CAS 会替换本地 manifest 条目，它不是跨 writer 的
-一致性机制。
-
-WAL prune 推进到已知安全位置时，writer 会在
-`GRAPHDB_INGEST_WAL_DIR` 原子写入 `checkpoint.json`。启动时优先从有效
-checkpoint 恢复，只扫描活跃尾部；缺失、截断或无效 checkpoint 会回退为完整
-WAL 扫描，WAL 本身损坏仍会阻止启动。不要手工修改 checkpoint，也不要脱离
-对应 WAL 目录单独复制或恢复它；它只是恢复加速记录，不能替代 WAL 或对象存储
-备份。
-
-使用 `graphdb_ingest_metadata_deadline_overshoot_seconds`、
-`graphdb_ingest_metadata_cache_total` 和
-`graphdb_ingest_wal_checkpoint_{total,scanned_bytes,duration_seconds}` 分别观察
-worker 饱和、点查压力和恢复成本。JSON 日志新增
-`ingest_wal_checkpoint_written`、`ingest_wal_checkpoint_recovery`；相应结果为
-`used`、`miss`、`fallback`、`written` 或 `error`。
-
-`/metrics` 提供 `graphdb_ingest_wal_*`、`graphdb_ingest_queue_*`、
-`graphdb_ingest_flush_*` 和 `graphdb_ingest_metadata_*` 指标，包括
-append/fsync、WAL 内存与磁盘占用、
+`/metrics` 提供 `graphdb_ingest_wal_*`、`graphdb_ingest_queue_*` 和
+`graphdb_ingest_flush_*` 指标，包括 append/fsync、WAL 内存与磁盘占用、
 written/durable LSN、待处理请求与最老等待时间、状态缓存命中/淘汰、flush
-延迟与请求/commit/segment/manifest 数、metadata 物理 PUT/字节、manifest
-冲突、Bloom 候选、metadata cache 结果、checkpoint 扫描成本、恢复重放字节，
-以及 recovery 结果。这些指标只有
+延迟与请求/commit/segment/manifest 数，以及 recovery 结果。这些指标只有
 固定状态类标签，不包含 tenant、source、collector 或 batch 等高基数标签。
 
-进程日志会输出 `ingest_wal_recovery`、采样后的 `ingest_wal_accepted`
-（首个成功事件及之后每第 1,024 个成功事件）、
-`ingest_flush_started`、`ingest_flush_completed`、
-`ingest_metadata_flush_started`、`ingest_metadata_segment_completed`、
-`ingest_metadata_manifest_published`、WAL rotate/prune/fsync
+进程日志会输出 `ingest_wal_recovery`、`ingest_wal_accepted`、
+`ingest_flush_started`、`ingest_flush_completed`、WAL rotate/prune/fsync
 失败和 shutdown 等 JSON 事件；租户、batch、LSN、flush ID、耗时和错误原因
-留在日志中。队列 gauge 会在首个 accepted、每 128 次 accepted 或 completed
-状态迁移及队列归零时刷新完整快照；事件计数器、trace、失败日志和 WAL 记录不
-采样。成功的 `POST /v1/ingest/batches` 请求日志同样保留首条和每第 1,024 条；
-其他请求日志仍全量。设置 `GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
-write、flush、batch apply、publish、metadata encode/PUT、manifest CAS 和
-Bloom/index lookup 会通过 OTLP/HTTP
+留在日志中。设置 `GRAPHDB_OTLP_ENDPOINT` 后，accept、WAL append/group
+write、flush、batch apply、publish 和 metadata finalize 会通过 OTLP/HTTP
 导出。异步 group write 和 flush 使用 OTel links 关联原请求 span；accepted
 记录还会保存 trace context，因此进程恢复后仍可关联原始写入请求。
 
-#### 1.1.5 WAL 故障处理
+### PostgreSQL-CAS 多 writer WAL（1.3 合同）
 
-瞬态对象存储或 metadata flush 错误会进入重试。重试尚未完成时，readiness
-保持不可用；重试成功后 writer 清除 last error，无需重启即可恢复就绪。这不会
-改变 durable `202` 的契约。
+1.3 profile 把每个 writer 的独立本地 WAL 与 PostgreSQL head CAS 组合起来。
+该能力仍受发行门禁约束；以下内容是合同，不宣称某个构建已经通过多 writer
+或崩溃恢复矩阵。完整协议见
+[1.3 设计文档](../ingest-wal-multiwriter-design.zh-CN.md)。
 
-本地 WAL 的 append、短写、rotate 或 fsync 发生致命错误时，writer 会被 fence。
-新的 ingest append 返回 `503` 和稳定错误码 `ingest_wal_unavailable`
-（`retryable=true`），不会分配新的 LSN；已经 durable accepted 的记录仍以 WAL
-作为恢复事实来源。请保留 WAL 目录，先修复或替换故障存储，确认原因后再重启。
-被 fence 的 writer 不得继续向可能损坏的尾部追加。
+每个 writer 都必须配置 `GRAPHDB_COORDINATION=postgres`、
+`GRAPHDB_WRITER_TOPOLOGY=cas`、`GRAPHDB_INGEST_MODE=wal`、generic S3 兼容
+对象存储和唯一稳定的 `GRAPHDB_INSTANCE_ID`。每个 writer 必须挂载自己的持久
+`GRAPHDB_INGEST_WAL_DIR`；两个 writer 绝不能共享 WAL 目录或卷。PostgreSQL
+schema v5 只保存协调元数据（tenant head/generation、幂等 reservation/result、
+collector state 和 batch metadata），不保存 ingest payload、WAL record、commit
+segment 或图数据。图数据真源仍是对象存储。
 
-v1.1.5 发行门禁使用真实二进制、`GRAPHDB_INGEST_MODE=wal`、
-`GRAPHDB_COORDINATION=local` 和显式 `GRAPHDB_INGEST_METADATA_MODE=segment`
-验证上述行为。提交绑定的证据覆盖 durable accepted 批次跨进程重启和对象存储
-中断；这些模式在该门禁中均为显式配置。
+完成静态校验并在本地 WAL `fsync` 后，writer 可以不等待 PostgreSQL 可达就返回
+`202 Accepted`。响应包含 `writer_id` 和 owner-routed `status_url`。网关必须
+根据稳定实例 ID 把 status URL 路由给 WAL 所有者；该 writer 正在恢复时，状态
+仍须可查询，并可报告 `recovery_pending=true`。`202` 表示 writer 已持久接管，
+不是图版本已经提交。
 
-#### 1.2.0 性能优先默认值
+1.3 owner 路径为：
 
-v1.1.5 到 v1.2.0 是单向数据升级：停止旧 writer，保留 WAL 与对象数据，再
-启动 v1.2.0；v1.2.0 激活 segment metadata 后不要再运行 v1.1.5 writer。
-发行门禁不提供反向兼容。图模型、逻辑 commit/version 顺序、FIFO 语义和对象
-布局保持不变，变化仅限物理攒批和默认运行策略。
+```text
+GET /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}
+```
 
-发行门禁在同一固定 OrbStack 主机上分别运行 v1.1.5、v1.2.0 各 5 次、每次
-30 分钟。v1.2.0 必须达到至少 10,000 committed mutations/s 和 v1.1.5 中位数
-的 1.5 倍；accepted p95/p99 不超过 20/250 ms，committed p95/p99 不超过
-8/15 秒；RSS 不超过 7 GiB 且不超过基线 110%；每 1,000 mutation 的 CPU
-至少下降 25%；吞吐离散不超过 5%；direct 写入与查询回归不超过 10%。
+旧的 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` 状态路径继续
+保留以兼容已有客户端，但 owner-routed URL 不能发送给随机 writer。
+
+WAL flush 按租户组成有界批次。单个 writer 保持本地 WAL FIFO；不同 writer 按
+成功的 PostgreSQL head CAS 排序，不按 HTTP 到达时间排序。CAS、PostgreSQL 和
+对象存储暂时错误都必须可重试：重新加载最新 head、重基、指数退避加抖动，并在
+持续冲突后按请求/cohort barrier 缩小批次前缀。已接收请求不能仅因重试预算耗尽
+而进入终态失败。PostgreSQL head CAS 失败的候选保持不可见，败方 writer 必须
+重新加载新 head；败方 `expected_version` cohort 不与其他 writer 交换或合并
+payload，也不重基到另一个 expected version，若该版本已过期则 cohort 成员全部
+以 `version_conflict` 终止且不发布。确定性的语义错误和生命周期 fencing
+（freeze/delete/restore）可以最终 `failed`；生命周期 fencing 优先于未发布 WAL，
+但不会回滚已经 CAS 发布的版本。
+
+该 profile 支持同一租户 2–8 个并发 writer。这是正确性和可用性边界，吞吐扩展
+目标是跨租户，而不是单热点租户线性提速。PostgreSQL 不可用时不会回退到 local
+coordination。writer 可以继续接收本地已持久的请求，直到 WAL 高水位；达到高水位
+后，在再写入 payload 前拒绝新准入，同时继续排空 WAL 和提供 owner status。
+
+滚动升级先以 direct 模式部署 1.3 二进制并验证现有 v5 协调平面，再逐个 writer
+启用 WAL。降级前先停止新 WAL 准入，等待该 writer 的 WAL 全部 finalized，再切回
+direct；存在 pending WAL 时禁止降级。1.2 direct 与 1.3 WAL 只能在文档化的上线
+顺序和共享对象布局下混跑。
 
 CMDB 采集场景的批次建议：
 

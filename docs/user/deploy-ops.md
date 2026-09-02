@@ -14,13 +14,15 @@ GRAPHDB_MODE=all|writer|reader
 
 `GRAPHDB_COORDINATION=local` is the default and keeps one active writer process
 per tenant. Writer lease and manifest CAS protect against accidental duplicate
-or stale writer processes. `GRAPHDB_COORDINATION=postgres` replaces that
-visibility boundary with PostgreSQL head CAS and supports 2–8 optimistic
-writers per tenant.
+or stale writer processes. `GRAPHDB_COORDINATION=postgres` coordinates the
+tenant head with PostgreSQL CAS and supports 2–8 optimistic writers per tenant.
+PostgreSQL stores coordination metadata only; immutable graph objects and the
+published manifest in object storage remain the graph-data authority.
 
-Readers are independent. In local mode object storage is authoritative; in
-PostgreSQL mode the PG head is authoritative and object storage holds immutable
-graph objects plus the eventual 1.0 manifest mirror.
+Readers are independent and load immutable graph objects from object storage.
+The PostgreSQL head is the coordination CAS record used by writers; it does not
+contain graph data or WAL payloads. The object-store manifest remains the
+reader-visible graph boundary, with the legacy mirror updated as required.
 
 ## Object Storage
 
@@ -76,6 +78,10 @@ Read path:
 - `GRAPHDB_READ_OBJECT_SINGLEFLIGHT=true`
 - `GRAPHDB_PARQUET_DECODE_MAX_CONCURRENT=2`
 - `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB`
+- `GRAPHDB_READER_CACHE_IDLE_TTL=15m`
+- `GRAPHDB_READER_CACHE_LOAD_TIMEOUT=1m`
+- `GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT=4`
+- `GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_READER_CATCHUP_TIMEOUT=2s`
 
 Write path:
@@ -84,27 +90,24 @@ Write path:
 - `GRAPHDB_WRITE_MAX_PER_TENANT=1`
 - `GRAPHDB_WRITE_QUEUE_TIMEOUT=2s`
 - `GRAPHDB_WRITE_EXECUTION_TIMEOUT=90s`
-- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000`
-- `GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB`
+- `GRAPHDB_WRITE_MAX_COMMIT_TAIL=1500`
+- `GRAPHDB_WRITE_CACHE_MAX_BYTES=512MiB`
 - `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB`
 - `GRAPHDB_INDEX_ENTITY_RECORDS=false`
 - `GRAPHDB_INGEST_COLLECTOR_STATUS_MATERIALIZED=true`
-- `GRAPHDB_INGEST_MODE=wal|direct` (`wal` for local writers; PostgreSQL requires explicit `direct`)
-- `GRAPHDB_INGEST_WAL_DURABILITY=sync`
-- `GRAPHDB_INGEST_METADATA_MODE=segment|legacy` (defaults to `segment` with WAL)
-- `GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`
-- `GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`
-- `GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`
-- `GRAPHDB_INGEST_MAX_PENDING_AGE=2m`
-- `GRAPHDB_INGEST_FLUSH_INTERVAL=250ms`
-- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8`
-- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB`
-- `GRAPHDB_INGEST_FLUSH_WORKERS=2`
-- `GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms`
-- `GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256`
-- `GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB`
-- `GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2`
 - `GRAPHDB_COORDINATION=local|postgres`
+- `GRAPHDB_INGEST_MODE=direct|wal`
+- `GRAPHDB_INGEST_WAL_DIR=${GRAPHDB_DATA_DIR}/wal/ingest`
+- `GRAPHDB_INGEST_WAL_DURABILITY=sync|os` (use `sync` for durable acceptance)
+- `GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`
+- `GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`
+- `GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`
+- `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`
+- `GRAPHDB_INGEST_FLUSH_INTERVAL=10s`
+- `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`
+- `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`
+- `GRAPHDB_INGEST_FLUSH_WORKERS=1`
+- `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
 - `GRAPHDB_POSTGRES_DSN=<dsn>`
 - `GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination`
 - `GRAPHDB_COORDINATOR_NAMESPACE=<stable-cluster-id>`
@@ -122,15 +125,61 @@ metadata finalization; manifest publication remains protected by the per-tenant
 single-writer lock in local mode or PG head CAS in PostgreSQL mode. `0` disables
 that admission dimension and should only be used for controlled testing.
 
-Automatic compaction, GC, and index catch-up wait until a tenant has been ingest
-idle for one minute. Heavy background task execution is single-concurrency by
-default; increase concurrency only with an explicit workload-specific review.
-
-PostgreSQL coordination additionally requires `GRAPHDB_INGEST_MODE=direct`, `GRAPHDB_STORAGE=s3`,
+PostgreSQL coordination additionally requires `GRAPHDB_STORAGE=s3`,
 `S3_PROVIDER=generic-s3`, and `GRAPHDB_WRITER_TOPOLOGY=cas`. Run
 `graphdb coordinator migrate` and `graphdb coordinator bootstrap --apply`
 before starting writers. See the release deployment guide for rollout and
 rollback sequencing.
+
+### 1.3 PostgreSQL-CAS WAL profile
+
+The 1.3 WAL profile is enabled only for the coordinated generic-S3 writer
+topology. Every writer must have a unique, stable `GRAPHDB_INSTANCE_ID` and
+its own persistent read-write WAL volume:
+
+```sh
+GRAPHDB_MODE=writer
+GRAPHDB_STORAGE=s3
+S3_PROVIDER=generic-s3
+GRAPHDB_COORDINATION=postgres
+GRAPHDB_WRITER_TOPOLOGY=cas
+GRAPHDB_COORDINATOR_NAMESPACE=production-a
+GRAPHDB_INSTANCE_ID=writer-a
+GRAPHDB_INGEST_MODE=wal
+GRAPHDB_INGEST_WAL_DIR=/var/lib/graphdb/wal/ingest
+GRAPHDB_INGEST_WAL_DURABILITY=sync
+```
+
+Do not share a WAL directory or volume between writers. A durable `202`
+response means that this writer has taken responsibility after local WAL
+`fsync`; it does not wait for PostgreSQL and does not mean that a graph version
+is already committed. The writer returns an owner-routed `status_url` and
+`writer_id`. Route status requests back to that instance, including while it
+reports `recovery_pending` during WAL recovery.
+
+At startup, a WAL writer may enter degraded mode when PostgreSQL or the
+object-store coordination-marker probe fails with a transient unavailable or
+timeout error. After restoring its local owner identity and WAL, it may serve
+owner status and accept durable `202` responses while those dependencies are
+temporarily unreachable. A missing or mismatched required schema or
+coordination marker is not transient: startup must fail closed rather than
+accepting writes against an unverified coordination plane.
+
+WAL flushes form bounded same-tenant batches. A writer preserves its own WAL
+FIFO, while successful PostgreSQL head CAS determines order across writers.
+CAS, temporary PostgreSQL, and temporary object-store failures are retried by
+reloading the newest head, rebasing, and shrinking the batch after repeated
+conflicts; an accepted request is not terminally failed because a retry budget
+was reached. Deterministic semantic errors and lifecycle fencing may finalize
+as `failed`. Freeze/delete/restore fencing wins over unpublished WAL, but never
+rolls back a version already published by CAS.
+
+During a PostgreSQL outage, local durable admission may continue until the WAL
+high-water policy is reached. At that point new ingest is rejected before a
+new payload is written, while owner status and recovery remain available.
+This profile protects against process failure with the original WAL volume; it
+does not protect against permanent loss of that volume. The full contract is
+in [PostgreSQL-CAS Multi-Writer Ingest WAL](../ingest-wal-multiwriter-design.md).
 
 Committed idempotency rows and abandoned pending reservations are retained for
 the configured idempotency window; replay protection is guaranteed only inside
@@ -229,8 +278,10 @@ separation, gateway tenant binding, RBAC, and TLS.
 
 ## Production Operating Rules
 
-- Keep exactly one active writer per tenant in local coordination; scale to
-  2–8 only after PostgreSQL bootstrap and never mix in a 1.0 writer.
+- Keep exactly one active writer per tenant in local coordination. In the 1.3
+  PostgreSQL-CAS profile, 2–8 writers may receive the same tenant; scale is
+  intended across tenants and is not a single-tenant linear-throughput claim.
+  Do not mix an uncoordinated 1.0 writer into the shared prefix.
 - Run multiple readers independently from the same object storage prefix.
 - Use `min_version` for read-after-write flows that need freshness.
 - Watch commit tail and keep auto compact enabled.
@@ -245,3 +296,7 @@ separation, gateway tenant binding, RBAC, and TLS.
 - Retry `429` with the same `batch_id` and `idempotency_key`, plus exponential
   backoff and jitter. A retry of the same source page must not create a new
   idempotency key.
+- Keep `GRAPHDB_INSTANCE_ID` stable across a process restart and remount the
+  original WAL volume. Before downgrading a WAL writer to direct mode, stop new
+  WAL admission and wait for its pending WAL to finalize; pending WAL blocks
+  downgrade.

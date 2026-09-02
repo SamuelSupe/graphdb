@@ -2,16 +2,21 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"path"
 	"strings"
 	"time"
 )
 
 type restoreDrillOwnership struct {
-	taskID  string
-	objects map[string]string
+	taskID      string
+	objectCount int
+	fingerprint string
 }
 
 type restoreDrillClaim struct {
@@ -63,18 +68,19 @@ func (s *TenantStore) claimRestoreDrillTarget(
 			ErrLeaseHeld, tenantID,
 		)
 	}
-	objects, err := s.listRestoreDrillTargetObjects(ctx, tenantID)
+	hasOtherObjects, err := s.restoreDrillTargetObjectMatches(
+		ctx,
+		tenantID,
+		func(object ObjectInfo) bool { return object.Key != s.writerLeaseKey(tenantID) },
+	)
 	if err != nil {
 		return restoreDrillClaim{}, err
 	}
-	leaseKey := s.writerLeaseKey(tenantID)
-	for _, object := range objects {
-		if object.Key != leaseKey {
-			return restoreDrillClaim{}, fmt.Errorf(
-				"%w: restore drill target tenant %q changed while claiming ownership",
-				ErrConflict, tenantID,
-			)
-		}
+	if hasOtherObjects {
+		return restoreDrillClaim{}, fmt.Errorf(
+			"%w: restore drill target tenant %q changed while claiming ownership",
+			ErrConflict, tenantID,
+		)
 	}
 	claim = restoreDrillClaim{fence: writerFenceRef{
 		ownerID: lease.OwnerID,
@@ -85,11 +91,13 @@ func (s *TenantStore) claimRestoreDrillTarget(
 }
 
 func (s *TenantStore) requireEmptyRestoreDrillTarget(ctx context.Context, tenantID string) error {
-	objects, err := s.listRestoreDrillTargetObjects(ctx, tenantID)
+	hasObjects, err := s.restoreDrillTargetObjectMatches(
+		ctx, tenantID, func(ObjectInfo) bool { return true },
+	)
 	if err != nil {
 		return err
 	}
-	if len(objects) != 0 {
+	if hasObjects {
 		return fmt.Errorf("%w: restore drill target tenant %q is not empty", ErrConflict, tenantID)
 	}
 	purged, err := s.tenantPurgeTombstoneExists(ctx, tenantID)
@@ -119,34 +127,47 @@ func (s *TenantStore) captureRestoreDrillOwnership(ctx context.Context, tenantID
 	if task.ID != taskID || task.TenantID != tenantID || task.Type != TaskTypeTenantRestore || task.Status != TaskStatusSucceeded {
 		return restoreDrillOwnership{}, fmt.Errorf("%w: restore drill ownership task mismatch", ErrConflict)
 	}
-	objects, err := s.restoreDrillObjectETags(ctx, tenantID)
+	objectCount, fingerprint, err := s.restoreDrillObjectFingerprint(ctx, tenantID)
 	if err != nil {
 		return restoreDrillOwnership{}, err
 	}
-	return restoreDrillOwnership{taskID: taskID, objects: objects}, nil
+	return restoreDrillOwnership{
+		taskID:      taskID,
+		objectCount: objectCount,
+		fingerprint: fingerprint,
+	}, nil
 }
 
-func (s *TenantStore) cleanupRestoreDrillTarget(ctx context.Context, tenantID string, ownership restoreDrillOwnership) (TenantPurgeReport, error) {
-	unlock := s.lockTenant(tenantID)
+func (s *TenantStore) cleanupOwnedRestoreDrillTarget(
+	ctx context.Context,
+	tenantID string,
+	ownership restoreDrillOwnership,
+	claim restoreDrillClaim,
+	verifyOwnership bool,
+) (TenantPurgeReport, bool, error) {
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return TenantPurgeReport{}, false, err
+	}
 	defer unlock()
+	s.deleteCachedWriterLease(tenantID)
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
-		return TenantPurgeReport{}, err
+		return TenantPurgeReport{}, false, err
 	}
-	current, err := s.captureRestoreDrillOwnership(ctx, tenantID, ownership.taskID)
-	if err != nil {
-		return TenantPurgeReport{}, err
+	if err := s.ensureBoundWriterLease(ctx, tenantID, claim.fence); err != nil {
+		return TenantPurgeReport{}, false, err
 	}
-	if !sameRestoreDrillObjects(ownership.objects, current.objects) {
-		return TenantPurgeReport{}, fmt.Errorf("%w: restore drill target tenant %q changed after restore", ErrConflict, tenantID)
+	if verifyOwnership {
+		current, err := s.captureRestoreDrillOwnership(ctx, tenantID, ownership.taskID)
+		if err != nil {
+			return TenantPurgeReport{}, false, err
+		}
+		if ownership.objectCount != current.objectCount || ownership.fingerprint != current.fingerprint {
+			return TenantPurgeReport{}, false, fmt.Errorf("%w: restore drill target tenant %q changed after restore", ErrConflict, tenantID)
+		}
 	}
-	report, err := s.purgeTenantLocked(ctx, tenantID, true)
-	if err != nil {
-		return report, err
-	}
-	if err := s.clearTenantPurgeTombstone(ctx, tenantID); err != nil {
-		return report, err
-	}
-	return report, nil
+	report, err := s.cleanupClaimedRestoreDrillTargetLocked(ctx, tenantID, claim)
+	return report, true, err
 }
 
 func (s *TenantStore) cleanupClaimedRestoreDrillTarget(
@@ -154,7 +175,10 @@ func (s *TenantStore) cleanupClaimedRestoreDrillTarget(
 	tenantID string,
 	claim restoreDrillClaim,
 ) (TenantPurgeReport, error) {
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return TenantPurgeReport{}, err
+	}
 	defer unlock()
 	s.deleteCachedWriterLease(tenantID)
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
@@ -163,21 +187,51 @@ func (s *TenantStore) cleanupClaimedRestoreDrillTarget(
 	if err := s.ensureBoundWriterLease(ctx, tenantID, claim.fence); err != nil {
 		return TenantPurgeReport{}, err
 	}
-	objects, err := s.listRestoreDrillTargetObjects(ctx, tenantID)
-	if err != nil {
-		return TenantPurgeReport{}, err
-	}
+	return s.cleanupClaimedRestoreDrillTargetLocked(ctx, tenantID, claim)
+}
+
+func (s *TenantStore) cleanupClaimedRestoreDrillTargetLocked(
+	ctx context.Context,
+	tenantID string,
+	claim restoreDrillClaim,
+) (TenantPurgeReport, error) {
 	report := TenantPurgeReport{TenantID: tenantID}
 	leaseKey := s.writerLeaseKey(tenantID)
-	for _, object := range objects {
-		if object.Key == leaseKey {
-			continue
+	prefix := s.tenantObjectPrefix(tenantID)
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.ClearPrefix(prefix)
+	}
+	err := scanObjectPrefixFresh(ctx, s.Objects, prefix, func(objects []ObjectInfo) error {
+		if err := s.ensureBoundWriterLease(ctx, tenantID, claim.fence); err != nil {
+			return err
 		}
-		if err := s.Objects.Delete(ctx, object.Key); err != nil {
-			return report, err
+		filtered := objects[:0]
+		for _, object := range objects {
+			if object.Key != leaseKey {
+				filtered = append(filtered, object)
+			}
 		}
-		report.Deleted++
-		report.DeletedKeys = append(report.DeletedKeys, object.Key)
+		deletedKeys, err := s.deleteTenantPurgePage(ctx, tenantID, filtered, 0)
+		report.Deleted += len(deletedKeys)
+		report.recordDeletedKeys(deletedKeys)
+		return err
+	})
+	if err != nil {
+		return report, err
+	}
+	residual, err := s.restoreDrillTargetObjectMatches(
+		ctx,
+		tenantID,
+		func(object ObjectInfo) bool { return object.Key != leaseKey },
+	)
+	if err != nil {
+		return report, err
+	}
+	if residual {
+		return report, fmt.Errorf(
+			"%w: restore drill target tenant %q changed during cleanup",
+			ErrConflict, tenantID,
+		)
 	}
 	if err := s.removeTenantFromRegistry(ctx, tenantID); err != nil {
 		return report, err
@@ -198,50 +252,63 @@ func (s *TenantStore) cleanupClaimedRestoreDrillTarget(
 	return report, nil
 }
 
-func (s *TenantStore) restoreDrillObjectETags(ctx context.Context, tenantID string) (map[string]string, error) {
-	objects, err := s.listRestoreDrillTargetObjects(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	prefix := s.tenantObjectPrefix(tenantID)
-	out := make(map[string]string, len(objects))
-	for _, object := range objects {
-		relative := strings.TrimPrefix(object.Key, prefix)
-		if strings.HasPrefix(relative, "control/") {
-			continue
-		}
-		etag := object.ETag
-		if etag == "" {
-			_, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
-			if errors.Is(err, ErrNotFound) {
-				return nil, fmt.Errorf("%w: restore drill object %q disappeared", ErrConflict, object.Key)
-			}
-			if err != nil {
-				return nil, err
-			}
-			etag = meta.ETag
-		}
-		out[object.Key] = etag
-	}
-	return out, nil
-}
-
-func (s *TenantStore) listRestoreDrillTargetObjects(ctx context.Context, tenantID string) ([]ObjectInfo, error) {
+func (s *TenantStore) restoreDrillObjectFingerprint(ctx context.Context, tenantID string) (int, string, error) {
 	prefix := s.tenantObjectPrefix(tenantID)
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {
 		cache.ClearPrefix(prefix)
 	}
-	return s.Objects.List(ctx, prefix)
+	digest := sha256.New()
+	count := 0
+	err := scanObjectPrefixFresh(ctx, s.Objects, prefix, func(objects []ObjectInfo) error {
+		for _, object := range objects {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			relative := strings.TrimPrefix(object.Key, prefix)
+			if strings.HasPrefix(relative, "control/") {
+				continue
+			}
+			etag := object.ETag
+			if etag == "" {
+				_, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
+				if errors.Is(err, ErrNotFound) {
+					return fmt.Errorf("%w: restore drill object %q disappeared", ErrConflict, object.Key)
+				}
+				if err != nil {
+					return err
+				}
+				etag = meta.ETag
+			}
+			if etag == "" {
+				return fmt.Errorf("%w: restore drill object %q has no ETag", ErrObjectStoreUnavailable, object.Key)
+			}
+			writeRestoreDrillFingerprintValue(digest, object.Key)
+			writeRestoreDrillFingerprintValue(digest, etag)
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	return count, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-func sameRestoreDrillObjects(expected map[string]string, current map[string]string) bool {
-	if len(expected) != len(current) {
-		return false
+func (s *TenantStore) restoreDrillTargetObjectMatches(
+	ctx context.Context,
+	tenantID string,
+	match func(ObjectInfo) bool,
+) (bool, error) {
+	prefix := s.tenantObjectPrefix(tenantID)
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.ClearPrefix(prefix)
 	}
-	for key, etag := range expected {
-		if current[key] != etag {
-			return false
-		}
-	}
-	return true
+	return objectPrefixMatches(ctx, s.Objects, prefix, match)
+}
+
+func writeRestoreDrillFingerprintValue(digest hash.Hash, value string) {
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+	_, _ = digest.Write(size[:])
+	_, _ = digest.Write([]byte(value))
 }

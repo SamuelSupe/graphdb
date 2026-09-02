@@ -37,9 +37,9 @@ Full contract: [../error_codes.md](../error_codes.md).
 | `quota_exceeded` | Tenant quota would be exceeded | Raise quota or delete data. |
 | `idempotency_conflict` | Same key, different payload | Use a new key or resend exact original body. |
 | `idempotency_in_progress` | Another writer owns the same key | Retry the exact request with the same key after backoff. |
-| `write_conflict` | PG head changed through the retry budget | Retry with the same idempotency key; inspect CAS conflict rate if sustained. |
+| `write_conflict` | Direct/preconditioned write observed a changed PG head | For a 1.3 WAL-accepted batch this is an internal retry condition, not a terminal result; inspect owner status and keep the same idempotency key. For direct writes, reload the head and resolve the precondition. |
 | `version_conflict` | `expected_version` no longer matches | Reload the head and resolve the caller's precondition; do not blind-retry. |
-| `coordinator_unavailable` | PostgreSQL coordinator unavailable | Restore PG connectivity; writes never fall back to local mode. |
+| `coordinator_unavailable` | PostgreSQL coordinator unavailable | Restore PG connectivity for direct/synchronous writes; they never fall back to local mode. A 1.3 WAL-accepted batch remains with its owner and continues retrying until the coordinator recovers or the WAL high-water policy blocks new admission. |
 | `lease_held` | Duplicate/stale local writer protection | Ensure only one local-coordination writer per tenant. |
 | `index_stale` | Index missing/stale | Rebuild indexes or allow fallback where supported. |
 | `repair_required` | Integrity issue blocks operation | Run audit and repair. |
@@ -52,6 +52,14 @@ GGraphDB uses 429 for admission and backpressure. Clients should:
 2. Retry with the same `idempotency_key`.
 3. Apply source-side concurrency backoff if repeated.
 4. Alert if the same reason remains for multiple retry windows.
+
+In 1.3 PostgreSQL-CAS WAL mode, a temporary PostgreSQL or object-store outage
+does not make an already accepted batch failed. The owning writer retries with
+the newest head, rebases, and shrinks the batch after repeated CAS conflicts.
+If the local WAL high-water policy is reached, new admission is rejected before
+the payload is written; query the owner-routed `status_url` for existing
+records. A `recovery_pending` status means the owner is rebuilding its WAL
+state, not that the batch is missing.
 
 Example body:
 

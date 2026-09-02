@@ -75,6 +75,9 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 			return result, nil
 		}
 	}
+	if options.SkipGraphFallback {
+		return EdgeScanResult{}, ErrGraphScanFallbackRequired
+	}
 	minVersion := manifestVersion
 	if options.MinVersion > minVersion {
 		minVersion = options.MinVersion
@@ -83,8 +86,7 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 	if err != nil {
 		return EdgeScanResult{}, err
 	}
-	edges, next := pageEdgeMap(g.Edges, loaded.Version, options, cursor)
-	return EdgeScanResult{TenantID: tenantID, Version: loaded.Version, Edges: edges, NextCursor: next}, nil
+	return ListEdgesFromGraph(ctx, tenantID, g, loaded, options)
 }
 
 func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, version int64, catalog IndexCatalog, options EdgeScanOptions, cursor scanCursor) (EdgeScanResult, bool, error) {

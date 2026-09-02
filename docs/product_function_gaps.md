@@ -1,11 +1,11 @@
-# GGraphDB 1.1 产品成熟度与剩余缺口
+# GGraphDB 1.3 产品成熟度与剩余缺口
 
 本文以通用当前态属性知识图谱产品为边界。CMDB 是重点 profile，但数据模型、
-查询和存储不绑定 CMDB；RDF/OWL 导入与规则推理不在 1.1 承诺中。
+查询和存储不绑定 CMDB；RDF/OWL 导入与规则推理不在 1.3 承诺中。
 
 ## 当前定位
 
-GGraphDB 1.1 已具备 GA 所需的核心闭环：
+GGraphDB 1.3 已具备可部署的核心闭环：
 
 - 通用 EntityType/RelationType、labels、关系属性 schema，以及 1.0
   CIType 和 layout version 2 兼容；
@@ -18,7 +18,13 @@ GGraphDB 1.1 已具备 GA 所需的核心闭环：
   bucket/prefix migration；
 - integrity audit、repair dry-run/apply、compact、GC、统一 task；
 - local 单 writer 与 PostgreSQL CAS 2–8 writer 两种协调模式；
-- 真实 1.0/1.1 双向二进制兼容门禁、结构化错误码、OpenAPI 和双 SDK。
+- 真实 1.0/1.1 双向二进制兼容门禁、结构化错误码、OpenAPI，以及与 1.3
+  写入合同对齐的 Go/Python SDK。
+
+Go/Python SDK 的 1.3 合同包括 direct `200/207` 结果、WAL durable `202`
+acceptance、`Location`/owner status、poll/wait，以及 ingest 的
+`expected_version`、`failure_mode` 和 `preconditions` 字段。GraphQL 公开合同
+只保留 `graph` 查询根；检索增强扩展不属于当前产品能力。
 
 这意味着产品已经越过 demo 和“只有内核”的阶段；GA tag 仍必须由发行证据
 认证，不能仅凭功能数量判定。
@@ -43,7 +49,7 @@ GGraphDB 1.1 已具备 GA 所需的核心闭环：
 
 ### 3. 目标数据规模容量证据
 
-1.1 发布门禁认证并发提交，不等于认证任意实体/边规模。每个部署目标还要
+1.3 发布门禁认证并发提交，不等于认证任意实体/边规模。每个部署目标还要
 在等价字段宽度、关系密度、索引和查询混合下运行 capacity baseline，并记录
 内存高水位、对象数量/字节、p95/p99 与 compact/restore 时间。
 
@@ -80,7 +86,7 @@ GGraphDB 1.1 已具备 GA 所需的核心闭环：
 - PostgreSQL coordination schema 与对象存储的一致备份编排；
 - 定期自动恢复演练和证据归档。
 
-## 不应误解为 1.1 已支持
+## 不应误解为 1.3 已支持
 
 - RDF/JSON-LD/Turtle/OWL 原生导入；
 - RDFS/OWL 规则推理、本体一致性校验；
@@ -93,6 +99,6 @@ GGraphDB 1.1 已具备 GA 所需的核心闭环：
 
 ## 结论
 
-1.1 的正确下一步是把已实现能力变成可重复发布、可安全部署、可量化容量的
+1.3 的正确下一步是把已实现能力变成可重复发布、可安全部署、可量化容量的
 产品，而不是继续横向堆查询语法。GA 判定应由 release gate、安全验收和目标
 规模报告共同决定。

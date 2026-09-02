@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	defaultIndexCacheMaxBytes     = 512 << 20
-	defaultIndexDiskCacheMaxBytes = 4 << 30
-	defaultIndexDiskCacheTTL      = 7 * 24 * time.Hour
-	defaultIndexRevalidateTTL     = 30 * time.Second
-	maxIndexObjectPrefetches      = 16
+	defaultIndexCacheMaxBytes         = 512 << 20
+	defaultIndexDiskCacheMaxBytes     = 4 << 30
+	defaultIndexDiskCacheTTL          = 7 * 24 * time.Hour
+	defaultIndexRevalidateTTL         = 30 * time.Second
+	defaultIndexObjectPrefetchTimeout = 30 * time.Second
+	maxIndexObjectPrefetches          = 16
 )
 
 type IndexObjectCacheConfig struct {
@@ -156,8 +157,8 @@ func cacheStatus(ok bool, err error) string {
 }
 
 func (s *TenantStore) recordIndexCache(tenantID string, kind string, status string) {
-	if s.CacheObserver != nil {
-		s.CacheObserver.RecordReaderCache(tenantID, kind+"_"+status)
+	if s.cacheObserver != nil {
+		s.cacheObserver.RecordReaderCache(tenantID, kind+"_"+status)
 	}
 }
 
@@ -209,7 +210,17 @@ func (s *TenantStore) prefetchIndexObject(ctx context.Context, kind string, tena
 	}
 	go func() {
 		defer s.indexCache.finishPrefetch(cacheKey)
-		data, meta, err := s.Objects.GetWithMeta(context.WithoutCancel(ctx), objectKey)
+		parent := ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		timeout := s.IndexPrefetchTimeout
+		if timeout <= 0 {
+			timeout = defaultIndexObjectPrefetchTimeout
+		}
+		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), timeout)
+		defer cancel()
+		data, meta, err := s.Objects.GetWithMeta(loadCtx, objectKey)
 		if err == nil {
 			s.indexCache.put(cacheKey, cachedIndexObject{data: data, meta: meta, validatedAt: time.Now()})
 		}

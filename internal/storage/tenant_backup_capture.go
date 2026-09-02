@@ -13,7 +13,10 @@ func (s *TenantStore) captureTenantBackup(
 	if s.coordinated() {
 		return s.captureCoordinatedTenantBackup(ctx, tenantID)
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	if err != nil {
+		return loadedGraph{}, TenantBackupRecord{}, "", err
+	}
 	defer unlock()
 	loaded, err := s.loadWithMeta(ctx, tenantID)
 	if err != nil {

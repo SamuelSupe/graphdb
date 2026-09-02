@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -29,7 +31,7 @@ func (s *Server) listEntities(w http.ResponseWriter, r *http.Request) {
 	if enforceTarget {
 		options.MinVersion = target.TargetVersion
 	}
-	result, err := s.Store.ListEntities(r.Context(), tenantID, options)
+	result, err := s.listEntitiesPage(r.Context(), tenantID, options)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -73,7 +75,7 @@ func (s *Server) streamEntities(w http.ResponseWriter, r *http.Request) {
 		options.MinVersion = 0
 	}
 	options.Limit = scanStreamPageSize
-	result, err := s.Store.ListEntities(r.Context(), tenantID, options)
+	result, err := s.listEntitiesPage(r.Context(), tenantID, options)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -104,7 +106,7 @@ func (s *Server) streamEntities(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		options.Cursor = result.NextCursor
-		result, err = s.Store.ListEntities(r.Context(), tenantID, options)
+		result, err = s.listEntitiesPage(r.Context(), tenantID, options)
 		if err != nil {
 			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
 			return
@@ -168,7 +170,7 @@ func (s *Server) listEdges(w http.ResponseWriter, r *http.Request) {
 	if enforceTarget {
 		options.MinVersion = target.TargetVersion
 	}
-	result, err := s.Store.ListEdges(r.Context(), tenantID, options)
+	result, err := s.listEdgesPage(r.Context(), tenantID, options)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -212,7 +214,7 @@ func (s *Server) streamEdges(w http.ResponseWriter, r *http.Request) {
 		options.MinVersion = 0
 	}
 	options.Limit = scanStreamPageSize
-	result, err := s.Store.ListEdges(r.Context(), tenantID, options)
+	result, err := s.listEdgesPage(r.Context(), tenantID, options)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -243,7 +245,7 @@ func (s *Server) streamEdges(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		options.Cursor = result.NextCursor
-		result, err = s.Store.ListEdges(r.Context(), tenantID, options)
+		result, err = s.listEdgesPage(r.Context(), tenantID, options)
 		if err != nil {
 			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
 			return
@@ -285,6 +287,34 @@ func (s *Server) streamEdgesFromCatalog(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
+}
+
+func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options storage.EntityScanOptions) (storage.EntityScanResult, error) {
+	indexedOptions := options
+	indexedOptions.SkipGraphFallback = s.Cache != nil
+	result, err := s.Store.ListEntities(ctx, tenantID, indexedOptions)
+	if !errors.Is(err, storage.ErrGraphScanFallbackRequired) || s.Cache == nil {
+		return result, err
+	}
+	err = s.withReadOnlyGraphForRead(ctx, tenantID, readTarget{TargetVersion: options.MinVersion}, func(g *graph.Graph, manifest storage.Manifest) error {
+		result, err = storage.ListEntitiesFromGraph(ctx, tenantID, g, manifest, options)
+		return err
+	})
+	return result, err
+}
+
+func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options storage.EdgeScanOptions) (storage.EdgeScanResult, error) {
+	indexedOptions := options
+	indexedOptions.SkipGraphFallback = s.Cache != nil
+	result, err := s.Store.ListEdges(ctx, tenantID, indexedOptions)
+	if !errors.Is(err, storage.ErrGraphScanFallbackRequired) || s.Cache == nil {
+		return result, err
+	}
+	err = s.withReadOnlyGraphForRead(ctx, tenantID, readTarget{TargetVersion: options.MinVersion}, func(g *graph.Graph, manifest storage.Manifest) error {
+		result, err = storage.ListEdgesFromGraph(ctx, tenantID, g, manifest, options)
+		return err
+	})
+	return result, err
 }
 
 func (s *Server) exportSnapshot(w http.ResponseWriter, r *http.Request) {

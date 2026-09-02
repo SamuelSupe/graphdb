@@ -52,6 +52,20 @@ func TestBoundedResultsMatchesFullSort(t *testing.T) {
 					t.Fatalf("result[%d] = %s, want %s", i, resultIdentity(actual[i]), resultIdentity(expected[i]))
 				}
 			}
+
+			boundedEntities := newBoundedEntities(test.specs, test.keep)
+			for _, entity := range entities {
+				boundedEntities.Add(entity)
+			}
+			actualEntities := boundedEntities.Sorted()
+			if len(actualEntities) != len(expected) {
+				t.Fatalf("len(entity results) = %d, want %d", len(actualEntities), len(expected))
+			}
+			for i := range expected {
+				if actualEntities[i].ID != expected[i].Entity.ID {
+					t.Fatalf("entity[%d] = %s, want %s", i, actualEntities[i].ID, expected[i].Entity.ID)
+				}
+			}
 		})
 	}
 }

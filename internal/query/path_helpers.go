@@ -64,7 +64,7 @@ func pathStepsMatch(path graph.Path, filter PathFilter, final bool) bool {
 			return !final
 		}
 		step := filter.Steps[i]
-		if !relationAllowed(edge.Type, stringSet(step.RelationTypes)) {
+		if !stringSliceAllows(edge.Type, step.RelationTypes) {
 			return false
 		}
 		if !edgeMatches(edge, step.EdgeWhere) || !edgeExprMatches(edge, step.EdgeWhereExpr) {
@@ -74,7 +74,7 @@ func pathStepsMatch(path graph.Path, filter PathFilter, final bool) bool {
 			return false
 		}
 		entity := path.Entities[i+1]
-		if len(step.NodeKinds) > 0 && !stringAllowed(entity.Kind, stringSet(step.NodeKinds)) {
+		if !stringSliceAllows(entity.Kind, step.NodeKinds) {
 			return false
 		}
 		if len(step.Where) > 0 && !entityMatches(entity, step.Where) {
@@ -109,6 +109,18 @@ func stringAllowed(value string, allowed map[string]struct{}) bool {
 	}
 	_, ok := allowed[value]
 	return ok
+}
+
+func stringSliceAllows(value string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func pathAllowsKind(kind string, filter PathFilter) bool {

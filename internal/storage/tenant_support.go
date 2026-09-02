@@ -271,34 +271,29 @@ func (s *TenantStore) ingestIdempotencyKey(tenantID string, source string, colle
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "idempotency", objectSegment(collectorID), objectSegment(idempotencyKey)+".parquet")
 }
 
+func (s *TenantStore) ingestAttemptFailureKey(tenantID string, ownerID string, source string, collectorID string, batchID string) string {
+	if strings.TrimSpace(ownerID) == "" {
+		ownerID = "local"
+	}
+	return path.Join(
+		s.Prefix,
+		"tenants",
+		tenantID,
+		"ingest",
+		objectSegment(source),
+		"attempt-failures",
+		objectSegment(ownerID),
+		objectSegment(collectorID),
+		objectSegment(batchID)+".parquet",
+	)
+}
+
 func (s *TenantStore) legacyIngestIdempotencyKey(tenantID string, source string, idempotencyKey string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "idempotency", objectSegment(idempotencyKey)+".parquet")
 }
 
 func (s *TenantStore) collectorStatusKey(tenantID string, source string, collectorID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "collectors", objectSegment(collectorID)+".parquet")
-}
-
-func (s *TenantStore) ingestMetadataManifestKey(tenantID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", "metadata", "manifest.parquet")
-}
-
-func (s *TenantStore) ingestMetadataSegmentKey(tenantID string, firstLSN uint64, lastLSN uint64, contentHash string) string {
-	hash := contentHash
-	if len(hash) > 16 {
-		hash = hash[:16]
-	}
-	name := fmt.Sprintf("%020d-%020d-%s.parquet", firstLSN, lastLSN, hash)
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", "metadata", "segments", name)
-}
-
-func (s *TenantStore) ingestMetadataIndexKey(tenantID string, level int, firstLSN uint64, lastLSN uint64, contentHash string) string {
-	hash := contentHash
-	if len(hash) > 16 {
-		hash = hash[:16]
-	}
-	name := fmt.Sprintf("%020d-%020d-%s.parquet", firstLSN, lastLSN, hash)
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", "metadata", "index", fmt.Sprintf("l%d", level), name)
 }
 
 func (s *TenantStore) deadLetterPrefix(tenantID string, source string) string {
@@ -334,6 +329,75 @@ func (s *TenantStore) indexCatalogVersionHashKey(tenantID string, version int64,
 
 func (s *TenantStore) indexDefinitionsKey(tenantID string) string {
 	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "definitions.parquet")
+}
+
+func (s *TenantStore) retrievalExtensionPrefix(tenantID string) string {
+	return path.Join(
+		s.Prefix,
+		"tenants",
+		tenantID,
+		"extensions",
+		"v1.2",
+		"retrieval",
+	)
+}
+
+func (s *TenantStore) retrievalDefinitionsKey(tenantID string) string {
+	return path.Join(s.retrievalExtensionPrefix(tenantID), "definitions.parquet")
+}
+
+func (s *TenantStore) retrievalHeadKey(tenantID string) string {
+	return path.Join(s.retrievalExtensionPrefix(tenantID), "head.parquet")
+}
+
+func (s *TenantStore) retrievalCatalogKey(
+	tenantID string,
+	revision int64,
+	graphVersion int64,
+	hash string,
+) string {
+	if len(hash) > 16 {
+		hash = hash[:16]
+	}
+	name := fmt.Sprintf(
+		"r%020d-v%020d-%s.parquet",
+		revision,
+		graphVersion,
+		hash,
+	)
+	return path.Join(
+		s.retrievalExtensionPrefix(tenantID),
+		"catalogs",
+		name,
+	)
+}
+
+func (s *TenantStore) retrievalGenerationPrefix(
+	tenantID string,
+	generation string,
+	graphVersion int64,
+) string {
+	return path.Join(
+		s.retrievalExtensionPrefix(tenantID),
+		"generations",
+		objectSegment(generation),
+		"versions",
+		"v"+strconv.FormatInt(graphVersion, 10),
+	)
+}
+
+func (s *TenantStore) retrievalSegmentKey(
+	tenantID string,
+	generation string,
+	graphVersion int64,
+	kind string,
+	shard string,
+) string {
+	return path.Join(
+		s.retrievalGenerationPrefix(tenantID, generation, graphVersion),
+		objectSegment(kind),
+		objectSegment(shard)+".parquet",
+	)
 }
 
 func (s *TenantStore) indexTaskKey(tenantID string, taskID string) string {

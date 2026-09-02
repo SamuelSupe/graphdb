@@ -6,6 +6,11 @@ GGraphDB provides lightweight Go and Python SDKs over the HTTP API. They do not
 import service `internal` packages and are safe to vendor into collectors,
 internal services, and operations tools.
 
+The 1.3 SDKs expose the current ingest contract. Both preserve direct-mode
+terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
+owner status resource, polling/waiting, and ingest CAS/conditional/atomic
+options. The Go and Python SDK package versions are `1.3.1`.
+
 SDK scope:
 
 - tenant lifecycle basics.
@@ -87,10 +92,23 @@ _, err = writer.Commit(ctx, graphdb.Mutations{
 
 ### Go: Ingestion
 
+`Ingest` is the compatibility convenience call: it sends `Prefer:
+wait=committed` and returns the terminal `IngestResult`, whether the server
+completed the request directly or first returned a WAL `202`. Include the
+transactional options in the request when a collector needs a version guard,
+conditional mutation, or all-or-nothing behavior:
+
 ```go
-result, err := writer.Ingest(ctx, graphdb.IngestRequest{
+expectedVersion := int64(42)
+request := graphdb.IngestRequest{
     Source: "aws", CollectorID: "collector-a",
     BatchID: "aws-001", IdempotencyKey: "aws-001", Cursor: "cursor-002",
+    ExpectedVersion: &expectedVersion,
+    FailureMode: "best_effort",
+    Preconditions: []graphdb.IngestPrecondition{
+        {ResourceType: "entity", ID: "host:aws:i-001", Op: "exists"},
+        {ResourceType: "entity", ID: "host:aws:i-001", Field: "state", Op: "eq", Value: "ready"},
+    },
     Items: []graphdb.IngestItem{{
         ExternalID: "i-001",
         Entity: &graphdb.Entity{
@@ -98,14 +116,47 @@ result, err := writer.Ingest(ctx, graphdb.IngestRequest{
             Fields: graphdb.Fields{"hostname": "app-01"},
         },
     }},
-})
+}
+result, err := writer.Ingest(ctx, request)
+if err != nil {
+    return err
+}
+fmt.Println(result.Version, result.ErrorCode, result.Applied, result.Failed)
 ```
 
-`Ingest` sends `Prefer: wait=committed` and returns the query-visible result.
-For the performance-first asynchronous path, call `AcceptIngest`, retain its
-`StatusURL`, and poll `GetIngestBatchStatus` until `State == "committed"`.
+For non-blocking WAL admission, use `SubmitIngest` and retain the returned
+owner URL. Direct mode places the terminal result in `Result` with status
+`200` or `207`; WAL mode places the durable acceptance in `Accepted` with
+status `202`. `SubmitIngest` reads `status_url` and falls back to the HTTP
+`Location` header, so callers can route status requests to the owning writer:
 
-### Go: 1.1 Schema And File Import
+```go
+submission, err := writer.SubmitIngest(ctx, request)
+if err != nil {
+    return err
+}
+if submission.StatusCode == 202 {
+    accepted := submission.Accepted
+    status, err := writer.WaitIngest(ctx, accepted.StatusURL, &graphdb.IngestWaitOptions{
+        PollInterval: 250 * time.Millisecond,
+    })
+    if err != nil {
+        return err
+    }
+    fmt.Println(status.State, status.Result.Version)
+} else {
+    fmt.Println(submission.StatusCode, submission.Result.Version)
+}
+```
+
+`GetIngestStatus` performs one status read when a caller wants to own the poll
+loop. Terminal states are `committed` and `failed`; intermediate states include
+`accepted`, `prepared`, `published`, and `retrying`. A `202` means durable
+takeover by the writer, not a committed graph version. Terminal conditional
+failures are represented by `IngestResult.ErrorCode` (`version_conflict`,
+`precondition_failed`, `atomic_validation_failed`, or `atomic_suppressed`).
+
+### Go: Schema And File Import (1.1-compatible)
 
 ```go
 catalog, err := writer.PutRelationSchema(ctx, graphdb.RelationSchema{
@@ -230,12 +281,18 @@ print(result["version"], result.get("skipped"))
 ### Python: Ingestion
 
 ```python
-result = writer.ingest({
+batch = {
     "source": "aws",
     "collector_id": "collector-a",
     "batch_id": "aws-001",
     "idempotency_key": "aws-001",
     "cursor": "cursor-002",
+    "expected_version": 42,
+    "failure_mode": "best_effort",
+    "preconditions": [
+        {"resource_type": "entity", "id": "host:aws:i-001", "op": "exists"},
+        {"resource_type": "entity", "id": "host:aws:i-001", "field": "state", "op": "eq", "value": "ready"},
+    ],
     "items": [
         {
             "external_id": "i-001",
@@ -246,13 +303,21 @@ result = writer.ingest({
             },
         }
     ],
-})
+}
+result = writer.ingest(batch)
+print(result["version"], result.get("error_code"), result["applied"], result["failed"])
 ```
 
-`ingest()` waits for `committed`. Use `accept_ingest()` and then poll
-`get_ingest_batch_status()` for the default asynchronous WAL path.
+`ingest` is the blocking compatibility convenience call and waits for the
+terminal result when the server initially acknowledges a WAL request with
+`202`. For explicit admission and polling, use `submit_ingest`, retain the
+returned `status_url`/owner information, and call `get_ingest_status` or
+`wait_ingest`. Direct mode returns the terminal result with HTTP `200` or
+`207`; WAL mode returns an acceptance with HTTP `202`. A terminal response may
+contain `error_code` values `version_conflict`, `precondition_failed`,
+`atomic_validation_failed`, or `atomic_suppressed`.
 
-### Python: 1.1 Schema And File Import
+### Python: Schema And File Import (1.1-compatible)
 
 ```python
 catalog = writer.put_relation_schema("cites", {
@@ -404,6 +469,8 @@ For writes and ingestion:
 
 - Always set `idempotency_key`.
 - On `429`, honor SDK retry hints and retry the same payload with the same key.
+- Treat a WAL `202` as durable takeover only; poll the owner-routed status URL
+  (or use the blocking ingest helper) before treating the mutation as committed.
 - On `idempotency_conflict`, do not retry with the same key unless the payload
   is exactly the original payload.
 - Suppressed source-priority conflicts are returned in the successful response;

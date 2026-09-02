@@ -2,15 +2,20 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
 
 const (
-	defaultTaskExecutionLimit = 1
+	defaultTaskExecutionLimit = 4
 	defaultTaskQueueLimit     = 128
 	defaultTaskTenantStripes  = 64
 )
+
+var ErrMaintenanceBusy = errors.New("maintenance execution capacity is busy")
+
+var ErrTaskServiceClosed = errors.New("task service is shutting down")
 
 func newTaskTenantSlots(count int) []chan struct{} {
 	if count < 1 {
@@ -27,9 +32,38 @@ func taskActiveKey(tenantID string, taskType string) string {
 	return tenantID + "\x00" + taskType
 }
 
+// TryAcquireMaintenance shares the bounded task execution pool with
+// synchronous maintenance endpoints. It deliberately does not use the writer
+// admission lock because compaction performs most work against immutable state
+// and should not block foreground commits for its entire duration.
+func (s *TenantStore) TryAcquireMaintenance(tenantID string) (func(), error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return nil, err
+	}
+	tenantSlot := s.taskTenantSlot(tenantID)
+	select {
+	case tenantSlot <- struct{}{}:
+	default:
+		return nil, ErrMaintenanceBusy
+	}
+	select {
+	case s.taskExecutionSlots <- struct{}{}:
+		return func() {
+			releaseTaskSlot(s.taskExecutionSlots)
+			releaseTaskSlot(tenantSlot)
+		}, nil
+	default:
+		releaseTaskSlot(tenantSlot)
+		return nil, ErrMaintenanceBusy
+	}
+}
+
 func (s *TenantStore) admitTask(task Task) (Task, bool, error) {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
+	if s.taskClosing {
+		return Task{}, false, ErrTaskServiceClosed
+	}
 	key := taskActiveKey(task.TenantID, task.Type)
 	if active, ok := s.taskActive[key]; ok {
 		return active, true, nil
@@ -37,6 +71,7 @@ func (s *TenantStore) admitTask(task Task) (Task, bool, error) {
 	select {
 	case s.taskQueueSlots <- struct{}{}:
 		s.taskActive[key] = task
+		s.taskWorkers.Add(1)
 		return Task{}, false, nil
 	default:
 		return Task{}, false, fmt.Errorf("task queue is full")
@@ -75,7 +110,8 @@ func (s *TenantStore) runTaskAdmitted(ctx context.Context, cancel context.Cancel
 }
 
 func (s *TenantStore) persistQueuedTaskCancellation(ctx context.Context, task Task) {
-	writeCtx := context.WithoutCancel(ctx)
+	writeCtx, cancel := s.taskFinalizationContext(ctx)
+	defer cancel()
 	current := s.taskStateOrLocal(writeCtx, task)
 	if taskTerminal(current.Status) {
 		return
@@ -95,6 +131,21 @@ func (s *TenantStore) reserveQueuedTask() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *TenantStore) admitIndexTaskWorker() error {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	if s.taskClosing {
+		return ErrTaskServiceClosed
+	}
+	select {
+	case s.taskQueueSlots <- struct{}{}:
+		s.taskWorkers.Add(1)
+		return nil
+	default:
+		return fmt.Errorf("task queue is full")
 	}
 }
 

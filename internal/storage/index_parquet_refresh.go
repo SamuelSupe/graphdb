@@ -8,12 +8,8 @@ import (
 )
 
 func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tenantID string, previous IndexCatalog, previousMeta ObjectMeta, before *graph.Graph, g *graph.Graph, report graph.ApplyReport, version int64) error {
-	if before == nil || previous.Version != before.Version {
-		previousVersion := int64(0)
-		if before != nil {
-			previousVersion = before.Version
-		}
-		return fmt.Errorf("index catalog version %d does not match previous graph version %d", previous.Version, previousVersion)
+	if previous.Version != version-1 {
+		return fmt.Errorf("index catalog version %d does not match previous graph version %d", previous.Version, version-1)
 	}
 	if err := s.ensureIncrementalIndexCurrent(ctx, tenantID, version); err != nil {
 		return err

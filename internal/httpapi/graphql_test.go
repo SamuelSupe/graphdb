@@ -76,3 +76,20 @@ func TestGraphQLExecutionErrorUsesGraphQLEnvelope(t *testing.T) {
 		t.Fatalf("GraphQL execution error = %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestGraphQLRejectsRemovedEvidenceSearch(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.InitTenant(context.Background(), "tenant-a"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	response := serveJSON(handler, http.MethodPost, "/v1/query/graphql", "tenant-a", map[string]any{
+		"query": `{ evidenceSearch(input: {query: "why?"}) { version } }`,
+	})
+	body := response.Body.String()
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(body, `"errors"`) ||
+		!strings.Contains(body, "evidenceSearch") {
+		t.Fatalf("removed GraphQL evidenceSearch = %d %s", response.Code, body)
+	}
+}

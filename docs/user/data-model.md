@@ -211,7 +211,11 @@ Parquet layout at object layout version 2:
   exposed as the top-level `labels` convenience field by 1.1 APIs.
 - relation property schemas and reverse adjacency artifacts live under
   `tenants/<tenant>/extensions/v1.1/`.
+- 1.2 retrieval definitions, immutable catalogs, retrieval segments, and the
+  CAS-published retrieval head live under
+  `tenants/<tenant>/extensions/v1.2/retrieval/`.
 
-A 1.0 reader can therefore continue reading the core graph and ignore the
-reserved field and extension sidecars. A 1.0 writer does not enforce 1.1
-relation property schemas, so schema-governed edge writes should stay on 1.1.
+A 1.0 or 1.1 reader can therefore continue reading the core graph and ignore
+the reserved field and extension sidecars. A 1.0 writer does not enforce 1.1
+relation property schemas, so schema-governed edge writes should stay on 1.1
+or later.

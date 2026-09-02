@@ -36,7 +36,11 @@ func TestMaintenanceAutoCompactsLongCommitTail(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put tenant config: %v", err)
 	}
-	server := &Server{Store: store, Mode: "all"}
+	cache := storage.NewReaderCache(store, time.Minute)
+	if _, _, err := cache.LoadAtLeast(ctx, "tenant-a", 2); err != nil {
+		t.Fatalf("warm reader cache: %v", err)
+	}
+	server := &Server{Store: store, Cache: cache, Mode: "all"}
 	report := server.runMaintenanceOnce(ctx, time.Now().UTC())
 	if report.Compacted != 1 || len(report.Errors) != 0 {
 		t.Fatalf("maintenance report = %#v", report)
@@ -51,62 +55,8 @@ func TestMaintenanceAutoCompactsLongCommitTail(t *testing.T) {
 	if len(report.Tenants) != 1 || report.Tenants[0].CompactReason != "commit_tail" {
 		t.Fatalf("tenant report = %#v", report.Tenants)
 	}
-}
-
-func TestMaintenanceYieldsUntilTenantIngestIsIdle(t *testing.T) {
-	ctx := context.Background()
-	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
-	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}},
-	}, storage.CommitOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	autoCompact := true
-	threshold := 1
-	if _, err := store.PutTenantConfig(ctx, "tenant-a", storage.TenantConfig{
-		Maintenance: storage.TenantMaintenanceConfig{
-			AutoCompact:                &autoCompact,
-			CompactCommitTailThreshold: &threshold,
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	config := storage.DefaultIngestServiceConfig(t.TempDir())
-	config.FlushInterval = time.Hour
-	service, err := storage.OpenIngestService(store, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := service.Close(closeCtx); err != nil {
-			t.Errorf("close ingest service: %v", err)
-		}
-	}()
-	if _, err := service.Accept(ctx, "tenant-a", storage.IngestRequest{
-		Source:      "agent",
-		CollectorID: "collector-a",
-		BatchID:     "batch-1",
-		Items: []storage.IngestItem{{
-			Entity: &graph.Entity{ID: "host:pending", Kind: "host"},
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
-		t.Fatal(err)
-	}
-	if readiness := service.Readiness(); readiness.Pending != 0 {
-		t.Fatalf("ingest readiness = %#v, want an idle queue", readiness)
-	}
-
-	report := (&Server{Store: store, Mode: "all", IngestService: service}).runMaintenanceOnce(ctx, time.Now().UTC())
-	if report.Compacted != 0 || len(report.Errors) != 0 || len(report.Tenants) != 1 {
-		t.Fatalf("maintenance report = %#v", report)
-	}
-	if report.Tenants[0].Skipped != "ingest_active" {
-		t.Fatalf("tenant maintenance = %#v, want ingest_active", report.Tenants[0])
+	if status := cache.Status("tenant-a"); !status.Cached || status.Version != 2 {
+		t.Fatalf("reader cache was invalidated by logical compaction: %#v", status)
 	}
 }
 

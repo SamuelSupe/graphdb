@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
@@ -22,8 +21,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const acceptedHTTPLogEvery = 1024
-
 type Server struct {
 	Store                 *storage.TenantStore
 	Cache                 *storage.ReaderCache
@@ -35,13 +32,22 @@ type Server struct {
 	ReaderCatchupTimeout  time.Duration
 	ReadinessTimeout      time.Duration
 	QueryRegistry         *RunningQueryRegistry
-	IngestService         *storage.IngestService
+	IngestService         IngestService
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration
 	maintenance           *maintenanceState
 	maintenanceOnce       sync.Once
 	usageCache            *tenantUsageCache
-	acceptedHTTPLogCount  atomic.Uint64
+	lazyUnavailable       sync.Map
+}
+
+type IngestService interface {
+	WriterID() string
+	Accept(context.Context, string, storage.IngestRequest) (storage.IngestAcceptance, error)
+	Wait(context.Context, storage.IngestAcceptance) (storage.IngestResult, error)
+	Status(context.Context, string, string, string, string) (storage.IngestBatchStatus, error)
+	Readiness() storage.IngestServiceReadiness
+	ObserveMetrics()
 }
 
 type CommitRequest struct {
@@ -243,7 +249,7 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 		attribute.Int("graphdb.commit.canonical_entities", len(result.CanonicalEntities)),
 		attribute.Int("graphdb.commit.canonical_edges", len(result.CanonicalEdges)),
 	))
-	s.invalidate(tenantID)
+	s.publishReadCacheAfterWrite(tenantID)
 	s.recordSuppressed(tenantID, result.Suppressed)
 	s.auditInfo("commit_applied", tenantID, map[string]any{
 		"version": result.Version, "suppressed": len(result.Suppressed), "canonical_entities": len(result.CanonicalEntities), "canonical_edges": len(result.CanonicalEdges),
@@ -388,13 +394,17 @@ func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	manifest, err := s.Store.Compact(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("compact_failed", tenantID, err, map[string]any{})
 		writeStorageError(w, err)
 		return
 	}
-	s.invalidate(tenantID)
 	s.auditInfo("compact_applied", tenantID, map[string]any{"version": manifest.Version})
 	writeJSON(w, http.StatusOK, manifest)
 }
@@ -421,6 +431,13 @@ func (s *Server) invalidate(tenantID string) {
 	if s.Cache != nil {
 		s.Cache.Invalidate(tenantID)
 	}
+}
+
+func (s *Server) publishReadCacheAfterWrite(tenantID string) {
+	if s.Cache != nil && s.Cache.PublishFromWriteCache(tenantID) {
+		return
+	}
+	s.invalidate(tenantID)
 }
 
 func (s *Server) obs() *observability.Observability {
@@ -463,17 +480,10 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		if recorder.status >= 500 {
 			span.SetStatus(codes.Error, http.StatusText(recorder.status))
 		}
-		logRequest := true
-		if route == "POST /v1/ingest/batches" && recorder.status == http.StatusAccepted {
-			count := s.acceptedHTTPLogCount.Add(1)
-			logRequest = count == 1 || count%acceptedHTTPLogEvery == 0
-		}
-		if logRequest {
-			obs.Logger.Info("http_request", map[string]any{
-				"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,
-				"status": recorder.status, "duration_ms": float64(duration.Microseconds()) / 1000,
-			})
-		}
+		obs.Logger.Info("http_request", map[string]any{
+			"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,
+			"status": recorder.status, "duration_ms": float64(duration.Microseconds()) / 1000,
+		})
 	})
 }
 

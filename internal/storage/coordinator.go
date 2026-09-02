@@ -21,6 +21,7 @@ var ErrCoordinatorHeadMissing = errors.New("coordinator tenant head is missing")
 var ErrCoordinatorFenced = errors.New("coordinator is fenced")
 var ErrWriteConflict = errors.New("write conflict")
 var ErrVersionConflict = errors.New("version conflict")
+var ErrIdempotencyConflict = errors.New("idempotency conflict")
 var ErrIdempotencyInProgress = errors.New("idempotency request is in progress")
 var ErrTaskLeaseHeld = errors.New("coordinator task lease is held")
 
@@ -48,6 +49,17 @@ type CommitReservation struct {
 	Committed   bool
 }
 
+type CommitReservationRequest struct {
+	Key         string
+	RequestHash string
+	OwnerToken  string
+}
+
+type CommitReservationOutcome struct {
+	Reservation CommitReservation
+	Err         error
+}
+
 type HeadPublishRequest struct {
 	TenantID                     string
 	ExpectedRevision             int64
@@ -64,6 +76,21 @@ type HeadPublishRequest struct {
 	OwnerToken                   string
 	Result                       json.RawMessage
 	CollectorState               *CollectorStateUpdate
+}
+
+type IngestBatchCompletion struct {
+	IdempotencyKey string
+	RequestHash    string
+	OwnerToken     string
+	CommitID       string
+	Result         json.RawMessage
+	CollectorState *CollectorStateUpdate
+}
+
+type IngestBatchPublishRequest struct {
+	Head         HeadPublishRequest
+	Items        []IngestBatchCompletion
+	PublishLease *CoordinatorTaskLease
 }
 
 type WriteContextPublishRequest struct {
@@ -159,36 +186,83 @@ type CoordinatorTaskLease struct {
 	ExpiresAt  time.Time
 }
 
-type WriteCoordinator interface {
+type CoordinatorDescriptor interface {
 	Backend() string
 	Namespace() string
+}
+
+type CoordinatorSchema interface {
 	CheckSchema(context.Context) error
+	Close()
+}
+
+type CoordinatorHeadStore interface {
 	Head(context.Context, string) (CoordinationHead, bool, error)
 	BootstrapHead(context.Context, CoordinationHead, bool) error
+}
+
+type CoordinatorCommitStore interface {
 	ReserveCommit(context.Context, string, string, string, string, time.Duration) (CommitReservation, error)
 	RenewCommit(context.Context, string, string, string, string) (bool, error)
 	AbortCommit(context.Context, string, string, string, string) error
 	PublishHead(context.Context, HeadPublishRequest) (CoordinationHead, bool, error)
 	CompleteNoop(context.Context, HeadPublishRequest) (bool, error)
+	PublishIngestBatch(context.Context, IngestBatchPublishRequest) (CoordinationHead, bool, error)
+	CompleteIngestBatch(context.Context, IngestBatchPublishRequest) (bool, error)
 	PublishWriteContext(context.Context, WriteContextPublishRequest) (CoordinationHead, bool, error)
+}
+
+type CoordinatorCommitBatchStore interface {
+	ReserveCommitBatch(context.Context, string, []CommitReservationRequest, time.Duration) ([]CommitReservationOutcome, error)
+	AbortCommitBatch(context.Context, string, []CommitReservationRequest) error
+}
+
+type CoordinatorLifecycleStore interface {
 	TransitionTenant(context.Context, string, string, bool) (CoordinationHead, error)
 	ActivateTenantHead(context.Context, HeadPublishRequest) (CoordinationHead, bool, error)
 	FinalizeTenantPurge(context.Context, string, int64) error
+}
+
+type CoordinatorTaskStore interface {
 	AcquireTaskLease(context.Context, string, string, string, time.Duration) (CoordinatorTaskLease, bool, error)
 	RenewTaskLease(context.Context, CoordinatorTaskLease, time.Duration) (CoordinatorTaskLease, bool, error)
 	ReleaseTaskLease(context.Context, CoordinatorTaskLease) error
+}
+
+type CoordinatorDerivedTaskStore interface {
 	ClaimDerivedTask(context.Context, string, time.Duration) (DerivedTaskJob, bool, error)
 	RenewDerivedTask(context.Context, DerivedTaskJob, time.Duration) (bool, error)
 	CompleteDerivedTask(context.Context, DerivedTaskJob, int64) error
 	FailDerivedTask(context.Context, DerivedTaskJob, error) error
+}
+
+type CoordinatorCollectorStore interface {
 	CollectorState(context.Context, string, string, string) (CollectorStateUpdate, bool, error)
+}
+
+type CoordinatorLegacyManifestStore interface {
 	ClaimLegacyManifest(context.Context, string, time.Duration) (LegacyManifestJob, bool, error)
 	CompleteLegacyManifest(context.Context, LegacyManifestJob) error
 	FailLegacyManifest(context.Context, LegacyManifestJob, error) error
+}
+
+type CoordinatorMaintenanceStore interface {
 	Cleanup(context.Context, CoordinatorCleanupConfig) (CoordinatorCleanupReport, error)
 	Reachability(context.Context, string) (CoordinatorReachability, error)
 	Status(context.Context) (CoordinatorStatus, error)
-	Close()
+}
+
+type WriteCoordinator interface {
+	CoordinatorDescriptor
+	CoordinatorSchema
+	CoordinatorHeadStore
+	CoordinatorCommitStore
+	CoordinatorLifecycleStore
+	CoordinatorTaskStore
+	CoordinatorDerivedTaskStore
+	CoordinatorCollectorStore
+	CoordinatorLegacyManifestStore
+	CoordinatorMaintenanceStore
 }
 
 type CoordinatorTaskLeaseReader interface {
@@ -197,6 +271,15 @@ type CoordinatorTaskLeaseReader interface {
 		string,
 		string,
 	) (CoordinatorTaskLease, bool, error)
+}
+
+type CoordinatorIngestPublishSlot interface {
+	AcquireIngestPublishSlot(
+		context.Context,
+		string,
+		string,
+		time.Duration,
+	) (CoordinatorTaskLease, CoordinationHead, bool, bool, error)
 }
 
 type CoordinatorDerivedTaskAcknowledger interface {

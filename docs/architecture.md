@@ -6,8 +6,9 @@
 
 GGraphDB 的核心目标是作为通用实体关系图数据底座，并通过可选的领域能力支持 CMDB 等场景：
 
-- 本地协调以对象存储 manifest 为权威状态；可选 PostgreSQL 协调以 tenant head
-  为权威状态，对象存储只保存不可变数据对象和 1.0 兼容镜像。
+- 本地协调以对象存储 manifest 为权威状态；PostgreSQL 协调只提供 tenant head
+  的原子 CAS 与必要元数据。对象存储中的不可变图对象和已发布 manifest 仍是
+  图数据真源，PG 不保存图数据或 WAL payload。
 - 以租户 prefix 隔离数据，HTTP 侧通过 `X-Tenant-ID` 选择租户。
 - 写入侧默认采用单租户单 writer；可选 PostgreSQL head CAS 允许同租户多 writer
   乐观并发，二者复用同一 commit log 和对象布局。
@@ -124,14 +125,25 @@ sequenceDiagram
   participant HTTP as Writer HTTP API
   participant BP as Write Admission / Backpressure
   participant Store as TenantStore
+  participant PG as PostgreSQL CAS
   participant Graph as Graph Apply
   participant Obj as Object Storage
 
   Client->>HTTP: POST /v1/commits, /v1/ingest/batches, or /v1/imports
   HTTP->>BP: queue slot + pressure check
   BP-->>HTTP: allow or 429 Retry-After
-  HTTP->>Store: CommitWithReport / Ingest
-  Store->>Obj: acquire writer lease
+  alt 1.3 coordinated WAL ingest
+    HTTP->>Store: validate + append local WAL + fsync
+    Store-->>HTTP: 202 + writer_id + owner-routed status_url
+    Store->>Store: bounded same-tenant batch / rebase
+  else direct or local WAL path
+    HTTP->>Store: CommitWithReport / Ingest
+  end
+  alt local object-store coordination
+    Store->>Obj: acquire writer lease
+  else PostgreSQL head-CAS coordination
+    Store->>PG: read tenant head / immutable write context
+  end
   Store->>Obj: read manifest + load write cache
   Store->>Graph: apply mutations copy
   Graph-->>Store: next graph + conflicts + canonical ids
@@ -154,11 +166,23 @@ sequenceDiagram
 - `local` 协调下 manifest 使用 ETag 条件写，writer lease 防止误启的第二写端；
   CAS 冲突会 retry 或暴露为 backpressure 信号。
 - `postgres` 协调下 writer 读取 PG head 和不可变 write-context，写不可变
-  commit/manifest 后条件更新 head；冲突会重新加载并按现有合并规则最多重放
-  `GRAPHDB_WRITE_CAS_MAX_RETRIES` 次（不含首次尝试），并使用 5–200ms
-  随机退避。
-- PG head CAS、幂等结果、collector cursor、legacy mirror outbox 和派生索引任务
-  在同一事务提交；`expected_version` 冲突不重放。
+  commit/manifest 后条件更新 head；冲突会重新加载并重基。1.3 WAL flush 将
+  同租户请求组成有界批次，持续冲突时缩小发布前缀，最终退化为单请求；跨
+  writer 的顺序由成功 CAS 决定，不提供全局 HTTP 到达 FIFO。
+- PG head CAS、批内幂等结果、collector cursor、legacy mirror outbox 和派生
+  索引任务在同一事务提交；PostgreSQL 协调路径中的 `expected_version` 冲突
+  不重放。`local` 和 `postgres` 下，每个 writer 的同一 flush 都可把至少两个
+  非 atomic 且 `expected_version` 相同的请求组成 CAS cohort：版本和前置条件
+  针对共同基线只比较一次，成功请求按该 writer 的 WAL 顺序保留独立结果和连续
+  版本，并使用一次 COW、一个 commit segment 和一次 manifest 候选发布。没有
+  expected_version 且没有前置条件的普通请求仍走 fast batch；不同 expected
+  version 按 WAL 顺序切为不同 contiguous group，单个 CAS、atomic 或没有
+  expected_version 但带前置条件的请求作为隔离 barrier，barrier 前后不使整批
+  退化。共同 expected version 已过期时，cohort 成员全部得到 terminal
+  `version_conflict` 且不发布；PG writer 仍必须赢得 tenant head CAS，跨 writer
+  只按成功 CAS 排序，不交换或合并 payload，也不把败方 expected_version cohort
+  重基到新 head。PG 只保存协调元数据，不保存 WAL record、commit segment 或
+  graph payload。
 - 已提交幂等记录、超过窗口的遗留 pending reservation 和已完成 mirror
   outbox 按保留窗口分批清理；outbox 只有在 mirror watermark 已越过对应
   revision 后才能删除，outbox 的 pending/running 记录不清理。
@@ -222,6 +246,7 @@ flowchart TB
   FieldIndexes["indexes/parquet/versions/v<version>/fields/<kind>/<field>.parquet"]
   EdgeShards["indexes/parquet/versions/v<version>/edges/<relation>/<from-shard>.parquet"]
   Extensions["extensions/v1.1/relation-schemas.json\nextensions/v1.1/reverse-index/"]
+  Retrieval["extensions/v1.2/retrieval/\ndefinitions.parquet\nhead.parquet\ncatalogs/*.parquet\ngenerations/*/versions/*"]
   EntityPages["indexes/parquet/versions/v<version>/entities/pages/<shard>.parquet"]
   EntityByID["indexes/entities/by-id/<entity-id>.parquet"]
   TenantRegistry["../_registry.parquet"]
@@ -246,6 +271,7 @@ flowchart TB
   IndexCatalog --> FieldIndexes
   IndexCatalog --> EdgeShards
   Tenant --> Extensions
+  Tenant --> Retrieval
   IndexCatalog --> EntityPages
   IndexCatalog --> EntityByID
   TenantRegistry --> Tenant
@@ -267,6 +293,10 @@ flowchart TB
 - `indexes/` 是可重建的读优化结构，不是最终真源；index definitions、catalog、secondary index、edge shard、entity page 和 by-id record 都使用 Parquet，非 Parquet index data 不会被解释为数据面对象。
 - `extensions/v1.1/` 保存不改变 1.0 核心布局的关系属性 schema 和可重建反向
   邻接 shard；1.0 进程可以忽略该目录。
+- `extensions/v1.2/retrieval/` 保存 GraphRAG definition、不可变 catalog、
+  vector/lexical/chunk segment 和 CAS head。head 只会指向已经完整校验的
+  Parquet 对象；该目录不修改 layout version 2 的 manifest、entity、edge
+  或 graph index catalog，1.0/1.1 reader 可以忽略。
 - reader 进程对 Parquet secondary index、edge shard、entity page 使用本地版本化 cache；cache key 包含 tenant、catalog version、object key、catalog content hash 和 schema hash，内存 LRU 可配，磁盘 cache 位于 `GRAPHDB_READER_INDEX_CACHE_DIR`。
 - tenant registry、tenant metadata、writer lease 已使用 Parquet。
 - source policy、tenant config、saved query、task、index task 和 task result 已使用 Parquet。
@@ -369,6 +399,9 @@ flowchart LR
 ```
 
 - Ingestion 适合采集器批量写入，支持 cursor、batch id、idempotency key。
+- 1.3 WAL ingest 在本地 `fsync` 后返回 durable `202`，并通过稳定
+  `GRAPHDB_INSTANCE_ID` 和 `/v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}`
+  owner 路由查询状态；旧 batch status 路径继续兼容。
 - Direct commit 适合内部服务直接提交图 mutation。
 - Dead-letter 保存失败项，支持后续 replay。
 - Scan/export API 面向运维导出和同步，不走复杂查询 planner。
@@ -388,13 +421,16 @@ flowchart LR
 
 可靠性边界：
 
-- 图 payload 的持久化真源是对象存储；可见 head 在本地模式由 manifest、
-  PostgreSQL 模式由 PG tenant head 决定，reader 本地缓存和索引均可重建。
+- 图 payload 和不可变图对象的持久化真源是对象存储；manifest 是 reader 可见性
+  边界，PostgreSQL tenant head 只作为 writer 的协调 CAS 记录，reader 本地缓存
+  和索引均可重建。
 - commit 原子性以 manifest 发布为可见边界。
 - snapshot compact 降低 replay 成本，但不改变可见版本语义。
 - persisted index 是优化结构，catalog stale 时查询可回退。
-- PostgreSQL 模式中 PG head 是唯一权威可见性边界；PG 不可用时写入 fail-closed，
-  reader 只能继续提供已经缓存且满足 `min_version` 的版本。
+- 直接 commit 等同步写入在 PostgreSQL 不可用时仍 fail-closed；1.3 WAL ingest
+  在本地 WAL `fsync` 后可在 PG 暂时不可用期间继续返回 `202`，直到 WAL 高水位
+  要求在写入下一条 payload 前背压。reader 仍只能从对象存储提供已发布且满足
+  `min_version` 的版本。
 - `manifest.parquet` 是给 1.0 reader 的单调最终一致镜像，不参与 1.1 head 决策。
 
 ## 10. 运行模式
@@ -408,8 +444,9 @@ flowchart LR
 典型生产部署：
 
 - `GRAPHDB_COORDINATION=local` 使用 1 个 writer 实例负责 commit、ingest 和维护。
-- `GRAPHDB_COORDINATION=postgres` 可使用 2–8 个 writer；仅支持具备
-  `If-Match` 的 generic S3/RustFS，禁止任何 1.0 writer 接入。
+- `GRAPHDB_COORDINATION=postgres` 可使用 2–8 个 writer；1.3 WAL profile 要求
+  每个 writer 使用唯一稳定 `GRAPHDB_INSTANCE_ID` 和独立持久 WAL 卷，仅支持
+  具备 `If-Match` 的 generic S3/RustFS，禁止任何未接入协调的 1.0 writer 接入。
 - 多个 reader 实例负责查询、scan、export。
 - 所有实例共享同一个对象存储 bucket 和 prefix。
 - 通过 `GRAPHDB_POLL_INTERVAL` 控制 reader 最终一致刷新间隔。
@@ -444,4 +481,7 @@ GGraphDB 提供三类观测信号：
 - 不内置认证系统，默认由上游网关或内部平台控制访问。
 - 不提供跨租户事务；多 writer 只在 PostgreSQL 协调模式下提供同租户乐观 CAS，
   目标规模为每租户 2–8 个 writer，更高吞吐需要图分区。
+- 1.3 WAL 只覆盖 `/v1/ingest/batches`；`202` 代表本地 WAL 已持久接管请求，
+  不承诺同步提交。WAL 持久性覆盖原卷仍可恢复时的进程故障，不覆盖 writer
+  节点及其 WAL 卷永久丢失。
 - 不把本地 reader cache 或 persisted index 作为真源。

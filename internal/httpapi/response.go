@@ -35,10 +35,12 @@ const (
 	ErrorCodeManifestCASConflict    ErrorCode = "manifest_cas_conflict"
 	ErrorCodeObjectWriteConflict    ErrorCode = "object_write_conflict"
 	ErrorCodeObjectStoreUnavailable ErrorCode = "object_store_unavailable"
-	ErrorCodeIngestWALUnavailable   ErrorCode = "ingest_wal_unavailable"
 	ErrorCodeTaskConflict           ErrorCode = "task_conflict"
 	ErrorCodeRepairRequired         ErrorCode = "repair_required"
 	ErrorCodeVersionConflict        ErrorCode = "version_conflict"
+	ErrorCodePreconditionFailed     ErrorCode = "precondition_failed"
+	ErrorCodeAtomicValidationFailed ErrorCode = "atomic_validation_failed"
+	ErrorCodeAtomicSuppressed       ErrorCode = "atomic_suppressed"
 	ErrorCodeIdempotencyConflict    ErrorCode = "idempotency_conflict"
 	ErrorCodeIdempotencyInProgress  ErrorCode = "idempotency_in_progress"
 	ErrorCodeWriteConflict          ErrorCode = "write_conflict"
@@ -76,10 +78,12 @@ var stableErrorCodes = []ErrorCode{
 	ErrorCodeManifestCASConflict,
 	ErrorCodeObjectWriteConflict,
 	ErrorCodeObjectStoreUnavailable,
-	ErrorCodeIngestWALUnavailable,
 	ErrorCodeTaskConflict,
 	ErrorCodeRepairRequired,
 	ErrorCodeVersionConflict,
+	ErrorCodePreconditionFailed,
+	ErrorCodeAtomicValidationFailed,
+	ErrorCodeAtomicSuppressed,
 	ErrorCodeIdempotencyConflict,
 	ErrorCodeIdempotencyInProgress,
 	ErrorCodeWriteConflict,
@@ -173,7 +177,7 @@ func storageErrorStatus(code ErrorCode) int {
 		return http.StatusForbidden
 	case ErrorCodeTenantDeleted:
 		return http.StatusGone
-	case ErrorCodeQuotaExceeded:
+	case ErrorCodeQuotaExceeded, ErrorCodeMaintenanceTaskRunning:
 		return http.StatusTooManyRequests
 	case ErrorCodeLeaseHeld,
 		ErrorCodeManifestCASConflict,
@@ -185,7 +189,7 @@ func storageErrorStatus(code ErrorCode) int {
 		ErrorCodeIdempotencyInProgress,
 		ErrorCodeWriteConflict:
 		return http.StatusConflict
-	case ErrorCodeObjectStoreUnavailable, ErrorCodeIngestWALUnavailable, ErrorCodeCoordinatorUnavailable:
+	case ErrorCodeObjectStoreUnavailable, ErrorCodeCoordinatorUnavailable:
 		return http.StatusServiceUnavailable
 	case ErrorCodeRequestTimeout:
 		return http.StatusGatewayTimeout
@@ -269,8 +273,6 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeLeaseHeld, true
 	case errors.Is(err, storage.ErrObjectStoreUnavailable):
 		return ErrorCodeObjectStoreUnavailable, true
-	case errors.Is(err, storage.ErrIngestWALFenced):
-		return ErrorCodeIngestWALUnavailable, true
 	case errors.Is(err, storage.ErrCoordinatorUnavailable):
 		return ErrorCodeCoordinatorUnavailable, true
 	case errors.Is(err, storage.ErrCoordinatorFenced):
@@ -281,8 +283,12 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeVersionConflict, false
 	case errors.Is(err, storage.ErrIdempotencyInProgress):
 		return ErrorCodeIdempotencyInProgress, true
+	case errors.Is(err, storage.ErrIdempotencyConflict), errors.Is(err, storage.ErrIngestIdentityConflict):
+		return ErrorCodeIdempotencyConflict, false
 	case errors.Is(err, storage.ErrTaskLeaseHeld):
 		return ErrorCodeTaskConflict, false
+	case errors.Is(err, storage.ErrMaintenanceBusy):
+		return ErrorCodeMaintenanceTaskRunning, true
 	case errors.Is(err, storage.ErrIngestRepairRequired):
 		return ErrorCodeRepairRequired, false
 	case errors.Is(err, storage.ErrTenantDisabled):

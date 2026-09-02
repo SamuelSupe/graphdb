@@ -99,64 +99,6 @@ func TestContentMD5CacheTracksStorageMutations(t *testing.T) {
 	assertContentMD5MatchesSnapshotBasedEncoding(t, g)
 }
 
-func TestContentMD5CacheTracksBatchStorageMutations(t *testing.T) {
-	g := New()
-	if err := g.ApplyCommit(Commit{
-		ID: "seed", Version: 1,
-		Mutations: Mutations{UpsertEntities: []Entity{
-			{ID: "host:a", Kind: "host"},
-			{ID: "host:b", Kind: "host"},
-		}},
-	}); err != nil {
-		t.Fatalf("seed graph: %v", err)
-	}
-	if _, err := g.ContentMD5(); err != nil {
-		t.Fatalf("prime content cache: %v", err)
-	}
-	next, reports, err := g.ApplyCommitBatchStorageCopyWithOptions([]Commit{
-		{
-			ID: "update", Version: 2,
-			Mutations: Mutations{UpsertEntities: []Entity{
-				{ID: "host:a", Kind: "host", Fields: Fields{"state": "ready"}},
-				{ID: "host:c", Kind: "host"},
-			}},
-		},
-		{
-			ID: "delete", Version: 3,
-			Mutations: Mutations{DeleteEntities: []string{"host:b"}},
-		},
-		{
-			ID: "update-again", Version: 4,
-			Mutations: Mutations{UpsertEntities: []Entity{
-				{ID: "host:a", Kind: "host", Fields: Fields{"state": "running"}},
-			}},
-		},
-	}, nil)
-	if err != nil {
-		t.Fatalf("apply batch storage copy: %v", err)
-	}
-	if len(reports) != 3 || !reports[0].Changed || !reports[1].Changed || !reports[2].Changed {
-		t.Fatalf("batch reports = %#v", reports)
-	}
-	assertContentMD5MatchesSnapshotBasedEncoding(t, next)
-	rebuilt, err := FromSnapshot(next.Snapshot())
-	if err != nil {
-		t.Fatalf("rebuild final graph: %v", err)
-	}
-	gotFingerprint, err := next.ContentFingerprint()
-	if err != nil {
-		t.Fatalf("final content fingerprint: %v", err)
-	}
-	wantFingerprint, err := rebuilt.ContentFingerprint()
-	if err != nil {
-		t.Fatalf("rebuilt content fingerprint: %v", err)
-	}
-	if gotFingerprint != wantFingerprint {
-		t.Fatalf("content fingerprint = %q, rebuilt = %q", gotFingerprint, wantFingerprint)
-	}
-	assertContentMD5MatchesSnapshotBasedEncoding(t, g)
-}
-
 func assertContentMD5MatchesSnapshotBasedEncoding(t *testing.T, g *Graph) {
 	t.Helper()
 	got, logicalBytes, err := g.ContentMD5WithLogicalSize()

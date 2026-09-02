@@ -28,8 +28,8 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	if err := ValidateTenantID(tenantID); err != nil {
 		return CommitResult{}, err
 	}
-	if s.IngestBarrier != nil {
-		if err := s.IngestBarrier(ctx, tenantID); err != nil {
+	if s.ingestBarrier != nil {
+		if err := s.ingestBarrier(ctx, tenantID); err != nil {
 			return CommitResult{}, err
 		}
 	}
@@ -300,6 +300,9 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	if err != nil {
 		return CommitResult{}, err
 	}
+	if err := evaluateIngestPreconditions(loaded.Graph, opts.ingestPreconditions, opts.ingestAcceptedAt); err != nil {
+		return CommitResult{}, err
+	}
 
 	var policyReport graph.ApplyReport
 	policyCtx, policySpan := startStorageSpan(ctx, "graphdb.storage.commit.resolve_source_policy", tenantTraceAttr(tenantID))
@@ -365,6 +368,9 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		return CommitResult{}, err
 	}
 	report.Suppressed = append(policyReport.Suppressed, report.Suppressed...)
+	if opts.rejectSuppressed && len(report.Suppressed) > 0 {
+		return CommitResult{}, fmt.Errorf("%w: %d mutation conflicts", ErrIngestAtomicSuppressed, len(report.Suppressed))
+	}
 	quotaCtx, quotaSpan := startStorageSpan(ctx, "graphdb.storage.commit.check_quota_after_apply", tenantTraceAttr(tenantID))
 	err = s.checkQuotaAfterApply(quotaCtx, tenantID, loaded.Graph, nextGraph)
 	endStorageSpan(quotaSpan, err)

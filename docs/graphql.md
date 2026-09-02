@@ -2,10 +2,10 @@
 
 [中文](graphql.zh-CN.md)
 
-GGraphDB 1.1 exposes GraphQL at `POST /v1/query/graphql`. The endpoint accepts
+GGraphDB exposes GraphQL at `POST /v1/query/graphql`. The endpoint accepts
 GraphQL documents, `operationName`, variables, aliases, fragments, and
 `@skip`/`@include`, and returns the standard `data`/`errors` response envelope.
-The existing JSON Query DSL remains the execution model.
+The `graph` root uses the existing JSON Query DSL execution model.
 
 ## Query
 
@@ -77,13 +77,13 @@ Document, variable, and GraphQL validation errors return HTTP `400` with
 to `null`, and include GGraphDB's stable error code under
 `errors[].extensions.code`.
 
-## 1.1 boundaries
+## Boundaries
 
-- Exactly one `graph` root field is allowed per request.
+- Exactly one supported query root (`graph`) is allowed per request.
 - Query operations are supported; mutations and subscriptions are not.
 - Schema introspection and GraphQL subscriptions are disabled.
 - Dynamic entity properties and result rows are returned through the `JSON`
-  scalar. GGraphDB 1.1 does not publish a generated strongly typed schema per
+  scalar. GGraphDB does not publish a generated strongly typed schema per
   tenant.
 - GraphQL uses a materialized JSON response. Use the JSON DSL scan/export or
   stream endpoints for NDJSON.

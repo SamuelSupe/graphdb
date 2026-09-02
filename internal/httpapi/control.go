@@ -480,6 +480,11 @@ func (s *Server) recoverTenant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	report, err := s.Store.RecoverTenant(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("tenant_recovery_failed", tenantID, err, map[string]any{})
@@ -499,6 +504,11 @@ func (s *Server) integrityAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deep := r.URL.Query().Get("deep") != "false"
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	report, err := s.Store.AuditIntegrity(r.Context(), tenantID, storage.IntegrityAuditOptions{Deep: deep})
 	if err != nil {
 		s.auditError("integrity_audit_failed", tenantID, err, map[string]any{"deep": deep})
@@ -524,6 +534,11 @@ func (s *Server) repairTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "repair apply is disabled in reader mode")
 		return
 	}
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	report, err := s.Store.RepairTenant(r.Context(), tenantID, storage.RepairOptions{Apply: request.Apply})
 	if err != nil {
 		s.auditError("tenant_repair_failed", tenantID, err, map[string]any{"apply": request.Apply})
@@ -548,6 +563,11 @@ func (s *Server) cleanupCommits(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	report, err := s.Store.CleanupCommits(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("commit_cleanup_failed", tenantID, err, map[string]any{})
@@ -577,6 +597,11 @@ func (s *Server) runGC(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "keep_snapshots, deadletter_max_age_seconds, task_max_age_seconds, and max_deletes must be non-negative")
 		return
 	}
+	release, ok := s.enterMaintenance(w, tenantID)
+	if !ok {
+		return
+	}
+	defer release()
 	report, err := s.Store.RunGC(r.Context(), tenantID, storage.GCOptions{
 		KeepSnapshots:       request.KeepSnapshots,
 		DeadLetterMaxAge:    time.Duration(request.DeadLetterMaxAgeSeconds) * time.Second,

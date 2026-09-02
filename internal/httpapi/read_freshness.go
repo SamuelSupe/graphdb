@@ -283,6 +283,15 @@ func writeReadError(w http.ResponseWriter, err error) {
 	if writeReaderNotFresh(w, err) {
 		return
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		writeRequestError(w, err)
+		return
+	}
+	if errors.Is(err, storage.ErrReaderLoadBusy) {
+		w.Header().Set("Retry-After", "1")
+		writeErrorDetail(w, http.StatusTooManyRequests, ErrorCodeTooManyRequests, err.Error(), true, nil)
+		return
+	}
 	writeErrorErr(w, http.StatusBadRequest, err)
 }
 

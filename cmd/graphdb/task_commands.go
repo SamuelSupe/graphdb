@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
+
+const cliTaskPollInterval = 100 * time.Millisecond
 
 func startTask(args []string, store *storage.TenantStore) error {
 	if len(args) < 2 || len(args) > 3 {
@@ -17,11 +20,13 @@ func startTask(args []string, store *storage.TenantStore) error {
 			return err
 		}
 	}
-	task, err := store.StartTask(context.Background(), args[0], args[1], params)
+	task, err := startAndWaitTask(
+		context.Background(), store, args[0], args[1], params,
+	)
 	if err != nil {
 		return err
 	}
-	return printJSON(task)
+	return printFinishedTask(task)
 }
 
 func listTasks(args []string, store *storage.TenantStore) error {
@@ -72,5 +77,61 @@ func retryTask(args []string, store *storage.TenantStore) error {
 	if err != nil {
 		return err
 	}
-	return printJSON(task)
+	task, err = waitForTask(context.Background(), store, task)
+	if err != nil {
+		return err
+	}
+	return printFinishedTask(task)
+}
+
+func startAndWaitTask(
+	ctx context.Context,
+	store *storage.TenantStore,
+	tenantID string,
+	taskType string,
+	params map[string]any,
+) (storage.Task, error) {
+	task, err := store.StartTask(ctx, tenantID, taskType, params)
+	if err != nil {
+		return storage.Task{}, err
+	}
+	return waitForTask(ctx, store, task)
+}
+
+func waitForTask(
+	ctx context.Context,
+	store *storage.TenantStore,
+	task storage.Task,
+) (storage.Task, error) {
+	ticker := time.NewTicker(cliTaskPollInterval)
+	defer ticker.Stop()
+	for {
+		switch task.Status {
+		case storage.TaskStatusSucceeded,
+			storage.TaskStatusFailed,
+			storage.TaskStatusCanceled:
+			return task, nil
+		}
+		select {
+		case <-ctx.Done():
+			return storage.Task{}, ctx.Err()
+		case <-ticker.C:
+			var err error
+			task, err = store.GetTask(ctx, task.TenantID, task.ID)
+			if err != nil {
+				return storage.Task{}, err
+			}
+		}
+	}
+}
+
+func printFinishedTask(task storage.Task) error {
+	if err := printJSON(task); err != nil {
+		return err
+	}
+	if task.Status == storage.TaskStatusFailed ||
+		task.Status == storage.TaskStatusCanceled {
+		return fmt.Errorf("task %q %s: %s", task.ID, task.Status, task.Error)
+	}
+	return nil
 }

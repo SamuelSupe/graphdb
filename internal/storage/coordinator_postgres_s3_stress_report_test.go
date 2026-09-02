@@ -17,9 +17,17 @@ type casStressReport struct {
 	TargetQPS           int       `json:"target_qps"`
 	Duration            string    `json:"duration"`
 	TargetCommits       int       `json:"target_commits"`
+	BatchSize           int       `json:"batch_size"`
+	TargetBatches       int       `json:"target_batches"`
 	Committed           int       `json:"committed"`
+	WriterCommitted     []int64   `json:"writer_committed"`
+	Publishes           int64     `json:"publishes"`
 	Compactions         int64     `json:"compactions"`
 	WriteConflicts      int64     `json:"write_conflicts"`
+	RetryConflicts      int64     `json:"retry_conflicts"`
+	TaskLeaseRetries    int64     `json:"task_lease_retries"`
+	CASConflicts        int64     `json:"cas_conflicts"`
+	CompactRetries      int64     `json:"compact_retries"`
 	ElapsedMS           int64     `json:"elapsed_ms"`
 	Throughput          float64   `json:"throughput_commits_per_second"`
 	GraphVersion        int64     `json:"graph_version"`

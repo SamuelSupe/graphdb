@@ -70,32 +70,6 @@ func startIngestFlushSpan(
 	)
 }
 
-func startIngestMetadataFlushSpan(
-	ctx context.Context,
-	tenantID string,
-	items []*ingestPending,
-) (context.Context, trace.Span) {
-	firstLSN, lastLSN := ingestPendingLSNRange(items)
-	links := make([]trace.Link, 0, len(items))
-	for _, item := range items {
-		spanContext := item.envelope.Trace.spanContext()
-		if spanContext.IsValid() {
-			links = append(links, trace.Link{SpanContext: spanContext})
-		}
-	}
-	return otel.Tracer("graphdb/storage").Start(
-		ctx,
-		"graphdb.storage.ingest.metadata_flush",
-		trace.WithLinks(links...),
-		trace.WithAttributes(
-			tenantTraceAttr(tenantID),
-			attribute.Int("graphdb.ingest.metadata.requests", len(items)),
-			attribute.Int64("graphdb.ingest.metadata.first_lsn", int64(firstLSN)),
-			attribute.Int64("graphdb.ingest.metadata.last_lsn", int64(lastLSN)),
-		),
-	)
-}
-
 func ingestPendingLSNRange(items []*ingestPending) (uint64, uint64) {
 	if len(items) == 0 {
 		return 0, 0

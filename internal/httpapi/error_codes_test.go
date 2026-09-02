@@ -42,13 +42,6 @@ func TestHTTPErrorCodeContractMapsProductErrors(t *testing.T) {
 			retryable: true,
 		},
 		{
-			name:      "ingest WAL unavailable",
-			status:    http.StatusBadRequest,
-			err:       fmt.Errorf("%w: short write", storage.ErrIngestWALFenced),
-			wantCode:  ErrorCodeIngestWALUnavailable,
-			retryable: true,
-		},
-		{
 			name:      "index stale",
 			status:    http.StatusBadRequest,
 			err:       fmt.Errorf("%w: catalog version mismatch", query.ErrIndexUnavailable),
@@ -105,11 +98,11 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 		wantCode   ErrorCode
 	}{
 		{name: "object store", err: storage.ErrObjectStoreUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeObjectStoreUnavailable},
-		{name: "ingest WAL", err: storage.ErrIngestWALFenced, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeIngestWALUnavailable},
 		{name: "coordinator", err: storage.ErrCoordinatorUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeCoordinatorUnavailable},
 		{name: "write conflict", err: storage.ErrWriteConflict, wantStatus: http.StatusConflict, wantCode: ErrorCodeWriteConflict},
 		{name: "task lease", err: storage.ErrTaskLeaseHeld, wantStatus: http.StatusConflict, wantCode: ErrorCodeTaskConflict},
 		{name: "ingest repair", err: storage.ErrIngestRepairRequired, wantStatus: http.StatusConflict, wantCode: ErrorCodeRepairRequired},
+		{name: "maintenance busy", err: storage.ErrMaintenanceBusy, wantStatus: http.StatusTooManyRequests, wantCode: ErrorCodeMaintenanceTaskRunning},
 		{name: "timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
 		{name: "validation", err: fmt.Errorf("invalid field"), wantStatus: http.StatusBadRequest, wantCode: ErrorCodeBadRequest},
 	}
@@ -117,6 +110,49 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
 			writeStorageError(rr, tt.err)
+			var body ErrorResponse
+			decodeResponse(t, rr, &body)
+			if rr.Code != tt.wantStatus || body.Code != tt.wantCode {
+				t.Fatalf("status/code = %d/%s, want %d/%s", rr.Code, body.Code, tt.wantStatus, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestQueryErrorResponsePreservesContextCause(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   ErrorCode
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
+		{name: "canceled", err: context.Canceled, wantStatus: statusClientClosedRequest, wantCode: ErrorCodeRequestCanceled},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			status, response := queryErrorResponse(tt.err)
+			if status != tt.wantStatus || response.Code != tt.wantCode {
+				t.Fatalf("status/code = %d/%s, want %d/%s", status, response.Code, tt.wantStatus, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestWriteReadErrorPreservesContextStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   ErrorCode
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
+		{name: "canceled", err: context.Canceled, wantStatus: statusClientClosedRequest, wantCode: ErrorCodeRequestCanceled},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			writeReadError(rr, tt.err)
 			var body ErrorResponse
 			decodeResponse(t, rr, &body)
 			if rr.Code != tt.wantStatus || body.Code != tt.wantCode {

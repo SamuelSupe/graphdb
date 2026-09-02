@@ -88,7 +88,7 @@ func TestProfileIncludesOperators(t *testing.T) {
 	}
 }
 
-func TestMaterializedMatchWithoutSortReportsFullMapScan(t *testing.T) {
+func TestMaterializedMatchWithoutSortStopsAfterPageBoundary(t *testing.T) {
 	g := seedPruneGraph(t, 50)
 	response, err := Execute(g, Request{Op: "match", Kind: "host", Limit: 5})
 	if err != nil {
@@ -97,8 +97,8 @@ func TestMaterializedMatchWithoutSortReportsFullMapScan(t *testing.T) {
 	if len(response.Results) != 5 || response.NextCursor == "" {
 		t.Fatalf("response = %#v", response)
 	}
-	if response.Stats.Scanned != len(g.Entities) {
-		t.Fatalf("scanned = %d, want full materialized map size %d", response.Stats.Scanned, len(g.Entities))
+	if response.Stats.Scanned != 6 {
+		t.Fatalf("scanned = %d, want limit+1", response.Stats.Scanned)
 	}
 }
 

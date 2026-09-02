@@ -64,6 +64,40 @@ func TestTenantLockWaitCanBeCanceled(t *testing.T) {
 	}
 }
 
+func TestTenantOperationsHonorContextWhileWaitingForLock(t *testing.T) {
+	operations := map[string]func(context.Context, *TenantStore) error{
+		"foreground": func(ctx context.Context, store *TenantStore) error {
+			_, err := store.InitTenant(ctx, "tenant-a")
+			return err
+		},
+		"maintenance": func(ctx context.Context, store *TenantStore) error {
+			_, err := store.RunGC(ctx, "tenant-a", GCOptions{})
+			return err
+		},
+	}
+	for name, operation := range operations {
+		t.Run(name, func(t *testing.T) {
+			store := NewTenantStore(NewMemoryStore(), "test")
+			firstUnlock := store.lockTenant("tenant-a")
+			defer firstUnlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- operation(ctx, store) }()
+			waitForTenantLockRefs(t, store, "tenant-a", 2)
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("operation err = %v, want context canceled", err)
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("operation ignored context while waiting for tenant lock")
+			}
+		})
+	}
+}
+
 func TestForegroundTenantLockPassesQueuedMaintenance(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	firstUnlock := store.lockTenant("tenant-a")

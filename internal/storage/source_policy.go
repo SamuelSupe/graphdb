@@ -67,7 +67,10 @@ func (s *TenantStore) PutSourcePolicy(ctx context.Context, tenantID string, poli
 	if s.coordinated() {
 		return s.putCoordinatedSourcePolicy(ctx, tenantID, normalized)
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return graph.SourcePolicy{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

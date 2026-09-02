@@ -47,9 +47,15 @@ func (s *TenantStore) loadCoordinatedWriteContextFresh(
 	ctx context.Context,
 	tenantID string,
 ) (WriteContextSnapshot, CoordinationHead, error) {
-	head, exists, err := s.Coordinator.Head(ctx, tenantID)
-	if err != nil {
-		return WriteContextSnapshot{}, CoordinationHead{}, err
+	publishState, hasPublishState := coordinatorIngestPublishStateFromContext(ctx, tenantID)
+	head := publishState.head
+	exists := publishState.headExists
+	if !hasPublishState {
+		var err error
+		head, exists, err = s.Coordinator.Head(ctx, tenantID)
+		if err != nil {
+			return WriteContextSnapshot{}, CoordinationHead{}, err
+		}
 	}
 	if !exists {
 		return emptyWriteContext(tenantID), CoordinationHead{}, nil

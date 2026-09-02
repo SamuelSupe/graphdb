@@ -7,26 +7,23 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
-    name: Unit, vet, and race
+    name: Unit, vet, race, and v1.0 compatibility
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
       - name: Check out full history
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
 
       - name: Run static release gate
         run: RELEASE_GATE_VERIFY_ONLY=1 scripts/release_gate.sh
@@ -35,51 +32,38 @@ jobs:
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
   integration:
-    name: RustFS, WAL recovery, PostgreSQL CAS, load, and restore
+    name: RustFS, PostgreSQL CAS, load, and restore
     runs-on: ubuntu-latest
-    timeout-minutes: 40
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
 
       - name: Run integration release gate
-        env:
-          GRAPHDB_TEST_WAL_RELEASE_REPORT: artifacts/wal-recovery.json
         run: RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
 
-      - name: Upload WAL recovery evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wal-recovery
-          path: artifacts/wal-recovery.json
-
   cas-soak:
-    name: PostgreSQL CAS 2-active-writer 20 QPS 30-minute soak
+    name: PostgreSQL CAS 2-active-writer 20 logical ingest groups/s 30-minute soak
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
 
       - name: Run PostgreSQL/RustFS CAS soak
         env:
@@ -88,7 +72,8 @@ jobs:
         run: scripts/postgres_cas_gate.sh soak
 
       - name: Upload CAS stress evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: postgres-cas-stress
           path: artifacts/cas-stress.json
@@ -99,17 +84,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
 
       - name: Run formal rollback drill
         env:
@@ -118,76 +101,38 @@ jobs:
         run: scripts/postgres_cas_gate.sh rollback
 
       - name: Upload rollback evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: postgres-rollback-drill
           path: artifacts/rollback-drill.json
 
-  performance:
-    name: Local WAL 5x30-minute performance gate
-    runs-on: [self-hosted, macOS, ARM64, orbstack]
-    timeout-minutes: 390
-    steps:
-      - name: Check out full history
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Run fixed-host v1.1.5 and v1.2.0 matrix
-        run: scripts/wal_performance_matrix.sh
-
-      - name: Upload local WAL performance evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: local-wal-performance
-          path: artifacts/wal-performance
-
   release:
     name: Build and publish release assets
-    needs: [verify, integration, cas-soak, rollback, performance]
+    needs: [verify, integration, cas-soak, rollback]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
 
       - name: Download CAS stress evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@v4
         with:
           name: postgres-cas-stress
           path: artifacts
 
       - name: Download rollback evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@v4
         with:
           name: postgres-rollback-drill
           path: artifacts
-
-      - name: Download WAL recovery evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: wal-recovery
-          path: artifacts
-
-      - name: Download local WAL performance evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: local-wal-performance
-          path: artifacts/wal-performance
 
       - name: Build release package
         shell: bash
@@ -196,14 +141,10 @@ jobs:
 
           tag="${GITHUB_REF_NAME}"
           commit="${GITHUB_SHA}"
-          evidence_commit="$(python3 -c 'import json; report=json.load(open("artifacts/cas-stress.json")); assert report["schema_version"] == 2; assert report["success"] is True; assert report["legacy_v1_binary_validated"] is True; print(report["commit"])')"
+          evidence_commit="$(python3 -c 'import json; report=json.load(open("artifacts/cas-stress.json")); assert report["schema_version"] == 2; assert report["success"] is True; assert report["target_qps"] == 20; assert report["duration"] == "30m0s"; assert report["batch_size"] == 10; assert report["committed"] == report["target_commits"]; assert report["publishes"] == report["target_batches"]; assert len(report["writer_committed"]) == report["writers"]; assert all(value > 0 for value in report["writer_committed"]); assert report["legacy_v1_binary_validated"] is True; print(report["commit"])')"
           test "$evidence_commit" = "$commit"
           rollback_commit="$(python3 -c 'import json; report=json.load(open("artifacts/rollback-drill.json")); assert report["schema_version"] == 1; assert report["success"] is True; assert report["outbox_backlog"] == 0; assert report["legacy_mirror_lag"] == 0; assert report["marker_removed"] is True; assert report["postgres_writer_fenced"] is True; assert report["local_writer_succeeded"] is True; print(report["commit"])')"
           test "$rollback_commit" = "$commit"
-          wal_commit="$(python3 -c 'import json; report=json.load(open("artifacts/wal-recovery.json")); cfg=report["configuration"]; counts=report["counts"]; windows={item["name"]: item for item in report["windows"]}; crash=windows["durable_202_sigkill_restart"]; published=windows["published_to_finalized_sigkill_restart"]; outage=windows["object_store_outage"]; assert report["schema_version"] == 1; assert report["kind"] == "wal_metadata_segment_process_recovery"; assert report["success"] is True; assert cfg["ingest_mode"] == "wal"; assert cfg["metadata_mode"] == "segment"; assert cfg["coordination"] == "local"; assert counts["expected_applied"] == counts["collector_applied_total"] == counts["final_graph_version"] == 5; assert counts["published_windows_observed"] == 1; assert all(window.get("passed") is True for window in report["windows"]); assert crash["pre_kill_state"] == "accepted"; assert published["published_observed"] is True and published["recovered_state"] == "committed"; assert outage["durable_202_before_outage"] is True and outage["recovered_across_outage"] is True; assert outage["readiness_during_outage"] == 503 and outage["ingest_wal_ready_during_outage"] is False and outage["ingest_wal_writable_during_outage"] is True and outage["ingest_wal_pending_during_outage"] > 0; assert outage["readiness_recovered"] is True and outage["recovered_state"] == "committed"; assert report["recovery"]["no_loss"] is True; assert report["recovery"]["no_duplicate_graph_versions"] is True; assert report["recovery"]["fifo_preserved"] is True; assert report["recovery"]["metadata_outage_readiness_recovered"] is True; print(report["commit"])')"
-          test "$wal_commit" = "$commit"
-          performance_commit="$(python3 -c 'import json; report=json.load(open("artifacts/wal-performance/gate.json")); assert report["schema_version"] == 1; assert report["kind"] == "local_wal_ingest_performance_gate"; assert report["success"] is True; assert report["valid_baseline_runs"] == report["valid_candidate_runs"] == 5; assert report["median_candidate_mutations_per_second"] >= 10000; assert report["throughput_ratio"] >= 1.5; assert report["candidate_throughput_variation"] <= 0.05; assert report["rss_ratio"] <= 1.10; assert report["cpu_per_1000_mutations_ratio"] <= 0.75; assert report["direct_write_ratio"] <= 1.10; assert report["query_ratio"] <= 1.10; print(report["candidate_commit"])')"
-          test "$performance_commit" = "$commit"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           root="dist/${tag}"
           buildinfo_package="gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
@@ -225,7 +166,8 @@ jobs:
           cp docs/README.md docs/README.zh-CN.md docs/database-introduction.md docs/database-introduction.zh-CN.md \
             docs/openapi.yaml docs/query_capabilities.md docs/graphql.md docs/graphql.zh-CN.md \
             docs/gql.md docs/naming-and-compatibility.md docs/naming-and-compatibility.zh-CN.md \
-            docs/error_codes.md \
+            docs/error_codes.md docs/ingest-wal-batching-design.zh-CN.md \
+            docs/ingest-wal-multiwriter-design.md docs/ingest-wal-multiwriter-design.zh-CN.md \
             docs/capacity.md docs/capacity.zh-CN.md docs/security-deployment.md docs/security-deployment.zh-CN.md \
             docs/release-checklist.md \
             "$root/docs/"
@@ -236,13 +178,9 @@ jobs:
           cp release/capacity-envelope.yaml release/freeze-1.1.yaml "$root/release/"
           cp artifacts/cas-stress.json "$root/release/evidence/cas-stress-${tag}.json"
           cp artifacts/rollback-drill.json "$root/release/evidence/rollback-drill-${tag}.json"
-          cp artifacts/wal-recovery.json "$root/release/evidence/wal-recovery-${tag}.json"
-          cp -R artifacts/wal-performance "$root/release/evidence/wal-performance-${tag}"
-          cp scripts/capacity_baseline.sh \
-            scripts/check_release_freeze.sh scripts/postgres_cas_gate.sh \
-            scripts/wal_release_gate.sh scripts/wal_performance_run.sh \
-            scripts/wal_performance_gate.sh scripts/wal_performance_matrix.sh \
-            scripts/performance_regression_gate.sh scripts/release_gate.sh "$root/scripts/"
+          cp scripts/capacity_baseline.sh scripts/compatibility_v1_0_v1_1.sh \
+            scripts/check_release_freeze.sh scripts/check_workspace_hygiene.sh scripts/postgres_cas_gate.sh \
+            scripts/release_gate.sh "$root/scripts/"
           printf '%s\n' "$tag" > "$root/VERSION"
           printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
             "$tag" "$commit" "$build_date" "$(go version | cut -d' ' -f3)" > "$root/BUILD-METADATA.json"

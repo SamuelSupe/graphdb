@@ -12,7 +12,7 @@
 
 </div>
 
-GGraphDB 1.3.0 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.3.1 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -34,7 +34,7 @@ SPARQL、本体推理或历史图引擎。
 
 ### 1.3 PostgreSQL-CAS 多 writer WAL 合同
 
-GGraphDB 1.3.0 提供一个可选的 `/v1/ingest/batches` WAL profile：每个
+GGraphDB 1.3.1 提供一个可选的 `/v1/ingest/batches` WAL profile：每个
 writer 拥有独立本地 WAL，PostgreSQL 负责 tenant-head CAS 和协调元数据更新。
 对象存储仍是图数据权威；PostgreSQL 不保存 ingest payload、WAL record、commit
 segment 或图数据。`202` 表示本地 WAL `fsync` 后已持久接管，不是图版本已经提交。
@@ -45,7 +45,18 @@ CAS 和依赖的暂时故障仍通过重基与有界缩批重试；PostgreSQL �
 扩展。每个 writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID`、独立持久 WAL 卷和
 owner-routed 状态 URL。批量发布使用有界 CAS/publish slot 和生命周期
 generation fence：租户 freeze、delete 或 recreate 后，旧 generation 的请求
-不能发布。完整合同见[1.3 设计文档](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.zh-CN.md)。
+不能发布。完整合同见[1.3 设计文档](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.zh-CN.md)。
+
+1.3.1 在本地与 PostgreSQL 协调的 ingest 中补齐与 commit 对等的
+`expected_version`、atomic failure 和实体/边 precondition 语义。共享同一 WAL
+flush baseline 的兼容请求会组成有界 CAS cohort 统一计算和发布，同时保留独立结果
+与 WAL 顺序；不同 writer 之间不会合并 payload。恢复性 compact 不再被陈旧的
+ingest activity 阻塞，PostgreSQL direct ingest 也会同时预留幂等键与 batch alias。
+
+1.3.1 Go/Python SDK 保留 direct 模式的 `200/207` 结果，并提供 WAL 的 durable
+`202` acceptance、`Location`/owner status 资源、显式轮询/等待，以及 ingest
+的 `expected_version`、`failure_mode` 和 `preconditions`。GraphQL 公开合同只
+保留 `graph` 查询根；未接通的检索增强扩展不属于当前产品能力。
 
 发行证据覆盖完整 Go 测试、聚焦 race 和 vet，以及隔离 PostgreSQL 下的原子发布/回滚、
 跨 writer 幂等、同租户 2、4、8 writer 并发、四个独立租户、恢复和 owner 路由状态。
@@ -219,7 +230,7 @@ query FindPerson($request: QueryRequest!) {
 变量使用 `{"op":"match","kind":"person",...}`；要沿关系查询一跳邻居，可改为
 `{"op":"neighbors","id":"person:alice","relation_types":["works_at"]}`。
 
-schema、错误、alias、fragment 和 1.1 边界见
+schema、错误、alias、fragment 和兼容边界见
 [GraphQL 文档](docs/graphql.zh-CN.md)。旧 `FIND`/`MATCH` 文本 DSL 仅在
 `/v1/query/gql` 保留 1.0 兼容，不是 GraphQL。
 
@@ -248,10 +259,11 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.3.0：
-[**v1.3.0**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.0)。
-该版本包含 PostgreSQL-CAS 多 writer WAL profile 及绑定到提交的正确性/恢复证据。
-下文固定环境的读缓存与查询测量仍是历史证据，不是生产 SLO。
+最新已发布版本为 GGraphDB 1.3.1：
+[**v1.3.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.1)。
+该版本强化 PostgreSQL-CAS 多 writer WAL profile，补齐 ingest 条件/atomic 写入，
+更新两套 SDK，并下架未接通的 Evidence Search GraphQL 接口。下文固定环境的读缓存
+与查询测量仍是历史证据，不是生产 SLO。
 
 发行包包含：
 
@@ -261,7 +273,7 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.3.0` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.3.1` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 
@@ -277,7 +289,7 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
 | [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | GraphQL、JSON DSL、分页、流式、explain 和 profile。 |
 | [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
-| [1.3 多 writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](https://github.com/SamuelSupe/graphdb/blob/v1.3.0/docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
+| [1.3 多 writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
 | [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |

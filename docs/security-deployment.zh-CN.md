@@ -13,8 +13,9 @@ GGraphDB listener。
 - 配置 `GRAPHDB_ADMIN_ADDR` 后，数据面和管理面使用独立 listener。
 - 启用 pprof 时必须配置不同于 `GRAPHDB_ADDR` 的
   `GRAPHDB_ADMIN_ADDR`，否则启动失败。
-- PostgreSQL coordinator 不可用时写入 fail-closed，不会回退到本地
-  writer。
+- PostgreSQL coordinator 不可用时绝不回退到未协调 writer。直接 commit 仍
+  fail-closed；1.3 WAL ingest 可以继续本地 durable 准入，直到有界 WAL 高水位
+  在写入新 payload 前拒绝请求。
 
 推荐生产配置：
 
@@ -69,11 +70,19 @@ header。
 身份服务必须把逗号分隔角色解释为 any-of，并把原始 method、URI、身份和
 租户一起校验。
 
+1.3 WAL 状态路由中，网关必须保留并校验
+`/v1/ingest/writers/{writer_id}/...`，再根据稳定
+`GRAPHDB_INSTANCE_ID` 将请求转发给对应 writer。未知 writer ID 不能落到随机
+writer 池。参考 NGINX 文件展示了 writer-A 和 writer-B 的显式路由，实际部署
+应按 writer fleet 扩展。
+
 ## 必须落实的网络控制
 
 - 客户端只能访问 TLS 网关；
 - 禁止直接访问数据与管理 listener；
 - PostgreSQL coordination schema 和对象存储凭据只授予 GGraphDB 服务身份；
+- 每个 1.3 WAL writer 使用唯一稳定的 `GRAPHDB_INSTANCE_ID` 和独立保护的
+  持久 WAL 卷；不同 writer 不得共享 WAL 卷；
 - 1.0 reader 只能使用对象存储只读凭据；PG bootstrap 前撤销所有 1.0
   writer 路由和写凭据；
 - 指标可能包含租户标签和运行状态，必须保护；

@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 )
 
 type CoordinatorRollbackTenant struct {
@@ -61,7 +63,7 @@ func (s *TenantStore) RollbackCoordinator(
 		return report, err
 	}
 
-	restorePostgresMode := false
+	restorePostgresFrom := ""
 	switch mode {
 	case CoordinationPostgres:
 		changed, err := controller.CompareAndSwapCoordinationMode(
@@ -73,22 +75,38 @@ func (s *TenantStore) RollbackCoordinator(
 		if !changed {
 			return report, fmt.Errorf("%w: coordinator mode changed while starting rollback", ErrConflict)
 		}
-		restorePostgresMode = true
+		restorePostgresFrom = CoordinationDraining
 		mode = CoordinationDraining
 	case CoordinationDraining:
-		restorePostgresMode = true
+		restorePostgresFrom = CoordinationDraining
 	case CoordinationLocal:
 		// Resume a prior apply that fenced PostgreSQL but did not remove the marker.
 	default:
 		return report, fmt.Errorf("cannot roll back coordinator from mode %q", mode)
 	}
 	defer func() {
-		if err == nil || !restorePostgresMode {
+		if err == nil || restorePostgresFrom == "" {
 			return
 		}
-		_, _ = controller.CompareAndSwapCoordinationMode(
-			context.WithoutCancel(ctx), CoordinationDraining, CoordinationPostgres,
+		rollbackCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), 5*time.Second,
 		)
+		defer cancel()
+		restored, restoreErr := controller.CompareAndSwapCoordinationMode(
+			rollbackCtx, restorePostgresFrom, CoordinationPostgres,
+		)
+		if restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore PostgreSQL coordination mode: %w", restoreErr))
+			return
+		}
+		if !restored {
+			err = errors.Join(err, fmt.Errorf(
+				"%w: coordinator mode changed while restoring failed rollback",
+				ErrConflict,
+			))
+			return
+		}
+		report.ModeAfter = CoordinationPostgres
 	}()
 
 	s.SetCoordinator(coordinator)
@@ -114,8 +132,8 @@ func (s *TenantStore) RollbackCoordinator(
 		if !changed {
 			return report, fmt.Errorf("%w: coordinator mode changed while completing rollback", ErrConflict)
 		}
+		restorePostgresFrom = CoordinationLocal
 	}
-	restorePostgresMode = false
 	report.ModeAfter = CoordinationLocal
 	if err := s.Objects.DeleteConditional(
 		ctx, s.coordinationMarkerKey(), PutCondition{IfMatch: markerMeta.ETag},
@@ -124,5 +142,6 @@ func (s *TenantStore) RollbackCoordinator(
 	}
 	report.MarkerRemoved = true
 	report.Applied = true
+	restorePostgresFrom = ""
 	return report, nil
 }

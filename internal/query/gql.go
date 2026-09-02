@@ -8,6 +8,9 @@ import (
 
 // ParseGQL compiles the legacy FIND/MATCH text syntax into a JSON query request.
 func ParseGQL(input string) (Request, error) {
+	if len(input) > maxTextQueryBytes {
+		return Request{}, fmt.Errorf("%w: legacy text query exceeds %d bytes", ErrInvalid, maxTextQueryBytes)
+	}
 	tokens, err := tokenizeGQL(input)
 	if err != nil {
 		return Request{}, err
@@ -24,8 +27,9 @@ func ParseGQL(input string) (Request, error) {
 }
 
 type gqlParser struct {
-	tokens []gqlToken
-	pos    int
+	tokens      []gqlToken
+	pos         int
+	filterDepth int
 }
 
 func (p *gqlParser) parse() (Request, error) {
@@ -361,6 +365,10 @@ func (p *gqlParser) parseAndExpr() (*FilterExpr, error) {
 
 func (p *gqlParser) parseNotExpr() (*FilterExpr, error) {
 	if p.matchKeyword("NOT") {
+		if err := p.enterFilterNesting(); err != nil {
+			return nil, err
+		}
+		defer p.leaveFilterNesting()
 		child, err := p.parseNotExpr()
 		if err != nil {
 			return nil, err
@@ -372,6 +380,10 @@ func (p *gqlParser) parseNotExpr() (*FilterExpr, error) {
 
 func (p *gqlParser) parsePrimaryExpr() (*FilterExpr, error) {
 	if p.matchSymbol("(") {
+		if err := p.enterFilterNesting(); err != nil {
+			return nil, err
+		}
+		defer p.leaveFilterNesting()
 		expr, err := p.parseFilterExpr()
 		if err != nil {
 			return nil, err
@@ -382,6 +394,18 @@ func (p *gqlParser) parsePrimaryExpr() (*FilterExpr, error) {
 		return expr, nil
 	}
 	return p.parseConditionExpr()
+}
+
+func (p *gqlParser) enterFilterNesting() error {
+	if p.filterDepth >= maxFilterExpressionDepth {
+		return fmt.Errorf("%w: filter expression depth exceeds %d", ErrInvalid, maxFilterExpressionDepth)
+	}
+	p.filterDepth++
+	return nil
+}
+
+func (p *gqlParser) leaveFilterNesting() {
+	p.filterDepth--
 }
 
 func (p *gqlParser) parseConditionExpr() (*FilterExpr, error) {

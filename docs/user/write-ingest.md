@@ -239,6 +239,12 @@ Request shape:
   "batch_id": "aws-batch-001",
   "idempotency_key": "aws-batch-001",
   "cursor": "next-source-cursor",
+  "expected_version": 42,
+  "failure_mode": "best_effort",
+  "preconditions": [
+    {"resource_type": "entity", "id": "host:aws:i-001", "op": "exists"},
+    {"resource_type": "entity", "id": "host:aws:i-001", "field": "state", "op": "eq", "value": "ready"}
+  ],
   "items": [
     {
       "external_id": "i-001",
@@ -251,6 +257,25 @@ Request shape:
   ]
 }
 ```
+
+Transactional options are evaluated against the graph snapshot used for the
+mutation. `expected_version` is an optional tenant-version CAS guard;
+`failure_mode` is `best_effort` by default and may be set to `atomic`; atomic
+requests publish no graph version when an item is invalid, a precondition fails,
+or source governance suppresses a mutation. `preconditions` accepts at most 256
+entity/edge checks. Use `exists` or `not_exists` without a field, or compare a
+field with `eq`, `ne`, `lt`, `lte`, `gt`, or `gte` and a JSON `value`. Set
+`value_from` to `accepted_at` instead of `value` when the comparison must use the
+WAL acceptance timestamp; `value` and `value_from` are mutually exclusive.
+
+In direct mode, successful requests return `200`; ordinary item-level failures
+return `207`, a stale `expected_version` returns `409`, a failed precondition
+returns `412`, and atomic validation or suppression returns `422` or `409`
+respectively. In WAL mode, the initial response is `202` after durable local
+takeover; these statuses are reported by the terminal `result` in the status
+resource (or by `Prefer: wait=committed`). The terminal result includes
+`error_code` (`version_conflict`, `precondition_failed`,
+`atomic_validation_failed`, or `atomic_suppressed`) when applicable.
 
 Supported item payloads:
 
@@ -271,24 +296,38 @@ Response fields:
 - `skip_reason`: `logical_noop` when the resulting logical graph is unchanged,
   or `idempotent_replay` when an earlier batch result is replayed.
 - `cursor`: returned collector cursor.
+- `error_code`: terminal request error classification, when the request is
+  rejected by version/precondition/atomic semantics.
 - `failures`: item-level errors.
 - `conflicts`: suppressed conflicts and failed commit reasons.
 
-### Local WAL mode
+### Per-writer WAL CAS cohorts
 
-GGraphDB 1.2 defaults local writers to `GRAPHDB_INGEST_MODE=wal`,
-`GRAPHDB_INGEST_METADATA_MODE=segment`, and sync durability. Requests are first
-appended to one process-wide segmented WAL, so tenants share group fsync while
-two graph-write workers process independent tenants and preserve per-tenant FIFO
-order. The graph flush trigger is 8 requests / 2 MiB; busy tenants may merge the
-same-round queue. One tenant flush keeps the logical commit order of its requests,
-writes those commits to one
+For either `GRAPHDB_COORDINATION=local` or `GRAPHDB_COORDINATION=postgres`, a
+flush containing at least two non-atomic mutation requests from one writer with
+present, identical `expected_version` values is a CAS cohort. The writer
+compares that value and every request precondition once against the common graph
+snapshot at flush start. Each request keeps an independent result; changed
+requests receive consecutive logical versions in that writer's WAL order, while
+the changed cohort is built with one copy-on-write apply, one commit segment,
+and one candidate manifest. A request-local precondition failure only fails
+that request. If the shared expected version is stale, every cohort member
+returns `version_conflict` (HTTP `409`) and no graph version is published.
+Atomic requests, different expected-version values, and requests with
+preconditions but no expected version are isolation barriers; requests before
+and after a barrier can still form their own cohort or ordinary fast batch. A
+batch-apply fallback reuses the already-checked cohort guards rather than
+rechecking them against versions created earlier in the same flush.
+
+### Local WAL mode (1.2 compatibility profile)
+
+`GRAPHDB_INGEST_MODE=direct` remains the default synchronous `200/207`
+behavior. A single-writer deployment using `GRAPHDB_COORDINATION=local` can
+explicitly enable `GRAPHDB_INGEST_MODE=wal`. Requests are first appended to one
+process-wide segmented WAL, so tenants share group fsync while the default
+single graph-write worker preserves per-tenant FIFO order. One tenant flush
+keeps the logical commit order of its requests, writes those commits to one
 Parquet commit segment, and publishes the manifest once.
-
-PostgreSQL coordination has no distributed WAL. Set
-`GRAPHDB_INGEST_MODE=direct` explicitly for PostgreSQL writers; startup fails
-closed when that choice is omitted. Reader processes select direct mode
-automatically because they do not accept writes.
 
 Sync durability returns `202 Accepted`, `Location`, and a status URL after the
 WAL fsync. Send `Prefer: wait=committed` to wait for the final `200/207` result,
@@ -299,79 +338,53 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
 ```
 
-The WAL directory is part of the durability boundary. Container deployments
-must mount `GRAPHDB_DATA_DIR` on persistent local storage; the provided Compose
-profiles mount `/var/lib/graphdb` for the writer.
+In the PostgreSQL-CAS profile the acceptance body identifies the stable owner;
+the `Location` header and `status_url` carry the same owner-routed resource:
 
-Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
-`${GRAPHDB_DATA_DIR}/wal/ingest`), `GRAPHDB_INGEST_WAL_DURABILITY=sync`,
-`GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`,
-`GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=3ms`,
-`GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`,
-`GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`,
-`GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK=80`,
-`GRAPHDB_INGEST_WAL_HIGH_WATERMARK=70`,
-`GRAPHDB_INGEST_WAL_STOP_WATERMARK=85`,
-`GRAPHDB_INGEST_MAX_PENDING_AGE=2m`,
-`GRAPHDB_INGEST_FLUSH_INTERVAL=250ms`,
-`GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=8`,
-`GRAPHDB_INGEST_FLUSH_MAX_BYTES=2MiB`,
-`GRAPHDB_INGEST_FLUSH_WORKERS=2`,
-`GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms`,
-`GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256`,
-`GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB`,
-`GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2`,
-`GRAPHDB_WRITE_CACHE_MAX_BYTES=4GiB`,
-`GRAPHDB_WRITE_MAX_COMMIT_TAIL=20000`, and
-`GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
+```http
+HTTP/1.1 202 Accepted
+Location: /v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001
+Content-Type: application/json
 
-At the memory queue's 80% watermark, WAL disk's 70% watermark, or a two-minute
-old pending request, the writer returns `429` with `Retry-After`. At 85% WAL
-disk usage it enters drain-only readiness until committed work is reclaimed.
-Retry the same batch and idempotency identity after the advertised delay.
-
-#### Metadata segment mode (1.1.3+)
-
-GGraphDB 1.1.3 introduced metadata batching on top of local WAL ingest. It is
-the local-writer default in 1.2:
-
-```ini
-GRAPHDB_INGEST_MODE=wal
-GRAPHDB_COORDINATION=local
-GRAPHDB_INGEST_METADATA_MODE=segment
-GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL=500ms
-GRAPHDB_INGEST_METADATA_MAX_REQUESTS=256
-GRAPHDB_INGEST_METADATA_MAX_BYTES=8MiB
-GRAPHDB_INGEST_METADATA_FLUSH_WORKERS=2
+{
+  "writer_id": "writer-a",
+  "batch_id": "aws-batch-001",
+  "state": "accepted",
+  "durability": "durable",
+  "accepted_at": "2026-07-30T00:00:00Z",
+  "estimated_flush_at": "2026-07-30T00:00:10Z",
+  "status_url": "/v1/ingest/writers/writer-a/aws/collector-a/aws-batch-001"
+}
 ```
 
-Direct mode uses `legacy`; local WAL mode defaults to `segment`. Segment mode stores full requests, results,
-digests, and final collector snapshots from graph flushes of the same tenant in
-one content-addressed Parquet segment, then publishes it with one independent
-ingest-manifest CAS. Batch and idempotency identities point to the same segment
-row, so a normal 256-request window creates no per-request batch, idempotency,
-or collector-status objects.
+Poll the returned resource until `state` is `committed` or `failed`. A terminal
+status embeds the final result; `recovery_pending=true` means the owner is
+rebuilding WAL state and the batch remains queryable:
 
-The manifest keeps 32 recent segment references. Older references move into
-tiered catalogs with at most eight catalogs per level. Catalog compaction
-rewrites only references and Bloom filters, never historical payload segments.
-Lookup order is active WAL, segment/index, then legacy objects. Existing history
-is neither migrated nor deleted; the first segment collector snapshot is seeded
-from legacy status or legacy batch records.
+```json
+{
+  "writer_id": "writer-a",
+  "tenant_id": "demo",
+  "source": "aws",
+  "collector_id": "collector-a",
+  "batch_id": "aws-batch-001",
+  "state": "committed",
+  "durability": "durable",
+  "result": {"batch_id": "aws-batch-001", "version": 43, "applied": 1, "failed": 0}
+}
+```
 
-A request becomes `published` after graph-manifest publication and `committed`
-only after the metadata manifest is durable. `Prefer: wait=committed` forces the
-current tenant metadata window; normal `202` requests may wait for a threshold
-or the 500 ms interval. The WAL persists a metadata flush ID, LSN range, and
-content identity so crashes between segment PUT, manifest CAS, and `FINALIZED`
-do not duplicate graph versions, collector totals, or results.
-
-Upgrade all readers and writers to 1.1.3 in `legacy` mode before enabling
-`segment`. After a tenant has a segment manifest, a 1.1.3 legacy writer refuses
-old-format ingest. Do not run a 1.1.2 writer after activation; stop writes and
-export or convert with 1.1.3-compatible tooling before rollback. Direct mode,
-graph commits, logical versions, FIFO order, tenant isolation, and dead-letter
-object layout are unchanged.
+Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
+`${GRAPHDB_DATA_DIR}/wal/ingest`), `GRAPHDB_INGEST_WAL_DURABILITY=sync|os`,
+`GRAPHDB_INGEST_WAL_BUFFER_BYTES=4MiB`,
+`GRAPHDB_INGEST_WAL_FSYNC_INTERVAL=5ms`,
+`GRAPHDB_INGEST_WAL_MAX_BYTES=10GiB`,
+`GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES=256MiB`,
+`GRAPHDB_INGEST_FLUSH_INTERVAL=10s`,
+`GRAPHDB_INGEST_FLUSH_MAX_REQUESTS=256`,
+`GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`,
+`GRAPHDB_INGEST_FLUSH_WORKERS=1`, and
+`GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
 
 Recovery finishes before HTTP starts and holds an exclusive process lock on the
 WAL directory. Middle corruption fails closed; only an incomplete final record
@@ -381,108 +394,83 @@ graph version when recovering a manifest published before ingest metadata was
 finalized. The first flush that encounters a historical loose-commit tail folds
 it into the segment; later flushes do not pay that migration cost again.
 
-#### 1.1.4 sparse-tenant operation
-
-Metadata flush workers are independent of graph write workers. The default is
-two, with 500 ms and 256 requests / 8 MiB as scheduling triggers. For hundreds
-of mostly sparse tenants, tune those values against
-object-store p95 latency and the metadata deadline-overshoot metric. A tenant
-still has at most one in-flight metadata flush, and metadata segments never
-mix tenants; more workers therefore improve fairness rather than changing
-ordering or isolation.
-
-Per-tenant automatic maintenance waits for one minute of ingest idleness before
-running compaction, GC, or index catch-up. Heavy background task execution is
-single-concurrency by default.
-
-Each writer keeps a bounded, process-local LRU for ingest metadata manifests,
-catalogs, and immutable segments: at most 1,024 objects and 64 MiB of charged
-residency. A decoded segment is charged by the greater of its encoded bytes or
-4 KiB per retained item. Manifest entries expire after one second; immutable index and segment
-entries expire after 15 minutes. Concurrent cold reads of one object share a
-single object-store request; a warm lookup does not issue another GET. The
-cache is disposable and is rebuilt after restart. A successful metadata
-manifest CAS replaces the local manifest entry; it is not a cross-writer
-coherence mechanism.
-
-When WAL pruning advances past a known-safe position, the writer atomically
-records `checkpoint.json` in `GRAPHDB_INGEST_WAL_DIR`. Startup resumes from a
-valid checkpoint, scanning only the active tail. Missing, torn, or invalid
-checkpoint files fall back to a full WAL scan; corruption in the WAL itself
-continues to fail startup. Do not edit, copy independently, or restore a
-checkpoint without its corresponding WAL directory. It is an acceleration
-record, not a replacement for the WAL or object-store backup.
-
-Use `graphdb_ingest_metadata_deadline_overshoot_seconds`,
-`graphdb_ingest_metadata_cache_total`, and
-`graphdb_ingest_wal_checkpoint_{total,scanned_bytes,duration_seconds}` to
-separate worker saturation, lookup pressure, and recovery cost. JSON logs add
-`ingest_wal_checkpoint_written` and `ingest_wal_checkpoint_recovery`; their
-outcomes are `used`, `miss`, `fallback`, `written`, or `error` as applicable.
-
-`/metrics` exposes `graphdb_ingest_wal_*`, `graphdb_ingest_queue_*`,
-`graphdb_ingest_flush_*`, and `graphdb_ingest_metadata_*` metrics for
-append/fsync activity, WAL memory and disk
+`/metrics` exposes `graphdb_ingest_wal_*`, `graphdb_ingest_queue_*`, and
+`graphdb_ingest_flush_*` metrics for append/fsync activity, WAL memory and disk
 usage, written/durable LSNs, pending work and oldest age, status-cache
-hits/evictions, flush latency, logical and physical segment/object counts,
-manifest conflicts, Bloom candidates, metadata cache results, checkpoint scan
-cost, replay bytes, and recovery results.
-These metrics use only fixed status labels; tenant, source,
+hits/evictions, flush latency and request/commit/segment/manifest counts, and
+recovery results. These metrics use only fixed status labels; tenant, source,
 collector, and batch identifiers are deliberately excluded.
 
-JSON logs include `ingest_wal_recovery`, sampled `ingest_wal_accepted`
-(the first success and every 1,024th success),
-`ingest_flush_started`, `ingest_flush_completed`,
-`ingest_metadata_flush_started`, `ingest_metadata_segment_completed`,
-`ingest_metadata_manifest_published`, WAL rotate/prune/fsync
+JSON logs include `ingest_wal_recovery`, `ingest_wal_accepted`,
+`ingest_flush_started`, `ingest_flush_completed`, WAL rotate/prune/fsync
 failures, and shutdown events. Tenant, batch, LSN, flush ID, latency, and error
-details remain in logs. Queue gauges refresh from complete snapshots on the
-first acceptance, every 128 accepted or completed transitions, and queue drain;
-successful `POST /v1/ingest/batches` request logs retain the first event and
-every 1,024th event. Event counters, traces, failure logs, other request logs,
-and WAL records are not sampled. When
-`GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
-append/group write, flush, batch apply, publish, metadata encode/PUT, manifest
-CAS, and Bloom/index lookup spans
+details remain in logs. When `GRAPHDB_OTLP_ENDPOINT` is set, accept, WAL
+append/group write, flush, batch apply, publish, and metadata-finalization spans
 are exported over OTLP/HTTP. Asynchronous group writes and flushes use OTel
 links to the originating request span. Accepted records persist that trace
 context, so recovery can retain the association after a restart.
 
-#### 1.1.5 WAL fault handling
+### PostgreSQL-CAS multi-writer WAL (1.3 contract)
 
-Transient object-store or metadata-flush errors are retried. While retry work is
-pending, readiness remains unavailable; after a successful retry the writer
-clears its last error and becomes ready again without a restart. This does not
-change the durable `202` contract.
+The 1.3 profile combines an independent local WAL on every writer with
+PostgreSQL head CAS. It is release-gated; the contract below does not claim
+that a particular build has passed the required multi-writer or crash matrix.
+Use the [1.3 design](../ingest-wal-multiwriter-design.md) for the complete
+protocol.
 
-A fatal WAL append, short-write, rotation, or fsync error fences the local WAL
-writer. New ingest appends are rejected with `503` and the stable
-`ingest_wal_unavailable` code (`retryable=true`), no new LSN is assigned, and the
-durable records already accepted in the WAL remain the recovery source of truth.
-Keep the WAL directory intact, repair or replace the failed storage, and restart
-only after the failure is understood. A fenced writer must not continue
-appending to a possibly damaged tail.
+Configure every writer with `GRAPHDB_COORDINATION=postgres`,
+`GRAPHDB_WRITER_TOPOLOGY=cas`, `GRAPHDB_INGEST_MODE=wal`, generic S3-compatible
+object storage, and a unique stable `GRAPHDB_INSTANCE_ID`. Each writer must
+mount its own persistent `GRAPHDB_INGEST_WAL_DIR`; two writers must never share
+one WAL directory or volume. PostgreSQL schema v5 stores coordination metadata
+only (tenant head/generation, idempotency reservations/results, collector state,
+and batch metadata). It does not store ingest payloads, WAL records, commit
+segments, or graph data. Object storage remains the graph-data authority.
 
-The v1.1.5 release gate exercises this behavior with the real binary in
-`GRAPHDB_INGEST_MODE=wal`, `GRAPHDB_COORDINATION=local`, and explicit
-`GRAPHDB_INGEST_METADATA_MODE=segment`. Its commit-bound evidence covers a
-durable accepted batch across process restart and object-store interruption;
-those explicitly selected modes.
+After static validation and local WAL `fsync`, the writer returns `202 Accepted`
+without requiring PostgreSQL to be reachable. The response includes
+`writer_id` and an owner-routed `status_url`. Route that status URL to the
+writer named by the stable instance ID; while that writer is recovering, status
+must remain available and may report `recovery_pending=true`. A `202` means
+durable takeover by that writer, not a committed graph version.
 
-#### 1.2.0 performance-first defaults
+The 1.3 owner route is:
 
-The v1.1.5 to v1.2.0 data upgrade is one-way. Stop the old writer, retain the
-WAL and object data, then start v1.2.0; do not run a v1.1.5 writer after v1.2.0
-has activated segment metadata. There is no reverse-compatibility release gate.
-The graph model, logical commit/version order, FIFO semantics, and object layout
-remain unchanged; only physical batching and default runtime policy change.
+```text
+GET /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}
+```
 
-The release gate runs v1.1.5 and v1.2.0 five times each for 30 minutes on one
-fixed OrbStack host. v1.2.0 must commit at least 10,000 mutations/s and reach
-1.5x the v1.1.5 median, with accepted p95/p99 at most 20/250 ms, committed
-p95/p99 at most 8/15 seconds, RSS at most 7 GiB and 110% of baseline, CPU per
-1,000 mutations at least 25% lower, throughput spread at most 5%, and direct
-write/query regression at most 10%.
+The legacy `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` status path
+remains available for compatibility, but an owner-routed URL must not be sent
+to a random writer.
+
+WAL flushes are bounded per-tenant batches. A writer preserves its local WAL
+FIFO; different writers are ordered by successful PostgreSQL head CAS, not by
+HTTP arrival time. CAS, PostgreSQL, and temporary object-store failures remain
+retryable: reload the newest head, rebase, apply exponential backoff with
+jitter, and shrink the batch prefix at request/cohort barriers after repeated
+conflicts. An accepted request cannot become terminally failed merely because a
+retry budget was exhausted. When a PostgreSQL writer loses head CAS, its
+candidate remains invisible and it reloads the new head. A losing
+`expected_version` cohort is not merged with another writer's payload or
+rebased to a different expected version; if the expected version is now stale,
+all of that cohort's members finalize as `version_conflict` without publication.
+Deterministic semantic errors and lifecycle fencing (freeze/delete/restore) may
+finalize as `failed`; lifecycle fencing wins over unpublished WAL and never
+rolls back a version already published by CAS.
+
+The profile supports two to eight concurrent writers for one tenant. This is a
+correctness and availability boundary; the throughput scale target is across
+tenants, not linear single-tenant speed-up. PostgreSQL unavailability does not
+fall back to local coordination. A writer may accept locally durable requests
+until its WAL high-water policy is reached, then rejects new admission before
+writing another payload while it continues to drain and serve owner status.
+
+For rolling upgrade, first deploy the 1.3 binary in direct mode and validate
+the existing v5 coordination plane. Enable WAL writer by writer. Before a
+downgrade, stop new WAL admission and wait for that writer's WAL to finalize;
+a pending WAL is a downgrade blocker. The 1.2 direct and 1.3 WAL profiles may
+coexist only under the documented rollout and shared object layout.
 
 Collector batch sizing for CMDB workloads:
 

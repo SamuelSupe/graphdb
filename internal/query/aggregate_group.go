@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 type groupAccumulator struct {
@@ -27,17 +29,40 @@ func newGroupAccumulator(groupBy []string, specs []Aggregation) *groupAccumulato
 	return &groupAccumulator{groupBy: append([]string(nil), groupBy...), specs: append([]Aggregation(nil), specs...), groups: map[string]*aggregateGroupState{}}
 }
 
-func (a *groupAccumulator) add(result Result) {
+func (a *groupAccumulator) add(result Result) error {
 	if a == nil {
-		return
+		return nil
 	}
 	key, identity := aggregateGroupKey(result, a.groupBy)
+	group, err := a.groupFor(key, identity)
+	if err != nil {
+		return err
+	}
+	return group.acc.add(result)
+}
+
+func (a *groupAccumulator) addEntity(entity graph.Entity) error {
+	if a == nil {
+		return nil
+	}
+	key, identity := aggregateGroupEntityKey(entity, a.groupBy)
+	group, err := a.groupFor(key, identity)
+	if err != nil {
+		return err
+	}
+	return group.acc.addEntity(entity)
+}
+
+func (a *groupAccumulator) groupFor(key map[string]any, identity string) (*aggregateGroupState, error) {
 	group := a.groups[identity]
 	if group == nil {
+		if len(a.groups) >= maxAggregateBuckets {
+			return nil, fmt.Errorf("%w: group_by supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
+		}
 		group = &aggregateGroupState{key: key, acc: newAggregateAccumulator(a.specs)}
 		a.groups[identity] = group
 	}
-	group.acc.add(result)
+	return group, nil
 }
 
 func (a *groupAccumulator) results(having []Filter, havingExpr *FilterExpr) []AggregateGroup {
@@ -61,19 +86,33 @@ func (a *groupAccumulator) results(having []Filter, havingExpr *FilterExpr) []Ag
 	return out
 }
 
-func aggregateGroups(results []Result, groupBy []string, specs []Aggregation, having []Filter, havingExpr *FilterExpr) []AggregateGroup {
+func aggregateGroups(results []Result, groupBy []string, specs []Aggregation, having []Filter, havingExpr *FilterExpr) ([]AggregateGroup, error) {
 	acc := newGroupAccumulator(groupBy, specs)
 	for _, result := range results {
-		acc.add(result)
+		if err := acc.add(result); err != nil {
+			return nil, err
+		}
 	}
-	return acc.results(having, havingExpr)
+	return acc.results(having, havingExpr), nil
 }
 
 func aggregateGroupKey(result Result, fields []string) (map[string]any, string) {
+	return aggregateGroupKeyValues(fields, func(field string) any {
+		return resultValue(result, field)
+	})
+}
+
+func aggregateGroupEntityKey(entity graph.Entity, fields []string) (map[string]any, string) {
+	return aggregateGroupKeyValues(fields, func(field string) any {
+		return entityValue(entity, field)
+	})
+}
+
+func aggregateGroupKeyValues(fields []string, valueFor func(string) any) (map[string]any, string) {
 	key := make(map[string]any, len(fields))
 	identityParts := make([]any, 0, len(fields)*2)
 	for _, field := range fields {
-		value := resultValue(result, field)
+		value := valueFor(field)
 		key[field] = value
 		identityParts = append(identityParts, field, value)
 	}

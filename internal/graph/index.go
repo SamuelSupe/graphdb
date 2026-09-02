@@ -3,6 +3,8 @@ package graph
 import "sort"
 
 func (g *Graph) rebuildIndexes() {
+	g.invalidateEntityOrder()
+	g.invalidateFieldIndexOrder()
 	g.cow = nil
 	g.out = map[string]map[string]struct{}{}
 	g.in = map[string]map[string]struct{}{}
@@ -218,6 +220,8 @@ func (g *Graph) indexSnapshot() IndexSnapshot {
 }
 
 func (g *Graph) loadIndexSnapshot(snapshot IndexSnapshot) {
+	g.invalidateEntityOrder()
+	g.invalidateFieldIndexOrder()
 	g.cow = nil
 	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
 	g.out = map[string]map[string]struct{}{}

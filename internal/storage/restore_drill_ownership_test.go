@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -101,7 +102,18 @@ func TestRestoreDrillCleanupRejectsChangedOwnedTarget(t *testing.T) {
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("change target after capture: %v", err)
 	}
-	if _, err := store.cleanupRestoreDrillTarget(ctx, "tenant-target", ownership); !errors.Is(err, ErrConflict) {
+	lease, _, ok := store.getCachedWriterLeaseAny("tenant-target")
+	if !ok {
+		t.Fatal("target writer lease is not cached")
+	}
+	claim := restoreDrillClaim{fence: writerFenceRef{
+		ownerID: lease.OwnerID,
+		token:   lease.FenceToken,
+		epoch:   lease.FenceEpoch,
+	}}
+	if _, _, err := store.cleanupOwnedRestoreDrillTarget(
+		ctx, "tenant-target", ownership, claim, true,
+	); !errors.Is(err, ErrConflict) {
 		t.Fatalf("cleanup err = %v, want ErrConflict", err)
 	}
 	g, manifest, err := store.Load(ctx, "tenant-target")
@@ -113,6 +125,52 @@ func TestRestoreDrillCleanupRejectsChangedOwnedTarget(t *testing.T) {
 	}
 	if _, ok := g.GetEntity("host:b"); !ok {
 		t.Fatal("rejected cleanup deleted the changed target")
+	}
+}
+
+func TestRestoreDrillOwnershipUsesBoundedObjectPages(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	paged := &pagingOnlyStore{ObjectStore: base}
+	store := NewTenantStore(paged, "drill")
+	tenantID := "tenant-target"
+	prefix := store.tenantObjectPrefix(tenantID)
+	for i := 0; i < objectPrefixScanPageSize+1; i++ {
+		if err := base.Put(
+			ctx,
+			fmt.Sprintf("%sdata/item-%04d", prefix, i),
+			[]byte("value"),
+		); err != nil {
+			t.Fatalf("put target object: %v", err)
+		}
+	}
+	now := time.Now().UTC()
+	marker := Task{
+		ID:         "drill-restore",
+		TenantID:   tenantID,
+		Type:       TaskTypeTenantRestore,
+		Status:     TaskStatusSucceeded,
+		Phase:      "done",
+		OwnerID:    store.InstanceID,
+		StartedAt:  now,
+		UpdatedAt:  now,
+		FinishedAt: now,
+	}
+	if err := store.saveTask(ctx, marker); err != nil {
+		t.Fatalf("save ownership marker: %v", err)
+	}
+	ownership, err := store.captureRestoreDrillOwnership(ctx, tenantID, marker.ID)
+	if err != nil {
+		t.Fatalf("capture ownership: %v", err)
+	}
+	if ownership.objectCount != objectPrefixScanPageSize+2 {
+		t.Fatalf("ownership object count = %d, want %d", ownership.objectCount, objectPrefixScanPageSize+2)
+	}
+	if ownership.fingerprint == "" {
+		t.Fatal("ownership fingerprint is empty")
+	}
+	if paged.listCalls != 0 || paged.pageCalls < 2 {
+		t.Fatalf("list calls=%d page calls=%d, want 0 and at least 2", paged.listCalls, paged.pageCalls)
 	}
 }
 
@@ -148,6 +206,38 @@ func TestRestoreDrillOwnedCleanupRemovesOnlyTargetTenant(t *testing.T) {
 	purged, err := target.tenantPurgeTombstoneExists(ctx, "tenant-cleanup")
 	if err != nil || purged {
 		t.Fatalf("cleanup tombstone exists=%v err=%v", purged, err)
+	}
+}
+
+func TestRestoreDrillCleanupFailureFailsTaskAndRetriesCleanup(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	objects := &failOnceTargetDeleteStore{
+		ObjectStore: base,
+		prefix:      "drill/tenants/tenant-cleanup/",
+	}
+	source := NewTenantStore(objects, "test")
+	seedRestoreDrillTenant(t, ctx, source, "tenant-a", "host:source")
+
+	task, err := source.StartTask(ctx, "tenant-a", TaskTypeTenantRestoreDrill, map[string]any{
+		"target_prefix":    "drill",
+		"target_tenant_id": "tenant-cleanup",
+		"cleanup":          true,
+	})
+	if err != nil {
+		t.Fatalf("start restore drill: %v", err)
+	}
+	task = waitForRestoreDrillTerminalTask(t, ctx, source, "tenant-a", task.ID)
+	if task.Status != TaskStatusFailed ||
+		!strings.Contains(task.Error, "injected cleanup delete failure") {
+		t.Fatalf("restore drill task = %#v", task)
+	}
+	remaining, err := base.List(ctx, objects.prefix)
+	if err != nil {
+		t.Fatalf("list retried cleanup target: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("retried cleanup left target objects: %#v", remaining)
 	}
 }
 
@@ -304,6 +394,30 @@ type failTargetManifestPutStore struct {
 	mu     sync.Mutex
 	key    string
 	failed bool
+}
+
+type failOnceTargetDeleteStore struct {
+	ObjectStore
+	mu     sync.Mutex
+	prefix string
+	failed bool
+}
+
+func (s *failOnceTargetDeleteStore) DeleteConditional(
+	ctx context.Context,
+	key string,
+	condition PutCondition,
+) error {
+	s.mu.Lock()
+	fail := strings.HasPrefix(key, s.prefix) && !s.failed
+	if fail {
+		s.failed = true
+	}
+	s.mu.Unlock()
+	if fail {
+		return errors.New("injected cleanup delete failure")
+	}
+	return s.ObjectStore.DeleteConditional(ctx, key, condition)
 }
 
 func (s *failTargetManifestPutStore) PutConditional(

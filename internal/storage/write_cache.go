@@ -22,13 +22,19 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 	}()
 	if s.coordinated() {
 		cached, cacheFound := s.getWriteCache(tenantID)
+		publishState, hasPublishState := coordinatorIngestPublishStateFromContext(ctx, tenantID)
 		var manifest Manifest
 		var meta ObjectMeta
 		var manifestErr error
 		if cacheFound {
-			head, exists, headErr := s.Coordinator.Head(ctx, tenantID)
-			if headErr != nil {
-				return loadedGraph{}, headErr
+			head := publishState.head
+			exists := publishState.headExists
+			if !hasPublishState {
+				var headErr error
+				head, exists, headErr = s.Coordinator.Head(ctx, tenantID)
+				if headErr != nil {
+					return loadedGraph{}, headErr
+				}
 			}
 			if exists && writeCacheMatchesCoordinatorHead(cached, head) {
 				span.SetAttributes(
@@ -46,6 +52,10 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 			} else {
 				manifest, meta, manifestErr = s.getManifest(ctx, tenantID)
 			}
+		} else if hasPublishState && publishState.headExists {
+			manifest, meta, manifestErr = s.getCoordinatedManifestAtHead(
+				ctx, tenantID, publishState.head,
+			)
 		} else {
 			manifest, meta, manifestErr = s.getManifest(ctx, tenantID)
 		}

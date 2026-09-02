@@ -13,6 +13,8 @@ import (
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
 )
 
+const huaweiOBSMaxRetryCount = 0
+
 type huaweiOBSClient struct {
 	client    *obs.ObsClient
 	endpoint  string
@@ -22,7 +24,8 @@ type huaweiOBSClient struct {
 	secretKey string
 	pathStyle bool
 
-	probeHTTPClient *http.Client
+	requestHTTPClient *http.Client
+	probeHTTPClient   *http.Client
 }
 
 func (c *huaweiOBSClient) Probe(ctx context.Context) error {
@@ -76,32 +79,65 @@ func NewHuaweiOBSStore(endpoint, bucket, region, accessKey, secretKey string, op
 	if err != nil {
 		return nil, err
 	}
+	httpClient := &http.Client{
+		Timeout:   defaultS3RequestTimeout,
+		Transport: newS3Transport(),
+	}
 	client, err := obs.New(
 		config.accessKey,
 		config.secretKey,
 		config.endpoint,
 		obs.WithPathStyle(config.pathStyle),
 		obs.WithRegion(config.region),
+		// The SDK retry backoff does not observe the request context. Retrying at
+		// this layer can therefore retain canceled requests until every backoff
+		// completes; callers already have bounded, retryable object operations.
+		obs.WithMaxRetryCount(huaweiOBSMaxRetryCount),
+		obs.WithHttpClient(httpClient),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create huawei obs client: %w", err)
 	}
 	return newNativeObjectStore(&huaweiOBSClient{
-		client:    client,
-		endpoint:  config.endpoint,
-		bucket:    config.bucket,
-		region:    config.region,
-		accessKey: config.accessKey,
-		secretKey: config.secretKey,
-		pathStyle: config.pathStyle,
+		client:            client,
+		endpoint:          config.endpoint,
+		bucket:            config.bucket,
+		region:            config.region,
+		accessKey:         config.accessKey,
+		secretKey:         config.secretKey,
+		pathStyle:         config.pathStyle,
+		requestHTTPClient: httpClient,
 	}), nil
+}
+
+func (c *huaweiOBSClient) requestClient(ctx context.Context) (*obs.ObsClient, error) {
+	if c.requestHTTPClient == nil {
+		if c.client == nil {
+			return nil, fmt.Errorf("huawei obs client is not configured")
+		}
+		return c.client, nil
+	}
+	return obs.New(
+		c.accessKey,
+		c.secretKey,
+		c.endpoint,
+		obs.WithPathStyle(c.pathStyle),
+		obs.WithRegion(c.region),
+		obs.WithRequestContext(ctx),
+		obs.WithMaxRetryCount(huaweiOBSMaxRetryCount),
+		obs.WithHttpClient(c.requestHTTPClient),
+	)
 }
 
 func (c *huaweiOBSClient) Get(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
 	if err := objectContextErr(ctx); err != nil {
 		return nil, ObjectMeta{Key: key}, err
 	}
-	result, err := c.client.GetObject(&obs.GetObjectInput{GetObjectMetadataInput: obs.GetObjectMetadataInput{Bucket: c.bucket, Key: key}})
+	client, err := c.requestClient(ctx)
+	if err != nil {
+		return nil, ObjectMeta{Key: key}, err
+	}
+	result, err := client.GetObject(&obs.GetObjectInput{GetObjectMetadataInput: obs.GetObjectMetadataInput{Bucket: c.bucket, Key: key}})
 	if err != nil {
 		return nil, ObjectMeta{Key: key}, normalizeHuaweiOBSError(err, false)
 	}
@@ -120,7 +156,11 @@ func (c *huaweiOBSClient) Head(ctx context.Context, key string) (ObjectMeta, err
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
-	result, err := c.client.HeadObject(&obs.HeadObjectInput{Bucket: c.bucket, Key: key})
+	client, err := c.requestClient(ctx)
+	if err != nil {
+		return ObjectMeta{Key: key}, err
+	}
+	result, err := client.HeadObject(&obs.HeadObjectInput{Bucket: c.bucket, Key: key})
 	if err != nil {
 		return ObjectMeta{Key: key}, normalizeHuaweiOBSError(err, false)
 	}
@@ -134,6 +174,10 @@ func (c *huaweiOBSClient) Put(ctx context.Context, key string, data []byte, crea
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
+	client, err := c.requestClient(ctx)
+	if err != nil {
+		return ObjectMeta{Key: key}, err
+	}
 	input := &obs.PutObjectInput{
 		PutObjectBasicInput: obs.PutObjectBasicInput{
 			ObjectOperationInput: obs.ObjectOperationInput{Bucket: c.bucket, Key: key},
@@ -143,15 +187,15 @@ func (c *huaweiOBSClient) Put(ctx context.Context, key string, data []byte, crea
 	}
 	var (
 		result *obs.PutObjectOutput
-		err    error
+		putErr error
 	)
 	if createOnly {
-		result, err = c.client.PutObject(input, obs.WithCustomHeader("x-obs-forbid-overwrite", "true"))
+		result, putErr = client.PutObject(input, obs.WithCustomHeader("x-obs-forbid-overwrite", "true"))
 	} else {
-		result, err = c.client.PutObject(input)
+		result, putErr = client.PutObject(input)
 	}
-	if err != nil {
-		return ObjectMeta{Key: key}, normalizeHuaweiOBSError(err, createOnly)
+	if putErr != nil {
+		return ObjectMeta{Key: key}, normalizeHuaweiOBSError(putErr, createOnly)
 	}
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key}, err
@@ -167,7 +211,11 @@ func (c *huaweiOBSClient) Delete(ctx context.Context, key string) error {
 	if err := objectContextErr(ctx); err != nil {
 		return err
 	}
-	_, err := c.client.DeleteObject(&obs.DeleteObjectInput{Bucket: c.bucket, Key: key})
+	client, err := c.requestClient(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = client.DeleteObject(&obs.DeleteObjectInput{Bucket: c.bucket, Key: key})
 	if err == nil {
 		return objectContextErr(ctx)
 	}
@@ -191,7 +239,11 @@ func (c *huaweiOBSClient) ListPage(
 	if err := objectContextErr(ctx); err != nil {
 		return nil, "", err
 	}
-	result, err := c.client.ListObjects(&obs.ListObjectsInput{
+	client, err := c.requestClient(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	result, err := client.ListObjects(&obs.ListObjectsInput{
 		ListObjsInput: obs.ListObjsInput{
 			Prefix:  prefix,
 			MaxKeys: nativeObjectPageLimit(limit),

@@ -17,6 +17,9 @@ entity-relationship applications.
   readers independently reload immutable graph objects from object storage.
 - Object-storage persistence using Parquet manifests, commits, snapshots, entity
   pages, edge shards, and index objects.
+- The 1.3 coordinated WAL profile uses an independent persistent WAL per writer;
+  PostgreSQL stores head-CAS and coordination metadata only, while object
+  storage remains the graph-data authority.
 - GraphQL, JSON Query DSL, scan/export APIs, saved queries, and running-query
   control.
 - Optional source-priority governance for entity fields, edge fields, and edge
@@ -62,6 +65,7 @@ export BASE=http://127.0.0.1:8080
 - [Usage Manual](usage-manual.md) · [中文](usage-manual.zh-CN.md)
 - [Data Model](data-model.md) · [中文](data-model.zh-CN.md)
 - [Write And Ingest](write-ingest.md) · [中文](write-ingest.zh-CN.md)
+- [1.3 PostgreSQL-CAS Multi-Writer WAL](../ingest-wal-multiwriter-design.md) · [中文](../ingest-wal-multiwriter-design.zh-CN.md)
 - [Read And Query](read-query.md) · [中文](read-query.zh-CN.md)
 - [Scan And Export](scan-export.md) · [中文](scan-export.zh-CN.md)
 - [Tenant And Config](tenant-config.md) · [中文](tenant-config.zh-CN.md)

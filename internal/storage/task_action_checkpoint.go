@@ -17,13 +17,15 @@ type taskActionUpdate struct {
 }
 
 func (s *TenantStore) updateTaskActionProgress(ctx context.Context, task Task, phase string, completed int, total int, action taskActionUpdate, extra map[string]any) error {
-	current := s.taskStateOrLocal(ctx, task)
+	writeCtx, cancel := s.taskPersistenceContext(ctx)
+	defer cancel()
+	current := s.taskStateOrLocal(writeCtx, task)
 	checkpoint := taskActionCheckpoint(current.Checkpoint, action)
 	for key, value := range extra {
 		checkpoint[key] = value
 	}
 	checkpoint["phase"] = phase
-	return s.updateTaskProgress(ctx, current, phase, completed, total, checkpoint)
+	return s.updateTaskProgress(writeCtx, current, phase, completed, total, checkpoint)
 }
 
 func taskActionCheckpoint(existing map[string]any, update taskActionUpdate) map[string]any {

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +18,12 @@ type Config struct {
 	Mode                              string
 	Prefix                            string
 	PollInterval                      time.Duration
+	ReaderCacheIdleTTL                time.Duration
+	ReaderCacheMaxTenants             int
+	ReaderCacheMaxBytes               int64
+	ReaderCacheLoadTimeout            time.Duration
+	ReaderCacheLoadMaxConcurrent      int
+	ReaderCacheLoadQueueTimeout       time.Duration
 	DataDir                           string
 	StoreKind                         string
 	QueryMaxConcurrent                int
@@ -59,19 +64,10 @@ type Config struct {
 	IngestWALSegmentBytes             int64
 	IngestWALAppendQueue              int
 	IngestQueueMemoryBytes            int64
-	IngestQueueHighWatermark          int
-	IngestWALHighWatermark            int
-	IngestWALStopWatermark            int
-	IngestMaxPendingAge               time.Duration
 	IngestFlushInterval               time.Duration
 	IngestFlushMaxRequests            int
 	IngestFlushMaxBytes               int64
 	IngestFlushWorkers                int
-	IngestMetadataMode                string
-	IngestMetadataFlushInterval       time.Duration
-	IngestMetadataMaxRequests         int
-	IngestMetadataMaxBytes            int64
-	IngestMetadataFlushWorkers        int
 	IngestShutdownTimeout             time.Duration
 	SlowQueryThreshold                time.Duration
 	IndexHealthInterval               time.Duration
@@ -113,29 +109,18 @@ type Config struct {
 
 func Load() (Config, error) {
 	cleanup := storage.DefaultCoordinatorCleanupConfig()
-	mode := getenv("GRAPHDB_MODE", "all")
-	ingestMode := strings.ToLower(strings.TrimSpace(os.Getenv("GRAPHDB_INGEST_MODE")))
-	if ingestMode == "" {
-		if mode == "reader" {
-			ingestMode = "direct"
-		} else {
-			ingestMode = "wal"
-		}
-	}
-	ingestMetadataMode := strings.ToLower(strings.TrimSpace(os.Getenv("GRAPHDB_INGEST_METADATA_MODE")))
-	if ingestMetadataMode == "" {
-		if ingestMode == "wal" {
-			ingestMetadataMode = storage.IngestMetadataModeSegment
-		} else {
-			ingestMetadataMode = storage.IngestMetadataModeLegacy
-		}
-	}
 	cfg := Config{
 		Addr:                              getenv("GRAPHDB_ADDR", ":8080"),
 		AdminAddr:                         strings.TrimSpace(os.Getenv("GRAPHDB_ADMIN_ADDR")),
-		Mode:                              mode,
+		Mode:                              getenv("GRAPHDB_MODE", "all"),
 		Prefix:                            getenv("GRAPHDB_PREFIX", "graphdb"),
 		PollInterval:                      2 * time.Second,
+		ReaderCacheIdleTTL:                15 * time.Minute,
+		ReaderCacheMaxTenants:             64,
+		ReaderCacheMaxBytes:               512 * 1024 * 1024,
+		ReaderCacheLoadTimeout:            time.Minute,
+		ReaderCacheLoadMaxConcurrent:      4,
+		ReaderCacheLoadQueueTimeout:       2 * time.Second,
 		DataDir:                           getenv("GRAPHDB_DATA_DIR", ".graphdb"),
 		StoreKind:                         os.Getenv("GRAPHDB_STORAGE"),
 		QueryMaxConcurrent:                64,
@@ -156,34 +141,25 @@ func Load() (Config, error) {
 		WriteObjectErrorThreshold:         1,
 		WriteCASConflictWindow:            30 * time.Second,
 		WriteCASConflictThreshold:         5,
-		WriteMaxCommitTail:                20000,
-		WriteCacheMaxBytes:                4 * 1024 * 1024 * 1024,
+		WriteMaxCommitTail:                1500,
+		WriteCacheMaxBytes:                512 * 1024 * 1024,
 		WriterObjectCache:                 true,
 		WriterObjectCacheMaxBytes:         512 * 1024 * 1024,
 		WriterObjectCacheMaxKeys:          200000,
 		WriterObjectCacheNegativeTTL:      5 * time.Minute,
 		IngestCollectorStatusMaterialized: true,
-		IngestMode:                        ingestMode,
+		IngestMode:                        strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_MODE", "direct"))),
 		IngestWALDurability:               strings.ToLower(strings.TrimSpace(getenv("GRAPHDB_INGEST_WAL_DURABILITY", storage.IngestWALDurabilitySync))),
 		IngestWALBufferBytes:              4 * 1024 * 1024,
-		IngestWALFsyncInterval:            3 * time.Millisecond,
+		IngestWALFsyncInterval:            5 * time.Millisecond,
 		IngestWALMaxBytes:                 10 * 1024 * 1024 * 1024,
 		IngestWALSegmentBytes:             256 * 1024 * 1024,
 		IngestWALAppendQueue:              4096,
 		IngestQueueMemoryBytes:            256 * 1024 * 1024,
-		IngestQueueHighWatermark:          80,
-		IngestWALHighWatermark:            70,
-		IngestWALStopWatermark:            85,
-		IngestMaxPendingAge:               2 * time.Minute,
-		IngestFlushInterval:               250 * time.Millisecond,
-		IngestFlushMaxRequests:            8,
-		IngestFlushMaxBytes:               2 * 1024 * 1024,
-		IngestFlushWorkers:                2,
-		IngestMetadataMode:                ingestMetadataMode,
-		IngestMetadataFlushInterval:       500 * time.Millisecond,
-		IngestMetadataMaxRequests:         256,
-		IngestMetadataMaxBytes:            8 * 1024 * 1024,
-		IngestMetadataFlushWorkers:        2,
+		IngestFlushInterval:               10 * time.Second,
+		IngestFlushMaxRequests:            256,
+		IngestFlushMaxBytes:               8 * 1024 * 1024,
+		IngestFlushWorkers:                1,
 		IngestShutdownTimeout:             30 * time.Second,
 		SlowQueryThreshold:                500 * time.Millisecond,
 		IndexHealthInterval:               30 * time.Second,
@@ -224,6 +200,24 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_POLL_INTERVAL", &cfg.PollInterval); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_READER_CACHE_IDLE_TTL", &cfg.ReaderCacheIdleTTL); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_READER_CACHE_MAX_TENANTS", &cfg.ReaderCacheMaxTenants); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_READER_CACHE_MAX_BYTES", &cfg.ReaderCacheMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_READER_CACHE_LOAD_TIMEOUT", &cfg.ReaderCacheLoadTimeout); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT", &cfg.ReaderCacheLoadMaxConcurrent); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT", &cfg.ReaderCacheLoadQueueTimeout); err != nil {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_QUERY_MAX_CONCURRENT", &cfg.QueryMaxConcurrent); err != nil {
@@ -350,18 +344,6 @@ func Load() (Config, error) {
 	if err := loadBytesEnv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", &cfg.IngestQueueMemoryBytes); err != nil {
 		return Config{}, err
 	}
-	if err := loadIntEnv("GRAPHDB_INGEST_QUEUE_HIGH_WATERMARK", &cfg.IngestQueueHighWatermark); err != nil {
-		return Config{}, err
-	}
-	if err := loadIntEnv("GRAPHDB_INGEST_WAL_HIGH_WATERMARK", &cfg.IngestWALHighWatermark); err != nil {
-		return Config{}, err
-	}
-	if err := loadIntEnv("GRAPHDB_INGEST_WAL_STOP_WATERMARK", &cfg.IngestWALStopWatermark); err != nil {
-		return Config{}, err
-	}
-	if err := loadDurationEnv("GRAPHDB_INGEST_MAX_PENDING_AGE", &cfg.IngestMaxPendingAge); err != nil {
-		return Config{}, err
-	}
 	if err := loadDurationEnv("GRAPHDB_INGEST_FLUSH_INTERVAL", &cfg.IngestFlushInterval); err != nil {
 		return Config{}, err
 	}
@@ -372,18 +354,6 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_INGEST_FLUSH_WORKERS", &cfg.IngestFlushWorkers); err != nil {
-		return Config{}, err
-	}
-	if err := loadDurationEnv("GRAPHDB_INGEST_METADATA_FLUSH_INTERVAL", &cfg.IngestMetadataFlushInterval); err != nil {
-		return Config{}, err
-	}
-	if err := loadIntEnv("GRAPHDB_INGEST_METADATA_MAX_REQUESTS", &cfg.IngestMetadataMaxRequests); err != nil {
-		return Config{}, err
-	}
-	if err := loadBytesEnv("GRAPHDB_INGEST_METADATA_MAX_BYTES", &cfg.IngestMetadataMaxBytes); err != nil {
-		return Config{}, err
-	}
-	if err := loadIntEnv("GRAPHDB_INGEST_METADATA_FLUSH_WORKERS", &cfg.IngestMetadataFlushWorkers); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_INGEST_SHUTDOWN_TIMEOUT", &cfg.IngestShutdownTimeout); err != nil {
@@ -468,15 +438,6 @@ func Load() (Config, error) {
 }
 
 func (cfg Config) validateIngest() error {
-	switch cfg.IngestMetadataMode {
-	case storage.IngestMetadataModeLegacy:
-	case storage.IngestMetadataModeSegment:
-		if cfg.IngestMode != "wal" {
-			return fmt.Errorf("GRAPHDB_INGEST_METADATA_MODE=segment requires GRAPHDB_INGEST_MODE=wal")
-		}
-	default:
-		return fmt.Errorf("unsupported GRAPHDB_INGEST_METADATA_MODE %q", cfg.IngestMetadataMode)
-	}
 	switch cfg.IngestMode {
 	case "direct":
 		return nil
@@ -484,23 +445,18 @@ func (cfg Config) validateIngest() error {
 	default:
 		return fmt.Errorf("unsupported GRAPHDB_INGEST_MODE %q", cfg.IngestMode)
 	}
-	if cfg.coordinationMode() != storage.CoordinationLocal {
-		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal requires GRAPHDB_COORDINATION=local")
-	}
 	if cfg.Mode == "reader" {
 		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal is unavailable in reader mode")
 	}
-	if err := cfg.IngestServiceConfig().Validate(); err != nil {
-		return err
+	if cfg.coordinationMode() == storage.CoordinationPostgres && cfg.InstanceID == "" {
+		return fmt.Errorf("GRAPHDB_INSTANCE_ID is required when GRAPHDB_INGEST_MODE=wal and GRAPHDB_COORDINATION=postgres")
 	}
-	if cfg.IngestWALDurability != storage.IngestWALDurabilitySync {
-		return fmt.Errorf("GRAPHDB_INGEST_WAL_DURABILITY=sync is required for durable 202 responses")
-	}
-	return nil
+	return cfg.IngestServiceConfig().Validate()
 }
 
 func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 	return storage.IngestServiceConfig{
+		OwnerID: cfg.InstanceID,
 		WAL: storage.IngestWALConfig{
 			Dir:           cfg.IngestWALDir,
 			Durability:    cfg.IngestWALDurability,
@@ -510,37 +466,14 @@ func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 			SegmentBytes:  cfg.IngestWALSegmentBytes,
 			AppendQueue:   cfg.IngestWALAppendQueue,
 		},
-		QueueMemoryBytes:   cfg.IngestQueueMemoryBytes,
-		QueueHighWatermark: cfg.IngestQueueHighWatermark,
-		WALHighWatermark:   cfg.IngestWALHighWatermark,
-		WALStopWatermark:   cfg.IngestWALStopWatermark,
-		MaxPendingAge:      cfg.IngestMaxPendingAge,
-		FlushInterval:      cfg.IngestFlushInterval,
-		FlushMaxRequests:   cfg.IngestFlushMaxRequests,
-		FlushMaxBytes:      cfg.IngestFlushMaxBytes,
-		FlushWorkers:       cfg.IngestFlushWorkers,
-		Metadata: storage.IngestMetadataConfig{
-			Mode:          cfg.IngestMetadataMode,
-			FlushInterval: cfg.IngestMetadataFlushInterval,
-			MaxRequests:   cfg.IngestMetadataMaxRequests,
-			MaxBytes:      cfg.IngestMetadataMaxBytes,
-			FlushWorkers:  cfg.IngestMetadataFlushWorkers,
-		},
-		FlushTimeout:  cfg.WriteExecutionTimeout,
-		RetryInterval: time.Second,
+		QueueMemoryBytes: cfg.IngestQueueMemoryBytes,
+		FlushInterval:    cfg.IngestFlushInterval,
+		FlushMaxRequests: cfg.IngestFlushMaxRequests,
+		FlushMaxBytes:    cfg.IngestFlushMaxBytes,
+		FlushWorkers:     cfg.IngestFlushWorkers,
+		FlushTimeout:     cfg.WriteExecutionTimeout,
+		RetryInterval:    time.Second,
 	}
-}
-
-func NewCoordinator(ctx context.Context, cfg Config) (storage.WriteCoordinator, error) {
-	if cfg.coordinationMode() == storage.CoordinationLocal {
-		return nil, nil
-	}
-	return storage.NewPostgresCoordinator(
-		ctx,
-		cfg.PostgresDSN,
-		cfg.PostgresSchema,
-		cfg.CoordinatorNamespace,
-	)
 }
 
 func (cfg Config) validateCoordination() error {
@@ -579,6 +512,10 @@ func (cfg Config) validateCoordination() error {
 
 func (cfg Config) coordinationMode() string {
 	return normalizeCoordination(cfg.Coordination)
+}
+
+func (cfg Config) CoordinationMode() string {
+	return cfg.coordinationMode()
 }
 
 func normalizeCoordination(value string) string {
@@ -734,43 +671,6 @@ func parseBytes(raw string) (int64, error) {
 	return strconv.ParseInt(value, 10, 64)
 }
 
-func NewObjectStore(cfg Config) (storage.ObjectStore, error) {
-	if err := cfg.validateObjectStore(); err != nil {
-		return nil, err
-	}
-	switch cfg.StoreKind {
-	case "local":
-		return storage.NewFileStore(cfg.DataDir), nil
-	case "s3":
-		options := storage.S3Options{PathStyle: cfg.S3PathStyle}
-		switch cfg.objectProvider() {
-		case storage.ObjectProviderGenericS3:
-			return storage.NewS3StoreWithOptions(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-		case storage.ObjectProviderAliyunOSS:
-			objects, err := storage.NewAliyunOSSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-			if err != nil {
-				return nil, err
-			}
-			return storage.NewSingleWriterObjectStore(objects), nil
-		case storage.ObjectProviderHuaweiOBS:
-			objects, err := storage.NewHuaweiOBSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-			if err != nil {
-				return nil, err
-			}
-			return storage.NewSingleWriterObjectStore(objects), nil
-		case storage.ObjectProviderTencentCOS:
-			objects, err := storage.NewTencentCOSStore(cfg.S3Endpoint, cfg.S3Bucket, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, options)
-			if err != nil {
-				return nil, err
-			}
-			return storage.NewSingleWriterObjectStore(objects), nil
-		}
-		return nil, fmt.Errorf("unsupported S3_PROVIDER %q", cfg.S3Provider)
-	default:
-		return nil, fmt.Errorf("unsupported GRAPHDB_STORAGE %q", cfg.StoreKind)
-	}
-}
-
 func (cfg Config) validateObjectStore() error {
 	if cfg.StoreKind != "s3" {
 		return nil
@@ -800,8 +700,16 @@ func (cfg Config) validateObjectStore() error {
 	return nil
 }
 
+func (cfg Config) ValidateObjectStore() error {
+	return cfg.validateObjectStore()
+}
+
 func (cfg Config) objectProvider() string {
 	return storage.NormalizeObjectProvider(cfg.S3Provider)
+}
+
+func (cfg Config) ObjectProvider() string {
+	return cfg.objectProvider()
 }
 
 func (cfg Config) writerTopology() string {

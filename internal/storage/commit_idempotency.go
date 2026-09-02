@@ -249,7 +249,11 @@ func validateDirectCommitRecord(tenantID string, request DirectCommitRequest, re
 		return fmt.Errorf("commit idempotency tenant mismatch: path tenant %q contains tenant %q", tenantID, record.TenantID)
 	}
 	if record.Request.IdempotencyKey != request.IdempotencyKey || !directCommitRequestEqual(record.Request, request) {
-		return fmt.Errorf("commit idempotency conflict for key %q: stored request differs from incoming request", request.IdempotencyKey)
+		return fmt.Errorf(
+			"%w for key %q: stored request differs from incoming request",
+			ErrIdempotencyConflict,
+			request.IdempotencyKey,
+		)
 	}
 	return nil
 }

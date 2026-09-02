@@ -15,6 +15,25 @@ func (s *TenantStore) CheckWriteBackpressure(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID string, authoritative bool) (err error) {
+	return s.checkWriteBackpressureWithOptions(ctx, tenantID, authoritative, writeBackpressureCheckOptions{})
+}
+
+type writeBackpressureCheckOptions struct {
+	ignoreCASConflicts bool
+}
+
+func (s *TenantStore) checkAcceptedWALBackpressure(ctx context.Context, tenantID string, authoritative bool) error {
+	return s.checkWriteBackpressureWithOptions(ctx, tenantID, authoritative, writeBackpressureCheckOptions{
+		ignoreCASConflicts: s.coordinated(),
+	})
+}
+
+func (s *TenantStore) checkWriteBackpressureWithOptions(
+	ctx context.Context,
+	tenantID string,
+	authoritative bool,
+	options writeBackpressureCheckOptions,
+) (err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.write_backpressure.check", tenantTraceAttr(tenantID))
 	defer func() {
 		endStorageSpan(span, err)
@@ -30,11 +49,11 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 	config, err := s.effectiveBackpressureConfig(ctx, tenantID)
 	if err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
-			return newBackpressureError([]BackpressureReason{reason}, s.Backpressure.Config().RetryAfter)
+			return newCheckedBackpressureError([]BackpressureReason{reason}, s.Backpressure.Config().RetryAfter, options)
 		}
 		return err
 	}
-	reasons := s.Backpressure.ReasonsWithConfig(tenantID, config)
+	reasons := filterCheckedBackpressureReasons(s.Backpressure.ReasonsWithConfig(tenantID, config), options)
 	span.SetAttributes(
 		attribute.Bool("graphdb.write_backpressure.authoritative", authoritative),
 		attribute.Int("graphdb.write_backpressure.reasons_initial", len(reasons)),
@@ -43,12 +62,12 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 	)
 	if !authoritative {
 		span.SetAttributes(attribute.Int("graphdb.write_backpressure.reasons_final", len(reasons)))
-		return newBackpressureError(reasons, config.RetryAfter)
+		return newCheckedBackpressureError(reasons, config.RetryAfter, options)
 	}
 	manifest, err := s.currentManifestForWriteAdmission(ctx, tenantID)
 	if err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
-			return newBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter)
+			return newCheckedBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter, options)
 		}
 		return err
 	}
@@ -58,8 +77,8 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 		attribute.Int64("graphdb.write_backpressure.current_manifest_version", manifest.Version),
 	)
 	s.Backpressure.RecordCommitTail(tenantID, tailLength)
-	if s.BackpressureObserver != nil {
-		s.BackpressureObserver.RecordCommitTail(tenantID, tailLength)
+	if s.backpressureObserver != nil {
+		s.backpressureObserver.RecordCommitTail(tenantID, tailLength)
 	}
 	if config.MaxCommitTail > 0 && tailLength > config.MaxCommitTail {
 		reasons = append(reasons, BackpressureReason{
@@ -69,15 +88,34 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 			Message:   "compact required",
 		})
 	}
-	if task, ok, _, err := s.findRunningIndexRebuildTask(ctx, tenantID); err != nil {
+	indexTask, indexTaskRunning, err := s.findRunningTask(
+		ctx, tenantID, TaskTypeIndexRebuild,
+	)
+	if err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
-			return newBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter)
+			return newCheckedBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter, options)
 		}
 		return err
-	} else if ok {
+	}
+	var legacyIndexTask IndexTask
+	legacyIndexTaskRunning := false
+	if !indexTaskRunning {
+		legacyIndexTask, legacyIndexTaskRunning, _, err = s.findRunningIndexRebuildTask(ctx, tenantID)
+		if err != nil {
+			if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
+				return newCheckedBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter, options)
+			}
+			return err
+		}
+	}
+	if indexTaskRunning || legacyIndexTaskRunning {
+		taskID := indexTask.ID
+		if taskID == "" {
+			taskID = legacyIndexTask.ID
+		}
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_backpressure.index_rebuild_running", true),
-			attribute.String("graphdb.write_backpressure.index_rebuild_task_id", task.ID),
+			attribute.String("graphdb.write_backpressure.index_rebuild_task_id", taskID),
 		)
 		reasons = append(reasons, BackpressureReason{
 			Code:    "index_rebuild_running",
@@ -89,7 +127,7 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 	}
 	if task, ok, err := s.findRunningTask(ctx, tenantID, TaskTypeGC); err != nil {
 		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
-			return newBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter)
+			return newCheckedBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter, options)
 		}
 		return err
 	} else if ok {
@@ -105,9 +143,36 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 	} else {
 		span.SetAttributes(attribute.Bool("graphdb.write_backpressure.gc_running", false))
 	}
-	reasons = appendBackpressureReasons(reasons, s.Backpressure.ReasonsWithConfig(tenantID, config)...)
+	reasons = filterCheckedBackpressureReasons(
+		appendBackpressureReasons(reasons, s.Backpressure.ReasonsWithConfig(tenantID, config)...),
+		options,
+	)
 	span.SetAttributes(attribute.Int("graphdb.write_backpressure.reasons_final", len(reasons)))
-	return newBackpressureError(reasons, config.RetryAfter)
+	return newCheckedBackpressureError(reasons, config.RetryAfter, options)
+}
+
+func newCheckedBackpressureError(
+	reasons []BackpressureReason,
+	retryAfter time.Duration,
+	options writeBackpressureCheckOptions,
+) error {
+	return newBackpressureError(filterCheckedBackpressureReasons(reasons, options), retryAfter)
+}
+
+func filterCheckedBackpressureReasons(
+	reasons []BackpressureReason,
+	options writeBackpressureCheckOptions,
+) []BackpressureReason {
+	if !options.ignoreCASConflicts {
+		return reasons
+	}
+	filtered := reasons[:0]
+	for _, reason := range reasons {
+		if reason.Code != "manifest_cas_conflicts_high" {
+			filtered = append(filtered, reason)
+		}
+	}
+	return filtered
 }
 
 func (s *TenantStore) currentManifestForWriteAdmission(ctx context.Context, tenantID string) (manifest Manifest, err error) {
@@ -250,8 +315,8 @@ func (s *TenantStore) recordManifestCASConflict(tenantID string) {
 	if s.Backpressure != nil {
 		s.Backpressure.RecordManifestCASConflict(tenantID)
 	}
-	if s.BackpressureObserver != nil {
-		s.BackpressureObserver.RecordManifestCASConflict(tenantID)
+	if s.backpressureObserver != nil {
+		s.backpressureObserver.RecordManifestCASConflict(tenantID)
 	}
 }
 
@@ -289,6 +354,21 @@ func (s *TenantStore) findRunningTask(ctx context.Context, tenantID string, task
 	}()
 	if taskType == TaskTypeGC {
 		return s.findRunningGCTask(ctx, tenantID)
+	}
+	if taskType == TaskTypeIndexRebuild {
+		s.taskMu.Lock()
+		active, ok := s.taskActive[taskActiveKey(tenantID, taskType)]
+		s.taskMu.Unlock()
+		if ok {
+			return active, true, nil
+		}
+		if s.coordinated() {
+			active, ok := s.findCoordinatorQueuedTask(ctx, Task{
+				TenantID: tenantID,
+				Type:     taskType,
+			})
+			return active, ok, nil
+		}
 	}
 	return Task{}, false, nil
 }

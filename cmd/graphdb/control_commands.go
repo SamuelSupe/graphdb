@@ -50,22 +50,73 @@ func createIndex(args []string, store *storage.TenantStore) error {
 	if len(args) == 4 {
 		definition.Name = args[3]
 	}
-	result, err := store.CreateIndex(context.Background(), args[0], definition)
+	ctx := context.Background()
+	result, err := store.CreateIndex(ctx, args[0], definition)
 	if err != nil {
 		return err
 	}
-	return printJSON(result)
+	result.Task, err = waitForIndexTask(ctx, store, result.Task)
+	if err != nil {
+		return err
+	}
+	return printFinishedIndexDefinitionResult(result)
 }
 
 func dropIndex(args []string, store *storage.TenantStore) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: graphdb drop-index <tenant-id> <name>")
 	}
-	result, err := store.DropIndex(context.Background(), args[0], args[1])
+	ctx := context.Background()
+	result, err := store.DropIndex(ctx, args[0], args[1])
 	if err != nil {
 		return err
 	}
-	return printJSON(result)
+	result.Task, err = waitForIndexTask(ctx, store, result.Task)
+	if err != nil {
+		return err
+	}
+	return printFinishedIndexDefinitionResult(result)
+}
+
+func waitForIndexTask(
+	ctx context.Context,
+	store *storage.TenantStore,
+	task storage.IndexTask,
+) (storage.IndexTask, error) {
+	ticker := time.NewTicker(cliTaskPollInterval)
+	defer ticker.Stop()
+	for {
+		switch task.Status {
+		case storage.TaskStatusSucceeded,
+			storage.TaskStatusFailed,
+			storage.TaskStatusCanceled:
+			return task, nil
+		}
+		select {
+		case <-ctx.Done():
+			return storage.IndexTask{}, ctx.Err()
+		case <-ticker.C:
+			var err error
+			task, err = store.GetIndexTask(ctx, task.TenantID, task.ID)
+			if err != nil {
+				return storage.IndexTask{}, err
+			}
+		}
+	}
+}
+
+func printFinishedIndexDefinitionResult(result storage.IndexDefinitionResult) error {
+	if err := printJSON(result); err != nil {
+		return err
+	}
+	if result.Task.Status == storage.TaskStatusFailed ||
+		result.Task.Status == storage.TaskStatusCanceled {
+		return fmt.Errorf(
+			"index task %q %s: %s",
+			result.Task.ID, result.Task.Status, result.Task.Error,
+		)
+	}
+	return nil
 }
 
 func indexHealth(args []string, store *storage.TenantStore) error {

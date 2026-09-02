@@ -17,6 +17,19 @@ func executeMatch(g *graph.Graph, request Request, plan Plan, cursor cursorState
 	if canPageMatchEarly(request) {
 		return executeMatchPage(g, request, plan, cursor, budget)
 	}
+	bounded := canBuildBoundedMatchPage(request, cursor)
+	if bounded && budget.lookup == nil && plan.Strategy == "field-index" {
+		return executeBoundedMatchPageByFieldIndex(g, request, plan, cursor, budget)
+	}
+	if bounded && budget.lookup == nil && plan.Strategy == "field-index-scan" {
+		ids, ok, err := measuredCandidateIDs(g, request, plan, budget)
+		if err != nil {
+			return Response{}, err
+		}
+		if ok {
+			return executeBoundedMatchPageByID(g, request, ids, cursor, budget)
+		}
+	}
 	var entities []graph.Entity
 	if err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
 		var err error
@@ -25,7 +38,7 @@ func executeMatch(g *graph.Graph, request Request, plan Plan, cursor cursorState
 	}); err != nil {
 		return Response{}, err
 	}
-	if canBuildBoundedMatchPage(request, cursor) {
+	if bounded {
 		return executeBoundedMatchPage(g, request, entities, cursor, budget)
 	}
 	results := make([]Result, 0, len(entities))
@@ -74,13 +87,13 @@ func boundedMatchPageLimit(request Request, cursor cursorState) int {
 }
 
 func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.Entity, cursor cursorState, budget *budget) (Response, error) {
-	acc := newAggregateAccumulator(request.Aggregate)
-	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
-	keep := boundedMatchPageLimit(request, cursor)
 	if len(request.Sort) == 0 {
 		cursor.Order = matchPageOrder(cursor, EntityPageOrderIdentity)
 		entities = orderEntities(entities, cursor.Order)
 	}
+	acc := newAggregateAccumulator(request.Aggregate)
+	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
+	keep := boundedMatchPageLimit(request, cursor)
 	results := make([]Result, 0, keep)
 	var sorted *boundedResults
 	if len(request.Sort) > 0 {
@@ -96,8 +109,12 @@ func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.E
 				continue
 			}
 			result := Result{Entity: &entity}
-			acc.add(result)
-			groupAcc.add(result)
+			if err := acc.add(result); err != nil {
+				return len(results) + sorted.Len(), err
+			}
+			if err := groupAcc.add(result); err != nil {
+				return len(results) + sorted.Len(), err
+			}
 			if sorted != nil {
 				sorted.Add(result)
 				continue
@@ -117,6 +134,128 @@ func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.E
 		results = sorted.Sorted()
 	}
 	return buildResponseWithAggregatesAndGroups(g.Version, results, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
+}
+
+func executeBoundedMatchPageByID(g *graph.Graph, request Request, ids []string, cursor cursorState, budget *budget) (Response, error) {
+	if len(request.Sort) == 0 {
+		cursor.Order = matchPageOrder(cursor, EntityPageOrderIdentity)
+		ids = orderEntityIDs(ids, cursor.Order)
+	}
+	acc := newAggregateAccumulator(request.Aggregate)
+	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
+	keep := boundedMatchPageLimit(request, cursor)
+	matched := make([]graph.Entity, 0, keep)
+	var sorted *boundedEntities
+	if len(request.Sort) > 0 {
+		sorted = newBoundedEntities(request.Sort, keep)
+	}
+	if err := budget.measure("filter-project", "", len(ids), func() (int, error) {
+		for _, id := range ids {
+			entity, ok := g.Entities[id]
+			if !ok {
+				continue
+			}
+			if err := budget.add(1); err != nil {
+				return len(matched) + sorted.Len(), err
+			}
+			budget.scanned++
+			if !requestEntityMatches(request, entity) {
+				continue
+			}
+			if err := acc.addEntity(entity); err != nil {
+				return len(matched) + sorted.Len(), err
+			}
+			if err := groupAcc.addEntity(entity); err != nil {
+				return len(matched) + sorted.Len(), err
+			}
+			if sorted != nil {
+				sorted.Add(entity)
+				continue
+			}
+			if len(matched) < keep {
+				matched = append(matched, entity)
+			}
+		}
+		return len(matched) + sorted.Len(), nil
+	}); err != nil {
+		return Response{}, err
+	}
+	if err := budget.check(); err != nil {
+		return Response{}, err
+	}
+	if sorted != nil {
+		matched = sorted.Sorted()
+	}
+	results := ownedEntityResults(matched)
+	return buildResponseWithAggregatesAndGroups(g.Version, results, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
+}
+
+func executeBoundedMatchPageByFieldIndex(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
+	if len(request.Sort) == 0 {
+		cursor.Order = matchPageOrder(cursor, EntityPageOrderIdentity)
+	}
+	acc := newAggregateAccumulator(request.Aggregate)
+	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
+	keep := boundedMatchPageLimit(request, cursor)
+	matched := make([]graph.Entity, 0, keep)
+	var sorted *boundedEntities
+	if len(request.Sort) > 0 {
+		sorted = newBoundedEntities(request.Sort, keep)
+	}
+	if err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
+		candidateCount := 0
+		err := budget.measure("filter-project", "", plan.EstimatedRows, func() (int, error) {
+			var err error
+			candidateCount, err = g.VisitFieldIndexIDs(request.Kind, plan.IndexField, plan.IndexValues, func(id string) error {
+				entity, ok := g.Entities[id]
+				if !ok {
+					return nil
+				}
+				if err := budget.add(1); err != nil {
+					return err
+				}
+				budget.scanned++
+				if !requestEntityMatches(request, entity) {
+					return nil
+				}
+				if err := acc.addEntity(entity); err != nil {
+					return err
+				}
+				if err := groupAcc.addEntity(entity); err != nil {
+					return err
+				}
+				if sorted != nil {
+					sorted.Add(entity)
+					return nil
+				}
+				if len(matched) < keep {
+					matched = append(matched, entity)
+				}
+				return nil
+			})
+			return len(matched) + sorted.Len(), err
+		})
+		return candidateCount, err
+	}); err != nil {
+		return Response{}, err
+	}
+	if err := budget.check(); err != nil {
+		return Response{}, err
+	}
+	if sorted != nil {
+		matched = sorted.Sorted()
+	}
+	results := ownedEntityResults(matched)
+	return buildResponseWithAggregatesAndGroups(g.Version, results, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
+}
+
+func ownedEntityResults(entities []graph.Entity) []Result {
+	results := make([]Result, len(entities))
+	for i := range entities {
+		entity := graph.CopyEntity(entities[i])
+		results[i] = Result{Entity: &entity}
+	}
+	return results
 }
 
 func matchOperatorName(plan Plan) string {

@@ -119,6 +119,9 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 		stats.fallbackReason = "index_page_unavailable"
 	}
 	stats.path = "graph_fallback"
+	if options.SkipGraphFallback {
+		return EntityScanResult{}, ErrGraphScanFallbackRequired
+	}
 	minVersion := manifestVersion
 	if options.MinVersion > minVersion {
 		minVersion = options.MinVersion
@@ -140,10 +143,14 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 		attribute.Int("graphdb.scan.input_entities", len(g.Entities)),
 		attribute.String("graphdb.scan.fallback_strategy", "bounded_heap"),
 	)
-	entities, next := pageEntityMap(g.Entities, loaded.Version, options, cursor)
-	sortSpan.SetAttributes(attribute.Int("graphdb.scan.returned", len(entities)))
+	result, err = ListEntitiesFromGraph(ctx, tenantID, g, loaded, options)
+	if err != nil {
+		endStorageSpan(sortSpan, err)
+		return EntityScanResult{}, err
+	}
+	sortSpan.SetAttributes(attribute.Int("graphdb.scan.returned", len(result.Entities)))
 	endStorageSpan(sortSpan, nil)
-	return EntityScanResult{TenantID: tenantID, Version: loaded.Version, Entities: entities, NextCursor: next}, nil
+	return result, nil
 }
 
 type loadedEntityScanPage struct {

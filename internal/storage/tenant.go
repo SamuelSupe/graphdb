@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -61,12 +62,17 @@ type CommitOptions struct {
 	WriteBackpressureChecked bool
 	directCommit             *directCommitReservation
 	collectorState           *CollectorStateUpdate
+	ingestPreconditions      []IngestPrecondition
+	ingestAcceptedAt         time.Time
+	rejectSuppressed         bool
 }
 
 type TenantStore struct {
 	Objects                    ObjectStore
 	Coordinator                WriteCoordinator
+	RequireCoordinationMarker  bool
 	Prefix                     string
+	coordinationMarkerVerified atomic.Bool
 	coordinatorStatusMu        sync.RWMutex
 	coordinatorStatusCache     CoordinatorStatus
 	coordinatorStatusActive    *coordinatorStatusCall
@@ -89,7 +95,9 @@ type TenantStore struct {
 	tenantConfigCache          map[string]cachedTenantConfig
 	indexCatalogCache          map[string]cachedIndexCatalog
 	indexCatalogLoads          map[string]*indexCatalogLoad
-	ingestMetadataCache        *ingestMetadataObjectCache
+	retrievalSnapshotCache     map[string]cachedRetrievalSnapshot
+	retrievalSnapshotLoads     map[string]*retrievalSnapshotLoad
+	retrievalSnapshotEpoch     map[string]uint64
 	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
 	compiledScanCatalogCache   map[string]*compiledScanCatalog
@@ -100,6 +108,10 @@ type TenantStore struct {
 	indexTasks                 map[string]IndexTask
 	taskCancels                map[string]context.CancelFunc
 	taskActive                 map[string]Task
+	taskWorkers                sync.WaitGroup
+	taskClosing                bool
+	taskShutdownOnce           sync.Once
+	taskShutdownDone           chan struct{}
 	taskQueueSlots             chan struct{}
 	taskExecutionSlots         chan struct{}
 	taskTenantSlots            []chan struct{}
@@ -109,6 +121,7 @@ type TenantStore struct {
 	LeaseTTL                   time.Duration
 	LifecycleCacheTTL          time.Duration
 	TaskMarkerTTL              time.Duration
+	TaskPersistenceTimeout     time.Duration
 	MaxRetries                 int
 	CoordinatorRetryLimit      int
 	CoordinatorPendingTTL      time.Duration
@@ -116,18 +129,16 @@ type TenantStore struct {
 	MaxWriteCacheTenants       int
 	MaxWriteCacheBytes         int64
 	EntityPagePackMaxBytes     int64
+	IndexPrefetchTimeout       time.Duration
 	IndexFormat                string
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool
-	IngestMetadataMode         string
-	IngestObserver             IngestObserver
-	IngestLogger               IngestLogger
 	Backpressure               *WritePressure
-	BackpressureObserver       BackpressureObserver
-	CacheObserver              ReaderCacheObserver
-	CoordinatorObserver        CoordinatorObserver
-	IngestBarrier              func(context.Context, string) error
+	backpressureObserver       BackpressureObserver
+	cacheObserver              ReaderCacheObserver
+	coordinatorObserver        CoordinatorObserver
+	ingestBarrier              func(context.Context, string) error
 }
 
 type loadedGraph struct {
@@ -154,14 +165,15 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		collectorStatusCache:       map[string]cachedCollectorStatus{},
 		readerHeartbeatCache:       map[string]cachedReaderHeartbeat{},
 		objectKeyCache:             map[string]struct{}{},
-		IngestMetadataMode:         IngestMetadataModeLegacy,
 		tenantMetadataCache:        map[string]cachedTenantMetadata{},
 		purgeTombstoneCache:        map[string]cachedTenantPurgeTombstone{},
 		sourcePolicyCache:          map[string]cachedSourcePolicy{},
 		tenantConfigCache:          map[string]cachedTenantConfig{},
 		indexCatalogCache:          map[string]cachedIndexCatalog{},
 		indexCatalogLoads:          map[string]*indexCatalogLoad{},
-		ingestMetadataCache:        newIngestMetadataObjectCache(),
+		retrievalSnapshotCache:     map[string]cachedRetrievalSnapshot{},
+		retrievalSnapshotLoads:     map[string]*retrievalSnapshotLoad{},
+		retrievalSnapshotEpoch:     map[string]uint64{},
 		reverseIndexCatalogCache:   map[string]cachedReverseIndexCatalog{},
 		reverseIndexCatalogLoads:   map[string]*reverseIndexCatalogLoad{},
 		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},
@@ -180,13 +192,15 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		LeaseTTL:                   30 * time.Second,
 		LifecycleCacheTTL:          time.Second,
 		TaskMarkerTTL:              30 * time.Second,
+		TaskPersistenceTimeout:     10 * time.Second,
 		MaxRetries:                 3,
 		CoordinatorRetryLimit:      8,
 		CoordinatorPendingTTL:      coordinatorPendingReservationTTL,
 		CoordinatorCleanup:         DefaultCoordinatorCleanupConfig(),
 		MaxWriteCacheTenants:       64,
-		MaxWriteCacheBytes:         4 * 1024 * 1024 * 1024,
+		MaxWriteCacheBytes:         512 * 1024 * 1024,
 		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
+		IndexPrefetchTimeout:       defaultIndexObjectPrefetchTimeout,
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,
 	}
@@ -196,7 +210,10 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
-	unlock := s.lockTenant(tenantID)
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return Manifest{}, err
+	}
 	defer unlock()
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
@@ -242,11 +259,10 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
-	if s.IngestBarrier != nil {
-		if err := s.IngestBarrier(ctx, tenantID); err != nil {
-			return Manifest{}, err
-		}
-	}
+	// Compaction is the recovery path for commit-tail backpressure, so it must
+	// not wait for WAL items that may themselves require compaction to proceed.
+	// Both publication paths preserve commits newer than the snapshot; lifecycle
+	// operations retain their separate ingest drain and fencing semantics.
 	if s.coordinated() {
 		operationCtx, stop, err := s.startCoordinatorOperationLease(
 			ctx, tenantID, TaskTypeCompact,
@@ -333,36 +349,21 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 		}
 		return manifest, nil
 	}
-	current, currentMeta, err := s.getManifest(ctx, tenantID)
-	if err != nil {
-		return Manifest{}, err
-	}
-	if !cachedManifestMatches(loaded, current, currentMeta) {
-		return Manifest{}, fmt.Errorf("%w: manifest changed while compacting tenant %q", ErrConflict, tenantID)
-	}
 	if alreadyCompacted {
+		current, currentMeta, currentErr := s.getManifest(ctx, tenantID)
+		if currentErr != nil {
+			return Manifest{}, currentErr
+		}
+		if !cachedManifestMatches(loaded, current, currentMeta) {
+			return Manifest{}, fmt.Errorf(
+				"%w: manifest changed while compacting tenant %q",
+				ErrConflict, tenantID,
+			)
+		}
 		return current, nil
 	}
-	manifest = current
-	manifest.TenantID = tenantID
-	manifest.LayoutVersion = CurrentObjectLayoutVersion
-	manifest.SnapshotKey = snapshotKey
-	manifest.SnapshotCatalogKey = snapshotCatalog.Key
-	manifest.SnapshotVersion = manifest.Version
-	manifest.CommitSegments = nil
-	manifest.CommitKeys = nil
-	manifest.UpdatedAt = time.Now().UTC()
-	manifest.DataMD5 = dataMD5
-	meta, err := s.putManifestMeta(ctx, tenantID, manifest, currentMeta)
-	if err != nil {
-		s.deleteWriteCache(tenantID)
-		return Manifest{}, err
-	}
-	s.setWriteCache(tenantID, loadedGraph{
-		Graph: g, Manifest: manifest, Meta: meta,
-		DataMD5:    dataMD5,
-		CommitTail: emptyCommitTailCache(),
-		CacheBytes: writeCacheBytesWithoutCommitTail(loaded),
-	})
-	return manifest, nil
+	manifest, _, err = s.publishLocalCompaction(
+		ctx, tenantID, loaded, snapshotKey, snapshotCatalog.Key, dataMD5,
+	)
+	return manifest, err
 }

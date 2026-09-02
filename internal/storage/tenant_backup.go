@@ -384,7 +384,10 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 				return TenantRestoreReport{}, err
 			}
 		}
-		unlock := s.lockTenant(task.TenantID)
+		unlock, err := s.lockTenantMaintenance(ctx, task.TenantID)
+		if err != nil {
+			return TenantRestoreReport{}, err
+		}
 		boundCtx, err := s.acquireAndBindWriterFence(ctx, task.TenantID)
 		if err != nil {
 			unlock()

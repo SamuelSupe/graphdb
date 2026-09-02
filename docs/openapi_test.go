@@ -7,11 +7,7 @@ import (
 )
 
 func TestOpenAPIContractIncludesProductAPIs(t *testing.T) {
-	data, err := os.ReadFile("openapi.yaml")
-	if err != nil {
-		t.Fatalf("read openapi.yaml: %v", err)
-	}
-	spec := string(data)
+	spec := readOpenAPISpec(t)
 	required := []string{
 		"/openapi.yaml:",
 		"/v1/health:",
@@ -83,4 +79,103 @@ func TestOpenAPIContractIncludesProductAPIs(t *testing.T) {
 			t.Fatalf("openapi.yaml missing %q", item)
 		}
 	}
+}
+
+func TestOpenAPICommitAndIngestContractsAreTyped(t *testing.T) {
+	spec := readOpenAPISpec(t)
+	commitPath := openAPIBlock(t, spec, "  /v1/commits:")
+	if !strings.Contains(commitPath, "#/components/schemas/CommitRequest") {
+		t.Fatalf("/v1/commits does not reference CommitRequest: %s", commitPath)
+	}
+	commitRequest := openAPIBlock(t, spec, "    CommitRequest:")
+	for _, field := range []string{"expected_version:", "idempotency_key:", "mutations:"} {
+		if !strings.Contains(commitRequest, field) {
+			t.Errorf("CommitRequest missing %q", field)
+		}
+	}
+
+	mutations := openAPIBlock(t, spec, "    Mutations:")
+	for _, field := range []string{
+		"upsert_ci_types:", "delete_ci_types:", "upsert_entity_types:", "delete_entity_types:",
+		"upsert_relation_types:", "delete_relation_types:", "upsert_entities:", "delete_entities:",
+		"delete_entity_requests:", "mark_source_stale:", "upsert_edges:", "delete_edges:",
+		"delete_edge_requests:", "merge_entities:", "split_entities:",
+	} {
+		if !strings.Contains(mutations, field) {
+			t.Errorf("Mutations missing %q", field)
+		}
+	}
+
+	ingestPath := openAPIBlock(t, spec, "  /v1/ingest/batches:")
+	for _, response := range []string{"'200':", "'207':", "'202':", "Location:", "IngestAccepted"} {
+		if !strings.Contains(ingestPath, response) {
+			t.Errorf("ingest path missing %q", response)
+		}
+	}
+	ingestRequest := openAPIBlock(t, spec, "    IngestRequest:")
+	for _, field := range []string{"expected_version:", "failure_mode:", "preconditions:", "items:"} {
+		if !strings.Contains(ingestRequest, field) {
+			t.Errorf("IngestRequest missing %q", field)
+		}
+	}
+	if strings.Contains(ingestRequest, "additionalProperties: true") {
+		t.Fatal("IngestRequest must describe typed items instead of arbitrary item objects")
+	}
+	ingestItem := openAPIBlock(t, spec, "    IngestItem:")
+	for _, field := range []string{
+		"external_id:", "entity:", "edge:", "delete_entity:", "delete_edge:",
+		"relation_type:", "ci_type:", "entity_type:",
+	} {
+		if !strings.Contains(ingestItem, field) {
+			t.Errorf("IngestItem missing %q", field)
+		}
+	}
+	result := openAPIBlock(t, spec, "    IngestResult:")
+	if !strings.Contains(result, "error_code:") {
+		t.Fatal("IngestResult missing error_code")
+	}
+	accepted := openAPIBlock(t, spec, "    IngestAccepted:")
+	if !strings.Contains(accepted, "required: [writer_id, source, collector_id, batch_id, state, durability, accepted_at, estimated_flush_at, status_url]") {
+		t.Fatalf("IngestAccepted required fields do not include owner/source identity: %s", accepted)
+	}
+}
+
+func TestOpenAPIPublicContractDoesNotExposeEvidenceSearch(t *testing.T) {
+	spec := readOpenAPISpec(t)
+	if strings.Contains(strings.ToLower(spec), "evidence") {
+		t.Fatal("OpenAPI public contract still exposes evidence search")
+	}
+}
+
+func readOpenAPISpec(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	return string(data)
+}
+
+// openAPIBlock returns a top-level path or component block without requiring a
+// YAML dependency in the contract test. The marker must include its indentation
+// so nested properties cannot terminate the block early.
+func openAPIBlock(t *testing.T, spec string, marker string) string {
+	t.Helper()
+	start := strings.Index(spec, "\n"+marker)
+	if start < 0 {
+		t.Fatalf("OpenAPI marker %q not found", marker)
+	}
+	start++
+	indent := marker[:len(marker)-len(strings.TrimLeft(marker, " "))]
+	rest := spec[start+len(marker):]
+	offset := 0
+	for _, line := range strings.SplitAfter(rest, "\n") {
+		content := strings.TrimSuffix(line, "\n")
+		leadingSpaces := len(content) - len(strings.TrimLeft(content, " "))
+		if strings.TrimSpace(content) != "" && leadingSpaces == len(indent) {
+			return spec[start : start+len(marker)+offset]
+		}
+		offset += len(line)
+	}
+	return spec[start:]
 }

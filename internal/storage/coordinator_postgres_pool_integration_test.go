@@ -10,6 +10,24 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func TestNewPostgresCoordinatorLazyDefersInitialConnection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	coordinator, err := NewPostgresCoordinatorLazy(
+		ctx,
+		"postgres://graphdb:graphdb@127.0.0.1:1/graphdb?connect_timeout=1",
+		"graphdb_test_lazy",
+		"lazy-start",
+	)
+	if err != nil {
+		t.Fatalf("lazy coordinator construction = %v, want no initial connection attempt", err)
+	}
+	t.Cleanup(coordinator.Close)
+	if coordinator.Backend() != CoordinationPostgres || coordinator.Namespace() != "lazy-start" {
+		t.Fatalf("lazy coordinator metadata = backend %q namespace %q", coordinator.Backend(), coordinator.Namespace())
+	}
+}
+
 func TestPostgresCoordinatorCASMissWorksWithSingleConnection(t *testing.T) {
 	dsn := os.Getenv("GRAPHDB_TEST_POSTGRES_DSN")
 	if dsn == "" {

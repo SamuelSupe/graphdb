@@ -46,6 +46,8 @@ func (g *Graph) replaceState(next *Graph) {
 	g.contentFingerprint = fingerprint
 	g.contentFingerprintReady = fingerprintReady
 	g.logicalHashCache = logicalHashCache
+	g.invalidateEntityOrder()
+	g.invalidateFieldIndexOrder()
 }
 
 func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) (*Graph, ApplyReport, error) {
@@ -98,7 +100,6 @@ func (g *Graph) ApplyCommitBatchStorageCopyWithOptions(commits []Commit, options
 		previousVersion = commit.Version
 	}
 	next := g.cloneForStorageImpact(impact)
-	logicalHashBatch := newMutationFingerprintTracker(next, nil)
 	reports := make([]ApplyReport, 0, len(commits))
 	for index, commit := range commits {
 		option := ApplyOptions{}
@@ -113,7 +114,7 @@ func (g *Graph) ApplyCommitBatchStorageCopyWithOptions(commits []Commit, options
 				return nil, reports, fmt.Errorf("%w: commit %d: %v", ErrBatchApplyRequiresIsolation, index, err)
 			}
 			next.Version = commit.Version
-			report, err := next.applyMutationsWithLogicalHashBatch(commit, ApplyOptions{}, logicalHashBatch)
+			report, err := next.applyMutations(commit, ApplyOptions{})
 			if err != nil {
 				return nil, reports, fmt.Errorf("%w: commit %d: %v", ErrBatchApplyRequiresIsolation, index, err)
 			}
@@ -125,7 +126,7 @@ func (g *Graph) ApplyCommitBatchStorageCopyWithOptions(commits []Commit, options
 			continue
 		}
 		next.Version = commit.Version
-		report, err := next.applyMutationsWithLogicalHashBatch(commit, ApplyOptions{}, logicalHashBatch)
+		report, err := next.applyMutations(commit, ApplyOptions{})
 		if err != nil {
 			return nil, reports, fmt.Errorf("%w: commit %d: %v", ErrBatchApplyRequiresIsolation, index, err)
 		}
@@ -133,9 +134,6 @@ func (g *Graph) ApplyCommitBatchStorageCopyWithOptions(commits []Commit, options
 			return nil, reports, fmt.Errorf("%w: commit %d is a logical no-op", ErrBatchApplyRequiresIsolation, index)
 		}
 		reports = append(reports, report)
-	}
-	if err := next.refreshLogicalHashCache(logicalHashBatch); err != nil {
-		return nil, reports, err
 	}
 	return next, reports, nil
 }
@@ -175,17 +173,11 @@ func (g *Graph) applyCommitToCopy(clone *Graph, commit Commit, options ApplyOpti
 	return clone, report, nil
 }
 
-func (g *Graph) applyMutations(commit Commit, options ApplyOptions) (ApplyReport, error) {
-	return g.applyMutationsWithLogicalHashBatch(commit, options, nil)
-}
-
-func (g *Graph) applyMutationsWithLogicalHashBatch(
-	commit Commit,
-	_ ApplyOptions,
-	logicalHashBatch *mutationFingerprintTracker,
-) (ApplyReport, error) {
+func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, error) {
+	g.invalidateEntityOrder()
+	g.invalidateFieldIndexOrder()
 	report := ApplyReport{}
-	tracker := newMutationFingerprintTracker(g, logicalHashBatch)
+	tracker := newMutationFingerprintTracker(g)
 	affected := newUniqueStringCollector(&report.AffectedEntityIDs)
 	affectedEdges := newUniqueStringCollector(&report.AffectedEdgeIDs)
 	now := commit.CreatedAt
@@ -416,7 +408,7 @@ func (g *Graph) applyMutationsWithLogicalHashBatch(
 			return ApplyReport{}, err
 		}
 	}
-	if err := tracker.finish(&report, logicalHashBatch); err != nil {
+	if err := tracker.finish(&report); err != nil {
 		return ApplyReport{}, err
 	}
 	return report, nil

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,26 +30,14 @@ type apiResponse struct {
 	json    map[string]any
 }
 
-type encodedJSON []byte
-
-type ingestOutcome struct {
-	version       int64
-	applied       int64
-	backpressured bool
-	retryAfter    time.Duration
-}
-
 func newClient(baseURL string, tenant string, timeout time.Duration) *apiClient {
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 1024
-	transport.MaxIdleConnsPerHost = 512
 	return &apiClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		tenant:  tenant,
-		http:    &http.Client{Timeout: timeout, Transport: transport},
+		http:    &http.Client{Timeout: timeout},
 	}
 }
 
@@ -65,67 +52,13 @@ func (c *apiClient) commitSchema(ctx context.Context, metrics *registry) (int64,
 	return responseVersion(resp), err
 }
 
-func (c *apiClient) ingest(ctx context.Context, metrics *registry, body encodedJSON) (ingestOutcome, error) {
-	want := []int{http.StatusOK, http.StatusMultiStatus, http.StatusAccepted}
+func (c *apiClient) ingest(ctx context.Context, metrics *registry, body storage.IngestRequest) (int64, error) {
 	if c.allowWriteBackpressure {
-		want = append(want, http.StatusTooManyRequests)
+		resp, err := c.do(ctx, metrics, "ingest", http.MethodPost, "/v1/ingest/batches", body, http.StatusOK, http.StatusTooManyRequests)
+		return responseVersion(resp), err
 	}
-	started := time.Now()
-	resp, err := c.do(ctx, metrics, "ingest", http.MethodPost, "/v1/ingest/batches", body, want...)
-	if err != nil {
-		return ingestOutcome{}, err
-	}
-	if resp.status == http.StatusTooManyRequests {
-		retryAfter := time.Second
-		if seconds, parseErr := strconv.Atoi(strings.TrimSpace(resp.headers.Get("Retry-After"))); parseErr == nil && seconds > 0 {
-			retryAfter = time.Duration(seconds) * time.Second
-		}
-		return ingestOutcome{backpressured: true, retryAfter: retryAfter}, nil
-	}
-	if resp.status != http.StatusAccepted {
-		return ingestOutcome{version: responseVersion(resp), applied: responseApplied(resp)}, nil
-	}
-	statusPath := stringValue(resp.json["status_url"])
-	if statusPath == "" {
-		statusPath = resp.headers.Get("Location")
-	}
-	if statusPath == "" {
-		return ingestOutcome{}, fmt.Errorf("WAL ingest response omitted status_url and Location: %s", string(resp.body))
-	}
-	outcome, err := c.waitIngestCommitted(ctx, metrics, statusPath)
-	metrics.add("ingest-committed", time.Since(started), http.StatusOK, err)
-	return outcome, err
-}
-
-func (c *apiClient) waitIngestCommitted(ctx context.Context, metrics *registry, statusPath string) (ingestOutcome, error) {
-	ticker := time.NewTicker(ingestStatusPollInterval(statusPath))
-	defer ticker.Stop()
-	for {
-		resp, err := c.do(ctx, metrics, "ingest-status", http.MethodGet, statusPath, nil, http.StatusOK)
-		if err != nil {
-			return ingestOutcome{}, err
-		}
-		switch stringValue(resp.json["state"]) {
-		case storage.IngestStateCommitted:
-			return ingestOutcome{version: responseVersion(resp), applied: responseApplied(resp)}, nil
-		case storage.IngestStateFailed:
-			return ingestOutcome{}, fmt.Errorf("WAL ingest failed: %s", string(resp.body))
-		}
-		select {
-		case <-ctx.Done():
-			return ingestOutcome{}, ctx.Err()
-		case <-ticker.C:
-		}
-	}
-}
-
-func ingestStatusPollInterval(statusPath string) time.Duration {
-	hash := uint32(2166136261)
-	for index := 0; index < len(statusPath); index++ {
-		hash ^= uint32(statusPath[index])
-		hash *= 16777619
-	}
-	return 1500*time.Millisecond + time.Duration(hash%1001)*time.Millisecond
+	resp, err := c.do(ctx, metrics, "ingest", http.MethodPost, "/v1/ingest/batches", body, http.StatusOK)
+	return responseVersion(resp), err
 }
 
 func (c *apiClient) query(ctx context.Context, metrics *registry, name string, body query.Request) error {
@@ -198,7 +131,7 @@ func (c *apiClient) indexHealth(ctx context.Context, metrics *registry) error {
 }
 
 func (c *apiClient) collectorStatus(ctx context.Context, metrics *registry) error {
-	_, err := c.do(ctx, metrics, "collector-status", http.MethodGet, "/v1/ingest/collectors/loadtest/"+collectorName(0), nil, http.StatusOK)
+	_, err := c.do(ctx, metrics, "collector-status", http.MethodGet, "/v1/ingest/collectors/loadtest/collector-a", nil, http.StatusOK)
 	return err
 }
 
@@ -219,16 +152,9 @@ func (c *apiClient) doWithHeaders(ctx context.Context, metrics *registry, name s
 func (c *apiClient) request(ctx context.Context, method string, path string, body any, headers map[string]string) (apiResponse, error) {
 	var reader io.Reader
 	if body != nil {
-		var data []byte
-		switch value := body.(type) {
-		case encodedJSON:
-			data = value
-		default:
-			var err error
-			data, err = json.Marshal(body)
-			if err != nil {
-				return apiResponse{}, err
-			}
+		data, err := json.Marshal(body)
+		if err != nil {
+			return apiResponse{}, err
 		}
 		reader = bytes.NewReader(data)
 	}
@@ -283,25 +209,10 @@ func validateReaderVersionResponse(resp apiResponse) error {
 }
 
 func responseVersion(resp apiResponse) int64 {
-	if result, ok := resp.json["result"].(map[string]any); ok {
-		if version := int64Value(result["readable_version"]); version > 0 {
-			return version
-		}
-		if version := int64Value(result["version"]); version > 0 {
-			return version
-		}
-	}
 	if version := int64Value(resp.json["readable_version"]); version > 0 {
 		return version
 	}
 	return int64Value(resp.json["version"])
-}
-
-func responseApplied(resp apiResponse) int64 {
-	if result, ok := resp.json["result"].(map[string]any); ok {
-		return int64Value(result["applied"])
-	}
-	return int64Value(resp.json["applied"])
 }
 
 func stringValue(value any) string {

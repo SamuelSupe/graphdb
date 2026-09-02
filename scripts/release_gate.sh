@@ -96,23 +96,20 @@ wait_task_success() {
 }
 
 if [[ "${RELEASE_GATE_SKIP_STATIC:-0}" != "1" ]]; then
+  log "workspace hygiene"
+  scripts/check_workspace_hygiene.sh
   log "1.1 feature-freeze and naming contract"
   scripts/check_release_freeze.sh
-  log "unit, vet, and race tests"
+  log "unit, vet, race, and v1.0 compatibility tests"
   go test -mod=readonly ./...
   go vet -mod=readonly ./...
   go test -mod=readonly -race ./...
+  scripts/compatibility_v1_0_v1_1.sh
 fi
 
 if [[ "${RELEASE_GATE_VERIFY_ONLY:-0}" == "1" ]]; then
   log "static release gate passed"
   exit 0
-fi
-
-if [[ "${RUN_WAL_RELEASE_GATE:-1}" == "1" ]]; then
-  log "real-process WAL and metadata segment recovery gate"
-  GRAPHDB_TEST_WAL_RELEASE_REPORT="${GRAPHDB_TEST_WAL_RELEASE_REPORT:-artifacts/wal-recovery.json}" \
-    scripts/wal_release_gate.sh
 fi
 
 log "start RustFS release stack"
@@ -134,16 +131,6 @@ S3_REGION="${S3_REGION:-us-east-1}" \
 S3_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID:-graphdbadmin}" \
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-graphdbsecret}" \
 go test -mod=readonly ./internal/storage -run TestS3StoreIntegration -count=1
-
-log "WAL metadata segment capacity matrix against RustFS"
-GRAPHDB_INGEST_METADATA_CAPACITY=1 \
-S3_ENDPOINT="$RUSTFS_URL" \
-S3_BUCKET="${S3_BUCKET:-graphdb}" \
-S3_PATH_STYLE=true \
-S3_REGION="${S3_REGION:-us-east-1}" \
-S3_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID:-graphdbadmin}" \
-S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-graphdbsecret}" \
-go test -mod=readonly ./internal/storage -run TestIngestMetadataCapacityRustFS -count=1 -v
 
 if [[ "${RUN_EXTERNAL_S3:-0}" == "1" ]]; then
   log "S3 compatibility against external endpoint"

@@ -2,49 +2,36 @@
 
 [中文](capacity.zh-CN.md)
 
-GGraphDB 1.2 publishes a reproducible release envelope instead of an unbounded
-“large graph” claim. The machine-readable contract is
-`release/capacity-envelope.yaml`.
+GGraphDB 1.3 defines a release-gated multi-writer envelope instead of an
+unbounded “large graph” claim. The machine-readable contract is
+`release/capacity-envelope.yaml`. Historical 1.2 throughput numbers below are
+kept as historical evidence only and do not certify the 1.3 WAL profile.
 
-## 1.2 Release Gates
+## 1.3 Contract (evidence pending)
 
-The primary write-throughput gate is one local writer using sync WAL and
-segment metadata on a fixed 8 CPU/8 GiB OrbStack container. It runs eight
-tenants and 16 collectors for 30 minutes, five times for v1.1.5 and five times
-for v1.2.0. Every candidate run must sustain at least 10,000 committed
-mutations/s; the candidate median must be at least 1.5x the baseline and its
-run-to-run spread at most 5%. Accepted p95/p99 are capped at 20/250 ms,
-committed p95/p99 at 8/15 seconds, RSS at 7 GiB and 110% of baseline, CPU per
-1,000 mutations at 75% of baseline, and direct-write/query regression at 10%.
-RSS is sampled from the writer process `VmRSS`; CPU is read from the writer
-container cgroup and normalized per 1,000 committed mutations.
+The 1.3 PostgreSQL-CAS WAL profile requires evidence for:
 
-Run the complete commit-bound matrix with:
+- 2, 4, and 8 writers concurrently receiving one tenant's ingest batches;
+- zero lost requests, duplicate graph versions, or duplicate effects for
+  cross-writer idempotency races;
+- successful CAS-order publication with batch rebase and repeated-conflict
+  shrinking, without terminal failure caused by a retry budget;
+- local durable acceptance during a temporary PostgreSQL outage until the WAL
+  high-water policy rejects new admission;
+- process-crash recovery from `ACCEPTED` through `FINALIZED` with the original
+  writer volume and stable `GRAPHDB_INSTANCE_ID`;
+- lifecycle fencing, owner-routed status, and `recovery_pending` behavior; and
+- rolling coexistence of 1.2 direct writers and 1.3 WAL writers, including
+  drain-before-downgrade.
 
-```sh
-scripts/wal_performance_matrix.sh
-```
+No 1.3 performance result is claimed until these runs produce commit-bound
+evidence. The supported durability boundary is process failure with the
+original WAL volume; permanent loss of that volume is outside the contract.
+The scaling target is across tenants. Eight same-tenant writers are a
+correctness and availability boundary, not a claim of linear single-tenant
+throughput.
 
-The GitHub release job depends on a self-hosted `orbstack` runner and refuses
-to publish unless all five candidate runs and every relative gate pass.
-
-### Local-WAL runtime defaults
-
-These are v1.2.0 local-writer defaults, separate from the fixed-host capacity
-profile and its intentionally stricter test thresholds:
-
-| Setting | Default |
-| --- | ---: |
-| WAL durability | `sync` |
-| Maximum pending age | `2m` |
-| Graph flush | `250ms`, flush trigger 8 requests / 2 MiB (busy tenants may merge the same-round queue), 2 workers |
-| Metadata flush | `500ms`, trigger 256 requests / 8 MiB, 2 workers |
-| Write cache | `4GiB` |
-| Commit-tail limit | `20,000` |
-| Heavy background task execution | 1 concurrent task |
-| Maintenance ingest-idle window | `1m` per tenant |
-
-The PostgreSQL direct-write path remains a correctness and regression gate:
+## Historical 1.2 Release Gate
 
 For each release candidate, CI must pass:
 
@@ -62,7 +49,8 @@ For each release candidate, CI must pass:
   preserve concurrent commits without lowering the graph version;
 - legacy-mirror and derived-index workers run during the load, then converge to
   zero mirror lag and zero pending backlog;
-- the tagged 1.0 binary reads the final mirrored graph version.
+- the tagged 1.0 binary reads the final mirrored graph version;
+- both directions of the real 1.0/1.1 binary compatibility test.
 
 This is a concurrency and durability envelope, not the maximum supported graph
 size. A short 200-commit run is only a smoke test and cannot certify a release.
@@ -121,7 +109,7 @@ to the release evidence or performance system.
 | --- | --- | ---: | ---: | --- |
 | Development or evaluation | local files | 1 | 0 | `GRAPHDB_MODE=all`; no HA |
 | Small production | local + generic/native object store | 1 | 2+ | writer lease; readers scale independently |
-| Concurrent production | PostgreSQL + generic S3 | 2–8 | 2+ | Two active contenders per hot tenant in the published envelope; PG head is authoritative |
+| Concurrent production | PostgreSQL + generic S3 | 2–8 | 2+ | 1.3 WAL uses independent writer volumes and owner routing; PG provides coordination CAS while object storage remains graph authority |
 
 Starting validation resources—not support guarantees—are 4 vCPU/8 GiB for a
 writer, 2 vCPU/4 GiB for a reader, and an HA PostgreSQL service sized for the
@@ -138,10 +126,12 @@ strategy.
 - Query result `limit` is capped at 1,000. Use scans/streams for bulk export.
 - Keep normal collector batches near 200–500 logical groups. Very small batches
   amplify commits, manifests, idempotency records, and collector state.
-- PostgreSQL direct mode supports 2–8 deployed writers and retains the 20 commits/s
-  per hot tenant with two active contenders. Eight-way same-tenant concurrency
-  remains a correctness gate, not a sustained-throughput claim. Higher
-  throughput requires graph/entity partitioning and a new capacity envelope.
+- The historical 1.2 envelope supports 2–8 deployed writers and measured about
+  20 commits/s per hot tenant with two active contenders. That result does not
+  certify 1.3 WAL. In 1.3, eight-way same-tenant concurrency remains a
+  correctness/availability boundary, not a sustained-throughput claim; the
+  throughput scale target is across tenants. Higher single-tenant throughput
+  requires graph/entity partitioning and a new capacity envelope.
 - The published 20 commits/s profile keeps automatic compaction enabled, uses
   a 1,000-entry compact threshold and a 1,500-entry write-backpressure limit,
   and runs maintenance at least every 30 seconds.

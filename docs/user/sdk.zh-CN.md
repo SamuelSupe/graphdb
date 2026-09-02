@@ -5,6 +5,11 @@
 GGraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务端
 `internal` 包，可以安全地 vendoring 到采集器、内部服务和运维工具。
 
+1.3 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
+`200/207` 结果，并提供 WAL 的 `202` acceptance、`Location`/owner status
+资源、轮询/等待，以及 ingest CAS、条件和 atomic 选项。Go 和 Python SDK
+包版本均为 `1.3.1`。
+
 SDK 覆盖：
 
 - 租户生命周期基础操作；
@@ -86,10 +91,21 @@ _, err = writer.Commit(ctx, graphdb.Mutations{
 
 ### Go：Ingestion
 
+`Ingest` 是兼容性便利调用：它发送 `Prefer: wait=committed`，无论服务端直接
+完成还是先返回 WAL `202`，都等待并返回终态 `IngestResult`。需要版本保护、
+条件 mutation 或 all-or-nothing 行为时，在请求中加入事务选项：
+
 ```go
-result, err := writer.Ingest(ctx, graphdb.IngestRequest{
+expectedVersion := int64(42)
+request := graphdb.IngestRequest{
     Source: "aws", CollectorID: "collector-a",
     BatchID: "aws-001", IdempotencyKey: "aws-001", Cursor: "cursor-002",
+    ExpectedVersion: &expectedVersion,
+    FailureMode: "best_effort",
+    Preconditions: []graphdb.IngestPrecondition{
+        {ResourceType: "entity", ID: "host:aws:i-001", Op: "exists"},
+        {ResourceType: "entity", ID: "host:aws:i-001", Field: "state", Op: "eq", Value: "ready"},
+    },
     Items: []graphdb.IngestItem{{
         ExternalID: "i-001",
         Entity: &graphdb.Entity{
@@ -97,14 +113,46 @@ result, err := writer.Ingest(ctx, graphdb.IngestRequest{
             Fields: graphdb.Fields{"hostname": "app-01"},
         },
     }},
-})
+}
+result, err := writer.Ingest(ctx, request)
+if err != nil {
+    return err
+}
+fmt.Println(result.Version, result.ErrorCode, result.Applied, result.Failed)
 ```
 
-`Ingest` 会发送 `Prefer: wait=committed` 并返回查询可见的最终结果。性能优先的
-异步路径使用 `AcceptIngest`，保留其 `StatusURL`，再通过
-`GetIngestBatchStatus` 轮询到 `State == "committed"`。
+需要非阻塞地接收 WAL 时使用 `SubmitIngest`，并保存返回的 owner URL。direct
+模式会在 `Result` 中返回终态结果（状态为 `200` 或 `207`）；WAL 模式会在
+`Accepted` 中返回 durable acceptance（状态为 `202`）。`SubmitIngest` 优先
+读取 `status_url`，没有时使用 HTTP `Location` header，因此可以把状态请求
+路由给 owner writer：
 
-### Go：1.1 Schema 与文件导入
+```go
+submission, err := writer.SubmitIngest(ctx, request)
+if err != nil {
+    return err
+}
+if submission.StatusCode == 202 {
+    accepted := submission.Accepted
+    status, err := writer.WaitIngest(ctx, accepted.StatusURL, &graphdb.IngestWaitOptions{
+        PollInterval: 250 * time.Millisecond,
+    })
+    if err != nil {
+        return err
+    }
+    fmt.Println(status.State, status.Result.Version)
+} else {
+    fmt.Println(submission.StatusCode, submission.Result.Version)
+}
+```
+
+需要自行控制轮询时，`GetIngestStatus` 只执行一次状态读取。终态为
+`committed` 和 `failed`；中间状态包括 `accepted`、`prepared`、`published`、
+`retrying`。`202` 只表示 writer 已持久接管，不表示图版本已经提交。终态条件
+失败会在 `IngestResult.ErrorCode` 中返回：`version_conflict`、
+`precondition_failed`、`atomic_validation_failed` 或 `atomic_suppressed`。
+
+### Go：Schema 与文件导入（兼容 1.1）
 
 ```go
 catalog, err := writer.PutRelationSchema(ctx, graphdb.RelationSchema{
@@ -229,12 +277,18 @@ print(result["version"], result.get("skipped"))
 ### Python：Ingestion
 
 ```python
-result = writer.ingest({
+batch = {
     "source": "aws",
     "collector_id": "collector-a",
     "batch_id": "aws-001",
     "idempotency_key": "aws-001",
     "cursor": "cursor-002",
+    "expected_version": 42,
+    "failure_mode": "best_effort",
+    "preconditions": [
+        {"resource_type": "entity", "id": "host:aws:i-001", "op": "exists"},
+        {"resource_type": "entity", "id": "host:aws:i-001", "field": "state", "op": "eq", "value": "ready"},
+    ],
     "items": [
         {
             "external_id": "i-001",
@@ -245,13 +299,19 @@ result = writer.ingest({
             },
         }
     ],
-})
+}
+result = writer.ingest(batch)
+print(result["version"], result.get("error_code"), result["applied"], result["failed"])
 ```
 
-`ingest()` 会等待 `committed`。默认异步 WAL 路径使用 `accept_ingest()`，
-再轮询 `get_ingest_batch_status()`。
+`ingest` 是阻塞式兼容便利调用：服务端先以 `202` 确认 WAL 请求时，它会等待
+终态结果。需要显式接收并轮询时，使用 `submit_ingest`，保存返回的
+`status_url`/owner 信息，再调用 `get_ingest_status` 或 `wait_ingest`。direct
+模式返回 HTTP `200` 或 `207` 的终态结果；WAL 模式返回 HTTP `202` acceptance。
+终态响应可能包含 `error_code`：`version_conflict`、`precondition_failed`、
+`atomic_validation_failed` 或 `atomic_suppressed`。
 
-### Python：1.1 Schema 与文件导入
+### Python：Schema 与文件导入（兼容 1.1）
 
 ```python
 catalog = writer.put_relation_schema("cites", {
@@ -402,6 +462,8 @@ freshness = reader.reader_freshness()
 
 - 始终设置 `idempotency_key`；
 - 429 时遵守 SDK 重试提示，用相同 payload 和相同 key 重试；
+- 将 WAL `202` 视为 durable takeover，而不是已提交图版本；在将 mutation
+  视为 committed 前轮询 owner 路由的 status URL（或使用阻塞式 ingest helper）；
 - `idempotency_conflict` 表示 payload 不同，除非 payload 与原请求完全一致，
   不要继续使用同一个 key；
 - 被抑制的 source-priority 冲突会在成功响应中返回，不会成为 SDK 异常。

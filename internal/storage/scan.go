@@ -14,13 +14,16 @@ const (
 	maxScanLimit     = 1000
 )
 
+var ErrGraphScanFallbackRequired = errors.New("graph scan fallback required")
+
 type EntityScanOptions struct {
-	Kind       string
-	Source     string
-	Shard      string
-	Limit      int
-	Cursor     string
-	MinVersion int64
+	Kind              string
+	Source            string
+	Shard             string
+	Limit             int
+	Cursor            string
+	MinVersion        int64
+	SkipGraphFallback bool `json:"-"`
 }
 
 type EntityScanResult struct {
@@ -32,13 +35,14 @@ type EntityScanResult struct {
 }
 
 type EdgeScanOptions struct {
-	Type       string
-	From       string
-	FromShard  string
-	Source     string
-	Limit      int
-	Cursor     string
-	MinVersion int64
+	Type              string
+	From              string
+	FromShard         string
+	Source            string
+	Limit             int
+	Cursor            string
+	MinVersion        int64
+	SkipGraphFallback bool `json:"-"`
 }
 
 type EdgeScanResult struct {

@@ -16,6 +16,7 @@ with a language-switch link at the top.
 - [Deployment And Operations](user/deploy-ops.md) · [中文](user/deploy-ops.zh-CN.md)
 - [Data Model](user/data-model.md) · [中文](user/data-model.zh-CN.md)
 - [Write And Ingest](user/write-ingest.md) · [中文](user/write-ingest.zh-CN.md)
+- [1.3 PostgreSQL-CAS Multi-Writer WAL](ingest-wal-multiwriter-design.md) · [中文](ingest-wal-multiwriter-design.zh-CN.md)
 - [Read And Query](user/read-query.md) · [中文](user/read-query.zh-CN.md)
 - [Scan And Export](user/scan-export.md) · [中文](user/scan-export.zh-CN.md)
 - [Tenant And Config](user/tenant-config.md) · [中文](user/tenant-config.zh-CN.md)

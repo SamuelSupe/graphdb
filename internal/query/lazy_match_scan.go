@@ -60,8 +60,12 @@ func executeLazyKindMaterialized(g *graph.Graph, request Request, plan Plan, cur
 				return true, nil
 			}
 			result := Result{Entity: &entity}
-			acc.add(result)
-			groupAcc.add(result)
+			if err := acc.add(result); err != nil {
+				return false, err
+			}
+			if err := groupAcc.add(result); err != nil {
+				return false, err
+			}
 			if sorted != nil {
 				sorted.Add(result)
 			} else if !bounded || len(results) < keep {

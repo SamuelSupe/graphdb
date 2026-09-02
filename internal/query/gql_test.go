@@ -1,6 +1,9 @@
 package query
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseGQLFind(t *testing.T) {
 	request, err := ParseGQL(`FIND host WHERE cpu >= 8 AND region IN ["us-east-1", "eu-west-1"] PROJECT id, hostname, cpu ORDER BY cpu DESC LIMIT 100`)
@@ -109,5 +112,15 @@ func TestParseGQLRejectsInvalidSyntax(t *testing.T) {
 	}
 	if _, err := ParseGQL(`SHORTEST service:a database:b`); err == nil {
 		t.Fatal("expected missing TO error")
+	}
+}
+
+func TestParseGQLRejectsPathologicalInput(t *testing.T) {
+	if _, err := ParseGQL(strings.Repeat("x", maxTextQueryBytes+1)); err == nil {
+		t.Fatal("oversized legacy text query was accepted")
+	}
+	query := `FIND host WHERE ` + strings.Repeat("NOT ", maxFilterExpressionDepth+1) + `region = "us-east-1"`
+	if _, err := ParseGQL(query); err == nil {
+		t.Fatal("deeply nested legacy filter was accepted")
 	}
 }

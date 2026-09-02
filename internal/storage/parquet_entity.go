@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -367,7 +368,9 @@ func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, sh
 		rowTenant := columns.tenantID.Value(i)
 		if rowTenant != "" {
 			if page.TenantID == "" || page.TenantID == tenantID {
-				page.TenantID = rowTenant
+				if page.TenantID != rowTenant {
+					page.TenantID = strings.Clone(rowTenant)
+				}
 			} else if page.TenantID != rowTenant {
 				return fmt.Errorf("parquet entity page tenant mismatch")
 			}
@@ -379,10 +382,12 @@ func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, sh
 		if rowShard != "" {
 			if shard == "" {
 				if page.Shard == "" {
-					page.Shard = rowShard
+					page.Shard = strings.Clone(rowShard)
 				}
 			} else if page.Shard == "" || page.Shard == shard {
-				page.Shard = rowShard
+				if page.Shard != rowShard {
+					page.Shard = strings.Clone(rowShard)
+				}
 			} else if page.Shard != rowShard {
 				return fmt.Errorf("parquet entity page shard mismatch")
 			}
@@ -398,19 +403,20 @@ func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, sh
 		if page.UpdatedAt.IsZero() {
 			page.UpdatedAt = parseParquetTime(columns.pageUpdatedAt.Value(i))
 		}
-		entity := byID[columns.id.Value(i)]
+		entityID := columns.id.Value(i)
+		entity := byID[entityID]
 		if entity == nil {
 			created := graph.Entity{
-				ID:         columns.id.Value(i),
-				Kind:       columns.kind.Value(i),
-				Source:     columns.source.Value(i),
-				ExternalID: columns.externalID.Value(i),
+				ID:         strings.Clone(entityID),
+				Kind:       strings.Clone(columns.kind.Value(i)),
+				Source:     strings.Clone(columns.source.Value(i)),
+				ExternalID: strings.Clone(columns.externalID.Value(i)),
 				Version:    columns.entityVersion.Value(i),
 				CreatedAt:  parseParquetTime(columns.entityCreatedAt.Value(i)),
 				UpdatedAt:  parseParquetTime(columns.entityUpdatedAt.Value(i)),
 				Confidence: columns.confidence.Value(i),
 				SourceRank: int(columns.sourceRank.Value(i)),
-				SplitFrom:  columns.splitFrom.Value(i),
+				SplitFrom:  strings.Clone(columns.splitFrom.Value(i)),
 			}
 			byID[created.ID] = &created
 			entity = &created
@@ -697,23 +703,23 @@ func entityPageRowFromColumns(columns parquetEntityPageColumnSet, row int) entit
 	return entityPageRow{
 		Kind:    columns.rowKind.Value(row),
 		Ordinal: int(columns.ordinal.Value(row)),
-		Key:     columns.entryKey.Value(row),
+		Key:     strings.Clone(columns.entryKey.Value(row)),
 		Value: parquetValue{
 			Kind:        columns.valueKind.Value(row),
-			StringValue: columns.stringValue.Value(row),
+			StringValue: strings.Clone(columns.stringValue.Value(row)),
 			BoolValue:   columns.boolValue.Value(row),
 			FloatValue:  columns.floatValue.Value(row),
 		},
 		FieldSource: graph.FieldSource{
-			Source:     columns.fieldSourceSource.Value(row),
+			Source:     strings.Clone(columns.fieldSourceSource.Value(row)),
 			Priority:   int(columns.fieldSourcePriority.Value(row)),
 			Confidence: columns.fieldSourceConfidence.Value(row),
 			Version:    columns.fieldSourceVersion.Value(row),
 			UpdatedAt:  parseParquetTime(columns.fieldSourceUpdatedAt.Value(row)),
 		},
 		EntitySource: graph.EntitySource{
-			Source:     columns.entitySourceSource.Value(row),
-			ExternalID: columns.entitySourceExternalID.Value(row),
+			Source:     strings.Clone(columns.entitySourceSource.Value(row)),
+			ExternalID: strings.Clone(columns.entitySourceExternalID.Value(row)),
 			Confidence: columns.entitySourceConfidence.Value(row),
 			Priority:   int(columns.entitySourcePriority.Value(row)),
 			ObservedAt: parseParquetTime(columns.entitySourceObservedAt.Value(row)),

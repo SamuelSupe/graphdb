@@ -19,22 +19,6 @@ type IngestObserver interface {
 		fallback bool,
 	)
 	RecordIngestRecovery(status string, records int, pending int, prepared int, duration time.Duration)
-	RecordIngestMetadataQueue(pending int, bytes int64, oldest time.Duration)
-	RecordIngestMetadataFlush(
-		status string,
-		duration time.Duration,
-		requests int,
-		segmentBytes int,
-		segmentPuts int,
-		manifestPublishes int,
-		manifestConflicts int,
-		indexPublishes int,
-	)
-	RecordIngestMetadataDispatch(deadlineOvershoot time.Duration)
-	RecordIngestMetadataLookup(kind string, outcome string, candidates int, duration time.Duration)
-	RecordIngestMetadataCache(kind string, outcome string)
-	RecordIngestMetadataReplay(bytes int64)
-	RecordIngestWALCheckpoint(outcome string, scannedBytes int64, duration time.Duration)
 }
 
 type IngestLogger interface {

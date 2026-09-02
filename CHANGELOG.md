@@ -3,221 +3,288 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [1.2.0] - 2026-08-26
+## [1.3.1] - 2026-09-02
 
-### Changed
+### Added
 
-- Make `wal + segment + sync` the default ingest path for local writers. The
-  default `POST /v1/ingest/batches` response is now durable `202 Accepted`;
-  callers that require immediate visibility can send `Prefer: wait=committed`.
-- Use a 250 ms graph flush interval with a trigger at 8 requests / 2 MiB and
-  two graph flush workers; metadata flush defaults to 500 ms with a trigger at
-  256 requests / 8 MiB and two metadata workers. Busy tenants may merge the
-  same-round queue.
-- Reuse the request normalized at WAL acceptance during graph flush and reuse
-  the prepared commit-segment content identity during physical publication,
-  removing duplicate normalization, commit-tail loading, and logical JSON
-  encoding from the hot path without merging logical commits or versions.
-- Reject new ingest with `429` and `Retry-After` at bounded queue, WAL, or
-  pending-age admission watermarks. Readiness becomes non-writable at the WAL
-  drain-only watermark. The fixed-host performance client retries the same
-  batch after that delay, so saturation sheds load without dropping scheduled
-  work or creating an immediate 429 retry loop. The fixed-host matrix gives all
-  tenants one synchronized measured-workload start after seed and index setup.
-  Performance defaults use a 3 ms group-fsync window, two graph and two
-  metadata flush workers, the flush triggers above, a 4 GiB write cache, a
-  20,000 commit-tail limit, and a two-minute pending-age guard. The admission
-  path prepares durable envelopes outside the service lock, transfers their
-  payload directly to the synchronous WAL append, and avoids rescanning the
-  unchanged metadata queue. Successful durable-acceptance logs retain the first
-  event and every 1,024th event. Queue gauges refresh from complete snapshots on
-  the first acceptance, every 128 state transitions, and queue drain. Successful
-  ingest HTTP request logs use the same first-and-every-1,024 sampling policy.
-  The ingest HTTP decoder and accepted-envelope encoder use a byte-compatible
-  accelerated JSON path while preserving request-size errors. WAL progress
-  gauges update atomically so fsync completion never waits on the shared
-  metrics lock; event counters, traces, failures, and WAL records remain
-  complete. Heavy
-  background task execution is single-concurrency by default.
-- Store the complete request only in its accepted WAL record. Prepared,
-  published, and finalized records carry compact state deltas, eliminating
-  repeated graph-item serialization during state changes. Prepared records
-  retain only the publish identity and result: recovery replays the accepted
-  request when the manifest is still at the base version, and recognizes the
-  final manifest without persisting a second copy of commit mutations.
-- Bound decoded ingest-metadata cache residency by the retained graph-item
-  footprint rather than compressed Parquet bytes, and serve immediate
-  post-commit status polling from a bounded recent-result ring.
-- Keep synchronous batch index updates correct when one flush advances multiple
-  logical graph versions. The default WAL path defers derived index refresh,
-  and per-tenant automatic maintenance requires a one-minute ingest-idle window
-  before compaction, GC, or index catch-up. The fixed-host gate initializes
-  indexes before timing.
-- Require sync WAL durability for the public WAL mode so every `202` response
-  is fsynced and recoverable; the former OS-buffered acceptance mode is not a
-  v1.2.0 server option.
-- Mount the writer data directory on a named volume in the supplied Compose
-  profiles so durable accepted WAL records survive container replacement.
+- Added commit-equivalent ingest controls across direct, local-WAL, and
+  PostgreSQL-coordinated writers: `expected_version`, bounded entity/edge
+  preconditions, and `best_effort` or `atomic` failure modes now retain stable
+  terminal error codes through durable admission, retry, recovery, and status
+  polling.
+- Added blocking and non-blocking ingest support to the Go and Python SDKs,
+  including WAL `202` acceptance, owner-routed status polling, and explicit
+  terminal waiting. Both SDK package versions advance to 1.3.1.
 
-### Release evidence
+### Improved
 
-- Add a fixed-host OrbStack gate with eight tenants, 16 collectors, sync WAL,
-  segment metadata, five 30-minute runs for v1.1.5 and v1.2.0, and commit-bound
-  accepted/committed latency, throughput, RSS, CPU, direct-write, and query
-  regression evidence. Its load generator writes the canonical request JSON
-  into per-writer reusable buffers instead of allocating an equivalent
-  600-item object graph, and shares the writer network namespace instead of
-  routing timed requests through host NAT. These keep client GC and bridge
-  jitter out of accepted-latency measurements without changing request bytes,
-  concurrency, or server limits. The accepted-latency release ceiling is
-  20 ms at p95 and 250 ms at p99; any failed threshold blocks the release
-  workflow.
-
-### Compatibility
-
-- This release intentionally changes the default ingest protocol and does not
-  provide a reverse-compatible writer rollback. Existing local data can be
-  opened by v1.2.0, but once segment metadata is active the supported path is
-  forward-only. PostgreSQL coordination must explicitly set
-  `GRAPHDB_INGEST_MODE=direct`; distributed WAL is not implemented.
-
-## [1.1.5] - 2026-08-01
+- Compatible requests in one writer WAL flush can share validation and one
+  copy-on-write candidate publication while retaining independent results,
+  consecutive logical versions, and FIFO order. PostgreSQL writers still
+  compete through tenant-head CAS; payloads are never merged across writers.
+- Conflict handling reuses prepared work and bounded CAS cohorts to reduce
+  repeated graph loads, commit objects, and manifest writes without weakening
+  lifecycle fencing or idempotency.
 
 ### Fixed
 
-- Recover readiness after a transient object-store or metadata flush error once
-  the retry succeeds, instead of retaining a stale `last_error` and rejecting
-  traffic after the dependency is healthy again.
-- Fence a WAL writer after a fatal append, short-write, rotate, or fsync error.
-  Subsequent writes are rejected without advancing the LSN, preserving a
-  deterministic recovery boundary for the damaged WAL tail.
+- Recovery compaction no longer remains blocked by stale ingest-active state,
+  and shutdown/recovery paths preserve terminal WAL ownership and failure
+  state.
+- Direct PostgreSQL ingest now reserves both the primary idempotency key and
+  the `batch_id` alias, preventing two writers from committing the same batch
+  identity with different keys.
+- Ingest path identifiers reject dot path segments consistently with the Go
+  and Python SDKs, so an accepted durable request always has a pollable owner
+  status URL.
+- Lifecycle fencing, partial-failure metadata, publisher leases, and batch CAS
+  completion remain atomic across retries and writer takeover.
 
-### Release evidence
+### Contract changes
 
-- Add real process-level WAL recovery evidence for durable `202 Accepted`
-  batches across restart and object-store interruption with explicit local WAL
-  mode and segment metadata enabled. The evidence records the tested commit and
-  verifies recovery before release.
+- Removed the unsupported Evidence Search GraphQL surface and its retrieval
+  error codes. The supported public GraphQL contract has the `graph` root only.
+- Expanded OpenAPI mutation and ingest schemas to match the implemented HTTP
+  contract, including conditional failures and canonicalization results.
 
-### Compatibility
-
-- Request/response shapes, WAL and metadata formats, object layout, and default
-  modes are unchanged. The additive `ingest_wal_unavailable` error code is
-  backward-compatible. `direct` ingest, `legacy` metadata, and local
-  single-writer coordination remain the defaults; v1.1.4 WAL/checkpoint data is
-  readable by this release.
-
-## [1.1.4] - 2026-07-31
+## [1.3.0] - 2026-09-01
 
 ### Added
 
-- Add a bounded process-local metadata manifest/index/segment cache with
-  singleflight cold loads and short negative caching for local WAL writers.
-- Add atomic local-WAL `checkpoint.json` recovery hints. A valid checkpoint
-  scans only the active tail; invalid or missing hints safely fall back to a
-  full WAL scan.
-- Export metadata dispatch overshoot, cache, and WAL checkpoint metrics with
-  corresponding structured logs and OpenTelemetry spans.
+- Added an opt-in PostgreSQL-CAS multi-writer WAL profile for
+  `POST /v1/ingest/batches`. Each writer has an independent persistent WAL;
+  PostgreSQL stores tenant-head CAS and coordination metadata only, while
+  immutable graph objects in object storage remain authoritative.
+- Added durable owner takeover semantics: `202` is returned only after the
+  writer's local WAL is synced and means that writer durably accepted
+  responsibility for the batch. It does not mean that a graph version is
+  committed. The response includes the stable `writer_id` and owner-routed
+  status URL, including during startup recovery.
+- Added bounded batch CAS/publish slots, per-writer WAL FIFO, successful
+  PostgreSQL CAS ordering across writers, rebase and repeated-conflict batch
+  shrinking, and cross-writer idempotency coordination.
+- Added lifecycle generation fencing so freeze, delete, and recreate take
+  precedence over unpublished WAL work; fenced work becomes a visible final
+  failure rather than publishing against a new tenant generation.
 
-### Changed
+### Supported topology and operations
 
-- Raise the default `GRAPHDB_INGEST_METADATA_FLUSH_WORKERS` from 1 to 4 and
-  avoid scheduler blocking when the metadata worker queue is saturated.
-- Preserve one in-flight metadata flush per tenant while allowing independent
-  tenants to make progress concurrently.
+- Supports 2–8 concurrent writers for one tenant, with horizontal scale across
+  tenants. Eight same-tenant writers are a correctness and availability
+  boundary, not a linear hot-tenant throughput claim.
+- Supports controlled coexistence of 1.2 direct writers and 1.3 WAL writers
+  through PostgreSQL coordination schema v5 and the existing graph/object
+  layout. Each writer must use a unique stable `GRAPHDB_INSTANCE_ID` and its
+  own persistent WAL volume.
+- Rolling downgrade requires stopping new WAL admission and draining every
+  writer WAL until no durable record remains pending. An unconditional
+  in-place downgrade, WAL-volume reassignment with pending records, or
+  recovery after permanent volume loss is outside the contract.
+
+### Verification and evidence
+
+- Full Go tests, focused race checks, `go vet`, OpenAPI/static release checks,
+  and isolated PostgreSQL checks passed for atomic publish/rollback,
+  cross-writer idempotency, same-tenant 2-, 4-, and 8-writer concurrency,
+  four independent tenants, recovery, and owner-routed status.
+- Reader-cache behavior remains bounded: a warm `ReaderCache` in `all` mode
+  can serve a fresh-enough materialized graph, while reader mode and cold-cache
+  requests retain the lazy persisted-index path.
+- Fixed-environment single-node read evidence (OrbStack Linux/arm64, 8 CPUs,
+  8 GiB; three 45-second rounds per cohort) measured QPS
+  `62.586→106.278` (`+69.81%`) and mean operation-level p95
+  `1308.0→386.3 ms` (`-70.46%`). These measurements are historical relative
+  evidence, not a production SLO or a 1.3 WAL capacity certification.
+
+### Compatibility and evidence boundaries
+
+- Direct commits and other mutations retain their existing synchronous paths;
+  the WAL profile covers ingest batches only. PostgreSQL or object-store
+  outages keep accepted batches retryable; a simultaneous outage does not
+  provide an immediate graph commit or exactly-once semantics.
+- The durability guarantee covers process failure when the original writer WAL
+  volume can be recovered. It does not cover permanent loss of that volume.
+- The release does not claim unbounded graph size, linear throughput from eight
+  writers on one hot tenant, or a production capacity guarantee. Re-run the
+  capacity envelope in the target deployment before setting limits.
+
+## [1.2.5] - 2026-08-31
+
+### Improved
+
+- When `GRAPHDB_MODE=all` has a warm `ReaderCache` whose cached version
+  satisfies the requested freshness target, regular and stream queries use the
+  materialized graph. Reader mode and cold-cache requests retain the lazy
+  persisted-index path.
+- Bounded single-node mixed read/write evidence on OrbStack Linux/arm64 (8 CPUs,
+  8 GiB; 4 writers, 16 readers, 200 items/request, three 45-second
+  duration-bound closed-loop rounds per comparison cohort) measured QPS
+  `62.586→106.278` (`+69.81%`),
+  QPS/core `+62.72%`, and mean operation-level p95
+  `1308.0→386.3 ms` (`-70.46%`).
+
+### Evidence boundaries
+
+- The operation-level p95 comparison has sample variability, and some hot
+  saved-query and scan paths have p50 regressions. Ingest p50 is effectively
+  flat (`14097→13988 ms`, `-0.77%`), while ingest p95 worsened from
+  `22291.7` to `23554.3 ms` (`+5.66%`, candidate CV `8.48%`); write-tail
+  improvement is `UNKNOWN`. RSS improvement is also `UNKNOWN`: the mean fell
+  `9.76%`, but candidate CV was `6.56%`.
+- Index health was transiently stale in some end samples, and integrity
+  snapshots reported `snapshot_catalog_missing` with maintenance disabled, so
+  no full integrity `PASS` is claimed. Snapshot export regressed from mean p95
+  `3744.3` to `5943.0 ms` and completed count `46.3` to `26.3`. Production
+  capacity and full matrix coverage remain `UNKNOWN`.
 
 ### Compatibility
 
-- No graph commit, ingest metadata segment, dead-letter, logical-version, or
-  tenant-isolation format changes. `legacy` remains the default metadata mode.
-- Checkpoints and caches are disposable local accelerators; they neither
-  replace the WAL nor change the existing segment activation/rollback fence.
+- API and storage layout remain compatible with 1.2.4; existing deployment
+  modes and clients remain supported, while Go and Python SDK user-agent
+  versions advance to 1.2.5. The performance figures are bounded
+  fixed-environment evidence, not a production SLO or capacity guarantee.
 
-## [1.1.3] - 2026-07-30
+## [1.2.4] - 2026-08-31
 
-### Added
+### Improved
 
-- Add the opt-in `GRAPHDB_INGEST_METADATA_MODE=segment` format for local WAL
-  writers. Requests published across multiple graph flushes share one
-  content-addressed Parquet metadata segment and one ingest-manifest CAS.
-- Add batch, idempotency, and collector Bloom indexes, 32 recent segment
-  references, and tiered reference-only catalogs with at most eight catalogs
-  per level. Historical payload segments are never rewritten.
-- Export fixed-cardinality metadata queue, segment/object-write, manifest CAS,
-  lookup, and replay metrics together with structured lifecycle logs and OTel
-  spans linked to the accepted requests.
-
-### Changed
-
-- Keep `PUBLISHED` WAL records until their metadata manifest is durable, then
-  append batched `FINALIZED` state and reclaim the WAL.
-- Make `Prefer: wait=committed` force the tenant's current metadata window while
-  normal `202` requests may remain `published` until the metadata threshold or
-  interval is reached.
-- Read ingest identities in active-WAL, segment/index, then legacy-object order.
-  Collector totals are seeded from legacy state when a tenant first enables
-  segment metadata.
+- Large-bucket field-index lookups use a snapshot-level ordered cache and a
+  stable streaming merge; aggregate and Top-K paths no longer allocate a full
+  candidate-ID list before selecting and merging results.
+- OrbStack Go 1.25.14 linux/arm64 process-internal relative evidence improves
+  the original benchmark median from `7.133` to `6.058 ms/op` and allocation
+  from `304,849` to `35,800 B/op`. On a 50,000-entity range aggregate c64 wave,
+  latency is `43.765→31.192 ms`, throughput `1,462→2,052 queries/s`, p95
+  `35.25→14.79 ms`, p99 `53.89→32.18 ms`, and allocation
+  `34,614,535→13,642,518 B/wave`.
 
 ### Compatibility
 
-- `legacy` remains the default. Segment metadata is limited to
-  `GRAPHDB_COORDINATION=local` plus `GRAPHDB_INGEST_MODE=wal`.
-- After a tenant has a segment manifest, a 1.1.3 legacy writer refuses further
-  ingest for that tenant. All readers and writers must be upgraded before
-  enabling the new mode; a 1.1.2 writer must not be used after activation.
-- Graph commits, direct ingest, dead-letter objects, logical versions, FIFO
-  ordering, and tenant isolation are unchanged. Legacy metadata is retained and
-  remains readable without migration.
+- API and storage layout remain compatible with 1.2.3; existing deployment
+  modes and clients remain supported, while Go and Python SDK user-agent
+  versions advance to 1.2.4. The performance figures are process-internal
+  relative measurements, not HTTP, object-storage, or mixed read/write
+  production SLOs.
 
-## [1.1.2] - 2026-07-30
+## [1.2.3] - 2026-08-30
 
-### Added
+### Improved
 
-- Add an opt-in process-local segmented WAL for
-  `GRAPHDB_COORDINATION=local` single-writer deployments, with durable
-  `202 Accepted` responses, batch status lookup, `Prefer: wait=committed`,
-  crash recovery, bounded memory/disk queues, and graceful drain on shutdown.
-- Batch per-tenant FIFO requests through one graph apply, one Parquet commit
-  segment, and one manifest publication while sharing group fsync across
-  tenants.
-- Export low-cardinality WAL, queue, flush, deduplication, and recovery
-  metrics; structured lifecycle logs; and OpenTelemetry spans and links that
-  retain accepted-request context across WAL recovery.
-
-### Changed
-
-- Detect exact entity upserts before storage copy-on-write and reuse the same
-  entity preparation path during normal and batched apply.
-- Keep direct ingest as the default while allowing the WAL mode to coordinate
-  direct commits, compaction, clone, disable, delete, and purge through a
-  per-tenant flush barrier.
-
-### Compatibility
-
-- Object layout version 2, existing commit/manifest readers, and the default
-  synchronous direct-ingest API remain unchanged. WAL mode is explicitly
-  enabled and is limited to local single-writer coordination.
-
-## [1.1.1] - 2026-07-30
+- Commit-tail replay is concurrent and bounded while preserving version-ordered
+  application. Entity-page decode releases Arrow payloads promptly, and heavy
+  graph load/compact work is bounded by backpressure and timeout controls.
+- Materialized range/aggregate paths copy only final results, support value
+  top-K, and deduplicate multi-value index keys. Fuzzy matching avoids
+  per-entity filters and string allocations.
+- Fixed-environment relative evidence, not a production SLO: tail-31
+  `157.146→96.849 ms`, compact `149.525→112.156 ms`, and in-use heap
+  `2218.06→1247.61 MB`; native in-process c64 range QPS
+  `70.97→777.09`, p95 `1028.15→49.28 ms`, and
+  `49.763→0.890 MB/query`; fuzzy QPS `1251.31→2568.26`, p95
+  `48.955→12.305 ms`, and `1.235 MB→35.187 KB/query`.
 
 ### Fixed
 
-- Treat ingest batches whose resulting logical graph is unchanged as no-op
-  writes, while distinguishing `logical_noop` from `idempotent_replay` in the
-  API, Go SDK, metrics, and audit output.
-- Copy only graph maps affected by a storage mutation instead of cloning
-  unrelated entity, edge, schema, and index maps before every commit.
-- Build conflict-to-item associations with a batch index instead of repeatedly
-  scanning large ingest requests.
-- Encode dual-key ingest metadata once, publish the idempotency and batch
-  records concurrently, and probe legacy compatibility keys with bounded
-  concurrency while retaining current-key precedence.
+- Compact keeps a newly advanced commit tail when the head moves, avoiding a
+  maintenance conflict while retaining the newer writes.
 
 ### Compatibility
 
-- The object layout and stored ingest record contract remain compatible with
-  GGraphDB 1.1.0. `skip_reason` is an additive response field and is not
-  persisted as idempotency state.
+- API and storage layout remain compatible with 1.2.2; deployment modes and
+  existing clients remain supported, while Go and Python SDK user-agent versions
+  advance to 1.2.3.
+- No HTTP, stream, saved-query, freshness, or mixed service-level performance
+  pass is claimed; that matrix remains `UNKNOWN`.
+
+## [1.2.2] - 2026-08-29
+
+### Fixed
+
+- Query validation now rejects oversized nested filters, projections, sorts,
+  aggregates, traversal patterns, and cost budgets before storage work begins;
+  GraphQL selection and variable handling follow the same bounded contract.
+- Streaming and materialized query paths preserve cancellation and timeout
+  semantics while avoiding unnecessary graph materialization and repeated
+  index/object scans.
+- Server shutdown stops task admission, cancels active maintenance and index
+  workers, and waits for their terminal state; synchronous CLI operations now
+  wait for the task result instead of returning after queue admission.
+- Index rebuild admission and definition updates roll back cleanly when a task
+  cannot start, and terminal state is published only after capacity and leases
+  are released.
+- Restore-drill cleanup failures now fail the task, retry partial cleanup under
+  the original writer fence, and never report a failed required cleanup as a
+  successful drill.
+- PostgreSQL coordinator rollback reports mode-restoration failures and restores
+  PostgreSQL mode when marker removal fails, avoiding a hidden write outage.
+- The ingest WAL reports background writer startup and final sync/close errors;
+  concurrent close calls are idempotent and return the same result.
+
+### Compatibility
+
+- Storage layout, endpoint names, and deployment modes remain compatible with
+  1.2.1. Requests above the new documented query-shape limits are rejected;
+  Go and Python SDK user-agent versions advance to 1.2.2.
+
+## [1.2.1] - 2026-08-28
+
+### Improved
+
+- Commit-tail compaction and graph loading reuse decoded state, load persisted
+  commit segments concurrently, and preserve version-ordered application.
+- Reader graph caches retain active tenant graphs independently of manifest
+  polling and bound cold-load concurrency, queue wait, and background load time.
+- Query validation runs before storage I/O, while `timeout_ms` now covers
+  admission, index access, cold graph loading, and execution end to end.
+- Materialized kind pagination follows a cached stable ID order and stops at the
+  requested window; mutation batches invalidate that order once.
+- Materialized queries skip redundant persistent-index catalog reads, and lazy
+  index failures use a short bounded retry backoff.
+
+### Operations
+
+- Added `GRAPHDB_READER_CACHE_IDLE_TTL`,
+  `GRAPHDB_READER_CACHE_LOAD_TIMEOUT`,
+  `GRAPHDB_READER_CACHE_LOAD_MAX_CONCURRENT`, and
+  `GRAPHDB_READER_CACHE_LOAD_QUEUE_TIMEOUT`.
+- Added benchmarks covering materialized kind/index pagination plus match,
+  neighbors, pattern, traverse, impact, and shortest-path operations.
+
+### Compatibility
+
+- Storage formats, query request/response contracts, and existing deployment
+  modes are unchanged from 1.2.0. New reader load controls have bounded defaults.
+
+## [1.2.0] - 2026-08-28
+
+### Added
+
+- Optional local durable-WAL ingest with acknowledged admission, tenant FIFO
+  batching, restart recovery, status/readiness reporting, and bounded queue and
+  WAL backpressure.
+- Persisted retrieval snapshots and a retrieval service boundary for lexical,
+  vector, and fused evidence queries.
+- GraphQL evidence responses with explicit freshness and retrieval metadata.
+
+### Improved
+
+- Entity upserts avoid publishing graph versions for semantic no-op writes and
+  reduce copy-on-write work on the mutation path.
+- HTTP routes and CLI commands declare mutation semantics next to their
+  handlers, keeping tenant lifecycle enforcement and local-writer fencing in
+  sync with registration.
+- Object-store, coordinator, cache, and tenant-store construction now lives in
+  a dedicated bootstrap layer; coordinator and ingest dependencies use smaller
+  capability interfaces.
+- Release hygiene rejects Finder-style duplicate files and incomplete vendor
+  trees before the release gate starts.
+
+### Compatibility
+
+- Local WAL ingest is opt-in, defaults to direct ingest, requires local
+  coordination, and is unavailable in reader mode.
+- Existing 1.0/1.1 core graph layout and retained technical identifiers remain
+  compatible; the release does not add RDF/OWL storage, SPARQL, or inference.
 
 ## [1.1.0] - 2026-07-27
 

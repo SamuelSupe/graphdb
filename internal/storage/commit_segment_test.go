@@ -4,10 +4,94 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+type concurrentSegmentReadStore struct {
+	ObjectStore
+	entered chan struct{}
+	release chan struct{}
+	active  atomic.Int64
+	max     atomic.Int64
+}
+
+type concurrentCommitTailReadStore struct {
+	ObjectStore
+	firstKey     string
+	entered      chan string
+	releaseFirst chan struct{}
+	releaseLater chan struct{}
+	completed    chan string
+	active       atomic.Int64
+	max          atomic.Int64
+}
+
+func (s *concurrentSegmentReadStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if !strings.Contains(key, "/commits/segments/") {
+		return s.ObjectStore.Get(ctx, key)
+	}
+	active := s.active.Add(1)
+	defer s.active.Add(-1)
+	for {
+		current := s.max.Load()
+		if active <= current || s.max.CompareAndSwap(current, active) {
+			break
+		}
+	}
+	select {
+	case s.entered <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return s.ObjectStore.Get(ctx, key)
+}
+
+func (s *concurrentCommitTailReadStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if !strings.Contains(key, "/commits/") || strings.Contains(key, "/commits/segments/") {
+		return s.ObjectStore.Get(ctx, key)
+	}
+	active := s.active.Add(1)
+	defer s.active.Add(-1)
+	for {
+		current := s.max.Load()
+		if active <= current || s.max.CompareAndSwap(current, active) {
+			break
+		}
+	}
+	select {
+	case s.entered <- key:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	release := s.releaseLater
+	if key == s.firstKey {
+		release = s.releaseFirst
+	}
+	select {
+	case <-release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	data, err := s.ObjectStore.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case s.completed <- key:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return data, nil
+}
 
 func TestTenantStoreSegmentsCommitTailAndLoadsAfterLooseCleanup(t *testing.T) {
 	ctx := context.Background()
@@ -110,6 +194,142 @@ func TestCommitTailSegmentationReusesTailLoadedAfterCacheMiss(t *testing.T) {
 			"cache-miss boundary read %d loose commit objects, want one load of %d",
 			got, commitSegmentTargetCount-1,
 		)
+	}
+}
+
+func TestTenantStoreLoadsCommitSegmentsConcurrentlyAndAppliesInOrder(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	writer := NewTenantStore(base, "test")
+	for i := 0; i < commitSegmentTargetCount*2; i++ {
+		if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{
+				ID: "host:ordered", Kind: "host",
+				Fields: graph.Fields{"sequence": fmt.Sprintf("%03d", i)},
+			}},
+		}, CommitOptions{}); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+	}
+	objects := &concurrentSegmentReadStore{
+		ObjectStore: base,
+		entered:     make(chan struct{}, 2),
+		release:     make(chan struct{}),
+	}
+	reader := NewTenantStore(objects, "test")
+	wantSequence := fmt.Sprintf("%03d", commitSegmentTargetCount*2-1)
+	loadCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		g, manifest, err := reader.Load(loadCtx, "tenant-a")
+		if err == nil {
+			ordered := g.Entities["host:ordered"]
+			if manifest.Version != int64(commitSegmentTargetCount*2) || ordered.Fields["sequence"] != wantSequence {
+				err = fmt.Errorf("loaded version/final sequence = %d/%v", manifest.Version, ordered.Fields["sequence"])
+			}
+		}
+		done <- err
+	}()
+	for range 2 {
+		select {
+		case <-objects.entered:
+		case <-loadCtx.Done():
+			close(objects.release)
+			t.Fatal("commit segments were not loaded concurrently")
+		}
+	}
+	close(objects.release)
+	if err := <-done; err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if objects.max.Load() < 2 {
+		t.Fatalf("max concurrent segment reads = %d, want at least 2", objects.max.Load())
+	}
+}
+
+func TestTenantStoreLoadsCommitTailConcurrentlyAndAppliesInOrder(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	writer := NewTenantStore(base, "test")
+	commitCount := commitTailLoadConcurrency * 2
+	for i := 0; i < commitCount; i++ {
+		if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{
+				ID: "host:ordered", Kind: "host",
+				Fields: graph.Fields{"sequence": fmt.Sprintf("%03d", i)},
+			}},
+		}, CommitOptions{}); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+	}
+	manifest, err := writer.CurrentManifest(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	if len(manifest.CommitSegments) != 0 || len(manifest.CommitKeys) != commitCount {
+		t.Fatalf("manifest segments/tail=%#v/%#v", manifest.CommitSegments, manifest.CommitKeys)
+	}
+	objects := &concurrentCommitTailReadStore{
+		ObjectStore:  base,
+		firstKey:     manifest.CommitKeys[0],
+		entered:      make(chan string, commitCount),
+		releaseFirst: make(chan struct{}),
+		releaseLater: make(chan struct{}),
+		completed:    make(chan string, commitCount),
+	}
+	reader := NewTenantStore(objects, "test")
+	loadCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		g, loadedManifest, err := reader.Load(loadCtx, "tenant-a")
+		if err == nil {
+			ordered, ok := g.GetEntity("host:ordered")
+			if !ok {
+				err = fmt.Errorf("ordered entity is missing")
+			} else if loadedManifest.Version != int64(commitCount) ||
+				ordered.Fields["sequence"] != fmt.Sprintf("%03d", commitCount-1) {
+				err = fmt.Errorf(
+					"loaded version/final sequence = %d/%v",
+					loadedManifest.Version,
+					ordered.Fields["sequence"],
+				)
+			}
+		}
+		done <- err
+	}()
+	for range commitTailLoadConcurrency {
+		select {
+		case <-objects.entered:
+		case <-loadCtx.Done():
+			close(objects.releaseFirst)
+			t.Fatal("commit tail reads did not reach the concurrency window")
+		}
+	}
+	close(objects.releaseLater)
+	for range commitTailLoadConcurrency - 1 {
+		select {
+		case <-objects.completed:
+		case <-loadCtx.Done():
+			close(objects.releaseFirst)
+			t.Fatal("out-of-order commit tail reads did not complete")
+		}
+	}
+	if got := objects.max.Load(); got > int64(commitTailLoadConcurrency) {
+		t.Fatalf("max concurrent commit tail reads = %d, want at most %d", got, commitTailLoadConcurrency)
+	}
+	if got := objects.max.Load(); got < 2 {
+		t.Fatalf("max concurrent commit tail reads = %d, want at least 2", got)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("load completed before the first manifest commit was released: %v", err)
+	default:
+	}
+	close(objects.releaseFirst)
+	if err := <-done; err != nil {
+		t.Fatalf("load: %v", err)
 	}
 }
 

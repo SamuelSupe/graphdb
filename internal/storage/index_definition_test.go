@@ -118,6 +118,56 @@ func TestDropIndexStartsNewRebuildWhenPreviousTaskRunning(t *testing.T) {
 	}
 }
 
+func TestIndexDefinitionChangeRollsBackWhenRebuildCannotStart(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatalf("init tenant: %v", err)
+	}
+	for range defaultTaskQueueLimit {
+		store.taskQueueSlots <- struct{}{}
+	}
+	if _, err := store.CreateIndex(
+		ctx,
+		"tenant-a",
+		IndexDefinition{Kind: "host", Field: "owner"},
+	); err == nil {
+		t.Fatal("create index succeeded with a full rebuild queue")
+	}
+	definitions, err := store.ListIndexDefinitions(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("list definitions after create rollback: %v", err)
+	}
+	if len(definitions) != 0 {
+		t.Fatalf("definitions after create rollback = %#v, want empty", definitions)
+	}
+
+	record := IndexDefinitionRecord{
+		TenantID: "tenant-a",
+		Indexes: []IndexDefinition{{
+			Name: "host.owner", Kind: "host", Field: "owner",
+		}},
+	}
+	if err := store.putIndexDefinitionsWithMeta(
+		ctx,
+		"tenant-a",
+		record,
+		ObjectMeta{Key: store.indexDefinitionsKey("tenant-a")},
+	); err != nil {
+		t.Fatalf("seed index definition: %v", err)
+	}
+	if _, err := store.DropIndex(ctx, "tenant-a", "host.owner"); err == nil {
+		t.Fatal("drop index succeeded with a full rebuild queue")
+	}
+	definitions, err = store.ListIndexDefinitions(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("list definitions after drop rollback: %v", err)
+	}
+	if len(definitions) != 1 || definitions[0].Name != "host.owner" {
+		t.Fatalf("definitions after drop rollback = %#v", definitions)
+	}
+}
+
 func TestIndexDefinitionsRejectNonParquetBytes(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
