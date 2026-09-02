@@ -178,7 +178,3 @@ func snapshotRecordRows(record snapshotRecord) ([]parquetCommitRow, error) {
 	}
 	return rows, nil
 }
-
-func parquetSnapshotRecordSchemaHash() string {
-	return parquetCommitSchemaHash(snapshotRecordCodecParquet)
-}

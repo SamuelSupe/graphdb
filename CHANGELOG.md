@@ -25,6 +25,11 @@ versioning; release tags and binaries expose the exact build commit and date.
 - Conflict handling reuses prepared work and bounded CAS cohorts to reduce
   repeated graph loads, commit objects, and manifest writes without weakening
   lifecycle fencing or idempotency.
+- Snapshot creation no longer materializes an unused embedded index. Legacy
+  snapshots carrying that field remain readable and indexes are rebuilt from
+  authoritative graph data.
+- Derived-index rebuilds now use one Parquet implementation instead of carrying
+  inactive format-selection and incremental-capture paths.
 
 ### Fixed
 
@@ -42,8 +47,9 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ### Contract changes
 
-- Removed the unsupported Evidence Search GraphQL surface and its retrieval
-  error codes. The supported public GraphQL contract has the `graph` root only.
+- Removed the unsupported Evidence Search GraphQL surface, its retrieval error
+  codes, and the dormant retrieval service/storage implementation. The
+  supported public GraphQL contract has the `graph` root only.
 - Expanded OpenAPI mutation and ingest schemas to match the implemented HTTP
   contract, including conditional failures and canonicalization results.
 

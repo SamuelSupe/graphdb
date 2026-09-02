@@ -254,13 +254,6 @@ func (p *WritePressure) ReasonsWithConfig(tenantID string, config BackpressureCo
 	return reasons
 }
 
-func (p *WritePressure) NewError(reasons []BackpressureReason) error {
-	if p == nil {
-		return newBackpressureError(reasons, 0)
-	}
-	return newBackpressureError(reasons, p.Config().RetryAfter)
-}
-
 func newBackpressureError(reasons []BackpressureReason, retryAfter time.Duration) error {
 	if len(reasons) == 0 {
 		return nil

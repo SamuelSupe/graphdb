@@ -166,8 +166,6 @@ func (g *Graph) Snapshot() Snapshot {
 	for _, edge := range g.Edges {
 		snapshot.Edges = append(snapshot.Edges, copyEdge(edge))
 	}
-	index := g.indexSnapshot()
-	snapshot.Index = &index
 	sort.Slice(snapshot.CITypes, func(i, j int) bool {
 		return snapshot.CITypes[i].Name < snapshot.CITypes[j].Name
 	})

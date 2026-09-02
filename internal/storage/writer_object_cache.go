@@ -230,17 +230,6 @@ func (s *WriterObjectCache) List(ctx context.Context, prefix string) ([]ObjectIn
 	return cloneObjectInfos(items), nil
 }
 
-func (s *WriterObjectCache) Clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.bytes = 0
-	s.listBytes = 0
-	s.objects = map[string]*writerObjectEntry{}
-	s.objectLRU.Init()
-	s.lists = map[string]*writerListEntry{}
-	s.listLRU.Init()
-}
-
 func (s *WriterObjectCache) ClearPrefix(prefix string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

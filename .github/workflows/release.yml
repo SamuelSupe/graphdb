@@ -166,7 +166,7 @@ jobs:
           cp docs/README.md docs/README.zh-CN.md docs/database-introduction.md docs/database-introduction.zh-CN.md \
             docs/openapi.yaml docs/query_capabilities.md docs/graphql.md docs/graphql.zh-CN.md \
             docs/gql.md docs/naming-and-compatibility.md docs/naming-and-compatibility.zh-CN.md \
-            docs/error_codes.md docs/ingest-wal-batching-design.zh-CN.md \
+            docs/error_codes.md \
             docs/ingest-wal-multiwriter-design.md docs/ingest-wal-multiwriter-design.zh-CN.md \
             docs/capacity.md docs/capacity.zh-CN.md docs/security-deployment.md docs/security-deployment.zh-CN.md \
             docs/release-checklist.md \

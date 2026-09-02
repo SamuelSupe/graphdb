@@ -293,10 +293,6 @@ func (c *indexObjectCache) putForContent(cacheKey string, contentHash string, en
 	}
 }
 
-func (c *indexObjectCache) putMemory(cacheKey string, entry cachedIndexObject) {
-	c.putMemoryForContent(cacheKey, "", entry)
-}
-
 func (c *indexObjectCache) putMemoryForContent(cacheKey string, contentHash string, entry cachedIndexObject) bool {
 	if c.max == 0 || len(entry.data) == 0 {
 		return false

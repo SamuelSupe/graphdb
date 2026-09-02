@@ -147,14 +147,6 @@ func (s *TenantStore) GetTenantInfo(ctx context.Context, tenantID string) (Tenan
 	return s.tenantInfoFromMetadata(ctx, legacyTenantMetadata(tenantID), false)
 }
 
-func (s *TenantStore) ListTenantInfos(ctx context.Context) ([]TenantInfo, error) {
-	tenants, err := s.ListTenants(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s.tenantInfos(ctx, tenants)
-}
-
 func (s *TenantStore) ListManagedTenantInfos(ctx context.Context) ([]TenantInfo, error) {
 	tenants, err := s.ListManagedTenants(ctx)
 	if err != nil {
@@ -225,9 +217,6 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 			metadata.DeletedAt = time.Time{}
 		}
 	})
-	if err == nil {
-		s.deleteCachedRetrievalSnapshot(tenantID)
-	}
 	return info, err
 }
 
@@ -252,7 +241,6 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 		purgeGeneration = generation
 		candidateOnly = onlyCandidate
 		s.deleteWriteCache(tenantID)
-		s.deleteCachedRetrievalSnapshot(tenantID)
 		if !candidateOnly && s.ingestBarrier != nil {
 			if err := s.ingestBarrier(ctx, tenantID); err != nil {
 				return TenantPurgeReport{}, err
@@ -305,10 +293,6 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 		}
 	}
 	return report, nil
-}
-
-func (s *TenantStore) purgeTenantLocked(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
-	return s.purgeTenantLockedAtGeneration(ctx, tenantID, force, 0)
 }
 
 func (s *TenantStore) purgeTenantLockedAtGeneration(
@@ -397,12 +381,10 @@ func (s *TenantStore) purgeTenantLockedAtGeneration(
 		return report, err
 	}
 	s.deleteWriteCache(tenantID)
-	s.deleteCachedRetrievalSnapshot(tenantID)
 	s.deleteCachedTenantMetadata(tenantID)
 	s.deleteCachedTenantConfig(tenantID)
 	s.deleteCachedSourcePolicy(tenantID)
 	s.deleteCachedIndexCatalog(tenantID)
-	s.deleteCachedRetrievalSnapshot(tenantID)
 	s.deleteCachedWriterLease(tenantID)
 	s.deleteCachedTenantPurgeTombstone(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
@@ -809,18 +791,6 @@ func (s *TenantStore) getTenantMetadataWithMetaFresh(ctx context.Context, tenant
 	return s.getTenantMetadataWithMeta(ctx, tenantID)
 }
 
-func (s *TenantStore) getTenantMetadataForWrite(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
-	if metadata, configured, meta, ok := s.getCachedTenantMetadata(tenantID); ok {
-		return metadata, configured, meta, nil
-	}
-	metadata, configured, meta, err := s.getTenantMetadataWithMeta(ctx, tenantID)
-	if err != nil {
-		return TenantMetadata{}, false, ObjectMeta{}, err
-	}
-	s.setCachedTenantMetadata(tenantID, metadata, configured, meta)
-	return metadata, configured, meta, nil
-}
-
 func (s *TenantStore) tenantInfoFromMetadata(ctx context.Context, metadata TenantMetadata, exists bool) (TenantInfo, error) {
 	manifest, _, err := s.getManifest(ctx, metadata.TenantID)
 	if err != nil {
@@ -838,28 +808,6 @@ func (s *TenantStore) tenantInfoFromMetadata(ctx context.Context, metadata Tenan
 
 func (s *TenantStore) tenantPrefixExists(ctx context.Context, tenantID string) (bool, error) {
 	return s.tenantDataExists(ctx, tenantID)
-}
-
-func (s *TenantStore) cloneTenantConfigs(ctx context.Context, sourceTenantID string, targetTenantID string) error {
-	if policy, ok, err := s.GetSourcePolicy(ctx, sourceTenantID); err != nil {
-		return err
-	} else if ok {
-		meta, err := s.putSourcePolicyRecordWithMeta(ctx, targetTenantID, sourcePolicyRecord{TenantID: targetTenantID, SourcePolicy: policy}, ObjectMeta{Key: s.sourcePolicyKey(targetTenantID)})
-		if err != nil {
-			return err
-		}
-		s.setCachedSourcePolicy(targetTenantID, policy, true, meta)
-	}
-	if config, ok, err := s.GetTenantConfig(ctx, sourceTenantID); err != nil {
-		return err
-	} else if ok {
-		meta, err := s.putTenantConfigRecordWithMeta(ctx, targetTenantID, tenantConfigRecord{TenantID: targetTenantID, Config: config}, ObjectMeta{Key: s.tenantConfigKey(targetTenantID)})
-		if err != nil {
-			return err
-		}
-		s.setCachedTenantConfig(targetTenantID, config, true, meta)
-	}
-	return nil
 }
 
 func (s *TenantStore) applyTenantCreateTemplates(ctx context.Context, tenantID string, options TenantCreateOptions) error {

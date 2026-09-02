@@ -18,7 +18,7 @@ func TestParquetRebuildLookupScanInspectAndHealth(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	seedIndexedGraph(t, ctx, store)
-	catalog, err := store.RebuildIndexesWithOptions(ctx, "tenant-a", IndexRebuildOptions{Format: IndexFormatParquet})
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("rebuild parquet: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestParquetCatalogRefreshesAfterCommit(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	seedIndexedGraph(t, ctx, store)
-	if _, err := store.RebuildIndexesWithOptions(ctx, "tenant-a", IndexRebuildOptions{Format: IndexFormatParquet}); err != nil {
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
 		t.Fatalf("rebuild parquet: %v", err)
 	}
 	result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
@@ -166,7 +166,7 @@ func TestParquetRebuildSkipsUnchangedObjectWrites(t *testing.T) {
 	seedIndexedGraph(t, ctx, store)
 
 	objects.TrackIndexes = true
-	if _, err := store.RebuildIndexesWithOptions(ctx, "tenant-a", IndexRebuildOptions{Format: IndexFormatParquet}); err != nil {
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
 		t.Fatalf("first rebuild parquet: %v", err)
 	}
 	if writes := objects.PutCount("/indexes/parquet/"); writes == 0 {
@@ -174,7 +174,7 @@ func TestParquetRebuildSkipsUnchangedObjectWrites(t *testing.T) {
 	}
 
 	objects.ResetPutCounts()
-	if _, err := store.RebuildIndexesWithOptions(ctx, "tenant-a", IndexRebuildOptions{Format: IndexFormatParquet}); err != nil {
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
 		t.Fatalf("second rebuild parquet: %v", err)
 	}
 	if writes := objects.PutCount("/indexes/parquet/"); writes != 0 {

@@ -413,10 +413,6 @@ func (s *Server) writeAllowed() bool {
 	return s.Mode == "" || s.Mode == "all" || s.Mode == "writer"
 }
 
-func (s *Server) loadGraph(ctx context.Context, tenantID string) (*graph.Graph, storage.Manifest, error) {
-	return s.loadGraphAtLeast(ctx, tenantID, 0)
-}
-
 func (s *Server) loadGraphAtLeast(ctx context.Context, tenantID string, minVersion int64) (*graph.Graph, storage.Manifest, error) {
 	if s.Cache != nil {
 		if minVersion > 0 {

@@ -43,7 +43,3 @@ func decodeParquetCommitObject(ctx context.Context, data []byte) (graph.Commit, 
 	}
 	return items[0].Commit, nil
 }
-
-func parquetCommitObjectSchemaHash() string {
-	return parquetCommitSchemaHash(commitObjectCodecParquet)
-}

@@ -2,38 +2,6 @@ package graph
 
 import "testing"
 
-func TestSnapshotPersistsIndexes(t *testing.T) {
-	g := New()
-	if err := g.ApplyCommit(Commit{
-		ID:      "seed",
-		Version: 1,
-		Mutations: Mutations{
-			UpsertCITypes: []CIType{{
-				Name: "host",
-				Fields: map[string]FieldSpec{
-					"hostname": {Type: "string", Indexed: true},
-				},
-				IdentityKeys: []IdentityKey{{Name: "hostname", Fields: []string{"hostname"}}},
-			}},
-			UpsertEntities: []Entity{{ID: "host:a", Kind: "host", Fields: Fields{"hostname": "app-01"}}},
-		},
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	snapshot := g.Snapshot()
-	if snapshot.Index == nil {
-		t.Fatal("snapshot missing persistent index")
-	}
-	loaded, err := FromSnapshot(snapshot)
-	if err != nil {
-		t.Fatalf("from snapshot: %v", err)
-	}
-	matches := loaded.MatchEntities("host", Fields{"hostname": "app-01"})
-	if len(matches) != 1 || matches[0].ID != "host:a" {
-		t.Fatalf("indexed snapshot match = %#v", matches)
-	}
-}
-
 func TestFromSnapshotRejectsCardinalityViolations(t *testing.T) {
 	_, err := FromSnapshot(Snapshot{
 		Version: 1,

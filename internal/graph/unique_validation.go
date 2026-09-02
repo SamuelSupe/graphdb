@@ -228,14 +228,3 @@ func entityMutationKinds(g *Graph, mutations Mutations) map[string]struct{} {
 	}
 	return kinds
 }
-
-func (g *Graph) validateUniqueEntity(entity Entity) error {
-	validator, err := newUniqueEntityValidator(
-		g,
-		map[string]struct{}{entity.Kind: {}},
-	)
-	if err != nil {
-		return err
-	}
-	return validator.validate(entity)
-}

@@ -196,15 +196,6 @@ type edgeShardTarget struct {
 	Shard        string
 }
 
-func edgeShardSpec(catalog IndexCatalog, relationType string, shard string) (EdgeShard, bool) {
-	for _, spec := range catalog.EdgeShards {
-		if spec.RelationType == relationType && spec.Shard == shard {
-			return spec, true
-		}
-	}
-	return EdgeShard{}, false
-}
-
 func edgeShardReadable(shard EdgeShardData, tenantID string, version int64, spec EdgeShard) bool {
 	if !indexTenantMatches(shard.TenantID, tenantID) ||
 		shard.RelationType != spec.RelationType ||

@@ -268,10 +268,6 @@ func secondaryIndexStringShardID(valueKey string, prefixBytes int) string {
 	return cleanSecondaryIndexShardID("s_" + stringShardPrefixBytes(value, prefixBytes))
 }
 
-func stringShardPrefix(value string) string {
-	return stringShardPrefixBytes(value, secondaryIndexStringShardPrefixBytes)
-}
-
 func stringShardPrefixBytes(value string, prefixBytes int) string {
 	if prefixBytes <= 0 || len(value) <= prefixBytes {
 		return value

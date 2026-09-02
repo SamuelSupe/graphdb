@@ -33,10 +33,6 @@ func (s *TenantStore) writeParquetSecondaryIndexes(ctx context.Context, tenantID
 	return s.writeParquetSecondaryIndexesWithOptions(ctx, tenantID, indexes, true)
 }
 
-func (s *TenantStore) writeParquetSecondaryIndexesFast(ctx context.Context, tenantID string, indexes []SecondaryIndex) error {
-	return s.writeParquetSecondaryIndexesWithOptions(ctx, tenantID, indexes, false)
-}
-
 func (s *TenantStore) writeParquetSecondaryIndexesWithOptions(ctx context.Context, tenantID string, indexes []SecondaryIndex, checkExisting bool) error {
 	for _, index := range indexes {
 		index.TenantID = tenantID

@@ -21,65 +21,6 @@ func aggregateResults(results []Result, specs []Aggregation) (map[string]any, er
 	return acc.results(), nil
 }
 
-func aggregateOne(results []Result, spec Aggregation) any {
-	switch spec.Op {
-	case "count":
-		return len(results)
-	case "count_by":
-		counts := map[string]int{}
-		for _, result := range results {
-			counts[fmt.Sprint(resultValue(result, spec.Field))]++
-		}
-		return counts
-	case "sum", "avg", "min", "max":
-		return numericAggregate(results, spec)
-	default:
-		return nil
-	}
-}
-
-func numericAggregate(results []Result, spec Aggregation) any {
-	var sum float64
-	var min float64
-	var max float64
-	count := 0
-	for _, result := range results {
-		value, ok := asFloat(resultValue(result, spec.Field))
-		if !ok {
-			continue
-		}
-		if count == 0 || value < min {
-			min = value
-		}
-		if count == 0 || value > max {
-			max = value
-		}
-		sum += value
-		count++
-	}
-	switch spec.Op {
-	case "sum":
-		return sum
-	case "avg":
-		if count == 0 {
-			return nil
-		}
-		return sum / float64(count)
-	case "min":
-		if count == 0 {
-			return nil
-		}
-		return min
-	case "max":
-		if count == 0 {
-			return nil
-		}
-		return max
-	default:
-		return nil
-	}
-}
-
 type aggregateAccumulator struct {
 	specs  []Aggregation
 	states []aggregateState

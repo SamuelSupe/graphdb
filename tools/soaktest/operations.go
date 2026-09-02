@@ -59,10 +59,6 @@ func (c *apiClient) queryStream(ctx context.Context, metrics *registry, body que
 	return c.queryStreamNamedWithTimeout(ctx, metrics, "query-stream", c.timeout, body)
 }
 
-func (c *apiClient) queryStreamWithTimeout(ctx context.Context, metrics *registry, timeout time.Duration, body query.Request) error {
-	return c.queryStreamNamedWithTimeout(ctx, metrics, "query-stream", timeout, body)
-}
-
 func (c *apiClient) queryStreamNamedWithTimeout(ctx context.Context, metrics *registry, name string, timeout time.Duration, body query.Request) error {
 	resp, err := c.doWithTimeout(ctx, metrics, timeout, name, http.MethodPost, "/v1/query/stream", body, http.StatusOK)
 	if err != nil {
@@ -169,14 +165,6 @@ func (c *apiClient) fleetReadiness(ctx context.Context, metrics *registry) (apiR
 	return resp, nil
 }
 
-func (c *apiClient) scanEntities(ctx context.Context, metrics *registry) error {
-	return c.scanEntitiesWithTimeout(ctx, metrics, c.timeout)
-}
-
-func (c *apiClient) scanEntitiesWithTimeout(ctx context.Context, metrics *registry, timeout time.Duration) error {
-	return c.scanEntitiesNamedWithTimeout(ctx, metrics, "scan-entities", timeout)
-}
-
 func (c *apiClient) scanEntitiesNamedWithTimeout(ctx context.Context, metrics *registry, name string, timeout time.Duration) error {
 	_, err := c.doWithTimeout(ctx, metrics, timeout, name, http.MethodGet, "/v1/entities?kind=host&limit=100", nil, http.StatusOK)
 	return err
@@ -194,14 +182,6 @@ func (c *apiClient) scanEntitiesMinVersionWithTimeout(ctx context.Context, metri
 func (c *apiClient) scanEntitiesAllowStaleWithTimeout(ctx context.Context, metrics *registry, name string, timeout time.Duration) error {
 	_, err := c.doWithTimeout(ctx, metrics, timeout, name, http.MethodGet, "/v1/entities?kind=host&limit=100&allow_stale=true", nil, http.StatusOK)
 	return err
-}
-
-func (c *apiClient) scanEdges(ctx context.Context, metrics *registry) error {
-	return c.scanEdgesWithTimeout(ctx, metrics, c.timeout)
-}
-
-func (c *apiClient) scanEdgesWithTimeout(ctx context.Context, metrics *registry, timeout time.Duration) error {
-	return c.scanEdgesNamedWithTimeout(ctx, metrics, "scan-edges", timeout)
 }
 
 func (c *apiClient) scanEdgesNamedWithTimeout(ctx context.Context, metrics *registry, name string, timeout time.Duration) error {

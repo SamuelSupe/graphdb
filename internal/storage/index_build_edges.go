@@ -1,28 +1,11 @@
 package storage
 
 import (
-	"context"
-	"fmt"
 	"sort"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
-
-func (s *TenantStore) writeEdgeShards(ctx context.Context, tenantID string, g *graph.Graph, version int64) error {
-	return s.writeParquetEdgeShards(ctx, tenantID, buildEdgeShards(g, version))
-}
-
-func (s *TenantStore) writeEdgeShardsWithFormat(ctx context.Context, tenantID string, shards []EdgeShardData, format string) error {
-	normalized, err := normalizeIndexFormat(format)
-	if err != nil {
-		return err
-	}
-	if normalized != IndexFormatParquet {
-		return fmt.Errorf("unsupported index format %q", format)
-	}
-	return s.writeParquetEdgeShards(ctx, tenantID, shards)
-}
 
 func buildEdgeShards(g *graph.Graph, version int64) []EdgeShardData {
 	counts := edgeShardCounts(g)

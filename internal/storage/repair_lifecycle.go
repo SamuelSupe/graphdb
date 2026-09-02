@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -127,12 +126,4 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func repairActionFailed(actionType string, err error) RepairAction {
-	return RepairAction{Type: actionType, Status: "failed", Message: err.Error()}
-}
-
-func repairActionApplied(actionType string, format string, args ...any) RepairAction {
-	return RepairAction{Type: actionType, Status: "applied", Message: fmt.Sprintf(format, args...)}
 }

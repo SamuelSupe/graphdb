@@ -24,11 +24,7 @@ func (s *TenantStore) buildIncrementalEdgeShards(ctx context.Context, tenantID s
 			return edgeShardID(edge.From)
 		},
 		func(catalog *IndexCatalog) {
-			s.decorateIndexCatalog(
-				catalog,
-				tenantID,
-				IndexFormatParquet,
-			)
+			s.decorateIndexCatalog(catalog, tenantID)
 		},
 	)
 }

@@ -445,15 +445,6 @@ func entityMatchesSource(entity graph.Entity, source string) bool {
 	return false
 }
 
-func entityPageSpec(catalog IndexCatalog, shard string) (EntityPageSpec, bool) {
-	for _, spec := range catalog.EntityPages {
-		if spec.Shard == shard {
-			return spec, true
-		}
-	}
-	return EntityPageSpec{}, false
-}
-
 func entityPageReadable(page EntityPageData, tenantID string, version int64, spec EntityPageSpec) bool {
 	if !indexTenantMatches(page.TenantID, tenantID) || page.Shard != spec.Shard || page.Version > version {
 		return false

@@ -95,9 +95,6 @@ type TenantStore struct {
 	tenantConfigCache          map[string]cachedTenantConfig
 	indexCatalogCache          map[string]cachedIndexCatalog
 	indexCatalogLoads          map[string]*indexCatalogLoad
-	retrievalSnapshotCache     map[string]cachedRetrievalSnapshot
-	retrievalSnapshotLoads     map[string]*retrievalSnapshotLoad
-	retrievalSnapshotEpoch     map[string]uint64
 	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
 	compiledScanCatalogCache   map[string]*compiledScanCatalog
@@ -130,7 +127,6 @@ type TenantStore struct {
 	MaxWriteCacheBytes         int64
 	EntityPagePackMaxBytes     int64
 	IndexPrefetchTimeout       time.Duration
-	IndexFormat                string
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool
@@ -171,9 +167,6 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		tenantConfigCache:          map[string]cachedTenantConfig{},
 		indexCatalogCache:          map[string]cachedIndexCatalog{},
 		indexCatalogLoads:          map[string]*indexCatalogLoad{},
-		retrievalSnapshotCache:     map[string]cachedRetrievalSnapshot{},
-		retrievalSnapshotLoads:     map[string]*retrievalSnapshotLoad{},
-		retrievalSnapshotEpoch:     map[string]uint64{},
 		reverseIndexCatalogCache:   map[string]cachedReverseIndexCatalog{},
 		reverseIndexCatalogLoads:   map[string]*reverseIndexCatalogLoad{},
 		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},

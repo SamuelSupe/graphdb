@@ -32,18 +32,6 @@ func requestEntityMatches(request Request, entity graph.Entity) bool {
 	return entityExprMatches(entity, request.WhereExpr)
 }
 
-func equalityFilters(filters []Filter) graph.Fields {
-	out := graph.Fields{}
-	for _, filter := range filters {
-		if filter.Op == "" || filter.Op == "eq" {
-			if field, ok := indexedField(filter.Field); ok {
-				out[field] = filter.Value
-			}
-		}
-	}
-	return out
-}
-
 func indexedField(field string) (string, bool) {
 	if field == "labels" {
 		return graph.ReservedLabelsField, true

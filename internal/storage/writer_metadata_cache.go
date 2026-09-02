@@ -83,16 +83,6 @@ func (s *TenantStore) deleteCachedTenantConfig(tenantID string) {
 	delete(s.tenantConfigCache, tenantID)
 }
 
-func (s *TenantStore) getCachedTenantMetadata(tenantID string) (TenantMetadata, bool, ObjectMeta, bool) {
-	s.lockMu.Lock()
-	defer s.lockMu.Unlock()
-	cached, ok := s.tenantMetadataCache[tenantID]
-	if !ok {
-		return TenantMetadata{}, false, ObjectMeta{}, false
-	}
-	return cached.metadata, cached.configured, cached.meta, true
-}
-
 func (s *TenantStore) setCachedTenantMetadata(tenantID string, metadata TenantMetadata, configured bool, meta ObjectMeta) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()

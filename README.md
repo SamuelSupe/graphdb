@@ -68,6 +68,12 @@ and ingest `expected_version`, `failure_mode`, and `preconditions`. GraphQL's
 public query contract is limited to the `graph` root; unsupported retrieval
 extensions are not product capabilities.
 
+The final 1.3.1 source also removes the dormant retrieval service and storage
+side path, consolidates derived-index rebuilds on Parquet, and stops
+materializing a duplicate embedded index for every graph snapshot. Snapshots
+that contain the legacy `index` field remain readable; authoritative indexes
+are rebuilt from graph data.
+
 The release evidence covers full Go tests, focused race and vet checks, plus isolated
 PostgreSQL checks for atomic publish/rollback, cross-writer idempotency, 2-, 4-,
 and 8-writer same-tenant concurrency, four independent tenants, recovery, and
@@ -300,9 +306,10 @@ The latest published release is GGraphDB 1.3.1:
 [**v1.3.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.1).
 The release hardens the PostgreSQL-CAS multi-writer WAL profile, adds
 commit-equivalent conditional and atomic ingest, updates both SDKs, and removes
-the unsupported Evidence Search GraphQL surface. The fixed-environment
-read-cache and query measurements below remain historical evidence, not
-production SLOs.
+the unsupported Evidence Search GraphQL and dormant retrieval implementation.
+It also removes duplicate snapshot-index work and keeps one Parquet derived-index
+path. The fixed-environment read-cache and query measurements below remain
+historical evidence, not production SLOs.
 
 Each release archive contains:
 

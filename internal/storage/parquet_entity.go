@@ -75,10 +75,6 @@ func (s *TenantStore) writeParquetEntityPages(ctx context.Context, tenantID stri
 	return s.writeParquetEntityPagesWithOptions(ctx, tenantID, pages, version, true)
 }
 
-func (s *TenantStore) writeParquetEntityPagesFast(ctx context.Context, tenantID string, pages []EntityPageData, version int64) error {
-	return s.writeParquetEntityPagesWithOptions(ctx, tenantID, pages, version, false)
-}
-
 func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, tenantID string, pages []EntityPageData, version int64, checkExisting bool) error {
 	recordJobs := []entityRecordWriteJob{}
 	currentIDs := map[string]struct{}{}
@@ -340,20 +336,6 @@ func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, 
 	}
 	sort.Slice(page.Entities, func(i, j int) bool { return page.Entities[i].ID < page.Entities[j].ID })
 	return page, nil
-}
-
-func appendParquetEntityPageRows(table arrow.Table, tenantID string, shard string, version int64, page *EntityPageData, byID map[string]*graph.Entity) error {
-	if table.NumCols() < int64(parquetEntityColumnEntitySourceStaleAt+1) {
-		return fmt.Errorf("parquet entity page has %d columns, want at least %d", table.NumCols(), parquetEntityColumnEntitySourceStaleAt+1)
-	}
-	reader := array.NewTableReader(table, 4096)
-	defer reader.Release()
-	for reader.Next() {
-		if err := appendParquetEntityPageRecord(reader.RecordBatch(), tenantID, shard, version, page, byID); err != nil {
-			return err
-		}
-	}
-	return reader.Err()
 }
 
 func appendParquetEntityPageRecord(record arrow.RecordBatch, tenantID string, shard string, version int64, page *EntityPageData, byID map[string]*graph.Entity) error {
@@ -888,30 +870,6 @@ func (l *PersistedIndexLookup) getEntityFromParquetPage(ctx context.Context, rec
 		return graph.Entity{}, false, nil
 	}
 	return trimEntityFields(record.Entity, fields), true, nil
-}
-
-func (l *PersistedIndexLookup) listParquetEntitiesFromPage(ctx context.Context, spec EntityPageSpec, kind string, fields []string) ([]graph.Entity, bool, error) {
-	page, ok, err := l.loadParquetEntityPage(ctx, spec)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, false, err
-		}
-		return nil, false, nil
-	}
-	if !ok {
-		return nil, false, nil
-	}
-	out := make([]graph.Entity, 0, len(page.Entities))
-	for _, entity := range page.Entities {
-		if err := objectContextErr(ctx); err != nil {
-			return nil, false, err
-		}
-		if kind != "" && entity.Kind != kind {
-			continue
-		}
-		out = append(out, trimEntityFields(entity, fields))
-	}
-	return out, true, nil
 }
 
 func (l *PersistedIndexLookup) loadParquetEntityPage(ctx context.Context, spec EntityPageSpec) (EntityPageData, bool, error) {

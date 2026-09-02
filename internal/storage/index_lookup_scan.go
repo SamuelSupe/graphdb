@@ -285,10 +285,3 @@ func (l *PersistedIndexLookup) visitEntitiesFromPage(ctx context.Context, spec E
 	}
 	return true, keepGoing, nil
 }
-
-func (l *PersistedIndexLookup) listEntitiesFromPage(ctx context.Context, spec EntityPageSpec, kind string, fields []string) ([]graph.Entity, bool, error) {
-	if specFormat(spec.Format) == IndexFormatParquet {
-		return l.listParquetEntitiesFromPage(ctx, spec, kind, fields)
-	}
-	return nil, false, nil
-}

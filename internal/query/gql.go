@@ -688,15 +688,6 @@ func (p *gqlParser) peekKeyword(value string) bool {
 	return strings.EqualFold(p.peek().value, value)
 }
 
-func (p *gqlParser) peekTopLevelClause() bool {
-	switch strings.ToUpper(p.peek().value) {
-	case "WHERE", "EDGE", "PROJECT", "ORDER", "SORT", "AGG", "AGGREGATE", "GROUP", "HAVING", "LIMIT", "DEPTH", "PATH", "END", "OUT", "IN", "BOTH":
-		return true
-	default:
-		return false
-	}
-}
-
 func (p *gqlParser) peekPathStepBoundary() bool {
 	switch strings.ToUpper(p.peek().value) {
 	case "PROJECT", "ORDER", "SORT", "AGG", "AGGREGATE", "GROUP", "HAVING", "LIMIT", "DEPTH", "PATH", "END", "OUT", "IN", "BOTH":

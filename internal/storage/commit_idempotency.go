@@ -272,21 +272,6 @@ func replayDirectCommitResult(record DirectCommitRecord) CommitResult {
 	return result
 }
 
-func directCommitRecordSameResult(stored DirectCommitRecord, incoming DirectCommitRecord) bool {
-	if !directCommitRequestEqual(stored.Request, incoming.Request) {
-		return false
-	}
-	storedResult, err := json.Marshal(stored.Result)
-	if err != nil {
-		return false
-	}
-	incomingResult, err := json.Marshal(incoming.Result)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(storedResult, incomingResult)
-}
-
 func directCommitRequestEqual(stored DirectCommitRequest, incoming DirectCommitRequest) bool {
 	stored.IdempotencyKey = strings.TrimSpace(stored.IdempotencyKey)
 	incoming.IdempotencyKey = strings.TrimSpace(incoming.IdempotencyKey)

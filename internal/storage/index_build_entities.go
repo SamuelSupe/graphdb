@@ -13,21 +13,6 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func (s *TenantStore) writeEntityPages(ctx context.Context, tenantID string, g *graph.Graph, version int64) error {
-	return s.writeParquetEntityPages(ctx, tenantID, buildEntityPages(g, version), version)
-}
-
-func (s *TenantStore) writeEntityPagesWithFormat(ctx context.Context, tenantID string, g *graph.Graph, version int64, pages []EntityPageData, format string) error {
-	normalized, err := normalizeIndexFormat(format)
-	if err != nil {
-		return err
-	}
-	if normalized != IndexFormatParquet {
-		return fmt.Errorf("unsupported index format %q", format)
-	}
-	return s.writeParquetEntityPages(ctx, tenantID, pages, version)
-}
-
 func buildEntityPages(g *graph.Graph, version int64) []EntityPageData {
 	counts := entityPageCounts(g)
 	now := time.Now().UTC()

@@ -309,7 +309,6 @@ func (s *TenantStore) restoreDrillTargetStore(targetPrefix string) *TenantStore 
 	target.TaskPersistenceTimeout = s.TaskPersistenceTimeout
 	target.IndexPrefetchTimeout = s.IndexPrefetchTimeout
 	target.MaxRetries = s.MaxRetries
-	target.IndexFormat = s.IndexFormat
 	target.Backpressure = s.Backpressure
 	target.backpressureObserver = s.backpressureObserver
 	return target

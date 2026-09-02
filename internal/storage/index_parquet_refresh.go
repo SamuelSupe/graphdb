@@ -28,7 +28,7 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 			return err
 		}
 		artifacts.Catalog.TenantID = tenantID
-		s.decorateIndexCatalog(&artifacts.Catalog, tenantID, IndexFormatParquet)
+		s.decorateIndexCatalog(&artifacts.Catalog, tenantID)
 		s.reuseUnchangedIndexCatalogObjects(tenantID, &artifacts.Catalog, previous)
 	}
 	catalog := artifacts.Catalog

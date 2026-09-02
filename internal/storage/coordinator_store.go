@@ -16,7 +16,6 @@ func (s *TenantStore) SetCoordinator(coordinator WriteCoordinator) {
 		})
 	}
 	s.deleteAllWriteCaches()
-	s.deleteAllCachedRetrievalSnapshots()
 }
 
 func (s *TenantStore) CoordinationBackend() string {

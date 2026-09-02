@@ -144,10 +144,6 @@ type IndexCatalog struct {
 }
 
 func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (IndexCatalog, error) {
-	return s.RebuildIndexesWithOptions(ctx, tenantID, IndexRebuildOptions{})
-}
-
-func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID string, opts IndexRebuildOptions) (IndexCatalog, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -161,14 +157,10 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 		defer stop()
 		ctx = operationCtx
 	}
-	format, err := s.effectiveIndexFormat(opts.Format)
-	if err != nil {
-		return IndexCatalog{}, err
-	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
-	ctx, err = s.bindCurrentWriterFence(ctx, tenantID)
+	ctx, err := s.bindCurrentWriterFence(ctx, tenantID)
 	if err != nil {
 		return IndexCatalog{}, err
 	}
@@ -192,19 +184,19 @@ func (s *TenantStore) RebuildIndexesWithOptions(ctx context.Context, tenantID st
 	}
 	catalog := artifacts.Catalog
 	catalog.TenantID = tenantID
-	s.decorateIndexCatalog(&catalog, tenantID, format)
+	s.decorateIndexCatalog(&catalog, tenantID)
 	// Versioned index artifacts are immutable. Build and upload them without the
 	// tenant lock, then validate and publish the mutable catalog under the lock.
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.writeSecondaryIndexesWithFormat(ctx, tenantID, artifacts.Indexes, format); err != nil {
+	if err := s.writeParquetSecondaryIndexes(ctx, tenantID, artifacts.Indexes); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.writeEdgeShardsWithFormat(ctx, tenantID, artifacts.EdgeShards, format); err != nil {
+	if err := s.writeParquetEdgeShards(ctx, tenantID, artifacts.EdgeShards); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.writeEntityPagesWithFormat(ctx, tenantID, g, manifest.Version, artifacts.EntityPages, format); err != nil {
+	if err := s.writeParquetEntityPages(ctx, tenantID, artifacts.EntityPages, manifest.Version); err != nil {
 		return IndexCatalog{}, err
 	}
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
@@ -300,10 +292,6 @@ func (s *TenantStore) GetIndexCatalogAtVersion(ctx context.Context, tenantID str
 	}
 	catalog, _, err := s.loadIndexCatalog(ctx, tenantID)
 	return catalog, err
-}
-
-func (s *TenantStore) GetIndexCatalogVersion(ctx context.Context, tenantID string, version int64) (IndexCatalog, error) {
-	return s.GetIndexCatalogSnapshot(ctx, tenantID, version, "")
 }
 
 func (s *TenantStore) GetIndexCatalogSnapshot(ctx context.Context, tenantID string, version int64, contentHash string) (IndexCatalog, error) {

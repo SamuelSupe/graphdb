@@ -98,19 +98,6 @@ func readParquetTable(ctx context.Context, data []byte) (arrow.Table, func(), er
 	return table, release, nil
 }
 
-func readParquetRowGroups(ctx context.Context, reader *pqarrow.FileReader, columns []int, rowGroups []int) (arrow.Table, func(), error) {
-	release, err := acquireParquetDecode(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	table, err := reader.ReadRowGroups(ctx, columns, rowGroups)
-	if err != nil {
-		release()
-		return nil, nil, err
-	}
-	return table, release, nil
-}
-
 // readParquetRecordReader holds one admission slot while a streaming reader
 // owns its Arrow decode buffers. Callers must release both returned values.
 func readParquetRecordReader(ctx context.Context, reader *pqarrow.FileReader, columns []int, rowGroups []int) (pqarrow.RecordReader, func(), error) {

@@ -4,14 +4,6 @@ import (
 	"fmt"
 )
 
-func (g *Graph) applyEntitySchema(entity *Entity) error {
-	specs, err := g.EffectiveFields(entity.Kind)
-	if err != nil {
-		return err
-	}
-	return g.applyEntitySchemaWithSpecs(entity, specs)
-}
-
 func (g *Graph) applyEntitySchemaWithSpecs(
 	entity *Entity,
 	specs map[string]FieldSpec,
@@ -150,10 +142,6 @@ func (g *Graph) validateCITypes() error {
 	return nil
 }
 
-func (g *Graph) validateEntitiesAgainstCITypes() error {
-	return g.validateEntitiesAgainstCITypesForKinds(nil)
-}
-
 func (g *Graph) validateEntitiesAgainstCITypesForKinds(
 	kinds map[string]struct{},
 ) error {
@@ -219,14 +207,6 @@ func (g *Graph) validateCIIdentityOwners(
 		owners[signature.Value] = entity.ID
 	}
 	return nil
-}
-
-func (g *Graph) validateEntityFields(entity Entity) error {
-	specs, err := g.EffectiveFields(entity.Kind)
-	if err != nil {
-		return err
-	}
-	return validateEntityFieldsWithSpecs(entity, specs)
 }
 
 func validateEntityFieldsWithSpecs(

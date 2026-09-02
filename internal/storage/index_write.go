@@ -1,9 +1,7 @@
 package storage
 
 import (
-	"bytes"
 	"context"
-	"errors"
 )
 
 const indexWriteConcurrency = 4
@@ -27,22 +25,4 @@ func (s *TenantStore) putBytesWithMetaResult(ctx context.Context, key string, da
 		condition.IfNoneMatch = true
 	}
 	return s.Objects.PutConditional(ctx, key, data, condition)
-}
-
-func (s *TenantStore) putBytesIfChangedMeta(ctx context.Context, key string, data []byte) (ObjectMeta, error) {
-	meta, err := s.Objects.PutConditional(ctx, key, data, PutCondition{IfNoneMatch: true})
-	if err == nil {
-		return meta, nil
-	}
-	if !errors.Is(err, ErrConflict) {
-		return ObjectMeta{}, err
-	}
-	existing, meta, err := s.Objects.GetWithMeta(ctx, key)
-	if err != nil {
-		return ObjectMeta{}, err
-	}
-	if bytes.Equal(existing, data) {
-		return meta, nil
-	}
-	return s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
 }

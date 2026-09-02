@@ -111,7 +111,6 @@ func (s *TenantStore) clearTenantCachesAfterCandidatePurge(tenantID string) {
 	s.deleteCachedTenantConfig(tenantID)
 	s.deleteCachedSourcePolicy(tenantID)
 	s.deleteCachedIndexCatalog(tenantID)
-	s.deleteCachedRetrievalSnapshot(tenantID)
 	s.deleteCachedWriterLease(tenantID)
 	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
 	if cache := FindWriterObjectCache(s.Objects); cache != nil {

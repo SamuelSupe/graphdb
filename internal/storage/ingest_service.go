@@ -1659,25 +1659,6 @@ func (s *IngestService) appendPreparedBatchState(
 	return nil
 }
 
-func (s *IngestService) appendPendingState(pending *ingestPending, kind IngestWALRecordType, state string, result *IngestResult, errorMessage string) error {
-	payload, err := pendingStatePayload(pending, kind, state, result, errorMessage)
-	if err != nil {
-		return err
-	}
-	appendResult, err := s.wal.Append(s.runCtx, kind, payload)
-	if errors.Is(err, ErrIngestWALFull) {
-		if pruneErr := s.prune(s.runCtx); pruneErr == nil {
-			appendResult, err = s.wal.Append(s.runCtx, kind, payload)
-		}
-	}
-	if err == nil {
-		s.mu.Lock()
-		s.highestLSN = max(s.highestLSN, appendResult.LSN)
-		s.mu.Unlock()
-	}
-	return err
-}
-
 func pendingStatePayload(pending *ingestPending, kind IngestWALRecordType, state string, _ *IngestResult, errorMessage string) ([]byte, error) {
 	envelope := walPendingStateEnvelope{
 		RecordID: pending.envelope.RecordID,
@@ -1688,13 +1669,6 @@ func pendingStatePayload(pending *ingestPending, kind IngestWALRecordType, state
 		envelope.FinishedAt = time.Now().UTC()
 	}
 	return json.Marshal(envelope)
-}
-
-func (s *IngestService) setPendingState(pending *ingestPending, state string) {
-	s.mu.Lock()
-	pending.state = state
-	pending.err = nil
-	s.mu.Unlock()
 }
 
 func (s *IngestService) setPendingRetry(pending *ingestPending, err error) {

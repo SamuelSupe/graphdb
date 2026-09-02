@@ -6,11 +6,6 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func neighborsFor(g *graph.Graph, entityID string, request Request) []graph.Neighbor {
-	neighbors, _ := neighborsForBudget(g, entityID, request, nil)
-	return neighbors
-}
-
 func neighborsForBudget(g *graph.Graph, entityID string, request Request, budget *budget) ([]graph.Neighbor, error) {
 	if indexed, ok, err := shardNeighbors(g, entityID, request, budget); ok || err != nil {
 		return indexed, err

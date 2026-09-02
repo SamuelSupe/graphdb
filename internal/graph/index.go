@@ -187,81 +187,6 @@ func edgeAliasValues(edge Edge) []string {
 	return aliases
 }
 
-func (g *Graph) indexSnapshot() IndexSnapshot {
-	snapshot := IndexSnapshot{
-		Version:  g.Version,
-		Field:    map[string]map[string]map[string][]string{},
-		Out:      map[string][]string{},
-		In:       map[string][]string{},
-		Identity: map[string]map[string]string{},
-	}
-	for kind, byField := range g.fieldIndex {
-		snapshot.Field[kind] = map[string]map[string][]string{}
-		for field, byValue := range byField {
-			snapshot.Field[kind][field] = map[string][]string{}
-			for value, ids := range byValue {
-				snapshot.Field[kind][field][value] = sortedKeys(ids)
-			}
-		}
-	}
-	for id, edgeIDs := range g.out {
-		snapshot.Out[id] = sortedKeys(edgeIDs)
-	}
-	for id, edgeIDs := range g.in {
-		snapshot.In[id] = sortedKeys(edgeIDs)
-	}
-	for kind, identities := range g.identityIndex {
-		snapshot.Identity[kind] = map[string]string{}
-		for signature, id := range identities {
-			snapshot.Identity[kind][signature] = id
-		}
-	}
-	return snapshot
-}
-
-func (g *Graph) loadIndexSnapshot(snapshot IndexSnapshot) {
-	g.invalidateEntityOrder()
-	g.invalidateFieldIndexOrder()
-	g.cow = nil
-	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
-	g.out = map[string]map[string]struct{}{}
-	g.in = map[string]map[string]struct{}{}
-	g.edgeAliasIndex = map[string]map[string]struct{}{}
-	g.edgeTypeIndex = map[string]map[string]struct{}{}
-	g.entityAliasIndex = map[string]map[string]struct{}{}
-	g.kindCounts = map[string]int{}
-	g.identityIndex = map[string]map[string]string{}
-	for kind, byField := range snapshot.Field {
-		g.fieldIndex[kind] = map[string]map[string]map[string]struct{}{}
-		for field, byValue := range byField {
-			g.fieldIndex[kind][field] = map[string]map[string]struct{}{}
-			for value, ids := range byValue {
-				g.fieldIndex[kind][field][value] = setFromSlice(ids)
-			}
-		}
-	}
-	for id, edgeIDs := range snapshot.Out {
-		g.out[id] = setFromSlice(edgeIDs)
-	}
-	for id, edgeIDs := range snapshot.In {
-		g.in[id] = setFromSlice(edgeIDs)
-	}
-	for kind, identities := range snapshot.Identity {
-		g.identityIndex[kind] = map[string]string{}
-		for signature, id := range identities {
-			g.identityIndex[kind][signature] = id
-		}
-	}
-	for id, edge := range g.Edges {
-		g.addEdgeAliasesToIndex(id, edge)
-		g.writableEdgeType(edge.Type)[id] = struct{}{}
-	}
-	for id, entity := range g.Entities {
-		g.kindCounts[entity.Kind]++
-		g.addEntityAliasesToIndex(id, entity)
-	}
-}
-
 func sortedKeys(values map[string]struct{}) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -269,12 +194,4 @@ func sortedKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func setFromSlice(values []string) map[string]struct{} {
-	set := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		set[value] = struct{}{}
-	}
-	return set
 }

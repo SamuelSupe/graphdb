@@ -1404,12 +1404,3 @@ func setSplitAt(values []graph.SplitRequest, index int, value graph.SplitRequest
 	values[index] = value
 	return values
 }
-
-func parquetCommitSchemaHash(codec string) string {
-	fields := make([]string, 0, len(parquetCommitArrowSchema().Fields())+1)
-	for _, field := range parquetCommitArrowSchema().Fields() {
-		fields = append(fields, field.Name)
-	}
-	fields = append(fields, codec)
-	return objectSchemaHash(fields)
-}

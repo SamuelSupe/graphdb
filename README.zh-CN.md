@@ -58,6 +58,10 @@ ingest activity 阻塞，PostgreSQL direct ingest 也会同时预留幂等键与
 的 `expected_version`、`failure_mode` 和 `preconditions`。GraphQL 公开合同只
 保留 `graph` 查询根；未接通的检索增强扩展不属于当前产品能力。
 
+最终的 1.3.1 源码同时删除未接通的 retrieval service 和存储旁路，将派生索引
+重建收敛到 Parquet 单一路径，并停止为每个图快照重复构造内嵌索引。包含旧
+`index` 字段的快照仍可读取；权威索引继续从图数据重建。
+
 发行证据覆盖完整 Go 测试、聚焦 race 和 vet，以及隔离 PostgreSQL 下的原子发布/回滚、
 跨 writer 幂等、同租户 2、4、8 writer 并发、四个独立租户、恢复和 owner 路由状态。
 这些是正确性与恢复结果，不是无界吞吐或 exactly-once 保证。持久性边界是进程
@@ -262,8 +266,9 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 最新已发布版本为 GGraphDB 1.3.1：
 [**v1.3.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.1)。
 该版本强化 PostgreSQL-CAS 多 writer WAL profile，补齐 ingest 条件/atomic 写入，
-更新两套 SDK，并下架未接通的 Evidence Search GraphQL 接口。下文固定环境的读缓存
-与查询测量仍是历史证据，不是生产 SLO。
+更新两套 SDK，并下架未接通的 Evidence Search GraphQL 接口及其 dormant retrieval
+实现；同时移除重复的快照索引构造，保留单一 Parquet 派生索引路径。下文固定环境的
+读缓存与查询测量仍是历史证据，不是生产 SLO。
 
 发行包包含：
 

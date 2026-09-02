@@ -559,17 +559,6 @@ func (s *TenantStore) runIndexRebuildTaskWithRelease(
 	s.finishIndexRebuildTask(ctx, task)
 }
 
-func (s *TenantStore) clearIndexRebuildTask(tenantID string, taskID string) {
-	s.taskMu.Lock()
-	defer s.taskMu.Unlock()
-	if s.indexTasks == nil {
-		return
-	}
-	if task, ok := s.indexTasks[tenantID]; ok && task.ID == taskID {
-		delete(s.indexTasks, tenantID)
-	}
-}
-
 func (s *TenantStore) saveIndexTask(ctx context.Context, task IndexTask) error {
 	data, err := marshalParquetIndexTask(ctx, task)
 	if err != nil {

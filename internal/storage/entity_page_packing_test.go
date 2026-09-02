@@ -17,7 +17,7 @@ func TestEntityRecordModeUsesLogicalEntityPageObjects(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	store.WriteEntityRecords = true
 	catalog := IndexCatalog{Version: 1, EntityPages: append([]EntityPageSpec(nil), pages...)}
-	store.decorateIndexCatalog(&catalog, "tenant-a", IndexFormatParquet)
+	store.decorateIndexCatalog(&catalog, "tenant-a")
 	seen := map[string]struct{}{}
 	for _, page := range catalog.EntityPages {
 		key := firstIndexObjectKey(page.Objects, "page", "")
@@ -29,7 +29,7 @@ func TestEntityRecordModeUsesLogicalEntityPageObjects(t *testing.T) {
 
 	store.WriteEntityRecords = false
 	packed := IndexCatalog{Version: 1, EntityPages: append([]EntityPageSpec(nil), pages...)}
-	store.decorateIndexCatalog(&packed, "tenant-a", IndexFormatParquet)
+	store.decorateIndexCatalog(&packed, "tenant-a")
 	packedKeys := map[string]struct{}{}
 	for _, page := range packed.EntityPages {
 		packedKeys[firstIndexObjectKey(page.Objects, "page", "")] = struct{}{}

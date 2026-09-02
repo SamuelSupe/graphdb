@@ -90,27 +90,6 @@ func pathStepsMatch(path graph.Path, filter PathFilter, final bool) bool {
 	return true
 }
 
-func stringSet(values []string) map[string]struct{} {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if value != "" {
-			out[value] = struct{}{}
-		}
-	}
-	return out
-}
-
-func stringAllowed(value string, allowed map[string]struct{}) bool {
-	if len(allowed) == 0 {
-		return true
-	}
-	_, ok := allowed[value]
-	return ok
-}
-
 func stringSliceAllows(value string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true

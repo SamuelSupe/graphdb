@@ -6,6 +6,7 @@ dist/
 soak-runs/
 capacity-runs/
 .ci-bin/
+.workflow/
 .idea/
 .DS_Store
 __pycache__/

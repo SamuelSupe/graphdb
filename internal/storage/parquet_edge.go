@@ -66,10 +66,6 @@ func (s *TenantStore) writeParquetEdgeShards(ctx context.Context, tenantID strin
 	return s.writeParquetEdgeShardsWithOptions(ctx, tenantID, shards, true)
 }
 
-func (s *TenantStore) writeParquetEdgeShardsFast(ctx context.Context, tenantID string, shards []EdgeShardData) error {
-	return s.writeParquetEdgeShardsWithOptions(ctx, tenantID, shards, false)
-}
-
 func (s *TenantStore) writeParquetEdgeShardsWithOptions(ctx context.Context, tenantID string, shards []EdgeShardData, checkExisting bool) error {
 	for _, group := range edgeShardDataPackGroups(shards) {
 		for i := range group.Shards {
@@ -94,11 +90,6 @@ func (s *TenantStore) writeParquetEdgeShardsWithOptions(ctx context.Context, ten
 		}
 	}
 	return nil
-}
-
-func (s *TenantStore) putParquetEdgeShard(ctx context.Context, tenantID string, shard EdgeShardData) error {
-	key := s.parquetEdgeShardVersionKey(tenantID, shard.Version, shard.RelationType, shard.Shard)
-	return s.putParquetEdgeShardObject(ctx, key, tenantID, shard, true)
 }
 
 func (s *TenantStore) putParquetEdgeShardObject(ctx context.Context, key string, tenantID string, shard EdgeShardData, checkExisting bool) error {

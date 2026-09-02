@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -11,20 +10,10 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func buildIndexCatalog(g *graph.Graph, version int64) (IndexCatalog, error) {
-	return buildIndexCatalogWithDefinitions(g, version, nil)
-}
-
-func buildIndexCatalogWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition) (IndexCatalog, error) {
-	artifacts, err := buildIndexArtifactsWithDefinitions(g, version, definitions)
-	return artifacts.Catalog, err
-}
-
-func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID string, format string) {
-	format = IndexFormatParquet
+func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID string) {
 	for i := range catalog.Indexes {
 		index := &catalog.Indexes[i]
-		index.Format = format
+		index.Format = IndexFormatParquet
 		index.RowCount = index.EntryCount
 		index.Codec = parquetSecondaryIndexCodec
 		index.SchemaHash = parquetSecondaryIndexSchemaHash()
@@ -56,7 +45,7 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 	edgePackIDs := edgeShardPackIDs(catalog.EdgeShards)
 	for i := range catalog.EdgeShards {
 		shard := &catalog.EdgeShards[i]
-		shard.Format = format
+		shard.Format = IndexFormatParquet
 		shard.RowCount = shard.EdgeCount
 		packID := edgePackIDs[shard.RelationType+"\x00"+shard.Shard]
 		key := s.parquetEdgeShardVersionKey(tenantID, catalog.Version, shard.RelationType, shard.Shard)
@@ -70,7 +59,7 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 	entityPackIDs := entityPagePackIDs(catalog.EntityPages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes)
 	for i := range catalog.EntityPages {
 		page := &catalog.EntityPages[i]
-		page.Format = format
+		page.Format = IndexFormatParquet
 		page.RowCount = page.EntityCount
 		page.Codec = parquetEntityPageCodec
 		page.SchemaHash = parquetEntityPageSchemaHash()
@@ -81,33 +70,6 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 		}
 		page.Objects = []IndexObject{{Role: "page", Key: key, Format: IndexFormatParquet, Codec: parquetEntityPageCodec, RowCount: page.EntityCount, ContentHash: page.ContentHash, SchemaHash: page.SchemaHash}}
 	}
-}
-
-func (s *TenantStore) writeSecondaryIndexes(ctx context.Context, tenantID string, g *graph.Graph, version int64) error {
-	definitions, err := s.getIndexDefinitions(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	indexes, err := buildSecondaryIndexesWithDefinitions(g, version, definitions)
-	if err != nil {
-		return err
-	}
-	return s.writeParquetSecondaryIndexes(ctx, tenantID, indexes)
-}
-
-func (s *TenantStore) writeSecondaryIndexesWithFormat(ctx context.Context, tenantID string, indexes []SecondaryIndex, format string) error {
-	normalized, err := normalizeIndexFormat(format)
-	if err != nil {
-		return err
-	}
-	if normalized != IndexFormatParquet {
-		return fmt.Errorf("unsupported index format %q", format)
-	}
-	return s.writeParquetSecondaryIndexes(ctx, tenantID, indexes)
-}
-
-func buildSecondaryIndexes(g *graph.Graph, version int64) ([]SecondaryIndex, error) {
-	return buildSecondaryIndexesWithDefinitions(g, version, nil)
 }
 
 func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition) ([]SecondaryIndex, error) {
@@ -226,21 +188,6 @@ func secondaryIndexSpecUnique(spec IndexSpec) bool {
 	return spec.Type == "unique-field"
 }
 
-func fieldIndexType(spec graph.FieldSpec) string {
-	if spec.Unique {
-		return "unique-field"
-	}
-	return "secondary-field"
-}
-
-func storageIndexTopValues(values []graph.FieldIndexValueStat) []IndexValueStat {
-	out := make([]IndexValueStat, len(values))
-	for i, value := range values {
-		out[i] = IndexValueStat{Value: value.Value, Count: value.Count}
-	}
-	return out
-}
-
 func splitShard(value string) (string, string) {
 	for i, ch := range value {
 		if ch == '\x00' {
@@ -248,14 +195,6 @@ func splitShard(value string) (string, string) {
 		}
 	}
 	return value, "default"
-}
-
-func canonicalIndexValue(value any) string {
-	key, ok := secondaryIndexValue(value)
-	if ok {
-		return key
-	}
-	return fmt.Sprintf("v:%v", value)
 }
 
 func secondaryIndexValue(value any) (string, bool) {

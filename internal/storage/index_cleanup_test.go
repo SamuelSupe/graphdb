@@ -247,7 +247,7 @@ func TestCleanupRemovesVersionedParquetObjectsWhenConditionalDeleteUnsupported(t
 	base := NewMemoryStore()
 	store := newParquetIndexTenantStore(base, "test")
 	seedIndexedGraph(t, ctx, store)
-	previous, err := store.RebuildIndexesWithOptions(ctx, "tenant-a", IndexRebuildOptions{Format: IndexFormatParquet})
+	previous, err := store.RebuildIndexes(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("initial rebuild parquet: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCleanupRemovesVersionedParquetObjectsWhenConditionalDeleteUnsupported(t
 	}}}, CommitOptions{}); err != nil {
 		t.Fatalf("advance graph: %v", err)
 	}
-	current, err := store.RebuildIndexesWithOptions(ctx, "tenant-a", IndexRebuildOptions{Format: IndexFormatParquet})
+	current, err := store.RebuildIndexes(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("current rebuild parquet: %v", err)
 	}

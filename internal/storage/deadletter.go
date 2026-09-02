@@ -289,23 +289,6 @@ func deadLetterRequest(request IngestRequest, result IngestResult) IngestRequest
 	return next
 }
 
-func (s *TenantStore) DeleteDeadLetter(ctx context.Context, tenantID string, source string, id string) error {
-	normalizedSource, err := normalizeDeadLetterScope(tenantID, source)
-	if err != nil {
-		return err
-	}
-	source = normalizedSource
-	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	ctx = boundCtx
-	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
-		return err
-	}
-	return s.deleteTenantObject(ctx, tenantID, s.deadLetterKey(tenantID, source, id))
-}
-
 func invalidDeadLetter(tenantID string, source string, key string, err error) DeadLetter {
 	return DeadLetter{
 		ID:       deadLetterIDFromKey(key),
@@ -336,11 +319,6 @@ func deadLetterIDFromKey(key string) string {
 		return name
 	}
 	return decoded
-}
-
-func validateDeadLetterScope(tenantID string, source string) error {
-	_, err := normalizeDeadLetterScope(tenantID, source)
-	return err
 }
 
 func normalizeDeadLetterScope(tenantID string, source string) (string, error) {

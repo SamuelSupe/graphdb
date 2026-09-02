@@ -77,7 +77,7 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 	}
 
 	mini := IndexCatalog{Version: version, EntityPages: rawSpecs}
-	s.decorateIndexCatalog(&mini, tenantID, IndexFormatParquet)
+	s.decorateIndexCatalog(&mini, tenantID)
 	decorated := entityPageSpecMap(mini)
 	next := make([]EntityPageSpec, 0, len(previous)+len(decorated))
 	for _, spec := range previous {

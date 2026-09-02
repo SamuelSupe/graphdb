@@ -136,10 +136,6 @@ func sortIdentitySignatures(signatures []identitySignature) {
 	})
 }
 
-func mergeEntity(existing, incoming Entity) Entity {
-	return mergeEntityWithSpecs(existing, incoming, nil)
-}
-
 func mergeEntityWithSpecs(existing, incoming Entity, fieldSpecs map[string]FieldSpec) Entity {
 	merged := copyEntity(existing)
 	backfillFieldSources(&merged)
