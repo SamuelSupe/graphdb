@@ -147,12 +147,14 @@ func TestHTTPIngestWriteExecutionTimeoutReturnsGatewayTimeout(t *testing.T) {
 }
 
 func TestHTTPCommitIdempotencyReservationTimeoutDoesNotApply(t *testing.T) {
-	store := storage.NewTenantStore(&timeoutMatchingPutStore{
+	objects := &timeoutMatchingPutStore{
 		ObjectStore: storage.NewMemoryStore(),
 		contains:    "/idempotency/commits/",
-	}, "test")
+		hit:         make(chan struct{}),
+	}
+	store := storage.NewTenantStore(objects, "test")
 	handler := (&Server{
-		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second), WriteExecutionTimeout: 50 * time.Millisecond,
+		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second), WriteExecutionTimeout: 5 * time.Second,
 	}).Handler()
 
 	rr := serveJSON(handler, httpMethodPost, "/v1/commits", "tenant-a", CommitRequest{
@@ -161,9 +163,14 @@ func TestHTTPCommitIdempotencyReservationTimeoutDoesNotApply(t *testing.T) {
 			UpsertEntities: []graph.Entity{{ID: "host:after-apply", Kind: "host"}},
 		},
 	})
+	select {
+	case <-objects.hit:
+	default:
+		t.Fatal("idempotency reservation timeout did not reach the injected storage boundary")
+	}
 	body := rr.Body.String()
-	if rr.Code != 504 || !strings.Contains(body, `"code":"request_timeout"`) || strings.Contains(body, `"code":"internal_error"`) {
-		t.Fatalf("status=%d body=%s, want after-apply request timeout", rr.Code, body)
+	if rr.Code != 504 || !strings.Contains(body, `"code":"request_timeout"`) || !strings.Contains(body, `"retryable":true`) || strings.Contains(body, `"code":"internal_error"`) {
+		t.Fatalf("status=%d body=%s, want reservation request timeout", rr.Code, body)
 	}
 	g, manifest, err := store.Load(context.Background(), "tenant-a")
 	if err != nil {
@@ -178,20 +185,27 @@ func TestHTTPCommitIdempotencyReservationTimeoutDoesNotApply(t *testing.T) {
 }
 
 func TestHTTPIngestTimeoutAfterApplyReturnsGatewayTimeout(t *testing.T) {
-	store := storage.NewTenantStore(&timeoutMatchingPutStore{
+	objects := &timeoutMatchingPutStore{
 		ObjectStore: storage.NewMemoryStore(),
 		contains:    "/ingest/",
-	}, "test")
+		hit:         make(chan struct{}),
+	}
+	store := storage.NewTenantStore(objects, "test")
 	handler := (&Server{
-		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second), WriteExecutionTimeout: 50 * time.Millisecond,
+		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second), WriteExecutionTimeout: 5 * time.Second,
 	}).Handler()
 
 	rr := serveJSON(handler, httpMethodPost, "/v1/ingest/batches", "tenant-a", storage.IngestRequest{
 		Source: "agent", CollectorID: "collector-a", BatchID: "batch-timeout", IdempotencyKey: "idem-timeout",
 		Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "host:ingest-after-apply", Kind: "host"}}},
 	})
+	select {
+	case <-objects.hit:
+	default:
+		t.Fatal("ingest metadata timeout did not reach the injected storage boundary")
+	}
 	body := rr.Body.String()
-	if rr.Code != 504 || !strings.Contains(body, `"code":"request_timeout"`) || strings.Contains(body, `"code":"internal_error"`) || strings.Contains(body, `"failed"`) {
+	if rr.Code != 504 || !strings.Contains(body, `"code":"request_timeout"`) || !strings.Contains(body, `"retryable":true`) || strings.Contains(body, `"code":"internal_error"`) || strings.Contains(body, `"failed"`) {
 		t.Fatalf("status=%d body=%s, want after-apply request timeout", rr.Code, body)
 	}
 	g, manifest, err := store.Load(context.Background(), "tenant-a")
@@ -227,6 +241,8 @@ func (s *slowConditionalPutStore) PutConditional(ctx context.Context, key string
 type timeoutMatchingPutStore struct {
 	storage.ObjectStore
 	contains string
+	hit      chan struct{}
+	hitOnce  sync.Once
 }
 
 type countBackpressureStore struct {
@@ -252,8 +268,12 @@ func (s *countBackpressureStore) indexMarkerReads() int {
 
 func (s *timeoutMatchingPutStore) PutConditional(ctx context.Context, key string, data []byte, condition storage.PutCondition) (storage.ObjectMeta, error) {
 	if strings.Contains(key, s.contains) {
-		<-ctx.Done()
-		return storage.ObjectMeta{Key: key}, ctx.Err()
+		s.hitOnce.Do(func() {
+			if s.hit != nil {
+				close(s.hit)
+			}
+		})
+		return storage.ObjectMeta{Key: key}, context.DeadlineExceeded
 	}
 	return s.ObjectStore.PutConditional(ctx, key, data, condition)
 }

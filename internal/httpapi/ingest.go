@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -38,14 +39,18 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		if s.writeBackpressureIfNeeded(w, tenantID, err) {
 			return
 		}
-		if writeCtx.Err() != nil {
+		requestErr := writeCtx.Err()
+		if requestErr == nil && errors.Is(err, context.DeadlineExceeded) {
+			requestErr = err
+		}
+		if requestErr != nil {
 			if ingestMayHaveChangedData(result) {
 				s.invalidate(tenantID)
 			}
 			s.auditError("ingest_timeout", tenantID, err, map[string]any{
 				"source": request.Source, "collector_id": request.CollectorID, "batch_id": result.BatchID,
 			})
-			writeRequestError(w, writeCtx.Err())
+			writeRequestError(w, requestErr)
 			return
 		}
 		if ingestMayHaveChangedData(result) {

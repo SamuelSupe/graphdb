@@ -85,6 +85,10 @@ completion:
 - terminal preparation failures retry the whole completion batch, while a
   per-record terminal WAL error still retains the successful-prefix retry
   boundary;
+- after direct ingest has published data, a wrapped `context.DeadlineExceeded`
+  from metadata/object storage while the overall `writeCtx` remains valid now
+  follows the timeout branch: it returns `504 request_timeout` with
+  `retryable: true`, invalidates the cache, and keeps the published data visible;
 - same-tenant shutdown no longer busy-loops, and ready/complete queues remain
   live when multiple tenants are active.
 

@@ -14,6 +14,10 @@ versioning; release tags and binaries expose the exact build commit and date.
 - Terminal preparation failures retry the entire completion batch. A per-record
   terminal WAL append failure still preserves the successful-prefix retry
   boundary.
+- After direct ingest has published data, a wrapped `context.DeadlineExceeded`
+  from metadata/object storage while the overall `writeCtx` remains valid now
+  follows the timeout branch: it returns `504 request_timeout` with
+  `retryable: true`, invalidates the cache, and keeps the published data visible.
 - Same-tenant shutdown no longer busy-loops, and ready/complete queues remain
   live when multiple tenants are active instead of deadlocking.
 

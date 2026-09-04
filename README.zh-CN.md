@@ -70,6 +70,9 @@ ingest activity 阻塞，PostgreSQL direct ingest 也会同时预留幂等键与
 - 并发 `Accept` 按 WAL append 顺序入队；
 - WAL pruning 会保留已接收记录，直到对应 active state 完成登记；
 - terminal preparation 失败时重试整个完成批次；逐条 terminal WAL 错误仍保留成功前缀的重试边界；
+- direct ingest 已发布数据后，如果 metadata/object-store 返回 wrapped
+  `context.DeadlineExceeded` 但整体 `writeCtx` 仍有效，现在沿用 timeout 分支，返回
+  `504 request_timeout`、`retryable: true` 并失效缓存；已发布数据仍可见；
 - 同租户 shutdown 不再忙循环，多租户同时活跃时 ready/complete 队列不会死锁。
 
 本源码树的本地 Go 测试、`go vet`、聚焦 race 检查和隔离 PostgreSQL 检查已通过。
