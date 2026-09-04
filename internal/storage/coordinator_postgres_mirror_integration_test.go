@@ -71,35 +71,60 @@ func TestPostgresCoordinatorRenewsLegacyManifestLease(t *testing.T) {
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+	const (
+		initialLeaseTTL = 30 * time.Second
+		renewedLeaseTTL = 2 * time.Minute
+	)
 	job, ok, err := coordinator.ClaimLegacyManifest(
 		ctx,
 		"owner-a",
-		30*time.Millisecond,
+		initialLeaseTTL,
 	)
 	if err != nil || !ok {
 		t.Fatalf("claim mirror job: ok=%v err=%v", ok, err)
 	}
+	readLeaseUntil := func() time.Time {
+		t.Helper()
+		var leaseUntil time.Time
+		if err := coordinator.pool.QueryRow(ctx,
+			`SELECT lease_until
+			 FROM `+coordinator.table("legacy_manifest_outbox")+`
+			 WHERE namespace = $1 AND tenant_id = $2 AND head_revision = $3`,
+			coordinator.namespace, job.TenantID, job.HeadRevision,
+		).Scan(&leaseUntil); err != nil {
+			t.Fatalf("read legacy manifest lease_until: %v", err)
+		}
+		return leaseUntil
+	}
+	claimedUntil := readLeaseUntil()
 	stale := job
 	stale.OwnerToken = "owner-b"
 	if renewed, err := coordinator.RenewLegacyManifest(
 		ctx,
 		stale,
-		250*time.Millisecond,
+		renewedLeaseTTL,
 	); err != nil || renewed {
 		t.Fatalf("renew stale owner: renewed=%v err=%v", renewed, err)
+	}
+	staleUntil := readLeaseUntil()
+	if !staleUntil.Equal(claimedUntil) {
+		t.Fatalf("stale owner changed lease_until from %s to %s", claimedUntil, staleUntil)
 	}
 	if renewed, err := coordinator.RenewLegacyManifest(
 		ctx,
 		job,
-		250*time.Millisecond,
+		renewedLeaseTTL,
 	); err != nil || !renewed {
 		t.Fatalf("renew owner: renewed=%v err=%v", renewed, err)
 	}
-	time.Sleep(60 * time.Millisecond)
+	renewedUntil := readLeaseUntil()
+	if !renewedUntil.After(staleUntil) {
+		t.Fatalf("owner renewal lease_until = %s, want after prior lease_until %s", renewedUntil, staleUntil)
+	}
 	if _, claimed, err := coordinator.ClaimLegacyManifest(
 		ctx,
 		"owner-b",
-		time.Second,
+		renewedLeaseTTL,
 	); err != nil || claimed {
 		t.Fatalf("claim renewed mirror job: claimed=%v err=%v", claimed, err)
 	}
