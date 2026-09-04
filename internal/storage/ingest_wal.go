@@ -133,6 +133,8 @@ type IngestWALAppendResult struct {
 	Segment string
 	Offset  int64
 	Durable bool
+
+	acceptedSequence uint64
 }
 
 type ingestWALAppendRequest struct {
@@ -469,14 +471,15 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 }
 
 type ingestWALWriterState struct {
-	wal        *IngestWAL
-	file       ingestWALWriteFile
-	segments   []ingestWALSegment
-	current    int
-	nextLSN    uint64
-	totalBytes int64
-	writtenLSN uint64
-	durableLSN uint64
+	wal              *IngestWAL
+	file             ingestWALWriteFile
+	segments         []ingestWALSegment
+	current          int
+	nextLSN          uint64
+	totalBytes       int64
+	writtenLSN       uint64
+	durableLSN       uint64
+	acceptedSequence uint64
 }
 
 func (s *ingestWALWriterState) openCurrent() error {
@@ -596,6 +599,10 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		for i, request := range pending {
 			result := results[i]
 			result.Durable = s.wal.config.Durability == IngestWALDurabilitySync
+			if request.kind == IngestWALAccepted {
+				s.acceptedSequence++
+				result.acceptedSequence = s.acceptedSequence
+			}
 			request.done <- ingestWALAppendResponse{result: result}
 		}
 		buffer.Reset()

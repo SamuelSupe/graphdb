@@ -188,24 +188,26 @@ type walPendingStateEnvelope struct {
 }
 
 type ingestPending struct {
-	envelope      walIngestEnvelope
-	acceptedLSN   uint64
-	estimated     time.Time
-	bytes         int64
-	state         string
-	result        IngestResult
-	err           error
-	finishedAt    time.Time
-	done          chan struct{}
-	completedOnce sync.Once
-	casConflicts  int
-	retryAttempts int
+	envelope         walIngestEnvelope
+	acceptedLSN      uint64
+	acceptedSequence uint64
+	estimated        time.Time
+	bytes            int64
+	state            string
+	result           IngestResult
+	err              error
+	finishedAt       time.Time
+	done             chan struct{}
+	completedOnce    sync.Once
+	casConflicts     int
+	retryAttempts    int
 }
 
 type ingestAcceptFlight struct {
-	digest string
-	done   chan struct{}
-	err    error
+	digest    string
+	done      chan struct{}
+	err       error
+	retainLSN uint64
 }
 
 type ingestGenerationCacheEntry struct {
@@ -252,6 +254,7 @@ type IngestService struct {
 	runCtx      context.Context
 	cancel      context.CancelFunc
 	workers     sync.WaitGroup
+	acceptors   sync.WaitGroup
 	closeOnce   sync.Once
 }
 
@@ -426,10 +429,12 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 				ErrIngestIdentityConflict, request.Source, request.CollectorID, request.BatchID,
 			)
 		}
-		flight := &ingestAcceptFlight{digest: digest, done: make(chan struct{})}
+		flight := &ingestAcceptFlight{digest: digest, done: make(chan struct{}), retainLSN: s.highestLSN + 1}
 		s.accepting[identity] = flight
 		s.acceptingStatus[statusKey] = flight
+		s.acceptors.Add(1)
 		s.mu.Unlock()
+		defer s.acceptors.Done()
 
 		generationCtx, cancelGeneration := context.WithTimeout(ctx, ingestWALGenerationCaptureTimeout)
 		generation, generationErr := s.captureIngestWALGeneration(generationCtx, tenantID)
@@ -547,12 +552,13 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		envelope.AcceptedLSN = appendResult.LSN
 		s.walFull = false
 		pending := &ingestPending{
-			envelope:    envelope,
-			acceptedLSN: appendResult.LSN,
-			estimated:   acceptedAt.Add(s.config.FlushInterval),
-			bytes:       recordBytes,
-			state:       IngestStateAccepted,
-			done:        make(chan struct{}),
+			envelope:         envelope,
+			acceptedLSN:      appendResult.LSN,
+			acceptedSequence: appendResult.acceptedSequence,
+			estimated:        acceptedAt.Add(s.config.FlushInterval),
+			bytes:            recordBytes,
+			state:            IngestStateAccepted,
+			done:             make(chan struct{}),
 		}
 		if request.FullSync {
 			pending.estimated = acceptedAt
@@ -871,6 +877,17 @@ func (s *IngestService) Close(ctx context.Context) error {
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()
+		accepted := make(chan struct{})
+		go func() {
+			s.acceptors.Wait()
+			close(accepted)
+		}()
+		select {
+		case <-accepted:
+		case <-ctx.Done():
+			closeErr = ctx.Err()
+			s.cancel()
+		}
 		close(s.shutdownCh)
 		select {
 		case <-s.schedulerOK:
@@ -1060,6 +1077,8 @@ func (s *IngestService) schedule() {
 	queues := map[string]*ingestTenantQueue{}
 	busy := map[string]bool{}
 	forceThrough := map[string]uint64{}
+	awaitingAdmission := map[uint64]*ingestPending{}
+	nextAcceptedSequence := uint64(1)
 	deadlines := ingestDeadlineHeap{}
 	heap.Init(&deadlines)
 	timer := time.NewTimer(time.Hour)
@@ -1068,6 +1087,31 @@ func (s *IngestService) schedule() {
 	}
 	draining := false
 	shutdownCh := s.shutdownCh
+	enqueue := func(pending *ingestPending) {
+		tenantID := pending.envelope.TenantID
+		queue := queues[tenantID]
+		if queue == nil {
+			queue = &ingestTenantQueue{
+				tenantID: tenantID,
+				deadline: pending.envelope.AcceptedAt.Add(s.config.FlushInterval),
+				index:    -1,
+			}
+			if draining || pending.envelope.Request.FullSync {
+				queue.deadline = time.Now()
+			}
+			queues[tenantID] = queue
+			heap.Push(&deadlines, queue)
+		}
+		queue.items = append(queue.items, pending)
+		queue.bytes += pending.bytes
+		if len(queue.items) >= s.config.FlushMaxRequests ||
+			queue.bytes >= s.config.FlushMaxBytes ||
+			pending.envelope.Request.FullSync ||
+			pending.acceptedLSN <= forceThrough[tenantID] {
+			queue.deadline = time.Now()
+			heap.Fix(&deadlines, queue.index)
+		}
+	}
 
 	resetTimer := func() <-chan time.Time {
 		if deadlines.Len() == 0 {
@@ -1088,62 +1132,58 @@ func (s *IngestService) schedule() {
 			}
 		}
 	}
-	dispatch := func(now time.Time) bool {
+	nextQueue := func(now time.Time) *ingestTenantQueue {
 		for deadlines.Len() > 0 {
 			queue := deadlines[0]
-			if !draining && queue.deadline.After(now) {
-				return true
+			if queue.deadline.After(now) {
+				return nil
+			}
+			if !busy[queue.tenantID] {
+				return queue
 			}
 			heap.Pop(&deadlines)
-			if busy[queue.tenantID] {
-				queue.deadline = now.Add(10 * time.Millisecond)
-				heap.Push(&deadlines, queue)
-				continue
-			}
-			delete(queues, queue.tenantID)
-			select {
-			case s.readyCh <- ingestTenantFlush{tenantID: queue.tenantID, items: queue.items}:
-				busy[queue.tenantID] = true
-			case <-s.runCtx.Done():
-				return false
-			}
+			queue.deadline = now.Add(10 * time.Millisecond)
+			heap.Push(&deadlines, queue)
 		}
-		return true
+		return nil
 	}
 
 	for {
-		if !dispatch(time.Now()) {
-			return
+		queue := nextQueue(time.Now())
+		var readyCh chan ingestTenantFlush
+		var flush ingestTenantFlush
+		if queue != nil {
+			readyCh = s.readyCh
+			flush = ingestTenantFlush{tenantID: queue.tenantID, items: queue.items}
 		}
-		if draining && len(queues) == 0 && len(busy) == 0 {
+		if draining && len(queues) == 0 && len(busy) == 0 && len(s.enqueueCh) == 0 && len(awaitingAdmission) == 0 {
 			return
 		}
 		stopTimer()
-		timerCh := resetTimer()
+		var timerCh <-chan time.Time
+		if queue == nil {
+			timerCh = resetTimer()
+		}
 		select {
+		case readyCh <- flush:
+			// Keep completion handling live when the worker queue is full.
+			heap.Pop(&deadlines)
+			delete(queues, queue.tenantID)
+			busy[queue.tenantID] = true
 		case pending := <-s.enqueueCh:
-			tenantID := pending.envelope.TenantID
-			queue := queues[tenantID]
-			if queue == nil {
-				queue = &ingestTenantQueue{
-					tenantID: tenantID,
-					deadline: pending.envelope.AcceptedAt.Add(s.config.FlushInterval),
-					index:    -1,
-				}
-				if draining || pending.envelope.Request.FullSync {
-					queue.deadline = time.Now()
-				}
-				queues[tenantID] = queue
-				heap.Push(&deadlines, queue)
+			if pending.acceptedSequence == 0 {
+				// Recovered records were already sorted by their persisted LSN.
+				enqueue(pending)
+				continue
 			}
-			queue.items = append(queue.items, pending)
-			queue.bytes += pending.bytes
-			if len(queue.items) >= s.config.FlushMaxRequests ||
-				queue.bytes >= s.config.FlushMaxBytes ||
-				pending.envelope.Request.FullSync ||
-				pending.acceptedLSN <= forceThrough[tenantID] {
-				queue.deadline = time.Now()
-				heap.Fix(&deadlines, queue.index)
+			// WAL append responses can resume their callers in a different order.
+			// This process-local sequence excludes prepared and terminal records.
+			awaitingAdmission[pending.acceptedSequence] = pending
+			for awaitingAdmission[nextAcceptedSequence] != nil {
+				next := awaitingAdmission[nextAcceptedSequence]
+				delete(awaitingAdmission, nextAcceptedSequence)
+				nextAcceptedSequence++
+				enqueue(next)
 			}
 		case force := <-s.forceCh:
 			forceThrough[force.tenantID] = max(forceThrough[force.tenantID], force.throughLSN)
@@ -1484,21 +1524,14 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 	return nil
 }
 
-type ingestTerminalRecordRange struct {
-	start  int
-	count  int
-	failed bool
-}
-
 func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []IngestResult) (int, error) {
 	if len(items) != len(results) {
 		return 0, fmt.Errorf("terminal ingest result count mismatch")
 	}
 	records := make([]ingestWALBatchRecord, 0, len(items))
-	ranges := make([]ingestTerminalRecordRange, len(items))
+	// Preparation has not finalized any prefix; a failure here retries all items.
 	for index, pending := range items {
 		result := results[index]
-		start := len(records)
 		if result.Failed > 0 && result.Applied == 0 {
 			if failureStore, ok := s.store.(ingestAttemptFailureStore); ok {
 				if err := failureStore.PersistIngestAttemptFailure(
@@ -1510,7 +1543,7 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 					pending.envelope.AcceptedAt,
 					time.Now().UTC(),
 				); err != nil {
-					return index, fmt.Errorf("persist ingest attempt failure: %w", err)
+					return 0, fmt.Errorf("persist ingest attempt failure: %w", err)
 				}
 			}
 			payload, err := pendingStatePayload(
@@ -1520,7 +1553,6 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 				return 0, err
 			}
 			records = append(records, ingestWALBatchRecord{kind: IngestWALFailed, payload: payload})
-			ranges[index] = ingestTerminalRecordRange{start: start, count: 1, failed: true}
 			continue
 		}
 		if result.SkipReason == IngestSkipReasonIdempotentReplay {
@@ -1534,7 +1566,7 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 					pending.envelope.AcceptedAt,
 					time.Now().UTC(),
 				); err != nil {
-					return index, fmt.Errorf("resolve ingest attempt failure: %w", err)
+					return 0, fmt.Errorf("resolve ingest attempt failure: %w", err)
 				}
 			}
 		}
@@ -1545,22 +1577,16 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 			return 0, err
 		}
 		records = append(records, ingestWALBatchRecord{kind: IngestWALFinalized, payload: finalized})
-		ranges[index] = ingestTerminalRecordRange{start: start, count: 1}
 	}
 
 	responses := s.appendWALBatchWithPrune(records)
-	for index, itemRange := range ranges {
-		for offset := 0; offset < itemRange.count; offset++ {
-			if err := responses[itemRange.start+offset].err; err != nil {
-				return index, err
-			}
+	for index, response := range responses {
+		if response.err != nil {
+			s.completePendingBatch(items[:index], results[:index])
+			return index, response.err
 		}
-		if itemRange.failed {
-			s.completePendingState(items[index], results[index], nil, IngestStateFailed)
-			continue
-		}
-		s.completePending(items[index], results[index], nil)
 	}
+	s.completePendingBatch(items, results)
 	return len(items), nil
 }
 
@@ -1707,16 +1733,36 @@ func (s *IngestService) ingestRetryDelay(pending *ingestPending) time.Duration {
 	return delay * time.Duration(jitterPercent) / 100
 }
 
-func (s *IngestService) completePending(pending *ingestPending, result IngestResult, err error) {
-	state := IngestStateCommitted
-	if err != nil {
-		state = IngestStateFailed
+func (s *IngestService) completePendingBatch(items []*ingestPending, results []IngestResult) {
+	if len(items) == 0 {
+		return
 	}
-	s.completePendingState(pending, result, err, state)
+	s.mu.Lock()
+	for index, pending := range items {
+		state := IngestStateCommitted
+		if results[index].Failed > 0 && results[index].Applied == 0 {
+			state = IngestStateFailed
+		}
+		s.completePendingStateLocked(pending, results[index], nil, state)
+	}
+	shouldPrune := s.finishPendingCompletionsLocked()
+	s.mu.Unlock()
+	if shouldPrune {
+		_ = s.prune(context.Background())
+	}
 }
 
 func (s *IngestService) completePendingState(pending *ingestPending, result IngestResult, err error, state string) {
 	s.mu.Lock()
+	s.completePendingStateLocked(pending, result, err, state)
+	shouldPrune := s.finishPendingCompletionsLocked()
+	s.mu.Unlock()
+	if shouldPrune {
+		_ = s.prune(context.Background())
+	}
+}
+
+func (s *IngestService) completePendingStateLocked(pending *ingestPending, result IngestResult, err error, state string) {
 	pending.state = state
 	pending.result = result
 	pending.err = err
@@ -1748,23 +1794,25 @@ func (s *IngestService) completePendingState(pending *ingestPending, result Inge
 	}
 	if pending.envelope.AcceptedAt.Equal(s.oldestPending) {
 		s.oldestPending = time.Time{}
+	}
+	s.completedSince++
+	pending.completedOnce.Do(func() { close(pending.done) })
+}
+
+func (s *IngestService) finishPendingCompletionsLocked() bool {
+	if s.oldestPending.IsZero() {
 		for _, active := range s.active {
 			if s.oldestPending.IsZero() || active.envelope.AcceptedAt.Before(s.oldestPending) {
 				s.oldestPending = active.envelope.AcceptedAt
 			}
 		}
 	}
-	s.completedSince++
 	shouldPrune := s.walFull || s.completedSince >= 128
 	if shouldPrune {
 		s.completedSince = 0
 	}
-	pending.completedOnce.Do(func() { close(pending.done) })
 	s.observeQueueLocked()
-	s.mu.Unlock()
-	if shouldPrune {
-		_ = s.prune(context.Background())
-	}
+	return shouldPrune
 }
 
 func terminalIngestFlushError(err error) bool {
@@ -1800,6 +1848,10 @@ func failedIngestResult(request IngestRequest, failure error) IngestResult {
 func (s *IngestService) prune(ctx context.Context) error {
 	s.mu.Lock()
 	before := s.highestLSN + 1
+	// A durable append can still be returning to Accept and not yet be in active.
+	for _, flight := range s.accepting {
+		before = min(before, flight.retainLSN)
+	}
 	for _, pending := range s.active {
 		if pending.acceptedLSN < before {
 			before = pending.acceptedLSN

@@ -9,7 +9,7 @@ internal services, and operations tools.
 The 1.3 SDKs expose the current ingest contract. Both preserve direct-mode
 terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
 owner status resource, polling/waiting, and ingest CAS/conditional/atomic
-options. The Go and Python SDK package versions are `1.3.1`.
+options. The Go and Python SDK package versions are `1.3.2`.
 
 SDK scope:
 

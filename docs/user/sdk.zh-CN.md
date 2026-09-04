@@ -8,7 +8,7 @@ GGraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务
 1.3 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
 `200/207` 结果，并提供 WAL 的 `202` acceptance、`Location`/owner status
 资源、轮询/等待，以及 ingest CAS、条件和 atomic 选项。Go 和 Python SDK
-包版本均为 `1.3.1`。
+包版本均为 `1.3.2`。
 
 SDK 覆盖：
 

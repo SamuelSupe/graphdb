@@ -8,11 +8,11 @@
 [![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
 [![Public Repository](https://img.shields.io/badge/repository-public-2ea44f)](https://github.com/SamuelSupe/graphdb)
 
-[English README](README.md) · [最新发行版](https://github.com/SamuelSupe/graphdb/releases/latest)
+[English README](README.md) · [GGraphDB 1.3.2 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.2)
 
 </div>
 
-GGraphDB 1.3.1 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.3.2 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -34,7 +34,7 @@ SPARQL、本体推理或历史图引擎。
 
 ### 1.3 PostgreSQL-CAS 多 writer WAL 合同
 
-GGraphDB 1.3.1 提供一个可选的 `/v1/ingest/batches` WAL profile：每个
+GGraphDB 1.3.2 保留可选的 `/v1/ingest/batches` WAL profile：每个
 writer 拥有独立本地 WAL，PostgreSQL 负责 tenant-head CAS 和协调元数据更新。
 对象存储仍是图数据权威；PostgreSQL 不保存 ingest payload、WAL record、commit
 segment 或图数据。`202` 表示本地 WAL `fsync` 后已持久接管，不是图版本已经提交。
@@ -45,7 +45,7 @@ CAS 和依赖的暂时故障仍通过重基与有界缩批重试；PostgreSQL �
 扩展。每个 writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID`、独立持久 WAL 卷和
 owner-routed 状态 URL。批量发布使用有界 CAS/publish slot 和生命周期
 generation fence：租户 freeze、delete 或 recreate 后，旧 generation 的请求
-不能发布。完整合同见[1.3 设计文档](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.zh-CN.md)。
+不能发布。完整合同见[1.3 设计文档](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.zh-CN.md)。
 
 1.3.1 在本地与 PostgreSQL 协调的 ingest 中补齐与 commit 对等的
 `expected_version`、atomic failure 和实体/边 precondition 语义。共享同一 WAL
@@ -62,7 +62,23 @@ ingest activity 阻塞，PostgreSQL direct ingest 也会同时预留幂等键与
 重建收敛到 Parquet 单一路径，并停止为每个图快照重复构造内嵌索引。包含旧
 `index` 字段的快照仍可读取；权威索引继续从图数据重建。
 
-发行证据覆盖完整 Go 测试、聚焦 race 和 vet，以及隔离 PostgreSQL 下的原子发布/回滚、
+### 1.3.2 ingest 可靠性修复
+
+1.3.2 保持 1.3 WAL record 格式、HTTP 合同和图/对象布局不变，修复了持久准入
+与完成路径的边界问题：
+
+- 并发 `Accept` 按 WAL append 顺序入队；
+- WAL pruning 会保留已接收记录，直到对应 active state 完成登记；
+- terminal preparation 失败时重试整个完成批次；逐条 terminal WAL 错误仍保留成功前缀的重试边界；
+- 同租户 shutdown 不再忙循环，多租户同时活跃时 ready/complete 队列不会死锁。
+
+本源码树的本地 Go 测试、`go vet`、聚焦 race 检查和隔离 PostgreSQL 检查已通过。
+发布归档只有在静态检查、RustFS/PostgreSQL 集成、30 分钟 CAS soak 和 rollback
+检查通过后才会构建；本地证据不表示这些发布门禁已经通过。实际运行和发布状态见
+[release workflow](.github/workflows/release.yml) 与
+[GitHub releases](https://github.com/SamuelSupe/graphdb/releases)。
+
+1.3.1 发行证据覆盖完整 Go 测试、聚焦 race 和 vet，以及隔离 PostgreSQL 下的原子发布/回滚、
 跨 writer 幂等、同租户 2、4、8 writer 并发、四个独立租户、恢复和 owner 路由状态。
 这些是正确性与恢复结果，不是无界吞吐或 exactly-once 保证。持久性边界是进程
 故障且原 writer WAL 卷仍可恢复；WAL 卷永久丢失不在合同内。
@@ -95,6 +111,17 @@ ingest activity 阻塞，PostgreSQL direct ingest 也会同时预留幂等键与
   可用性边界，不代表热点租户吞吐线性增长。历史两 active writer、20 commit/s
   结果属于 1.2 基线，不是 1.3 WAL 容量认证。设置生产上限前，请在目标部署中
   重新运行[容量边界](docs/capacity.zh-CN.md)。
+
+### 1.3.2 terminal completion 基准
+
+在 OrbStack Linux/arm64 使用 Go 1.25.14（`golang:1.25-bookworm` 镜像，8 CPU、
+8 GiB）时，基准使用真实的 `appendTerminalBatch` 和 WAL 写入，setup 与 teardown
+均排除在计时外。
+固定 `10x`、连续 3 轮的中位数为：`active=8192, complete=256` 从
+`20.466951` 降至 `3.409939 ms/op`（`-83.3%`），`active=4096, complete=256`
+从 `12.507517` 降至 `2.894312 ms/op`（`-76.9%`）。这只测量 terminal bookkeeping
+热点，不代表端到端 QPS 或容量。命令为
+`go test -mod=readonly -run '^$' -bench '^BenchmarkIngestTerminalCompletion$' -benchmem -benchtime=10x -count=3 ./internal/storage`。
 
 ### 1.2.4 查询性能更新
 
@@ -263,12 +290,12 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 
 ## 发行版
 
-最新已发布版本为 GGraphDB 1.3.1：
-[**v1.3.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.1)。
-该版本强化 PostgreSQL-CAS 多 writer WAL profile，补齐 ingest 条件/atomic 写入，
-更新两套 SDK，并下架未接通的 Evidence Search GraphQL 接口及其 dormant retrieval
-实现；同时移除重复的快照索引构造，保留单一 Parquet 派生索引路径。下文固定环境的
-读缓存与查询测量仍是历史证据，不是生产 SLO。
+GGraphDB 1.3.2 发行版见：
+[**v1.3.2**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.2)。
+该补丁保留 PostgreSQL-CAS 多 writer WAL 合同，并修复并发准入顺序、WAL 登记保留、
+terminal batch 重试和 shutdown 队列活性。1.3.1 的能力继续保留，包括 ingest 条件/
+atomic 写入、两套 SDK、受支持的 GraphQL surface 和单一 Parquet 派生索引路径。本
+README 中的固定环境读缓存、查询和 terminal completion 测量是有边界的证据，不是生产 SLO。
 
 发行包包含：
 
@@ -278,7 +305,7 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.3.1` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.3.2` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 
@@ -294,7 +321,7 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
 | [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | GraphQL、JSON DSL、分页、流式、explain 和 profile。 |
 | [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
-| [1.3 多 writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
+| [1.3 多 writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
 | [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |

@@ -8,11 +8,11 @@
 [![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
 [![Public Repository](https://img.shields.io/badge/repository-public-2ea44f)](https://github.com/SamuelSupe/graphdb)
 
-[中文 README](README.zh-CN.md) · [Latest Release](https://github.com/SamuelSupe/graphdb/releases/latest)
+[中文 README](README.zh-CN.md) · [GGraphDB 1.3.2 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.2)
 
 </div>
 
-GGraphDB 1.3.1 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.3.2 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -36,7 +36,7 @@ SPARQL, ontology-reasoning, or historical graph engine.
 
 ### 1.3 PostgreSQL-CAS multi-writer WAL contract
 
-GGraphDB 1.3.1 ships an opt-in WAL profile for
+GGraphDB 1.3.2 retains the opt-in WAL profile for
 `POST /v1/ingest/batches`: every writer owns an independent local WAL and
 PostgreSQL performs tenant-head CAS plus coordination metadata updates. Object
 storage remains the graph-data authority; PostgreSQL never stores ingest
@@ -52,7 +52,7 @@ horizontally across tenants. Every writer needs a stable
 status URL. Batch publish uses a bounded CAS/publish slot and lifecycle
 generation fencing: a stale or fenced request cannot publish after a tenant
 freeze, delete, or recreate. The complete contract is in the [1.3 design
-document](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.md).
+document](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.md).
 
 The 1.3.1 write path adds commit-equivalent `expected_version`, atomic failure,
 and entity/edge precondition semantics to both local and PostgreSQL-coordinated
@@ -74,7 +74,29 @@ materializing a duplicate embedded index for every graph snapshot. Snapshots
 that contain the legacy `index` field remain readable; authoritative indexes
 are rebuilt from graph data.
 
-The release evidence covers full Go tests, focused race and vet checks, plus isolated
+### 1.3.2 ingest reliability fixes
+
+The 1.3.2 patch keeps the 1.3 WAL record format, HTTP contract, and graph/object
+layout unchanged. It fixes the operational edges around durable admission and
+completion:
+
+- concurrent `Accept` calls are enqueued in the order of their WAL appends;
+- WAL pruning retains an accepted record until its active state is registered;
+- terminal preparation failures retry the whole completion batch, while a
+  per-record terminal WAL error still retains the successful-prefix retry
+  boundary;
+- same-tenant shutdown no longer busy-loops, and ready/complete queues remain
+  live when multiple tenants are active.
+
+Local Go tests, `go vet`, focused race checks, and isolated PostgreSQL checks
+pass for this source tree. Release publication is gated by static checks,
+RustFS/PostgreSQL integration, a 30-minute CAS soak, and rollback checks before
+the archive is built. This local evidence does not assert that those release
+gates passed; the [release workflow](.github/workflows/release.yml) and
+[GitHub releases](https://github.com/SamuelSupe/graphdb/releases) show the
+eventual run and publication status.
+
+The 1.3.1 baseline evidence covered full Go tests, focused race and vet checks, plus isolated
 PostgreSQL checks for atomic publish/rollback, cross-writer idempotency, 2-, 4-,
 and 8-writer same-tenant concurrency, four independent tenants, recovery, and
 owner-routed status. These are correctness and recovery results, not an
@@ -117,6 +139,17 @@ certification.
   20-commit/s result is a 1.2 baseline; it is not 1.3 WAL capacity
   certification. Re-run the [capacity envelope](docs/capacity.md) in the target
   deployment before setting production limits.
+
+### 1.3.2 terminal-completion benchmark
+
+On OrbStack Linux/arm64 with Go 1.25.14 (the `golang:1.25-bookworm` image,
+8 CPUs, 8 GiB), a benchmark exercises real `appendTerminalBatch` plus WAL
+writes with setup and teardown outside the timer. Across three fixed `10x` rounds, the
+`active=8192, complete=256` median moved from `20.466951` to `3.409939 ms/op`
+(`-83.3%`), and `active=4096, complete=256` moved from `12.507517` to
+`2.894312 ms/op` (`-76.9%`). This measures the terminal bookkeeping hotspot
+only; it is not an end-to-end QPS or capacity claim. The command was
+`go test -mod=readonly -run '^$' -bench '^BenchmarkIngestTerminalCompletion$' -benchmem -benchtime=10x -count=3 ./internal/storage`.
 
 ### 1.2.4 query performance update
 
@@ -302,14 +335,15 @@ restart.
 
 ## Release
 
-The latest published release is GGraphDB 1.3.1:
-[**v1.3.1**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.1).
-The release hardens the PostgreSQL-CAS multi-writer WAL profile, adds
-commit-equivalent conditional and atomic ingest, updates both SDKs, and removes
-the unsupported Evidence Search GraphQL and dormant retrieval implementation.
-It also removes duplicate snapshot-index work and keeps one Parquet derived-index
-path. The fixed-environment read-cache and query measurements below remain
-historical evidence, not production SLOs.
+The GGraphDB 1.3.2 release is tracked at:
+[**v1.3.2**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.2).
+This patch keeps the PostgreSQL-CAS multi-writer WAL contract and fixes
+concurrent admission ordering, WAL registration retention, terminal-batch
+retry, and shutdown queue liveness. The 1.3.1 capabilities also remain in the
+release: commit-equivalent conditional and atomic ingest, both SDKs, the
+supported GraphQL surface, and the single Parquet derived-index path. The
+fixed-environment read-cache, query, and terminal-completion measurements in
+this README are bounded evidence, not production SLOs.
 
 Each release archive contains:
 
@@ -320,7 +354,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.3.1` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.3.2` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 
@@ -336,7 +370,7 @@ supported for older deployment workflows.
 | [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
 | [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | GraphQL, JSON DSL, pagination, streaming, explain, and profile. |
 | [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
-| [1.3 multi-writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.md) · [中文](https://github.com/SamuelSupe/graphdb/blob/v1.3.1/docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
+| [1.3 multi-writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.md) · [中文](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
 | [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, optional CI types, entities, relations, edges, and source governance. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
 | [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |

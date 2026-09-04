@@ -7,7 +7,7 @@ from .tenant import TenantMixin
 from .transport import TransportMixin
 from .write import WriteMixin
 
-SDK_VERSION = "1.3.1"
+SDK_VERSION = "1.3.2"
 
 
 class GraphDBClient(TenantMixin, WriteMixin, ReadMixin, QueryMixin, OpsMixin, TransportMixin):

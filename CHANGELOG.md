@@ -3,6 +3,47 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.3.2] - 2026-09-05
+
+### Fixed
+
+- Concurrent WAL admissions are enqueued in completed durable WAL append order,
+  preserving per-writer FIFO behavior under concurrent `Accept` calls.
+- WAL pruning retains an accepted record until its active admission state is
+  registered, so a record cannot be removed in the registration gap.
+- Terminal preparation failures retry the entire completion batch. A per-record
+  terminal WAL append failure still preserves the successful-prefix retry
+  boundary.
+- Same-tenant shutdown no longer busy-loops, and ready/complete queues remain
+  live when multiple tenants are active instead of deadlocking.
+
+### Performance evidence
+
+- In an OrbStack Linux/arm64 benchmark using Go 1.25.14 in the
+  `golang:1.25-bookworm` image, 8 CPUs, 8 GiB, real `appendTerminalBatch` plus
+  WAL writes, and setup/teardown outside the timer, three fixed `10x` rounds
+  measured the terminal bookkeeping hotspot. With `active=8192, complete=256`,
+  the median moved from
+  `20.466951` to `3.409939 ms/op` (`-83.3%`); with
+  `active=4096, complete=256`, it moved from `12.507517` to
+  `2.894312 ms/op` (`-76.9%`). This is a bounded hotspot measurement, not an
+  end-to-end QPS or capacity claim.
+
+### Verification boundary
+
+- Local Go tests, `go vet`, focused race checks, and isolated PostgreSQL checks
+  passed for the source tree. Release publication has separate static,
+  RustFS/PostgreSQL integration, 30-minute CAS soak, and rollback gates; this
+  local evidence does not substitute for those workflow results.
+- The benchmark used `go test -mod=readonly -run '^$' -bench
+  '^BenchmarkIngestTerminalCompletion$' -benchmem -benchtime=10x -count=3
+  ./internal/storage`, comparing the baseline at `26175c37` with the candidate.
+
+### Compatibility
+
+- No ingest WAL record format change or migration is introduced. The existing
+  1.3 graph/object layout and HTTP contract remain compatible.
+
 ## [1.3.1] - 2026-09-02
 
 ### Added

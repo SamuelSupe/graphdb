@@ -1,8 +1,10 @@
-# GGraphDB 1.3 Release Checklist
+# GGraphDB 1.3.2 Release Checklist
 
 The checklist is intentionally unchecked until commit-bound evidence is
 available. The 1.3 PostgreSQL-CAS multi-writer WAL profile is release-gated;
 the historical 1.2 gates below remain compatibility inputs, not proof of 1.3.
+The v1.3.2 patch preserves the existing WAL record format. Local verification
+summaries remain separate from the release workflow gates below.
 
 ## 1.3 Contract And Durability
 
@@ -25,7 +27,7 @@ the historical 1.2 gates below remain compatibility inputs, not proof of 1.3.
 - [ ] Ingest accepts `expected_version`, `failure_mode` (`best_effort` or
       `atomic`), and bounded entity/edge `preconditions`; terminal results expose
       the corresponding `error_code` when a request is rejected.
-- [ ] Go and Python SDKs are version `1.3.1` and preserve direct `200/207`
+- [ ] Go and Python SDKs are version `1.3.2` and preserve direct `200/207`
       behavior while exposing WAL `202` acceptance, `Location`/owner status,
       and explicit poll/wait helpers without hiding HTTP status.
 - [ ] GraphQL, OpenAPI, and user-facing documentation expose only the supported

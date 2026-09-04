@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.3.1
-  description: Object-store backed multi-tenant current-state property knowledge graph API. The 1.3 development contract adds opt-in PostgreSQL-CAS multi-writer WAL for ingest batches; it is release-gated and preserves the existing graph/object layout.
+  version: 1.3.2
+  description: Object-store backed multi-tenant current-state property knowledge graph API. The 1.3 contract adds opt-in PostgreSQL-CAS multi-writer WAL for ingest batches; v1.3.2 preserves the existing graph/object layout and WAL record format.
 servers:
   - url: http://localhost:8080
 security:

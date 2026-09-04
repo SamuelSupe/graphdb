@@ -629,6 +629,237 @@ func TestIngestServiceExactReplayAfterIdentityAttemptFailureStatusCommitted(t *t
 	}
 }
 
+func TestIngestServiceRetriesAllPendingAfterAttemptFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		resolve bool
+	}{
+		{name: "persist"},
+		{name: "resolve", resolve: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			objects := &failIngestRecordOnceStore{ObjectStore: NewMemoryStore()}
+			store := NewTenantStore(objects, "test")
+			config := testIngestServiceConfig(t)
+			config.FlushInterval = time.Hour
+			config.FlushMaxRequests = 8
+			config.RetryInterval = time.Millisecond
+			service, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			defer func() {
+				if !closed {
+					closeIngestService(t, service)
+				}
+			}()
+
+			flushAndWait := func(acceptances ...IngestAcceptance) []IngestResult {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+					t.Fatalf("flush tenant: %v", err)
+				}
+				results := make([]IngestResult, len(acceptances))
+				for index, acceptance := range acceptances {
+					result, err := service.Wait(ctx, acceptance)
+					if err != nil {
+						t.Fatalf("wait acceptance %d: %v", index, err)
+					}
+					results[index] = result
+				}
+				return results
+			}
+
+			seed := ingestEntityRequest("batch-attempt-seed-"+test.name, "host:seed")
+			seedAccepted, err := service.Accept(context.Background(), "tenant-a", seed)
+			if err != nil {
+				t.Fatalf("accept seed: %v", err)
+			}
+			seedResults := flushAndWait(seedAccepted)
+			if seedResults[0].Version != 1 || seedResults[0].Applied != 1 || seedResults[0].Failed != 0 {
+				t.Fatalf("seed result = %#v, want committed version 1", seedResults[0])
+			}
+
+			conflict := seed
+			conflict.Items = []IngestItem{{
+				ExternalID: "host:conflict",
+				Entity:     &graph.Entity{ID: "host:conflict", Kind: "host"},
+			}}
+			prefix := ingestEntityRequest("batch-attempt-prefix-"+test.name, "host:prefix")
+			var tail IngestRequest
+			if test.resolve {
+				attemptAccepted, err := service.Accept(context.Background(), "tenant-a", conflict)
+				if err != nil {
+					t.Fatalf("accept attempt failure seed: %v", err)
+				}
+				attemptResults := flushAndWait(attemptAccepted)
+				if attemptResults[0].Applied != 0 || attemptResults[0].Failed != 1 || len(attemptResults[0].Failures) != 1 {
+					t.Fatalf("attempt failure result = %#v, want one durable failure", attemptResults[0])
+				}
+				if _, err := store.GetIngestAttemptFailure(
+					context.Background(), config.OwnerID, "tenant-a", conflict.Source, conflict.CollectorID, conflict.BatchID,
+				); err != nil {
+					t.Fatalf("load attempt failure marker: %v", err)
+				}
+				tail = seed
+				objects.mu.Lock()
+				objects.failDeleteKey = store.ingestAttemptFailureKey(
+					"tenant-a", config.OwnerID, tail.Source, tail.CollectorID, tail.BatchID,
+				)
+				objects.mu.Unlock()
+			} else {
+				tail = conflict
+				objects.mu.Lock()
+				objects.failKey = store.ingestAttemptFailureKey(
+					"tenant-a", config.OwnerID, tail.Source, tail.CollectorID, tail.BatchID,
+				)
+				objects.mu.Unlock()
+			}
+
+			prefixAccepted, err := service.Accept(context.Background(), "tenant-a", prefix)
+			if err != nil {
+				t.Fatalf("accept prefix: %v", err)
+			}
+			tailAccepted, err := service.Accept(context.Background(), "tenant-a", tail)
+			if err != nil {
+				t.Fatalf("accept trailing request: %v", err)
+			}
+			results := flushAndWait(prefixAccepted, tailAccepted)
+
+			objects.mu.Lock()
+			persistFailed := objects.failed
+			resolveFailed := objects.deleteFailed
+			objects.mu.Unlock()
+			if test.resolve {
+				if !resolveFailed {
+					t.Fatal("resolver failure was not injected")
+				}
+			} else if !persistFailed {
+				t.Fatal("attempt failure persistence failure was not injected")
+			}
+
+			if results[0].Version != 2 || results[0].Applied != 1 || results[0].Failed != 0 {
+				t.Fatalf("prefix result = %#v, want committed version 2 after retry", results[0])
+			}
+			if test.resolve {
+				if results[1].Version != 1 || results[1].Applied != 1 || results[1].Failed != 0 ||
+					!results[1].Skipped || results[1].SkipReason != IngestSkipReasonIdempotentReplay {
+					t.Fatalf("replay result = %#v, want successful idempotent replay", results[1])
+				}
+			} else if results[1].Applied != 0 || results[1].Failed != 1 || len(results[1].Failures) != 1 {
+				t.Fatalf("failed result = %#v, want one terminal failure", results[1])
+			}
+
+			loaded, manifest, err := store.Load(context.Background(), "tenant-a")
+			if err != nil {
+				t.Fatalf("load graph after retry: %v", err)
+			}
+			if manifest.Version != 2 {
+				t.Fatalf("manifest version after retry = %d, want 2", manifest.Version)
+			}
+			if _, ok := loaded.GetEntity("host:prefix"); !ok {
+				t.Fatal("prefix request was lost while retrying trailing request")
+			}
+			if _, ok := loaded.GetEntity("host:conflict"); ok {
+				t.Fatal("conflicting request changed the graph")
+			}
+
+			prefixStatus, err := service.Status(
+				context.Background(), "tenant-a", prefix.Source, prefix.CollectorID, prefix.BatchID,
+			)
+			if err != nil {
+				t.Fatalf("prefix status: %v", err)
+			}
+			if prefixStatus.State != IngestStateCommitted || prefixStatus.Result == nil ||
+				prefixStatus.Result.Version != 2 || prefixStatus.Result.Applied != 1 {
+				t.Fatalf("prefix status = %#v, want committed version 2", prefixStatus)
+			}
+			tailStatus, err := service.Status(
+				context.Background(), "tenant-a", tail.Source, tail.CollectorID, tail.BatchID,
+			)
+			if err != nil {
+				t.Fatalf("tail status: %v", err)
+			}
+			if test.resolve {
+				if tailStatus.State != IngestStateCommitted || tailStatus.Result == nil ||
+					tailStatus.Result.Version != 1 || tailStatus.Result.Applied != 1 {
+					t.Fatalf("replay status = %#v, want committed version 1", tailStatus)
+				}
+				if _, err := store.GetIngestAttemptFailure(
+					context.Background(), config.OwnerID, "tenant-a", tail.Source, tail.CollectorID, tail.BatchID,
+				); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("resolved attempt failure marker = %v, want ErrNotFound", err)
+				}
+			} else if tailStatus.State != IngestStateFailed || tailStatus.Result == nil ||
+				tailStatus.Result.Applied != 0 || tailStatus.Result.Failed != 1 {
+				t.Fatalf("failed status = %#v, want terminal failure", tailStatus)
+			}
+
+			crashIngestService(t, service)
+			closed = true
+			recoveredWAL, recoveredRecords, err := OpenIngestWAL(config.WAL)
+			if err != nil {
+				t.Fatalf("open WAL before recovery: %v", err)
+			}
+			if err := recoveredWAL.Close(); err != nil {
+				t.Fatalf("close WAL before recovery: %v", err)
+			}
+			acceptedRecords, terminalRecords := 0, 0
+			for _, record := range recoveredRecords {
+				switch record.Type {
+				case IngestWALAccepted:
+					acceptedRecords++
+				case IngestWALFinalized, IngestWALFailed:
+					terminalRecords++
+				}
+			}
+			if acceptedRecords < 3 || terminalRecords < 3 {
+				t.Fatalf("WAL before recovery has %d accepted and %d terminal records, want at least 3 each: %#v", acceptedRecords, terminalRecords, recoveredRecords)
+			}
+
+			recovered, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatalf("reopen ingest service: %v", err)
+			}
+			recoveredClosed := false
+			defer func() {
+				if !recoveredClosed {
+					closeIngestService(t, recovered)
+				}
+			}()
+			for _, request := range []IngestRequest{prefix, tail} {
+				status, err := recovered.Status(
+					context.Background(), "tenant-a", request.Source, request.CollectorID, request.BatchID,
+				)
+				if err != nil {
+					t.Fatalf("recovered status for %s: %v", request.BatchID, err)
+				}
+				if status.Result == nil {
+					t.Fatalf("recovered status for %s has no result: %#v", request.BatchID, status)
+				}
+			}
+			if err := recovered.Close(context.Background()); err != nil {
+				t.Fatalf("close recovered service: %v", err)
+			}
+			recoveredClosed = true
+			prunedWAL, prunedRecords, err := OpenIngestWAL(config.WAL)
+			if err != nil {
+				t.Fatalf("open WAL after recovery prune: %v", err)
+			}
+			if err := prunedWAL.Close(); err != nil {
+				t.Fatalf("close WAL after recovery prune: %v", err)
+			}
+			if len(prunedRecords) != 0 {
+				t.Fatalf("WAL records after recovery prune = %d, want 0", len(prunedRecords))
+			}
+		})
+	}
+}
+
 func TestIngestServiceTerminalizesDurableIdentityConflictWithoutBlockingTenant(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1433,9 +1664,11 @@ func TestIngestServiceRecoversLegacyPreparedBatchEnvelope(t *testing.T) {
 
 type failIngestRecordOnceStore struct {
 	ObjectStore
-	mu      sync.Mutex
-	failKey string
-	failed  bool
+	mu            sync.Mutex
+	failKey       string
+	failed        bool
+	failDeleteKey string
+	deleteFailed  bool
 }
 
 type repairRequiredIngestStore struct {
@@ -1463,6 +1696,17 @@ func (s *failIngestRecordOnceStore) PutConditional(ctx context.Context, key stri
 	}
 	s.mu.Unlock()
 	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
+func (s *failIngestRecordOnceStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
+	s.mu.Lock()
+	if s.failDeleteKey != "" && key == s.failDeleteKey && !s.deleteFailed {
+		s.deleteFailed = true
+		s.mu.Unlock()
+		return errors.New("injected ingest metadata delete failure")
+	}
+	s.mu.Unlock()
+	return s.ObjectStore.DeleteConditional(ctx, key, condition)
 }
 
 func testIngestServiceConfig(t *testing.T) IngestServiceConfig {
