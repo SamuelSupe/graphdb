@@ -3,6 +3,46 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.3.3] - 2026-09-07
+
+### Improved
+
+- COW graph versions inherit sorted entity ID order and selectively invalidate
+  changed kind/field/value-key caches; scalar range scans reuse ordered keys.
+- Changed entity and edge shards build from the authoritative post-commit graph;
+  Parquet entity reads prune irrelevant row groups.
+- Warm `all`-mode scans and snapshot streams reuse fresh version-matched graphs
+  with catalog-pinned cursors; logical MD5 state shares immutable COW data.
+- Entity streams expose `JSONValue` for one outer encoding; reverse `To` data
+  uses 128-edge physical packs, and edge reads use streaming row-group pruning.
+- Local maintenance preserves an active same-instance runtime after lease expiry;
+  strict manifest/ETag matching protects write-cache reuse and public clone isolation.
+
+### Fixed
+
+- Active local maintenance is no longer misclassified as stopped solely because
+  its writer lease expired; orphan/coordinated ownership semantics remain unchanged.
+
+### Performance evidence
+
+- The self-contained [1.3.3 performance report](docs/performance-v1.3.3.md)
+  separates round1 history from the final comparison. In the same bounded
+  OrbStack Go 1.25.14 linux/arm64 envelope, writes were `21→28`, ingest p95
+  `16.8→13.0 s`, export p95 `621→340 ms`, and stream median `13.136→6.480 µs`.
+- Large indexed stream p99 regressed `167→221 ms` (min-version `131→224 ms`);
+  16-target cold reverse lookup rose about 15%, and RSS was higher on a larger graph.
+- Maintenance reached `succeeded`; after restart integrity was `status=ok` with
+  1,747 checks and 0 issues, freshness was `30/30` with 0 ms lag, and index health
+  was `ready` with 17 orphan warnings from skipped cleanup.
+
+### Compatibility
+
+- No object-storage layout or WAL record format migration is introduced; JSON
+  response shapes and cursor semantics remain unchanged.
+- Focused and multi-pack checks plus the source-final-v3 local static gate exited
+  0. Release assets require the documented unit/race/compatibility, integration,
+  30-minute soak, and rollback workflow gates.
+
 ## [1.3.2] - 2026-09-05
 
 ### Fixed

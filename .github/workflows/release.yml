@@ -169,7 +169,7 @@ jobs:
             docs/error_codes.md \
             docs/ingest-wal-multiwriter-design.md docs/ingest-wal-multiwriter-design.zh-CN.md \
             docs/capacity.md docs/capacity.zh-CN.md docs/security-deployment.md docs/security-deployment.zh-CN.md \
-            docs/release-checklist.md \
+            docs/release-checklist.md docs/performance-v1.3.3.md \
             "$root/docs/"
           cp -R docs/user "$root/docs/"
           cp -R examples/. "$root/examples/"

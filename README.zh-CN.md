@@ -8,11 +8,11 @@
 [![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
 [![Public Repository](https://img.shields.io/badge/repository-public-2ea44f)](https://github.com/SamuelSupe/graphdb)
 
-[English README](README.md) · [GGraphDB 1.3.2 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.2)
+[English README](README.md) · [GGraphDB 1.3.3 发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.3)
 
 </div>
 
-GGraphDB 1.3.2 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
+GGraphDB 1.3.3 是一个 Go 实现的通用当前态属性知识图谱，面向实体关系数据。
 知识库、CMDB、资产关系、服务依赖、IT 拓扑和影响分析都是它支持的应用场景。
 它把租户数据持久化到本地磁盘或 S3 兼容对象存储，使用 Parquet、manifest
 CAS、快照和提交回放，提供可追踪的写入版本与可控的新鲜度。它不是 RDF/OWL、
@@ -32,9 +32,43 @@ SPARQL、本体推理或历史图引擎。
 | 有界读路径 | 冷图加载、查询准入、执行预算和缓存驻留分别设有独立边界。 |
 | 运维能力 | compact、GC、backup/restore、repair、integrity audit、index health 和 metrics。 |
 
+### 1.3.3 性能与正确性更新
+
+1.3.3 发行版纳入本轮审查中已测的图读写优化和可靠性修复：
+
+- COW 图版本继承排序后的 ID 顺序，只让变化的 kind/field/value key 失效；
+  scalar range 查询复用有序 key 并从边界 seek。
+- 变化的 entity/edge shard 直接从提交后的权威图构建，Parquet entity 读取会剪枝
+  不相关的 row group。
+- warm `all` 模式扫描和 snapshot stream 可复用新鲜且版本匹配的缓存图，cursor
+  绑定 catalog 版本。
+- 本地维护任务在旧 writer lease 过期时仍能识别活跃的同实例 runtime；已提交
+  write-cache 只有在 manifest/ETag 严格匹配时复用，public refresh 继续保持 clone 隔离。
+- JSON 响应和 cursor 合同、对象布局及 WAL record 格式保持不变。详见
+  [1.3.3 性能报告](docs/performance-v1.3.3.md)，其中明确区分 v1.3.2→第一轮历史结果、
+  第一轮→发行版基线，并列出逐操作尾延迟、资源测量和边界。
+
+第二轮采用 entity `JSONValue` 单次编码和每个合并物理 reverse `To` pack 最多 128 条边。
+核心对照如下：
+
+前 3 行来自 60 秒服务对照，最后一行是独立的进程内 micro benchmark。
+
+| 指标 | 第一轮 | 1.3.3 发行版 |
+| --- | ---: | ---: |
+| 成功写入 | 21 次 HTTP 200（+4 次 499） | 28 次 HTTP 200（+4 次 499） |
+| 成功 ingest p95 | 16.8 s | 13.0 s |
+| Snapshot export p95 | 621 ms | 340 ms |
+| `streamGraphSnapshot` 中位数 | 13.136 µs | 6.480 µs |
+
+近时检查中 16 目标冷 reverse 查找约慢 15%；large indexed stream p99 从 `167` 升至
+`221 ms`（min-version 从 `131` 升至 `224 ms`），RSS 为 `1,266,884 kB`，高于第一轮
+`1,098,816 kB`，且最终图更大。详见[1.3.3 性能报告](docs/performance-v1.3.3.md)中的
+单位、分配、新鲜度、integrity 和未覆盖边界。发布归档仍需按文档通过 unit/race/兼容性、
+集成、30 分钟 soak 和 rollback 工作流门禁。
+
 ### 1.3 PostgreSQL-CAS 多 writer WAL 合同
 
-GGraphDB 1.3.2 保留可选的 `/v1/ingest/batches` WAL profile：每个
+GGraphDB 1.3.3 保留可选的 `/v1/ingest/batches` WAL profile：每个
 writer 拥有独立本地 WAL，PostgreSQL 负责 tenant-head CAS 和协调元数据更新。
 对象存储仍是图数据权威；PostgreSQL 不保存 ingest payload、WAL record、commit
 segment 或图数据。`202` 表示本地 WAL `fsync` 后已持久接管，不是图版本已经提交。
@@ -45,7 +79,7 @@ CAS 和依赖的暂时故障仍通过重基与有界缩批重试；PostgreSQL �
 扩展。每个 writer 必须使用稳定的 `GRAPHDB_INSTANCE_ID`、独立持久 WAL 卷和
 owner-routed 状态 URL。批量发布使用有界 CAS/publish slot 和生命周期
 generation fence：租户 freeze、delete 或 recreate 后，旧 generation 的请求
-不能发布。完整合同见[1.3 设计文档](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.zh-CN.md)。
+不能发布。完整合同见[1.3 设计文档](https://github.com/SamuelSupe/graphdb/blob/v1.3.3/docs/ingest-wal-multiwriter-design.zh-CN.md)。
 
 1.3.1 在本地与 PostgreSQL 协调的 ingest 中补齐与 commit 对等的
 `expected_version`、atomic failure 和实体/边 precondition 语义。共享同一 WAL
@@ -293,12 +327,12 @@ owner 路由状态显示没有 pending durable record。切换 direct 模式、�
 
 ## 发行版
 
-GGraphDB 1.3.2 发行版见：
-[**v1.3.2**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.2)。
-该补丁保留 PostgreSQL-CAS 多 writer WAL 合同，并修复并发准入顺序、WAL 登记保留、
-terminal batch 重试和 shutdown 队列活性。1.3.1 的能力继续保留，包括 ingest 条件/
-atomic 写入、两套 SDK、受支持的 GraphQL surface 和单一 Parquet 派生索引路径。本
-README 中的固定环境读缓存、查询和 terminal completion 测量是有边界的证据，不是生产 SLO。
+GGraphDB 1.3.3 发行版见：
+[**v1.3.3**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.3)。
+该版本保留 PostgreSQL-CAS 多 writer WAL 合同和 1.3.2 的 ingest 可靠性修复，
+并加入本轮图读写性能与本地维护 owner 修复。1.3.1 的能力继续保留，包括 ingest
+条件/atomic 写入、两套 SDK、受支持的 GraphQL surface 和单一 Parquet 派生索引路径。
+本 README 中的固定环境读缓存、查询和 terminal completion 测量是有边界的证据，不是生产 SLO。
 
 发行包包含：
 
@@ -308,7 +342,7 @@ README 中的固定环境读缓存、查询和 terminal completion 测量是有�
 - `.sha256` 校验文件。
 
 详见[发行版部署文档](docs/user/release-deployment.zh-CN.md)，也可查看
-[英文版本](docs/user/release-deployment.md)。推送类似 `v1.3.2` 的语义化版本
+[英文版本](docs/user/release-deployment.md)。推送类似 `v1.3.3` 的语义化版本
 标签会触发 [GitHub Actions](.github/workflows/release.yml)，自动构建并发布
 归档包。为兼容旧部署流程，`release_*` 标签仍然受支持。
 
@@ -324,7 +358,8 @@ README 中的固定环境读缓存、查询和 terminal completion 测量是有�
 | [发行版部署](docs/user/release-deployment.zh-CN.md) · [English](docs/user/release-deployment.md) | Release 下载、校验、升级、回滚和安全边界。 |
 | [读与查询](docs/user/read-query.zh-CN.md) · [English](docs/user/read-query.md) | GraphQL、JSON DSL、分页、流式、explain 和 profile。 |
 | [写入与采集](docs/user/write-ingest.zh-CN.md) · [English](docs/user/write-ingest.md) | commit、ingest、幂等、删除、source policy 和背压。 |
-| [1.3 多 writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](https://github.com/SamuelSupe/graphdb/blob/v1.3.2/docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
+| [1.3.3 性能报告](docs/performance-v1.3.3.md) | 逐操作尾延迟、资源证据、兼容性和性能边界。 |
+| [1.3 多 writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.3/docs/ingest-wal-multiwriter-design.zh-CN.md) · [English](https://github.com/SamuelSupe/graphdb/blob/v1.3.3/docs/ingest-wal-multiwriter-design.md) | PostgreSQL-CAS ingest 合同、owner 路由、恢复和滚动升级。 |
 | [数据模型](docs/user/data-model.zh-CN.md) · [English](docs/user/data-model.md) | tenant、可选 CI type、entity、relation、edge 和数据治理。 |
 | [API Map](docs/user/api-map.zh-CN.md) · [English](docs/user/api-map.md) | 按领域整理的 HTTP endpoint 清单。 |
 | [OpenAPI](docs/openapi.yaml) | HTTP API 合同，也可通过 `GET /openapi.yaml` 获取。 |
