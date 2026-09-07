@@ -1,9 +1,11 @@
 package graph
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestEntityLabelsJSONUsesCompatibleReservedField(t *testing.T) {
@@ -60,5 +62,70 @@ func TestEntityLabelsPreservesLegacyInvalidReservedField(t *testing.T) {
 	}
 	if labels := EntityLabels(entity); labels != nil {
 		t.Fatalf("invalid legacy field exposed as labels: %#v", labels)
+	}
+}
+
+func TestEntityJSONValueMatchesMarshalJSONWithEscapingAndSources(t *testing.T) {
+	now := time.Date(2026, 9, 7, 8, 9, 10, 123456789, time.UTC)
+	entity := Entity{
+		ID:   "doc:escaped",
+		Kind: "document",
+		Fields: Fields{
+			"title":             "<admin>&\"",
+			ReservedLabelsField: []any{"zeta", "alpha"},
+		},
+		FieldSources: map[string]FieldSource{
+			"title": {Source: "catalog", Priority: 80, Confidence: 0.9, Version: 4, UpdatedAt: now},
+		},
+		Source:     "catalog",
+		ExternalID: "doc-escaped",
+		Version:    4,
+		UpdatedAt:  now,
+	}
+
+	type legacyEntityAlias Entity
+	legacyReference := struct {
+		legacyEntityAlias
+		Labels []string `json:"labels,omitempty"`
+	}{
+		legacyEntityAlias: legacyEntityAlias(entity),
+		Labels:            []string{"alpha", "zeta"},
+	}
+	expected, err := json.Marshal(legacyReference)
+	if err != nil {
+		t.Fatalf("marshal independent entity reference: %v", err)
+	}
+	legacy, err := json.Marshal(entity)
+	if err != nil {
+		t.Fatalf("marshal entity: %v", err)
+	}
+	if !bytes.Equal(legacy, expected) {
+		t.Fatalf("MarshalJSON differs from independent reference:\nlegacy=%s\nreference=%s", legacy, expected)
+	}
+	value, err := json.Marshal(entity.JSONValue())
+	if err != nil {
+		t.Fatalf("marshal entity JSONValue: %v", err)
+	}
+	if !bytes.Equal(value, expected) {
+		t.Fatalf("JSONValue differs from independent reference:\nvalue=%s\nreference=%s", value, expected)
+	}
+	if !bytes.Contains(value, []byte(`\u003cadmin\u003e\u0026`)) {
+		t.Fatalf("JSONValue did not preserve HTML escaping: %s", value)
+	}
+
+	var wire map[string]any
+	if err := json.Unmarshal(value, &wire); err != nil {
+		t.Fatalf("decode JSONValue: %v", err)
+	}
+	if !reflect.DeepEqual(wire["labels"], []any{"alpha", "zeta"}) {
+		t.Fatalf("labels = %#v", wire["labels"])
+	}
+	fields, ok := wire["fields"].(map[string]any)
+	if !ok || fields["title"] != `<admin>&"` {
+		t.Fatalf("fields = %#v", wire["fields"])
+	}
+	fieldSources, ok := wire["field_sources"].(map[string]any)
+	if !ok || fieldSources["title"] == nil {
+		t.Fatalf("field_sources = %#v", wire["field_sources"])
 	}
 }

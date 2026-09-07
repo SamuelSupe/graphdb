@@ -103,6 +103,7 @@ type EdgeShardData struct {
 	cacheVerified      bool
 	hashCanonical      bool
 	logicalContentHash string
+	reverse            bool
 }
 
 type EntityPageData struct {

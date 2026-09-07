@@ -35,9 +35,8 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 			markEntitySourceStale(&entity, request.Source, version, now)
 			entity.Version = version
 			entity.UpdatedAt = now
-			g.removeEntityFromIndexes(entityID, g.Entities[entityID])
+			g.updateEntityIndexes(entityID, g.Entities[entityID], entity)
 			g.Entities[entityID] = entity
-			g.addEntityToIndexes(entityID, entity)
 			affected.add(entityID)
 		case "delete":
 			backfillFieldSources(&entity)

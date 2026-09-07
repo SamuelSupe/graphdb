@@ -97,7 +97,7 @@ func (s *Server) streamEntities(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, entity := range result.Entities {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity}, flush); err != nil {
+			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush); err != nil {
 				return
 			}
 		}
@@ -133,7 +133,7 @@ func (s *Server) streamEntitiesFromCatalog(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		for _, entity := range result.Entities {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity}, flush); err != nil {
+			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush); err != nil {
 				return
 			}
 		}
@@ -290,6 +290,20 @@ func (s *Server) streamEdgesFromCatalog(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options storage.EntityScanOptions) (storage.EntityScanResult, error) {
+	if options.Cursor == "" {
+		var result storage.EntityScanResult
+		used, err := s.withCachedScanGraph(ctx, tenantID, options.MinVersion, func(g *graph.Graph, manifest storage.Manifest, catalog storage.IndexCatalog) error {
+			var err error
+			result, err = storage.ListEntitiesFromGraph(ctx, tenantID, g, manifest, options)
+			if err == nil {
+				result.NextCursor, err = storage.PinScanCursor(result.NextCursor, catalog)
+			}
+			return err
+		})
+		if used || err != nil {
+			return result, err
+		}
+	}
 	indexedOptions := options
 	indexedOptions.SkipGraphFallback = s.Cache != nil
 	result, err := s.Store.ListEntities(ctx, tenantID, indexedOptions)
@@ -304,6 +318,20 @@ func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options 
 }
 
 func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options storage.EdgeScanOptions) (storage.EdgeScanResult, error) {
+	if options.Cursor == "" {
+		var result storage.EdgeScanResult
+		used, err := s.withCachedScanGraph(ctx, tenantID, options.MinVersion, func(g *graph.Graph, manifest storage.Manifest, catalog storage.IndexCatalog) error {
+			var err error
+			result, err = storage.ListEdgesFromGraph(ctx, tenantID, g, manifest, options)
+			if err == nil {
+				result.NextCursor, err = storage.PinScanCursor(result.NextCursor, catalog)
+			}
+			return err
+		})
+		if used || err != nil {
+			return result, err
+		}
+	}
 	indexedOptions := options
 	indexedOptions.SkipGraphFallback = s.Cache != nil
 	result, err := s.Store.ListEdges(ctx, tenantID, indexedOptions)
@@ -374,6 +402,20 @@ func (s *Server) streamSnapshot(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if s.Mode == "all" && s.Cache != nil {
+		used, err := s.Cache.WithCachedReadOnlyGraph(r.Context(), tenantID, target.TargetVersion, func(g *graph.Graph, manifest storage.Manifest) error {
+			s.recordReaderVisible(tenantID, manifest.Version)
+			s.streamGraphSnapshot(w, r, tenantID, g, manifest.Version)
+			return nil
+		})
+		if err != nil {
+			writeReadError(w, err)
+			return
+		}
+		if used {
+			return
+		}
+	}
 	if catalog, err := s.Store.CurrentScanCatalog(r.Context(), tenantID); err == nil {
 		if target.requiresVersion(catalog.Version) {
 			s.recordReaderVisible(tenantID, catalog.Version)
@@ -426,7 +468,7 @@ func (s *Server) streamIndexedSnapshot(w http.ResponseWriter, r *http.Request, t
 			return
 		}
 		for _, entity := range result.Entities {
-			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity}, flush); err != nil {
+			if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": entity.JSONValue()}, flush); err != nil {
 				return
 			}
 		}
@@ -456,46 +498,13 @@ func (s *Server) streamIndexedSnapshot(w http.ResponseWriter, r *http.Request, t
 }
 
 func (s *Server) streamLoadedSnapshot(w http.ResponseWriter, r *http.Request, tenantID string, target readTarget) {
-	var snapshot graph.Snapshot
-	var version int64
 	err := s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
-		snapshot = g.Snapshot()
-		version = manifest.Version
+		s.streamGraphSnapshot(w, r, tenantID, g, manifest.Version)
 		return nil
 	})
 	if err != nil {
 		writeReadError(w, err)
-		return
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	encoder := json.NewEncoder(w)
-	flush := streamFlush(w)
-	if err := encodeStreamItem(r.Context(), encoder, map[string]any{
-		"stream": "snapshot", "tenant_id": tenantID, "version": version,
-	}, flush); err != nil {
-		return
-	}
-	for _, item := range snapshot.CITypes {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"ci_type": item}, flush); err != nil {
-			return
-		}
-	}
-	for _, item := range snapshot.RelationTypes {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"relation_type": item}, flush); err != nil {
-			return
-		}
-	}
-	for _, item := range snapshot.Entities {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"entity": item}, flush); err != nil {
-			return
-		}
-	}
-	for _, item := range snapshot.Edges {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge": item}, flush); err != nil {
-			return
-		}
-	}
-	_ = encodeStreamItem(r.Context(), encoder, map[string]any{"done": true, "version": version}, flush)
 }
 
 const scanStreamPageSize = 500

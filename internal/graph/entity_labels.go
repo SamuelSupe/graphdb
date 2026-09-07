@@ -37,14 +37,20 @@ func SetEntityLabels(entity *Entity, labels []string) error {
 }
 
 func (entity Entity) MarshalJSON() ([]byte, error) {
+	return json.Marshal(entity.JSONValue())
+}
+
+// JSONValue exposes the same read-only representation as MarshalJSON without
+// a nested marshaler pass when embedding an entity in a streamed JSON record.
+func (entity Entity) JSONValue() any {
 	type entityAlias Entity
-	return json.Marshal(struct {
+	return struct {
 		entityAlias
 		Labels []string `json:"labels,omitempty"`
 	}{
 		entityAlias: entityAlias(entity),
 		Labels:      EntityLabels(entity),
-	})
+	}
 }
 
 func (entity *Entity) UnmarshalJSON(data []byte) error {

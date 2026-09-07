@@ -1,6 +1,9 @@
 package graph
 
-import "sort"
+import (
+	"slices"
+	"sort"
+)
 
 func (g *Graph) rebuildIndexes() {
 	g.invalidateEntityOrder()
@@ -54,11 +57,26 @@ func (g *Graph) rebuildIndexes() {
 }
 
 func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
+	g.invalidateEntityKindOrder(entity.Kind)
 	if count := g.kindCounts[entity.Kind]; count <= 1 {
 		delete(g.kindCounts, entity.Kind)
 	} else {
 		g.kindCounts[entity.Kind] = count - 1
 	}
+	g.removeEntityAliasesFromIndex(id, entity)
+	for _, signature := range g.identitySignatures(entity) {
+		if identities := g.identityIndex[entity.Kind]; identities != nil && identities[signature.Value] == id {
+			delete(g.writableIdentityKind(entity.Kind), signature.Value)
+		}
+	}
+	for field, value := range entity.Fields {
+		if key, ok := scalarKey(value); ok {
+			g.removeEntityFieldIndex(id, entity.Kind, field, key)
+		}
+	}
+}
+
+func (g *Graph) removeEntityAliasesFromIndex(id string, entity Entity) {
 	for _, alias := range entityAliasValues(entity) {
 		entityIDs := g.entityAliasIndex[alias]
 		if entityIDs == nil {
@@ -70,29 +88,10 @@ func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
 			delete(g.entityAliasIndex, alias)
 		}
 	}
-	for _, signature := range g.identitySignatures(entity) {
-		if identities := g.identityIndex[entity.Kind]; identities != nil && identities[signature.Value] == id {
-			delete(g.writableIdentityKind(entity.Kind), signature.Value)
-		}
-	}
-	for field, value := range entity.Fields {
-		key, ok := scalarKey(value)
-		if !ok {
-			continue
-		}
-		byKind := g.fieldIndex[entity.Kind]
-		if byKind == nil || byKind[field] == nil || byKind[field][key] == nil {
-			continue
-		}
-		ids := g.writableFieldValue(entity.Kind, field, key)
-		delete(ids, id)
-		if len(ids) == 0 {
-			delete(g.writableFieldName(entity.Kind, field), key)
-		}
-	}
 }
 
 func (g *Graph) addEntityToIndexes(id string, entity Entity) {
+	g.invalidateEntityKindOrder(entity.Kind)
 	g.kindCounts[entity.Kind]++
 	g.addEntityAliasesToIndex(id, entity)
 	for _, signature := range g.identitySignatures(entity) {
@@ -103,8 +102,69 @@ func (g *Graph) addEntityToIndexes(id string, entity Entity) {
 		if !ok {
 			continue
 		}
-		g.writableFieldValue(entity.Kind, field, key)[id] = struct{}{}
+		g.addEntityFieldIndex(id, entity.Kind, field, key)
 	}
+}
+
+func (g *Graph) updateEntityIndexes(id string, before, after Entity) {
+	if before.Kind != after.Kind {
+		g.removeEntityFromIndexes(id, before)
+		g.addEntityToIndexes(id, after)
+		return
+	}
+	if !slices.Equal(before.MergedFrom, after.MergedFrom) {
+		g.removeEntityAliasesFromIndex(id, before)
+		g.addEntityAliasesToIndex(id, after)
+	}
+	oldIdentities, newIdentities := g.identitySignatures(before), g.identitySignatures(after)
+	if !slices.Equal(oldIdentities, newIdentities) {
+		identities := g.writableIdentityKind(after.Kind)
+		for _, signature := range oldIdentities {
+			if identities[signature.Value] == id {
+				delete(identities, signature.Value)
+			}
+		}
+		for _, signature := range newIdentities {
+			identities[signature.Value] = id
+		}
+	}
+	for field, value := range before.Fields {
+		key, indexed := scalarKey(value)
+		nextValue, exists := after.Fields[field]
+		nextKey, nextIndexed := scalarKey(nextValue)
+		if indexed && (!exists || !nextIndexed || key != nextKey) {
+			g.removeEntityFieldIndex(id, before.Kind, field, key)
+		}
+	}
+	for field, value := range after.Fields {
+		key, indexed := scalarKey(value)
+		previousValue, exists := before.Fields[field]
+		previousKey, previousIndexed := scalarKey(previousValue)
+		if indexed && (!exists || !previousIndexed || key != previousKey) {
+			g.addEntityFieldIndex(id, after.Kind, field, key)
+		}
+	}
+}
+
+func (g *Graph) removeEntityFieldIndex(id, kind, field, key string) {
+	if g.fieldIndex[kind][field][key] == nil {
+		return
+	}
+	g.invalidateFieldValueOrder(kind, field, key)
+	ids := g.writableFieldValue(kind, field, key)
+	delete(ids, id)
+	if len(ids) == 0 {
+		delete(g.writableFieldName(kind, field), key)
+		g.invalidateFieldKeyOrder(kind, field)
+	}
+}
+
+func (g *Graph) addEntityFieldIndex(id, kind, field, key string) {
+	g.invalidateFieldValueOrder(kind, field, key)
+	if len(g.fieldIndex[kind][field][key]) == 0 {
+		g.invalidateFieldKeyOrder(kind, field)
+	}
+	g.writableFieldValue(kind, field, key)[id] = struct{}{}
 }
 
 func (g *Graph) addEntityAliasesToIndex(id string, entity Entity) {

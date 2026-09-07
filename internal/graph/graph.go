@@ -25,6 +25,7 @@ type Graph struct {
 	entityOrder       map[string][]string
 	entityOrderMu     sync.Mutex
 	fieldIndexOrder   map[fieldIndexOrderKey][]string
+	fieldValueOrder   map[fieldValueOrderKey]fieldValueOrder
 	fieldIndexOrderMu sync.Mutex
 
 	contentFingerprint      [16]byte
@@ -98,7 +99,7 @@ func FromSnapshot(snapshot Snapshot) (*Graph, error) {
 
 func (g *Graph) Clone() *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
-	logicalHashCache := g.cloneLogicalHashCache()
+	logicalHashCache := g.shareLogicalHashCache()
 	clone := &Graph{
 		Version:                 g.Version,
 		CITypes:                 map[string]CIType{},
@@ -129,6 +130,7 @@ func (g *Graph) Clone() *Graph {
 	for id, edge := range g.Edges {
 		clone.Edges[id] = copyEdge(edge)
 	}
+	clone.inheritReadOrder(g)
 	return clone
 }
 

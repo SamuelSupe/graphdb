@@ -31,6 +31,10 @@ func planIndexPacks(items []indexPackItem) []indexPackGroup {
 }
 
 func planIndexPacksWithMaxBytes(items []indexPackItem, maxBytes int64) []indexPackGroup {
+	return planIndexPacksWithLimits(items, indexPackTargetRows, maxBytes)
+}
+
+func planIndexPacksWithLimits(items []indexPackItem, targetRows int, maxBytes int64) []indexPackGroup {
 	if len(items) == 0 {
 		return nil
 	}
@@ -58,12 +62,12 @@ func planIndexPacksWithMaxBytes(items []indexPackItem, maxBytes int64) []indexPa
 	}
 	for _, item := range items {
 		itemBytes := max(item.Bytes, 0)
-		if item.Rows >= indexPackTargetRows || (maxBytes > 0 && itemBytes >= maxBytes) {
+		if item.Rows >= targetRows || (maxBytes > 0 && itemBytes >= maxBytes) {
 			flush()
 			groups = append(groups, indexPackGroup{ID: item.ID, Items: []indexPackItem{item}})
 			continue
 		}
-		if len(current) > 0 && (item.Group != currentGroup || currentRows+item.Rows > indexPackTargetRows || (maxBytes > 0 && currentBytes+itemBytes > maxBytes) || len(current) >= indexPackMaxLogicalItems) {
+		if len(current) > 0 && (item.Group != currentGroup || currentRows+item.Rows > targetRows || (maxBytes > 0 && currentBytes+itemBytes > maxBytes) || len(current) >= indexPackMaxLogicalItems) {
 			flush()
 		}
 		current = append(current, item)

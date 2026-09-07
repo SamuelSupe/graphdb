@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,6 +122,56 @@ func TestHTTPListEntitiesCursorStaysOnPinnedVersionAfterManifestAdvance(t *testi
 		secondPage.NextCursor != "" ||
 		strings.Contains(second.Body.String(), `"id":"host:c"`) {
 		t.Fatalf("second page = %#v body=%s, want pinned version %d without new entity", secondPage, second.Body.String(), catalog.Version)
+	}
+}
+
+func TestHTTPWarmScanCursorSurvivesManifestAdvanceAndCacheClear(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	seedHTTPScanTenant(t, ctx, store)
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	cache := storage.NewReaderCache(store, time.Minute)
+	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
+		t.Fatalf("warm cache: %v", err)
+	}
+	handler := (&Server{Store: store, Cache: cache, Mode: "all"}).Handler()
+
+	first := serveJSON(handler, http.MethodGet, "/v1/entities?kind=host&limit=1", "tenant-a", nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("warm entities first page = %d body=%s", first.Code, first.Body.String())
+	}
+	var firstPage storage.EntityScanResult
+	if err := json.Unmarshal(first.Body.Bytes(), &firstPage); err != nil {
+		t.Fatalf("decode warm first page: %v", err)
+	}
+	if len(firstPage.Entities) != 1 || firstPage.NextCursor == "" || firstPage.Version != catalog.Version || firstPage.IndexedRead {
+		t.Fatalf("warm first page = %#v, want graph view at catalog version %d", firstPage, catalog.Version)
+	}
+	firstID := firstPage.Entities[0].ID
+
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:c", Kind: "host", Fields: graph.Fields{"hostname": "app-c"}}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("advance manifest: %v", err)
+	}
+	cache.Invalidate("tenant-a")
+
+	second := serveJSON(handler, http.MethodGet, "/v1/entities?kind=host&limit=1&cursor="+firstPage.NextCursor, "tenant-a", nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("persisted continuation = %d body=%s", second.Code, second.Body.String())
+	}
+	var secondPage storage.EntityScanResult
+	if err := json.Unmarshal(second.Body.Bytes(), &secondPage); err != nil {
+		t.Fatalf("decode persisted continuation: %v", err)
+	}
+	if len(secondPage.Entities) != 1 || secondPage.NextCursor != "" || secondPage.Version != catalog.Version || !secondPage.IndexedRead {
+		t.Fatalf("persisted continuation = %#v, want one remaining v%d indexed entity", secondPage, catalog.Version)
+	}
+	if secondPage.Entities[0].ID == firstID || secondPage.Entities[0].ID == "host:c" {
+		t.Fatalf("persisted continuation entity = %#v, want a distinct pre-advance entity", secondPage.Entities[0])
 	}
 }
 
@@ -466,6 +518,21 @@ func (r *commitOnStreamWriteRecorder) Write(data []byte) (int, error) {
 	return r.ResponseRecorder.Write(data)
 }
 
+type commitOnSnapshotWriteRecorder struct {
+	*httptest.ResponseRecorder
+	committed bool
+	commit    func() error
+	commitErr error
+}
+
+func (r *commitOnSnapshotWriteRecorder) Write(data []byte) (int, error) {
+	if !r.committed && strings.Contains(string(data), `"stream":"snapshot"`) {
+		r.committed = true
+		r.commitErr = r.commit()
+	}
+	return r.ResponseRecorder.Write(data)
+}
+
 func TestHTTPStreamSnapshotUsesShardedCatalogRefs(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
@@ -498,6 +565,127 @@ func TestHTTPStreamSnapshotUsesShardedCatalogRefs(t *testing.T) {
 		!strings.Contains(inline.Body.String(), `"edge"`) {
 		t.Fatalf("inline snapshot stream = %d body=%s", inline.Code, inline.Body.String())
 	}
+}
+
+func TestHTTPWarmSnapshotStreamKeepsCompleteVersionDuringWrite(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertCITypes: []graph.CIType{{
+			Name:   "host",
+			Fields: map[string]graph.FieldSpec{"hostname": {Type: "string", Indexed: true}},
+		}},
+		UpsertRelationTypes: []graph.RelationType{{
+			Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true,
+		}},
+		UpsertEntities: []graph.Entity{
+			{ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "app-a"}},
+			{ID: "service:api", Kind: "service", Fields: graph.Fields{"name": "api"}},
+		},
+		UpsertEdges: []graph.Edge{{
+			ID: "edge:api-host", Type: "runs_on", From: "service:api", To: "host:a",
+		}},
+	}, storage.CommitOptions{}); err != nil {
+		t.Fatalf("seed snapshot graph: %v", err)
+	}
+	cache := storage.NewReaderCache(store, time.Minute)
+	loaded, manifest, err := cache.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("warm snapshot cache: %v", err)
+	}
+	if loaded.Version != 1 || manifest.Version != 1 {
+		t.Fatalf("warm snapshot version = %d/%d, want 1/1", loaded.Version, manifest.Version)
+	}
+	expected := loaded.Snapshot()
+	handler := (&Server{Store: store, Cache: cache, Mode: "all"}).Handler()
+	recorder := &commitOnSnapshotWriteRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		commit: func() error {
+			_, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+				UpsertEntities: []graph.Entity{{ID: "host:new", Kind: "host", Fields: graph.Fields{"hostname": "app-new"}}},
+				UpsertEdges:    []graph.Edge{{ID: "edge:new", Type: "runs_on", From: "service:api", To: "host:new"}},
+			}, storage.CommitOptions{})
+			return err
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/export/snapshot/stream?inline=true", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	handler.ServeHTTP(recorder, req)
+	if recorder.commitErr != nil {
+		t.Fatalf("advance during snapshot: %v", recorder.commitErr)
+	}
+	if !recorder.committed {
+		t.Fatal("test did not advance manifest while snapshot was being encoded")
+	}
+
+	var headerVersion, doneVersion int64
+	var ciTypes []graph.CIType
+	var relationTypes []graph.RelationType
+	var entities []graph.Entity
+	var edges []graph.Edge
+	decoder := json.NewDecoder(strings.NewReader(recorder.Body.String()))
+	for {
+		var item struct {
+			Stream       string              `json:"stream"`
+			Done         bool                `json:"done"`
+			Version      int64               `json:"version"`
+			CIType       *graph.CIType       `json:"ci_type"`
+			RelationType *graph.RelationType `json:"relation_type"`
+			Entity       *graph.Entity       `json:"entity"`
+			Edge         *graph.Edge         `json:"edge"`
+		}
+		err := decoder.Decode(&item)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode snapshot stream: %v body=%s", err, recorder.Body.String())
+		}
+		if item.Stream == "snapshot" {
+			headerVersion = item.Version
+		}
+		if item.Done {
+			doneVersion = item.Version
+		}
+		if item.CIType != nil {
+			ciTypes = append(ciTypes, *item.CIType)
+		}
+		if item.RelationType != nil {
+			relationTypes = append(relationTypes, *item.RelationType)
+		}
+		if item.Entity != nil {
+			entities = append(entities, *item.Entity)
+		}
+		if item.Edge != nil {
+			edges = append(edges, *item.Edge)
+		}
+	}
+	if recorder.Code != http.StatusOK || headerVersion != 1 || doneVersion != 1 {
+		t.Fatalf("snapshot response status/version = %d/%d/%d body=%s", recorder.Code, headerVersion, doneVersion, recorder.Body.String())
+	}
+	if !jsonEqual(ciTypes, expected.CITypes) {
+		t.Fatalf("snapshot CI types = %#v, want selected-version schema %#v", ciTypes, expected.CITypes)
+	}
+	if !jsonEqual(relationTypes, expected.RelationTypes) {
+		t.Fatalf("snapshot relation types = %#v, want selected-version schema %#v", relationTypes, expected.RelationTypes)
+	}
+	if !jsonEqual(entities, expected.Entities) || !jsonEqual(edges, expected.Edges) {
+		t.Fatalf("snapshot graph entities/edges = %#v/%#v, want selected version %#v/%#v", entities, edges, expected.Entities, expected.Edges)
+	}
+	for _, entity := range entities {
+		if entity.ID == "host:new" {
+			t.Fatalf("snapshot included entity written after selected version: %#v", entity)
+		}
+	}
+	if edges[0].To != "host:a" || len(edges[0].Sources) != 1 || edges[0].Sources[0].EdgeID != "edge:api-host" {
+		t.Fatalf("snapshot edges = %#v, want v1 edge only", edges)
+	}
+}
+
+func jsonEqual(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func seedHTTPScanTenant(t *testing.T, ctx context.Context, store *storage.TenantStore) {

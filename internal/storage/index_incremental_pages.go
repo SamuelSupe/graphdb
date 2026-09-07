@@ -10,7 +10,9 @@ import (
 )
 
 func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID string, previousVersion int64, previous []EntityPageSpec, before *graph.Graph, after *graph.Graph, entityIDs []string, version int64, now time.Time) ([]EntityPageData, []EntityPageSpec, error) {
-	previousByShard := entityPageSpecMap(IndexCatalog{EntityPages: previous})
+	if before.Version != previousVersion || after.Version != version {
+		return nil, nil, fmt.Errorf("incremental entity pages require graph versions %d and %d", previousVersion, version)
+	}
 	changedByShard := map[string][]string{}
 	for _, entityID := range entityIDs {
 		_, oldOK := before.Entities[entityID]
@@ -22,48 +24,44 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 		changedByShard[shard] = append(changedByShard[shard], entityID)
 	}
 	shards := sortedStringKeys(changedByShard)
+	if len(shards) == 0 {
+		return nil, previous, ctx.Err()
+	}
+	// The commit already owns the authoritative graph. Rebuilding only the
+	// affected shards avoids reading and decoding their previous packed pages.
+	entitiesByShard := make(map[string][]graph.Entity, len(shards))
+	checked := 0
+	for id, entity := range after.Entities {
+		checked++
+		if checked&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
+		shard := entityShardID(id)
+		if _, changed := changedByShard[shard]; changed {
+			entitiesByShard[shard] = append(entitiesByShard[shard], graph.CopyEntity(entity))
+		}
+	}
 	pages := make([]EntityPageData, 0, len(shards))
 	rawSpecs := make([]EntityPageSpec, 0, len(shards))
 	removed := map[string]struct{}{}
 	for _, shard := range shards {
-		spec, existed := previousByShard[shard]
-		page := EntityPageData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Shard: shard}
-		if existed {
-			loaded, _, valid, err := s.loadValidatedParquetEntityPageObject(ctx, tenantID, previousVersion, spec)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !valid {
-				return nil, nil, fmt.Errorf("incremental entity page %s is not readable at version %d", shard, previousVersion)
-			}
-			page = loaded
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
 		}
-		entities := make(map[string]graph.Entity, len(page.Entities)+len(changedByShard[shard]))
-		for _, entity := range page.Entities {
-			entities[entity.ID] = entity
-		}
-		for _, entityID := range changedByShard[shard] {
-			delete(entities, entityID)
-			if entity, ok := after.Entities[entityID]; ok {
-				entities[entityID] = graph.CopyEntity(entity)
-			} else if !existed {
-				return nil, nil, fmt.Errorf("incremental entity page %s is missing from the previous catalog", shard)
-			}
-		}
+		entities := entitiesByShard[shard]
 		if len(entities) == 0 {
 			removed[shard] = struct{}{}
 			continue
 		}
-		page = EntityPageData{
+		page := EntityPageData{
 			LayoutVersion: CurrentObjectLayoutVersion,
 			TenantID:      tenantID,
 			Shard:         shard,
-			Entities:      make([]graph.Entity, 0, len(entities)),
+			Entities:      entities,
 			Version:       version,
 			UpdatedAt:     now,
-		}
-		for _, entity := range entities {
-			page.Entities = append(page.Entities, entity)
 		}
 		sort.Slice(page.Entities, func(i, j int) bool { return page.Entities[i].ID < page.Entities[j].ID })
 		page.logicalContentHash = entityPageContentHash(page)

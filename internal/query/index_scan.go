@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -48,14 +49,31 @@ func scanRuntimeFieldIndexIDs(
 	field string,
 	filters []Filter,
 ) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	fieldFilters := filtersForIndexField(field, filters)
 	matchesKey := newIndexScanKeyMatcher(fieldFilters)
-	return g.ScanFieldIndexIDs(kind, field, func(key string) (bool, error) {
+	match := func(key string) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
 		return matchesKey(key), nil
-	})
+	}
+	bounds := make([]graph.FieldIndexRange, 0, len(fieldFilters))
+	for _, filter := range fieldFilters {
+		switch filter.Op {
+		case "gt", "gte", "lt", "lte", "prefix":
+			number, numeric := asFloat(filter.Value)
+			bounds = append(bounds, graph.FieldIndexRange{
+				Op: filter.Op, Text: fmt.Sprint(filter.Value), Number: number, Numeric: numeric,
+			})
+		}
+	}
+	if len(bounds) > 0 {
+		return g.ScanFieldIndexRangeIDs(kind, field, bounds, match)
+	}
+	return g.ScanFieldIndexIDs(kind, field, match)
 }
 
 func filtersForIndexField(field string, filters []Filter) []Filter {

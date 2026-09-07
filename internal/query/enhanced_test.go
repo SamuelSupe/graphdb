@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -91,6 +92,107 @@ func TestRangeFiltersTreatJSONNumbersAsNumbers(t *testing.T) {
 	if len(response.Results) != 1 || response.Results[0].Entity.ID != "host:large" {
 		t.Fatalf("results = %#v, want host:large only", response.Results)
 	}
+}
+
+func TestMaterializedRangeScanMatchesFullScanForMixedScalars(t *testing.T) {
+	indexed := rangeScanFixture(t)
+	tests := []struct {
+		name  string
+		where []Filter
+	}{
+		{
+			name:  "numeric negative decimal",
+			where: []Filter{{Field: "value", Op: "gte", Value: -2.5}},
+		},
+		{
+			name: "numeric lower and upper bounds",
+			where: []Filter{
+				{Field: "value", Op: "gte", Value: -2.5},
+				{Field: "value", Op: "lt", Value: 2.0},
+			},
+		},
+		{
+			name: "numeric bounds reversed",
+			where: []Filter{
+				{Field: "value", Op: "lt", Value: 2.0},
+				{Field: "value", Op: "gte", Value: -2.5},
+			},
+		},
+		{
+			name: "mixed scalar text bounds",
+			where: []Filter{
+				{Field: "value", Op: "gte", Value: "1"},
+				{Field: "value", Op: "lt", Value: "2"},
+			},
+		},
+		{
+			name:  "mixed scalar prefix",
+			where: []Filter{{Field: "value", Op: "prefix", Value: "app-"}},
+		},
+		{
+			name:  "empty prefix result",
+			where: []Filter{{Field: "value", Op: "prefix", Value: "zzz"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertMaterializedRangeMatchesFullScan(t, indexed, Request{
+				Op:        "match",
+				Kind:      "item",
+				Where:     test.where,
+				Limit:     100,
+				CostLimit: 1000,
+				Profile:   true,
+			})
+		})
+	}
+}
+
+func TestMaterializedRangeScanCOWInvalidatesFieldValueOrder(t *testing.T) {
+	source := rangeScanFixture(t)
+	rangeRequest := Request{
+		Op:        "match",
+		Kind:      "item",
+		Where:     []Filter{{Field: "value", Op: "gte", Value: -2.5}},
+		Limit:     100,
+		CostLimit: 1000,
+		Profile:   true,
+	}
+	prefixRequest := Request{
+		Op:        "match",
+		Kind:      "item",
+		Where:     []Filter{{Field: "value", Op: "prefix", Value: "app-"}},
+		Limit:     100,
+		CostLimit: 1000,
+		Profile:   true,
+	}
+	assertMaterializedRangeMatchesFullScan(t, source, rangeRequest)
+	assertMaterializedRangeMatchesFullScan(t, source, prefixRequest)
+
+	updated, _, err := source.ApplyCommitStorageCopyWithOptions(graph.Commit{
+		ID: "range-update", Version: 2,
+		Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{
+			ID: "item:num-decimal", Kind: "item",
+			Fields: graph.Fields{"value": -99.5, "name": "app-one"},
+		}}},
+	}, graph.ApplyOptions{})
+	if err != nil {
+		t.Fatalf("storage copy update: %v", err)
+	}
+	assertMaterializedRangeMatchesFullScan(t, source, rangeRequest)
+	assertMaterializedRangeMatchesFullScan(t, updated, rangeRequest)
+	assertMaterializedRangeMatchesFullScan(t, source, prefixRequest)
+	assertMaterializedRangeMatchesFullScan(t, updated, prefixRequest)
+
+	deleted, _, err := updated.ApplyCommitStorageCopyWithOptions(graph.Commit{
+		ID: "range-delete", Version: 3,
+		Mutations: graph.Mutations{DeleteEntities: []string{"item:str-app-delete"}},
+	}, graph.ApplyOptions{})
+	if err != nil {
+		t.Fatalf("storage copy delete: %v", err)
+	}
+	assertMaterializedRangeMatchesFullScan(t, updated, prefixRequest)
+	assertMaterializedRangeMatchesFullScan(t, deleted, prefixRequest)
 }
 
 func TestEqualityFiltersTreatNumericRepresentationsAsNumbers(t *testing.T) {
@@ -763,6 +865,62 @@ func TestExplainAndProfileExposeQueryPlan(t *testing.T) {
 	if profile.Plan == nil || profile.Plan.EstimatedRows != 1 || profile.Stats.Scanned != 1 || profile.Stats.Returned != 1 || len(profile.Results) != 1 {
 		t.Fatalf("profile response = %#v", profile)
 	}
+}
+
+func rangeScanFixture(t *testing.T) *graph.Graph {
+	t.Helper()
+	g := graph.New()
+	if err := g.ApplyCommit(graph.Commit{
+		ID: "range-fixture", Version: 1,
+		Mutations: graph.Mutations{UpsertEntities: []graph.Entity{
+			{ID: "item:num-neg10", Kind: "item", Fields: graph.Fields{"value": -10, "name": "neg-ten"}},
+			{ID: "item:num-neg2-5", Kind: "item", Fields: graph.Fields{"value": -2.5, "name": "neg-two-five"}},
+			{ID: "item:num-json-neg1-25", Kind: "item", Fields: graph.Fields{"value": json.Number("-1.25"), "name": "neg-one"}},
+			{ID: "item:num-zero", Kind: "item", Fields: graph.Fields{"value": 0, "name": "zero"}},
+			{ID: "item:num-decimal", Kind: "item", Fields: graph.Fields{"value": 1.25, "name": "one"}},
+			{ID: "item:num-json-two", Kind: "item", Fields: graph.Fields{"value": json.Number("2"), "name": "two"}},
+			{ID: "item:num-ten", Kind: "item", Fields: graph.Fields{"value": int64(10), "name": "ten"}},
+			{ID: "item:str-one", Kind: "item", Fields: graph.Fields{"value": "1", "name": "string-one"}},
+			{ID: "item:str-ten", Kind: "item", Fields: graph.Fields{"value": "10", "name": "string-ten"}},
+			{ID: "item:str-two", Kind: "item", Fields: graph.Fields{"value": "2", "name": "string-two"}},
+			{ID: "item:str-alpha", Kind: "item", Fields: graph.Fields{"value": "alpha", "name": "alpha"}},
+			{ID: "item:str-app-delete", Kind: "item", Fields: graph.Fields{"value": "app-delete", "name": "delete"}},
+			{ID: "item:str-app-42", Kind: "item", Fields: graph.Fields{"value": "app-42", "name": "app-number"}},
+		}},
+	}); err != nil {
+		t.Fatalf("seed range fixture: %v", err)
+	}
+	return g
+}
+
+func assertMaterializedRangeMatchesFullScan(t *testing.T, indexed *graph.Graph, request Request) {
+	t.Helper()
+	indexedResponse, err := Execute(indexed, request)
+	if err != nil {
+		t.Fatalf("indexed range execute: %v", err)
+	}
+	if indexedResponse.Plan == nil || indexedResponse.Plan.Strategy != "field-index-scan" {
+		t.Fatalf("indexed range plan = %#v, want field-index-scan", indexedResponse.Plan)
+	}
+	fullScanResponse, err := Execute(unindexedGraphFrom(indexed), request)
+	if err != nil {
+		t.Fatalf("full scan execute: %v", err)
+	}
+	indexedIDs := resultEntityIDs(indexedResponse.Results)
+	fullScanIDs := resultEntityIDs(fullScanResponse.Results)
+	if !slices.Equal(indexedIDs, fullScanIDs) {
+		t.Fatalf("indexed ids = %#v, full scan ids = %#v", indexedIDs, fullScanIDs)
+	}
+}
+
+func unindexedGraphFrom(source *graph.Graph) *graph.Graph {
+	snapshot := source.Snapshot()
+	g := graph.New()
+	g.Version = snapshot.Version
+	for _, entity := range snapshot.Entities {
+		g.Entities[entity.ID] = entity
+	}
+	return g
 }
 
 func seedCMDBGraph(t *testing.T) *graph.Graph {

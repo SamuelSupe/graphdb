@@ -304,6 +304,11 @@ func (s *TenantStore) scanRunningIndexRebuildTasks(ctx context.Context, tenantID
 }
 
 func (s *TenantStore) indexTaskActive(ctx context.Context, tenantID string, task IndexTask, now time.Time) (bool, error) {
+	// A local worker can outlive the writer lease while queued or cleaning up.
+	// Its registered runtime remains authoritative until finalization completes.
+	if !s.coordinated() && task.OwnerID == s.InstanceID && s.taskRuntimeActive(tenantID, task.ID) {
+		return true, nil
+	}
 	if s.coordinated() {
 		reader, ok := s.Coordinator.(CoordinatorTaskLeaseReader)
 		if !ok {

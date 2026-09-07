@@ -1,11 +1,13 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
 	"time"
 
+	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
@@ -112,6 +114,117 @@ func TestParquetEntityCandidateScanFiltersPackedPageByLogicalShard(t *testing.T)
 	if _, ok := scan.IDs[secondID]; ok {
 		t.Fatalf("candidate IDs = %#v, packed entity from another shard %q must be excluded", scan.IDs, secondID)
 	}
+}
+
+func TestDecodeParquetEntityPageReadsPackedShardAcrossRowGroups(t *testing.T) {
+	ctx := context.Background()
+	targetIDs, targetShard := parquetEntityIDsInShard(t, "system:rowgroup-target", 128, "")
+	otherIDs, otherShard := parquetEntityIDsInShard(t, "system:rowgroup-other", 64, targetShard)
+	if targetShard == otherShard {
+		t.Fatalf("test shards collided: %q", targetShard)
+	}
+	entities := make([]graph.Entity, 0, len(targetIDs)+len(otherIDs))
+	for _, id := range targetIDs[:64] {
+		entities = append(entities, parquetShardTestEntity(id))
+	}
+	for _, id := range otherIDs {
+		entities = append(entities, parquetShardTestEntity(id))
+	}
+	for _, id := range targetIDs[64:] {
+		entities = append(entities, parquetShardTestEntity(id))
+	}
+	data, err := marshalParquetEntityPage(ctx, EntityPageData{
+		TenantID: "tenant-a",
+		Shard:    "pack_test",
+		Version:  1,
+		Entities: entities,
+	})
+	if err != nil {
+		t.Fatalf("marshal packed page: %v", err)
+	}
+	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("open packed page: %v", err)
+	}
+	rowGroups := parquetEntityShardRowGroups(reader, targetShard)
+	reader.Close()
+	if len(rowGroups) != 2 || rowGroups[0] != 0 || rowGroups[1] != 2 {
+		t.Fatalf("target row groups = %#v, want [0 2] across packed shards", rowGroups)
+	}
+
+	decoded, err := decodeParquetEntityPage(ctx, data, "tenant-a", targetShard, 1)
+	if err != nil {
+		t.Fatalf("decode packed target shard: %v", err)
+	}
+	if len(decoded.Entities) != len(targetIDs) {
+		t.Fatalf("decoded target entities = %d, want %d", len(decoded.Entities), len(targetIDs))
+	}
+	for _, entity := range decoded.Entities {
+		if entityShardID(entity.ID) != targetShard {
+			t.Fatalf("decoded entity %q from shard %q, want %q", entity.ID, entityShardID(entity.ID), targetShard)
+		}
+		if got := entity.Fields["field-3"]; got != entity.ID+":value-3" {
+			t.Fatalf("decoded entity %q field-3 = %#v, want complete field value", entity.ID, got)
+		}
+	}
+}
+
+func TestDecodeParquetEntityPageKeepsLegacyEmptyShardRows(t *testing.T) {
+	ctx := context.Background()
+	ids, shard := parquetEntityIDsInShard(t, "system:legacy-empty-shard", 2, "")
+	entities := []graph.Entity{parquetShardTestEntity(ids[0]), parquetShardTestEntity(ids[1])}
+	data, err := marshalParquetEntityPage(ctx, EntityPageData{
+		TenantID: "tenant-a",
+		Shard:    "",
+		Version:  1,
+		Entities: entities,
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy page: %v", err)
+	}
+	decoded, err := decodeParquetEntityPage(ctx, data, "tenant-a", shard, 1)
+	if err != nil {
+		t.Fatalf("decode legacy page: %v", err)
+	}
+	if len(decoded.Entities) != len(entities) {
+		t.Fatalf("decoded legacy entities = %d, want %d", len(decoded.Entities), len(entities))
+	}
+	for _, entity := range decoded.Entities {
+		if got := entity.Fields["field-3"]; got != entity.ID+":value-3" {
+			t.Fatalf("decoded legacy entity %q field-3 = %#v, want complete field value", entity.ID, got)
+		}
+	}
+}
+
+func parquetEntityIDsInShard(t *testing.T, prefix string, count int, avoid string) ([]string, string) {
+	t.Helper()
+	ids := make([]string, 0, count)
+	shard := ""
+	for i := 0; i < 1000000 && len(ids) < count; i++ {
+		id := fmt.Sprintf("%s-%06d", prefix, i)
+		candidate := entityShardID(id)
+		if shard == "" {
+			if candidate == avoid {
+				continue
+			}
+			shard = candidate
+		}
+		if candidate == shard {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) != count {
+		t.Fatalf("found %d/%d IDs for shard %q with prefix %q", len(ids), count, shard, prefix)
+	}
+	return ids, shard
+}
+
+func parquetShardTestEntity(id string) graph.Entity {
+	fields := make(graph.Fields, 8)
+	for i := 0; i < 8; i++ {
+		fields[fmt.Sprintf("field-%d", i)] = fmt.Sprintf("%s:value-%d", id, i)
+	}
+	return graph.Entity{ID: id, Kind: "system", Fields: fields}
 }
 
 func entityIDsInDifferentShards(t *testing.T) (string, string) {

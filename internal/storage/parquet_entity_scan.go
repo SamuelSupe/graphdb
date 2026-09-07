@@ -190,10 +190,20 @@ func parquetEntityCandidateRowGroups(reader *pqfile.Reader, options EntityScanOp
 	return rowGroups
 }
 
-func parquetRowGroupStringMayContain(reader *pqfile.Reader, rowGroup int, column int, value string) bool {
-	if value == "" {
-		return true
+func parquetEntityShardRowGroups(reader *pqfile.Reader, shard string) []int {
+	groups := make([]int, 0, reader.NumRowGroups())
+	for i := 0; i < reader.NumRowGroups(); i++ {
+		// Older pages may omit the shard value. Those rows must still be
+		// decoded; missing statistics also conservatively retain the group.
+		if shard == "" || parquetRowGroupStringMayContain(reader, i, parquetEntityColumnShard, shard) ||
+			parquetRowGroupStringMayContain(reader, i, parquetEntityColumnShard, "") {
+			groups = append(groups, i)
+		}
 	}
+	return groups
+}
+
+func parquetRowGroupStringMayContain(reader *pqfile.Reader, rowGroup int, column int, value string) bool {
 	group := reader.MetaData().RowGroup(rowGroup)
 	chunk, err := group.ColumnChunk(column)
 	if err != nil {
@@ -201,6 +211,9 @@ func parquetRowGroupStringMayContain(reader *pqfile.Reader, rowGroup int, column
 	}
 	stats, err := chunk.Statistics()
 	if err != nil || stats == nil || !stats.HasMinMax() {
+		return true
+	}
+	if value == "" && stats.HasNullCount() && stats.NullCount() > 0 {
 		return true
 	}
 	minValue := string(stats.EncodeMin())

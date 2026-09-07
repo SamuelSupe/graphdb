@@ -14,6 +14,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
+	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
@@ -181,7 +182,11 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 	for _, edge := range edges {
 		rowShard := shard.Shard
 		if isIndexPackID(shard.Shard) {
-			rowShard = edgeShardID(edge.From)
+			if shard.reverse {
+				rowShard = edgeShardID(edge.To)
+			} else {
+				rowShard = edgeShardID(edge.From)
+			}
 		}
 		rows, err := edgeShardRows(edge)
 		if err != nil {
@@ -243,20 +248,41 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 }
 
 func decodeParquetEdgeShard(ctx context.Context, data []byte, tenantID string, relationType string, shardID string, version int64) (EdgeShardData, error) {
-	table, release, err := readParquetTable(ctx, data)
+	file, err := pqfile.NewParquetReader(bytes.NewReader(data))
+	if err != nil {
+		return EdgeShardData{}, err
+	}
+	defer file.Close()
+	if file.MetaData().Schema.NumColumns() < parquetEdgeColumnEdgeSourceObservedAt+1 {
+		return EdgeShardData{}, fmt.Errorf("parquet edge shard has %d columns, want at least %d", file.MetaData().Schema.NumColumns(), parquetEdgeColumnEdgeSourceObservedAt+1)
+	}
+	shard := EdgeShardData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, RelationType: relationType, Shard: shardID, Version: version}
+	filterShard := shardID != "" && !isIndexPackID(shardID)
+	rowGroups := make([]int, 0, file.NumRowGroups())
+	for i := 0; i < file.NumRowGroups(); i++ {
+		if !filterShard || parquetRowGroupStringMayContain(file, i, parquetEdgeColumnShard, shardID) ||
+			parquetRowGroupStringMayContain(file, i, parquetEdgeColumnShard, "") {
+			rowGroups = append(rowGroups, i)
+		}
+	}
+	if len(rowGroups) == 0 {
+		return shard, objectContextErr(ctx)
+	}
+	fileReader, err := pqarrow.NewFileReader(file, pqarrow.ArrowReadProperties{BatchSize: 128}, memory.DefaultAllocator)
+	if err != nil {
+		return EdgeShardData{}, err
+	}
+	reader, release, err := readParquetRecordReader(ctx, fileReader, nil, rowGroups)
 	if err != nil {
 		return EdgeShardData{}, err
 	}
 	defer release()
-	defer table.Release()
-	if table.NumCols() < int64(parquetEdgeColumnEdgeSourceObservedAt+1) {
-		return EdgeShardData{}, fmt.Errorf("parquet edge shard has %d columns, want at least %d", table.NumCols(), parquetEdgeColumnEdgeSourceObservedAt+1)
-	}
-	shard := EdgeShardData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, RelationType: relationType, Shard: shardID, Version: version}
-	byID := map[string]*graph.Edge{}
-	reader := array.NewTableReader(table, 4096)
 	defer reader.Release()
+	byID := map[string]*graph.Edge{}
 	for reader.Next() {
+		if err := objectContextErr(ctx); err != nil {
+			return EdgeShardData{}, err
+		}
 		record := reader.RecordBatch()
 		if record.NumCols() < int64(parquetEdgeColumnEdgeSourceObservedAt+1) {
 			return EdgeShardData{}, fmt.Errorf("parquet edge record has %d columns, want at least %d", record.NumCols(), parquetEdgeColumnEdgeSourceObservedAt+1)
@@ -286,10 +312,10 @@ func decodeParquetEdgeShard(ctx context.Context, data []byte, tenantID string, r
 				}
 			}
 			rowShard := columns.shard.Value(i)
-			if shardID != "" && rowShard != "" && rowShard != shardID {
+			if filterShard && rowShard != "" && rowShard != shardID {
 				continue
 			}
-			if rowShard != "" {
+			if rowShard != "" && !isIndexPackID(shardID) {
 				if shardID == "" {
 					if shard.Shard == "" {
 						shard.Shard = rowShard
@@ -337,6 +363,9 @@ func decodeParquetEdgeShard(ctx context.Context, data []byte, tenantID string, r
 				return EdgeShardData{}, err
 			}
 		}
+	}
+	if err := reader.Err(); err != nil {
+		return EdgeShardData{}, err
 	}
 	for _, edge := range byID {
 		shard.Edges = append(shard.Edges, decodedEdgeShardCopy(*edge))

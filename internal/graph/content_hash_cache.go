@@ -81,39 +81,16 @@ func buildLogicalHashCategory[T any](
 	return category, nil
 }
 
-func (g *Graph) cloneLogicalHashCache() *logicalHashCache {
-	g.logicalHashMu.Lock()
-	defer g.logicalHashMu.Unlock()
-	if g.logicalHashCache == nil {
-		return nil
-	}
-	source := g.logicalHashCache
-	return &logicalHashCache{
-		ciTypes:       cloneLogicalHashCategory(source.ciTypes),
-		entities:      cloneLogicalHashCategory(source.entities),
-		relationTypes: cloneLogicalHashCategory(source.relationTypes),
-		edges:         cloneLogicalHashCategory(source.edges),
-		digest:        source.digest,
-		logicalBytes:  source.logicalBytes,
-		finalReady:    source.finalReady,
-	}
-}
-
 func (g *Graph) shareLogicalHashCache() *logicalHashCache {
 	g.logicalHashMu.Lock()
 	defer g.logicalHashMu.Unlock()
 	if g.logicalHashCache == nil {
 		return nil
 	}
+	// Category arrays and encoded values are immutable. Updates replace the
+	// affected arrays, while each graph owns its final digest/cache state.
 	shared := *g.logicalHashCache
 	return &shared
-}
-
-func cloneLogicalHashCategory(source logicalHashCategory) logicalHashCategory {
-	return logicalHashCategory{
-		keys:    append([]string(nil), source.keys...),
-		encoded: append([][]byte(nil), source.encoded...),
-	}
 }
 
 func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) error {

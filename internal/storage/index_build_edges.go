@@ -74,6 +74,10 @@ func edgeShardPackIDs(shards []EdgeShard) map[string]string {
 }
 
 func edgeShardDataPackGroups(shards []EdgeShardData) []edgeShardDataPackGroup {
+	return edgeShardDataPackGroupsWithTargetRows(shards, indexPackTargetRows)
+}
+
+func edgeShardDataPackGroupsWithTargetRows(shards []EdgeShardData, targetRows int) []edgeShardDataPackGroup {
 	items := make([]indexPackItem, 0, len(shards))
 	byKey := map[string]EdgeShardData{}
 	for _, shard := range shards {
@@ -81,7 +85,7 @@ func edgeShardDataPackGroups(shards []EdgeShardData) []edgeShardDataPackGroup {
 		items = append(items, indexPackItem{ID: shard.Shard, Group: shard.RelationType, Rows: len(shard.Edges)})
 		byKey[key] = shard
 	}
-	groups := planIndexPacks(items)
+	groups := planIndexPacksWithLimits(items, targetRows, 0)
 	out := make([]edgeShardDataPackGroup, 0, len(groups))
 	for _, group := range groups {
 		packed := edgeShardDataPackGroup{ID: group.ID}

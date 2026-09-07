@@ -2,6 +2,7 @@ package graph
 
 import (
 	"container/heap"
+	"maps"
 	"sort"
 )
 
@@ -76,6 +77,52 @@ func (g *Graph) invalidateEntityOrder() {
 func (g *Graph) invalidateFieldIndexOrder() {
 	g.fieldIndexOrderMu.Lock()
 	g.fieldIndexOrder = nil
+	g.fieldValueOrder = nil
+	g.fieldIndexOrderMu.Unlock()
+}
+
+func (g *Graph) inheritReadOrder(source *Graph) {
+	source.entityOrderMu.Lock()
+	entityOrder := maps.Clone(source.entityOrder)
+	source.entityOrderMu.Unlock()
+	source.fieldIndexOrderMu.Lock()
+	fieldOrder := maps.Clone(source.fieldIndexOrder)
+	valueOrder := maps.Clone(source.fieldValueOrder)
+	source.fieldIndexOrderMu.Unlock()
+	// Cached slices are immutable; only the maps need their own ownership.
+	g.entityOrderMu.Lock()
+	g.entityOrder = entityOrder
+	g.entityOrderMu.Unlock()
+	g.fieldIndexOrderMu.Lock()
+	g.fieldIndexOrder = fieldOrder
+	g.fieldValueOrder = valueOrder
+	g.fieldIndexOrderMu.Unlock()
+}
+
+// HasEntityOrder reports whether visiting a kind can reuse its sorted IDs.
+func (g *Graph) HasEntityOrder(kind string) bool {
+	g.entityOrderMu.Lock()
+	_, ok := g.entityOrder[kind]
+	g.entityOrderMu.Unlock()
+	return ok
+}
+
+func (g *Graph) invalidateFieldKeyOrder(kind, field string) {
+	g.fieldIndexOrderMu.Lock()
+	delete(g.fieldValueOrder, fieldValueOrderKey{kind: kind, field: field})
+	g.fieldIndexOrderMu.Unlock()
+}
+
+func (g *Graph) invalidateEntityKindOrder(kind string) {
+	g.entityOrderMu.Lock()
+	delete(g.entityOrder, "")
+	delete(g.entityOrder, kind)
+	g.entityOrderMu.Unlock()
+}
+
+func (g *Graph) invalidateFieldValueOrder(kind, field, value string) {
+	g.fieldIndexOrderMu.Lock()
+	delete(g.fieldIndexOrder, fieldIndexOrderKey{kind: kind, field: field, value: value})
 	g.fieldIndexOrderMu.Unlock()
 }
 

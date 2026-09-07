@@ -131,6 +131,25 @@ func (c *ReaderCache) WithReadOnlyGraphAtLeast(ctx context.Context, tenantID str
 	return fn(g, manifest)
 }
 
+// WithCachedReadOnlyGraph lends a fresh immutable view only when it is already
+// resident. A miss never loads the tenant; fn must not retain or mutate the view.
+func (c *ReaderCache) WithCachedReadOnlyGraph(ctx context.Context, tenantID string, minVersion int64, fn func(*graph.Graph, Manifest) error) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	c.mu.RLock()
+	entry, ok := c.entries[tenantID]
+	usable := ok && cacheEntryFresh(entry, time.Now(), minVersion)
+	c.mu.RUnlock()
+	if !usable || fn == nil {
+		return false, nil
+	}
+	c.touch(tenantID)
+	c.recordCache(tenantID, "hit")
+	c.recordVisible(tenantID, entry.manifest.Version)
+	return true, fn(entry.graph, entry.manifest)
+}
+
 func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int64, shared bool) (*graph.Graph, Manifest, error) {
 	for {
 		now := time.Now()
@@ -403,6 +422,13 @@ func (c *ReaderCache) loadStoreAtLeastFromEntry(
 	manifest Manifest,
 	manifestMeta ObjectMeta,
 ) (loadedGraph, error) {
+	// A commit publishes this immutable graph after its manifest is durable,
+	// before the slower index refresh finishes. Do not replay that commit again.
+	if loaded, ok := c.Store.getWriteCache(tenantID); ok && loaded.Graph != nil &&
+		cachedManifestMatches(loaded, manifest, manifestMeta) && loaded.Manifest.Version >= minVersion {
+		c.recordCache(tenantID, "committed_graph_reuse")
+		return loaded, nil
+	}
 	if cachedOK && cached.graph != nil {
 		cacheBytes := cached.bytes
 		if cacheBytes <= 0 {
@@ -643,12 +669,8 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	if ok && !markAccess {
 		lastAccess = entry.lastAccess
 	}
-	cachedGraph := loaded.Graph
-	if markAccess {
-		cachedGraph = loaded.Graph.Clone()
-	}
 	next := cacheEntry{
-		graph: cachedGraph, manifest: loaded.Manifest, meta: loaded.Meta,
+		graph: loaded.Graph, manifest: loaded.Manifest, meta: loaded.Meta,
 		cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: lastAccess,
 		bytes: readerCacheEntryBytes(loaded),
 	}
@@ -661,14 +683,14 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 			if !markAccess {
 				return nil, Manifest{}, nil
 			}
-			return loaded.Graph, loaded.Manifest, nil
+			return cacheEntryGraph(next, false)
 		}
 		c.finishLoad(tenantID, load, err)
 		return nil, Manifest{}, err
 	}
 	c.mu.Unlock()
 	c.finishLoad(tenantID, load, nil)
-	return loaded.Graph, loaded.Manifest, nil
+	return cacheEntryGraph(next, !markAccess)
 }
 
 func (c *ReaderCache) touch(tenantID string) {

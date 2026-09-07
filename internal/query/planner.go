@@ -187,7 +187,12 @@ func estimatedKindScanRows(g *graph.Graph, request Request, stats PlannerStats) 
 	if lazyPageScan {
 		rows = estimateEntityPageTotal(stats)
 	}
-	if lazyPageScan &&
+	cachedPageScan := false
+	if g.HasEntityOrder(request.Kind) {
+		cursor, err := parseCursor(request.Cursor)
+		cachedPageScan = err == nil && !cursor.Legacy && matchPageOrder(cursor, EntityPageOrderIdentity) == EntityPageOrderIdentity
+	}
+	if (lazyPageScan || cachedPageScan) &&
 		request.Op == "match" &&
 		canPageMatchEarly(request) &&
 		len(requestFilters(request)) == 0 &&

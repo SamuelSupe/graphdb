@@ -59,7 +59,7 @@ func (g *Graph) cloneForStorageMutation(mutations Mutations) *Graph {
 func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
 	logicalHashCache := g.shareLogicalHashCache()
-	return &Graph{
+	clone := &Graph{
 		Version:                 g.Version,
 		CITypes:                 storageMutationMap(g.CITypes, impact.ciTypes),
 		Entities:                storageMutationMap(g.Entities, impact.entities),
@@ -88,6 +88,8 @@ func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 			fieldValues:   map[string]map[string]map[string]struct{}{},
 		},
 	}
+	clone.inheritReadOrder(g)
+	return clone
 }
 
 func storageMutationMap[K comparable, V any](source map[K]V, writable bool) map[K]V {

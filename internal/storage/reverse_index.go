@@ -50,9 +50,6 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 		shard.TenantID = tenantID
 		shard.logicalContentHash = edgeShardContentHash(*shard)
 		key := s.reverseEdgeShardVersionKey(tenantID, version, shard.RelationType, shard.Shard)
-		if err := s.putParquetEdgeShardObject(ctx, key, tenantID, *shard, true); err != nil {
-			return err
-		}
 		catalog.EdgeShards = append(catalog.EdgeShards, EdgeShard{
 			RelationType:    shard.RelationType,
 			ImpactDirection: relationImpactDirection(g, shard.RelationType),
@@ -74,6 +71,9 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 			SchemaHash:  parquetEdgeShardSchemaHash(),
 			UpdatedAt:   now,
 		})
+	}
+	if err := s.writeChangedReverseEdgeShards(ctx, tenantID, shards, catalog.EdgeShards, version); err != nil {
+		return err
 	}
 	sort.Slice(catalog.EdgeShards, func(i, j int) bool {
 		if catalog.EdgeShards[i].RelationType == catalog.EdgeShards[j].RelationType {

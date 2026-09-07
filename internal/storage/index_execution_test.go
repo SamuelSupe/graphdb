@@ -1667,6 +1667,78 @@ func TestIncrementalIndexRemovesEdgesForDeletedEntity(t *testing.T) {
 	}
 }
 
+func TestIncrementalIndexRebuildsEdgeEndpointChangeAcrossCatalogAndGraph(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", twoHostEdgeMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	before, _, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load before endpoint change: %v", err)
+	}
+	var oldEdgeID string
+	for id, edge := range before.Edges {
+		if edge.Type == "runs_on" && edge.From == "service:api" && edge.To == "host:app-01" {
+			oldEdgeID = id
+			break
+		}
+	}
+	if oldEdgeID == "" {
+		t.Fatalf("seed graph edges = %#v, want service:api -> host:app-01", before.Edges)
+	}
+
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		DeleteEdges: []string{oldEdgeID},
+		UpsertEdges: []graph.Edge{{
+			ID: "edge:api-host-moved", Type: "runs_on", From: "service:api", To: "host:app-02",
+		}},
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("move edge endpoint: %v", err)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("catalog after endpoint change: %v", err)
+	}
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	indexed, ok, err := lookup.OutEdges(ctx, "service:api", map[string]struct{}{"runs_on": {}})
+	if err != nil || !ok || len(indexed) != 1 || indexed[0].To != "host:app-02" || indexed[0].ID == oldEdgeID {
+		t.Fatalf("indexed edges after endpoint change = %#v ok=%v err=%v", indexed, ok, err)
+	}
+
+	loaded, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load after endpoint change: %v", err)
+	}
+	if manifest.Version != catalog.Version {
+		t.Fatalf("graph manifest version = %d, catalog version = %d", manifest.Version, catalog.Version)
+	}
+	var graphEdges []graph.Edge
+	for _, edge := range loaded.Edges {
+		if edge.Type == "runs_on" && edge.From == "service:api" {
+			graphEdges = append(graphEdges, edge)
+		}
+	}
+	if len(graphEdges) != 1 || graphEdges[0].To != "host:app-02" {
+		t.Fatalf("graph edges after endpoint change = %#v, want one edge to host:app-02", graphEdges)
+	}
+
+	scanned, err := store.ListEdgesFromCatalog(ctx, "tenant-a", catalog, EdgeScanOptions{Type: "runs_on", From: "service:api", Limit: 10})
+	if err != nil {
+		t.Fatalf("scan rebuilt catalog: %v", err)
+	}
+	if scanned.Version != catalog.Version || len(scanned.Edges) != len(graphEdges) || scanned.Edges[0].ID != graphEdges[0].ID || scanned.Edges[0].To != graphEdges[0].To {
+		t.Fatalf("catalog scan = %#v, graph edges = %#v", scanned, graphEdges)
+	}
+	health, err := store.IndexHealth(ctx, "tenant-a")
+	if err != nil || health.Status != "ready" {
+		t.Fatalf("health after endpoint change = %#v err=%v", health, err)
+	}
+}
+
 func TestPersistedEntityLookupProjectionAndIncrementalDelete(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")

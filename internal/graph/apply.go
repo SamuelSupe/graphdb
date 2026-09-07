@@ -24,7 +24,7 @@ func (g *Graph) ApplyCommitWithOptions(commit Commit, options ApplyOptions) (App
 
 func (g *Graph) replaceState(next *Graph) {
 	fingerprint, fingerprintReady := next.contentFingerprintState()
-	logicalHashCache := next.cloneLogicalHashCache()
+	logicalHashCache := next.shareLogicalHashCache()
 	g.contentFingerprintMu.Lock()
 	defer g.contentFingerprintMu.Unlock()
 	g.logicalHashMu.Lock()
@@ -46,8 +46,7 @@ func (g *Graph) replaceState(next *Graph) {
 	g.contentFingerprint = fingerprint
 	g.contentFingerprintReady = fingerprintReady
 	g.logicalHashCache = logicalHashCache
-	g.invalidateEntityOrder()
-	g.invalidateFieldIndexOrder()
+	g.inheritReadOrder(next)
 }
 
 func (g *Graph) ApplyCommitCopyWithOptions(commit Commit, options ApplyOptions) (*Graph, ApplyReport, error) {
@@ -174,8 +173,6 @@ func (g *Graph) applyCommitToCopy(clone *Graph, commit Commit, options ApplyOpti
 }
 
 func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, error) {
-	g.invalidateEntityOrder()
-	g.invalidateFieldIndexOrder()
 	report := ApplyReport{}
 	tracker := newMutationFingerprintTracker(g)
 	affected := newUniqueStringCollector(&report.AffectedEntityIDs)
@@ -320,11 +317,12 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 			return ApplyReport{}, err
 		}
 		if prepared.existed {
-			g.removeEntityFromIndexes(normalized.ID, prepared.previous)
+			g.updateEntityIndexes(normalized.ID, prepared.previous, normalized)
+		} else {
+			g.addEntityToIndexes(normalized.ID, normalized)
 		}
 		clearEntityWriteMetadata(&normalized)
 		g.Entities[normalized.ID] = normalized
-		g.addEntityToIndexes(normalized.ID, normalized)
 		uniqueValidator.add(normalized)
 		affected.add(normalized.ID)
 	}

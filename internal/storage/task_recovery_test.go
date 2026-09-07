@@ -174,3 +174,54 @@ func TestRunGCCleansExpiredTaskAfterOwnerStops(t *testing.T) {
 		t.Fatalf("get deleted index task err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestGetIndexTaskKeepsRuntimeIndexTaskAfterWriterLeaseExpires(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatalf("init tenant: %v", err)
+	}
+	for range defaultTaskExecutionLimit {
+		store.taskExecutionSlots <- struct{}{}
+	}
+	task, err := store.StartIndexRebuild(ctx, "tenant-a")
+	if err != nil {
+		for range defaultTaskExecutionLimit {
+			<-store.taskExecutionSlots
+		}
+		t.Fatalf("start index rebuild: %v", err)
+	}
+	defer func() {
+		store.cancelTaskRuntime(task.TenantID, task.ID)
+		for range defaultTaskExecutionLimit {
+			<-store.taskExecutionSlots
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := store.ShutdownTasks(shutdownCtx); err != nil {
+			t.Errorf("shutdown tasks: %v", err)
+		}
+	}()
+	if !store.taskRuntimeActive(task.TenantID, task.ID) {
+		t.Fatal("queued index task runtime was not registered")
+	}
+
+	leaseKey := store.writerLeaseKey(task.TenantID)
+	lease, meta, err := store.getWriterLease(ctx, task.TenantID, leaseKey)
+	if err != nil {
+		t.Fatalf("get writer lease: %v", err)
+	}
+	lease.ExpiresAt = time.Now().UTC().Add(-time.Second)
+	lease.UpdatedAt = lease.ExpiresAt
+	if _, err := store.putLease(ctx, leaseKey, lease, meta); err != nil {
+		t.Fatalf("expire writer lease: %v", err)
+	}
+
+	loaded, err := store.GetIndexTask(ctx, task.TenantID, task.ID)
+	if err != nil {
+		t.Fatalf("get index task: %v", err)
+	}
+	if loaded.Status != TaskStatusRunning || loaded.Phase != TaskStatusQueued {
+		t.Fatalf("runtime index task = %#v, want running/queued", loaded)
+	}
+}

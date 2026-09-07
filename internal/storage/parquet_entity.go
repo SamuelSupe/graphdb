@@ -316,7 +316,11 @@ func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, 
 
 	page := EntityPageData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Shard: shard, Version: version}
 	byID := map[string]*graph.Entity{}
-	recordReader, release, err := readParquetRecordReader(ctx, fileReader, columns, nil)
+	rowGroups := parquetEntityShardRowGroups(reader, shard)
+	if len(rowGroups) == 0 {
+		return page, objectContextErr(ctx)
+	}
+	recordReader, release, err := readParquetRecordReader(ctx, fileReader, columns, rowGroups)
 	if err != nil {
 		return EntityPageData{}, err
 	}

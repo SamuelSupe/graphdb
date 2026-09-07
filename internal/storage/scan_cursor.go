@@ -55,6 +55,26 @@ func encodeScanCursor(cursor scanCursor) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
+// PinScanCursor binds a graph-produced page to the immutable catalog for the
+// same version, so subsequent requests can continue after the graph advances.
+func PinScanCursor(raw string, catalog IndexCatalog) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	cursor, err := decodeScanCursor(raw)
+	if err != nil {
+		return "", err
+	}
+	if cursor.Version != catalog.Version {
+		return "", fmt.Errorf("cursor version %d does not match catalog version %d", cursor.Version, catalog.Version)
+	}
+	cursor.CatalogHash, err = indexCatalogContentHash(catalog)
+	if err != nil {
+		return "", err
+	}
+	return encodeScanCursor(cursor), nil
+}
+
 func entityScanQueryHash(options EntityScanOptions) string {
 	options.Cursor = ""
 	options.Limit = 0

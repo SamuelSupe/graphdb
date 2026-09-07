@@ -42,7 +42,9 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 	shardIDFor func(graph.Edge) string,
 	decorate func(*IndexCatalog),
 ) ([]EdgeShardData, []EdgeShard, error) {
-	previousByKey := edgeShardSpecMap(IndexCatalog{EdgeShards: previous})
+	if before.Version != previousVersion || after.Version != version {
+		return nil, nil, fmt.Errorf("incremental edge shards require graph versions %d and %d", previousVersion, version)
+	}
 	changedByKey := map[string][]string{}
 	for _, edgeID := range edgeIDs {
 		if edge, ok := before.Edges[edgeID]; ok {
@@ -55,56 +57,44 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 		}
 	}
 	keys := sortedStringKeys(changedByKey)
+	if len(keys) == 0 {
+		return nil, previous, ctx.Err()
+	}
+	edgesByKey := make(map[string][]graph.Edge, len(keys))
+	checked := 0
+	for _, edge := range after.Edges {
+		checked++
+		if checked&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
+		key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
+		if _, changed := changedByKey[key]; changed {
+			edgesByKey[key] = append(edgesByKey[key], graph.CopyEdge(edge))
+		}
+	}
 	shards := make([]EdgeShardData, 0, len(keys))
 	rawSpecs := make([]EdgeShard, 0, len(keys))
 	removed := map[string]struct{}{}
 	for _, key := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		relationType, shardID := splitShard(key)
-		spec, existed := previousByKey[key]
-		shard := EdgeShardData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, RelationType: relationType, Shard: shardID}
-		if existed {
-			loaded, ok, err := s.loadParquetEdgeShardObject(ctx, tenantID, previousVersion, spec)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !ok || !edgeShardMatchesCatalog(loaded, spec, previousVersion) {
-				return nil, nil, fmt.Errorf("incremental edge shard %s/%s is not readable at version %d", relationType, shardID, previousVersion)
-			}
-			shard = loaded
-		}
-		edges := make(map[string]graph.Edge, len(shard.Edges)+len(changedByKey[key]))
-		for _, edge := range shard.Edges {
-			edges[edge.ID] = edge
-		}
-		for _, edgeID := range changedByKey[key] {
-			delete(edges, edgeID)
-			if edge, ok := after.Edges[edgeID]; ok &&
-				edge.Type == relationType &&
-				shardIDFor(edge) == shardID {
-				edges[edgeID] = graph.CopyEdge(edge)
-			} else if !existed {
-				if old, ok := before.Edges[edgeID]; ok &&
-					old.Type == relationType &&
-					shardIDFor(old) == shardID {
-					return nil, nil, fmt.Errorf("incremental edge shard %s/%s is missing from the previous catalog", relationType, shardID)
-				}
-			}
-		}
+		edges := edgesByKey[key]
 		if len(edges) == 0 {
 			removed[key] = struct{}{}
 			continue
 		}
-		shard = EdgeShardData{
+		shard := EdgeShardData{
 			LayoutVersion: CurrentObjectLayoutVersion,
 			TenantID:      tenantID,
 			RelationType:  relationType,
 			Shard:         shardID,
-			Edges:         make([]graph.Edge, 0, len(edges)),
+			Edges:         edges,
 			Version:       version,
 			UpdatedAt:     now,
-		}
-		for _, edge := range edges {
-			shard.Edges = append(shard.Edges, edge)
 		}
 		sort.Slice(shard.Edges, func(i, j int) bool { return shard.Edges[i].ID < shard.Edges[j].ID })
 		shard.logicalContentHash = edgeShardContentHash(shard)

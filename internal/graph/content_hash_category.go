@@ -37,6 +37,22 @@ func updateLogicalHashCategoryBatch(
 	sort.Slice(updates, func(i, j int) bool {
 		return updates[i].key < updates[j].key
 	})
+	positions := make([]int, 0, len(updates))
+	for _, update := range updates {
+		index := sort.SearchStrings(category.keys, update.key)
+		if !update.exists || index == len(category.keys) || category.keys[index] != update.key {
+			break
+		}
+		positions = append(positions, index)
+	}
+	if len(positions) == len(updates) {
+		encoded := append([][]byte(nil), category.encoded...)
+		for i, position := range positions {
+			encoded[position] = updates[i].encoded
+		}
+		category.encoded = encoded
+		return nil
+	}
 
 	keys := make([]string, 0, len(category.keys)+len(updates))
 	encoded := make([][]byte, 0, cap(keys))
