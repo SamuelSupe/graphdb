@@ -46,6 +46,7 @@ type CommitResult struct {
 	CanonicalEntities []graph.EntityCanonicalization `json:"canonical_entities,omitempty"`
 	CanonicalEdges    []graph.EdgeCanonicalization   `json:"canonical_edges,omitempty"`
 	IndexWarnings     []string                       `json:"index_warnings,omitempty"`
+	indexUpdate       *commitIndexUpdate
 }
 
 type snapshotRecord struct {
@@ -95,6 +96,8 @@ type TenantStore struct {
 	tenantConfigCache          map[string]cachedTenantConfig
 	indexCatalogCache          map[string]cachedIndexCatalog
 	indexCatalogLoads          map[string]*indexCatalogLoad
+	indexUpdateMu              sync.Mutex
+	indexUpdateTails           map[string]chan struct{}
 	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
 	compiledScanCatalogCache   map[string]*compiledScanCatalog
@@ -167,6 +170,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		tenantConfigCache:          map[string]cachedTenantConfig{},
 		indexCatalogCache:          map[string]cachedIndexCatalog{},
 		indexCatalogLoads:          map[string]*indexCatalogLoad{},
+		indexUpdateTails:           map[string]chan struct{}{},
 		reverseIndexCatalogCache:   map[string]cachedReverseIndexCatalog{},
 		reverseIndexCatalogLoads:   map[string]*reverseIndexCatalogLoad{},
 		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -15,7 +16,73 @@ import (
 const (
 	snapshotFormatParquetSharded = "parquet-sharded"
 	snapshotSchemaFormatParquet  = "parquet"
+	snapshotPartConcurrency      = 4
 )
+
+func runSnapshotParts(ctx context.Context, count int, fn func(context.Context, int) error) error {
+	if count == 0 {
+		return nil
+	}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	workers := min(snapshotPartConcurrency, count)
+	jobs := make(chan int)
+	errCh := make(chan error, 1)
+	var group sync.WaitGroup
+	group.Add(workers)
+	for range workers {
+		go func() {
+			defer group.Done()
+			for {
+				select {
+				case <-workCtx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					if err := runSnapshotPart(workCtx, index, fn); err != nil {
+						select {
+						case errCh <- err:
+						default:
+						}
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+
+dispatch:
+	for index := 0; index < count; index++ {
+		select {
+		case jobs <- index:
+		case <-workCtx.Done():
+			break dispatch
+		}
+	}
+	close(jobs)
+	group.Wait()
+	select {
+	case err := <-errCh:
+		return err
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func runSnapshotPart(ctx context.Context, index int, fn func(context.Context, int) error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	return fn(ctx, index)
+}
 
 type ShardedSnapshotCatalog struct {
 	LayoutVersion int                      `json:"layout_version,omitempty"`
@@ -84,36 +151,51 @@ func (s *TenantStore) putShardedSnapshot(ctx context.Context, tenantID string, s
 		Schema:        SnapshotSchemaSpec{Key: schemaKey, Format: snapshotSchemaFormatParquet, ContentHash: snapshotSchemaContentHash(schema)},
 		UpdatedAt:     updatedAt,
 	}
-	for _, page := range buildEntityPagesFromEntities(snapshot.Entities, snapshot.Version) {
-		page.TenantID = tenantID
-		page.UpdatedAt = updatedAt
-		key := s.snapshotEntityPageKey(tenantID, snapshot.Version, page.Shard)
-		if err := s.putSnapshotParquetEntityPageIfAbsentOrSame(ctx, key, tenantID, page); err != nil {
-			return ShardedSnapshotCatalog{}, err
-		}
-		catalog.EntityPages = append(catalog.EntityPages, SnapshotEntityPageSpec{
-			Shard:       page.Shard,
-			Key:         key,
-			Format:      IndexFormatParquet,
-			EntityCount: len(page.Entities),
-			ContentHash: entityPageContentHash(page),
-		})
+	entityPages := buildEntityPagesFromEntities(snapshot.Entities, snapshot.Version)
+	edgeShards := buildEdgeShardsFromEdges(snapshot.Edges, snapshot.Version)
+	if len(entityPages) > 0 {
+		catalog.EntityPages = make([]SnapshotEntityPageSpec, len(entityPages))
 	}
-	for _, shard := range buildEdgeShardsFromEdges(snapshot.Edges, snapshot.Version) {
+	if len(edgeShards) > 0 {
+		catalog.EdgeShards = make([]SnapshotEdgeShardSpec, len(edgeShards))
+	}
+	if err := runSnapshotParts(ctx, len(entityPages)+len(edgeShards), func(workCtx context.Context, index int) error {
+		if index < len(entityPages) {
+			page := entityPages[index]
+			page.TenantID = tenantID
+			page.UpdatedAt = updatedAt
+			key := s.snapshotEntityPageKey(tenantID, snapshot.Version, page.Shard)
+			if err := s.putSnapshotParquetEntityPageIfAbsentOrSame(workCtx, key, tenantID, page); err != nil {
+				return err
+			}
+			catalog.EntityPages[index] = SnapshotEntityPageSpec{
+				Shard:       page.Shard,
+				Key:         key,
+				Format:      IndexFormatParquet,
+				EntityCount: len(page.Entities),
+				ContentHash: entityPageContentHash(page),
+			}
+			return nil
+		}
+		index -= len(entityPages)
+		shard := edgeShards[index]
 		shard.TenantID = tenantID
 		shard.UpdatedAt = updatedAt
 		key := s.snapshotEdgeShardKey(tenantID, snapshot.Version, shard.RelationType, shard.Shard)
-		if err := s.putSnapshotParquetEdgeShardIfAbsentOrSame(ctx, key, tenantID, shard); err != nil {
-			return ShardedSnapshotCatalog{}, err
+		if err := s.putSnapshotParquetEdgeShardIfAbsentOrSame(workCtx, key, tenantID, shard); err != nil {
+			return err
 		}
-		catalog.EdgeShards = append(catalog.EdgeShards, SnapshotEdgeShardSpec{
+		catalog.EdgeShards[index] = SnapshotEdgeShardSpec{
 			RelationType: shard.RelationType,
 			Shard:        shard.Shard,
 			Key:          key,
 			Format:       IndexFormatParquet,
 			EdgeCount:    len(shard.Edges),
 			ContentHash:  edgeShardContentHash(shard),
-		})
+		}
+		return nil
+	}); err != nil {
+		return ShardedSnapshotCatalog{}, err
 	}
 	if err := s.putShardedSnapshotCatalogIfAbsentOrSame(ctx, catalog.Key, catalog); err != nil {
 		return ShardedSnapshotCatalog{}, err
@@ -222,30 +304,45 @@ func (s *TenantStore) loadSnapshotFromCatalog(ctx context.Context, tenantID stri
 		CITypes:       append([]graph.CIType(nil), schema.CITypes...),
 		RelationTypes: append([]graph.RelationType(nil), schema.RelationTypes...),
 	}
-	for _, spec := range catalog.EntityPages {
+	entityPages := make([]EntityPageData, len(catalog.EntityPages))
+	edgeShards := make([]EdgeShardData, len(catalog.EdgeShards))
+	if err := runSnapshotParts(ctx, len(entityPages)+len(edgeShards), func(workCtx context.Context, index int) error {
+		if index < len(entityPages) {
+			spec := catalog.EntityPages[index]
+			if err := s.validateTenantObjectKey(tenantID, spec.Key); err != nil {
+				return err
+			}
+			page, err := s.loadSnapshotEntityPage(workCtx, tenantID, catalog.Version, spec)
+			if err != nil {
+				return err
+			}
+			if !shardedEntityPageReadable(page, tenantID, catalog.Version, spec) {
+				return fmt.Errorf("snapshot entity page %q failed validation", spec.Key)
+			}
+			entityPages[index] = page
+			return nil
+		}
+		index -= len(entityPages)
+		spec := catalog.EdgeShards[index]
 		if err := s.validateTenantObjectKey(tenantID, spec.Key); err != nil {
-			return graph.Snapshot{}, err
+			return err
 		}
-		page, err := s.loadSnapshotEntityPage(ctx, tenantID, catalog.Version, spec)
+		shard, err := s.loadSnapshotEdgeShard(workCtx, tenantID, catalog.Version, spec)
 		if err != nil {
-			return graph.Snapshot{}, err
-		}
-		if !shardedEntityPageReadable(page, tenantID, catalog.Version, spec) {
-			return graph.Snapshot{}, fmt.Errorf("snapshot entity page %q failed validation", spec.Key)
-		}
-		snapshot.Entities = append(snapshot.Entities, page.Entities...)
-	}
-	for _, spec := range catalog.EdgeShards {
-		if err := s.validateTenantObjectKey(tenantID, spec.Key); err != nil {
-			return graph.Snapshot{}, err
-		}
-		shard, err := s.loadSnapshotEdgeShard(ctx, tenantID, catalog.Version, spec)
-		if err != nil {
-			return graph.Snapshot{}, err
+			return err
 		}
 		if !shardedEdgeShardReadable(shard, tenantID, catalog.Version, spec) {
-			return graph.Snapshot{}, fmt.Errorf("snapshot edge shard %q failed validation", spec.Key)
+			return fmt.Errorf("snapshot edge shard %q failed validation", spec.Key)
 		}
+		edgeShards[index] = shard
+		return nil
+	}); err != nil {
+		return graph.Snapshot{}, err
+	}
+	for _, page := range entityPages {
+		snapshot.Entities = append(snapshot.Entities, page.Entities...)
+	}
+	for _, shard := range edgeShards {
 		snapshot.Edges = append(snapshot.Edges, shard.Edges...)
 	}
 	sort.Slice(snapshot.Entities, func(i, j int) bool { return snapshot.Entities[i].ID < snapshot.Entities[j].ID })

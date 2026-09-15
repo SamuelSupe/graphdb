@@ -34,23 +34,28 @@ func (s *TenantStore) writeParquetSecondaryIndexes(ctx context.Context, tenantID
 }
 
 func (s *TenantStore) writeParquetSecondaryIndexesWithOptions(ctx context.Context, tenantID string, indexes []SecondaryIndex, checkExisting bool) error {
+	jobs := make([]func(context.Context) error, 0, len(indexes))
 	for _, index := range indexes {
+		index := index
 		index.TenantID = tenantID
 		groups := secondaryIndexObjectGroups(index)
 		if len(groups) == 0 {
-			if err := s.putParquetSecondaryIndex(ctx, tenantID, index, checkExisting); err != nil {
-				return err
-			}
+			jobs = append(jobs, func(workCtx context.Context) error {
+				return s.putParquetSecondaryIndex(workCtx, tenantID, index, checkExisting)
+			})
 			continue
 		}
 		for _, group := range groups {
+			group := group
 			group.Index.TenantID = tenantID
-			if err := s.putParquetSecondaryIndexShard(ctx, tenantID, group.ID, group.Index, checkExisting); err != nil {
-				return err
-			}
+			jobs = append(jobs, func(workCtx context.Context) error {
+				return s.putParquetSecondaryIndexShard(workCtx, tenantID, group.ID, group.Index, checkExisting)
+			})
 		}
 	}
-	return nil
+	return runIndexWriteJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
+		return jobs[index](workCtx)
+	})
 }
 
 func (s *TenantStore) putParquetSecondaryIndex(ctx context.Context, tenantID string, index SecondaryIndex, checkExisting bool) error {

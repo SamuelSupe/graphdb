@@ -8,11 +8,11 @@
 [![Release Build](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml/badge.svg)](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)
 [![Public Repository](https://img.shields.io/badge/repository-public-2ea44f)](https://github.com/SamuelSupe/graphdb)
 
-[中文 README](README.zh-CN.md) · [GGraphDB 1.3.3 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.3)
+[中文 README](README.zh-CN.md) · [GGraphDB 1.3.4 release](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4)
 
 </div>
 
-GGraphDB 1.3.3 is a Go-based general-purpose current-state property knowledge graph
+GGraphDB 1.3.4 is a Go-based general-purpose current-state property knowledge graph
 for entity-relationship data. Knowledge bases, CMDB, asset relationships,
 service dependencies, topology, and impact analysis are supported application
 scenarios. It persists tenant data to local disk or S3-compatible object
@@ -34,11 +34,19 @@ SPARQL, ontology-reasoning, or historical graph engine.
 | Bounded read-path work | Cold graph loads, query admission, execution budgets, and cache retention are independently bounded. |
 | Operations | Compact, GC, backup/restore, repair, integrity audit, index health, and metrics. |
 
-### 1.3.3 performance and correctness update
+### 1.3.4 performance and correctness update
 
-The 1.3.3 release includes the measured graph read/write optimizations and
+The 1.3.4 release includes the measured graph read/write optimizations and
 reliability fixes from the current review:
 
+- Local incremental index refresh runs after the tenant foreground lock is
+  released; a per-tenant queue preserves catalog version order and recovers
+  queued version gaps from the current graph.
+- Immutable Parquet index objects and sharded snapshot parts use bounded
+  four-worker I/O for writes and cold loads, while preserving validation and
+  catalog order.
+- Query streams flush the first item immediately and batch later flushes;
+  logical MD5 encoding reuses its buffered writer.
 - COW graph versions inherit sorted ID order and invalidate only changed
   kind/field/value keys; scalar range scans reuse ordered keys and seek to bounds.
 - Changed entity and edge shards are rebuilt from the authoritative post-commit
@@ -49,12 +57,13 @@ reliability fixes from the current review:
   alive when an old writer lease expires; committed write-cache reuse requires
   strict manifest/ETag matching while public refresh keeps clone isolation.
 - The JSON response and cursor contracts, object layout, and WAL record format
-  remain unchanged. See the [1.3.3 performance report](docs/performance-v1.3.3.md)
-  for the separate v1.3.2-to-round1 history, round1-to-release baseline,
-  operation tails, resource measurements, and boundaries.
+  remain unchanged. See the [1.3.4 performance report](docs/performance-v1.3.4.md)
+  for the targeted implementation evidence and release boundaries. The
+  historical [1.3.3 performance report](docs/performance-v1.3.3.md) retains the
+  separate v1.3.2-to-round1 history and service comparison.
 
-Round2's 128-edge physical reverse pack and JSONValue stream encoding are
-summarized by this bounded comparison:
+The previous v1.3.3 service comparison remains historical and is not a new
+v1.3.4 end-to-end capacity claim:
 
 The first three rows are from the 60-second service comparison; the last row is
 a separate process-local microbenchmark.
@@ -69,14 +78,15 @@ a separate process-local microbenchmark.
 The 16-target cold reverse lookup was about 15% slower in the near-time check;
 large indexed stream p99 rose `167→221 ms` (min-version `131→224 ms`), and RSS
 was `1,266,884 kB` versus `1,098,816 kB` on a larger graph. See the
-[1.3.3 performance report](docs/performance-v1.3.3.md) for units, allocations,
-freshness, integrity, and untested boundaries. Release assets still require the
+[1.3.3 performance report](docs/performance-v1.3.3.md) for those historical
+measurements. The [1.3.4 performance report](docs/performance-v1.3.4.md)
+records the current targeted checks; release assets still require the
 documented unit/race/compatibility, integration, 30-minute soak, and rollback
 workflow gates.
 
 ### 1.3 PostgreSQL-CAS multi-writer WAL contract
 
-GGraphDB 1.3.3 retains the opt-in WAL profile for
+GGraphDB 1.3.4 retains the opt-in WAL profile for
 `POST /v1/ingest/batches`: every writer owns an independent local WAL and
 PostgreSQL performs tenant-head CAS plus coordination metadata updates. Object
 storage remains the graph-data authority; PostgreSQL never stores ingest
@@ -92,7 +102,7 @@ horizontally across tenants. Every writer needs a stable
 status URL. Batch publish uses a bounded CAS/publish slot and lifecycle
 generation fencing: a stale or fenced request cannot publish after a tenant
 freeze, delete, or recreate. The complete contract is in the [1.3 design
-document](https://github.com/SamuelSupe/graphdb/blob/v1.3.3/docs/ingest-wal-multiwriter-design.md).
+document](https://github.com/SamuelSupe/graphdb/blob/v1.3.4/docs/ingest-wal-multiwriter-design.md).
 
 The 1.3.1 write path adds commit-equivalent `expected_version`, atomic failure,
 and entity/edge precondition semantics to both local and PostgreSQL-coordinated
@@ -379,8 +389,8 @@ restart.
 
 ## Release
 
-The GGraphDB 1.3.3 release is tracked at:
-[**v1.3.3**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.3).
+The GGraphDB 1.3.4 release is tracked at:
+[**v1.3.4**](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4).
 This release keeps the PostgreSQL-CAS multi-writer WAL contract and the 1.3.2
 ingest reliability fixes, and adds the graph read/write performance and local
 maintenance ownership fixes described above. The 1.3.1 capabilities also
@@ -398,7 +408,7 @@ Each release archive contains:
 
 See the [release deployment guide](docs/user/release-deployment.md) or its
 [中文版本](docs/user/release-deployment.zh-CN.md). Pushing a semantic-version
-tag such as `v1.3.3` triggers [GitHub Actions](.github/workflows/release.yml) to
+tag such as `v1.3.4` triggers [GitHub Actions](.github/workflows/release.yml) to
 build and publish the archive automatically. Legacy `release_*` tags remain
 supported for older deployment workflows.
 
@@ -414,8 +424,8 @@ supported for older deployment workflows.
 | [Release deployment](docs/user/release-deployment.md) · [中文](docs/user/release-deployment.zh-CN.md) | Download, verify, upgrade, rollback, and security boundaries. |
 | [Read and query](docs/user/read-query.md) · [中文](docs/user/read-query.zh-CN.md) | GraphQL, JSON DSL, pagination, streaming, explain, and profile. |
 | [Write and ingest](docs/user/write-ingest.md) · [中文](docs/user/write-ingest.zh-CN.md) | Commits, ingestion, idempotency, deletes, source policy, and backpressure. |
-| [1.3.3 performance report](docs/performance-v1.3.3.md) | Operation-level tails, resource evidence, compatibility, and performance boundaries. |
-| [1.3 multi-writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.3/docs/ingest-wal-multiwriter-design.md) · [中文](https://github.com/SamuelSupe/graphdb/blob/v1.3.3/docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
+| [1.3.4 performance report](docs/performance-v1.3.4.md) | Operation-level tails, resource evidence, compatibility, and performance boundaries. |
+| [1.3 multi-writer WAL](https://github.com/SamuelSupe/graphdb/blob/v1.3.4/docs/ingest-wal-multiwriter-design.md) · [中文](https://github.com/SamuelSupe/graphdb/blob/v1.3.4/docs/ingest-wal-multiwriter-design.zh-CN.md) | PostgreSQL-CAS ingest contract, owner routing, recovery, and rolling upgrade. |
 | [Data model](docs/user/data-model.md) · [中文](docs/user/data-model.zh-CN.md) | Tenants, optional CI types, entities, relations, edges, and source governance. |
 | [OpenAPI contract](docs/openapi.yaml) | The complete HTTP API definition. |
 | [Go and Python SDKs](docs/user/sdk.md) · [中文](docs/user/sdk.zh-CN.md) | Client setup, reads, writes, streaming, and retry guidance. |

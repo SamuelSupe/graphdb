@@ -8,7 +8,7 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, mutations graph.Mutations, report graph.ApplyReport, version int64) error {
+func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, mutations graph.Mutations, report graph.ApplyReport, version int64, rebuildOnGap bool) error {
 	if !canIncrementIndexes(mutations) {
 		return nil
 	}
@@ -17,6 +17,16 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	if catalog.Version >= version {
+		return nil
+	}
+	if catalog.Version != version-1 {
+		if !rebuildOnGap {
+			return fmt.Errorf("index catalog version %d does not match previous graph version %d", catalog.Version, version-1)
+		}
+		_, err := s.RebuildIndexes(ctx, tenantID)
 		return err
 	}
 	return s.refreshParquetIndexesAfterCommit(ctx, tenantID, catalog, catalogMeta, before, after, report, version)

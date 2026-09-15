@@ -7,7 +7,12 @@ import (
 	"hash"
 	"io"
 	"sort"
+	"sync"
 )
+
+var logicalHashWriterPool = sync.Pool{
+	New: func() any { return bufio.NewWriterSize(io.Discard, 64*1024) },
+}
 
 // ContentMD5 preserves the logical snapshot JSON encoding while hashing one
 // item at a time. This avoids keeping a second full logical graph plus its
@@ -35,7 +40,12 @@ func (g *Graph) ContentMD5WithLogicalSize() (string, int64, error) {
 	}
 
 	digest := &countingHash{Hash: md5.New()}
-	buffered := bufio.NewWriterSize(digest, 64*1024)
+	buffered := logicalHashWriterPool.Get().(*bufio.Writer)
+	buffered.Reset(digest)
+	defer func() {
+		buffered.Reset(io.Discard)
+		logicalHashWriterPool.Put(buffered)
+	}()
 	_, _ = io.WriteString(buffered, "{")
 	firstField := true
 	cache := g.logicalHashCache

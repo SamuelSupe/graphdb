@@ -68,29 +68,30 @@ func (s *TenantStore) writeParquetEdgeShards(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) writeParquetEdgeShardsWithOptions(ctx context.Context, tenantID string, shards []EdgeShardData, checkExisting bool) error {
+	jobs := make([]func(context.Context) error, 0, len(shards))
 	for _, group := range edgeShardDataPackGroups(shards) {
+		group := group
 		for i := range group.Shards {
 			group.Shards[i].TenantID = tenantID
 		}
-		pack := mergeEdgeShardPack(group)
-		pack.TenantID = tenantID
-		key := s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, pack.Shard)
-		if len(group.Shards) > 1 {
-			key = s.parquetEdgeShardPackVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
-			if checkExisting {
-				if _, ok, err := s.existingParquetEdgeShardPackMeta(ctx, key, tenantID, group.Shards); err != nil || ok {
-					if err != nil {
+		jobs = append(jobs, func(workCtx context.Context) error {
+			pack := mergeEdgeShardPack(group)
+			pack.TenantID = tenantID
+			key := s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, pack.Shard)
+			if len(group.Shards) > 1 {
+				key = s.parquetEdgeShardPackVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
+				if checkExisting {
+					if _, ok, err := s.existingParquetEdgeShardPackMeta(workCtx, key, tenantID, group.Shards); err != nil || ok {
 						return err
 					}
-					continue
 				}
 			}
-		}
-		if err := s.putParquetEdgeShardObject(ctx, key, tenantID, pack, checkExisting); err != nil {
-			return err
-		}
+			return s.putParquetEdgeShardObject(workCtx, key, tenantID, pack, checkExisting)
+		})
 	}
-	return nil
+	return runIndexWriteJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
+		return jobs[index](workCtx)
+	})
 }
 
 func (s *TenantStore) putParquetEdgeShardObject(ctx context.Context, key string, tenantID string, shard EdgeShardData, checkExisting bool) error {

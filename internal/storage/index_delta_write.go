@@ -166,12 +166,10 @@ func (s *TenantStore) writeChangedParquetSecondaryIndexesFast(ctx context.Contex
 }
 
 func (s *TenantStore) writeIncrementalSecondaryIndexObjects(ctx context.Context, tenantID string, writes []incrementalSecondaryIndexWrite) error {
-	for _, write := range writes {
-		if err := s.putParquetSecondaryIndexObject(ctx, write.Key, tenantID, write.Index, false); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runIndexWriteJobs(ctx, len(writes), func(workCtx context.Context, index int) error {
+		write := writes[index]
+		return s.putParquetSecondaryIndexObject(workCtx, write.Key, tenantID, write.Index, false)
+	})
 }
 
 func (s *TenantStore) secondaryIndexGroupUsesVersion(tenantID string, spec IndexSpec, group secondaryIndexObjectGroup, version int64) bool {

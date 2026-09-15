@@ -123,6 +123,91 @@ func TestRebuildIndexObjectBuildDoesNotBlockCommit(t *testing.T) {
 	}
 }
 
+func TestIncrementalIndexUpdateDoesNotHoldTenantLock(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+
+	blocking := &blockOncePutStore{
+		ObjectStore: base,
+		substring:   "/indexes/parquet/",
+		paused:      make(chan struct{}),
+		resume:      make(chan struct{}),
+	}
+	store.Objects = blocking
+	type commitOutcome struct {
+		result CommitResult
+		err    error
+	}
+	firstDone := make(chan commitOutcome, 1)
+	go func() {
+		result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: "host:app-02", Kind: "host", Fields: graph.Fields{"hostname": "app-02"}}},
+		}, CommitOptions{})
+		firstDone <- commitOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-blocking.paused:
+	case <-time.After(time.Second):
+		close(blocking.resume)
+		t.Fatal("first commit did not reach blocked incremental index write")
+	}
+
+	secondDone := make(chan commitOutcome, 1)
+	go func() {
+		result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: "host:app-03", Kind: "host", Fields: graph.Fields{"hostname": "app-03"}}},
+		}, CommitOptions{})
+		secondDone <- commitOutcome{result: result, err: err}
+	}()
+	lockCtx, cancel := context.WithTimeout(ctx, time.Second)
+	unlock, err := store.lockTenantForeground(lockCtx, "tenant-a")
+	cancel()
+	if err != nil {
+		close(blocking.resume)
+		t.Fatalf("tenant lock remained held by incremental index update: %v", err)
+	}
+	unlock()
+
+	close(blocking.resume)
+	select {
+	case outcome := <-firstDone:
+		if outcome.err != nil {
+			t.Fatalf("first commit: %v", outcome.err)
+		}
+		if outcome.result.Version != 2 {
+			t.Fatalf("first commit version = %d, want 2", outcome.result.Version)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first commit did not finish after index update resumed")
+	}
+	select {
+	case outcome := <-secondDone:
+		if outcome.err != nil {
+			t.Fatalf("second commit: %v", outcome.err)
+		}
+		if outcome.result.Version != 3 {
+			t.Fatalf("second commit version = %d, want 3", outcome.result.Version)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second commit did not finish after ordered index updates resumed")
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("load index catalog: %v", err)
+	}
+	if catalog.Version != 3 {
+		t.Fatalf("index catalog version = %d, want 3", catalog.Version)
+	}
+}
+
 func TestRebuildIndexesDoesNotPublishStaleCatalogAfterLeaseTakeover(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()

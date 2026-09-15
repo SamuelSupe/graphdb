@@ -3,6 +3,31 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.3.4] - 2026-09-15
+
+### Performance
+
+- Local incremental index refresh no longer holds the tenant foreground lock;
+  same-tenant refreshes remain ordered by commit version.
+- Immutable Parquet index objects and sharded snapshot parts use bounded
+  four-worker I/O, while preserving catalog ordering and validation semantics.
+- Graph query streams flush the first item immediately and batch later flushes;
+  logical MD5 encoding reuses its buffered writer.
+
+### Correctness
+
+- Version gaps caused by queued index refreshes rebuild the current catalog;
+  independently stale catalogs still return the existing warning contract.
+- Panics from bounded index or snapshot workers are converted to task errors
+  instead of escaping from worker goroutines.
+
+### Verification boundary
+
+- OrbStack Linux/arm64 core tests, focused storage tests, targeted race tests,
+  and full-repository Go compilation passed on the release candidate.
+- The release still requires the repository's static, compatibility,
+  RustFS/PostgreSQL integration, soak, and rollback gates.
+
 ## [1.3.3] - 2026-09-07
 
 ### Improved

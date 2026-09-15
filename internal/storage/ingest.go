@@ -137,7 +137,16 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err != nil {
 		return IngestResult{}, err
 	}
-	defer unlock()
+	var indexWork *commitIndexUpdate
+	foregroundLockHeld := true
+	defer func() {
+		if foregroundLockHeld {
+			unlock()
+		}
+		if indexWork != nil {
+			s.finishCommitIndexUpdate(ctx, tenantID, indexWork, nil)
+		}
+	}()
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
 			return IngestResult{}, pressure
@@ -184,6 +193,8 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	pendingApplied := result.Applied
 	if pendingApplied > 0 {
 		commitResult, err := s.commitIngestMutationsLocked(ctx, tenantID, request, mutations, durableCommit, started)
+		indexWork = commitResult.indexUpdate
+		commitResult.indexUpdate = nil
 		if err != nil {
 			if errors.Is(err, ErrBackpressure) {
 				return IngestResult{}, err
@@ -199,6 +210,11 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 			result.Suppressed = len(commitResult.Suppressed)
 			result.Conflicts = append(result.Conflicts, ingestConflicts(request, commitResult.Suppressed)...)
 		}
+	}
+	s.enqueueCommitIndexUpdate(tenantID, indexWork)
+	if foregroundLockHeld {
+		unlock()
+		foregroundLockHeld = false
 	}
 	finished := time.Now().UTC()
 	metadataErr := s.saveIngestResultMetadata(ctx, tenantID, request, result, started, finished, saveFailures)

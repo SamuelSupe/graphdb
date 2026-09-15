@@ -99,7 +99,7 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 		}
 		loaded.Meta = meta
 		loaded.Graph = nextGraph
-		if err := s.updateIndexesAfterCommit(ctx, tenantID, previousGraph, nextGraph, item.Commit.Mutations, applyReport, item.Commit.Version); err != nil {
+		if err := s.updateIndexesAfterCommit(ctx, tenantID, previousGraph, nextGraph, item.Commit.Mutations, applyReport, item.Commit.Version, false); err != nil {
 			report.IndexWarnings = append(report.IndexWarnings, "incremental index update failed for "+item.Key+": "+err.Error())
 		}
 		report.Recovered++

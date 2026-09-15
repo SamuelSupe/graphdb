@@ -166,12 +166,18 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	if err := s.checkAcceptedWALBackpressure(ctx, tenantID, false); err != nil {
 		return nil, err
 	}
+	var foregroundUnlock func()
 	if !s.coordinated() {
 		unlock, err := s.lockTenantForeground(ctx, tenantID)
 		if err != nil {
 			return nil, err
 		}
-		defer unlock()
+		foregroundUnlock = unlock
+		defer func() {
+			if foregroundUnlock != nil {
+				foregroundUnlock()
+			}
+		}()
 		if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 			return nil, err
 		}
@@ -331,7 +337,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		preparedSegment preparedCommitSegment
 		logicalBytes    int64
 		fallback        bool
-		indexUpdateDone <-chan error
+		indexWork       *commitIndexUpdate
 	)
 	if len(mutationCandidates) > 0 || coordinatedBatchHasReservations(candidates) {
 		loaded, err = s.loadForWriteLocked(ctx, tenantID)
@@ -389,7 +395,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		}
 	}
 	if len(commitItems) > 0 {
-		indexUpdateDone, err = s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, preparedSegment, commitItems, candidates, logicalBytes)
+		indexWork, err = s.publishIngestBatch(ctx, tenantID, loaded, finalGraph, finalManifest, preparedSegment, commitItems, candidates, logicalBytes)
 		if err != nil {
 			return results, err
 		}
@@ -400,6 +406,10 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		if err := s.completeCoordinatedIngestBatch(ctx, tenantID, loaded, candidates); err != nil {
 			return results, err
 		}
+	}
+	if foregroundUnlock != nil {
+		foregroundUnlock()
+		foregroundUnlock = nil
 	}
 	if stopPublishSlot != nil {
 		releasePublishSlot := stopPublishSlot
@@ -427,8 +437,8 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		results[candidate.index] = candidate.result
 	}
 	metadataErr := s.saveIngestBatchResultMetadataWithFailures(metadataCtx, tenantID, candidates, saveFailures)
-	if indexUpdateDone != nil {
-		<-indexUpdateDone
+	if indexWork != nil {
+		s.finishCommitIndexUpdate(ctx, tenantID, indexWork, nil)
 	}
 	endStorageSpan(metadataSpan, metadataErr)
 	if metadataErr != nil {
@@ -1130,7 +1140,7 @@ func (s *TenantStore) publishIngestBatch(
 	newItems []commitSegmentItem,
 	candidates []*ingestBatchCandidate,
 	logicalBytes int64,
-) (indexUpdateDone <-chan error, err error) {
+) (indexWork *commitIndexUpdate, err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.ingest.publish",
 		tenantTraceAttr(tenantID),
 		attribute.Int("graphdb.ingest.publish.logical_commits", len(newItems)),
@@ -1188,14 +1198,15 @@ func (s *TenantStore) publishIngestBatch(
 		aggregateReport.AffectedEntityIDs = append(aggregateReport.AffectedEntityIDs, candidate.report.AffectedEntityIDs...)
 		aggregateReport.AffectedEdgeIDs = append(aggregateReport.AffectedEdgeIDs, candidate.report.AffectedEdgeIDs...)
 	}
-	done := make(chan error, 1)
-	go func() {
-		done <- s.updateIndexesAfterCommit(
-			ctx, tenantID, loaded.Graph, finalGraph,
-			aggregateMutations, aggregateReport, manifest.Version,
-		)
-	}()
-	return done, nil
+	indexWork = &commitIndexUpdate{
+		before:    loaded.Graph,
+		after:     finalGraph,
+		mutations: aggregateMutations,
+		report:    aggregateReport,
+		version:   manifest.Version,
+	}
+	s.enqueueCommitIndexUpdate(tenantID, indexWork)
+	return indexWork, nil
 }
 
 func (s *TenantStore) ingestBatchSegmentItems(

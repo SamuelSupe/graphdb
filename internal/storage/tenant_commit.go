@@ -11,6 +11,69 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type commitIndexUpdate struct {
+	before    *graph.Graph
+	after     *graph.Graph
+	mutations graph.Mutations
+	report    graph.ApplyReport
+	version   int64
+	waitFor   <-chan struct{}
+	done      chan struct{}
+}
+
+func (s *TenantStore) enqueueCommitIndexUpdate(tenantID string, work *commitIndexUpdate) {
+	if work == nil {
+		return
+	}
+	work.done = make(chan struct{})
+	s.indexUpdateMu.Lock()
+	work.waitFor = s.indexUpdateTails[tenantID]
+	s.indexUpdateTails[tenantID] = work.done
+	s.indexUpdateMu.Unlock()
+}
+
+func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) (indexErr error) {
+	if work == nil {
+		return nil
+	}
+	if work.waitFor != nil {
+		<-work.waitFor
+	}
+	defer func() {
+		close(work.done)
+		s.indexUpdateMu.Lock()
+		if s.indexUpdateTails[tenantID] == work.done {
+			delete(s.indexUpdateTails, tenantID)
+		}
+		s.indexUpdateMu.Unlock()
+	}()
+	indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
+		tenantTraceAttr(tenantID),
+		attribute.Int64("graphdb.commit.version", work.version),
+		attribute.Int("graphdb.commit.affected_entities", len(work.report.AffectedEntityIDs)),
+		attribute.Bool("graphdb.commit.outside_tenant_lock", true),
+	)
+	indexErr = s.updateIndexesAfterCommit(
+		indexCtx,
+		tenantID,
+		work.before,
+		work.after,
+		work.mutations,
+		work.report,
+		work.version,
+		work.waitFor != nil,
+	)
+	endStorageSpan(indexSpan, indexErr)
+	return indexErr
+}
+
+func (s *TenantStore) finishCommitIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate, result *CommitResult) {
+	indexErr := s.runCommitIndexUpdate(ctx, tenantID, work)
+	if indexErr != nil && result != nil {
+		result.IndexWarnings = append(result.IndexWarnings, "incremental index update failed: "+indexErr.Error())
+	}
+}
+
 func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions) (result CommitResult, err error) {
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.commit", append([]attribute.KeyValue{
 		tenantTraceAttr(tenantID),
@@ -105,13 +168,21 @@ func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID strin
 	}
 	criticalCtx, criticalSpan := startStorageSpan(ctx, "graphdb.storage.commit.critical_section", tenantTraceAttr(tenantID))
 	criticalStarted := time.Now()
-	defer func() {
+	criticalReleased := false
+	releaseCritical := func() {
+		if criticalReleased {
+			return
+		}
+		criticalReleased = true
 		unlock()
 		criticalSpan.SetAttributes(
 			attribute.Int64("graphdb.commit.lock_held_ms", time.Since(criticalStarted).Milliseconds()),
 			attribute.Int64("graphdb.commit.version", result.Version),
 		)
 		endStorageSpan(criticalSpan, err)
+	}
+	defer func() {
+		releaseCritical()
 	}()
 
 	leaseCtx, leaseSpan := startStorageSpan(criticalCtx, "graphdb.storage.commit.acquire_writer_lease", tenantTraceAttr(tenantID))
@@ -164,6 +235,11 @@ func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID strin
 	if err != nil {
 		return CommitResult{}, reservation, err
 	}
+	indexWork := result.indexUpdate
+	result.indexUpdate = nil
+	s.enqueueCommitIndexUpdate(tenantID, indexWork)
+	releaseCritical()
+	s.finishCommitIndexUpdate(ctx, tenantID, indexWork, &result)
 	return result, reservation, nil
 }
 
@@ -555,18 +631,14 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	if schemaErr := s.advanceRelationSchemaValidation(ctx, tenantID, relationSchemas, relationSchemaMeta, version); schemaErr != nil {
 		result.IndexWarnings = append(result.IndexWarnings, "relation schema validation checkpoint update failed: "+schemaErr.Error())
 	}
-	if s.coordinated() {
-		return result, nil
-	}
-	indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
-		tenantTraceAttr(tenantID),
-		attribute.Int64("graphdb.commit.version", version),
-		attribute.Int("graphdb.commit.affected_entities", len(report.AffectedEntityIDs)),
-	)
-	indexErr := s.updateIndexesAfterCommit(indexCtx, tenantID, loaded.Graph, nextGraph, mutations, report, version)
-	endStorageSpan(indexSpan, indexErr)
-	if indexErr != nil {
-		result.IndexWarnings = append(result.IndexWarnings, "incremental index update failed: "+indexErr.Error())
+	if !s.coordinated() {
+		result.indexUpdate = &commitIndexUpdate{
+			before:    loaded.Graph,
+			after:     nextGraph,
+			mutations: mutations,
+			report:    report,
+			version:   version,
+		}
 	}
 	return result, nil
 }

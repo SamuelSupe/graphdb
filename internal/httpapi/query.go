@@ -30,6 +30,8 @@ type GQLQueryRequest struct {
 
 const lazyUnavailableBackoff = 5 * time.Second
 
+const streamFlushEvery = 32
+
 func (s *Server) query(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantFromRequest(w, r)
 	if !ok {
@@ -323,7 +325,13 @@ func encodeStreamItem(ctx context.Context, encoder *json.Encoder, item any, flus
 
 func streamFlush(w http.ResponseWriter) func() error {
 	controller := http.NewResponseController(w)
+	pending := 0
 	return func() error {
+		pending++
+		if pending != 1 && pending < streamFlushEvery {
+			return nil
+		}
+		pending = 0
 		if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return err
 		}
