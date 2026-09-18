@@ -285,12 +285,14 @@ func TestLocalRestoreWhileRemoteStagingRemainsOpen(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() { store.taskWorkers.Wait(); close(done) }()
+	// Durable staging can take several seconds under race instrumentation.
+	// Keeping the download open still detects a retained directory IO lock.
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		closeStaging()
 		<-done
-		t.Fatal("restore waited for an unrelated download to close")
+		t.Fatal("restore did not finish while an unrelated download remained open")
 	}
 	restore, err = store.GetTask(ctx, "target", restore.ID)
 	if err != nil || restore.Status != TaskStatusSucceeded {
