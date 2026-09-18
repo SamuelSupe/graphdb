@@ -14,8 +14,9 @@ func schemaMutations() graph.Mutations {
 			{
 				Name: "host",
 				Fields: map[string]graph.FieldSpec{
-					"hostname": {Type: "string", Required: true, Unique: true, Indexed: true},
-					"region":   {Type: "string", Indexed: true},
+					"hostname":          {Type: "string", Required: true, Unique: true, Indexed: true},
+					"region":            {Type: "string", Indexed: true},
+					"loadtest_revision": {Type: "string"},
 				},
 			},
 			{Name: "service", Fields: map[string]graph.FieldSpec{"name": {Type: "string", Required: true, Unique: true, Indexed: true}}},

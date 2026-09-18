@@ -17,14 +17,13 @@ type compiledScanCatalog struct {
 }
 
 func (s *TenantStore) compiledScanCatalog(tenantID string, catalog IndexCatalog, expectedHash string) (*compiledScanCatalog, error) {
-	if expectedHash != "" {
-		if compiled, ok := s.getCompiledScanCatalog(compiledScanCatalogKey(tenantID, catalog.Version, expectedHash)); ok {
-			return compiled, nil
+	contentHash := catalog.contentHash
+	if contentHash == "" {
+		var err error
+		contentHash, err = indexCatalogContentHash(catalog)
+		if err != nil {
+			return nil, err
 		}
-	}
-	contentHash, err := indexCatalogContentHash(catalog)
-	if err != nil {
-		return nil, err
 	}
 	if expectedHash != "" && contentHash != expectedHash {
 		return nil, fmt.Errorf("cursor index catalog content hash mismatch")

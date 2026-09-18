@@ -148,6 +148,16 @@ func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (Inde
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
+	ctx, releaseView, err := s.ReadViewContext(ctx, tenantID)
+	if err != nil {
+		return IndexCatalog{}, err
+	}
+	defer releaseView()
+	return s.rebuildIndexesWithView(ctx, tenantID)
+}
+
+// The caller retains a shared or exclusive view until catalog publication.
+func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID string) (IndexCatalog, error) {
 	if s.coordinated() {
 		operationCtx, stop, err := s.startCoordinatorOperationLease(
 			ctx, tenantID, TaskTypeIndexRebuild,

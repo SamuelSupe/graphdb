@@ -28,7 +28,20 @@ func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (Manifes
 	}
 	var manifest Manifest
 	key := s.manifestKey(tenantID)
-	data, meta, err := s.Objects.GetWithMeta(ctx, key)
+	files := s.localFileStore()
+	objects := s.Objects
+	var generation uint64
+	if files != nil {
+		cached, meta, current, ok, err := files.cachedManifest(ctx, key)
+		if err != nil || ok {
+			return cached, meta, err
+		}
+		generation = current
+		// Mutable heads must bypass byte caches and in-flight read sharing:
+		// either can still contain a read that began before publication.
+		objects = files
+	}
+	data, meta, err := objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return Manifest{TenantID: tenantID}, ObjectMeta{Key: key}, nil
 	}
@@ -44,6 +57,9 @@ func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (Manifes
 	}
 	if manifest.TenantID != tenantID {
 		return Manifest{}, ObjectMeta{}, fmt.Errorf("manifest tenant mismatch: key tenant %q contains tenant %q", tenantID, manifest.TenantID)
+	}
+	if files != nil {
+		files.cacheManifest(key, manifest, meta, generation, false)
 	}
 	return manifest, meta, nil
 }
@@ -102,6 +118,9 @@ func (s *TenantStore) putManifestMetaUnchecked(ctx context.Context, tenantID str
 	if errors.Is(err, ErrConflict) {
 		s.recordManifestCASConflict(tenantID)
 		return ObjectMeta{}, fmt.Errorf("%w: manifest for tenant %q changed while publishing", ErrConflict, tenantID)
+	}
+	if files := s.localFileStore(); err == nil && files != nil {
+		files.cacheManifest(s.manifestKey(tenantID), manifest, next, 0, true)
 	}
 	return next, err
 }

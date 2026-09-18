@@ -103,6 +103,9 @@ func (s *TenantStore) ConfigureIndexObjectCache(config IndexObjectCacheConfig) {
 	}
 	s.indexCache = cache
 	s.entityPageCache = newConfiguredEntityPageCache(config.MaxEntries)
+	if config.MaxBytes > 0 {
+		s.entityPageCache.maxBytes = min(s.entityPageCache.maxBytes, config.MaxBytes/2)
+	}
 	s.edgeLookupCache = configuredEdgeLookupCache(
 		config.MaxEntries, config.MaxBytes,
 	)
@@ -163,10 +166,16 @@ func (s *TenantStore) recordIndexCache(tenantID string, kind string, status stri
 }
 
 func (s *TenantStore) putCachedIndexObject(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string, data []byte, meta ObjectMeta) {
+	if len(data) == 0 {
+		return
+	}
 	s.putCachedIndexObjectState(kind, tenantID, version, objectKey, contentHash, schemaHash, data, meta, false)
 }
 
 func (s *TenantStore) putVerifiedCachedIndexObject(kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string, data []byte, meta ObjectMeta) {
+	if len(data) == 0 {
+		return
+	}
 	s.putCachedIndexObjectState(kind, tenantID, version, objectKey, contentHash, schemaHash, data, meta, true)
 }
 
@@ -196,6 +205,9 @@ func (s *TenantStore) dropCachedIndexObject(kind string, tenantID string, versio
 }
 
 func (s *TenantStore) prefetchIndexObject(ctx context.Context, kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
+	if exclusiveFileStore(s.Objects) != nil {
+		return
+	}
 	if s.indexCache == nil || s.indexCache.max == 0 ||
 		contentHash == "" || schemaHash == "" || objectKey == "" {
 		return

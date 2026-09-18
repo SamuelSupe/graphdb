@@ -168,6 +168,12 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	}
 	var foregroundUnlock func()
 	if !s.coordinated() {
+		viewCtx, releaseView, err := s.ReadViewContext(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		defer releaseView()
+		ctx = viewCtx
 		unlock, err := s.lockTenantForeground(ctx, tenantID)
 		if err != nil {
 			return nil, err
@@ -178,6 +184,9 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 				foregroundUnlock()
 			}
 		}()
+		if err := s.validateLocalIngestGeneration(ctx, tenantID, acceptedGeneration); err != nil {
+			return nil, err
+		}
 		if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 			return nil, err
 		}
@@ -228,6 +237,16 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 					markIngestCandidateFailure(candidate, err)
 					candidate.metadataOnly = true
 					candidate.skipMetadata = true
+					if entry.Prepared != nil {
+						if entry.Prepared.Commit != nil || entry.Prepared.Result.BatchID != request.BatchID ||
+							entry.Prepared.Result.Failed == 0 || entry.Prepared.Result.Applied != 0 {
+							return nil, fmt.Errorf("%w: prepared ingest outcome conflicts with saved identity", ErrIngestRepairRequired)
+						}
+						// The conflict is already prepared; only its attempt-failure
+						// marker or terminal WAL record may still need persistence.
+						candidate.preparedPlan = entry.Prepared
+						candidate.result = entry.Prepared.Result
+					}
 					candidates = append(candidates, candidate)
 					continue
 				}
@@ -1199,11 +1218,17 @@ func (s *TenantStore) publishIngestBatch(
 		aggregateReport.AffectedEdgeIDs = append(aggregateReport.AffectedEdgeIDs, candidate.report.AffectedEdgeIDs...)
 	}
 	indexWork = &commitIndexUpdate{
-		before:    loaded.Graph,
-		after:     finalGraph,
-		mutations: aggregateMutations,
-		report:    aggregateReport,
-		version:   manifest.Version,
+		baseVersion: loaded.Manifest.Version,
+		before:      loaded.Graph,
+		after:       finalGraph,
+		mutations:   aggregateMutations,
+		report:      aggregateReport,
+		version:     manifest.Version,
+	}
+	if s.localFileStore() != nil && s.enqueueLocalIngestIndexUpdate(ctx, tenantID, indexWork) {
+		// The WAL and manifest are already durable. Index failures cannot undo
+		// acceptance or publication; reads retain their version-checked fallback.
+		return nil, nil
 	}
 	s.enqueueCommitIndexUpdate(tenantID, indexWork)
 	return indexWork, nil

@@ -351,6 +351,8 @@ func (s *TenantStore) checkEdgeShardObjects(ctx context.Context, tenantID string
 		if shard.Version > catalog.Version {
 			health.Issues = append(health.Issues, "edge shard "+shardSpec.RelationType+"/"+shardSpec.Shard+" version is ahead of catalog")
 		}
+		shard.Edges = normalizeGraphEdges(shard.Edges)
+		shard.hashCanonical = true
 		if shardSpec.ContentHash == "" {
 			health.Issues = append(health.Issues, "edge shard "+shardSpec.RelationType+"/"+shardSpec.Shard+" content hash missing")
 		} else if edgeShardContentHash(shard) != shardSpec.ContentHash {
@@ -362,7 +364,7 @@ func (s *TenantStore) checkEdgeShardObjects(ctx context.Context, tenantID string
 		if len(shard.Edges) != shardSpec.EdgeCount {
 			health.Issues = append(health.Issues, "edge shard "+shardSpec.RelationType+"/"+shardSpec.Shard+" count mismatch")
 		}
-		if !reflect.DeepEqual(normalizeGraphEdges(shard.Edges), normalizeGraphEdges(expectedShardEdges(g, shardSpec.RelationType, shardSpec.Shard))) {
+		if !reflect.DeepEqual(shard.Edges, normalizeGraphEdges(expectedShardEdges(g, shardSpec.RelationType, shardSpec.Shard))) {
 			health.Issues = append(health.Issues, "edge shard "+shardSpec.RelationType+"/"+shardSpec.Shard+" content mismatch")
 		}
 	}
@@ -441,9 +443,15 @@ func (s *TenantStore) checkEntityPageObjects(ctx context.Context, tenantID strin
 		if page.Version > catalog.Version {
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" version is ahead of catalog")
 		}
+		// Hashing and graph comparison use JSON normalization. Keep the original
+		// decoded entities for the stricter entity-record comparison below.
+		normalized := page
+		normalized.Entities = normalizeGraphEntities(page.Entities)
+		normalized.hashCanonical = true
+		pageHash := entityPageContentHash(normalized)
 		if pageSpec.ContentHash == "" {
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" content hash missing")
-		} else if entityPageContentHash(page) != pageSpec.ContentHash {
+		} else if pageHash != pageSpec.ContentHash {
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" content hash mismatch")
 		}
 		if page.Shard != pageSpec.Shard {
@@ -452,11 +460,10 @@ func (s *TenantStore) checkEntityPageObjects(ctx context.Context, tenantID strin
 		if len(page.Entities) != pageSpec.EntityCount {
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" count mismatch")
 		}
-		if !reflect.DeepEqual(normalizeGraphEntities(page.Entities), normalizeGraphEntities(expectedPageEntities(g, pageSpec.Shard))) {
+		if !reflect.DeepEqual(normalized.Entities, normalizeGraphEntities(expectedPageEntities(g, pageSpec.Shard))) {
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" content mismatch")
 		}
 		checkRecords = true
-		pageHash := entityPageContentHash(page)
 		for _, entity := range page.Entities {
 			expectedRecords[entity.ID] = entityRecordExpectation{Entity: entity, Page: page.Shard, PageHash: pageHash, PageETag: pageETag}
 		}

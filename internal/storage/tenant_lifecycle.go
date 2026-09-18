@@ -66,6 +66,21 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantInfo{}, err
 	}
+	if options.Config != nil {
+		if err := validateTenantConfig(*options.Config); err != nil {
+			return TenantInfo{}, err
+		}
+	}
+	if options.SourcePolicy != nil {
+		if _, err := graph.NormalizeSourcePolicy(*options.SourcePolicy); err != nil {
+			return TenantInfo{}, err
+		}
+	}
+	if s.localFileStore() != nil {
+		return s.publishLocalTenantLifecycle(ctx, tenantID, false, func(stage *TenantStore) (TenantInfo, error) {
+			return stage.CreateTenant(ctx, tenantID, options)
+		})
+	}
 	if s.coordinated() {
 		return s.createCoordinatedTenant(ctx, tenantID, options)
 	}
@@ -221,6 +236,20 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 }
 
 func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
+	resumeIngest, err := s.pauseLocalIngest(ctx, tenantID)
+	if err != nil {
+		return TenantPurgeReport{}, err
+	}
+	defer resumeIngest()
+	releaseViews, viewErr := s.lockReadViews(ctx, tenantID, true)
+	if viewErr != nil {
+		return TenantPurgeReport{}, viewErr
+	}
+	defer releaseViews()
+	return s.purgeTenantWithViewsLocked(ctx, tenantID, force)
+}
+
+func (s *TenantStore) purgeTenantWithViewsLocked(ctx context.Context, tenantID string, force bool) (TenantPurgeReport, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantPurgeReport{}, err
 	}
@@ -246,7 +275,7 @@ func (s *TenantStore) PurgeTenant(ctx context.Context, tenantID string, force bo
 				return TenantPurgeReport{}, err
 			}
 		}
-	} else if s.ingestBarrier != nil {
+	} else if s.localFileStore() == nil && s.ingestBarrier != nil {
 		if err := s.ingestBarrier(ctx, tenantID); err != nil {
 			return TenantPurgeReport{}, err
 		}
@@ -326,6 +355,9 @@ func (s *TenantStore) purgeTenantLockedAtGeneration(
 	}
 	if alreadyComplete {
 		return TenantPurgeReport{TenantID: tenantID}, nil
+	}
+	if err := s.advanceLocalIngestGeneration(ctx, tenantID); err != nil {
+		return TenantPurgeReport{}, err
 	}
 	report := TenantPurgeReport{TenantID: tenantID}
 	leaseKey := s.writerLeaseKey(tenantID)
@@ -423,6 +455,16 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 	if err != nil {
 		return TenantInfo{}, err
 	}
+	if s.localFileStore() != nil {
+		return s.publishLocalTenantLifecycle(ctx, targetTenantID, true, func(stage *TenantStore) (TenantInfo, error) {
+			return stage.cloneTenantRecord(ctx, sourceTenantID, sourceInfo, sourceRecord, dataMD5, options)
+		})
+	}
+	return s.cloneTenantRecord(ctx, sourceTenantID, sourceInfo, sourceRecord, dataMD5, options)
+}
+
+func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID string, sourceInfo TenantInfo, sourceRecord TenantBackupRecord, dataMD5 string, options TenantCloneOptions) (TenantInfo, error) {
+	targetTenantID := options.TargetTenantID
 	var activationContext *WriteContextSnapshot
 	if s.coordinated() {
 		writeContext, err := tenantWriteContextFromBackupRecord(

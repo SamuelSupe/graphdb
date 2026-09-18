@@ -128,8 +128,8 @@ for the complete structure.
 
 ## 5. Read-after-write consistency
 
-The `all` mode normally reads its own writes. In a writer/reader deployment,
-pass the write response version to a reader:
+The single-process `all` mode reads published writes. To require an explicit
+version, pass the write response version to the next request:
 
 ```sh
 curl -fsS "$BASE/v1/entities/person:alice?min_version=1" \

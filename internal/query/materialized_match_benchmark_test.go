@@ -35,6 +35,91 @@ func BenchmarkMaterializedKindPage(b *testing.B) {
 	}
 }
 
+func BenchmarkMaterializedFieldIndexStringSort10K(b *testing.B) {
+	g := graph.New()
+	entities := make([]graph.Entity, 10_000)
+	for i := range entities {
+		entities[i] = graph.Entity{
+			ID: fmt.Sprintf("host:%05d", i), Kind: "host",
+			Fields: graph.Fields{"hostname": fmt.Sprintf("host-%05d", len(entities)-i), "region": fmt.Sprintf("region-%d", i%8)},
+		}
+	}
+	if err := g.ApplyCommit(graph.Commit{ID: "seed", Version: 1, Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{
+			"hostname": {Type: "string", Indexed: true}, "region": {Type: "string", Indexed: true},
+		}}},
+		UpsertEntities: entities,
+	}}); err != nil {
+		b.Fatal(err)
+	}
+	request := Request{
+		Op: "match", Kind: "host", Where: []Filter{{Field: "region", Op: "eq", Value: "region-0"}},
+		Sort: []SortSpec{{Field: "hostname"}}, Project: []string{"id", "hostname", "region"}, Limit: 20,
+	}
+	if _, err := Execute(g, request); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		response, err := Execute(g, request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(response.Results) != 20 || response.Results[0].Entity.ID != "host:09992" {
+			b.Fatalf("unexpected sorted page: %+v", response)
+		}
+	}
+}
+
+func BenchmarkMaterializedProjectedPage(b *testing.B) {
+	g := graph.New()
+	entities := make([]graph.Entity, 1_000)
+	for i := range entities {
+		fields := graph.Fields{"region": "all", "keep": map[string]any{"values": []any{"selected", i}}}
+		for field := 0; field < 64; field++ {
+			fields[fmt.Sprintf("unused-%02d", field)] = map[string]any{"values": []any{"unselected", i, field}}
+		}
+		entities[i] = graph.Entity{ID: fmt.Sprintf("host:%05d", i), Kind: "host", Fields: fields}
+	}
+	if err := g.ApplyCommit(graph.Commit{ID: "seed", Version: 1, Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{
+			"region": {Type: "string", Indexed: true},
+		}}},
+		UpsertEntities: entities,
+	}}); err != nil {
+		b.Fatal(err)
+	}
+	for _, offset := range []int{0, 500} {
+		b.Run(fmt.Sprintf("offset-%d", offset), func(b *testing.B) {
+			request := Request{
+				Op: "match", Kind: "host", Limit: 20, Where: []Filter{{Field: "region", Op: "eq", Value: "all"}},
+				Sort: []SortSpec{{Field: "id"}}, Project: []string{"id", "keep"},
+			}
+			if offset > 0 {
+				firstRequest := request
+				firstRequest.Limit = offset
+				first, err := Execute(g, firstRequest)
+				if err != nil {
+					b.Fatal(err)
+				}
+				request.Cursor = first.NextCursor
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				response, err := Execute(g, request)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(response.Results) != 20 || response.Results[0].Entity.ID != fmt.Sprintf("host:%05d", offset) {
+					b.Fatal("unexpected projected page")
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkMaterializedFieldIndexRangePage(b *testing.B) {
 	const entityCount = 50000
 	g := graph.New()

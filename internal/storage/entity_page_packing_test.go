@@ -2,10 +2,72 @@ package storage
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func TestIncrementalPackedPagesRemainReadableAndBackedUp(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.WriteEntityRecords = false
+	store.EntityPagePackMaxBytes = 4096
+	entities := []graph.Entity{
+		{ID: "host:a", Kind: "host", Fields: graph.Fields{"payload": "small"}},
+		{ID: "host:b", Kind: "host", Fields: graph.Fields{"payload": strings.Repeat("b", 8192)}},
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range entities {
+		entities[i].Fields["revision"] = "updated"
+	}
+	result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, CommitOptions{})
+	if err != nil || len(result.IndexWarnings) != 0 {
+		t.Fatalf("incremental commit: %v, warnings: %v", err, result.IndexWarnings)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range catalog.EntityPages {
+		for _, object := range page.Objects {
+			if _, err := store.Objects.Get(ctx, object.Key); err != nil {
+				t.Fatalf("published page %s is unreadable: %v", object.Key, err)
+			}
+		}
+	}
+	backup, err := store.StartTask(ctx, "tenant-a", TaskTypeTenantBackup, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup = waitForTask(t, ctx, store, "tenant-a", backup.ID)
+	if backup.Status != TaskStatusSucceeded {
+		t.Fatalf("backup failed: %#v", backup)
+	}
+	restore, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backup.ResultKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore = waitForTask(t, ctx, store, "tenant-b", restore.ID)
+	if restore.Status != TaskStatusSucceeded {
+		t.Fatalf("restore failed: %#v", restore)
+	}
+	g, _, err := store.Load(ctx, "tenant-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range entities {
+		got, ok := g.GetEntity(want.ID)
+		if !ok || got.Fields["payload"] != want.Fields["payload"] || got.Fields["revision"] != "updated" {
+			t.Fatalf("restored entity %s differs", want.ID)
+		}
+	}
+}
 
 func TestEntityRecordModeUsesLogicalEntityPageObjects(t *testing.T) {
 	pages := []EntityPageSpec{

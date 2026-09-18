@@ -261,7 +261,7 @@ func confirmCursorDirectedNeighbor(
 		return invalidCursorAfter(cursor)
 	}
 	if !pathAllowsKind(entity.Kind, request.Path) ||
-		!requestEntityMatches(request, entity) ||
+		!requestEntityMatches(&request, &entity) ||
 		!requestEdgeMatches(request, edge) {
 		return invalidCursorAfter(cursor)
 	}

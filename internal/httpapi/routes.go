@@ -44,6 +44,7 @@ type routeSpec struct {
 	pattern               string
 	handler               http.HandlerFunc
 	mutation              bool
+	runtimeOnly           bool
 	bypassTenantLifecycle bool
 }
 
@@ -52,6 +53,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
 		handler := http.Handler(route.handler)
 		if !route.bypassTenantLifecycle {
 			handler = s.tenantLifecycleGate(route.mutation, handler)
+		}
+		if !route.mutation && !route.runtimeOnly {
+			handler = s.pinLocalReadView(handler)
 		}
 		mux.Handle(route.pattern, handler)
 	}
@@ -111,8 +115,10 @@ func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	s.registerRoutes(mux,
 		routeSpec{pattern: "GET /metrics", handler: s.metrics},
-		routeSpec{pattern: "/v1/tenants", handler: s.tenantLifecycle, bypassTenantLifecycle: true},
-		routeSpec{pattern: "/v1/tenants/", handler: s.tenantLifecycle, bypassTenantLifecycle: true},
+		routeSpec{pattern: "GET /v1/tenants", handler: s.tenantLifecycle, bypassTenantLifecycle: true},
+		routeSpec{pattern: "GET /v1/tenants/", handler: s.tenantLifecycle, bypassTenantLifecycle: true},
+		routeSpec{pattern: "/v1/tenants", handler: s.tenantLifecycle, mutation: true, bypassTenantLifecycle: true},
+		routeSpec{pattern: "/v1/tenants/", handler: s.tenantLifecycle, mutation: true, bypassTenantLifecycle: true},
 		routeSpec{pattern: "GET /v1/tenant-usage", handler: s.tenantUsage},
 		routeSpec{pattern: "GET /v1/ingest/collectors/", handler: s.collectorStatus},
 		routeSpec{pattern: "GET /v1/ingest/deadletters/", handler: s.listDeadLetters},
@@ -121,8 +127,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 		routeSpec{pattern: "DELETE /v1/relation-schemas/", handler: s.relationSchema, mutation: true},
 		routeSpec{pattern: "PUT /v1/source-policy", handler: s.putSourcePolicy, mutation: true},
 		routeSpec{pattern: "PUT /v1/tenant-config", handler: s.putTenantConfig, mutation: true},
-		routeSpec{pattern: "GET /v1/queries/running", handler: s.listRunningQueries},
-		routeSpec{pattern: "DELETE /v1/queries/running/", handler: s.killRunningQuery},
+		routeSpec{pattern: "GET /v1/queries/running", handler: s.listRunningQueries, runtimeOnly: true, bypassTenantLifecycle: true},
+		routeSpec{pattern: "DELETE /v1/queries/running/", handler: s.killRunningQuery, runtimeOnly: true, bypassTenantLifecycle: true},
 		routeSpec{pattern: "POST /v1/query/templates", handler: s.saveQueryTemplate, mutation: true},
 		routeSpec{pattern: "GET /v1/tasks", handler: s.listTasks},
 		routeSpec{pattern: "POST /v1/tasks", handler: s.startTask, mutation: true},
@@ -156,4 +162,20 @@ func registerPprofRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("POST /debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
+}
+
+func (s *Server) pinLocalReadView(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.Store == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ctx, release, err := s.Store.ReadViewContext(r.Context(), r.Header.Get("X-Tenant-ID"))
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

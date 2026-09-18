@@ -23,8 +23,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	}
 	g := loaded.Graph
 	current := loaded.Manifest
-	snapshot := g.Snapshot()
-	version := snapshot.Version
+	version := g.Version
 	if manifestCompacted(current, version) {
 		_ = s.updateTaskActionProgress(ctx, task, "compact_done", total, total, taskActionUpdate{
 			ID:     "publish_manifest",
@@ -37,6 +36,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		}, map[string]any{"version": current.Version, "snapshot_catalog_key": current.SnapshotCatalogKey})
 		return taskResult(current), "", nil
 	}
+	snapshot := g.Snapshot()
 	dataMD5 := loaded.DataMD5
 	if dataMD5 == "" {
 		dataMD5, err = g.ContentMD5()

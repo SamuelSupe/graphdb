@@ -49,6 +49,22 @@ func TestIndexCatalogAtVersionRevalidatesSameVersion(t *testing.T) {
 	if err != nil || len(first.Indexes) != 0 {
 		t.Fatalf("first catalog = %#v, err %v", first, err)
 	}
+	rawCursor := encodeScanCursor(scanCursor{Version: 1, After: "00\x00host:a", Query: "query"})
+	oldBinding, err := store.GetScanCursorBinding(ctx, "tenant-a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCursor, err := oldBinding.Pin(rawCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCursor, err := PinScanCursor(rawCursor, first)
+	if err != nil || oldCursor != wantCursor {
+		t.Fatalf("binding cursor differs: %v", err)
+	}
+	if _, err := store.GetScanCursorBinding(ctx, "tenant-a", 2); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("mismatched graph version: %v", err)
+	}
 	putIndexCatalogCacheFixture(t, ctx, store, base, IndexCatalog{
 		TenantID: "tenant-a",
 		Version:  1,
@@ -68,6 +84,23 @@ func TestIndexCatalogAtVersionRevalidatesSameVersion(t *testing.T) {
 	}
 	if reads := objects.countContains("/indexes/catalog.parquet"); reads != 2 {
 		t.Fatalf("catalog reads = %d, want one initial and one refresh", reads)
+	}
+	newBinding, err := store.GetScanCursorBinding(ctx, "tenant-a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newCursor, err := newBinding.Pin(rawCursor)
+	if err != nil || newCursor == oldCursor {
+		t.Fatalf("same-version rebuild retained old binding: %v", err)
+	}
+	stillOld, err := oldBinding.Pin(rawCursor)
+	if err != nil || stillOld != oldCursor {
+		t.Fatalf("old read binding changed: %v", err)
+	}
+	refreshed.Indexes[0].Field = "modified-by-caller"
+	modified, err := PinScanCursor(rawCursor, refreshed)
+	if err != nil || modified == newCursor {
+		t.Fatalf("public catalog mutation reused verified hash: %v", err)
 	}
 }
 

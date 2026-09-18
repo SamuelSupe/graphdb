@@ -228,28 +228,57 @@ func marshalParquetEntityPage(ctx context.Context, page EntityPageData) ([]byte,
 	schema := parquetEntityPageArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
+	pageUpdatedAt := formatParquetTime(page.UpdatedAt)
 
-	for _, entity := range page.Entities {
+	// Physical shard locality lets min/max statistics skip unrelated row groups.
+	// Keep page.Entities in its canonical order for logical content hashes.
+	type rowPosition struct {
+		index int
+		shard string
+	}
+	var order []rowPosition
+	if isIndexPackID(page.Shard) {
+		order = make([]rowPosition, len(page.Entities))
+		for i, entity := range page.Entities {
+			order[i] = rowPosition{index: i, shard: entityShardID(entity.ID)}
+		}
+		sort.Slice(order, func(i, j int) bool {
+			if order[i].shard != order[j].shard {
+				return order[i].shard < order[j].shard
+			}
+			return page.Entities[order[i].index].ID < page.Entities[order[j].index].ID
+		})
+	}
+	for i := range page.Entities {
+		if i&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		entity := page.Entities[i]
 		rowShard := page.Shard
-		if isIndexPackID(page.Shard) {
-			rowShard = entityShardID(entity.ID)
+		if order != nil {
+			entity = page.Entities[order[i].index]
+			rowShard = order[i].shard
 		}
 		rows, err := entityPageRows(entity)
 		if err != nil {
 			return nil, err
 		}
+		createdAt := formatParquetTime(entity.CreatedAt)
+		updatedAt := formatParquetTime(entity.UpdatedAt)
 		for _, row := range rows {
 			builder.Field(parquetEntityColumnTenantID).(*array.StringBuilder).Append(page.TenantID)
 			builder.Field(parquetEntityColumnShard).(*array.StringBuilder).Append(rowShard)
 			builder.Field(parquetEntityColumnPageVersion).(*array.Int64Builder).Append(page.Version)
-			builder.Field(parquetEntityColumnPageUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(page.UpdatedAt))
+			builder.Field(parquetEntityColumnPageUpdatedAt).(*array.StringBuilder).Append(pageUpdatedAt)
 			builder.Field(parquetEntityColumnID).(*array.StringBuilder).Append(entity.ID)
 			builder.Field(parquetEntityColumnKind).(*array.StringBuilder).Append(entity.Kind)
 			builder.Field(parquetEntityColumnSource).(*array.StringBuilder).Append(entity.Source)
 			builder.Field(parquetEntityColumnExternalID).(*array.StringBuilder).Append(entity.ExternalID)
 			builder.Field(parquetEntityColumnEntityVersion).(*array.Int64Builder).Append(entity.Version)
-			builder.Field(parquetEntityColumnEntityCreatedAt).(*array.StringBuilder).Append(formatParquetTime(entity.CreatedAt))
-			builder.Field(parquetEntityColumnEntityUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(entity.UpdatedAt))
+			builder.Field(parquetEntityColumnEntityCreatedAt).(*array.StringBuilder).Append(createdAt)
+			builder.Field(parquetEntityColumnEntityUpdatedAt).(*array.StringBuilder).Append(updatedAt)
 			builder.Field(parquetEntityColumnConfidence).(*array.Float64Builder).Append(entity.Confidence)
 			builder.Field(parquetEntityColumnSourceRank).(*array.Int64Builder).Append(int64(entity.SourceRank))
 			builder.Field(parquetEntityColumnSplitFrom).(*array.StringBuilder).Append(entity.SplitFrom)
@@ -297,7 +326,11 @@ func marshalParquetEntityPage(ctx context.Context, page EntityPageData) ([]byte,
 }
 
 func decodeParquetEntityPage(ctx context.Context, data []byte, tenantID string, shard string, version int64) (EntityPageData, error) {
-	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
+	return decodeParquetEntityPageReader(ctx, bytes.NewReader(data), tenantID, shard, version)
+}
+
+func decodeParquetEntityPageReader(ctx context.Context, source parquet.ReaderAtSeeker, tenantID string, shard string, version int64) (EntityPageData, error) {
+	reader, err := pqfile.NewParquetReader(source)
 	if err != nil {
 		return EntityPageData{}, err
 	}
@@ -482,7 +515,11 @@ type parquetEntityPageColumnSet struct {
 
 func entityPageRows(entity graph.Entity) ([]entityPageRow, error) {
 	entity = graph.CopyEntity(entity)
-	rows := []entityPageRow{}
+	rowCount := len(entity.Fields) + len(entity.FieldSources) + len(entity.Identity) + len(entity.Sources) + len(entity.MergedFrom)
+	if entity.ExistenceSource != nil {
+		rowCount++
+	}
+	rows := make([]entityPageRow, 0, max(1, rowCount))
 	fieldNames := sortedAnyMapKeys(entity.Fields)
 	for i, field := range fieldNames {
 		value, err := parquetValueFromAny(entity.Fields[field])
@@ -957,6 +994,17 @@ func (s *TenantStore) withParquetEntityPageObject(ctx context.Context, tenantID 
 	}
 	if traceStats != nil {
 		traceStats.decodedCacheMisses++
+	}
+	if exclusiveFileStore(s.Objects) != nil {
+		loaded, err := s.loadLocalEntityPage(ctx, tenantID, version, spec, EntityScanOptions{}, scanCursor{})
+		if err != nil || !loaded.available {
+			return loaded.available, err
+		}
+		readable := entityPageReadable(loaded.page, tenantID, version, spec)
+		if readable {
+			s.putCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash, loaded.page, "")
+		}
+		return true, visit(loaded.page, "", readable)
 	}
 	data, meta, ok, cached, err := s.loadParquetEntityPageObjectBytes(ctx, tenantID, version, spec)
 	if err != nil || !ok {

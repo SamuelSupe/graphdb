@@ -47,7 +47,7 @@ func (a *aggregateAccumulator) add(result Result) error {
 	})
 }
 
-func (a *aggregateAccumulator) addEntity(entity graph.Entity) error {
+func (a *aggregateAccumulator) addEntity(entity *graph.Entity) error {
 	return a.addValues(func(field string) any {
 		return entityValue(entity, field)
 	})

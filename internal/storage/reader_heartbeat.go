@@ -70,6 +70,10 @@ func (s *TenantStore) PutReaderHeartbeat(ctx context.Context, tenantID string, h
 	if s.readerHeartbeatWriteCached(cacheKey, heartbeat, time.Now()) {
 		return heartbeat, nil
 	}
+	if exclusiveFileStore(s.Objects) != nil {
+		s.cacheReaderHeartbeatWrite(cacheKey, heartbeat, time.Now())
+		return heartbeat, nil
+	}
 	data, err := marshalParquetReaderHeartbeat(ctx, heartbeat)
 	if err != nil {
 		return ReaderHeartbeat{}, err
@@ -100,6 +104,32 @@ func (s *TenantStore) ListReaderHeartbeatsWithOptions(ctx context.Context, tenan
 	}
 	if options.ScanLimit <= 0 {
 		options.ScanLimit = readerHeartbeatScanLimit
+	}
+	if exclusiveFileStore(s.Objects) != nil {
+		s.lockMu.Lock()
+		defer s.lockMu.Unlock()
+		items := []ReaderHeartbeat{}
+		now := time.Now()
+		for key, entry := range s.readerHeartbeatCache {
+			if entry.heartbeat.TenantID != tenantID {
+				continue
+			}
+			if options.DeleteExpired && options.MaxAge > 0 && now.Sub(entry.heartbeat.LastSeenAt) > options.MaxAge {
+				delete(s.readerHeartbeatCache, key)
+				continue
+			}
+			items = append(items, entry.heartbeat)
+		}
+		if len(items) > options.Limit {
+			return nil, fmt.Errorf("reader heartbeat limit exceeded: more than %d records for tenant %q", options.Limit, tenantID)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].LastSeenAt.Equal(items[j].LastSeenAt) {
+				return items[i].ReaderID < items[j].ReaderID
+			}
+			return items[i].LastSeenAt.After(items[j].LastSeenAt)
+		})
+		return items, objectContextErr(ctx)
 	}
 	items := make([]ReaderHeartbeat, 0, min(256, options.Limit))
 	now := time.Now().UTC()

@@ -11,6 +11,156 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
+func TestLocalPreparedCommitSurvivesCompactionAndReopen(t *testing.T) {
+	for _, retryBefore := range []bool{false, true} {
+		for _, noop := range []bool{false, true} {
+			name := "changed"
+			if noop {
+				name = "noop"
+			}
+			if retryBefore {
+				name += "/retry_before_compact"
+			} else {
+				name += "/compact_before_retry"
+			}
+			t.Run(name, func(t *testing.T) {
+				ctx := context.Background()
+				root := t.TempDir()
+				files, err := OpenFileStore(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer files.Close()
+				fault := &failNthIdempotencyPutStore{ObjectStore: files, failAt: 3}
+				store := NewTenantStore(fault, "test")
+				mutations := graph.Mutations{}
+				if !noop {
+					mutations.UpsertEntities = []graph.Entity{{ID: "host:a", Kind: "host"}}
+				}
+				opts := CommitOptions{IdempotencyKey: "recoverable"}
+				first, err := store.CommitWithReport(ctx, "tenant", mutations, opts)
+				if err == nil || first.DataMD5 == "" {
+					t.Fatalf("expected finalization failure, got %+v, %v", first, err)
+				}
+				if retryBefore {
+					if result, err := store.CommitWithReport(ctx, "tenant", mutations, opts); err != nil || !result.IdempotentReplay {
+						t.Fatalf("retry = %+v, %v", result, err)
+					}
+				}
+				if _, err := store.Commit(ctx, "tenant", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}}}, CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Compact(ctx, "tenant"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.RunGC(ctx, "tenant", GCOptions{KeepSnapshots: 1}); err != nil {
+					t.Fatal(err)
+				}
+				if err := files.Close(); err != nil {
+					t.Fatal(err)
+				}
+				reopened, err := OpenFileStore(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reopened.Close()
+				store = NewTenantStore(reopened, "test")
+				result, err := store.CommitWithReport(ctx, "tenant", mutations, opts)
+				if err != nil || !result.IdempotentReplay || result.Version != first.Version || result.DataMD5 != first.DataMD5 {
+					t.Fatalf("replay after compact, GC and reopen = %+v, %v", result, err)
+				}
+				g, manifest, err := store.Load(ctx, "tenant")
+				if err != nil || manifest.Version != first.Version+1 || len(g.Entities) != int(first.Version)+1 {
+					t.Fatalf("replay changed graph: manifest=%+v err=%v", manifest, err)
+				}
+			})
+		}
+	}
+}
+
+func TestDirectCommitResumesPersistedPendingRecord(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		ctx := context.Background()
+		store := NewTenantStore(NewMemoryStore(), "test")
+		request := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+		opts := CommitOptions{IdempotencyKey: "pending-retry"}
+		if legacy {
+			record := DirectCommitRecord{TenantID: "tenant", Status: directCommitStatusPending, Request: directCommitRequest(request, opts), StartedAt: time.Now().UTC()}
+			data, err := marshalParquetDirectCommitRecord(ctx, record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Objects.Put(ctx, store.commitIdempotencyKey("tenant", opts.IdempotencyKey), data); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			store.Objects = &failNthIdempotencyPutStore{ObjectStore: store.Objects, failAt: 2}
+			if _, err := store.CommitWithReport(ctx, "tenant", request, opts); err == nil {
+				t.Fatal("expected preparation failure")
+			}
+		}
+		result, err := store.CommitWithReport(ctx, "tenant", request, opts)
+		if err != nil || result.Version != 1 || result.IdempotentReplay {
+			t.Fatalf("legacy=%v result=%+v err=%v", legacy, result, err)
+		}
+	}
+}
+
+func TestCompactionKeepsHistoryWhenIdempotencySettlementFails(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	fault := &failNthIdempotencyPutStore{ObjectStore: files, failAt: 3}
+	store := NewTenantStore(fault, "test")
+	request := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	opts := CommitOptions{IdempotencyKey: "failed-finalization"}
+	if _, err := store.CommitWithReport(ctx, "tenant", request, opts); err == nil {
+		t.Fatal("expected finalization failure")
+	}
+	if _, err := store.Commit(ctx, "tenant", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	fault.failAt = 4
+	if _, err := store.Compact(ctx, "tenant"); err == nil {
+		t.Fatal("compaction discarded history despite settlement failure")
+	}
+	manifest, err := store.CurrentManifest(ctx, "tenant")
+	if err != nil || manifest.SnapshotVersion != 0 || manifest.Version != 2 {
+		t.Fatalf("manifest=%+v err=%v", manifest, err)
+	}
+	if _, err := store.Compact(ctx, "tenant"); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := store.CommitWithReport(ctx, "tenant", request, opts); err != nil || result.Version != 1 || !result.IdempotentReplay {
+		t.Fatalf("retry=%+v err=%v", result, err)
+	}
+}
+
+func TestCompactionPreservesUnpublishedIdempotentRetry(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	store.Objects = &failPutOnceStore{ObjectStore: objects, contains: store.manifestKey("tenant")}
+	request := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	opts := CommitOptions{IdempotencyKey: "unpublished"}
+	if _, err := store.CommitWithReport(ctx, "tenant", request, opts); err == nil {
+		t.Fatal("expected manifest failure")
+	}
+	if _, err := store.Commit(ctx, "tenant", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Compact(ctx, "tenant"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.CommitWithReport(ctx, "tenant", request, opts)
+	if err != nil || result.IdempotentReplay || result.Version != 2 {
+		t.Fatalf("unpublished retry=%+v err=%v", result, err)
+	}
+}
+
 func TestDirectCommitIdempotencyReplaysSameRequest(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()
@@ -208,6 +358,10 @@ func TestDirectCommitFinalizationDoesNotHoldTenantLock(t *testing.T) {
 		close(objects.release)
 		t.Fatalf("second commit version = %d, want 2", second.Version)
 	}
+	if _, err := store.Compact(ctx, "tenant-a"); err != nil {
+		close(objects.release)
+		t.Fatalf("compact during idempotency finalization: %v", err)
+	}
 	close(objects.release)
 
 	select {
@@ -304,6 +458,8 @@ type failNthIdempotencyPutStore struct {
 	count  int
 	failAt int
 }
+
+func (s *failNthIdempotencyPutStore) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
 
 type blockIdempotencyFinalizationStore struct {
 	ObjectStore

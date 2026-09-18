@@ -149,6 +149,53 @@ func BenchmarkTenantStoreCompactCommitTail(b *testing.B) {
 	}
 }
 
+func BenchmarkCompactTaskAlreadyCompacted10K(b *testing.B) {
+	ctx := context.Background()
+	files, err := OpenFileStore(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "bench")
+	entities := make([]graph.Entity, 10_000)
+	for i := range entities {
+		id := fmt.Sprintf("host:%05d", i)
+		entities[i] = graph.Entity{ID: id, Kind: "host", Fields: graph.Fields{
+			"hostname": id, "region": "east", "sequence": i,
+		}}
+	}
+	if _, err := store.Commit(ctx, benchmarkCommitTenantID, graph.Mutations{
+		UpsertEntities: entities,
+	}, CommitOptions{}); err != nil {
+		b.Fatal(err)
+	}
+	manifest, err := store.Compact(ctx, benchmarkCommitTenantID)
+	if err != nil {
+		b.Fatal(err)
+	}
+	task := Task{ID: "repeat-compact", TenantID: benchmarkCommitTenantID,
+		Type: TaskTypeCompact, Status: TaskStatusRunning, OwnerID: store.InstanceID}
+	if err := store.saveTask(ctx, task); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result, _, err := store.compactTask(ctx, task)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if int64TaskParam(result, "version") != manifest.Version || result["snapshot_key"] != manifest.SnapshotKey {
+			b.Fatal("repeat compact changed the snapshot")
+		}
+	}
+	b.StopTimer()
+	current, err := store.GetTask(ctx, task.TenantID, task.ID)
+	if err != nil || current.ProgressCompleted != taskProgressTotal(TaskTypeCompact) {
+		b.Fatalf("compact progress was not persisted: %+v, %v", current, err)
+	}
+}
+
 func buildBenchmarkCommitFixture(
 	b *testing.B,
 	segmentCount int,
@@ -271,4 +318,53 @@ func reportBenchmarkCommitFixture(b *testing.B, fixture benchmarkCommitFixture) 
 	b.ReportMetric(float64(fixture.storedBytes), "stored_bytes/op")
 	b.ReportMetric(float64(fixture.segmentBytes), "segment_bytes/op")
 	b.ReportMetric(float64(fixture.tailBytes), "tail_bytes/op")
+}
+
+func benchmarkSnapshotRecord10K(b *testing.B) snapshotRecord {
+	b.Helper()
+	g := graph.New()
+	entities := make([]graph.Entity, 10_000)
+	for i := range entities {
+		id := fmt.Sprintf("host:%05d", i)
+		entities[i] = graph.Entity{ID: id, Kind: "host", Fields: graph.Fields{
+			"hostname": id, "region": "east", "sequence": i,
+		}}
+	}
+	if err := g.ApplyCommit(graph.Commit{Version: 1, Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host"}}, UpsertEntities: entities,
+	}}); err != nil {
+		b.Fatal(err)
+	}
+	return snapshotRecord{TenantID: benchmarkCommitTenantID, Snapshot: g.Snapshot()}
+}
+
+func BenchmarkMarshalParquetSnapshotRecord10K(b *testing.B) {
+	record := benchmarkSnapshotRecord10K(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data, err := marshalParquetSnapshotRecord(context.Background(), record)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ReportMetric(float64(len(data)), "file-bytes/op")
+	}
+}
+
+func BenchmarkDecodeParquetSnapshotRecord10K(b *testing.B) {
+	data, err := marshalParquetSnapshotRecord(context.Background(), benchmarkSnapshotRecord10K(b))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		record, err := decodeParquetSnapshotRecord(context.Background(), data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(record.Snapshot.Entities) != 10_000 {
+			b.Fatalf("decoded %d entities, want 10000", len(record.Snapshot.Entities))
+		}
+	}
 }

@@ -48,7 +48,7 @@ func executeMatch(g *graph.Graph, request Request, plan Plan, cursor cursorState
 				return len(results), err
 			}
 			budget.scanned++
-			if !requestEntityMatches(request, entity) {
+			if !requestEntityMatches(&request, &entity) {
 				continue
 			}
 			result := Result{Entity: &entity}
@@ -94,10 +94,12 @@ func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.E
 	acc := newAggregateAccumulator(request.Aggregate)
 	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
 	keep := boundedMatchPageLimit(request, cursor)
-	results := make([]Result, 0, keep)
+	var results []Result
 	var sorted *boundedResults
 	if len(request.Sort) > 0 {
 		sorted = newBoundedResults(request.Sort, keep)
+	} else {
+		results = make([]Result, 0, keep)
 	}
 	if err := budget.measure("filter-project", "", len(entities), func() (int, error) {
 		for _, entity := range entities {
@@ -105,7 +107,7 @@ func executeBoundedMatchPage(g *graph.Graph, request Request, entities []graph.E
 				return len(results) + sorted.Len(), err
 			}
 			budget.scanned++
-			if !requestEntityMatches(request, entity) {
+			if !requestEntityMatches(&request, &entity) {
 				continue
 			}
 			result := Result{Entity: &entity}
@@ -144,10 +146,12 @@ func executeBoundedMatchPageByID(g *graph.Graph, request Request, ids []string, 
 	acc := newAggregateAccumulator(request.Aggregate)
 	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
 	keep := boundedMatchPageLimit(request, cursor)
-	matched := make([]graph.Entity, 0, keep)
+	var matched []graph.Entity
 	var sorted *boundedEntities
 	if len(request.Sort) > 0 {
 		sorted = newBoundedEntities(request.Sort, keep)
+	} else {
+		matched = make([]graph.Entity, 0, keep)
 	}
 	if err := budget.measure("filter-project", "", len(ids), func() (int, error) {
 		for _, id := range ids {
@@ -159,17 +163,17 @@ func executeBoundedMatchPageByID(g *graph.Graph, request Request, ids []string, 
 				return len(matched) + sorted.Len(), err
 			}
 			budget.scanned++
-			if !requestEntityMatches(request, entity) {
+			if !requestEntityMatches(&request, &entity) {
 				continue
 			}
-			if err := acc.addEntity(entity); err != nil {
+			if err := acc.addEntity(&entity); err != nil {
 				return len(matched) + sorted.Len(), err
 			}
-			if err := groupAcc.addEntity(entity); err != nil {
+			if err := groupAcc.addEntity(&entity); err != nil {
 				return len(matched) + sorted.Len(), err
 			}
 			if sorted != nil {
-				sorted.Add(entity)
+				sorted.Add(&entity)
 				continue
 			}
 			if len(matched) < keep {
@@ -186,8 +190,7 @@ func executeBoundedMatchPageByID(g *graph.Graph, request Request, ids []string, 
 	if sorted != nil {
 		matched = sorted.Sorted()
 	}
-	results := ownedEntityResults(matched)
-	return buildResponseWithAggregatesAndGroups(g.Version, results, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
+	return buildBorrowedEntityResponse(g.Version, matched, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
 }
 
 func executeBoundedMatchPageByFieldIndex(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
@@ -197,10 +200,12 @@ func executeBoundedMatchPageByFieldIndex(g *graph.Graph, request Request, plan P
 	acc := newAggregateAccumulator(request.Aggregate)
 	groupAcc := newGroupAccumulator(request.GroupBy, request.Aggregate)
 	keep := boundedMatchPageLimit(request, cursor)
-	matched := make([]graph.Entity, 0, keep)
+	var matched []graph.Entity
 	var sorted *boundedEntities
 	if len(request.Sort) > 0 {
 		sorted = newBoundedEntities(request.Sort, keep)
+	} else {
+		matched = make([]graph.Entity, 0, keep)
 	}
 	if err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
 		candidateCount := 0
@@ -215,17 +220,17 @@ func executeBoundedMatchPageByFieldIndex(g *graph.Graph, request Request, plan P
 					return err
 				}
 				budget.scanned++
-				if !requestEntityMatches(request, entity) {
+				if !requestEntityMatches(&request, &entity) {
 					return nil
 				}
-				if err := acc.addEntity(entity); err != nil {
+				if err := acc.addEntity(&entity); err != nil {
 					return err
 				}
-				if err := groupAcc.addEntity(entity); err != nil {
+				if err := groupAcc.addEntity(&entity); err != nil {
 					return err
 				}
 				if sorted != nil {
-					sorted.Add(entity)
+					sorted.Add(&entity)
 					return nil
 				}
 				if len(matched) < keep {
@@ -245,17 +250,36 @@ func executeBoundedMatchPageByFieldIndex(g *graph.Graph, request Request, plan P
 	if sorted != nil {
 		matched = sorted.Sorted()
 	}
-	results := ownedEntityResults(matched)
-	return buildResponseWithAggregatesAndGroups(g.Version, results, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
+	return buildBorrowedEntityResponse(g.Version, matched, request, cursor, budget, acc.results(), groupAcc.results(request.Having, request.HavingExpr))
 }
 
-func ownedEntityResults(entities []graph.Entity) []Result {
+func buildBorrowedEntityResponse(version int64, entities []graph.Entity, request Request, cursor cursorState, budget *budget, aggregates map[string]any, groups []AggregateGroup) (Response, error) {
 	results := make([]Result, len(entities))
 	for i := range entities {
-		entity := graph.CopyEntity(entities[i])
-		results[i] = Result{Entity: &entity}
+		results[i] = Result{Entity: &entities[i]}
 	}
-	return results
+	page, next, err := paginate(version, results, request, cursor)
+	if err != nil {
+		return Response{}, err
+	}
+	for i := range page {
+		// Selection is complete, so only the returned page and fields need owned
+		// copies. Projection must replace maps without changing the borrowed graph.
+		entity := *page[i].Entity
+		page[i].Entity = &entity
+		applyProjection(&page[i], request.Project)
+		entity = graph.CopyEntity(entity)
+		// Scalars are immutable. Rebind containers to avoid exposing borrowed maps
+		// and slices through the projected values.
+		for field, value := range page[i].Fields {
+			switch value.(type) {
+			case nil, bool, string, int, int64, float64:
+				continue
+			}
+			page[i].Fields[field] = entityValue(&entity, field)
+		}
+	}
+	return responseFromPage(version, page, next, budget, aggregates, groups), nil
 }
 
 func matchOperatorName(plan Plan) string {

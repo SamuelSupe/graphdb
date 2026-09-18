@@ -42,6 +42,16 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 	if err := ValidateTenantID(tenantID); err != nil {
 		return RecoveryReport{}, err
 	}
+	resumeIngest, err := s.pauseLocalIngest(ctx, tenantID)
+	if err != nil {
+		return RecoveryReport{}, err
+	}
+	defer resumeIngest()
+	releaseViews, err := s.lockReadViews(ctx, tenantID, true)
+	if err != nil {
+		return RecoveryReport{}, err
+	}
+	defer releaseViews()
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
 	if err != nil {
 		return RecoveryReport{}, err
@@ -99,7 +109,7 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 		}
 		loaded.Meta = meta
 		loaded.Graph = nextGraph
-		if err := s.updateIndexesAfterCommit(ctx, tenantID, previousGraph, nextGraph, item.Commit.Mutations, applyReport, item.Commit.Version, false); err != nil {
+		if err := s.updateIndexesAfterCommit(ctx, tenantID, previousGraph, nextGraph, item.Commit.Mutations, applyReport, item.Commit.Version-1, item.Commit.Version, false, false); err != nil {
 			report.IndexWarnings = append(report.IndexWarnings, "incremental index update failed for "+item.Key+": "+err.Error())
 		}
 		report.Recovered++
@@ -111,6 +121,11 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 }
 
 func (s *TenantStore) CleanupCommits(ctx context.Context, tenantID string) (CleanupReport, error) {
+	releaseViews, viewErr := s.lockReadViews(ctx, tenantID, true)
+	if viewErr != nil {
+		return CleanupReport{}, viewErr
+	}
+	defer releaseViews()
 	if err := ValidateTenantID(tenantID); err != nil {
 		return CleanupReport{}, err
 	}

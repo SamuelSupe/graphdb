@@ -65,6 +65,7 @@ func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, re
 		TenantID:  tenantID,
 		Status:    directCommitStatusPending,
 		Request:   request,
+		Result:    CommitResult{Manifest: Manifest{TenantID: tenantID}},
 		StartedAt: started,
 	}
 	data, err := marshalParquetDirectCommitRecord(ctx, pending)
@@ -99,6 +100,10 @@ func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, re
 			return nil, nil, err
 		}
 		if published {
+			reservation := &directCommitReservation{key: key, record: existing, meta: meta}
+			if err := s.completeDirectCommit(ctx, reservation, existing.Result, existing.FinishedAt); err != nil {
+				return nil, nil, err
+			}
 			result := replayDirectCommitResult(existing)
 			return nil, &result, nil
 		}
@@ -137,7 +142,20 @@ func (s *TenantStore) completeDirectCommit(ctx context.Context, reservation *dir
 	record.Status = directCommitStatusCommitted
 	record.Result = result
 	record.FinishedAt = finished
-	return s.updateDirectCommitReservation(ctx, reservation, record)
+	err := s.updateDirectCommitReservation(ctx, reservation, record)
+	if !errors.Is(err, ErrConflict) {
+		return err
+	}
+	// A retry or compaction may have completed the same record while the
+	// original writer was finishing its indexes outside the tenant lock.
+	current, _, loadErr := s.loadDirectCommitRecordWithMeta(ctx, reservation.key)
+	if loadErr == nil && directCommitRecordStatus(current) == directCommitStatusCommitted &&
+		validateDirectCommitRecord(record.TenantID, record.Request, current) == nil &&
+		current.Result.Version == result.Version && current.Result.HeadCommitID == result.HeadCommitID &&
+		current.Result.DataMD5 == result.DataMD5 {
+		return nil
+	}
+	return err
 }
 
 func (s *TenantStore) abortDirectCommit(

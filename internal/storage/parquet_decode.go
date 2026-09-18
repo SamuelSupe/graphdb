@@ -8,6 +8,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
@@ -86,11 +87,15 @@ func acquireParquetDecode(ctx context.Context) (func(), error) {
 // readParquetTable keeps its admission slot until the caller releases the
 // returned table. Arrow owns the large decode buffers for that whole period.
 func readParquetTable(ctx context.Context, data []byte) (arrow.Table, func(), error) {
+	return readParquetTableReader(ctx, bytes.NewReader(data))
+}
+
+func readParquetTableReader(ctx context.Context, source parquet.ReaderAtSeeker) (arrow.Table, func(), error) {
 	release, err := acquireParquetDecode(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	table, err := pqarrow.ReadTable(ctx, bytes.NewReader(data), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	table, err := pqarrow.ReadTable(ctx, source, nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
 	if err != nil {
 		release()
 		return nil, nil, err

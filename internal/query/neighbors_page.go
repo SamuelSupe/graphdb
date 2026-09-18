@@ -163,7 +163,7 @@ func pageNeighborSlice(g *graph.Graph, request Request, cursor cursorState, budg
 func appendPageNeighbor(results *[]Result, neighbor graph.Neighbor, request Request, cursor cursorState, state *matchPageState, budget *budget) (bool, error) {
 	budget.visited++
 	entity := neighbor.Entity
-	if !requestEntityMatches(request, entity) || !requestEdgeMatches(request, neighbor.Edge) {
+	if !requestEntityMatches(&request, &entity) || !requestEdgeMatches(request, neighbor.Edge) {
 		return false, nil
 	}
 	edge := neighbor.Edge

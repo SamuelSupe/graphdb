@@ -81,7 +81,7 @@ func (r *runner) run(ctx context.Context) error {
 	if err := r.checkCompactAndControl(ctx, id.host1); err != nil {
 		return err
 	}
-	return nil
+	return r.checkBackupRestore(ctx)
 }
 
 func (r *runner) checkHealth(ctx context.Context) error {
@@ -96,7 +96,7 @@ func (r *runner) checkHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if mode := stringValue(reader.json["mode"]); mode != "reader" {
+	if mode := stringValue(reader.json["mode"]); mode != "reader" && !(mode == "all" && r.cfg.writer == r.cfg.reader) {
 		return fmt.Errorf("reader mode = %q", mode)
 	}
 	pass("health writer=%s reader=%s", stringValue(writer.json["mode"]), stringValue(reader.json["mode"]))
@@ -104,6 +104,9 @@ func (r *runner) checkHealth(ctx context.Context) error {
 }
 
 func (r *runner) checkReaderRejectsWrites(ctx context.Context) error {
+	if r.cfg.writer == r.cfg.reader {
+		return nil
+	}
 	_, err := r.reader.do(ctx, http.MethodPost, "/v1/commits", httpapi.CommitRequest{}, http.StatusMethodNotAllowed)
 	if err != nil {
 		return err

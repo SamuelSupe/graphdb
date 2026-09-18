@@ -187,29 +187,35 @@ type IngestWAL struct {
 	closeErr  error
 }
 
-func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error) {
-	if err := config.validate(); err != nil {
-		return nil, nil, err
+// OpenIngestWAL replays validated records while holding the process lock,
+// before starting the writer. Replay must release completed history as it goes
+// to keep recovery memory proportional to outstanding requests.
+func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (*IngestWAL, error) {
+	if replay == nil {
+		return nil, fmt.Errorf("ingest WAL recovery callback is required")
 	}
-	if err := os.MkdirAll(config.Dir, 0o700); err != nil {
-		return nil, nil, fmt.Errorf("create ingest WAL directory: %w", err)
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+	if err := ensureDurableDirectoryMode(config.Dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create ingest WAL directory: %w", err)
 	}
 	if err := os.Chmod(config.Dir, 0o700); err != nil {
-		return nil, nil, fmt.Errorf("secure ingest WAL directory: %w", err)
+		return nil, fmt.Errorf("secure ingest WAL directory: %w", err)
 	}
 	lockFile, err := os.OpenFile(filepath.Join(config.Dir, ingestWALLockFile), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open ingest WAL process lock: %w", err)
+		return nil, fmt.Errorf("open ingest WAL process lock: %w", err)
 	}
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = lockFile.Close()
-		return nil, nil, fmt.Errorf("%w: %v", ErrIngestWALLocked, err)
+		return nil, fmt.Errorf("%w: %v", ErrIngestWALLocked, err)
 	}
-	records, segments, nextLSN, totalBytes, err := recoverIngestWAL(config.Dir)
+	segments, nextLSN, totalBytes, err := scanIngestWAL(config.Dir, replay)
 	if err != nil {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	wal := &IngestWAL{
 		config:   config,
@@ -226,9 +232,9 @@ func OpenIngestWAL(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error
 		if closeErr == nil {
 			closeErr = err
 		}
-		return nil, nil, fmt.Errorf("open ingest WAL writer: %w", closeErr)
+		return nil, fmt.Errorf("open ingest WAL writer: %w", closeErr)
 	}
-	return wal, records, nil
+	return wal, nil
 }
 
 func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payload []byte) (result IngestWALAppendResult, err error) {
@@ -577,7 +583,7 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		s.segments[s.current].size += int64(written)
 		s.totalBytes += int64(written)
 		if s.wal.config.Durability == IngestWALDurabilitySync {
-			if err := s.file.Sync(); err != nil {
+			if err := syncStorageFile(s.file); err != nil {
 				s.observeSync("error", groupRecords, groupBytes, time.Since(groupStarted), err)
 				endStorageSpan(groupSpan, err)
 				return err
@@ -762,7 +768,7 @@ func (s *ingestWALWriterState) syncAndClose() error {
 	if s.file == nil {
 		return nil
 	}
-	syncErr := s.file.Sync()
+	syncErr := syncStorageFile(s.file)
 	closeErr := s.file.Close()
 	s.file = nil
 	return errors.Join(syncErr, closeErr)
@@ -806,10 +812,10 @@ func (s *ingestWALWriterState) observeState(bufferBytes int) {
 	}
 }
 
-func recoverIngestWAL(dir string) ([]IngestWALRecord, []ingestWALSegment, uint64, int64, error) {
+func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALSegment, uint64, int64, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, nil, 0, 0, err
+		return nil, 0, 0, err
 	}
 	paths := make([]string, 0)
 	for _, entry := range entries {
@@ -820,7 +826,6 @@ func recoverIngestWAL(dir string) ([]IngestWALRecord, []ingestWALSegment, uint64
 		}
 	}
 	sort.Strings(paths)
-	records := make([]IngestWALRecord, 0)
 	segments := make([]ingestWALSegment, 0, len(paths))
 	var lastLSN uint64
 	var totalBytes int64
@@ -829,42 +834,41 @@ func recoverIngestWAL(dir string) ([]IngestWALRecord, []ingestWALSegment, uint64
 		if index == 0 {
 			lastLSN = startLSN - 1
 		} else if startLSN != lastLSN+1 {
-			return nil, nil, 0, 0, fmt.Errorf(
+			return nil, 0, 0, fmt.Errorf(
 				"%w: segment %q starts at LSN %d after LSN %d",
 				ErrIngestWALCorrupt, path, startLSN, lastLSN,
 			)
 		}
 		isLast := index == len(paths)-1
-		segmentRecords, size, err := recoverIngestWALSegment(path, isLast, lastLSN)
+		segmentLastLSN, size, err := scanIngestWALSegment(path, isLast, lastLSN, replay)
 		if err != nil {
-			return nil, nil, 0, 0, err
+			return nil, 0, 0, err
 		}
 		segment := ingestWALSegment{path: path, startLSN: startLSN, size: size}
-		if len(segmentRecords) > 0 {
-			segment.maxLSN = segmentRecords[len(segmentRecords)-1].LSN
-			lastLSN = segment.maxLSN
+		if segmentLastLSN > lastLSN {
+			segment.maxLSN = segmentLastLSN
+			lastLSN = segmentLastLSN
 		}
-		records = append(records, segmentRecords...)
 		segments = append(segments, segment)
 		totalBytes += size
 	}
-	return records, segments, lastLSN + 1, totalBytes, nil
+	return segments, lastLSN + 1, totalBytes, nil
 }
 
-func recoverIngestWALSegment(path string, isLast bool, previousLSN uint64) ([]IngestWALRecord, int64, error) {
+func scanIngestWALSegment(path string, isLast bool, previousLSN uint64, replay func(IngestWALRecord) error) (uint64, int64, error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, 0, err
+		return 0, 0, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, 0, err
+		return 0, 0, err
 	}
 	size := info.Size()
 	var offset int64
 	var lastLSN = previousLSN
-	records := make([]IngestWALRecord, 0)
+	checksumTable := crc32.MakeTable(crc32.Castagnoli)
 	for offset < size {
 		recordOffset := offset
 		header := make([]byte, ingestWALHeaderBytes)
@@ -872,53 +876,55 @@ func recoverIngestWALSegment(path string, isLast bool, previousLSN uint64) ([]In
 		if readErr != nil {
 			if isLast && errors.Is(readErr, io.ErrUnexpectedEOF) {
 				truncatedSize, truncateErr := truncateIngestWALTail(file, path, recordOffset)
-				return records, truncatedSize, truncateErr
+				return lastLSN, truncatedSize, truncateErr
 			}
-			return nil, 0, fmt.Errorf("%w: read header at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
+			return 0, 0, fmt.Errorf("%w: read header at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
 		}
 		offset += int64(read)
 		if string(header[:4]) != ingestWALMagic || binary.BigEndian.Uint16(header[4:6]) != ingestWALFormatVersion {
-			return nil, 0, fmt.Errorf("%w: invalid header at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return 0, 0, fmt.Errorf("%w: invalid header at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
 		}
 		kind := IngestWALRecordType(header[6])
 		lsn := binary.BigEndian.Uint64(header[8:16])
 		payloadBytes := binary.BigEndian.Uint32(header[16:20])
 		if !validIngestWALRecordType(kind) || payloadBytes > ingestWALMaxPayload || lsn != lastLSN+1 {
-			return nil, 0, fmt.Errorf("%w: invalid record metadata at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return 0, 0, fmt.Errorf("%w: invalid record metadata at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
 		}
 		body := make([]byte, int(payloadBytes)+ingestWALChecksumBytes)
 		read, readErr = io.ReadFull(file, body)
 		if readErr != nil {
 			if isLast && errors.Is(readErr, io.ErrUnexpectedEOF) {
 				truncatedSize, truncateErr := truncateIngestWALTail(file, path, recordOffset)
-				return records, truncatedSize, truncateErr
+				return lastLSN, truncatedSize, truncateErr
 			}
-			return nil, 0, fmt.Errorf("%w: read payload at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
+			return 0, 0, fmt.Errorf("%w: read payload at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
 		}
 		offset += int64(read)
 		payload := body[:payloadBytes]
 		wantCRC := binary.BigEndian.Uint32(body[payloadBytes:])
-		checksumInput := append(append([]byte(nil), header...), payload...)
-		if crc32.Checksum(checksumInput, crc32.MakeTable(crc32.Castagnoli)) != wantCRC {
-			return nil, 0, fmt.Errorf("%w: checksum mismatch at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+		checksum := crc32.Update(crc32.Checksum(header, checksumTable), checksumTable, payload)
+		if checksum != wantCRC {
+			return 0, 0, fmt.Errorf("%w: checksum mismatch at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
 		}
-		records = append(records, IngestWALRecord{
+		if err := replay(IngestWALRecord{
 			Type:    kind,
 			LSN:     lsn,
 			Segment: filepath.Base(path),
 			Offset:  recordOffset,
-			Payload: append([]byte(nil), payload...),
-		})
+			Payload: payload,
+		}); err != nil {
+			return 0, 0, err
+		}
 		lastLSN = lsn
 	}
-	return records, size, nil
+	return lastLSN, size, nil
 }
 
 func truncateIngestWALTail(file *os.File, path string, size int64) (int64, error) {
 	if err := file.Truncate(size); err != nil {
 		return 0, fmt.Errorf("truncate incomplete ingest WAL tail %q: %w", path, err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := syncStorageFile(file); err != nil {
 		return 0, err
 	}
 	return size, nil
@@ -980,5 +986,5 @@ func syncDirectory(path string) error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	return syncStorageFile(dir)
 }

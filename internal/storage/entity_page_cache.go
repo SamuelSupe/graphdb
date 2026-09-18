@@ -69,7 +69,7 @@ func (s *TenantStore) borrowCachedEntityPage(tenantID string, version int64, obj
 	if !ok {
 		return cachedEntityPage{}, false, false
 	}
-	return entry, s.entityPageCache.needsRevalidation(entry), true
+	return entry, exclusiveFileStore(s.Objects) == nil && s.entityPageCache.needsRevalidation(entry), true
 }
 
 func (s *TenantStore) dropCachedEntityPage(tenantID string, version int64, objectKey string, contentHash string, schemaHash string) {
@@ -99,7 +99,7 @@ func (c *entityPageCache) get(key string) (cachedEntityPage, bool) {
 }
 
 func (c *entityPageCache) put(key string, entry cachedEntityPage) {
-	if c == nil || c.max <= 0 {
+	if c == nil || c.max <= 0 || c.maxBytes <= 0 {
 		return
 	}
 	c.mu.Lock()

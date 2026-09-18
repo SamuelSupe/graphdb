@@ -40,6 +40,9 @@ func run(args []string) error {
 		printHelp()
 		return nil
 	}
+	if command.kind == commandCoordinator {
+		return fmt.Errorf("coordinator commands are unsupported in the local disk edition")
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -50,38 +53,6 @@ func run(args []string) error {
 	}
 	defer runtime.Close()
 	store := runtime.Store
-	coordinator := runtime.Coordinator
-	if command.kind == commandCoordinator {
-		return coordinatorCommand(args[1:], store, coordinator)
-	}
-	if coordinator != nil {
-		store.SetCoordinator(coordinator)
-		startupTimeout := cfg.ReadinessTimeout
-		if startupTimeout <= 0 {
-			startupTimeout = 2 * time.Second
-		}
-		startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
-		schemaErr := coordinator.CheckSchema(startupCtx)
-		cancel()
-		walServe := command.kind == commandServe && cfg.IngestMode == "wal"
-		if schemaErr != nil && !(walServe &&
-			(errors.Is(schemaErr, storage.ErrCoordinatorUnavailable) ||
-				errors.Is(schemaErr, context.DeadlineExceeded))) {
-			return schemaErr
-		}
-		markerCtx, markerCancel := context.WithTimeout(context.Background(), startupTimeout)
-		markerErr := store.EnsurePostgresMarker(markerCtx)
-		markerCancel()
-		if markerErr != nil && !(walServe &&
-			(errors.Is(markerErr, storage.ErrObjectStoreUnavailable) ||
-				errors.Is(markerErr, context.DeadlineExceeded))) {
-			return markerErr
-		}
-	} else if command.mayWrite(cfg.Mode) {
-		if err := store.EnsureLocalWriterAllowed(context.Background()); err != nil {
-			return err
-		}
-	}
 
 	if command.kind == commandServe {
 		return serve(cfg, store)
@@ -288,18 +259,11 @@ Environment:
   GRAPHDB_ADDR=:8080
   GRAPHDB_ADMIN_ADDR=127.0.0.1:8081 (optional separate admin listener)
   GRAPHDB_PPROF_ENABLED=false (requires GRAPHDB_ADMIN_ADDR)
-  GRAPHDB_MODE=all|writer|reader
-  GRAPHDB_COORDINATION=local|postgres
-  GRAPHDB_POSTGRES_DSN=postgres://user:password@host:5432/graphdb
-  GRAPHDB_POSTGRES_SCHEMA=graphdb_coordination
-  GRAPHDB_COORDINATOR_NAMESPACE=<stable-cluster-id>
+  GRAPHDB_MODE=all
+  GRAPHDB_COORDINATION=local
   GRAPHDB_WRITE_CAS_MAX_RETRIES=8
-  GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION=24h
-  GRAPHDB_COORDINATOR_OUTBOX_RETENTION=1h
-  GRAPHDB_COORDINATOR_CLEANUP_INTERVAL=1m
-  GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE=5000
   GRAPHDB_READINESS_TIMEOUT=2s
-  GRAPHDB_STORAGE=local|s3
+  GRAPHDB_STORAGE=local
   GRAPHDB_DATA_DIR=.graphdb
   GRAPHDB_PREFIX=graphdb
   GRAPHDB_QUERY_MAX_CONCURRENT=64
@@ -345,16 +309,10 @@ Environment:
   GRAPHDB_READER_CATCHUP_TIMEOUT=2s
   GRAPHDB_READER_INDEX_CACHE_ENTRIES=4096
   GRAPHDB_READER_INDEX_CACHE_MAX_BYTES=256MiB
-  GRAPHDB_READER_INDEX_CACHE_DIR=.graphdb/cache/index-objects
+  GRAPHDB_READER_INDEX_CACHE_DIR= (optional; disabled by default)
   GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES=32MiB
   GRAPHDB_FAULT_OBJECT_READ_DELAY=25ms
   GRAPHDB_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
   GRAPHDB_OTLP_INSECURE=true
-  GRAPHDB_SERVICE_NAME=graphdb
-  S3_ENDPOINT=http://localhost:9000
-  S3_BUCKET=graphdb
-  S3_PATH_STYLE=false
-  S3_REGION=us-east-1
-  S3_ACCESS_KEY_ID=minioadmin
-  S3_SECRET_ACCESS_KEY=minioadmin`)
+  GRAPHDB_SERVICE_NAME=graphdb`)
 }

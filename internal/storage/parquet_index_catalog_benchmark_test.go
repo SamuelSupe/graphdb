@@ -73,4 +73,15 @@ func TestMarshalParquetIndexCatalogBatchesRows(t *testing.T) {
 	if reader.NumRowGroups() != 1 {
 		t.Fatalf("row groups = %d, want 1", reader.NumRowGroups())
 	}
+	normalized := normalizeIndexCatalogForParquet(catalog)
+	parts := []string{formatInt64ForHash(int64(normalized.LayoutVersion)), normalized.TenantID,
+		formatInt64ForHash(normalized.Version), formatInt64ForHash(int64(len(normalized.Indexes))),
+		formatInt64ForHash(int64(len(normalized.EdgeShards))), formatInt64ForHash(int64(len(normalized.EntityPages)))}
+	for _, row := range indexCatalogRows(normalized) {
+		parts = append(parts, indexCatalogRowHashParts(row)...)
+	}
+	got, err := indexCatalogContentHash(catalog)
+	if err != nil || got != parquetScalarContentHash(parts...) {
+		t.Fatalf("streamed catalog hash differs from persisted NUL-separated format: %s, %v", got, err)
+	}
 }

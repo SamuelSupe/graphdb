@@ -138,7 +138,7 @@ paths:
             Location:
               schema:
                 type: string
-              description: Batch status resource. In 1.3 PostgreSQL-CAS WAL mode this is the owner-routed /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id} path.
+              description: 'Local batch status resource: /v1/ingest/batches/{source}/{collector_id}/{batch_id}.'
           content:
             application/json:
               schema:
@@ -187,47 +187,18 @@ paths:
           $ref: '#/components/responses/NotFound'
   /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}:
     get:
-      summary: Get an ingest batch status from its stable WAL owner.
-      description: The 1.3 owner-routed status endpoint. The writer_id must be the stable GRAPHDB_INSTANCE_ID returned with the durable 202 response. During WAL startup recovery, the endpoint returns 200 with recovery_pending=true instead of treating an owned batch as missing.
+      summary: Retired writer-routed batch status
+      description: Local disk deployments use /v1/ingest/batches/{source}/{collector_id}/{batch_id}.
+      deprecated: true
       parameters:
-        - name: writer_id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Stable GRAPHDB_INSTANCE_ID of the writer that owns the local WAL.
-        - name: source
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: collector_id
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: batch_id
-          in: path
-          required: true
-          schema:
-            type: string
+        - {name: writer_id, in: path, required: true, schema: {type: string}}
+        - {name: source, in: path, required: true, schema: {type: string}}
+        - {name: collector_id, in: path, required: true, schema: {type: string}}
+        - {name: batch_id, in: path, required: true, schema: {type: string}}
       responses:
-        '200':
-          description: Active, recovering, retrying, or finalized batch status.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IngestBatchStatus'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '405':
-          $ref: '#/components/responses/MethodNotAllowed'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '503':
-          $ref: '#/components/responses/CoordinatorUnavailable'
+        '501':
+          description: Writer routing is unsupported in the local disk edition.
+
   /v1/imports:
     post:
       summary: Upload CSV or JSONL and start a resumable bulk import task.
@@ -883,6 +854,18 @@ paths:
       summary: Start a tenant backup task.
       parameters:
         - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destination:
+                  type: string
+                  enum: [local, object]
+                  default: local
+                  description: Object captures a committed snapshot in the configured S3 backup repository. The completed task result contains an s3:// backup_key.
       responses:
         '202':
           description: Tenant backup task queued.
@@ -896,6 +879,40 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/tenants/{tenant_id}/backups:
+    get:
+      summary: List completed object-storage snapshots for a source tenant, including after local data loss.
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: next_cursor from the previous page; scoped to this tenant and configured repository.
+      responses:
+        '200':
+          description: Published manifests in lexicographic backup-key order, not time order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [backups]
+                properties:
+                  backups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ObjectBackup'
+                  next_cursor:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /v1/tenants/{tenant_id}/restore:
     post:
       summary: Start a tenant restore task from a backup key.
@@ -2561,7 +2578,7 @@ components:
           format: date-time
         status_url:
           type: string
-          description: Owner-routed status resource. In 1.3 PostgreSQL-CAS WAL mode this uses /v1/ingest/writers/{writer_id}/{source}/{collector_id}/{batch_id}.
+          description: 'Local batch status resource: /v1/ingest/batches/{source}/{collector_id}/{batch_id}.'
     IngestBatchStatus:
       type: object
       required: [tenant_id, source, collector_id, batch_id, state, durability]
@@ -2593,7 +2610,7 @@ components:
           format: date-time
         status_url:
           type: string
-          description: Optional owner-routed status resource. Clients must retain the status_url from the 202 response or Location header because a finalized status response may omit this convenience field.
+          description: Optional local batch status resource. Clients must retain the status_url from the 202 response or Location header because a finalized status response may omit this convenience field.
         writer_id:
           type: string
           description: Stable GRAPHDB_INSTANCE_ID of the WAL owner, when this batch was accepted through WAL.
@@ -3698,12 +3715,40 @@ components:
           properties:
             target_tenant_id:
               type: string
+    ObjectBackup:
+      type: object
+      required: [format, tenant_id, backup_id, version, created_at, snapshot_key, bytes, sha256, backup_key]
+      properties:
+        format:
+          type: string
+          enum: [graphdb-object-snapshot-v1]
+        tenant_id:
+          type: string
+        backup_id:
+          type: string
+        version:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        snapshot_key:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        backup_key:
+          type: string
+          description: s3:// URI accepted by restore and restore-drill in the configured repository.
     TenantRestoreRequest:
       type: object
       required: [backup_key]
       properties:
         backup_key:
           type: string
+          description: Local backup key or s3:// manifest URI from an object backup task or backup listing. Remote files are verified before changing the target.
         overwrite:
           type: boolean
         dry_run:

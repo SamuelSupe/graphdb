@@ -25,14 +25,7 @@ type commandSpec struct {
 var commandSpecs = []commandSpec{
 	{name: "serve", usage: []string{"graphdb serve"}, kind: commandServe},
 	{name: "version", usage: []string{"graphdb version"}, kind: commandVersion},
-	{name: "coordinator", usage: []string{
-		"graphdb coordinator migrate",
-		"graphdb coordinator bootstrap --dry-run|--apply",
-		"graphdb coordinator status",
-		"graphdb coordinator sync-legacy-manifest",
-		"graphdb coordinator rollback --dry-run",
-		"graphdb coordinator rollback --apply --writers-stopped",
-	}, kind: commandCoordinator},
+	{name: "coordinator", usage: []string{"graphdb coordinator (unsupported in local disk edition)"}, kind: commandCoordinator},
 	{name: "init-tenant", usage: []string{"graphdb init-tenant <tenant-id>"}, mutation: true, handler: initTenant},
 	{name: "list-tenants", usage: []string{"graphdb list-tenants"}, handler: listTenants},
 	{name: "tenant", usage: []string{"graphdb tenant <tenant-id>"}, handler: tenantInfo},

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -875,6 +876,9 @@ func TestIngestDurableBatchMergesExistingLooseTail(t *testing.T) {
 	if len(before.CommitKeys) != 1 {
 		t.Fatalf("seed manifest = %#v, want one loose commit", before)
 	}
+	if _, err := store.RebuildIndexes(context.Background(), "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
 	results, err := store.IngestDurableBatch(context.Background(), "tenant-a", []IngestBatchEntry{
 		{Request: ingestEntityRequest("batch-1", "host:1")},
 		{Request: ingestEntityRequest("batch-2", "host:2")},
@@ -903,6 +907,172 @@ func TestIngestDurableBatchMergesExistingLooseTail(t *testing.T) {
 	}
 	if loadedManifest.Version != 3 || len(loaded.Entities) != 3 {
 		t.Fatalf("reloaded graph/manifest = %d entities, version %d", len(loaded.Entities), loadedManifest.Version)
+	}
+	catalog, err := reloaded.GetIndexCatalog(context.Background(), "tenant-a")
+	if err != nil || catalog.Version != manifest.Version {
+		t.Fatalf("batch index version = %d, want %d: %v", catalog.Version, manifest.Version, err)
+	}
+	lookup := &PersistedIndexLookup{Store: reloaded, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	for _, id := range []string{"host:seed", "host:1", "host:2"} {
+		entity, ok, err := lookup.GetEntity(context.Background(), id, nil)
+		if err != nil || !ok || entity.ID != id {
+			t.Fatalf("batch indexed entity %s: entity=%v available=%v err=%v", id, entity, ok, err)
+		}
+	}
+	reverse, _, err := reloaded.getReverseIndexCatalogWithMeta(context.Background(), "tenant-a")
+	if err != nil || reverse.Version != manifest.Version {
+		t.Fatalf("batch reverse index version = %d, want %d: %v", reverse.Version, manifest.Version, err)
+	}
+}
+
+func TestLocalIngestPublishesWhileIndexesCatchUp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	store.WriteEntityRecords = false
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &blockOncePutStore{ObjectStore: files, substring: "/indexes/parquet/", paused: make(chan struct{}), resume: make(chan struct{})}
+	resume := sync.OnceFunc(func() { close(blocked.resume) })
+	t.Cleanup(resume)
+	store.Objects = blocked
+	if _, err := store.IngestDurableBatch(ctx, "tenant-a", []IngestBatchEntry{
+		{Request: ingestEntityRequest("batch-1", "host:1")},
+		{Request: ingestEntityRequest("batch-2", "host:2")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.paused:
+	case <-ctx.Done():
+		t.Fatal("index update did not start")
+	}
+	for i, id := range []string{"host:3", "host:4", "host:3"} {
+		request := ingestEntityRequest("next-"+id, id)
+		request.BatchID += string(rune('a' + i))
+		request.Items[0].Entity.Fields["revision"] = i
+		if i == 0 {
+			// Cross the pending-delta bound, then merge another update. The
+			// resulting rebuild must include both the large batch and its tail.
+			for n := 0; n < maxPendingIndexChanges; n++ {
+				id := fmt.Sprintf("host:bulk-%d", n)
+				request.Items = append(request.Items, IngestItem{ExternalID: id, Entity: &graph.Entity{ID: id, Kind: "host"}})
+			}
+		}
+		var results []IngestResult
+		var err error
+		if i == 1 {
+			var result IngestResult
+			result, err = store.Ingest(ctx, "tenant-a", request)
+			results = []IngestResult{result}
+		} else {
+			results, err = store.IngestDurableBatch(ctx, "tenant-a", []IngestBatchEntry{{Request: request}})
+		}
+		if err != nil || results[0].Version != int64(4+i) {
+			t.Fatalf("WAL publication while indexes are blocked: %v, %v", results, err)
+		}
+	}
+	store.indexUpdateMu.Lock()
+	done := store.indexUpdateTails["tenant-a"]
+	store.indexUpdateMu.Unlock()
+	resume()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("indexes did not catch up after publication")
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil || catalog.Version != 6 {
+		t.Fatalf("caught-up catalog: %d, %v", catalog.Version, err)
+	}
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	for _, id := range []string{"host:1", "host:2", "host:3", "host:4", "host:bulk-8191"} {
+		entity, ok, err := lookup.GetEntity(ctx, id, nil)
+		if err != nil || !ok || entity.ID != id {
+			t.Fatalf("coalesced indexed entity %s: available=%v err=%v", id, ok, err)
+		}
+		if id == "host:3" && entity.Fields["revision"] != float64(2) {
+			t.Fatalf("coalesced update lost the last revision: %v", entity.Fields)
+		}
+	}
+}
+
+func TestLocalIngestBoundsBackgroundIndexWorkAcrossTenants(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	store.WriteEntityRecords = false
+	var objects ObjectStore = files
+	blocked := make([]*blockOncePutStore, maxBackgroundIndexUpdates+1)
+	resumes := make([]func(), len(blocked))
+	for i := range blocked {
+		tenant := fmt.Sprintf("tenant-%d", i)
+		if _, err := store.Commit(ctx, tenant, indexMutations(), CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.RebuildIndexes(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		blocked[i] = &blockOncePutStore{ObjectStore: objects, substring: "/tenants/" + tenant + "/indexes/parquet/", paused: make(chan struct{}), resume: make(chan struct{})}
+		objects = blocked[i]
+		resumes[i] = sync.OnceFunc(func() { close(blocked[i].resume) })
+		t.Cleanup(resumes[i])
+	}
+	store.Objects = objects
+	for i := 0; i < maxBackgroundIndexUpdates; i++ {
+		if _, err := store.Ingest(ctx, fmt.Sprintf("tenant-%d", i), ingestEntityRequest("batch", "host:new")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-blocked[i].paused:
+		case <-ctx.Done():
+			t.Fatal("background index did not start")
+		}
+	}
+	tenant := fmt.Sprintf("tenant-%d", maxBackgroundIndexUpdates)
+	completed := make(chan error, 1)
+	go func() {
+		_, err := store.Ingest(ctx, tenant, ingestEntityRequest("batch", "host:new"))
+		completed <- err
+	}()
+	select {
+	case <-blocked[maxBackgroundIndexUpdates].paused:
+	case <-ctx.Done():
+		t.Fatal("foreground fallback did not start")
+	}
+	select {
+	case err := <-completed:
+		t.Fatalf("ingest escaped background limit before finishing indexes: %v", err)
+	default:
+	}
+	// Capacity pressure must not hold the publication lock while indexing.
+	unlock, err := store.lockTenantForeground(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	resumes[maxBackgroundIndexUpdates]()
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("foreground fallback did not finish")
 	}
 }
 

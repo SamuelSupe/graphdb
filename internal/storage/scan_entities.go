@@ -22,6 +22,20 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 	if err := ValidateTenantID(tenantID); err != nil {
 		return EntityScanResult{}, err
 	}
+	ctx, releaseView, err := s.ReadViewContext(ctx, tenantID)
+	if err != nil {
+		return EntityScanResult{}, err
+	}
+	defer releaseView()
+	binding, err := s.ValidateScanCursor(ctx, tenantID, options.Cursor)
+	if err != nil {
+		return EntityScanResult{}, err
+	}
+	defer func() {
+		if err == nil {
+			result.NextCursor, err = binding.PinGeneration(result.NextCursor)
+		}
+	}()
 	options.normalize()
 	cursorVersion, cursorCatalogHash, hasCursorVersion, err := scanCursorPinnedCatalog(options.Cursor)
 	if err != nil {
@@ -72,7 +86,7 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 		} else if !errors.Is(catalogErr, ErrNotFound) {
 			return EntityScanResult{}, catalogErr
 		}
-		if manifestVersion != cursorVersion {
+		if cursorCatalogHash != "" || manifestVersion != cursorVersion {
 			return EntityScanResult{}, fmt.Errorf("cursor version %d is no longer available", cursorVersion)
 		}
 	}
@@ -227,6 +241,9 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		return false
 	}
 	loadPage := func(spec EntityPageSpec, key string) (loaded loadedEntityScanPage, loadErr error) {
+		if exclusiveFileStore(s.Objects) != nil {
+			return s.loadLocalEntityPage(ctx, tenantID, version, spec, options, cursor)
+		}
 		reusePhysicalObject := objectRefCounts[key] > 1
 		if object, ok := objectBytes[key]; reusePhysicalObject && ok {
 			loaded.data = object.data

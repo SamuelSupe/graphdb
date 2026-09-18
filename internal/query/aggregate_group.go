@@ -41,7 +41,7 @@ func (a *groupAccumulator) add(result Result) error {
 	return group.acc.add(result)
 }
 
-func (a *groupAccumulator) addEntity(entity graph.Entity) error {
+func (a *groupAccumulator) addEntity(entity *graph.Entity) error {
 	if a == nil {
 		return nil
 	}
@@ -102,7 +102,7 @@ func aggregateGroupKey(result Result, fields []string) (map[string]any, string) 
 	})
 }
 
-func aggregateGroupEntityKey(entity graph.Entity, fields []string) (map[string]any, string) {
+func aggregateGroupEntityKey(entity *graph.Entity, fields []string) (map[string]any, string) {
 	return aggregateGroupKeyValues(fields, func(field string) any {
 		return entityValue(entity, field)
 	})

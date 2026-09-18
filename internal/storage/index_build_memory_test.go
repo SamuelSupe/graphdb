@@ -2,14 +2,40 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 var benchmarkIndexBuildArtifacts indexBuildArtifacts
+
+func TestIncrementalEntityPagesPreserveNormalizedHashes(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	for _, number := range []any{float64(2), int(2), json.Number("2")} {
+		before, after := graph.New(), graph.New()
+		before.Version, after.Version = 1, 2
+		after.Entities["host:a"] = graph.Entity{ID: "host:a", Kind: "host", Fields: graph.Fields{"nested": map[string]any{"count": number}}}
+		pages, _, err := store.buildIncrementalEntityPages(context.Background(), "tenant-a", 1, nil, before, after, []string{"host:a"}, 2, time.Now())
+		if err != nil || len(pages) != 1 {
+			t.Fatalf("incremental pages: %v, %v", pages, err)
+		}
+		legacy := pages[0]
+		legacy.logicalContentHash, legacy.hashCanonical = "", false
+		if entityPageContentHash(pages[0]) != entityPageContentHash(legacy) {
+			t.Fatalf("normalized hash changed for %T", number)
+		}
+		if _, err := marshalParquetEntityPage(context.Background(), pages[0]); err != nil {
+			t.Fatal(err)
+		}
+		if after.Entities["host:a"].Fields["nested"].(map[string]any)["count"] != number {
+			t.Fatal("index preparation mutated graph fields")
+		}
+	}
+}
 
 func TestPreparedIndexArtifactsPreserveLogicalHashes(t *testing.T) {
 	g, err := graph.FromSnapshot(graph.Snapshot{

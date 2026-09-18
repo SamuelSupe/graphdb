@@ -64,7 +64,7 @@ func TestIndexTaskMarkerIODoesNotBlockOtherTaskAdmission(t *testing.T) {
 		Type:     TaskTypeCompact,
 	}
 	go func() {
-		_, _, err := store.admitTask(task)
+		_, _, err := store.admitTask(context.Background(), task)
 		admissionDone <- err
 	}()
 	select {

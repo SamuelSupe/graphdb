@@ -135,7 +135,7 @@ func streamLazyMatch(g *graph.Graph, request Request, cursor cursorState, budget
 			return nil, "", err
 		}
 		budget.scanned++
-		if !requestEntityMatches(request, entity) {
+		if !requestEntityMatches(&request, &entity) {
 			continue
 		}
 		result := Result{Entity: &entity}

@@ -53,7 +53,7 @@ func (s *TenantStore) writeParquetSecondaryIndexesWithOptions(ctx context.Contex
 			})
 		}
 	}
-	return runIndexWriteJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
+	return s.runFileWriteJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
 		return jobs[index](workCtx)
 	})
 }
@@ -166,7 +166,11 @@ func marshalParquetSecondaryIndex(ctx context.Context, index SecondaryIndex) ([]
 }
 
 func decodeParquetSecondaryIndex(ctx context.Context, data []byte, tenantID string, kind string, field string, version int64, unique bool) (SecondaryIndex, error) {
-	table, release, err := readParquetTable(ctx, data)
+	return decodeParquetSecondaryIndexReader(ctx, bytes.NewReader(data), tenantID, kind, field, version, unique)
+}
+
+func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.ReaderAtSeeker, tenantID string, kind string, field string, version int64, unique bool) (SecondaryIndex, error) {
+	table, release, err := readParquetTableReader(ctx, source)
 	if err != nil {
 		return SecondaryIndex{}, err
 	}
@@ -454,6 +458,21 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 			return index, true, nil
 		}
 		s.dropCachedIndexObject("secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash)
+	}
+	if s.localFileStore() != nil {
+		reader, err := openFileReader(ctx, s.Objects, object.Key)
+		if errors.Is(err, ErrNotFound) {
+			return SecondaryIndex{}, false, nil
+		}
+		if err != nil {
+			return SecondaryIndex{}, false, err
+		}
+		defer reader.Close()
+		index, err := decodeParquetSecondaryIndexReader(ctx, borrowedParquetSource{reader}, tenantID, spec.Kind, spec.Field, 0, secondaryIndexSpecUnique(spec))
+		if err == nil {
+			index.cacheVerified = secondaryIndexObjectMatches(index, tenantID, version, spec, object.ContentHash)
+		}
+		return index, true, err
 	}
 	data, meta, err := s.Objects.GetWithMeta(ctx, object.Key)
 	if errors.Is(err, ErrNotFound) {

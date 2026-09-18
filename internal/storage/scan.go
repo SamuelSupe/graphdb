@@ -54,6 +54,7 @@ type EdgeScanResult struct {
 }
 
 type scanCursor struct {
+	Generation  int64  `json:"generation,omitempty"`
 	Version     int64  `json:"version"`
 	CatalogHash string `json:"catalog_hash,omitempty"`
 	After       string `json:"after,omitempty"`

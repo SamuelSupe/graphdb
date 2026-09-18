@@ -18,7 +18,7 @@ func (s *TenantStore) captureTenantBackup(
 		return loadedGraph{}, TenantBackupRecord{}, "", err
 	}
 	defer unlock()
-	loaded, err := s.loadWithMeta(ctx, tenantID)
+	loaded, err := s.loadForWriteLocked(ctx, tenantID)
 	if err != nil {
 		return loadedGraph{}, TenantBackupRecord{}, "", err
 	}

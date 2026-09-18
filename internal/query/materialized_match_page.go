@@ -55,7 +55,7 @@ func executeMaterializedKindPage(
 						}
 						budget.scanned++
 						if (request.Kind != "" && entity.Kind != request.Kind) ||
-							!requestEntityMatches(request, entity) ||
+							!requestEntityMatches(&request, &entity) ||
 							(afterID != "" &&
 								compareEntityPageOrder(entity.ID, afterID, order) <= 0) {
 							continue
@@ -122,7 +122,7 @@ func executeMaterializedIdentityPage(
 							return false, err
 						}
 						budget.scanned++
-						if !requestEntityMatches(request, entity) {
+						if !requestEntityMatches(&request, &entity) {
 							return true, nil
 						}
 						matched = append(matched, graph.CopyEntity(entity))
@@ -167,7 +167,7 @@ func validateMaterializedMatchCursor(
 	entity, ok := g.Entities[id]
 	if !ok ||
 		(request.Kind != "" && entity.Kind != request.Kind) ||
-		!requestEntityMatches(request, entity) {
+		!requestEntityMatches(&request, &entity) {
 		return "", invalidCursorAfter(cursor)
 	}
 	return id, nil

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -224,7 +225,13 @@ func (s *Server) backupTenant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	task, err := s.Store.StartTask(r.Context(), tenantID, storage.TaskTypeTenantBackup, nil)
+	var request struct {
+		Destination string `json:"destination,omitempty"`
+	}
+	if r.ContentLength != 0 && !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
+		return
+	}
+	task, err := s.Store.StartTask(r.Context(), tenantID, storage.TaskTypeTenantBackup, map[string]any{"destination": request.Destination})
 	if err != nil {
 		s.auditError("tenant_backup_start_failed", tenantID, err, map[string]any{})
 		writeTenantLifecycleError(w, err)
@@ -259,6 +266,28 @@ func (s *Server) restoreTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditInfo("tenant_restore_started", tenantID, map[string]any{"task_id": task.ID, "backup_key": request.BackupKey})
 	writeJSON(w, http.StatusAccepted, task)
+}
+
+func (s *Server) listTenantObjectBackups(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromLifecyclePath(w, r, 2, "backup list path must be /v1/tenants/{tenant-id}/backups")
+	if !ok {
+		return
+	}
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		var err error
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+	}
+	page, err := s.Store.ListObjectBackups(r.Context(), tenantID, r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		writeTenantLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) restoreDrillTenant(w http.ResponseWriter, r *http.Request) {
@@ -313,6 +342,8 @@ func (s *Server) tenantLifecycle(w http.ResponseWriter, r *http.Request) {
 		s.cloneTenant(w, r)
 	case strings.HasSuffix(r.URL.Path, "/backup") && r.Method == http.MethodPost:
 		s.backupTenant(w, r)
+	case strings.HasSuffix(r.URL.Path, "/backups") && r.Method == http.MethodGet:
+		s.listTenantObjectBackups(w, r)
 	case strings.HasSuffix(r.URL.Path, "/restore") && r.Method == http.MethodPost:
 		s.restoreTenant(w, r)
 	case strings.HasSuffix(r.URL.Path, "/restore-drill") && r.Method == http.MethodPost:

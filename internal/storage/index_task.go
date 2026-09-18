@@ -304,6 +304,10 @@ func (s *TenantStore) scanRunningIndexRebuildTasks(ctx context.Context, tenantID
 }
 
 func (s *TenantStore) indexTaskActive(ctx context.Context, tenantID string, task IndexTask, now time.Time) (bool, error) {
+	if exclusiveFileStore(s.Objects) != nil {
+		return s.taskRuntimeActive(tenantID, task.ID) ||
+			indexTaskWithinLeaseGrace(task, now, s.leaseTTL()), nil
+	}
 	// A local worker can outlive the writer lease while queued or cleaning up.
 	// Its registered runtime remains authoritative until finalization completes.
 	if !s.coordinated() && task.OwnerID == s.InstanceID && s.taskRuntimeActive(tenantID, task.ID) {
@@ -569,10 +573,24 @@ func (s *TenantStore) saveIndexTask(ctx context.Context, task IndexTask) error {
 	if err != nil {
 		return err
 	}
+	startSlot := s.indexTaskStartSlot(task.TenantID)
+	if !acquireTaskSlot(ctx, startSlot) {
+		return ctx.Err()
+	}
+	defer releaseTaskSlot(startSlot)
+
 	if err := s.putTenantGenerationObject(ctx, task.TenantID, s.indexTaskKey(task.TenantID, task.ID), data); err != nil {
 		return err
 	}
 	if task.Type != "rebuild" {
+		return nil
+	}
+	// An older rebuild may still be cleaning up after a definition change has
+	// queued its replacement. Only the current task may update the shared marker.
+	s.taskMu.Lock()
+	current, exists := s.indexTasks[task.TenantID]
+	s.taskMu.Unlock()
+	if exists && current.ID != task.ID {
 		return nil
 	}
 	if indexTaskStillActive(task) {

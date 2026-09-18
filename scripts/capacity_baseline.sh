@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WRITER_URL="${WRITER_URL:-http://127.0.0.1:${GRAPHDB_PORT:-38080}}"
-READER_URL="${READER_URL:-http://127.0.0.1:${GRAPHDB_READER_PORT:-38081}}"
+READER_URL="${READER_URL:-$WRITER_URL}"
 PROFILE="${CAPACITY_PROFILE:-smoke}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_ID_SLUG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"

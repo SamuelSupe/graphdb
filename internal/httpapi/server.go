@@ -154,6 +154,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = w.Write(s.obs().Metrics.SnapshotPrometheus())
+	storage.WriteDiskMetrics(w)
 }
 
 func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +288,25 @@ func (s *Server) entity(w http.ResponseWriter, r *http.Request) {
 		writeReadError(w, err)
 		return
 	}
+	if s.Mode == "all" && s.Cache != nil {
+		used, err := s.Cache.WithCachedReadOnlyGraph(r.Context(), tenantID, target.TargetVersion, func(g *graph.Graph, manifest storage.Manifest) error {
+			entity, found := g.GetEntityByReference(id)
+			if !found {
+				writeError(w, http.StatusNotFound, "entity not found")
+				return nil
+			}
+			s.recordReaderVisible(tenantID, manifest.Version)
+			writeJSON(w, http.StatusOK, map[string]any{"version": manifest.Version, "entity": entity.JSONValue()})
+			return nil
+		})
+		if err != nil {
+			writeReadError(w, err)
+			return
+		}
+		if used {
+			return
+		}
+	}
 	if target.ManifestVersion > 0 {
 		options, version, ok := s.lazyQueryOptions(
 			r.Context(), tenantID, target.ManifestVersion, false,
@@ -299,7 +319,7 @@ func (s *Server) entity(w http.ResponseWriter, r *http.Request) {
 			}
 			if ok {
 				s.recordReaderVisible(tenantID, version)
-				writeJSON(w, http.StatusOK, map[string]any{"version": version, "entity": entity})
+				writeJSON(w, http.StatusOK, map[string]any{"version": version, "entity": entity.JSONValue()})
 				return
 			}
 		}
@@ -320,7 +340,7 @@ func (s *Server) entity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "entity not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": version, "entity": entity})
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "entity": entity.JSONValue()})
 }
 
 func escapedPathTail(r *http.Request, prefix string) (string, error) {

@@ -286,7 +286,7 @@ func (s *TenantStore) createRestoreDrillBackup(ctx context.Context, tenantID str
 		return tenantBackupInput{}, "", BackupManifestStats{}, err
 	}
 	backupManifest, err := s.buildBackupManifest(
-		ctx, tenantID, backupID, record, resultKey, manifest, loaded.Meta.Key,
+		ctx, tenantID, backupID, record, resultKey,
 	)
 	if err != nil {
 		return tenantBackupInput{}, "", BackupManifestStats{}, err

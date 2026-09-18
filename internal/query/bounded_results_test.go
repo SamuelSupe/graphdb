@@ -3,6 +3,7 @@ package query
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
@@ -18,6 +19,17 @@ func TestBoundedResultsMatchesFullSort(t *testing.T) {
 		{ID: "host:d", Fields: graph.Fields{"score": 3, "zone": "c"}},
 		{ID: "host:c", Fields: graph.Fields{"score": 3, "zone": "b"}},
 	}
+	for i := 0; i < 64; i++ {
+		entities = append(entities, graph.Entity{
+			ID: fmt.Sprintf("host:%03d", i),
+			Fields: graph.Fields{
+				"score": (i * 37) % 17, "zone": fmt.Sprintf("zone-%d", i%3),
+				graph.ReservedLabelsField: []any{fmt.Sprintf("label-%d", i%5)},
+			},
+			Identity:  map[string]any{"hostname": fmt.Sprintf("name-%d", (i*13)%11)},
+			CreatedAt: time.Unix(int64((i*7)%19), 0).UTC(),
+		})
+	}
 	all := make([]Result, len(entities))
 	for i := range entities {
 		all[i] = Result{Entity: &entities[i]}
@@ -31,6 +43,14 @@ func TestBoundedResultsMatchesFullSort(t *testing.T) {
 		{name: "ascending", specs: []SortSpec{{Field: "score"}}, keep: 3},
 		{name: "descending", specs: []SortSpec{{Field: "score", Desc: true}}, keep: 4},
 		{name: "multiple", specs: []SortSpec{{Field: "score", Desc: true}, {Field: "zone"}}, keep: 5},
+		{name: "one", specs: []SortSpec{{Field: "score"}}, keep: 1},
+		{name: "all", specs: []SortSpec{{Field: "zone"}, {Field: "score"}}, keep: len(entities)},
+		{name: "large-window", specs: []SortSpec{{Field: "zone"}, {Field: "score", Desc: true}}, keep: 10_000},
+		{name: "id-fallback", keep: 13},
+		{name: "explicit-fields", specs: []SortSpec{{Field: "fields.score"}, {Field: "fields.zone", Desc: true}}, keep: 17},
+		{name: "identity", specs: []SortSpec{{Field: "identity.hostname", Desc: true}}, keep: 23},
+		{name: "labels", specs: []SortSpec{{Field: "labels"}}, keep: 31},
+		{name: "timestamp", specs: []SortSpec{{Field: "created_at", Desc: true}}, keep: 9},
 		{name: "empty", specs: []SortSpec{{Field: "id"}}, keep: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -55,7 +75,7 @@ func TestBoundedResultsMatchesFullSort(t *testing.T) {
 
 			boundedEntities := newBoundedEntities(test.specs, test.keep)
 			for _, entity := range entities {
-				boundedEntities.Add(entity)
+				boundedEntities.Add(&entity)
 			}
 			actualEntities := boundedEntities.Sorted()
 			if len(actualEntities) != len(expected) {

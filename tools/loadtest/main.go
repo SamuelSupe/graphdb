@@ -10,18 +10,24 @@ import (
 )
 
 type config struct {
-	baseURL                string
-	readerURL              string
-	tenant                 string
-	writers                int
-	readers                int
-	batches                int
-	batchSize              int
-	timeout                time.Duration
-	httpTimeout            time.Duration
-	maintenanceTimeout     time.Duration
-	allowWriteBackpressure bool
-	reportJSON             string
+	duration, warmup        time.Duration
+	writeInterval           time.Duration
+	entities                int
+	seedOnly, skipSeed, wal bool
+	runID                   string
+	updateEpoch             string
+	baseURL                 string
+	readerURL               string
+	tenant                  string
+	writers                 int
+	readers                 int
+	batches                 int
+	batchSize               int
+	timeout                 time.Duration
+	httpTimeout             time.Duration
+	maintenanceTimeout      time.Duration
+	allowWriteBackpressure  bool
+	reportJSON              string
 }
 
 func main() {
@@ -34,6 +40,13 @@ func main() {
 	reader := client
 	if cfg.readerURL != "" {
 		reader = newClient(cfg.readerURL, cfg.tenant, cfg.httpTimeout)
+	}
+	if cfg.duration > 0 || cfg.seedOnly {
+		if err := runTimed(ctx, cfg, client, reader); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
 	}
 	metrics := newRegistry()
 	if err := client.health(ctx, metrics); err != nil {
@@ -89,8 +102,17 @@ func parseConfig() config {
 	flag.DurationVar(&cfg.maintenanceTimeout, "maintenance-timeout", 10*time.Minute, "timeout for post-load maintenance calls")
 	flag.BoolVar(&cfg.allowWriteBackpressure, "allow-write-backpressure", false, "treat write 429 backpressure as expected load shedding")
 	flag.StringVar(&cfg.reportJSON, "report-json", "", "optional path for a machine-readable JSON report")
+	flag.DurationVar(&cfg.duration, "duration", 0, "measure updates on a fixed graph for this duration")
+	flag.DurationVar(&cfg.warmup, "warmup", time.Minute, "unmeasured warmup for timed runs")
+	flag.DurationVar(&cfg.writeInterval, "write-interval", 0, "target interval between write starts per client; zero measures maximum throughput")
+	flag.IntVar(&cfg.entities, "entities", 10002, "fixed graph cardinality, rounded down to complete batches")
+	flag.BoolVar(&cfg.seedOnly, "seed-only", false, "seed and rebuild the fixed graph, then stop")
+	flag.BoolVar(&cfg.skipSeed, "skip-seed", false, "reuse a previously seeded fixed graph")
+	flag.BoolVar(&cfg.wal, "wal", false, "measure WAL acceptance through readable publication")
+	flag.StringVar(&cfg.runID, "run-id", "timed", "unique idempotency namespace for a timed run")
+	flag.StringVar(&cfg.updateEpoch, "update-epoch", "run", "fixed data revision namespace, shared by compared timed runs")
 	flag.Parse()
-	if cfg.writers < 1 {
+	if cfg.writers < 0 || (cfg.writers == 0 && cfg.duration == 0 && !cfg.seedOnly) {
 		cfg.writers = 1
 	}
 	if cfg.readers < 0 {

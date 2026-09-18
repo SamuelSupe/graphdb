@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -356,6 +357,69 @@ func TestBoundedIndexedMatchReturnsOwnedEntities(t *testing.T) {
 	}
 	if original.Fields["hostname"] == "mutated" {
 		t.Fatal("mutating the response changed the graph entity")
+	}
+
+	for _, strategy := range []string{"field-index", "field-index-scan"} {
+		for _, projected := range []bool{false, true} {
+			g := seedCMDBGraph(t)
+			for id, entity := range g.Entities {
+				entity.Fields["nested"] = map[string]any{"values": []any{"original"}}
+				entity.Fields[graph.ReservedLabelsField] = []string{"original"}
+				entity.Identity["nested"] = map[string]any{"value": "original"}
+				g.Entities[id] = entity
+			}
+			request := Request{
+				Op: "match", Kind: "host", Limit: 1, Profile: true,
+				Sort: []SortSpec{{Field: "cpu", Desc: true}}, Aggregate: []Aggregation{{Op: "count"}},
+				Where: []Filter{{Field: "cpu", Op: "gte", Value: 0}},
+			}
+			if strategy == "field-index" {
+				request.Where = []Filter{{Field: "region", Op: "eq", Value: "us-east-1"}}
+			}
+			if projected {
+				request.Project = []string{"id", "nested", "fields.nested", "labels", "identity.nested", "missing"}
+			}
+			seen := map[string]bool{}
+			for {
+				response, err := Execute(g, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.Plan.Strategy != strategy || len(response.Results) != 1 {
+					t.Fatalf("strategy=%s projected=%v: unexpected response: %#v", strategy, projected, response)
+				}
+				result := &response.Results[0]
+				before, _ := g.GetEntity(result.Entity.ID)
+				wantEntity := graph.CopyEntity(before)
+				want := Result{Entity: &wantEntity}
+				applyProjection(&want, request.Project)
+				if !reflect.DeepEqual(*result, want) {
+					t.Fatalf("strategy=%s projected=%v: result differs from full-copy projection", strategy, projected)
+				}
+				if seen[result.Entity.ID] {
+					t.Fatalf("entity repeated across pages: %s", result.Entity.ID)
+				}
+				seen[result.Entity.ID] = true
+				if projected {
+					result.Fields["nested"].(map[string]any)["values"].([]any)[0] = "changed"
+					result.Fields["identity.nested"].(map[string]any)["value"] = "changed"
+					result.Fields["labels"].([]string)[0] = "changed"
+				}
+				result.Entity.Fields["nested"].(map[string]any)["values"].([]any)[0] = "changed again"
+				result.Entity.Identity["nested"].(map[string]any)["value"] = "changed again"
+				after, _ := g.GetEntity(result.Entity.ID)
+				if !reflect.DeepEqual(before, after) {
+					t.Fatalf("strategy=%s projected=%v: response changed the shared graph", strategy, projected)
+				}
+				if response.NextCursor == "" {
+					if response.Aggregates["count"] != len(seen) {
+						t.Fatalf("pagination lost entities: count=%v seen=%d", response.Aggregates["count"], len(seen))
+					}
+					break
+				}
+				request.Cursor = response.NextCursor
+			}
+		}
 	}
 }
 

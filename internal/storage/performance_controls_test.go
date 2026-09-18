@@ -223,18 +223,18 @@ func TestTaskAdmissionDeduplicatesAndBoundsQueue(t *testing.T) {
 	tasks := make([]Task, 0, defaultTaskQueueLimit)
 	for i := 0; i < defaultTaskQueueLimit; i++ {
 		task := Task{ID: fmt.Sprintf("task-%03d", i), TenantID: "tenant-a", Type: fmt.Sprintf("type-%03d", i), Status: TaskStatusQueued}
-		if _, reused, err := store.admitTask(task); err != nil || reused {
+		if _, reused, err := store.admitTask(context.Background(), task); err != nil || reused {
 			t.Fatalf("admit task %d: reused=%v err=%v", i, reused, err)
 		}
 		tasks = append(tasks, task)
 	}
 	duplicate := tasks[0]
 	duplicate.ID = "duplicate"
-	active, reused, err := store.admitTask(duplicate)
+	active, reused, err := store.admitTask(context.Background(), duplicate)
 	if err != nil || !reused || active.ID != tasks[0].ID {
 		t.Fatalf("duplicate admission = active %#v reused=%v err=%v", active, reused, err)
 	}
-	if _, _, err := store.admitTask(Task{ID: "overflow", TenantID: "tenant-b", Type: "overflow"}); err == nil {
+	if _, _, err := store.admitTask(context.Background(), Task{ID: "overflow", TenantID: "tenant-b", Type: "overflow"}); err == nil {
 		t.Fatal("task admission accepted queue overflow")
 	}
 	for _, task := range tasks {
@@ -249,7 +249,7 @@ func TestQueuedTaskCancellationPersistsBeforeExecutionSlot(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	task := Task{ID: "task-canceled-in-queue", TenantID: "tenant-a", Type: TaskTypeCompact, Status: TaskStatusQueued, Phase: TaskStatusQueued, StartedAt: time.Now().UTC()}
-	if _, reused, err := store.admitTask(task); err != nil || reused {
+	if _, reused, err := store.admitTask(context.Background(), task); err != nil || reused {
 		t.Fatalf("admit task: reused=%v err=%v", reused, err)
 	}
 	if err := store.saveTask(ctx, task); err != nil {

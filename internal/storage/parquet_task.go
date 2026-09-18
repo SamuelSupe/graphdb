@@ -270,7 +270,11 @@ func marshalParquetTaskResult(ctx context.Context, tenantID string, taskID strin
 }
 
 func decodeParquetTaskResult(ctx context.Context, data []byte, tenantID string, taskID string) (map[string]any, error) {
-	identity, rows, err := decodeParquetTaskRows(ctx, data)
+	return decodeParquetTaskResultReader(ctx, bytes.NewReader(data), tenantID, taskID)
+}
+
+func decodeParquetTaskResultReader(ctx context.Context, source parquet.ReaderAtSeeker, tenantID string, taskID string) (map[string]any, error) {
+	identity, rows, err := decodeParquetTaskRowsReader(ctx, source)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +334,11 @@ func marshalParquetTaskRows(ctx context.Context, identity parquetTaskIdentity, r
 }
 
 func decodeParquetTaskRows(ctx context.Context, data []byte) (parquetTaskIdentity, []parquetTaskRow, error) {
-	table, release, err := readParquetTable(ctx, data)
+	return decodeParquetTaskRowsReader(ctx, bytes.NewReader(data))
+}
+
+func decodeParquetTaskRowsReader(ctx context.Context, source parquet.ReaderAtSeeker) (parquetTaskIdentity, []parquetTaskRow, error) {
+	table, release, err := readParquetTableReader(ctx, source)
 	if err != nil {
 		return parquetTaskIdentity{}, nil, err
 	}
@@ -613,19 +621,14 @@ func indexTaskContentHash(task IndexTask) (string, error) {
 }
 
 func taskResultContentHash(result map[string]any) (string, error) {
+	// Decoded Parquet values already contain only JSON-normalized types. Keep
+	// the persisted hash while avoiding a second copy of a potentially large
+	// snapshot as nested maps and slices.
 	payload, err := taskResultPayloadJSON(result)
 	if err != nil {
 		return "", err
 	}
-	normalized := map[string]any{}
-	if err := json.Unmarshal(payload, &normalized); err != nil {
-		return "", err
-	}
-	canonical, err := taskResultPayloadJSON(normalized)
-	if err != nil {
-		return "", err
-	}
-	return objectContentHash(canonical), nil
+	return objectContentHash(payload), nil
 }
 
 func taskPayloadJSON(task Task) ([]byte, error) {

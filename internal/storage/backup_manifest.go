@@ -138,134 +138,17 @@ func (s *TenantStore) buildBackupManifest(
 	backupID string,
 	record TenantBackupRecord,
 	backupRecordKey string,
-	manifest Manifest,
-	tenantManifestKey string,
 ) (TenantBackupManifest, error) {
-	refs := []BackupObjectRef{}
-	addRef := func(ref BackupObjectRef) error {
-		if ref.Key == "" {
-			return nil
-		}
-		filled, err := s.backupObjectRef(ctx, ref)
-		if err != nil {
-			return err
-		}
-		refs = append(refs, filled)
-		return nil
-	}
-	addKey := func(role string, key string, rowCount int, contentHash string, schemaHash string, required bool) error {
-		return addRef(BackupObjectRef{Role: role, Key: key, RowCount: rowCount, ContentHash: contentHash, SchemaHash: schemaHash, Required: required})
-	}
-	if err := addKey("backup_record", backupRecordKey, 1, "", "", true); err != nil {
+	ref, err := s.backupObjectRef(ctx, BackupObjectRef{Role: "backup_record", Key: backupRecordKey, RowCount: 1, Required: true})
+	if err != nil {
 		return TenantBackupManifest{}, err
-	}
-	if tenantManifestKey == "" {
-		tenantManifestKey = s.manifestKey(tenantID)
-	}
-	if err := addKey("tenant_manifest", tenantManifestKey, 1, "", "", true); err != nil {
-		return TenantBackupManifest{}, err
-	}
-	if err := addKey("snapshot_record", manifest.SnapshotKey, 1, "", "", false); err != nil {
-		return TenantBackupManifest{}, err
-	}
-	if err := s.backupSnapshotCatalogRefs(ctx, tenantID, manifest, addRef); err != nil {
-		return TenantBackupManifest{}, err
-	}
-	if catalog, err := s.GetIndexCatalog(ctx, tenantID); err == nil && catalog.Version == manifest.Version {
-		catalogHash, err := indexCatalogContentHash(catalog)
-		if err != nil {
-			return TenantBackupManifest{}, err
-		}
-		if err := addRef(BackupObjectRef{Role: "index_catalog", Key: s.indexCatalogKey(tenantID), RowCount: 1, ContentHash: catalogHash, SchemaHash: parquetIndexCatalogSchemaHash()}); err != nil {
-			return TenantBackupManifest{}, err
-		}
-		for _, index := range catalog.Indexes {
-			for _, object := range index.Objects {
-				if err := addRef(BackupObjectRef{
-					Role:        "secondary_index",
-					Key:         object.Key,
-					Kind:        index.Kind,
-					Field:       index.Field,
-					IndexType:   index.Type,
-					RowCount:    object.RowCount,
-					ContentHash: object.ContentHash,
-					SchemaHash:  object.SchemaHash,
-				}); err != nil {
-					return TenantBackupManifest{}, err
-				}
-			}
-		}
-		for _, shard := range catalog.EdgeShards {
-			for _, object := range shard.Objects {
-				if err := addRef(BackupObjectRef{
-					Role:         "edge_shard",
-					Key:          object.Key,
-					RelationType: shard.RelationType,
-					Shard:        shard.Shard,
-					RowCount:     object.RowCount,
-					ContentHash:  object.ContentHash,
-					SchemaHash:   object.SchemaHash,
-				}); err != nil {
-					return TenantBackupManifest{}, err
-				}
-			}
-		}
-		for _, page := range catalog.EntityPages {
-			for _, object := range page.Objects {
-				if err := addRef(BackupObjectRef{
-					Role:        "entity_page",
-					Key:         object.Key,
-					Shard:       page.Shard,
-					RowCount:    object.RowCount,
-					ContentHash: page.ContentHash,
-					SchemaHash:  object.SchemaHash,
-				}); err != nil {
-					return TenantBackupManifest{}, err
-				}
-			}
-		}
-	}
-	stats := BackupManifestStats{ObjectCount: len(refs), Entities: len(record.Snapshot.Entities), Edges: len(record.Snapshot.Edges)}
-	for _, ref := range refs {
-		stats.TotalBytes += ref.Bytes
 	}
 	return TenantBackupManifest{
-		Format:          backupManifestFormat,
-		TenantID:        tenantID,
-		BackupID:        backupID,
-		Version:         record.Version,
-		CreatedAt:       record.CreatedAt,
-		BackupRecordKey: backupRecordKey,
-		Objects:         refs,
-		Stats:           stats,
+		Format: backupManifestFormat, TenantID: tenantID, BackupID: backupID,
+		Version: record.Version, CreatedAt: record.CreatedAt, BackupRecordKey: backupRecordKey,
+		Objects: []BackupObjectRef{ref},
+		Stats:   BackupManifestStats{ObjectCount: 1, TotalBytes: ref.Bytes, Entities: len(record.Snapshot.Entities), Edges: len(record.Snapshot.Edges)},
 	}, nil
-}
-
-func (s *TenantStore) backupSnapshotCatalogRefs(ctx context.Context, tenantID string, manifest Manifest, addRef func(BackupObjectRef) error) error {
-	if manifest.SnapshotCatalogKey == "" {
-		return nil
-	}
-	catalog, err := s.getShardedSnapshotCatalog(ctx, tenantID, manifest.SnapshotCatalogKey)
-	if err != nil {
-		return err
-	}
-	if err := addRef(BackupObjectRef{Role: "snapshot_catalog", Key: manifest.SnapshotCatalogKey, RowCount: 1, ContentHash: shardedSnapshotCatalogContentHash(catalog), SchemaHash: parquetSnapshotCatalogSchemaHash(), Required: true}); err != nil {
-		return err
-	}
-	if err := addRef(BackupObjectRef{Role: "snapshot_schema", Key: catalog.Schema.Key, RowCount: 1, ContentHash: catalog.Schema.ContentHash, Required: true}); err != nil {
-		return err
-	}
-	for _, page := range catalog.EntityPages {
-		if err := addRef(BackupObjectRef{Role: "snapshot_entity_page", Key: page.Key, Shard: page.Shard, RowCount: page.EntityCount, ContentHash: page.ContentHash, SchemaHash: parquetEntityPageSchemaHash(), Required: true}); err != nil {
-			return err
-		}
-	}
-	for _, shard := range catalog.EdgeShards {
-		if err := addRef(BackupObjectRef{Role: "snapshot_edge_shard", Key: shard.Key, RelationType: shard.RelationType, Shard: shard.Shard, RowCount: shard.EdgeCount, ContentHash: shard.ContentHash, SchemaHash: parquetEdgeShardSchemaHash(), Required: true}); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *TenantStore) backupObjectRef(ctx context.Context, ref BackupObjectRef) (BackupObjectRef, error) {
@@ -281,7 +164,14 @@ func (s *TenantStore) backupObjectRef(ctx context.Context, ref BackupObjectRef) 
 
 func (s *TenantStore) validateBackupManifest(ctx context.Context, manifest TenantBackupManifest) BackupIntegrityReport {
 	report := BackupIntegrityReport{Status: "ok", CheckedAt: time.Now().UTC(), ManifestKey: s.backupManifestKey(manifest.TenantID, manifest.BackupID)}
+	foundRecord := false
 	for _, ref := range manifest.Objects {
+		// Older manifests also described live indexes and heads. They are not
+		// recovery inputs: the backup record contains the complete snapshot.
+		if ref.Role != "backup_record" || ref.Key != manifest.BackupRecordKey {
+			continue
+		}
+		foundRecord = true
 		data, _, err := s.Objects.GetWithMeta(ctx, ref.Key)
 		if err != nil {
 			if ref.Required {
@@ -299,73 +189,14 @@ func (s *TenantStore) validateBackupManifest(ctx context.Context, manifest Tenan
 		if ref.SHA256 != "" && objectContentHash(data) != ref.SHA256 {
 			report.Issues = append(report.Issues, "object "+ref.Key+" sha256 mismatch")
 		}
-		report.Issues = append(report.Issues, s.validateBackupObjectPayload(ctx, manifest, ref, data)...)
+	}
+	if !foundRecord {
+		report.Issues = append(report.Issues, "backup record checksum reference is missing")
 	}
 	if len(report.Issues) > 0 {
 		report.Status = "error"
 	}
 	return report
-}
-
-func (s *TenantStore) validateBackupObjectPayload(ctx context.Context, manifest TenantBackupManifest, ref BackupObjectRef, data []byte) []string {
-	switch ref.Role {
-	case "snapshot_entity_page", "entity_page":
-		page, err := decodeParquetEntityPage(ctx, data, manifest.TenantID, ref.Shard, manifest.Version)
-		if err != nil {
-			return []string{"object " + ref.Key + " decode failed: " + err.Error()}
-		}
-		return backupContentIssues(ref, len(page.Entities), entityPageContentHash(page), parquetEntityPageSchemaHash())
-	case "snapshot_edge_shard", "edge_shard":
-		shard, err := decodeParquetEdgeShard(ctx, data, manifest.TenantID, ref.RelationType, ref.Shard, manifest.Version)
-		if err != nil {
-			return []string{"object " + ref.Key + " decode failed: " + err.Error()}
-		}
-		return backupContentIssues(ref, len(shard.Edges), edgeShardContentHash(shard), parquetEdgeShardSchemaHash())
-	case "secondary_index":
-		index, err := decodeParquetSecondaryIndex(ctx, data, manifest.TenantID, ref.Kind, ref.Field, manifest.Version, strings.Contains(ref.IndexType, "unique"))
-		if err != nil {
-			return []string{"object " + ref.Key + " decode failed: " + err.Error()}
-		}
-		return backupContentIssues(ref, secondaryIndexEntryCount(index), secondaryIndexContentHash(index), parquetSecondaryIndexSchemaHash())
-	case "snapshot_schema":
-		schema, err := decodeParquetSnapshotSchema(ctx, data)
-		if err != nil {
-			return []string{"object " + ref.Key + " decode failed: " + err.Error()}
-		}
-		return backupContentIssues(ref, 1, snapshotSchemaContentHash(schema), "")
-	case "snapshot_catalog":
-		catalog, err := decodeParquetShardedSnapshotCatalog(ctx, data)
-		if err != nil {
-			return []string{"object " + ref.Key + " decode failed: " + err.Error()}
-		}
-		return backupContentIssues(ref, 1, shardedSnapshotCatalogContentHash(catalog), parquetSnapshotCatalogSchemaHash())
-	case "index_catalog":
-		catalog, err := decodeParquetIndexCatalog(ctx, data)
-		if err != nil {
-			return []string{"object " + ref.Key + " decode failed: " + err.Error()}
-		}
-		contentHash, err := indexCatalogContentHash(catalog)
-		if err != nil {
-			return []string{"object " + ref.Key + " content_hash unavailable: " + err.Error()}
-		}
-		return backupContentIssues(ref, 1, contentHash, parquetIndexCatalogSchemaHash())
-	default:
-		return nil
-	}
-}
-
-func backupContentIssues(ref BackupObjectRef, rowCount int, contentHash string, schemaHash string) []string {
-	issues := []string{}
-	if ref.RowCount > 0 && ref.RowCount != rowCount {
-		issues = append(issues, "object "+ref.Key+" row_count mismatch")
-	}
-	if ref.ContentHash != "" && ref.ContentHash != contentHash {
-		issues = append(issues, "object "+ref.Key+" content_hash mismatch")
-	}
-	if ref.SchemaHash != "" && schemaHash != "" && ref.SchemaHash != schemaHash {
-		issues = append(issues, "object "+ref.Key+" schema_hash mismatch")
-	}
-	return issues
 }
 
 func (s *TenantStore) restoreIntegrityReport(ctx context.Context, tenantID string) RestoreIntegrityReport {

@@ -10,13 +10,16 @@ with a language-switch link at the top.
 ## User guides
 
 - [User Guide](user/README.md) · [中文](user/README.zh-CN.md)
+- [Local disk deployment and durability](local-disk.md) · [中文](local-disk.zh-CN.md)
+- [Object-storage snapshots and restore](object-backup.md) · [中文](object-backup.zh-CN.md)
+- [Local disk v2 validation and focused benchmark (Chinese)](performance-local-disk-v2.md)
+- [Local disk performance: pagination, JSON encoding and Parquet layout (Chinese)](performance-local-disk-optimization-2.md)
 - [Quick Start](user/quickstart.md) · [中文](user/quickstart.zh-CN.md)
 - [Usage Manual](user/usage-manual.md) · [中文](user/usage-manual.zh-CN.md)
 - [Release Deployment](user/release-deployment.md) · [中文](user/release-deployment.zh-CN.md)
 - [Deployment And Operations](user/deploy-ops.md) · [中文](user/deploy-ops.zh-CN.md)
 - [Data Model](user/data-model.md) · [中文](user/data-model.zh-CN.md)
 - [Write And Ingest](user/write-ingest.md) · [中文](user/write-ingest.zh-CN.md)
-- [1.3 PostgreSQL-CAS Multi-Writer WAL](ingest-wal-multiwriter-design.md) · [中文](ingest-wal-multiwriter-design.zh-CN.md)
 - [Read And Query](user/read-query.md) · [中文](user/read-query.zh-CN.md)
 - [Scan And Export](user/scan-export.md) · [中文](user/scan-export.zh-CN.md)
 - [Tenant And Config](user/tenant-config.md) · [中文](user/tenant-config.zh-CN.md)

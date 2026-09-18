@@ -12,13 +12,13 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
-func (s *Server) withCachedScanGraph(ctx context.Context, tenantID string, minVersion int64, visit func(*graph.Graph, storage.Manifest, storage.IndexCatalog) error) (bool, error) {
+func (s *Server) withCachedScanGraph(ctx context.Context, tenantID string, minVersion int64, visit func(*graph.Graph, storage.Manifest, storage.ScanCursorBinding) error) (bool, error) {
 	if s.Mode != "all" || s.Cache == nil {
 		return false, nil
 	}
 	used := false
 	_, err := s.Cache.WithCachedReadOnlyGraph(ctx, tenantID, minVersion, func(g *graph.Graph, manifest storage.Manifest) error {
-		catalog, err := s.Store.GetIndexCatalogAtVersion(ctx, tenantID, manifest.Version)
+		binding, err := s.Store.GetScanCursorBinding(ctx, tenantID, manifest.Version)
 		if errors.Is(err, storage.ErrNotFound) {
 			return nil
 		}
@@ -27,11 +27,8 @@ func (s *Server) withCachedScanGraph(ctx context.Context, tenantID string, minVe
 		}
 		// A returned cursor must remain readable through the persisted catalog
 		// after this in-memory version has been replaced or evicted.
-		if catalog.Version != manifest.Version {
-			return nil
-		}
 		used = true
-		return visit(g, manifest, catalog)
+		return visit(g, manifest, binding)
 	})
 	return used, err
 }

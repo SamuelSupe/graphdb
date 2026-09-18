@@ -289,14 +289,23 @@ func (s *Server) streamEdgesFromCatalog(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
-func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options storage.EntityScanOptions) (storage.EntityScanResult, error) {
+func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options storage.EntityScanOptions) (result storage.EntityScanResult, err error) {
+	binding, err := s.Store.ValidateScanCursor(ctx, tenantID, options.Cursor)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if err == nil {
+			result.NextCursor, err = binding.PinGeneration(result.NextCursor)
+		}
+	}()
 	if options.Cursor == "" {
 		var result storage.EntityScanResult
-		used, err := s.withCachedScanGraph(ctx, tenantID, options.MinVersion, func(g *graph.Graph, manifest storage.Manifest, catalog storage.IndexCatalog) error {
+		used, err := s.withCachedScanGraph(ctx, tenantID, options.MinVersion, func(g *graph.Graph, manifest storage.Manifest, binding storage.ScanCursorBinding) error {
 			var err error
-			result, err = storage.ListEntitiesFromGraph(ctx, tenantID, g, manifest, options)
+			result, err = s.Cache.ListEntitiesFromReadView(ctx, tenantID, g, manifest, options)
 			if err == nil {
-				result.NextCursor, err = storage.PinScanCursor(result.NextCursor, catalog)
+				result.NextCursor, err = binding.Pin(result.NextCursor)
 			}
 			return err
 		})
@@ -306,25 +315,34 @@ func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options 
 	}
 	indexedOptions := options
 	indexedOptions.SkipGraphFallback = s.Cache != nil
-	result, err := s.Store.ListEntities(ctx, tenantID, indexedOptions)
+	result, err = s.Store.ListEntities(ctx, tenantID, indexedOptions)
 	if !errors.Is(err, storage.ErrGraphScanFallbackRequired) || s.Cache == nil {
 		return result, err
 	}
 	err = s.withReadOnlyGraphForRead(ctx, tenantID, readTarget{TargetVersion: options.MinVersion}, func(g *graph.Graph, manifest storage.Manifest) error {
-		result, err = storage.ListEntitiesFromGraph(ctx, tenantID, g, manifest, options)
+		result, err = s.Cache.ListEntitiesFromReadView(ctx, tenantID, g, manifest, options)
 		return err
 	})
 	return result, err
 }
 
-func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options storage.EdgeScanOptions) (storage.EdgeScanResult, error) {
+func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options storage.EdgeScanOptions) (result storage.EdgeScanResult, err error) {
+	binding, err := s.Store.ValidateScanCursor(ctx, tenantID, options.Cursor)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if err == nil {
+			result.NextCursor, err = binding.PinGeneration(result.NextCursor)
+		}
+	}()
 	if options.Cursor == "" {
 		var result storage.EdgeScanResult
-		used, err := s.withCachedScanGraph(ctx, tenantID, options.MinVersion, func(g *graph.Graph, manifest storage.Manifest, catalog storage.IndexCatalog) error {
+		used, err := s.withCachedScanGraph(ctx, tenantID, options.MinVersion, func(g *graph.Graph, manifest storage.Manifest, binding storage.ScanCursorBinding) error {
 			var err error
 			result, err = storage.ListEdgesFromGraph(ctx, tenantID, g, manifest, options)
 			if err == nil {
-				result.NextCursor, err = storage.PinScanCursor(result.NextCursor, catalog)
+				result.NextCursor, err = binding.Pin(result.NextCursor)
 			}
 			return err
 		})
@@ -334,7 +352,7 @@ func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options sto
 	}
 	indexedOptions := options
 	indexedOptions.SkipGraphFallback = s.Cache != nil
-	result, err := s.Store.ListEdges(ctx, tenantID, indexedOptions)
+	result, err = s.Store.ListEdges(ctx, tenantID, indexedOptions)
 	if !errors.Is(err, storage.ErrGraphScanFallbackRequired) || s.Cache == nil {
 		return result, err
 	}

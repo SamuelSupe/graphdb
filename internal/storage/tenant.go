@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
@@ -70,6 +71,7 @@ type CommitOptions struct {
 
 type TenantStore struct {
 	Objects                    ObjectStore
+	Backups                    *backupstore.Repository
 	Coordinator                WriteCoordinator
 	RequireCoordinationMarker  bool
 	Prefix                     string
@@ -98,6 +100,8 @@ type TenantStore struct {
 	indexCatalogLoads          map[string]*indexCatalogLoad
 	indexUpdateMu              sync.Mutex
 	indexUpdateTails           map[string]chan struct{}
+	pendingIngestIndexes       map[string]*commitIndexUpdate
+	activeIngestIndexUpdates   int
 	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
 	compiledScanCatalogCache   map[string]*compiledScanCatalog
@@ -114,6 +118,7 @@ type TenantStore struct {
 	taskShutdownDone           chan struct{}
 	taskQueueSlots             chan struct{}
 	taskExecutionSlots         chan struct{}
+	taskResidentSlots          chan struct{}
 	taskTenantSlots            []chan struct{}
 	indexTaskStartSlots        []chan struct{}
 	InstanceID                 string
@@ -182,6 +187,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		taskActive:                 map[string]Task{},
 		taskQueueSlots:             make(chan struct{}, defaultTaskQueueLimit),
 		taskExecutionSlots:         make(chan struct{}, defaultTaskExecutionLimit),
+		taskResidentSlots:          make(chan struct{}, defaultTaskExecutionLimit),
 		taskTenantSlots:            newTaskTenantSlots(defaultTaskTenantStripes),
 		indexTaskStartSlots:        newTaskTenantSlots(defaultTaskTenantStripes),
 		InstanceID:                 instanceID,

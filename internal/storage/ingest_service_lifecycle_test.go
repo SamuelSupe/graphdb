@@ -3,7 +3,8 @@ package storage
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"path/filepath"
+
 	"strings"
 	"sync"
 	"testing"
@@ -259,78 +260,6 @@ func TestIngestServiceGenerationInvalidationDetachesOldRefresh(t *testing.T) {
 	}
 	if got := store.captureCalls(); got != 2 {
 		t.Fatalf("generation captures after cache recheck = %d, want no stale overwrite", got)
-	}
-}
-
-func TestIngestServiceFencesOldGenerationBeforeDisabledStatus(t *testing.T) {
-	ctx, coordinator := newPostgresIntegrationCoordinator(t, "ingest-service-generation-disabled")
-	store := NewTenantStore(NewMemoryStore(), "test")
-	store.InstanceID = "generation-order-writer"
-	store.CoordinatorRetryLimit = 32
-	store.SetCoordinator(coordinator)
-	if _, err := store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
-		t.Fatalf("create coordinated tenant: %v", err)
-	}
-
-	config := testIngestServiceConfig(t)
-	config.OwnerID = store.InstanceID
-	config.FlushInterval = time.Hour
-	config.FlushMaxRequests = 8
-	service, err := OpenIngestService(store, config)
-	if err != nil {
-		t.Fatalf("open ingest service: %v", err)
-	}
-	defer closeIngestService(t, service)
-
-	request := ingestEntityRequest("batch-generation-before-disabled", "host:old-generation-disabled")
-	accepted, err := service.Accept(ctx, "tenant-a", request)
-	if err != nil {
-		t.Fatalf("accept active-generation request: %v", err)
-	}
-	before, exists, err := coordinator.Head(ctx, "tenant-a")
-	if err != nil || !exists {
-		t.Fatalf("head after accept exists=%v err=%v", exists, err)
-	}
-	if accepted.pending == nil || accepted.pending.envelope.AcceptedGeneration != before.Generation {
-		t.Fatalf("accepted generation = %d, want current generation %d", accepted.pending.envelope.AcceptedGeneration, before.Generation)
-	}
-
-	if _, err := store.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled); err != nil {
-		t.Fatalf("disable tenant after accept: %v", err)
-	}
-	disabled, exists, err := coordinator.Head(ctx, "tenant-a")
-	if err != nil || !exists {
-		t.Fatalf("head after disable exists=%v err=%v", exists, err)
-	}
-	if disabled.Generation != before.Generation+1 || disabled.Status != TenantStatusDisabled ||
-		disabled.GraphVersion != before.GraphVersion {
-		t.Fatalf("disabled head = %#v, want generation %d and unchanged graph version %d", disabled, before.Generation+1, before.GraphVersion)
-	}
-
-	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := service.FlushTenant(flushCtx, "tenant-a"); err != nil {
-		t.Fatalf("flush old-generation request while disabled: %v", err)
-	}
-	result, err := service.Wait(flushCtx, accepted)
-	if err != nil {
-		t.Fatalf("wait old-generation request: %v", err)
-	}
-	if result.Version != 0 || result.Applied != 0 || result.Failed != 1 || len(result.Failures) != 1 ||
-		!strings.Contains(result.Failures[0].Error, ErrTenantDeleted.Error()) ||
-		!strings.Contains(result.Failures[0].Error, errIngestGenerationFenced.Error()) {
-		t.Fatalf("old-generation result = %#v, want generation-fenced terminal failure", result)
-	}
-	if _, err := store.GetIngestBatch(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("canonical ingest record after generation fence = %v, want ErrNotFound", err)
-	}
-	after, exists, err := coordinator.Head(ctx, "tenant-a")
-	if err != nil || !exists {
-		t.Fatalf("head after generation fence exists=%v err=%v", exists, err)
-	}
-	if after.Generation != disabled.Generation || after.Status != TenantStatusDisabled ||
-		after.GraphVersion != disabled.GraphVersion {
-		t.Fatalf("head after generation fence = %#v, want unchanged disabled head %#v", after, disabled)
 	}
 }
 
@@ -1395,7 +1324,7 @@ func writeLegacyAcceptedWAL(
 	if err != nil {
 		t.Fatalf("marshal legacy WAL envelope: %v", err)
 	}
-	wal, _, err := OpenIngestWAL(config.WAL)
+	wal, _, err := openIngestWALRecords(config.WAL)
 	if err != nil {
 		t.Fatalf("open legacy WAL: %v", err)
 	}
@@ -1410,3 +1339,147 @@ func writeLegacyAcceptedWAL(
 }
 
 var _ IngestStore = (*lifecycleFencingIngestStore)(nil)
+
+func TestLocalIngestWALFencesPurgeAndRecreate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "review")
+	if _, err = store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	config := testIngestServiceConfig(t)
+	config.WAL.Dir = filepath.Join(root, "wal")
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 256
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := service.Accept(ctx, "tenant-a", ingestEntityRequest("old-batch", "host:from-old-tenant"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashIngestService(t, service)
+	if err = files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store = NewTenantStore(files, "review")
+	if _, err = store.PurgeTenant(ctx, "tenant-a", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	service, err = OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	if err = service.FlushTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	request := accepted.pending.envelope.Request
+	status, err := service.Status(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID)
+	if err != nil || status.State != IngestStateFailed {
+		t.Fatalf("fenced WAL status=%+v err=%v", status, err)
+	}
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := g.GetEntity("host:from-old-tenant"); exists {
+		t.Fatalf("old accepted WAL resurrected data after purge/recreate and reopen: version=%d", manifest.Version)
+	}
+}
+
+func TestLocalPurgeDrainsPendingWAL(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "review")
+	if _, err = store.CreateTenant(context.Background(), "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 256
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	if _, err = service.Accept(context.Background(), "tenant-a", ingestEntityRequest("pending", "host:pending")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err = store.PurgeTenant(ctx, "tenant-a", true); err != nil {
+		t.Fatalf("purge blocked draining WAL under exclusive read-view lock after %v: %v", time.Since(start), err)
+	}
+}
+
+func TestLocalLegacyWALOnlyRecoversInitialTenant(t *testing.T) {
+	for _, recreated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "initial", true: "recreated"}[recreated], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := NewTenantStore(files, "test")
+			if _, err := store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			config := testIngestServiceConfig(t)
+			request := writeLegacyAcceptedWAL(t, config, "tenant-a", ingestEntityRequest("legacy", "host:legacy"))
+			if recreated {
+				if _, err := store.PurgeTenant(ctx, "tenant-a", true); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			service, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeIngestService(t, service)
+			if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			status, err := service.Status(ctx, "tenant-a", request.Source, request.CollectorID, request.BatchID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			g, manifest, err := store.Load(ctx, "tenant-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, present := g.GetEntity("host:legacy")
+			if recreated {
+				if present || manifest.Version != 0 || status.State != IngestStateFailed {
+					t.Fatalf("old WAL crossed recreation: version=%d state=%s", manifest.Version, status.State)
+				}
+			} else if !present || manifest.Version != 1 || status.State != IngestStateCommitted {
+				t.Fatalf("initial legacy WAL did not recover: version=%d state=%s", manifest.Version, status.State)
+			}
+		})
+	}
+}

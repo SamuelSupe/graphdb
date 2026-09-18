@@ -107,9 +107,9 @@ func TestAcceptedWALBackpressureIgnoresCASConflictsButKeepsOtherReasons(t *testi
 		TenantID: "tenant-a", Generation: 1, Status: TenantStatusActive, Revision: 1,
 	}})
 	pressure := NewWritePressure(BackpressureConfig{
-		CASConflictThreshold:     1,
-		ObjectLatencyThreshold:   time.Millisecond,
-		RetryAfter:               37 * time.Millisecond,
+		CASConflictThreshold:   1,
+		ObjectLatencyThreshold: time.Millisecond,
+		RetryAfter:             37 * time.Millisecond,
 	})
 	pressure.RecordManifestCASConflict("tenant-a")
 	pressure.RecordObjectLatency(2 * time.Millisecond)

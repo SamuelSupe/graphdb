@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - codex/local-disk-v2
 
 permissions:
   contents: read
@@ -39,7 +40,7 @@ jobs:
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
   integration:
-    name: RustFS, WAL recovery, PostgreSQL CAS, load, and restore
+    name: Local disk, WAL recovery, load, and restore
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -58,6 +59,9 @@ jobs:
 
       - name: Run integration release gate
         run: RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
+
+  object-backup:
+    uses: ./.github/workflows/object-backup.yml
 
   container:
     name: Build and start container image
@@ -80,4 +84,19 @@ jobs:
             .
 
       - name: Start image
-        run: docker run --rm graphdb:ci version
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker logs graphdb-ci; docker rm -f graphdb-ci >/dev/null; docker volume rm graphdb-ci-data >/dev/null' EXIT
+          docker run -d --name graphdb-ci -p 127.0.0.1:38080:8080 \
+            -v graphdb-ci-data:/var/lib/graphdb graphdb:ci
+          curl --fail --retry 30 --retry-all-errors --retry-delay 1 --max-time 2 \
+            http://127.0.0.1:38080/v1/readiness
+          curl --fail http://127.0.0.1:38080/v1/commits \
+            -H 'X-Tenant-ID: image-ci' -H 'Content-Type: application/json' \
+            -d '{"mutations":{"upsert_entities":[{"id":"host:ci","kind":"host","fields":{"name":"persistent"}}]}}'
+          curl --fail http://127.0.0.1:38080/v1/export/snapshot -H 'X-Tenant-ID: image-ci' > before.json
+          docker restart --timeout 60 graphdb-ci
+          curl --fail --retry 30 --retry-all-errors --retry-delay 1 --max-time 2 \
+            http://127.0.0.1:38080/v1/export/snapshot -H 'X-Tenant-ID: image-ci' > after.json
+          python3 -c 'import json; assert json.load(open("before.json")) == json.load(open("after.json"))'

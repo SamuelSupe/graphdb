@@ -3,7 +3,6 @@ package query
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -32,7 +31,7 @@ func compareResults(left, right Result, specs []SortSpec) int {
 
 func resultValue(result Result, field string) any {
 	if result.Entity != nil {
-		return entityValue(*result.Entity, field)
+		return entityValue(result.Entity, field)
 	}
 	if result.Edge != nil {
 		switch field {
@@ -107,7 +106,7 @@ func compareAny(left, right any) int {
 		}
 		return 0
 	}
-	return strings.Compare(fmt.Sprint(left), fmt.Sprint(right))
+	return strings.Compare(filterText(left), filterText(right))
 }
 
 func applyProjection(result *Result, fields []string) {
@@ -117,7 +116,7 @@ func applyProjection(result *Result, fields []string) {
 	projected := map[string]any{}
 	entityFields := graph.Fields{}
 	for _, field := range fields {
-		value := entityValue(*result.Entity, field)
+		value := entityValue(result.Entity, field)
 		projected[field] = value
 		name, ok := projectionEntityFieldName(field)
 		if !ok {

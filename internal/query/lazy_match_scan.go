@@ -56,7 +56,7 @@ func executeLazyKindMaterialized(g *graph.Graph, request Request, plan Plan, cur
 				return false, err
 			}
 			budget.scanned++
-			if !requestEntityMatches(request, entity) {
+			if !requestEntityMatches(&request, &entity) {
 				return true, nil
 			}
 			result := Result{Entity: &entity}

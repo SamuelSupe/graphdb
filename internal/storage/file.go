@@ -13,12 +13,21 @@ import (
 )
 
 type FileStore struct {
-	root        string
-	lockMu      sync.Mutex
-	objectLocks map[string]*fileObjectLock
+	directoryMu          sync.Mutex
+	pendingDirectorySync string
+	runtime              *fileRuntime
+	root                 string
+	lockMu               sync.Mutex
+	objectLocks          map[string]*fileObjectLock
 }
 
 func (s *FileStore) Probe(ctx context.Context) error {
+	releaseOperation, operationErr := s.beginOperation(ctx)
+	if operationErr != nil {
+		err := operationErr
+		return err
+	}
+	defer releaseOperation()
 	if err := objectContextErr(ctx); err != nil {
 		return err
 	}
@@ -56,6 +65,12 @@ func NewFileStore(root string) *FileStore {
 }
 
 func (s *FileStore) Get(ctx context.Context, key string) ([]byte, error) {
+	releaseOperation, operationErr := s.beginOperation(ctx)
+	if operationErr != nil {
+		err := operationErr
+		return nil, err
+	}
+	defer releaseOperation()
 	if err := objectContextErr(ctx); err != nil {
 		return nil, err
 	}
@@ -95,6 +110,12 @@ func (s *FileStore) GetWithMeta(ctx context.Context, key string) ([]byte, Object
 }
 
 func (s *FileStore) Head(ctx context.Context, key string) (ObjectMeta, error) {
+	releaseOperation, operationErr := s.beginOperation(ctx)
+	if operationErr != nil {
+		err := operationErr
+		return ObjectMeta{Key: key}, err
+	}
+	defer releaseOperation()
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
@@ -108,14 +129,7 @@ func (s *FileStore) Head(ctx context.Context, key string) (ObjectMeta, error) {
 	if err := s.verifySafeParent(path); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
-	etag, exists, err := readFileStoreObjectState(path, true)
-	if err != nil {
-		return ObjectMeta{Key: key}, err
-	}
-	if !exists {
-		return ObjectMeta{Key: key}, ErrNotFound
-	}
-	return ObjectMeta{Key: key, ETag: etag, Exists: true}, nil
+	return s.readMeta(ctx, key, path)
 }
 
 func (s *FileStore) Put(ctx context.Context, key string, data []byte) error {
@@ -124,6 +138,12 @@ func (s *FileStore) Put(ctx context.Context, key string, data []byte) error {
 }
 
 func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	releaseOperation, operationErr := s.beginOperation(ctx)
+	if operationErr != nil {
+		err := operationErr
+		return ObjectMeta{Key: key}, err
+	}
+	defer releaseOperation()
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
@@ -139,7 +159,7 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	if err := s.ensureSafeParent(path); err != nil {
 		return ObjectMeta{}, err
 	}
-	currentETag, exists, err := readFileStoreObjectState(path, fileStorePutNeedsCurrentETag(condition))
+	currentETag, exists, err := s.objectState(key, path, fileStorePutNeedsCurrentETag(condition))
 	if err != nil {
 		return ObjectMeta{}, err
 	}
@@ -149,10 +169,20 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key, ETag: currentETag, Exists: exists}, err
 	}
-	if err := writeFileAtomic(path, data); err != nil {
+	if _, batched := ctx.Value(fileBatchKey{}).(*FileStore); !batched {
+		// A reused immutable file may belong to another in-flight batch. Every
+		// standalone publication drains pending renames, including that batch.
+		if err := s.syncPendingDirectories(); err != nil {
+			return ObjectMeta{}, err
+		}
+	}
+	etag := ""
+	defer func() { s.changed(key, etag) }()
+	if err := writeFileAtomicContext(ctx, path, data); err != nil {
 		return ObjectMeta{}, err
 	}
-	return ObjectMeta{Key: key, ETag: sha256Hex(data), Exists: true}, nil
+	etag = sha256Hex(data)
+	return ObjectMeta{Key: key, ETag: etag, Exists: true}, nil
 }
 
 func (s *FileStore) Delete(ctx context.Context, key string) error {
@@ -160,6 +190,12 @@ func (s *FileStore) Delete(ctx context.Context, key string) error {
 }
 
 func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
+	releaseOperation, operationErr := s.beginOperation(ctx)
+	if operationErr != nil {
+		err := operationErr
+		return err
+	}
+	defer releaseOperation()
 	if err := objectContextErr(ctx); err != nil {
 		return err
 	}
@@ -200,7 +236,7 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 		}
 		return nil
 	}
-	currentETag, exists, err := readFileStoreObjectState(path, condition.IfMatch != "")
+	currentETag, exists, err := s.objectState(key, path, condition.IfMatch != "")
 	if err != nil {
 		return err
 	}
@@ -213,14 +249,24 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	if err := objectContextErr(ctx); err != nil {
 		return err
 	}
+	defer s.changed(key, "")
 	err = os.Remove(path)
 	if os.IsNotExist(err) {
 		return nil
+	}
+	if err == nil {
+		return syncDir(filepath.Dir(path))
 	}
 	return err
 }
 
 func (s *FileStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	releaseOperation, operationErr := s.beginOperation(ctx)
+	if operationErr != nil {
+		err := operationErr
+		return nil, err
+	}
+	defer releaseOperation()
 	if err := objectContextErr(ctx); err != nil {
 		return nil, err
 	}
@@ -273,6 +319,9 @@ func (s *FileStore) List(ctx context.Context, prefix string) ([]ObjectInfo, erro
 			return walkErr
 		}
 		if entry.IsDir() {
+			if path == filepath.Join(root, fileRestoreDirectory) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if isFileStoreTemp(path) {
@@ -361,6 +410,9 @@ func validateFileStoreKey(key string) error {
 	if key == "" {
 		return nil
 	}
+	if key == fileRestoreDirectory || strings.HasPrefix(key, fileRestoreDirectory+"/") {
+		return fmt.Errorf("reserved object key %q", key)
+	}
 	if strings.Contains(key, "\\") || filepath.IsAbs(filepath.FromSlash(key)) {
 		return fmt.Errorf("invalid object key %q", key)
 	}
@@ -373,6 +425,10 @@ func validateFileStoreKey(key string) error {
 }
 
 func writeFileAtomic(path string, data []byte) error {
+	return writeFileAtomicContext(context.Background(), path, data)
+}
+
+func writeFileAtomicContext(ctx context.Context, path string, data []byte) error {
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(path)+"-")
 	if err != nil {
@@ -389,20 +445,33 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := file.Chmod(0o644); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := syncStorageFile(file); err != nil {
 		_ = file.Close()
 		return err
 	}
 	if err := file.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(temp, 0o644); err != nil {
-		return err
+	files, batched := ctx.Value(fileBatchKey{}).(*FileStore)
+	if batched {
+		files.runtime.publicationMu.Lock()
+		defer files.runtime.publicationMu.Unlock()
 	}
 	if err := os.Rename(temp, path); err != nil {
 		return err
 	}
 	cleanup = false
+	if batched {
+		if files.runtime.pendingDirectories == nil {
+			files.runtime.pendingDirectories = make(map[string]struct{})
+		}
+		files.runtime.pendingDirectories[dir] = struct{}{}
+		return nil
+	}
 	return syncDir(dir)
 }
 
@@ -412,11 +481,11 @@ func syncDir(dir string) error {
 		return err
 	}
 	defer file.Close()
-	return file.Sync()
+	return syncStorageFile(file)
 }
 
 func isFileStoreTemp(path string) bool {
-	return strings.HasPrefix(filepath.Base(path), ".tmp-")
+	return strings.HasPrefix(filepath.Base(path), ".tmp-") || filepath.Base(path) == ".graphdb.lock"
 }
 
 func fileStorePutNeedsCurrentETag(condition PutCondition) bool {

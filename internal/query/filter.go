@@ -19,7 +19,7 @@ func requestFilters(request Request) []Filter {
 	return filters
 }
 
-func requestEntityMatches(request Request, entity graph.Entity) bool {
+func requestEntityMatches(request *Request, entity *graph.Entity) bool {
 	if !entityMatches(entity, request.Where) {
 		return false
 	}
@@ -50,7 +50,7 @@ func indexedField(field string) (string, bool) {
 	return field, true
 }
 
-func entityMatches(entity graph.Entity, filters []Filter) bool {
+func entityMatches(entity *graph.Entity, filters []Filter) bool {
 	for _, filter := range filters {
 		actual, exists := entityFilterValue(entity, filter.Field)
 		if !filterMatches(actual, exists, filter) {
@@ -60,7 +60,7 @@ func entityMatches(entity graph.Entity, filters []Filter) bool {
 	return true
 }
 
-func entityExprMatches(entity graph.Entity, expr *FilterExpr) bool {
+func entityExprMatches(entity *graph.Entity, expr *FilterExpr) bool {
 	if expr == nil {
 		return true
 	}
@@ -213,7 +213,7 @@ func edgeFilterValue(edge graph.Edge, field string) (any, bool) {
 	return value, ok
 }
 
-func entityFilterValue(entity graph.Entity, field string) (any, bool) {
+func entityFilterValue(entity *graph.Entity, field string) (any, bool) {
 	if field == "labels" {
 		if value, ok := entity.Fields[graph.ReservedLabelsField]; ok {
 			return value, true
@@ -257,7 +257,7 @@ func entityFilterValue(entity graph.Entity, field string) (any, bool) {
 	return value, ok
 }
 
-func entityValue(entity graph.Entity, field string) any {
+func entityValue(entity *graph.Entity, field string) any {
 	if field == "labels" {
 		if value, ok := entity.Fields[graph.ReservedLabelsField]; ok {
 			return value
@@ -321,6 +321,10 @@ func compareFilter(actual any, expected any, op string) bool {
 }
 
 func valuesEqual(left any, right any) bool {
+	if text, ok := left.(string); ok {
+		other, ok := right.(string)
+		return ok && text == other
+	}
 	leftNumber, leftOK := asFloat(left)
 	rightNumber, rightOK := asFloat(right)
 	if leftOK && rightOK {

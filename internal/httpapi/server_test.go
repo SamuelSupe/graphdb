@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,46 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
+
+func TestEntityHTTPResponsesPreserveJSON(t *testing.T) {
+	entity := graph.Entity{
+		ID: "host:<a>", Kind: "host", Version: 7,
+		Fields:          graph.Fields{"message": "<script>\"&\u2028\u2029", "tags": []any{"a", nil, float64(2)}},
+		Identity:        map[string]any{"key": "a&b"},
+		Sources:         []graph.EntitySource{{Source: "manual", ExternalID: "<external>"}},
+		ExistenceSource: &graph.FieldSource{Source: "agent", Priority: 10},
+		FieldSources:    map[string]graph.FieldSource{"message": {Source: "agent", Version: 7}},
+	}
+	edge := graph.Edge{ID: "edge:a", From: entity.ID, To: "host:b", Type: "links"}
+	values := []any{
+		query.Response{}, query.Response{Results: []query.Result{}},
+		query.Response{Version: 7, NextCursor: "cursor", Results: []query.Result{
+			{Entity: &entity, Edge: &edge, Direction: "out", Score: 2, Fields: map[string]any{"rank": 1}},
+			{Path: &graph.Path{Entities: []graph.Entity{entity}, Edges: []graph.Edge{edge}}},
+			{Path: &graph.Path{}}, {Path: &graph.Path{Entities: []graph.Entity{}, Edges: []graph.Edge{}}}, {},
+		}},
+		storage.EntityScanResult{}, storage.EntityScanResult{Entities: []graph.Entity{}},
+		storage.EntityScanResult{TenantID: "tenant-a", Version: 7, Entities: []graph.Entity{entity}, NextCursor: "cursor", IndexedRead: true},
+	}
+	for i, value := range values {
+		wantJSON, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rr := httptest.NewRecorder()
+		writeJSON(rr, http.StatusOK, value)
+		var got, want any
+		if err := json.Unmarshal(wantJSON, &want); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("response %d changed JSON: got %s want %s", i, rr.Body.Bytes(), wantJSON)
+		}
+	}
+}
 
 type queryLoadDelayStore struct {
 	storage.ObjectStore
@@ -1937,4 +1978,92 @@ func (s *switchListStore) List(ctx context.Context, prefix string) ([]storage.Ob
 		return nil, errors.New("list failed")
 	}
 	return s.ObjectStore.List(ctx, prefix)
+}
+
+func TestHTTPLocalRunningQueryControlWhileGCWaits(t *testing.T) {
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := storage.NewTenantStore(files, "review")
+	admission := NewQueryAdmission(0, 1, 10*time.Second)
+	release, err := admission.Acquire(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	server := &Server{Store: store, Mode: "all", Admission: admission}
+	handler := server.Handler()
+	queryDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		queryDone <- serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{Op: "match", Kind: "host"})
+	}()
+	id := ""
+	end := time.Now().Add(time.Second)
+	for time.Now().Before(end) {
+		running := server.QueryRegistry.List("tenant-a")
+		if len(running) > 0 {
+			id = running[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("query not running")
+	}
+	defer server.QueryRegistry.Kill("tenant-a", id)
+	gcCtx, cancelGC := context.WithCancel(context.Background())
+	defer cancelGC()
+	gcDone := make(chan error, 1)
+	go func() { _, err := store.RunGC(gcCtx, "tenant-a", storage.GCOptions{}); gcDone <- err }()
+	// Wait for the queued maintenance writer to close admission to new readers.
+	blocked := false
+	for i := 0; i < 100; i++ {
+		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		unpin, err := store.PinReadView(probeCtx, "tenant-a")
+		cancel()
+		if err != nil {
+			blocked = true
+			break
+		}
+		unpin()
+		time.Sleep(time.Millisecond)
+	}
+	if !blocked {
+		t.Fatal("GC never waited for query view")
+	}
+	listCtx, cancelList := context.WithTimeout(context.Background(), time.Second)
+	defer cancelList()
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/queries/running", nil).WithContext(listCtx)
+	listReq.Header.Set("X-Tenant-ID", "tenant-a")
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, listReq)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list while GC waits: %d %s", list.Code, list.Body.String())
+	}
+	other := serveJSON(handler, http.MethodDelete, "/v1/queries/running/"+id, "tenant-b", nil)
+	if other.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant cancellation: %d", other.Code)
+	}
+	killCtx, cancelKill := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancelKill()
+	req := httptest.NewRequest(http.MethodDelete, "/v1/queries/running/"+id, nil).WithContext(killCtx)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	running := server.QueryRegistry.List("tenant-a")
+	canceled := len(running) == 0 || running[0].Canceled
+	t.Logf("kill HTTP=%d body=%s query canceled=%v", response.Code, response.Body.String(), canceled)
+	cancelGC()
+	<-gcDone
+	server.QueryRegistry.Kill("tenant-a", id)
+	select {
+	case <-queryDone:
+	case <-time.After(time.Second):
+		t.Fatal("query failed to finish after direct registry cancellation")
+	}
+	if response.Code != http.StatusOK || !canceled {
+		t.Error("HTTP query cancellation cannot pass the maintenance writer that is waiting for that query")
+	}
 }

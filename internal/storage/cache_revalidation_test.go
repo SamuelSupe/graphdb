@@ -12,6 +12,72 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
+type pausedManifestReadStore struct {
+	ObjectStore
+	block   atomic.Bool
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *pausedManifestReadStore) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
+	data, meta, err := s.ObjectStore.GetWithMeta(ctx, key)
+	if err == nil && strings.HasSuffix(key, "/manifest.parquet") && s.block.Swap(false) {
+		close(s.started)
+		select {
+		case <-ctx.Done():
+			return nil, ObjectMeta{}, ctx.Err()
+		case <-s.release:
+		}
+	}
+	return data, meta, err
+}
+
+func TestReaderCacheRevalidationPreservesConcurrentPublication(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	objects := &pausedManifestReadStore{ObjectStore: NewMemoryStore(), started: make(chan struct{}), release: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(objects.release) })
+	defer release()
+	store := NewTenantStore(objects, "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cache := NewReaderCache(store, time.Hour)
+	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	cache.expirePublishedView("tenant-a")
+	objects.block.Store(true)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := cache.Load(ctx, "tenant-a")
+		done <- err
+	}()
+	select {
+	case <-objects.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "two", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// MemoryStore has no publication notifications; deliver the event that a
+	// local manifest publication sends while the old manifest read is paused.
+	cache.expirePublishedView("tenant-a")
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	g, manifest, err := cache.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, present := g.GetEntity("two")
+	if manifest.Version != 2 || !present {
+		t.Fatalf("lost publication: version=%d new_entity=%v", manifest.Version, present)
+	}
+}
+
 type delayedGraphReadStore struct {
 	ObjectStore
 	delay time.Duration

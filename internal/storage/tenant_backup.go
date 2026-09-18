@@ -42,6 +42,9 @@ type TenantRestoreReport struct {
 }
 
 func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[string]any, string, error) {
+	if stringTaskParam(task.Params, "destination") == "object" {
+		return s.tenantObjectBackupTask(ctx, task)
+	}
 	total := taskProgressTotal(task.Type)
 	if summary, resultKey, ok, err := s.resumeTenantBackupTask(ctx, task); err != nil {
 		return nil, "", err
@@ -140,7 +143,7 @@ func (s *TenantStore) tenantBackupTask(ctx context.Context, task Task) (map[stri
 	}
 	if backupManifestKey == "" {
 		backupManifest, err = s.buildBackupManifest(
-			ctx, task.TenantID, task.ID, record, resultKey, manifest, loaded.Meta.Key,
+			ctx, task.TenantID, task.ID, record, resultKey,
 		)
 		if err != nil {
 			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_write_manifest", 4, total, taskActionUpdate{ID: "write_backup_manifest", Err: err}, nil)
@@ -243,6 +246,9 @@ func (s *TenantStore) restoreSnapshotMatches(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantRestoreReport, error) {
+	if s.localFileStore() != nil && taskCheckpointBool(task, "local_restore_published") {
+		return s.resumePublishedLocalRestore(ctx, task)
+	}
 	total := taskProgressTotal(task.Type)
 	backupKey := stringTaskParam(task.Params, "backup_key")
 	if err := s.updateTaskActionProgress(ctx, task, "restore_load_backup", 1, total, taskActionUpdate{
@@ -256,6 +262,14 @@ func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantR
 	if err != nil {
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_load_backup", 1, total, taskActionUpdate{ID: "load_backup", Err: err}, nil)
 		return TenantRestoreReport{}, err
+	}
+	if input.SHA256 != "" {
+		if previous := taskCheckpointString(task, "remote_snapshot_sha256"); previous != "" && previous != input.SHA256 {
+			return TenantRestoreReport{}, fmt.Errorf("remote snapshot changed since this restore started")
+		}
+		if err := s.updateTaskProgress(ctx, task, "restore_backup_verified", 1, total, map[string]any{"remote_snapshot_sha256": input.SHA256}); err != nil {
+			return TenantRestoreReport{}, err
+		}
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "restore_backup_loaded", 1, total, taskActionUpdate{
 		ID:     "load_backup",
@@ -271,6 +285,14 @@ func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantR
 }
 
 func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Task, backupKey string, input tenantBackupInput) (TenantRestoreReport, error) {
+	if s.localFileStore() != nil && !boolTaskParam(task.Params, "dry_run") {
+		return s.restoreLocalTenantBackupTask(ctx, task, backupKey, input)
+	}
+	releaseViews, viewErr := s.lockReadViews(ctx, task.TenantID, true)
+	if viewErr != nil {
+		return TenantRestoreReport{}, viewErr
+	}
+	defer releaseViews()
 	total := taskProgressTotal(task.Type)
 	overwrite := boolTaskParam(task.Params, "overwrite")
 	dryRun := boolTaskParam(task.Params, "dry_run")
@@ -328,7 +350,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			}, map[string]any{"phase": "restore_purge_existing", "backup_key": backupKey}); err != nil {
 				return TenantRestoreReport{}, err
 			}
-			purge, err := s.PurgeTenant(ctx, task.TenantID, true)
+			purge, err := s.purgeTenantWithViewsLocked(ctx, task.TenantID, true)
 			if err != nil {
 				_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_purge_existing", 2, total, taskActionUpdate{ID: "purge_existing", Err: err}, nil)
 				return TenantRestoreReport{}, err
@@ -538,7 +560,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			return TenantRestoreReport{}, err
 		}
 		var err error
-		catalogIndex, err = s.RebuildIndexes(ctx, task.TenantID)
+		catalogIndex, err = s.rebuildIndexesWithView(ctx, task.TenantID)
 		if err != nil {
 			_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_rebuild_indexes", 5, total, taskActionUpdate{ID: "rebuild_indexes", Err: err}, nil)
 			return TenantRestoreReport{}, err
@@ -605,9 +627,13 @@ type tenantBackupInput struct {
 	Record      TenantBackupRecord
 	ManifestKey string
 	Integrity   BackupIntegrityReport
+	SHA256      string
 }
 
 func (s *TenantStore) loadTenantBackupInput(ctx context.Context, backupKey string) (tenantBackupInput, error) {
+	if strings.HasPrefix(backupKey, "s3://") {
+		return s.loadObjectBackupInput(ctx, backupKey)
+	}
 	if _, _, ok := s.backupManifestIdentityFromKey(backupKey); ok {
 		manifest, err := s.loadBackupManifest(ctx, backupKey)
 		if err != nil {
@@ -640,18 +666,21 @@ func (s *TenantStore) loadTenantBackupInput(ctx context.Context, backupKey strin
 }
 
 func (s *TenantStore) loadTenantBackupRecord(ctx context.Context, backupKey string) (TenantBackupRecord, error) {
-	data, err := s.Objects.Get(ctx, backupKey)
-	if err != nil {
-		return TenantBackupRecord{}, err
-	}
-	resultTenantID, resultTaskID, ok := s.taskResultIdentityFromKey(backupKey)
+	_, _, ok := s.taskResultIdentityFromKey(backupKey)
 	if !ok {
 		return TenantBackupRecord{}, fmt.Errorf("invalid tenant backup key")
 	}
-	result, err := decodeParquetTaskResult(ctx, data, resultTenantID, resultTaskID)
+	result, found, err := s.loadTaskResultByKey(ctx, backupKey)
 	if err != nil {
 		return TenantBackupRecord{}, err
 	}
+	if !found {
+		return TenantBackupRecord{}, ErrNotFound
+	}
+	return tenantBackupRecordFromResult(result)
+}
+
+func tenantBackupRecordFromResult(result map[string]any) (TenantBackupRecord, error) {
 	var record TenantBackupRecord
 	payload, err := json.Marshal(result)
 	if err != nil {

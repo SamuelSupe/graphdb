@@ -121,6 +121,18 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err != nil {
 		return IngestResult{}, err
 	}
+	if err := s.validateTaskIngestGeneration(ctx, tenantID); err != nil {
+		return IngestResult{}, err
+	}
+	resumeIngest := func() {}
+	if s.localFileStore() != nil && s.ingestBarrier != nil {
+		resume, err := s.pauseLocalIngest(ctx, tenantID)
+		if err != nil {
+			return IngestResult{}, err
+		}
+		resumeIngest = sync.OnceFunc(resume)
+		defer resumeIngest()
+	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
 			return IngestResult{}, pressure
@@ -133,10 +145,16 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if s.coordinated() {
 		return s.ingestCoordinated(ctx, tenantID, request, saveFailures)
 	}
+	ctx, releaseView, err := s.ReadViewContext(ctx, tenantID)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	defer releaseView()
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return IngestResult{}, err
 	}
+	resumeIngest()
 	var indexWork *commitIndexUpdate
 	foregroundLockHeld := true
 	defer func() {
@@ -147,6 +165,9 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 			s.finishCommitIndexUpdate(ctx, tenantID, indexWork, nil)
 		}
 	}()
+	if err := s.validateTaskIngestGeneration(ctx, tenantID); err != nil {
+		return IngestResult{}, err
+	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
 			return IngestResult{}, pressure
@@ -211,7 +232,11 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 			result.Conflicts = append(result.Conflicts, ingestConflicts(request, commitResult.Suppressed)...)
 		}
 	}
-	s.enqueueCommitIndexUpdate(tenantID, indexWork)
+	if indexWork != nil && s.localFileStore() != nil && s.enqueueLocalIngestIndexUpdate(ctx, tenantID, indexWork) {
+		indexWork = nil
+	} else {
+		s.enqueueCommitIndexUpdate(tenantID, indexWork)
+	}
 	if foregroundLockHeld {
 		unlock()
 		foregroundLockHeld = false

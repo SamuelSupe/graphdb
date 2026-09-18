@@ -37,7 +37,7 @@ func executeNeighbors(g *graph.Graph, request Request, cursor cursorState, budge
 		for _, neighbor := range neighbors {
 			budget.visited++
 			entity := neighbor.Entity
-			if !requestEntityMatches(request, entity) {
+			if !requestEntityMatches(&request, &entity) {
 				continue
 			}
 			edge := neighbor.Edge

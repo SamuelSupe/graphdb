@@ -55,7 +55,7 @@ GGraphDB 使用 429 表示准入或背压。客户端应：
 在 1.3 PostgreSQL-CAS WAL 模式中，PostgreSQL 或对象存储暂时故障不会让已经
 接收的 batch 失败。owner writer 会读取最新 head、重基，并在持续 CAS 冲突后缩批。
 如果本地 WAL 达到高水位，新准入会在写入 payload 前被拒绝；已有记录应查询
-owner-routed `status_url`。`recovery_pending` 表示 owner 正在重建 WAL 状态，
+local `status_url`。`recovery_pending` 表示 服务正在重建 WAL 状态，
 不是 batch 丢失。
 
 示例：

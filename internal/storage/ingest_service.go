@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"reflect"
 	"sync"
 	"time"
 
@@ -148,6 +148,10 @@ type ingestGenerationStore interface {
 	CaptureIngestWALGeneration(context.Context, string) (int64, error)
 }
 
+type ingestAdmissionStore interface {
+	beginIngestAcceptance(context.Context, string) (func(), error)
+}
+
 const (
 	ingestWALGenerationCaptureTimeout  = 25 * time.Millisecond
 	ingestWALGenerationCacheTTL        = time.Second
@@ -226,24 +230,25 @@ type IngestService struct {
 	wal    *IngestWAL
 	config IngestServiceConfig
 
-	mu              sync.Mutex
-	active          map[string]*ingestPending
-	activeByStatus  map[string]*ingestPending
-	accepting       map[string]*ingestAcceptFlight
-	acceptingStatus map[string]*ingestAcceptFlight
-	pendingBytes    int64
-	highestLSN      uint64
-	completedSince  int
-	closed          bool
-	lastError       string
-	oldestPending   time.Time
-	failedStatuses  []string
-	walFull         bool
-	walFailed       bool
-	fatalErr        error
-	generationMu    sync.Mutex
-	generations     map[string]ingestGenerationCacheEntry
-	generationLoad  map[string]*ingestGenerationFlight
+	mu                sync.Mutex
+	active            map[string]*ingestPending
+	activeByStatus    map[string]*ingestPending
+	accepting         map[string]*ingestAcceptFlight
+	acceptingStatus   map[string]*ingestAcceptFlight
+	pendingBytes      int64
+	highestLSN        uint64
+	completedSince    int
+	closed            bool
+	lastError         string
+	oldestPending     time.Time
+	failedStatuses    []ingestFailedStatus
+	failedStatusBytes int64
+	walFull           bool
+	walFailed         bool
+	fatalErr          error
+	generationMu      sync.Mutex
+	generations       map[string]ingestGenerationCacheEntry
+	generationLoad    map[string]*ingestGenerationFlight
 
 	enqueueCh   chan *ingestPending
 	forceCh     chan ingestForceRequest
@@ -286,7 +291,8 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 	)
 	config.WAL.Observer = config.Observer
 	config.WAL.Logger = config.Logger
-	wal, records, err := OpenIngestWAL(config.WAL)
+	var recovery ingestRecovery
+	wal, err := OpenIngestWAL(config.WAL, recovery.apply)
 	if err != nil {
 		recordIngestRecovery(config, "error", 0, 0, 0, recoveryStarted, err)
 		endStorageSpan(recoverySpan, err)
@@ -312,16 +318,16 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 		runCtx:          runCtx,
 		cancel:          cancel,
 	}
-	recovered, err := service.recover(records)
+	recovered, err := recovery.finish(service)
 	if err != nil {
-		recordIngestRecovery(config, "error", len(records), 0, 0, recoveryStarted, err)
+		recordIngestRecovery(config, "error", recovery.records, 0, 0, recoveryStarted, err)
 		endStorageSpan(recoverySpan, err)
 		cancel()
 		_ = wal.Close()
 		return nil, err
 	}
 	if err := service.prune(context.Background()); err != nil {
-		recordIngestRecovery(config, "error", len(records), len(recovered), 0, recoveryStarted, err)
+		recordIngestRecovery(config, "error", recovery.records, len(recovered), 0, recoveryStarted, err)
 		endStorageSpan(recoverySpan, err)
 		cancel()
 		_ = wal.Close()
@@ -341,9 +347,9 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 			prepared++
 		}
 	}
-	recordIngestRecovery(config, "ok", len(records), len(recovered), prepared, recoveryStarted, nil)
+	recordIngestRecovery(config, "ok", recovery.records, len(recovered), prepared, recoveryStarted, nil)
 	recoverySpan.SetAttributes(
-		attribute.Int("graphdb.ingest.recovery.records", len(records)),
+		attribute.Int("graphdb.ingest.recovery.records", recovery.records),
 		attribute.Int("graphdb.ingest.recovery.pending", len(recovered)),
 		attribute.Int("graphdb.ingest.recovery.prepared", prepared),
 	)
@@ -358,6 +364,13 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 	request, err = PrepareIngestRequest(tenantID, request)
 	if err != nil {
 		return IngestAcceptance{}, err
+	}
+	if store, ok := s.store.(ingestAdmissionStore); ok {
+		release, err := store.beginIngestAcceptance(ctx, tenantID)
+		if err != nil {
+			return IngestAcceptance{}, err
+		}
+		defer release()
 	}
 	span.SetAttributes(
 		attribute.String("graphdb.ingest.source", request.Source),
@@ -437,13 +450,21 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		defer s.acceptors.Done()
 
 		generationCtx, cancelGeneration := context.WithTimeout(ctx, ingestWALGenerationCaptureTimeout)
-		generation, generationErr := s.captureIngestWALGeneration(generationCtx, tenantID)
+		captureCtx := generationCtx
+		if s.store.CoordinationBackend() == CoordinationLocal {
+			captureCtx = ctx
+		}
+		generation, generationErr := s.captureIngestWALGeneration(captureCtx, tenantID)
 		cancelGeneration()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			s.failAcceptFlight(identity, statusKey, flight, ctxErr)
 			return IngestAcceptance{}, ctxErr
 		}
 		if generationErr != nil {
+			if s.store.CoordinationBackend() == CoordinationLocal {
+				s.failAcceptFlight(identity, statusKey, flight, generationErr)
+				return IngestAcceptance{}, generationErr
+			}
 			// Admission is owned by the writer-local WAL, not PostgreSQL. If the
 			// coordinator cannot supply a generation promptly, retain the record
 			// as conservatively unbound: generation one may recover it, while a
@@ -601,6 +622,9 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 
 func (s *IngestService) captureIngestWALGeneration(ctx context.Context, tenantID string) (int64, error) {
 	if s.store.CoordinationBackend() != CoordinationPostgres {
+		if store, ok := s.store.(ingestGenerationStore); ok {
+			return store.CaptureIngestWALGeneration(ctx, tenantID)
+		}
 		return 0, nil
 	}
 	generationStore, ok := s.store.(ingestGenerationStore)
@@ -922,109 +946,6 @@ func (s *IngestService) Close(ctx context.Context) error {
 	return closeErr
 }
 
-func (s *IngestService) recover(records []IngestWALRecord) ([]*ingestPending, error) {
-	recovered := map[string]*ingestPending{}
-	for _, record := range records {
-		if record.Type == IngestWALPrepared {
-			var batch walPreparedBatchEnvelope
-			if err := json.Unmarshal(record.Payload, &batch); err == nil && len(batch.Items) > 0 {
-				for _, prepared := range batch.Items {
-					pending := recovered[prepared.RecordID]
-					if pending == nil || prepared.Prepared == nil {
-						return nil, fmt.Errorf("%w: incomplete prepared batch at LSN %d", ErrIngestWALCorrupt, record.LSN)
-					}
-					pending.envelope.State = IngestStatePrepared
-					pending.envelope.Prepared = prepared.Prepared
-					pending.envelope.Result = &prepared.Prepared.Result
-					pending.envelope.Error = ""
-					pending.state = IngestStatePrepared
-				}
-				s.highestLSN = max(s.highestLSN, record.LSN)
-				continue
-			}
-		}
-		var envelope walIngestEnvelope
-		if err := json.Unmarshal(record.Payload, &envelope); err != nil {
-			return nil, fmt.Errorf("%w: decode LSN %d: %v", ErrIngestWALCorrupt, record.LSN, err)
-		}
-		if envelope.RecordID == "" || (record.Type == IngestWALAccepted && envelope.TenantID == "") {
-			return nil, fmt.Errorf("%w: incomplete envelope at LSN %d", ErrIngestWALCorrupt, record.LSN)
-		}
-		s.highestLSN = max(s.highestLSN, record.LSN)
-		switch record.Type {
-		case IngestWALAccepted:
-			envelope.AcceptedLSN = record.LSN
-			pending := &ingestPending{
-				envelope:    envelope,
-				acceptedLSN: record.LSN,
-				estimated:   time.Now().UTC(),
-				bytes:       int64(len(record.Payload) + ingestWALHeaderBytes + ingestWALChecksumBytes),
-				state:       IngestStateAccepted,
-				done:        make(chan struct{}),
-			}
-			recovered[envelope.RecordID] = pending
-		case IngestWALPrepared, IngestWALPublished:
-			if pending := recovered[envelope.RecordID]; pending != nil {
-				pending.envelope.State = envelope.State
-				if envelope.Prepared != nil {
-					pending.envelope.Prepared = envelope.Prepared
-				}
-				if envelope.Result != nil {
-					pending.envelope.Result = envelope.Result
-				}
-				pending.envelope.Error = envelope.Error
-				pending.envelope.FinishedAt = envelope.FinishedAt
-				pending.state = envelope.State
-			}
-		case IngestWALFinalized, IngestWALFailed:
-			delete(recovered, envelope.RecordID)
-		}
-	}
-	out := make([]*ingestPending, 0, len(recovered))
-	for _, pending := range recovered {
-		if pending.envelope.WriterID == "" {
-			pending.envelope.WriterID = s.config.OwnerID
-		} else if pending.envelope.WriterID != s.config.OwnerID {
-			return nil, fmt.Errorf(
-				"ingest WAL owner mismatch: volume belongs to %q, configured owner is %q",
-				pending.envelope.WriterID,
-				s.config.OwnerID,
-			)
-		}
-		identity := ingestRequestIdentity(pending.envelope.TenantID, pending.envelope.Request)
-		statusKey := ingestStatusKey(
-			pending.envelope.TenantID,
-			pending.envelope.Request.Source,
-			pending.envelope.Request.CollectorID,
-			pending.envelope.Request.BatchID,
-		)
-		if existing := s.active[identity]; existing != nil && existing.envelope.RecordID != pending.envelope.RecordID {
-			return nil, fmt.Errorf("%w: duplicate active ingest identity in WAL", ErrIngestWALCorrupt)
-		}
-		if existing := s.activeByStatus[statusKey]; existing != nil && existing.envelope.RecordID != pending.envelope.RecordID {
-			return nil, fmt.Errorf(
-				"%w: source %q collector %q batch %q has multiple active WAL identities",
-				ErrIngestWALCorrupt,
-				pending.envelope.Request.Source,
-				pending.envelope.Request.CollectorID,
-				pending.envelope.Request.BatchID,
-			)
-		}
-		s.active[identity] = pending
-		s.activeByStatus[statusKey] = pending
-		s.pendingBytes += pending.bytes
-		if s.oldestPending.IsZero() || pending.envelope.AcceptedAt.Before(s.oldestPending) {
-			s.oldestPending = pending.envelope.AcceptedAt
-		}
-		out = append(out, pending)
-	}
-	s.observeQueueLocked()
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].acceptedLSN < out[j].acceptedLSN
-	})
-	return out, nil
-}
-
 type ingestTenantFlush struct {
 	tenantID string
 	items    []*ingestPending
@@ -1286,7 +1207,7 @@ func (s *IngestService) pendingAcceptedGeneration(pending *ingestPending) int64 
 		// initial generation; later generations must prefer lifecycle fencing.
 		return legacyUnboundIngestGeneration
 	}
-	return 0
+	return legacyUnboundIngestGeneration
 }
 
 func (s *IngestService) adaptiveFlushEnd(items []*ingestPending, start int, end int) int {
@@ -1343,6 +1264,7 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 	var (
 		stats    IngestBatchStats
 		flushErr error
+		flushID  string
 	)
 	if s.config.Logger != nil {
 		fields := ingestTraceLogFields(items[0].envelope)
@@ -1372,8 +1294,8 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 			attribute.Int("graphdb.ingest.flush.cas_merged", stats.CASMerged),
 			attribute.Bool("graphdb.ingest.flush.fallback", stats.Fallback),
 		)
-		if items[0].envelope.Prepared != nil {
-			span.SetAttributes(attribute.String("graphdb.ingest.flush.id", items[0].envelope.Prepared.FlushID))
+		if flushID != "" {
+			span.SetAttributes(attribute.String("graphdb.ingest.flush.id", flushID))
 		}
 		endStorageSpan(span, flushErr)
 		if s.config.Observer != nil {
@@ -1406,8 +1328,8 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 			fields["cas_merged"] = stats.CASMerged
 			fields["fallback"] = stats.Fallback
 			fields["duration_ms"] = float64(duration.Microseconds()) / 1000
-			if items[0].envelope.Prepared != nil {
-				fields["flush_id"] = items[0].envelope.Prepared.FlushID
+			if flushID != "" {
+				fields["flush_id"] = flushID
 			}
 			if flushErr != nil {
 				fields["error"] = flushErr.Error()
@@ -1451,6 +1373,9 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		},
 	)
 	cancel()
+	if prepared := items[0].envelope.Prepared; prepared != nil {
+		flushID = prepared.FlushID
+	}
 	if err != nil {
 		flushErr = err
 		if terminalIngestFlushError(err) {
@@ -1637,6 +1562,17 @@ func (s *IngestService) appendPreparedBatchState(
 		if plans[index] == nil {
 			continue
 		}
+		s.mu.Lock()
+		previous := pending.envelope.Prepared
+		s.mu.Unlock()
+		if previous != nil {
+			// Recovery reconstructs this same durable plan. Retrying a failed
+			// publication or metadata write must not consume WAL space again.
+			if !reflect.DeepEqual(previous, plans[index]) {
+				return fmt.Errorf("%w: durable prepared ingest plan changed", ErrIngestRepairRequired)
+			}
+			continue
+		}
 		envelopes = append(envelopes, walPreparedEnvelope{
 			RecordID: pending.envelope.RecordID,
 			Prepared: plans[index],
@@ -1777,14 +1713,7 @@ func (s *IngestService) completePendingStateLocked(pending *ingestPending, resul
 	)
 	if s.activeByStatus[statusKey] == pending {
 		if state == IngestStateFailed {
-			s.failedStatuses = append(s.failedStatuses, statusKey)
-			if len(s.failedStatuses) > 1024 {
-				oldest := s.failedStatuses[0]
-				s.failedStatuses = s.failedStatuses[1:]
-				if cached := s.activeByStatus[oldest]; cached != nil && cached.state == IngestStateFailed {
-					delete(s.activeByStatus, oldest)
-				}
-			}
+			s.cacheFailedStatusLocked(statusKey, pending)
 		} else {
 			delete(s.activeByStatus, statusKey)
 			if s.config.Observer != nil {
@@ -1792,6 +1721,18 @@ func (s *IngestService) completePendingStateLocked(pending *ingestPending, resul
 			}
 		}
 	}
+	// Keep identity and FullSync immutable for callers and the scheduler.
+	// Wait keeps the result; the request body already has a durable record.
+	pending.envelope.Request.Items = nil
+	pending.envelope.Request.Preconditions = nil
+	pending.envelope.Request.IdempotencyKey = ""
+	pending.envelope.Request.Cursor = ""
+	pending.envelope.Request.StaleAction = ""
+	pending.envelope.Request.StaleKind = ""
+	pending.envelope.Request.FailureMode = ""
+	pending.envelope.Request.ExpectedVersion = nil
+	pending.envelope.Prepared = nil
+	pending.envelope.Result = nil
 	if pending.envelope.AcceptedAt.Equal(s.oldestPending) {
 		s.oldestPending = time.Time{}
 	}

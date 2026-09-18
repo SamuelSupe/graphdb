@@ -123,7 +123,7 @@ curl -fsS -X POST "$BASE/v1/query/graphql" \
 
 ## 5. 读后写一致性
 
-单进程 `all` 模式通常可直接读取。writer/reader 分离时，使用写入响应的
+单进程 `all` 模式可以读取已发布的写入。需要明确版本下限时，使用写入响应的
 版本号：
 
 ```sh

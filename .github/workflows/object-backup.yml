@@ -1,0 +1,50 @@
+name: Object snapshot verification
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  object-backup:
+    name: Object snapshots and fresh-directory restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GRAPHDB_BACKUP_GATE_OUTPUT: ${{ runner.temp }}/object-backup-gate
+      GRAPHDB_TEST_BACKUP_S3_ENDPOINT: http://127.0.0.1:39090
+      GRAPHDB_TEST_BACKUP_S3_BUCKET: graphdb-backups
+      GRAPHDB_TEST_BACKUP_S3_ACCESS_KEY_ID: graphdb-test
+      GRAPHDB_TEST_BACKUP_S3_SECRET_ACCESS_KEY: graphdb-backup-test-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run isolated MinIO backup gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f graphdb-backup-ci >/dev/null' EXIT
+          docker run -d --name graphdb-backup-ci -p 127.0.0.1:39090:9000 \
+            -e MINIO_ROOT_USER=graphdb-test -e MINIO_ROOT_PASSWORD=graphdb-backup-test-only \
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          curl --fail --retry 30 --retry-all-errors --retry-delay 1 --max-time 2 \
+            http://127.0.0.1:39090/minio/health/ready
+          docker run --rm --network host \
+            -e MC_HOST_test=http://graphdb-test:graphdb-backup-test-only@127.0.0.1:39090 \
+            minio/mc:RELEASE.2025-08-13T08-35-41Z mb test/graphdb-backups
+          scripts/object_backup_gate.sh
+
+      - name: Preserve backup verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: object-backup-gate
+          path: |
+            ${{ runner.temp }}/object-backup-gate/*.log
+            ${{ runner.temp }}/object-backup-gate/*.json

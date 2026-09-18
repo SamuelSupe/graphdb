@@ -161,6 +161,10 @@ func buildResponseWithAggregatesAndGroups(version int64, results []Result, reque
 		return Response{}, err
 	}
 	applyProjectionToResults(page, request.Project)
+	return responseFromPage(version, page, next, budget, aggregates, groups), nil
+}
+
+func responseFromPage(version int64, page []Result, next string, budget *budget, aggregates map[string]any, groups []AggregateGroup) Response {
 	budget.returned = len(page)
 	budget.truncated = next != ""
 	return Response{
@@ -171,7 +175,7 @@ func buildResponseWithAggregatesAndGroups(version int64, results []Result, reque
 		Aggregates: aggregates,
 		Groups:     groups,
 		Profile:    budget.profile(),
-	}, nil
+	}
 }
 
 func applyProjectionToResults(results []Result, fields []string) {

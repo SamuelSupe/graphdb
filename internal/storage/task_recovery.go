@@ -78,6 +78,11 @@ func (s *TenantStore) taskOwnerActive(
 	if task.OwnerID == s.InstanceID {
 		return false, true
 	}
+	// Owning the local directory excludes every previous process, regardless of
+	// its persisted writer lease expiry.
+	if exclusiveFileStore(s.Objects) != nil {
+		return false, true
+	}
 	if s.coordinated() {
 		return s.coordinatedTaskOwnerActive(ctx, task)
 	}

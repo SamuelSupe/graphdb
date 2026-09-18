@@ -6,3 +6,5 @@ coverage.out
 dist
 soak-runs
 *.test
+
+capacity-runs

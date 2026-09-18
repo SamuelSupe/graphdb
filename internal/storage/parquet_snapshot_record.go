@@ -8,77 +8,120 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
+	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
 const snapshotRecordCodecParquet = "snapshot-record-arrow-parquet-v1"
 
+const parquetSnapshotRecordBatchRows = 16384
+
 func marshalParquetSnapshotRecord(ctx context.Context, record snapshotRecord) ([]byte, error) {
-	normalized, hash, err := normalizeSnapshotRecordForParquet(record)
-	if err != nil {
+	if err := objectContextErr(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := snapshotRecordRows(normalized)
+	normalized, hash, err := normalizeSnapshotRecordForParquet(record)
 	if err != nil {
 		return nil, err
 	}
 	schema := parquetCommitArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
+	var buf bytes.Buffer
+	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
+	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
+	writer, err := pqarrow.NewFileWriter(schema, &buf, writerProps, arrowProps)
+	if err != nil {
+		return nil, err
+	}
+	defer writer.Close()
 	header := graph.Commit{
 		LayoutVersion: CurrentObjectLayoutVersion,
 		TenantID:      normalized.TenantID,
 		ID:            "snapshot-record",
 		Version:       normalized.Snapshot.Version,
 	}
-	for _, row := range rows {
-		appendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
+	pending := 0
+	flush := func() error {
+		if err := objectContextErr(ctx); err != nil {
+			return err
+		}
+		if pending == 0 {
+			return nil
+		}
+		batch := builder.NewRecordBatch()
+		defer batch.Release()
+		pending = 0
+		return writer.Write(batch)
 	}
-
-	batch := builder.NewRecordBatch()
-	defer batch.Release()
-	table := array.NewTableFromRecords(schema, []arrow.RecordBatch{batch})
-	defer table.Release()
-
-	var buf bytes.Buffer
-	rowGroupSize := table.NumRows()
-	if rowGroupSize < 1 {
-		rowGroupSize = 1
+	// Ordinals and the content hash span all row groups. Bound the intermediate
+	// Arrow row count independently of snapshot size, including splits within an entity.
+	err = visitSnapshotRecordRows(normalized, func(rows []parquetCommitRow) error {
+		if err := objectContextErr(ctx); err != nil {
+			return err
+		}
+		for _, row := range rows {
+			appendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
+			pending++
+			if pending == parquetSnapshotRecordBatchRows {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
-	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetSnapshotRecord(ctx context.Context, data []byte) (snapshotRecord, error) {
-	table, release, err := readParquetTable(ctx, data)
+	return decodeParquetSnapshotRecordReader(ctx, bytes.NewReader(data))
+}
+
+func decodeParquetSnapshotRecordReader(ctx context.Context, source parquet.ReaderAtSeeker) (snapshotRecord, error) {
+	if err := objectContextErr(ctx); err != nil {
+		return snapshotRecord{}, err
+	}
+	file, err := pqfile.NewParquetReader(source)
+	if err != nil {
+		return snapshotRecord{}, err
+	}
+	defer file.Close()
+	fileReader, err := pqarrow.NewFileReader(file, pqarrow.ArrowReadProperties{BatchSize: 4096}, memory.DefaultAllocator)
+	if err != nil {
+		return snapshotRecord{}, err
+	}
+	reader, release, err := readParquetRecordReader(ctx, fileReader, nil, nil)
 	if err != nil {
 		return snapshotRecord{}, err
 	}
 	defer release()
-	defer table.Release()
-	if table.NumRows() < 1 {
-		return snapshotRecord{}, fmt.Errorf("parquet snapshot record is empty")
-	}
-	if table.NumCols() < int64(parquetCommitColumnEdgeSourceObservedAt+1) {
-		return snapshotRecord{}, fmt.Errorf("parquet snapshot record has %d columns, want at least %d", table.NumCols(), parquetCommitColumnEdgeSourceObservedAt+1)
+	defer reader.Release()
+	if columns := reader.Schema().NumFields(); columns < parquetCommitColumnEdgeSourceObservedAt+1 {
+		return snapshotRecord{}, fmt.Errorf("parquet snapshot record has %d columns, want at least %d", columns, parquetCommitColumnEdgeSourceObservedAt+1)
 	}
 
 	var record snapshotRecord
 	var expectedHash string
 	build := &commitBuild{}
 	rows := 0
-	reader := array.NewTableReader(table, 4096)
-	defer reader.Release()
 	for reader.Next() {
+		if err := objectContextErr(ctx); err != nil {
+			return snapshotRecord{}, err
+		}
 		batch := reader.RecordBatch()
 		columns, err := parquetCommitColumns(batch)
 		if err != nil {
@@ -114,6 +157,15 @@ func decodeParquetSnapshotRecord(ctx context.Context, data []byte) (snapshotReco
 			rows++
 		}
 	}
+	if err := reader.Err(); err != nil {
+		return snapshotRecord{}, err
+	}
+	if err := objectContextErr(ctx); err != nil {
+		return snapshotRecord{}, err
+	}
+	if rows == 0 {
+		return snapshotRecord{}, fmt.Errorf("parquet snapshot record is empty")
+	}
 	for _, ordinal := range sortedIntKeys(build.ciTypes) {
 		record.Snapshot.CITypes = setCITypeAt(record.Snapshot.CITypes, ordinal, build.ciTypes[ordinal].item)
 	}
@@ -136,7 +188,7 @@ func decodeParquetSnapshotRecord(ctx context.Context, data []byte) (snapshotReco
 	if expectedHash == "" || expectedHash != hash {
 		return snapshotRecord{}, fmt.Errorf("snapshot record content hash mismatch")
 	}
-	return record, nil
+	return record, objectContextErr(ctx)
 }
 
 func normalizeSnapshotRecordForParquet(record snapshotRecord) (snapshotRecord, string, error) {
@@ -154,27 +206,37 @@ func normalizeSnapshotRecordForParquet(record snapshotRecord) (snapshotRecord, s
 	return normalized, objectContentHash(payload), nil
 }
 
-func snapshotRecordRows(record snapshotRecord) ([]parquetCommitRow, error) {
-	rows := []parquetCommitRow{{Kind: commitRowMetadata}}
+func visitSnapshotRecordRows(record snapshotRecord, visit func([]parquetCommitRow) error) error {
+	if err := visit([]parquetCommitRow{{Kind: commitRowMetadata}}); err != nil {
+		return err
+	}
 	for i, ciType := range record.Snapshot.CITypes {
-		rows = append(rows, ciTypeRows(i, ciType)...)
+		if err := visit(ciTypeRows(i, ciType)); err != nil {
+			return err
+		}
 	}
 	for i, relationType := range record.Snapshot.RelationTypes {
-		rows = append(rows, relationTypeRows(i, relationType)...)
+		if err := visit(relationTypeRows(i, relationType)); err != nil {
+			return err
+		}
 	}
 	for i, entity := range record.Snapshot.Entities {
-		entityRows, err := entityMutationRows(commitRowUpsertEntity, i, 0, entity)
+		rows, err := entityMutationRows(commitRowUpsertEntity, i, 0, entity)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		rows = append(rows, entityRows...)
+		if err := visit(rows); err != nil {
+			return err
+		}
 	}
 	for i, edge := range record.Snapshot.Edges {
-		edgeRows, err := edgeMutationRows(commitRowUpsertEdge, i, edge)
+		rows, err := edgeMutationRows(commitRowUpsertEdge, i, edge)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		rows = append(rows, edgeRows...)
+		if err := visit(rows); err != nil {
+			return err
+		}
 	}
-	return rows, nil
+	return nil
 }

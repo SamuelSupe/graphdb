@@ -80,6 +80,11 @@ type gcReaderProtection struct {
 }
 
 func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
+	releaseViews, viewErr := s.lockReadViews(ctx, tenantID, true)
+	if viewErr != nil {
+		return GCReport{}, viewErr
+	}
+	defer releaseViews()
 	if err := ValidateTenantID(tenantID); err != nil {
 		return GCReport{}, err
 	}
@@ -359,6 +364,9 @@ func (p gcReaderProtection) activeReaderBehind(manifestVersion int64) bool {
 }
 
 func (s *TenantStore) gcReaderProtection(ctx context.Context, tenantID string, maxAge time.Duration, scanLimit int, now time.Time) (gcReaderProtection, error) {
+	if exclusiveFileStore(s.Objects) != nil {
+		return gcReaderProtection{}, nil
+	}
 	if maxAge < 0 {
 		return gcReaderProtection{}, nil
 	}

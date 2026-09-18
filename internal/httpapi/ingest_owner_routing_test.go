@@ -50,7 +50,7 @@ func TestHTTPIngestAcceptanceCarriesStableOwnerAndStatusRecovery(t *testing.T) {
 	if accepted.Source != "agent" || accepted.CollectorID != "collector-a" {
 		t.Fatalf("accepted source/collector = %q/%q, want agent/collector-a", accepted.Source, accepted.CollectorID)
 	}
-	if accepted.StatusURL != "/v1/ingest/writers/writer-a/agent/collector-a/batch-a" {
+	if accepted.StatusURL != "/v1/ingest/batches/agent/collector-a/batch-a" {
 		t.Fatalf("accepted status_url = %q", accepted.StatusURL)
 	}
 	if body.Header().Get("Location") != accepted.StatusURL {
@@ -69,7 +69,7 @@ func TestHTTPIngestAcceptanceCarriesStableOwnerAndStatusRecovery(t *testing.T) {
 		t.Fatalf("status = %#v, want prepared recovery_pending", statusBody)
 	}
 	wrongOwner := serveJSON(handler, http.MethodGet, "/v1/ingest/writers/writer-b/agent/collector-a/batch-a", "tenant-a", nil)
-	if wrongOwner.Code != http.StatusConflict {
+	if wrongOwner.Code != http.StatusNotImplemented {
 		t.Fatalf("wrong owner status code = %d body=%s, want conflict", wrongOwner.Code, wrongOwner.Body.String())
 	}
 }

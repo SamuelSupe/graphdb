@@ -36,7 +36,7 @@ func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorSta
 			return false, err
 		}
 		budget.scanned++
-		if !requestEntityMatches(request, entity) {
+		if !requestEntityMatches(&request, &entity) {
 			return true, nil
 		}
 		remaining := 0

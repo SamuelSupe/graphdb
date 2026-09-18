@@ -15,7 +15,7 @@ func (s *TenantStore) refreshReverseIndexAfterCommit(
 	before *graph.Graph,
 	after *graph.Graph,
 	affectedEdgeIDs []string,
-	version int64,
+	baseVersion, version int64,
 ) error {
 	previous, meta, err := s.getReverseIndexCatalogWithMeta(
 		ctx,
@@ -24,11 +24,11 @@ func (s *TenantStore) refreshReverseIndexAfterCommit(
 	if err != nil {
 		return err
 	}
-	if previous.Version != version-1 {
+	if previous.Version != baseVersion {
 		return fmt.Errorf(
 			"reverse index catalog version %d does not match previous graph version %d",
 			previous.Version,
-			version-1,
+			baseVersion,
 		)
 	}
 	now := time.Now().UTC()

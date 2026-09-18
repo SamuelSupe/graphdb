@@ -480,12 +480,12 @@ func (s *Server) recoverTenant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	release, ok := s.enterMaintenance(w, tenantID)
+	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)
 	if !ok {
 		return
 	}
 	defer release()
-	report, err := s.Store.RecoverTenant(r.Context(), tenantID)
+	report, err := s.Store.RecoverTenant(ctx, tenantID)
 	if err != nil {
 		s.auditError("tenant_recovery_failed", tenantID, err, map[string]any{})
 		writeStorageError(w, err)

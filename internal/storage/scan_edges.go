@@ -18,6 +18,20 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 	if err := ValidateTenantID(tenantID); err != nil {
 		return EdgeScanResult{}, err
 	}
+	ctx, releaseView, err := s.ReadViewContext(ctx, tenantID)
+	if err != nil {
+		return EdgeScanResult{}, err
+	}
+	defer releaseView()
+	binding, err := s.ValidateScanCursor(ctx, tenantID, options.Cursor)
+	if err != nil {
+		return EdgeScanResult{}, err
+	}
+	defer func() {
+		if err == nil {
+			result.NextCursor, err = binding.PinGeneration(result.NextCursor)
+		}
+	}()
 	options.normalize()
 	cursorVersion, cursorCatalogHash, hasCursorVersion, err := scanCursorPinnedCatalog(options.Cursor)
 	if err != nil {
@@ -46,7 +60,7 @@ func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options Ed
 		} else if !errors.Is(err, ErrNotFound) {
 			return EdgeScanResult{}, err
 		}
-		if manifestVersion != cursorVersion {
+		if cursorCatalogHash != "" || manifestVersion != cursorVersion {
 			return EdgeScanResult{}, fmt.Errorf("cursor version %d is no longer available", cursorVersion)
 		}
 	}

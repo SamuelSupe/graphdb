@@ -1,7 +1,6 @@
 package config
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +23,6 @@ func TestLoadRejectsNegativeQueryAdmissionLimits(t *testing.T) {
 		"GRAPHDB_WRITE_OBJECT_ERROR_THRESHOLD",
 		"GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD",
 		"GRAPHDB_WRITE_CAS_MAX_RETRIES",
-		"GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE",
 		"GRAPHDB_WRITE_MAX_COMMIT_TAIL",
 		"GRAPHDB_WRITE_MAX_OBJECTS_PER_TENANT",
 		"GRAPHDB_WRITE_MAX_BYTES_PER_TENANT",
@@ -71,60 +69,6 @@ func TestLoadKeepsPprofDisabledByDefault(t *testing.T) {
 	if cfg.PprofEnabled || cfg.AdminAddr != "" {
 		t.Fatalf("admin defaults = addr %q pprof %t, want empty/false", cfg.AdminAddr, cfg.PprofEnabled)
 	}
-}
-
-func TestLoadIngestWALDefaultsAndDeploymentBoundary(t *testing.T) {
-	setLocalConfigEnv(t)
-	dataDir := t.TempDir()
-	t.Setenv("GRAPHDB_DATA_DIR", dataDir)
-	t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.IngestWALDir != filepath.Join(dataDir, "wal", "ingest") ||
-		cfg.IngestWALDurability != storage.IngestWALDurabilitySync ||
-		cfg.IngestWALBufferBytes != 4*1024*1024 ||
-		cfg.IngestFlushWorkers != 1 ||
-		cfg.IngestFlushInterval != 10*time.Second {
-		t.Fatalf("WAL defaults = %#v", cfg.IngestServiceConfig())
-	}
-
-	t.Run("postgres", func(t *testing.T) {
-		setPostgresConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-		t.Setenv("GRAPHDB_INSTANCE_ID", "writer-a")
-		cfg, err := Load()
-		if err != nil {
-			t.Fatalf("Load postgres+cas+wal: %v", err)
-		}
-		if cfg.CoordinationMode() != storage.CoordinationPostgres || cfg.WriterTopology != storage.WriterTopologyCAS || cfg.IngestMode != "wal" || cfg.InstanceID != "writer-a" || cfg.IngestServiceConfig().OwnerID != "writer-a" {
-			t.Fatalf("postgres+cas+wal config = %#v", cfg)
-		}
-	})
-	t.Run("postgres requires stable instance id", func(t *testing.T) {
-		setPostgresConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GRAPHDB_INSTANCE_ID") {
-			t.Fatalf("Load err = %v, want stable instance id validation", err)
-		}
-	})
-	t.Run("reader", func(t *testing.T) {
-		setLocalConfigEnv(t)
-		t.Setenv("GRAPHDB_MODE", "reader")
-		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "unavailable in reader mode") {
-			t.Fatalf("Load err = %v, want reader boundary", err)
-		}
-	})
-	t.Run("durability", func(t *testing.T) {
-		setLocalConfigEnv(t)
-		t.Setenv("GRAPHDB_INGEST_MODE", "wal")
-		t.Setenv("GRAPHDB_INGEST_WAL_DURABILITY", "invalid")
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "durability") {
-			t.Fatalf("Load err = %v, want durability validation", err)
-		}
-	})
 }
 
 func TestLoadRequiresSeparateAdminListenerForPprof(t *testing.T) {
@@ -201,10 +145,6 @@ func TestLoadRejectsNegativeDurations(t *testing.T) {
 		"GRAPHDB_TENANT_USAGE_CACHE_TTL",
 		"GRAPHDB_READER_CATCHUP_TIMEOUT",
 		"GRAPHDB_READINESS_TIMEOUT",
-		"GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION",
-		"GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL",
-		"GRAPHDB_COORDINATOR_OUTBOX_RETENTION",
-		"GRAPHDB_COORDINATOR_CLEANUP_INTERVAL",
 		"GRAPHDB_FAULT_OBJECT_READ_DELAY",
 		"GRAPHDB_WRITER_OBJECT_CACHE_NEGATIVE_TTL",
 	}
@@ -340,114 +280,6 @@ func TestLoadAllowsWriteRequestPipeliningPerTenant(t *testing.T) {
 	}
 	if cfg.WriteMaxPerTenant != 4 {
 		t.Fatalf("WriteMaxPerTenant = %d, want 4", cfg.WriteMaxPerTenant)
-	}
-}
-
-func TestLoadPostgresCoordinationRequirements(t *testing.T) {
-	setLocalConfigEnv(t)
-	t.Setenv("GRAPHDB_COORDINATION", "postgres")
-	t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
-	t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")
-	t.Setenv("GRAPHDB_STORAGE", "s3")
-	t.Setenv("S3_PROVIDER", storage.ObjectProviderGenericS3)
-	t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
-	t.Setenv("GRAPHDB_WRITE_CAS_MAX_RETRIES", "12")
-	t.Setenv("GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION", "48h")
-	t.Setenv("GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", "4m")
-	t.Setenv("GRAPHDB_COORDINATOR_OUTBOX_RETENTION", "2h")
-	t.Setenv("GRAPHDB_COORDINATOR_CLEANUP_INTERVAL", "30s")
-	t.Setenv("GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE", "7000")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Coordination != storage.CoordinationPostgres ||
-		cfg.PostgresSchema != "graphdb_coordination" ||
-		cfg.CoordinatorNamespace != "production" ||
-		cfg.WriteCASMaxRetries != 12 ||
-		cfg.CoordinatorIdempotencyRetention != 48*time.Hour ||
-		cfg.CoordinatorPendingReservationTTL != 4*time.Minute ||
-		cfg.CoordinatorOutboxRetention != 2*time.Hour ||
-		cfg.CoordinatorCleanupInterval != 30*time.Second ||
-		cfg.CoordinatorCleanupBatchSize != 7000 {
-		t.Fatalf("coordination config = %#v", cfg)
-	}
-}
-
-func TestLoadRejectsUnsafePostgresReservationTTL(t *testing.T) {
-	for _, test := range []struct {
-		name         string
-		writeTimeout string
-		pendingTTL   string
-	}{
-		{name: "unbounded write", writeTimeout: "0", pendingTTL: "3m"},
-		{name: "equal ttl", writeTimeout: "3m", pendingTTL: "3m"},
-		{name: "short ttl", writeTimeout: "4m", pendingTTL: "3m"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			setPostgresConfigEnv(t)
-			t.Setenv("GRAPHDB_WRITE_EXECUTION_TIMEOUT", test.writeTimeout)
-			t.Setenv("GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", test.pendingTTL)
-			if _, err := Load(); err == nil ||
-				!strings.Contains(err.Error(), "GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL") &&
-					!strings.Contains(err.Error(), "GRAPHDB_WRITE_EXECUTION_TIMEOUT") {
-				t.Fatalf("Load err = %v, want reservation/write timeout validation", err)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsUnsafePostgresCoordination(t *testing.T) {
-	tests := []struct {
-		name string
-		set  func(*testing.T)
-		want string
-	}{
-		{
-			name: "missing dsn",
-			set:  func(t *testing.T) { t.Setenv("GRAPHDB_POSTGRES_DSN", "") },
-			want: "GRAPHDB_POSTGRES_DSN",
-		},
-		{
-			name: "missing namespace",
-			set:  func(t *testing.T) { t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "") },
-			want: "GRAPHDB_COORDINATOR_NAMESPACE",
-		},
-		{
-			name: "local object store",
-			set:  func(t *testing.T) { t.Setenv("GRAPHDB_STORAGE", "local") },
-			want: "GRAPHDB_STORAGE=s3",
-		},
-		{
-			name: "native provider",
-			set: func(t *testing.T) {
-				t.Setenv("S3_PROVIDER", storage.ObjectProviderAliyunOSS)
-				t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologySingle)
-				t.Setenv("S3_VERSIONING", storage.BucketVersioningDisabled)
-			},
-			want: "S3_PROVIDER=generic-s3",
-		},
-		{
-			name: "single topology",
-			set:  func(t *testing.T) { t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologySingle) },
-			want: "GRAPHDB_WRITER_TOPOLOGY=cas",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			setLocalConfigEnv(t)
-			t.Setenv("GRAPHDB_COORDINATION", "postgres")
-			t.Setenv("GRAPHDB_POSTGRES_DSN", "postgres://graphdb:test@postgres/graphdb")
-			t.Setenv("GRAPHDB_COORDINATOR_NAMESPACE", "production")
-			t.Setenv("GRAPHDB_STORAGE", "s3")
-			t.Setenv("S3_PROVIDER", storage.ObjectProviderGenericS3)
-			t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
-			test.set(t)
-			_, err := Load()
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("Load err=%v, want %q", err, test.want)
-			}
-		})
 	}
 }
 
@@ -630,88 +462,12 @@ func TestLoadRejectsInvalidOTLPInsecure(t *testing.T) {
 	}
 }
 
-func TestLoadParsesS3PathStyle(t *testing.T) {
-	setLocalConfigEnv(t)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.S3PathStyle {
-		t.Fatal("S3PathStyle default = true, want false")
-	}
-
-	t.Setenv("S3_PATH_STYLE", "true")
-	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("Load with S3_PATH_STYLE: %v", err)
-	}
-	if !cfg.S3PathStyle {
-		t.Fatal("S3PathStyle = false, want true")
-	}
-}
-
-func TestLoadRejectsInvalidS3PathStyle(t *testing.T) {
+func TestLoadRejectsRetiredS3Configuration(t *testing.T) {
 	setLocalConfigEnv(t)
 	t.Setenv("S3_PATH_STYLE", "sometimes")
 	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "S3_PATH_STYLE must be a boolean") {
+	if err == nil || !strings.Contains(err.Error(), "S3_PATH_STYLE is unsupported") {
 		t.Fatalf("Load err = %v, want S3_PATH_STYLE validation", err)
-	}
-}
-
-func TestLoadValidatesNativeObjectStorageProfile(t *testing.T) {
-	setup := func(t *testing.T) {
-		t.Helper()
-		setLocalConfigEnv(t)
-		t.Setenv("GRAPHDB_STORAGE", "s3")
-		t.Setenv("S3_PROVIDER", storage.ObjectProviderAliyunOSS)
-		t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologySingle)
-		t.Setenv("S3_VERSIONING", storage.BucketVersioningDisabled)
-	}
-	cases := []struct {
-		name string
-		set  func(t *testing.T)
-		want string
-	}{
-		{
-			name: "requires single writer",
-			set: func(t *testing.T) {
-				t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
-			},
-			want: "GRAPHDB_WRITER_TOPOLOGY=single",
-		},
-		{
-			name: "requires disabled versioning",
-			set: func(t *testing.T) {
-				t.Setenv("S3_VERSIONING", "enabled")
-			},
-			want: "S3_VERSIONING=disabled",
-		},
-		{
-			name: "rejects unknown provider",
-			set: func(t *testing.T) {
-				t.Setenv("S3_PROVIDER", "unknown")
-			},
-			want: "unsupported S3_PROVIDER",
-		},
-		{
-			name: "rejects cos path style",
-			set: func(t *testing.T) {
-				t.Setenv("S3_PROVIDER", storage.ObjectProviderTencentCOS)
-				t.Setenv("S3_PATH_STYLE", "true")
-			},
-			want: "does not support S3_PATH_STYLE=true",
-		},
-	}
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			setup(t)
-			tt.set(t)
-			_, err := Load()
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Load err = %v, want %q", err, tt.want)
-			}
-		})
 	}
 }
 

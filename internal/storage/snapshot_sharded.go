@@ -159,7 +159,7 @@ func (s *TenantStore) putShardedSnapshot(ctx context.Context, tenantID string, s
 	if len(edgeShards) > 0 {
 		catalog.EdgeShards = make([]SnapshotEdgeShardSpec, len(edgeShards))
 	}
-	if err := runSnapshotParts(ctx, len(entityPages)+len(edgeShards), func(workCtx context.Context, index int) error {
+	if err := s.runFileWriteJobs(ctx, len(entityPages)+len(edgeShards), func(workCtx context.Context, index int) error {
 		if index < len(entityPages) {
 			page := entityPages[index]
 			page.TenantID = tenantID
@@ -354,22 +354,24 @@ func (s *TenantStore) loadSnapshotEntityPage(ctx context.Context, tenantID strin
 	if spec.Format != IndexFormatParquet {
 		return EntityPageData{}, fmt.Errorf("unsupported snapshot entity page format %q: only parquet pages are readable", spec.Format)
 	}
-	data, err := s.Objects.Get(ctx, spec.Key)
+	reader, err := openFileReader(ctx, s.Objects, spec.Key)
 	if err != nil {
 		return EntityPageData{}, err
 	}
-	return decodeParquetEntityPage(ctx, data, tenantID, spec.Shard, version)
+	defer reader.Close()
+	return decodeParquetEntityPageReader(ctx, reader, tenantID, spec.Shard, version)
 }
 
 func (s *TenantStore) loadSnapshotEdgeShard(ctx context.Context, tenantID string, version int64, spec SnapshotEdgeShardSpec) (EdgeShardData, error) {
 	if spec.Format != IndexFormatParquet {
 		return EdgeShardData{}, fmt.Errorf("unsupported snapshot edge shard format %q: only parquet shards are readable", spec.Format)
 	}
-	data, err := s.Objects.Get(ctx, spec.Key)
+	reader, err := openFileReader(ctx, s.Objects, spec.Key)
 	if err != nil {
 		return EdgeShardData{}, err
 	}
-	return decodeParquetEdgeShard(ctx, data, tenantID, spec.RelationType, spec.Shard, version)
+	defer reader.Close()
+	return decodeParquetEdgeShardReader(ctx, reader, tenantID, spec.RelationType, spec.Shard, version)
 }
 
 func (s *TenantStore) putSnapshotParquetEntityPageIfAbsentOrSame(ctx context.Context, key string, tenantID string, page EntityPageData) error {

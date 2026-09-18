@@ -3,11 +3,10 @@ package storage
 import (
 	"context"
 	"errors"
-	"io"
-	"net/http"
+
 	"os"
 	"path/filepath"
-	"strings"
+
 	"sync"
 	"testing"
 	"time"
@@ -53,39 +52,6 @@ func TestFileStoreProbeRejectsNonDirectoryRoot(t *testing.T) {
 	store := NewTenantStore(NewFileStore(root), "test")
 	if status := store.ObjectStoreStatus(context.Background()); status.Available {
 		t.Fatalf("file-root status = %#v", status)
-	}
-}
-
-func TestS3ProbeUsesBoundedBucketList(t *testing.T) {
-	store, err := NewS3StoreWithOptions(
-		"https://s3.example.com",
-		"bucket",
-		"us-east-1",
-		"access",
-		"secret",
-		S3Options{PathStyle: true},
-	)
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	store.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodGet || r.URL.Path != "/bucket" {
-			t.Fatalf("probe request = %s %s", r.Method, r.URL.Path)
-		}
-		if r.URL.Query().Get("list-type") != "2" || r.URL.Query().Get("max-keys") != "1" {
-			t.Fatalf("probe query = %q", r.URL.RawQuery)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body: io.NopCloser(strings.NewReader(
-				`<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`,
-			)),
-			Request: r,
-		}, nil
-	})
-	if err := store.Probe(context.Background()); err != nil {
-		t.Fatalf("probe: %v", err)
 	}
 }
 
@@ -171,80 +137,6 @@ func TestObjectStoreStatusWaiterRetriesCanceledLeader(t *testing.T) {
 	probe.mu.Unlock()
 	if calls != 2 {
 		t.Fatalf("backend probe calls = %d, want canceled load plus retry", calls)
-	}
-}
-
-func TestHuaweiOBSProbeHonorsContext(t *testing.T) {
-	requestCanceled := make(chan struct{}, 1)
-	client := &huaweiOBSClient{
-		endpoint:  "https://obs.example.com",
-		bucket:    "bucket",
-		region:    "region",
-		accessKey: "access",
-		secretKey: "secret",
-		pathStyle: true,
-		probeHTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			<-r.Context().Done()
-			requestCanceled <- struct{}{}
-			return nil, r.Context().Err()
-		})},
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	err := client.Probe(ctx)
-	if err == nil || time.Since(started) > 500*time.Millisecond {
-		t.Fatalf("probe err=%v elapsed=%s", err, time.Since(started))
-	}
-	select {
-	case <-requestCanceled:
-	case <-time.After(time.Second):
-		t.Fatal("Huawei OBS probe request did not observe context cancellation")
-	}
-}
-
-func TestHuaweiOBSDataRequestHonorsContext(t *testing.T) {
-	requestStarted := make(chan struct{})
-	requestCanceled := make(chan struct{}, 1)
-	var once sync.Once
-	client := &huaweiOBSClient{
-		endpoint:  "https://obs.example.com",
-		bucket:    "bucket",
-		region:    "region",
-		accessKey: "access",
-		secretKey: "secret",
-		pathStyle: true,
-		requestHTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			once.Do(func() { close(requestStarted) })
-			<-r.Context().Done()
-			requestCanceled <- struct{}{}
-			return nil, r.Context().Err()
-		})},
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, _, err := client.Get(ctx, "objects/a")
-		done <- err
-	}()
-	select {
-	case <-requestStarted:
-	case <-time.After(time.Second):
-		t.Fatal("Huawei OBS data request did not start")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Huawei OBS data request err = %v, want context canceled", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Huawei OBS data request ignored context cancellation")
-	}
-	select {
-	case <-requestCanceled:
-	case <-time.After(time.Second):
-		t.Fatal("Huawei OBS HTTP request did not observe context cancellation")
 	}
 }
 

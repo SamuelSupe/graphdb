@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
@@ -12,10 +13,18 @@ import (
 type StorageRuntime struct {
 	Store       *storage.TenantStore
 	Coordinator storage.WriteCoordinator
+	Files       *storage.FileStore
 }
 
 func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime, error) {
-	objects, err := newObjectStore(cfg)
+	if cfg.Mode != "" && cfg.Mode != "all" {
+		return nil, fmt.Errorf("only GRAPHDB_MODE=all is supported in the local disk edition")
+	}
+	if err := cfg.ValidateObjectStore(); err != nil {
+		return nil, err
+	}
+	files, err := storage.OpenFileStore(cfg.DataDir)
+	var objects storage.ObjectStore = files
 	if err != nil {
 		return nil, err
 	}
@@ -52,14 +61,29 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 	})
 	coordinator, err := newCoordinator(ctx, cfg)
 	if err != nil {
+		files.Close()
 		return nil, err
 	}
-	return &StorageRuntime{Store: store, Coordinator: coordinator}, nil
+	if err := store.EnsureLocalWriterAllowed(ctx); err != nil {
+		files.Close()
+		return nil, err
+	}
+	store.Backups, err = backupstore.New(ctx, cfg.Backup)
+	if err != nil {
+		files.Close()
+		return nil, err
+	}
+	return &StorageRuntime{Store: store, Coordinator: coordinator, Files: files}, nil
 }
 
 func (r *StorageRuntime) Close() {
-	if r != nil && r.Coordinator != nil {
-		r.Coordinator.Close()
+	if r != nil {
+		if r.Coordinator != nil {
+			r.Coordinator.Close()
+		}
+		if r.Files != nil {
+			r.Files.Close()
+		}
 	}
 }
 

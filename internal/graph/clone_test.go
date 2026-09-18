@@ -54,6 +54,13 @@ func TestGraphCopiesDoNotShareNestedFieldValues(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
+	entity := g.Entities["host:a"]
+	entity.FieldConflicts = []FieldConflict{{
+		Field: "meta", ExistingValue: map[string]any{"env": "prod"},
+		IncomingValue: []any{map[string]any{"env": "staging"}},
+	}}
+	g.Entities["host:a"] = entity
+
 	first, ok := g.GetEntity("host:a")
 	if !ok {
 		t.Fatal("missing entity")
@@ -61,6 +68,8 @@ func TestGraphCopiesDoNotShareNestedFieldValues(t *testing.T) {
 	first.Fields["meta"].(map[string]any)["env"] = "staging"
 	first.Fields["tags"].([]any)[0] = "red"
 	first.Identity["cloud"].(map[string]any)["provider"] = "gcp"
+	first.FieldConflicts[0].ExistingValue.(map[string]any)["env"] = "changed"
+	first.FieldConflicts[0].IncomingValue.([]any)[0].(map[string]any)["env"] = "changed"
 
 	again, ok := g.GetEntity("host:a")
 	if !ok {
@@ -75,12 +84,22 @@ func TestGraphCopiesDoNotShareNestedFieldValues(t *testing.T) {
 	if got := again.Identity["cloud"].(map[string]any)["provider"]; got != "aws" {
 		t.Fatalf("nested identity mutation leaked through read copy: %v", got)
 	}
+	if got := again.FieldConflicts[0].ExistingValue.(map[string]any)["env"]; got != "prod" {
+		t.Fatalf("existing conflict value mutation leaked through read copy: %v", got)
+	}
+	if got := again.FieldConflicts[0].IncomingValue.([]any)[0].(map[string]any)["env"]; got != "staging" {
+		t.Fatalf("incoming conflict value mutation leaked through read copy: %v", got)
+	}
 
 	cloned := g.Clone()
 	cloned.Entities["host:a"].Fields["meta"].(map[string]any)["env"] = "qa"
+	cloned.Entities["host:a"].FieldConflicts[0].ExistingValue.(map[string]any)["env"] = "qa"
 	afterCloneMutation, _ := g.GetEntity("host:a")
 	if got := afterCloneMutation.Fields["meta"].(map[string]any)["env"]; got != "prod" {
 		t.Fatalf("nested map mutation leaked through graph clone: %v", got)
+	}
+	if got := afterCloneMutation.FieldConflicts[0].ExistingValue.(map[string]any)["env"]; got != "prod" {
+		t.Fatalf("conflict value mutation leaked through graph clone: %v", got)
 	}
 }
 

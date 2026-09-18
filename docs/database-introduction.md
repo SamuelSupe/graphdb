@@ -4,7 +4,7 @@
 
 GGraphDB is a lightweight, general-purpose Go current-state property knowledge
 graph for entity-relationship data. It organizes entities and their
-relationships as a graph and uses local files or S3-compatible object storage
+relationships as a graph and uses local disk files
 as the persistence backend. Knowledge bases and CMDB are supported application
 scenarios alongside asset relationships, service dependencies, topology,
 lineage, and other graph-shaped workloads. It does not implement RDF/OWL,
@@ -96,7 +96,7 @@ flowchart LR
   API --> Graph["Graph model and query execution"]
   Graph --> Store["Tenant Store\nmanifest / commit / snapshot / index"]
   Store -. optional head CAS .-> PG["PostgreSQL coordination"]
-  Store --> Object["Local files or S3-compatible object storage"]
+  Store --> Object["Local disk files"]
 ```
 
 A write normally follows this path:

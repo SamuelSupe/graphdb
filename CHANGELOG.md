@@ -3,6 +3,33 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [1.3.4-local.1] - 2026-09-18
+
+Independent local disk prerelease from `codex/local-disk-v2`; the default `main`
+branch and stable Latest release are unchanged.
+
+- Run one process with concurrent tenant workloads and an exclusive data-directory
+  lock shared by the service and offline tools. Remote online-storage backends,
+  PostgreSQL coordination, separate reader/writer modes and owner routing are
+  retired; incompatible settings and coordinated data fail explicitly.
+- Preserve local Parquet/WAL formats and API contracts. File publication batches
+  directory syncs after durable file writes, with publication barriers before
+  catalog replacement. Bounded metadata caches track process-local generations.
+- Read Parquet directly through closable random-access files. Publication updates
+  reader caches; active read views protect files during GC, purge and restore.
+- Optionally back up committed tenant snapshots to S3-compatible object storage.
+  Discover published backups after local data loss, verify SHA-256 before restore,
+  and retry interrupted tasks using their original captured versions.
+- Deploy with GraphDB and one persistent local directory. Local release gates
+  cover compatibility, SDKs, HTTP recovery, restart and background maintenance;
+  focused before/after reports record measured gains and unresolved regressions
+  separately, without a general performance guarantee.
+- Optimize bounded Parquet decoding, projected/paginated reads, incremental
+  indexes, no-op compaction and deep index validation. Preserve recovery,
+  cancellation, read-view isolation and nested result ownership invariants.
+- Publish Linux amd64/arm64 and macOS arm64 binaries with checksums, build
+  metadata, validation evidence and SDKs (`1.3.4+local.1`).
+
 ## [1.3.4] - 2026-09-15
 
 ### Performance

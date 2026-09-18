@@ -8,8 +8,8 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, mutations graph.Mutations, report graph.ApplyReport, version int64, rebuildOnGap bool) error {
-	if !canIncrementIndexes(mutations) {
+func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, mutations graph.Mutations, report graph.ApplyReport, baseVersion, version int64, rebuild, rebuildOnGap bool) error {
+	if !rebuild && !canIncrementIndexes(mutations) {
 		return nil
 	}
 	catalog, catalogMeta, err := s.getIndexCatalogForWriteWithMeta(ctx, tenantID)
@@ -22,9 +22,9 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 	if catalog.Version >= version {
 		return nil
 	}
-	if catalog.Version != version-1 {
-		if !rebuildOnGap {
-			return fmt.Errorf("index catalog version %d does not match previous graph version %d", catalog.Version, version-1)
+	if rebuild || catalog.Version != baseVersion {
+		if !rebuild && !rebuildOnGap {
+			return fmt.Errorf("index catalog version %d does not match previous graph version %d", catalog.Version, baseVersion)
 		}
 		_, err := s.RebuildIndexes(ctx, tenantID)
 		return err
@@ -40,7 +40,11 @@ func (s *TenantStore) ensureIncrementalIndexCurrent(ctx context.Context, tenantI
 	if err != nil {
 		return err
 	}
-	if current.Version != version {
+	// Ordered local updates may trail the graph head. The caller retains its
+	// original writer fence and read view through publication, excluding tenant
+	// replacement and GC; the catalog CAS still requires the preceding catalog.
+	catchup, _ := ctx.Value(orderedIndexUpdateKey{}).(bool)
+	if current.Version != version && !(catchup && current.Version > version) {
 		return fmt.Errorf("%w: manifest for tenant %q changed while updating indexes", ErrConflict, tenantID)
 	}
 	return nil

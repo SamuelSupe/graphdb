@@ -13,7 +13,7 @@ import (
 
 func TestIngestWALConcurrentAppendsRecoverInLSNOrder(t *testing.T) {
 	config := testIngestWALConfig(t)
-	wal, records, err := OpenIngestWAL(config)
+	wal, records, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestIngestWALConcurrentAppendsRecoverInLSNOrder(t *testing.T) {
 		}
 	}
 
-	reopened, recovered, err := OpenIngestWAL(config)
+	reopened, recovered, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestIngestWALConcurrentAppendsRecoverInLSNOrder(t *testing.T) {
 
 func TestIngestWALTruncatesOnlyIncompleteFinalTail(t *testing.T) {
 	config := testIngestWALConfig(t)
-	wal, _, err := OpenIngestWAL(config)
+	wal, _, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestIngestWALTruncatesOnlyIncompleteFinalTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, records, err := OpenIngestWAL(config)
+	reopened, records, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,11 +120,11 @@ func TestIngestWALTruncatesOnlyIncompleteFinalTail(t *testing.T) {
 
 func TestIngestWALRejectsChecksumCorruptionAndSecondProcess(t *testing.T) {
 	config := testIngestWALConfig(t)
-	wal, _, err := OpenIngestWAL(config)
+	wal, _, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := OpenIngestWAL(config); !errors.Is(err, ErrIngestWALLocked) {
+	if _, _, err := openIngestWALRecords(config); !errors.Is(err, ErrIngestWALLocked) {
 		t.Fatalf("second open err = %v, want ErrIngestWALLocked", err)
 	}
 	if _, err := wal.Append(context.Background(), IngestWALAccepted, []byte("first")); err != nil {
@@ -149,7 +149,7 @@ func TestIngestWALRejectsChecksumCorruptionAndSecondProcess(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := OpenIngestWAL(config); !errors.Is(err, ErrIngestWALCorrupt) {
+	if _, _, err := openIngestWALRecords(config); !errors.Is(err, ErrIngestWALCorrupt) {
 		t.Fatalf("corrupt open err = %v, want ErrIngestWALCorrupt", err)
 	}
 }
@@ -165,7 +165,7 @@ func TestIngestWALRejectsLSNGaps(t *testing.T) {
 	if err := os.WriteFile(path, append(first, third...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := OpenIngestWAL(config); !errors.Is(err, ErrIngestWALCorrupt) {
+	if _, _, err := openIngestWALRecords(config); !errors.Is(err, ErrIngestWALCorrupt) {
 		t.Fatalf("gap open err = %v, want ErrIngestWALCorrupt", err)
 	}
 }
@@ -173,7 +173,7 @@ func TestIngestWALRejectsLSNGaps(t *testing.T) {
 func TestIngestWALPruneReclaimsCompletedSegments(t *testing.T) {
 	config := testIngestWALConfig(t)
 	config.SegmentBytes = 96
-	wal, _, err := OpenIngestWAL(config)
+	wal, _, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestIngestWALReopensAtCapacityForRecovery(t *testing.T) {
 	config := testIngestWALConfig(t)
 	config.MaxBytes = int64(ingestWALHeaderBytes + len(payload) + ingestWALChecksumBytes)
 	config.SegmentBytes = config.MaxBytes
-	wal, _, err := OpenIngestWAL(config)
+	wal, _, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestIngestWALReopensAtCapacityForRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, records, err := OpenIngestWAL(config)
+	reopened, records, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestIngestWALReservesControlStateCapacity(t *testing.T) {
 	config.SegmentBytes = config.MaxBytes
 	config.ControlReserveBytes = 512
 	acceptedPayload := make([]byte, 3560)
-	wal, _, err := OpenIngestWAL(config)
+	wal, _, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestIngestWALReservesControlStateCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, records, err := OpenIngestWAL(config)
+	reopened, records, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestIngestWALRuntimeWriteFailureFailsClosedAndRecovers(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			config := testIngestWALConfig(t)
-			wal, _, err := OpenIngestWAL(config)
+			wal, _, err := openIngestWALRecords(config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -334,7 +334,7 @@ func TestIngestWALRuntimeWriteFailureFailsClosedAndRecovers(t *testing.T) {
 			}
 			faultConfig := config
 			faultConfig.openWriterFile = ingestWALFaultOpener(fault)
-			failedWAL, recovered, err := OpenIngestWAL(faultConfig)
+			failedWAL, recovered, err := openIngestWALRecords(faultConfig)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -363,7 +363,7 @@ func TestIngestWALRuntimeWriteFailureFailsClosedAndRecovers(t *testing.T) {
 			}
 
 			recoveryConfig := config
-			reopened, records, err := OpenIngestWAL(recoveryConfig)
+			reopened, records, err := openIngestWALRecords(recoveryConfig)
 			if err != nil {
 				t.Fatalf("reopen after injected failure: %v", err)
 			}
@@ -388,7 +388,7 @@ func TestIngestWALPruneReopensFromRemainingSegmentLSN(t *testing.T) {
 	config := testIngestWALConfig(t)
 	config.BufferBytes = 1
 	config.SegmentBytes = 96
-	wal, _, err := OpenIngestWAL(config)
+	wal, _, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +439,7 @@ func TestIngestWALPruneReopensFromRemainingSegmentLSN(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed = true
-	reopened, records, err := OpenIngestWAL(config)
+	reopened, records, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatalf("reopen after prune: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestIngestWALRuntimeRotateFailureFailsClosedAndRecovers(t *testing.T) {
 	config.SegmentBytes = 64
 	fault := &ingestWALFaultFile{failOpenAfter: 1}
 	config.openWriterFile = ingestWALFaultOpener(fault)
-	wal, _, err := OpenIngestWAL(config)
+	wal, _, err := openIngestWALRecords(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestIngestWALRuntimeRotateFailureFailsClosedAndRecovers(t *testing.T) {
 		t.Fatalf("failed rotate WAL close err = %v, want ErrIngestWALFailed", err)
 	}
 
-	reopened, records, err := OpenIngestWAL(testIngestWALConfigWithDir(config.Dir))
+	reopened, records, err := openIngestWALRecords(testIngestWALConfigWithDir(config.Dir))
 	if err != nil {
 		t.Fatalf("reopen after rotate failure: %v", err)
 	}
@@ -619,4 +619,25 @@ func (o *ingestWALTestObserver) syncSnapshot() []ingestWALSyncObservation {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return append([]ingestWALSyncObservation(nil), o.syncs...)
+}
+
+func openIngestWALRecords(config IngestWALConfig) (*IngestWAL, []IngestWALRecord, error) {
+	var records []IngestWALRecord
+	wal, err := OpenIngestWAL(config, func(record IngestWALRecord) error {
+		records = append(records, record)
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return wal, records, nil
+}
+
+func recoverIngestWAL(dir string) ([]IngestWALRecord, []ingestWALSegment, uint64, int64, error) {
+	var records []IngestWALRecord
+	segments, nextLSN, totalBytes, err := scanIngestWAL(dir, func(record IngestWALRecord) error {
+		records = append(records, record)
+		return nil
+	})
+	return records, segments, nextLSN, totalBytes, err
 }

@@ -115,7 +115,7 @@ func setupIngestTerminalCompletionBenchmark(
 	config.WAL.MaxBytes = 32 << 20
 	config.WAL.SegmentBytes = 16 << 20
 	config.WAL.AppendQueue = activeCount
-	wal, _, err := OpenIngestWAL(config.WAL)
+	wal, _, err := openIngestWALRecords(config.WAL)
 	if err != nil {
 		b.Fatalf("open benchmark WAL: %v", err)
 	}

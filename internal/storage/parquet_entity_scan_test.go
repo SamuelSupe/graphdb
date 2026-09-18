@@ -4,12 +4,58 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func TestPackedEntityRowsPruneShardsWithoutChangingLogicalHashes(t *testing.T) {
+	ctx := context.Background()
+	entities := make([]graph.Entity, 2200)
+	for i := range entities {
+		entities[i] = graph.Entity{ID: fmt.Sprintf("host:%05d", i), Kind: "host", Fields: graph.Fields{"name": fmt.Sprint(i)}}
+	}
+	pages := buildEntityPagesFromEntities(entities, 7)
+	pack := mergeEntityPagePack(entityPageDataPackGroup{ID: indexPackPrefix + "test", Pages: pages})
+	pack.TenantID = "tenant-a"
+	wantHash := entityPageContentHash(pack)
+	data, err := marshalParquetEntityPage(ctx, pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entityPageContentHash(pack) != wantHash {
+		t.Fatal("physical encoding mutated logical page order")
+	}
+	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	for _, page := range pages {
+		groups := parquetEntityShardRowGroups(reader, page.Shard)
+		if len(groups) >= reader.NumRowGroups() {
+			t.Fatalf("shard %s cannot prune any row groups", page.Shard)
+		}
+		decoded, err := decodeParquetEntityPage(ctx, data, pack.TenantID, page.Shard, pack.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entityPageContentHash(decoded) != entityPageContentHash(page) {
+			t.Fatalf("shard %s logical hash changed after packing", page.Shard)
+		}
+	}
+	decoded, err := decodeParquetEntityPage(ctx, data, pack.TenantID, "", pack.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded.Shard = pack.Shard
+	if entityPageContentHash(decoded) != wantHash {
+		t.Fatal("full pack read changed its logical hash")
+	}
+}
 
 func TestParquetEntityCandidateScanPrunesAbsentKind(t *testing.T) {
 	ctx := context.Background()
@@ -119,28 +165,11 @@ func TestParquetEntityCandidateScanFiltersPackedPageByLogicalShard(t *testing.T)
 func TestDecodeParquetEntityPageReadsPackedShardAcrossRowGroups(t *testing.T) {
 	ctx := context.Background()
 	targetIDs, targetShard := parquetEntityIDsInShard(t, "system:rowgroup-target", 128, "")
-	otherIDs, otherShard := parquetEntityIDsInShard(t, "system:rowgroup-other", 64, targetShard)
-	if targetShard == otherShard {
-		t.Fatalf("test shards collided: %q", targetShard)
-	}
-	entities := make([]graph.Entity, 0, len(targetIDs)+len(otherIDs))
-	for _, id := range targetIDs[:64] {
-		entities = append(entities, parquetShardTestEntity(id))
-	}
-	for _, id := range otherIDs {
-		entities = append(entities, parquetShardTestEntity(id))
-	}
-	for _, id := range targetIDs[64:] {
-		entities = append(entities, parquetShardTestEntity(id))
-	}
-	data, err := marshalParquetEntityPage(ctx, EntityPageData{
-		TenantID: "tenant-a",
-		Shard:    "pack_test",
-		Version:  1,
-		Entities: entities,
-	})
+	// The pre-locality writer interleaved logical shards. Keep exercising
+	// noncontiguous row groups even though the current writer groups shards.
+	data, err := os.ReadFile("testdata/entity-pack-interleaved.parquet")
 	if err != nil {
-		t.Fatalf("marshal packed page: %v", err)
+		t.Fatal(err)
 	}
 	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
 	if err != nil {

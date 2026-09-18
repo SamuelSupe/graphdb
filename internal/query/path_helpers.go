@@ -6,13 +6,14 @@ func pathMatches(path graph.Path, filter PathFilter) bool {
 	if !pathStepsMatch(path, filter, true) {
 		return false
 	}
-	if filter.EndKind != "" && pathEnd(path).Kind != filter.EndKind {
+	end := pathEnd(path)
+	if filter.EndKind != "" && end.Kind != filter.EndKind {
 		return false
 	}
-	if len(filter.EndWhere) > 0 && !entityMatches(pathEnd(path), filter.EndWhere) {
+	if len(filter.EndWhere) > 0 && !entityMatches(&end, filter.EndWhere) {
 		return false
 	}
-	if !entityExprMatches(pathEnd(path), filter.EndWhereExpr) {
+	if !entityExprMatches(&end, filter.EndWhereExpr) {
 		return false
 	}
 	if len(filter.NodeKinds) > 0 {
@@ -43,13 +44,14 @@ func pathPrefixMatches(path graph.Path, filter PathFilter, final bool) bool {
 	if !final {
 		return true
 	}
-	if filter.EndKind != "" && pathEnd(path).Kind != filter.EndKind {
+	end := pathEnd(path)
+	if filter.EndKind != "" && end.Kind != filter.EndKind {
 		return false
 	}
-	if len(filter.EndWhere) > 0 && !entityMatches(pathEnd(path), filter.EndWhere) {
+	if len(filter.EndWhere) > 0 && !entityMatches(&end, filter.EndWhere) {
 		return false
 	}
-	if !entityExprMatches(pathEnd(path), filter.EndWhereExpr) {
+	if !entityExprMatches(&end, filter.EndWhereExpr) {
 		return false
 	}
 	return true
@@ -77,10 +79,10 @@ func pathStepsMatch(path graph.Path, filter PathFilter, final bool) bool {
 		if !stringSliceAllows(entity.Kind, step.NodeKinds) {
 			return false
 		}
-		if len(step.Where) > 0 && !entityMatches(entity, step.Where) {
+		if len(step.Where) > 0 && !entityMatches(&entity, step.Where) {
 			return false
 		}
-		if !entityExprMatches(entity, step.WhereExpr) {
+		if !entityExprMatches(&entity, step.WhereExpr) {
 			return false
 		}
 	}

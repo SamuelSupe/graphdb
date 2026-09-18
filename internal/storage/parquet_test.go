@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
@@ -957,5 +959,60 @@ func assertCatalogParquet(t *testing.T, catalog IndexCatalog) {
 		if shard.Format != IndexFormatParquet || shard.Codec != parquetEdgeShardCodec || len(shard.Objects) != 1 || shard.Objects[0].Format != IndexFormatParquet {
 			t.Fatalf("edge shard should be parquet-ready: %#v", shard)
 		}
+	}
+}
+
+func TestParquetSnapshotRecordRoundTripAcrossRowGroups(t *testing.T) {
+	ctx := context.Background()
+	for _, fieldCount := range []int{0, 9000} {
+		t.Run(fmt.Sprintf("fields-%d", fieldCount), func(t *testing.T) {
+			g := graph.New()
+			if fieldCount > 0 {
+				fields := graph.Fields{"nested": map[string]any{"items": []any{"one", float64(2), true}}}
+				for i := 0; i < fieldCount; i++ {
+					fields[fmt.Sprintf("field-%05d", i)] = float64(i)
+				}
+				if err := g.ApplyCommit(graph.Commit{Version: 7, CreatedAt: time.Unix(1000, 0).UTC(), Mutations: graph.Mutations{
+					UpsertCITypes:       []graph.CIType{{Name: "host"}},
+					UpsertRelationTypes: []graph.RelationType{{Name: "connects", FromKind: "host", ToKind: "host", Directed: true}},
+					UpsertEntities: []graph.Entity{
+						{ID: "host:a", Kind: "host", Fields: fields, Source: "agent"},
+						{ID: "host:b", Kind: "host", Fields: graph.Fields{"name": "target"}},
+					},
+					UpsertEdges: []graph.Edge{{ID: "edge:1", Type: "connects", From: "host:a", To: "host:b", Fields: fields, Source: "agent"}},
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			record := snapshotRecord{TenantID: "tenant-a", Snapshot: g.Snapshot()}
+			want, err := snapshotRecordPayloadJSON(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := marshalParquetSnapshotRecord(ctx, record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			groups := reader.NumRowGroups()
+			reader.Close()
+			if fieldCount > 0 && groups < 3 {
+				t.Fatalf("wide entity and edge must cross row groups: got %d", groups)
+			}
+			decoded, err := decodeParquetSnapshotRecord(ctx, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := snapshotRecordPayloadJSON(decoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatal("snapshot lost content across row groups")
+			}
+		})
 	}
 }

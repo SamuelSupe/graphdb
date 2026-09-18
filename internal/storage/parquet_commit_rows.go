@@ -550,7 +550,6 @@ func relationTypeRows(ordinal int, relationType graph.RelationType) []parquetCom
 }
 
 func entityMutationRows(kind string, parent int, child int, entity graph.Entity) ([]parquetCommitRow, error) {
-	entity = graph.CopyEntity(entity)
 	components, err := entityPageRows(entity)
 	if err != nil {
 		return nil, err
@@ -585,7 +584,6 @@ func entityMutationRows(kind string, parent int, child int, entity graph.Entity)
 }
 
 func edgeMutationRows(kind string, parent int, edge graph.Edge) ([]parquetCommitRow, error) {
-	edge = graph.CopyEdge(edge)
 	components, err := edgeShardRows(edge)
 	if err != nil {
 		return nil, err

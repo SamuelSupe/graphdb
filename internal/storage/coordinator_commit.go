@@ -1,6 +1,9 @@
 package storage
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 func (s *TenantStore) putManifestForCommit(
 	ctx context.Context,
@@ -41,3 +44,7 @@ func attachCoordinatorCommitMetadata(
 	}
 	return nil
 }
+
+const derivedTaskIndexes = "indexes"
+
+func marshalCommitResult(result CommitResult) (json.RawMessage, error) { return json.Marshal(result) }

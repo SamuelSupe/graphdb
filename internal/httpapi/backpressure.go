@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -61,15 +62,20 @@ func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID str
 }
 
 func (s *Server) enterMaintenance(w http.ResponseWriter, tenantID string) (func(), bool) {
-	release, err := s.Store.TryAcquireMaintenance(tenantID)
+	_, release, ok := s.enterMaintenanceContext(w, context.Background(), tenantID)
+	return release, ok
+}
+
+func (s *Server) enterMaintenanceContext(w http.ResponseWriter, ctx context.Context, tenantID string) (context.Context, func(), bool) {
+	ctx, release, err := s.Store.TryAcquireMaintenanceContext(ctx, tenantID)
 	if err == nil {
-		return release, true
+		return ctx, release, true
 	}
 	if errors.Is(err, storage.ErrMaintenanceBusy) {
 		w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds(retryAfterFromStore(s.Store)), 10))
 	}
 	writeStorageError(w, err)
-	return nil, false
+	return ctx, nil, false
 }
 
 func (s *Server) writeBackpressureIfNeeded(w http.ResponseWriter, tenantID string, err error) bool {

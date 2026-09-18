@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -153,3 +154,10 @@ func (s *SingleWriterObjectStore) lockKey(key string) func() {
 }
 
 var _ ObjectStore = (*SingleWriterObjectStore)(nil)
+
+func validateNativeCondition(condition PutCondition) error {
+	if condition.IfNoneMatch && condition.IfMatch != "" {
+		return fmt.Errorf("cannot combine If-None-Match and If-Match")
+	}
+	return nil
+}

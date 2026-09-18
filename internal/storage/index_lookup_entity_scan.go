@@ -101,6 +101,9 @@ func (s *entityPageVisitSession) visitPage(ctx context.Context, spec EntityPageS
 }
 
 func (s *entityPageVisitSession) loadAndDecodePage(ctx context.Context, spec EntityPageSpec, key string) (loaded loadedEntityScanPage, err error) {
+	if exclusiveFileStore(s.store.Objects) != nil {
+		return s.store.loadLocalEntityPage(ctx, s.tenantID, s.version, spec, EntityScanOptions{Kind: s.kind}, scanCursor{})
+	}
 	reusePhysicalObject := s.objectRefCounts[key] > 1
 	if object, ok := s.objectBytes[key]; reusePhysicalObject && ok {
 		loaded.data = object.data

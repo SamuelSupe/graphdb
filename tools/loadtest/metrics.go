@@ -21,6 +21,9 @@ type metric struct {
 }
 
 type metricReport struct {
+	P50US    int64       `json:"p50_us"`
+	P95US    int64       `json:"p95_us"`
+	P99US    int64       `json:"p99_us"`
 	Name     string      `json:"name"`
 	Count    int         `json:"count"`
 	Errors   int         `json:"errors"`
@@ -95,6 +98,9 @@ func (r *registry) snapshot() []metricReport {
 		}
 		reports = append(reports, metricReport{
 			Name:     name,
+			P50US:    pct(latency, 50).Microseconds(),
+			P95US:    pct(latency, 95).Microseconds(),
+			P99US:    pct(latency, 99).Microseconds(),
 			Count:    m.count,
 			Errors:   m.errors,
 			Statuses: statuses,
@@ -112,11 +118,11 @@ func pct(values []time.Duration, percentile int) time.Duration {
 		return 0
 	}
 	if percentile >= 100 {
-		return values[len(values)-1].Round(time.Millisecond)
+		return values[len(values)-1]
 	}
 	index := (len(values)*percentile + 99) / 100
 	if index < 1 {
 		index = 1
 	}
-	return values[index-1].Round(time.Millisecond)
+	return values[index-1]
 }

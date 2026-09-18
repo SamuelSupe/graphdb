@@ -10,12 +10,12 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
-type scanCandidate[T any] struct {
+type scanCandidate struct {
 	position scanPosition
-	value    T
+	key      string
 }
 
-type scanCandidateHeap[T any] []scanCandidate[T]
+type scanCandidateHeap []scanCandidate
 
 type scanPosition struct {
 	group string
@@ -112,9 +112,9 @@ func selectBoundedScanCandidates[T any](ctx context.Context, values map[string]T
 		return nil, nil
 	}
 	afterPosition, validAfter := parseScanPosition(after)
-	candidates := make(scanCandidateHeap[T], 0, min(len(values), keep))
+	candidates := make(scanCandidateHeap, 0, min(len(values), keep))
 	checked := 0
-	for _, value := range values {
+	for key, value := range values {
 		checked++
 		if checked&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -134,7 +134,7 @@ func selectBoundedScanCandidates[T any](ctx context.Context, values map[string]T
 				continue
 			}
 		}
-		candidate := scanCandidate[T]{position: position, value: value}
+		candidate := scanCandidate{position: position, key: key}
 		if len(candidates) < keep {
 			heap.Push(&candidates, candidate)
 			continue
@@ -151,7 +151,7 @@ func selectBoundedScanCandidates[T any](ctx context.Context, values map[string]T
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].position.compare(candidates[j].position) < 0 })
 	selected := make([]T, len(candidates))
 	for i := range candidates {
-		selected[i] = candidates[i].value
+		selected[i] = values[candidates[i].key]
 	}
 	return selected, nil
 }
@@ -171,23 +171,23 @@ func (position scanPosition) compare(other scanPosition) int {
 	return strings.Compare(position.id, other.id)
 }
 
-func (h scanCandidateHeap[T]) Len() int { return len(h) }
+func (h scanCandidateHeap) Len() int { return len(h) }
 
-func (h scanCandidateHeap[T]) Less(i, j int) bool {
+func (h scanCandidateHeap) Less(i, j int) bool {
 	return h[i].position.compare(h[j].position) > 0
 }
 
-func (h scanCandidateHeap[T]) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h scanCandidateHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
-func (h *scanCandidateHeap[T]) Push(value any) {
-	*h = append(*h, value.(scanCandidate[T]))
+func (h *scanCandidateHeap) Push(value any) {
+	*h = append(*h, value.(scanCandidate))
 }
 
-func (h *scanCandidateHeap[T]) Pop() any {
+func (h *scanCandidateHeap) Pop() any {
 	values := *h
 	last := len(values) - 1
 	value := values[last]
-	var zero scanCandidate[T]
+	var zero scanCandidate
 	values[last] = zero
 	*h = values[:last]
 	return value

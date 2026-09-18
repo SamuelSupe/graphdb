@@ -23,11 +23,7 @@ func sameTenantMigrationLocation(
 	case *FileStore:
 		targetStore, ok := target.(*FileStore)
 		return ok && sameFileStoreRoot(sourceStore.root, targetStore.root)
-	case *S3Store:
-		targetStore, ok := target.(*S3Store)
-		return ok &&
-			sourceStore.endpoint.String() == targetStore.endpoint.String() &&
-			sourceStore.bucket == targetStore.bucket
+
 	}
 	sourceValue := reflect.ValueOf(source)
 	targetValue := reflect.ValueOf(target)

@@ -69,6 +69,9 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 			next.FenceEpoch = lastEpoch + 1
 		}
 	}
+	if exclusiveFileStore(s.Objects) != nil {
+		next.ExpiresAt = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
 	key := s.writerLeaseKey(tenantID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
 		current, meta, err := s.getWriterLease(ctx, tenantID, key)
@@ -82,7 +85,7 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 			}
 		case err != nil:
 			return err
-		case current.OwnerID == s.InstanceID || current.ExpiresAt.Before(now):
+		case current.OwnerID == s.InstanceID || current.ExpiresAt.Before(now) || exclusiveFileStore(s.Objects) != nil:
 			if current.OwnerID == s.InstanceID {
 				if current.FenceToken != "" {
 					next.FenceToken = current.FenceToken

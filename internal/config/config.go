@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
 )
 
 type Config struct {
+	Backup                            backupstore.Config
 	Addr                              string
 	AdminAddr                         string
 	PprofEnabled                      bool
@@ -95,21 +97,22 @@ type Config struct {
 	CoordinatorOutboxRetention        time.Duration
 	CoordinatorCleanupInterval        time.Duration
 	CoordinatorCleanupBatchSize       int
-
-	S3Endpoint        string
-	S3Bucket          string
-	S3Region          string
-	S3AccessKeyID     string
-	S3SecretAccessKey string
-	S3PathStyle       bool
-	S3Provider        string
-	S3Versioning      string
-	WriterTopology    string
 }
 
 func Load() (Config, error) {
+	backup, err := loadBackupConfig()
+	if err != nil {
+		return Config{}, err
+	}
+	for _, env := range os.Environ() {
+		key, value, _ := strings.Cut(env, "=")
+		if value != "" && (strings.HasPrefix(key, "GRAPHDB_POSTGRES_") || strings.HasPrefix(key, "GRAPHDB_COORDINATOR_")) {
+			return Config{}, fmt.Errorf("%s is unsupported in the local disk edition", key)
+		}
+	}
 	cleanup := storage.DefaultCoordinatorCleanupConfig()
 	cfg := Config{
+		Backup:                            backup,
 		Addr:                              getenv("GRAPHDB_ADDR", ":8080"),
 		AdminAddr:                         strings.TrimSpace(os.Getenv("GRAPHDB_ADMIN_ADDR")),
 		Mode:                              getenv("GRAPHDB_MODE", "all"),
@@ -184,17 +187,6 @@ func Load() (Config, error) {
 		CoordinatorOutboxRetention:        cleanup.OutboxRetention,
 		CoordinatorCleanupInterval:        cleanup.Interval,
 		CoordinatorCleanupBatchSize:       cleanup.BatchSize,
-		S3Endpoint:                        os.Getenv("S3_ENDPOINT"),
-		S3Bucket:                          os.Getenv("S3_BUCKET"),
-		S3Region:                          getenv("S3_REGION", "us-east-1"),
-		S3Provider:                        storage.NormalizeObjectProvider(os.Getenv("S3_PROVIDER")),
-		S3Versioning:                      strings.ToLower(strings.TrimSpace(os.Getenv("S3_VERSIONING"))),
-		WriterTopology:                    normalizeWriterTopology(os.Getenv("GRAPHDB_WRITER_TOPOLOGY")),
-	}
-	cfg.S3AccessKeyID = firstNonEmpty(os.Getenv("S3_ACCESS_KEY_ID"), os.Getenv("AWS_ACCESS_KEY_ID"))
-	cfg.S3SecretAccessKey = firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
-	if err := loadBoolEnv("S3_PATH_STYLE", &cfg.S3PathStyle); err != nil {
-		return Config{}, err
 	}
 	if err := loadBoolEnv("GRAPHDB_PPROF_ENABLED", &cfg.PprofEnabled); err != nil {
 		return Config{}, err
@@ -397,25 +389,19 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.StoreKind == "" {
-		if cfg.S3Bucket != "" {
-			cfg.StoreKind = "s3"
-		} else {
-			cfg.StoreKind = "local"
-		}
+		cfg.StoreKind = "local"
 	}
 	prefix, err := normalizeObjectPrefix(cfg.Prefix)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.Prefix = prefix
-	if cfg.ReaderIndexCacheDir == "" && cfg.DataDir != "" {
-		cfg.ReaderIndexCacheDir = filepath.Join(cfg.DataDir, "cache", "index-objects")
-	}
+
 	if cfg.IngestWALDir == "" && cfg.DataDir != "" {
 		cfg.IngestWALDir = filepath.Join(cfg.DataDir, "wal", "ingest")
 	}
 	switch cfg.Mode {
-	case "all", "writer", "reader":
+	case "all":
 	default:
 		return Config{}, fmt.Errorf("unsupported GRAPHDB_MODE %q", cfg.Mode)
 	}
@@ -477,35 +463,11 @@ func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 }
 
 func (cfg Config) validateCoordination() error {
-	switch cfg.coordinationMode() {
-	case storage.CoordinationLocal:
-		return nil
-	case storage.CoordinationPostgres:
-	default:
-		return fmt.Errorf("unsupported GRAPHDB_COORDINATION %q", cfg.Coordination)
+	if cfg.coordinationMode() != storage.CoordinationLocal {
+		return fmt.Errorf("GRAPHDB_COORDINATION=%s is unsupported; local disk edition requires local", cfg.Coordination)
 	}
-	if cfg.PostgresDSN == "" {
-		return fmt.Errorf("GRAPHDB_POSTGRES_DSN is required when GRAPHDB_COORDINATION=postgres")
-	}
-	if cfg.CoordinatorNamespace == "" {
-		return fmt.Errorf("GRAPHDB_COORDINATOR_NAMESPACE is required when GRAPHDB_COORDINATION=postgres")
-	}
-	if cfg.StoreKind != "s3" {
-		return fmt.Errorf("GRAPHDB_COORDINATION=postgres requires GRAPHDB_STORAGE=s3")
-	}
-	if cfg.objectProvider() != storage.ObjectProviderGenericS3 {
-		return fmt.Errorf("GRAPHDB_COORDINATION=postgres requires S3_PROVIDER=%s", storage.ObjectProviderGenericS3)
-	}
-	if cfg.writerTopology() != storage.WriterTopologyCAS {
-		return fmt.Errorf("GRAPHDB_COORDINATION=postgres requires GRAPHDB_WRITER_TOPOLOGY=%s", storage.WriterTopologyCAS)
-	}
-	if cfg.WriteExecutionTimeout <= 0 {
-		return fmt.Errorf("GRAPHDB_WRITE_EXECUTION_TIMEOUT must be > 0 when GRAPHDB_COORDINATION=postgres")
-	}
-	if cfg.CoordinatorPendingReservationTTL <= cfg.WriteExecutionTimeout {
-		return fmt.Errorf(
-			"GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL must be greater than GRAPHDB_WRITE_EXECUTION_TIMEOUT when GRAPHDB_COORDINATION=postgres",
-		)
+	if cfg.PostgresDSN != "" || cfg.CoordinatorNamespace != "" {
+		return fmt.Errorf("PostgreSQL coordinator configuration is unsupported")
 	}
 	return nil
 }
@@ -672,56 +634,22 @@ func parseBytes(raw string) (int64, error) {
 }
 
 func (cfg Config) validateObjectStore() error {
-	if cfg.StoreKind != "s3" {
-		return nil
+	if cfg.StoreKind != "" && cfg.StoreKind != "local" {
+		return fmt.Errorf("GRAPHDB_STORAGE=%s is unsupported; local disk edition requires local", cfg.StoreKind)
 	}
-	provider := cfg.objectProvider()
-	if !storage.IsKnownObjectProvider(provider) {
-		return fmt.Errorf("unsupported S3_PROVIDER %q", cfg.S3Provider)
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		return fmt.Errorf("GRAPHDB_DATA_DIR is required")
 	}
-	topology := cfg.writerTopology()
-	switch topology {
-	case storage.WriterTopologyCAS, storage.WriterTopologySingle:
-	default:
-		return fmt.Errorf("unsupported GRAPHDB_WRITER_TOPOLOGY %q", cfg.WriterTopology)
-	}
-	if !storage.IsNativeObjectProvider(provider) {
-		return nil
-	}
-	if topology != storage.WriterTopologySingle {
-		return fmt.Errorf("S3_PROVIDER %q requires GRAPHDB_WRITER_TOPOLOGY=%s", provider, storage.WriterTopologySingle)
-	}
-	if strings.ToLower(strings.TrimSpace(cfg.S3Versioning)) != storage.BucketVersioningDisabled {
-		return fmt.Errorf("S3_PROVIDER %q requires S3_VERSIONING=%s", provider, storage.BucketVersioningDisabled)
-	}
-	if provider == storage.ObjectProviderTencentCOS && cfg.S3PathStyle {
-		return fmt.Errorf("S3_PROVIDER %q does not support S3_PATH_STYLE=true", provider)
+	for _, key := range []string{"S3_ENDPOINT", "S3_BUCKET", "S3_PROVIDER", "S3_PATH_STYLE", "S3_REGION", "S3_VERSIONING", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "GRAPHDB_WRITER_TOPOLOGY"} {
+		if os.Getenv(key) != "" {
+			return fmt.Errorf("%s is unsupported in the local disk edition", key)
+		}
 	}
 	return nil
 }
 
 func (cfg Config) ValidateObjectStore() error {
 	return cfg.validateObjectStore()
-}
-
-func (cfg Config) objectProvider() string {
-	return storage.NormalizeObjectProvider(cfg.S3Provider)
-}
-
-func (cfg Config) ObjectProvider() string {
-	return cfg.objectProvider()
-}
-
-func (cfg Config) writerTopology() string {
-	return normalizeWriterTopology(cfg.WriterTopology)
-}
-
-func normalizeWriterTopology(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return storage.WriterTopologyCAS
-	}
-	return value
 }
 
 func normalizeObjectPrefix(prefix string) (string, error) {
@@ -745,13 +673,4 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }

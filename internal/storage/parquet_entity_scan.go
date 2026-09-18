@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/apache/arrow-go/v18/parquet"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
@@ -48,8 +49,12 @@ func scanParquetEntityPageCandidates(ctx context.Context, data []byte, shard str
 }
 
 func scanParquetEntityObjectCandidates(ctx context.Context, data []byte, options EntityScanOptions) (parquetEntityCandidateScan, error) {
+	return scanParquetEntityObjectCandidatesReader(ctx, bytes.NewReader(data), options)
+}
+
+func scanParquetEntityObjectCandidatesReader(ctx context.Context, source parquet.ReaderAtSeeker, options EntityScanOptions) (parquetEntityCandidateScan, error) {
 	out := parquetEntityCandidateScan{IDs: map[string]struct{}{}, Shards: map[string]string{}}
-	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
+	reader, err := pqfile.NewParquetReader(source)
 	if err != nil {
 		return out, err
 	}

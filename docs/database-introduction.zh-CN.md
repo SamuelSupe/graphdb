@@ -3,7 +3,7 @@
 [English](database-introduction.md)
 
 GGraphDB 是一个使用 Go 编写的轻量级通用当前态属性知识图谱，面向实体关系
-数据。它把实体和关系组织成图，并使用本地文件或 S3 兼容对象存储持久化。
+数据。它把实体和关系组织成图，并使用本地磁盘文件持久化。
 知识库和 CMDB 都是支持的应用场景，也可用于资产关系、服务依赖、IT 拓扑、
 数据血缘等图结构数据。它不实现 RDF/OWL、SPARQL、本体推理或历史图查询。
 
@@ -79,7 +79,7 @@ flowchart LR
   API --> Graph["图模型与查询执行"]
   Graph --> Store["Tenant Store\nmanifest / commit / snapshot / index"]
   Store -. 可选 head CAS .-> PG["PostgreSQL 协调"]
-  Store --> Object["本地文件或 S3 兼容对象存储"]
+  Store --> Object["本地磁盘文件"]
 ```
 
 写入通常经过以下流程：

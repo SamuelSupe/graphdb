@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,13 +37,14 @@ type ReaderCacheObserver interface {
 }
 
 type cacheEntry struct {
-	graph      *graph.Graph
-	manifest   Manifest
-	meta       ObjectMeta
-	cachedAt   time.Time
-	expiresAt  time.Time
-	lastAccess time.Time
-	bytes      int64
+	graph           *graph.Graph
+	manifest        Manifest
+	meta            ObjectMeta
+	cachedAt        time.Time
+	expiresAt       time.Time
+	lastAccess      time.Time
+	bytes           int64
+	entityScanOrder *cachedEntityScanOrder
 }
 
 type cacheLoad struct {
@@ -68,7 +70,7 @@ func NewReaderCache(store *TenantStore, ttl time.Duration) *ReaderCache {
 	if ttl <= 0 {
 		ttl = 2 * time.Second
 	}
-	return &ReaderCache{
+	cache := &ReaderCache{
 		Store:            store,
 		TTL:              ttl,
 		IdleTTL:          15 * time.Minute,
@@ -81,6 +83,25 @@ func NewReaderCache(store *TenantStore, ttl time.Duration) *ReaderCache {
 		loading:          map[string]*cacheLoad{},
 		loadSlots:        make(chan struct{}, 4),
 	}
+	if files := store.localFileStore(); files != nil {
+		files.OnChange(func(key string) {
+			prefix := store.Prefix + "/tenants/"
+			if store.Prefix == "" {
+				prefix = "tenants/"
+			}
+			if !strings.HasPrefix(key, prefix) {
+				return
+			}
+			tenantID, name, ok := strings.Cut(strings.TrimPrefix(key, prefix), "/")
+			if ok && name == "manifest.parquet" {
+				cache.expirePublishedView(tenantID)
+			} else if ok && (name == "metadata.parquet" || strings.HasPrefix(name, "config/")) {
+				cache.Invalidate(tenantID)
+			}
+		})
+	}
+	return cache
+
 }
 
 func (c *ReaderCache) ConfigureLoadAdmission(maxConcurrent int, queueTimeout time.Duration) {
@@ -95,7 +116,12 @@ func (c *ReaderCache) ConfigureLoadAdmission(maxConcurrent int, queueTimeout tim
 }
 
 func (c *ReaderCache) Start(ctx context.Context) {
-	ticker := time.NewTicker(c.TTL)
+	local := c.Store.localFileStore() != nil
+	interval := c.TTL
+	if local {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
 		for {
@@ -103,7 +129,11 @@ func (c *ReaderCache) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				c.RefreshCached(ctx)
+				if local {
+					c.cachedTenantsForRefresh() // Evict idle graphs without reading files.
+				} else {
+					c.RefreshCached(ctx)
+				}
 			}
 		}
 	}()
@@ -223,14 +253,18 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
 		}
-		startGen = c.gens[tenantID]
+		if startGen != c.gens[tenantID] {
+			c.mu.Unlock()
+			c.finishLoad(tenantID, load, nil)
+			continue
+		}
 		if ok &&
 			cacheEntryMatchesManifest(entry, manifest, manifestMeta) &&
 			entry.manifest.Version >= minVersion {
 			if entry.cachedAt.IsZero() {
 				entry.cachedAt = now
 			}
-			entry.expiresAt = now.Add(c.TTL)
+			entry.expiresAt = c.expiry(now)
 			entry.lastAccess = now
 			c.entries[tenantID] = entry
 			c.mu.Unlock()
@@ -247,7 +281,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			}
 			entry.manifest = manifest
 			entry.meta = manifestMeta
-			entry.expiresAt = now.Add(c.TTL)
+			entry.expiresAt = c.expiry(now)
 			entry.lastAccess = now
 			c.entries[tenantID] = entry
 			c.mu.Unlock()
@@ -297,8 +331,14 @@ func (c *ReaderCache) startStoreLoad(
 	manifest Manifest,
 	manifestMeta ObjectMeta,
 ) error {
+	parent, releaseView, err := c.Store.ReadViewContext(parent, tenantID)
+	if err != nil {
+		c.finishLoad(tenantID, load, err)
+		return err
+	}
 	release, err := c.acquireStoreLoad(parent)
 	if err != nil {
+		releaseView()
 		c.recordCache(tenantID, "miss_rejected")
 		c.finishLoad(tenantID, load, err)
 		return err
@@ -313,6 +353,7 @@ func (c *ReaderCache) startStoreLoad(
 	releaseStoreLoad := sync.OnceFunc(func() {
 		cancel()
 		release()
+		releaseView()
 	})
 	go func() {
 		defer releaseStoreLoad()
@@ -347,7 +388,7 @@ func (c *ReaderCache) startStoreLoad(
 		now := time.Now()
 		next := cacheEntry{
 			graph: loaded.Graph, manifest: loaded.Manifest, meta: loaded.Meta,
-			cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: now,
+			cachedAt: now, expiresAt: c.expiry(now), lastAccess: now,
 			bytes: readerCacheEntryBytes(loaded),
 		}
 		if err := c.storeEntryLocked(tenantID, next); err != nil {
@@ -547,7 +588,7 @@ func (c *ReaderCache) finishUncachedLoad(tenantID string, load *cacheLoad, entry
 }
 
 func cacheEntryFresh(entry cacheEntry, now time.Time, minVersion int64) bool {
-	if !now.Before(entry.expiresAt) {
+	if !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
 		return false
 	}
 	return minVersion <= 0 || entry.manifest.Version >= minVersion
@@ -600,7 +641,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		if entry.cachedAt.IsZero() {
 			entry.cachedAt = now
 		}
-		entry.expiresAt = now.Add(c.TTL)
+		entry.expiresAt = c.expiry(now)
 		if markAccess {
 			entry.lastAccess = now
 		}
@@ -622,7 +663,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		}
 		entry.manifest = manifest
 		entry.meta = manifestMeta
-		entry.expiresAt = now.Add(c.TTL)
+		entry.expiresAt = c.expiry(now)
 		if markAccess {
 			entry.lastAccess = now
 		}
@@ -671,7 +712,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	}
 	next := cacheEntry{
 		graph: loaded.Graph, manifest: loaded.Manifest, meta: loaded.Meta,
-		cachedAt: now, expiresAt: now.Add(c.TTL), lastAccess: lastAccess,
+		cachedAt: now, expiresAt: c.expiry(now), lastAccess: lastAccess,
 		bytes: readerCacheEntryBytes(loaded),
 	}
 	if err := c.storeEntryLocked(tenantID, next); err != nil {
@@ -725,6 +766,18 @@ func cacheEntryGraph(entry cacheEntry, shared bool) (*graph.Graph, Manifest, err
 	return entry.graph.Clone(), entry.manifest, nil
 }
 
+// Keep the immutable graph as a catch-up base. Compaction can replace the
+// manifest without changing the graph, and a full reload would stall readers.
+func (c *ReaderCache) expirePublishedView(tenantID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.entries[tenantID]; ok {
+		entry.expiresAt = time.Unix(1, 0)
+		c.entries[tenantID] = entry
+	}
+	c.gens[tenantID]++
+}
+
 func (c *ReaderCache) Invalidate(tenantID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -761,7 +814,7 @@ func (c *ReaderCache) PublishFromWriteCache(tenantID string) bool {
 		manifest:   loaded.Manifest,
 		meta:       loaded.Meta,
 		cachedAt:   now,
-		expiresAt:  now.Add(c.TTL),
+		expiresAt:  c.expiry(now),
 		lastAccess: now,
 		bytes:      readerCacheEntryBytes(loaded),
 	}
@@ -825,4 +878,11 @@ func cacheEntryIdle(entry cacheEntry, now time.Time, ttl time.Duration) bool {
 		return false
 	}
 	return !now.Before(entry.lastAccess.Add(ttl))
+}
+
+func (c *ReaderCache) expiry(now time.Time) time.Time {
+	if c.Store.localFileStore() != nil {
+		return time.Time{}
+	}
+	return now.Add(c.TTL)
 }

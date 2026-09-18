@@ -10,14 +10,15 @@ func (s *TenantStore) loadTaskResultByKey(ctx context.Context, key string) (map[
 	if !ok {
 		return nil, false, nil
 	}
-	data, err := s.Objects.Get(ctx, key)
+	reader, err := openFileReader(ctx, s.Objects, key)
 	if errors.Is(err, ErrNotFound) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	result, err := decodeParquetTaskResult(ctx, data, tenantID, taskID)
+	defer reader.Close()
+	result, err := decodeParquetTaskResultReader(ctx, reader, tenantID, taskID)
 	if err != nil {
 		return nil, false, err
 	}

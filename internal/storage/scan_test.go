@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -307,5 +308,123 @@ func seedScanTenant(t *testing.T, ctx context.Context, store *TenantStore) {
 	}, CommitOptions{})
 	if err != nil {
 		t.Fatalf("seed commit: %v", err)
+	}
+}
+
+func TestLocalScanCursorsRejectReplacedTenant(t *testing.T) {
+	for _, indexed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("indexed=%v", indexed), func(t *testing.T) {
+			ctx := context.Background()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := NewTenantStore(files, "review")
+			for tenant, epoch := range map[string]string{"source": "new", "target": "old"} {
+				entities := []graph.Entity{}
+				for _, id := range []string{"host:a", "host:b", "host:c", "host:d"} {
+					entities = append(entities, graph.Entity{ID: id, Kind: "host", Fields: graph.Fields{"epoch": epoch}})
+				}
+				_, err := store.Commit(ctx, tenant, graph.Mutations{
+					UpsertRelationTypes: []graph.RelationType{{Name: "link", FromKind: "host", ToKind: "host", Directed: true}},
+					UpsertEntities:      entities,
+					UpsertEdges: []graph.Edge{
+						{ID: "link:a", Type: "link", From: "host:a", To: "host:b", Fields: graph.Fields{"epoch": epoch}},
+						{ID: "link:b", Type: "link", From: "host:c", To: "host:d", Fields: graph.Fields{"epoch": epoch}},
+					},
+				}, CommitOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if indexed {
+					if _, err := store.RebuildIndexes(ctx, tenant); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			entityPage, err := store.ListEntities(ctx, "target", EntityScanOptions{Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			edgePage, err := store.ListEdges(ctx, "target", EdgeScanOptions{Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entityPage.NextCursor == "" || edgePage.NextCursor == "" {
+				t.Fatal("missing first-page cursors")
+			}
+			legacy, _ := decodeScanCursor(entityPage.NextCursor)
+			legacy.Generation = 0
+			legacyCursor := encodeScanCursor(legacy)
+			if _, err := store.ListEntities(ctx, "target", EntityScanOptions{Limit: 1, Cursor: legacyCursor}); err != nil {
+				t.Fatalf("initial legacy cursor: %v", err)
+			}
+			backup, err := store.StartTask(ctx, "source", TaskTypeTenantBackup, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backup = waitForLocalRestoreTask(t, store, "source", backup.ID)
+			restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backup.Result["backup_manifest_key"], "overwrite": true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			restore = waitForLocalRestoreTask(t, store, "target", restore.ID)
+			if restore.Status != TaskStatusSucceeded {
+				t.Fatalf("restore: %+v", restore)
+			}
+			for _, cursor := range []string{entityPage.NextCursor, legacyCursor} {
+				if _, err := store.ListEntities(ctx, "target", EntityScanOptions{Limit: 1, Cursor: cursor}); err == nil {
+					t.Fatal("old entity cursor survived tenant replacement")
+				}
+			}
+			if _, err := store.ListEdges(ctx, "target", EdgeScanOptions{Limit: 1, Cursor: edgePage.NextCursor}); err == nil {
+				t.Fatal("old edge cursor survived tenant replacement")
+			}
+			fresh, err := store.ListEntities(ctx, "target", EntityScanOptions{Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := store.ListEntities(ctx, "target", EntityScanOptions{Limit: 1, Cursor: fresh.NextCursor})
+			if err != nil || len(next.Entities) != 1 || next.Entities[0].Fields["epoch"] != "new" {
+				t.Fatalf("new generation pagination: %+v %v", next, err)
+			}
+			freshEdges, err := store.ListEdges(ctx, "target", EdgeScanOptions{Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			nextEdges, err := store.ListEdges(ctx, "target", EdgeScanOptions{Limit: 1, Cursor: freshEdges.NextCursor})
+			if err != nil || len(nextEdges.Edges) != 1 || nextEdges.Edges[0].Fields["epoch"] != "new" {
+				t.Fatalf("new generation edge pagination: %+v %v", nextEdges, err)
+			}
+		})
+	}
+}
+
+func TestPinnedScanRejectsMissingCatalogAtCurrentVersion(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	seedScanTenant(t, ctx, store)
+	old, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListEntities(ctx, "tenant-a", EntityScanOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, meta, err := store.getIndexCatalogWithMeta(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Indexes = append(current.Indexes, IndexSpec{Name: "another", Kind: "host", Field: "hostname", Type: "string", Status: "ready"})
+	if _, err := store.putIndexCatalogWithMeta(ctx, "tenant-a", current, meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Objects.Delete(ctx, store.indexCatalogVersionHashKey("tenant-a", old.Version, scanCatalogContentHash(old))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ListEntities(ctx, "tenant-a", EntityScanOptions{Limit: 1, Cursor: page.NextCursor}); err == nil {
+		t.Fatal("missing pinned catalog silently fell back to current graph")
 	}
 }

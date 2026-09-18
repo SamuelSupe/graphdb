@@ -255,8 +255,8 @@ func shortestStepAllows(stepIndex int, neighbor graph.Neighbor, filter PathFilte
 		edgeMatches(neighbor.Edge, step.EdgeWhere) &&
 		edgeExprMatches(neighbor.Edge, step.EdgeWhereExpr) &&
 		stringSliceAllows(neighbor.Entity.Kind, step.NodeKinds) &&
-		entityMatches(neighbor.Entity, step.Where) &&
-		entityExprMatches(neighbor.Entity, step.WhereExpr)
+		entityMatches(&neighbor.Entity, step.Where) &&
+		entityExprMatches(&neighbor.Entity, step.WhereExpr)
 }
 
 func shortestTargetAllows(target graph.Entity, depth int, filter PathFilter) bool {
@@ -266,7 +266,7 @@ func shortestTargetAllows(target graph.Entity, depth int, filter PathFilter) boo
 	if filter.EndKind != "" && target.Kind != filter.EndKind {
 		return false
 	}
-	return entityMatches(target, filter.EndWhere) && entityExprMatches(target, filter.EndWhereExpr)
+	return entityMatches(&target, filter.EndWhere) && entityExprMatches(&target, filter.EndWhereExpr)
 }
 
 func rebuildShortestPath(start shortestState, target shortestState, previous map[shortestState]shortestPredecessor, entities map[shortestState]graph.Entity) graph.Path {

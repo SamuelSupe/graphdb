@@ -5,12 +5,102 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 var benchmarkFallbackEntities []graph.Entity
+
+func TestReadViewEntityPagesPreserveOrderingAndOwnership(t *testing.T) {
+	ctx := context.Background()
+	g := graph.New()
+	g.Version = 7
+	for i := range 700 {
+		id := fmt.Sprintf("host:%04d", i)
+		g.Entities[id] = graph.Entity{ID: id, Kind: []string{"host", "service"}[i%2],
+			Fields: graph.Fields{"name": id}, Source: "agent",
+			Sources: []graph.EntitySource{{Source: "manual"}}}
+	}
+	manifest := Manifest{TenantID: "tenant-a", Version: 7}
+	cache := NewReaderCache(NewTenantStore(NewMemoryStore(), "test"), time.Minute)
+	if err := cache.storeEntryLocked("tenant-a", cacheEntry{graph: g, manifest: manifest}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, filter := range []EntityScanOptions{{Limit: 17}, {Kind: "service", Source: "manual", Limit: 13}, {Shard: entityShardID("host:0001"), Limit: 3}, {Limit: -1}} {
+				for {
+					got, err := cache.ListEntitiesFromReadView(ctx, "tenant-a", g, manifest, filter)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					want, err := ListEntitiesFromGraph(ctx, "tenant-a", g, manifest, filter)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					assertEntityPageEqual(t, got.Entities, got.NextCursor, want.Entities, want.NextCursor)
+					if len(got.Entities) > 0 {
+						got.Entities[0].Fields["name"] = "changed by caller"
+						if g.Entities[got.Entities[0].ID].Fields["name"] == "changed by caller" {
+							t.Error("result mutated read view")
+						}
+					}
+					if got.NextCursor == "" {
+						break
+					}
+					filter.Cursor = got.NextCursor
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := cache.ListEntitiesFromReadView(canceled, "tenant-a", g, manifest, EntityScanOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled scan: %v", err)
+	}
+	// A restored view can have the same version and different entity IDs.
+	restored := graph.New()
+	restored.Version = 7
+	restored.Entities["host:restored"] = graph.Entity{ID: "host:restored", Kind: "host"}
+	cache.Invalidate("tenant-a")
+	if err := cache.storeEntryLocked("tenant-a", cacheEntry{graph: restored, manifest: manifest}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cache.ListEntitiesFromReadView(ctx, "tenant-a", restored, manifest, EntityScanOptions{})
+	if err != nil || len(got.Entities) != 1 || got.Entities[0].ID != "host:restored" {
+		t.Fatalf("restored page: %+v, %v", got, err)
+	}
+	cache.Invalidate("tenant-a")
+	if cache.bytes != 0 {
+		t.Fatalf("eviction retained %d bytes", cache.bytes)
+	}
+	// With no space for ordering, pagination still uses the bounded fallback.
+	cache.ConfigureCapacity(1, 1)
+	if err := cache.storeEntryLocked("tenant-a", cacheEntry{graph: g, manifest: manifest, bytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = cache.ListEntitiesFromReadView(ctx, "tenant-a", g, manifest, EntityScanOptions{Limit: 17})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := ListEntitiesFromGraph(ctx, "tenant-a", g, manifest, EntityScanOptions{Limit: 17})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEntityPageEqual(t, got.Entities, got.NextCursor, want.Entities, want.NextCursor)
+	if cache.bytes > cache.MaxBytes {
+		t.Fatal("scan exceeded cache budget")
+	}
+}
 
 func TestFallbackEntityPageMatchesFullSort(t *testing.T) {
 	entities := make(map[string]graph.Entity, 500)
@@ -81,6 +171,29 @@ func BenchmarkFallbackEntityPage10K(b *testing.B) {
 		entities[id] = graph.Entity{ID: id, Kind: "host", Source: "agent"}
 	}
 	options := EntityScanOptions{Kind: "host", Limit: 100}
+
+	b.Run("cached-read-view", func(b *testing.B) {
+		g := graph.New()
+		g.Version = 1
+		g.Entities = entities
+		manifest := Manifest{TenantID: "tenant-a", Version: 1}
+		cache := NewReaderCache(NewTenantStore(NewMemoryStore(), "test"), time.Minute)
+		if err := cache.storeEntryLocked("tenant-a", cacheEntry{graph: g, manifest: manifest}); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := cache.ListEntitiesFromReadView(context.Background(), "tenant-a", g, manifest, options); err != nil {
+			b.Fatal(err)
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			page, err := cache.ListEntitiesFromReadView(context.Background(), "tenant-a", g, manifest, options)
+			if err != nil || len(page.Entities) != 100 {
+				b.Fatalf("page: %d entities, %v", len(page.Entities), err)
+			}
+			benchmarkFallbackEntities = page.Entities
+		}
+	})
 
 	b.Run("full-sort", func(b *testing.B) {
 		b.ReportAllocs()

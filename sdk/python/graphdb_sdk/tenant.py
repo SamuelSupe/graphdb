@@ -30,8 +30,11 @@ class TenantMixin:
         body = {"target_tenant_id": target_tenant_id, **metadata}
         return self._json("POST", f"/v1/tenants/{self._escape(source_tenant_id)}/clone", tenant_id=None, body=body)
 
-    def backup_tenant(self, tenant_id: str) -> dict:
-        return self._json("POST", f"/v1/tenants/{self._escape(tenant_id)}/backup", tenant_id=None)
+    def backup_tenant(self, tenant_id: str, *, destination: str = "local") -> dict:
+        return self._json("POST", f"/v1/tenants/{self._escape(tenant_id)}/backup", tenant_id=None, body={"destination": destination})
+
+    def list_object_backups(self, tenant_id: str, *, cursor: str = "", limit: int = 20) -> dict:
+        return self._json("GET", f"/v1/tenants/{self._escape(tenant_id)}/backups", tenant_id=None, query={"cursor": cursor, "limit": limit})
 
     def restore_tenant(self, tenant_id: str, backup_key: str, overwrite: bool = False, dry_run: bool = False) -> dict:
         body = {"backup_key": backup_key, "overwrite": overwrite, "dry_run": dry_run}

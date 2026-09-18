@@ -5,7 +5,65 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func TestLocalTasksRecoverAfterDirectoryReopen(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewTenantStore(files, "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-time.Hour)
+	task := Task{
+		ID: "interrupted-backup", TenantID: "tenant-a", Type: TaskTypeTenantBackup,
+		Status: TaskStatusRunning, Phase: "backup_upload", OwnerID: store.InstanceID,
+		StartedAt: old, UpdatedAt: old,
+	}
+	if err := store.saveTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	index := IndexTask{
+		ID: "interrupted-index", TenantID: task.TenantID, Type: "rebuild",
+		Status: TaskStatusRunning, OwnerID: store.InstanceID,
+		StartedAt: old, UpdatedAt: old,
+	}
+	if err := store.saveIndexTask(ctx, index); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store = NewTenantStore(files, "test")
+	defer store.ShutdownTasks(ctx)
+	loaded, err := store.GetTask(ctx, task.TenantID, task.ID)
+	if err != nil || loaded.Status != TaskStatusFailed {
+		t.Fatalf("recovered task = %+v, %v", loaded, err)
+	}
+	loadedIndex, err := store.GetIndexTask(ctx, index.TenantID, index.ID)
+	if err != nil || loadedIndex.Status != TaskStatusFailed {
+		t.Fatalf("recovered index = %+v, %v", loadedIndex, err)
+	}
+	retry, err := store.RetryTask(ctx, task.TenantID, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry = waitForLocalRestoreTask(t, store, task.TenantID, retry.ID)
+	if retry.Status != TaskStatusSucceeded {
+		t.Fatalf("retried backup = %+v", retry)
+	}
+}
 
 func TestGetTaskFailsInactiveLocalOwnerAfterRecoveryGrace(t *testing.T) {
 	ctx := context.Background()
@@ -177,7 +235,12 @@ func TestRunGCCleansExpiredTaskAfterOwnerStops(t *testing.T) {
 
 func TestGetIndexTaskKeepsRuntimeIndexTaskAfterWriterLeaseExpires(t *testing.T) {
 	ctx := context.Background()
-	store := NewTenantStore(NewMemoryStore(), "test")
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
 	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
 		t.Fatalf("init tenant: %v", err)
 	}

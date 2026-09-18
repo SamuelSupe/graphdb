@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -12,14 +13,20 @@ import (
 )
 
 type commitIndexUpdate struct {
-	before    *graph.Graph
-	after     *graph.Graph
-	mutations graph.Mutations
-	report    graph.ApplyReport
-	version   int64
-	waitFor   <-chan struct{}
-	done      chan struct{}
+	before      *graph.Graph
+	after       *graph.Graph
+	mutations   graph.Mutations
+	report      graph.ApplyReport
+	version     int64
+	baseVersion int64
+	background  bool
+	rebuild     bool
+	fence       writerFenceRef
+	waitFor     <-chan struct{}
+	done        chan struct{}
 }
+
+type orderedIndexUpdateKey struct{}
 
 func (s *TenantStore) enqueueCommitIndexUpdate(tenantID string, work *commitIndexUpdate) {
 	if work == nil {
@@ -39,6 +46,11 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 	if work.waitFor != nil {
 		<-work.waitFor
 	}
+	s.indexUpdateMu.Lock()
+	if s.pendingIngestIndexes[tenantID] == work {
+		delete(s.pendingIngestIndexes, tenantID)
+	}
+	s.indexUpdateMu.Unlock()
 	defer func() {
 		close(work.done)
 		s.indexUpdateMu.Lock()
@@ -53,6 +65,9 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		attribute.Int("graphdb.commit.affected_entities", len(work.report.AffectedEntityIDs)),
 		attribute.Bool("graphdb.commit.outside_tenant_lock", true),
 	)
+	if s.localFileStore() != nil && s.writerFenceBound(ctx, tenantID) {
+		indexCtx = context.WithValue(indexCtx, orderedIndexUpdateKey{}, true)
+	}
 	indexErr = s.updateIndexesAfterCommit(
 		indexCtx,
 		tenantID,
@@ -60,8 +75,10 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		work.after,
 		work.mutations,
 		work.report,
+		work.baseVersion,
 		work.version,
-		work.waitFor != nil,
+		work.rebuild,
+		work.waitFor != nil || work.background,
 	)
 	endStorageSpan(indexSpan, indexErr)
 	return indexErr
@@ -91,7 +108,7 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	if err := ValidateTenantID(tenantID); err != nil {
 		return CommitResult{}, err
 	}
-	if s.ingestBarrier != nil {
+	if s.localFileStore() == nil && s.ingestBarrier != nil {
 		if err := s.ingestBarrier(ctx, tenantID); err != nil {
 			return CommitResult{}, err
 		}
@@ -154,6 +171,20 @@ func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID strin
 	if s.coordinated() {
 		return s.commitWithoutTenantLock(ctx, tenantID, mutations, opts, request)
 	}
+	resumeIngest := func() {}
+	if s.localFileStore() != nil && s.ingestBarrier != nil {
+		resume, err := s.pauseLocalIngest(ctx, tenantID)
+		if err != nil {
+			return CommitResult{}, nil, err
+		}
+		resumeIngest = sync.OnceFunc(resume)
+		defer resumeIngest()
+	}
+	ctx, releaseView, err := s.ReadViewContext(ctx, tenantID)
+	if err != nil {
+		return CommitResult{}, nil, err
+	}
+	defer releaseView()
 	_, lockSpan := startStorageSpan(ctx, "graphdb.storage.commit.lock_tenant", tenantTraceAttr(tenantID))
 	lockStarted := time.Now()
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
@@ -166,6 +197,9 @@ func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID strin
 	if err != nil {
 		return CommitResult{}, nil, err
 	}
+	// New WAL requests can be admitted now: their preparation must acquire
+	// this same tenant lock after the direct publication.
+	resumeIngest()
 	criticalCtx, criticalSpan := startStorageSpan(ctx, "graphdb.storage.commit.critical_section", tenantTraceAttr(tenantID))
 	criticalStarted := time.Now()
 	criticalReleased := false
@@ -239,7 +273,7 @@ func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID strin
 	result.indexUpdate = nil
 	s.enqueueCommitIndexUpdate(tenantID, indexWork)
 	releaseCritical()
-	s.finishCommitIndexUpdate(ctx, tenantID, indexWork, &result)
+	s.finishCommitIndexUpdate(criticalCtx, tenantID, indexWork, &result)
 	return result, reservation, nil
 }
 
@@ -633,11 +667,12 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	}
 	if !s.coordinated() {
 		result.indexUpdate = &commitIndexUpdate{
-			before:    loaded.Graph,
-			after:     nextGraph,
-			mutations: mutations,
-			report:    report,
-			version:   version,
+			baseVersion: loaded.Manifest.Version,
+			before:      loaded.Graph,
+			after:       nextGraph,
+			mutations:   mutations,
+			report:      report,
+			version:     version,
 		}
 	}
 	return result, nil

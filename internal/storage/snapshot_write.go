@@ -35,6 +35,14 @@ func (s *TenantStore) putSnapshotRecordIfAbsentOrEquivalent(ctx context.Context,
 }
 
 func (s *TenantStore) loadSnapshotRecord(ctx context.Context, key string) (snapshotRecord, error) {
+	if s.localFileStore() != nil {
+		reader, err := openFileReader(ctx, s.Objects, key)
+		if err != nil {
+			return snapshotRecord{}, err
+		}
+		defer reader.Close()
+		return decodeParquetSnapshotRecordReader(ctx, reader)
+	}
 	data, err := s.Objects.Get(ctx, key)
 	if err != nil {
 		return snapshotRecord{}, err

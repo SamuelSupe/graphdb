@@ -463,7 +463,7 @@ freshness = reader.reader_freshness()
 - 始终设置 `idempotency_key`；
 - 429 时遵守 SDK 重试提示，用相同 payload 和相同 key 重试；
 - 将 WAL `202` 视为 durable takeover，而不是已提交图版本；在将 mutation
-  视为 committed 前轮询 owner 路由的 status URL（或使用阻塞式 ingest helper）；
+  视为 committed 前轮询 本地的 status URL（或使用阻塞式 ingest helper）；
 - `idempotency_conflict` 表示 payload 不同，除非 payload 与原请求完全一致，
   不要继续使用同一个 key；
 - 被抑制的 source-priority 冲突会在成功响应中返回，不会成为 SDK 异常。

@@ -3,6 +3,7 @@ package graphdb
 import (
 	"context"
 	"net/url"
+	"strconv"
 )
 
 type TenantInfo struct {
@@ -102,6 +103,42 @@ func (c *Client) CloneTenant(ctx context.Context, sourceTenantID string, request
 
 func (c *Client) BackupTenant(ctx context.Context, tenantID string) (out Task, err error) {
 	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/backup", "", nil, nil, &out)
+	return out, err
+}
+
+// BackupTenantToObjectStorage captures a committed snapshot in the server's
+// configured S3 repository. The completed task result contains its backup_key.
+func (c *Client) BackupTenantToObjectStorage(ctx context.Context, tenantID string) (out Task, err error) {
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/backup", "", nil, map[string]any{"destination": "object"}, &out)
+	return out, err
+}
+
+type ObjectBackup struct {
+	Format      string `json:"format"`
+	TenantID    string `json:"tenant_id"`
+	BackupID    string `json:"backup_id"`
+	Version     int64  `json:"version"`
+	CreatedAt   string `json:"created_at"`
+	SnapshotKey string `json:"snapshot_key"`
+	Bytes       int64  `json:"bytes"`
+	SHA256      string `json:"sha256"`
+	BackupKey   string `json:"backup_key"`
+}
+
+type ObjectBackupPage struct {
+	Backups    []ObjectBackup `json:"backups"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+}
+
+func (c *Client) ListObjectBackups(ctx context.Context, tenantID, cursor string, limit int) (out ObjectBackupPage, err error) {
+	values := url.Values{}
+	if cursor != "" {
+		values.Set("cursor", cursor)
+	}
+	if limit != 0 {
+		values.Set("limit", strconv.Itoa(limit))
+	}
+	err = c.doJSON(ctx, "GET", "/v1/tenants/"+pathEscape(tenantID)+"/backups", "", values, nil, &out)
 	return out, err
 }
 

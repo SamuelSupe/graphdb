@@ -209,3 +209,34 @@ func waitIndexCatalogIndexes(t *testing.T, store *TenantStore, tenantID string, 
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestSupersededIndexRebuildProgressPreservesNewRunningTask(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	old := IndexTask{ID: "old", TenantID: "tenant-a", Type: "rebuild", Status: "running", Phase: "backfill", OwnerID: store.InstanceID, StartedAt: time.Now().UTC()}
+	if err := store.saveIndexTask(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	next := old
+	next.ID = "next"
+	next.Phase = "queued"
+	if err := store.publishQueuedIndexTask(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	store.indexTasks["tenant-a"] = next
+	old.Phase = "cleanup"
+	if err := store.saveIndexTask(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	marker, err := store.getIndexRebuildRunningMarker(ctx, "tenant-a")
+	if err != nil || marker.ID != next.ID {
+		t.Fatalf("superseded progress replaced running task: marker=%+v err=%v", marker, err)
+	}
+	persisted, _, err := store.getIndexTaskObjectWithMeta(ctx, "tenant-a", old.ID)
+	if err != nil || persisted.Phase != "cleanup" {
+		t.Fatalf("superseded task lost its own progress: task=%+v err=%v", persisted, err)
+	}
+}

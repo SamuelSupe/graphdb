@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"strings"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -204,6 +205,11 @@ func (s *TenantStore) deleteCachedIndexCatalog(tenantID string) {
 	defer s.lockMu.Unlock()
 	delete(s.indexCatalogCache, tenantID)
 	delete(s.reverseIndexCatalogCache, tenantID)
+	for key := range s.compiledScanCatalogCache {
+		if strings.HasPrefix(key, tenantID+"\x00") {
+			delete(s.compiledScanCatalogCache, key)
+		}
+	}
 }
 
 func copyIndexCatalog(catalog IndexCatalog) IndexCatalog {

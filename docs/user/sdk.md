@@ -469,7 +469,7 @@ For writes and ingestion:
 
 - Always set `idempotency_key`.
 - On `429`, honor SDK retry hints and retry the same payload with the same key.
-- Treat a WAL `202` as durable takeover only; poll the owner-routed status URL
+- Treat a WAL `202` as durable takeover only; poll the local status URL
   (or use the blocking ingest helper) before treating the mutation as committed.
 - On `idempotency_conflict`, do not retry with the same key unless the payload
   is exactly the original payload.

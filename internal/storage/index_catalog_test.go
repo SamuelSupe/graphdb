@@ -125,7 +125,11 @@ func TestRebuildIndexObjectBuildDoesNotBlockCommit(t *testing.T) {
 
 func TestIncrementalIndexUpdateDoesNotHoldTenantLock(t *testing.T) {
 	ctx := context.Background()
-	base := NewMemoryStore()
+	base, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { base.Close() })
 	store := NewTenantStore(base, "test")
 	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("seed commit: %v", err)
@@ -167,7 +171,7 @@ func TestIncrementalIndexUpdateDoesNotHoldTenantLock(t *testing.T) {
 		}, CommitOptions{})
 		secondDone <- commitOutcome{result: result, err: err}
 	}()
-	lockCtx, cancel := context.WithTimeout(ctx, time.Second)
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	unlock, err := store.lockTenantForeground(lockCtx, "tenant-a")
 	cancel()
 	if err != nil {
@@ -176,7 +180,29 @@ func TestIncrementalIndexUpdateDoesNotHoldTenantLock(t *testing.T) {
 	}
 	unlock()
 
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		manifest, _, err := store.getManifest(ctx, "tenant-a")
+		if err != nil {
+			close(blocking.resume)
+			t.Fatal(err)
+		}
+		if manifest.Version == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(blocking.resume)
+			t.Fatal("second commit did not publish while first index update was blocked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	gcCtx, cancelGC := context.WithTimeout(ctx, 25*time.Millisecond)
+	_, gcErr := store.RunGC(gcCtx, "tenant-a", GCOptions{DryRun: true})
+	cancelGC()
 	close(blocking.resume)
+	if !errors.Is(gcErr, context.DeadlineExceeded) {
+		t.Fatalf("GC did not wait for pending index files: %v", gcErr)
+	}
 	select {
 	case outcome := <-firstDone:
 		if outcome.err != nil {
@@ -184,6 +210,9 @@ func TestIncrementalIndexUpdateDoesNotHoldTenantLock(t *testing.T) {
 		}
 		if outcome.result.Version != 2 {
 			t.Fatalf("first commit version = %d, want 2", outcome.result.Version)
+		}
+		if len(outcome.result.IndexWarnings) != 0 {
+			t.Fatalf("first incremental update: %v", outcome.result.IndexWarnings)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("first commit did not finish after index update resumed")
@@ -195,6 +224,9 @@ func TestIncrementalIndexUpdateDoesNotHoldTenantLock(t *testing.T) {
 		}
 		if outcome.result.Version != 3 {
 			t.Fatalf("second commit version = %d, want 3", outcome.result.Version)
+		}
+		if len(outcome.result.IndexWarnings) != 0 {
+			t.Fatalf("second incremental update: %v", outcome.result.IndexWarnings)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("second commit did not finish after ordered index updates resumed")
@@ -964,6 +996,8 @@ func (s *blockOnceGetWithMetaStore) GetWithMeta(ctx context.Context, key string)
 	}
 	return s.ObjectStore.GetWithMeta(ctx, key)
 }
+
+func (s *blockOncePutStore) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
 
 func (s *blockOncePutStore) Put(ctx context.Context, key string, data []byte) error {
 	_, err := s.PutConditional(ctx, key, data, PutCondition{})

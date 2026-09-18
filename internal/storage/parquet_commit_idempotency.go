@@ -143,6 +143,15 @@ func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCo
 		return DirectCommitRecord{}, err
 	}
 	if expectedHash == "" || expectedHash != hash {
+		// Older pending records hashed an empty result tenant, while the decoder
+		// derives it from the Parquet header. Validate that exact legacy payload.
+		if record.Status == directCommitStatusPending && record.Result.Version == 0 {
+			legacy := record
+			legacy.Result.TenantID = ""
+			if legacyHash, err := directCommitRecordContentHash(legacy); err == nil && expectedHash == legacyHash {
+				return record, nil
+			}
+		}
 		return DirectCommitRecord{}, fmt.Errorf("direct commit record content hash mismatch")
 	}
 	return record, nil

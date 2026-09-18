@@ -139,6 +139,17 @@ func TestIndexObjectCacheAvoidsRepeatedFieldIndexReads(t *testing.T) {
 }
 
 func TestIndexObjectMemoryCacheHonorsByteLimit(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	page := EntityPageData{TenantID: "tenant-a", Shard: "00", Version: 1}
+	store.ConfigureIndexObjectCache(IndexObjectCacheConfig{MaxEntries: 16, MaxBytes: 2 * estimateEntityPageBytes(page)})
+	store.putCachedEntityPage("tenant-a", 1, "page-a", "hash-a", "schema", page, "")
+	store.putCachedEntityPage("tenant-a", 1, "page-b", "hash-b", "schema", page, "")
+	if _, _, ok := store.cachedEntityPage("tenant-a", 1, "page-a", "hash-a", "schema"); ok {
+		t.Fatal("decoded pages ignored the configured byte budget")
+	}
+	if _, _, ok := store.cachedEntityPage("tenant-a", 1, "page-b", "hash-b", "schema"); !ok {
+		t.Fatal("decoded page eviction discarded the newest page")
+	}
 	cache := newIndexObjectCache(10)
 	cache.maxBytes = 420
 	cache.put("first", cachedIndexObject{data: make([]byte, 300), meta: ObjectMeta{Key: "first"}})

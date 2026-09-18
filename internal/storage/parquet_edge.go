@@ -89,7 +89,7 @@ func (s *TenantStore) writeParquetEdgeShardsWithOptions(ctx context.Context, ten
 			return s.putParquetEdgeShardObject(workCtx, key, tenantID, pack, checkExisting)
 		})
 	}
-	return runIndexWriteJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
+	return s.runFileWriteJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
 		return jobs[index](workCtx)
 	})
 }
@@ -177,6 +177,7 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 	schema := parquetEdgeShardArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
+	shardUpdatedAt := formatParquetTime(shard.UpdatedAt)
 
 	edges := append([]graph.Edge(nil), shard.Edges...)
 	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
@@ -193,12 +194,14 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 		if err != nil {
 			return nil, err
 		}
+		createdAt := formatParquetTime(edge.CreatedAt)
+		updatedAt := formatParquetTime(edge.UpdatedAt)
 		for _, row := range rows {
 			builder.Field(parquetEdgeColumnTenantID).(*array.StringBuilder).Append(shard.TenantID)
 			builder.Field(parquetEdgeColumnRelationType).(*array.StringBuilder).Append(shard.RelationType)
 			builder.Field(parquetEdgeColumnShard).(*array.StringBuilder).Append(rowShard)
 			builder.Field(parquetEdgeColumnVersion).(*array.Int64Builder).Append(shard.Version)
-			builder.Field(parquetEdgeColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(shard.UpdatedAt))
+			builder.Field(parquetEdgeColumnUpdatedAt).(*array.StringBuilder).Append(shardUpdatedAt)
 			builder.Field(parquetEdgeColumnEdgeID).(*array.StringBuilder).Append(edge.ID)
 			builder.Field(parquetEdgeColumnEdgeType).(*array.StringBuilder).Append(edge.Type)
 			builder.Field(parquetEdgeColumnFrom).(*array.StringBuilder).Append(edge.From)
@@ -206,8 +209,8 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 			builder.Field(parquetEdgeColumnSource).(*array.StringBuilder).Append(edge.Source)
 			builder.Field(parquetEdgeColumnExternalID).(*array.StringBuilder).Append(edge.ExternalID)
 			builder.Field(parquetEdgeColumnEdgeVersion).(*array.Int64Builder).Append(edge.Version)
-			builder.Field(parquetEdgeColumnEdgeCreatedAt).(*array.StringBuilder).Append(formatParquetTime(edge.CreatedAt))
-			builder.Field(parquetEdgeColumnEdgeUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(edge.UpdatedAt))
+			builder.Field(parquetEdgeColumnEdgeCreatedAt).(*array.StringBuilder).Append(createdAt)
+			builder.Field(parquetEdgeColumnEdgeUpdatedAt).(*array.StringBuilder).Append(updatedAt)
 			builder.Field(parquetEdgeColumnConfidence).(*array.Float64Builder).Append(edge.Confidence)
 			builder.Field(parquetEdgeColumnSourceRank).(*array.Int64Builder).Append(int64(edge.SourceRank))
 			builder.Field(parquetEdgeColumnRowKind).(*array.StringBuilder).Append(row.Kind)
@@ -249,7 +252,11 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 }
 
 func decodeParquetEdgeShard(ctx context.Context, data []byte, tenantID string, relationType string, shardID string, version int64) (EdgeShardData, error) {
-	file, err := pqfile.NewParquetReader(bytes.NewReader(data))
+	return decodeParquetEdgeShardReader(ctx, bytes.NewReader(data), tenantID, relationType, shardID, version)
+}
+
+func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSeeker, tenantID string, relationType string, shardID string, version int64) (EdgeShardData, error) {
+	file, err := pqfile.NewParquetReader(source)
 	if err != nil {
 		return EdgeShardData{}, err
 	}
@@ -423,7 +430,11 @@ type parquetEdgeShardColumnSet struct {
 
 func edgeShardRows(edge graph.Edge) ([]edgeShardRow, error) {
 	edge = graph.CopyEdge(edge)
-	rows := []edgeShardRow{}
+	rowCount := len(edge.Fields) + len(edge.FieldSources) + len(edge.Sources)
+	if edge.ExistenceSource != nil {
+		rowCount++
+	}
+	rows := make([]edgeShardRow, 0, max(1, rowCount))
 	fieldNames := sortedAnyMapKeys(edge.Fields)
 	for i, field := range fieldNames {
 		value, err := parquetValueFromAny(edge.Fields[field])
@@ -685,6 +696,21 @@ func (l *PersistedIndexLookup) inEdgesFromParquetShard(ctx context.Context, spec
 
 func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID string, version int64, spec EdgeShard) (EdgeShardData, bool, error) {
 	key := firstIndexObjectKey(spec.Objects, "shard", s.parquetEdgeShardVersionKey(tenantID, version, spec.RelationType, spec.Shard))
+	if exclusiveFileStore(s.Objects) != nil {
+		reader, err := openFileReader(ctx, s.Objects, key)
+		if errors.Is(err, ErrNotFound) {
+			return EdgeShardData{}, false, nil
+		}
+		if err != nil {
+			return EdgeShardData{}, false, err
+		}
+		defer reader.Close()
+		shard, err := decodeParquetEdgeShardReader(ctx, reader, tenantID, spec.RelationType, spec.Shard, 0)
+		if err == nil {
+			shard.cacheVerified = edgeShardObjectMatchesCatalog(shard, spec, version)
+		}
+		return shard, err == nil, err
+	}
 	if data, _, verified, ok, err := s.cachedIndexObjectWithVerification(ctx, "edge_shard", tenantID, version, key, spec.ContentHash, spec.SchemaHash); err != nil {
 		return EdgeShardData{}, false, err
 	} else if ok {

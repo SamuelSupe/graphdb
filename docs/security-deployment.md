@@ -14,10 +14,8 @@ listener directly.
 - Set `GRAPHDB_ADMIN_ADDR` to create separate data and admin listeners.
 - Enabling pprof requires a distinct `GRAPHDB_ADMIN_ADDR`; startup fails if it
   is absent or equal to `GRAPHDB_ADDR`.
-- PostgreSQL coordination never falls back to an uncoordinated writer. Direct
-  commits fail closed when PostgreSQL is unavailable; the 1.3 WAL ingest path
-  may finish local durable admission until its bounded WAL high-water policy
-  rejects new payloads.
+- The data directory is owned by exactly one process. Keep its permissions
+  restricted to the GraphDB service account and protect its persistent volume.
 
 Recommended production settings:
 
@@ -76,24 +74,15 @@ The identity provider must treat each comma-separated value as an any-of
 requirement and must evaluate the original method, URI, identity, and tenant
 together.
 
-For the 1.3 WAL status route, the gateway must preserve and validate
-`/v1/ingest/writers/{writer_id}/...`, then route the request to the registered
-writer whose stable `GRAPHDB_INSTANCE_ID` equals `writer_id`. Unknown writer
-IDs must not fall through to a random writer pool. The reference NGINX file
-shows explicit writer-A and writer-B routes that operators extend for their
-fleet.
+WAL responses use `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`.
+Send data and status requests to the same GraphDB process. No owner routing is needed.
 
 ## Required Network Controls
 
 - Expose only the TLS gateway to clients.
 - Deny direct network access to the data and admin listeners.
-- Restrict the PostgreSQL coordination schema and object-store credentials to
-  GGraphDB service identities.
-- Give every 1.3 WAL writer a unique stable `GRAPHDB_INSTANCE_ID` and an
-  independently protected persistent WAL volume. Do not share a WAL volume
-  between writers.
-- Give 1.0 readers read-only object-store credentials. Revoke all 1.0 writer
-  routes and write credentials before PostgreSQL bootstrap.
+- Mount the persistent data directory only in the GraphDB service.
+- Keep a stable `GRAPHDB_INSTANCE_ID` when reopening its WAL.
 - Protect metrics because tenant labels and operational state may be sensitive.
 - Send access and audit logs to an append-only or centrally controlled sink.
 

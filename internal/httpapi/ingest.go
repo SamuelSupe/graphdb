@@ -184,31 +184,22 @@ func (s *Server) ingestBatchStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if strings.HasPrefix(r.URL.EscapedPath(), "/v1/ingest/writers/") {
+		writeError(w, http.StatusNotImplemented, "writer-routed status is unsupported; use /v1/ingest/batches/{source}/{collector_id}/{batch_id}")
+		return
+	}
 	prefix := "/v1/ingest/batches/"
 	partCount := 3
-	ownerID := ""
-	if strings.HasPrefix(r.URL.EscapedPath(), "/v1/ingest/writers/") {
-		prefix = "/v1/ingest/writers/"
-		partCount = 4
-	}
 	parts, err := escapedPathParts(r, prefix, partCount)
 	if err != nil || len(parts) != partCount {
 		writeError(w, http.StatusBadRequest, "batch status path must include source, collector_id, and batch_id")
 		return
 	}
-	if partCount == 4 {
-		ownerID = parts[0]
-		parts = parts[1:]
-	}
-	if parts[0] == "" || parts[1] == "" || parts[2] == "" || (partCount == 4 && ownerID == "") {
+	if parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		writeError(w, http.StatusBadRequest, "batch status path contains an empty identifier")
 		return
 	}
 	if s.IngestService != nil {
-		if ownerID != "" && ownerID != s.IngestService.WriterID() {
-			writeError(w, http.StatusConflict, "batch status request was routed to a different writer")
-			return
-		}
 		status, statusErr := s.IngestService.Status(r.Context(), tenantID, parts[0], parts[1], parts[2])
 		if statusErr != nil {
 			writeStorageError(w, statusErr)
@@ -227,9 +218,7 @@ func (s *Server) ingestBatchStatus(w http.ResponseWriter, r *http.Request) {
 
 func ingestBatchStatusPath(writerID string, source string, collectorID string, batchID string) string {
 	prefix := "/v1/ingest/batches/"
-	if writerID != "" {
-		prefix = "/v1/ingest/writers/" + url.PathEscape(writerID) + "/"
-	}
+
 	return prefix + url.PathEscape(source) + "/" + url.PathEscape(collectorID) + "/" + url.PathEscape(batchID)
 }
 

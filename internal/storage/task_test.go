@@ -49,6 +49,39 @@ func TestUnifiedTaskRunsCompactAndExportSnapshot(t *testing.T) {
 	assertTaskActionCompleted(t, compact, "write_snapshot_record")
 	assertTaskActionCompleted(t, compact, "publish_manifest")
 
+	for _, write := range []bool{false, true} {
+		if write {
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+				UpsertEntities: []graph.Entity{{ID: "host:c", Kind: "host"}},
+			}, CommitOptions{}); err != nil {
+				t.Fatalf("commit after compact: %v", err)
+			}
+		}
+		repeated, err := store.StartTask(ctx, "tenant-a", TaskTypeCompact, nil)
+		if err != nil {
+			t.Fatalf("repeat compact task: %v", err)
+		}
+		repeated = waitForTask(t, ctx, store, "tenant-a", repeated.ID)
+		if repeated.Status != TaskStatusSucceeded || repeated.ProgressCompleted != repeated.ProgressTotal {
+			t.Fatalf("repeat compact task = %#v", repeated)
+		}
+		reloaded, current, err := store.Load(ctx, "tenant-a")
+		if err != nil {
+			t.Fatalf("load after repeat compact: %v", err)
+		}
+		wantVersion, wantEntities := manifest.Version, 2
+		if write {
+			wantVersion++
+			wantEntities++
+		}
+		if current.Version != wantVersion || current.SnapshotVersion != wantVersion || len(reloaded.Entities) != wantEntities {
+			t.Fatalf("repeat compact lost current data: manifest=%+v, entities=%d", current, len(reloaded.Entities))
+		}
+		if !write && current.SnapshotKey != manifest.SnapshotKey {
+			t.Fatal("repeat compact replaced an unchanged snapshot")
+		}
+	}
+
 	exportTask, err := store.StartTask(ctx, "tenant-a", TaskTypeExportSnapshot, nil)
 	if err != nil {
 		t.Fatalf("start export task: %v", err)

@@ -1,13 +1,18 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
@@ -564,5 +569,453 @@ func TestFileStoreListRejectsSymlinkRoot(t *testing.T) {
 	store := NewFileStore(linkRoot)
 	if objects, err := store.List(ctx, ""); err == nil {
 		t.Fatalf("list through symlink root objects=%#v, want rejection", objects)
+	}
+}
+
+func TestFileStoreExclusiveRuntime(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if _, err := OpenFileStore(root); !errors.Is(err, ErrDataDirectoryLocked) {
+		t.Fatalf("second open: %v", err)
+	}
+	meta, err := files.PutConditional(ctx, "tenant/head", []byte("first"), PutCondition{IfNoneMatch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Head(ctx, "tenant/head"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := files.PutConditional(ctx, "tenant/head", []byte("other"), PutCondition{IfMatch: meta.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.PutConditional(ctx, "tenant/head", []byte("stale"), PutCondition{IfMatch: meta.ETag}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale write: %v", err)
+	}
+	got, err := files.Head(ctx, "tenant/head")
+	if err != nil || got.ETag != next.ETag {
+		t.Fatalf("cached head after replacement: %+v %v", got, err)
+	}
+	files.Close()
+	reopened, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	data, err := reopened.Get(ctx, "tenant/head")
+	if err != nil || string(data) != "other" {
+		t.Fatalf("reopen: %q %v", data, err)
+	}
+}
+
+func TestFileStoreProcessDeathReleasesDirectory(t *testing.T) {
+	if root := os.Getenv("GRAPHDB_TEST_DISK_CHILD"); root != "" {
+		files, err := OpenFileStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := files.Put(context.Background(), "confirmed", []byte("durable")); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Println("ready")
+		select {}
+	}
+	root := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFileStoreProcessDeathReleasesDirectory$")
+	child.Env = append(os.Environ(), "GRAPHDB_TEST_DISK_CHILD="+root)
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.Stderr = os.Stderr
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer child.Process.Kill()
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "ready" {
+		t.Fatalf("child startup: %s %v", scanner.Text(), scanner.Err())
+	}
+	if _, err := OpenFileStore(root); !errors.Is(err, ErrDataDirectoryLocked) {
+		t.Fatalf("process lock: %v", err)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	data, err := files.Get(ctx, "confirmed")
+	if err != nil || string(data) != "durable" {
+		t.Fatalf("confirmed write after process death: %q %v", data, err)
+	}
+}
+
+func TestFileStoreLocalReadViewsAndInvalidation(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	objects := NewMeteredObjectStore(NewReadProtectedObjectStore(files, ReadProtectionConfig{MaxConcurrent: 4}), nil, nil)
+	store := NewTenantStore(objects, "graphdb")
+	cache := NewReaderCache(store, time.Hour)
+	if _, err := store.InitTenant(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cache.Load(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.CommitWithReport(ctx, "a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, manifest, err := cache.Load(ctx, "a")
+	if err != nil || manifest.Version != result.Version {
+		t.Fatalf("published view: %+v %v", manifest, err)
+	}
+	if _, ok := got.GetEntity("one"); !ok {
+		t.Fatal("new graph not visible")
+	}
+	release, err := store.PinReadView(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeout, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancel()
+	if _, err := store.lockReadViews(timeout, "a", true); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("maintenance raced active view: %v", err)
+	}
+	other, err := store.lockReadViews(ctx, "b", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other()
+	release()
+	exclusive, err := store.lockReadViews(ctx, "a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exclusive()
+	if _, err := store.Compact(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	cache.mu.RLock()
+	_, retained := cache.entries["a"]
+	cache.mu.RUnlock()
+	if !retained {
+		t.Fatal("compaction discarded the fixed graph needed for incremental catch-up")
+	}
+	if _, _, err := cache.Load(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	store.deleteWriteCache("a")
+	cache.Invalidate("a")
+	got, _, err = cache.Load(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.GetEntity("one"); !ok {
+		t.Fatal("random-read snapshot lost entity")
+	}
+}
+
+func TestFileStoreRandomParquetReadAndCancellation(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	page := EntityPageData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: "a", Shard: "00", Version: 1, Entities: []graph.Entity{{ID: "one", Kind: "host", Fields: graph.Fields{"name": "example"}}}}
+	data, err := marshalParquetEntityPage(ctx, page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Put(ctx, "page.parquet", data); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := decodeParquetEntityPage(ctx, data, "a", "00", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := openFileReader(ctx, files, "page.parquet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	actual, err := decodeParquetEntityPageReader(ctx, borrowedParquetSource{reader}, "a", "00", 1)
+	if err != nil || !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("random read differs: %v", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	handle, err := files.OpenReader(canceled, "page.parquet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if _, err := handle.ReadAt(make([]byte, 4), 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled read: %v", err)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileStoreFailedBatchKeepsPublishedHead(t *testing.T) {
+	for _, stage := range []string{"data", "directory", "manifest"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			files, err := OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			if err := files.Put(ctx, "head", []byte("old")); err != nil {
+				t.Fatal(err)
+			}
+			store := NewTenantStore(files, "")
+			err = store.runFileWriteJobs(ctx, 1, func(ctx context.Context, _ int) error {
+				if stage == "data" {
+					return files.Put(ctx, "../invalid", []byte("new"))
+				}
+				if err := files.Put(ctx, "new/data", []byte("new")); err != nil {
+					return err
+				}
+				if stage == "directory" {
+					// Simulate a directory becoming unavailable before its durability barrier.
+					return os.Rename(filepath.Join(root, "new"), filepath.Join(root, "orphan"))
+				}
+				return nil
+			})
+			if err == nil {
+				_, err = files.PutConditional(ctx, "head", []byte("new"), PutCondition{IfMatch: "wrong-generation"})
+			}
+			if err == nil {
+				t.Fatal("failed publication reported success")
+			}
+			if err := files.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			data, err := reopened.Get(ctx, "head")
+			if err != nil || string(data) != "old" {
+				t.Fatalf("old head lost after %s failure: %q %v", stage, data, err)
+			}
+		})
+	}
+}
+
+func TestFileStoreReadViewSurvivesCallerCancellation(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "graphdb")
+	ctx, cancel := context.WithCancel(context.Background())
+	view, releaseRequest, err := store.ReadViewContext(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, releaseLoad, err := store.ReadViewContext(context.WithoutCancel(view), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	releaseRequest()
+	timeout, stop := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer stop()
+	if _, err := store.lockReadViews(timeout, "a", true); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GC entered while shared load was active: %v", err)
+	}
+	releaseLoad()
+	release, err := store.lockReadViews(context.Background(), "a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
+
+func TestFileStoreManifestCacheTracksPublication(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "graphdb")
+	if _, err := store.InitTenant(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	first, meta, err := store.getManifest(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, generation, _, err := files.cachedManifest(ctx, store.manifestKey("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.CommitWithReport(ctx, "a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files.cacheManifest(store.manifestKey("a"), first, meta, generation, false)
+	// A delayed wrapping-cache read can start after the file generation changes
+	// and still return the old bytes. It must not overwrite the published head.
+	_, _, generation, _, err = files.cachedManifest(ctx, store.manifestKey("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files.cacheManifest(store.manifestKey("a"), first, meta, generation, false)
+	current, err := store.CurrentManifest(ctx, "a")
+	if err != nil || current.Version != result.Version {
+		t.Fatalf("stale load replaced published head: %+v %v", current, err)
+	}
+	data, err := files.Get(ctx, store.manifestKey("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := decodeParquetManifest(ctx, data)
+	if err != nil || !reflect.DeepEqual(current, persisted) {
+		t.Fatalf("cached and persisted heads differ: %+v %+v %v", current, persisted, err)
+	}
+	if len(current.CommitKeys) > 0 {
+		current.CommitKeys[0] = "caller-mutated"
+	}
+	if len(current.CommitSegments) > 0 {
+		current.CommitSegments[0].Key = "caller-mutated"
+	}
+	fresh, err := store.CurrentManifest(ctx, "a")
+	if err != nil || !reflect.DeepEqual(fresh, persisted) {
+		t.Fatalf("caller changed cached head: %+v %v", fresh, err)
+	}
+	// A delayed byte-cache fill may outlive publication and eviction of the
+	// bounded file metadata caches. Reload must still use the durable head.
+	oldData, err := marshalParquetManifest(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytesCache := NewWriterObjectCache(files, WriterObjectCacheConfig{MaxBytes: 1 << 20, MaxKeys: 16})
+	bytesCache.cachePositive(store.manifestKey("a"), oldData, meta, true)
+	files.runtime.mu.Lock()
+	clear(files.runtime.manifests)
+	files.runtime.manifestBytes = 0
+	clear(files.runtime.etags)
+	files.runtime.mu.Unlock()
+	cachedStore := NewTenantStore(bytesCache, "graphdb")
+	fresh, err = cachedStore.CurrentManifest(ctx, "a")
+	if err != nil || !reflect.DeepEqual(fresh, persisted) {
+		t.Fatalf("evicted metadata reused a stale byte-cache head: %+v %+v %v", fresh, persisted, err)
+	}
+	if err := files.Put(ctx, store.manifestKey("a"), []byte("corrupt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CurrentManifest(ctx, "a"); err == nil {
+		t.Fatal("corrupt replacement was hidden by cached head")
+	}
+}
+
+func TestFileStorePublicationWaitsForOtherBatchDirectories(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := files.Put(ctx, "head", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	store := NewTenantStore(files, "")
+	renamed, finish := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- store.runFileWriteJobs(ctx, 1, func(ctx context.Context, _ int) error {
+			if err := files.Put(ctx, "parts/data", []byte("new")); err != nil {
+				close(renamed)
+				return err
+			}
+			close(renamed)
+			<-finish
+			return nil
+		})
+	}()
+	<-renamed
+	// A second publisher can see and reuse the first batch's file before that
+	// batch returns. An unavailable directory must still prevent head publication.
+	if err := os.Rename(filepath.Join(root, "parts"), filepath.Join(root, "unavailable")); err != nil {
+		close(finish)
+		<-done
+		t.Fatal(err)
+	}
+	publishErr := files.Put(ctx, "head", []byte("new"))
+	close(finish)
+	batchErr := <-done
+	if publishErr == nil || batchErr == nil {
+		t.Fatalf("publication bypassed pending barrier: publish=%v batch=%v", publishErr, batchErr)
+	}
+	data, err := files.Get(ctx, "head")
+	if err != nil || string(data) != "old" {
+		t.Fatalf("failed barrier changed head: %q %v", data, err)
+	}
+	if err := os.Rename(filepath.Join(root, "unavailable"), filepath.Join(root, "parts")); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Put(ctx, "head", []byte("new")); err != nil {
+		t.Fatalf("barrier retry failed: %v", err)
+	}
+}
+
+func TestFileStoreDirectoryWaitHonorsCancellation(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := files.Put(ctx, "data", []byte("visible")); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := files.lockDirectoryIOWeight(ctx, directoryIOCapacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock = sync.OnceFunc(unlock)
+	defer unlock()
+	blockedCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := files.Get(blockedCtx, "data"); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("blocked Get: %v", err)
+		}
+	case <-time.After(time.Second):
+		unlock()
+		<-done
+		t.Fatal("file read ignored deadline while directory publication was blocked")
+	}
+	unlock()
+	data, err := files.Get(ctx, "data")
+	if err != nil || string(data) != "visible" {
+		t.Fatalf("read after canceled waiter: %q %v", data, err)
 	}
 }

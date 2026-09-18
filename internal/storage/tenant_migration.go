@@ -276,7 +276,7 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	if !found || !manifestFound {
 		return report, fmt.Errorf("source tenant %q has no manifest object", sourceTenantID)
 	}
-	manifest := cloneTenantMigrationManifest(sourceManifest)
+	manifest := cloneManifest(sourceManifest)
 	rewriteTenantMigrationManifest(
 		&manifest,
 		targetTenantID,
@@ -303,14 +303,6 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	}
 	report.FinishedAt = time.Now().UTC()
 	return report, nil
-}
-
-func cloneTenantMigrationManifest(manifest Manifest) Manifest {
-	manifest.CommitKeys = append([]string(nil), manifest.CommitKeys...)
-	manifest.CommitSegments = append(
-		[]CommitSegmentRef(nil), manifest.CommitSegments...,
-	)
-	return manifest
 }
 
 func tenantMigrationObjectNeedsRewrite(relative string) bool {

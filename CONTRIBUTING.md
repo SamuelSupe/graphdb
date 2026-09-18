@@ -27,13 +27,15 @@ also run:
 scripts/compatibility_v1_0_v1_1.sh
 ```
 
-Release candidates use OrbStack/Docker with RustFS and PostgreSQL:
+Release candidates use OrbStack/Docker with a Linux local data volume:
 
 ```sh
-scripts/postgres_cas_gate.sh integration
-scripts/postgres_cas_gate.sh soak
-scripts/postgres_cas_gate.sh rollback
+scripts/release_gate.sh
+GRAPHDB_GATE_SOAK=1 RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
 ```
+
+See [local disk validation](docs/local-disk.md) for the reproducible performance
+comparison. Historical cloud-storage release evidence does not certify this edition.
 
 Update OpenAPI, SDK types, error codes, both English and Chinese user
 documentation, and `CHANGELOG.md` when the public contract changes. A new

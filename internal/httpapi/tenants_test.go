@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
@@ -100,5 +102,28 @@ func TestHTTPTenantListUsesManagedRegistryByDefault(t *testing.T) {
 	legacy := serveJSON(handler, http.MethodGet, "/v1/tenants?include_legacy=true", "", nil)
 	if legacy.Code != http.StatusOK || !strings.Contains(legacy.Body.String(), `"managed-tenant"`) || !strings.Contains(legacy.Body.String(), `"legacy-tenant"`) {
 		t.Fatalf("legacy list = %d body=%s", legacy.Code, legacy.Body.String())
+	}
+}
+
+func TestLocalHTTPLifecyclePurgeWithTenantHeader(t *testing.T) {
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := storage.NewTenantStore(files, "review")
+	if _, err = store.CreateTenant(context.Background(), "tenant-a", storage.TenantCreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant-a/purge?force=true", nil).WithContext(ctx)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	recorder := httptest.NewRecorder()
+	start := time.Now()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("purge holding its own read view returned %d after %v: %s", recorder.Code, time.Since(start), recorder.Body.String())
 	}
 }

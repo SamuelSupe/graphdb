@@ -57,7 +57,7 @@ In 1.3 PostgreSQL-CAS WAL mode, a temporary PostgreSQL or object-store outage
 does not make an already accepted batch failed. The owning writer retries with
 the newest head, rebases, and shrinks the batch after repeated CAS conflicts.
 If the local WAL high-water policy is reached, new admission is rejected before
-the payload is written; query the owner-routed `status_url` for existing
+the payload is written; query the local `status_url` for existing
 records. A `recovery_pending` status means the owner is rebuilding its WAL
 state, not that the batch is missing.
 

@@ -40,7 +40,8 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 		}
 		shard := entityShardID(id)
 		if _, changed := changedByShard[shard]; changed {
-			entitiesByShard[shard] = append(entitiesByShard[shard], graph.CopyEntity(entity))
+			// The published graph is immutable; only the page slice is reordered.
+			entitiesByShard[shard] = append(entitiesByShard[shard], entity)
 		}
 	}
 	pages := make([]EntityPageData, 0, len(shards))
@@ -62,15 +63,20 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 			Entities:      entities,
 			Version:       version,
 			UpdatedAt:     now,
+			hashCanonical: true,
+		}
+		for _, entity := range entities {
+			page.hashCanonical = page.hashCanonical && graphEntityHashCanonical(entity)
 		}
 		sort.Slice(page.Entities, func(i, j int) bool { return page.Entities[i].ID < page.Entities[j].ID })
 		page.logicalContentHash = entityPageContentHash(page)
 		pages = append(pages, page)
 		rawSpecs = append(rawSpecs, EntityPageSpec{
-			Shard:       shard,
-			EntityCount: len(page.Entities),
-			ContentHash: page.logicalContentHash,
-			UpdatedAt:   now,
+			Shard:          shard,
+			EntityCount:    len(page.Entities),
+			ContentHash:    page.logicalContentHash,
+			UpdatedAt:      now,
+			estimatedBytes: entityPagePackBytes(page),
 		})
 	}
 

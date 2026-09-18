@@ -7,6 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +20,89 @@ import (
 
 	"go.opentelemetry.io/otel"
 )
+
+func TestIngestServiceRecoveryBoundsTerminalHistory(t *testing.T) {
+	config := DefaultIngestServiceConfig(t.TempDir())
+	config.QueueMemoryBytes = 8 << 20
+	config.FlushInterval = time.Hour
+	file, err := os.Create(filepath.Join(config.WAL.Dir, ingestWALSegmentName(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lsn uint64
+	write := func(kind IngestWALRecordType, value any) {
+		t.Helper()
+		payload, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lsn++
+		if _, err := file.Write(encodeIngestWALFrame(kind, lsn, payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 128 {
+		id := fmt.Sprintf("history-%d", i)
+		request := ingestEntityRequest(id, id)
+		request.Items[0].Entity.Fields = map[string]any{"payload": strings.Repeat("x", 1<<20)}
+		write(IngestWALAccepted, walIngestEnvelope{RecordID: id, TenantID: "tenant-a", Request: request, AcceptedAt: time.Now().UTC(), State: IngestStateAccepted})
+		if i > 0 {
+			write(IngestWALFinalized, walPendingStateEnvelope{RecordID: id, State: IngestStateCommitted})
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	previousLimit := debug.SetMemoryLimit(int64(before.HeapAlloc) + 48<<20)
+	defer debug.SetMemoryLimit(previousLimit)
+	stop := make(chan struct{})
+	peakResult := make(chan uint64, 1)
+	go func() {
+		var peak uint64
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			var stats runtime.MemStats
+			runtime.ReadMemStats(&stats)
+			peak = max(peak, stats.HeapAlloc)
+			select {
+			case <-stop:
+				peakResult <- peak
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	service, err := OpenIngestService(store, config)
+	close(stop)
+	peak := <-peakResult
+	t.Logf("recovery peak heap growth=%d bytes for 128 MiB retained history", peak-before.HeapAlloc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	// GOMEMLIMIT is soft: retaining the raw 128 MiB history still exceeds this
+	// allowance. Streaming recovery needs only live requests and one frame.
+	if peak > before.HeapAlloc+96<<20 {
+		t.Errorf("recovery retained terminal history: peak heap growth=%d", peak-before.HeapAlloc)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := service.FlushTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != 1 || len(g.Entities) != 1 {
+		t.Fatalf("replayed completed history: version=%d entities=%d", manifest.Version, len(g.Entities))
+	}
+}
 
 func TestIngestServicePreservesTenantFIFOWithOneWriteWorker(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
@@ -83,7 +170,7 @@ func TestIngestServiceTerminalBatchPublishesAndFinalizesInWALOrder(t *testing.T)
 	config.WAL.BufferBytes = 16 * 1024
 	config.WAL.Observer = observer
 	config.Observer = observer
-	wal, initial, err := OpenIngestWAL(config.WAL)
+	wal, initial, err := openIngestWALRecords(config.WAL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +278,7 @@ func TestIngestServiceTerminalBatchPublishesAndFinalizesInWALOrder(t *testing.T)
 		t.Fatal(err)
 	}
 	closed = true
-	reopened, recovered, err := OpenIngestWAL(config.WAL)
+	reopened, recovered, err := openIngestWALRecords(config.WAL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +435,7 @@ func TestIngestServiceRecoversDurableAcceptedRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wal, _, err := OpenIngestWAL(config.WAL)
+	wal, _, err := openIngestWALRecords(config.WAL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +507,7 @@ func TestIngestServiceRejectsPendingWALOwnedByAnotherWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wal, _, err := OpenIngestWAL(config.WAL)
+	wal, _, err := openIngestWALRecords(config.WAL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -801,7 +888,7 @@ func TestIngestServiceRetriesAllPendingAfterAttemptFailure(t *testing.T) {
 
 			crashIngestService(t, service)
 			closed = true
-			recoveredWAL, recoveredRecords, err := OpenIngestWAL(config.WAL)
+			recoveredWAL, recoveredRecords, err := openIngestWALRecords(config.WAL)
 			if err != nil {
 				t.Fatalf("open WAL before recovery: %v", err)
 			}
@@ -846,7 +933,7 @@ func TestIngestServiceRetriesAllPendingAfterAttemptFailure(t *testing.T) {
 				t.Fatalf("close recovered service: %v", err)
 			}
 			recoveredClosed = true
-			prunedWAL, prunedRecords, err := OpenIngestWAL(config.WAL)
+			prunedWAL, prunedRecords, err := openIngestWALRecords(config.WAL)
 			if err != nil {
 				t.Fatalf("open WAL after recovery prune: %v", err)
 			}
@@ -1756,4 +1843,14 @@ func crashIngestService(t *testing.T, service *IngestService) {
 func sha256Sum(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func (s *IngestService) recover(records []IngestWALRecord) ([]*ingestPending, error) {
+	var recovery ingestRecovery
+	for _, record := range records {
+		if err := recovery.apply(record); err != nil {
+			return nil, err
+		}
+	}
+	return recovery.finish(s)
 }

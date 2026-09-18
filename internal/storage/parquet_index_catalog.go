@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -264,7 +267,17 @@ type parquetIndexCatalogColumnSet struct {
 }
 
 func indexCatalogRows(catalog IndexCatalog) []indexCatalogRow {
-	rows := []indexCatalogRow{}
+	count := len(catalog.Indexes) + len(catalog.EdgeShards) + len(catalog.EntityPages)
+	for _, index := range catalog.Indexes {
+		count += len(index.Objects) + len(index.TopValues)
+	}
+	for _, shard := range catalog.EdgeShards {
+		count += len(shard.Objects)
+	}
+	for _, page := range catalog.EntityPages {
+		count += len(page.Objects)
+	}
+	rows := make([]indexCatalogRow, 0, count)
 	for i, index := range catalog.Indexes {
 		rows = append(rows, indexCatalogRow{
 			Kind:           indexCatalogRowIndex,
@@ -670,10 +683,26 @@ func indexCatalogContentHash(catalog IndexCatalog) (string, error) {
 		formatInt64ForHash(int64(len(catalog.EdgeShards))),
 		formatInt64ForHash(int64(len(catalog.EntityPages))),
 	}
-	for _, row := range indexCatalogRows(catalog) {
-		parts = append(parts, indexCatalogRowHashParts(row)...)
+	hash := sha256.New()
+	buffer := bufio.NewWriterSize(hash, 4096)
+	// Preserve the NUL-separated on-disk hash without materializing all scalar
+	// values and their concatenation for every cursor or catalog publication.
+	for i, part := range parts {
+		if i != 0 {
+			_ = buffer.WriteByte(0)
+		}
+		_, _ = buffer.WriteString(part)
 	}
-	return parquetScalarContentHash(parts...), nil
+	for _, row := range indexCatalogRows(catalog) {
+		for _, part := range indexCatalogRowHashParts(row) {
+			_ = buffer.WriteByte(0)
+			_, _ = buffer.WriteString(part)
+		}
+	}
+	if err := buffer.Flush(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func indexCatalogRowHashParts(row indexCatalogRow) []string {

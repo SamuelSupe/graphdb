@@ -142,7 +142,7 @@ func confirmCursorEntity(g *graph.Graph, id string, request Request, cursor curs
 		return err
 	}
 	budget.scanned++
-	if !requestEntityMatches(request, entity) {
+	if !requestEntityMatches(&request, &entity) {
 		return invalidCursorAfter(cursor)
 	}
 	return nil
@@ -183,7 +183,7 @@ func appendPageMatch(results *[]Result, entity graph.Entity, request Request, cu
 		return true, err
 	}
 	budget.scanned++
-	if !requestEntityMatches(request, entity) {
+	if !requestEntityMatches(&request, &entity) {
 		return false, nil
 	}
 	result := Result{Entity: &entity}

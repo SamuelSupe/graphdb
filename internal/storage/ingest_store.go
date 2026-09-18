@@ -27,7 +27,7 @@ type ingestRecordKeyProbe struct {
 // local WAL acceptance must remain bound to until terminalization.
 func (s *TenantStore) CaptureIngestWALGeneration(ctx context.Context, tenantID string) (int64, error) {
 	if !s.coordinated() {
-		return 0, nil
+		return s.localIngestGeneration(ctx, tenantID)
 	}
 	head, exists, err := s.Coordinator.Head(ctx, tenantID)
 	if err != nil {
@@ -637,6 +637,11 @@ func ingestRecordRequestEqualIgnoringBatch(stored IngestRequest, incoming Ingest
 }
 
 func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, request IngestRequest, result IngestResult, started time.Time, finished time.Time) error {
+	unlock, err := s.lockCollectorStatus(ctx, tenantID, request.Source, request.CollectorID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if !s.MaterializeCollectorStatus {
 		return s.cacheCollectorStatusFromBatches(ctx, tenantID, request, result, started, finished)
 	}
@@ -701,6 +706,11 @@ func (s *TenantStore) saveCollectorStatusBatch(
 			return fmt.Errorf("collector status batch contains multiple collectors")
 		}
 	}
+	unlock, err := s.lockCollectorStatus(ctx, tenantID, first.request.Source, first.request.CollectorID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	key := s.collectorStatusKey(tenantID, first.request.Source, first.request.CollectorID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
 		status, meta, ok := s.getCachedCollectorStatus(key)
@@ -747,6 +757,11 @@ func (s *TenantStore) saveCollectorStatusBatch(
 }
 
 func (s *TenantStore) repairCollectorStatusAfterSkip(ctx context.Context, tenantID string, record IngestBatchRecord) error {
+	unlock, err := s.lockCollectorStatus(ctx, tenantID, record.Request.Source, record.Request.CollectorID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if !s.MaterializeCollectorStatus {
 		return s.repairCachedCollectorStatusFromBatches(ctx, tenantID, record)
 	}
@@ -893,4 +908,10 @@ func firstFailure(result IngestResult) string {
 		return result.Failures[0].Error
 	}
 	return ""
+}
+
+func (s *TenantStore) lockCollectorStatus(ctx context.Context, tenantID, source, collectorID string) (func(), error) {
+	// Metadata finalization runs after the graph lock is released. Use the
+	// existing bounded lock queue with a namespace no valid tenant can occupy.
+	return s.lockTenantContext(ctx, "\x00collector:"+s.collectorStatusKey(tenantID, source, collectorID), true)
 }

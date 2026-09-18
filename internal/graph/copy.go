@@ -37,6 +37,10 @@ func copyEntity(entity Entity) Entity {
 	entity.FieldWriteModes = copyFieldWriteModes(entity.FieldWriteModes)
 	entity.FieldSources = copyFieldSources(entity.FieldSources)
 	entity.FieldConflicts = append([]FieldConflict(nil), entity.FieldConflicts...)
+	for i := range entity.FieldConflicts {
+		entity.FieldConflicts[i].ExistingValue = copyAny(entity.FieldConflicts[i].ExistingValue)
+		entity.FieldConflicts[i].IncomingValue = copyAny(entity.FieldConflicts[i].IncomingValue)
+	}
 	if entity.ExistenceSource != nil {
 		source := *entity.ExistenceSource
 		entity.ExistenceSource = &source

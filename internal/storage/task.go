@@ -60,6 +60,17 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	if err := validateTaskParams(taskType, params); err != nil {
 		return Task{}, err
 	}
+	if taskType == TaskTypeTenantBackup && stringTaskParam(params, "destination") == "object" && s.Backups == nil {
+		return Task{}, fmt.Errorf("object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET")
+	}
+	if (taskType == TaskTypeTenantRestore || taskType == TaskTypeTenantRestoreDrill) && strings.HasPrefix(stringTaskParam(params, "backup_key"), "s3://") {
+		if s.Backups == nil {
+			return Task{}, fmt.Errorf("object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET")
+		}
+		if _, _, err := s.Backups.ParseURI(stringTaskParam(params, "backup_key")); err != nil {
+			return Task{}, err
+		}
+	}
 	if s.coordinated() {
 		if _, exists, err := s.Coordinator.Head(ctx, tenantID); err != nil {
 			return Task{}, err
@@ -82,7 +93,13 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Task{}, err
 	}
+	_, resuming := params[taskResumeCheckpointParam]
+	resuming = resuming || stringTaskParam(params, "retry_of") != ""
 	checkpoint := taskInitialCheckpoint(params)
+	checkpoint, err = s.prepareTaskIngestCheckpoint(ctx, tenantID, taskType, checkpoint, resuming)
+	if err != nil {
+		return Task{}, err
+	}
 	id, err := newCommitID()
 	if err != nil {
 		return Task{}, err
@@ -101,7 +118,7 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 		StartedAt:     now,
 		UpdatedAt:     now,
 	}
-	if active, reused, err := s.admitTask(task); err != nil {
+	if active, reused, err := s.admitTask(ctx, task); err != nil {
 		return Task{}, err
 	} else if reused {
 		return active, nil
@@ -282,6 +299,10 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 }
 
 func (s *TenantStore) runTaskOperation(ctx context.Context, task Task) (map[string]any, string, error) {
+	ctx, err := s.taskIngestContext(ctx, task)
+	if err != nil {
+		return nil, "", err
+	}
 	total := taskProgressTotal(task.Type)
 	if err := s.updateTaskProgress(ctx, task, "starting", 0, total, map[string]any{"phase": "starting"}); err != nil {
 		return nil, "", err
@@ -528,6 +549,10 @@ func validateTaskParams(taskType string, params map[string]any) error {
 	case TaskTypeIndexRebuild:
 		if strings.TrimSpace(stringTaskParam(params, "format")) != "" {
 			return fmt.Errorf("index_rebuild task format is fixed to parquet")
+		}
+	case TaskTypeTenantBackup:
+		if value, exists := params["destination"]; exists && value != "" && value != "local" && value != "object" {
+			return fmt.Errorf("backup destination must be local or object")
 		}
 	case TaskTypeTenantRestore:
 		if strings.TrimSpace(stringTaskParam(params, "backup_key")) == "" {

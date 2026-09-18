@@ -8,6 +8,11 @@
 
 ## 用户指南
 
+- [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)
+- [对象存储快照备份与恢复](object-backup.zh-CN.md) · [English](object-backup.md)
+- [本地磁盘 v2 验证与性能抽查](performance-local-disk-v2.md)
+- [本地磁盘第二轮优化：分页、JSON 编码与 Parquet 布局](performance-local-disk-optimization-2.md)
+
 - [用户指南](user/README.zh-CN.md) · [English](user/README.md)
 - [快速开始](user/quickstart.zh-CN.md) · [English](user/quickstart.md)
 - [使用手册](user/usage-manual.zh-CN.md) · [English](user/usage-manual.md)
@@ -15,7 +20,6 @@
 - [部署与运维](user/deploy-ops.zh-CN.md) · [English](user/deploy-ops.md)
 - [数据模型](user/data-model.zh-CN.md) · [English](user/data-model.md)
 - [写入与采集](user/write-ingest.zh-CN.md) · [English](user/write-ingest.md)
-- [1.3 PostgreSQL-CAS 多 writer WAL](ingest-wal-multiwriter-design.zh-CN.md) · [English](ingest-wal-multiwriter-design.md)
 - [读取与查询](user/read-query.zh-CN.md) · [English](user/read-query.md)
 - [扫描与导出](user/scan-export.zh-CN.md) · [English](user/scan-export.md)
 - [租户与配置](user/tenant-config.zh-CN.md) · [English](user/tenant-config.md)
