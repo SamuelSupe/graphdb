@@ -37,7 +37,7 @@ jobs:
             http://127.0.0.1:39090/minio/health/ready
           docker run --rm --network host \
             -e MC_HOST_test=http://graphdb-test:graphdb-backup-test-only@127.0.0.1:39090 \
-            minio/mc:RELEASE.2025-08-13T08-35-41Z mb test/graphdb-backups
+            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z mb test/graphdb-backups
           scripts/object_backup_gate.sh
 
       - name: Preserve backup verification evidence
