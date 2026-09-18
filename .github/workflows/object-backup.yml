@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GRAPHDB_BACKUP_GATE_OUTPUT: ${{ runner.temp }}/object-backup-gate
+      GRAPHDB_BACKUP_GATE_OUTPUT: ${{ github.workspace }}/artifacts/object-backup-gate
       GRAPHDB_TEST_BACKUP_S3_ENDPOINT: http://127.0.0.1:39090
       GRAPHDB_TEST_BACKUP_S3_BUCKET: graphdb-backups
       GRAPHDB_TEST_BACKUP_S3_ACCESS_KEY_ID: graphdb-test
@@ -46,5 +46,5 @@ jobs:
         with:
           name: object-backup-gate
           path: |
-            ${{ runner.temp }}/object-backup-gate/*.log
-            ${{ runner.temp }}/object-backup-gate/*.json
+            ${{ env.GRAPHDB_BACKUP_GATE_OUTPUT }}/*.log
+            ${{ env.GRAPHDB_BACKUP_GATE_OUTPUT }}/*.json
