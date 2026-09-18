@@ -359,6 +359,79 @@ func TestRebuildCleanupDeletesParquetListedOrphanObject(t *testing.T) {
 	}
 }
 
+func TestListedIndexCleanupPreservesUnsafeObjects(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		tenant  string
+		version int64
+		corrupt bool
+	}{
+		{name: "current content", tenant: "tenant-a", version: 2},
+		{name: "future content", tenant: "tenant-a", version: 3},
+		{name: "other tenant", tenant: "tenant-b", version: 1},
+		{name: "corrupt content", tenant: "tenant-a", version: 1, corrupt: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+			key := store.parquetEntityPageVersionKey("tenant-a", 1, "00")
+			data, err := marshalParquetEntityPage(ctx, EntityPageData{
+				TenantID: test.tenant, Shard: "00", Version: test.version,
+				Entities: []graph.Entity{{ID: "host:old", Kind: "host"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.corrupt {
+				data = data[:len(data)/2]
+			}
+			if err := store.Objects.Put(ctx, key, data); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.cleanupObsoleteIndexObjects(ctx, "tenant-a", IndexCatalog{}, IndexCatalog{Version: 2}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Objects.Get(ctx, key); err != nil {
+				t.Fatalf("unsafe orphan should remain: %v", err)
+			}
+		})
+	}
+}
+
+func BenchmarkCleanupListedEntityPage10K(b *testing.B) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "bench")
+	key := store.parquetEntityPageVersionKey("tenant-a", 1, "00")
+	page := EntityPageData{TenantID: "tenant-a", Shard: "00", Version: 1}
+	for i := 0; i < 10_000; i++ {
+		page.Entities = append(page.Entities, graph.Entity{
+			ID: fmt.Sprintf("host:%05d", i), Kind: "host",
+			Fields: graph.Fields{"hostname": fmt.Sprintf("host-%05d", i), "region": "ap-southeast-1", "state": "ready", "cpu": 8},
+		})
+	}
+	data, err := marshalParquetEntityPage(ctx, page)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		if err := store.Objects.Put(ctx, key, data); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		if err := store.deleteListedObsoleteIndexObjectIfSafe(ctx, "tenant-a", key, 2); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		if _, err := store.Objects.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+			b.Fatalf("obsolete entity page was not deleted: %v", err)
+		}
+		b.StartTimer()
+	}
+}
+
 func TestIncrementalCleanupSkipsTenantMismatchedRemovedObject(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")

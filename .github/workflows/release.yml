@@ -159,7 +159,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "GGraphDB $GITHUB_REF_NAME — Local disk edition" \
-            --verify-tag --prerelease --latest=false \
+            --target codex/local-disk-v2 --verify-tag --prerelease --latest=false \
             --notes-file release/local-disk.md \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz.sha256"

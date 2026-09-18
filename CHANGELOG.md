@@ -27,6 +27,9 @@ branch and stable Latest release are unchanged.
 - Optimize bounded Parquet decoding, projected/paginated reads, incremental
   indexes, no-op compaction and deep index validation. Preserve recovery,
   cancellation, read-view isolation and nested result ownership invariants.
+- Avoid repeated decoding and self-comparison hashes when GC validates listed
+  index orphans. Retain catalog hash checks, current references and tenant/version
+  protection; this fixes a maintenance bottleneck found by the release soak.
 - Publish Linux amd64/arm64 and macOS arm64 binaries with checksums, build
   metadata, validation evidence and SDKs (`1.3.4+local.1`).
 

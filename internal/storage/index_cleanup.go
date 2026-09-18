@@ -133,18 +133,21 @@ func (s *TenantStore) deleteObsoleteIndexObjectDataIfSafe(ctx context.Context, t
 }
 
 func (s *TenantStore) deleteListedObsoleteIndexObjectIfSafe(ctx context.Context, tenantID string, key string, currentVersion int64) error {
-	data, meta, err := s.Objects.GetWithMeta(ctx, key)
+	version, ok := s.parquetVersionFromKey(tenantID, key)
+	if !ok || version >= currentVersion || !strings.HasSuffix(key, ".parquet") {
+		return nil
+	}
+	data, err := s.Objects.Get(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	target, ok := s.indexObjectTargetFromContent(tenantID, key, data, currentVersion)
-	if !ok {
-		return nil
+	if !s.listedParquetObjectSafeToDelete(ctx, tenantID, key, data, version, currentVersion) {
+		return objectContextErr(ctx)
 	}
-	return s.deleteObsoleteIndexObjectDataIfSafe(ctx, target, currentVersion, data, meta)
+	return s.Objects.Delete(ctx, key)
 }
 
 func (s *TenantStore) deleteObsoleteIndexObjectWithLease(ctx context.Context, target indexObjectTarget, currentVersion int64, expected []byte) error {
@@ -263,65 +266,39 @@ func indexObjectVersionSafeToDelete(version int64, currentVersion int64, immutab
 	return !immutable || version < currentVersion
 }
 
-func (s *TenantStore) indexObjectTargetFromContent(tenantID string, key string, data []byte, currentVersion int64) (indexObjectTarget, bool) {
-	if target, ok := s.versionedParquetObjectTarget(tenantID, key, data, currentVersion); ok {
-		return target, true
+func (s *TenantStore) listedParquetObjectSafeToDelete(ctx context.Context, tenantID string, key string, data []byte, version int64, currentVersion int64) bool {
+	prefix := s.parquetVersionPrefix(tenantID, version) + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return false
 	}
-
-	return indexObjectTarget{}, false
-}
-
-func (s *TenantStore) versionedParquetObjectTarget(tenantID string, key string, data []byte, currentVersion int64) (indexObjectTarget, bool) {
-	if !strings.HasSuffix(key, ".parquet") {
-		return indexObjectTarget{}, false
-	}
-	version, ok := s.parquetVersionFromKey(tenantID, key)
-	if !ok || version > currentVersion {
-		return indexObjectTarget{}, false
-	}
-	if catalog, err := decodeParquetIndexCatalog(context.Background(), data); err == nil {
-		if !indexTenantMatches(catalog.TenantID, tenantID) || catalog.Version != version || catalog.Version > currentVersion {
-			return indexObjectTarget{}, false
+	// Listed orphans have no catalog hash to compare against. Decode the known
+	// object type once; hashing that same payload twice adds no integrity check.
+	// Referenced objects are excluded by the caller under the maintenance lock.
+	relative := strings.TrimPrefix(key, prefix)
+	switch {
+	case relative == "catalog.parquet" || strings.HasPrefix(relative, "catalogs/"):
+		catalog, err := decodeParquetIndexCatalog(ctx, data)
+		return err == nil && indexTenantMatches(catalog.TenantID, tenantID) &&
+			catalog.Version == version && catalog.Version < currentVersion
+	case strings.HasPrefix(relative, "fields/"):
+		kind, field, ok := s.parquetSecondaryIndexIdentityFromKey(tenantID, key)
+		if !ok {
+			return false
 		}
-		hash, err := indexCatalogContentHash(catalog)
-		if err != nil {
-			return indexObjectTarget{}, false
-		}
-		return indexObjectTarget{Key: key, Type: "parquet_index_catalog", Immutable: true, TenantID: tenantID, ContentHash: hash}, true
+		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, kind, field, version, false)
+		return err == nil && indexTenantMatches(index.TenantID, tenantID) &&
+			index.Kind == kind && index.Field == field && index.Version < currentVersion
+	case strings.HasPrefix(relative, "edges/"):
+		shard, err := decodeParquetEdgeShard(ctx, data, tenantID, "", "", version)
+		return err == nil && indexTenantMatches(shard.TenantID, tenantID) &&
+			shard.RelationType != "" && shard.Shard != "" && shard.Version < currentVersion
+	case strings.HasPrefix(relative, "entities/pages/"):
+		page, err := decodeParquetEntityPage(ctx, data, tenantID, "", version)
+		return err == nil && indexTenantMatches(page.TenantID, tenantID) &&
+			page.Shard != "" && page.Version < currentVersion
+	default:
+		return false
 	}
-	kind, field, _ := s.parquetSecondaryIndexIdentityFromKey(tenantID, key)
-	if index, err := decodeParquetSecondaryIndex(context.Background(), data, tenantID, kind, field, version, false); err == nil && index.Kind != "" && index.Field != "" {
-		if !indexTenantMatches(index.TenantID, tenantID) || index.Version > currentVersion {
-			return indexObjectTarget{}, false
-		}
-		targetType := "parquet_secondary_index"
-		if strings.Contains(key, "/shards/pack_") {
-			targetType = "parquet_secondary_index_pack"
-		}
-		return indexObjectTarget{Key: key, Type: targetType, Immutable: true, TenantID: tenantID, Kind: index.Kind, Field: index.Field, Unique: index.Unique, ContentHash: secondaryIndexContentHash(index)}, true
-	}
-	if shard, err := decodeParquetEdgeShard(context.Background(), data, tenantID, "", "", version); err == nil && shard.RelationType != "" && shard.Shard != "" {
-		if !indexTenantMatches(shard.TenantID, tenantID) || shard.Version > currentVersion {
-			return indexObjectTarget{}, false
-		}
-		targetType := "parquet_edge_shard"
-		if strings.Contains(key, "/packs/") {
-			targetType = "parquet_edge_shard_pack"
-		}
-		return indexObjectTarget{Key: key, Type: targetType, Immutable: true, TenantID: tenantID, RelationType: shard.RelationType, Shard: shard.Shard, ContentHash: edgeShardContentHash(shard)}, true
-	}
-	page, err := decodeParquetEntityPage(context.Background(), data, tenantID, "", version)
-	if err != nil {
-		return indexObjectTarget{}, false
-	}
-	if !indexTenantMatches(page.TenantID, tenantID) || page.Version > currentVersion || page.Shard == "" {
-		return indexObjectTarget{}, false
-	}
-	targetType := "parquet_entity_page"
-	if strings.Contains(key, "/pages/packs/") {
-		targetType = "parquet_entity_page_pack"
-	}
-	return indexObjectTarget{Key: key, Type: targetType, Immutable: true, TenantID: tenantID, Shard: page.Shard, ContentHash: entityPageContentHash(page)}, true
 }
 
 func (s *TenantStore) parquetVersionFromKey(tenantID string, key string) (int64, bool) {
