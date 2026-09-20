@@ -1,4 +1,4 @@
-# GGraphDB v1.3.4-local.5 — 本地磁盘版 / Local disk edition
+# GGraphDB v1.3.4-local.6 — 本地磁盘版 / Local disk edition
 
 这是 `codex/local-disk-v2` 的独立预发布版本，基于 `ffa85414`。
 原 `main` 分支、稳定版和 Latest 设置保持不变。
@@ -14,6 +14,7 @@
 - 修复持续负载暴露的 GC 最后一页重复扫描、索引清理占住租户维护名额、存活 GC 任务被误判过期的问题。失败候选 `v1.3.4-local.2` 保留标签用于追溯，没有发布发行包。
 - 补齐用量采样在持续负载正常结束时的取消分类；候选 `v1.3.4-local.3` 因报告工具误判而未发布，原始业务操作错误数为 0。
 - 修复自动 GC 配置删除预算时绕过分批限制，以及多个维护任务连续抢占读视图导致查询超时的问题；预算和 dry-run 检查点保持有效。同批删除共享目录同步，失败或取消时也先同步再释放维护锁。失败候选 `v1.3.4-local.4` 保留标签，没有发行包。
+- 维护任务循环在持续负载正常结束时停止，不把全局取消记录成运行故障；保留独立请求超时和真实维护错误。候选 `v1.3.4-local.5` 为修复此门禁工具问题而取消发行，数据库实现保持不变。
 - 发行包补齐容器构建源码，发布前从解压后的包构建并启动容器。
 
 单组预热基准中，1 万实体的深度索引检查从 1.65 秒降至 1.49 秒，分配次数减少 5.08%。
@@ -21,21 +22,21 @@
 
 ## 下载与运行
 
-下载 `graphdb-v1.3.4-local.5.tar.gz` 和对应 `.sha256`，先校验压缩包，再校验包内 `SHA256SUMS`。
+下载 `graphdb-v1.3.4-local.6.tar.gz` 和对应 `.sha256`，先校验压缩包，再校验包内 `SHA256SUMS`。
 包内提供 Linux amd64、Linux arm64 和 macOS arm64 二进制，以及文档、SDK、部署示例和发布验证证据。
 例如 Linux arm64：
 
 ```sh
-sha256sum -c graphdb-v1.3.4-local.5.tar.gz.sha256
-tar -xzf graphdb-v1.3.4-local.5.tar.gz
-cd v1.3.4-local.5
+sha256sum -c graphdb-v1.3.4-local.6.tar.gz.sha256
+tar -xzf graphdb-v1.3.4-local.6.tar.gz
+cd v1.3.4-local.6
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-arm64 version
 GRAPHDB_DATA_DIR=./data bin/graphdb-linux-arm64 serve
 ```
 
 macOS 使用 `shasum -a 256 -c` 校验并运行 `bin/graphdb-darwin-arm64`。
-Go/Python SDK 包版本为 `1.3.4+local.5`，Python 使用符合 PEP 440 的本地版本号。
+Go/Python SDK 包版本为 `1.3.4+local.6`，Python 使用符合 PEP 440 的本地版本号。
 包内包含容器构建所需源码，可运行 `docker compose up -d --build`。需要执行依赖 Git 历史的兼容性验证时，检出此 Release 的 Git 标签。
 
 ## 兼容和验证边界

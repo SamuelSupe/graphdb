@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"sync"
 	"time"
@@ -22,7 +23,9 @@ func (r *soakRunner) startMaintenance(ctx context.Context, wg *sync.WaitGroup) {
 	}
 	if r.cfg.indexRebuildInterval > 0 {
 		wg.Add(1)
-		go r.rebuildLoop(ctx, wg)
+		go r.periodic(ctx, wg, "index_rebuild", r.cfg.indexRebuildInterval, func(ctx context.Context, metrics *registry) error {
+			return r.admin.rebuildIndexesWithTimeout(ctx, metrics, r.cfg.maintenanceTimeout)
+		})
 	}
 	if r.cfg.readerRestartEvery > 0 && r.cfg.readerRestartCommand != "" {
 		wg.Add(1)
@@ -40,33 +43,19 @@ func (r *soakRunner) periodic(ctx context.Context, wg *sync.WaitGroup, name stri
 			return
 		case <-ticker.C:
 			r.maintenanceMu.Lock()
-			if err := fn(ctx, r.metrics); err != nil {
+			if ctx.Err() != nil {
 				r.maintenanceMu.Unlock()
+				return
+			}
+			err := fn(ctx, r.metrics)
+			r.maintenanceMu.Unlock()
+			if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+				return
+			}
+			if err != nil {
 				r.events.emit(name+"_error", map[string]any{"error": err.Error()})
 			} else {
-				r.maintenanceMu.Unlock()
 				r.events.emit(name+"_ok", nil)
-			}
-		}
-	}
-}
-
-func (r *soakRunner) rebuildLoop(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-	ticker := time.NewTicker(r.cfg.indexRebuildInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			r.maintenanceMu.Lock()
-			err := r.admin.rebuildIndexesWithTimeout(ctx, r.metrics, r.cfg.maintenanceTimeout)
-			r.maintenanceMu.Unlock()
-			if err != nil {
-				r.events.emit("index_rebuild_error", map[string]any{"error": err.Error()})
-			} else {
-				r.events.emit("index_rebuild_ok", nil)
 			}
 		}
 	}

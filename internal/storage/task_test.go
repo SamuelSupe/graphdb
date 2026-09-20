@@ -419,22 +419,29 @@ func TestUpdateTaskProgressSeesPersistedCancel(t *testing.T) {
 
 func waitForTask(t *testing.T, ctx context.Context, store *TenantStore, tenantID string, taskID string) Task {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	// File-backed restore syncs many Parquet files. This helper checks terminal
+	// state, not a two-second latency SLA under the race detector on shared CI.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var last Task
+	for {
 		task, err := store.GetTask(ctx, tenantID, taskID)
 		if err != nil {
-			t.Fatalf("get task: %v", err)
+			t.Fatalf("get task after status=%s phase=%s: %v", last.Status, last.Phase, err)
 		}
+		last = task
 		if task.Status != "queued" && task.Status != "running" {
 			if task.Status == "failed" {
 				t.Fatalf("task failed: %#v", task)
 			}
 			return task
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("task %s did not finish: status=%s phase=%s: %v", taskID, last.Status, last.Phase, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
-	t.Fatalf("task %s did not finish", taskID)
-	return Task{}
 }
 
 func assertTaskActionCompleted(t *testing.T, task Task, actionID string) {

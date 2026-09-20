@@ -3,7 +3,7 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [1.3.4-local.5] - 2026-09-20
+## [1.3.4-local.6] - 2026-09-20
 
 Independent local disk prerelease on `codex/local-disk-v2`; `main` and the stable
 Latest release remain unchanged.
@@ -28,9 +28,11 @@ Latest release remain unchanged.
   their persisted heartbeat is delayed.
 - Classify tenant-usage sampling deadlines during soak shutdown consistently
   with other sampling operations; retain failures outside shutdown grace.
+- Stop maintenance loops cleanly when the soak run ends; request deadlines and
+  actual maintenance failures remain errors.
 - Include the source required by the packaged Dockerfile, and verify a container
   built from the extracted release archive before publication.
-- Update bundled Go/Python SDK versions to `1.3.4+local.5`.
+- Update bundled Go/Python SDK versions to `1.3.4+local.6`.
 
 A focused 10K-entity deep-index benchmark measured 1.65 s/op before and 1.49 s/op
 after, with 5.08% fewer allocations. This small warm sample is not an overall
