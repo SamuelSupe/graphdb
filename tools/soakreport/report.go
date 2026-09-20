@@ -193,6 +193,8 @@ func effectiveOperationErrors(op operationMetric, plannedRestart map[string]int,
 		shutdownErrors = shutdown["index_catalog_sample_error"]
 	case "index-health":
 		shutdownErrors = shutdown["index_health_sample_error"]
+	case "tenant-usage":
+		shutdownErrors = shutdown["usage_sample_error"]
 	}
 	return maxInt(0, op.errors-planned-shutdownErrors), planned, shutdownErrors
 }
@@ -226,7 +228,7 @@ func (r *report) inShutdownGrace(item errorEvent) bool {
 		return false
 	}
 	switch item.kind {
-	case "index_catalog_sample_error", "index_health_sample_error", "reader_freshness_error", "reader_fleet_error":
+	case "index_catalog_sample_error", "index_health_sample_error", "reader_freshness_error", "reader_fleet_error", "usage_sample_error":
 	default:
 		return false
 	}

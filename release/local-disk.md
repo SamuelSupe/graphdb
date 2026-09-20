@@ -1,4 +1,4 @@
-# GGraphDB v1.3.4-local.3 — 本地磁盘版 / Local disk edition
+# GGraphDB v1.3.4-local.4 — 本地磁盘版 / Local disk edition
 
 这是 `codex/local-disk-v2` 的独立预发布版本，基于 `ffa85414`。
 原 `main` 分支、稳定版和 Latest 设置保持不变。
@@ -12,6 +12,7 @@
 - 删除不可达 PostgreSQL 协调实现，生产 Go 代码净减少 7,150 行；保留本地锁、写入围栏、WAL 恢复和持久化格式。
 - 本地 GC 按最多 64 次删除分批，批次间释放锁并重新读取当前引用；索引孤儿清理支持预算、游标和 dry-run。
 - 修复持续负载暴露的 GC 最后一页重复扫描、索引清理占住租户维护名额、存活 GC 任务被误判过期的问题。失败候选 `v1.3.4-local.2` 保留标签用于追溯，没有发布发行包。
+- 补齐用量采样在持续负载正常结束时的取消分类；候选 `v1.3.4-local.3` 因报告工具误判而未发布，原始业务操作错误数为 0。
 - 发行包补齐容器构建源码，发布前从解压后的包构建并启动容器。
 
 单组预热基准中，1 万实体的深度索引检查从 1.65 秒降至 1.49 秒，分配次数减少 5.08%。
@@ -19,21 +20,21 @@
 
 ## 下载与运行
 
-下载 `graphdb-v1.3.4-local.3.tar.gz` 和对应 `.sha256`，先校验压缩包，再校验包内 `SHA256SUMS`。
+下载 `graphdb-v1.3.4-local.4.tar.gz` 和对应 `.sha256`，先校验压缩包，再校验包内 `SHA256SUMS`。
 包内提供 Linux amd64、Linux arm64 和 macOS arm64 二进制，以及文档、SDK、部署示例和发布验证证据。
 例如 Linux arm64：
 
 ```sh
-sha256sum -c graphdb-v1.3.4-local.3.tar.gz.sha256
-tar -xzf graphdb-v1.3.4-local.3.tar.gz
-cd v1.3.4-local.3
+sha256sum -c graphdb-v1.3.4-local.4.tar.gz.sha256
+tar -xzf graphdb-v1.3.4-local.4.tar.gz
+cd v1.3.4-local.4
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-arm64 version
 GRAPHDB_DATA_DIR=./data bin/graphdb-linux-arm64 serve
 ```
 
 macOS 使用 `shasum -a 256 -c` 校验并运行 `bin/graphdb-darwin-arm64`。
-Go/Python SDK 包版本为 `1.3.4+local.3`，Python 使用符合 PEP 440 的本地版本号。
+Go/Python SDK 包版本为 `1.3.4+local.4`，Python 使用符合 PEP 440 的本地版本号。
 包内包含容器构建所需源码，可运行 `docker compose up -d --build`。需要执行依赖 Git 历史的兼容性验证时，检出此 Release 的 Git 标签。
 
 ## 兼容和验证边界

@@ -139,6 +139,8 @@ func TestReportIgnoresSamplingDeadlineDuringShutdownGrace(t *testing.T) {
 		`{"event":"operation_metric","ts":"2026-06-20T00:59:00Z","name":"index-catalog","count":20,"errors":1}`,
 		`{"event":"index_catalog_sample_error","ts":"2026-06-20T00:59:10Z","error":"Get \"http://127.0.0.1:38380/v1/indexes\": context deadline exceeded"}`,
 		`{"event":"reader_fleet_error","ts":"2026-06-20T00:59:11Z","error":"Get \"http://127.0.0.1:38381/v1/control/reader-fleet-readiness\": context deadline exceeded"}`,
+		`{"event":"operation_metric","ts":"2026-06-20T00:59:12Z","name":"tenant-usage","count":20,"errors":1}`,
+		`{"event":"usage_sample_error","ts":"2026-06-20T00:59:12Z","error":"Get \"http://127.0.0.1:38380/v1/tenant-usage\": context deadline exceeded"}`,
 		`{"event":"soak_done","ts":"2026-06-20T01:00:00Z"}`,
 	}, "\n")
 	report := newReport(config{
@@ -159,11 +161,14 @@ func TestReportIgnoresSamplingDeadlineDuringShutdownGrace(t *testing.T) {
 	if len(classified.active) != 0 {
 		t.Fatalf("errors = %v", classified.active)
 	}
-	if classified.shutdown["index_catalog_sample_error"] != 1 || classified.shutdown["reader_fleet_error"] != 1 {
+	if classified.shutdown["index_catalog_sample_error"] != 1 || classified.shutdown["reader_fleet_error"] != 1 || classified.shutdown["usage_sample_error"] != 1 {
 		t.Fatalf("shutdown errors = %v", classified.shutdown)
 	}
 	if errors, _, shutdownCount := effectiveOperationErrors(report.operations["index-catalog"], classified.plannedRestart, classified.shutdown); errors != 0 || shutdownCount != 1 {
 		t.Fatalf("effective index-catalog errors = %d shutdown = %d", errors, shutdownCount)
+	}
+	if errors, _, shutdownCount := effectiveOperationErrors(report.operations["tenant-usage"], classified.plannedRestart, classified.shutdown); errors != 0 || shutdownCount != 1 {
+		t.Fatalf("effective tenant-usage errors = %d shutdown = %d", errors, shutdownCount)
 	}
 	if violations := report.violations(); len(violations) != 0 {
 		t.Fatalf("violations = %v", violations)
@@ -176,6 +181,7 @@ func TestReportFlagsSamplingDeadlineOutsideShutdownGrace(t *testing.T) {
 		`{"event":"usage_sample","ts":"2026-06-20T00:00:01Z","manifest_version":1,"commit_tail_length":0,"object_count":10,"total_bytes":1000}`,
 		`{"event":"index_catalog_sample","ts":"2026-06-20T00:00:02Z","version":1}`,
 		`{"event":"index_health_sample_error","ts":"2026-06-20T00:55:00Z","error":"Get \"http://127.0.0.1:38381/v1/indexes/health\": context deadline exceeded"}`,
+		`{"event":"usage_sample_error","ts":"2026-06-20T00:55:00Z","error":"Get \"http://127.0.0.1:38380/v1/tenant-usage\": context deadline exceeded"}`,
 		`{"event":"soak_done","ts":"2026-06-20T01:00:00Z"}`,
 	}, "\n")
 	report := newReport(config{
@@ -191,6 +197,9 @@ func TestReportFlagsSamplingDeadlineOutsideShutdownGrace(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatalf("read events: %v", err)
+	}
+	if report.classifiedErrors().active["usage_sample_error"] != 1 {
+		t.Fatal("usage deadline outside shutdown grace was ignored")
 	}
 	violations := strings.Join(report.violations(), "\n")
 	if !strings.Contains(violations, "error events present") {
@@ -204,6 +213,7 @@ func TestReportFlagsNonDeadlineSamplingErrorDuringShutdownGrace(t *testing.T) {
 		`{"event":"usage_sample","ts":"2026-06-20T00:00:01Z","manifest_version":1,"commit_tail_length":0,"object_count":10,"total_bytes":1000}`,
 		`{"event":"index_catalog_sample","ts":"2026-06-20T00:00:02Z","version":1}`,
 		`{"event":"reader_freshness_error","ts":"2026-06-20T00:59:10Z","error":"connection reset by peer"}`,
+		`{"event":"usage_sample_error","ts":"2026-06-20T00:59:10Z","error":"connection reset by peer"}`,
 		`{"event":"soak_done","ts":"2026-06-20T01:00:00Z"}`,
 	}, "\n")
 	report := newReport(config{
@@ -219,6 +229,9 @@ func TestReportFlagsNonDeadlineSamplingErrorDuringShutdownGrace(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatalf("read events: %v", err)
+	}
+	if report.classifiedErrors().active["usage_sample_error"] != 1 {
+		t.Fatal("non-deadline usage error during shutdown grace was ignored")
 	}
 	violations := strings.Join(report.violations(), "\n")
 	if !strings.Contains(violations, "error events present") {
