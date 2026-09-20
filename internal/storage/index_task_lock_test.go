@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 var errIndexTaskMarkerProbe = errors.New("index task marker probe failed")
@@ -105,5 +107,49 @@ func TestIndexTaskStartSlotHonorsContext(t *testing.T) {
 		<-slot
 		<-done
 		t.Fatal("index task start ignored cancellation while waiting for its slot")
+	}
+}
+
+func TestIndexCleanupReleasesMaintenanceExecution(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	objects := newBlockingTenantDeleteStore(files, "")
+	store := NewTenantStore(objects, "test")
+	defer store.ShutdownTasks(ctx)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
+	}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	objects.prefix = store.reverseIndexPrefix("tenant-a")
+	if err := files.Put(ctx, objects.prefix+"orphan.parquet", []byte("orphan")); err != nil {
+		t.Fatal(err)
+	}
+	entered, resume := objects.blockNextDelete()
+	resumeCleanup := sync.OnceFunc(func() { close(resume) })
+	defer resumeCleanup()
+	task, err := store.StartIndexRebuild(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	release, err := store.TryAcquireMaintenance("tenant-a")
+	if err != nil {
+		t.Fatalf("index cleanup blocked other maintenance: %v", err)
+	}
+	release()
+	resumeCleanup()
+	finished := waitForIndexTaskStatus(t, ctx, store, "tenant-a", task.ID)
+	if finished.Status != TaskStatusSucceeded {
+		t.Fatalf("index task = %+v", finished)
 	}
 }

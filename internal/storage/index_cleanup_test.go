@@ -599,7 +599,7 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
 		t.Fatal(err)
 	}
-	const count = gcBatchDeletes*2 + 1
+	const count = gcBatchDeletes * 2
 	for i := 0; i < count; i++ {
 		if err := files.Put(ctx, store.entityRecordKey("tenant-a", fmt.Sprintf("host:%04d", i)), []byte("obsolete")); err != nil {
 			t.Fatal(err)
@@ -649,6 +649,10 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 		t.Fatalf("GC finished while read view pinned: %v", err)
 	default:
 	}
+	lateKey := store.entityRecordKey("tenant-a", "host:late")
+	if err := files.Put(ctx, lateKey, []byte("created after the scan")); err != nil {
+		t.Fatal(err)
+	}
 	release()
 	select {
 	case err := <-done:
@@ -657,5 +661,8 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	if _, err := files.Get(ctx, lateKey); err != nil {
+		t.Fatalf("GC must leave newly discovered candidates to the next run: %v", err)
 	}
 }

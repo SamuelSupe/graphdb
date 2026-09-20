@@ -63,7 +63,10 @@ for graph read views or maintenance.
 
 GC releases its tenant and read-view locks between batches (64 deletions per
 batch by default) and reloads the current manifest and catalogs after reacquiring
-them. Index orphan cleanup supports `max_deletes`, `cursor`, and `dry_run`.
+them. Candidate listings remain fixed for one GC run, so concurrent writes do not
+keep extending its last page. Index cleanup releases the tenant maintenance slot
+after publication while retaining the global worker limit. Local live GC workers
+remain authoritative even when a persisted heartbeat is delayed. Index orphan cleanup supports `max_deletes`, `cursor`, and `dry_run`.
 Index rebuild blocks write admission during backfill; its cleanup phase and local
 GC use the batch locks so foreground work can run between batches. A large single
 file or directory listing can still make one batch slow.

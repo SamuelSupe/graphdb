@@ -167,6 +167,7 @@ func (r *gcCheckpointRunner) listPage(ctx context.Context, objects ObjectStore, 
 	r.addPrefix(prefix)
 	cursor, skip := r.pageCursor(prefix)
 	if skip {
+		delete(r.options.listings, prefix)
 		return nil, "", true, nil
 	}
 	if r.options.listings != nil {
@@ -184,9 +185,10 @@ func (r *gcCheckpointRunner) listPage(ctx context.Context, objects ObjectStore, 
 		next := ""
 		if end < len(items) {
 			next = items[end-1].Key
-		} else {
-			delete(r.options.listings, prefix)
 		}
+		// Retain the final page until the cursor leaves this prefix. A deletion
+		// budget can pause partway through it; relisting then would let ongoing
+		// writes keep extending this GC run indefinitely.
 		return items[start:end], next, false, objectContextErr(ctx)
 	}
 	items, next, err := listObjectPage(ctx, objects, prefix, cursor, r.scanPageLimit())

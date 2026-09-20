@@ -68,6 +68,35 @@ func TestStaleGCMarkerRecoversMissingTaskHistory(t *testing.T) {
 	}
 }
 
+func TestLocalGCMarkerKeepsLiveWorkerAfterHeartbeatExpires(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	old := time.Now().UTC().Add(-time.Hour)
+	task := Task{ID: "live-gc", TenantID: "tenant-a", Type: TaskTypeGC,
+		Status: TaskStatusQueued, OwnerID: store.InstanceID, StartedAt: old, UpdatedAt: old}
+	if err := store.saveTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	store.registerTaskCancel(task.TenantID, task.ID, func() {})
+	defer store.unregisterTaskCancel(task.TenantID, task.ID)
+	if _, found, err := store.findRunningGCTask(ctx, task.TenantID); err != nil || !found {
+		t.Fatalf("live queued worker lost ownership: found=%v err=%v", found, err)
+	}
+	current, err := store.GetTask(ctx, task.TenantID, task.ID)
+	if err != nil || current.Status != TaskStatusQueued {
+		t.Fatalf("live task was marked failed: %+v err=%v", current, err)
+	}
+	store.unregisterTaskCancel(task.TenantID, task.ID)
+	if _, found, err := store.findRunningGCTask(ctx, task.TenantID); err != nil || found {
+		t.Fatalf("stopped worker retained ownership: found=%v err=%v", found, err)
+	}
+}
+
 func TestTaskProgressCannotOverwriteConcurrentCancel(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()

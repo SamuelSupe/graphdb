@@ -223,6 +223,9 @@ func (s *TenantStore) gcMarkerActive(task Task, now time.Time) bool {
 	if !taskStillActive(task) {
 		return false
 	}
+	if s.localFileStore() != nil && s.taskRuntimeActive(task.TenantID, task.ID) {
+		return true
+	}
 	updatedAt := task.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = task.StartedAt

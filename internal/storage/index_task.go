@@ -434,7 +434,7 @@ func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenant
 }
 
 func (s *TenantStore) runIndexRebuildTask(ctx context.Context, tenantID string, task IndexTask) {
-	s.runIndexRebuildTaskWithRelease(ctx, tenantID, task, func() {})
+	s.runIndexRebuildTaskWithRelease(ctx, tenantID, task, func() {}, func() {})
 }
 
 func (s *TenantStore) runIndexRebuildTaskWithRelease(
@@ -442,6 +442,7 @@ func (s *TenantStore) runIndexRebuildTaskWithRelease(
 	tenantID string,
 	task IndexTask,
 	releaseExecution func(),
+	releaseTenant func(),
 ) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -474,6 +475,9 @@ func (s *TenantStore) runIndexRebuildTaskWithRelease(
 	task.CatalogVersion = catalog.Version
 	task.UpdatedAt = time.Now().UTC()
 	s.trySaveIndexTask(ctx, task)
+	// GC takes its own batch locks. Let this tenant compact while cleanup runs,
+	// retaining the global execution slot to bound concurrent cleanup workers.
+	releaseTenant()
 	gcReport, cleanupErr := s.RunGC(ctx, tenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
 	task.Status = "succeeded"
 	task.Phase = "done"
