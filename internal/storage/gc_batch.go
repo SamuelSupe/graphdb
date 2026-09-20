@@ -10,19 +10,24 @@ import (
 const gcBatchDeletes = 64
 
 func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
-	if options.MaxDeletes > 0 || s.localFileStore() == nil {
+	if s.localFileStore() == nil {
 		return s.runGCBatch(ctx, tenantID, options)
 	}
 	// Each batch reacquires the read-view and tenant locks, then reloads the
 	// manifest and catalogs. A listing is only a candidate list, never a root.
+	maxDeletes := max(0, options.MaxDeletes)
 	options.MaxDeletes = gcBatchDeletes
+	if maxDeletes > 0 {
+		options.MaxDeletes = min(options.MaxDeletes, maxDeletes)
+	}
 	options.listings = make(map[string][]ObjectInfo)
 	var report GCReport
 	for {
 		batch, err := s.runGCBatch(ctx, tenantID, options)
 		mergeGCReport(&report, batch)
-		report.Checkpoint.MaxDeletes = 0
-		if err != nil || !batch.Checkpoint.Paused || batch.IndexCleanupError != "" {
+		report.Checkpoint.MaxDeletes = maxDeletes
+		used := report.Checkpoint.Deleted + report.Checkpoint.Planned
+		if err != nil || !batch.Checkpoint.Paused || batch.IndexCleanupError != "" || (maxDeletes > 0 && used >= maxDeletes) {
 			sort.Strings(report.DeletedKeys)
 			return report, err
 		}
@@ -31,6 +36,9 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return report, fmt.Errorf("gc checkpoint did not advance from %q", options.CheckpointCursor)
 		}
 		options.CheckpointCursor = next
+		if maxDeletes > 0 {
+			options.MaxDeletes = min(gcBatchDeletes, maxDeletes-used)
+		}
 		// Give waiting foreground operations a turn before requesting exclusivity.
 		timer := time.NewTimer(time.Millisecond)
 		select {

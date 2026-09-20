@@ -77,7 +77,7 @@ type gcReaderProtection struct {
 	Ignored          int
 }
 
-func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
+func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options GCOptions) (report GCReport, err error) {
 	releaseViews, viewErr := s.lockReadViews(ctx, tenantID, true)
 	if viewErr != nil {
 		return GCReport{}, viewErr
@@ -107,7 +107,18 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	if err := s.validateGCSnapshotCursor(tenantID, manifest, options.CheckpointCursor); err != nil {
 		return GCReport{}, err
 	}
-	report := GCReport{TenantID: tenantID, ManifestVersion: manifest.Version}
+	if files := s.localFileStore(); files != nil {
+		ctx = context.WithValue(ctx, fileBatchKey{}, files)
+		// Deletions share a directory barrier within this bounded batch. Flush
+		// even on cancellation, before releasing tenant and read-view locks.
+		defer func() {
+			err = errors.Join(err, files.syncPendingDirectories())
+			if err != nil {
+				report.Checkpoint.Completed = false
+			}
+		}()
+	}
+	report = GCReport{TenantID: tenantID, ManifestVersion: manifest.Version}
 	checkpoint := newGCCheckpointRunner(options)
 	finish := func(err error) (GCReport, error) {
 		sort.Strings(report.DeletedKeys)

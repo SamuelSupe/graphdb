@@ -250,11 +250,24 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 		return err
 	}
 	defer s.changed(key, "")
+	files, batched := ctx.Value(fileBatchKey{}).(*FileStore)
+	batched = batched && files == s
+	if batched {
+		s.runtime.publicationMu.Lock()
+		defer s.runtime.publicationMu.Unlock()
+	}
 	err = os.Remove(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err == nil {
+		if batched {
+			if s.runtime.pendingDirectories == nil {
+				s.runtime.pendingDirectories = make(map[string]struct{})
+			}
+			s.runtime.pendingDirectories[filepath.Dir(path)] = struct{}{}
+			return nil
+		}
 		return syncDir(filepath.Dir(path))
 	}
 	return err

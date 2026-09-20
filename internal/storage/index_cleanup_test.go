@@ -587,82 +587,100 @@ func TestIndexGCCheckpointRechecksReferencesAndProtectsReadViews(t *testing.T) {
 }
 
 func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	files, err := OpenFileStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer files.Close()
-	objects := newBlockingTenantDeleteStore(files, "test/tenants/tenant-a/indexes/entities/by-id/")
-	store := NewTenantStore(objects, "test")
-	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
-		t.Fatal(err)
-	}
-	const count = gcBatchDeletes * 2
-	for i := 0; i < count; i++ {
-		if err := files.Put(ctx, store.entityRecordKey("tenant-a", fmt.Sprintf("host:%04d", i)), []byte("obsolete")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	entered, resume := objects.blockNextDelete()
-	done := make(chan error, 1)
-	go func() {
-		report, err := store.RunGC(ctx, "tenant-a", GCOptions{CleanupIndexOrphans: true})
-		if err == nil && (report.DeletedEntityRecords != count || !report.Checkpoint.Completed) {
-			err = fmt.Errorf("incomplete GC: %+v", report)
-		}
-		done <- err
-	}()
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	view := make(chan func(), 1)
-	readError := make(chan error, 1)
-	go func() {
-		release, err := store.PinReadView(ctx, "tenant-a")
-		if err != nil {
-			readError <- err
-			return
-		}
-		view <- release
-	}()
-	close(resume)
-	var release func()
-	select {
-	case release = <-view:
-	case err := <-readError:
-		t.Fatal(err)
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	release = sync.OnceFunc(release)
-	defer release()
-	remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
-	if err != nil || len(remaining) == 0 {
-		t.Fatalf("reader only admitted after all garbage was deleted: remaining=%d err=%v", len(remaining), err)
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("GC finished while read view pinned: %v", err)
-	default:
-	}
-	lateKey := store.entityRecordKey("tenant-a", "host:late")
-	if err := files.Put(ctx, lateKey, []byte("created after the scan")); err != nil {
-		t.Fatal(err)
-	}
-	release()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	if _, err := files.Get(ctx, lateKey); err != nil {
-		t.Fatalf("GC must leave newly discovered candidates to the next run: %v", err)
+	for _, maxDeletes := range []int{0, gcBatchDeletes + 17} {
+		t.Run(fmt.Sprintf("max_deletes_%d", maxDeletes), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			objects := newBlockingTenantDeleteStore(files, "test/tenants/tenant-a/indexes/entities/by-id/")
+			store := NewTenantStore(objects, "test")
+			if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			const count = gcBatchDeletes * 3
+			for i := 0; i < count; i++ {
+				if err := files.Put(ctx, store.entityRecordKey("tenant-a", fmt.Sprintf("host:%04d", i)), []byte("obsolete")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entered, resume := objects.blockNextDelete()
+			done := make(chan error, 1)
+			go func() {
+				report, err := store.RunGC(ctx, "tenant-a", GCOptions{CleanupIndexOrphans: true, MaxDeletes: maxDeletes})
+				want := count
+				if maxDeletes > 0 {
+					want = maxDeletes
+				}
+				if err == nil && (report.DeletedEntityRecords != want || report.Checkpoint.MaxDeletes != maxDeletes || report.Checkpoint.Completed != (maxDeletes == 0)) {
+					err = fmt.Errorf("incomplete GC: %+v", report)
+				}
+				done <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			view := make(chan func(), 1)
+			readError := make(chan error, 1)
+			go func() {
+				release, err := store.PinReadView(ctx, "tenant-a")
+				if err != nil {
+					readError <- err
+					return
+				}
+				view <- release
+			}()
+			close(resume)
+			var release func()
+			select {
+			case release = <-view:
+			case err := <-readError:
+				t.Fatal(err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			release = sync.OnceFunc(release)
+			defer release()
+			remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
+			if err != nil || len(remaining) != count-gcBatchDeletes {
+				t.Fatalf("reader only admitted after all garbage was deleted: remaining=%d err=%v", len(remaining), err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("GC finished while read view pinned: %v", err)
+			default:
+			}
+			lateKey := store.entityRecordKey("tenant-a", "host:late")
+			if err := files.Put(ctx, lateKey, []byte("created after the scan")); err != nil {
+				t.Fatal(err)
+			}
+			release()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if _, err := files.Get(ctx, lateKey); err != nil {
+				t.Fatalf("GC must leave newly discovered candidates to the next run: %v", err)
+			}
+			if maxDeletes > 0 {
+				plan, err := store.RunGC(ctx, "tenant-a", GCOptions{CleanupIndexOrphans: true, MaxDeletes: gcBatchDeletes + 1, DryRun: true})
+				if err != nil || plan.Checkpoint.Planned != gcBatchDeletes+1 || !plan.Checkpoint.Paused || plan.Checkpoint.MaxDeletes != gcBatchDeletes+1 {
+					t.Fatalf("bounded dry run: %+v err=%v", plan.Checkpoint, err)
+				}
+				remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
+				if err != nil || len(remaining) != count-maxDeletes+1 {
+					t.Fatalf("dry run removed records: remaining=%d err=%v", len(remaining), err)
+				}
+			}
+		})
 	}
 }

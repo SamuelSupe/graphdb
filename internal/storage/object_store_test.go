@@ -731,6 +731,58 @@ func TestFileStoreLocalReadViewsAndInvalidation(t *testing.T) {
 	}
 }
 
+func TestLocalReadViewGateAdmitsReadersBetweenMaintenanceWriters(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	first, err := store.lockReadViews(ctx, "tenant-a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first = sync.OnceFunc(first)
+	defer first()
+	entered := make(chan bool, 2)
+	for _, write := range []bool{true, false} {
+		go func() {
+			release, err := store.lockReadViews(ctx, "tenant-a", write)
+			if err != nil {
+				return
+			}
+			defer release()
+			entered <- write
+			<-ctx.Done()
+		}()
+	}
+	for {
+		files.runtime.mu.Lock()
+		gate := files.runtime.views[store.tenantObjectPrefix("tenant-a")]
+		queued := gate.refs == 3
+		files.runtime.mu.Unlock()
+		if queued {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal(ctx.Err())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	first()
+	select {
+	case write := <-entered:
+		if write {
+			t.Fatal("another maintenance writer overtook the queued reader")
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	cancel()
+}
+
 func TestFileStoreRandomParquetReadAndCancellation(t *testing.T) {
 	ctx := context.Background()
 	files, err := OpenFileStore(t.TempDir())
@@ -817,6 +869,50 @@ func TestFileStoreFailedBatchKeepsPublishedHead(t *testing.T) {
 			data, err := reopened.Get(ctx, "head")
 			if err != nil || string(data) != "old" {
 				t.Fatalf("old head lost after %s failure: %q %v", stage, data, err)
+			}
+		})
+	}
+}
+
+func TestFileStoreDeleteBatchReportsDirectoryBarrierFailure(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled_%t", canceled), func(t *testing.T) {
+			root := t.TempDir()
+			files, err := OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if err := files.Put(ctx, "parts/obsolete", []byte("old")); err != nil {
+				t.Fatal(err)
+			}
+			store := NewTenantStore(files, "")
+			err = store.runFileWriteJobs(ctx, 1, func(ctx context.Context, _ int) error {
+				if err := files.Delete(ctx, "parts/obsolete"); err != nil {
+					return err
+				}
+				if err := os.Rename(filepath.Join(root, "parts"), filepath.Join(root, "unavailable")); err != nil {
+					return err
+				}
+				if canceled {
+					cancel()
+					return ctx.Err()
+				}
+				return nil
+			})
+			if !errors.Is(err, os.ErrNotExist) || (canceled && !errors.Is(err, context.Canceled)) {
+				t.Fatalf("delete batch lost its durability failure: %v", err)
+			}
+			if err := os.Rename(filepath.Join(root, "unavailable"), filepath.Join(root, "parts")); err != nil {
+				t.Fatal(err)
+			}
+			if err := files.syncPendingDirectories(); err != nil {
+				t.Fatalf("retry directory barrier: %v", err)
+			}
+			if _, err := files.Get(context.Background(), "parts/obsolete"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("deleted file reappeared: %v", err)
 			}
 		})
 	}

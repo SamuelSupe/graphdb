@@ -3,7 +3,7 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [1.3.4-local.4] - 2026-09-20
+## [1.3.4-local.5] - 2026-09-20
 
 Independent local disk prerelease on `codex/local-disk-v2`; `main` and the stable
 Latest release remain unchanged.
@@ -18,6 +18,9 @@ Latest release remain unchanged.
 - Run local GC in batches of up to 64 deletions, releasing locks and rechecking
   current references between batches. Index orphan cleanup now honors cursors,
   deletion budgets, and dry runs.
+- Apply the 64-file batch bound even when an overall deletion budget is set,
+  admit queued readers between exclusive maintenance batches, and share
+  directory durability barriers within each deletion batch.
 - Keep a fixed GC candidate listing across the last-page deletion checkpoint,
   preventing continuous writes from extending a cleanup run indefinitely.
 - Release the tenant maintenance slot during post-rebuild cleanup while retaining
@@ -27,7 +30,7 @@ Latest release remain unchanged.
   with other sampling operations; retain failures outside shutdown grace.
 - Include the source required by the packaged Dockerfile, and verify a container
   built from the extracted release archive before publication.
-- Update bundled Go/Python SDK versions to `1.3.4+local.4`.
+- Update bundled Go/Python SDK versions to `1.3.4+local.5`.
 
 A focused 10K-entity deep-index benchmark measured 1.65 s/op before and 1.49 s/op
 after, with 5.08% fewer allocations. This small warm sample is not an overall

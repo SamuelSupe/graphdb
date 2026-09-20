@@ -62,8 +62,11 @@ and cancellation use the process registry with tenant validation, without waitin
 for graph read views or maintenance.
 
 GC releases its tenant and read-view locks between batches (64 deletions per
-batch by default) and reloads the current manifest and catalogs after reacquiring
-them. Candidate listings remain fixed for one GC run, so concurrent writes do not
+batch, including runs with an explicit total deletion budget) and reloads the
+current manifest and catalogs after reacquiring them. Queued readers get a turn
+between exclusive maintenance batches; the total deletion budget is preserved.
+Deletions within a batch share directory durability barriers, which are flushed
+before releasing the locks, including on failure or cancellation. Candidate listings remain fixed for one GC run, so concurrent writes do not
 keep extending its last page. Index cleanup releases the tenant maintenance slot
 after publication while retaining the global worker limit. Local live GC workers
 remain authoritative even when a persisted heartbeat is delayed. Index orphan cleanup supports `max_deletes`, `cursor`, and `dry_run`.

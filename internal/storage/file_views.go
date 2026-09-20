@@ -7,6 +7,8 @@ import (
 
 type localViewGate struct {
 	refs, readers, waiting int
+	waitingReaders         int
+	readerTurn             bool
 	writer                 bool
 	changed                chan struct{}
 }
@@ -82,6 +84,18 @@ func (s *TenantStore) lockLocalGate(ctx context.Context, tenantID string, write,
 	g.refs++
 	if write {
 		g.waiting++
+	} else {
+		g.waitingReaders++
+	}
+	leaveQueue := func() {
+		if write {
+			g.waiting--
+		} else {
+			g.waitingReaders--
+			if g.waitingReaders == 0 {
+				g.readerTurn = false
+			}
+		}
 	}
 	finishRef := func() {
 		g.refs--
@@ -93,17 +107,15 @@ func (s *TenantStore) lockLocalGate(ctx context.Context, tenantID string, write,
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			if write {
-				g.waiting--
-			}
+			leaveQueue()
 			finishRef()
 			r.mu.Unlock()
 			releaseOperation()
 			return nil, err
 		}
-		if !g.writer && ((write && g.readers == 0) || (!write && g.waiting == 0)) {
+		if !g.writer && ((write && g.readers == 0 && !g.readerTurn) || (!write && (g.waiting == 0 || g.readerTurn))) {
+			leaveQueue()
 			if write {
-				g.waiting--
 				g.writer = true
 			} else {
 				g.readers++
@@ -113,6 +125,9 @@ func (s *TenantStore) lockLocalGate(ctx context.Context, tenantID string, write,
 				r.mu.Lock()
 				if write {
 					g.writer = false
+					// Queued reads get one turn between exclusive maintenance batches.
+					// Otherwise multiple GC workers can keep foreground work out.
+					g.readerTurn = !admission && g.waitingReaders > 0
 				} else {
 					g.readers--
 				}

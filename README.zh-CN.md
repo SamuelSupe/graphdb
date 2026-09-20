@@ -8,7 +8,7 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 
 ## 独立版本
 
-[`v1.3.4-local.4`](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4-local.4)
+[`v1.3.4-local.5`](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4-local.5)
 从独立分支 [`codex/local-disk-v2`](https://github.com/SamuelSupe/graphdb/tree/codex/local-disk-v2)
 发布为本地磁盘预发布版。默认 `main` 分支和稳定版 Latest 保持原样。
 二进制下载、兼容边界和验证证据见[发行说明](release/local-disk.md)。
