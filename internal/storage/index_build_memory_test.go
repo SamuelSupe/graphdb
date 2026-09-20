@@ -13,6 +13,53 @@ import (
 
 var benchmarkIndexBuildArtifacts indexBuildArtifacts
 
+func TestIncrementalIndexAcceptsRepeatedEntityChanges(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"app-01-extra", "changed"} {
+		t.Run(value, func(t *testing.T) {
+			after, report, err := before.ApplyCommitCopyWithOptions(graph.Commit{
+				Version: 2,
+				Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{
+					ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": value},
+				}}},
+			}, graph.ApplyOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A WAL group can update the same entity in multiple logical commits.
+			report.AffectedEntityIDs = append(report.AffectedEntityIDs, report.AffectedEntityIDs...)
+			artifacts, err := store.buildIncrementalIndexArtifacts(ctx, "tenant-a", catalog, before, after, report, 2)
+			if err != nil {
+				t.Fatalf("repeated changes forced a full index rebuild: %v", err)
+			}
+			if len(artifacts.IncrementalIndexWrites) == 0 {
+				t.Fatal("missing incremental index changes")
+			}
+			for _, write := range artifacts.IncrementalIndexWrites {
+				if write.Index.Field != "hostname" {
+					continue
+				}
+				ids := write.Index.Values["s:"+value]
+				if len(ids) != 1 || ids[0] != "host:app-01" || len(write.Index.Values["s:app-01"]) != 0 {
+					t.Fatalf("repeated change corrupted index postings: %#v", write.Index.Values)
+				}
+			}
+		})
+	}
+}
+
 func TestIncrementalEntityPagesPreserveNormalizedHashes(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	for _, number := range []any{float64(2), int(2), json.Number("2")} {

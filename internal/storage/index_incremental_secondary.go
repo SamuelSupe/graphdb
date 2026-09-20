@@ -20,6 +20,8 @@ type incrementalSecondaryGroup struct {
 }
 
 func (s *TenantStore) buildIncrementalSecondaryIndexes(ctx context.Context, tenantID string, previousVersion int64, previous []IndexSpec, before *graph.Graph, after *graph.Graph, entityIDs []string, version int64, now time.Time) ([]incrementalSecondaryIndexWrite, []IndexSpec, error) {
+	// WAL groups may report the same entity from several logical commits.
+	entityIDs = uniqueStrings(entityIDs)
 	next := append([]IndexSpec(nil), previous...)
 	writes := make([]incrementalSecondaryIndexWrite, 0)
 	for specIndex, spec := range previous {
@@ -38,8 +40,9 @@ func (s *TenantStore) buildIncrementalSecondaryIndexes(ctx context.Context, tena
 			if sharded {
 				object, ok = secondaryIndexShardObjectForValue(shardedObjects, value)
 				if !ok {
-					shardID, ok = secondaryIndexNewShardID(shardedObjects, value)
-					if !ok {
+					var routable bool
+					shardID, routable = secondaryIndexNewShardID(shardedObjects, value)
+					if !routable {
 						return nil, fmt.Errorf("incremental index cannot route new value %q without shadowing an existing shard", value)
 					}
 				}

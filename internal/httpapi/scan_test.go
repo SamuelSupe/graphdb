@@ -363,12 +363,13 @@ func TestHTTPScanReadAdmissionReturns429(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	seedHTTPScanTenant(t, ctx, store)
-	admission := NewQueryAdmission(1, 1, time.Millisecond)
+	admission := NewQueryAdmission(1, 1, 0)
 	release, err := admission.Acquire(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("hold admission: %v", err)
 	}
 	defer release()
+	admission.queueTimeout = time.Millisecond
 	handler := (&Server{Store: store, Mode: "reader", ReadAdmission: admission}).Handler()
 
 	rr := serveJSON(handler, http.MethodGet, "/v1/entities?kind=host", "tenant-a", nil)
