@@ -156,19 +156,21 @@ func taskRetainsDataDuringWALWait(taskType string) bool {
 
 type taskIngestAdmissionKey struct{}
 
-// Used only by the task's sequential execution path. WAL waits release these
-// slots, then reacquire them before resuming work.
+// Used only by the task's sequential execution path. GC batches omit the tenant
+// slot because their read-view and tenant locks already serialize each batch.
 type taskExecutionAdmission struct {
 	tenant, execution chan struct{}
 	held              bool
 }
 
 func (a *taskExecutionAdmission) acquire(ctx context.Context) bool {
-	if !acquireTaskSlot(ctx, a.tenant) {
+	if a.tenant != nil && !acquireTaskSlot(ctx, a.tenant) {
 		return false
 	}
 	if !acquireTaskSlot(ctx, a.execution) {
-		releaseTaskSlot(a.tenant)
+		if a.tenant != nil {
+			releaseTaskSlot(a.tenant)
+		}
 		return false
 	}
 	a.held = true
@@ -178,7 +180,9 @@ func (a *taskExecutionAdmission) acquire(ctx context.Context) bool {
 func (a *taskExecutionAdmission) release() {
 	if a.held {
 		releaseTaskSlot(a.execution)
-		releaseTaskSlot(a.tenant)
+		if a.tenant != nil {
+			releaseTaskSlot(a.tenant)
+		}
 		a.held = false
 	}
 }

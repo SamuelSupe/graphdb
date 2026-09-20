@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"sync"
 	"time"
 )
 
@@ -14,28 +13,14 @@ func (s *TenantStore) runIndexTaskAdmitted(
 	task IndexTask,
 ) {
 	defer s.releaseQueuedTask()
-	tenantSlot := s.taskTenantSlot(tenantID)
-	if !acquireTaskSlot(ctx, tenantSlot) {
+	admission := &taskExecutionAdmission{tenant: s.taskTenantSlot(tenantID), execution: s.taskExecutionSlots}
+	if !admission.acquire(ctx) {
 		s.failQueuedIndexTask(ctx, task)
 		return
 	}
-	if !acquireTaskSlot(ctx, s.taskExecutionSlots) {
-		releaseTaskSlot(tenantSlot)
-		s.failQueuedIndexTask(ctx, task)
-		return
-	}
-	releaseTenant := sync.OnceFunc(func() { releaseTaskSlot(tenantSlot) })
-	released := false
-	releaseExecution := func() {
-		if released {
-			return
-		}
-		releaseTaskSlot(s.taskExecutionSlots)
-		releaseTenant()
-		released = true
-	}
-	defer releaseExecution()
-	s.runIndexRebuildTaskWithRelease(ctx, tenantID, task, releaseExecution, releaseTenant)
+	defer admission.release()
+	ctx = context.WithValue(ctx, taskIngestAdmissionKey{}, admission)
+	s.runIndexRebuildTaskWithRelease(ctx, tenantID, task, admission.release)
 }
 
 func (s *TenantStore) failQueuedIndexTask(

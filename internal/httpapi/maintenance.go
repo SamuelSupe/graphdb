@@ -141,7 +141,7 @@ func (s *Server) maybeAutoCompact(ctx context.Context, tenantID string, manifest
 	if !decision.Compact {
 		return manifest
 	}
-	release, ok := s.enterScheduledMaintenance(tenantID, "compact", report, tenantReport)
+	ctx, release, ok := s.enterScheduledMaintenance(ctx, tenantID, "compact", report, tenantReport)
 	if !ok {
 		return manifest
 	}
@@ -223,7 +223,7 @@ func (s *Server) maybeRunGC(ctx context.Context, tenantID string, now time.Time,
 	if !s.gcDue(tenantID, now, interval) {
 		return
 	}
-	release, ok := s.enterScheduledMaintenance(tenantID, "gc", report, tenantReport)
+	ctx, release, ok := s.enterScheduledMaintenance(ctx, tenantID, "gc", report, tenantReport)
 	if !ok {
 		return
 	}
@@ -282,19 +282,19 @@ func (s *Server) maybeRebuildIndexes(ctx context.Context, tenantID string, confi
 	s.auditInfo("maintenance_index_rebuild_started", tenantID, map[string]any{"task_id": task.ID, "status": health.Status})
 }
 
-func (s *Server) enterScheduledMaintenance(tenantID string, action string, report *MaintenanceReport, tenantReport *TenantMaintenanceReport) (func(), bool) {
-	release, err := s.Store.TryAcquireMaintenance(tenantID)
+func (s *Server) enterScheduledMaintenance(ctx context.Context, tenantID string, action string, report *MaintenanceReport, tenantReport *TenantMaintenanceReport) (context.Context, func(), bool) {
+	ctx, release, err := s.Store.TryAcquireMaintenanceContext(ctx, tenantID)
 	if err == nil {
-		return release, true
+		return ctx, release, true
 	}
 	if errors.Is(err, storage.ErrMaintenanceBusy) {
 		if tenantReport.Skipped == "" {
 			tenantReport.Skipped = "maintenance_busy"
 		}
-		return nil, false
+		return ctx, nil, false
 	}
 	report.addError(tenantID, action+"_admission", err)
-	return nil, false
+	return ctx, nil, false
 }
 
 func (s *Server) storageLayoutFindings(ctx context.Context, tenantID string, config storage.TenantMaintenanceConfig, report *MaintenanceReport) []StorageLayoutFinding {

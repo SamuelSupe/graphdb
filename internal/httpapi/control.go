@@ -597,11 +597,12 @@ func (s *Server) runGC(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "keep_snapshots, deadletter_max_age_seconds, task_max_age_seconds, and max_deletes must be non-negative")
 		return
 	}
-	release, ok := s.enterMaintenance(w, tenantID)
+	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)
 	if !ok {
 		return
 	}
 	defer release()
+	r = r.WithContext(ctx)
 	report, err := s.Store.RunGC(r.Context(), tenantID, storage.GCOptions{
 		KeepSnapshots:       request.KeepSnapshots,
 		DeadLetterMaxAge:    time.Duration(request.DeadLetterMaxAgeSeconds) * time.Second,

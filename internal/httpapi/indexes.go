@@ -105,11 +105,12 @@ func (s *Server) rebuildIndexes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "index rebuild format is fixed to parquet")
 		return
 	}
-	release, ok := s.enterMaintenance(w, tenantID)
+	ctx, release, ok := s.enterMaintenanceContext(w, r.Context(), tenantID)
 	if !ok {
 		return
 	}
 	defer release()
+	r = r.WithContext(ctx)
 	catalog, err := s.Store.RebuildIndexes(r.Context(), tenantID)
 	if err != nil {
 		s.auditError("index_rebuild_failed", tenantID, err, map[string]any{"async": false})

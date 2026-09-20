@@ -68,7 +68,8 @@ between exclusive maintenance batches; the total deletion budget is preserved.
 Deletions within a batch share directory durability barriers, which are flushed
 before releasing the locks, including on failure or cancellation. Candidate listings remain fixed for one GC run, so concurrent writes do not
 keep extending its last page. Index cleanup releases the tenant maintenance slot
-after publication while retaining the global worker limit. Local live GC workers
+after publication. Local GC releases task admission between batches and reacquires
+the global worker limit for each batch, allowing compaction to relieve WAL backpressure. Local live GC workers
 remain authoritative even when a persisted heartbeat is delayed. Index orphan cleanup supports `max_deletes`, `cursor`, and `dry_run`.
 Index rebuild blocks write admission during backfill; its cleanup phase and local
 GC use the batch locks so foreground work can run between batches. A large single

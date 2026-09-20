@@ -684,3 +684,79 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	objects := newBlockingTenantDeleteStore(files, "test/tenants/tenant-a/indexes/entities/by-id/")
+	store := NewTenantStore(objects, "test")
+	store.taskExecutionSlots = make(chan struct{}, 1)
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	const count = gcBatchDeletes * 3
+	for i := 0; i < count; i++ {
+		if err := files.Put(ctx, store.entityRecordKey("tenant-a", fmt.Sprintf("host:%04d", i)), []byte("obsolete")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entered, resume := objects.blockNextDelete()
+	resumeGC := sync.OnceFunc(func() { close(resume) })
+	defer resumeGC()
+	done := make(chan error, 1)
+	go func() {
+		runCtx, release, err := store.TryAcquireMaintenanceContext(ctx, "tenant-a")
+		if err == nil {
+			defer release()
+			_, err = store.RunGC(runCtx, "tenant-a", GCOptions{CleanupIndexOrphans: true})
+		}
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	maintenance := &taskExecutionAdmission{tenant: store.taskTenantSlot("tenant-a"), execution: store.taskExecutionSlots}
+	admitted, finish, finished := make(chan bool, 1), make(chan struct{}), make(chan struct{})
+	releaseMaintenance := sync.OnceFunc(func() { close(finish) })
+	defer releaseMaintenance()
+	go func() {
+		defer close(finished)
+		ok := maintenance.acquire(ctx)
+		admitted <- ok
+		if ok {
+			defer maintenance.release()
+			select {
+			case <-finish:
+			case <-ctx.Done():
+			}
+		}
+	}()
+	resumeGC()
+	if !<-admitted {
+		t.Fatal("other maintenance could not acquire execution capacity")
+	}
+	remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
+	if err != nil || len(remaining) != count-gcBatchDeletes {
+		t.Fatalf("maintenance did not run between bounded GC batches: remaining=%d err=%v", len(remaining), err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("GC bypassed the occupied execution slot: %v", err)
+	default:
+	}
+	releaseMaintenance()
+	<-finished
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(store.taskExecutionSlots) != 0 || len(store.taskTenantSlot("tenant-a")) != 0 {
+		t.Fatal("GC leaked maintenance capacity")
+	}
+}

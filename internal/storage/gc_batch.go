@@ -21,9 +21,21 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		options.MaxDeletes = min(options.MaxDeletes, maxDeletes)
 	}
 	options.listings = make(map[string][]ObjectInfo)
+	var admission *taskExecutionAdmission
+	if parent, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
+		parent.release()
+		admission = &taskExecutionAdmission{execution: parent.execution}
+		defer admission.release()
+	}
 	var report GCReport
 	for {
+		if admission != nil && !admission.acquire(ctx) {
+			return report, ctx.Err()
+		}
 		batch, err := s.runGCBatch(ctx, tenantID, options)
+		if admission != nil {
+			admission.release()
+		}
 		mergeGCReport(&report, batch)
 		report.Checkpoint.MaxDeletes = maxDeletes
 		used := report.Checkpoint.Deleted + report.Checkpoint.Planned

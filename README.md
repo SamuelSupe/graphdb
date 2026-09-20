@@ -9,7 +9,7 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Independent release
 
-[`v1.3.4-local.6`](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4-local.6)
+[`v1.3.4-local.7`](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4-local.7)
 is published from [`codex/local-disk-v2`](https://github.com/SamuelSupe/graphdb/tree/codex/local-disk-v2)
 as a local disk prerelease. The default `main` branch and stable Latest release
 remain unchanged. See the [release notes](release/local-disk.md) for binaries,
