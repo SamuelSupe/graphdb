@@ -564,3 +564,9 @@ func cloneObjectInfos(items []ObjectInfo) []ObjectInfo {
 	})
 	return out
 }
+
+func (s *TenantStore) clearWriterObjectKey(key string) {
+	if cache := FindWriterObjectCache(s.Objects); cache != nil {
+		cache.invalidateKey(key)
+	}
+}

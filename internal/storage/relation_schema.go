@@ -52,9 +52,7 @@ func (s *TenantStore) PutRelationSchema(ctx context.Context, tenantID string, sc
 	if err != nil {
 		return RelationSchemaCatalog{}, err
 	}
-	if s.coordinated() {
-		return s.putCoordinatedRelationSchema(ctx, tenantID, normalized)
-	}
+
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return RelationSchemaCatalog{}, err
@@ -100,9 +98,7 @@ func (s *TenantStore) DeleteRelationSchema(ctx context.Context, tenantID string,
 	if relationType == "" {
 		return RelationSchemaCatalog{}, fmt.Errorf("relation type is required")
 	}
-	if s.coordinated() {
-		return s.deleteCoordinatedRelationSchema(ctx, tenantID, relationType)
-	}
+
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return RelationSchemaCatalog{}, err
@@ -147,14 +143,7 @@ func (s *TenantStore) getRelationSchemaCatalogWithMeta(ctx context.Context, tena
 	if err := ValidateTenantID(tenantID); err != nil {
 		return RelationSchemaCatalog{}, ObjectMeta{}, err
 	}
-	if s.coordinated() {
-		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
-		if err != nil {
-			return RelationSchemaCatalog{}, ObjectMeta{}, err
-		}
-		return snapshot.RelationSchemas,
-			coordinatedManifestMeta(s.relationSchemaCatalogKey(tenantID), head), nil
-	}
+
 	key := s.relationSchemaCatalogKey(tenantID)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
@@ -181,68 +170,12 @@ func (s *TenantStore) getRelationSchemaCatalogWithMeta(ctx context.Context, tena
 }
 
 func (s *TenantStore) putRelationSchemaCatalog(ctx context.Context, tenantID string, catalog RelationSchemaCatalog, meta ObjectMeta) error {
-	if s.coordinated() {
-		return s.putCoordinatedRelationSchemaCatalog(ctx, tenantID, catalog)
-	}
 	data, err := json.Marshal(catalog)
 	if err != nil {
 		return err
 	}
 	_, err = s.putTenantBytesWithMetaResult(ctx, tenantID, s.relationSchemaCatalogKey(tenantID), data, meta)
 	return err
-}
-
-func (s *TenantStore) putCoordinatedRelationSchemaCatalog(
-	ctx context.Context,
-	tenantID string,
-	catalog RelationSchemaCatalog,
-) error {
-	if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
-		return err
-	}
-	for attempt := 0; attempt < s.CoordinatorRetryLimit+1; attempt++ {
-		loaded, err := s.loadForWriteLocked(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		token, err := parseCoordinatedHeadToken(loaded.Meta)
-		if err != nil {
-			return err
-		}
-		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		if !sameCoordinationPoint(head, token) {
-			if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-				return err
-			}
-			continue
-		}
-		catalog.LayoutVersion = relationSchemaLayoutVersion
-		catalog.TenantID = tenantID
-		catalog.GraphVersion = loaded.Manifest.Version
-		catalog.UpdatedAt = time.Now().UTC()
-		normalized, err := normalizeRelationSchemaCatalog(catalog)
-		if err != nil {
-			return err
-		}
-		if err := validateRelationSchemaGraph(loaded.Graph, normalized); err != nil {
-			return err
-		}
-		snapshot.RelationSchemas = normalized
-		_, published, err := s.publishCoordinatedWriteContext(ctx, head, snapshot)
-		if err != nil {
-			return err
-		}
-		if published {
-			return s.mirrorLatestWriteContext(ctx, tenantID)
-		}
-		if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-			return err
-		}
-	}
-	return fmt.Errorf("%w: relation schemas for tenant %q changed while publishing", ErrWriteConflict, tenantID)
 }
 
 func emptyRelationSchemaCatalog(tenantID string) RelationSchemaCatalog {
@@ -307,117 +240,4 @@ func normalizeRelationSchema(schema RelationSchema) (RelationSchema, error) {
 	schema.Description = strings.TrimSpace(schema.Description)
 	schema.Fields = fields
 	return schema, nil
-}
-
-func (s *TenantStore) putCoordinatedRelationSchema(
-	ctx context.Context,
-	tenantID string,
-	schema RelationSchema,
-) (RelationSchemaCatalog, error) {
-	if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
-		return RelationSchemaCatalog{}, err
-	}
-	for attempt := 0; attempt < s.CoordinatorRetryLimit+1; attempt++ {
-		loaded, err := s.loadForWriteLocked(ctx, tenantID)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		token, err := parseCoordinatedHeadToken(loaded.Meta)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		if !sameCoordinationPoint(head, token) {
-			if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-				return RelationSchemaCatalog{}, err
-			}
-			continue
-		}
-		if _, exists := loaded.Graph.RelationTypes[schema.RelationType]; !exists {
-			return RelationSchemaCatalog{}, fmt.Errorf("relation schema references missing relation type %q", schema.RelationType)
-		}
-		catalog := upsertRelationSchema(snapshot.RelationSchemas, schema)
-		prepareRelationSchemaCatalog(&catalog, tenantID, loaded.Manifest.Version)
-		if err := validateRelationSchemaGraph(loaded.Graph, catalog); err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		snapshot.RelationSchemas = catalog
-		_, published, err := s.publishCoordinatedWriteContext(ctx, head, snapshot)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		if published {
-			if err := s.mirrorLatestWriteContext(ctx, tenantID); err != nil {
-				return RelationSchemaCatalog{}, err
-			}
-			return catalog, nil
-		}
-		if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-	}
-	return RelationSchemaCatalog{}, fmt.Errorf("%w: relation schemas for tenant %q changed while publishing", ErrWriteConflict, tenantID)
-}
-
-func (s *TenantStore) deleteCoordinatedRelationSchema(
-	ctx context.Context,
-	tenantID string,
-	relationType string,
-) (RelationSchemaCatalog, error) {
-	if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
-		return RelationSchemaCatalog{}, err
-	}
-	for attempt := 0; attempt < s.CoordinatorRetryLimit+1; attempt++ {
-		loaded, err := s.loadForWriteLocked(ctx, tenantID)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		token, err := parseCoordinatedHeadToken(loaded.Meta)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		if !sameCoordinationPoint(head, token) {
-			if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-				return RelationSchemaCatalog{}, err
-			}
-			continue
-		}
-		catalog := snapshot.RelationSchemas
-		next := make([]RelationSchema, 0, len(catalog.RelationSchemas))
-		found := false
-		for _, item := range catalog.RelationSchemas {
-			if item.RelationType == relationType {
-				found = true
-				continue
-			}
-			next = append(next, item)
-		}
-		if !found {
-			return catalog, nil
-		}
-		catalog.RelationSchemas = next
-		prepareRelationSchemaCatalog(&catalog, tenantID, loaded.Manifest.Version)
-		snapshot.RelationSchemas = catalog
-		_, published, err := s.publishCoordinatedWriteContext(ctx, head, snapshot)
-		if err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-		if published {
-			if err := s.mirrorLatestWriteContext(ctx, tenantID); err != nil {
-				return RelationSchemaCatalog{}, err
-			}
-			return catalog, nil
-		}
-		if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-			return RelationSchemaCatalog{}, err
-		}
-	}
-	return RelationSchemaCatalog{}, fmt.Errorf("%w: relation schemas for tenant %q changed while publishing", ErrWriteConflict, tenantID)
 }

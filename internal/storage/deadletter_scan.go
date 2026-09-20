@@ -31,20 +31,13 @@ func (s *TenantStore) walkDeadLettersByKey(
 	visit func(DeadLetter) (bool, error),
 ) error {
 	prefix := s.deadLetterPrefix(tenantID, source)
-	cursor := after
-	for {
-		objects, next, err := listObjectPage(
-			ctx,
-			s.Objects,
-			prefix,
-			cursor,
-			objectPrefixScanPageSize,
-		)
-		if err != nil {
-			return err
-		}
+	stop := errors.New("deadletter scan complete")
+	err := scanObjectPrefixFresh(ctx, s.Objects, prefix, func(objects []ObjectInfo) error {
 		for _, object := range objects {
-			s.clearCoordinatedWriterObjectKey(object.Key)
+			if object.Key <= after {
+				continue
+			}
+
 			item, ok, err := s.loadListedDeadLetter(
 				ctx, tenantID, source, object,
 			)
@@ -59,19 +52,15 @@ func (s *TenantStore) walkDeadLettersByKey(
 				return err
 			}
 			if !keepGoing {
-				return nil
+				return stop
 			}
 		}
-		if next == "" {
-			return nil
-		}
-		if next <= cursor {
-			return fmt.Errorf(
-				"object list cursor did not advance for prefix %q", prefix,
-			)
-		}
-		cursor = next
+		return nil
+	})
+	if errors.Is(err, stop) {
+		return nil
 	}
+	return err
 }
 
 func (s *TenantStore) loadListedDeadLetter(

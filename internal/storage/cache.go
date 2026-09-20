@@ -101,7 +101,6 @@ func NewReaderCache(store *TenantStore, ttl time.Duration) *ReaderCache {
 		})
 	}
 	return cache
-
 }
 
 func (c *ReaderCache) ConfigureLoadAdmission(maxConcurrent int, queueTimeout time.Duration) {
@@ -218,23 +217,8 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
 		}
-		manifest, manifestMeta, err := c.manifestForCacheEntry(
-			ctx, tenantID, entry, ok,
-		)
+		manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
 		if err != nil {
-			if errors.Is(err, ErrCoordinatorUnavailable) {
-				fallback, fallbackOK := c.extendStaleEntry(
-					tenantID, minVersion, true,
-				)
-				if fallbackOK {
-					c.finishLoad(tenantID, load, nil)
-					c.recordCache(tenantID, "stale_coordinator_unavailable")
-					c.recordVisible(tenantID, fallback.manifest.Version)
-					return cacheEntryGraph(fallback, shared)
-				}
-				c.finishLoad(tenantID, load, err)
-				return nil, Manifest{}, err
-			}
 			c.finishLoad(tenantID, load, err)
 			return nil, Manifest{}, err
 		}
@@ -470,32 +454,7 @@ func (c *ReaderCache) loadStoreAtLeastFromEntry(
 		c.recordCache(tenantID, "committed_graph_reuse")
 		return loaded, nil
 	}
-	if cachedOK && cached.graph != nil {
-		cacheBytes := cached.bytes
-		if cacheBytes <= 0 {
-			cacheBytes = normalizedWriteCacheBytes(loadedGraph{Graph: cached.graph})
-		}
-		base := loadedGraph{
-			Graph:      cached.graph,
-			Manifest:   cached.manifest,
-			Meta:       cached.meta,
-			DataMD5:    cached.manifest.DataMD5,
-			CommitTail: emptyCommitTailCache(),
-			CacheBytes: cacheBytes,
-		}
-		if loaded, caughtUp, err := c.Store.catchUpWriteCache(
-			ctx, tenantID, base, manifest, manifestMeta,
-		); err == nil && caughtUp && (minVersion <= 0 || loaded.Manifest.Version >= minVersion) {
-			if loaded.Manifest.Version != cached.manifest.Version {
-				// Reader entries do not retain the commit-tail cache. Recompute the
-				// changed graph's weight so large field updates cannot evade MaxBytes.
-				loaded.CacheBytes = 0
-				loaded.CommitTail = emptyCommitTailCache()
-			}
-			c.recordCache(tenantID, "incremental_catchup")
-			return loaded, nil
-		}
-	}
+
 	return c.loadStoreAtLeast(ctx, tenantID, minVersion)
 }
 
@@ -518,12 +477,6 @@ func cacheEntryMatchesLogicalGraph(entry cacheEntry, manifest Manifest) bool {
 }
 
 func cacheEntryNewerThanLoaded(entry cacheEntry, loaded loadedGraph) bool {
-	entryRevision := coordinatedMetaRevision(entry.meta)
-	loadedRevision := coordinatedMetaRevision(loaded.Meta)
-	if entryRevision > 0 || loadedRevision > 0 {
-		return entryRevision > loadedRevision ||
-			(entryRevision == loadedRevision && entry.manifest.Version > loaded.Manifest.Version)
-	}
 	return entry.manifest.Version > loaded.Manifest.Version
 }
 
@@ -601,7 +554,7 @@ func (c *ReaderCache) Refresh(ctx context.Context, tenantID string) (*graph.Grap
 func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess bool) (*graph.Graph, Manifest, error) {
 	c.mu.RLock()
 	startGen := c.gens[tenantID]
-	revalidationEntry, revalidationOK := c.entries[tenantID]
+	_, revalidationOK := c.entries[tenantID]
 	c.mu.RUnlock()
 	if !revalidationOK && !markAccess {
 		return nil, Manifest{}, nil
@@ -616,16 +569,8 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		}
 		return c.Load(ctx, tenantID)
 	}
-	manifest, manifestMeta, err := c.manifestForCacheEntry(
-		ctx, tenantID, revalidationEntry, revalidationOK,
-	)
+	manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
 	if err != nil {
-		if errors.Is(err, ErrCoordinatorUnavailable) {
-			if _, ok := c.extendStaleEntry(tenantID, 0, markAccess); ok {
-				c.finishLoad(tenantID, load, nil)
-				return nil, Manifest{}, err
-			}
-		}
 		c.finishLoad(tenantID, load, err)
 		return nil, Manifest{}, err
 	}

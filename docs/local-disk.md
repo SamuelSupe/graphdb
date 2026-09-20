@@ -61,6 +61,13 @@ causes an error instead of continuing against another graph. Running-query list
 and cancellation use the process registry with tenant validation, without waiting
 for graph read views or maintenance.
 
+GC releases its tenant and read-view locks between batches (64 deletions per
+batch by default) and reloads the current manifest and catalogs after reacquiring
+them. Index orphan cleanup supports `max_deletes`, `cursor`, and `dry_run`.
+Index rebuild blocks write admission during backfill; its cleanup phase and local
+GC use the batch locks so foreground work can run between batches. A large single
+file or directory listing can still make one batch slow.
+
 ## Ingestion
 
 Entity page packing defaults to a 32 MiB estimated-memory budget

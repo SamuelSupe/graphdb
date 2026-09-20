@@ -33,6 +33,30 @@ func TestIndexHealthUsesBoundedObjectPages(t *testing.T) {
 	}
 }
 
+func TestHealthBucketsPreserveCurrentAndLegacyShards(t *testing.T) {
+	id := "host:legacy"
+	for i := 0; hashedIndexShardID(id) == legacyIndexShardID(id); i++ {
+		id = fmt.Sprintf("host:legacy-%d", i)
+	}
+	g := graph.New()
+	g.Entities[id] = graph.Entity{ID: id, Kind: "host"}
+	g.Edges["edge:a"] = graph.Edge{ID: "edge:a", Type: "links", From: id, To: "host:other"}
+	current, legacy := hashedIndexShardID(id), legacyIndexShardID(id)
+	pages := expectedEntityPages(g, []EntityPageSpec{{Shard: current}, {Shard: legacy}, {Shard: "missing"}})
+	edges := expectedEdgeShards(g, []EdgeShard{{RelationType: "links", Shard: current}, {RelationType: "links", Shard: legacy}, {RelationType: "other", Shard: legacy}})
+	for _, shard := range []string{current, legacy} {
+		if got := pages[shard]; len(got) != 1 || got[0].ID != id {
+			t.Fatalf("page %s = %v", shard, got)
+		}
+		if got := edges["links\x00"+shard]; len(got) != 1 || got[0].ID != "edge:a" {
+			t.Fatalf("edge shard %s = %v", shard, got)
+		}
+	}
+	if len(pages["missing"]) != 0 || len(edges["other\x00"+legacy]) != 0 {
+		t.Fatal("bucket leaked an unrelated entity or relation")
+	}
+}
+
 func BenchmarkIndexHealth10K(b *testing.B) {
 	ctx := context.Background()
 	files, err := OpenFileStore(b.TempDir())

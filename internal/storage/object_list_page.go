@@ -36,23 +36,16 @@ func listObjectPage(ctx context.Context, objects ObjectStore, prefix string, aft
 	case *SingleWriterObjectStore:
 		return listObjectPage(ctx, store.Inner, prefix, after, limit)
 	}
-	if limit <= 0 {
-		items, err := objects.List(ctx, prefix)
-		if err != nil {
-			return nil, "", err
-		}
-		sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
-		start := sort.Search(len(items), func(i int) bool { return items[i].Key > after })
-		return items[start:], "", nil
-	}
-	if paged, ok := objects.(objectPageLister); ok {
+	if paged, ok := objects.(objectPageLister); ok && limit > 0 {
 		return paged.ListPage(ctx, prefix, after, limit)
 	}
 	items, err := objects.List(ctx, prefix)
 	if err != nil {
 		return nil, "", err
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	if _, sorted := objects.(*FileStore); !sorted {
+		sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	}
 	start := sort.Search(len(items), func(i int) bool { return items[i].Key > after })
 	items = items[start:]
 	if limit <= 0 || len(items) <= limit {

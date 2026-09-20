@@ -69,7 +69,7 @@ func (s *TenantStore) RebuildTenantRegistry(ctx context.Context) ([]string, erro
 		return nil, err
 	}
 	key := s.tenantRegistryKey()
-	s.clearCoordinatedWriterObjectKey(key)
+
 	_, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		meta = ObjectMeta{Key: key}
@@ -117,25 +117,7 @@ func (s *TenantStore) listTenantsByPrefix(ctx context.Context) ([]string, error)
 }
 
 func (s *TenantStore) addTenantToRegistry(ctx context.Context, tenantID string) error {
-	var expectedGeneration int64
-	var expectedStatus string
-	if s.coordinated() {
-		head, exists, err := s.Coordinator.Head(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		if exists {
-			expectedGeneration = head.Generation
-			expectedStatus = head.Status
-			if s.isRegisteredTenantGenerationCached(
-				tenantID,
-				expectedGeneration,
-				expectedStatus,
-			) {
-				return nil
-			}
-		}
-	} else if s.isRegisteredTenantCached(tenantID) {
+	if s.isRegisteredTenantCached(tenantID) {
 		return nil
 	}
 	if err := s.updateTenantRegistry(ctx, func(seen map[string]struct{}) bool {
@@ -147,26 +129,7 @@ func (s *TenantStore) addTenantToRegistry(ctx context.Context, tenantID string) 
 	}); err != nil {
 		return err
 	}
-	if expectedGeneration > 0 {
-		head, exists, err := s.Coordinator.Head(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		if !exists ||
-			head.Status != expectedStatus ||
-			head.Generation != expectedGeneration {
-			return fmt.Errorf(
-				"%w: tenant %q generation changed while updating registry",
-				ErrConflict, tenantID,
-			)
-		}
-		s.setRegisteredTenantGenerationCached(
-			tenantID,
-			expectedGeneration,
-			expectedStatus,
-		)
-		return nil
-	}
+
 	s.setRegisteredTenantCached(tenantID)
 	return nil
 }
@@ -214,7 +177,7 @@ func (s *TenantStore) updateTenantRegistry(ctx context.Context, update func(map[
 
 func (s *TenantStore) updateTenantRegistryOnce(ctx context.Context, update func(map[string]struct{}) bool) error {
 	key := s.tenantRegistryKey()
-	s.clearCoordinatedWriterObjectKey(key)
+
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	registry := tenantRegistry{}
 	if errors.Is(err, ErrNotFound) {
@@ -250,7 +213,7 @@ func (s *TenantStore) updateTenantRegistryOnce(ctx context.Context, update func(
 
 func (s *TenantStore) getTenantRegistry(ctx context.Context) ([]string, bool, error) {
 	key := s.tenantRegistryKey()
-	s.clearCoordinatedWriterObjectKey(key)
+
 	data, _, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return nil, false, nil

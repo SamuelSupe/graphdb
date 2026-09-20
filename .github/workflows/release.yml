@@ -130,8 +130,9 @@ jobs:
           done
 
           cp README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md LICENSE SECURITY.md \
-            Dockerfile docker-compose.yml docker-compose.backup.yml \
+            Dockerfile .dockerignore docker-compose.yml docker-compose.backup.yml \
             go.mod go.sum "$root/"
+          cp -R cmd internal tools "$root/"
           cp -R docs/. "$root/docs/"
           cp -R examples/. "$root/examples/"
           cp -R sdk "$root/"
@@ -151,6 +152,23 @@ jobs:
 
           tar -C dist -czf "dist/graphdb-${tag}.tar.gz" "$tag"
           (cd dist && sha256sum "graphdb-${tag}.tar.gz" > "graphdb-${tag}.tar.gz.sha256")
+
+      - name: Verify extracted release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c "graphdb-${GITHUB_REF_NAME}.tar.gz.sha256")
+          unpacked="$(mktemp -d)"
+          tar -xzf "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" -C "$unpacked"
+          cd "$unpacked/$GITHUB_REF_NAME"
+          sha256sum -c SHA256SUMS
+          bin/graphdb-linux-amd64 version
+          docker build --build-arg VERSION="$GITHUB_REF_NAME" \
+            --build-arg COMMIT="$GITHUB_SHA" --tag graphdb:release-check .
+          trap 'docker logs graphdb-release-check; docker rm -f graphdb-release-check >/dev/null' EXIT
+          docker run -d --name graphdb-release-check -p 127.0.0.1:38080:8080 graphdb:release-check
+          curl --fail --retry 30 --retry-all-errors --retry-delay 1 --max-time 2 \
+            http://127.0.0.1:38080/v1/readiness
 
       - name: Publish GitHub Release
         env:

@@ -110,8 +110,8 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 	if metered := storage.FindMeteredObjectStore(store.Objects); metered != nil {
 		metered.Observer = obs.Metrics
 	}
-	store.SetObservers(obs.Metrics, obs.Metrics, obs.Metrics)
-	store.StartCoordinatorStatusMonitor(ctx, cfg.PollInterval, cfg.ReadinessTimeout)
+	store.SetObservers(obs.Metrics, obs.Metrics)
+
 	obs.StartIndexHealthMonitor(ctx, cfg.IndexHealthInterval, func(checkCtx context.Context, tenantID string) (string, int, error) {
 		health, err := store.IndexHealthWithOptions(checkCtx, tenantID, storage.IndexHealthOptions{})
 		if err != nil {
@@ -144,7 +144,6 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 	}
 	api.StartMaintenanceLoop(ctx, cfg.MaintenanceInterval)
 	if cfg.Mode == "all" || cfg.Mode == "writer" {
-		store.StartCoordinatorMaintenance(ctx, cfg.PollInterval)
 	}
 	var servers []*http.Server
 	if cfg.AdminAddr != "" {

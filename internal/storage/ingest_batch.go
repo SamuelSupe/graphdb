@@ -134,11 +134,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	if err := ValidateTenantID(tenantID); err != nil {
 		return nil, err
 	}
-	if s.coordinated() && s.RequireCoordinationMarker && !s.coordinationMarkerVerified.Load() {
-		if err := s.EnsurePostgresMarker(ctx); err != nil {
-			return nil, err
-		}
-	}
+
 	preparedEntries := make([]IngestBatchEntry, len(entries))
 	for index, entry := range entries {
 		request, err := PrepareIngestRequest(tenantID, entry.Request)
@@ -155,11 +151,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	if err != nil {
 		return nil, err
 	}
-	if s.coordinated() {
-		if err := s.validateCoordinatedIngestGeneration(ctx, tenantID, acceptedGeneration); err != nil {
-			return nil, err
-		}
-	}
+
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return nil, err
 	}
@@ -167,7 +159,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		return nil, err
 	}
 	var foregroundUnlock func()
-	if !s.coordinated() {
+	{
 		viewCtx, releaseView, err := s.ReadViewContext(ctx, tenantID)
 		if err != nil {
 			return nil, err
@@ -231,98 +223,56 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 			candidate.mutations = graph.Mutations{}
 			candidate.metadataOnly = true
 		}
-		if !s.coordinated() {
-			if previous, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
-				if errors.Is(err, ErrIngestIdentityConflict) {
-					markIngestCandidateFailure(candidate, err)
-					candidate.metadataOnly = true
-					candidate.skipMetadata = true
-					if entry.Prepared != nil {
-						if entry.Prepared.Commit != nil || entry.Prepared.Result.BatchID != request.BatchID ||
-							entry.Prepared.Result.Failed == 0 || entry.Prepared.Result.Applied != 0 {
-							return nil, fmt.Errorf("%w: prepared ingest outcome conflicts with saved identity", ErrIngestRepairRequired)
-						}
-						// The conflict is already prepared; only its attempt-failure
-						// marker or terminal WAL record may still need persistence.
-						candidate.preparedPlan = entry.Prepared
-						candidate.result = entry.Prepared.Result
+
+		if previous, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
+			if errors.Is(err, ErrIngestIdentityConflict) {
+				markIngestCandidateFailure(candidate, err)
+				candidate.metadataOnly = true
+				candidate.skipMetadata = true
+				if entry.Prepared != nil {
+					if entry.Prepared.Commit != nil || entry.Prepared.Result.BatchID != request.BatchID ||
+						entry.Prepared.Result.Failed == 0 || entry.Prepared.Result.Applied != 0 {
+						return nil, fmt.Errorf("%w: prepared ingest outcome conflicts with saved identity", ErrIngestRepairRequired)
 					}
-					candidates = append(candidates, candidate)
-					continue
+					// The conflict is already prepared; only its attempt-failure
+					// marker or terminal WAL record may still need persistence.
+					candidate.preparedPlan = entry.Prepared
+					candidate.result = entry.Prepared.Result
 				}
-				return nil, err
-			} else if ok {
-				result := previous.Result
-				result.Skipped = true
-				result.SkipReason = IngestSkipReasonIdempotentReplay
-				results[index] = result
-				if err := s.repairIngestMetadataAfterSkip(ctx, tenantID, previous, true); err != nil {
-					return results, err
-				}
+				candidates = append(candidates, candidate)
 				continue
 			}
+			return nil, err
+		} else if ok {
+			result := previous.Result
+			result.Skipped = true
+			result.SkipReason = IngestSkipReasonIdempotentReplay
+			results[index] = result
+			if err := s.repairIngestMetadataAfterSkip(ctx, tenantID, previous, true); err != nil {
+				return results, err
+			}
+			continue
 		}
+
 		if entry.Prepared != nil {
 			if entry.Prepared.Result.BatchID != request.BatchID {
 				return results, fmt.Errorf("%w: prepared ingest batch identity changed", ErrIngestRepairRequired)
 			}
-			stale := false
-			if s.coordinated() {
-				stale, err = s.coordinatedPreparedIngestStale(ctx, tenantID, *entry.Prepared)
-				if err != nil {
-					return results, err
-				}
-			}
-			published := false
-			if !stale {
-				published, err = s.preparedIngestPublished(ctx, tenantID, *entry.Prepared)
-				if err != nil {
-					return results, err
-				}
+			published, err := s.preparedIngestPublished(ctx, tenantID, *entry.Prepared)
+			if err != nil {
+				return results, err
 			}
 			if published {
 				candidate.result = entry.Prepared.Result
 				candidate.metadataOnly = true
-			} else if entry.Prepared.Commit != nil && !stale {
+			} else if entry.Prepared.Commit != nil {
 				candidate.commit = *entry.Prepared.Commit
 				candidate.mutations = candidate.commit.Mutations
 				candidate.prepared = true
 			}
-			if !stale {
-				candidate.preparedPlan = entry.Prepared
-			}
+			candidate.preparedPlan = entry.Prepared
 		}
 		candidates = append(candidates, candidate)
-	}
-	if s.coordinated() {
-		if err := s.reserveCoordinatedIngestCandidates(ctx, tenantID, candidates); err != nil {
-			return results, err
-		}
-	}
-
-	batchCtx := ctx
-	var stopPublishSlot func()
-	if s.coordinated() && coordinatedBatchHasReservations(candidates) {
-		publishCtx, stop, err := s.startCoordinatorIngestPublishSlot(ctx, tenantID)
-		if err != nil {
-			return results, err
-		}
-		// The slot only avoids duplicate object-store work. PostgreSQL Head CAS
-		// remains authoritative so older writers can coexist during upgrades.
-		ctx = publishCtx
-		stopPublishSlot = stop
-		defer func() {
-			if stopPublishSlot != nil {
-				stopPublishSlot()
-			}
-		}()
-		if err := s.validateCoordinatedIngestGeneration(ctx, tenantID, acceptedGeneration); err != nil {
-			abortErr := s.abortCoordinatedIngestReservations(candidates, err)
-			return results, errors.Join(err, abortErr)
-		}
-		if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
-			return results, err
-		}
 	}
 
 	mutationCandidates := make([]*ingestBatchCandidate, 0, len(candidates))
@@ -358,7 +308,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		fallback        bool
 		indexWork       *commitIndexUpdate
 	)
-	if len(mutationCandidates) > 0 || coordinatedBatchHasReservations(candidates) {
+	if len(mutationCandidates) > 0 {
 		loaded, err = s.loadForWriteLocked(ctx, tenantID)
 		if err != nil {
 			return results, err
@@ -389,7 +339,6 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 				return results, err
 			}
 		}
-		prepareCoordinatedMetadataOnlyResults(loaded.Manifest, candidates)
 	}
 	stats := ingestBatchStats(candidates, commitItems, fallback)
 	span.SetAttributes(
@@ -401,12 +350,8 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		attribute.Bool("graphdb.ingest.batch.fallback", stats.Fallback),
 	)
 	if hooks.Prepared != nil {
-		plans, err := s.preparedIngestBatchPlans(ctx, tenantID, preparedEntries, candidates, loaded.Manifest, loaded.Meta, finalManifest)
+		plans, err := s.preparedIngestBatchPlans(ctx, tenantID, preparedEntries, candidates, loaded.Manifest, finalManifest)
 		if err != nil {
-			if errors.Is(err, ErrTenantDisabled) || errors.Is(err, ErrTenantDeleted) {
-				abortErr := s.abortCoordinatedIngestReservations(candidates, err)
-				return results, errors.Join(err, abortErr)
-			}
 			return results, err
 		}
 		if err := hooks.Prepared(ctx, plans); err != nil {
@@ -421,29 +366,12 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		if hooks.Published != nil {
 			hooks.Published()
 		}
-	} else if s.coordinated() && coordinatedBatchHasReservations(candidates) {
-		if err := s.completeCoordinatedIngestBatch(ctx, tenantID, loaded, candidates); err != nil {
-			return results, err
-		}
 	}
 	if foregroundUnlock != nil {
 		foregroundUnlock()
 		foregroundUnlock = nil
 	}
-	if stopPublishSlot != nil {
-		releasePublishSlot := stopPublishSlot
-		stopPublishSlot = nil
-		if _, releasedWithPublish := coordinatorIngestPublishStateFromContext(ctx, tenantID); releasedWithPublish {
-			// PostgreSQL released the slot in the publication transaction, so this
-			// only stops renewal and can stay on the current goroutine.
-			releasePublishSlot()
-		} else {
-			// Older coordinator implementations still release through a separate
-			// call; keep that compatibility work off the successful flush path.
-			go releasePublishSlot()
-		}
-		ctx = batchCtx
-	}
+
 	if hooks.Stats != nil {
 		hooks.Stats(stats)
 	}
@@ -463,9 +391,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	if metadataErr != nil {
 		return results, metadataErr
 	}
-	if err := s.releaseFailedIngestReservations(candidates); err != nil {
-		return results, err
-	}
+
 	return results, nil
 }
 
@@ -755,7 +681,7 @@ func (s *TenantStore) applyIngestBatchCandidateGroup(
 		for index, candidate := range candidates {
 			reports[index].Suppressed = append(candidate.policyReport.Suppressed, reports[index].Suppressed...)
 		}
-		if validateIngestBatchRelationSchemas(next, candidates, reports, s.coordinated(), loaded.Manifest.Version) == nil &&
+		if validateIngestBatchRelationSchemas(next, candidates, reports, loaded.Manifest.Version) == nil &&
 			s.checkQuotaAfterApply(ctx, tenantID, loaded.Graph, next) == nil {
 			items := make([]commitSegmentItem, 0, len(candidates))
 			for index, candidate := range candidates {
@@ -819,7 +745,6 @@ func validateIngestBatchRelationSchemas(
 	next *graph.Graph,
 	candidates []*ingestBatchCandidate,
 	reports []graph.ApplyReport,
-	coordinated bool,
 	baseVersion int64,
 ) error {
 	validations := make([]ingestRelationSchemaValidation, 0)
@@ -841,7 +766,7 @@ func validateIngestBatchRelationSchemas(
 			byVersion[version] = index
 			validations = append(validations, ingestRelationSchemaValidation{
 				catalog:     catalog,
-				incremental: relationSchemaCommitCanValidateIncrementally(coordinated, catalog, baseVersion),
+				incremental: relationSchemaCommitCanValidateIncrementally(catalog, baseVersion),
 				seen:        make(map[string]struct{}),
 			})
 		}
@@ -874,9 +799,6 @@ func (s *TenantStore) advanceIngestBatchRelationSchemaValidation(
 	candidates []*ingestBatchCandidate,
 	graphVersion int64,
 ) {
-	if s.coordinated() {
-		return
-	}
 	advanced := make(map[ingestRelationSchemaVersion]struct{})
 	for _, candidate := range candidates {
 		catalog := candidate.relationSchema
@@ -902,8 +824,6 @@ func (s *TenantStore) advanceIngestBatchRelationSchemaValidation(
 // prepareIngestCASCohort compares one writer's WAL cohort against its shared
 // base snapshot. The accepted requests retain WAL order and individual logical
 // versions, but can use the single-COW batch apply and one manifest publish.
-// A coordinated writer must still win the PostgreSQL head CAS before any
-// candidate in the cohort becomes visible.
 func (s *TenantStore) prepareIngestCASCohort(
 	base *graph.Graph,
 	candidates []*ingestBatchCandidate,
@@ -1022,7 +942,7 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolatedWithGuards(
 			next, report, err = current.ApplyCommitStorageCopyWithOptions(candidate.commit, graph.ApplyOptions{})
 		}
 		if err == nil {
-			if relationSchemaCommitCanValidateIncrementally(false, candidate.relationSchema, current.Version) {
+			if relationSchemaCommitCanValidateIncrementally(candidate.relationSchema, current.Version) {
 				err = validateRelationSchemaCommit(next, candidate.relationSchema, report.AffectedEdgeIDs)
 			} else {
 				err = validateRelationSchemaGraph(next, candidate.relationSchema)
@@ -1176,11 +1096,9 @@ func (s *TenantStore) publishIngestBatch(
 		return nil, fmt.Errorf("prepared commit segment changed before publish")
 	}
 	var meta ObjectMeta
-	if s.coordinated() {
-		meta, err = s.putCoordinatedIngestBatchManifest(ctx, tenantID, manifest, loaded.Meta, candidates)
-	} else {
-		meta, err = s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
-	}
+
+	meta, err = s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
+
 	if err != nil {
 		s.handleManifestPublishFailureCache(tenantID, loaded, err)
 		return nil, err
@@ -1199,9 +1117,7 @@ func (s *TenantStore) publishIngestBatch(
 		attribute.Int64("graphdb.ingest.publish.segment_first_version", ref.FirstVersion),
 		attribute.Int64("graphdb.ingest.publish.segment_last_version", ref.LastVersion),
 	)
-	if s.coordinated() {
-		return nil, nil
-	}
+
 	aggregateMutations := graph.Mutations{}
 	aggregateReport := graph.ApplyReport{Changed: true}
 	for _, item := range newItems {
@@ -1316,7 +1232,6 @@ func (s *TenantStore) preparedIngestBatchPlans(
 	entries []IngestBatchEntry,
 	candidates []*ingestBatchCandidate,
 	base Manifest,
-	baseMeta ObjectMeta,
 	final Manifest,
 ) ([]*IngestPreparedRequest, error) {
 	if base.TenantID == "" {
@@ -1382,30 +1297,6 @@ func (s *TenantStore) preparedIngestBatchPlans(
 		}
 	}
 
-	baseToken := coordinatedHeadToken{}
-	if s.coordinated() {
-		var err error
-		baseToken, err = parseCoordinatedHeadToken(baseMeta)
-		if err != nil {
-			return nil, err
-		}
-		acceptedGeneration, err := ingestBatchAcceptedGeneration(entries)
-		if err != nil {
-			return nil, err
-		}
-		if acceptedGeneration == legacyUnboundIngestGeneration && baseToken.Generation > 1 {
-			return nil, fmt.Errorf(
-				"%w: %w: tenant %q legacy WAL record is not bound to current generation %d",
-				ErrTenantDeleted, errIngestGenerationFenced, tenantID, baseToken.Generation,
-			)
-		}
-		if acceptedGeneration > 0 && baseToken.Generation != acceptedGeneration {
-			return nil, fmt.Errorf(
-				"%w: %w: tenant %q WAL generation changed from %d to %d",
-				ErrTenantDeleted, errIngestGenerationFenced, tenantID, acceptedGeneration, baseToken.Generation,
-			)
-		}
-	}
 	plans := make([]*IngestPreparedRequest, len(entries))
 	for _, candidate := range candidates {
 		if candidate.preparedPlan != nil {
@@ -1416,17 +1307,14 @@ func (s *TenantStore) preparedIngestBatchPlans(
 			continue
 		}
 		plan := &IngestPreparedRequest{
-			FlushID:                  flushID,
-			BaseVersion:              base.Version,
-			BaseHeadCommitID:         base.HeadCommitID,
-			BaseHeadRevision:         baseToken.Revision,
-			BaseGeneration:           baseToken.Generation,
-			BaseWriteContextRevision: baseToken.ContextRevision,
-			FinalVersion:             final.Version,
-			FinalHeadCommitID:        final.HeadCommitID,
-			Result:                   candidate.result,
-			DataMD5:                  final.DataMD5,
-			StartedAt:                candidate.started,
+			FlushID:           flushID,
+			BaseVersion:       base.Version,
+			BaseHeadCommitID:  base.HeadCommitID,
+			FinalVersion:      final.Version,
+			FinalHeadCommitID: final.HeadCommitID,
+			Result:            candidate.result,
+			DataMD5:           final.DataMD5,
+			StartedAt:         candidate.started,
 		}
 		if candidate.changed {
 			commit := candidate.commit

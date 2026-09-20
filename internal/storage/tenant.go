@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
@@ -70,67 +69,61 @@ type CommitOptions struct {
 }
 
 type TenantStore struct {
-	Objects                    ObjectStore
-	Backups                    *backupstore.Repository
-	Coordinator                WriteCoordinator
-	RequireCoordinationMarker  bool
-	Prefix                     string
-	coordinationMarkerVerified atomic.Bool
-	coordinatorStatusMu        sync.RWMutex
-	coordinatorStatusCache     CoordinatorStatus
-	coordinatorStatusActive    *coordinatorStatusCall
-	objectProbeMu              sync.Mutex
-	objectProbeActive          *objectStoreProbeCall
-	lockMu                     sync.Mutex
-	tenantLocks                map[string]*tenantLock
-	tenantRegistryMu           sync.Mutex
-	writeCache                 map[string]loadedGraph
-	writeCacheOrder            []string
-	writeCacheBytes            int64
-	writerLeaseCache           map[string]cachedWriterLease
-	registeredTenantCache      map[string]registeredTenantCacheEntry
-	collectorStatusCache       map[string]cachedCollectorStatus
-	readerHeartbeatCache       map[string]cachedReaderHeartbeat
-	objectKeyCache             map[string]struct{}
-	tenantMetadataCache        map[string]cachedTenantMetadata
-	purgeTombstoneCache        map[string]cachedTenantPurgeTombstone
-	sourcePolicyCache          map[string]cachedSourcePolicy
-	tenantConfigCache          map[string]cachedTenantConfig
-	indexCatalogCache          map[string]cachedIndexCatalog
-	indexCatalogLoads          map[string]*indexCatalogLoad
-	indexUpdateMu              sync.Mutex
-	indexUpdateTails           map[string]chan struct{}
-	pendingIngestIndexes       map[string]*commitIndexUpdate
-	activeIngestIndexUpdates   int
-	reverseIndexCatalogCache   map[string]cachedReverseIndexCatalog
-	reverseIndexCatalogLoads   map[string]*reverseIndexCatalogLoad
-	compiledScanCatalogCache   map[string]*compiledScanCatalog
-	indexCache                 *indexObjectCache
-	entityPageCache            *entityPageCache
-	edgeLookupCache            *edgeLookupCache
-	taskMu                     sync.Mutex
-	indexTasks                 map[string]IndexTask
-	taskCancels                map[string]context.CancelFunc
-	taskActive                 map[string]Task
-	taskWorkers                sync.WaitGroup
-	taskClosing                bool
-	taskShutdownOnce           sync.Once
-	taskShutdownDone           chan struct{}
-	taskQueueSlots             chan struct{}
-	taskExecutionSlots         chan struct{}
-	taskResidentSlots          chan struct{}
-	taskTenantSlots            []chan struct{}
-	indexTaskStartSlots        []chan struct{}
-	InstanceID                 string
-	ReaderID                   string
-	LeaseTTL                   time.Duration
-	LifecycleCacheTTL          time.Duration
-	TaskMarkerTTL              time.Duration
-	TaskPersistenceTimeout     time.Duration
-	MaxRetries                 int
-	CoordinatorRetryLimit      int
-	CoordinatorPendingTTL      time.Duration
-	CoordinatorCleanup         CoordinatorCleanupConfig
+	Objects ObjectStore
+	Backups *backupstore.Repository
+
+	Prefix string
+
+	objectProbeMu            sync.Mutex
+	objectProbeActive        *objectStoreProbeCall
+	lockMu                   sync.Mutex
+	tenantLocks              map[string]*tenantLock
+	tenantRegistryMu         sync.Mutex
+	writeCache               map[string]loadedGraph
+	writeCacheOrder          []string
+	writeCacheBytes          int64
+	writerLeaseCache         map[string]cachedWriterLease
+	registeredTenantCache    map[string]registeredTenantCacheEntry
+	collectorStatusCache     map[string]cachedCollectorStatus
+	readerHeartbeatCache     map[string]cachedReaderHeartbeat
+	objectKeyCache           map[string]struct{}
+	tenantMetadataCache      map[string]cachedTenantMetadata
+	purgeTombstoneCache      map[string]cachedTenantPurgeTombstone
+	sourcePolicyCache        map[string]cachedSourcePolicy
+	tenantConfigCache        map[string]cachedTenantConfig
+	indexCatalogCache        map[string]cachedIndexCatalog
+	indexCatalogLoads        map[string]*indexCatalogLoad
+	indexUpdateMu            sync.Mutex
+	indexUpdateTails         map[string]chan struct{}
+	pendingIngestIndexes     map[string]*commitIndexUpdate
+	activeIngestIndexUpdates int
+	reverseIndexCatalogCache map[string]cachedReverseIndexCatalog
+	reverseIndexCatalogLoads map[string]*reverseIndexCatalogLoad
+	compiledScanCatalogCache map[string]*compiledScanCatalog
+	indexCache               *indexObjectCache
+	entityPageCache          *entityPageCache
+	edgeLookupCache          *edgeLookupCache
+	taskMu                   sync.Mutex
+	indexTasks               map[string]IndexTask
+	taskCancels              map[string]context.CancelFunc
+	taskActive               map[string]Task
+	taskWorkers              sync.WaitGroup
+	taskClosing              bool
+	taskShutdownOnce         sync.Once
+	taskShutdownDone         chan struct{}
+	taskQueueSlots           chan struct{}
+	taskExecutionSlots       chan struct{}
+	taskResidentSlots        chan struct{}
+	taskTenantSlots          []chan struct{}
+	indexTaskStartSlots      []chan struct{}
+	InstanceID               string
+	ReaderID                 string
+	LeaseTTL                 time.Duration
+	LifecycleCacheTTL        time.Duration
+	TaskMarkerTTL            time.Duration
+	TaskPersistenceTimeout   time.Duration
+	MaxRetries               int
+
 	MaxWriteCacheTenants       int
 	MaxWriteCacheBytes         int64
 	EntityPagePackMaxBytes     int64
@@ -141,8 +134,8 @@ type TenantStore struct {
 	Backpressure               *WritePressure
 	backpressureObserver       BackpressureObserver
 	cacheObserver              ReaderCacheObserver
-	coordinatorObserver        CoordinatorObserver
-	ingestBarrier              func(context.Context, string) error
+
+	ingestBarrier func(context.Context, string) error
 }
 
 type loadedGraph struct {
@@ -160,46 +153,44 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		instanceID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return &TenantStore{
-		Objects:                    objects,
-		Prefix:                     cleanPrefix(prefix),
-		tenantLocks:                map[string]*tenantLock{},
-		writeCache:                 map[string]loadedGraph{},
-		writerLeaseCache:           map[string]cachedWriterLease{},
-		registeredTenantCache:      map[string]registeredTenantCacheEntry{},
-		collectorStatusCache:       map[string]cachedCollectorStatus{},
-		readerHeartbeatCache:       map[string]cachedReaderHeartbeat{},
-		objectKeyCache:             map[string]struct{}{},
-		tenantMetadataCache:        map[string]cachedTenantMetadata{},
-		purgeTombstoneCache:        map[string]cachedTenantPurgeTombstone{},
-		sourcePolicyCache:          map[string]cachedSourcePolicy{},
-		tenantConfigCache:          map[string]cachedTenantConfig{},
-		indexCatalogCache:          map[string]cachedIndexCatalog{},
-		indexCatalogLoads:          map[string]*indexCatalogLoad{},
-		indexUpdateTails:           map[string]chan struct{}{},
-		reverseIndexCatalogCache:   map[string]cachedReverseIndexCatalog{},
-		reverseIndexCatalogLoads:   map[string]*reverseIndexCatalogLoad{},
-		compiledScanCatalogCache:   map[string]*compiledScanCatalog{},
-		indexCache:                 newIndexObjectCache(4096),
-		entityPageCache:            newEntityPageCache(2048),
-		edgeLookupCache:            newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
-		indexTasks:                 map[string]IndexTask{},
-		taskCancels:                map[string]context.CancelFunc{},
-		taskActive:                 map[string]Task{},
-		taskQueueSlots:             make(chan struct{}, defaultTaskQueueLimit),
-		taskExecutionSlots:         make(chan struct{}, defaultTaskExecutionLimit),
-		taskResidentSlots:          make(chan struct{}, defaultTaskExecutionLimit),
-		taskTenantSlots:            newTaskTenantSlots(defaultTaskTenantStripes),
-		indexTaskStartSlots:        newTaskTenantSlots(defaultTaskTenantStripes),
-		InstanceID:                 instanceID,
-		ReaderID:                   instanceID,
-		LeaseTTL:                   30 * time.Second,
-		LifecycleCacheTTL:          time.Second,
-		TaskMarkerTTL:              30 * time.Second,
-		TaskPersistenceTimeout:     10 * time.Second,
-		MaxRetries:                 3,
-		CoordinatorRetryLimit:      8,
-		CoordinatorPendingTTL:      coordinatorPendingReservationTTL,
-		CoordinatorCleanup:         DefaultCoordinatorCleanupConfig(),
+		Objects:                  objects,
+		Prefix:                   cleanPrefix(prefix),
+		tenantLocks:              map[string]*tenantLock{},
+		writeCache:               map[string]loadedGraph{},
+		writerLeaseCache:         map[string]cachedWriterLease{},
+		registeredTenantCache:    map[string]registeredTenantCacheEntry{},
+		collectorStatusCache:     map[string]cachedCollectorStatus{},
+		readerHeartbeatCache:     map[string]cachedReaderHeartbeat{},
+		objectKeyCache:           map[string]struct{}{},
+		tenantMetadataCache:      map[string]cachedTenantMetadata{},
+		purgeTombstoneCache:      map[string]cachedTenantPurgeTombstone{},
+		sourcePolicyCache:        map[string]cachedSourcePolicy{},
+		tenantConfigCache:        map[string]cachedTenantConfig{},
+		indexCatalogCache:        map[string]cachedIndexCatalog{},
+		indexCatalogLoads:        map[string]*indexCatalogLoad{},
+		indexUpdateTails:         map[string]chan struct{}{},
+		reverseIndexCatalogCache: map[string]cachedReverseIndexCatalog{},
+		reverseIndexCatalogLoads: map[string]*reverseIndexCatalogLoad{},
+		compiledScanCatalogCache: map[string]*compiledScanCatalog{},
+		indexCache:               newIndexObjectCache(4096),
+		entityPageCache:          newEntityPageCache(2048),
+		edgeLookupCache:          newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
+		indexTasks:               map[string]IndexTask{},
+		taskCancels:              map[string]context.CancelFunc{},
+		taskActive:               map[string]Task{},
+		taskQueueSlots:           make(chan struct{}, defaultTaskQueueLimit),
+		taskExecutionSlots:       make(chan struct{}, defaultTaskExecutionLimit),
+		taskResidentSlots:        make(chan struct{}, defaultTaskExecutionLimit),
+		taskTenantSlots:          newTaskTenantSlots(defaultTaskTenantStripes),
+		indexTaskStartSlots:      newTaskTenantSlots(defaultTaskTenantStripes),
+		InstanceID:               instanceID,
+		ReaderID:                 instanceID,
+		LeaseTTL:                 30 * time.Second,
+		LifecycleCacheTTL:        time.Second,
+		TaskMarkerTTL:            30 * time.Second,
+		TaskPersistenceTimeout:   10 * time.Second,
+		MaxRetries:               3,
+
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
 		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
@@ -262,20 +253,7 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
-	// Compaction is the recovery path for commit-tail backpressure, so it must
-	// not wait for WAL items that may themselves require compaction to proceed.
-	// Both publication paths preserve commits newer than the snapshot; lifecycle
-	// operations retain their separate ingest drain and fencing semantics.
-	if s.coordinated() {
-		operationCtx, stop, err := s.startCoordinatorOperationLease(
-			ctx, tenantID, TaskTypeCompact,
-		)
-		if err != nil {
-			return Manifest{}, err
-		}
-		defer stop()
-		ctx = operationCtx
-	}
+
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
 		return Manifest{}, err
@@ -328,30 +306,7 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return Manifest{}, err
 	}
-	if s.coordinated() {
-		manifest, meta, err := s.publishCoordinatedCompaction(
-			ctx,
-			tenantID,
-			loaded,
-			snapshotKey,
-			snapshotCatalog.Key,
-			dataMD5,
-		)
-		if err != nil {
-			return Manifest{}, err
-		}
-		if manifest.Version == loaded.Manifest.Version {
-			s.setWriteCache(tenantID, loadedGraph{
-				Graph: g, Manifest: manifest, Meta: meta,
-				DataMD5:    dataMD5,
-				CommitTail: emptyCommitTailCache(),
-				CacheBytes: writeCacheBytesWithoutCommitTail(
-					loaded,
-				),
-			})
-		}
-		return manifest, nil
-	}
+
 	if alreadyCompacted {
 		current, currentMeta, currentErr := s.getManifest(ctx, tenantID)
 		if currentErr != nil {

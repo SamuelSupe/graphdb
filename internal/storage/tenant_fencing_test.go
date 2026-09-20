@@ -268,3 +268,5 @@ func (s *blockingTenantDeleteStore) Delete(ctx context.Context, key string) erro
 	}
 	return s.ObjectStore.Delete(ctx, key)
 }
+
+func (s *blockingTenantDeleteStore) UnwrapObjectStore() ObjectStore { return s.ObjectStore }

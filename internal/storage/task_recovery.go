@@ -83,9 +83,7 @@ func (s *TenantStore) taskOwnerActive(
 	if exclusiveFileStore(s.Objects) != nil {
 		return false, true
 	}
-	if s.coordinated() {
-		return s.coordinatedTaskOwnerActive(ctx, task)
-	}
+
 	lease, err := s.GetWriterLease(ctx, task.TenantID)
 	if errors.Is(err, ErrNotFound) {
 		return false, true
@@ -94,48 +92,6 @@ func (s *TenantStore) taskOwnerActive(
 		return false, false
 	}
 	return lease.OwnerID == task.OwnerID && lease.ExpiresAt.After(now), true
-}
-
-func (s *TenantStore) coordinatedTaskOwnerActive(
-	ctx context.Context,
-	task Task,
-) (bool, bool) {
-	reader, ok := s.Coordinator.(CoordinatorTaskLeaseReader)
-	if !ok {
-		return false, false
-	}
-	expectedOwner := task.OwnerID + "/" + task.ID
-	active, known := matchingCoordinatorTaskLease(
-		ctx,
-		reader,
-		task.TenantID,
-		coordinatorQueuedTaskLeaseType(task),
-		expectedOwner,
-	)
-	if active || !known || task.Status != TaskStatusRunning {
-		return active, known
-	}
-	return matchingCoordinatorTaskLease(
-		ctx,
-		reader,
-		task.TenantID,
-		coordinatorTaskLeaseType(task),
-		expectedOwner,
-	)
-}
-
-func matchingCoordinatorTaskLease(
-	ctx context.Context,
-	reader CoordinatorTaskLeaseReader,
-	tenantID string,
-	taskType string,
-	expectedOwner string,
-) (bool, bool) {
-	lease, active, err := reader.TaskLease(ctx, tenantID, taskType)
-	if err != nil {
-		return false, false
-	}
-	return active && lease.OwnerToken == expectedOwner, true
 }
 
 func (s *TenantStore) taskRuntimeActive(tenantID string, taskID string) bool {

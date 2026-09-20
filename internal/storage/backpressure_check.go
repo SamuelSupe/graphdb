@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -24,7 +23,7 @@ type writeBackpressureCheckOptions struct {
 
 func (s *TenantStore) checkAcceptedWALBackpressure(ctx context.Context, tenantID string, authoritative bool) error {
 	return s.checkWriteBackpressureWithOptions(ctx, tenantID, authoritative, writeBackpressureCheckOptions{
-		ignoreCASConflicts: s.coordinated(),
+		ignoreCASConflicts: false,
 	})
 }
 
@@ -108,6 +107,9 @@ func (s *TenantStore) checkWriteBackpressureWithOptions(
 			return err
 		}
 	}
+	if s.localFileStore() != nil && legacyIndexTask.Phase == "cleanup" {
+		legacyIndexTaskRunning = false
+	}
 	if indexTaskRunning || legacyIndexTaskRunning {
 		taskID := indexTask.ID
 		if taskID == "" {
@@ -130,7 +132,7 @@ func (s *TenantStore) checkWriteBackpressureWithOptions(
 			return newCheckedBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter, options)
 		}
 		return err
-	} else if ok {
+	} else if ok && s.localFileStore() == nil {
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_backpressure.gc_running", true),
 			attribute.String("graphdb.write_backpressure.gc_task_id", task.ID),
@@ -184,40 +186,16 @@ func (s *TenantStore) currentManifestForWriteAdmission(ctx context.Context, tena
 		endStorageSpan(span, err)
 	}()
 	if loaded, ok := s.getWriteCache(tenantID); ok {
-		if !s.coordinated() {
-			if _, _, leaseOK := s.getCachedWriterLease(
-				tenantID, time.Now().UTC(),
-			); !leaseOK {
-				span.SetAttributes(
-					attribute.Bool("graphdb.write_cache.found", true),
-					attribute.Bool("graphdb.write_cache.hit", false),
-				)
-				return s.currentManifestWithoutWriteCache(ctx, tenantID)
-			}
-		} else {
-			head, exists, headErr := s.Coordinator.Head(ctx, tenantID)
-			if headErr != nil {
-				return Manifest{}, headErr
-			}
-			if !exists {
-				span.SetAttributes(
-					attribute.Bool("graphdb.write_cache.found", true),
-					attribute.Bool("graphdb.write_cache.hit", false),
-				)
-				return s.currentManifestWithoutWriteCache(ctx, tenantID)
-			}
-			if !writeCacheMatchesCoordinatorHead(loaded, head) {
-				manifest, _, err = s.getCoordinatedManifestAtHead(
-					ctx, tenantID, head,
-				)
-				span.SetAttributes(
-					attribute.Bool("graphdb.write_cache.found", true),
-					attribute.Bool("graphdb.write_cache.hit", false),
-					attribute.Int64("graphdb.write_cache.current_manifest_version", manifest.Version),
-				)
-				return manifest, err
-			}
+		if _, _, leaseOK := s.getCachedWriterLease(
+			tenantID, time.Now().UTC(),
+		); !leaseOK {
+			span.SetAttributes(
+				attribute.Bool("graphdb.write_cache.found", true),
+				attribute.Bool("graphdb.write_cache.hit", false),
+			)
+			return s.currentManifestWithoutWriteCache(ctx, tenantID)
 		}
+
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_cache.found", true),
 			attribute.Bool("graphdb.write_cache.hit", true),
@@ -238,15 +216,6 @@ func (s *TenantStore) currentManifestWithoutWriteCache(
 ) (Manifest, error) {
 	manifest, _, err := s.getManifest(ctx, tenantID)
 	return manifest, err
-}
-
-func writeCacheMatchesCoordinatorHead(
-	loaded loadedGraph,
-	head CoordinationHead,
-) bool {
-	return loaded.Graph != nil &&
-		loaded.Graph.Version == head.GraphVersion &&
-		manifestMetaMatchesCoordinatorHead(loaded.Manifest, loaded.Meta, head)
 }
 
 func objectStoreUnavailableBackpressureReason(err error) (BackpressureReason, bool) {
@@ -361,13 +330,6 @@ func (s *TenantStore) findRunningTask(ctx context.Context, tenantID string, task
 		s.taskMu.Unlock()
 		if ok {
 			return active, true, nil
-		}
-		if s.coordinated() {
-			active, ok := s.findCoordinatorQueuedTask(ctx, Task{
-				TenantID: tenantID,
-				Type:     taskType,
-			})
-			return active, ok, nil
 		}
 	}
 	return Task{}, false, nil

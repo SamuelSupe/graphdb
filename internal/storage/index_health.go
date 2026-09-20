@@ -339,6 +339,7 @@ func normalizeSecondaryIndexValues(values map[string][]string) map[string][]stri
 }
 
 func (s *TenantStore) checkEdgeShardObjects(ctx context.Context, tenantID string, catalog IndexCatalog, g *graph.Graph, health *IndexHealth) {
+	expected := expectedEdgeShards(g, catalog.EdgeShards)
 	for _, shardSpec := range catalog.EdgeShards {
 		shard, ok := s.loadEdgeShardForHealth(ctx, tenantID, shardSpec, health)
 		if !ok {
@@ -364,7 +365,7 @@ func (s *TenantStore) checkEdgeShardObjects(ctx context.Context, tenantID string
 		if len(shard.Edges) != shardSpec.EdgeCount {
 			health.Issues = append(health.Issues, "edge shard "+shardSpec.RelationType+"/"+shardSpec.Shard+" count mismatch")
 		}
-		if !reflect.DeepEqual(shard.Edges, normalizeGraphEdges(expectedShardEdges(g, shardSpec.RelationType, shardSpec.Shard))) {
+		if !reflect.DeepEqual(shard.Edges, normalizeGraphEdges(expected[shardSpec.RelationType+"\x00"+shardSpec.Shard])) {
 			health.Issues = append(health.Issues, "edge shard "+shardSpec.RelationType+"/"+shardSpec.Shard+" content mismatch")
 		}
 	}
@@ -387,15 +388,23 @@ func (s *TenantStore) loadEdgeShardForHealth(ctx context.Context, tenantID strin
 	return EdgeShardData{}, false
 }
 
-func expectedShardEdges(g *graph.Graph, relationType string, shardID string) []graph.Edge {
-	edges := make([]graph.Edge, 0)
+func expectedEdgeShards(g *graph.Graph, specs []EdgeShard) map[string][]graph.Edge {
+	shards := make(map[string][]graph.Edge, len(specs))
+	for _, spec := range specs {
+		shards[spec.RelationType+"\x00"+spec.Shard] = nil
+	}
 	for _, edge := range g.Edges {
-		if edge.Type == relationType && indexShardIDMatches(edge.From, shardID) {
-			edges = append(edges, edge)
+		for _, shard := range indexShardIDCandidates(edge.From) {
+			key := edge.Type + "\x00" + shard
+			if _, wanted := shards[key]; wanted {
+				shards[key] = append(shards[key], edge)
+			}
 		}
 	}
-	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
-	return edges
+	for _, edges := range shards {
+		sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
+	}
+	return shards
 }
 
 func normalizeGraphEdges(edges []graph.Edge) []graph.Edge {
@@ -429,6 +438,7 @@ func normalizeGraphEntities(entities []graph.Entity) []graph.Entity {
 }
 
 func (s *TenantStore) checkEntityPageObjects(ctx context.Context, tenantID string, catalog IndexCatalog, g *graph.Graph, health *IndexHealth) {
+	expected := expectedEntityPages(g, catalog.EntityPages)
 	expectedRecords := map[string]entityRecordExpectation{}
 	checkRecords := false
 	for _, pageSpec := range catalog.EntityPages {
@@ -460,7 +470,7 @@ func (s *TenantStore) checkEntityPageObjects(ctx context.Context, tenantID strin
 		if len(page.Entities) != pageSpec.EntityCount {
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" count mismatch")
 		}
-		if !reflect.DeepEqual(normalized.Entities, normalizeGraphEntities(expectedPageEntities(g, pageSpec.Shard))) {
+		if !reflect.DeepEqual(normalized.Entities, normalizeGraphEntities(expected[pageSpec.Shard])) {
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" content mismatch")
 		}
 		checkRecords = true
@@ -497,15 +507,22 @@ func (s *TenantStore) loadEntityPageForHealth(ctx context.Context, tenantID stri
 	return EntityPageData{}, "", false
 }
 
-func expectedPageEntities(g *graph.Graph, shardID string) []graph.Entity {
-	entities := make([]graph.Entity, 0)
+func expectedEntityPages(g *graph.Graph, specs []EntityPageSpec) map[string][]graph.Entity {
+	pages := make(map[string][]graph.Entity, len(specs))
+	for _, spec := range specs {
+		pages[spec.Shard] = nil
+	}
 	for _, entity := range g.Entities {
-		if indexShardIDMatches(entity.ID, shardID) {
-			entities = append(entities, entity)
+		for _, shard := range indexShardIDCandidates(entity.ID) {
+			if _, wanted := pages[shard]; wanted {
+				pages[shard] = append(pages[shard], entity)
+			}
 		}
 	}
-	sort.Slice(entities, func(i, j int) bool { return entities[i].ID < entities[j].ID })
-	return entities
+	for _, entities := range pages {
+		sort.Slice(entities, func(i, j int) bool { return entities[i].ID < entities[j].ID })
+	}
+	return pages
 }
 
 func secondaryIndexCounts(index SecondaryIndex) (entryCount int, distinctValues int) {

@@ -23,9 +23,6 @@ func ValidateTenantID(tenantID string) error {
 }
 
 func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (Manifest, ObjectMeta, error) {
-	if s.coordinated() {
-		return s.getCoordinatedManifest(ctx, tenantID)
-	}
 	var manifest Manifest
 	key := s.manifestKey(tenantID)
 	files := s.localFileStore()
@@ -70,11 +67,6 @@ func (s *TenantStore) putManifest(ctx context.Context, tenantID string, manifest
 }
 
 func (s *TenantStore) putManifestMeta(ctx context.Context, tenantID string, manifest Manifest, meta ObjectMeta) (ObjectMeta, error) {
-	if s.coordinated() {
-		return s.putCoordinatedManifest(
-			ctx, tenantID, manifest, meta, nil, nil,
-		)
-	}
 	lease, _, ok := s.getCachedWriterLeaseAny(tenantID)
 	if !ok {
 		if err := s.acquireWriterLease(ctx, tenantID); err != nil {
@@ -126,9 +118,6 @@ func (s *TenantStore) putManifestMetaUnchecked(ctx context.Context, tenantID str
 }
 
 func (s *TenantStore) publishWriterFence(ctx context.Context, tenantID string, lease WriterLease) error {
-	if s.coordinated() {
-		return nil
-	}
 	if lease.FenceToken == "" || lease.FenceEpoch <= 0 {
 		return fmt.Errorf("writer fence token is required")
 	}

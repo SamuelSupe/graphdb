@@ -142,9 +142,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err := s.checkWriteBackpressure(ctx, tenantID, false); err != nil {
 		return IngestResult{}, err
 	}
-	if s.coordinated() {
-		return s.ingestCoordinated(ctx, tenantID, request, saveFailures)
-	}
+
 	ctx, releaseView, err := s.ReadViewContext(ctx, tenantID)
 	if err != nil {
 		return IngestResult{}, err
@@ -261,7 +259,7 @@ func (s *TenantStore) saveIngestResultMetadata(
 	finished time.Time,
 	saveFailures bool,
 ) error {
-	if !s.coordinated() {
+	{
 		var metadataErr error
 		if err := s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{
 			Request: request, Result: result, StartedAt: started, FinishedAt: finished,
@@ -278,39 +276,6 @@ func (s *TenantStore) saveIngestResultMetadata(
 		}
 		return metadataErr
 	}
-
-	var batchErr, collectorErr, deadLetterErr error
-	var wait sync.WaitGroup
-	wait.Add(2)
-	go func() {
-		defer wait.Done()
-		batchErr = s.saveIngestBatch(ctx, tenantID, IngestBatchRecord{
-			Request: request, Result: result, StartedAt: started, FinishedAt: finished,
-		})
-	}()
-	go func() {
-		defer wait.Done()
-		collectorErr = s.saveCollectorStatus(ctx, tenantID, request, result, started, finished)
-	}()
-	if saveFailures && result.Failed > 0 {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			deadLetterErr = s.saveDeadLetter(ctx, tenantID, request, result)
-		}()
-	}
-	wait.Wait()
-	var metadataErr error
-	if batchErr != nil {
-		metadataErr = errors.Join(metadataErr, fmt.Errorf("save ingest batch: %w", batchErr))
-	}
-	if collectorErr != nil {
-		metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", collectorErr))
-	}
-	if deadLetterErr != nil {
-		metadataErr = errors.Join(metadataErr, fmt.Errorf("save dead letter: %w", deadLetterErr))
-	}
-	return metadataErr
 }
 
 func (s *TenantStore) PersistIngestFailure(

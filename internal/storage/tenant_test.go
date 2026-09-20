@@ -941,46 +941,6 @@ func TestReaderCachePublishFromWriteCacheSkipsObjectReads(t *testing.T) {
 	}
 }
 
-func TestReaderCachePublishFromWriteCacheKeepsNewerCoordinatorRevision(t *testing.T) {
-	store := NewTenantStore(NewMemoryStore(), "test")
-	g := graph.New()
-	g.Version = 7
-	manifest := Manifest{TenantID: "tenant-a", Version: 7, HeadCommitID: "commit-7"}
-	store.setWriteCache("tenant-a", loadedGraph{
-		Graph:    g,
-		Manifest: manifest,
-		Meta: coordinatedManifestMeta("manifest-r11", CoordinationHead{
-			TenantID: "tenant-a", Generation: 1, Status: TenantStatusActive,
-			Revision: 11, GraphVersion: 7, ManifestKey: "manifest-r11", CommitID: "commit-7",
-		}),
-	})
-
-	cache := NewReaderCache(store, time.Minute)
-	newerMeta := coordinatedManifestMeta("manifest-r12", CoordinationHead{
-		TenantID: "tenant-a", Generation: 1, Status: TenantStatusActive,
-		Revision: 12, GraphVersion: 7, ManifestKey: "manifest-r12", CommitID: "commit-7",
-	})
-	cache.mu.Lock()
-	if err := cache.storeEntryLocked("tenant-a", cacheEntry{
-		graph: g, manifest: manifest, meta: newerMeta,
-		cachedAt: time.Now(), expiresAt: time.Now().Add(time.Minute), lastAccess: time.Now(),
-	}); err != nil {
-		cache.mu.Unlock()
-		t.Fatal(err)
-	}
-	cache.mu.Unlock()
-
-	if !cache.PublishFromWriteCache("tenant-a") {
-		t.Fatal("publish from write cache returned false")
-	}
-	cache.mu.Lock()
-	gotRevision := coordinatedMetaRevision(cache.entries["tenant-a"].meta)
-	cache.mu.Unlock()
-	if gotRevision != 12 {
-		t.Fatalf("cached coordinator revision = %d, want 12", gotRevision)
-	}
-}
-
 func TestReaderCacheEnforcesTenantAndByteCapacity(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

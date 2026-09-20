@@ -38,34 +38,6 @@ func TestHTTPReadinessTracksObjectStoreAvailability(t *testing.T) {
 	}
 }
 
-func TestHTTPHealthAndMetricsDoNotProbeCoordinator(t *testing.T) {
-	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
-	store.SetCoordinator(noStatusProbeCoordinator{})
-	handler := (&Server{Store: store, Mode: "all"}).Handler()
-	for _, path := range []string{"/v1/health", "/metrics"} {
-		response := serveJSON(handler, http.MethodGet, path, "", nil)
-		if response.Code != http.StatusOK {
-			t.Fatalf("%s response = %d body=%s", path, response.Code, response.Body.String())
-		}
-	}
-}
-
-type noStatusProbeCoordinator struct {
-	storage.WriteCoordinator
-}
-
-func (noStatusProbeCoordinator) Backend() string {
-	return storage.CoordinationPostgres
-}
-
-func (noStatusProbeCoordinator) Namespace() string {
-	return "no-probe"
-}
-
-func (noStatusProbeCoordinator) Status(context.Context) (storage.CoordinatorStatus, error) {
-	panic("health and metrics must use the cached coordinator status")
-}
-
 type readinessProbeStore struct {
 	storage.ObjectStore
 	mu  sync.RWMutex

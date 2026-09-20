@@ -98,9 +98,9 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 		wantCode   ErrorCode
 	}{
 		{name: "object store", err: storage.ErrObjectStoreUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeObjectStoreUnavailable},
-		{name: "coordinator", err: storage.ErrCoordinatorUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: ErrorCodeCoordinatorUnavailable},
+
 		{name: "write conflict", err: storage.ErrWriteConflict, wantStatus: http.StatusConflict, wantCode: ErrorCodeWriteConflict},
-		{name: "task lease", err: storage.ErrTaskLeaseHeld, wantStatus: http.StatusConflict, wantCode: ErrorCodeTaskConflict},
+
 		{name: "ingest repair", err: storage.ErrIngestRepairRequired, wantStatus: http.StatusConflict, wantCode: ErrorCodeRepairRequired},
 		{name: "maintenance busy", err: storage.ErrMaintenanceBusy, wantStatus: http.StatusTooManyRequests, wantCode: ErrorCodeMaintenanceTaskRunning},
 		{name: "timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},

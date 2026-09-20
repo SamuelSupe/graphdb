@@ -77,7 +77,7 @@ func (s *TenantStore) getSavedQueryWithMeta(ctx context.Context, tenantID string
 		return SavedQuery{}, false, ObjectMeta{}, errors.New("saved query name is required")
 	}
 	key := s.savedQueryKey(tenantID, name)
-	s.clearCoordinatedWriterObjectKey(key)
+
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return SavedQuery{}, false, ObjectMeta{Key: key}, ErrNotFound
@@ -116,7 +116,6 @@ func (s *TenantStore) ListSavedQueries(ctx context.Context, tenantID string) ([]
 		prefix,
 		func(objects []ObjectInfo) error {
 			for _, object := range objects {
-				s.clearCoordinatedWriterObjectKey(object.Key)
 				data, err := s.Objects.Get(ctx, object.Key)
 				if err != nil {
 					if errors.Is(err, ErrNotFound) {

@@ -180,3 +180,40 @@ func compactedCommitTailCache(
 	}
 	return buildCommitTailCache(items, remainingKeys)
 }
+
+func (s *TenantStore) commitTailAfterVersion(
+	ctx context.Context,
+	tenantID string,
+	manifest Manifest,
+	version int64,
+) ([]CommitSegmentRef, []string, error) {
+	segments := make([]CommitSegmentRef, 0, len(manifest.CommitSegments))
+	for _, ref := range manifest.CommitSegments {
+		lastVersion := ref.LastVersion
+		if lastVersion <= 0 {
+			items, err := s.loadCommitSegment(ctx, tenantID, ref)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(items) == 0 {
+				return nil, nil, fmt.Errorf("empty commit segment %q", ref.Key)
+			}
+			lastVersion = items[len(items)-1].Commit.Version
+		}
+		if lastVersion > version {
+			segments = append(segments, ref)
+		}
+	}
+
+	keys := make([]string, 0, len(manifest.CommitKeys))
+	for _, key := range manifest.CommitKeys {
+		commitVersion, _, ok := commitIdentityFromKey(key)
+		if !ok {
+			return nil, nil, fmt.Errorf("invalid commit key %q", key)
+		}
+		if commitVersion > version {
+			keys = append(keys, key)
+		}
+	}
+	return segments, keys, nil
+}

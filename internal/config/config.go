@@ -91,12 +91,6 @@ type Config struct {
 	PostgresDSN                       string
 	PostgresSchema                    string
 	CoordinatorNamespace              string
-	WriteCASMaxRetries                int
-	CoordinatorIdempotencyRetention   time.Duration
-	CoordinatorPendingReservationTTL  time.Duration
-	CoordinatorOutboxRetention        time.Duration
-	CoordinatorCleanupInterval        time.Duration
-	CoordinatorCleanupBatchSize       int
 }
 
 func Load() (Config, error) {
@@ -110,7 +104,6 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%s is unsupported in the local disk edition", key)
 		}
 	}
-	cleanup := storage.DefaultCoordinatorCleanupConfig()
 	cfg := Config{
 		Backup:                            backup,
 		Addr:                              getenv("GRAPHDB_ADDR", ":8080"),
@@ -179,14 +172,8 @@ func Load() (Config, error) {
 		InstanceID:                        strings.TrimSpace(os.Getenv("GRAPHDB_INSTANCE_ID")),
 		Coordination:                      normalizeCoordination(os.Getenv("GRAPHDB_COORDINATION")),
 		PostgresDSN:                       strings.TrimSpace(os.Getenv("GRAPHDB_POSTGRES_DSN")),
-		PostgresSchema:                    getenv("GRAPHDB_POSTGRES_SCHEMA", "graphdb_coordination"),
+		PostgresSchema:                    strings.TrimSpace(os.Getenv("GRAPHDB_POSTGRES_SCHEMA")),
 		CoordinatorNamespace:              strings.TrimSpace(os.Getenv("GRAPHDB_COORDINATOR_NAMESPACE")),
-		WriteCASMaxRetries:                8,
-		CoordinatorIdempotencyRetention:   cleanup.IdempotencyRetention,
-		CoordinatorPendingReservationTTL:  cleanup.PendingReservationTTL,
-		CoordinatorOutboxRetention:        cleanup.OutboxRetention,
-		CoordinatorCleanupInterval:        cleanup.Interval,
-		CoordinatorCleanupBatchSize:       cleanup.BatchSize,
 	}
 	if err := loadBoolEnv("GRAPHDB_PPROF_ENABLED", &cfg.PprofEnabled); err != nil {
 		return Config{}, err
@@ -264,24 +251,6 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_WRITE_CAS_CONFLICT_THRESHOLD", &cfg.WriteCASConflictThreshold); err != nil {
-		return Config{}, err
-	}
-	if err := loadIntEnv("GRAPHDB_WRITE_CAS_MAX_RETRIES", &cfg.WriteCASMaxRetries); err != nil {
-		return Config{}, err
-	}
-	if err := loadDurationEnv("GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION", &cfg.CoordinatorIdempotencyRetention); err != nil {
-		return Config{}, err
-	}
-	if err := loadDurationEnv("GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", &cfg.CoordinatorPendingReservationTTL); err != nil {
-		return Config{}, err
-	}
-	if err := loadDurationEnv("GRAPHDB_COORDINATOR_OUTBOX_RETENTION", &cfg.CoordinatorOutboxRetention); err != nil {
-		return Config{}, err
-	}
-	if err := loadDurationEnv("GRAPHDB_COORDINATOR_CLEANUP_INTERVAL", &cfg.CoordinatorCleanupInterval); err != nil {
-		return Config{}, err
-	}
-	if err := loadIntEnv("GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE", &cfg.CoordinatorCleanupBatchSize); err != nil {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_WRITE_MAX_COMMIT_TAIL", &cfg.WriteMaxCommitTail); err != nil {
@@ -408,7 +377,7 @@ func Load() (Config, error) {
 	if err := cfg.validateObjectStore(); err != nil {
 		return Config{}, err
 	}
-	if err := cfg.validateCoordination(); err != nil {
+	if err := cfg.ValidateCoordination(); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.validateIngest(); err != nil {
@@ -434,9 +403,7 @@ func (cfg Config) validateIngest() error {
 	if cfg.Mode == "reader" {
 		return fmt.Errorf("GRAPHDB_INGEST_MODE=wal is unavailable in reader mode")
 	}
-	if cfg.coordinationMode() == storage.CoordinationPostgres && cfg.InstanceID == "" {
-		return fmt.Errorf("GRAPHDB_INSTANCE_ID is required when GRAPHDB_INGEST_MODE=wal and GRAPHDB_COORDINATION=postgres")
-	}
+
 	return cfg.IngestServiceConfig().Validate()
 }
 
@@ -462,11 +429,16 @@ func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 	}
 }
 
-func (cfg Config) validateCoordination() error {
+func (cfg Config) ValidateCoordination() error {
 	if cfg.coordinationMode() != storage.CoordinationLocal {
 		return fmt.Errorf("GRAPHDB_COORDINATION=%s is unsupported; local disk edition requires local", cfg.Coordination)
 	}
-	if cfg.PostgresDSN != "" || cfg.CoordinatorNamespace != "" {
+	for _, key := range []string{"GRAPHDB_WRITE_CAS_MAX_RETRIES", "GRAPHDB_COORDINATOR_IDEMPOTENCY_RETENTION", "GRAPHDB_COORDINATOR_PENDING_RESERVATION_TTL", "GRAPHDB_COORDINATOR_OUTBOX_RETENTION", "GRAPHDB_COORDINATOR_CLEANUP_INTERVAL", "GRAPHDB_COORDINATOR_CLEANUP_BATCH_SIZE"} {
+		if os.Getenv(key) != "" {
+			return fmt.Errorf("%s is unsupported in the local disk edition", key)
+		}
+	}
+	if cfg.PostgresDSN != "" || cfg.CoordinatorNamespace != "" || cfg.PostgresSchema != "" {
 		return fmt.Errorf("PostgreSQL coordinator configuration is unsupported")
 	}
 	return nil
@@ -509,16 +481,6 @@ func (cfg Config) WriterObjectCacheConfig() storage.WriterObjectCacheConfig {
 		MaxBytes:    cfg.WriterObjectCacheMaxBytes,
 		MaxKeys:     cfg.WriterObjectCacheMaxKeys,
 		NegativeTTL: cfg.WriterObjectCacheNegativeTTL,
-	}
-}
-
-func (cfg Config) CoordinatorCleanupConfig() storage.CoordinatorCleanupConfig {
-	return storage.CoordinatorCleanupConfig{
-		IdempotencyRetention:  cfg.CoordinatorIdempotencyRetention,
-		PendingReservationTTL: cfg.CoordinatorPendingReservationTTL,
-		OutboxRetention:       cfg.CoordinatorOutboxRetention,
-		Interval:              cfg.CoordinatorCleanupInterval,
-		BatchSize:             cfg.CoordinatorCleanupBatchSize,
 	}
 }
 

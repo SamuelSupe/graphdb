@@ -1687,43 +1687,6 @@ func TestSaveIngestBatchCanonicalizesReplayBeforePersisting(t *testing.T) {
 	}
 }
 
-func TestCoordinatedSaveIngestBatchReplacesPriorLifecycleFailure(t *testing.T) {
-	ctx := context.Background()
-	store := NewTenantStore(NewMemoryStore(), "test")
-	request := ingestEntityRequest("batch-lifecycle-retry", "host:retry")
-	failed := IngestBatchRecord{
-		Request: request,
-		Result: IngestResult{
-			BatchID: request.BatchID,
-			Failed:  1,
-			Failures: []IngestFailure{{
-				Index:      0,
-				ExternalID: request.Items[0].ExternalID,
-				Error:      ErrTenantDisabled.Error(),
-			}},
-		},
-	}
-	if err := store.saveIngestBatch(ctx, "tenant-a", failed); err != nil {
-		t.Fatalf("save lifecycle failure: %v", err)
-	}
-
-	store.Coordinator = postgresWriteCacheTestCoordinator{}
-	committed := IngestBatchRecord{
-		Request: request,
-		Result:  IngestResult{BatchID: request.BatchID, Version: 1, Applied: 1},
-	}
-	if err := store.saveIngestBatch(ctx, "tenant-a", committed); err != nil {
-		t.Fatalf("replace lifecycle failure with committed result: %v", err)
-	}
-	stored, ok, err := store.loadIngestRecord(ctx, "tenant-a", request)
-	if err != nil {
-		t.Fatalf("load replaced lifecycle result: %v", err)
-	}
-	if !ok || stored.Result.Version != 1 || stored.Result.Applied != 1 || stored.Result.Failed != 0 {
-		t.Fatalf("stored lifecycle retry result = %#v, want committed version 1", stored.Result)
-	}
-}
-
 type blockingCompatibilityProbeStore struct {
 	ObjectStore
 	mu      sync.Mutex

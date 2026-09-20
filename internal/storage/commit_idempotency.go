@@ -35,13 +35,9 @@ type DirectCommitRecord struct {
 }
 
 type directCommitReservation struct {
-	key         string
-	record      DirectCommitRecord
-	meta        ObjectMeta
-	coordinated bool
-	requestHash string
-	ownerToken  string
-	renewal     *commitReservationRenewal
+	key    string
+	record DirectCommitRecord
+	meta   ObjectMeta
 }
 
 func directCommitRequest(mutations graph.Mutations, opts CommitOptions) DirectCommitRequest {
@@ -57,9 +53,7 @@ func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, re
 	if request.IdempotencyKey == "" {
 		return nil, nil, nil
 	}
-	if s.coordinated() {
-		return s.beginCoordinatedDirectCommit(ctx, tenantID, request, started)
-	}
+
 	key := s.commitIdempotencyKey(tenantID, request.IdempotencyKey)
 	pending := DirectCommitRecord{
 		TenantID:  tenantID,
@@ -124,10 +118,7 @@ func (s *TenantStore) prepareDirectCommit(ctx context.Context, reservation *dire
 	record.Status = directCommitStatusPrepared
 	record.Result = result
 	record.FinishedAt = finished
-	if reservation.coordinated {
-		reservation.record = record
-		return nil
-	}
+
 	return s.updateDirectCommitReservation(ctx, reservation, record)
 }
 
@@ -135,9 +126,7 @@ func (s *TenantStore) completeDirectCommit(ctx context.Context, reservation *dir
 	if reservation == nil {
 		return nil
 	}
-	if reservation.coordinated {
-		return nil
-	}
+
 	record := reservation.record
 	record.Status = directCommitStatusCommitted
 	record.Result = result
@@ -156,79 +145,6 @@ func (s *TenantStore) completeDirectCommit(ctx context.Context, reservation *dir
 		return nil
 	}
 	return err
-}
-
-func (s *TenantStore) abortDirectCommit(
-	reservation *directCommitReservation,
-	commitErr error,
-) error {
-	if reservation == nil || !reservation.coordinated || !definitiveCommitFailure(commitErr) {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return s.Coordinator.AbortCommit(
-		ctx,
-		reservation.record.TenantID,
-		reservation.key,
-		reservation.requestHash,
-		reservation.ownerToken,
-	)
-}
-
-func definitiveCommitFailure(err error) bool {
-	return err != nil &&
-		!errors.Is(err, ErrCoordinatorUnavailable) &&
-		!errors.Is(err, context.Canceled) &&
-		!errors.Is(err, context.DeadlineExceeded)
-}
-
-func (s *TenantStore) beginCoordinatedDirectCommit(
-	ctx context.Context,
-	tenantID string,
-	request DirectCommitRequest,
-	started time.Time,
-) (*directCommitReservation, *CommitResult, error) {
-	data, err := json.Marshal(request)
-	if err != nil {
-		return nil, nil, err
-	}
-	requestHash := objectContentHash(data)
-	ownerToken, err := newCommitID()
-	if err != nil {
-		return nil, nil, err
-	}
-	reserved, err := s.Coordinator.ReserveCommit(
-		ctx,
-		tenantID,
-		request.IdempotencyKey,
-		requestHash,
-		ownerToken,
-		s.coordinatorPendingReservationTTL(),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	if reserved.Committed {
-		var result CommitResult
-		if err := json.Unmarshal(reserved.Result, &result); err != nil {
-			return nil, nil, fmt.Errorf("decode coordinated commit result: %w", err)
-		}
-		result.IdempotentReplay = true
-		return nil, &result, nil
-	}
-	return &directCommitReservation{
-		key: request.IdempotencyKey,
-		record: DirectCommitRecord{
-			TenantID:  tenantID,
-			Status:    directCommitStatusPending,
-			Request:   request,
-			StartedAt: started,
-		},
-		coordinated: true,
-		requestHash: requestHash,
-		ownerToken:  ownerToken,
-	}, nil, nil
 }
 
 func (s *TenantStore) updateDirectCommitReservation(ctx context.Context, reservation *directCommitReservation, record DirectCommitRecord) error {

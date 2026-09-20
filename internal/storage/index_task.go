@@ -91,23 +91,7 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 		}
 	}()
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	stopQueueLease, active, reused, err :=
-		s.claimCoordinatorQueuedIndexTask(ctx, task, cancel)
-	if err != nil {
-		cancel()
-		s.releaseQueuedTask()
-		return IndexTask{}, err
-	}
-	if reused {
-		cancel()
-		s.releaseQueuedTask()
-		s.taskMu.Lock()
-		s.indexTasks[tenantID] = active
-		s.taskMu.Unlock()
-		return active, nil
-	}
 	if err := s.publishQueuedIndexTask(ctx, task); err != nil {
-		stopQueueLease()
 		cancel()
 		s.releaseQueuedTask()
 		return IndexTask{}, err
@@ -120,7 +104,6 @@ func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, re
 	go func() {
 		defer s.taskWorkers.Done()
 		defer s.unregisterTaskCancel(tenantID, task.ID)
-		defer stopQueueLease()
 		defer cancel()
 		s.runIndexTaskAdmitted(runCtx, tenantID, task)
 	}()
@@ -310,43 +293,10 @@ func (s *TenantStore) indexTaskActive(ctx context.Context, tenantID string, task
 	}
 	// A local worker can outlive the writer lease while queued or cleaning up.
 	// Its registered runtime remains authoritative until finalization completes.
-	if !s.coordinated() && task.OwnerID == s.InstanceID && s.taskRuntimeActive(tenantID, task.ID) {
+	if task.OwnerID == s.InstanceID && s.taskRuntimeActive(tenantID, task.ID) {
 		return true, nil
 	}
-	if s.coordinated() {
-		reader, ok := s.Coordinator.(CoordinatorTaskLeaseReader)
-		if !ok {
-			return indexTaskWithinLeaseGrace(task, now, s.leaseTTL()), nil
-		}
-		expectedOwner := task.OwnerID + "/" + task.ID
-		queueLease, queued, err := reader.TaskLease(
-			ctx,
-			tenantID,
-			coordinatorQueuedIndexTaskLeaseType(),
-		)
-		if err != nil {
-			return false, err
-		}
-		if queued &&
-			task.OwnerID != "" &&
-			queueLease.OwnerToken == expectedOwner {
-			return true, nil
-		}
-		lease, active, err := reader.TaskLease(
-			ctx,
-			tenantID,
-			coordinatorLeaseTaskType(TaskTypeIndexRebuild),
-		)
-		if err != nil {
-			return false, err
-		}
-		if active &&
-			task.OwnerID != "" &&
-			lease.OwnerToken == expectedOwner {
-			return true, nil
-		}
-		return indexTaskWithinLeaseGrace(task, now, s.leaseTTL()), nil
-	}
+
 	lease, err := s.GetWriterLease(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {
 		return now.Before(task.StartedAt.Add(s.leaseTTL())), nil
@@ -493,33 +443,8 @@ func (s *TenantStore) runIndexRebuildTaskWithRelease(
 	task IndexTask,
 	releaseExecution func(),
 ) {
-	operationCtx, stopLease, leaseErr := s.startIndexRebuildTaskLease(
-		ctx,
-		task,
-	)
-	if leaseErr != nil {
-		releaseExecution()
-		task.FinishedAt = time.Now().UTC()
-		task.UpdatedAt = task.FinishedAt
-		task.Status = "failed"
-		task.Phase = "failed"
-		task.Error = leaseErr.Error()
-		s.finishIndexRebuildTask(ctx, task)
-		return
-	}
-	ctx = operationCtx
-	leaseStopped := false
-	stopOperationLease := func() {
-		if leaseStopped {
-			return
-		}
-		leaseStopped = true
-		stopLease()
-	}
-	defer stopOperationLease()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			stopOperationLease()
 			releaseExecution()
 			task.FinishedAt = time.Now().UTC()
 			task.UpdatedAt = task.FinishedAt
@@ -538,7 +463,6 @@ func (s *TenantStore) runIndexRebuildTaskWithRelease(
 	task.FinishedAt = time.Now().UTC()
 	task.UpdatedAt = task.FinishedAt
 	if err != nil {
-		stopOperationLease()
 		releaseExecution()
 		task.Status = "failed"
 		task.Phase = "failed"
@@ -563,7 +487,6 @@ func (s *TenantStore) runIndexRebuildTaskWithRelease(
 	} else if gcReport.IndexCleanupSkippedReason != "" {
 		task.Error = "index cleanup skipped: " + gcReport.IndexCleanupSkippedReason
 	}
-	stopOperationLease()
 	releaseExecution()
 	s.finishIndexRebuildTask(ctx, task)
 }
@@ -611,4 +534,41 @@ func (s *TenantStore) trySaveIndexTask(ctx context.Context, task IndexTask) {
 			_ = retryDelay(ctx, attempt)
 		}
 	}
+}
+
+func (s *TenantStore) publishQueuedIndexTask(
+	ctx context.Context,
+	task IndexTask,
+) error {
+	data, err := marshalParquetIndexTask(ctx, task)
+	if err != nil {
+		return err
+	}
+	if err := s.putTenantGenerationObject(
+		ctx,
+		task.TenantID,
+		s.indexRebuildRunningTaskKey(task.TenantID),
+		data,
+	); err != nil {
+		return err
+	}
+	if err := s.putTenantGenerationObject(
+		ctx,
+		task.TenantID,
+		s.indexTaskKey(task.TenantID, task.ID),
+		data,
+	); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			5*time.Second,
+		)
+		defer cancel()
+		_ = s.clearIndexRebuildRunningMarker(
+			cleanupCtx,
+			task.TenantID,
+			task.ID,
+		)
+		return err
+	}
+	return nil
 }

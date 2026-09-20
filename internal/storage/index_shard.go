@@ -33,8 +33,12 @@ func legacyIndexShardID(value string) string {
 }
 
 func indexShardIDCandidates(value string) []string {
-	primary := hashedIndexShardID(value)
-	legacy := legacyIndexShardID(value)
+	if value == "" {
+		return []string{"default"}
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(value)))
+	primary := indexShardHex[int(sum[0])%indexShardBuckets]
+	legacy := indexShardHex[sum[0]]
 	if legacy == primary {
 		return []string{primary}
 	}

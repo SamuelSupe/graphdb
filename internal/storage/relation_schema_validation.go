@@ -27,12 +27,6 @@ func (s *TenantStore) prepareRelationSchemaMutations(ctx context.Context, tenant
 }
 
 func (s *TenantStore) advanceRelationSchemaValidation(ctx context.Context, tenantID string, catalog RelationSchemaCatalog, meta ObjectMeta, graphVersion int64) error {
-	if s.coordinated() {
-		// The immutable write-context records the graph version at which the
-		// schema was fully validated. Later commits can safely revalidate the
-		// full graph without creating a context revision for every graph write.
-		return nil
-	}
 	if len(catalog.RelationSchemas) == 0 || catalog.GraphVersion == graphVersion {
 		return nil
 	}
@@ -42,16 +36,10 @@ func (s *TenantStore) advanceRelationSchemaValidation(ctx context.Context, tenan
 }
 
 func relationSchemaCommitCanValidateIncrementally(
-	coordinated bool,
 	catalog RelationSchemaCatalog,
 	currentGraphVersion int64,
 ) bool {
-	if catalog.GraphVersion == currentGraphVersion {
-		return true
-	}
-	return coordinated &&
-		catalog.GraphVersion > 0 &&
-		catalog.GraphVersion < currentGraphVersion
+	return catalog.GraphVersion == currentGraphVersion
 }
 
 func validateRelationSchemaGraph(g *graph.Graph, catalog RelationSchemaCatalog) error {

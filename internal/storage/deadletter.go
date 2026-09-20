@@ -66,7 +66,7 @@ func (s *TenantStore) ensureDeadLetterAfterSkip(ctx context.Context, tenantID st
 		request.Source,
 		deadLetterID(request),
 	)
-	s.clearCoordinatedWriterObjectKey(key)
+
 	_, _, err := s.Objects.GetWithMeta(ctx, key)
 	if err == nil {
 		return nil

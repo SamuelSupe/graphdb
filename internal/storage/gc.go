@@ -2,10 +2,8 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +11,6 @@ import (
 )
 
 const defaultGCReaderMaxAge = 5 * time.Minute
-const coordinatorCandidateGracePeriod = time.Hour
 
 type GCOptions struct {
 	KeepSnapshots           int
@@ -26,6 +23,7 @@ type GCOptions struct {
 	MaxDeletes              int
 	DryRun                  bool
 	SkipEntityRecordCleanup bool
+	listings                map[string][]ObjectInfo
 }
 
 type GCReport struct {
@@ -79,7 +77,7 @@ type gcReaderProtection struct {
 	Ignored          int
 }
 
-func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
+func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
 	releaseViews, viewErr := s.lockReadViews(ctx, tenantID, true)
 	if viewErr != nil {
 		return GCReport{}, viewErr
@@ -88,16 +86,7 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	if err := ValidateTenantID(tenantID); err != nil {
 		return GCReport{}, err
 	}
-	if s.coordinated() {
-		operationCtx, stop, err := s.startCoordinatorOperationLease(
-			ctx, tenantID, TaskTypeGC,
-		)
-		if err != nil {
-			return GCReport{}, err
-		}
-		defer stop()
-		ctx = operationCtx
-	}
+
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
 	if err != nil {
 		return GCReport{}, err
@@ -126,6 +115,9 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		if gcPaused(err) {
 			return report, nil
 		}
+		if err != nil {
+			report.Checkpoint.Completed = false
+		}
 		return report, err
 	}
 	protection, err := s.gcReaderProtection(ctx, tenantID, options.ReaderMaxAge, options.ReaderScanLimit, time.Now().UTC())
@@ -135,18 +127,8 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	report.ReaderWatermarkVersion = protection.Watermark
 	report.ReaderWatermarkReaders = protection.Active
 	report.ReaderWatermarkIgnored = protection.Ignored
-	coordinatorMirrorPending := false
-	var coordinatorRoots CoordinatorReachability
-	if s.coordinated() {
-		coordinatorRoots, err = s.Coordinator.Reachability(ctx, tenantID)
-		if err != nil {
-			return finish(err)
-		}
-		coordinatorMirrorPending = coordinatorRoots.PendingLegacy > 0
-	}
-	if coordinatorMirrorPending {
-		report.CommitCleanupSkippedReason = "PostgreSQL legacy manifest outbox still has reachable manifests"
-	} else if protection.activeReaderBehind(manifest.Version) {
+
+	if protection.activeReaderBehind(manifest.Version) {
 		report.CommitCleanupSkippedReason = fmt.Sprintf("active reader watermark %d is behind manifest version %d", protection.Watermark, manifest.Version)
 	} else {
 		commitReport, err := s.cleanupCommitsLocked(ctx, tenantID, manifest, checkpoint)
@@ -156,15 +138,21 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return finish(err)
 		}
 	}
-	if s.coordinated() {
-		manifests, contexts, keys, err := s.cleanupCoordinatorCandidatesLocked(
-			ctx, tenantID, coordinatorRoots, checkpoint,
-		)
-		report.DeletedCoordinatorManifests = manifests
-		report.DeletedWriteContexts = contexts
-		report.DeletedKeys = append(report.DeletedKeys, keys...)
-		if err != nil {
-			return finish(err)
+
+	if options.CleanupIndexOrphans {
+		if protection.activeReaderBehind(manifest.Version) {
+			report.IndexCleanupSkippedReason = fmt.Sprintf("active reader watermark %d is behind manifest version %d", protection.Watermark, manifest.Version)
+		} else {
+			report.IndexCleanupAttempt = true
+			before := len(checkpoint.checkpoint.DeletedKeys)
+			err := s.cleanupIndexOrphansLocked(ctx, tenantID, checkpoint, &report)
+			report.DeletedKeys = append(report.DeletedKeys, checkpoint.checkpoint.DeletedKeys[before:]...)
+			if err != nil {
+				if !gcPaused(err) {
+					report.IndexCleanupError = err.Error()
+				}
+				return finish(err)
+			}
 		}
 	}
 	var deleted int
@@ -186,16 +174,14 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return finish(err)
 		}
 	}
-	if coordinatorMirrorPending {
-		report.SnapshotCleanupSkippedReason = "PostgreSQL legacy manifest outbox still has reachable snapshots"
-	} else {
-		deleted, keys, err = s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, protection, checkpoint)
-		report.DeletedSnapshots = deleted
-		report.DeletedKeys = append(report.DeletedKeys, keys...)
-		if err != nil {
-			return finish(err)
-		}
+
+	deleted, keys, err = s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, protection, checkpoint)
+	report.DeletedSnapshots = deleted
+	report.DeletedKeys = append(report.DeletedKeys, keys...)
+	if err != nil {
+		return finish(err)
 	}
+
 	if options.TaskMaxAge > 0 {
 		cutoff := time.Now().UTC().Add(-options.TaskMaxAge)
 		taskReport := taskCleanupReport{}
@@ -208,147 +194,8 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			return finish(err)
 		}
 	}
-	if options.CleanupIndexOrphans {
-		if options.DryRun || options.CheckpointCursor != "" || options.MaxDeletes > 0 {
-			report.IndexCleanupSkippedReason = "checkpoint or dry-run mode skips index orphan cleanup"
-		} else if protection.activeReaderBehind(manifest.Version) {
-			report.IndexCleanupSkippedReason = fmt.Sprintf("active reader watermark %d is behind manifest version %d", protection.Watermark, manifest.Version)
-		} else {
-			report.IndexCleanupAttempt = true
-			if err := s.cleanupIndexOrphansLocked(ctx, tenantID); err != nil {
-				report.IndexCleanupError = err.Error()
-			}
-			if !options.SkipEntityRecordCleanup {
-				deletedRecords, recordKeys, err := s.cleanupEntityRecordsLocked(ctx, tenantID)
-				report.DeletedEntityRecords = deletedRecords
-				report.DeletedKeys = append(report.DeletedKeys, recordKeys...)
-				if err != nil && report.IndexCleanupError == "" {
-					report.IndexCleanupError = err.Error()
-				}
-			}
-		}
-	}
+
 	return finish(nil)
-}
-
-func (s *TenantStore) cleanupCoordinatorCandidatesLocked(
-	ctx context.Context,
-	tenantID string,
-	roots CoordinatorReachability,
-	checkpoint *gcCheckpointRunner,
-) (int, int, []string, error) {
-	cutoff := time.Now().UTC().Add(-coordinatorCandidateGracePeriod)
-	manifestPrefix := s.coordinatorManifestPrefix(tenantID)
-	contextPrefix := s.coordinatorWriteContextPrefix(tenantID)
-	manifestCount, manifestKeys, err := s.cleanupCoordinatorCandidatePrefix(
-		ctx,
-		manifestPrefix,
-		roots.ManifestKeys,
-		cutoff,
-		checkpoint,
-		roots.Head.Revision,
-		coordinatorManifestRevisionFromKey,
-		coordinatorManifestUpdatedAt,
-	)
-	if err != nil {
-		return manifestCount, 0, manifestKeys, err
-	}
-	contextCount, contextKeys, err := s.cleanupCoordinatorCandidatePrefix(
-		ctx,
-		contextPrefix,
-		roots.WriteContextKeys,
-		cutoff,
-		checkpoint,
-		roots.Head.WriteContextRevision,
-		coordinatorWriteContextRevisionFromKey,
-		coordinatorWriteContextUpdatedAt,
-	)
-	return manifestCount, contextCount, append(manifestKeys, contextKeys...), err
-}
-
-func (s *TenantStore) cleanupCoordinatorCandidatePrefix(
-	ctx context.Context,
-	prefix string,
-	roots map[string]struct{},
-	cutoff time.Time,
-	checkpoint *gcCheckpointRunner,
-	maxResolvedRevision int64,
-	revisionFromKey func(string) (int64, bool),
-	updatedAt func(context.Context, []byte) (time.Time, error),
-) (int, []string, error) {
-	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
-	if err != nil || skip {
-		return 0, nil, err
-	}
-	deleted := 0
-	keys := make([]string, 0)
-	for _, object := range objects {
-		if _, reachable := roots[object.Key]; reachable {
-			continue
-		}
-		revision, ok := revisionFromKey(object.Key)
-		if !ok || revision > maxResolvedRevision {
-			continue
-		}
-		data, err := s.Objects.Get(ctx, object.Key)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return deleted, keys, err
-		}
-		updated, err := updatedAt(ctx, data)
-		if err != nil || updated.IsZero() || updated.After(cutoff) {
-			continue
-		}
-		removed, err := checkpoint.deleteKey(ctx, s.Objects, object.Key)
-		if err != nil {
-			return deleted, keys, err
-		}
-		if removed {
-			deleted++
-			keys = append(keys, object.Key)
-		}
-	}
-	if err := checkpoint.pauseAfterPage(next); err != nil {
-		return deleted, keys, err
-	}
-	return deleted, keys, nil
-}
-
-func coordinatorManifestRevisionFromKey(key string) (int64, bool) {
-	name := strings.TrimSuffix(path.Base(key), ".parquet")
-	parts := strings.Split(name, "-")
-	if len(parts) != 3 {
-		return 0, false
-	}
-	revision, err := strconv.ParseInt(parts[1], 10, 64)
-	return revision, err == nil && revision > 0
-}
-
-func coordinatorWriteContextRevisionFromKey(key string) (int64, bool) {
-	parts := strings.Split(path.Base(key), "-")
-	if len(parts) != 2 {
-		return 0, false
-	}
-	revision, err := strconv.ParseInt(parts[0], 10, 64)
-	return revision, err == nil && revision > 0
-}
-
-func coordinatorManifestUpdatedAt(ctx context.Context, data []byte) (time.Time, error) {
-	if !isParquetBytes(data) {
-		return time.Time{}, fmt.Errorf("coordinator manifest is not parquet")
-	}
-	manifest, err := decodeParquetManifest(ctx, data)
-	return manifest.UpdatedAt, err
-}
-
-func coordinatorWriteContextUpdatedAt(_ context.Context, data []byte) (time.Time, error) {
-	var snapshot WriteContextSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return time.Time{}, err
-	}
-	return snapshot.UpdatedAt, nil
 }
 
 func (s *TenantStore) validateGCSnapshotCursor(tenantID string, manifest Manifest, cursor string) error {
@@ -434,12 +281,6 @@ func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string,
 	}
 	report.InvalidKeys = scan.InvalidKeys
 	for _, item := range scan.Items {
-		if s.coordinated() && !item.Commit.CreatedAt.IsZero() &&
-			item.Commit.CreatedAt.After(time.Now().UTC().Add(-coordinatorCandidateGracePeriod)) {
-			report.KeptFuture++
-			report.FutureKeys = append(report.FutureKeys, item.Key)
-			continue
-		}
 		if item.Commit.Version > manifest.Version {
 			report.KeptFuture++
 			report.FutureKeys = append(report.FutureKeys, item.Key)
@@ -692,48 +533,27 @@ func (s *TenantStore) cleanupDeadLettersLocked(ctx context.Context, tenantID str
 	return deleted, keys, nil
 }
 
-func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID string) error {
-	catalog, err := s.GetIndexCatalog(ctx, tenantID)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return err
+func (s *TenantStore) cleanupEntityRecordsLocked(ctx context.Context, tenantID string, checkpoint *gcCheckpointRunner) (int, []string, error) {
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, s.entityRecordPrefix(tenantID))
+	if err != nil || skip {
+		return 0, nil, err
 	}
-	if err == nil {
-		if err := s.cleanupObsoleteIndexObjects(ctx, tenantID, IndexCatalog{}, catalog); err != nil {
-			return err
+	var keys []string
+	for _, object := range objects {
+		if _, ok, err := s.entityIDFromRecordKey(tenantID, object.Key); err != nil {
+			return len(keys), keys, err
+		} else if !ok {
+			continue
+		}
+		removed, err := checkpoint.deleteKey(ctx, s.Objects, object.Key)
+		if err != nil {
+			return len(keys), keys, err
+		}
+		if removed {
+			keys = append(keys, object.Key)
 		}
 	}
-	return s.cleanupReverseIndexOrphans(ctx, tenantID)
-}
-
-func (s *TenantStore) cleanupEntityRecordsLocked(ctx context.Context, tenantID string) (int, []string, error) {
-	deleted := 0
-	keys := make([]string, 0)
-	err := scanObjectPrefix(
-		ctx,
-		s.Objects,
-		s.entityRecordPrefix(tenantID),
-		func(objects []ObjectInfo) error {
-			for _, object := range objects {
-				if _, ok, err := s.entityIDFromRecordKey(
-					tenantID, object.Key,
-				); err != nil {
-					return err
-				} else if !ok {
-					continue
-				}
-				if err := s.deleteListedObject(ctx, object); err != nil {
-					return err
-				}
-				deleted++
-				keys = append(keys, object.Key)
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		return deleted, keys, err
-	}
-	return deleted, keys, nil
+	return len(keys), keys, checkpoint.pauseAfterPage(next)
 }
 
 type taskCleanupReport struct {

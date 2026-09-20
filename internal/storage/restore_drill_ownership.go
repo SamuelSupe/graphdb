@@ -211,7 +211,7 @@ func (s *TenantStore) cleanupClaimedRestoreDrillTargetLocked(
 				filtered = append(filtered, object)
 			}
 		}
-		deletedKeys, err := s.deleteTenantPurgePage(ctx, tenantID, filtered, 0)
+		deletedKeys, err := s.deleteTenantPurgePage(ctx, filtered)
 		report.Deleted += len(deletedKeys)
 		report.recordDeletedKeys(deletedKeys)
 		return err

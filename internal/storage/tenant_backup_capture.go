@@ -10,9 +10,6 @@ func (s *TenantStore) captureTenantBackup(
 	ctx context.Context,
 	tenantID string,
 ) (loadedGraph, TenantBackupRecord, string, error) {
-	if s.coordinated() {
-		return s.captureCoordinatedTenantBackup(ctx, tenantID)
-	}
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
 	if err != nil {
 		return loadedGraph{}, TenantBackupRecord{}, "", err
@@ -26,67 +23,6 @@ func (s *TenantStore) captureTenantBackup(
 		ctx, tenantID, loaded,
 	)
 	return loaded, record, dataMD5, err
-}
-
-func (s *TenantStore) captureCoordinatedTenantBackup(
-	ctx context.Context,
-	tenantID string,
-) (loadedGraph, TenantBackupRecord, string, error) {
-	for attempt := 0; attempt < s.CoordinatorRetryLimit+1; attempt++ {
-		loaded, err := s.loadWithMeta(ctx, tenantID)
-		if err != nil {
-			return loadedGraph{}, TenantBackupRecord{}, "", err
-		}
-		token, err := parseCoordinatedHeadToken(loaded.Meta)
-		if err != nil {
-			return loadedGraph{}, TenantBackupRecord{}, "", err
-		}
-		metadata, err := s.tenantBackupMetadata(ctx, tenantID)
-		if err != nil {
-			return loadedGraph{}, TenantBackupRecord{}, "", err
-		}
-		writeContext, head, err := s.loadCoordinatedWriteContext(
-			ctx, tenantID,
-		)
-		if err != nil {
-			return loadedGraph{}, TenantBackupRecord{}, "", err
-		}
-		if head.Status != TenantStatusActive {
-			return loadedGraph{}, TenantBackupRecord{}, "", ErrTenantDeleted
-		}
-		if !sameCoordinationPoint(head, token) {
-			if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-				return loadedGraph{}, TenantBackupRecord{}, "", err
-			}
-			continue
-		}
-		record := newTenantBackupRecord(tenantID, loaded, metadata)
-		if writeContext.TenantConfigConfigured {
-			config := writeContext.TenantConfig
-			record.Config = &config
-		}
-		if writeContext.SourcePolicyConfigured {
-			policy := writeContext.SourcePolicy
-			record.SourcePolicy = &policy
-		}
-		record.RelationSchemas = append(
-			[]RelationSchema(nil),
-			writeContext.RelationSchemas.RelationSchemas...,
-		)
-		dataMD5, err := validateCapturedTenantBackup(
-			record, tenantID, loaded,
-		)
-		if err != nil {
-			return loadedGraph{}, TenantBackupRecord{}, "", fmt.Errorf(
-				"captured backup is not restorable: %w", err,
-			)
-		}
-		return loaded, record, dataMD5, nil
-	}
-	return loadedGraph{}, TenantBackupRecord{}, "", fmt.Errorf(
-		"%w: tenant %q changed while capturing backup",
-		ErrWriteConflict, tenantID,
-	)
 }
 
 func (s *TenantStore) tenantBackupRecordFromLocalState(

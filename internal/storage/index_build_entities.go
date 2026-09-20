@@ -151,7 +151,6 @@ func (s *TenantStore) tombstoneStaleEntityRecords(ctx context.Context, tenantID 
 		s.entityRecordPrefix(tenantID),
 		func(objects []ObjectInfo) error {
 			for _, object := range objects {
-				s.clearCoordinatedWriterObjectKey(object.Key)
 				entityID, ok, err := s.entityIDFromRecordKey(
 					tenantID, object.Key,
 				)

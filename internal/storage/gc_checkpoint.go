@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 )
 
@@ -167,6 +168,26 @@ func (r *gcCheckpointRunner) listPage(ctx context.Context, objects ObjectStore, 
 	cursor, skip := r.pageCursor(prefix)
 	if skip {
 		return nil, "", true, nil
+	}
+	if r.options.listings != nil {
+		items, exists := r.options.listings[prefix]
+		if !exists {
+			var err error
+			items, _, err = listObjectPage(ctx, objects, prefix, "", 0)
+			if err != nil {
+				return nil, "", false, err
+			}
+			r.options.listings[prefix] = items
+		}
+		start := sort.Search(len(items), func(i int) bool { return items[i].Key > cursor })
+		end := min(len(items), start+r.scanPageLimit())
+		next := ""
+		if end < len(items) {
+			next = items[end-1].Key
+		} else {
+			delete(r.options.listings, prefix)
+		}
+		return items[start:end], next, false, objectContextErr(ctx)
 	}
 	items, next, err := listObjectPage(ctx, objects, prefix, cursor, r.scanPageLimit())
 	return items, next, false, err

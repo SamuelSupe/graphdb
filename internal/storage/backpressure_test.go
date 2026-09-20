@@ -101,33 +101,6 @@ func TestCommitBackpressureRecordsManifestCASConflict(t *testing.T) {
 	assertBackpressureReason(t, err, "manifest_cas_conflicts_high")
 }
 
-func TestAcceptedWALBackpressureIgnoresCASConflictsButKeepsOtherReasons(t *testing.T) {
-	store := NewTenantStore(NewMemoryStore(), "test")
-	store.SetCoordinator(&mutableHeadCoordinator{head: CoordinationHead{
-		TenantID: "tenant-a", Generation: 1, Status: TenantStatusActive, Revision: 1,
-	}})
-	pressure := NewWritePressure(BackpressureConfig{
-		CASConflictThreshold:   1,
-		ObjectLatencyThreshold: time.Millisecond,
-		RetryAfter:             37 * time.Millisecond,
-	})
-	pressure.RecordManifestCASConflict("tenant-a")
-	pressure.RecordObjectLatency(2 * time.Millisecond)
-	store.Backpressure = pressure
-
-	err := store.checkAcceptedWALBackpressure(context.Background(), "tenant-a", false)
-	var backpressure *BackpressureError
-	if !errors.As(err, &backpressure) {
-		t.Fatalf("accepted WAL backpressure err = %v, want BackpressureError", err)
-	}
-	if backpressure.RetryAfter != 37*time.Millisecond {
-		t.Fatalf("retry after = %s, want 37ms", backpressure.RetryAfter)
-	}
-	if len(backpressure.Reasons) != 1 || backpressure.Reasons[0].Code != "object_store_latency_high" {
-		t.Fatalf("accepted WAL reasons = %#v, want only object_store_latency_high", backpressure.Reasons)
-	}
-}
-
 func TestCommitBackpressureRejectsDuringIndexRebuild(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
@@ -213,75 +186,6 @@ func TestCommitBackpressureRejectsLongCommitTail(t *testing.T) {
 		UpsertEntities: []graph.Entity{{ID: "host:c", Kind: "host"}},
 	}, CommitOptions{})
 	assertBackpressureReason(t, err, "commit_tail_too_long")
-}
-
-func TestCoordinatedBackpressureDoesNotTrustStaleWriteCacheTail(t *testing.T) {
-	ctx := context.Background()
-	objects := NewMemoryStore()
-	current := Manifest{
-		LayoutVersion: CurrentObjectLayoutVersion,
-		TenantID:      "tenant-a",
-		Version:       3,
-		CommitKeys:    []string{"commit-2", "commit-3"},
-	}
-	data, err := marshalParquetManifest(ctx, current)
-	if err != nil {
-		t.Fatalf("marshal current manifest: %v", err)
-	}
-	key := "test/tenants/tenant-a/coordination/manifests/current.parquet"
-	if err := objects.Put(ctx, key, data); err != nil {
-		t.Fatalf("put current manifest: %v", err)
-	}
-	head := CoordinationHead{
-		TenantID:     "tenant-a",
-		Status:       TenantStatusActive,
-		Generation:   1,
-		Revision:     3,
-		GraphVersion: 3,
-		ManifestKey:  key,
-		ManifestHash: objectContentHash(data),
-	}
-	store := NewTenantStore(objects, "test")
-	store.SetCoordinator(&mutableHeadCoordinator{head: head})
-	store.Backpressure = NewWritePressure(BackpressureConfig{MaxCommitTail: 1})
-	stale := cachedGraph(1)
-	stale.Manifest.TenantID = "tenant-a"
-	stale.Manifest.CommitKeys = []string{"commit-1"}
-	stale.Meta = coordinatedManifestMeta("stale.parquet", CoordinationHead{
-		Generation: 1, Revision: 1,
-	})
-	store.setWriteCache("tenant-a", stale)
-
-	err = store.CheckWriteBackpressure(ctx, "tenant-a")
-	assertBackpressureReason(t, err, "commit_tail_too_long")
-}
-
-func TestCoordinatedBackpressureCurrentHeadKeepsCacheHit(t *testing.T) {
-	head := CoordinationHead{
-		TenantID:             "tenant-a",
-		Status:               TenantStatusActive,
-		Generation:           2,
-		Revision:             7,
-		GraphVersion:         5,
-		WriteContextRevision: 3,
-		ManifestKey:          "current.parquet",
-	}
-	store := NewTenantStore(NewMemoryStore(), "test")
-	store.SetCoordinator(&mutableHeadCoordinator{head: head})
-	current := cachedGraph(5)
-	current.Manifest.TenantID = "tenant-a"
-	current.Meta = coordinatedManifestMeta(head.ManifestKey, head)
-	store.setWriteCache("tenant-a", current)
-
-	manifest, err := store.currentManifestForWriteAdmission(
-		context.Background(), "tenant-a",
-	)
-	if err != nil {
-		t.Fatalf("current manifest: %v", err)
-	}
-	if manifest.Version != 5 {
-		t.Fatalf("manifest version = %d, want 5", manifest.Version)
-	}
 }
 
 func TestLocalBackpressureDoesNotTrustCacheAfterWriterTakeover(t *testing.T) {

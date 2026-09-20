@@ -107,14 +107,9 @@ func (s *TenantStore) putReverseIndexCatalogWithMeta(
 	// catalog hot path and avoiding another fixed metadata round trip.
 	key := s.reverseIndexCatalogKey(tenantID)
 	var nextMeta ObjectMeta
-	if s.coordinated() {
-		nextMeta, err = s.putTenantGenerationConditional(ctx, tenantID, key, data, PutCondition{
-			IfNoneMatch: !meta.Exists,
-			IfMatch:     meta.ETag,
-		})
-	} else {
-		nextMeta, err = s.putBytesWithMetaResult(ctx, key, data, meta)
-	}
+
+	nextMeta, err = s.putBytesWithMetaResult(ctx, key, data, meta)
+
 	if err == nil {
 		s.setCachedReverseIndexCatalog(tenantID, catalog, nextMeta)
 	}
@@ -126,7 +121,7 @@ func (s *TenantStore) getReverseIndexCatalogWithMeta(ctx context.Context, tenant
 		return ReverseIndexCatalog{}, ObjectMeta{}, err
 	}
 	key := s.reverseIndexCatalogKey(tenantID)
-	s.clearCoordinatedWriterObjectKey(key)
+
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return ReverseIndexCatalog{}, ObjectMeta{Key: key}, ErrNotFound

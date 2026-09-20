@@ -9,7 +9,6 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
-
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -273,10 +272,6 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeLeaseHeld, true
 	case errors.Is(err, storage.ErrObjectStoreUnavailable):
 		return ErrorCodeObjectStoreUnavailable, true
-	case errors.Is(err, storage.ErrCoordinatorUnavailable):
-		return ErrorCodeCoordinatorUnavailable, true
-	case errors.Is(err, storage.ErrCoordinatorFenced):
-		return ErrorCodeCoordinatorUnavailable, false
 	case errors.Is(err, storage.ErrWriteConflict):
 		return ErrorCodeWriteConflict, true
 	case errors.Is(err, storage.ErrVersionConflict):
@@ -285,8 +280,6 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeIdempotencyInProgress, true
 	case errors.Is(err, storage.ErrIdempotencyConflict), errors.Is(err, storage.ErrIngestIdentityConflict):
 		return ErrorCodeIdempotencyConflict, false
-	case errors.Is(err, storage.ErrTaskLeaseHeld):
-		return ErrorCodeTaskConflict, false
 	case errors.Is(err, storage.ErrMaintenanceBusy):
 		return ErrorCodeMaintenanceTaskRunning, true
 	case errors.Is(err, storage.ErrIngestRepairRequired):

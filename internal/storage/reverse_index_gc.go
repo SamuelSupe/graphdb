@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-func (s *TenantStore) cleanupReverseIndexOrphans(ctx context.Context, tenantID string) error {
+func (s *TenantStore) cleanupReverseIndexOrphans(ctx context.Context, tenantID string, checkpoint *gcCheckpointRunner) error {
 	referenced := map[string]struct{}{s.reverseIndexCatalogKey(tenantID): {}}
 	catalog, err := s.GetReverseIndexCatalog(ctx, tenantID, 0)
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -18,20 +18,17 @@ func (s *TenantStore) cleanupReverseIndexOrphans(ctx context.Context, tenantID s
 			}
 		}
 	}
-	return scanObjectPrefix(
-		ctx,
-		s.Objects,
-		s.reverseIndexPrefix(tenantID),
-		func(objects []ObjectInfo) error {
-			for _, object := range objects {
-				if _, keep := referenced[object.Key]; keep {
-					continue
-				}
-				if err := s.deleteListedObject(ctx, object); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	)
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, s.reverseIndexPrefix(tenantID))
+	if err != nil || skip {
+		return err
+	}
+	for _, object := range objects {
+		if _, keep := referenced[object.Key]; keep {
+			continue
+		}
+		if _, err := checkpoint.deleteKey(ctx, s.Objects, object.Key); err != nil {
+			return err
+		}
+	}
+	return checkpoint.pauseAfterPage(next)
 }

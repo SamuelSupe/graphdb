@@ -11,9 +11,9 @@ import (
 )
 
 type StorageRuntime struct {
-	Store       *storage.TenantStore
-	Coordinator storage.WriteCoordinator
-	Files       *storage.FileStore
+	Store *storage.TenantStore
+
+	Files *storage.FileStore
 }
 
 func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime, error) {
@@ -21,6 +21,9 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 		return nil, fmt.Errorf("only GRAPHDB_MODE=all is supported in the local disk edition")
 	}
 	if err := cfg.ValidateObjectStore(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateCoordination(); err != nil {
 		return nil, err
 	}
 	files, err := storage.OpenFileStore(cfg.DataDir)
@@ -41,29 +44,22 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 	}
 
 	store := storage.NewTenantStoreWithOptions(objects, cfg.Prefix, storage.TenantStoreOptions{
-		InstanceID:                 cfg.InstanceID,
-		ReaderID:                   readerID(cfg),
-		RequireCoordinationMarker:  cfg.CoordinationMode() == storage.CoordinationPostgres,
+		InstanceID: cfg.InstanceID,
+		ReaderID:   readerID(cfg),
+
 		MaxWriteCacheBytes:         cfg.WriteCacheMaxBytes,
 		WriteEntityRecords:         cfg.IndexEntityRecords,
 		UseEntityRecordsForRead:    cfg.IndexEntityRecords,
 		EntityPagePackMaxBytes:     cfg.EntityPagePackMaxBytes,
 		MaterializeCollectorStatus: cfg.IngestCollectorStatusMaterialized,
 		Backpressure:               pressure,
-		CoordinatorRetryLimit:      cfg.WriteCASMaxRetries,
-		CoordinatorPendingTTL:      cfg.CoordinatorPendingReservationTTL,
-		CoordinatorCleanup:         cfg.CoordinatorCleanupConfig(),
+
 		IndexObjectCache: storage.IndexObjectCacheConfig{
 			MaxEntries: cfg.ReaderIndexCacheEntries,
 			MaxBytes:   cfg.ReaderIndexCacheMaxBytes,
 			DiskDir:    cfg.ReaderIndexCacheDir,
 		},
 	})
-	coordinator, err := newCoordinator(ctx, cfg)
-	if err != nil {
-		files.Close()
-		return nil, err
-	}
 	if err := store.EnsureLocalWriterAllowed(ctx); err != nil {
 		files.Close()
 		return nil, err
@@ -73,14 +69,11 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 		files.Close()
 		return nil, err
 	}
-	return &StorageRuntime{Store: store, Coordinator: coordinator, Files: files}, nil
+	return &StorageRuntime{Store: store, Files: files}, nil
 }
 
 func (r *StorageRuntime) Close() {
 	if r != nil {
-		if r.Coordinator != nil {
-			r.Coordinator.Close()
-		}
 		if r.Files != nil {
 			r.Files.Close()
 		}

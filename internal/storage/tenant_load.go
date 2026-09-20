@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -29,18 +28,7 @@ func (s *TenantStore) LoadAtLeast(ctx context.Context, tenantID string, minVersi
 func (s *TenantStore) loadAtLeast(ctx context.Context, tenantID string, minVersion int64) (*graph.Graph, Manifest, error) {
 	if cached, ok := s.getWriteCache(tenantID); ok {
 		if cached.Manifest.Version >= minVersion {
-			if s.coordinated() {
-				head, exists, err := s.Coordinator.Head(ctx, tenantID)
-				if err != nil {
-					if errors.Is(err, ErrCoordinatorUnavailable) {
-						return cloneLoadedGraph(cached)
-					}
-					return nil, Manifest{}, err
-				}
-				if exists && writeCacheMatchesCoordinatorHead(cached, head) {
-					return cloneLoadedGraph(cached)
-				}
-			} else {
+			{
 				manifest, meta, err := s.getManifest(ctx, tenantID)
 				if err != nil {
 					return nil, Manifest{}, err
@@ -85,15 +73,7 @@ func (s *TenantStore) CurrentVersion(ctx context.Context, tenantID string) (int6
 	if err := ValidateTenantID(tenantID); err != nil {
 		return 0, err
 	}
-	if s.coordinated() {
-		head, exists, err := s.Coordinator.Head(ctx, tenantID)
-		if err != nil {
-			return 0, err
-		}
-		if exists {
-			return head.GraphVersion, nil
-		}
-	}
+
 	manifest, _, err := s.getManifest(ctx, tenantID)
 	return manifest.Version, err
 }

@@ -77,17 +77,6 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 			ErrConflict,
 		)
 	}
-	if target.coordinated() && !options.DryRun {
-		return copyTenantObjectsCoordinated(
-			ctx,
-			source,
-			sourceTenantID,
-			target,
-			targetTenantID,
-			options,
-			report,
-		)
-	}
 
 	if options.DryRun {
 		found := false

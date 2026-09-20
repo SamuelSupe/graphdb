@@ -8,7 +8,6 @@ import (
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
-
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -382,17 +381,6 @@ func (s *Server) tenantLifecycleGate(mutation bool, next http.Handler) http.Hand
 		setAPITraceTenant(ctx, tenantID)
 		status, err := s.Store.TenantStatus(ctx, tenantID)
 		if err != nil {
-			if errors.Is(err, storage.ErrCoordinatorUnavailable) && !mutation {
-				if span != nil {
-					span.SetAttributes(
-						attribute.String("graphdb.tenant", tenantID),
-						attribute.String("graphdb.tenant_gate.result", "coordinator_unavailable_read_fallback"),
-					)
-				}
-				endHTTPSpan(span, nil)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
 			endHTTPSpan(span, err)
 			writeTenantLifecycleError(w, err)
 			return
@@ -450,8 +438,7 @@ func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int
 
 func writeTenantLifecycleError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, storage.ErrCoordinatorUnavailable),
-		errors.Is(err, storage.ErrWriteConflict),
+	case errors.Is(err, storage.ErrWriteConflict),
 		errors.Is(err, storage.ErrVersionConflict),
 		errors.Is(err, storage.ErrIdempotencyInProgress):
 		writeStorageError(w, err)

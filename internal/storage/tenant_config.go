@@ -136,9 +136,7 @@ func (s *TenantStore) PutTenantConfig(ctx context.Context, tenantID string, conf
 	if err := validateTenantConfig(config); err != nil {
 		return TenantConfig{}, err
 	}
-	if s.coordinated() {
-		return s.putCoordinatedTenantConfig(ctx, tenantID, config)
-	}
+
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return TenantConfig{}, err
@@ -176,14 +174,7 @@ func (s *TenantStore) getTenantConfigWithMeta(ctx context.Context, tenantID stri
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantConfig{}, false, ObjectMeta{}, err
 	}
-	if s.coordinated() {
-		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
-		if err != nil {
-			return TenantConfig{}, false, ObjectMeta{}, err
-		}
-		return snapshot.TenantConfig, snapshot.TenantConfigConfigured,
-			coordinatedManifestMeta(s.tenantConfigKey(tenantID), head), nil
-	}
+
 	key := s.tenantConfigKey(tenantID)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
@@ -209,13 +200,6 @@ func (s *TenantStore) getTenantConfigWithMeta(ctx context.Context, tenantID stri
 }
 
 func (s *TenantStore) putTenantConfigRecordWithMeta(ctx context.Context, tenantID string, record tenantConfigRecord, meta ObjectMeta) (ObjectMeta, error) {
-	if s.coordinated() {
-		if _, err := s.PutTenantConfig(ctx, tenantID, record.Config); err != nil {
-			return ObjectMeta{}, err
-		}
-		_, _, next, err := s.getTenantConfigWithMeta(ctx, tenantID)
-		return next, err
-	}
 	record.TenantID = tenantID
 	data, err := marshalParquetTenantConfig(ctx, record)
 	if err != nil {
@@ -242,9 +226,6 @@ func (s *TenantStore) effectiveBackpressureConfig(ctx context.Context, tenantID 
 }
 
 func (s *TenantStore) getTenantConfigForWrite(ctx context.Context, tenantID string) (TenantConfig, bool, ObjectMeta, error) {
-	if s.coordinated() {
-		return s.getTenantConfigWithMeta(ctx, tenantID)
-	}
 	if config, configured, meta, ok := s.getCachedTenantConfig(tenantID); ok {
 		return config, configured, meta, nil
 	}
@@ -254,42 +235,6 @@ func (s *TenantStore) getTenantConfigForWrite(ctx context.Context, tenantID stri
 	}
 	s.setCachedTenantConfig(tenantID, config, configured, meta)
 	return config, configured, meta, nil
-}
-
-func (s *TenantStore) putCoordinatedTenantConfig(
-	ctx context.Context,
-	tenantID string,
-	config TenantConfig,
-) (TenantConfig, error) {
-	if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
-		return TenantConfig{}, err
-	}
-	for attempt := 0; attempt < s.CoordinatorRetryLimit+1; attempt++ {
-		snapshot, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
-		if err != nil {
-			return TenantConfig{}, err
-		}
-		snapshot.TenantConfig = config
-		snapshot.TenantConfigConfigured = true
-		_, published, err := s.publishCoordinatedWriteContext(ctx, head, snapshot)
-		if err != nil {
-			return TenantConfig{}, err
-		}
-		if published {
-			s.deleteCachedTenantConfig(tenantID)
-			if err := s.mirrorLatestWriteContext(ctx, tenantID); err != nil {
-				return TenantConfig{}, err
-			}
-			if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
-				return TenantConfig{}, err
-			}
-			return config, nil
-		}
-		if err := coordinatorRetryDelay(ctx, attempt); err != nil {
-			return TenantConfig{}, err
-		}
-	}
-	return TenantConfig{}, fmt.Errorf("%w: tenant config for tenant %q changed while publishing", ErrWriteConflict, tenantID)
 }
 
 func applyTenantBackpressureConfig(base *BackpressureConfig, config TenantBackpressureConfig) {

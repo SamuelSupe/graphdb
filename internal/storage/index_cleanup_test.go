@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
@@ -489,4 +491,171 @@ func (s unsupportedConditionalDeleteStore) DeleteConditional(ctx context.Context
 		return fmt.Errorf("%w: %w", ErrConflict, ErrConditionalDeleteUnsupported)
 	}
 	return s.ObjectStore.DeleteConditional(ctx, key, condition)
+}
+
+func TestIndexGCCheckpointRechecksReferencesAndProtectsReadViews(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := newParquetIndexTenantStore(files, "test")
+	for i := 0; i < 2; i++ {
+		if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: fmt.Sprintf("host:%d", i), Kind: "host"}}}, CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 3)
+	for i := range keys {
+		shard := fmt.Sprintf("zz%d", i)
+		keys[i] = store.parquetEntityPageVersionKey("tenant-a", 1, shard)
+		data, err := marshalParquetEntityPage(ctx, EntityPageData{TenantID: "tenant-a", Shard: shard, Version: 1, Entities: []graph.Entity{{ID: "host:old", Kind: "host"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := files.Put(ctx, keys[i], data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	options := GCOptions{CleanupIndexOrphans: true, MaxDeletes: 1, DryRun: true}
+	plan, err := store.RunGC(ctx, "tenant-a", options)
+	if err != nil || plan.Checkpoint.Planned != 1 || !plan.Checkpoint.Paused {
+		t.Fatalf("plan=%+v err=%v", plan.Checkpoint, err)
+	}
+	for _, key := range plan.Checkpoint.PlannedKeys {
+		if _, err := files.Get(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	options.DryRun = false
+	first, err := store.RunGC(ctx, "tenant-a", options)
+	if err != nil || first.Checkpoint.Deleted != 1 || !first.Checkpoint.Paused {
+		t.Fatalf("first=%+v err=%v", first.Checkpoint, err)
+	}
+	options.CheckpointCursor = first.Checkpoint.NextCursor
+	release, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeout, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	_, blocked := store.RunGC(timeout, "tenant-a", options)
+	cancel()
+	release()
+	if !errors.Is(blocked, context.DeadlineExceeded) {
+		t.Fatalf("GC bypassed active read: %v", blocked)
+	}
+	// An index publication can reuse an older object between checkpoints.
+	catalog, meta, err := store.getIndexCatalogWithMeta(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog.EntityPages = append(catalog.EntityPages, EntityPageSpec{Shard: "zz2", Format: IndexFormatParquet, Objects: []IndexObject{{Key: keys[2]}}})
+	if _, err := store.putIndexCatalogWithMeta(ctx, "tenant-a", catalog, meta); err != nil {
+		t.Fatal(err)
+	}
+	for batch := 0; ; batch++ {
+		if batch > 30 {
+			t.Fatal("GC checkpoint did not finish")
+		}
+		result, err := store.RunGC(ctx, "tenant-a", options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Checkpoint.Deleted > 1 {
+			t.Fatalf("delete budget exceeded: %+v", result.Checkpoint)
+		}
+		if result.Checkpoint.Completed {
+			break
+		}
+		if result.Checkpoint.NextCursor <= options.CheckpointCursor {
+			t.Fatal("cursor did not advance")
+		}
+		options.CheckpointCursor = result.Checkpoint.NextCursor
+	}
+	for _, key := range keys[:2] {
+		if _, err := files.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("orphan %s: %v", key, err)
+		}
+	}
+	if _, err := files.Get(ctx, keys[2]); err != nil {
+		t.Fatalf("newly referenced object deleted: %v", err)
+	}
+}
+
+func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	objects := newBlockingTenantDeleteStore(files, "test/tenants/tenant-a/indexes/entities/by-id/")
+	store := NewTenantStore(objects, "test")
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	const count = gcBatchDeletes*2 + 1
+	for i := 0; i < count; i++ {
+		if err := files.Put(ctx, store.entityRecordKey("tenant-a", fmt.Sprintf("host:%04d", i)), []byte("obsolete")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entered, resume := objects.blockNextDelete()
+	done := make(chan error, 1)
+	go func() {
+		report, err := store.RunGC(ctx, "tenant-a", GCOptions{CleanupIndexOrphans: true})
+		if err == nil && (report.DeletedEntityRecords != count || !report.Checkpoint.Completed) {
+			err = fmt.Errorf("incomplete GC: %+v", report)
+		}
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	view := make(chan func(), 1)
+	readError := make(chan error, 1)
+	go func() {
+		release, err := store.PinReadView(ctx, "tenant-a")
+		if err != nil {
+			readError <- err
+			return
+		}
+		view <- release
+	}()
+	close(resume)
+	var release func()
+	select {
+	case release = <-view:
+	case err := <-readError:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	release = sync.OnceFunc(release)
+	defer release()
+	remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
+	if err != nil || len(remaining) == 0 {
+		t.Fatalf("reader only admitted after all garbage was deleted: remaining=%d err=%v", len(remaining), err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("GC finished while read view pinned: %v", err)
+	default:
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 }

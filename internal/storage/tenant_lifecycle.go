@@ -81,9 +81,7 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 			return stage.CreateTenant(ctx, tenantID, options)
 		})
 	}
-	if s.coordinated() {
-		return s.createCoordinatedTenant(ctx, tenantID, options)
-	}
+
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return TenantInfo{}, err
@@ -211,9 +209,7 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 	if status != TenantStatusActive && status != TenantStatusDisabled && status != TenantStatusDeleted {
 		return TenantInfo{}, fmt.Errorf("unsupported tenant status %q", status)
 	}
-	if s.coordinated() {
-		return s.setCoordinatedTenantStatus(ctx, tenantID, status)
-	}
+
 	if status != TenantStatusActive && s.ingestBarrier != nil {
 		if err := s.ingestBarrier(ctx, tenantID); err != nil {
 			return TenantInfo{}, err
@@ -253,29 +249,7 @@ func (s *TenantStore) purgeTenantWithViewsLocked(ctx context.Context, tenantID s
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantPurgeReport{}, err
 	}
-	var (
-		purgeGeneration int64
-		candidateOnly   bool
-	)
-	if s.coordinated() {
-		purgeCtx, generation, onlyCandidate, stopLease, err :=
-			s.startCoordinatedPurge(
-				ctx, tenantID, force,
-			)
-		if err != nil {
-			return TenantPurgeReport{}, err
-		}
-		defer stopLease()
-		ctx = purgeCtx
-		purgeGeneration = generation
-		candidateOnly = onlyCandidate
-		s.deleteWriteCache(tenantID)
-		if !candidateOnly && s.ingestBarrier != nil {
-			if err := s.ingestBarrier(ctx, tenantID); err != nil {
-				return TenantPurgeReport{}, err
-			}
-		}
-	} else if s.localFileStore() == nil && s.ingestBarrier != nil {
+	if s.localFileStore() == nil && s.ingestBarrier != nil {
 		if err := s.ingestBarrier(ctx, tenantID); err != nil {
 			return TenantPurgeReport{}, err
 		}
@@ -285,9 +259,7 @@ func (s *TenantStore) purgeTenantWithViewsLocked(ctx context.Context, tenantID s
 		return TenantPurgeReport{}, err
 	}
 	defer unlock()
-	if candidateOnly {
-		return s.purgeCoordinatedTenantCandidate(ctx, tenantID)
-	}
+
 	if metadata, exists, _, err := s.getTenantPurgeTombstone(ctx, tenantID); err != nil {
 		return TenantPurgeReport{}, err
 	} else if phase, _ := tenantPurgeState(metadata, exists); phase == tenantPurgePhaseComplete {
@@ -296,11 +268,6 @@ func (s *TenantStore) purgeTenantWithViewsLocked(ctx context.Context, tenantID s
 			return TenantPurgeReport{}, err
 		}
 		if !residual {
-			if s.coordinated() {
-				if err := s.Coordinator.FinalizeTenantPurge(ctx, tenantID, purgeGeneration); err != nil {
-					return TenantPurgeReport{TenantID: tenantID}, err
-				}
-			}
 			return TenantPurgeReport{TenantID: tenantID}, nil
 		}
 		if err := s.reopenCompletedTenantPurge(ctx, tenantID); err != nil {
@@ -310,25 +277,21 @@ func (s *TenantStore) purgeTenantWithViewsLocked(ctx context.Context, tenantID s
 	if err := s.acquireWriterLeaseForPurge(ctx, tenantID); err != nil {
 		return TenantPurgeReport{}, err
 	}
-	report, err := s.purgeTenantLockedAtGeneration(
-		ctx, tenantID, force, purgeGeneration,
+	report, err := s.purgeTenantLocked(
+		ctx, tenantID, force,
 	)
 	if err != nil {
 		return report, err
 	}
-	if s.coordinated() {
-		if err := s.Coordinator.FinalizeTenantPurge(ctx, tenantID, purgeGeneration); err != nil {
-			return report, err
-		}
-	}
+
 	return report, nil
 }
 
-func (s *TenantStore) purgeTenantLockedAtGeneration(
+func (s *TenantStore) purgeTenantLocked(
 	ctx context.Context,
 	tenantID string,
 	force bool,
-	purgeGeneration int64,
+
 ) (TenantPurgeReport, error) {
 	metadata, markerExists, _, err := s.getTenantPurgeTombstone(ctx, tenantID)
 	if err != nil {
@@ -348,7 +311,7 @@ func (s *TenantStore) purgeTenantLockedAtGeneration(
 		}
 	}
 	operationID, alreadyComplete, err := s.beginTenantPurge(
-		ctx, tenantID, purgeGeneration > 0,
+		ctx, tenantID, false,
 	)
 	if err != nil {
 		return TenantPurgeReport{}, err
@@ -366,9 +329,7 @@ func (s *TenantStore) purgeTenantLockedAtGeneration(
 		s.Objects,
 		s.tenantObjectPrefix(tenantID),
 		func(objects []ObjectInfo) error {
-			if err := s.ensureCoordinatedPurgeCurrent(
-				ctx, tenantID, purgeGeneration,
-			); err != nil {
+			if err := objectContextErr(ctx); err != nil {
 				return err
 			}
 			filtered := objects[:0]
@@ -378,32 +339,26 @@ func (s *TenantStore) purgeTenantLockedAtGeneration(
 				}
 			}
 			deletedKeys, err := s.deleteTenantPurgePage(
-				ctx, tenantID, filtered, purgeGeneration,
+				ctx, filtered,
 			)
 			report.Deleted += len(deletedKeys)
 			report.recordDeletedKeys(deletedKeys)
 			if err != nil {
 				return err
 			}
-			return s.ensureCoordinatedPurgeCurrent(
-				ctx, tenantID, purgeGeneration,
-			)
+			return objectContextErr(ctx)
 		},
 	)
 	if err != nil {
 		return report, err
 	}
-	if err := s.ensureCoordinatedPurgeCurrent(
-		ctx, tenantID, purgeGeneration,
-	); err != nil {
+	if err := objectContextErr(ctx); err != nil {
 		return report, err
 	}
 	if err := s.removeTenantFromRegistry(ctx, tenantID); err != nil {
 		return report, err
 	}
-	if err := s.ensureCoordinatedPurgeCurrent(
-		ctx, tenantID, purgeGeneration,
-	); err != nil {
+	if err := objectContextErr(ctx); err != nil {
 		return report, err
 	}
 	if err := s.completeTenantPurge(ctx, tenantID, operationID); err != nil {
@@ -465,49 +420,14 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 
 func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID string, sourceInfo TenantInfo, sourceRecord TenantBackupRecord, dataMD5 string, options TenantCloneOptions) (TenantInfo, error) {
 	targetTenantID := options.TargetTenantID
-	var activationContext *WriteContextSnapshot
-	if s.coordinated() {
-		writeContext, err := tenantWriteContextFromBackupRecord(
-			sourceRecord, targetTenantID,
-		)
-		if err != nil {
-			return TenantInfo{}, err
-		}
-		if sourceRecord.Config != nil ||
-			sourceRecord.SourcePolicy != nil ||
-			len(sourceRecord.RelationSchemas) > 0 {
-			activationContext = &writeContext
-		}
-	}
+
 	targetLock, err := s.lockTenantMaintenance(ctx, targetTenantID)
 	if err != nil {
 		return TenantInfo{}, err
 	}
 	defer targetLock()
-	leaseCtx, stopLease, err := s.startCoordinatorOperationLease(ctx, targetTenantID, "clone")
-	if err != nil {
-		return TenantInfo{}, err
-	}
-	defer stopLease()
-	ctx = leaseCtx
-	coordinatedResume := false
-	var coordinatedCandidate coordinatedTenantCandidate
-	if s.coordinated() {
-		coordinatedCandidate = newCoordinatedTenantCandidate(
-			"clone",
-			sourceTenantID,
-			s.tenantObjectPrefix(sourceTenantID),
-			targetTenantID,
-		)
-		coordinatedResume, err = s.prepareCoordinatedCloneTarget(
-			ctx,
-			targetTenantID,
-			coordinatedCandidate,
-		)
-		if err != nil {
-			return TenantInfo{}, err
-		}
-	} else {
+
+	{
 		if exists, err := s.tenantPrefixExists(ctx, targetTenantID); err != nil {
 			return TenantInfo{}, err
 		} else if exists {
@@ -525,7 +445,7 @@ func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID stri
 	snapshot := sourceRecord.Snapshot
 	snapshotKey := ""
 	snapshotCatalogKey := ""
-	if snapshot.Version > 0 && !coordinatedResume {
+	if snapshot.Version > 0 {
 		catalog, err := s.putShardedSnapshot(ctx, targetTenantID, snapshot)
 		if err != nil {
 			return TenantInfo{}, err
@@ -547,40 +467,24 @@ func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID stri
 		DataMD5:            dataMD5,
 		UpdatedAt:          time.Now().UTC(),
 	}
-	if s.coordinated() && !coordinatedResume {
-		if _, err := s.putCoordinatedManifest(
-			ctx,
-			targetTenantID,
-			manifest,
-			ObjectMeta{Key: s.manifestKey(targetTenantID)},
-			nil,
-			activationContext,
+
+	{
+		_, targetManifestMeta, err := s.getManifest(ctx, targetTenantID)
+		if err != nil {
+			return TenantInfo{}, err
+		}
+		if _, err := s.putManifestMeta(
+			ctx, targetTenantID, manifest, targetManifestMeta,
 		); err != nil {
 			return TenantInfo{}, err
 		}
-	} else {
-		if !s.coordinated() {
-			_, targetManifestMeta, err := s.getManifest(ctx, targetTenantID)
-			if err != nil {
-				return TenantInfo{}, err
-			}
-			if _, err := s.putManifestMeta(
-				ctx, targetTenantID, manifest, targetManifestMeta,
-			); err != nil {
-				return TenantInfo{}, err
-			}
-			if err := s.putLocalLifecycleWriteContext(
-				ctx, targetTenantID, sourceRecord, snapshot.Version,
-			); err != nil {
-				return TenantInfo{}, err
-			}
-		}
-	}
-	if s.coordinated() && activationContext != nil {
-		if err := s.mirrorLatestWriteContext(ctx, targetTenantID); err != nil {
+		if err := s.putLocalLifecycleWriteContext(
+			ctx, targetTenantID, sourceRecord, snapshot.Version,
+		); err != nil {
 			return TenantInfo{}, err
 		}
 	}
+
 	now := time.Now().UTC()
 	metadata := TenantMetadata{
 		TenantID:    targetTenantID,
@@ -615,13 +519,7 @@ func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID stri
 	if err != nil {
 		return TenantInfo{}, err
 	}
-	if s.coordinated() {
-		if err := s.completeCoordinatedTenantCandidate(
-			ctx, targetTenantID, coordinatedCandidate,
-		); err != nil {
-			return TenantInfo{}, err
-		}
-	}
+
 	return info, nil
 }
 
@@ -638,70 +536,6 @@ func (s *TenantStore) EnsureTenantWritable(ctx context.Context, tenantID string)
 	default:
 		return nil
 	}
-}
-
-func (s *TenantStore) setCoordinatedTenantStatus(
-	ctx context.Context,
-	tenantID string,
-	status string,
-) (TenantInfo, error) {
-	if err := ValidateTenantID(tenantID); err != nil {
-		return TenantInfo{}, err
-	}
-	operationCtx, stopLease, err := s.startCoordinatorOperationLease(
-		ctx, tenantID, "status",
-	)
-	if err != nil {
-		return TenantInfo{}, err
-	}
-	defer stopLease()
-	ctx = operationCtx
-	if _, exists, err := s.Coordinator.Head(ctx, tenantID); err != nil {
-		return TenantInfo{}, err
-	} else if !exists {
-		if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
-			return TenantInfo{}, err
-		}
-	}
-	metadata, configured, _, err := s.getTenantMetadataWithMeta(ctx, tenantID)
-	if err != nil {
-		return TenantInfo{}, err
-	}
-	if !configured {
-		metadata = legacyTenantMetadata(tenantID)
-	}
-	now := time.Now().UTC()
-	metadata.Status = status
-	metadata.UpdatedAt = now
-	switch status {
-	case TenantStatusDisabled:
-		metadata.DisabledAt = now
-		metadata.DeletedAt = time.Time{}
-	case TenantStatusDeleted:
-		metadata.DeletedAt = now
-	case TenantStatusActive:
-		metadata.DisabledAt = time.Time{}
-		metadata.DeletedAt = time.Time{}
-	}
-	head, err := s.Coordinator.TransitionTenant(ctx, tenantID, status, true)
-	if err != nil {
-		return TenantInfo{}, err
-	}
-	data, err := marshalParquetTenantMetadata(ctx, metadata)
-	if err != nil {
-		return TenantInfo{}, err
-	}
-	if err := s.putLegacyLifecycleMirrorObject(
-		ctx, tenantID, s.tenantMetadataKey(tenantID), data, head,
-	); err != nil {
-		return TenantInfo{}, err
-	}
-	s.deleteWriteCache(tenantID)
-	s.deleteCachedTenantMetadata(tenantID)
-	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
-		return TenantInfo{}, err
-	}
-	return s.tenantInfoFromMetadata(ctx, metadata, true)
 }
 
 func (s *TenantStore) TenantStatus(ctx context.Context, tenantID string) (string, error) {
@@ -760,7 +594,7 @@ func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID st
 	}
 	var metadata TenantMetadata
 	key := s.tenantMetadataKey(tenantID)
-	s.clearCoordinatedWriterObjectKey(key)
+
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return TenantMetadata{}, false, ObjectMeta{Key: key}, nil
@@ -783,22 +617,6 @@ func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string) (string, error) {
-	if s.coordinated() {
-		if publishState, ok := coordinatorIngestPublishStateFromContext(ctx, tenantID); ok {
-			if !publishState.headExists {
-				return TenantStatusActive, nil
-			}
-			return publishState.head.Status, nil
-		}
-		head, exists, err := s.Coordinator.Head(ctx, tenantID)
-		if err != nil {
-			return "", err
-		}
-		if !exists {
-			return TenantStatusActive, nil
-		}
-		return head.Status, nil
-	}
 	purged, err := s.tenantPurgeTombstoneExistsCached(ctx, tenantID)
 	if err != nil {
 		return "", err

@@ -169,48 +169,6 @@ func TestRelationSchemaDetectsWritesMadeByVersion10Writer(t *testing.T) {
 	}
 }
 
-func TestRelationSchemaCommitIncrementalValidationEligibility(t *testing.T) {
-	cases := []struct {
-		name        string
-		coordinated bool
-		checkpoint  int64
-		current     int64
-		want        bool
-	}{
-		{name: "local current", checkpoint: 7, current: 7, want: true},
-		{name: "local stale", checkpoint: 6, current: 7},
-		{name: "coordinated current", coordinated: true, checkpoint: 7, current: 7, want: true},
-		{name: "coordinated historical checkpoint", coordinated: true, checkpoint: 3, current: 7, want: true},
-		{name: "coordinated missing checkpoint", coordinated: true, current: 7},
-		{name: "coordinated future checkpoint", coordinated: true, checkpoint: 8, current: 7},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			got := relationSchemaCommitCanValidateIncrementally(
-				test.coordinated,
-				RelationSchemaCatalog{GraphVersion: test.checkpoint},
-				test.current,
-			)
-			if got != test.want {
-				t.Fatalf("incremental eligibility = %v, want %v", got, test.want)
-			}
-		})
-	}
-}
-
-func TestMigrationWriteContextPinsRelationSchemaCheckpoint(t *testing.T) {
-	context := tenantMigrationContext{
-		relationSchemas: []RelationSchema{{RelationType: "depends_on"}},
-	}
-	snapshot := context.coordinatedSnapshot("tenant-b", 42)
-	if snapshot == nil {
-		t.Fatal("migration write context is nil")
-	}
-	if got := snapshot.RelationSchemas.GraphVersion; got != 42 {
-		t.Fatalf("relation schema graph version = %d, want 42", got)
-	}
-}
-
 func TestTenantMigrationRejectsInvalidStaleRelationSchemaData(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()

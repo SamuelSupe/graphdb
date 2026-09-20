@@ -1,9 +1,7 @@
 package storage
 
 import (
-	"context"
 	"fmt"
-	"reflect"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
@@ -73,57 +71,24 @@ func tenantWriteContextFromBackupRecord(
 	return snapshot, nil
 }
 
-func (s *TenantStore) pinCoordinatedRestoreContext(
-	ctx context.Context,
-	tenantID string,
-	expectedGraphVersion int64,
-	desired WriteContextSnapshot,
-) (ObjectMeta, error) {
-	current, head, err := s.loadCoordinatedWriteContext(ctx, tenantID)
-	if err != nil {
-		return ObjectMeta{}, err
-	}
-	if head.Status != TenantStatusActive {
-		return ObjectMeta{}, ErrTenantDeleted
-	}
-	if head.GraphVersion != expectedGraphVersion {
-		return ObjectMeta{}, fmt.Errorf(
-			"%w: target tenant %q changed during restore",
-			ErrConflict, tenantID,
-		)
-	}
-	if sameRestoreWriteContext(current, desired) {
-		return coordinatedManifestMeta(head.ManifestKey, head), nil
-	}
-	if head.WriteContextRevision != 0 {
-		return ObjectMeta{}, fmt.Errorf(
-			"%w: target tenant %q write context changed during restore",
-			ErrConflict, tenantID,
-		)
-	}
-	next, published, err := s.publishCoordinatedWriteContext(
-		ctx, head, desired,
-	)
-	if err != nil {
-		return ObjectMeta{}, err
-	}
-	if !published {
-		return ObjectMeta{}, fmt.Errorf(
-			"%w: target tenant %q changed during restore",
-			ErrConflict, tenantID,
-		)
-	}
-	return coordinatedManifestMeta(next.ManifestKey, next), nil
+const writeContextLayoutVersion = 1
+
+type WriteContextSnapshot struct {
+	LayoutVersion          int                   `json:"layout_version"`
+	TenantID               string                `json:"tenant_id"`
+	Revision               int64                 `json:"revision"`
+	SourcePolicy           graph.SourcePolicy    `json:"source_policy,omitempty"`
+	SourcePolicyConfigured bool                  `json:"source_policy_configured,omitempty"`
+	TenantConfig           TenantConfig          `json:"tenant_config,omitempty"`
+	TenantConfigConfigured bool                  `json:"tenant_config_configured,omitempty"`
+	RelationSchemas        RelationSchemaCatalog `json:"relation_schemas"`
+	UpdatedAt              time.Time             `json:"updated_at"`
 }
 
-func sameRestoreWriteContext(left, right WriteContextSnapshot) bool {
-	left.Revision = 0
-	left.UpdatedAt = time.Time{}
-	left.RelationSchemas.Revision = 0
-	left.RelationSchemas.UpdatedAt = time.Time{}
-	right.Revision = 0
-	right.UpdatedAt = time.Time{}
-	right.RelationSchemas.Revision = 0
-	right.RelationSchemas.UpdatedAt = time.Time{}
-	return reflect.DeepEqual(left, right)
+func emptyWriteContext(tenantID string) WriteContextSnapshot {
+	return WriteContextSnapshot{
+		LayoutVersion:   writeContextLayoutVersion,
+		TenantID:        tenantID,
+		RelationSchemas: emptyRelationSchemaCatalog(tenantID),
+	}
 }

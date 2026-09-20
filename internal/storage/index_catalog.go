@@ -158,16 +158,6 @@ func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (Inde
 
 // The caller retains a shared or exclusive view until catalog publication.
 func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID string) (IndexCatalog, error) {
-	if s.coordinated() {
-		operationCtx, stop, err := s.startCoordinatorOperationLease(
-			ctx, tenantID, TaskTypeIndexRebuild,
-		)
-		if err != nil {
-			return IndexCatalog{}, err
-		}
-		defer stop()
-		ctx = operationCtx
-	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -242,16 +232,7 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 	if err := s.rebuildReverseIndex(ctx, tenantID, g, manifest.Version); err != nil {
 		return IndexCatalog{}, fmt.Errorf("rebuild reverse index: %w", err)
 	}
-	if acknowledger, ok := s.Coordinator.(CoordinatorDerivedTaskAcknowledger); ok {
-		if err := acknowledger.AcknowledgeDerivedTaskVersion(
-			ctx,
-			tenantID,
-			derivedTaskIndexes,
-			catalog.Version,
-		); err != nil {
-			return IndexCatalog{}, fmt.Errorf("acknowledge derived indexes: %w", err)
-		}
-	}
+
 	return catalog, nil
 }
 
@@ -361,7 +342,7 @@ func (s *TenantStore) GetIndexCatalogSnapshot(ctx context.Context, tenantID stri
 
 func (s *TenantStore) getIndexCatalogWithMeta(ctx context.Context, tenantID string) (IndexCatalog, ObjectMeta, error) {
 	key := s.indexCatalogKey(tenantID)
-	s.clearCoordinatedWriterObjectKey(key)
+
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return IndexCatalog{}, meta, err
@@ -418,14 +399,9 @@ func (s *TenantStore) putIndexCatalogWithMetaMode(ctx context.Context, tenantID 
 		writeMeta = ObjectMeta{Key: key}
 	}
 	var nextMeta ObjectMeta
-	if s.coordinated() {
-		nextMeta, err = s.putTenantGenerationConditional(ctx, tenantID, key, data, PutCondition{
-			IfNoneMatch: !writeMeta.Exists,
-			IfMatch:     writeMeta.ETag,
-		})
-	} else {
-		nextMeta, err = s.putBytesWithMetaResult(ctx, key, data, writeMeta)
-	}
+
+	nextMeta, err = s.putBytesWithMetaResult(ctx, key, data, writeMeta)
+
 	if err != nil {
 		return ObjectMeta{}, err
 	}

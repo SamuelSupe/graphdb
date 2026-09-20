@@ -71,15 +71,7 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 			return Task{}, err
 		}
 	}
-	if s.coordinated() {
-		if _, exists, err := s.Coordinator.Head(ctx, tenantID); err != nil {
-			return Task{}, err
-		} else if !exists {
-			if _, err := s.ensureCoordinatedTenantHead(ctx, tenantID); err != nil {
-				return Task{}, err
-			}
-		}
-	}
+
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
 		return Task{}, err
@@ -141,29 +133,7 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 		}
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	stopQueueLease, active, reused, err := s.claimCoordinatorQueuedTask(
-		ctx,
-		task,
-		cancel,
-	)
-	if err != nil {
-		cancel()
-		if task.Type == TaskTypeGC {
-			s.abandonGCRunningMarker(ctx, task)
-		}
-		s.releaseTaskAdmission(task)
-		return Task{}, err
-	}
-	if reused {
-		cancel()
-		if task.Type == TaskTypeGC {
-			s.abandonGCRunningMarker(ctx, task)
-		}
-		s.releaseTaskAdmission(task)
-		return active, nil
-	}
 	if err := s.saveTask(ctx, task); err != nil {
-		stopQueueLease()
 		cancel()
 		if task.Type == TaskTypeGC {
 			s.abandonGCRunningMarker(ctx, task)
@@ -175,7 +145,6 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	launchPending = false
 	go func() {
 		defer s.taskWorkers.Done()
-		defer stopQueueLease()
 		s.runTaskAdmitted(runCtx, cancel, task)
 	}()
 	return task, nil
@@ -236,20 +205,6 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 	if s.taskCancelRequested(ctx, task) || ctx.Err() != nil {
 		return
 	}
-	leaseCtx, stopCoordinatorLease, leaseErr := s.startCoordinatorTaskLease(
-		ctx, task, cancel,
-	)
-	if leaseErr != nil {
-		task.Status = TaskStatusFailed
-		task.Phase = TaskStatusFailed
-		task.Error = leaseErr.Error()
-		task.FinishedAt = time.Now().UTC()
-		task.UpdatedAt = task.FinishedAt
-		s.trySaveTaskFinal(ctx, task)
-		return
-	}
-	defer stopCoordinatorLease()
-	ctx = leaseCtx
 	task.Status = "running"
 	task.Phase = "running"
 	task.ProgressTotal = taskProgressTotal(task.Type)

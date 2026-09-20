@@ -23,26 +23,10 @@ type ingestRecordKeyProbe struct {
 	err      error
 }
 
-// CaptureIngestWALGeneration returns the current coordinator generation that a
+// CaptureIngestWALGeneration returns the current tenant generation that a
 // local WAL acceptance must remain bound to until terminalization.
 func (s *TenantStore) CaptureIngestWALGeneration(ctx context.Context, tenantID string) (int64, error) {
-	if !s.coordinated() {
-		return s.localIngestGeneration(ctx, tenantID)
-	}
-	head, exists, err := s.Coordinator.Head(ctx, tenantID)
-	if err != nil {
-		return 0, err
-	}
-	if !exists {
-		head, err = s.ensureCoordinatedTenantHead(ctx, tenantID)
-		if err != nil {
-			return 0, err
-		}
-	}
-	if head.Generation <= 0 {
-		return 0, fmt.Errorf("tenant %q has invalid coordinator generation %d", tenantID, head.Generation)
-	}
-	return head.Generation, nil
+	return s.localIngestGeneration(ctx, tenantID)
 }
 
 func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, source string, collectorID string, batchID string) (IngestBatchRecord, error) {
@@ -409,11 +393,11 @@ func (s *TenantStore) loadMatchingIngestIdempotencyRecord(ctx context.Context, t
 
 func (s *TenantStore) repairIngestMetadataAfterSkip(ctx context.Context, tenantID string, record IngestBatchRecord, saveFailures bool) error {
 	var metadataErr error
-	if !s.coordinated() {
-		if err := s.repairCollectorStatusAfterSkip(ctx, tenantID, record); err != nil {
-			metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
-		}
+
+	if err := s.repairCollectorStatusAfterSkip(ctx, tenantID, record); err != nil {
+		metadataErr = errors.Join(metadataErr, fmt.Errorf("save collector status: %w", err))
 	}
+
 	if saveFailures && record.Result.Failed > 0 {
 		if err := s.ensureDeadLetterAfterSkip(ctx, tenantID, record.Request, record.Result); err != nil {
 			metadataErr = errors.Join(metadataErr, fmt.Errorf("save dead letter: %w", err))
@@ -492,17 +476,7 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 	if ingestRecordSameResult(existing, record) {
 		return nil
 	}
-	if s.coordinated() && coordinatedIngestMayReplaceFailedRecord(existing, record) {
-		_, err = s.Objects.PutConditional(ctx, key, data, PutCondition{IfMatch: meta.ETag})
-		if err == nil {
-			s.markObjectKeyCached(key)
-			return nil
-		}
-		if errors.Is(err, ErrConflict) {
-			return fmt.Errorf("%w: failed ingest record changed while publishing committed result", ErrConflict)
-		}
-		return err
-	}
+
 	if ingestRecordMatchesBatchIdentity(existing, tenantID, record.Request) {
 		if !ingestRecordRequestEqual(existing.Request, record.Request) {
 			return fmt.Errorf(
@@ -535,13 +509,6 @@ func (s *TenantStore) saveEncodedIngestRecord(ctx context.Context, tenantID stri
 		return fmt.Errorf("%w: ingest record changed while repairing mismatched metadata", ErrConflict)
 	}
 	return err
-}
-
-func coordinatedIngestMayReplaceFailedRecord(stored IngestBatchRecord, incoming IngestBatchRecord) bool {
-	return stored.Result.Applied == 0 &&
-		stored.Result.Failed > 0 &&
-		incoming.Result.Failed == 0 &&
-		ingestRecordRequestEqual(stored.Request, incoming.Request)
 }
 
 func (s *TenantStore) loadIngestRecordWithMeta(ctx context.Context, key string) (IngestBatchRecord, ObjectMeta, error) {
@@ -656,7 +623,7 @@ func (s *TenantStore) saveCollectorStatus(ctx context.Context, tenantID string, 
 				return err
 			}
 		}
-		if migrated || collectorStatusCoversOrSupersedesResult(status, result, s.coordinated()) {
+		if migrated || collectorStatusCoversResult(status, result) {
 			return nil
 		}
 		applyCollectorStatusResult(&status, tenantID, request, result, started, finished)
@@ -727,7 +694,7 @@ func (s *TenantStore) saveCollectorStatusBatch(
 		}
 		changed := false
 		for _, update := range updates {
-			if collectorStatusCoversOrSupersedesResult(status, update.result, s.coordinated()) {
+			if collectorStatusCoversResult(status, update.result) {
 				continue
 			}
 			applyCollectorStatusResult(&status, tenantID, update.request, update.result, update.started, update.finished)
@@ -797,17 +764,6 @@ func collectorStatusCoversResult(status CollectorStatus, result IngestResult) bo
 	return status.LastBatchID == result.BatchID && status.LastVersion == result.Version
 }
 
-func collectorStatusCoversOrSupersedesResult(
-	status CollectorStatus,
-	result IngestResult,
-	coordinated bool,
-) bool {
-	if collectorStatusCoversResult(status, result) {
-		return true
-	}
-	return coordinated && status.LastVersion > result.Version
-}
-
 func collectorStatusCanRepairSkippedResult(status CollectorStatus, meta ObjectMeta, result IngestResult) bool {
 	if !meta.Exists {
 		return true
@@ -827,23 +783,7 @@ func (s *TenantStore) GetCollectorStatus(ctx context.Context, tenantID string, s
 	if source == "" || collectorID == "" {
 		return CollectorStatus{}, fmt.Errorf("source and collector_id are required")
 	}
-	if s.coordinated() {
-		state, exists, err := s.Coordinator.CollectorState(ctx, tenantID, source, collectorID)
-		if err != nil {
-			return CollectorStatus{}, err
-		}
-		if !exists {
-			return CollectorStatus{}, ErrNotFound
-		}
-		return CollectorStatus{
-			TenantID:    tenantID,
-			Source:      state.Source,
-			CollectorID: state.CollectorID,
-			LastBatchID: state.BatchID,
-			LastCursor:  state.Cursor,
-			LastVersion: state.Version,
-		}, nil
-	}
+
 	key := s.collectorStatusKey(tenantID, source, collectorID)
 	if status, _, ok := s.getCachedCollectorStatus(key); ok {
 		return status, nil

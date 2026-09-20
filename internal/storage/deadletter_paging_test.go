@@ -95,3 +95,34 @@ func TestListDeadLettersUsesPagedObjectScan(t *testing.T) {
 		)
 	}
 }
+
+func TestDeadLetterLocalScanListsOnceAndHonorsCursor(t *testing.T) {
+	ctx := context.Background()
+	objects := &listOnlyCountingStore{ObjectStore: NewMemoryStore()}
+	store := NewTenantStore(objects, "test")
+	for i := 0; i < 1005; i++ {
+		key := store.deadLetterKey("tenant-a", "agent", fmt.Sprintf("%04d", i))
+		objects.items = append(objects.items, ObjectInfo{Key: key})
+		if err := objects.Put(ctx, key, []byte("damaged record")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := 0
+	if err := store.walkDeadLettersByKey(ctx, "tenant-a", "agent", "", func(DeadLetter) (bool, error) {
+		count++
+		return true, nil
+	}); err != nil || count != 1005 || objects.calls != 1 {
+		t.Fatalf("count=%d lists=%d err=%v", count, objects.calls, err)
+	}
+	count = 0
+	after := store.deadLetterKey("tenant-a", "agent", "1001")
+	if err := store.walkDeadLettersByKey(ctx, "tenant-a", "agent", after, func(item DeadLetter) (bool, error) {
+		if item.ID <= "1001" {
+			t.Fatalf("cursor returned old ID %s", item.ID)
+		}
+		count++
+		return count < 2, nil
+	}); err != nil || count != 2 || objects.calls != 2 {
+		t.Fatalf("cursor count=%d lists=%d err=%v", count, objects.calls, err)
+	}
+}

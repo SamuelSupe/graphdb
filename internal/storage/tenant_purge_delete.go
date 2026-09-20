@@ -10,9 +10,7 @@ const tenantPurgeDeletedKeySampleLimit = 100
 
 func (s *TenantStore) deleteTenantPurgePage(
 	ctx context.Context,
-	tenantID string,
 	objects []ObjectInfo,
-	generation int64,
 ) ([]string, error) {
 	if len(objects) == 0 {
 		return nil, nil
@@ -30,9 +28,7 @@ func (s *TenantStore) deleteTenantPurgePage(
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				if err := s.deleteTenantPurgeObject(
-					deleteCtx, tenantID, objects[index], generation,
-				); err != nil {
+				if err := s.Objects.Delete(deleteCtx, objects[index].Key); err != nil {
 					errorMu.Lock()
 					if firstErr == nil {
 						firstErr = err
