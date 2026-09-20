@@ -196,12 +196,13 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 	}
 	response, err := s.executeQueryAdmitted(r, tenantID, request)
 	err = normalizeQueryExecutionError(r.Context(), err)
-	s.observeQuery(tenantID, request, response, err, time.Since(start))
 	if err != nil {
+		s.observeQuery(tenantID, request, response, err, time.Since(start))
 		writeQueryError(w, err)
 		return
 	}
-	_ = encodeMaterializedQueryStream(w, r, response)
+	err = encodeMaterializedQueryStream(w, r, response)
+	s.observeQuery(tenantID, request, response, normalizeQueryExecutionError(r.Context(), err), time.Since(start))
 }
 
 func encodeMaterializedQueryStream(w http.ResponseWriter, r *http.Request, response query.Response) (err error) {
@@ -325,10 +326,10 @@ func encodeStreamItem(ctx context.Context, encoder *json.Encoder, item any, flus
 
 func streamFlush(w http.ResponseWriter) func() error {
 	controller := http.NewResponseController(w)
-	pending := 0
+	pending := streamFlushEvery - 1
 	return func() error {
 		pending++
-		if pending != 1 && pending < streamFlushEvery {
+		if pending < streamFlushEvery {
 			return nil
 		}
 		pending = 0

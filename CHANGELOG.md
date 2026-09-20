@@ -3,7 +3,7 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [1.3.4-local.8] - 2026-09-20
+## [1.3.4-local.9] - 2026-09-20
 
 Independent local disk prerelease on `codex/local-disk-v2`; `main` and the stable
 Latest release remain unchanged.
@@ -15,10 +15,10 @@ Latest release remain unchanged.
 - Remove unreachable PostgreSQL coordination code and its dedicated tests;
   retain local locking, fencing, durable recovery, data formats, and explicit
   rejection of unsupported coordination settings and markers.
-- Run local GC in batches of up to 256 deletions, releasing locks and rechecking
+- Run local GC in batches of up to 4,096 deletions, releasing locks and rechecking
   current references between batches. Index orphan cleanup now honors cursors,
   deletion budgets, and dry runs.
-- Apply the 256-file batch bound even when an overall deletion budget is set,
+- Apply the 4,096-file batch bound even when an overall deletion budget is set,
   admit queued readers between exclusive maintenance batches, and share
   directory durability barriers within each deletion batch.
 - Release task admission across local GC batches so compaction can relieve WAL
@@ -37,7 +37,10 @@ Latest release remain unchanged.
   actual maintenance failures remain errors.
 - Include the source required by the packaged Dockerfile, and verify a container
   built from the extracted release archive before publication.
-- Update bundled Go/Python SDK versions to `1.3.4+local.8`.
+- Flush streaming query/scan output in 32-row batches after immediate metadata,
+  fixing a counter reset that flushed every row; report materialized stream
+  encoding failures in query telemetry.
+- Update bundled Go/Python SDK versions to `1.3.4+local.9`.
 
 A focused 10K-entity deep-index benchmark measured 1.65 s/op before and 1.49 s/op
 after, with 5.08% fewer allocations. This small warm sample is not an overall

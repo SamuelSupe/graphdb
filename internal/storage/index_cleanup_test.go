@@ -589,8 +589,7 @@ func TestIndexGCCheckpointRechecksReferencesAndProtectsReadViews(t *testing.T) {
 func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 	for _, maxDeletes := range []int{0, gcBatchDeletes + 17} {
 		t.Run(fmt.Sprintf("max_deletes_%d", maxDeletes), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ctx := context.Background()
 			files, err := OpenFileStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -607,6 +606,8 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
 			entered, resume := objects.blockNextDelete()
 			done := make(chan error, 1)
 			go func() {
@@ -686,8 +687,7 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 }
 
 func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	files, err := OpenFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -705,6 +705,8 @@ func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	entered, resume := objects.blockNextDelete()
 	resumeGC := sync.OnceFunc(func() { close(resume) })
 	defer resumeGC()

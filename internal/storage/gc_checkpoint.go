@@ -149,7 +149,11 @@ func (r *gcCheckpointRunner) scanPageLimit() int {
 	if r.options.MaxDeletes <= 0 {
 		return 0
 	}
-	return max(64, min(512, r.options.MaxDeletes*2))
+	limit := 512
+	if r.options.listings != nil {
+		limit = gcBatchDeletes * 2
+	}
+	return max(64, min(limit, r.options.MaxDeletes*2))
 }
 
 func (r *gcCheckpointRunner) pageCursor(prefix string) (string, bool) {

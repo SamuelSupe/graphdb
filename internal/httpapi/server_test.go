@@ -1308,6 +1308,39 @@ func TestHTTPQueryStreamSavedQueryAndIndexCatalog(t *testing.T) {
 	}
 }
 
+func TestHTTPQueryStreamBatchesFlushes(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	entities := make([]graph.Entity, streamFlushEvery*2+5)
+	for i := range entities {
+		entities[i] = graph.Entity{ID: fmt.Sprintf("host:%03d", i), Kind: "host"}
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	req := httptest.NewRequest(http.MethodPost, "/v1/query/stream", strings.NewReader(`{"op":"match","kind":"host","limit":1000}`))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	rr := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"done":true`) || bytes.Count(rr.Body.Bytes(), []byte("\n")) != len(entities)+2 {
+		t.Fatalf("incomplete stream: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(rr.flushedLines) != 3 || rr.flushedLines[0] != 1 {
+		t.Fatalf("expected immediate metadata then batched rows, flushed at lines %v", rr.flushedLines)
+	}
+}
+
+type flushCountingRecorder struct {
+	*httptest.ResponseRecorder
+	flushedLines []int
+}
+
+func (r *flushCountingRecorder) Flush() {
+	r.flushedLines = append(r.flushedLines, bytes.Count(r.Body.Bytes(), []byte("\n")))
+	r.ResponseRecorder.Flush()
+}
+
 func TestHTTPQueryStreamStopsOnEncoderError(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")

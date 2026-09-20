@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const gcBatchDeletes = 256
+const gcBatchDeletes = 4096
 
 func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
 	if s.localFileStore() == nil {
