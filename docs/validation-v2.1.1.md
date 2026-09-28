@@ -1,6 +1,6 @@
-# GGraphDB 2.1.0 validation / 验证记录
+# GGraphDB 2.1.1 validation / 验证记录
 
-Date: 2026-09-28. Candidate identity is the annotated `v2.1.0` tag; published
+Date: 2026-09-28. Candidate identity is the annotated `v2.1.1` tag; published
 archives record the exact commit in `BUILD-METADATA.json` and binary `version`.
 
 ## Changes under review
@@ -14,6 +14,8 @@ archives record the exact commit in `BUILD-METADATA.json` and binary `version`.
   captures; schedule persistence honors tenant generations.
 - File publication locates affected read views by path prefixes instead of scanning
   all active tenants. Retention stops further pagination after 100 deletions.
+- A forced WAL flush arriving during a failed attempt survives completion and
+  gets one immediate retry; later failures still observe normal backoff.
 
 ## Checks
 
@@ -37,7 +39,15 @@ The tag workflow independently repeats static and HTTP/S3 gates and runs the
 required 30-minute mixed workload with compaction, GC and index rebuilding before
 publishing assets. A release exists only after those jobs and artifact checks
 succeed. Raw CI evidence is included under `release/evidence/` in the archive;
-local evidence is retained in `.workflow/release-v2.1.0/`.
+local evidence is retained in `.workflow/release-v2.1.1/`.
+
+The first 2.1.0 candidate passed the local gates above and its tag static gate,
+but the parallel main-branch race gate exposed a recovery timeout in
+`TestLocalRecoverDrainsPreparedWALBeforeOrphans`. Publication was cancelled.
+A deterministic scheduler regression reproduced the lost forced flush on the
+old implementation. After the fix, the scheduler, recovery and shutdown race
+regressions passed 20 consecutive runs on OrbStack. 2.1.1 reruns the release gates;
+the earlier local logs remain in `.workflow/release-v2.1.0/`.
 
 ## Focused cost measurement
 

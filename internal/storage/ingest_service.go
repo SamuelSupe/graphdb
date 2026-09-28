@@ -866,6 +866,7 @@ func (s *IngestService) schedule() {
 	queues := map[string]*ingestTenantQueue{}
 	busy := map[string]bool{}
 	forceThrough := map[string]uint64{}
+	forceRetry := map[string]bool{}
 	awaitingAdmission := map[uint64]*ingestPending{}
 	nextAcceptedSequence := uint64(1)
 	deadlines := ingestDeadlineHeap{}
@@ -976,12 +977,17 @@ func (s *IngestService) schedule() {
 			}
 		case force := <-s.forceCh:
 			forceThrough[force.tenantID] = max(forceThrough[force.tenantID], force.throughLSN)
+			if busy[force.tenantID] {
+				forceRetry[force.tenantID] = true
+			}
 			if queue := queues[force.tenantID]; queue != nil {
 				queue.deadline = time.Now()
 				heap.Fix(&deadlines, queue.index)
 			}
 		case completion := <-s.completeCh:
 			delete(busy, completion.tenantID)
+			forced := forceRetry[completion.tenantID]
+			delete(forceRetry, completion.tenantID)
 			if len(completion.retry) > 0 {
 				retryDeadline := time.Now().Add(s.ingestRetryDelay(completion.retry[0]))
 				queue := queues[completion.tenantID]
@@ -1001,7 +1007,9 @@ func (s *IngestService) schedule() {
 				for _, pending := range completion.retry {
 					queue.bytes += pending.bytes
 				}
-				if draining {
+				// A force received during this flush must survive a failed attempt,
+				// but only bypass backoff once so persistent faults cannot spin.
+				if draining || forced {
 					queue.deadline = time.Now()
 					heap.Fix(&deadlines, queue.index)
 				}

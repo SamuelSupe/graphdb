@@ -18,13 +18,13 @@ Stop the service before using offline tools on its directory. Use HTTP for live 
 
 ## Release archive
 
-Download the archive and checksum from the [2.1 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.0).
+Download the archive and checksum from the [2.1 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.1).
 Verify the outer archive and inner `SHA256SUMS`, then choose the binary for your platform:
 
 ```sh
-sha256sum -c graphdb-v2.1.0.tar.gz.sha256
-tar -xzf graphdb-v2.1.0.tar.gz
-cd v2.1.0
+sha256sum -c graphdb-v2.1.1.tar.gz.sha256
+tar -xzf graphdb-v2.1.1.tar.gz
+cd v2.1.1
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 bin/graphdb-linux-amd64 serve
@@ -38,7 +38,7 @@ Commit responses use `data_hash`; update clients to the 2.0 SDKs.
 ## Upgrade from 2.0
 
 Create and verify a snapshot, stop the old process, replace the binary, then start
-2.1.0 with the same `GRAPHDB_DATA_DIR` and prefix. The directory remains exclusive;
+2.1.1 with the same `GRAPHDB_DATA_DIR` and prefix. The directory remains exclusive;
 never run both versions against it. Validate readiness, representative queries,
 and WAL status before reopening traffic. Preserve the pre-upgrade backup for
 rollback; downgrading after enabling new automation is not a supported workflow.

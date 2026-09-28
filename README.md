@@ -9,7 +9,7 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.1.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.0) is the main
+[2.1.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.1) is the main
 release, developed on `main`. Local disk holds the live graph; optional
 S3-compatible object storage holds snapshot backups for on-demand recovery.
 See the [2.1 release notes](release/local-disk.md) and

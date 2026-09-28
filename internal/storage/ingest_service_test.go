@@ -104,6 +104,51 @@ func TestIngestServiceRecoveryBoundsTerminalHistory(t *testing.T) {
 	}
 }
 
+func TestIngestSchedulerPreservesForceDuringFailedFlush(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	service := &IngestService{
+		config:      IngestServiceConfig{FlushInterval: time.Hour, FlushMaxRequests: 1, FlushMaxBytes: 1024, RetryInterval: time.Hour},
+		runCtx:      ctx,
+		enqueueCh:   make(chan *ingestPending),
+		readyCh:     make(chan ingestTenantFlush),
+		forceCh:     make(chan ingestForceRequest),
+		completeCh:  make(chan ingestWorkerCompletion),
+		shutdownCh:  make(chan struct{}),
+		schedulerOK: make(chan struct{}),
+	}
+	go service.schedule()
+	defer func() { cancel(); <-service.schedulerOK }()
+	pending := &ingestPending{acceptedLSN: 1, envelope: walIngestEnvelope{TenantID: "tenant-a", AcceptedAt: time.Now()}}
+	service.enqueueCh <- pending
+	select {
+	case <-service.readyCh:
+	case <-time.After(time.Second):
+		t.Fatal("initial flush did not start")
+	}
+	// The unbuffered handoff fixes the ordering that recovery can encounter:
+	// a barrier is accepted while the worker is still returning its failure.
+	service.forceCh <- ingestForceRequest{tenantID: "tenant-a", throughLSN: 1}
+	completion := ingestWorkerCompletion{tenantID: "tenant-a", retry: []*ingestPending{pending}}
+	service.completeCh <- completion
+	select {
+	case <-service.readyCh:
+	case <-time.After(time.Second):
+		t.Fatal("forced flush was lost behind retry backoff")
+	}
+	service.completeCh <- completion
+	select {
+	case <-service.readyCh:
+		t.Fatal("one force request disabled backoff for subsequent failures")
+	case <-time.After(20 * time.Millisecond):
+	}
+	service.forceCh <- ingestForceRequest{tenantID: "tenant-a", throughLSN: 1}
+	select {
+	case <-service.readyCh:
+	case <-time.After(time.Second):
+		t.Fatal("subsequent force did not wake the queued retry")
+	}
+}
+
 func TestIngestServicePreservesTenantFIFOWithOneWriteWorker(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	config := testIngestServiceConfig(t)

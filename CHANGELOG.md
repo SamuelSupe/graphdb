@@ -3,7 +3,7 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [2.1.0] - 2026-09-28
+## [2.1.1] - 2026-09-28
 
 Compatible with existing 2.0 local data directories and HTTP contracts.
 
@@ -18,9 +18,12 @@ Compatible with existing 2.0 local data directories and HTTP contracts.
 - Avoid scanning unrelated tenant read views on every file publication and stop
   S3 retention pagination at its deletion budget. Remove duplicate initialization.
 - Fix task terminal-state admission races and audit logging with empty fields.
+- Preserve a forced WAL flush across an in-flight publication failure, while
+  keeping backoff for subsequent failures. The unpublished 2.1.0 candidate was
+  cancelled after CI exposed this recovery timeout; 2.1.1 supersedes it.
 - Update SDKs, OpenAPI, deployment and bilingual operating instructions.
 
-See [2.1 validation and limitations](docs/validation-v2.1.0.md).
+See [2.1 validation and limitations](docs/validation-v2.1.1.md).
 No overall throughput or tail-latency improvement is claimed by this release.
 
 ## [2.0.0] - 2026-09-28
