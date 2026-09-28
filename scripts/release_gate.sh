@@ -70,6 +70,7 @@ PY
     go run -mod=readonly ./tools/soaktest -writer "$BASE" -reader "$BASE" \
       -tenant local-disk-soak -duration 30m -writers 4 -readers 16 -batch-size 20 -write-interval 5s \
       -http-timeout 120s \
+      -maintenance-timeout 10m \
       -compact-interval 5m -gc-interval 10m -index-rebuild-interval 10m \
       -out "$RUN_DIR/soak.ndjson"
     go run -mod=readonly ./tools/soakreport -in "$RUN_DIR/soak.ndjson" \

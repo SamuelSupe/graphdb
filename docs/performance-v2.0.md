@@ -46,7 +46,8 @@ Final observations against the previous local implementation:
 ## Method
 
 - Baseline: `5632cd82`, the previous local implementation with the maintenance fixes.
-  Candidate runtime: `d90e554c`; later report-only commits do not change that runtime.
+  Candidate runtime: `d90e554c`; later documentation and validation-script commits
+  do not change that runtime.
 - OrbStack Linux arm64, Go 1.26.7, Linux named volume, 4 CPU / 4 GiB container.
   CI, container and release builds use Go 1.26.7 too. Architecture and build flags
   still differ; local arm64 timings are not measurements of the amd64 packages.
@@ -195,6 +196,15 @@ files, so a single large file or four in-flight files can exceed it. Large tenan
 may be admitted alone above the estimate budget; this does not cap process RSS.
 
 ## Correctness and publication gates
+
+The first OrbStack endurance attempt hit the load tool's default 5-minute task
+deadline. The server GC succeeded after 328.6 seconds and deleted 47,401 old files;
+the client had already recorded a timeout. That attempt is a failed gate, not a
+pass. The release gate uses the existing `-maintenance-timeout 10m` option for
+this growing CMDB workload. Individual HTTP requests remain limited to 120 seconds.
+The complete 30-minute gate is rerun and still requires successful compact, GC
+and index-rebuild events with no active error events. This is a validation timing
+change, not a production-runtime change or a promise that GC finishes in five minutes.
 
 - OrbStack full Go unit tests and vet passed on the field-index candidate;
   graph/query race tests passed after the final read-path adjustment.
