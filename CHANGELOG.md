@@ -16,7 +16,9 @@ snapshot backups and on-demand restore. This is a breaking release: use a fresh
   keep small field-index ID sets compact.
 - Reuse entity partitions for incremental indexes; bound queued delta batches
   instead of rebuilding merely because a backlog threshold was crossed.
-- Bound GC scan work and reopen read admission during long view waits. Share
+- Avoid redundant automatic rebuilds while ordered incremental indexes are catching up.
+- Bound GC scan work and reopen read admission during long view waits, including
+  overlapping maintenance waiters. Share
   memory admission across queued indexes, active builds and restore drills.
 - Bound file publication groups by count, bytes and elapsed time, retaining
   data-before-manifest durability and directory barriers.
@@ -25,6 +27,7 @@ snapshot backups and on-demand restore. This is a breaking release: use a fresh
 - Publish the Go module as `github.com/SamuelSupe/graphdb/v2`; Go and Python SDKs
   are version 2.0.0. HTTP `/v1` routes remain the current transport API.
 - Align deployment, documentation, website and stable release gates with 2.0.
+  Build containers, CI and release binaries with Go 1.26.7, matching local validation.
 
 See [2.0 performance and validation](docs/performance-v2.0.md) for measurements
 and limits. Historical 1.x performance results do not qualify this release.

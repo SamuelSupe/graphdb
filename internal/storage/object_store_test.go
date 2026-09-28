@@ -830,6 +830,69 @@ func TestLocalReadViewGateAdmitsReadersBetweenMaintenanceWriters(t *testing.T) {
 	cancel()
 }
 
+func TestLocalReadViewGateCanceledWriterYieldsToReaders(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	pinned, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned()
+	attempt, cancelAttempt := context.WithCancel(ctx)
+	defer cancelAttempt()
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	defer cancel()
+	entered := make(chan bool, 3)
+	for i := 0; i < 3; i++ {
+		workerCtx, write := ctx, i < 2
+		if i == 0 {
+			workerCtx = attempt
+		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			release, err := store.lockReadViews(workerCtx, "tenant-a", write)
+			if err != nil {
+				return
+			}
+			defer release()
+			entered <- write
+		}()
+		for {
+			files.runtime.mu.Lock()
+			gate := files.runtime.views[store.tenantObjectPrefix("tenant-a")]
+			queued := gate.waiting == i+1
+			if !write {
+				queued = gate.waitingReaders == 1
+			}
+			files.runtime.mu.Unlock()
+			if queued {
+				break
+			}
+			if ctx.Err() != nil {
+				t.Fatal(ctx.Err())
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancelAttempt()
+	select {
+	case write := <-entered:
+		if write {
+			t.Fatal("maintenance passed a pinned read view")
+		}
+	case <-ctx.Done():
+		t.Fatal("remaining maintenance waiter blocked the queued reader after cancellation")
+	}
+}
+
 func TestFileStoreRandomParquetReadAndCancellation(t *testing.T) {
 	ctx := context.Background()
 	files, err := OpenFileStore(t.TempDir())

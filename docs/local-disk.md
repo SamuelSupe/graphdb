@@ -229,9 +229,11 @@ a successful `min_version` entity read; it is an upper bound on first visibility
 
 ## Maintenance latency and memory admission
 
-GC visits at most 512 candidates per batch and checks 50 ms / 16 MiB budgets between objects. While waiting for a long-lived view, it reopens read admission every 50 ms. A single large object can exceed the budget; sustained long reads may delay GC.
+GC visits at most 512 candidates per batch and checks 50 ms / 16 MiB budgets between objects. While waiting for a long-lived view, each failed 50 ms exclusive attempt is followed by a 50 ms read-admission window. Canceled exclusive attempts also give queued readers a turn when other maintenance writers are waiting. A single large object can exceed the budget; sustained long reads may delay GC.
 
 Incremental entity, forward-edge and reverse-edge pages use a reusable 64-partition entity directory and adjacency maps. Membership changes copy only affected directory partitions. Persisted layouts remain unchanged; each affected page is still rewritten in full. Pending deltas stop coalescing at 8192 changed IDs and continue in bounded publication order instead of forcing a full rebuild. Schema changes, catalog gaps and corrupt inputs can still require rebuilding.
+
+Index health reports `updating: true` while a published graph is ahead of its queued or running index update. Automatic maintenance waits for that update instead of starting a redundant full rebuild and throttling writes. Failed updates remain eligible for repair on the next maintenance cycle. Explicit rebuild requests still run.
 
 `GRAPHDB_MAINTENANCE_MAX_BYTES` defaults to `512MiB`. It is one shared estimate budget for active index/snapshot builds and queued asynchronous index graphs. Queue reservations transfer into execution without releasing and reacquiring memory. At most two builds and four partition encoding/write jobs run concurrently. An oversized build runs alone to preserve progress. On the retained-byte or eight-work-item limit, callers catch up synchronously after releasing the tenant lock.
 

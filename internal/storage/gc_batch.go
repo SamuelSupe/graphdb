@@ -23,7 +23,10 @@ func (s *TenantStore) lockGCReadViews(ctx context.Context, tenantID string) (fun
 		if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 			return nil, err
 		}
-		timer := time.NewTimer(time.Millisecond)
+		// Leave read admission open for as long as the failed exclusive attempt.
+		// A short retry gap otherwise blocks readers almost continuously while
+		// an index build or export keeps its original view pinned.
+		timer := time.NewTimer(gcBatchDuration)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

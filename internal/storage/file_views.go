@@ -108,6 +108,11 @@ func (s *TenantStore) lockLocalGate(ctx context.Context, tenantID string, write,
 	for {
 		if err := ctx.Err(); err != nil {
 			leaveQueue()
+			if write && !admission && g.waitingReaders > 0 {
+				// A GC timeout must yield even when another maintenance writer
+				// is queued, or overlapping retries keep the reader gate closed.
+				g.readerTurn = true
+			}
 			finishRef()
 			r.mu.Unlock()
 			releaseOperation()
