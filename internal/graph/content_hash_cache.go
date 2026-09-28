@@ -27,8 +27,7 @@ type logicalHashCache struct {
 
 var logicalHashKinds = [...]string{"ci_type", "entity", "relation_type", "edge"}
 
-// Persisted digests use a fixed bucket assignment, independent of the process's
-// randomized in-memory map placement.
+// Bucket assignment is part of the persisted digest contract.
 func logicalHashShard(key string) uint8 {
 	var hash uint32 = 2166136261
 	for i := 0; i < len(key); i++ {

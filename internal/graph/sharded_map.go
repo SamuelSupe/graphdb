@@ -2,15 +2,12 @@ package graph
 
 import (
 	"encoding/json"
-	"hash/maphash"
 	"iter"
 	"maps"
 	"sync/atomic"
 )
 
 const graphMapShards = 256
-
-var graphMapSeed = maphash.MakeSeed()
 
 type graphMapBucket[V any] struct {
 	values map[string]V
@@ -36,17 +33,13 @@ func ShardedMapFrom[V any](values map[string]V) *ShardedMap[V] {
 	return result
 }
 
-func graphMapShard(key string) uint8 {
-	return uint8(maphash.String(graphMapSeed, key))
-}
-
 func (m *ShardedMap[V]) Get(key string) (value V, ok bool) {
-	if m != nil && m.small != nil {
-		value, ok = m.small.values[key]
-		return
-	}
-	if m != nil && m.buckets != nil {
-		if bucket := m.buckets[graphMapShard(key)]; bucket != nil {
+	if m != nil {
+		bucket := m.small
+		if m.buckets != nil {
+			bucket = m.buckets[logicalHashShard(key)]
+		}
+		if bucket != nil {
 			value, ok = bucket.values[key]
 		}
 	}
@@ -74,7 +67,7 @@ func (m *ShardedMap[V]) writable(key string) map[string]V {
 		}
 		return m.small.values
 	}
-	index := graphMapShard(key)
+	index := logicalHashShard(key)
 	bucket := m.buckets[index]
 	if bucket == nil {
 		bucket = &graphMapBucket[V]{values: make(map[string]V)}

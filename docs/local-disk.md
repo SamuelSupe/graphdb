@@ -239,8 +239,9 @@ These are admission estimates, not RSS limits. Caches, waiting requests and all 
 
 `graphdb_maintenance_phase_seconds` exposes `gc_wait_views`, `gc_wait_tenant`, `gc_hold`, `gc_sync`, `index_wait_previous`, `index_work`, `memory_wait`, `tenant_wait`, `tenant_hold`, and `file_batch_sync`. Phases can nest and must not be added as independent durations. `graphdb_maintenance_estimated_bytes{pool="active"}` and `{pool="pending_indexes"}` report charged estimates, not measured RSS.
 
-Entity, edge and top-level adjacency maps use 256 copy-on-write buckets; published
-versions share untouched buckets. Logical hashing stores SHA-256 leaf digests in
+Entity, edge, top-level adjacency and field-index maps use 256 copy-on-write buckets;
+maps with at most 32 entries retain a compact representation. Published versions
+share untouched buckets. Logical hashing stores SHA-256 leaf digests in
 256 buckets per category, replaces only touched buckets and hashes a fixed 32 KiB
 root. It no longer retains full per-entity JSON encodings or hashes the full graph
 on each update. Cold graph/hash construction still scans the graph. The new API

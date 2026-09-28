@@ -12,7 +12,8 @@ snapshot backups and on-demand restore. This is a breaking release: use a fresh
 
 - Replace `data_md5` with `data_hash` (`sha256-shards-v2:<64 hex digits>`).
   Update only changed logical hash buckets; hash a fixed-size root per version.
-- Copy only changed entity, edge and adjacency map buckets across versions.
+- Copy only changed entity, edge, adjacency and field-index buckets across versions;
+  keep small field-index ID sets compact.
 - Reuse entity partitions for incremental indexes; bound queued delta batches
   instead of rebuilding merely because a backlog threshold was crossed.
 - Bound GC scan work and reopen read admission during long view waits. Share
