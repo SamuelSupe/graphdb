@@ -1,7 +1,10 @@
 schema_version: 2
 edition: local_disk
 version: 2.0.0
-status: evidence_required
+status: performance_unqualified
+report: docs/performance-v2.0.md
+runtime_revision: d90e554c
+toolchain: go1.26.7
 scope: single_process_multi_tenant
 
 topology:
@@ -28,7 +31,8 @@ comparison:
   entities: [10002, 100002]
   ingest_modes: [direct, wal]
   warmup: 1m
-  measurement: 5m
+  measurement: 2m
+  direct_scope: 10002_entities_20s_warmup_60s_measurement
   repetitions: 1
   repeat_only_to_investigate_regressions: true
   minimum_mixed_throughput_improvement: 0.10

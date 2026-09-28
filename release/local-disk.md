@@ -17,6 +17,9 @@ GC、文件发布和维护队列增加扫描、时间、字节与共享内存预
 这仍是单机单进程产品。单机容量、磁盘空间与可用性需要自行规划，S3 备份不提供实时复制或高可用。
 维护预算是估算准入额度，不是进程 RSS 硬上限。单个大文件、全量重建和冷加载仍有全量成本。
 性能与验证范围见包内 `docs/performance-v2.0.md`，发布门禁记录在 `release/evidence/`。
+本轮 10 万实体维护负载的写入 P95 为 16.6 秒、查询 P95 为 92.3 ms，较本地基线改善；
+1 万实体 WAL 混合查询及部分导出、冷读结果仍有退化，整体性能目标未获认证。
+原始数据和复现步骤另附 `graphdb-v2.0.0-performance.tar.gz`，不据此承诺所有场景提速。
 
 ## English
 
@@ -36,6 +39,11 @@ Incremental indexes reuse partition membership; maintenance uses bounded scan,
 file publication and shared queued/active memory admission. Durability and
 recovery ordering remain enforced. This release does not provide replication
 or high availability; maintenance estimates are not hard RSS limits.
+
+The 100K maintenance workload improved, but 10K WAL mixed queries and several
+export/cold-read observations still regressed. Overall performance targets remain
+unqualified. See `docs/performance-v2.0.md` and the separately checksummed
+performance evidence archive for results, limitations and reproduction steps.
 
 ## Download and verify / 下载与校验
 
