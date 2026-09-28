@@ -69,8 +69,15 @@ type CommitOptions struct {
 }
 
 type TenantStore struct {
-	Objects ObjectStore
-	Backups *backupstore.Repository
+	queryMu          sync.Mutex
+	queryUnavailable map[string]queryIndexFailure
+	Objects          ObjectStore
+	files            *FileStore
+	viewsMu          sync.RWMutex
+	readViews        []*ReaderCache
+	viewGenerations  sync.Map
+	unsubscribe      func()
+	Backups          *backupstore.Repository
 
 	Prefix string
 
@@ -106,10 +113,11 @@ type TenantStore struct {
 	entityPageCache          *entityPageCache
 	edgeLookupCache          *edgeLookupCache
 	taskMu                   sync.Mutex
-	indexTasks               map[string]IndexTask
 	taskCancels              map[string]context.CancelFunc
 	taskActive               map[string]Task
 	taskWorkers              sync.WaitGroup
+	backgroundCtx            context.Context
+	stopBackground           context.CancelFunc
 	taskClosing              bool
 	taskShutdownOnce         sync.Once
 	taskShutdownDone         chan struct{}
@@ -118,12 +126,9 @@ type TenantStore struct {
 	taskBackupSlots          chan struct{}
 	taskResidentSlots        chan struct{}
 	taskTenantSlots          []chan struct{}
-	indexTaskStartSlots      []chan struct{}
 	InstanceID               string
 	ReaderID                 string
-	LeaseTTL                 time.Duration
 	LifecycleCacheTTL        time.Duration
-	TaskMarkerTTL            time.Duration
 	TaskPersistenceTimeout   time.Duration
 	MaxRetries               int
 
@@ -156,8 +161,11 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 	if err != nil {
 		instanceID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
-	return &TenantStore{
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
+	store := &TenantStore{
+		backgroundCtx: backgroundCtx, stopBackground: stopBackground,
 		Objects:                  objects,
+		files:                    exclusiveFileStore(objects),
 		Prefix:                   cleanPrefix(prefix),
 		tenantLocks:              map[string]*tenantLock{},
 		writeCache:               map[string]loadedGraph{},
@@ -180,7 +188,6 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		indexCache:               newIndexObjectCache(4096),
 		entityPageCache:          newEntityPageCache(2048),
 		edgeLookupCache:          newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
-		indexTasks:               map[string]IndexTask{},
 		taskCancels:              map[string]context.CancelFunc{},
 		taskActive:               map[string]Task{},
 		taskQueueSlots:           make(chan struct{}, defaultTaskQueueLimit),
@@ -188,12 +195,9 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		taskBackupSlots:          make(chan struct{}, 2),
 		taskResidentSlots:        make(chan struct{}, defaultTaskExecutionLimit),
 		taskTenantSlots:          newTaskTenantSlots(defaultTaskTenantStripes),
-		indexTaskStartSlots:      newTaskTenantSlots(defaultTaskTenantStripes),
 		InstanceID:               instanceID,
 		ReaderID:                 instanceID,
-		LeaseTTL:                 30 * time.Second,
 		LifecycleCacheTTL:        time.Second,
-		TaskMarkerTTL:            30 * time.Second,
 		TaskPersistenceTimeout:   10 * time.Second,
 		MaxRetries:               3,
 
@@ -206,6 +210,10 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		WriteEntityRecords:         true,
 		MaterializeCollectorStatus: true,
 	}
+	if source, ok := unwrapTenantMigrationStore(objects).(interface{ OnChange(func(string)) func() }); ok {
+		store.unsubscribe = source.OnChange(store.localFileChanged)
+	}
+	return store
 }
 
 func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest, error) {

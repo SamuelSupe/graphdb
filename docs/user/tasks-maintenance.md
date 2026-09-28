@@ -99,7 +99,7 @@ curl -sS -X POST "$WRITER/v1/control/gc" \
   }'
 ```
 
-GC respects reader heartbeats and keeps objects needed by active readers. When
+GC defers files protected by older in-process read views while admitting new queries. When
 `max_deletes` pauses a run, pass returned `checkpoint.next_cursor` as `cursor`
 to continue.
 
@@ -200,6 +200,17 @@ curl -sS -X DELETE "$WRITER/v1/indexes/definitions/host_hostname" \
   -H 'X-Tenant-ID: demo'
 ```
 
+New rebuilds started through index endpoints also use the `index_rebuild` task model. Use the
+same task ID under `/v1/tasks` to inspect, cancel or retry them. Index endpoints retain their
+status response shape. Previously stored separate index task records remain readable, but
+cancellation of those legacy records is unsupported. Post-rebuild cleanup warnings appear in
+`result.cleanup_warning` and in the index status response's `error`; the rebuild can still succeed.
+
+The local runtime tracks task liveness and signals cancellation directly, without task heartbeats.
+After restart, inspecting an active record without an executor marks it failed. Retry explicitly
+to reuse supported checkpoints; maintenance tasks are not all replayed automatically.
+
+
 ## Backup, Restore, Restore Drill
 
 Start backup:
@@ -250,3 +261,7 @@ go run ./cmd/graphdb backup-tenant demo
 go run ./cmd/graphdb restore-tenant demo <backup-key> --overwrite
 go run ./cmd/graphdb restore-drill-tenant demo params.json
 ```
+
+## Automatic S3 Backups
+
+Automatic backups reuse `tenant_backup` tasks and the maintenance loop. Configure scheduling, retry, verification, restore drills and retention in the [object backup guide](../object-backup.md#automatic-backups). GC reports `checkpoint.deferred_files` when active older read views delay reclamation; a completed scan does not imply every orphan was deleted.

@@ -8,10 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,6 +413,225 @@ func TestObjectBackupRetryAfterReopenAndVerifiedRestore(t *testing.T) {
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".tmp-backup-") {
 			t.Fatalf("leaked staging file: %s", entry.Name())
+		}
+	}
+}
+
+func TestObjectBackupAutomationReopenRetryRetentionAndDrill(t *testing.T) {
+	endpoint := os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set GRAPHDB_TEST_BACKUP_S3_ENDPOINT for S3 integration")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { files.Close() }()
+	store := NewTenantStore(files, "test")
+	defer func() { store.ShutdownTasks(ctx) }()
+	cfg := backupstore.Config{Endpoint: endpoint, Bucket: os.Getenv("GRAPHDB_TEST_BACKUP_S3_BUCKET"), Prefix: fmt.Sprintf("automation-%d", time.Now().UnixNano()), PathStyle: true, AccessKeyID: os.Getenv("GRAPHDB_TEST_BACKUP_S3_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("GRAPHDB_TEST_BACKUP_S3_SECRET_ACCESS_KEY")}
+	store.Backups, err = backupstore.New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(ctx, "source", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "captured", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	enabled, keep, age, retry, drill := true, 1, int64(0), int64(1), int64(60)
+	if _, err := store.PutTenantConfig(ctx, "source", TenantConfig{Backup: TenantBackupConfig{Enabled: &enabled, KeepCount: &keep, MaxAgeSeconds: &age, RetryInitialSeconds: &retry, RestoreDrillIntervalSeconds: &drill}}); err != nil {
+		t.Fatal(err)
+	}
+	manual, err := store.StartTask(ctx, "source", TaskTypeTenantBackup, map[string]any{"destination": "object"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual = waitForTask(t, ctx, store, "source", manual.ID)
+	if manual.Status != TaskStatusSucceeded {
+		t.Fatalf("manual backup: %+v", manual)
+	}
+	_, capture, _, err := store.captureTenantBackup(ctx, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupID := "scheduled-before-crash"
+	if err := store.putTaskResult(ctx, "source", backupID, taskResult(capture)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	interrupted := Task{ID: "interrupted-auto", TenantID: "source", Type: TaskTypeTenantBackup, Status: TaskStatusRunning, OwnerID: store.InstanceID, StartedAt: now, UpdatedAt: now, Params: map[string]any{"destination": "object", "automatic": true, "keep_count": 1, "restore_drill": true}, Checkpoint: map[string]any{"remote_backup_id": backupID, "snapshot_captured": true}}
+	if err := store.saveTask(ctx, interrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.saveBackupSchedule(ctx, "source", BackupAutomationStatus{TaskID: interrupted.ID}); err != nil {
+		t.Fatal(err)
+	}
+	store.ShutdownTasks(ctx)
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store = NewTenantStore(files, "test")
+	store.Backups, err = backupstore.New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(ctx, "source", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "later", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.ScheduleObjectBackup(ctx, "source", now)
+	if err != nil || state.Failures != 1 || !state.NextRun.After(now) {
+		t.Fatalf("recovered retry delay: %+v %v", state, err)
+	}
+	if _, err := store.RunGC(ctx, "source", GCOptions{TaskMaxAge: time.Nanosecond}); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.ScheduleObjectBackup(ctx, "source", state.NextRun)
+	if err != nil || state.TaskID == interrupted.ID {
+		t.Fatalf("retry launch: %+v %v", state, err)
+	}
+	task := waitForTask(t, ctx, store, "source", state.TaskID)
+	if task.Status != TaskStatusSucceeded {
+		t.Fatalf("automatic retry: %+v", task)
+	}
+	uri := stringTaskParam(task.Result, "backup_key")
+	m, err := store.Backups.Verify(ctx, uri)
+	if err != nil || m.Version != capture.Version || !m.Automatic {
+		t.Fatalf("retry recaptured data: %+v %v", m, err)
+	}
+	automation, _ := task.Result["automation"].(map[string]any)
+	drillReport, _ := automation["restore_drill"].(map[string]any)
+	if drillReport["recoverable"] != true {
+		t.Fatalf("missing restore proof: %+v", automation)
+	}
+	disabled := false
+	if _, err := store.PutTenantConfig(ctx, "source", TenantConfig{Backup: TenantBackupConfig{Enabled: &disabled}}); err != nil {
+		t.Fatal(err)
+	}
+	// Disabling future runs must not abandon terminal observation or local cleanup.
+	for deadline := time.Now().Add(time.Second); ; {
+		state, err = store.ScheduleObjectBackup(ctx, "source", time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !state.LastSuccess.IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("completed cycle was not observed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if state.Failures != 0 || state.LastDrill.IsZero() {
+		t.Fatalf("success state: %+v", state)
+	}
+	if _, err := files.Get(ctx, store.taskResultKey("source", backupID)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("successful automatic backup retained its local capture: %v", err)
+	}
+	paused, err := store.ScheduleObjectBackup(ctx, "source", state.NextRun)
+	if err != nil || paused.TaskID != state.TaskID {
+		t.Fatalf("disabled policy started a new cycle: %+v %v", paused, err)
+	}
+	if _, err := store.PutTenantConfig(ctx, "source", TenantConfig{Backup: TenantBackupConfig{Enabled: &enabled, KeepCount: &keep, MaxAgeSeconds: &age, RestoreDrillIntervalSeconds: &drill}}); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.ScheduleObjectBackup(ctx, "source", state.NextRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := waitForTask(t, ctx, store, "source", state.TaskID)
+	if next.Status != TaskStatusSucceeded {
+		t.Fatalf("next cycle: %+v", next)
+	}
+	page, err := store.Backups.List(ctx, "source", "", 100)
+	if err != nil || len(page.Backups) != 2 {
+		t.Fatalf("retention: %+v %v", page, err)
+	}
+	if _, err := store.Backups.ReadManifest(ctx, stringTaskParam(manual.Result, "backup_key")); err != nil {
+		t.Fatalf("manual backup was pruned: %v", err)
+	}
+	if _, err := store.Backups.ReadManifest(ctx, uri); !errors.Is(err, backupstore.ErrNotFound) {
+		t.Fatalf("old automatic backup remains: %v", err)
+	}
+	if _, err := store.Backups.Verify(ctx, stringTaskParam(next.Result, "backup_key")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestObjectBackupRetentionStopsListingAtDeleteBudget(t *testing.T) {
+	endpoint := os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set GRAPHDB_TEST_BACKUP_S3_ENDPOINT for S3 integration")
+	}
+	target, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deletedPayloads, extraLists atomic.Int32
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") == "2" && deletedPayloads.Load() >= 100 {
+			extraLists.Add(1)
+		}
+		if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, ".parquet") {
+			deletedPayloads.Add(1)
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer remote.Close()
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	defer store.ShutdownTasks(ctx)
+	store.Backups, err = backupstore.New(ctx, backupstore.Config{
+		Endpoint: remote.URL, Bucket: os.Getenv("GRAPHDB_TEST_BACKUP_S3_BUCKET"), PathStyle: true,
+		Prefix:      fmt.Sprintf("retention-budget-%d", time.Now().UnixNano()),
+		AccessKeyID: os.Getenv("GRAPHDB_TEST_BACKUP_S3_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("GRAPHDB_TEST_BACKUP_S3_SECRET_ACCESS_KEY"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Equal timestamps exercise the stable key tie-break across multiple pages.
+	now := time.Now().UTC()
+	var verified backupstore.Entry
+	for i := range 205 {
+		payload := strings.NewReader("snapshot")
+		verified, err = store.Backups.Publish(ctx, backupstore.Manifest{
+			TenantID: "source", BackupID: fmt.Sprintf("scheduled-%03d", i),
+			Automatic: true, Version: 1, CreatedAt: now,
+		}, io.NewSectionReader(payload, 0, payload.Size()))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := Task{ID: "retention", TenantID: "source", Type: TaskTypeTenantBackup, Status: TaskStatusRunning,
+		OwnerID: store.InstanceID, StartedAt: now, UpdatedAt: now, Params: map[string]any{"keep_count": 3}}
+	ctx, release := store.inlineTask(ctx, task)
+	defer release()
+	if err := store.saveTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []int{100, 100, 2} {
+		deletedPayloads.Store(0)
+		extraLists.Store(0)
+		deleted, err := store.retainObjectBackups(ctx, task, verified)
+		if err != nil || deleted != want {
+			t.Fatalf("retention deleted %d, want %d: %v", deleted, want, err)
+		}
+		if got := extraLists.Load(); got != 0 {
+			t.Fatalf("listed %d more pages after reaching the deletion budget", got)
+		}
+	}
+	page, err := store.Backups.List(ctx, task.TenantID, "", 100)
+	if err != nil || len(page.Backups) != 3 {
+		t.Fatalf("retained backups: %+v %v", page, err)
+	}
+	for i, entry := range page.Backups {
+		if entry.BackupID != fmt.Sprintf("scheduled-%03d", 202+i) {
+			t.Fatalf("retained wrong backup: %s", entry.BackupID)
 		}
 	}
 }

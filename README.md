@@ -9,12 +9,14 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.0.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.0.0) is the main
+[2.1.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.0) is the main
 release, developed on `main`. Local disk holds the live graph; optional
 S3-compatible object storage holds snapshot backups for on-demand recovery.
-See the [2.0 release notes](release/local-disk.md) and
+See the [2.1 release notes](release/local-disk.md) and
 [version boundaries](docs/naming-and-compatibility.md). There is no 1.x migration
-or legacy digest compatibility layer. Use a new data directory for 2.0.
+or legacy digest compatibility layer. Upgrading from 1.x requires a new directory;
+2.0 installations can reuse their directory after stopping the old process.
+2.1 adds [scheduled S3 backups, retries, retention, and restore drills](docs/object-backup.md#automatic-backups), disabled by default.
 
 ## Capabilities
 
@@ -95,7 +97,7 @@ from capacity limits. Historical release reports describe their own builds.
 
 - [Local disk operation and validation](docs/local-disk.md)
 - [2.0 changes and performance validation](docs/performance-v2.0.md)
-- [Architecture](docs/architecture.md)
+- [Architecture](docs/architecture.en.md)
 - [User guide](docs/user/README.md)
 - [Query capabilities](docs/query_capabilities.md)
 - [GraphQL](docs/graphql.md)
@@ -119,3 +121,6 @@ consistency. The optional soak runs for 30 minutes. It manages only its own proc
 and retains evidence in the printed output directory.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [LICENSE](LICENSE).
+
+S3 backups support opt-in tenant schedules, restart retries, full download verification,
+optional restore drills and automatic retention. See [backup automation](docs/object-backup.md#automatic-backups).

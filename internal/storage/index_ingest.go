@@ -15,7 +15,23 @@ const (
 // last queued batch; a full delta starts another batch rather than a rebuild.
 // Read views keep every queued version's inputs alive through publication.
 func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) bool {
-	ctx, release, err := s.ReadViewContext(context.WithoutCancel(ctx), tenantID)
+	s.taskMu.Lock()
+	if s.taskClosing {
+		s.taskMu.Unlock()
+		return false
+	}
+	s.taskWorkers.Add(1)
+	s.taskMu.Unlock()
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(s.backgroundCtx, cancel)
+	finish := func() { stop(); cancel(); s.taskWorkers.Done() }
+	launched := false
+	defer func() {
+		if !launched {
+			finish()
+		}
+	}()
+	ctx, release, err := s.ReadViewContext(runCtx, tenantID)
 	if err != nil {
 		return false
 	}
@@ -67,7 +83,9 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	}
 	s.pendingIngestIndexes[tenantID] = work
 	s.indexUpdateMu.Unlock()
+	launched = true
 	go func() {
+		defer finish()
 		defer work.reservation.release()
 		defer release()
 		defer func() {

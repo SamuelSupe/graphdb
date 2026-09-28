@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-const taskCancelPollInterval = 500 * time.Millisecond
-
 const defaultTaskPersistenceTimeout = 10 * time.Second
 
 func (s *TenantStore) taskPersistenceTimeout() time.Duration {
@@ -125,29 +123,6 @@ func (s *TenantStore) taskStateOrLocal(ctx context.Context, task Task) Task {
 func (s *TenantStore) taskCancelRequested(ctx context.Context, task Task) bool {
 	current, err := s.GetTask(ctx, task.TenantID, task.ID)
 	return err == nil && current.Status == TaskStatusCanceled
-}
-
-func (s *TenantStore) watchTaskCancellation(
-	task Task,
-	cancelTask context.CancelFunc,
-) func() {
-	watchCtx, stop := context.WithCancel(context.Background())
-	go func() {
-		ticker := time.NewTicker(taskCancelPollInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-watchCtx.Done():
-				return
-			case <-ticker.C:
-				if s.taskCancelRequested(watchCtx, task) {
-					cancelTask()
-					return
-				}
-			}
-		}
-	}()
-	return stop
 }
 
 func mergeTaskMap(base map[string]any, update map[string]any) map[string]any {

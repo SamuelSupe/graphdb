@@ -24,7 +24,7 @@ func TestLocalMaintenanceMemoryBudgetCancellationAndProgress(t *testing.T) {
 	t.Cleanup(func() { files.Close() })
 	store := NewTenantStore(files, "test")
 	store.MaxMaintenanceBytes = 1 // Both tenants exceed the budget and must run alone.
-	target := store.restoreDrillTargetStore("drill")
+	target := store.restoreDrillTargetStore("drill", store.Objects)
 	for tenant, writer := range map[string]*TenantStore{"tenant-a": store, "tenant-b": target} {
 		if _, err := writer.Commit(ctx, tenant, indexMutations(), CommitOptions{}); err != nil {
 			t.Fatal(err)

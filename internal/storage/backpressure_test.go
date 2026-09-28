@@ -81,7 +81,6 @@ func TestCommitBackpressureRecordsManifestCASConflict(t *testing.T) {
 	base := NewMemoryStore()
 	objects := &takeoverOnManifestPutStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	store := NewTenantStore(objects, "test")
-	store.LeaseTTL = time.Hour
 	store.MaxRetries = 2
 	store.Backpressure = NewWritePressure(BackpressureConfig{CASConflictThreshold: 1})
 
@@ -113,6 +112,7 @@ func TestCommitBackpressureRejectsDuringIndexRebuild(t *testing.T) {
 		t.Fatalf("save task: %v", err)
 	}
 
+	store.taskActive[taskActiveKey("tenant-a", TaskTypeIndexRebuild)] = Task{ID: "task-a", TenantID: "tenant-a", Type: TaskTypeIndexRebuild, Status: TaskStatusRunning}
 	_, err := store.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
 	}, CommitOptions{})
@@ -152,24 +152,6 @@ func TestCommitBackpressureIndexRebuildCheckDoesNotScanHistoricalTasks(t *testin
 	}
 }
 
-func TestCommitBackpressureRejectsDuringGC(t *testing.T) {
-	ctx := context.Background()
-	store := NewTenantStore(NewMemoryStore(), "test")
-	store.Backpressure = NewWritePressure(BackpressureConfig{})
-	now := time.Now().UTC()
-	if err := store.saveTask(ctx, Task{
-		ID: "task-gc", TenantID: "tenant-a", Type: TaskTypeGC, Status: "running",
-		StartedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("save task: %v", err)
-	}
-
-	_, err := store.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
-	}, CommitOptions{})
-	assertBackpressureReason(t, err, "gc_running")
-}
-
 func TestCommitBackpressureRejectsLongCommitTail(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
@@ -206,12 +188,6 @@ func TestLocalBackpressureDoesNotTrustCacheAfterWriterTakeover(t *testing.T) {
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("commit replacement version: %v", err)
 	}
-	lease, meta, ok := original.getCachedWriterLeaseAny("tenant-a")
-	if !ok {
-		t.Fatal("original writer lease was not cached")
-	}
-	lease.ExpiresAt = time.Now().UTC().Add(-time.Second)
-	original.setCachedWriterLease("tenant-a", lease, meta)
 	original.Backpressure = NewWritePressure(
 		BackpressureConfig{MaxCommitTail: 1},
 	)

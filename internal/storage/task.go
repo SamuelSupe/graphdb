@@ -77,6 +77,20 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 		return Task{}, err
 	}
 	defer unlock()
+	return s.startTaskLocked(ctx, tenantID, taskType, params, false)
+}
+
+// The tenant lock serializes starts and definition changes. A new definition
+// may queue a replacement rebuild while its predecessor is still finishing.
+func (s *TenantStore) startTaskLocked(ctx context.Context, tenantID, taskType string, params map[string]any, replace bool) (Task, error) {
+	id, err := newCommitID()
+	if err != nil {
+		return Task{}, err
+	}
+	return s.startTaskIDLocked(ctx, tenantID, taskType, params, replace, id)
+}
+
+func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType string, params map[string]any, replace bool, id string) (Task, error) {
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
 		return Task{}, err
@@ -89,10 +103,6 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	resuming = resuming || stringTaskParam(params, "retry_of") != ""
 	checkpoint := taskInitialCheckpoint(params)
 	checkpoint, err = s.prepareTaskIngestCheckpoint(ctx, tenantID, taskType, checkpoint, resuming)
-	if err != nil {
-		return Task{}, err
-	}
-	id, err := newCommitID()
 	if err != nil {
 		return Task{}, err
 	}
@@ -110,7 +120,10 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 		StartedAt:     now,
 		UpdatedAt:     now,
 	}
-	if active, reused, err := s.admitTask(ctx, task); err != nil {
+	s.taskMu.Lock()
+	previous := s.taskActive[taskActiveKey(tenantID, taskType)]
+	s.taskMu.Unlock()
+	if active, reused, err := s.admitTaskMode(ctx, task, replace); err != nil {
 		return Task{}, err
 	} else if reused {
 		return active, nil
@@ -119,26 +132,22 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	defer func() {
 		if launchPending {
 			s.taskWorkers.Done()
+			s.releaseTaskAdmission(task)
+			if previous.ID != "" {
+				s.taskMu.Lock()
+				key := taskActiveKey(tenantID, taskType)
+				if _, exists := s.taskActive[key]; !exists {
+					if _, running := s.taskCancels[taskRuntimeKey(tenantID, previous.ID)]; running {
+						s.taskActive[key] = previous
+					}
+				}
+				s.taskMu.Unlock()
+			}
 		}
 	}()
-	if task.Type == TaskTypeGC {
-		active, reused, err := s.claimGCRunningMarker(ctx, task)
-		if err != nil {
-			s.releaseTaskAdmission(task)
-			return Task{}, err
-		}
-		if reused {
-			s.releaseTaskAdmission(task)
-			return active, nil
-		}
-	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	if err := s.saveTask(ctx, task); err != nil {
 		cancel()
-		if task.Type == TaskTypeGC {
-			s.abandonGCRunningMarker(ctx, task)
-		}
-		s.releaseTaskAdmission(task)
 		return Task{}, err
 	}
 	s.registerTaskCancel(tenantID, id, cancel)
@@ -175,7 +184,11 @@ func (s *TenantStore) GetTask(ctx context.Context, tenantID string, taskID strin
 	if task.ID != taskID {
 		return Task{}, fmt.Errorf("task id mismatch: path task %q contains task %q", taskID, task.ID)
 	}
-	return s.reconcileInactiveTask(ctx, task), nil
+	task = s.reconcileInactiveTask(ctx, task)
+	// A persisted terminal state can be read before its writer updates the
+	// runtime registry. Once observed, subsequent admission must see it too.
+	s.rememberTaskState(task)
+	return task, nil
 }
 
 func (s *TenantStore) ListTasks(ctx context.Context, tenantID string, options TaskListOptions) ([]Task, error) {
@@ -187,8 +200,6 @@ func (s *TenantStore) ListTasks(ctx context.Context, tenantID string, options Ta
 
 func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, task Task) {
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
-	stopHeartbeat := s.startGCTaskHeartbeat(ctx, task, cancel)
-	defer stopHeartbeat()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			task.Status = "failed"
@@ -311,7 +322,10 @@ func (s *TenantStore) runTaskOperation(ctx context.Context, task Task) (map[stri
 		if err == nil {
 			_ = s.updateTaskProgress(ctx, task, "index_rebuild_done", total, total, map[string]any{"phase": "index_rebuild_done", "version": catalog.Version})
 		}
-		return taskResult(catalog), "", err
+		if err != nil {
+			return nil, "", err
+		}
+		return s.finishIndexTaskCleanup(ctx, task, catalog)
 	case TaskTypeTenantBackup:
 		return s.tenantBackupTask(ctx, task)
 	case TaskTypeTenantRestore:
@@ -437,7 +451,8 @@ func (s *TenantStore) saveTask(ctx context.Context, task Task) error {
 			condition.IfMatch = meta.ETag
 		}
 		if _, err := s.putTenantConditional(ctx, task.TenantID, key, data, condition); err == nil {
-			return s.syncGCRunningMarker(ctx, task)
+			s.rememberTaskState(task)
+			return nil
 		} else if !errors.Is(err, ErrConflict) {
 			return err
 		}
@@ -508,6 +523,9 @@ func validateTaskParams(taskType string, params map[string]any) error {
 	case TaskTypeTenantBackup:
 		if value, exists := params["destination"]; exists && value != "" && value != "local" && value != "object" {
 			return fmt.Errorf("backup destination must be local or object")
+		}
+		if boolTaskParam(params, "automatic") && (intTaskParam(params, "keep_count") < 0 || intTaskParam(params, "keep_count") > 1000 || int64TaskParam(params, "max_age_seconds") < 0 || int64TaskParam(params, "max_age_seconds") > 10*365*86400) {
+			return fmt.Errorf("invalid automatic backup retention")
 		}
 	case TaskTypeTenantRestore:
 		if strings.TrimSpace(stringTaskParam(params, "backup_key")) == "" {

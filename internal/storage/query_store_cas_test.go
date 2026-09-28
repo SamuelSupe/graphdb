@@ -14,13 +14,19 @@ func TestSaveQueryRequiresWriterLease(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()
 	owner := NewTenantStore(objects, "test")
-	owner.LeaseTTL = time.Hour
 	if _, err := owner.SaveQuery(ctx, "tenant-a", SavedQuery{Name: "hosts", Request: query.Request{Op: "match", Kind: "host"}}); err != nil {
 		t.Fatalf("owner save query: %v", err)
 	}
 
+	bound, err := owner.acquireAndBindWriterFence(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
 	other := NewTenantStore(objects, "test")
-	_, err := other.SaveQuery(ctx, "tenant-a", SavedQuery{Name: "hosts-2", Request: query.Request{Op: "match", Kind: "host"}})
+	if err := other.acquireWriterLease(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = owner.SaveQuery(bound, "tenant-a", SavedQuery{Name: "hosts-2", Request: query.Request{Op: "match", Kind: "host"}})
 	if !errors.Is(err, ErrLeaseHeld) {
 		t.Fatalf("save query err = %v, want ErrLeaseHeld", err)
 	}
@@ -40,7 +46,6 @@ func TestSaveQueryDoesNotOverwriteAfterLeaseTakeover(t *testing.T) {
 		triggerKey:  store.savedQueryKey("tenant-a", "hosts"),
 	}
 	stale := NewTenantStore(objects, "test")
-	stale.LeaseTTL = time.Nanosecond
 	_, err := stale.SaveQuery(ctx, "tenant-a", SavedQuery{
 		Name:        "hosts",
 		Description: "stale",
@@ -76,7 +81,6 @@ func (s *takeoverDuringSaveQueryStore) PutConditional(ctx context.Context, key s
 	if s.shouldTrigger(key) {
 		time.Sleep(time.Millisecond)
 		takeover := NewTenantStore(s.base, "test")
-		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.SaveQuery(ctx, s.tenantID, SavedQuery{
 			Name:        "hosts",
 			Description: "fresh",

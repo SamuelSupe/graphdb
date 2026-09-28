@@ -188,3 +188,7 @@ go run ./cmd/graphdb tenant-usage demo
 GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh --dry-run
 GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh
 ```
+
+## 备份自动化
+
+`backup` 配置控制 S3 定时快照、失败退避、保留清理和可选恢复演练，详见[备份自动化指南](../object-backup.zh-CN.md#自动备份)。

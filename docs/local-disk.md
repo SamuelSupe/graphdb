@@ -229,7 +229,7 @@ a successful `min_version` entity read; it is an upper bound on first visibility
 
 ## Maintenance latency and memory admission
 
-GC visits at most 512 candidates per batch and checks 50 ms / 16 MiB budgets between objects. While waiting for a long-lived view, each failed 50 ms exclusive attempt is followed by a 50 ms read-admission window. Canceled exclusive attempts also give queued readers a turn when other maintenance writers are waiting. A single large object can exceed the budget; sustained long reads may delay GC.
+GC visits at most 512 candidates per batch and checks 50 ms / 16 MiB budgets between objects. Files still needed by older read views are deferred; new readers remain admitted. Later batches reconsider deferred files after those views finish. A single large object can exceed the budget; sustained long reads may delay reclamation.
 
 Incremental entity, forward-edge and reverse-edge pages use a reusable 64-partition entity directory and adjacency maps. Membership changes copy only affected directory partitions. Persisted layouts remain unchanged; each affected page is still rewritten in full. Pending deltas stop coalescing at 8192 changed IDs and continue in bounded publication order instead of forcing a full rebuild. Schema changes, catalog gaps and corrupt inputs can still require rebuilding.
 

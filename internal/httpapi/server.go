@@ -11,6 +11,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/maintenance"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 
@@ -35,10 +36,9 @@ type Server struct {
 	IngestService         IngestService
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration
-	maintenance           *maintenanceState
+	maintenance           *maintenance.Runner
 	maintenanceOnce       sync.Once
 	usageCache            *tenantUsageCache
-	lazyUnavailable       sync.Map
 }
 
 type IngestService interface {
@@ -250,7 +250,6 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 		attribute.Int("graphdb.commit.canonical_entities", len(result.CanonicalEntities)),
 		attribute.Int("graphdb.commit.canonical_edges", len(result.CanonicalEdges)),
 	))
-	s.publishReadCacheAfterWrite(tenantID)
 	s.recordSuppressed(tenantID, result.Suppressed)
 	s.auditInfo("commit_applied", tenantID, map[string]any{
 		"version": result.Version, "suppressed": len(result.Suppressed), "canonical_entities": len(result.CanonicalEntities), "canonical_edges": len(result.CanonicalEdges),
@@ -308,7 +307,7 @@ func (s *Server) entity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if target.ManifestVersion > 0 {
-		options, version, ok := s.lazyQueryOptions(
+		options, version, ok := s.Store.QueryOptions(
 			r.Context(), tenantID, target.ManifestVersion, false,
 		)
 		if ok && target.requiresVersion(version) && options.EntityLookup != nil {
@@ -447,13 +446,6 @@ func (s *Server) invalidate(tenantID string) {
 	if s.Cache != nil {
 		s.Cache.Invalidate(tenantID)
 	}
-}
-
-func (s *Server) publishReadCacheAfterWrite(tenantID string) {
-	if s.Cache != nil && s.Cache.PublishFromWriteCache(tenantID) {
-		return
-	}
-	s.invalidate(tenantID)
 }
 
 func (s *Server) obs() *observability.Observability {
@@ -598,11 +590,17 @@ func (s *Server) recordSuppressed(tenantID string, conflicts []graph.FieldConfli
 }
 
 func (s *Server) auditInfo(event string, tenantID string, fields map[string]any) {
+	if fields == nil {
+		fields = make(map[string]any)
+	}
 	fields["tenant"] = tenantID
 	s.obs().Logger.Info(event, fields)
 }
 
 func (s *Server) auditError(event string, tenantID string, err error, fields map[string]any) {
+	if fields == nil {
+		fields = make(map[string]any)
+	}
 	fields["tenant"] = tenantID
 	fields["error"] = err.Error()
 	s.obs().Logger.Error(event, fields)

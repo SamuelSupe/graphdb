@@ -159,11 +159,11 @@ func TestUnifiedTaskListIncludesLegacyIndexTasks(t *testing.T) {
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	indexTask, err := store.StartIndexRebuild(ctx, "tenant-a")
-	if err != nil {
-		t.Fatalf("start index task: %v", err)
+	now := time.Now().UTC()
+	indexTask := IndexTask{ID: "old-rebuild", TenantID: "tenant-a", Type: "rebuild", Status: TaskStatusSucceeded, StartedAt: now, FinishedAt: now, CatalogVersion: 1}
+	if err := store.saveIndexTask(ctx, indexTask); err != nil {
+		t.Fatal(err)
 	}
-	waitForIndexTaskStatus(t, ctx, store, "tenant-a", indexTask.ID)
 	tasks, err := store.ListTasks(ctx, "tenant-a", TaskListOptions{Type: TaskTypeIndexRebuild})
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)

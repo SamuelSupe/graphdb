@@ -21,7 +21,7 @@ func TestCommitSetsTenantHeaderAndParsesResult(t *testing.T) {
 		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
 			t.Fatalf("tenant header = %q", got)
 		}
-		if got := r.Header.Get("User-Agent"); got != "graphdb-go-sdk/2.0.0" {
+		if got := r.Header.Get("User-Agent"); got != "graphdb-go-sdk/"+SDKVersion {
 			t.Fatalf("user agent = %q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {

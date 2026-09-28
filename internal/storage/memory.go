@@ -8,9 +8,11 @@ import (
 )
 
 type MemoryStore struct {
-	mu      sync.RWMutex
-	objects map[string][]byte
-	etags   map[string]string
+	mu         sync.RWMutex
+	objects    map[string][]byte
+	etags      map[string]string
+	listeners  map[uint64]func(string)
+	listenerID uint64
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -76,6 +78,12 @@ func (s *MemoryStore) PutConditional(ctx context.Context, key string, data []byt
 	if err := validateObjectKey(key); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
+	changed := false
+	defer func() {
+		if changed {
+			s.changed(key)
+		}
+	}()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, exists := s.objects[key]
@@ -86,6 +94,7 @@ func (s *MemoryStore) PutConditional(ctx context.Context, key string, data []byt
 	if err := checkCondition(condition, currentETag, exists); err != nil {
 		return ObjectMeta{Key: key, ETag: currentETag, Exists: exists}, err
 	}
+	changed = true
 	s.objects[key] = append([]byte(nil), data...)
 	s.etags[key] = sha256Hex(data)
 	return ObjectMeta{Key: key, ETag: s.etags[key], Exists: true}, nil
@@ -102,6 +111,12 @@ func (s *MemoryStore) DeleteConditional(ctx context.Context, key string, conditi
 	if err := validateObjectKey(key); err != nil {
 		return err
 	}
+	changed := false
+	defer func() {
+		if changed {
+			s.changed(key)
+		}
+	}()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := objectContextErr(ctx); err != nil {
@@ -116,6 +131,7 @@ func (s *MemoryStore) DeleteConditional(ctx context.Context, key string, conditi
 	if err := checkCondition(condition, currentETag, exists); err != nil {
 		return err
 	}
+	changed = true
 	delete(s.objects, key)
 	delete(s.etags, key)
 	return nil
@@ -140,4 +156,28 @@ func (s *MemoryStore) List(ctx context.Context, prefix string) ([]ObjectInfo, er
 		return items[i].Key < items[j].Key
 	})
 	return items, nil
+}
+
+func (s *MemoryStore) OnChange(listener func(string)) func() {
+	s.mu.Lock()
+	s.listenerID++
+	id := s.listenerID
+	if s.listeners == nil {
+		s.listeners = make(map[uint64]func(string))
+	}
+	s.listeners[id] = listener
+	s.mu.Unlock()
+	return sync.OnceFunc(func() { s.mu.Lock(); delete(s.listeners, id); s.mu.Unlock() })
+}
+
+func (s *MemoryStore) changed(key string) {
+	s.mu.RLock()
+	listeners := make([]func(string), 0, len(s.listeners))
+	for _, listener := range s.listeners {
+		listeners = append(listeners, listener)
+	}
+	s.mu.RUnlock()
+	for _, listener := range listeners {
+		listener(key)
+	}
 }

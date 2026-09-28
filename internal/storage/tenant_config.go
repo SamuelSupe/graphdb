@@ -8,6 +8,7 @@ import (
 )
 
 type TenantConfig struct {
+	Backup       TenantBackupConfig       `json:"backup,omitempty"`
 	Backpressure TenantBackpressureConfig `json:"backpressure,omitempty"`
 	Quota        TenantQuotaConfig        `json:"quota,omitempty"`
 	Maintenance  TenantMaintenanceConfig  `json:"maintenance,omitempty"`
@@ -81,6 +82,7 @@ func TenantConfigWithDefaults(config TenantConfig) TenantConfig {
 	defaults := DefaultTenantConfig()
 	config.Maintenance = maintenanceConfigWithDefaults(config.Maintenance, defaults.Maintenance)
 	config.Indexes = indexConfigWithDefaults(config.Indexes, defaults.Indexes)
+	config.Backup = backupPolicy(config.Backup)
 	return config
 }
 
@@ -265,6 +267,9 @@ func applyTenantQuotaConfig(base *BackpressureConfig, config TenantQuotaConfig) 
 }
 
 func validateTenantConfig(config TenantConfig) error {
+	if err := validateBackupPolicy(config.Backup); err != nil {
+		return err
+	}
 	if err := nonNegativeInt64("backpressure.object_latency_threshold_ms", config.Backpressure.ObjectLatencyThresholdMS); err != nil {
 		return err
 	}

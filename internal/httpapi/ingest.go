@@ -68,7 +68,6 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if result.Applied > 0 && !result.Skipped {
-		s.publishReadCacheAfterWrite(tenantID)
 	}
 	if result.Skipped {
 		s.obs().Metrics.RecordIngestSkipped(tenantID, request.Source, result.SkipReason)
@@ -130,7 +129,6 @@ func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantI
 
 func (s *Server) writeCompletedIngest(w http.ResponseWriter, tenantID string, request storage.IngestRequest, result storage.IngestResult) {
 	if result.Applied > 0 && !result.Skipped {
-		s.publishReadCacheAfterWrite(tenantID)
 	}
 	if result.Skipped {
 		s.obs().Metrics.RecordIngestSkipped(tenantID, request.Source, result.SkipReason)

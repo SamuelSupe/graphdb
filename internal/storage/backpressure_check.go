@@ -96,25 +96,11 @@ func (s *TenantStore) checkWriteBackpressureWithOptions(
 		}
 		return err
 	}
-	var legacyIndexTask IndexTask
-	legacyIndexTaskRunning := false
-	if !indexTaskRunning {
-		legacyIndexTask, legacyIndexTaskRunning, _, err = s.findRunningIndexRebuildTask(ctx, tenantID)
-		if err != nil {
-			if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
-				return newCheckedBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter, options)
-			}
-			return err
-		}
+	if indexTask.Phase == "cleanup" {
+		indexTaskRunning = false
 	}
-	if s.localFileStore() != nil && legacyIndexTask.Phase == "cleanup" {
-		legacyIndexTaskRunning = false
-	}
-	if indexTaskRunning || legacyIndexTaskRunning {
+	if indexTaskRunning {
 		taskID := indexTask.ID
-		if taskID == "" {
-			taskID = legacyIndexTask.ID
-		}
 		span.SetAttributes(
 			attribute.Bool("graphdb.write_backpressure.index_rebuild_running", true),
 			attribute.String("graphdb.write_backpressure.index_rebuild_task_id", taskID),
@@ -126,24 +112,6 @@ func (s *TenantStore) checkWriteBackpressureWithOptions(
 		})
 	} else {
 		span.SetAttributes(attribute.Bool("graphdb.write_backpressure.index_rebuild_running", false))
-	}
-	if task, ok, err := s.findRunningTask(ctx, tenantID, TaskTypeGC); err != nil {
-		if reason, ok := objectStoreUnavailableBackpressureReason(err); ok {
-			return newCheckedBackpressureError(appendBackpressureReasons(reasons, reason), config.RetryAfter, options)
-		}
-		return err
-	} else if ok && s.localFileStore() == nil {
-		span.SetAttributes(
-			attribute.Bool("graphdb.write_backpressure.gc_running", true),
-			attribute.String("graphdb.write_backpressure.gc_task_id", task.ID),
-		)
-		reasons = append(reasons, BackpressureReason{
-			Code:    "gc_running",
-			Current: 1,
-			Message: "gc is running",
-		})
-	} else {
-		span.SetAttributes(attribute.Bool("graphdb.write_backpressure.gc_running", false))
 	}
 	reasons = filterCheckedBackpressureReasons(
 		appendBackpressureReasons(reasons, s.Backpressure.ReasonsWithConfig(tenantID, config)...),
@@ -186,9 +154,7 @@ func (s *TenantStore) currentManifestForWriteAdmission(ctx context.Context, tena
 		endStorageSpan(span, err)
 	}()
 	if loaded, ok := s.getWriteCache(tenantID); ok {
-		if _, _, leaseOK := s.getCachedWriterLease(
-			tenantID, time.Now().UTC(),
-		); !leaseOK {
+		if _, _, leaseOK := s.getCachedWriterLease(tenantID); !leaseOK {
 			span.SetAttributes(
 				attribute.Bool("graphdb.write_cache.found", true),
 				attribute.Bool("graphdb.write_cache.hit", false),
@@ -329,7 +295,7 @@ func (s *TenantStore) findRunningTask(ctx context.Context, tenantID string, task
 		active, ok := s.taskActive[taskActiveKey(tenantID, taskType)]
 		s.taskMu.Unlock()
 		if ok {
-			return active, true, nil
+			return active, !taskTerminal(active.Status), nil
 		}
 	}
 	return Task{}, false, nil

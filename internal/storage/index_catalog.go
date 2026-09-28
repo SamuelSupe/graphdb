@@ -393,6 +393,7 @@ func (s *TenantStore) putIndexCatalogWithMetaFast(ctx context.Context, tenantID 
 }
 
 func (s *TenantStore) putIndexCatalogWithMetaMode(ctx context.Context, tenantID string, catalog IndexCatalog, meta ObjectMeta, fast bool) (ObjectMeta, error) {
+	s.protectCatalogObjects(tenantID, catalog)
 	catalog.TenantID = tenantID
 	key := s.indexCatalogKey(tenantID)
 	data, err := marshalParquetIndexCatalog(ctx, catalog)

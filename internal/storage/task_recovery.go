@@ -14,7 +14,7 @@ func (s *TenantStore) reconcileInactiveTask(
 	ctx context.Context,
 	task Task,
 ) Task {
-	if !s.taskOwnerStopped(ctx, task, time.Now().UTC()) {
+	if !s.taskOwnerStopped(task) {
 		return task
 	}
 	updated, err := s.mutateTask(
@@ -42,56 +42,12 @@ func (s *TenantStore) reconcileInactiveTask(
 	return task
 }
 
-func (s *TenantStore) taskOwnerStopped(
-	ctx context.Context,
-	task Task,
-	now time.Time,
-) bool {
-	if !taskStillActive(task) ||
-		task.OwnerID == "" ||
-		!taskRecoveryDue(task, now, s.taskMarkerTTL()) {
-		return false
-	}
-	active, known := s.taskOwnerActive(ctx, task, now)
-	return known && !active
-}
-
-func taskRecoveryDue(task Task, now time.Time, grace time.Duration) bool {
-	if grace <= 0 {
-		grace = 30 * time.Second
-	}
-	updatedAt := task.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = task.StartedAt
-	}
-	return !updatedAt.IsZero() && !now.Before(updatedAt.Add(grace))
-}
-
-func (s *TenantStore) taskOwnerActive(
-	ctx context.Context,
-	task Task,
-	now time.Time,
-) (bool, bool) {
-	if s.taskRuntimeActive(task.TenantID, task.ID) {
-		return true, true
-	}
-	if task.OwnerID == s.InstanceID {
-		return false, true
-	}
-	// Owning the local directory excludes every previous process, regardless of
-	// its persisted writer lease expiry.
-	if exclusiveFileStore(s.Objects) != nil {
-		return false, true
-	}
-
-	lease, err := s.GetWriterLease(ctx, task.TenantID)
-	if errors.Is(err, ErrNotFound) {
-		return false, true
-	}
-	if err != nil {
-		return false, false
-	}
-	return lease.OwnerID == task.OwnerID && lease.ExpiresAt.After(now), true
+func (s *TenantStore) taskOwnerStopped(task Task) bool {
+	s.taskMu.Lock()
+	_, running := s.taskCancels[taskRuntimeKey(task.TenantID, task.ID)]
+	pending := s.taskActive[taskActiveKey(task.TenantID, task.Type)].ID == task.ID
+	s.taskMu.Unlock()
+	return taskStillActive(task) && task.OwnerID != "" && !running && !pending
 }
 
 func (s *TenantStore) taskRuntimeActive(tenantID string, taskID string) bool {

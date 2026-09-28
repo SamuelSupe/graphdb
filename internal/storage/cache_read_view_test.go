@@ -78,6 +78,7 @@ func TestReaderCacheCachedReadOnlyGraphMissDoesNotLoad(t *testing.T) {
 	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
 		t.Fatalf("warm cache: %v", err)
 	}
+	store.readViews = nil // Exercise the gap before reader publication.
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
 	}, CommitOptions{}); err != nil {
@@ -227,6 +228,8 @@ func newReaderCacheWriteReuseFixture(t *testing.T) (*countingReadStore, *TenantS
 	if !ok || old.Manifest.Version != 1 {
 		t.Fatalf("v1 write cache = %#v, want version 1", old)
 	}
+	// Hold reader publication to exercise catch-up from the durable manifest.
+	store.readViews = nil
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
 	}, CommitOptions{}); err != nil {
@@ -287,4 +290,52 @@ func BenchmarkReaderCacheHotRead(b *testing.B) {
 			}
 		}
 	})
+}
+
+func TestLocalDirectAndWALPublishReadViewWithoutHTTPCallbacks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	cache := NewReaderCache(store, time.Hour)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "direct", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var before *graph.Graph
+	used, err := cache.WithCachedReadOnlyGraph(ctx, "tenant-a", 1, func(g *graph.Graph, _ Manifest) error { before = g; return nil })
+	if err != nil || !used {
+		t.Fatalf("direct view: %v, %v", used, err)
+	}
+	service, err := OpenIngestService(store, testIngestServiceConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	accepted, err := service.Accept(ctx, "tenant-a", ingestEntityRequest("wal-view", "wal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Wait(ctx, accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	used, err = cache.WithCachedReadOnlyGraph(ctx, "tenant-a", result.Version, func(g *graph.Graph, manifest Manifest) error {
+		if _, ok := g.GetEntity("wal"); !ok {
+			t.Fatal("published WAL entity missing")
+		}
+		if manifest.Version != result.Version {
+			t.Fatalf("view version=%d, commit=%d", manifest.Version, result.Version)
+		}
+		return nil
+	})
+	if err != nil || !used {
+		t.Fatalf("WAL view: %v, %v", used, err)
+	}
+	if _, ok := before.GetEntity("wal"); ok {
+		t.Fatal("publication mutated the prior read view")
+	}
 }

@@ -93,16 +93,16 @@ func TestDropIndexStartsNewRebuildWhenPreviousTaskRunning(t *testing.T) {
 	if err := store.putIndexDefinitionsWithMeta(ctx, "tenant-a", record, ObjectMeta{Key: store.indexDefinitionsKey("tenant-a")}); err != nil {
 		t.Fatalf("put index definitions: %v", err)
 	}
-	oldTask := IndexTask{
+	oldTask := Task{
 		ID:        "old-running",
 		TenantID:  "tenant-a",
-		Type:      "rebuild",
+		Type:      TaskTypeIndexRebuild,
 		Status:    "running",
 		StartedAt: now,
 		UpdatedAt: now,
 	}
 	store.taskMu.Lock()
-	store.indexTasks["tenant-a"] = oldTask
+	store.taskActive[taskActiveKey("tenant-a", TaskTypeIndexRebuild)] = oldTask
 	store.taskMu.Unlock()
 
 	dropped, err := store.DropIndex(ctx, "tenant-a", "host.owner")
@@ -216,26 +216,26 @@ func TestSupersededIndexRebuildProgressPreservesNewRunningTask(t *testing.T) {
 	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
 		t.Fatal(err)
 	}
-	old := IndexTask{ID: "old", TenantID: "tenant-a", Type: "rebuild", Status: "running", Phase: "backfill", OwnerID: store.InstanceID, StartedAt: time.Now().UTC()}
-	if err := store.saveIndexTask(ctx, old); err != nil {
+	old := Task{ID: "old", TenantID: "tenant-a", Type: TaskTypeIndexRebuild, Status: TaskStatusRunning, Phase: "backfill", OwnerID: store.InstanceID, StartedAt: time.Now().UTC()}
+	if err := store.saveTask(ctx, old); err != nil {
 		t.Fatal(err)
 	}
 	next := old
 	next.ID = "next"
-	next.Phase = "queued"
-	if err := store.publishQueuedIndexTask(ctx, next); err != nil {
+	next.Status = TaskStatusQueued
+	next.Phase = TaskStatusQueued
+	if err := store.saveTask(ctx, next); err != nil {
 		t.Fatal(err)
 	}
-	store.indexTasks["tenant-a"] = next
-	old.Phase = "cleanup"
-	if err := store.saveIndexTask(ctx, old); err != nil {
+	store.taskActive[taskActiveKey(next.TenantID, next.Type)] = next
+	if err := store.updateTaskProgress(ctx, old, "cleanup", 1, 2, nil); err != nil {
 		t.Fatal(err)
 	}
-	marker, err := store.getIndexRebuildRunningMarker(ctx, "tenant-a")
-	if err != nil || marker.ID != next.ID {
-		t.Fatalf("superseded progress replaced running task: marker=%+v err=%v", marker, err)
+	running, found, err := store.findRunningTask(ctx, next.TenantID, next.Type)
+	if err != nil || !found || running.ID != next.ID {
+		t.Fatalf("superseded progress replaced running task: task=%+v found=%v err=%v", running, found, err)
 	}
-	persisted, _, err := store.getIndexTaskObjectWithMeta(ctx, "tenant-a", old.ID)
+	persisted, _, err := store.getTaskObjectWithMeta(ctx, old.TenantID, old.ID)
 	if err != nil || persisted.Phase != "cleanup" {
 		t.Fatalf("superseded task lost its own progress: task=%+v err=%v", persisted, err)
 	}

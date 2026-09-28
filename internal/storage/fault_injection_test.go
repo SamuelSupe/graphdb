@@ -259,7 +259,6 @@ func testFaultProcessCrashRecovery(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	writer := NewTenantStore(base, "test")
-	writer.LeaseTTL = time.Nanosecond
 	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
 	}, CommitOptions{}); err != nil {

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-const defaultGCReaderMaxAge = 5 * time.Minute
-
 type GCOptions struct {
 	KeepSnapshots           int
 	DeadLetterMaxAge        time.Duration
@@ -25,6 +23,7 @@ type GCOptions struct {
 	SkipEntityRecordCleanup bool
 	listings                map[string]gcListing
 	listBefore              time.Time
+	view                    *gcView
 }
 
 type GCReport struct {
@@ -58,6 +57,7 @@ type GCCheckpoint struct {
 	LastKey         string   `json:"last_key,omitempty"`
 	ScannedPrefixes []string `json:"scanned_prefixes,omitempty"`
 	ScannedKeys     int      `json:"scanned_keys,omitempty"`
+	DeferredFiles   int      `json:"deferred_files,omitempty"`
 	SkippedByCursor int      `json:"skipped_by_cursor,omitempty"`
 	DeletedKeys     []string `json:"deleted_keys,omitempty"`
 	PlannedKeys     []string `json:"planned_keys,omitempty"`
@@ -68,14 +68,6 @@ type GCCheckpoint struct {
 	DryRun          bool     `json:"dry_run,omitempty"`
 	Paused          bool     `json:"paused,omitempty"`
 	Completed       bool     `json:"completed"`
-}
-
-type gcReaderProtection struct {
-	SnapshotVersions []int64
-	VisibleVersions  []int64
-	Watermark        int64
-	Active           int
-	Ignored          int
 }
 
 func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options GCOptions) (report GCReport, err error) {
@@ -106,6 +98,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		return GCReport{}, err
 	}
 	ctx = boundCtx
+	options.view = s.gcView(tenantID)
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return GCReport{}, err
 	}
@@ -142,39 +135,22 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		}
 		return report, err
 	}
-	protection, err := s.gcReaderProtection(ctx, tenantID, options.ReaderMaxAge, options.ReaderScanLimit, time.Now().UTC())
+	commitReport, err := s.cleanupCommitsLocked(ctx, tenantID, manifest, checkpoint)
+	report.CommitCleanup = commitReport
+	report.DeletedKeys = append(report.DeletedKeys, commitReport.DeletedKeys...)
 	if err != nil {
 		return finish(err)
 	}
-	report.ReaderWatermarkVersion = protection.Watermark
-	report.ReaderWatermarkReaders = protection.Active
-	report.ReaderWatermarkIgnored = protection.Ignored
-
-	if protection.activeReaderBehind(manifest.Version) {
-		report.CommitCleanupSkippedReason = fmt.Sprintf("active reader watermark %d is behind manifest version %d", protection.Watermark, manifest.Version)
-	} else {
-		commitReport, err := s.cleanupCommitsLocked(ctx, tenantID, manifest, checkpoint)
-		report.CommitCleanup = commitReport
-		report.DeletedKeys = append(report.DeletedKeys, commitReport.DeletedKeys...)
-		if err != nil {
-			return finish(err)
-		}
-	}
-
 	if options.CleanupIndexOrphans {
-		if protection.activeReaderBehind(manifest.Version) {
-			report.IndexCleanupSkippedReason = fmt.Sprintf("active reader watermark %d is behind manifest version %d", protection.Watermark, manifest.Version)
-		} else {
-			report.IndexCleanupAttempt = true
-			before := len(checkpoint.checkpoint.DeletedKeys)
-			err := s.cleanupIndexOrphansLocked(ctx, tenantID, checkpoint, &report)
-			report.DeletedKeys = append(report.DeletedKeys, checkpoint.checkpoint.DeletedKeys[before:]...)
-			if err != nil {
-				if !gcPaused(err) {
-					report.IndexCleanupError = err.Error()
-				}
-				return finish(err)
+		report.IndexCleanupAttempt = true
+		before := len(checkpoint.checkpoint.DeletedKeys)
+		err := s.cleanupIndexOrphansLocked(ctx, tenantID, checkpoint, &report)
+		report.DeletedKeys = append(report.DeletedKeys, checkpoint.checkpoint.DeletedKeys[before:]...)
+		if err != nil {
+			if !gcPaused(err) {
+				report.IndexCleanupError = err.Error()
 			}
+			return finish(err)
 		}
 	}
 	var deleted int
@@ -197,7 +173,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		}
 	}
 
-	deleted, keys, err = s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, protection, checkpoint)
+	deleted, keys, err = s.cleanupSnapshotsLocked(ctx, tenantID, manifest, options.KeepSnapshots, checkpoint)
 	report.DeletedSnapshots = deleted
 	report.DeletedKeys = append(report.DeletedKeys, keys...)
 	if err != nil {
@@ -226,64 +202,6 @@ func (s *TenantStore) validateGCSnapshotCursor(tenantID string, manifest Manifes
 		return nil
 	}
 	return fmt.Errorf("gc checkpoint cursor references current snapshot version %d", version)
-}
-
-func (p gcReaderProtection) activeReaderBehind(manifestVersion int64) bool {
-	return p.Active > 0 && p.Watermark > 0 && p.Watermark < manifestVersion
-}
-
-func (s *TenantStore) gcReaderProtection(ctx context.Context, tenantID string, maxAge time.Duration, scanLimit int, now time.Time) (gcReaderProtection, error) {
-	if exclusiveFileStore(s.Objects) != nil {
-		return gcReaderProtection{}, nil
-	}
-	if maxAge < 0 {
-		return gcReaderProtection{}, nil
-	}
-	if maxAge == 0 {
-		maxAge = defaultGCReaderMaxAge
-	}
-	if scanLimit <= 0 {
-		scanLimit = readerHeartbeatScanLimit
-	}
-	heartbeats, err := s.ListReaderHeartbeatsWithOptions(ctx, tenantID, ReaderHeartbeatListOptions{
-		MaxAge:        maxAge,
-		Limit:         readerHeartbeatListLimit,
-		ScanLimit:     scanLimit,
-		DeleteExpired: true,
-	})
-	if err != nil {
-		return gcReaderProtection{}, err
-	}
-	out := gcReaderProtection{}
-	seenVisible := map[int64]struct{}{}
-	seenSnapshots := map[int64]struct{}{}
-	for _, heartbeat := range heartbeats {
-		if heartbeat.VisibleVersion <= 0 || heartbeat.LastSeenAt.IsZero() {
-			out.Ignored++
-			continue
-		}
-		if maxAge > 0 && now.Sub(heartbeat.LastSeenAt) > maxAge {
-			out.Ignored++
-			continue
-		}
-		if _, ok := seenVisible[heartbeat.VisibleVersion]; !ok {
-			seenVisible[heartbeat.VisibleVersion] = struct{}{}
-			out.VisibleVersions = append(out.VisibleVersions, heartbeat.VisibleVersion)
-		}
-		if heartbeat.SnapshotVersion > 0 {
-			if _, ok := seenSnapshots[heartbeat.SnapshotVersion]; !ok {
-				seenSnapshots[heartbeat.SnapshotVersion] = struct{}{}
-				out.SnapshotVersions = append(out.SnapshotVersions, heartbeat.SnapshotVersion)
-			}
-		}
-		out.Active++
-		if out.Watermark == 0 || heartbeat.VisibleVersion < out.Watermark {
-			out.Watermark = heartbeat.VisibleVersion
-		}
-	}
-	sort.Slice(out.SnapshotVersions, func(i, j int) bool { return out.SnapshotVersions[i] < out.SnapshotVersions[j] })
-	sort.Slice(out.VisibleVersions, func(i, j int) bool { return out.VisibleVersions[i] < out.VisibleVersions[j] })
-	return out, nil
 }
 
 func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string, manifest Manifest, checkpoint *gcCheckpointRunner) (CleanupReport, error) {
@@ -379,15 +297,9 @@ func (s *TenantStore) cleanupCommitSegmentsLocked(ctx context.Context, tenantID 
 	return checkpoint.pauseAfterPage(next)
 }
 
-func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID string, manifest Manifest, keepSnapshots int, protection gcReaderProtection, checkpoint *gcCheckpointRunner) (int, []string, error) {
+func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID string, manifest Manifest, keepSnapshots int, checkpoint *gcCheckpointRunner) (int, []string, error) {
 	if keepSnapshots < 1 {
 		keepSnapshots = 1
-	}
-	// A reader can require the closest snapshot at or before its visible
-	// version. Conservatively defer snapshot retention while any reader is
-	// active instead of materializing every snapshot to rediscover that base.
-	if protection.Active > 0 {
-		return 0, nil, nil
 	}
 	type snapshotObject struct {
 		Key     string
@@ -617,6 +529,10 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 	if skip {
 		return nil
 	}
+	schedule, err := s.BackupAutomationStatus(ctx, tenantID)
+	if err != nil {
+		return err
+	}
 	for _, object := range objects {
 		if err := checkpoint.visit(object); err != nil {
 			return err
@@ -643,10 +559,10 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 		if err != nil {
 			continue
 		}
-		if task.TenantID != tenantID ||
+		if task.ID == schedule.TaskID || task.TenantID != tenantID ||
 			task.ID != taskID ||
 			(taskStillActive(task) &&
-				!s.taskOwnerStopped(ctx, task, time.Now().UTC())) ||
+				!s.taskOwnerStopped(task)) ||
 			!taskExpired(
 				task.StartedAt,
 				task.UpdatedAt,

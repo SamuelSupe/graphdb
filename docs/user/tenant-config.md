@@ -193,3 +193,7 @@ before confirming the destructive operation:
 GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh --dry-run
 GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh
 ```
+
+## Backup Automation
+
+The `backup` config section controls scheduled S3 snapshots, retry backoff, retention and optional restore drills. See the [backup automation guide](../object-backup.md#automatic-backups).

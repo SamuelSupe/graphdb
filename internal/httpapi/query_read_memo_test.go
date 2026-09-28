@@ -26,7 +26,7 @@ func TestQueryReadMemoAvoidsDuplicateManifestAndCatalogReads(t *testing.T) {
 	}
 	objects := &queryCountingStore{ObjectStore: base}
 	server := &Server{Store: storage.NewTenantStore(objects, "test")}
-	memoCtx := withQueryReadMemo(ctx)
+	memoCtx := storage.WithQueryReadMemo(ctx)
 	request := httptest.NewRequest("GET", "/v1/query", nil).WithContext(memoCtx)
 	if _, err := server.readTarget(request, "tenant-a", readFreshness{}); err != nil {
 		t.Fatalf("first target: %v", err)
@@ -34,14 +34,14 @@ func TestQueryReadMemoAvoidsDuplicateManifestAndCatalogReads(t *testing.T) {
 	if _, err := server.readTarget(request, "tenant-a", readFreshness{}); err != nil {
 		t.Fatalf("second target: %v", err)
 	}
-	if _, _, ok := server.lazyQueryOptions(memoCtx, "tenant-a", 1, false); !ok {
+	if _, _, ok := server.Store.QueryOptions(memoCtx, "tenant-a", 1, false); !ok {
 		t.Fatal("lazy query options unavailable")
 	}
-	secondRequestCtx := withQueryReadMemo(context.Background())
-	if _, _, ok := server.lazyQueryOptions(secondRequestCtx, "tenant-a", 1, false); !ok {
+	secondRequestCtx := storage.WithQueryReadMemo(context.Background())
+	if _, _, ok := server.Store.QueryOptions(secondRequestCtx, "tenant-a", 1, false); !ok {
 		t.Fatal("cross-request lazy query options unavailable")
 	}
-	if _, _, ok := server.lazyQueryOptions(withQueryReadMemo(context.Background()), "tenant-a", unconstrainedVersion, false); !ok {
+	if _, _, ok := server.Store.QueryOptions(storage.WithQueryReadMemo(context.Background()), "tenant-a", unconstrainedVersion, false); !ok {
 		t.Fatal("allow-stale catalog options unavailable")
 	}
 	if got := objects.countContains("/manifest.parquet"); got != 1 {
@@ -53,8 +53,8 @@ func TestQueryReadMemoAvoidsDuplicateManifestAndCatalogReads(t *testing.T) {
 	if got := objects.countContains("/reverse-index/catalog.json"); got != 0 {
 		t.Fatalf("match query reverse catalog reads = %d, want 0", got)
 	}
-	reverseCtx := withQueryReadMemo(context.Background())
-	if _, _, ok := server.lazyQueryOptions(
+	reverseCtx := storage.WithQueryReadMemo(context.Background())
+	if _, _, ok := server.Store.QueryOptions(
 		reverseCtx,
 		"tenant-a",
 		1,
@@ -65,8 +65,8 @@ func TestQueryReadMemoAvoidsDuplicateManifestAndCatalogReads(t *testing.T) {
 	if got := objects.countContains("/reverse-index/catalog.json"); got != 1 {
 		t.Fatalf("incoming query reverse catalog reads = %d, want 1", got)
 	}
-	if _, _, ok := server.lazyQueryOptions(
-		withQueryReadMemo(context.Background()),
+	if _, _, ok := server.Store.QueryOptions(
+		storage.WithQueryReadMemo(context.Background()),
 		"tenant-a",
 		1,
 		true,
@@ -108,8 +108,8 @@ func TestQueryReadMemoKeysIndexCatalogByVersion(t *testing.T) {
 	}
 
 	server := &Server{Store: store}
-	memoCtx := withQueryReadMemo(ctx)
-	first, err := server.currentQueryCatalog(memoCtx, "tenant-a", 1)
+	memoCtx := storage.WithQueryReadMemo(ctx)
+	first, err := server.Store.QueryCatalog(memoCtx, "tenant-a", 1)
 	if err != nil {
 		t.Fatalf("catalog version 1: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestQueryReadMemoKeysIndexCatalogByVersion(t *testing.T) {
 	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
 		t.Fatalf("rebuild indexes version 2: %v", err)
 	}
-	second, err := server.currentQueryCatalog(memoCtx, "tenant-a", 2)
+	second, err := server.Store.QueryCatalog(memoCtx, "tenant-a", 2)
 	if err != nil {
 		t.Fatalf("catalog version 2: %v", err)
 	}

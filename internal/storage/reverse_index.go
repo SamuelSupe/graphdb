@@ -102,6 +102,7 @@ func (s *TenantStore) putReverseIndexCatalogWithMeta(
 	catalog ReverseIndexCatalog,
 	meta ObjectMeta,
 ) error {
+	s.protectCatalogObjects(tenantID, IndexCatalog{EdgeShards: catalog.EdgeShards})
 	data, err := json.Marshal(catalog)
 	if err != nil {
 		return err

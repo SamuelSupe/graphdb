@@ -57,3 +57,30 @@ func (s *Server) putTenantConfig(w http.ResponseWriter, r *http.Request) {
 	s.auditInfo("tenant_config_updated", tenantID, map[string]any{})
 	writeJSON(w, http.StatusOK, TenantConfigResponse{Configured: true, Config: config})
 }
+
+func (s *Server) getBackupAutomation(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
+	state, err := s.Store.BackupAutomationStatus(r.Context(), tenant)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, state.Public())
+}
+
+func (s *Server) resetBackupAutomation(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
+	state, err := s.Store.ResetBackupAutomation(r.Context(), tenant)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	s.auditInfo("backup_automation_reset", tenant, nil)
+	writeJSON(w, http.StatusOK, state)
+}

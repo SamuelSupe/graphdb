@@ -235,7 +235,6 @@ func TestLocalPublishedRestoreRetryPreservesLaterCommit(t *testing.T) {
 			defer func() { files.Close() }()
 			objects := &restoreTerminalFailureStore{FileStore: files}
 			store := NewTenantStore(objects, "review")
-			store.TaskMarkerTTL = time.Millisecond
 			store.MaxRetries = 1
 			backupKey := seedLocalRestoreBackup(t, store)
 			objects.fail.Store(true)

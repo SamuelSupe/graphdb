@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -87,7 +88,21 @@ func (s *TenantStore) tenantRestoreDrillTask(
 		return TenantRestoreDrillReport{}, err
 	}
 	targetPrefix := restoreDrillTargetPrefix(s.Prefix, task)
-	targetStore := s.restoreDrillTargetStore(targetPrefix)
+	targetObjects := s.Objects
+	if task.Type == TaskTypeTenantBackup && boolTaskParam(task.Params, "automatic") {
+		if files := s.localFileStore(); files != nil {
+			// Disposable builds have no publish journal. Reopening the data
+			// directory also removes them after a killed verification process.
+			dir, err := files.newRestoreDirectory()
+			if err != nil {
+				return report, err
+			}
+			defer func() { returnErr = errors.Join(returnErr, removeRestoreDirectory(dir)) }()
+			targetObjects = NewFileStore(filepath.Join(dir, "build"))
+		}
+	}
+	targetStore := s.restoreDrillTargetStore(targetPrefix, targetObjects)
+	defer targetStore.ShutdownTasks(context.Background())
 	dryRun := boolTaskParam(task.Params, "dry_run")
 	cleanup := restoreDrillCleanup(task.Params)
 	if !dryRun {
@@ -173,7 +188,9 @@ func (s *TenantStore) tenantRestoreDrillTask(
 		StartedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	restoreReport, err := targetStore.restoreTenantBackupInputTask(ctx, restoreTask, report.BackupKey, input)
+	restoreCtx, finishRestore := targetStore.inlineTask(ctx, restoreTask)
+	defer finishRestore()
+	restoreReport, err := targetStore.restoreTenantBackupInputTask(restoreCtx, restoreTask, report.BackupKey, input)
 	if err != nil {
 		return report, err
 	}
@@ -302,10 +319,9 @@ func (s *TenantStore) createRestoreDrillBackup(ctx context.Context, tenantID str
 	return tenantBackupInput{Record: record, ManifestKey: manifestKey, Integrity: integrity}, resultKey, backupManifest.Stats, nil
 }
 
-func (s *TenantStore) restoreDrillTargetStore(targetPrefix string) *TenantStore {
-	target := NewTenantStore(s.Objects, targetPrefix)
+func (s *TenantStore) restoreDrillTargetStore(targetPrefix string, objects ObjectStore) *TenantStore {
+	target := NewTenantStore(objects, targetPrefix)
 	target.InstanceID = s.InstanceID
-	target.LeaseTTL = s.LeaseTTL
 	target.TaskPersistenceTimeout = s.TaskPersistenceTimeout
 	target.IndexPrefetchTimeout = s.IndexPrefetchTimeout
 	target.MaxRetries = s.MaxRetries

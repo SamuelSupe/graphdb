@@ -17,14 +17,15 @@ func TestLocalTasksRecoverAfterDirectoryReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewTenantStore(files, "test")
+	store.InstanceID = "fixed-local-node"
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().UTC().Add(-time.Hour)
+	now := time.Now().UTC()
 	task := Task{
 		ID: "interrupted-backup", TenantID: "tenant-a", Type: TaskTypeTenantBackup,
 		Status: TaskStatusRunning, Phase: "backup_upload", OwnerID: store.InstanceID,
-		StartedAt: old, UpdatedAt: old,
+		StartedAt: now, UpdatedAt: now,
 	}
 	if err := store.saveTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -32,7 +33,7 @@ func TestLocalTasksRecoverAfterDirectoryReopen(t *testing.T) {
 	index := IndexTask{
 		ID: "interrupted-index", TenantID: task.TenantID, Type: "rebuild",
 		Status: TaskStatusRunning, OwnerID: store.InstanceID,
-		StartedAt: old, UpdatedAt: old,
+		StartedAt: now, UpdatedAt: now,
 	}
 	if err := store.saveIndexTask(ctx, index); err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestLocalTasksRecoverAfterDirectoryReopen(t *testing.T) {
 	}
 	defer files.Close()
 	store = NewTenantStore(files, "test")
+	store.InstanceID = "fixed-local-node"
 	defer store.ShutdownTasks(ctx)
 	loaded, err := store.GetTask(ctx, task.TenantID, task.ID)
 	if err != nil || loaded.Status != TaskStatusFailed {
@@ -68,7 +70,6 @@ func TestLocalTasksRecoverAfterDirectoryReopen(t *testing.T) {
 func TestGetTaskFailsInactiveLocalOwnerAfterRecoveryGrace(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
-	store.TaskMarkerTTL = time.Millisecond
 	now := time.Now().UTC().Add(-time.Minute)
 	task := Task{
 		ID:        "stale-local-task",
@@ -97,7 +98,6 @@ func TestGetTaskFailsInactiveLocalOwnerAfterRecoveryGrace(t *testing.T) {
 func TestRunGCCleansExpiredTaskAfterOwnerStops(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
-	store.TaskMarkerTTL = time.Millisecond
 	old := time.Now().UTC().Add(-2 * time.Hour)
 	task := Task{
 		ID:        "expired-orphan-task",

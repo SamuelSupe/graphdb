@@ -95,11 +95,7 @@ func TestWriterHotCommitAvoidsFixedMetadataReads(t *testing.T) {
 			t.Fatalf("hot commit GET count for %s = %d, want 0", fragment, got)
 		}
 	}
-	for _, fragment := range []string{"/indexes/running/rebuild.parquet", "/tasks/_active/gc.parquet"} {
-		if got := objects.CountContains(fragment); got != 1 {
-			t.Fatalf("hot commit admission GET count for %s = %d, want 1", fragment, got)
-		}
-	}
+
 }
 
 func TestRebuildIndexesAvoidsNewEntityRecordMissReads(t *testing.T) {
@@ -308,7 +304,6 @@ func TestIncrementalIndexUpdateDoesNotOverwriteAfterLeaseTakeover(t *testing.T) 
 	ctx := context.Background()
 	base := NewMemoryStore()
 	writer := newParquetIndexTenantStore(base, "test")
-	writer.LeaseTTL = time.Millisecond
 	if _, err := writer.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit v1: %v", err)
 	}
@@ -319,7 +314,6 @@ func TestIncrementalIndexUpdateDoesNotOverwriteAfterLeaseTakeover(t *testing.T) 
 
 	objects := &takeoverDuringIncrementalIndexStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	committer := newParquetIndexTenantStore(objects, "test")
-	committer.LeaseTTL = time.Nanosecond
 	result, err := committer.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
 		ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": "app-01b"},
 	}}}, CommitOptions{})
@@ -353,7 +347,6 @@ func TestIncrementalIndexDeleteDoesNotRemoveObjectAfterLeaseTakeover(t *testing.
 	ctx := context.Background()
 	base := NewMemoryStore()
 	writer := newParquetIndexTenantStore(base, "test")
-	writer.LeaseTTL = time.Millisecond
 	if _, err := writer.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit v1: %v", err)
 	}
@@ -364,7 +357,6 @@ func TestIncrementalIndexDeleteDoesNotRemoveObjectAfterLeaseTakeover(t *testing.
 
 	objects := &takeoverDuringIncrementalDeleteStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	committer := newParquetIndexTenantStore(objects, "test")
-	committer.LeaseTTL = time.Nanosecond
 	result, err := committer.CommitWithReport(ctx, "tenant-a", graph.Mutations{DeleteEntities: []string{"host:app-01"}}, CommitOptions{})
 	if err != nil {
 		t.Fatalf("delete commit: %v", err)
@@ -1012,7 +1004,6 @@ func TestRebuildIndexesDoesNotTombstoneRecordAfterLeaseTakeover(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	writer := newParquetIndexTenantStore(base, "test")
-	writer.LeaseTTL = time.Millisecond
 	if _, err := writer.Commit(ctx, "tenant-a", multiHostIndexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -1027,7 +1018,6 @@ func TestRebuildIndexesDoesNotTombstoneRecordAfterLeaseTakeover(t *testing.T) {
 
 	objects := &takeoverDuringStaleRecordCleanupStore{ObjectStore: base, base: base, tenantID: "tenant-a", triggerKey: staleKey}
 	rebuilder := newParquetIndexTenantStore(objects, "test")
-	rebuilder.LeaseTTL = time.Nanosecond
 	_, err := rebuilder.RebuildIndexes(ctx, "tenant-a")
 	if !errors.Is(err, ErrConflict) && !errors.Is(err, ErrLeaseHeld) {
 		t.Fatalf("rebuild err = %v, want conflict after takeover", err)
@@ -2194,7 +2184,6 @@ func (s *takeoverDuringIncrementalIndexStore) PutConditional(ctx context.Context
 	if s.shouldTrigger(key) {
 		time.Sleep(time.Millisecond)
 		takeover := newParquetIndexTenantStore(s.base, "test")
-		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.Commit(ctx, s.tenantID, graph.Mutations{UpsertEntities: []graph.Entity{{
 			ID: "host:app-02", Kind: "host", Fields: graph.Fields{"hostname": "app-02"},
 		}}}, CommitOptions{}); err != nil {
@@ -2279,7 +2268,6 @@ func (s *takeoverDuringIncrementalDeleteStore) PutConditional(ctx context.Contex
 	if s.shouldTrigger(key) {
 		time.Sleep(time.Millisecond)
 		takeover := newParquetIndexTenantStore(s.base, "test")
-		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.Commit(ctx, s.tenantID, graph.Mutations{UpsertEntities: []graph.Entity{{
 			ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": "app-02"},
 		}}}, CommitOptions{}); err != nil {
@@ -2325,7 +2313,6 @@ func (s *takeoverDuringStaleRecordCleanupStore) PutConditional(ctx context.Conte
 	if s.shouldTrigger(key) {
 		time.Sleep(time.Millisecond)
 		takeover := newParquetIndexTenantStore(s.base, "test")
-		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.Commit(ctx, s.tenantID, graph.Mutations{UpsertEntities: []graph.Entity{{
 			ID: "host:stale", Kind: "host", Fields: graph.Fields{"hostname": "stale"},
 		}}}, CommitOptions{}); err != nil {

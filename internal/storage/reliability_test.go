@@ -10,37 +10,39 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
-func TestWriterLeaseBlocksOtherOwnersUntilExpiry(t *testing.T) {
+func TestLocalWriterReopenAdvancesFence(t *testing.T) {
 	ctx := context.Background()
-	objects := NewMemoryStore()
-	first := NewTenantStore(objects, "test")
-	first.LeaseTTL = time.Hour
-	second := NewTenantStore(objects, "test")
-	if _, err := first.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
-	}, CommitOptions{}); err != nil {
-		t.Fatalf("first commit: %v", err)
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err := second.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
-	}, CommitOptions{})
-	if !errors.Is(err, ErrLeaseHeld) {
-		t.Fatalf("second commit error = %v, want ErrLeaseHeld", err)
+	store := NewTenantStore(files, "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "a", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
 	}
-
-	expiring := NewTenantStore(NewMemoryStore(), "test")
-	expiring.LeaseTTL = time.Millisecond
-	if _, err := expiring.Commit(ctx, "tenant-b", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
-	}, CommitOptions{}); err != nil {
-		t.Fatalf("expiring commit: %v", err)
+	lease, err := store.GetWriterLease(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
 	}
-	time.Sleep(2 * time.Millisecond)
-	takeover := NewTenantStore(expiring.Objects, "test")
-	if _, err := takeover.Commit(ctx, "tenant-b", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
-	}, CommitOptions{}); err != nil {
-		t.Fatalf("takeover commit after lease expiry: %v", err)
+	if _, err := OpenFileStore(root); !errors.Is(err, ErrDataDirectoryLocked) {
+		t.Fatalf("directory lock: %v", err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store = NewTenantStore(files, "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "b", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	next, err := store.GetWriterLease(ctx, "tenant-a")
+	if err != nil || next.FenceEpoch <= lease.FenceEpoch || next.FenceToken == lease.FenceToken {
+		t.Fatalf("reopen fence: %+v %v", next, err)
 	}
 }
 
@@ -78,7 +80,6 @@ func TestWriterLeaseAcceptsEmptyTenantObject(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()
 	store := NewTenantStore(objects, "test")
-	store.LeaseTTL = time.Hour
 	key := store.writerLeaseKey("tenant-a")
 	now := time.Now().UTC()
 	if err := putWriterLeaseFixture(ctx, store, key, WriterLease{
@@ -97,8 +98,8 @@ func TestWriterLeaseAcceptsEmptyTenantObject(t *testing.T) {
 	}
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
-	}, CommitOptions{}); !errors.Is(err, ErrLeaseHeld) {
-		t.Fatalf("commit err = %v, want ErrLeaseHeld", err)
+	}, CommitOptions{}); err != nil {
+		t.Fatalf("commit err = %v, want successful local takeover", err)
 	}
 }
 
@@ -150,7 +151,6 @@ func TestCommitRetryReacquiresWriterLeaseAfterManifestConflict(t *testing.T) {
 	base := NewMemoryStore()
 	objects := &takeoverOnManifestPutStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	store := NewTenantStore(objects, "test")
-	store.LeaseTTL = time.Hour
 	store.MaxRetries = 2
 
 	_, err := store.Commit(ctx, "tenant-a", graph.Mutations{
@@ -1138,7 +1138,6 @@ func (s *takeoverOnManifestPutStore) PutConditional(ctx context.Context, key str
 			return ObjectMeta{}, err
 		}
 		takeover := NewTenantStore(s.base, "test")
-		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.Commit(ctx, s.tenantID, graph.Mutations{
 			UpsertEntities: []graph.Entity{{ID: "host:takeover", Kind: "host"}},
 		}, CommitOptions{}); err != nil {

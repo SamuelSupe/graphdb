@@ -147,7 +147,7 @@ func TestAutoCompactSkipsUsageForAlreadyCompactedManifest(t *testing.T) {
 	}
 	autoCompact := true
 	objectThreshold := 1
-	decision := server.autoCompactDecision(context.Background(), "tenant-a", manifest, storage.TenantMaintenanceConfig{
+	decision := server.maintenanceRuntime().CompactDecision(context.Background(), "tenant-a", manifest, storage.TenantMaintenanceConfig{
 		AutoCompact:                 &autoCompact,
 		CompactObjectCountThreshold: &objectThreshold,
 	}, report)
@@ -182,7 +182,7 @@ func TestMaintenanceReusesTenantUsageHTTPCache(t *testing.T) {
 		t.Fatalf("manifest: %v", err)
 	}
 	objectThreshold := 1
-	decision := server.autoCompactDecision(ctx, "tenant-a", manifest, storage.TenantMaintenanceConfig{
+	decision := server.maintenanceRuntime().CompactDecision(ctx, "tenant-a", manifest, storage.TenantMaintenanceConfig{
 		CompactObjectCountThreshold: &objectThreshold,
 	}, &MaintenanceReport{})
 	if !decision.Compact || decision.Reason != "object_count" {
@@ -409,7 +409,7 @@ func TestMaintenanceWaitsForIncrementalIndexBeforeRepair(t *testing.T) {
 	enabled := true
 	config := storage.TenantIndexConfig{AutoRebuild: &enabled, RebuildOnStale: &enabled}
 	report, tenant := &MaintenanceReport{}, &TenantMaintenanceReport{}
-	server.maybeRebuildIndexes(ctx, "tenant-a", config, report, tenant)
+	server.maintenanceRuntime().RebuildIndexesIfNeeded(ctx, "tenant-a", config, report, tenant)
 	if report.IndexRebuilds != 0 || len(report.Errors) != 0 || tenant.IndexStatus != "stale" {
 		t.Fatalf("maintenance interrupted incremental update: %#v, %#v", report, tenant)
 	}
@@ -417,7 +417,7 @@ func TestMaintenanceWaitsForIncrementalIndexBeforeRepair(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	server.maybeRebuildIndexes(ctx, "tenant-a", config, report, tenant)
+	server.maintenanceRuntime().RebuildIndexesIfNeeded(ctx, "tenant-a", config, report, tenant)
 	if report.IndexRebuilds != 1 || len(report.Errors) != 0 {
 		t.Fatalf("failed incremental update was not repaired: %#v", report)
 	}
@@ -546,4 +546,28 @@ func (s *maintenanceCountingListStore) count(prefix string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.counts[prefix]
+}
+
+func TestMaintenanceReportsUnconfiguredBackupWithoutStopping(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	defer store.ShutdownTasks(ctx)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	if _, err := store.PutTenantConfig(ctx, "tenant-a", storage.TenantConfig{Backup: storage.TenantBackupConfig{Enabled: &enabled}}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Store: store, Mode: "all"}
+	report := server.runMaintenanceOnce(ctx, time.Now().UTC())
+	found := false
+	for _, failure := range report.Errors {
+		if failure.TenantID == "tenant-a" && failure.Action == "backup_schedule" {
+			found = true
+		}
+	}
+	if !found || report.TenantsChecked != 1 {
+		t.Fatalf("missing backup configuration failure: %+v", report)
+	}
 }

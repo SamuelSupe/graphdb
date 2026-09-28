@@ -31,20 +31,6 @@ func TestLocalGCWaitingForPinnedViewAllowsNewReads(t *testing.T) {
 	defer release()
 	done := make(chan error, 1)
 	go func() { _, err := store.RunGC(ctx, "tenant-a", GCOptions{}); done <- err }()
-	for {
-		files.runtime.mu.Lock()
-		gate := files.runtime.views[store.tenantObjectPrefix("tenant-a")]
-		waiting := gate != nil && gate.waiting > 0
-		files.runtime.mu.Unlock()
-		if waiting {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("GC did not wait for view")
-		case <-time.After(time.Millisecond):
-		}
-	}
 	readCtx, readCancel := context.WithTimeout(ctx, 4*gcBatchDuration)
 	newRead, err := store.PinReadView(readCtx, "tenant-a")
 	readCancel()
@@ -59,7 +45,98 @@ func TestLocalGCWaitingForPinnedViewAllowsNewReads(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-ctx.Done():
-		t.Fatal("GC did not progress after views released")
+		t.Fatal("GC did not finish while a view was pinned")
+	}
+}
+
+func BenchmarkLocalViewInvalidation(b *testing.B) {
+	for _, tenants := range []int{1, 1000} {
+		b.Run(fmt.Sprint(tenants), func(b *testing.B) {
+			runtime := fileRuntime{views: make(map[string]*localViewGate, tenants)}
+			for i := range tenants {
+				runtime.views[fmt.Sprintf("test/tenants/tenant-%d/", i)] = &localViewGate{}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				runtime.invalidateViewFile("test/tenants/tenant-0/indexes/catalog.parquet")
+			}
+		})
+	}
+}
+
+func TestLocalGCRetirementSurvivesReadersAndSameVersionCatalogChanges(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	defer store.ShutdownTasks(ctx)
+	for _, id := range []string{"host:a", "host:b"} {
+		if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: id, Kind: "host"}}}, CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	key := store.parquetEntityPageVersionKey("tenant-a", 1, "retired")
+	data, err := marshalParquetEntityPage(ctx, EntityPageData{TenantID: "tenant-a", Shard: "retired", Version: 1, Entities: []graph.Entity{{ID: "host:old", Kind: "host"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Put(ctx, key, data); err != nil {
+		t.Fatal(err)
+	}
+	old, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old()
+	gc := func() {
+		t.Helper()
+		if _, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gc()
+	if _, err := files.Get(ctx, key); err != nil {
+		t.Fatalf("retired file lost before old view closed: %v", err)
+	}
+	catalog, meta, err := store.getIndexCatalogWithMeta(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := catalog
+	catalog.EntityPages = append(append([]EntityPageSpec(nil), catalog.EntityPages...), EntityPageSpec{Shard: "retired", Format: IndexFormatParquet, Objects: []IndexObject{{Key: key}}})
+	meta, err = store.putIndexCatalogWithMeta(ctx, "tenant-a", catalog, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reintroduced, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reintroduced()
+	old()
+	if _, err := store.putIndexCatalogWithMeta(ctx, "tenant-a", original, meta); err != nil {
+		t.Fatal(err)
+	}
+	gc()
+	if _, err := files.Get(ctx, key); err != nil {
+		t.Fatalf("same-version view lost its file: %v", err)
+	}
+	newRead, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newRead()
+	reintroduced()
+	gc()
+	if _, err := files.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("new readers prevented retired-file collection: %v", err)
 	}
 }
 
@@ -593,13 +670,11 @@ func TestIndexGCCheckpointRechecksReferencesAndProtectsReadViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	timeout, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
-	_, blocked := store.RunGC(timeout, "tenant-a", options)
-	cancel()
-	release()
-	if !errors.Is(blocked, context.DeadlineExceeded) {
-		t.Fatalf("GC bypassed active read: %v", blocked)
+	protected, err := store.RunGC(ctx, "tenant-a", options)
+	if err != nil || protected.Checkpoint.Deleted != 0 {
+		t.Fatalf("GC removed a pinned file: %+v %v", protected.Checkpoint, err)
 	}
+	release()
 	// An index publication can reuse an older object between checkpoints.
 	catalog, meta, err := store.getIndexCatalogWithMeta(ctx, "tenant-a")
 	if err != nil {
@@ -692,9 +767,6 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 				}
 				view <- release
 			}()
-			// A slow first delete must yield before a second object, even with budget left.
-			time.Sleep(gcBatchDuration * 2)
-			close(resume)
 			var release func()
 			select {
 			case release = <-view:
@@ -706,19 +778,15 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 			release = sync.OnceFunc(release)
 			defer release()
 			remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
-			if err != nil || len(remaining) != count-1 {
-				t.Fatalf("reader only admitted after all garbage was deleted: remaining=%d err=%v", len(remaining), err)
-			}
-			select {
-			case err := <-done:
-				t.Fatalf("GC finished while read view pinned: %v", err)
-			default:
+			if err != nil || len(remaining) != count {
+				t.Fatalf("read admission waited for delete: %d %v", len(remaining), err)
 			}
 			lateKey := store.entityRecordKey("tenant-a", "host:late")
 			if err := files.Put(ctx, lateKey, []byte("created after the scan")); err != nil {
 				t.Fatal(err)
 			}
 			release()
+			close(resume)
 			select {
 			case err := <-done:
 				if err != nil {

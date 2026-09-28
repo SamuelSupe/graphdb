@@ -9,11 +9,11 @@ with a language-switch link at the top.
 
 ## User guides
 
-- [2.0 release and validation](../release/local-disk.md) · [Performance](performance-v2.0.md)
+- [2.1 release notes](../release/local-disk.md) · [Validation and limits](validation-v2.1.0.md) · [Previous 2.0 performance](performance-v2.0.md)
 
 - [User Guide](user/README.md) · [中文](user/README.zh-CN.md)
 - [Local disk deployment and durability](local-disk.md) · [中文](local-disk.zh-CN.md)
-- [Object-storage snapshots and restore](object-backup.md) · [中文](object-backup.zh-CN.md)
+- [Object-storage snapshots, automation and restore](object-backup.md) · [中文](object-backup.zh-CN.md)
 - [Historical local disk v2 validation and focused benchmark (Chinese)](performance-local-disk-v2.md)
 - [Historical local disk performance: pagination, JSON encoding and Parquet layout (Chinese)](performance-local-disk-optimization-2.md)
 - [Quick Start](user/quickstart.md) · [中文](user/quickstart.zh-CN.md)
@@ -38,6 +38,6 @@ with a language-switch link at the top.
 - [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md)
 - [Query capabilities](query_capabilities.md)
 - [Error codes](error_codes.md)
-- [Architecture](architecture.md)
+- [Architecture](architecture.en.md)
 - [OpenAPI](openapi.yaml)
 - [Product function gaps](product_function_gaps.md)

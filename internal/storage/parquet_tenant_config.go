@@ -233,6 +233,13 @@ func tenantConfigEntries(config TenantConfig) []tenantConfigEntry {
 	appendBool("maintenance.cleanup_index_orphans", config.Maintenance.CleanupIndexOrphans)
 	appendBool("indexes.auto_rebuild", config.Indexes.AutoRebuild)
 	appendBool("indexes.rebuild_on_stale", config.Indexes.RebuildOnStale)
+	appendBool("backup.enabled", config.Backup.Enabled)
+	appendInt64("backup.interval_seconds", config.Backup.IntervalSeconds)
+	appendInt("backup.keep_count", config.Backup.KeepCount)
+	appendInt64("backup.max_age_seconds", config.Backup.MaxAgeSeconds)
+	appendInt64("backup.retry_initial_seconds", config.Backup.RetryInitialSeconds)
+	appendInt64("backup.retry_max_seconds", config.Backup.RetryMaxSeconds)
+	appendInt64("backup.restore_drill_interval_seconds", config.Backup.RestoreDrillIntervalSeconds)
 	return entries
 }
 
@@ -292,6 +299,20 @@ func applyTenantConfigEntry(config *TenantConfig, entry tenantConfigEntry) error
 		config.Indexes.AutoRebuild = &boolValue
 	case "indexes.rebuild_on_stale":
 		config.Indexes.RebuildOnStale = &boolValue
+	case "backup.enabled":
+		config.Backup.Enabled = &boolValue
+	case "backup.interval_seconds":
+		config.Backup.IntervalSeconds = &int64Value
+	case "backup.keep_count":
+		config.Backup.KeepCount = &intValue
+	case "backup.max_age_seconds":
+		config.Backup.MaxAgeSeconds = &int64Value
+	case "backup.retry_initial_seconds":
+		config.Backup.RetryInitialSeconds = &int64Value
+	case "backup.retry_max_seconds":
+		config.Backup.RetryMaxSeconds = &int64Value
+	case "backup.restore_drill_interval_seconds":
+		config.Backup.RestoreDrillIntervalSeconds = &int64Value
 	default:
 		return fmt.Errorf("unknown tenant config setting %q", entry.Setting)
 	}
@@ -300,7 +321,7 @@ func applyTenantConfigEntry(config *TenantConfig, entry tenantConfigEntry) error
 
 func validateTenantConfigEntryKind(entry tenantConfigEntry) error {
 	switch entry.Setting {
-	case "maintenance.auto_compact", "maintenance.cleanup_index_orphans", "indexes.auto_rebuild", "indexes.rebuild_on_stale":
+	case "backup.enabled", "maintenance.auto_compact", "maintenance.cleanup_index_orphans", "indexes.auto_rebuild", "indexes.rebuild_on_stale":
 		if entry.ValueKind != tenantConfigKindBool {
 			return fmt.Errorf("tenant config setting %q has kind %q, want bool", entry.Setting, entry.ValueKind)
 		}

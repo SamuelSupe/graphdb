@@ -6,6 +6,10 @@ import (
 )
 
 type localViewGate struct {
+	clock                  uint64
+	active                 map[uint64]struct{}
+	retired                map[string]uint64
+	rootGeneration         uint64
 	refs, readers, waiting int
 	waitingReaders         int
 	readerTurn             bool
@@ -13,10 +17,34 @@ type localViewGate struct {
 	changed                chan struct{}
 }
 
-// PinReadView protects even files that a read has not opened yet. GC, purge,
-// and restore wait for existing views and prevent new ones until publication.
+// PinReadView protects even files that a read has not opened yet. GC defers
+// reclamation until older views finish; purge and restore still wait exclusively.
 func (s *TenantStore) PinReadView(ctx context.Context, tenantID string) (func(), error) {
-	return s.lockReadViews(ctx, tenantID, false)
+	release, err := s.lockReadViews(ctx, tenantID, false)
+	files := s.localFileStore()
+	if err != nil || files == nil {
+		return release, err
+	}
+	r := files.runtime
+	r.mu.Lock()
+	g := r.views[s.tenantObjectPrefix(tenantID)]
+	if g == nil {
+		r.mu.Unlock()
+		return release, nil
+	}
+	g.clock++
+	epoch := g.clock
+	if g.active == nil {
+		g.active = make(map[uint64]struct{})
+	}
+	g.active[epoch] = struct{}{}
+	r.mu.Unlock()
+	return sync.OnceFunc(func() {
+		r.mu.Lock()
+		delete(g.active, epoch)
+		r.mu.Unlock()
+		release()
+	}), nil
 }
 
 func (s *TenantStore) lockReadViews(ctx context.Context, tenantID string, write bool) (func(), error) {
@@ -109,8 +137,7 @@ func (s *TenantStore) lockLocalGate(ctx context.Context, tenantID string, write,
 		if err := ctx.Err(); err != nil {
 			leaveQueue()
 			if write && !admission && g.waitingReaders > 0 {
-				// A GC timeout must yield even when another maintenance writer
-				// is queued, or overlapping retries keep the reader gate closed.
+				// A canceled exclusive operation yields to queued readers.
 				g.readerTurn = true
 			}
 			finishRef()
@@ -130,8 +157,7 @@ func (s *TenantStore) lockLocalGate(ctx context.Context, tenantID string, write,
 				r.mu.Lock()
 				if write {
 					g.writer = false
-					// Queued reads get one turn between exclusive maintenance batches.
-					// Otherwise multiple GC workers can keep foreground work out.
+					// Queued reads get a turn between exclusive operations.
 					g.readerTurn = !admission && g.waitingReaders > 0
 				} else {
 					g.readers--

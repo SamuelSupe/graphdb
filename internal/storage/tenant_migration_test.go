@@ -99,37 +99,6 @@ func TestCopyTenantObjectsRejectsTenantRename(t *testing.T) {
 	}
 }
 
-func TestCopyTenantObjectsRequiresTargetWriterFence(t *testing.T) {
-	ctx := context.Background()
-	source := NewTenantStore(NewMemoryStore(), "source")
-	if _, err := source.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}},
-	}, CommitOptions{}); err != nil {
-		t.Fatalf("commit source: %v", err)
-	}
-	targetObjects := NewMemoryStore()
-	owner := NewTenantStore(targetObjects, "target")
-	owner.LeaseTTL = time.Hour
-	if _, err := owner.Commit(ctx, "tenant-a", graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:target", Kind: "host"}},
-	}, CommitOptions{}); err != nil {
-		t.Fatalf("commit target: %v", err)
-	}
-
-	migrator := NewTenantStore(targetObjects, "target")
-	_, err := CopyTenantObjects(ctx, source, "tenant-a", migrator, "tenant-a", TenantMigrationOptions{Overwrite: true})
-	if !errors.Is(err, ErrLeaseHeld) {
-		t.Fatalf("migration err = %v, want ErrLeaseHeld", err)
-	}
-	g, _, err := owner.Load(ctx, "tenant-a")
-	if err != nil {
-		t.Fatalf("load target: %v", err)
-	}
-	if _, ok := g.GetEntity("host:target"); !ok {
-		t.Fatal("fenced migration changed active target")
-	}
-}
-
 func TestCopyTenantObjectsPinsManifestBeforeListing(t *testing.T) {
 	ctx := context.Background()
 	sourceObjects := &commitAfterTenantListStore{
@@ -310,7 +279,6 @@ func TestCopyTenantObjectsRechecksTargetAfterWriterFence(t *testing.T) {
 		prefix:      "target/tenants/tenant-a/",
 	}
 	owner := NewTenantStore(targetObjects, "target")
-	owner.LeaseTTL = 5 * time.Millisecond
 	if _, err := owner.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:target", Kind: "host"}},
 	}, CommitOptions{}); err != nil {

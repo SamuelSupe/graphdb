@@ -25,6 +25,15 @@ def main():
     admin = GraphDBClient(base, timeout=60)
     source = admin.for_tenant("backup-source")
     target = admin.for_tenant("backup-target")
+    automated = admin.for_tenant("backup-automated")
+    if phase == "automation-restart":
+        saved = json.loads(evidence.read_text())
+        state = automated.get_backup_automation()
+        assert state["last_backup_key"] == saved["automatic_key"], state
+        assert state["consecutive_failures"] == 0 and state["last_drill"], state
+        assert not automated.get_tenant_config()["config"]["backup"]["enabled"]
+        print("Automatic backup state and disabled policy survived server restart")
+        return
     if phase == "capture":
         admin.create_tenant("backup-source", name="Remote snapshot source")
         source.ingest({
@@ -35,7 +44,25 @@ def main():
         backup = wait(source, admin.backup_tenant("backup-source", destination="object"))
         source.commit({"upsert_entities": [{"id": "host:later", "kind": "host"}]})
         second = wait(source, admin.backup_tenant("backup-source", destination="object"))
-        evidence.write_text(json.dumps({"snapshot": snapshot, "backup_key": backup["result"]["backup_key"], "second_key": second["result"]["backup_key"]}, indent=2))
+        admin.create_tenant("backup-automated")
+        automated.commit({"upsert_entities": [{"id": "host:auto", "kind": "host"}]})
+        automated.put_tenant_config({"backup": {"enabled": True, "keep_count": 1, "restore_drill_interval_seconds": 60}})
+        deadline = time.monotonic() + 60
+        while not automated.get_backup_automation().get("task_id"):
+            assert time.monotonic() < deadline, "automatic backup was not scheduled"
+            time.sleep(0.1)
+        automated.put_tenant_config({"backup": {"enabled": False}})
+        while True:
+            state = automated.get_backup_automation()
+            if state.get("last_backup_key"):
+                assert state["last_drill"] and state["consecutive_failures"] == 0, state
+                break
+            assert not state.get("last_error"), state
+            assert time.monotonic() < deadline, state
+            time.sleep(0.1)
+        reset = automated.reset_backup_automation()
+        assert not reset.get("task_id") and reset["last_backup_key"] == state["last_backup_key"], reset
+        evidence.write_text(json.dumps({"automatic_key": state["last_backup_key"], "snapshot": snapshot, "backup_key": backup["result"]["backup_key"], "second_key": second["result"]["backup_key"]}, indent=2))
         print("WAL committed snapshot uploaded; a later backup is independently discoverable")
         return
     saved = json.loads(evidence.read_text())

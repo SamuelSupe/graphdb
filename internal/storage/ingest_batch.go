@@ -1095,22 +1095,14 @@ func (s *TenantStore) publishIngestBatch(
 	if ref != expected {
 		return nil, fmt.Errorf("prepared commit segment changed before publish")
 	}
-	var meta ObjectMeta
-
-	meta, err = s.putManifestMeta(ctx, tenantID, manifest, loaded.Meta)
-
-	if err != nil {
-		s.handleManifestPublishFailureCache(tenantID, loaded, err)
-		return nil, err
-	}
-	s.setWriteCache(tenantID, loadedGraph{
-		Graph:      finalGraph,
-		Manifest:   manifest,
-		Meta:       meta,
-		DataHash:   manifest.DataHash,
+	err = s.publishCommittedGraph(ctx, tenantID, loaded, loadedGraph{
+		Graph: finalGraph, Manifest: manifest, DataHash: manifest.DataHash,
 		CommitTail: emptyCommitTailCache(),
 		CacheBytes: writeCacheBytesForGraphWithCommitTail(finalGraph, logicalBytes, emptyCommitTailCache()),
 	})
+	if err != nil {
+		return nil, err
+	}
 	s.advanceIngestBatchRelationSchemaValidation(ctx, tenantID, candidates, manifest.Version)
 	span.SetAttributes(
 		attribute.Int("graphdb.ingest.publish.segment_commits", ref.Count),

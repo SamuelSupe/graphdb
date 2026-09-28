@@ -19,7 +19,7 @@ const (
 	headerReadAllowStale  = "X-GraphDB-Allow-Stale"
 	defaultCatchupTimeout = 2 * time.Second
 	defaultReadRetryAfter = time.Second
-	unconstrainedVersion  = int64(^uint64(0) >> 1)
+	unconstrainedVersion  = storage.UnconstrainedQueryVersion
 )
 
 type readFreshness struct {
@@ -77,7 +77,7 @@ func (s *Server) readTarget(r *http.Request, tenantID string, body readFreshness
 	if freshness.AllowStale && freshness.MinVersion == 0 {
 		return readTarget{ManifestVersion: unconstrainedVersion, AllowStale: true}, nil
 	}
-	manifest, err := s.currentQueryManifest(r.Context(), tenantID)
+	manifest, err := s.Store.QueryManifest(r.Context(), tenantID)
 	if err != nil {
 		return readTarget{}, err
 	}

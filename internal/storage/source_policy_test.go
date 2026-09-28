@@ -22,15 +22,21 @@ func TestPutSourcePolicyRequiresWriterLease(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()
 	owner := NewTenantStore(objects, "test")
-	owner.LeaseTTL = time.Hour
 	if _, err := owner.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("seed lease: %v", err)
 	}
 
+	bound, err := owner.acquireAndBindWriterFence(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
 	other := NewTenantStore(objects, "test")
-	_, err := other.PutSourcePolicy(ctx, "tenant-a", graph.SourcePolicy{
+	if err := other.acquireWriterLease(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = owner.PutSourcePolicy(bound, "tenant-a", graph.SourcePolicy{
 		Sources: []graph.SourcePolicyItem{{Name: "manual", Priority: 1000}},
 	})
 	if !errors.Is(err, ErrLeaseHeld) {
@@ -113,7 +119,6 @@ func TestPutSourcePolicyDoesNotOverwriteAfterLeaseTakeover(t *testing.T) {
 		triggerKey:  store.sourcePolicyKey("tenant-a"),
 	}
 	stale := NewTenantStore(objects, "test")
-	stale.LeaseTTL = time.Nanosecond
 	_, err := stale.PutSourcePolicy(ctx, "tenant-a", graph.SourcePolicy{
 		DefaultPriority: 1,
 		Sources:         []graph.SourcePolicyItem{{Name: "agent", Priority: 100}},
@@ -467,7 +472,6 @@ func (s *takeoverDuringSourcePolicyPutStore) PutConditional(ctx context.Context,
 	if s.shouldTrigger(key) {
 		time.Sleep(time.Millisecond)
 		takeover := NewTenantStore(s.base, "test")
-		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.PutSourcePolicy(ctx, s.tenantID, graph.SourcePolicy{
 			DefaultPriority: 9,
 			Sources:         []graph.SourcePolicyItem{{Name: "manual", Priority: 1000}},

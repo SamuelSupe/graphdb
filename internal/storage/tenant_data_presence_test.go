@@ -31,7 +31,7 @@ func TestTenantDataExistsUsesBoundedPages(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	paged := &pagingOnlyStore{ObjectStore: base}
-	store := NewTenantStore(NewSingleWriterObjectStore(paged), "test")
+	store := NewTenantStore(NewReadProtectedObjectStore(paged, ReadProtectionConfig{MaxConcurrent: 2}), "test")
 	prefix := store.tenantObjectPrefix("tenant-a")
 	for i := 0; i < objectPrefixProbePageSize+1; i++ {
 		key := fmt.Sprintf("%scoordination/item-%03d", prefix, i)

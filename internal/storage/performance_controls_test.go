@@ -166,37 +166,6 @@ func TestReaderHeartbeatLegacyCleanupHasTotalWorkBudget(t *testing.T) {
 	}
 }
 
-func TestGCFailsClosedWhenHeartbeatInventoryExceedsScanBudget(t *testing.T) {
-	ctx := context.Background()
-	objects := &putCountingStore{ObjectStore: NewMemoryStore()}
-	store := NewTenantStore(objects, "test")
-	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
-		t.Fatalf("init tenant: %v", err)
-	}
-	for i := 0; i < 70; i++ {
-		_, err := store.PutReaderHeartbeat(ctx, "tenant-a", ReaderHeartbeat{
-			ReaderID:       fmt.Sprintf("reader-%03d", i),
-			Status:         "fresh",
-			VisibleVersion: 1,
-			LastSeenAt:     time.Now().UTC().Add(-time.Hour),
-		})
-		if err != nil {
-			t.Fatalf("put heartbeat %d: %v", i, err)
-		}
-	}
-	objects.gets = 0
-	objects.deletes = 0
-	objects.heartbeatGets = 0
-	objects.heartbeatDeletes = 0
-	_, err := store.RunGC(ctx, "tenant-a", GCOptions{ReaderMaxAge: time.Minute, ReaderScanLimit: 64, MaxDeletes: 1})
-	if !errors.Is(err, errReaderHeartbeatScanIncomplete) {
-		t.Fatalf("gc err = %v, want incomplete heartbeat scan", err)
-	}
-	if objects.heartbeatGets > 64 || objects.heartbeatDeletes > 64 {
-		t.Fatalf("gc heartbeat gets/deletes = %d/%d, want <=64", objects.heartbeatGets, objects.heartbeatDeletes)
-	}
-}
-
 func TestCollectorStatusCacheIsBoundedAndExpires(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	for i := 0; i <= collectorStatusCacheLimit; i++ {

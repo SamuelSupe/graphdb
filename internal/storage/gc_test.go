@@ -43,9 +43,14 @@ func TestRunGCCleansOldSnapshotsAndOrphanCommits(t *testing.T) {
 	}
 }
 
-func TestRunGCProtectsSnapshotAndCommitsForActiveReaderWatermark(t *testing.T) {
+func TestRunGCProtectsSnapshotAndCommitsForActiveReadView(t *testing.T) {
 	ctx := context.Background()
-	store := NewTenantStore(NewMemoryStore(), "test")
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, CommitOptions{}); err != nil {
 		t.Fatalf("commit 1: %v", err)
 	}
@@ -60,28 +65,17 @@ func TestRunGCProtectsSnapshotAndCommitsForActiveReaderWatermark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compact 2: %v", err)
 	}
-	if _, err := store.PutReaderHeartbeat(ctx, "tenant-a", ReaderHeartbeat{
-		ReaderID:        "reader-slow",
-		Status:          "fresh",
-		VisibleVersion:  first.Version,
-		ManifestVersion: first.Version,
-		Consistent:      true,
-		LastSeenAt:      time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("put reader heartbeat: %v", err)
+	release, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer release()
 	report, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true})
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
-	if report.ReaderWatermarkVersion != first.Version || report.ReaderWatermarkReaders != 1 {
-		t.Fatalf("reader watermark report = %#v", report)
-	}
-	if report.DeletedSnapshots != 0 {
-		t.Fatalf("report = %#v, want active reader to protect old snapshot", report)
-	}
-	if report.CommitCleanupSkippedReason == "" || report.IndexCleanupSkippedReason == "" {
-		t.Fatalf("report = %#v, want commit and index cleanup skipped", report)
+	if report.DeletedSnapshots != 0 || report.Checkpoint.DeferredFiles == 0 {
+		t.Fatalf("pinned view was not protected: %+v", report)
 	}
 	for _, key := range []string{first.SnapshotKey, first.SnapshotCatalogKey, second.SnapshotKey, second.SnapshotCatalogKey} {
 		if _, err := store.Objects.Get(ctx, key); err != nil {
@@ -123,9 +117,6 @@ func TestRunGCIgnoresStaleReaderHeartbeat(t *testing.T) {
 	if report.ReaderWatermarkReaders != 0 || report.ReaderWatermarkIgnored != 0 {
 		t.Fatalf("reader watermark report = %#v", report)
 	}
-	if _, err := store.Objects.Get(ctx, store.readerHeartbeatKey("tenant-a", "reader-stale")); err != ErrNotFound {
-		t.Fatalf("stale reader heartbeat get err = %v, want ErrNotFound", err)
-	}
 	if report.DeletedSnapshots != 1 {
 		t.Fatalf("report = %#v, want stale heartbeat ignored", report)
 	}
@@ -137,9 +128,14 @@ func TestRunGCIgnoresStaleReaderHeartbeat(t *testing.T) {
 	}
 }
 
-func TestRunGCProtectsReaderSnapshotVersionWhenVisibleIsCurrent(t *testing.T) {
+func TestRunGCProtectsPinnedSnapshotFiles(t *testing.T) {
 	ctx := context.Background()
-	store := NewTenantStore(NewMemoryStore(), "test")
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, CommitOptions{}); err != nil {
 		t.Fatalf("commit 1: %v", err)
 	}
@@ -150,21 +146,15 @@ func TestRunGCProtectsReaderSnapshotVersionWhenVisibleIsCurrent(t *testing.T) {
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:2", Kind: "host"}}}, CommitOptions{}); err != nil {
 		t.Fatalf("commit 2: %v", err)
 	}
-	second, err := store.Compact(ctx, "tenant-a")
+	_, err = store.Compact(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("compact 2: %v", err)
 	}
-	if _, err := store.PutReaderHeartbeat(ctx, "tenant-a", ReaderHeartbeat{
-		ReaderID:        "reader-current",
-		Status:          "fresh",
-		VisibleVersion:  second.Version,
-		SnapshotVersion: first.Version,
-		ManifestVersion: second.Version,
-		Consistent:      true,
-		LastSeenAt:      time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("put reader heartbeat: %v", err)
+	release, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer release()
 	report, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1})
 	if err != nil {
 		t.Fatalf("gc: %v", err)

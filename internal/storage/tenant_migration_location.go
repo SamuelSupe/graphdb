@@ -36,24 +36,15 @@ func sameTenantMigrationLocation(
 
 func unwrapTenantMigrationStore(store ObjectStore) ObjectStore {
 	for store != nil {
-		switch current := store.(type) {
-		case *ReadProtectedObjectStore:
-			store = current.Inner
-		case *DelayedReadObjectStore:
-			store = current.Inner
-		case *SingleWriterObjectStore:
-			store = current.Inner
-		default:
-			unwrapper, ok := store.(objectStoreUnwrapper)
-			if !ok {
-				return store
-			}
-			next := unwrapper.UnwrapObjectStore()
-			if next == nil || next == store {
-				return store
-			}
-			store = next
+		unwrapper, ok := store.(objectStoreUnwrapper)
+		if !ok {
+			return store
 		}
+		next := unwrapper.UnwrapObjectStore()
+		if next == nil || next == store {
+			return store
+		}
+		store = next
 	}
 	return nil
 }

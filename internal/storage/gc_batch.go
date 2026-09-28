@@ -2,39 +2,12 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
 )
 
 const gcBatchDeletes = 4096
-
-// A long-lived index build or export may pin a view for seconds. Reopen the
-// reader gate periodically instead of stopping all incoming reads for that wait.
-func (s *TenantStore) lockGCReadViews(ctx context.Context, tenantID string) (func(), error) {
-	for {
-		attempt, cancel := context.WithTimeout(ctx, gcBatchDuration)
-		release, err := s.lockReadViews(attempt, tenantID, true)
-		cancel()
-		if err == nil {
-			return release, nil
-		}
-		if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-			return nil, err
-		}
-		// Leave read admission open for as long as the failed exclusive attempt.
-		// A short retry gap otherwise blocks readers almost continuously while
-		// an index build or export keeps its original view pinned.
-		timer := time.NewTimer(gcBatchDuration)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
-}
 
 func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
 	if s.localFileStore() == nil {
@@ -130,6 +103,7 @@ func mergeGCReport(total *GCReport, batch GCReport) {
 	cp, bp := &total.Checkpoint, batch.Checkpoint
 	cp.NextCursor, cp.LastKey = bp.NextCursor, bp.LastKey
 	cp.ScannedKeys += bp.ScannedKeys
+	cp.DeferredFiles += bp.DeferredFiles
 	cp.SkippedByCursor += bp.SkippedByCursor
 	cp.Deleted += bp.Deleted
 	cp.Planned += bp.Planned

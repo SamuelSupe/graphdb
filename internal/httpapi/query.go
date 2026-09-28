@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -27,8 +26,6 @@ type GQLQueryRequest struct {
 	CostLimit  int    `json:"cost_limit,omitempty"`
 	Profile    bool   `json:"profile,omitempty"`
 }
-
-const lazyUnavailableBackoff = 5 * time.Second
 
 const streamFlushEvery = 32
 
@@ -180,7 +177,7 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 	w.Header().Set("X-GraphDB-Query-ID", queryID)
 	ctx, cancel := queryRequestContext(ctx, request)
 	defer cancel()
-	r = r.WithContext(withQueryReadMemo(ctx))
+	r = r.WithContext(storage.WithQueryReadMemo(ctx))
 	release, err := s.acquireQuery(r.Context(), tenantID)
 	if err != nil {
 		err = normalizeQueryExecutionError(r.Context(), err)
@@ -263,20 +260,8 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 		writeQueryError(w, err)
 		return true, err
 	}
-	options := query.ExecuteOptions{}
-	version := int64(0)
-	ok := false
-	useCachedGraph := s.cachedMaterializedQueryAvailable(tenantID, target)
-	if !useCachedGraph && !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
-		options, version, ok = s.lazyQueryOptions(
-			r.Context(), tenantID, target.ManifestVersion,
-			query.RequiresReverseIndex(request),
-		)
-	}
-	if ok && s.lazyQuerySuppressed(tenantID, version) {
-		return false, nil
-	}
-	if !ok || !target.requiresVersion(version) || !query.SupportsLazyRead(request, options.PlannerStats) {
+	options, version, ok := s.Store.SelectQueryRead(r.Context(), tenantID, request, target.TargetVersion, target.ManifestVersion, s.cachedMaterializedQueryAvailable(tenantID, target))
+	if !ok {
 		return false, nil
 	}
 	g := graph.New()
@@ -296,7 +281,7 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		if !started {
 			if errors.Is(err, query.ErrIndexUnavailable) {
-				s.markLazyQueryUnavailable(tenantID, version)
+				s.Store.MarkQueryIndexUnavailable(tenantID, version)
 				return false, nil
 			}
 			err = normalizeQueryExecutionError(r.Context(), err)
@@ -429,7 +414,7 @@ func (s *Server) executeQuery(r *http.Request, tenantID string, request query.Re
 	}
 	ctx, cancel := queryRequestContext(r.Context(), request)
 	defer cancel()
-	r = r.WithContext(withQueryReadMemo(ctx))
+	r = r.WithContext(storage.WithQueryReadMemo(ctx))
 	release, err := s.acquireQuery(r.Context(), tenantID)
 	if err != nil {
 		return query.Response{}, normalizeQueryExecutionError(ctx, err)
@@ -454,27 +439,9 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 	if err != nil {
 		return query.Response{}, err
 	}
-	options := query.ExecuteOptions{}
-	version := int64(0)
-	ok := false
 	useCachedGraph := s.cachedMaterializedQueryAvailable(tenantID, target)
-	if !useCachedGraph {
-		if !s.lazyQuerySuppressed(tenantID, target.ManifestVersion) {
-			options, version, ok = s.lazyQueryOptions(
-				r.Context(), tenantID, target.ManifestVersion,
-				query.RequiresReverseIndex(request),
-			)
-		} else if span != nil {
-			span.SetAttributes(attribute.Bool("graphdb.query.lazy_suppressed", true))
-		}
-	}
-	if ok && s.lazyQuerySuppressed(tenantID, version) {
-		ok = false
-		if span != nil {
-			span.SetAttributes(attribute.Bool("graphdb.query.lazy_suppressed", true))
-		}
-	}
-	if ok && target.requiresVersion(version) && query.SupportsLazyRead(request, options.PlannerStats) {
+	options, version, ok := s.Store.SelectQueryRead(r.Context(), tenantID, request, target.TargetVersion, target.ManifestVersion, useCachedGraph)
+	if ok {
 		if span != nil {
 			span.SetAttributes(attribute.String("graphdb.query.execution_path", "lazy_index"))
 		}
@@ -484,7 +451,7 @@ func (s *Server) executeQueryAdmitted(r *http.Request, tenantID string, request 
 		if err == nil || !errors.Is(err, query.ErrIndexUnavailable) {
 			return response, err
 		}
-		s.markLazyQueryUnavailable(tenantID, version)
+		s.Store.MarkQueryIndexUnavailable(tenantID, version)
 		if span != nil {
 			span.SetAttributes(attribute.Bool("graphdb.query.lazy_fallback", true))
 		}
@@ -525,35 +492,6 @@ func normalizeQueryExecutionError(ctx context.Context, err error) error {
 	return err
 }
 
-func (s *Server) lazyQuerySuppressed(tenantID string, version int64) bool {
-	if version <= 0 || version == unconstrainedVersion {
-		return false
-	}
-	key := fmt.Sprintf("%s\x00%d", tenantID, version)
-	value, ok := s.lazyUnavailable.Load(key)
-	if !ok {
-		return false
-	}
-	expiresAt, ok := value.(time.Time)
-	if !ok || !time.Now().Before(expiresAt) {
-		s.lazyUnavailable.Delete(key)
-		return false
-	}
-	return true
-}
-
-func (s *Server) markLazyQueryUnavailable(tenantID string, version int64) {
-	if version <= 0 || version == unconstrainedVersion {
-		return
-	}
-	key := fmt.Sprintf("%s\x00%d", tenantID, version)
-	expiresAt := time.Now().Add(lazyUnavailableBackoff)
-	s.lazyUnavailable.Store(key, expiresAt)
-	time.AfterFunc(lazyUnavailableBackoff, func() {
-		s.lazyUnavailable.CompareAndDelete(key, expiresAt)
-	})
-}
-
 func (s *Server) acquireQuery(ctx context.Context, tenantID string) (func(), error) {
 	acquireCtx, span := startAPIPhase(ctx, "query_admission.acquire", attribute.String("graphdb.tenant", tenantID))
 	start := time.Now()
@@ -575,57 +513,6 @@ func (s *Server) acquireQuery(ctx context.Context, tenantID string) (func(), err
 
 func queryReadFreshness(request query.Request) readFreshness {
 	return readFreshness{MinVersion: request.MinVersion, AllowStale: request.AllowStale}
-}
-
-func (s *Server) lazyQueryOptions(
-	ctx context.Context,
-	tenantID string,
-	maxVersion int64,
-	includeReverse bool,
-) (query.ExecuteOptions, int64, bool) {
-	expectedVersion := maxVersion
-	if maxVersion == unconstrainedVersion {
-		expectedVersion = 0
-	}
-	catalog, err := s.currentQueryCatalog(ctx, tenantID, expectedVersion)
-	if err != nil || catalog.Version <= 0 || catalog.Version > maxVersion {
-		return query.ExecuteOptions{}, 0, false
-	}
-	return s.queryOptionsForCatalog(
-		ctx, tenantID, catalog, includeReverse,
-	), catalog.Version, true
-}
-
-func (s *Server) queryOptionsForCatalog(
-	ctx context.Context,
-	tenantID string,
-	catalog storage.IndexCatalog,
-	includeReverse bool,
-) query.ExecuteOptions {
-	lookup := &storage.PersistedIndexLookup{Store: s.Store, TenantID: tenantID, Version: catalog.Version, Catalog: catalog}
-	stats := catalog.PlannerStats()
-	if includeReverse {
-		reverse, err := s.currentQueryReverseCatalog(
-			ctx, tenantID, catalog.Version,
-		)
-		if err == nil {
-			lookup.ReverseCatalog = &reverse
-			stats.ReverseEdgeIndexAvailable = true
-			for _, shard := range reverse.EdgeShards {
-				stats.ReverseEdgeShards = append(stats.ReverseEdgeShards, query.PlannerEdgeStat{
-					RelationType:    shard.RelationType,
-					ImpactDirection: shard.ImpactDirection,
-					Shard:           shard.Shard,
-					EdgeCount:       shard.EdgeCount,
-				})
-			}
-		}
-	}
-	return query.ExecuteOptions{
-		PlannerStats: stats,
-		IndexLookup:  lookup,
-		EntityLookup: lookup,
-	}
 }
 
 func writeQueryError(w http.ResponseWriter, err error) {

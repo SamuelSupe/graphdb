@@ -33,6 +33,14 @@ class TenantMixin:
     def backup_tenant(self, tenant_id: str, *, destination: str = "local") -> dict:
         return self._json("POST", f"/v1/tenants/{self._escape(tenant_id)}/backup", tenant_id=None, body={"destination": destination})
 
+    def get_backup_automation(self) -> dict:
+        """Return the last observed scheduled cycle for this client's tenant."""
+        return self._json("GET", "/v1/backup-automation")
+
+    def reset_backup_automation(self) -> dict:
+        """Abandon the retry checkpoint; conflicts while a backup is active."""
+        return self._json("POST", "/v1/backup-automation/reset")
+
     def list_object_backups(self, tenant_id: str, *, cursor: str = "", limit: int = 20) -> dict:
         return self._json("GET", f"/v1/tenants/{self._escape(tenant_id)}/backups", tenant_id=None, query={"cursor": cursor, "limit": limit})
 

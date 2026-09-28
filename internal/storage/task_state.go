@@ -20,9 +20,7 @@ func (s *TenantStore) mutateTask(ctx context.Context, tenantID string, taskID st
 			return Task{}, err
 		}
 		if _, err := s.putTenantGenerationConditional(ctx, tenantID, s.taskKey(tenantID, taskID), data, PutCondition{IfMatch: meta.ETag}); err == nil {
-			if err := s.syncGCRunningMarker(ctx, current); err != nil {
-				return Task{}, err
-			}
+			s.rememberTaskState(current)
 			return current, nil
 		} else if !errors.Is(err, ErrConflict) {
 			return Task{}, err
@@ -32,4 +30,18 @@ func (s *TenantStore) mutateTask(ctx context.Context, tenantID string, taskID st
 		}
 	}
 	return Task{}, fmt.Errorf("%w: task %q changed while updating", ErrConflict, taskID)
+}
+
+func (s *TenantStore) rememberTaskState(task Task) {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	key := taskActiveKey(task.TenantID, task.Type)
+	if active, ok := s.taskActive[key]; ok && active.ID == task.ID {
+		// Durable updates can reach this lock out of order. Cancellation and
+		// newer progress must not be replaced by an earlier save.
+		if taskTerminal(active.Status) || active.UpdatedAt.After(task.UpdatedAt) {
+			return
+		}
+		s.taskActive[key] = task
+	}
 }

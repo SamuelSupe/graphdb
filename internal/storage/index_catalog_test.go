@@ -229,8 +229,8 @@ func TestIncrementalIndexUpdateDoesNotHoldTenantLock(t *testing.T) {
 	_, gcErr := store.RunGC(gcCtx, "tenant-a", GCOptions{DryRun: true})
 	cancelGC()
 	close(blocking.resume)
-	if !errors.Is(gcErr, context.DeadlineExceeded) {
-		t.Fatalf("GC did not wait for pending index files: %v", gcErr)
+	if gcErr != nil {
+		t.Fatalf("GC blocked on pending index files: %v", gcErr)
 	}
 	select {
 	case outcome := <-firstDone:
@@ -273,7 +273,6 @@ func TestRebuildIndexesDoesNotPublishStaleCatalogAfterLeaseTakeover(t *testing.T
 	ctx := context.Background()
 	base := NewMemoryStore()
 	writer := NewTenantStore(base, "test")
-	writer.LeaseTTL = time.Millisecond
 	if _, err := writer.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit v1: %v", err)
 	}
@@ -284,7 +283,6 @@ func TestRebuildIndexesDoesNotPublishStaleCatalogAfterLeaseTakeover(t *testing.T
 
 	objects := &takeoverDuringIndexWriteStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	rebuilder := NewTenantStore(objects, "test")
-	rebuilder.LeaseTTL = time.Nanosecond
 	_, err := rebuilder.RebuildIndexes(ctx, "tenant-a")
 	if !errors.Is(err, ErrLeaseHeld) && !errors.Is(err, ErrConflict) {
 		t.Fatalf("rebuild err = %v, want ErrLeaseHeld or ErrConflict", err)
@@ -311,7 +309,6 @@ func TestRebuildIndexesDoesNotOverwriteCatalogAfterLeaseTakeover(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	writer := NewTenantStore(base, "test")
-	writer.LeaseTTL = time.Millisecond
 	if _, err := writer.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit v1: %v", err)
 	}
@@ -322,7 +319,6 @@ func TestRebuildIndexesDoesNotOverwriteCatalogAfterLeaseTakeover(t *testing.T) {
 
 	objects := &takeoverBeforeCatalogPublishStore{ObjectStore: base, base: base, tenantID: "tenant-a"}
 	rebuilder := NewTenantStore(objects, "test")
-	rebuilder.LeaseTTL = time.Nanosecond
 	_, err := rebuilder.RebuildIndexes(ctx, "tenant-a")
 	if objects.Triggered() {
 		if !errors.Is(err, ErrConflict) && !errors.Is(err, ErrLeaseHeld) {
@@ -593,12 +589,12 @@ func TestIndexRebuildTaskRecoversPanicAndMarksFailed(t *testing.T) {
 	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	task := IndexTask{ID: "task-panic", TenantID: "tenant-a", Type: "rebuild", Status: "running", StartedAt: time.Now().UTC()}
-	if err := store.saveIndexTask(ctx, task); err != nil {
+	task := Task{ID: "task-panic", TenantID: "tenant-a", Type: TaskTypeIndexRebuild, Status: "running", StartedAt: time.Now().UTC()}
+	if err := store.saveTask(ctx, task); err != nil {
 		t.Fatalf("save task: %v", err)
 	}
 	store.Objects = &panicOnIndexWriteStore{ObjectStore: base, panicFragment: "/indexes/parquet/"}
-	store.runIndexRebuildTask(ctx, "tenant-a", task)
+	store.runTask(ctx, func() {}, task)
 
 	loaded, err := store.GetIndexTask(ctx, "tenant-a", task.ID)
 	if err != nil {
@@ -616,12 +612,12 @@ func TestIndexRebuildTaskRetriesFinalStatusSave(t *testing.T) {
 	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	task := IndexTask{ID: "task-flaky", TenantID: "tenant-a", Type: "rebuild", Status: "running", StartedAt: time.Now().UTC()}
-	if err := store.saveIndexTask(ctx, task); err != nil {
+	task := Task{ID: "task-flaky", TenantID: "tenant-a", Type: TaskTypeIndexRebuild, Status: "running", StartedAt: time.Now().UTC()}
+	if err := store.saveTask(ctx, task); err != nil {
 		t.Fatalf("save task: %v", err)
 	}
-	store.Objects = &failOnceTaskStatusStore{ObjectStore: base, fragment: "/indexes/tasks/task-flaky.parquet"}
-	store.runIndexRebuildTask(ctx, "tenant-a", task)
+	store.Objects = &failOnceTaskStatusStore{ObjectStore: base, fragment: "/tasks/task-flaky.parquet"}
+	store.runTask(ctx, func() {}, task)
 
 	loaded, err := store.GetIndexTask(ctx, "tenant-a", task.ID)
 	if err != nil {
@@ -734,40 +730,22 @@ func TestIndexRebuildTaskSkipsEntityRecordCleanup(t *testing.T) {
 	}
 }
 
-func TestStartIndexRebuildDeduplicatesPersistedRunningTenantTask(t *testing.T) {
+func TestStartIndexRebuildReadsLegacyRunningTask(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
-	blocking := &blockOncePutStore{
-		ObjectStore: base,
-		substring:   "/indexes/parquet/",
-		paused:      make(chan struct{}),
-		resume:      make(chan struct{}),
+	owner := NewTenantStore(base, "test")
+	if _, err := owner.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
 	}
-	firstStore := NewTenantStore(blocking, "test")
-	secondStore := NewTenantStore(blocking, "test")
-	if _, err := firstStore.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
-		t.Fatalf("commit: %v", err)
+	now := time.Now().UTC()
+	legacy := IndexTask{ID: "legacy-running", TenantID: "tenant-a", Type: "rebuild", Status: TaskStatusRunning, OwnerID: owner.InstanceID, StartedAt: now, UpdatedAt: now}
+	if err := owner.saveIndexTask(ctx, legacy); err != nil {
+		t.Fatal(err)
 	}
-	first, err := firstStore.StartIndexRebuild(ctx, "tenant-a")
-	if err != nil {
-		t.Fatalf("start first rebuild: %v", err)
-	}
-	select {
-	case <-blocking.paused:
-	case <-time.After(time.Second):
-		t.Fatal("first rebuild did not reach blocked index write")
-	}
-	second, err := secondStore.StartIndexRebuild(ctx, "tenant-a")
-	if err != nil {
-		t.Fatalf("start duplicate rebuild from second store: %v", err)
-	}
-	if second.ID != first.ID {
-		t.Fatalf("duplicate persisted rebuild task id = %q, want existing %q", second.ID, first.ID)
-	}
-	close(blocking.resume)
-	finished := waitIndexTask(t, firstStore, first.ID)
-	if finished.Status != "succeeded" {
-		t.Fatalf("first task = %#v", finished)
+	reader := NewTenantStore(base, "test")
+	task, err := reader.GetIndexTask(ctx, "tenant-a", legacy.ID)
+	if err != nil || task.ID != legacy.ID || task.Status != TaskStatusFailed {
+		t.Fatalf("legacy task: %+v, %v", task, err)
 	}
 }
 
@@ -1093,7 +1071,6 @@ func (s *takeoverDuringIndexWriteStore) GetWithMeta(ctx context.Context, key str
 func (s *takeoverDuringIndexWriteStore) takeover(ctx context.Context) error {
 	time.Sleep(time.Millisecond)
 	takeover := NewTenantStore(s.base, "test")
-	takeover.LeaseTTL = time.Hour
 	_, err := takeover.Commit(ctx, s.tenantID, graph.Mutations{
 		UpsertEntities: []graph.Entity{{
 			ID: "host:app-02", Kind: "host", Fields: graph.Fields{"hostname": "app-02"},
@@ -1139,7 +1116,6 @@ func (s *takeoverBeforeCatalogPublishStore) PutConditional(ctx context.Context, 
 	if s.shouldTrigger(key) {
 		time.Sleep(time.Millisecond)
 		takeover := NewTenantStore(s.base, "test")
-		takeover.LeaseTTL = time.Hour
 		if _, err := takeover.Commit(ctx, s.tenantID, graph.Mutations{
 			UpsertEntities: []graph.Entity{{
 				ID: "host:app-02", Kind: "host", Fields: graph.Fields{"hostname": "app-02"},

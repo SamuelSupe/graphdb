@@ -1,9 +1,11 @@
 schema_version: 2
 edition: local_disk
-version: 2.0.0
+version: 2.1.0
 status: performance_unqualified
-report: docs/performance-v2.0.md
-runtime_revision: d90e554c
+report: docs/validation-v2.1.0.md
+previous_performance_report: docs/performance-v2.0.md
+previous_performance_revision: d90e554c
+runtime_revision: release_tag
 toolchain: go1.26.7
 scope: single_process_multi_tenant
 

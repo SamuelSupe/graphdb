@@ -120,37 +120,7 @@ func (s *TenantStore) writerFenceStillCurrent(ctx context.Context, tenantID stri
 }
 
 func (s *TenantStore) ensureBoundWriterLease(ctx context.Context, tenantID string, expected writerFenceRef) error {
-	now := time.Now().UTC()
-	if lease, _, ok := s.getCachedWriterLeaseAny(tenantID); ok && writerLeaseMatchesFence(lease, expected) && lease.ExpiresAt.After(now.Add(s.leaseTTL()/3)) {
-		return nil
-	}
-	key := s.writerLeaseKey(tenantID)
-	s.clearWriterObjectKey(key)
-	lease, meta, err := s.getWriterLease(ctx, tenantID, key)
-	if errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("%w: tenant %q writer fence was removed", ErrLeaseHeld, tenantID)
-	}
-	if err != nil {
-		return err
-	}
-	if !writerLeaseMatchesFence(lease, expected) {
-		return fmt.Errorf("%w: tenant %q writer fence changed", ErrLeaseHeld, tenantID)
-	}
-	if lease.ExpiresAt.After(now.Add(s.leaseTTL() / 3)) {
-		s.setCachedWriterLease(tenantID, lease, meta)
-		return nil
-	}
-	lease.UpdatedAt = now
-	lease.ExpiresAt = now.Add(s.leaseTTL())
-	nextMeta, err := s.putLease(ctx, key, lease, meta)
-	if errors.Is(err, ErrConflict) {
-		return fmt.Errorf("%w: tenant %q writer fence changed while renewing", ErrLeaseHeld, tenantID)
-	}
-	if err != nil {
-		return err
-	}
-	s.setCachedWriterLease(tenantID, lease, nextMeta)
-	return nil
+	return s.writerFenceStillCurrent(ctx, tenantID, expected)
 }
 
 func writerLeaseMatchesFence(lease WriterLease, expected writerFenceRef) bool {
@@ -259,7 +229,7 @@ func (s *TenantStore) putTenantGenerationObject(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) tenantObjectPutCondition(ctx context.Context, key string) (PutCondition, error) {
-	_, meta, err := s.Objects.GetWithMeta(ctx, key)
+	meta, err := objectMeta(ctx, s.Objects, key)
 	if errors.Is(err, ErrNotFound) {
 		return PutCondition{IfNoneMatch: true}, nil
 	}

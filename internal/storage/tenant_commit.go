@@ -583,20 +583,16 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 			tenantTraceAttr(tenantID),
 		}, manifestTraceAttrs("graphdb.manifest", manifest)...)...,
 	)
-	meta, err := s.putManifestMeta(putManifestCtx, tenantID, manifest, loaded.Meta)
+	err = s.publishCommittedGraph(putManifestCtx, tenantID, loaded, loadedGraph{
+		Graph: nextGraph, Manifest: manifest, DataHash: nextHash,
+		CommitTail: commitTail,
+		CacheBytes: writeCacheBytesForGraphWithCommitTail(nextGraph, logicalBytes, commitTail),
+	})
 	endStorageSpan(putManifestSpan, err)
 	if err != nil {
-		s.handleManifestPublishFailureCache(tenantID, loaded, err)
 		return CommitResult{}, err
 	}
 	commitPublished = true
-	s.setWriteCache(tenantID, loadedGraph{
-		Graph: nextGraph, Manifest: manifest, Meta: meta, DataHash: nextHash,
-		CommitTail: commitTail,
-		CacheBytes: writeCacheBytesForGraphWithCommitTail(
-			nextGraph, logicalBytes, commitTail,
-		),
-	})
 	if schemaErr := s.advanceRelationSchemaValidation(ctx, tenantID, relationSchemas, relationSchemaMeta, version); schemaErr != nil {
 		result.IndexWarnings = append(result.IndexWarnings, "relation schema validation checkpoint update failed: "+schemaErr.Error())
 	}

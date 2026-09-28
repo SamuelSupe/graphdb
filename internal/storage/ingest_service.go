@@ -244,6 +244,7 @@ type IngestService struct {
 	workers     sync.WaitGroup
 	acceptors   sync.WaitGroup
 	closeOnce   sync.Once
+	closeErr    error
 }
 
 func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestService, error) {
@@ -764,7 +765,6 @@ func (s *IngestService) Close(ctx context.Context) error {
 			"pending": pending,
 		})
 	}
-	var closeErr error
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
@@ -777,26 +777,26 @@ func (s *IngestService) Close(ctx context.Context) error {
 		select {
 		case <-accepted:
 		case <-ctx.Done():
-			closeErr = ctx.Err()
+			s.closeErr = ctx.Err()
 			s.cancel()
 		}
 		close(s.shutdownCh)
 		select {
 		case <-s.schedulerOK:
 		case <-ctx.Done():
-			closeErr = ctx.Err()
+			s.closeErr = ctx.Err()
 			s.cancel()
 			<-s.schedulerOK
 		}
 		s.workers.Wait()
 		s.cancel()
-		if closeErr == nil {
+		if s.closeErr == nil {
 			if err := s.prune(context.Background()); err != nil {
-				closeErr = err
+				s.closeErr = err
 			}
 		}
 		if err := s.wal.Close(); err != nil {
-			closeErr = errors.Join(closeErr, err)
+			s.closeErr = errors.Join(s.closeErr, err)
 		}
 	})
 	if s.config.Logger != nil {
@@ -804,14 +804,14 @@ func (s *IngestService) Close(ctx context.Context) error {
 			"pending_at_start": pending,
 			"duration_ms":      float64(time.Since(started).Microseconds()) / 1000,
 		}
-		if closeErr != nil {
-			fields["error"] = closeErr.Error()
+		if s.closeErr != nil {
+			fields["error"] = s.closeErr.Error()
 			s.config.Logger.Error("ingest_wal_shutdown_completed", fields)
 		} else {
 			s.config.Logger.Info("ingest_wal_shutdown_completed", fields)
 		}
 	}
-	return closeErr
+	return s.closeErr
 }
 
 type ingestTenantFlush struct {

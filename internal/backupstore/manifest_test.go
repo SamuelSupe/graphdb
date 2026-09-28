@@ -164,3 +164,69 @@ func TestObjectBackupMultipartAndPublication(t *testing.T) {
 type testHTTPClient func(*http.Request) (*http.Response, error)
 
 func (f testHTTPClient) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestObjectBackupRetentionProtectsReadersAndResumesDeletion(t *testing.T) {
+	endpoint := os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set GRAPHDB_TEST_BACKUP_S3_ENDPOINT for S3 integration")
+	}
+	ctx := context.Background()
+	repo, err := New(ctx, Config{Bucket: os.Getenv("GRAPHDB_TEST_BACKUP_S3_BUCKET"), Endpoint: endpoint,
+		Prefix: fmt.Sprintf("retention-%d", time.Now().UnixNano()), PathStyle: true,
+		AccessKeyID: os.Getenv("GRAPHDB_TEST_BACKUP_S3_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("GRAPHDB_TEST_BACKUP_S3_SECRET_ACCESS_KEY")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("retained snapshot")
+	publish := func(id string, automatic bool) Entry {
+		t.Helper()
+		entry, err := repo.Publish(ctx, Manifest{TenantID: "tenant-a", BackupID: id, Version: 1, CreatedAt: time.Now().UTC(), Automatic: automatic}, io.NewSectionReader(bytes.NewReader(data), 0, int64(len(data))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entry
+	}
+	manual := publish("manual", false)
+	if err := repo.DeleteAutomatic(ctx, manual); err == nil {
+		t.Fatal("manual backup deleted")
+	}
+	entry := publish("automatic", true)
+	release, err := repo.Pin(entry.BackupKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteAutomatic(ctx, entry); !errors.Is(err, ErrBackupInUse) {
+		t.Fatalf("active reader lost backup: %v", err)
+	}
+	if _, err := repo.Verify(ctx, entry.BackupKey); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	options := repo.client.Options()
+	base := options.HTTPClient
+	options.RetryMaxAttempts = 1
+	options.HTTPClient = testHTTPClient(func(request *http.Request) (*http.Response, error) {
+		if request.Method == "DELETE" && strings.HasSuffix(request.URL.Path, ".parquet") {
+			return nil, errors.New("interrupted snapshot deletion")
+		}
+		return base.Do(request)
+	})
+	repo.client = s3.New(options)
+	if err := repo.DeleteAutomatic(ctx, entry); err == nil {
+		t.Fatal("partial deletion did not report failure")
+	}
+	if _, err := repo.ReadManifest(ctx, entry.BackupKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("manifest still visible: %v", err)
+	}
+	options.HTTPClient = base
+	repo.client = s3.New(options)
+	if err := repo.DeleteAutomatic(ctx, entry); err != nil {
+		t.Fatalf("resume with checkpoint: %v", err)
+	}
+	if err := repo.Download(ctx, entry.Manifest, io.Discard); err == nil {
+		t.Fatal("payload retained after resumed deletion")
+	}
+	if _, err := repo.Verify(ctx, manual.BackupKey); err != nil {
+		t.Fatalf("manual backup damaged: %v", err)
+	}
+}

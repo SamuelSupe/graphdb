@@ -17,7 +17,10 @@ const (
 )
 
 func (s *TenantStore) CancelTask(ctx context.Context, tenantID string, taskID string) (Task, error) {
-	task, err := s.GetTask(ctx, tenantID, taskID)
+	task, err := s.getTaskObject(ctx, tenantID, taskID)
+	if errors.Is(err, ErrNotFound) {
+		task, err = s.GetTask(ctx, tenantID, taskID)
+	}
 	if err != nil {
 		return Task{}, err
 	}
@@ -129,9 +132,20 @@ func (s *TenantStore) ShutdownTasks(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.StopBackground()
+	select {
+	case <-s.taskShutdownDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *TenantStore) StopBackground() {
 	s.taskShutdownOnce.Do(func() {
 		s.taskMu.Lock()
 		s.taskClosing = true
+		s.stopBackground()
 		s.taskShutdownDone = make(chan struct{})
 		cancels := make([]context.CancelFunc, 0, len(s.taskCancels))
 		for _, cancel := range s.taskCancels {
@@ -145,15 +159,12 @@ func (s *TenantStore) ShutdownTasks(ctx context.Context) error {
 		}
 		go func() {
 			s.taskWorkers.Wait()
+			if s.unsubscribe != nil {
+				s.unsubscribe()
+			}
 			close(done)
 		}()
 	})
-	select {
-	case <-s.taskShutdownDone:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 func (s *TenantStore) unregisterTaskCancel(tenantID string, taskID string) {

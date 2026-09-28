@@ -102,6 +102,7 @@ func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 		routeSpec{pattern: "GET /v1/relation-schemas", handler: s.relationSchemas},
 		routeSpec{pattern: "GET /v1/source-policy", handler: s.getSourcePolicy},
 		routeSpec{pattern: "GET /v1/tenant-config", handler: s.getTenantConfig},
+		routeSpec{pattern: "GET /v1/backup-automation", handler: s.getBackupAutomation},
 		routeSpec{pattern: "POST /v1/query", handler: s.query},
 		routeSpec{pattern: "POST /v1/query/stream", handler: s.queryStream},
 		routeSpec{pattern: "POST /v1/query/graphql", handler: s.queryGraphQL},
@@ -114,6 +115,7 @@ func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	s.registerRoutes(mux,
+		routeSpec{pattern: "POST /v1/backup-automation/reset", handler: s.resetBackupAutomation, mutation: true},
 		routeSpec{pattern: "GET /metrics", handler: s.metrics},
 		routeSpec{pattern: "GET /v1/tenants", handler: s.tenantLifecycle, bypassTenantLifecycle: true},
 		routeSpec{pattern: "GET /v1/tenants/", handler: s.tenantLifecycle, bypassTenantLifecycle: true},

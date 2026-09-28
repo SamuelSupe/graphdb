@@ -244,6 +244,9 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	if err := objectContextErr(ctx); err != nil {
 		return err
 	}
+	if view, ok := ctx.Value(gcViewKey{}).(*gcView); ok && !view.canDelete(key) {
+		return errGCViewPinned
+	}
 	defer s.changed(key, "")
 	files, batched := ctx.Value(fileBatchKey{}).(*FileStore)
 	batched = batched && files == s

@@ -11,7 +11,7 @@ A passing short test does not establish a performance claim.
 - [ ] The 2.0 local Parquet/WAL formats, new content hash and matching SDKs pass.
 - [ ] `expected_version`, `min_version`, cursors, idempotency, and WAL state contracts pass.
 - [ ] File/parent-directory sync and publication failures preserve a readable committed head.
-- [ ] Restore/delete/GC wait for active read views, including shared loads after HTTP cancellation.
+- [ ] Restore/delete wait for active read views; GC defers pinned files without excluding new reads, including shared loads after HTTP cancellation.
 
 ## Verification
 
@@ -34,7 +34,7 @@ A passing short test does not establish a performance claim.
 ## Main release
 
 - [ ] Fast-forward GitHub `main` to the verified local-disk implementation; preserve historical tags.
-- [ ] Publish a new annotated `v2.0.0` tag on that commit.
+- [ ] Publish a new annotated tag matching `VERSION` on that commit.
 - [ ] Publish as a stable Release with `latest=true`, after all required gates pass.
 - [ ] Verify remote main/tag, workflow conclusions, SDK/module versions and GitHub Pages.
 - [ ] Download published assets, verify both checksum layers and execute the matching binary.

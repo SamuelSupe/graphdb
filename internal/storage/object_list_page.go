@@ -9,8 +9,8 @@ type objectPageLister interface {
 	ListPage(ctx context.Context, prefix string, after string, limit int) ([]ObjectInfo, string, error)
 }
 
-// listObjectPage preserves the behavior of store wrappers while allowing S3
-// callers to stop after one bounded page. Stores without native paging use a
+// listObjectPage preserves read admission and metrics while callers stop
+// after one bounded directory page. Stores without native paging use a
 // sorted compatibility fallback.
 func listObjectPage(ctx context.Context, objects ObjectStore, prefix string, after string, limit int) ([]ObjectInfo, string, error) {
 	switch store := objects.(type) {
@@ -32,8 +32,6 @@ func listObjectPage(ctx context.Context, objects ObjectStore, prefix string, aft
 		if err := store.wait(ctx); err != nil {
 			return nil, "", err
 		}
-		return listObjectPage(ctx, store.Inner, prefix, after, limit)
-	case *SingleWriterObjectStore:
 		return listObjectPage(ctx, store.Inner, prefix, after, limit)
 	}
 	if paged, ok := objects.(objectPageLister); ok && limit > 0 {

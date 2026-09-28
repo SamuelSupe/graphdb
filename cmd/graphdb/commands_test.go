@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -43,6 +45,50 @@ func TestRunHTTPServerStopsOnContextCancellation(t *testing.T) {
 	if err := runHTTPServer(ctx, server, time.Second); err != nil {
 		t.Fatalf("runHTTPServer err = %v, want nil graceful shutdown", err)
 	}
+}
+
+func TestRunHTTPServerCancelsRequestsAfterGracePeriod(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	address := make(chan string, 1)
+	entered, ended := make(chan struct{}), make(chan struct{})
+	server := &http.Server{Addr: "127.0.0.1:0",
+		BaseContext: func(listener net.Listener) context.Context {
+			address <- listener.Addr().String()
+			return context.Background()
+		},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-r.Context().Done()
+			close(ended)
+		}),
+	}
+	defer server.Close()
+	done := make(chan error, 1)
+	go func() { done <- runHTTPServer(ctx, server, 30*time.Millisecond) }()
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		response, err := http.Get("http://" + <-address)
+		if err == nil {
+			response.Body.Close()
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach server")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown did not report expired grace period: %v", err)
+	}
+	select {
+	case <-ended:
+	case <-time.After(time.Second):
+		t.Fatal("request context survived shutdown")
+	}
+	<-clientDone
 }
 
 func TestNewSeparateHTTPServersUseExpectedHandlers(t *testing.T) {

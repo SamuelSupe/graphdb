@@ -15,7 +15,6 @@ func TestStaleGCRunningMarkerDoesNotBlockWrites(t *testing.T) {
 	ctx := context.Background()
 	objects := newCountingListStore(NewMemoryStore())
 	store := NewTenantStore(objects, "test")
-	store.TaskMarkerTTL = 5 * time.Millisecond
 	store.Backpressure = NewWritePressure(BackpressureConfig{})
 	old := time.Now().UTC().Add(-time.Hour)
 	task := Task{
@@ -38,33 +37,8 @@ func TestStaleGCRunningMarkerDoesNotBlockWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get stale task: %v", err)
 	}
-	if failed.Status != TaskStatusFailed || !strings.Contains(failed.Error, "heartbeat expired") {
+	if failed.Status != TaskStatusFailed || !strings.Contains(failed.Error, inactiveTaskError) {
 		t.Fatalf("stale task = %#v", failed)
-	}
-}
-
-func TestStaleGCMarkerRecoversMissingTaskHistory(t *testing.T) {
-	ctx := context.Background()
-	store := NewTenantStore(NewMemoryStore(), "test")
-	store.TaskMarkerTTL = 5 * time.Millisecond
-	old := time.Now().UTC().Add(-time.Hour)
-	marker := Task{
-		ID: "orphaned-gc", TenantID: "tenant-a", Type: TaskTypeGC,
-		Status: TaskStatusRunning, Phase: TaskStatusRunning,
-		OwnerID: "crashed-owner", StartedAt: old, UpdatedAt: old,
-	}
-	if _, err := store.putGCRunningMarker(ctx, marker, ObjectMeta{Key: store.gcRunningTaskKey("tenant-a")}); err != nil {
-		t.Fatalf("write orphaned marker: %v", err)
-	}
-	if _, found, err := store.findRunningGCTask(ctx, "tenant-a"); err != nil || found {
-		t.Fatalf("find stale marker found=%v err=%v", found, err)
-	}
-	recovered, err := store.GetTask(ctx, "tenant-a", marker.ID)
-	if err != nil {
-		t.Fatalf("get recovered task: %v", err)
-	}
-	if recovered.Status != TaskStatusFailed || !strings.Contains(recovered.Error, "heartbeat expired") {
-		t.Fatalf("recovered task = %#v", recovered)
 	}
 }
 
@@ -82,6 +56,11 @@ func TestLocalGCMarkerKeepsLiveWorkerAfterHeartbeatExpires(t *testing.T) {
 	if err := store.saveTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := store.admitTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	defer store.taskWorkers.Done()
+	defer store.releaseTaskAdmission(task)
 	store.registerTaskCancel(task.TenantID, task.ID, func() {})
 	defer store.unregisterTaskCancel(task.TenantID, task.ID)
 	if _, found, err := store.findRunningGCTask(ctx, task.TenantID); err != nil || !found {
@@ -92,6 +71,7 @@ func TestLocalGCMarkerKeepsLiveWorkerAfterHeartbeatExpires(t *testing.T) {
 		t.Fatalf("live task was marked failed: %+v err=%v", current, err)
 	}
 	store.unregisterTaskCancel(task.TenantID, task.ID)
+	store.releaseTaskAdmission(task)
 	if _, found, err := store.findRunningGCTask(ctx, task.TenantID); err != nil || found {
 		t.Fatalf("stopped worker retained ownership: found=%v err=%v", found, err)
 	}

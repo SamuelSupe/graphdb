@@ -22,7 +22,6 @@ func TestLateTenantConfigWriteIsRolledBackAfterPurge(t *testing.T) {
 		triggerKey:  probe.tenantConfigKey("tenant-a"),
 	}
 	stale := NewTenantStore(objects, "test")
-	stale.LeaseTTL = time.Hour
 	if _, err := stale.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -52,7 +51,6 @@ func TestLateTaskProgressCannotRecreateTaskAfterPurge(t *testing.T) {
 	base := NewMemoryStore()
 	objects := newBlockingTaskPutStore(base)
 	runner := NewTenantStore(objects, "test")
-	runner.LeaseTTL = 10 * time.Millisecond
 	if _, err := runner.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -94,7 +92,6 @@ func TestBoundTaskCannotAdoptRecreatedTenantGeneration(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	runner := NewTenantStore(base, "test")
-	runner.LeaseTTL = time.Hour
 	if _, err := runner.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -130,13 +127,18 @@ func TestBoundTaskCannotAdoptRecreatedTenantGeneration(t *testing.T) {
 	if _, err := base.Get(ctx, runner.taskKey("tenant-a", task.ID)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("old task crossed into recreated tenant: %v", err)
 	}
+	if err := runner.saveBackupSchedule(boundCtx, "tenant-a", BackupAutomationStatus{TaskID: task.ID}); !errors.Is(err, ErrLeaseHeld) && !errors.Is(err, ErrTenantDeleted) {
+		t.Fatalf("old backup schedule crossed into recreated tenant: %v", err)
+	}
+	if _, err := base.Get(ctx, runner.backupScheduleKey("tenant-a")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recreated tenant inherited old backup schedule: %v", err)
+	}
 }
 
 func TestBoundIndexTaskCannotAdoptRecreatedTenantGeneration(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	runner := NewTenantStore(base, "test")
-	runner.LeaseTTL = time.Hour
 	if _, err := runner.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -184,7 +186,6 @@ func TestLateReaderHeartbeatCannotRecreateObjectAfterPurge(t *testing.T) {
 		triggerKey:  probe.readerHeartbeatKey("tenant-a", "reader-a"),
 	}
 	writer := NewTenantStore(base, "test")
-	writer.LeaseTTL = time.Hour
 	if _, err := writer.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -214,7 +215,6 @@ func TestLateCommitObjectCannotCrossPurgeAndRecreateGeneration(t *testing.T) {
 		recreate:      true,
 	}
 	stale := NewTenantStore(objects, "test")
-	stale.LeaseTTL = time.Hour
 	if _, err := stale.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -264,7 +264,6 @@ func (s *purgeDuringPutStore) PutConditional(ctx context.Context, key string, da
 			return ObjectMeta{}, err
 		}
 		purger := NewTenantStore(s.base, "test")
-		purger.LeaseTTL = time.Hour
 		if _, err := purger.PurgeTenant(ctx, s.tenantID, true); err != nil {
 			return ObjectMeta{}, err
 		}
@@ -295,4 +294,46 @@ func (s *purgeDuringPutStore) Triggered() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.triggered
+}
+
+func TestLocalTaskCannotAdoptRecreatedTenantGeneration(t *testing.T) {
+	ctx := context.Background()
+	base, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	runner := NewTenantStore(base, "test")
+	if _, err := runner.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	boundCtx, err := runner.acquireAndBindWriterFence(ctx, "tenant-a")
+	if err != nil {
+		t.Fatalf("bind task generation: %v", err)
+	}
+	now := time.Now().UTC()
+	task := Task{
+		ID: "old-generation-task", TenantID: "tenant-a", Type: TaskTypeCompact,
+		Status: TaskStatusRunning, Phase: TaskStatusRunning,
+		OwnerID: runner.InstanceID, StartedAt: now, UpdatedAt: now,
+	}
+	if err := runner.saveTask(boundCtx, task); err != nil {
+		t.Fatalf("save task: %v", err)
+	}
+	purger := runner
+	if _, err := purger.PurgeTenant(ctx, "tenant-a", true); err != nil {
+		t.Fatalf("purge tenant: %v", err)
+	}
+	recreator := runner
+	if _, err := recreator.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+		t.Fatalf("recreate tenant: %v", err)
+	}
+
+	err = runner.updateTaskProgress(boundCtx, task, "compact", 1, 2, nil)
+	if !errors.Is(err, ErrLeaseHeld) && !errors.Is(err, ErrTenantDeleted) {
+		t.Fatalf("old task progress err = %v, want fencing error", err)
+	}
+	if _, err := base.Get(ctx, runner.taskKey("tenant-a", task.ID)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old task crossed into recreated tenant: %v", err)
+	}
 }

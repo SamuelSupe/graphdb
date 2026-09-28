@@ -3,6 +3,26 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [2.1.0] - 2026-09-28
+
+Compatible with existing 2.0 local data directories and HTTP contracts.
+
+- Add opt-in tenant S3 backup schedules, durable retries, checksum verification,
+  optional restore drills, bounded retention, and status/reset APIs in both SDKs.
+- Finish observing and reclaiming successful captures even when scheduling is
+  disabled during a run; protect schedule writes with tenant-generation fencing.
+- Unify ordinary and index tasks, shutdown ownership, query view selection, and
+  direct/WAL graph publication. Remove unused distributed heartbeat/TTL paths.
+- Let GC defer files held by older read views without excluding new readers;
+  preserve same-version catalog and restore/delete lifecycle protections.
+- Avoid scanning unrelated tenant read views on every file publication and stop
+  S3 retention pagination at its deletion budget. Remove duplicate initialization.
+- Fix task terminal-state admission races and audit logging with empty fields.
+- Update SDKs, OpenAPI, deployment and bilingual operating instructions.
+
+See [2.1 validation and limitations](docs/validation-v2.1.0.md).
+No overall throughput or tail-latency improvement is claimed by this release.
+
 ## [2.0.0] - 2026-09-28
 
 Local disk is now the main edition and stable release. One process owns a data

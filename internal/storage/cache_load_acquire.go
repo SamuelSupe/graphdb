@@ -10,7 +10,7 @@ func (c *ReaderCache) cacheEntryAfterLoadAcquire(
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[tenantID]
-	generation := c.gens[tenantID]
+	generation := c.Store.readGeneration(tenantID)
 	if !ok || !cacheEntryFresh(entry, now, minVersion) {
 		return entry, ok, generation, false
 	}

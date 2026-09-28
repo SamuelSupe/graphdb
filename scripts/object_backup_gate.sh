@@ -24,7 +24,7 @@ export GRAPHDB_ADDR="127.0.0.1:${GRAPHDB_BACKUP_GATE_PORT:-39180}"
 export GRAPHDB_STORAGE=local GRAPHDB_MODE=all GRAPHDB_COORDINATION=local
 export GRAPHDB_INGEST_MODE=wal GRAPHDB_INGEST_WAL_DURABILITY=sync
 export GRAPHDB_INGEST_FLUSH_INTERVAL=100ms
-export GRAPHDB_MAINTENANCE_INTERVAL=0
+export GRAPHDB_MAINTENANCE_INTERVAL=1s
 SERVER_PID=""
 stop_server() {
   if [[ -n "$SERVER_PID" ]]; then
@@ -48,6 +48,9 @@ start_server() {
 export PYTHONPATH="$ROOT/sdk/python${PYTHONPATH:+:$PYTHONPATH}"
 start_server "$RUN_DIR/source-data"
 python3 scripts/object_backup_http.py capture "http://$GRAPHDB_ADDR" "$RUN_DIR" >"$RUN_DIR/http-capture.log"
+stop_server
+start_server "$RUN_DIR/source-data"
+python3 scripts/object_backup_http.py automation-restart "http://$GRAPHDB_ADDR" "$RUN_DIR" >"$RUN_DIR/http-automation-restart.log"
 stop_server
 # A new data directory proves recovery needs no original tenant, task history,
 # local backup record, indexes, or manifest files.

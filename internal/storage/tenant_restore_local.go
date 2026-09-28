@@ -87,10 +87,12 @@ func (s *TenantStore) restoreLocalTenantBackupTask(ctx context.Context, task Tas
 	}
 	stagedTask.Params = map[string]any{"backup_key": backupKey}
 	stagedTask.Status = TaskStatusRunning
+	stageCtx, finishStage := stage.inlineTask(ctx, stagedTask)
+	defer finishStage()
 	if err := stage.saveTask(ctx, stagedTask); err != nil {
 		return TenantRestoreReport{}, err
 	}
-	report, err := stage.restoreTenantBackupInputTask(ctx, stagedTask, backupKey, input)
+	report, err := stage.restoreTenantBackupInputTask(stageCtx, stagedTask, backupKey, input)
 	if err != nil {
 		return report, err
 	}
@@ -214,15 +216,7 @@ func (files *FileStore) publishTenantDirectory(ctx context.Context, dir, targetK
 }
 
 func (s *TenantStore) invalidateLocalRestoredTenant(tenantID string) {
-	s.deleteWriteCache(tenantID)
-	s.deleteCachedTenantMetadata(tenantID)
-	s.deleteCachedTenantConfig(tenantID)
-	s.deleteCachedSourcePolicy(tenantID)
-	s.deleteCachedIndexCatalog(tenantID)
-	s.clearObjectKeyPrefix(s.tenantObjectPrefix(tenantID))
-	if cache := FindWriterObjectCache(s.Objects); cache != nil {
-		cache.ClearPrefix(s.tenantObjectPrefix(tenantID))
-	}
+	s.invalidateTenantState(tenantID)
 	files := s.localFileStore()
 	files.changed(s.manifestKey(tenantID), "")
 	files.changed(s.tenantMetadataKey(tenantID), "")

@@ -1359,3 +1359,45 @@ func (s *ingestBatchCountingStore) countLooseCommits(commitPrefix string, segmen
 	}
 	return count
 }
+
+func TestLocalShutdownCancelsPendingIncrementalIndex(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	defer store.ShutdownTasks(context.Background())
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &blockOncePutStore{ObjectStore: files, substring: "/indexes/parquet/", paused: make(chan struct{}), resume: make(chan struct{})}
+	defer close(blocked.resume)
+	store.Objects = blocked
+	if _, err := store.Ingest(ctx, "tenant-a", ingestEntityRequest("shutdown", "host:new")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.paused:
+	case <-ctx.Done():
+		t.Fatal("index worker did not start")
+	}
+	if err := store.ShutdownTasks(ctx); err != nil {
+		t.Fatalf("incremental worker outlived shutdown: %v", err)
+	}
+	store.indexUpdateMu.Lock()
+	active := store.activeIngestIndexUpdates
+	store.indexUpdateMu.Unlock()
+	if active != 0 {
+		t.Fatalf("shutdown left %d incremental workers", active)
+	}
+	graph, _, err := store.Load(ctx, "tenant-a")
+	if err != nil || graph.Entities.At("host:new").ID != "host:new" {
+		t.Fatalf("shutdown lost a published write: %v", err)
+	}
+}

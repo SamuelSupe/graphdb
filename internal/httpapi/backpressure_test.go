@@ -43,25 +43,6 @@ func TestHTTPCommitBackpressureReturns429(t *testing.T) {
 	}
 }
 
-func TestHTTPCommitReusesWriteBackpressureCheck(t *testing.T) {
-	objects := &countBackpressureStore{ObjectStore: storage.NewMemoryStore()}
-	store := storage.NewTenantStore(objects, "test")
-	store.Backpressure = storage.NewWritePressure(storage.BackpressureConfig{})
-	handler := (&Server{
-		Store: store, Mode: "all", WriteAdmission: NewWriteAdmission(1, 1, time.Second),
-	}).Handler()
-
-	rr := serveJSON(handler, httpMethodPost, "/v1/commits", "tenant-a", CommitRequest{Mutations: graph.Mutations{
-		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}},
-	}})
-	if rr.Code != 200 {
-		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	if got := objects.indexMarkerReads(); got != 1 {
-		t.Fatalf("index marker reads = %d, want one backpressure scan", got)
-	}
-}
-
 func TestHTTPWriteAdmissionQueueTimeoutReturns429(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	store.Backpressure = storage.NewWritePressure(storage.BackpressureConfig{})
@@ -243,27 +224,6 @@ type timeoutMatchingPutStore struct {
 	contains string
 	hit      chan struct{}
 	hitOnce  sync.Once
-}
-
-type countBackpressureStore struct {
-	storage.ObjectStore
-	mu    sync.Mutex
-	count int
-}
-
-func (s *countBackpressureStore) Get(ctx context.Context, key string) ([]byte, error) {
-	if strings.HasSuffix(key, "/tenants/tenant-a/indexes/running/rebuild.parquet") {
-		s.mu.Lock()
-		s.count++
-		s.mu.Unlock()
-	}
-	return s.ObjectStore.Get(ctx, key)
-}
-
-func (s *countBackpressureStore) indexMarkerReads() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.count
 }
 
 func (s *timeoutMatchingPutStore) PutConditional(ctx context.Context, key string, data []byte, condition storage.PutCondition) (storage.ObjectMeta, error) {

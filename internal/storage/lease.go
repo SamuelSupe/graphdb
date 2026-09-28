@@ -29,7 +29,7 @@ func (s *TenantStore) acquireWriterLeaseForPurge(ctx context.Context, tenantID s
 
 func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID string, allowPurged bool) error {
 	now := time.Now().UTC()
-	if _, _, ok := s.getCachedWriterLease(tenantID, now); ok {
+	if _, _, ok := s.getCachedWriterLease(tenantID); ok {
 		return nil
 	}
 	if !allowPurged {
@@ -51,7 +51,6 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 		FenceToken: token,
 		FenceEpoch: 1,
 		UpdatedAt:  now,
-		ExpiresAt:  now.Add(s.leaseTTL()),
 	}
 	if allowPurged {
 		metadata, exists, _, err := s.getTenantPurgeTombstone(ctx, tenantID)
@@ -62,9 +61,6 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 		if exists && lastEpoch >= next.FenceEpoch {
 			next.FenceEpoch = lastEpoch + 1
 		}
-	}
-	if exclusiveFileStore(s.Objects) != nil {
-		next.ExpiresAt = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 	}
 	key := s.writerLeaseKey(tenantID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
@@ -79,7 +75,7 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 			}
 		case err != nil:
 			return err
-		case current.OwnerID == s.InstanceID || current.ExpiresAt.Before(now) || exclusiveFileStore(s.Objects) != nil:
+		default:
 			if current.OwnerID == s.InstanceID {
 				if current.FenceToken != "" {
 					next.FenceToken = current.FenceToken
@@ -98,9 +94,6 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 			} else if !errors.Is(err, ErrConflict) {
 				return err
 			}
-		default:
-			s.deleteCachedWriterLease(tenantID)
-			return fmt.Errorf("%w: tenant %q lease owner %q until %s", ErrLeaseHeld, tenantID, current.OwnerID, current.ExpiresAt.Format(time.RFC3339))
 		}
 		s.deleteCachedWriterLease(tenantID)
 		if err := retryDelay(ctx, attempt); err != nil {
@@ -164,6 +157,15 @@ func (s *TenantStore) GetWriterLease(ctx context.Context, tenantID string) (Writ
 }
 
 func (s *TenantStore) getWriterLease(ctx context.Context, tenantID string, key string) (WriterLease, ObjectMeta, error) {
+	if cached, meta, ok := s.getCachedWriterLeaseAny(tenantID); ok {
+		current, err := objectMeta(ctx, s.Objects, key)
+		if err != nil {
+			return WriterLease{}, current, err
+		}
+		if current.ETag == meta.ETag {
+			return cached, current, nil
+		}
+	}
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
 		return WriterLease{}, meta, err
@@ -196,13 +198,6 @@ func (s *TenantStore) putLease(ctx context.Context, key string, lease WriterLeas
 		condition.IfNoneMatch = true
 	}
 	return s.Objects.PutConditional(ctx, key, data, condition)
-}
-
-func (s *TenantStore) leaseTTL() time.Duration {
-	if s.LeaseTTL <= 0 {
-		return 30 * time.Second
-	}
-	return s.LeaseTTL
 }
 
 func (s *TenantStore) retryCount() int {

@@ -124,6 +124,10 @@ func (r *gcCheckpointRunner) deleteKeyWithCursor(ctx context.Context, objects Ob
 	r.checkpoint.ScannedKeys++
 	r.checkpoint.LastKey = key
 	if r.options.DryRun {
+		if !r.options.view.canDelete(key) {
+			r.checkpoint.DeferredFiles++
+			return false, objectContextErr(ctx)
+		}
 		r.checkpoint.Planned++
 		r.checkpoint.PlannedKeys = append(r.checkpoint.PlannedKeys, key)
 		if r.limitReached() {
@@ -131,7 +135,14 @@ func (r *gcCheckpointRunner) deleteKeyWithCursor(ctx context.Context, objects Ob
 		}
 		return false, objectContextErr(ctx)
 	}
+	if r.options.view != nil {
+		ctx = context.WithValue(ctx, gcViewKey{}, r.options.view)
+	}
 	if err := objects.Delete(ctx, key); err != nil {
+		if errors.Is(err, errGCViewPinned) {
+			r.checkpoint.DeferredFiles++
+			return false, nil
+		}
 		r.checkpoint.FailedKeys = append(r.checkpoint.FailedKeys, key)
 		return false, err
 	}

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.0.0
+  version: 2.1.0
   description: GGraphDB 2.0 local-disk, single-process, multi-tenant graph API. S3-compatible storage is optional for snapshot backup and restore. Use a fresh 2.0 data directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
@@ -1317,7 +1317,7 @@ paths:
                 $ref: '#/components/schemas/ReaderFreshness'
   /v1/control/reader-fleet-readiness:
     get:
-      summary: Aggregate reader heartbeat readiness for this tenant.
+      summary: Report local reader readiness for this tenant.
       parameters:
         - name: min_version
           in: query
@@ -1533,6 +1533,32 @@ paths:
           $ref: '#/components/responses/MethodNotAllowed'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/CoordinatorUnavailable'
+  /v1/backup-automation/reset:
+    post:
+      summary: Explicitly abandon the current automatic-backup retry checkpoint.
+      description: Preserves successful backup history and remote snapshots. An enabled policy starts a fresh capture on its next maintenance tick. Refuses while any backup task for the tenant is active.
+      responses:
+        '200':
+          description: Reset scheduling state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupAutomationStatus'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/backup-automation:
+    get:
+      summary: Get the last observed automatic backup cycle for the current tenant.
+      description: Configure scheduling through tenant-config.backup. Status updates on maintenance ticks; inspect task_id through the task API for current progress.
+      responses:
+        '200':
+          description: Durable backup scheduling state, or an empty initial state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupAutomationStatus'
         '503':
           $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/tenant-config:
@@ -3722,6 +3748,9 @@ components:
       type: object
       required: [format, tenant_id, backup_id, version, created_at, snapshot_key, bytes, sha256, backup_key]
       properties:
+        automatic:
+          type: boolean
+          description: Only automatic backups are eligible for configured retention.
         format:
           type: string
           enum: [graphdb-object-snapshot-v1]
@@ -3831,9 +3860,71 @@ components:
           type: boolean
         config:
           $ref: '#/components/schemas/TenantConfig'
+    BackupAutomationStatus:
+      type: object
+      properties:
+        task_id:
+          type: string
+        next_run:
+          type: string
+          format: date-time
+        last_success:
+          type: string
+          format: date-time
+        last_backup_key:
+          type: string
+        last_drill:
+          type: string
+          format: date-time
+        consecutive_failures:
+          type: integer
+        last_error:
+          type: string
+    TenantBackupConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: false
+        interval_seconds:
+          type: integer
+          minimum: 60
+          maximum: 31536000
+          default: 86400
+        keep_count:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          default: 30
+          description: Zero disables count retention. Manual backups and the newest automatic backup are protected.
+        max_age_seconds:
+          type: integer
+          minimum: 0
+          maximum: 315360000
+          default: 2592000
+          description: Zero disables age retention. Age is measured from snapshot capture.
+        retry_initial_seconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          default: 60
+        retry_max_seconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          default: 3600
+          description: Must be at least retry_initial_seconds.
+        restore_drill_interval_seconds:
+          type: integer
+          minimum: 0
+          maximum: 315360000
+          default: 0
+          description: Zero disables restore drills. Enabled drills rebuild and audit the newly uploaded snapshot in disposable local storage.
     TenantConfig:
       type: object
       properties:
+        backup:
+          $ref: '#/components/schemas/TenantBackupConfig'
         backpressure:
           type: object
           properties:

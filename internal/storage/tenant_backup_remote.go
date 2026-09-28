@@ -28,6 +28,9 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	backupID := taskCheckpointString(task, "remote_backup_id")
 	if backupID == "" {
 		backupID = task.ID
+		if boolTaskParam(task.Params, "automatic") {
+			backupID = "scheduled-" + backupID
+		}
 	}
 	uri, err := s.Backups.URI(task.TenantID, backupID)
 	if err != nil {
@@ -65,7 +68,7 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	}); err != nil {
 		return nil, "", err
 	}
-	manifest := backupstore.Manifest{TenantID: record.TenantID, BackupID: backupID, Version: record.Version, CreatedAt: record.CreatedAt}
+	manifest := backupstore.Manifest{Automatic: boolTaskParam(task.Params, "automatic"), TenantID: record.TenantID, BackupID: backupID, Version: record.Version, CreatedAt: record.CreatedAt}
 	entities, edges := len(record.Snapshot.Entities), len(record.Snapshot.Edges)
 	// The durable file is the upload source; do not retain its decoded graph
 	// for the duration of a potentially slow network transfer.
@@ -96,8 +99,19 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	}); err != nil {
 		return nil, "", err
 	}
+	var automation map[string]any
+	if manifest.Automatic {
+		automation, err = s.finishAutomaticBackup(ctx, task, entry)
+		if err != nil {
+			return nil, "", err
+		}
+		// The scheduler reclaims the capture only after observing durable task
+		// success. Automatic backup results reference the remote manifest.
+		resultKey = ""
+	}
 	return map[string]any{
-		"tenant_id": manifest.TenantID, "version": manifest.Version, "destination": "object",
+		"automation": automation,
+		"tenant_id":  manifest.TenantID, "version": manifest.Version, "destination": "object",
 		"backup_key": entry.BackupKey, "backup_manifest": entry.Manifest,
 		"entities": entities, "edges": edges,
 	}, resultKey, nil
@@ -117,6 +131,11 @@ func (s *TenantStore) loadObjectBackupInput(ctx context.Context, uri string) (te
 	if s.Backups == nil {
 		return tenantBackupInput{}, fmt.Errorf("object backups are not configured")
 	}
+	release, err := s.Backups.Pin(uri)
+	if err != nil {
+		return tenantBackupInput{}, err
+	}
+	defer release()
 	m, err := s.Backups.ReadManifest(ctx, uri)
 	if err != nil {
 		return tenantBackupInput{}, err

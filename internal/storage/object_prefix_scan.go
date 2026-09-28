@@ -54,21 +54,21 @@ func anyObjectMatches(items []ObjectInfo, match func(ObjectInfo) bool) bool {
 }
 
 func objectStoreSupportsPaging(objects ObjectStore) bool {
-	switch store := objects.(type) {
-	case *WriterObjectCache:
-		return objectStoreSupportsPaging(store.Inner)
-	case *MeteredObjectStore:
-		return objectStoreSupportsPaging(store.Inner)
-	case *ReadProtectedObjectStore:
-		return objectStoreSupportsPaging(store.Inner)
-	case *DelayedReadObjectStore:
-		return objectStoreSupportsPaging(store.Inner)
-	case *SingleWriterObjectStore:
-		return objectStoreSupportsPaging(store.Inner)
-	default:
-		_, ok := objects.(objectPageLister)
-		return ok
+	for objects != nil {
+		if _, ok := objects.(objectPageLister); ok {
+			return true
+		}
+		unwrapper, ok := objects.(objectStoreUnwrapper)
+		if !ok {
+			return false
+		}
+		next := unwrapper.UnwrapObjectStore()
+		if next == objects {
+			return false
+		}
+		objects = next
 	}
+	return false
 }
 
 func scanObjectPrefix(

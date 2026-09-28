@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -61,6 +62,8 @@ func (c Config) Validate() error {
 type Repository struct {
 	client         *s3.Client
 	bucket, prefix string
+	mu             sync.Mutex
+	readers        map[string]int
 }
 
 func New(ctx context.Context, c Config) (*Repository, error) {

@@ -84,8 +84,6 @@ func probeObjectStore(ctx context.Context, objects ObjectStore, prefix string) e
 			return err
 		}
 		return probeObjectStore(ctx, store.Inner, prefix)
-	case *SingleWriterObjectStore:
-		return probeObjectStore(ctx, store.Inner, prefix)
 	}
 	if prober, ok := objects.(objectStoreProber); ok {
 		return prober.Probe(ctx)

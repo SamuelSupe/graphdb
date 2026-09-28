@@ -20,19 +20,19 @@ type blockingIndexTaskMarkerStore struct {
 	once    sync.Once
 }
 
-func (s *blockingIndexTaskMarkerStore) Get(
+func (s *blockingIndexTaskMarkerStore) GetWithMeta(
 	ctx context.Context,
 	key string,
-) ([]byte, error) {
+) ([]byte, ObjectMeta, error) {
 	if key != s.key {
-		return s.ObjectStore.Get(ctx, key)
+		return s.ObjectStore.GetWithMeta(ctx, key)
 	}
 	s.once.Do(func() { close(s.entered) })
 	select {
 	case <-s.release:
-		return nil, errIndexTaskMarkerProbe
+		return nil, ObjectMeta{}, errIndexTaskMarkerProbe
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, ObjectMeta{}, ctx.Err()
 	}
 }
 
@@ -43,14 +43,10 @@ func TestIndexTaskMarkerIODoesNotBlockOtherTaskAdmission(t *testing.T) {
 		release:     make(chan struct{}),
 	}
 	store := NewTenantStore(objects, "test")
-	objects.key = store.indexRebuildRunningTaskKey("tenant-a")
+	objects.key = store.writerLeaseKey("tenant-a")
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := store.startIndexRebuild(
-			context.Background(),
-			"tenant-a",
-			true,
-		)
+		_, err := store.StartIndexRebuild(context.Background(), "tenant-a")
 		startDone <- err
 	}()
 	select {
@@ -78,35 +74,36 @@ func TestIndexTaskMarkerIODoesNotBlockOtherTaskAdmission(t *testing.T) {
 		t.Fatal("unrelated task admission blocked behind marker I/O")
 	}
 	store.releaseTaskAdmission(task)
+	store.taskWorkers.Done()
 	close(objects.release)
 	if err := <-startDone; !errors.Is(err, errIndexTaskMarkerProbe) {
 		t.Fatalf("start index task err = %v, want marker probe error", err)
 	}
 }
 
-func TestIndexTaskStartSlotHonorsContext(t *testing.T) {
+func TestIndexTaskStartHonorsContext(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
-	slot := store.indexTaskStartSlot("tenant-a")
-	slot <- struct{}{}
+	unlock, err := store.lockTenantForeground(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := store.startIndexRebuild(ctx, "tenant-a", true)
+		_, err := store.StartIndexRebuild(ctx, "tenant-a")
 		done <- err
 	}()
 	cancel()
 
 	select {
 	case err := <-done:
-		<-slot
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("start index task err = %v, want context.Canceled", err)
 		}
 	case <-time.After(250 * time.Millisecond):
-		<-slot
-		<-done
-		t.Fatal("index task start ignored cancellation while waiting for its slot")
+		t.Fatal("index task start ignored cancellation while waiting for the tenant lock")
 	}
 }
 

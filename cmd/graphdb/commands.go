@@ -23,7 +23,7 @@ const (
 	backgroundTaskShutdownTimeout = 30 * time.Second
 )
 
-func run(args []string) error {
+func run(args []string) (err error) {
 	if len(args) == 0 {
 		printHelp()
 		return nil
@@ -51,11 +51,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer runtime.Close()
+	defer func() { err = errors.Join(err, runtime.Close()) }()
 	store := runtime.Store
 
 	if command.kind == commandServe {
-		return serve(cfg, store)
+		return serve(cfg, runtime)
 	}
 	if command.handler == nil {
 		return fmt.Errorf("command %q is not executable", command.name)
@@ -63,13 +63,16 @@ func run(args []string) error {
 	return command.handler(args[1:], store)
 }
 
-func serve(cfg config.Config, store *storage.TenantStore) error {
+func serve(cfg config.Config, runtime *bootstrap.StorageRuntime) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return serveContext(ctx, cfg, store)
+	return serveContext(ctx, cfg, runtime)
 }
 
-func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantStore) error {
+func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.StorageRuntime) error {
+	store := runtime.Store
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	shutdownTrace, err := observability.SetupOTLP(ctx, observability.TraceConfig{
 		Endpoint:    cfg.OTLPEndpoint,
 		Insecure:    cfg.OTLPInsecure,
@@ -97,16 +100,13 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		ingestConfig := cfg.IngestServiceConfig()
 		ingestConfig.Observer = obs.Metrics
 		ingestConfig.Logger = obs.Logger
-		ingestConfig.OnGraphPublished = func(tenantID string) {
-			if !cache.PublishFromWriteCache(tenantID) {
-				cache.Invalidate(tenantID)
-			}
-		}
+
 		ingestService, err = storage.OpenIngestService(store, ingestConfig)
 		if err != nil {
 			return fmt.Errorf("open ingest WAL service: %w", err)
 		}
 	}
+	runtime.Ingest = ingestService
 	if metered := storage.FindMeteredObjectStore(store.Objects); metered != nil {
 		metered.Observer = obs.Metrics
 	}
@@ -143,8 +143,6 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
 	}
 	api.StartMaintenanceLoop(ctx, cfg.MaintenanceInterval)
-	if cfg.Mode == "all" || cfg.Mode == "writer" {
-	}
 	var servers []*http.Server
 	if cfg.AdminAddr != "" {
 		servers = []*http.Server{
@@ -162,18 +160,10 @@ func serveContext(ctx context.Context, cfg config.Config, store *storage.TenantS
 		"otlp_enabled": cfg.OTLPEndpoint != "",
 	})
 	serverErr := runHTTPServers(ctx, servers, httpShutdownTimeout)
-	taskShutdownCtx, taskShutdownCancel := context.WithTimeout(
-		context.Background(),
-		backgroundTaskShutdownTimeout,
-	)
-	taskShutdownErr := store.ShutdownTasks(taskShutdownCtx)
-	taskShutdownCancel()
-	if ingestService == nil {
-		return errors.Join(serverErr, taskShutdownErr)
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.IngestShutdownTimeout)
+	stop()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), max(backgroundTaskShutdownTimeout, cfg.IngestShutdownTimeout))
 	defer cancel()
-	return errors.Join(serverErr, taskShutdownErr, ingestService.Close(shutdownCtx))
+	return errors.Join(serverErr, runtime.Shutdown(shutdownCtx))
 }
 
 func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
@@ -227,8 +217,10 @@ func runHTTPServers(ctx context.Context, servers []*http.Server, shutdownTimeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	for _, server := range servers {
-		if err := server.Shutdown(shutdownCtx); err != nil && firstErr == nil {
-			firstErr = err
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			// Shutdown leaves active request contexts alive on timeout. Close
+			// their connections so canceled reads release their file views.
+			firstErr = errors.Join(firstErr, err, server.Close())
 		}
 	}
 	for received < len(servers) {

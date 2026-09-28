@@ -66,28 +66,21 @@ func (s *TenantStore) TryAcquireMaintenanceContext(ctx context.Context, tenantID
 }
 
 func (s *TenantStore) admitTask(ctx context.Context, task Task) (Task, bool, error) {
+	return s.admitTaskMode(ctx, task, false)
+}
+
+func (s *TenantStore) admitTaskMode(ctx context.Context, task Task, replace bool) (Task, bool, error) {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	if s.taskClosing {
 		return Task{}, false, ErrTaskServiceClosed
 	}
 	key := taskActiveKey(task.TenantID, task.Type)
-	if active, ok := s.taskActive[key]; ok {
-		current, err := s.getTaskObject(ctx, active.TenantID, active.ID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return Task{}, false, err
+	if active, ok := s.taskActive[key]; ok && !taskTerminal(active.Status) && !replace {
+		if !sameTaskParams(active.Params, task.Params) {
+			return Task{}, false, fmt.Errorf("%w: tenant %q already has %s task %q with different parameters", ErrConflict, task.TenantID, task.Type, active.ID)
 		}
-		if err == nil && taskTerminal(current.Status) {
-			delete(s.taskActive, key)
-		} else {
-			if !sameTaskParams(active.Params, task.Params) {
-				return Task{}, false, fmt.Errorf("%w: tenant %q already has %s task %q with different parameters", ErrConflict, task.TenantID, task.Type, active.ID)
-			}
-			if err == nil {
-				active = current
-			}
-			return active, true, nil
-		}
+		return active, true, nil
 	}
 	select {
 	case s.taskQueueSlots <- struct{}{}:
@@ -122,10 +115,9 @@ func (s *TenantStore) releaseTaskAdmission(task Task) {
 }
 
 func (s *TenantStore) runTaskAdmitted(ctx context.Context, cancel context.CancelFunc, task Task) {
+	defer cancel()
 	defer s.releaseTaskAdmission(task)
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
-	stopWatch := s.watchTaskCancellation(task, cancel)
-	defer stopWatch()
 	if task.Type == TaskTypeTenantBackup && stringTaskParam(task.Params, "destination") == "object" {
 		// Network waits must not occupy the pool that compaction needs to
 		// relieve WAL backpressure. Bound captures and uploads together.
@@ -212,48 +204,10 @@ func (s *TenantStore) persistQueuedTaskCancellation(ctx context.Context, task Ta
 	s.trySaveTask(writeCtx, current)
 }
 
-func (s *TenantStore) reserveQueuedTask() bool {
-	select {
-	case s.taskQueueSlots <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *TenantStore) admitIndexTaskWorker() error {
-	s.taskMu.Lock()
-	defer s.taskMu.Unlock()
-	if s.taskClosing {
-		return ErrTaskServiceClosed
-	}
-	select {
-	case s.taskQueueSlots <- struct{}{}:
-		s.taskWorkers.Add(1)
-		return nil
-	default:
-		return fmt.Errorf("task queue is full")
-	}
-}
-
-func (s *TenantStore) releaseQueuedTask() {
-	select {
-	case <-s.taskQueueSlots:
-	default:
-	}
-}
-
 func (s *TenantStore) taskTenantSlot(tenantID string) chan struct{} {
 	return s.taskTenantSlots[taskTenantStripe(
 		tenantID,
 		len(s.taskTenantSlots),
-	)]
-}
-
-func (s *TenantStore) indexTaskStartSlot(tenantID string) chan struct{} {
-	return s.indexTaskStartSlots[taskTenantStripe(
-		tenantID,
-		len(s.indexTaskStartSlots),
 	)]
 }
 

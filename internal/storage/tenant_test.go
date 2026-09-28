@@ -1142,7 +1142,7 @@ func TestReaderCacheRefreshCachedKeepsActiveStaleTenant(t *testing.T) {
 	if !ok {
 		t.Fatal("active tenant was evicted from reader cache")
 	}
-	if !entry.expiresAt.After(time.Now()) {
+	if !cacheEntryFresh(entry, time.Now(), entry.manifest.Version) {
 		t.Fatalf("active stale tenant was not refreshed: expires_at=%s", entry.expiresAt.Format(time.RFC3339Nano))
 	}
 }
@@ -1163,7 +1163,7 @@ func TestReaderCacheExpirationStartsAfterSlowLoad(t *testing.T) {
 	cache.mu.RLock()
 	entry := cache.entries["tenant-a"]
 	cache.mu.RUnlock()
-	if !entry.expiresAt.After(time.Now()) {
+	if !cacheEntryFresh(entry, time.Now(), entry.manifest.Version) {
 		t.Fatalf("cache entry expired during load: expires_at=%s now=%s", entry.expiresAt.Format(time.RFC3339Nano), time.Now().Format(time.RFC3339Nano))
 	}
 }
@@ -1274,6 +1274,7 @@ func TestReaderCacheRefreshAndLoadShareTenantLoad(t *testing.T) {
 	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
 		t.Fatalf("warm cache: %v", err)
 	}
+	store.readViews = nil // Leave a stale base for the shared catch-up load.
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "person:bob", Kind: "person"}},
 	}, CommitOptions{}); err != nil {

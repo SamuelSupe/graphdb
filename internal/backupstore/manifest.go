@@ -24,6 +24,7 @@ const Format = "graphdb-object-snapshot-v1"
 const maxManifestBytes = 64 << 10
 
 type Manifest struct {
+	Automatic   bool      `json:"automatic,omitempty"`
 	Format      string    `json:"format"`
 	TenantID    string    `json:"tenant_id"`
 	BackupID    string    `json:"backup_id"`
@@ -126,6 +127,11 @@ func (r *Repository) Publish(ctx context.Context, m Manifest, source *io.Section
 	if err != nil {
 		return Entry{}, err
 	}
+	release, err := r.Pin(uri)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer release()
 	hash := sha256.New()
 	n, err := io.Copy(hash, source)
 	if err != nil {

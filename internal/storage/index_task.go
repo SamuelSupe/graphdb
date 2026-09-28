@@ -2,17 +2,8 @@ package storage
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"net/url"
-	"path"
-	"strings"
 	"time"
-
-	"go.opentelemetry.io/otel/attribute"
 )
-
-var errInvalidIndexTask = errors.New("invalid index task")
 
 type IndexTask struct {
 	ID                string    `json:"id"`
@@ -34,13 +25,11 @@ func (s *TenantStore) StartIndexRebuild(ctx context.Context, tenantID string) (I
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexTask{}, err
 	}
-	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
 		return IndexTask{}, err
 	}
-	return s.startIndexRebuildLocked(ctx, tenantID)
-}
-
-func (s *TenantStore) startIndexRebuildLocked(ctx context.Context, tenantID string) (IndexTask, error) {
+	defer unlock()
 	return s.startIndexRebuild(ctx, tenantID, true)
 }
 
@@ -48,529 +37,57 @@ func (s *TenantStore) startIndexRebuildAfterDefinitionChangeLocked(ctx context.C
 	return s.startIndexRebuild(ctx, tenantID, false)
 }
 
-func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, reuseRunning bool) (IndexTask, error) {
-	startSlot := s.indexTaskStartSlot(tenantID)
-	if !acquireTaskSlot(ctx, startSlot) {
-		return IndexTask{}, ctx.Err()
-	}
-	defer releaseTaskSlot(startSlot)
-
-	s.taskMu.Lock()
-	if s.indexTasks == nil {
-		s.indexTasks = map[string]IndexTask{}
-	}
-	s.taskMu.Unlock()
-	if reuseRunning {
-		if task, ok, err := s.findRunningIndexRebuildTaskIncludingLegacy(ctx, tenantID); err != nil {
+func (s *TenantStore) startIndexRebuild(ctx context.Context, tenantID string, reuse bool) (IndexTask, error) {
+	if reuse {
+		if task, ok, err := s.findRunningTask(ctx, tenantID, TaskTypeIndexRebuild); err != nil {
 			return IndexTask{}, err
 		} else if ok {
-			s.taskMu.Lock()
-			s.indexTasks[tenantID] = task
-			s.taskMu.Unlock()
-			return task, nil
+			return indexTaskFromTask(task), nil
 		}
+
 	}
-	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
-	if err != nil {
-		return IndexTask{}, err
-	}
-	ctx = boundCtx
-	id, err := newCommitID()
-	if err != nil {
-		return IndexTask{}, err
-	}
-	now := time.Now().UTC()
-	task := IndexTask{ID: id, TenantID: tenantID, Type: "rebuild", Status: "running", Phase: "queued", ProgressTotal: 1, OwnerID: s.InstanceID, StartedAt: now, UpdatedAt: now}
-	if err := s.admitIndexTaskWorker(); err != nil {
-		return IndexTask{}, err
-	}
-	launchPending := true
-	defer func() {
-		if launchPending {
-			s.taskWorkers.Done()
-		}
-	}()
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	if err := s.publishQueuedIndexTask(ctx, task); err != nil {
-		cancel()
-		s.releaseQueuedTask()
-		return IndexTask{}, err
-	}
-	s.taskMu.Lock()
-	s.indexTasks[tenantID] = task
-	s.taskMu.Unlock()
-	s.registerTaskCancel(tenantID, task.ID, cancel)
-	launchPending = false
-	go func() {
-		defer s.taskWorkers.Done()
-		defer s.unregisterTaskCancel(tenantID, task.ID)
-		defer cancel()
-		s.runIndexTaskAdmitted(runCtx, tenantID, task)
-	}()
-	return task, nil
+	task, err := s.startTaskLocked(ctx, tenantID, TaskTypeIndexRebuild, nil, !reuse)
+	return indexTaskFromTask(task), err
 }
 
-func (s *TenantStore) findRunningIndexRebuildTask(ctx context.Context, tenantID string) (running IndexTask, found bool, authoritative bool, err error) {
-	ctx, span := startStorageSpan(ctx, "graphdb.storage.write_backpressure.find_running_index_rebuild_task",
-		tenantTraceAttr(tenantID),
-		attribute.String("graphdb.index_task.type", "rebuild"),
-		attribute.String("graphdb.index_task.status", "running"),
-		attribute.String("graphdb.index_task.lookup", "running_marker"),
-	)
-	var markerFound, markerInvalid, stale bool
-	var loaded, activeChecks, inactive int
-	defer func() {
-		span.SetAttributes(
-			attribute.Int("graphdb.index_task.objects_listed", 0),
-			attribute.Int("graphdb.index_task.candidates", 0),
-			attribute.Int("graphdb.index_task.loaded", loaded),
-			attribute.Int("graphdb.index_task.ignored", 0),
-			attribute.Int("graphdb.index_task.active_checks", activeChecks),
-			attribute.Int("graphdb.index_task.inactive", inactive),
-			attribute.Bool("graphdb.index_task.marker_found", markerFound),
-			attribute.Bool("graphdb.index_task.marker_invalid", markerInvalid),
-			attribute.Bool("graphdb.index_task.marker_stale", stale),
-			attribute.Bool("graphdb.index_task.running_found", found),
-		)
-		if found {
-			span.SetAttributes(attribute.String("graphdb.index_task.id", running.ID))
-		}
-		endStorageSpan(span, err)
-	}()
-	task, err := s.getIndexRebuildRunningMarker(ctx, tenantID)
-	if errors.Is(err, ErrNotFound) {
-		return IndexTask{}, false, false, nil
+func indexTaskFromTask(task Task) IndexTask {
+	status := task.Status
+	if status == TaskStatusQueued {
+		status = TaskStatusRunning
 	}
-	if errors.Is(err, errInvalidIndexTask) {
-		markerInvalid = true
-		_ = s.deleteTenantGenerationObject(ctx, tenantID, s.indexRebuildRunningTaskKey(tenantID))
-		return IndexTask{}, false, false, nil
+	version := taskCheckpointNumber(task.Result["version"])
+	if version == 0 {
+		version = taskCheckpointNumber(task.Checkpoint["version"])
 	}
-	if err != nil {
-		return IndexTask{}, false, false, err
+	errorText := task.Error
+	if errorText == "" {
+		errorText, _ = task.Result["cleanup_warning"].(string)
 	}
-	markerFound = true
-	loaded = 1
-	if !indexTaskStillActive(task) {
-		stale = true
-		persisted, loadErr := s.GetIndexTask(ctx, tenantID, task.ID)
-		if loadErr == nil && !indexTaskStillActive(persisted) {
-			_ = s.clearIndexRebuildRunningMarker(ctx, tenantID, task.ID)
-		} else if loadErr != nil && !errors.Is(loadErr, ErrNotFound) {
-			return IndexTask{}, false, true, loadErr
-		}
-		return IndexTask{}, false, true, nil
-	}
-	persisted, loadErr := s.GetIndexTask(ctx, tenantID, task.ID)
-	if errors.Is(loadErr, ErrNotFound) {
-		return IndexTask{}, false, true, nil
-	}
-	if loadErr != nil {
-		return IndexTask{}, false, true, loadErr
-	}
-	if persisted.Type != "rebuild" ||
-		persisted.OwnerID != task.OwnerID ||
-		!indexTaskStillActive(persisted) {
-		stale = true
-		_ = s.clearIndexRebuildRunningMarker(ctx, tenantID, task.ID)
-		return IndexTask{}, false, true, nil
-	}
-	activeChecks = 1
-	active, err := s.indexTaskActive(
-		ctx,
-		tenantID,
-		persisted,
-		time.Now().UTC(),
-	)
-	if err != nil {
-		return IndexTask{}, false, true, err
-	}
-	if !active {
-		stale = true
-		inactive = 1
-		_ = s.clearIndexRebuildRunningMarker(ctx, tenantID, task.ID)
-		return IndexTask{}, false, false, nil
-	}
-	return persisted, true, true, nil
+	return IndexTask{ID: task.ID, TenantID: task.TenantID, Type: "rebuild", Status: status,
+		Phase: task.Phase, ProgressCompleted: task.ProgressCompleted, ProgressTotal: task.ProgressTotal,
+		OwnerID: task.OwnerID, CatalogVersion: version,
+		Error: errorText, StartedAt: task.StartedAt, UpdatedAt: task.UpdatedAt, FinishedAt: task.FinishedAt}
 }
 
-func (s *TenantStore) findRunningIndexRebuildTaskIncludingLegacy(ctx context.Context, tenantID string) (IndexTask, bool, error) {
-	task, ok, authoritative, err := s.findRunningIndexRebuildTask(ctx, tenantID)
-	if err != nil || ok || authoritative {
-		return task, ok, err
+func (s *TenantStore) finishIndexTaskCleanup(ctx context.Context, task Task, catalog IndexCatalog) (map[string]any, string, error) {
+	if err := s.updateTaskProgress(ctx, task, "cleanup", 1, 2, map[string]any{"version": catalog.Version}); err != nil {
+		return nil, "", err
 	}
-	task, ok, err = s.scanRunningIndexRebuildTasks(ctx, tenantID)
-	if err != nil || !ok {
-		return task, ok, err
-	}
-	if markerErr := s.saveIndexRebuildRunningMarker(ctx, task); markerErr != nil {
-		return IndexTask{}, false, markerErr
-	}
-	return task, true, nil
-}
-
-func (s *TenantStore) scanRunningIndexRebuildTasks(ctx context.Context, tenantID string) (running IndexTask, found bool, err error) {
-	ctx, span := startStorageSpan(ctx, "graphdb.storage.write_backpressure.find_running_index_rebuild_task.legacy_scan",
-		tenantTraceAttr(tenantID),
-		attribute.String("graphdb.index_task.type", "rebuild"),
-		attribute.String("graphdb.index_task.status", "running"),
-		attribute.String("graphdb.index_task.lookup", "legacy_scan"),
-	)
-	var listed, candidates, loaded, ignored, activeChecks, inactive int
-	defer func() {
-		span.SetAttributes(
-			attribute.Int("graphdb.index_task.objects_listed", listed),
-			attribute.Int("graphdb.index_task.candidates", candidates),
-			attribute.Int("graphdb.index_task.loaded", loaded),
-			attribute.Int("graphdb.index_task.ignored", ignored),
-			attribute.Int("graphdb.index_task.active_checks", activeChecks),
-			attribute.Int("graphdb.index_task.inactive", inactive),
-			attribute.Bool("graphdb.index_task.running_found", found),
-		)
-		if found {
-			span.SetAttributes(attribute.String("graphdb.index_task.id", running.ID))
-		}
-		endStorageSpan(span, err)
-	}()
-	err = scanObjectPrefix(
-		ctx,
-		s.Objects,
-		s.indexTaskPrefix(tenantID),
-		func(objects []ObjectInfo) error {
-			listed += len(objects)
-			for _, object := range objects {
-				taskID, ok := indexTaskIDFromKey(object.Key)
-				if !ok {
-					ignored++
-					continue
-				}
-				candidates++
-				task, err := s.GetIndexTask(ctx, tenantID, taskID)
-				if errors.Is(err, ErrNotFound) ||
-					errors.Is(err, errInvalidIndexTask) {
-					ignored++
-					continue
-				}
-				if err != nil {
-					return err
-				}
-				loaded++
-				if task.TenantID != tenantID ||
-					task.Type != "rebuild" ||
-					task.Status != "running" {
-					ignored++
-					continue
-				}
-				activeChecks++
-				active, err := s.indexTaskActive(
-					ctx, tenantID, task, time.Now().UTC(),
-				)
-				if err != nil {
-					return err
-				}
-				if !active {
-					inactive++
-					continue
-				}
-				if running.ID == "" ||
-					task.StartedAt.Before(running.StartedAt) {
-					running = task
-				}
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		return IndexTask{}, false, err
-	}
-	return running, running.ID != "", nil
-}
-
-func (s *TenantStore) indexTaskActive(ctx context.Context, tenantID string, task IndexTask, now time.Time) (bool, error) {
-	if exclusiveFileStore(s.Objects) != nil {
-		return s.taskRuntimeActive(tenantID, task.ID) ||
-			indexTaskWithinLeaseGrace(task, now, s.leaseTTL()), nil
-	}
-	// A local worker can outlive the writer lease while queued or cleaning up.
-	// Its registered runtime remains authoritative until finalization completes.
-	if task.OwnerID == s.InstanceID && s.taskRuntimeActive(tenantID, task.ID) {
-		return true, nil
-	}
-
-	lease, err := s.GetWriterLease(ctx, tenantID)
-	if errors.Is(err, ErrNotFound) {
-		return now.Before(task.StartedAt.Add(s.leaseTTL())), nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if task.OwnerID == "" {
-		return now.Before(task.StartedAt.Add(s.leaseTTL())), nil
-	}
-	return lease.OwnerID == task.OwnerID && lease.ExpiresAt.After(now), nil
-}
-
-func indexTaskWithinLeaseGrace(
-	task IndexTask,
-	now time.Time,
-	ttl time.Duration,
-) bool {
-	updatedAt := task.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = task.StartedAt
-	}
-	return now.Before(updatedAt.Add(ttl))
-}
-
-func indexTaskIDFromKey(key string) (string, bool) {
-	name := path.Base(key)
-	if !strings.HasSuffix(name, ".parquet") {
-		return "", false
-	}
-	id, err := url.PathUnescape(strings.TrimSuffix(name, ".parquet"))
-	if err != nil || id == "" {
-		return "", false
-	}
-	return id, true
-}
-
-func (s *TenantStore) GetIndexTask(ctx context.Context, tenantID string, taskID string) (IndexTask, error) {
-	if err := ValidateTenantID(tenantID); err != nil {
-		return IndexTask{}, err
-	}
-	taskID = strings.TrimSpace(taskID)
-	if taskID == "" {
-		return IndexTask{}, fmt.Errorf("index task id is required")
-	}
-	task, _, err := s.getIndexTaskObjectWithMeta(ctx, tenantID, taskID)
-	if err != nil {
-		return IndexTask{}, err
-	}
-	return s.reconcileInactiveIndexTask(ctx, task), nil
-}
-
-func (s *TenantStore) getIndexTaskObjectWithMeta(
-	ctx context.Context,
-	tenantID string,
-	taskID string,
-) (IndexTask, ObjectMeta, error) {
-	key := s.indexTaskKey(tenantID, taskID)
-	s.clearWriterObjectKey(key)
-	data, meta, err := s.Objects.GetWithMeta(ctx, key)
-	if err != nil {
-		return IndexTask{}, meta, err
-	}
-	if !isParquetBytes(data) {
-		return IndexTask{}, meta, fmt.Errorf("%w: only parquet index tasks are readable", errInvalidIndexTask)
-	}
-	task, err := decodeParquetIndexTask(ctx, data)
-	if err != nil {
-		return IndexTask{}, meta, fmt.Errorf("%w: %v", errInvalidIndexTask, err)
-	}
-	if task.TenantID == "" || task.ID == "" {
-		return IndexTask{}, meta, fmt.Errorf("%w: task metadata is required", errInvalidIndexTask)
-	}
-	if task.TenantID != tenantID {
-		return IndexTask{}, meta, fmt.Errorf("%w: index task tenant mismatch: path tenant %q contains tenant %q", errInvalidIndexTask, tenantID, task.TenantID)
-	}
-	if task.ID != taskID {
-		return IndexTask{}, meta, fmt.Errorf("%w: index task id mismatch: path task %q contains task %q", errInvalidIndexTask, taskID, task.ID)
-	}
-	return task, meta, nil
-}
-
-func (s *TenantStore) getIndexRebuildRunningMarker(ctx context.Context, tenantID string) (IndexTask, error) {
-	if err := ValidateTenantID(tenantID); err != nil {
-		return IndexTask{}, err
-	}
-	key := s.indexRebuildRunningTaskKey(tenantID)
-	s.clearWriterObjectKey(key)
-	data, err := s.Objects.Get(ctx, key)
-	if err != nil {
-		return IndexTask{}, err
-	}
-	if !isParquetBytes(data) {
-		return IndexTask{}, fmt.Errorf("%w: only parquet index rebuild running markers are readable", errInvalidIndexTask)
-	}
-	task, err := decodeParquetIndexTask(ctx, data)
-	if err != nil {
-		return IndexTask{}, fmt.Errorf("%w: %v", errInvalidIndexTask, err)
-	}
-	if task.TenantID == "" || task.ID == "" {
-		return IndexTask{}, fmt.Errorf("%w: running marker task metadata is required", errInvalidIndexTask)
-	}
-	if task.TenantID != tenantID {
-		return IndexTask{}, fmt.Errorf("%w: running marker tenant mismatch: path tenant %q contains tenant %q", errInvalidIndexTask, tenantID, task.TenantID)
-	}
-	if task.Type != "rebuild" {
-		return IndexTask{}, fmt.Errorf("%w: running marker type %q is not rebuild", errInvalidIndexTask, task.Type)
-	}
-	return task, nil
-}
-
-func (s *TenantStore) saveIndexRebuildRunningMarker(ctx context.Context, task IndexTask) error {
-	data, err := marshalParquetIndexTask(ctx, task)
-	if err != nil {
-		return err
-	}
-	return s.putTenantGenerationObject(ctx, task.TenantID, s.indexRebuildRunningTaskKey(task.TenantID), data)
-}
-
-func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenantID string, taskID string) error {
-	task, err := s.getIndexRebuildRunningMarker(ctx, tenantID)
-	if errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	if errors.Is(err, errInvalidIndexTask) {
-		return s.deleteTenantGenerationObject(ctx, tenantID, s.indexRebuildRunningTaskKey(tenantID))
-	}
-	if err != nil {
-		return err
-	}
-	if task.ID != taskID {
-		return nil
-	}
-	return s.deleteTenantGenerationObject(ctx, tenantID, s.indexRebuildRunningTaskKey(tenantID))
-}
-
-func (s *TenantStore) runIndexRebuildTask(ctx context.Context, tenantID string, task IndexTask) {
-	s.runIndexRebuildTaskWithRelease(ctx, tenantID, task, func() {})
-}
-
-func (s *TenantStore) runIndexRebuildTaskWithRelease(
-	ctx context.Context,
-	tenantID string,
-	task IndexTask,
-	releaseExecution func(),
-) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			releaseExecution()
-			task.FinishedAt = time.Now().UTC()
-			task.UpdatedAt = task.FinishedAt
-			task.Status = "failed"
-			task.Phase = "failed"
-			task.Error = fmt.Sprintf("panic: %v", recovered)
-			s.finishIndexRebuildTask(ctx, task)
-		}
-	}()
-	task.Phase = "backfill"
-	task.ProgressCompleted = 0
-	task.ProgressTotal = 1
-	task.UpdatedAt = time.Now().UTC()
-	s.trySaveIndexTask(ctx, task)
-	catalog, err := s.RebuildIndexes(ctx, tenantID)
-	task.FinishedAt = time.Now().UTC()
-	task.UpdatedAt = task.FinishedAt
-	if err != nil {
-		releaseExecution()
-		task.Status = "failed"
-		task.Phase = "failed"
-		task.Error = err.Error()
-		s.finishIndexRebuildTask(ctx, task)
-		return
-	}
-	task.Phase = "cleanup"
-	task.CatalogVersion = catalog.Version
-	task.UpdatedAt = time.Now().UTC()
-	s.trySaveIndexTask(ctx, task)
 	// GC reacquires execution capacity per batch so compact can run between them.
-	releaseExecution()
-	gcReport, cleanupErr := s.RunGC(ctx, tenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
-	task.Status = "succeeded"
-	task.Phase = "done"
-	task.ProgressCompleted = 1
-	task.ProgressTotal = 1
-	task.CatalogVersion = catalog.Version
-	if cleanupErr != nil {
-		task.Error = "index cleanup failed: " + cleanupErr.Error()
-	} else if gcReport.IndexCleanupError != "" {
-		task.Error = "index cleanup failed: " + gcReport.IndexCleanupError
-	} else if gcReport.IndexCleanupSkippedReason != "" {
-		task.Error = "index cleanup skipped: " + gcReport.IndexCleanupSkippedReason
+	if admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
+		admission.release()
 	}
-	releaseExecution()
-	s.finishIndexRebuildTask(ctx, task)
-}
-
-func (s *TenantStore) saveIndexTask(ctx context.Context, task IndexTask) error {
-	data, err := marshalParquetIndexTask(ctx, task)
+	report, err := s.RunGC(ctx, task.TenantID, GCOptions{KeepSnapshots: 2, CleanupIndexOrphans: true, SkipEntityRecordCleanup: true})
+	result := taskResult(catalog)
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
 	if err != nil {
-		return err
+		result["cleanup_warning"] = err.Error()
+	} else if report.IndexCleanupError != "" {
+		result["cleanup_warning"] = report.IndexCleanupError
+	} else if report.IndexCleanupSkippedReason != "" {
+		result["cleanup_warning"] = report.IndexCleanupSkippedReason
 	}
-	startSlot := s.indexTaskStartSlot(task.TenantID)
-	if !acquireTaskSlot(ctx, startSlot) {
-		return ctx.Err()
-	}
-	defer releaseTaskSlot(startSlot)
-
-	if err := s.putTenantGenerationObject(ctx, task.TenantID, s.indexTaskKey(task.TenantID, task.ID), data); err != nil {
-		return err
-	}
-	if task.Type != "rebuild" {
-		return nil
-	}
-	// An older rebuild may still be cleaning up after a definition change has
-	// queued its replacement. Only the current task may update the shared marker.
-	s.taskMu.Lock()
-	current, exists := s.indexTasks[task.TenantID]
-	s.taskMu.Unlock()
-	if exists && current.ID != task.ID {
-		return nil
-	}
-	if indexTaskStillActive(task) {
-		return s.putTenantGenerationObject(ctx, task.TenantID, s.indexRebuildRunningTaskKey(task.TenantID), data)
-	}
-	return s.clearIndexRebuildRunningMarker(ctx, task.TenantID, task.ID)
-}
-
-func (s *TenantStore) trySaveIndexTask(ctx context.Context, task IndexTask) {
-	defer func() {
-		_ = recover()
-	}()
-	for attempt := 0; attempt < s.retryCount(); attempt++ {
-		if err := s.saveIndexTask(ctx, task); err == nil {
-			return
-		}
-		if attempt+1 < s.retryCount() {
-			_ = retryDelay(ctx, attempt)
-		}
-	}
-}
-
-func (s *TenantStore) publishQueuedIndexTask(
-	ctx context.Context,
-	task IndexTask,
-) error {
-	data, err := marshalParquetIndexTask(ctx, task)
-	if err != nil {
-		return err
-	}
-	if err := s.putTenantGenerationObject(
-		ctx,
-		task.TenantID,
-		s.indexRebuildRunningTaskKey(task.TenantID),
-		data,
-	); err != nil {
-		return err
-	}
-	if err := s.putTenantGenerationObject(
-		ctx,
-		task.TenantID,
-		s.indexTaskKey(task.TenantID, task.ID),
-		data,
-	); err != nil {
-		cleanupCtx, cancel := context.WithTimeout(
-			context.WithoutCancel(ctx),
-			5*time.Second,
-		)
-		defer cancel()
-		_ = s.clearIndexRebuildRunningMarker(
-			cleanupCtx,
-			task.TenantID,
-			task.ID,
-		)
-		return err
-	}
-	return nil
+	return result, "", nil
 }

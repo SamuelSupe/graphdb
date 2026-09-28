@@ -114,6 +114,7 @@ func (c *Client) BackupTenantToObjectStorage(ctx context.Context, tenantID strin
 }
 
 type ObjectBackup struct {
+	Automatic   bool   `json:"automatic,omitempty"`
 	Format      string `json:"format"`
 	TenantID    string `json:"tenant_id"`
 	BackupID    string `json:"backup_id"`
@@ -155,5 +156,29 @@ func (c *Client) RestoreDrillTenant(ctx context.Context, tenantID string, reques
 
 func (c *Client) tenantAction(ctx context.Context, tenantID string, action string) (out TenantInfo, err error) {
 	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/"+action, "", nil, nil, &out)
+	return out, err
+}
+
+// BackupAutomationStatus reports the last observed scheduled cycle. Task progress
+// remains available through GetTask; success includes verification and retention.
+type BackupAutomationStatus struct {
+	TaskID              string `json:"task_id,omitempty"`
+	NextRun             string `json:"next_run,omitempty"`
+	LastSuccess         string `json:"last_success,omitempty"`
+	LastBackupKey       string `json:"last_backup_key,omitempty"`
+	LastDrill           string `json:"last_drill,omitempty"`
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	LastError           string `json:"last_error,omitempty"`
+}
+
+func (c *Client) GetBackupAutomation(ctx context.Context) (out BackupAutomationStatus, err error) {
+	err = c.doJSON(ctx, "GET", "/v1/backup-automation", "", nil, nil, &out)
+	return out, err
+}
+
+// ResetBackupAutomation abandons the current retry; an enabled policy starts a
+// fresh capture on its next tick. Returns a conflict while a backup is active.
+func (c *Client) ResetBackupAutomation(ctx context.Context) (out BackupAutomationStatus, err error) {
+	err = c.doJSON(ctx, "POST", "/v1/backup-automation/reset", "", nil, nil, &out)
 	return out, err
 }

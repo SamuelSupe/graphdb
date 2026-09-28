@@ -18,5 +18,7 @@ HTTP 路径继续为 `/v1/...`，这是路由命名空间，不是产品版本�
 `POST /v1/query/graphql`；旧文本 DSL 别名仍然是文本 DSL。`extensions/v1.1/` 等目录名
 是布局标识，不代表跨版本兼容承诺。
 
-Go/Python SDK 均为 2.0.0。Go 模块为 `github.com/SamuelSupe/graphdb/v2`，SDK 导入路径为
+Go/Python SDK 均为 2.1.0。Go 模块为 `github.com/SamuelSupe/graphdb/v2`，SDK 导入路径为
 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`。
+
+2.1 沿用 2.0 本地数据格式，新增可选 S3 自动化；见[升级步骤](user/release-deployment.zh-CN.md#从-20-升级)。

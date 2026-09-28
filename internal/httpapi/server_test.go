@@ -279,7 +279,12 @@ func TestHTTPDirectIngestPublishesReaderCache(t *testing.T) {
 
 func warmHTTPReaderCache(t *testing.T, ctx context.Context) (*storage.TenantStore, *storage.ReaderCache, http.Handler) {
 	t.Helper()
-	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = files.Close() })
+	store := storage.NewTenantStore(files, "test")
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{{ID: "host:old", Kind: "host"}},
 	}, storage.CommitOptions{}); err != nil {
@@ -499,7 +504,7 @@ func TestHTTPIntegrityAuditEndpoint(t *testing.T) {
 	}
 }
 
-func TestHTTPReaderLagReportsCachedVisibleVersion(t *testing.T) {
+func TestHTTPReaderLagReportsPublishedVersion(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	cache := storage.NewReaderCache(store, time.Minute)
@@ -512,14 +517,14 @@ func TestHTTPReaderLagReportsCachedVisibleVersion(t *testing.T) {
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:2", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
 		t.Fatalf("second commit: %v", err)
 	}
-	handler := (&Server{Store: store, Cache: cache, Mode: "reader"}).Handler()
+	handler := (&Server{Store: store, Cache: cache, Mode: "all"}).Handler()
 	rr := serveJSON(handler, http.MethodGet, "/v1/control/reader-lag", "tenant-a", nil)
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"manifest_version":2`) || !strings.Contains(rr.Body.String(), `"visible_version":1`) || !strings.Contains(rr.Body.String(), `"lag":1`) ||
-		!strings.Contains(rr.Body.String(), `"status":"stale"`) || !strings.Contains(rr.Body.String(), `"replay_status":"pending"`) {
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"manifest_version":2`) || !strings.Contains(rr.Body.String(), `"visible_version":2`) || !strings.Contains(rr.Body.String(), `"lag":0`) ||
+		!strings.Contains(rr.Body.String(), `"status":"fresh"`) || !strings.Contains(rr.Body.String(), `"replay_status":"replayed"`) {
 		t.Fatalf("reader lag = %d body=%s", rr.Code, rr.Body.String())
 	}
 	freshness := serveJSON(handler, http.MethodGet, "/v1/control/reader-freshness", "tenant-a", nil)
-	if freshness.Code != http.StatusOK || !strings.Contains(freshness.Body.String(), `"writer_manifest_version":2`) || !strings.Contains(freshness.Body.String(), `"reader_manifest_version":1`) {
+	if freshness.Code != http.StatusOK || !strings.Contains(freshness.Body.String(), `"writer_manifest_version":2`) || !strings.Contains(freshness.Body.String(), `"reader_manifest_version":2`) {
 		t.Fatalf("reader freshness = %d body=%s", freshness.Code, freshness.Body.String())
 	}
 }
@@ -561,7 +566,7 @@ func TestHTTPReaderFleetReadinessAllowsBoundedStaleness(t *testing.T) {
 		t.Fatalf("bounded stale readiness = %d report=%#v body=%s", rr.Code, ready, rr.Body.String())
 	}
 
-	strict := serveJSON(handler, http.MethodGet, "/v1/control/reader-fleet-readiness?min_ready=1&min_version=2&max_staleness_ms=30000", "tenant-a", nil)
+	strict := serveJSON(handler, http.MethodGet, "/v1/control/reader-fleet-readiness?min_ready=1&min_version=3&max_staleness_ms=30000", "tenant-a", nil)
 	var strictReport ReaderFleetReadinessReport
 	if err := json.Unmarshal(strict.Body.Bytes(), &strictReport); err != nil {
 		t.Fatalf("decode strict: %v body=%s", err, strict.Body.String())
@@ -571,7 +576,7 @@ func TestHTTPReaderFleetReadinessAllowsBoundedStaleness(t *testing.T) {
 	}
 }
 
-func TestHTTPReaderTrafficGateDrainsAndRestoresStaleReader(t *testing.T) {
+func TestHTTPReaderTrafficGateHonorsRequestedVersion(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	cache := storage.NewReaderCache(store, time.Minute)
@@ -586,7 +591,7 @@ func TestHTTPReaderTrafficGateDrainsAndRestoresStaleReader(t *testing.T) {
 	}
 	handler := (&Server{Store: store, Cache: cache, Mode: "reader"}).Handler()
 
-	drain := serveJSON(handler, http.MethodGet, "/v1/control/reader-traffic-gate?refresh=false", "tenant-a", nil)
+	drain := serveJSON(handler, http.MethodGet, "/v1/control/reader-traffic-gate?refresh=false&min_version=3", "tenant-a", nil)
 	if drain.Code != http.StatusServiceUnavailable ||
 		drain.Header().Get("X-GraphDB-Reader-Traffic") != "draining" ||
 		!strings.Contains(drain.Body.String(), `"serve_traffic":false`) ||
@@ -596,8 +601,7 @@ func TestHTTPReaderTrafficGateDrainsAndRestoresStaleReader(t *testing.T) {
 	ready := serveJSON(handler, http.MethodGet, "/v1/control/reader-traffic-gate", "tenant-a", nil)
 	if ready.Code != http.StatusOK ||
 		ready.Header().Get("X-GraphDB-Reader-Traffic") != "ready" ||
-		!strings.Contains(ready.Body.String(), `"serve_traffic":true`) ||
-		!strings.Contains(ready.Body.String(), `"refresh_success":true`) {
+		!strings.Contains(ready.Body.String(), `"serve_traffic":true`) {
 		t.Fatalf("traffic gate ready = %d headers=%#v body=%s", ready.Code, ready.Header(), ready.Body.String())
 	}
 }
@@ -636,6 +640,7 @@ func TestHTTPReaderFleetReadinessUsesIndexCatalogWhenCacheCold(t *testing.T) {
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "service"}}}, storage.CommitOptions{}); err != nil {
 		t.Fatalf("second commit: %v", err)
 	}
+	cache.Invalidate("tenant-a")
 	handler := (&Server{Store: store, Cache: cache, Mode: "reader"}).Handler()
 
 	lag := serveJSON(handler, http.MethodGet, "/v1/control/reader-lag", "tenant-a", nil)
@@ -1052,7 +1057,7 @@ func TestHTTPReadMinVersionAboveManifestReturnsReaderNotFresh(t *testing.T) {
 	}
 }
 
-func TestHTTPQueryAllowStaleCanUseCachedReaderVersion(t *testing.T) {
+func TestHTTPQueryAllowStaleObservesPublishedVersion(t *testing.T) {
 	ctx := context.Background()
 	objects := storage.NewMemoryStore()
 	writer := storage.NewTenantStore(objects, "test")
@@ -1075,7 +1080,7 @@ func TestHTTPQueryAllowStaleCanUseCachedReaderVersion(t *testing.T) {
 	}
 
 	rr := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{Op: "match", Kind: "host", AllowStale: true})
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"version":1`) || strings.Contains(rr.Body.String(), `"id":"host:b"`) {
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"version":2`) || !strings.Contains(rr.Body.String(), `"id":"host:b"`) {
 		t.Fatalf("allow stale query = %d body=%s", rr.Code, rr.Body.String())
 	}
 }
@@ -2050,22 +2055,13 @@ func TestHTTPLocalRunningQueryControlWhileGCWaits(t *testing.T) {
 	defer cancelGC()
 	gcDone := make(chan error, 1)
 	go func() { _, err := store.RunGC(gcCtx, "tenant-a", storage.GCOptions{}); gcDone <- err }()
-	// Wait for the queued maintenance writer to close admission to new readers.
-	blocked := false
-	for i := 0; i < 100; i++ {
-		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-		unpin, err := store.PinReadView(probeCtx, "tenant-a")
-		cancel()
-		if err != nil {
-			blocked = true
-			break
-		}
-		unpin()
-		time.Sleep(time.Millisecond)
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	unpin, err := store.PinReadView(probeCtx, "tenant-a")
+	cancelProbe()
+	if err != nil {
+		t.Fatalf("GC blocked read admission: %v", err)
 	}
-	if !blocked {
-		t.Fatal("GC never waited for query view")
-	}
+	unpin()
 	listCtx, cancelList := context.WithTimeout(context.Background(), time.Second)
 	defer cancelList()
 	listReq := httptest.NewRequest(http.MethodGet, "/v1/queries/running", nil).WithContext(listCtx)

@@ -68,7 +68,8 @@ type fileRuntime struct {
 	lock               *os.File
 	mu                 sync.Mutex
 	etags              map[string]string
-	listeners          []func(string)
+	listeners          map[uint64]func(string)
+	listenerID         uint64
 	closeOnce          sync.Once
 	closeErr           error
 }
@@ -89,13 +90,20 @@ func (s *FileStore) Close() error {
 
 func (s *FileStore) Exclusive() bool { return s.runtime != nil }
 
-func (s *FileStore) OnChange(listener func(string)) {
+func (s *FileStore) OnChange(listener func(string)) func() {
 	if s.runtime == nil {
-		return
+		return func() {}
 	}
-	s.runtime.mu.Lock()
-	s.runtime.listeners = append(s.runtime.listeners, listener)
-	s.runtime.mu.Unlock()
+	r := s.runtime
+	r.mu.Lock()
+	r.listenerID++
+	id := r.listenerID
+	if r.listeners == nil {
+		r.listeners = make(map[uint64]func(string))
+	}
+	r.listeners[id] = listener
+	r.mu.Unlock()
+	return sync.OnceFunc(func() { r.mu.Lock(); delete(r.listeners, id); r.mu.Unlock() })
 }
 
 func (s *FileStore) changed(key, etag string) {
@@ -104,6 +112,7 @@ func (s *FileStore) changed(key, etag string) {
 	}
 	s.runtime.mu.Lock()
 	s.runtime.generation++
+	s.runtime.invalidateViewFile(key)
 	delete(s.runtime.walGenerations, key)
 	delete(s.runtime.etags, key)
 	if entry, ok := s.runtime.manifests[key]; ok {
@@ -116,7 +125,10 @@ func (s *FileStore) changed(key, etag string) {
 		}
 		s.runtime.etags[key] = etag
 	}
-	listeners := append([]func(string){}, s.runtime.listeners...)
+	listeners := make([]func(string), 0, len(s.runtime.listeners))
+	for _, listener := range s.runtime.listeners {
+		listeners = append(listeners, listener)
+	}
 	s.runtime.mu.Unlock()
 	for _, listener := range listeners {
 		listener(key)
@@ -218,6 +230,9 @@ func (s *FileStore) readMeta(ctx context.Context, key, path string) (ObjectMeta,
 func (s *TenantStore) localFileStore() *FileStore {
 	if s == nil {
 		return nil
+	}
+	if s.files != nil {
+		return s.files
 	}
 	return exclusiveFileStore(s.Objects)
 }

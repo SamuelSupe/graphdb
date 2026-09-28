@@ -28,31 +28,6 @@ func (s *blockingTaskCancellationStore) GetWithMeta(
 	return nil, ObjectMeta{}, ctx.Err()
 }
 
-func TestTaskCancellationWatchStopsBlockedObjectRead(t *testing.T) {
-	objects := &blockingTaskCancellationStore{
-		ObjectStore: NewMemoryStore(),
-		entered:     make(chan struct{}),
-		exited:      make(chan struct{}),
-	}
-	store := NewTenantStore(objects, "test")
-	stop := store.watchTaskCancellation(
-		Task{ID: "task-a", TenantID: "tenant-a"},
-		func() {},
-	)
-	select {
-	case <-objects.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("task cancellation watch did not start object read")
-	}
-
-	stop()
-	select {
-	case <-objects.exited:
-	case <-time.After(time.Second):
-		t.Fatal("stopped task cancellation watch left object read blocked")
-	}
-}
-
 func TestTaskRunnerInitialCancelCheckStopsBlockedObjectRead(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()

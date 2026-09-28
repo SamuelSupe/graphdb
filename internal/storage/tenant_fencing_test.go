@@ -16,7 +16,6 @@ func TestExpiredWriterCannotPublishAfterLifecycleTakeover(t *testing.T) {
 	base := NewMemoryStore()
 	objects := newBlockingManifestStore(base)
 	stale := NewTenantStore(objects, "test")
-	stale.LeaseTTL = 20 * time.Millisecond
 	if _, err := stale.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -35,7 +34,6 @@ func TestExpiredWriterCannotPublishAfterLifecycleTakeover(t *testing.T) {
 
 	time.Sleep(30 * time.Millisecond)
 	owner := NewTenantStore(base, "test")
-	owner.LeaseTTL = time.Hour
 	if _, err := owner.SetTenantStatus(ctx, "tenant-a", TenantStatusDeleted); err != nil {
 		t.Fatalf("soft delete after takeover: %v", err)
 	}
@@ -57,7 +55,6 @@ func TestDelayedLeaseAcquirerCannotOverwriteNewerFence(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	seed := NewTenantStore(base, "test")
-	seed.LeaseTTL = 20 * time.Millisecond
 	if _, err := seed.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
@@ -65,7 +62,6 @@ func TestDelayedLeaseAcquirerCannotOverwriteNewerFence(t *testing.T) {
 
 	objects := newBlockingManifestStore(base)
 	delayed := NewTenantStore(objects, "test")
-	delayed.LeaseTTL = 20 * time.Millisecond
 	entered, release := objects.blockNextManifest()
 	done := make(chan error, 1)
 	go func() {
@@ -80,7 +76,6 @@ func TestDelayedLeaseAcquirerCannotOverwriteNewerFence(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 
 	owner := NewTenantStore(base, "test")
-	owner.LeaseTTL = time.Hour
 	if _, err := owner.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled); err != nil {
 		t.Fatalf("new owner takeover: %v", err)
 	}
@@ -157,7 +152,6 @@ func TestRunningPurgeBlocksLeaseAcquisitionWithStaleLifecycleCache(t *testing.T)
 	base := NewMemoryStore()
 	objects := newBlockingTenantDeleteStore(base, "test/tenants/tenant-a/")
 	purger := NewTenantStore(objects, "test")
-	purger.LeaseTTL = 20 * time.Millisecond
 	if _, err := purger.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}

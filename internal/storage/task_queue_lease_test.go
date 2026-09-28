@@ -140,7 +140,7 @@ func TestShutdownTasksCancelsQueuedWorkAndRejectsNewTasks(t *testing.T) {
 	}
 }
 
-func TestShutdownTasksCancelsLegacyIndexRebuild(t *testing.T) {
+func TestShutdownTasksCancelsIndexRebuild(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
@@ -166,8 +166,8 @@ func TestShutdownTasksCancelsLegacyIndexRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get stopped index task: %v", err)
 	}
-	if loaded.Status != TaskStatusFailed || loaded.FinishedAt.IsZero() {
-		t.Fatalf("index task = %#v, want terminal failed state", loaded)
+	if loaded.Status != TaskStatusCanceled || loaded.FinishedAt.IsZero() {
+		t.Fatalf("index task = %#v, want terminal canceled state", loaded)
 	}
 	if _, err := store.StartIndexRebuild(ctx, "tenant-a"); !errors.Is(err, ErrTaskServiceClosed) {
 		t.Fatalf("start index rebuild after shutdown err = %v, want ErrTaskServiceClosed", err)
@@ -235,4 +235,43 @@ func waitForTaskStatus(
 	}
 	task, err := store.GetTask(context.Background(), tenantID, taskID)
 	t.Fatalf("task status = %q err=%v, want %q", task.Status, err, status)
+}
+
+func TestReadTerminalTaskAllowsNewAdmission(t *testing.T) {
+	for _, taskType := range []string{TaskTypeCompact, TaskTypeIndexRebuild} {
+		t.Run(taskType, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewTenantStore(NewMemoryStore(), "test")
+			defer store.ShutdownTasks(ctx)
+			if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			finished := Task{ID: "finished", TenantID: "tenant-a", Type: taskType, Status: TaskStatusSucceeded, OwnerID: store.InstanceID, StartedAt: now, UpdatedAt: now, FinishedAt: now}
+			if err := store.saveTask(ctx, finished); err != nil {
+				t.Fatal(err)
+			}
+			// Pause at the real publication boundary: durable terminal state is
+			// visible before the saving goroutine updates the admission registry.
+			stale := finished
+			stale.Status = TaskStatusRunning
+			stale.Params = map[string]any{"previous": true}
+			store.taskActive[taskActiveKey("tenant-a", taskType)] = stale
+			if taskType == TaskTypeIndexRebuild {
+				observed, err := store.GetIndexTask(ctx, "tenant-a", finished.ID)
+				if err != nil || observed.Status != TaskStatusSucceeded {
+					t.Fatalf("terminal index task: %+v %v", observed, err)
+				}
+			} else {
+				observed, err := store.GetTask(ctx, "tenant-a", finished.ID)
+				if err != nil || observed.Status != TaskStatusSucceeded {
+					t.Fatalf("terminal task: %+v %v", observed, err)
+				}
+			}
+			next, err := store.StartTask(ctx, "tenant-a", taskType, nil)
+			if err != nil || next.ID == finished.ID {
+				t.Fatalf("completed task blocked new work: %+v %v", next, err)
+			}
+		})
+	}
 }

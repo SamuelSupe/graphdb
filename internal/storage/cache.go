@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +22,6 @@ type ReaderCache struct {
 
 	mu        sync.RWMutex
 	entries   map[string]cacheEntry
-	gens      map[string]uint64
 	loading   map[string]*cacheLoad
 	loadSlots chan struct{}
 	bytes     int64
@@ -79,26 +77,13 @@ func NewReaderCache(store *TenantStore, ttl time.Duration) *ReaderCache {
 		LoadTimeout:      time.Minute,
 		LoadQueueTimeout: 2 * time.Second,
 		entries:          map[string]cacheEntry{},
-		gens:             map[string]uint64{},
 		loading:          map[string]*cacheLoad{},
 		loadSlots:        make(chan struct{}, 4),
 	}
-	if files := store.localFileStore(); files != nil {
-		files.OnChange(func(key string) {
-			prefix := store.Prefix + "/tenants/"
-			if store.Prefix == "" {
-				prefix = "tenants/"
-			}
-			if !strings.HasPrefix(key, prefix) {
-				return
-			}
-			tenantID, name, ok := strings.Cut(strings.TrimPrefix(key, prefix), "/")
-			if ok && name == "manifest.parquet" {
-				cache.expirePublishedView(tenantID)
-			} else if ok && (name == "metadata.parquet" || strings.HasPrefix(name, "config/")) {
-				cache.Invalidate(tenantID)
-			}
-		})
+	if store != nil {
+		store.viewsMu.Lock()
+		store.readViews = append(store.readViews, cache)
+		store.viewsMu.Unlock()
 	}
 	return cache
 }
@@ -115,27 +100,18 @@ func (c *ReaderCache) ConfigureLoadAdmission(maxConcurrent int, queueTimeout tim
 }
 
 func (c *ReaderCache) Start(ctx context.Context) {
-	local := c.Store.localFileStore() != nil
-	interval := c.TTL
-	if local {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	go func() {
+	ticker := time.NewTicker(time.Minute)
+	c.Store.StartBackground(ctx, func(ctx context.Context) {
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if local {
-					c.cachedTenantsForRefresh() // Evict idle graphs without reading files.
-				} else {
-					c.RefreshCached(ctx)
-				}
+				c.cachedTenantsForRefresh()
 			}
 		}
-	}()
+	})
 }
 
 func (c *ReaderCache) Load(ctx context.Context, tenantID string) (*graph.Graph, Manifest, error) {
@@ -191,7 +167,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
 		}
-		startGen := c.gens[tenantID]
+		startGen := c.Store.readGeneration(tenantID)
 		c.mu.RUnlock()
 
 		load, acquired, err := c.beginLoad(ctx, tenantID)
@@ -237,7 +213,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
 		}
-		if startGen != c.gens[tenantID] {
+		if startGen != c.Store.readGeneration(tenantID) {
 			c.mu.Unlock()
 			c.finishLoad(tenantID, load, nil)
 			continue
@@ -364,7 +340,7 @@ func (c *ReaderCache) startStoreLoad(
 			c.finishLoad(tenantID, load, nil)
 			return
 		}
-		if c.gens[tenantID] != startGen {
+		if c.Store.readGeneration(tenantID) != startGen {
 			c.mu.Unlock()
 			c.finishLoad(tenantID, load, nil)
 			return
@@ -553,7 +529,7 @@ func (c *ReaderCache) Refresh(ctx context.Context, tenantID string) (*graph.Grap
 
 func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess bool) (*graph.Graph, Manifest, error) {
 	c.mu.RLock()
-	startGen := c.gens[tenantID]
+	startGen := c.Store.readGeneration(tenantID)
 	_, revalidationOK := c.entries[tenantID]
 	c.mu.RUnlock()
 	if !revalidationOK && !markAccess {
@@ -591,7 +567,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 			entry.lastAccess = now
 		}
 		c.mu.Lock()
-		if c.gens[tenantID] != startGen {
+		if c.Store.readGeneration(tenantID) != startGen {
 			c.mu.Unlock()
 			c.finishLoad(tenantID, load, nil)
 			return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
@@ -613,7 +589,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 			entry.lastAccess = now
 		}
 		c.mu.Lock()
-		if c.gens[tenantID] != startGen {
+		if c.Store.readGeneration(tenantID) != startGen {
 			c.mu.Unlock()
 			c.finishLoad(tenantID, load, nil)
 			return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
@@ -645,7 +621,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		return nil, Manifest{}, err
 	}
 	c.mu.Lock()
-	if c.gens[tenantID] != startGen {
+	if c.Store.readGeneration(tenantID) != startGen {
 		c.mu.Unlock()
 		c.finishLoad(tenantID, load, nil)
 		return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
@@ -720,17 +696,16 @@ func (c *ReaderCache) expirePublishedView(tenantID string) {
 		entry.expiresAt = time.Unix(1, 0)
 		c.entries[tenantID] = entry
 	}
-	c.gens[tenantID]++
 }
 
 func (c *ReaderCache) Invalidate(tenantID string) {
+	c.Store.invalidateReadViews(tenantID, false)
+}
+
+func (c *ReaderCache) invalidate(tenantID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deleteEntryLocked(tenantID)
-	if c.gens == nil {
-		c.gens = map[string]uint64{}
-	}
-	c.gens[tenantID]++
 }
 
 // PublishFromWriteCache makes an already-persisted copy-on-write graph visible
@@ -743,6 +718,10 @@ func (c *ReaderCache) PublishFromWriteCache(tenantID string) bool {
 		return false
 	}
 
+	return c.publishGraph(tenantID, loaded)
+}
+
+func (c *ReaderCache) publishGraph(tenantID string, loaded loadedGraph) bool {
 	now := time.Now()
 	c.mu.Lock()
 	if current, exists := c.entries[tenantID]; exists &&
@@ -750,10 +729,6 @@ func (c *ReaderCache) PublishFromWriteCache(tenantID string) bool {
 		c.mu.Unlock()
 		return true
 	}
-	if c.gens == nil {
-		c.gens = map[string]uint64{}
-	}
-	c.gens[tenantID]++
 	next := cacheEntry{
 		graph:      loaded.Graph,
 		manifest:   loaded.Manifest,
@@ -826,8 +801,5 @@ func cacheEntryIdle(entry cacheEntry, now time.Time, ttl time.Duration) bool {
 }
 
 func (c *ReaderCache) expiry(now time.Time) time.Time {
-	if c.Store.localFileStore() != nil {
-		return time.Time{}
-	}
-	return now.Add(c.TTL)
+	return time.Time{}
 }
