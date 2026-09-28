@@ -813,8 +813,8 @@ func TestPersistedIndexLookupUsesRecordHashesBeforeReadingEntityPage(t *testing.
 	lookup.pageMu.Lock()
 	pageIndex := lookup.pageIndex[shard]
 	lookup.pageMu.Unlock()
-	if pageIndex.Len() != 0 {
-		t.Fatalf("page index entries = %d, want 0 when record hashes are sufficient", pageIndex.Len())
+	if len(pageIndex) != 0 {
+		t.Fatalf("page index entries = %d, want 0 when record hashes are sufficient", len(pageIndex))
 	}
 }
 
