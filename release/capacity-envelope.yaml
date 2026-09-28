@@ -43,7 +43,8 @@ comparison:
 correctness:
   soak_duration: 30m
   maintenance_task_deadline: 10m
-  http_request_deadline: 120s
+  default_http_request_deadline: 120s
+  snapshot_export_request_deadline: 5m
   background: [compact, gc, index_rebuild]
   lost_confirmed_writes: 0
   duplicate_replayed_versions: 0

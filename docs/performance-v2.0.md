@@ -201,10 +201,19 @@ The first OrbStack endurance attempt hit the load tool's default 5-minute task
 deadline. The server GC succeeded after 328.6 seconds and deleted 47,401 old files;
 the client had already recorded a timeout. That attempt is a failed gate, not a
 pass. The release gate uses the existing `-maintenance-timeout 10m` option for
-this growing CMDB workload. Individual HTTP requests remain limited to 120 seconds.
+this growing CMDB workload. The default HTTP request deadline remains 120 seconds;
+the existing streaming snapshot-export case uses a 5-minute deadline.
 The complete 30-minute gate is rerun and still requires successful compact, GC
 and index-rebuild events with no active error events. This is a validation timing
 change, not a production-runtime change or a promise that GC finishes in five minutes.
+
+The complete OrbStack rerun at release revision `129f41ae` passed: 30 minutes,
+764 successful ingest requests, five compactions, two GC tasks and two index
+rebuilds, with no operation or active error events. All 59 reader samples were
+ready with zero sampled version lag. Ingest P95/P99 were 9,494/17,689 ms in this
+growing workload; correctness passed, but maintenance write latency is not fully
+resolved. The raw events and report are included in the performance evidence
+archive's `soak-local-retry/` directory.
 
 - OrbStack full Go unit tests and vet passed on the field-index candidate;
   graph/query race tests passed after the final read-path adjustment.
