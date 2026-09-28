@@ -3207,11 +3207,13 @@ components:
           type: integer
         catalog_version:
           type: integer
+        updating:
+          type: boolean
+          description: An ordered local index update is still running or queued. Automatic maintenance defers a redundant rebuild until it finishes.
         issues:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            type: string
     ReaderFreshness:
       type: object
       properties:

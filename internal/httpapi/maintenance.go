@@ -267,6 +267,11 @@ func (s *Server) maybeRebuildIndexes(ctx context.Context, tenantID string, confi
 		return
 	}
 	tenantReport.IndexStatus = health.Status
+	// A local commit publishes its manifest before its ordered index update.
+	// Rebuilding during that interval duplicates work and throttles new writes.
+	if health.Updating {
+		return
+	}
 	if !shouldRebuildIndex(health.Status, autoRebuild, rebuildOnStale) {
 		return
 	}

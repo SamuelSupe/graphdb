@@ -19,6 +19,7 @@ type IndexHealth struct {
 	SnapshotVersion        int64     `json:"snapshot_version,omitempty"`
 	SnapshotCatalogVersion int64     `json:"snapshot_catalog_version,omitempty"`
 	CatalogVersion         int64     `json:"catalog_version,omitempty"`
+	Updating               bool      `json:"updating,omitempty"`
 	CheckedAt              time.Time `json:"checked_at"`
 	Issues                 []string  `json:"issues,omitempty"`
 }
@@ -52,6 +53,9 @@ func (s *TenantStore) IndexHealthWithOptions(ctx context.Context, tenantID strin
 	health.CatalogVersion = catalog.Version
 	if catalog.Version != manifest.Version {
 		health.Status = "stale"
+		s.indexUpdateMu.Lock()
+		health.Updating = catalog.Version < manifest.Version && s.indexUpdateTails[tenantID] != nil
+		s.indexUpdateMu.Unlock()
 		health.Issues = append(health.Issues, "index catalog version does not match manifest")
 		return health, nil
 	}

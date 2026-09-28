@@ -381,6 +381,76 @@ func TestMaintenanceStartsIndexRebuildWhenConfigured(t *testing.T) {
 	waitForIndexTask(t, ctx, store, "tenant-a", report.Tenants[0].IndexTaskID)
 }
 
+func TestMaintenanceWaitsForIncrementalIndexBeforeRepair(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &maintenanceFailingIndexStore{ObjectStore: store.Objects, paused: make(chan struct{}), resume: make(chan struct{})}
+	resume := sync.OnceFunc(func() { close(blocked.resume) })
+	t.Cleanup(resume)
+	store.Objects = blocked
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}}}, storage.CommitOptions{})
+		done <- err
+	}()
+	select {
+	case <-blocked.paused:
+	case <-ctx.Done():
+		t.Fatal("incremental index did not start")
+	}
+	server := &Server{Store: store, Mode: "all"}
+	enabled := true
+	config := storage.TenantIndexConfig{AutoRebuild: &enabled, RebuildOnStale: &enabled}
+	report, tenant := &MaintenanceReport{}, &TenantMaintenanceReport{}
+	server.maybeRebuildIndexes(ctx, "tenant-a", config, report, tenant)
+	if report.IndexRebuilds != 0 || len(report.Errors) != 0 || tenant.IndexStatus != "stale" {
+		t.Fatalf("maintenance interrupted incremental update: %#v, %#v", report, tenant)
+	}
+	resume()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	server.maybeRebuildIndexes(ctx, "tenant-a", config, report, tenant)
+	if report.IndexRebuilds != 1 || len(report.Errors) != 0 {
+		t.Fatalf("failed incremental update was not repaired: %#v", report)
+	}
+	waitForIndexTask(t, ctx, store, "tenant-a", tenant.IndexTaskID)
+}
+
+type maintenanceFailingIndexStore struct {
+	storage.ObjectStore
+	once           sync.Once
+	paused, resume chan struct{}
+}
+
+func (s *maintenanceFailingIndexStore) Put(ctx context.Context, key string, data []byte) error {
+	_, err := s.PutConditional(ctx, key, data, storage.PutCondition{})
+	return err
+}
+
+func (s *maintenanceFailingIndexStore) PutConditional(ctx context.Context, key string, data []byte, condition storage.PutCondition) (storage.ObjectMeta, error) {
+	fail := false
+	if strings.Contains(key, "/indexes/parquet/") {
+		s.once.Do(func() { fail = true; close(s.paused) })
+	}
+	if fail {
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return storage.ObjectMeta{}, ctx.Err()
+		}
+		return storage.ObjectMeta{}, fmt.Errorf("injected index write failure")
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
 func TestMaintenanceUsesDefaultsWhenTenantConfigMissing(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")

@@ -71,6 +71,7 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 		}
 		relationType, shardID := splitShard(key)
 		var edges []graph.Edge
+		canonical := true
 		err := after.VisitEdgeStorageShard(ctx, relationType, shardID, reverse, func(edge graph.Edge) error {
 			if len(edges)&255 == 0 {
 				if err := ctx.Err(); err != nil {
@@ -78,6 +79,7 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 				}
 			}
 			edges = append(edges, edge)
+			canonical = canonical && graphEdgeHashCanonical(edge)
 			return nil
 		})
 		if err != nil {
@@ -95,6 +97,7 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 			Edges:         edges,
 			Version:       version,
 			UpdatedAt:     now,
+			hashCanonical: canonical,
 		}
 		sort.Slice(shard.Edges, func(i, j int) bool { return shard.Edges[i].ID < shard.Edges[j].ID })
 		shard.logicalContentHash = edgeShardContentHash(shard)
