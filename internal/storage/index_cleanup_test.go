@@ -658,7 +658,9 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			// Bulk deletion includes thousands of durable directory barriers. Its
+			// completion deadline is separate from the foreground admission bound.
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			entered, resume := objects.blockNextDelete()
 			done := make(chan error, 1)
@@ -680,8 +682,10 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 			}
 			view := make(chan func(), 1)
 			readError := make(chan error, 1)
+			readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer readCancel()
 			go func() {
-				release, err := store.PinReadView(ctx, "tenant-a")
+				release, err := store.PinReadView(readCtx, "tenant-a")
 				if err != nil {
 					readError <- err
 					return
@@ -696,8 +700,8 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 			case release = <-view:
 			case err := <-readError:
 				t.Fatal(err)
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
+			case <-readCtx.Done():
+				t.Fatal(readCtx.Err())
 			}
 			release = sync.OnceFunc(release)
 			defer release()

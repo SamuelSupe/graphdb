@@ -27,6 +27,16 @@ type logicalHashCache struct {
 
 var logicalHashKinds = [...]string{"ci_type", "entity", "relation_type", "edge"}
 
+// Persisted digests use a fixed bucket assignment, independent of the process's
+// randomized in-memory map placement.
+func logicalHashShard(key string) uint8 {
+	var hash uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		hash = (hash ^ uint32(key[i])) * 16777619
+	}
+	return uint8(hash ^ hash>>16)
+}
+
 func (g *Graph) CachedLogicalSize() int64 {
 	g.logicalHashMu.Lock()
 	defer g.logicalHashMu.Unlock()
@@ -74,7 +84,7 @@ func buildLogicalHashCache(g *Graph) (*logicalHashCache, error) {
 		if err != nil {
 			return err
 		}
-		index := graphMapShard(key)
+		index := logicalHashShard(key)
 		block := cache.categories[category][index]
 		if block == nil {
 			block = &logicalHashBlock{entries: make(map[string]logicalHashEntry)}
@@ -134,7 +144,7 @@ func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) err
 	for category, touched := range []map[string]trackedFingerprint{tracker.ciTypes, tracker.entities, tracker.relationTypes, tracker.edges} {
 		var copied [graphMapShards]bool
 		for key := range touched {
-			index := graphMapShard(key)
+			index := logicalHashShard(key)
 			block := cache.categories[category][index]
 			if !copied[index] {
 				if block == nil {
