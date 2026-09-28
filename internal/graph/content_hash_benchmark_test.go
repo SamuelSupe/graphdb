@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func BenchmarkContentMD5(b *testing.B) {
+func BenchmarkContentHash(b *testing.B) {
 	g := New()
 	entities := make([]Entity, 10_000)
 	for i := range entities {
@@ -22,7 +22,7 @@ func BenchmarkContentMD5(b *testing.B) {
 
 	b.Run("stream", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			if _, err := g.ContentMD5(); err != nil {
+			if _, err := g.ContentHash(); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -35,7 +35,7 @@ func BenchmarkContentMD5(b *testing.B) {
 		}
 	})
 	b.Run("storage-copy-and-hash", func(b *testing.B) {
-		if _, err := g.ContentMD5(); err != nil {
+		if _, err := g.ContentHash(); err != nil {
 			b.Fatal(err)
 		}
 		b.ResetTimer()
@@ -51,15 +51,15 @@ func BenchmarkContentMD5(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			if _, err := next.ContentMD5(); err != nil {
+			if _, err := next.ContentHash(); err != nil {
 				b.Fatal(err)
 			}
 		}
 	})
 }
 
-func BenchmarkStorageCopyAndContentMD5Scale(b *testing.B) {
-	for _, size := range []int{10_000, 30_000, 36_000} {
+func BenchmarkStorageCopyAndContentHashScale(b *testing.B) {
+	for _, size := range []int{10_000, 100_000} {
 		g := New()
 		entities := make([]Entity, size)
 		for i := range entities {
@@ -75,7 +75,7 @@ func BenchmarkStorageCopyAndContentMD5Scale(b *testing.B) {
 		}); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := g.ContentMD5(); err != nil {
+		if _, err := g.ContentHash(); err != nil {
 			b.Fatal(err)
 		}
 
@@ -93,7 +93,7 @@ func BenchmarkStorageCopyAndContentMD5Scale(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				if _, err := next.ContentMD5(); err != nil {
+				if _, err := next.ContentHash(); err != nil {
 					b.Fatal(err)
 				}
 			}

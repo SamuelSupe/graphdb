@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestIngestBatchPartialFailureIdempotencyAndCollectorStatus(t *testing.T) {
@@ -535,7 +535,7 @@ func TestIngestRejectsAmbiguousItemPayload(t *testing.T) {
 	if _, ok := g.GetEntity("host:ambiguous"); ok {
 		t.Fatal("ambiguous entity was committed")
 	}
-	if len(g.Edges) != 0 {
+	if g.Edges.Len() != 0 {
 		t.Fatal("ambiguous edge was committed")
 	}
 	letters, err := store.ListDeadLetters(ctx, "tenant-a", "aws")
@@ -579,8 +579,8 @@ func TestConcurrentIngestIsSerializedPerTenant(t *testing.T) {
 	if manifest.Version != batches {
 		t.Fatalf("version = %d, want %d", manifest.Version, batches)
 	}
-	if len(g.Entities) != batches {
-		t.Fatalf("entities = %d, want %d", len(g.Entities), batches)
+	if g.Entities.Len() != batches {
+		t.Fatalf("entities = %d, want %d", g.Entities.Len(), batches)
 	}
 }
 

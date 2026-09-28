@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type TenantBackupRecord struct {
@@ -331,7 +331,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 	if input.Integrity.Status == "error" {
 		return TenantRestoreReport{}, fmt.Errorf("backup integrity failed: %s", strings.Join(input.Integrity.Issues, "; "))
 	}
-	_, restoreDataMD5, err := prepareTenantRestoreContext(
+	_, restoreDataHash, err := prepareTenantRestoreContext(
 		record, task.TenantID,
 	)
 	if err != nil {
@@ -374,7 +374,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		TenantID:        task.TenantID,
 		Version:         snapshot.Version,
 		SnapshotVersion: snapshot.Version,
-		DataMD5:         restoreDataMD5,
+		DataHash:        restoreDataHash,
 	}
 	if !snapshotWritten {
 		if err := s.updateTaskActionProgress(ctx, task, "restore_write_snapshot", 3, total, taskActionUpdate{
@@ -413,7 +413,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			SnapshotKey:        snapshotKey,
 			SnapshotCatalogKey: catalog.Key,
 			SnapshotVersion:    snapshot.Version,
-			DataMD5:            restoreDataMD5,
+			DataHash:           restoreDataHash,
 			UpdatedAt:          time.Now().UTC(),
 		}
 		currentMeta := ObjectMeta{}

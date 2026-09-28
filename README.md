@@ -1,19 +1,20 @@
-# GGraphDB — local disk edition
+# GGraphDB 2.0
 
 [简体中文](README.zh-CN.md)
 
 GGraphDB is a multi-tenant property graph database for entities, relationships,
-source-governed ingestion, graph queries, and operational workflows. This branch
+source-governed ingestion, graph queries, and operational workflows. GGraphDB 2.0
 runs one process on local disk, without a required object-storage or PostgreSQL service.
 Optional [S3-compatible snapshot backups](docs/object-backup.md) support recovery onto a new local disk.
 
-## Independent release
+## Current release
 
-[`v1.3.4-local.9`](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4-local.9)
-is published from [`codex/local-disk-v2`](https://github.com/SamuelSupe/graphdb/tree/codex/local-disk-v2)
-as a local disk prerelease. The default `main` branch and stable Latest release
-remain unchanged. See the [release notes](release/local-disk.md) for binaries,
-compatibility boundaries, and validation evidence.
+[2.0.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.0.0) is the main
+release, developed on `main`. Local disk holds the live graph; optional
+S3-compatible object storage holds snapshot backups for on-demand recovery.
+See the [2.0 release notes](release/local-disk.md) and
+[version boundaries](docs/naming-and-compatibility.md). There is no 1.x migration
+or legacy digest compatibility layer. Use a new data directory for 2.0.
 
 ## Capabilities
 
@@ -22,7 +23,7 @@ compatibility boundaries, and validation evidence.
 - Entity and relationship types, field constraints, identity keys, source
   priority, idempotency, and collector state.
 - Direct commits and durable WAL ingestion; Parquet commits, snapshots, and
-  persistent indexes retain their existing formats.
+  persistent indexes with durable local publication.
 - Import/export, saved queries, tenant lifecycle, backup/restore, repair,
   compaction, GC, and persistent background tasks.
 - Go/Python SDKs, Prometheus metrics, JSON logs, and optional OTLP traces.
@@ -75,25 +76,25 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/query/graphql \
 
 
 Use the write response's `version` as `min_version` when a query must observe it.
+Commit responses include `data_hash` (`sha256-shards-v2:<hex>`).
 For WAL ingestion, set `GRAPHDB_INGEST_MODE=wal`; a 202 response confirms WAL
 acceptance, while `Prefer: wait=committed` waits for the terminal result.
 
 ## Architecture and performance
 
 Data files are synced before their manifest/catalog is published. A bounded
-four-worker write path coalesces directory syncs; random file reads let Parquet
+four-worker write path coalesces directory syncs with file, byte and time budgets; random file reads let Parquet
 select columns and row groups. Reads use bounded caches and local invalidation.
 GC and destructive lifecycle operations wait for active read views.
 
 The benchmark tools support the original object-store and local-file baselines.
-This worktree uses a focused local-to-local sample, described in the validation
-report below. Historical release reports describe their own builds.
+The [2.0 validation report](docs/performance-v2.0.md) separates measured results
+from capacity limits. Historical release reports describe their own builds.
 
 ## Documentation
 
 - [Local disk operation and validation](docs/local-disk.md)
-- [Local disk v2 validation and focused benchmark (Chinese)](docs/performance-local-disk-v2.md)
-- [Local disk performance: pagination, JSON encoding and Parquet layout (Chinese)](docs/performance-local-disk-optimization-2.md)
+- [2.0 changes and performance validation](docs/performance-v2.0.md)
 - [Architecture](docs/architecture.md)
 - [User guide](docs/user/README.md)
 - [Query capabilities](docs/query_capabilities.md)

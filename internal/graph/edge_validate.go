@@ -3,7 +3,7 @@ package graph
 import "fmt"
 
 func (g *Graph) validateAllEdges() error {
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		if err := g.validateEdge(edge); err != nil {
 			return err
 		}
@@ -16,7 +16,7 @@ func (g *Graph) validateRelationTypeEdges(
 ) error {
 	for relationType := range relationTypes {
 		for edgeID := range g.edgeTypeIndex[relationType] {
-			edge, ok := g.Edges[edgeID]
+			edge, ok := g.Edges.Get(edgeID)
 			if !ok {
 				continue
 			}
@@ -39,7 +39,7 @@ type cardinalityEndpoint struct {
 func (g *Graph) validateAllCardinalities() error {
 	outgoing := make(map[cardinalityEndpoint]struct{})
 	incoming := make(map[cardinalityEndpoint]struct{})
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		relationType := g.RelationTypes[edge.Type]
 		outKey := cardinalityEndpoint{entityID: edge.From, relationType: edge.Type}
 		inKey := cardinalityEndpoint{entityID: edge.To, relationType: edge.Type}
@@ -75,11 +75,11 @@ func (g *Graph) validateEdge(edge Edge) error {
 	if !ok {
 		return fmt.Errorf("edge %q references missing relation type %q", edge.ID, edge.Type)
 	}
-	from, ok := g.Entities[edge.From]
+	from, ok := g.Entities.Get(edge.From)
 	if !ok {
 		return fmt.Errorf("edge %q references missing from entity %q", edge.ID, edge.From)
 	}
-	to, ok := g.Entities[edge.To]
+	to, ok := g.Entities.Get(edge.To)
 	if !ok {
 		return fmt.Errorf("edge %q references missing to entity %q", edge.ID, edge.To)
 	}
@@ -98,15 +98,15 @@ func (g *Graph) validateCardinality(edge Edge) error {
 	case "", ManyToMany:
 		return nil
 	case OneToOne:
-		if g.hasCardinalityConflict(edge, g.out[edge.From]) || g.hasCardinalityConflict(edge, g.in[edge.To]) {
+		if g.hasCardinalityConflict(edge, g.out.At(edge.From)) || g.hasCardinalityConflict(edge, g.in.At(edge.To)) {
 			return fmt.Errorf("edge %q violates one_to_one cardinality for relation %q", edge.ID, edge.Type)
 		}
 	case OneToMany:
-		if g.hasCardinalityConflict(edge, g.in[edge.To]) {
+		if g.hasCardinalityConflict(edge, g.in.At(edge.To)) {
 			return fmt.Errorf("edge %q violates one_to_many cardinality for relation %q", edge.ID, edge.Type)
 		}
 	case ManyToOne:
-		if g.hasCardinalityConflict(edge, g.out[edge.From]) {
+		if g.hasCardinalityConflict(edge, g.out.At(edge.From)) {
 			return fmt.Errorf("edge %q violates many_to_one cardinality for relation %q", edge.ID, edge.Type)
 		}
 	}
@@ -115,7 +115,7 @@ func (g *Graph) validateCardinality(edge Edge) error {
 
 func (g *Graph) hasCardinalityConflict(edge Edge, edgeIDs map[string]struct{}) bool {
 	for edgeID := range edgeIDs {
-		existing := g.Edges[edgeID]
+		existing := g.Edges.At(edgeID)
 		if existing.ID != edge.ID && existing.Type == edge.Type {
 			return true
 		}

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type fakeLookup struct {
@@ -26,7 +26,7 @@ func (f *fakeLookup) OutEdges(_ context.Context, _ string, _ map[string]struct{}
 
 type rangeScanLookup struct {
 	scanCalls int
-	entities  map[string]graph.Entity
+	entities  *graph.ShardedMap[graph.Entity]
 }
 
 func (l *rangeScanLookup) MatchFieldIndex(context.Context, string, string, []any) ([]string, bool, error) {
@@ -48,7 +48,7 @@ func (l *rangeScanLookup) OutEdges(context.Context, string, map[string]struct{})
 }
 
 func (l *rangeScanLookup) GetEntity(_ context.Context, id string, _ []string) (graph.Entity, bool, error) {
-	entity, ok := l.entities[id]
+	entity, ok := l.entities.Get(id)
 	return entity, ok, nil
 }
 
@@ -225,13 +225,15 @@ type countingInEdgeLookup struct {
 }
 
 type bidirectionalNeighborLookup struct {
-	entities map[string]graph.Entity
-	out      []graph.Edge
-	in       []graph.Edge
+	entities *graph.ShardedMap[graph.Entity]
+
+	out []graph.Edge
+	in  []graph.Edge
 }
 
 type countingBothEdgeLookup struct {
-	entities    map[string]graph.Entity
+	entities *graph.ShardedMap[graph.Entity]
+
 	neighbors   []graph.Neighbor
 	outCalls    int
 	inCalls     int
@@ -240,9 +242,10 @@ type countingBothEdgeLookup struct {
 }
 
 type adjacencyLookup struct {
-	entities map[string]graph.Entity
-	edges    map[string][]graph.Edge
-	calls    map[string]int
+	entities *graph.ShardedMap[graph.Entity]
+
+	edges map[string][]graph.Edge
+	calls map[string]int
 }
 
 func (l *adjacencyLookup) MatchFieldIndex(context.Context, string, string, []any) ([]string, bool, error) {
@@ -258,7 +261,7 @@ func (l *adjacencyLookup) OutEdges(_ context.Context, from string, _ map[string]
 }
 
 func (l *adjacencyLookup) GetEntity(_ context.Context, id string, _ []string) (graph.Entity, bool, error) {
-	entity, ok := l.entities[id]
+	entity, ok := l.entities.Get(id)
 	return entity, ok, nil
 }
 
@@ -375,7 +378,7 @@ func (l *bidirectionalNeighborLookup) GetEntity(
 	id string,
 	_ []string,
 ) (graph.Entity, bool, error) {
-	entity, ok := l.entities[id]
+	entity, ok := l.entities.Get(id)
 	return entity, ok, nil
 }
 
@@ -427,7 +430,7 @@ func (l *countingBothEdgeLookup) GetEntity(
 	id string,
 	_ []string,
 ) (graph.Entity, bool, error) {
-	entity, ok := l.entities[id]
+	entity, ok := l.entities.Get(id)
 	return entity, ok, nil
 }
 
@@ -454,12 +457,12 @@ func TestExecutorUsesExternalFieldIndexLookup(t *testing.T) {
 func TestExecutorUsesFieldIndexScanForRangeAggregateSort(t *testing.T) {
 	g := graph.New()
 	g.Version = 1
-	lookup := &rangeScanLookup{entities: map[string]graph.Entity{
+	lookup := &rangeScanLookup{entities: graph.ShardedMapFrom[graph.Entity](map[string]graph.Entity{
 		"host:1": {ID: "host:1", Kind: "host", Fields: graph.Fields{"hostname": "app-01", "region": "r1"}},
 		"host:2": {ID: "host:2", Kind: "host", Fields: graph.Fields{"hostname": "app-02", "region": "r2"}},
 		"host:3": {ID: "host:3", Kind: "host", Fields: graph.Fields{"hostname": "app-03", "region": "r2"}},
 		"host:4": {ID: "host:4", Kind: "host", Fields: graph.Fields{"hostname": "app-04", "region": "r3"}},
-	}}
+	})}
 	response, err := ExecuteContextWithOptions(context.Background(), g, Request{
 		Op:        "match",
 		Kind:      "host",
@@ -689,9 +692,9 @@ func TestLazyKindScanSecondPageStartsAtCursorEntity(t *testing.T) {
 
 func TestShortestPathExpandsDiamondNodeOnce(t *testing.T) {
 	ids := []string{"start", "left", "right", "merge", "leaf", "target"}
-	lookup := &adjacencyLookup{entities: map[string]graph.Entity{}, edges: map[string][]graph.Edge{}}
+	lookup := &adjacencyLookup{entities: graph.NewShardedMap[graph.Entity](), edges: map[string][]graph.Edge{}}
 	for _, id := range ids {
-		lookup.entities[id] = graph.Entity{ID: id, Kind: "node"}
+		lookup.entities.Set(id, graph.Entity{ID: id, Kind: "node"})
 	}
 	add := func(from, to string) {
 		lookup.edges[from] = append(lookup.edges[from], graph.Edge{ID: from + "->" + to, Type: "links", From: from, To: to})
@@ -723,9 +726,9 @@ func TestShortestPathExpandsDiamondNodeOnce(t *testing.T) {
 
 func TestSteppedShortestPathKeepsDistinctCycleHistories(t *testing.T) {
 	ids := []string{"start", "a", "b", "x", "target"}
-	lookup := &adjacencyLookup{entities: map[string]graph.Entity{}, edges: map[string][]graph.Edge{}}
+	lookup := &adjacencyLookup{entities: graph.NewShardedMap[graph.Entity](), edges: map[string][]graph.Edge{}}
 	for _, id := range ids {
-		lookup.entities[id] = graph.Entity{ID: id, Kind: "node"}
+		lookup.entities.Set(id, graph.Entity{ID: id, Kind: "node"})
 	}
 	add := func(from, to string) {
 		lookup.edges[from] = append(lookup.edges[from], graph.Edge{ID: from + "->" + to, Type: "links", From: from, To: to})
@@ -913,11 +916,11 @@ func TestIndexedBothNeighborsPreserveOrderAndSelfLoopDirections(t *testing.T) {
 	g := graph.New()
 	g.Version = 1
 	lookup := &bidirectionalNeighborLookup{
-		entities: map[string]graph.Entity{
+		entities: graph.ShardedMapFrom[graph.Entity](map[string]graph.Entity{
 			"node:start": {ID: "node:start", Kind: "node"},
 			"node:in":    {ID: "node:in", Kind: "node"},
 			"node:out":   {ID: "node:out", Kind: "node"},
-		},
+		}),
 		out: []graph.Edge{
 			{ID: "edge:02", Type: "links", From: "node:start", To: "node:out"},
 			{ID: "edge:03", Type: "links", From: "node:start", To: "node:start"},
@@ -973,12 +976,12 @@ func TestLazyBothNeighborsCursorUsesMergedVisitorRange(t *testing.T) {
 	g := graph.New()
 	g.Version = 1
 	lookup := &countingBothEdgeLookup{
-		entities: map[string]graph.Entity{
+		entities: graph.ShardedMapFrom[graph.Entity](map[string]graph.Entity{
 			"node:start": {ID: "node:start", Kind: "node"},
 			"node:in":    {ID: "node:in", Kind: "node"},
 			"node:out":   {ID: "node:out", Kind: "node"},
 			"node:later": {ID: "node:later", Kind: "node"},
-		},
+		}),
 		neighbors: []graph.Neighbor{
 			{
 				Edge: graph.Edge{

@@ -19,10 +19,10 @@ func (s *TenantStore) captureTenantBackup(
 	if err != nil {
 		return loadedGraph{}, TenantBackupRecord{}, "", err
 	}
-	record, dataMD5, err := s.tenantBackupRecordFromLocalState(
+	record, dataHash, err := s.tenantBackupRecordFromLocalState(
 		ctx, tenantID, loaded,
 	)
-	return loaded, record, dataMD5, err
+	return loaded, record, dataHash, err
 }
 
 func (s *TenantStore) tenantBackupRecordFromLocalState(
@@ -52,7 +52,7 @@ func (s *TenantStore) tenantBackupRecordFromLocalState(
 	record.RelationSchemas = append(
 		[]RelationSchema(nil), schemas.RelationSchemas...,
 	)
-	dataMD5, err := validateCapturedTenantBackup(
+	dataHash, err := validateCapturedTenantBackup(
 		record, tenantID, loaded,
 	)
 	if err != nil {
@@ -60,7 +60,7 @@ func (s *TenantStore) tenantBackupRecordFromLocalState(
 			"captured backup is not restorable: %w", err,
 		)
 	}
-	return record, dataMD5, nil
+	return record, dataHash, nil
 }
 
 func validateCapturedTenantBackup(
@@ -79,10 +79,10 @@ func validateCapturedTenantBackup(
 	); err != nil {
 		return "", err
 	}
-	if loaded.DataMD5 != "" {
-		return loaded.DataMD5, nil
+	if loaded.DataHash != "" {
+		return loaded.DataHash, nil
 	}
-	return loaded.Graph.ContentMD5()
+	return loaded.Graph.ContentHash()
 }
 
 func (s *TenantStore) tenantBackupMetadata(

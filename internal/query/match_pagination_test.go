@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestMatchSortedSecondPageKeepsBoundedTopK(t *testing.T) {
@@ -12,11 +12,11 @@ func TestMatchSortedSecondPageKeepsBoundedTopK(t *testing.T) {
 	g.Version = 1
 	for i := 0; i < 50; i++ {
 		id := fmt.Sprintf("host:%02d", i)
-		g.Entities[id] = graph.Entity{
+		g.Entities.Set(id, graph.Entity{
 			ID:     id,
 			Kind:   "host",
 			Fields: graph.Fields{"score": float64(i)},
-		}
+		})
 	}
 
 	request := Request{

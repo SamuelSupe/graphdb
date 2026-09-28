@@ -3,7 +3,7 @@ package storage
 import (
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 // legacyEntity has the 1.0 Entity fields and JSON tags without 1.1's

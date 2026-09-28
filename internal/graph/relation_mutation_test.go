@@ -28,7 +28,7 @@ func TestBatchDeleteRelationTypesRemovesOnlyTheirEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantAffected := make([]string, 0, 2)
-	for id, edge := range g.Edges {
+	for id, edge := range g.Edges.All() {
 		if edge.Type == "first" || edge.Type == "second" {
 			wantAffected = append(wantAffected, id)
 		}
@@ -53,10 +53,10 @@ func TestBatchDeleteRelationTypesRemovesOnlyTheirEdges(t *testing.T) {
 	if _, ok := next.RelationTypes["kept"]; !ok {
 		t.Fatal("unrelated relation type was removed")
 	}
-	if len(next.Edges) != 1 {
+	if next.Edges.Len() != 1 {
 		t.Fatalf("edges = %#v, want only kept edge", next.Edges)
 	}
-	for _, edge := range next.Edges {
+	for _, edge := range next.Edges.All() {
 		if edge.Type != "kept" {
 			t.Fatalf("remaining edge = %#v, want kept relation", edge)
 		}

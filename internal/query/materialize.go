@@ -3,7 +3,7 @@ package query
 import (
 	"sort"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func materializeEntity(g *graph.Graph, id string, request Request, budget *budget) (graph.Entity, bool, error) {
@@ -61,7 +61,7 @@ func materializeEntities(g *graph.Graph, ids []string, request Request, budget *
 }
 
 func lazyExecution(g *graph.Graph, budget *budget) bool {
-	return g != nil && len(g.Entities) == 0 && budget != nil && budget.entities != nil
+	return g != nil && g.Entities.Len() == 0 && budget != nil && budget.entities != nil
 }
 
 func materializeFields(request Request) []string {

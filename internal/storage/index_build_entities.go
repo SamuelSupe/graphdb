@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func buildEntityPages(g *graph.Graph, version int64) []EntityPageData {
 	counts := entityPageCounts(g)
 	now := time.Now().UTC()
 	pages := newEntityPageBuckets(counts, version, now)
-	for _, entity := range g.Entities {
+	for _, entity := range g.Entities.All() {
 		appendEntityPage(pages, entity)
 	}
 	return finishEntityPages(pages)
@@ -134,7 +134,7 @@ func mergeEntityPagePack(group entityPageDataPackGroup) EntityPageData {
 
 func entityPageCounts(g *graph.Graph) map[string]int {
 	pages := map[string]int{}
-	for _, entity := range g.Entities {
+	for _, entity := range g.Entities.All() {
 		pages[entityShardID(entity.ID)]++
 	}
 	return pages

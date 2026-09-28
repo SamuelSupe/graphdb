@@ -41,7 +41,7 @@ func (s *FileStore) cacheManifest(key string, manifest Manifest, meta ObjectMeta
 	if current, known := r.etags[key]; known && current != meta.ETag {
 		return
 	}
-	size := 512 + len(key) + len(meta.ETag) + len(manifest.TenantID) + len(manifest.HeadCommitID) + len(manifest.SnapshotKey) + len(manifest.SnapshotCatalogKey) + len(manifest.WriterFence) + len(manifest.DataMD5)
+	size := 512 + len(key) + len(meta.ETag) + len(manifest.TenantID) + len(manifest.HeadCommitID) + len(manifest.SnapshotKey) + len(manifest.SnapshotCatalogKey) + len(manifest.WriterFence) + len(manifest.DataHash)
 	for _, key := range manifest.CommitKeys {
 		size += 16 + len(key)
 	}

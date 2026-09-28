@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"

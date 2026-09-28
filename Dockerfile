@@ -9,9 +9,9 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -mod=readonly -trimpath \
     -ldflags="-s -w \
-      -X gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo.Version=${VERSION} \
-      -X gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo.Commit=${COMMIT} \
-      -X gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo.Date=${BUILD_DATE}" \
+      -X github.com/SamuelSupe/graphdb/v2/internal/buildinfo.Version=${VERSION} \
+      -X github.com/SamuelSupe/graphdb/v2/internal/buildinfo.Commit=${COMMIT} \
+      -X github.com/SamuelSupe/graphdb/v2/internal/buildinfo.Date=${BUILD_DATE}" \
     -o /out/graphdb ./cmd/graphdb
 
 FROM alpine:3.20

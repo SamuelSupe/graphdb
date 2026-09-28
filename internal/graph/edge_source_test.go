@@ -40,8 +40,8 @@ func TestSameTripleEdgesMergeToCanonicalEdge(t *testing.T) {
 		t.Fatalf("second edge: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge, ok := g.Edges[edgeID]
-	if !ok || len(g.Edges) != 1 {
+	edge, ok := g.Edges.Get(edgeID)
+	if !ok || g.Edges.Len() != 1 {
 		t.Fatalf("edges = %#v", g.Edges)
 	}
 	if edge.ID != edgeID || edge.Fields["port"] != float64(8080) || edge.Fields["protocol"] != "http" {
@@ -65,7 +65,7 @@ func TestUpsertEdgeWithoutIDUsesCanonicalTripleID(t *testing.T) {
 		t.Fatalf("edge without id: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge, ok := g.Edges[edgeID]
+	edge, ok := g.Edges.Get(edgeID)
 	if !ok || edge.ID != edgeID || edge.Fields["port"] != float64(8080) {
 		t.Fatalf("edge = %#v", g.Edges)
 	}
@@ -89,7 +89,7 @@ func TestCanonicalEdgeSourcesStampObservedAt(t *testing.T) {
 		t.Fatalf("edge: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if len(edge.Sources) != 1 || !edge.Sources[0].ObservedAt.Equal(observedAt) {
 		t.Fatalf("sources = %#v", edge.Sources)
 	}
@@ -108,12 +108,12 @@ func TestSnapshotRoundTripDoesNotAddDuplicateCanonicalEdgeSource(t *testing.T) {
 		t.Fatalf("edge: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	before := g.Edges[edgeID]
+	before := g.Edges.At(edgeID)
 	loaded, err := FromSnapshot(g.Snapshot())
 	if err != nil {
 		t.Fatalf("from snapshot: %v", err)
 	}
-	after := loaded.Edges[edgeID]
+	after := loaded.Edges.At(edgeID)
 	if !reflect.DeepEqual(after.Sources, before.Sources) {
 		t.Fatalf("sources after snapshot = %#v, want %#v", after.Sources, before.Sources)
 	}
@@ -146,7 +146,7 @@ func TestEdgeSourcePolicySuppressesLowerPriorityField(t *testing.T) {
 		t.Fatalf("agent edge: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if edge.Fields["note"] != "manual" {
 		t.Fatalf("edge note = %#v", edge.Fields["note"])
 	}
@@ -184,7 +184,7 @@ func TestIncomingEdgeSourcesCannotElevateWriteOwner(t *testing.T) {
 		t.Fatalf("agent spoof edge: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if edge.Fields["note"] != "manual" {
 		t.Fatalf("spoofed source elevated edge write owner: %#v", edge)
 	}
@@ -195,7 +195,7 @@ func TestIncomingEdgeSourcesCannotElevateWriteOwner(t *testing.T) {
 
 func TestIncomingEdgeSourcesCannotSpoofAlias(t *testing.T) {
 	g := graphWithEdgeEndpoints(t)
-	g.Entities["host:app-02"] = Entity{ID: "host:app-02", Kind: "host", Fields: Fields{}}
+	g.Entities.Set("host:app-02", Entity{ID: "host:app-02", Kind: "host", Fields: Fields{}})
 	g.rebuildIndexes()
 	if err := g.ApplyCommit(Commit{
 		ID:      "manual",
@@ -219,7 +219,7 @@ func TestIncomingEdgeSourcesCannotSpoofAlias(t *testing.T) {
 		t.Fatalf("agent spoof edge: %v", err)
 	}
 	agentID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-02")
-	agent := g.Edges[agentID]
+	agent := g.Edges.At(agentID)
 	if EdgeSourceAliasMatches(agent, "manual-edge") {
 		t.Fatalf("agent edge accepted spoofed manual alias: %#v", agent.Sources)
 	}
@@ -236,7 +236,7 @@ func TestIncomingEdgeSourcesCannotSpoofAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent delete by manual alias: %v", err)
 	}
-	if _, ok := g.Edges[agentID]; !ok {
+	if _, ok := g.Edges.Get(agentID); !ok {
 		t.Fatal("agent edge was deleted through spoofed manual alias")
 	}
 	if len(report.Suppressed) != 1 || report.Suppressed[0].CanonicalID != CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01") {
@@ -269,7 +269,7 @@ func TestEdgeSourceMergeKeepsHigherPriorityAliasRecord(t *testing.T) {
 		t.Fatalf("lower priority edge: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if len(edge.Sources) != 1 {
 		t.Fatalf("sources = %#v", edge.Sources)
 	}
@@ -300,7 +300,7 @@ func TestNewEdgeStampsOwnershipFromEffectiveSource(t *testing.T) {
 		t.Fatalf("suppressed = %#v", report.Suppressed)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if edge.ExistenceSource == nil || edge.ExistenceSource.Source != "agent" || edge.ExistenceSource.Priority != 100 {
 		t.Fatalf("existence source = %#v", edge.ExistenceSource)
 	}
@@ -363,7 +363,7 @@ func TestEmptyIncomingEdgeFieldDoesNotClearExistingValue(t *testing.T) {
 		t.Fatalf("manual edge: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if edge.Fields["note"] != "collector" {
 		t.Fatalf("note was cleared: %#v", edge.Fields)
 	}
@@ -399,7 +399,7 @@ func TestEdgeSourceAwareDeleteHonorsExistenceOwner(t *testing.T) {
 		t.Fatalf("agent delete: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	if _, ok := g.Edges[edgeID]; !ok {
+	if _, ok := g.Edges.Get(edgeID); !ok {
 		t.Fatal("low priority delete removed manual edge")
 	}
 	if len(report.Suppressed) != 1 || report.Suppressed[0].Field != "__existence__" || report.Suppressed[0].ResourceType != "edge" {
@@ -415,7 +415,7 @@ func TestEdgeSourceAwareDeleteHonorsExistenceOwner(t *testing.T) {
 	}, ApplyOptions{SourcePolicy: &policy}); err != nil {
 		t.Fatalf("manual delete: %v", err)
 	}
-	if _, ok := g.Edges[edgeID]; ok {
+	if _, ok := g.Edges.Get(edgeID); ok {
 		t.Fatal("high priority delete did not remove edge")
 	}
 }
@@ -435,7 +435,7 @@ func TestDeleteEdgesForceDeleteResolvesSourceAlias(t *testing.T) {
 	if err := g.ApplyCommit(Commit{ID: "delete", Version: 2, Mutations: Mutations{DeleteEdges: []string{"collector-edge"}}}); err != nil {
 		t.Fatalf("delete alias: %v", err)
 	}
-	if len(g.Edges) != 0 {
+	if g.Edges.Len() != 0 {
 		t.Fatalf("edges = %#v", g.Edges)
 	}
 }
@@ -456,7 +456,7 @@ func TestDeleteEdgesRejectsAmbiguousSourceAlias(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ambiguous source alias error")
 	}
-	if len(g.Edges) != 2 {
+	if g.Edges.Len() != 2 {
 		t.Fatalf("ambiguous delete changed edges: %#v", g.Edges)
 	}
 }
@@ -483,7 +483,7 @@ func TestDeleteEdgeRequestRejectsAmbiguousSourceAlias(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ambiguous source alias error")
 	}
-	if len(g.Edges) != 2 {
+	if g.Edges.Len() != 2 {
 		t.Fatalf("ambiguous delete request changed edges: %#v", g.Edges)
 	}
 }
@@ -505,8 +505,8 @@ func TestSnapshotLoadCanonicalizesDuplicateTriples(t *testing.T) {
 		t.Fatalf("load snapshot: %v", err)
 	}
 	edgeID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge, ok := g.Edges[edgeID]
-	if !ok || len(g.Edges) != 1 {
+	edge, ok := g.Edges.Get(edgeID)
+	if !ok || g.Edges.Len() != 1 {
 		t.Fatalf("edges = %#v", g.Edges)
 	}
 	if !EdgeSourceAliasMatches(edge, "old-edge-a") || !EdgeSourceAliasMatches(edge, "old-edge-b") {
@@ -534,10 +534,10 @@ func TestSnapshotLoadPreservesMultipleEdgesWithoutIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load snapshot: %v", err)
 	}
-	if len(g.Edges) != 2 {
+	if g.Edges.Len() != 2 {
 		t.Fatalf("edges = %#v", g.Edges)
 	}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		if edge.ID != CanonicalEdgeID(edge) {
 			t.Fatalf("edge was not canonicalized: %#v", edge)
 		}
@@ -552,7 +552,7 @@ func TestMergeEdgeSetUsesStableWriteOrderForDuplicateTriples(t *testing.T) {
 	newerAt := olderAt.Add(time.Minute)
 	canonicalID := CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
 	for i := 0; i < 50; i++ {
-		merged, _ := mergeEdgeSet(map[string]Edge{
+		merged, _ := mergeEdgeSet(ShardedMapFrom[Edge](map[string]Edge{
 			"legacy-new": {
 				ID: "legacy-new", Type: "runs_on", From: "service:api", To: "host:app-01",
 				Source: "agent", SourceRank: 100, Confidence: 0.5, Version: 2, UpdatedAt: newerAt,
@@ -563,9 +563,9 @@ func TestMergeEdgeSetUsesStableWriteOrderForDuplicateTriples(t *testing.T) {
 				Source: "agent", SourceRank: 100, Confidence: 0.5, Version: 1, UpdatedAt: olderAt,
 				Fields: Fields{"port": 8080},
 			},
-		}, 3, newerAt)
-		edge, ok := merged[canonicalID]
-		if !ok || len(merged) != 1 {
+		}), 3, newerAt)
+		edge, ok := merged.Get(canonicalID)
+		if !ok || merged.Len() != 1 {
 			t.Fatalf("merged edges = %#v", merged)
 		}
 		if edge.Fields["port"] != 9090 {
@@ -580,8 +580,8 @@ func TestMergeEdgeSetUsesStableWriteOrderForDuplicateTriples(t *testing.T) {
 func graphWithEdgeEndpoints(t *testing.T) *Graph {
 	t.Helper()
 	g := New()
-	g.Entities["service:api"] = Entity{ID: "service:api", Kind: "service", Fields: Fields{}}
-	g.Entities["host:app-01"] = Entity{ID: "host:app-01", Kind: "host", Fields: Fields{}}
+	g.Entities.Set("service:api", Entity{ID: "service:api", Kind: "service", Fields: Fields{}})
+	g.Entities.Set("host:app-01", Entity{ID: "host:app-01", Kind: "host", Fields: Fields{}})
 	g.rebuildIndexes()
 	return g
 }

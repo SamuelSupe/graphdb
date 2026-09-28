@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestTenantStoreCommitLoadAndCompact(t *testing.T) {
@@ -1079,8 +1079,8 @@ func TestReaderCacheReturnsIsolatedGraphCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first load: %v", err)
 	}
-	delete(g.Entities, "person:alice")
-	g.Entities["person:poison"] = graph.Entity{ID: "person:poison", Kind: "person"}
+	g.Entities.Delete("person:alice")
+	g.Entities.Set("person:poison", graph.Entity{ID: "person:poison", Kind: "person"})
 
 	reloaded, _, err := cache.Load(ctx, "tenant-a")
 	if err != nil {

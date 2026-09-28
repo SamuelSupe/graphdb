@@ -54,12 +54,12 @@ func TestGraphCopiesDoNotShareNestedFieldValues(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	entity := g.Entities["host:a"]
+	entity := g.Entities.At("host:a")
 	entity.FieldConflicts = []FieldConflict{{
 		Field: "meta", ExistingValue: map[string]any{"env": "prod"},
 		IncomingValue: []any{map[string]any{"env": "staging"}},
 	}}
-	g.Entities["host:a"] = entity
+	g.Entities.Set("host:a", entity)
 
 	first, ok := g.GetEntity("host:a")
 	if !ok {
@@ -92,8 +92,8 @@ func TestGraphCopiesDoNotShareNestedFieldValues(t *testing.T) {
 	}
 
 	cloned := g.Clone()
-	cloned.Entities["host:a"].Fields["meta"].(map[string]any)["env"] = "qa"
-	cloned.Entities["host:a"].FieldConflicts[0].ExistingValue.(map[string]any)["env"] = "qa"
+	cloned.Entities.At("host:a").Fields["meta"].(map[string]any)["env"] = "qa"
+	cloned.Entities.At("host:a").FieldConflicts[0].ExistingValue.(map[string]any)["env"] = "qa"
 	afterCloneMutation, _ := g.GetEntity("host:a")
 	if got := afterCloneMutation.Fields["meta"].(map[string]any)["env"]; got != "prod" {
 		t.Fatalf("nested map mutation leaked through graph clone: %v", got)
@@ -170,20 +170,20 @@ func TestSchemaDefaultValuesDoNotShareNestedFieldValues(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	g.Entities["host:a"].Fields["meta"].(map[string]any)["env"] = "staging"
-	g.Entities["host:a"].Fields["tags"].([]any)[0] = "red"
-	g.Entities["host:a"].Identity["meta"].(map[string]any)["env"] = "identity"
+	g.Entities.At("host:a").Fields["meta"].(map[string]any)["env"] = "staging"
+	g.Entities.At("host:a").Fields["tags"].([]any)[0] = "red"
+	g.Entities.At("host:a").Identity["meta"].(map[string]any)["env"] = "identity"
 
-	if got := g.Entities["host:b"].Fields["meta"].(map[string]any)["env"]; got != "prod" {
+	if got := g.Entities.At("host:b").Fields["meta"].(map[string]any)["env"]; got != "prod" {
 		t.Fatalf("default object shared between entities: %v", got)
 	}
-	if got := g.Entities["host:b"].Fields["tags"].([]any)[0]; got != "blue" {
+	if got := g.Entities.At("host:b").Fields["tags"].([]any)[0]; got != "blue" {
 		t.Fatalf("default array shared between entities: %v", got)
 	}
 	if got := g.CITypes["host"].Fields["meta"].Default.(map[string]any)["env"]; got != "prod" {
 		t.Fatalf("default object shared with ci type: %v", got)
 	}
-	if got := g.Entities["host:a"].Fields["meta"].(map[string]any)["env"]; got != "staging" {
+	if got := g.Entities.At("host:a").Fields["meta"].(map[string]any)["env"]; got != "staging" {
 		t.Fatalf("identity mutation changed field value: %v", got)
 	}
 }
@@ -218,10 +218,10 @@ func TestCITypeDefaultsDoNotShareCallerValues(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("entity: %v", err)
 	}
-	if got := g.Entities["host:a"].Fields["meta"].(map[string]any)["env"]; got != "prod" {
+	if got := g.Entities.At("host:a").Fields["meta"].(map[string]any)["env"]; got != "prod" {
 		t.Fatalf("ci type default shared caller object: %v", got)
 	}
-	if got := g.Entities["host:a"].Fields["tags"].([]any)[0]; got != "blue" {
+	if got := g.Entities.At("host:a").Fields["tags"].([]any)[0]; got != "blue" {
 		t.Fatalf("ci type default shared caller array: %v", got)
 	}
 }

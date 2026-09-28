@@ -79,7 +79,7 @@ curl -sS -X POST "$READER/v1/query/graphql" \
 ```
 
 See [../graphql.md](../graphql.md) for the schema, response envelope, errors,
-fragments, and 1.1 boundaries.
+fragments, and current boundaries.
 
 ## Legacy text DSL
 

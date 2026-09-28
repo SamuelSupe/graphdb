@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-
-grep -Fx 'release: "1.1"' release/freeze-1.1.yaml >/dev/null
-grep -Fx 'status: frozen' release/freeze-1.1.yaml >/dev/null
-grep -Fx '  product_name: GGraphDB' release/freeze-1.1.yaml >/dev/null
-grep -Fx '  query_protocol: GraphQL' release/freeze-1.1.yaml >/dev/null
-grep -F '# GGraphDB' README.md >/dev/null
-grep -F 'title: GGraphDB API' docs/openapi.yaml >/dev/null
-grep -F 'POST /v1/query/graphql' docs/graphql.md >/dev/null
-grep -F 'POST /v1/query/graphql' docs/graphql.zh-CN.md >/dev/null
+version="$(cat VERSION)"
+[[ "$version" == 2.* ]]
+grep -Fx "  version: $version" docs/openapi.yaml >/dev/null
+grep -F 'SDKVersion       = "'"$version"'"' sdk/go/graphdb/client.go >/dev/null
+grep -Fx 'version = "'"$version"'"' sdk/python/pyproject.toml >/dev/null
+grep -Fx '__version__ = "'"$version"'"' sdk/python/graphdb_sdk/__init__.py >/dev/null
+grep -F 'module github.com/SamuelSupe/graphdb/v2' go.mod >/dev/null
+grep -F 'data_hash:' docs/openapi.yaml >/dev/null
 grep -F 'routeSpec{pattern: "POST /v1/query/graphql"' internal/httpapi/routes.go >/dev/null
-grep -F '它不是 GraphQL' docs/gql.md >/dev/null
-
-echo "GGraphDB 1.1 freeze contract verified"
+echo "GGraphDB $version contracts verified"

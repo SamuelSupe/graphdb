@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type incrementalSecondaryGroup struct {
@@ -245,7 +245,7 @@ func secondaryIndexEntityValue(g *graph.Graph, entityID string, spec IndexSpec) 
 	if g == nil {
 		return "", false
 	}
-	entity, ok := g.Entities[entityID]
+	entity, ok := g.Entities.Get(entityID)
 	if !ok || entity.Kind != spec.Kind {
 		return "", false
 	}

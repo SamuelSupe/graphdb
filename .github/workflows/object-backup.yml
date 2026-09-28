@@ -29,15 +29,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          trap 'docker rm -f graphdb-backup-ci >/dev/null' EXIT
-          docker run -d --name graphdb-backup-ci -p 127.0.0.1:39090:9000 \
-            -e MINIO_ROOT_USER=graphdb-test -e MINIO_ROOT_PASSWORD=graphdb-backup-test-only \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          mkdir -p "$GRAPHDB_BACKUP_GATE_OUTPUT" "$RUNNER_TEMP/backup-tools"
+          for item in minio:RELEASE.2025-09-07T16-13-09Z mc:RELEASE.2025-08-13T08-35-41Z; do
+            tool="${item%%:*}"
+            version="${item#*:}"
+            asset="${tool}.linux-amd64.${version}"
+            url="https://github.com/minio/${tool}/releases/download/${version}/${asset}"
+            curl -fL --retry 3 "$url" -o "$RUNNER_TEMP/backup-tools/$tool"
+            curl -fL --retry 3 "$url.sha256sum" -o "$RUNNER_TEMP/backup-tools/$tool.sha256"
+            hash="$(awk '{print $1}' "$RUNNER_TEMP/backup-tools/$tool.sha256")"
+            printf '%s  %s\n' "$hash" "$RUNNER_TEMP/backup-tools/$tool" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/backup-tools/$tool"
+          done
+          MINIO_ROOT_USER=graphdb-test MINIO_ROOT_PASSWORD=graphdb-backup-test-only \
+            "$RUNNER_TEMP/backup-tools/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:39090 >"$GRAPHDB_BACKUP_GATE_OUTPUT/minio.log" 2>&1 &
+          minio_pid=$!
+          trap 'kill "$minio_pid" 2>/dev/null || true' EXIT
           curl --fail --retry 30 --retry-all-errors --retry-delay 1 --max-time 2 \
             http://127.0.0.1:39090/minio/health/ready
-          docker run --rm --network host \
-            -e MC_HOST_test=http://graphdb-test:graphdb-backup-test-only@127.0.0.1:39090 \
-            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z mb test/graphdb-backups
+          MC_HOST_test=http://graphdb-test:graphdb-backup-test-only@127.0.0.1:39090 \
+            "$RUNNER_TEMP/backup-tools/mc" mb test/graphdb-backups
           scripts/object_backup_gate.sh
 
       - name: Preserve backup verification evidence

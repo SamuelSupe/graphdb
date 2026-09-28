@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 var benchmarkFallbackEntities []graph.Entity
@@ -20,9 +20,9 @@ func TestReadViewEntityPagesPreserveOrderingAndOwnership(t *testing.T) {
 	g.Version = 7
 	for i := range 700 {
 		id := fmt.Sprintf("host:%04d", i)
-		g.Entities[id] = graph.Entity{ID: id, Kind: []string{"host", "service"}[i%2],
+		g.Entities.Set(id, graph.Entity{ID: id, Kind: []string{"host", "service"}[i%2],
 			Fields: graph.Fields{"name": id}, Source: "agent",
-			Sources: []graph.EntitySource{{Source: "manual"}}}
+			Sources: []graph.EntitySource{{Source: "manual"}}})
 	}
 	manifest := Manifest{TenantID: "tenant-a", Version: 7}
 	cache := NewReaderCache(NewTenantStore(NewMemoryStore(), "test"), time.Minute)
@@ -49,7 +49,7 @@ func TestReadViewEntityPagesPreserveOrderingAndOwnership(t *testing.T) {
 					assertEntityPageEqual(t, got.Entities, got.NextCursor, want.Entities, want.NextCursor)
 					if len(got.Entities) > 0 {
 						got.Entities[0].Fields["name"] = "changed by caller"
-						if g.Entities[got.Entities[0].ID].Fields["name"] == "changed by caller" {
+						if g.Entities.At(got.Entities[0].ID).Fields["name"] == "changed by caller" {
 							t.Error("result mutated read view")
 						}
 					}
@@ -70,7 +70,7 @@ func TestReadViewEntityPagesPreserveOrderingAndOwnership(t *testing.T) {
 	// A restored view can have the same version and different entity IDs.
 	restored := graph.New()
 	restored.Version = 7
-	restored.Entities["host:restored"] = graph.Entity{ID: "host:restored", Kind: "host"}
+	restored.Entities.Set("host:restored", graph.Entity{ID: "host:restored", Kind: "host"})
 	cache.Invalidate("tenant-a")
 	if err := cache.storeEntryLocked("tenant-a", cacheEntry{graph: restored, manifest: manifest}); err != nil {
 		t.Fatal(err)
@@ -103,10 +103,11 @@ func TestReadViewEntityPagesPreserveOrderingAndOwnership(t *testing.T) {
 }
 
 func TestFallbackEntityPageMatchesFullSort(t *testing.T) {
-	entities := make(map[string]graph.Entity, 500)
+	entities := graph.NewShardedMap[graph.Entity]()
+
 	for i := 0; i < 500; i++ {
 		id := fmt.Sprintf("host:%04d", i)
-		entities[id] = graph.Entity{ID: id, Kind: []string{"host", "service"}[i%2], Source: []string{"agent", "manual"}[i%2]}
+		entities.Set(id, graph.Entity{ID: id, Kind: []string{"host", "service"}[i%2], Source: []string{"agent", "manual"}[i%2]})
 	}
 	options := EntityScanOptions{Kind: "host", Source: "agent", Limit: 17}
 	first, firstCursor := referenceEntityPage(entities, 7, options, scanCursor{})
@@ -129,14 +130,15 @@ func TestFallbackEntityPageMatchesFullSort(t *testing.T) {
 }
 
 func TestFallbackEdgePageMatchesFullSort(t *testing.T) {
-	edges := make(map[string]graph.Edge, 500)
+	edges := graph.NewShardedMap[graph.Edge]()
+
 	for i := 0; i < 500; i++ {
 		id := fmt.Sprintf("edge:%04d", i)
-		edges[id] = graph.Edge{
+		edges.Set(id, graph.Edge{
 			ID: id, Type: []string{"depends_on", "runs_on"}[i%2],
 			From: fmt.Sprintf("service:%03d", i%73), To: fmt.Sprintf("host:%03d", i),
 			Source: []string{"agent", "manual"}[i%2],
-		}
+		})
 	}
 	options := EdgeScanOptions{Type: "depends_on", Source: "agent", Limit: 19}
 	want, wantCursor := referenceEdgePage(edges, 11, options, scanCursor{})
@@ -157,18 +159,19 @@ func TestFallbackEdgePageMatchesFullSort(t *testing.T) {
 func TestFallbackScanStopsAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := pageEntityMap(ctx, map[string]graph.Entity{
+	if _, _, err := pageEntityMap(ctx, graph.ShardedMapFrom[graph.Entity](map[string]graph.Entity{
 		"host:a": {ID: "host:a", Kind: "host"},
-	}, 1, EntityScanOptions{}, scanCursor{}); !errors.Is(err, context.Canceled) {
+	}), 1, EntityScanOptions{}, scanCursor{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("pageEntityMap err = %v, want context.Canceled", err)
 	}
 }
 
 func BenchmarkFallbackEntityPage10K(b *testing.B) {
-	entities := make(map[string]graph.Entity, 10_000)
+	entities := graph.NewShardedMap[graph.Entity]()
+
 	for i := 0; i < 10_000; i++ {
 		id := fmt.Sprintf("host:%05d", i)
-		entities[id] = graph.Entity{ID: id, Kind: "host", Source: "agent"}
+		entities.Set(id, graph.Entity{ID: id, Kind: "host", Source: "agent"})
 	}
 	options := EntityScanOptions{Kind: "host", Limit: 100}
 
@@ -209,9 +212,10 @@ func BenchmarkFallbackEntityPage10K(b *testing.B) {
 	})
 }
 
-func referenceEntityPage(entities map[string]graph.Entity, version int64, options EntityScanOptions, cursor scanCursor) ([]graph.Entity, string) {
-	items := make([]graph.Entity, 0, len(entities))
-	for _, entity := range entities {
+func referenceEntityPage(entities *graph.ShardedMap[graph.Entity],
+	version int64, options EntityScanOptions, cursor scanCursor) ([]graph.Entity, string) {
+	items := make([]graph.Entity, 0, entities.Len())
+	for _, entity := range entities.All() {
 		items = append(items, entity)
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -220,9 +224,10 @@ func referenceEntityPage(entities map[string]graph.Entity, version int64, option
 	return pageEntities(items, version, options, cursor)
 }
 
-func referenceEdgePage(edges map[string]graph.Edge, version int64, options EdgeScanOptions, cursor scanCursor) ([]graph.Edge, string) {
-	items := make([]graph.Edge, 0, len(edges))
-	for _, edge := range edges {
+func referenceEdgePage(edges *graph.ShardedMap[graph.Edge],
+	version int64, options EdgeScanOptions, cursor scanCursor) ([]graph.Edge, string) {
+	items := make([]graph.Edge, 0, edges.Len())
+	for _, edge := range edges.All() {
 		items = append(items, edge)
 	}
 	sort.Slice(items, func(i, j int) bool {

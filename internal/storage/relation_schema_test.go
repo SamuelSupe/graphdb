@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestRelationSchemaSidecarValidatesEdgesAndKeepsCoreLayout(t *testing.T) {
@@ -43,7 +43,7 @@ func TestRelationSchemaSidecarValidatesEdgesAndKeepsCoreLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("depends_on", "document:b", "document:a")
-	edge, ok := loaded.Edges[edgeID]
+	edge, ok := loaded.Edges.Get(edgeID)
 	if !ok || edge.Fields["weight"] != float64(1) {
 		t.Fatalf("defaulted edge=%#v", edge)
 	}

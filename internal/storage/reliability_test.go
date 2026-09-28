@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestWriterLeaseBlocksOtherOwnersUntilExpiry(t *testing.T) {
@@ -171,10 +171,10 @@ func TestCommitRetryReacquiresWriterLeaseAfterManifestConflict(t *testing.T) {
 	if manifest.Version != 1 {
 		t.Fatalf("manifest version = %d, want takeover version 1", manifest.Version)
 	}
-	if _, ok := g.Entities["host:takeover"]; !ok {
+	if _, ok := g.Entities.Get("host:takeover"); !ok {
 		t.Fatal("takeover entity missing")
 	}
-	if _, ok := g.Entities["host:first"]; ok {
+	if _, ok := g.Entities.Get("host:first"); ok {
 		t.Fatal("expired writer entity became visible after retry")
 	}
 }
@@ -224,7 +224,7 @@ func TestDeadLetterReplayResolvesFailedIngest(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("connects_to", "host:a", "host:b")
-	edge, ok := g.Edges[edgeID]
+	edge, ok := g.Edges.Get(edgeID)
 	if !ok {
 		t.Fatal("replayed edge missing")
 	}
@@ -476,7 +476,7 @@ func TestDeadLetterKeepsAppliedItemsForAtomicCommitFailure(t *testing.T) {
 	if _, ok := g.GetEntity("host:a"); !ok {
 		t.Fatal("replayed entity missing")
 	}
-	if _, ok := g.Edges[graph.CanonicalEdgeIDParts("connects_to", "host:a", "host:b")]; !ok {
+	if _, ok := g.Edges.Get(graph.CanonicalEdgeIDParts("connects_to", "host:a", "host:b")); !ok {
 		t.Fatal("replayed edge missing")
 	}
 }
@@ -544,7 +544,7 @@ func TestDeadLettersAreScopedByCollector(t *testing.T) {
 		graph.CanonicalEdgeIDParts("connects_to", "host:a", "host:b"),
 		graph.CanonicalEdgeIDParts("connects_to", "host:c", "host:d"),
 	} {
-		if _, ok := g.Edges[edgeID]; !ok {
+		if _, ok := g.Edges.Get(edgeID); !ok {
 			t.Fatalf("replayed edge %s missing", edgeID)
 		}
 	}

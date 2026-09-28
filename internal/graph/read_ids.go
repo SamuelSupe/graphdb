@@ -36,7 +36,7 @@ func (g *Graph) VisitEntitiesByID(kind string, afterID string, visit func(Entity
 		}
 	}
 	for _, id := range ids[start:] {
-		entity, ok := g.Entities[id]
+		entity, ok := g.Entities.Get(id)
 		if !ok {
 			continue
 		}
@@ -55,7 +55,7 @@ func (g *Graph) sortedEntityIDs(kind string) []string {
 		return ids
 	}
 	ids := make([]string, 0, g.KindCount(kind))
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		if kind == "" || entity.Kind == kind {
 			ids = append(ids, id)
 		}

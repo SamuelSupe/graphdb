@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -156,7 +156,7 @@ func normalizedWriteCacheBytes(loaded loadedGraph) int64 {
 	if loaded.Graph == nil {
 		return minimumWriteCacheBytes
 	}
-	_, logicalBytes, err := loaded.Graph.ContentMD5WithLogicalSize()
+	_, logicalBytes, err := loaded.Graph.ContentHashWithLogicalSize()
 	if err != nil {
 		return int64(^uint64(0) >> 1)
 	}
@@ -188,8 +188,8 @@ func writeCacheBytesForGraph(g *graph.Graph, logicalBytes int64) int64 {
 		count int
 		bytes int64
 	}{
-		{len(g.Entities), 1024},
-		{len(g.Edges), 768},
+		{g.Entities.Len(), 1024},
+		{g.Edges.Len(), 768},
 		{len(g.CITypes) + len(g.RelationTypes), 2048},
 	}
 	for _, part := range parts {

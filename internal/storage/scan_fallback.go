@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type scanCandidate struct {
@@ -76,7 +76,8 @@ func validateGraphScanInput(tenantID string, g *graph.Graph, manifest Manifest, 
 	return nil
 }
 
-func pageEntityMap(ctx context.Context, candidates map[string]graph.Entity, version int64, options EntityScanOptions, cursor scanCursor) ([]graph.Entity, string, error) {
+func pageEntityMap(ctx context.Context, candidates *graph.ShardedMap[graph.Entity],
+	version int64, options EntityScanOptions, cursor scanCursor) ([]graph.Entity, string, error) {
 	items, err := selectBoundedScanCandidates(ctx, candidates, normalizedScanLimit(options.Limit)+1, cursor.After,
 		func(entity graph.Entity) scanPosition {
 			return scanPosition{group: entityShardID(entity.ID), id: entity.ID}
@@ -90,7 +91,8 @@ func pageEntityMap(ctx context.Context, candidates map[string]graph.Entity, vers
 	return entities, next, nil
 }
 
-func pageEdgeMap(ctx context.Context, candidates map[string]graph.Edge, version int64, options EdgeScanOptions, cursor scanCursor) ([]graph.Edge, string, error) {
+func pageEdgeMap(ctx context.Context, candidates *graph.ShardedMap[graph.Edge],
+	version int64, options EdgeScanOptions, cursor scanCursor) ([]graph.Edge, string, error) {
 	items, err := selectBoundedScanCandidates(ctx, candidates, normalizedScanLimit(options.Limit)+1, cursor.After,
 		func(edge graph.Edge) scanPosition {
 			return scanPosition{group: edge.Type + "\x00" + edgeShardID(edge.From), id: edge.ID}
@@ -104,7 +106,7 @@ func pageEdgeMap(ctx context.Context, candidates map[string]graph.Edge, version 
 	return edges, next, nil
 }
 
-func selectBoundedScanCandidates[T any](ctx context.Context, values map[string]T, keep int, after string, positionFor func(T) scanPosition, matches func(T) bool) ([]T, error) {
+func selectBoundedScanCandidates[T any](ctx context.Context, values *graph.ShardedMap[T], keep int, after string, positionFor func(T) scanPosition, matches func(T) bool) ([]T, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -112,9 +114,9 @@ func selectBoundedScanCandidates[T any](ctx context.Context, values map[string]T
 		return nil, nil
 	}
 	afterPosition, validAfter := parseScanPosition(after)
-	candidates := make(scanCandidateHeap, 0, min(len(values), keep))
+	candidates := make(scanCandidateHeap, 0, min(values.Len(), keep))
 	checked := 0
-	for key, value := range values {
+	for key, value := range values.All() {
 		checked++
 		if checked&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -151,7 +153,7 @@ func selectBoundedScanCandidates[T any](ctx context.Context, values map[string]T
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].position.compare(candidates[j].position) < 0 })
 	selected := make([]T, len(candidates))
 	for i := range candidates {
-		selected[i] = values[candidates[i].key]
+		selected[i] = values.At(candidates[i].key)
 	}
 	return selected, nil
 }

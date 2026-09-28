@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestIngestDurableBatchPublishesOneSegmentAndManifest(t *testing.T) {
@@ -402,8 +402,8 @@ func TestIngestDurableBatchMergesExistingLooseTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loadedManifest.Version != 3 || len(loaded.Entities) != 3 {
-		t.Fatalf("reloaded graph/manifest = %d entities, version %d", len(loaded.Entities), loadedManifest.Version)
+	if loadedManifest.Version != 3 || loaded.Entities.Len() != 3 {
+		t.Fatalf("reloaded graph/manifest = %d entities, version %d", loaded.Entities.Len(), loadedManifest.Version)
 	}
 	catalog, err := reloaded.GetIndexCatalog(context.Background(), "tenant-a")
 	if err != nil || catalog.Version != manifest.Version {

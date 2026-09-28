@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const timeSortLayout = "2006-01-02T15:04:05.000000000Z07:00"

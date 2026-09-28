@@ -4,14 +4,14 @@ import (
 	"sort"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func buildEdgeShards(g *graph.Graph, version int64) []EdgeShardData {
 	counts := edgeShardCounts(g)
 	now := time.Now().UTC()
 	shards := newEdgeShardBuckets(counts, version, now)
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		appendEdgeShard(shards, edge)
 	}
 	return finishEdgeShards(shards)
@@ -126,7 +126,7 @@ func mergeEdgeShardPack(group edgeShardDataPackGroup) EdgeShardData {
 
 func edgeShardCounts(g *graph.Graph) map[string]int {
 	shards := map[string]int{}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		shards[edge.Type+"\x00"+edgeShardID(edge.From)]++
 	}
 	return shards

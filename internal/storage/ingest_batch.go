@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -37,7 +37,7 @@ type IngestPreparedRequest struct {
 	FinalHeadCommitID        string        `json:"final_head_commit_id,omitempty"`
 	Result                   IngestResult  `json:"result"`
 	Commit                   *graph.Commit `json:"commit,omitempty"`
-	DataMD5                  string        `json:"data_md5,omitempty"`
+	DataHash                 string        `json:"data_hash,omitempty"`
 	StartedAt                time.Time     `json:"started_at"`
 }
 
@@ -978,7 +978,7 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolatedWithGuards(
 				Version:       current.Version,
 				HeadCommitID:  currentHeadID,
 				UpdatedAt:     currentUpdatedAt,
-				DataMD5:       loaded.DataMD5,
+				DataHash:      loaded.DataHash,
 			}
 			continue
 		}
@@ -1034,7 +1034,7 @@ func (s *TenantStore) prepareIngestBatchManifest(
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
-		digest, logicalBytes, err := finalGraph.ContentMD5WithLogicalSize()
+		digest, logicalBytes, err := finalGraph.ContentHashWithLogicalSize()
 		hashCh <- hashResult{digest: digest, logicalBytes: logicalBytes, err: err}
 	}()
 	go func() {
@@ -1065,7 +1065,7 @@ func (s *TenantStore) prepareIngestBatchManifest(
 	manifest.CommitSegments = append(append([]CommitSegmentRef(nil), manifest.CommitSegments...), segmented.prepared.ref)
 	manifest.CommitKeys = nil
 	manifest.UpdatedAt = last.CreatedAt
-	manifest.DataMD5 = hashed.digest
+	manifest.DataHash = hashed.digest
 	return manifest, hashed.logicalBytes, segmented.prepared, nil
 }
 
@@ -1107,7 +1107,7 @@ func (s *TenantStore) publishIngestBatch(
 		Graph:      finalGraph,
 		Manifest:   manifest,
 		Meta:       meta,
-		DataMD5:    manifest.DataMD5,
+		DataHash:   manifest.DataHash,
 		CommitTail: emptyCommitTailCache(),
 		CacheBytes: writeCacheBytesForGraphWithCommitTail(finalGraph, logicalBytes, emptyCommitTailCache()),
 	})
@@ -1300,7 +1300,7 @@ func (s *TenantStore) preparedIngestBatchPlans(
 	plans := make([]*IngestPreparedRequest, len(entries))
 	for _, candidate := range candidates {
 		if candidate.preparedPlan != nil {
-			if candidate.preparedPlan.DataMD5 != final.DataMD5 {
+			if candidate.preparedPlan.DataHash != final.DataHash {
 				return nil, fmt.Errorf("%w: prepared graph digest changed", ErrIngestRepairRequired)
 			}
 			plans[candidate.index] = candidate.preparedPlan
@@ -1313,7 +1313,7 @@ func (s *TenantStore) preparedIngestBatchPlans(
 			FinalVersion:      final.Version,
 			FinalHeadCommitID: final.HeadCommitID,
 			Result:            candidate.result,
-			DataMD5:           final.DataMD5,
+			DataHash:          final.DataHash,
 			StartedAt:         candidate.started,
 		}
 		if candidate.changed {

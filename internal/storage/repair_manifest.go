@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) manifestRepairIssues(ctx context.Context, tenantID string, manifest Manifest, manifestErr error) []RepairIssue {

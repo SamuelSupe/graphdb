@@ -16,7 +16,7 @@ func (s *TenantStore) restoreLocalTenantBackupTask(ctx context.Context, task Tas
 	if input.Integrity.Status == "error" {
 		return TenantRestoreReport{}, fmt.Errorf("backup integrity failed: %s", strings.Join(input.Integrity.Issues, "; "))
 	}
-	_, dataMD5, err := prepareTenantRestoreContext(input.Record, task.TenantID)
+	_, dataHash, err := prepareTenantRestoreContext(input.Record, task.TenantID)
 	if err != nil {
 		return TenantRestoreReport{}, err
 	}
@@ -44,7 +44,7 @@ func (s *TenantStore) restoreLocalTenantBackupTask(ctx context.Context, task Tas
 		if err != nil {
 			return TenantRestoreReport{}, err
 		}
-		if current.DataMD5 != dataMD5 || !s.restoreSnapshotCanResume(ctx, task, backupKey, input.Record) {
+		if current.DataHash != dataHash || !s.restoreSnapshotCanResume(ctx, task, backupKey, input.Record) {
 			return TenantRestoreReport{}, fmt.Errorf("%w: target tenant %q already exists", ErrConflict, task.TenantID)
 		}
 	}

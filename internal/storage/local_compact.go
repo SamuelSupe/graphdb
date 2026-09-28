@@ -12,7 +12,7 @@ func (s *TenantStore) publishLocalCompaction(
 	loaded loadedGraph,
 	snapshotKey string,
 	snapshotCatalogKey string,
-	dataMD5 string,
+	dataHash string,
 ) (Manifest, ObjectMeta, error) {
 	current, currentMeta, err := s.getManifest(ctx, tenantID)
 	if err != nil {
@@ -58,7 +58,7 @@ func (s *TenantStore) publishLocalCompaction(
 		return Manifest{}, ObjectMeta{}, err
 	}
 	if candidate.Version == snapshotVersion {
-		candidate.DataMD5 = dataMD5
+		candidate.DataHash = dataHash
 	}
 	candidate.UpdatedAt = time.Now().UTC()
 	meta, err := s.putManifestMeta(ctx, tenantID, candidate, currentMeta)
@@ -147,7 +147,7 @@ func (s *TenantStore) updateWriteCacheAfterLocalCompaction(
 	)
 	cached.Manifest = candidate
 	cached.Meta = meta
-	cached.DataMD5 = candidate.DataMD5
+	cached.DataHash = candidate.DataHash
 	cached.CacheBytes = addWriteCacheBytes(
 		writeCacheBytesWithoutCommitTail(cached), tail.bytes,
 	)

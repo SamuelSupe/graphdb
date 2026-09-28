@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestTraverseCursorContinuesPastSecondPage(t *testing.T) {

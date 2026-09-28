@@ -27,17 +27,17 @@ func (g *Graph) deleteEntityForce(entityID string) {
 	if entityID == "" {
 		return
 	}
-	if existing, ok := g.Entities[entityID]; ok {
+	if existing, ok := g.Entities.Get(entityID); ok {
 		g.removeEntityFromIndexes(entityID, existing)
 	}
-	delete(g.Entities, entityID)
+	g.Entities.Delete(entityID)
 	for _, edgeID := range g.incidentEdgeIDs(entityID) {
-		edge, ok := g.Edges[edgeID]
+		edge, ok := g.Edges.Get(edgeID)
 		if !ok {
 			continue
 		}
 		g.removeEdgeFromIndexes(edgeID, edge)
-		delete(g.Edges, edgeID)
+		g.Edges.Delete(edgeID)
 	}
 }
 

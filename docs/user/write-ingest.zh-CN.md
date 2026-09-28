@@ -167,7 +167,7 @@ curl -sS -X PUT "$WRITER/v1/source-policy" \
 
 字段别名：
 
-- `field_aliases` 在合并、索引、MD5 skip、查询、scan 和 export 前，把
+- `field_aliases` 在合并、索引、no-op detection、查询、scan 和 export 前，把
   输入的顶层 `entity.fields` 名称映射为规范字段名。
 - `source + kind` 规则优先于 source 全局回退规则。
 - 没有 `source` 的直接提交实体不使用别名；ingest 实体先继承批次 source。
@@ -296,7 +296,7 @@ atomic，或没有 expected version 但带前置条件的请求作为隔离 barr
 前后的请求仍可分别形成 cohort 或走普通 fast batch。批量 apply 回退时复用已经
 完成的 cohort 预检，不会针对同一 flush 中此前产生的版本再次逐请求比较。
 
-### 本地 WAL 模式（1.2 兼容 profile）
+### 本地 WAL 模式
 
 默认 `GRAPHDB_INGEST_MODE=direct` 保持原来的同步 `200/207` 行为。单 writer、
 `GRAPHDB_COORDINATION=local` 部署可以显式设置
@@ -325,8 +325,7 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
 ```
 
-在 PostgreSQL-CAS profile 中，acceptance body 会返回稳定 owner；`Location`
-header 和 `status_url` 指向同一个 owner 路由资源：
+acceptance body 返回本地实例标识；`Location` header 和 `status_url` 指向同一本地状态资源：
 
 ```http
 HTTP/1.1 202 Accepted
@@ -345,7 +344,7 @@ Content-Type: application/json
 ```
 
 轮询返回的资源，直到 `state` 变为 `committed` 或 `failed`。终态 status 会嵌入
-最终结果；`recovery_pending=true` 表示 owner 正在重建 WAL 状态，批次仍可查询：
+最终结果；`recovery_pending=true` 表示服务正在重建 WAL 状态，批次仍可查询：
 
 ```json
 {
@@ -472,9 +471,9 @@ JSONL/CSV Content-Type 推断；`batch_size` 默认 500、最大 5000；`on_erro
 为 `abort` 或 `continue`。当前上传上限是 32 MiB，每个租户同时只运行一个
 bulk import。
 
-## MD5 Skip
+## Content Hash / No-op Writes
 
-commit 和 ingest 作用于当前图。如果结果 MD5 与当前已存图相同，GGraphDB
+commit 和 ingest 作用于当前图。如果结果 logical content hash 与当前已存图相同，GGraphDB
 会跳过新 commit 并返回 `skipped=true`，避免重复采集导致 commit tail
 增长。
 

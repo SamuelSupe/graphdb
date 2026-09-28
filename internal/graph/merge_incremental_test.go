@@ -104,7 +104,7 @@ func TestBatchMergeTracksRedirectedEdgeFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	edgeID := CanonicalEdgeIDParts("link", "node:final", "node:sink")
-	if edge, ok := next.Edges[edgeID]; !ok ||
+	if edge, ok := next.Edges.Get(edgeID); !ok ||
 		edge.From != "node:final" ||
 		edge.To != "node:sink" {
 		t.Fatalf("redirected edge = %#v, found=%v", edge, ok)
@@ -112,7 +112,7 @@ func TestBatchMergeTracksRedirectedEdgeFingerprint(t *testing.T) {
 
 	recomputed := next.Clone()
 	recomputed.contentFingerprintMu.Lock()
-	recomputed.contentFingerprint = [16]byte{}
+	recomputed.contentFingerprint = [32]byte{}
 	recomputed.contentFingerprintReady = false
 	recomputed.contentFingerprintMu.Unlock()
 	want, err := recomputed.ContentFingerprint()

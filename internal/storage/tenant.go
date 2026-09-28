@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type Manifest struct {
@@ -23,7 +23,7 @@ type Manifest struct {
 	UpdatedAt          time.Time          `json:"updated_at"`
 	WriterFence        string             `json:"-"`
 	WriterFenceEpoch   int64              `json:"-"`
-	DataMD5            string             `json:"-"`
+	DataHash           string             `json:"-"`
 }
 
 type CommitSegmentRef struct {
@@ -41,7 +41,7 @@ type CommitResult struct {
 	ReadAfterCommitID string                         `json:"read_after_commit_id,omitempty"`
 	Skipped           bool                           `json:"skipped,omitempty"`
 	IdempotentReplay  bool                           `json:"idempotent_replay,omitempty"`
-	DataMD5           string                         `json:"data_md5,omitempty"`
+	DataHash          string                         `json:"data_hash,omitempty"`
 	Suppressed        []graph.FieldConflict          `json:"suppressed,omitempty"`
 	CanonicalEntities []graph.EntityCanonicalization `json:"canonical_entities,omitempty"`
 	CanonicalEdges    []graph.EdgeCanonicalization   `json:"canonical_edges,omitempty"`
@@ -95,9 +95,9 @@ type TenantStore struct {
 	indexCatalogLoads        map[string]*indexCatalogLoad
 	indexUpdateMu            sync.Mutex
 	indexUpdateTails         map[string]chan struct{}
+	indexUnreservedTails     map[string]chan struct{}
 	pendingIngestIndexes     map[string]*commitIndexUpdate
 	maintenance              *maintenanceResources
-	activeIngestIndexBytes   int64
 	activeIngestIndexUpdates int
 	reverseIndexCatalogCache map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads map[string]*reverseIndexCatalogLoad
@@ -146,7 +146,7 @@ type loadedGraph struct {
 	Graph      *graph.Graph
 	Manifest   Manifest
 	Meta       ObjectMeta
-	DataMD5    string
+	DataHash   string
 	CommitTail commitTailCache
 	CacheBytes int64
 }
@@ -173,6 +173,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		indexCatalogCache:        map[string]cachedIndexCatalog{},
 		indexCatalogLoads:        map[string]*indexCatalogLoad{},
 		indexUpdateTails:         map[string]chan struct{}{},
+		indexUnreservedTails:     map[string]chan struct{}{},
 		reverseIndexCatalogCache: map[string]cachedReverseIndexCatalog{},
 		reverseIndexCatalogLoads: map[string]*reverseIndexCatalogLoad{},
 		compiledScanCatalogCache: map[string]*compiledScanCatalog{},
@@ -221,11 +222,11 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 		return Manifest{}, err
 	}
 	ctx = boundCtx
-	g, dataMD5, cacheBytes, err := newEmptyTenantGraph()
+	g, dataHash, cacheBytes, err := newEmptyTenantGraph()
 	if err != nil {
 		return Manifest{}, err
 	}
-	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataMD5: dataMD5}
+	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataHash: dataHash}
 	meta, err := s.putManifestMeta(ctx, tenantID, manifest, ObjectMeta{Key: s.manifestKey(tenantID)})
 	if err != nil {
 		return manifest, err
@@ -235,7 +236,7 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 	}
 	s.setWriteCache(tenantID, loadedGraph{
 		Graph: g, Manifest: manifest, Meta: meta,
-		DataMD5:    dataMD5,
+		DataHash:   dataHash,
 		CommitTail: emptyCommitTailCache(),
 		CacheBytes: cacheBytes,
 	})
@@ -247,8 +248,8 @@ func newEmptyTenantGraph() (*graph.Graph, string, int64, error) {
 	if _, err := g.ContentFingerprint(); err != nil {
 		return nil, "", 0, err
 	}
-	dataMD5, logicalBytes, err := g.ContentMD5WithLogicalSize()
-	return g, dataMD5, writeCacheBytesForGraph(g, logicalBytes), err
+	dataHash, logicalBytes, err := g.ContentHashWithLogicalSize()
+	return g, dataHash, writeCacheBytesForGraph(g, logicalBytes), err
 }
 
 func (s *TenantStore) Commit(ctx context.Context, tenantID string, mutations graph.Mutations, opts CommitOptions) (Manifest, error) {
@@ -276,9 +277,9 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	g := loaded.Graph
 	manifest := loaded.Manifest
 	alreadyCompacted := manifestCommitTailLength(manifest) == 0 && manifest.Version == manifest.SnapshotVersion && manifest.SnapshotKey != "" && manifest.SnapshotCatalogKey != ""
-	dataMD5 := loaded.DataMD5
-	if !alreadyCompacted && dataMD5 == "" {
-		dataMD5, err = g.ContentMD5()
+	dataHash := loaded.DataHash
+	if !alreadyCompacted && dataHash == "" {
+		dataHash, err = g.ContentHash()
 		if err != nil {
 			return Manifest{}, err
 		}
@@ -333,7 +334,7 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 		return current, nil
 	}
 	manifest, _, err = s.publishLocalCompaction(
-		ctx, tenantID, loaded, snapshotKey, snapshotCatalog.Key, dataMD5,
+		ctx, tenantID, loaded, snapshotKey, snapshotCatalog.Key, dataHash,
 	)
 	return manifest, err
 }

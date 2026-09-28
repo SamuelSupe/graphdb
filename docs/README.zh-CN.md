@@ -1,4 +1,4 @@
-# 文档
+# GGraphDB 2.0 文档
 
 [English](README.md)
 
@@ -8,10 +8,12 @@
 
 ## 用户指南
 
+- [2.0 发行说明](../release/local-disk.md) · [性能验证](performance-v2.0.md)
+
 - [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)
 - [对象存储快照备份与恢复](object-backup.zh-CN.md) · [English](object-backup.md)
-- [本地磁盘 v2 验证与性能抽查](performance-local-disk-v2.md)
-- [本地磁盘第二轮优化：分页、JSON 编码与 Parquet 布局](performance-local-disk-optimization-2.md)
+- [历史记录：本地磁盘 v2 验证与性能抽查](performance-local-disk-v2.md)
+- [历史记录：本地磁盘第二轮优化：分页、JSON 编码与 Parquet 布局](performance-local-disk-optimization-2.md)
 
 - [用户指南](user/README.zh-CN.md) · [English](user/README.md)
 - [快速开始](user/quickstart.zh-CN.md) · [English](user/quickstart.md)

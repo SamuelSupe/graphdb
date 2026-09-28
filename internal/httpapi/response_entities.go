@@ -1,9 +1,9 @@
 package httpapi
 
 import (
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 // Use the entity's wire fields directly so the outer encoder does not have to

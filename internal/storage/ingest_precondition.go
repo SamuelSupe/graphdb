@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const (
@@ -154,7 +154,7 @@ func evaluateIngestPreconditions(g *graph.Graph, conditions []IngestPrecondition
 
 func ingestPreconditionValue(g *graph.Graph, condition IngestPrecondition) (any, bool) {
 	if condition.ResourceType == "entity" {
-		entity, ok := g.Entities[condition.ID]
+		entity, ok := g.Entities.Get(condition.ID)
 		if condition.Field == "" {
 			return nil, ok
 		}
@@ -164,7 +164,7 @@ func ingestPreconditionValue(g *graph.Graph, condition IngestPrecondition) (any,
 		value, exists := entity.Fields[condition.Field]
 		return value, exists
 	}
-	edge, ok := g.Edges[condition.ID]
+	edge, ok := g.Edges.Get(condition.ID)
 	if condition.Field == "" {
 		return nil, ok
 	}

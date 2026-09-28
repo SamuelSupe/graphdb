@@ -5,11 +5,11 @@ import "testing"
 func TestEntityAliasIndexStorageCopyIsolation(t *testing.T) {
 	source := New()
 	source.Version = 1
-	source.Entities["node:current"] = Entity{
+	source.Entities.Set("node:current", Entity{
 		ID:         "node:current",
 		Kind:       "node",
 		MergedFrom: []string{"node:legacy"},
-	}
+	})
 	source.rebuildIndexes()
 
 	next, _, err := source.ApplyCommitStorageCopyWithOptions(Commit{
@@ -32,14 +32,14 @@ func TestEntityAliasIndexStorageCopyIsolation(t *testing.T) {
 
 func TestEntityAliasIndexKeepsAmbiguousAliasUnresolved(t *testing.T) {
 	g := New()
-	g.Entities["node:a"] = Entity{
+	g.Entities.Set("node:a", Entity{
 		ID: "node:a", Kind: "node",
 		MergedFrom: []string{"node:legacy"},
-	}
-	g.Entities["node:b"] = Entity{
+	})
+	g.Entities.Set("node:b", Entity{
 		ID: "node:b", Kind: "node",
 		MergedFrom: []string{"node:legacy"},
-	}
+	})
 	g.rebuildIndexes()
 
 	if resolved := g.ResolveEntityReference("node:legacy"); resolved != "" {

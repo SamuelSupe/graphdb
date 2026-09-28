@@ -193,12 +193,12 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if resolved != "" {
 			tracker.touchEdge(resolved)
 			affectedEdges.add(resolved)
-			edge := g.Edges[resolved]
+			edge := g.Edges.At(resolved)
 			g.removeEdgeFromIndexes(resolved, edge)
-			delete(g.Edges, resolved)
+			g.Edges.Delete(resolved)
 		} else {
 			tracker.touchEdge(edgeID)
-			delete(g.Edges, edgeID)
+			g.Edges.Delete(edgeID)
 		}
 	}
 	for _, request := range commit.Mutations.DeleteEdgeRequests {
@@ -209,7 +209,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if edgeID == "" {
 			continue
 		}
-		edge, ok := g.Edges[edgeID]
+		edge, ok := g.Edges.Get(edgeID)
 		if !ok {
 			continue
 		}
@@ -221,7 +221,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if sourceCanDeleteEdge(existingOwner, incomingOwner) {
 			affectedEdges.add(edgeID)
 			g.removeEdgeFromIndexes(edgeID, edge)
-			delete(g.Edges, edgeID)
+			g.Edges.Delete(edgeID)
 			continue
 		}
 		report.Suppressed = append(report.Suppressed, existenceConflict(edgeID, request, existingOwner, incomingOwner))
@@ -234,7 +234,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if entityID == "" {
 			continue
 		}
-		entity, ok := g.Entities[entityID]
+		entity, ok := g.Entities.Get(entityID)
 		if !ok {
 			continue
 		}
@@ -323,7 +323,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 			g.addEntityToIndexes(normalized.ID, normalized)
 		}
 		clearEntityWriteMetadata(&normalized)
-		g.Entities[normalized.ID] = normalized
+		g.Entities.Set(normalized.ID, normalized)
 		uniqueValidator.add(normalized)
 		affected.add(normalized.ID)
 	}
@@ -385,7 +385,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		if err := g.validateEdge(normalized); err != nil {
 			return ApplyReport{}, err
 		}
-		if previous, ok := g.Edges[normalized.ID]; ok {
+		if previous, ok := g.Edges.Get(normalized.ID); ok {
 			g.removeEdgeFromIndexes(normalized.ID, previous)
 			var mergeReport ApplyReport
 			normalized, mergeReport = mergeEdgeForUpsert(previous, normalized, normalized.ID, incomingID, commit.Version, now)
@@ -401,7 +401,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 		}
 		normalized.UpdatedAt = now
 		normalized.Version = commit.Version
-		g.Edges[normalized.ID] = normalized
+		g.Edges.Set(normalized.ID, normalized)
 		g.addEdgeToIndexes(normalized.ID, normalized)
 		if err := g.validateCardinality(normalized); err != nil {
 			return ApplyReport{}, err

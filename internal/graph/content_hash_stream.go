@@ -1,31 +1,23 @@
 package graph
 
 import (
-	"bufio"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
-	"hash"
-	"io"
 	"sort"
-	"sync"
 )
 
-var logicalHashWriterPool = sync.Pool{
-	New: func() any { return bufio.NewWriterSize(io.Discard, 64*1024) },
-}
+const ContentHashAlgorithm = "sha256-shards-v2"
 
-// ContentMD5 preserves the logical snapshot JSON encoding while hashing one
-// item at a time. This avoids keeping a second full logical graph plus its
-// encoded JSON in memory during every write.
-func (g *Graph) ContentMD5() (string, error) {
-	value, _, err := g.ContentMD5WithLogicalSize()
+// ContentHash identifies logical graph content, excluding version and timestamps.
+// The algorithm prefix is part of the public digest contract.
+func (g *Graph) ContentHash() (string, error) {
+	value, _, err := g.ContentHashWithLogicalSize()
 	return value, err
 }
 
-// ContentMD5WithLogicalSize also reports the encoded logical byte count. The
-// writer cache uses that stable count as the basis for a conservative memory
-// weight without walking or encoding the graph a second time.
-func (g *Graph) ContentMD5WithLogicalSize() (string, int64, error) {
+// ContentHashWithLogicalSize returns the canonical logical-item byte count for
+// memory admission. Unchanged shard digests are reused across graph versions.
+func (g *Graph) ContentHashWithLogicalSize() (string, int64, error) {
 	g.logicalHashMu.Lock()
 	defer g.logicalHashMu.Unlock()
 	if g.logicalHashCache == nil {
@@ -35,70 +27,24 @@ func (g *Graph) ContentMD5WithLogicalSize() (string, int64, error) {
 		}
 		g.logicalHashCache = cache
 	}
-	if g.logicalHashCache.finalReady {
-		return g.logicalHashCache.digest, g.logicalHashCache.logicalBytes, nil
-	}
-
-	digest := &countingHash{Hash: md5.New()}
-	buffered := logicalHashWriterPool.Get().(*bufio.Writer)
-	buffered.Reset(digest)
-	defer func() {
-		buffered.Reset(io.Discard)
-		logicalHashWriterPool.Put(buffered)
-	}()
-	_, _ = io.WriteString(buffered, "{")
-	firstField := true
 	cache := g.logicalHashCache
-	for _, field := range []struct {
-		name     string
-		category logicalHashCategory
-	}{
-		{name: "ci_types", category: cache.ciTypes},
-		{name: "entities", category: cache.entities},
-		{name: "relation_types", category: cache.relationTypes},
-		{name: "edges", category: cache.edges},
-	} {
-		writeLogicalHashArray(buffered, &firstField, field.name, field.category)
-	}
-
-	_, _ = io.WriteString(buffered, "}")
-	if err := buffered.Flush(); err != nil {
-		return "", 0, err
-	}
-	cache.digest = hex.EncodeToString(digest.Sum(nil))
-	cache.logicalBytes = digest.written
-	cache.finalReady = true
-	return cache.digest, cache.logicalBytes, nil
-}
-
-type countingHash struct {
-	hash.Hash
-	written int64
-}
-
-func (h *countingHash) Write(data []byte) (int, error) {
-	n, err := h.Hash.Write(data)
-	h.written += int64(n)
-	return n, err
-}
-
-func writeLogicalHashArray(digest io.Writer, firstField *bool, name string, category logicalHashCategory) {
-	if len(category.keys) == 0 {
-		return
-	}
-	if !*firstField {
-		_, _ = io.WriteString(digest, ",")
-	}
-	*firstField = false
-	_, _ = io.WriteString(digest, `"`+name+`":`)
-	_, _ = io.WriteString(digest, "[")
-	for i, value := range category.encoded {
-		if i > 0 {
-			_, _ = io.WriteString(digest, ",")
+	if !cache.finalReady {
+		digest := sha256.New()
+		_, _ = digest.Write([]byte(ContentHashAlgorithm + "\x00"))
+		var empty [sha256.Size]byte
+		for _, category := range cache.categories {
+			for _, block := range category {
+				if block == nil {
+					_, _ = digest.Write(empty[:])
+				} else {
+					_, _ = digest.Write(block.digest[:])
+				}
+			}
 		}
-		_, _ = digest.Write(value)
+		cache.digest = ContentHashAlgorithm + ":" + hex.EncodeToString(digest.Sum(nil))
+		cache.finalReady = true
 	}
-	_, _ = io.WriteString(digest, "]")
+	return cache.digest, cache.logicalBytes, nil
 }
 
 func logicalEntityForHash(entity Entity) logicalEntity {

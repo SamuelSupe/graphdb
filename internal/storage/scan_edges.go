@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) ListEdges(ctx context.Context, tenantID string, options EdgeScanOptions) (result EdgeScanResult, err error) {

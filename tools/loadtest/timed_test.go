@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func TestTimedWALWaitsThroughRetryAndChecksReadableVersion(t *testing.T) {

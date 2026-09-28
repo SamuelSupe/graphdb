@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestLocalPreparedCommitSurvivesCompactionAndReopen(t *testing.T) {
@@ -39,7 +39,7 @@ func TestLocalPreparedCommitSurvivesCompactionAndReopen(t *testing.T) {
 				}
 				opts := CommitOptions{IdempotencyKey: "recoverable"}
 				first, err := store.CommitWithReport(ctx, "tenant", mutations, opts)
-				if err == nil || first.DataMD5 == "" {
+				if err == nil || first.DataHash == "" {
 					t.Fatalf("expected finalization failure, got %+v, %v", first, err)
 				}
 				if retryBefore {
@@ -66,11 +66,11 @@ func TestLocalPreparedCommitSurvivesCompactionAndReopen(t *testing.T) {
 				defer reopened.Close()
 				store = NewTenantStore(reopened, "test")
 				result, err := store.CommitWithReport(ctx, "tenant", mutations, opts)
-				if err != nil || !result.IdempotentReplay || result.Version != first.Version || result.DataMD5 != first.DataMD5 {
+				if err != nil || !result.IdempotentReplay || result.Version != first.Version || result.DataHash != first.DataHash {
 					t.Fatalf("replay after compact, GC and reopen = %+v, %v", result, err)
 				}
 				g, manifest, err := store.Load(ctx, "tenant")
-				if err != nil || manifest.Version != first.Version+1 || len(g.Entities) != int(first.Version)+1 {
+				if err != nil || manifest.Version != first.Version+1 || g.Entities.Len() != int(first.Version)+1 {
 					t.Fatalf("replay changed graph: manifest=%+v err=%v", manifest, err)
 				}
 			})

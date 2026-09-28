@@ -1,6 +1,6 @@
 package query
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 // visitPathsInIdentityOrder walks depth first so a path is emitted immediately
 // before its extensions. With edge neighbors ordered by ID, this is the same

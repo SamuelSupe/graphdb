@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestLoadDoesNotReuseCacheAcrossTenantRecreate(t *testing.T) {
@@ -51,10 +51,10 @@ func TestLoadDoesNotReuseCacheAcrossTenantRecreate(t *testing.T) {
 			if manifest.Version != 1 {
 				t.Fatalf("manifest version = %d, want 1", manifest.Version)
 			}
-			if _, ok := loaded.Entities["host:new"]; !ok {
+			if _, ok := loaded.Entities.Get("host:new"); !ok {
 				t.Fatalf("recreated entity missing: %#v", loaded.Entities)
 			}
-			if _, ok := loaded.Entities["host:old"]; ok {
+			if _, ok := loaded.Entities.Get("host:old"); ok {
 				t.Fatalf("stale entity survived tenant recreation: %#v", loaded.Entities)
 			}
 		})

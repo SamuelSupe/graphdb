@@ -1,24 +1,30 @@
-# GGraphDB naming and 1.0 compatibility
+# GGraphDB 2.0 contracts
 
-The public product name is **GGraphDB**.
+The product is GGraphDB. Version 2.0 is the main local-disk release; S3-compatible
+storage is optional snapshot backup storage. Run one process per local directory.
+Remote primary storage, PostgreSQL coordination, separate reader/writer modes
+and shared network filesystems are unsupported.
 
-The canonical text protocol name is **GraphQL**, served by
-`POST /v1/query/graphql`. It accepts GraphQL documents and variables and
-returns a GraphQL `data`/`errors` envelope. The GraphQL schema and 1.1 limits
-are documented in [graphql.md](graphql.md).
+## Version boundary
 
-The following technical identifiers remain unchanged in 1.1 to avoid breaking
-1.0 deployments and clients:
+2.0 replaces the 1.x release line. It does not provide automatic data migration,
+a legacy `data_md5` response, or a cross-version rollback guarantee. Start with a
+new data directory. Keep any 1.x installation and backups separate; 2.0 backup
+and restore operate within the 2.0 format. Never point an older binary at 2.0 data.
 
-| Compatibility identifier | 1.1 policy |
-| --- | --- |
-| `graphdb` binary and repository/module paths | Retained. |
-| `GRAPHDB_*` environment variables | Retained. |
-| `X-GraphDB-*` response and control headers | Retained. |
-| `graphdb` object prefixes and layout keys | Retained. |
-| Go package `graphdb` and Python `GraphDBClient` | Retained. |
-| `/v1/query/gql`, `graphdb gql`, SDK `GQL`/`gql` | Deprecated 1.0 text-DSL aliases; not GraphQL. |
+Commit results use `data_hash`: `sha256-shards-v2:` followed by 64 lowercase hex
+characters. It identifies logical graph content, excluding commit version and
+timestamps. The algorithm is specified in [content-hash-v2.md](content-hash-v2.md).
+It is a different contract from the former MD5 of the complete logical JSON.
+No-op writes retain the current version and hash; idempotent retries return the
+recorded result. `expected_version`, `min_version`, cursor version checks and
+WAL accepted/published/terminal distinctions remain supported.
 
-New public documentation must not call the `FIND`/`MATCH` compatibility DSL
-“GQL”. That name is reserved neither as a GGraphDB language nor as an
-abbreviation for the legacy syntax.
+The HTTP routes remain `/v1/...`; that is the API route namespace, not the product
+major version. GraphQL is served by `POST /v1/query/graphql`. The legacy text DSL
+aliases still refer to the text DSL, not GraphQL. Existing extension directory
+names such as `extensions/v1.1/` are layout identifiers, not a compatibility promise.
+
+Both SDKs are version 2.0.0. The Go module is
+`github.com/SamuelSupe/graphdb/v2`; import
+`github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`.

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 )
 
 func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (map[string]any, string, error) {

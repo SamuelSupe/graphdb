@@ -53,7 +53,7 @@ func (g *Graph) MatchFieldIndex(kind string, field string, values []any) []Entit
 	ids := g.MatchFieldIndexIDs(kind, field, values)
 	entities := make([]Entity, 0, len(ids))
 	for _, id := range ids {
-		if entity, ok := g.Entities[id]; ok {
+		if entity, ok := g.Entities.Get(id); ok {
 			entities = append(entities, copyEntity(entity))
 		}
 	}
@@ -79,7 +79,7 @@ func distinctScalarKeys(values []any) []string {
 
 func (g *Graph) KindCount(kind string) int {
 	if kind == "" {
-		return len(g.Entities)
+		return g.Entities.Len()
 	}
 	return g.kindCounts[kind]
 }
@@ -107,7 +107,7 @@ func (g *Graph) matchCandidates(kind string, filters Fields) []Entity {
 	}
 	entities := make([]Entity, 0, len(best))
 	for id := range best {
-		if entity, ok := g.Entities[id]; ok {
+		if entity, ok := g.Entities.Get(id); ok {
 			entities = append(entities, entity)
 		}
 	}
@@ -115,8 +115,8 @@ func (g *Graph) matchCandidates(kind string, filters Fields) []Entity {
 }
 
 func (g *Graph) allEntities() []Entity {
-	entities := make([]Entity, 0, len(g.Entities))
-	for _, entity := range g.Entities {
+	entities := make([]Entity, 0, g.Entities.Len())
+	for _, entity := range g.Entities.All() {
 		entities = append(entities, entity)
 	}
 	return entities
@@ -137,17 +137,17 @@ func (g *Graph) FilteredNeighbors(entityID, direction string, relationTypes map[
 	}
 	refs := make([]neighborRef, 0)
 	if direction == "out" || direction == "both" {
-		for edgeID := range g.out[entityID] {
+		for edgeID := range g.out.At(entityID) {
 			if charge != nil {
 				if err := charge(); err != nil {
 					return nil, err
 				}
 			}
-			edge := g.Edges[edgeID]
+			edge := g.Edges.At(edgeID)
 			if !neighborRelationAllowed(edge.Type, relationTypes) || !neighborImpactAllowed(g, edge.Type, "out", impact) {
 				continue
 			}
-			neighbor, ok := g.Entities[edge.To]
+			neighbor, ok := g.Entities.Get(edge.To)
 			if !ok {
 				continue
 			}
@@ -158,17 +158,17 @@ func (g *Graph) FilteredNeighbors(entityID, direction string, relationTypes map[
 		}
 	}
 	if direction == "in" || direction == "both" {
-		for edgeID := range g.in[entityID] {
+		for edgeID := range g.in.At(entityID) {
 			if charge != nil {
 				if err := charge(); err != nil {
 					return nil, err
 				}
 			}
-			edge := g.Edges[edgeID]
+			edge := g.Edges.At(edgeID)
 			if !neighborRelationAllowed(edge.Type, relationTypes) || !neighborImpactAllowed(g, edge.Type, "in", impact) {
 				continue
 			}
-			neighbor, ok := g.Entities[edge.From]
+			neighbor, ok := g.Entities.Get(edge.From)
 			if !ok {
 				continue
 			}
@@ -189,8 +189,8 @@ func (g *Graph) FilteredNeighbors(entityID, direction string, relationTypes map[
 	})
 	results := make([]Neighbor, 0, len(refs))
 	for _, ref := range refs {
-		edge := g.Edges[ref.edgeID]
-		entity := g.Entities[ref.entityID]
+		edge := g.Edges.At(ref.edgeID)
+		entity := g.Entities.At(ref.entityID)
 		results = append(results, Neighbor{Entity: copyEntity(entity), Edge: copyEdge(edge), Direction: ref.direction})
 	}
 	return results, nil

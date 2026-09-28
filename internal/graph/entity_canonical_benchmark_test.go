@@ -7,10 +7,11 @@ import (
 
 func BenchmarkSortedEntityIDs(b *testing.B) {
 	const entityCount = 20000
-	entities := make(map[string]Entity, entityCount)
+	entities := NewShardedMap[Entity]()
+
 	for i := 0; i < entityCount; i++ {
 		id := fmt.Sprintf("entity:%05d", i)
-		entities[id] = Entity{ID: id, Kind: "node"}
+		entities.Set(id, Entity{ID: id, Kind: "node"})
 	}
 
 	b.ReportAllocs()

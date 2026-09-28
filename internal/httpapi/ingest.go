@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {

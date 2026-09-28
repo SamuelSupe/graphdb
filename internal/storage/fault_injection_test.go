@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestFaultInjectionRegressionMatrix(t *testing.T) {
@@ -144,7 +144,7 @@ func testFaultCASCommitCollisionRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(g.Entities) != 1 {
+	if g.Entities.Len() != 1 {
 		t.Fatalf("entities = %#v, want exactly one visible entity", g.Entities)
 	}
 }

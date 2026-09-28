@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestEnhancedFiltersSortProjectionAggregationAndStableCursor(t *testing.T) {
@@ -362,11 +362,11 @@ func TestBoundedIndexedMatchReturnsOwnedEntities(t *testing.T) {
 	for _, strategy := range []string{"field-index", "field-index-scan"} {
 		for _, projected := range []bool{false, true} {
 			g := seedCMDBGraph(t)
-			for id, entity := range g.Entities {
+			for id, entity := range g.Entities.All() {
 				entity.Fields["nested"] = map[string]any{"values": []any{"original"}}
 				entity.Fields[graph.ReservedLabelsField] = []string{"original"}
 				entity.Identity["nested"] = map[string]any{"value": "original"}
-				g.Entities[id] = entity
+				g.Entities.Set(id, entity)
 			}
 			request := Request{
 				Op: "match", Kind: "host", Limit: 1, Profile: true,
@@ -982,7 +982,7 @@ func unindexedGraphFrom(source *graph.Graph) *graph.Graph {
 	g := graph.New()
 	g.Version = snapshot.Version
 	for _, entity := range snapshot.Entities {
-		g.Entities[entity.ID] = entity
+		g.Entities.Set(entity.ID, entity)
 	}
 	return g
 }

@@ -3,7 +3,7 @@ package query
 import (
 	"sort"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func neighborsForBudget(g *graph.Graph, entityID string, request Request, budget *budget) ([]graph.Neighbor, error) {

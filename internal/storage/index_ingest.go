@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const (
@@ -28,31 +28,37 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	work.fence = bound.fence
 	work.background = true
 	s.indexUpdateMu.Lock()
+	// Do not reserve memory behind a synchronous predecessor: that predecessor
+	// may need the same memory before it can complete and release this work.
+	if s.indexUnreservedTails[tenantID] != nil {
+		s.indexUpdateMu.Unlock()
+		release()
+		return false
+	}
 	if pending := s.pendingIngestIndexes[tenantID]; pending != nil &&
 		s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
 		len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
 			len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges &&
-		pendingIndexBytes(pending.before, work.after) <= s.backgroundIndexByteLimit()-(s.activeIngestIndexBytes-pending.retainedBytes) {
-		s.activeIngestIndexBytes -= pending.retainedBytes
+		pending.reservation.resize(pendingIndexBytes(pending.before, work.after)) {
 		mergePendingIndexUpdate(pending, work)
-		pending.retainedBytes = pendingIndexBytes(pending.before, pending.after)
-		s.activeIngestIndexBytes += pending.retainedBytes
-		s.recordMaintenanceMemory("pending_indexes", s.activeIngestIndexBytes)
 		s.indexUpdateMu.Unlock()
 		release()
 		return true
 	}
 	// Do not wait for capacity while holding the tenant lock: a queued rebuild
 	// can need that lock. The caller falls back to finishing after unlocking.
-	work.retainedBytes = pendingIndexBytes(work.before, work.after)
-	if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates || work.retainedBytes > s.backgroundIndexByteLimit()-s.activeIngestIndexBytes {
+	if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
+		s.indexUpdateMu.Unlock()
+		release()
+		return false
+	}
+	work.reservation = s.reserveIndexMemory(pendingIndexBytes(work.before, work.after))
+	if work.reservation == nil {
 		s.indexUpdateMu.Unlock()
 		release()
 		return false
 	}
 	s.activeIngestIndexUpdates++
-	s.activeIngestIndexBytes += work.retainedBytes
-	s.recordMaintenanceMemory("pending_indexes", s.activeIngestIndexBytes)
 	work.done = make(chan struct{})
 	work.waitFor = s.indexUpdateTails[tenantID]
 	s.indexUpdateTails[tenantID] = work.done
@@ -62,12 +68,11 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	s.pendingIngestIndexes[tenantID] = work
 	s.indexUpdateMu.Unlock()
 	go func() {
+		defer work.reservation.release()
 		defer release()
 		defer func() {
 			s.indexUpdateMu.Lock()
 			s.activeIngestIndexUpdates--
-			s.activeIngestIndexBytes -= work.retainedBytes
-			s.recordMaintenanceMemory("pending_indexes", s.activeIngestIndexBytes)
 			s.indexUpdateMu.Unlock()
 		}()
 		s.finishCommitIndexUpdate(ctx, tenantID, work, nil)

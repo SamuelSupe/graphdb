@@ -17,11 +17,11 @@ func largeIsolatedMutationGraph(
 		AllowCrossKind: true,
 		Cardinality:    ManyToMany,
 	}
-	g.Entities["node:target"] = Entity{ID: "node:target", Kind: "node"}
-	g.Entities["node:source"] = Entity{ID: "node:source", Kind: "node"}
+	g.Entities.Set("node:target", Entity{ID: "node:target", Kind: "node"})
+	g.Entities.Set("node:source", Entity{ID: "node:source", Kind: "node"})
 	for i := 0; i < entityCount; i++ {
 		id := fmt.Sprintf("node:%05d", i)
-		g.Entities[id] = Entity{ID: id, Kind: "node"}
+		g.Entities.Set(id, Entity{ID: id, Kind: "node"})
 	}
 	for i := 0; i < edgeCount; i++ {
 		from := fmt.Sprintf("node:%05d", i%entityCount)
@@ -31,7 +31,7 @@ func largeIsolatedMutationGraph(
 		)
 		edge := Edge{Type: "link", From: from, To: to}
 		edge.ID = CanonicalEdgeID(edge)
-		g.Edges[edge.ID] = edge
+		g.Edges.Set(edge.ID, edge)
 	}
 	g.rebuildIndexes()
 	if err := g.ensureContentFingerprint(); err != nil {

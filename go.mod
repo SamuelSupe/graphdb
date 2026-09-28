@@ -1,4 +1,4 @@
-module gitlab.jiagouyun.com/guance/graphdb
+module github.com/SamuelSupe/graphdb/v2
 
 go 1.25.0
 

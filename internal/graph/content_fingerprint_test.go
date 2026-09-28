@@ -66,7 +66,7 @@ func TestContentFingerprintTracksMutationSizedChanges(t *testing.T) {
 
 func TestContentFingerprintConcurrentFirstRead(t *testing.T) {
 	g := New()
-	g.Entities["host:a"] = Entity{ID: "host:a", Kind: "host", Fields: Fields{"name": "app"}}
+	g.Entities.Set("host:a", Entity{ID: "host:a", Kind: "host", Fields: Fields{"name": "app"}})
 	const readers = 32
 	values := make(chan string, readers)
 	errs := make(chan error, readers)

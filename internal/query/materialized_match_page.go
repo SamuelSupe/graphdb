@@ -4,7 +4,7 @@ import (
 	"container/heap"
 	"sort"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func materializedKindPageAvailable(
@@ -12,7 +12,7 @@ func materializedKindPageAvailable(
 	request Request,
 	plan Plan,
 ) bool {
-	return len(g.Entities) > 0 &&
+	return g.Entities.Len() > 0 &&
 		plan.Strategy == "kind-scan" &&
 		canPageMatchEarly(request)
 }
@@ -47,9 +47,9 @@ func executeMaterializedKindPage(
 			err := budget.measure(
 				"filter-project",
 				"",
-				len(g.Entities),
+				g.Entities.Len(),
 				func() (int, error) {
-					for _, entity := range g.Entities {
+					for _, entity := range g.Entities.All() {
 						if err := budget.add(1); err != nil {
 							return ids.Len(), err
 						}
@@ -164,7 +164,7 @@ func validateMaterializedMatchCursor(
 	if !ok {
 		return "", invalidCursorAfter(cursor)
 	}
-	entity, ok := g.Entities[id]
+	entity, ok := g.Entities.Get(id)
 	if !ok ||
 		(request.Kind != "" && entity.Kind != request.Kind) ||
 		!requestEntityMatches(&request, &entity) {

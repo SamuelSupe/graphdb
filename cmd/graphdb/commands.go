@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/bootstrap"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/bootstrap"
+	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
+	"github.com/SamuelSupe/graphdb/v2/internal/config"
+	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 const (

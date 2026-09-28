@@ -1,6 +1,6 @@
 package query
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 func executeMatch(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
 	if lazyKindScanAvailable(g, request, plan, budget) {
@@ -155,7 +155,7 @@ func executeBoundedMatchPageByID(g *graph.Graph, request Request, ids []string, 
 	}
 	if err := budget.measure("filter-project", "", len(ids), func() (int, error) {
 		for _, id := range ids {
-			entity, ok := g.Entities[id]
+			entity, ok := g.Entities.Get(id)
 			if !ok {
 				continue
 			}
@@ -212,7 +212,7 @@ func executeBoundedMatchPageByFieldIndex(g *graph.Graph, request Request, plan P
 		err := budget.measure("filter-project", "", plan.EstimatedRows, func() (int, error) {
 			var err error
 			candidateCount, err = g.VisitFieldIndexIDs(request.Kind, plan.IndexField, plan.IndexValues, func(id string) error {
-				entity, ok := g.Entities[id]
+				entity, ok := g.Entities.Get(id)
 				if !ok {
 					return nil
 				}

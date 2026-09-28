@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="GGraphDB is an object-storage-native property graph database for entities, relationships, topology, and impact analysis."
+      content="GGraphDB 2.0 is a local-disk property graph database for entities, relationships, topology, and impact analysis."
     />
     <meta name="theme-color" content="#0d1117" />
     <link rel="icon" type="image/png" href="./favicon.png" />
@@ -14,7 +14,7 @@
     <meta property="og:title" content="GGraphDB | Operational property graphs" />
     <meta
       property="og:description"
-      content="Model entities, traverse relationships, and scale readers over S3-compatible storage."
+      content="Continuously update your graph and query current state on local disk, with S3 snapshot backups."
     />
     <meta
       property="og:image"
@@ -37,7 +37,7 @@
         "@context": "https://schema.org",
         "@type": "SoftwareSourceCode",
         "name": "GGraphDB",
-        "description": "An object-storage-native property graph database for entities, relationships, and topology.",
+        "description": "A local-disk property graph database for entities, relationships, and topology.",
         "codeRepository": "https://github.com/SamuelSupe/graphdb",
         "programmingLanguage": "Go",
         "runtimePlatform": "Linux, macOS, Docker"
@@ -86,11 +86,11 @@
     <main id="main">
       <section class="hero" id="top">
         <div class="hero-copy">
-          <p class="eyebrow">Object-storage-native property graph</p>
+          <p class="eyebrow">GGraphDB 2.0 · Local-disk property graph</p>
           <h1>Build graphs that stay operational.</h1>
           <p class="hero-lede">
-            Model entities, traverse relationships, and scale readers over
-            S3-compatible storage.
+            Continuously update your graph and query its latest state on local disk.
+            Back up snapshots to S3 and restore when needed.
           </p>
           <div class="hero-actions">
             <a
@@ -126,11 +126,11 @@
         </div>
         <div>
           <span>Persist</span>
-          <strong>Local or S3-compatible</strong>
+          <strong>Local disk + S3 backups</strong>
         </div>
         <div>
           <span>Operate</span>
-          <strong>Writer and reader fleets</strong>
+          <strong>One process, many tenants</strong>
         </div>
         <div>
           <span>Build</span>
@@ -154,7 +154,7 @@
               <h3>Durable data without a storage cluster.</h3>
               <p>
                 Persist Parquet snapshots, commits, manifests, and indexes on
-                local disk or S3-compatible object storage.
+                local disk. Keep recovery snapshots in optional S3-compatible storage.
               </p>
             </div>
             <img
@@ -231,10 +231,10 @@
 
       <section class="section-shell architecture" id="architecture">
         <header class="section-heading reveal">
-          <h2>Separate writes from reads.</h2>
+          <h2>Update and query in one process.</h2>
           <p>
-            Run one binary in all, writer, or reader mode. Shared object storage
-            connects the topology.
+            Run one binary against an exclusively owned local directory. Concurrent
+            reads see committed versions while updates continue.
           </p>
         </header>
 
@@ -246,30 +246,30 @@
             </div>
             <span class="flow-link" aria-hidden="true"></span>
             <div class="architecture-node architecture-node-accent">
-              <small>Write plane</small>
-              <strong>Writer API</strong>
-              <code>GRAPHDB_MODE=writer</code>
+              <small>GraphDB process</small>
+              <strong>Write and query API</strong>
+              <code>GRAPHDB_MODE=all</code>
             </div>
             <span class="flow-link" aria-hidden="true"></span>
             <div class="architecture-node architecture-node-storage">
               <small>Durable state</small>
-              <strong>S3, RustFS, or local</strong>
+              <strong>Local persistent disk</strong>
               <code>Parquet + manifest</code>
             </div>
             <span class="flow-link" aria-hidden="true"></span>
             <div class="architecture-node">
-              <small>Read plane</small>
-              <strong>Reader fleet</strong>
-              <code>GRAPHDB_MODE=reader</code>
+              <small>Optional recovery</small>
+              <strong>S3 snapshot repository</strong>
+              <code>Backup → restore</code>
             </div>
           </div>
 
           <div class="coordination-branch">
             <span class="branch-line" aria-hidden="true"></span>
             <div>
-              <small>Optional coordination</small>
-              <strong>PostgreSQL head CAS</strong>
-              <p>Use optimistic multi-writer coordination when one writer is not enough.</p>
+              <small>Recovery boundary</small>
+              <strong>Single machine, explicit backups</strong>
+              <p>Back up committed snapshots and restore to a fresh local disk. Replication and automatic failover are outside 2.0.</p>
             </div>
           </div>
         </div>
@@ -279,8 +279,8 @@
         <div class="query-intro reveal">
           <h2>Query the same graph at the right level.</h2>
           <p>
-            Use GraphQL or JSON DSL for new integrations. The text DSL remains
-            available for 1.0 compatibility.
+            Use GraphQL or JSON DSL for new integrations. The text DSL is also
+            available for concise graph exploration.
           </p>
           <a
             class="text-link"
@@ -333,7 +333,7 @@ curl -fsS http://127.0.0.1:8080/v1/health</code></pre>
     <footer class="site-footer">
       <div>
         <a class="wordmark footer-wordmark" href="#top">GGraphDB</a>
-        <p>General-purpose property graphs on durable object storage.</p>
+        <p>Continuously updated property graphs on local disk, with S3 snapshot recovery.</p>
       </div>
       <div class="footer-links" aria-label="Project links">
         <a href="https://github.com/SamuelSupe/graphdb">Repository</a>

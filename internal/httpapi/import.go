@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func (s *Server) startImport(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 package query
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 func lazyKindScanAvailable(g *graph.Graph, request Request, plan Plan, budget *budget) bool {
 	if !lazyExecution(g, budget) || plan.Strategy != "kind-scan" || request.Kind == "" {

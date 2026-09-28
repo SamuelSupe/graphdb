@@ -183,3 +183,11 @@ func copySet(values map[string]struct{}) map[string]struct{} {
 	}
 	return out
 }
+
+func copyAdjacency(source *ShardedMap[map[string]struct{}]) *ShardedMap[map[string]struct{}] {
+	result := NewShardedMap[map[string]struct{}]()
+	for key, ids := range source.All() {
+		result.Set(key, copyStringSet(ids))
+	}
+	return result
+}

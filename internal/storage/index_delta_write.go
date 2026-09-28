@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) reuseUnchangedIndexCatalogObjects(tenantID string, catalog *IndexCatalog, previous IndexCatalog) {
@@ -286,10 +286,10 @@ func (s *TenantStore) tombstoneDeletedEntityRecords(ctx context.Context, tenantI
 		return nil
 	}
 	for _, id := range changedEntityIDs {
-		if _, existed := before.Entities[id]; !existed {
+		if _, existed := before.Entities.Get(id); !existed {
 			continue
 		}
-		if _, exists := after.Entities[id]; exists {
+		if _, exists := after.Entities.Get(id); exists {
 			continue
 		}
 		key := s.entityRecordKey(tenantID, id)

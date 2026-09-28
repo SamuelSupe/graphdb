@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type ReaderCache struct {
@@ -473,7 +473,7 @@ func cacheEntryMatchesLogicalGraph(entry cacheEntry, manifest Manifest) bool {
 		entry.manifest.HeadCommitID != manifest.HeadCommitID {
 		return false
 	}
-	return entry.manifest.DataMD5 != "" && entry.manifest.DataMD5 == manifest.DataMD5
+	return entry.manifest.DataHash != "" && entry.manifest.DataHash == manifest.DataHash
 }
 
 func cacheEntryNewerThanLoaded(entry cacheEntry, loaded loadedGraph) bool {

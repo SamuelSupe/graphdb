@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 1.3.2
-  description: Object-store backed multi-tenant current-state property knowledge graph API. The 1.3 contract adds opt-in PostgreSQL-CAS multi-writer WAL for ingest batches; v1.3.2 preserves the existing graph/object layout and WAL record format.
+  version: 2.0.0
+  description: GGraphDB 2.0 local-disk, single-process, multi-tenant graph API. S3-compatible storage is optional for snapshot backup and restore. Use a fresh 2.0 data directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
 security:
@@ -71,7 +71,7 @@ paths:
               $ref: '#/components/schemas/CommitRequest'
       responses:
         '200':
-          description: Commit applied, skipped by md5, or idempotently replayed.
+          description: Commit applied, skipped because logical content is unchanged, or idempotently replayed.
           content:
             application/json:
               schema:
@@ -88,11 +88,11 @@ paths:
           $ref: '#/components/responses/CoordinatorUnavailable'
   /v1/ingest/batches:
     post:
-      summary: Apply a collector ingestion batch with idempotency and partial failure reporting. In 1.3 WAL mode, durable local takeover returns 202 with the WAL owner identity.
+      summary: Apply a collector batch with idempotency and partial failure reporting. Synchronous WAL returns durable 202 acceptance.
       description: |
-        In either local or PostgreSQL coordination, a writer flush containing at least two non-atomic mutation candidates with present and identical `expected_version` values forms a per-writer CAS cohort. The writer compares the expected version and all request preconditions once against the common flush baseline. Each request retains an independent result; changed requests receive consecutive logical versions in that writer's WAL order, while the changed cohort uses one copy-on-write apply, one commit segment, and one candidate manifest.
+        A local WAL flush containing at least two non-atomic mutation candidates with present and identical `expected_version` values forms a CAS cohort. The writer compares the expected version and all request preconditions once against the common flush baseline. Each request retains an independent result; changed requests receive consecutive logical versions in that writer's WAL order, while the changed cohort uses one copy-on-write apply, one commit segment, and one candidate manifest.
 
-        A stale cohort gives every member a `409` `version_conflict` result and publishes no graph version. A request-local precondition failure only fails that request; other accepted cohort members may still publish. Requests without `expected_version` and without preconditions remain on the ordinary fast batch path. Contiguous requests with different expected versions form separate WAL-order groups; a single CAS request, an atomic request, or a no-`expected_version` request with preconditions is an isolation barrier. In PostgreSQL coordination, the complete candidate must still win the tenant-head CAS; across writers, successful CAS order decides visibility, and a losing expected-version cohort is reloaded and then terminates as a cohort if its expected version is stale. Writers never exchange or merge payloads across WALs.
+        A stale cohort gives every member a `409` `version_conflict` result and publishes no graph version. A request-local precondition failure only fails that request; other accepted cohort members may still publish. Requests without `expected_version` and without preconditions remain on the ordinary fast batch path. Contiguous requests with different expected versions form separate WAL-order groups; a single CAS request, an atomic request, or a no-`expected_version` request with preconditions is an isolation barrier.
       parameters:
         - name: Prefer
           in: header
@@ -133,7 +133,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestResult'
         '202':
-          description: Batch durably appended to this writer's local ingest WAL. Returned only when GRAPHDB_INGEST_MODE=wal; in the 1.3 PostgreSQL-CAS profile the response identifies the stable owner writer and does not require PostgreSQL to be reachable.
+          description: Batch durably appended to the local ingest WAL. Returned in WAL mode after the requested durability barrier; status is available from the same service.
           headers:
             Location:
               schema:
@@ -1814,13 +1814,13 @@ components:
           schema:
             $ref: '#/components/schemas/WriteBackpressureError'
     Conflict:
-      description: The expected version changed or another writer still owns the idempotency key. A 1.3 WAL-accepted request does not become terminally failed because an internal CAS retry budget was exhausted; it remains under owner recovery/retry.
+      description: The expected version changed or another request is processing the idempotency key. Resolve version preconditions; retain the same key when retrying the same request.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     CoordinatorUnavailable:
-      description: A required coordinator or object-store dependency is unavailable for the synchronous operation; writes never fall back to local coordination. In 1.3 WAL mode, locally durable ingest acceptance may continue until the WAL high-water policy is reached.
+      description: The local storage or recovery state does not permit the operation. Check service readiness and disk health.
       headers:
         Retry-After:
           schema:
@@ -1837,7 +1837,7 @@ components:
       properties:
         backend:
           type: string
-          enum: [local, postgres]
+          enum: [local]
         available:
           type: boolean
         schema_version:
@@ -2028,9 +2028,10 @@ components:
           type: boolean
         idempotent_replay:
           type: boolean
-        data_md5:
+        data_hash:
           type: string
-          description: MD5 of the canonical logical graph content, encoded as 32 hexadecimal characters.
+          description: Logical graph digest with an algorithm prefix. Independent of version and operational timestamps.
+          pattern: "^sha256-shards-v2:[0-9a-f]{64}$"
         suppressed:
           type: array
           items:
@@ -2060,12 +2061,12 @@ components:
             type: string
         upsert_entity_types:
           type: array
-          description: GGraphDB 1.1 alias of upsert_ci_types; both forms cannot appear together.
+          description: Alias of upsert_ci_types; both forms cannot appear together.
           items:
             $ref: '#/components/schemas/CIType'
         delete_entity_types:
           type: array
-          description: GGraphDB 1.1 alias of delete_ci_types.
+          description: Alias of delete_ci_types.
           items:
             type: string
         upsert_relation_types:
@@ -2356,7 +2357,7 @@ components:
           type: array
           items: {}
         default: {}
-      description: Relation properties intentionally do not support merge_strategy, indexed, or unique in 1.1.
+      description: Relation properties intentionally do not support merge_strategy, indexed, or unique.
     RelationSchemaCatalog:
       type: object
       properties:
@@ -2448,7 +2449,7 @@ components:
         expected_version:
           type: integer
           minimum: 0
-          description: Optional tenant graph version precondition, evaluated when the WAL request is committed rather than when its 202 response is returned. In local and PostgreSQL WAL modes, at least two contiguous non-atomic requests from one writer with the same value in one flush compare it once against the common flush baseline and receive independent consecutive versions in WAL order when changed. Requests with different values use separate WAL-order groups; a single CAS request, atomic request, or no-expected-version request with preconditions is isolated. A stale PostgreSQL losing cohort is terminally rejected as a cohort after head reload; it is not merged with another writer's payload.
+          description: Optional graph version precondition evaluated at commit, not WAL acceptance. Contiguous non-atomic requests with identical expected versions compare against the same flush baseline and receive independent consecutive versions when changed. Atomic requests, different expected versions, or unversioned preconditions create isolation barriers. A stale expected version is rejected without publishing a graph version.
         failure_mode:
           type: string
           enum: [best_effort, atomic]

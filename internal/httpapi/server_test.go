@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func TestEntityHTTPResponsesPreserveJSON(t *testing.T) {
@@ -333,7 +333,7 @@ func TestHTTPCommitSkipsUnchangedContent(t *testing.T) {
 		t.Fatalf("first commit status = %d body=%s", first.Code, first.Body.String())
 	}
 	second := serveJSON(handler, http.MethodPost, "/v1/commits", "tenant-a", request)
-	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"version":1`) || !strings.Contains(second.Body.String(), `"skipped":true`) || !strings.Contains(second.Body.String(), `"data_md5"`) {
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"version":1`) || !strings.Contains(second.Body.String(), `"skipped":true`) || !strings.Contains(second.Body.String(), `"data_hash"`) {
 		t.Fatalf("second commit status = %d body=%s", second.Code, second.Body.String())
 	}
 }

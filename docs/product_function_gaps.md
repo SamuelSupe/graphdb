@@ -1,28 +1,23 @@
-# GGraphDB 1.3 产品成熟度与剩余缺口
+# GGraphDB 2.0 产品边界与后续能力
 
 本文以通用当前态属性知识图谱产品为边界。CMDB 是重点 profile，但数据模型、
-查询和存储不绑定 CMDB；RDF/OWL 导入与规则推理不在 1.3 承诺中。
+查询和存储不绑定 CMDB；RDF/OWL 导入与规则推理不在 2.0 承诺中。
 
 ## 当前定位
 
-GGraphDB 1.3 已具备可部署的核心闭环：
+GGraphDB 2.0 已具备可部署的核心闭环：
 
-- 通用 EntityType/RelationType、labels、关系属性 schema，以及 1.0
-  CIType 和 layout version 2 兼容；
-- 当前态 commit、source/field priority、幂等 ingest、CSV/JSONL import、
-  deadletter 和 collector cursor；
-- match/pattern/traverse/impact/shortest path、过滤、排序、聚合、游标、
-  explain/profile 和 saved query；
-- Parquet snapshot/page/index/shard、reader/writer 分离、reader freshness；
-- tenant lifecycle、clone、backup/restore/dry-run、restore drill、跨
-  bucket/prefix migration；
-- integrity audit、repair dry-run/apply、compact、GC、统一 task；
-- local 单 writer 与 PostgreSQL CAS 2–8 writer 两种协调模式；
-- 真实 1.0/1.1 双向二进制兼容门禁、结构化错误码、OpenAPI，以及与 1.3
-  写入合同对齐的 Go/Python SDK。
+- 通用 EntityType/RelationType、labels、可选字段与关系 schema；
+- 当前态 commit、来源治理、幂等 ingest、CSV/JSONL import、deadletter 和采集游标；
+- GraphQL/JSON DSL 查询、过滤、排序、聚合、分页与 explain/profile；
+- 本地 Parquet 持久化、单进程多租户并发、direct/同步 WAL、版本固定读视图；
+- 租户生命周期、快照备份恢复、S3 兼容备份、恢复演练、审计、压实、GC 和索引任务；
+- 新的分片 `data_hash`、Go/Python 2.0 SDK；不提供 1.x 迁移。
 
-Go/Python SDK 的 1.3 合同包括 direct `200/207` 结果、WAL durable `202`
-acceptance、`Location`/owner status、poll/wait，以及 ingest 的
+Go/Python SDK。
+
+Go/Python SDK 的 2.0 合同包括 direct `200/207` 结果、WAL durable `202`
+acceptance、`Location`/local status、poll/wait，以及 ingest 的
 `expected_version`、`failure_mode` 和 `preconditions` 字段。GraphQL 公开合同
 只保留 `graph` 查询根；检索增强扩展不属于当前产品能力。
 
@@ -33,13 +28,11 @@ acceptance、`Location`/owner status、poll/wait，以及 ingest 的
 
 ### 1. 发行证据
 
-- 每个候选版本必须完成 8 writer 并发正确性门禁，以及 2 个活跃 writer、
-  20 commit/s、30 分钟 PG/RustFS 容量门禁；
-- RustFS、PG CAS、restore drill、race、真实 1.0 二进制兼容必须成为发布
-  job 的硬依赖；
-- 保存容量报告、失败日志、构建 commit、校验和和恢复证明。
+- 单元、vet、race、SDK、direct/WAL HTTP、重启和备份恢复检查；
+- 含 compact、GC、index rebuild 的 30 分钟混合负载；
+- 可复查性能报告、构建 commit、二进制校验和与发布包验证。
 
-门禁和机器可读边界已经实现，只有全部 CI 结果通过的 tag 才能标记 GA。
+全部门禁通过后才发布，历史报告不能替代当前候选版本证据。
 
 ### 2. 生产安全集成
 
@@ -49,7 +42,7 @@ acceptance、`Location`/owner status、poll/wait，以及 ingest 的
 
 ### 3. 目标数据规模容量证据
 
-1.3 发布门禁认证并发提交，不等于认证任意实体/边规模。每个部署目标还要
+2.0 发布门禁认证并发提交，不等于认证任意实体/边规模。每个部署目标还要
 在等价字段宽度、关系密度、索引和查询混合下运行 capacity baseline，并记录
 内存高水位、对象数量/字节、p95/p99 与 compact/restore 时间。
 
@@ -67,11 +60,9 @@ acceptance、`Location`/owner status、poll/wait，以及 ingest 的
 - source 覆盖率、policy 变更影响分析和批量导出；
 - deadletter 按 collector/batch/time range dry-run 与 task 化 replay。
 
-### Reader Fleet
+### 单机边界
 
-- reader inventory、drain/undrain、指定租户 reload；
-- 跨进程运行中查询与取消需要独立控制平面；
-- fleet 容量、版本分布和流量闸门的统一视图。
+分布式 reader/writer、复制、自动故障切换和跨租户事务不属于 2.0。
 
 ### 查询产品化
 
@@ -83,22 +74,21 @@ acceptance、`Location`/owner status、poll/wait，以及 ingest 的
 ### 备份运营
 
 - 跨区域复制延迟、长期恢复审计和大租户 RTO/RPO 报告；
-- PostgreSQL coordination schema 与对象存储的一致备份编排；
 - 定期自动恢复演练和证据归档。
 
-## 不应误解为 1.3 已支持
+## 不应误解为 2.0 已支持
 
 - RDF/JSON-LD/Turtle/OWL 原生导入；
 - RDFS/OWL 规则推理、本体一致性校验；
 - 历史版本或时态图查询；
 - 跨租户事务；
 - 租户内部行级授权；
-- 超过当前单租户 CAS 容量边界的自动图分区。
+- 超过当前单机容量边界的自动图分区。
 
 这些能力需要单独版本承诺，不能通过给现有字段换名来宣称支持。
 
 ## 结论
 
-1.3 的正确下一步是把已实现能力变成可重复发布、可安全部署、可量化容量的
+2.0 的正确下一步是把已实现能力变成可重复发布、可安全部署、可量化容量的
 产品，而不是继续横向堆查询语法。GA 判定应由 release gate、安全验收和目标
 规模报告共同决定。

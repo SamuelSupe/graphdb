@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"slices"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func (s *Server) withCachedScanGraph(ctx context.Context, tenantID string, minVersion int64, visit func(*graph.Graph, storage.Manifest, storage.ScanCursorBinding) error) (bool, error) {
@@ -58,8 +58,8 @@ func (s *Server) streamGraphSnapshot(w http.ResponseWriter, r *http.Request, ten
 	}); err != nil {
 		return
 	}
-	for _, id := range slices.Sorted(maps.Keys(g.Edges)) {
-		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge": g.Edges[id]}, flush); err != nil {
+	for _, id := range slices.Sorted(g.Edges.Keys()) {
+		if err := encodeStreamItem(r.Context(), encoder, map[string]any{"edge": g.Edges.At(id)}, flush); err != nil {
 			return
 		}
 	}

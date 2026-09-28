@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func prepareTenantRestoreContext(
@@ -21,7 +21,7 @@ func prepareTenantRestoreContext(
 	if err != nil {
 		return WriteContextSnapshot{}, "", err
 	}
-	dataMD5, err := g.ContentMD5()
+	dataHash, err := g.ContentHash()
 	if err != nil {
 		return WriteContextSnapshot{}, "", err
 	}
@@ -32,7 +32,7 @@ func prepareTenantRestoreContext(
 	if err := validateRelationSchemaGraph(g, snapshot.RelationSchemas); err != nil {
 		return WriteContextSnapshot{}, "", err
 	}
-	return snapshot, dataMD5, nil
+	return snapshot, dataHash, nil
 }
 
 func tenantWriteContextFromBackupRecord(

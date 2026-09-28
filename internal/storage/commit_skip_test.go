@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestInitTenantConcurrentFirstLoadAndCommit(t *testing.T) {
@@ -40,7 +40,7 @@ func TestInitTenantConcurrentFirstLoadAndCommit(t *testing.T) {
 	}
 }
 
-func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
+func TestCommitSkipsWhenContentHashUnchanged(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{
@@ -50,19 +50,19 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first commit: %v", err)
 	}
-	if first.Skipped || first.Version != 1 || first.DataMD5 == "" {
-		t.Fatalf("first result = %#v, want committed version 1 with data md5", first)
+	if first.Skipped || first.Version != 1 || first.DataHash == "" {
+		t.Fatalf("first result = %#v, want committed version 1 with data hash", first)
 	}
 	g, _, err := store.Load(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("load committed graph: %v", err)
 	}
-	legacyMD5, err := g.ContentMD5()
+	expectedHash, err := g.ContentHash()
 	if err != nil {
-		t.Fatalf("legacy content md5: %v", err)
+		t.Fatalf("legacy content hash: %v", err)
 	}
-	if first.DataMD5 != legacyMD5 {
-		t.Fatalf("data_md5 = %q, want legacy logical md5 %q", first.DataMD5, legacyMD5)
+	if first.DataHash != expectedHash {
+		t.Fatalf("data_hash = %q, want legacy logical hash %q", first.DataHash, expectedHash)
 	}
 
 	second, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{})
@@ -75,8 +75,8 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	if second.Version != 1 || second.ReadableVersion != 1 || second.ReadAfterCommitID != "" {
 		t.Fatalf("skipped result = %#v, want current version 1 without commit id", second)
 	}
-	if second.DataMD5 != first.DataMD5 {
-		t.Fatalf("skipped md5 = %q, want %q", second.DataMD5, first.DataMD5)
+	if second.DataHash != first.DataHash {
+		t.Fatalf("skipped hash = %q, want %q", second.DataHash, first.DataHash)
 	}
 	manifest, err := store.CurrentManifest(ctx, "tenant-a")
 	if err != nil {
@@ -85,8 +85,8 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	if manifest.Version != 1 || len(manifest.CommitKeys) != 1 {
 		t.Fatalf("manifest after skip = %#v, want original single commit", manifest)
 	}
-	if manifest.DataMD5 != first.DataMD5 {
-		t.Fatalf("manifest data md5 = %q, want %q", manifest.DataMD5, first.DataMD5)
+	if manifest.DataHash != first.DataHash {
+		t.Fatalf("manifest data hash = %q, want %q", manifest.DataHash, first.DataHash)
 	}
 
 	changed, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
@@ -95,12 +95,12 @@ func TestCommitSkipsWhenContentMD5Unchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("changed commit: %v", err)
 	}
-	if changed.Skipped || changed.Version != 2 || changed.DataMD5 == first.DataMD5 {
-		t.Fatalf("changed result = %#v, want committed version 2 with new md5", changed)
+	if changed.Skipped || changed.Version != 2 || changed.DataHash == first.DataHash {
+		t.Fatalf("changed result = %#v, want committed version 2 with new hash", changed)
 	}
 }
 
-func TestCommitPreservesDataMD5WhenLoadingLegacyManifest(t *testing.T) {
+func TestCommitPreservesDataHashWhenLoadingLegacyManifest(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()
 	writer := NewTenantStore(objects, "test")
@@ -113,7 +113,7 @@ func TestCommitPreservesDataMD5WhenLoadingLegacyManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get manifest: %v", err)
 	}
-	manifest.DataMD5 = ""
+	manifest.DataHash = ""
 	if _, err := writer.putManifestMeta(ctx, "tenant-a", manifest, meta); err != nil {
 		t.Fatalf("write legacy manifest: %v", err)
 	}
@@ -124,8 +124,8 @@ func TestCommitPreservesDataMD5WhenLoadingLegacyManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cold no-op commit: %v", err)
 	}
-	if !replay.Skipped || replay.DataMD5 != first.DataMD5 {
-		t.Fatalf("legacy manifest replay = %#v, want skipped md5 %q", replay, first.DataMD5)
+	if !replay.Skipped || replay.DataHash != first.DataHash {
+		t.Fatalf("legacy manifest replay = %#v, want skipped hash %q", replay, first.DataHash)
 	}
 }
 
@@ -174,8 +174,8 @@ func TestCommitFingerprintStableAfterColdSnapshotLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cold no-op commit: %v", err)
 	}
-	if !second.Skipped || second.DataMD5 != first.DataMD5 {
-		t.Fatalf("cold result = %#v, want skipped fingerprint %q", second, first.DataMD5)
+	if !second.Skipped || second.DataHash != first.DataHash {
+		t.Fatalf("cold result = %#v, want skipped fingerprint %q", second, first.DataHash)
 	}
 }
 

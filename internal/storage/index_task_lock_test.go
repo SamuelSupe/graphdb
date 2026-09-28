@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 var errIndexTaskMarkerProbe = errors.New("index task marker probe failed")

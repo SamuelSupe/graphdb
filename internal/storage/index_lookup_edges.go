@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strconv"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (l *PersistedIndexLookup) cachedParquetOutEdges(ctx context.Context, spec EdgeShard, from string) ([]graph.Edge, bool, error) {

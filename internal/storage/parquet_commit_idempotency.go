@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -168,7 +168,7 @@ func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row pa
 		record.Result.ReadAfterCommitID = row.TargetID
 		record.Result.SnapshotKey = row.From
 		record.Result.SnapshotCatalogKey = row.To
-		record.Result.DataMD5 = row.ExternalID
+		record.Result.DataHash = row.ExternalID
 		record.Result.LayoutVersion = row.SourcePriority
 		record.Result.ReadableVersion = row.VersionValue
 		record.Result.SnapshotVersion = row.FieldSource.Version
@@ -264,7 +264,7 @@ func directCommitRecordRows(record DirectCommitRecord) ([]parquetCommitRow, erro
 		TargetID:       record.Result.ReadAfterCommitID,
 		From:           record.Result.SnapshotKey,
 		To:             record.Result.SnapshotCatalogKey,
-		ExternalID:     record.Result.DataMD5,
+		ExternalID:     record.Result.DataHash,
 		SourcePriority: record.Result.LayoutVersion,
 		Required:       record.Request.ExpectedVersion != nil,
 		Indexed:        record.Result.Skipped,

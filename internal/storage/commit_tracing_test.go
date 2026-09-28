@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestCommitTracesPreflightAndCriticalSection(t *testing.T) {

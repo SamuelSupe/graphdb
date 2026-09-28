@@ -1,23 +1,23 @@
-# GGraphDB — 本地磁盘版
+# GGraphDB 2.0
 
 [English](README.md)
 
 GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治理、写入接入、图查询
-和运维功能。这个分支采用单机单进程架构，所有数据持久化在本地磁盘，运行时无需
+和运维功能。2.0 主版本采用单机单进程架构，所有数据持久化在本地磁盘，运行时无需
 对象存储或 PostgreSQL。可选的 [S3 兼容快照备份](docs/object-backup.zh-CN.md) 支持恢复到新的本地磁盘。
 
-## 独立版本
+## 当前版本
 
-[`v1.3.4-local.9`](https://github.com/SamuelSupe/graphdb/releases/tag/v1.3.4-local.9)
-从独立分支 [`codex/local-disk-v2`](https://github.com/SamuelSupe/graphdb/tree/codex/local-disk-v2)
-发布为本地磁盘预发布版。默认 `main` 分支和稳定版 Latest 保持原样。
-二进制下载、兼容边界和验证证据见[发行说明](release/local-disk.md)。
+[2.0.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.0.0) 是主版本，由 `main` 发布。
+在线图数据存放在本地盘，S3 兼容对象存储用于快照备份与按需恢复。
+本版不提供 1.x 迁移或旧摘要兼容层，部署时使用新的数据目录。
+二进制、契约变化及验证证据见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 核心能力
 
 - JSON DSL 与 GraphQL：匹配、路径模式、邻居、遍历、影响分析、最短路径、聚合、分页与流式查询。
 - 实体/关系类型、字段约束、身份键、来源优先级、幂等写入与采集游标。
-- direct 和同步 WAL 接入；沿用 Parquet 提交、快照和索引格式。
+- direct 和同步 WAL 接入；使用 Parquet 提交、快照和索引；提交返回带算法标识的 `data_hash`。
 - 导入导出、保存查询、租户生命周期、备份恢复、修复、压实、GC 与持久化后台任务。
 - Go/Python SDK、Prometheus 指标、JSON 日志与可选 OTLP 链路。
 

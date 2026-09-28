@@ -3,7 +3,7 @@
 [English](data-model.md)
 
 GGraphDB 为每个租户保存一张当前态属性知识图谱，不提供历史版本查询；每次
-读取观察一个 manifest snapshot 版本。GGraphDB 1.1 不提供 RDF/OWL 存储、
+读取观察一个 manifest snapshot 版本。GGraphDB 2.0 不提供 RDF/OWL 存储、
 SPARQL、本体推理或向量检索。
 
 核心模型与具体领域无关：应用可以只使用无模式实体和类型化边，不必定义实体
@@ -109,7 +109,7 @@ SPARQL、本体推理或向量检索。
 
 ## 关系属性 Schema
 
-GGraphDB 1.1 可以为已有关系类型选择性定义边属性校验和默认值：
+GGraphDB 2.0 可以为已有关系类型选择性定义边属性校验和默认值：
 
 ```json
 {
@@ -188,19 +188,9 @@ edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
 每个可见 commit 都会增加租户 manifest 的 `version`。读响应包含其观察到的
 版本；读后写场景使用 `min_version`。
 
-如果写入后的 MD5 与当前图一致，GGraphDB 返回 `skipped=true`，不会发布
+如果写入后的 logical content hash 与当前图一致，GGraphDB 返回 `skipped=true`，不会发布
 新 commit。
 
-## 1.0 数据兼容性
+## 2.0 数据格式
 
-1.1 保持核心 manifest、snapshot、commit、entity、edge 和 Parquet 的对象
-布局版本为 2：
-
-- `EntityType` 只是已有 `CIType` 对象的 API/代码别名；
-- 标签编码在普通实体字段 `fields.__graphdb_labels` 中，1.1 API 同时以顶层
-  `labels` 便捷字段暴露；
-- 关系属性 schema 和反向邻接产物放在
-  `tenants/<tenant>/extensions/v1.1/` 下。
-因此 1.0 或 1.1 reader 可以继续读取核心图，并忽略保留字段和扩展
-sidecar。1.0 writer 不会执行 1.1 关系属性校验，所以受 schema 管理的边应
-继续由 1.1 或更高版本 writer 写入。
+2.0 使用本地数据布局和 `data_hash` 契约，见[版本边界](../naming-and-compatibility.zh-CN.md)。使用新的数据目录，不提供 1.x 迁移或跨版本 writer 兼容。

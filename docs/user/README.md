@@ -13,13 +13,11 @@ entity-relationship applications.
 - Schemaless entities with optional type definitions, including CI types for
   CMDB-style modeling.
 - Typed directed edges with `(type, from, to)` canonical identity.
-- One local writer or 2–8 PostgreSQL-coordinated optimistic writers per tenant;
-  readers independently reload immutable graph objects from object storage.
-- Object-storage persistence using Parquet manifests, commits, snapshots, entity
-  pages, edge shards, and index objects.
-- The 1.3 coordinated WAL profile uses an independent persistent WAL per writer;
-  PostgreSQL stores head-CAS and coordination metadata only, while object
-  storage remains the graph-data authority.
+- One process owns the local data directory; tenants support concurrent clients.
+- Parquet manifests, commits, snapshots, entity pages, edge shards and indexes
+  persist on local disk. Direct ingest and synchronous WAL are supported.
+- Optional S3-compatible snapshot backup and on-demand restore.
+- A fresh 2.0 data directory and the `data_hash` digest contract; no 1.x migration.
 - GraphQL, JSON Query DSL, scan/export APIs, saved queries, and running-query
   control.
 - Optional source-priority governance for entity fields, edge fields, and edge
@@ -42,19 +40,14 @@ Read APIs support freshness controls:
 - query: `?min_version=123&allow_stale=true`;
 - headers: `X-GraphDB-Min-Version`, `X-GraphDB-Allow-Stale`.
 
-Mode behavior:
-
-- `GRAPHDB_MODE=writer`: write/control APIs are enabled; read APIs remain
-  available for checks.
-- `GRAPHDB_MODE=reader`: write/config/task mutations return `405`; reads,
-  queries, scans, metrics, and freshness APIs remain available.
-- `GRAPHDB_MODE=all`: local or small single-process mode.
+`GRAPHDB_MODE=all` is the supported mode. Separate reader/writer modes,
+remote online storage and PostgreSQL coordination are rejected.
 
 Examples use:
 
 ```sh
-export WRITER=http://127.0.0.1:38080
-export READER=http://127.0.0.1:38081
+export WRITER=http://127.0.0.1:8080
+export READER=http://127.0.0.1:8080
 export BASE=http://127.0.0.1:8080
 ```
 
@@ -65,7 +58,6 @@ export BASE=http://127.0.0.1:8080
 - [Usage Manual](usage-manual.md) · [中文](usage-manual.zh-CN.md)
 - [Data Model](data-model.md) · [中文](data-model.zh-CN.md)
 - [Write And Ingest](write-ingest.md) · [中文](write-ingest.zh-CN.md)
-- [1.3 PostgreSQL-CAS Multi-Writer WAL](../ingest-wal-multiwriter-design.md) · [中文](../ingest-wal-multiwriter-design.zh-CN.md)
 - [Read And Query](read-query.md) · [中文](read-query.zh-CN.md)
 - [Scan And Export](scan-export.md) · [中文](scan-export.zh-CN.md)
 - [Tenant And Config](tenant-config.md) · [中文](tenant-config.zh-CN.md)

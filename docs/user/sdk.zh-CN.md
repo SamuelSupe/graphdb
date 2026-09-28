@@ -5,10 +5,10 @@
 GGraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务端
 `internal` 包，可以安全地 vendoring 到采集器、内部服务和运维工具。
 
-1.3 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
-`200/207` 结果，并提供 WAL 的 `202` acceptance、`Location`/owner status
+2.0 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
+`200/207` 结果，并提供 WAL 的 `202` acceptance、`Location`/local status
 资源、轮询/等待，以及 ingest CAS、条件和 atomic 选项。Go 和 Python SDK
-包版本均为 `1.3.2`。
+包版本均为 `2.0.0`。
 
 SDK 覆盖：
 
@@ -27,7 +27,7 @@ SDK 覆盖：
 包：
 
 ```go
-import graphdb "gitlab.jiagouyun.com/guance/graphdb/sdk/go/graphdb"
+import graphdb "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb"
 ```
 
 创建客户端：
@@ -121,11 +121,11 @@ if err != nil {
 fmt.Println(result.Version, result.ErrorCode, result.Applied, result.Failed)
 ```
 
-需要非阻塞地接收 WAL 时使用 `SubmitIngest`，并保存返回的 owner URL。direct
+需要非阻塞地接收 WAL 时使用 `SubmitIngest`，并保存返回的 status URL。direct
 模式会在 `Result` 中返回终态结果（状态为 `200` 或 `207`）；WAL 模式会在
 `Accepted` 中返回 durable acceptance（状态为 `202`）。`SubmitIngest` 优先
 读取 `status_url`，没有时使用 HTTP `Location` header，因此可以把状态请求
-路由给 owner writer：
+路由给 本地服务：
 
 ```go
 submission, err := writer.SubmitIngest(ctx, request)
@@ -152,7 +152,7 @@ if submission.StatusCode == 202 {
 失败会在 `IngestResult.ErrorCode` 中返回：`version_conflict`、
 `precondition_failed`、`atomic_validation_failed` 或 `atomic_suppressed`。
 
-### Go：Schema 与文件导入（兼容 1.1）
+### Go：Schema 与文件导入（2.0）
 
 ```go
 catalog, err := writer.PutRelationSchema(ctx, graphdb.RelationSchema{
@@ -306,12 +306,12 @@ print(result["version"], result.get("error_code"), result["applied"], result["fa
 
 `ingest` 是阻塞式兼容便利调用：服务端先以 `202` 确认 WAL 请求时，它会等待
 终态结果。需要显式接收并轮询时，使用 `submit_ingest`，保存返回的
-`status_url`/owner 信息，再调用 `get_ingest_status` 或 `wait_ingest`。direct
+`status_url`/实例信息，再调用 `get_ingest_status` 或 `wait_ingest`。direct
 模式返回 HTTP `200` 或 `207` 的终态结果；WAL 模式返回 HTTP `202` acceptance。
 终态响应可能包含 `error_code`：`version_conflict`、`precondition_failed`、
 `atomic_validation_failed` 或 `atomic_suppressed`。
 
-### Python：Schema 与文件导入（兼容 1.1）
+### Python：Schema 与文件导入（2.0）
 
 ```python
 catalog = writer.put_relation_schema("cites", {

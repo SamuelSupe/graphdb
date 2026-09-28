@@ -1,4 +1,4 @@
-# Documentation
+# GGraphDB 2.0 Documentation
 
 [中文](README.zh-CN.md)
 
@@ -9,11 +9,13 @@ with a language-switch link at the top.
 
 ## User guides
 
+- [2.0 release and validation](../release/local-disk.md) · [Performance](performance-v2.0.md)
+
 - [User Guide](user/README.md) · [中文](user/README.zh-CN.md)
 - [Local disk deployment and durability](local-disk.md) · [中文](local-disk.zh-CN.md)
 - [Object-storage snapshots and restore](object-backup.md) · [中文](object-backup.zh-CN.md)
-- [Local disk v2 validation and focused benchmark (Chinese)](performance-local-disk-v2.md)
-- [Local disk performance: pagination, JSON encoding and Parquet layout (Chinese)](performance-local-disk-optimization-2.md)
+- [Historical local disk v2 validation and focused benchmark (Chinese)](performance-local-disk-v2.md)
+- [Historical local disk performance: pagination, JSON encoding and Parquet layout (Chinese)](performance-local-disk-optimization-2.md)
 - [Quick Start](user/quickstart.md) · [中文](user/quickstart.zh-CN.md)
 - [Usage Manual](user/usage-manual.md) · [中文](user/usage-manual.zh-CN.md)
 - [Release Deployment](user/release-deployment.md) · [中文](user/release-deployment.zh-CN.md)

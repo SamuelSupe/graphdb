@@ -31,7 +31,7 @@ func (g *Graph) shareEntityPartitions() *entityPartitions {
 	defer g.entityPartitionsMu.Unlock()
 	if g.entityPartitions == nil {
 		parts := new(entityPartitions)
-		for id := range g.Entities {
+		for id := range g.Entities.All() {
 			n := entityPartition(id)
 			if parts[n] == nil {
 				parts[n] = make(map[string]struct{})
@@ -53,7 +53,7 @@ func (g *Graph) VisitEntityStorageShard(shard string, visit func(Entity) error) 
 			continue
 		}
 		for id := range ids {
-			if err := visit(g.Entities[id]); err != nil {
+			if err := visit(g.Entities.At(id)); err != nil {
 				return err
 			}
 		}
@@ -69,12 +69,12 @@ func (g *Graph) VisitEdgeStorageShard(ctx context.Context, relationType, shard s
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		ids := g.out[entity.ID]
+		ids := g.out.At(entity.ID)
 		if reverse {
-			ids = g.in[entity.ID]
+			ids = g.in.At(entity.ID)
 		}
 		for id := range ids {
-			edge := g.Edges[id]
+			edge := g.Edges.At(id)
 			if edge.Type == relationType {
 				if err := visit(edge); err != nil {
 					return err
@@ -92,7 +92,7 @@ func (g *Graph) refreshEntityPartitions(tracker *mutationFingerprintTracker) {
 	parts := *g.entityPartitions
 	var copied [entityPartitionCount]bool
 	for id, before := range tracker.entities {
-		_, exists := g.Entities[id]
+		_, exists := g.Entities.Get(id)
 		if exists == before.exists {
 			continue
 		}

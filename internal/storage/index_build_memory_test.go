@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 var benchmarkIndexBuildArtifacts indexBuildArtifacts
@@ -108,7 +108,7 @@ func TestIncrementalEntityPagesPreserveNormalizedHashes(t *testing.T) {
 	for _, number := range []any{float64(2), int(2), json.Number("2")} {
 		before, after := graph.New(), graph.New()
 		before.Version, after.Version = 1, 2
-		after.Entities["host:a"] = graph.Entity{ID: "host:a", Kind: "host", Fields: graph.Fields{"nested": map[string]any{"count": number}}}
+		after.Entities.Set("host:a", graph.Entity{ID: "host:a", Kind: "host", Fields: graph.Fields{"nested": map[string]any{"count": number}}})
 		pages, _, err := store.buildIncrementalEntityPages(context.Background(), "tenant-a", 1, nil, before, after, []string{"host:a"}, 2, time.Now())
 		if err != nil || len(pages) != 1 {
 			t.Fatalf("incremental pages: %v, %v", pages, err)
@@ -121,7 +121,7 @@ func TestIncrementalEntityPagesPreserveNormalizedHashes(t *testing.T) {
 		if _, err := marshalParquetEntityPage(context.Background(), pages[0]); err != nil {
 			t.Fatal(err)
 		}
-		if after.Entities["host:a"].Fields["nested"].(map[string]any)["count"] != number {
+		if after.Entities.At("host:a").Fields["nested"].(map[string]any)["count"] != number {
 			t.Fatal("index preparation mutated graph fields")
 		}
 	}
@@ -250,5 +250,69 @@ func BenchmarkBuildIndexArtifacts10K(b *testing.B) {
 			b.Fatal(err)
 		}
 		benchmarkIndexBuildArtifacts = artifacts
+	}
+}
+
+func TestQueuedIndexReservationAllowsProgressWithWaitingMaintenance(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	store.MaxMaintenanceBytes = 100
+	queued := store.reserveIndexMemory(100)
+	if queued == nil {
+		t.Fatal("cannot reserve empty budget")
+	}
+	defer queued.release()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, release, err := store.admitMaintenance(ctx, 100)
+		if err == nil {
+			release()
+		}
+		done <- err
+	}()
+	// A queued job must keep its memory while it acquires an execution slot,
+	// even when another build is already waiting for that memory.
+	if _, err := queued.activate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if extra := store.reserveIndexMemory(1); extra != nil {
+		extra.release()
+		t.Fatal("active and queued work exceeded their shared memory budget")
+	}
+	queued.release()
+	if err := <-done; err != nil {
+		t.Fatalf("waiting maintenance did not resume: %v", err)
+	}
+}
+
+func TestIndexQueueDoesNotReserveBehindSynchronousPredecessor(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	ctx, err := store.acquireAndBindWriterFence(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessor := &commitIndexUpdate{}
+	store.enqueueCommitIndexUpdate("tenant-a", predecessor)
+	next := &commitIndexUpdate{before: graph.New(), after: graph.New()}
+	accepted := store.enqueueLocalIngestIndexUpdate(ctx, "tenant-a", next)
+	// Always drain the predecessor, including on failure, so no background worker
+	// outlives the test's data directory.
+	if err := store.runCommitIndexUpdate(ctx, "tenant-a", predecessor); err != nil {
+		t.Fatal(err)
+	}
+	if accepted {
+		<-next.done
+		t.Fatal("later index work reserved memory needed by its synchronous predecessor")
 	}
 }

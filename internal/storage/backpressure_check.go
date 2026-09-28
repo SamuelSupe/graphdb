@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -249,18 +249,18 @@ func (s *TenantStore) checkQuotaAfterApply(ctx context.Context, tenantID string,
 		return err
 	}
 	reasons := make([]BackpressureReason, 0, 2)
-	if config.MaxEntitiesPerTenant > 0 && len(next.Entities) > config.MaxEntitiesPerTenant {
+	if config.MaxEntitiesPerTenant > 0 && next.Entities.Len() > config.MaxEntitiesPerTenant {
 		reasons = append(reasons, BackpressureReason{
 			Code:      "tenant_entity_quota_exceeded",
-			Current:   float64(len(next.Entities)),
+			Current:   float64(next.Entities.Len()),
 			Threshold: float64(config.MaxEntitiesPerTenant),
 			Message:   "tenant entity quota exceeded",
 		})
 	}
-	if config.MaxEdgesPerTenant > 0 && len(next.Edges) > config.MaxEdgesPerTenant {
+	if config.MaxEdgesPerTenant > 0 && next.Edges.Len() > config.MaxEdgesPerTenant {
 		reasons = append(reasons, BackpressureReason{
 			Code:      "tenant_edge_quota_exceeded",
-			Current:   float64(len(next.Edges)),
+			Current:   float64(next.Edges.Len()),
 			Threshold: float64(config.MaxEdgesPerTenant),
 			Message:   "tenant edge quota exceeded",
 		})
@@ -275,8 +275,8 @@ func quotaDecreased(previous *graph.Graph, next *graph.Graph, config Backpressur
 	if previous == nil || next == nil {
 		return false
 	}
-	entityOK := config.MaxEntitiesPerTenant <= 0 || len(next.Entities) <= config.MaxEntitiesPerTenant || len(next.Entities) < len(previous.Entities)
-	edgeOK := config.MaxEdgesPerTenant <= 0 || len(next.Edges) <= config.MaxEdgesPerTenant || len(next.Edges) < len(previous.Edges)
+	entityOK := config.MaxEntitiesPerTenant <= 0 || next.Entities.Len() <= config.MaxEntitiesPerTenant || next.Entities.Len() < previous.Entities.Len()
+	edgeOK := config.MaxEdgesPerTenant <= 0 || next.Edges.Len() <= config.MaxEdgesPerTenant || next.Edges.Len() < previous.Edges.Len()
 	return entityOK && edgeOK
 }
 

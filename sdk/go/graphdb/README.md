@@ -3,7 +3,7 @@
 Import path inside this repository:
 
 ```go
-import graphdb "gitlab.jiagouyun.com/guance/graphdb/sdk/go/graphdb"
+import graphdb "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb"
 ```
 
 Example:

@@ -4,7 +4,7 @@
 
 GGraphDB stores one current-state property knowledge graph per tenant. It does
 not expose historical version queries; each read observes a manifest snapshot
-version. GGraphDB 1.1 does not implement RDF/OWL storage, SPARQL, ontology
+version. GGraphDB 2.0 does not implement RDF/OWL storage, SPARQL, ontology
 reasoning, or vector retrieval.
 
 The core model is domain-neutral: applications can use schemaless entities and
@@ -114,7 +114,7 @@ Supported cardinality values:
 
 ## Relation Property Schema
 
-GGraphDB 1.1 can optionally validate and default edge properties for an existing
+GGraphDB 2.0 can optionally validate and default edge properties for an existing
 relation type:
 
 ```json
@@ -198,20 +198,9 @@ source-aware delete requests.
 Every visible commit increments the tenant manifest `version`. Read responses
 include the `version` they observed. Use `min_version` for read-after-write.
 
-If a write is MD5-identical to the current graph, GGraphDB returns
+If a write is logically identical to the current graph, GGraphDB returns
 `skipped=true` and does not publish a new commit.
 
-## 1.0 Data Compatibility
+## 2.0 Data Format
 
-Version 1.1 leaves the core manifest, snapshot, commit, entity, edge, and
-Parquet layout at object layout version 2:
-
-- `EntityType` is an API/code alias of the existing `CIType` object.
-- labels are encoded in the ordinary entity `fields.__graphdb_labels` value and
-  exposed as the top-level `labels` convenience field by 1.1 APIs.
-- relation property schemas and reverse adjacency artifacts live under
-  `tenants/<tenant>/extensions/v1.1/`.
-A 1.0 or 1.1 reader can therefore continue reading the core graph and ignore
-the reserved field and extension sidecars. A 1.0 writer does not enforce 1.1
-relation property schemas, so schema-governed edge writes should stay on 1.1
-or later.
+2.0 uses the local data layout and the `data_hash` contract described in [version boundaries](../naming-and-compatibility.md). Start with a new directory; no 1.x migration or cross-version writer compatibility is provided.

@@ -44,8 +44,8 @@ func TestCISchemaDefaultsValidationAndIdentityMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply cmdb commit: %v", err)
 	}
-	if len(g.Entities) != 1 {
-		t.Fatalf("entities = %d, want deduped 1", len(g.Entities))
+	if g.Entities.Len() != 1 {
+		t.Fatalf("entities = %d, want deduped 1", g.Entities.Len())
 	}
 	entity, ok := g.GetEntity("host:a1")
 	if !ok {
@@ -423,7 +423,7 @@ func TestIdentityConfidenceThresholdIgnoresSourcePriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source priority should not satisfy confidence threshold: %v", err)
 	}
-	if len(g.Entities) != 2 {
-		t.Fatalf("entities = %d, want low-confidence identities kept separate", len(g.Entities))
+	if g.Entities.Len() != 2 {
+		t.Fatalf("entities = %d, want low-confidence identities kept separate", g.Entities.Len())
 	}
 }

@@ -16,7 +16,7 @@ func (g *Graph) redirectMergeEdges(
 ) error {
 	edgeIDs := g.incidentEdgeIDs(sourceID)
 	for _, edgeID := range edgeIDs {
-		edge, ok := g.Edges[edgeID]
+		edge, ok := g.Edges.Get(edgeID)
 		if !ok {
 			continue
 		}
@@ -32,19 +32,19 @@ func (g *Graph) redirectMergeEdges(
 		reportAffected.add(edgeID, nextID)
 
 		g.removeEdgeFromIndexes(edgeID, edge)
-		delete(g.Edges, edgeID)
+		g.Edges.Delete(edgeID)
 		candidates := []Edge{redirected}
-		if existing, exists := g.Edges[nextID]; exists {
+		if existing, exists := g.Edges.Get(nextID); exists {
 			g.removeEdgeFromIndexes(nextID, existing)
-			delete(g.Edges, nextID)
+			g.Edges.Delete(nextID)
 			candidates = append(candidates, existing)
 		}
 		merged, _ := mergeEdgeList(candidates, version, now)
-		next, ok := merged[nextID]
+		next, ok := merged.Get(nextID)
 		if !ok {
 			return fmt.Errorf("merge edge %q did not produce canonical edge %q", edgeID, nextID)
 		}
-		g.Edges[nextID] = next
+		g.Edges.Set(nextID, next)
 		g.addEdgeToIndexes(nextID, next)
 		affectedMergeEdges[nextID] = struct{}{}
 	}
@@ -53,7 +53,7 @@ func (g *Graph) redirectMergeEdges(
 
 func (g *Graph) validateAffectedMergeEdges(affected map[string]struct{}) error {
 	for edgeID := range affected {
-		edge, ok := g.Edges[edgeID]
+		edge, ok := g.Edges.Get(edgeID)
 		if !ok {
 			continue
 		}

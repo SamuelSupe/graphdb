@@ -1,5 +1,6 @@
 schema_version: 2
 edition: local_disk
+version: 2.0.0
 status: evidence_required
 scope: single_process_multi_tenant
 
@@ -22,14 +23,14 @@ persistence:
   physical_volume_loss: outside_contract
 
 comparison:
-  baseline_revision: ffa854149b7d481cd56da58f4a1f2bf61a58af92
-  cases: [baseline_s3, baseline_local, local_disk]
+  baseline_revision: 5632cd82
+  cases: [previous_local, v2_local]
   entities: [10002, 100002]
   ingest_modes: [direct, wal]
   warmup: 1m
   measurement: 5m
-  repetitions: 3
-  rotating_order: true
+  repetitions: 1
+  repeat_only_to_investigate_regressions: true
   minimum_mixed_throughput_improvement: 0.10
   minimum_cold_p95_improvement: 0.10
   maximum_other_latency_regression: 0.05
@@ -40,5 +41,6 @@ correctness:
   background: [compact, gc, index_rebuild]
   lost_confirmed_writes: 0
   duplicate_replayed_versions: 0
-  compatibility_tag: release_20260722_01
+  data_format: v2_fresh_directory
+  cross_major_migration: unsupported
   maximum_query_result_limit: 1000

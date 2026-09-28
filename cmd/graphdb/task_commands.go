@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 const cliTaskPollInterval = 100 * time.Millisecond

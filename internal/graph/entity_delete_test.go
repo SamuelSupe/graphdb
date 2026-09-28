@@ -33,13 +33,13 @@ func TestSourceStaleDeleteRemovesOnlyIncidentEdges(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("delete stale entity: %v", err)
 	}
-	if _, ok := g.Entities["host:stale"]; ok {
+	if _, ok := g.Entities.Get("host:stale"); ok {
 		t.Fatal("stale entity was not deleted")
 	}
-	if len(g.Edges) != 1 {
+	if g.Edges.Len() != 1 {
 		t.Fatalf("edges after delete = %#v, want one unrelated edge", g.Edges)
 	}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		if edge.From != "host:a" || edge.To != "host:b" {
 			t.Fatalf("unexpected surviving edge: %#v", edge)
 		}

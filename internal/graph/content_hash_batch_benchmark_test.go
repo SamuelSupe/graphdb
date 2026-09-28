@@ -25,7 +25,7 @@ func BenchmarkStorageCopyContentHashBatch(b *testing.B) {
 	}); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := g.ContentMD5(); err != nil {
+	if _, err := g.ContentHash(); err != nil {
 		b.Fatal(err)
 	}
 	inserts := make([]Entity, added)
@@ -47,7 +47,7 @@ func BenchmarkStorageCopyContentHashBatch(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if _, err := next.ContentMD5(); err != nil {
+		if _, err := next.ContentHash(); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 	"go.opentelemetry.io/otel/attribute"
 )
 

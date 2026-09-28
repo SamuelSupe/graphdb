@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func scanFieldIndexIDs(ctx context.Context, scanner FieldIndexScanLookup, kind string, field string, filters []Filter) ([]string, bool, error) {

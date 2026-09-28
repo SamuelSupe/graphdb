@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestIndexHealthUsesBoundedObjectPages(t *testing.T) {
@@ -39,8 +39,8 @@ func TestHealthBucketsPreserveCurrentAndLegacyShards(t *testing.T) {
 		id = fmt.Sprintf("host:legacy-%d", i)
 	}
 	g := graph.New()
-	g.Entities[id] = graph.Entity{ID: id, Kind: "host"}
-	g.Edges["edge:a"] = graph.Edge{ID: "edge:a", Type: "links", From: id, To: "host:other"}
+	g.Entities.Set(id, graph.Entity{ID: id, Kind: "host"})
+	g.Edges.Set("edge:a", graph.Edge{ID: "edge:a", Type: "links", From: id, To: "host:other"})
 	current, legacy := hashedIndexShardID(id), legacyIndexShardID(id)
 	pages := expectedEntityPages(g, []EntityPageSpec{{Shard: current}, {Shard: legacy}, {Shard: "missing"}})
 	edges := expectedEdgeShards(g, []EdgeShard{{RelationType: "links", Shard: current}, {RelationType: "links", Shard: legacy}, {RelationType: "other", Shard: legacy}})

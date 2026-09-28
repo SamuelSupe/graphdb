@@ -17,20 +17,20 @@ func (g *Graph) applySplit(
 	if request.SourceID == "" {
 		return fmt.Errorf("split source_id is required")
 	}
-	source, ok := g.Entities[request.SourceID]
+	source, ok := g.Entities.Get(request.SourceID)
 	if !ok {
 		return fmt.Errorf("split source entity %q not found", request.SourceID)
 	}
 	g.removeEntityFromIndexes(request.SourceID, source)
-	delete(g.Entities, request.SourceID)
+	g.Entities.Delete(request.SourceID)
 	affected.add(request.SourceID)
 	for _, edgeID := range g.incidentEdgeIDs(request.SourceID) {
-		edge, ok := g.Edges[edgeID]
+		edge, ok := g.Edges.Get(edgeID)
 		if !ok {
 			continue
 		}
 		g.removeEdgeFromIndexes(edgeID, edge)
-		delete(g.Edges, edgeID)
+		g.Edges.Delete(edgeID)
 		affectedEdges.add(edgeID)
 	}
 	for _, entity := range request.Entities {
@@ -58,7 +58,7 @@ func (g *Graph) applySplit(
 				request.SourceID,
 			)
 		}
-		if _, exists := g.Entities[normalized.ID]; exists {
+		if _, exists := g.Entities.Get(normalized.ID); exists {
 			return fmt.Errorf(
 				"split replacement entity %q already exists",
 				normalized.ID,
@@ -76,7 +76,7 @@ func (g *Graph) applySplit(
 			return err
 		}
 		clearEntityWriteMetadata(&normalized)
-		g.Entities[normalized.ID] = normalized
+		g.Entities.Set(normalized.ID, normalized)
 		g.addEntityToIndexes(normalized.ID, normalized)
 		uniqueValidator.add(normalized)
 		affected.add(normalized.ID)

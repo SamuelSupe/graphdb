@@ -23,18 +23,13 @@ SPARQL, ontology reasoning, or historical graph queries.
 - **Optional identity and source governance**: applications can use
   `IdentityKey` rules to reconcile duplicates, while source priority,
   confidence, and write time resolve field and relation conflicts.
-- **Object-storage persistence**: manifests define visibility boundaries;
-  immutable commits, Parquet snapshots, and rebuildable indexes persist data.
-  Manifest CAS prevents stale writers from overwriting newer versions.
-- **Read/write modes**: one binary supports `all`, `writer`, and `reader`.
-  Local coordination uses one active writer per tenant; optional PostgreSQL
-  head CAS supports 2–8 optimistic writers. In the 1.3 WAL profile each writer
-  owns an independent persistent WAL volume, while readers load immutable graph
-  objects from object storage.
-- **Coordination boundary**: PostgreSQL stores tenant-head/generation CAS,
-  idempotency and collector/batch coordination metadata. It never stores graph
-  payloads, WAL records, or commit segments; object storage remains the graph
-  data authority.
+- **Local persistence**: one process owns the data directory. Data files are
+  synchronized before the manifest publishes a version. Direct and synchronous
+  WAL ingestion are supported.
+- **Online reads and writes**: one `all` process serves concurrent tenants.
+  Read views pin immutable graph versions; queries can request `min_version`.
+- **Recovery boundary**: S3-compatible storage holds optional snapshot backups.
+  There is no PostgreSQL dependency, distributed writer or automatic failover.
 - **Query options**: GraphQL, JSON Query DSL, 1-8 step bounded pattern matching,
   indexed bidirectional traversal, streaming queries, current-state scans, and
   snapshot export.
@@ -95,19 +90,16 @@ flowchart LR
   Client["Graph applications / ingest clients / operations tools"] --> API["GGraphDB HTTP API or CLI"]
   API --> Graph["Graph model and query execution"]
   Graph --> Store["Tenant Store\nmanifest / commit / snapshot / index"]
-  Store -. optional head CAS .-> PG["PostgreSQL coordination"]
   Store --> Object["Local disk files"]
+  Object -. snapshot backup .-> S3["S3-compatible backup repository"]
 ```
 
 A write normally follows this path:
 
-1. accept a direct commit or ingestion batch; in 1.3 coordinated WAL mode,
-   validate and fsync the batch to the owning writer's local WAL first;
-2. validate and reconcile entities, relations, identities, and source priority;
-3. write immutable objects and publish a new version through the manifest,
-   using PostgreSQL head CAS when coordinated;
-4. let readers load the snapshot and replay visible commits, using persisted
-   indexes when available.
+1. accept a direct commit or batch; synchronous WAL first validates and fsyncs the request;
+2. validate and reconcile entities, relations, identities and source priority;
+3. write and synchronize immutable files, then replace the manifest;
+4. publish the new in-process version and update derived indexes.
 
 After sustained operation, compact folds the commit tail into a snapshot.
 GC, repair, and index rebuild tasks keep data and indexes healthy.
@@ -151,25 +143,20 @@ X-Tenant-ID: demo
 | `cmd/graphdb` | CLI commands and service startup |
 | `internal/graph` | entities, relations, types, validation, reconciliation, and source governance |
 | `internal/query` | GraphQL adapter, query DSL, planning, execution, traversal, and streaming |
-| `internal/storage` | object storage, manifests, commits, snapshots, indexes, and ingestion metadata |
+| `internal/storage` | local file storage, manifests, commits, snapshots, indexes, and ingestion metadata |
 | `internal/httpapi` | HTTP routes, modes, rate limits, tenant routing, and operations APIs |
 | `internal/config` | environment variables and runtime configuration |
 | `sdk/go`, `sdk/python` | Go and Python SDKs |
 
 ## Current boundaries
 
-- Local coordination supports one active writer per tenant. PostgreSQL
-  coordination optionally supports 2–8 optimistic writers and does not provide
-  cross-tenant transactions. The 1.3 WAL profile applies only to ingest batches,
-  uses one independent WAL volume per writer, and orders cross-writer commits by
-  successful head CAS.
-- PostgreSQL is coordination metadata/head CAS only; object storage remains the
-  graph-data authority. WAL durability covers process failure when the original
-  writer volume can be recovered, not permanent volume loss. A durable `202`
-  means takeover by the writer, not a committed graph version.
-- Readers use manifests, snapshots, and commits from object storage. Use
-  `min_version` for read-after-write consistency and `allow_stale` when
-  eventual consistency is acceptable.
+- A single process owns the directory. There are no distributed writers,
+  cross-tenant transactions, replication or automatic failover.
+- Use a fresh 2.0 directory. No 1.x migration or cross-major rollback is provided.
+- A durable WAL `202` means acceptance, not a published graph version. WAL covers
+  process failure with a recoverable volume; backups cover recovery to another disk.
+- Use `min_version` for read-after-write consistency and `allow_stale` only when
+  the application permits reading an older visible version.
 - Tenant selection for data APIs relies on `X-Tenant-ID`; production
   authentication and authorization belong at the gateway or upstream system.
 - Reads expose the latest visible tenant graph and do not provide historical
@@ -182,6 +169,5 @@ X-Tenant-ID: demo
 - [Write And Ingest](user/write-ingest.md) · [中文](user/write-ingest.zh-CN.md)
 - [Read And Query](user/read-query.md) · [中文](user/read-query.zh-CN.md)
 - [Deployment And Operations](user/deploy-ops.md) · [中文](user/deploy-ops.zh-CN.md)
-- [1.3 PostgreSQL-CAS Multi-Writer WAL](ingest-wal-multiwriter-design.md) · [中文](ingest-wal-multiwriter-design.zh-CN.md)
 - [Architecture](architecture.md)
 - [OpenAPI](openapi.yaml)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const commitSegmentLoadConcurrency = 4

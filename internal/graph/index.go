@@ -10,8 +10,8 @@ func (g *Graph) rebuildIndexes() {
 	g.invalidateEntityOrder()
 	g.invalidateFieldIndexOrder()
 	g.cow = nil
-	g.out = map[string]map[string]struct{}{}
-	g.in = map[string]map[string]struct{}{}
+	g.out = NewShardedMap[map[string]struct{}]()
+	g.in = NewShardedMap[map[string]struct{}]()
 	g.edgeAliasIndex = map[string]map[string]struct{}{}
 	g.edgeTypeIndex = map[string]map[string]struct{}{}
 	g.entityAliasIndex = map[string]map[string]struct{}{}
@@ -19,7 +19,7 @@ func (g *Graph) rebuildIndexes() {
 	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
 	g.identityIndex = map[string]map[string]string{}
 
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		g.kindCounts[entity.Kind]++
 		g.addEntityAliasesToIndex(id, entity)
 		if g.identityIndex[entity.Kind] == nil {
@@ -52,7 +52,7 @@ func (g *Graph) rebuildIndexes() {
 		}
 	}
 
-	for id, edge := range g.Edges {
+	for id, edge := range g.Edges.All() {
 		g.addEdgeToIndexes(id, edge)
 	}
 }
@@ -185,18 +185,18 @@ func entityAliasValues(entity Entity) []string {
 }
 
 func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
-	if edges := g.out[edge.From]; edges != nil {
+	if edges := g.out.At(edge.From); edges != nil {
 		edges = g.writableOut(edge.From)
 		delete(edges, id)
 		if len(edges) == 0 {
-			delete(g.out, edge.From)
+			g.out.Delete(edge.From)
 		}
 	}
-	if edges := g.in[edge.To]; edges != nil {
+	if edges := g.in.At(edge.To); edges != nil {
 		edges = g.writableIn(edge.To)
 		delete(edges, id)
 		if len(edges) == 0 {
-			delete(g.in, edge.To)
+			g.in.Delete(edge.To)
 		}
 	}
 	for _, alias := range edgeAliasValues(edge) {

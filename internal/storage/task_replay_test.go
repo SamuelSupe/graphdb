@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestReplayTaskCursorFollowsDeadLetterObjectOrder(t *testing.T) {
@@ -72,10 +72,10 @@ func TestReplayTaskCursorFollowsDeadLetterObjectOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load replayed graph: %v", err)
 	}
-	if _, ok := loaded.Entities["host:a"]; !ok {
+	if _, ok := loaded.Entities.Get("host:a"); !ok {
 		t.Fatal("first replayed entity is missing")
 	}
-	if _, ok := loaded.Entities["host:z"]; !ok {
+	if _, ok := loaded.Entities.Get("host:z"); !ok {
 		t.Fatal("second replayed entity is missing")
 	}
 }

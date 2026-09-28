@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestReaderCacheReadOnlyViewReusesSnapshotAndKeepsLoadIsolated(t *testing.T) {
@@ -38,7 +38,7 @@ func TestReaderCacheReadOnlyViewReusesSnapshotAndKeepsLoadIsolated(t *testing.T)
 	if owned == first {
 		t.Fatal("public Load returned the shared cache snapshot")
 	}
-	delete(owned.Entities, "person:alice")
+	owned.Entities.Delete("person:alice")
 	if err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 1, func(g *graph.Graph, _ Manifest) error {
 		if _, ok := g.GetEntity("person:alice"); !ok {
 			t.Fatal("mutation of public Load result reached cache snapshot")
@@ -120,7 +120,7 @@ func TestReaderCacheReusesExactWriteCacheForCatchupAndKeepsPublicResultsIsolated
 	if got := objects.CountContains("manifest.parquet"); got == 0 {
 		t.Fatal("exact write-cache catch-up skipped the authoritative manifest read")
 	}
-	delete(loaded.Entities, "host:b")
+	loaded.Entities.Delete("host:b")
 	assertReaderCacheEntityPresent(t, ctx, cache, store, "host:b", 2)
 
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
@@ -145,7 +145,7 @@ func TestReaderCacheReusesExactWriteCacheForCatchupAndKeepsPublicResultsIsolated
 	if got := objects.CountContains("manifest.parquet"); got == 0 {
 		t.Fatal("exact write-cache refresh skipped the authoritative manifest read")
 	}
-	delete(refreshed.Entities, "host:c")
+	refreshed.Entities.Delete("host:c")
 	assertReaderCacheEntityPresent(t, ctx, cache, store, "host:c", 3)
 }
 

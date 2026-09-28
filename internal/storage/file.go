@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type FileStore struct {
@@ -344,6 +345,9 @@ func writeFileAtomic(path string, data []byte) error {
 }
 
 func writeFileAtomicContext(ctx context.Context, path string, data []byte) error {
+	if bytes, ok := ctx.Value(fileBatchBytesKey{}).(*atomic.Int64); ok {
+		bytes.Add(int64(len(data)))
+	}
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(path)+"-")
 	if err != nil {

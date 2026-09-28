@@ -3,7 +3,7 @@ package storage
 import (
 	"sort"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type indexCatalogCoverage struct {
@@ -53,12 +53,12 @@ func expectedIndexCatalogCoverage(
 		key := fieldIndexHealthKey(definition.Kind, definition.Field)
 		coverage.fields[key] = definition.Kind + "." + definition.Field
 	}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		shard := edgeShardID(edge.From)
 		key := edgeShardCatalogKey(edge.Type, shard)
 		coverage.edges[key] = edge.Type + "/" + shard
 	}
-	for _, entity := range g.Entities {
+	for _, entity := range g.Entities.All() {
 		shard := entityShardID(entity.ID)
 		coverage.pages[shard] = shard
 	}

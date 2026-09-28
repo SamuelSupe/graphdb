@@ -21,14 +21,14 @@ func (g *Graph) applyRelationTypeDeletes(
 	}
 	for name := range deleted {
 		for edgeID := range g.edgeTypeIndex[name] {
-			edge, ok := g.Edges[edgeID]
+			edge, ok := g.Edges.Get(edgeID)
 			if !ok {
 				continue
 			}
 			tracker.touchEdge(edgeID)
 			affectedEdges.add(edgeID)
 			g.removeEdgeFromIndexes(edgeID, edge)
-			delete(g.Edges, edgeID)
+			g.Edges.Delete(edgeID)
 		}
 	}
 	return nil

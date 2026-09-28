@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestRunGCCleansOldSnapshotsAndOrphanCommits(t *testing.T) {

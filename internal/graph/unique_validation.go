@@ -43,7 +43,7 @@ func newUniqueEntityValidator(
 	if len(validator.complexKinds) == 0 {
 		return validator, nil
 	}
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		if _, ok := validator.complexKinds[entity.Kind]; !ok {
 			continue
 		}
@@ -88,7 +88,7 @@ func (v *uniqueEntityValidator) ensureKind(kind string) error {
 	if _, complex := v.complexKinds[kind]; !complex {
 		return nil
 	}
-	for id, entity := range v.graph.Entities {
+	for id, entity := range v.graph.Entities.All() {
 		if entity.Kind == kind {
 			v.addComplexValues(id, entity)
 		}
@@ -125,7 +125,7 @@ func (v *uniqueEntityValidator) validate(entity Entity) error {
 			if id == entity.ID {
 				continue
 			}
-			existing, exists := v.graph.Entities[id]
+			existing, exists := v.graph.Entities.Get(id)
 			if !exists {
 				continue
 			}
@@ -175,7 +175,7 @@ func (v *uniqueEntityValidator) conflictsWithAnyEntity(
 	field string,
 	value any,
 ) bool {
-	for id, existing := range v.graph.Entities {
+	for id, existing := range v.graph.Entities.All() {
 		if id == entity.ID || existing.Kind != entity.Kind {
 			continue
 		}
@@ -212,12 +212,12 @@ func entityMutationKinds(g *Graph, mutations Mutations) map[string]struct{} {
 		}
 	}
 	for _, request := range mutations.MergeEntities {
-		if entity, ok := g.Entities[request.TargetID]; ok {
+		if entity, ok := g.Entities.Get(request.TargetID); ok {
 			kinds[entity.Kind] = struct{}{}
 		}
 	}
 	for _, request := range mutations.SplitEntities {
-		if entity, ok := g.Entities[request.SourceID]; ok {
+		if entity, ok := g.Entities.Get(request.SourceID); ok {
 			kinds[entity.Kind] = struct{}{}
 		}
 		for _, entity := range request.Entities {

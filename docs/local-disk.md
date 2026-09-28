@@ -1,6 +1,6 @@
-# Local disk operation
+# GGraphDB 2.0 local disk operation
 
-This edition runs one process with concurrent tenant workloads. The process owns
+The main release runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
 local files. PostgreSQL and remote online-storage backends are unavailable.
 Optional [S3-compatible snapshot backups](object-backup.md) support recovery after local disk loss.
@@ -29,7 +29,7 @@ immediately; the operating system releases the lock after process death.
 ## Publication and reads
 
 Immutable data files are individually synced and renamed. Groups of at most 64
-write jobs, using four workers, then sync each affected directory once before
+write jobs, using four workers, check 16 MiB / 50 ms budgets between complete files and sync each affected directory before
 publishing a referencing catalog. Newly created directories sync their parents.
 Manifest/catalog publication remains an atomic file replacement. A failed group
 can leave unreferenced files; it does not create a multi-file transaction.
@@ -114,7 +114,7 @@ After direct/WAL ingest manifest publication, an in-process worker advances inde
 order. At most eight background updates are retained across all tenants; when
 full, ingest finishes its index work synchronously after releasing the tenant lock.
 Adjacent pending batches share a bounded delta; more than 8192 change
-references trigger a rebuild. `committed` still means durable, readable graph
+references start another bounded incremental batch. `committed` still means durable, readable graph
 data. Queries use a graph view meeting `min_version` when indexes lag. The
 `/v1/commits` API still waits for its index update and shares that ordering chain. GC, restore, and directory close
 wait for those file references. A crash can leave indexes behind the durable
@@ -122,15 +122,15 @@ graph head; it does not discard published graph commits.
 
 ## Upgrade and recovery
 
-Stop the previous service and back up its data directory before opening it with
-this edition. Existing local Parquet and WAL formats are retained. A PostgreSQL
-coordination marker causes startup to fail: remote data migration and coordinated
-head conversion are outside this change. Do not delete that marker to force entry.
+2.0 starts with a new data directory and provides no 1.x migration or cross-version
+rollback. Manifests use the new `data_hash` column; pre-2.0 Parquet manifests are
+rejected. Keep older installations and their directory backups separate.
+PostgreSQL coordination markers are also rejected; do not remove them to force entry.
 
 Use the backup/restore and integrity-audit HTTP APIs. To recover after disk loss,
 configure [object-storage snapshots](object-backup.md) and create a backup with
 `destination: object`. The existing same-directory backup remains available.
-Roll back binaries only while stopped, using the retained directory backup.
+Use a backup produced by the same supported major version for recovery.
 
 Restore results and their tenant generation are published with the replacement
 directory. If terminal task persistence fails, retry only finalizes the task,
@@ -165,15 +165,17 @@ a different restore or backup.
 
 ## Validation and performance
 
+See [the 2.0 report](performance-v2.0.md) for this release. Older reports below are historical.
+
 Start performance work with one representative comparison and repeat only to
 investigate a measured regression. `scripts/local_disk_optimization.py` compares
-before/after local binaries using copies of the same stopped database, covering
+before/after local binaries using the same deterministic seed in fresh per-version directories, covering
 direct/WAL mixed load, export, compaction, backup/restore, and process-cold reads.
 See the [optimization measurements](performance-local-disk-optimization.md).
 The [second optimization round](performance-local-disk-optimization-2.md) covers
 catalog hashes, entity pagination, HTTP encoding, Parquet row locality and incremental indexes.
 
-`scripts/release_gate.sh` runs unit/vet/race/compatibility/SDK checks, then direct
+`scripts/release_gate.sh` runs unit/vet/race/2.0-contract/SDK checks, then direct
 and WAL HTTP scenarios, load, and restart equality. `GRAPHDB_GATE_SOAK=1` adds a
 30-minute mixed workload with compaction, GC and index rebuild. The HTTP gate uses
 a tiny graph cache to exercise persisted index reads; it is not a capacity benchmark.
@@ -231,10 +233,15 @@ GC visits at most 512 candidates per batch and checks 50 ms / 16 MiB budgets bet
 
 Incremental entity, forward-edge and reverse-edge pages use a reusable 64-partition entity directory and adjacency maps. Membership changes copy only affected directory partitions. Persisted layouts remain unchanged; each affected page is still rewritten in full. Pending deltas stop coalescing at 8192 changed IDs and continue in bounded publication order instead of forcing a full rebuild. Schema changes, catalog gaps and corrupt inputs can still require rebuilding.
 
-`GRAPHDB_MAINTENANCE_MAX_BYTES` defaults to `512MiB`. It independently bounds estimated active index/snapshot build memory and estimated graph retention in asynchronous index work. At most two builds and four partition encoding/write jobs run concurrently. An oversized build runs alone to preserve progress. On the retained-byte or eight-work-item limit, callers catch up synchronously after releasing the tenant lock.
+`GRAPHDB_MAINTENANCE_MAX_BYTES` defaults to `512MiB`. It is one shared estimate budget for active index/snapshot builds and queued asynchronous index graphs. Queue reservations transfer into execution without releasing and reacquiring memory. At most two builds and four partition encoding/write jobs run concurrently. An oversized build runs alone to preserve progress. On the retained-byte or eight-work-item limit, callers catch up synchronously after releasing the tenant lock.
 
-These are admission estimates, not RSS limits. Caches, waiting requests and all encoding temporaries are not covered. Size both maintenance pools, caches and runtime overhead together with `GOMEMLIMIT` and container limits. Queueing can increase response latency; already-published data remains readable through version-checked graph fallback.
+These are admission estimates, not RSS limits. Caches, waiting requests and all encoding temporaries are not covered. Size the shared maintenance pool, caches and runtime overhead together with `GOMEMLIMIT` and container limits. Queueing can increase response latency; already-published data remains readable through version-checked graph fallback.
 
 `graphdb_maintenance_phase_seconds` exposes `gc_wait_views`, `gc_wait_tenant`, `gc_hold`, `gc_sync`, `index_wait_previous`, `index_work`, `memory_wait`, `tenant_wait`, `tenant_hold`, and `file_batch_sync`. Phases can nest and must not be added as independent durations. `graphdb_maintenance_estimated_bytes{pool="active"}` and `{pool="pending_indexes"}` report charged estimates, not measured RSS.
 
-Top-level entity/edge map copying and the compatible whole-graph MD5 remain proportional to graph size. Directory partitioning does not replace those graph containers or change the digest contract; small updates are not yet strictly proportional to the changed data.
+Entity, edge and top-level adjacency maps use 256 copy-on-write buckets; published
+versions share untouched buckets. Logical hashing stores SHA-256 leaf digests in
+256 buckets per category, replaces only touched buckets and hashes a fixed 32 KiB
+root. It no longer retains full per-entity JSON encodings or hashes the full graph
+on each update. Cold graph/hash construction still scans the graph. The new API
+field is `data_hash`; see [the exact contract](content-hash-v2.md).

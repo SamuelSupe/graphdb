@@ -10,7 +10,7 @@
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `GET` | `/v1/health` | 进程存活、运行模式和 coordinator 状态；降级时仍返回 HTTP 200。 |
-| `GET` | `/v1/readiness` | 流量就绪状态；对象存储或 PostgreSQL coordinator 不可用时返回 HTTP 503。 |
+| `GET` | `/v1/readiness` | 流量就绪状态；本地磁盘不可写或 WAL 恢复未完成时返回 HTTP 503。 |
 | `GET` | `/metrics` | Prometheus 指标。 |
 | `GET` | `/openapi.yaml` | OpenAPI 合同。 |
 | `GET` | `/debug/pprof/` | 可选的仅管理 listener profiling 入口，默认关闭。 |
@@ -39,9 +39,9 @@
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `POST` | `/v1/commits` | 原子图变更提交。 |
-| `POST` | `/v1/ingest/batches` | 采集批次写入，支持 `expected_version`、`failure_mode` 和 entity/edge `preconditions`；direct 模式返回终态 `200/207`，1.3 WAL 模式返回带 `writer_id` 和 本地状态 URL 的 durable `202`。 |
+| `POST` | `/v1/ingest/batches` | 采集批次写入，支持 `expected_version`、`failure_mode` 和 entity/edge `preconditions`；direct 模式返回终态 `200/207`，WAL 模式返回带 `writer_id` 和 本地状态 URL 的 durable `202`。 |
 | `POST` | `/v1/imports` | 提交可恢复的 CSV 或 JSONL 批量导入。 |
-| `GET` | `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` | 活跃/已完成采集状态；1.3 WAL 状态必须路由给 owner writer。 |
+| `GET` | `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` | 活跃/已完成采集状态；WAL 状态在同一本地服务查询。 |
 | `GET` | `/v1/ingest/collectors/{source}/{collector_id}` | 采集器状态。 |
 | `GET` | `/v1/ingest/deadletters/{source}` | 列出死信。 |
 | `POST` | `/v1/ingest/deadletters/{source}/replay` | 重放死信。 |

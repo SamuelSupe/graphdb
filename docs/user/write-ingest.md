@@ -179,7 +179,7 @@ Field priority rules:
 Field alias rules:
 
 - `field_aliases` maps incoming top-level `entity.fields` names to canonical
-  field names before merge, indexing, MD5 skip, query, scan, and export.
+  field names before merge, indexing, no-op detection, query, scan, and export.
 - `source + kind` rules are applied before source-global fallback rules.
 - Direct commit entities without `source` do not use aliases. Ingest entities
   inherit the batch `source` first, then aliases are applied.
@@ -319,7 +319,7 @@ and after a barrier can still form their own cohort or ordinary fast batch. A
 batch-apply fallback reuses the already-checked cohort guards rather than
 rechecking them against versions created earlier in the same flush.
 
-### Local WAL mode (1.2 compatibility profile)
+### Local WAL mode
 
 `GRAPHDB_INGEST_MODE=direct` remains the default synchronous `200/207`
 behavior. A single-writer deployment using `GRAPHDB_COORDINATION=local` can
@@ -338,7 +338,7 @@ curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \
   -H 'X-Tenant-ID: demo'
 ```
 
-In the PostgreSQL-CAS profile the acceptance body identifies the stable owner;
+The acceptance body identifies the local instance;
 the `Location` header and `status_url` carry the same local status resource:
 
 ```http
@@ -358,7 +358,7 @@ Content-Type: application/json
 ```
 
 Poll the returned resource until `state` is `committed` or `failed`. A terminal
-status embeds the final result; `recovery_pending=true` means the owner is
+status embeds the final result; `recovery_pending=true` means the service is
 rebuilding WAL state and the batch remains queryable:
 
 ```json
@@ -493,10 +493,10 @@ final counts. `format` can be inferred from JSONL/CSV content type; `batch_size`
 defaults to 500 and is capped at 5000; `on_error` is `abort` or `continue`.
 The current upload limit is 32 MiB and only one bulk import runs per tenant.
 
-## MD5 Skip
+## Content Hash / No-op Writes
 
 Commits and ingestion apply mutations to the current graph. If the resulting
-data MD5 matches the stored current graph, GGraphDB skips writing a new commit
+data logical content hash matches the stored current graph, GGraphDB skips writing a new commit
 and returns `skipped=true`. This avoids commit tail growth for repeated
 collector payloads.
 

@@ -161,7 +161,7 @@ func (g *Graph) validateEntitiesAgainstCITypesForKinds(
 		return err
 	}
 	identityOwners := map[string]map[string]string{}
-	for _, entity := range g.Entities {
+	for _, entity := range g.Entities.All() {
 		if _, affected := kinds[entity.Kind]; !affected {
 			continue
 		}

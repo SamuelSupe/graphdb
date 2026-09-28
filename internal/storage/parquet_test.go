@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
@@ -632,7 +634,7 @@ func TestParquetSchemasAvoidJSONPayloadColumns(t *testing.T) {
 			},
 			ReadableVersion:   4,
 			ReadAfterCommitID: "commit-1",
-			DataMD5:           "md5",
+			DataHash:          "md5",
 			Suppressed: []graph.FieldConflict{{
 				ResourceType:     "entity",
 				EntityID:         "host:app-01",
@@ -1014,5 +1016,38 @@ func TestParquetSnapshotRecordRoundTripAcrossRowGroups(t *testing.T) {
 				t.Fatal("snapshot lost content across row groups")
 			}
 		})
+	}
+}
+
+func TestManifestRejectsPreV2DigestColumn(t *testing.T) {
+	ctx := context.Background()
+	data, err := marshalParquetManifest(ctx, Manifest{TenantID: "tenant-a", Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, release, err := readParquetTable(ctx, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	defer table.Release()
+	fields := table.Schema().Fields()
+	fields[parquetManifestColumnDataHash].Name = "data_md5"
+	schema := arrow.NewSchema(fields, nil)
+	columns := make([]arrow.Column, table.NumCols())
+	for i := range columns {
+		columns[i] = *arrow.NewColumn(fields[i], table.Column(i).Data())
+	}
+	old := array.NewTable(schema, columns, table.NumRows())
+	defer old.Release()
+	for i := range columns {
+		columns[i].Release()
+	}
+	var buf bytes.Buffer
+	if err := pqarrow.WriteTable(old, &buf, 1024, nil, pqarrow.DefaultWriterProps()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeParquetManifest(ctx, buf.Bytes()); err == nil {
+		t.Fatal("pre-2.0 manifest accepted with a different digest contract")
 	}
 }

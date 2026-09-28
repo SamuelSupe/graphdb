@@ -1,16 +1,16 @@
-name: Build GGraphDB local disk release
+name: Build GGraphDB release
 
 on:
   push:
     tags:
-      - "v*-local.*"
+      - "v2.*"
 
 permissions:
   contents: write
 
 jobs:
   verify:
-    name: Unit, vet, race, and v1.0 compatibility
+    name: Unit, vet, race, and 2.0 contracts
     runs-on: ubuntu-latest
     steps:
       - name: Check out full history
@@ -113,10 +113,11 @@ jobs:
           set -euo pipefail
 
           tag="${GITHUB_REF_NAME}"
+          test "$tag" = "v$(cat VERSION)"
           commit="${GITHUB_SHA}"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           root="dist/${tag}"
-          buildinfo_package="gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
+          buildinfo_package="github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
           ldflags="-s -w -X ${buildinfo_package}.Version=${tag} -X ${buildinfo_package}.Commit=${commit} -X ${buildinfo_package}.Date=${build_date}"
           mkdir -p "$root/bin" "$root/docs" "$root/examples" "$root/scripts" \
             "$root/deploy/nginx" "$root/release/evidence"
@@ -129,7 +130,7 @@ jobs:
               -o "$root/bin/graphdb-${os}-${arch}" ./cmd/graphdb
           done
 
-          cp README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md LICENSE SECURITY.md \
+          cp VERSION README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md LICENSE SECURITY.md \
             Dockerfile .dockerignore docker-compose.yml docker-compose.backup.yml \
             go.mod go.sum "$root/"
           cp -R cmd internal tools "$root/"
@@ -139,13 +140,12 @@ jobs:
           cp deploy/object-backup.env.example "$root/deploy/"
           cp deploy/nginx/graphdb.conf.example "$root/deploy/nginx/"
           cp -R artifacts/local-gate artifacts/object-backup-gate "$root/release/evidence/"
-          cp release/capacity-envelope.yaml release/freeze-1.1.yaml release/local-disk.md "$root/release/"
-          cp scripts/capacity_baseline.sh scripts/compatibility_v1_0_v1_1.sh \
+          cp release/capacity-envelope.yaml release/local-disk.md "$root/release/"
+          cp scripts/capacity_baseline.sh \
             scripts/check_release_freeze.sh scripts/check_workspace_hygiene.sh \
             scripts/release_gate.sh scripts/local_disk_compare.sh scripts/local_disk_benchmark.py \
             scripts/local_disk_report.py scripts/local_disk_optimization.py \
             scripts/object_backup_gate.sh scripts/object_backup_http.py "$root/scripts/"
-          printf '%s\n' "$tag" > "$root/VERSION"
           printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
             "$tag" "$commit" "$build_date" "$(go version | cut -d' ' -f3)" > "$root/BUILD-METADATA.json"
           (cd "$root" && sha256sum bin/* > SHA256SUMS)
@@ -176,8 +176,8 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "GGraphDB $GITHUB_REF_NAME — Local disk edition" \
-            --target codex/local-disk-v2 --verify-tag --prerelease --latest=false \
+            --title "GGraphDB $GITHUB_REF_NAME" \
+            --target main --verify-tag --latest=true \
             --notes-file release/local-disk.md \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz.sha256"

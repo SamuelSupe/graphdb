@@ -28,7 +28,7 @@ Full contract: [../error_codes.md](../error_codes.md).
 | `invalid_tenant` | Bad tenant id | Fix tenant id format. |
 | `tenant_disabled` | Mutations blocked | Enable tenant or route to active tenant. |
 | `tenant_deleted` | Soft-deleted tenant | Restore/clone or stop using tenant. |
-| `operation_disabled` | Reader mode write attempt | Send write/config/task mutation to writer. |
+| `operation_disabled` | Operation disabled | Check local service configuration and operation permissions. |
 | `reader_not_fresh` | Reader cannot reach required version | Retry later, lower `min_version`, or allow stale read. |
 | `write_admission_queue_timeout` | Write queue full | Retry with same idempotency key and reduce concurrency. |
 | `write_backpressure` | System pressure | Honor `Retry-After`; inspect `reasons`. |
@@ -36,10 +36,9 @@ Full contract: [../error_codes.md](../error_codes.md).
 | `index_rebuild_running` | Index rebuild blocks writes | Wait or cancel task if appropriate. |
 | `quota_exceeded` | Tenant quota would be exceeded | Raise quota or delete data. |
 | `idempotency_conflict` | Same key, different payload | Use a new key or resend exact original body. |
-| `idempotency_in_progress` | Another writer owns the same key | Retry the exact request with the same key after backoff. |
-| `write_conflict` | Direct/preconditioned write observed a changed PG head | For a 1.3 WAL-accepted batch this is an internal retry condition, not a terminal result; inspect owner status and keep the same idempotency key. For direct writes, reload the head and resolve the precondition. |
+| `idempotency_in_progress` | Another request is processing the same key | Retry the exact request with the same key after backoff. |
+| `write_conflict` | Concurrent publication or precondition conflict | Inspect local status and retain the idempotency key. For preconditioned writes, reload the head and resolve the conflict. |
 | `version_conflict` | `expected_version` no longer matches | Reload the head and resolve the caller's precondition; do not blind-retry. |
-| `coordinator_unavailable` | PostgreSQL coordinator unavailable | Restore PG connectivity for direct/synchronous writes; they never fall back to local mode. A 1.3 WAL-accepted batch remains with its owner and continues retrying until the coordinator recovers or the WAL high-water policy blocks new admission. |
 | `lease_held` | Duplicate/stale local writer protection | Ensure only one local-coordination writer per tenant. |
 | `index_stale` | Index missing/stale | Rebuild indexes or allow fallback where supported. |
 | `repair_required` | Integrity issue blocks operation | Run audit and repair. |
@@ -53,13 +52,11 @@ GGraphDB uses 429 for admission and backpressure. Clients should:
 3. Apply source-side concurrency backoff if repeated.
 4. Alert if the same reason remains for multiple retry windows.
 
-In 1.3 PostgreSQL-CAS WAL mode, a temporary PostgreSQL or object-store outage
-does not make an already accepted batch failed. The owning writer retries with
-the newest head, rebases, and shrinks the batch after repeated CAS conflicts.
-If the local WAL high-water policy is reached, new admission is rejected before
-the payload is written; query the local `status_url` for existing
-records. A `recovery_pending` status means the owner is rebuilding its WAL
-state, not that the batch is missing.
+Synchronous WAL accepts a request after fsync. Restart recovers accepted records
+from the same local directory; `recovery_pending` means that recovery is not yet
+complete. A WAL high-water condition rejects new admission; existing records
+remain queryable at their `status_url`. Check disk space, permissions and recovery
+logs. Object-backup failures do not make online storage unavailable.
 
 Example body:
 
@@ -91,10 +88,10 @@ curl -sS "$READER/v1/control/reader-traffic-gate?min_ready=1" -H 'X-Tenant-ID: d
 
 Actions:
 
-- Confirm reader can reach object storage.
-- Check `GRAPHDB_POLL_INTERVAL` and `GRAPHDB_READER_CATCHUP_TIMEOUT`.
+- Confirm local disk is readable and writable and WAL recovery is complete.
+- Check `GRAPHDB_READER_CATCHUP_TIMEOUT` and requested `min_version`.
 - Use `allow_stale=true` only for workflows that tolerate stale reads.
-- If a reader remains behind, remove it from traffic and restart it.
+- If the version remains behind, inspect WAL status and local recovery logs before restarting the single service.
 
 ## Slow Or Expensive Queries
 

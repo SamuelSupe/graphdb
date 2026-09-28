@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/config"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/config"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type StorageRuntime struct {

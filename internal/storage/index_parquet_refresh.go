@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tenantID string, previous IndexCatalog, previousMeta ObjectMeta, before *graph.Graph, g *graph.Graph, report graph.ApplyReport, version int64) error {

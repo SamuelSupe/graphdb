@@ -1,6 +1,6 @@
 package query
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 func canPageNeighborsEarly(request Request) bool {
 	return len(request.Sort) == 0 && len(request.Aggregate) == 0 && len(request.GroupBy) == 0

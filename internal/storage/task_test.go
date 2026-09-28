@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestUnifiedTaskRunsCompactAndExportSnapshot(t *testing.T) {
@@ -74,8 +74,8 @@ func TestUnifiedTaskRunsCompactAndExportSnapshot(t *testing.T) {
 			wantVersion++
 			wantEntities++
 		}
-		if current.Version != wantVersion || current.SnapshotVersion != wantVersion || len(reloaded.Entities) != wantEntities {
-			t.Fatalf("repeat compact lost current data: manifest=%+v, entities=%d", current, len(reloaded.Entities))
+		if current.Version != wantVersion || current.SnapshotVersion != wantVersion || reloaded.Entities.Len() != wantEntities {
+			t.Fatalf("repeat compact lost current data: manifest=%+v, entities=%d", current, reloaded.Entities.Len())
 		}
 		if !write && current.SnapshotKey != manifest.SnapshotKey {
 			t.Fatal("repeat compact replaced an unchanged snapshot")

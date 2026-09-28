@@ -49,11 +49,11 @@ func TestUpsertRejectsConflictingIdentityOwners(t *testing.T) {
 	if err == nil {
 		t.Fatal("upsert accepted identities owned by different entities")
 	}
-	if g.Version != 1 || len(g.Entities) != 2 {
+	if g.Version != 1 || g.Entities.Len() != 2 {
 		t.Fatalf(
 			"failed upsert changed graph version/entities: %d/%d",
 			g.Version,
-			len(g.Entities),
+			g.Entities.Len(),
 		)
 	}
 	id, _, err := g.findEntityByIdentity(Entity{

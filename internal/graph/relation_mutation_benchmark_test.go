@@ -61,13 +61,13 @@ func BenchmarkBatchUpdateRelationTypes(b *testing.B) {
 func BenchmarkValidateHighDegreeCardinality(b *testing.B) {
 	const edgeCount = 4096
 	g := New()
-	g.Entities["node:hub"] = Entity{ID: "node:hub", Kind: "node"}
+	g.Entities.Set("node:hub", Entity{ID: "node:hub", Kind: "node"})
 	for i := 0; i < edgeCount; i++ {
 		suffix := fmt.Sprintf("%04d", i)
 		relationName := "relation_" + suffix
 		entityID := "node:to:" + suffix
 		edgeID := "edge:" + suffix
-		g.Entities[entityID] = Entity{ID: entityID, Kind: "node"}
+		g.Entities.Set(entityID, Entity{ID: entityID, Kind: "node"})
 		g.RelationTypes[relationName] = RelationType{
 			Name:        relationName,
 			FromKind:    "node",
@@ -75,12 +75,12 @@ func BenchmarkValidateHighDegreeCardinality(b *testing.B) {
 			Directed:    true,
 			Cardinality: ManyToOne,
 		}
-		g.Edges[edgeID] = Edge{
+		g.Edges.Set(edgeID, Edge{
 			ID:   edgeID,
 			Type: relationName,
 			From: "node:hub",
 			To:   entityID,
-		}
+		})
 	}
 	g.rebuildIndexes()
 

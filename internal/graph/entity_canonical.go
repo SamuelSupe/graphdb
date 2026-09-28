@@ -49,15 +49,15 @@ func (g *Graph) canonicalizeEntitySet(version int64, updatedAt time.Time) map[st
 	aliases := map[string]string{}
 	owners := map[string]string{}
 	for _, id := range ids {
-		entity := g.Entities[id]
+		entity := g.Entities.At(id)
 		targetID := findCanonicalOwner(owners, entity)
 		if targetID == "" || targetID == id {
 			backfillFieldSources(&entity)
-			g.Entities[id] = entity
+			g.Entities.Set(id, entity)
 			registerCanonicalOwners(owners, id, entity)
 			continue
 		}
-		target := g.Entities[targetID]
+		target := g.Entities.At(targetID)
 		fields, _ := g.EffectiveFields(target.Kind)
 		merged := mergeEntityWithSpecs(target, entity, fields)
 		if !target.CreatedAt.IsZero() {
@@ -66,8 +66,8 @@ func (g *Graph) canonicalizeEntitySet(version int64, updatedAt time.Time) map[st
 		merged.ID = targetID
 		merged.Version = version
 		merged.UpdatedAt = updatedAt
-		g.Entities[targetID] = merged
-		delete(g.Entities, id)
+		g.Entities.Set(targetID, merged)
+		g.Entities.Delete(id)
 		aliases[id] = targetID
 		for _, oldID := range entity.MergedFrom {
 			aliases[oldID] = targetID
@@ -102,9 +102,10 @@ func registerCanonicalOwners(owners map[string]string, entityID string, entity E
 	}
 }
 
-func sortedEntityIDs(entities map[string]Entity) []string {
-	ids := make([]string, 0, len(entities))
-	for id := range entities {
+func sortedEntityIDs(entities *ShardedMap[Entity],
+) []string {
+	ids := make([]string, 0, entities.Len())
+	for id := range entities.All() {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)

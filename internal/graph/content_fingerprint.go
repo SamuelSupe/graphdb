@@ -1,14 +1,14 @@
 package graph
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 )
 
 type trackedFingerprint struct {
 	exists bool
-	value  [md5.Size]byte
+	value  [sha256.Size]byte
 }
 
 type mutationFingerprintTracker struct {
@@ -34,7 +34,7 @@ func (g *Graph) ensureContentFingerprint() error {
 	if g.contentFingerprintReady {
 		return nil
 	}
-	var fingerprint [md5.Size]byte
+	var fingerprint [sha256.Size]byte
 	for key, value := range g.CITypes {
 		entry, err := contentFingerprintEntry("ci_type", key, value)
 		if err != nil {
@@ -42,7 +42,7 @@ func (g *Graph) ensureContentFingerprint() error {
 		}
 		xorFingerprint(&fingerprint, entry)
 	}
-	for key, value := range g.Entities {
+	for key, value := range g.Entities.All() {
 		entry, err := contentFingerprintEntry("entity", key, logicalEntityForHash(value))
 		if err != nil {
 			return err
@@ -56,7 +56,7 @@ func (g *Graph) ensureContentFingerprint() error {
 		}
 		xorFingerprint(&fingerprint, entry)
 	}
-	for key, value := range g.Edges {
+	for key, value := range g.Edges.All() {
 		entry, err := contentFingerprintEntry("edge", key, logicalEdgeForHash(value))
 		if err != nil {
 			return err
@@ -68,7 +68,7 @@ func (g *Graph) ensureContentFingerprint() error {
 	return nil
 }
 
-func (g *Graph) contentFingerprintState() ([md5.Size]byte, bool) {
+func (g *Graph) contentFingerprintState() ([sha256.Size]byte, bool) {
 	g.contentFingerprintMu.Lock()
 	defer g.contentFingerprintMu.Unlock()
 	return g.contentFingerprint, g.contentFingerprintReady
@@ -96,7 +96,7 @@ func (t *mutationFingerprintTracker) touchEntity(id string) {
 	if _, ok := t.entities[id]; ok || t.err != nil {
 		return
 	}
-	value, exists := t.graph.Entities[id]
+	value, exists := t.graph.Entities.Get(id)
 	if exists {
 		t.entities[id] = t.capture("entity", id, logicalEntityForHash(value), true)
 		return
@@ -106,10 +106,10 @@ func (t *mutationFingerprintTracker) touchEntity(id string) {
 
 func (t *mutationFingerprintTracker) touchEntityWithEdges(id string) {
 	t.touchEntity(id)
-	for edgeID := range t.graph.out[id] {
+	for edgeID := range t.graph.out.At(id) {
 		t.touchEdge(edgeID)
 	}
-	for edgeID := range t.graph.in[id] {
+	for edgeID := range t.graph.in.At(id) {
 		t.touchEdge(edgeID)
 	}
 }
@@ -144,7 +144,7 @@ func (t *mutationFingerprintTracker) touchEdge(id string) {
 	if _, ok := t.edges[id]; ok || t.err != nil {
 		return
 	}
-	value, exists := t.graph.Edges[id]
+	value, exists := t.graph.Edges.Get(id)
 	if exists {
 		t.edges[id] = t.capture("edge", id, logicalEdgeForHash(value), true)
 		return
@@ -187,7 +187,7 @@ func (t *mutationFingerprintTracker) finish(report *ApplyReport) error {
 		apply(before, t.capture("ci_type", key, value, exists))
 	}
 	for key, before := range t.entities {
-		value, exists := t.graph.Entities[key]
+		value, exists := t.graph.Entities.Get(key)
 		if exists {
 			apply(before, t.capture("entity", key, logicalEntityForHash(value), true))
 		} else {
@@ -199,7 +199,7 @@ func (t *mutationFingerprintTracker) finish(report *ApplyReport) error {
 		apply(before, t.capture("relation_type", key, value, exists))
 	}
 	for key, before := range t.edges {
-		value, exists := t.graph.Edges[key]
+		value, exists := t.graph.Edges.Get(key)
 		if exists {
 			apply(before, t.capture("edge", key, logicalEdgeForHash(value), true))
 		} else {
@@ -219,10 +219,10 @@ func (t *mutationFingerprintTracker) finish(report *ApplyReport) error {
 	return nil
 }
 
-func contentFingerprintEntry(kind string, key string, value any) ([md5.Size]byte, error) {
+func contentFingerprintEntry(kind string, key string, value any) ([sha256.Size]byte, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return [md5.Size]byte{}, err
+		return [sha256.Size]byte{}, err
 	}
 	payload := make([]byte, 0, len(kind)+len(key)+len(data)+2)
 	payload = append(payload, kind...)
@@ -230,10 +230,10 @@ func contentFingerprintEntry(kind string, key string, value any) ([md5.Size]byte
 	payload = append(payload, key...)
 	payload = append(payload, 0)
 	payload = append(payload, data...)
-	return md5.Sum(payload), nil
+	return sha256.Sum256(payload), nil
 }
 
-func xorFingerprint(target *[md5.Size]byte, value [md5.Size]byte) {
+func xorFingerprint(target *[sha256.Size]byte, value [sha256.Size]byte) {
 	for i := range target {
 		target[i] ^= value[i]
 	}

@@ -7,14 +7,15 @@ import (
 )
 
 type Graph struct {
-	Version       int64
-	CITypes       map[string]CIType
-	Entities      map[string]Entity
-	RelationTypes map[string]RelationType
-	Edges         map[string]Edge
+	Version  int64
+	CITypes  map[string]CIType
+	Entities *ShardedMap[Entity]
 
-	out                map[string]map[string]struct{}
-	in                 map[string]map[string]struct{}
+	RelationTypes map[string]RelationType
+	Edges         *ShardedMap[Edge]
+
+	out                *ShardedMap[map[string]struct{}]
+	in                 *ShardedMap[map[string]struct{}]
 	edgeAliasIndex     map[string]map[string]struct{}
 	edgeTypeIndex      map[string]map[string]struct{}
 	entityAliasIndex   map[string]map[string]struct{}
@@ -30,7 +31,7 @@ type Graph struct {
 	fieldValueOrder    map[fieldValueOrderKey]fieldValueOrder
 	fieldIndexOrderMu  sync.Mutex
 
-	contentFingerprint      [16]byte
+	contentFingerprint      [32]byte
 	contentFingerprintReady bool
 	contentFingerprintMu    sync.Mutex
 	logicalHashCache        *logicalHashCache
@@ -40,9 +41,9 @@ type Graph struct {
 func New() *Graph {
 	g := &Graph{
 		CITypes:       map[string]CIType{},
-		Entities:      map[string]Entity{},
+		Entities:      NewShardedMap[Entity](),
 		RelationTypes: map[string]RelationType{},
-		Edges:         map[string]Edge{},
+		Edges:         NewShardedMap[Edge](),
 	}
 	for _, relationType := range StandardRelationTypes() {
 		g.RelationTypes[relationType.Name] = relationType
@@ -73,7 +74,7 @@ func FromSnapshot(snapshot Snapshot) (*Graph, error) {
 		if err != nil {
 			return nil, err
 		}
-		g.Entities[normalized.ID] = normalized
+		g.Entities.Set(normalized.ID, normalized)
 	}
 	g.rebuildIndexes()
 	entityAliases := g.canonicalizeEntitySet(snapshot.Version, snapshotVersionTime(snapshot))
@@ -105,11 +106,11 @@ func (g *Graph) Clone() *Graph {
 	clone := &Graph{
 		Version:                 g.Version,
 		CITypes:                 map[string]CIType{},
-		Entities:                map[string]Entity{},
+		Entities:                NewShardedMap[Entity](),
 		RelationTypes:           map[string]RelationType{},
-		Edges:                   map[string]Edge{},
-		out:                     copySetMap(g.out),
-		in:                      copySetMap(g.in),
+		Edges:                   NewShardedMap[Edge](),
+		out:                     copyAdjacency(g.out),
+		in:                      copyAdjacency(g.in),
 		edgeAliasIndex:          copySetMap(g.edgeAliasIndex),
 		edgeTypeIndex:           copySetMap(g.edgeTypeIndex),
 		entityAliasIndex:        copySetMap(g.entityAliasIndex),
@@ -123,14 +124,14 @@ func (g *Graph) Clone() *Graph {
 	for name, ciType := range g.CITypes {
 		clone.CITypes[name] = copyCIType(ciType)
 	}
-	for id, entity := range g.Entities {
-		clone.Entities[id] = copyEntity(entity)
+	for id, entity := range g.Entities.All() {
+		clone.Entities.Set(id, copyEntity(entity))
 	}
 	for name, relationType := range g.RelationTypes {
 		clone.RelationTypes[name] = copyRelationType(relationType)
 	}
-	for id, edge := range g.Edges {
-		clone.Edges[id] = copyEdge(edge)
+	for id, edge := range g.Edges.All() {
+		clone.Edges.Set(id, copyEdge(edge))
 	}
 	clone.inheritReadOrder(g)
 	return clone
@@ -160,9 +161,9 @@ func (g *Graph) snapshot(copyValues bool) Snapshot {
 	snapshot := Snapshot{
 		Version:       g.Version,
 		CITypes:       make([]CIType, 0, len(g.CITypes)),
-		Entities:      make([]Entity, 0, len(g.Entities)),
+		Entities:      make([]Entity, 0, g.Entities.Len()),
 		RelationTypes: make([]RelationType, 0, len(g.RelationTypes)),
-		Edges:         make([]Edge, 0, len(g.Edges)),
+		Edges:         make([]Edge, 0, g.Edges.Len()),
 	}
 	for _, ciType := range g.CITypes {
 		if copyValues {
@@ -170,7 +171,7 @@ func (g *Graph) snapshot(copyValues bool) Snapshot {
 		}
 		snapshot.CITypes = append(snapshot.CITypes, ciType)
 	}
-	for _, entity := range g.Entities {
+	for _, entity := range g.Entities.All() {
 		if copyValues {
 			entity = copyEntity(entity)
 		}
@@ -182,7 +183,7 @@ func (g *Graph) snapshot(copyValues bool) Snapshot {
 		}
 		snapshot.RelationTypes = append(snapshot.RelationTypes, relationType)
 	}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		if copyValues {
 			edge = copyEdge(edge)
 		}
@@ -204,7 +205,7 @@ func (g *Graph) snapshot(copyValues bool) Snapshot {
 }
 
 func (g *Graph) GetEntity(id string) (Entity, bool) {
-	entity, ok := g.Entities[id]
+	entity, ok := g.Entities.Get(id)
 	return copyEntity(entity), ok
 }
 
@@ -220,7 +221,7 @@ func (g *Graph) ResolveEntityReference(id string) string {
 	if id == "" {
 		return ""
 	}
-	if _, ok := g.Entities[id]; ok {
+	if _, ok := g.Entities.Get(id); ok {
 		return id
 	}
 	matches := g.entityAliasIndex[id]
@@ -228,7 +229,7 @@ func (g *Graph) ResolveEntityReference(id string) string {
 		return ""
 	}
 	for entityID := range matches {
-		if _, ok := g.Entities[entityID]; ok {
+		if _, ok := g.Entities.Get(entityID); ok {
 			return entityID
 		}
 	}

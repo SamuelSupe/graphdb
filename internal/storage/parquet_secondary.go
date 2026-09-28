@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"

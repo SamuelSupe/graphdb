@@ -410,7 +410,7 @@ func TestIncomingEntitySourcesCannotSpoofIdentityAlias(t *testing.T) {
 	if !ok || agent.Fields["owner"] != "collector" {
 		t.Fatalf("agent entity = %#v ok=%v", agent, ok)
 	}
-	if len(g.Entities) != 2 {
+	if g.Entities.Len() != 2 {
 		t.Fatalf("entities = %#v, spoofed source alias merged into manual entity", g.Entities)
 	}
 	if err := g.ApplyCommit(Commit{
@@ -424,7 +424,7 @@ func TestIncomingEntitySourcesCannotSpoofIdentityAlias(t *testing.T) {
 		t.Fatalf("top-level alias merge: %v", err)
 	}
 	manual, _ = g.GetEntity("host:manual")
-	if len(g.Entities) != 2 || manual.Fields["rack"] != "r1" {
+	if g.Entities.Len() != 2 || manual.Fields["rack"] != "r1" {
 		t.Fatalf("top-level source alias did not merge: entities=%#v manual=%#v", g.Entities, manual)
 	}
 }

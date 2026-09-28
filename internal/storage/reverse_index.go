@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const reverseIndexLayoutVersion = 1
@@ -167,11 +167,11 @@ func validImpactDirection(direction string) bool {
 
 func buildReverseEdgeShards(g *graph.Graph, version int64) []EdgeShardData {
 	counts := map[string]int{}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		counts[edge.Type+"\x00"+edgeShardID(edge.To)]++
 	}
 	shards := newEdgeShardBuckets(counts, version, time.Now().UTC())
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		shardID := edgeShardID(edge.To)
 		key := edge.Type + "\x00" + shardID
 		shard := shards[key]

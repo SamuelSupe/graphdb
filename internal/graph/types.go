@@ -12,8 +12,7 @@ type CIType struct {
 	IdentityKeys []IdentityKey        `json:"identity_keys,omitempty"`
 }
 
-// EntityType is the domain-neutral name for CIType introduced in GGraphDB 1.1.
-// It is an alias so the in-memory and persisted 1.0 data structures stay identical.
+// EntityType and CIType name the same optional kind-level schema.
 type EntityType = CIType
 
 type FieldSpec struct {

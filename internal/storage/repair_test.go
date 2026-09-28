@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestJSONManifestIsRejectedAndRepairRebuildsParquet(t *testing.T) {
@@ -177,16 +177,16 @@ func TestRepairReportsGraphConsistencyIssues(t *testing.T) {
 	g := graph.New()
 	g.CITypes["host"] = graph.CIType{Name: "host", IdentityKeys: []graph.IdentityKey{{Name: "hostname", Fields: []string{"hostname"}}}}
 	g.RelationTypes["runs_on"] = graph.RelationType{Name: "runs_on", FromKind: "service", ToKind: "host", Directed: true}
-	g.Entities["host:a"] = graph.Entity{
+	g.Entities.Set("host:a", graph.Entity{
 		ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "same"},
 		Sources:         []graph.EntitySource{{Source: "agent", ExternalID: "a", Stale: true}},
 		FieldSources:    map[string]graph.FieldSource{"hostname": {Source: "agent"}},
 		ExistenceSource: &graph.FieldSource{Source: "agent"},
 		MergedFrom:      []string{"legacy:shared"},
-	}
-	g.Entities["host:b"] = graph.Entity{ID: "host:b", Kind: "host", Fields: graph.Fields{"hostname": "same"}, MergedFrom: []string{"legacy:shared"}}
-	g.Edges["edge:bad"] = graph.Edge{ID: "edge:bad", Type: "runs_on", From: "host:a", To: "missing"}
-	g.Edges["edge:kind"] = graph.Edge{ID: "edge:kind", Type: "runs_on", From: "host:a", To: "host:b"}
+	})
+	g.Entities.Set("host:b", graph.Entity{ID: "host:b", Kind: "host", Fields: graph.Fields{"hostname": "same"}, MergedFrom: []string{"legacy:shared"}})
+	g.Edges.Set("edge:bad", graph.Edge{ID: "edge:bad", Type: "runs_on", From: "host:a", To: "missing"})
+	g.Edges.Set("edge:kind", graph.Edge{ID: "edge:kind", Type: "runs_on", From: "host:a", To: "host:b"})
 
 	issues := graphConsistencyIssues(g)
 	for _, code := range []string{

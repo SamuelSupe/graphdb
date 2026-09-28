@@ -15,14 +15,9 @@ GGraphDB 是一个使用 Go 编写的轻量级通用当前态属性知识图谱�
   （1.0 名称为 `CIType`）；标签用于分类实体，关系属性 schema 用于校验和
   填充边字段。
 - **可选身份合并与来源治理**：应用可以使用 `IdentityKey` 自动识别重复实体，并按来源优先级、置信度和写入时间处理字段及关系冲突。
-- **对象存储持久化**：以 manifest 作为可见性边界，使用不可变提交、Parquet 快照和可重建索引保存数据；通过 manifest CAS 避免陈旧写入覆盖新版本。
-- **读写模式分离**：同一个程序支持 `all`、`writer` 和 `reader` 三种运行模式；
-  本地协调每租户一个活动写入者，可选 PostgreSQL head CAS 支持 2–8 个乐观
-  并发 writer；1.3 WAL profile 中每个 writer 拥有独立的持久 WAL 卷，读端从
-  对象存储加载不可变图对象。
-- **协调边界**：PostgreSQL 只保存 tenant head/generation CAS、幂等以及
-  collector/batch 协调元数据，不保存图 payload、WAL record 或 commit segment；
-  对象存储仍是图数据权威。
+- **本地持久化**：一个进程独占数据目录，数据文件同步完成后再发布 manifest；支持 direct 和同步 WAL。
+- **在线读写**：`all` 模式服务多租户并发请求，读视图固定不可变版本，查询可以指定 `min_version`。
+- **恢复边界**：可选 S3 兼容快照备份与按需恢复；不依赖 PostgreSQL，不提供多 writer、复制或自动故障切换。
 - **多种查询方式**：提供 GraphQL、JSON Query DSL、1-8 步有界 pattern、索引化
   双向遍历、流式查询、当前态扫描和快照导出。
 - **批量导入**：task 驱动、带 checkpoint 的 CSV 和 JSONL ingest。
@@ -78,18 +73,16 @@ flowchart LR
   Client["图应用 / 写入客户端 / 运维工具"] --> API["GGraphDB HTTP API 或 CLI"]
   API --> Graph["图模型与查询执行"]
   Graph --> Store["Tenant Store\nmanifest / commit / snapshot / index"]
-  Store -. 可选 head CAS .-> PG["PostgreSQL 协调"]
   Store --> Object["本地磁盘文件"]
+  Object -. 快照备份 .-> S3["S3 兼容备份仓库"]
 ```
 
 写入通常经过以下流程：
 
-1. 接收直接提交或采集批次；1.3 协调 WAL 模式会先在所属 writer 的本地 WAL
-   中校验并 `fsync` 批次；
-2. 对实体、关系、身份和来源优先级进行校验与合并；
-3. 写入不可变对象，并在协调模式使用 PostgreSQL head CAS 通过 manifest
-   发布新版本；
-4. 读端加载快照并回放可见提交，必要时使用持久化索引加速查询。
+1. 接收直接提交或采集批次；同步 WAL 先完成校验与 fsync；
+2. 校验并合并实体、关系、身份与来源优先级；
+3. 写入并同步不可变文件，再替换 manifest；
+4. 发布进程内可见版本并更新派生索引。
 
 长时间运行后可以通过 compact 把提交尾部折叠为快照，并通过 GC、repair、index rebuild 等任务维护数据和索引。
 
@@ -132,20 +125,17 @@ X-Tenant-ID: demo
 | `cmd/graphdb` | CLI 命令和服务启动入口 |
 | `internal/graph` | 实体、关系、类型、校验、合并和来源治理 |
 | `internal/query` | GraphQL adapter、查询 DSL、规划、执行、遍历和流式查询 |
-| `internal/storage` | 对象存储、manifest、commit、快照、索引和采集元数据 |
+| `internal/storage` | 本地文件存储、manifest、commit、快照、索引和采集元数据 |
 | `internal/httpapi` | HTTP 路由、读写模式、限流、租户和运维接口 |
 | `internal/config` | 环境变量和运行配置 |
 | `sdk/go`、`sdk/python` | Go 和 Python SDK |
 
 ## 当前边界
 
-- 本地协调每租户只支持一个活动写入者；可选 PostgreSQL 协调支持 2–8 个
-  乐观并发 writer，但不提供跨租户事务。1.3 WAL profile 只覆盖 ingest
-  batch；每个 writer 使用独立 WAL 卷，跨 writer 按成功 head CAS 排序。
-- PostgreSQL 只保存协调元数据和 head CAS；图数据权威仍是对象存储。WAL
-  持久性只覆盖原 writer 卷可恢复时的进程故障，不覆盖卷永久丢失；durable
-  `202` 表示 writer 已接管请求，不是图版本已经提交。
-- 读端以对象存储中的 manifest、快照和提交为准；需要读后写一致性时，可以使用 `min_version`，允许最终一致读取时可以使用 `allow_stale`。
+- 一个进程独占目录，不提供分布式 writer、跨租户事务、复制或自动故障切换。
+- 使用全新的 2.0 数据目录，不提供 1.x 迁移或跨版本回滚。
+- 同步 WAL 的 durable `202` 表示已受理，不代表版本已发布。WAL 覆盖磁盘可恢复的进程故障，备份支持恢复到另一块磁盘。
+- 使用 `min_version` 保证写后读，只有业务允许旧读时才开启 `allow_stale`。
 - 数据 API 的租户选择依赖 `X-Tenant-ID`；实际部署时应由网关或上游系统提供认证与授权。
 - 当前读取的是租户的最新可见图状态，不提供历史版本查询。
 
@@ -156,6 +146,5 @@ X-Tenant-ID: demo
 - [写入与采集](user/write-ingest.zh-CN.md)
 - [读取与查询](user/read-query.zh-CN.md)
 - [部署与运维](user/deploy-ops.zh-CN.md)
-- [1.3 PostgreSQL-CAS 多 writer WAL](ingest-wal-multiwriter-design.zh-CN.md)
 - [整体架构](architecture.md)
 - [OpenAPI](openapi.yaml)

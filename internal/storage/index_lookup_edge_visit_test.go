@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestPersistedIndexLookupVisitsSortedOutEdgeRange(t *testing.T) {
@@ -44,8 +44,8 @@ func TestPersistedIndexLookupVisitsSortedOutEdgeRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load graph: %v", err)
 	}
-	edgeIDs := make([]string, 0, len(g.Edges))
-	for _, edge := range g.Edges {
+	edgeIDs := make([]string, 0, g.Edges.Len())
+	for _, edge := range g.Edges.All() {
 		if edge.From == "service:range" {
 			edgeIDs = append(edgeIDs, edge.ID)
 		}
@@ -119,8 +119,8 @@ func TestPersistedIndexLookupVisitsSortedInEdgeRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load graph: %v", err)
 	}
-	edgeIDs := make([]string, 0, len(g.Edges))
-	for _, edge := range g.Edges {
+	edgeIDs := make([]string, 0, g.Edges.Len())
+	for _, edge := range g.Edges.All() {
 		if edge.To == "host:range" {
 			edgeIDs = append(edgeIDs, edge.ID)
 		}

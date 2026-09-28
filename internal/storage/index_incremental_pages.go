@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID string, previousVersion int64, previous []EntityPageSpec, before *graph.Graph, after *graph.Graph, entityIDs []string, version int64, now time.Time) ([]EntityPageData, []EntityPageSpec, error) {
@@ -15,8 +15,8 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 	}
 	changedByShard := map[string][]string{}
 	for _, entityID := range entityIDs {
-		_, oldOK := before.Entities[entityID]
-		_, newOK := after.Entities[entityID]
+		_, oldOK := before.Entities.Get(entityID)
+		_, newOK := after.Entities.Get(entityID)
 		if !oldOK && !newOK {
 			continue
 		}

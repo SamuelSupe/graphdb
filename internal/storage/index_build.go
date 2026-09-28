@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID string) {
@@ -128,7 +128,7 @@ func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definit
 }
 
 func addEntitiesToIndex(g *graph.Graph, index *SecondaryIndex) {
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		if entity.Kind != index.Kind {
 			continue
 		}

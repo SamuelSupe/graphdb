@@ -3,6 +3,31 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [2.0.0] - 2026-09-28
+
+Local disk is now the main edition and stable release. One process owns a data
+directory and serves concurrent tenants; S3-compatible storage is reserved for
+snapshot backups and on-demand restore. This is a breaking release: use a fresh
+2.0 directory. No 1.x migration or cross-major rollback is provided.
+
+- Replace `data_md5` with `data_hash` (`sha256-shards-v2:<64 hex digits>`).
+  Update only changed logical hash buckets; hash a fixed-size root per version.
+- Copy only changed entity, edge and adjacency map buckets across versions.
+- Reuse entity partitions for incremental indexes; bound queued delta batches
+  instead of rebuilding merely because a backlog threshold was crossed.
+- Bound GC scan work and reopen read admission during long view waits. Share
+  memory admission across queued indexes, active builds and restore drills.
+- Bound file publication groups by count, bytes and elapsed time, retaining
+  data-before-manifest durability and directory barriers.
+- Reduce restore/backup lock scope; preserve tenant generations, recovery
+  journals, accepted WAL semantics and in-flight read protection.
+- Publish the Go module as `github.com/SamuelSupe/graphdb/v2`; Go and Python SDKs
+  are version 2.0.0. HTTP `/v1` routes remain the current transport API.
+- Align deployment, documentation, website and stable release gates with 2.0.
+
+See [2.0 performance and validation](docs/performance-v2.0.md) for measurements
+and limits. Historical 1.x performance results do not qualify this release.
+
 ## [1.3.4-local.9] - 2026-09-20
 
 Independent local disk prerelease on `codex/local-disk-v2`; `main` and the stable

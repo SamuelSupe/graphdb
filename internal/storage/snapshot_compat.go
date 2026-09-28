@@ -1,6 +1,6 @@
 package storage
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 // legacySnapshotRecord preserves the 1.0 JSON field order and entity wire
 // shape used by snapshot content hashes.

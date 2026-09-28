@@ -196,7 +196,7 @@ curl -fsS "$BASE/metrics"
 curl -fsS "$BASE/openapi.yaml"
 ```
 
-排查顺序建议是：先查 `/v1/health`，再查对象存储连通性、bucket/prefix、
+排查顺序建议是：先查 `/v1/health`，再查本地目录权限、剩余空间、prefix、
 `/metrics` 中的写入 backpressure、CAS 冲突、reader 可见版本和索引健康。
 错误响应中的 `code`、`retryable` 和 `detail` 比展示文本更适合程序处理；
 错误码表见 [errors-troubleshooting.md](errors-troubleshooting.zh-CN.md)。

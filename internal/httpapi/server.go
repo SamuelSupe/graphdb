@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -265,7 +265,7 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 }
 
 func commitMayHaveChangedData(result storage.CommitResult) bool {
-	return result.Version > 0 || result.ReadAfterCommitID != "" || result.DataMD5 != ""
+	return result.Version > 0 || result.ReadAfterCommitID != "" || result.DataHash != ""
 }
 
 func (s *Server) entity(w http.ResponseWriter, r *http.Request) {

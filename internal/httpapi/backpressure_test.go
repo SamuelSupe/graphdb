@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func TestHTTPCommitBackpressureReturns429(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]any, string, error) {
@@ -42,9 +42,9 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	}
 	defer releaseMemory()
 	snapshot := g.SnapshotForStorage()
-	dataMD5 := loaded.DataMD5
-	if dataMD5 == "" {
-		dataMD5, err = g.ContentMD5()
+	dataHash := loaded.DataHash
+	if dataHash == "" {
+		dataHash, err = g.ContentHash()
 		if err != nil {
 			return nil, "", err
 		}
@@ -95,7 +95,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		SnapshotCatalogKey: catalog.Key,
 		SnapshotVersion:    snapshot.Version,
 		UpdatedAt:          time.Now().UTC(),
-		DataMD5:            dataMD5,
+		DataHash:           dataHash,
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "compact_publish_manifest", total-1, total, taskActionUpdate{
 		ID:     "publish_manifest",
@@ -111,7 +111,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		loaded,
 		snapshotKey,
 		catalog.Key,
-		dataMD5,
+		dataHash,
 	)
 
 	if err != nil {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestPackedEntityRowsPruneShardsWithoutChangingLogicalHashes(t *testing.T) {

@@ -6,10 +6,10 @@ GGraphDB provides lightweight Go and Python SDKs over the HTTP API. They do not
 import service `internal` packages and are safe to vendor into collectors,
 internal services, and operations tools.
 
-The 1.3 SDKs expose the current ingest contract. Both preserve direct-mode
+The 2.0 SDKs expose the current ingest contract. Both preserve direct-mode
 terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
-owner status resource, polling/waiting, and ingest CAS/conditional/atomic
-options. The Go and Python SDK package versions are `1.3.2`.
+local status resource, polling/waiting, and ingest CAS/conditional/atomic
+options. The Go and Python SDK package versions are `2.0.0`.
 
 SDK scope:
 
@@ -28,7 +28,7 @@ SDK scope:
 Package:
 
 ```go
-import graphdb "gitlab.jiagouyun.com/guance/graphdb/sdk/go/graphdb"
+import graphdb "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb"
 ```
 
 Create a client:
@@ -125,7 +125,7 @@ fmt.Println(result.Version, result.ErrorCode, result.Applied, result.Failed)
 ```
 
 For non-blocking WAL admission, use `SubmitIngest` and retain the returned
-owner URL. Direct mode places the terminal result in `Result` with status
+status URL. Direct mode places the terminal result in `Result` with status
 `200` or `207`; WAL mode places the durable acceptance in `Accepted` with
 status `202`. `SubmitIngest` reads `status_url` and falls back to the HTTP
 `Location` header, so callers can route status requests to the owning writer:
@@ -156,7 +156,7 @@ takeover by the writer, not a committed graph version. Terminal conditional
 failures are represented by `IngestResult.ErrorCode` (`version_conflict`,
 `precondition_failed`, `atomic_validation_failed`, or `atomic_suppressed`).
 
-### Go: Schema And File Import (1.1-compatible)
+### Go: Schema And File Import (2.0)
 
 ```go
 catalog, err := writer.PutRelationSchema(ctx, graphdb.RelationSchema{
@@ -311,13 +311,13 @@ print(result["version"], result.get("error_code"), result["applied"], result["fa
 `ingest` is the blocking compatibility convenience call and waits for the
 terminal result when the server initially acknowledges a WAL request with
 `202`. For explicit admission and polling, use `submit_ingest`, retain the
-returned `status_url`/owner information, and call `get_ingest_status` or
+returned `status_url`/instance information, and call `get_ingest_status` or
 `wait_ingest`. Direct mode returns the terminal result with HTTP `200` or
 `207`; WAL mode returns an acceptance with HTTP `202`. A terminal response may
 contain `error_code` values `version_conflict`, `precondition_failed`,
 `atomic_validation_failed`, or `atomic_suppressed`.
 
-### Python: Schema And File Import (1.1-compatible)
+### Python: Schema And File Import (2.0)
 
 ```python
 catalog = writer.put_relation_schema("cites", {

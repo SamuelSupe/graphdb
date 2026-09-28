@@ -15,7 +15,7 @@ func (g *Graph) applyMerge(
 	affected *uniqueStringCollector,
 	reportAffectedEdges *uniqueStringCollector,
 ) error {
-	target, ok := g.Entities[request.TargetID]
+	target, ok := g.Entities.Get(request.TargetID)
 	if !ok {
 		return fmt.Errorf("merge target entity %q not found", request.TargetID)
 	}
@@ -33,7 +33,7 @@ func (g *Graph) applyMerge(
 		if sourceID == request.TargetID {
 			continue
 		}
-		source, ok := g.Entities[sourceID]
+		source, ok := g.Entities.Get(sourceID)
 		if !ok {
 			return fmt.Errorf("merge source entity %q not found", sourceID)
 		}
@@ -54,13 +54,13 @@ func (g *Graph) applyMerge(
 			return err
 		}
 		g.removeEntityFromIndexes(sourceID, source)
-		delete(g.Entities, sourceID)
+		g.Entities.Delete(sourceID)
 		affected.add(sourceID)
 	}
 	target.ID = request.TargetID
 	target.Version = version
 	target.UpdatedAt = now
-	g.Entities[request.TargetID] = target
+	g.Entities.Set(request.TargetID, target)
 	if err := validateEntityFieldsWithSpecs(target, fields); err != nil {
 		return err
 	}

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sort"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type cachedEntityScanOrder struct {
@@ -58,7 +58,7 @@ func (c *ReaderCache) ListEntitiesFromReadView(ctx context.Context, tenantID str
 				return EntityScanResult{}, err
 			}
 		}
-		entity := g.Entities[order[i].key]
+		entity := g.Entities.At(order[i].key)
 		if !entityMatchesScan(entity, options) {
 			continue
 		}
@@ -96,7 +96,7 @@ func (c *ReaderCache) readViewEntityScanOrder(ctx context.Context, tenantID stri
 	}
 	// Reserve before allocating; ID strings are borrowed from the immutable map.
 	// If the reader cache is full, the bounded heap remains the fallback.
-	bytes := int64(len(g.Entities))*64 + 128
+	bytes := int64(g.Entities.Len())*64 + 128
 	if bytes > c.MaxBytes-c.bytes {
 		c.mu.Unlock()
 		return nil, nil
@@ -108,8 +108,8 @@ func (c *ReaderCache) readViewEntityScanOrder(ctx context.Context, tenantID stri
 	c.entries[tenantID] = entry
 	c.mu.Unlock()
 
-	items := make([]scanCandidate, 0, len(g.Entities))
-	for key, entity := range g.Entities {
+	items := make([]scanCandidate, 0, g.Entities.Len())
+	for key, entity := range g.Entities.All() {
 		if len(items)&255 == 0 {
 			if order.err = ctx.Err(); order.err != nil {
 				break

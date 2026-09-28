@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const (
@@ -107,11 +107,11 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 		return TenantInfo{}, err
 	}
 	if !meta.Exists {
-		_, dataMD5, _, err := newEmptyTenantGraph()
+		_, dataHash, _, err := newEmptyTenantGraph()
 		if err != nil {
 			return TenantInfo{}, err
 		}
-		manifest = Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataMD5: dataMD5}
+		manifest = Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataHash: dataHash}
 		if _, err := s.putManifestMeta(ctx, tenantID, manifest, meta); err != nil {
 			return TenantInfo{}, err
 		}
@@ -404,7 +404,7 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 	if sourceInfo.Status == TenantStatusDeleted {
 		return TenantInfo{}, ErrTenantDeleted
 	}
-	_, sourceRecord, dataMD5, err := s.captureTenantBackup(
+	_, sourceRecord, dataHash, err := s.captureTenantBackup(
 		ctx, sourceTenantID,
 	)
 	if err != nil {
@@ -412,13 +412,13 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 	}
 	if s.localFileStore() != nil {
 		return s.publishLocalTenantLifecycle(ctx, targetTenantID, true, func(stage *TenantStore) (TenantInfo, error) {
-			return stage.cloneTenantRecord(ctx, sourceTenantID, sourceInfo, sourceRecord, dataMD5, options)
+			return stage.cloneTenantRecord(ctx, sourceTenantID, sourceInfo, sourceRecord, dataHash, options)
 		})
 	}
-	return s.cloneTenantRecord(ctx, sourceTenantID, sourceInfo, sourceRecord, dataMD5, options)
+	return s.cloneTenantRecord(ctx, sourceTenantID, sourceInfo, sourceRecord, dataHash, options)
 }
 
-func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID string, sourceInfo TenantInfo, sourceRecord TenantBackupRecord, dataMD5 string, options TenantCloneOptions) (TenantInfo, error) {
+func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID string, sourceInfo TenantInfo, sourceRecord TenantBackupRecord, dataHash string, options TenantCloneOptions) (TenantInfo, error) {
 	targetTenantID := options.TargetTenantID
 
 	targetLock, err := s.lockTenantMaintenance(ctx, targetTenantID)
@@ -464,7 +464,7 @@ func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID stri
 		SnapshotKey:        snapshotKey,
 		SnapshotCatalogKey: snapshotCatalogKey,
 		SnapshotVersion:    snapshot.Version,
-		DataMD5:            dataMD5,
+		DataHash:           dataHash,
 		UpdatedAt:          time.Now().UTC(),
 	}
 

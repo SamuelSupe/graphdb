@@ -3,7 +3,7 @@ package config
 import (
 	"os"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 )
 
 func loadBackupConfig() (backupstore.Config, error) {

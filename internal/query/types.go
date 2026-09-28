@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 var ErrInvalid = errors.New("invalid query")

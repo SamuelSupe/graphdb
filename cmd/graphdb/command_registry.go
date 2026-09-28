@@ -1,6 +1,6 @@
 package main
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+import "github.com/SamuelSupe/graphdb/v2/internal/storage"
 
 type commandKind uint8
 

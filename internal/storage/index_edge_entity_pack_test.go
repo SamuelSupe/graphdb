@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
@@ -150,7 +150,7 @@ func TestEdgeShardPackingMergesSmallShards(t *testing.T) {
 		t.Fatalf("load committed graph: %v", err)
 	}
 	committedEdges := make([]graph.Edge, 0, len(edges))
-	for _, edge := range loaded.Edges {
+	for _, edge := range loaded.Edges.All() {
 		if edge.Type == "runs_on" {
 			committedEdges = append(committedEdges, edge)
 		}
@@ -233,7 +233,7 @@ func TestReverseEdgeShardPackingPreservesLogicalShardsAndMetadata(t *testing.T) 
 		t.Fatalf("load committed graph: %v", err)
 	}
 	committedEdges := make([]graph.Edge, 0, len(edges))
-	for _, edge := range loaded.Edges {
+	for _, edge := range loaded.Edges.All() {
 		if edge.Type == "runs_on" {
 			committedEdges = append(committedEdges, edge)
 		}
@@ -340,23 +340,24 @@ func TestReverseEdgeShardPackingSplitsColdReadsAcrossPhysicalPacks(t *testing.T)
 	if err != nil {
 		t.Fatalf("load committed graph: %v", err)
 	}
-	expectedByTarget := make(map[string]map[string]graph.Edge, len(targets))
+	expectedByTarget := make(map[string]*graph.ShardedMap[graph.Edge], len(targets))
 	for _, target := range targets {
-		expectedByTarget[target.ID] = make(map[string]graph.Edge)
+		expectedByTarget[target.ID] = graph.NewShardedMap[graph.Edge]()
+
 	}
-	for _, edge := range loaded.Edges {
+	for _, edge := range loaded.Edges.All() {
 		if edge.Type == "runs_on" {
-			expectedByTarget[edge.To][edge.ID] = edge
+			expectedByTarget[edge.To].Set(edge.ID, edge)
 		}
 	}
 	if got := len(expectedByTarget); got != len(targets) {
 		t.Fatalf("expected target buckets=%d, got %d", len(targets), got)
 	}
-	if got := len(expectedByTarget[targets[0].ID]); got != largeShardEdges {
+	if got := expectedByTarget[targets[0].ID].Len(); got != largeShardEdges {
 		t.Fatalf("large target edges=%d, want %d", got, largeShardEdges)
 	}
 	for _, target := range targets[1:] {
-		if got := len(expectedByTarget[target.ID]); got != smallShardEdges {
+		if got := expectedByTarget[target.ID].Len(); got != smallShardEdges {
 			t.Fatalf("target %s edges=%d, want %d", target.ID, got, smallShardEdges)
 		}
 	}
@@ -370,7 +371,7 @@ func TestReverseEdgeShardPackingSplitsColdReadsAcrossPhysicalPacks(t *testing.T)
 		if spec.RelationType != "runs_on" {
 			continue
 		}
-		if want := len(expectedByTarget[findTargetForShard(t, targets, spec.Shard)]); want != spec.EdgeCount {
+		if want := expectedByTarget[findTargetForShard(t, targets, spec.Shard)].Len(); want != spec.EdgeCount {
 			t.Fatalf("reverse shard %s edge count=%d, want %d", spec.Shard, spec.EdgeCount, want)
 		}
 		key := requireAnyIndexObjectKey(t, spec.Objects)
@@ -413,14 +414,14 @@ func TestReverseEdgeShardPackingSplitsColdReadsAcrossPhysicalPacks(t *testing.T)
 			t.Fatalf("reverse lookup to=%s got=%#v ok=%v err=%v", target.ID, incoming, ok, err)
 		}
 		expected := expectedByTarget[target.ID]
-		if len(incoming) != len(expected) {
-			t.Fatalf("reverse lookup to=%s edges=%d, want %d", target.ID, len(incoming), len(expected))
+		if len(incoming) != expected.Len() {
+			t.Fatalf("reverse lookup to=%s edges=%d, want %d", target.ID, len(incoming), expected.Len())
 		}
 		for _, edge := range incoming {
 			if edge.To != target.ID {
 				t.Fatalf("reverse lookup to=%s returned cross-shard edge %#v", target.ID, edge)
 			}
-			want, exists := expected[edge.ID]
+			want, exists := expected.Get(edge.ID)
 			if !exists {
 				t.Fatalf("reverse lookup to=%s returned unexpected edge %#v", target.ID, edge)
 			}
@@ -459,11 +460,11 @@ func TestPackedReverseEdgeShardDecoderStreamsRowsAndReusesHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode physical pack: %v", err)
 	}
-	if len(full.Edges) != len(expectedByID) {
-		t.Fatalf("physical pack edges=%d, want %d", len(full.Edges), len(expectedByID))
+	if len(full.Edges) != expectedByID.Len() {
+		t.Fatalf("physical pack edges=%d, want %d", len(full.Edges), expectedByID.Len())
 	}
 	for _, edge := range full.Edges {
-		want, ok := expectedByID[edge.ID]
+		want, ok := expectedByID.Get(edge.ID)
 		if !ok {
 			t.Fatalf("physical pack returned unexpected edge %#v", edge)
 		}
@@ -475,7 +476,7 @@ func TestPackedReverseEdgeShardDecoderStreamsRowsAndReusesHash(t *testing.T) {
 			t.Fatalf("decode logical shard %s: %v", shardID, err)
 		}
 		wantCount := 0
-		for _, edge := range expectedByID {
+		for _, edge := range expectedByID.All() {
 			if edgeShardID(edge.To) == shardID {
 				wantCount++
 			}
@@ -484,7 +485,7 @@ func TestPackedReverseEdgeShardDecoderStreamsRowsAndReusesHash(t *testing.T) {
 			t.Fatalf("logical shard %s edges=%d, want %d", shardID, len(decoded.Edges), wantCount)
 		}
 		for _, edge := range decoded.Edges {
-			want := expectedByID[edge.ID]
+			want := expectedByID.At(edge.ID)
 			if edgeShardID(edge.To) != shardID {
 				t.Fatalf("logical shard %s returned edge for %s: %#v", shardID, edge.To, edge)
 			}
@@ -508,11 +509,13 @@ func TestPackedReverseEdgeShardDecoderStreamsRowsAndReusesHash(t *testing.T) {
 	}
 }
 
-func packedReverseEdgeShardFixture(t *testing.T) (EdgeShardData, map[string]graph.Edge, []string) {
+func packedReverseEdgeShardFixture(t *testing.T) (EdgeShardData, *graph.ShardedMap[graph.Edge],
+	[]string) {
 	t.Helper()
 	targets := entitiesForDistinctShards("host", "decode-target", 8, edgeShardID)
 	shards := make([]EdgeShardData, 0, len(targets))
-	expectedByID := make(map[string]graph.Edge, len(targets)*24)
+	expectedByID := graph.NewShardedMap[graph.Edge]()
+
 	for targetIndex, target := range targets {
 		shard := EdgeShardData{
 			LayoutVersion: CurrentObjectLayoutVersion,
@@ -544,7 +547,7 @@ func packedReverseEdgeShardFixture(t *testing.T) (EdgeShardData, map[string]grap
 				Version:         9,
 			}
 			shard.Edges = append(shard.Edges, edge)
-			expectedByID[edge.ID] = edge
+			expectedByID.Set(edge.ID, edge)
 		}
 		shards = append(shards, shard)
 	}

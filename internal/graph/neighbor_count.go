@@ -6,10 +6,10 @@ func (g *Graph) NeighborCount(entityID string, direction string, relationTypes m
 	}
 	count := 0
 	if direction == "out" || direction == "both" {
-		count += g.countNeighborEdges(entityID, g.out[entityID], "out", relationTypes, nodeKinds, impact)
+		count += g.countNeighborEdges(entityID, g.out.At(entityID), "out", relationTypes, nodeKinds, impact)
 	}
 	if direction == "in" || direction == "both" {
-		count += g.countNeighborEdges(entityID, g.in[entityID], "in", relationTypes, nodeKinds, impact)
+		count += g.countNeighborEdges(entityID, g.in.At(entityID), "in", relationTypes, nodeKinds, impact)
 	}
 	return count
 }
@@ -17,7 +17,7 @@ func (g *Graph) NeighborCount(entityID string, direction string, relationTypes m
 func (g *Graph) countNeighborEdges(entityID string, edgeIDs map[string]struct{}, direction string, relationTypes map[string]struct{}, nodeKinds []string, impact bool) int {
 	count := 0
 	for edgeID := range edgeIDs {
-		edge := g.Edges[edgeID]
+		edge := g.Edges.At(edgeID)
 		if !neighborRelationAllowed(edge.Type, relationTypes) || !neighborImpactAllowed(g, edge.Type, direction, impact) {
 			continue
 		}
@@ -25,7 +25,7 @@ func (g *Graph) countNeighborEdges(entityID string, edgeIDs map[string]struct{},
 		if direction == "in" {
 			neighborID = edge.From
 		}
-		neighbor, ok := g.Entities[neighborID]
+		neighbor, ok := g.Entities.Get(neighborID)
 		if !ok || !neighborKindAllowed(neighbor.Kind, nodeKinds) {
 			continue
 		}

@@ -1,4 +1,4 @@
-# 本地磁盘版：quickstart
+# GGraphDB 2.0：quickstart
 
 本版使用单机单进程和持久化本地目录。
 

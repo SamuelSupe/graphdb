@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestImpactQueryUsesRelationSemanticsInsteadOfOutEdgeIndex(t *testing.T) {
@@ -37,7 +37,7 @@ func TestImpactQueryUsesRelationSemanticsInsteadOfOutEdgeIndex(t *testing.T) {
 		t.Fatalf("seed graph: %v", err)
 	}
 	lookup := &adjacencyLookup{
-		entities: map[string]graph.Entity{},
+		entities: graph.NewShardedMap[graph.Entity](),
 		edges:    map[string][]graph.Edge{},
 	}
 

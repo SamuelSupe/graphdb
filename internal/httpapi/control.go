@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type GCRequest struct {

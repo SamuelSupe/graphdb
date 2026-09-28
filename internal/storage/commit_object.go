@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) putCommitObjectIfAbsent(ctx context.Context, key string, commit graph.Commit) error {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"

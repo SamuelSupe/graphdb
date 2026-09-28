@@ -11,12 +11,10 @@ API 也可以服务其他实体关系应用。
 - 通过 `X-Tenant-ID` 隔离多租户图数据；
 - 无模式实体和可选类型定义，其中 CI type 适合 CMDB 风格的建模；
 - 以 `(type, from, to)` 作为规范身份的有向类型化边；
-- 每租户一个本地 writer，或 2–8 个 PostgreSQL 协调的乐观并发 writer；
-  reader 独立从对象存储重新加载不可变图对象；
-- 基于 Parquet manifest、commit、snapshot、entity page、edge shard 和索引
-  对象的对象存储持久化；
-- 1.3 协调 WAL profile 为每个 writer 使用独立持久 WAL；PostgreSQL 只保存
-  head CAS 和协调元数据，对象存储仍是图数据权威；
+- 一个进程独占本地数据目录，多租户支持客户端并发读写；
+- Parquet manifest、commit、snapshot、entity page、edge shard 和索引在本地盘持久化；
+- direct 和同步 WAL 写入，可选 S3 兼容快照备份与按需恢复；
+- 使用新的 2.0 数据目录和 `data_hash` 契约，不提供 1.x 迁移。
 - GraphQL、JSON Query DSL、scan/export、saved query 和运行中查询控制；
 - 可选的实体字段、边字段和边存在性 source priority 治理；
 - 租户生命周期、source policy、tenant config、索引、统一 task、维护、
@@ -37,18 +35,13 @@ Content-Type: application/json
 - query：`?min_version=123&allow_stale=true`；
 - header：`X-GraphDB-Min-Version`、`X-GraphDB-Allow-Stale`。
 
-运行模式：
-
-- `GRAPHDB_MODE=writer`：启用写入/控制 API，读取 API 可用于检查；
-- `GRAPHDB_MODE=reader`：写入、配置和 task 变更返回 `405`，读取、查询、
-  scan、指标和 freshness API 仍可用；
-- `GRAPHDB_MODE=all`：本地或小规模单进程模式。
+仅支持 `GRAPHDB_MODE=all`。独立 reader/writer、远端在线存储和 PostgreSQL 协调配置会明确报错。
 
 示例变量：
 
 ```sh
-export WRITER=http://127.0.0.1:38080
-export READER=http://127.0.0.1:38081
+export WRITER=http://127.0.0.1:8080
+export READER=http://127.0.0.1:8080
 export BASE=http://127.0.0.1:8080
 ```
 
@@ -59,7 +52,6 @@ export BASE=http://127.0.0.1:8080
 - [使用手册](usage-manual.zh-CN.md) · [English](usage-manual.md)
 - [数据模型](data-model.zh-CN.md) · [English](data-model.md)
 - [写入与采集](write-ingest.zh-CN.md) · [English](write-ingest.md)
-- [1.3 PostgreSQL-CAS 多 writer WAL](../ingest-wal-multiwriter-design.zh-CN.md) · [English](../ingest-wal-multiwriter-design.md)
 - [读取与查询](read-query.zh-CN.md) · [English](read-query.md)
 - [扫描与导出](scan-export.zh-CN.md) · [English](scan-export.md)
 - [租户与配置](tenant-config.zh-CN.md) · [English](tenant-config.md)

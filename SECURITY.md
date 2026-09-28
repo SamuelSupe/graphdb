@@ -4,8 +4,8 @@
 
 | Version | Security fixes |
 | --- | --- |
-| 1.1.x | Yes |
-| 1.0.x | Critical compatibility and migration fixes during the 1.1 rollout |
+| 2.0.x | Yes |
+| 1.x / local prereleases | Superseded by 2.0; no migration support |
 | Older | No |
 
 ## Reporting A Vulnerability
@@ -33,5 +33,5 @@ not identity. Production deployments must use the controls in
 authentication, tenant-header replacement, RBAC, listener isolation, and
 credential scoping.
 
-Never attach object-store data, PostgreSQL coordination rows, access tokens, or
+Never attach object-store data, access tokens, or
 customer graph exports to a public report.

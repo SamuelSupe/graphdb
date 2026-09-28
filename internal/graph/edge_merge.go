@@ -87,9 +87,11 @@ func existenceConflict(edgeID string, request EdgeDeleteRequest, existing FieldS
 	return edgeConflict(edgeID, incomingID, "__existence__", existing, incoming, true, false, "incoming edge delete was ignored because source priority is lower")
 }
 
-func mergeEdgeSet(edges map[string]Edge, version int64, updatedAt time.Time) (map[string]Edge, ApplyReport) {
-	items := make([]Edge, 0, len(edges))
-	for _, edge := range edges {
+func mergeEdgeSet(edges *ShardedMap[Edge],
+	version int64, updatedAt time.Time) (*ShardedMap[Edge],
+	ApplyReport) {
+	items := make([]Edge, 0, edges.Len())
+	for _, edge := range edges.All() {
 		items = append(items, edge)
 	}
 	sortEdgesForMerge(items)
@@ -115,14 +117,15 @@ func sortEdgesForMerge(edges []Edge) {
 	})
 }
 
-func mergeEdgeList(edges []Edge, version int64, updatedAt time.Time) (map[string]Edge, ApplyReport) {
-	next := map[string]Edge{}
+func mergeEdgeList(edges []Edge, version int64, updatedAt time.Time) (*ShardedMap[Edge],
+	ApplyReport) {
+	next := NewShardedMap[Edge]()
 	report := ApplyReport{}
 	for _, edge := range edges {
 		edge = copyEdge(edge)
 		incomingID := firstNonEmpty(edge.ID, edge.ExternalID)
 		edge = canonicalizeEdge(edge, firstNonZero(edge.Version, version), firstNonZeroTime(edge.UpdatedAt, updatedAt))
-		if existing, ok := next[edge.ID]; ok {
+		if existing, ok := next.Get(edge.ID); ok {
 			var mergeReport ApplyReport
 			edge, mergeReport = mergeEdgeForUpsert(existing, edge, edge.ID, incomingID, firstNonZero(edge.Version, version), firstNonZeroTime(edge.UpdatedAt, updatedAt))
 			report.Suppressed = append(report.Suppressed, mergeReport.Suppressed...)
@@ -130,7 +133,7 @@ func mergeEdgeList(edges []Edge, version int64, updatedAt time.Time) (map[string
 				edge.CreatedAt = existing.CreatedAt
 			}
 		}
-		next[edge.ID] = edge
+		next.Set(edge.ID, edge)
 	}
 	return next, report
 }

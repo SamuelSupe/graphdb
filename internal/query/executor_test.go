@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestExecutorUsesIDLookupPlan(t *testing.T) {
@@ -247,13 +247,13 @@ func TestStableCursorRejectsChangedFilterWithSameResultSetAnchor(t *testing.T) {
 func TestBlockingSortAddsCandidateCost(t *testing.T) {
 	g := seedPruneGraph(t, 50)
 	plan := PlanQuery(g, Request{Op: "match", Kind: "host", Sort: []SortSpec{{Field: "id"}}})
-	if plan.EstimatedRows != len(g.Entities) {
+	if plan.EstimatedRows != g.Entities.Len() {
 		t.Fatalf("estimated rows = %d", plan.EstimatedRows)
 	}
 	if plan.EstimatedCost <= plan.EstimatedRows {
 		t.Fatalf("estimated cost = %d, want sort cost included", plan.EstimatedCost)
 	}
-	if plan.Steps[len(plan.Steps)-1].Name != "sort" || plan.Steps[len(plan.Steps)-1].Cost != len(g.Entities) {
+	if plan.Steps[len(plan.Steps)-1].Name != "sort" || plan.Steps[len(plan.Steps)-1].Cost != g.Entities.Len() {
 		t.Fatalf("sort step = %#v", plan.Steps[len(plan.Steps)-1])
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestBulkImportJSONLAndCSV(t *testing.T) {
@@ -48,7 +48,7 @@ func TestBulkImportJSONLAndCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	document, ok := g.Entities["doc:2"]
+	document, ok := g.Entities.Get("doc:2")
 	if !ok || document.Fields["title"] != "Two" || document.Fields["pages"] != float64(12) {
 		t.Fatalf("document = %#v ok=%v", document, ok)
 	}

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func BenchmarkMaterializedKindPage(b *testing.B) {
@@ -13,7 +13,7 @@ func BenchmarkMaterializedKindPage(b *testing.B) {
 	g.Version = 1
 	for i := 0; i < entityCount; i++ {
 		id := fmt.Sprintf("host:%06d", i)
-		g.Entities[id] = graph.Entity{ID: id, Kind: "host"}
+		g.Entities.Set(id, graph.Entity{ID: id, Kind: "host"})
 	}
 	request := Request{
 		Op:        "match",

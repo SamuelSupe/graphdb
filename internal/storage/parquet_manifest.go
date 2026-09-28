@@ -13,7 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
-const manifestCodecParquet = "manifest-arrow-parquet-v1"
+const manifestCodecParquet = "manifest-arrow-parquet-v2"
 
 const (
 	parquetManifestColumnLayoutVersion = iota
@@ -38,7 +38,7 @@ const (
 	parquetManifestColumnSegmentContentHash
 	parquetManifestColumnWriterFence
 	parquetManifestColumnWriterFenceEpoch
-	parquetManifestColumnDataMD5
+	parquetManifestColumnDataHash
 )
 
 const (
@@ -81,7 +81,7 @@ func marshalParquetManifest(ctx context.Context, manifest Manifest) ([]byte, err
 		builder.Field(parquetManifestColumnSegmentContentHash).(*array.StringBuilder).Append(segment.ContentHash)
 		builder.Field(parquetManifestColumnWriterFence).(*array.StringBuilder).Append(normalized.WriterFence)
 		builder.Field(parquetManifestColumnWriterFenceEpoch).(*array.Int64Builder).Append(normalized.WriterFenceEpoch)
-		builder.Field(parquetManifestColumnDataMD5).(*array.StringBuilder).Append(normalized.DataMD5)
+		builder.Field(parquetManifestColumnDataHash).(*array.StringBuilder).Append(normalized.DataHash)
 	}
 
 	if len(normalized.CommitSegments) == 0 && len(normalized.CommitKeys) == 0 {
@@ -116,6 +116,9 @@ func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
 	}
 	defer release()
 	defer table.Release()
+	if table.NumCols() <= int64(parquetManifestColumnDataHash) || table.Schema().Field(parquetManifestColumnDataHash).Name != "data_hash" {
+		return Manifest{}, fmt.Errorf("unsupported pre-2.0 manifest: use a new data directory for GGraphDB 2.0")
+	}
 	if table.NumRows() < 1 {
 		return Manifest{}, fmt.Errorf("parquet manifest is empty")
 	}
@@ -154,8 +157,8 @@ func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
 			if columns.writerFenceEpoch != nil {
 				rowManifest.WriterFenceEpoch = columns.writerFenceEpoch.Value(i)
 			}
-			if columns.dataMD5 != nil {
-				rowManifest.DataMD5 = columns.dataMD5.Value(i)
+			if columns.dataHash != nil {
+				rowManifest.DataHash = columns.dataHash.Value(i)
 			}
 			if rows == 0 {
 				manifest = rowManifest
@@ -232,7 +235,7 @@ type parquetManifestColumnSet struct {
 	segmentContentHash  *array.String
 	writerFence         *array.String
 	writerFenceEpoch    *array.Int64
-	dataMD5             *array.String
+	dataHash            *array.String
 }
 
 func parquetManifestColumns(batch arrow.RecordBatch) (parquetManifestColumnSet, error) {
@@ -308,8 +311,8 @@ func parquetManifestColumns(batch arrow.RecordBatch) (parquetManifestColumnSet, 
 			return columns, err
 		}
 	}
-	if batch.NumCols() > int64(parquetManifestColumnDataMD5) {
-		if columns.dataMD5, err = parquetStringColumn(batch, parquetManifestColumnDataMD5, "data_md5"); err != nil {
+	if batch.NumCols() > int64(parquetManifestColumnDataHash) {
+		if columns.dataHash, err = parquetStringColumn(batch, parquetManifestColumnDataHash, "data_hash"); err != nil {
 			return columns, err
 		}
 	}
@@ -340,7 +343,7 @@ func parquetManifestArrowSchema() *arrow.Schema {
 		{Name: "segment_content_hash", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "writer_fence", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "writer_fence_epoch", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
-		{Name: "data_md5", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "data_hash", Type: arrow.BinaryTypes.String, Nullable: false},
 	}, nil)
 }
 
@@ -361,7 +364,7 @@ func sameManifestMetadata(left Manifest, right Manifest) bool {
 		left.SnapshotVersion == right.SnapshotVersion &&
 		left.WriterFence == right.WriterFence &&
 		left.WriterFenceEpoch == right.WriterFenceEpoch &&
-		left.DataMD5 == right.DataMD5 &&
+		left.DataHash == right.DataHash &&
 		formatParquetTime(left.UpdatedAt) == formatParquetTime(right.UpdatedAt)
 }
 
@@ -385,8 +388,8 @@ func manifestContentHash(manifest Manifest) (string, error) {
 	if normalized.WriterFenceEpoch > 0 {
 		parts = append(parts, formatInt64ForHash(normalized.WriterFenceEpoch))
 	}
-	if normalized.DataMD5 != "" {
-		parts = append(parts, normalized.DataMD5)
+	if normalized.DataHash != "" {
+		parts = append(parts, normalized.DataHash)
 	}
 	for _, segment := range normalized.CommitSegments {
 		parts = append(parts,

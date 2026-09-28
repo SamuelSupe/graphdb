@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestWriteCacheEvictsLeastRecentlyUsedTenant(t *testing.T) {
@@ -96,11 +96,11 @@ func TestWriteCacheAccountsVariableLengthPayload(t *testing.T) {
 	store.MaxWriteCacheTenants = 10
 	store.MaxWriteCacheBytes = 1024 * 1024
 	g := graph.New()
-	g.Entities["host:large"] = graph.Entity{
+	g.Entities.Set("host:large", graph.Entity{
 		ID:     "host:large",
 		Kind:   "host",
 		Fields: graph.Fields{"payload": strings.Repeat("x", 200*1024)},
-	}
+	})
 	loaded := loadedGraph{Graph: g, Manifest: Manifest{Version: 1}}
 	if weight := normalizedWriteCacheBytes(loaded); weight <= store.MaxWriteCacheBytes {
 		t.Fatalf("variable-length graph weight = %d, want above %d", weight, store.MaxWriteCacheBytes)
@@ -151,8 +151,8 @@ func TestWriteCacheRetainsComputedContentHash(t *testing.T) {
 		t.Fatalf("first commit: %v", err)
 	}
 	cached, ok := store.getWriteCache("tenant-a")
-	if !ok || cached.DataMD5 == "" || cached.DataMD5 != first.DataMD5 {
-		t.Fatalf("cached hash = %q, result hash = %q", cached.DataMD5, first.DataMD5)
+	if !ok || cached.DataHash == "" || cached.DataHash != first.DataHash {
+		t.Fatalf("cached hash = %q, result hash = %q", cached.DataHash, first.DataHash)
 	}
 	if cached.CacheBytes < minimumWriteCacheBytes {
 		t.Fatalf("cached memory weight = %d, want at least %d", cached.CacheBytes, minimumWriteCacheBytes)
@@ -161,7 +161,7 @@ func TestWriteCacheRetainsComputedContentHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skipped commit: %v", err)
 	}
-	if !second.Skipped || second.DataMD5 != first.DataMD5 {
+	if !second.Skipped || second.DataHash != first.DataHash {
 		t.Fatalf("second result = %#v, want skipped with retained hash", second)
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const (
@@ -141,7 +141,7 @@ func (s *TenantStore) completeDirectCommit(ctx context.Context, reservation *dir
 	if loadErr == nil && directCommitRecordStatus(current) == directCommitStatusCommitted &&
 		validateDirectCommitRecord(record.TenantID, record.Request, current) == nil &&
 		current.Result.Version == result.Version && current.Result.HeadCommitID == result.HeadCommitID &&
-		current.Result.DataMD5 == result.DataMD5 {
+		current.Result.DataHash == result.DataHash {
 		return nil
 	}
 	return err

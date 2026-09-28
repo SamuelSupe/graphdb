@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type graphParityLookup struct {
@@ -103,8 +103,8 @@ func (l *graphParityLookup) VisitEntities(
 	afterID string,
 	visit func(graph.Entity) (bool, error),
 ) (bool, error) {
-	ids := make([]string, 0, len(l.graph.Entities))
-	for id, entity := range l.graph.Entities {
+	ids := make([]string, 0, l.graph.Entities.Len())
+	for id, entity := range l.graph.Entities.All() {
 		if kind == "" || entity.Kind == kind {
 			ids = append(ids, id)
 		}
@@ -119,7 +119,7 @@ func (l *graphParityLookup) VisitEntities(
 			return false, ctx.Err()
 		default:
 		}
-		keepGoing, err := visit(l.graph.Entities[id])
+		keepGoing, err := visit(l.graph.Entities.At(id))
 		if err != nil || !keepGoing {
 			return true, err
 		}

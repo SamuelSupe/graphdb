@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func TestHTTPDisabledTenantRejectsMaintenanceMutations(t *testing.T) {

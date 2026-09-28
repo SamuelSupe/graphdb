@@ -3,7 +3,7 @@ package storage
 import (
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func newEntityRecord(tenantID string, entity graph.Entity, page string, pageHash string, pageETag string, version int64, updatedAt time.Time) EntityRecord {

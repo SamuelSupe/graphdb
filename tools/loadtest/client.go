@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/httpapi"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type apiClient struct {

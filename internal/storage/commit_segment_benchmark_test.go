@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const benchmarkCommitTenantID = "tenant-a"
@@ -46,13 +46,13 @@ func BenchmarkTenantStoreLoadManifestGraphCommitSegments(b *testing.B) {
 				if manifest.Version != fixture.manifest.Version ||
 					len(manifest.CommitSegments) != len(fixture.manifest.CommitSegments) ||
 					len(manifest.CommitKeys) != 0 ||
-					len(loaded.Entities) != fixture.entityCount {
+					loaded.Entities.Len() != fixture.entityCount {
 					b.Fatalf(
 						"loaded version/segments/tail/entities = %d/%d/%d/%d, want %d/%d/0/%d",
 						manifest.Version,
 						len(manifest.CommitSegments),
 						len(manifest.CommitKeys),
-						len(loaded.Entities),
+						loaded.Entities.Len(),
 						fixture.manifest.Version,
 						len(fixture.manifest.CommitSegments),
 						fixture.entityCount,
@@ -100,13 +100,13 @@ func benchmarkTenantStoreLoadCommitTail(b *testing.B, tailCount int) {
 		if manifest.Version != fixture.manifest.Version ||
 			len(manifest.CommitSegments) != 0 ||
 			len(manifest.CommitKeys) != len(fixture.manifest.CommitKeys) ||
-			len(loaded.Entities) != fixture.entityCount {
+			loaded.Entities.Len() != fixture.entityCount {
 			b.Fatalf(
 				"loaded version/segments/tail/entities = %d/%d/%d/%d, want %d/0/%d/%d",
 				manifest.Version,
 				len(manifest.CommitSegments),
 				len(manifest.CommitKeys),
-				len(loaded.Entities),
+				loaded.Entities.Len(),
 				fixture.manifest.Version,
 				len(fixture.manifest.CommitKeys),
 				fixture.entityCount,

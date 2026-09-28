@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
 
 func TestSaveQueryRequiresWriterLease(t *testing.T) {

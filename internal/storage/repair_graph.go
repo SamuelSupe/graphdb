@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func graphConsistencyIssues(g *graph.Graph) []RepairIssue {
@@ -20,7 +20,7 @@ func graphConsistencyIssues(g *graph.Graph) []RepairIssue {
 
 func aliasConflictIssues(g *graph.Graph) []RepairIssue {
 	owners := map[string][]string{}
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		for _, alias := range entity.MergedFrom {
 			if alias == "" {
 				continue
@@ -43,7 +43,7 @@ func aliasConflictIssues(g *graph.Graph) []RepairIssue {
 			})
 			continue
 		}
-		if _, active := g.Entities[alias]; active && ids[0] != alias {
+		if _, active := g.Entities.Get(alias); active && ids[0] != alias {
 			issues = append(issues, RepairIssue{
 				Code:         "alias_points_to_active_entity",
 				Severity:     "error",
@@ -60,7 +60,7 @@ func aliasConflictIssues(g *graph.Graph) []RepairIssue {
 
 func duplicateCIIdentityIssues(g *graph.Graph) []RepairIssue {
 	owners := map[string][]string{}
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		ciType := g.CITypes[entity.Kind]
 		for _, key := range ciType.IdentityKeys {
 			signature, ok := repairIdentitySignature(entity, key)
@@ -138,18 +138,18 @@ func repairScalarKey(value any) (string, bool) {
 
 func edgeEndpointIssues(g *graph.Graph) []RepairIssue {
 	issues := make([]RepairIssue, 0)
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		relationType, ok := g.RelationTypes[edge.Type]
 		if !ok {
 			issues = append(issues, edgeIssue("missing_relation_type", edge, "edge references a missing relation type"))
 			continue
 		}
-		from, ok := g.Entities[edge.From]
+		from, ok := g.Entities.Get(edge.From)
 		if !ok {
 			issues = append(issues, edgeIssue("orphan_edge_from", edge, "edge references a missing from entity"))
 			continue
 		}
-		to, ok := g.Entities[edge.To]
+		to, ok := g.Entities.Get(edge.To)
 		if !ok {
 			issues = append(issues, edgeIssue("orphan_edge_to", edge, "edge references a missing to entity"))
 			continue
@@ -191,7 +191,7 @@ func repairKindAllowed(kind string, legacy string, allowed []string, allowCrossK
 
 func staleSourceIssues(g *graph.Graph) []RepairIssue {
 	issues := make([]RepairIssue, 0)
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		stale := staleEntitySources(entity)
 		if len(stale) == 0 {
 			continue

@@ -22,7 +22,7 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 	affectedEdges := newUniqueStringCollector(&report.AffectedEdgeIDs)
 	ids := sortedEntityIDs(g.Entities)
 	for _, entityID := range ids {
-		entity := copyEntity(g.Entities[entityID])
+		entity := copyEntity(g.Entities.At(entityID))
 		if request.Kind != "" && entity.Kind != request.Kind {
 			continue
 		}
@@ -35,8 +35,8 @@ func (g *Graph) applySourceStale(request SourceStaleRequest, version int64, now 
 			markEntitySourceStale(&entity, request.Source, version, now)
 			entity.Version = version
 			entity.UpdatedAt = now
-			g.updateEntityIndexes(entityID, g.Entities[entityID], entity)
-			g.Entities[entityID] = entity
+			g.updateEntityIndexes(entityID, g.Entities.At(entityID), entity)
+			g.Entities.Set(entityID, entity)
 			affected.add(entityID)
 		case "delete":
 			backfillFieldSources(&entity)

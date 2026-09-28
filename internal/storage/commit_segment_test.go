@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type concurrentSegmentReadStore struct {
@@ -224,7 +224,7 @@ func TestTenantStoreLoadsCommitSegmentsConcurrentlyAndAppliesInOrder(t *testing.
 	go func() {
 		g, manifest, err := reader.Load(loadCtx, "tenant-a")
 		if err == nil {
-			ordered := g.Entities["host:ordered"]
+			ordered := g.Entities.At("host:ordered")
 			if manifest.Version != int64(commitSegmentTargetCount*2) || ordered.Fields["sequence"] != wantSequence {
 				err = fmt.Errorf("loaded version/final sequence = %d/%v", manifest.Version, ordered.Fields["sequence"])
 			}

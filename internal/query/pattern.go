@@ -3,7 +3,7 @@ package query
 import (
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func executePattern(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {

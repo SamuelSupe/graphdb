@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func (s *Server) listDeadLetters(w http.ResponseWriter, r *http.Request) {

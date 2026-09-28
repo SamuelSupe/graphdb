@@ -1,6 +1,6 @@
 package storage
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 func copyEntityPage(page EntityPageData) EntityPageData {
 	page.Entities = copyGraphEntities(page.Entities)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const commitObjectCodecParquet = "commit-arrow-parquet-v1"

@@ -63,11 +63,11 @@ func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 		entityPartitions:        g.shareEntityPartitions(),
 		Version:                 g.Version,
 		CITypes:                 storageMutationMap(g.CITypes, impact.ciTypes),
-		Entities:                storageMutationMap(g.Entities, impact.entities),
+		Entities:                g.Entities.Clone(),
 		RelationTypes:           storageMutationMap(g.RelationTypes, impact.relationTypes),
-		Edges:                   storageMutationMap(g.Edges, impact.edges),
-		out:                     storageMutationMap(g.out, impact.edges),
-		in:                      storageMutationMap(g.in, impact.edges),
+		Edges:                   g.Edges.Clone(),
+		out:                     g.out.Clone(),
+		in:                      g.in.Clone(),
 		edgeAliasIndex:          g.edgeAliasIndex,
 		edgeTypeIndex:           g.edgeTypeIndex,
 		entityAliasIndex:        g.entityAliasIndex,
@@ -113,36 +113,36 @@ func copyStringSet(source map[string]struct{}) map[string]struct{} {
 
 func (g *Graph) writableOut(node string) map[string]struct{} {
 	if g.cow == nil {
-		if g.out[node] == nil {
-			g.out[node] = map[string]struct{}{}
+		if g.out.At(node) == nil {
+			g.out.Set(node, map[string]struct{}{})
 		}
-		return g.out[node]
+		return g.out.At(node)
 	}
 	if _, ok := g.cow.outNodes[node]; !ok {
-		g.out[node] = copyStringSet(g.out[node])
+		g.out.Set(node, copyStringSet(g.out.At(node)))
 		g.cow.outNodes[node] = struct{}{}
 	}
-	if g.out[node] == nil {
-		g.out[node] = map[string]struct{}{}
+	if g.out.At(node) == nil {
+		g.out.Set(node, map[string]struct{}{})
 	}
-	return g.out[node]
+	return g.out.At(node)
 }
 
 func (g *Graph) writableIn(node string) map[string]struct{} {
 	if g.cow == nil {
-		if g.in[node] == nil {
-			g.in[node] = map[string]struct{}{}
+		if g.in.At(node) == nil {
+			g.in.Set(node, map[string]struct{}{})
 		}
-		return g.in[node]
+		return g.in.At(node)
 	}
 	if _, ok := g.cow.inNodes[node]; !ok {
-		g.in[node] = copyStringSet(g.in[node])
+		g.in.Set(node, copyStringSet(g.in.At(node)))
 		g.cow.inNodes[node] = struct{}{}
 	}
-	if g.in[node] == nil {
-		g.in[node] = map[string]struct{}{}
+	if g.in.At(node) == nil {
+		g.in.Set(node, map[string]struct{}{})
 	}
-	return g.in[node]
+	return g.in.At(node)
 }
 
 func (g *Graph) writableEntityAlias(alias string) map[string]struct{} {

@@ -1,18 +1,16 @@
 package graph
 
 import (
-	"crypto/md5"
-	"encoding/hex"
-	"encoding/json"
+	"strings"
 	"testing"
 )
 
-func TestContentMD5MatchesSnapshotBasedEncoding(t *testing.T) {
+func TestContentHashMatchesColdEncoding(t *testing.T) {
 	g := graphWithCompany(t)
-	assertContentMD5MatchesSnapshotBasedEncoding(t, g)
+	assertContentHashMatchesColdEncoding(t, g)
 }
 
-func TestContentMD5MatchesSnapshotBasedEncodingForRichMetadata(t *testing.T) {
+func TestContentHashMatchesColdEncodingForRichMetadata(t *testing.T) {
 	g := New()
 	g.CITypes["service"] = CIType{
 		Name: "service",
@@ -23,7 +21,7 @@ func TestContentMD5MatchesSnapshotBasedEncodingForRichMetadata(t *testing.T) {
 	}
 	g.RelationTypes["calls"] = RelationType{Name: "calls", FromKind: "service", ToKind: "service", Directed: true, Cardinality: ManyToMany}
 	owner := FieldSource{Source: "agent", Priority: 10, Confidence: 0.9}
-	g.Entities["service:api"] = Entity{
+	g.Entities.Set("service:api", Entity{
 		ID:              "service:api",
 		Kind:            "service",
 		Fields:          Fields{"name": "api", "region": "sg", "replicas": float64(3)},
@@ -40,9 +38,9 @@ func TestContentMD5MatchesSnapshotBasedEncodingForRichMetadata(t *testing.T) {
 		},
 		MergedFrom: []string{"legacy:z", "legacy:a"},
 		SplitFrom:  "service:monolith",
-	}
-	g.Entities["service:db"] = Entity{ID: "service:db", Kind: "service"}
-	g.Edges["edge:api-db"] = Edge{
+	})
+	g.Entities.Set("service:db", Entity{ID: "service:db", Kind: "service"})
+	g.Edges.Set("edge:api-db", Edge{
 		ID:              "edge:api-db",
 		Type:            "calls",
 		From:            "service:api",
@@ -54,11 +52,11 @@ func TestContentMD5MatchesSnapshotBasedEncodingForRichMetadata(t *testing.T) {
 			{Source: "z-source", ExternalID: "z", EdgeID: "z-edge"},
 			{Source: "a-source", ExternalID: "a", EdgeID: "a-edge"},
 		},
-	}
-	assertContentMD5MatchesSnapshotBasedEncoding(t, g)
+	})
+	assertContentHashMatchesColdEncoding(t, g)
 }
 
-func TestContentMD5CacheTracksStorageMutations(t *testing.T) {
+func TestContentHashCacheTracksStorageMutations(t *testing.T) {
 	g := New()
 	if err := g.ApplyCommit(Commit{
 		ID: "seed", Version: 1,
@@ -69,7 +67,7 @@ func TestContentMD5CacheTracksStorageMutations(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed graph: %v", err)
 	}
-	if _, err := g.ContentMD5(); err != nil {
+	if _, err := g.ContentHash(); err != nil {
 		t.Fatalf("prime content cache: %v", err)
 	}
 	next, _, err := g.ApplyCommitStorageCopyWithOptions(Commit{
@@ -85,7 +83,7 @@ func TestContentMD5CacheTracksStorageMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply storage copy: %v", err)
 	}
-	assertContentMD5MatchesSnapshotBasedEncoding(t, next)
+	assertContentHashMatchesColdEncoding(t, next)
 	if err := next.ApplyCommitInPlaceForStorage(Commit{
 		ID: "replay", Version: 3,
 		Mutations: Mutations{
@@ -95,40 +93,49 @@ func TestContentMD5CacheTracksStorageMutations(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("apply in-place replay: %v", err)
 	}
-	assertContentMD5MatchesSnapshotBasedEncoding(t, next)
-	assertContentMD5MatchesSnapshotBasedEncoding(t, g)
+	assertContentHashMatchesColdEncoding(t, next)
+	assertContentHashMatchesColdEncoding(t, g)
 }
 
-func assertContentMD5MatchesSnapshotBasedEncoding(t *testing.T, g *Graph) {
+func assertContentHashMatchesColdEncoding(t *testing.T, g *Graph) {
 	t.Helper()
-	got, logicalBytes, err := g.ContentMD5WithLogicalSize()
+	got, logicalBytes, err := g.ContentHashWithLogicalSize()
 	if err != nil {
-		t.Fatalf("content md5: %v", err)
+		t.Fatalf("content hash: %v", err)
 	}
 
-	snapshot := g.Snapshot()
-	legacy := logicalSnapshot{
-		CITypes:       snapshot.CITypes,
-		RelationTypes: snapshot.RelationTypes,
-		Entities:      make([]logicalEntity, 0, len(snapshot.Entities)),
-		Edges:         make([]logicalEdge, 0, len(snapshot.Edges)),
-	}
-	for _, entity := range snapshot.Entities {
-		legacy.Entities = append(legacy.Entities, logicalEntityFromEntity(entity))
-	}
-	for _, edge := range snapshot.Edges {
-		legacy.Edges = append(legacy.Edges, logicalEdgeFromEdge(edge))
-	}
-	data, err := json.Marshal(legacy)
+	cold := g.Clone()
+	cold.logicalHashCache = nil
+	want, wantBytes, err := cold.ContentHashWithLogicalSize()
 	if err != nil {
-		t.Fatalf("marshal legacy snapshot: %v", err)
+		t.Fatal(err)
 	}
-	sum := md5.Sum(data)
-	want := hex.EncodeToString(sum[:])
-	if got != want {
-		t.Fatalf("content md5 = %q, snapshot-based value = %q", got, want)
+	if got != want || logicalBytes != wantBytes || !strings.HasPrefix(got, ContentHashAlgorithm+":") {
+		t.Fatalf("cached hash/size = %s/%d, cold = %s/%d", got, logicalBytes, want, wantBytes)
 	}
-	if logicalBytes != int64(len(data)) {
-		t.Fatalf("logical bytes = %d, snapshot encoding bytes = %d", logicalBytes, len(data))
+}
+
+func TestContentHashV2ContractAndSnapshotRoundTrip(t *testing.T) {
+	g := New()
+	g.RelationTypes = nil
+	g.Entities.Set("host:a", Entity{ID: "host:a", Kind: "host", Fields: Fields{"state": "ready"}})
+	const expected = "sha256-shards-v2:df65092bfc4b1470ae96be175542b9ed68e9b987b6d5a3c02fc757516abf959e"
+	got, err := g.ContentHash()
+	if err != nil || got != expected {
+		t.Fatalf("digest = %q, %v; want %q", got, err, expected)
+	}
+	g = graphWithCompany(t)
+	want, err := g.ContentHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := FromSnapshot(g.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.Version = 99
+	got, err = restored.ContentHash()
+	if err != nil || got != want {
+		t.Fatalf("snapshot round trip changed digest: %q, %v", got, err)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestIngestEdgeSuppressionIsNotFailureOrDeadLetter(t *testing.T) {
@@ -57,7 +57,7 @@ func TestIngestEdgeSuppressionIsNotFailureOrDeadLetter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if edge.Fields["note"] != "manual" || !graph.EdgeSourceAliasMatches(edge, "agent-edge") {
 		t.Fatalf("edge = %#v", edge)
 	}
@@ -127,7 +127,7 @@ func TestIngestEdgeWithoutIDUsesExternalIDAlias(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge, ok := g.Edges[edgeID]
+	edge, ok := g.Edges.Get(edgeID)
 	if !ok || edge.ID != edgeID || edge.Source != "agent" || edge.SourceRank != 100 {
 		t.Fatalf("edge = %#v", edge)
 	}
@@ -176,7 +176,7 @@ func TestIngestDeleteEdgeSuppressionIsNotFailureOrDeadLetter(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	if _, ok := g.Edges[edgeID]; !ok {
+	if _, ok := g.Edges.Get(edgeID); !ok {
 		t.Fatal("suppressed delete removed edge")
 	}
 }
@@ -210,7 +210,7 @@ func TestIngestDeleteEdgeInheritsItemExternalIDAlias(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	if _, ok := g.Edges[edgeID]; ok {
+	if _, ok := g.Edges.Get(edgeID); ok {
 		t.Fatal("manual delete by item external_id did not remove edge")
 	}
 }
@@ -241,7 +241,7 @@ func TestSourcePolicyRewritesEdgeDeletePriority(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	if _, ok := g.Edges[edgeID]; ok {
+	if _, ok := g.Edges.Get(edgeID); ok {
 		t.Fatal("manual delete did not remove lower priority edge")
 	}
 }
@@ -260,7 +260,7 @@ func TestCompactPreservesCanonicalEdgeSourceMetadata(t *testing.T) {
 		t.Fatalf("load compacted: %v", err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	edge := g.Edges[edgeID]
+	edge := g.Edges.At(edgeID)
 	if edge.ID != edgeID || edge.ExistenceSource == nil || edge.ExistenceSource.Source != "manual" {
 		t.Fatalf("edge existence source = %#v", edge)
 	}
@@ -344,7 +344,7 @@ func TestIncrementalEdgeShardDeleteRequestTrimsAlias(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	edgeID := graph.CanonicalEdgeIDParts("runs_on", "service:api", "host:app-01")
-	if edge, ok := g.Edges[edgeID]; ok {
+	if edge, ok := g.Edges.Get(edgeID); ok {
 		t.Fatalf("edge was not deleted: %#v", edge)
 	}
 	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true}); err != nil {

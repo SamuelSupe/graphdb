@@ -1,65 +1,51 @@
-# GGraphDB v1.3.4-local.9 — 本地磁盘版 / Local disk edition
+# GGraphDB v2.0.0
 
-这是 `codex/local-disk-v2` 的独立预发布版本，基于 `ffa85414`。
-原 `main` 分支、稳定版和 Latest 设置保持不变。
+## 中文
 
-## 本版变化
+本地磁盘版成为主版本：单进程、多租户并发读写，面向持续更新图数据和在线查询最新状态。
+S3 兼容对象存储用于快照备份与按需恢复；服务运行不依赖对象存储或 PostgreSQL。
 
-在 `v1.3.4-local.1` 的本地存储和对象快照备份功能上：
+2.0 是不兼容版本，使用全新的数据目录，不提供 1.x 迁移或跨大版本回滚。
+提交结果的 `data_md5` 替换为 `data_hash`，格式为 `sha256-shards-v2:<64 位十六进制>`。
+Go SDK 路径为 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`，Python SDK 为 2.0.0。
+HTTP `/v1` 路径保持不变。
 
-- 死信内部扫描只枚举一次目录，保留游标、提前停止和新鲜读取。
-- 深度索引检查一次分组图数据，共用当前/历史分片哈希，保留内容校验。
-- 删除不可达 PostgreSQL 协调实现，简化候选的生产 Go 代码净减少 7,150 行；保留本地锁、写入围栏、WAL 恢复和持久化格式。
-- 本地 GC 每批最多删除 4,096 个文件，重新读取当前引用，并在批次之间让排队的查询和 compact 执行；每批重新申请全局执行名额，保留并发上限。
-- 同批删除共享目录同步，失败或取消时也在释放维护锁前同步；删除总预算、游标和 dry-run 保持有效。
-- 修复 WAL 批次内重复实体和新索引分片触发不必要全量重建的问题。
-- 固定 GC 候选集合，避免持续写入延长最后一页；存活任务不会仅因持久化心跳延迟而被误判过期。
-- 修复持续负载工具的正常结束取消记录，保留独立请求超时和真实维护错误。候选验证过程及失败记录详见性能报告。
-- 修复流式查询和扫描逐行刷新问题：元数据立即发送，后续每 32 行刷新；流式编码失败纳入查询观测。
-- 发行包补齐容器构建源码，发布前从解压后的包构建并启动容器。
+实体、边和邻接表改为分片写时复制；摘要只重算受影响分片。增量索引复用分片目录，
+GC、文件发布和维护队列增加扫描、时间、字节与共享内存预算。目录同步、manifest 发布顺序、
+同步 WAL、幂等恢复、版本固定读视图和对象备份校验继续保留。
 
-单组预热基准中，1 万实体的深度索引检查从 1.65 秒降至 1.49 秒，分配次数减少 5.08%。
-这是有限样本，不代表整体吞吐或冷读性能。详见 `docs/performance-local-disk-code-simplification.md`。
+这仍是单机单进程产品。单机容量、磁盘空间与可用性需要自行规划，S3 备份不提供实时复制或高可用。
+维护预算是估算准入额度，不是进程 RSS 硬上限。单个大文件、全量重建和冷加载仍有全量成本。
+性能与验证范围见包内 `docs/performance-v2.0.md`，发布门禁记录在 `release/evidence/`。
 
-## 下载与运行
+## English
 
-下载 `graphdb-v1.3.4-local.9.tar.gz` 和对应 `.sha256`，先校验压缩包，再校验包内 `SHA256SUMS`。
-包内提供 Linux amd64、Linux arm64 和 macOS arm64 二进制，以及文档、SDK、部署示例和发布验证证据。
-例如 Linux arm64：
+Local disk is now the main, stable edition. One process owns the data directory
+and serves concurrent tenants. S3-compatible storage provides snapshot backup
+and on-demand restore. There is no PostgreSQL or object-storage dependency for
+online reads and writes.
+
+Start with a fresh 2.0 data directory. There is no 1.x migration or cross-major
+rollback. Commit responses replace `data_md5` with `data_hash`, using
+`sha256-shards-v2:<64 hex digits>`. The Go module is
+`github.com/SamuelSupe/graphdb/v2`; both SDKs are version 2.0.0.
+
+Updates copy changed graph buckets and recompute changed digest buckets.
+Incremental indexes reuse partition membership; maintenance uses bounded scan,
+file publication and shared queued/active memory admission. Durability and
+recovery ordering remain enforced. This release does not provide replication
+or high availability; maintenance estimates are not hard RSS limits.
+
+## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v1.3.4-local.9.tar.gz.sha256
-tar -xzf graphdb-v1.3.4-local.9.tar.gz
-cd v1.3.4-local.9
+sha256sum -c graphdb-v2.0.0.tar.gz.sha256
+tar -xzf graphdb-v2.0.0.tar.gz
+cd v2.0.0
 sha256sum -c SHA256SUMS
-bin/graphdb-linux-arm64 version
-GRAPHDB_DATA_DIR=./data bin/graphdb-linux-arm64 serve
+bin/graphdb-linux-amd64 version
+GRAPHDB_DATA_DIR=/path/to/new-v2-data bin/graphdb-linux-amd64 serve
 ```
 
-macOS 使用 `shasum -a 256 -c` 校验并运行 `bin/graphdb-darwin-arm64`。
-Go/Python SDK 包版本为 `1.3.4+local.9`，Python 使用符合 PEP 440 的本地版本号。
-包内包含容器构建所需源码，可运行 `docker compose up -d --build`。需要执行依赖 Git 历史的兼容性验证时，检出此 Release 的 Git 标签。
-
-## 兼容和验证边界
-
-- 保留现有本地 Parquet/WAL 格式；仍支持 `expected_version`、`min_version`、分页游标和 WAL 状态查询契约。
-- 不支持远端在线主存储、PostgreSQL 协调、独立 reader/writer、多实例和共享网络文件系统；带 PostgreSQL 协调标记的数据拒绝直接接管。本版不提供远端主存储迁移。
-- 发布流水线要求完整单元测试、vet、race、旧版本数据兼容、SDK、真实 HTTP direct/WAL 恢复和重启、MinIO 快照恢复，以及带 compact/GC/索引重建的 30 分钟持续负载通过，才上传发行包。
-- 早期候选在持续写入下出现维护超时，未生成发行包；失败证据和后续修复保留在性能报告。正式门禁的负载时长和超时阈值未放宽。
-- 性能采用有限次重点对比，没有完整执行三方、多规模、多次轮换验收，因此不宣称整体性能达标或所有路径更快。本次定向基准及验证边界见 `docs/performance-local-disk-code-simplification.md`。
-
-## English summary
-
-An independent prerelease on `codex/local-disk-v2`, based on `ffa85414`. The default
-`main` branch and stable Latest release are preserved. This edition runs concurrent
-tenant workloads in one process on an exclusively locked local data directory,
-with optional S3-compatible snapshot backup and on-demand restore.
-
-The archive includes Linux amd64/arm64 and macOS arm64 binaries, checksums, exact
-build metadata, SDKs, documentation, container-build source, deployment examples,
-and release-gate evidence. This update removes unreachable coordination code,
-batches all local GC with reference revalidation and a turn for queued readers, and reduces repeated directory scans and
-deep-index validation work.
-Local formats and API contracts are retained; remote primary storage, PostgreSQL
-coordination and multi-process deployments are unsupported. Performance reports
-describe focused samples and limitations, not a general speedup guarantee.
+The archive includes Linux amd64/arm64 and macOS arm64 binaries, build metadata,
+source, SDKs, bilingual documentation, deployment examples and release evidence.

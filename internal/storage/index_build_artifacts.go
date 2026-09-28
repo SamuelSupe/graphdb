@@ -3,7 +3,7 @@ package storage
 import (
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 // indexBuildArtifacts keeps the catalog and the objects used to describe it

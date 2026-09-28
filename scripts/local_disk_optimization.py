@@ -3,13 +3,12 @@
 
 Provide graphdb-main (before), graphdb-new (after), and loadtest in --bin.
 Run inside Linux with --output on a private local volume. Each case starts
-from the same stopped database copy; no existing data directory is modified.
+with the same deterministic seed in its own data format; no existing data is modified.
 """
 import argparse
 import hashlib
 import json
 from pathlib import Path
-import shutil
 
 from local_disk_benchmark import Server, cold_reads, dump, load, maintenance, sampled_run
 
@@ -27,24 +26,16 @@ def run(args):
                    for name in ("cpu.max", "memory.max")
                    if Path("/sys/fs/cgroup", name).exists()},
     })
-    seed = args.output / "seed"
-    seed.mkdir()
-    server = Server(args, "main-local", "direct", seed)
-    try:
-        server.start()
-        load(args, seed, "direct", args.entities, "seed", 0, seed=True)
-    finally:
-        server.stop()
     # Reverse the order for WAL to avoid always favoring the second binary.
     for mode in args.modes:
         cases = ("main-local", "new-local") if mode == "direct" else ("new-local", "main-local")
         for case in cases:
             folder = args.output / (case + "-" + mode)
             folder.mkdir()
-            shutil.copytree(seed / "data", folder / "data")
             server = Server(args, case, mode, folder)
             try:
                 server.start()
+                load(args, folder, mode, args.entities, "seed", 0, seed=True)
                 load(args, folder, mode, args.entities, "warmup", args.warmup)
                 sampled_run(server, folder, "mixed", lambda: load(
                     args, folder, mode, args.entities, "measure", args.measure))

@@ -7,24 +7,24 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
 type commitIndexUpdate struct {
-	before        *graph.Graph
-	after         *graph.Graph
-	mutations     graph.Mutations
-	report        graph.ApplyReport
-	version       int64
-	baseVersion   int64
-	retainedBytes int64
-	background    bool
-	rebuild       bool
-	fence         writerFenceRef
-	waitFor       <-chan struct{}
-	done          chan struct{}
+	before      *graph.Graph
+	after       *graph.Graph
+	mutations   graph.Mutations
+	report      graph.ApplyReport
+	version     int64
+	baseVersion int64
+	reservation *maintenanceReservation
+	background  bool
+	rebuild     bool
+	fence       writerFenceRef
+	waitFor     <-chan struct{}
+	done        chan struct{}
 }
 
 func (work *commitIndexUpdate) retainIndexInputs() {
@@ -44,6 +44,7 @@ func (s *TenantStore) enqueueCommitIndexUpdate(tenantID string, work *commitInde
 	s.indexUpdateMu.Lock()
 	work.waitFor = s.indexUpdateTails[tenantID]
 	s.indexUpdateTails[tenantID] = work.done
+	s.indexUnreservedTails[tenantID] = work.done
 	s.indexUpdateMu.Unlock()
 }
 
@@ -65,11 +66,21 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 	defer func() {
 		close(work.done)
 		s.indexUpdateMu.Lock()
+		if s.indexUnreservedTails[tenantID] == work.done {
+			delete(s.indexUnreservedTails, tenantID)
+		}
 		if s.indexUpdateTails[tenantID] == work.done {
 			delete(s.indexUpdateTails, tenantID)
 		}
 		s.indexUpdateMu.Unlock()
 	}()
+	if work.reservation != nil {
+		var err error
+		ctx, err = work.reservation.activate(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
 		tenantTraceAttr(tenantID),
 		attribute.Int64("graphdb.commit.version", work.version),
@@ -443,31 +454,31 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	fingerprintSpan.SetAttributes(attribute.Bool("graphdb.commit.content_changed", report.Changed))
 	endStorageSpan(fingerprintSpan, nil)
 	if !report.Changed {
-		previousMD5 := loaded.DataMD5
-		if previousMD5 == "" {
-			previousMD5 = manifest.DataMD5
+		previousHash := loaded.DataHash
+		if previousHash == "" {
+			previousHash = manifest.DataHash
 		}
-		if previousMD5 == "" || loaded.CacheBytes <= 0 {
-			computedMD5, logicalBytes, hashErr := loaded.Graph.ContentMD5WithLogicalSize()
+		if previousHash == "" || loaded.CacheBytes <= 0 {
+			computedHash, logicalBytes, hashErr := loaded.Graph.ContentHashWithLogicalSize()
 			if hashErr != nil {
 				return CommitResult{}, hashErr
 			}
-			if previousMD5 == "" {
-				previousMD5 = computedMD5
+			if previousHash == "" {
+				previousHash = computedHash
 			}
 			loaded.CacheBytes = writeCacheBytesForGraph(loaded.Graph, logicalBytes)
 		}
-		if previousMD5 == "" {
-			return CommitResult{}, fmt.Errorf("logical graph content md5 is empty")
+		if previousHash == "" {
+			return CommitResult{}, fmt.Errorf("logical graph content hash is empty")
 		}
-		loaded.DataMD5 = previousMD5
-		loaded.Manifest.DataMD5 = previousMD5
-		manifest.DataMD5 = previousMD5
+		loaded.DataHash = previousHash
+		loaded.Manifest.DataHash = previousHash
+		manifest.DataHash = previousHash
 		result := CommitResult{
 			Manifest:          manifest,
 			ReadableVersion:   manifest.Version,
 			Skipped:           true,
-			DataMD5:           previousMD5,
+			DataHash:          previousHash,
 			Suppressed:        report.Suppressed,
 			CanonicalEntities: report.CanonicalEntities,
 			CanonicalEdges:    report.CanonicalEdges,
@@ -480,9 +491,9 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		s.setWriteCache(tenantID, loaded)
 		return result, nil
 	}
-	_, md5Span := startStorageSpan(ctx, "graphdb.storage.commit.compute_content_md5", tenantTraceAttr(tenantID))
-	nextMD5, logicalBytes, err := nextGraph.ContentMD5WithLogicalSize()
-	endStorageSpan(md5Span, err)
+	_, hashSpan := startStorageSpan(ctx, "graphdb.storage.commit.compute_content_hash", tenantTraceAttr(tenantID))
+	nextHash, logicalBytes, err := nextGraph.ContentHashWithLogicalSize()
+	endStorageSpan(hashSpan, err)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -523,7 +534,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	manifest.HeadCommitID = commitID
 	manifest.CommitKeys = append(append([]string(nil), manifest.CommitKeys...), commitKey)
 	manifest.UpdatedAt = commit.CreatedAt
-	manifest.DataMD5 = nextMD5
+	manifest.DataHash = nextHash
 	commitTail := appendCommitTailCache(
 		loaded.CommitTail,
 		loaded.Manifest.CommitKeys,
@@ -551,7 +562,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		Manifest:          manifest,
 		ReadableVersion:   version,
 		ReadAfterCommitID: commitID,
-		DataMD5:           nextMD5,
+		DataHash:          nextHash,
 		Suppressed:        report.Suppressed,
 		CanonicalEntities: report.CanonicalEntities,
 		CanonicalEdges:    report.CanonicalEdges,
@@ -580,7 +591,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	}
 	commitPublished = true
 	s.setWriteCache(tenantID, loadedGraph{
-		Graph: nextGraph, Manifest: manifest, Meta: meta, DataMD5: nextMD5,
+		Graph: nextGraph, Manifest: manifest, Meta: meta, DataHash: nextHash,
 		CommitTail: commitTail,
 		CacheBytes: writeCacheBytesForGraphWithCommitTail(
 			nextGraph, logicalBytes, commitTail,

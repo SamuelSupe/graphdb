@@ -10,7 +10,7 @@ This is a user-facing endpoint map. The detailed schema contract is
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/health` | Process liveness, mode, and coordinator status; remains HTTP 200 when degraded. |
-| `GET` | `/v1/readiness` | Traffic readiness; returns HTTP 503 when the object store or PostgreSQL coordinator is unavailable. |
+| `GET` | `/v1/readiness` | Traffic readiness; returns HTTP 503 when the local disk is unwritable or WAL recovery is incomplete. |
 | `GET` | `/metrics` | Prometheus metrics. |
 | `GET` | `/openapi.yaml` | OpenAPI contract. |
 | `GET` | `/debug/pprof/` | Optional admin-listener-only profiling index; disabled by default. |
@@ -39,9 +39,9 @@ This is a user-facing endpoint map. The detailed schema contract is
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/commits` | Atomic graph mutation commit. |
-| `POST` | `/v1/ingest/batches` | Collector ingestion batch with `expected_version`, `failure_mode`, and entity/edge `preconditions`; direct mode returns terminal `200/207`, while 1.3 WAL mode returns durable `202` with `writer_id` and an local status URL. |
+| `POST` | `/v1/ingest/batches` | Collector ingestion batch with `expected_version`, `failure_mode`, and entity/edge `preconditions`; direct mode returns terminal `200/207`, while WAL mode returns durable `202` with `writer_id` and a local status URL. |
 | `POST` | `/v1/imports` | Queue a resumable CSV or JSONL bulk import. |
-| `GET` | `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` | Active/finalized ingest status; route 1.3 WAL status to the owning writer. |
+| `GET` | `/v1/ingest/batches/{source}/{collector_id}/{batch_id}` | Active/finalized ingest status; query WAL status on the same local service. |
 | `GET` | `/v1/ingest/collectors/{source}/{collector_id}` | Collector status. |
 | `GET` | `/v1/ingest/deadletters/{source}` | List dead letters. |
 | `POST` | `/v1/ingest/deadletters/{source}/replay` | Replay dead letters. |

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type directedEdgeVisit func(

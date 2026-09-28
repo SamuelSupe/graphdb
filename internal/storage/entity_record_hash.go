@@ -1,6 +1,6 @@
 package storage
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 func entityRecordContentHash(record EntityRecord) string {
 	return indexContentHash(struct {

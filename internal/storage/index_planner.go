@@ -1,6 +1,6 @@
 package storage
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/query"
+import "github.com/SamuelSupe/graphdb/v2/internal/query"
 
 func (catalog IndexCatalog) PlannerStats() query.PlannerStats {
 	stats := query.PlannerStats{

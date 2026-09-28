@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func TestHTTPStartsJSONLImportTask(t *testing.T) {
@@ -41,7 +41,7 @@ func TestHTTPStartsJSONLImportTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := g.Entities["concept:graph"]; !ok {
+	if _, ok := g.Entities.Get("concept:graph"); !ok {
 		t.Fatal("imported entity not found")
 	}
 }

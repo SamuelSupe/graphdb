@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -99,8 +99,8 @@ func graphTraceAttrs(prefix string, g *graph.Graph) []attribute.KeyValue {
 	}
 	return []attribute.KeyValue{
 		attribute.Int64(prefix+".version", g.Version),
-		attribute.Int(prefix+".entities", len(g.Entities)),
-		attribute.Int(prefix+".edges", len(g.Edges)),
+		attribute.Int(prefix+".entities", g.Entities.Len()),
+		attribute.Int(prefix+".edges", g.Edges.Len()),
 		attribute.Int(prefix+".ci_types", len(g.CITypes)),
 		attribute.Int(prefix+".relation_types", len(g.RelationTypes)),
 	}

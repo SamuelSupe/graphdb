@@ -1,6 +1,6 @@
 package query
 
-import "gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 func executeLazyKindScan(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
 	if canPageMatchEarly(request) {

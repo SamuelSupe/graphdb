@@ -3,7 +3,7 @@ package httpapi
 import (
 	"net/http"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type SourcePolicyResponse struct {

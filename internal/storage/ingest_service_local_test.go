@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type localIngestPublicationFault struct {
@@ -94,7 +94,7 @@ func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
 				t.Fatal(err)
 			}
 			g, manifest, err := store.Load(ctx, "tenant-a")
-			if err != nil || manifest.Version != 1 || len(g.Entities) != 1 {
+			if err != nil || manifest.Version != 1 || g.Entities.Len() != 1 {
 				t.Fatalf("recovery version=%d err=%v", manifest.Version, err)
 			}
 			accepted, err := reopened.Accept(ctx, "tenant-a", request)
@@ -169,7 +169,7 @@ func TestLocalImportWaitsForPreparedWAL(t *testing.T) {
 		t.Fatalf("import: %+v", task)
 	}
 	g, manifest, err := store.Load(ctx, "tenant-a")
-	if err != nil || manifest.Version != 2 || len(g.Entities) != 2 {
+	if err != nil || manifest.Version != 2 || g.Entities.Len() != 2 {
 		t.Fatalf("final version=%d err=%v", manifest.Version, err)
 	}
 	if !service.Readiness().Ready {
@@ -240,7 +240,7 @@ func TestLocalImportWALWaitAllowsCompaction(t *testing.T) {
 		t.Fatalf("import: %+v", task)
 	}
 	g, manifest, err := store.Load(ctx, "tenant-a")
-	if err != nil || manifest.Version != 4 || len(g.Entities) != 4 {
+	if err != nil || manifest.Version != 4 || g.Entities.Len() != 4 {
 		t.Fatalf("final version=%d err=%v", manifest.Version, err)
 	}
 }
@@ -422,7 +422,7 @@ func TestLocalRestoreFencesImportAndPersistedRetry(t *testing.T) {
 	if restore.Status != TaskStatusSucceeded || imp.Status != TaskStatusFailed {
 		t.Fatalf("restore=%+v import=%+v", restore, imp)
 	}
-	if m.Version != 1 || len(g.Entities) != 1 || g.Entities["seed"].ID != "seed" {
+	if m.Version != 1 || g.Entities.Len() != 1 || g.Entities.At("seed").ID != "seed" {
 		t.Fatalf("old import crossed restore: version=%d graph=%+v", m.Version, g.Entities)
 	}
 	if _, err := store.RetryTask(ctx, "tenant-a", imp.ID); !errors.Is(err, ErrConflict) {
@@ -461,7 +461,7 @@ func TestLocalRestoreFencesImportAndPersistedRetry(t *testing.T) {
 	}
 	fresh = waitForTask(t, ctx, restarted, "tenant-a", fresh.ID)
 	g, m, err = restarted.Load(ctx, "tenant-a")
-	if err != nil || fresh.Status != TaskStatusSucceeded || m.Version != 4 || len(g.Entities) != 4 {
+	if err != nil || fresh.Status != TaskStatusSucceeded || m.Version != 4 || g.Entities.Len() != 4 {
 		t.Fatalf("fresh import=%+v version=%d err=%v", fresh, m.Version, err)
 	}
 }
@@ -524,7 +524,7 @@ func TestLocalRecoverDrainsPreparedWALBeforeOrphans(t *testing.T) {
 		t.Fatalf("WAL result=%+v err=%v", result, err)
 	}
 	g, manifest, err := store.Load(ctx, "tenant-a")
-	if err != nil || manifest.Version != 1 || len(g.Entities) != 1 || g.Entities["wal"].ID != "wal" {
+	if err != nil || manifest.Version != 1 || g.Entities.Len() != 1 || g.Entities.At("wal").ID != "wal" {
 		t.Fatalf("recovered graph=%+v version=%d err=%v", g, manifest.Version, err)
 	}
 	other, err := service.Accept(ctx, "tenant-b", ingestEntityRequest("other", "other"))

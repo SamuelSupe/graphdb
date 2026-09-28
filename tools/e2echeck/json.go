@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func pass(format string, args ...any) {

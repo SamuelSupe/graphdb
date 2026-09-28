@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type IndexHealth struct {
@@ -393,7 +393,7 @@ func expectedEdgeShards(g *graph.Graph, specs []EdgeShard) map[string][]graph.Ed
 	for _, spec := range specs {
 		shards[spec.RelationType+"\x00"+spec.Shard] = nil
 	}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		for _, shard := range indexShardIDCandidates(edge.From) {
 			key := edge.Type + "\x00" + shard
 			if _, wanted := shards[key]; wanted {
@@ -512,7 +512,7 @@ func expectedEntityPages(g *graph.Graph, specs []EntityPageSpec) map[string][]gr
 	for _, spec := range specs {
 		pages[spec.Shard] = nil
 	}
-	for _, entity := range g.Entities {
+	for _, entity := range g.Entities.All() {
 		for _, shard := range indexShardIDCandidates(entity.ID) {
 			if _, wanted := pages[shard]; wanted {
 				pages[shard] = append(pages[shard], entity)

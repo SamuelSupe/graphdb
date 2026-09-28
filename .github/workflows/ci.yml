@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Unit, vet, race, compatibility, and SDKs
+    name: Unit, vet, race, 2.0 contracts, and SDKs
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

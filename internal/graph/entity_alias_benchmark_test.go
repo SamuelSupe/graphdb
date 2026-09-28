@@ -20,7 +20,7 @@ func BenchmarkDeleteEntitiesByMergedAlias(b *testing.B) {
 			Kind:       "node",
 			MergedFrom: []string{alias},
 		}
-		g.Entities[entity.ID] = entity
+		g.Entities.Set(entity.ID, entity)
 		if index < deleteCount {
 			aliases = append(aliases, alias)
 		}

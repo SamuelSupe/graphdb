@@ -50,7 +50,7 @@ func (g *Graph) prepareEntityUpsert(
 		entityFieldConflictsForTarget(normalized, targetID)...,
 	)
 	normalized.FieldConflicts = nil
-	if previous, ok := g.Entities[targetID]; ok {
+	if previous, ok := g.Entities.Get(targetID); ok {
 		if previous.Kind != normalized.Kind {
 			return preparedEntityUpsert{}, fmt.Errorf(
 				"entity %q kind change from %q to %q is not allowed",

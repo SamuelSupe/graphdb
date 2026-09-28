@@ -51,9 +51,10 @@ func (g *Graph) applyCITypeMutations(
 	return nil
 }
 
-func entityKindSet(entities map[string]Entity) map[string]struct{} {
+func entityKindSet(entities *ShardedMap[Entity],
+) map[string]struct{} {
 	kinds := make(map[string]struct{})
-	for _, entity := range entities {
+	for _, entity := range entities.All() {
 		kinds[entity.Kind] = struct{}{}
 	}
 	return kinds
@@ -110,7 +111,7 @@ func (g *Graph) rebuildIdentityIndexesForKinds(
 	for kind := range kinds {
 		next[kind] = map[string]string{}
 	}
-	for id, entity := range g.Entities {
+	for id, entity := range g.Entities.All() {
 		identities, affected := next[entity.Kind]
 		if !affected {
 			continue

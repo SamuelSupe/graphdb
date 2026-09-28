@@ -1,27 +1,32 @@
 package graph
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"maps"
 	"sort"
 )
 
+type logicalHashEntry struct {
+	digest [sha256.Size]byte
+	bytes  int64
+}
+
+type logicalHashBlock struct {
+	entries map[string]logicalHashEntry
+	digest  [sha256.Size]byte
+}
+
 type logicalHashCache struct {
-	ciTypes       logicalHashCategory
-	entities      logicalHashCategory
-	relationTypes logicalHashCategory
-	edges         logicalHashCategory
-	digest        string
-	logicalBytes  int64
-	finalReady    bool
+	categories   [4][graphMapShards]*logicalHashBlock
+	digest       string
+	logicalBytes int64
+	finalReady   bool
 }
 
-type logicalHashCategory struct {
-	keys    []string
-	encoded [][]byte
-}
+var logicalHashKinds = [...]string{"ci_type", "entity", "relation_type", "edge"}
 
-// CachedLogicalSize returns the last computed encoded size without hashing the
-// graph again. Zero means no completed size calculation is available.
 func (g *Graph) CachedLogicalSize() int64 {
 	g.logicalHashMu.Lock()
 	defer g.logicalHashMu.Unlock()
@@ -31,65 +36,82 @@ func (g *Graph) CachedLogicalSize() int64 {
 	return g.logicalHashCache.logicalBytes
 }
 
-func buildLogicalHashCache(g *Graph) (*logicalHashCache, error) {
-	ciTypes, err := buildLogicalHashCategory(g.CITypes, func(value CIType) any {
-		return value
-	})
+func hashLogicalEntry(category int, key string, value any) (logicalHashEntry, error) {
+	data, err := json.Marshal(value)
 	if err != nil {
-		return nil, err
+		return logicalHashEntry{}, err
 	}
-	entities, err := buildLogicalHashCategory(g.Entities, func(value Entity) any {
-		return logicalEntityForHash(value)
-	})
-	if err != nil {
-		return nil, err
-	}
-	relationTypes, err := buildLogicalHashCategory(g.RelationTypes, func(value RelationType) any {
-		return value
-	})
-	if err != nil {
-		return nil, err
-	}
-	edges, err := buildLogicalHashCategory(g.Edges, func(value Edge) any {
-		return logicalEdgeForHash(value)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &logicalHashCache{
-		ciTypes: ciTypes, entities: entities,
-		relationTypes: relationTypes, edges: edges,
-	}, nil
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(logicalHashKinds[category] + "\x00"))
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(key)))
+	_, _ = hash.Write(length[:])
+	_, _ = hash.Write([]byte(key))
+	_, _ = hash.Write(data)
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return logicalHashEntry{digest: digest, bytes: int64(len(data))}, nil
 }
 
-func buildLogicalHashCategory[T any](
-	values map[string]T,
-	logicalValue func(T) any,
-) (logicalHashCategory, error) {
-	type logicalItem struct {
-		key     string
-		encoded []byte
+func (block *logicalHashBlock) rehash() {
+	keys := make([]string, 0, len(block.entries))
+	for key := range block.entries {
+		keys = append(keys, key)
 	}
-	items := make([]logicalItem, 0, len(values))
-	for key, value := range values {
-		data, err := json.Marshal(logicalValue(value))
+	sort.Strings(keys)
+	hash := sha256.New()
+	for _, key := range keys {
+		entry := block.entries[key]
+		_, _ = hash.Write(entry.digest[:])
+	}
+	copy(block.digest[:], hash.Sum(nil))
+}
+
+func buildLogicalHashCache(g *Graph) (*logicalHashCache, error) {
+	cache := &logicalHashCache{}
+	add := func(category int, key string, value any) error {
+		entry, err := hashLogicalEntry(category, key, value)
 		if err != nil {
-			return logicalHashCategory{}, err
+			return err
 		}
-		items = append(items, logicalItem{key: key, encoded: data})
+		index := graphMapShard(key)
+		block := cache.categories[category][index]
+		if block == nil {
+			block = &logicalHashBlock{entries: make(map[string]logicalHashEntry)}
+			cache.categories[category][index] = block
+		}
+		block.entries[key] = entry
+		cache.logicalBytes += entry.bytes
+		return nil
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].key < items[j].key
-	})
-	category := logicalHashCategory{
-		keys:    make([]string, len(items)),
-		encoded: make([][]byte, len(items)),
+	for key, value := range g.CITypes {
+		if err := add(0, key, value); err != nil {
+			return nil, err
+		}
 	}
-	for i, item := range items {
-		category.keys[i] = item.key
-		category.encoded[i] = item.encoded
+	for key, value := range g.Entities.All() {
+		if err := add(1, key, logicalEntityForHash(value)); err != nil {
+			return nil, err
+		}
 	}
-	return category, nil
+	for key, value := range g.RelationTypes {
+		if err := add(2, key, value); err != nil {
+			return nil, err
+		}
+	}
+	for key, value := range g.Edges.All() {
+		if err := add(3, key, logicalEdgeForHash(value)); err != nil {
+			return nil, err
+		}
+	}
+	for _, category := range cache.categories {
+		for _, block := range category {
+			if block != nil {
+				block.rehash()
+			}
+		}
+	}
+	return cache, nil
 }
 
 func (g *Graph) shareLogicalHashCache() *logicalHashCache {
@@ -98,8 +120,6 @@ func (g *Graph) shareLogicalHashCache() *logicalHashCache {
 	if g.logicalHashCache == nil {
 		return nil
 	}
-	// Category arrays and encoded values are immutable. Updates replace the
-	// affected arrays, while each graph owns its final digest/cache state.
 	shared := *g.logicalHashCache
 	return &shared
 }
@@ -107,56 +127,65 @@ func (g *Graph) shareLogicalHashCache() *logicalHashCache {
 func (g *Graph) refreshLogicalHashCache(tracker *mutationFingerprintTracker) error {
 	g.logicalHashMu.Lock()
 	defer g.logicalHashMu.Unlock()
-	if g.logicalHashCache == nil {
+	cache := g.logicalHashCache
+	if cache == nil {
 		return nil
 	}
-	cache := g.logicalHashCache
-	if err := updateLogicalHashCategoryBatch(
-		&cache.ciTypes,
-		tracker.ciTypes,
-		func(key string) (any, bool) {
-			value, exists := g.CITypes[key]
-			return value, exists
-		},
-	); err != nil {
-		return err
-	}
-	if err := updateLogicalHashCategoryBatch(
-		&cache.entities,
-		tracker.entities,
-		func(key string) (any, bool) {
-			value, exists := g.Entities[key]
-			if !exists {
-				return nil, false
+	for category, touched := range []map[string]trackedFingerprint{tracker.ciTypes, tracker.entities, tracker.relationTypes, tracker.edges} {
+		var copied [graphMapShards]bool
+		for key := range touched {
+			index := graphMapShard(key)
+			block := cache.categories[category][index]
+			if !copied[index] {
+				if block == nil {
+					block = &logicalHashBlock{entries: make(map[string]logicalHashEntry)}
+				} else {
+					block = &logicalHashBlock{entries: maps.Clone(block.entries)}
+				}
+				cache.categories[category][index] = block
+				copied[index] = true
 			}
-			return logicalEntityForHash(value), true
-		},
-	); err != nil {
-		return err
-	}
-	if err := updateLogicalHashCategoryBatch(
-		&cache.relationTypes,
-		tracker.relationTypes,
-		func(key string) (any, bool) {
-			value, exists := g.RelationTypes[key]
-			return value, exists
-		},
-	); err != nil {
-		return err
-	}
-	if err := updateLogicalHashCategoryBatch(
-		&cache.edges,
-		tracker.edges,
-		func(key string) (any, bool) {
-			value, exists := g.Edges[key]
-			if !exists {
-				return nil, false
+			cache.logicalBytes -= block.entries[key].bytes
+			value, exists := g.logicalHashValue(category, key)
+			if exists {
+				entry, err := hashLogicalEntry(category, key, value)
+				if err != nil {
+					return err
+				}
+				block.entries[key] = entry
+				cache.logicalBytes += entry.bytes
+			} else {
+				delete(block.entries, key)
 			}
-			return logicalEdgeForHash(value), true
-		},
-	); err != nil {
-		return err
+		}
+		for index, changed := range copied {
+			if changed {
+				block := cache.categories[category][index]
+				if len(block.entries) == 0 {
+					cache.categories[category][index] = nil
+				} else {
+					block.rehash()
+				}
+			}
+		}
 	}
 	cache.finalReady = false
 	return nil
+}
+
+func (g *Graph) logicalHashValue(category int, key string) (any, bool) {
+	switch category {
+	case 0:
+		value, ok := g.CITypes[key]
+		return value, ok
+	case 1:
+		value, ok := g.Entities.Get(key)
+		return logicalEntityForHash(value), ok
+	case 2:
+		value, ok := g.RelationTypes[key]
+		return value, ok
+	default:
+		value, ok := g.Edges.Get(key)
+		return logicalEdgeForHash(value), ok
+	}
 }

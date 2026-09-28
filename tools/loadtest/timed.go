@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 // Timed runs update a fixed graph so faster servers do not end up measuring a

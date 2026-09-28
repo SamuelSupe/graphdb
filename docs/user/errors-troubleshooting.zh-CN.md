@@ -27,7 +27,7 @@
 | `invalid_tenant` | 租户 ID 无效 | 修正租户 ID 格式。 |
 | `tenant_disabled` | 写入被阻断 | 启用租户或切换到活跃租户。 |
 | `tenant_deleted` | 租户已软删除 | 恢复/克隆，或停止使用该租户。 |
-| `operation_disabled` | reader 模式尝试写入 | 把写入/配置/任务变更发送到 writer。 |
+| `operation_disabled` | 操作被禁用 | 检查本地服务配置和操作权限。 |
 | `reader_not_fresh` | reader 未追上所需版本 | 稍后重试，降低 `min_version` 或允许旧读。 |
 | `write_admission_queue_timeout` | 写入队列已满 | 用相同幂等键重试并降低并发。 |
 | `write_backpressure` | 系统背压 | 遵守 `Retry-After` 并检查 `reasons`。 |
@@ -35,10 +35,9 @@
 | `index_rebuild_running` | 索引重建阻塞写入 | 等待，或在合适时取消任务。 |
 | `quota_exceeded` | 将超过租户配额 | 提高配额或删除数据。 |
 | `idempotency_conflict` | 相同 key 对应不同 payload | 使用新 key，或重发完全相同 body。 |
-| `idempotency_in_progress` | 另一个 writer 正在处理相同 key | 退避后用相同 key 重试完全相同的请求。 |
-| `write_conflict` | 直接/带前置条件写入发现 PG head 已变化 | 对 1.3 WAL 已接收批次，这是内部重试状态而非终态；查看 owner status 并保持相同幂等键。直接写入则重新读取 head 并处理前置条件。 |
+| `idempotency_in_progress` | 另一个请求正在处理相同 key | 退避后用相同 key 重试完全相同的请求。 |
+| `write_conflict` | 并发提交或前置条件冲突 | 查看本地状态并保持幂等键；带前置条件的写入重新读取 head 并解决冲突。 |
 | `version_conflict` | `expected_version` 已不匹配 | 重新读取 head 并处理调用方前置条件，不要盲目重试。 |
-| `coordinator_unavailable` | PostgreSQL coordinator 不可用 | 直接/同步写入需恢复 PG 连接，且不会回退到 local 模式；1.3 WAL 已接收批次仍由 owner 重试，直到 coordinator 恢复或 WAL 高水位阻止新准入。 |
 | `lease_held` | 本地模式重复/陈旧 writer 保护 | 确保每租户只有一个本地协调 writer。 |
 | `index_stale` | 索引缺失或过期 | 重建索引，或在支持时允许 fallback。 |
 | `repair_required` | 完整性问题阻断操作 | 执行 audit 和 repair。 |
@@ -52,11 +51,9 @@ GGraphDB 使用 429 表示准入或背压。客户端应：
 3. 重复出现时在来源侧降低并发；
 4. 同一原因跨多个重试窗口持续时告警。
 
-在 1.3 PostgreSQL-CAS WAL 模式中，PostgreSQL 或对象存储暂时故障不会让已经
-接收的 batch 失败。owner writer 会读取最新 head、重基，并在持续 CAS 冲突后缩批。
-如果本地 WAL 达到高水位，新准入会在写入 payload 前被拒绝；已有记录应查询
-local `status_url`。`recovery_pending` 表示 服务正在重建 WAL 状态，
-不是 batch 丢失。
+同步 WAL 在 fsync 完成后受理请求。重启后服务从同一本地目录恢复受理记录；
+`recovery_pending` 表示恢复尚未完成。达到 WAL 高水位时拒绝新准入，已有记录继续通过
+返回的 `status_url` 查询。检查磁盘空间、目录权限和恢复日志；对象备份故障不影响在线主存储。
 
 示例：
 
@@ -88,10 +85,10 @@ curl -sS "$READER/v1/control/reader-traffic-gate?min_ready=1" -H 'X-Tenant-ID: d
 
 处理：
 
-- 确认 reader 可访问对象存储；
-- 检查 `GRAPHDB_POLL_INTERVAL` 和 `GRAPHDB_READER_CATCHUP_TIMEOUT`；
+- 确认本地磁盘可读写且 WAL 恢复完成；
+- 检查 `GRAPHDB_READER_CATCHUP_TIMEOUT` 和请求的 `min_version`；
 - 只在业务允许旧读时使用 `allow_stale=true`；
-- reader 持续落后时，将其移出流量并重启。
+- 版本持续落后时，先检查 WAL 状态和本地恢复日志，再决定是否重启单实例服务。
 
 ## 慢查询或高成本查询
 

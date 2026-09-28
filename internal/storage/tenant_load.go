@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -261,7 +261,7 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 	}
 	return loadedGraph{
 		Graph: g, Manifest: manifest, Meta: meta,
-		DataMD5: manifest.DataMD5,
+		DataHash: manifest.DataHash,
 		CommitTail: buildCommitTailCache(
 			looseCommits, manifest.CommitKeys,
 		),

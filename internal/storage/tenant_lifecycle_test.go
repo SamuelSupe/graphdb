@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 )
 
 func TestLocalObjectBackupDoesNotHoldMaintenanceDuringTransfer(t *testing.T) {
@@ -223,8 +223,8 @@ func TestLocalTenantInitializationFailureAndRetry(t *testing.T) {
 				if clone {
 					want = 1
 				}
-				if err != nil || len(g.Entities) != want {
-					t.Fatalf("initialized graph count=%d err=%v", len(g.Entities), err)
+				if err != nil || g.Entities.Len() != want {
+					t.Fatalf("initialized graph count=%d err=%v", g.Entities.Len(), err)
 				}
 			})
 		}
@@ -266,7 +266,7 @@ func TestLocalCreateRetainsExistingDataAndLateControlWrites(t *testing.T) {
 		t.Fatalf("preserved idempotency=%+v err=%v", result, err)
 	}
 	g, manifest, err := store.Load(ctx, "tenant")
-	if err != nil || manifest.Version != 1 || len(g.Entities) != 1 {
+	if err != nil || manifest.Version != 1 || g.Entities.Len() != 1 {
 		t.Fatalf("preserved graph=%+v err=%v", manifest, err)
 	}
 }

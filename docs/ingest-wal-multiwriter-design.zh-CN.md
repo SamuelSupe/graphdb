@@ -1,5 +1,8 @@
 # PostgreSQL-CAS 多 writer Ingest WAL（1.3）
 
+> Historical 1.x document. For current 2.0 deployment use [local disk](local-disk.md); PostgreSQL coordination and separate reader/writer modes are unsupported.
+
+
 [English](ingest-wal-multiwriter-design.md)
 
 ## 状态与范围

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/apache/arrow-go/v18/parquet/file"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func BenchmarkMarshalParquetIndexCatalog10K(b *testing.B) {

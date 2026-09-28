@@ -30,7 +30,7 @@ type CommitResult struct {
 	ReadAfterCommitID string                   `json:"read_after_commit_id,omitempty"`
 	Skipped           bool                     `json:"skipped,omitempty"`
 	IdempotentReplay  bool                     `json:"idempotent_replay,omitempty"`
-	DataMD5           string                   `json:"data_md5,omitempty"`
+	DataHash          string                   `json:"data_hash,omitempty"`
 	Suppressed        []FieldConflict          `json:"suppressed,omitempty"`
 	CanonicalEntities []EntityCanonicalization `json:"canonical_entities,omitempty"`
 	CanonicalEdges    []EdgeCanonicalization   `json:"canonical_edges,omitempty"`

@@ -45,7 +45,7 @@ func TestSourceExternalIDMergesDifferentIncomingEntityIDs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	if len(g.Entities) != 1 {
+	if g.Entities.Len() != 1 {
 		t.Fatalf("entities = %#v", g.Entities)
 	}
 	entity, ok := g.GetEntityByReference("host:second")
@@ -90,7 +90,7 @@ func TestDifferentSourcesMergeByCIIdentityAndKeepAliases(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("cloud: %v", err)
 	}
-	if len(g.Entities) != 1 {
+	if g.Entities.Len() != 1 {
 		t.Fatalf("entities = %#v", g.Entities)
 	}
 	entity, ok := g.GetEntity("host:agent")

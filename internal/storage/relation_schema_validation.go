@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) prepareRelationSchemaMutations(ctx context.Context, tenantID string, mutations graph.Mutations) (graph.Mutations, RelationSchemaCatalog, ObjectMeta, error) {
@@ -49,7 +49,7 @@ func validateRelationSchemaGraph(g *graph.Graph, catalog RelationSchemaCatalog) 
 	if err := validateRelationSchemaReferences(g, catalog); err != nil {
 		return err
 	}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		if err := validateRelationSchemaEdge(edge, catalog); err != nil {
 			return err
 		}
@@ -65,7 +65,7 @@ func validateRelationSchemaCommit(g *graph.Graph, catalog RelationSchemaCatalog,
 		return err
 	}
 	for _, edgeID := range affectedEdgeIDs {
-		edge, ok := g.Edges[edgeID]
+		edge, ok := g.Edges.Get(edgeID)
 		if !ok {
 			continue
 		}

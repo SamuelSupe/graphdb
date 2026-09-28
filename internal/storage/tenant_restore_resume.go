@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) restoreSnapshotCanResume(
@@ -40,10 +40,10 @@ func (s *TenantStore) restoreSnapshotContentMatches(
 	if err != nil {
 		return false
 	}
-	gotHash, err := loaded.Graph.ContentMD5()
+	gotHash, err := loaded.Graph.ContentHash()
 	if err != nil {
 		return false
 	}
-	wantHash, err := expected.ContentMD5()
+	wantHash, err := expected.ContentHash()
 	return err == nil && gotHash == wantHash
 }

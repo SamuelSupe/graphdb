@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -146,7 +146,7 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 	)
 	g, loaded, loadErr := s.LoadAtLeast(loadCtx, tenantID, minVersion)
 	if g != nil {
-		loadSpan.SetAttributes(attribute.Int("graphdb.scan.loaded_entities", len(g.Entities)))
+		loadSpan.SetAttributes(attribute.Int("graphdb.scan.loaded_entities", g.Entities.Len()))
 	}
 	loadSpan.SetAttributes(attribute.Int64("graphdb.scan.loaded_version", loaded.Version))
 	endStorageSpan(loadSpan, loadErr)
@@ -154,7 +154,7 @@ func (s *TenantStore) ListEntities(ctx context.Context, tenantID string, options
 		return EntityScanResult{}, loadErr
 	}
 	_, sortSpan := startStorageSpan(ctx, "graphdb.storage.scan.entities.sort_fallback",
-		attribute.Int("graphdb.scan.input_entities", len(g.Entities)),
+		attribute.Int("graphdb.scan.input_entities", g.Entities.Len()),
 		attribute.String("graphdb.scan.fallback_strategy", "bounded_heap"),
 	)
 	result, err = ListEntitiesFromGraph(ctx, tenantID, g, loaded, options)

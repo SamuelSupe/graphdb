@@ -134,7 +134,7 @@ func TestApplyCommitRejectsEmptyTopLevelFieldNames(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected empty entity field name error")
 	}
-	if g.Version != 0 || len(g.Entities) != 0 {
+	if g.Version != 0 || g.Entities.Len() != 0 {
 		t.Fatalf("invalid entity field commit changed graph: version=%d entities=%#v", g.Version, g.Entities)
 	}
 
@@ -150,7 +150,7 @@ func TestApplyCommitRejectsEmptyTopLevelFieldNames(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected empty edge field name error")
 	}
-	if len(g.Edges) != 0 {
+	if g.Edges.Len() != 0 {
 		t.Fatalf("invalid edge field commit changed graph: edges=%#v", g.Edges)
 	}
 }

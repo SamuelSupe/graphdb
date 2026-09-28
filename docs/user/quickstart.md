@@ -1,6 +1,8 @@
-# Local disk edition: quickstart
+# GGraphDB 2.0: quickstart
 
-This edition uses one process and a persistent local directory.
+[中文](quickstart.zh-CN.md)
+
+GGraphDB 2.0 uses one process and a persistent local directory. Start with a fresh directory; no 1.x data migration is provided.
 
 - [Start, write, and query](../../README.md)
 - [Configuration, directory ownership, recovery, and validation](../local-disk.md)

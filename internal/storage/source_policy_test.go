@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
 func TestPutSourcePolicyRequiresWriterLease(t *testing.T) {
@@ -263,7 +263,7 @@ func TestCommitAndIngestApplySourcePolicyFieldAliases(t *testing.T) {
 		t.Fatalf("repeat alias commit: %v", err)
 	}
 	if !skipped.Skipped {
-		t.Fatalf("repeat alias write did not MD5 skip: %#v", skipped)
+		t.Fatalf("repeat alias write did not skip unchanged content: %#v", skipped)
 	}
 	ingested, err := store.Ingest(ctx, "tenant-a", IngestRequest{
 		Source:      "aws",

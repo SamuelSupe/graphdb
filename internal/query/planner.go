@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func PlanQuery(g *graph.Graph, request Request) Plan {
@@ -79,10 +79,10 @@ func planPattern(plan *Plan, g *graph.Graph, request Request, stats PlannerStats
 		entities += max(page.EntityCount, 0)
 	}
 	if edges == 0 {
-		edges = len(g.Edges)
+		edges = g.Edges.Len()
 	}
 	if entities == 0 {
-		entities = len(g.Entities)
+		entities = g.Entities.Len()
 	}
 	fanout := 1
 	if entities > 0 && edges > entities {
@@ -171,7 +171,7 @@ func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) 
 	}
 	plan.Strategy = "kind-scan"
 	plan.EstimatedRows = estimatedKindScanRows(g, request, stats)
-	if len(g.Entities) == 0 && stats.Version == g.Version && len(stats.EntityPages) > 0 {
+	if g.Entities.Len() == 0 && stats.Version == g.Version && len(stats.EntityPages) > 0 {
 		plan.StatsSource = "persisted-catalog"
 	}
 	plan.Steps = append(plan.Steps, PlanStep{Name: "scan-entities", Detail: request.Kind, Cost: plan.EstimatedRows})
@@ -182,8 +182,8 @@ func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) 
 }
 
 func estimatedKindScanRows(g *graph.Graph, request Request, stats PlannerStats) int {
-	rows := len(g.Entities)
-	lazyPageScan := len(g.Entities) == 0 && stats.Version == g.Version
+	rows := g.Entities.Len()
+	lazyPageScan := g.Entities.Len() == 0 && stats.Version == g.Version
 	if lazyPageScan {
 		rows = estimateEntityPageTotal(stats)
 	}
@@ -287,7 +287,7 @@ func estimateFanout(g *graph.Graph, request Request, stats PlannerStats) int {
 		return count
 	}
 	if request.ID == "" {
-		return len(g.Edges)
+		return g.Edges.Len()
 	}
 	return g.NeighborCount(request.ID, request.Direction, relationTypeSet(request), request.Path.NodeKinds, request.Op == "impact" || request.DirectionStrategy == "impact")
 }
@@ -443,7 +443,7 @@ func estimateEdgeCap(
 			}
 		}
 	}
-	return max(len(g.Edges), 1)
+	return max(g.Edges.Len(), 1)
 }
 
 func estimateEdgeShardTotal(stats PlannerStats, allowed map[string]struct{}) int {

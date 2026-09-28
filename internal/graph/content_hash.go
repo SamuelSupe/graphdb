@@ -68,8 +68,8 @@ func (g *Graph) logicalSnapshot() logicalSnapshot {
 	out := logicalSnapshot{
 		CITypes:       make([]CIType, 0, len(g.CITypes)),
 		RelationTypes: make([]RelationType, 0, len(g.RelationTypes)),
-		Entities:      make([]logicalEntity, 0, len(g.Entities)),
-		Edges:         make([]logicalEdge, 0, len(g.Edges)),
+		Entities:      make([]logicalEntity, 0, g.Entities.Len()),
+		Edges:         make([]logicalEdge, 0, g.Edges.Len()),
 	}
 	for _, ciType := range g.CITypes {
 		out.CITypes = append(out.CITypes, copyCIType(ciType))
@@ -77,10 +77,10 @@ func (g *Graph) logicalSnapshot() logicalSnapshot {
 	for _, relationType := range g.RelationTypes {
 		out.RelationTypes = append(out.RelationTypes, copyRelationType(relationType))
 	}
-	for _, entity := range g.Entities {
+	for _, entity := range g.Entities.All() {
 		out.Entities = append(out.Entities, logicalEntityFromEntity(entity))
 	}
-	for _, edge := range g.Edges {
+	for _, edge := range g.Edges.All() {
 		out.Edges = append(out.Edges, logicalEdgeFromEdge(edge))
 	}
 	sort.Slice(out.CITypes, func(i, j int) bool {

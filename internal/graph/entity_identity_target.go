@@ -9,7 +9,7 @@ func (g *Graph) validateResolvedEntityTarget(
 	if incomingID == "" || incomingID == targetID {
 		return nil
 	}
-	if _, exists := g.Entities[incomingID]; !exists {
+	if _, exists := g.Entities.Get(incomingID); !exists {
 		return nil
 	}
 	return fmt.Errorf(

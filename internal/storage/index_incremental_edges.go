@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) buildIncrementalEdgeShards(ctx context.Context, tenantID string, previousVersion int64, previous []EdgeShard, before *graph.Graph, after *graph.Graph, edgeIDs []string, version int64, now time.Time) ([]EdgeShardData, []EdgeShard, error) {
@@ -49,11 +49,11 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 	}
 	changedByKey := map[string][]string{}
 	for _, edgeID := range edgeIDs {
-		if edge, ok := before.Edges[edgeID]; ok {
+		if edge, ok := before.Edges.Get(edgeID); ok {
 			key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
 			changedByKey[key] = append(changedByKey[key], edgeID)
 		}
-		if edge, ok := after.Edges[edgeID]; ok {
+		if edge, ok := after.Edges.Get(edgeID); ok {
 			key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
 			changedByKey[key] = append(changedByKey[key], edgeID)
 		}

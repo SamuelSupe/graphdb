@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 	"go.opentelemetry.io/otel"
 )
@@ -99,8 +99,8 @@ func TestIngestServiceRecoveryBoundsTerminalHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != 1 || len(g.Entities) != 1 {
-		t.Fatalf("replayed completed history: version=%d entities=%d", manifest.Version, len(g.Entities))
+	if manifest.Version != 1 || g.Entities.Len() != 1 {
+		t.Fatalf("replayed completed history: version=%d entities=%d", manifest.Version, g.Entities.Len())
 	}
 }
 

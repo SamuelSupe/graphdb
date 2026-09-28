@@ -27,7 +27,7 @@ func (g *Graph) resolveEdgeReference(id string) (string, error) {
 	if id == "" {
 		return "", nil
 	}
-	if _, ok := g.Edges[id]; ok {
+	if _, ok := g.Edges.Get(id); ok {
 		return id, nil
 	}
 	matches := g.edgeAliasIndex[id]
@@ -38,7 +38,7 @@ func (g *Graph) resolveEdgeReference(id string) (string, error) {
 		)
 	}
 	for edgeID := range matches {
-		if _, ok := g.Edges[edgeID]; ok {
+		if _, ok := g.Edges.Get(edgeID); ok {
 			return edgeID, nil
 		}
 	}

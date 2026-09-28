@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, mutations graph.Mutations, report graph.ApplyReport, baseVersion, version int64, rebuild, rebuildOnGap bool) error {

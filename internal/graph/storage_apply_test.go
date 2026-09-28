@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestApplyCommitStorageCopyKeepsSourceGraphImmutable(t *testing.T) {
 	}}}}); err != nil {
 		t.Fatalf("add source age: %v", err)
 	}
-	beforeHash, err := source.ContentMD5()
+	beforeHash, err := source.ContentHash()
 	if err != nil {
 		t.Fatalf("hash source: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestApplyCommitStorageCopyKeepsSourceGraphImmutable(t *testing.T) {
 	if got := next.MatchFieldIndex("person", "age", []any{float64(32)}); len(got) != 1 {
 		t.Fatalf("next age index = %#v", got)
 	}
-	afterHash, err := source.ContentMD5()
+	afterHash, err := source.ContentHash()
 	if err != nil {
 		t.Fatalf("hash source after copy: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestApplyCommitStorageCopyKeepsSourceGraphImmutable(t *testing.T) {
 
 func TestApplyCommitStorageCopyFailureDoesNotLeakMutations(t *testing.T) {
 	source := graphWithCompany(t)
-	beforeHash, err := source.ContentMD5()
+	beforeHash, err := source.ContentHash()
 	if err != nil {
 		t.Fatalf("hash source: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestApplyCommitStorageCopyFailureDoesNotLeakMutations(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid edge error")
 	}
-	afterHash, hashErr := source.ContentMD5()
+	afterHash, hashErr := source.ContentHash()
 	if hashErr != nil {
 		t.Fatalf("hash source after failure: %v", hashErr)
 	}
@@ -230,31 +231,31 @@ func TestApplyCommitStorageCopyMutationClassesKeepSourceImmutable(t *testing.T) 
 				t.Fatal("borrowed snapshot changed across a commit")
 			}
 			for _, g := range []*Graph{source, updated} {
-				entities := map[string]Entity{}
+				entities := NewShardedMap[Entity]()
 				for shard := 0; shard < 64; shard++ {
 					if err := g.VisitEntityStorageShard(fmt.Sprintf("%02x", shard), func(entity Entity) error {
-						entities[entity.ID] = entity
+						entities.Set(entity.ID, entity)
 						return nil
 					}); err != nil {
 						t.Fatal(err)
 					}
 				}
-				if !reflect.DeepEqual(entities, g.Entities) {
+				if !reflect.DeepEqual(maps.Collect(entities.All()), maps.Collect(g.Entities.All())) {
 					t.Fatal("partition membership lost or retained an entity")
 				}
 				for _, reverse := range []bool{false, true} {
-					edges := map[string]Edge{}
+					edges := NewShardedMap[Edge]()
 					for kind := range g.RelationTypes {
 						for shard := 0; shard < 64; shard++ {
 							if err := g.VisitEdgeStorageShard(context.Background(), kind, fmt.Sprintf("%02x", shard), reverse, func(edge Edge) error {
-								edges[edge.ID] = edge
+								edges.Set(edge.ID, edge)
 								return nil
 							}); err != nil {
 								t.Fatal(err)
 							}
 						}
 					}
-					if !reflect.DeepEqual(edges, g.Edges) {
+					if !reflect.DeepEqual(maps.Collect(edges.All()), maps.Collect(g.Edges.All())) {
 						t.Fatal("partition adjacency differs from graph edges")
 					}
 				}
@@ -342,7 +343,7 @@ func TestApplyCommitBatchStorageCopyWithOptionsPreservesOrder(t *testing.T) {
 	if _, ok := next.GetEntity("host:1"); ok {
 		t.Fatal("upsert then delete was reordered")
 	}
-	if source.Version != 0 || len(source.Entities) != 0 {
+	if source.Version != 0 || source.Entities.Len() != 0 {
 		t.Fatal("batch apply mutated the source graph")
 	}
 }

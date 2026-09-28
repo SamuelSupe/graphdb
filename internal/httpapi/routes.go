@@ -6,7 +6,7 @@ import (
 	"net/http/pprof"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 )
 
 // Handler preserves the 1.0 single-listener API surface, with pprof disabled.

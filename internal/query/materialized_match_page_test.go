@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestMaterializedKindPageUsesFullScanAdmissionCost(t *testing.T) {
@@ -13,7 +13,7 @@ func TestMaterializedKindPageUsesFullScanAdmissionCost(t *testing.T) {
 	g.Version = 1
 	for i := 0; i < 150; i++ {
 		id := fmt.Sprintf("host:%03d", i)
-		g.Entities[id] = graph.Entity{ID: id, Kind: "host"}
+		g.Entities.Set(id, graph.Entity{ID: id, Kind: "host"})
 	}
 	request := Request{
 		Op:        "match",
@@ -135,7 +135,7 @@ func TestMaterializedKindPagePreservesFilteredCursorOrder(t *testing.T) {
 		{ID: "host:b", Kind: "host", Fields: graph.Fields{"active": false}},
 		{ID: "host:a", Kind: "host", Fields: graph.Fields{"active": true}},
 	} {
-		g.Entities[entity.ID] = entity
+		g.Entities.Set(entity.ID, entity)
 	}
 	request := Request{
 		Op:        "match",
@@ -207,7 +207,7 @@ func TestMaterializedKindPageStopsAfterRequestedKindWindow(t *testing.T) {
 func TestMaterializedKindPageLegacyCursorPastEndIsEmpty(t *testing.T) {
 	g := graph.New()
 	g.Version = 1
-	g.Entities["host:a"] = graph.Entity{ID: "host:a", Kind: "host"}
+	g.Entities.Set("host:a", graph.Entity{ID: "host:a", Kind: "host"})
 	response, err := Execute(g, Request{
 		Op:        "match",
 		Kind:      "host",

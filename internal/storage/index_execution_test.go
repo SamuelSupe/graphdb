@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
-	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
 
 func TestPersistedIndexLookupAndIncrementalUpdate(t *testing.T) {
@@ -813,8 +813,8 @@ func TestPersistedIndexLookupUsesRecordHashesBeforeReadingEntityPage(t *testing.
 	lookup.pageMu.Lock()
 	pageIndex := lookup.pageIndex[shard]
 	lookup.pageMu.Unlock()
-	if len(pageIndex) != 0 {
-		t.Fatalf("page index entries = %d, want 0 when record hashes are sufficient", len(pageIndex))
+	if pageIndex.Len() != 0 {
+		t.Fatalf("page index entries = %d, want 0 when record hashes are sufficient", pageIndex.Len())
 	}
 }
 
@@ -1681,7 +1681,7 @@ func TestIncrementalIndexRebuildsEdgeEndpointChangeAcrossCatalogAndGraph(t *test
 		t.Fatalf("load before endpoint change: %v", err)
 	}
 	var oldEdgeID string
-	for id, edge := range before.Edges {
+	for id, edge := range before.Edges.All() {
 		if edge.Type == "runs_on" && edge.From == "service:api" && edge.To == "host:app-01" {
 			oldEdgeID = id
 			break
@@ -1717,7 +1717,7 @@ func TestIncrementalIndexRebuildsEdgeEndpointChangeAcrossCatalogAndGraph(t *test
 		t.Fatalf("graph manifest version = %d, catalog version = %d", manifest.Version, catalog.Version)
 	}
 	var graphEdges []graph.Edge
-	for _, edge := range loaded.Edges {
+	for _, edge := range loaded.Edges.All() {
 		if edge.Type == "runs_on" && edge.From == "service:api" {
 			graphEdges = append(graphEdges, edge)
 		}

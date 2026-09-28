@@ -78,7 +78,7 @@ curl -sS -X POST "$READER/v1/query/graphql" \
   }'
 ```
 
-schema、响应 envelope、错误、fragment 和 1.1 边界见
+schema、响应 envelope、错误、fragment 和当前边界见
 [graphql.zh-CN.md](../graphql.zh-CN.md)。
 
 ## 旧文本 DSL
