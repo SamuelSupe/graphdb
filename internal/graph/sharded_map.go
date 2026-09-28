@@ -21,6 +21,7 @@ type graphMapBucket[V any] struct {
 // callers must copy nested maps or slices before modifying a shared value.
 // Published maps support concurrent reads and clones; writes require isolation.
 type ShardedMap[V any] struct {
+	small   *graphMapBucket[V]
 	buckets *[graphMapShards]*graphMapBucket[V]
 	size    int
 }
@@ -40,6 +41,10 @@ func graphMapShard(key string) uint8 {
 }
 
 func (m *ShardedMap[V]) Get(key string) (value V, ok bool) {
+	if m != nil && m.small != nil {
+		value, ok = m.small.values[key]
+		return
+	}
 	if m != nil && m.buckets != nil {
 		if bucket := m.buckets[graphMapShard(key)]; bucket != nil {
 			value, ok = bucket.values[key]
@@ -62,7 +67,12 @@ func (m *ShardedMap[V]) Len() int {
 
 func (m *ShardedMap[V]) writable(key string) map[string]V {
 	if m.buckets == nil {
-		m.buckets = new([graphMapShards]*graphMapBucket[V])
+		if m.small == nil {
+			m.small = &graphMapBucket[V]{values: make(map[string]V)}
+		} else if m.small.shared.Load() {
+			m.small = &graphMapBucket[V]{values: maps.Clone(m.small.values)}
+		}
+		return m.small.values
 	}
 	index := graphMapShard(key)
 	bucket := m.buckets[index]
@@ -82,6 +92,15 @@ func (m *ShardedMap[V]) Set(key string, value V) {
 		m.size++
 	}
 	values[key] = value
+	// Most field-index values have only one ID. Allocate the shard directory
+	// only when copying a small native map would become more expensive.
+	if m.small != nil && m.size > 32 {
+		m.buckets = new([graphMapShards]*graphMapBucket[V])
+		m.small = nil
+		for key, value := range values {
+			m.writable(key)[key] = value
+		}
+	}
 }
 
 func (m *ShardedMap[V]) Delete(key string) {
@@ -93,7 +112,10 @@ func (m *ShardedMap[V]) Delete(key string) {
 
 func (m *ShardedMap[V]) Clone() *ShardedMap[V] {
 	clone := NewShardedMap[V]()
-	if m != nil && m.buckets != nil {
+	if m != nil && m.small != nil {
+		m.small.shared.Store(true)
+		clone.small, clone.size = m.small, m.size
+	} else if m != nil && m.buckets != nil {
 		clone.buckets = new([graphMapShards]*graphMapBucket[V])
 		clone.size = m.size
 		for index, bucket := range m.buckets {
@@ -108,6 +130,14 @@ func (m *ShardedMap[V]) Clone() *ShardedMap[V] {
 
 func (m *ShardedMap[V]) All() iter.Seq2[string, V] {
 	return func(yield func(string, V) bool) {
+		if m != nil && m.small != nil {
+			for key, value := range m.small.values {
+				if !yield(key, value) {
+					return
+				}
+			}
+			return
+		}
 		if m == nil || m.buckets == nil {
 			return
 		}

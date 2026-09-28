@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+type fieldValueIndex = ShardedMap[*ShardedMap[struct{}]]
+
 type Graph struct {
 	Version  int64
 	CITypes  map[string]CIType
@@ -20,7 +22,7 @@ type Graph struct {
 	edgeTypeIndex      map[string]map[string]struct{}
 	entityAliasIndex   map[string]map[string]struct{}
 	kindCounts         map[string]int
-	fieldIndex         map[string]map[string]map[string]map[string]struct{}
+	fieldIndex         map[string]map[string]*fieldValueIndex
 	identityIndex      map[string]map[string]string
 	entityPartitions   *entityPartitions
 	entityPartitionsMu sync.Mutex

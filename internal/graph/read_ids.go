@@ -127,9 +127,9 @@ func (g *Graph) invalidateFieldValueOrder(kind, field, value string) {
 }
 
 func (g *Graph) sortedFieldIndexIDs(kind, field, value string) []string {
-	valueIDs := g.fieldIndex[kind][field][value]
-	if len(valueIDs) < minCachedFieldIndexOrder {
-		return sortedKeys(valueIDs)
+	valueIDs := g.fieldIndex[kind][field].At(value)
+	if valueIDs.Len() < minCachedFieldIndexOrder {
+		return sortedFieldIDs(valueIDs)
 	}
 
 	cacheKey := fieldIndexOrderKey{kind: kind, field: field, value: value}
@@ -138,11 +138,20 @@ func (g *Graph) sortedFieldIndexIDs(kind, field, value string) []string {
 	if ids, ok := g.fieldIndexOrder[cacheKey]; ok {
 		return ids
 	}
-	ids := sortedKeys(valueIDs)
+	ids := sortedFieldIDs(valueIDs)
 	if g.fieldIndexOrder == nil {
 		g.fieldIndexOrder = map[fieldIndexOrderKey][]string{}
 	}
 	g.fieldIndexOrder[cacheKey] = ids
+	return ids
+}
+
+func sortedFieldIDs(values *ShardedMap[struct{}]) []string {
+	ids := make([]string, 0, values.Len())
+	for id := range values.Keys() {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
 	return ids
 }
 
@@ -156,7 +165,7 @@ func (g *Graph) MatchFieldIndexIDs(kind string, field string, values []any) []st
 	}
 	count := 0
 	for _, key := range keys {
-		count += len(g.fieldIndex[kind][field][key])
+		count += g.fieldIndex[kind][field].At(key).Len()
 	}
 	ids := make([]string, 0, count)
 	for _, key := range keys {
@@ -270,7 +279,7 @@ func (g *Graph) ScanFieldIndexIDs(
 		return nil, nil
 	}
 	ids := make([]string, 0)
-	for value, valueIDs := range g.fieldIndex[kind][field] {
+	for value, valueIDs := range g.fieldIndex[kind][field].All() {
 		matched, err := match(value)
 		if err != nil {
 			return nil, err
@@ -278,7 +287,7 @@ func (g *Graph) ScanFieldIndexIDs(
 		if !matched {
 			continue
 		}
-		for id := range valueIDs {
+		for id := range valueIDs.Keys() {
 			ids = append(ids, id)
 		}
 	}

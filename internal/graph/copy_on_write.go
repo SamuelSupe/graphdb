@@ -237,10 +237,10 @@ func (g *Graph) writableIdentityKind(kind string) map[string]string {
 	return g.identityIndex[kind]
 }
 
-func (g *Graph) writableFieldKind(kind string) map[string]map[string]map[string]struct{} {
+func (g *Graph) writableFieldKind(kind string) map[string]*fieldValueIndex {
 	if g.cow == nil {
 		if g.fieldIndex[kind] == nil {
-			g.fieldIndex[kind] = map[string]map[string]map[string]struct{}{}
+			g.fieldIndex[kind] = map[string]*fieldValueIndex{}
 		}
 		return g.fieldIndex[kind]
 	}
@@ -251,11 +251,11 @@ func (g *Graph) writableFieldKind(kind string) map[string]map[string]map[string]
 	return g.fieldIndex[kind]
 }
 
-func (g *Graph) writableFieldName(kind, field string) map[string]map[string]struct{} {
+func (g *Graph) writableFieldName(kind, field string) *fieldValueIndex {
 	byKind := g.writableFieldKind(kind)
 	if g.cow == nil {
 		if byKind[field] == nil {
-			byKind[field] = map[string]map[string]struct{}{}
+			byKind[field] = NewShardedMap[*ShardedMap[struct{}]]()
 		}
 		return byKind[field]
 	}
@@ -263,19 +263,19 @@ func (g *Graph) writableFieldName(kind, field string) map[string]map[string]stru
 		g.cow.fieldNames[kind] = map[string]struct{}{}
 	}
 	if _, ok := g.cow.fieldNames[kind][field]; !ok {
-		byKind[field] = shallowCopyMap(byKind[field])
+		byKind[field] = byKind[field].Clone()
 		g.cow.fieldNames[kind][field] = struct{}{}
 	}
 	return byKind[field]
 }
 
-func (g *Graph) writableFieldValue(kind, field, value string) map[string]struct{} {
+func (g *Graph) writableFieldValue(kind, field, value string) *ShardedMap[struct{}] {
 	byField := g.writableFieldName(kind, field)
 	if g.cow == nil {
-		if byField[value] == nil {
-			byField[value] = map[string]struct{}{}
+		if byField.At(value) == nil {
+			byField.Set(value, NewShardedMap[struct{}]())
 		}
-		return byField[value]
+		return byField.At(value)
 	}
 	if g.cow.fieldValues[kind] == nil {
 		g.cow.fieldValues[kind] = map[string]map[string]struct{}{}
@@ -284,11 +284,11 @@ func (g *Graph) writableFieldValue(kind, field, value string) map[string]struct{
 		g.cow.fieldValues[kind][field] = map[string]struct{}{}
 	}
 	if _, ok := g.cow.fieldValues[kind][field][value]; !ok {
-		byField[value] = copyStringSet(byField[value])
+		byField.Set(value, byField.At(value).Clone())
 		g.cow.fieldValues[kind][field][value] = struct{}{}
 	}
-	if byField[value] == nil {
-		byField[value] = map[string]struct{}{}
+	if byField.At(value) == nil {
+		byField.Set(value, NewShardedMap[struct{}]())
 	}
-	return byField[value]
+	return byField.At(value)
 }

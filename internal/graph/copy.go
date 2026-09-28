@@ -151,15 +151,16 @@ func copySetMap(values map[string]map[string]struct{}) map[string]map[string]str
 	return out
 }
 
-func copyFieldIndex(index map[string]map[string]map[string]map[string]struct{}) map[string]map[string]map[string]map[string]struct{} {
-	out := make(map[string]map[string]map[string]map[string]struct{}, len(index))
+func copyFieldIndex(index map[string]map[string]*fieldValueIndex) map[string]map[string]*fieldValueIndex {
+	out := make(map[string]map[string]*fieldValueIndex, len(index))
 	for kind, byField := range index {
-		out[kind] = make(map[string]map[string]map[string]struct{}, len(byField))
+		out[kind] = make(map[string]*fieldValueIndex, len(byField))
 		for field, byValue := range byField {
-			out[kind][field] = make(map[string]map[string]struct{}, len(byValue))
-			for value, ids := range byValue {
-				out[kind][field][value] = copySet(ids)
+			values := NewShardedMap[*ShardedMap[struct{}]]()
+			for value, ids := range byValue.All() {
+				values.Set(value, ids.Clone())
 			}
+			out[kind][field] = values
 		}
 	}
 	return out

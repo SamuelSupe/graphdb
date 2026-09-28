@@ -99,6 +99,47 @@ func TestApplyCommitStorageCopyFailureDoesNotLeakMutations(t *testing.T) {
 	}
 }
 
+func TestStorageCopyFieldIndexesKeepEarlierVersions(t *testing.T) {
+	for _, size := range []int{32, 128} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			source := New()
+			entities := make([]Entity, size)
+			for i := range entities {
+				entities[i] = Entity{ID: fmt.Sprintf("host:%d", i), Kind: "host", Fields: Fields{"group": "all", "ordinal": i}}
+			}
+			if err := source.ApplyCommit(Commit{ID: "seed", Version: 1, Mutations: Mutations{UpsertEntities: entities}}); err != nil {
+				t.Fatal(err)
+			}
+			next, _, err := source.ApplyCommitStorageCopyWithOptions(Commit{ID: "insert", Version: 2, Mutations: Mutations{
+				UpsertEntities: []Entity{{ID: "host:new", Kind: "host", Fields: Fields{"group": "all", "ordinal": size}}},
+			}}, ApplyOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			last, _, err := next.ApplyCommitStorageCopyWithOptions(Commit{ID: "delete", Version: 3, Mutations: Mutations{DeleteEntities: []string{"host:0"}}}, ApplyOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, version := range []*Graph{source, next, last} {
+				want := []int{size, size + 1, size}[i]
+				if ids := version.MatchFieldIndexIDs("host", "group", []any{"all"}); len(ids) != want {
+					t.Fatalf("version %d shared-value IDs = %d, want %d", i+1, len(ids), want)
+				}
+				wantNew, wantOld := 1, 1
+				if i == 0 {
+					wantNew = 0
+				}
+				if i == 2 {
+					wantOld = 0
+				}
+				if version.FieldIndexCount("host", "ordinal", []any{size}) != wantNew || version.FieldIndexCount("host", "ordinal", []any{0}) != wantOld {
+					t.Fatalf("version %d point index changed across a copy", i+1)
+				}
+			}
+		})
+	}
+}
+
 func TestApplyCommitStorageCopyDoesNotShareStaleSourceMutation(t *testing.T) {
 	source := New()
 	if err := source.ApplyCommit(Commit{ID: "seed", Version: 1, Mutations: Mutations{UpsertEntities: []Entity{{

@@ -6,7 +6,7 @@ backup/restore, mixed-load calibration and the 30-minute maintenance soak.
 
 ## Changes under validation
 
-- 256-bucket copy-on-write entity/edge/adjacency tables for graph versions.
+- 256-bucket copy-on-write entity/edge/adjacency and field-index tables for graph versions; small maps stay compact until they grow beyond 32 entries.
 - Incremental `sha256-shards-v2` logical digest; no complete-graph MD5 per update.
 - Reused entity partitions for incremental page/index updates.
 - Shared queued/active maintenance memory admission, including protection

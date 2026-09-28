@@ -10,7 +10,7 @@ S3 兼容对象存储用于快照备份与按需恢复；服务运行不依赖�
 Go SDK 路径为 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`，Python SDK 为 2.0.0。
 HTTP `/v1` 路径保持不变。
 
-实体、边和邻接表改为分片写时复制；摘要只重算受影响分片。增量索引复用分片目录，
+实体、边、邻接表及字段索引改为分片写时复制；摘要只重算受影响分片。小集合保留紧凑表示，避免为每个单值索引分配分片目录。增量索引复用分片目录，
 GC、文件发布和维护队列增加扫描、时间、字节与共享内存预算。目录同步、manifest 发布顺序、
 同步 WAL、幂等恢复、版本固定读视图和对象备份校验继续保留。
 
@@ -30,7 +30,8 @@ rollback. Commit responses replace `data_md5` with `data_hash`, using
 `sha256-shards-v2:<64 hex digits>`. The Go module is
 `github.com/SamuelSupe/graphdb/v2`; both SDKs are version 2.0.0.
 
-Updates copy changed graph buckets and recompute changed digest buckets.
+Updates copy changed graph and field-index buckets and recompute changed digest buckets.
+Small sets retain a compact representation instead of allocating a shard directory.
 Incremental indexes reuse partition membership; maintenance uses bounded scan,
 file publication and shared queued/active memory admission. Durability and
 recovery ordering remain enforced. This release does not provide replication

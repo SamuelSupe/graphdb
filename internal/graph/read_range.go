@@ -44,7 +44,7 @@ func (g *Graph) ScanFieldIndexRangeIDs(kind, field string, bounds []FieldIndexRa
 				return err
 			}
 			if ok {
-				for id := range g.fieldIndex[kind][field][value.key] {
+				for id := range g.fieldIndex[kind][field].At(value.key).Keys() {
 					ids = append(ids, id)
 				}
 			}
@@ -90,7 +90,7 @@ func (g *Graph) sortedFieldValues(kind, field string) fieldValueOrder {
 		return order
 	}
 	var order fieldValueOrder
-	for key := range g.fieldIndex[kind][field] {
+	for key := range g.fieldIndex[kind][field].Keys() {
 		value := orderedFieldValue{key: key}
 		switch {
 		case key == "null":

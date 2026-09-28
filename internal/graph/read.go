@@ -38,13 +38,13 @@ func (g *Graph) FieldIndexCount(kind string, field string, values []any) int {
 		if !ok {
 			return 0
 		}
-		return len(g.fieldIndex[kind][field][key])
+		return g.fieldIndex[kind][field].At(key).Len()
 	}
 	count := 0
 	// Each entity contributes one scalar key per field, so distinct value sets
 	// cannot overlap. De-duplicating the small key list avoids an ID-sized map.
 	for _, key := range distinctScalarKeys(values) {
-		count += len(g.fieldIndex[kind][field][key])
+		count += g.fieldIndex[kind][field].At(key).Len()
 	}
 	return count
 }
@@ -88,25 +88,25 @@ func (g *Graph) matchCandidates(kind string, filters Fields) []Entity {
 	if kind == "" || len(filters) == 0 {
 		return g.allEntities()
 	}
-	var best map[string]struct{}
+	var best *ShardedMap[struct{}]
 	for field, value := range filters {
 		key, ok := scalarKey(value)
 		if !ok {
 			continue
 		}
-		ids := g.fieldIndex[kind][field][key]
-		if len(ids) == 0 {
+		ids := g.fieldIndex[kind][field].At(key)
+		if ids.Len() == 0 {
 			return nil
 		}
-		if best == nil || len(ids) < len(best) {
+		if best == nil || ids.Len() < best.Len() {
 			best = ids
 		}
 	}
 	if best == nil {
 		return g.allEntities()
 	}
-	entities := make([]Entity, 0, len(best))
-	for id := range best {
+	entities := make([]Entity, 0, best.Len())
+	for id := range best.Keys() {
 		if entity, ok := g.Entities.Get(id); ok {
 			entities = append(entities, entity)
 		}

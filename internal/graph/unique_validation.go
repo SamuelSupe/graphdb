@@ -106,7 +106,7 @@ func (v *uniqueEntityValidator) validate(entity Entity) error {
 			continue
 		}
 		if key, scalar := scalarKey(value); scalar {
-			for id := range v.graph.fieldIndex[entity.Kind][field][key] {
+			for id := range v.graph.fieldIndex[entity.Kind][field].At(key).Keys() {
 				if id != entity.ID {
 					return uniqueFieldError(entity, field)
 				}

@@ -16,7 +16,7 @@ func (g *Graph) rebuildIndexes() {
 	g.edgeTypeIndex = map[string]map[string]struct{}{}
 	g.entityAliasIndex = map[string]map[string]struct{}{}
 	g.kindCounts = map[string]int{}
-	g.fieldIndex = map[string]map[string]map[string]map[string]struct{}{}
+	g.fieldIndex = map[string]map[string]*fieldValueIndex{}
 	g.identityIndex = map[string]map[string]string{}
 
 	for id, entity := range g.Entities.All() {
@@ -35,20 +35,20 @@ func (g *Graph) rebuildIndexes() {
 			}
 			byKind := g.fieldIndex[entity.Kind]
 			if byKind == nil {
-				byKind = map[string]map[string]map[string]struct{}{}
+				byKind = map[string]*fieldValueIndex{}
 				g.fieldIndex[entity.Kind] = byKind
 			}
 			byField := byKind[field]
 			if byField == nil {
-				byField = map[string]map[string]struct{}{}
+				byField = NewShardedMap[*ShardedMap[struct{}]]()
 				byKind[field] = byField
 			}
-			ids := byField[key]
+			ids := byField.At(key)
 			if ids == nil {
-				ids = map[string]struct{}{}
-				byField[key] = ids
+				ids = NewShardedMap[struct{}]()
+				byField.Set(key, ids)
 			}
-			ids[id] = struct{}{}
+			ids.Set(id, struct{}{})
 		}
 	}
 
@@ -148,24 +148,24 @@ func (g *Graph) updateEntityIndexes(id string, before, after Entity) {
 }
 
 func (g *Graph) removeEntityFieldIndex(id, kind, field, key string) {
-	if g.fieldIndex[kind][field][key] == nil {
+	if g.fieldIndex[kind][field].At(key) == nil {
 		return
 	}
 	g.invalidateFieldValueOrder(kind, field, key)
 	ids := g.writableFieldValue(kind, field, key)
-	delete(ids, id)
-	if len(ids) == 0 {
-		delete(g.writableFieldName(kind, field), key)
+	ids.Delete(id)
+	if ids.Len() == 0 {
+		g.writableFieldName(kind, field).Delete(key)
 		g.invalidateFieldKeyOrder(kind, field)
 	}
 }
 
 func (g *Graph) addEntityFieldIndex(id, kind, field, key string) {
 	g.invalidateFieldValueOrder(kind, field, key)
-	if len(g.fieldIndex[kind][field][key]) == 0 {
+	if g.fieldIndex[kind][field].At(key).Len() == 0 {
 		g.invalidateFieldKeyOrder(kind, field)
 	}
-	g.writableFieldValue(kind, field, key)[id] = struct{}{}
+	g.writableFieldValue(kind, field, key).Set(id, struct{}{})
 }
 
 func (g *Graph) addEntityAliasesToIndex(id string, entity Entity) {
