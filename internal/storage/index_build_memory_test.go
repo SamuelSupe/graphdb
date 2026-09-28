@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +14,47 @@ import (
 )
 
 var benchmarkIndexBuildArtifacts indexBuildArtifacts
+
+func TestLocalMaintenanceMemoryBudgetCancellationAndProgress(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	store.MaxMaintenanceBytes = 1 // Both tenants exceed the budget and must run alone.
+	target := store.restoreDrillTargetStore("drill")
+	for tenant, writer := range map[string]*TenantStore{"tenant-a": store, "tenant-b": target} {
+		if _, err := writer.Commit(ctx, tenant, indexMutations(), CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocked := &blockOncePutStore{ObjectStore: files, substring: "/snapshots/sharded/", paused: make(chan struct{}), resume: make(chan struct{})}
+	resume := sync.OnceFunc(func() { close(blocked.resume) })
+	t.Cleanup(resume)
+	store.Objects = blocked
+	done := make(chan error, 1)
+	go func() { _, err := store.Compact(ctx, "tenant-a"); done <- err }()
+	select {
+	case <-blocked.paused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("compact did not start")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	_, err = target.RebuildIndexes(waitCtx, "tenant-b")
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("rebuild exceeded active memory budget: %v", err)
+	}
+	resume()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.RebuildIndexes(ctx, "tenant-b"); err != nil {
+		t.Fatalf("canceled waiter leaked budget: %v", err)
+	}
+}
 
 func TestIncrementalIndexAcceptsRepeatedEntityChanges(t *testing.T) {
 	ctx := context.Background()

@@ -83,7 +83,8 @@ func (s *TenantStore) publishLocalTenantLifecycle(ctx context.Context, tenantID 
 	if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
 		return TenantInfo{}, err
 	}
-	unlockIO, err := files.lockDirectoryIOWeight(ctx, directoryIOCapacity)
+	targetKey := strings.TrimSuffix(s.tenantObjectPrefix(tenantID), "/")
+	unlockIO, err := files.beginDirectoryChange(ctx, targetKey)
 	if err != nil {
 		return TenantInfo{}, err
 	}
@@ -92,7 +93,6 @@ func (s *TenantStore) publishLocalTenantLifecycle(ctx context.Context, tenantID 
 	if err := files.syncPendingDirectories(); err != nil {
 		return TenantInfo{}, err
 	}
-	targetKey := strings.TrimSuffix(s.tenantObjectPrefix(tenantID), "/")
 	target, err := files.path(targetKey)
 	if err != nil {
 		return TenantInfo{}, err

@@ -96,6 +96,8 @@ type TenantStore struct {
 	indexUpdateMu            sync.Mutex
 	indexUpdateTails         map[string]chan struct{}
 	pendingIngestIndexes     map[string]*commitIndexUpdate
+	maintenance              *maintenanceResources
+	activeIngestIndexBytes   int64
 	activeIngestIndexUpdates int
 	reverseIndexCatalogCache map[string]cachedReverseIndexCatalog
 	reverseIndexCatalogLoads map[string]*reverseIndexCatalogLoad
@@ -113,6 +115,7 @@ type TenantStore struct {
 	taskShutdownDone         chan struct{}
 	taskQueueSlots           chan struct{}
 	taskExecutionSlots       chan struct{}
+	taskBackupSlots          chan struct{}
 	taskResidentSlots        chan struct{}
 	taskTenantSlots          []chan struct{}
 	indexTaskStartSlots      []chan struct{}
@@ -125,6 +128,7 @@ type TenantStore struct {
 	MaxRetries               int
 
 	MaxWriteCacheTenants       int
+	MaxMaintenanceBytes        int64
 	MaxWriteCacheBytes         int64
 	EntityPagePackMaxBytes     int64
 	IndexPrefetchTimeout       time.Duration
@@ -180,6 +184,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		taskActive:               map[string]Task{},
 		taskQueueSlots:           make(chan struct{}, defaultTaskQueueLimit),
 		taskExecutionSlots:       make(chan struct{}, defaultTaskExecutionLimit),
+		taskBackupSlots:          make(chan struct{}, 2),
 		taskResidentSlots:        make(chan struct{}, defaultTaskExecutionLimit),
 		taskTenantSlots:          newTaskTenantSlots(defaultTaskTenantStripes),
 		indexTaskStartSlots:      newTaskTenantSlots(defaultTaskTenantStripes),
@@ -193,6 +198,8 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 
 		MaxWriteCacheTenants:       64,
 		MaxWriteCacheBytes:         512 * 1024 * 1024,
+		MaxMaintenanceBytes:        defaultMaintenanceBytes,
+		maintenance:                &maintenanceResources{builds: make(chan struct{}, 2), encodes: make(chan struct{}, indexWriteConcurrency)},
 		EntityPagePackMaxBytes:     defaultEntityPagePackMaxBytes,
 		IndexPrefetchTimeout:       defaultIndexObjectPrefetchTimeout,
 		WriteEntityRecords:         true,
@@ -276,12 +283,17 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 			return Manifest{}, err
 		}
 	}
+	ctx, releaseMemory, err := s.admitMaintenance(ctx, maintenanceGraphBytes(g))
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer releaseMemory()
 	var snapshotCatalog ShardedSnapshotCatalog
 	var snapshotKey string
 	if !alreadyCompacted {
 		// Snapshot objects are versioned and immutable, so their expensive build
 		// can run concurrently with foreground commits.
-		snapshot := g.Snapshot()
+		snapshot := g.SnapshotForStorage()
 		snapshotCatalog, err = s.putShardedSnapshot(ctx, tenantID, snapshot)
 		if err != nil {
 			return Manifest{}, err

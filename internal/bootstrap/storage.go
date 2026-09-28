@@ -47,6 +47,7 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 		InstanceID: cfg.InstanceID,
 		ReaderID:   readerID(cfg),
 
+		MaxMaintenanceBytes:        cfg.MaintenanceMaxBytes,
 		MaxWriteCacheBytes:         cfg.WriteCacheMaxBytes,
 		WriteEntityRecords:         cfg.IndexEntityRecords,
 		UseEntityRecordsForRead:    cfg.IndexEntityRecords,

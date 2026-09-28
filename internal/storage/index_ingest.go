@@ -11,10 +11,9 @@ const (
 	maxBackgroundIndexUpdates = 8
 )
 
-// Ingest publication does not depend on index availability. Keep one active and
-// one coalesced pending update between direct commits, sharing their ordering
-// chain. A retained view protects files and makes FileStore.Close wait for the
-// worker; later batches cannot accumulate one graph copy per accepted write.
+// Retain bounded incremental batches in publication order. Coalesce only the
+// last queued batch; a full delta starts another batch rather than a rebuild.
+// Read views keep every queued version's inputs alive through publication.
 func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) bool {
 	ctx, release, err := s.ReadViewContext(context.WithoutCancel(ctx), tenantID)
 	if err != nil {
@@ -25,27 +24,35 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 		release()
 		return false
 	}
+	work.retainIndexInputs()
 	work.fence = bound.fence
 	work.background = true
-	if len(work.report.AffectedEntityIDs)+len(work.report.AffectedEdgeIDs) > maxPendingIndexChanges {
-		rebuildPendingIndexUpdate(work)
-	}
 	s.indexUpdateMu.Lock()
 	if pending := s.pendingIngestIndexes[tenantID]; pending != nil &&
-		s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence {
+		s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
+		len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
+			len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges &&
+		pendingIndexBytes(pending.before, work.after) <= s.backgroundIndexByteLimit()-(s.activeIngestIndexBytes-pending.retainedBytes) {
+		s.activeIngestIndexBytes -= pending.retainedBytes
 		mergePendingIndexUpdate(pending, work)
+		pending.retainedBytes = pendingIndexBytes(pending.before, pending.after)
+		s.activeIngestIndexBytes += pending.retainedBytes
+		s.recordMaintenanceMemory("pending_indexes", s.activeIngestIndexBytes)
 		s.indexUpdateMu.Unlock()
 		release()
 		return true
 	}
 	// Do not wait for capacity while holding the tenant lock: a queued rebuild
 	// can need that lock. The caller falls back to finishing after unlocking.
-	if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
+	work.retainedBytes = pendingIndexBytes(work.before, work.after)
+	if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates || work.retainedBytes > s.backgroundIndexByteLimit()-s.activeIngestIndexBytes {
 		s.indexUpdateMu.Unlock()
 		release()
 		return false
 	}
 	s.activeIngestIndexUpdates++
+	s.activeIngestIndexBytes += work.retainedBytes
+	s.recordMaintenanceMemory("pending_indexes", s.activeIngestIndexBytes)
 	work.done = make(chan struct{})
 	work.waitFor = s.indexUpdateTails[tenantID]
 	s.indexUpdateTails[tenantID] = work.done
@@ -59,6 +66,8 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 		defer func() {
 			s.indexUpdateMu.Lock()
 			s.activeIngestIndexUpdates--
+			s.activeIngestIndexBytes -= work.retainedBytes
+			s.recordMaintenanceMemory("pending_indexes", s.activeIngestIndexBytes)
 			s.indexUpdateMu.Unlock()
 		}()
 		s.finishCommitIndexUpdate(ctx, tenantID, work, nil)
@@ -69,10 +78,8 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 func mergePendingIndexUpdate(pending, next *commitIndexUpdate) {
 	pending.after = next.after
 	pending.version = next.version
-	if pending.rebuild || next.rebuild || !canIncrementIndexes(pending.mutations) || !canIncrementIndexes(next.mutations) ||
-		len(pending.report.AffectedEntityIDs)+len(next.report.AffectedEntityIDs)+
-			len(pending.report.AffectedEdgeIDs)+len(next.report.AffectedEdgeIDs) > maxPendingIndexChanges {
-		// Force the existing gap-rebuild path once the bounded delta is full.
+	if pending.rebuild || next.rebuild || !canIncrementIndexes(pending.mutations) || !canIncrementIndexes(next.mutations) {
+		// Schema changes require rebuilding the catalog.
 		// An absent index catalog still stays absent.
 		rebuildPendingIndexUpdate(pending)
 		return
@@ -86,4 +93,15 @@ func rebuildPendingIndexUpdate(work *commitIndexUpdate) {
 	work.before = nil
 	work.mutations = graph.Mutations{}
 	work.report = graph.ApplyReport{}
+}
+
+func (s *TenantStore) backgroundIndexByteLimit() int64 {
+	if s.MaxMaintenanceBytes > 0 {
+		return s.MaxMaintenanceBytes
+	}
+	return defaultMaintenanceBytes
+}
+
+func pendingIndexBytes(before, after *graph.Graph) int64 {
+	return addWriteCacheBytes(maintenanceGraphBytes(before), maintenanceGraphBytes(after))
 }

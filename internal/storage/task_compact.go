@@ -36,7 +36,12 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		}, map[string]any{"version": current.Version, "snapshot_catalog_key": current.SnapshotCatalogKey})
 		return taskResult(current), "", nil
 	}
-	snapshot := g.Snapshot()
+	ctx, releaseMemory, err := s.admitMaintenance(ctx, maintenanceGraphBytes(g))
+	if err != nil {
+		return nil, "", err
+	}
+	defer releaseMemory()
+	snapshot := g.SnapshotForStorage()
 	dataMD5 := loaded.DataMD5
 	if dataMD5 == "" {
 		dataMD5, err = g.ContentMD5()

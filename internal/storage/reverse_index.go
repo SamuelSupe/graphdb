@@ -36,6 +36,14 @@ func (s *TenantStore) GetReverseIndexCatalog(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, g *graph.Graph, version int64) error {
+	catalog, meta, err := s.prepareReverseIndex(ctx, tenantID, g, version)
+	if err != nil {
+		return err
+	}
+	return s.putReverseIndexCatalogWithMeta(ctx, tenantID, catalog, meta)
+}
+
+func (s *TenantStore) prepareReverseIndex(ctx context.Context, tenantID string, g *graph.Graph, version int64) (ReverseIndexCatalog, ObjectMeta, error) {
 	shards := buildReverseEdgeShards(g, version)
 	now := time.Now().UTC()
 	catalog := ReverseIndexCatalog{
@@ -73,7 +81,7 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 		})
 	}
 	if err := s.writeChangedReverseEdgeShards(ctx, tenantID, shards, catalog.EdgeShards, version); err != nil {
-		return err
+		return ReverseIndexCatalog{}, ObjectMeta{}, err
 	}
 	sort.Slice(catalog.EdgeShards, func(i, j int) bool {
 		if catalog.EdgeShards[i].RelationType == catalog.EdgeShards[j].RelationType {
@@ -83,14 +91,9 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 	})
 	_, meta, err := s.getReverseIndexCatalogWithMeta(ctx, tenantID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return err
+		return ReverseIndexCatalog{}, ObjectMeta{}, err
 	}
-	return s.putReverseIndexCatalogWithMeta(
-		ctx,
-		tenantID,
-		catalog,
-		meta,
-	)
+	return catalog, meta, nil
 }
 
 func (s *TenantStore) putReverseIndexCatalogWithMeta(

@@ -1,7 +1,11 @@
 package graph
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -208,7 +212,9 @@ func TestApplyCommitStorageCopyMutationClassesKeepSourceImmutable(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			source := storageCopyMutationFixture(t)
 			before := source.Snapshot()
-			_, report, err := source.ApplyCommitStorageCopyWithOptions(Commit{
+			borrowed := source.SnapshotForStorage()
+			borrowedBefore, _ := json.Marshal(borrowed)
+			updated, report, err := source.ApplyCommitStorageCopyWithOptions(Commit{
 				ID:        "storage-copy-" + test.name,
 				Version:   2,
 				Mutations: test.mutations(source),
@@ -218,6 +224,40 @@ func TestApplyCommitStorageCopyMutationClassesKeepSourceImmutable(t *testing.T) 
 			}
 			if !report.Changed {
 				t.Fatal("mutation did not change the copied graph")
+			}
+			borrowedAfter, _ := json.Marshal(borrowed)
+			if !bytes.Equal(borrowedBefore, borrowedAfter) {
+				t.Fatal("borrowed snapshot changed across a commit")
+			}
+			for _, g := range []*Graph{source, updated} {
+				entities := map[string]Entity{}
+				for shard := 0; shard < 64; shard++ {
+					if err := g.VisitEntityStorageShard(fmt.Sprintf("%02x", shard), func(entity Entity) error {
+						entities[entity.ID] = entity
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !reflect.DeepEqual(entities, g.Entities) {
+					t.Fatal("partition membership lost or retained an entity")
+				}
+				for _, reverse := range []bool{false, true} {
+					edges := map[string]Edge{}
+					for kind := range g.RelationTypes {
+						for shard := 0; shard < 64; shard++ {
+							if err := g.VisitEdgeStorageShard(context.Background(), kind, fmt.Sprintf("%02x", shard), reverse, func(edge Edge) error {
+								edges[edge.ID] = edge
+								return nil
+							}); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					if !reflect.DeepEqual(edges, g.Edges) {
+						t.Fatal("partition adjacency differs from graph edges")
+					}
+				}
 			}
 			if after := source.Snapshot(); !reflect.DeepEqual(after, before) {
 				t.Fatalf("storage copy mutated source graph: before=%#v after=%#v", before, after)

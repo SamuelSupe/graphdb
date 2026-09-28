@@ -17,6 +17,53 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
+func TestFileStorePagesPreserveKeyOrderAndExcludeNewGCCandidates(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	want := []string{"objects/a.parquet", "objects/a/one", "objects/a/two", "objects/a0", "objects/b/one"}
+	for _, key := range want {
+		if err := files.Put(ctx, key, []byte(key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cutoff := time.Now()
+	if err := files.Put(ctx, "objects/a/new", []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	// Make the boundary independent of the filesystem timestamp resolution.
+	newPath, _ := files.path("objects/a/new")
+	if err := os.Chtimes(newPath, cutoff.Add(time.Second), cutoff.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	ctx = context.WithValue(ctx, fileListBeforeKey{}, cutoff)
+	ctx = context.WithValue(ctx, fileListDirectoriesKey{}, make(fileListDirectories))
+	var got []string
+	cursor := ""
+	for {
+		page, next, err := files.ListPage(ctx, "objects/", cursor, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, object := range page {
+			got = append(got, object.Key)
+		}
+		if next == "" {
+			break
+		}
+		if next <= cursor {
+			t.Fatal("cursor did not advance")
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pages = %v, want %v", got, want)
+	}
+}
+
 func TestObjectStoresHonorCanceledContext(t *testing.T) {
 	stores := []struct {
 		name  string

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 )
 
 type fileBatchKey struct{}
@@ -17,9 +18,17 @@ func (s *TenantStore) runFileWriteJobs(ctx context.Context, count int, fn func(c
 	}
 	for start := 0; start < count; start += 64 {
 		batchCtx := context.WithValue(ctx, fileBatchKey{}, files)
-		err := runIndexWriteJobs(batchCtx, min(64, count-start), func(ctx context.Context, index int) error { return fn(ctx, start+index) })
+		err := runIndexWriteJobs(batchCtx, min(64, count-start), func(ctx context.Context, index int) error {
+			if !acquireTaskSlot(ctx, s.maintenance.encodes) {
+				return ctx.Err()
+			}
+			defer releaseTaskSlot(s.maintenance.encodes)
+			return fn(ctx, start+index)
+		})
 		// Flush successful renames even if another job failed or was canceled.
+		started := time.Now()
 		err = errors.Join(err, files.syncPendingDirectories())
+		s.recordMaintenance("file_batch_sync", started)
 		if err != nil {
 			return err
 		}

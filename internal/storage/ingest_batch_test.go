@@ -458,8 +458,8 @@ func TestLocalIngestPublishesWhileIndexesCatchUp(t *testing.T) {
 		request.BatchID += string(rune('a' + i))
 		request.Items[0].Entity.Fields["revision"] = i
 		if i == 0 {
-			// Cross the pending-delta bound, then merge another update. The
-			// resulting rebuild must include both the large batch and its tail.
+			// Cross the pending-delta bound. Ordered incremental batches must
+			// include both the large batch and its tail without a full rebuild.
 			for n := 0; n < maxPendingIndexChanges; n++ {
 				id := fmt.Sprintf("host:bulk-%d", n)
 				request.Items = append(request.Items, IngestItem{ExternalID: id, Entity: &graph.Entity{ID: id, Kind: "host"}})
@@ -503,6 +503,53 @@ func TestLocalIngestPublishesWhileIndexesCatchUp(t *testing.T) {
 	}
 }
 
+func TestLocalIngestByteBudgetFallsBackAfterPublishing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	store.MaxMaintenanceBytes = 1
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &blockOncePutStore{ObjectStore: files, substring: "/indexes/parquet/", paused: make(chan struct{}), resume: make(chan struct{})}
+	resume := sync.OnceFunc(func() { close(blocked.resume) })
+	t.Cleanup(resume)
+	store.Objects = blocked
+	done := make(chan error, 1)
+	go func() { _, err := store.Ingest(ctx, "tenant-a", ingestEntityRequest("bytes", "host:new")); done <- err }()
+	select {
+	case <-blocked.paused:
+	case <-ctx.Done():
+		t.Fatal("index fallback did not start")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("oversized update escaped asynchronously: %v", err)
+	default:
+	}
+	manifest, _, err := store.getManifest(ctx, "tenant-a")
+	if err != nil || manifest.Version != 2 {
+		t.Fatalf("commit not published before waiting: %v %v", manifest, err)
+	}
+	unlock, err := store.lockTenantForeground(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	resume()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLocalIngestBoundsBackgroundIndexWorkAcrossTenants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -534,10 +581,12 @@ func TestLocalIngestBoundsBackgroundIndexWorkAcrossTenants(t *testing.T) {
 		if _, err := store.Ingest(ctx, fmt.Sprintf("tenant-%d", i), ingestEntityRequest("batch", "host:new")); err != nil {
 			t.Fatal(err)
 		}
-		select {
-		case <-blocked[i].paused:
-		case <-ctx.Done():
-			t.Fatal("background index did not start")
+		if i < 2 {
+			select {
+			case <-blocked[i].paused:
+			case <-ctx.Done():
+				t.Fatal("background index did not start")
+			}
 		}
 	}
 	tenant := fmt.Sprintf("tenant-%d", maxBackgroundIndexUpdates)
@@ -546,10 +595,16 @@ func TestLocalIngestBoundsBackgroundIndexWorkAcrossTenants(t *testing.T) {
 		_, err := store.Ingest(ctx, tenant, ingestEntityRequest("batch", "host:new"))
 		completed <- err
 	}()
-	select {
-	case <-blocked[maxBackgroundIndexUpdates].paused:
-	case <-ctx.Done():
-		t.Fatal("foreground fallback did not start")
+	for {
+		manifest, _, err := store.getManifest(ctx, tenant)
+		if err == nil && manifest.Version == 2 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("foreground fallback did not publish")
+		case <-time.After(time.Millisecond):
+		}
 	}
 	select {
 	case err := <-completed:
@@ -562,6 +617,14 @@ func TestLocalIngestBoundsBackgroundIndexWorkAcrossTenants(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock()
+	for i := 0; i < maxBackgroundIndexUpdates; i++ {
+		resumes[i]()
+	}
+	select {
+	case <-blocked[maxBackgroundIndexUpdates].paused:
+	case <-ctx.Done():
+		t.Fatal("foreground fallback did not resume after capacity release")
+	}
 	resumes[maxBackgroundIndexUpdates]()
 	select {
 	case err := <-completed:

@@ -23,7 +23,8 @@ type GCOptions struct {
 	MaxDeletes              int
 	DryRun                  bool
 	SkipEntityRecordCleanup bool
-	listings                map[string][]ObjectInfo
+	listings                map[string]gcListing
+	listBefore              time.Time
 }
 
 type GCReport struct {
@@ -78,7 +79,12 @@ type gcReaderProtection struct {
 }
 
 func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options GCOptions) (report GCReport, err error) {
-	releaseViews, viewErr := s.lockReadViews(ctx, tenantID, true)
+	if !options.listBefore.IsZero() {
+		ctx = context.WithValue(ctx, fileListBeforeKey{}, options.listBefore)
+	}
+	viewStarted := time.Now()
+	releaseViews, viewErr := s.lockGCReadViews(ctx, tenantID)
+	s.recordMaintenance("gc_wait_views", viewStarted)
 	if viewErr != nil {
 		return GCReport{}, viewErr
 	}
@@ -87,11 +93,14 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		return GCReport{}, err
 	}
 
+	lockStarted := time.Now()
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
+	s.recordMaintenance("gc_wait_tenant", lockStarted)
 	if err != nil {
 		return GCReport{}, err
 	}
 	defer unlock()
+	defer s.recordMaintenance("gc_hold", time.Now())
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
 		return GCReport{}, err
@@ -112,7 +121,9 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		// Deletions share a directory barrier within this bounded batch. Flush
 		// even on cancellation, before releasing tenant and read-view locks.
 		defer func() {
+			started := time.Now()
 			err = errors.Join(err, files.syncPendingDirectories())
+			s.recordMaintenance("gc_sync", started)
 			if err != nil {
 				report.Checkpoint.Completed = false
 			}
@@ -285,13 +296,27 @@ func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string,
 	if cursor != "" && !strings.HasPrefix(cursor, commitPrefix) && cursor > commitPrefix {
 		return report, nil
 	}
-	pageLimit := checkpoint.scanPageLimit()
-	scan, err := s.loadCommitObjectsPage(ctx, tenantID, referenced, cursor, pageLimit)
+	objects, next, _, err := checkpoint.listPage(ctx, s.Objects, commitPrefix)
 	if err != nil {
 		return report, err
 	}
-	report.InvalidKeys = scan.InvalidKeys
-	for _, item := range scan.Items {
+	for _, object := range objects {
+		if strings.HasPrefix(object.Key, s.commitSegmentPrefix(tenantID)) {
+			next = ""
+			break
+		}
+		if err := checkpoint.visit(object); err != nil {
+			return report, err
+		}
+		var scan commitObjectScan
+		if err := s.appendCommitObject(ctx, tenantID, object, referenced, 0, &scan); err != nil {
+			return report, err
+		}
+		report.InvalidKeys = append(report.InvalidKeys, scan.InvalidKeys...)
+		if len(scan.Items) == 0 {
+			continue
+		}
+		item := scan.Items[0]
 		if item.Commit.Version > manifest.Version {
 			report.KeptFuture++
 			report.FutureKeys = append(report.FutureKeys, item.Key)
@@ -306,12 +331,8 @@ func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string,
 			report.DeletedKeys = append(report.DeletedKeys, item.Key)
 		}
 	}
-	if checkpoint.checkpoint.Paused {
-		return report, errGCPaused
-	}
-	if scan.Truncated && !checkpoint.checkpoint.Paused {
-		checkpoint.pauseAt(scan.NextCursor)
-		return report, errGCPaused
+	if err := checkpoint.pauseAfterPage(next); err != nil {
+		return report, err
 	}
 	if err := s.cleanupCommitSegmentsLocked(ctx, tenantID, manifest, referenced, &report, checkpoint); err != nil {
 		return report, err
@@ -329,6 +350,9 @@ func (s *TenantStore) cleanupCommitSegmentsLocked(ctx context.Context, tenantID 
 		return nil
 	}
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return err
+		}
 		if _, ok := referenced[object.Key]; ok {
 			continue
 		}
@@ -464,6 +488,9 @@ func (s *TenantStore) deleteShardedSnapshotVersionObjectsLocked(ctx context.Cont
 	}
 	keys := make([]string, 0, len(objects))
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return keys, err
+		}
 		deleted, err := checkpoint.deleteKey(ctx, s.Objects, object.Key)
 		if err != nil {
 			return keys, err
@@ -504,6 +531,9 @@ func (s *TenantStore) cleanupDeadLettersLocked(ctx context.Context, tenantID str
 	deleted := 0
 	keys := make([]string, 0)
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return deleted, keys, err
+		}
 		if !strings.Contains(object.Key, "/deadletters/") || !strings.HasSuffix(object.Key, ".parquet") {
 			continue
 		}
@@ -551,6 +581,9 @@ func (s *TenantStore) cleanupEntityRecordsLocked(ctx context.Context, tenantID s
 	}
 	var keys []string
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return len(keys), keys, err
+		}
 		if _, ok, err := s.entityIDFromRecordKey(tenantID, object.Key); err != nil {
 			return len(keys), keys, err
 		} else if !ok {
@@ -585,6 +618,9 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 		return nil
 	}
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return err
+		}
 		rest := strings.TrimPrefix(object.Key, prefix)
 		if strings.Contains(rest, "/") {
 			continue
@@ -698,6 +734,9 @@ func (s *TenantStore) cleanupIndexTasksLocked(ctx context.Context, tenantID stri
 		return nil
 	}
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return err
+		}
 		taskID, ok := indexTaskIDFromKey(object.Key)
 		if !ok {
 			continue

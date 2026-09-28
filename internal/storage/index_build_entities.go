@@ -141,7 +141,7 @@ func entityPageCounts(g *graph.Graph) map[string]int {
 }
 
 func entityShardID(id string) string {
-	return hashedIndexShardID(id)
+	return graph.EntityStorageShard(id)
 }
 
 func (s *TenantStore) tombstoneStaleEntityRecords(ctx context.Context, tenantID string, currentIDs map[string]struct{}, version int64) error {

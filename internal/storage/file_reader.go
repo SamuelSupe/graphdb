@@ -61,7 +61,7 @@ func (s *FileStore) OpenReader(ctx context.Context, key string) (fileReader, err
 			releaseOperation()
 		}
 	}()
-	unlock, err := s.lockDirectoryIO(ctx)
+	unlock, err := s.lockDirectoryIOForKey(ctx, key)
 	if err != nil {
 		return nil, err
 	}

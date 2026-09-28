@@ -126,6 +126,15 @@ func (s *TenantStore) runTaskAdmitted(ctx context.Context, cancel context.Cancel
 	defer s.unregisterTaskCancel(task.TenantID, task.ID)
 	stopWatch := s.watchTaskCancellation(task, cancel)
 	defer stopWatch()
+	if task.Type == TaskTypeTenantBackup && stringTaskParam(task.Params, "destination") == "object" {
+		// Network waits must not occupy the pool that compaction needs to
+		// relieve WAL backpressure. Bound captures and uploads together.
+		if !acquireTaskSlot(ctx, s.taskBackupSlots) {
+			s.persistQueuedTaskCancellation(ctx, task)
+			return
+		}
+		defer releaseTaskSlot(s.taskBackupSlots)
+	}
 	if taskRetainsDataDuringWALWait(task.Type) {
 		// Acquire before the tenant/execution slots so waiting for memory cannot
 		// prevent compact from relieving another task's WAL backpressure.

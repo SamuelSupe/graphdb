@@ -6,9 +6,42 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
+
+func BenchmarkIncrementalEntityPageSmallUpdate(b *testing.B) {
+	for _, count := range []int{10_000, 100_000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			entities := make([]graph.Entity, count)
+			for i := range entities {
+				entities[i] = graph.Entity{ID: fmt.Sprintf("host:%06d", i), Kind: "host", Fields: graph.Fields{"state": "ready"}}
+			}
+			before, err := graph.FromSnapshot(graph.Snapshot{Version: 1, Entities: entities})
+			if err != nil {
+				b.Fatal(err)
+			}
+			after, _, err := before.ApplyCommitStorageCopyWithOptions(graph.Commit{Version: 2, Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: entities[0].ID, Kind: "host", Fields: graph.Fields{"state": "changed"}}}}}, graph.ApplyOptions{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			store := NewTenantStore(NewMemoryStore(), "bench")
+			now := time.Now()
+			build := func() {
+				if _, _, err := store.buildIncrementalEntityPages(context.Background(), "tenant", 1, nil, before, after, []string{entities[0].ID}, 2, now); err != nil {
+					b.Fatal(err)
+				}
+			}
+			build()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				build()
+			}
+		})
+	}
+}
 
 func BenchmarkIncrementalIndexedEntityCommit10K(b *testing.B) {
 	ctx := context.Background()

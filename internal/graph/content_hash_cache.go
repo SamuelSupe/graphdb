@@ -20,6 +20,17 @@ type logicalHashCategory struct {
 	encoded [][]byte
 }
 
+// CachedLogicalSize returns the last computed encoded size without hashing the
+// graph again. Zero means no completed size calculation is available.
+func (g *Graph) CachedLogicalSize() int64 {
+	g.logicalHashMu.Lock()
+	defer g.logicalHashMu.Unlock()
+	if g.logicalHashCache == nil {
+		return 0
+	}
+	return g.logicalHashCache.logicalBytes
+}
+
 func buildLogicalHashCache(g *Graph) (*logicalHashCache, error) {
 	ciTypes, err := buildLogicalHashCategory(g.CITypes, func(value CIType) any {
 		return value

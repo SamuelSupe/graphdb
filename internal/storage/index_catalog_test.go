@@ -12,6 +12,35 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 )
 
+func TestRebuildReverseIndexPreparationAllowsCommit(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	blocked := &blockOncePutStore{ObjectStore: store.Objects, substring: "/reverse-index/v", paused: make(chan struct{}), resume: make(chan struct{})}
+	store.Objects = blocked
+	done := make(chan error, 1)
+	go func() { _, err := store.RebuildIndexes(ctx, "tenant-a"); done <- err }()
+	select {
+	case <-blocked.paused:
+	case <-time.After(5 * time.Second):
+		close(blocked.resume)
+		t.Fatal("reverse index build did not start")
+	}
+	commitCtx, cancel := context.WithTimeout(ctx, time.Second)
+	_, err := store.Commit(commitCtx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:concurrent", Kind: "host"}}}, CommitOptions{})
+	cancel()
+	close(blocked.resume)
+	rebuildErr := <-done
+	if err != nil {
+		t.Fatalf("reverse index preparation held tenant lock: %v", err)
+	}
+	if !errors.Is(rebuildErr, ErrConflict) {
+		t.Fatalf("stale rebuild must not publish: %v", rebuildErr)
+	}
+}
+
 func TestRebuildIndexesWritesCatalogSecondaryIndexesAndEdgeShards(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()

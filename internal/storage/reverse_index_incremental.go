@@ -42,6 +42,7 @@ func (s *TenantStore) refreshReverseIndexAfterCommit(
 		affectedEdgeIDs,
 		version,
 		now,
+		true,
 		func(edge graph.Edge) string {
 			return edgeShardID(edge.To)
 		},

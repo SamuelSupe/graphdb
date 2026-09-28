@@ -11,6 +11,58 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 )
 
+func TestLocalGCWaitingForPinnedViewAllowsNewReads(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	store := NewTenantStore(files, "test")
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	release, err := store.PinReadView(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release = sync.OnceFunc(release)
+	defer release()
+	done := make(chan error, 1)
+	go func() { _, err := store.RunGC(ctx, "tenant-a", GCOptions{}); done <- err }()
+	for {
+		files.runtime.mu.Lock()
+		gate := files.runtime.views[store.tenantObjectPrefix("tenant-a")]
+		waiting := gate != nil && gate.waiting > 0
+		files.runtime.mu.Unlock()
+		if waiting {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("GC did not wait for view")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	readCtx, readCancel := context.WithTimeout(ctx, 4*gcBatchDuration)
+	newRead, err := store.PinReadView(readCtx, "tenant-a")
+	readCancel()
+	if err != nil {
+		t.Fatalf("GC stopped new reads behind a long-lived view: %v", err)
+	}
+	newRead()
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("GC did not progress after views released")
+	}
+}
+
 func TestRebuildIndexesDefersOrphanIndexObjectCleanupToGC(t *testing.T) {
 	ctx := context.Background()
 	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
@@ -636,6 +688,8 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 				}
 				view <- release
 			}()
+			// A slow first delete must yield before a second object, even with budget left.
+			time.Sleep(gcBatchDuration * 2)
 			close(resume)
 			var release func()
 			select {
@@ -648,7 +702,7 @@ func TestLocalGCAllowsReadViewsBetweenBatches(t *testing.T) {
 			release = sync.OnceFunc(release)
 			defer release()
 			remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
-			if err != nil || len(remaining) != count-gcBatchDeletes {
+			if err != nil || len(remaining) != count-1 {
 				t.Fatalf("reader only admitted after all garbage was deleted: remaining=%d err=%v", len(remaining), err)
 			}
 			select {
@@ -745,7 +799,7 @@ func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
 		t.Fatal("other maintenance could not acquire execution capacity")
 	}
 	remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
-	if err != nil || len(remaining) != count-gcBatchDeletes {
+	if err != nil || (len(remaining) >= count || len(remaining) < count-gcBatchDeletes) {
 		t.Fatalf("maintenance did not run between bounded GC batches: remaining=%d err=%v", len(remaining), err)
 	}
 	select {

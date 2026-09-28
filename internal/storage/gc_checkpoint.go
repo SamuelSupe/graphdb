@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 )
 
 var errGCPaused = errors.New("gc checkpoint paused")
@@ -13,11 +14,25 @@ type gcCheckpointRunner struct {
 	options    GCOptions
 	checkpoint GCCheckpoint
 	prefixSeen map[string]struct{}
+	started    time.Time
+	visited    int
+	bytes      int64
 }
+
+type gcListing struct {
+	after, next string
+	items       []ObjectInfo
+}
+
+const (
+	gcBatchDuration = 50 * time.Millisecond
+	gcBatchBytes    = 16 << 20
+)
 
 func newGCCheckpointRunner(options GCOptions) *gcCheckpointRunner {
 	return &gcCheckpointRunner{
 		options: options,
+		started: time.Now(),
 		checkpoint: GCCheckpoint{
 			Cursor:     options.CheckpointCursor,
 			MaxDeletes: options.MaxDeletes,
@@ -25,6 +40,21 @@ func newGCCheckpointRunner(options GCOptions) *gcCheckpointRunner {
 		},
 		prefixSeen: map[string]struct{}{},
 	}
+}
+
+// Yield between objects, including ones that are retained rather than deleted.
+// A single object is always allowed so a large object cannot stall the cursor.
+func (r *gcCheckpointRunner) visit(object ObjectInfo) error {
+	if r.options.listings == nil {
+		return nil
+	}
+	if r.visited > 0 && (r.visited >= 512 || r.bytes >= gcBatchBytes || time.Since(r.started) >= gcBatchDuration) {
+		r.pauseBeforeObject(object.Key)
+		return errGCPaused
+	}
+	r.visited++
+	r.bytes += object.Size
+	return nil
 }
 
 func (r *gcCheckpointRunner) addPrefix(prefix string) {
@@ -150,9 +180,6 @@ func (r *gcCheckpointRunner) scanPageLimit() int {
 		return 0
 	}
 	limit := 512
-	if r.options.listings != nil {
-		limit = gcBatchDeletes * 2
-	}
 	return max(64, min(limit, r.options.MaxDeletes*2))
 }
 
@@ -175,25 +202,19 @@ func (r *gcCheckpointRunner) listPage(ctx context.Context, objects ObjectStore, 
 		return nil, "", true, nil
 	}
 	if r.options.listings != nil {
-		items, exists := r.options.listings[prefix]
-		if !exists {
+		page, exists := r.options.listings[prefix]
+		if !exists || cursor < page.after || (page.next != "" && cursor >= page.next) {
 			var err error
-			items, _, err = listObjectPage(ctx, objects, prefix, "", 0)
+			ctx = context.WithValue(ctx, fileListBeforeKey{}, r.options.listBefore)
+			page = gcListing{after: cursor}
+			page.items, page.next, err = listObjectPage(ctx, objects, prefix, cursor, r.scanPageLimit())
 			if err != nil {
 				return nil, "", false, err
 			}
-			r.options.listings[prefix] = items
+			r.options.listings[prefix] = page
 		}
-		start := sort.Search(len(items), func(i int) bool { return items[i].Key > cursor })
-		end := min(len(items), start+r.scanPageLimit())
-		next := ""
-		if end < len(items) {
-			next = items[end-1].Key
-		}
-		// Retain the final page until the cursor leaves this prefix. A deletion
-		// budget can pause partway through it; relisting then would let ongoing
-		// writes keep extending this GC run indefinitely.
-		return items[start:end], next, false, objectContextErr(ctx)
+		start := sort.Search(len(page.items), func(i int) bool { return page.items[i].Key > cursor })
+		return page.items[start:], page.next, false, objectContextErr(ctx)
 	}
 	items, next, err := listObjectPage(ctx, objects, prefix, cursor, r.scanPageLimit())
 	return items, next, false, err

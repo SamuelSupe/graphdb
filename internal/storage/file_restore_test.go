@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,6 +15,45 @@ import (
 	"path/filepath"
 	"testing"
 )
+
+func TestLocalDirectoryChangeIsolatesTenantAndReleasesWaiters(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	for _, key := range []string{"test/tenants/a/value", "test/tenants/b/value"} {
+		if err := files.Put(ctx, key, []byte("original")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resume, err := files.beginDirectoryChange(ctx, "test/tenants/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resume()
+	blocked, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := files.Put(blocked, "test/tenants/a/value", []byte("late")); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("target write bypassed preparation: %v", err)
+	}
+	other, cancelOther := context.WithTimeout(ctx, time.Second)
+	defer cancelOther()
+	if data, err := files.Get(other, "test/tenants/b/value"); err != nil || string(data) != "original" {
+		t.Fatalf("unrelated tenant blocked: %q %v", data, err)
+	}
+	// A canceled waiter must not retain a global permit needed for publication.
+	unlock, err := files.lockDirectoryIOWeight(other, directoryIOCapacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	resume()
+	if data, err := files.Get(ctx, "test/tenants/a/value"); err != nil || string(data) != "original" {
+		t.Fatalf("target after resume: %q %v", data, err)
+	}
+}
 
 func TestLocalRestoreDirectoryConcurrentPublication(t *testing.T) {
 	ctx := context.Background()

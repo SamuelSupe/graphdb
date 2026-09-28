@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +22,116 @@ import (
 	"gitlab.jiagouyun.com/guance/graphdb/internal/graph"
 	"gitlab.jiagouyun.com/guance/graphdb/internal/query"
 )
+
+func TestLocalObjectBackupDoesNotHoldMaintenanceDuringTransfer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	entered, resume := make(chan struct{}, 8), make(chan struct{})
+	resumeTransfer := sync.OnceFunc(func() { close(resume) })
+	var mu sync.Mutex
+	objects := make(map[string][]byte)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			data, found := objects[r.URL.Path]
+			mu.Unlock()
+			if found {
+				w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+				_, _ = w.Write(data)
+				return
+			}
+			entered <- struct{}{}
+			select {
+			case <-resume:
+			case <-r.Context().Done():
+			}
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, "<Error><Code>NoSuchKey</Code></Error>")
+			return
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		objects[r.URL.Path] = data
+		mu.Unlock()
+		w.Header().Set("ETag", `"test"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer remote.Close()
+	defer resumeTransfer()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	defer func() {
+		resumeTransfer()
+		if err := store.ShutdownTasks(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	store.taskExecutionSlots = make(chan struct{}, 1)
+	store.Backups, err = backupstore.New(ctx, backupstore.Config{Bucket: "test-backups", Endpoint: remote.URL, Region: "us-east-1", AccessKeyID: "test", SecretAccessKey: "test", PathStyle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tasks []Task
+	for _, tenant := range []string{"a", "b"} {
+		if _, err := store.Commit(ctx, tenant, graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:one", Kind: "host"}}}, CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		task, err := store.StartTask(ctx, tenant, TaskTypeTenantBackup, map[string]any{"destination": "object"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, task)
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("backup transfer retained the maintenance slot")
+		}
+	}
+	release, err := store.TryAcquireMaintenance("unrelated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	maintenance, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	if _, err := store.RunGC(maintenance, "a", GCOptions{TaskMaxAge: time.Nanosecond}); err != nil {
+		t.Fatalf("GC blocked by upload: %v", err)
+	}
+	if _, err := store.PurgeTenant(maintenance, "a", true); err != nil {
+		t.Fatalf("purge blocked by upload: %v", err)
+	}
+	resumeTransfer()
+	if task := waitForTask(t, ctx, store, "b", tasks[1].ID); task.Status != TaskStatusSucceeded {
+		t.Fatalf("backup after GC: %+v", task)
+	}
+	if err := store.ShutdownTasks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	uri, err := store.Backups.URI("a", tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.Backups.ReadManifest(ctx, uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var downloaded bytes.Buffer
+	if err := store.Backups.Download(ctx, manifest, &downloaded); err != nil {
+		t.Fatalf("open upload descriptor did not survive purge: %v", err)
+	}
+	if _, err := files.Get(ctx, store.taskKey("a", tasks[0].ID)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("late completion resurrected purged task: %v", err)
+	}
+}
 
 func TestLocalTenantInitializationFailureAndRetry(t *testing.T) {
 	for _, clone := range []bool{false, true} {

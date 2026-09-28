@@ -111,9 +111,14 @@ also check that the remote snapshot hash has not changed.
 - The capture is first persisted locally. Its content-addressed Parquet file is
   uploaded before the manifest is conditionally published. An interrupted transfer
   has no discoverable complete backup, and an ID cannot replace different content.
-- Uploads use two workers and 16 MiB parts. Ordinary commits can continue; GC and
-  purge wait for the backup's read view. The two remote writes are not a multi-object
-  atomic transaction; failures can leave unreferenced objects.
+- At most two object-backup tasks capture/upload concurrently, using a separate
+  admission limit. Each upload uses two workers and 16 MiB parts. Once the capture
+  is open, uploads retain a file descriptor rather than a tenant read view or a
+  compaction/GC execution slot. GC and purge can proceed during network waits.
+  Purge can remove task history and retry inputs; an already open upload may still
+  finish remotely, but its completion cannot recreate the purged task. The two
+  remote writes are not a multi-object atomic transaction; failures can leave
+  unreferenced objects.
 - This feature supplies on-demand backup, restore, and task retry. Scheduling,
   incremental backups, replication, and migration of remote online data are outside it.
 

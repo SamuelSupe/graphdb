@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"gitlab.jiagouyun.com/guance/graphdb/internal/backupstore"
@@ -16,12 +17,13 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	if s.Backups == nil {
 		return nil, "", fmt.Errorf("object backups are not configured")
 	}
-	// Keep the durable capture available to this task while GC and tenant purge
-	// run. Normal commits remain free to advance the tenant during the upload.
+	// Protect capture until its descriptor is open. The descriptor survives
+	// GC, purge and restore without pinning the tenant during network IO.
 	release, err := s.PinReadView(ctx, task.TenantID)
 	if err != nil {
 		return nil, "", err
 	}
+	release = sync.OnceFunc(release)
 	defer release()
 	backupID := taskCheckpointString(task, "remote_backup_id")
 	if backupID == "" {
@@ -79,6 +81,10 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "backup_upload", 3, 5, taskActionUpdate{ID: "publish_object_backup", Status: "running", Input: map[string]any{"backup_key": uri}}, nil); err != nil {
 		return nil, "", err
+	}
+	release()
+	if admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
+		admission.release()
 	}
 	entry, err := s.Backups.Publish(ctx, manifest, io.NewSectionReader(source, 0, size))
 	if err != nil {

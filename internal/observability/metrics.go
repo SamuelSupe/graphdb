@@ -19,9 +19,11 @@ var ingestSegmentBuckets = []float64{0, 1, 2, 4, 8}
 type Metrics struct {
 	mu sync.Mutex
 
-	httpRequests   map[string]float64
-	httpDuration   map[string]*histogram
-	objectDuration map[string]*histogram
+	httpRequests        map[string]float64
+	httpDuration        map[string]*histogram
+	objectDuration      map[string]*histogram
+	maintenanceDuration map[string]*histogram
+	maintenanceMemory   map[string]float64
 
 	queries              map[string]float64
 	queryDuration        map[string]*histogram
@@ -87,6 +89,8 @@ func NewMetrics() *Metrics {
 		httpRequests:           map[string]float64{},
 		httpDuration:           map[string]*histogram{},
 		objectDuration:         map[string]*histogram{},
+		maintenanceDuration:    map[string]*histogram{},
+		maintenanceMemory:      map[string]float64{},
 		queries:                map[string]float64{},
 		queryDuration:          map[string]*histogram{},
 		slowQueries:            map[string]float64{},
@@ -125,6 +129,24 @@ func NewMetrics() *Metrics {
 		indexHealthStatus:      map[string]string{},
 		indexHealthIssues:      map[string]float64{},
 	}
+}
+
+func (m *Metrics) RecordMaintenanceMemory(pool string, bytes int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maintenanceMemory[pool] = float64(bytes)
+}
+
+func (m *Metrics) RecordMaintenancePhase(phase string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.observe(m.maintenanceDuration, phase, writeBuckets, duration.Seconds())
 }
 
 func (m *Metrics) RecordHTTPRequest(method string, route string, status int, duration time.Duration) {
@@ -433,6 +455,8 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	defer m.mu.Unlock()
 	var b bytes.Buffer
 	writeCounter(&b, "graphdb_http_requests_total", "HTTP requests by method, route and status.", []string{"method", "route", "status"}, m.httpRequests)
+	writeGaugeValues(&b, "graphdb_maintenance_estimated_bytes", "Estimated bytes charged to maintenance admission pools, not RSS.", []string{"pool"}, m.maintenanceMemory)
+	writeHistogram(&b, "graphdb_maintenance_phase_seconds", "Local maintenance wait and processing time.", []string{"phase"}, m.maintenanceDuration)
 	writeHistogram(&b, "graphdb_http_request_duration_seconds", "HTTP request latency.", []string{"method", "route", "status"}, m.httpDuration)
 	writeHistogram(&b, "graphdb_object_store_operation_seconds", "Object store operation latency.", []string{"operation", "status"}, m.objectDuration)
 	writeCounter(&b, "graphdb_queries_total", "Queries by tenant, operation and status.", []string{"tenant", "op", "status"}, m.queries)

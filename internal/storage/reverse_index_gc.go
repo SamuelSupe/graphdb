@@ -23,6 +23,9 @@ func (s *TenantStore) cleanupReverseIndexOrphans(ctx context.Context, tenantID s
 		return err
 	}
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return err
+		}
 		if _, keep := referenced[object.Key]; keep {
 			continue
 		}

@@ -27,23 +27,6 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 	if len(shards) == 0 {
 		return nil, previous, ctx.Err()
 	}
-	// The commit already owns the authoritative graph. Rebuilding only the
-	// affected shards avoids reading and decoding their previous packed pages.
-	entitiesByShard := make(map[string][]graph.Entity, len(shards))
-	checked := 0
-	for id, entity := range after.Entities {
-		checked++
-		if checked&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, nil, err
-			}
-		}
-		shard := entityShardID(id)
-		if _, changed := changedByShard[shard]; changed {
-			// The published graph is immutable; only the page slice is reordered.
-			entitiesByShard[shard] = append(entitiesByShard[shard], entity)
-		}
-	}
 	pages := make([]EntityPageData, 0, len(shards))
 	rawSpecs := make([]EntityPageSpec, 0, len(shards))
 	removed := map[string]struct{}{}
@@ -51,7 +34,19 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		entities := entitiesByShard[shard]
+		var entities []graph.Entity
+		err := after.VisitEntityStorageShard(shard, func(entity graph.Entity) error {
+			if len(entities)&255 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			entities = append(entities, entity)
+			return nil
+		})
+		if err != nil {
+			return nil, nil, err
+		}
 		if len(entities) == 0 {
 			removed[shard] = struct{}{}
 			continue

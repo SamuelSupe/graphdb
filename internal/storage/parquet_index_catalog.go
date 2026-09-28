@@ -133,7 +133,11 @@ func marshalParquetIndexCatalog(ctx context.Context, catalog IndexCatalog) ([]by
 }
 
 func decodeParquetIndexCatalog(ctx context.Context, data []byte) (IndexCatalog, error) {
-	table, release, err := readParquetTable(ctx, data)
+	return decodeParquetIndexCatalogReader(ctx, bytes.NewReader(data))
+}
+
+func decodeParquetIndexCatalogReader(ctx context.Context, source parquet.ReaderAtSeeker) (IndexCatalog, error) {
+	table, release, err := readParquetTableReader(ctx, source)
 	if err != nil {
 		return IndexCatalog{}, err
 	}

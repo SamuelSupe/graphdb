@@ -153,7 +153,8 @@ func (s *TenantStore) resumePublishedLocalRestore(ctx context.Context, task Task
 }
 
 func (s *TenantStore) publishLocalTenantRestore(ctx context.Context, files *FileStore, stage *TenantStore, dir string, task Task) error {
-	unlock, err := files.lockDirectoryIOWeight(ctx, directoryIOCapacity)
+	targetKey := strings.TrimSuffix(s.tenantObjectPrefix(task.TenantID), "/")
+	unlock, err := files.beginDirectoryChange(ctx, targetKey)
 	if err != nil {
 		return err
 	}
@@ -164,7 +165,6 @@ func (s *TenantStore) publishLocalTenantRestore(ctx context.Context, files *File
 	if err := files.syncPendingDirectories(); err != nil {
 		return err
 	}
-	targetKey := strings.TrimSuffix(s.tenantObjectPrefix(task.TenantID), "/")
 	target, err := files.path(targetKey)
 	if err != nil {
 		return err
@@ -185,9 +185,18 @@ func (s *TenantStore) publishLocalTenantRestore(ctx context.Context, files *File
 	return files.publishTenantDirectory(ctx, dir, targetKey)
 }
 
-// The caller holds the tenant view and the directory IO gate through publication.
+// Retained files are prepared under the subtree barrier. Only the recoverable
+// directory switch and cache generation change need the global IO gate.
 func (files *FileStore) publishTenantDirectory(ctx context.Context, dir, targetKey string) error {
-	err := files.publishRestoreDirectory(ctx, dir, targetKey)
+	unlock, err := files.lockDirectoryIOWeight(ctx, directoryIOCapacity)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := files.syncPendingDirectories(); err != nil {
+		return err
+	}
+	err = files.publishRestoreDirectory(ctx, dir, targetKey)
 	_, journalErr := os.Lstat(filepath.Join(dir, "journal.json"))
 	r := files.runtime
 	r.mu.Lock()

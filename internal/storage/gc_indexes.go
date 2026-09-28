@@ -32,6 +32,9 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 	}
 	keep := indexObjectKeys(s, tenantID, catalog)
 	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return err
+		}
 		if _, referenced := keep[object.Key]; referenced {
 			continue
 		}
@@ -39,14 +42,19 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 		if !ok || version >= catalog.Version || !strings.HasSuffix(object.Key, ".parquet") {
 			continue
 		}
-		data, err := s.Objects.Get(ctx, object.Key)
+		source, err := openFileReader(ctx, s.Objects, object.Key)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if !s.listedParquetObjectSafeToDelete(ctx, tenantID, object.Key, data, version, catalog.Version) {
+		safe := s.listedParquetReaderSafeToDelete(ctx, tenantID, object.Key, source, version, catalog.Version)
+		closeErr := source.Close()
+		if closeErr != nil {
+			return closeErr
+		}
+		if !safe {
 			if err := ctx.Err(); err != nil {
 				return err
 			}

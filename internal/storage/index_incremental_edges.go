@@ -20,6 +20,7 @@ func (s *TenantStore) buildIncrementalEdgeShards(ctx context.Context, tenantID s
 		edgeIDs,
 		version,
 		now,
+		false,
 		func(edge graph.Edge) string {
 			return edgeShardID(edge.From)
 		},
@@ -39,6 +40,7 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 	edgeIDs []string,
 	version int64,
 	now time.Time,
+	reverse bool,
 	shardIDFor func(graph.Edge) string,
 	decorate func(*IndexCatalog),
 ) ([]EdgeShardData, []EdgeShard, error) {
@@ -60,20 +62,6 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 	if len(keys) == 0 {
 		return nil, previous, ctx.Err()
 	}
-	edgesByKey := make(map[string][]graph.Edge, len(keys))
-	checked := 0
-	for _, edge := range after.Edges {
-		checked++
-		if checked&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, nil, err
-			}
-		}
-		key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
-		if _, changed := changedByKey[key]; changed {
-			edgesByKey[key] = append(edgesByKey[key], graph.CopyEdge(edge))
-		}
-	}
 	shards := make([]EdgeShardData, 0, len(keys))
 	rawSpecs := make([]EdgeShard, 0, len(keys))
 	removed := map[string]struct{}{}
@@ -82,7 +70,19 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 			return nil, nil, err
 		}
 		relationType, shardID := splitShard(key)
-		edges := edgesByKey[key]
+		var edges []graph.Edge
+		err := after.VisitEdgeStorageShard(ctx, relationType, shardID, reverse, func(edge graph.Edge) error {
+			if len(edges)&255 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			edges = append(edges, edge)
+			return nil
+		})
+		if err != nil {
+			return nil, nil, err
+		}
 		if len(edges) == 0 {
 			removed[key] = struct{}{}
 			continue

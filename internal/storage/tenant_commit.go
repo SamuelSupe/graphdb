@@ -13,17 +13,24 @@ import (
 )
 
 type commitIndexUpdate struct {
-	before      *graph.Graph
-	after       *graph.Graph
-	mutations   graph.Mutations
-	report      graph.ApplyReport
-	version     int64
-	baseVersion int64
-	background  bool
-	rebuild     bool
-	fence       writerFenceRef
-	waitFor     <-chan struct{}
-	done        chan struct{}
+	before        *graph.Graph
+	after         *graph.Graph
+	mutations     graph.Mutations
+	report        graph.ApplyReport
+	version       int64
+	baseVersion   int64
+	retainedBytes int64
+	background    bool
+	rebuild       bool
+	fence         writerFenceRef
+	waitFor       <-chan struct{}
+	done          chan struct{}
+}
+
+func (work *commitIndexUpdate) retainIndexInputs() {
+	m := work.mutations
+	work.mutations = graph.Mutations{UpsertCITypes: m.UpsertCITypes, DeleteCITypes: m.DeleteCITypes, UpsertRelationTypes: m.UpsertRelationTypes, DeleteRelationTypes: m.DeleteRelationTypes}
+	work.report = graph.ApplyReport{AffectedEntityIDs: work.report.AffectedEntityIDs, AffectedEdgeIDs: work.report.AffectedEdgeIDs}
 }
 
 type orderedIndexUpdateKey struct{}
@@ -32,6 +39,7 @@ func (s *TenantStore) enqueueCommitIndexUpdate(tenantID string, work *commitInde
 	if work == nil {
 		return
 	}
+	work.retainIndexInputs()
 	work.done = make(chan struct{})
 	s.indexUpdateMu.Lock()
 	work.waitFor = s.indexUpdateTails[tenantID]
@@ -44,8 +52,11 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		return nil
 	}
 	if work.waitFor != nil {
+		started := time.Now()
 		<-work.waitFor
+		s.recordMaintenance("index_wait_previous", started)
 	}
+	defer s.recordMaintenance("index_work", time.Now())
 	s.indexUpdateMu.Lock()
 	if s.pendingIngestIndexes[tenantID] == work {
 		delete(s.pendingIngestIndexes, tenantID)

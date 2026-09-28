@@ -61,19 +61,41 @@ causes an error instead of continuing against another graph. Running-query list
 and cancellation use the process registry with tenant validation, without waiting
 for graph read views or maintenance.
 
-GC releases its tenant and read-view locks between batches (64 deletions per
-batch, including runs with an explicit total deletion budget) and reloads the
-current manifest and catalogs after reacquiring them. Queued readers get a turn
-between exclusive maintenance batches; the total deletion budget is preserved.
-Deletions within a batch share directory durability barriers, which are flushed
-before releasing the locks, including on failure or cancellation. Candidate listings remain fixed for one GC run, so concurrent writes do not
-keep extending its last page. Index cleanup releases the tenant maintenance slot
-after publication. Local GC releases task admission between batches and reacquires
-the global worker limit for each batch, allowing compaction to relieve WAL backpressure. Local live GC workers
-remain authoritative even when a persisted heartbeat is delayed. Index orphan cleanup supports `max_deletes`, `cursor`, and `dry_run`.
-Index rebuild blocks write admission during backfill; its cleanup phase and local
-GC use the batch locks so foreground work can run between batches. A large single
-file or directory listing can still make one batch slow.
+GC releases its tenant and read-view locks between batches and reloads the current
+manifest and catalogs. Local candidate pages contain at most 512 files. Between
+objects, GC yields after 50 ms of work or 16 MiB of candidate bytes; a single
+object always makes progress, so this is a cooperative budget, not a hard latency
+limit. The explicit total deletion budget and dry-run cursor remain supported.
+Files modified after the scan starts are left for a later run. Only the current
+candidate pages and directory entries on the listing path are retained, rather
+than a complete prefix listing. Very large individual directories still require
+sorting their entries; a single large file can exceed a batch's time budget.
+
+Deletions share directory durability barriers, flushed before releasing locks,
+including on failure or cancellation. Index orphan validation reads directly
+from file handles while retaining its content and tenant checks. Local GC yields
+task execution capacity between batches so compaction can relieve WAL backpressure.
+Index rebuild still blocks write admission during backfill; its cleanup uses the
+same batch locks. Live workers remain authoritative if their heartbeat is delayed.
+
+## Readiness and memory budgets
+
+`/v1/readiness` checks that the data directory exists and can create, write, sync
+and remove a small temporary file. Concurrent dependency probes share work. A
+readable but unwritable directory is not ready for the local write service;
+`/v1/health` remains a liveness check.
+
+Compose accepts `GRAPHDB_MEMORY_LIMIT`, `GOMEMLIMIT`, and reader/writer cache byte
+limits. Defaults keep the container/runtime memory limits unset and both graph
+caches at 512 MiB. Set these together for a finite-memory deployment, for example:
+
+```sh
+GRAPHDB_MEMORY_LIMIT=7g GOMEMLIMIT=5GiB docker compose up -d
+```
+
+This is a starting configuration, not a capacity guarantee. `GOMEMLIMIT` is a Go
+soft heap budget, not an RSS limit; leave room for decoding, snapshots, stacks,
+file access and other caches. Validate the actual dataset with maintenance enabled.
 
 ## Ingestion
 
@@ -123,7 +145,10 @@ manifests that also listed live heads or indexes. Subsequent commits and index G
 do not invalidate that recovery record.
 
 Restore builds and verifies a complete tenant in a staging directory on the same
-filesystem. Existing tasks and local backups are preserved. A durable switch
+filesystem. Existing tasks and local backups are preserved under a barrier for
+that tenant directory; other tenants can continue file access during preparation.
+Each retained directory is synced once. The global IO gate covers the directory
+switch and generation update; old-directory deletion runs after releasing it. A durable switch
 journal retains the old directory until the new one is committed; startup rolls
 back incomplete switches before accepting requests. These directory renames are
 not an atomic multi-file transaction. Reserve space for both old and new data.
@@ -199,3 +224,17 @@ to measurement. A run fails if the graph-version delta differs from the successf
 batch count. This prevents no-op responses from inflating published throughput.
 WAL readability timing includes terminal-status confirmation, 10 ms polling and
 a successful `min_version` entity read; it is an upper bound on first visibility.
+
+## Maintenance latency and memory admission
+
+GC visits at most 512 candidates per batch and checks 50 ms / 16 MiB budgets between objects. While waiting for a long-lived view, it reopens read admission every 50 ms. A single large object can exceed the budget; sustained long reads may delay GC.
+
+Incremental entity, forward-edge and reverse-edge pages use a reusable 64-partition entity directory and adjacency maps. Membership changes copy only affected directory partitions. Persisted layouts remain unchanged; each affected page is still rewritten in full. Pending deltas stop coalescing at 8192 changed IDs and continue in bounded publication order instead of forcing a full rebuild. Schema changes, catalog gaps and corrupt inputs can still require rebuilding.
+
+`GRAPHDB_MAINTENANCE_MAX_BYTES` defaults to `512MiB`. It independently bounds estimated active index/snapshot build memory and estimated graph retention in asynchronous index work. At most two builds and four partition encoding/write jobs run concurrently. An oversized build runs alone to preserve progress. On the retained-byte or eight-work-item limit, callers catch up synchronously after releasing the tenant lock.
+
+These are admission estimates, not RSS limits. Caches, waiting requests and all encoding temporaries are not covered. Size both maintenance pools, caches and runtime overhead together with `GOMEMLIMIT` and container limits. Queueing can increase response latency; already-published data remains readable through version-checked graph fallback.
+
+`graphdb_maintenance_phase_seconds` exposes `gc_wait_views`, `gc_wait_tenant`, `gc_hold`, `gc_sync`, `index_wait_previous`, `index_work`, `memory_wait`, `tenant_wait`, `tenant_hold`, and `file_batch_sync`. Phases can nest and must not be added as independent durations. `graphdb_maintenance_estimated_bytes{pool="active"}` and `{pool="pending_indexes"}` report charged estimates, not measured RSS.
+
+Top-level entity/edge map copying and the compatible whole-graph MD5 remain proportional to graph size. Directory partitioning does not replace those graph containers or change the digest contract; small updates are not yet strictly proportional to the changed data.

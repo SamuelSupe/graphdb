@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Bound foreground priority so sustained writes cannot starve queued maintenance.
@@ -35,7 +36,14 @@ func (s *TenantStore) lockTenantForeground(ctx context.Context, tenantID string)
 }
 
 func (s *TenantStore) lockTenantMaintenance(ctx context.Context, tenantID string) (func(), error) {
-	return s.lockTenantContext(ctx, tenantID, false)
+	started := time.Now()
+	unlock, err := s.lockTenantContext(ctx, tenantID, false)
+	s.recordMaintenance("tenant_wait", started)
+	if err != nil {
+		return nil, err
+	}
+	held := time.Now()
+	return sync.OnceFunc(func() { s.recordMaintenance("tenant_hold", held); unlock() }), nil
 }
 
 func (s *TenantStore) lockTenantContext(ctx context.Context, tenantID string, foreground bool) (func(), error) {

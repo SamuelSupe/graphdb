@@ -179,6 +179,11 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 	if err != nil {
 		return IndexCatalog{}, err
 	}
+	ctx, releaseMemory, err := s.admitMaintenance(ctx, maintenanceGraphBytes(g))
+	if err != nil {
+		return IndexCatalog{}, err
+	}
+	defer releaseMemory()
 	artifacts, err := buildIndexArtifactsWithDefinitions(g, manifest.Version, definitions)
 	if err != nil {
 		return IndexCatalog{}, err
@@ -199,6 +204,10 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 	}
 	if err := s.writeParquetEntityPages(ctx, tenantID, artifacts.EntityPages, manifest.Version); err != nil {
 		return IndexCatalog{}, err
+	}
+	reverseCatalog, reverseMeta, err := s.prepareReverseIndex(ctx, tenantID, g, manifest.Version)
+	if err != nil {
+		return IndexCatalog{}, fmt.Errorf("prepare reverse index: %w", err)
 	}
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)
 	if err != nil {
@@ -229,7 +238,7 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 	if err := s.ensureIndexRebuildCurrent(ctx, tenantID, manifest); err != nil {
 		return IndexCatalog{}, err
 	}
-	if err := s.rebuildReverseIndex(ctx, tenantID, g, manifest.Version); err != nil {
+	if err := s.putReverseIndexCatalogWithMeta(ctx, tenantID, reverseCatalog, reverseMeta); err != nil {
 		return IndexCatalog{}, fmt.Errorf("rebuild reverse index: %w", err)
 	}
 

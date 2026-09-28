@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/apache/arrow-go/v18/parquet"
 )
 
 func (s *TenantStore) cleanupObsoleteIndexObjects(ctx context.Context, tenantID string, previous IndexCatalog, current IndexCatalog) error {
@@ -267,6 +269,10 @@ func indexObjectVersionSafeToDelete(version int64, currentVersion int64, immutab
 }
 
 func (s *TenantStore) listedParquetObjectSafeToDelete(ctx context.Context, tenantID string, key string, data []byte, version int64, currentVersion int64) bool {
+	return s.listedParquetReaderSafeToDelete(ctx, tenantID, key, bytes.NewReader(data), version, currentVersion)
+}
+
+func (s *TenantStore) listedParquetReaderSafeToDelete(ctx context.Context, tenantID, key string, source parquet.ReaderAtSeeker, version, currentVersion int64) bool {
 	prefix := s.parquetVersionPrefix(tenantID, version) + "/"
 	if !strings.HasPrefix(key, prefix) {
 		return false
@@ -277,7 +283,7 @@ func (s *TenantStore) listedParquetObjectSafeToDelete(ctx context.Context, tenan
 	relative := strings.TrimPrefix(key, prefix)
 	switch {
 	case relative == "catalog.parquet" || strings.HasPrefix(relative, "catalogs/"):
-		catalog, err := decodeParquetIndexCatalog(ctx, data)
+		catalog, err := decodeParquetIndexCatalogReader(ctx, source)
 		return err == nil && indexTenantMatches(catalog.TenantID, tenantID) &&
 			catalog.Version == version && catalog.Version < currentVersion
 	case strings.HasPrefix(relative, "fields/"):
@@ -285,15 +291,15 @@ func (s *TenantStore) listedParquetObjectSafeToDelete(ctx context.Context, tenan
 		if !ok {
 			return false
 		}
-		index, err := decodeParquetSecondaryIndex(ctx, data, tenantID, kind, field, version, false)
+		index, err := decodeParquetSecondaryIndexReader(ctx, source, tenantID, kind, field, version, false)
 		return err == nil && indexTenantMatches(index.TenantID, tenantID) &&
 			index.Kind == kind && index.Field == field && index.Version < currentVersion
 	case strings.HasPrefix(relative, "edges/"):
-		shard, err := decodeParquetEdgeShard(ctx, data, tenantID, "", "", version)
+		shard, err := decodeParquetEdgeShardReader(ctx, source, tenantID, "", "", version)
 		return err == nil && indexTenantMatches(shard.TenantID, tenantID) &&
 			shard.RelationType != "" && shard.Shard != "" && shard.Version < currentVersion
 	case strings.HasPrefix(relative, "entities/pages/"):
-		page, err := decodeParquetEntityPage(ctx, data, tenantID, "", version)
+		page, err := decodeParquetEntityPageReader(ctx, source, tenantID, "", version)
 		return err == nil && indexTenantMatches(page.TenantID, tenantID) &&
 			page.Shard != "" && page.Version < currentVersion
 	default:

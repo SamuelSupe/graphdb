@@ -6,6 +6,7 @@ import (
 )
 
 func (g *Graph) rebuildIndexes() {
+	g.entityPartitions = nil
 	g.invalidateEntityOrder()
 	g.invalidateFieldIndexOrder()
 	g.cow = nil

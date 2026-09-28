@@ -8,6 +8,7 @@ type TenantStoreOptions struct {
 	InstanceID string
 	ReaderID   string
 
+	MaxMaintenanceBytes        int64
 	MaxWriteCacheBytes         int64
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
@@ -26,6 +27,7 @@ func NewTenantStoreWithOptions(objects ObjectStore, prefix string, options Tenan
 	if options.ReaderID != "" {
 		store.ReaderID = options.ReaderID
 	}
+	store.MaxMaintenanceBytes = options.MaxMaintenanceBytes
 	store.MaxWriteCacheBytes = options.MaxWriteCacheBytes
 
 	store.WriteEntityRecords = options.WriteEntityRecords

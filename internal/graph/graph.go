@@ -13,20 +13,22 @@ type Graph struct {
 	RelationTypes map[string]RelationType
 	Edges         map[string]Edge
 
-	out               map[string]map[string]struct{}
-	in                map[string]map[string]struct{}
-	edgeAliasIndex    map[string]map[string]struct{}
-	edgeTypeIndex     map[string]map[string]struct{}
-	entityAliasIndex  map[string]map[string]struct{}
-	kindCounts        map[string]int
-	fieldIndex        map[string]map[string]map[string]map[string]struct{}
-	identityIndex     map[string]map[string]string
-	cow               *copyOnWriteState
-	entityOrder       map[string][]string
-	entityOrderMu     sync.Mutex
-	fieldIndexOrder   map[fieldIndexOrderKey][]string
-	fieldValueOrder   map[fieldValueOrderKey]fieldValueOrder
-	fieldIndexOrderMu sync.Mutex
+	out                map[string]map[string]struct{}
+	in                 map[string]map[string]struct{}
+	edgeAliasIndex     map[string]map[string]struct{}
+	edgeTypeIndex      map[string]map[string]struct{}
+	entityAliasIndex   map[string]map[string]struct{}
+	kindCounts         map[string]int
+	fieldIndex         map[string]map[string]map[string]map[string]struct{}
+	identityIndex      map[string]map[string]string
+	entityPartitions   *entityPartitions
+	entityPartitionsMu sync.Mutex
+	cow                *copyOnWriteState
+	entityOrder        map[string][]string
+	entityOrderMu      sync.Mutex
+	fieldIndexOrder    map[fieldIndexOrderKey][]string
+	fieldValueOrder    map[fieldValueOrderKey]fieldValueOrder
+	fieldIndexOrderMu  sync.Mutex
 
 	contentFingerprint      [16]byte
 	contentFingerprintReady bool
@@ -148,7 +150,13 @@ func snapshotVersionTime(snapshot Snapshot) time.Time {
 	return time.Time{}
 }
 
-func (g *Graph) Snapshot() Snapshot {
+func (g *Graph) Snapshot() Snapshot { return g.snapshot(true) }
+
+// SnapshotForStorage borrows nested values from an immutable graph. Callers must
+// keep the graph alive and must not mutate any nested values in the snapshot.
+func (g *Graph) SnapshotForStorage() Snapshot { return g.snapshot(false) }
+
+func (g *Graph) snapshot(copyValues bool) Snapshot {
 	snapshot := Snapshot{
 		Version:       g.Version,
 		CITypes:       make([]CIType, 0, len(g.CITypes)),
@@ -157,16 +165,28 @@ func (g *Graph) Snapshot() Snapshot {
 		Edges:         make([]Edge, 0, len(g.Edges)),
 	}
 	for _, ciType := range g.CITypes {
-		snapshot.CITypes = append(snapshot.CITypes, copyCIType(ciType))
+		if copyValues {
+			ciType = copyCIType(ciType)
+		}
+		snapshot.CITypes = append(snapshot.CITypes, ciType)
 	}
 	for _, entity := range g.Entities {
-		snapshot.Entities = append(snapshot.Entities, copyEntity(entity))
+		if copyValues {
+			entity = copyEntity(entity)
+		}
+		snapshot.Entities = append(snapshot.Entities, entity)
 	}
 	for _, relationType := range g.RelationTypes {
-		snapshot.RelationTypes = append(snapshot.RelationTypes, copyRelationType(relationType))
+		if copyValues {
+			relationType = copyRelationType(relationType)
+		}
+		snapshot.RelationTypes = append(snapshot.RelationTypes, relationType)
 	}
 	for _, edge := range g.Edges {
-		snapshot.Edges = append(snapshot.Edges, copyEdge(edge))
+		if copyValues {
+			edge = copyEdge(edge)
+		}
+		snapshot.Edges = append(snapshot.Edges, edge)
 	}
 	sort.Slice(snapshot.CITypes, func(i, j int) bool {
 		return snapshot.CITypes[i].Name < snapshot.CITypes[j].Name

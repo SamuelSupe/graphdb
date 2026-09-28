@@ -53,6 +53,7 @@ const directoryIOCapacity = math.MaxInt64
 
 type fileRuntime struct {
 	ioGate             *semaphore.Weighted
+	directoryChanges   map[string]chan struct{}
 	ingestAdmissions   map[string]*localViewGate
 	walGenerations     map[string]int64
 	publicationMu      sync.Mutex
@@ -221,12 +222,12 @@ func (s *TenantStore) localFileStore() *FileStore {
 	return exclusiveFileStore(s.Objects)
 }
 
-func (s *FileStore) beginOperation(ctx context.Context) (func(), error) {
+func (s *FileStore) beginOperation(ctx context.Context, key string) (func(), error) {
 	release, err := s.beginLifecycleOperation(ctx)
 	if err != nil || s.runtime == nil {
 		return release, err
 	}
-	unlock, err := s.lockDirectoryIO(ctx)
+	unlock, err := s.lockDirectoryIOForKey(ctx, key)
 	if err != nil {
 		release()
 		return nil, err

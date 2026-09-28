@@ -32,6 +32,7 @@ func (g *Graph) replaceState(next *Graph) {
 	g.Version = next.Version
 	g.CITypes = next.CITypes
 	g.Entities = next.Entities
+	g.entityPartitions = next.entityPartitions
 	g.RelationTypes = next.RelationTypes
 	g.Edges = next.Edges
 	g.out = next.out
@@ -406,6 +407,7 @@ func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, erro
 			return ApplyReport{}, err
 		}
 	}
+	g.refreshEntityPartitions(tracker)
 	if err := tracker.finish(&report); err != nil {
 		return ApplyReport{}, err
 	}

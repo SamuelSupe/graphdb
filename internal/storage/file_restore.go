@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -53,7 +54,7 @@ func (s *FileStore) publishRestoreDirectory(ctx context.Context, dir, targetKey 
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, s.recoverRestoreDirectory(dir))
+			err = errors.Join(err, s.finishRestoreDirectory(dir))
 		}
 	}()
 	if err = s.restoreRename(target, filepath.Join(dir, "old")); err != nil {
@@ -75,7 +76,7 @@ func (s *FileStore) publishRestoreDirectory(ctx context.Context, dir, targetKey 
 	if err = writeFileAtomic(filepath.Join(dir, "journal.json"), data); err != nil {
 		return err
 	}
-	return s.recoverRestoreDirectory(dir)
+	return s.finishRestoreDirectory(dir)
 }
 
 func (s *FileStore) restoreRename(from, to string) error {
@@ -123,13 +124,22 @@ func (s *FileStore) recoverRestoreDirectories() error {
 }
 
 func (s *FileStore) recoverRestoreDirectory(dir string) error {
+	if err := s.finishRestoreDirectory(dir); err != nil {
+		return err
+	}
+	return removeRestoreDirectory(dir)
+}
+
+// Removing the journal commits recovery; recursive garbage removal may run
+// after releasing the global IO gate, or be retried during the next startup.
+func (s *FileStore) finishRestoreDirectory(dir string) error {
 	journalPath := filepath.Join(dir, "journal.json")
 	if err := s.verifySafeParent(journalPath); err != nil {
 		return err
 	}
 	info, err := os.Lstat(journalPath)
 	if os.IsNotExist(err) {
-		return removeRestoreDirectory(dir)
+		return nil
 	}
 	if err != nil {
 		return err
@@ -188,7 +198,7 @@ func (s *FileStore) recoverRestoreDirectory(dir string) error {
 	if err := syncDir(dir); err != nil {
 		return err
 	}
-	return removeRestoreDirectory(dir)
+	return nil
 }
 
 func removeRestoreDirectory(dir string) error {
@@ -208,7 +218,8 @@ func linkTenantTree(ctx context.Context, from, to string, keepExisting bool) err
 	} else if err != nil {
 		return err
 	}
-	return filepath.WalkDir(from, func(name string, entry os.DirEntry, err error) error {
+	dirs := make(map[string]struct{})
+	err := filepath.WalkDir(from, func(name string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -243,6 +254,24 @@ func linkTenantTree(ctx context.Context, from, to string, keepExisting bool) err
 		if err := os.Link(name, target); err != nil {
 			return err
 		}
-		return syncDir(filepath.Dir(target))
+		dirs[filepath.Dir(target)] = struct{}{}
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	ordered := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		ordered = append(ordered, dir)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(ordered)))
+	for _, dir := range ordered {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := syncDir(dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }

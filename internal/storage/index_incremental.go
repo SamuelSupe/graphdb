@@ -22,6 +22,11 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 	if catalog.Version >= version {
 		return nil
 	}
+	ctx, releaseMemory, err := s.admitMaintenance(ctx, pendingIndexBytes(before, after))
+	if err != nil {
+		return err
+	}
+	defer releaseMemory()
 	if rebuild || catalog.Version != baseVersion {
 		if !rebuild && !rebuildOnGap {
 			return fmt.Errorf("index catalog version %d does not match previous graph version %d", catalog.Version, baseVersion)

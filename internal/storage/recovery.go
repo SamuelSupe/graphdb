@@ -264,7 +264,7 @@ func (s *TenantStore) appendCommitObject(
 	if err != nil {
 		return err
 	}
-	commit, err := unmarshalCommitObject(data)
+	commit, err := unmarshalCommitObjectWithContext(ctx, data)
 	if err != nil || commit.TenantID != tenantID ||
 		validateCommitObjectIdentity(object.Key, commit) != nil {
 		scan.InvalidKeys = append(scan.InvalidKeys, object.Key)

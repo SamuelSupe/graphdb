@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -22,7 +20,7 @@ type FileStore struct {
 }
 
 func (s *FileStore) Probe(ctx context.Context) error {
-	releaseOperation, operationErr := s.beginOperation(ctx)
+	releaseOperation, operationErr := s.beginOperation(ctx, ".tmp-probe")
 	if operationErr != nil {
 		err := operationErr
 		return err
@@ -36,9 +34,6 @@ func (s *FileStore) Probe(ctx context.Context) error {
 		return err
 	}
 	info, err := os.Lstat(root)
-	if os.IsNotExist(err) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -48,16 +43,15 @@ func (s *FileStore) Probe(ctx context.Context) error {
 	if !info.IsDir() {
 		return fmt.Errorf("object root %q is not a directory", root)
 	}
-	dir, err := os.Open(root)
+	file, err := os.CreateTemp(root, ".tmp-probe-*")
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	_, err = dir.Readdirnames(1)
-	if errors.Is(err, io.EOF) {
-		return nil
+	_, writeErr := file.Write([]byte{0})
+	if writeErr == nil {
+		writeErr = file.Sync()
 	}
-	return err
+	return errors.Join(writeErr, file.Close(), os.Remove(file.Name()), ctx.Err())
 }
 
 func NewFileStore(root string) *FileStore {
@@ -65,7 +59,7 @@ func NewFileStore(root string) *FileStore {
 }
 
 func (s *FileStore) Get(ctx context.Context, key string) ([]byte, error) {
-	releaseOperation, operationErr := s.beginOperation(ctx)
+	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr
 		return nil, err
@@ -110,7 +104,7 @@ func (s *FileStore) GetWithMeta(ctx context.Context, key string) ([]byte, Object
 }
 
 func (s *FileStore) Head(ctx context.Context, key string) (ObjectMeta, error) {
-	releaseOperation, operationErr := s.beginOperation(ctx)
+	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr
 		return ObjectMeta{Key: key}, err
@@ -138,7 +132,7 @@ func (s *FileStore) Put(ctx context.Context, key string, data []byte) error {
 }
 
 func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
-	releaseOperation, operationErr := s.beginOperation(ctx)
+	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr
 		return ObjectMeta{Key: key}, err
@@ -190,7 +184,7 @@ func (s *FileStore) Delete(ctx context.Context, key string) error {
 }
 
 func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
-	releaseOperation, operationErr := s.beginOperation(ctx)
+	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr
 		return err
@@ -274,100 +268,8 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 }
 
 func (s *FileStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	releaseOperation, operationErr := s.beginOperation(ctx)
-	if operationErr != nil {
-		err := operationErr
-		return nil, err
-	}
-	defer releaseOperation()
-	if err := objectContextErr(ctx); err != nil {
-		return nil, err
-	}
-	root, err := s.path("")
-	if err != nil {
-		return nil, err
-	}
-	walkRoot, err := s.listWalkRoot(root, prefix)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]ObjectInfo, 0)
-	info, err := os.Lstat(root)
-	if os.IsNotExist(err) {
-		return items, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("object directory %q is a symlink", root)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("object root %q is not a directory", root)
-	}
-	if err := objectContextErr(ctx); err != nil {
-		return nil, err
-	}
-	info, err = os.Lstat(walkRoot)
-	if os.IsNotExist(err) {
-		return items, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("object list prefix %q is a symlink", prefix)
-	}
-	if !info.IsDir() {
-		return items, nil
-	}
-	if err := s.walkSafeDir(walkRoot, false); err != nil {
-		return nil, err
-	}
-	err = filepath.WalkDir(walkRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if err := objectContextErr(ctx); err != nil {
-			return err
-		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			if path == filepath.Join(root, fileRestoreDirectory) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if isFileStoreTemp(path) {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		key := filepath.ToSlash(rel)
-		if !strings.HasPrefix(key, prefix) {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		if err := objectContextErr(ctx); err != nil {
-			return err
-		}
-		items = append(items, ObjectInfo{Key: key, Size: info.Size()})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Key < items[j].Key
-	})
-	return items, nil
+	items, _, err := s.ListPage(ctx, prefix, "", 0)
+	return items, err
 }
 
 func (s *FileStore) listWalkRoot(root string, prefix string) (string, error) {
