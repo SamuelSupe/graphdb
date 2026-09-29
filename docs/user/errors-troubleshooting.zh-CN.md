@@ -67,28 +67,24 @@ GGraphDB 使用 429 表示准入或背压。客户端应：
 }
 ```
 
-## Reader 新鲜度问题
+## 本地读取新鲜度
 
-现象：
-
-- `reader_not_fresh`
-- `/v1/control/reader-freshness` 中的 `version_lag`
-- fleet readiness 未就绪
-
-检查：
+`reader_not_fresh` 或 `/v1/control/reader-freshness` 中的 `version_lag` 表示本地
+读取视图尚未满足请求版本，不代表存在独立 reader 服务。
 
 ```sh
-curl -sS "$READER/v1/control/reader-freshness" -H 'X-Tenant-ID: demo'
-curl -sS "$READER/v1/control/reader-fleet-readiness?min_ready=1" -H 'X-Tenant-ID: demo'
-curl -sS "$READER/v1/control/reader-traffic-gate?min_ready=1" -H 'X-Tenant-ID: demo'
+curl -sS "$BASE/v1/readiness"
+curl -sS "$BASE/v1/control/reader-freshness" -H 'X-Tenant-ID: demo'
+curl -sS "$BASE/v1/control/reader-traffic-gate" -H 'X-Tenant-ID: demo'
 ```
 
-处理：
+- 确认本地盘可读写、WAL 恢复完成；`202` 仅表示接管，需要查询批次是否 committed。
+- 核对请求的 `min_version` 与已提交版本，检查 `GRAPHDB_READER_CATCHUP_TIMEOUT`。
+- 仅在业务允许旧读时使用 `allow_stale=true`，不能通过降低版本要求替代写入完成检查。
+- 持续落后时检查 WAL、索引任务和本地恢复日志，再决定是否重启进程。
 
-- 确认本地磁盘可读写且 WAL 恢复完成；
-- 检查 `GRAPHDB_READER_CATCHUP_TIMEOUT` 和请求的 `min_version`；
-- 只在业务允许旧读时使用 `allow_stale=true`；
-- 版本持续落后时，先检查 WAL 状态和本地恢复日志，再决定是否重启单实例服务。
+`reader-fleet-readiness` 是兼容路由，仅汇总本地进程的 reader 状态记录；不发现其他实例，
+也不提供集群就绪保证。常规排障使用上面的单实例接口。
 
 ## 慢查询或高成本查询
 
@@ -121,9 +117,9 @@ curl -sS "$READER/v1/indexes" -H 'X-Tenant-ID: demo'
 
 处理：
 
-- 从 writer 发起异步重建；
+- 通过本实例管理接口发起异步重建；
 - `?deep=true` 只用于明确校验；
-- 重建后，当 reader watermark 允许时，GC 可以清理孤立索引对象。
+- GC 延迟回收仍被本地活跃读视图保护的文件；检查 `checkpoint.deferred_files`，扫描结束不代表所有孤儿文件均已删除。
 
 ## 完整性问题
 
@@ -160,7 +156,7 @@ curl -sS -X POST "$WRITER/v1/control/repair" \
 curl -sS "$BASE/metrics"
 ```
 
-关注：按原因统计的写入背压、写入准入队列延迟、对象存储操作延迟和错误、
+关注：按原因统计的写入背压、写入准入队列延迟、本地文件存储操作延迟和错误（部分指标保留 `object_store` 名称）、
 manifest CAS 冲突、commit tail、reader 可见版本/落后量、慢查询日志和
 query profile 算子耗时。日志以 JSON 行输出，可按 `tenant_id`、`event`、
 `query_id`、`task_id` 和 `reason` 搜索。

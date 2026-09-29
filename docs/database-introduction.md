@@ -152,7 +152,7 @@ X-Tenant-ID: demo
 
 - A single process owns the directory. There are no distributed writers,
   cross-tenant transactions, replication or automatic failover.
-- Use a fresh 2.0 directory. No 1.x migration or cross-major rollback is provided.
+- Reuse a 2.0/2.1 directory after stopping the old process. Replacing 1.x requires a fresh directory; no 1.x migration or cross-major rollback is provided.
 - A durable WAL `202` means acceptance, not a published graph version. WAL covers
   process failure with a recoverable volume; backups cover recovery to another disk.
 - Use `min_version` for read-after-write consistency and `allow_stale` only when

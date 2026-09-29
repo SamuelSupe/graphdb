@@ -5,14 +5,14 @@
 GGraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务端
 `internal` 包，可以安全地 vendoring 到采集器、内部服务和运维工具。
 
-2.0 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
+当前 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
 `200/207` 结果，并提供 WAL 的 `202` acceptance、`Location`/local status
 资源、轮询/等待，以及 ingest CAS、条件和 atomic 选项。Go 和 Python SDK
 包版本均为 `2.1.2`。
 
 SDK 覆盖：
 
-- 租户生命周期基础操作；
+- 租户生命周期、S3 快照备份恢复和备份自动化状态/重置；
 - 直接 commit、批量 ingest 和 CSV/JSONL 导入；
 - 实体类型别名和关系属性 schema；
 - source policy 和 tenant config；

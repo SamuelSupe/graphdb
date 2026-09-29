@@ -1,4 +1,4 @@
-# GGraphDB 2.0 Local Disk Architecture
+# GGraphDB 2.x Local Disk Architecture
 
 [中文](architecture.md)
 
@@ -88,7 +88,7 @@ No separate scheduler or task execution engine is introduced. See [object backup
 
 | Module | Responsibility |
 | --- | --- |
-| `internal/httpapi` | HTTP/GraphQL protocol, authentication, request admission, responses and tracing |
+| `internal/httpapi` | HTTP/GraphQL protocol, tenant routing, admission, responses and tracing; external gateways handle authentication/authorization |
 | `internal/storage` | Persistence, tenant generations, read views, publication, query index selection and task lifecycle |
 | `internal/maintenance` | Scheduling and decisions using storage operations/budgets, with usage and audit callbacks |
 | `internal/graph` / `internal/query` | Graph structures, planning and execution |

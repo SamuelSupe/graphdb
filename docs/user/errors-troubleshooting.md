@@ -70,28 +70,27 @@ Example body:
 }
 ```
 
-## Reader Freshness Problems
+## Local Read Freshness
 
-Symptoms:
-
-- `reader_not_fresh`
-- `version_lag` in `/v1/control/reader-freshness`
-- fleet readiness not ready
-
-Checks:
+`reader_not_fresh` or `version_lag` in `/v1/control/reader-freshness` means the
+local read view has not reached the requested version, not a separate reader service.
 
 ```sh
-curl -sS "$READER/v1/control/reader-freshness" -H 'X-Tenant-ID: demo'
-curl -sS "$READER/v1/control/reader-fleet-readiness?min_ready=1" -H 'X-Tenant-ID: demo'
-curl -sS "$READER/v1/control/reader-traffic-gate?min_ready=1" -H 'X-Tenant-ID: demo'
+curl -sS "$BASE/v1/readiness"
+curl -sS "$BASE/v1/control/reader-freshness" -H 'X-Tenant-ID: demo'
+curl -sS "$BASE/v1/control/reader-traffic-gate" -H 'X-Tenant-ID: demo'
 ```
 
-Actions:
+- Confirm local disk access and WAL recovery. A `202` is acceptance; check whether
+  the batch has reached `committed`.
+- Compare `min_version` with the committed version and check `GRAPHDB_READER_CATCHUP_TIMEOUT`.
+- Use `allow_stale=true` only when the application permits it; lowering the requested
+  version does not replace checking write completion.
+- For persistent lag, inspect WAL, index tasks and local recovery logs before restarting.
 
-- Confirm local disk is readable and writable and WAL recovery is complete.
-- Check `GRAPHDB_READER_CATCHUP_TIMEOUT` and requested `min_version`.
-- Use `allow_stale=true` only for workflows that tolerate stale reads.
-- If the version remains behind, inspect WAL status and local recovery logs before restarting the single service.
+`reader-fleet-readiness` is a compatibility route over process-local reader status
+records. It does not discover other instances or certify cluster readiness. Use
+the single-instance endpoints above for routine diagnosis.
 
 ## Slow Or Expensive Queries
 
@@ -124,9 +123,9 @@ curl -sS "$READER/v1/indexes" -H 'X-Tenant-ID: demo'
 
 Actions:
 
-- Run async rebuild from writer.
+- Start an async rebuild through this instance’s management API.
 - Use `?deep=true` only for explicit validation.
-- After rebuild, GC can clean orphan index objects when reader watermark allows.
+- GC defers files still protected by active local read views. Inspect `checkpoint.deferred_files`; a completed scan need not have deleted every orphan.
 
 ## Integrity Problems
 
@@ -167,7 +166,7 @@ Useful signals:
 
 - write backpressure total by reason.
 - write admission queue latency.
-- object store operation latency and errors.
+- local file-store operation latency and errors; some metric names retain `object_store`.
 - manifest CAS conflicts.
 - commit tail length.
 - reader visible version and lag.

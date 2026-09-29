@@ -16,8 +16,8 @@ entity-relationship applications.
 - One process owns the local data directory; tenants support concurrent clients.
 - Parquet manifests, commits, snapshots, entity pages, edge shards and indexes
   persist on local disk. Direct ingest and synchronous WAL are supported.
-- Optional S3-compatible snapshot backup and on-demand restore.
-- A fresh 2.0 data directory and the `data_hash` digest contract; no 1.x migration.
+- Optional S3-compatible snapshots, scheduled backups/retries/retention, restore drills and on-demand restore.
+- The `data_hash` digest contract and 2.0/2.1-compatible directories; no 1.x migration.
 - GraphQL, JSON Query DSL, scan/export APIs, saved queries, and running-query
   control.
 - Optional source-priority governance for entity fields, edge fields, and edge
@@ -43,7 +43,10 @@ Read APIs support freshness controls:
 `GRAPHDB_MODE=all` is the supported mode. Separate reader/writer modes,
 remote online storage and PostgreSQL coordination are rejected.
 
-Examples use:
+Examples use three names for the same process, not separate reader/writer services.
+They assume the default combined listener. If `GRAPHDB_ADMIN_ADDR` is set, send
+management requests to that listener or its authenticated gateway route; see
+[listener responsibilities](../security-deployment.md#listener-responsibilities).
 
 ```sh
 export WRITER=http://127.0.0.1:8080

@@ -1,4 +1,4 @@
-# GGraphDB 2.0: release-deployment
+# GGraphDB 2.x: release-deployment
 
 [中文](release-deployment.zh-CN.md)
 
@@ -33,9 +33,11 @@ GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 bin/graphdb-linux-amd64 serve
 Use `graphdb-linux-arm64` on ARM Linux or `graphdb-darwin-arm64` on Apple Silicon.
 Configure authentication, tenant authorization and TLS at the gateway before
 exposing the API. For off-machine recovery, configure [object snapshots](../object-backup.md).
-Commit responses use `data_hash`; update clients to the 2.0 SDKs.
+Commit responses use `data_hash`; use the matching SDK release listed in [version boundaries](../naming-and-compatibility.md).
 
 ## Upgrade from 2.0
+
+The same process applies to updates within 2.1.
 
 Create and verify a snapshot, stop the old process, replace the binary, then start
 2.1.2 with the same `GRAPHDB_DATA_DIR` and prefix. The directory remains exclusive;

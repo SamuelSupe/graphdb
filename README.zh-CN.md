@@ -3,14 +3,14 @@
 [English](README.md)
 
 GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治理、写入接入、图查询
-和运维功能。2.0 主版本采用单机单进程架构，所有数据持久化在本地磁盘，运行时无需
+和运维功能。2.x 主版本采用单机单进程架构，所有数据持久化在本地磁盘，运行时无需
 对象存储或 PostgreSQL。可选的 [S3 兼容快照备份](docs/object-backup.zh-CN.md) 支持恢复到新的本地磁盘。
 
 ## 当前版本
 
 [2.1.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.2) 是主版本，由 `main` 发布。
 在线图数据存放在本地盘，S3 兼容对象存储用于快照备份与按需恢复。
-不提供 1.x 迁移或旧摘要兼容层；从 1.x 升级需要新目录。2.0 用户停止旧进程后可沿用原目录。
+不提供 1.x 迁移或旧摘要兼容层；从 1.x 升级需要新目录。2.0/2.1 用户停止旧进程后可沿用原目录。
 2.1 新增[定时 S3 备份、重试、保留清理和恢复演练](docs/object-backup.zh-CN.md#自动备份)，默认关闭。
 二进制、契约变化及验证证据见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 

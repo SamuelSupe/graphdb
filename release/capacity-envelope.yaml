@@ -27,6 +27,8 @@ persistence:
   lifecycle: fencing_wins_over_unpublished_wal
   physical_volume_loss: outside_contract
 
+# Historical 2.0 comparison profile and targets, not 2.1.2 measurements.
+# Current results and omitted cases are recorded in report above.
 comparison:
   baseline_revision: 5632cd82
   cases: [previous_local, v2_local]
@@ -43,6 +45,8 @@ comparison:
   maximum_peak_rss_regression: 0.10
 
 correctness:
+  # Default gate duration; the 2.1.2 run was stopped by explicit release decision.
+  # It is NOT COMPLETED, not a passing result. See report above.
   soak_duration: 30m
   maintenance_task_deadline: 10m
   default_http_request_deadline: 120s
@@ -50,6 +54,7 @@ correctness:
   background: [compact, gc, index_rebuild]
   lost_confirmed_writes: 0
   duplicate_replayed_versions: 0
+  # A fresh directory is required when replacing 1.x; 2.1 reuses 2.0/2.1 directories.
   data_format: v2_fresh_directory
   cross_major_migration: unsupported
   maximum_query_result_limit: 1000

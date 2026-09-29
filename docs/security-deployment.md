@@ -2,7 +2,7 @@
 
 [中文](security-deployment.zh-CN.md)
 
-GGraphDB 1.1 keeps authentication and authorization at the gateway or service
+GGraphDB 2.x keeps authentication and authorization at the gateway or service
 mesh. The database does not treat `X-Tenant-ID` as proof of identity. A
 production deployment must prevent clients from reaching either GGraphDB
 listener directly.
@@ -30,7 +30,7 @@ management network. Enable pprof temporarily only while diagnosing an incident.
 
 ## Listener Responsibilities
 
-When `GRAPHDB_ADMIN_ADDR` is unset, GGraphDB keeps the 1.0-compatible combined
+When `GRAPHDB_ADMIN_ADDR` is unset, GGraphDB uses a combined data/admin
 listener, except that pprof remains disabled. When it is set:
 
 | Listener | Surface |

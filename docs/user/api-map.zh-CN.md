@@ -107,12 +107,12 @@
 | `POST` | `/v1/control/cleanup-commits` | 清理过期 commit。 |
 | `POST` | `/v1/control/gc` | 支持 checkpoint/dry-run 的 GC。 |
 
-## Reader 与 Writer 控制
+## 本地运行状态控制
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| `GET` | `/v1/control/writer-lease` | 查看 writer lease。 |
+| `GET` | `/v1/control/writer-lease` | 查看本地 writer 代次/隔离记录。 |
 | `GET` | `/v1/control/reader-freshness` | reader 新鲜度报告。 |
 | `GET` | `/v1/control/reader-lag` | freshness 兼容别名。 |
-| `GET` | `/v1/control/reader-fleet-readiness` | reader 集群就绪报告。 |
+| `GET` | `/v1/control/reader-fleet-readiness` | 本地进程 reader 状态的兼容报告，不发现其他实例。 |
 | `GET` | `/v1/control/reader-traffic-gate` | 部署检查使用的流量闸门结果。 |

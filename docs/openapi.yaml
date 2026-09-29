@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: GGraphDB API
   version: 2.1.2
-  description: GGraphDB 2.0 local-disk, single-process, multi-tenant graph API. S3-compatible storage is optional for snapshot backup and restore. Use a fresh 2.0 data directory; no 1.x migration is provided.
+  description: GGraphDB 2.x local-disk, single-process, multi-tenant graph API. Version 2.1 retains the 2.0 data format and adds optional S3 backup automation. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
 security:
@@ -1318,6 +1318,7 @@ paths:
   /v1/control/reader-fleet-readiness:
     get:
       summary: Report local reader readiness for this tenant.
+      description: Compatibility route over process-local reader status records; it does not discover other instances or provide cluster readiness.
       parameters:
         - name: min_version
           in: query
@@ -1336,7 +1337,7 @@ paths:
           description: Heartbeat freshness window; default 30000.
       responses:
         '200':
-          description: Reader fleet readiness.
+          description: Local reader readiness in the compatibility fleet response format.
           content:
             application/json:
               schema:

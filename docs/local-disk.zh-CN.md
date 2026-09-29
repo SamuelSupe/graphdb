@@ -1,4 +1,4 @@
-# GGraphDB 2.0 本地磁盘运行指南
+# GGraphDB 2.x 本地磁盘运行指南
 
 本版采用单进程、多租户并发读写。`GRAPHDB_DATA_DIR` 保存图数据、控制元数据、后台任务
 及本地备份，运行时无需 PostgreSQL 或远端在线存储。可选的
@@ -117,16 +117,18 @@ WAL 绑定的租户代次保存在租户目录之外，并在清空或恢复时�
 
 ## 验证与性能
 
-本版证据见 [2.0 验证报告](performance-v2.0.md)。以下旧版报告仅作历史参考。验收
+当前发行状态见 [2.1.2 验证记录](validation-v2.1.2.md)，实测改善及剩余限制见
+[写入长尾报告](performance-write-tail.md)。30 分钟持续负载按本次发布要求提前停止，不计为通过。
+[2.0 验证报告](performance-v2.0.md)及以下旧版报告仅作历史参考。
 
-日常优化先运行代表性单轮对比，出现明确退化后才定向复测。本次使用
+日常优化先运行代表性单轮对比，出现明确退化后才定向复测。已有工具
 `scripts/local_disk_optimization.py` 比较优化前后的本地二进制，复用相同停服数据副本，
 覆盖 direct/WAL、混合读写、导出、压缩、备份恢复和进程冷读。
 方法、结果及局限见[本地性能优化记录](performance-local-disk-optimization.md)。
 [第二轮优化记录](performance-local-disk-optimization-2.md)覆盖目录哈希、实体分页、HTTP 编码、
 Parquet 行组布局和增量索引。
 
-`scripts/release_gate.sh` 包含单元、vet、race、2.0 契约、SDK、direct/WAL HTTP、负载及重启一致性验证。
+`scripts/release_gate.sh` 包含单元、vet、race、2.x 契约、SDK、direct/WAL HTTP、负载及重启一致性验证。
 `GRAPHDB_GATE_SOAK=1` 增加含压实、GC、索引重建的 30 分钟混合负载。
 HTTP 功能验证默认缩小图缓存以实际执行持久化索引读取，不作为性能容量测试。
 
@@ -162,13 +164,14 @@ scripts/local_disk_compare.sh
 版本增量与成功批次数不一致时测试失败，防止把无变更响应计入已发布吞吐。
 WAL 可读延迟包含终态确认、10 ms 轮询及一次成功的 `min_version` 实体读取，属于首次可读延迟的上界。
 
-索引发布后的清理阶段释放原任务执行名额，本地 GC 每批重新申请全局执行名额，让 compact 在批次之间继续推进，同时保留并发上限。每次 GC 固定目录候选集，避免持续写入让最后一页不断延长；本地存活 GC 任务不会仅因持久化心跳延迟而失效。
+索引发布后的清理阶段释放原任务执行名额，本地 GC 每批重新申请全局执行名额，让 compact 在批次之间继续推进，同时保留并发上限。每次 GC 固定目录候选集，避免持续写入让最后一页不断延长；本地任务存活由进程内执行者判定，不依赖持久化心跳。
 
 
-## 2.0 写入、维护和内存
+## 写入、维护和内存
 
-2.0 是 `main` 的主版本，使用新的数据目录，不提供 1.x 迁移、旧 MD5 接口或跨版本回滚。
-旧版 Parquet manifest 会明确报错。S3 只承担可选快照备份和按需恢复。
+`main` 发布 2.x 本地版。2.1 沿用 2.0 数据目录，复用前须停止旧进程；替换 1.x 时使用新目录。
+不提供 1.x 迁移、旧 MD5 接口或跨主版本回滚；旧版 Parquet manifest 会明确报错。
+S3 只承担可选快照备份和按需恢复。
 
 实体、边和顶层邻接目录使用 256 个写时复制分片，旧读视图复用未变化分片。
 `data_hash` 使用带算法标识的分片 SHA-256，只更新受影响分片，根摘要固定处理 32 KiB；
@@ -193,4 +196,4 @@ GC 每批至多访问 512 个候选，在对象之间检查 50 ms / 16 MiB 预�
 `graphdb_maintenance_phase_seconds` 区分等待、构建、持锁和同步；
 `graphdb_maintenance_estimated_bytes` 显示执行和排队预留，不表示实测 RSS。
 
-详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[2.0 验证](performance-v2.0.md)。
+详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](validation-v2.1.2.md)。

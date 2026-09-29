@@ -4,7 +4,7 @@
 
 GGraphDB stores one current-state property knowledge graph per tenant. It does
 not expose historical version queries; each read observes a manifest snapshot
-version. GGraphDB 2.0 does not implement RDF/OWL storage, SPARQL, ontology
+version. GGraphDB 2.x does not implement RDF/OWL storage, SPARQL, ontology
 reasoning, or vector retrieval.
 
 The core model is domain-neutral: applications can use schemaless entities and
@@ -21,8 +21,10 @@ Tenant id is supplied by `X-Tenant-ID` for data APIs. Each tenant has:
 - entity pages and entity by-id records.
 - edge shards.
 - persisted secondary indexes.
-- source policy, tenant config, saved queries, tasks, dead letters, and reader
-  heartbeats.
+- source policy, tenant config, saved queries, tasks, and dead letters.
+
+Local read-view protection and compatibility reader status live in process
+memory; persisted remote-reader heartbeats are not used for GC.
 
 ## Entity Type (`CIType` Compatibility Alias)
 
@@ -114,7 +116,7 @@ Supported cardinality values:
 
 ## Relation Property Schema
 
-GGraphDB 2.0 can optionally validate and default edge properties for an existing
+GGraphDB 2.x can optionally validate and default edge properties for an existing
 relation type:
 
 ```json
@@ -203,4 +205,4 @@ If a write is logically identical to the current graph, GGraphDB returns
 
 ## 2.0 Data Format
 
-2.0 uses the local data layout and the `data_hash` contract described in [version boundaries](../naming-and-compatibility.md). Start with a new directory; no 1.x migration or cross-version writer compatibility is provided.
+2.0 uses the local data layout and the `data_hash` contract described in [version boundaries](../naming-and-compatibility.md). Version 2.1 reuses this format after the old process stops. A new directory is required when replacing 1.x; migration and concurrent writers from different processes/versions are unsupported.

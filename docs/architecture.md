@@ -1,4 +1,4 @@
-# GGraphDB 2.0 本地磁盘架构
+# GGraphDB 2.x 本地磁盘架构
 
 [English](architecture.en.md)
 
@@ -75,7 +75,7 @@ GC 任务心跳。重启后没有执行者的活动记录会在查询/恢复检�
 
 | 模块 | 职责 |
 | --- | --- |
-| `internal/httpapi` | HTTP/GraphQL 协议、认证、请求准入、响应与追踪 |
+| `internal/httpapi` | HTTP/GraphQL 协议、租户路由、请求准入、响应与追踪；认证授权由外部网关负责 |
 | `internal/storage` | 持久化、租户代次、读视图与缓存发布、查询索引选择、任务生命周期 |
 | `internal/maintenance` | 维护调度和决策，复用存储任务与预算，通过回调接入用量缓存及审计 |
 | `internal/graph` / `internal/query` | 图结构、查询规划与执行 |
@@ -93,4 +93,5 @@ GC 任务心跳。重启后没有执行者的活动记录会在查询/恢复检�
 
 运行参数、兼容性和验收矩阵见[本地磁盘指南](local-disk.zh-CN.md)。
 
-2.0 使用新的数据目录，不提供 1.x 数据迁移或旧 MD5 契约，见[版本边界](naming-and-compatibility.zh-CN.md)。
+2.1 沿用 2.0 数据格式；停止旧进程后可复用已有 2.0/2.1 目录。替换 1.x 时须使用新目录，
+不提供 1.x 数据迁移或旧 MD5 契约，见[版本边界](naming-and-compatibility.zh-CN.md)。

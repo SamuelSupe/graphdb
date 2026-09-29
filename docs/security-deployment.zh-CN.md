@@ -2,7 +2,7 @@
 
 [English](security-deployment.md)
 
-GGraphDB 1.1 把认证与授权放在网关或服务网格层。数据库不会把
+GGraphDB 2.x 把认证与授权放在网关或服务网格层。数据库不会把
 `X-Tenant-ID` 当成身份凭证；生产部署必须阻止客户端直接访问任一
 GGraphDB listener。
 
@@ -28,8 +28,7 @@ GRAPHDB_PPROF_ENABLED=false
 
 ## Listener 职责
 
-未设置 `GRAPHDB_ADMIN_ADDR` 时，除默认关闭 pprof 外，仍保持 1.0
-兼容的合并 listener。设置后：
+未设置 `GRAPHDB_ADMIN_ADDR` 时，除默认关闭 pprof 外，仍使用数据与管理接口合并的 listener。设置后：
 
 | Listener | 接口范围 |
 | --- | --- |

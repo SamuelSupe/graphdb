@@ -1,10 +1,13 @@
 # Object-storage snapshots and on-demand restore
 
-This guide describes 2.0 snapshots. It provides no 1.x backup migration; keep older backups separate.
+This guide covers the current 2.x backup features. Version 2.1 adds optional
+automation while retaining the 2.0 snapshot format. There is no 1.x backup
+migration; keep older backups separate.
 
 
 Online graph data stays on local disk. An optional S3-compatible repository stores
-self-contained, full tenant snapshots. Restore downloads a snapshot and rebuilds
+full logical graph snapshots with tenant configuration, not all operational state
+(see the snapshot scope below). Restore downloads a snapshot and rebuilds
 local indexes. AWS S3 and MinIO use the same interface; PostgreSQL is unnecessary.
 The existing backup endpoint without a request body still creates a local backup.
 

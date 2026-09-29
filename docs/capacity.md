@@ -8,6 +8,14 @@ capacity. Entity count alone is insufficient. Writer and reader graph caches
 remain bounded; a graph exceeding the cache budget is loaded without caching.
 Size both caches for the workload when predictable query latency is required.
 
+## Current validation status
+
+See [2.1.2 validation](validation-v2.1.2.md) and the [write-tail report](performance-write-tail.md).
+The capacity envelope is `performance_unqualified`. Its 30-minute workload was
+stopped by explicit release decision and is not a pass. Tool descriptions and
+historical comparison parameters below are not completed measurements or
+production capacity guarantees for this version.
+
 ## Validation profiles
 
 - `scripts/capacity_baseline.sh`: short API smoke and finite load profiles.
@@ -20,8 +28,11 @@ Size both caches for the workload when predictable query latency is required.
   cache budgets and a five-second writer interval to bound graph growth.
 
 See [local disk operations](local-disk.md) for durability and configuration.
-The comparison uses 10,002 and 100,002 entities, one minute warmup, five minutes
-measurement, and three repetitions with rotating server order. Reports retain
+Start routine optimization with a representative focused comparison; repeat to
+investigate regressions or noise. The optional full historical-baseline matrix
+uses 10,002 and 100,002 entities, one minute warmup, five minutes measurement,
+and three repetitions with rotating server order. It is not required on every
+release. Reports retain
 published throughput, latency percentiles, WAL acceptance-to-readable latency,
 RSS/CPU, process I/O, GraphDB fsync counters, and descriptors. MinIO runs only
 for the historical baseline and is not a dependency of this edition.

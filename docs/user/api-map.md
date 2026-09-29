@@ -107,12 +107,12 @@ This is a user-facing endpoint map. The detailed schema contract is
 | `POST` | `/v1/control/cleanup-commits` | Cleanup obsolete commits. |
 | `POST` | `/v1/control/gc` | GC with checkpoint/dry-run support. |
 
-## Reader And Writer Control
+## Local Runtime Control
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/control/writer-lease` | Inspect writer lease. |
+| `GET` | `/v1/control/writer-lease` | Inspect the local writer generation/fencing record. |
 | `GET` | `/v1/control/reader-freshness` | Reader freshness report. |
 | `GET` | `/v1/control/reader-lag` | Compatibility alias for freshness. |
-| `GET` | `/v1/control/reader-fleet-readiness` | Fleet readiness report. |
+| `GET` | `/v1/control/reader-fleet-readiness` | Compatibility report over process-local reader status; not cluster discovery. |
 | `GET` | `/v1/control/reader-traffic-gate` | Traffic gate result for deployment checks. |

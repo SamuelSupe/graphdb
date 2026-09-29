@@ -1,94 +1,67 @@
-# GGraphDB 2.0 产品边界与后续能力
+# GGraphDB 产品边界与后续能力
 
-本文以通用当前态属性知识图谱产品为边界。CMDB 是重点 profile，但数据模型、
-查询和存储不绑定 CMDB；RDF/OWL 导入与规则推理不在 2.0 承诺中。
+本文描述当前 **2.1.2**，定位为持续更新、在线查询当前状态的单机属性图数据库。
+CMDB 是重点应用场景，数据模型、查询和存储不绑定 CMDB。
+版本、数据格式和升级边界以[版本契约](naming-and-compatibility.zh-CN.md)为准。
 
-## 当前定位
+## 已实现的能力
 
-GGraphDB 2.0 已具备可部署的核心闭环：
+- 通用 EntityType/RelationType、labels、可选字段与关系 schema。
+- 当前态 commit、来源治理、幂等 ingest、CSV/JSONL import、deadletter 和采集游标。
+- GraphQL/JSON DSL 查询、过滤、排序、聚合、分页、流式读取与 explain/profile。
+- 本地 Parquet 持久化、单进程多租户并发、direct/同步 WAL、版本固定读视图。
+- 租户生命周期、快照备份恢复、审计、压实、GC、索引和持久化任务。
+- S3 自动备份调度、持久化重试、完整下载校验、保留清理、可选周期恢复演练和状态/重置 API。
+  自动化默认关闭，详见[备份指南](object-backup.zh-CN.md#自动备份)。
+- `replay_deadletters` 异步任务及检查点重试；进一步的筛选与预演仍属后续工作。
+- 分片 `data_hash`，配套 Go/Python SDK 2.1.2。
 
-- 通用 EntityType/RelationType、labels、可选字段与关系 schema；
-- 当前态 commit、来源治理、幂等 ingest、CSV/JSONL import、deadletter 和采集游标；
-- GraphQL/JSON DSL 查询、过滤、排序、聚合、分页与 explain/profile；
-- 本地 Parquet 持久化、单进程多租户并发、direct/同步 WAL、版本固定读视图；
-- 租户生命周期、快照备份恢复、S3 兼容备份、恢复演练、审计、压实、GC 和索引任务；
-- 新的分片 `data_hash`、Go/Python 2.0 SDK；不提供 1.x 迁移。
+SDK 保留 direct `200/207` 结果、WAL durable `202` 接管、`Location`/本地状态查询、
+poll/wait，以及 ingest 的 `expected_version`、`failure_mode` 和 `preconditions`。
+GraphQL 公开合同使用 `graph` 查询根；检索增强扩展不属于当前能力。
 
-Go/Python SDK。
+## 当前发行与验证边界
 
-Go/Python SDK 的 2.0 合同包括 direct `200/207` 结果、WAL durable `202`
-acceptance、`Location`/local status、poll/wait，以及 ingest 的
-`expected_version`、`failure_mode` 和 `preconditions` 字段。GraphQL 公开合同
-只保留 `graph` 查询根；检索增强扩展不属于当前产品能力。
+2.1.2 已发布，单元/vet/race、SDK、direct/WAL HTTP、重启、S3 备份恢复和发行包检查通过。
+按本次发布要求，30 分钟混合负载提前停止，**未完成，不计为通过**。
+默认后续发布流程仍包含该检查；见[发布清单](release-checklist.md)和
+[本版验证记录](validation-v2.1.2.md)。历史测试不能替代当前候选证据。
 
-这意味着产品已经越过 demo 和“只有内核”的阶段；GA tag 仍必须由发行证据
-认证，不能仅凭功能数量判定。
+[写入长尾实测](performance-write-tail.md)记录了重点负载的改善，也保留了秒级长尾和
+压实退化信号。容量状态仍为 `performance_unqualified`，没有任意实体/边规模或延迟保证。
+目标部署应按实际字段宽度、关系密度、索引和查询组合核验资源与延迟。
 
-## GA 发布门禁
+## 当前限制与后续候选
 
-### 1. 发行证据
+以下内容没有已承诺的交付版本或日期。
 
-- 单元、vet、race、SDK、direct/WAL HTTP、重启和备份恢复检查；
-- 含 compact、GC、index rebuild 的 30 分钟混合负载；
-- 可复查性能报告、构建 commit、二进制校验和与发布包验证。
+### 生产部署与运维
 
-全部门禁通过后才发布，历史报告不能替代当前候选版本证据。
+- 认证、租户授权、TLS 和网络隔离由外部网关负责；默认 Compose 不是完整的安全生产部署。
+- 已有配额、准入与背压；实际磁盘剩余空间的统一保护、维护空间预检仍待完善。
+- 诊断和指标分布在任务、WAL、索引、备份及日志接口中，缺少统一诊断摘要与配套告警规则。
 
-### 2. 生产安全集成
+### 备份恢复
 
-内核默认关闭 pprof，并支持独立 data/admin listener；生产还必须由实际
-网关完成认证、租户 header 覆写、RBAC、TLS、限流和网络隔离。参考配置不是
-身份系统本身，正式环境需要一次端到端安全验收。
+- 已实现定时备份、重试、保留清理和周期恢复演练，不再列作缺失能力。
+- 当前是完整逻辑图快照，不包含待发布 WAL、任务历史、幂等历史、采集游标和保存查询模板。
+  因此完整租户运行状态恢复、恢复后续采流程仍需完善。
+- 尚无增量备份或按任意时间点恢复；大租户恢复时间、可恢复时间范围和长期演练审计需量化。
+- 远端权限、独占桶/前缀和版本化桶边界见[备份指南](object-backup.zh-CN.md)。
 
-### 3. 目标数据规模容量证据
+### 长任务、查询与治理
 
-2.0 发布门禁认证并发提交，不等于认证任意实体/边规模。每个部署目标还要
-在等价字段宽度、关系密度、索引和查询混合下运行 capacity baseline，并记录
-内存高水位、对象数量/字节、p95/p99 与 compact/restore 时间。
+- repair 可进一步细化到 page/object 检查点；export 仍缺少分片 manifest 和下载断点续传。
+- saved query 执行已保存的固定请求，尚无参数 schema、默认值和调用参数校验。
+- explain/profile 字段版本、常用查询模板及与异步导出的组合需要明确的产品契约。
+- source 覆盖率、冲突趋势、policy 影响预演及 deadletter 按 collector/batch/time 的筛选可继续完善。
 
-## 非阻断但重要的后续能力
+## 未承诺支持的能力
 
-### 长任务可恢复性
+- RDF/JSON-LD/Turtle/OWL 原生导入、RDFS/OWL 推理或本体一致性校验。
+- 历史版本或时态图查询。
+- 独立 reader/writer、跨机器复制、自动故障切换或自动图分区。
+- 跨租户事务或租户内部行级授权。
+- 1.x 数据迁移、旧 MD5 响应或跨主版本回滚。
 
-- repair 继续下沉到 page/object 级 checkpoint；
-- export 增加分片 manifest 和断点续传；
-- 对不响应 context 的对象存储调用，cancel 只能在调用返回后生效。
-
-### 治理与运营
-
-- suppressed conflict 按 source/kind/field 聚合与趋势；
-- source 覆盖率、policy 变更影响分析和批量导出；
-- deadletter 按 collector/batch/time range dry-run 与 task 化 replay。
-
-### 单机边界
-
-分布式 reader/writer、复制、自动故障切换和跨租户事务不属于 2.0。
-
-### 查询产品化
-
-- saved query 参数 schema、默认值和参数校验；
-- 稳定 explain/profile 字段版本；
-- CMDB、治理和知识图谱常用模板库；
-- 模板与异步导出任务组合。
-
-### 备份运营
-
-- 跨区域复制延迟、长期恢复审计和大租户 RTO/RPO 报告；
-- 定期自动恢复演练和证据归档。
-
-## 不应误解为 2.0 已支持
-
-- RDF/JSON-LD/Turtle/OWL 原生导入；
-- RDFS/OWL 规则推理、本体一致性校验；
-- 历史版本或时态图查询；
-- 跨租户事务；
-- 租户内部行级授权；
-- 超过当前单机容量边界的自动图分区。
-
-这些能力需要单独版本承诺，不能通过给现有字段换名来宣称支持。
-
-## 结论
-
-2.0 的正确下一步是把已实现能力变成可重复发布、可安全部署、可量化容量的
-产品，而不是继续横向堆查询语法。GA 判定应由 release gate、安全验收和目标
-规模报告共同决定。
+这些能力需要单独设计和版本承诺，不能由已有接口名称或兼容路由推断支持。

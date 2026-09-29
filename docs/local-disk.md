@@ -1,4 +1,4 @@
-# GGraphDB 2.0 local disk operation
+# GGraphDB 2.x local disk operation
 
 The main release runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -76,7 +76,7 @@ including on failure or cancellation. Index orphan validation reads directly
 from file handles while retaining its content and tenant checks. Local GC yields
 task execution capacity between batches so compaction can relieve WAL backpressure.
 Index rebuild still blocks write admission during backfill; its cleanup uses the
-same batch locks. Live workers remain authoritative if their heartbeat is delayed.
+same batch locks. Live workers are tracked in process; task liveness does not depend on heartbeats.
 
 ## Readiness and memory budgets
 
@@ -122,9 +122,10 @@ graph head; it does not discard published graph commits.
 
 ## Upgrade and recovery
 
-2.0 starts with a new data directory and provides no 1.x migration or cross-version
-rollback. Manifests use the new `data_hash` column; pre-2.0 Parquet manifests are
-rejected. Keep older installations and their directory backups separate.
+2.1 retains the 2.0 data format. Stop the old process before reusing a 2.0/2.1
+directory. Replacing 1.x requires a fresh directory; no 1.x migration or cross-major
+rollback is provided. Manifests use `data_hash`; pre-2.0 Parquet manifests are
+rejected. Keep 1.x installations and their backups separate.
 PostgreSQL coordination markers are also rejected; do not remove them to force entry.
 
 Use the backup/restore and integrity-audit HTTP APIs. To recover after disk loss,
@@ -165,7 +166,10 @@ a different restore or backup.
 
 ## Validation and performance
 
-See [the 2.0 report](performance-v2.0.md) for this release. Older reports below are historical.
+Current release status is in [2.1.2 validation](validation-v2.1.2.md); measured
+write-tail improvements and remaining limits are in [the focused report](performance-write-tail.md).
+The 30-minute run was stopped by explicit release decision and is not a pass.
+The [2.0 report](performance-v2.0.md) and earlier reports below are historical.
 
 Start performance work with one representative comparison and repeat only to
 investigate a measured regression. `scripts/local_disk_optimization.py` compares
@@ -175,7 +179,7 @@ See the [optimization measurements](performance-local-disk-optimization.md).
 The [second optimization round](performance-local-disk-optimization-2.md) covers
 catalog hashes, entity pagination, HTTP encoding, Parquet row locality and incremental indexes.
 
-`scripts/release_gate.sh` runs unit/vet/race/2.0-contract/SDK checks, then direct
+`scripts/release_gate.sh` runs unit/vet/race/2.x-contract/SDK checks, then direct
 and WAL HTTP scenarios, load, and restart equality. `GRAPHDB_GATE_SOAK=1` adds a
 30-minute mixed workload with compaction, GC and index rebuild. The HTTP gate uses
 a tiny graph cache to exercise persisted index reads; it is not a capacity benchmark.

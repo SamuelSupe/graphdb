@@ -3,7 +3,7 @@
 [English](data-model.md)
 
 GGraphDB 为每个租户保存一张当前态属性知识图谱，不提供历史版本查询；每次
-读取观察一个 manifest snapshot 版本。GGraphDB 2.0 不提供 RDF/OWL 存储、
+读取观察一个 manifest snapshot 版本。GGraphDB 2.x 不提供 RDF/OWL 存储、
 SPARQL、本体推理或向量检索。
 
 核心模型与具体领域无关：应用可以只使用无模式实体和类型化边，不必定义实体
@@ -19,8 +19,9 @@ SPARQL、本体推理或向量检索。
 - entity page 和按 ID 的实体记录；
 - edge shard；
 - 持久化二级索引；
-- source policy、tenant config、saved query、task、dead letter 和 reader
-  heartbeat。
+- source policy、tenant config、saved query、task 和 dead letter。
+
+本地读视图保护及兼容 reader 状态在进程内管理，GC 不依赖持久化的远端 reader heartbeat。
 
 ## 实体类型（`CIType` 兼容别名）
 
@@ -109,7 +110,7 @@ SPARQL、本体推理或向量检索。
 
 ## 关系属性 Schema
 
-GGraphDB 2.0 可以为已有关系类型选择性定义边属性校验和默认值：
+GGraphDB 2.x 可以为已有关系类型选择性定义边属性校验和默认值：
 
 ```json
 {
@@ -193,4 +194,4 @@ edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
 
 ## 2.0 数据格式
 
-2.0 使用本地数据布局和 `data_hash` 契约，见[版本边界](../naming-and-compatibility.zh-CN.md)。使用新的数据目录，不提供 1.x 迁移或跨版本 writer 兼容。
+2.0 使用本地数据布局和 `data_hash` 契约，见[版本边界](../naming-and-compatibility.zh-CN.md)。2.1 沿用该格式，复用目录前须停止旧进程。替换 1.x 时须使用新目录；不提供 1.x 迁移，也不允许不同进程或版本同时写入。

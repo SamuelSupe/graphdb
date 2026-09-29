@@ -13,8 +13,8 @@ API 也可以服务其他实体关系应用。
 - 以 `(type, from, to)` 作为规范身份的有向类型化边；
 - 一个进程独占本地数据目录，多租户支持客户端并发读写；
 - Parquet manifest、commit、snapshot、entity page、edge shard 和索引在本地盘持久化；
-- direct 和同步 WAL 写入，可选 S3 兼容快照备份与按需恢复；
-- 使用新的 2.0 数据目录和 `data_hash` 契约，不提供 1.x 迁移。
+- direct 和同步 WAL 写入，可选 S3 快照备份、定时调度/重试/保留清理、恢复演练与按需恢复；
+- 使用 `data_hash` 契约，2.0/2.1 数据目录兼容，不提供 1.x 迁移；
 - GraphQL、JSON Query DSL、scan/export、saved query 和运行中查询控制；
 - 可选的实体字段、边字段和边存在性 source priority 治理；
 - 租户生命周期、source policy、tenant config、索引、统一 task、维护、
@@ -37,7 +37,9 @@ Content-Type: application/json
 
 仅支持 `GRAPHDB_MODE=all`。独立 reader/writer、远端在线存储和 PostgreSQL 协调配置会明确报错。
 
-示例变量：
+以下三个变量指向同一个进程，不代表独立 reader/writer 服务。示例默认使用合并监听；
+配置 `GRAPHDB_ADMIN_ADDR` 后，管理请求须发送到该监听或对应的已认证网关路径，
+见[监听职责](../security-deployment.zh-CN.md#listener-职责)。
 
 ```sh
 export WRITER=http://127.0.0.1:8080

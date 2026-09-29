@@ -1,16 +1,43 @@
-# GGraphDB 2.0 contracts
+# GGraphDB version and compatibility contracts
 
-The product is GGraphDB. Version 2.0 is the main local-disk release; S3-compatible
-storage is optional snapshot backup storage. Run one process per local directory.
-Remote primary storage, PostgreSQL coordination, separate reader/writer modes
-and shared network filesystems are unsupported.
+[中文](naming-and-compatibility.zh-CN.md)
 
-## Version boundary
+The current release is **2.1.2**, developed on `main`. GGraphDB runs one process
+per local data directory; S3-compatible storage is optional snapshot backup
+storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
+modes and shared network filesystems are unsupported.
 
-2.0 replaces the 1.x release line. It does not provide automatic data migration,
-a legacy `data_md5` response, or a cross-version rollback guarantee. Start with a
-new data directory. Keep any 1.x installation and backups separate; 2.0 backup
-and restore operate within the 2.0 format. Never point an older binary at 2.0 data.
+## Version identifiers
+
+| Identifier | Current contract |
+| --- | --- |
+| Product and release tag | `VERSION`: `2.1.2`; tag: `v2.1.2` |
+| Go/Python SDKs and OpenAPI document version | `2.1.2` |
+| Go module | `github.com/SamuelSupe/graphdb/v2` |
+| HTTP route namespace | `/v1/...`; not the product major version |
+| Persisted Parquet/WAL and snapshot format | Introduced in 2.0 and retained by 2.1 |
+
+Import the Go SDK from `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`.
+Existing extension directory names such as `extensions/v1.1/` are layout
+identifiers, not product versions or a cross-major compatibility promise.
+Security support is described in [SECURITY.md](../SECURITY.md).
+
+## Installation and upgrades
+
+- New installations and replacements of 1.x require a fresh data directory.
+  No automatic 1.x migration or legacy `data_md5` response is provided. Keep 1.x
+  installations and backups separate; never open 2.x data with a 1.x binary.
+- 2.1 retains the 2.0 local data and snapshot formats. Stop the old process before
+  reusing a 2.0/2.1 directory with the same data root and prefix. Directory reuse
+  does not permit concurrent processes or versions.
+- Upgrade compatibility does not promise direct binary downgrade or cross-major
+  rollback. Keep a verified pre-upgrade backup and follow the
+  [upgrade instructions](user/release-deployment.md#upgrade-from-20).
+- 2.1 adds opt-in S3 scheduling, retries, retention and restore drills. A logical
+  graph snapshot does not contain all operational state; consult the
+  [backup scope](object-backup.md) before planning disaster recovery.
+
+## Data and API contracts
 
 Commit results use `data_hash`: `sha256-shards-v2:` followed by 64 lowercase hex
 characters. It identifies logical graph content, excluding commit version and
@@ -20,13 +47,18 @@ No-op writes retain the current version and hash; idempotent retries return the
 recorded result. `expected_version`, `min_version`, cursor version checks and
 WAL accepted/published/terminal distinctions remain supported.
 
-The HTTP routes remain `/v1/...`; that is the API route namespace, not the product
-major version. GraphQL is served by `POST /v1/query/graphql`. The legacy text DSL
-aliases still refer to the text DSL, not GraphQL. Existing extension directory
-names such as `extensions/v1.1/` are layout identifiers, not a compatibility promise.
+GraphQL is served by `POST /v1/query/graphql`. The deprecated text DSL aliases
+remain text DSL endpoints. Compatibility control routes named `reader`, `writer`
+or `fleet` describe local state, not supported distributed deployment modes.
 
-Both SDKs are version 2.1.2. The Go module is
-`github.com/SamuelSupe/graphdb/v2`; import
-`github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`.
+## Release status and performance claims
 
-2.1 retains the 2.0 local data format and adds opt-in S3 automation. See [upgrade instructions](user/release-deployment.md#upgrade-from-20).
+2.1.2 is published. Unit/vet/race, SDK, HTTP/restart, S3 backup/restore and artifact
+checks passed. Its 30-minute mixed workload was stopped by explicit release
+decision and is **not completed**, not a passing endurance check. The default tag
+workflow retains that gate for future releases.
+
+See [2.1.2 validation](validation-v2.1.2.md) and the
+[write-tail measurements](performance-write-tail.md). The capacity envelope
+remains `performance_unqualified`; a stable release label does not certify all
+workload sizes or latency targets. Older reports describe their own builds.

@@ -3,7 +3,7 @@
 [简体中文](README.zh-CN.md)
 
 GGraphDB is a multi-tenant property graph database for entities, relationships,
-source-governed ingestion, graph queries, and operational workflows. GGraphDB 2.0
+source-governed ingestion, graph queries, and operational workflows. GGraphDB 2.x
 runs one process on local disk, without a required object-storage or PostgreSQL service.
 Optional [S3-compatible snapshot backups](docs/object-backup.md) support recovery onto a new local disk.
 
@@ -15,7 +15,7 @@ S3-compatible object storage holds snapshot backups for on-demand recovery.
 See the [2.1.2 release notes](release/local-disk.md) and
 [version boundaries](docs/naming-and-compatibility.md). There is no 1.x migration
 or legacy digest compatibility layer. Upgrading from 1.x requires a new directory;
-2.0 installations can reuse their directory after stopping the old process.
+2.0/2.1 installations can reuse their directory after stopping the old process.
 2.1 adds [scheduled S3 backups, retries, retention, and restore drills](docs/object-backup.md#automatic-backups), disabled by default.
 
 2.1.2 reduces GC work under the tenant lock by deferring validation of orphan

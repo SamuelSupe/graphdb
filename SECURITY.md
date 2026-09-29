@@ -4,9 +4,13 @@
 
 | Version | Security fixes |
 | --- | --- |
-| 2.0.x | Yes |
-| 1.x / local prereleases | Superseded by 2.0; no migration support |
+| 2.x | Yes; use the latest 2.x release |
+| 1.x / local prereleases | Superseded by 2.x; no migration support |
 | Older | No |
+
+Security fixes are delivered in the current 2.x release line; separate patch
+backports to each older minor version are not promised. Current version and data
+compatibility are documented in [version boundaries](docs/naming-and-compatibility.md).
 
 ## Reporting A Vulnerability
 

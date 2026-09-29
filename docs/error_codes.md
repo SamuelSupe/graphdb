@@ -43,7 +43,7 @@ The following top-level `code` values are stable:
 | `idempotency_conflict` | 409 | no | Idempotency key belongs to a different request. |
 | `idempotency_in_progress` | 409 | yes | Another request is still processing the same idempotency key. |
 | `write_conflict` | 409 | yes | A direct/preconditioned write observed a changed tenant head. Inspect the local WAL status before retrying an accepted request. |
-| `coordinator_unavailable` | 503 | yes | Reserved compatibility code; external coordination is unsupported in 2.0. |
+| `coordinator_unavailable` | 503 | yes | Reserved compatibility code; external coordination is unsupported in the local-disk edition. |
 | `commit_tail_too_long` | 429 | yes | Commit tail is above the write threshold. |
 | `index_rebuild_running` | 429 | yes | Index rebuild is running for this tenant. |
 | `maintenance_task_running` | 429 | yes | Maintenance work is blocking ordinary writes. |

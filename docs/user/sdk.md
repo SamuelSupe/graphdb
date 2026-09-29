@@ -6,14 +6,14 @@ GGraphDB provides lightweight Go and Python SDKs over the HTTP API. They do not
 import service `internal` packages and are safe to vendor into collectors,
 internal services, and operations tools.
 
-The 2.0 SDKs expose the current ingest contract. Both preserve direct-mode
+The current SDKs expose the current ingest contract. Both preserve direct-mode
 terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
 local status resource, polling/waiting, and ingest CAS/conditional/atomic
 options. The Go and Python SDK package versions are `2.1.2`.
 
 SDK scope:
 
-- tenant lifecycle basics.
+- tenant lifecycle, S3 snapshot backup/restore, and backup automation status/reset.
 - direct commits, ingestion batches, and CSV/JSONL imports.
 - entity-type aliases and relation property schemas.
 - source policy and tenant config.
