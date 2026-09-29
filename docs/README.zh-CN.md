@@ -1,4 +1,4 @@
-# GGraphDB 2.0 文档
+# GGraphDB 2.1 文档
 
 [English](README.md)
 
@@ -8,7 +8,7 @@
 
 ## 用户指南
 
-- [2.0 发行说明](../release/local-disk.md) · [性能验证](performance-v2.0.md)
+- [2.1.2 发行说明](../release/local-disk.md) · [发布验证](validation-v2.1.2.md) · [写入长尾实测与限制](performance-write-tail.md)
 
 - [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)
 - [对象存储快照备份与恢复](object-backup.zh-CN.md) · [English](object-backup.md)

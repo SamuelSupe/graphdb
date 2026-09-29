@@ -48,7 +48,9 @@ func (v *gcView) canDelete(key string) bool {
 			return false
 		}
 	}
-	delete(g.retired, key)
+	// Keep the retirement epoch through preflight and deletion checks. The
+	// actual file mutation clears it; clearing it here would make a newer
+	// reader pin this orphan again before Delete reaches the filesystem.
 	return true
 }
 

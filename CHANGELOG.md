@@ -3,6 +3,25 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [2.1.2] - 2026-09-29
+
+Compatible with existing 2.0/2.1 local data directories and HTTP contracts.
+
+- Check read-view protection before decoding orphan index files during GC,
+  avoiding repeated Parquet validation under the tenant lock for deferred files.
+- Preserve the retirement epoch through preflight and deletion checks so newly
+  admitted readers cannot repeatedly postpone eligible orphan collection.
+- Keep content/tenant validation before reclamation, same-version catalog
+  protection, checkpoint accounting and deletion-time view checks.
+- Update bilingual READMEs, deployment instructions, SDK versions and release
+  documentation. No data-format or durability-default changes.
+
+The focused 4-writer/16-reader workload observed write P95 fall from
+11.77–12.34 s to 8.08 s. Compaction showed an unresolved regression signal;
+this does not establish an overall performance-qualified capacity envelope.
+See [measurements and limits](docs/performance-write-tail.md) and
+[release validation](docs/validation-v2.1.2.md).
+
 ## [2.1.1] - 2026-09-28
 
 Compatible with existing 2.0 local data directories and HTTP contracts.

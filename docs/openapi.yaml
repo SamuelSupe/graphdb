@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.1.1
+  version: 2.1.2
   description: GGraphDB 2.0 local-disk, single-process, multi-tenant graph API. S3-compatible storage is optional for snapshot backup and restore. Use a fresh 2.0 data directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080

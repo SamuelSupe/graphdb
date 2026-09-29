@@ -1,4 +1,4 @@
-# GGraphDB 2.0
+# GGraphDB 2.1
 
 [English](README.md)
 
@@ -8,11 +8,14 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 
 ## 当前版本
 
-[2.1.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.1) 是主版本，由 `main` 发布。
+[2.1.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.2) 是主版本，由 `main` 发布。
 在线图数据存放在本地盘，S3 兼容对象存储用于快照备份与按需恢复。
 不提供 1.x 迁移或旧摘要兼容层；从 1.x 升级需要新目录。2.0 用户停止旧进程后可沿用原目录。
 2.1 新增[定时 S3 备份、重试、保留清理和恢复演练](docs/object-backup.zh-CN.md#自动备份)，默认关闭。
 二进制、契约变化及验证证据见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+
+2.1.2 延后校验仍被活跃查询保护的孤儿索引文件，减少 GC 在租户锁内的无效工作。
+磁盘格式、API 和同步持久化默认值保持不变。
 
 ## 核心能力
 
@@ -75,16 +78,17 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/query/graphql \
 
 数据文件同步后才发布 manifest/catalog；四个有界工作线程批量合并目录同步。
 Parquet 直接通过文件随机读取选择列和行组，读缓存按本地发布通知失效。
-GC、清理提交、清空和恢复会等待活跃读视图结束。
+GC 延迟回收被活跃读视图保护的文件；清理提交、清空和恢复会等待相关读视图结束。
 
-性能工具支持原对象存储和原本地模式的完整对比。本次仅做本地模式之间的单轮重点抽查，
-范围和结果见下方验证报告；历史版本报告不代表本分支性能。
+在 OrbStack 的 4 写入、16 查询客户端并行运行后台维护的重点负载中，写入 P95 从
+11.77–12.34 秒降至 8.08 秒。这是有限范围的实测结果，不是生产延迟保证：仍有秒级写入
+长尾，压实耗时也出现尚未稳定归因的退化信号。方法与限制见[写入长尾报告](docs/performance-write-tail.md)，
+发布检查见 [2.1.2 验证记录](docs/validation-v2.1.2.md)。历史报告仅代表各自版本。
 
 ## 文档与验证
 
 - [本地磁盘运行与验证](docs/local-disk.zh-CN.md)
-- [本地磁盘 v2 验证与性能抽查](docs/performance-local-disk-v2.md)
-- [本地磁盘第二轮优化：分页、JSON 编码与 Parquet 布局](docs/performance-local-disk-optimization-2.md)
+- [2.1.2 写入长尾实测与限制](docs/performance-write-tail.md)
 - [架构](docs/architecture.md)
 - [用户手册](docs/user/README.zh-CN.md)
 - [查询能力](docs/query_capabilities.md)、[GraphQL](docs/graphql.zh-CN.md)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,6 +91,8 @@ func TestLocalGCRetirementSurvivesReadersAndSameVersionCatalogChanges(t *testing
 	if err := files.Put(ctx, key, data); err != nil {
 		t.Fatal(err)
 	}
+	reads := &gcOrphanReadStore{FileStore: files, key: key}
+	store.Objects = reads
 	old, err := store.PinReadView(ctx, "tenant-a")
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +105,9 @@ func TestLocalGCRetirementSurvivesReadersAndSameVersionCatalogChanges(t *testing
 		}
 	}
 	gc()
+	if reads.opens.Load() != 0 {
+		t.Fatal("GC decoded a pinned orphan that cannot be deleted")
+	}
 	if _, err := files.Get(ctx, key); err != nil {
 		t.Fatalf("retired file lost before old view closed: %v", err)
 	}
@@ -135,9 +141,27 @@ func TestLocalGCRetirementSurvivesReadersAndSameVersionCatalogChanges(t *testing
 	defer newRead()
 	reintroduced()
 	gc()
+	if reads.opens.Load() == 0 {
+		t.Fatal("GC deleted an unpinned orphan without validating it")
+	}
 	if _, err := files.Get(ctx, key); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("new readers prevented retired-file collection: %v", err)
 	}
+}
+
+type gcOrphanReadStore struct {
+	*FileStore
+	key   string
+	opens atomic.Int64
+}
+
+func (s *gcOrphanReadStore) UnwrapObjectStore() ObjectStore { return s.FileStore }
+
+func (s *gcOrphanReadStore) OpenReader(ctx context.Context, key string) (fileReader, error) {
+	if key == s.key {
+		s.opens.Add(1)
+	}
+	return s.FileStore.OpenReader(ctx, key)
 }
 
 func TestRebuildIndexesDefersOrphanIndexObjectCleanupToGC(t *testing.T) {

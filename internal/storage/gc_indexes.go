@@ -42,6 +42,15 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 		if !ok || version >= catalog.Version || !strings.HasSuffix(object.Key, ".parquet") {
 			continue
 		}
+		// A pinned orphan cannot be removed in this pass. Retire it before
+		// decoding so active queries do not pay for repeated, unusable GC work.
+		// Delete rechecks the view in case roots change during validation.
+		if !checkpoint.options.view.canDelete(object.Key) {
+			checkpoint.checkpoint.ScannedKeys++
+			checkpoint.checkpoint.LastKey = object.Key
+			checkpoint.checkpoint.DeferredFiles++
+			continue
+		}
 		source, err := openFileReader(ctx, s.Objects, object.Key)
 		if errors.Is(err, ErrNotFound) {
 			continue

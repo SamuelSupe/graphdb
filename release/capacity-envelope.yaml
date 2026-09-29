@@ -1,8 +1,8 @@
 schema_version: 2
 edition: local_disk
-version: 2.1.1
+version: 2.1.2
 status: performance_unqualified
-report: docs/validation-v2.1.1.md
+report: docs/validation-v2.1.2.md
 previous_performance_report: docs/performance-v2.0.md
 previous_performance_revision: d90e554c
 runtime_revision: release_tag

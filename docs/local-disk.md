@@ -231,6 +231,8 @@ a successful `min_version` entity read; it is an upper bound on first visibility
 
 GC visits at most 512 candidates per batch and checks 50 ms / 16 MiB budgets between objects. Files still needed by older read views are deferred; new readers remain admitted. Later batches reconsider deferred files after those views finish. A single large object can exceed the budget; sustained long reads may delay reclamation.
 
+GC checks read-view protection before decoding orphan index files, avoiding repeated validation under the tenant lock when a file cannot yet be reclaimed. Eligible files still undergo content and tenant validation; deletion rechecks read-view protection.
+
 Incremental entity, forward-edge and reverse-edge pages use a reusable 64-partition entity directory and adjacency maps. Membership changes copy only affected directory partitions. Persisted layouts remain unchanged; each affected page is still rewritten in full. Pending deltas stop coalescing at 8192 changed IDs and continue in bounded publication order instead of forcing a full rebuild. Schema changes, catalog gaps and corrupt inputs can still require rebuilding.
 
 Index health reports `updating: true` while a published graph is ahead of its queued or running index update. Automatic maintenance waits for that update instead of starting a redundant full rebuild and throttling writes. Failed updates remain eligible for repair on the next maintenance cycle. Explicit rebuild requests still run.

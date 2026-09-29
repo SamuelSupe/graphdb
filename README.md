@@ -1,4 +1,4 @@
-# GGraphDB 2.0
+# GGraphDB 2.1
 
 [简体中文](README.zh-CN.md)
 
@@ -9,14 +9,18 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.1.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.1) is the main
+[2.1.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.2) is the main
 release, developed on `main`. Local disk holds the live graph; optional
 S3-compatible object storage holds snapshot backups for on-demand recovery.
-See the [2.1 release notes](release/local-disk.md) and
+See the [2.1.2 release notes](release/local-disk.md) and
 [version boundaries](docs/naming-and-compatibility.md). There is no 1.x migration
 or legacy digest compatibility layer. Upgrading from 1.x requires a new directory;
 2.0 installations can reuse their directory after stopping the old process.
 2.1 adds [scheduled S3 backups, retries, retention, and restore drills](docs/object-backup.md#automatic-backups), disabled by default.
+
+2.1.2 reduces GC work under the tenant lock by deferring validation of orphan
+index files still protected by active queries. It keeps the existing data format,
+API and synchronous durability defaults.
 
 ## Capabilities
 
@@ -87,16 +91,21 @@ acceptance, while `Prefer: wait=committed` waits for the terminal result.
 Data files are synced before their manifest/catalog is published. A bounded
 four-worker write path coalesces directory syncs with file, byte and time budgets; random file reads let Parquet
 select columns and row groups. Reads use bounded caches and local invalidation.
-GC and destructive lifecycle operations wait for active read views.
+GC defers files protected by active read views; destructive lifecycle operations
+wait for those views to finish.
 
-The benchmark tools support the original object-store and local-file baselines.
-The [2.0 validation report](docs/performance-v2.0.md) separates measured results
-from capacity limits. Historical release reports describe their own builds.
+In a focused OrbStack workload with four writers, sixteen readers and background
+maintenance, write P95 fell from 11.77–12.34 s to 8.08 s. This is a limited
+measurement, not a production latency guarantee: writes still have second-scale
+tails, and compaction duration showed an unresolved regression signal. See the
+[write-tail report](docs/performance-write-tail.md) for the method and limits and
+[2.1.2 validation](docs/validation-v2.1.2.md) for release checks.
+Historical reports, including [2.0](docs/performance-v2.0.md), describe their own builds.
 
 ## Documentation
 
 - [Local disk operation and validation](docs/local-disk.md)
-- [2.0 changes and performance validation](docs/performance-v2.0.md)
+- [2.1.2 write-tail measurements and limits](docs/performance-write-tail.md)
 - [Architecture](docs/architecture.en.md)
 - [User guide](docs/user/README.md)
 - [Query capabilities](docs/query_capabilities.md)
@@ -121,6 +130,3 @@ consistency. The optional soak runs for 30 minutes. It manages only its own proc
 and retains evidence in the printed output directory.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [LICENSE](LICENSE).
-
-S3 backups support opt-in tenant schedules, restart retries, full download verification,
-optional restore drills and automatic retention. See [backup automation](docs/object-backup.md#automatic-backups).
