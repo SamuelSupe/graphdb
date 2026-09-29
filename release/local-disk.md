@@ -16,8 +16,8 @@
 磁盘格式、HTTP `/v1`、Go 模块 `/v2`、同步持久化默认值和 S3 备份机制保持不变。
 SDK 版本同步为 2.1.2。升级步骤见[部署指南](https://github.com/SamuelSupe/graphdb/blob/v2.1.2/docs/user/release-deployment.zh-CN.md)。
 
-发布门禁覆盖完整单元/vet/race、SDK、HTTP direct/WAL、重启恢复、S3 备份恢复和
-含维护任务的 30 分钟混合负载；只有全部通过并验证归档后才发布。
+完整单元/vet/race、SDK、HTTP direct/WAL、重启恢复和 S3 备份恢复检查已通过。
+按本次发布要求，30 分钟混合负载提前停止，不计为通过；归档和二进制仍执行校验。
 验证范围见包内 `docs/validation-v2.1.2.md`，原始 CI 记录在 `release/evidence/`。
 
 ## English
@@ -41,9 +41,9 @@ Data formats, HTTP `/v1`, Go module `/v2`, synchronous durability defaults and
 S3 backups are unchanged. Both SDKs are version 2.1.2. See the
 [upgrade guide](https://github.com/SamuelSupe/graphdb/blob/v2.1.2/docs/user/release-deployment.md).
 
-Publication requires unit/vet/race, SDK, direct/WAL HTTP and restart checks,
-S3 backup/restore, a 30-minute mixed workload with maintenance, and archive
-verification. Scope and limits are in `docs/validation-v2.1.2.md`; raw CI gate
+Unit/vet/race, SDK, direct/WAL HTTP and restart checks, and S3 backup/restore
+passed. The 30-minute mixed workload was stopped by explicit release decision
+and is not counted as passed. Archive and binary verification remain required. Scope and limits are in `docs/validation-v2.1.2.md`; raw CI gate
 evidence is included under `release/evidence/`.
 
 ## Download and verify / 下载与校验

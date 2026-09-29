@@ -38,17 +38,22 @@ retained in `.workflow/release-v2.1.2/`.
 
 ## Publication gate
 
-The exact tag must pass full Go unit/vet/race, Python SDK and version-contract
+The exact tag passed GitHub unit/vet/race, Python SDK and version-contract
 checks, actual direct/WAL HTTP and restart flows, S3-compatible backup/restore,
-and a 30-minute mixed workload with compaction, GC and index rebuilding.
-The workflow then checks archive/binary checksums, build identity, and container
-startup from the extracted package before creating the GitHub Release.
-The existence of a published release requires these jobs to succeed; a local
-report or pushed tag alone is not completion.
+and main-branch container startup/restart checks. The full OrbStack static gate
+also passed, including race and SDK checks.
 
-The archive contains raw local-disk and S3 gate evidence in `release/evidence/`.
-The performance report's 180-second measurements are separate from the release
-soak, which checks correctness and endurance rather than relative performance.
+**The 30-minute mixed workload was stopped at the user's explicit request. It is
+NOT COMPLETED and is not counted as a passing endurance test.** The tag workflow
+was cancelled after its static, HTTP and S3 jobs succeeded. Publication uses the
+same immutable tag source with archive/binary checksums, build identity and a
+container-local binary startup check. Default future release workflows retain
+their existing soak requirement.
+
+The archive contains direct/WAL and S3 evidence under `release/evidence/`, plus
+this explicit endurance-test waiver. `BUILD-METADATA.json` records the tagged
+code commit and the later documentation commit separately. The performance
+report's 180-second measurements do not replace the skipped endurance test.
 
 ## Performance and limits
 

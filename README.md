@@ -20,7 +20,9 @@ or legacy digest compatibility layer. Upgrading from 1.x requires a new director
 
 2.1.2 reduces GC work under the tenant lock by deferring validation of orphan
 index files still protected by active queries. It keeps the existing data format,
-API and synchronous durability defaults.
+API and synchronous durability defaults. Unit/race, HTTP and S3 checks passed;
+the 30-minute endurance run was stopped by explicit release decision and remains
+unvalidated for this release.
 
 ## Capabilities
 
