@@ -30,7 +30,7 @@ func loadRaftConfig(dataDir string) (RaftConfig, error) {
 	cfg := RaftConfig{Bootstrap: true, Tick: 100 * time.Millisecond, SnapshotEntries: 1000, MaxSnapshotBytes: 512 << 20}
 	raw := strings.TrimSpace(os.Getenv("GRAPHDB_RAFT_NODE_ID"))
 	if raw == "" {
-		for _, key := range []string{"GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP"} {
+		for _, key := range []string{"GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES"} {
 			if os.Getenv(key) != "" {
 				return cfg, fmt.Errorf("GRAPHDB_RAFT_NODE_ID is required with %s", key)
 			}

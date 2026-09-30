@@ -35,11 +35,16 @@ type Cluster struct {
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	files.RequireReplicatedWrites()
 	return &Cluster{App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
+	if _, err := c.App.Applied(); err != nil {
+		return err
+	}
+	if err := c.App.Files.RequireReplicatedWrites(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	node, err := replication.Open(ctx, replication.Config{ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes}, c.App)

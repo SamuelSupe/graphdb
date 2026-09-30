@@ -34,6 +34,12 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 	if err != nil {
 		return nil, err
 	}
+	if !cfg.Raft.Enabled {
+		if err := files.CheckStandaloneDirectory(); err != nil {
+			files.Close()
+			return nil, err
+		}
+	}
 	pressure := storage.NewWritePressure(cfg.BackpressureConfig())
 	objects = storage.NewDelayedReadObjectStore(objects, cfg.FaultObjectReadDelay)
 	objects = storage.NewReadProtectedObjectStore(objects, storage.ReadProtectionConfig{

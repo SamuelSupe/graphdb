@@ -39,6 +39,15 @@ GRAPHDB_DATA_DIR=./.graphdb bin/graphdb serve
 docker compose up -d --build
 ```
 
+同一二进制同时支持单机和 Raft 两种部署方式：
+
+| 部署方式 | 启用方式 | 数据持久化 | 运维 |
+| --- | --- | --- | --- |
+| 单机（默认） | 不设置 `GRAPHDB_RAFT_*`；使用 `docker-compose.yml` | 本机同步 direct / WAL | 定时维护、自动 S3 备份、停机后离线 CLI |
+| 三副本 Raft | 完整配置 `GRAPHDB_RAFT_NODE_ID` 等参数；使用 `docker-compose.raft.yml` | 多数派持久化，节点各持完整副本 | Leader 接管、集群 API 维护；首版自动备份由外部调度 |
+
+两种部署均支持 direct 和 WAL 接入，可在同一环境中使用不同端口、不同数据目录独立运行。已有单机目录保持兼容；Raft 副本目录不能通过删除配置切换成单机，单机数据也不能直接作为新 Raft 副本。跨部署迁移使用 API 导入或备份恢复到新目录。
+
 数据目录由一个进程独占。离线 CLI 必须在服务停止后使用，在线管理使用 HTTP API。
 支持 Linux/macOS 本地文件系统；不提供独立读写进程或共享网络文件系统。跨机器复制使用可选 [Raft 部署](docs/raft-ha.zh-CN.md)，每个节点拥有独立目录。
 

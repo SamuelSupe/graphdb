@@ -530,9 +530,14 @@ func TestHARejectsDataWithoutRaftHistory(t *testing.T) {
 	if err := standalone.Put(context.Background(), "graphdb/old-data", []byte("existing")); err != nil {
 		t.Fatal(err)
 	}
-	app := &Application{Files: standalone}
-	if _, err := app.Applied(); err == nil {
+	store = storage.NewTenantStore(standalone, "graphdb")
+	cluster = New(replica.cfg, store, standalone)
+	if err := cluster.Start(context.Background(), replica.cfg.Raft); err == nil {
+		cluster.Close()
 		t.Fatal("standalone data directory was accepted for bootstrap")
+	}
+	if err := standalone.CheckStandaloneDirectory(); err != nil {
+		t.Fatalf("failed bootstrap changed the standalone directory's mode: %v", err)
 	}
 }
 

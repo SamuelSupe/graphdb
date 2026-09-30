@@ -250,8 +250,29 @@ func recordReplicationFailure(ctx context.Context, err error) {
 }
 
 var ErrReplicationWriteRequired = errors.New("HA data changes require a committed Raft application")
+var ErrRaftDataDirectory = errors.New("Raft replica data cannot be opened in standalone mode; restore the Raft configuration or import into a new standalone directory")
 
-func (s *FileStore) RequireReplicatedWrites() { s.replicatedWrites.Store(true) }
+func (s *FileStore) CheckStandaloneDirectory() error {
+	for _, dir := range []string{replicationDirectory, ".graphdb-raft"} {
+		if _, err := os.Lstat(filepath.Join(s.root, dir)); err == nil {
+			return ErrRaftDataDirectory
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// Persist the mode before joining, even when the Raft log is stored elsewhere
+// and this replica has not applied its first entry yet.
+func (s *FileStore) RequireReplicatedWrites() error {
+	if err := ensureDurableDirectory(filepath.Join(s.root, replicationDirectory)); err != nil {
+		return err
+	}
+	s.replicatedWrites.Store(true)
+	return nil
+}
+
 func (s *FileStore) checkReplicatedWrite(ctx context.Context) error {
 	if !s.replicatedWrites.Load() {
 		return nil

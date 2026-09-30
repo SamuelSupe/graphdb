@@ -50,6 +50,19 @@ Or start the single-service container deployment:
 docker compose up -d --build
 ```
 
+The same binary supports both deployment options:
+
+| Deployment | Selection | Durability | Operations |
+| --- | --- | --- | --- |
+| Standalone (default) | Leave `GRAPHDB_RAFT_*` unset; use `docker-compose.yml` | Local synchronous direct / WAL writes | Scheduled maintenance, automatic S3 backups, offline CLI after shutdown |
+| Three-replica Raft | Configure `GRAPHDB_RAFT_NODE_ID` and the other required Raft settings; use `docker-compose.raft.yml` | Majority persistence, a full copy per node | Leader failover and cluster API maintenance; external backup scheduling in the first version |
+
+Both accept direct and WAL ingestion and can run independently with separate
+ports and data directories. Existing standalone directories remain compatible.
+Removing Raft settings cannot turn a replica directory into a standalone database;
+existing standalone data cannot bootstrap a new replica. Migrate through API
+imports or backup restoration into a new directory.
+
 The data directory is exclusive to one process. Stop the service before using
 an offline CLI on its directory; use the HTTP APIs for live administration.
 Linux and macOS local filesystems are supported. Separate readers/writers,
