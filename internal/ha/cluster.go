@@ -17,6 +17,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -31,11 +32,13 @@ type Cluster struct {
 	FlushInterval    time.Duration
 	FlushMaxRequests int
 	FlushMaxBytes    int64
+	config           config.RaftConfig
+	shards           *sharding.Client
 }
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
@@ -45,6 +48,17 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	if err := c.App.Files.RequireReplicatedWrites(); err != nil {
 		return err
 	}
+	role := ""
+	if cfg.Catalog {
+		role = "catalog"
+	} else if cfg.ShardID != "" {
+		role = "shard:" + cfg.ShardID
+	}
+	if err := c.App.Files.ConfigureReplicationRole(role); err != nil {
+		return err
+	}
+	c.config = cfg
+	c.shards = sharding.NewClient(cfg.Token)
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	node, err := replication.Open(ctx, replication.Config{ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes}, c.App)
@@ -55,6 +69,10 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	c.Node = node
 	c.background.Add(1)
 	go func() { defer c.background.Done(); c.RunBackground(ctx) }()
+	if cfg.Catalog {
+		c.background.Add(1)
+		go func() { defer c.background.Done(); c.runShardMigrations(ctx) }()
+	}
 	return nil
 }
 
@@ -66,6 +84,7 @@ func newCommand(kind string) (command, error) {
 	return command{ID: hex.EncodeToString(id[:]), At: time.Now().UTC(), Kind: kind}, nil
 }
 func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
+	cmd.Role = c.App.replicationRole()
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
@@ -99,11 +118,19 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		return
 	}
 	tenant := r.Header.Get("X-Tenant-ID")
+	if c.App.Catalog {
+		http.Error(w, "catalog groups only expose cluster administration on their private listener", http.StatusNotFound)
+		return
+	}
 	if strings.HasPrefix(r.URL.EscapedPath(), "/v1/tenants/") {
 		segments := strings.Split(strings.TrimPrefix(r.URL.EscapedPath(), "/v1/tenants/"), "/")
 		if len(segments) > 0 {
 			tenant, _ = url.PathUnescape(segments[0])
 		}
+	}
+	routeEpoch, valid := c.checkShardRequest(ctx, w, r, tenant)
+	if !valid {
+		return
 	}
 	var expectedGeneration int64
 	if raw := r.Header.Get("X-GraphDB-Read-Generation"); raw != "" {
@@ -117,6 +144,13 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	if !mutation || runtimeOnly {
 		c.App.mu.RLock()
 		defer c.App.mu.RUnlock()
+		if c.App.ShardID != "" && tenant != "" {
+			valid, err := c.App.checkOwnership(ctx, tenant, routeEpoch)
+			if err != nil || !valid {
+				http.Error(w, "tenant ownership changed before reading", http.StatusConflict)
+				return
+			}
+		}
 		if tenant != "" {
 			generation, err := c.App.Store.ReplicationTenantGeneration(ctx, tenant)
 			if err != nil {
@@ -152,12 +186,13 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	cmd.URI = r.URL.RequestURI()
 	cmd.Body = body
 	cmd.Header = make(http.Header)
-	for _, name := range []string{"X-Tenant-ID", "Content-Type"} {
+	for _, name := range []string{"X-Tenant-ID", "Content-Type", "Idempotency-Key", sharding.TargetEpochHeader} {
 		if value := r.Header.Get(name); value != "" {
 			cmd.Header.Set(name, value)
 		}
 	}
 	cmd.Tenant = tenant
+	cmd.RouteEpoch = routeEpoch
 	cmd.ExpectedGeneration = expectedGeneration
 	if r.URL.Path == "/v1/ingest/batches" {
 		var request storage.IngestRequest
@@ -212,7 +247,12 @@ func (c *Cluster) writeError(w http.ResponseWriter, err error) {
 }
 
 func (c *Cluster) Close() error {
-	c.closeOnce.Do(func() { c.cancel(); c.background.Wait(); c.closeErr = c.Node.Close() })
+	c.closeOnce.Do(func() {
+		c.cancel()
+		c.background.Wait()
+		c.shards.HTTP.CloseIdleConnections()
+		c.closeErr = c.Node.Close()
+	})
 	return c.closeErr
 }
 func (c *Cluster) Status() map[string]any { return c.Node.Status() }

@@ -10,6 +10,7 @@ const (
 	commandCoordinator
 	commandVersion
 	commandHelp
+	commandRouter
 )
 
 type commandHandler func([]string, *storage.TenantStore) error
@@ -24,6 +25,7 @@ type commandSpec struct {
 
 var commandSpecs = []commandSpec{
 	{name: "serve", usage: []string{"graphdb serve"}, kind: commandServe},
+	{name: "serve-router", usage: []string{"graphdb serve-router"}, kind: commandRouter},
 	{name: "version", usage: []string{"graphdb version"}, kind: commandVersion},
 	{name: "coordinator", usage: []string{"graphdb coordinator (unsupported in local disk edition)"}, kind: commandCoordinator},
 	{name: "init-tenant", usage: []string{"graphdb init-tenant <tenant-id>"}, mutation: true, handler: initTenant},

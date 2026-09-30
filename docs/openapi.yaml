@@ -2,13 +2,144 @@ openapi: 3.0.3
 info:
   title: GGraphDB API
   version: 2.1.2
-  description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Version 2.1 retains the 2.0 data format and adds optional S3 backup automation. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
+  description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Version 2.1 retains the 2.0 data format and adds optional S3 backup automation. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
 security:
   - GatewayBearer: []
     TenantHeader: []
 paths:
+  /v1/cluster:
+    get:
+      security:
+        - GatewayBearer: []
+      summary: Read the strongly consistent shard catalog (serve-router only).
+      description: Requires the router token. Returns shard definitions, persistent tenant placements and resumable migration phases. Data-shard health is reported separately by each node.
+      responses:
+        '200':
+          description: Current catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShardCatalog'
+        '401':
+          description: Router token missing or invalid.
+        '503':
+          description: Catalog majority or leader unavailable.
+  /v1/cluster/shards:
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Register a data Raft group or update its peer seeds (serve-router only).
+      description: Probes the leader and verifies shard ID, cluster ID and object prefix. Registering a shard preserves existing placements. A registered cluster ID is immutable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DataShard'
+      responses:
+        '202':
+          description: Shard registration persisted by the catalog majority.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataShard'
+        '400':
+          description: Invalid shard definition.
+        '401':
+          description: Router token missing or invalid.
+        '409':
+          description: Shard identity, role or prefix conflicts.
+        '503':
+          description: Catalog or target shard unavailable.
+  /v1/cluster/placements:
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Persist a tenant assignment (serve-router only).
+      description: Without target, selects the shard with the fewest assigned tenants, with stable ID ordering for ties. Existing placements are never overwritten. Poll GET /v1/cluster until state is active.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id:
+                  type: string
+                target:
+                  type: string
+      responses:
+        '202':
+          description: Assignment persisted; data-group ownership may still be pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShardPlacement'
+        '401':
+          description: Router token missing or invalid.
+        '409':
+          description: Invalid tenant, no registered target, or conflicting placement.
+        '503':
+          description: Catalog unavailable.
+  /v1/cluster/moves:
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Move a complete tenant to another Raft group (serve-router only).
+      description: Pauses this tenant's reads and writes until the source is drained and frozen, the target is installed and activated, and placement advances to a new routing epoch. Other tenants continue serving. Repeating an in-progress request for the same target returns its current state. Poll the catalog for completion and errors.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, target]
+              properties:
+                tenant_id:
+                  type: string
+                target:
+                  type: string
+      responses:
+        '202':
+          description: Migration persisted; completes when active at target with no move.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShardPlacement'
+        '401':
+          description: Router token missing or invalid.
+        '409':
+          description: Invalid placement, same source and target, or another unfinished move.
+        '503':
+          description: Catalog unavailable.
+  /v1/cluster/moves/{tenant_id}/cancel:
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Cancel a tenant move before catalog cutover (serve-router only).
+      description: Advances the source routing epoch before resuming service. Destination cleanup resumes when its group is available. After cutover, cancellation is rejected; activation and cleanup continue retrying.
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Cancellation persisted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShardPlacement'
+        '401':
+          description: Router token missing or invalid.
+        '409':
+          description: Move absent or already cut over.
+        '503':
+          description: Catalog unavailable.
   /openapi.yaml:
     get:
       security: []
@@ -1860,6 +1991,70 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
   schemas:
+    DataShard:
+      type: object
+      required: [id, cluster_id, peers]
+      properties:
+        id:
+          type: string
+        cluster_id:
+          type: string
+        peers:
+          type: object
+          minProperties: 3
+          description: Positive node IDs mapped to distinct private HTTP origins.
+          additionalProperties:
+            type: string
+            format: uri
+    ShardPlacement:
+      type: object
+      required: [tenant_id, shard_id, epoch, state]
+      properties:
+        tenant_id:
+          type: string
+        shard_id:
+          type: string
+        epoch:
+          type: integer
+          format: int64
+          minimum: 1
+        state:
+          type: string
+          enum: [assigning, active, moving, activating, cancelling]
+        move:
+          type: object
+          required: [id, source, target, epoch, phase]
+          properties:
+            id:
+              type: string
+            source:
+              type: string
+            target:
+              type: string
+            epoch:
+              type: integer
+              format: int64
+            phase:
+              type: string
+              enum: [copy, activate, cleanup, cancel, discard]
+            error:
+              type: string
+              description: Last attempt's error; the coordinator retries until progress or explicit cancellation.
+    ShardCatalog:
+      type: object
+      required: [version, shards, tenants]
+      properties:
+        version:
+          type: integer
+          format: int64
+        shards:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/DataShard'
+        tenants:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ShardPlacement'
     CoordinatorStatus:
       type: object
       required: [backend, available, schema_version, tenants, outbox_backlog, derived_backlog, max_legacy_mirror_lag, checked_at]

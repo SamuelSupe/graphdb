@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,14 +21,15 @@ import (
 )
 
 type testReplica struct {
-	mu      sync.RWMutex
-	cluster *Cluster
-	handler http.Handler
-	files   *storage.FileStore
-	store   *storage.TenantStore
-	peer    *httptest.Server
-	blocked atomic.Bool
-	cfg     config.Config
+	mu                  sync.RWMutex
+	cluster             *Cluster
+	handler             http.Handler
+	files               *storage.FileStore
+	store               *storage.TenantStore
+	peer                *httptest.Server
+	blocked             atomic.Bool
+	loseInstallResponse atomic.Bool
+	cfg                 config.Config
 }
 
 type testCluster struct {
@@ -36,6 +38,10 @@ type testCluster struct {
 }
 
 func newTestCluster(t *testing.T, wal bool) *testCluster {
+	return newTestClusterRole(t, wal, "", false)
+}
+
+func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool) *testCluster {
 	t.Helper()
 	group := &testCluster{t: t}
 	peers := make(map[uint64]string)
@@ -53,7 +59,23 @@ func newTestCluster(t *testing.T, wal bool) *testCluster {
 				http.Error(w, "stopped", http.StatusServiceUnavailable)
 				return
 			}
-			cluster.Node.Handler().ServeHTTP(w, r)
+			if replica.loseInstallResponse.Load() && r.Method == http.MethodPost && r.URL.Path == "/cluster/action" {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				var action struct {
+					Operation string `json:"operation"`
+				}
+				if json.Unmarshal(body, &action) == nil && action.Operation == "install" && replica.loseInstallResponse.Swap(false) {
+					cluster.PrivateHandler().ServeHTTP(httptest.NewRecorder(), r)
+					http.Error(w, "install response lost", http.StatusServiceUnavailable)
+					return
+				}
+			}
+			cluster.PrivateHandler().ServeHTTP(w, r)
 		}))
 		peers[uint64(i+1)] = replica.peer.URL
 		group.nodes = append(group.nodes, replica)
@@ -65,6 +87,15 @@ func newTestCluster(t *testing.T, wal bool) *testCluster {
 		}
 		replica.cfg = config.Config{Prefix: "graphdb", InstanceID: "raft-test", IngestMode: mode, IngestFlushInterval: time.Hour, IngestFlushMaxRequests: 256, IngestFlushMaxBytes: 8 << 20, Raft: config.RaftConfig{Enabled: true, ID: uint64(i + 1), ClusterID: "test", Dir: filepath.Join(t.TempDir(), "raft"), Peers: peers, Token: "01234567890123456789012345678901", Bootstrap: true, Tick: 20 * time.Millisecond, SnapshotEntries: 5, MaxSnapshotBytes: 64 << 20}}
 		replica.cfg.Raft.Tick = 100 * time.Millisecond
+		if catalog || shardID != "" {
+			replica.cfg.Raft.ShardID, replica.cfg.Raft.Catalog = shardID, catalog
+			replica.cfg.Raft.ClusterID = shardID
+			if catalog {
+				replica.cfg.Raft.ClusterID = "catalog"
+			}
+			replica.cfg.InstanceID = "raft-" + replica.cfg.Raft.ClusterID
+			replica.cfg.IngestFlushInterval = 200 * time.Millisecond
+		}
 		replica.cfg.DataDir = t.TempDir()
 		group.start(i)
 	}
@@ -84,7 +115,7 @@ func (g *testCluster) start(i int) {
 	if err != nil {
 		g.t.Fatal(err)
 	}
-	store := storage.NewTenantStoreWithOptions(files, "graphdb", storage.TenantStoreOptions{InstanceID: "raft-test", MaxWriteCacheBytes: 64 << 20})
+	store := storage.NewTenantStoreWithOptions(files, "graphdb", storage.TenantStoreOptions{InstanceID: replica.cfg.InstanceID, MaxWriteCacheBytes: 64 << 20})
 	cluster := New(replica.cfg, store, files)
 	api := &httpapi.Server{Store: store, Mode: "all", Cluster: cluster}
 	handler := api.Handler()

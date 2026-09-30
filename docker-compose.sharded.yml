@@ -1,0 +1,108 @@
+x-node: &node
+  image: ${GRAPHDB_HA_IMAGE:-graphdb:raft-ha}
+  build: .
+  command: [serve]
+  restart: unless-stopped
+  stop_grace_period: 60s
+
+x-common: &common
+  GRAPHDB_ADDR: :8080
+  GRAPHDB_DATA_DIR: /var/lib/graphdb
+  GRAPHDB_RAFT_ADDR: :8081
+  GRAPHDB_RAFT_TOKEN: ${GRAPHDB_RAFT_TOKEN:?set a random token of at least 32 bytes}
+  GRAPHDB_INGEST_MODE: ${GRAPHDB_INGEST_MODE:-direct}
+
+x-catalog: &catalog
+  <<: *common
+  GRAPHDB_RAFT_CATALOG: "true"
+  GRAPHDB_RAFT_CLUSTER_ID: graphdb-catalog
+  GRAPHDB_RAFT_PEERS: '{"1":"http://catalog1:8081","2":"http://catalog2:8081","3":"http://catalog3:8081"}'
+
+x-shard-a: &shard-a
+  <<: *common
+  GRAPHDB_RAFT_SHARD_ID: shard-a
+  GRAPHDB_RAFT_CLUSTER_ID: graphdb-shard-a
+  GRAPHDB_RAFT_PEERS: '{"1":"http://a1:8081","2":"http://a2:8081","3":"http://a3:8081"}'
+
+x-shard-b: &shard-b
+  <<: *common
+  GRAPHDB_RAFT_SHARD_ID: shard-b
+  GRAPHDB_RAFT_CLUSTER_ID: graphdb-shard-b
+  GRAPHDB_RAFT_PEERS: '{"1":"http://b1:8081","2":"http://b2:8081","3":"http://b3:8081"}'
+
+services:
+  catalog1:
+    <<: *node
+    environment:
+      <<: *catalog
+      GRAPHDB_RAFT_NODE_ID: "1"
+    volumes: ["catalog1:/var/lib/graphdb"]
+  catalog2:
+    <<: *node
+    environment:
+      <<: *catalog
+      GRAPHDB_RAFT_NODE_ID: "2"
+    volumes: ["catalog2:/var/lib/graphdb"]
+  catalog3:
+    <<: *node
+    environment:
+      <<: *catalog
+      GRAPHDB_RAFT_NODE_ID: "3"
+    volumes: ["catalog3:/var/lib/graphdb"]
+  a1:
+    <<: *node
+    environment:
+      <<: *shard-a
+      GRAPHDB_RAFT_NODE_ID: "1"
+    volumes: ["a1:/var/lib/graphdb"]
+  a2:
+    <<: *node
+    environment:
+      <<: *shard-a
+      GRAPHDB_RAFT_NODE_ID: "2"
+    volumes: ["a2:/var/lib/graphdb"]
+  a3:
+    <<: *node
+    environment:
+      <<: *shard-a
+      GRAPHDB_RAFT_NODE_ID: "3"
+    volumes: ["a3:/var/lib/graphdb"]
+  b1:
+    <<: *node
+    environment:
+      <<: *shard-b
+      GRAPHDB_RAFT_NODE_ID: "1"
+    volumes: ["b1:/var/lib/graphdb"]
+  b2:
+    <<: *node
+    environment:
+      <<: *shard-b
+      GRAPHDB_RAFT_NODE_ID: "2"
+    volumes: ["b2:/var/lib/graphdb"]
+  b3:
+    <<: *node
+    environment:
+      <<: *shard-b
+      GRAPHDB_RAFT_NODE_ID: "3"
+    volumes: ["b3:/var/lib/graphdb"]
+  router:
+    <<: *node
+    command: [serve-router]
+    environment:
+      GRAPHDB_ADDR: :8080
+      GRAPHDB_ROUTER_TOKEN: ${GRAPHDB_RAFT_TOKEN:?set a random token of at least 32 bytes}
+      GRAPHDB_ROUTER_CATALOG_CLUSTER_ID: graphdb-catalog
+      GRAPHDB_ROUTER_CATALOG_PEERS: '{"1":"http://catalog1:8081","2":"http://catalog2:8081","3":"http://catalog3:8081"}'
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on: [catalog1, catalog2, catalog3]
+
+volumes:
+  catalog1:
+  catalog2:
+  catalog3:
+  a1:
+  a2:
+  a3:
+  b1:
+  b2:
+  b3:

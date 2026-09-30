@@ -24,13 +24,15 @@ type RaftConfig struct {
 	Tick             time.Duration
 	SnapshotEntries  uint64
 	MaxSnapshotBytes int64
+	ShardID          string
+	Catalog          bool
 }
 
 func loadRaftConfig(dataDir string) (RaftConfig, error) {
 	cfg := RaftConfig{Bootstrap: true, Tick: 100 * time.Millisecond, SnapshotEntries: 1000, MaxSnapshotBytes: 512 << 20}
 	raw := strings.TrimSpace(os.Getenv("GRAPHDB_RAFT_NODE_ID"))
 	if raw == "" {
-		for _, key := range []string{"GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES"} {
+		for _, key := range []string{"GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES", "GRAPHDB_RAFT_SHARD_ID", "GRAPHDB_RAFT_CATALOG"} {
 			if os.Getenv(key) != "" {
 				return cfg, fmt.Errorf("GRAPHDB_RAFT_NODE_ID is required with %s", key)
 			}
@@ -43,6 +45,16 @@ func loadRaftConfig(dataDir string) (RaftConfig, error) {
 		return cfg, fmt.Errorf("GRAPHDB_RAFT_NODE_ID must be a positive integer")
 	}
 	cfg.ID = id
+	cfg.ShardID = strings.TrimSpace(os.Getenv("GRAPHDB_RAFT_SHARD_ID"))
+	if cfg.ShardID != "" && (strings.ContainsAny(cfg.ShardID, "/\\ \t\r\n") || cfg.ShardID == "." || cfg.ShardID == ".." || len(cfg.ShardID) > 128) {
+		return cfg, fmt.Errorf("invalid GRAPHDB_RAFT_SHARD_ID")
+	}
+	if err := loadBoolEnv("GRAPHDB_RAFT_CATALOG", &cfg.Catalog); err != nil {
+		return cfg, err
+	}
+	if cfg.Catalog && cfg.ShardID != "" {
+		return cfg, fmt.Errorf("a Raft group must be either catalog or data shard")
+	}
 	cfg.ClusterID = strings.TrimSpace(os.Getenv("GRAPHDB_RAFT_CLUSTER_ID"))
 	if cfg.ClusterID == "" || strings.ContainsAny(cfg.ClusterID, "/\\ \t\r\n") {
 		return cfg, fmt.Errorf("GRAPHDB_RAFT_CLUSTER_ID must be a nonempty identifier")

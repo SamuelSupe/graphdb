@@ -13,14 +13,17 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type command struct {
 	ExpectedGeneration int64       `json:"expected_generation,omitempty"`
+	RouteEpoch         uint64      `json:"route_epoch,omitempty"`
 	ID                 string      `json:"id"`
 	At                 time.Time   `json:"at"`
 	Kind               string      `json:"kind"`
+	Role               string      `json:"role,omitempty"`
 	Tenant             string      `json:"tenant,omitempty"`
 	Method             string      `json:"method,omitempty"`
 	URI                string      `json:"uri,omitempty"`
@@ -44,6 +47,8 @@ type Application struct {
 	MaxSnapshotBytes int64
 	MaxPendingBytes  int64
 	FlushInterval    time.Duration
+	ShardID          string
+	Catalog          bool
 	mu               sync.RWMutex
 }
 
@@ -88,7 +93,22 @@ func (a *Application) Apply(ctx context.Context, index uint64, data []byte) ([]b
 	if cmd.ID == "" || cmd.At.IsZero() {
 		return nil, fmt.Errorf("replication command has no identity or timestamp")
 	}
+	if cmd.Role != "" && cmd.Role != a.replicationRole() {
+		return nil, fmt.Errorf("replicated group role %q differs from configured role %q", cmd.Role, a.replicationRole())
+	}
 	return a.Files.ApplyReplicated(ctx, index, cmd.ID, cmd.At, func(applyCtx context.Context) ([]byte, error) {
+		if a.ShardID != "" && (cmd.Kind == "http" || cmd.Kind == "accept") {
+			valid, err := a.checkOwnership(applyCtx, cmd.Tenant, cmd.RouteEpoch)
+			if err != nil {
+				return nil, err
+			}
+			if !valid {
+				return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": "tenant ownership changed before application", "retryable": true})
+			}
+			if err := a.checkShardedMutation(applyCtx, cmd); err != nil {
+				return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": err.Error(), "retryable": true})
+			}
+		}
 		if cmd.ExpectedGeneration > 0 {
 			generation, err := a.Store.ReplicationTenantGeneration(applyCtx, cmd.Tenant)
 			if err != nil {
@@ -99,6 +119,18 @@ func (a *Application) Apply(ctx context.Context, index uint64, data []byte) ([]b
 			}
 		}
 		switch cmd.Kind {
+		case "sharding":
+			var action sharding.Action
+			if err := json.Unmarshal(cmd.Body, &action); err != nil {
+				return nil, err
+			}
+			if a.Catalog {
+				return a.applyCatalog(applyCtx, action)
+			}
+			if a.ShardID != "" {
+				return a.applyOwnership(applyCtx, action)
+			}
+			return resultJSON(http.StatusBadRequest, map[string]any{"error": "Raft group has no sharding role"})
 		case "http":
 			request, err := http.NewRequestWithContext(applyCtx, cmd.Method, cmd.URI, bytes.NewReader(cmd.Body))
 			if err != nil {

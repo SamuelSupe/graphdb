@@ -6,6 +6,7 @@ GGraphDB is a multi-tenant property graph database for entities, relationships,
 source-governed ingestion, graph queries, and operational workflows. GGraphDB 2.x
 runs one process on local disk, without a required object-storage or PostgreSQL service.
 Optional [three-replica Raft HA](docs/raft-ha.zh-CN.md) uses independent local disks with leader failover and majority durability.
+Optional [tenant sharding](docs/sharding.zh-CN.md) adds independent Raft groups, persistent placement and tenant migration for horizontal expansion.
 Optional [S3-compatible snapshot backups](docs/object-backup.md) support recovery onto a new local disk.
 
 ## Current release
@@ -50,14 +51,15 @@ Or start the single-service container deployment:
 docker compose up -d --build
 ```
 
-The same binary supports both deployment options:
+The same binary supports standalone and both Raft deployment options:
 
 | Deployment | Selection | Durability | Operations |
 | --- | --- | --- | --- |
 | Standalone (default) | Leave `GRAPHDB_RAFT_*` unset; use `docker-compose.yml` | Local synchronous direct / WAL writes | Scheduled maintenance, automatic S3 backups, offline CLI after shutdown |
 | Three-replica Raft | Configure `GRAPHDB_RAFT_NODE_ID` and the other required Raft settings; use `docker-compose.raft.yml` | Majority persistence, a full copy per node | Leader failover and cluster API maintenance; external backup scheduling in the first version |
+| Sharded Raft | Add catalog / shard roles and `serve-router`; use `docker-compose.sharded.yml` | Independent majority persistence in each shard and the catalog | Add shards, assign new tenants and explicitly move existing tenants |
 
-Both accept direct and WAL ingestion and can run independently with separate
+All accept direct and WAL ingestion and can run independently with separate
 ports and data directories. Existing standalone directories remain compatible.
 Removing Raft settings cannot turn a replica directory into a standalone database;
 existing standalone data cannot bootstrap a new replica. Migrate through API

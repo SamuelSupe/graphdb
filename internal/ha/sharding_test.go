@@ -1,0 +1,233 @@
+package ha
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+)
+
+func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
+	catalog := newTestClusterRole(t, false, "", true)
+	a := newTestClusterRole(t, true, "a", false)
+	b := newTestClusterRole(t, true, "b", false)
+	definition := func(group *testCluster, id string) sharding.Shard {
+		cfg := group.nodes[0].cfg.Raft
+		return sharding.Shard{ID: id, ClusterID: cfg.ClusterID, Peers: cfg.Peers}
+	}
+	catalog.leader(-1)
+	a.leader(-1)
+	b.leader(-1)
+	token := catalog.nodes[0].cfg.Raft.Token
+	client := sharding.NewClient(token)
+	defer client.HTTP.CloseIdleConnections()
+	router := sharding.NewRouter(definition(catalog, "catalog"), token)
+	defer router.Client.HTTP.CloseIdleConnections()
+	var readGeneration string
+	request := func(method, uri, tenant string, body any, status int) *httptest.ResponseRecorder {
+		t.Helper()
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		r := httptest.NewRequest(method, uri, bytes.NewReader(data)).WithContext(ctx)
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+token)
+		if tenant != "" {
+			r.Header.Set("X-Tenant-ID", tenant)
+		}
+		if uri == "/v1/query" && tenant == "tenant-a" {
+			r.Header.Set("X-GraphDB-Read-Generation", readGeneration)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("%s %s: %d, want %d: %s", method, uri, w.Code, status, w.Body.String())
+		}
+		return w
+	}
+	state := func() sharding.Catalog {
+		t.Helper()
+		var result sharding.Catalog
+		if err := client.JSON(context.Background(), definition(catalog, "catalog"), "GET", "/cluster/catalog", nil, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	waitPlacement := func(tenant string, match func(sharding.Placement) bool) sharding.Placement {
+		t.Helper()
+		deadline := time.Now().Add(25 * time.Second)
+		var placement sharding.Placement
+		for time.Now().Before(deadline) {
+			placement = state().Tenants[tenant]
+			if match(placement) {
+				return placement
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("tenant placement did not progress: %+v, move: %+v", placement, placement.Move)
+		return placement
+	}
+	request("POST", "/v1/cluster/shards", "", definition(a, "a"), http.StatusAccepted)
+	request("POST", "/v1/tenants", "", map[string]any{"tenant_id": "tenant-a"}, http.StatusOK)
+	body := map[string]any{"idempotency_key": "before-move", "mutations": map[string]any{"upsert_entities": []any{map[string]any{"id": "host:1", "kind": "host", "fields": map[string]any{"name": "original"}}}}}
+	committed := request("POST", "/v1/commits", "tenant-a", body, http.StatusOK)
+	readGeneration = committed.Header().Get("X-GraphDB-Tenant-Generation")
+	if readGeneration == "" {
+		t.Fatal("commit did not return a read generation")
+	}
+	request("POST", "/v1/cluster/shards", "", definition(b, "b"), http.StatusAccepted)
+	if placement := state().Tenants["tenant-a"]; placement.Shard != "a" || placement.Epoch != 1 {
+		t.Fatalf("adding a shard remapped an existing tenant: %+v", placement)
+	}
+	request("POST", "/v1/tenants", "", map[string]any{"tenant_id": "tenant-b"}, http.StatusOK)
+	if placement := state().Tenants["tenant-b"]; placement.Shard != "b" {
+		t.Fatalf("new shard did not receive new tenants: %+v", placement)
+	}
+	request("POST", "/v1/commits", "tenant-b", body, http.StatusOK)
+	request("POST", "/v1/tenants/tenant-b/clone", "", map[string]any{"target_tenant_id": "tenant-clone"}, http.StatusAccepted)
+	request("GET", "/v1/entities/host:1", "tenant-clone", nil, http.StatusOK)
+	if placement := state().Tenants["tenant-clone"]; placement.Shard != "b" {
+		t.Fatal("clone escaped its owned shard")
+	}
+
+	// The accepted record itself forces a transfer larger than one proposal chunk.
+	batch := map[string]any{"source": "agent", "collector_id": "sharding", "batch_id": "before-move", "idempotency_key": "accepted-before-move", "items": []any{map[string]any{"external_id": "host:2", "entity": map[string]any{"id": "host:2", "kind": "host", "fields": map[string]any{"payload": strings.Repeat("transfer-data", 150000)}}}}}
+	accepted := request("POST", "/v1/ingest/batches", "tenant-a", batch, http.StatusAccepted)
+	var acceptance map[string]any
+	if err := json.Unmarshal(accepted.Body.Bytes(), &acceptance); err != nil {
+		t.Fatal(err)
+	}
+	for _, replica := range b.nodes {
+		replica.blocked.Store(true)
+	}
+	request("POST", "/v1/cluster/moves", "", map[string]any{"tenant_id": "tenant-a", "target": "b"}, http.StatusAccepted)
+	waitPlacement("tenant-a", func(p sharding.Placement) bool { return p.Move != nil && p.Move.Error != "" })
+	oldCatalogLeader := catalog.leader(-1)
+	catalog.stop(oldCatalogLeader)
+	catalog.leader(oldCatalogLeader)
+	for _, replica := range b.nodes {
+		replica.loseInstallResponse.Store(true)
+		replica.blocked.Store(false)
+	}
+	placement := waitPlacement("tenant-a", func(p sharding.Placement) bool { return p.State == "active" && p.Shard == "b" && p.Move == nil })
+	if placement.Epoch != 2 {
+		t.Fatalf("migration did not advance ownership epoch: %+v", placement)
+	}
+	var lostResponse bool
+	for _, replica := range b.nodes {
+		lostResponse = lostResponse || !replica.loseInstallResponse.Load()
+		replica.loseInstallResponse.Store(false)
+	}
+	if !lostResponse {
+		t.Fatal("migration did not exercise recovery from a lost install response")
+	}
+	if chunks, err := b.nodes[b.leader(-1)].files.List(context.Background(), "graphdb/control/sharding/transfers/tenant-a/"); err != nil || len(chunks) != 0 {
+		t.Fatalf("install replay retained staging data: %d, %v", len(chunks), err)
+	}
+	catalog.start(oldCatalogLeader)
+	replayed := request("POST", "/v1/commits", "tenant-a", body, http.StatusOK)
+	var result map[string]any
+	if json.Unmarshal(replayed.Body.Bytes(), &result) != nil || result["idempotent_replay"] != true || result["version"] != float64(1) {
+		t.Fatalf("migration lost commit identity: %s", replayed.Body.String())
+	}
+	status := request("GET", "/v1/ingest/batches/agent/sharding/before-move", "tenant-a", nil, http.StatusOK)
+	var batchStatus map[string]any
+	if json.Unmarshal(status.Body.Bytes(), &batchStatus) != nil || batchStatus["accepted_lsn"] != acceptance["accepted_lsn"] || batchStatus["state"] != "committed" {
+		t.Fatalf("migration lost accepted WAL state: %s", status.Body.String())
+	}
+	request("GET", "/v1/entities/host:2", "tenant-a", nil, http.StatusOK)
+	request("GET", "/v1/ingest/writers/raft-a/batches/agent/sharding/before-move", "tenant-a", nil, http.StatusOK)
+	query := request("POST", "/v1/query", "tenant-a", map[string]any{"op": "match", "kind": "host", "min_version": 2, "limit": 10}, http.StatusOK)
+	if query.Header().Get("X-GraphDB-Shard-ID") != "b" || query.Header().Get(sharding.EpochHeader) != "2" {
+		t.Fatalf("query was not routed to its new owner: %v", query.Header())
+	}
+	aleader := a.leader(-1)
+	if objects, err := a.nodes[aleader].files.List(context.Background(), "graphdb/tenants/tenant-a/"); err != nil || len(objects) != 0 {
+		t.Fatalf("old shard retained migrated tenant data: %d, %v", len(objects), err)
+	}
+	stale := httptest.NewRequest("POST", "/v1/commits", bytes.NewBufferString(`{"mutations":{}}`))
+	stale.Header.Set("X-Tenant-ID", "tenant-a")
+	stale.Header.Set(sharding.EpochHeader, "1")
+	w := httptest.NewRecorder()
+	a.nodes[aleader].handler.ServeHTTP(w, stale)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("old owner accepted a stale request: %d %s", w.Code, w.Body.String())
+	}
+	request("POST", "/v1/cluster/moves", "", map[string]any{"tenant_id": "tenant-a", "target": "a"}, http.StatusAccepted)
+	waitPlacement("tenant-a", func(p sharding.Placement) bool {
+		return p.State == "active" && p.Shard == "a" && p.Epoch == 3 && p.Move == nil
+	})
+	request("GET", "/v1/entities/host:2", "tenant-a", nil, http.StatusOK)
+	request("POST", "/v1/query", "tenant-a", map[string]any{"op": "match", "kind": "host", "min_version": 2, "limit": 10}, http.StatusOK)
+	request("POST", "/v1/commits", "tenant-a", map[string]any{"mutations": map[string]any{"upsert_entities": []any{map[string]any{"id": "host:after-return", "kind": "host"}}}}, http.StatusOK)
+	status = request("GET", "/v1/ingest/batches/agent/sharding/before-move", "tenant-a", nil, http.StatusOK)
+	if json.Unmarshal(status.Body.Bytes(), &batchStatus) != nil || batchStatus["accepted_lsn"] != acceptance["accepted_lsn"] {
+		t.Fatalf("return migration lost accepted WAL identity: %s", status.Body.String())
+	}
+
+	// Losing a data shard quorum does not stop independent shards or catalog.
+	for _, replica := range a.nodes {
+		replica.blocked.Store(true)
+	}
+	request("POST", "/v1/commits", "tenant-b", map[string]any{"mutations": map[string]any{"upsert_entities": []any{map[string]any{"id": "host:independent", "kind": "host"}}}}, http.StatusOK)
+	for _, replica := range a.nodes {
+		replica.blocked.Store(false)
+	}
+	a.leader(-1)
+	request("POST", "/v1/cluster/placements", "", map[string]any{"tenant_id": "cancel-tenant", "target": "a"}, http.StatusAccepted)
+	waitPlacement("cancel-tenant", func(p sharding.Placement) bool { return p.State == "active" })
+	request("POST", "/v1/tenants", "", map[string]any{"tenant_id": "cancel-tenant"}, http.StatusOK)
+	request("POST", "/v1/commits", "cancel-tenant", body, http.StatusOK)
+	for _, replica := range b.nodes {
+		replica.blocked.Store(true)
+	}
+	request("POST", "/v1/cluster/moves", "", map[string]any{"tenant_id": "cancel-tenant", "target": "b"}, http.StatusAccepted)
+	cancelled := waitPlacement("cancel-tenant", func(p sharding.Placement) bool { return p.Move != nil && p.Move.Error != "" })
+	request("POST", "/v1/cluster/moves/cancel-tenant/cancel", "", nil, http.StatusAccepted)
+	waitPlacement("cancel-tenant", func(p sharding.Placement) bool { return p.State == "active" && p.Epoch == 2 })
+	request("GET", "/v1/entities/host:1", "cancel-tenant", nil, http.StatusOK)
+	for _, replica := range b.nodes {
+		replica.blocked.Store(false)
+	}
+	waitPlacement("cancel-tenant", func(p sharding.Placement) bool { return p.Move == nil })
+	for _, obsolete := range []struct {
+		group *testCluster
+		op    string
+		epoch uint64
+	}{{a, "freeze", 1}, {b, "reserve", 2}, {b, "activate", 2}, {catalog, "cutover", 2}} {
+		err := client.JSON(context.Background(), definition(obsolete.group, obsolete.group.nodes[0].cfg.Raft.ClusterID), "POST", "/cluster/action", sharding.Action{Operation: obsolete.op, Tenant: "cancel-tenant", Epoch: obsolete.epoch, MoveID: cancelled.Move.ID}, nil)
+		if response, ok := err.(*sharding.HTTPError); !ok || response.Status != http.StatusConflict {
+			t.Fatalf("cancelled coordinator %s was not fenced: %v", obsolete.op, err)
+		}
+	}
+	request("GET", "/v1/tenants", "", nil, http.StatusOK)
+	groupNode := 0
+	a.stop(groupNode)
+	replica := a.nodes[groupNode]
+	files, err := storage.OpenFileStore(replica.cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	misconfigured := replica.cfg
+	misconfigured.Raft.ShardID = ""
+	store := storage.NewTenantStoreWithOptions(files, "graphdb", storage.TenantStoreOptions{InstanceID: misconfigured.InstanceID})
+	cluster := New(misconfigured, store, files)
+	if err := cluster.Start(context.Background(), misconfigured.Raft); err == nil {
+		cluster.Close()
+		t.Fatal("a shard directory was opened without its ownership role")
+	}
+	files.Close()
+	a.start(groupNode)
+	a.leader(-1)
+	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
+}

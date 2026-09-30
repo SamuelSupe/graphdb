@@ -1,6 +1,6 @@
 # Raft 高可用运行说明
 
-本实现以 [高可用设计](high-availability-design.zh-CN.md) 的首版为目标：三个完整副本、单 Raft 组、单主写入、强一致读取、自动接管。节点各自持有独立目录和磁盘，属于 Share-Nothing 部署；当前没有租户分片，写入容量由一个 Leader 承担。
+本页介绍 [高可用设计](high-availability-design.zh-CN.md) 的单组部署：三个完整副本、单主写入、强一致读取、自动接管。节点各自持有独立目录和磁盘，属于 Share-Nothing 部署；单组写入由一个 Leader 承担。需要扩容时，可选 [分片部署](sharding.zh-CN.md)，通过独立 Raft 数据组和租户迁移增加容量。
 
 单机和 Raft 使用同一二进制，均支持 direct / WAL。未设置 `GRAPHDB_RAFT_*` 时，默认单机运行，保留原有本机 WAL、定时维护、自动 S3 备份和离线 CLI；`GRAPHDB_MODE=all` 在两种部署中均表示一个进程提供完整图服务。设置节点 ID 和完整 Raft 配置后才启用集群；不完整的 Raft 配置会导致启动报错。两种部署使用独立端口和数据目录即可同时运行。
 

@@ -16,6 +16,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/ha"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -43,6 +44,17 @@ func run(args []string) (err error) {
 	}
 	if command.kind == commandCoordinator {
 		return fmt.Errorf("coordinator commands are unsupported in the local disk edition")
+	}
+	if command.kind == commandRouter {
+		cfg, err := config.LoadRouter()
+		if err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		router := sharding.NewRouter(cfg.Catalog, cfg.Token)
+		defer router.Client.HTTP.CloseIdleConnections()
+		return runHTTPServer(ctx, newHTTPServerWithHandler(cfg.Addr, router), httpShutdownTimeout)
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -168,7 +180,7 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		servers = []*http.Server{newHTTPServer(cfg, api)}
 	}
 	if cluster != nil {
-		servers = append(servers, newHTTPServerWithHandler(cfg.Raft.Addr, cluster.Node.Handler()))
+		servers = append(servers, newHTTPServerWithHandler(cfg.Raft.Addr, cluster.PrivateHandler()))
 	}
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,

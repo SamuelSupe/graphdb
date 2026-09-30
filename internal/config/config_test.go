@@ -27,7 +27,40 @@ func TestLoadSupportsStandaloneAndRaftIngestion(t *testing.T) {
 			if err != nil || !cfg.Raft.Enabled || cfg.IngestMode != mode {
 				t.Fatalf("Raft configuration = %+v, %v", cfg.Raft, err)
 			}
+			t.Setenv("GRAPHDB_RAFT_SHARD_ID", "data-a")
+			cfg, err = Load()
+			if err != nil || cfg.Raft.ShardID != "data-a" || cfg.Raft.Catalog {
+				t.Fatalf("data shard configuration = %+v, %v", cfg.Raft, err)
+			}
+			t.Setenv("GRAPHDB_RAFT_CATALOG", "true")
+			if _, err := Load(); err == nil {
+				t.Fatal("one group accepted both catalog and data roles")
+			}
+			t.Setenv("GRAPHDB_RAFT_SHARD_ID", "")
+			cfg, err = Load()
+			if err != nil || !cfg.Raft.Catalog {
+				t.Fatalf("catalog configuration = %+v, %v", cfg.Raft, err)
+			}
 		})
+	}
+}
+
+func TestLoadRouterRequiresProtectedCatalog(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_ROUTER_TOKEN", "01234567890123456789012345678901")
+	t.Setenv("GRAPHDB_ROUTER_CATALOG_CLUSTER_ID", "catalog")
+	t.Setenv("GRAPHDB_ROUTER_CATALOG_PEERS", `{"1":"http://meta1:8081","2":"http://meta2:8081","3":"http://meta3:8081"}`)
+	if _, err := LoadRouter(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GRAPHDB_ROUTER_TOKEN", "short")
+	if _, err := LoadRouter(); err == nil {
+		t.Fatal("router accepted an unprotected catalog connection")
+	}
+	t.Setenv("GRAPHDB_ROUTER_TOKEN", "01234567890123456789012345678901")
+	t.Setenv("GRAPHDB_ROUTER_CATALOG_PEERS", `{"1":"http://meta1:8081","2":"http://meta1:8081/","3":"http://meta3:8081"}`)
+	if _, err := LoadRouter(); err == nil {
+		t.Fatal("router accepted duplicate catalog origins")
 	}
 }
 
@@ -534,7 +567,7 @@ func TestLoadRejectsAmbiguousObjectPrefix(t *testing.T) {
 
 func setLocalConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"GRAPHDB_RAFT_NODE_ID", "GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES"} {
+	for _, key := range []string{"GRAPHDB_RAFT_NODE_ID", "GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES", "GRAPHDB_RAFT_SHARD_ID", "GRAPHDB_RAFT_CATALOG"} {
 		t.Setenv(key, "")
 	}
 	t.Setenv("GRAPHDB_STORAGE", "local")

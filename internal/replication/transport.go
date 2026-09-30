@@ -136,7 +136,15 @@ func (n *Node) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /raft/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(n.Status())
+		status := n.Status()
+		n.peerMu.RLock()
+		peers := make(map[uint64]string, len(n.peers))
+		for id, origin := range n.peers {
+			peers[id] = origin
+		}
+		n.peerMu.RUnlock()
+		status["peers"] = peers
+		json.NewEncoder(w).Encode(status)
 	})
 	mux.HandleFunc("POST /raft/members", n.changeMember)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
