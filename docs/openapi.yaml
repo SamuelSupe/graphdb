@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: GGraphDB API
   version: 2.1.2
-  description: GGraphDB 2.x local-disk, single-process, multi-tenant graph API. Version 2.1 retains the 2.0 data format and adds optional S3 backup automation. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
+  description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Version 2.1 retains the 2.0 data format and adds optional S3 backup automation. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
 security:
@@ -37,17 +37,19 @@ paths:
       summary: Report whether this process is ready to receive traffic.
       responses:
         '200':
-          description: The process, object store, and configured coordinator are ready.
+          description: The process, object store, and configured coordinator are ready. Raft HA additionally requires the leader to complete a majority read barrier.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProcessReadiness'
         '503':
-          description: The object store or configured coordinator is unavailable.
+          description: The object store or configured coordinator is unavailable, or Raft cannot admit leader traffic.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProcessReadiness'
+                oneOf:
+                  - $ref: '#/components/schemas/ProcessReadiness'
+                  - $ref: '#/components/schemas/ErrorResponse'
   /metrics:
     get:
       security: []
@@ -133,7 +135,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestResult'
         '202':
-          description: Batch durably appended to the local ingest WAL. Returned in WAL mode after the requested durability barrier; status is available from the same service.
+          description: Batch durably accepted. Standalone WAL uses its configured local durability barrier; Raft HA majority-persists the logical acceptance and returns durability=raft_majority. Status is available through the cluster leader.
           headers:
             Location:
               schema:
@@ -1909,6 +1911,22 @@ components:
           $ref: '#/components/schemas/CoordinatorStatus'
         build:
           $ref: '#/components/schemas/BuildInfo'
+        raft:
+          type: object
+          description: Present only in Raft HA. Liveness does not imply leader readiness.
+          properties:
+            node_id:
+              type: integer
+            leader_id:
+              type: integer
+            applied_index:
+              type: integer
+            ready:
+              type: boolean
+            error:
+              type: string
+            snapshot_error:
+              type: string
     ProcessReadiness:
       type: object
       required: [status, mode, coordination, object_store, build]
@@ -1984,6 +2002,9 @@ components:
             - write_admission_queue_timeout
             - write_backpressure
             - request_timeout
+            - raft_unavailable
+            - tenant_generation_changed
+            - ingest_queue_full
             - request_canceled
         message:
           type: string
@@ -2585,7 +2606,7 @@ components:
       properties:
         writer_id:
           type: string
-          description: Stable GRAPHDB_INSTANCE_ID of the writer that owns the local WAL.
+          description: Stable GRAPHDB_INSTANCE_ID of the standalone WAL owner, or the stable cluster writer ID in Raft HA.
         source:
           type: string
         collector_id:
@@ -2594,10 +2615,16 @@ components:
           type: string
         state:
           type: string
-          enum: [accepted]
+          enum: [accepted, committed, failed]
         durability:
           type: string
-          enum: [durable, memory]
+          enum: [durable, memory, raft_majority]
+        generation:
+          type: integer
+          description: Tenant incarnation in Raft HA; pair later min_version reads with this generation.
+        accepted_lsn:
+          type: integer
+          description: Raft log index for HA acceptance.
         accepted_at:
           type: string
           format: date-time
@@ -2624,7 +2651,7 @@ components:
           enum: [accepted, prepared, published, retrying, committed, failed]
         durability:
           type: string
-          enum: [durable, memory]
+          enum: [durable, memory, raft_majority]
         accepted_lsn:
           type: integer
         accepted_at:

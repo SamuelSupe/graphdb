@@ -50,6 +50,9 @@ The following top-level `code` values are stable:
 | `write_admission_queue_timeout` | 429 | yes | Write admission queue timed out. |
 | `write_backpressure` | 429 | yes | Generic write backpressure category. |
 | `request_timeout` | 504 | yes | Request execution timed out. |
+| `raft_unavailable` | 503/504 | yes | Raft leader, quorum, application, or snapshot capacity is unavailable. Use the HA entry point and retain write idempotency on retries. |
+| `tenant_generation_changed` | 409 | no | Restore or purge replaced the tenant incarnation. Obtain a new generation before using min_version or retrying fenced mutations. |
+| `ingest_queue_full` | 503 | yes | Replicated accepted requests reached their byte budget. |
 | `request_canceled` | 499 | no | Client or caller canceled the request. |
 
 Write backpressure responses may include `reasons[]` with more specific reason

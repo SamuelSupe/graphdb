@@ -34,7 +34,7 @@ func (s *TenantStore) tenantBackupRecordFromLocalState(
 	if err != nil {
 		return TenantBackupRecord{}, "", err
 	}
-	record := newTenantBackupRecord(tenantID, loaded, metadata)
+	record := newTenantBackupRecord(tenantID, loaded, metadata, mutationTime(ctx))
 	if config, ok, err := s.GetTenantConfig(ctx, tenantID); err != nil {
 		return TenantBackupRecord{}, "", err
 	} else if ok {
@@ -105,11 +105,12 @@ func newTenantBackupRecord(
 	tenantID string,
 	loaded loadedGraph,
 	metadata TenantMetadata,
+	at ...time.Time,
 ) TenantBackupRecord {
 	return TenantBackupRecord{
 		TenantID:  tenantID,
 		Version:   loaded.Manifest.Version,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: artifactTime(at),
 		Metadata:  metadata,
 		Snapshot:  loaded.Graph.Snapshot(),
 	}

@@ -151,8 +151,8 @@ func (s *TenantStore) putShardedSnapshot(ctx context.Context, tenantID string, s
 		Schema:        SnapshotSchemaSpec{Key: schemaKey, Format: snapshotSchemaFormatParquet, ContentHash: snapshotSchemaContentHash(schema)},
 		UpdatedAt:     updatedAt,
 	}
-	entityPages := buildEntityPagesFromEntities(snapshot.Entities, snapshot.Version)
-	edgeShards := buildEdgeShardsFromEdges(snapshot.Edges, snapshot.Version)
+	entityPages := buildEntityPagesFromEntities(snapshot.Entities, snapshot.Version, mutationTime(ctx))
+	edgeShards := buildEdgeShardsFromEdges(snapshot.Edges, snapshot.Version, mutationTime(ctx))
 	if len(entityPages) > 0 {
 		catalog.EntityPages = make([]SnapshotEntityPageSpec, len(entityPages))
 	}

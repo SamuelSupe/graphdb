@@ -62,7 +62,7 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 		return IndexDefinitionResult{}, err
 	}
 	previous := cloneIndexDefinitionRecord(record)
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	normalized.CreatedAt = now
 	normalized.UpdatedAt = now
 	for _, existing := range record.Indexes {

@@ -69,6 +69,7 @@ type CommitOptions struct {
 }
 
 type TenantStore struct {
+	ReplicationMode  bool
 	queryMu          sync.Mutex
 	queryUnavailable map[string]queryIndexFailure
 	Objects          ObjectStore
@@ -234,7 +235,7 @@ func (s *TenantStore) InitTenant(ctx context.Context, tenantID string) (Manifest
 	if err != nil {
 		return Manifest{}, err
 	}
-	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataHash: dataHash}
+	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: mutationTime(ctx), DataHash: dataHash}
 	meta, err := s.putManifestMeta(ctx, tenantID, manifest, ObjectMeta{Key: s.manifestKey(tenantID)})
 	if err != nil {
 		return manifest, err

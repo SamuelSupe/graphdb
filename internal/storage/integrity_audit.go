@@ -49,7 +49,7 @@ func (s *TenantStore) AuditIntegrity(ctx context.Context, tenantID string, optio
 	report := IntegrityAuditReport{
 		TenantID:  tenantID,
 		Status:    "ok",
-		CheckedAt: time.Now().UTC(),
+		CheckedAt: mutationTime(ctx),
 	}
 	manifest, _, err := s.getManifest(ctx, tenantID)
 	if err != nil {

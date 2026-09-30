@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"time"
 )
 
 func (s *TenantStore) publishLocalCompaction(
@@ -60,7 +59,7 @@ func (s *TenantStore) publishLocalCompaction(
 	if candidate.Version == snapshotVersion {
 		candidate.DataHash = dataHash
 	}
-	candidate.UpdatedAt = time.Now().UTC()
+	candidate.UpdatedAt = mutationTime(ctx)
 	meta, err := s.putManifestMeta(ctx, tenantID, candidate, currentMeta)
 	if err != nil {
 		s.deleteWriteCache(tenantID)

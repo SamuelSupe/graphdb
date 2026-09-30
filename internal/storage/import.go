@@ -36,7 +36,7 @@ func (s *TenantStore) StartImport(ctx context.Context, tenantID string, data []b
 	if len(data) > maxImportSourceBytes {
 		return Task{}, fmt.Errorf("import source exceeds %d bytes", maxImportSourceBytes)
 	}
-	importID, err := newCommitID()
+	importID, err := mutationID(ctx, "import")
 	if err != nil {
 		return Task{}, err
 	}

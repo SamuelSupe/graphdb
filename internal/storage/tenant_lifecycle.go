@@ -111,12 +111,12 @@ func (s *TenantStore) CreateTenant(ctx context.Context, tenantID string, options
 		if err != nil {
 			return TenantInfo{}, err
 		}
-		manifest = Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC(), DataHash: dataHash}
+		manifest = Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: mutationTime(ctx), DataHash: dataHash}
 		if _, err := s.putManifestMeta(ctx, tenantID, manifest, meta); err != nil {
 			return TenantInfo{}, err
 		}
 	}
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	metadata := TenantMetadata{
 		TenantID:    tenantID,
 		Status:      TenantStatusActive,
@@ -201,7 +201,7 @@ func (s *TenantStore) UpdateTenantMetadata(ctx context.Context, tenantID string,
 		metadata.Description = options.Description
 		metadata.Labels = cloneStringMap(options.Labels)
 		metadata.Metadata = cloneAnyMap(options.Metadata)
-		metadata.UpdatedAt = time.Now().UTC()
+		metadata.UpdatedAt = mutationTime(ctx)
 	})
 }
 
@@ -216,7 +216,7 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 		}
 	}
 	info, err := s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
-		now := time.Now().UTC()
+		now := mutationTime(ctx)
 		metadata.Status = status
 		metadata.UpdatedAt = now
 		if status == TenantStatusDisabled {
@@ -465,7 +465,7 @@ func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID stri
 		SnapshotCatalogKey: snapshotCatalogKey,
 		SnapshotVersion:    snapshot.Version,
 		DataHash:           dataHash,
-		UpdatedAt:          time.Now().UTC(),
+		UpdatedAt:          mutationTime(ctx),
 	}
 
 	{
@@ -485,7 +485,7 @@ func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID stri
 		}
 	}
 
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	metadata := TenantMetadata{
 		TenantID:    targetTenantID,
 		Status:      TenantStatusActive,
@@ -635,7 +635,7 @@ func (s *TenantStore) tenantMetadataStatus(ctx context.Context, tenantID string)
 }
 
 func (s *TenantStore) getTenantMetadataForStatus(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
-	if metadata, configured, meta, ok := s.getCachedTenantMetadataFresh(tenantID, time.Now().UTC()); ok {
+	if metadata, configured, meta, ok := s.getCachedTenantMetadataFresh(tenantID, mutationTime(ctx)); ok {
 		return metadata, configured, meta, nil
 	}
 	metadata, configured, meta, err := s.getTenantMetadataWithMetaFresh(ctx, tenantID)

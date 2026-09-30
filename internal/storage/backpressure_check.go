@@ -14,6 +14,9 @@ func (s *TenantStore) CheckWriteBackpressure(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID string, authoritative bool) (err error) {
+	if IsReplicatedContext(ctx) {
+		return nil
+	}
 	return s.checkWriteBackpressureWithOptions(ctx, tenantID, authoritative, writeBackpressureCheckOptions{})
 }
 

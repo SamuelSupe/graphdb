@@ -163,7 +163,7 @@ func (s *TenantStore) backupObjectRef(ctx context.Context, ref BackupObjectRef) 
 }
 
 func (s *TenantStore) validateBackupManifest(ctx context.Context, manifest TenantBackupManifest) BackupIntegrityReport {
-	report := BackupIntegrityReport{Status: "ok", CheckedAt: time.Now().UTC(), ManifestKey: s.backupManifestKey(manifest.TenantID, manifest.BackupID)}
+	report := BackupIntegrityReport{Status: "ok", CheckedAt: mutationTime(ctx), ManifestKey: s.backupManifestKey(manifest.TenantID, manifest.BackupID)}
 	foundRecord := false
 	for _, ref := range manifest.Objects {
 		// Older manifests also described live indexes and heads. They are not
@@ -200,7 +200,7 @@ func (s *TenantStore) validateBackupManifest(ctx context.Context, manifest Tenan
 }
 
 func (s *TenantStore) restoreIntegrityReport(ctx context.Context, tenantID string) RestoreIntegrityReport {
-	report := RestoreIntegrityReport{Status: "ok", CheckedAt: time.Now().UTC()}
+	report := RestoreIntegrityReport{Status: "ok", CheckedAt: mutationTime(ctx)}
 	health, err := s.IndexHealth(ctx, tenantID)
 	if err != nil {
 		report.Status = "error"

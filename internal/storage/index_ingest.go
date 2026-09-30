@@ -15,6 +15,9 @@ const (
 // last queued batch; a full delta starts another batch rather than a rebuild.
 // Read views keep every queued version's inputs alive through publication.
 func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) bool {
+	if IsReplicatedContext(ctx) {
+		return false
+	}
 	s.taskMu.Lock()
 	if s.taskClosing {
 		s.taskMu.Unlock()

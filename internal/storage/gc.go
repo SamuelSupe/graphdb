@@ -24,6 +24,7 @@ type GCOptions struct {
 	listings                map[string]gcListing
 	listBefore              time.Time
 	view                    *gcView
+	replicated              bool
 }
 
 type GCReport struct {
@@ -99,6 +100,11 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	}
 	ctx = boundCtx
 	options.view = s.gcView(tenantID)
+	if IsReplicatedContext(ctx) {
+		// HA serializes graph application against active reads. Retained cursors
+		// may expire after maintenance and cannot change replica deletion sets.
+		options.view = nil
+	}
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return GCReport{}, err
 	}
@@ -156,7 +162,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	var deleted int
 	var keys []string
 	if options.TaskMaxAge > 0 {
-		cutoff := time.Now().UTC().Add(-options.TaskMaxAge)
+		cutoff := mutationTime(ctx).Add(-options.TaskMaxAge)
 		taskReport := taskCleanupReport{}
 		if err := s.cleanupIndexTasksLocked(ctx, tenantID, cutoff, &taskReport, checkpoint); err != nil {
 			return finish(err)
@@ -181,7 +187,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	}
 
 	if options.TaskMaxAge > 0 {
-		cutoff := time.Now().UTC().Add(-options.TaskMaxAge)
+		cutoff := mutationTime(ctx).Add(-options.TaskMaxAge)
 		taskReport := taskCleanupReport{}
 		err := s.cleanupUnifiedTasksLocked(ctx, tenantID, cutoff, &taskReport, checkpoint)
 		report.DeletedTasks = taskReport.DeletedTasks
@@ -439,7 +445,7 @@ func (s *TenantStore) cleanupDeadLettersLocked(ctx context.Context, tenantID str
 	if skip {
 		return 0, nil, nil
 	}
-	cutoff := time.Now().UTC().Add(-maxAge)
+	cutoff := mutationTime(ctx).Add(-maxAge)
 	deleted := 0
 	keys := make([]string, 0)
 	for _, object := range objects {
@@ -673,7 +679,7 @@ func (s *TenantStore) cleanupIndexTasksLocked(ctx context.Context, tenantID stri
 				ctx,
 				tenantID,
 				task,
-				time.Now().UTC(),
+				mutationTime(ctx),
 			)
 			if err != nil {
 				return err

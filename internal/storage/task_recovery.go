@@ -14,6 +14,9 @@ func (s *TenantStore) reconcileInactiveTask(
 	ctx context.Context,
 	task Task,
 ) Task {
+	if s.ReplicationMode {
+		return task
+	}
 	if !s.taskOwnerStopped(task) {
 		return task
 	}

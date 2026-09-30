@@ -6,6 +6,8 @@
 查询、部署和运维。每份用户指南都有英文默认文件和对应的
 `.zh-CN.md` 中文文件，文档顶部提供语言切换。
 
+- [三副本 Raft 高可用运行说明](raft-ha.zh-CN.md) · [设计](high-availability-design.zh-CN.md) · [验收记录](raft-ha-validation.zh-CN.md)
+
 ## 用户指南
 
 - [2.1.2 发行说明](../release/local-disk.md) · [发布验证](validation-v2.1.2.md) · [写入长尾实测与限制](performance-write-tail.md)

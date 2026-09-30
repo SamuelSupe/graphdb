@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -31,7 +30,7 @@ func (s *TenantStore) refreshReverseIndexAfterCommit(
 			baseVersion,
 		)
 	}
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	shards, specs, err := s.buildIncrementalEdgeShardsFor(
 		ctx,
 		tenantID,

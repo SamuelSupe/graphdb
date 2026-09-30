@@ -40,7 +40,7 @@ Go SDK 导入路径为 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`。
 发布、终态区分继续支持。
 
 GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然是文本 DSL。
-兼容控制路由中的 `reader`、`writer`、`fleet` 名称描述本地状态，不代表支持分布式部署。
+兼容控制路由中的 `reader`、`writer`、`fleet` 名称描述本地状态，不是 Raft 成员管理接口；可选分布式部署见 [Raft 运行说明](raft-ha.zh-CN.md)。
 
 ## 发行状态与性能承诺
 

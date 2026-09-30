@@ -28,8 +28,8 @@ func (s *TenantStore) acquireWriterLeaseForPurge(ctx context.Context, tenantID s
 }
 
 func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID string, allowPurged bool) error {
-	now := time.Now().UTC()
-	if _, _, ok := s.getCachedWriterLease(tenantID); ok {
+	now := mutationTime(ctx)
+	if _, _, ok := s.getCachedWriterLease(tenantID); ok && !IsReplicatedContext(ctx) {
 		return nil
 	}
 	if !allowPurged {
@@ -41,7 +41,7 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 			return ErrTenantDeleted
 		}
 	}
-	token, err := newCommitID()
+	token, err := mutationID(ctx, "lease")
 	if err != nil {
 		return fmt.Errorf("create writer fence: %w", err)
 	}
@@ -137,7 +137,7 @@ func (s *TenantStore) releaseWriterLeaseForPurge(ctx context.Context, tenantID s
 	}
 	// Some object stores cannot conditionally delete. Retire the lease in
 	// place there so a replacement still has to advance the fence epoch.
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	lease.OwnerID = ""
 	lease.ExpiresAt = now.Add(-time.Nanosecond)
 	lease.UpdatedAt = now

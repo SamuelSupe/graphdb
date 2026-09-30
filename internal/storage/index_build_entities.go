@@ -13,9 +13,9 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
-func buildEntityPages(g *graph.Graph, version int64) []EntityPageData {
+func buildEntityPages(g *graph.Graph, version int64, at ...time.Time) []EntityPageData {
 	counts := entityPageCounts(g)
-	now := time.Now().UTC()
+	now := artifactTime(at)
 	pages := newEntityPageBuckets(counts, version, now)
 	for _, entity := range g.Entities.All() {
 		appendEntityPage(pages, entity)
@@ -23,12 +23,12 @@ func buildEntityPages(g *graph.Graph, version int64) []EntityPageData {
 	return finishEntityPages(pages)
 }
 
-func buildEntityPagesFromEntities(entities []graph.Entity, version int64) []EntityPageData {
+func buildEntityPagesFromEntities(entities []graph.Entity, version int64, at ...time.Time) []EntityPageData {
 	counts := make(map[string]int, len(entities))
 	for _, entity := range entities {
 		counts[entityShardID(entity.ID)]++
 	}
-	now := time.Now().UTC()
+	now := artifactTime(at)
 	pages := newEntityPageBuckets(counts, version, now)
 	for _, entity := range entities {
 		appendEntityPage(pages, entity)
@@ -192,7 +192,7 @@ func (s *TenantStore) tombstoneStaleEntityRecords(ctx context.Context, tenantID 
 					Page:          entityShardID(entityID),
 					Deleted:       true,
 					Version:       version,
-					UpdatedAt:     time.Now().UTC(),
+					UpdatedAt:     mutationTime(ctx),
 				}
 				stampEntityRecordHash(&record)
 				if err := s.putEntityRecordWithMeta(

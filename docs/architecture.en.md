@@ -2,7 +2,7 @@
 
 [中文](architecture.md)
 
-GGraphDB runs as one process on one machine, with concurrent reads and writes across tenants.
+The default deployment runs as one process on one machine, with concurrent reads and writes across tenants. Optional [Raft HA](raft-ha.zh-CN.md) uses three independent local-disk replicas.
 Parquet commits, snapshots and indexes remain the durable representation. An optional WAL
 provides durable ingestion acceptance and replay. Object storage is an optional backup destination.
 
@@ -106,6 +106,6 @@ snapshots, indexes, config and tasks. This simplification preserves released 2.0
 and does not introduce another metadata encoding.
 
 Remote primary storage, PostgreSQL coordination and split reader/writer modes are rejected.
-There is no replication or failover protocol. See the [local disk guide](local-disk.md) for
+Optional [Raft HA](raft-ha.zh-CN.md) provides replication and leader failover using fresh independent directories. See the [local disk guide](local-disk.md) for
 configuration and validation, and [version boundaries](naming-and-compatibility.md) for the
 2.0 break from 1.x data and the old MD5 contract.

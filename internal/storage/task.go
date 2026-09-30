@@ -56,6 +56,12 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	if err != nil {
 		return Task{}, err
 	}
+	if s.ReplicationMode && boolTaskParam(params, "automatic") {
+		return Task{}, fmt.Errorf("automatic task scheduling is unavailable in HA; start tasks through the cluster API")
+	}
+	if s.ReplicationMode && taskType == TaskTypeTenantRestoreDrill && stringTaskParam(params, "backup_key") == "" {
+		return Task{}, fmt.Errorf("HA restore drills require an explicit backup_key")
+	}
 	params = cloneTaskParams(params)
 	if err := validateTaskParams(taskType, params); err != nil {
 		return Task{}, err
@@ -83,7 +89,7 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 // The tenant lock serializes starts and definition changes. A new definition
 // may queue a replacement rebuild while its predecessor is still finishing.
 func (s *TenantStore) startTaskLocked(ctx context.Context, tenantID, taskType string, params map[string]any, replace bool) (Task, error) {
-	id, err := newCommitID()
+	id, err := mutationID(ctx, "task")
 	if err != nil {
 		return Task{}, err
 	}
@@ -91,6 +97,26 @@ func (s *TenantStore) startTaskLocked(ctx context.Context, tenantID, taskType st
 }
 
 func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType string, params map[string]any, replace bool, id string) (Task, error) {
+	if s.ReplicationMode && !replace {
+		tasks, err := s.listTasks(ctx, tenantID, TaskListOptions{Type: taskType, Status: TaskStatusQueued, Limit: 1})
+		if err != nil {
+			return Task{}, err
+		}
+		if len(tasks) > 0 {
+			current, err := json.Marshal(tasks[0].Params)
+			if err != nil {
+				return Task{}, err
+			}
+			next, err := json.Marshal(params)
+			if err != nil {
+				return Task{}, err
+			}
+			if string(current) != string(next) {
+				return Task{}, fmt.Errorf("%w: a different %s task is already queued", ErrConflict, taskType)
+			}
+			return tasks[0], nil
+		}
+	}
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {
 		return Task{}, err
@@ -106,7 +132,7 @@ func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType 
 	if err != nil {
 		return Task{}, err
 	}
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	task := Task{
 		ID:            id,
 		TenantID:      tenantID,
@@ -149,6 +175,10 @@ func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType 
 	if err := s.saveTask(ctx, task); err != nil {
 		cancel()
 		return Task{}, err
+	}
+	if IsReplicatedContext(ctx) {
+		cancel()
+		return task, nil
 	}
 	s.registerTaskCancel(tenantID, id, cancel)
 	launchPending = false
@@ -205,7 +235,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 			task.Status = "failed"
 			task.Phase = "failed"
 			task.Error = fmt.Sprintf("panic: %v", recovered)
-			task.FinishedAt = time.Now().UTC()
+			task.FinishedAt = mutationTime(ctx)
 			task.UpdatedAt = task.FinishedAt
 			s.trySaveTaskFinal(ctx, task)
 		}
@@ -219,7 +249,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 	task.Status = "running"
 	task.Phase = "running"
 	task.ProgressTotal = taskProgressTotal(task.Type)
-	task.UpdatedAt = time.Now().UTC()
+	task.UpdatedAt = mutationTime(ctx)
 	s.trySaveTask(ctx, task)
 	result, resultKey, err := s.runTaskOperation(ctx, task)
 	writeCtx, writeCancel := s.taskFinalizationContext(ctx)
@@ -235,7 +265,7 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 		}
 	}
 	task = s.taskStateOrLocal(writeCtx, task)
-	task.FinishedAt = time.Now().UTC()
+	task.FinishedAt = mutationTime(ctx)
 	task.UpdatedAt = task.FinishedAt
 	if ctx.Err() != nil || taskCanceled(err) || task.Status == TaskStatusCanceled {
 		task.Status = "canceled"

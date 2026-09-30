@@ -13,6 +13,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/bootstrap"
 	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
+	"github.com/SamuelSupe/graphdb/v2/internal/ha"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -46,6 +47,9 @@ func run(args []string) (err error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+	if cfg.Raft.Enabled && command.kind != commandServe {
+		return fmt.Errorf("offline commands are disabled in HA mode; use the cluster HTTP API")
 	}
 	runtime, err := bootstrap.NewStorageRuntime(context.Background(), cfg)
 	if err != nil {
@@ -96,7 +100,7 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		cfg.ReaderCacheLoadQueueTimeout,
 	)
 	var ingestService *storage.IngestService
-	if cfg.IngestMode == "wal" {
+	if cfg.IngestMode == "wal" && !cfg.Raft.Enabled {
 		ingestConfig := cfg.IngestServiceConfig()
 		ingestConfig.Observer = obs.Metrics
 		ingestConfig.Logger = obs.Logger
@@ -142,7 +146,18 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		Observability:         obs,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
 	}
-	api.StartMaintenanceLoop(ctx, cfg.MaintenanceInterval)
+	var cluster *ha.Cluster
+	if cfg.Raft.Enabled {
+		cluster = ha.New(cfg, store, runtime.Files)
+		api.Cluster = cluster
+		cluster.App.Handler = api.Handler()
+		if err := cluster.Start(ctx, cfg.Raft); err != nil {
+			return err
+		}
+		defer cluster.Close()
+	} else {
+		api.StartMaintenanceLoop(ctx, cfg.MaintenanceInterval)
+	}
 	var servers []*http.Server
 	if cfg.AdminAddr != "" {
 		servers = []*http.Server{
@@ -151,6 +166,9 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		}
 	} else {
 		servers = []*http.Server{newHTTPServer(cfg, api)}
+	}
+	if cluster != nil {
+		servers = append(servers, newHTTPServerWithHandler(cfg.Raft.Addr, cluster.Node.Handler()))
 	}
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
@@ -161,9 +179,13 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 	})
 	serverErr := runHTTPServers(ctx, servers, httpShutdownTimeout)
 	stop()
+	var clusterErr error
+	if cluster != nil {
+		clusterErr = cluster.Close()
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), max(backgroundTaskShutdownTimeout, cfg.IngestShutdownTimeout))
 	defer cancel()
-	return errors.Join(serverErr, runtime.Shutdown(shutdownCtx))
+	return errors.Join(serverErr, clusterErr, runtime.Shutdown(shutdownCtx))
 }
 
 func newHTTPServer(cfg config.Config, api *httpapi.Server) *http.Server {
@@ -257,6 +279,15 @@ Environment:
   GRAPHDB_STORAGE=local
   GRAPHDB_DATA_DIR=.graphdb
   GRAPHDB_PREFIX=graphdb
+  GRAPHDB_RAFT_NODE_ID= (set to enable HA; initial IDs 1,2,3)
+  GRAPHDB_RAFT_CLUSTER_ID= (required in HA)
+  GRAPHDB_RAFT_ADDR=:8082 (required separate private listener in HA)
+  GRAPHDB_RAFT_PEERS= (JSON map of IDs to private HTTP origins)
+  GRAPHDB_RAFT_TOKEN= (shared token, at least 32 bytes)
+  GRAPHDB_RAFT_BOOTSTRAP=true (false for a replacement learner)
+  GRAPHDB_RAFT_DIR=${GRAPHDB_DATA_DIR}/.graphdb-raft
+  GRAPHDB_RAFT_SNAPSHOT_ENTRIES=1000
+  GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES=512MiB
   GRAPHDB_QUERY_MAX_CONCURRENT=64
   GRAPHDB_QUERY_MAX_PER_TENANT=32
   GRAPHDB_QUERY_QUEUE_TIMEOUT=5s

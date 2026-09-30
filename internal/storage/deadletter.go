@@ -41,7 +41,7 @@ type ReplayReport struct {
 }
 
 func (s *TenantStore) saveDeadLetter(ctx context.Context, tenantID string, request IngestRequest, result IngestResult) error {
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	failedRequest := deadLetterRequest(request, result)
 	record := DeadLetter{
 		ID:         deadLetterID(request),
@@ -164,11 +164,11 @@ func (s *TenantStore) replayDeadLetter(ctx context.Context, tenantID string, sou
 		return IngestResult{}, ok, err
 	}
 	request := claimed.Request
-	request.BatchID = request.BatchID + "-replay-" + time.Now().UTC().Format("20060102150405.000000000")
+	request.BatchID = request.BatchID + "-replay-" + mutationTime(ctx).Format("20060102150405.000000000")
 	request.IdempotencyKey = ""
 	result, err := s.ingest(ctx, tenantID, request, false, false)
 	claimed.LastResult = result
-	claimed.UpdatedAt = time.Now().UTC()
+	claimed.UpdatedAt = mutationTime(ctx)
 	finalizeDeadLetterReplay(&claimed, result)
 	if err != nil {
 		claimed.Error = err.Error()
@@ -194,7 +194,7 @@ func (s *TenantStore) claimDeadLetterReplay(ctx context.Context, tenantID string
 	if status == "resolved" || status == "invalid" {
 		return DeadLetter{}, ObjectMeta{}, false, nil
 	}
-	if status == "replaying" && time.Now().UTC().Before(letter.UpdatedAt.Add(deadLetterReplayLease)) {
+	if status == "replaying" && mutationTime(ctx).Before(letter.UpdatedAt.Add(deadLetterReplayLease)) {
 		return DeadLetter{}, ObjectMeta{}, false, nil
 	}
 	key := deadLetterObjectKey(s, tenantID, source, letter)
@@ -231,7 +231,7 @@ func (s *TenantStore) claimDeadLetterReplay(ctx context.Context, tenantID string
 	claimed.Attempts++
 	claimed.Status = "replaying"
 	claimed.Error = ""
-	claimed.UpdatedAt = time.Now().UTC()
+	claimed.UpdatedAt = mutationTime(ctx)
 	nextMeta, err := s.putDeadLetterWithMeta(ctx, tenantID, key, claimed, meta)
 	if errors.Is(err, ErrConflict) {
 		return DeadLetter{}, ObjectMeta{}, false, nil

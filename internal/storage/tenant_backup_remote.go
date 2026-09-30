@@ -89,7 +89,15 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 	if admission, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
 		admission.release()
 	}
-	entry, err := s.Backups.Publish(ctx, manifest, io.NewSectionReader(source, 0, size))
+	var entry backupstore.Entry
+	if replicated, ok := ctx.Value(replicatedBackupKey{}).(backupstore.Entry); ok {
+		entry = replicated
+		if entry.TenantID != manifest.TenantID || entry.BackupID != manifest.BackupID || entry.Version != manifest.Version {
+			return nil, "", fmt.Errorf("replicated object backup identity mismatch")
+		}
+	} else {
+		entry, err = s.Backups.Publish(ctx, manifest, io.NewSectionReader(source, 0, size))
+	}
 	if err != nil {
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "backup_upload", 3, 5, taskActionUpdate{ID: "publish_object_backup", Err: err}, nil)
 		return nil, "", err

@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -31,7 +30,7 @@ func (s *TenantStore) advanceRelationSchemaValidation(ctx context.Context, tenan
 		return nil
 	}
 	catalog.GraphVersion = graphVersion
-	catalog.UpdatedAt = time.Now().UTC()
+	catalog.UpdatedAt = mutationTime(ctx)
 	return s.putRelationSchemaCatalog(ctx, tenantID, catalog, meta)
 }
 

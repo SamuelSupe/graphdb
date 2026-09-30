@@ -46,7 +46,7 @@ func (s *TenantStore) TenantUsage(ctx context.Context, tenantID string) (TenantU
 	report := TenantUsageReport{
 		TenantID:  tenantID,
 		Prefix:    prefix,
-		CheckedAt: time.Now().UTC(),
+		CheckedAt: mutationTime(ctx),
 	}
 	categories := map[string]*TenantUsageCategory{}
 	err := scanObjectPrefix(ctx, s.Objects, prefix, func(objects []ObjectInfo) error {

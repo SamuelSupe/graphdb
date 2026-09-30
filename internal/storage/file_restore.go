@@ -34,11 +34,17 @@ func (s *FileStore) newRestoreDirectory() (string, error) {
 // during the short directory switch. The two renames are NOT a transaction:
 // a durable journal rolls back an interrupted switch before the store opens.
 func (s *FileStore) publishRestoreDirectory(ctx context.Context, dir, targetKey string) (err error) {
+	if err := s.checkReplicatedWrite(ctx); err != nil {
+		return err
+	}
 	target, err := s.path(targetKey)
 	if err != nil {
 		return err
 	}
 	if err := s.walkSafeDir(target, false); err != nil {
+		return err
+	}
+	if err := s.journalDirectory(ctx, targetKey, filepath.Join(dir, "build", filepath.FromSlash(targetKey))); err != nil {
 		return err
 	}
 	journal := fileRestoreJournal{Target: targetKey}

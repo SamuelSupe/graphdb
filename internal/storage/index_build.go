@@ -72,8 +72,8 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 	}
 }
 
-func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition) ([]SecondaryIndex, error) {
-	now := time.Now().UTC()
+func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition, at ...time.Time) ([]SecondaryIndex, error) {
+	now := artifactTime(at)
 	indexes := map[string]SecondaryIndex{}
 	for _, ciType := range g.ListCITypes() {
 		fields, err := g.EffectiveFields(ciType.Name)

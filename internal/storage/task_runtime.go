@@ -90,7 +90,7 @@ func (s *TenantStore) updateTaskProgress(ctx context.Context, task Task, phase s
 		current.Phase = phase
 		current.ProgressCompleted = progressCompleted
 		current.ProgressTotal = progressTotal
-		current.UpdatedAt = time.Now().UTC()
+		current.UpdatedAt = mutationTime(ctx)
 		if checkpoint != nil {
 			current.Checkpoint = mergeTaskMap(current.Checkpoint, checkpoint)
 		}

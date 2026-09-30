@@ -116,7 +116,7 @@ func (s *TenantStore) tenantRestoreDrillTask(
 		TargetPrefix:   cleanPrefix(targetPrefix),
 		DryRun:         dryRun,
 		Cleanup:        cleanup,
-		StartedAt:      time.Now().UTC(),
+		StartedAt:      mutationTime(ctx),
 	}
 	if err := s.updateTaskProgress(ctx, task, "restore_drill_backup", 1, total, map[string]any{"phase": "restore_drill_backup", "target_tenant_id": targetTenantID, "target_prefix": report.TargetPrefix}); err != nil {
 		return report, err
@@ -137,7 +137,7 @@ func (s *TenantStore) tenantRestoreDrillTask(
 	report.SourceUsage = &sourceUsage
 	if dryRun {
 		report.Proof = restoreDrillDryRunProof(report)
-		report.finish()
+		report.finish(mutationTime(ctx))
 		_ = s.updateTaskProgress(ctx, task, "restore_drill_dry_run_done", total, total, map[string]any{"phase": "restore_drill_dry_run_done", "backup_key": report.BackupKey, "backup_manifest_key": report.BackupManifestKey, "recoverable": report.Recoverable})
 		return report, nil
 	}
@@ -171,7 +171,7 @@ func (s *TenantStore) tenantRestoreDrillTask(
 					fmt.Errorf("cleanup restore drill target: %w", cleanupErr),
 				)
 			}
-			report.finish()
+			report.finish(mutationTime(ctx))
 		}()
 	}
 	if err := s.updateTaskProgress(ctx, task, "restore_drill_restore", 2, total, map[string]any{"phase": "restore_drill_restore", "backup_key": report.BackupKey}); err != nil {
@@ -185,8 +185,8 @@ func (s *TenantStore) tenantRestoreDrillTask(
 		Phase:     "restore_drill_restore",
 		OwnerID:   s.InstanceID,
 		Params:    map[string]any{"backup_key": report.BackupKey, "overwrite": false},
-		StartedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		StartedAt: mutationTime(ctx),
+		UpdatedAt: mutationTime(ctx),
 	}
 	restoreCtx, finishRestore := targetStore.inlineTask(ctx, restoreTask)
 	defer finishRestore()
@@ -248,11 +248,11 @@ func (s *TenantStore) tenantRestoreDrillTask(
 			return report, err
 		}
 		if err := cleanupTarget(ctx); err != nil {
-			report.finish()
+			report.finish(mutationTime(ctx))
 			return report, fmt.Errorf("cleanup restore drill target: %w", err)
 		}
 	}
-	report.finish()
+	report.finish(mutationTime(ctx))
 	_ = s.updateTaskProgress(ctx, task, "restore_drill_done", total, total, map[string]any{"phase": "restore_drill_done", "recoverable": report.Recoverable, "status": report.Status})
 	return report, nil
 }
@@ -287,7 +287,7 @@ func (s *TenantStore) createRestoreDrillBackup(ctx context.Context, tenantID str
 	if !configured {
 		metadata = legacyTenantMetadata(tenantID)
 	}
-	record := TenantBackupRecord{TenantID: tenantID, Version: manifest.Version, CreatedAt: time.Now().UTC(), Metadata: metadata, Snapshot: g.Snapshot()}
+	record := TenantBackupRecord{TenantID: tenantID, Version: manifest.Version, CreatedAt: mutationTime(ctx), Metadata: metadata, Snapshot: g.Snapshot()}
 	if config, ok, err := s.GetTenantConfig(ctx, tenantID); err != nil {
 		return tenantBackupInput{}, "", BackupManifestStats{}, err
 	} else if ok {
@@ -339,7 +339,7 @@ func (s *TenantStore) finishSyntheticRestoreTask(ctx context.Context, tenantID s
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	task.Status = TaskStatusSucceeded
 	task.Phase = "done"
 	task.UpdatedAt = now
@@ -408,7 +408,10 @@ func (s *TenantStore) runRestoreDrillQueries(ctx context.Context, task Task, g *
 		queryCtx, cancel := context.WithTimeout(ctx, timeout)
 		response, err := query.ExecuteContext(queryCtx, g, item.Request)
 		cancel()
-		result := TenantRestoreDrillQueryResult{Name: item.Name, DurationMS: time.Since(start).Milliseconds()}
+		result := TenantRestoreDrillQueryResult{Name: item.Name}
+		if !IsReplicatedContext(ctx) {
+			result.DurationMS = time.Since(start).Milliseconds()
+		}
 		if err != nil {
 			result.Status = "error"
 			result.Error = err.Error()
@@ -505,8 +508,8 @@ func (p *TenantRestoreProof) finish() {
 	p.Message = "restore drill proof passed"
 }
 
-func (r *TenantRestoreDrillReport) finish() {
-	r.CompletedAt = time.Now().UTC()
+func (r *TenantRestoreDrillReport) finish(at time.Time) {
+	r.CompletedAt = at
 	r.Recoverable = r.Proof.Recoverable
 	if r.DryRun {
 		r.Status = "dry_run"

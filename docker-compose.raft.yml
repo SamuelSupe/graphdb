@@ -1,0 +1,49 @@
+x-node: &node
+  image: ${GRAPHDB_HA_IMAGE:-graphdb:raft-ha}
+  build: .
+  command: [serve]
+  restart: unless-stopped
+  stop_grace_period: 60s
+
+x-environment: &environment
+  GRAPHDB_ADDR: :8080
+  GRAPHDB_DATA_DIR: /var/lib/graphdb
+  GRAPHDB_RAFT_CLUSTER_ID: ${GRAPHDB_RAFT_CLUSTER_ID:-graphdb-ha}
+  GRAPHDB_RAFT_ADDR: :8081
+  GRAPHDB_RAFT_TOKEN: ${GRAPHDB_RAFT_TOKEN:?set a random token of at least 32 bytes}
+  GRAPHDB_RAFT_PEERS: '{"1":"http://node1:8081","2":"http://node2:8081","3":"http://node3:8081"}'
+  GRAPHDB_INGEST_MODE: ${GRAPHDB_INGEST_MODE:-direct}
+
+services:
+  node1:
+    <<: *node
+    environment:
+      <<: *environment
+      GRAPHDB_RAFT_NODE_ID: "1"
+    ports: ["127.0.0.1:18081:8080"]
+    volumes: ["raft-node1:/var/lib/graphdb"]
+  node2:
+    <<: *node
+    environment:
+      <<: *environment
+      GRAPHDB_RAFT_NODE_ID: "2"
+    ports: ["127.0.0.1:18082:8080"]
+    volumes: ["raft-node2:/var/lib/graphdb"]
+  node3:
+    <<: *node
+    environment:
+      <<: *environment
+      GRAPHDB_RAFT_NODE_ID: "3"
+    ports: ["127.0.0.1:18083:8080"]
+    volumes: ["raft-node3:/var/lib/graphdb"]
+  gateway:
+    image: haproxy:3.0-alpine
+    restart: unless-stopped
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: ["./deploy/raft/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"]
+    depends_on: [node1, node2, node3]
+
+volumes:
+  raft-node1:
+  raft-node2:
+  raft-node3:

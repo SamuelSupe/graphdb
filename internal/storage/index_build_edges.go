@@ -7,9 +7,12 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
-func buildEdgeShards(g *graph.Graph, version int64) []EdgeShardData {
+func buildEdgeShards(g *graph.Graph, version int64, at ...time.Time) []EdgeShardData {
 	counts := edgeShardCounts(g)
 	now := time.Now().UTC()
+	if len(at) > 0 {
+		now = at[0]
+	}
 	shards := newEdgeShardBuckets(counts, version, now)
 	for _, edge := range g.Edges.All() {
 		appendEdgeShard(shards, edge)
@@ -17,12 +20,15 @@ func buildEdgeShards(g *graph.Graph, version int64) []EdgeShardData {
 	return finishEdgeShards(shards)
 }
 
-func buildEdgeShardsFromEdges(edges []graph.Edge, version int64) []EdgeShardData {
+func buildEdgeShardsFromEdges(edges []graph.Edge, version int64, at ...time.Time) []EdgeShardData {
 	counts := make(map[string]int, len(edges))
 	for _, edge := range edges {
 		counts[edge.Type+"\x00"+edgeShardID(edge.From)]++
 	}
 	now := time.Now().UTC()
+	if len(at) > 0 {
+		now = at[0]
+	}
 	shards := newEdgeShardBuckets(counts, version, now)
 	for _, edge := range edges {
 		appendEdgeShard(shards, edge)

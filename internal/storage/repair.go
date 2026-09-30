@@ -155,7 +155,7 @@ func (s *TenantStore) inspectTenantRepair(ctx context.Context, tenantID string) 
 	report := RepairReport{
 		TenantID:         tenantID,
 		Status:           "ready",
-		CheckedAt:        time.Now().UTC(),
+		CheckedAt:        mutationTime(ctx),
 		CurrentLayout:    CurrentObjectLayoutVersion,
 		SupportedLayouts: []int{LegacyObjectLayoutVersion, CurrentObjectLayoutVersion},
 	}

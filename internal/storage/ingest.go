@@ -183,7 +183,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if err := s.checkWriteBackpressure(ctx, tenantID, true); err != nil {
 		return IngestResult{}, err
 	}
-	started := time.Now().UTC()
+	started := mutationTime(ctx)
 	if previousRecord, ok, err := s.loadIngestRecord(ctx, tenantID, request); err != nil {
 		if pressure := s.objectStoreBackpressureError(err); pressure != nil {
 			return IngestResult{}, pressure
@@ -239,7 +239,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 		unlock()
 		foregroundLockHeld = false
 	}
-	finished := time.Now().UTC()
+	finished := mutationTime(ctx)
 	metadataErr := s.saveIngestResultMetadata(ctx, tenantID, request, result, started, finished, saveFailures)
 	if metadataErr != nil {
 		return result, metadataErr
@@ -362,7 +362,7 @@ func (s *TenantStore) commitIngestMutationsLocked(
 		IdempotencyKey:  durableIngestCommitKey(tenantID, request),
 		Mutations:       mutations,
 	}
-	reservation, replay, err := s.beginDirectCommit(ctx, tenantID, commitRequest, time.Now().UTC())
+	reservation, replay, err := s.beginDirectCommit(ctx, tenantID, commitRequest, mutationTime(ctx))
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -374,7 +374,7 @@ func (s *TenantStore) commitIngestMutationsLocked(
 	if err != nil {
 		return CommitResult{}, err
 	}
-	if err := s.completeDirectCommit(ctx, reservation, result, time.Now().UTC()); err != nil {
+	if err := s.completeDirectCommit(ctx, reservation, result, mutationTime(ctx)); err != nil {
 		return result, fmt.Errorf("complete durable ingest commit: %w", err)
 	}
 	return result, nil

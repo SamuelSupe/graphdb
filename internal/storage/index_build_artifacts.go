@@ -21,23 +21,23 @@ type incrementalSecondaryIndexWrite struct {
 	Index SecondaryIndex
 }
 
-func buildIndexArtifactsWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition) (indexBuildArtifacts, error) {
-	indexes, err := buildSecondaryIndexesWithDefinitions(g, version, definitions)
+func buildIndexArtifactsWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition, at ...time.Time) (indexBuildArtifacts, error) {
+	indexes, err := buildSecondaryIndexesWithDefinitions(g, version, definitions, at...)
 	if err != nil {
 		return indexBuildArtifacts{}, err
 	}
 	for i := range indexes {
 		prepareSecondaryIndexArtifact(&indexes[i])
 	}
-	edgeShards := buildEdgeShards(g, version)
-	entityPages := buildEntityPages(g, version)
+	edgeShards := buildEdgeShards(g, version, at...)
+	entityPages := buildEntityPages(g, version, at...)
 	for i := range edgeShards {
 		edgeShards[i].logicalContentHash = edgeShardContentHash(edgeShards[i])
 	}
 	for i := range entityPages {
 		entityPages[i].logicalContentHash = entityPageContentHash(entityPages[i])
 	}
-	now := time.Now().UTC()
+	now := artifactTime(at)
 	catalog := IndexCatalog{LayoutVersion: CurrentObjectLayoutVersion, Version: version, UpdatedAt: now}
 	for _, index := range indexes {
 		summary := secondaryIndexSummary(index, 16)

@@ -22,7 +22,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type ClusterGate interface {
+	ServeRoute(http.ResponseWriter, *http.Request, bool, bool, http.Handler)
+	Status() map[string]any
+}
+
 type Server struct {
+	Cluster               ClusterGate
 	Store                 *storage.TenantStore
 	Cache                 *storage.ReaderCache
 	Mode                  string
@@ -71,6 +77,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 	response := map[string]any{
 		"status": status, "mode": s.Mode, "coordination": coordinator, "build": buildinfo.Current(),
+	}
+	if s.Cluster != nil {
+		response["raft"] = s.Cluster.Status()
 	}
 	if s.IngestService != nil {
 		response["ingest_wal"] = s.IngestService.Readiness()

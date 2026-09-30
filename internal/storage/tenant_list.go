@@ -244,7 +244,7 @@ func (s *TenantStore) getTenantRegistry(ctx context.Context) ([]string, bool, er
 
 func (s *TenantStore) putTenantRegistryWithMeta(ctx context.Context, registry tenantRegistry, meta ObjectMeta) error {
 	if registry.UpdatedAt == "" {
-		registry.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		registry.UpdatedAt = mutationTime(ctx).Format(time.RFC3339Nano)
 	}
 	data, err := marshalParquetTenantRegistry(ctx, registry)
 	if err != nil {

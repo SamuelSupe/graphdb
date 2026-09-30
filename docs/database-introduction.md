@@ -29,7 +29,7 @@ SPARQL, ontology reasoning, or historical graph queries.
 - **Online reads and writes**: one `all` process serves concurrent tenants.
   Read views pin immutable graph versions; queries can request `min_version`.
 - **Recovery boundary**: S3-compatible storage holds optional snapshot backups.
-  There is no PostgreSQL dependency, distributed writer or automatic failover.
+  There is no PostgreSQL dependency. Optional [Raft HA](raft-ha.zh-CN.md) provides majority replication and leader failover.
 - **Query options**: GraphQL, JSON Query DSL, 1-8 step bounded pattern matching,
   indexed bidirectional traversal, streaming queries, current-state scans, and
   snapshot export.
@@ -150,8 +150,7 @@ X-Tenant-ID: demo
 
 ## Current boundaries
 
-- A single process owns the directory. There are no distributed writers,
-  cross-tenant transactions, replication or automatic failover.
+- A single process owns each directory. Optional [Raft HA](raft-ha.zh-CN.md) uses three independent directories and one leader; sharding and cross-tenant transactions are unsupported.
 - Reuse a 2.0/2.1 directory after stopping the old process. Replacing 1.x requires a fresh directory; no 1.x migration or cross-major rollback is provided.
 - A durable WAL `202` means acceptance, not a published graph version. WAL covers
   process failure with a recoverable volume; backups cover recovery to another disk.

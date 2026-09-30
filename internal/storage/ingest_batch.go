@@ -143,7 +143,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		}
 		entry.Request = request
 		if entry.AcceptedAt.IsZero() {
-			entry.AcceptedAt = time.Now().UTC()
+			entry.AcceptedAt = mutationTime(ctx)
 		}
 		preparedEntries[index] = entry
 	}
@@ -427,7 +427,7 @@ func (s *TenantStore) saveIngestBatchResultMetadataWithFailures(
 			continue
 		}
 		candidate := candidate
-		finished := time.Now().UTC()
+		finished := mutationTime(ctx)
 		key := collectorKey{source: candidate.request.Source, collectorID: candidate.request.CollectorID}
 		group := collectorGroups[key]
 		if group == nil {
@@ -662,7 +662,7 @@ func (s *TenantStore) applyIngestBatchCandidateGroup(
 				return nil, nil, false, fmt.Errorf("%w: prepared commit no longer follows the base manifest", ErrIngestRepairRequired)
 			}
 		} else {
-			commitID, err := newCommitID()
+			commitID, err := mutationID(ctx, "ingest_batch")
 			if err != nil {
 				return nil, nil, false, err
 			}
@@ -671,7 +671,7 @@ func (s *TenantStore) applyIngestBatchCandidateGroup(
 				ID:            commitID,
 				TenantID:      tenantID,
 				Version:       nextVersion,
-				CreatedAt:     time.Now().UTC(),
+				CreatedAt:     mutationTime(ctx),
 				Mutations:     candidate.mutations,
 			}
 		}
@@ -922,7 +922,7 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolatedWithGuards(
 			}
 		} else {
 			if candidate.commit.ID == "" {
-				commitID, err := newCommitID()
+				commitID, err := mutationID(ctx, "ingest_batch")
 				if err != nil {
 					return nil, nil, err
 				}
@@ -934,7 +934,7 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolatedWithGuards(
 				}
 			}
 			candidate.commit.Version = expectedVersion
-			candidate.commit.CreatedAt = time.Now().UTC()
+			candidate.commit.CreatedAt = mutationTime(ctx)
 		}
 		report, entityNoop, err := current.PreviewStorageEntityNoop(candidate.commit)
 		next := current
@@ -1283,7 +1283,7 @@ func (s *TenantStore) preparedIngestBatchPlans(
 		}
 	} else {
 		var err error
-		flushID, err = newCommitID()
+		flushID, err = mutationID(ctx, "ingest_batch")
 		if err != nil {
 			return nil, err
 		}

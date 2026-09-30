@@ -2,7 +2,7 @@
 
 [English](architecture.en.md)
 
-主版本采用单机、单进程、多租户并发读写。图模型、JSON DSL、GraphQL、来源治理和运维功能
+默认采用单机、单进程、多租户并发读写。可选 [Raft 高可用](raft-ha.zh-CN.md) 使用三个独立本地盘副本。图模型、JSON DSL、GraphQL、来源治理和运维功能
 保持独立于存储介质，底层继续使用 Parquet 提交、快照、索引与可选 WAL。
 
 ```mermaid
@@ -89,7 +89,7 @@ GC 任务心跳。重启后没有执行者的活动记录会在查询/恢复检�
 服务与离线 CLI 独占 `GRAPHDB_DATA_DIR`。在线维护使用 HTTP，目录不能与另一个实例或旧版本共享。
 持久化布局仍为 `<prefix>/tenants/<tenant>/` 下的 manifest、commits、snapshots、indexes、config、tasks 等。
 本次精简保持已发布 2.0 的 Parquet/WAL 格式及数据目录兼容性，不引入第二种元数据编码。
-启动拒绝远端存储配置和 PostgreSQL 协调标记；无远端迁移、复制、选主或跨机器高可用协议。
+启动拒绝远端主存储配置和 PostgreSQL 协调标记。可选 Raft 模式提供复制和选主；需要新目录，其部署、恢复和任务限制见 [运行说明](raft-ha.zh-CN.md)。
 
 运行参数、兼容性和验收矩阵见[本地磁盘指南](local-disk.zh-CN.md)。
 

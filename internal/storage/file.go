@@ -12,6 +12,7 @@ import (
 )
 
 type FileStore struct {
+	replicatedWrites     atomic.Bool
 	directoryMu          sync.Mutex
 	pendingDirectorySync string
 	runtime              *fileRuntime
@@ -132,7 +133,11 @@ func (s *FileStore) Put(ctx context.Context, key string, data []byte) error {
 	return err
 }
 
-func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (result ObjectMeta, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
+	if err := s.checkReplicatedWrite(ctx); err != nil {
+		return ObjectMeta{}, err
+	}
 	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr
@@ -173,6 +178,9 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	}
 	etag := ""
 	defer func() { s.changed(key, etag) }()
+	if err := s.journalObject(ctx, key); err != nil {
+		return ObjectMeta{}, err
+	}
 	if err := writeFileAtomicContext(ctx, path, data); err != nil {
 		return ObjectMeta{}, err
 	}
@@ -184,7 +192,11 @@ func (s *FileStore) Delete(ctx context.Context, key string) error {
 	return s.DeleteConditional(ctx, key, PutCondition{})
 }
 
-func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
+func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) (err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
+	if err := s.checkReplicatedWrite(ctx); err != nil {
+		return err
+	}
 	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr
@@ -253,6 +265,9 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	if batched {
 		s.runtime.publicationMu.Lock()
 		defer s.runtime.publicationMu.Unlock()
+	}
+	if err := s.journalObject(ctx, key); err != nil {
+		return err
 	}
 	err = os.Remove(path)
 	if os.IsNotExist(err) {
@@ -329,7 +344,7 @@ func validateFileStoreKey(key string) error {
 	if key == "" {
 		return nil
 	}
-	if key == fileRestoreDirectory || strings.HasPrefix(key, fileRestoreDirectory+"/") {
+	if key == fileRestoreDirectory || strings.HasPrefix(key, fileRestoreDirectory+"/") || key == replicationDirectory || strings.HasPrefix(key, replicationDirectory+"/") || key == ".graphdb-raft" || strings.HasPrefix(key, ".graphdb-raft/") {
 		return fmt.Errorf("reserved object key %q", key)
 	}
 	if strings.Contains(key, "\\") || filepath.IsAbs(filepath.FromSlash(key)) {

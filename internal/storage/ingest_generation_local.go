@@ -92,3 +92,7 @@ func (s *TenantStore) validateLocalIngestGeneration(ctx context.Context, tenantI
 	}
 	return nil
 }
+
+func (s *TenantStore) ReplicationTenantGeneration(ctx context.Context, tenantID string) (int64, error) {
+	return s.localIngestGeneration(ctx, tenantID)
+}

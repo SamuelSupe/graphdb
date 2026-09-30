@@ -57,7 +57,7 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		return TenantMigrationReport{}, fmt.Errorf("cross-tenant migration rewrites embedded tenant ids; use tenant backup/restore instead")
 	}
 
-	started := time.Now().UTC()
+	started := mutationTime(ctx)
 	sourcePrefix := source.tenantObjectPrefix(sourceTenantID)
 	targetPrefix := target.tenantObjectPrefix(targetTenantID)
 	report := TenantMigrationReport{
@@ -106,7 +106,7 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		if !found {
 			return report, ErrNotFound
 		}
-		report.FinishedAt = time.Now().UTC()
+		report.FinishedAt = mutationTime(ctx)
 		return report, nil
 	}
 	sourceManifest, meta, err := source.getManifest(ctx, sourceTenantID)
@@ -290,7 +290,7 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	if err := target.addTenantToRegistry(targetCtx, targetTenantID); err != nil {
 		return report, err
 	}
-	report.FinishedAt = time.Now().UTC()
+	report.FinishedAt = mutationTime(ctx)
 	return report, nil
 }
 

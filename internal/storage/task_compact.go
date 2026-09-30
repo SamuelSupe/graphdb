@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -94,7 +93,7 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		SnapshotKey:        snapshotKey,
 		SnapshotCatalogKey: catalog.Key,
 		SnapshotVersion:    snapshot.Version,
-		UpdatedAt:          time.Now().UTC(),
+		UpdatedAt:          mutationTime(ctx),
 		DataHash:           dataHash,
 	}
 	if err := s.updateTaskActionProgress(ctx, task, "compact_publish_manifest", total-1, total, taskActionUpdate{

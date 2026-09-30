@@ -11,6 +11,9 @@ func (s *TenantStore) reconcileInactiveIndexTask(
 	ctx context.Context,
 	task IndexTask,
 ) IndexTask {
+	if s.ReplicationMode {
+		return task
+	}
 	if !indexTaskStillActive(task) || task.OwnerID == "" {
 		return task
 	}

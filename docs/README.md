@@ -7,6 +7,8 @@ start, write, query, deploy, and operate GGraphDB through the API and CLI.
 Every user guide has an English default file and a matching `.zh-CN.md` file
 with a language-switch link at the top.
 
+- [三副本 Raft 高可用运行说明](raft-ha.zh-CN.md) · [设计](high-availability-design.zh-CN.md) · [验收记录](raft-ha-validation.zh-CN.md)
+
 ## User guides
 
 - [2.1.2 release notes](../release/local-disk.md) · [Validation](validation-v2.1.2.md) · [Write-tail measurements and limits](performance-write-tail.md)

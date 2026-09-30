@@ -57,6 +57,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
 		if !route.mutation && !route.runtimeOnly {
 			handler = s.pinLocalReadView(handler)
 		}
+		if s.Cluster != nil {
+			next := handler
+			handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				s.Cluster.ServeRoute(w, r, route.mutation, route.runtimeOnly, next)
+			})
+		}
 		mux.Handle(route.pattern, handler)
 	}
 }

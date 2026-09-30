@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -90,7 +89,7 @@ func (s *TenantStore) reconstructManifestFromObjects(ctx context.Context, tenant
 		return loadedGraph{}, err
 	}
 	g := graph.New()
-	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: time.Now().UTC()}
+	manifest := Manifest{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, UpdatedAt: mutationTime(ctx)}
 	if base != nil {
 		var err error
 		g, err = graph.FromSnapshot(*base)

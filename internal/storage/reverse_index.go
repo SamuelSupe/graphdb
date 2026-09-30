@@ -44,8 +44,8 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 }
 
 func (s *TenantStore) prepareReverseIndex(ctx context.Context, tenantID string, g *graph.Graph, version int64) (ReverseIndexCatalog, ObjectMeta, error) {
-	shards := buildReverseEdgeShards(g, version)
-	now := time.Now().UTC()
+	shards := buildReverseEdgeShards(g, version, mutationTime(ctx))
+	now := mutationTime(ctx)
 	catalog := ReverseIndexCatalog{
 		LayoutVersion: reverseIndexLayoutVersion,
 		TenantID:      tenantID,
@@ -166,12 +166,16 @@ func validImpactDirection(direction string) bool {
 	}
 }
 
-func buildReverseEdgeShards(g *graph.Graph, version int64) []EdgeShardData {
+func buildReverseEdgeShards(g *graph.Graph, version int64, at ...time.Time) []EdgeShardData {
 	counts := map[string]int{}
 	for _, edge := range g.Edges.All() {
 		counts[edge.Type+"\x00"+edgeShardID(edge.To)]++
 	}
-	shards := newEdgeShardBuckets(counts, version, time.Now().UTC())
+	now := time.Now().UTC()
+	if len(at) > 0 {
+		now = at[0]
+	}
+	shards := newEdgeShardBuckets(counts, version, now)
 	for _, edge := range g.Edges.All() {
 		shardID := edgeShardID(edge.To)
 		key := edge.Type + "\x00" + shardID

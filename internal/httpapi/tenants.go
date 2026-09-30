@@ -439,6 +439,7 @@ func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int
 func writeTenantLifecycleError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, storage.ErrWriteConflict),
+		errors.Is(err, storage.ErrConflict),
 		errors.Is(err, storage.ErrVersionConflict),
 		errors.Is(err, storage.ErrIdempotencyInProgress):
 		writeStorageError(w, err)

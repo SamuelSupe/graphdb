@@ -77,7 +77,7 @@ func (s *TenantStore) PutRelationSchema(ctx context.Context, tenantID string, sc
 		return RelationSchemaCatalog{}, err
 	}
 	catalog = upsertRelationSchema(catalog, normalized)
-	prepareRelationSchemaCatalog(&catalog, tenantID, loaded.Manifest.Version)
+	prepareRelationSchemaCatalog(ctx, &catalog, tenantID, loaded.Manifest.Version)
 	if err := validateRelationSchemaGraph(loaded.Graph, catalog); err != nil {
 		return RelationSchemaCatalog{}, err
 	}
@@ -132,7 +132,7 @@ func (s *TenantStore) DeleteRelationSchema(ctx context.Context, tenantID string,
 		return catalog, nil
 	}
 	catalog.RelationSchemas = next
-	prepareRelationSchemaCatalog(&catalog, tenantID, loaded.Manifest.Version)
+	prepareRelationSchemaCatalog(ctx, &catalog, tenantID, loaded.Manifest.Version)
 	if err := s.putRelationSchemaCatalog(ctx, tenantID, catalog, meta); err != nil {
 		return RelationSchemaCatalog{}, err
 	}
@@ -182,12 +182,12 @@ func emptyRelationSchemaCatalog(tenantID string) RelationSchemaCatalog {
 	return RelationSchemaCatalog{LayoutVersion: relationSchemaLayoutVersion, TenantID: tenantID, RelationSchemas: []RelationSchema{}}
 }
 
-func prepareRelationSchemaCatalog(catalog *RelationSchemaCatalog, tenantID string, graphVersion int64) {
+func prepareRelationSchemaCatalog(ctx context.Context, catalog *RelationSchemaCatalog, tenantID string, graphVersion int64) {
 	catalog.LayoutVersion = relationSchemaLayoutVersion
 	catalog.TenantID = tenantID
 	catalog.Revision++
 	catalog.GraphVersion = graphVersion
-	catalog.UpdatedAt = time.Now().UTC()
+	catalog.UpdatedAt = mutationTime(ctx)
 	sort.Slice(catalog.RelationSchemas, func(i, j int) bool {
 		return catalog.RelationSchemas[i].RelationType < catalog.RelationSchemas[j].RelationType
 	})

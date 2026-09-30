@@ -13,6 +13,7 @@ import (
 )
 
 type Config struct {
+	Raft                              RaftConfig
 	Backup                            backupstore.Config
 	Addr                              string
 	AdminAddr                         string
@@ -393,6 +394,16 @@ func Load() (Config, error) {
 	}
 	if cfg.AdminAddr != "" && cfg.AdminAddr == cfg.Addr {
 		return Config{}, fmt.Errorf("GRAPHDB_ADMIN_ADDR must differ from GRAPHDB_ADDR")
+	}
+	cfg.Raft, err = loadRaftConfig(cfg.DataDir)
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.Raft.Enabled {
+		if cfg.Raft.Addr == cfg.Addr || cfg.Raft.Addr == cfg.AdminAddr {
+			return Config{}, fmt.Errorf("Raft listener must differ from API listeners")
+		}
+		cfg.InstanceID = "raft-" + cfg.Raft.ClusterID
 	}
 	return cfg, nil
 }

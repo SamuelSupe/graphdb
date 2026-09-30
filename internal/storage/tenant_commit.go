@@ -165,7 +165,7 @@ func (s *TenantStore) CommitWithReport(ctx context.Context, tenantID string, mut
 	if err != nil {
 		return CommitResult{}, err
 	}
-	finished := time.Now().UTC()
+	finished := mutationTime(ctx)
 	completeCtx, completeSpan := startStorageSpan(ctx, "graphdb.storage.commit.complete_idempotency_record",
 		tenantTraceAttr(tenantID),
 		attribute.Int64("graphdb.commit.version", result.Version),
@@ -256,7 +256,7 @@ func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID strin
 		}
 		return CommitResult{}, nil, err
 	}
-	started := time.Now().UTC()
+	started := mutationTime(ctx)
 	idemCtx, idemSpan := startStorageSpan(criticalCtx, "graphdb.storage.commit.reserve_idempotency_record", tenantTraceAttr(tenantID), attribute.Bool("graphdb.commit.idempotency_key_present", request.IdempotencyKey != ""))
 	reservation, replay, err := s.beginDirectCommit(idemCtx, tenantID, request, started)
 	idemSpan.SetAttributes(attribute.Bool("graphdb.commit.idempotency_replay_found", replay != nil))
@@ -393,7 +393,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	manifest := loaded.Manifest
 	span.SetAttributes(manifestTraceAttrs("graphdb.loaded_manifest", manifest)...)
 	version := manifest.Version + 1
-	commitID, err := newCommitID()
+	commitID, err := mutationID(ctx, "tenant_commit")
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -402,7 +402,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		ID:            commitID,
 		TenantID:      tenantID,
 		Version:       version,
-		CreatedAt:     time.Now().UTC(),
+		CreatedAt:     mutationTime(ctx),
 		Mutations:     mutations,
 	}
 	_, applySpan := startStorageSpan(ctx, "graphdb.storage.commit.apply_mutations",
@@ -483,7 +483,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 			CanonicalEntities: report.CanonicalEntities,
 			CanonicalEdges:    report.CanonicalEdges,
 		}
-		if err := s.prepareDirectCommit(ctx, opts.directCommit, result, time.Now().UTC()); err != nil {
+		if err := s.prepareDirectCommit(ctx, opts.directCommit, result, mutationTime(ctx)); err != nil {
 			return CommitResult{}, err
 		}
 
@@ -571,7 +571,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		tenantTraceAttr(tenantID),
 		attribute.Int64("graphdb.commit.version", version),
 	)
-	err = s.prepareDirectCommit(prepareCtx, opts.directCommit, result, time.Now().UTC())
+	err = s.prepareDirectCommit(prepareCtx, opts.directCommit, result, mutationTime(ctx))
 	endStorageSpan(prepareSpan, err)
 	if err != nil {
 		s.deleteWriteCache(tenantID)

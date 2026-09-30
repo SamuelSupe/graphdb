@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 func (s *TenantStore) tenantLifecycleIssues(ctx context.Context, tenantID string) []RepairIssue {
@@ -84,7 +83,7 @@ func (s *TenantStore) repairTenantMetadata(ctx context.Context, tenantID string)
 		return err
 	}
 	manifest, _, _ := s.getManifest(ctx, tenantID)
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	createdAt := manifest.UpdatedAt
 	if createdAt.IsZero() {
 		createdAt = now

@@ -15,6 +15,6 @@ func (s *TenantStore) putRelationSchemasForLifecycle(ctx context.Context, tenant
 	if err != nil {
 		return err
 	}
-	prepareRelationSchemaCatalog(&catalog, tenantID, graphVersion)
+	prepareRelationSchemaCatalog(ctx, &catalog, tenantID, graphVersion)
 	return s.putRelationSchemaCatalog(ctx, tenantID, catalog, meta)
 }

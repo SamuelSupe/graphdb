@@ -44,6 +44,10 @@ func OpenFileStore(root string) (*FileStore, error) {
 		_ = s.Close()
 		return nil, fmt.Errorf("recover local restore: %w", err)
 	}
+	if err := s.recoverReplication(); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("recover replicated application: %w", err)
+	}
 	return s, nil
 }
 

@@ -3,7 +3,7 @@
 [English](README.md)
 
 GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治理、写入接入、图查询
-和运维功能。2.x 主版本采用单机单进程架构，所有数据持久化在本地磁盘，运行时无需
+和运维功能。默认部署为单机单进程；可选 [三副本 Raft 高可用](docs/raft-ha.zh-CN.md) 使用独立磁盘的 Share-Nothing 结构。所有数据持久化在本地磁盘，运行时无需
 对象存储或 PostgreSQL。可选的 [S3 兼容快照备份](docs/object-backup.zh-CN.md) 支持恢复到新的本地磁盘。
 
 ## 当前版本
@@ -40,7 +40,7 @@ docker compose up -d --build
 ```
 
 数据目录由一个进程独占。离线 CLI 必须在服务停止后使用，在线管理使用 HTTP API。
-支持 Linux/macOS 本地文件系统；本版不提供独立读写进程、共享网络文件系统或跨机器复制。
+支持 Linux/macOS 本地文件系统；不提供独立读写进程或共享网络文件系统。跨机器复制使用可选 [Raft 部署](docs/raft-ha.zh-CN.md)，每个节点拥有独立目录。
 
 ## 写入与查询
 

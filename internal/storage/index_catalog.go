@@ -184,7 +184,7 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 		return IndexCatalog{}, err
 	}
 	defer releaseMemory()
-	artifacts, err := buildIndexArtifactsWithDefinitions(g, manifest.Version, definitions)
+	artifacts, err := buildIndexArtifactsWithDefinitions(g, manifest.Version, definitions, mutationTime(ctx))
 	if err != nil {
 		return IndexCatalog{}, err
 	}

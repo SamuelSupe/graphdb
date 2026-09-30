@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 const (
@@ -33,7 +32,7 @@ func (s *TenantStore) CancelTask(ctx context.Context, tenantID string, taskID st
 		if taskTerminal(current.Status) {
 			return nil
 		}
-		now := time.Now().UTC()
+		now := mutationTime(ctx)
 		current.Status = TaskStatusCanceled
 		current.Phase = TaskStatusCanceled
 		current.Error = TaskStatusCanceled

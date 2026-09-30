@@ -21,7 +21,10 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		options.MaxDeletes = min(options.MaxDeletes, maxDeletes)
 	}
 	options.listings = make(map[string]gcListing)
-	options.listBefore = time.Now()
+	options.replicated = IsReplicatedContext(ctx)
+	if !options.replicated {
+		options.listBefore = time.Now()
+	}
 	ctx = context.WithValue(ctx, fileListDirectoriesKey{}, make(fileListDirectories))
 	var admission *taskExecutionAdmission
 	if parent, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {

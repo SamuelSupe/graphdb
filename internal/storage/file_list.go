@@ -97,6 +97,9 @@ func (s *FileStore) ListPage(ctx context.Context, prefix, after string, limit in
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if entry.Name() == replicationDirectory || entry.Name() == ".graphdb-raft" {
+				continue
+			}
 			path := filepath.Join(dir, entry.Name())
 			if isFileStoreTemp(path) || path == filepath.Join(root, fileRestoreDirectory) {
 				continue

@@ -34,7 +34,7 @@ func (s *TenantStore) beginTenantPurge(
 	tenantID string,
 	replaceRunning bool,
 ) (string, bool, error) {
-	operationID, err := newCommitID()
+	operationID, err := mutationID(ctx, "tenant_purge_tombstone")
 	if err != nil {
 		return "", false, err
 	}
@@ -132,7 +132,7 @@ func (s *TenantStore) clearTenantPurgeTombstone(ctx context.Context, tenantID st
 }
 
 func (s *TenantStore) reopenCompletedTenantPurge(ctx context.Context, tenantID string) error {
-	operationID, err := newCommitID()
+	operationID, err := mutationID(ctx, "tenant_purge_tombstone")
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func (s *TenantStore) reopenCompletedTenantPurge(ctx context.Context, tenantID s
 }
 
 func (s *TenantStore) putTenantPurgeState(ctx context.Context, tenantID string, phase string, operationID string, previous TenantMetadata, meta ObjectMeta) (ObjectMeta, error) {
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	fenceEpoch := tenantPurgeFenceEpoch(previous)
 	if lease, _, ok := s.getCachedWriterLeaseAny(tenantID); ok && lease.FenceEpoch > fenceEpoch {
 		fenceEpoch = lease.FenceEpoch
@@ -248,19 +248,19 @@ func (s *TenantStore) tenantPurgeTombstoneExists(ctx context.Context, tenantID s
 	metadata, exists, _, err := s.getTenantPurgeTombstone(ctx, tenantID)
 	if err != nil || !exists {
 		if err == nil {
-			s.setCachedTenantPurgeTombstone(tenantID, cachedTenantPurgeTombstone{phase: tenantPurgePhaseCleared, checkedAt: time.Now().UTC()})
+			s.setCachedTenantPurgeTombstone(tenantID, cachedTenantPurgeTombstone{phase: tenantPurgePhaseCleared, checkedAt: mutationTime(ctx)})
 		}
 		return false, err
 	}
 	phase, operationID := tenantPurgeState(metadata, true)
 	s.setCachedTenantPurgeTombstone(tenantID, cachedTenantPurgeTombstone{
-		phase: phase, operationID: operationID, exists: true, checkedAt: time.Now().UTC(),
+		phase: phase, operationID: operationID, exists: true, checkedAt: mutationTime(ctx),
 	})
 	return phase != tenantPurgePhaseCleared, nil
 }
 
 func (s *TenantStore) tenantPurgeTombstoneExistsCached(ctx context.Context, tenantID string) (bool, error) {
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	if cached, ok := s.getCachedTenantPurgeTombstone(tenantID, now); ok {
 		return cached.exists && cached.phase != tenantPurgePhaseCleared, nil
 	}

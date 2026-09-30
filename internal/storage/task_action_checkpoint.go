@@ -20,7 +20,7 @@ func (s *TenantStore) updateTaskActionProgress(ctx context.Context, task Task, p
 	writeCtx, cancel := s.taskPersistenceContext(ctx)
 	defer cancel()
 	current := s.taskStateOrLocal(writeCtx, task)
-	checkpoint := taskActionCheckpoint(current.Checkpoint, action)
+	checkpoint := taskActionCheckpoint(current.Checkpoint, action, mutationTime(ctx))
 	for key, value := range extra {
 		checkpoint[key] = value
 	}
@@ -28,14 +28,14 @@ func (s *TenantStore) updateTaskActionProgress(ctx context.Context, task Task, p
 	return s.updateTaskProgress(writeCtx, current, phase, completed, total, checkpoint)
 }
 
-func taskActionCheckpoint(existing map[string]any, update taskActionUpdate) map[string]any {
+func taskActionCheckpoint(existing map[string]any, update taskActionUpdate, at ...time.Time) map[string]any {
 	out := map[string]any{}
 	if update.ID == "" {
 		return out
 	}
 	actions := taskCheckpointActions(existing)
 	replaced := false
-	next := taskActionMap(update)
+	next := taskActionMap(update, at...)
 	for i, action := range actions {
 		if actionID(action) == update.ID {
 			actions[i] = mergeActionMap(action, next)
@@ -60,7 +60,7 @@ func taskActionCheckpoint(existing map[string]any, update taskActionUpdate) map[
 	return out
 }
 
-func taskActionMap(update taskActionUpdate) map[string]any {
+func taskActionMap(update taskActionUpdate, at ...time.Time) map[string]any {
 	status := update.Status
 	if status == "" {
 		status = "running"
@@ -68,7 +68,7 @@ func taskActionMap(update taskActionUpdate) map[string]any {
 	out := map[string]any{
 		"id":         update.ID,
 		"status":     status,
-		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"updated_at": artifactTime(at).Format(time.RFC3339Nano),
 	}
 	if len(update.Input) > 0 {
 		out["input"] = update.Input

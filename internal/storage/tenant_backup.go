@@ -315,7 +315,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		DryRun:            dryRun,
 		TargetExists:      exists,
 		BackupIntegrity:   input.Integrity,
-		RestoredAt:        time.Now().UTC(),
+		RestoredAt:        mutationTime(ctx),
 	}
 	if dryRun {
 		_ = s.updateTaskActionProgress(ctx, task, "restore_dry_run_done", total, total, taskActionUpdate{
@@ -414,7 +414,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 			SnapshotCatalogKey: catalog.Key,
 			SnapshotVersion:    snapshot.Version,
 			DataHash:           restoreDataHash,
-			UpdatedAt:          time.Now().UTC(),
+			UpdatedAt:          mutationTime(ctx),
 		}
 		currentMeta := ObjectMeta{}
 
@@ -467,7 +467,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		}, map[string]any{"phase": "restore_write_metadata", "backup_key": backupKey, "version": manifest.Version}); err != nil {
 			return TenantRestoreReport{}, err
 		}
-		metadata := restoredTenantMetadata(record.Metadata, task.TenantID)
+		metadata := restoredTenantMetadata(record.Metadata, task.TenantID, mutationTime(ctx))
 		if err := s.putTenantMetadata(ctx, task.TenantID, metadata); err != nil {
 			return TenantRestoreReport{}, err
 		}
@@ -537,7 +537,7 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 	baseReport.IndexCatalogVersion = catalogIndex.Version
 	baseReport.Overwrote = exists
 	baseReport.RestoreIntegrity = restoreIntegrity
-	baseReport.RestoredAt = time.Now().UTC()
+	baseReport.RestoredAt = mutationTime(ctx)
 	if integrityErr := restoreIntegrityError(restoreIntegrity); integrityErr != nil {
 		_ = s.updateTaskActionProgress(
 			context.WithoutCancel(ctx),
@@ -578,6 +578,9 @@ type tenantBackupInput struct {
 }
 
 func (s *TenantStore) loadTenantBackupInput(ctx context.Context, backupKey string) (tenantBackupInput, error) {
+	if input, ok := ctx.Value(replicatedRestoreKey{}).(tenantBackupInput); ok {
+		return input, nil
+	}
 	if strings.HasPrefix(backupKey, "s3://") {
 		return s.loadObjectBackupInput(ctx, backupKey)
 	}
@@ -604,7 +607,7 @@ func (s *TenantStore) loadTenantBackupInput(ctx context.Context, backupKey strin
 		Record: record,
 		Integrity: BackupIntegrityReport{
 			Status:      "legacy",
-			CheckedAt:   time.Now().UTC(),
+			CheckedAt:   mutationTime(ctx),
 			Objects:     1,
 			ManifestKey: "",
 			Issues:      []string{"backup manifest is missing; restored from legacy backup record only"},
@@ -642,8 +645,8 @@ func tenantBackupRecordFromResult(result map[string]any) (TenantBackupRecord, er
 	return record, nil
 }
 
-func restoredTenantMetadata(metadata TenantMetadata, tenantID string) TenantMetadata {
-	now := time.Now().UTC()
+func restoredTenantMetadata(metadata TenantMetadata, tenantID string, at ...time.Time) TenantMetadata {
+	now := artifactTime(at)
 	metadata.TenantID = tenantID
 	metadata.Status = TenantStatusActive
 	metadata.DisabledAt = time.Time{}

@@ -2,13 +2,12 @@ package storage
 
 import (
 	"context"
-	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (s *TenantStore) buildIncrementalIndexArtifacts(ctx context.Context, tenantID string, previous IndexCatalog, before *graph.Graph, after *graph.Graph, report graph.ApplyReport, version int64) (indexBuildArtifacts, error) {
-	now := time.Now().UTC()
+	now := mutationTime(ctx)
 	catalog := cloneIndexCatalog(previous)
 	catalog.LayoutVersion = CurrentObjectLayoutVersion
 	catalog.TenantID = tenantID

@@ -48,7 +48,7 @@ func (r *gcCheckpointRunner) visit(object ObjectInfo) error {
 	if r.options.listings == nil {
 		return nil
 	}
-	if r.visited > 0 && (r.visited >= 512 || r.bytes >= gcBatchBytes || time.Since(r.started) >= gcBatchDuration) {
+	if r.visited > 0 && (r.visited >= 512 || r.bytes >= gcBatchBytes || (!r.options.replicated && time.Since(r.started) >= gcBatchDuration)) {
 		r.pauseBeforeObject(object.Key)
 		return errGCPaused
 	}

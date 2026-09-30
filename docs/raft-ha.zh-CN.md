@@ -1,0 +1,72 @@
+# Raft 高可用运行说明
+
+本实现以 [高可用设计](high-availability-design.zh-CN.md) 的首版为目标：三个完整副本、单 Raft 组、单主写入、强一致读取、自动接管。节点各自持有独立目录和磁盘，属于 Share-Nothing 部署；当前没有租户分片，写入容量由一个 Leader 承担。
+
+## 启动集群
+
+使用三个新的、独立的数据目录。不要把已有单机目录直接作为任意一个副本加入集群；通过集群 API 导入数据或恢复已有备份。首次启动的三个节点使用完全相同的集群 ID、成员地址和随机通信令牌。
+
+```sh
+export GRAPHDB_RAFT_TOKEN="$(openssl rand -hex 32)"
+docker --context orbstack compose -f docker-compose.raft.yml up --build -d
+```
+
+本机验证入口为 `http://127.0.0.1:8080`。示例的 HAProxy 通过 `/v1/readiness` 仅选择能完成多数派读取屏障的 Leader。生产访问入口也需要多个实例或外部高可用负载均衡，三个数据库节点应位于独立故障域。示例本机容器共用同一宿主机，不能证明宿主机故障可用性。
+
+Raft 监听器只开放在可信私有网络；示例不发布 8081。通信校验集群 ID 和至少 32 字节的共享令牌，HTTP 传输本身不加密。跨不可信网络需使用受保护的网络或 TLS 隧道。节点的数据目录和 Raft 日志属于同一副本，不要单独复制其中一部分。
+
+| 环境变量 | 含义 |
+| --- | --- |
+| `GRAPHDB_RAFT_NODE_ID` | 非零节点 ID；设置后启用 HA |
+| `GRAPHDB_RAFT_CLUSTER_ID` | 稳定集群身份 |
+| `GRAPHDB_RAFT_ADDR` | 独立的 Raft `host:port` 监听器 |
+| `GRAPHDB_RAFT_PEERS` | 节点 ID 到私有 HTTP origin 的 JSON 对象 |
+| `GRAPHDB_RAFT_TOKEN` | 所有节点相同的通信令牌 |
+| `GRAPHDB_RAFT_DIR` | 默认数据目录下 `.graphdb-raft` |
+| `GRAPHDB_RAFT_BOOTSTRAP` | 初始三个投票节点为 `true`；新替换节点为 `false` |
+| `GRAPHDB_RAFT_TICK` | 默认 `100ms`，选举使用 10 个 tick |
+| `GRAPHDB_RAFT_SNAPSHOT_ENTRIES` | 默认每 1000 条应用日志创建快照；成员变更强制更新快照 |
+| `GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES` | 默认 `512MiB`，限制复制快照（含传输封装）和安装后的展开数据量 |
+
+未设置 Raft 配置时保持单机行为。HA 下离线修改命令拒绝启动；数据目录也拒绝绕过 Raft 的普通写入。所有副本需使用一致的 GraphDB 版本和影响编码、限额及业务语义的配置。
+
+## 成功、重试和读取
+
+- direct 请求在多数派持久化日志、Leader 发布本地图版本后返回成功。
+- WAL `202` 返回 `durability=raft_majority`：内容、身份和租户代次已多数派持久化。独立本机 ingest WAL 不再启用。Leader 将明确的请求列表写入 `flush` 日志后合批发布；新主继续处理受理队列。
+- 受理队列使用 `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES` 作为未完成请求的字节预算；Raft 还限制等待提案及未应用日志积压。超出预算返回可重试错误。
+- 请求断开或超时仍可能提交。使用相同幂等键重试，并通过状态接口核对；同一身份的不同内容会产生冲突。
+- 普通查询在 `ReadIndex` 多数派确认后等待本地应用，随后固定读取范围。Follower 和隔离旧主返回 `503`；响应的 `X-GraphDB-Leader-ID` 是发现提示，客户端应重试高可用入口。
+- `/v1/health` 返回 Raft 节点 ID、Leader ID、已应用位置和错误。`/v1/readiness` 才是 Leader 流量准入依据。
+- 携带 `min_version` 时，保存响应的 `X-GraphDB-Tenant-Generation`，下一次读取传 `X-GraphDB-Read-Generation`。恢复或清除租户后，旧代次请求返回 `409 tenant_generation_changed`，避免相同版本数字被误用。
+- 分页游标保留逻辑版本、排序位置和租户代次。接管节点无法提供游标绑定的本地 catalog 时，现有游标校验明确报错，客户端重新开始扫描。
+
+## 快照、任务和 S3
+
+Raft 日志和投票状态使用 bbolt 原子事务持久化。正常复制携带逻辑请求及 Leader 决定的 ID、时间、合批列表；每个节点自行生成图存储文件。Raft 的心跳/传输与图应用使用不同执行循环，慢应用不会占用心跳执行队列。首版图应用及 HTTP 读范围使用实例级锁，容量优化不属于这一版的验收结论。
+
+复制快照包含图文件、租户代次、已受理请求、幂等记录、任务、已应用位置和成员地址。安装前校验摘要、文件路径和大小，安装期间不提供正常服务。应用日志在修改文件前持久化旧内容；崩溃后回滚不完整应用，再重放，已完成提交不重复增加版本。
+
+超过快照预算时保留日志和在线读取，拒绝后续变更，并在健康状态中暴露 `snapshot_error`。应提高预算后逐节点重启恢复写入；不要删除数据或日志。
+
+集群任务的排队和执行均有日志记录，切主后继续处理排队任务。维护任务通过集群接口执行，首版不启用单机定时维护循环。任务执行和快照占用本地应用阶段，查询和新写入会等待；生产维护长尾需要单独测量。
+
+S3 继续使用现有 `GRAPHDB_BACKUP_S3_*` 配置。手动对象备份先复制并固定捕获结果，只有 Leader 上传和校验，再复制任务完成结果；稳定任务 ID 允许切主重试同一上传。租户恢复先由 Leader 下载、校验完整内容，再将内容写入多数派日志后发布新代次，Follower 不需要在应用时下载 S3。恢复命令也受单条 Raft 提案的 32MiB 上限约束，较大的恢复需要后续的分块持久化协议。
+
+HA 首版暂不支持自动备份策略；启用请求明确报错。可由外部调度调用集群手动备份接口。手动恢复演练需提供明确的 `backup_key`。维护清理可以令此前保留的分页游标过期，客户端需要重新开始扫描。
+
+## 安全替换节点与滚动升级
+
+Raft 管理接口位于私有 Raft 监听器，请求必须携带 `Authorization: Bearer <令牌>` 和 `X-Raft-Cluster: <集群 ID>`。
+
+1. 用新的 ID、空目录、完整当前成员地址启动替换节点，`GRAPHDB_RAFT_BOOTSTRAP=false`。
+2. 向当前 Leader `POST /raft/members`，请求 `{"action":"add_learner","id":4,"url":"http://node4:8081"}`。
+3. 等待新节点追赶，再请求 `{"action":"promote","id":4}`。尚未追赶完成返回 `409`。
+4. 请求 `{"action":"remove","id":旧节点ID}`。移除后 ID 永久保留，不能复用；保持至少三个投票副本。
+5. 停止旧节点。新节点会从包含其成员配置的快照及后续日志恢复。
+
+滚动重启或升级每次只操作一个节点，等待其追赶、集群恢复正常后再操作下一个。首版只支持使用相同日志/快照协议的兼容版本；没有对未来任意版本的混部兼容作保证。丢失多数副本时停止写入，不通过重新 bootstrap 残存目录强行组成新集群。
+
+## 验证
+
+针对新的一致性与恢复边界运行 `internal/ha` 和 `internal/storage` 的集成测试，另外使用实际 Linux 二进制启动三个独立进程进行入口与故障切换验证。结果与未验证边界见 [验收记录](raft-ha-validation.zh-CN.md)。协议实现参考 [etcd/raft](https://github.com/etcd-io/raft)，入口健康检查配置参考 [HAProxy 文档](https://docs.haproxy.org/3.0/configuration.html)。

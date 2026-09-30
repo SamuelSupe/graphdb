@@ -5,6 +5,7 @@
 GGraphDB is a multi-tenant property graph database for entities, relationships,
 source-governed ingestion, graph queries, and operational workflows. GGraphDB 2.x
 runs one process on local disk, without a required object-storage or PostgreSQL service.
+Optional [three-replica Raft HA](docs/raft-ha.zh-CN.md) uses independent local disks with leader failover and majority durability.
 Optional [S3-compatible snapshot backups](docs/object-backup.md) support recovery onto a new local disk.
 
 ## Current release
@@ -52,7 +53,7 @@ docker compose up -d --build
 The data directory is exclusive to one process. Stop the service before using
 an offline CLI on its directory; use the HTTP APIs for live administration.
 Linux and macOS local filesystems are supported. Separate readers/writers,
-shared network filesystems, and multi-machine replication are outside this edition.
+and shared network filesystems are unsupported. For multi-machine replicas, use the optional [Raft deployment](docs/raft-ha.zh-CN.md) with independent directories.
 
 ## Write and query
 
