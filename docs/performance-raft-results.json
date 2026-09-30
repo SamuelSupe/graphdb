@@ -1,0 +1,3680 @@
+{
+  "date": "2026-10-01",
+  "timezone": "Asia/Singapore",
+  "baseline_commit": "984cb692",
+  "environment": {
+    "runtime": "OrbStack Linux aarch64",
+    "go": "1.26.7",
+    "cpu_limit": 8,
+    "memory_limit_gib": 8,
+    "gomaxprocs_per_service": 2,
+    "network": "HTTP over loopback inside one isolated container",
+    "data": "fresh independent Linux volume directories per window",
+    "other_host_workloads": true
+  },
+  "runs": [
+    {
+      "name": "aa-raft",
+      "seconds": 15,
+      "warmup_seconds": 3,
+      "rounds": 2,
+      "profile": true,
+      "windows": [
+        {
+          "variant": "aa1",
+          "case": "read-8",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 16.410000000000004,
+          "write_bytes": 1283637248,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.009942941,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:36:35.669993373Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 13986,
+                "p95_us": 20042,
+                "p99_us": 23525,
+                "name": "query-match",
+                "count": 2240,
+                "errors": 0,
+                "statuses": {
+                  "200": 2240
+                },
+                "p50_ms": 13,
+                "p95_ms": 20,
+                "p99_ms": 23,
+                "max_ms": 73
+              },
+              {
+                "p50_us": 13969,
+                "p95_us": 20312,
+                "p99_us": 24089,
+                "name": "query-min-version",
+                "count": 2238,
+                "errors": 0,
+                "statuses": {
+                  "200": 2238
+                },
+                "p50_ms": 13,
+                "p95_ms": 20,
+                "p99_ms": 24,
+                "max_ms": 74
+              },
+              {
+                "p50_us": 11276,
+                "p95_us": 15977,
+                "p99_us": 19616,
+                "name": "query-traverse",
+                "count": 2240,
+                "errors": 0,
+                "statuses": {
+                  "200": 2240
+                },
+                "p50_ms": 11,
+                "p95_ms": 15,
+                "p99_ms": 19,
+                "max_ms": 27
+              },
+              {
+                "p50_us": 12835,
+                "p95_us": 18385,
+                "p99_us": 21925,
+                "name": "scan",
+                "count": 2239,
+                "errors": 0,
+                "statuses": {
+                  "200": 2239
+                },
+                "p50_ms": 12,
+                "p95_ms": 18,
+                "p99_ms": 21,
+                "max_ms": 70
+              }
+            ],
+            "mixed_operations_per_second": 596.7377780986595,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 15,
+            "run_id": "0-read-8-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            8.60302734375,
+            7.74169921875,
+            9.31201171875
+          ],
+          "system_load_after": [
+            9.36865234375,
+            7.951171875,
+            9.35595703125
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "read-8",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 16.380000000000003,
+          "write_bytes": 1289797632,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.011838238,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:36:59.700604971Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 13937,
+                "p95_us": 19946,
+                "p99_us": 23330,
+                "name": "query-match",
+                "count": 2257,
+                "errors": 0,
+                "statuses": {
+                  "200": 2257
+                },
+                "p50_ms": 13,
+                "p95_ms": 19,
+                "p99_ms": 23,
+                "max_ms": 46
+              },
+              {
+                "p50_us": 13764,
+                "p95_us": 19878,
+                "p99_us": 23623,
+                "name": "query-min-version",
+                "count": 2257,
+                "errors": 0,
+                "statuses": {
+                  "200": 2257
+                },
+                "p50_ms": 13,
+                "p95_ms": 19,
+                "p99_ms": 23,
+                "max_ms": 39
+              },
+              {
+                "p50_us": 11168,
+                "p95_us": 16106,
+                "p99_us": 19329,
+                "name": "query-traverse",
+                "count": 2257,
+                "errors": 0,
+                "statuses": {
+                  "200": 2257
+                },
+                "p50_ms": 11,
+                "p95_ms": 16,
+                "p99_ms": 19,
+                "max_ms": 41
+              },
+              {
+                "p50_us": 12740,
+                "p95_us": 18405,
+                "p99_us": 22981,
+                "name": "scan",
+                "count": 2256,
+                "errors": 0,
+                "statuses": {
+                  "200": 2256
+                },
+                "p50_ms": 12,
+                "p95_ms": 18,
+                "p99_ms": 22,
+                "max_ms": 40
+              }
+            ],
+            "mixed_operations_per_second": 601.3254244340067,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 15,
+            "run_id": "0-read-8-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            10.89794921875,
+            8.33056640625,
+            9.46533203125
+          ],
+          "system_load_after": [
+            11.5615234375,
+            8.60791015625,
+            9.53857421875
+          ]
+        },
+        {
+          "variant": "aa1",
+          "case": "read-32",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 21.089999999999996,
+          "write_bytes": 702951424,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.031082711,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:37:23.293835967Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 36665,
+                "p95_us": 54820,
+                "p99_us": 75171,
+                "name": "query-match",
+                "count": 3335,
+                "errors": 0,
+                "statuses": {
+                  "200": 3335
+                },
+                "p50_ms": 36,
+                "p95_ms": 54,
+                "p99_ms": 75,
+                "max_ms": 201
+              },
+              {
+                "p50_us": 36233,
+                "p95_us": 56624,
+                "p99_us": 82384,
+                "name": "query-min-version",
+                "count": 3331,
+                "errors": 0,
+                "statuses": {
+                  "200": 3331
+                },
+                "p50_ms": 36,
+                "p95_ms": 56,
+                "p99_ms": 82,
+                "max_ms": 204
+              },
+              {
+                "p50_us": 30293,
+                "p95_us": 46695,
+                "p99_us": 66963,
+                "name": "query-traverse",
+                "count": 3329,
+                "errors": 0,
+                "statuses": {
+                  "200": 3329
+                },
+                "p50_ms": 30,
+                "p95_ms": 46,
+                "p99_ms": 66,
+                "max_ms": 196
+              },
+              {
+                "p50_us": 32668,
+                "p95_us": 50022,
+                "p99_us": 73694,
+                "name": "scan",
+                "count": 3333,
+                "errors": 0,
+                "statuses": {
+                  "200": 3333
+                },
+                "p50_ms": 32,
+                "p95_ms": 50,
+                "p99_ms": 73,
+                "max_ms": 200
+              }
+            ],
+            "mixed_operations_per_second": 886.695939092022,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 15,
+            "run_id": "0-read-32-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            11.43603515625,
+            8.63134765625,
+            9.54150390625
+          ],
+          "system_load_after": [
+            11.697265625,
+            8.8291015625,
+            9.59228515625
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "read-32",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 21.3,
+          "write_bytes": 1022423040,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.037471563,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:37:46.972559045Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 35783,
+                "p95_us": 55984,
+                "p99_us": 85327,
+                "name": "query-match",
+                "count": 3431,
+                "errors": 0,
+                "statuses": {
+                  "200": 3431
+                },
+                "p50_ms": 35,
+                "p95_ms": 55,
+                "p99_ms": 85,
+                "max_ms": 128
+              },
+              {
+                "p50_us": 34954,
+                "p95_us": 55092,
+                "p99_us": 101745,
+                "name": "query-min-version",
+                "count": 3430,
+                "errors": 0,
+                "statuses": {
+                  "200": 3430
+                },
+                "p50_ms": 34,
+                "p95_ms": 55,
+                "p99_ms": 101,
+                "max_ms": 125
+              },
+              {
+                "p50_us": 29477,
+                "p95_us": 47599,
+                "p99_us": 78682,
+                "name": "query-traverse",
+                "count": 3426,
+                "errors": 0,
+                "statuses": {
+                  "200": 3426
+                },
+                "p50_ms": 29,
+                "p95_ms": 47,
+                "p99_ms": 78,
+                "max_ms": 118
+              },
+              {
+                "p50_us": 31972,
+                "p95_us": 50203,
+                "p99_us": 91940,
+                "name": "scan",
+                "count": 3427,
+                "errors": 0,
+                "statuses": {
+                  "200": 3427
+                },
+                "p50_ms": 31,
+                "p95_ms": 50,
+                "p99_ms": 91,
+                "max_ms": 117
+              }
+            ],
+            "mixed_operations_per_second": 911.9884245529396,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 15,
+            "run_id": "0-read-32-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            10.96826171875,
+            8.76806640625,
+            9.56396484375
+          ],
+          "system_load_after": [
+            11.5419921875,
+            8.99462890625,
+            9.625
+          ]
+        },
+        {
+          "variant": "aa1",
+          "case": "mixed-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 35.48,
+          "write_bytes": 911806464,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 16.293565913,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:38:13.546345893Z",
+            "last_version": 85,
+            "metrics": [
+              {
+                "p50_us": 1073702,
+                "p95_us": 2044580,
+                "p99_us": 2250895,
+                "name": "ingest",
+                "count": 59,
+                "errors": 0,
+                "statuses": {
+                  "200": 59
+                },
+                "p50_ms": 1073,
+                "p95_ms": 2044,
+                "p99_ms": 2250,
+                "max_ms": 2250
+              },
+              {
+                "p50_us": 654511,
+                "p95_us": 1072898,
+                "p99_us": 1145947,
+                "name": "query-match",
+                "count": 119,
+                "errors": 0,
+                "statuses": {
+                  "200": 119
+                },
+                "p50_ms": 654,
+                "p95_ms": 1072,
+                "p99_ms": 1145,
+                "max_ms": 1146
+              },
+              {
+                "p50_us": 665728,
+                "p95_us": 1141603,
+                "p99_us": 1154905,
+                "name": "query-min-version",
+                "count": 118,
+                "errors": 0,
+                "statuses": {
+                  "200": 118
+                },
+                "p50_ms": 665,
+                "p95_ms": 1141,
+                "p99_ms": 1154,
+                "max_ms": 1155
+              },
+              {
+                "p50_us": 299844,
+                "p95_us": 895486,
+                "p99_us": 1079573,
+                "name": "query-traverse",
+                "count": 117,
+                "errors": 0,
+                "statuses": {
+                  "200": 117
+                },
+                "p50_ms": 299,
+                "p95_ms": 895,
+                "p99_ms": 1079,
+                "max_ms": 1147
+              },
+              {
+                "p50_us": 298764,
+                "p95_us": 896393,
+                "p99_us": 1074002,
+                "name": "scan",
+                "count": 116,
+                "errors": 0,
+                "statuses": {
+                  "200": 116
+                },
+                "p50_ms": 298,
+                "p95_ms": 896,
+                "p99_ms": 1074,
+                "max_ms": 1144
+              }
+            ],
+            "mixed_operations_per_second": 32.46680332743685,
+            "published_batches": 59,
+            "published_batches_per_second": 3.621061240678212,
+            "published_host_updates_per_second": 72.42122481356424,
+            "published_version_delta": 59,
+            "readers": 16,
+            "requested_seconds": 15,
+            "run_id": "0-mixed-direct-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            10.689453125,
+            8.8955078125,
+            9.5859375
+          ],
+          "system_load_after": [
+            12.03271484375,
+            9.310546875,
+            9.7080078125
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "mixed-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 36.599999999999994,
+          "write_bytes": 988893184,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.929314396,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:38:38.977442965Z",
+            "last_version": 91,
+            "metrics": [
+              {
+                "p50_us": 981674,
+                "p95_us": 1294838,
+                "p99_us": 1481043,
+                "name": "ingest",
+                "count": 65,
+                "errors": 0,
+                "statuses": {
+                  "200": 65
+                },
+                "p50_ms": 981,
+                "p95_ms": 1294,
+                "p99_ms": 1481,
+                "max_ms": 1481
+              },
+              {
+                "p50_us": 656017,
+                "p95_us": 1040007,
+                "p99_us": 1131133,
+                "name": "query-match",
+                "count": 105,
+                "errors": 0,
+                "statuses": {
+                  "200": 105
+                },
+                "p50_ms": 656,
+                "p95_ms": 1040,
+                "p99_ms": 1131,
+                "max_ms": 1170
+              },
+              {
+                "p50_us": 508402,
+                "p95_us": 1178757,
+                "p99_us": 1205183,
+                "name": "query-min-version",
+                "count": 107,
+                "errors": 0,
+                "statuses": {
+                  "200": 107
+                },
+                "p50_ms": 508,
+                "p95_ms": 1178,
+                "p99_ms": 1205,
+                "max_ms": 1477
+              },
+              {
+                "p50_us": 534002,
+                "p95_us": 1057083,
+                "p99_us": 1171534,
+                "name": "query-traverse",
+                "count": 105,
+                "errors": 0,
+                "statuses": {
+                  "200": 105
+                },
+                "p50_ms": 534,
+                "p95_ms": 1057,
+                "p99_ms": 1171,
+                "max_ms": 1185
+              },
+              {
+                "p50_us": 506735,
+                "p95_us": 1063656,
+                "p99_us": 1209780,
+                "name": "scan",
+                "count": 106,
+                "errors": 0,
+                "statuses": {
+                  "200": 106
+                },
+                "p50_ms": 506,
+                "p95_ms": 1063,
+                "p99_ms": 1209,
+                "max_ms": 1264
+              }
+            ],
+            "mixed_operations_per_second": 30.63534235488135,
+            "published_batches": 65,
+            "published_batches_per_second": 4.080527157924769,
+            "published_host_updates_per_second": 81.61054315849539,
+            "published_version_delta": 65,
+            "readers": 16,
+            "requested_seconds": 15,
+            "run_id": "0-mixed-direct-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            12.02978515625,
+            9.35546875,
+            9.720703125
+          ],
+          "system_load_after": [
+            11.71142578125,
+            9.4609375,
+            9.74853515625
+          ]
+        },
+        {
+          "variant": "aa1",
+          "case": "write-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 35.2,
+          "write_bytes": 855916544,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.976557757,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:39:04.263776925Z",
+            "last_version": 85,
+            "metrics": [
+              {
+                "p50_us": 1033058,
+                "p95_us": 1734524,
+                "p99_us": 1924239,
+                "name": "ingest",
+                "count": 59,
+                "errors": 0,
+                "statuses": {
+                  "200": 59
+                },
+                "p50_ms": 1033,
+                "p95_ms": 1734,
+                "p99_ms": 1924,
+                "max_ms": 1924
+              }
+            ],
+            "mixed_operations_per_second": 3.6929106317754603,
+            "published_batches": 59,
+            "published_batches_per_second": 3.6929106317754603,
+            "published_host_updates_per_second": 73.8582126355092,
+            "published_version_delta": 59,
+            "readers": 0,
+            "requested_seconds": 15,
+            "run_id": "0-write-direct-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            11.654296875,
+            9.48681640625,
+            9.75537109375
+          ],
+          "system_load_after": [
+            12.1240234375,
+            9.73193359375,
+            9.83056640625
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "write-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 37.06,
+          "write_bytes": 898129920,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 16.115341729,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:39:30.922124963Z",
+            "last_version": 87,
+            "metrics": [
+              {
+                "p50_us": 1055122,
+                "p95_us": 1517091,
+                "p99_us": 1782421,
+                "name": "ingest",
+                "count": 61,
+                "errors": 0,
+                "statuses": {
+                  "200": 61
+                },
+                "p50_ms": 1055,
+                "p95_ms": 1517,
+                "p99_ms": 1782,
+                "max_ms": 1782
+              }
+            ],
+            "mixed_operations_per_second": 3.7852129371993906,
+            "published_batches": 61,
+            "published_batches_per_second": 3.7852129371993906,
+            "published_host_updates_per_second": 75.70425874398781,
+            "published_version_delta": 61,
+            "readers": 0,
+            "requested_seconds": 15,
+            "run_id": "0-write-direct-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            12.6337890625,
+            9.921875,
+            9.8916015625
+          ],
+          "system_load_after": [
+            12.28955078125,
+            9.9755859375,
+            9.91015625
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "read-8",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 6.43,
+          "write_bytes": 260177920,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.13563812,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:39:56.378644645Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 35326,
+                "p95_us": 47600,
+                "p99_us": 205811,
+                "name": "query-match",
+                "count": 792,
+                "errors": 0,
+                "statuses": {
+                  "200": 792
+                },
+                "p50_ms": 35,
+                "p95_ms": 47,
+                "p99_ms": 205,
+                "max_ms": 226
+              },
+              {
+                "p50_us": 35653,
+                "p95_us": 47046,
+                "p99_us": 200538,
+                "name": "query-min-version",
+                "count": 794,
+                "errors": 0,
+                "statuses": {
+                  "200": 794
+                },
+                "p50_ms": 35,
+                "p95_ms": 47,
+                "p99_ms": 200,
+                "max_ms": 217
+              },
+              {
+                "p50_us": 32455,
+                "p95_us": 44304,
+                "p99_us": 199484,
+                "name": "query-traverse",
+                "count": 794,
+                "errors": 0,
+                "statuses": {
+                  "200": 794
+                },
+                "p50_ms": 32,
+                "p95_ms": 44,
+                "p99_ms": 199,
+                "max_ms": 220
+              },
+              {
+                "p50_us": 33914,
+                "p95_us": 45836,
+                "p99_us": 202448,
+                "name": "scan",
+                "count": 795,
+                "errors": 0,
+                "statuses": {
+                  "200": 795
+                },
+                "p50_ms": 33,
+                "p95_ms": 45,
+                "p99_ms": 202,
+                "max_ms": 217
+              }
+            ],
+            "mixed_operations_per_second": 209.7698144490257,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 15,
+            "run_id": "1-read-8-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            11.84423828125,
+            9.958984375,
+            9.9052734375
+          ],
+          "system_load_after": [
+            11.755859375,
+            10.0283203125,
+            9.9296875
+          ]
+        },
+        {
+          "variant": "aa1",
+          "case": "read-8",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 7.1899999999999995,
+          "write_bytes": 302682112,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.026549812,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:40:20.957091767Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 33658,
+                "p95_us": 46623,
+                "p99_us": 191113,
+                "name": "query-match",
+                "count": 897,
+                "errors": 0,
+                "statuses": {
+                  "200": 897
+                },
+                "p50_ms": 33,
+                "p95_ms": 46,
+                "p99_ms": 191,
+                "max_ms": 205
+              },
+              {
+                "p50_us": 34623,
+                "p95_us": 46130,
+                "p99_us": 187014,
+                "name": "query-min-version",
+                "count": 898,
+                "errors": 0,
+                "statuses": {
+                  "200": 898
+                },
+                "p50_ms": 34,
+                "p95_ms": 46,
+                "p99_ms": 187,
+                "max_ms": 203
+              },
+              {
+                "p50_us": 30902,
+                "p95_us": 43134,
+                "p99_us": 183111,
+                "name": "query-traverse",
+                "count": 897,
+                "errors": 0,
+                "statuses": {
+                  "200": 897
+                },
+                "p50_ms": 30,
+                "p95_ms": 43,
+                "p99_ms": 183,
+                "max_ms": 204
+              },
+              {
+                "p50_us": 32273,
+                "p95_us": 43794,
+                "p99_us": 193210,
+                "name": "scan",
+                "count": 897,
+                "errors": 0,
+                "statuses": {
+                  "200": 897
+                },
+                "p50_ms": 32,
+                "p95_ms": 43,
+                "p99_ms": 193,
+                "max_ms": 209
+              }
+            ],
+            "mixed_operations_per_second": 238.84391592898277,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 15,
+            "run_id": "1-read-8-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            11.33203125,
+            9.994140625,
+            9.9189453125
+          ],
+          "system_load_after": [
+            12.17333984375,
+            10.25439453125,
+            10.00537109375
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "read-32",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 17.200000000000003,
+          "write_bytes": 445972480,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.032621774,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:40:46.677808455Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 40939,
+                "p95_us": 60055,
+                "p99_us": 213159,
+                "name": "query-match",
+                "count": 2820,
+                "errors": 0,
+                "statuses": {
+                  "200": 2820
+                },
+                "p50_ms": 40,
+                "p95_ms": 60,
+                "p99_ms": 213,
+                "max_ms": 235
+              },
+              {
+                "p50_us": 40368,
+                "p95_us": 59964,
+                "p99_us": 215275,
+                "name": "query-min-version",
+                "count": 2821,
+                "errors": 0,
+                "statuses": {
+                  "200": 2821
+                },
+                "p50_ms": 40,
+                "p95_ms": 59,
+                "p99_ms": 215,
+                "max_ms": 237
+              },
+              {
+                "p50_us": 34762,
+                "p95_us": 53226,
+                "p99_us": 210846,
+                "name": "query-traverse",
+                "count": 2818,
+                "errors": 0,
+                "statuses": {
+                  "200": 2818
+                },
+                "p50_ms": 34,
+                "p95_ms": 53,
+                "p99_ms": 210,
+                "max_ms": 224
+              },
+              {
+                "p50_us": 37507,
+                "p95_us": 57863,
+                "p99_us": 213035,
+                "name": "scan",
+                "count": 2817,
+                "errors": 0,
+                "statuses": {
+                  "200": 2817
+                },
+                "p50_ms": 37,
+                "p95_ms": 57,
+                "p99_ms": 213,
+                "max_ms": 227
+              }
+            ],
+            "mixed_operations_per_second": 750.1020227557811,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 15,
+            "run_id": "1-read-32-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            11.53759765625,
+            10.18017578125,
+            9.9833984375
+          ],
+          "system_load_after": [
+            11.54736328125,
+            10.2392578125,
+            10.005859375
+          ]
+        },
+        {
+          "variant": "aa1",
+          "case": "read-32",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 14.25,
+          "write_bytes": 340344832,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.184704941,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:41:11.647014851Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 48796,
+                "p95_us": 177864,
+                "p99_us": 223907,
+                "name": "query-match",
+                "count": 2266,
+                "errors": 0,
+                "statuses": {
+                  "200": 2266
+                },
+                "p50_ms": 48,
+                "p95_ms": 177,
+                "p99_ms": 223,
+                "max_ms": 246
+              },
+              {
+                "p50_us": 48128,
+                "p95_us": 79068,
+                "p99_us": 227001,
+                "name": "query-min-version",
+                "count": 2265,
+                "errors": 0,
+                "statuses": {
+                  "200": 2265
+                },
+                "p50_ms": 48,
+                "p95_ms": 79,
+                "p99_ms": 227,
+                "max_ms": 248
+              },
+              {
+                "p50_us": 42291,
+                "p95_us": 72691,
+                "p99_us": 209836,
+                "name": "query-traverse",
+                "count": 2264,
+                "errors": 0,
+                "statuses": {
+                  "200": 2264
+                },
+                "p50_ms": 42,
+                "p95_ms": 72,
+                "p99_ms": 209,
+                "max_ms": 230
+              },
+              {
+                "p50_us": 44265,
+                "p95_us": 76712,
+                "p99_us": 215415,
+                "name": "scan",
+                "count": 2259,
+                "errors": 0,
+                "statuses": {
+                  "200": 2259
+                },
+                "p50_ms": 44,
+                "p95_ms": 76,
+                "p99_ms": 215,
+                "max_ms": 236
+              }
+            ],
+            "mixed_operations_per_second": 596.2578815445684,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 15,
+            "run_id": "1-read-32-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            11.16162109375,
+            10.1982421875,
+            9.9951171875
+          ],
+          "system_load_after": [
+            12.3095703125,
+            10.4990234375,
+            10.09716796875
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "mixed-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 38.76,
+          "write_bytes": 980643840,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.947775622,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:41:39.004347537Z",
+            "last_version": 87,
+            "metrics": [
+              {
+                "p50_us": 1014218,
+                "p95_us": 1483374,
+                "p99_us": 1732670,
+                "name": "ingest",
+                "count": 61,
+                "errors": 0,
+                "statuses": {
+                  "200": 61
+                },
+                "p50_ms": 1014,
+                "p95_ms": 1483,
+                "p99_ms": 1732,
+                "max_ms": 1732
+              },
+              {
+                "p50_us": 681145,
+                "p95_us": 877012,
+                "p99_us": 1012443,
+                "name": "query-match",
+                "count": 120,
+                "errors": 0,
+                "statuses": {
+                  "200": 120
+                },
+                "p50_ms": 681,
+                "p95_ms": 877,
+                "p99_ms": 1012,
+                "max_ms": 1016
+              },
+              {
+                "p50_us": 685412,
+                "p95_us": 881532,
+                "p99_us": 943895,
+                "name": "query-min-version",
+                "count": 121,
+                "errors": 0,
+                "statuses": {
+                  "200": 121
+                },
+                "p50_ms": 685,
+                "p95_ms": 881,
+                "p99_ms": 943,
+                "max_ms": 979
+              },
+              {
+                "p50_us": 325433,
+                "p95_us": 875300,
+                "p99_us": 1010803,
+                "name": "query-traverse",
+                "count": 122,
+                "errors": 0,
+                "statuses": {
+                  "200": 122
+                },
+                "p50_ms": 325,
+                "p95_ms": 875,
+                "p99_ms": 1010,
+                "max_ms": 1011
+              },
+              {
+                "p50_us": 329515,
+                "p95_us": 872459,
+                "p99_us": 973386,
+                "name": "scan",
+                "count": 119,
+                "errors": 0,
+                "statuses": {
+                  "200": 119
+                },
+                "p50_ms": 329,
+                "p95_ms": 872,
+                "p99_ms": 973,
+                "max_ms": 1019
+              }
+            ],
+            "mixed_operations_per_second": 34.04863555083695,
+            "published_batches": 61,
+            "published_batches_per_second": 3.8249848408859184,
+            "published_host_updates_per_second": 76.49969681771837,
+            "published_version_delta": 61,
+            "readers": 16,
+            "requested_seconds": 15,
+            "run_id": "1-mixed-direct-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            11.94775390625,
+            10.482421875,
+            10.095703125
+          ],
+          "system_load_after": [
+            12.22607421875,
+            10.658203125,
+            10.1630859375
+          ]
+        },
+        {
+          "variant": "aa1",
+          "case": "mixed-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 36.57,
+          "write_bytes": 909516800,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 16.143182237,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:42:04.658831152Z",
+            "last_version": 85,
+            "metrics": [
+              {
+                "p50_us": 992071,
+                "p95_us": 1745690,
+                "p99_us": 1855717,
+                "name": "ingest",
+                "count": 59,
+                "errors": 0,
+                "statuses": {
+                  "200": 59
+                },
+                "p50_ms": 992,
+                "p95_ms": 1745,
+                "p99_ms": 1855,
+                "max_ms": 1855
+              },
+              {
+                "p50_us": 662828,
+                "p95_us": 1332318,
+                "p99_us": 1481460,
+                "name": "query-match",
+                "count": 95,
+                "errors": 0,
+                "statuses": {
+                  "200": 95
+                },
+                "p50_ms": 662,
+                "p95_ms": 1332,
+                "p99_ms": 1481,
+                "max_ms": 1481
+              },
+              {
+                "p50_us": 678622,
+                "p95_us": 1243277,
+                "p99_us": 1416774,
+                "name": "query-min-version",
+                "count": 97,
+                "errors": 0,
+                "statuses": {
+                  "200": 97
+                },
+                "p50_ms": 678,
+                "p95_ms": 1243,
+                "p99_ms": 1416,
+                "max_ms": 1416
+              },
+              {
+                "p50_us": 632134,
+                "p95_us": 1396287,
+                "p99_us": 1490927,
+                "name": "query-traverse",
+                "count": 96,
+                "errors": 0,
+                "statuses": {
+                  "200": 96
+                },
+                "p50_ms": 632,
+                "p95_ms": 1396,
+                "p99_ms": 1490,
+                "max_ms": 1490
+              },
+              {
+                "p50_us": 578297,
+                "p95_us": 1328955,
+                "p99_us": 1495609,
+                "name": "scan",
+                "count": 97,
+                "errors": 0,
+                "statuses": {
+                  "200": 97
+                },
+                "p50_ms": 578,
+                "p95_ms": 1328,
+                "p99_ms": 1495,
+                "max_ms": 1495
+              }
+            ],
+            "mixed_operations_per_second": 27.503870889988267,
+            "published_batches": 59,
+            "published_batches_per_second": 3.6547936543002426,
+            "published_host_updates_per_second": 73.09587308600486,
+            "published_version_delta": 59,
+            "readers": 16,
+            "requested_seconds": 15,
+            "run_id": "1-mixed-direct-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            12.47314453125,
+            10.76708984375,
+            10.2041015625
+          ],
+          "system_load_after": [
+            12.87353515625,
+            10.92822265625,
+            10.26513671875
+          ]
+        },
+        {
+          "variant": "aa2",
+          "case": "write-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 37.53,
+          "write_bytes": 931901440,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.919211157,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:42:31.003030492Z",
+            "last_version": 89,
+            "metrics": [
+              {
+                "p50_us": 1001193,
+                "p95_us": 1330885,
+                "p99_us": 1654353,
+                "name": "ingest",
+                "count": 63,
+                "errors": 0,
+                "statuses": {
+                  "200": 63
+                },
+                "p50_ms": 1001,
+                "p95_ms": 1330,
+                "p99_ms": 1654,
+                "max_ms": 1654
+              }
+            ],
+            "mixed_operations_per_second": 3.957482527160124,
+            "published_batches": 63,
+            "published_batches_per_second": 3.957482527160124,
+            "published_host_updates_per_second": 79.14965054320248,
+            "published_version_delta": 63,
+            "readers": 0,
+            "requested_seconds": 15,
+            "run_id": "1-write-direct-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            12.80615234375,
+            10.97998046875,
+            10.28955078125
+          ],
+          "system_load_after": [
+            12.46142578125,
+            10.98291015625,
+            10.30126953125
+          ]
+        },
+        {
+          "variant": "aa1",
+          "case": "write-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 36.74,
+          "write_bytes": 963358720,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 15.94443875,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:42:56.859122245Z",
+            "last_version": 93,
+            "metrics": [
+              {
+                "p50_us": 971184,
+                "p95_us": 1311325,
+                "p99_us": 1353248,
+                "name": "ingest",
+                "count": 67,
+                "errors": 0,
+                "statuses": {
+                  "200": 67
+                },
+                "p50_ms": 971,
+                "p95_ms": 1311,
+                "p99_ms": 1353,
+                "max_ms": 1353
+              }
+            ],
+            "mixed_operations_per_second": 4.202092093081671,
+            "published_batches": 67,
+            "published_batches_per_second": 4.202092093081671,
+            "published_host_updates_per_second": 84.04184186163342,
+            "published_version_delta": 67,
+            "readers": 0,
+            "requested_seconds": 15,
+            "run_id": "1-write-direct-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            12.0888671875,
+            10.95068359375,
+            10.2978515625
+          ],
+          "system_load_after": [
+            12.18115234375,
+            11.0205078125,
+            10.33056640625
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ab-raft",
+      "seconds": 30,
+      "warmup_seconds": 5,
+      "rounds": 2,
+      "profile": false,
+      "windows": [
+        {
+          "variant": "before",
+          "case": "read-8",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 25.459999999999997,
+          "write_bytes": 1728241664,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.012927977,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:44:02.696336656Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 18170,
+                "p95_us": 30050,
+                "p99_us": 80217,
+                "name": "query-match",
+                "count": 3242,
+                "errors": 0,
+                "statuses": {
+                  "200": 3242
+                },
+                "p50_ms": 18,
+                "p95_ms": 30,
+                "p99_ms": 80,
+                "max_ms": 118
+              },
+              {
+                "p50_us": 18127,
+                "p95_us": 28899,
+                "p99_us": 51886,
+                "name": "query-min-version",
+                "count": 3242,
+                "errors": 0,
+                "statuses": {
+                  "200": 3242
+                },
+                "p50_ms": 18,
+                "p95_ms": 28,
+                "p99_ms": 51,
+                "max_ms": 91
+              },
+              {
+                "p50_us": 15008,
+                "p95_us": 26259,
+                "p99_us": 77898,
+                "name": "query-traverse",
+                "count": 3242,
+                "errors": 0,
+                "statuses": {
+                  "200": 3242
+                },
+                "p50_ms": 15,
+                "p95_ms": 26,
+                "p99_ms": 77,
+                "max_ms": 122
+              },
+              {
+                "p50_us": 16825,
+                "p95_us": 28723,
+                "p99_us": 82855,
+                "name": "scan",
+                "count": 3243,
+                "errors": 0,
+                "statuses": {
+                  "200": 3243
+                },
+                "p50_ms": 16,
+                "p95_ms": 28,
+                "p99_ms": 82,
+                "max_ms": 109
+              }
+            ],
+            "mixed_operations_per_second": 432.1137880962036,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "0-read-8-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            12.951171875,
+            11.37353515625,
+            10.4755859375
+          ],
+          "system_load_after": [
+            12.650390625,
+            11.4501953125,
+            10.52978515625
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "read-8",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 50.19,
+          "write_bytes": 13905920,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.00488563,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:44:42.408411405Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 6621,
+                "p95_us": 11392,
+                "p99_us": 14381,
+                "name": "query-match",
+                "count": 9740,
+                "errors": 0,
+                "statuses": {
+                  "200": 9740
+                },
+                "p50_ms": 6,
+                "p95_ms": 11,
+                "p99_ms": 14,
+                "max_ms": 20
+              },
+              {
+                "p50_us": 6411,
+                "p95_us": 11105,
+                "p99_us": 14063,
+                "name": "query-min-version",
+                "count": 9740,
+                "errors": 0,
+                "statuses": {
+                  "200": 9740
+                },
+                "p50_ms": 6,
+                "p95_ms": 11,
+                "p99_ms": 14,
+                "max_ms": 22
+              },
+              {
+                "p50_us": 4153,
+                "p95_us": 7859,
+                "p99_us": 10030,
+                "name": "query-traverse",
+                "count": 9738,
+                "errors": 0,
+                "statuses": {
+                  "200": 9738
+                },
+                "p50_ms": 4,
+                "p95_ms": 7,
+                "p99_ms": 10,
+                "max_ms": 16
+              },
+              {
+                "p50_us": 6249,
+                "p95_us": 11878,
+                "p99_us": 15326,
+                "name": "scan",
+                "count": 9739,
+                "errors": 0,
+                "statuses": {
+                  "200": 9739
+                },
+                "p50_ms": 6,
+                "p95_ms": 11,
+                "p99_ms": 15,
+                "max_ms": 25
+              }
+            ],
+            "mixed_operations_per_second": 1298.3552238922498,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "0-read-8-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            12.3486328125,
+            11.419921875,
+            10.52978515625
+          ],
+          "system_load_after": [
+            12.4345703125,
+            11.55078125,
+            10.603515625
+          ]
+        },
+        {
+          "variant": "before",
+          "case": "read-32",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 39.330000000000005,
+          "write_bytes": 1289019392,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.036205318,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:45:23.501416634Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 39102,
+                "p95_us": 60168,
+                "p99_us": 100579,
+                "name": "query-match",
+                "count": 6277,
+                "errors": 0,
+                "statuses": {
+                  "200": 6277
+                },
+                "p50_ms": 39,
+                "p95_ms": 60,
+                "p99_ms": 100,
+                "max_ms": 122
+              },
+              {
+                "p50_us": 38515,
+                "p95_us": 60974,
+                "p99_us": 98046,
+                "name": "query-min-version",
+                "count": 6276,
+                "errors": 0,
+                "statuses": {
+                  "200": 6276
+                },
+                "p50_ms": 38,
+                "p95_ms": 60,
+                "p99_ms": 98,
+                "max_ms": 118
+              },
+              {
+                "p50_us": 32313,
+                "p95_us": 50138,
+                "p99_us": 91050,
+                "name": "query-traverse",
+                "count": 6276,
+                "errors": 0,
+                "statuses": {
+                  "200": 6276
+                },
+                "p50_ms": 32,
+                "p95_ms": 50,
+                "p99_ms": 91,
+                "max_ms": 109
+              },
+              {
+                "p50_us": 34682,
+                "p95_us": 54573,
+                "p99_us": 95537,
+                "name": "scan",
+                "count": 6275,
+                "errors": 0,
+                "statuses": {
+                  "200": 6275
+                },
+                "p50_ms": 34,
+                "p95_ms": 54,
+                "p99_ms": 95,
+                "max_ms": 113
+              }
+            ],
+            "mixed_operations_per_second": 835.7913303034907,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 30,
+            "run_id": "0-read-32-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            11.82666015625,
+            11.4462890625,
+            10.58349609375
+          ],
+          "system_load_after": [
+            13.8017578125,
+            11.9365234375,
+            10.77392578125
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "read-32",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 53.78,
+          "write_bytes": 15085568,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.022325095,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:46:03.676192437Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 23702,
+                "p95_us": 32544,
+                "p99_us": 37346,
+                "name": "query-match",
+                "count": 10530,
+                "errors": 0,
+                "statuses": {
+                  "200": 10530
+                },
+                "p50_ms": 23,
+                "p95_ms": 32,
+                "p99_ms": 37,
+                "max_ms": 51
+              },
+              {
+                "p50_us": 23399,
+                "p95_us": 31810,
+                "p99_us": 36095,
+                "name": "query-min-version",
+                "count": 10528,
+                "errors": 0,
+                "statuses": {
+                  "200": 10528
+                },
+                "p50_ms": 23,
+                "p95_ms": 31,
+                "p99_ms": 36,
+                "max_ms": 55
+              },
+              {
+                "p50_us": 20318,
+                "p95_us": 27656,
+                "p99_us": 31593,
+                "name": "query-traverse",
+                "count": 10530,
+                "errors": 0,
+                "statuses": {
+                  "200": 10530
+                },
+                "p50_ms": 20,
+                "p95_ms": 27,
+                "p99_ms": 31,
+                "max_ms": 48
+              },
+              {
+                "p50_us": 22449,
+                "p95_us": 31079,
+                "p99_us": 36466,
+                "name": "scan",
+                "count": 10527,
+                "errors": 0,
+                "statuses": {
+                  "200": 10527
+                },
+                "p50_ms": 22,
+                "p95_ms": 31,
+                "p99_ms": 36,
+                "max_ms": 57
+              }
+            ],
+            "mixed_operations_per_second": 1402.7894197646253,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 30,
+            "run_id": "0-read-32-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            13.63671875,
+            11.95654296875,
+            10.79248046875
+          ],
+          "system_load_after": [
+            13.166015625,
+            12.02001953125,
+            10.8515625
+          ]
+        },
+        {
+          "variant": "before",
+          "case": "mixed-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 73.2,
+          "write_bytes": 1572507648,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.335116903,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:46:45.710270654Z",
+            "last_version": 127,
+            "metrics": [
+              {
+                "p50_us": 1225502,
+                "p95_us": 1772067,
+                "p99_us": 2007817,
+                "name": "ingest",
+                "count": 101,
+                "errors": 0,
+                "statuses": {
+                  "200": 101
+                },
+                "p50_ms": 1225,
+                "p95_ms": 1772,
+                "p99_ms": 2007,
+                "max_ms": 2072
+              },
+              {
+                "p50_us": 704169,
+                "p95_us": 1040302,
+                "p99_us": 1142624,
+                "name": "query-match",
+                "count": 194,
+                "errors": 0,
+                "statuses": {
+                  "200": 194
+                },
+                "p50_ms": 704,
+                "p95_ms": 1040,
+                "p99_ms": 1142,
+                "max_ms": 1146
+              },
+              {
+                "p50_us": 729392,
+                "p95_us": 1115230,
+                "p99_us": 1367882,
+                "name": "query-min-version",
+                "count": 193,
+                "errors": 0,
+                "statuses": {
+                  "200": 193
+                },
+                "p50_ms": 729,
+                "p95_ms": 1115,
+                "p99_ms": 1367,
+                "max_ms": 1398
+              },
+              {
+                "p50_us": 642102,
+                "p95_us": 1148023,
+                "p99_us": 1232110,
+                "name": "query-traverse",
+                "count": 196,
+                "errors": 0,
+                "statuses": {
+                  "200": 196
+                },
+                "p50_ms": 642,
+                "p95_ms": 1148,
+                "p99_ms": 1232,
+                "max_ms": 1726
+              },
+              {
+                "p50_us": 634535,
+                "p95_us": 1112822,
+                "p99_us": 1329549,
+                "name": "scan",
+                "count": 193,
+                "errors": 0,
+                "statuses": {
+                  "200": 193
+                },
+                "p50_ms": 634,
+                "p95_ms": 1112,
+                "p99_ms": 1329,
+                "max_ms": 1727
+              }
+            ],
+            "mixed_operations_per_second": 27.98776857015768,
+            "published_batches": 101,
+            "published_batches_per_second": 3.223220781739938,
+            "published_host_updates_per_second": 64.46441563479875,
+            "published_version_delta": 101,
+            "readers": 16,
+            "requested_seconds": 30,
+            "run_id": "0-mixed-direct-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            13.72021484375,
+            12.16943359375,
+            10.912109375
+          ],
+          "system_load_after": [
+            12.0595703125,
+            11.92578125,
+            10.8720703125
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "mixed-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 70.5,
+          "write_bytes": 1314738176,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.100342134999998,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:47:26.685833949Z",
+            "last_version": 122,
+            "metrics": [
+              {
+                "p50_us": 1280600,
+                "p95_us": 1941338,
+                "p99_us": 2251195,
+                "name": "ingest",
+                "count": 96,
+                "errors": 0,
+                "statuses": {
+                  "200": 96
+                },
+                "p50_ms": 1280,
+                "p95_ms": 1941,
+                "p99_ms": 2251,
+                "max_ms": 2251
+              },
+              {
+                "p50_us": 610403,
+                "p95_us": 1154031,
+                "p99_us": 1344108,
+                "name": "query-match",
+                "count": 189,
+                "errors": 0,
+                "statuses": {
+                  "200": 189
+                },
+                "p50_ms": 610,
+                "p95_ms": 1154,
+                "p99_ms": 1344,
+                "max_ms": 1350
+              },
+              {
+                "p50_us": 551317,
+                "p95_us": 1153978,
+                "p99_us": 1354387,
+                "name": "query-min-version",
+                "count": 190,
+                "errors": 0,
+                "statuses": {
+                  "200": 190
+                },
+                "p50_ms": 551,
+                "p95_ms": 1153,
+                "p99_ms": 1354,
+                "max_ms": 1355
+              },
+              {
+                "p50_us": 606806,
+                "p95_us": 1051259,
+                "p99_us": 1159579,
+                "name": "query-traverse",
+                "count": 190,
+                "errors": 0,
+                "statuses": {
+                  "200": 190
+                },
+                "p50_ms": 606,
+                "p95_ms": 1051,
+                "p99_ms": 1159,
+                "max_ms": 1403
+              },
+              {
+                "p50_us": 612429,
+                "p95_us": 1041289,
+                "p99_us": 1353881,
+                "name": "scan",
+                "count": 189,
+                "errors": 0,
+                "statuses": {
+                  "200": 189
+                },
+                "p50_ms": 612,
+                "p95_ms": 1041,
+                "p99_ms": 1353,
+                "max_ms": 1406
+              }
+            ],
+            "mixed_operations_per_second": 27.459504988497134,
+            "published_batches": 96,
+            "published_batches_per_second": 3.0867827621729798,
+            "published_host_updates_per_second": 61.7356552434596,
+            "published_version_delta": 96,
+            "readers": 16,
+            "requested_seconds": 30,
+            "run_id": "0-mixed-direct-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            12.291015625,
+            11.978515625,
+            10.90087890625
+          ],
+          "system_load_after": [
+            13.1015625,
+            12.24169921875,
+            11.025390625
+          ]
+        },
+        {
+          "variant": "before",
+          "case": "write-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 70.55,
+          "write_bytes": 1443168256,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.333979005,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:48:09.154740224Z",
+            "last_version": 122,
+            "metrics": [
+              {
+                "p50_us": 1296168,
+                "p95_us": 1835399,
+                "p99_us": 2359627,
+                "name": "ingest",
+                "count": 96,
+                "errors": 0,
+                "statuses": {
+                  "200": 96
+                },
+                "p50_ms": 1296,
+                "p95_ms": 1835,
+                "p99_ms": 2359,
+                "max_ms": 2359
+              }
+            ],
+            "mixed_operations_per_second": 3.0637666535961223,
+            "published_batches": 96,
+            "published_batches_per_second": 3.0637666535961223,
+            "published_host_updates_per_second": 61.27533307192245,
+            "published_version_delta": 96,
+            "readers": 0,
+            "requested_seconds": 30,
+            "run_id": "0-write-direct-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            12.31689453125,
+            12.1015625,
+            10.9921875
+          ],
+          "system_load_after": [
+            11.47802734375,
+            11.916015625,
+            10.9716796875
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "write-direct",
+          "round": 0,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 76.28,
+          "write_bytes": 1542098944,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.057423709,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:48:51.240801801Z",
+            "last_version": 134,
+            "metrics": [
+              {
+                "p50_us": 1100282,
+                "p95_us": 1896109,
+                "p99_us": 2083801,
+                "name": "ingest",
+                "count": 108,
+                "errors": 0,
+                "statuses": {
+                  "200": 108
+                },
+                "p50_ms": 1100,
+                "p95_ms": 1896,
+                "p99_ms": 2083,
+                "max_ms": 2235
+              }
+            ],
+            "mixed_operations_per_second": 3.4774294549326425,
+            "published_batches": 108,
+            "published_batches_per_second": 3.4774294549326425,
+            "published_host_updates_per_second": 69.54858909865285,
+            "published_version_delta": 108,
+            "readers": 0,
+            "requested_seconds": 30,
+            "run_id": "0-write-direct-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            11.96484375,
+            12.001953125,
+            11.01025390625
+          ],
+          "system_load_after": [
+            12.5458984375,
+            12.11865234375,
+            11.080078125
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "read-8",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 50.54,
+          "write_bytes": 13049856,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.005404049,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:49:31.993713275Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 7120,
+                "p95_us": 12047,
+                "p99_us": 15339,
+                "name": "query-match",
+                "count": 9132,
+                "errors": 0,
+                "statuses": {
+                  "200": 9132
+                },
+                "p50_ms": 7,
+                "p95_ms": 12,
+                "p99_ms": 15,
+                "max_ms": 41
+              },
+              {
+                "p50_us": 6806,
+                "p95_us": 11712,
+                "p99_us": 15375,
+                "name": "query-min-version",
+                "count": 9131,
+                "errors": 0,
+                "statuses": {
+                  "200": 9131
+                },
+                "p50_ms": 6,
+                "p95_ms": 11,
+                "p99_ms": 15,
+                "max_ms": 35
+              },
+              {
+                "p50_us": 4456,
+                "p95_us": 8294,
+                "p99_us": 10748,
+                "name": "query-traverse",
+                "count": 9132,
+                "errors": 0,
+                "statuses": {
+                  "200": 9132
+                },
+                "p50_ms": 4,
+                "p95_ms": 8,
+                "p99_ms": 10,
+                "max_ms": 30
+              },
+              {
+                "p50_us": 6565,
+                "p95_us": 12386,
+                "p99_us": 16208,
+                "name": "scan",
+                "count": 9131,
+                "errors": 0,
+                "statuses": {
+                  "200": 9131
+                },
+                "p50_ms": 6,
+                "p95_ms": 12,
+                "p99_ms": 16,
+                "max_ms": 29
+              }
+            ],
+            "mixed_operations_per_second": 1217.3140525070621,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "1-read-8-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            13.8427734375,
+            12.3974609375,
+            11.181640625
+          ],
+          "system_load_after": [
+            13.64306640625,
+            12.4873046875,
+            11.25048828125
+          ]
+        },
+        {
+          "variant": "before",
+          "case": "read-8",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 26.229999999999997,
+          "write_bytes": 1788846080,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.014233467,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:50:12.382507641Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 16579,
+                "p95_us": 28236,
+                "p99_us": 75721,
+                "name": "query-match",
+                "count": 3530,
+                "errors": 0,
+                "statuses": {
+                  "200": 3530
+                },
+                "p50_ms": 16,
+                "p95_ms": 28,
+                "p99_ms": 75,
+                "max_ms": 104
+              },
+              {
+                "p50_us": 16525,
+                "p95_us": 27584,
+                "p99_us": 41249,
+                "name": "query-min-version",
+                "count": 3532,
+                "errors": 0,
+                "statuses": {
+                  "200": 3532
+                },
+                "p50_ms": 16,
+                "p95_ms": 27,
+                "p99_ms": 41,
+                "max_ms": 109
+              },
+              {
+                "p50_us": 13572,
+                "p95_us": 24250,
+                "p99_us": 39823,
+                "name": "query-traverse",
+                "count": 3530,
+                "errors": 0,
+                "statuses": {
+                  "200": 3530
+                },
+                "p50_ms": 13,
+                "p95_ms": 24,
+                "p99_ms": 39,
+                "max_ms": 104
+              },
+              {
+                "p50_us": 15262,
+                "p95_us": 26409,
+                "p99_us": 77903,
+                "name": "scan",
+                "count": 3532,
+                "errors": 0,
+                "statuses": {
+                  "200": 3532
+                },
+                "p50_ms": 15,
+                "p95_ms": 26,
+                "p99_ms": 77,
+                "max_ms": 99
+              }
+            ],
+            "mixed_operations_per_second": 470.57673538553075,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "1-read-8-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            14.34521484375,
+            12.6708984375,
+            11.32373046875
+          ],
+          "system_load_after": [
+            13.97607421875,
+            12.73583984375,
+            11.3896484375
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "read-32",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 47.28,
+          "write_bytes": 9342976,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.040363288,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:50:52.980775658Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 38378,
+                "p95_us": 55209,
+                "p99_us": 64290,
+                "name": "query-match",
+                "count": 6509,
+                "errors": 0,
+                "statuses": {
+                  "200": 6509
+                },
+                "p50_ms": 38,
+                "p95_ms": 55,
+                "p99_ms": 64,
+                "max_ms": 98
+              },
+              {
+                "p50_us": 37615,
+                "p95_us": 54178,
+                "p99_us": 63975,
+                "name": "query-min-version",
+                "count": 6508,
+                "errors": 0,
+                "statuses": {
+                  "200": 6508
+                },
+                "p50_ms": 37,
+                "p95_ms": 54,
+                "p99_ms": 63,
+                "max_ms": 92
+              },
+              {
+                "p50_us": 32523,
+                "p95_us": 46975,
+                "p99_us": 55422,
+                "name": "query-traverse",
+                "count": 6507,
+                "errors": 0,
+                "statuses": {
+                  "200": 6507
+                },
+                "p50_ms": 32,
+                "p95_ms": 46,
+                "p99_ms": 55,
+                "max_ms": 70
+              },
+              {
+                "p50_us": 35769,
+                "p95_us": 50583,
+                "p99_us": 57842,
+                "name": "scan",
+                "count": 6505,
+                "errors": 0,
+                "statuses": {
+                  "200": 6505
+                },
+                "p50_ms": 35,
+                "p95_ms": 50,
+                "p99_ms": 57,
+                "max_ms": 85
+              }
+            ],
+            "mixed_operations_per_second": 866.4675506902944,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 30,
+            "run_id": "1-read-32-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            13.5634765625,
+            12.68017578125,
+            11.3857421875
+          ],
+          "system_load_after": [
+            16.951171875,
+            13.60107421875,
+            11.73486328125
+          ]
+        },
+        {
+          "variant": "before",
+          "case": "read-32",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 39.959999999999994,
+          "write_bytes": 936194048,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.070825522,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:51:34.762329318Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 62219,
+                "p95_us": 96733,
+                "p99_us": 120560,
+                "name": "query-match",
+                "count": 4010,
+                "errors": 0,
+                "statuses": {
+                  "200": 4010
+                },
+                "p50_ms": 62,
+                "p95_ms": 96,
+                "p99_ms": 120,
+                "max_ms": 230
+              },
+              {
+                "p50_us": 61503,
+                "p95_us": 93362,
+                "p99_us": 116753,
+                "name": "query-min-version",
+                "count": 4012,
+                "errors": 0,
+                "statuses": {
+                  "200": 4012
+                },
+                "p50_ms": 61,
+                "p95_ms": 93,
+                "p99_ms": 116,
+                "max_ms": 236
+              },
+              {
+                "p50_us": 51431,
+                "p95_us": 78990,
+                "p99_us": 96612,
+                "name": "query-traverse",
+                "count": 4007,
+                "errors": 0,
+                "statuses": {
+                  "200": 4007
+                },
+                "p50_ms": 51,
+                "p95_ms": 78,
+                "p99_ms": 96,
+                "max_ms": 230
+              },
+              {
+                "p50_us": 54987,
+                "p95_us": 84508,
+                "p99_us": 105914,
+                "name": "scan",
+                "count": 4006,
+                "errors": 0,
+                "statuses": {
+                  "200": 4006
+                },
+                "p50_ms": 54,
+                "p95_ms": 84,
+                "p99_ms": 105,
+                "max_ms": 232
+              }
+            ],
+            "mixed_operations_per_second": 533.2410973642442,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 32,
+            "requested_seconds": 30,
+            "run_id": "1-read-32-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            16.63623046875,
+            13.6884765625,
+            11.79248046875
+          ],
+          "system_load_after": [
+            18.37548828125,
+            14.376953125,
+            12.08203125
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "mixed-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 76.03,
+          "write_bytes": 1136070656,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.767594169,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:52:16.976498789Z",
+            "last_version": 104,
+            "metrics": [
+              {
+                "p50_us": 1595380,
+                "p95_us": 2230887,
+                "p99_us": 2855464,
+                "name": "ingest",
+                "count": 78,
+                "errors": 0,
+                "statuses": {
+                  "200": 78
+                },
+                "p50_ms": 1595,
+                "p95_ms": 2230,
+                "p99_ms": 2855,
+                "max_ms": 2855
+              },
+              {
+                "p50_us": 1054989,
+                "p95_us": 1806236,
+                "p99_us": 2290640,
+                "name": "query-match",
+                "count": 128,
+                "errors": 0,
+                "statuses": {
+                  "200": 128
+                },
+                "p50_ms": 1054,
+                "p95_ms": 1806,
+                "p99_ms": 2290,
+                "max_ms": 3024
+              },
+              {
+                "p50_us": 991271,
+                "p95_us": 1773542,
+                "p99_us": 2048068,
+                "name": "query-min-version",
+                "count": 126,
+                "errors": 0,
+                "statuses": {
+                  "200": 126
+                },
+                "p50_ms": 991,
+                "p95_ms": 1773,
+                "p99_ms": 2048,
+                "max_ms": 2483
+              },
+              {
+                "p50_us": 984672,
+                "p95_us": 1741797,
+                "p99_us": 1804605,
+                "name": "query-traverse",
+                "count": 128,
+                "errors": 0,
+                "statuses": {
+                  "200": 128
+                },
+                "p50_ms": 984,
+                "p95_ms": 1741,
+                "p99_ms": 1804,
+                "max_ms": 2086
+              },
+              {
+                "p50_us": 884501,
+                "p95_us": 1708374,
+                "p99_us": 2118877,
+                "name": "scan",
+                "count": 126,
+                "errors": 0,
+                "statuses": {
+                  "200": 126
+                },
+                "p50_ms": 884,
+                "p95_ms": 1708,
+                "p99_ms": 2118,
+                "max_ms": 2180
+              }
+            ],
+            "mixed_operations_per_second": 18.446470855883717,
+            "published_batches": 78,
+            "published_batches_per_second": 2.45533229822343,
+            "published_host_updates_per_second": 49.1066459644686,
+            "published_version_delta": 78,
+            "readers": 16,
+            "requested_seconds": 30,
+            "run_id": "1-mixed-direct-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            19.1416015625,
+            14.67724609375,
+            12.205078125
+          ],
+          "system_load_after": [
+            19.95263671875,
+            15.26025390625,
+            12.47607421875
+          ]
+        },
+        {
+          "variant": "before",
+          "case": "mixed-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 76.28,
+          "write_bytes": 1286930432,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.77012068,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:53:00.279407771Z",
+            "last_version": 104,
+            "metrics": [
+              {
+                "p50_us": 1646364,
+                "p95_us": 2251519,
+                "p99_us": 2582287,
+                "name": "ingest",
+                "count": 78,
+                "errors": 0,
+                "statuses": {
+                  "200": 78
+                },
+                "p50_ms": 1646,
+                "p95_ms": 2251,
+                "p99_ms": 2582,
+                "max_ms": 2582
+              },
+              {
+                "p50_us": 870318,
+                "p95_us": 1739963,
+                "p99_us": 2420098,
+                "name": "query-match",
+                "count": 139,
+                "errors": 0,
+                "statuses": {
+                  "200": 139
+                },
+                "p50_ms": 870,
+                "p95_ms": 1739,
+                "p99_ms": 2420,
+                "max_ms": 2625
+              },
+              {
+                "p50_us": 813747,
+                "p95_us": 1447359,
+                "p99_us": 1850175,
+                "name": "query-min-version",
+                "count": 138,
+                "errors": 0,
+                "statuses": {
+                  "200": 138
+                },
+                "p50_ms": 813,
+                "p95_ms": 1447,
+                "p99_ms": 1850,
+                "max_ms": 1851
+              },
+              {
+                "p50_us": 870106,
+                "p95_us": 1848870,
+                "p99_us": 1982211,
+                "name": "query-traverse",
+                "count": 138,
+                "errors": 0,
+                "statuses": {
+                  "200": 138
+                },
+                "p50_ms": 870,
+                "p95_ms": 1848,
+                "p99_ms": 1982,
+                "max_ms": 2628
+              },
+              {
+                "p50_us": 923646,
+                "p95_us": 1611791,
+                "p99_us": 1989951,
+                "name": "scan",
+                "count": 140,
+                "errors": 0,
+                "statuses": {
+                  "200": 140
+                },
+                "p50_ms": 923,
+                "p95_ms": 1611,
+                "p99_ms": 1989,
+                "max_ms": 2505
+              }
+            ],
+            "mixed_operations_per_second": 19.924381351138134,
+            "published_batches": 78,
+            "published_batches_per_second": 2.4551370385288696,
+            "published_host_updates_per_second": 49.10274077057739,
+            "published_version_delta": 78,
+            "readers": 16,
+            "requested_seconds": 30,
+            "run_id": "1-mixed-direct-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            19.96044921875,
+            15.4169921875,
+            12.55712890625
+          ],
+          "system_load_after": [
+            19.41552734375,
+            15.78271484375,
+            12.7861328125
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "write-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 70.0,
+          "write_bytes": 1176121344,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.17938122,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:53:43.440444274Z",
+            "last_version": 108,
+            "metrics": [
+              {
+                "p50_us": 1501959,
+                "p95_us": 2330495,
+                "p99_us": 2609393,
+                "name": "ingest",
+                "count": 82,
+                "errors": 0,
+                "statuses": {
+                  "200": 82
+                },
+                "p50_ms": 1501,
+                "p95_ms": 2330,
+                "p99_ms": 2609,
+                "max_ms": 2609
+              }
+            ],
+            "mixed_operations_per_second": 2.6299431480507103,
+            "published_batches": 82,
+            "published_batches_per_second": 2.6299431480507103,
+            "published_host_updates_per_second": 52.598862961014206,
+            "published_version_delta": 82,
+            "readers": 0,
+            "requested_seconds": 30,
+            "run_id": "1-write-direct-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            19.77734375,
+            15.97265625,
+            12.88037109375
+          ],
+          "system_load_after": [
+            18.5615234375,
+            16.0390625,
+            13.001953125
+          ]
+        },
+        {
+          "variant": "before",
+          "case": "write-direct",
+          "round": 1,
+          "topology": "raft",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 77.98,
+          "write_bytes": 1395216384,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 31.78419346,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:54:25.476274126Z",
+            "last_version": 121,
+            "metrics": [
+              {
+                "p50_us": 1244182,
+                "p95_us": 2146761,
+                "p99_us": 2649478,
+                "name": "ingest",
+                "count": 95,
+                "errors": 0,
+                "statuses": {
+                  "200": 95
+                },
+                "p50_ms": 1244,
+                "p95_ms": 2146,
+                "p99_ms": 2649,
+                "max_ms": 2649
+              }
+            ],
+            "mixed_operations_per_second": 2.988907052795166,
+            "published_batches": 95,
+            "published_batches_per_second": 2.988907052795166,
+            "published_host_updates_per_second": 59.778141055903326,
+            "published_version_delta": 95,
+            "readers": 0,
+            "requested_seconds": 30,
+            "run_id": "1-write-direct-before-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 4
+          },
+          "system_load_before": [
+            16.7197265625,
+            15.7451171875,
+            12.95361328125
+          ],
+          "system_load_after": [
+            16.38818359375,
+            15.72900390625,
+            13.03564453125
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ab-sharded",
+      "seconds": 30,
+      "warmup_seconds": 5,
+      "rounds": 2,
+      "profile": false,
+      "windows": [
+        {
+          "variant": "before-aa1",
+          "case": "read-8",
+          "round": 0,
+          "topology": "sharded",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 30.680000000000003,
+          "write_bytes": 2067894272,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.015594595,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:55:16.891661068Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 24627,
+                "p95_us": 61935,
+                "p99_us": 84784,
+                "name": "query-match",
+                "count": 2133,
+                "errors": 0,
+                "statuses": {
+                  "200": 2133
+                },
+                "p50_ms": 24,
+                "p95_ms": 61,
+                "p99_ms": 84,
+                "max_ms": 246
+              },
+              {
+                "p50_us": 24592,
+                "p95_us": 63550,
+                "p99_us": 87951,
+                "name": "query-min-version",
+                "count": 2131,
+                "errors": 0,
+                "statuses": {
+                  "200": 2131
+                },
+                "p50_ms": 24,
+                "p95_ms": 63,
+                "p99_ms": 87,
+                "max_ms": 263
+              },
+              {
+                "p50_us": 21997,
+                "p95_us": 60591,
+                "p99_us": 82230,
+                "name": "query-traverse",
+                "count": 2132,
+                "errors": 0,
+                "statuses": {
+                  "200": 2132
+                },
+                "p50_ms": 21,
+                "p95_ms": 60,
+                "p99_ms": 82,
+                "max_ms": 241
+              },
+              {
+                "p50_us": 23541,
+                "p95_us": 61170,
+                "p99_us": 94545,
+                "name": "scan",
+                "count": 2131,
+                "errors": 0,
+                "statuses": {
+                  "200": 2131
+                },
+                "p50_ms": 23,
+                "p95_ms": 61,
+                "p99_ms": 94,
+                "max_ms": 251
+              }
+            ],
+            "mixed_operations_per_second": 284.08565997291385,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "0-read-8-before-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            14.134765625,
+            15.24658203125,
+            12.9326171875
+          ],
+          "system_load_after": [
+            14.74365234375,
+            15.27392578125,
+            13.01611328125
+          ]
+        },
+        {
+          "variant": "before-aa2",
+          "case": "read-8",
+          "round": 0,
+          "topology": "sharded",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 32.63,
+          "write_bytes": 1661231104,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.020983464,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:55:59.257998981Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 27778,
+                "p95_us": 41690,
+                "p99_us": 59619,
+                "name": "query-match",
+                "count": 2153,
+                "errors": 0,
+                "statuses": {
+                  "200": 2153
+                },
+                "p50_ms": 27,
+                "p95_ms": 41,
+                "p99_ms": 59,
+                "max_ms": 240
+              },
+              {
+                "p50_us": 27412,
+                "p95_us": 39718,
+                "p99_us": 51685,
+                "name": "query-min-version",
+                "count": 2154,
+                "errors": 0,
+                "statuses": {
+                  "200": 2154
+                },
+                "p50_ms": 27,
+                "p95_ms": 39,
+                "p99_ms": 51,
+                "max_ms": 230
+              },
+              {
+                "p50_us": 24387,
+                "p95_us": 37075,
+                "p99_us": 49903,
+                "name": "query-traverse",
+                "count": 2153,
+                "errors": 0,
+                "statuses": {
+                  "200": 2153
+                },
+                "p50_ms": 24,
+                "p95_ms": 37,
+                "p99_ms": 49,
+                "max_ms": 229
+              },
+              {
+                "p50_us": 26362,
+                "p95_us": 39333,
+                "p99_us": 53266,
+                "name": "scan",
+                "count": 2153,
+                "errors": 0,
+                "statuses": {
+                  "200": 2153
+                },
+                "p50_ms": 26,
+                "p95_ms": 39,
+                "p99_ms": 53,
+                "max_ms": 231
+              }
+            ],
+            "mixed_operations_per_second": 286.8993286088837,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "0-read-8-before-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            14.5859375,
+            15.19873046875,
+            13.02685546875
+          ],
+          "system_load_after": [
+            17.259765625,
+            15.83837890625,
+            13.31201171875
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "read-8",
+          "round": 0,
+          "topology": "sharded",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 65.94999999999999,
+          "write_bytes": 10186752,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.009773512,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:56:41.585026075Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 8915,
+                "p95_us": 15338,
+                "p99_us": 19407,
+                "name": "query-match",
+                "count": 7120,
+                "errors": 0,
+                "statuses": {
+                  "200": 7120
+                },
+                "p50_ms": 8,
+                "p95_ms": 15,
+                "p99_ms": 19,
+                "max_ms": 34
+              },
+              {
+                "p50_us": 8858,
+                "p95_us": 15554,
+                "p99_us": 19531,
+                "name": "query-min-version",
+                "count": 7120,
+                "errors": 0,
+                "statuses": {
+                  "200": 7120
+                },
+                "p50_ms": 8,
+                "p95_ms": 15,
+                "p99_ms": 19,
+                "max_ms": 35
+              },
+              {
+                "p50_us": 5945,
+                "p95_us": 11317,
+                "p99_us": 14496,
+                "name": "query-traverse",
+                "count": 7119,
+                "errors": 0,
+                "statuses": {
+                  "200": 7119
+                },
+                "p50_ms": 5,
+                "p95_ms": 11,
+                "p99_ms": 14,
+                "max_ms": 28
+              },
+              {
+                "p50_us": 8173,
+                "p95_us": 14927,
+                "p99_us": 19189,
+                "name": "scan",
+                "count": 7118,
+                "errors": 0,
+                "statuses": {
+                  "200": 7118
+                },
+                "p50_ms": 8,
+                "p95_ms": 14,
+                "p99_ms": 19,
+                "max_ms": 36
+              }
+            ],
+            "mixed_operations_per_second": 948.9241892683033,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "0-read-8-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            17.4921875,
+            15.927734375,
+            13.36767578125
+          ],
+          "system_load_after": [
+            18.8671875,
+            16.375,
+            13.59619140625
+          ]
+        },
+        {
+          "variant": "after",
+          "case": "read-8",
+          "round": 1,
+          "topology": "sharded",
+          "binary_sha256": "c4214fdb27e1ee073906b65160bccb0d715e587cd3a0e242de983b0d2b86c69f",
+          "cpu_seconds": 50.59,
+          "write_bytes": 6459392,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.006166089,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:57:23.628009443Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 10397,
+                "p95_us": 46573,
+                "p99_us": 68154,
+                "name": "query-match",
+                "count": 4496,
+                "errors": 0,
+                "statuses": {
+                  "200": 4496
+                },
+                "p50_ms": 10,
+                "p95_ms": 46,
+                "p99_ms": 68,
+                "max_ms": 206
+              },
+              {
+                "p50_us": 10432,
+                "p95_us": 44843,
+                "p99_us": 64655,
+                "name": "query-min-version",
+                "count": 4494,
+                "errors": 0,
+                "statuses": {
+                  "200": 4494
+                },
+                "p50_ms": 10,
+                "p95_ms": 44,
+                "p99_ms": 64,
+                "max_ms": 139
+              },
+              {
+                "p50_us": 6981,
+                "p95_us": 30461,
+                "p99_us": 44680,
+                "name": "query-traverse",
+                "count": 4494,
+                "errors": 0,
+                "statuses": {
+                  "200": 4494
+                },
+                "p50_ms": 6,
+                "p95_ms": 30,
+                "p99_ms": 44,
+                "max_ms": 153
+              },
+              {
+                "p50_us": 9513,
+                "p95_us": 39630,
+                "p99_us": 60475,
+                "name": "scan",
+                "count": 4495,
+                "errors": 0,
+                "statuses": {
+                  "200": 4495
+                },
+                "p50_ms": 9,
+                "p95_ms": 39,
+                "p99_ms": 60,
+                "max_ms": 228
+              }
+            ],
+            "mixed_operations_per_second": 599.1768474077381,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "1-read-8-after-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            16.8349609375,
+            16.03271484375,
+            13.5283203125
+          ],
+          "system_load_after": [
+            20.36572265625,
+            17.02099609375,
+            13.9404296875
+          ]
+        },
+        {
+          "variant": "before-aa2",
+          "case": "read-8",
+          "round": 1,
+          "topology": "sharded",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 26.06,
+          "write_bytes": 1773297664,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.025874787,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:58:05.890423402Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 33399,
+                "p95_us": 56074,
+                "p99_us": 105454,
+                "name": "query-match",
+                "count": 1723,
+                "errors": 0,
+                "statuses": {
+                  "200": 1723
+                },
+                "p50_ms": 33,
+                "p95_ms": 56,
+                "p99_ms": 105,
+                "max_ms": 218
+              },
+              {
+                "p50_us": 33359,
+                "p95_us": 56050,
+                "p99_us": 100139,
+                "name": "query-min-version",
+                "count": 1725,
+                "errors": 0,
+                "statuses": {
+                  "200": 1725
+                },
+                "p50_ms": 33,
+                "p95_ms": 56,
+                "p99_ms": 100,
+                "max_ms": 195
+              },
+              {
+                "p50_us": 30400,
+                "p95_us": 51356,
+                "p99_us": 97874,
+                "name": "query-traverse",
+                "count": 1724,
+                "errors": 0,
+                "statuses": {
+                  "200": 1724
+                },
+                "p50_ms": 30,
+                "p95_ms": 51,
+                "p99_ms": 97,
+                "max_ms": 205
+              },
+              {
+                "p50_us": 32237,
+                "p95_us": 55056,
+                "p99_us": 100154,
+                "name": "scan",
+                "count": 1724,
+                "errors": 0,
+                "statuses": {
+                  "200": 1724
+                },
+                "p50_ms": 32,
+                "p95_ms": 55,
+                "p99_ms": 100,
+                "max_ms": 200
+              }
+            ],
+            "mixed_operations_per_second": 229.6685791477986,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "1-read-8-before-aa2-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            20.68505859375,
+            17.20166015625,
+            14.03271484375
+          ],
+          "system_load_after": [
+            19.9306640625,
+            17.35693359375,
+            14.1865234375
+          ]
+        },
+        {
+          "variant": "before-aa1",
+          "case": "read-8",
+          "round": 1,
+          "topology": "sharded",
+          "binary_sha256": "849e13cd1b165e6ab9f2ae83bcb5659db916a6b51c860b5c95d9cb073206bbdd",
+          "cpu_seconds": 26.460000000000004,
+          "write_bytes": 1336967168,
+          "load": {
+            "batch_size": 20,
+            "elapsed_seconds": 30.017522232,
+            "entities": 1002,
+            "generated_at": "2026-09-30T17:58:47.436476204Z",
+            "last_version": 26,
+            "metrics": [
+              {
+                "p50_us": 32181,
+                "p95_us": 49870,
+                "p99_us": 103698,
+                "name": "query-match",
+                "count": 1795,
+                "errors": 0,
+                "statuses": {
+                  "200": 1795
+                },
+                "p50_ms": 32,
+                "p95_ms": 49,
+                "p99_ms": 103,
+                "max_ms": 129
+              },
+              {
+                "p50_us": 31887,
+                "p95_us": 50419,
+                "p99_us": 104935,
+                "name": "query-min-version",
+                "count": 1796,
+                "errors": 0,
+                "statuses": {
+                  "200": 1796
+                },
+                "p50_ms": 31,
+                "p95_ms": 50,
+                "p99_ms": 104,
+                "max_ms": 163
+              },
+              {
+                "p50_us": 28988,
+                "p95_us": 45865,
+                "p99_us": 103161,
+                "name": "query-traverse",
+                "count": 1795,
+                "errors": 0,
+                "statuses": {
+                  "200": 1795
+                },
+                "p50_ms": 28,
+                "p95_ms": 45,
+                "p99_ms": 103,
+                "max_ms": 145
+              },
+              {
+                "p50_us": 30971,
+                "p95_us": 49507,
+                "p99_us": 105485,
+                "name": "scan",
+                "count": 1795,
+                "errors": 0,
+                "statuses": {
+                  "200": 1795
+                },
+                "p50_ms": 30,
+                "p95_ms": 49,
+                "p99_ms": 105,
+                "max_ms": 161
+              }
+            ],
+            "mixed_operations_per_second": 239.22694033502665,
+            "published_batches": 0,
+            "published_batches_per_second": 0,
+            "published_host_updates_per_second": 0,
+            "published_version_delta": 0,
+            "readers": 8,
+            "requested_seconds": 30,
+            "run_id": "1-read-8-before-aa1-measure",
+            "schema_version": 2,
+            "starting_version": 26,
+            "success": true,
+            "warmup_seconds": 0,
+            "write_interval_seconds": 0,
+            "writers": 0
+          },
+          "system_load_before": [
+            19.1240234375,
+            17.26416015625,
+            14.18994140625
+          ],
+          "system_load_after": [
+            20.1123046875,
+            17.671875,
+            14.423828125
+          ]
+        }
+      ]
+    }
+  ]
+}

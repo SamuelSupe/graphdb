@@ -115,6 +115,11 @@ func indexKey(index uint64) []byte {
 }
 
 func (s *diskStorage) save(ready raft.Ready) error {
+	// Heartbeats and ReadIndex responses contain only volatile state. A disk
+	// transaction is needed only when Raft has changed its durable state.
+	if raft.IsEmptySnap(ready.Snapshot) && len(ready.Entries) == 0 && raft.IsEmptyHardState(ready.HardState) {
+		return nil
+	}
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
 		entries := tx.Bucket([]byte("entries"))
