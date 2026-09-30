@@ -15,6 +15,9 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := files.RequireReplicatedWrites(); err != nil {
+			t.Fatal(err)
+		}
 		_, err = files.ApplyReplicated(context.Background(), 2, "crashing-command", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
 			if err := files.Put(ctx, "graphdb/manifest", []byte("new-version")); err != nil {
 				return nil, err
@@ -30,6 +33,9 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 	root := t.TempDir()
 	files, err := OpenFileStore(root)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.RequireReplicatedWrites(); err != nil {
 		t.Fatal(err)
 	}
 	_, err = files.ApplyReplicated(context.Background(), 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
@@ -51,6 +57,9 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer files.Close()
+	if err := files.RequireReplicatedWrites(); err != nil {
+		t.Fatal(err)
+	}
 	data, err := files.Get(context.Background(), "graphdb/manifest")
 	if err != nil || string(data) != "old-version" {
 		t.Fatalf("partial publication was not rolled back: %q, %v", data, err)
@@ -82,6 +91,9 @@ func TestReplicationApplicationDoesNotCheckpointHiddenIOFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer files.Close()
+	if err := files.RequireReplicatedWrites(); err != nil {
+		t.Fatal(err)
+	}
 	_, err = files.ApplyReplicated(context.Background(), 1, "io-failure", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
 		if err := files.Put(ctx, "graphdb/original", []byte("partial")); err != nil {
 			return nil, err

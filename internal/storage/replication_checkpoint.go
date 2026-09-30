@@ -54,7 +54,15 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		return checkpoint.Response, nil
 	}
 	dir := filepath.Join(s.root, replicationDirectory)
-	if err := ensureDurableDirectory(dir); err != nil {
+	if s.replicatedWrites.Load() {
+		// RequireReplicatedWrites durably initialized the ancestors at startup.
+		// Validate the path and sync newly created directories without repeating
+		// those ancestor barriers for every committed entry.
+		err = s.ensureSafeDirectory(dir)
+	} else {
+		err = ensureDurableDirectory(dir)
+	}
+	if err != nil {
 		return nil, err
 	}
 	db, err := bolt.Open(filepath.Join(dir, "pending.db"), 0600, &bolt.Options{Timeout: time.Second})

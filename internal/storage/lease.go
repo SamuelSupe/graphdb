@@ -86,11 +86,29 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 			} else if current.FenceEpoch >= next.FenceEpoch {
 				next.FenceEpoch = current.FenceEpoch + 1
 			}
+			var cached loadedGraph
+			retainCache := IsReplicatedContext(ctx) && s.localFileStore() != nil &&
+				current.OwnerID == s.InstanceID && current.FenceToken == next.FenceToken && current.FenceEpoch == next.FenceEpoch
+			if retainCache {
+				cached, retainCache = s.getWriteCache(tenantID)
+			}
 			if meta, err := s.putLease(ctx, key, next, meta); err == nil {
 				if current.OwnerID != s.InstanceID || current.FenceToken != next.FenceToken {
 					s.invalidateWriterTakeoverState(tenantID)
 				}
-				return s.finishWriterLeaseAcquire(ctx, tenantID, next, meta)
+				if err := s.finishWriterLeaseAcquire(ctx, tenantID, next, meta); err != nil {
+					return err
+				}
+				// Local lease notifications invalidate all tenant caches. An
+				// unchanged fence can retain its immutable graph after checking
+				// the manifest identity, including restore/recreation boundaries.
+				if retainCache {
+					manifest, manifestMeta, err := s.getManifest(ctx, tenantID)
+					if err == nil && cachedManifestMatches(cached, manifest, manifestMeta) {
+						s.setWriteCache(tenantID, cached)
+					}
+				}
+				return nil
 			} else if !errors.Is(err, ErrConflict) {
 				return err
 			}

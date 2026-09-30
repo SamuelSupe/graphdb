@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -163,6 +165,39 @@ func TestWriteCacheRetainsComputedContentHash(t *testing.T) {
 	}
 	if !second.Skipped || second.DataHash != first.DataHash {
 		t.Fatalf("second result = %#v, want skipped with retained hash", second)
+	}
+}
+
+func TestReplicatedLeaseRefreshRetainsGraphWithoutReplayingHistory(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	objects := newPathCountingStore(files)
+	store := NewTenantStore(files, "test")
+	store.Objects = objects
+	for version := int64(1); version <= 3; version++ {
+		objects.reset()
+		_, err := files.ApplyReplicated(context.Background(), uint64(version), fmt.Sprint(version), time.Unix(version, 0), func(ctx context.Context) ([]byte, error) {
+			result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
+				ID: "host:a", Kind: "host", Fields: graph.Fields{"version": version},
+			}}}, CommitOptions{})
+			if err == nil && result.Version != version {
+				return nil, fmt.Errorf("version = %d, want %d", result.Version, version)
+			}
+			return nil, err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := objects.countContains("/commits/"); got != 0 {
+			t.Fatalf("version %d reread commit history %d times", version, got)
+		}
+		lease, err := store.GetWriterLease(context.Background(), "tenant-a")
+		if err != nil || !lease.UpdatedAt.Equal(time.Unix(version, 0)) {
+			t.Fatalf("lease refresh not persisted: %+v, %v", lease, err)
+		}
 	}
 }
 
