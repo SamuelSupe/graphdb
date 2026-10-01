@@ -1,0 +1,2091 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "started_at": "2026-10-01T13:36:25.556033+00:00",
+    "source_commit": "6318b54b126b51b4747936bcca3b0e41d21932fa",
+    "production_source_sha256": "23e7ff51eeab201465c017791281c14cbd3c47bc234b5c72044ef4e50b0c6918",
+    "environment": "OrbStack Linux arm64 / Go 1.26.7",
+    "result": "PASS",
+    "candidate_archive_sha256": "76e628fb9a3a6889803295a39d70feeebccb9a35278afcb6579f295396dbc54b",
+    "binary_sha256": "02ea5bec9427faee52236b36d62680413214a741aef7cc84ccd73307715b8177",
+    "baseline_release_commit": "979be7871e851e1dccb2752b7350d95063c4d6a7",
+    "finished_at": "2026-10-01T15:06:30.785055+00:00"
+  },
+  "production_changed": false,
+  "checks": [
+    {
+      "evidence": "tests.log",
+      "result": "PASS",
+      "tested_packages": [
+        "github.com/SamuelSupe/graphdb/v2/cmd/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/docs",
+        "github.com/SamuelSupe/graphdb/v2/internal/backupstore",
+        "github.com/SamuelSupe/graphdb/v2/internal/bootstrap",
+        "github.com/SamuelSupe/graphdb/v2/internal/config",
+        "github.com/SamuelSupe/graphdb/v2/internal/graph",
+        "github.com/SamuelSupe/graphdb/v2/internal/ha",
+        "github.com/SamuelSupe/graphdb/v2/internal/httpapi",
+        "github.com/SamuelSupe/graphdb/v2/internal/query",
+        "github.com/SamuelSupe/graphdb/v2/internal/replication",
+        "github.com/SamuelSupe/graphdb/v2/internal/sharding",
+        "github.com/SamuelSupe/graphdb/v2/internal/storage",
+        "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/tools/loadtest",
+        "github.com/SamuelSupe/graphdb/v2/tools/soakreport",
+        "github.com/SamuelSupe/graphdb/v2/tools/soaktest"
+      ],
+      "count": 16
+    },
+    {
+      "evidence": "race.log",
+      "result": "PASS",
+      "tested_packages": [
+        "github.com/SamuelSupe/graphdb/v2/cmd/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/docs",
+        "github.com/SamuelSupe/graphdb/v2/internal/backupstore",
+        "github.com/SamuelSupe/graphdb/v2/internal/bootstrap",
+        "github.com/SamuelSupe/graphdb/v2/internal/config",
+        "github.com/SamuelSupe/graphdb/v2/internal/graph",
+        "github.com/SamuelSupe/graphdb/v2/internal/ha",
+        "github.com/SamuelSupe/graphdb/v2/internal/httpapi",
+        "github.com/SamuelSupe/graphdb/v2/internal/query",
+        "github.com/SamuelSupe/graphdb/v2/internal/replication",
+        "github.com/SamuelSupe/graphdb/v2/internal/sharding",
+        "github.com/SamuelSupe/graphdb/v2/internal/storage",
+        "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/tools/loadtest",
+        "github.com/SamuelSupe/graphdb/v2/tools/soakreport",
+        "github.com/SamuelSupe/graphdb/v2/tools/soaktest"
+      ],
+      "count": 16
+    }
+  ],
+  "vet": {
+    "result": "PASS",
+    "kind": "static",
+    "evidence": "vet.log"
+  },
+  "python_sdk_units": {
+    "result": "PASS",
+    "run": 11,
+    "skipped": 1
+  },
+  "live_python_sdk_per_mode": {
+    "run": 12,
+    "skipped": 0,
+    "live_http_scenarios": 1,
+    "mock_or_unit_tests": 11
+  },
+  "deployment": [
+    {
+      "check": "v2.1.2 directory and acknowledged WAL survive SIGKILL and upgrade to current standalone binary",
+      "result": "PASS"
+    },
+    {
+      "check": "current WAL durable 202 survives SIGKILL and idempotent retry publishes once",
+      "result": "PASS"
+    },
+    {
+      "check": "direct directory reuse, SIGKILL persistence, exclusive writer lock and offline CLI pass",
+      "result": "PASS"
+    },
+    {
+      "check": "real S3 multipart, cancellation, manifest safety, corruption rejection and reopen checks with race",
+      "result": "PASS"
+    },
+    {
+      "check": "packaged standalone S3 Compose uploads backups and resumes automatic policy after restart",
+      "result": "PASS"
+    },
+    {
+      "check": "new empty standalone volume discovers S3 backups, dry runs, restores, overwrites, proves recovery and survives restart",
+      "result": "PASS"
+    }
+  ],
+  "soaks": [
+    {
+      "mode": "direct",
+      "result": "PASS",
+      "start": {
+        "admin": "http://127.0.0.1:45080",
+        "batch_size": 20,
+        "duration": "30m0s",
+        "event": "soak_start",
+        "reader": "http://127.0.0.1:45080",
+        "readers": 16,
+        "skip_setup": false,
+        "tenant": "local-disk-soak-direct",
+        "ts": "2026-10-01T13:57:15.79808678Z",
+        "writer": "http://127.0.0.1:45080",
+        "writers": 4
+      },
+      "done": {
+        "elapsed_ms": 1797882,
+        "event": "soak_done",
+        "ts": "2026-10-01T14:27:15.842067667Z"
+      },
+      "event_span_seconds": 1800.043981,
+      "event_counts": {
+        "soak_start": 1,
+        "setup_ok": 1,
+        "usage_sample": 61,
+        "operation_metric": 2377,
+        "index_catalog_sample": 61,
+        "index_health_sample": 61,
+        "reader_freshness": 61,
+        "reader_fleet": 61,
+        "compact_ok": 5,
+        "index_rebuild_ok": 2,
+        "gc_ok": 2,
+        "soak_done": 1
+      },
+      "error_events": [],
+      "final_index_catalog": {
+        "edge_rows": 67191,
+        "edge_shards": 233,
+        "entity_pages": 64,
+        "entity_rows": 40267,
+        "event": "index_catalog_sample",
+        "index_count": 20,
+        "index_entries": 214595,
+        "ts": "2026-10-01T14:27:15.826944287Z",
+        "version": 671
+      },
+      "final_reader_freshness": {
+        "consistent": true,
+        "event": "reader_freshness",
+        "fresh": true,
+        "lag_ms": 0,
+        "status": "fresh",
+        "ts": "2026-10-01T14:27:15.836864095Z",
+        "version_lag": 0,
+        "visible_version": 671
+      },
+      "final_index_health": {
+        "catalog_version": 671,
+        "event": "index_health_sample",
+        "issue_count": 0,
+        "manifest_version": 671,
+        "status": "ready",
+        "ts": "2026-10-01T14:27:15.83205165Z"
+      },
+      "final_operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 18,
+          "name": "commit-schema",
+          "p50_ms": 18,
+          "p95_ms": 18,
+          "p99_ms": 18,
+          "statuses": {
+            "200": 1
+          },
+          "ts": "2026-10-01T14:27:15.814393338Z",
+          "unclassified_status_count": 0
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 87,
+          "name": "create-tenant",
+          "p50_ms": 87,
+          "p95_ms": 87,
+          "p99_ms": 87,
+          "statuses": {
+            "200": 1
+          },
+          "ts": "2026-10-01T14:27:15.814398963Z",
+          "unclassified_status_count": 0
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 0,
+          "name": "health",
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "statuses": {
+            "200": 2
+          },
+          "ts": "2026-10-01T14:27:15.814415338Z",
+          "unclassified_status_count": 0
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 16196,
+          "name": "rebuild-indexes",
+          "p50_ms": 14053,
+          "p95_ms": 16196,
+          "p99_ms": 16196,
+          "statuses": {
+            "202": 3
+          },
+          "ts": "2026-10-01T14:27:15.814468838Z",
+          "unclassified_status_count": 0
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 10,
+          "name": "save-query",
+          "p50_ms": 9,
+          "p95_ms": 10,
+          "p99_ms": 10,
+          "statuses": {
+            "200": 5
+          },
+          "ts": "2026-10-01T14:27:15.81447138Z",
+          "unclassified_status_count": 0
+        },
+        "tenant-usage": {
+          "count": 61,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 925,
+          "name": "tenant-usage",
+          "p50_ms": 2,
+          "p95_ms": 564,
+          "p99_ms": 925,
+          "statuses": {
+            "200": 61
+          },
+          "ts": "2026-10-01T14:27:15.81452263Z",
+          "unclassified_status_count": 0
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 0,
+          "name": "warm-reader",
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "statuses": {
+            "200": 1
+          },
+          "ts": "2026-10-01T14:27:15.814525047Z",
+          "unclassified_status_count": 0
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 48,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 1,
+          "p95_ms": 4,
+          "p99_ms": 11,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814341046Z",
+          "unclassified_status_count": 0
+        },
+        "cmdb-owner-service-match": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 42,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 2,
+          "p95_ms": 14,
+          "p99_ms": 22,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.81438663Z",
+          "unclassified_status_count": 0
+        },
+        "cmdb-service-to-database-path": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 37,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 1,
+          "p95_ms": 2,
+          "p99_ms": 6,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814390421Z",
+          "unclassified_status_count": 0
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 893,
+          "name": "export-snapshot-stream",
+          "p50_ms": 472,
+          "p95_ms": 893,
+          "p99_ms": 893,
+          "statuses": {
+            "200": 6
+          },
+          "ts": "2026-10-01T14:27:15.814401421Z",
+          "unclassified_status_count": 0
+        },
+        "fuzzy-service-match": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 58,
+          "name": "fuzzy-service-match",
+          "p50_ms": 11,
+          "p95_ms": 21,
+          "p99_ms": 30,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814409588Z",
+          "unclassified_status_count": 1
+        },
+        "impact-service": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 68,
+          "name": "impact-service",
+          "p50_ms": 8,
+          "p95_ms": 14,
+          "p99_ms": 23,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814418255Z",
+          "unclassified_status_count": 0
+        },
+        "index-catalog": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 34,
+          "name": "index-catalog",
+          "p50_ms": 13,
+          "p95_ms": 27,
+          "p99_ms": 34,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:27:15.814421046Z",
+          "unclassified_status_count": 0
+        },
+        "index-health": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 26,
+          "name": "index-health",
+          "p50_ms": 5,
+          "p95_ms": 15,
+          "p99_ms": 26,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:27:15.814423588Z",
+          "unclassified_status_count": 0
+        },
+        "indexed-match-allow-stale": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 47,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 5,
+          "p95_ms": 11,
+          "p99_ms": 18,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.81442738Z",
+          "unclassified_status_count": 0
+        },
+        "indexed-match-min-version": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 45,
+          "name": "indexed-match-min-version",
+          "p50_ms": 5,
+          "p95_ms": 10,
+          "p99_ms": 18,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814430297Z",
+          "unclassified_status_count": 0
+        },
+        "ingest": {
+          "count": 973,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 15580,
+          "name": "ingest",
+          "p50_ms": 2010,
+          "p95_ms": 5035,
+          "p99_ms": 11185,
+          "statuses": {
+            "200": 669,
+            "429": 303
+          },
+          "ts": "2026-10-01T14:27:15.814435588Z",
+          "unclassified_status_count": 1
+        },
+        "neighbors-host-out": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 41,
+          "name": "neighbors-host-out",
+          "p50_ms": 0,
+          "p95_ms": 6,
+          "p99_ms": 14,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814447838Z",
+          "unclassified_status_count": 0
+        },
+        "path-filter-traverse": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 40,
+          "name": "path-filter-traverse",
+          "p50_ms": 1,
+          "p95_ms": 3,
+          "p99_ms": 7,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814451047Z",
+          "unclassified_status_count": 0
+        },
+        "profile-indexed-match": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 63,
+          "name": "profile-indexed-match",
+          "p50_ms": 5,
+          "p95_ms": 11,
+          "p99_ms": 18,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814457255Z",
+          "unclassified_status_count": 0
+        },
+        "range-aggregate-match": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 68,
+          "name": "range-aggregate-match",
+          "p50_ms": 11,
+          "p95_ms": 21,
+          "p99_ms": 30,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814460463Z",
+          "unclassified_status_count": 0
+        },
+        "reader-fleet": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 40,
+          "name": "reader-fleet",
+          "p50_ms": 4,
+          "p95_ms": 17,
+          "p99_ms": 40,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:27:15.814463005Z",
+          "unclassified_status_count": 0
+        },
+        "reader-freshness": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 66,
+          "name": "reader-freshness",
+          "p50_ms": 5,
+          "p95_ms": 17,
+          "p99_ms": 66,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:27:15.814465922Z",
+          "unclassified_status_count": 0
+        },
+        "saved-host-query": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 87,
+          "name": "saved-host-query",
+          "p50_ms": 6,
+          "p95_ms": 19,
+          "p99_ms": 34,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814474588Z",
+          "unclassified_status_count": 0
+        },
+        "saved-prod-containment": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 65,
+          "name": "saved-prod-containment",
+          "p50_ms": 1,
+          "p95_ms": 6,
+          "p99_ms": 16,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.81447863Z",
+          "unclassified_status_count": 0
+        },
+        "saved-prod-services": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 84,
+          "name": "saved-prod-services",
+          "p50_ms": 9,
+          "p95_ms": 21,
+          "p99_ms": 35,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814487047Z",
+          "unclassified_status_count": 0
+        },
+        "saved-service-impact": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 81,
+          "name": "saved-service-impact",
+          "p50_ms": 9,
+          "p95_ms": 17,
+          "p99_ms": 28,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814490005Z",
+          "unclassified_status_count": 0
+        },
+        "saved-team-services": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 88,
+          "name": "saved-team-services",
+          "p50_ms": 8,
+          "p95_ms": 22,
+          "p99_ms": 36,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814492589Z",
+          "unclassified_status_count": 0
+        },
+        "scan-edges": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 60,
+          "name": "scan-edges",
+          "p50_ms": 7,
+          "p95_ms": 14,
+          "p99_ms": 25,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814495714Z",
+          "unclassified_status_count": 0
+        },
+        "scan-edges-allow-stale": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 160,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 17,
+          "p95_ms": 39,
+          "p99_ms": 58,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.814498547Z",
+          "unclassified_status_count": 0
+        },
+        "scan-entities": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 116,
+          "name": "scan-entities",
+          "p50_ms": 5,
+          "p95_ms": 24,
+          "p99_ms": 41,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814500922Z",
+          "unclassified_status_count": 0
+        },
+        "scan-entities-allow-stale": {
+          "count": 5274,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 521,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 3,
+          "p95_ms": 86,
+          "p99_ms": 144,
+          "statuses": {
+            "200": 5274
+          },
+          "ts": "2026-10-01T14:27:15.81450338Z",
+          "unclassified_status_count": 0
+        },
+        "scan-entities-min-version": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 90,
+          "name": "scan-entities-min-version",
+          "p50_ms": 4,
+          "p95_ms": 16,
+          "p99_ms": 32,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814505922Z",
+          "unclassified_status_count": 0
+        },
+        "shortest-service-cluster": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 37,
+          "name": "shortest-service-cluster",
+          "p50_ms": 0,
+          "p95_ms": 3,
+          "p99_ms": 11,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814508589Z",
+          "unclassified_status_count": 0
+        },
+        "stream-all-host-page": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 114,
+          "name": "stream-all-host-page",
+          "p50_ms": 19,
+          "p95_ms": 37,
+          "p99_ms": 56,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814511672Z",
+          "unclassified_status_count": 0
+        },
+        "stream-large-indexed-hosts": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 122,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 23,
+          "p95_ms": 43,
+          "p99_ms": 65,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814514672Z",
+          "unclassified_status_count": 0
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 5273,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 112,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 22,
+          "p95_ms": 44,
+          "p99_ms": 66,
+          "statuses": {
+            "200": 5273
+          },
+          "ts": "2026-10-01T14:27:15.814518047Z",
+          "unclassified_status_count": 0
+        },
+        "compact": {
+          "count": 5,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 12069,
+          "name": "compact",
+          "p50_ms": 8031,
+          "p95_ms": 12069,
+          "p99_ms": 12069,
+          "statuses": {
+            "202": 5
+          },
+          "ts": "2026-10-01T14:27:15.814395963Z",
+          "unclassified_status_count": 0
+        },
+        "gc": {
+          "count": 2,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 4026,
+          "name": "gc",
+          "p50_ms": 2012,
+          "p95_ms": 4026,
+          "p99_ms": 4026,
+          "statuses": {
+            "202": 2
+          },
+          "ts": "2026-10-01T14:27:15.814412796Z",
+          "unclassified_status_count": 0
+        }
+      },
+      "strict_report": "service/soak-report-direct.txt",
+      "basic_load": {
+        "schema_version": 1,
+        "generated_at": "2026-10-01T13:57:14.542424003Z",
+        "success": true,
+        "elapsed_ms": 305,
+        "workload": {
+          "tenant": "local-gate-direct",
+          "writer_url": "http://127.0.0.1:45080",
+          "reader_url": "http://127.0.0.1:45080",
+          "writers": 4,
+          "readers": 16,
+          "batches": 10,
+          "batch_size": 20,
+          "allow_write_backpressure": false
+        },
+        "planned_graph": {
+          "entities": 402,
+          "edges": 201
+        },
+        "metrics": [
+          {
+            "p50_us": 124,
+            "p95_us": 124,
+            "p99_us": 124,
+            "name": "collector-status",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 25853,
+            "p95_us": 25853,
+            "p99_us": 25853,
+            "name": "commit-schema",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 25,
+            "p95_ms": 25,
+            "p99_ms": 25,
+            "max_ms": 25
+          },
+          {
+            "p50_us": 938,
+            "p95_us": 2747,
+            "p99_us": 2747,
+            "name": "entities-allow-stale",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 636,
+            "p95_us": 1060,
+            "p99_us": 1060,
+            "name": "entity-min-version",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 1,
+            "p99_ms": 1,
+            "max_ms": 1
+          },
+          {
+            "p50_us": 395,
+            "p95_us": 395,
+            "p99_us": 395,
+            "name": "health",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 8019,
+            "p95_us": 8019,
+            "p99_us": 8019,
+            "name": "index-health",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 8,
+            "p95_ms": 8,
+            "p99_ms": 8,
+            "max_ms": 8
+          },
+          {
+            "p50_us": 71565,
+            "p95_us": 96487,
+            "p99_us": 96487,
+            "name": "ingest",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 71,
+            "p95_ms": 96,
+            "p99_ms": 96,
+            "max_ms": 96
+          },
+          {
+            "p50_us": 591,
+            "p95_us": 2734,
+            "p99_us": 2734,
+            "name": "query-allow-stale",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 2275,
+            "p95_us": 4853,
+            "p99_us": 4853,
+            "name": "query-match",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 2,
+            "p95_ms": 4,
+            "p99_ms": 4,
+            "max_ms": 4
+          },
+          {
+            "p50_us": 385,
+            "p95_us": 846,
+            "p99_us": 846,
+            "name": "query-min-version",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 880,
+            "p95_us": 2745,
+            "p99_us": 2745,
+            "name": "query-stream",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 578,
+            "p95_us": 938,
+            "p99_us": 938,
+            "name": "query-stream-min-version",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 1277,
+            "p95_us": 3764,
+            "p99_us": 3764,
+            "name": "query-traverse",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 1,
+            "p95_ms": 3,
+            "p99_ms": 3,
+            "max_ms": 3
+          },
+          {
+            "p50_us": 85659,
+            "p95_us": 85659,
+            "p99_us": 85659,
+            "name": "rebuild-indexes",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 85,
+            "p95_ms": 85,
+            "p99_ms": 85,
+            "max_ms": 85
+          },
+          {
+            "p50_us": 986,
+            "p95_us": 986,
+            "p99_us": 986,
+            "name": "run-saved-query",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 6234,
+            "p95_us": 6234,
+            "p99_us": 6234,
+            "name": "save-query",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 6,
+            "p95_ms": 6,
+            "p99_ms": 6,
+            "max_ms": 6
+          },
+          {
+            "p50_us": 415,
+            "p95_us": 415,
+            "p99_us": 415,
+            "name": "seed-query",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          }
+        ]
+      }
+    },
+    {
+      "mode": "wal",
+      "result": "PASS",
+      "start": {
+        "admin": "http://127.0.0.1:45080",
+        "batch_size": 20,
+        "duration": "30m0s",
+        "event": "soak_start",
+        "reader": "http://127.0.0.1:45080",
+        "readers": 16,
+        "skip_setup": false,
+        "tenant": "local-disk-soak-wal",
+        "ts": "2026-10-01T14:27:24.582600425Z",
+        "writer": "http://127.0.0.1:45080",
+        "writers": 4
+      },
+      "done": {
+        "elapsed_ms": 1798246,
+        "event": "soak_done",
+        "ts": "2026-10-01T14:57:24.966243949Z"
+      },
+      "event_span_seconds": 1800.383643,
+      "event_counts": {
+        "soak_start": 1,
+        "setup_ok": 1,
+        "usage_sample": 61,
+        "operation_metric": 2377,
+        "index_catalog_sample": 61,
+        "index_health_sample": 61,
+        "reader_freshness": 61,
+        "reader_fleet": 61,
+        "compact_ok": 5,
+        "index_rebuild_ok": 2,
+        "gc_ok": 2,
+        "soak_done": 1
+      },
+      "error_events": [],
+      "final_index_catalog": {
+        "edge_rows": 74591,
+        "edge_shards": 233,
+        "entity_pages": 64,
+        "entity_rows": 44707,
+        "event": "index_catalog_sample",
+        "index_count": 20,
+        "index_entries": 238275,
+        "ts": "2026-10-01T14:57:24.948842732Z",
+        "version": 745
+      },
+      "final_reader_freshness": {
+        "consistent": true,
+        "event": "reader_freshness",
+        "fresh": true,
+        "lag_ms": 0,
+        "status": "fresh",
+        "ts": "2026-10-01T14:57:24.960106292Z",
+        "version_lag": 0,
+        "visible_version": 745
+      },
+      "final_index_health": {
+        "catalog_version": 745,
+        "event": "index_health_sample",
+        "issue_count": 0,
+        "manifest_version": 745,
+        "status": "ready",
+        "ts": "2026-10-01T14:57:24.954534387Z"
+      },
+      "final_operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 21,
+          "name": "commit-schema",
+          "p50_ms": 21,
+          "p95_ms": 21,
+          "p99_ms": 21,
+          "statuses": {
+            "200": 1
+          },
+          "ts": "2026-10-01T14:57:24.928078373Z",
+          "unclassified_status_count": 0
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 66,
+          "name": "create-tenant",
+          "p50_ms": 66,
+          "p95_ms": 66,
+          "p99_ms": 66,
+          "statuses": {
+            "200": 1
+          },
+          "ts": "2026-10-01T14:57:24.92808404Z",
+          "unclassified_status_count": 0
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 0,
+          "name": "health",
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "statuses": {
+            "200": 2
+          },
+          "ts": "2026-10-01T14:57:24.928095373Z",
+          "unclassified_status_count": 0
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 24108,
+          "name": "rebuild-indexes",
+          "p50_ms": 18086,
+          "p95_ms": 24108,
+          "p99_ms": 24108,
+          "statuses": {
+            "202": 3
+          },
+          "ts": "2026-10-01T14:57:24.928136665Z",
+          "unclassified_status_count": 0
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 12,
+          "name": "save-query",
+          "p50_ms": 6,
+          "p95_ms": 12,
+          "p99_ms": 12,
+          "statuses": {
+            "200": 5
+          },
+          "ts": "2026-10-01T14:57:24.928139706Z",
+          "unclassified_status_count": 0
+        },
+        "tenant-usage": {
+          "count": 61,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 378,
+          "name": "tenant-usage",
+          "p50_ms": 2,
+          "p95_ms": 289,
+          "p99_ms": 378,
+          "statuses": {
+            "200": 61
+          },
+          "ts": "2026-10-01T14:57:24.928183748Z",
+          "unclassified_status_count": 0
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 1,
+          "name": "warm-reader",
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "statuses": {
+            "200": 1
+          },
+          "ts": "2026-10-01T14:57:24.928186998Z",
+          "unclassified_status_count": 0
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 94,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 1,
+          "p95_ms": 4,
+          "p99_ms": 12,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.927972081Z",
+          "unclassified_status_count": 0
+        },
+        "cmdb-owner-service-match": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 95,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 3,
+          "p95_ms": 15,
+          "p99_ms": 25,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928071123Z",
+          "unclassified_status_count": 0
+        },
+        "cmdb-service-to-database-path": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 59,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 1,
+          "p95_ms": 2,
+          "p99_ms": 8,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928075498Z",
+          "unclassified_status_count": 0
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 1058,
+          "name": "export-snapshot-stream",
+          "p50_ms": 530,
+          "p95_ms": 1058,
+          "p99_ms": 1058,
+          "statuses": {
+            "200": 6
+          },
+          "ts": "2026-10-01T14:57:24.928086665Z",
+          "unclassified_status_count": 0
+        },
+        "fuzzy-service-match": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 98,
+          "name": "fuzzy-service-match",
+          "p50_ms": 11,
+          "p95_ms": 25,
+          "p99_ms": 38,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.92809004Z",
+          "unclassified_status_count": 0
+        },
+        "impact-service": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 71,
+          "name": "impact-service",
+          "p50_ms": 8,
+          "p95_ms": 17,
+          "p99_ms": 28,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928098373Z",
+          "unclassified_status_count": 0
+        },
+        "index-catalog": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 91,
+          "name": "index-catalog",
+          "p50_ms": 14,
+          "p95_ms": 44,
+          "p99_ms": 91,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:57:24.928101248Z",
+          "unclassified_status_count": 0
+        },
+        "index-health": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 27,
+          "name": "index-health",
+          "p50_ms": 5,
+          "p95_ms": 15,
+          "p99_ms": 27,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:57:24.928104373Z",
+          "unclassified_status_count": 0
+        },
+        "indexed-match-allow-stale": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 96,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 5,
+          "p95_ms": 12,
+          "p99_ms": 19,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928107123Z",
+          "unclassified_status_count": 0
+        },
+        "indexed-match-min-version": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 52,
+          "name": "indexed-match-min-version",
+          "p50_ms": 5,
+          "p95_ms": 11,
+          "p99_ms": 20,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928110373Z",
+          "unclassified_status_count": 0
+        },
+        "ingest": {
+          "count": 744,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 23992,
+          "name": "ingest",
+          "p50_ms": 4338,
+          "p95_ms": 12755,
+          "p99_ms": 20628,
+          "statuses": {
+            "200": 744
+          },
+          "ts": "2026-10-01T14:57:24.928112998Z",
+          "unclassified_status_count": 0
+        },
+        "neighbors-host-out": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 95,
+          "name": "neighbors-host-out",
+          "p50_ms": 0,
+          "p95_ms": 6,
+          "p99_ms": 16,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.92811579Z",
+          "unclassified_status_count": 0
+        },
+        "path-filter-traverse": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 58,
+          "name": "path-filter-traverse",
+          "p50_ms": 1,
+          "p95_ms": 3,
+          "p99_ms": 9,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928119123Z",
+          "unclassified_status_count": 0
+        },
+        "profile-indexed-match": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 73,
+          "name": "profile-indexed-match",
+          "p50_ms": 5,
+          "p95_ms": 12,
+          "p99_ms": 23,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.92812204Z",
+          "unclassified_status_count": 0
+        },
+        "range-aggregate-match": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 101,
+          "name": "range-aggregate-match",
+          "p50_ms": 12,
+          "p95_ms": 24,
+          "p99_ms": 39,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928127165Z",
+          "unclassified_status_count": 0
+        },
+        "reader-fleet": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 40,
+          "name": "reader-fleet",
+          "p50_ms": 4,
+          "p95_ms": 12,
+          "p99_ms": 40,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:57:24.92813079Z",
+          "unclassified_status_count": 0
+        },
+        "reader-freshness": {
+          "count": 60,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 54,
+          "name": "reader-freshness",
+          "p50_ms": 4,
+          "p95_ms": 17,
+          "p99_ms": 54,
+          "statuses": {
+            "200": 60
+          },
+          "ts": "2026-10-01T14:57:24.928133498Z",
+          "unclassified_status_count": 0
+        },
+        "saved-host-query": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 146,
+          "name": "saved-host-query",
+          "p50_ms": 7,
+          "p95_ms": 18,
+          "p99_ms": 34,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928142582Z",
+          "unclassified_status_count": 0
+        },
+        "saved-prod-containment": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 152,
+          "name": "saved-prod-containment",
+          "p50_ms": 2,
+          "p95_ms": 7,
+          "p99_ms": 21,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928146123Z",
+          "unclassified_status_count": 0
+        },
+        "saved-prod-services": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 151,
+          "name": "saved-prod-services",
+          "p50_ms": 9,
+          "p95_ms": 23,
+          "p99_ms": 40,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928148915Z",
+          "unclassified_status_count": 0
+        },
+        "saved-service-impact": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 161,
+          "name": "saved-service-impact",
+          "p50_ms": 9,
+          "p95_ms": 21,
+          "p99_ms": 37,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928152082Z",
+          "unclassified_status_count": 0
+        },
+        "saved-team-services": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 162,
+          "name": "saved-team-services",
+          "p50_ms": 8,
+          "p95_ms": 24,
+          "p99_ms": 39,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928154665Z",
+          "unclassified_status_count": 0
+        },
+        "scan-edges": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 96,
+          "name": "scan-edges",
+          "p50_ms": 8,
+          "p95_ms": 17,
+          "p99_ms": 31,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928157415Z",
+          "unclassified_status_count": 0
+        },
+        "scan-edges-allow-stale": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 269,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 9,
+          "p95_ms": 44,
+          "p99_ms": 70,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928160123Z",
+          "unclassified_status_count": 0
+        },
+        "scan-entities": {
+          "count": 5271,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 197,
+          "name": "scan-entities",
+          "p50_ms": 5,
+          "p95_ms": 24,
+          "p99_ms": 43,
+          "statuses": {
+            "200": 5271
+          },
+          "ts": "2026-10-01T14:57:24.928163123Z",
+          "unclassified_status_count": 0
+        },
+        "scan-entities-allow-stale": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 653,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 3,
+          "p95_ms": 23,
+          "p99_ms": 119,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928166207Z",
+          "unclassified_status_count": 0
+        },
+        "scan-entities-min-version": {
+          "count": 5271,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 183,
+          "name": "scan-entities-min-version",
+          "p50_ms": 4,
+          "p95_ms": 16,
+          "p99_ms": 36,
+          "statuses": {
+            "200": 5271
+          },
+          "ts": "2026-10-01T14:57:24.92816904Z",
+          "unclassified_status_count": 0
+        },
+        "shortest-service-cluster": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 42,
+          "name": "shortest-service-cluster",
+          "p50_ms": 0,
+          "p95_ms": 3,
+          "p99_ms": 12,
+          "statuses": {
+            "200": 5272
+          },
+          "ts": "2026-10-01T14:57:24.928171873Z",
+          "unclassified_status_count": 0
+        },
+        "stream-all-host-page": {
+          "count": 5271,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 171,
+          "name": "stream-all-host-page",
+          "p50_ms": 18,
+          "p95_ms": 39,
+          "p99_ms": 63,
+          "statuses": {
+            "200": 5271
+          },
+          "ts": "2026-10-01T14:57:24.928174582Z",
+          "unclassified_status_count": 0
+        },
+        "stream-large-indexed-hosts": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 184,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 23,
+          "p95_ms": 49,
+          "p99_ms": 77,
+          "statuses": {
+            "200": 5271
+          },
+          "ts": "2026-10-01T14:57:24.928178207Z",
+          "unclassified_status_count": 1
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 5272,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 189,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 22,
+          "p95_ms": 49,
+          "p99_ms": 79,
+          "statuses": {
+            "200": 5271
+          },
+          "ts": "2026-10-01T14:57:24.92818054Z",
+          "unclassified_status_count": 1
+        },
+        "compact": {
+          "count": 5,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 22054,
+          "name": "compact",
+          "p50_ms": 12053,
+          "p95_ms": 22054,
+          "p99_ms": 22054,
+          "statuses": {
+            "202": 5
+          },
+          "ts": "2026-10-01T14:57:24.928081248Z",
+          "unclassified_status_count": 0
+        },
+        "gc": {
+          "count": 2,
+          "errors": 0,
+          "event": "operation_metric",
+          "max_ms": 6035,
+          "name": "gc",
+          "p50_ms": 2014,
+          "p95_ms": 6035,
+          "p99_ms": 6035,
+          "statuses": {
+            "202": 2
+          },
+          "ts": "2026-10-01T14:57:24.928092665Z",
+          "unclassified_status_count": 0
+        }
+      },
+      "strict_report": "service/soak-report-wal.txt",
+      "basic_load": {
+        "schema_version": 1,
+        "generated_at": "2026-10-01T14:27:23.854841143Z",
+        "success": true,
+        "elapsed_ms": 556,
+        "workload": {
+          "tenant": "local-gate-wal",
+          "writer_url": "http://127.0.0.1:45080",
+          "reader_url": "http://127.0.0.1:45080",
+          "writers": 4,
+          "readers": 16,
+          "batches": 10,
+          "batch_size": 20,
+          "allow_write_backpressure": false
+        },
+        "planned_graph": {
+          "entities": 402,
+          "edges": 201
+        },
+        "metrics": [
+          {
+            "p50_us": 142,
+            "p95_us": 142,
+            "p99_us": 142,
+            "name": "collector-status",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 15659,
+            "p95_us": 15659,
+            "p99_us": 15659,
+            "name": "commit-schema",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 15,
+            "p95_ms": 15,
+            "p99_ms": 15,
+            "max_ms": 15
+          },
+          {
+            "p50_us": 545,
+            "p95_us": 824,
+            "p99_us": 824,
+            "name": "entities-allow-stale",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 602,
+            "p95_us": 2173,
+            "p99_us": 2173,
+            "name": "entity-min-version",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 493,
+            "p95_us": 493,
+            "p99_us": 493,
+            "name": "health",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          },
+          {
+            "p50_us": 5468,
+            "p95_us": 5468,
+            "p99_us": 5468,
+            "name": "index-health",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 5,
+            "p95_ms": 5,
+            "p99_ms": 5,
+            "max_ms": 5
+          },
+          {
+            "p50_us": 146967,
+            "p95_us": 177431,
+            "p99_us": 177431,
+            "name": "ingest",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 146,
+            "p95_ms": 177,
+            "p99_ms": 177,
+            "max_ms": 177
+          },
+          {
+            "p50_us": 309,
+            "p95_us": 2395,
+            "p99_us": 2395,
+            "name": "query-allow-stale",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 4774,
+            "p95_us": 5694,
+            "p99_us": 5694,
+            "name": "query-match",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 4,
+            "p95_ms": 5,
+            "p99_ms": 5,
+            "max_ms": 5
+          },
+          {
+            "p50_us": 645,
+            "p95_us": 1308,
+            "p99_us": 1308,
+            "name": "query-min-version",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 1,
+            "p99_ms": 1,
+            "max_ms": 1
+          },
+          {
+            "p50_us": 643,
+            "p95_us": 2006,
+            "p99_us": 2006,
+            "name": "query-stream",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 366,
+            "p95_us": 1069,
+            "p99_us": 1069,
+            "name": "query-stream-min-version",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 0,
+            "p95_ms": 1,
+            "p99_ms": 1,
+            "max_ms": 1
+          },
+          {
+            "p50_us": 1001,
+            "p95_us": 2441,
+            "p99_us": 2441,
+            "name": "query-traverse",
+            "count": 10,
+            "errors": 0,
+            "statuses": {
+              "200": 10
+            },
+            "p50_ms": 1,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 79540,
+            "p95_us": 79540,
+            "p99_us": 79540,
+            "name": "rebuild-indexes",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 79,
+            "p95_ms": 79,
+            "p99_ms": 79,
+            "max_ms": 79
+          },
+          {
+            "p50_us": 2283,
+            "p95_us": 2283,
+            "p99_us": 2283,
+            "name": "run-saved-query",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 2,
+            "p95_ms": 2,
+            "p99_ms": 2,
+            "max_ms": 2
+          },
+          {
+            "p50_us": 4852,
+            "p95_us": 4852,
+            "p99_us": 4852,
+            "name": "save-query",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 4,
+            "p95_ms": 4,
+            "p99_ms": 4,
+            "max_ms": 4
+          },
+          {
+            "p50_us": 361,
+            "p95_us": 361,
+            "p99_us": 361,
+            "name": "seed-query",
+            "count": 1,
+            "errors": 0,
+            "statuses": {
+              "200": 1
+            },
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "max_ms": 0
+          }
+        ]
+      }
+    }
+  ],
+  "large_data_reopening": [
+    {
+      "mode": "direct",
+      "result": "PASS",
+      "version": 671,
+      "entities": 40267,
+      "edges": 67191,
+      "snapshot_sha256": "918157a92f9557bb0dd528b819228f64c8aae1fd27cb068c061d06b474c63762",
+      "deep_integrity": "ok",
+      "graphql_at_final_version": true,
+      "same_snapshot_after_sigkill": true
+    },
+    {
+      "mode": "wal",
+      "result": "PASS",
+      "version": 745,
+      "entities": 44707,
+      "edges": 74591,
+      "snapshot_sha256": "9789f7bbebe5e78ea60f39d5064d30abd7a410c31667293a01810cf790633e3f",
+      "deep_integrity": "ok",
+      "graphql_at_final_version": true,
+      "same_snapshot_after_sigkill": true
+    }
+  ],
+  "platform_smokes": [
+    {
+      "platform": "darwin-arm64-native",
+      "mode": "direct",
+      "result": "PASS",
+      "binary_sha256": "23434a846b6fb8d99639ab28b69154199eba6b7b9adfd95ef5dfb16e99b0624a",
+      "snapshot_same_after_sigkill": true
+    },
+    {
+      "platform": "darwin-arm64-native",
+      "mode": "wal",
+      "result": "PASS",
+      "binary_sha256": "23434a846b6fb8d99639ab28b69154199eba6b7b9adfd95ef5dfb16e99b0624a",
+      "snapshot_same_after_sigkill": true
+    },
+    {
+      "platform": "linux-amd64-emulated",
+      "mode": "direct",
+      "result": "PASS",
+      "binary_sha256": "8011d83f627c88b3347b46e106ac6b239ed52482c1bab24464282ae36688a81d",
+      "snapshot_same_after_sigkill": true
+    },
+    {
+      "platform": "linux-amd64-emulated",
+      "mode": "wal",
+      "result": "PASS",
+      "binary_sha256": "8011d83f627c88b3347b46e106ac6b239ed52482c1bab24464282ae36688a81d",
+      "snapshot_same_after_sigkill": true
+    }
+  ],
+  "method": {
+    "backend_environment": "OrbStack Linux arm64",
+    "cpu_limit": 4,
+    "gomaxprocs": 4,
+    "reader_cache_bytes": 2147483648,
+    "write_cache_bytes": 2147483648,
+    "basic_reader_cache_bytes": 1,
+    "write_interval": "5s",
+    "http_timeout": "120s",
+    "maintenance_timeout": "10m",
+    "allow_write_backpressure": true,
+    "metrics_are_cumulative": true,
+    "aggregation": "last operation_metric for each name; do not sum periodic samples"
+  },
+  "test_commands": [
+    "go test -mod=readonly -count=1 -p 1 -timeout 20m ./...",
+    "go vet -mod=readonly ./...",
+    "go test -mod=readonly -race -count=1 -p 1 -timeout 30m ./...",
+    "python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'"
+  ],
+  "observations": [
+    "direct HTTP 429 responses are backpressure rejections, not successful writes",
+    "duration-end context cancellation may omit status; preserve unclassified attempts",
+    "large cold export may return retryable 503 reader_not_fresh before cache catches up",
+    "native macOS smoke uses canonical data directory; /tmp symlink was refused",
+    "Go SDK GraphQL helper was added for Darwin/amd64 smoke; arm64 large-data GraphQL was exercised separately"
+  ],
+  "qualification_limits": [
+    "30 minute workload qualifies only the tested Linux arm64 environment",
+    "Linux amd64 used emulation; Darwin arm64 was native; both are HTTP/SDK/restart smoke only",
+    "baseline v2.1.2 program was rebuilt from tagged source with Go 1.26.7",
+    "capacity, disk exhaustion, prolonged saturation and cloud-provider S3 not qualified",
+    "cross-host Raft acceptance remains pending at user request",
+    "no new version, remote push, release tag or public asset publication"
+  ]
+}
