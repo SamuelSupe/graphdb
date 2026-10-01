@@ -14,6 +14,7 @@ type Shard struct {
 	ID        string            `json:"id"`
 	ClusterID string            `json:"cluster_id"`
 	Peers     map[uint64]string `json:"peers"`
+	Draining  bool              `json:"draining,omitempty"`
 }
 
 type Move struct {
@@ -45,10 +46,11 @@ type Resolution struct {
 }
 
 type Ownership struct {
-	Epoch  uint64 `json:"epoch"`
-	State  string `json:"state"`
-	MoveID string `json:"move_id,omitempty"`
-	Digest string `json:"digest,omitempty"`
+	Epoch    uint64 `json:"epoch"`
+	State    string `json:"state"`
+	MoveID   string `json:"move_id,omitempty"`
+	Digest   string `json:"digest,omitempty"`
+	NextPart int    `json:"next_part,omitempty"`
 }
 
 type Action struct {

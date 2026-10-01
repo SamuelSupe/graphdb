@@ -13,14 +13,22 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type Router struct {
-	Catalog Shard
-	Client  *Client
+	Catalog    Shard
+	Client     *Client
+	mu         sync.Mutex
+	placements map[string]cachedPlacement
+}
+
+type cachedPlacement struct {
+	resolution Resolution
+	expires    time.Time
 }
 
 func NewRouter(catalog Shard, token string) *Router {
@@ -130,12 +138,32 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 }
 
 func (r *Router) resolve(ctx context.Context, tenant string) (Resolution, error) {
+	r.mu.Lock()
+	cached := r.placements[tenant]
+	r.mu.Unlock()
+	if time.Now().Before(cached.expires) {
+		return cached.resolution, nil
+	}
 	var resolution Resolution
 	err := r.Client.JSON(ctx, r.Catalog, http.MethodGet, "/cluster/placement/"+url.PathEscape(tenant), nil, &resolution)
 	if err == nil && resolution.Placement.State != "active" {
 		err = &HTTPError{Status: http.StatusServiceUnavailable, Body: "tenant assignment or migration is in progress"}
 	}
+	if err == nil {
+		r.mu.Lock()
+		if len(r.placements) >= 4096 || r.placements == nil {
+			r.placements = make(map[string]cachedPlacement)
+		}
+		r.placements[tenant] = cachedPlacement{resolution: resolution, expires: time.Now().Add(5 * time.Second)}
+		r.mu.Unlock()
+	}
 	return resolution, err
+}
+
+func (r *Router) forgetPlacement(tenant string) {
+	r.mu.Lock()
+	delete(r.placements, tenant)
+	r.mu.Unlock()
 }
 
 func (r *Router) assign(ctx context.Context, tenant, shard string) (Resolution, error) {
@@ -185,7 +213,20 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			p.Out.Header.Set(EpochHeader, fmt.Sprint(epoch))
 			p.Out.Header.Set("X-Tenant-ID", tenant)
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) { r.writeError(w, err) },
+		ModifyResponse: func(response *http.Response) error {
+			if response.StatusCode == http.StatusConflict || response.StatusCode >= 500 {
+				r.forgetPlacement(tenant)
+			}
+			if response.StatusCode == http.StatusServiceUnavailable {
+				r.Client.ForgetLeader(shard)
+			}
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			r.Client.ForgetLeader(shard)
+			r.forgetPlacement(tenant)
+			r.writeError(w, err)
+		},
 	}
 	proxy.ServeHTTP(w, request)
 }
@@ -236,6 +277,15 @@ func (r *Router) admin(w http.ResponseWriter, request *http.Request) {
 		}
 		action = Action{Operation: operation, Tenant: input.Tenant, Target: input.Target}
 	default:
+		if strings.HasPrefix(request.URL.Path, "/v1/cluster/shards/") {
+			parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/v1/cluster/shards/"), "/")
+			if len(parts) != 2 || ValidateIdentifier(parts[0]) != nil || (parts[1] != "drain" && parts[1] != "resume" && parts[1] != "unregister") {
+				http.NotFound(w, request)
+				return
+			}
+			action = Action{Operation: parts[1], Target: parts[0]}
+			break
+		}
 		if !strings.HasPrefix(request.URL.Path, "/v1/cluster/moves/") || !strings.HasSuffix(request.URL.Path, "/cancel") {
 			http.NotFound(w, request)
 			return
@@ -248,6 +298,9 @@ func (r *Router) admin(w http.ResponseWriter, request *http.Request) {
 		r.writeError(w, err)
 		return
 	}
+	r.mu.Lock()
+	r.placements = nil
+	r.mu.Unlock()
 	r.writeJSON(w, http.StatusAccepted, result)
 }
 

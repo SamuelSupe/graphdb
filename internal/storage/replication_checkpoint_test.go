@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"os/exec"
@@ -232,5 +234,66 @@ func TestReplicationApplicationDoesNotCheckpointHiddenIOFailure(t *testing.T) {
 	}
 	if _, err := files.Get(context.Background(), "graphdb/original"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("failed transaction retained partial data: %v", err)
+	}
+}
+
+func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
+	ctx := context.Background()
+	source, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	_, err = source.ApplyReplicated(ctx, 2, "source", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		return nil, source.Put(ctx, "graphdb/data", bytes.Repeat([]byte("payload"), 16384))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := source.ReplicationSnapshot(ctx, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	target, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = target.ApplyReplicated(ctx, 1, "target", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		return nil, target.Put(ctx, "graphdb/old", []byte("old"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := bytes.Clone(snapshot)
+	invalid[len(invalid)-1] ^= 1
+	sum := sha256.Sum256(invalid[32:])
+	copy(invalid[:32], sum[:])
+	if err := target.InstallReplicationSnapshot(ctx, 2, invalid, 1<<20); err == nil {
+		t.Fatal("archive with a corrupt gzip trailer was installed")
+	}
+	if data, err := target.Get(ctx, "graphdb/old"); err != nil || string(data) != "old" {
+		t.Fatalf("rejected snapshot changed live data: %q, %v", data, err)
+	}
+	if err := target.InstallReplicationSnapshot(ctx, 2, snapshot, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	checkpoint, err := target.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 2 {
+		t.Fatalf("snapshot checkpoint: %v, %v", checkpoint, err)
+	}
+	if data, err := target.Get(ctx, "graphdb/data"); err != nil || !bytes.Equal(data, bytes.Repeat([]byte("payload"), 16384)) {
+		t.Fatalf("installed snapshot did not survive reopen: %v", err)
+	}
+	if _, err := target.Get(ctx, "graphdb/old"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("snapshot retained old object: %v", err)
 	}
 }

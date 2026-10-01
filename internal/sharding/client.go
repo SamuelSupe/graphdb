@@ -11,12 +11,21 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Client struct {
-	Token string
-	HTTP  *http.Client
+	Token   string
+	HTTP    *http.Client
+	mu      sync.Mutex
+	leaders map[string]cachedLeader
+}
+
+type cachedLeader struct {
+	origin     string
+	definition string
+	expires    time.Time
 }
 
 type HTTPError struct {
@@ -34,6 +43,27 @@ func NewClient(token string) *Client {
 }
 
 func (c *Client) Leader(ctx context.Context, shard Shard) (string, error) {
+	definition, err := json.Marshal(shard.Peers)
+	if err != nil {
+		return "", err
+	}
+	key := shard.ClusterID + "/" + shard.ID
+	c.mu.Lock()
+	cached := c.leaders[key]
+	c.mu.Unlock()
+	if cached.definition == string(definition) && time.Now().Before(cached.expires) {
+		return cached.origin, nil
+	}
+	remember := func(origin string) (string, error) {
+		origin = strings.TrimRight(origin, "/")
+		c.mu.Lock()
+		if len(c.leaders) >= 1024 || c.leaders == nil {
+			c.leaders = make(map[string]cachedLeader)
+		}
+		c.leaders[key] = cachedLeader{origin: origin, definition: string(definition), expires: time.Now().Add(2 * time.Second)}
+		c.mu.Unlock()
+		return origin, nil
+	}
 	ids := make([]uint64, 0, len(shard.Peers))
 	for id := range shard.Peers {
 		ids = append(ids, id)
@@ -54,17 +84,23 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (string, error) {
 		response.Body.Close()
 		cancel()
 		if err == nil && response.StatusCode == http.StatusOK && shard.Peers[status.LeaderID] != "" {
-			return strings.TrimRight(shard.Peers[status.LeaderID], "/"), nil
+			return remember(shard.Peers[status.LeaderID])
 		}
 		if err == nil && response.StatusCode == http.StatusOK {
 			origin := status.Peers[status.LeaderID]
 			u, parseErr := url.Parse(origin)
 			if parseErr == nil && status.LeaderID > 0 && u.Scheme == "http" && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/") {
-				return strings.TrimRight(origin, "/"), nil
+				return remember(origin)
 			}
 		}
 	}
 	return "", fmt.Errorf("no leader discovered for shard %s", shard.ID)
+}
+
+func (c *Client) ForgetLeader(shard Shard) {
+	c.mu.Lock()
+	delete(c.leaders, shard.ClusterID+"/"+shard.ID)
+	c.mu.Unlock()
 }
 
 func (c *Client) request(ctx context.Context, shard Shard, origin, method, path string, data []byte) (*http.Response, error) {
@@ -93,7 +129,21 @@ func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body 
 	}
 	// Once sent, a mutation may have committed even if its response is lost.
 	// The caller retries by operation identity, never by blindly replaying HTTP.
-	return c.request(ctx, shard, origin, method, path, data)
+	response, err := c.request(ctx, shard, origin, method, path, data)
+	if err != nil || response.StatusCode == http.StatusServiceUnavailable {
+		c.ForgetLeader(shard)
+		if method == http.MethodGet && ctx.Err() == nil {
+			if response != nil {
+				response.Body.Close()
+			}
+			origin, discoverErr := c.Leader(ctx, shard)
+			if discoverErr != nil {
+				return nil, discoverErr
+			}
+			return c.request(ctx, shard, origin, method, path, data)
+		}
+	}
+	return response, err
 }
 
 func (c *Client) JSON(ctx context.Context, shard Shard, method, path string, body, result any) error {

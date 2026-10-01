@@ -71,18 +71,26 @@ func (s *FileStore) ReplicationSnapshot(ctx context.Context, budgets ...int64) (
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("replication snapshot contains non-regular file %s", key)
 		}
-		data, err := s.Get(ctx, key)
+		reader, err := s.OpenReader(ctx, key)
 		if err != nil {
 			return err
 		}
-		total += int64(len(data))
+		defer reader.Close()
+		size, err := reader.Seek(0, io.SeekEnd)
+		if err != nil {
+			return err
+		}
+		if _, err := reader.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		total += size
 		if total > budget {
 			return ErrReplicationSnapshotTooLarge
 		}
-		if err := archive.WriteHeader(&tar.Header{Name: "objects/" + key, Mode: 0600, Size: int64(len(data))}); err != nil {
+		if err := archive.WriteHeader(&tar.Header{Name: "objects/" + key, Mode: 0600, Size: size}); err != nil {
 			return err
 		}
-		_, err = archive.Write(data)
+		_, err = io.Copy(archive, io.NewSectionReader(reader, 0, size))
 		return err
 	})
 	if err != nil {
@@ -125,8 +133,14 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 		return err
 	}
 	defer compressed.Close()
-	archive := tar.NewReader(io.LimitReader(compressed, maxBytes+1))
-	objects := make(map[string][]byte)
+	limited := &io.LimitedReader{R: compressed, N: maxBytes + 1}
+	archive := tar.NewReader(limited)
+	staging, err := os.MkdirTemp("", "graphdb-replication-snapshot-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	objects := make(map[string]string)
 	var checkpoint ReplicationCheckpoint
 	var total int64
 	metadataFound := false
@@ -144,16 +158,16 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 		if header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > maxBytes-total {
 			return fmt.Errorf("invalid or oversized replication snapshot entry")
 		}
-		body, err := io.ReadAll(io.LimitReader(archive, header.Size))
-		if err != nil || int64(len(body)) != header.Size {
-			return fmt.Errorf("truncated snapshot object")
-		}
 		total += header.Size
 		if header.Name == "checkpoint.json" {
 			if metadataFound {
 				return fmt.Errorf("duplicate snapshot checkpoint")
 			}
 			metadataFound = true
+			body, err := io.ReadAll(io.LimitReader(archive, header.Size))
+			if err != nil || int64(len(body)) != header.Size {
+				return fmt.Errorf("truncated snapshot checkpoint")
+			}
 			if err := json.Unmarshal(body, &checkpoint); err != nil {
 				return err
 			}
@@ -174,7 +188,27 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 		if _, exists := objects[key]; exists {
 			return fmt.Errorf("duplicate snapshot object")
 		}
-		objects[key] = body
+		filename := filepath.Join(staging, fmt.Sprint(len(objects)))
+		file, err := os.OpenFile(filename, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		written, copyErr := io.Copy(file, archive)
+		closeErr := file.Close()
+		if copyErr != nil || written != header.Size {
+			return fmt.Errorf("truncated snapshot object")
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		objects[key] = filename
+	}
+	// Consume padding and verify gzip's checksum before changing live data.
+	if _, err := io.Copy(io.Discard, limited); err != nil {
+		return err
+	}
+	if limited.N == 0 {
+		return ErrReplicationSnapshotTooLarge
 	}
 	if !metadataFound || checkpoint.Index != index {
 		return fmt.Errorf("snapshot applied position mismatch")
@@ -197,7 +231,11 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			if err := s.Put(applyCtx, key, objects[key]); err != nil {
+			body, err := os.ReadFile(objects[key])
+			if err != nil {
+				return nil, err
+			}
+			if err := s.Put(applyCtx, key, body); err != nil {
 				return nil, err
 			}
 		}

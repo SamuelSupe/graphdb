@@ -43,7 +43,9 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			if previous.ClusterID != action.Shard.ClusterID {
 				return conflict("a shard's Raft cluster identity is immutable")
 			}
-			state.Shards[action.Shard.ID] = *action.Shard
+			updated := *action.Shard
+			updated.Draining = previous.Draining
+			state.Shards[action.Shard.ID] = updated
 		} else {
 			for _, existing := range state.Shards {
 				if existing.ClusterID == action.Shard.ClusterID {
@@ -53,6 +55,30 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			state.Shards[action.Shard.ID] = *action.Shard
 		}
 		result = state.Shards[action.Shard.ID]
+	} else if action.Operation == "drain" || action.Operation == "resume" || action.Operation == "unregister" {
+		shard, exists := state.Shards[action.Target]
+		if !exists {
+			if action.Operation == "unregister" {
+				return resultJSON(http.StatusOK, map[string]any{"id": action.Target, "removed": true})
+			}
+			return conflict("shard is not registered")
+		}
+		if action.Operation == "unregister" {
+			if !shard.Draining {
+				return conflict("drain the shard before unregistering it")
+			}
+			for _, placement := range state.Tenants {
+				if placement.Shard == shard.ID || (placement.Move != nil && (placement.Move.Source == shard.ID || placement.Move.Target == shard.ID)) {
+					return conflict("shard still owns tenants or participates in a migration")
+				}
+			}
+			delete(state.Shards, shard.ID)
+			result = map[string]any{"id": shard.ID, "removed": true}
+		} else {
+			shard.Draining = action.Operation == "drain"
+			state.Shards[shard.ID] = shard
+			result = shard
+		}
 	} else {
 		if err := storage.ValidateTenantID(action.Tenant); err != nil {
 			return conflict(err.Error())
@@ -69,7 +95,7 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			if action.Target == "" {
 				action.Target = leastPopulatedShard(state)
 			}
-			if _, ok := state.Shards[action.Target]; !ok {
+			if shard, ok := state.Shards[action.Target]; !ok || shard.Draining {
 				return conflict("register a data shard before assigning tenants")
 			}
 			placement = sharding.Placement{Tenant: action.Tenant, Shard: action.Target, Epoch: 1, State: "assigning"}
@@ -79,7 +105,7 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			}
 			placement.State = "active"
 		case "move":
-			if !exists || state.Shards[action.Target].ID == "" || action.Target == placement.Shard {
+			if !exists || state.Shards[action.Target].ID == "" || state.Shards[action.Target].Draining || action.Target == placement.Shard {
 				return conflict("move requires an existing tenant and a different registered target shard")
 			}
 			if placement.Move != nil {
@@ -158,8 +184,10 @@ func matchesMove(p sharding.Placement, action sharding.Action, phase string) boo
 func leastPopulatedShard(state sharding.Catalog) string {
 	counts := make(map[string]int)
 	ids := make([]string, 0, len(state.Shards))
-	for id := range state.Shards {
-		ids = append(ids, id)
+	for id, shard := range state.Shards {
+		if !shard.Draining {
+			ids = append(ids, id)
+		}
 	}
 	for _, tenant := range state.Tenants {
 		counts[tenant.Shard]++

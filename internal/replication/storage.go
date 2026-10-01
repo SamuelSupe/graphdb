@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -13,10 +14,11 @@ import (
 )
 
 type diskStorage struct {
-	*raft.MemoryStorage
-	db        *bolt.DB
-	conf      raftpb.ConfState
-	confIndex uint64
+	mu           sync.RWMutex
+	snapshotMeta raftpb.SnapshotMetadata
+	db           *bolt.DB
+	conf         raftpb.ConfState
+	confIndex    uint64
 }
 
 func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, error) {
@@ -27,7 +29,7 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 	if err != nil {
 		return nil, false, err
 	}
-	disk := &diskStorage{MemoryStorage: raft.NewMemoryStorage(), db: db}
+	disk := &diskStorage{db: db}
 	existing := false
 	err = db.Update(func(tx *bolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists([]byte("meta"))
@@ -50,9 +52,7 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 			if err := snapshot.Unmarshal(data); err != nil {
 				return err
 			}
-			if err := disk.ApplySnapshot(snapshot); err != nil {
-				return err
-			}
+			disk.snapshotMeta = snapshot.Metadata
 			existing = true
 		}
 		if data := meta.Get([]byte("hard")); data != nil {
@@ -60,9 +60,7 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 			if err := hard.Unmarshal(data); err != nil {
 				return err
 			}
-			if err := disk.SetHardState(hard); err != nil {
-				return err
-			}
+
 			existing = true
 		}
 		if data := meta.Get([]byte("conf")); data != nil {
@@ -76,16 +74,8 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 			}
 			disk.confIndex = binary.BigEndian.Uint64(data)
 		}
-		return entries.ForEach(func(key, value []byte) error {
-			var entry raftpb.Entry
-			if err := entry.Unmarshal(value); err != nil {
-				return err
-			}
-			if entry.Index > snapshot.Metadata.Index {
-				return disk.Append([]raftpb.Entry{entry})
-			}
-			return nil
-		})
+		_ = entries
+		return nil
 	})
 	if err != nil {
 		db.Close()
@@ -103,9 +93,120 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 	return disk, existing, nil
 }
 
-func (s *diskStorage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
-	hard, _, err := s.MemoryStorage.InitialState()
+func (s *diskStorage) InitialState() (hard raftpb.HardState, conf raftpb.ConfState, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	err = s.db.View(func(tx *bolt.Tx) error {
+		if data := tx.Bucket([]byte("meta")).Get([]byte("hard")); data != nil {
+			return hard.Unmarshal(data)
+		}
+		return nil
+	})
 	return hard, s.conf, err
+}
+
+func (s *diskStorage) FirstIndex() (uint64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotMeta.Index + 1, nil
+}
+
+func (s *diskStorage) LastIndex() (index uint64, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	index = s.snapshotMeta.Index
+	err = s.db.View(func(tx *bolt.Tx) error {
+		if key, _ := tx.Bucket([]byte("entries")).Cursor().Last(); key != nil {
+			index = binary.BigEndian.Uint64(key)
+		}
+		return nil
+	})
+	return index, err
+}
+
+func (s *diskStorage) Term(index uint64) (term uint64, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if index == s.snapshotMeta.Index {
+		return s.snapshotMeta.Term, nil
+	}
+	if index < s.snapshotMeta.Index {
+		return 0, raft.ErrCompacted
+	}
+	err = s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket([]byte("entries")).Get(indexKey(index))
+		if data == nil {
+			return raft.ErrUnavailable
+		}
+		var entry raftpb.Entry
+		if err := entry.Unmarshal(data); err != nil {
+			return err
+		}
+		term = entry.Term
+		return nil
+	})
+	return term, err
+}
+
+func (s *diskStorage) Entries(lo, hi, maxSize uint64) (entries []raftpb.Entry, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if lo <= s.snapshotMeta.Index {
+		return nil, raft.ErrCompacted
+	}
+	err = s.db.View(func(tx *bolt.Tx) error {
+		cursor := tx.Bucket([]byte("entries")).Cursor()
+		last, _ := cursor.Last()
+		if hi > s.snapshotMeta.Index+1 && (last == nil || hi-1 > binary.BigEndian.Uint64(last)) {
+			return raft.ErrUnavailable
+		}
+		var size uint64
+		expected := lo
+		for key, value := cursor.Seek(indexKey(lo)); key != nil && binary.BigEndian.Uint64(key) < hi; key, value = cursor.Next() {
+			var entry raftpb.Entry
+			if err := entry.Unmarshal(value); err != nil {
+				return err
+			}
+			if entry.Index != expected {
+				return raft.ErrUnavailable
+			}
+			entrySize := uint64(entry.Size())
+			if len(entries) > 0 && (size > maxSize || entrySize > maxSize-size) {
+				break
+			}
+			entries = append(entries, entry)
+			size += entrySize
+			expected++
+		}
+		if lo < hi && len(entries) == 0 {
+			return raft.ErrUnavailable
+		}
+		return nil
+	})
+	return entries, err
+}
+
+func (s *diskStorage) Snapshot() (snapshot raftpb.Snapshot, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	err = s.db.View(func(tx *bolt.Tx) error {
+		if data := tx.Bucket([]byte("meta")).Get([]byte("snapshot")); data != nil {
+			return snapshot.Unmarshal(data)
+		}
+		return nil
+	})
+	return snapshot, err
+}
+
+func (s *diskStorage) CreateSnapshot(index uint64, conf *raftpb.ConfState, data []byte) (raftpb.Snapshot, error) {
+	term, err := s.Term(index)
+	if err != nil {
+		if err == raft.ErrCompacted {
+			err = raft.ErrSnapOutOfDate
+		}
+		return raftpb.Snapshot{}, err
+	}
+	return raftpb.Snapshot{Data: data, Metadata: raftpb.SnapshotMetadata{Index: index, Term: term, ConfState: *conf}}, nil
 }
 
 func indexKey(index uint64) []byte {
@@ -115,6 +216,8 @@ func indexKey(index uint64) []byte {
 }
 
 func (s *diskStorage) save(ready raft.Ready) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	// Heartbeats and ReadIndex responses contain only volatile state. A disk
 	// transaction is needed only when Raft has changed its durable state.
 	if raft.IsEmptySnap(ready.Snapshot) && len(ready.Entries) == 0 && raft.IsEmptyHardState(ready.HardState) {
@@ -178,17 +281,9 @@ func (s *diskStorage) save(ready raft.Ready) error {
 		return err
 	}
 	if !raft.IsEmptySnap(ready.Snapshot) {
-		if err := s.MemoryStorage.ApplySnapshot(ready.Snapshot); err != nil {
-			return err
-		}
+		s.snapshotMeta = ready.Snapshot.Metadata
 		s.conf = ready.Snapshot.Metadata.ConfState
 		s.confIndex = ready.Snapshot.Metadata.Index
-	}
-	if err := s.Append(ready.Entries); err != nil {
-		return err
-	}
-	if !raft.IsEmptyHardState(ready.HardState) {
-		return s.SetHardState(ready.HardState)
 	}
 	return nil
 }
@@ -208,6 +303,11 @@ func (s *diskStorage) saveConf(conf raftpb.ConfState, index uint64) error {
 }
 
 func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snapshot.Metadata.Index < s.snapshotMeta.Index {
+		return raft.ErrSnapOutOfDate
+	}
 	data, err := snapshot.Marshal()
 	if err != nil {
 		return err
@@ -227,5 +327,6 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 	if err != nil {
 		return err
 	}
-	return s.Compact(retain)
+	s.snapshotMeta = snapshot.Metadata
+	return nil
 }

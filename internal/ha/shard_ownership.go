@@ -128,6 +128,12 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 		if owner.State == "installed" {
 			return resultJSON(http.StatusOK, owner)
 		}
+		if action.Part > owner.NextPart || (owner.Digest != "" && action.Digest != "" && owner.Digest != action.Digest) {
+			return conflict("migration chunk sequence or snapshot digest changed")
+		}
+		if action.Digest != "" {
+			owner.Digest = action.Digest
+		}
 		key := a.transferKey(action.Tenant, action.MoveID, action.Part)
 		previous, err := a.Files.Get(ctx, key)
 		if err == nil {
@@ -139,7 +145,9 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 		} else if err := a.Files.Put(ctx, key, action.Data); err != nil {
 			return nil, err
 		}
-		return resultJSON(http.StatusOK, owner)
+		if action.Part == owner.NextPart {
+			owner.NextPart++
+		}
 	case "install":
 		if match && (owner.State == "installed" || owner.State == "active") {
 			if owner.Digest != action.Digest {

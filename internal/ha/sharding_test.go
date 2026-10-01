@@ -39,17 +39,26 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		r := httptest.NewRequest(method, uri, bytes.NewReader(data)).WithContext(ctx)
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("Authorization", "Bearer "+token)
-		if tenant != "" {
-			r.Header.Set("X-Tenant-ID", tenant)
+		var w *httptest.ResponseRecorder
+		for {
+			r := httptest.NewRequest(method, uri, bytes.NewReader(data)).WithContext(ctx)
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Authorization", "Bearer "+token)
+			if tenant != "" {
+				r.Header.Set("X-Tenant-ID", tenant)
+			}
+			if uri == "/v1/query" && tenant == "tenant-a" {
+				r.Header.Set("X-GraphDB-Read-Generation", readGeneration)
+			}
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, r)
+			// A leader change invalidates the cached address. Retry only safe
+			// reads within the existing deadline, never uncertain mutations.
+			if method != http.MethodGet || status != http.StatusOK || w.Code != http.StatusServiceUnavailable || ctx.Err() != nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
-		if uri == "/v1/query" && tenant == "tenant-a" {
-			r.Header.Set("X-GraphDB-Read-Generation", readGeneration)
-		}
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, r)
 		if w.Code != status {
 			t.Fatalf("%s %s: %d, want %d: %s", method, uri, w.Code, status, w.Body.String())
 		}
@@ -100,7 +109,7 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 		t.Fatal("clone escaped its owned shard")
 	}
 
-	// The accepted record itself forces a transfer larger than one proposal chunk.
+	// Migration must drain accepted WAL and preserve both its data and identity.
 	batch := map[string]any{"source": "agent", "collector_id": "sharding", "batch_id": "before-move", "idempotency_key": "accepted-before-move", "items": []any{map[string]any{"external_id": "host:2", "entity": map[string]any{"id": "host:2", "kind": "host", "fields": map[string]any{"payload": strings.Repeat("transfer-data", 150000)}}}}}
 	accepted := request("POST", "/v1/ingest/batches", "tenant-a", batch, http.StatusAccepted)
 	var acceptance map[string]any
@@ -117,6 +126,7 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	catalog.leader(oldCatalogLeader)
 	for _, replica := range b.nodes {
 		replica.loseInstallResponse.Store(true)
+		replica.loseStageResponse.Store(true)
 		replica.blocked.Store(false)
 	}
 	placement := waitPlacement("tenant-a", func(p sharding.Placement) bool { return p.State == "active" && p.Shard == "b" && p.Move == nil })
@@ -130,6 +140,14 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	}
 	if !lostResponse {
 		t.Fatal("migration did not exercise recovery from a lost install response")
+	}
+	var stageRequests int64
+	for _, replica := range b.nodes {
+		stageRequests += replica.stageRequests.Load()
+		replica.loseStageResponse.Store(false)
+	}
+	if stageRequests != 1 {
+		t.Fatalf("lost stage response caused retransmission of a committed chunk: %d", stageRequests)
 	}
 	if chunks, err := b.nodes[b.leader(-1)].files.List(context.Background(), "graphdb/control/sharding/transfers/tenant-a/"); err != nil || len(chunks) != 0 {
 		t.Fatalf("install replay retained staging data: %d, %v", len(chunks), err)
@@ -229,5 +247,31 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	files.Close()
 	a.start(groupNode)
 	a.leader(-1)
+	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
+	request("POST", "/v1/cluster/shards/a/drain", "", nil, http.StatusAccepted)
+	request("POST", "/v1/cluster/shards/a/unregister", "", nil, http.StatusConflict)
+	request("POST", "/v1/cluster/shards/b/drain", "", nil, http.StatusAccepted)
+	request("POST", "/v1/cluster/placements", "", map[string]any{"tenant_id": "cannot-assign", "target": "b"}, http.StatusConflict)
+	request("POST", "/v1/cluster/shards/b/resume", "", nil, http.StatusAccepted)
+	for _, tenant := range []string{"tenant-a", "cancel-tenant"} {
+		request("POST", "/v1/cluster/moves", "", map[string]any{"tenant_id": tenant, "target": "b"}, http.StatusAccepted)
+		waitPlacement(tenant, func(p sharding.Placement) bool { return p.State == "active" && p.Shard == "b" && p.Move == nil })
+	}
+	request("POST", "/v1/cluster/shards/a/unregister", "", nil, http.StatusAccepted)
+	for _, replica := range a.nodes {
+		replica.blocked.Store(true)
+	}
+	request("GET", "/v1/tenants", "", nil, http.StatusOK)
+	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
+	for _, replica := range catalog.nodes {
+		replica.blocked.Store(true)
+	}
+	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
+	time.Sleep(6 * time.Second)
+	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusServiceUnavailable)
+	for _, replica := range catalog.nodes {
+		replica.blocked.Store(false)
+	}
+	catalog.leader(-1)
 	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
 }

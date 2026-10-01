@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import threading
 import time
@@ -184,8 +185,12 @@ def load(args, cluster, folder, stage, writers, readers, mode, duration=0, seed=
 def run(args, name, binary, case, iteration):
     folder = args.output / f'{iteration}-{case}-{name}'
     folder.mkdir(parents=True, exist_ok=False)
+    data_folder = folder
+    if args.data_dir is not None:
+        data_folder = args.data_dir / folder.name
+        data_folder.mkdir(parents=True, exist_ok=False)
     writers, readers, mode = CASES[case]
-    cluster = Cluster(binary, folder, mode, args.topology, args.replicas)
+    cluster = Cluster(binary, data_folder, mode, args.topology, args.replicas)
     profile_errors = []
     def profile():
         try:
@@ -199,7 +204,7 @@ def run(args, name, binary, case, iteration):
         load(args, cluster, folder, 'seed', 4, 0, mode, seed=True)
         if args.profile:
             cluster.stop()
-            cluster = Cluster(binary, folder, mode, args.topology, args.replicas)
+            cluster = Cluster(binary, data_folder, mode, args.topology, args.replicas)
             cluster.start(profiling=True, reopen=True)
         if args.warmup > 0:
             load(args, cluster, folder, 'warm', 0, max(1, readers), mode, args.warmup)
@@ -222,6 +227,7 @@ def run(args, name, binary, case, iteration):
             raise RuntimeError('loadtest integrity or freshness check failed')
         row = {'variant': name, 'case': case, 'round': iteration, 'topology': args.topology,
             'replicas': args.replicas,
+            'data_directory': str(data_folder),
             'binary_sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
             'cpu_seconds': sum(b['cpu_seconds']-a['cpu_seconds'] for a,b in zip(before,after)),
             'write_bytes': sum(b['io']['write_bytes']-a['io']['write_bytes'] for a,b in zip(before,after)),
@@ -232,6 +238,9 @@ def run(args, name, binary, case, iteration):
         return row
     finally:
         cluster.stop()
+        if data_folder != folder:
+            for log in data_folder.glob('*.log'):
+                shutil.copy2(log, folder / log.name)
 
 
 def main():
@@ -239,6 +248,7 @@ def main():
     parser.add_argument('--variant', action='append', required=True, help='label=/absolute/binary/path')
     parser.add_argument('--loadtest', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--data-dir', type=Path, help='Independent data root; use a Linux local volume when output is a host mount')
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--topology', choices=['raft', 'sharded'], default='raft')
     parser.add_argument('--replicas', type=int, choices=[3, 5], default=3)

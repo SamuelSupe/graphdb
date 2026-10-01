@@ -20,7 +20,7 @@ func (c *Cluster) runShardMigrations(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			operationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			operationCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			if c.Node.ReadBarrier(operationCtx) == nil {
 				_ = c.advanceShardMigration(operationCtx)
 			}
@@ -74,7 +74,9 @@ func (c *Cluster) advanceTenantMove(ctx context.Context, state sharding.Catalog,
 	m := p.Move
 	source, target := state.Shards[m.Source], state.Shards[m.Target]
 	call := func(shard sharding.Shard, operation string, epoch uint64) error {
-		return c.shards.JSON(ctx, shard, http.MethodPost, "/cluster/action", sharding.Action{Operation: operation, Tenant: p.Tenant, MoveID: m.ID, Epoch: epoch}, nil)
+		callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		return c.shards.JSON(callCtx, shard, http.MethodPost, "/cluster/action", sharding.Action{Operation: operation, Tenant: p.Tenant, MoveID: m.ID, Epoch: epoch}, nil)
 	}
 	switch m.Phase {
 	case "copy":
@@ -82,7 +84,10 @@ func (c *Cluster) advanceTenantMove(ctx context.Context, state sharding.Catalog,
 			return err
 		}
 		var owner sharding.Ownership
-		if err := c.shards.JSON(ctx, target, http.MethodPost, "/cluster/action", sharding.Action{Operation: "reserve", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch}, &owner); err != nil {
+		reserveCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := c.shards.JSON(reserveCtx, target, http.MethodPost, "/cluster/action", sharding.Action{Operation: "reserve", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch}, &owner)
+		cancel()
+		if err != nil {
 			return err
 		}
 		if owner.State == "installed" {
@@ -104,13 +109,26 @@ func (c *Cluster) advanceTenantMove(ctx context.Context, state sharding.Catalog,
 			return fmt.Errorf("migration exceeds the catalog transfer budget")
 		}
 		parts := (len(data) + sharding.ChunkBytes - 1) / sharding.ChunkBytes
-		for part := 0; part < parts; part++ {
-			action := sharding.Action{Operation: "stage", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch, Part: part, Data: data[part*sharding.ChunkBytes : min((part+1)*sharding.ChunkBytes, len(data))]}
-			if err := c.shards.JSON(ctx, target, http.MethodPost, "/cluster/action", action, nil); err != nil {
+		digest := fmt.Sprintf("%x", sha256.Sum256(data))
+		if owner.NextPart > parts || (owner.Digest != "" && owner.Digest != digest) {
+			return fmt.Errorf("migration source changed after transfer began")
+		}
+		// Make bounded progress per pass. The target's replicated ownership
+		// checkpoint survives lost responses and either coordinator's restart.
+		end := min(parts, owner.NextPart+8)
+		for part := owner.NextPart; part < end; part++ {
+			action := sharding.Action{Operation: "stage", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch, Part: part, Digest: digest, Data: data[part*sharding.ChunkBytes : min((part+1)*sharding.ChunkBytes, len(data))]}
+			stageCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			err := c.shards.JSON(stageCtx, target, http.MethodPost, "/cluster/action", action, nil)
+			cancel()
+			if err != nil {
 				return err
 			}
 		}
-		action := sharding.Action{Operation: "install", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch, Parts: parts, Bytes: int64(len(data)), Digest: fmt.Sprintf("%x", sha256.Sum256(data))}
+		if end < parts {
+			return nil
+		}
+		action := sharding.Action{Operation: "install", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch, Parts: parts, Bytes: int64(len(data)), Digest: digest}
 		if err := c.shards.JSON(ctx, target, http.MethodPost, "/cluster/action", action, nil); err != nil {
 			return err
 		}

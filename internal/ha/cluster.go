@@ -97,6 +97,16 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		next.ServeHTTP(w, r)
 		return
 	}
+	if runtimeOnly {
+		if c.App.Catalog {
+			http.NotFound(w, r)
+			return
+		}
+		// Query cancellation belongs to this process and must remain usable
+		// while a committed mutation waits for a reader or a replica catches up.
+		next.ServeHTTP(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/v1/health", "/openapi.yaml", "/metrics":
 		next.ServeHTTP(w, r)
@@ -141,9 +151,20 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		}
 		expectedGeneration = parsed
 	}
-	if !mutation || runtimeOnly {
+	if !mutation {
+		graphRead := tenant != "" && (strings.HasPrefix(r.URL.Path, "/v1/query") && r.URL.Path != "/v1/query/templates" ||
+			strings.HasPrefix(r.URL.Path, "/v1/entities") || strings.HasPrefix(r.URL.Path, "/v1/edges") || strings.HasPrefix(r.URL.Path, "/v1/export/snapshot"))
+		if graphRead {
+			c.App.readers.RLock()
+			defer c.App.readers.RUnlock()
+		}
 		c.App.mu.RLock()
-		defer c.App.mu.RUnlock()
+		locked := true
+		defer func() {
+			if locked {
+				c.App.mu.RUnlock()
+			}
+		}()
 		if c.App.ShardID != "" && tenant != "" {
 			valid, err := c.App.checkOwnership(ctx, tenant, routeEpoch)
 			if err != nil || !valid {
@@ -168,6 +189,17 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		if c.WAL && (strings.HasPrefix(r.URL.Path, "/v1/ingest/batches/") || strings.HasPrefix(r.URL.Path, "/v1/ingest/writers/")) {
 			c.batchStatus(w, r)
 			return
+		}
+		if graphRead {
+			readCtx, release, err := c.App.Store.ReadViewContext(r.Context(), tenant)
+			if err != nil {
+				c.writeError(w, err)
+				return
+			}
+			defer release()
+			r = r.WithContext(readCtx)
+			c.App.mu.RUnlock()
+			locked = false
 		}
 		next.ServeHTTP(w, r)
 		return

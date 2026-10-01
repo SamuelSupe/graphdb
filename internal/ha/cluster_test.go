@@ -29,6 +29,8 @@ type testReplica struct {
 	peer                *httptest.Server
 	blocked             atomic.Bool
 	loseInstallResponse atomic.Bool
+	loseStageResponse   atomic.Bool
+	stageRequests       atomic.Int64
 	cfg                 config.Config
 }
 
@@ -59,7 +61,7 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool) *t
 				http.Error(w, "stopped", http.StatusServiceUnavailable)
 				return
 			}
-			if replica.loseInstallResponse.Load() && r.Method == http.MethodPost && r.URL.Path == "/cluster/action" {
+			if r.Method == http.MethodPost && r.URL.Path == "/cluster/action" {
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Error(err)
@@ -69,7 +71,15 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool) *t
 				var action struct {
 					Operation string `json:"operation"`
 				}
-				if json.Unmarshal(body, &action) == nil && action.Operation == "install" && replica.loseInstallResponse.Swap(false) {
+				if json.Unmarshal(body, &action) == nil && action.Operation == "stage" {
+					replica.stageRequests.Add(1)
+					if replica.loseStageResponse.Swap(false) {
+						cluster.PrivateHandler().ServeHTTP(httptest.NewRecorder(), r)
+						http.Error(w, "stage response lost", http.StatusServiceUnavailable)
+						return
+					}
+				}
+				if action.Operation == "install" && replica.loseInstallResponse.Swap(false) {
 					cluster.PrivateHandler().ServeHTTP(httptest.NewRecorder(), r)
 					http.Error(w, "install response lost", http.StatusServiceUnavailable)
 					return
@@ -387,6 +397,17 @@ func TestHAPendingQueueBudgetSurvivesFlushAndRestart(t *testing.T) {
 	if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("one"), http.StatusAccepted)
+	changed := bytes.ReplaceAll([]byte(body("one")), []byte(`"name":"one"`), []byte(`"name":"changed"`))
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", string(changed), http.StatusConflict)
+	generation, err := group.nodes[leader].store.ReplicationTenantGeneration(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := group.nodes[leader].cluster.App.accepted(context.Background(), group.nodes[leader].cluster.App.ingestKey("tenant-a", "agent", "collector", "one", generation))
+	if err != nil || len(record.Request.Items) != 0 || record.Digest == "" {
+		t.Fatalf("completed WAL payload was not compacted: %v", err)
+	}
 	for i, id := range []string{"one", "two", "three"} {
 		status := group.mustRequest(leader, "GET", "/v1/ingest/batches/agent/collector/"+id, "", http.StatusOK)
 		var record storage.IngestBatchStatus
@@ -686,4 +707,109 @@ func TestHASnapshotBudgetKeepsReadsAvailable(t *testing.T) {
 	}
 	group.mustRequest(leader, "GET", "/v1/entities/host:1", "", http.StatusOK)
 	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:2","kind":"host"}]}}`, http.StatusServiceUnavailable)
+}
+
+func TestHALongReadAllowsPublicationAndCancellation(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host"}]}}`, http.StatusOK)
+	cluster := group.nodes[leader].cluster
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	go func() {
+		defer close(done)
+		r := httptest.NewRequest("POST", "/v1/query", nil)
+		r.Header.Set("X-Tenant-ID", "tenant-a")
+		cluster.ServeRoute(httptest.NewRecorder(), r, false, false, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			close(entered)
+			<-release
+		}))
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("long read did not start")
+	}
+	// A publication must complete while the query retains its read view.
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:2","kind":"host"}]}}`, http.StatusOK)
+	writeDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		writeDone <- group.request(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-other"}`)
+	}()
+	follower := (leader + 1) % 3
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := group.nodes[follower].store.GetTenantInfo(context.Background(), "tenant-other"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("structural mutation did not commit on follower")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case result := <-writeDone:
+		t.Fatalf("structural mutation bypassed pinned read: %d", result.Code)
+	default:
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	r := httptest.NewRequest("DELETE", "/v1/queries/running/test", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	cluster.ServeRoute(w, r, false, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		unblock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("cancellation blocked behind committed mutation: %d %s", w.Code, w.Body.String())
+	}
+	<-done
+	select {
+	case result := <-writeDone:
+		if result.Code != http.StatusOK {
+			t.Fatalf("structural mutation failed after cancellation: %d %s", result.Code, result.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("structural mutation remained blocked")
+	}
+}
+
+func TestHASlowFollowerKeepsApplicationMemoryBounded(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	follower := (leader + 1) % 3
+	group.waitApplied(follower, checkpoint.Index)
+	app := group.nodes[follower].cluster.App
+	app.mu.Lock()
+	unlock := sync.OnceFunc(app.mu.Unlock)
+	defer unlock()
+	payload := string(bytes.Repeat([]byte("x"), 256<<10))
+	for i := range 20 {
+		body := fmt.Sprintf(`{"idempotency_key":"slow-%d","mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"payload":%q,"step":%d}}]}}`, i, payload, i)
+		group.mustRequest(leader, "POST", "/v1/commits", body, http.StatusOK)
+	}
+	status := group.nodes[follower].cluster.Node.Status()
+	if status["application_lag"].(uint64) < 10 {
+		t.Fatalf("follower did not accumulate a durable backlog: %v", status)
+	}
+	if status["application_bytes"].(int64) > 5<<20 {
+		t.Fatalf("slow follower retained unbounded payloads: %v", status)
+	}
+	checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	group.waitApplied(follower, checkpoint.Index)
+	if group.manifest(follower).Version != 20 {
+		t.Fatal("follower lost publications while resuming its durable backlog")
+	}
 }

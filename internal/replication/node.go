@@ -52,7 +52,7 @@ type result struct {
 type applicationBatch struct {
 	configurationChanged bool
 	snapshot             raftpb.Snapshot
-	entries              []raftpb.Entry
+	first, last          uint64
 	conf                 raftpb.ConfState
 }
 
@@ -149,7 +149,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, fmt.Errorf("application checkpoint %d exceeds durable Raft commit %d", applied, hard.Commit)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]chan packet), application: make(chan applicationBatch, 8), snapshotRequests: make(chan snapshotRequest)}
+	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]chan packet), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
 	n.applied.Store(applied)
 	for id, address := range cfg.Peers {
 		n.peers[id] = address
@@ -168,7 +168,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, err
 	}
 	n.client = newTransportClient()
-	rc := &raft.Config{ID: cfg.ID, ElectionTick: 10, HeartbeatTick: 1, Storage: disk, Applied: applied, MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 64, MaxUncommittedEntriesSize: 64 << 20, CheckQuorum: true, PreVote: true, DisableProposalForwarding: true, ReadOnlyOption: raft.ReadOnlySafe, StepDownOnRemoval: true}
+	rc := &raft.Config{ID: cfg.ID, ElectionTick: 10, HeartbeatTick: 1, Storage: disk, Applied: applied, MaxSizePerMsg: 1 << 20, MaxCommittedSizePerReady: 4 << 20, MaxInflightMsgs: 64, MaxUncommittedEntriesSize: 64 << 20, CheckQuorum: true, PreVote: true, DisableProposalForwarding: true, ReadOnlyOption: raft.ReadOnlySafe, StepDownOnRemoval: true}
 	if existing || !cfg.Bootstrap {
 		n.raft = raft.RestartNode(rc)
 	} else {
@@ -350,18 +350,17 @@ func (n *Node) fail(err error) {
 func (n *Node) run() {
 	defer n.workers.Done()
 	defer n.raft.Stop()
-	var pending []applicationBatch
+	var pending applicationBatch
 	for {
 		var application chan applicationBatch
 		var next applicationBatch
-		if len(pending) > 0 {
+		if pending.last > 0 || !raft.IsEmptySnap(pending.snapshot) {
 			application = n.application
-			next = pending[0]
+			next = pending
 		}
 		select {
 		case application <- next:
-			pending[0] = applicationBatch{}
-			pending = pending[1:]
+			pending = applicationBatch{}
 		case <-n.ctx.Done():
 			return
 		case request := <-n.snapshotRequests:
@@ -370,6 +369,9 @@ func (n *Node) run() {
 				err = n.disk.saveSnapshot(snapshot, request.index)
 			}
 			request.done <- err
+			if errors.Is(err, raft.ErrSnapOutOfDate) {
+				continue
+			}
 			if err != nil {
 				n.fail(err)
 				return
@@ -445,11 +447,19 @@ func (n *Node) run() {
 				n.send(ready.Messages)
 			}
 			if len(ready.CommittedEntries) > 0 || !raft.IsEmptySnap(ready.Snapshot) {
-				for _, entry := range ready.CommittedEntries {
-					n.applicationBytes.Add(int64(len(entry.Data)))
+				// Only retain positions in the durable log. A slow application
+				// cannot grow an in-memory queue or stop persisted Raft heartbeats.
+				if !raft.IsEmptySnap(ready.Snapshot) {
+					pending = applicationBatch{snapshot: ready.Snapshot}
 				}
-				batch := applicationBatch{snapshot: ready.Snapshot, entries: ready.CommittedEntries, conf: conf, configurationChanged: configurationChanged}
-				pending = append(pending, batch)
+				if len(ready.CommittedEntries) > 0 {
+					if pending.first == 0 {
+						pending.first = ready.CommittedEntries[0].Index
+					}
+					pending.last = ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
+				}
+				pending.conf = conf
+				pending.configurationChanged = pending.configurationChanged || configurationChanged
 			}
 			n.raft.Advance()
 		}
@@ -486,30 +496,42 @@ func (n *Node) applyLoop() {
 				n.progress(batch.snapshot.Metadata.Index)
 				snapshotIndex = batch.snapshot.Metadata.Index
 			}
-			for _, entry := range batch.entries {
-				if entry.Index <= n.applied.Load() {
-					n.applicationBytes.Add(-int64(len(entry.Data)))
-					continue
+			for first := max(batch.first, n.applied.Load()+1); first <= batch.last; {
+				entries, err := n.disk.Entries(first, batch.last+1, 4<<20)
+				if errors.Is(err, raft.ErrCompacted) {
+					// A received snapshot superseded this range while applying it.
+					// The run loop will deliver that snapshot next.
+					break
 				}
-				var command proposal
-				if entry.Type == raftpb.EntryNormal && len(entry.Data) > 0 {
-					if err := json.Unmarshal(entry.Data, &command); err != nil {
-						n.fail(err)
-						return
-					}
-				}
-				data, err := n.machine.Apply(n.ctx, entry.Index, command.Data)
 				if err != nil {
-					n.fail(fmt.Errorf("apply Raft entry %d: %w", entry.Index, err))
+					n.fail(err)
 					return
 				}
-				n.progress(entry.Index)
-				n.applicationBytes.Add(-int64(len(entry.Data)))
-				n.mu.Lock()
-				ch := n.proposals[command.ID]
-				n.mu.Unlock()
-				if ch != nil {
-					ch <- result{data: data}
+				for _, entry := range entries {
+					n.applicationBytes.Add(int64(len(entry.Data)))
+				}
+				for _, entry := range entries {
+					var command proposal
+					if entry.Type == raftpb.EntryNormal && len(entry.Data) > 0 {
+						if err := json.Unmarshal(entry.Data, &command); err != nil {
+							n.fail(err)
+							return
+						}
+					}
+					data, err := n.machine.Apply(n.ctx, entry.Index, command.Data)
+					if err != nil {
+						n.fail(fmt.Errorf("apply Raft entry %d: %w", entry.Index, err))
+						return
+					}
+					n.progress(entry.Index)
+					n.applicationBytes.Add(-int64(len(entry.Data)))
+					n.mu.Lock()
+					ch := n.proposals[command.ID]
+					n.mu.Unlock()
+					if ch != nil {
+						ch <- result{data: data}
+					}
+					first = entry.Index + 1
 				}
 			}
 			if n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || batch.configurationChanged {
@@ -548,6 +570,9 @@ func (n *Node) applyLoop() {
 				case <-n.ctx.Done():
 					return
 				}
+				if errors.Is(err, raft.ErrSnapOutOfDate) {
+					continue
+				}
 				if err != nil {
 					n.fail(err)
 					return
@@ -582,7 +607,9 @@ func (n *Node) Status() map[string]any {
 	failure := n.failure
 	snapshotFailure := n.snapshotFailure
 	n.mu.Unlock()
-	status := map[string]any{"node_id": n.cfg.ID, "leader_id": n.leader.Load(), "applied_index": n.applied.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID}
+	raftStatus := n.raft.Status()
+	applied := n.applied.Load()
+	status := map[string]any{"node_id": n.cfg.ID, "leader_id": n.leader.Load(), "term": raftStatus.Term, "commit_index": raftStatus.Commit, "applied_index": applied, "application_lag": raftStatus.Commit - min(raftStatus.Commit, applied), "application_bytes": n.applicationBytes.Load(), "proposal_bytes": n.proposalBytes.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID}
 	if failure != nil {
 		status["error"] = failure.Error()
 	}

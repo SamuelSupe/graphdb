@@ -50,6 +50,7 @@ type Application struct {
 	ShardID          string
 	Catalog          bool
 	mu               sync.RWMutex
+	readers          sync.RWMutex
 	pending          map[string]pendingAcceptance
 	pendingBytes     int64
 }
@@ -77,6 +78,8 @@ func (a *Application) Snapshot(ctx context.Context) ([]byte, error) {
 	return data, err
 }
 func (a *Application) Restore(ctx context.Context, index uint64, data []byte) error {
+	a.readers.Lock()
+	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pending = nil
@@ -84,6 +87,21 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 }
 
 func (a *Application) Apply(ctx context.Context, index uint64, data []byte) (response []byte, err error) {
+	var cmd command
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &cmd); err != nil {
+			return nil, err
+		}
+	}
+	publication := cmd.Kind == "accept" || cmd.Kind == "flush" ||
+		(cmd.Kind == "http" && cmd.Method == http.MethodPost &&
+			(cmd.URI == "/v1/ingest/batches" || cmd.URI == "/v1/commits"))
+	// Immutable publications can run beside pinned graph reads. Operations
+	// that replace an incarnation, ownership or control state wait for readers.
+	if !publication {
+		a.readers.Lock()
+		defer a.readers.Unlock()
+	}
 	a.mu.Lock()
 	defer func() {
 		if err != nil {
@@ -94,19 +112,12 @@ func (a *Application) Apply(ctx context.Context, index uint64, data []byte) (res
 	if len(data) == 0 {
 		return a.Files.ApplyReplicated(ctx, index, "", time.Time{}, func(context.Context) ([]byte, error) { return nil, nil })
 	}
-	var cmd command
-	if err := json.Unmarshal(data, &cmd); err != nil {
-		return nil, err
-	}
 	if cmd.ID == "" || cmd.At.IsZero() {
 		return nil, fmt.Errorf("replication command has no identity or timestamp")
 	}
 	// Graph publication does not change the replicated acceptance queue. Keep
 	// its index through normal writes; maintenance may purge, restore or migrate it.
-	queueUnchanged := cmd.Kind == "accept" || cmd.Kind == "flush" ||
-		(cmd.Kind == "http" && cmd.Method == http.MethodPost &&
-			(cmd.URI == "/v1/ingest/batches" || cmd.URI == "/v1/commits"))
-	if !queueUnchanged {
+	if !publication {
 		a.pending = nil
 	}
 	if cmd.Role != "" && cmd.Role != a.replicationRole() {

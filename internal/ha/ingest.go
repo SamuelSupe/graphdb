@@ -19,6 +19,7 @@ import (
 type acceptedRequest struct {
 	Tenant     string                `json:"tenant_id"`
 	Request    storage.IngestRequest `json:"request"`
+	Digest     string                `json:"request_digest,omitempty"`
 	Generation int64                 `json:"generation"`
 	Index      uint64                `json:"accepted_lsn"`
 	AcceptedAt time.Time             `json:"accepted_at"`
@@ -101,11 +102,22 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		return nil, err
 	}
 	key := a.ingestKey(cmd.Tenant, request.Source, request.CollectorID, request.BatchID, generation)
+	after, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(after))
 	record, err := a.accepted(ctx, key)
 	if err == nil {
-		before, _ := json.Marshal(record.Request)
-		after, _ := json.Marshal(request)
-		if string(before) != string(after) {
+		previous := record.Digest
+		if previous == "" {
+			before, err := json.Marshal(record.Request)
+			if err != nil {
+				return nil, err
+			}
+			previous = fmt.Sprintf("%x", sha256.Sum256(before))
+		}
+		if previous != digest {
 			return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": "ingest identity was used for a different request"})
 		}
 	} else if !errors.Is(err, storage.ErrNotFound) {
@@ -122,7 +134,7 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		if err := a.Store.EnsureTenantWritable(ctx, cmd.Tenant); err != nil {
 			return resultJSON(http.StatusConflict, map[string]any{"error": err.Error()})
 		}
-		record = acceptedRequest{Tenant: cmd.Tenant, Request: request, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
+		record = acceptedRequest{Tenant: cmd.Tenant, Request: request, Digest: digest, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
 		if err := a.saveAccepted(ctx, key, record); err != nil {
 			return nil, err
 		}
@@ -177,6 +189,14 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 		}
 		record.Result = &results[i]
 		record.FinishedAt = cmd.At
+		if record.Digest == "" {
+			request, err := json.Marshal(record.Request)
+			if err != nil {
+				return nil, err
+			}
+			record.Digest = fmt.Sprintf("%x", sha256.Sum256(request))
+		}
+		record.Request = storage.IngestRequest{Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID}
 		if err := a.saveAccepted(ctx, keys[i], record); err != nil {
 			return nil, err
 		}
