@@ -51,6 +51,11 @@ jobs:
   object-backup:
     uses: ./.github/workflows/object-backup.yml
 
+  raft:
+    uses: ./.github/workflows/raft.yml
+    with:
+      soak: true
+
   local-soak:
     name: Local disk 30-minute mixed read/write soak
     runs-on: ubuntu-latest
@@ -81,7 +86,7 @@ jobs:
 
   release:
     name: Build and publish release assets
-    needs: [verify, integration, object-backup, local-soak]
+    needs: [verify, integration, object-backup, local-soak, raft]
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -107,6 +112,12 @@ jobs:
           name: object-backup-gate
           path: artifacts/object-backup-gate
 
+      - name: Download Raft evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: raft-gate
+          path: artifacts/raft-gate
+
       - name: Build release package
         shell: bash
         run: |
@@ -114,24 +125,26 @@ jobs:
 
           tag="${GITHUB_REF_NAME}"
           test "$tag" = "v$(cat VERSION)"
+          grep -Fx "# GGraphDB ${tag}" release/local-disk.md
           commit="${GITHUB_SHA}"
-          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           root="dist/${tag}"
           buildinfo_package="github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
           ldflags="-s -w -X ${buildinfo_package}.Version=${tag} -X ${buildinfo_package}.Commit=${commit} -X ${buildinfo_package}.Date=${build_date}"
           mkdir -p "$root/bin" "$root/docs" "$root/examples" "$root/scripts" \
-            "$root/deploy/nginx" "$root/release/evidence"
+            "$root/deploy/nginx" "$root/deploy/raft" "$root/release/evidence"
 
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             os="${target%/*}"
             arch="${target#*/}"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -mod=readonly -trimpath -ldflags="$ldflags" \
+              go build -mod=readonly -trimpath -buildvcs=false -ldflags="$ldflags" \
               -o "$root/bin/graphdb-${os}-${arch}" ./cmd/graphdb
           done
 
           cp VERSION README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md LICENSE SECURITY.md \
             Dockerfile .dockerignore docker-compose.yml docker-compose.backup.yml \
+            docker-compose.raft.yml docker-compose.sharded.yml \
             go.mod go.sum "$root/"
           cp -R cmd internal tools "$root/"
           cp -R docs/. "$root/docs/"
@@ -139,13 +152,16 @@ jobs:
           cp -R sdk "$root/"
           cp deploy/object-backup.env.example "$root/deploy/"
           cp deploy/nginx/graphdb.conf.example "$root/deploy/nginx/"
-          cp -R artifacts/local-gate artifacts/object-backup-gate "$root/release/evidence/"
+          cp deploy/raft/haproxy.cfg "$root/deploy/raft/"
+          cp -R artifacts/local-gate artifacts/object-backup-gate artifacts/raft-gate "$root/release/evidence/"
           cp release/capacity-envelope.yaml release/local-disk.md "$root/release/"
           cp scripts/capacity_baseline.sh \
             scripts/check_release_freeze.sh scripts/check_workspace_hygiene.sh \
             scripts/release_gate.sh scripts/local_disk_compare.sh scripts/local_disk_benchmark.py \
             scripts/local_disk_report.py scripts/local_disk_optimization.py \
             scripts/object_backup_gate.sh scripts/object_backup_http.py "$root/scripts/"
+          cp scripts/raft_gate.sh scripts/raft_gate_dual.py scripts/raft_gate_sharded.py "$root/scripts/"
+          cp -R scripts/raft-gate "$root/scripts/"
           printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
             "$tag" "$commit" "$build_date" "$(go version | cut -d' ' -f3)" > "$root/BUILD-METADATA.json"
           (cd "$root" && sha256sum bin/* > SHA256SUMS)
@@ -160,11 +176,25 @@ jobs:
           (cd dist && sha256sum -c "graphdb-${GITHUB_REF_NAME}.tar.gz.sha256")
           unpacked="$(mktemp -d)"
           tar -xzf "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" -C "$unpacked"
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           cd "$unpacked/$GITHUB_REF_NAME"
           sha256sum -c SHA256SUMS
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          report = json.loads(Path('release/evidence/raft-gate/metadata.json').read_text())
+          digest = hashlib.file_digest(Path('bin/graphdb-linux-amd64').open('rb'), 'sha256').hexdigest()
+          assert report['result'] == 'PASS', report
+          assert digest == report['binary_sha256'], 'packaged binary differs from the Raft-qualified binary'
+          PY
           bin/graphdb-linux-amd64 version
+          export GRAPHDB_RAFT_TOKEN=release-configuration-check-only-0123456789
+          docker compose -f docker-compose.raft.yml config --quiet
+          docker compose -f docker-compose.sharded.yml config --quiet
           docker build --build-arg VERSION="$GITHUB_REF_NAME" \
-            --build-arg COMMIT="$GITHUB_SHA" --tag graphdb:release-check .
+            --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$build_date" \
+            --tag graphdb:release-check .
           trap 'docker logs graphdb-release-check; docker rm -f graphdb-release-check >/dev/null' EXIT
           docker run -d --name graphdb-release-check -p 127.0.0.1:38080:8080 graphdb:release-check
           curl --fail --retry 30 --retry-all-errors --retry-delay 1 --max-time 2 \

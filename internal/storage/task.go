@@ -178,6 +178,11 @@ func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType 
 	}
 	if IsReplicatedContext(ctx) {
 		cancel()
+		// Replicated workers discover queued work through the tenant registry,
+		// including restores whose target graph does not exist yet.
+		if err := s.addTenantToRegistry(ctx, tenantID); err != nil {
+			return Task{}, err
+		}
 		return task, nil
 	}
 	s.registerTaskCancel(tenantID, id, cancel)

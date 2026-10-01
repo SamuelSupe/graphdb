@@ -44,6 +44,20 @@ The 2.1.2 capacity envelope remains `performance_unqualified`.
 - [ ] Binary checksums, source revision/diff, and verification reports are retained. Record the image digest when distributing an image; record a separate documentation revision when applicable.
 - [ ] The release archive contains matching binaries, SDKs, OpenAPI, deployment examples, and evidence.
 
+## Optional Raft and sharding release
+
+- [ ] The candidate passes `scripts/raft_gate.sh` using real containers; retain the image ID, binary SHA256, per-scenario results and logs.
+- [ ] Standalone direct/WAL and Raft remain usable concurrently with independent directories.
+- [ ] Live network isolation rejects reads/writes at the old leader while the majority continues; accepted writes survive takeover and reconnect.
+- [ ] Large restore, replica replacement, shard addition, migration interruption/cancellation and old-directory role protection pass.
+- [ ] Thirty-minute Raft WAL mixed workload with compact, GC and index rebuild passes; record its actual size and rate without a capacity claim.
+- [ ] Three independent fault domains pass host-loss/network/recovery qualification, or record NOT RUN with the release boundary explicitly restricted.
+- [ ] Whole-group upgrade, unsupported downgrade combinations, protected private transport, redundant entry points and backup recovery are documented and validated for the deployment.
+- [ ] Include both Raft Compose examples, HAProxy configuration, gate fixtures and reports in the extracted release archive; validate their configuration there.
+
+See [Raft release readiness](raft-release-readiness.zh-CN.md) for current gaps and
+[operations](raft-operations.zh-CN.md) for the maintenance upgrade boundary.
+
 ## Main release
 
 - [ ] Fast-forward GitHub `main` to the verified local-disk implementation; preserve historical tags.

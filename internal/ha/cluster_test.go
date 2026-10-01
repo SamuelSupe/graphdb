@@ -3,6 +3,8 @@ package ha
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,17 +37,21 @@ type testReplica struct {
 }
 
 type testCluster struct {
-	t     *testing.T
-	nodes []*testReplica
+	t                   *testing.T
+	nodes               []*testReplica
+	decorateApplication func(*Application, http.Handler) http.Handler
 }
 
-func newTestCluster(t *testing.T, wal bool) *testCluster {
-	return newTestClusterRole(t, wal, "", false)
+func newTestCluster(t *testing.T, wal bool, decorate ...func(*Application, http.Handler) http.Handler) *testCluster {
+	return newTestClusterRole(t, wal, "", false, decorate...)
 }
 
-func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool) *testCluster {
+func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, decorate ...func(*Application, http.Handler) http.Handler) *testCluster {
 	t.Helper()
 	group := &testCluster{t: t}
+	if len(decorate) > 0 {
+		group.decorateApplication = decorate[0]
+	}
 	peers := make(map[uint64]string)
 	for i := 0; i < 3; i++ {
 		replica := &testReplica{}
@@ -130,6 +136,9 @@ func (g *testCluster) start(i int) {
 	api := &httpapi.Server{Store: store, Mode: "all", Cluster: cluster}
 	handler := api.Handler()
 	cluster.App.Handler = handler
+	if g.decorateApplication != nil {
+		cluster.App.Handler = g.decorateApplication(cluster.App, handler)
+	}
 	if err := cluster.Start(context.Background(), replica.cfg.Raft); err != nil {
 		g.t.Fatal(err)
 	}
@@ -195,9 +204,13 @@ func (g *testCluster) leader(exclude int) int {
 	return -1
 }
 
-func (g *testCluster) request(i int, method, uri, body string) *httptest.ResponseRecorder {
+func (g *testCluster) request(i int, method, uri, body string, timeout ...time.Duration) *httptest.ResponseRecorder {
 	g.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	budget := 5 * time.Second
+	if len(timeout) > 0 {
+		budget = timeout[0]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	request := httptest.NewRequest(method, uri, bytes.NewBufferString(body)).WithContext(ctx)
 	request.Header.Set("X-Tenant-ID", "tenant-a")
@@ -207,9 +220,9 @@ func (g *testCluster) request(i int, method, uri, body string) *httptest.Respons
 	return writer
 }
 
-func (g *testCluster) mustRequest(i int, method, uri, body string, status int) *httptest.ResponseRecorder {
+func (g *testCluster) mustRequest(i int, method, uri, body string, status int, timeout ...time.Duration) *httptest.ResponseRecorder {
 	g.t.Helper()
-	writer := g.request(i, method, uri, body)
+	writer := g.request(i, method, uri, body, timeout...)
 	if writer.Code != status {
 		g.t.Fatalf("%s %s on %d: status %d, expected %d: %s", method, uri, i, writer.Code, status, writer.Body.String())
 	}
@@ -228,9 +241,13 @@ func (g *testCluster) manifest(i int) storage.Manifest {
 	return manifest
 }
 
-func (g *testCluster) waitApplied(i int, index uint64) {
+func (g *testCluster) waitApplied(i int, index uint64, timeout ...time.Duration) {
 	g.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	budget := 10 * time.Second
+	if len(timeout) > 0 {
+		budget = timeout[0]
+	}
+	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		checkpoint, err := g.nodes[i].files.ReplicationCheckpoint()
 		if err != nil {
@@ -564,7 +581,25 @@ func BenchmarkHAWALAcceptanceHistory(b *testing.B) {
 }
 
 func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
-	group := newTestCluster(t, false)
+	type stagedInput struct{ body, input []byte }
+	var completedTransfer atomic.Pointer[stagedInput]
+	group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+			seed := completedTransfer.Load()
+			if seed == nil || r.Method != "POST" || r.URL.Path != "/v1/tenants/tenant-a/restore" {
+				return
+			}
+			var task storage.Task
+			if err := json.Unmarshal(w.(*httptest.ResponseRecorder).Body.Bytes(), &task); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := app.stageRestore(r.Context(), command{Tenant: task.TenantID, IDs: []string{task.ID}, Body: seed.body, Restore: seed.input}); err != nil {
+				t.Error(err)
+			}
+		})
+	})
 	leader := group.leader(-1)
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
 	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"name":"original"}}]}}`, http.StatusOK)
@@ -584,6 +619,51 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 	}
 	if finished.Status != storage.TaskStatusSucceeded {
 		t.Fatalf("backup task: %+v", finished)
+	}
+	for _, dryRun := range []bool{true, false} {
+		response := group.mustRequest(leader, "POST", "/v1/tenants/tenant-cold/restore",
+			fmt.Sprintf(`{"backup_key":%q,"dry_run":%t}`, finished.ResultKey, dryRun), http.StatusAccepted)
+		var cold storage.Task
+		if err := json.Unmarshal(response.Body.Bytes(), &cold); err != nil {
+			t.Fatal(err)
+		}
+		if err := group.nodes[leader].cluster.runQueuedTask(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		group.nodes[leader].cluster.App.mu.RLock()
+		cold, err = group.nodes[leader].store.GetTask(context.Background(), "tenant-cold", cold.ID)
+		group.nodes[leader].cluster.App.mu.RUnlock()
+		if err != nil || cold.Status != storage.TaskStatusSucceeded {
+			t.Fatalf("restore into unregistered tenant did not run: dry_run=%t task=%+v error=%v", dryRun, cold, err)
+		}
+		if dryRun && (cold.Result["dry_run"] != true || cold.Result["target_exists"] == true) {
+			t.Fatalf("dry run created a target graph: %+v", cold.Result)
+		}
+	}
+	drillResponse := group.mustRequest(leader, "POST", "/v1/tenants/tenant-cold/restore-drill",
+		fmt.Sprintf(`{"backup_key":%q,"target_tenant_id":"tenant-proof","cleanup":true}`, finished.ResultKey), http.StatusAccepted)
+	var drill storage.Task
+	if err := json.Unmarshal(drillResponse.Body.Bytes(), &drill); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.nodes[leader].cluster.runQueuedTask(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	group.nodes[leader].cluster.App.mu.RLock()
+	drill, err = group.nodes[leader].store.GetTask(context.Background(), "tenant-cold", drill.ID)
+	group.nodes[leader].cluster.App.mu.RUnlock()
+	if err != nil || drill.Status != storage.TaskStatusSucceeded {
+		t.Fatalf("restore drill failed: task=%+v error=%v", drill, err)
+	}
+	data, err := json.Marshal(drill.Result)
+	var proof storage.TenantRestoreDrillReport
+	if err != nil || json.Unmarshal(data, &proof) != nil {
+		t.Fatalf("decode restore drill result: %v", err)
+	}
+	for _, result := range proof.QueryResults {
+		if !result.Skipped {
+			t.Fatalf("restore drill executed an unconfigured query: %+v", result)
+		}
 	}
 	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"name":"changed"}}]}}`, http.StatusOK)
 	invalidRestore := group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/restore", `{"backup_key":"graphdb/missing-backup","overwrite":true}`, http.StatusAccepted)
@@ -615,7 +695,19 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 	if err := json.Unmarshal(restore.Body.Bytes(), &restoreTask); err != nil {
 		t.Fatal(err)
 	}
-	if err := group.nodes[leader].cluster.runQueuedTask(context.Background()); err != nil {
+	cluster := group.nodes[leader].cluster
+	cluster.App.mu.RLock()
+	legacyInput, err := cluster.App.Store.PrepareReplicatedTask(context.Background(), restoreTask)
+	cluster.App.mu.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := newCommand("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Tenant, legacy.IDs, legacy.Restore = restoreTask.TenantID, []string{restoreTask.ID}, legacyInput
+	if _, err := cluster.propose(context.Background(), legacy); err != nil {
 		t.Fatal(err)
 	}
 	if got := group.manifest(leader).Version; got != 1 {
@@ -629,6 +721,39 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 	if staleResponse.Code != http.StatusConflict {
 		t.Fatalf("restore retained an old read generation: %d: %s", staleResponse.Code, staleResponse.Body.String())
 	}
+	digest := sha256.Sum256(legacyInput)
+	manifest := restoreManifest{Bytes: int64(len(legacyInput)), SHA256: hex.EncodeToString(digest[:]), Generation: 2}
+	// Seed a fully persisted transfer with queue admission, before the live
+	// background worker can try the deliberately unavailable backup source.
+	partBody, _ := json.Marshal(restorePart{restoreManifest: manifest})
+	completedTransfer.Store(&stagedInput{body: partBody, input: legacyInput})
+	queuedResponse := group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/restore", `{"backup_key":"graphdb/unavailable-backup","overwrite":true}`, http.StatusAccepted)
+	var completedInputTask storage.Task
+	if err := json.Unmarshal(queuedResponse.Body.Bytes(), &completedInputTask); err != nil {
+		t.Fatal(err)
+	}
+	stagedCheckpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousLeader := leader
+	group.stop(previousLeader)
+	leader = group.leader(previousLeader)
+	for i := range group.nodes {
+		if i == previousLeader {
+			continue
+		}
+		group.waitApplied(i, stagedCheckpoint.Index)
+	}
+	completedTransfer.Store(nil)
+	if err := group.nodes[leader].cluster.runQueuedTask(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	completedResponse := group.mustRequest(leader, "GET", "/v1/tasks/"+completedInputTask.ID, "", http.StatusOK)
+	if err := json.Unmarshal(completedResponse.Body.Bytes(), &completedInputTask); err != nil || completedInputTask.Status != storage.TaskStatusSucceeded {
+		t.Fatalf("fully persisted restore fetched unavailable backup after failover: %s, %v", completedResponse.Body.String(), err)
+	}
+	group.start(previousLeader)
 	replica := &testReplica{}
 	replica.peer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		replica.mu.RLock()
@@ -696,6 +821,176 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 	}
 	leader = group.leader(removed)
 	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:3","kind":"host"}]}}`, http.StatusOK)
+}
+
+func TestHALargeRestoreResumesAfterLeaderLoss(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK, time.Minute)
+	payload := string(bytes.Repeat([]byte("x"), 4<<20))
+	for i := 0; i < 9; i++ {
+		body := fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"host:%d","kind":"host","fields":{"payload":%q}}]}}`, i, payload)
+		group.mustRequest(leader, "POST", "/v1/commits", body, http.StatusOK, time.Minute)
+	}
+	backup := group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/backup", `{}`, http.StatusAccepted, time.Minute)
+	var task storage.Task
+	if err := json.Unmarshal(backup.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.nodes[leader].cluster.runQueuedTask(ctx); err != nil {
+		t.Fatal(err)
+	}
+	finished := group.mustRequest(leader, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK, time.Minute)
+	if err := json.Unmarshal(finished.Body.Bytes(), &task); err != nil || task.Status != storage.TaskStatusSucceeded {
+		t.Fatalf("backup failed: %s, %v", finished.Body.String(), err)
+	}
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"delete_entities":["host:0"]}}`, http.StatusOK, time.Minute)
+	restore := group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/restore", fmt.Sprintf(`{"backup_key":%q,"overwrite":true}`, task.ResultKey), http.StatusAccepted, time.Minute)
+	if err := json.Unmarshal(restore.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	cluster := group.nodes[leader].cluster
+	cluster.App.mu.RLock()
+	input, err := cluster.App.Store.PrepareReplicatedTask(ctx, task)
+	cluster.App.mu.RUnlock()
+	if err != nil || len(input) <= 32<<20 {
+		t.Fatalf("large restore input: %d bytes, %v", len(input), err)
+	}
+	digest := sha256.Sum256(input)
+	manifest := restoreManifest{Bytes: int64(len(input)), SHA256: hex.EncodeToString(digest[:]), Generation: 1}
+	for part := int64(0); part < 2; part++ {
+		cmd, err := newCommand("restore_part")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Tenant, cmd.IDs = task.TenantID, []string{task.ID}
+		cmd.ExpectedGeneration = 1
+		cmd.Restore = input[part*restoreChunkBytes : (part+1)*restoreChunkBytes]
+		cmd.Body, _ = json.Marshal(restorePart{restoreManifest: manifest, Part: part})
+		if _, err := cluster.propose(ctx, cmd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	group.stop(leader)
+	replacement := group.leader(leader)
+	if err := group.nodes[replacement].cluster.runQueuedTask(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result := group.mustRequest(replacement, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK, time.Minute)
+	if err := json.Unmarshal(result.Body.Bytes(), &task); err != nil || task.Status != storage.TaskStatusSucceeded {
+		t.Fatalf("resumed restore failed: %s, %v", result.Body.String(), err)
+	}
+	if group.manifest(replacement).Version != 9 {
+		t.Fatal("restore did not publish the backed-up version")
+	}
+	group.start(leader)
+	checkpoint, err := group.nodes[replacement].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, replica := range group.nodes {
+		group.waitApplied(i, checkpoint.Index, time.Minute)
+		replica.cluster.App.mu.RLock()
+		generation, err := replica.store.ReplicationTenantGeneration(ctx, "tenant-a")
+		objects, listErr := replica.files.List(ctx, replica.cluster.App.restorePrefix("tenant-a", task.ID))
+		replica.cluster.App.mu.RUnlock()
+		if err != nil || listErr != nil || generation != 2 || len(objects) != 0 || group.manifest(i).Version != 9 {
+			t.Fatalf("replica %d restore: generation=%d staging=%d errors=%v/%v", i, generation, len(objects), err, listErr)
+		}
+	}
+}
+
+func TestHAReadinessDuringMaintenanceStillRequiresFreshReads(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var target atomic.Pointer[Application]
+	var blocked atomic.Bool
+	group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if target.Load() == app && r.Method == "POST" && r.URL.Path == "/v1/commits" && blocked.CompareAndSwap(false, true) {
+				close(entered)
+				<-release
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	target.Store(group.nodes[leader].cluster.App)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		completed <- group.request(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:blocked","kind":"host"}]}}`)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("application did not start")
+	}
+	group.mustRequest(leader, "GET", "/v1/readiness", "", http.StatusOK)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	request := httptest.NewRequest("GET", "/v1/entities/host:blocked", nil).WithContext(ctx)
+	request.Header.Set("X-Tenant-ID", "tenant-a")
+	response := httptest.NewRecorder()
+	group.nodes[leader].handler.ServeHTTP(response, request)
+	cancel()
+	if response.Code != http.StatusGatewayTimeout {
+		t.Fatalf("query bypassed unapplied commit: %d: %s", response.Code, response.Body.String())
+	}
+	arrived := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(arrived)
+		group.nodes[leader].handler.ServeHTTP(w, r)
+	}))
+	server.Config.ReadTimeout = 100 * time.Millisecond
+	server.Start()
+	defer func() { unblock(); server.Close() }()
+	server.Client().Timeout = 5 * time.Second
+	written := make(chan error, 1)
+	go func() {
+		body := fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"host:after","kind":"host","fields":{"payload":%q}}]}}`, bytes.Repeat([]byte("x"), 8<<10))
+		request, err := http.NewRequest("POST", server.URL+"/v1/commits", bytes.NewBufferString(body))
+		if err != nil {
+			written <- err
+			return
+		}
+		request.Header.Set("X-Tenant-ID", "tenant-a")
+		request.Header.Set("Content-Type", "application/json")
+		response, err := server.Client().Do(request)
+		if err != nil {
+			written <- err
+			return
+		}
+		defer response.Body.Close()
+		result, err := io.ReadAll(response.Body)
+		if err == nil && response.StatusCode != http.StatusOK {
+			err = fmt.Errorf("write after maintenance: %d: %s", response.StatusCode, result)
+		}
+		written <- err
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP write did not arrive")
+	}
+	// The body read deadline expires while the committed application is held.
+	time.Sleep(150 * time.Millisecond)
+	unblock()
+	select {
+	case response := <-completed:
+		if response.Code != http.StatusOK {
+			t.Fatalf("commit failed: %d: %s", response.Code, response.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("application did not finish")
+	}
+	if err := <-written; err != nil {
+		t.Fatal(err)
+	}
+	group.mustRequest(leader, "GET", "/v1/entities/host:blocked", "", http.StatusOK)
 }
 
 func TestHAAcceptedWALIsFencedByRestore(t *testing.T) {

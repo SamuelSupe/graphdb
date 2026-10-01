@@ -524,7 +524,7 @@ func (r *TenantRestoreDrillReport) finish(at time.Time) {
 
 func stringSliceTaskParam(params map[string]any, key string) []string {
 	value, ok := params[key]
-	if !ok {
+	if !ok || value == nil {
 		return nil
 	}
 	switch typed := value.(type) {

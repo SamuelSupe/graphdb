@@ -4,6 +4,14 @@
 
 GGraphDB 2.x uses one process and a persistent local directory. Upgrades from 1.x need a fresh directory; no 1.x data migration is provided.
 
+The current branch also supports optional single-group and tenant-sharded Raft,
+with an independent local directory per replica. The packaged examples are
+`docker-compose.raft.yml` and `docker-compose.sharded.yml`. See the
+[Raft operations guide](../raft-operations.zh-CN.md) and
+[release qualification status](../raft-release-readiness.zh-CN.md). The upgrade
+instructions below concern standalone deployments; this Raft protocol change
+requires a whole-group maintenance upgrade and does not support in-place downgrade.
+
 - [Start, write, and query](../../README.md)
 - [Configuration, directory ownership, recovery, and validation](../local-disk.md)
 - [API user guide](README.md)

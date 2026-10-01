@@ -1,9 +1,13 @@
 package ha
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -11,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
@@ -142,6 +147,134 @@ func TestApplicationBatchRecovery(t *testing.T) {
 		if err != nil || string(data) != "second" {
 			t.Fatalf("committed batch object lost: %s: %q, %v", key, data, err)
 		}
+	}
+}
+
+func TestStagedRestoreIntegrityAndCancellation(t *testing.T) {
+	for _, scenario := range []string{"missing", "corrupt", "canceled", "purged", "schema_named_purge"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			files, err := storage.OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			if err := files.RequireReplicatedWrites(); err != nil {
+				t.Fatal(err)
+			}
+			store := storage.NewTenantStore(files, "graphdb")
+			store.ReplicationMode = true
+			app := &Application{Files: files, Store: store, MaxSnapshotBytes: 64 << 20}
+			app.Handler = (&httpapi.Server{Store: store, Mode: "all"}).Handler()
+			index := uint64(0)
+			apply := func(cmd command, success bool) []byte {
+				t.Helper()
+				cmd.ID = fmt.Sprint(index + 1)
+				cmd.At = time.Unix(int64(index+1), 0)
+				if cmd.Tenant != "" {
+					cmd.Header = make(http.Header)
+					cmd.Header.Set("X-Tenant-ID", cmd.Tenant)
+				}
+				data, err := json.Marshal(cmd)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response, err := app.Apply(ctx, index+1, data)
+				if (err == nil) != success {
+					t.Fatalf("%s: error=%v, success=%v", cmd.Kind, err, success)
+				}
+				if success {
+					index++
+				}
+				return response
+			}
+			apply(command{Kind: "http", Method: "POST", URI: "/v1/tenants", Body: []byte(`{"tenant_id":"tenant-a"}`)}, true)
+			wantVersion := int64(0)
+			if scenario == "schema_named_purge" {
+				seed := apply(command{Kind: "http", Method: "POST", URI: "/v1/commits", Tenant: "tenant-a",
+					Body: []byte(`{"mutations":{"upsert_relation_types":[{"name":"purge","from_kind":"host","to_kind":"host"}]}}`)}, true)
+				var response httpResult
+				if json.Unmarshal(seed, &response) != nil || response.Status != http.StatusOK {
+					t.Fatalf("relation type not created: %s", seed)
+				}
+				wantVersion = 1
+			}
+			result := apply(command{Kind: "http", Method: "POST", URI: "/v1/tenants/tenant-a/restore", Tenant: "tenant-a", Body: []byte(`{"backup_key":"graphdb/missing-backup","overwrite":true}`)}, true)
+			var response httpResult
+			var task storage.Task
+			if json.Unmarshal(result, &response) != nil || response.Status != 202 || json.Unmarshal(response.Body, &task) != nil || task.ID == "" {
+				t.Fatalf("restore not queued: %s", result)
+			}
+			input := bytes.Repeat([]byte("x"), restoreChunkBytes+1)
+			digest := sha256.Sum256(input)
+			manifest := restoreManifest{Bytes: int64(len(input)), SHA256: hex.EncodeToString(digest[:])}
+			body, _ := json.Marshal(restorePart{restoreManifest: manifest})
+			part := input[:restoreChunkBytes]
+			if scenario == "corrupt" {
+				part = bytes.Repeat([]byte("y"), restoreChunkBytes)
+			}
+			apply(command{Kind: "restore_part", Tenant: "tenant-a", IDs: []string{task.ID}, Body: body, Restore: part}, true)
+			if scenario == "corrupt" {
+				body, _ = json.Marshal(restorePart{restoreManifest: manifest, Part: 1})
+				apply(command{Kind: "restore_part", Tenant: "tenant-a", IDs: []string{task.ID}, Body: body, Restore: input[restoreChunkBytes:]}, true)
+			}
+			if scenario == "schema_named_purge" {
+				result := apply(command{Kind: "http", Method: "PUT", Tenant: "tenant-a",
+					URI: "/v1/relation-schemas/purge", Body: []byte(`{}`)}, true)
+				var response httpResult
+				staging, err := files.List(ctx, app.restorePrefix("tenant-a", task.ID))
+				current, taskErr := store.GetTask(ctx, "tenant-a", task.ID)
+				if json.Unmarshal(result, &response) != nil || response.Status != http.StatusOK || err != nil || taskErr != nil || len(staging) != 2 || current.Status != storage.TaskStatusQueued {
+					t.Fatalf("schema update discarded pending restore: response=%s staging=%d task=%+v errors=%v/%v", result, len(staging), current, err, taskErr)
+				}
+			}
+			if scenario == "canceled" {
+				result := apply(command{Kind: "http", Method: "POST", Tenant: "tenant-a", URI: "/v1/tasks/" + task.ID + "/cancel?reason=test"}, true)
+				var canceled httpResult
+				current, err := store.GetTask(ctx, "tenant-a", task.ID)
+				if json.Unmarshal(result, &canceled) != nil || canceled.Status != 200 || err != nil || current.Status != storage.TaskStatusCanceled {
+					t.Fatalf("cancel failed: response=%s task=%+v error=%v", result, current, err)
+				}
+			}
+			if scenario == "purged" {
+				result := apply(command{Kind: "http", Method: "POST", Tenant: "tenant-a",
+					URI: "/v1/tenants/tenant-a/purge?force=true"}, true)
+				var response httpResult
+				if json.Unmarshal(result, &response) != nil || response.Status != http.StatusOK {
+					t.Fatalf("purge failed: %s", result)
+				}
+				staging, err := files.List(ctx, app.restorePrefix("tenant-a", task.ID))
+				if err != nil || len(staging) != 0 {
+					t.Fatalf("purge retained orphaned restore input: %d objects, %v", len(staging), err)
+				}
+				body, _ = json.Marshal(manifest)
+				result = apply(command{Kind: "task", Tenant: "tenant-a", IDs: []string{task.ID}, Body: body, ExpectedGeneration: 1}, true)
+				if json.Unmarshal(result, &response) != nil || response.Status != http.StatusConflict {
+					t.Fatalf("stale restore was not fenced: %s", result)
+				}
+				generation, err := store.ReplicationTenantGeneration(ctx, "tenant-a")
+				objects, listErr := files.List(ctx, "graphdb/tenants/tenant-a/")
+				staging, stagingErr := files.List(ctx, app.restorePrefix("tenant-a", task.ID))
+				if err != nil || listErr != nil || stagingErr != nil || generation != 2 || len(objects) != 0 || len(staging) != 0 {
+					t.Fatalf("stale restore recreated purged tenant: generation=%d objects=%d staging=%d errors=%v/%v/%v", generation, len(objects), len(staging), err, listErr, stagingErr)
+				}
+				return
+			}
+			body, _ = json.Marshal(manifest)
+			apply(command{Kind: "task", Tenant: "tenant-a", IDs: []string{task.ID}, Body: body}, scenario == "canceled")
+			checkpoint, err := files.ReplicationCheckpoint()
+			generation, generationErr := store.ReplicationTenantGeneration(ctx, "tenant-a")
+			current, manifestErr := store.CurrentManifest(ctx, "tenant-a")
+			if err != nil || generationErr != nil || manifestErr != nil || checkpoint.Index != index || generation != 1 || current.Version != wantVersion {
+				t.Fatalf("invalid transfer changed publication: checkpoint=%+v generation=%d version=%d errors=%v/%v/%v", checkpoint, generation, current.Version, err, generationErr, manifestErr)
+			}
+			if scenario == "canceled" {
+				objects, err := files.List(ctx, app.restorePrefix("tenant-a", task.ID))
+				if err != nil || len(objects) != 0 {
+					t.Fatalf("canceled transfer retained staging: %d objects, %v", len(objects), err)
+				}
+			}
+		})
 	}
 }
 

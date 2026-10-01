@@ -3,6 +3,28 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## Unreleased: Raft release preparation
+
+- Retain standalone direct/WAL deployments alongside three-replica Raft and
+  independent tenant shard groups.
+- Replicate restore input in 1 MiB parts, resume after leader loss, verify the
+  complete digest before publication, and clean up terminal transfers.
+- Discover queued restores into absent tenants and preserve empty query-template
+  lists after task persistence so restore drills do not run phantom queries.
+- Keep a quorum-confirmed leader eligible at the gateway during maintenance;
+  graph reads still wait for committed application and never bypass it.
+- Allow up to two minutes of internal Raft request waiting during maintenance,
+  while preserving shorter caller deadlines; this is not a latency guarantee.
+- Read bounded HTTP input before waiting for application, preventing maintenance
+  waits from exhausting the socket read deadline and producing false HTTP 413s.
+- Add real-container failure, coexistence and sharding gates to CI, require a
+  thirty-minute Raft workload for release, and package deployment/evidence files.
+- Require the packaged Linux binary to match the Raft-qualified binary digest.
+
+The new restore commands require a whole-group maintenance upgrade; older
+binaries cannot execute them or safely downgrade the existing replica directory.
+Cross-host qualification remains pending. See [release readiness](docs/raft-release-readiness.zh-CN.md).
+
 ## [2.1.2] - 2026-09-29
 
 Compatible with existing 2.0/2.1 local data directories and HTTP contracts.

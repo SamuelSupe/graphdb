@@ -270,37 +270,9 @@ func (n *Node) Propose(ctx context.Context, data []byte) ([]byte, error) {
 }
 
 func (n *Node) ReadBarrier(ctx context.Context) error {
-	if err := n.available(true); err != nil {
-		return err
-	}
-	id, err := randomID()
+	index, err := n.readIndex(ctx)
 	if err != nil {
 		return err
-	}
-	ch := make(chan uint64, 1)
-	n.mu.Lock()
-	n.reads[id] = ch
-	n.mu.Unlock()
-	defer func() { n.mu.Lock(); delete(n.reads, id); n.mu.Unlock() }()
-	if err := n.raft.ReadIndex(ctx, []byte(id)); err != nil {
-		return err
-	}
-	var index uint64
-	for index == 0 {
-		n.mu.Lock()
-		changed := n.changed
-		n.mu.Unlock()
-		if err := n.available(true); err != nil {
-			return err
-		}
-		select {
-		case index = <-ch:
-		case <-changed:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-n.ctx.Done():
-			return n.available(false)
-		}
 	}
 	for {
 		n.mu.Lock()
@@ -317,6 +289,52 @@ func (n *Node) ReadBarrier(ctx context.Context) error {
 			return n.available(false)
 		}
 	}
+}
+
+// QuorumBarrier checks current leadership without waiting for application.
+// It keeps the entry point available during maintenance; graph operations
+// must still use ReadBarrier before accessing the state machine.
+func (n *Node) QuorumBarrier(ctx context.Context) error {
+	if _, err := n.readIndex(ctx); err != nil {
+		return err
+	}
+	return n.available(true)
+}
+
+func (n *Node) readIndex(ctx context.Context) (uint64, error) {
+	if err := n.available(true); err != nil {
+		return 0, err
+	}
+	id, err := randomID()
+	if err != nil {
+		return 0, err
+	}
+	ch := make(chan uint64, 1)
+	n.mu.Lock()
+	n.reads[id] = ch
+	n.mu.Unlock()
+	defer func() { n.mu.Lock(); delete(n.reads, id); n.mu.Unlock() }()
+	if err := n.raft.ReadIndex(ctx, []byte(id)); err != nil {
+		return 0, err
+	}
+	var index uint64
+	for index == 0 {
+		n.mu.Lock()
+		changed := n.changed
+		n.mu.Unlock()
+		if err := n.available(true); err != nil {
+			return 0, err
+		}
+		select {
+		case index = <-ch:
+		case <-changed:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-n.ctx.Done():
+			return 0, n.available(false)
+		}
+	}
+	return index, nil
 }
 
 func (n *Node) available(leader bool) error {

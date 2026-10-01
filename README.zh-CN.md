@@ -41,6 +41,8 @@ docker compose up -d --build
 
 同一二进制同时支持单机、单组 Raft 和分片 Raft：
 
+Raft 正式发布的验收范围与剩余项目见 [发布准备状态](docs/raft-release-readiness.zh-CN.md)。
+
 | 部署方式 | 启用方式 | 数据持久化 | 运维 |
 | --- | --- | --- | --- |
 | 单机（默认） | 不设置 `GRAPHDB_RAFT_*`；使用 `docker-compose.yml` | 本机同步 direct / WAL | 定时维护、自动 S3 备份、停机后离线 CLI |

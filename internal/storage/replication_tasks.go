@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,6 +47,9 @@ func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]b
 	if task.Type != TaskTypeTenantRestore && task.Type != TaskTypeTenantRestoreDrill {
 		return nil, nil
 	}
+	// A new leader must reproduce the same transfer digest, including the
+	// integrity report timestamp, when resuming a queued restore.
+	ctx = ReplicatedContext(ctx, task.ID, task.StartedAt)
 	input, err := s.loadTenantBackupInput(ctx, stringTaskParam(task.Params, "backup_key"))
 	if err != nil {
 		return nil, err
@@ -57,6 +61,17 @@ func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]b
 }
 
 func (s *TenantStore) RunReplicatedTask(ctx context.Context, tenantID, id string, restore []byte) (Task, error) {
+	var source io.Reader
+	if len(restore) > 0 {
+		source = bytes.NewReader(restore)
+	}
+	return s.RunReplicatedTaskFromReader(ctx, tenantID, id, source)
+}
+
+// RunReplicatedTaskFromReader consumes verified, majority-persisted input.
+// Restore decoding still materializes the graph; the reader avoids joining
+// all replicated transfer parts into a second full-size byte buffer.
+func (s *TenantStore) RunReplicatedTaskFromReader(ctx context.Context, tenantID, id string, restore io.Reader) (Task, error) {
 	task, err := s.getTaskObject(ctx, tenantID, id)
 	if err != nil {
 		return Task{}, err
@@ -64,19 +79,24 @@ func (s *TenantStore) RunReplicatedTask(ctx context.Context, tenantID, id string
 	if taskTerminal(task.Status) {
 		return task, nil
 	}
-	if len(restore) > 0 {
+	if restore != nil {
+		decoder := json.NewDecoder(restore)
 		if task.Type == TaskTypeTenantBackup {
 			var entry backupstore.Entry
-			if err := json.Unmarshal(restore, &entry); err != nil {
+			if err := decoder.Decode(&entry); err != nil {
 				return Task{}, err
 			}
 			ctx = context.WithValue(ctx, replicatedBackupKey{}, entry)
 		} else {
 			var input tenantBackupInput
-			if err := json.Unmarshal(restore, &input); err != nil {
+			if err := decoder.Decode(&input); err != nil {
 				return Task{}, err
 			}
 			ctx = context.WithValue(ctx, replicatedRestoreKey{}, input)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return Task{}, fmt.Errorf("replicated task input has trailing data: %v", err)
 		}
 	}
 	task.Status = TaskStatusRunning

@@ -53,6 +53,9 @@ docker compose up -d --build
 
 The same binary supports standalone and both Raft deployment options:
 
+Raft qualification and the remaining release gates are tracked in the
+[release readiness report](docs/raft-release-readiness.zh-CN.md).
+
 | Deployment | Selection | Durability | Operations |
 | --- | --- | --- | --- |
 | Standalone (default) | Leave `GRAPHDB_RAFT_*` unset; use `docker-compose.yml` | Local synchronous direct / WAL writes | Scheduled maintenance, automatic S3 backups, offline CLI after shutdown |

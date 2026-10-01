@@ -5,6 +5,11 @@
 本版使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1
 目录可在停止旧进程后沿用。版本与兼容性见[版本边界](../naming-and-compatibility.zh-CN.md)。
 
+当前分支还支持可选的单组 Raft 和按租户分片的 Raft，每个副本使用独立本地目录。
+部署包提供 `docker-compose.raft.yml` 和 `docker-compose.sharded.yml`，见
+[Raft 运维手册](../raft-operations.zh-CN.md) 与 [发布验收状态](../raft-release-readiness.zh-CN.md)。
+下文升级步骤适用于单机；本次 Raft 协议变更需要全组维护升级，不支持原目录降级。
+
 - [启动、写入和查询](../../README.zh-CN.md)
 - [配置、目录独占、备份恢复与验证](../local-disk.zh-CN.md)
 - [API 用户手册](README.zh-CN.md)

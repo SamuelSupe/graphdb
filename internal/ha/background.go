@@ -53,7 +53,16 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 		}
 	}
 	var restore []byte
+	var generation int64
+	var staged restoreManifest
+	ready := false
 	capture := false
+	if queued != nil && restoreTask(*queued) {
+		generation, err = c.App.Store.ReplicationTenantGeneration(ctx, queued.TenantID)
+		if err == nil {
+			staged, ready, err = c.App.stagedRestoreReady(ctx, *queued)
+		}
+	}
 	if queued != nil && queued.Type == storage.TaskTypeTenantBackup && queued.Params["destination"] == "object" {
 		captured, captureErr := c.App.Store.ReplicatedObjectBackupCaptured(ctx, *queued)
 		if captureErr != nil {
@@ -62,12 +71,18 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 		}
 		capture = !captured
 	}
-	if queued != nil && !capture {
+	if queued != nil && !capture && !ready && err == nil {
 		restore, err = c.App.Store.PrepareReplicatedTask(ctx, *queued)
 	}
 	c.App.mu.RUnlock()
 	if queued == nil {
 		return err
+	}
+	if err == nil && restoreTask(*queued) {
+		if ready {
+			return c.publishRestore(ctx, *queued, staged)
+		}
+		return c.replicateRestore(ctx, *queued, restore, generation)
 	}
 	prepareErr := err
 	cmd, commandErr := newCommand("task")
@@ -80,6 +95,7 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 	cmd.Tenant = queued.TenantID
 	cmd.IDs = []string{queued.ID}
 	cmd.Restore = restore
+	cmd.ExpectedGeneration = generation
 	if prepareErr != nil {
 		cmd.Error = prepareErr.Error()
 	}

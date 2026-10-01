@@ -7,11 +7,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -mod=readonly -trimpath \
-    -ldflags="-s -w \
-      -X github.com/SamuelSupe/graphdb/v2/internal/buildinfo.Version=${VERSION} \
-      -X github.com/SamuelSupe/graphdb/v2/internal/buildinfo.Commit=${COMMIT} \
-      -X github.com/SamuelSupe/graphdb/v2/internal/buildinfo.Date=${BUILD_DATE}" \
+RUN buildinfo_package=github.com/SamuelSupe/graphdb/v2/internal/buildinfo && \
+    CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false \
+    -ldflags="-s -w -X ${buildinfo_package}.Version=${VERSION} -X ${buildinfo_package}.Commit=${COMMIT} -X ${buildinfo_package}.Date=${BUILD_DATE}" \
     -o /out/graphdb ./cmd/graphdb
 
 FROM alpine:3.20

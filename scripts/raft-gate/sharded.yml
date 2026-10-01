@@ -1,0 +1,32 @@
+services:
+  router:
+    ports: !override ["127.0.0.1:47080:8080"]
+  catalog1:
+    ports: ["127.0.0.1:47101:8080"]
+    environment: &tuning
+      GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"
+      GRAPHDB_INGEST_FLUSH_INTERVAL: "200ms"
+  catalog2:
+    ports: ["127.0.0.1:47102:8080"]
+    environment: *tuning
+  catalog3:
+    ports: ["127.0.0.1:47103:8080"]
+    environment: *tuning
+  a1:
+    ports: ["127.0.0.1:47201:8080"]
+    environment: *tuning
+  a2:
+    ports: ["127.0.0.1:47202:8080"]
+    environment: *tuning
+  a3:
+    ports: ["127.0.0.1:47203:8080"]
+    environment: *tuning
+  b1:
+    ports: ["127.0.0.1:47301:8080"]
+    environment: *tuning
+  b2:
+    ports: ["127.0.0.1:47302:8080"]
+    environment: *tuning
+  b3:
+    ports: ["127.0.0.1:47303:8080"]
+    environment: *tuning

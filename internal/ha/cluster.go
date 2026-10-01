@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -114,14 +115,29 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	case "/v1/readiness":
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		if err := c.Node.ReadBarrier(ctx); err != nil {
+		if err := c.Node.QuorumBarrier(ctx); err != nil {
 			c.writeError(w, err)
 			return
 		}
 		next.ServeHTTP(w, r)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	// The server's body read deadline also runs while application is blocked.
+	// Consume bounded input before waiting, retaining it for read handlers.
+	var body []byte
+	if r.Body != nil && r.Body != http.NoBody {
+		var err error
+		body, err = readBody(w, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		if !mutation {
+			r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 	if err := c.Node.ReadBarrier(ctx); err != nil {
 		c.writeError(w, err)
@@ -202,11 +218,6 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 			locked = false
 		}
 		next.ServeHTTP(w, r)
-		return
-	}
-	body, err := readBody(w, r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 		return
 	}
 	cmd, err := newCommand("http")

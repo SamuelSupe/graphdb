@@ -1,0 +1,844 @@
+{
+  "date": "2026-10-01",
+  "kind": "local release preparation; no push, tag, or published assets",
+  "repository_version": "2.1.2",
+  "build_identity": {
+    "kind": "local release rehearsal, not published release",
+    "version": "2.1.2-raft-candidate",
+    "base_commit": "770b85a05c4c3b84d536331fced64400916b2617",
+    "embedded_commit": "770b85a0-dirty",
+    "build_date": "2026-10-01T00:00:00Z",
+    "go_version": "go1.26.7",
+    "production_source_sha256": "23e7ff51eeab201465c017791281c14cbd3c47bc234b5c72044ef4e50b0c6918",
+    "binaries": {
+      "graphdb-darwin-arm64": "23434a846b6fb8d99639ab28b69154199eba6b7b9adfd95ef5dfb16e99b0624a",
+      "graphdb-linux-amd64": "8011d83f627c88b3347b46e106ac6b239ed52482c1bab24464282ae36688a81d",
+      "graphdb-linux-arm64": "02ea5bec9427faee52236b36d62680413214a741aef7cc84ccd73307715b8177"
+    },
+    "candidate_image": {
+      "image": "graphdb:raft-release-prep8-20261001",
+      "image_id": "sha256:e0aea9c18b87f3f47a3c4eead32c0b0349c5d21d948b1c8249093cc97dfd4482",
+      "binary_sha256": "02ea5bec9427faee52236b36d62680413214a741aef7cc84ccd73307715b8177",
+      "binary_version": "GGraphDB 2.1.2-raft-candidate commit=770b85a0-dirty built=2026-10-01T00:00:00Z go=go1.26.7"
+    }
+  },
+  "runtime_environment": "OrbStack Linux arm64 / Go 1.26.7; independent native Linux volumes; unrelated host load left running",
+  "source_image": {
+    "image": "graphdb:raft-source-prep8-20261001",
+    "image_id": "sha256:e0aea9c18b87f3f47a3c4eead32c0b0349c5d21d948b1c8249093cc97dfd4482",
+    "binary_sha256": "02ea5bec9427faee52236b36d62680413214a741aef7cc84ccd73307715b8177",
+    "matches_tested_candidate": true,
+    "build": "Repository Dockerfile, network disabled, verified module cache supplied through named Go build image context",
+    "go_version": "go1.26.7",
+    "initial_network_build": "FAIL: local Go proxy TLS trust; verification was not disabled"
+  },
+  "raft_gate": {
+    "metadata": {
+      "started_at": "2026-10-01T12:53:57.763978+00:00",
+      "image": "graphdb:raft-release-prep8-20261001",
+      "image_id": "sha256:e0aea9c18b87f3f47a3c4eead32c0b0349c5d21d948b1c8249093cc97dfd4482",
+      "binary_sha256": "02ea5bec9427faee52236b36d62680413214a741aef7cc84ccd73307715b8177",
+      "binary_version": "GGraphDB 2.1.2-raft-candidate commit=770b85a0-dirty built=2026-10-01T00:00:00Z go=go1.26.7",
+      "image_labels": null,
+      "port_offset": 2000,
+      "cross_host_qualification": "NOT RUN",
+      "result": "PASS",
+      "finished_at": "2026-10-01T13:25:25.357919+00:00"
+    },
+    "dual": [
+      {
+        "check": "same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent",
+        "result": "PASS"
+      },
+      {
+        "check": "standalone direct commits and ingest survive SIGKILL; compact and GC remain available",
+        "result": "PASS"
+      },
+      {
+        "check": "standalone WAL accepted response is durable; SIGKILL recovery publishes once and idempotent retry preserves identity",
+        "result": "PASS"
+      },
+      {
+        "check": "live isolated leader rejects strong reads and writes; majority serves and confirmed write survives reconnection",
+        "result": "PASS",
+        "old": 1,
+        "new": 3
+      },
+      {
+        "check": "Raft majority WAL and leader takeover remain available alongside standalone services",
+        "result": "PASS",
+        "old": 3,
+        "new": 2,
+        "seconds": 6.532
+      },
+      {
+        "check": "standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access",
+        "result": "PASS"
+      },
+      {
+        "check": "Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works",
+        "result": "PASS"
+      },
+      {
+        "check": "36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation",
+        "result": "PASS",
+        "old": 2,
+        "new": 3,
+        "payload_bytes": 37748736
+      },
+      {
+        "check": "thirty-minute three-replica WAL mixed workload with compact, GC and index rebuild",
+        "result": "PASS"
+      }
+    ],
+    "sharded": [
+      {
+        "check": "standalone direct/WAL coexist with sharded Raft",
+        "result": "PASS",
+        "processes_before_expansion": 9
+      },
+      {
+        "check": "add three-replica shard without remapping existing tenant",
+        "result": "PASS",
+        "processes": 12
+      },
+      {
+        "check": "chunked migration survives catalog and destination leader interruption",
+        "result": "PASS",
+        "accepted_lsn": 8,
+        "destination_interrupted_during_transfer": true
+      },
+      {
+        "check": "tenant can return to retired source and commit again",
+        "result": "PASS"
+      },
+      {
+        "check": "one shard loses quorum while other shard and standalones serve",
+        "result": "PASS"
+      },
+      {
+        "check": "cancel before cutover resumes source before unavailable target cleanup",
+        "result": "PASS"
+      },
+      {
+        "check": "replica cannot remove shard role; original configuration recovers",
+        "result": "PASS",
+        "image_id": "sha256:e0aea9c18b87f3f47a3c4eead32c0b0349c5d21d948b1c8249093cc97dfd4482"
+      }
+    ],
+    "soak": {
+      "first_event": "2026-10-01T12:54:36.908680392Z",
+      "last_event": "2026-10-01T13:24:37.547518039Z",
+      "event_span_seconds": 1800.639,
+      "error_events": 0,
+      "maintenance": {
+        "compact_ok": 5,
+        "gc_ok": 2,
+        "index_rebuild_ok": 2
+      },
+      "operations": {
+        "cmdb-env-containment-traverse": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 1192,
+          "p99_ms": 2993,
+          "max_ms": 61129,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "cmdb-owner-service-match": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 1259,
+          "p99_ms": 2980,
+          "max_ms": 59858,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "cmdb-service-to-database-path": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 1249,
+          "p99_ms": 2963,
+          "max_ms": 59856,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "p50_ms": 67,
+          "p95_ms": 67,
+          "p99_ms": 67,
+          "max_ms": 67,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "compact": {
+          "count": 5,
+          "errors": 0,
+          "p50_ms": 3030,
+          "p95_ms": 4350,
+          "p99_ms": 4350,
+          "max_ms": 4350,
+          "statuses": {
+            "202": 5
+          }
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "p50_ms": 225,
+          "p95_ms": 225,
+          "p99_ms": 225,
+          "max_ms": 225,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "p50_ms": 74,
+          "p95_ms": 69517,
+          "p99_ms": 69517,
+          "max_ms": 69517,
+          "statuses": {
+            "200": 6
+          }
+        },
+        "fuzzy-service-match": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 3,
+          "p95_ms": 1183,
+          "p99_ms": 2857,
+          "max_ms": 5499,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "gc": {
+          "count": 2,
+          "errors": 0,
+          "p50_ms": 3174,
+          "p95_ms": 3903,
+          "p99_ms": 3903,
+          "max_ms": 3903,
+          "statuses": {
+            "202": 2
+          }
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "p50_ms": 0,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1,
+          "statuses": {
+            "200": 2
+          }
+        },
+        "impact-service": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 3,
+          "p95_ms": 1239,
+          "p99_ms": 2879,
+          "max_ms": 59837,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "index-catalog": {
+          "count": 58,
+          "errors": 0,
+          "p50_ms": 13,
+          "p95_ms": 2732,
+          "p99_ms": 69445,
+          "max_ms": 69445,
+          "statuses": {
+            "200": 58
+          }
+        },
+        "index-health": {
+          "count": 58,
+          "errors": 0,
+          "p50_ms": 7,
+          "p95_ms": 629,
+          "p99_ms": 60023,
+          "max_ms": 60023,
+          "statuses": {
+            "200": 58
+          }
+        },
+        "indexed-match-allow-stale": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 5,
+          "p95_ms": 1124,
+          "p99_ms": 2806,
+          "max_ms": 5529,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "indexed-match-min-version": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 6,
+          "p95_ms": 1104,
+          "p99_ms": 2780,
+          "max_ms": 5515,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "ingest": {
+          "count": 1012,
+          "errors": 0,
+          "p50_ms": 983,
+          "p95_ms": 4520,
+          "p99_ms": 7299,
+          "max_ms": 71483,
+          "statuses": {
+            "200": 1011
+          }
+        },
+        "neighbors-host-out": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 1293,
+          "p99_ms": 2810,
+          "max_ms": 59931,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "path-filter-traverse": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 1248,
+          "p99_ms": 2916,
+          "max_ms": 59837,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "profile-indexed-match": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 7,
+          "p95_ms": 1088,
+          "p99_ms": 2784,
+          "max_ms": 69355,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "range-aggregate-match": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 6,
+          "p95_ms": 1163,
+          "p99_ms": 2872,
+          "max_ms": 5520,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "reader-fleet": {
+          "count": 58,
+          "errors": 0,
+          "p50_ms": 4,
+          "p95_ms": 641,
+          "p99_ms": 2515,
+          "max_ms": 2515,
+          "statuses": {
+            "200": 58
+          }
+        },
+        "reader-freshness": {
+          "count": 58,
+          "errors": 0,
+          "p50_ms": 6,
+          "p95_ms": 559,
+          "p99_ms": 1277,
+          "max_ms": 1277,
+          "statuses": {
+            "200": 58
+          }
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 0,
+          "p50_ms": 63095,
+          "p95_ms": 72782,
+          "p99_ms": 72782,
+          "max_ms": 72782,
+          "statuses": {
+            "202": 3
+          }
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "p50_ms": 60,
+          "p95_ms": 63,
+          "p99_ms": 63,
+          "max_ms": 63,
+          "statuses": {
+            "200": 5
+          }
+        },
+        "saved-host-query": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 8,
+          "p95_ms": 1176,
+          "p99_ms": 2948,
+          "max_ms": 69370,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "saved-prod-containment": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 6,
+          "p95_ms": 1045,
+          "p99_ms": 2814,
+          "max_ms": 69358,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "saved-prod-services": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 9,
+          "p95_ms": 1140,
+          "p99_ms": 2904,
+          "max_ms": 69386,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "saved-service-impact": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 8,
+          "p95_ms": 1058,
+          "p99_ms": 2816,
+          "max_ms": 69386,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "saved-team-services": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 7,
+          "p95_ms": 1110,
+          "p99_ms": 2820,
+          "max_ms": 69374,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "scan-edges": {
+          "count": 2626,
+          "errors": 0,
+          "p50_ms": 8,
+          "p95_ms": 1157,
+          "p99_ms": 2933,
+          "max_ms": 69381,
+          "statuses": {
+            "200": 2626
+          }
+        },
+        "scan-edges-allow-stale": {
+          "count": 2626,
+          "errors": 0,
+          "p50_ms": 7,
+          "p95_ms": 1119,
+          "p99_ms": 2933,
+          "max_ms": 69376,
+          "statuses": {
+            "200": 2626
+          }
+        },
+        "scan-entities": {
+          "count": 2626,
+          "errors": 0,
+          "p50_ms": 9,
+          "p95_ms": 1192,
+          "p99_ms": 2944,
+          "max_ms": 69382,
+          "statuses": {
+            "200": 2626
+          }
+        },
+        "scan-entities-allow-stale": {
+          "count": 2626,
+          "errors": 0,
+          "p50_ms": 9,
+          "p95_ms": 1190,
+          "p99_ms": 2935,
+          "max_ms": 69385,
+          "statuses": {
+            "200": 2626
+          }
+        },
+        "scan-entities-min-version": {
+          "count": 2626,
+          "errors": 0,
+          "p50_ms": 9,
+          "p95_ms": 1157,
+          "p99_ms": 2985,
+          "max_ms": 69393,
+          "statuses": {
+            "200": 2626
+          }
+        },
+        "shortest-service-cluster": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 1141,
+          "p99_ms": 2916,
+          "max_ms": 69365,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "stream-all-host-page": {
+          "count": 2626,
+          "errors": 0,
+          "p50_ms": 20,
+          "p95_ms": 1295,
+          "p99_ms": 2951,
+          "max_ms": 69369,
+          "statuses": {
+            "200": 2626
+          }
+        },
+        "stream-large-indexed-hosts": {
+          "count": 2625,
+          "errors": 0,
+          "p50_ms": 9,
+          "p95_ms": 1165,
+          "p99_ms": 2903,
+          "max_ms": 69370,
+          "statuses": {
+            "200": 2625
+          }
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 2626,
+          "errors": 0,
+          "p50_ms": 10,
+          "p95_ms": 1243,
+          "p99_ms": 2917,
+          "max_ms": 69364,
+          "statuses": {
+            "200": 2626
+          }
+        },
+        "tenant-usage": {
+          "count": 59,
+          "errors": 0,
+          "p50_ms": 102,
+          "p95_ms": 2237,
+          "p99_ms": 3893,
+          "max_ms": 3893,
+          "statuses": {
+            "200": 59
+          }
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "max_ms": 2,
+          "statuses": {
+            "200": 1
+          }
+        }
+      }
+    },
+    "scope": "Four writers, sixteen readers, batch size one, five-second writer interval; correctness and maintenance, not capacity or comparative throughput"
+  },
+  "raft_s3_joint": {
+    "metadata": {
+      "started_at": "2026-10-01T12:51:01.053303+00:00",
+      "result": "PASS",
+      "scope": "OrbStack, three Raft replicas and real MinIO, small HTTP fixture",
+      "cross_host": "NOT RUN",
+      "image": "graphdb:raft-release-prep8-20261001",
+      "image_id": "sha256:e0aea9c18b87f3f47a3c4eead32c0b0349c5d21d948b1c8249093cc97dfd4482",
+      "binary_sha256": "02ea5bec9427faee52236b36d62680413214a741aef7cc84ccd73307715b8177",
+      "minio_sha256": "5c83cd2cf151717ba0243f73e1c7802ff36e272b67144bdd7f1f7d684fd6f03d",
+      "mc_sha256": "14c8c9616cfce4636add161304353244e8de383b2e2752c0e9dad01d4c27c12c",
+      "finished_at": "2026-10-01T12:51:35.822410+00:00"
+    },
+    "checks": [
+      {
+        "check": "two majority-captured snapshots uploaded to real S3",
+        "result": "PASS"
+      },
+      {
+        "check": "S3 backup task identities and source graph survive leader SIGKILL",
+        "result": "PASS",
+        "old_leader": 2
+      },
+      {
+        "check": "S3 backup tasks and graph survive whole-group restart",
+        "result": "PASS"
+      },
+      {
+        "check": "restore",
+        "result": "PASS",
+        "detail": "Fresh-directory discovery, dry-run, restore, and overwrite passed\nrestore: snapshot, entity query, and metadata verified"
+      },
+      {
+        "check": "verify",
+        "result": "PASS",
+        "detail": "verify: snapshot, entity query, and metadata verified"
+      }
+    ],
+    "scope": "Manual backup tasks through HTTP SDK against three Raft replicas: S3 capture/discovery, task identities and graph after leader SIGKILL and whole-group restart, new empty replica directories, dry run, restore/overwrite/drill and restart. Small fixture; no S3 outage or large S3 transfer/failover qualification"
+  },
+  "validation": [
+    {
+      "check": "all-package normal tests after cold-restore fix; final null-list fix additionally tested at restore boundary",
+      "result": "PASS",
+      "ha_seconds": 117.073,
+      "evidence": [
+        "final-tests7.log",
+        "drill-null-after.log",
+        "final-vet8.log"
+      ],
+      "note": "Includes unchanged-package cached results; vet is static validation"
+    },
+    {
+      "check": "all-package race tests in two batches before final cleanup/cold-restore/null-list fixes",
+      "result": "PASS",
+      "ha_seconds": 363.645,
+      "storage_seconds": 559.442,
+      "evidence": [
+        "final-ha-race5.log",
+        "final-other-race.log"
+      ]
+    },
+    {
+      "check": "final cleanup boundary race regression",
+      "result": "PASS",
+      "seconds": 3.39,
+      "evidence": "purge-scope-race.log"
+    },
+    {
+      "check": "cleanup regression old code reproduced orphan deletion; final code preserves staging",
+      "result": "PASS",
+      "evidence": [
+        "purge-scope-before.log",
+        "purge-scope-after.log"
+      ]
+    },
+    {
+      "check": "final cold restore and persisted null-template regression with race",
+      "result": "PASS",
+      "ha_seconds": 33.854,
+      "storage_seconds": 11.602,
+      "evidence": [
+        "final-restore-race8.log",
+        "drill-null-after.log",
+        "cold-restore-before.log",
+        "drill-null-before.log"
+      ]
+    },
+    {
+      "check": "cold restore/task/registry race boundary after registration fix",
+      "result": "PASS",
+      "ha_seconds": 24.604,
+      "storage_seconds": 104.94,
+      "evidence": "cold-restore-race.log"
+    },
+    {
+      "check": "module verification",
+      "result": "PASS",
+      "evidence": "module-verify.log"
+    },
+    {
+      "check": "standalone direct/WAL, real HTTP SDK, query/export/load, restore/restart gate",
+      "result": "PASS",
+      "evidence": "local-gate"
+    },
+    {
+      "check": "real MinIO backupstore/storage and standalone HTTP gate",
+      "result": "PASS",
+      "evidence": "object-backup-gate",
+      "note": "Multipart/cancel/corrupt manifest, capture, automation restart, empty-directory restore and restart"
+    },
+    {
+      "check": "Python SDK",
+      "result": "PASS",
+      "tests_run": 11,
+      "skipped": 1,
+      "evidence": "python-sdk.log",
+      "note": "Missing HTTP environment skipped in unit invocation; actual SDK HTTP fixture ran in service gates"
+    },
+    {
+      "check": "three architecture compilation and native macOS CLI",
+      "result": "PASS",
+      "evidence": "crossbuild8.log"
+    },
+    {
+      "check": "workflow YAML, shell/Python syntax, diff/hygiene/freeze",
+      "result": "PASS",
+      "note": "Static validation, not a remote workflow execution"
+    }
+  ],
+  "package_validation": {
+    "result": "PASS",
+    "archive": "/tmp/graphdb-raft-release-prep/graphdb-2.1.2-raft-candidate.tar.gz",
+    "binary_checksums": {
+      "bin/graphdb-darwin-arm64": "23434a846b6fb8d99639ab28b69154199eba6b7b9adfd95ef5dfb16e99b0624a",
+      "bin/graphdb-linux-amd64": "8011d83f627c88b3347b46e106ac6b239ed52482c1bab24464282ae36688a81d",
+      "bin/graphdb-linux-arm64": "02ea5bec9427faee52236b36d62680413214a741aef7cc84ccd73307715b8177"
+    },
+    "production_source_sha256": "23e7ff51eeab201465c017791281c14cbd3c47bc234b5c72044ef4e50b0c6918",
+    "raft_and_sharded_compose": "PASS, extracted configuration parsed by Docker Compose",
+    "scope": "Local candidate archive extraction; no public release or remote workflow",
+    "darwin_arm64_cli": "GGraphDB 2.1.2-raft-candidate commit=770b85a0-dirty built=2026-10-01T00:00:00Z go=go1.26.7",
+    "linux_arm64_cli": "GGraphDB 2.1.2-raft-candidate commit=770b85a0-dirty built=2026-10-01T00:00:00Z go=go1.26.7",
+    "linux_amd64_cli_emulated": "GGraphDB 2.1.2-raft-candidate commit=770b85a0-dirty built=2026-10-01T00:00:00Z go=go1.26.7",
+    "extracted_dockerfile_binary_matches_tested_candidate": true,
+    "identity_scope": "Source and binary digest proof; final archive checksum and rebuilt image identity are stored outside the archive to avoid self-reference and time-dependent image metadata"
+  },
+  "prior_runs": [
+    {
+      "run": "candidate-gate",
+      "result": "FAIL",
+      "binary_sha256": "6c622db111f6738165110ce1961e725c7b264e46dc9521b10e2000d090324f1a",
+      "reason": "CGO-linked executable could not run in Alpine; rebuilt statically",
+      "complete_thirty_minute_soak": false,
+      "error_events": null
+    },
+    {
+      "run": "candidate-gate-static",
+      "result": "FAIL",
+      "binary_sha256": "3199319b35bd4ba78fb80dfca601d05289d54069a554c43efc616a190c24c2c9",
+      "reason": "Maintenance removed leader from gateway because readiness waited for application; stopped early",
+      "complete_thirty_minute_soak": false,
+      "error_events": 1491
+    },
+    {
+      "run": "final-gate",
+      "result": "FAIL",
+      "binary_sha256": "1a28114b40b51f8d79066414ec7ca99ace62c73a84d6b60fe7829b32a526c001",
+      "reason": "One-minute internal deadline expired during maintenance",
+      "complete_thirty_minute_soak": true,
+      "error_events": 22
+    },
+    {
+      "run": "final-gate3",
+      "result": "FAIL",
+      "binary_sha256": "680b0dd710a936e0ffe9f69fbda21f60cf2fd2dedff1544c852d69ebc10c477d",
+      "reason": "One-minute internal deadline expired during maintenance",
+      "complete_thirty_minute_soak": true,
+      "error_events": 43
+    },
+    {
+      "run": "final-gate4",
+      "result": "FAIL",
+      "binary_sha256": "caa84d8793ca7ae51c21c7d8c2a391c76e7733e5b8af0446ea3d3314f508f08b",
+      "reason": "HTTP body read deadline exhausted while waiting for application; four HTTP 413 events",
+      "complete_thirty_minute_soak": true,
+      "error_events": 4
+    },
+    {
+      "run": "final-gate5",
+      "result": "FAIL",
+      "binary_sha256": "c8301fa09555cbef30dd94bf03ce86f69025457104d61f15d9f0ca5dcefbd1b7",
+      "reason": "Leader lost quorum during concurrent own disk/race stress; stopped early, load explanation is an inference",
+      "complete_thirty_minute_soak": false,
+      "error_events": 40
+    },
+    {
+      "run": "final-gate6",
+      "result": "PASS",
+      "binary_sha256": "c8301fa09555cbef30dd94bf03ce86f69025457104d61f15d9f0ca5dcefbd1b7",
+      "reason": "Previous binary passed full gate; later scoped restore-cleanup fix required a new final candidate",
+      "complete_thirty_minute_soak": true,
+      "error_events": 0
+    },
+    {
+      "run": "final-gate7",
+      "result": "PASS",
+      "binary_sha256": "3ffd4a4be0b1430d33981efdc226150e56e46354695c9affa6e3f5b1588f649a",
+      "reason": "Previous binary passed full gate; S3 joint validation then exposed cold-restore discovery and null-template bugs",
+      "complete_thirty_minute_soak": true,
+      "error_events": 0
+    }
+  ],
+  "initial_network_build": {
+    "result": "FAIL",
+    "reason": "Go proxy certificate was not trusted locally; used verified offline cache without disabling TLS verification"
+  },
+  "prior_s3_fixture_runs": [
+    {
+      "result": "FAIL",
+      "reason": "Startup HAProxy HTTP 503 HTML was incorrectly parsed as JSON; fixture fixed",
+      "evidence": "raft-s3-joint-startup-failure"
+    },
+    {
+      "result": "FAIL",
+      "reason": "Standalone automatic-backup fixture exceeded supported HA contract; enable was explicitly rejected HTTP 400. Retested supported manual tasks",
+      "evidence": "raft-s3-joint-automation-failure"
+    },
+    {
+      "result": "FAIL",
+      "reason": "Unregistered target task remained queued; fixed replicated task-owner registration",
+      "evidence": "raft-s3-joint-cold-restore-failure"
+    },
+    {
+      "result": "FAIL",
+      "reason": "Persisted null query-template list became a phantom query; fixed null-list decoding",
+      "evidence": "raft-s3-joint-drill-null-failure"
+    },
+    {
+      "result": "FAIL",
+      "reason": "Read verification began during startup gateway/leader transition; fixture now waits for stable readiness",
+      "evidence": "raft-s3-joint-restart-routing-failure"
+    }
+  ],
+  "prior_race_fixture_run": {
+    "result": "FAIL",
+    "evidence": "final-restore-race.log",
+    "reason": "Existing two-second task completion deadline exceeded while own compilation ran; no-compilation rerun passed in final-restore-race8.log"
+  },
+  "remaining_qualification": {
+    "cross_host": "PENDING, user confirmed no three independent test hosts",
+    "cross_version_rolling_upgrade": "NOT QUALIFIED; whole-group maintenance upgrade required",
+    "capacity_and_latency": "NOT QUALIFIED; maintenance long tails remain, prior WAL regression and A/A variation retained",
+    "large_graph_low_disk_slow_replica": "NOT RUN",
+    "full_snapshot_network_streaming": "NOT IMPLEMENTED; snapshot and restore preparation/graph decoding still materialize in memory",
+    "raft_s3_large_transfer_and_outage": "NOT RUN",
+    "internal_automatic_s3_backup": "NOT SUPPORTED in Raft; external scheduler must submit cluster backup tasks",
+    "formal_release": "NOT DONE; version selection, SDK/OpenAPI alignment, remote CI/tag/assets/checksums still required"
+  },
+  "raw_evidence_directory": "/tmp/graphdb-raft-release-prep"
+}

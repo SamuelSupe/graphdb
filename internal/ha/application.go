@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"time"
 
@@ -211,6 +212,15 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			return nil, err
 		}
 		if generation != cmd.ExpectedGeneration {
+			if len(cmd.IDs) == 1 && (cmd.Kind == "restore_part" || cmd.Kind == "task") {
+				_, err := a.Store.FailReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], "tenant generation changed during restore")
+				if err != nil && !errors.Is(err, storage.ErrNotFound) {
+					return nil, err
+				}
+				if err := a.clearRestore(applyCtx, cmd.Tenant, cmd.IDs[0]); err != nil {
+					return nil, err
+				}
+			}
 			return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "tenant has been replaced; obtain a new read token"})
 		}
 	}
@@ -238,10 +248,24 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		if writer.Code >= 500 {
 			return nil, fmt.Errorf("replicated mutation failed locally: HTTP %d: %s", writer.Code, writer.Body.String())
 		}
+		if writer.Code < 400 && strings.HasPrefix(request.URL.Path, "/v1/tasks/") && strings.HasSuffix(request.URL.Path, "/cancel") {
+			var task storage.Task
+			if err := json.Unmarshal(writer.Body.Bytes(), &task); err != nil {
+				return nil, err
+			}
+			if err := a.clearRestore(applyCtx, task.TenantID, task.ID); err != nil {
+				return nil, err
+			}
+		}
 		if cmd.Tenant != "" && writer.Code < 400 {
 			generation, err := a.Store.ReplicationTenantGeneration(applyCtx, cmd.Tenant)
 			if err != nil {
 				return nil, err
+			}
+			if request.URL.Path == "/v1/tenants/"+cmd.Tenant+"/purge" || (cmd.ExpectedGeneration > 0 && generation != cmd.ExpectedGeneration) {
+				if err := a.clearRestore(applyCtx, cmd.Tenant, ""); err != nil {
+					return nil, err
+				}
 			}
 			writer.Header().Set("X-GraphDB-Tenant-Generation", fmt.Sprint(generation))
 		}
@@ -255,12 +279,24 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			return nil, fmt.Errorf("invalid backup capture command")
 		}
 		return nil, a.Store.CaptureReplicatedObjectBackup(applyCtx, cmd.Tenant, cmd.IDs[0])
+	case "restore_part":
+		return a.stageRestore(applyCtx, cmd)
 	case "task":
 		if len(cmd.IDs) != 1 {
 			return nil, fmt.Errorf("invalid replicated task command")
 		}
 		if cmd.Error != "" {
 			task, err := a.Store.FailReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Error)
+			if err != nil {
+				return nil, err
+			}
+			if err := a.clearRestore(applyCtx, cmd.Tenant, task.ID); err != nil {
+				return nil, err
+			}
+			return json.Marshal(task)
+		}
+		if len(cmd.Body) > 0 {
+			task, err := a.runStagedRestore(applyCtx, cmd)
 			if err != nil {
 				return nil, err
 			}
