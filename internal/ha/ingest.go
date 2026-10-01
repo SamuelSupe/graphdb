@@ -149,6 +149,15 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 }
 
 func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
+	if a.ShardID != "" {
+		owner, err := a.ownership(ctx, cmd.Tenant)
+		if err != nil {
+			return nil, err
+		}
+		if owner.State != "active" || (cmd.RouteEpoch > 0 && owner.Epoch != cmd.RouteEpoch) {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": "tenant ownership changed before WAL publication", "retryable": true})
+		}
+	}
 	var records []acceptedRequest
 	var keys []string
 	var entries []storage.IngestBatchEntry
@@ -313,17 +322,25 @@ func (c *Cluster) flushPending(ctx context.Context) error {
 	if len(requests) == 0 {
 		return nil
 	}
-	c.App.mu.RLock()
-	err = c.App.Store.CheckWriteBackpressure(ctx, requests[0].record.tenant)
-	c.App.mu.RUnlock()
-	if err != nil {
-		return err
-	}
 	cmd, err := newCommand("flush")
 	if err != nil {
 		return err
 	}
 	cmd.Tenant = requests[0].record.tenant
+	c.App.mu.RLock()
+	if c.App.ShardID != "" {
+		owner, ownerErr := c.App.ownership(ctx, cmd.Tenant)
+		if ownerErr != nil || owner.State != "active" {
+			c.App.mu.RUnlock()
+			return ownerErr
+		}
+		cmd.RouteEpoch = owner.Epoch
+	}
+	err = c.App.Store.CheckWriteBackpressure(ctx, cmd.Tenant)
+	c.App.mu.RUnlock()
+	if err != nil {
+		return err
+	}
 	var size int64
 	generation := requests[0].record.generation
 	for _, pending := range requests {

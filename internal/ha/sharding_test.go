@@ -14,6 +14,109 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+func TestHAShardDelayedFlushAfterRetirement(t *testing.T) {
+	group := newTestClusterRole(t, true, "a", false)
+	leader := group.leader(-1)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	propose := func(cmd command) []byte {
+		t.Helper()
+		identity, err := newCommand(cmd.Kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.ID, cmd.At = identity.ID, identity.At
+		data, err := group.nodes[leader].cluster.propose(ctx, cmd)
+		if err != nil {
+			t.Fatalf("%s command stopped the shard application: %v", cmd.Kind, err)
+		}
+		return data
+	}
+	ownership := func(operation, tenant, move string, epoch uint64) {
+		t.Helper()
+		body, _ := json.Marshal(sharding.Action{Operation: operation, Tenant: tenant, Epoch: epoch, MoveID: move})
+		data := propose(command{Kind: "sharding", Body: body})
+		var result httpResult
+		if json.Unmarshal(data, &result) != nil || result.Status != http.StatusOK {
+			t.Fatalf("%s: %s", operation, data)
+		}
+	}
+	request := func(method, uri, body string, status int) {
+		t.Helper()
+		r := httptest.NewRequest(method, uri, strings.NewReader(body)).WithContext(ctx)
+		r.Header.Set("X-Tenant-ID", "tenant-a")
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set(sharding.EpochHeader, "1")
+		w := httptest.NewRecorder()
+		group.nodes[leader].handler.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("%s %s: %d: %s", method, uri, w.Code, w.Body.String())
+		}
+	}
+	ownership("own", "tenant-a", "", 1)
+	request("POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	request("POST", "/v1/ingest/batches", `{"source":"agent","collector_id":"collector","batch_id":"delayed","items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host"}}]}`, http.StatusAccepted)
+	cluster := group.nodes[leader].cluster
+	queue, err := cluster.App.pendingSnapshot(ctx)
+	if err != nil || len(queue) != 1 {
+		t.Fatalf("accepted queue: %d, %v", len(queue), err)
+	}
+	delayed := command{Kind: "flush", Tenant: "tenant-a", RouteEpoch: 1}
+	for key := range queue {
+		delayed.IDs = append(delayed.IDs, key)
+	}
+	if err := cluster.flushPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ownership("freeze", "tenant-a", "move-delayed", 1)
+	ownership("thaw", "tenant-a", "move-delayed", 2)
+	data := propose(delayed)
+	var outcome httpResult
+	if json.Unmarshal(data, &outcome) != nil || outcome.Status != http.StatusConflict {
+		t.Fatalf("previous ownership epoch flush was not rejected: %s", data)
+	}
+	ownership("freeze", "tenant-a", "move-delayed", 2)
+	ownership("retire", "tenant-a", "move-delayed", 2)
+	data = propose(delayed)
+	if json.Unmarshal(data, &outcome) != nil || outcome.Status != http.StatusConflict {
+		t.Fatalf("retired tenant flush was not rejected: %s", data)
+	}
+	delayed.RouteEpoch = 0
+	data = propose(delayed)
+	if json.Unmarshal(data, &outcome) != nil || outcome.Status != http.StatusConflict {
+		t.Fatalf("legacy flush recreated a retired tenant: %s", data)
+	}
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, replica := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		if objects, err := replica.files.List(ctx, cluster.App.ingestPrefix()); err != nil || len(objects) != 0 {
+			t.Fatalf("replica %d recreated retired ingestion: %d, %v", i, len(objects), err)
+		}
+	}
+	group.stop(leader)
+	leader = group.leader(leader)
+	ownership("own", "tenant-b", "", 1)
+	for i := range group.nodes {
+		if i == leader {
+			continue
+		}
+		if group.nodes[i].cluster != nil {
+			checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.waitApplied(i, checkpoint.Index)
+			owner, err := group.nodes[i].cluster.App.ownership(ctx, "tenant-b")
+			if err != nil || owner.State != "active" {
+				t.Fatalf("shard did not continue after failover: %+v, %v", owner, err)
+			}
+		}
+	}
+}
+
 func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	catalog := newTestClusterRole(t, false, "", true)
 	a := newTestClusterRole(t, true, "a", false)

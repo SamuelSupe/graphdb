@@ -1283,6 +1283,74 @@ func TestHAAcceptedWALIsFencedByRestore(t *testing.T) {
 	}
 }
 
+func TestHADelayedTaskAfterPurge(t *testing.T) {
+	for _, scenario := range []string{"task", "prepare_error", "capture_backup"} {
+		t.Run(scenario, func(t *testing.T) {
+			group := newTestCluster(t, false)
+			leader := group.leader(-1)
+			cluster := group.nodes[leader].cluster
+			group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+			uri, body := "/v1/tenants/tenant-a/backup", `{}`
+			if scenario != "task" {
+				repo, err := backupstore.New(context.Background(), backupstore.Config{
+					Bucket: "test-bucket", Prefix: "review", Endpoint: "http://127.0.0.1:1", PathStyle: true,
+					AccessKeyID: "test", SecretAccessKey: "test-secret",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				cluster.App.mu.Lock()
+				group.nodes[leader].store.Backups = repo
+				cluster.App.mu.Unlock()
+				uri, body = "/v1/tasks", `{"type":"tenant_backup","params":{"destination":"object"}}`
+			}
+			response := group.mustRequest(leader, "POST", uri, body, http.StatusAccepted)
+			var task storage.Task
+			if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+				t.Fatal(err)
+			}
+			kind := scenario
+			if scenario == "prepare_error" {
+				kind = "task"
+			}
+			delayed, err := newCommand(kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delayed.Tenant, delayed.IDs = "tenant-a", []string{task.ID}
+			if scenario == "prepare_error" {
+				delayed.Error = "backup source unavailable"
+			}
+			group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/purge?force=true", `{}`, http.StatusOK)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			data, err := cluster.propose(ctx, delayed)
+			if err != nil {
+				t.Fatalf("delayed %s stopped the Raft application: %v", scenario, err)
+			}
+			var outcome httpResult
+			if json.Unmarshal(data, &outcome) != nil || outcome.Status != http.StatusConflict {
+				t.Fatalf("obsolete task was not rejected: %s", data)
+			}
+			checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, replica := range group.nodes {
+				group.waitApplied(i, checkpoint.Index)
+				if _, err := replica.store.GetTask(ctx, "tenant-a", task.ID); !errors.Is(err, storage.ErrNotFound) {
+					t.Fatalf("replica %d recreated a purged task: %v", i, err)
+				}
+			}
+			group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:after-purge","kind":"host"}]}}`, http.StatusOK)
+			group.stop(leader)
+			leader = group.leader(leader)
+			group.mustRequest(leader, "GET", "/v1/entities/host:after-purge", "", http.StatusOK)
+		})
+	}
+}
+
 func TestHARejectsDataWithoutRaftHistory(t *testing.T) {
 	group := newTestCluster(t, false)
 	leader := group.leader(-1)

@@ -234,6 +234,21 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "tenant has been replaced; obtain a new read token"})
 		}
 	}
+	if cmd.Kind == "task" || cmd.Kind == "capture_backup" || cmd.Kind == "restore_part" {
+		if len(cmd.IDs) != 1 {
+			return nil, fmt.Errorf("invalid replicated task identity")
+		}
+		// Purge or GC can remove a task after the leader prepares its command.
+		// Such a committed command is obsolete, rather than a replica failure.
+		if _, err := a.Store.GetTask(applyCtx, cmd.Tenant, cmd.IDs[0]); errors.Is(err, storage.ErrNotFound) {
+			if err := a.clearRestore(applyCtx, cmd.Tenant, cmd.IDs[0]); err != nil {
+				return nil, err
+			}
+			return resultJSON(http.StatusConflict, map[string]any{"code": "task_not_found", "error": "task was removed before application"})
+		} else if err != nil {
+			return nil, err
+		}
+	}
 	switch cmd.Kind {
 	case "sharding":
 		var action sharding.Action
@@ -285,16 +300,10 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 	case "flush":
 		return a.flush(applyCtx, cmd)
 	case "capture_backup":
-		if len(cmd.IDs) != 1 {
-			return nil, fmt.Errorf("invalid backup capture command")
-		}
 		return nil, a.Store.CaptureReplicatedObjectBackup(applyCtx, cmd.Tenant, cmd.IDs[0])
 	case "restore_part":
 		return a.stageRestore(applyCtx, cmd)
 	case "task":
-		if len(cmd.IDs) != 1 {
-			return nil, fmt.Errorf("invalid replicated task command")
-		}
 		if cmd.Error != "" {
 			task, err := a.Store.FailReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Error)
 			if err != nil {
