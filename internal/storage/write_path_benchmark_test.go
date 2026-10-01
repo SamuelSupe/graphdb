@@ -9,6 +9,55 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func BenchmarkReplicatedFilePublication(b *testing.B) {
+	benchmarkReplicatedFilePublication(b, false)
+}
+
+func BenchmarkReplicatedDirectoryCreation(b *testing.B) {
+	benchmarkReplicatedFilePublication(b, true)
+}
+
+func benchmarkReplicatedFilePublication(b *testing.B, newDirectories bool) {
+	files, err := OpenFileStore(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = files.Close() })
+	if err := files.RequireReplicatedWrites(); err != nil {
+		b.Fatal(err)
+	}
+	keys := make([]string, 16)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("graphdb/objects/%d/%d", i%4, i)
+	}
+	data := make([]byte, 1024)
+	b.ReportAllocs()
+	b.ResetTimer()
+	syncsBefore := diskSyncCalls.Load()
+	for i := 0; i < b.N; i++ {
+		if newDirectories {
+			for j := range keys {
+				keys[j] = fmt.Sprintf("graphdb/objects/%d/%d/%d", i, j%4, j)
+			}
+		}
+		_, err := files.ApplyReplicated(context.Background(), uint64(i+1), "publication", time.Unix(int64(i+1), 0), func(ctx context.Context) ([]byte, error) {
+			for repeat := 0; repeat < 2; repeat++ {
+				data[0] = byte(i + repeat)
+				for _, key := range keys {
+					if err := files.Put(ctx, key, data); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return nil, nil
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(diskSyncCalls.Load()-syncsBefore)/float64(b.N), "data-directory-syncs/op")
+}
+
 func BenchmarkSingleEntityIndexedCommit(b *testing.B) {
 	benchmarkSingleEntityIndexedCommit(b, false)
 }

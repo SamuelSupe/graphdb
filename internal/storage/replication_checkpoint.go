@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,10 +22,12 @@ type ReplicationCheckpoint struct {
 }
 
 type replicationJournal struct {
-	db      *bolt.DB
-	files   *FileStore
-	mu      sync.Mutex
-	failure error
+	db          *bolt.DB
+	files       *FileStore
+	mu          sync.Mutex
+	failure     error
+	directoryMu sync.Mutex
+	directories map[string]struct{}
 }
 
 type replicationJournalKey struct{}
@@ -58,7 +61,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		// RequireReplicatedWrites durably initialized the ancestors at startup.
 		// Validate the path and sync newly created directories without repeating
 		// those ancestor barriers for every committed entry.
-		err = s.ensureSafeDirectory(dir)
+		err = s.ensureSafeDirectory(dir, nil)
 	} else {
 		err = ensureDurableDirectory(dir)
 	}
@@ -89,6 +92,10 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		db.Close()
 		return nil, err
 	}
+	if err := journal.syncDirectories(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	checkpoint = ReplicationCheckpoint{Index: index, Response: response}
 	data, err := json.Marshal(checkpoint)
 	if err == nil {
@@ -110,9 +117,47 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	return response, nil
 }
 
+func (s *FileStore) replicationJournal(ctx context.Context) *replicationJournal {
+	journal, _ := ctx.Value(replicationJournalKey{}).(*replicationJournal)
+	if journal != nil && journal.files == s {
+		return journal
+	}
+	return nil
+}
+
+// Before-images are durable before each mutation. A crash before this barrier
+// restores them, so intermediate renames need no separate directory sync.
+// Every affected directory must be synced before the durable commit marker.
+// Directory bookkeeping must not wait behind another file's before-image I/O.
+func (j *replicationJournal) deferDirectorySync(dir string) {
+	j.directoryMu.Lock()
+	defer j.directoryMu.Unlock()
+	if j.directories == nil {
+		j.directories = make(map[string]struct{})
+	}
+	j.directories[dir] = struct{}{}
+}
+
+func (j *replicationJournal) syncDirectories() error {
+	j.directoryMu.Lock()
+	defer j.directoryMu.Unlock()
+	dirs := make([]string, 0, len(j.directories))
+	for dir := range j.directories {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		if err := syncDir(dir); err != nil {
+			return err
+		}
+		delete(j.directories, dir)
+	}
+	return nil
+}
+
 func (s *FileStore) journalObject(ctx context.Context, key string) error {
-	journal, ok := ctx.Value(replicationJournalKey{}).(*replicationJournal)
-	if !ok || journal.files != s {
+	journal := s.replicationJournal(ctx)
+	if journal == nil {
 		return nil
 	}
 	journal.mu.Lock()
@@ -220,7 +265,7 @@ func (s *FileStore) recoverReplication() error {
 			if err != nil {
 				return err
 			}
-			if err := s.ensureSafeParent(filename); err != nil {
+			if err := s.ensureSafeParent(filename, nil); err != nil {
 				return err
 			}
 			if len(value) == 0 {

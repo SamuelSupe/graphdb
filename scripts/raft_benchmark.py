@@ -19,6 +19,9 @@ import urllib.request
 from local_disk_benchmark import proc_sample
 
 TOKEN = 'raft-performance-local-only-token-0123456789'
+# Avoid listener conflicts with ephemeral connections retained between runs.
+DATA_PORT = 18080
+CATALOG_PORT = 22080
 CASES = {'read-1': (0, 1, 'direct'), 'read-8': (0, 8, 'direct'),
          'read-32': (0, 32, 'direct'), 'mixed-direct': (4, 16, 'direct'),
          'write-direct': (4, 0, 'direct'), 'mixed-wal': (4, 16, 'wal')}
@@ -100,22 +103,22 @@ class Cluster:
     def start(self, profiling=False, reopen=False):
         self.profiling = profiling
         role = {'GRAPHDB_RAFT_SHARD_ID': 'data'} if self.topology == 'sharded' else {}
-        self.group('data', 40080, role, reopen)
-        leader = self.leader(40080)
+        self.group('data', DATA_PORT, role, reopen)
+        leader = self.leader(DATA_PORT)
         if not reopen:
-            self.expand('data', 40080)
-            leader = self.leader(40080)
-        self.base = f'http://127.0.0.1:{40080+leader}'
-        self.profile_base = f'http://127.0.0.1:{42080+leader}'
+            self.expand('data', DATA_PORT)
+            leader = self.leader(DATA_PORT)
+        self.base = f'http://127.0.0.1:{DATA_PORT+leader}'
+        self.profile_base = f'http://127.0.0.1:{DATA_PORT+2000+leader}'
         if self.topology == 'sharded':
-            peers = self.group('catalog', 44080, {'GRAPHDB_RAFT_CATALOG': 'true'}, reopen)
-            self.leader(44080)
+            peers = self.group('catalog', CATALOG_PORT, {'GRAPHDB_RAFT_CATALOG': 'true'}, reopen)
+            self.leader(CATALOG_PORT)
             if not reopen:
-                self.expand('catalog', 44080)
-            self.spawn('router', {'GRAPHDB_ADDR': '127.0.0.1:40080',
+                self.expand('catalog', CATALOG_PORT)
+            self.spawn('router', {'GRAPHDB_ADDR': f'127.0.0.1:{DATA_PORT}',
                 'GRAPHDB_ROUTER_TOKEN': TOKEN, 'GRAPHDB_ROUTER_CATALOG_CLUSTER_ID': 'catalog',
                 'GRAPHDB_ROUTER_CATALOG_PEERS': peers}, 'serve-router')
-            self.base = 'http://127.0.0.1:40080'
+            self.base = f'http://127.0.0.1:{DATA_PORT}'
             for attempt in range(50):
                 try:
                     request(self.base, '/v1/readiness')
@@ -126,7 +129,7 @@ class Cluster:
                     time.sleep(.1)
             if not reopen:
                 request(self.base, '/v1/cluster/shards', {'id': 'data', 'cluster_id': 'data',
-                    'peers': {str(i): f'http://127.0.0.1:{41080+i}' for i in range(1, self.replicas+1)}})
+                    'peers': {str(i): f'http://127.0.0.1:{DATA_PORT+1000+i}' for i in range(1, self.replicas+1)}})
         if not reopen:
             request(self.base, '/v1/tenants', {'tenant_id': 'bench'})
 
@@ -143,6 +146,26 @@ class Cluster:
                 raise RuntimeError('replica did not shut down')
         for log in self.logs:
             log.close()
+
+    def disk_metrics(self):
+        port = DATA_PORT+2000 if self.profiling else DATA_PORT
+        values = {'graphdb_disk_sync_total': 0,
+                  'graphdb_disk_sync_failures_total': 0,
+                  'graphdb_disk_sync_seconds_total': 0}
+        for i in range(1, self.replicas+1):
+            req = urllib.request.Request(f'http://127.0.0.1:{port+i}/metrics',
+                headers={'Authorization': 'Bearer ' + TOKEN})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                sample = {}
+                for line in response.read().decode().splitlines():
+                    parts = line.split()
+                    if len(parts) == 2 and parts[0] in values:
+                        sample[parts[0]] = float(parts[1])
+            if sample.keys() != values.keys():
+                raise RuntimeError('replica disk sync metrics are missing')
+            for key, value in sample.items():
+                values[key] += value
+        return values
 
 
 def load(args, cluster, folder, stage, writers, readers, mode, duration=0, seed=False):
@@ -180,16 +203,20 @@ def run(args, name, binary, case, iteration):
             cluster.start(profiling=True, reopen=True)
         if args.warmup > 0:
             load(args, cluster, folder, 'warm', 0, max(1, readers), mode, args.warmup)
+        disk_before = cluster.disk_metrics()
         before = [proc_sample(p.pid) for p in cluster.processes]
         sampler = threading.Thread(target=profile) if args.profile else None
         if sampler:
             sampler.start()
         load(args, cluster, folder, 'measure', writers, readers, mode, args.seconds)
         after = [proc_sample(p.pid) for p in cluster.processes]
+        disk_after = cluster.disk_metrics()
         if sampler:
             sampler.join()
         if profile_errors:
             raise RuntimeError(profile_errors)
+        if disk_after['graphdb_disk_sync_failures_total'] != disk_before['graphdb_disk_sync_failures_total']:
+            raise RuntimeError('disk sync failed during measurement')
         report = json.loads((folder/'measure.json').read_text())
         if not report['success']:
             raise RuntimeError('loadtest integrity or freshness check failed')
@@ -198,6 +225,7 @@ def run(args, name, binary, case, iteration):
             'binary_sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
             'cpu_seconds': sum(b['cpu_seconds']-a['cpu_seconds'] for a,b in zip(before,after)),
             'write_bytes': sum(b['io']['write_bytes']-a['io']['write_bytes'] for a,b in zip(before,after)),
+            'disk_syncs': {key: disk_after[key]-disk_before[key] for key in disk_before},
             'resources_before': before, 'resources_after': after, 'load': report}
         (folder/'result.json').write_text(json.dumps(row, indent=2)+'\n')
         print(json.dumps({k: row[k] for k in ['variant','case','round','cpu_seconds','write_bytes']}), flush=True)

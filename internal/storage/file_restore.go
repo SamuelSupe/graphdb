@@ -20,7 +20,7 @@ type fileRestoreJournal struct {
 
 func (s *FileStore) newRestoreDirectory() (string, error) {
 	parent := filepath.Join(s.root, fileRestoreDirectory)
-	if err := s.ensureSafeDirectory(parent); err != nil {
+	if err := s.ensureSafeDirectory(parent, nil); err != nil {
 		return "", err
 	}
 	dir, err := os.MkdirTemp(parent, "restore-")
@@ -41,8 +41,14 @@ func (s *FileStore) publishRestoreDirectory(ctx context.Context, dir, targetKey 
 	if err != nil {
 		return err
 	}
-	if err := s.walkSafeDir(target, false); err != nil {
+	if err := s.walkSafeDir(target, false, nil); err != nil {
 		return err
+	}
+	// A directory switch may remove paths modified earlier in this application.
+	if journal := s.replicationJournal(ctx); journal != nil {
+		if err := journal.syncDirectories(); err != nil {
+			return err
+		}
 	}
 	if err := s.journalDirectory(ctx, targetKey, filepath.Join(dir, "build", filepath.FromSlash(targetKey))); err != nil {
 		return err
@@ -86,7 +92,7 @@ func (s *FileStore) publishRestoreDirectory(ctx context.Context, dir, targetKey 
 }
 
 func (s *FileStore) restoreRename(from, to string) error {
-	if err := s.walkSafeDir(from, false); err != nil {
+	if err := s.walkSafeDir(from, false, nil); err != nil {
 		return err
 	}
 	if err := s.verifySafeParent(to); err != nil {
@@ -105,7 +111,7 @@ func (s *FileStore) restoreRename(from, to string) error {
 
 func (s *FileStore) recoverRestoreDirectories() error {
 	parent := filepath.Join(s.root, fileRestoreDirectory)
-	if err := s.walkSafeDir(parent, false); err != nil {
+	if err := s.walkSafeDir(parent, false, nil); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}
@@ -169,11 +175,11 @@ func (s *FileStore) finishRestoreDirectory(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.walkSafeDir(target, false); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := s.walkSafeDir(target, false, nil); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	old := filepath.Join(dir, "old")
-	if err := s.walkSafeDir(old, false); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := s.walkSafeDir(old, false, nil); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	if !journal.Committed {

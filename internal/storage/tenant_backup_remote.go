@@ -187,7 +187,7 @@ func (s *TenantStore) backupStagingFile(ctx context.Context) (*os.File, func(), 
 		return nil, nil, err
 	}
 	defer unlock()
-	if err := files.ensureSafeParent(filepath.Join(files.root, ".tmp-backup")); err != nil {
+	if err := files.ensureSafeParent(filepath.Join(files.root, ".tmp-backup"), nil); err != nil {
 		release()
 		return nil, nil, err
 	}

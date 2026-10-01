@@ -72,3 +72,5 @@ Raft 管理接口位于私有 Raft 监听器，请求必须携带 `Authorization
 ## 验证
 
 针对新的一致性与恢复边界运行 `internal/ha` 和 `internal/storage` 的集成测试，另外使用实际 Linux 二进制启动三个独立进程进行入口与故障切换验证。结果与未验证边界见 [验收记录](raft-ha-validation.zh-CN.md)。协议实现参考 [etcd/raft](https://github.com/etcd-io/raft)，入口健康检查配置参考 [HAProxy 文档](https://docs.haproxy.org/3.0/configuration.html)。
+
+目录同步合并的三、五副本对比与持久化验收见 [性能复测](performance-raft-directory-sync.zh-CN.md)，其中三副本仍有明显回退，不能据此宣称整体性能提升。

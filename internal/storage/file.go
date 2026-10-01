@@ -156,7 +156,7 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	}
 	unlock := s.lockObject(key)
 	defer unlock()
-	if err := s.ensureSafeParent(path); err != nil {
+	if err := s.ensureSafeParent(path, s.replicationJournal(ctx)); err != nil {
 		return ObjectMeta{}, err
 	}
 	currentETag, exists, err := s.objectState(key, path, fileStorePutNeedsCurrentETag(condition))
@@ -181,7 +181,7 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	if err := s.journalObject(ctx, key); err != nil {
 		return ObjectMeta{}, err
 	}
-	if err := writeFileAtomicContext(ctx, path, data); err != nil {
+	if err := writeFileAtomicContext(ctx, path, data, s.replicationJournal(ctx)); err != nil {
 		return ObjectMeta{}, err
 	}
 	etag = sha256Hex(data)
@@ -260,8 +260,9 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 		return errGCViewPinned
 	}
 	defer s.changed(key, "")
+	journal := s.replicationJournal(ctx)
 	files, batched := ctx.Value(fileBatchKey{}).(*FileStore)
-	batched = batched && files == s
+	batched = batched && files == s && journal == nil
 	if batched {
 		s.runtime.publicationMu.Lock()
 		defer s.runtime.publicationMu.Unlock()
@@ -274,6 +275,10 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 		return nil
 	}
 	if err == nil {
+		if journal != nil {
+			journal.deferDirectorySync(filepath.Dir(path))
+			return nil
+		}
 		if batched {
 			if s.runtime.pendingDirectories == nil {
 				s.runtime.pendingDirectories = make(map[string]struct{})
@@ -359,10 +364,10 @@ func validateFileStoreKey(key string) error {
 }
 
 func writeFileAtomic(path string, data []byte) error {
-	return writeFileAtomicContext(context.Background(), path, data)
+	return writeFileAtomicContext(context.Background(), path, data, nil)
 }
 
-func writeFileAtomicContext(ctx context.Context, path string, data []byte) error {
+func writeFileAtomicContext(ctx context.Context, path string, data []byte, journal *replicationJournal) error {
 	if bytes, ok := ctx.Value(fileBatchBytesKey{}).(*atomic.Int64); ok {
 		bytes.Add(int64(len(data)))
 	}
@@ -394,6 +399,7 @@ func writeFileAtomicContext(ctx context.Context, path string, data []byte) error
 		return err
 	}
 	files, batched := ctx.Value(fileBatchKey{}).(*FileStore)
+	batched = batched && journal == nil
 	if batched {
 		files.runtime.publicationMu.Lock()
 		defer files.runtime.publicationMu.Unlock()
@@ -402,6 +408,10 @@ func writeFileAtomicContext(ctx context.Context, path string, data []byte) error
 		return err
 	}
 	cleanup = false
+	if journal != nil {
+		journal.deferDirectorySync(dir)
+		return nil
+	}
 	if batched {
 		if files.runtime.pendingDirectories == nil {
 			files.runtime.pendingDirectories = make(map[string]struct{})

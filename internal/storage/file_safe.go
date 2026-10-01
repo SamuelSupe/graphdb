@@ -8,16 +8,16 @@ import (
 )
 
 func (s *FileStore) verifySafeParent(filePath string) error {
-	return s.walkSafeDir(filepath.Dir(filePath), false)
+	return s.walkSafeDir(filepath.Dir(filePath), false, nil)
 }
 
-func (s *FileStore) ensureSafeParent(filePath string) error {
-	return s.ensureSafeDirectory(filepath.Dir(filePath))
+func (s *FileStore) ensureSafeParent(filePath string, journal *replicationJournal) error {
+	return s.ensureSafeDirectory(filepath.Dir(filePath), journal)
 }
 
-func (s *FileStore) ensureSafeDirectory(dir string) error {
-	// A directory becomes usable by another writer only after its parent's
-	// fsync. Retry a failed barrier before allowing any later publication.
+func (s *FileStore) ensureSafeDirectory(dir string, journal *replicationJournal) error {
+	// Standalone writers require an immediate parent barrier. Replicated
+	// writers share the journal's rollback and final publication barrier.
 	s.directoryMu.Lock()
 	defer s.directoryMu.Unlock()
 	if s.pendingDirectorySync != "" {
@@ -26,10 +26,10 @@ func (s *FileStore) ensureSafeDirectory(dir string) error {
 		}
 		s.pendingDirectorySync = ""
 	}
-	return s.walkSafeDir(dir, true)
+	return s.walkSafeDir(dir, true, journal)
 }
 
-func (s *FileStore) walkSafeDir(dir string, create bool) error {
+func (s *FileStore) walkSafeDir(dir string, create bool, journal *replicationJournal) error {
 	rootAbs, err := filepath.Abs(s.root)
 	if err != nil {
 		return err
@@ -45,7 +45,7 @@ func (s *FileStore) walkSafeDir(dir string, create bool) error {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return fmt.Errorf("object directory %q is outside root %q", dirAbs, rootAbs)
 	}
-	if err := s.ensureSafeDirComponent(rootAbs, create); err != nil {
+	if err := s.ensureSafeDirComponent(rootAbs, create, journal); err != nil {
 		return err
 	}
 	if rel == "." {
@@ -57,14 +57,14 @@ func (s *FileStore) walkSafeDir(dir string, create bool) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		if err := s.ensureSafeDirComponent(current, create); err != nil {
+		if err := s.ensureSafeDirComponent(current, create, journal); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *FileStore) ensureSafeDirComponent(path string, create bool) error {
+func (s *FileStore) ensureSafeDirComponent(path string, create bool, journal *replicationJournal) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		if !create {
@@ -73,11 +73,15 @@ func (s *FileStore) ensureSafeDirComponent(path string, create bool) error {
 		if err := os.Mkdir(path, 0o755); err != nil && !os.IsExist(err) {
 			return err
 		}
-		s.pendingDirectorySync = filepath.Dir(path)
-		if err := syncDir(s.pendingDirectorySync); err != nil {
-			return err
+		if journal != nil {
+			journal.deferDirectorySync(filepath.Dir(path))
+		} else {
+			s.pendingDirectorySync = filepath.Dir(path)
+			if err := syncDir(s.pendingDirectorySync); err != nil {
+				return err
+			}
+			s.pendingDirectorySync = ""
 		}
-		s.pendingDirectorySync = ""
 		info, err = os.Lstat(path)
 	}
 	if err != nil {

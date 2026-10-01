@@ -31,7 +31,7 @@ func (s *FileStore) ListPage(ctx context.Context, prefix, after string, limit in
 	if err != nil {
 		return nil, "", err
 	}
-	if err := s.walkSafeDir(walkRoot, false); err != nil {
+	if err := s.walkSafeDir(walkRoot, false, nil); err != nil {
 		if errors.Is(err, ErrNotFound) || os.IsNotExist(err) {
 			return []ObjectInfo{}, "", nil
 		}
