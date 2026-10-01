@@ -181,7 +181,8 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	if err := s.journalObject(ctx, key); err != nil {
 		return ObjectMeta{}, err
 	}
-	if err := writeFileAtomicContext(ctx, path, data, s.replicationJournal(ctx)); err != nil {
+	journal := s.replicationJournal(ctx)
+	if err := writeFileAtomicContext(ctx, path, data, journal); err != nil {
 		return ObjectMeta{}, err
 	}
 	etag = sha256Hex(data)
@@ -276,6 +277,7 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	}
 	if err == nil {
 		if journal != nil {
+			journal.forgetFileSync(path)
 			journal.deferDirectorySync(filepath.Dir(path))
 			return nil
 		}
@@ -391,9 +393,11 @@ func writeFileAtomicContext(ctx context.Context, path string, data []byte, journ
 		_ = file.Close()
 		return err
 	}
-	if err := syncStorageFile(file); err != nil {
-		_ = file.Close()
-		return err
+	if journal == nil {
+		if err := syncStorageFile(file); err != nil {
+			_ = file.Close()
+			return err
+		}
 	}
 	if err := file.Close(); err != nil {
 		return err
@@ -409,6 +413,7 @@ func writeFileAtomicContext(ctx context.Context, path string, data []byte, journ
 	}
 	cleanup = false
 	if journal != nil {
+		journal.deferFileSync(path)
 		journal.deferDirectorySync(dir)
 		return nil
 	}

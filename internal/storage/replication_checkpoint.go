@@ -30,6 +30,8 @@ type replicationJournal struct {
 	writers     atomic.Int32
 	directoryMu sync.Mutex
 	directories map[string]struct{}
+	fileMu      sync.Mutex
+	fileSyncs   map[string]struct{}
 }
 
 type replicationJournalKey struct{}
@@ -87,13 +89,19 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	ctx = context.WithValue(ReplicatedContext(ctx, id, at), replicationJournalKey{}, journal)
 	response, applyErr := apply(ctx)
 	journal.mu.Lock()
-	applyErr = errors.Join(applyErr, journal.failure)
+	// A handler can translate cancellation into an HTTP response before any
+	// file operation records a failure. That response must not become durable.
+	applyErr = errors.Join(applyErr, journal.failure, ctx.Err())
 	journal.mu.Unlock()
 	if applyErr != nil {
 		db.Close()
 		return nil, errors.Join(applyErr, s.recoverReplication())
 	}
 	if err := s.syncPendingDirectories(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := journal.syncFiles(); err != nil {
 		db.Close()
 		return nil, err
 	}

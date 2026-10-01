@@ -40,8 +40,14 @@ func TestApplicationBatchRecovery(t *testing.T) {
 	}
 	app := open()
 	fail := false
+	var cancelHandler context.CancelFunc
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		value, _ := io.ReadAll(r.Body)
+		if string(value) == "second" && cancelHandler != nil {
+			cancelHandler()
+			w.WriteHeader(http.StatusRequestTimeout)
+			return
+		}
 		if err := app.Files.Put(r.Context(), "graphdb/manifest", value); err != nil {
 			t.Error(err)
 			w.WriteHeader(500)
@@ -90,6 +96,15 @@ func TestApplicationBatchRecovery(t *testing.T) {
 	if _, err := app.ApplyBatch(context.Background(), batch); err == nil {
 		t.Fatal("failed command acknowledged the batch")
 	}
+	verifyRollback()
+	fail = false
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelHandler = cancel
+	if _, err := app.ApplyBatch(ctx, batch); !errors.Is(err, context.Canceled) {
+		t.Fatalf("translated cancellation acknowledged the batch: %v", err)
+	}
+	cancelHandler = nil
 	verifyRollback()
 	if err := app.Files.Close(); err != nil {
 		t.Fatal(err)

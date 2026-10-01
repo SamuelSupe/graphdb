@@ -55,6 +55,9 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			if err := files.Put(ctx, "graphdb/new/child/data", []byte("new")); err != nil {
 				return nil, err
 			}
+			if err := files.Delete(ctx, "graphdb/manifest"); err != nil {
+				return nil, err
+			}
 			if err := files.Put(ctx, "graphdb/manifest", []byte("newer-version")); err != nil {
 				return nil, err
 			}
@@ -134,6 +137,9 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			}
 			for i := 0; i < 2; i++ {
 				_, err = files.ApplyReplicated(context.Background(), 2, "replay", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+					if err := files.Delete(ctx, "graphdb/manifest"); err != nil {
+						return nil, err
+					}
 					for _, key := range []string{"graphdb/manifest", "graphdb/pages/a", "graphdb/commits/b"} {
 						if err := files.Put(ctx, key, []byte("committed")); err != nil {
 							return nil, err
@@ -201,6 +207,65 @@ func TestReplicationApplicationDirectorySyncFailure(t *testing.T) {
 	}
 }
 
+func TestReplicationApplicationFileSyncFailure(t *testing.T) {
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	ctx := context.Background()
+	if _, err := files.ApplyReplicated(ctx, 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		return nil, files.Put(ctx, "graphdb/manifest", []byte("old"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = files.ApplyReplicated(ctx, 2, "file-failure", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		if err := files.Put(ctx, "graphdb/manifest", []byte("new")); err != nil {
+			return nil, err
+		}
+		if err := files.Put(ctx, "graphdb/new-data", []byte("new")); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(root, "graphdb", "manifest")
+		if err := os.Remove(path); err != nil {
+			return nil, err
+		}
+		// The final data barrier must reject a replaced leaf before checkpointing.
+		return []byte("response"), os.Symlink(outside, path)
+	})
+	if err == nil {
+		t.Fatal("failed final object sync was checkpointed")
+	}
+	checkpoint, err := files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 1 {
+		t.Fatalf("failed file sync advanced checkpoint: %+v, %v", checkpoint, err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	data, err := files.Get(ctx, "graphdb/manifest")
+	if err != nil || string(data) != "old" {
+		t.Fatalf("failed final object sync was not rolled back: %q, %v", data, err)
+	}
+	if _, err := files.Get(ctx, "graphdb/new-data"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("new object survived a failed final barrier: %v", err)
+	}
+	data, err = os.ReadFile(outside)
+	if err != nil || string(data) != "outside" {
+		t.Fatalf("replaced leaf modified an outside file: %q, %v", data, err)
+	}
+}
+
 func TestReplicationApplicationDirectoryReplacement(t *testing.T) {
 	root := t.TempDir()
 	files, err := OpenFileStore(root)
@@ -212,9 +277,20 @@ func TestReplicationApplicationDirectoryReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	const target = "graphdb/tenants/a"
-	_, err = files.ApplyReplicated(context.Background(), 1, "replacement", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+	_, err = files.ApplyReplicated(context.Background(), 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
 		if err := files.Put(ctx, target+"/old-only/object", []byte("old")); err != nil {
 			return nil, err
+		}
+		return nil, files.Put(ctx, target+"/kept/object", []byte("old"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = files.ApplyReplicated(context.Background(), 2, "replacement", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		for _, key := range []string{target + "/old-only/object", target + "/kept/object"} {
+			if err := files.Put(ctx, key, []byte("updated")); err != nil {
+				return nil, err
+			}
 		}
 		dir, err := files.newRestoreDirectory()
 		if err != nil {
@@ -222,6 +298,9 @@ func TestReplicationApplicationDirectoryReplacement(t *testing.T) {
 		}
 		stage := NewFileStore(filepath.Join(dir, "build"))
 		if err := stage.Put(ctx, target+"/manifest", []byte("replacement")); err != nil {
+			return nil, err
+		}
+		if err := os.Link(filepath.Join(root, target, "kept", "object"), filepath.Join(dir, "build", target, "kept-copy")); err != nil {
 			return nil, err
 		}
 		return nil, files.publishRestoreDirectory(ctx, dir, target)
@@ -243,6 +322,10 @@ func TestReplicationApplicationDirectoryReplacement(t *testing.T) {
 	}
 	if _, err := files.Get(context.Background(), target+"/old-only/object"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("replaced object survived: %v", err)
+	}
+	data, err = files.Get(context.Background(), target+"/kept-copy")
+	if err != nil || string(data) != "updated" {
+		t.Fatalf("updated hard-linked object did not survive replacement: %q, %v", data, err)
 	}
 }
 

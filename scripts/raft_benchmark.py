@@ -178,6 +178,20 @@ class Cluster:
                 values[key] += status[key]
         return values
 
+    def wait_applied(self):
+        leader = self.leader(DATA_PORT)
+        target = request(f'http://127.0.0.1:{DATA_PORT+leader}', '/v1/health')['raft']['commit_index']
+        deadline = time.monotonic()+60
+        while time.monotonic() < deadline:
+            states = [request(f'http://127.0.0.1:{DATA_PORT+i}', '/v1/health')['raft']
+                      for i in range(1, self.replicas+1)]
+            if any(state.get('error') or state.get('snapshot_error') for state in states):
+                raise RuntimeError(f'replica application failed: {states}')
+            if all(state['applied_index'] >= target for state in states):
+                return states
+            time.sleep(.05)
+        raise RuntimeError(f'replicas did not apply committed index {target}: {states}')
+
 
 def load(args, cluster, folder, stage, writers, readers, mode, duration=0, seed=False):
     command = [args.loadtest, '-base', cluster.base, '-tenant', 'bench',
@@ -212,12 +226,23 @@ def run(args, name, binary, case, iteration):
     try:
         cluster.start()
         load(args, cluster, folder, 'seed', 4, 0, mode, seed=True)
+        cluster.wait_applied()
+        for i in range(1, args.replicas+1):
+            events = []
+            for line in (data_folder / f'data{i}.log').read_text().splitlines():
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    pass
+            if not any(event.get('event') == 'index_rebuild_completed' for event in events):
+                raise RuntimeError(f'replica {i} did not complete seed index rebuild')
         if args.profile:
             cluster.stop()
             cluster = Cluster(binary, data_folder, mode, args.topology, args.replicas)
             cluster.start(profiling=True, reopen=True)
         if args.warmup > 0:
             load(args, cluster, folder, 'warm', 0, max(1, readers), mode, args.warmup)
+        replica_states_before = cluster.wait_applied()
         disk_before = cluster.disk_metrics()
         application_before = cluster.application_metrics()
         before = [proc_sample(p.pid) for p in cluster.processes]
@@ -225,6 +250,7 @@ def run(args, name, binary, case, iteration):
         if sampler:
             sampler.start()
         load(args, cluster, folder, 'measure', writers, readers, mode, args.seconds)
+        replica_states_after = cluster.wait_applied()
         after = [proc_sample(p.pid) for p in cluster.processes]
         disk_after = cluster.disk_metrics()
         application_after = cluster.application_metrics()
@@ -240,6 +266,8 @@ def run(args, name, binary, case, iteration):
         row = {'variant': name, 'case': case, 'round': iteration, 'topology': args.topology,
             'replicas': args.replicas,
             'data_directory': str(data_folder),
+            'replica_states_before': replica_states_before,
+            'replica_states_after': replica_states_after,
             'binary_sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
             'cpu_seconds': sum(b['cpu_seconds']-a['cpu_seconds'] for a,b in zip(before,after)),
             'write_bytes': sum(b['io']['write_bytes']-a['io']['write_bytes'] for a,b in zip(before,after)),

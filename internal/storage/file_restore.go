@@ -46,6 +46,9 @@ func (s *FileStore) publishRestoreDirectory(ctx context.Context, dir, targetKey 
 	}
 	// A directory switch may remove paths modified earlier in this application.
 	if journal := s.replicationJournal(ctx); journal != nil {
+		if err := journal.syncFiles(); err != nil {
+			return err
+		}
 		if err := journal.syncDirectories(); err != nil {
 			return err
 		}
