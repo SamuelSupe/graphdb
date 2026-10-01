@@ -54,17 +54,25 @@ func (r *Repository) manifestKey(tenant, id string) string {
 }
 
 func (r *Repository) URI(tenant, id string) (string, error) {
+	return r.Namespace().URI(tenant, id)
+}
+
+func (n Namespace) URI(tenant, id string) (string, error) {
 	if !validID(tenant) || !validID(id) {
 		return "", fmt.Errorf("invalid backup identity")
 	}
-	return (&url.URL{Scheme: "s3", Host: r.bucket, Path: "/" + r.manifestKey(tenant, id)}).String(), nil
+	return (&url.URL{Scheme: "s3", Host: n.Bucket, Path: "/" + path.Join(n.Prefix, tenant, id, "manifest.json")}).String(), nil
 }
 
 // ParseURI restricts requests to the configured repository. Request bodies cannot
 // choose another bucket, endpoint, prefix, or arbitrary object within the bucket.
 func (r *Repository) ParseURI(uri string) (tenant, id string, err error) {
+	return r.Namespace().ParseURI(uri)
+}
+
+func (n Namespace) ParseURI(uri string) (tenant, id string, err error) {
 	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "s3" || u.Host != r.bucket || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Scheme != "s3" || u.Host != n.Bucket || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", "", fmt.Errorf("backup_key must identify a snapshot in the configured S3 backup repository")
 	}
 	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
@@ -72,7 +80,7 @@ func (r *Repository) ParseURI(uri string) (tenant, id string, err error) {
 		return "", "", fmt.Errorf("invalid object backup key")
 	}
 	tenant, id = parts[len(parts)-3], parts[len(parts)-2]
-	canonical, err := r.URI(tenant, id)
+	canonical, err := n.URI(tenant, id)
 	if err != nil || canonical != uri {
 		return "", "", fmt.Errorf("invalid object backup key")
 	}

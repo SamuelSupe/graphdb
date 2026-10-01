@@ -66,6 +66,19 @@ type Repository struct {
 	readers        map[string]int
 }
 
+// Namespace identifies the permitted backup location without endpoint or credentials.
+type Namespace struct {
+	Bucket string `json:"bucket"`
+	Prefix string `json:"prefix,omitempty"`
+}
+
+func (r *Repository) Namespace() Namespace {
+	if r == nil {
+		return Namespace{}
+	}
+	return Namespace{Bucket: r.bucket, Prefix: r.prefix}
+}
+
 func New(ctx context.Context, c Config) (*Repository, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err

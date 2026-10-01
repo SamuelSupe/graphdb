@@ -9,6 +9,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 )
 
 const (
@@ -66,14 +68,18 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	if err := validateTaskParams(taskType, params); err != nil {
 		return Task{}, err
 	}
-	if taskType == TaskTypeTenantBackup && stringTaskParam(params, "destination") == "object" && s.Backups == nil {
+	namespace := s.Backups.Namespace()
+	if replicated, ok := ctx.Value(replicatedBackupNamespaceKey{}).(backupstore.Namespace); ok {
+		namespace = replicated
+	}
+	if taskType == TaskTypeTenantBackup && stringTaskParam(params, "destination") == "object" && namespace.Bucket == "" {
 		return Task{}, fmt.Errorf("object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET")
 	}
 	if (taskType == TaskTypeTenantRestore || taskType == TaskTypeTenantRestoreDrill) && strings.HasPrefix(stringTaskParam(params, "backup_key"), "s3://") {
-		if s.Backups == nil {
+		if namespace.Bucket == "" {
 			return Task{}, fmt.Errorf("object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET")
 		}
-		if _, _, err := s.Backups.ParseURI(stringTaskParam(params, "backup_key")); err != nil {
+		if _, _, err := namespace.ParseURI(stringTaskParam(params, "backup_key")); err != nil {
 			return Task{}, err
 		}
 	}

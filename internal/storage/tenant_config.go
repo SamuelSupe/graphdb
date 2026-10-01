@@ -215,7 +215,9 @@ func (s *TenantStore) putTenantConfigRecordWithMeta(ctx context.Context, tenantI
 
 func (s *TenantStore) effectiveBackpressureConfig(ctx context.Context, tenantID string) (BackpressureConfig, error) {
 	base := BackpressureConfig{}
-	if s.Backpressure != nil {
+	if replicated, ok := ctx.Value(replicatedBackpressureKey{}).(BackpressureConfig); ok {
+		base = replicated
+	} else if s.Backpressure != nil {
 		base = s.Backpressure.Config()
 	}
 	config, ok, _, err := s.getTenantConfigForWrite(ctx, tenantID)

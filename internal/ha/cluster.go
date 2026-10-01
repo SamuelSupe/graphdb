@@ -86,6 +86,23 @@ func newCommand(kind string) (command, error) {
 }
 func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 	cmd.Role = c.App.replicationRole()
+	c.App.mu.RLock()
+	if cmd.Kind == "http" || cmd.Kind == "accept" || cmd.Kind == "flush" || cmd.Kind == "task" {
+		policy := storage.BackpressureConfig{}
+		if c.App.Store.Backpressure != nil {
+			policy = c.App.Store.Backpressure.Config()
+		}
+		cmd.Backpressure = &policy
+	}
+	if cmd.Kind == "accept" {
+		budget := c.App.MaxPendingBytes
+		cmd.QueueBudget = &budget
+	}
+	if cmd.Kind == "http" {
+		namespace := c.App.Store.Backups.Namespace()
+		cmd.BackupNamespace = &namespace
+	}
+	c.App.mu.RUnlock()
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err

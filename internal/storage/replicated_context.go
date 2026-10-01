@@ -6,9 +6,25 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 )
 
 type replicatedContextKey struct{}
+type replicatedBackpressureKey struct{}
+type replicatedBackupNamespaceKey struct{}
+
+// ReplicatedBackpressureContext carries the proposing leader's base limits.
+// Tenant overrides are still read from replicated state in log order.
+func ReplicatedBackpressureContext(ctx context.Context, config BackpressureConfig) context.Context {
+	return context.WithValue(ctx, replicatedBackpressureKey{}, config)
+}
+
+// ReplicatedBackupContext validates task admission against the leader's namespace.
+// Only task preparation uses this node's S3 client; application uses logged input.
+func ReplicatedBackupContext(ctx context.Context, namespace backupstore.Namespace) context.Context {
+	return context.WithValue(ctx, replicatedBackupNamespaceKey{}, namespace)
+}
 
 type replicatedExecution struct {
 	id       string

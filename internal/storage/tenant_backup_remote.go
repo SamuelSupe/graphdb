@@ -14,7 +14,8 @@ import (
 )
 
 func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (map[string]any, string, error) {
-	if s.Backups == nil {
+	replicated, hasReplicated := ctx.Value(replicatedBackupKey{}).(backupstore.Entry)
+	if !hasReplicated && s.Backups == nil {
 		return nil, "", fmt.Errorf("object backups are not configured")
 	}
 	// Protect capture until its descriptor is open. The descriptor survives
@@ -32,9 +33,12 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 			backupID = "scheduled-" + backupID
 		}
 	}
-	uri, err := s.Backups.URI(task.TenantID, backupID)
-	if err != nil {
-		return nil, "", err
+	uri := replicated.BackupKey
+	if !hasReplicated {
+		uri, err = s.Backups.URI(task.TenantID, backupID)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	resultKey := s.taskResultKey(task.TenantID, backupID)
 	if err := s.updateTaskActionProgress(ctx, task, "backup_capture", 1, 5, taskActionUpdate{ID: "load_snapshot_metadata", Status: "running"}, map[string]any{
@@ -90,7 +94,7 @@ func (s *TenantStore) tenantObjectBackupTask(ctx context.Context, task Task) (ma
 		admission.release()
 	}
 	var entry backupstore.Entry
-	if replicated, ok := ctx.Value(replicatedBackupKey{}).(backupstore.Entry); ok {
+	if hasReplicated {
 		entry = replicated
 		if entry.TenantID != manifest.TenantID || entry.BackupID != manifest.BackupID || entry.Version != manifest.Version {
 			return nil, "", fmt.Errorf("replicated object backup identity mismatch")

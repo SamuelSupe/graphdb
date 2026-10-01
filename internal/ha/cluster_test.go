@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -534,6 +536,223 @@ func TestHAPendingQueueBudgetSurvivesFlushAndRestart(t *testing.T) {
 			t.Fatalf("batch %s was not published exactly once: %+v, %v", id, record, err)
 		}
 	}
+}
+
+func TestHAWALAcceptanceUsesLeaderQueueBudget(t *testing.T) {
+	group := newTestCluster(t, true)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	for i, replica := range group.nodes {
+		replica.cluster.App.mu.Lock()
+		replica.cluster.App.MaxPendingBytes = 1
+		if i == leader {
+			replica.cluster.App.MaxPendingBytes = 32 << 10
+		}
+		replica.cluster.App.mu.Unlock()
+	}
+	body := `{"source":"agent","collector_id":"collector","batch_id":"accepted-before-failover","items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host"}}]}`
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body, http.StatusAccepted)
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+	}
+	group.stop(leader)
+	leader = group.leader(leader)
+	group.mustRequest(leader, "GET", "/v1/ingest/batches/agent/collector/accepted-before-failover", "", http.StatusOK)
+	if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	group.mustRequest(leader, "GET", "/v1/entities/host:1", "", http.StatusOK)
+}
+
+func TestHAWritesUseLeaderQuota(t *testing.T) {
+	for _, wal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wal=%t", wal), func(t *testing.T) {
+			group := newTestCluster(t, wal)
+			leader := group.leader(-1)
+			group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+			for i, replica := range group.nodes {
+				replica.cluster.App.mu.Lock()
+				limit := 1
+				if i == leader {
+					limit = 100
+				}
+				replica.store.Backpressure = storage.NewWritePressure(storage.BackpressureConfig{MaxEntitiesPerTenant: limit, ObjectErrorThreshold: 1})
+				if i != leader {
+					replica.store.Backpressure.RecordObjectOperation(time.Second, storage.ErrObjectStoreUnavailable)
+				}
+				if i == (leader+1)%len(group.nodes) {
+					replica.store.Backpressure = nil
+				}
+				replica.cluster.App.mu.Unlock()
+			}
+			body := `{"source":"agent","collector_id":"collector","batch_id":"quota","items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host"}},{"external_id":"host:2","entity":{"id":"host:2","kind":"host"}}]}`
+			status := http.StatusOK
+			if wal {
+				status = http.StatusAccepted
+			}
+			group.mustRequest(leader, "POST", "/v1/ingest/batches", body, status)
+			if wal {
+				if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			group.mustRequest(leader, "GET", "/v1/entities/host:2", "", http.StatusOK)
+			group.mustRequest(leader, "PUT", "/v1/tenant-config", `{"quota":{"max_entities_per_tenant":2}}`, http.StatusOK)
+			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:3","kind":"host"}]}}`, http.StatusTooManyRequests)
+			checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range group.nodes {
+				group.waitApplied(i, checkpoint.Index)
+			}
+			group.stop(leader)
+			leader = group.leader(leader)
+			group.mustRequest(leader, "GET", "/v1/entities/host:2", "", http.StatusOK)
+			group.mustRequest(leader, "GET", "/v1/entities/host:3", "", http.StatusNotFound)
+		})
+	}
+}
+
+func TestHAObjectBackupUsesLeaderRepository(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", `{"source":"agent","collector_id":"collector","batch_id":"backup","items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host"}}]}`, http.StatusOK)
+	endpoint := os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT")
+	if endpoint == "" {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "backup source unavailable", http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+		endpoint = server.URL
+	}
+	repo, err := backupstore.New(context.Background(), backupstore.Config{
+		Bucket: "test-bucket", Prefix: fmt.Sprintf("replica-%d", time.Now().UnixNano()), Endpoint: endpoint, PathStyle: true,
+		AccessKeyID: "test", SecretAccessKey: "test-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := backupstore.New(context.Background(), backupstore.Config{
+		Bucket: "other-bucket", Prefix: "other-prefix", Endpoint: endpoint, PathStyle: true,
+		AccessKeyID: "test", SecretAccessKey: "test-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.nodes[leader].cluster.App.mu.Lock()
+	group.nodes[leader].store.Backups = repo
+	group.nodes[leader].cluster.App.mu.Unlock()
+	follower := group.nodes[(leader+1)%len(group.nodes)]
+	follower.cluster.App.mu.Lock()
+	follower.store.Backups = other
+	follower.cluster.App.mu.Unlock()
+	response := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"tenant_backup","params":{"destination":"object"}}`, http.StatusAccepted)
+	var task storage.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, replica := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		replica.cluster.App.mu.RLock()
+		_, err := replica.store.GetTask(context.Background(), "tenant-a", task.ID)
+		replica.cluster.App.mu.RUnlock()
+		if err != nil {
+			t.Fatalf("acknowledged object backup task missing on replica %d: %v", i, err)
+		}
+	}
+	if os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT") != "" {
+		for range 2 {
+			if err := group.nodes[leader].cluster.runQueuedTask(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		response = group.mustRequest(leader, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK)
+		if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+			t.Fatal(err)
+		}
+		if task.Status != storage.TaskStatusSucceeded {
+			t.Fatalf("object backup failed: %+v", task)
+		}
+		checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, replica := range group.nodes {
+			group.waitApplied(i, checkpoint.Index)
+			replica.cluster.App.mu.RLock()
+			stored, err := replica.store.GetTask(context.Background(), "tenant-a", task.ID)
+			replica.cluster.App.mu.RUnlock()
+			if err != nil || stored.Status != storage.TaskStatusSucceeded || stored.Result["backup_key"] != task.Result["backup_key"] {
+				t.Fatalf("object backup result differs on replica %d: %+v, %v", i, stored, err)
+			}
+		}
+		group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/restore", `{"backup_key":"s3://other-bucket/other-prefix/tenant-a/bad/manifest.json","overwrite":true}`, http.StatusBadRequest)
+		response = group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/restore", fmt.Sprintf(`{"backup_key":%q,"overwrite":true}`, task.Result["backup_key"]), http.StatusAccepted)
+		var restore storage.Task
+		if err := json.Unmarshal(response.Body.Bytes(), &restore); err != nil {
+			t.Fatal(err)
+		}
+		if err := group.nodes[leader].cluster.runQueuedTask(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, replica := range group.nodes {
+			group.waitApplied(i, checkpoint.Index)
+			replica.cluster.App.mu.RLock()
+			stored, err := replica.store.GetTask(context.Background(), "tenant-a", restore.ID)
+			replica.cluster.App.mu.RUnlock()
+			if err != nil || stored.Status != storage.TaskStatusSucceeded {
+				t.Fatalf("S3 restore failed on replica %d: %+v, %v", i, stored, err)
+			}
+		}
+	}
+	group.stop(leader)
+	leader = group.leader(leader)
+	group.mustRequest(leader, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK)
+	group.mustRequest(leader, "GET", "/v1/entities/host:1", "", http.StatusOK)
+}
+
+func TestHAWALBackpressureLeavesClusterAvailable(t *testing.T) {
+	group := newTestCluster(t, true)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	for _, replica := range group.nodes {
+		replica.cluster.App.mu.Lock()
+		replica.store.Backpressure = storage.NewWritePressure(storage.BackpressureConfig{MaxCommitTail: 1})
+		replica.cluster.App.mu.Unlock()
+	}
+	group.nodes[leader].cluster.FlushMaxRequests = 1
+	for i := 1; i <= 3; i++ {
+		body := fmt.Sprintf(`{"source":"agent","collector_id":"collector","batch_id":"tail-%d","items":[{"external_id":"host:%d","entity":{"id":"host:%d","kind":"host"}}]}`, i, i, i)
+		group.mustRequest(leader, "POST", "/v1/ingest/batches", body, http.StatusAccepted)
+	}
+	for range 2 {
+		if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := group.nodes[leader].cluster.flushPending(context.Background()); !errors.Is(err, storage.ErrBackpressure) {
+		t.Fatalf("expected leader to defer the next flush for compaction: %v", err)
+	}
+	group.mustRequest(leader, "GET", "/v1/entities/host:2", "", http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/compact", `{}`, http.StatusOK)
+	if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	group.mustRequest(leader, "GET", "/v1/entities/host:3", "", http.StatusOK)
 }
 
 func BenchmarkHAWALAcceptanceHistory(b *testing.B) {

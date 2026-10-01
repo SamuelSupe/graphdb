@@ -520,7 +520,9 @@ func (s *TenantStore) checkIngestProjectedCommitTail(
 	manifest Manifest,
 	changedCommits int,
 ) error {
-	if s.Backpressure == nil || changedCommits == 0 {
+	// Resource pressure defers proposals on the leader. Rejecting a committed
+	// flush would stop application on every replica and prevent compaction.
+	if IsReplicatedContext(ctx) || s.Backpressure == nil || changedCommits == 0 {
 		return nil
 	}
 	config, err := s.effectiveBackpressureConfig(ctx, tenantID)

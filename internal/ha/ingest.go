@@ -123,11 +123,15 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return nil, err
 	} else {
-		if a.MaxPendingBytes > 0 {
+		budget := a.MaxPendingBytes
+		if cmd.QueueBudget != nil {
+			budget = *cmd.QueueBudget
+		}
+		if budget > 0 {
 			if err := a.ensurePending(ctx); err != nil {
 				return nil, err
 			}
-			if a.pendingBytes+int64(len(cmd.Body)) > a.MaxPendingBytes {
+			if a.pendingBytes+int64(len(cmd.Body)) > budget {
 				return resultJSON(http.StatusServiceUnavailable, map[string]any{"code": "ingest_queue_full", "error": "replicated accepted queue exceeds its byte budget", "retryable": true})
 			}
 		}
@@ -308,6 +312,12 @@ func (c *Cluster) flushPending(ctx context.Context) error {
 	sort.Slice(requests, func(i, j int) bool { return requests[i].record.index < requests[j].record.index })
 	if len(requests) == 0 {
 		return nil
+	}
+	c.App.mu.RLock()
+	err = c.App.Store.CheckWriteBackpressure(ctx, requests[0].record.tenant)
+	c.App.mu.RUnlock()
+	if err != nil {
+		return err
 	}
 	cmd, err := newCommand("flush")
 	if err != nil {

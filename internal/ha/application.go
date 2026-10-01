@@ -13,26 +13,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type command struct {
-	ExpectedGeneration int64       `json:"expected_generation,omitempty"`
-	RouteEpoch         uint64      `json:"route_epoch,omitempty"`
-	ID                 string      `json:"id"`
-	At                 time.Time   `json:"at"`
-	Kind               string      `json:"kind"`
-	Role               string      `json:"role,omitempty"`
-	Tenant             string      `json:"tenant,omitempty"`
-	Method             string      `json:"method,omitempty"`
-	URI                string      `json:"uri,omitempty"`
-	Header             http.Header `json:"header,omitempty"`
-	Body               []byte      `json:"body,omitempty"`
-	IDs                []string    `json:"ids,omitempty"`
-	Restore            []byte      `json:"restore,omitempty"`
-	Error              string      `json:"error,omitempty"`
+	ExpectedGeneration int64                       `json:"expected_generation,omitempty"`
+	RouteEpoch         uint64                      `json:"route_epoch,omitempty"`
+	ID                 string                      `json:"id"`
+	At                 time.Time                   `json:"at"`
+	Kind               string                      `json:"kind"`
+	Role               string                      `json:"role,omitempty"`
+	Tenant             string                      `json:"tenant,omitempty"`
+	Method             string                      `json:"method,omitempty"`
+	URI                string                      `json:"uri,omitempty"`
+	Header             http.Header                 `json:"header,omitempty"`
+	Body               []byte                      `json:"body,omitempty"`
+	IDs                []string                    `json:"ids,omitempty"`
+	Restore            []byte                      `json:"restore,omitempty"`
+	Error              string                      `json:"error,omitempty"`
+	QueueBudget        *int64                      `json:"queue_budget,omitempty"`
+	Backpressure       *storage.BackpressureConfig `json:"backpressure,omitempty"`
+	BackupNamespace    *backupstore.Namespace      `json:"backup_namespace,omitempty"`
 }
 
 type httpResult struct {
@@ -178,6 +182,12 @@ func (a *Application) ApplyBatch(ctx context.Context, entries []replication.Appl
 			}
 			cmd := commands[i]
 			commandCtx := storage.ReplicatedContext(applyCtx, cmd.ID, cmd.At)
+			if cmd.Backpressure != nil {
+				commandCtx = storage.ReplicatedBackpressureContext(commandCtx, *cmd.Backpressure)
+			}
+			if cmd.BackupNamespace != nil {
+				commandCtx = storage.ReplicatedBackupContext(commandCtx, *cmd.BackupNamespace)
+			}
 			response, err := a.applyCommand(commandCtx, entry.Index, cmd)
 			if err != nil {
 				return nil, err

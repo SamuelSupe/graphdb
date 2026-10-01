@@ -25,6 +25,9 @@ type writeBackpressureCheckOptions struct {
 }
 
 func (s *TenantStore) checkAcceptedWALBackpressure(ctx context.Context, tenantID string, authoritative bool) error {
+	if IsReplicatedContext(ctx) {
+		return nil
+	}
 	return s.checkWriteBackpressureWithOptions(ctx, tenantID, authoritative, writeBackpressureCheckOptions{
 		ignoreCASConflicts: false,
 	})
@@ -210,7 +213,8 @@ func (s *TenantStore) objectStoreBackpressureError(err error) error {
 }
 
 func (s *TenantStore) checkQuotaAfterApply(ctx context.Context, tenantID string, previous *graph.Graph, next *graph.Graph) error {
-	if s.Backpressure == nil || next == nil {
+	_, replicated := ctx.Value(replicatedBackpressureKey{}).(BackpressureConfig)
+	if (s.Backpressure == nil && !replicated) || next == nil {
 		return nil
 	}
 	config, err := s.effectiveBackpressureConfig(ctx, tenantID)

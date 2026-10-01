@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "finished_at": "2026-10-01T17:07:17.707687+00:00",
+  "result": "PASS",
+  "base_commit": "5d33e0e1f203d4ff8689eb3d515a42a7b71af8c1",
+  "branch": "codex/raft-ha",
+  "p0_confirmed": 0,
+  "p1_confirmed_and_repaired": 4,
+  "source_sha256": "b897ae0a9512ee60e9b8aee1559322e50c8ad649ffe2c96bc6d144f195a3e190",
+  "binary_sha256": "51abbf3f987a5adb78353fd63bbec65bb3078be71f83b83dc50015be1674a830",
+  "gate": {
+    "started_at": "2026-10-01T16:53:13.012912+00:00",
+    "image": "graphdb:raft-p1-review-20261002",
+    "image_id": "sha256:f785eb57c57963a0c4b625351a63912e64a576fdca410db6c0656608283c70a0",
+    "binary_sha256": "51abbf3f987a5adb78353fd63bbec65bb3078be71f83b83dc50015be1674a830",
+    "binary_version": "GGraphDB 2.1.2-raft-review commit=5d33e0e1-p1-review-dirty built=2026-10-01T16:50:00Z go=go1.26.7",
+    "image_labels": {
+      "graphdb.source.sha256": "b897ae0a9512ee60e9b8aee1559322e50c8ad649ffe2c96bc6d144f195a3e190",
+      "org.opencontainers.image.created": "2026-10-01T16:50:00Z",
+      "org.opencontainers.image.description": "Local P1 repair verification; unreleased",
+      "org.opencontainers.image.revision": "5d33e0e1-p1-review-dirty",
+      "org.opencontainers.image.version": "2.1.2-raft-review"
+    },
+    "port_offset": 8000,
+    "cross_host_qualification": "NOT RUN",
+    "result": "PASS",
+    "finished_at": "2026-10-01T16:54:51.642574+00:00"
+  },
+  "reproductions": [
+    {
+      "evidence": "wal-budget-before.log",
+      "result": "REPRODUCED",
+      "stage": "before corresponding production repair",
+      "sha256": "d2c87f9d2a9e455b62dafc0c44c76d6d7b8d0950a150ca39223314e6baa0c6d8"
+    },
+    {
+      "evidence": "quota-before.log",
+      "result": "REPRODUCED",
+      "stage": "before corresponding production repair",
+      "sha256": "cd8a74ebcca2971de8ced10d199d2e115dc6eaba14ce37165ec685acb6bb6a79"
+    },
+    {
+      "evidence": "backup-before.log",
+      "result": "REPRODUCED",
+      "stage": "before corresponding production repair",
+      "sha256": "c24051e935427dcad1d88501e99c5bab2166c035a499f3166e923c0d006be46c"
+    },
+    {
+      "evidence": "tail-before.log",
+      "result": "REPRODUCED",
+      "stage": "before corresponding production repair",
+      "sha256": "9f6c7e6740ef27bb101423db4d8d2b1f0f51820ef16967cafd90078f55632b9f"
+    }
+  ],
+  "checks": [
+    {
+      "evidence": "normal.log",
+      "result": "PASS",
+      "tested_packages": [
+        "github.com/SamuelSupe/graphdb/v2/cmd/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/docs",
+        "github.com/SamuelSupe/graphdb/v2/internal/backupstore",
+        "github.com/SamuelSupe/graphdb/v2/internal/bootstrap",
+        "github.com/SamuelSupe/graphdb/v2/internal/config",
+        "github.com/SamuelSupe/graphdb/v2/internal/graph",
+        "github.com/SamuelSupe/graphdb/v2/internal/ha",
+        "github.com/SamuelSupe/graphdb/v2/internal/httpapi",
+        "github.com/SamuelSupe/graphdb/v2/internal/query",
+        "github.com/SamuelSupe/graphdb/v2/internal/replication",
+        "github.com/SamuelSupe/graphdb/v2/internal/sharding",
+        "github.com/SamuelSupe/graphdb/v2/internal/storage",
+        "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/tools/loadtest",
+        "github.com/SamuelSupe/graphdb/v2/tools/soakreport",
+        "github.com/SamuelSupe/graphdb/v2/tools/soaktest"
+      ]
+    },
+    {
+      "evidence": "race.log",
+      "result": "PASS",
+      "tested_packages": [
+        "github.com/SamuelSupe/graphdb/v2/cmd/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/docs",
+        "github.com/SamuelSupe/graphdb/v2/internal/backupstore",
+        "github.com/SamuelSupe/graphdb/v2/internal/bootstrap",
+        "github.com/SamuelSupe/graphdb/v2/internal/config",
+        "github.com/SamuelSupe/graphdb/v2/internal/graph",
+        "github.com/SamuelSupe/graphdb/v2/internal/ha",
+        "github.com/SamuelSupe/graphdb/v2/internal/httpapi",
+        "github.com/SamuelSupe/graphdb/v2/internal/query",
+        "github.com/SamuelSupe/graphdb/v2/internal/replication",
+        "github.com/SamuelSupe/graphdb/v2/internal/sharding",
+        "github.com/SamuelSupe/graphdb/v2/internal/storage",
+        "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb",
+        "github.com/SamuelSupe/graphdb/v2/tools/loadtest",
+        "github.com/SamuelSupe/graphdb/v2/tools/soakreport",
+        "github.com/SamuelSupe/graphdb/v2/tools/soaktest"
+      ]
+    }
+  ],
+  "vet": {
+    "result": "PASS",
+    "kind": "static",
+    "evidence": "vet.log"
+  },
+  "specialized_regressions": {
+    "result": "PASS",
+    "seconds": 17.867,
+    "evidence": "p1-s3-after.log",
+    "includes_existing_pending_queue_restart_and_idempotency": true
+  },
+  "deployment": [
+    {
+      "mode": "dual",
+      "check": "same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent",
+      "result": "PASS"
+    },
+    {
+      "mode": "dual",
+      "check": "standalone direct commits and ingest survive SIGKILL; compact and GC remain available",
+      "result": "PASS"
+    },
+    {
+      "mode": "dual",
+      "check": "standalone WAL accepted response is durable; SIGKILL recovery publishes once and idempotent retry preserves identity",
+      "result": "PASS"
+    },
+    {
+      "mode": "dual",
+      "check": "live isolated leader rejects strong reads and writes; majority serves and confirmed write survives reconnection",
+      "result": "PASS",
+      "old": 1,
+      "new": 2
+    },
+    {
+      "mode": "dual",
+      "check": "Raft majority WAL and leader takeover remain available alongside standalone services",
+      "result": "PASS",
+      "old": 2,
+      "new": 3,
+      "seconds": 3.376
+    },
+    {
+      "mode": "dual",
+      "check": "standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access",
+      "result": "PASS"
+    },
+    {
+      "mode": "dual",
+      "check": "Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works",
+      "result": "PASS"
+    },
+    {
+      "mode": "dual",
+      "check": "36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation",
+      "result": "PASS",
+      "old": 3,
+      "new": 1,
+      "payload_bytes": 37748736
+    },
+    {
+      "mode": "sharded",
+      "check": "standalone direct/WAL coexist with sharded Raft",
+      "result": "PASS",
+      "processes_before_expansion": 9
+    },
+    {
+      "mode": "sharded",
+      "check": "add three-replica shard without remapping existing tenant",
+      "result": "PASS",
+      "processes": 12
+    },
+    {
+      "mode": "sharded",
+      "check": "chunked migration survives catalog and destination leader interruption",
+      "result": "PASS",
+      "accepted_lsn": 8,
+      "destination_interrupted_during_transfer": true
+    },
+    {
+      "mode": "sharded",
+      "check": "tenant can return to retired source and commit again",
+      "result": "PASS"
+    },
+    {
+      "mode": "sharded",
+      "check": "one shard loses quorum while other shard and standalones serve",
+      "result": "PASS"
+    },
+    {
+      "mode": "sharded",
+      "check": "cancel before cutover resumes source before unavailable target cleanup",
+      "result": "PASS"
+    },
+    {
+      "mode": "sharded",
+      "check": "replica cannot remove shard role; original configuration recovers",
+      "result": "PASS",
+      "image_id": "sha256:f785eb57c57963a0c4b625351a63912e64a576fdca410db6c0656608283c70a0"
+    }
+  ],
+  "environment": {
+    "backend": "OrbStack Linux arm64",
+    "go": "1.26.7",
+    "cpus": 4,
+    "gomaxprocs": 4,
+    "s3": "real MinIO on isolated Docker network",
+    "module_network": "offline cached dependencies"
+  },
+  "evidence_directory": "/tmp/graphdb-p0p1-review-20261002",
+  "limits": [
+    "bounded critical-path review; no claim that the whole product contains no P0/P1",
+    "legacy commands without captured policies still require matching original configuration and replica data audit",
+    "no automatic repair of preexisting replica divergence",
+    "cross-host, capacity, disk exhaustion, slow disks, mixed-version and cloud-provider S3 not qualified",
+    "previous candidate archive and prep8 image do not contain these repairs",
+    "no public release or remote push; no new 30-minute standalone soak"
+  ]
+}
