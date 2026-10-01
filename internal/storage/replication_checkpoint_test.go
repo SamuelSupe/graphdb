@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,26 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		}
 		_, err = files.ApplyReplicated(context.Background(), 2, "crashing-command", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
 			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "empty" {
+				os.Exit(0)
+			}
+			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "concurrent" {
+				jobs := make([]func() error, 8)
+				for worker := range jobs {
+					jobs[worker] = func() error {
+						old := fmt.Sprintf("graphdb/concurrent/old/%d", worker)
+						fresh := fmt.Sprintf("graphdb/concurrent/new/%d", worker)
+						if err := files.Put(ctx, old, []byte("updated")); err != nil {
+							return err
+						}
+						if err := files.Put(ctx, fresh, []byte("new")); err != nil {
+							return err
+						}
+						return files.Put(ctx, old, []byte("updated-again"))
+					}
+				}
+				if err := runIngestMetadataJobs(jobs); err != nil {
+					return nil, err
+				}
 				os.Exit(0)
 			}
 			if err := files.Put(ctx, "graphdb/manifest", []byte("new-version")); err != nil {
@@ -48,7 +69,7 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		})
 		t.Fatal(err)
 	}
-	for _, stage := range []string{"empty", "partial"} {
+	for _, stage := range []string{"empty", "partial", "concurrent"} {
 		t.Run(stage, func(t *testing.T) {
 			root := t.TempDir()
 			files, err := OpenFileStore(root)
@@ -59,6 +80,13 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = files.ApplyReplicated(context.Background(), 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				if stage == "concurrent" {
+					for worker := range 8 {
+						if err := files.Put(ctx, fmt.Sprintf("graphdb/concurrent/old/%d", worker), []byte("old")); err != nil {
+							return nil, err
+						}
+					}
+				}
 				return []byte("old-response"), files.Put(ctx, "graphdb/manifest", []byte("old-version"))
 			})
 			if err != nil {
@@ -87,6 +115,17 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			for _, key := range []string{"graphdb/new-data", "graphdb/new/child/data"} {
 				if _, err := files.Get(context.Background(), key); !errors.Is(err, ErrNotFound) {
 					t.Fatalf("uncommitted file %q survived: %v", key, err)
+				}
+			}
+			if stage == "concurrent" {
+				for worker := range 8 {
+					data, err := files.Get(context.Background(), fmt.Sprintf("graphdb/concurrent/old/%d", worker))
+					if err != nil || string(data) != "old" {
+						t.Fatalf("concurrent before-image was not restored: %q, %v", data, err)
+					}
+					if _, err := files.Get(context.Background(), fmt.Sprintf("graphdb/concurrent/new/%d", worker)); !errors.Is(err, ErrNotFound) {
+						t.Fatalf("concurrent new object survived interrupted application: %v", err)
+					}
 				}
 			}
 			checkpoint, err := files.ReplicationCheckpoint()
@@ -295,5 +334,51 @@ func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 	}
 	if _, err := target.Get(ctx, "graphdb/old"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("snapshot retained old object: %v", err)
+	}
+}
+
+func BenchmarkReplicationJournalWrites(b *testing.B) {
+	for _, workers := range []int{1, 4, 8} {
+		b.Run(fmt.Sprintf("workers_%d", workers), func(b *testing.B) {
+			files, err := OpenFileStore(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer files.Close()
+			if err := files.RequireReplicatedWrites(); err != nil {
+				b.Fatal(err)
+			}
+			payload := make([]byte, 1024)
+			var writes int64
+			b.ReportAllocs()
+			b.ResetTimer()
+			for iteration := range b.N {
+				_, err := files.ApplyReplicated(context.Background(), uint64(iteration+1), "bench", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+					jobs := make([]func() error, workers)
+					for worker := range workers {
+						jobs[worker] = func() error {
+							for object := 0; object < 16/workers; object++ {
+								key := fmt.Sprintf("graphdb/%d/%d", worker, object)
+								if err := files.Put(ctx, key, payload); err != nil {
+									return err
+								}
+								if err := files.Put(ctx, key, payload); err != nil {
+									return err
+								}
+							}
+							return nil
+						}
+					}
+					err := runIngestMetadataJobs(jobs)
+					stats := files.replicationJournal(ctx).db.Stats().TxStats
+					writes += int64(stats.GetWrite())
+					return nil, err
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(writes)/float64(b.N), "journal_write_calls/op")
+		})
 	}
 }

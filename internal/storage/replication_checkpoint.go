@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -26,6 +27,7 @@ type replicationJournal struct {
 	files       *FileStore
 	mu          sync.Mutex
 	failure     error
+	writers     atomic.Int32
 	directoryMu sync.Mutex
 	directories map[string]struct{}
 }
@@ -72,6 +74,9 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	if err != nil {
 		return nil, err
 	}
+	// Coalesce concurrent before-images without delaying serial applications.
+	db.MaxBatchSize = 8
+	db.MaxBatchDelay = 100 * time.Microsecond
 	journal := &replicationJournal{db: db, files: s}
 	// bbolt initializes new databases durably. Create the objects bucket with
 	// the first before-image instead of syncing a separate empty transaction.
@@ -160,8 +165,6 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	if journal == nil {
 		return nil
 	}
-	journal.mu.Lock()
-	defer journal.mu.Unlock()
 	var recorded bool
 	if err := journal.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte("objects"))
@@ -175,24 +178,35 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	if recorded {
 		return nil
 	}
-	return journal.db.Update(func(tx *bolt.Tx) error {
+	filename, err := s.path(key)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(filename)
+	before := []byte{0}
+	if err == nil {
+		before = append([]byte{1}, data...)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	// Callers hold the object lock or the directory replacement gate until
+	// Batch returns. Its callback may be retried; file reads stay outside it.
+	persist := func(tx *bolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists([]byte("objects"))
 		if err != nil {
 			return err
 		}
-		filename, err := s.path(key)
-		if err != nil {
-			return err
+		if bucket.Get([]byte(key)) != nil {
+			return nil
 		}
-		data, err := os.ReadFile(filename)
-		if os.IsNotExist(err) {
-			return bucket.Put([]byte(key), []byte{0})
-		}
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(key), append([]byte{1}, data...))
-	})
+		return bucket.Put([]byte(key), before)
+	}
+	active := journal.writers.Add(1)
+	defer journal.writers.Add(-1)
+	if active == 1 {
+		return journal.db.Update(persist)
+	}
+	return journal.db.Batch(persist)
 }
 
 func (s *FileStore) journalDirectory(ctx context.Context, targetKey, incoming string) error {
