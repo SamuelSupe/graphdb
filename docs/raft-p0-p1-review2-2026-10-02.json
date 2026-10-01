@@ -1,0 +1,185 @@
+{
+  "date": "2026-10-02",
+  "result": "PASS",
+  "scope": "Second P0/P1 review: membership concurrency, durable metadata and snapshot ordering; restore and shard routing review",
+  "base_commit": "69db4587edd6bb3069eb1567ab84509fdb538091",
+  "branch": "codex/raft-ha",
+  "confirmed_p0": 0,
+  "confirmed_p1": 3,
+  "findings": [
+    {
+      "priority": "P1",
+      "problem": "Concurrent removals reduce four voters to two",
+      "result": "FIXED",
+      "before_evidence": "membership-before.log"
+    },
+    {
+      "priority": "P1",
+      "problem": "Delayed duplicate learner admission overwrites peer address",
+      "result": "FIXED",
+      "before_evidence": "membership-before.log"
+    },
+    {
+      "priority": "P1",
+      "problem": "Asynchronous old snapshot installation erases subsequent durable peer address",
+      "result": "FIXED",
+      "before_evidence": "snapshot-before.log"
+    }
+  ],
+  "source_sha256": "4ed8b6a8eba4b4c52f8ec2fa8d455be7ee0ca66bf77f33db5e2ec209879bcbb0",
+  "binary_sha256": "f6d587aa2f7fbbb4fe505d3ad0c9dde4a50227553708988a857a4278d3c3ea20",
+  "image": "graphdb:raft-membership-p1-review-final-20261002",
+  "image_id": "sha256:210f0175e111a55d6675e80c6ca9574084e5709fe861f71cff256f6ff0e13750",
+  "binary_version": "GGraphDB 2.1.2-raft-review2 commit=69db4587-membership-review-dirty built=2026-10-02 go=go1.26.7",
+  "environment": {
+    "runtime": "OrbStack",
+    "os": "Linux",
+    "arch": "arm64",
+    "go": "1.26.7"
+  },
+  "validation": {
+    "normal": {
+      "result": "PASS",
+      "packages": [
+        "internal/replication",
+        "internal/ha",
+        "internal/httpapi"
+      ],
+      "log": "tests.log",
+      "seconds": [
+        3.78,
+        91.633,
+        5.024
+      ]
+    },
+    "race": {
+      "result": "PASS",
+      "packages": [
+        "internal/replication",
+        "internal/ha"
+      ],
+      "log": "race.log",
+      "seconds": [
+        4.27,
+        236.07
+      ],
+      "race_reports": 0,
+      "final_test_boundary_recheck": {
+        "result": "PASS",
+        "log": "race-boundary-final.log",
+        "seconds": 5.653
+      },
+      "earlier_failures_preserved": [
+        "race-first.log",
+        "race-pre-recheck.log",
+        "batch-header-failure.log"
+      ],
+      "earlier_failure_explanation": "Batch test admitted HTTP requests could wait on the deliberately blocked application; test now submits admitted Raft commands. A noncanonical manually built test header was also corrected before final validation."
+    },
+    "vet": {
+      "result": "PASS",
+      "kind": "static",
+      "log": "vet.log"
+    },
+    "deployment": {
+      "result": "PASS",
+      "case_count": 15,
+      "cases": [
+        {
+          "check": "same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent",
+          "result": "PASS"
+        },
+        {
+          "check": "standalone direct commits and ingest survive SIGKILL; compact and GC remain available",
+          "result": "PASS"
+        },
+        {
+          "check": "standalone WAL accepted response is durable; SIGKILL recovery publishes once and idempotent retry preserves identity",
+          "result": "PASS"
+        },
+        {
+          "check": "live isolated leader rejects strong reads and writes; majority serves and confirmed write survives reconnection",
+          "result": "PASS",
+          "old": 1,
+          "new": 3
+        },
+        {
+          "check": "Raft majority WAL and leader takeover remain available alongside standalone services",
+          "result": "PASS",
+          "old": 3,
+          "new": 2,
+          "seconds": 2.434
+        },
+        {
+          "check": "standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access",
+          "result": "PASS"
+        },
+        {
+          "check": "Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works",
+          "result": "PASS"
+        },
+        {
+          "check": "36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation",
+          "result": "PASS",
+          "old": 2,
+          "new": 3,
+          "payload_bytes": 37748736
+        },
+        {
+          "check": "standalone direct/WAL coexist with sharded Raft",
+          "result": "PASS",
+          "processes_before_expansion": 9
+        },
+        {
+          "check": "add three-replica shard without remapping existing tenant",
+          "result": "PASS",
+          "processes": 12
+        },
+        {
+          "check": "chunked migration survives catalog and destination leader interruption",
+          "result": "PASS",
+          "accepted_lsn": 8,
+          "destination_interrupted_during_transfer": true
+        },
+        {
+          "check": "tenant can return to retired source and commit again",
+          "result": "PASS"
+        },
+        {
+          "check": "one shard loses quorum while other shard and standalones serve",
+          "result": "PASS"
+        },
+        {
+          "check": "cancel before cutover resumes source before unavailable target cleanup",
+          "result": "PASS"
+        },
+        {
+          "check": "replica cannot remove shard role; original configuration recovers",
+          "result": "PASS",
+          "image_id": "sha256:210f0175e111a55d6675e80c6ca9574084e5709fe861f71cff256f6ff0e13750"
+        }
+      ],
+      "metadata": "gate/metadata.json"
+    }
+  },
+  "upgrade": {
+    "mode": "whole-group maintenance",
+    "mixed_version": "NOT QUALIFIED",
+    "automatic_repair_of_historical_bad_membership": false
+  },
+  "unverified": [
+    "cross-host fault domains",
+    "production capacity and workload",
+    "slow disk or disk exhaustion",
+    "mixed-version qualification",
+    "cloud-vendor S3"
+  ],
+  "not_repeated_this_round": [
+    "whole-repository storage/S3 tests",
+    "standalone 30-minute direct/WAL soak",
+    "macOS native and Linux amd64 smoke"
+  ],
+  "public_release": false,
+  "evidence_archive": "dist/graphdb-raft-p0-p1-review2-20261002-evidence.tar.gz",
+  "completed_at": "2026-10-01T18:06:07.204273+00:00"
+}

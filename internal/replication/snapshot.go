@@ -25,7 +25,7 @@ func decodeSnapshot(data []byte) (snapshotEnvelope, error) {
 	return snapshot, nil
 }
 
-func (n *Node) snapshotData(state []byte) ([]byte, error) {
+func (n *Node) snapshotData(state []byte, index uint64) ([]byte, error) {
 	n.peerMu.RLock()
 	defer n.peerMu.RUnlock()
 	var retired []uint64
@@ -34,27 +34,43 @@ func (n *Node) snapshotData(state []byte) ([]byte, error) {
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(key, value []byte) error { retired = append(retired, binary.BigEndian.Uint64(key)); return nil })
+		return bucket.ForEach(func(key, value []byte) error {
+			// Membership application can run ahead of this graph snapshot.
+			// Older one-byte tombstones predate the indexed encoding.
+			if len(value) != 8 || binary.BigEndian.Uint64(value) <= index {
+				retired = append(retired, binary.BigEndian.Uint64(key))
+			}
+			return nil
+		})
 	}); err != nil {
 		return nil, err
 	}
 	return json.Marshal(snapshotEnvelope{Version: 1, State: state, Peers: n.peers, Retired: retired})
 }
 
-func (n *Node) installRetired(ids []uint64) error {
+func (n *Node) installRetired(ids []uint64, index uint64) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	return n.disk.db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("retired"))
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
-			if err := bucket.Put(indexKey(id), []byte{1}); err != nil {
+		return persistRetired(tx, ids, index)
+	})
+}
+
+func persistRetired(tx *bolt.Tx, ids []uint64, index uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	bucket, err := tx.CreateBucketIfNotExists([]byte("retired"))
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if bucket.Get(indexKey(id)) == nil {
+			if err := bucket.Put(indexKey(id), indexKey(index)); err != nil {
 				return err
 			}
 		}
-		return nil
-	})
+	}
+	return nil
 }

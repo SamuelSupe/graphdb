@@ -18,11 +18,11 @@ func TestDurableLogTruncationCompactionAndReopen(t *testing.T) {
 	for i := uint64(1); i <= 5; i++ {
 		entries = append(entries, raftpb.Entry{Index: i, Term: 1, Data: []byte("old")})
 	}
-	if err := s.save(raft.Ready{Entries: entries, HardState: raftpb.HardState{Term: 1, Commit: 2}}); err != nil {
+	if err := s.save(raft.Ready{Entries: entries, HardState: raftpb.HardState{Term: 1, Commit: 2}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// A new leader replaces an uncommitted suffix; it must disappear on disk.
-	if err := s.save(raft.Ready{Entries: []raftpb.Entry{{Index: 3, Term: 2, Data: []byte("new")}, {Index: 4, Term: 2, Data: []byte("tail")}}, HardState: raftpb.HardState{Term: 2, Commit: 4}}); err != nil {
+	if err := s.save(raft.Ready{Entries: []raftpb.Entry{{Index: 3, Term: 2, Data: []byte("new")}, {Index: 4, Term: 2, Data: []byte("tail")}}, HardState: raftpb.HardState{Term: 2, Commit: 4}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conf := raftpb.ConfState{Voters: []uint64{1, 2, 3}}

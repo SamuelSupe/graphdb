@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -153,125 +152,6 @@ func (n *Node) Handler() http.Handler {
 			return
 		}
 		mux.ServeHTTP(w, r)
-	})
-}
-
-type memberChange struct {
-	ID     uint64 `json:"id"`
-	URL    string `json:"url,omitempty"`
-	Action string `json:"action"`
-}
-
-func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
-	if err := n.ReadBarrier(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	var change memberChange
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&change); err != nil || change.ID == 0 {
-		http.Error(w, "invalid membership change", http.StatusBadRequest)
-		return
-	}
-	status := n.raft.Status()
-	kind := raftpb.ConfChangeAddLearnerNode
-	switch change.Action {
-	case "add_learner":
-		parsed, err := url.Parse(change.URL)
-		if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-			http.Error(w, "member URL must be an HTTP origin on the private Raft network", http.StatusBadRequest)
-			return
-		}
-		var retired bool
-		n.disk.db.View(func(tx *bolt.Tx) error {
-			bucket := tx.Bucket([]byte("retired"))
-			retired = bucket != nil && bucket.Get(indexKey(change.ID)) != nil
-			return nil
-		})
-		if retired {
-			http.Error(w, "removed member IDs cannot be reused", http.StatusConflict)
-			return
-		}
-		if _, exists := status.Progress[change.ID]; exists {
-			http.Error(w, "member ID is already in use", http.StatusConflict)
-			return
-		}
-	case "promote":
-		progress, ok := status.Progress[change.ID]
-		if !ok || !progress.IsLearner || progress.Match < status.Commit {
-			http.Error(w, "learner has not caught up", http.StatusConflict)
-			return
-		}
-		kind = raftpb.ConfChangeAddNode
-	case "remove":
-		if _, exists := status.Progress[change.ID]; !exists {
-			http.Error(w, "member does not exist", http.StatusNotFound)
-			return
-		}
-		if len(status.Config.Voters.IDs()) <= 3 && !status.Progress[change.ID].IsLearner {
-			http.Error(w, "add and promote a replacement before removing a voter", http.StatusConflict)
-			return
-		}
-		kind = raftpb.ConfChangeRemoveNode
-	default:
-		http.Error(w, "action must be add_learner, promote or remove", http.StatusBadRequest)
-		return
-	}
-	data, _ := json.Marshal(change)
-	if err := n.raft.ProposeConfChange(r.Context(), raftpb.ConfChangeV2{Changes: []raftpb.ConfChangeSingle{{Type: kind, NodeID: change.ID}}, Context: data}); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	// Membership APIs acknowledge only after the configuration was applied.
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
-			http.Error(w, r.Context().Err().Error(), http.StatusGatewayTimeout)
-			return
-		case <-n.ctx.Done():
-			http.Error(w, "node stopped", http.StatusServiceUnavailable)
-			return
-		case <-ticker.C:
-			current := n.raft.Status()
-			progress, exists := current.Progress[change.ID]
-			complete := (change.Action == "remove" && !exists) || (change.Action == "add_learner" && exists && progress.IsLearner) || (change.Action == "promote" && exists && !progress.IsLearner)
-			if complete {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-		}
-	}
-}
-
-func (n *Node) applyPeerChange(data []byte) error {
-	var change memberChange
-	if err := json.Unmarshal(data, &change); err != nil {
-		return err
-	}
-	n.peerMu.Lock()
-	defer n.peerMu.Unlock()
-	if change.Action == "add_learner" {
-		n.peers[change.ID] = change.URL
-	}
-	// Retain removed IDs as tombstones, so they can never be reused.
-	encoded, err := json.Marshal(n.peers)
-	if err != nil {
-		return err
-	}
-	return n.disk.db.Update(func(tx *bolt.Tx) error {
-		if change.Action == "remove" {
-			retired, err := tx.CreateBucketIfNotExists([]byte("retired"))
-			if err != nil {
-				return err
-			}
-			if err := retired.Put(indexKey(change.ID), []byte{1}); err != nil {
-				return err
-			}
-		}
-		return tx.Bucket([]byte("meta")).Put([]byte("peers"), encoded)
 	})
 }
 

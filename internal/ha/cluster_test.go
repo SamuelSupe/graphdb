@@ -362,13 +362,33 @@ func TestHAConcurrentPublicationBatch(t *testing.T) {
 	const count = 8
 	type publicationResult struct {
 		index    int
-		response *httptest.ResponseRecorder
+		response []byte
+		err      error
 	}
 	results := make(chan publicationResult, count)
 	bodies := make([]string, count)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	for i := range count {
 		bodies[i] = fmt.Sprintf(`{"idempotency_key":"batch-%d","mutations":{"upsert_entities":[{"id":"host:%d","kind":"host","fields":{"name":"value-%d"}}]}}`, i, i, i)
-		go func(i int) { results <- publicationResult{i, group.request(leader, "POST", "/v1/commits", bodies[i])} }(i)
+		cmd, err := newCommand("http")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Method, cmd.URI, cmd.Tenant = "POST", "/v1/commits", "tenant-a"
+		cmd.Header = make(http.Header)
+		cmd.Header.Set("X-Tenant-ID", "tenant-a")
+		cmd.Body = []byte(bodies[i])
+		payload, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Admission and HTTP read barriers can wait for the blocked application.
+		// Submit admitted commands directly to test Raft/application isolation.
+		go func(i int, payload []byte) {
+			response, err := replica.cluster.Node.Propose(ctx, payload)
+			results <- publicationResult{i, response, err}
+		}(i, payload)
 	}
 	select {
 	case <-blocked:
@@ -387,10 +407,13 @@ func TestHAConcurrentPublicationBatch(t *testing.T) {
 	var first storage.CommitResult
 	for range count {
 		publication := <-results
-		response := publication.response
+		var response httpResult
+		if publication.err != nil || json.Unmarshal(publication.response, &response) != nil {
+			t.Fatalf("publication proposal failed: %s: %v", publication.response, publication.err)
+		}
 		var result storage.CommitResult
-		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil {
-			t.Fatalf("publication failed: %d: %s", response.Code, response.Body.String())
+		if response.Status != 200 || json.Unmarshal(response.Body, &result) != nil {
+			t.Fatalf("publication failed: %d: %s", response.Status, response.Body)
 		}
 		if versions[result.Version] {
 			t.Fatalf("publication results shared version %d", result.Version)

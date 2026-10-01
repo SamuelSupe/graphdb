@@ -164,7 +164,15 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		disk.db.Close()
 		return nil, err
 	}
-	if err := n.installRetired(snapshotRetired); err != nil {
+	// Recover snapshots saved by versions that persisted peers separately.
+	if len(snapshotPeers) > 0 && disk.confIndex <= snapshot.Metadata.Index {
+		if err := n.installPeers(snapshotPeers); err != nil {
+			cancel()
+			disk.db.Close()
+			return nil, err
+		}
+	}
+	if err := n.installRetired(snapshotRetired, snapshot.Metadata.Index); err != nil {
 		cancel()
 		disk.db.Close()
 		return nil, err
@@ -397,9 +405,25 @@ func (n *Node) run() {
 				return
 			}
 		case ready := <-n.raft.Ready():
-			if err := n.disk.save(ready); err != nil {
+			var envelope *snapshotEnvelope
+			if !raft.IsEmptySnap(ready.Snapshot) {
+				decoded, err := decodeSnapshot(ready.Snapshot.Data)
+				if err != nil {
+					n.fail(err)
+					return
+				}
+				envelope = &decoded
+			}
+			if err := n.disk.save(ready, envelope); err != nil {
 				n.fail(err)
 				return
+			}
+			if envelope != nil {
+				n.peerMu.Lock()
+				for id, address := range envelope.Peers {
+					n.peers[id] = address
+				}
+				n.peerMu.Unlock()
 			}
 			if ready.SoftState != nil {
 				n.leader.Store(ready.SoftState.Lead)
@@ -419,6 +443,7 @@ func (n *Node) run() {
 			conf := n.disk.conf
 			confIndex := n.disk.confIndex
 			configurationChanged := false
+			var membershipResults []membershipResult
 			for _, entry := range ready.CommittedEntries {
 				switch entry.Type {
 				case raftpb.EntryConfChange:
@@ -445,14 +470,15 @@ func (n *Node) run() {
 						n.fail(err)
 						return
 					}
-					conf = *n.raft.ApplyConfChange(change)
-					confIndex = entry.Index
-					if len(change.Context) > 0 {
-						if err := n.applyPeerChange(change.Context); err != nil {
-							n.fail(err)
-							return
-						}
+					var outcome membershipResult
+					var err error
+					conf, outcome, err = n.applyMembership(change, conf, entry.Index)
+					if err != nil {
+						n.fail(err)
+						return
 					}
+					membershipResults = append(membershipResults, outcome)
+					confIndex = entry.Index
 				}
 			}
 			if confIndex != n.disk.confIndex {
@@ -463,6 +489,14 @@ func (n *Node) run() {
 			}
 			n.disk.conf = conf
 			n.disk.confIndex = confIndex
+			for _, outcome := range membershipResults {
+				n.mu.Lock()
+				ch := n.proposals[outcome.id]
+				n.mu.Unlock()
+				if ch != nil {
+					ch <- result{err: outcome.err}
+				}
+			}
 			if len(ready.Messages) > 0 {
 				n.send(ready.Messages)
 			}
@@ -471,6 +505,7 @@ func (n *Node) run() {
 				// cannot grow an in-memory queue or stop persisted Raft heartbeats.
 				if !raft.IsEmptySnap(ready.Snapshot) {
 					pending = applicationBatch{snapshot: ready.Snapshot}
+					pending.snapshot.Data = envelope.State
 				}
 				if len(ready.CommittedEntries) > 0 {
 					if pending.first == 0 {
@@ -496,20 +531,7 @@ func (n *Node) applyLoop() {
 			return
 		case batch := <-n.application:
 			if !raft.IsEmptySnap(batch.snapshot) && batch.snapshot.Metadata.Index > n.applied.Load() {
-				envelope, err := decodeSnapshot(batch.snapshot.Data)
-				if err != nil {
-					n.fail(err)
-					return
-				}
-				if err := n.installRetired(envelope.Retired); err != nil {
-					n.fail(err)
-					return
-				}
-				if err := n.installPeers(envelope.Peers); err != nil {
-					n.fail(err)
-					return
-				}
-				if err := n.machine.Restore(n.ctx, batch.snapshot.Metadata.Index, envelope.State); err != nil {
+				if err := n.machine.Restore(n.ctx, batch.snapshot.Metadata.Index, batch.snapshot.Data); err != nil {
 					n.fail(err)
 					return
 				}
@@ -542,7 +564,7 @@ func (n *Node) applyLoop() {
 					err = ErrSnapshotTooLarge
 				}
 				if err == nil {
-					data, err = n.snapshotData(data)
+					data, err = n.snapshotData(data, n.applied.Load())
 				}
 				if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
 					err = ErrSnapshotTooLarge

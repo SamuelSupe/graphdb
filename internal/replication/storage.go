@@ -2,6 +2,7 @@ package replication
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -215,13 +216,24 @@ func indexKey(index uint64) []byte {
 	return key[:]
 }
 
-func (s *diskStorage) save(ready raft.Ready) error {
+func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Heartbeats and ReadIndex responses contain only volatile state. A disk
 	// transaction is needed only when Raft has changed its durable state.
 	if raft.IsEmptySnap(ready.Snapshot) && len(ready.Entries) == 0 && raft.IsEmptyHardState(ready.HardState) {
 		return nil
+	}
+	var peers []byte
+	if !raft.IsEmptySnap(ready.Snapshot) {
+		if envelope == nil {
+			return fmt.Errorf("snapshot membership metadata is missing")
+		}
+		var err error
+		peers, err = json.Marshal(envelope.Peers)
+		if err != nil {
+			return err
+		}
 	}
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
@@ -242,6 +254,14 @@ func (s *diskStorage) save(ready raft.Ready) error {
 				return err
 			}
 			if err := meta.Put([]byte("conf-index"), indexKey(ready.Snapshot.Metadata.Index)); err != nil {
+				return err
+			}
+			// Transport metadata must become durable with the configuration,
+			// before later log entries can apply while graph restore is pending.
+			if err := meta.Put([]byte("peers"), peers); err != nil {
+				return err
+			}
+			if err := persistRetired(tx, envelope.Retired, ready.Snapshot.Metadata.Index); err != nil {
 				return err
 			}
 			cursor := entries.Cursor()
