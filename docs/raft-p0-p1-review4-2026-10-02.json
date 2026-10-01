@@ -1,0 +1,228 @@
+{
+  "date": "2026-10-02",
+  "verified_at": "2026-10-01T23:11:55.798302+00:00",
+  "base_commit": "5dc7c08c362b71b9f4cd5c7277bce526d310b158",
+  "branch": "codex/raft-ha",
+  "environment": "OrbStack Linux arm64; Go 1.26.7",
+  "result": "PASS",
+  "confirmed_p0": 0,
+  "fixed_p1": [
+    "replica-local read failure commits a failed import task and skips committed writes",
+    "import source corruption on a replica or leader publishes data different from the admitted input"
+  ],
+  "additional_fix": "membership replies now follow Raft Advance, preventing the next sequential configuration change from being ignored as still pending",
+  "source_sha256": "0fece2e1612a961f9e48f18a001a97dea3599971daf69d1cbd07bde3f2c79e13",
+  "binary_sha256": "cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a",
+  "image_id": "sha256:210fd3651c8ff582b9eb123e76f85114e06fcafc3e9d5aa2062a62b439f61b55",
+  "image": "graphdb:raft-read-io-p1-review-20261002",
+  "ordinary_tests": [
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/cmd/graphdb",
+      "seconds": 0.212
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/docs",
+      "seconds": 0.003
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/backupstore",
+      "seconds": 0.011
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/bootstrap",
+      "seconds": 0.105
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/config",
+      "seconds": 0.024
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/graph",
+      "seconds": 0.019
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+      "seconds": 134.239
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/httpapi",
+      "seconds": 5.274
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/query",
+      "seconds": 0.256
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/replication",
+      "seconds": 3.789
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/sharding",
+      "seconds": 0.009
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+      "seconds": 212.38
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb",
+      "seconds": 0.946
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/tools/loadtest",
+      "seconds": 0.078
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/tools/soakreport",
+      "seconds": 0.002
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/tools/soaktest",
+      "seconds": 0.043
+    }
+  ],
+  "race_tests": [
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+      "seconds": 343.796
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+      "seconds": 291.071
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/replication",
+      "seconds": 4.083
+    }
+  ],
+  "initial_parallel_race": {
+    "result": "FAIL",
+    "case": "TestHASlowFollowerKeepsApplicationMemoryBounded",
+    "cause_observed": "follower at applied_index=22, commit_index=25 exceeded existing 10s catch-up deadline; no race reported",
+    "evidence": "race.log",
+    "recheck": "entire HA race suite passed alone before source-digest completion; final code passed all three race packages sequentially"
+  },
+  "membership_failure": {
+    "result": "FAIL before repair",
+    "evidence": "full-complete.log",
+    "cause": "successful membership reply preceded Advance; Raft ignored the next proposal with possible unapplied conf change",
+    "regression": "existing membership scenarios passed 10 times under race detector after repair"
+  },
+  "focused_tests": [
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+      "seconds": 0.442
+    },
+    {
+      "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+      "seconds": 8.799
+    }
+  ],
+  "gate": {
+    "started_at": "2026-10-01T23:03:08.348998+00:00",
+    "image": "graphdb:raft-read-io-p1-review-20261002",
+    "image_id": "sha256:210fd3651c8ff582b9eb123e76f85114e06fcafc3e9d5aa2062a62b439f61b55",
+    "binary_sha256": "cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a",
+    "binary_version": "GGraphDB 2.1.2-raft-review4 commit=5dc7c08c-read-io-review-dirty built=2026-10-01T22:59:18Z go=go1.26.7",
+    "image_labels": {
+      "graphdb.source.sha256": "0fece2e1612a961f9e48f18a001a97dea3599971daf69d1cbd07bde3f2c79e13",
+      "org.opencontainers.image.created": "2026-10-01T16:50:00Z",
+      "org.opencontainers.image.description": "Local replica read I/O P1 repair verification; unreleased",
+      "org.opencontainers.image.revision": "5dc7c08c-read-io-review-dirty",
+      "org.opencontainers.image.version": "2.1.2-raft-review4"
+    },
+    "port_offset": 8000,
+    "cross_host_qualification": "NOT RUN",
+    "result": "PASS",
+    "finished_at": "2026-10-01T23:04:39.695751+00:00"
+  },
+  "deployment_checks": [
+    {
+      "check": "same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent",
+      "result": "PASS"
+    },
+    {
+      "check": "standalone direct commits and ingest survive SIGKILL; compact and GC remain available",
+      "result": "PASS"
+    },
+    {
+      "check": "standalone WAL accepted response is durable; SIGKILL recovery publishes once and idempotent retry preserves identity",
+      "result": "PASS"
+    },
+    {
+      "check": "live isolated leader rejects strong reads and writes; majority serves and confirmed write survives reconnection",
+      "result": "PASS",
+      "old": 3,
+      "new": 2
+    },
+    {
+      "check": "Raft majority WAL and leader takeover remain available alongside standalone services",
+      "result": "PASS",
+      "old": 2,
+      "new": 1,
+      "seconds": 6.767
+    },
+    {
+      "check": "standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access",
+      "result": "PASS"
+    },
+    {
+      "check": "Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works",
+      "result": "PASS"
+    },
+    {
+      "check": "36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation",
+      "result": "PASS",
+      "old": 1,
+      "new": 3,
+      "payload_bytes": 37748736
+    },
+    {
+      "check": "standalone direct/WAL coexist with sharded Raft",
+      "result": "PASS",
+      "processes_before_expansion": 9
+    },
+    {
+      "check": "add three-replica shard without remapping existing tenant",
+      "result": "PASS",
+      "processes": 12
+    },
+    {
+      "check": "chunked migration survives catalog and destination leader interruption",
+      "result": "PASS",
+      "accepted_lsn": 8,
+      "destination_interrupted_during_transfer": true
+    },
+    {
+      "check": "tenant can return to retired source and commit again",
+      "result": "PASS"
+    },
+    {
+      "check": "one shard loses quorum while other shard and standalones serve",
+      "result": "PASS"
+    },
+    {
+      "check": "cancel before cutover resumes source before unavailable target cleanup",
+      "result": "PASS"
+    },
+    {
+      "check": "replica cannot remove shard role; original configuration recovers",
+      "result": "PASS",
+      "image_id": "sha256:210fd3651c8ff582b9eb123e76f85114e06fcafc3e9d5aa2062a62b439f61b55"
+    }
+  ],
+  "vet": "PASS; static analysis",
+  "failure_evidence": [
+    "baseline-source.log",
+    "baseline-final.log",
+    "import-before-final.log",
+    "full-complete.log"
+  ],
+  "cross_host_qualification": "NOT RUN; deferred by user",
+  "physical_disk_fault_qualification": "NOT RUN; read-interface EIO/missing-source injection only",
+  "production_capacity_qualification": "NOT RUN",
+  "mixed_version_qualification": "NOT RUN; whole-group maintenance upgrade required",
+  "previously_checkpointed_divergence_repaired": false,
+  "legacy_import_integrity_proof_backfilled": false,
+  "public_release": false
+}

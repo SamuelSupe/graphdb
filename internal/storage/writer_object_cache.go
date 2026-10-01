@@ -102,7 +102,8 @@ func FindWriterObjectCache(objects ObjectStore) *WriterObjectCache {
 	return nil
 }
 
-func (s *WriterObjectCache) Get(ctx context.Context, key string) ([]byte, error) {
+func (s *WriterObjectCache) Get(ctx context.Context, key string) (result []byte, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	if err := objectContextErr(ctx); err != nil {
 		return nil, err
 	}
@@ -120,7 +121,8 @@ func (s *WriterObjectCache) Get(ctx context.Context, key string) ([]byte, error)
 	return append([]byte(nil), data...), nil
 }
 
-func (s *WriterObjectCache) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
+func (s *WriterObjectCache) GetWithMeta(ctx context.Context, key string) (result []byte, resultMeta ObjectMeta, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	if err := objectContextErr(ctx); err != nil {
 		return nil, ObjectMeta{Key: key}, err
 	}
@@ -138,17 +140,15 @@ func (s *WriterObjectCache) GetWithMeta(ctx context.Context, key string) ([]byte
 	return append([]byte(nil), data...), meta, nil
 }
 
-func (s *WriterObjectCache) Head(ctx context.Context, key string) (ObjectMeta, error) {
+func (s *WriterObjectCache) Head(ctx context.Context, key string) (result ObjectMeta, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key}, err
 	}
 	if meta, hit, err := s.getMeta(key); hit || err != nil {
 		return meta, err
 	}
-	var (
-		meta ObjectMeta
-		err  error
-	)
+	var meta ObjectMeta
 	if head, ok := s.Inner.(objectHeadStore); ok {
 		meta, err = head.Head(ctx, key)
 	} else {
@@ -210,7 +210,8 @@ func (s *WriterObjectCache) DeleteConditional(ctx context.Context, key string, c
 	return nil
 }
 
-func (s *WriterObjectCache) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+func (s *WriterObjectCache) List(ctx context.Context, prefix string) (result []ObjectInfo, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	if err := objectContextErr(ctx); err != nil {
 		return nil, err
 	}

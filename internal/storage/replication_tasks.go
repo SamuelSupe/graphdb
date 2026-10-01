@@ -13,10 +13,26 @@ import (
 
 type replicatedRestoreKey struct{}
 type replicatedBackupKey struct{}
+type replicatedImportKey struct{}
 
 // PrepareReplicatedTask materializes and verifies a restore before proposal.
 // Its bytes are majority-persisted in Raft; application never fetches S3.
 func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]byte, error) {
+	if task.Type == TaskTypeBulkImport {
+		key := stringTaskParam(task.Params, "source_key")
+		if err := s.validateImportSourceKey(task.TenantID, key); err != nil {
+			return nil, err
+		}
+		data, err := s.Objects.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		digest := sha256Hex(data)
+		if expected := stringTaskParam(task.Checkpoint, importSourceDigestCheckpoint); expected != "" && expected != digest {
+			return nil, fmt.Errorf("import source %q differs from the admitted input", key)
+		}
+		return json.Marshal(digest)
+	}
 	if task.Type == TaskTypeTenantBackup && stringTaskParam(task.Params, "destination") == "object" {
 		backupID := task.ID
 		if boolTaskParam(task.Params, "automatic") {
@@ -81,7 +97,16 @@ func (s *TenantStore) RunReplicatedTaskFromReader(ctx context.Context, tenantID,
 	}
 	if restore != nil {
 		decoder := json.NewDecoder(restore)
-		if task.Type == TaskTypeTenantBackup {
+		if task.Type == TaskTypeBulkImport {
+			var digest string
+			if err := decoder.Decode(&digest); err != nil {
+				return Task{}, err
+			}
+			if len(digest) != 64 {
+				return Task{}, fmt.Errorf("invalid replicated import source digest")
+			}
+			ctx = context.WithValue(ctx, replicatedImportKey{}, digest)
+		} else if task.Type == TaskTypeTenantBackup {
 			var entry backupstore.Entry
 			if err := decoder.Decode(&entry); err != nil {
 				return Task{}, err

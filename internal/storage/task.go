@@ -138,6 +138,12 @@ func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType 
 	if err != nil {
 		return Task{}, err
 	}
+	if digest, _ := ctx.Value(replicatedImportKey{}).(string); taskType == TaskTypeBulkImport && digest != "" {
+		if checkpoint == nil {
+			checkpoint = make(map[string]any)
+		}
+		checkpoint[importSourceDigestCheckpoint] = digest
+	}
 	now := mutationTime(ctx)
 	task := Task{
 		ID:            id,

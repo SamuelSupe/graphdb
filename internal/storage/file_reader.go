@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -28,14 +29,31 @@ type managedFileReader struct {
 	err   error
 }
 
-func (r *managedFileReader) ReadAt(p []byte, off int64) (int, error) {
+func (r *managedFileReader) ReadAt(p []byte, off int64) (n int, err error) {
+	defer func() {
+		if !errors.Is(err, io.EOF) {
+			recordReplicationFailure(r.ctx, err)
+		}
+	}()
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
 	}
 	return r.ReaderAtSeeker.ReadAt(p, off)
 }
+
+func (r *managedFileReader) Seek(offset int64, whence int) (position int64, err error) {
+	defer func() { recordReplicationFailure(r.ctx, err) }()
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.ReaderAtSeeker.Seek(offset, whence)
+}
+
 func (r *managedFileReader) Close() error {
-	r.once.Do(func() { r.err = r.close() })
+	r.once.Do(func() {
+		r.err = r.close()
+		recordReplicationFailure(r.ctx, r.err)
+	})
 	return r.err
 }
 
@@ -50,7 +68,8 @@ func openFileReader(ctx context.Context, objects ObjectStore, key string) (fileR
 	return &managedFileReader{ReaderAtSeeker: bytes.NewReader(data), ctx: ctx, close: func() error { return nil }}, nil
 }
 
-func (s *FileStore) OpenReader(ctx context.Context, key string) (fileReader, error) {
+func (s *FileStore) OpenReader(ctx context.Context, key string) (result fileReader, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	releaseOperation, operationErr := s.beginLifecycleOperation(ctx)
 	if operationErr != nil {
 		return nil, operationErr

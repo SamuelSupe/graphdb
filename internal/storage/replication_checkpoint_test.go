@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -330,32 +331,114 @@ func TestReplicationApplicationDirectoryReplacement(t *testing.T) {
 }
 
 func TestReplicationApplicationDoesNotCheckpointHiddenIOFailure(t *testing.T) {
+	for _, operation := range []string{"put", "get", "get_with_meta", "head", "list", "list_page", "open_reader", "read_at", "seek", "read_admission", "cached_read"} {
+		t.Run(operation, func(t *testing.T) {
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			if err := files.RequireReplicatedWrites(); err != nil {
+				t.Fatal(err)
+			}
+			_, err = files.ApplyReplicated(context.Background(), 1, "io-failure", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				if err := files.Put(ctx, "graphdb/original", []byte("partial")); err != nil {
+					return nil, err
+				}
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				switch operation {
+				case "put":
+					_ = files.Put(canceled, "graphdb/next", []byte("never-written"))
+				case "get":
+					_, _ = files.Get(canceled, "graphdb/original")
+				case "get_with_meta":
+					_, _, _ = files.GetWithMeta(canceled, "graphdb/original")
+				case "head":
+					_, _ = files.Head(canceled, "graphdb/original")
+				case "list":
+					_, _ = files.List(canceled, "graphdb/")
+				case "list_page":
+					_, _, _ = files.ListPage(canceled, "graphdb/", "", 1)
+				case "open_reader":
+					_, _ = files.OpenReader(canceled, "graphdb/original")
+				case "read_at", "seek":
+					readerCtx, cancelReader := context.WithCancel(ctx)
+					defer cancelReader()
+					reader, err := files.OpenReader(readerCtx, "graphdb/original")
+					if err != nil {
+						return nil, err
+					}
+					defer reader.Close()
+					cancelReader()
+					if operation == "read_at" {
+						_, _ = reader.ReadAt(make([]byte, 1), 0)
+					} else {
+						_, _ = reader.Seek(0, 0)
+					}
+				case "read_admission":
+					protected := NewReadProtectedObjectStore(files, ReadProtectionConfig{MaxConcurrent: 1})
+					release, err := protected.acquireRead(ctx)
+					if err != nil {
+						return nil, err
+					}
+					defer release()
+					_, _ = NewMeteredObjectStore(protected, nil, nil).Get(canceled, "graphdb/original")
+				case "cached_read":
+					cache := NewWriterObjectCache(files, WriterObjectCacheConfig{})
+					if _, err := cache.Get(ctx, "graphdb/original"); err != nil {
+						return nil, err
+					}
+					_, _ = cache.Get(canceled, "graphdb/original")
+				}
+				return []byte("handler-translated-error"), nil
+			})
+			if err == nil {
+				t.Fatal("translated filesystem failure was checkpointed")
+			}
+			checkpoint, err := files.ReplicationCheckpoint()
+			if err != nil || checkpoint.Index != 0 {
+				t.Fatalf("failed I/O advanced checkpoint: %+v, %v", checkpoint, err)
+			}
+			if _, err := files.Get(context.Background(), "graphdb/original"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("failed transaction retained partial data: %v", err)
+			}
+		})
+	}
+}
+
+func TestReplicationReaderEOFDoesNotAbortPublication(t *testing.T) {
 	files, err := OpenFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer files.Close()
-	if err := files.RequireReplicatedWrites(); err != nil {
-		t.Fatal(err)
-	}
-	_, err = files.ApplyReplicated(context.Background(), 1, "io-failure", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
-		if err := files.Put(ctx, "graphdb/original", []byte("partial")); err != nil {
+	_, err = files.ApplyReplicated(context.Background(), 1, "read-to-end", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		if err := files.Put(ctx, "graphdb/source", []byte("source")); err != nil {
 			return nil, err
 		}
-		canceled, cancel := context.WithCancel(ctx)
-		cancel()
-		_ = files.Put(canceled, "graphdb/next", []byte("never-written"))
-		return []byte("handler-translated-error"), nil
+		reader, err := files.OpenReader(ctx, "graphdb/source")
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		data := make([]byte, 16)
+		n, err := reader.ReadAt(data, 0)
+		if err != io.EOF {
+			return nil, fmt.Errorf("expected EOF, got %v", err)
+		}
+		return nil, files.Put(ctx, "graphdb/copy", data[:n])
 	})
-	if err == nil {
-		t.Fatal("translated filesystem failure was checkpointed")
+	if err != nil {
+		t.Fatal(err)
 	}
 	checkpoint, err := files.ReplicationCheckpoint()
-	if err != nil || checkpoint.Index != 0 {
-		t.Fatalf("failed I/O advanced checkpoint: %+v, %v", checkpoint, err)
+	if err != nil || checkpoint.Index != 1 {
+		t.Fatalf("EOF prevented publication: index=%d error=%v", checkpoint.Index, err)
 	}
-	if _, err := files.Get(context.Background(), "graphdb/original"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("failed transaction retained partial data: %v", err)
+	data, err := files.Get(context.Background(), "graphdb/copy")
+	if err != nil || string(data) != "source" {
+		t.Fatalf("copy was not published: %q, %v", data, err)
 	}
 }
 

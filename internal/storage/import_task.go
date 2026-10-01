@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -51,8 +52,19 @@ func (s *TenantStore) bulkImportTask(ctx context.Context, task Task) (ImportRepo
 		return ImportReport{}, err
 	}
 	data, err := s.Objects.Get(ctx, key)
+	digest, _ := ctx.Value(replicatedImportKey{}).(string)
 	if err != nil {
+		if digest != "" && errors.Is(err, ErrNotFound) {
+			// The execution log verified this source on the leader. Its
+			// absence on a replica must not become a durable task outcome.
+			recordReplicationFailure(ctx, fmt.Errorf("replicated import source %q is missing", key))
+		}
 		return ImportReport{}, fmt.Errorf("read import source: %w", err)
+	}
+	if digest != "" && sha256Hex(data) != digest {
+		err := fmt.Errorf("replicated import source %q differs from the verified input", key)
+		recordReplicationFailure(ctx, err)
+		return ImportReport{}, err
 	}
 	reader, err := newImportRecordReader(options.Format, data)
 	if err != nil {

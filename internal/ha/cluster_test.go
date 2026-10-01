@@ -13,8 +13,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1280,6 +1282,159 @@ func TestHAAcceptedWALIsFencedByRestore(t *testing.T) {
 	cluster.App.mu.RUnlock()
 	if err != nil || old.State != "failed" {
 		t.Fatalf("old accepted WAL was not fenced: %+v, %v", old, err)
+	}
+}
+
+type importReadFaultStore struct {
+	storage.ObjectStore
+	app    *Application
+	target *atomic.Pointer[Application]
+	err    error
+}
+
+func (s *importReadFaultStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if s.app == s.target.Load() && strings.Contains(key, "/tasks/imports/") {
+		if s.err == nil {
+			return []byte(`{"entity":{"id":"host:corrupt","kind":"host"}}`), nil
+		}
+		return nil, s.err
+	}
+	return s.ObjectStore.Get(ctx, key)
+}
+
+func (s *importReadFaultStore) UnwrapObjectStore() storage.ObjectStore { return s.ObjectStore }
+
+func TestHAImportReadFailureStopsReplicaUntilReplay(t *testing.T) {
+	for _, fault := range []struct {
+		name string
+		err  error
+	}{{"io_error", syscall.EIO}, {"missing_source", storage.ErrNotFound}, {"corrupt_source", nil}, {"leader_corrupt_source", nil}} {
+		t.Run(fault.name, func(t *testing.T) {
+			var faultTarget atomic.Pointer[Application]
+			group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
+				app.Store.Objects = storage.NewMeteredObjectStore(&importReadFaultStore{ObjectStore: app.Store.Objects, app: app, target: &faultTarget, err: fault.err}, nil, nil)
+				return next
+			})
+			leader := group.leader(-1)
+			follower := (leader + 1) % len(group.nodes)
+			faultTarget.Store(group.nodes[follower].cluster.App)
+			if fault.name == "leader_corrupt_source" {
+				faultTarget.Store(group.nodes[leader].cluster.App)
+			}
+			group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+			if fault.name == "missing_source" {
+				invalid := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"bulk_import","params":{"import_id":"manual","source_key":"graphdb/tenants/tenant-a/tasks/imports/missing.jsonl","format":"jsonl"}}`, http.StatusAccepted)
+				var invalidTask storage.Task
+				if err := json.Unmarshal(invalid.Body.Bytes(), &invalidTask); err != nil {
+					t.Fatal(err)
+				}
+				if err := group.nodes[leader].cluster.runQueuedTask(context.Background()); err != nil {
+					t.Fatalf("invalid import source stopped the cluster: %v", err)
+				}
+				checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, replica := range group.nodes {
+					group.waitApplied(i, checkpoint.Index)
+					failed, err := replica.store.GetTask(context.Background(), "tenant-a", invalidTask.ID)
+					if err != nil || failed.Status != storage.TaskStatusFailed {
+						t.Fatalf("invalid source was not a consistent task failure: %+v, %v", failed, err)
+					}
+				}
+			}
+			response := group.mustRequest(leader, "POST", "/v1/imports?format=jsonl&batch_size=1", `{"entity":{"id":"host:import","kind":"host"}}`, http.StatusAccepted)
+			var task storage.Task
+			if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if fault.name == "leader_corrupt_source" {
+				if err := group.nodes[leader].cluster.runQueuedTask(ctx); err != nil {
+					t.Fatal(err)
+				}
+				checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, replica := range group.nodes {
+					group.waitApplied(i, checkpoint.Index)
+					failed, err := replica.store.GetTask(ctx, "tenant-a", task.ID)
+					if err != nil || failed.Status != storage.TaskStatusFailed {
+						t.Fatalf("leader source corruption was accepted: %+v, %v", failed, err)
+					}
+					if group.manifest(i).Version != 0 {
+						t.Fatal("corrupt import published graph data")
+					}
+				}
+				faultTarget.Store(nil)
+				group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:after-invalid-source","kind":"host"}]}}`, http.StatusOK)
+				return
+			}
+			for {
+				group.nodes[leader].cluster.App.mu.RLock()
+				completed, err := group.nodes[leader].store.GetTask(ctx, "tenant-a", task.ID)
+				group.nodes[leader].cluster.App.mu.RUnlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if completed.Status == storage.TaskStatusSucceeded {
+					break
+				}
+				if completed.Status == storage.TaskStatusFailed || ctx.Err() != nil {
+					t.Fatalf("healthy import did not succeed: %+v, %v", completed, ctx.Err())
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.waitApplied((leader+2)%len(group.nodes), checkpoint.Index)
+			faulted := group.nodes[follower].cluster
+			for faulted.Status()["error"] == nil && ctx.Err() == nil {
+				applied, err := group.nodes[follower].files.ReplicationCheckpoint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if applied.Index >= checkpoint.Index {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			faulted.App.mu.RLock()
+			failedCheckpoint, err := group.nodes[follower].files.ReplicationCheckpoint()
+			queued, taskErr := group.nodes[follower].store.GetTask(ctx, "tenant-a", task.ID)
+			faulted.App.mu.RUnlock()
+			if faulted.Status()["error"] == nil {
+				t.Fatalf("faulted replica continued after skipping a committed import: checkpoint=%+v task=%+v", failedCheckpoint, queued)
+			}
+			t.Logf("faulted replica: %v", faulted.Status()["error"])
+			if err != nil || failedCheckpoint.Index >= checkpoint.Index || taskErr != nil || queued.Status != storage.TaskStatusQueued {
+				t.Fatalf("read fault became durable: checkpoint=%+v task=%+v errors=%v/%v", failedCheckpoint, queued, err, taskErr)
+			}
+			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:quorum","kind":"host"}]}}`, http.StatusOK)
+			group.stop(follower)
+			faultTarget.Store(nil)
+			group.start(follower)
+			checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.waitApplied(follower, checkpoint.Index)
+			group.nodes[follower].cluster.App.mu.RLock()
+			graph, _, err := group.nodes[follower].store.Load(ctx, "tenant-a")
+			group.nodes[follower].cluster.App.mu.RUnlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"host:import", "host:quorum"} {
+				if _, ok := graph.Entities.Get(id); !ok {
+					t.Fatalf("repaired replica is missing %s", id)
+				}
+			}
+		})
 	}
 }
 

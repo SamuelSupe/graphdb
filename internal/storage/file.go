@@ -60,7 +60,8 @@ func NewFileStore(root string) *FileStore {
 	return &FileStore{root: root, objectLocks: map[string]*fileObjectLock{}}
 }
 
-func (s *FileStore) Get(ctx context.Context, key string) ([]byte, error) {
+func (s *FileStore) Get(ctx context.Context, key string) (result []byte, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr
@@ -105,7 +106,8 @@ func (s *FileStore) GetWithMeta(ctx context.Context, key string) ([]byte, Object
 	return data, ObjectMeta{Key: key, ETag: sha256Hex(data), Exists: true}, nil
 }
 
-func (s *FileStore) Head(ctx context.Context, key string) (ObjectMeta, error) {
+func (s *FileStore) Head(ctx context.Context, key string) (result ObjectMeta, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	releaseOperation, operationErr := s.beginOperation(ctx, key)
 	if operationErr != nil {
 		err := operationErr

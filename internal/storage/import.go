@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	TaskTypeBulkImport   = "bulk_import"
-	defaultImportBatch   = 500
-	maxImportBatch       = 5000
-	maxImportSourceBytes = 32 << 20
+	TaskTypeBulkImport           = "bulk_import"
+	defaultImportBatch           = 500
+	maxImportBatch               = 5000
+	maxImportSourceBytes         = 32 << 20
+	importSourceDigestCheckpoint = "import_source_sha256"
 )
 
 type ImportOptions struct {
@@ -52,6 +53,9 @@ func (s *TenantStore) StartImport(ctx context.Context, tenantID string, data []b
 		"collector_id": options.CollectorID,
 		"batch_size":   options.BatchSize,
 		"on_error":     options.OnError,
+	}
+	if IsReplicatedContext(ctx) {
+		ctx = context.WithValue(ctx, replicatedImportKey{}, sha256Hex(data))
 	}
 	task, err := s.StartTask(ctx, tenantID, TaskTypeBulkImport, params)
 	if err != nil {

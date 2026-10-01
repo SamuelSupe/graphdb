@@ -489,14 +489,6 @@ func (n *Node) run() {
 			}
 			n.disk.conf = conf
 			n.disk.confIndex = confIndex
-			for _, outcome := range membershipResults {
-				n.mu.Lock()
-				ch := n.proposals[outcome.id]
-				n.mu.Unlock()
-				if ch != nil {
-					ch <- result{err: outcome.err}
-				}
-			}
 			if len(ready.Messages) > 0 {
 				n.send(ready.Messages)
 			}
@@ -517,6 +509,16 @@ func (n *Node) run() {
 				pending.configurationChanged = pending.configurationChanged || configurationChanged
 			}
 			n.raft.Advance()
+			// A reply can trigger the next change immediately. Advance must
+			// clear Raft's pending configuration before that proposal arrives.
+			for _, outcome := range membershipResults {
+				n.mu.Lock()
+				ch := n.proposals[outcome.id]
+				n.mu.Unlock()
+				if ch != nil {
+					ch <- result{err: outcome.err}
+				}
+			}
 		}
 	}
 }

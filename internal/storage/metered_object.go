@@ -108,6 +108,10 @@ func (s *MeteredObjectStore) start(ctx context.Context, operation string, key st
 	}
 	ctx, span := startStorageSpan(ctx, "graphdb.object_store."+operation, attrs...)
 	return ctx, func(err error) {
+		switch operation {
+		case "get", "get_with_meta", "head", "list", "list_page", "read_file":
+			recordReplicationFailure(ctx, err)
+		}
 		duration := time.Since(start)
 		if s.Pressure != nil {
 			s.Pressure.RecordObjectOperation(duration, err)
