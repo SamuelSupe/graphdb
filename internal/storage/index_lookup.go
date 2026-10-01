@@ -344,7 +344,7 @@ func (l *PersistedIndexLookup) loadEntityPage(ctx context.Context, shard string)
 	l.pageMu.Unlock()
 
 	if spec, ok := l.catalogEntityPageSpec(shard); ok && specFormat(spec.Format) == IndexFormatParquet {
-		loaded, _, ok, err := l.Store.loadValidatedParquetEntityPageObject(ctx, l.TenantID, l.Version, spec)
+		loaded, _, ok, err := l.Store.borrowValidatedParquetEntityPageObject(ctx, l.TenantID, l.Version, spec)
 		if err != nil || !ok {
 			if err != nil {
 				return EntityPageData{}, err

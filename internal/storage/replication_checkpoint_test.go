@@ -19,10 +19,22 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = files.ApplyReplicated(context.Background(), 2, "crashing-command", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "empty" {
+				os.Exit(0)
+			}
 			if err := files.Put(ctx, "graphdb/manifest", []byte("new-version")); err != nil {
 				return nil, err
 			}
 			if err := files.Put(ctx, "graphdb/new-data", []byte("new")); err != nil {
+				return nil, err
+			}
+			if err := files.Put(ctx, "graphdb/manifest", []byte("newer-version")); err != nil {
+				return nil, err
+			}
+			if err := files.Delete(ctx, "graphdb/new-data"); err != nil {
+				return nil, err
+			}
+			if err := files.Put(ctx, "graphdb/new-data", []byte("recreated")); err != nil {
 				return nil, err
 			}
 			os.Exit(0)
@@ -30,58 +42,62 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		})
 		t.Fatal(err)
 	}
-	root := t.TempDir()
-	files, err := OpenFileStore(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := files.RequireReplicatedWrites(); err != nil {
-		t.Fatal(err)
-	}
-	_, err = files.ApplyReplicated(context.Background(), 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
-		return []byte("old-response"), files.Put(ctx, "graphdb/manifest", []byte("old-version"))
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := files.Close(); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command(os.Args[0], "-test.run=^TestReplicationApplicationCrashRecovery$")
-	command.Env = append(os.Environ(), "GRAPHDB_TEST_REPLICA_CRASH_ROOT="+root)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("crash helper: %v: %s", err, output)
-	}
-	files, err = OpenFileStore(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer files.Close()
-	if err := files.RequireReplicatedWrites(); err != nil {
-		t.Fatal(err)
-	}
-	data, err := files.Get(context.Background(), "graphdb/manifest")
-	if err != nil || string(data) != "old-version" {
-		t.Fatalf("partial publication was not rolled back: %q, %v", data, err)
-	}
-	if _, err := files.Get(context.Background(), "graphdb/new-data"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("uncommitted file survived: %v", err)
-	}
-	checkpoint, err := files.ReplicationCheckpoint()
-	if err != nil || checkpoint.Index != 1 {
-		t.Fatalf("applied position advanced across crash: %+v, %v", checkpoint, err)
-	}
-	for i := 0; i < 2; i++ {
-		_, err = files.ApplyReplicated(context.Background(), 2, "replay", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
-			return []byte("new-response"), files.Put(ctx, "graphdb/manifest", []byte("committed"))
+	for _, stage := range []string{"empty", "partial"} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			files, err := OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := files.RequireReplicatedWrites(); err != nil {
+				t.Fatal(err)
+			}
+			_, err = files.ApplyReplicated(context.Background(), 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				return []byte("old-response"), files.Put(ctx, "graphdb/manifest", []byte("old-version"))
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := files.Close(); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command(os.Args[0], "-test.run=^TestReplicationApplicationCrashRecovery$")
+			command.Env = append(os.Environ(), "GRAPHDB_TEST_REPLICA_CRASH_ROOT="+root, "GRAPHDB_TEST_REPLICA_CRASH_STAGE="+stage)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("crash helper: %v: %s", err, output)
+			}
+			files, err = OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			if err := files.RequireReplicatedWrites(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := files.Get(context.Background(), "graphdb/manifest")
+			if err != nil || string(data) != "old-version" {
+				t.Fatalf("partial publication was not rolled back: %q, %v", data, err)
+			}
+			if _, err := files.Get(context.Background(), "graphdb/new-data"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("uncommitted file survived: %v", err)
+			}
+			checkpoint, err := files.ReplicationCheckpoint()
+			if err != nil || checkpoint.Index != 1 {
+				t.Fatalf("applied position advanced across crash: %+v, %v", checkpoint, err)
+			}
+			for i := 0; i < 2; i++ {
+				_, err = files.ApplyReplicated(context.Background(), 2, "replay", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+					return []byte("new-response"), files.Put(ctx, "graphdb/manifest", []byte("committed"))
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			checkpoint, err = files.ReplicationCheckpoint()
+			if err != nil || checkpoint.Index != 2 || string(checkpoint.Response) != "new-response" {
+				t.Fatalf("replay checkpoint mismatch: %+v, %v", checkpoint, err)
+			}
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	checkpoint, err = files.ReplicationCheckpoint()
-	if err != nil || checkpoint.Index != 2 || string(checkpoint.Response) != "new-response" {
-		t.Fatalf("replay checkpoint mismatch: %+v, %v", checkpoint, err)
 	}
 }
 

@@ -237,14 +237,14 @@ func TestIndexObjectCacheAvoidsRepeatedEdgeShardReads(t *testing.T) {
 	}
 }
 
-func TestIndexObjectCacheAvoidsRepeatedEntityPageReadsAcrossScanPages(t *testing.T) {
+func TestIndexObjectCacheAvoidsRepeatedEntityPageReadsAndIsolatesResults(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
 	store := NewTenantStore(base, "test")
 	ids := sameEntityShardIDs(t, "host:cache-page-", 2)
 	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
 		UpsertEntities: []graph.Entity{
-			{ID: ids[0], Kind: "host"},
+			{ID: ids[0], Kind: "host", Fields: graph.Fields{"labels": map[string]any{"values": []any{"original"}}}},
 			{ID: ids[1], Kind: "host"},
 		},
 	}, CommitOptions{}); err != nil {
@@ -265,6 +265,20 @@ func TestIndexObjectCacheAvoidsRepeatedEntityPageReadsAcrossScanPages(t *testing
 	second, err := store.ListEntitiesFromCatalog(ctx, "tenant-a", catalog, EntityScanOptions{Kind: "host", Limit: 1, Cursor: first.NextCursor})
 	if err != nil || len(second.Entities) != 1 {
 		t.Fatalf("second page=%#v err=%v", second, err)
+	}
+	for _, fields := range [][]string{nil, {"fields.labels"}} {
+		lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+		entities, ok, err := lookup.GetEntities(ctx, ids, fields)
+		if err != nil || !ok || len(entities) != len(ids) {
+			t.Fatalf("batch lookup entities=%#v ok=%v err=%v", entities, ok, err)
+		}
+		entities[ids[0]].Fields["labels"].(map[string]any)["values"].([]any)[0] = "changed"
+		for _, reader := range []*PersistedIndexLookup{lookup, {Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}} {
+			entity, ok, err := reader.GetEntity(ctx, ids[0], fields)
+			if err != nil || !ok || entity.Fields["labels"].(map[string]any)["values"].([]any)[0] != "original" {
+				t.Fatalf("lookup result changed cached page: entity=%#v ok=%v err=%v", entity, ok, err)
+			}
+		}
 	}
 	pageKey := store.parquetEntityPageVersionKey("tenant-a", catalog.Version, entityShardID(ids[0]))
 	if got := counting.GetWithMetaCount(pageKey); got != 1 {

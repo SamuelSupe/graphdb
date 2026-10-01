@@ -50,6 +50,8 @@ type Application struct {
 	ShardID          string
 	Catalog          bool
 	mu               sync.RWMutex
+	pending          map[string]pendingAcceptance
+	pendingBytes     int64
 }
 
 func (a *Application) Applied() (uint64, error) {
@@ -77,12 +79,18 @@ func (a *Application) Snapshot(ctx context.Context) ([]byte, error) {
 func (a *Application) Restore(ctx context.Context, index uint64, data []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.pending = nil
 	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes)
 }
 
-func (a *Application) Apply(ctx context.Context, index uint64, data []byte) ([]byte, error) {
+func (a *Application) Apply(ctx context.Context, index uint64, data []byte) (response []byte, err error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	defer func() {
+		if err != nil {
+			a.pending = nil
+		}
+		a.mu.Unlock()
+	}()
 	if len(data) == 0 {
 		return a.Files.ApplyReplicated(ctx, index, "", time.Time{}, func(context.Context) ([]byte, error) { return nil, nil })
 	}
@@ -92,6 +100,14 @@ func (a *Application) Apply(ctx context.Context, index uint64, data []byte) ([]b
 	}
 	if cmd.ID == "" || cmd.At.IsZero() {
 		return nil, fmt.Errorf("replication command has no identity or timestamp")
+	}
+	// Graph publication does not change the replicated acceptance queue. Keep
+	// its index through normal writes; maintenance may purge, restore or migrate it.
+	queueUnchanged := cmd.Kind == "accept" || cmd.Kind == "flush" ||
+		(cmd.Kind == "http" && cmd.Method == http.MethodPost &&
+			(cmd.URI == "/v1/ingest/batches" || cmd.URI == "/v1/commits"))
+	if !queueUnchanged {
+		a.pending = nil
 	}
 	if cmd.Role != "" && cmd.Role != a.replicationRole() {
 		return nil, fmt.Errorf("replicated group role %q differs from configured role %q", cmd.Role, a.replicationRole())

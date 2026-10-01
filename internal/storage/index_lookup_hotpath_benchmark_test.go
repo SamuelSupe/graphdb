@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -11,6 +12,47 @@ var (
 	benchmarkCatalogSpec EdgeShard
 	benchmarkEntityValue any
 )
+
+func BenchmarkPersistedIndexLookupBatchCache(b *testing.B) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "bench")
+	store.ConfigureIndexObjectCache(IndexObjectCacheConfig{MaxEntries: 16})
+	var entities []graph.Entity
+	var ids []string
+	for i := 0; len(entities) < 128; i++ {
+		id := fmt.Sprintf("host:batch-cache-%d", i)
+		if entityShardID(id) != "2a" {
+			continue
+		}
+		entities = append(entities, graph.Entity{ID: id, Kind: "host", Fields: graph.Fields{
+			"hostname": id, "labels": map[string]any{"environment": "prod", "owners": []any{"ops", "db"}},
+		}})
+		ids = append(ids, id)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: entities}, CommitOptions{}); err != nil {
+		b.Fatal(err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name   string
+		fields []string
+	}{{"full", nil}, {"projected", []string{"fields.hostname"}}} {
+		b.Run(scenario.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+				result, ok, err := lookup.GetEntities(ctx, ids[:8], scenario.fields)
+				if err != nil || !ok || len(result) != 8 {
+					b.Fatalf("batch lookup ok=%v count=%d err=%v", ok, len(result), err)
+				}
+				benchmarkEntityValue = result
+			}
+		})
+	}
+}
 
 func BenchmarkPersistedIndexLookupEdgeCatalog(b *testing.B) {
 	catalog := benchmarkEdgeCatalog()

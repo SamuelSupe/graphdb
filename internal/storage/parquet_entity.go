@@ -935,13 +935,15 @@ func (s *TenantStore) loadParquetEntityPageObject(ctx context.Context, tenantID 
 	return result, resultETag, ok, err
 }
 
-func (s *TenantStore) loadValidatedParquetEntityPageObject(ctx context.Context, tenantID string, version int64, spec EntityPageSpec) (EntityPageData, string, bool, error) {
+// Lookup pages stay immutable. Copy only selected entities at the public lookup
+// boundary instead of copying every entity before applying IDs and projections.
+func (s *TenantStore) borrowValidatedParquetEntityPageObject(ctx context.Context, tenantID string, version int64, spec EntityPageSpec) (EntityPageData, string, bool, error) {
 	var result EntityPageData
 	var resultETag string
 	valid := false
 	ok, err := s.withParquetEntityPageObject(ctx, tenantID, version, spec, func(page EntityPageData, etag string, validated bool) error {
 		if validated {
-			result = copyEntityPage(page)
+			result = page
 			resultETag = etag
 			valid = true
 		}

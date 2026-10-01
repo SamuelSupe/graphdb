@@ -24,18 +24,23 @@ CASES = {'read-1': (0, 1, 'direct'), 'read-8': (0, 8, 'direct'),
          'write-direct': (4, 0, 'direct'), 'mixed-wal': (4, 16, 'wal')}
 
 
-def request(base, path, body=None):
+def request(base, path, body=None, cluster_id=None):
+    headers = {'X-Tenant-ID': 'bench', 'Content-Type': 'application/json',
+               'Authorization': 'Bearer ' + TOKEN}
+    if cluster_id:
+        headers['X-Raft-Cluster'] = cluster_id
     req = urllib.request.Request(base + path,
         data=None if body is None else json.dumps(body).encode(),
-        headers={'X-Tenant-ID': 'bench', 'Content-Type': 'application/json',
-                 'Authorization': 'Bearer ' + TOKEN})
+        headers=headers)
     with urllib.request.urlopen(req, timeout=30) as response:
-        return json.loads(response.read())
+        data = response.read()
+        return json.loads(data) if data else None
 
 
 class Cluster:
-    def __init__(self, binary, folder, mode, topology):
+    def __init__(self, binary, folder, mode, topology, replicas):
         self.binary, self.folder, self.mode, self.topology = binary, folder, mode, topology
+        self.replicas = replicas
         self.processes, self.logs = [], []
 
     def spawn(self, name, environment, command='serve'):
@@ -45,26 +50,45 @@ class Cluster:
         self.logs.append(log)
         self.processes.append(subprocess.Popen([self.binary, command], env=env, stdout=log, stderr=log))
 
-    def group(self, name, port, role):
-        peers = json.dumps({str(i): f'http://127.0.0.1:{port+1000+i}' for i in range(1, 4)})
-        for i in range(1, 4):
+    def group(self, name, port, role, reopen):
+        peers = json.dumps({str(i): f'http://127.0.0.1:{port+1000+i}' for i in range(1, self.replicas+1)})
+        initial_peers = json.dumps({str(i): f'http://127.0.0.1:{port+1000+i}' for i in range(1, 4)})
+        for i in range(1, self.replicas+1):
             self.spawn(name+str(i), {
                 'GRAPHDB_ADDR': f'127.0.0.1:{port+i}',
                 'GRAPHDB_DATA_DIR': str(self.folder / (name+str(i))),
                 'GRAPHDB_RAFT_NODE_ID': str(i), 'GRAPHDB_RAFT_CLUSTER_ID': name,
                 'GRAPHDB_RAFT_ADDR': f'127.0.0.1:{port+1000+i}',
-                'GRAPHDB_RAFT_PEERS': peers, 'GRAPHDB_RAFT_TOKEN': TOKEN,
+                'GRAPHDB_RAFT_PEERS': peers if reopen or i > 3 else initial_peers,
+                'GRAPHDB_RAFT_BOOTSTRAP': 'false' if reopen or i > 3 else 'true',
+                'GRAPHDB_RAFT_TOKEN': TOKEN,
                 'GRAPHDB_INGEST_MODE': self.mode, 'GRAPHDB_INGEST_FLUSH_INTERVAL': '100ms',
                 **({'GRAPHDB_ADMIN_ADDR': f'127.0.0.1:{port+2000+i}',
                     'GRAPHDB_PPROF_ENABLED': 'true'} if self.profiling else {}), **role})
         return peers
+
+    def expand(self, name, port):
+        for i in range(4, self.replicas+1):
+            leader = self.leader(port)
+            base = f'http://127.0.0.1:{port+1000+leader}'
+            request(base, '/raft/members', {'action': 'add_learner', 'id': i,
+                'url': f'http://127.0.0.1:{port+1000+i}'}, name)
+            deadline = time.monotonic()+30
+            while True:
+                try:
+                    request(base, '/raft/members', {'action': 'promote', 'id': i}, name)
+                    break
+                except urllib.error.HTTPError as err:
+                    if err.code != 409 or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.1)
 
     def leader(self, port):
         deadline = time.monotonic()+30
         while time.monotonic()<deadline:
             if any(p.poll() is not None for p in self.processes):
                 raise RuntimeError('replica exited; inspect server logs')
-            for i in range(1, 4):
+            for i in range(1, self.replicas+1):
                 try:
                     request(f'http://127.0.0.1:{port+i}', '/v1/readiness')
                     return i
@@ -76,13 +100,18 @@ class Cluster:
     def start(self, profiling=False, reopen=False):
         self.profiling = profiling
         role = {'GRAPHDB_RAFT_SHARD_ID': 'data'} if self.topology == 'sharded' else {}
-        self.group('data', 40080, role)
+        self.group('data', 40080, role, reopen)
         leader = self.leader(40080)
+        if not reopen:
+            self.expand('data', 40080)
+            leader = self.leader(40080)
         self.base = f'http://127.0.0.1:{40080+leader}'
         self.profile_base = f'http://127.0.0.1:{42080+leader}'
         if self.topology == 'sharded':
-            peers = self.group('catalog', 44080, {'GRAPHDB_RAFT_CATALOG': 'true'})
+            peers = self.group('catalog', 44080, {'GRAPHDB_RAFT_CATALOG': 'true'}, reopen)
             self.leader(44080)
+            if not reopen:
+                self.expand('catalog', 44080)
             self.spawn('router', {'GRAPHDB_ADDR': '127.0.0.1:40080',
                 'GRAPHDB_ROUTER_TOKEN': TOKEN, 'GRAPHDB_ROUTER_CATALOG_CLUSTER_ID': 'catalog',
                 'GRAPHDB_ROUTER_CATALOG_PEERS': peers}, 'serve-router')
@@ -97,7 +126,7 @@ class Cluster:
                     time.sleep(.1)
             if not reopen:
                 request(self.base, '/v1/cluster/shards', {'id': 'data', 'cluster_id': 'data',
-                    'peers': {str(i): f'http://127.0.0.1:{41080+i}' for i in range(1, 4)}})
+                    'peers': {str(i): f'http://127.0.0.1:{41080+i}' for i in range(1, self.replicas+1)}})
         if not reopen:
             request(self.base, '/v1/tenants', {'tenant_id': 'bench'})
 
@@ -133,7 +162,7 @@ def run(args, name, binary, case, iteration):
     folder = args.output / f'{iteration}-{case}-{name}'
     folder.mkdir(parents=True, exist_ok=False)
     writers, readers, mode = CASES[case]
-    cluster = Cluster(binary, folder, mode, args.topology)
+    cluster = Cluster(binary, folder, mode, args.topology, args.replicas)
     profile_errors = []
     def profile():
         try:
@@ -147,7 +176,7 @@ def run(args, name, binary, case, iteration):
         load(args, cluster, folder, 'seed', 4, 0, mode, seed=True)
         if args.profile:
             cluster.stop()
-            cluster = Cluster(binary, folder, mode, args.topology)
+            cluster = Cluster(binary, folder, mode, args.topology, args.replicas)
             cluster.start(profiling=True, reopen=True)
         if args.warmup > 0:
             load(args, cluster, folder, 'warm', 0, max(1, readers), mode, args.warmup)
@@ -165,6 +194,7 @@ def run(args, name, binary, case, iteration):
         if not report['success']:
             raise RuntimeError('loadtest integrity or freshness check failed')
         row = {'variant': name, 'case': case, 'round': iteration, 'topology': args.topology,
+            'replicas': args.replicas,
             'binary_sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
             'cpu_seconds': sum(b['cpu_seconds']-a['cpu_seconds'] for a,b in zip(before,after)),
             'write_bytes': sum(b['io']['write_bytes']-a['io']['write_bytes'] for a,b in zip(before,after)),
@@ -183,6 +213,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--topology', choices=['raft', 'sharded'], default='raft')
+    parser.add_argument('--replicas', type=int, choices=[3, 5], default=3)
     parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--seconds', type=int, default=20)
     parser.add_argument('--warmup', type=int, default=5)

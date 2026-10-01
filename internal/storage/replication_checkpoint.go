@@ -70,13 +70,8 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		return nil, err
 	}
 	journal := &replicationJournal{db: db, files: s}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("objects"))
-		return err
-	}); err != nil {
-		db.Close()
-		return nil, err
-	}
+	// bbolt initializes new databases durably. Create the objects bucket with
+	// the first before-image instead of syncing a separate empty transaction.
 	if err := syncDir(dir); err != nil {
 		db.Close()
 		return nil, err
@@ -122,10 +117,23 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	}
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
-	return journal.db.Update(func(tx *bolt.Tx) error {
+	var recorded bool
+	if err := journal.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte("objects"))
-		if bucket.Get([]byte(key)) != nil {
-			return nil
+		recorded = bucket != nil && bucket.Get([]byte(key)) != nil
+		return nil
+	}); err != nil {
+		return err
+	}
+	// The first before-image is already durable. A repeated mutation needs no
+	// new transaction; committing an empty bbolt update would still sync disk.
+	if recorded {
+		return nil
+	}
+	return journal.db.Update(func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucketIfNotExists([]byte("objects"))
+		if err != nil {
+			return err
 		}
 		filename, err := s.path(key)
 		if err != nil {

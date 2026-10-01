@@ -49,7 +49,27 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 	if err != nil {
 		return err
 	}
-	return a.Store.Objects.Put(ctx, key, data)
+	var pending pendingAcceptance
+	if a.pending != nil && record.State == "accepted" {
+		pending, err = pendingInfo(record, int64(len(data)))
+		if err != nil {
+			return err
+		}
+	}
+	if err := a.Store.Objects.Put(ctx, key, data); err != nil {
+		return err
+	}
+	if a.pending != nil {
+		if previous, ok := a.pending[key]; ok {
+			a.pendingBytes -= previous.objectBytes
+		}
+		delete(a.pending, key)
+		if record.State == "accepted" {
+			a.pending[key] = pending
+			a.pendingBytes += pending.objectBytes
+		}
+	}
+	return nil
 }
 
 func resultJSON(status int, value any) ([]byte, error) {
@@ -92,21 +112,10 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		return nil, err
 	} else {
 		if a.MaxPendingBytes > 0 {
-			objects, err := a.Store.Objects.List(ctx, a.ingestPrefix())
-			if err != nil {
+			if err := a.ensurePending(ctx); err != nil {
 				return nil, err
 			}
-			pendingBytes := int64(len(cmd.Body))
-			for _, object := range objects {
-				pending, err := a.accepted(ctx, object.Key)
-				if err != nil {
-					return nil, err
-				}
-				if pending.State == "accepted" {
-					pendingBytes += object.Size
-				}
-			}
-			if pendingBytes > a.MaxPendingBytes {
+			if a.pendingBytes+int64(len(cmd.Body)) > a.MaxPendingBytes {
 				return resultJSON(http.StatusServiceUnavailable, map[string]any{"code": "ingest_queue_full", "error": "replicated accepted queue exceeds its byte budget", "retryable": true})
 			}
 		}
@@ -264,29 +273,19 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 }
 
 func (c *Cluster) flushPending(ctx context.Context) error {
-	c.App.mu.RLock()
-	objects, err := c.App.Store.Objects.List(ctx, c.App.ingestPrefix())
+	queue, err := c.App.pendingSnapshot(ctx)
 	if err != nil {
-		c.App.mu.RUnlock()
 		return err
 	}
 	type pending struct {
 		key    string
-		record acceptedRequest
+		record pendingAcceptance
 	}
 	var requests []pending
-	for _, object := range objects {
-		record, err := c.App.accepted(ctx, object.Key)
-		if err != nil {
-			c.App.mu.RUnlock()
-			return err
-		}
-		if record.State == "accepted" {
-			requests = append(requests, pending{object.Key, record})
-		}
+	for key, record := range queue {
+		requests = append(requests, pending{key, record})
 	}
-	c.App.mu.RUnlock()
-	sort.Slice(requests, func(i, j int) bool { return requests[i].record.Index < requests[j].record.Index })
+	sort.Slice(requests, func(i, j int) bool { return requests[i].record.index < requests[j].record.index })
 	if len(requests) == 0 {
 		return nil
 	}
@@ -294,19 +293,18 @@ func (c *Cluster) flushPending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cmd.Tenant = requests[0].record.Tenant
+	cmd.Tenant = requests[0].record.tenant
 	var size int64
-	generation := requests[0].record.Generation
+	generation := requests[0].record.generation
 	for _, pending := range requests {
-		if pending.record.Tenant != cmd.Tenant || pending.record.Generation != generation {
+		if pending.record.tenant != cmd.Tenant || pending.record.generation != generation {
 			continue
 		}
-		body, _ := json.Marshal(pending.record.Request)
-		if len(cmd.IDs) > 0 && (len(cmd.IDs) >= max(c.FlushMaxRequests, 1) || size+int64(len(body)) > c.FlushMaxBytes) {
+		if len(cmd.IDs) > 0 && (len(cmd.IDs) >= max(c.FlushMaxRequests, 1) || size+pending.record.requestBytes > c.FlushMaxBytes) {
 			break
 		}
 		cmd.IDs = append(cmd.IDs, pending.key)
-		size += int64(len(body))
+		size += pending.record.requestBytes
 	}
 	_, err = c.propose(ctx, cmd)
 	return err

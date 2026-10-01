@@ -350,6 +350,96 @@ func TestHAAcceptedWALSurvivesLeaderLoss(t *testing.T) {
 	}
 }
 
+func TestHAPendingQueueBudgetSurvivesFlushAndRestart(t *testing.T) {
+	group := newTestCluster(t, true)
+	for _, replica := range group.nodes {
+		replica.cfg.IngestQueueMemoryBytes = 3 << 10
+		replica.cluster.App.mu.Lock()
+		replica.cluster.App.MaxPendingBytes = replica.cfg.IngestQueueMemoryBytes
+		replica.cluster.App.mu.Unlock()
+	}
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	body := func(id string) string {
+		return fmt.Sprintf(`{"source":"agent","collector_id":"collector","batch_id":%q,"idempotency_key":%q,"items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host","fields":{"payload":%q,"name":%q}}}]}`, id, id, string(bytes.Repeat([]byte("x"), 2048)), id)
+	}
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("one"), http.StatusAccepted)
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("two"), http.StatusServiceUnavailable)
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("one"), http.StatusAccepted)
+	if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("two"), http.StatusAccepted)
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("three"), http.StatusServiceUnavailable)
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i := range group.nodes {
+		group.start(i)
+	}
+	leader = group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("three"), http.StatusServiceUnavailable)
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("two"), http.StatusAccepted)
+	if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body("three"), http.StatusAccepted)
+	if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"one", "two", "three"} {
+		status := group.mustRequest(leader, "GET", "/v1/ingest/batches/agent/collector/"+id, "", http.StatusOK)
+		var record storage.IngestBatchStatus
+		if err := json.Unmarshal(status.Body.Bytes(), &record); err != nil || record.State != "committed" || record.Result == nil || record.Result.Version != int64(i+1) {
+			t.Fatalf("batch %s was not published exactly once: %+v, %v", id, record, err)
+		}
+	}
+}
+
+func BenchmarkHAWALAcceptanceHistory(b *testing.B) {
+	ctx := context.Background()
+	app := &Application{Store: storage.NewTenantStore(storage.NewMemoryStore(), "bench"), MaxPendingBytes: 64 << 20}
+	body := fmt.Sprintf(`{"source":"agent","collector_id":"collector","batch_id":"live","items":[{"external_id":"host:1","entity":{"id":"host:1","kind":"host","fields":{"payload":%q}}}]}`, string(bytes.Repeat([]byte("x"), 1024)))
+	var request storage.IngestRequest
+	if err := json.Unmarshal([]byte(body), &request); err != nil {
+		b.Fatal(err)
+	}
+	request, err := storage.PrepareIngestRequest("tenant-a", request)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < 1000; i++ {
+		historical := request
+		historical.BatchID = fmt.Sprintf("history-%d", i)
+		record := acceptedRequest{Tenant: "tenant-a", Request: historical, Index: uint64(i + 1), State: "committed"}
+		key := app.ingestKey(record.Tenant, historical.Source, historical.CollectorID, historical.BatchID, 0)
+		if err := app.saveAccepted(ctx, key, record); err != nil {
+			b.Fatal(err)
+		}
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		b.Fatal(err)
+	}
+	cmd := command{Tenant: "tenant-a", At: time.Unix(1, 0), Body: data}
+	key := app.ingestKey(cmd.Tenant, request.Source, request.CollectorID, request.BatchID, 0)
+	completed := acceptedRequest{Tenant: cmd.Tenant, Request: request, Index: 1001, AcceptedAt: cmd.At, State: "committed"}
+	b.ReportAllocs()
+	for b.Loop() {
+		data, err := app.accept(ctx, 1001, cmd)
+		var response httpResult
+		if err != nil || json.Unmarshal(data, &response) != nil || response.Status != http.StatusAccepted {
+			b.Fatalf("accept status=%d err=%v", response.Status, err)
+		}
+		if err := app.saveAccepted(ctx, key, completed); err != nil {
+			b.Fatal(err)
+		}
+		if err := app.Store.Objects.Delete(ctx, key); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 	group := newTestCluster(t, false)
 	leader := group.leader(-1)
