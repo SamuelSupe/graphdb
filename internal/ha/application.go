@@ -86,18 +86,51 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes)
 }
 
-func (a *Application) Apply(ctx context.Context, index uint64, data []byte) (response []byte, err error) {
-	var cmd command
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &cmd); err != nil {
-			return nil, err
-		}
-	}
-	publication := cmd.Kind == "accept" || cmd.Kind == "flush" ||
+func publicationCommand(cmd command) bool {
+	return cmd.Kind == "accept" || cmd.Kind == "flush" ||
 		(cmd.Kind == "http" && cmd.Method == http.MethodPost &&
 			(cmd.URI == "/v1/ingest/batches" || cmd.URI == "/v1/commits"))
-	// Immutable publications can run beside pinned graph reads. Operations
-	// that replace an incarnation, ownership or control state wait for readers.
+}
+
+func (a *Application) Apply(ctx context.Context, index uint64, data []byte) ([]byte, error) {
+	responses, err := a.ApplyBatch(ctx, []replication.ApplyEntry{{Index: index, Data: data}})
+	if err != nil {
+		return nil, err
+	}
+	return responses[0], nil
+}
+
+func (a *Application) ApplyBatch(ctx context.Context, entries []replication.ApplyEntry) (responses [][]byte, err error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	commands := make([]command, 0, min(len(entries), 8))
+	for _, entry := range entries[:min(len(entries), 8)] {
+		var cmd command
+		if len(entry.Data) > 0 {
+			if err := json.Unmarshal(entry.Data, &cmd); err != nil {
+				if len(commands) > 0 {
+					break
+				}
+				return nil, err
+			}
+		}
+		if len(commands) > 0 && (!publicationCommand(cmd) || cmd.ID == "" || cmd.At.IsZero() ||
+			(cmd.Role != "" && cmd.Role != a.replicationRole()) || entry.Index != entries[len(commands)-1].Index+1 ||
+			cmd.Kind != commands[0].Kind || cmd.URI != commands[0].URI) {
+			break
+		}
+		commands = append(commands, cmd)
+		if !publicationCommand(cmd) {
+			break
+		}
+	}
+	entries = entries[:len(commands)]
+	publication := publicationCommand(commands[0])
+	// Only immutable publications share a journal. A task, ownership change,
+	// configuration entry or other control operation remains its own barrier.
+	// Keep acceptance separate from graph publication so its durable response
+	// does not wait for a later flush in the same log window.
 	if !publication {
 		a.readers.Lock()
 		defer a.readers.Unlock()
@@ -109,103 +142,138 @@ func (a *Application) Apply(ctx context.Context, index uint64, data []byte) (res
 		}
 		a.mu.Unlock()
 	}()
-	if len(data) == 0 {
-		return a.Files.ApplyReplicated(ctx, index, "", time.Time{}, func(context.Context) ([]byte, error) { return nil, nil })
+	for i, cmd := range commands {
+		if len(entries[i].Data) == 0 {
+			continue
+		}
+		if cmd.ID == "" || cmd.At.IsZero() {
+			return nil, fmt.Errorf("replication command has no identity or timestamp")
+		}
+		if cmd.Role != "" && cmd.Role != a.replicationRole() {
+			return nil, fmt.Errorf("replicated group role %q differs from configured role %q", cmd.Role, a.replicationRole())
+		}
+		if !publication {
+			a.pending = nil
+		}
 	}
-	if cmd.ID == "" || cmd.At.IsZero() {
-		return nil, fmt.Errorf("replication command has no identity or timestamp")
+	var checkpoint storage.ReplicationCheckpoint
+	if len(entries) > 1 {
+		checkpoint, err = a.Files.ReplicationCheckpoint()
+		if err != nil {
+			return nil, err
+		}
 	}
-	// Graph publication does not change the replicated acceptance queue. Keep
-	// its index through normal writes; maintenance may purge, restore or migrate it.
-	if !publication {
-		a.pending = nil
+	responses = make([][]byte, len(entries))
+	for i, entry := range entries {
+		if entry.Index <= checkpoint.Index {
+			responses[i] = checkpoint.Response
+		}
 	}
-	if cmd.Role != "" && cmd.Role != a.replicationRole() {
-		return nil, fmt.Errorf("replicated group role %q differs from configured role %q", cmd.Role, a.replicationRole())
-	}
-	return a.Files.ApplyReplicated(ctx, index, cmd.ID, cmd.At, func(applyCtx context.Context) ([]byte, error) {
-		if a.ShardID != "" && (cmd.Kind == "http" || cmd.Kind == "accept") {
-			valid, err := a.checkOwnership(applyCtx, cmd.Tenant, cmd.RouteEpoch)
+	last := len(entries) - 1
+	data, err := a.Files.ApplyReplicated(ctx, entries[last].Index, commands[last].ID, commands[last].At, func(applyCtx context.Context) ([]byte, error) {
+		for i, entry := range entries {
+			if entry.Index <= checkpoint.Index || len(entry.Data) == 0 {
+				continue
+			}
+			cmd := commands[i]
+			commandCtx := storage.ReplicatedContext(applyCtx, cmd.ID, cmd.At)
+			response, err := a.applyCommand(commandCtx, entry.Index, cmd)
 			if err != nil {
 				return nil, err
 			}
-			if !valid {
-				return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": "tenant ownership changed before application", "retryable": true})
-			}
-			if err := a.checkShardedMutation(applyCtx, cmd); err != nil {
-				return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": err.Error(), "retryable": true})
-			}
+			responses[i] = response
 		}
-		if cmd.ExpectedGeneration > 0 {
+		return responses[last], nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	responses[last] = data
+	return responses, nil
+}
+
+func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd command) ([]byte, error) {
+	if a.ShardID != "" && (cmd.Kind == "http" || cmd.Kind == "accept") {
+		valid, err := a.checkOwnership(applyCtx, cmd.Tenant, cmd.RouteEpoch)
+		if err != nil {
+			return nil, err
+		}
+		if !valid {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": "tenant ownership changed before application", "retryable": true})
+		}
+		if err := a.checkShardedMutation(applyCtx, cmd); err != nil {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": err.Error(), "retryable": true})
+		}
+	}
+	if cmd.ExpectedGeneration > 0 {
+		generation, err := a.Store.ReplicationTenantGeneration(applyCtx, cmd.Tenant)
+		if err != nil {
+			return nil, err
+		}
+		if generation != cmd.ExpectedGeneration {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "tenant has been replaced; obtain a new read token"})
+		}
+	}
+	switch cmd.Kind {
+	case "sharding":
+		var action sharding.Action
+		if err := json.Unmarshal(cmd.Body, &action); err != nil {
+			return nil, err
+		}
+		if a.Catalog {
+			return a.applyCatalog(applyCtx, action)
+		}
+		if a.ShardID != "" {
+			return a.applyOwnership(applyCtx, action)
+		}
+		return resultJSON(http.StatusBadRequest, map[string]any{"error": "Raft group has no sharding role"})
+	case "http":
+		request, err := http.NewRequestWithContext(applyCtx, cmd.Method, cmd.URI, bytes.NewReader(cmd.Body))
+		if err != nil {
+			return nil, err
+		}
+		request.Header = cmd.Header
+		writer := httptest.NewRecorder()
+		a.Handler.ServeHTTP(writer, request)
+		if writer.Code >= 500 {
+			return nil, fmt.Errorf("replicated mutation failed locally: HTTP %d: %s", writer.Code, writer.Body.String())
+		}
+		if cmd.Tenant != "" && writer.Code < 400 {
 			generation, err := a.Store.ReplicationTenantGeneration(applyCtx, cmd.Tenant)
 			if err != nil {
 				return nil, err
 			}
-			if generation != cmd.ExpectedGeneration {
-				return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "tenant has been replaced; obtain a new read token"})
-			}
+			writer.Header().Set("X-GraphDB-Tenant-Generation", fmt.Sprint(generation))
 		}
-		switch cmd.Kind {
-		case "sharding":
-			var action sharding.Action
-			if err := json.Unmarshal(cmd.Body, &action); err != nil {
-				return nil, err
-			}
-			if a.Catalog {
-				return a.applyCatalog(applyCtx, action)
-			}
-			if a.ShardID != "" {
-				return a.applyOwnership(applyCtx, action)
-			}
-			return resultJSON(http.StatusBadRequest, map[string]any{"error": "Raft group has no sharding role"})
-		case "http":
-			request, err := http.NewRequestWithContext(applyCtx, cmd.Method, cmd.URI, bytes.NewReader(cmd.Body))
-			if err != nil {
-				return nil, err
-			}
-			request.Header = cmd.Header
-			writer := httptest.NewRecorder()
-			a.Handler.ServeHTTP(writer, request)
-			if writer.Code >= 500 {
-				return nil, fmt.Errorf("replicated mutation failed locally: HTTP %d: %s", writer.Code, writer.Body.String())
-			}
-			if cmd.Tenant != "" && writer.Code < 400 {
-				generation, err := a.Store.ReplicationTenantGeneration(applyCtx, cmd.Tenant)
-				if err != nil {
-					return nil, err
-				}
-				writer.Header().Set("X-GraphDB-Tenant-Generation", fmt.Sprint(generation))
-			}
-			return json.Marshal(httpResult{Status: writer.Code, Header: writer.Header(), Body: writer.Body.Bytes()})
-		case "accept":
-			return a.accept(applyCtx, index, cmd)
-		case "flush":
-			return a.flush(applyCtx, cmd)
-		case "capture_backup":
-			if len(cmd.IDs) != 1 {
-				return nil, fmt.Errorf("invalid backup capture command")
-			}
-			return nil, a.Store.CaptureReplicatedObjectBackup(applyCtx, cmd.Tenant, cmd.IDs[0])
-		case "task":
-			if len(cmd.IDs) != 1 {
-				return nil, fmt.Errorf("invalid replicated task command")
-			}
-			if cmd.Error != "" {
-				task, err := a.Store.FailReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Error)
-				if err != nil {
-					return nil, err
-				}
-				return json.Marshal(task)
-			}
-			task, err := a.Store.RunReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Restore)
+		return json.Marshal(httpResult{Status: writer.Code, Header: writer.Header(), Body: writer.Body.Bytes()})
+	case "accept":
+		return a.accept(applyCtx, index, cmd)
+	case "flush":
+		return a.flush(applyCtx, cmd)
+	case "capture_backup":
+		if len(cmd.IDs) != 1 {
+			return nil, fmt.Errorf("invalid backup capture command")
+		}
+		return nil, a.Store.CaptureReplicatedObjectBackup(applyCtx, cmd.Tenant, cmd.IDs[0])
+	case "task":
+		if len(cmd.IDs) != 1 {
+			return nil, fmt.Errorf("invalid replicated task command")
+		}
+		if cmd.Error != "" {
+			task, err := a.Store.FailReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Error)
 			if err != nil {
 				return nil, err
 			}
 			return json.Marshal(task)
-		default:
-			return nil, fmt.Errorf("unsupported replicated command %q", cmd.Kind)
 		}
-	})
+		task, err := a.Store.RunReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Restore)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(task)
+	default:
+		return nil, fmt.Errorf("unsupported replicated command %q", cmd.Kind)
+	}
 }
 
 func writeResult(w http.ResponseWriter, data []byte) {

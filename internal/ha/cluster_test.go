@@ -312,6 +312,108 @@ func TestHAReplicationFailoverAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestHAConcurrentPublicationBatch(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	replica := group.nodes[leader]
+	checkpoint, err := replica.files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	var once sync.Once
+	var observations []uint64
+	replica.cluster.App.mu.Lock()
+	original := replica.cluster.App.Handler
+	replica.cluster.App.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/v1/commits" {
+			position, err := replica.files.ReplicationCheckpoint()
+			if err != nil {
+				t.Error(err)
+			}
+			observations = append(observations, position.Index)
+			once.Do(func() { close(blocked); <-release })
+		}
+		original.ServeHTTP(w, r)
+	})
+	replica.cluster.App.mu.Unlock()
+	const count = 8
+	type publicationResult struct {
+		index    int
+		response *httptest.ResponseRecorder
+	}
+	results := make(chan publicationResult, count)
+	bodies := make([]string, count)
+	for i := range count {
+		bodies[i] = fmt.Sprintf(`{"idempotency_key":"batch-%d","mutations":{"upsert_entities":[{"id":"host:%d","kind":"host","fields":{"name":"value-%d"}}]}}`, i, i, i)
+		go func(i int) { results <- publicationResult{i, group.request(leader, "POST", "/v1/commits", bodies[i])} }(i)
+	}
+	select {
+	case <-blocked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("application did not reach the publication barrier")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for replica.cluster.Node.Status()["commit_index"].(uint64) < checkpoint.Index+count {
+		if time.Now().After(deadline) {
+			t.Fatal("Raft stopped committing while application was blocked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	unblock()
+	versions := make(map[int64]bool)
+	var first storage.CommitResult
+	for range count {
+		publication := <-results
+		response := publication.response
+		var result storage.CommitResult
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil {
+			t.Fatalf("publication failed: %d: %s", response.Code, response.Body.String())
+		}
+		if versions[result.Version] {
+			t.Fatalf("publication results shared version %d", result.Version)
+		}
+		versions[result.Version] = true
+		if publication.index == 0 {
+			first = result
+		}
+	}
+	replica.cluster.App.mu.RLock()
+	shared := false
+	for i := 1; i < len(observations); i++ {
+		shared = shared || observations[i] == observations[i-1]
+	}
+	replica.cluster.App.mu.RUnlock()
+	if !shared || group.manifest(leader).Version != count {
+		t.Fatalf("publications did not share a durable transaction: %v", observations)
+	}
+	checkpoint, err = replica.files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := group.manifest(leader)
+	for i := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		got := group.manifest(i)
+		if got.Version != want.Version || got.HeadCommitID != want.HeadCommitID || !got.UpdatedAt.Equal(want.UpdatedAt) {
+			t.Fatalf("local batch boundaries changed replica identity: got %+v, want %+v", got, want)
+		}
+	}
+	group.stop(leader)
+	replacement := group.leader(leader)
+	response := group.mustRequest(replacement, "POST", "/v1/commits", bodies[0], http.StatusOK)
+	var replay storage.CommitResult
+	if err := json.Unmarshal(response.Body.Bytes(), &replay); err != nil || replay.Version != first.Version || replay.HeadCommitID != first.HeadCommitID {
+		t.Fatalf("failover replay lost the original result: %+v, %v", replay, err)
+	}
+	if group.manifest(replacement).Version != count {
+		t.Fatal("failover replay published a duplicate version")
+	}
+}
+
 func TestHAAcceptedWALSurvivesLeaderLoss(t *testing.T) {
 	group := newTestCluster(t, true)
 	leader := group.leader(-1)

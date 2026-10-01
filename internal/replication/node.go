@@ -57,29 +57,31 @@ type applicationBatch struct {
 }
 
 type Node struct {
-	cfg              Config
-	raft             raft.Node
-	disk             *diskStorage
-	machine          StateMachine
-	ctx              context.Context
-	cancel           context.CancelFunc
-	workers          sync.WaitGroup
-	applied          atomic.Uint64
-	applicationBytes atomic.Int64
-	proposalBytes    atomic.Int64
-	leader           atomic.Uint64
-	mu               sync.Mutex
-	changed          chan struct{}
-	failure          error
-	snapshotFailure  error
-	proposals        map[string]chan result
-	reads            map[string]chan uint64
-	peerMu           sync.RWMutex
-	peers            map[uint64]string
-	senders          map[uint64]chan packet
-	client           transportClient
-	application      chan applicationBatch
-	snapshotRequests chan snapshotRequest
+	cfg                Config
+	raft               raft.Node
+	disk               *diskStorage
+	machine            StateMachine
+	ctx                context.Context
+	cancel             context.CancelFunc
+	workers            sync.WaitGroup
+	applied            atomic.Uint64
+	applicationBytes   atomic.Int64
+	applicationCommits atomic.Uint64
+	applicationEntries atomic.Uint64
+	proposalBytes      atomic.Int64
+	leader             atomic.Uint64
+	mu                 sync.Mutex
+	changed            chan struct{}
+	failure            error
+	snapshotFailure    error
+	proposals          map[string]chan result
+	reads              map[string]chan uint64
+	peerMu             sync.RWMutex
+	peers              map[uint64]string
+	senders            map[uint64]chan packet
+	client             transportClient
+	application        chan applicationBatch
+	snapshotRequests   chan snapshotRequest
 }
 
 type snapshotRequest struct {
@@ -510,29 +512,11 @@ func (n *Node) applyLoop() {
 				for _, entry := range entries {
 					n.applicationBytes.Add(int64(len(entry.Data)))
 				}
-				for _, entry := range entries {
-					var command proposal
-					if entry.Type == raftpb.EntryNormal && len(entry.Data) > 0 {
-						if err := json.Unmarshal(entry.Data, &command); err != nil {
-							n.fail(err)
-							return
-						}
-					}
-					data, err := n.machine.Apply(n.ctx, entry.Index, command.Data)
-					if err != nil {
-						n.fail(fmt.Errorf("apply Raft entry %d: %w", entry.Index, err))
-						return
-					}
-					n.progress(entry.Index)
-					n.applicationBytes.Add(-int64(len(entry.Data)))
-					n.mu.Lock()
-					ch := n.proposals[command.ID]
-					n.mu.Unlock()
-					if ch != nil {
-						ch <- result{data: data}
-					}
-					first = entry.Index + 1
+				if err := n.applyEntries(entries); err != nil {
+					n.fail(err)
+					return
 				}
+				first = entries[len(entries)-1].Index + 1
 			}
 			if n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || batch.configurationChanged {
 				data, err := n.machine.Snapshot(n.ctx)
@@ -610,6 +594,8 @@ func (n *Node) Status() map[string]any {
 	raftStatus := n.raft.Status()
 	applied := n.applied.Load()
 	status := map[string]any{"node_id": n.cfg.ID, "leader_id": n.leader.Load(), "term": raftStatus.Term, "commit_index": raftStatus.Commit, "applied_index": applied, "application_lag": raftStatus.Commit - min(raftStatus.Commit, applied), "application_bytes": n.applicationBytes.Load(), "proposal_bytes": n.proposalBytes.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID}
+	status["application_commits"] = n.applicationCommits.Load()
+	status["application_entries"] = n.applicationEntries.Load()
 	if failure != nil {
 		status["error"] = failure.Error()
 	}

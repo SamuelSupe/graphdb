@@ -168,6 +168,16 @@ class Cluster:
                 values[key] += value
         return values
 
+    def application_metrics(self):
+        values = {'application_commits': 0, 'application_entries': 0}
+        for i in range(1, self.replicas+1):
+            status = request(f'http://127.0.0.1:{DATA_PORT+i}', '/v1/health')['raft']
+            if not values.keys() <= status.keys():
+                return None
+            for key in values:
+                values[key] += status[key]
+        return values
+
 
 def load(args, cluster, folder, stage, writers, readers, mode, duration=0, seed=False):
     command = [args.loadtest, '-base', cluster.base, '-tenant', 'bench',
@@ -209,6 +219,7 @@ def run(args, name, binary, case, iteration):
         if args.warmup > 0:
             load(args, cluster, folder, 'warm', 0, max(1, readers), mode, args.warmup)
         disk_before = cluster.disk_metrics()
+        application_before = cluster.application_metrics()
         before = [proc_sample(p.pid) for p in cluster.processes]
         sampler = threading.Thread(target=profile) if args.profile else None
         if sampler:
@@ -216,6 +227,7 @@ def run(args, name, binary, case, iteration):
         load(args, cluster, folder, 'measure', writers, readers, mode, args.seconds)
         after = [proc_sample(p.pid) for p in cluster.processes]
         disk_after = cluster.disk_metrics()
+        application_after = cluster.application_metrics()
         if sampler:
             sampler.join()
         if profile_errors:
@@ -232,6 +244,8 @@ def run(args, name, binary, case, iteration):
             'cpu_seconds': sum(b['cpu_seconds']-a['cpu_seconds'] for a,b in zip(before,after)),
             'write_bytes': sum(b['io']['write_bytes']-a['io']['write_bytes'] for a,b in zip(before,after)),
             'disk_syncs': {key: disk_after[key]-disk_before[key] for key in disk_before},
+            'application': None if application_before is None or application_after is None else
+                {key: application_after[key]-application_before[key] for key in application_before},
             'resources_before': before, 'resources_after': after, 'load': report}
         (folder/'result.json').write_text(json.dumps(row, indent=2)+'\n')
         print(json.dumps({k: row[k] for k in ['variant','case','round','cpu_seconds','write_bytes']}), flush=True)
