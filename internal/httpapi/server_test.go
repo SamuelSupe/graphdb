@@ -1794,12 +1794,14 @@ func TestHTTPDeadLetterReplayRejectsInvalidLimit(t *testing.T) {
 
 func TestHTTPQueryAdmissionRejectsWhenTenantQueueIsFull(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
-	admission := NewQueryAdmission(1, 1, time.Millisecond)
+	admission := NewQueryAdmission(1, 1, 0)
 	release, err := admission.Acquire(context.Background(), "tenant-a")
 	if err != nil {
 		t.Fatalf("acquire admission: %v", err)
 	}
 	defer release()
+	// Apply the short queue deadline only to the competing HTTP request.
+	admission.queueTimeout = time.Millisecond
 	handler := (&Server{Store: store, Mode: "all", Admission: admission}).Handler()
 	rr := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{Op: "match", Kind: "host"})
 	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), `"code":"query_limit_exceeded"`) || !strings.Contains(rr.Body.String(), `"retryable":true`) {
