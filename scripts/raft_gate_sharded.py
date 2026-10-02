@@ -141,6 +141,9 @@ try:
         expect('POST','/v1/commits',commit('same-key',mode),tenant='tenant-a',base=base)
     leader('catalog'); leader('a')
     wait(lambda: request(ROUTER,'GET','/v1/readiness')[0] == 200)
+    # The gateway can serve through router2 while the directly inspected
+    # router is still cooling down from its pre-election catalog probe.
+    wait(lambda: request(ROUTER_LOCAL,'GET','/v1/readiness')[0] == 200)
     register('a')
     with urllib.request.urlopen(ROUTER+'/openapi.yaml',timeout=10) as response:
         assert b'/v1/cluster/moves:' in response.read()

@@ -1394,14 +1394,40 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 
 func TestHALargeRestoreResumesAfterLeaderLoss(t *testing.T) {
 	group := newTestCluster(t, false)
+	// This case targets restore-part replay. Frequent full compatibility
+	// snapshots of its large setup graph dominate race-instrumented elections;
+	// snapshot faults are covered by separate cases and deployment gates.
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i, replica := range group.nodes {
+		replica.cfg.Raft.SnapshotEntries = 100
+		replica.cfg.Raft.ElectionTicks = 30
+		group.start(i)
+	}
 	leader := group.leader(-1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK, time.Minute)
 	payload := string(bytes.Repeat([]byte("x"), 4<<20))
 	for i := 0; i < 9; i++ {
-		body := fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"host:%d","kind":"host","fields":{"payload":%q}}]}}`, i, payload)
-		group.mustRequest(leader, "POST", "/v1/commits", body, http.StatusOK, time.Minute)
+		body := fmt.Sprintf(`{"idempotency_key":"restore-setup-%d","mutations":{"upsert_entities":[{"id":"host:%d","kind":"host","fields":{"payload":%q}}]}}`, i, i, payload)
+		deadline := time.Now().Add(time.Minute)
+		for {
+			leader = group.leader(-1)
+			response := group.request(leader, "POST", "/v1/commits", body, time.Until(deadline))
+			if response.Code == http.StatusOK {
+				break
+			}
+			var failure struct {
+				Code      string `json:"code"`
+				Retryable bool   `json:"retryable"`
+			}
+			if response.Code != http.StatusServiceUnavailable || json.Unmarshal(response.Body.Bytes(), &failure) != nil || failure.Code != "raft_unavailable" || !failure.Retryable || time.Now().After(deadline) {
+				t.Fatalf("restore setup %d: %d: %s", i, response.Code, response.Body.String())
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	backup := group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/backup", `{}`, http.StatusAccepted, time.Minute)
 	var task storage.Task
