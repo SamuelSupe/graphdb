@@ -9,7 +9,7 @@ internal services, and operations tools.
 The current SDKs expose the current ingest contract. Both preserve direct-mode
 terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
 local status resource, polling/waiting, and ingest CAS/conditional/atomic
-options. The Go and Python SDK package versions are `2.2.0`.
+options. The Go and Python SDK package versions are `2.2.1`.
 
 SDK scope:
 

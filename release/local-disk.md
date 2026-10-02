@@ -1,6 +1,8 @@
-# GGraphDB v2.2.0
+# GGraphDB v2.2.1
 
 ## 中文
+
+本版承接 2.2.0 候选功能。`v2.2.0` 标签的发行全量测试检出测试处理器替换的数据竞争和 GC 用例完成超时，未发布正式下载包；本版修正测试初始化顺序和分阶段预算，保留原行为断言，并重新执行完整发行门禁。旧标签与失败记录保留。
 
 同一二进制现在支持默认单机 direct/WAL、独立磁盘的 Raft 副本，以及按租户拆分的多个 Raft 数据组。
 单组默认三个完整副本，多数派持久化并提供强一致读取；分片目录保存稳定归属，新增组不会自动搬迁已有租户。
@@ -11,11 +13,11 @@
 同时修复副本配置分歧、成员变更竞态、过期任务/WAL 发布、导入损坏和维护期间误摘流等问题。
 
 单机 2.0/2.1 目录保持兼容，替换程序前必须停止旧进程。单机升级仍需重启；Raft 滚动升级只限于
-[已验收窗口](https://github.com/SamuelSupe/graphdb/blob/v2.2.0/docs/raft-rolling-upgrade.zh-CN.md)，不能推广到任意版本。
+[已验收窗口](https://github.com/SamuelSupe/graphdb/blob/v2.2.1/docs/raft-rolling-upgrade.zh-CN.md)，不能推广到任意版本。
 默认 Raft 协议仍为 1；协议 2/3 必须在全部投票节点具备支持后独立启用。协议 3 生效后，最高协议为 2 的旧程序不能打开原副本目录。
 保留原 WAL 受理/终态区分、幂等键、租户代次和多数派/应用屏障；超时可能已经提交，重试须使用原身份。
 
-SDK/OpenAPI 版本为 2.2.0，Go 模块仍为 `/v2`，HTTP 仍为 `/v1`。单机自动 S3 备份继续支持；Raft 使用外部调度调用集群备份 API。
+SDK/OpenAPI 版本为 2.2.1，Go 模块仍为 `/v2`，HTTP 仍为 `/v1`。单机自动 S3 备份继续支持；Raft 使用外部调度调用集群备份 API。
 业务认证、租户授权与 TLS 由网关负责，私有 Raft/目录/router 管理令牌不代替用户授权。完整运行态灾备仍要求一致离线边界。
 
 候选在 OrbStack 通过单机、协议 1/2/3、分片、故障恢复与实际混部滚动验证。
@@ -25,9 +27,15 @@ SDK/OpenAPI 版本为 2.2.0，Go 模块仍为 `/v2`，HTTP 仍为 `/v1`。单机
 
 发行标签工作流另行执行完整测试、vet/race、SDK、HTTP/重启、S3 恢复、单机及 Raft 30 分钟负载，并从该提交构建和核验发行包。
 实际结论以 [GitHub Actions](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)、包内 `release/evidence/` 和
-[2.2.0 验证范围](https://github.com/SamuelSupe/graphdb/blob/v2.2.0/docs/validation-v2.2.0.md) 为准；历史候选证据不代替发行二进制资格。
+[2.2.1 验证范围](https://github.com/SamuelSupe/graphdb/blob/v2.2.1/docs/validation-v2.2.1.md) 为准；历史候选证据不代替发行二进制资格。
 
 ## English
+
+This release carries forward the 2.2.0 candidate features. The `v2.2.0` tag
+failed its full test gate and has no published distribution. This version fixes
+a test-handler initialization race and separates the GC fairness and completion
+budgets while retaining the behavioral assertions. The complete release gates
+run again; the original tag and failure record remain available.
 
 The same binary supports default standalone direct/WAL, independent local Raft
 replicas, and tenant sharding across data groups. A group defaults to three full
@@ -46,7 +54,7 @@ Raft rolling compatibility is limited to the documented source/target/protocol
 window. The default protocol remains 1; separately activate 2/3 after all voters
 support them. A protocol-2-only binary cannot reopen a directory after protocol 3
 has been persisted. Keep idempotency identities when retrying uncertain writes.
-SDK/OpenAPI versions are 2.2.0; HTTP `/v1` and the Go module `/v2` remain unchanged.
+SDK/OpenAPI versions are 2.2.1; HTTP `/v1` and the Go module `/v2` remain unchanged.
 Standalone automatic S3 backups remain available; Raft uses external scheduling.
 
 The local candidate passed standalone, protocol 1/2/3, sharding, recovery and
@@ -59,14 +67,14 @@ low-latency or fixed recovery-time guarantee is claimed.
 The tag workflow independently qualifies and packages the release commit.
 Consult its actual conclusions and packaged `release/evidence/`; local candidate
 results do not certify a different binary. See the
-[upgrade guide](https://github.com/SamuelSupe/graphdb/blob/v2.2.0/docs/user/release-deployment.md).
+[upgrade guide](https://github.com/SamuelSupe/graphdb/blob/v2.2.1/docs/user/release-deployment.md).
 
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.2.0.tar.gz.sha256
-tar -xzf graphdb-v2.2.0.tar.gz
-cd v2.2.0
+sha256sum -c graphdb-v2.2.1.tar.gz.sha256
+tar -xzf graphdb-v2.2.1.tar.gz
+cd v2.2.1
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/path/to/v2-data bin/graphdb-linux-amd64 serve

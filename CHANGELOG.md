@@ -3,7 +3,19 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [2.2.0] - 2026-10-02
+## [2.2.1] - 2026-10-03
+
+- Distribute the 2.2 standalone, Raft, tenant sharding, rolling-upgrade and
+  diagnostic features through the qualified release pipeline.
+- Install the publication-batch test hook before starting Raft, matching the
+  real server and eliminating a test-only handler replacement race.
+- Keep the GC execution-handoff deadline separate from completion of all
+  filesystem deletions, preserving bounded batches and capacity-release checks.
+- Align SDK/OpenAPI, deployment examples and qualification documentation with
+  2.2.1. The immutable 2.2.0 tag failed release verification and did not publish
+  a formal distribution; its failure evidence remains available.
+
+## [2.2.0] - 2026-10-02 (unreleased distribution candidate)
 
 - Add optional Share-Nothing Raft with majority durability and strong reads,
   alongside the default standalone direct/WAL deployment.

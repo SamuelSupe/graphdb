@@ -855,8 +855,10 @@ func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
+	handoffCtx, handoffCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer handoffCancel()
 	entered, resume := objects.blockNextDelete()
 	resumeGC := sync.OnceFunc(func() { close(resume) })
 	defer resumeGC()
@@ -871,8 +873,8 @@ func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+	case <-handoffCtx.Done():
+		t.Fatal(handoffCtx.Err())
 	}
 	maintenance := &taskExecutionAdmission{tenant: store.taskTenantSlot("tenant-a"), execution: store.taskExecutionSlots}
 	admitted, finish, finished := make(chan bool, 1), make(chan struct{}), make(chan struct{})
@@ -880,7 +882,7 @@ func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
 	defer releaseMaintenance()
 	go func() {
 		defer close(finished)
-		ok := maintenance.acquire(ctx)
+		ok := maintenance.acquire(handoffCtx)
 		admitted <- ok
 		if ok {
 			defer maintenance.release()
@@ -894,10 +896,11 @@ func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
 	if !<-admitted {
 		t.Fatal("other maintenance could not acquire execution capacity")
 	}
-	remaining, err := files.List(ctx, store.entityRecordPrefix("tenant-a"))
+	remaining, err := files.List(handoffCtx, store.entityRecordPrefix("tenant-a"))
 	if err != nil || (len(remaining) >= count || len(remaining) < count-gcBatchDeletes) {
 		t.Fatalf("maintenance did not run between bounded GC batches: remaining=%d err=%v", len(remaining), err)
 	}
+	handoffCancel()
 	select {
 	case err := <-done:
 		t.Fatalf("GC bypassed the occupied execution slot: %v", err)

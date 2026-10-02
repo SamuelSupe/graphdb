@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release is **2.2.0**, developed on `main`. GGraphDB runs one process
+The current release is **2.2.1**, developed on `main`. GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,8 +12,8 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION`: `2.2.0`; tag: `v2.2.0` |
-| Go/Python SDKs and OpenAPI document version | `2.2.0` |
+| Product and release tag | `VERSION`: `2.2.1`; tag: `v2.2.1` |
+| Go/Python SDKs and OpenAPI document version | `2.2.1` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
 | Persisted Parquet/WAL and snapshot format | Standalone retains 2.0/2.1; Raft has separate protocol and directory-role markers |
@@ -66,10 +66,10 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See [2.2.0 validation](validation-v2.2.0.md), actual workflow conclusions and
+See [2.2.1 validation](validation-v2.2.1.md), actual workflow conclusions and
 packaged evidence for the specific release binary. The local candidate passed a
 thirty-minute Raft maintenance workload, with expected 429s and long write waits.
 Cross-host, capacity and day-scale stability remain unqualified. A stable label
 does not certify every workload size or latency target. The capacity envelope
 retains the historical 2.1.2 `performance_unqualified` record and does not qualify
-2.2.0 or Raft capacity. Older reports describe their own builds.
+2.2.1 or Raft capacity. Older reports describe their own builds.

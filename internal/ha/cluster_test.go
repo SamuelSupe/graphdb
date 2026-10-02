@@ -650,7 +650,27 @@ func testHAReplicationFailoverAndSnapshot(t *testing.T, stream bool) {
 }
 
 func TestHAConcurrentPublicationBatch(t *testing.T) {
-	group := newTestCluster(t, false)
+	blocked, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	var once sync.Once
+	var observations []uint64
+	var target atomic.Pointer[Application]
+	// Install the hook before starting Raft, as the real server does. Private
+	// request handlers can retain the application handler without its mutex.
+	group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if target.Load() == app && r.Method == "POST" && r.URL.Path == "/v1/commits" {
+				position, err := app.Files.ReplicationCheckpoint()
+				if err != nil {
+					t.Error(err)
+				}
+				observations = append(observations, position.Index)
+				once.Do(func() { close(blocked); <-release })
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
 	leader := group.leader(-1)
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
 	replica := group.nodes[leader]
@@ -658,25 +678,7 @@ func TestHAConcurrentPublicationBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked, release := make(chan struct{}), make(chan struct{})
-	unblock := sync.OnceFunc(func() { close(release) })
-	defer unblock()
-	var once sync.Once
-	var observations []uint64
-	replica.cluster.App.mu.Lock()
-	original := replica.cluster.App.Handler
-	replica.cluster.App.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/v1/commits" {
-			position, err := replica.files.ReplicationCheckpoint()
-			if err != nil {
-				t.Error(err)
-			}
-			observations = append(observations, position.Index)
-			once.Do(func() { close(blocked); <-release })
-		}
-		original.ServeHTTP(w, r)
-	})
-	replica.cluster.App.mu.Unlock()
+	target.Store(replica.cluster.App)
 	const count = 8
 	type publicationResult struct {
 		index    int
