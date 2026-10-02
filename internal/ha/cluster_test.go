@@ -1406,8 +1406,6 @@ func TestHALargeRestoreResumesAfterLeaderLoss(t *testing.T) {
 		group.start(i)
 	}
 	leader := group.leader(-1)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK, time.Minute)
 	payload := string(bytes.Repeat([]byte("x"), 4<<20))
 	for i := 0; i < 9; i++ {
@@ -1446,6 +1444,8 @@ func TestHALargeRestoreResumesAfterLeaderLoss(t *testing.T) {
 	if err := json.Unmarshal(restore.Body.Bytes(), &task); err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 	cluster := group.nodes[leader].cluster
 	cluster.App.mu.RLock()
 	input, err := cluster.App.Store.PrepareReplicatedTask(ctx, task)
@@ -1485,11 +1485,15 @@ func TestHALargeRestoreResumesAfterLeaderLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, replica := range group.nodes {
+	for i := range group.nodes {
 		group.waitApplied(i, checkpoint.Index, time.Minute)
+	}
+	verificationCtx, verificationCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer verificationCancel()
+	for i, replica := range group.nodes {
 		replica.cluster.App.mu.RLock()
-		generation, err := replica.store.ReplicationTenantGeneration(ctx, "tenant-a")
-		objects, listErr := replica.files.List(ctx, replica.cluster.App.restorePrefix("tenant-a", task.ID))
+		generation, err := replica.store.ReplicationTenantGeneration(verificationCtx, "tenant-a")
+		objects, listErr := replica.files.List(verificationCtx, replica.cluster.App.restorePrefix("tenant-a", task.ID))
 		replica.cluster.App.mu.RUnlock()
 		if err != nil || listErr != nil || generation != 2 || len(objects) != 0 || group.manifest(i).Version != 9 {
 			t.Fatalf("replica %d restore: generation=%d staging=%d errors=%v/%v", i, generation, len(objects), err, listErr)
