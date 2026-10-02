@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,8 @@ import (
 )
 
 type FileStore struct {
+	diskPolicy           DiskSpacePolicy
+	diskProbe            func(string) (DiskSpaceStatus, error)
 	replicatedWrites     atomic.Bool
 	directoryMu          sync.Mutex
 	pendingDirectorySync string
@@ -375,6 +379,10 @@ func writeFileAtomicContext(ctx context.Context, path string, data []byte, journ
 	if bytes, ok := ctx.Value(fileBatchBytesKey{}).(*atomic.Int64); ok {
 		bytes.Add(int64(len(data)))
 	}
+	return writeReaderAtomicContext(ctx, path, bytes.NewReader(data), journal)
+}
+
+func writeReaderAtomicContext(ctx context.Context, path string, reader io.Reader, journal *replicationJournal) error {
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(path)+"-")
 	if err != nil {
@@ -387,7 +395,7 @@ func writeFileAtomicContext(ctx context.Context, path string, data []byte, journ
 			_ = os.Remove(temp)
 		}
 	}()
-	if _, err := file.Write(data); err != nil {
+	if _, err := io.Copy(file, reader); err != nil {
 		_ = file.Close()
 		return err
 	}
@@ -438,8 +446,24 @@ func syncDir(dir string) error {
 	return syncStorageFile(file)
 }
 
+// Dot-prefixed business names are valid. Only runtime-owned root paths and
+// unfinished atomic writes are excluded from a complete application snapshot.
+func fileStoreInternalPath(key string) bool {
+	root, _, _ := strings.Cut(key, "/")
+	if root == replicationDirectory || root == fileRestoreDirectory || root == ".graphdb-raft" || root == ".graphdb.lock" || root == ".graphdb-runtime-restore.json" {
+		return true
+	}
+	for _, prefix := range []string{".snapshot-view-", ".graphdb-replication-snapshot-", ".maintenance-", ".runtime-restore-"} {
+		if strings.HasPrefix(root, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func isFileStoreTemp(path string) bool {
-	return strings.HasPrefix(filepath.Base(path), ".tmp-") || filepath.Base(path) == ".graphdb.lock"
+	name := filepath.Base(path)
+	return (strings.HasPrefix(name, ".tmp-") && !strings.HasSuffix(name, ".parquet")) || name == ".graphdb.lock"
 }
 
 func fileStorePutNeedsCurrentETag(condition PutCondition) bool {

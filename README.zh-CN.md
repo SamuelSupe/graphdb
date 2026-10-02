@@ -41,6 +41,8 @@ docker compose up -d --build
 
 同一二进制同时支持单机、单组 Raft 和分片 Raft：
 
+本轮磁盘保护、流式快照、维护隔离、完整灾备和诊断告警见 [产品运维说明](docs/product-operations.zh-CN.md)。
+
 Raft 正式发布的验收范围与剩余项目见 [发布准备状态](docs/raft-release-readiness.zh-CN.md)。
 
 | 部署方式 | 启用方式 | 数据持久化 | 运维 |

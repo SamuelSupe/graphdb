@@ -60,6 +60,9 @@ func run(args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	if command.kind == commandRecovery {
+		return runRuntimeRecovery(args, cfg)
+	}
 	if cfg.Raft.Enabled && command.kind != commandServe {
 		return fmt.Errorf("offline commands are disabled in HA mode; use the cluster HTTP API")
 	}
@@ -180,7 +183,9 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		servers = []*http.Server{newHTTPServer(cfg, api)}
 	}
 	if cluster != nil {
-		servers = append(servers, newHTTPServerWithHandler(cfg.Raft.Addr, cluster.PrivateHandler()))
+		private := newHTTPServerWithHandler(cfg.Raft.Addr, cluster.PrivateHandler())
+		private.ReadTimeout = 10 * time.Minute
+		servers = append(servers, private)
 	}
 	obs.Logger.Info("server_start", map[string]any{
 		"addr": cfg.Addr, "admin_addr": cfg.AdminAddr, "pprof_enabled": cfg.PprofEnabled,
@@ -300,6 +305,10 @@ Environment:
   GRAPHDB_RAFT_DIR=${GRAPHDB_DATA_DIR}/.graphdb-raft
   GRAPHDB_RAFT_SNAPSHOT_ENTRIES=1000
   GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES=512MiB
+  GRAPHDB_RAFT_STREAM_SNAPSHOTS=false (enable after all members support format 2)
+  GRAPHDB_RAFT_PROTOCOL_VERSION=1 (2 enables prepared compact/index maintenance)
+  GRAPHDB_DISK_MIN_FREE_BYTES=256MiB
+  GRAPHDB_DISK_MIN_FREE_PERCENT=5
   GRAPHDB_QUERY_MAX_CONCURRENT=64
   GRAPHDB_QUERY_MAX_PER_TENANT=32
   GRAPHDB_QUERY_QUEUE_TIMEOUT=5s

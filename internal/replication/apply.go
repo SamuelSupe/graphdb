@@ -41,7 +41,7 @@ func (n *Node) applyEntries(entries []raftpb.Entry) error {
 					}
 					return err
 				}
-				if command.Protocol != 0 && command.Protocol != ProtocolVersion {
+				if command.Protocol < 0 || command.Protocol > MaxProtocolVersion {
 					return fmt.Errorf("unsupported Raft command protocol %d", command.Protocol)
 				}
 			}

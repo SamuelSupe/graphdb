@@ -18,6 +18,9 @@ type replicatedImportKey struct{}
 // PrepareReplicatedTask materializes and verifies a restore before proposal.
 // Its bytes are majority-persisted in Raft; application never fetches S3.
 func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]byte, error) {
+	if err := s.CheckTaskDiskSpace(ctx, task); err != nil {
+		return nil, err
+	}
 	if task.Type == TaskTypeBulkImport {
 		key := stringTaskParam(task.Params, "source_key")
 		if err := s.validateImportSourceKey(task.TenantID, key); err != nil {
@@ -65,13 +68,15 @@ func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]b
 	}
 	// A new leader must reproduce the same transfer digest, including the
 	// integrity report timestamp, when resuming a queued restore.
-	ctx = ReplicatedContext(ctx, task.ID, task.StartedAt)
-	input, err := s.loadTenantBackupInput(ctx, stringTaskParam(task.Params, "backup_key"))
+	input, err := s.loadTenantBackupInput(ReplicatedContext(ctx, task.ID, task.StartedAt), stringTaskParam(task.Params, "backup_key"))
 	if err != nil {
 		return nil, err
 	}
 	if input.Integrity.Status == "error" {
 		return nil, fmt.Errorf("restore backup integrity failed")
+	}
+	if err := s.checkRestoreDiskSpace(ctx, input.Record); err != nil {
+		return nil, err
 	}
 	return json.Marshal(input)
 }

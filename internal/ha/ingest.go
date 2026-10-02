@@ -336,7 +336,7 @@ func (c *Cluster) flushPending(ctx context.Context) error {
 		}
 		cmd.RouteEpoch = owner.Epoch
 	}
-	err = c.App.Store.CheckWriteBackpressure(ctx, cmd.Tenant)
+	err = c.App.Store.CheckAcceptedWALBackpressure(ctx, cmd.Tenant)
 	c.App.mu.RUnlock()
 	if err != nil {
 		return err

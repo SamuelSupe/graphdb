@@ -203,6 +203,11 @@ func leastPopulatedShard(state sharding.Catalog) string {
 }
 
 func (c *Cluster) shardAction(ctx context.Context, action sharding.Action) ([]byte, error) {
+	if action.Operation == "stage" && action.Part == 0 {
+		if err := c.App.Store.CheckWriteDiskSpace(ctx, max(int64(len(action.Data))*4, action.Bytes*2)); err != nil {
+			return nil, err
+		}
+	}
 	cmd, err := newCommand("sharding")
 	if err != nil {
 		return nil, err

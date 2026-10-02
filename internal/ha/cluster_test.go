@@ -267,7 +267,110 @@ func (g *testCluster) waitApplied(i int, index uint64, timeout ...time.Duration)
 }
 
 func TestHAReplicationFailoverAndSnapshot(t *testing.T) {
+	testHAReplicationFailoverAndSnapshot(t, false)
+}
+
+func TestHAStreamingReplicationFailoverAndSnapshot(t *testing.T) {
+	testHAReplicationFailoverAndSnapshot(t, true)
+}
+
+func TestHAPreparedMaintenanceKeepsOtherTenantWritable(t *testing.T) {
 	group := newTestCluster(t, false)
+	for i := range group.nodes {
+		group.stop(i)
+		group.nodes[i].cfg.Raft.Protocol = 2
+		group.nodes[i].cfg.Raft.StreamSnapshots = true
+		group.start(i)
+	}
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-b"}`, http.StatusOK)
+	entities := []map[string]any{}
+	for i := 0; i < 200; i++ {
+		entities = append(entities, map[string]any{"id": fmt.Sprint("host:", i), "kind": "host", "fields": map[string]any{"payload": strings.Repeat("data", 1024)}})
+	}
+	body, _ := json.Marshal(map[string]any{"mutations": map[string]any{"upsert_entities": entities}})
+	group.mustRequest(leader, "POST", "/v1/commits", string(body), http.StatusOK)
+	for _, kind := range []string{storage.TaskTypeCompact, storage.TaskTypeIndexRebuild} {
+		response := group.mustRequest(leader, "POST", "/v1/tasks", fmt.Sprintf(`{"type":%q}`, kind), http.StatusAccepted)
+		var task storage.Task
+		if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+			t.Fatal(err)
+		}
+		writes := 0
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			request := httptest.NewRequest("POST", "/v1/commits", strings.NewReader(fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"other:%s:%d","kind":"host"}]}}`, kind, writes)))
+			request.Header.Set("X-Tenant-ID", "tenant-b")
+			writer := httptest.NewRecorder()
+			group.nodes[leader].handler.ServeHTTP(writer, request)
+			if writer.Code != http.StatusOK {
+				t.Fatalf("other tenant write: %d %s", writer.Code, writer.Body.String())
+			}
+			writes++
+			task, err := group.nodes[leader].store.GetTask(context.Background(), "tenant-a", task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if task.Status == storage.TaskStatusSucceeded {
+				break
+			}
+			if task.Status == storage.TaskStatusFailed {
+				t.Fatalf("maintenance: %+v", task)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		completed, err := group.nodes[leader].store.GetTask(context.Background(), "tenant-a", task.ID)
+		if err != nil || completed.Status != storage.TaskStatusSucceeded || writes == 0 {
+			t.Fatalf("maintenance did not complete with foreground progress: %+v writes=%d err=%v", completed, writes, err)
+		}
+		checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range group.nodes {
+			group.waitApplied(i, checkpoint.Index)
+			copy, err := group.nodes[i].store.GetTask(context.Background(), "tenant-a", task.ID)
+			if err != nil || copy.Status != storage.TaskStatusSucceeded {
+				t.Fatalf("replica %d task: %+v, %v", i, copy, err)
+			}
+		}
+	}
+}
+
+func TestHADiagnosticsRemainLocalWithoutQuorum(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	for i := range group.nodes {
+		if i != leader {
+			group.stop(i)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := group.nodes[leader].cluster.Node.ReadBarrier(ctx); err == nil {
+		t.Fatal("strong read succeeded without quorum")
+	}
+	for _, uri := range []string{"/v1/diagnostics", "/metrics"} {
+		request := httptest.NewRequest("GET", uri, nil)
+		request = request.WithContext(ctx)
+		writer := httptest.NewRecorder()
+		group.nodes[leader].handler.ServeHTTP(writer, request)
+		if writer.Code != http.StatusOK {
+			t.Fatalf("local observation %s: %d %s", uri, writer.Code, writer.Body.String())
+		}
+	}
+}
+
+func testHAReplicationFailoverAndSnapshot(t *testing.T, stream bool) {
+	group := newTestCluster(t, false)
+	if stream {
+		for i := range group.nodes {
+			group.stop(i)
+			group.nodes[i].cfg.Raft.StreamSnapshots = true
+			group.start(i)
+		}
+	}
 	leader := group.leader(-1)
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
 	body := `{"idempotency_key":"first","mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"name":"one"}}]}}`
@@ -1026,12 +1129,21 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		request := httptest.NewRequest("POST", "/raft/members", bytes.NewBufferString(body)).WithContext(ctx)
-		request.Header.Set("Authorization", "Bearer "+replica.cfg.Raft.Token)
-		request.Header.Set("X-Raft-Cluster", replica.cfg.Raft.ClusterID)
-		writer := httptest.NewRecorder()
-		group.nodes[leader].cluster.Node.Handler().ServeHTTP(writer, request)
-		if writer.Code != status {
+		for {
+			request := httptest.NewRequest("POST", "/raft/members", bytes.NewBufferString(body)).WithContext(ctx)
+			request.Header.Set("Authorization", "Bearer "+replica.cfg.Raft.Token)
+			request.Header.Set("X-Raft-Cluster", replica.cfg.Raft.ClusterID)
+			writer := httptest.NewRecorder()
+			group.nodes[leader].cluster.Node.Handler().ServeHTTP(writer, request)
+			if writer.Code == status {
+				return
+			}
+			// The admission barrier can observe a newer commit than waitApplied.
+			// A rejected promotion has not changed membership and can be retried.
+			if body == `{"action":"promote","id":4}` && status == http.StatusNoContent && writer.Code == http.StatusConflict && ctx.Err() == nil {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
 			t.Fatalf("membership %s: %d: %s", body, writer.Code, writer.Body.String())
 		}
 	}
@@ -1040,7 +1152,7 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group.waitApplied(3, checkpoint.Index)
+	group.waitApplied(3, max(checkpoint.Index, group.nodes[leader].cluster.Node.Status()["commit_index"].(uint64)))
 	memberRequest(`{"action":"promote","id":4}`, http.StatusNoContent)
 	removed := (leader + 1) % 3
 	memberRequest(fmt.Sprintf(`{"action":"remove","id":%d}`, removed+1), http.StatusNoContent)

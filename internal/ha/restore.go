@@ -18,9 +18,10 @@ import (
 const restoreChunkBytes = 1 << 20
 
 type restoreManifest struct {
-	Bytes      int64  `json:"bytes"`
-	SHA256     string `json:"sha256"`
-	Generation int64  `json:"generation,omitempty"`
+	Maintenance bool   `json:"maintenance,omitempty"`
+	Bytes       int64  `json:"bytes"`
+	SHA256      string `json:"sha256"`
+	Generation  int64  `json:"generation,omitempty"`
 }
 
 type restorePart struct {
@@ -30,6 +31,10 @@ type restorePart struct {
 
 func restoreTask(task storage.Task) bool {
 	return task.Type == storage.TaskTypeTenantRestore || task.Type == storage.TaskTypeTenantRestoreDrill
+}
+
+func transferTask(task storage.Task) bool {
+	return restoreTask(task) || storage.PreparedMaintenanceTask(task)
 }
 
 func (a *Application) restorePrefix(tenant, id string) string {
@@ -69,7 +74,7 @@ func (a *Application) stageRestore(ctx context.Context, cmd command) ([]byte, er
 		return nil, err
 	}
 	digest, err := hex.DecodeString(part.SHA256)
-	if !restoreTask(task) || err != nil || len(digest) != sha256.Size || part.Bytes <= 0 ||
+	if !transferTask(task) || err != nil || len(digest) != sha256.Size || part.Bytes <= 0 ||
 		part.Bytes > a.MaxSnapshotBytes || part.Part < 0 || part.Part >= (part.Bytes+restoreChunkBytes-1)/restoreChunkBytes ||
 		int64(len(cmd.Restore)) != min(restoreChunkBytes, part.Bytes-part.Part*restoreChunkBytes) {
 		return nil, fmt.Errorf("invalid restore part")
@@ -121,7 +126,7 @@ func (a *Application) runStagedRestore(ctx context.Context, cmd command) (storag
 		return task, err
 	}
 	var expected restoreManifest
-	if json.Unmarshal(persisted, &expected) != nil || expected != manifest || !restoreTask(task) {
+	if json.Unmarshal(persisted, &expected) != nil || expected != manifest || !transferTask(task) || manifest.Maintenance != storage.PreparedMaintenanceTask(task) {
 		return task, fmt.Errorf("restore manifest mismatch")
 	}
 	source := &restoreReader{ctx: ctx, app: a, prefix: prefix, manifest: manifest}
@@ -135,7 +140,14 @@ func (a *Application) runStagedRestore(ctx context.Context, cmd command) (storag
 		return task, fmt.Errorf("restore transfer integrity failed")
 	}
 	source = &restoreReader{ctx: ctx, app: a, prefix: prefix, manifest: manifest}
-	task, err = a.Store.RunReplicatedTaskFromReader(ctx, cmd.Tenant, task.ID, source)
+	if manifest.Maintenance {
+		task, err = a.Store.PublishReplicatedMaintenance(ctx, cmd.Tenant, task.ID, source, a.MaxSnapshotBytes)
+		if errors.Is(err, storage.ErrConflict) {
+			err = nil
+		}
+	} else {
+		task, err = a.Store.RunReplicatedTaskFromReader(ctx, cmd.Tenant, task.ID, source)
+	}
 	err = errors.Join(err, source.Close())
 	if err != nil {
 		return task, err

@@ -17,6 +17,9 @@ func (s *TenantStore) checkWriteBackpressure(ctx context.Context, tenantID strin
 	if IsReplicatedContext(ctx) {
 		return nil
 	}
+	if err := s.checkDiskSpace(ctx, 0, false); err != nil {
+		return err
+	}
 	return s.checkWriteBackpressureWithOptions(ctx, tenantID, authoritative, writeBackpressureCheckOptions{})
 }
 
@@ -27,6 +30,9 @@ type writeBackpressureCheckOptions struct {
 func (s *TenantStore) checkAcceptedWALBackpressure(ctx context.Context, tenantID string, authoritative bool) error {
 	if IsReplicatedContext(ctx) {
 		return nil
+	}
+	if err := s.checkDiskSpace(ctx, 0, true); err != nil {
+		return err
 	}
 	return s.checkWriteBackpressureWithOptions(ctx, tenantID, authoritative, writeBackpressureCheckOptions{
 		ignoreCASConflicts: false,

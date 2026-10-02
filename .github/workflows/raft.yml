@@ -30,6 +30,18 @@ jobs:
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate
           GRAPHDB_GATE_SOAK: ${{ inputs.soak && '1' || '0' }}
         run: scripts/raft_gate.sh
+      - name: Run streaming snapshots, prepared maintenance and runtime recovery gate
+        env:
+          GRAPHDB_GATE_IMAGE: graphdb:raft-gate
+          GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate/enhanced
+          GRAPHDB_GATE_ENHANCED: 'true'
+          GRAPHDB_GATE_RECOVERY: 'true'
+          GRAPHDB_GATE_DISK: 'true'
+        run: scripts/raft_gate.sh
+      - name: Validate operational alerts
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus/graphdb.rules.yml:/rules.yml:ro" \
+            --entrypoint /bin/promtool prom/prometheus:v3.5.0 check rules /rules.yml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

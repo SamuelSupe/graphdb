@@ -444,12 +444,18 @@ func TestReplicationReaderEOFDoesNotAbortPublication(t *testing.T) {
 
 func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 	ctx := context.Background()
+	dotKeys := []string{".namespace/queries/.hidden.parquet", "graphdb/queries/.tmp-hosts.parquet", "graphdb/indexes/.tmp-kind/data.parquet", "graphdb/queries/.runtime-restore-hosts.parquet"}
 	source, err := OpenFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer source.Close()
 	_, err = source.ApplyReplicated(ctx, 2, "source", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		for _, key := range dotKeys {
+			if err := source.Put(ctx, key, []byte("saved")); err != nil {
+				return nil, err
+			}
+		}
 		return nil, source.Put(ctx, "graphdb/data", bytes.Repeat([]byte("payload"), 16384))
 	})
 	if err != nil {
@@ -500,6 +506,75 @@ func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 	}
 	if _, err := target.Get(ctx, "graphdb/old"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("snapshot retained old object: %v", err)
+	}
+	for _, key := range dotKeys {
+		if data, err := target.Get(ctx, key); err != nil || string(data) != "saved" {
+			t.Fatalf("snapshot omitted %s: %q, %v", key, data, err)
+		}
+	}
+}
+
+func TestStreamingSnapshotPinsPublishedPosition(t *testing.T) {
+	ctx := context.Background()
+	dotKeys := []string{".namespace/queries/.hidden.parquet", "graphdb/queries/.tmp-hosts.parquet", "graphdb/indexes/.tmp-kind/data.parquet", "graphdb/queries/.runtime-restore-hosts.parquet"}
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	_, err = files.ApplyReplicated(ctx, 1, "before", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		for _, key := range dotKeys {
+			if err := files.Put(ctx, key, []byte("saved")); err != nil {
+				return nil, err
+			}
+		}
+		return nil, files.Put(ctx, "graphdb/object", []byte("before"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := files.CaptureReplicationSnapshot(ctx, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	_, err = files.ApplyReplicated(ctx, 2, "after", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		return nil, files.Put(ctx, "graphdb/object", []byte("after"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.CreateTemp(t.TempDir(), "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	if err := source.WriteTo(ctx, archive); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	target, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	if err := target.InstallReplicationSnapshotReader(ctx, 1, archive, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	data, err := target.Get(ctx, "graphdb/object")
+	if err != nil || string(data) != "before" {
+		t.Fatalf("snapshot did not pin its position: %q, %v", data, err)
+	}
+	checkpoint, err := target.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 1 {
+		t.Fatalf("checkpoint: %+v, %v", checkpoint, err)
+	}
+	for _, key := range dotKeys {
+		if data, err := target.Get(ctx, key); err != nil || string(data) != "saved" {
+			t.Fatalf("snapshot omitted %s: %q, %v", key, data, err)
+		}
 	}
 }
 

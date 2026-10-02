@@ -30,36 +30,42 @@ func (s *FileStore) ReplicationSnapshot(ctx context.Context, budgets ...int64) (
 	if len(budgets) > 0 {
 		budget = budgets[0]
 	}
-	var total int64
 	var raw bytes.Buffer
-	compressed := gzip.NewWriter(&raw)
+	if err := writeSnapshotArchive(ctx, s.root, checkpoint, budget, &raw); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(raw.Bytes())
+	return append(sum[:], raw.Bytes()...), nil
+}
+
+func writeSnapshotArchive(ctx context.Context, root string, checkpoint ReplicationCheckpoint, budget int64, output io.Writer) error {
+	compressed := gzip.NewWriter(output)
 	archive := tar.NewWriter(&snapshotBudgetWriter{writer: compressed, remaining: budget})
 	metadata, err := json.Marshal(checkpoint)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := archive.WriteHeader(&tar.Header{Name: "checkpoint.json", Mode: 0600, Size: int64(len(metadata))}); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := archive.Write(metadata); err != nil {
-		return nil, err
+		return err
 	}
-	err = filepath.WalkDir(s.root, func(filename string, entry os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(filename string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if filename == s.root {
+		if filename == root {
 			return nil
 		}
-		relative, err := filepath.Rel(s.root, filename)
+		relative, err := filepath.Rel(root, filename)
 		if err != nil {
 			return err
 		}
-		key := filepath.ToSlash(relative)
-		if strings.HasPrefix(entry.Name(), ".") {
+		if fileStoreInternalPath(filepath.ToSlash(relative)) || (!entry.IsDir() && isFileStoreTemp(filename)) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -69,41 +75,30 @@ func (s *FileStore) ReplicationSnapshot(ctx context.Context, budgets ...int64) (
 			return nil
 		}
 		if !entry.Type().IsRegular() {
-			return fmt.Errorf("replication snapshot contains non-regular file %s", key)
+			return fmt.Errorf("replication snapshot contains non-regular file %s", filename)
 		}
-		reader, err := s.OpenReader(ctx, key)
+		file, err := os.Open(filename)
 		if err != nil {
 			return err
 		}
-		defer reader.Close()
-		size, err := reader.Seek(0, io.SeekEnd)
+		defer file.Close()
+		info, err := file.Stat()
 		if err != nil {
 			return err
 		}
-		if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		if err := archive.WriteHeader(&tar.Header{Name: "objects/" + filepath.ToSlash(relative), Mode: 0600, Size: info.Size()}); err != nil {
 			return err
 		}
-		total += size
-		if total > budget {
-			return ErrReplicationSnapshotTooLarge
-		}
-		if err := archive.WriteHeader(&tar.Header{Name: "objects/" + key, Mode: 0600, Size: size}); err != nil {
-			return err
-		}
-		_, err = io.Copy(archive, io.NewSectionReader(reader, 0, size))
+		_, err = io.Copy(archive, io.NewSectionReader(file, 0, info.Size()))
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := archive.Close(); err != nil {
-		return nil, err
+		return err
 	}
-	if err := compressed.Close(); err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(raw.Bytes())
-	return append(sum[:], raw.Bytes()...), nil
+	return compressed.Close()
 }
 
 type snapshotBudgetWriter struct {
@@ -121,21 +116,32 @@ func (w *snapshotBudgetWriter) Write(data []byte) (int, error) {
 }
 
 func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64, data []byte, maxBytes int64) error {
-	if len(data) < 32 {
-		return fmt.Errorf("truncated replication snapshot")
+	return s.InstallReplicationSnapshotReader(ctx, index, bytes.NewReader(data), maxBytes)
+}
+
+func (s *FileStore) InstallReplicationSnapshotReader(ctx context.Context, index uint64, source io.ReadSeeker, maxBytes int64) error {
+	var checksum [sha256.Size]byte
+	if _, err := io.ReadFull(source, checksum[:]); err != nil {
+		return fmt.Errorf("truncated replication snapshot: %w", err)
 	}
-	sum := sha256.Sum256(data[32:])
-	if !bytes.Equal(sum[:], data[:32]) {
+	digest := sha256.New()
+	if _, err := io.Copy(digest, io.LimitReader(source, maxBytes+(32<<20)+1)); err != nil {
+		return err
+	}
+	if !bytes.Equal(digest.Sum(nil), checksum[:]) {
 		return fmt.Errorf("replication snapshot checksum mismatch")
 	}
-	compressed, err := gzip.NewReader(bytes.NewReader(data[32:]))
+	if _, err := source.Seek(sha256.Size, io.SeekStart); err != nil {
+		return err
+	}
+	compressed, err := gzip.NewReader(source)
 	if err != nil {
 		return err
 	}
 	defer compressed.Close()
 	limited := &io.LimitedReader{R: compressed, N: maxBytes + 1}
 	archive := tar.NewReader(limited)
-	staging, err := os.MkdirTemp("", "graphdb-replication-snapshot-")
+	staging, err := os.MkdirTemp(s.root, ".graphdb-replication-snapshot-")
 	if err != nil {
 		return err
 	}
@@ -177,13 +183,11 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 			return fmt.Errorf("invalid snapshot entry %s", header.Name)
 		}
 		key := strings.TrimPrefix(header.Name, "objects/")
-		if err := validateObjectKey(key); err != nil {
+		if err := validateFileStoreKey(key); err != nil {
 			return err
 		}
-		for _, segment := range strings.Split(key, "/") {
-			if strings.HasPrefix(segment, ".") {
-				return fmt.Errorf("reserved snapshot object %s", key)
-			}
+		if fileStoreInternalPath(key) || isFileStoreTemp(key) {
+			return fmt.Errorf("reserved snapshot object %s", key)
 		}
 		if _, exists := objects[key]; exists {
 			return fmt.Errorf("duplicate snapshot object")
@@ -219,6 +223,9 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 			return nil, err
 		}
 		for _, object := range existing {
+			if fileStoreInternalPath(object.Key) {
+				continue
+			}
 			if _, keep := objects[object.Key]; !keep {
 				if err := s.Delete(applyCtx, object.Key); err != nil {
 					return nil, err
@@ -231,11 +238,13 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			body, err := os.ReadFile(objects[key])
+			file, err := os.Open(objects[key])
 			if err != nil {
 				return nil, err
 			}
-			if err := s.Put(applyCtx, key, body); err != nil {
+			putErr := s.putReader(applyCtx, key, file)
+			closeErr := file.Close()
+			if err := errors.Join(putErr, closeErr); err != nil {
 				return nil, err
 			}
 		}

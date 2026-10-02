@@ -19,6 +19,14 @@ var ErrFileStoreClosed = errors.New("file store is closed")
 // OpenFileStore owns the entire directory until Close. All processes, including
 // offline tools, must acquire this lock before accessing a live database.
 func OpenFileStore(root string) (*FileStore, error) {
+	return openFileStore(root, false)
+}
+
+// OpenFileStoreForRecovery holds the normal directory lock while allowing the
+// runtime-restore tool to finish an interrupted, journaled installation.
+func OpenFileStoreForRecovery(root string) (*FileStore, error) { return openFileStore(root, true) }
+
+func openFileStore(root string, recovery bool) (*FileStore, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -40,6 +48,15 @@ func OpenFileStore(root string) (*FileStore, error) {
 		return nil, fmt.Errorf("%w: %s: %v", ErrDataDirectoryLocked, root, err)
 	}
 	s.runtime = &fileRuntime{lock: f, ioGate: semaphore.NewWeighted(directoryIOCapacity), etags: make(map[string]string), views: make(map[string]*localViewGate)}
+	if recovery {
+		return s, nil
+	}
+	if !recovery {
+		if _, err := os.Lstat(filepath.Join(root, ".graphdb-runtime-restore.json")); err == nil || !os.IsNotExist(err) {
+			s.Close()
+			return nil, fmt.Errorf("runtime restore is incomplete; rerun runtime-restore with the original archive")
+		}
+	}
 	if err := s.recoverRestoreDirectories(); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("recover local restore: %w", err)

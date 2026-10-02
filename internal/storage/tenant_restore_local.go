@@ -16,6 +16,9 @@ func (s *TenantStore) restoreLocalTenantBackupTask(ctx context.Context, task Tas
 	if input.Integrity.Status == "error" {
 		return TenantRestoreReport{}, fmt.Errorf("backup integrity failed: %s", strings.Join(input.Integrity.Issues, "; "))
 	}
+	if err := s.checkRestoreDiskSpace(ctx, input.Record); err != nil {
+		return TenantRestoreReport{}, err
+	}
 	_, dataHash, err := prepareTenantRestoreContext(input.Record, task.TenantID)
 	if err != nil {
 		return TenantRestoreReport{}, err

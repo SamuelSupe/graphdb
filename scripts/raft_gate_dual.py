@@ -21,10 +21,14 @@ TOKEN = os.environ['GRAPHDB_RAFT_TOKEN']
 COMPOSE = DOCKER + ['compose', '-p', PROJECT, '-f', ROOT+'/docker-compose.raft.yml', '-f', str(OUT/'override.yml')]
 ENV = {**os.environ, 'GRAPHDB_HA_IMAGE': IMAGE, 'GRAPHDB_RAFT_TOKEN': TOKEN}
 fixture = (Path(__file__).parent/'raft-gate'/'dual.yml').read_text()
+if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
+    fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', 'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "2"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
 (OUT/'override.yml').write_text(re.sub(r'(?<=127.0.0.1:)\d+', lambda match: str(int(match[0])+PORT_OFFSET), fixture))
 TENANT = 'same-tenant'
 results = []
 request_retries = []
+recovery_volumes = []
+disk_containers = []
 
 def docker(*args, check=True):
     return subprocess.run(DOCKER + list(args), check=check, text=True, capture_output=True)
@@ -130,6 +134,8 @@ try:
         health = expect(base,'GET','/v1/health')
         if mode != 'raft':
             assert not health.get('raft'), health
+        elif os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
+            assert health['raft']['protocol_version'] == 2 and health['raft']['stream_snapshots'] is True, health
         expect(base,'POST','/v1/tenants',{'tenant_id':TENANT})
         value = expect(base,'POST','/v1/commits',{'idempotency_key':'first',
             'mutations':{'upsert_entities':[{'id':'host:1','kind':'host','fields':{'name':mode}}]}})
@@ -277,6 +283,74 @@ try:
     docker('start', PROJECT+f'-node{old}-1')
     step('36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation', old=old, new=new, payload_bytes=9*len(payload))
 
+    if os.environ.get('GRAPHDB_GATE_DISK') == 'true':
+        for mode, port in [('direct',46083),('wal',46084)]:
+            name = PROJECT+'-disk-'+mode
+            disk_containers.append(name)
+            base = f'http://127.0.0.1:{port+PORT_OFFSET}'
+            docker('run','-d','--name',name,'-p',f'127.0.0.1:{port+PORT_OFFSET}:8080',
+                '--tmpfs','/var/lib/graphdb:rw,size=64m,uid=1000,gid=1000,mode=0700',
+                '-e','GRAPHDB_DISK_MIN_FREE_BYTES=8MiB','-e','GRAPHDB_DISK_MIN_FREE_PERCENT=0',
+                '-e','GRAPHDB_INGEST_MODE='+mode,'-e','GRAPHDB_INGEST_FLUSH_INTERVAL=200ms',IMAGE)
+            wait_ready(base)
+            expect(base,'POST','/v1/tenants',{'tenant_id':TENANT})
+            expect(base,'POST','/v1/commits',{'mutations':{'upsert_entities':[{'id':'host:disk','kind':'host'}]}})
+            docker('exec',name,'dd','if=/dev/zero','of=/var/lib/graphdb/.disk-pressure-fixture','bs=1M','count=57')
+            blocked = {'idempotency_key':'disk-blocked','mutations':{'upsert_entities':[{'id':'host:after-disk','kind':'host'}]}}
+            result = expect(base,'POST','/v1/commits',blocked,429)
+            assert 'disk_space_low' in json.dumps(result),result
+            expect(base,'POST','/v1/ingest/batches',batch('disk-'+mode),429)
+            expect(base,'GET','/v1/entities/host:disk')
+            assert expect(base,'GET','/v1/diagnostics')['disk']['write_ready'] is False
+            expect(base,'POST','/v1/control/gc',{'keep_snapshots':1})
+            docker('exec',name,'rm','/var/lib/graphdb/.disk-pressure-fixture')
+            expect(base,'POST','/v1/commits',blocked)
+            expect(base,'GET','/v1/entities/host:after-disk')
+            step('actual 64 MiB filesystem pressure rejects new writes/ingest; reads, diagnostics and GC survive; admission resumes',mode=mode)
+
+    if os.environ.get('GRAPHDB_GATE_RECOVERY') == 'true':
+        saved = expect(raft, 'POST', '/v1/query/templates', {'name':'dr-hosts','request':{'op':'match','kind':'host'}})
+        before = expect(raft, 'GET', '/v1/export/snapshot')
+        old_terminal = wait_committed(raft, 'raft')
+        subprocess.run(COMPOSE+['stop','--timeout','30','node1','node2','node3'], env=ENV, check=True, capture_output=True)
+        archives = PROJECT+'-runtime-archives'
+        recovery_volumes.append(archives)
+        docker('run','--rm','-v',archives+':/backup','alpine:3.20','chown','1000:1000','/backup')
+        lines = ['services:']
+        for i in range(1,4):
+            source = PROJECT+f'-node{i}-1'
+            env = json.loads(docker('inspect',source).stdout)[0]['Config']['Env']
+            args = [value for entry in env for value in ['-e',entry]]
+            archive = f'/backup/node{i}.runtime'
+            docker('run','--rm','--volumes-from',source,'-v',archives+':/backup',*args,IMAGE,'runtime-backup',archive)
+            recovered = PROJECT+f'-runtime-node{i}'
+            recovery_volumes.append(recovered)
+            docker('run','--rm','-v',recovered+':/var/lib/graphdb','-v',archives+':/backup:ro',*args,IMAGE,'runtime-restore',archive)
+            copier = docker('create','-v',archives+':/backup',IMAGE).stdout.strip()
+            try:
+                docker('cp',copier+':'+archive,str(OUT/f'node{i}.runtime'))
+            finally:
+                docker('rm',copier)
+            lines += [f'  node{i}:',f'    volumes: !override [runtime-node{i}:/var/lib/graphdb]']
+        lines.append('volumes:')
+        for i in range(1,4):
+            lines += [f'  runtime-node{i}:',f'    name: {PROJECT}-runtime-node{i}', '    external: true']
+        recovery_config = OUT/'runtime-restore.yml'
+        recovery_config.write_text('\n'.join(lines)+'\n')
+        COMPOSE += ['-f', str(recovery_config)]
+        subprocess.run(COMPOSE+['up','-d','--no-build','--no-deps','--force-recreate','node1','node2','node3'], env=ENV, check=True, capture_output=True)
+        wait_ready(raft)
+        assert before == expect(raft, 'GET', '/v1/export/snapshot')
+        templates = expect(raft, 'GET', '/v1/query/templates')
+        assert 'dr-hosts' in json.dumps(templates), templates
+        expect(raft, 'POST', '/v1/ingest/batches', batch('raft'), 202)
+        replay = wait_committed(raft, 'raft')
+        assert replay['result']['version'] == old_terminal['result']['version'], replay
+        assert before == expect(raft, 'GET', '/v1/export/snapshot')
+        expect(raft, 'POST', '/v1/commits', {'idempotency_key':'after-runtime-restore','mutations':{'upsert_entities':[{'id':'host:dr-resumed','kind':'host'}]}})
+        expect(raft, 'GET', '/v1/entities/host:0', headers=large_headers)
+        step('cold full three-replica runtime backup/restore preserves graph, templates, accepted identities and streaming snapshots; writes resume')
+
     if os.environ.get('GRAPHDB_GATE_SOAK') == '1':
         runner = PROJECT+'-soak'
         command = ('soak_status=0; go run -mod=readonly ./tools/soaktest -writer http://gateway:8080 -reader http://gateway:8080 '
@@ -295,6 +369,10 @@ try:
                 check=True, stdout=log, stderr=subprocess.STDOUT)
         step('thirty-minute three-replica WAL mixed workload with compact, GC and index rebuild')
 finally:
+    for name in disk_containers:
+        log = docker('logs',name,check=False)
+        (OUT/(name+'.log')).write_text(log.stdout+log.stderr)
+        docker('rm','-f',name,check=False)
     docker('rm','-f',PROJECT+'-soak',check=False)
     for name in [PROJECT+'-standalone-direct',PROJECT+'-standalone-wal']:
         log = docker('logs',name,check=False)
@@ -303,3 +381,6 @@ finally:
         docker('volume','rm',name+'-data',check=False)
     subprocess.run(COMPOSE+['logs','--no-color'], env=ENV, text=True, stdout=(OUT/'raft.log').open('w'), stderr=subprocess.STDOUT)
     subprocess.run(COMPOSE+['down','-v'], env=ENV, text=True, stdout=(OUT/'cleanup.log').open('w'), stderr=subprocess.STDOUT)
+
+    for volume in recovery_volumes:
+        docker('volume','rm',volume,check=False)

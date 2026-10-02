@@ -1,11 +1,13 @@
 package replication
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/raft/v3/raftpb"
@@ -74,6 +76,13 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 		progress, ok := status.Progress[change.ID]
 		if !ok || !progress.IsLearner || progress.Match < status.Commit {
 			http.Error(w, "learner has not caught up", http.StatusConflict)
+			return
+		}
+		probe, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		peer, err := n.peerStatus(probe, change.ID)
+		cancel()
+		if err != nil || peer.Error != "" || peer.SnapshotError != "" || peer.Applied < status.Commit {
+			http.Error(w, "learner application or protocol has not caught up", http.StatusConflict)
 			return
 		}
 		kind = raftpb.ConfChangeAddNode

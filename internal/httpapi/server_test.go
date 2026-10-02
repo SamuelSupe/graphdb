@@ -173,10 +173,12 @@ func TestHTTPDataAndAdminRouteSeparation(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	api := &Server{Store: store, Mode: "all"}
 
-	dataMetrics := httptest.NewRecorder()
-	api.DataHandler().ServeHTTP(dataMetrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if dataMetrics.Code != http.StatusNotFound {
-		t.Fatalf("data metrics status=%d, want 404", dataMetrics.Code)
+	for _, path := range []string{"/metrics", "/v1/diagnostics"} {
+		response := httptest.NewRecorder()
+		api.DataHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("data %s status=%d, want 404", path, response.Code)
+		}
 	}
 
 	adminCommit := httptest.NewRecorder()

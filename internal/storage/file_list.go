@@ -98,18 +98,15 @@ func (s *FileStore) ListPage(ctx context.Context, prefix, after string, limit in
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if entry.Name() == replicationDirectory || entry.Name() == ".graphdb-raft" {
-				continue
-			}
 			path := filepath.Join(dir, entry.Name())
-			if isFileStoreTemp(path) || path == filepath.Join(root, fileRestoreDirectory) {
-				continue
-			}
 			rel, err := filepath.Rel(root, path)
 			if err != nil {
 				return err
 			}
 			key := filepath.ToSlash(rel)
+			if fileStoreInternalPath(key) || (!entry.IsDir() && isFileStoreTemp(path)) {
+				continue
+			}
 			if entry.IsDir() {
 				subtree := key + "/"
 				if (!strings.HasPrefix(subtree, prefix) && !strings.HasPrefix(prefix, subtree)) ||

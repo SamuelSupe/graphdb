@@ -117,7 +117,7 @@ func TestHADrainWaitsForCommittedProposal(t *testing.T) {
 	request := httptest.NewRequest("POST", "/raft/message", bytes.NewReader(nil))
 	request.Header.Set("Authorization", "Bearer "+group.nodes[leader].cfg.Raft.Token)
 	request.Header.Set("X-Raft-Cluster", group.nodes[leader].cfg.Raft.ClusterID)
-	for _, protocol := range []string{"", "2"} {
+	for _, protocol := range []string{"", "3"} {
 		request.Header.Set("X-GraphDB-Raft-Protocol", protocol)
 		w := httptest.NewRecorder()
 		group.nodes[leader].cluster.PrivateHandler().ServeHTTP(w, request)

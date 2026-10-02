@@ -11,6 +11,56 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func TestDiskPressurePreservesReadsDrainAndCleanup(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := files.ConfigureDiskSpace(DiskSpacePolicy{MinFreeBytes: 256 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	available := int64(1 << 30)
+	files.diskProbe = func(string) (DiskSpaceStatus, error) {
+		return DiskSpaceStatus{TotalBytes: 2 << 30, AvailableBytes: available}, nil
+	}
+	store := NewTenantStore(files, "test")
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	before, err := store.Commit(ctx, "tenant-a", mutations, CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	available = 128 << 20
+	_, err = store.Commit(ctx, "tenant-a", mutations, CommitOptions{})
+	assertBackpressureReason(t, err, "disk_space_low")
+	_, err = store.Compact(ctx, "tenant-a")
+	assertBackpressureReason(t, err, "disk_space_low")
+	if err := store.CheckAcceptedWALBackpressure(ctx, "tenant-a"); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	_, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil || manifest.Version != before.Version {
+		t.Fatalf("read after rejection: %#v, %v", manifest, err)
+	}
+	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{DryRun: true}); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	available = 32 << 20
+	assertBackpressureReason(t, store.CheckAcceptedWALBackpressure(ctx, "tenant-a"), "disk_space_low")
+	files.diskProbe = func(string) (DiskSpaceStatus, error) {
+		t.Fatal("replica application consulted local admission")
+		return DiskSpaceStatus{}, nil
+	}
+	if err := store.CheckWriteBackpressure(ReplicatedContext(ctx, "replicated", time.Now()), "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	files.diskProbe = func(string) (DiskSpaceStatus, error) { return DiskSpaceStatus{AvailableBytes: 1 << 30}, nil }
+	if _, err := store.Commit(ctx, "tenant-a", mutations, CommitOptions{}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+}
+
 func TestCommitBackpressureRejectsHighObjectLatency(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	pressure := NewWritePressure(BackpressureConfig{ObjectLatencyThreshold: time.Millisecond})

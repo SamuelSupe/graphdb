@@ -91,8 +91,27 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes)
 }
 
+func (a *Application) CaptureSnapshot(ctx context.Context) (replication.SnapshotSource, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	source, err := a.Files.CaptureReplicationSnapshot(ctx, a.MaxSnapshotBytes)
+	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
+		err = replication.ErrSnapshotTooLarge
+	}
+	return source, err
+}
+
+func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source io.ReadSeeker) error {
+	a.readers.Lock()
+	defer a.readers.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pending = nil
+	return a.Files.InstallReplicationSnapshotReader(ctx, index, source, a.MaxSnapshotBytes)
+}
+
 func publicationCommand(cmd command) bool {
-	return cmd.Kind == "accept" || cmd.Kind == "flush" ||
+	return cmd.Kind == "accept" || cmd.Kind == "flush" || cmd.Kind == "restore_part" ||
 		(cmd.Kind == "http" && cmd.Method == http.MethodPost &&
 			(cmd.URI == "/v1/ingest/batches" || cmd.URI == "/v1/commits"))
 }
@@ -234,7 +253,7 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "tenant has been replaced; obtain a new read token"})
 		}
 	}
-	if cmd.Kind == "task" || cmd.Kind == "capture_backup" || cmd.Kind == "restore_part" {
+	if cmd.Kind == "task" || cmd.Kind == "capture_backup" || cmd.Kind == "restore_part" || cmd.Kind == "maintenance_reset" {
 		if len(cmd.IDs) != 1 {
 			return nil, fmt.Errorf("invalid replicated task identity")
 		}
@@ -303,6 +322,8 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		return nil, a.Store.CaptureReplicatedObjectBackup(applyCtx, cmd.Tenant, cmd.IDs[0])
 	case "restore_part":
 		return a.stageRestore(applyCtx, cmd)
+	case "maintenance_reset":
+		return nil, a.clearRestore(applyCtx, cmd.Tenant, cmd.IDs[0])
 	case "task":
 		if cmd.Error != "" {
 			task, err := a.Store.FailReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Error)
@@ -324,6 +345,11 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		task, err := a.Store.RunReplicatedTask(applyCtx, cmd.Tenant, cmd.IDs[0], cmd.Restore)
 		if err != nil {
 			return nil, err
+		}
+		if transferTask(task) {
+			if err := a.clearRestore(applyCtx, cmd.Tenant, task.ID); err != nil {
+				return nil, err
+			}
 		}
 		return json.Marshal(task)
 	default:

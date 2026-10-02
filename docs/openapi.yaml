@@ -203,11 +203,23 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ProcessReadiness'
                   - $ref: '#/components/schemas/ErrorResponse'
+  /v1/diagnostics:
+    get:
+      summary: Report local disk, replication, WAL and optional tenant task state.
+      description: Admin listener only. Local observations remain available without Raft quorum. HTTP 200 can contain degraded status. An optional X-Tenant-ID selects up to 100 local task observations. Protect with the management network or gateway.
+      responses:
+        '200':
+          description: Local diagnostic observations, build identity and machine-readable problems.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /metrics:
     get:
       security: []
       summary: Export Prometheus metrics from the admin listener.
-      description: This endpoint has no tenant scope and must be protected by the management network or gateway.
+      description: This endpoint has no tenant scope, remains locally readable without Raft quorum, and must be protected by the management network or gateway.
       responses:
         '200':
           description: Prometheus text exposition.

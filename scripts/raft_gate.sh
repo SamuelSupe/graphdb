@@ -26,7 +26,9 @@ metadata = {'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat
     'binary_version': subprocess.check_output(['docker', 'run', '--rm', image, 'version'], text=True).strip(),
     'image_labels': info['Config'].get('Labels'),
     'port_offset': int(os.environ.get('GRAPHDB_GATE_PORT_OFFSET', '0')),
-    'cross_host_qualification': 'NOT RUN', 'result': 'RUNNING'}
+    'cross_host_qualification': 'NOT RUN', 'enhanced': os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true',
+    'runtime_recovery': os.environ.get('GRAPHDB_GATE_RECOVERY') == 'true',
+    'disk_pressure': os.environ.get('GRAPHDB_GATE_DISK') == 'true', 'result': 'RUNNING'}
 (output / 'metadata.json').write_text(json.dumps(metadata, indent=2)+'\n')
 PY
 finish() {

@@ -270,6 +270,9 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 	if err := ValidateTenantID(tenantID); err != nil {
 		return Manifest{}, err
 	}
+	if err := s.CheckTaskDiskSpace(ctx, Task{TenantID: tenantID, Type: TaskTypeCompact}); err != nil {
+		return Manifest{}, err
+	}
 
 	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
 	if err != nil {

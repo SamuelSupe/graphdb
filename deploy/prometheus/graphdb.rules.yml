@@ -1,0 +1,54 @@
+groups:
+  - name: graphdb
+    rules:
+      - alert: GraphDBDiskInspectionFailed
+        expr: graphdb_disk_inspection_success == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "GraphDB cannot inspect its data filesystem"
+      - alert: GraphDBDiskAdmissionStopped
+        expr: graphdb_disk_write_ready == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "GraphDB disk reserve is below its admission threshold"
+      - alert: GraphDBRaftNoLeader
+        expr: graphdb_raft_leader_known == 0
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: "GraphDB replica has no known leader; inspect the whole group"
+      - alert: GraphDBRaftSnapshotFailed
+        expr: graphdb_raft_snapshot_failed == 1
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "GraphDB snapshot failed and mutations are paused on this replica"
+      - alert: GraphDBRaftFailed
+        expr: graphdb_raft_failed == 1
+        labels: {severity: critical}
+        annotations:
+          summary: "GraphDB replica stopped after a persistence or application failure"
+      - alert: GraphDBRaftApplyLag
+        expr: graphdb_raft_application_lag > 1000
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB application lags committed Raft entries"
+      - alert: GraphDBTaskFailed
+        expr: increase(graphdb_task_failures_total[5m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB task failed; inspect the tenant task history"
+      - alert: GraphDBWALSyncFailed
+        expr: increase(graphdb_ingest_wal_fsync_total{status="error"}[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "GraphDB ingest WAL fsync failed"
+      - alert: GraphDBIndexHealthIssues
+        expr: graphdb_index_health_issues > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB last index inspection found issues"

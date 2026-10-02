@@ -162,6 +162,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		status.DerivedBacklog,
 	)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	s.writeResourceMetrics(w, r.Context())
 	_, _ = w.Write(s.obs().Metrics.SnapshotPrometheus())
 	storage.WriteDiskMetrics(w)
 }

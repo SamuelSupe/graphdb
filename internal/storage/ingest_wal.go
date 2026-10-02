@@ -53,6 +53,7 @@ const (
 )
 
 type IngestWALConfig struct {
+	DiskSpace     DiskSpacePolicy
 	Dir           string
 	Durability    string
 	BufferBytes   int
@@ -82,6 +83,9 @@ func DefaultIngestWALConfig(dir string) IngestWALConfig {
 }
 
 func (c IngestWALConfig) validate() error {
+	if err := c.DiskSpace.Validate(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.Dir) == "" {
 		return fmt.Errorf("ingest WAL directory is required")
 	}
@@ -270,6 +274,15 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 	}
 	if len(payload) > ingestWALMaxPayload {
 		return IngestWALAppendResult{}, fmt.Errorf("%w: %d bytes", ErrIngestWALRecordTooLarge, len(payload))
+	}
+	if kind == IngestWALAccepted && (w.config.DiskSpace.MinFreeBytes > 0 || w.config.DiskSpace.MinFreePercent > 0) {
+		status, spaceErr := inspectDiskSpace(ctx, w.config.Dir, w.config.DiskSpace, nil)
+		if spaceErr != nil {
+			return result, spaceErr
+		}
+		if spaceErr = checkAvailableDiskSpace(status, int64(len(payload)+ingestWALHeaderBytes+ingestWALChecksumBytes), false); spaceErr != nil {
+			return result, spaceErr
+		}
 	}
 	request := ingestWALAppendRequest{
 		ctx:     ctx,

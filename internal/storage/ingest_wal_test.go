@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,31 @@ import (
 	"testing"
 	"time"
 )
+
+func TestIngestWALDiskPressureRejectsAcceptanceButPersistsTerminal(t *testing.T) {
+	config := testIngestWALConfig(t)
+	config.DiskSpace = DiskSpacePolicy{MinFreeBytes: math.MaxInt64 - ingestWALMaxPayload}
+	wal, _, err := openIngestWALRecords(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = wal.Append(context.Background(), IngestWALAccepted, []byte("new"))
+	assertBackpressureReason(t, err, "disk_space_low")
+	if _, err := wal.Append(context.Background(), IngestWALPublished, []byte("terminal")); err != nil {
+		t.Fatalf("terminal: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, records, err := openIngestWALRecords(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(records) != 1 || records[0].Type != IngestWALPublished {
+		t.Fatalf("recovered: %#v", records)
+	}
+}
 
 func TestIngestWALConcurrentAppendsRecoverInLSNOrder(t *testing.T) {
 	config := testIngestWALConfig(t)

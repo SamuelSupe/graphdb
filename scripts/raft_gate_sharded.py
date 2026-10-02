@@ -22,8 +22,11 @@ COMPOSE = DOCKER + ['compose', '-p', PROJECT, '-f', ROOT+'/docker-compose.sharde
 ENV = {**os.environ, 'GRAPHDB_HA_IMAGE': IMAGE, 'GRAPHDB_RAFT_TOKEN': TOKEN, 'GRAPHDB_INGEST_MODE': 'wal'}
 ROUTER = f'http://127.0.0.1:{47080+PORT_OFFSET}'
 fixture = (Path(__file__).parent/'raft-gate'/'sharded.yml').read_text()
+if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
+    fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', 'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "2"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
 (OUT/'override.yml').write_text(re.sub(r'(?<=127.0.0.1:)\d+', lambda match: str(int(match[0])+PORT_OFFSET), fixture))
 results = []
+route_retries = []
 
 def docker(*args, check=True):
     return subprocess.run(DOCKER+list(args), check=check, capture_output=True, text=True)
@@ -54,9 +57,19 @@ def request(base, method, path, body=None, tenant=None, headers=None):
         return err.code, body, {name.lower():value for name,value in err.headers.items()}
 
 def expect(method, path, body=None, tenant=None, status=200, base=ROUTER, headers=None):
-    code, value, hdr = request(base,method,path,body,tenant,headers)
-    assert code == status, (method,path,code,value)
-    return value,hdr
+    deadline = time.monotonic()+10
+    while True:
+        code, value, hdr = request(base,method,path,body,tenant,headers)
+        if code == status:
+            return value,hdr
+        # This response guarantees rejection before graph/WAL publication.
+        # Replay only this explicit routing error, preserving the original body.
+        if code == 409 and isinstance(value,dict) and value.get('code') == 'shard_epoch_changed' and value.get('retryable') is True and time.monotonic()<deadline:
+            route_retries.append({'method':method,'path':path,'tenant':tenant,'response':value})
+            (OUT/'route-retries.json').write_text(json.dumps(route_retries,indent=2)+'\n')
+            time.sleep(.1)
+            continue
+        raise AssertionError((method,path,code,value))
 
 def wait(fn, seconds=60):
     deadline = time.monotonic()+seconds

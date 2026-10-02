@@ -312,6 +312,9 @@ func (s *TenantStore) runTask(ctx context.Context, cancel context.CancelFunc, ta
 }
 
 func (s *TenantStore) runTaskOperation(ctx context.Context, task Task) (map[string]any, string, error) {
+	if err := s.CheckTaskDiskSpace(ctx, task); err != nil {
+		return nil, "", err
+	}
 	ctx, err := s.taskIngestContext(ctx, task)
 	if err != nil {
 		return nil, "", err
@@ -499,6 +502,11 @@ func (s *TenantStore) saveTask(ctx context.Context, task Task) error {
 		}
 		if _, err := s.putTenantConditional(ctx, task.TenantID, key, data, condition); err == nil {
 			s.rememberTaskState(task)
+			if task.Status == TaskStatusFailed && current.Status != TaskStatusFailed {
+				if observer, ok := s.backpressureObserver.(interface{ RecordTaskFailure(string, string) }); ok {
+					observer.RecordTaskFailure(task.TenantID, task.Type)
+				}
+			}
 			return nil
 		} else if !errors.Is(err, ErrConflict) {
 			return err

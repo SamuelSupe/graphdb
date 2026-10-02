@@ -53,6 +53,8 @@ docker compose up -d --build
 
 The same binary supports standalone and both Raft deployment options:
 
+Disk guards, streaming snapshots, prepared maintenance, full runtime recovery and operational diagnostics are described in the [operations guide](docs/product-operations.zh-CN.md).
+
 Raft qualification and the remaining release gates are tracked in the
 [release readiness report](docs/raft-release-readiness.zh-CN.md).
 

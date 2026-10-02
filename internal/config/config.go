@@ -28,6 +28,8 @@ type Config struct {
 	ReaderCacheLoadMaxConcurrent      int
 	ReaderCacheLoadQueueTimeout       time.Duration
 	DataDir                           string
+	DiskMinFreeBytes                  int64
+	DiskMinFreePercent                int
 	StoreKind                         string
 	QueryMaxConcurrent                int
 	QueryMaxPerTenant                 int
@@ -120,6 +122,8 @@ func Load() (Config, error) {
 		ReaderCacheLoadMaxConcurrent:      4,
 		ReaderCacheLoadQueueTimeout:       2 * time.Second,
 		DataDir:                           getenv("GRAPHDB_DATA_DIR", ".graphdb"),
+		DiskMinFreeBytes:                  256 << 20,
+		DiskMinFreePercent:                5,
 		StoreKind:                         os.Getenv("GRAPHDB_STORAGE"),
 		QueryMaxConcurrent:                64,
 		QueryMaxPerTenant:                 32,
@@ -263,6 +267,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadInt64Env("GRAPHDB_WRITE_MAX_BYTES_PER_TENANT", &cfg.WriteMaxBytesPerTenant); err != nil {
+		return Config{}, err
+	}
+	if err := loadBytesEnv("GRAPHDB_DISK_MIN_FREE_BYTES", &cfg.DiskMinFreeBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_DISK_MIN_FREE_PERCENT", &cfg.DiskMinFreePercent); err != nil {
+		return Config{}, err
+	}
+	if err := (storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent}).Validate(); err != nil {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT", &cfg.WriteMaxEntitiesPerTenant); err != nil {
@@ -427,6 +440,7 @@ func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 	return storage.IngestServiceConfig{
 		OwnerID: cfg.InstanceID,
 		WAL: storage.IngestWALConfig{
+			DiskSpace:     storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent},
 			Dir:           cfg.IngestWALDir,
 			Durability:    cfg.IngestWALDurability,
 			BufferBytes:   int(cfg.IngestWALBufferBytes),

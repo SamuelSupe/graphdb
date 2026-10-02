@@ -2,6 +2,7 @@ package ha
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -26,7 +27,26 @@ func (c *Cluster) RunBackground(ctx context.Context) {
 					_ = c.flushPending(operationCtx)
 					nextFlush = time.Now().Add(interval)
 				}
-				_ = c.runQueuedTask(operationCtx)
+				if c.config.Protocol < 2 {
+					_ = c.runQueuedTask(operationCtx)
+				}
+			}
+			cancel()
+		}
+	}
+}
+
+func (c *Cluster) runTaskBackground(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			operation, cancel := context.WithTimeout(ctx, 10*time.Minute)
+			if c.Node.ReadBarrier(operation) == nil {
+				_ = c.runQueuedTask(operation)
 			}
 			cancel()
 		}
@@ -57,6 +77,30 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 	var staged restoreManifest
 	ready := false
 	capture := false
+	if queued != nil {
+		if err := c.App.Store.CheckTaskDiskSpace(ctx, *queued); err != nil {
+			c.App.mu.RUnlock()
+			return err
+		}
+	}
+	if queued != nil && c.config.Protocol >= 2 && storage.PreparedMaintenanceTask(*queued) {
+		generation, err := c.App.Store.ReplicationTenantGeneration(ctx, queued.TenantID)
+		var source *storage.ReplicatedMaintenanceSource
+		if err == nil {
+			source, err = c.App.Store.CaptureReplicatedMaintenance(ctx, *queued)
+		}
+		c.App.mu.RUnlock()
+		if err != nil {
+			return err
+		}
+		defer source.Close()
+		input, err := source.Build(ctx, c.App.MaxSnapshotBytes)
+		if err != nil {
+			return err
+		}
+		defer input.Close()
+		return c.replicateMaintenance(ctx, *queued, input, generation)
+	}
 	if queued != nil && restoreTask(*queued) {
 		generation, err = c.App.Store.ReplicationTenantGeneration(ctx, queued.TenantID)
 		if err == nil {
@@ -85,6 +129,10 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 		return c.replicateRestore(ctx, *queued, restore, generation)
 	}
 	prepareErr := err
+	var pressure *storage.BackpressureError
+	if errors.As(prepareErr, &pressure) {
+		return prepareErr
+	}
 	cmd, commandErr := newCommand("task")
 	if commandErr != nil {
 		return commandErr

@@ -148,6 +148,9 @@ func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (Inde
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
+	if err := s.CheckTaskDiskSpace(ctx, Task{TenantID: tenantID, Type: TaskTypeIndexRebuild}); err != nil {
+		return IndexCatalog{}, err
+	}
 	ctx, releaseView, err := s.ReadViewContext(ctx, tenantID)
 	if err != nil {
 		return IndexCatalog{}, err

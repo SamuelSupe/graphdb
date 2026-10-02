@@ -1,0 +1,30 @@
+services:
+  graphdb:
+    image: ${GRAPHDB_IMAGE:?set a qualified image digest}
+    command: [serve]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      GRAPHDB_ADDR: :8080
+      GRAPHDB_ADMIN_ADDR: :8081
+      GRAPHDB_DATA_DIR: /var/lib/graphdb
+      GRAPHDB_INGEST_MODE: ${GRAPHDB_INGEST_MODE:-wal}
+      GRAPHDB_DISK_MIN_FREE_BYTES: ${GRAPHDB_DISK_MIN_FREE_BYTES:-256MiB}
+      GRAPHDB_DISK_MIN_FREE_PERCENT: ${GRAPHDB_DISK_MIN_FREE_PERCENT:-5}
+    volumes: [data:/var/lib/graphdb]
+    networks: [private]
+  gateway:
+    image: nginx:1.28.0-bookworm
+    ports: ["443:443"]
+    volumes:
+      - ../nginx/graphdb.conf.example:/etc/nginx/conf.d/default.conf:ro
+      - ${GRAPHDB_TLS_DIR:?set a certificate directory}:/etc/nginx/tls:ro
+    networks: [private, edge]
+  identity-provider:
+    image: ${GRAPHDB_IDENTITY_IMAGE:?provide an implementation of the verify contract}
+    networks: [private, edge]
+networks:
+  private: {internal: true}
+  edge: {}
+volumes:
+  data: {}

@@ -30,6 +30,7 @@ type StateMachine interface {
 }
 
 type Config struct {
+	Protocol            int
 	ID                  uint64
 	ClusterID           string
 	Dir                 string
@@ -39,6 +40,8 @@ type Config struct {
 	Tick                time.Duration
 	SnapshotEntries     uint64
 	MaxSnapshotBytes    int64
+	StreamSnapshots     bool
+	SnapshotPreflight   func(context.Context, int64) error
 	AllowLegacyProtocol bool
 }
 
@@ -90,6 +93,7 @@ type Node struct {
 	handoff            bool
 	activeProposals    int
 	draining           atomic.Bool
+	protocolValidated  atomic.Bool
 }
 
 type snapshotRequest struct {
@@ -100,6 +104,12 @@ type snapshotRequest struct {
 }
 
 func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, error) {
+	if cfg.Protocol == 0 {
+		cfg.Protocol = ProtocolVersion
+	}
+	if cfg.Protocol < ProtocolVersion || cfg.Protocol > MaxProtocolVersion {
+		return nil, fmt.Errorf("unsupported configured Raft protocol")
+	}
 	if cfg.ID == 0 || cfg.ClusterID == "" || cfg.Dir == "" || len(cfg.Token) < 32 {
 		return nil, fmt.Errorf("Raft requires node ID, cluster ID, directory and a token of at least 32 bytes")
 	}
@@ -112,10 +122,19 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	if cfg.MaxSnapshotBytes <= 0 {
 		cfg.MaxSnapshotBytes = 512 << 20
 	}
+	if cfg.MaxSnapshotBytes > 1<<40 {
+		return nil, fmt.Errorf("snapshot budget cannot exceed 1 TiB")
+	}
 	disk, existing, err := openStorage(cfg.Dir, cfg.ID, cfg.ClusterID)
 	if err != nil {
 		return nil, err
 	}
+	minimum, err := disk.minimumProtocol()
+	if err != nil || minimum > MaxProtocolVersion {
+		disk.db.Close()
+		return nil, fmt.Errorf("Raft data requires protocol %d: %v", minimum, err)
+	}
+	cfg.Protocol = max(cfg.Protocol, minimum)
 	applied, err := machine.Applied()
 	if err != nil {
 		disk.db.Close()
@@ -138,16 +157,25 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 			disk.db.Close()
 			return nil, decodeErr
 		}
+		if envelope.File != nil {
+			if err := validateSnapshotFile(cfg.Dir, snapshot.Metadata.Index, *envelope.File); err != nil {
+				disk.db.Close()
+				return nil, err
+			}
+		}
 		snapshotPeers = envelope.Peers
 		snapshotRetired = envelope.Retired
-		snapshot.Data = envelope.State
 	}
 	if snapshot.Metadata.Index > applied {
-		if err := machine.Restore(parent, snapshot.Metadata.Index, snapshot.Data); err != nil {
+		if err := restoreSnapshot(parent, machine, cfg.Dir, snapshot); err != nil {
 			disk.db.Close()
 			return nil, err
 		}
 		applied = snapshot.Metadata.Index
+	}
+	if err := pruneSnapshotFiles(cfg.Dir, snapshot, true); err != nil {
+		disk.db.Close()
+		return nil, err
 	}
 	hard, _, err := disk.InitialState()
 	if err != nil {
@@ -243,17 +271,38 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 	if err := n.available(true); err != nil {
 		return nil, err
 	}
+
 	n.mu.Lock()
 	snapshotFailure := n.snapshotFailure
 	n.mu.Unlock()
 	if snapshotFailure != nil {
-		return nil, fmt.Errorf("%w: %v; increase the snapshot budget before resuming mutations", ErrUnavailable, snapshotFailure)
+		return nil, fmt.Errorf("%w: %v; resolve the snapshot error before resuming mutations", ErrUnavailable, snapshotFailure)
+	}
+	if n.protocolVersion() > ProtocolVersion && !n.protocolValidated.Load() {
+		minimum, err := n.disk.minimumProtocol()
+		if err != nil {
+			return nil, err
+		}
+		// A durable command already records activation by a checked leader.
+		// Requiring an offline voter again would defeat majority failover.
+		if minimum < n.protocolVersion() {
+			for id := range n.raft.Status().Config.Voters.IDs() {
+				if id == n.cfg.ID {
+					continue
+				}
+				peer, err := n.peerStatus(ctx, id)
+				if err != nil || max(peer.Protocol, peer.MaxProtocol) < n.protocolVersion() {
+					return nil, fmt.Errorf("%w: upgrade every voter before activating protocol %d (peer %d: %v)", ErrUnavailable, n.protocolVersion(), id, err)
+				}
+			}
+		}
+		n.protocolValidated.Store(true)
 	}
 	id, err := randomID()
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(proposal{ID: id, Data: data, Protocol: ProtocolVersion})
+	payload, err := json.Marshal(proposal{ID: id, Data: data, Protocol: n.protocolVersion()})
 	if err != nil {
 		return nil, err
 	}
@@ -475,6 +524,7 @@ func (n *Node) run() {
 					confIndex = entry.Index
 				case raftpb.EntryConfChangeV2:
 					configurationChanged = true
+					n.protocolValidated.Store(false)
 					// Membership is durable independently of the graph checkpoint.
 					// Replaying an older add/promote/remove against a later saved
 					// configuration can resurrect a member or demote a voter.
@@ -513,7 +563,6 @@ func (n *Node) run() {
 				// cannot grow an in-memory queue or stop persisted Raft heartbeats.
 				if !raft.IsEmptySnap(ready.Snapshot) {
 					pending = applicationBatch{snapshot: ready.Snapshot}
-					pending.snapshot.Data = envelope.State
 				}
 				if len(ready.CommittedEntries) > 0 {
 					if pending.first == 0 {
@@ -543,13 +592,62 @@ func (n *Node) applyLoop() {
 	defer n.workers.Done()
 	lastSnapshot, _ := n.disk.Snapshot()
 	snapshotIndex := lastSnapshot.Metadata.Index
+	var building chan snapshotBuild
+	lastConf := lastSnapshot.Metadata.ConfState
+	retry := time.NewTicker(5 * time.Second)
+	defer retry.Stop()
 	for {
 		select {
 		case <-n.ctx.Done():
 			return
+		case built := <-building:
+			building = nil
+			if built.err != nil {
+				n.mu.Lock()
+				n.snapshotFailure = built.err
+				n.mu.Unlock()
+				continue
+			}
+			if built.request.index <= snapshotIndex {
+				continue
+			}
+			select {
+			case n.snapshotRequests <- built.request:
+			case <-n.ctx.Done():
+				return
+			}
+			select {
+			case err := <-built.request.done:
+				if err != nil && !errors.Is(err, raft.ErrSnapOutOfDate) {
+					n.fail(err)
+					return
+				}
+				if err == nil {
+					snapshotIndex = built.request.index
+					n.mu.Lock()
+					n.snapshotFailure = nil
+					n.mu.Unlock()
+				}
+			case <-n.ctx.Done():
+				return
+			}
+		case <-retry.C:
+			n.mu.Lock()
+			failed := n.snapshotFailure != nil
+			n.mu.Unlock()
+			if failed && n.cfg.StreamSnapshots && building == nil && n.applied.Load() > snapshotIndex {
+				var err error
+				building, err = n.startStreamSnapshot(lastConf)
+				if err != nil {
+					n.mu.Lock()
+					n.snapshotFailure = err
+					n.mu.Unlock()
+				}
+			}
 		case batch := <-n.application:
+			lastConf = batch.conf
 			if !raft.IsEmptySnap(batch.snapshot) && batch.snapshot.Metadata.Index > n.applied.Load() {
-				if err := n.machine.Restore(n.ctx, batch.snapshot.Metadata.Index, batch.snapshot.Data); err != nil {
+				if err := restoreSnapshot(n.ctx, n.machine, n.cfg.Dir, batch.snapshot); err != nil {
 					n.fail(err)
 					return
 				}
@@ -577,6 +675,19 @@ func (n *Node) applyLoop() {
 				first = entries[len(entries)-1].Index + 1
 			}
 			if n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || batch.configurationChanged {
+				if n.cfg.StreamSnapshots {
+					if building != nil {
+						continue
+					}
+					var err error
+					building, err = n.startStreamSnapshot(lastConf)
+					if err != nil {
+						n.mu.Lock()
+						n.snapshotFailure = err
+						n.mu.Unlock()
+					}
+					continue
+				}
 				data, err := n.machine.Snapshot(n.ctx)
 				if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
 					err = ErrSnapshotTooLarge
@@ -640,6 +751,9 @@ func (n *Node) signalChanged() {
 func (n *Node) Close() error {
 	n.cancel()
 	n.workers.Wait()
+	for _, queue := range n.senders {
+		drainPackets(queue)
+	}
 	n.client.CloseIdleConnections()
 	return n.disk.db.Close()
 }
@@ -653,9 +767,12 @@ func (n *Node) Status() map[string]any {
 	applied := n.applied.Load()
 	configuration := tracker.ProgressTracker{Config: raftStatus.Config}
 	conf := configuration.ConfState()
-	status := map[string]any{"node_id": n.cfg.ID, "cluster_id": n.cfg.ClusterID, "leader_id": n.leader.Load(), "term": raftStatus.Term, "commit_index": raftStatus.Commit, "applied_index": applied, "application_lag": raftStatus.Commit - min(raftStatus.Commit, applied), "application_bytes": n.applicationBytes.Load(), "proposal_bytes": n.proposalBytes.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID && !n.draining.Load(), "protocol_version": ProtocolVersion, "allow_legacy_protocol": n.cfg.AllowLegacyProtocol, "draining": n.draining.Load(), "voters": conf.Voters, "learners": conf.Learners, "build": buildinfo.Current()}
+	status := map[string]any{"node_id": n.cfg.ID, "cluster_id": n.cfg.ClusterID, "leader_id": n.leader.Load(), "term": raftStatus.Term, "commit_index": raftStatus.Commit, "applied_index": applied, "application_lag": raftStatus.Commit - min(raftStatus.Commit, applied), "application_bytes": n.applicationBytes.Load(), "proposal_bytes": n.proposalBytes.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID && !n.draining.Load(), "protocol_version": n.protocolVersion(), "allow_legacy_protocol": n.cfg.AllowLegacyProtocol, "draining": n.draining.Load(), "voters": conf.Voters, "learners": conf.Learners, "build": buildinfo.Current()}
 	status["application_commits"] = n.applicationCommits.Load()
 	status["application_entries"] = n.applicationEntries.Load()
+	status["protocol_max"] = MaxProtocolVersion
+	status["snapshot_format_max"] = 2
+	status["stream_snapshots"] = n.cfg.StreamSnapshots
 	if failure != nil {
 		status["error"] = failure.Error()
 	}

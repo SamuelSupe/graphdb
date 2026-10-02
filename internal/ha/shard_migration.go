@@ -117,7 +117,7 @@ func (c *Cluster) advanceTenantMove(ctx context.Context, state sharding.Catalog,
 		// checkpoint survives lost responses and either coordinator's restart.
 		end := min(parts, owner.NextPart+8)
 		for part := owner.NextPart; part < end; part++ {
-			action := sharding.Action{Operation: "stage", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch, Part: part, Digest: digest, Data: data[part*sharding.ChunkBytes : min((part+1)*sharding.ChunkBytes, len(data))]}
+			action := sharding.Action{Operation: "stage", Tenant: p.Tenant, MoveID: m.ID, Epoch: m.Epoch, Part: part, Bytes: int64(len(data)), Digest: digest, Data: data[part*sharding.ChunkBytes : min((part+1)*sharding.ChunkBytes, len(data))]}
 			stageCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			err := c.shards.JSON(stageCtx, target, http.MethodPost, "/cluster/action", action, nil)
 			cancel()

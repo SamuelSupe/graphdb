@@ -1,0 +1,33 @@
+# Apply to docker-compose.raft.yml with --project-directory set to the repo root.
+services:
+  node1:
+    image: ${GRAPHDB_HA_IMAGE:?set a qualified image digest}
+    ports: !reset []
+    environment: {GRAPHDB_ADMIN_ADDR: ':8082'}
+  node2:
+    image: ${GRAPHDB_HA_IMAGE:?set a qualified image digest}
+    ports: !reset []
+    environment: {GRAPHDB_ADMIN_ADDR: ':8082'}
+  node3:
+    image: ${GRAPHDB_HA_IMAGE:?set a qualified image digest}
+    ports: !reset []
+    environment: {GRAPHDB_ADMIN_ADDR: ':8082'}
+  gateway:
+    ports: !reset []
+    command: [haproxy, -W, -db, -f, /usr/local/etc/haproxy/haproxy.cfg, -f, /usr/local/etc/haproxy/admin.cfg]
+    volumes: ["./deploy/production/haproxy-admin.cfg:/usr/local/etc/haproxy/admin.cfg:ro"]
+    networks:
+      default: {aliases: [graphdb]}
+  tls-gateway:
+    image: nginx:1.28.0-bookworm
+    ports: ["443:443"]
+    volumes:
+      - ./deploy/nginx/graphdb.conf.example:/etc/nginx/conf.d/default.conf:ro
+      - ${GRAPHDB_TLS_DIR:?set a certificate directory}:/etc/nginx/tls:ro
+    networks: [default, edge]
+  identity-provider:
+    image: ${GRAPHDB_IDENTITY_IMAGE:?provide an implementation of the verify contract}
+    networks: [default, edge]
+networks:
+  default: {internal: true}
+  edge: {}

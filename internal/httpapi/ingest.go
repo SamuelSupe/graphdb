@@ -86,6 +86,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantID string, request storage.IngestRequest) {
 	accepted, err := s.IngestService.Accept(r.Context(), tenantID, request)
 	if err != nil {
+		if s.writeBackpressureIfNeeded(w, tenantID, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, storage.ErrIngestQueueFull), errors.Is(err, storage.ErrIngestWALFull):
 			s.writeBackpressure(w, tenantID, &storage.BackpressureError{

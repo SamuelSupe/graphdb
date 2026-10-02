@@ -1,16 +1,25 @@
 package replication
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
 func TestUnsupportedReplicationProtocolDoesNotApply(t *testing.T) {
-	data, err := json.Marshal(proposal{ID: "future", Data: []byte("mutate"), Protocol: ProtocolVersion + 1})
+	data, err := json.Marshal(proposal{ID: "future", Data: []byte("mutate"), Protocol: MaxProtocolVersion + 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,13 +31,13 @@ func TestUnsupportedReplicationProtocolDoesNotApply(t *testing.T) {
 	if machine.applied.Load() != 0 {
 		t.Fatal("unsupported command advanced the application checkpoint")
 	}
-	for _, protocol := range []int{0, ProtocolVersion, ProtocolVersion + 1} {
+	for _, protocol := range []int{0, ProtocolVersion, MaxProtocolVersion + 1} {
 		data, err := json.Marshal(snapshotEnvelope{Version: 1, Protocol: protocol, State: []byte("state"), Peers: map[uint64]string{1: "http://node1:8081"}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, err = decodeSnapshot(data)
-		if (err != nil) != (protocol > ProtocolVersion) {
+		if (err != nil) != (protocol > MaxProtocolVersion) {
 			t.Fatalf("snapshot protocol %d: %v", protocol, err)
 		}
 	}
@@ -96,5 +105,172 @@ func TestDurableLogTruncationCompactionAndReopen(t *testing.T) {
 	hard, restoredConf, err := s.InitialState()
 	if err != nil || hard.Commit != 4 || len(restoredConf.Voters) != 3 {
 		t.Fatalf("consensus state: %v, %v, %v", hard, restoredConf, err)
+	}
+}
+
+type retrySnapshotMachine struct {
+	membershipMachine
+	failCapture atomic.Bool
+}
+
+func (m *retrySnapshotMachine) CaptureSnapshot(context.Context) (SnapshotSource, error) {
+	if m.failCapture.Load() {
+		return nil, fmt.Errorf("temporary snapshot disk failure")
+	}
+	return testSnapshotSource{}, nil
+}
+func (m *retrySnapshotMachine) RestoreSnapshot(_ context.Context, index uint64, _ io.ReadSeeker) error {
+	m.applied.Store(index)
+	return nil
+}
+
+type testSnapshotSource struct{}
+
+func (testSnapshotSource) Close() error { return nil }
+func (testSnapshotSource) WriteTo(_ context.Context, writer io.WriteSeeker) error {
+	_, err := writer.Write([]byte(strings.Repeat("state", 16)))
+	return err
+}
+
+func TestStreamingSnapshotRetriesAndRejectsCorruptDurableFile(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var endpoints [3]atomic.Pointer[Node]
+	var legacy [3]atomic.Bool
+	var nodes [3]*Node
+	var machines [3]retrySnapshotMachine
+	var configs [3]Config
+	peers := map[uint64]string{}
+	for i := range endpoints {
+		i := i
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if node := endpoints[i].Load(); node != nil {
+				if legacy[i].Load() && r.URL.Path == "/raft/status" {
+					status := node.Status()
+					status["protocol_version"] = 0
+					status["protocol_max"] = 0
+					json.NewEncoder(w).Encode(status)
+				} else {
+					node.Handler().ServeHTTP(w, r)
+				}
+			} else {
+				w.WriteHeader(503)
+			}
+		}))
+		defer server.Close()
+		peers[uint64(i+1)] = server.URL
+	}
+	defer func() {
+		for i, node := range nodes {
+			endpoints[i].Store(nil)
+			if node != nil {
+				node.Close()
+			}
+		}
+	}()
+	for i := range nodes {
+		machines[i].failCapture.Store(true)
+		configs[i] = Config{Protocol: 2, ID: uint64(i + 1), ClusterID: "retry", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 100 * time.Millisecond, SnapshotEntries: 1, StreamSnapshots: true, AllowLegacyProtocol: true}
+		node, err := Open(ctx, configs[i], &machines[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[i] = node
+		endpoints[i].Store(node)
+	}
+	wait := func(check func() bool) {
+		t.Helper()
+		for !check() {
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}
+	leader := -1
+	wait(func() bool {
+		for i, node := range nodes {
+			if node.LeaderID() == uint64(i+1) {
+				leader = i
+				return node.Status()["snapshot_error"] != nil
+			}
+		}
+		return false
+	})
+	node := nodes[leader]
+	if _, err := node.Propose(ctx, []byte("blocked")); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("failed snapshot accepted writes: %v", err)
+	}
+	if err := node.ReadBarrier(ctx); err != nil {
+		t.Fatalf("failed snapshot prevented reads: %v", err)
+	}
+	for i := range machines {
+		machines[i].failCapture.Store(false)
+	}
+	wait(func() bool {
+		snap, err := node.disk.Snapshot()
+		return err == nil && snap.Metadata.Index > 0 && node.Status()["snapshot_error"] == nil
+	})
+	legacy[(leader+1)%3].Store(true)
+	if _, err := node.peerStatus(ctx, uint64((leader+1)%3+1)); err == nil {
+		t.Fatal("legacy window admitted an unversioned peer after protocol 2 configuration")
+	}
+	if _, err := node.Propose(ctx, []byte("premature protocol activation")); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("old voter did not prevent protocol activation: %v", err)
+	}
+	legacy[(leader+1)%3].Store(false)
+	if _, err := node.Propose(ctx, []byte("resumed")); err != nil {
+		t.Fatal(err)
+	}
+	endpoints[leader].Store(nil)
+	if err := node.Close(); err != nil {
+		t.Fatal(err)
+	}
+	nodes[leader] = nil
+	var replacement *Node
+	wait(func() bool {
+		for _, candidate := range nodes {
+			if candidate != nil && candidate.LeaderID() == candidate.ID() {
+				replacement = candidate
+				return true
+			}
+		}
+		return false
+	})
+	if _, err := replacement.Propose(ctx, []byte("activated protocol survives missing voter")); err != nil {
+		t.Fatalf("activated protocol lost majority availability: %v", err)
+	}
+	cfg := configs[leader]
+	cfg.Protocol = 1
+	node, err := Open(ctx, cfg, &machines[leader])
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes[leader] = node
+	if node.protocolVersion() != 2 {
+		t.Fatal("reopen discarded durable protocol minimum")
+	}
+	node.Close()
+	nodes[leader] = nil
+	disk, _, err := openStorage(cfg.Dir, cfg.ID, "retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := disk.Snapshot()
+	disk.db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := decodeSnapshot(snap.Data)
+	if err != nil || envelope.File == nil {
+		t.Fatalf("stream snapshot: %v", err)
+	}
+	if err := os.WriteFile(snapshotPath(cfg.Dir, snap.Metadata.Index, *envelope.File), []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := Open(ctx, cfg, &machines[leader]); err == nil {
+		reopened.Close()
+		t.Fatal("already applied corrupt snapshot passed startup")
 	}
 }

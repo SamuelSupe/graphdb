@@ -216,7 +216,7 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 			} else {
 				wait("learner caught up", func() bool {
 					status := leader.raft.Status()
-					return status.Progress[4].Match >= status.Commit
+					return status.Progress[4].Match >= status.Commit && nodes[3].applied.Load() >= status.Commit
 				})
 				request(memberChange{ID: 4, Action: "promote"})
 				expected = conf()
@@ -304,7 +304,7 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 			if action == "add_learner" {
 				wait("learner remains reachable", func() bool {
 					status := leader.raft.Status()
-					return status.Progress[4].Match >= status.Commit
+					return status.Progress[4].Match >= status.Commit && nodes[3].applied.Load() >= status.Commit
 				})
 				request(memberChange{ID: 4, Action: "promote"})
 				request(memberChange{ID: 4, Action: "remove"})

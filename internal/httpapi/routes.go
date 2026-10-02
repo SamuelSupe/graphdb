@@ -122,7 +122,8 @@ func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	s.registerRoutes(mux,
 		routeSpec{pattern: "POST /v1/backup-automation/reset", handler: s.resetBackupAutomation, mutation: true},
-		routeSpec{pattern: "GET /metrics", handler: s.metrics},
+		routeSpec{pattern: "GET /metrics", handler: s.metrics, runtimeOnly: true, bypassTenantLifecycle: true},
+		routeSpec{pattern: "GET /v1/diagnostics", handler: s.diagnostics, runtimeOnly: true, bypassTenantLifecycle: true},
 		routeSpec{pattern: "GET /v1/tenants", handler: s.tenantLifecycle, bypassTenantLifecycle: true},
 		routeSpec{pattern: "GET /v1/tenants/", handler: s.tenantLifecycle, bypassTenantLifecycle: true},
 		routeSpec{pattern: "/v1/tenants", handler: s.tenantLifecycle, mutation: true, bypassTenantLifecycle: true},

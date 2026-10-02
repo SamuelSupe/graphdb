@@ -36,6 +36,7 @@ type Metrics struct {
 	readerCache          map[string]float64
 
 	writeBackpressure      map[string]float64
+	taskFailures           map[string]float64
 	writeAdmission         map[string]*histogram
 	manifestConflicts      map[string]float64
 	commitTailLength       map[string]float64
@@ -101,6 +102,7 @@ func NewMetrics() *Metrics {
 		readerCatchupLatency:   map[string]*histogram{},
 		readerCache:            map[string]float64{},
 		writeBackpressure:      map[string]float64{},
+		taskFailures:           map[string]float64{},
 		writeAdmission:         map[string]*histogram{},
 		manifestConflicts:      map[string]float64{},
 		commitTailLength:       map[string]float64{},
@@ -167,6 +169,15 @@ func (m *Metrics) RecordObjectStoreOperation(operation string, status string, du
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.observe(m.objectDuration, labelKey(operation, status), writeBuckets, duration.Seconds())
+}
+
+func (m *Metrics) RecordTaskFailure(tenantID, taskType string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.taskFailures[labelKey(tenantID, taskType)]++
 }
 
 func (m *Metrics) RecordWriteBackpressure(tenantID string, reason string) {
@@ -468,6 +479,7 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeCounter(&b, "graphdb_reader_catchup_total", "Reader request-time catch-up attempts by tenant and status.", []string{"tenant", "status"}, m.readerCatchup)
 	writeHistogram(&b, "graphdb_reader_catchup_seconds", "Reader request-time catch-up latency.", []string{"tenant", "status"}, m.readerCatchupLatency)
 	writeCounter(&b, "graphdb_reader_cache_total", "Reader cache events by tenant and status.", []string{"tenant", "status"}, m.readerCache)
+	writeCounter(&b, "graphdb_task_failures_total", "Tasks transitioning to failed in this process.", []string{"tenant", "type"}, m.taskFailures)
 	writeCounter(&b, "graphdb_write_backpressure_total", "Rejected writes by tenant and backpressure reason.", []string{"tenant", "reason"}, m.writeBackpressure)
 	writeHistogram(&b, "graphdb_write_admission_queue_seconds", "Write admission queue wait time.", []string{"tenant", "status"}, m.writeAdmission)
 	writeCounter(&b, "graphdb_manifest_cas_conflicts_total", "Manifest compare-and-swap conflicts by tenant.", []string{"tenant"}, m.manifestConflicts)

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Qualify the review4 bridge and protocol-1 rolling restart on OrbStack/Linux.
 
-GRAPHDB_ROLLING_BASE_IMAGE must contain the previously verified d7b535b0 binary.
+GRAPHDB_ROLLING_BASE_IMAGE must contain the qualified previous binary (default d7b535b0).
+Set GRAPHDB_ROLLING_BASE_SHA256/BASE_COMMIT and TARGET_VERSION/TARGET_COMMIT
+when testing another explicitly identified compatibility window.
 GRAPHDB_ROLLING_TARGET_IMAGE, GRAPHDB_ROLLING_OUTPUT and GRAPHDB_RAFT_TOKEN are
 required. This is a one-host correctness gate, not cross-host qualification.
 """
@@ -25,7 +27,10 @@ TOKEN = os.environ['GRAPHDB_RAFT_TOKEN']
 PROJECT = os.environ.get('GRAPHDB_ROLLING_PROJECT', 'graphdb-rolling-'+str(os.getpid()))
 OFFSET = int(os.environ.get('GRAPHDB_ROLLING_PORT_OFFSET', '0'))
 DOCKER = ['docker', '--context', os.environ.get('DOCKER_CONTEXT', 'orbstack')]
-BASE_SHA = 'cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a'
+BASE_SHA = os.environ.get('GRAPHDB_ROLLING_BASE_SHA256', 'cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a')
+BASE_COMMIT = os.environ.get('GRAPHDB_ROLLING_BASE_COMMIT', 'd7b535b0')
+TARGET_VERSION = os.environ.get('GRAPHDB_ROLLING_TARGET_VERSION', '2.1.2-raft-rolling1')
+TARGET_COMMIT = os.environ.get('GRAPHDB_ROLLING_TARGET_COMMIT', 'd7b535b0-rolling-dirty')
 OUT.mkdir(parents=True, exist_ok=False)
 events = []
 
@@ -174,7 +179,7 @@ class Deployment:
         values = wait(lambda: self.caught_up(group))
         assert run(DOCKER+['inspect', '--format', '{{.Image}}', self.name+'-'+service+'-1']).stdout.strip() == metadata['target' if image == TARGET else 'base']['image_id']
         if image == TARGET:
-            assert values[i-1]['protocol_version'] == 1 and values[i-1]['build']['version'] == '2.1.2-raft-rolling1'
+            assert values[i-1]['protocol_version'] == 1 and values[i-1]['build']['version'] == TARGET_VERSION and values[i-1]['build']['commit'] == TARGET_COMMIT
         event('replica replaced and caught up', deployment=self.name, group=group['cluster_id'], node=i, image=image, legacy=legacy)
 
     def traffic(self, tenant):
@@ -271,7 +276,7 @@ class Deployment:
                 self.replace(group,rollback,BASE)
                 logs = self.command('logs','--no-color',group['services'][rollback-1]).stdout
                 assert 'restored snapshot' in logs, 'old binary did not install a compacted new snapshot'
-                event('new commands and snapshots replay on qualified previous binary', source_commit='d7b535b0', deployment=self.name)
+                event('new commands and snapshots replay on qualified previous binary', source_commit=BASE_COMMIT, deployment=self.name)
                 self.replace(group,rollback,TARGET)
             self.replace(group,original,TARGET)
             wait(lambda: self.caught_up(group))
@@ -298,7 +303,7 @@ class Deployment:
         inventory_path = self.folder/'inventory.json'
         inventory_path.write_text(json.dumps(inventory,indent=2)+'\n')
         command = [sys.executable,str(ROOT/'scripts/raft_rolling_upgrade.py'),'--inventory',str(inventory_path),
-            '--execute','--force','--target-version','2.1.2-raft-rolling1','--target-commit','d7b535b0-rolling-dirty','--report',str(self.folder/'controller.json')]
+            '--execute','--force','--target-version',TARGET_VERSION,'--target-commit',TARGET_COMMIT,'--report',str(self.folder/'controller.json')]
         result = run(command,env={**os.environ,'GRAPHDB_HA_IMAGE':BASE})
         (self.folder/'controller.log').write_text(result.stdout+result.stderr)
         self.stop.set()

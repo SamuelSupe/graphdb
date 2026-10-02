@@ -154,6 +154,7 @@ jobs:
           cp deploy/nginx/graphdb.conf.example "$root/deploy/nginx/"
           cp deploy/raft/haproxy.cfg "$root/deploy/raft/"
           cp deploy/sharded/haproxy.cfg "$root/deploy/sharded/"
+          cp -R deploy/production deploy/prometheus "$root/deploy/"
           cp -R artifacts/local-gate artifacts/object-backup-gate artifacts/raft-gate "$root/release/evidence/"
           cp release/capacity-envelope.yaml release/local-disk.md "$root/release/"
           cp scripts/capacity_baseline.sh \
@@ -185,9 +186,11 @@ jobs:
           import hashlib, json
           from pathlib import Path
           report = json.loads(Path('release/evidence/raft-gate/metadata.json').read_text())
+          enhanced = json.loads(Path('release/evidence/raft-gate/enhanced/metadata.json').read_text())
           digest = hashlib.file_digest(Path('bin/graphdb-linux-amd64').open('rb'), 'sha256').hexdigest()
           assert report['result'] == 'PASS', report
           assert digest == report['binary_sha256'], 'packaged binary differs from the Raft-qualified binary'
+          assert enhanced['result'] == 'PASS' and enhanced['binary_sha256'] == digest, 'enhanced Raft qualification differs from the packaged binary'
           PY
           bin/graphdb-linux-amd64 version
           export GRAPHDB_RAFT_TOKEN=release-configuration-check-only-0123456789

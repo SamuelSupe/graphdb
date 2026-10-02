@@ -607,3 +607,33 @@ func spanHasLink(span interface {
 	}
 	return false
 }
+
+func TestHTTPWALDiskPressurePreservesRetryContract(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	config := storage.DefaultIngestServiceConfig(t.TempDir())
+	config.WAL.DiskSpace = storage.DiskSpacePolicy{MinFreeBytes: 1 << 60}
+	service, err := storage.OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close(context.Background())
+	handler := (&Server{Store: store, Mode: "all", IngestService: service}).Handler()
+	request := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "disk-pressure", Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "host:disk", Kind: "host"}}}}
+	response := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+	var body struct {
+		Retryable bool `json:"retryable"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" || !body.Retryable {
+		t.Fatalf("disk pressure classified as a permanent input error: %d %s", response.Code, response.Body.String())
+	}
+	status := serveJSON(handler, http.MethodGet, "/v1/ingest/batches/agent/collector/disk-pressure", "tenant-a", nil)
+	if status.Code != http.StatusNotFound {
+		t.Fatalf("rejected request was accepted: %d %s", status.Code, status.Body.String())
+	}
+	if !service.Readiness().Ready {
+		t.Fatal("disk admission rejection failed the WAL writer")
+	}
+}

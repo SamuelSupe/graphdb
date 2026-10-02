@@ -15,6 +15,7 @@ import (
 )
 
 type diskStorage struct {
+	dir          string
 	mu           sync.RWMutex
 	snapshotMeta raftpb.SnapshotMetadata
 	db           *bolt.DB
@@ -30,7 +31,7 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 	if err != nil {
 		return nil, false, err
 	}
-	disk := &diskStorage{db: db}
+	disk := &diskStorage{db: db, dir: dir}
 	existing := false
 	err = db.Update(func(tx *bolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists([]byte("meta"))
@@ -104,6 +105,20 @@ func (s *diskStorage) InitialState() (hard raftpb.HardState, conf raftpb.ConfSta
 		return nil
 	})
 	return hard, s.conf, err
+}
+
+func (s *diskStorage) minimumProtocol() (minimum int, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket([]byte("meta")).Get([]byte("minimum-protocol"))
+		if len(data) > 0 {
+			if len(data) != 8 {
+				return fmt.Errorf("invalid minimum protocol")
+			}
+			minimum = int(binary.BigEndian.Uint64(data))
+		}
+		return nil
+	})
+	return
 }
 
 func (s *diskStorage) FirstIndex() (uint64, error) {
@@ -237,6 +252,24 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 	}
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
+		minimum := uint64(ProtocolVersion)
+		if data := meta.Get([]byte("minimum-protocol")); len(data) == 8 {
+			minimum = binary.BigEndian.Uint64(data)
+		}
+		if envelope != nil {
+			minimum = max(minimum, uint64(envelope.Protocol))
+		}
+		for _, entry := range ready.Entries {
+			if entry.Type == raftpb.EntryNormal && len(entry.Data) > 0 {
+				var proposal proposal
+				if json.Unmarshal(entry.Data, &proposal) == nil {
+					minimum = max(minimum, uint64(max(0, proposal.Protocol)))
+				}
+			}
+		}
+		if err := meta.Put([]byte("minimum-protocol"), indexKey(minimum)); err != nil {
+			return err
+		}
 		entries := tx.Bucket([]byte("entries"))
 		if !raft.IsEmptySnap(ready.Snapshot) {
 			data, err := ready.Snapshot.Marshal()
@@ -304,6 +337,9 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 		s.snapshotMeta = ready.Snapshot.Metadata
 		s.conf = ready.Snapshot.Metadata.ConfState
 		s.confIndex = ready.Snapshot.Metadata.Index
+		if err := pruneSnapshotFiles(s.dir, ready.Snapshot, false); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -333,6 +369,12 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 		return err
 	}
 	err = s.db.Update(func(tx *bolt.Tx) error {
+		envelope, decodeErr := decodeSnapshot(snapshot.Data)
+		if decodeErr == nil && envelope.Protocol > ProtocolVersion {
+			if err := tx.Bucket([]byte("meta")).Put([]byte("minimum-protocol"), indexKey(uint64(envelope.Protocol))); err != nil {
+				return err
+			}
+		}
 		if err := tx.Bucket([]byte("meta")).Put([]byte("snapshot"), data); err != nil {
 			return err
 		}
@@ -348,5 +390,5 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 		return err
 	}
 	s.snapshotMeta = snapshot.Metadata
-	return nil
+	return pruneSnapshotFiles(s.dir, snapshot, false)
 }

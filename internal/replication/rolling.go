@@ -14,23 +14,28 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
 )
 
-// ProtocolVersion identifies command semantics as well as wire and disk formats.
+// ProtocolVersion identifies command semantics and the base wire protocol.
+// Snapshot format 2 is negotiated separately and requires format-2 binaries
+// once enabled. Protocol-1 commands remain compatible with the format-1 bridge.
 // A new command or an incompatible application change requires a new protocol.
 const ProtocolVersion = 1
+const MaxProtocolVersion = 2
 const protocolHeader = "X-GraphDB-Raft-Protocol"
 
 type PeerStatus struct {
-	ID            uint64         `json:"node_id"`
-	ClusterID     string         `json:"cluster_id"`
-	LeaderID      uint64         `json:"leader_id"`
-	Commit        uint64         `json:"commit_index"`
-	Applied       uint64         `json:"applied_index"`
-	Protocol      int            `json:"protocol_version"`
-	Draining      bool           `json:"draining"`
-	Ready         bool           `json:"ready"`
-	Error         string         `json:"error,omitempty"`
-	SnapshotError string         `json:"snapshot_error,omitempty"`
-	Build         buildinfo.Info `json:"build"`
+	ID             uint64         `json:"node_id"`
+	ClusterID      string         `json:"cluster_id"`
+	LeaderID       uint64         `json:"leader_id"`
+	Commit         uint64         `json:"commit_index"`
+	Applied        uint64         `json:"applied_index"`
+	Protocol       int            `json:"protocol_version"`
+	Draining       bool           `json:"draining"`
+	Ready          bool           `json:"ready"`
+	Error          string         `json:"error,omitempty"`
+	SnapshotError  string         `json:"snapshot_error,omitempty"`
+	MaxProtocol    int            `json:"protocol_max,omitempty"`
+	SnapshotFormat int            `json:"snapshot_format_max,omitempty"`
+	Build          buildinfo.Info `json:"build"`
 }
 
 type UpgradeStatus struct {
@@ -47,7 +52,14 @@ func (n *Node) protocolCompatible(raw string) bool {
 	if raw == "" {
 		return n.cfg.AllowLegacyProtocol
 	}
-	return raw == strconv.Itoa(ProtocolVersion)
+	return raw == strconv.Itoa(ProtocolVersion) || raw == strconv.Itoa(MaxProtocolVersion)
+}
+
+func (n *Node) protocolVersion() int {
+	if n.cfg.Protocol == 0 {
+		return ProtocolVersion
+	}
+	return n.cfg.Protocol
 }
 
 func (n *Node) beginProposal(ctx context.Context) error {
@@ -99,14 +111,14 @@ func (n *Node) peerStatus(ctx context.Context, id uint64) (PeerStatus, error) {
 	}
 	err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&status)
 	if err == nil && (status.ID != id || (status.ClusterID != "" && status.ClusterID != n.cfg.ClusterID) ||
-		(status.Protocol != ProtocolVersion && !(status.Protocol == 0 && n.cfg.AllowLegacyProtocol))) {
+		(max(status.Protocol, status.MaxProtocol) < n.protocolVersion() && !(status.Protocol == 0 && n.cfg.AllowLegacyProtocol && n.protocolVersion() == ProtocolVersion))) {
 		err = fmt.Errorf("peer %d returned an incompatible identity or protocol", id)
 	}
 	return status, err
 }
 
 func (n *Node) UpgradeStatus(ctx context.Context) UpgradeStatus {
-	report := UpgradeStatus{NodeID: n.cfg.ID, LeaderID: n.LeaderID(), Protocol: ProtocolVersion}
+	report := UpgradeStatus{NodeID: n.cfg.ID, LeaderID: n.LeaderID(), Protocol: n.protocolVersion()}
 	status := n.raft.Status()
 	if len(status.Config.Voters[1]) != 0 || len(status.Config.Learners) != 0 || len(status.Config.LearnersNext) != 0 || status.Config.AutoLeave {
 		report.Reason = "finish membership changes before upgrading"

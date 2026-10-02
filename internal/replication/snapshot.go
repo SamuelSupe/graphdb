@@ -12,6 +12,7 @@ type snapshotEnvelope struct {
 	Retired  []uint64          `json:"retired,omitempty"`
 	Version  int               `json:"version"`
 	State    []byte            `json:"state"`
+	File     *snapshotFile     `json:"file,omitempty"`
 	Peers    map[uint64]string `json:"peers"`
 }
 
@@ -20,10 +21,22 @@ func decodeSnapshot(data []byte) (snapshotEnvelope, error) {
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return snapshot, err
 	}
-	if snapshot.Version != 1 || (snapshot.Protocol != 0 && snapshot.Protocol != ProtocolVersion) || len(snapshot.State) == 0 || len(snapshot.Peers) == 0 {
+	if snapshot.Protocol < 0 || snapshot.Protocol > MaxProtocolVersion || len(snapshot.Peers) == 0 ||
+		(snapshot.Version != 1 && snapshot.Version != 2) ||
+		(snapshot.Version == 1 && (len(snapshot.State) == 0 || snapshot.File != nil)) ||
+		(snapshot.Version == 2 && (len(snapshot.State) != 0 || snapshot.File == nil || !snapshot.File.valid())) {
 		return snapshot, fmt.Errorf("invalid Raft snapshot envelope")
 	}
 	return snapshot, nil
+}
+
+func (n *Node) snapshotMetadata(index uint64) (snapshotEnvelope, error) {
+	data, err := n.snapshotData(nil, index)
+	var envelope snapshotEnvelope
+	if err == nil {
+		err = json.Unmarshal(data, &envelope)
+	}
+	return envelope, err
 }
 
 func (n *Node) snapshotData(state []byte, index uint64) ([]byte, error) {
@@ -46,7 +59,11 @@ func (n *Node) snapshotData(state []byte, index uint64) ([]byte, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return json.Marshal(snapshotEnvelope{Version: 1, Protocol: ProtocolVersion, State: state, Peers: n.peers, Retired: retired})
+	minimum, err := n.disk.minimumProtocol()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(snapshotEnvelope{Version: 1, Protocol: max(ProtocolVersion, minimum), State: state, Peers: n.peers, Retired: retired})
 }
 
 func (n *Node) installRetired(ids []uint64, index uint64) error {

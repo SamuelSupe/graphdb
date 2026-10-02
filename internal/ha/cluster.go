@@ -34,12 +34,13 @@ type Cluster struct {
 	FlushMaxRequests int
 	FlushMaxBytes    int64
 	config           config.RaftConfig
+	diskPolicy       storage.DiskSpacePolicy
 	shards           *sharding.Client
 }
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{diskPolicy: storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent}, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
@@ -62,14 +63,22 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	c.shards = sharding.NewClient(cfg.Token)
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
-	node, err := replication.Open(ctx, replication.Config{ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes, AllowLegacyProtocol: cfg.AllowLegacyProtocol}, c.App)
+	node, err := replication.Open(ctx, replication.Config{Protocol: cfg.Protocol, ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes, AllowLegacyProtocol: cfg.AllowLegacyProtocol, StreamSnapshots: cfg.StreamSnapshots, SnapshotPreflight: func(ctx context.Context, bytes int64) error {
+		return storage.CheckDiskSpace(ctx, cfg.Dir, c.diskPolicy, bytes)
+	}}, c.App)
 	if err != nil {
 		cancel()
 		return err
 	}
 	c.Node = node
+	cfg.Protocol = node.Status()["protocol_version"].(int)
+	c.config = cfg
 	c.background.Add(1)
 	go func() { defer c.background.Done(); c.RunBackground(ctx) }()
+	if cfg.Protocol >= 2 {
+		c.background.Add(1)
+		go func() { defer c.background.Done(); c.runTaskBackground(ctx) }()
+	}
 	if cfg.Catalog {
 		c.background.Add(1)
 		go func() { defer c.background.Done(); c.runShardMigrations(ctx) }()
@@ -266,6 +275,12 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	cmd.Tenant = tenant
 	cmd.RouteEpoch = routeEpoch
 	cmd.ExpectedGeneration = expectedGeneration
+	if r.URL.Path == "/v1/commits" || r.URL.Path == "/v1/ingest/batches" || r.URL.Path == "/v1/imports" {
+		if err := c.checkAdmissionDiskSpace(ctx, int64(len(body))*4); err != nil {
+			c.writeError(w, err)
+			return
+		}
+	}
 	if r.URL.Path == "/v1/ingest/batches" {
 		var request storage.IngestRequest
 		decoder := json.NewDecoder(bytes.NewReader(body))
@@ -311,6 +326,14 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 }
 
 func (c *Cluster) writeError(w http.ResponseWriter, err error) {
+	var pressure *storage.BackpressureError
+	if errors.As(err, &pressure) {
+		w.Header().Set("Retry-After", fmt.Sprint(max(1, int(pressure.RetryAfter.Seconds()))))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]any{"error": "write backpressure", "message": "write backpressure", "code": "write_backpressure", "retryable": true, "reasons": pressure.Reasons, "retry_after_ms": pressure.RetryAfter.Milliseconds()})
+		return
+	}
 	code := http.StatusServiceUnavailable
 	if errors.Is(err, context.DeadlineExceeded) {
 		code = http.StatusGatewayTimeout
@@ -332,3 +355,10 @@ func (c *Cluster) Close() error {
 	return c.closeErr
 }
 func (c *Cluster) Status() map[string]any { return c.Node.Status() }
+
+func (c *Cluster) checkAdmissionDiskSpace(ctx context.Context, additional int64) error {
+	if err := c.App.Store.CheckWriteDiskSpace(ctx, additional); err != nil {
+		return err
+	}
+	return storage.CheckDiskSpace(ctx, c.config.Dir, c.diskPolicy, additional)
+}

@@ -3,11 +3,76 @@ package storage
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
+
+func TestPreparedMaintenanceRejectsSupersededGraphAndPublishesCurrent(t *testing.T) {
+	for _, kind := range []string{TaskTypeCompact, TaskTypeIndexRebuild} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := ReplicatedContext(context.Background(), "maintenance", time.Now().UTC())
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := NewTenantStore(files, "test")
+			defer store.ShutdownTasks(context.Background())
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			task, err := store.StartTask(ctx, "tenant-a", kind, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := store.CaptureReplicatedMaintenance(ctx, task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := source.Build(ctx, 32<<20)
+			if err != nil {
+				source.Close()
+				t.Fatal(err)
+			}
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = store.PublishReplicatedMaintenance(ctx, "tenant-a", task.ID, input, 32<<20)
+			if !errors.Is(err, ErrConflict) {
+				t.Fatalf("superseded preparation: %v", err)
+			}
+			input.Close()
+			source.Close()
+			source, err = store.CaptureReplicatedMaintenance(ctx, task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer source.Close()
+			input, err = source.Build(ctx, 32<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer input.Close()
+			if _, err := input.Seek(0, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			published, err := store.PublishReplicatedMaintenance(ctx, "tenant-a", task.ID, input, 32<<20)
+			if err != nil || published.Status != TaskStatusSucceeded {
+				t.Fatalf("publication: %+v, %v", published, err)
+			}
+			g, manifest, err := store.Load(ctx, "tenant-a")
+			if err != nil || len(g.Snapshot().Entities) != 2 || manifest.Version != 2 {
+				t.Fatalf("graph after publication: %+v, %v", manifest, err)
+			}
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:c", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatalf("write after maintenance: %v", err)
+			}
+		})
+	}
+}
 
 func TestUnifiedTaskRunsCompactAndExportSnapshot(t *testing.T) {
 	ctx := context.Background()
