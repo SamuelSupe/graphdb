@@ -1432,7 +1432,9 @@ func TestHALargeRestoreResumesAfterLeaderLoss(t *testing.T) {
 	if err := json.Unmarshal(backup.Body.Bytes(), &task); err != nil {
 		t.Fatal(err)
 	}
-	if err := group.nodes[leader].cluster.runQueuedTask(ctx); err != nil {
+	backupCtx, backupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer backupCancel()
+	if err := group.nodes[leader].cluster.runQueuedTask(backupCtx); err != nil {
 		t.Fatal(err)
 	}
 	finished := group.mustRequest(leader, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK, time.Minute)
