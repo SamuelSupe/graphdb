@@ -9,7 +9,7 @@ PUBREPO_IMAGE ?= pubrepo.jiagouyun.com/cloudcare-forethought/graphdb
 RUNTIME_BASE_IMAGE ?= registry.jiagouyun.com/basis/kodo-basis:kodo-basis-2026-03-25
 UOS_RUNTIME_BASE_IMAGE ?= registry.jiagouyun.com/basis/uos-kodo-basis:uos-kodo-basis-2025-01-07
 IMAGE_CMD_DIR := ./image/cmd
-BUILDINFO_PACKAGE := gitlab.jiagouyun.com/guance/graphdb/internal/buildinfo
+BUILDINFO_PACKAGE := github.com/SamuelSupe/graphdb/v2/internal/buildinfo
 GO_BUILD_FLAGS := -mod=readonly -gcflags="-e" -ldflags="-w -s -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).Date=$(BUILD_DATE)"
 
 .PHONY: all build build-amd64 build-arm64 build-linux-amd64 build-linux-arm64 clean deps tidy gofmt lint fix_lint verify-hygiene pub_registry_image pub_pubrepo_image pub_pubrepo_uos_image

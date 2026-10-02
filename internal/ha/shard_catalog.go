@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"path"
@@ -15,6 +16,9 @@ import (
 )
 
 func (a *Application) catalog(ctx context.Context) (sharding.Catalog, error) {
+	if cached := a.catalogState.Load(); cached != nil {
+		return *cached, nil
+	}
 	state := sharding.Catalog{Shards: make(map[string]sharding.Shard), Tenants: make(map[string]sharding.Placement)}
 	data, err := a.Files.Get(ctx, path.Join(a.Store.Prefix, "control/sharding/catalog.json"))
 	if errors.Is(err, storage.ErrNotFound) {
@@ -22,6 +26,9 @@ func (a *Application) catalog(ctx context.Context) (sharding.Catalog, error) {
 	}
 	if err == nil {
 		err = json.Unmarshal(data, &state)
+	}
+	if err == nil {
+		a.catalogState.Store(&state)
 	}
 	return state, err
 }
@@ -31,6 +38,10 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 	if err != nil {
 		return nil, err
 	}
+	// Readers retain immutable catalog snapshots after releasing App.mu.
+	// Publish the replacement only after the replication journal commits.
+	state.Shards = maps.Clone(state.Shards)
+	state.Tenants = maps.Clone(state.Tenants)
 	conflict := func(message string) ([]byte, error) {
 		return resultJSON(http.StatusConflict, map[string]any{"code": "shard_conflict", "error": message})
 	}
@@ -84,6 +95,10 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			return conflict(err.Error())
 		}
 		placement, exists := state.Tenants[action.Tenant]
+		if placement.Move != nil {
+			move := *placement.Move
+			placement.Move = &move
+		}
 		switch action.Operation {
 		case "assign":
 			if exists {
@@ -175,6 +190,7 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 		return nil, err
 	}
 	a.catalogPending = summarizeCatalog(state)
+	a.catalogStatePending = &state
 	return resultJSON(http.StatusOK, result)
 }
 
@@ -213,6 +229,7 @@ func (c *Cluster) shardAction(ctx context.Context, action sharding.Action) ([]by
 	if err != nil {
 		return nil, err
 	}
+	cmd.Tenant = action.Tenant
 	if action.Operation == "move" {
 		action.MoveID = cmd.ID
 	}

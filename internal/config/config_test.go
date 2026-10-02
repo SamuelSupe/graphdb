@@ -27,6 +27,20 @@ func TestLoadSupportsStandaloneAndRaftIngestion(t *testing.T) {
 			if err != nil || !cfg.Raft.Enabled || cfg.IngestMode != mode {
 				t.Fatalf("Raft configuration = %+v, %v", cfg.Raft, err)
 			}
+			if cfg.Raft.Tick != 100*time.Millisecond || cfg.Raft.ElectionTicks != 30 {
+				t.Fatalf("Raft timing defaults = %+v", cfg.Raft)
+			}
+			for _, value := range []string{"0", "1", "1001", "invalid"} {
+				t.Setenv("GRAPHDB_RAFT_ELECTION_TICKS", value)
+				if _, err := Load(); err == nil {
+					t.Fatalf("invalid election ticks %q were accepted", value)
+				}
+			}
+			t.Setenv("GRAPHDB_RAFT_ELECTION_TICKS", "10")
+			cfg, err = Load()
+			if err != nil || cfg.Raft.ElectionTicks != 10 || cfg.Raft.Tick != 100*time.Millisecond {
+				t.Fatalf("independent election tuning = %+v, %v", cfg.Raft, err)
+			}
 			t.Setenv("GRAPHDB_RAFT_SHARD_ID", "data-a")
 			cfg, err = Load()
 			if err != nil || cfg.Raft.ShardID != "data-a" || cfg.Raft.Catalog {
@@ -65,10 +79,14 @@ func TestLoadRouterRequiresProtectedCatalog(t *testing.T) {
 }
 
 func TestLoadRejectsRaftTuningWithoutNodeIdentity(t *testing.T) {
-	setLocalConfigEnv(t)
-	t.Setenv("GRAPHDB_RAFT_TICK", "200ms")
-	if _, err := Load(); err == nil {
-		t.Fatal("partial Raft configuration silently selected standalone mode")
+	for _, setting := range []struct{ key, value string }{{"GRAPHDB_RAFT_TICK", "200ms"}, {"GRAPHDB_RAFT_ELECTION_TICKS", "30"}} {
+		t.Run(setting.key, func(t *testing.T) {
+			setLocalConfigEnv(t)
+			t.Setenv(setting.key, setting.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("partial Raft configuration silently selected standalone mode")
+			}
+		})
 	}
 }
 
@@ -567,7 +585,7 @@ func TestLoadRejectsAmbiguousObjectPrefix(t *testing.T) {
 
 func setLocalConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"GRAPHDB_RAFT_NODE_ID", "GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES", "GRAPHDB_RAFT_SHARD_ID", "GRAPHDB_RAFT_CATALOG", "GRAPHDB_RAFT_ALLOW_LEGACY_PROTOCOL"} {
+	for _, key := range []string{"GRAPHDB_RAFT_NODE_ID", "GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_ELECTION_TICKS", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES", "GRAPHDB_RAFT_SHARD_ID", "GRAPHDB_RAFT_CATALOG", "GRAPHDB_RAFT_ALLOW_LEGACY_PROTOCOL"} {
 		t.Setenv(key, "")
 	}
 	t.Setenv("GRAPHDB_STORAGE", "local")

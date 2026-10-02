@@ -28,6 +28,7 @@ metadata = {'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat
     'port_offset': int(os.environ.get('GRAPHDB_GATE_PORT_OFFSET', '0')),
     'cross_host_qualification': 'NOT RUN', 'enhanced': os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true',
     'runtime_recovery': os.environ.get('GRAPHDB_GATE_RECOVERY') == 'true',
+    'protocol': int(os.environ.get('GRAPHDB_GATE_PROTOCOL_VERSION', '2' if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true' else '1')),
     'disk_pressure': os.environ.get('GRAPHDB_GATE_DISK') == 'true', 'result': 'RUNNING'}
 (output / 'metadata.json').write_text(json.dumps(metadata, indent=2)+'\n')
 PY

@@ -19,7 +19,7 @@ import (
 // once enabled. Protocol-1 commands remain compatible with the format-1 bridge.
 // A new command or an incompatible application change requires a new protocol.
 const ProtocolVersion = 1
-const MaxProtocolVersion = 2
+const MaxProtocolVersion = 3
 const protocolHeader = "X-GraphDB-Raft-Protocol"
 
 type PeerStatus struct {
@@ -52,7 +52,8 @@ func (n *Node) protocolCompatible(raw string) bool {
 	if raw == "" {
 		return n.cfg.AllowLegacyProtocol
 	}
-	return raw == strconv.Itoa(ProtocolVersion) || raw == strconv.Itoa(MaxProtocolVersion)
+	version, err := strconv.Atoi(raw)
+	return err == nil && raw == strconv.Itoa(version) && version >= ProtocolVersion && version <= MaxProtocolVersion
 }
 
 func (n *Node) protocolVersion() int {

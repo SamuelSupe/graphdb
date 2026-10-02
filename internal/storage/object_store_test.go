@@ -669,10 +669,28 @@ func TestFileStoreProcessDeathReleasesDirectory(t *testing.T) {
 		if err := files.Put(context.Background(), "confirmed", []byte("durable")); err != nil {
 			t.Fatal(err)
 		}
+		view, err := files.CaptureObjectView(context.Background(), []string{"confirmed"}, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		temporary, err := view.CreateTemp()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := temporary.Write([]byte("unfinished export")); err != nil {
+			t.Fatal(err)
+		}
 		fmt.Println("ready")
 		select {}
 	}
 	root := t.TempDir()
+	unowned := filepath.Join(root, ".snapshot-view-unowned")
+	if err := os.Mkdir(unowned, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unowned, "keep"), []byte("unrelated"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFileStoreProcessDeathReleasesDirectory$")
@@ -693,6 +711,9 @@ func TestFileStoreProcessDeathReleasesDirectory(t *testing.T) {
 	if _, err := OpenFileStore(root); !errors.Is(err, ErrDataDirectoryLocked) {
 		t.Fatalf("process lock: %v", err)
 	}
+	if views, err := filepath.Glob(filepath.Join(root, ".snapshot-view-*")); err != nil || len(views) != 2 {
+		t.Fatalf("locked open removed the live export: %v %v", views, err)
+	}
 	if err := child.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -705,6 +726,12 @@ func TestFileStoreProcessDeathReleasesDirectory(t *testing.T) {
 	data, err := files.Get(ctx, "confirmed")
 	if err != nil || string(data) != "durable" {
 		t.Fatalf("confirmed write after process death: %q %v", data, err)
+	}
+	if views, err := filepath.Glob(filepath.Join(root, ".snapshot-view-*")); err != nil || len(views) != 1 {
+		t.Fatalf("abandoned export survived restart: %v %v", views, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(unowned, "keep")); err != nil || string(data) != "unrelated" {
+		t.Fatalf("restart changed an unowned directory: %q %v", data, err)
 	}
 }
 

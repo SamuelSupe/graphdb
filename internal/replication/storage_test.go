@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +19,120 @@ import (
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
+
+func TestQuorumReadsContinueWhileAppendTransportIsBlocked(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var endpoints [3]atomic.Pointer[Node]
+	var nodes [3]*Node
+	var machines [3]membershipMachine
+	var blocked atomic.Bool
+	var entered [3]chan struct{}
+	var once [3]sync.Once
+	release := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(release) })
+	peers := map[uint64]string{}
+	for i := range endpoints {
+		i := i
+		entered[i] = make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/raft/message" {
+				data, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(data))
+				var message raftpb.Message
+				if message.Unmarshal(data) == nil && message.Type == raftpb.MsgApp && len(message.Entries) > 0 && blocked.Load() {
+					once[i].Do(func() { close(entered[i]) })
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return
+					}
+				}
+			}
+			if node := endpoints[i].Load(); node != nil {
+				node.Handler().ServeHTTP(w, r)
+			} else {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		}))
+		t.Cleanup(server.Close)
+		peers[uint64(i+1)] = server.URL
+	}
+	t.Cleanup(func() {
+		resume()
+		for i, node := range nodes {
+			endpoints[i].Store(nil)
+			if node != nil {
+				node.Close()
+			}
+		}
+	})
+	for i := range nodes {
+		var err error
+		nodes[i], err = Open(ctx, Config{ID: uint64(i + 1), ClusterID: "transport-isolation", Dir: t.TempDir(), Peers: peers, Bootstrap: true, ElectionTicks: 10, Token: strings.Repeat("t", 32), Tick: 50 * time.Millisecond, SnapshotEntries: 1000}, &machines[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		endpoints[i].Store(nodes[i])
+	}
+	var leader *Node
+	for leader == nil {
+		for _, node := range nodes {
+			read, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+			err := node.ReadBarrier(read)
+			stop()
+			if err == nil {
+				leader = node
+				break
+			}
+		}
+		if ctx.Err() != nil {
+			t.Fatal(ctx.Err())
+		}
+	}
+	term := leader.raft.Status().Term
+	blocked.Store(true)
+	proposed := make(chan error, 1)
+	go func() { _, err := leader.Propose(ctx, []byte("slow append")); proposed <- err }()
+	for i, node := range nodes {
+		if node == leader {
+			continue
+		}
+		select {
+		case <-entered[i]:
+		case <-ctx.Done():
+			t.Fatal("append did not block")
+		}
+	}
+	// Hold both replication requests beyond the randomized election timeout.
+	// The previously committed state must remain readable through ReadIndex.
+	until := time.Now().Add(2 * time.Second)
+	for time.Now().Before(until) {
+		read, stop := context.WithTimeout(ctx, 500*time.Millisecond)
+		err := leader.ReadBarrier(read)
+		stop()
+		if err != nil {
+			t.Fatalf("read blocked behind append transport: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if leader.raft.Status().Term != term {
+		t.Fatal("slow append caused an election despite healthy heartbeat transport")
+	}
+	resume()
+	select {
+	case err := <-proposed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("write did not finish after transport resumed")
+	}
+}
 
 func TestUnsupportedReplicationProtocolDoesNotApply(t *testing.T) {
 	data, err := json.Marshal(proposal{ID: "future", Data: []byte("mutate"), Protocol: MaxProtocolVersion + 1})
@@ -170,7 +286,7 @@ func TestStreamingSnapshotRetriesAndRejectsCorruptDurableFile(t *testing.T) {
 	}()
 	for i := range nodes {
 		machines[i].failCapture.Store(true)
-		configs[i] = Config{Protocol: 2, ID: uint64(i + 1), ClusterID: "retry", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 100 * time.Millisecond, SnapshotEntries: 1, StreamSnapshots: true, AllowLegacyProtocol: true}
+		configs[i] = Config{Protocol: 2, ID: uint64(i + 1), ClusterID: "retry", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, ElectionTicks: 10, Tick: 100 * time.Millisecond, SnapshotEntries: 1, StreamSnapshots: true, AllowLegacyProtocol: true}
 		node, err := Open(ctx, configs[i], &machines[i])
 		if err != nil {
 			t.Fatal(err)

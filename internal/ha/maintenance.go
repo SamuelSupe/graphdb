@@ -22,8 +22,10 @@ func (c *Cluster) replicateMaintenance(ctx context.Context, task storage.Task, i
 	if size <= 0 || size > c.App.MaxSnapshotBytes {
 		return fmt.Errorf("prepared maintenance exceeds snapshot budget")
 	}
-	if err := c.App.Store.CheckWriteDiskSpace(ctx, size*2); err != nil {
-		return err
+	if task.Type != storage.TaskTypeGC {
+		if err := c.App.Store.CheckWriteDiskSpace(ctx, size*2); err != nil {
+			return err
+		}
 	}
 	manifest := restoreManifest{Bytes: size, SHA256: hex.EncodeToString(digest.Sum(nil)), Generation: generation, Maintenance: true}
 	prefix := c.App.restorePrefix(task.TenantID, task.ID)

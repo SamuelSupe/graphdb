@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"path"
 	"sort"
@@ -102,35 +103,73 @@ func (a *Application) installTenantTransfer(ctx context.Context, action sharding
 	if action.Bytes <= 0 || action.Bytes > a.MaxSnapshotBytes || action.Parts <= 0 || int64(action.Parts) != (action.Bytes+sharding.ChunkBytes-1)/sharding.ChunkBytes {
 		return invalid("invalid migration size or chunk count")
 	}
-	data := make([]byte, 0, action.Bytes)
-	for i := 0; i < action.Parts; i++ {
-		chunk, err := a.Files.Get(ctx, a.transferKey(action.Tenant, action.MoveID, i))
-		if errors.Is(err, storage.ErrNotFound) {
-			return invalid("migration chunk is missing; retry transfer")
-		}
-		if err != nil {
-			return err
-		}
-		if len(chunk) != min(sharding.ChunkBytes, int(action.Bytes)-len(data)) {
-			return invalid("migration chunk has the wrong size")
-		}
-		data = append(data, chunk...)
+	reader := func() *restoreReader {
+		return &restoreReader{ctx: ctx, app: a, manifest: restoreManifest{Bytes: action.Bytes}, partKey: func(part int64) string { return a.transferKey(action.Tenant, action.MoveID, int(part)) }}
 	}
-	if fmt.Sprintf("%x", sha256.Sum256(data)) != action.Digest {
+	sourceReader := reader()
+	digest := sha256.New()
+	size, err := io.Copy(digest, sourceReader)
+	err = errors.Join(err, sourceReader.Close())
+	if errors.Is(err, storage.ErrNotFound) {
+		return invalid("migration chunk is missing; retry transfer")
+	}
+	if err != nil {
+		return err
+	}
+	if size != action.Bytes || fmt.Sprintf("%x", digest.Sum(nil)) != action.Digest {
 		return invalid("migration snapshot checksum mismatch")
 	}
-	var transfer sharding.Transfer
-	if err := json.Unmarshal(data, &transfer); err != nil || transfer.Tenant != action.Tenant || transfer.MoveID != action.MoveID {
+	view, err := a.Files.CaptureObjectView(ctx, nil, a.MaxSnapshotBytes)
+	if err != nil {
+		return err
+	}
+	defer view.Close()
+	objects := view.Store
+	sourceReader = reader()
+	defer sourceReader.Close()
+	decoder := json.NewDecoder(sourceReader)
+	expect := func(want any) error {
+		token, err := decoder.Token()
+		if err != nil || token != want {
+			return invalid("invalid migration JSON structure")
+		}
+		return nil
+	}
+	if err := expect(json.Delim('{')); err != nil {
+		return err
+	}
+	if err := expect("tenant_id"); err != nil {
+		return err
+	}
+	var tenant, move string
+	if err := decoder.Decode(&tenant); err != nil || tenant != action.Tenant {
+		return invalid("migration snapshot tenant mismatch")
+	}
+	if err := expect("move_id"); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&move); err != nil || move != action.MoveID {
 		return invalid("migration snapshot identity mismatch")
 	}
-	objects := storage.NewMemoryStore()
+	if err := expect("objects"); err != nil {
+		return err
+	}
+	if err := expect(json.Delim('[')); err != nil {
+		return err
+	}
 	tenantPrefix := path.Join(a.Store.Prefix, "tenants", action.Tenant) + "/"
 	seen := make(map[string]bool)
-	for _, object := range transfer.Objects {
+	keys := []string{}
+	for decoder.More() {
+		var object sharding.Object
+		if err := decoder.Decode(&object); err != nil {
+			return invalid("invalid migration object")
+		}
 		if path.Clean(object.Key) != object.Key || seen[object.Key] {
 			return invalid("invalid or repeated migration object")
 		}
 		seen[object.Key] = true
+		keys = append(keys, object.Key)
 		if object.Key == a.generationKey(action.Tenant) {
 			var generation int64
 			if json.Unmarshal(object.Data, &generation) != nil || generation < 1 {
@@ -151,21 +190,35 @@ func (a *Application) installTenantTransfer(ctx context.Context, action sharding
 			return err
 		}
 	}
+	if err := expect(json.Delim(']')); err != nil {
+		return err
+	}
+	if err := expect(json.Delim('}')); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return invalid("migration JSON has trailing data")
+	}
 	if !seen[a.generationKey(action.Tenant)] || !seen[a.purgeKey(action.Tenant)] || !seen[tenantPrefix+"manifest.parquet"] {
 		return invalid("migration is missing tenant incarnation metadata")
 	}
 	// Restore the source incarnation before acquiring the destination writer
 	// fence: a previously retired shard still has a local purge tombstone.
 	// These controls and the graph replacement share the replication journal.
-	for _, object := range transfer.Objects {
-		if strings.HasPrefix(object.Key, tenantPrefix) {
+	for _, key := range keys {
+		if strings.HasPrefix(key, tenantPrefix) {
 			continue
 		}
-		if object.Key == a.purgeKey(action.Tenant) && len(object.Data) == 0 {
-			if err := a.Files.Delete(ctx, object.Key); err != nil {
+		data, err := objects.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		if key == a.purgeKey(action.Tenant) && len(data) == 0 {
+			if err := a.Files.Delete(ctx, key); err != nil {
 				return err
 			}
-		} else if err := a.Files.Put(ctx, object.Key, object.Data); err != nil {
+		} else if err := a.Files.Put(ctx, key, data); err != nil {
 			return err
 		}
 	}

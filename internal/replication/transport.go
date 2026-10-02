@@ -28,6 +28,7 @@ func newTransportClient() transportClient {
 type packet struct {
 	data     []byte
 	snapshot bool
+	control  bool
 	file     *os.File
 }
 
@@ -56,17 +57,24 @@ func (n *Node) send(messages []raftpb.Message) {
 				}
 			}
 		}
+		// Raft tolerates message reordering. Keep quorum traffic independent of
+		// append/snapshot HTTP requests, which can take longer than an election.
+		control := message.Type != raftpb.MsgApp && message.Type != raftpb.MsgSnap
 		n.peerMu.Lock()
-		queue := n.senders[message.To]
+		senders := n.senders
+		if control {
+			senders = n.controlSenders
+		}
+		queue := senders[message.To]
 		if queue == nil {
 			queue = make(chan packet, 128)
-			n.senders[message.To] = queue
+			senders[message.To] = queue
 			n.workers.Add(1)
 			go n.sendLoop(message.To, queue)
 		}
 		n.peerMu.Unlock()
 		select {
-		case queue <- packet{data: data, snapshot: message.Type == raftpb.MsgSnap, file: snapshotFile}:
+		case queue <- packet{data: data, snapshot: message.Type == raftpb.MsgSnap, control: control, file: snapshotFile}:
 		default:
 			n.metrics.Event("transport_queue_full")
 			if snapshotFile != nil {
@@ -102,6 +110,8 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 			operation := "message_send"
 			if packet.snapshot {
 				operation = "snapshot_send"
+			} else if packet.control {
+				operation = "control_send"
 			}
 			finish := n.metrics.Start(operation)
 			n.peerMu.RLock()

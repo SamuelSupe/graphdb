@@ -145,6 +145,8 @@ func (c *Cluster) PrivateHandler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(data)
 	})
+	mux.HandleFunc("POST /cluster/export/manifest", c.exportChunk)
+	mux.HandleFunc("POST /cluster/export/chunk", c.exportChunk)
 	mux.Handle("/cluster/data/", http.StripPrefix("/cluster/data", c.App.Handler))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+c.config.Token)) != 1 || r.Header.Get("X-Raft-Cluster") != c.config.ClusterID {

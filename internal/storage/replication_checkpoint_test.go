@@ -47,6 +47,28 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 				}
 				os.Exit(0)
 			}
+			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "prepared" {
+				var keys []string
+				for object := range 130 {
+					keys = append(keys, fmt.Sprintf("graphdb/prepared/old/%d", object), fmt.Sprintf("graphdb/prepared/new/%d", object))
+				}
+				if err := files.journalObjects(ctx, keys); err != nil {
+					return nil, err
+				}
+				for object := range 65 {
+					old := fmt.Sprintf("graphdb/prepared/old/%d", object)
+					if err := files.Delete(ctx, old); err != nil {
+						return nil, err
+					}
+					if err := files.Put(ctx, old, []byte("replaced")); err != nil {
+						return nil, err
+					}
+					if err := files.Put(ctx, fmt.Sprintf("graphdb/prepared/new/%d", object), []byte("new")); err != nil {
+						return nil, err
+					}
+				}
+				os.Exit(0)
+			}
 			if err := files.Put(ctx, "graphdb/manifest", []byte("new-version")); err != nil {
 				return nil, err
 			}
@@ -73,7 +95,7 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		})
 		t.Fatal(err)
 	}
-	for _, stage := range []string{"empty", "partial", "concurrent"} {
+	for _, stage := range []string{"empty", "partial", "concurrent", "prepared"} {
 		t.Run(stage, func(t *testing.T) {
 			root := t.TempDir()
 			files, err := OpenFileStore(root)
@@ -84,6 +106,13 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = files.ApplyReplicated(context.Background(), 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				if stage == "prepared" {
+					for object := range 130 {
+						if err := files.Put(ctx, fmt.Sprintf("graphdb/prepared/old/%d", object), []byte("old")); err != nil {
+							return nil, err
+						}
+					}
+				}
 				if stage == "concurrent" {
 					for worker := range 8 {
 						if err := files.Put(ctx, fmt.Sprintf("graphdb/concurrent/old/%d", worker), []byte("old")); err != nil {
@@ -129,6 +158,17 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 					}
 					if _, err := files.Get(context.Background(), fmt.Sprintf("graphdb/concurrent/new/%d", worker)); !errors.Is(err, ErrNotFound) {
 						t.Fatalf("concurrent new object survived interrupted application: %v", err)
+					}
+				}
+			}
+			if stage == "prepared" {
+				for object := range 130 {
+					data, err := files.Get(context.Background(), fmt.Sprintf("graphdb/prepared/old/%d", object))
+					if err != nil || string(data) != "old" {
+						t.Fatalf("prepared before-image was not restored: %q, %v", data, err)
+					}
+					if _, err := files.Get(context.Background(), fmt.Sprintf("graphdb/prepared/new/%d", object)); !errors.Is(err, ErrNotFound) {
+						t.Fatalf("prepared new object survived interrupted publication: %v", err)
 					}
 				}
 			}

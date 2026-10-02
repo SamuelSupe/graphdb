@@ -9,6 +9,8 @@ x-environment: &environment
   GRAPHDB_ADDR: :8080
   GRAPHDB_DATA_DIR: /var/lib/graphdb
   GRAPHDB_RAFT_CLUSTER_ID: ${GRAPHDB_RAFT_CLUSTER_ID:-graphdb-ha}
+  GRAPHDB_RAFT_TICK: ${GRAPHDB_RAFT_TICK:-100ms}
+  GRAPHDB_RAFT_ELECTION_TICKS: ${GRAPHDB_RAFT_ELECTION_TICKS:-30}
   GRAPHDB_RAFT_ADDR: :8081
   GRAPHDB_RAFT_TOKEN: ${GRAPHDB_RAFT_TOKEN:?set a random token of at least 32 bytes}
   GRAPHDB_RAFT_PEERS: '{"1":"http://node1:8081","2":"http://node2:8081","3":"http://node3:8081"}'

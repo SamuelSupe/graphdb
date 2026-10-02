@@ -25,7 +25,9 @@ ROUTER = f'http://127.0.0.1:{47080+PORT_OFFSET}'
 ROUTER_LOCAL = f'http://127.0.0.1:{47083+PORT_OFFSET}'
 fixture = (Path(__file__).parent/'raft-gate'/'sharded.yml').read_text()
 if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
-    fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', 'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "2"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
+    protocol = int(os.environ.get('GRAPHDB_GATE_PROTOCOL_VERSION', '2'))
+    assert protocol in (2, 3)
+    fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', f'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "{protocol}"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
 (OUT/'override.yml').write_text(re.sub(r'(?<=127.0.0.1:)\d+', lambda match: str(int(match[0])+PORT_OFFSET), fixture))
 results = []
 route_retries = []
@@ -248,9 +250,19 @@ try:
     images = {docker('inspect','--format','{{.Image}}',name).stdout.strip() for name in [service('router'),service('a1'),PROJECT+'-standalone-direct',PROJECT+'-standalone-wal']}
     assert len(images)==1,images
     step('replica cannot remove shard role; original configuration recovers',image_id=images.pop())
-    expect('POST','/v1/router/drain',status=204,base=ROUTER_LOCAL)
+    expect('GET','/v1/entities/host:1',tenant='tenant-a',base=ROUTER_LOCAL)
+    expect('GET','/v1/entities/host:1',tenant='tenant-a',base=ROUTER)
     for i in range(1,4):
         docker('pause',service('catalog'+str(i)))
+    time.sleep(6)
+    expect('GET','/v1/readiness',base=ROUTER)
+    expect('POST','/v1/commits',commit('catalog-outage','available-without-catalog'),tenant='tenant-a')
+    value,_ = expect('GET','/v1/entities/host:1',tenant='tenant-a')
+    assert value['entity']['fields']['name']=='available-without-catalog',value
+    expect('GET','/v1/entities/host:1',tenant='unknown-tenant',status=503,base=ROUTER_LOCAL)
+    observation = collect(ROUTER_LOCAL, OUT, 'metrics-router-catalog-fallback', {'graphdb_router_catalog_unavailable': 1, 'graphdb_router_events_total{event="placement_stale_fallback"}': None}, {'Authorization':'Bearer '+TOKEN})
+    step('gateway keeps known tenant strong reads and idempotent writes during catalog outage; unknown routes fail closed',observation=observation)
+    expect('POST','/v1/router/drain',status=204,base=ROUTER_LOCAL)
     observation = collect(ROUTER_LOCAL, OUT, 'metrics-router-no-catalog', {'graphdb_router_draining': 1}, {'Authorization':'Bearer '+TOKEN})
     for i in range(1,4):
         docker('unpause',service('catalog'+str(i)))

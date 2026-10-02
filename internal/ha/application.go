@@ -47,21 +47,23 @@ type httpResult struct {
 }
 
 type Application struct {
-	Store              *storage.TenantStore
-	Files              *storage.FileStore
-	Handler            http.Handler
-	MaxSnapshotBytes   int64
-	MaxPendingBytes    int64
-	FlushInterval      time.Duration
-	ShardID            string
-	Catalog            bool
-	mu                 sync.RWMutex
-	readers            sync.RWMutex
-	pending            map[string]pendingAcceptance
-	pendingBytes       int64
-	queueObservation   atomic.Pointer[queueObservation]
-	catalogObservation atomic.Pointer[catalogObservation]
-	catalogPending     *catalogObservation
+	Store               *storage.TenantStore
+	Files               *storage.FileStore
+	Handler             http.Handler
+	MaxSnapshotBytes    int64
+	MaxPendingBytes     int64
+	FlushInterval       time.Duration
+	ShardID             string
+	Catalog             bool
+	mu                  sync.RWMutex
+	readers             sync.RWMutex
+	pending             map[string]pendingAcceptance
+	pendingBytes        int64
+	queueObservation    atomic.Pointer[queueObservation]
+	catalogObservation  atomic.Pointer[catalogObservation]
+	catalogPending      *catalogObservation
+	catalogState        atomic.Pointer[sharding.Catalog]
+	catalogStatePending *sharding.Catalog
 }
 
 func (a *Application) Applied() (uint64, error) {
@@ -94,6 +96,7 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	a.pending = nil
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
+	a.catalogState.Store(nil)
 	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes)
 }
 
@@ -115,6 +118,7 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	a.pending = nil
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
+	a.catalogState.Store(nil)
 	return a.Files.InstallReplicationSnapshotReader(ctx, index, source, a.MaxSnapshotBytes)
 }
 
@@ -169,14 +173,18 @@ func (a *Application) ApplyBatch(ctx context.Context, entries []replication.Appl
 	}
 	a.mu.Lock()
 	a.catalogPending = nil
+	a.catalogStatePending = nil
 	defer func() {
 		if err != nil {
 			a.pending = nil
 			a.catalogObservation.Store(nil)
+			a.catalogState.Store(nil)
 		} else if a.catalogPending != nil {
 			a.catalogObservation.Store(a.catalogPending)
+			a.catalogState.Store(a.catalogStatePending)
 		}
 		a.catalogPending = nil
+		a.catalogStatePending = nil
 		a.observePending()
 		a.mu.Unlock()
 	}()

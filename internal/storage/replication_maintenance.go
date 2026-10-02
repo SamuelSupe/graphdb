@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -24,13 +25,14 @@ type ReplicatedMaintenanceSource struct {
 }
 
 type preparedMaintenanceHeader struct {
-	Format    int    `json:"format"`
-	BaseToken string `json:"base_token"`
-	Task      Task   `json:"task"`
+	Format    int      `json:"format"`
+	BaseToken string   `json:"base_token"`
+	Task      Task     `json:"task"`
+	Deleted   []string `json:"deleted,omitempty"`
 }
 
 func PreparedMaintenanceTask(task Task) bool {
-	return task.Type == TaskTypeCompact || task.Type == TaskTypeIndexRebuild
+	return task.Type == TaskTypeCompact || task.Type == TaskTypeIndexRebuild || task.Type == TaskTypeGC
 }
 
 func (s *TenantStore) maintenanceToken(ctx context.Context, tenant string) (string, error) {
@@ -144,6 +146,24 @@ func (s *ReplicatedMaintenanceSource) Build(ctx context.Context, maxBytes int64)
 	if err != nil {
 		return nil, err
 	}
+	objects, err := files.List(ctx, stage.tenantObjectPrefix(task.TenantID))
+	if err != nil {
+		return nil, err
+	}
+	header := preparedMaintenanceHeader{Format: 1, BaseToken: s.token, Task: task}
+	if task.Type == TaskTypeGC {
+		header.Format = 2
+		remaining := make(map[string]bool, len(objects))
+		for _, object := range objects {
+			remaining[object.Key] = true
+		}
+		for key := range s.originals {
+			if !remaining[key] {
+				header.Deleted = append(header.Deleted, key)
+			}
+		}
+		sort.Strings(header.Deleted)
+	}
 	output, err := os.CreateTemp(s.root, "prepared-")
 	if err != nil {
 		return nil, err
@@ -156,18 +176,21 @@ func (s *ReplicatedMaintenanceSource) Build(ctx context.Context, maxBytes int64)
 		}
 	}()
 	archive := tar.NewWriter(&snapshotBudgetWriter{writer: output, remaining: maxBytes})
-	metadata, err := json.Marshal(preparedMaintenanceHeader{Format: 1, BaseToken: s.token, Task: task})
+	metadata, err := json.Marshal(header)
 	if err != nil {
 		return nil, err
+	}
+	headerLimit := int64(1 << 20)
+	if task.Type == TaskTypeGC {
+		headerLimit = 16 << 20
+	}
+	if int64(len(metadata)) > headerLimit {
+		return nil, fmt.Errorf("prepared maintenance metadata exceeds its budget")
 	}
 	if err := archive.WriteHeader(&tar.Header{Name: "maintenance.json", Size: int64(len(metadata)), Mode: 0600}); err != nil {
 		return nil, err
 	}
 	if _, err := archive.Write(metadata); err != nil {
-		return nil, err
-	}
-	objects, err := files.List(ctx, stage.tenantObjectPrefix(task.TenantID))
-	if err != nil {
 		return nil, err
 	}
 	for _, object := range objects {
@@ -222,7 +245,11 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 	limited := &io.LimitedReader{R: input, N: maxBytes + 1}
 	archive := tar.NewReader(limited)
 	header, err := archive.Next()
-	if err != nil || header.Name != "maintenance.json" || header.Typeflag != tar.TypeReg || header.Size > 1<<20 {
+	headerLimit := int64(1 << 20)
+	if task.Type == TaskTypeGC {
+		headerLimit = 16 << 20
+	}
+	if err != nil || header.Name != "maintenance.json" || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > headerLimit {
 		return task, fmt.Errorf("invalid prepared maintenance header")
 	}
 	data, err := io.ReadAll(archive)
@@ -230,7 +257,7 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 		return task, err
 	}
 	var prepared preparedMaintenanceHeader
-	if json.Unmarshal(data, &prepared) != nil || prepared.Format != 1 || prepared.Task.ID != id || prepared.Task.TenantID != tenant || prepared.Task.Type != task.Type || !taskTerminal(prepared.Task.Status) {
+	if json.Unmarshal(data, &prepared) != nil || (prepared.Format != 1 && prepared.Format != 2) || (prepared.Format == 2) != (task.Type == TaskTypeGC) || (prepared.Format == 1 && len(prepared.Deleted) != 0) || prepared.Task.ID != id || prepared.Task.TenantID != tenant || prepared.Task.Type != task.Type || !taskTerminal(prepared.Task.Status) {
 		return task, fmt.Errorf("invalid prepared maintenance identity")
 	}
 	token, err := s.maintenanceToken(ctx, tenant)
@@ -247,6 +274,12 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 	defer os.RemoveAll(staging)
 	keys := []string{}
 	seen := map[string]bool{}
+	for _, key := range prepared.Deleted {
+		if !strings.HasPrefix(key, s.tenantObjectPrefix(tenant)) || validateObjectKey(key) != nil || seen[key] || key == s.taskKey(tenant, id) {
+			return task, fmt.Errorf("invalid prepared maintenance deletion")
+		}
+		seen[key] = true
+	}
 	for {
 		header, err := archive.Next()
 		if err == io.EOF {
@@ -283,6 +316,10 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 	if !seen[s.taskKey(tenant, id)] {
 		return task, fmt.Errorf("prepared maintenance is missing its terminal task")
 	}
+	mutationKeys := append(append([]string(nil), keys...), prepared.Deleted...)
+	if err := s.localFileStore().journalObjects(ctx, mutationKeys); err != nil {
+		return task, err
+	}
 	for i, key := range keys {
 		file, err := os.Open(filepath.Join(staging, fmt.Sprint(i)))
 		if err != nil {
@@ -290,6 +327,11 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 		}
 		err = errors.Join(s.localFileStore().putReader(ctx, key, file), file.Close())
 		if err != nil {
+			return task, err
+		}
+	}
+	for _, key := range prepared.Deleted {
+		if err := s.Objects.Delete(ctx, key); err != nil {
 			return task, err
 		}
 	}

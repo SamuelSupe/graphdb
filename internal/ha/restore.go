@@ -162,6 +162,7 @@ type restoreReader struct {
 	manifest restoreManifest
 	part     int64
 	current  io.ReadCloser
+	partKey  func(int64) string
 }
 
 func (r *restoreReader) Read(buffer []byte) (int, error) {
@@ -174,7 +175,11 @@ func (r *restoreReader) Read(buffer []byte) (int, error) {
 			if remaining <= 0 {
 				return 0, io.EOF
 			}
-			file, err := r.app.Files.OpenReader(r.ctx, restorePartKey(r.prefix, r.part))
+			key := restorePartKey(r.prefix, r.part)
+			if r.partKey != nil {
+				key = r.partKey(r.part)
+			}
+			file, err := r.app.Files.OpenReader(r.ctx, key)
 			if err != nil {
 				return 0, err
 			}
@@ -262,7 +267,13 @@ func (c *Cluster) publishRestore(ctx context.Context, task storage.Task, manifes
 	if err != nil {
 		return err
 	}
-	_, err = c.propose(ctx, cmd)
+	data, err := c.propose(ctx, cmd)
+	if err == nil && manifest.Maintenance {
+		var result storage.Task
+		if err = json.Unmarshal(data, &result); err == nil && result.ID == task.ID && result.Status == storage.TaskStatusQueued {
+			return storage.ErrConflict
+		}
+	}
 	return err
 }
 

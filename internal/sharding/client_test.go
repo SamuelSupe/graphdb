@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestLeaderCacheInvalidationDoesNotReplayMutations(t *testing.T) {
@@ -124,5 +125,78 @@ func TestRouterDrainRemovesReadinessButKeepsInFlightRouting(t *testing.T) {
 		if path == "/metrics" && !strings.Contains(writer.Body.String(), "graphdb_router_draining 1") {
 			t.Fatalf("missing local drain metric: %s", writer.Body)
 		}
+	}
+}
+
+func TestRouterCatalogFallbackRemainsBoundedAndFenced(t *testing.T) {
+	var unavailable atomic.Bool
+	var state atomic.Int64
+	state.Store(1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		switch r.URL.Path {
+		case "/raft/status":
+			json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+		case "/cluster/placement/known":
+			placement := Placement{Tenant: "known", Shard: "data", Epoch: 1, State: "active"}
+			if state.Load() == 2 {
+				placement.State = "moving"
+			}
+			json.NewEncoder(w).Encode(Resolution{Placement: placement, Shard: Shard{ID: "data"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	router := NewRouter(Shard{ID: "catalog", ClusterID: "catalog", Peers: map[uint64]string{1: server.URL}}, "secret")
+	defer router.Client.HTTP.CloseIdleConnections()
+	ctx := context.Background()
+	if _, err := router.resolve(ctx, "known"); err != nil {
+		t.Fatal(err)
+	}
+	unavailable.Store(true)
+	router.mu.Lock()
+	cached := router.placements["known"]
+	cached.expires = time.Now().Add(-time.Second)
+	router.placements["known"] = cached
+	router.mu.Unlock()
+	if route, err := router.resolve(ctx, "known"); err != nil || route.Placement.Epoch != 1 {
+		t.Fatalf("known route unavailable: %+v, %v", route, err)
+	}
+	if _, err := router.resolve(ctx, "unknown"); err == nil {
+		t.Fatal("invented a route during catalog outage")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := router.resolve(canceled, "known"); err == nil {
+		t.Fatal("fallback ignored caller cancellation")
+	}
+	router.mu.Lock()
+	cached.retainUntil = time.Now().Add(-time.Second)
+	router.placements["known"] = cached
+	router.mu.Unlock()
+	if _, err := router.resolve(ctx, "known"); err == nil {
+		t.Fatal("fallback outlived its bound")
+	}
+	unavailable.Store(false)
+	router.catalogRetryAt.Store(0)
+	if _, err := router.resolve(ctx, "known"); err != nil {
+		t.Fatal(err)
+	}
+	state.Store(2)
+	router.mu.Lock()
+	cached = router.placements["known"]
+	cached.expires = time.Now().Add(-time.Second)
+	router.placements["known"] = cached
+	router.mu.Unlock()
+	if _, err := router.resolve(ctx, "known"); err == nil {
+		t.Fatal("ignored authoritative migration state")
+	}
+	unavailable.Store(true)
+	if _, err := router.resolve(ctx, "known"); err == nil {
+		t.Fatal("resurrected route invalidated by migration")
 	}
 }

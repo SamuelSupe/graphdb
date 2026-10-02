@@ -3,7 +3,12 @@ package ha
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -121,6 +126,19 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	catalog := newTestClusterRole(t, false, "", true)
 	a := newTestClusterRole(t, true, "a", false)
 	b := newTestClusterRole(t, true, "b", false)
+	// This case exercises a large resumable transfer. Generating a complete
+	// compatibility snapshot every five chunks under race instrumentation
+	// overwhelms heartbeat timing; snapshot faults have dedicated cases.
+	for _, group := range []*testCluster{catalog, a, b} {
+		for i := range group.nodes {
+			group.stop(i)
+		}
+		for i, replica := range group.nodes {
+			replica.cfg.Raft.SnapshotEntries = 100
+			replica.cfg.Raft.Tick = 500 * time.Millisecond
+			group.start(i)
+		}
+	}
 	definition := func(group *testCluster, id string) sharding.Shard {
 		cfg := group.nodes[0].cfg.Raft
 		return sharding.Shard{ID: id, ClusterID: cfg.ClusterID, Peers: cfg.Peers}
@@ -142,6 +160,10 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		safeRetry := method == http.MethodGet
+		if fields, ok := body.(map[string]any); ok && (uri == "/v1/commits" || uri == "/v1/ingest/batches") {
+			safeRetry = fields["idempotency_key"] != nil
+		}
 		var w *httptest.ResponseRecorder
 		for {
 			r := httptest.NewRequest(method, uri, bytes.NewReader(data)).WithContext(ctx)
@@ -155,9 +177,9 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 			}
 			w = httptest.NewRecorder()
 			router.ServeHTTP(w, r)
-			// A leader change invalidates the cached address. Retry only safe
-			// reads within the existing deadline, never uncertain mutations.
-			if method != http.MethodGet || status != http.StatusOK || w.Code != http.StatusServiceUnavailable || ctx.Err() != nil {
+			// Keep the original identity when a leader change leaves the
+			// outcome unknown; mutations without one are never replayed.
+			if !safeRetry || (status != http.StatusOK && status != http.StatusAccepted) || w.Code != http.StatusServiceUnavailable || ctx.Err() != nil {
 				break
 			}
 			time.Sleep(50 * time.Millisecond)
@@ -177,7 +199,10 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	}
 	waitPlacement := func(tenant string, match func(sharding.Placement) bool) sharding.Placement {
 		t.Helper()
-		deadline := time.Now().Add(25 * time.Second)
+		// The incompressible transfer spans several disk-backed passes. Race
+		// instrumentation also encodes replicated entries and snapshots, so
+		// allow the coordinator's existing two-minute operation budget.
+		deadline := time.Now().Add(2 * time.Minute)
 		var placement sharding.Placement
 		for time.Now().Before(deadline) {
 			placement = state().Tenants[tenant]
@@ -213,7 +238,11 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	}
 
 	// Migration must drain accepted WAL and preserve both its data and identity.
-	batch := map[string]any{"source": "agent", "collector_id": "sharding", "batch_id": "before-move", "idempotency_key": "accepted-before-move", "items": []any{map[string]any{"external_id": "host:2", "entity": map[string]any{"id": "host:2", "kind": "host", "fields": map[string]any{"payload": strings.Repeat("transfer-data", 150000)}}}}}
+	payload := make([]byte, 2<<20)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	batch := map[string]any{"source": "agent", "collector_id": "sharding", "batch_id": "before-move", "idempotency_key": "accepted-before-move", "items": []any{map[string]any{"external_id": "host:2", "entity": map[string]any{"id": "host:2", "kind": "host", "fields": map[string]any{"payload": base64.StdEncoding.EncodeToString(payload)}}}}}
 	accepted := request("POST", "/v1/ingest/batches", "tenant-a", batch, http.StatusAccepted)
 	var acceptance map[string]any
 	if err := json.Unmarshal(accepted.Body.Bytes(), &acceptance); err != nil {
@@ -223,7 +252,35 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 		replica.blocked.Store(true)
 	}
 	request("POST", "/v1/cluster/moves", "", map[string]any{"tenant_id": "tenant-a", "target": "b"}, http.StatusAccepted)
-	waitPlacement("tenant-a", func(p sharding.Placement) bool { return p.Move != nil && p.Move.Error != "" })
+	moving := waitPlacement("tenant-a", func(p sharding.Placement) bool { return p.Move != nil && p.Move.Error != "" })
+	export := sharding.Action{Tenant: "tenant-a", MoveID: moving.Move.ID, Epoch: moving.Epoch}
+	var info sharding.TransferInfo
+	exportCtx, exportCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer exportCancel()
+	for {
+		err := client.JSON(exportCtx, definition(a, "a"), "POST", "/cluster/export/manifest", export, &info)
+		if err == nil {
+			break
+		}
+		var response *sharding.HTTPError
+		if !errors.As(err, &response) || response.Status != http.StatusConflict || exportCtx.Err() != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	sourceLeader := a.leader(-1)
+	sourceCluster := a.nodes[sourceLeader].cluster
+	sourceCluster.App.mu.RLock()
+	legacy, err := sourceCluster.App.tenantTransfer(context.Background(), export.Tenant, export.MoveID, export.Epoch)
+	sourceCluster.App.mu.RUnlock()
+	if err != nil || info.Bytes != int64(len(legacy)) || info.Digest != fmt.Sprintf("%x", sha256.Sum256(legacy)) {
+		t.Fatalf("streamed export changed the legacy payload: %+v, %v", info, err)
+	}
+	if info.Parts <= 8 {
+		t.Fatalf("migration fixture did not exercise multiple transfer passes: %+v", info)
+	}
+	a.stop(sourceLeader)
+	a.leader(sourceLeader)
 	oldCatalogLeader := catalog.leader(-1)
 	catalog.stop(oldCatalogLeader)
 	catalog.leader(oldCatalogLeader)
@@ -233,6 +290,7 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 		replica.blocked.Store(false)
 	}
 	placement := waitPlacement("tenant-a", func(p sharding.Placement) bool { return p.State == "active" && p.Shard == "b" && p.Move == nil })
+	a.start(sourceLeader)
 	if placement.Epoch != 2 {
 		t.Fatalf("migration did not advance ownership epoch: %+v", placement)
 	}
@@ -249,7 +307,7 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 		stageRequests += replica.stageRequests.Load()
 		replica.loseStageResponse.Store(false)
 	}
-	if stageRequests != 1 {
+	if stageRequests != int64(info.Parts) {
 		t.Fatalf("lost stage response caused retransmission of a committed chunk: %d", stageRequests)
 	}
 	if chunks, err := b.nodes[b.leader(-1)].files.List(context.Background(), "graphdb/control/sharding/transfers/tenant-a/"); err != nil || len(chunks) != 0 {
@@ -284,10 +342,16 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("old owner accepted a stale request: %d %s", w.Code, w.Body.String())
 	}
+	for _, replica := range b.nodes {
+		replica.legacyExportOnly.Store(true)
+	}
 	request("POST", "/v1/cluster/moves", "", map[string]any{"tenant_id": "tenant-a", "target": "a"}, http.StatusAccepted)
 	waitPlacement("tenant-a", func(p sharding.Placement) bool {
 		return p.State == "active" && p.Shard == "a" && p.Epoch == 3 && p.Move == nil
 	})
+	for _, replica := range b.nodes {
+		replica.legacyExportOnly.Store(false)
+	}
 	request("GET", "/v1/entities/host:2", "tenant-a", nil, http.StatusOK)
 	request("POST", "/v1/query", "tenant-a", map[string]any{"op": "match", "kind": "host", "min_version": 2, "limit": 10}, http.StatusOK)
 	request("POST", "/v1/commits", "tenant-a", map[string]any{"mutations": map[string]any{"upsert_entities": []any{map[string]any{"id": "host:after-return", "kind": "host"}}}}, http.StatusOK)
@@ -371,7 +435,11 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	}
 	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
 	time.Sleep(6 * time.Second)
-	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusServiceUnavailable)
+	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
+	request("GET", "/v1/readiness", "", nil, http.StatusOK)
+	request("POST", "/v1/commits", "tenant-a", map[string]any{"idempotency_key": "catalog-outage", "mutations": map[string]any{"upsert_entities": []any{map[string]any{"id": "host:catalog-outage", "kind": "host"}}}}, http.StatusOK)
+	request("GET", "/v1/entities/host:catalog-outage", "tenant-a", nil, http.StatusOK)
+	request("GET", "/v1/entities/missing", "unknown-tenant", nil, http.StatusServiceUnavailable)
 	for _, replica := range catalog.nodes {
 		replica.blocked.Store(false)
 	}

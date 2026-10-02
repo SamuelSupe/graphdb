@@ -17,23 +17,27 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type Router struct {
-	Catalog    Shard
-	Client     *Client
-	mu         sync.Mutex
-	placements map[string]cachedPlacement
-	draining   atomic.Bool
-	metrics    *observability.OperationMetrics
+	Catalog            Shard
+	Client             *Client
+	mu                 sync.Mutex
+	placements         map[string]cachedPlacement
+	draining           atomic.Bool
+	metrics            *observability.OperationMetrics
+	catalogVerified    atomic.Bool
+	catalogUnavailable atomic.Bool
+	catalogRetryAt     atomic.Int64
+	catalogLastSuccess atomic.Int64
 }
 
 type cachedPlacement struct {
-	resolution Resolution
-	expires    time.Time
+	resolution  Resolution
+	expires     time.Time
+	retainUntil time.Time
 }
 
 func NewRouter(catalog Shard, token string) *Router {
@@ -63,21 +67,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	}
 	switch request.URL.Path {
 	case "/v1/health", "/v1/readiness":
-		if request.URL.Path == "/v1/readiness" && r.draining.Load() {
-			http.Error(w, "router is draining", http.StatusServiceUnavailable)
-			return
-		}
-		var identity struct {
-			Catalog bool `json:"catalog"`
-		}
-		if err := r.Client.JSON(ctx, r.Catalog, http.MethodGet, "/cluster/identity", nil, &identity); err != nil || !identity.Catalog {
-			if err == nil {
-				err = fmt.Errorf("configured catalog group has the wrong role")
-			}
-			r.writeError(w, err)
-			return
-		}
-		r.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deployment": "sharded_raft", "draining": r.draining.Load(), "build": buildinfo.Current()})
+		r.health(w, request)
 		return
 	case "/v1/tenants":
 		if request.Method == http.MethodGet {
@@ -170,17 +160,36 @@ func (r *Router) resolve(ctx context.Context, tenant string) (resolution Resolut
 		return cached.resolution, nil
 	}
 	r.metrics.Event("placement_cache_miss")
-	err = r.Client.JSON(ctx, r.Catalog, http.MethodGet, "/cluster/placement/"+url.PathEscape(tenant), nil, &resolution)
+	err = r.catalogRead(ctx, "/cluster/placement/"+url.PathEscape(tenant), &resolution)
+	if err != nil && ctx.Err() == nil && r.catalogVerified.Load() && catalogUnavailable(err) && time.Now().Before(cached.retainUntil) {
+		r.metrics.Event("placement_stale_fallback")
+		return cached.resolution, nil
+	}
 	if err == nil && resolution.Placement.State != "active" {
 		err = &HTTPError{Status: http.StatusServiceUnavailable, Body: "tenant assignment or migration is in progress"}
+		r.forgetPlacement(tenant)
 	}
 	if err == nil {
+		r.catalogVerified.Store(true)
 		r.mu.Lock()
-		if len(r.placements) >= 4096 || r.placements == nil {
+		if r.placements == nil {
 			r.placements = make(map[string]cachedPlacement)
 		}
-		r.placements[tenant] = cachedPlacement{resolution: resolution, expires: time.Now().Add(5 * time.Second)}
+		if len(r.placements) >= 4096 {
+			oldest := ""
+			var expiry time.Time
+			for id, entry := range r.placements {
+				if oldest == "" || entry.expires.Before(expiry) {
+					oldest, expiry = id, entry.expires
+				}
+			}
+			delete(r.placements, oldest)
+		}
+		now := time.Now()
+		r.placements[tenant] = cachedPlacement{resolution: resolution, expires: now.Add(5 * time.Second), retainUntil: now.Add(placementFallbackTTL)}
 		r.mu.Unlock()
+	} else if !catalogUnavailable(err) {
+		r.forgetPlacement(tenant)
 	}
 	return resolution, err
 }

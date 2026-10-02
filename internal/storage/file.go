@@ -26,7 +26,10 @@ type FileStore struct {
 }
 
 func (s *FileStore) Probe(ctx context.Context) error {
-	releaseOperation, operationErr := s.beginOperation(ctx, ".tmp-probe")
+	// Probe only touches its own temporary file, never a published object.
+	// Waiting for directory publication would turn slow maintenance into an
+	// apparent disk outage and remove every healthy replica from the gateway.
+	releaseOperation, operationErr := s.beginLifecycleOperation(ctx)
 	if operationErr != nil {
 		err := operationErr
 		return err

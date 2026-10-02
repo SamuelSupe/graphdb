@@ -28,7 +28,6 @@ jobs:
         env:
           GRAPHDB_GATE_IMAGE: graphdb:raft-gate
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate
-          GRAPHDB_GATE_SOAK: ${{ inputs.soak && '1' || '0' }}
         run: scripts/raft_gate.sh
       - name: Run streaming snapshots, prepared maintenance and runtime recovery gate
         env:
@@ -37,6 +36,15 @@ jobs:
           GRAPHDB_GATE_ENHANCED: 'true'
           GRAPHDB_GATE_RECOVERY: 'true'
           GRAPHDB_GATE_DISK: 'true'
+        run: scripts/raft_gate.sh
+      - name: Run protocol 3 GC isolation and rolling restart gate
+        env:
+          GRAPHDB_GATE_IMAGE: graphdb:raft-gate
+          GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate/protocol3
+          GRAPHDB_GATE_ENHANCED: 'true'
+          GRAPHDB_GATE_PROTOCOL_VERSION: '3'
+          GRAPHDB_GATE_RECOVERY: 'true'
+          GRAPHDB_GATE_SOAK: ${{ inputs.soak && '1' || '0' }}
         run: scripts/raft_gate.sh
       - name: Validate operational alerts
         run: |

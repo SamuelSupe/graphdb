@@ -38,6 +38,7 @@ type testReplica struct {
 	loseInstallResponse atomic.Bool
 	loseStageResponse   atomic.Bool
 	stageRequests       atomic.Int64
+	legacyExportOnly    atomic.Bool
 	cfg                 config.Config
 }
 
@@ -70,6 +71,10 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 			replica.mu.RUnlock()
 			if cluster == nil {
 				http.Error(w, "stopped", http.StatusServiceUnavailable)
+				return
+			}
+			if replica.legacyExportOnly.Load() && strings.HasPrefix(r.URL.Path, "/cluster/export/") {
+				http.NotFound(w, r)
 				return
 			}
 			if r.Method == http.MethodPost && r.URL.Path == "/cluster/action" {
@@ -106,7 +111,7 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 		if wal {
 			mode = "wal"
 		}
-		replica.cfg = config.Config{Prefix: "graphdb", InstanceID: "raft-test", IngestMode: mode, IngestFlushInterval: time.Hour, IngestFlushMaxRequests: 256, IngestFlushMaxBytes: 8 << 20, Raft: config.RaftConfig{Enabled: true, ID: uint64(i + 1), ClusterID: "test", Dir: filepath.Join(t.TempDir(), "raft"), Peers: peers, Token: "01234567890123456789012345678901", Bootstrap: true, Tick: 20 * time.Millisecond, SnapshotEntries: 5, MaxSnapshotBytes: 64 << 20}}
+		replica.cfg = config.Config{Prefix: "graphdb", InstanceID: "raft-test", IngestMode: mode, IngestFlushInterval: time.Hour, IngestFlushMaxRequests: 256, IngestFlushMaxBytes: 8 << 20, Raft: config.RaftConfig{Enabled: true, ID: uint64(i + 1), ClusterID: "test", Dir: filepath.Join(t.TempDir(), "raft"), Peers: peers, Token: "01234567890123456789012345678901", Bootstrap: true, ElectionTicks: 10, Tick: 20 * time.Millisecond, SnapshotEntries: 5, MaxSnapshotBytes: 64 << 20}}
 		replica.cfg.Raft.Tick = 100 * time.Millisecond
 		if catalog || shardID != "" {
 			replica.cfg.Raft.ShardID, replica.cfg.Raft.Catalog = shardID, catalog
@@ -275,11 +280,19 @@ func TestHAStreamingReplicationFailoverAndSnapshot(t *testing.T) {
 }
 
 func TestHAPreparedMaintenanceKeepsOtherTenantWritable(t *testing.T) {
+	for _, protocol := range []int{2, 3} {
+		t.Run(fmt.Sprint("protocol-", protocol), func(t *testing.T) { testHAPreparedMaintenanceKeepsOtherTenantWritable(t, protocol) })
+	}
+}
+
+func testHAPreparedMaintenanceKeepsOtherTenantWritable(t *testing.T, protocol int) {
 	group := newTestCluster(t, false)
 	for i := range group.nodes {
 		group.stop(i)
-		group.nodes[i].cfg.Raft.Protocol = 2
+		group.nodes[i].cfg.Raft.Protocol = protocol
 		group.nodes[i].cfg.Raft.StreamSnapshots = true
+		group.nodes[i].cfg.Raft.SnapshotEntries = 100
+		group.nodes[i].cfg.Raft.Tick = 500 * time.Millisecond
 		group.start(i)
 	}
 	leader := group.leader(-1)
@@ -291,15 +304,45 @@ func TestHAPreparedMaintenanceKeepsOtherTenantWritable(t *testing.T) {
 	}
 	body, _ := json.Marshal(map[string]any{"mutations": map[string]any{"upsert_entities": entities}})
 	group.mustRequest(leader, "POST", "/v1/commits", string(body), http.StatusOK)
-	for _, kind := range []string{storage.TaskTypeCompact, storage.TaskTypeIndexRebuild} {
+	kinds := []string{storage.TaskTypeCompact, storage.TaskTypeIndexRebuild}
+	if protocol >= 3 {
+		kinds = append(kinds, storage.TaskTypeGC)
+	}
+	for _, kind := range kinds {
+		if kind == storage.TaskTypeGC {
+			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:gc-new","kind":"host"}]}}`, http.StatusOK)
+			response := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"compact"}`, http.StatusAccepted)
+			var task storage.Task
+			if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				completed, err := group.nodes[leader].store.GetTask(context.Background(), "tenant-a", task.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if completed.Status == storage.TaskStatusSucceeded {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
 		response := group.mustRequest(leader, "POST", "/v1/tasks", fmt.Sprintf(`{"type":%q}`, kind), http.StatusAccepted)
 		var task storage.Task
 		if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
 			t.Fatal(err)
 		}
 		writes := 0
-		deadline := time.Now().Add(15 * time.Second)
+		// Repeated conflicts eventually pause only this tenant's admission.
+		deadline := time.Now().Add(time.Minute)
 		for time.Now().Before(deadline) {
+			// Keep the maintained tenant changing as well: prepared results
+			// must not retry forever while another tenant still makes progress.
+			hot := group.request(leader, "POST", "/v1/commits", fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"hot:%s:%d","kind":"host"}]}}`, kind, writes), 30*time.Second)
+			if hot.Code != http.StatusOK && hot.Code != http.StatusTooManyRequests {
+				t.Fatalf("maintained tenant write: %d %s", hot.Code, hot.Body.String())
+			}
 			request := httptest.NewRequest("POST", "/v1/commits", strings.NewReader(fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"other:%s:%d","kind":"host"}]}}`, kind, writes)))
 			request.Header.Set("X-Tenant-ID", "tenant-b")
 			writer := httptest.NewRecorder()
@@ -334,8 +377,152 @@ func TestHAPreparedMaintenanceKeepsOtherTenantWritable(t *testing.T) {
 			if err != nil || copy.Status != storage.TaskStatusSucceeded {
 				t.Fatalf("replica %d task: %+v, %v", i, copy, err)
 			}
+			if kind == storage.TaskTypeGC {
+				deleted, ok := copy.Result["deleted_keys"].([]any)
+				if !ok || len(deleted) == 0 {
+					t.Fatalf("GC did not exercise replicated deletions: %+v", copy.Result)
+				}
+				for _, key := range deleted {
+					if _, err := group.nodes[i].files.Head(context.Background(), key.(string)); !errors.Is(err, storage.ErrNotFound) {
+						t.Fatalf("replica %d retained GC object %s: %v", i, key, err)
+					}
+				}
+			}
 		}
 	}
+}
+
+func TestHAMaintenanceWritePauseDrainsAcceptedWAL(t *testing.T) {
+	group := newTestCluster(t, true)
+	leader := group.leader(-1)
+	cluster := group.nodes[leader].cluster
+	for _, replica := range group.nodes {
+		replica.cluster.maintenanceMu.Lock()
+	}
+	t.Cleanup(func() {
+		for _, replica := range group.nodes {
+			replica.cluster.maintenanceMu.Unlock()
+		}
+	})
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-b"}`, http.StatusOK)
+	body := `{"source":"agent","collector_id":"collector","batch_id":"before-pause","items":[{"external_id":"host:accepted","entity":{"id":"host:accepted","kind":"host"}}]}`
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body, http.StatusAccepted)
+	queued := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"compact"}`, http.StatusAccepted)
+	var task storage.Task
+	if err := json.Unmarshal(queued.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	operation, resume, err := cluster.pauseMaintenance(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resume()
+	status := group.mustRequest(leader, "GET", "/v1/ingest/batches/agent/collector/before-pause", "", http.StatusOK)
+	var accepted storage.IngestBatchStatus
+	if err := json.Unmarshal(status.Body.Bytes(), &accepted); err != nil || accepted.State != "committed" {
+		t.Fatalf("accepted WAL stranded: %+v, %v", accepted, err)
+	}
+	group.mustRequest(leader, "GET", "/v1/entities/host:accepted", "", http.StatusOK)
+	rejected := group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:paused","kind":"host"}]}}`, http.StatusTooManyRequests)
+	var pressure struct {
+		Retryable bool                         `json:"retryable"`
+		Reasons   []storage.BackpressureReason `json:"reasons"`
+	}
+	if json.Unmarshal(rejected.Body.Bytes(), &pressure) != nil || !pressure.Retryable || len(pressure.Reasons) != 1 || pressure.Reasons[0].Code != "maintenance_pending" {
+		t.Fatalf("pause response: %s", rejected.Body.String())
+	}
+	group.mustRequest(leader, "POST", "/v1/ingest/batches", body, http.StatusTooManyRequests)
+	group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"gc"}`, http.StatusAccepted)
+	group.mustRequest(leader, "POST", "/v1/indexes/rebuild?async=true", "{}", http.StatusAccepted)
+	canceled := group.mustRequest(leader, "POST", "/v1/tasks/"+task.ID+"/cancel", "", http.StatusOK)
+	if err := json.Unmarshal(canceled.Body.Bytes(), &task); err != nil || task.Status != storage.TaskStatusCanceled {
+		t.Fatalf("paused maintenance cannot be canceled: %+v, %v", task, err)
+	}
+	select {
+	case <-operation.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled maintenance still preparing")
+	}
+	request := httptest.NewRequest("POST", "/v1/commits", strings.NewReader(`{"mutations":{"upsert_entities":[{"id":"host:other","kind":"host"}]}}`))
+	request.Header.Set("X-Tenant-ID", "tenant-b")
+	response := httptest.NewRecorder()
+	group.nodes[leader].handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("other tenant blocked: %d %s", response.Code, response.Body.String())
+	}
+	resume()
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:paused","kind":"host"}]}}`, http.StatusOK)
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		group.mustRequest(i, "GET", "/v1/entities/host:accepted", "", http.StatusOK)
+	}
+}
+
+func TestHADiskPressureDoesNotBlockOtherTenantGC(t *testing.T) {
+	for _, protocol := range []int{1, 3} {
+		t.Run(fmt.Sprint("protocol-", protocol), func(t *testing.T) { testHADiskPressureDoesNotBlockOtherTenantGC(t, protocol) })
+	}
+}
+
+func testHADiskPressureDoesNotBlockOtherTenantGC(t *testing.T, protocol int) {
+	group := newTestCluster(t, false)
+	if protocol == 3 {
+		for i := range group.nodes {
+			group.stop(i)
+			group.nodes[i].cfg.Raft.Protocol = protocol
+			group.start(i)
+		}
+	}
+	leader := group.leader(-1)
+	for _, replica := range group.nodes {
+		replica.cluster.maintenanceMu.Lock()
+	}
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-b"}`, http.StatusOK)
+	var compact, gc storage.Task
+	response := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"compact"}`, http.StatusAccepted)
+	if err := json.Unmarshal(response.Body.Bytes(), &compact); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/v1/tasks", strings.NewReader(`{"type":"gc"}`))
+	r.Header.Set("X-Tenant-ID", "tenant-b")
+	w := httptest.NewRecorder()
+	group.nodes[leader].handler.ServeHTTP(w, r)
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &gc) != nil {
+		t.Fatalf("queue GC: %d %s", w.Code, w.Body)
+	}
+	for _, replica := range group.nodes {
+		if err := replica.files.ConfigureDiskSpace(storage.DiskSpacePolicy{MinFreeBytes: 1 << 60}); err != nil {
+			t.Fatal(err)
+		}
+		replica.cluster.maintenanceMu.Unlock()
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		completed, err := group.nodes[leader].store.GetTask(context.Background(), "tenant-b", gc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if completed.Status == storage.TaskStatusSucceeded {
+			waiting, err := group.nodes[leader].store.GetTask(context.Background(), "tenant-a", compact.ID)
+			if err != nil || waiting.Status != storage.TaskStatusQueued {
+				t.Fatalf("disk-blocked task changed: %+v, %v", waiting, err)
+			}
+			return
+		}
+		if completed.Status == storage.TaskStatusFailed {
+			t.Fatalf("GC failed: %+v", completed)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("disk-blocked compact prevented another tenant's GC")
 }
 
 func TestHADiagnosticsRemainLocalWithoutQuorum(t *testing.T) {

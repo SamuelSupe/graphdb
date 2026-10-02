@@ -95,7 +95,7 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 						members[id] = origin
 					}
 				}
-				configs[i] = Config{ID: uint64(i + 1), ClusterID: "membership", Dir: t.TempDir(), Peers: members, Bootstrap: i < 3, Token: "membership-test-token-32-bytes-long", Tick: 20 * time.Millisecond, SnapshotEntries: 1000}
+				configs[i] = Config{ID: uint64(i + 1), ClusterID: "membership", Dir: t.TempDir(), Peers: members, Bootstrap: i < 3, ElectionTicks: 10, Token: "membership-test-token-32-bytes-long", Tick: 20 * time.Millisecond, SnapshotEntries: 1000}
 				start(i)
 			}
 			wait := func(description string, condition func() bool) {

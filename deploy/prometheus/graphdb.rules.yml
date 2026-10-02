@@ -76,7 +76,7 @@ groups:
         annotations:
           summary: "GraphDB Raft persistence failed"
       - alert: GraphDBRaftTransportFailed
-        expr: sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{operation=~"message_send|snapshot_send",status=~"error|timeout"}[5m])) > 10
+        expr: sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{operation=~"message_send|control_send|snapshot_send",status=~"error|timeout"}[5m])) > 10
         for: 1m
         labels: {severity: warning}
         annotations:
@@ -99,6 +99,18 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "GraphDB router repeatedly failed to serve upstream requests"
+      - alert: GraphDBRouterCatalogUnavailable
+        expr: graphdb_router_catalog_unavailable == 1
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB router observed catalog failure; known-route fallback expires after five minutes"
+      - alert: GraphDBMaintenanceWritesPaused
+        expr: graphdb_ha_maintenance_writes_paused == 1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB tenant write admission remains paused for maintenance; inspect task progress and disk latency"
       - alert: GraphDBIngestQueueAge
         expr: graphdb_ingest_queue_oldest_seconds > 60
         for: 5m

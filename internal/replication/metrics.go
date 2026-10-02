@@ -22,6 +22,7 @@ type PeerProgress struct {
 	Learner          bool   `json:"learner"`
 	Paused           bool   `json:"paused"`
 	SendQueue        int    `json:"send_queue"`
+	ControlSendQueue int    `json:"control_send_queue"`
 	InflightMessages int    `json:"inflight_messages"`
 }
 
@@ -61,6 +62,8 @@ func (n *Node) WriteMetrics(w io.Writer) {
 		{"snapshot_index", "snapshot_index", "Latest locally persisted Raft snapshot index."},
 		{"snapshot_bytes", "snapshot_bytes", "Latest persisted snapshot payload bytes including streaming data."},
 		{"protocol_version", "protocol_version", "Active local Raft application protocol."},
+		{"tick_seconds", "tick_seconds", "Configured heartbeat interval in seconds."},
+		{"election_timeout_seconds", "election_timeout_seconds", "Configured minimum election timeout; randomized follower election waits up to twice this value."},
 	} {
 		var value float64
 		switch v := status[gauge.key].(type) {
@@ -70,6 +73,8 @@ func (n *Node) WriteMetrics(w io.Writer) {
 			value = float64(v)
 		case int:
 			value = float64(v)
+		case float64:
+			value = v
 		}
 		observability.WriteScalar(w, "graphdb_raft_"+gauge.name, gauge.help, "gauge", value)
 	}
@@ -101,7 +106,8 @@ func (n *Node) WriteMetrics(w io.Writer) {
 		{"recent_active", "Recent member activity observed by the leader; not a quorum guarantee.", func(p PeerProgress) float64 { return boolFloat(p.RecentActive) }},
 		{"learner", "Member is a learner in the local configuration.", func(p PeerProgress) float64 { return boolFloat(p.Learner) }},
 		{"paused", "Leader replication to this member is paused.", func(p PeerProgress) float64 { return boolFloat(p.Paused) }},
-		{"send_queue", "Packets currently waiting in the local bounded sender queue.", func(p PeerProgress) float64 { return float64(p.SendQueue) }},
+		{"send_queue", "Packets currently waiting in both local bounded sender queues.", func(p PeerProgress) float64 { return float64(p.SendQueue) }},
+		{"control_send_queue", "Quorum and response packets waiting independently of append and snapshot traffic.", func(p PeerProgress) float64 { return float64(p.ControlSendQueue) }},
 		{"inflight_messages", "Unacknowledged append messages tracked by the leader.", func(p PeerProgress) float64 { return float64(p.InflightMessages) }},
 	} {
 		name := "graphdb_raft_peer_" + metric.name

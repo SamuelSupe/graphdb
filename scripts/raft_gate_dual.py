@@ -23,7 +23,9 @@ COMPOSE = DOCKER + ['compose', '-p', PROJECT, '-f', ROOT+'/docker-compose.raft.y
 ENV = {**os.environ, 'GRAPHDB_HA_IMAGE': IMAGE, 'GRAPHDB_RAFT_TOKEN': TOKEN}
 fixture = (Path(__file__).parent/'raft-gate'/'dual.yml').read_text()
 if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
-    fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', 'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "2"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
+    protocol = int(os.environ.get('GRAPHDB_GATE_PROTOCOL_VERSION', '2'))
+    assert protocol in (2, 3)
+    fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', f'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "{protocol}"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
 (OUT/'override.yml').write_text(re.sub(r'(?<=127.0.0.1:)\d+', lambda match: str(int(match[0])+PORT_OFFSET), fixture))
 TENANT = 'same-tenant'
 results = []
@@ -136,7 +138,7 @@ try:
         if mode != 'raft':
             assert not health.get('raft'), health
         elif os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
-            assert health['raft']['protocol_version'] == 2 and health['raft']['stream_snapshots'] is True, health
+            assert health['raft']['protocol_version'] == protocol and health['raft']['stream_snapshots'] is True, health
         expect(base,'POST','/v1/tenants',{'tenant_id':TENANT})
         value = expect(base,'POST','/v1/commits',{'idempotency_key':'first',
             'mutations':{'upsert_entities':[{'id':'host:1','kind':'host','fields':{'name':mode}}]}})
@@ -368,6 +370,22 @@ try:
         expect(raft, 'GET', '/v1/entities/host:0', headers=large_headers)
         step('cold full three-replica runtime backup/restore preserves graph, templates, accepted identities and streaming snapshots; writes resume')
 
+    if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true' and protocol == 3:
+        identity = expect(node(leader()), 'GET', '/v1/health')['build']
+        inventory = {'groups':[{'cluster_id':'graphdb-ha','protocol_version':3,
+            'nodes':[{'id':i,'url':f'http://127.0.0.1:{39080+i+PORT_OFFSET}',
+                'restart':COMPOSE+['up','-d','--no-deps','--no-build','--force-recreate','node'+str(i)]}
+                for i in range(1,4)]}]}
+        path = OUT/'rolling-protocol3.json'
+        path.write_text(json.dumps(inventory,indent=2)+'\n')
+        with (OUT/'rolling-protocol3.log').open('w') as log:
+            subprocess.run([os.environ.get('PYTHON','python3'), ROOT+'/scripts/raft_rolling_upgrade.py',
+                '--inventory',str(path),'--execute','--force','--target-version',identity['version'],
+                '--target-commit',identity['commit'],'--report',str(OUT/'rolling-protocol3-results.json')],
+                env=ENV,check=True,stdout=log,stderr=subprocess.STDOUT)
+        expect(raft, 'GET', '/v1/entities/host:dr-resumed' if os.environ.get('GRAPHDB_GATE_RECOVERY') == 'true' else '/v1/entities/host:1')
+        step('protocol 3 serial drain/restart/rejoin preserves data with the same qualified binary')
+
     if os.environ.get('GRAPHDB_GATE_SOAK') == '1':
         runner = PROJECT+'-soak'
         command = ('soak_status=0; go run -mod=readonly ./tools/soaktest -writer http://gateway:8080 -reader http://gateway:8080 '
@@ -379,11 +397,15 @@ try:
             '[ "$soak_status" -eq 0 ] && [ "$report_status" -eq 0 ]')
         print('Starting 30-minute three-replica WAL soak with compact, GC and index rebuild', flush=True)
         with (OUT/'soak.log').open('w') as log:
-            subprocess.run(DOCKER+['run','--rm','--name',runner,'--network',PROJECT+'_default',
-                '-v',ROOT+':/src:ro','-v',str(OUT)+':/evidence',
-                '-v','graphdb-raft-go-mod:/go/pkg/mod','-v','graphdb-raft-go-build:/root/.cache/go-build',
-                '-w','/src','-e','GOMAXPROCS=2', 'golang:1.26.7-bookworm','bash','-c',command],
-                check=True, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                subprocess.run(DOCKER+['run','--rm','--name',runner,'--network',PROJECT+'_default',
+                    '-v',ROOT+':/src:ro','-v',str(OUT)+':/evidence',
+                    '-v','graphdb-raft-go-mod:/go/pkg/mod','-v','graphdb-raft-go-build:/root/.cache/go-build',
+                    '-w','/src','-e','GOMAXPROCS=2', 'golang:1.26.7-bookworm','bash','-c',command],
+                    check=True, stdout=log, stderr=subprocess.STDOUT)
+            finally:
+                for i in range(1, 4):
+                    collect(node(i), OUT, 'metrics-soak-node'+str(i), {'graphdb_raft_voters': 3})
         step('thirty-minute three-replica WAL mixed workload with compact, GC and index rebuild')
 finally:
     for name in disk_containers:

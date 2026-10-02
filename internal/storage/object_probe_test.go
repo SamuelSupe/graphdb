@@ -55,6 +55,35 @@ func TestFileStoreProbeRejectsNonDirectoryRoot(t *testing.T) {
 	}
 }
 
+func TestFileStoreProbeDuringPublication(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	release, err := files.lockDirectoryIOWeight(context.Background(), directoryIOCapacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err = files.Probe(ctx)
+	cancel()
+	release()
+	if err != nil {
+		t.Fatalf("healthy directory during publication: %v", err)
+	}
+	files.runtime.mu.Lock()
+	files.runtime.restoreErr = errors.New("incomplete recovery")
+	files.runtime.mu.Unlock()
+	if err := files.Probe(context.Background()); err == nil || err.Error() != "incomplete recovery" {
+		t.Fatalf("failed recovery probe: %v", err)
+	}
+	files.Close()
+	if err := files.Probe(context.Background()); !errors.Is(err, ErrFileStoreClosed) {
+		t.Fatalf("closed directory probe: %v", err)
+	}
+}
+
 func TestObjectStoreStatusCoalescesConcurrentProbes(t *testing.T) {
 	probe := &blockingProbeStore{
 		ObjectStore: NewMemoryStore(),

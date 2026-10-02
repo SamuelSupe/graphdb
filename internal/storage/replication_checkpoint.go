@@ -217,6 +217,79 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	return journal.db.Batch(persist)
 }
 
+// Prepared publication owns the application barrier, so none of these objects
+// can change while their before-images are captured. Persist bounded groups
+// before any mutation instead of syncing one rollback transaction per object.
+func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
+	journal := s.replicationJournal(ctx)
+	if journal == nil {
+		return nil
+	}
+	for start := 0; start < len(keys); {
+		before := make(map[string][]byte)
+		bytes := 0
+		for start < len(keys) && len(before) < 64 && bytes < 16<<20 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			key := keys[start]
+			start++
+			var recorded bool
+			if err := journal.db.View(func(tx *bolt.Tx) error {
+				bucket := tx.Bucket([]byte("objects"))
+				recorded = bucket != nil && bucket.Get([]byte(key)) != nil
+				return nil
+			}); err != nil {
+				return err
+			}
+			if recorded {
+				continue
+			}
+			filename, err := s.path(key)
+			if err != nil {
+				return err
+			}
+			if err := s.verifySafeParent(filename); err != nil && !errors.Is(err, ErrNotFound) {
+				return err
+			}
+			if info, err := os.Lstat(filename); err == nil && !info.Mode().IsRegular() {
+				return fmt.Errorf("non-regular replication object %s", filename)
+			} else if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			data, err := os.ReadFile(filename)
+			value := []byte{0}
+			if err == nil {
+				value = append([]byte{1}, data...)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			before[key] = value
+			bytes += len(value)
+		}
+		if len(before) == 0 {
+			continue
+		}
+		if err := journal.db.Update(func(tx *bolt.Tx) error {
+			bucket, err := tx.CreateBucketIfNotExists([]byte("objects"))
+			if err != nil {
+				return err
+			}
+			for key, value := range before {
+				if bucket.Get([]byte(key)) == nil {
+					if err := bucket.Put([]byte(key), value); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *FileStore) journalDirectory(ctx context.Context, targetKey, incoming string) error {
 	if _, ok := ctx.Value(replicationJournalKey{}).(*replicationJournal); !ok {
 		return nil

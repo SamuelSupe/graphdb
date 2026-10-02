@@ -39,6 +39,7 @@ type Config struct {
 	Bootstrap           bool
 	Token               string
 	Tick                time.Duration
+	ElectionTicks       int
 	SnapshotEntries     uint64
 	MaxSnapshotBytes    int64
 	StreamSnapshots     bool
@@ -87,6 +88,7 @@ type Node struct {
 	peerMu             sync.RWMutex
 	peers              map[uint64]string
 	senders            map[uint64]chan packet
+	controlSenders     map[uint64]chan packet
 	client             transportClient
 	application        chan applicationBatch
 	snapshotRequests   chan snapshotRequest
@@ -120,6 +122,12 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	}
 	if cfg.Tick <= 0 {
 		cfg.Tick = 100 * time.Millisecond
+	}
+	if cfg.ElectionTicks == 0 {
+		cfg.ElectionTicks = 30
+	}
+	if cfg.ElectionTicks < 2 || cfg.ElectionTicks > 1000 {
+		return nil, fmt.Errorf("Raft election ticks must be between 2 and 1000")
 	}
 	if cfg.SnapshotEntries == 0 {
 		cfg.SnapshotEntries = 1000
@@ -192,7 +200,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, fmt.Errorf("application checkpoint %d exceeds durable Raft commit %d", applied, hard.Commit)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]chan packet), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
+	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]chan packet), controlSenders: make(map[uint64]chan packet), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
 	n.metrics = observability.NewOperationMetrics()
 	n.observeSnapshot(snapshot)
 	n.applied.Store(applied)
@@ -221,7 +229,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, err
 	}
 	n.client = newTransportClient()
-	rc := &raft.Config{ID: cfg.ID, ElectionTick: 10, HeartbeatTick: 1, Storage: disk, Applied: applied, MaxSizePerMsg: 1 << 20, MaxCommittedSizePerReady: 4 << 20, MaxInflightMsgs: 64, MaxUncommittedEntriesSize: 64 << 20, CheckQuorum: true, PreVote: true, DisableProposalForwarding: true, ReadOnlyOption: raft.ReadOnlySafe, StepDownOnRemoval: true}
+	rc := &raft.Config{ID: cfg.ID, ElectionTick: cfg.ElectionTicks, HeartbeatTick: 1, Storage: disk, Applied: applied, MaxSizePerMsg: 1 << 20, MaxCommittedSizePerReady: 4 << 20, MaxInflightMsgs: 64, MaxUncommittedEntriesSize: 64 << 20, CheckQuorum: true, PreVote: true, DisableProposalForwarding: true, ReadOnlyOption: raft.ReadOnlySafe, StepDownOnRemoval: true}
 	if existing || !cfg.Bootstrap {
 		n.raft = raft.RestartNode(rc)
 	} else {
@@ -792,6 +800,9 @@ func (n *Node) Close() error {
 	for _, queue := range n.senders {
 		drainPackets(queue)
 	}
+	for _, queue := range n.controlSenders {
+		drainPackets(queue)
+	}
 	n.client.CloseIdleConnections()
 	return n.disk.db.Close()
 }
@@ -812,6 +823,8 @@ func (n *Node) Status() map[string]any {
 	status["protocol_max"] = MaxProtocolVersion
 	status["snapshot_format_max"] = 2
 	status["stream_snapshots"] = n.cfg.StreamSnapshots
+	status["tick_seconds"] = n.cfg.Tick.Seconds()
+	status["election_timeout_seconds"] = n.cfg.Tick.Seconds() * float64(n.cfg.ElectionTicks)
 	status["state"] = raftStatus.RaftState.String()
 	status["pending_proposals"], status["pending_reads"] = proposals, reads
 	status["snapshot_index"], status["snapshot_bytes"] = n.snapshotIndex.Load(), n.snapshotBytes.Load()
@@ -821,7 +834,7 @@ func (n *Node) Status() map[string]any {
 	n.peerMu.RLock()
 	for _, id := range members {
 		progress, known := raftStatus.Progress[id]
-		peer := PeerProgress{ID: id, Known: known, Match: progress.Match, Next: progress.Next, RecentActive: progress.RecentActive, Learner: progress.IsLearner, SendQueue: len(n.senders[id])}
+		peer := PeerProgress{ID: id, Known: known, Match: progress.Match, Next: progress.Next, RecentActive: progress.RecentActive, Learner: progress.IsLearner, SendQueue: len(n.senders[id]) + len(n.controlSenders[id]), ControlSendQueue: len(n.controlSenders[id])}
 		if !known {
 			for _, learner := range conf.Learners {
 				peer.Learner = peer.Learner || learner == id

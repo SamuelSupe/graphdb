@@ -41,7 +41,7 @@ func (r *Router) localStatus() map[string]any {
 		}
 	}
 	r.mu.Unlock()
-	return map[string]any{"deployment": "sharded_raft", "component": "router", "checked_at": now.UTC(), "build": buildinfo.Current(), "draining": r.draining.Load(), "placement_cache_entries": entries, "placement_cache_valid_entries": valid, "client": r.Client.localStatus()}
+	return map[string]any{"deployment": "sharded_raft", "component": "router", "checked_at": now.UTC(), "build": buildinfo.Current(), "draining": r.draining.Load(), "placement_cache_entries": entries, "placement_cache_valid_entries": valid, "placement_cache_retained_entries": r.retainedRoutes(), "catalog_unavailable": r.catalogUnavailable.Load(), "catalog_last_success_timestamp_seconds": float64(r.catalogLastSuccess.Load()) / 1e9, "client": r.Client.localStatus()}
 }
 
 func (r *Router) diagnostics(w http.ResponseWriter, request *http.Request) {
@@ -70,4 +70,11 @@ func (r *Router) diagnostics(w http.ResponseWriter, request *http.Request) {
 	observability.WriteScalar(w, "graphdb_router_draining", "Router has entered drain mode.", "gauge", draining)
 	observability.WriteScalar(w, "graphdb_router_placement_cache_entries", "Cached tenant placements including expired entries, bounded at 4096.", "gauge", float64(status["placement_cache_entries"].(int)))
 	observability.WriteScalar(w, "graphdb_router_placement_cache_valid_entries", "Placement cache entries within their local TTL; not a cluster freshness guarantee.", "gauge", float64(status["placement_cache_valid_entries"].(int)))
+	observability.WriteScalar(w, "graphdb_router_placement_cache_retained_entries", "Known routes within the bounded catalog-outage fallback window; data-group fencing still applies.", "gauge", float64(status["placement_cache_retained_entries"].(int)))
+	unavailable := 0.
+	if r.catalogUnavailable.Load() {
+		unavailable = 1
+	}
+	observability.WriteScalar(w, "graphdb_router_catalog_unavailable", "Last catalog read observed a transient failure, not a real-time quorum proof.", "gauge", unavailable)
+	observability.WriteScalar(w, "graphdb_router_catalog_last_success_timestamp_seconds", "Last successful catalog read in this process, zero if never.", "gauge", status["catalog_last_success_timestamp_seconds"].(float64))
 }

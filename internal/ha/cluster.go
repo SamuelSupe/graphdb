@@ -24,20 +24,27 @@ import (
 )
 
 type Cluster struct {
-	cancel           context.CancelFunc
-	background       sync.WaitGroup
-	closeOnce        sync.Once
-	closeErr         error
-	Node             *replication.Node
-	App              *Application
-	WAL              bool
-	FlushInterval    time.Duration
-	FlushMaxRequests int
-	FlushMaxBytes    int64
-	config           config.RaftConfig
-	diskPolicy       storage.DiskSpacePolicy
-	shards           *sharding.Client
-	metrics          *observability.OperationMetrics
+	cancel             context.CancelFunc
+	background         sync.WaitGroup
+	closeOnce          sync.Once
+	closeErr           error
+	Node               *replication.Node
+	App                *Application
+	WAL                bool
+	FlushInterval      time.Duration
+	FlushMaxRequests   int
+	FlushMaxBytes      int64
+	config             config.RaftConfig
+	diskPolicy         storage.DiskSpacePolicy
+	shards             *sharding.Client
+	metrics            *observability.OperationMetrics
+	maintenanceMu      sync.Mutex
+	maintenanceCursor  string
+	maintenanceRetries map[string]int
+	admissionMu        sync.Mutex
+	admissions         map[string]*tenantAdmission
+	exportMu           sync.Mutex
+	exports            map[string]*tenantExport
 }
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
@@ -66,7 +73,7 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	c.shards = sharding.NewClient(cfg.Token)
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
-	node, err := replication.Open(ctx, replication.Config{Protocol: cfg.Protocol, ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes, AllowLegacyProtocol: cfg.AllowLegacyProtocol, StreamSnapshots: cfg.StreamSnapshots, SnapshotPreflight: func(ctx context.Context, bytes int64) error {
+	node, err := replication.Open(ctx, replication.Config{Protocol: cfg.Protocol, ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, ElectionTicks: cfg.ElectionTicks, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes, AllowLegacyProtocol: cfg.AllowLegacyProtocol, StreamSnapshots: cfg.StreamSnapshots, SnapshotPreflight: func(ctx context.Context, bytes int64) error {
 		return storage.CheckDiskSpace(ctx, cfg.Dir, c.diskPolicy, bytes)
 	}}, c.App)
 	if err != nil {
@@ -86,6 +93,10 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 		c.background.Add(1)
 		go func() { defer c.background.Done(); c.runShardMigrations(ctx) }()
 	}
+	if cfg.ShardID != "" {
+		c.background.Add(1)
+		go func() { defer c.background.Done(); c.runExportCleanup(ctx) }()
+	}
 	return nil
 }
 
@@ -97,6 +108,11 @@ func newCommand(kind string) (command, error) {
 	return command{ID: hex.EncodeToString(id[:]), At: time.Now().UTC(), Kind: kind}, nil
 }
 func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
+	release, err := c.admitTenantMutation(cmd)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	cmd.Role = c.App.replicationRole()
 	c.App.mu.RLock()
 	if cmd.Kind == "http" || cmd.Kind == "accept" || cmd.Kind == "flush" || cmd.Kind == "task" {
@@ -354,12 +370,19 @@ func (c *Cluster) Close() error {
 		c.background.Wait()
 		c.shards.HTTP.CloseIdleConnections()
 		c.closeErr = c.Node.Close()
+		c.exportMu.Lock()
+		for key, transfer := range c.exports {
+			transfer.close()
+			delete(c.exports, key)
+		}
+		c.exportMu.Unlock()
 	})
 	return c.closeErr
 }
 func (c *Cluster) Status() map[string]any {
 	status := c.Node.Status()
 	status["ingest_queue"] = c.App.queueObservation.Load()
+	status["maintenance_writes_paused"] = c.maintenanceWritesPaused()
 	if c.App.Catalog {
 		status["catalog"] = c.App.catalogObservation.Load()
 	}

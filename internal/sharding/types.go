@@ -80,6 +80,12 @@ type Transfer struct {
 	Objects []Object `json:"objects"`
 }
 
+type TransferInfo struct {
+	Bytes  int64  `json:"bytes"`
+	Digest string `json:"digest"`
+	Parts  int    `json:"parts"`
+}
+
 func ValidateIdentifier(id string) error {
 	if id == "" || len(id) > 128 || strings.ContainsAny(id, "/\\ \t\r\n") || id == "." || id == ".." {
 		return fmt.Errorf("invalid shard or cluster identifier")

@@ -12,12 +12,15 @@ Leader 切换、连接关闭或健康检查传播期间，单次请求仍可能�
 | --- | --- | --- |
 | 第四轮修复 `d7b535b0` 对应的已验收二进制 | 本轮 `2.1.2-raft-rolling1` 候选 | 首次桥接，临时接收 legacy 通信；以本轮实测记录为准 |
 | 本轮协议 1 程序 | 同程序重启、配置滚动生效 | 严格协议检查和滚动协调脚本 |
+| `2.1.2-raft-diagnostics1` 已验收二进制 | `2.1.2-raft-isolation9` 候选 | 协议 1 的真实单组/分片混部、反向快照、有限回退和严格滚动协调；[本轮证据](raft-isolation-validation-2026-10-02.zh-CN.md) |
 | 未做双版本验收的未来补丁 | 任意版本 | 尚未资格验证 |
 | 更早的 Raft 程序、协议不同的版本 | 本轮或未来版本 | 不套用此流程，保持相应版本的维护或迁移要求 |
 
 桥接来源二进制 SHA256：`cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a`；源码摘要：`0fece2e1612a961f9e48f18a001a97dea3599971daf69d1cbd07bde3f2c79e13`。它已包含终态 WAL 摘要、恢复分块、成员竞态修复和导入源 SHA256 语义，见 [第四轮审核](raft-p0-p1-review4-2026-10-02.zh-CN.md)。更早的程序不能据此认定为兼容。
 
-新程序默认拒绝没有协议声明或声明其他协议的 Raft 通信。历史磁盘日志/快照的缺省字段按兼容旧编码读取；新日志/快照外层显式携带协议 1，业务载荷不变。来源程序忽略新增外层字段的行为需要实际二进制验收。严格模式下，旧程序即使保留原目录，也不能参与多数派通信。
+本次诊断候选至隔离候选的来源二进制 SHA256 为 `d6bff204faa791f06c903780c3924b36031a34c93989b13127d98aba514c17a3`，目标为 `857b4d6c68a0bea7d0fa95a3e6024b4f5b85eab6fe5ee59c24b22200c95fcc3b`。该来源已具备摘流接口。持续业务验证最终逻辑失败为 0，记录 6 次临时重试；资格仅覆盖此窗口和协议 1。
+
+新程序默认拒绝没有协议声明或声明不支持协议的 Raft 通信，支持的最高协议为 3，缺省配置仍为 1。历史磁盘日志/快照的缺省字段按兼容旧编码读取；兼容模式新日志/快照外层显式携带协议 1，业务载荷不变。桥接来源程序忽略新增外层字段的行为需要实际二进制验收。严格模式下，没有协议声明的旧程序即使保留原目录，也不能参与多数派通信。
 
 ## 私有运维接口
 
@@ -54,7 +57,11 @@ inventory 为 `{"groups":[{"cluster_id":"graphdb-ha","nodes":[...]}]}`，每个 
 {"id":1,"url":"http://127.0.0.1:19081","restart":["docker","compose","-p","graphdb-ha","-f","docker-compose.raft.yml","up","-d","--no-deps","--no-build","--force-recreate","node1"]}
 ```
 
+group 可配置 `protocol_version` 为 1、2 或 3，缺省为 1；协调器要求组内所有成员保持该协议，不能用一次滚动操作混合或激活不同协议。启用协议 3 前，先在原协议下升级全部副本和 router，并确认每个副本的 `protocol_max` 至少为 3，再按独立变更启用。协议 3 提案持久化后，最高支持协议为 2 的旧程序不能原目录回退。协议 3 同构建串行重启的本机证据见[本轮验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
+
 inventory 必须包含该组全部投票节点。restart 只替换对应进程并复用原数据卷，不经过 shell。相同 inventory 的本机文件锁防止本机重复执行；不同宿主机的串行约束由部署控制器保证。
+
+每个副本 drain 成功后默认等待 7 秒，使示例 HAProxy 的每秒检查、连续三次失败摘流策略完成传播，再执行 restart。顶层 `replica_drain_seconds` 可按实际负载均衡传播时间调整；这段等待不代替全部投票节点追赶和 Leader 交接检查。
 
 ```sh
 export GRAPHDB_RAFT_TOKEN='<现有令牌>'
@@ -65,13 +72,13 @@ python3 scripts/raft_rolling_upgrade.py --inventory upgrade.json --execute \
   --report upgrade-results.json
 ```
 
-分片 inventory 包含目录组和全部数据组，可追加 `routers` 数组，每项为 `id`、router 运维 URL、`restart` 数组，至少两个。脚本逐个调用带令牌的 `POST /v1/router/drain`，等待健康检查摘流后重启；默认等 2 秒，顶层 `router_drain_seconds` 必须覆盖实际入口的检查传播时间。重开验证构建和 readiness 再继续；放弃升级可调用 `POST /v1/router/resume`。令牌默认取 `GRAPHDB_RAFT_TOKEN`，数据组用 `token_env`、router 用顶层 `router_token_env` 指定其他环境变量名。`--force` 用于同构建配置生效或滚动重启，否则跳过已经是目标构建的进程。
+分片 inventory 包含目录组和全部数据组，可追加 `routers` 数组，每项为 `id`、router 运维 URL、`restart` 数组，至少两个。脚本逐个调用带令牌的 `POST /v1/router/drain`，等待健康检查摘流后重启；默认等 7 秒，顶层 `router_drain_seconds` 必须覆盖实际入口的检查传播时间。重开验证构建和 readiness 再继续；放弃升级可调用 `POST /v1/router/resume`。令牌默认取 `GRAPHDB_RAFT_TOKEN`，数据组用 `token_env`、router 用顶层 `router_token_env` 指定其他环境变量名。`--force` 用于同构建配置生效或滚动重启，否则跳过已经是目标构建的进程。
 
 副本/router 未恢复时保留其目录和日志，不继续升级。相同协议且经过反向验收的程序才允许原目录回退；本轮反向资格仅针对上表来源。不同协议或未验证来源不能无损原目录降级。
 
 ## 验收入口
 
-本轮已完成的版本窗口、负载、失败记录和限制见 [滚动验收报告](raft-rolling-validation-2026-10-02.zh-CN.md)。
+首次桥接的版本窗口、负载和限制见 [滚动验收报告](raft-rolling-validation-2026-10-02.zh-CN.md)；诊断候选至当前目标的最终结果见 [故障隔离与迁移验收](raft-isolation-validation-2026-10-02.zh-CN.md)。
 
 [`scripts/raft_rolling_gate.py`](../scripts/raft_rolling_gate.py) 绑定真实来源二进制，验收两个不同二进制的混部、换主、旧程序安装新版快照、导入任务、单组与分片持续读写、关闭 legacy 窗口以及严格模式协调脚本。负载按原幂等身份重试，记录尝试次数、重试和最终失败；每个副本轮流成为 Leader 后核对自己的强一致导出。临时独立项目和卷结束后清理。
 

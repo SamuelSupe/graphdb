@@ -306,6 +306,10 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 }
 
 func (c *Cluster) flushPending(ctx context.Context) (err error) {
+	return c.flushPendingTenant(ctx, "")
+}
+
+func (c *Cluster) flushPendingTenant(ctx context.Context, tenant string) (err error) {
 	finish := c.metrics.Start("ingest_flush_poll")
 	defer func() { finish(err) }()
 	queue, err := c.App.pendingSnapshot(ctx)
@@ -318,6 +322,9 @@ func (c *Cluster) flushPending(ctx context.Context) (err error) {
 	}
 	var requests []pending
 	for key, record := range queue {
+		if tenant != "" && record.tenant != tenant {
+			continue
+		}
 		requests = append(requests, pending{key, record})
 	}
 	sort.Slice(requests, func(i, j int) bool { return requests[i].record.index < requests[j].record.index })
@@ -334,6 +341,9 @@ func (c *Cluster) flushPending(ctx context.Context) (err error) {
 		owner, ownerErr := c.App.ownership(ctx, cmd.Tenant)
 		if ownerErr != nil || owner.State != "active" {
 			c.App.mu.RUnlock()
+			if ownerErr == nil {
+				return storage.ErrConflict
+			}
 			return ownerErr
 		}
 		cmd.RouteEpoch = owner.Epoch

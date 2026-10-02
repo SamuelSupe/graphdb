@@ -3,8 +3,8 @@
 
 An inventory contains groups[{cluster_id, nodes[{id, url, restart}]}]. Tokens are
 read from GRAPHDB_RAFT_TOKEN, or each group's token_env. Run without --execute
-to inspect readiness. Only qualified protocol-1 releases are supported here;
-the unversioned bridge procedure is documented separately.
+to inspect readiness. Each group specifies protocol_version (default 1);
+the selected version pair must be qualified before executing an upgrade.
 """
 import argparse
 import fcntl
@@ -30,8 +30,8 @@ def status(group, node):
     value = request(group, node, '/raft/status')
     if value.get('node_id') != node['id'] or value.get('cluster_id') != group['cluster_id']:
         raise RuntimeError(f"wrong node identity: {group['cluster_id']}/{node['id']}")
-    if value.get('protocol_version') != 1 or value.get('allow_legacy_protocol'):
-        raise RuntimeError('requires qualified protocol 1 with the legacy bridge disabled')
+    if value.get('protocol_version') != group.get('protocol_version', 1) or value.get('allow_legacy_protocol'):
+        raise RuntimeError('requires the inventory protocol with the legacy bridge disabled')
     return value
 
 
@@ -61,6 +61,8 @@ def wait_group(group, timeout):
 
 def upgrade(inventory, execute, target_version, target_commit, timeout, emit, force=False):
     for group in inventory['groups']:
+        if group.get('protocol_version', 1) not in (1, 2, 3):
+            parser.error('each group protocol_version must be 1, 2 or 3')
         report = wait_group(group, timeout)
         emit(group['cluster_id'], 'preflight', leader_id=report['leader_id'])
     router_group = {'cluster_id': '', 'token_env': inventory.get('router_token_env', 'GRAPHDB_RAFT_TOKEN')}
@@ -84,6 +86,7 @@ def upgrade(inventory, execute, target_version, target_commit, timeout, emit, fo
             wait_group(group, timeout)
             request(group, node, '/raft/drain', 'POST')
             emit(group['cluster_id'], 'drained', node_id=node['id'])
+            time.sleep(inventory.get('replica_drain_seconds', 7))
             # The command replaces only this process and keeps its directories.
             subprocess.run(node['restart'], check=True, timeout=timeout)
             deadline = time.monotonic()+timeout
@@ -112,7 +115,7 @@ def upgrade(inventory, execute, target_version, target_commit, timeout, emit, fo
                 request(router_group, peer, '/v1/readiness')
         request(router_group, router, '/v1/router/drain', 'POST')
         emit('', 'router_drained', router_id=router['id'])
-        time.sleep(inventory.get('router_drain_seconds', 2))
+        time.sleep(inventory.get('router_drain_seconds', 7))
         subprocess.run(router['restart'], check=True, timeout=timeout)
         deadline = time.monotonic()+timeout
         while True:

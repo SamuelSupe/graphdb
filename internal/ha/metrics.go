@@ -69,6 +69,11 @@ func (c *Cluster) DiskSpace(ctx context.Context) (storage.DiskSpaceStatus, error
 func (c *Cluster) WriteMetrics(w io.Writer) {
 	c.Node.WriteMetrics(w)
 	c.metrics.WritePrometheus(w, "graphdb_ha")
+	paused := 0.
+	if c.maintenanceWritesPaused() {
+		paused = 1
+	}
+	observability.WriteScalar(w, "graphdb_ha_maintenance_writes_paused", "This process temporarily pauses one tenant's new mutations while preparing maintenance; other tenants remain admitted.", "gauge", paused)
 	if c.config.Catalog {
 		c.shards.WriteMetrics(w)
 	}

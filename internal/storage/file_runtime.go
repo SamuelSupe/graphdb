@@ -48,6 +48,12 @@ func openFileStore(root string, recovery bool) (*FileStore, error) {
 		return nil, fmt.Errorf("%w: %s: %v", ErrDataDirectoryLocked, root, err)
 	}
 	s.runtime = &fileRuntime{lock: f, ioGate: semaphore.NewWeighted(directoryIOCapacity), etags: make(map[string]string), views: make(map[string]*localViewGate)}
+	// With exclusive ownership, no export or install can still use these
+	// temporary views left by a killed process. They are not recovery state.
+	if err := removeAbandonedObjectViews(root); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("clean abandoned migration views: %w", err)
+	}
 	if recovery {
 		return s, nil
 	}
