@@ -1488,7 +1488,8 @@ func TestHALargeRestoreResumesAfterLeaderLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range group.nodes {
-		group.waitApplied(i, checkpoint.Index, time.Minute)
+		// Rejoining replays and decodes a >32 MiB graph under race instrumentation.
+		group.waitApplied(i, checkpoint.Index, 3*time.Minute)
 	}
 	verificationCtx, verificationCancel := context.WithTimeout(context.Background(), time.Minute)
 	defer verificationCancel()
@@ -2027,7 +2028,9 @@ func TestHASlowFollowerKeepsApplicationMemoryBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock()
-	group.waitApplied(follower, checkpoint.Index)
+	// Allow instrumented replay of the intentionally blocked backlog while
+	// preserving the payload bound checked above.
+	group.waitApplied(follower, checkpoint.Index, 30*time.Second)
 	if group.manifest(follower).Version != 20 {
 		t.Fatal("follower lost publications while resuming its durable backlog")
 	}
