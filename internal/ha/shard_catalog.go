@@ -174,6 +174,7 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 	if err := a.Files.Put(ctx, path.Join(a.Store.Prefix, "control/sharding/catalog.json"), data); err != nil {
 		return nil, err
 	}
+	a.catalogPending = summarizeCatalog(state)
 	return resultJSON(http.StatusOK, result)
 }
 

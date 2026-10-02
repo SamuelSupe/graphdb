@@ -305,7 +305,9 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 	}
 }
 
-func (c *Cluster) flushPending(ctx context.Context) error {
+func (c *Cluster) flushPending(ctx context.Context) (err error) {
+	finish := c.metrics.Start("ingest_flush_poll")
+	defer func() { finish(err) }()
 	queue, err := c.App.pendingSnapshot(ctx)
 	if err != nil {
 		return err

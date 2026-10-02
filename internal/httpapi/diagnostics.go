@@ -3,10 +3,12 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -17,16 +19,26 @@ func (s *Server) diagnostics(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	deployment := "standalone"
 	report := map[string]any{"status": "ok", "mode": s.Mode, "checked_at": time.Now().UTC(), "build": buildinfo.Current(), "coordination": s.Store.CachedCoordinatorStatus()}
+	report["admission"] = s.admissionObservations()
+	report["queries_running"] = s.QueryRegistry.Count()
 	problems := []string{}
-	disk, err := s.Store.DiskSpace(ctx)
-	if err != nil {
-		problems = append(problems, "disk_inspection_failed")
-		report["disk_error"] = err.Error()
-	} else {
-		report["disk"] = disk
-		if !disk.WriteReady {
-			problems = append(problems, "disk_space_low")
+	disks := s.resourceDisks(ctx)
+	report["filesystems"] = disks
+	for role, observation := range disks {
+		prefix := role + "_"
+		if role == "data" {
+			prefix = ""
 		}
+		if observation.Error != "" {
+			problems = append(problems, prefix+"disk_inspection_failed")
+		} else if !observation.Space.WriteReady {
+			problems = append(problems, prefix+"disk_space_low")
+		}
+	}
+	if data := disks["data"]; data.Error != "" {
+		report["disk_error"] = data.Error
+	} else {
+		report["disk"] = data.Space
 	}
 	if s.Cluster != nil {
 		deployment = "raft"
@@ -72,16 +84,50 @@ func (s *Server) diagnostics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeResourceMetrics(w http.ResponseWriter, ctx context.Context) {
-	disk, err := s.Store.DiskSpace(ctx)
+	disks := s.resourceDisks(ctx)
+	disk := disks["data"].Space
 	known := 0
-	if err == nil {
+	if disks["data"].Error == "" {
 		known = 1
 	}
 	ready := 0
-	if err == nil && disk.WriteReady {
+	if known == 1 && disk.WriteReady {
 		ready = 1
 	}
-	fmt.Fprintf(w, "# TYPE graphdb_disk_inspection_success gauge\ngraphdb_disk_inspection_success %d\n# TYPE graphdb_disk_available_bytes gauge\ngraphdb_disk_available_bytes %d\n# TYPE graphdb_disk_minimum_free_bytes gauge\ngraphdb_disk_minimum_free_bytes %d\n# TYPE graphdb_disk_write_ready gauge\ngraphdb_disk_write_ready %d\n", known, disk.AvailableBytes, disk.MinimumFreeBytes, ready)
+	observability.WriteScalar(w, "graphdb_disk_inspection_success", "Data filesystem inspection succeeded.", "gauge", float64(known))
+	observability.WriteScalar(w, "graphdb_disk_available_bytes", "Data filesystem bytes available to this process.", "gauge", float64(disk.AvailableBytes))
+	observability.WriteScalar(w, "graphdb_disk_minimum_free_bytes", "Data filesystem configured free space admission floor.", "gauge", float64(disk.MinimumFreeBytes))
+	observability.WriteScalar(w, "graphdb_disk_write_ready", "Data filesystem inspection succeeded and admission floor is satisfied.", "gauge", float64(ready))
+	for _, metric := range []struct {
+		name, help string
+		value      func(diskObservation) float64
+	}{
+		{"inspection_success", "Filesystem inspection succeeded for this storage role.", func(d diskObservation) float64 {
+			if d.Error == "" {
+				return 1
+			}
+			return 0
+		}},
+		{"total_bytes", "Total filesystem capacity; roles sharing a filesystem must not be summed.", func(d diskObservation) float64 { return float64(d.Space.TotalBytes) }},
+		{"available_bytes", "Filesystem bytes available to this process.", func(d diskObservation) float64 { return float64(d.Space.AvailableBytes) }},
+		{"minimum_free_bytes", "Configured free space admission floor for this storage role.", func(d diskObservation) float64 { return float64(d.Space.MinimumFreeBytes) }},
+		{"write_ready", "Inspection succeeded and the filesystem is above its configured admission floor.", func(d diskObservation) float64 {
+			if d.Error == "" && d.Space.WriteReady {
+				return 1
+			}
+			return 0
+		}},
+	} {
+		name := "graphdb_filesystem_" + metric.name
+		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n", name, metric.help, name)
+		for _, role := range []string{"data", "wal", "raft"} {
+			if d, ok := disks[role]; ok {
+				fmt.Fprintf(w, "%s{role=%q} %g\n", name, role, metric.value(d))
+			}
+		}
+	}
+	observability.WriteRuntimeMetrics(w)
+	s.writeAdmissionMetrics(w)
 	if s.Cluster != nil {
 		status := s.Cluster.Status()
 		leader := 0
@@ -97,7 +143,41 @@ func (s *Server) writeResourceMetrics(w http.ResponseWriter, ctx context.Context
 		if status["error"] != nil {
 			failed = 1
 		}
-		fmt.Fprintf(w, "# TYPE graphdb_raft_failed gauge\ngraphdb_raft_failed %d\n", failed)
-		fmt.Fprintf(w, "# TYPE graphdb_raft_leader_known gauge\ngraphdb_raft_leader_known %d\n# TYPE graphdb_raft_application_lag gauge\ngraphdb_raft_application_lag %d\n# TYPE graphdb_raft_snapshot_failed gauge\ngraphdb_raft_snapshot_failed %d\n", leader, lag, snapshotFailure)
+		observability.WriteScalar(w, "graphdb_raft_failed", "Local Raft node stopped after an internal failure.", "gauge", float64(failed))
+		observability.WriteScalar(w, "graphdb_raft_leader_known", "Local replica knows a leader ID; not a quorum guarantee.", "gauge", float64(leader))
+		observability.WriteScalar(w, "graphdb_raft_application_lag", "Committed log entries not yet durably applied locally.", "gauge", float64(lag))
+		observability.WriteScalar(w, "graphdb_raft_snapshot_failed", "Local snapshot failure is retained.", "gauge", float64(snapshotFailure))
+		if metrics, ok := s.Cluster.(interface{ WriteMetrics(io.Writer) }); ok {
+			metrics.WriteMetrics(w)
+		}
 	}
+}
+
+type diskObserver interface {
+	DiskSpace(context.Context) (storage.DiskSpaceStatus, error)
+}
+
+type diskObservation struct {
+	Space storage.DiskSpaceStatus `json:"space"`
+	Error string                  `json:"error,omitempty"`
+}
+
+func (s *Server) resourceDisks(ctx context.Context) map[string]diskObservation {
+	providers := map[string]diskObserver{"data": s.Store}
+	if wal, ok := s.IngestService.(diskObserver); ok {
+		providers["wal"] = wal
+	}
+	if raft, ok := s.Cluster.(diskObserver); ok {
+		providers["raft"] = raft
+	}
+	result := make(map[string]diskObservation, len(providers))
+	for role, provider := range providers {
+		space, err := provider.DiskSpace(ctx)
+		observation := diskObservation{Space: space}
+		if err != nil {
+			observation.Error = err.Error()
+		}
+		result[role] = observation
+	}
+	return result
 }

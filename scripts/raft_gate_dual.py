@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from raft_gate_metrics import collect
 
 ROOT = str(Path(__file__).resolve().parents[1])
 OUT = Path(os.environ['GRAPHDB_GATE_OUTPUT']) / 'dual'
@@ -147,6 +148,16 @@ try:
     assert len(set(ids)) == 1, ids
     step('same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent')
 
+    observations = []
+    for mode, port in [('direct',46081),('wal',46082)]:
+        expected = {'graphdb_filesystem_inspection_success{role="data"}': 1, 'graphdb_admission_active{pool="write"}': 0}
+        if mode == 'wal':
+            expected['graphdb_filesystem_inspection_success{role="wal"}'] = 1
+        observations.append(collect(f'http://127.0.0.1:{port+PORT_OFFSET}', OUT, 'metrics-'+mode, expected))
+    for i in range(1,4):
+        observations.append(collect(f'http://127.0.0.1:{36080+i+PORT_OFFSET}', OUT, 'metrics-node'+str(i), {'graphdb_filesystem_inspection_success{role="raft"}': 1, 'graphdb_raft_voters': 3, 'graphdb_raft_application_entries_total': None}))
+    step('local standalone/WAL and every Raft replica expose finite diagnostic samples', observations=observations)
+
     expect(direct,'POST','/v1/ingest/batches',batch('direct'))
     before = expect(direct,'GET','/v1/export/snapshot')
     docker('kill','--signal=KILL',PROJECT+'-standalone-direct')
@@ -188,6 +199,8 @@ try:
         time.sleep(.1)
     expect(node(old), 'GET', '/v1/entities/host:partition', status=503, headers=partition_headers)
     expect(node(old), 'POST', '/v1/commits', confirmed, status=503, headers=partition_headers)
+    observation = collect(node(old), OUT, 'metrics-isolated-node', {'graphdb_raft_voters': 3, 'graphdb_filesystem_inspection_success{role="raft"}': 1})
+    step('isolated replica diagnostics remain locally readable without quorum',observation=observation)
     docker('network', 'connect', '--alias', f'raft-node{old}', network, isolated)
     replay = expect(raft, 'POST', '/v1/commits', confirmed, headers=partition_headers)
     assert replay['idempotent_replay'] and replay['version'] == 1, replay
@@ -237,7 +250,7 @@ try:
     step('Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works')
 
     large_headers = {'X-Tenant-ID': 'large-restore'}
-    expect(raft, 'POST', '/v1/tenants', {'tenant_id': 'large-restore'})
+    expect(node(leader()), 'POST', '/v1/tenants', {'tenant_id': 'large-restore'})
     payload = 'x' * (4 << 20)
     for i in range(9):
         expect(raft, 'POST', '/v1/commits', {'mutations': {'upsert_entities': [
@@ -258,6 +271,8 @@ try:
         raise AssertionError(('task did not complete', id))
 
     backup = completed_task(backup['id'])
+    observation = collect(node(leader()), OUT, 'metrics-maintenance', {'graphdb_ha_operation_seconds_count{operation="maintenance_prepare",status="ok"}': None})
+    step('maintenance diagnostic counters reflect completed real work',observation=observation)
     expect(raft, 'POST', '/v1/commits', {'mutations': {'delete_entities': ['host:0']}}, headers=large_headers)
     old = leader()
     task = expect(raft, 'POST', '/v1/tenants/large-restore/restore',
@@ -282,6 +297,8 @@ try:
         headers={**large_headers, 'X-GraphDB-Read-Generation': '1'})
     docker('start', PROJECT+f'-node{old}-1')
     step('36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation', old=old, new=new, payload_bytes=9*len(payload))
+    observation = collect(node(new), OUT, 'metrics-snapshot', {'graphdb_raft_snapshot_failed': 0, 'graphdb_raft_operation_seconds_count{operation="snapshot_build",status="ok"}': None})
+    step('snapshot diagnostic counters reflect completed real work',observation=observation)
 
     if os.environ.get('GRAPHDB_GATE_DISK') == 'true':
         for mode, port in [('direct',46083),('wal',46084)]:

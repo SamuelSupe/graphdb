@@ -68,6 +68,7 @@ func (n *Node) send(messages []raftpb.Message) {
 		select {
 		case queue <- packet{data: data, snapshot: message.Type == raftpb.MsgSnap, file: snapshotFile}:
 		default:
+			n.metrics.Event("transport_queue_full")
 			if snapshotFile != nil {
 				snapshotFile.Close()
 			}
@@ -98,6 +99,11 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 		case <-n.ctx.Done():
 			return
 		case packet := <-queue:
+			operation := "message_send"
+			if packet.snapshot {
+				operation = "snapshot_send"
+			}
+			finish := n.metrics.Start(operation)
 			n.peerMu.RLock()
 			address := n.peers[id]
 			n.peerMu.RUnlock()
@@ -179,6 +185,7 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 				}
 				return nil
 			}()
+			finish(err)
 			if err != nil {
 				n.raft.ReportUnreachable(id)
 			}

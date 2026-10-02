@@ -42,6 +42,18 @@ jobs:
         run: |
           docker run --rm -v "$PWD/deploy/prometheus/graphdb.rules.yml:/rules.yml:ro" \
             --entrypoint /bin/promtool prom/prometheus:v3.5.0 check rules /rules.yml
+      - name: Validate captured diagnostic metrics
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          samples = sorted(Path('artifacts/raft-gate').rglob('*.prom'))
+          assert samples, 'deployment gate did not capture diagnostic metrics'
+          for sample in samples:
+              print(sample, flush=True)
+              subprocess.run(['docker', 'run', '--rm', '-i', '--entrypoint', '/bin/promtool',
+                  'prom/prometheus:v3.5.0', 'check', 'metrics'], input=sample.read_bytes(), check=True)
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

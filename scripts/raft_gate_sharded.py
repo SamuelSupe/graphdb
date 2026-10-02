@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from raft_gate_metrics import collect
 
 ROOT = str(Path(__file__).resolve().parents[1])
 OUT = Path(os.environ['GRAPHDB_GATE_OUTPUT']) / 'sharded'
@@ -21,6 +22,7 @@ TOKEN = os.environ['GRAPHDB_RAFT_TOKEN']
 COMPOSE = DOCKER + ['compose', '-p', PROJECT, '-f', ROOT+'/docker-compose.sharded.yml', '-f', str(OUT/'override.yml')]
 ENV = {**os.environ, 'GRAPHDB_HA_IMAGE': IMAGE, 'GRAPHDB_RAFT_TOKEN': TOKEN, 'GRAPHDB_INGEST_MODE': 'wal'}
 ROUTER = f'http://127.0.0.1:{47080+PORT_OFFSET}'
+ROUTER_LOCAL = f'http://127.0.0.1:{47083+PORT_OFFSET}'
 fixture = (Path(__file__).parent/'raft-gate'/'sharded.yml').read_text()
 if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
     fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', 'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "2"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
@@ -143,6 +145,17 @@ try:
     expect('POST','/v1/tenants',{'tenant_id':'tenant-a'})
     expect('POST','/v1/commits',commit('same-key','sharded'),tenant='tenant-a')
     step('standalone direct/WAL coexist with sharded Raft',processes_before_expansion=11)
+    observations = []
+    for group in ['catalog','a']:
+        for i in range(1,4):
+            expected = {'graphdb_filesystem_inspection_success{role="raft"}': 1, 'graphdb_raft_voters': 3}
+            if group == 'catalog' and i == leader('catalog'):
+                expected['graphdb_catalog_observation_known'] = 1
+                expected['graphdb_catalog_shards'] = 1
+            observations.append(collect(node(group,i), OUT, 'metrics-'+group+str(i), expected))
+    expect('GET','/v1/entities/host:1',tenant='tenant-a',base=ROUTER_LOCAL)
+    observations.append(collect(ROUTER_LOCAL, OUT, 'metrics-router', {'graphdb_router_draining': 0, 'graphdb_router_events_total{event="proxy_response_2xx"}': None}, {'Authorization':'Bearer '+TOKEN}))
+    step('catalog, shard replicas and authenticated router expose local diagnostics',observations=observations)
     compose('up','-d','--no-build','b1','b2','b3')
     leader('b'); register('b')
     assert placement('tenant-a','shard-a',1,complete=True)
@@ -157,6 +170,8 @@ try:
         docker('pause',service('b'+str(i)))
     expect('POST','/v1/cluster/moves',{'tenant_id':'tenant-a','target':'shard-b'},status=202)
     wait(lambda: placement('tenant-a',phase='copy',error=True))
+    observation = collect(node('catalog',leader('catalog')), OUT, 'metrics-migration-error', {'graphdb_catalog_move_errors': 1, 'graphdb_catalog_moves{phase="copy"}': 1})
+    step('catalog diagnostics expose the blocked migration phase and retained error',observation=observation)
     assert request(ROUTER,'GET','/v1/entities/host:1',tenant='tenant-a')[0]==503
     old_catalog = leader('catalog')
     docker('update','--restart=no',service('catalog'+str(old_catalog)))
@@ -193,6 +208,7 @@ try:
     files = docker('exec',service('a'+str(source)),'sh','-c','find /var/lib/graphdb/graphdb/tenants/tenant-a -type f 2>/dev/null',check=False)
     assert not files.stdout.strip(),files.stdout
     step('chunked migration survives catalog and destination leader interruption',accepted_lsn=status['accepted_lsn'],destination_interrupted_during_transfer=interrupted)
+    collect(node('catalog',leader('catalog')), OUT, 'metrics-migration-completed', {'graphdb_catalog_move_errors': 0, 'graphdb_catalog_moves{phase="copy"}': 0})
     expect('POST','/v1/cluster/moves',{'tenant_id':'tenant-a','target':'shard-a'},status=202)
     wait(lambda: placement('tenant-a','shard-a',3,complete=True))
     expect('POST','/v1/commits',commit('after-return','returned'),tenant='tenant-a')
@@ -232,6 +248,14 @@ try:
     images = {docker('inspect','--format','{{.Image}}',name).stdout.strip() for name in [service('router'),service('a1'),PROJECT+'-standalone-direct',PROJECT+'-standalone-wal']}
     assert len(images)==1,images
     step('replica cannot remove shard role; original configuration recovers',image_id=images.pop())
+    expect('POST','/v1/router/drain',status=204,base=ROUTER_LOCAL)
+    for i in range(1,4):
+        docker('pause',service('catalog'+str(i)))
+    observation = collect(ROUTER_LOCAL, OUT, 'metrics-router-no-catalog', {'graphdb_router_draining': 1}, {'Authorization':'Bearer '+TOKEN})
+    for i in range(1,4):
+        docker('unpause',service('catalog'+str(i)))
+    expect('POST','/v1/router/resume',status=204,base=ROUTER_LOCAL)
+    step('drained router diagnostics do not require a reachable catalog',observation=observation)
     (OUT/'final-catalog.json').write_text(json.dumps(catalog(),indent=2)+'\n')
 finally:
     logs = compose('logs','--no-color',check=False)

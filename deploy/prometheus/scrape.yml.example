@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+
+rule_files:
+  - /etc/prometheus/graphdb.rules.yml
+
+scrape_configs:
+  - job_name: graphdb-standalone
+    static_configs:
+      - targets: [graphdb:8081]
+        labels: {deployment: standalone}
+  - job_name: graphdb-raft
+    static_configs:
+      - targets: [node1:8082, node2:8082, node3:8082]
+        labels: {deployment: raft, raft_group: graphdb-main}
+  - job_name: graphdb-sharded-nodes
+    static_configs:
+      - targets: [catalog1:8082, catalog2:8082, catalog3:8082]
+        labels: {deployment: sharded_raft, raft_group: graphdb-catalog}
+      - targets: [a1:8082, a2:8082, a3:8082]
+        labels: {deployment: sharded_raft, raft_group: graphdb-shard-a}
+      - targets: [b1:8082, b2:8082, b3:8082]
+        labels: {deployment: sharded_raft, raft_group: graphdb-shard-b}
+  - job_name: graphdb-router
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/graphdb-router-token
+    static_configs:
+      - targets: [router:8080, router2:8080]
+        labels: {deployment: sharded_raft}

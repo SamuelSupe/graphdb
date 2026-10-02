@@ -2,17 +2,17 @@ groups:
   - name: graphdb
     rules:
       - alert: GraphDBDiskInspectionFailed
-        expr: graphdb_disk_inspection_success == 0
+        expr: graphdb_filesystem_inspection_success == 0
         for: 1m
         labels: {severity: critical}
         annotations:
-          summary: "GraphDB cannot inspect its data filesystem"
+          summary: "GraphDB cannot inspect its {{ $labels.role }} filesystem"
       - alert: GraphDBDiskAdmissionStopped
-        expr: graphdb_disk_write_ready == 0
+        expr: (graphdb_filesystem_write_ready == 0) and (graphdb_filesystem_inspection_success == 1)
         for: 1m
         labels: {severity: critical}
         annotations:
-          summary: "GraphDB disk reserve is below its admission threshold"
+          summary: "GraphDB {{ $labels.role }} disk reserve is below its admission threshold"
       - alert: GraphDBRaftNoLeader
         expr: graphdb_raft_leader_known == 0
         for: 30s
@@ -52,3 +52,56 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "GraphDB last index inspection found issues"
+      - alert: GraphDBRaftReplicaLag
+        expr: (graphdb_raft_peer_replication_lag > 1000) and (graphdb_raft_peer_progress_known == 1)
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB peer {{ $labels.peer_id }} has a persistent replicated-log backlog"
+      - alert: GraphDBRaftLeaderChurn
+        expr: increase(graphdb_raft_leader_changes_total[10m]) > 4
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB leader repeatedly changed; inspect member networking and disk latency"
+      - alert: GraphDBRaftBarrierTimeouts
+        expr: sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{operation=~"read_barrier|quorum_barrier",status="timeout"}[5m])) > 5
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB quorum/read barriers timed out repeatedly"
+      - alert: GraphDBRaftPersistenceFailed
+        expr: increase(graphdb_raft_operation_seconds_count{operation=~"persist|configuration_persist|snapshot_persist",status="error"}[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "GraphDB Raft persistence failed"
+      - alert: GraphDBRaftTransportFailed
+        expr: sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{operation=~"message_send|snapshot_send",status=~"error|timeout"}[5m])) > 10
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB Raft transport repeatedly failed; inspect per-peer progress"
+      - alert: GraphDBRaftProposalPressure
+        expr: graphdb_raft_proposal_bytes > 50331648
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB pending proposal bytes approach the 64 MiB admission limit"
+      - alert: GraphDBCatalogMoveError
+        expr: graphdb_catalog_move_errors > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB catalog retains tenant migration errors"
+      - alert: GraphDBRouterUpstreamErrors
+        expr: increase(graphdb_router_events_total{event=~"proxy_response_5xx|proxy_transport_failure"}[5m]) > 5
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB router repeatedly failed to serve upstream requests"
+      - alert: GraphDBIngestQueueAge
+        expr: graphdb_ingest_queue_oldest_seconds > 60
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB standalone WAL queue contains old unfinalized requests"

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
@@ -46,18 +47,21 @@ type httpResult struct {
 }
 
 type Application struct {
-	Store            *storage.TenantStore
-	Files            *storage.FileStore
-	Handler          http.Handler
-	MaxSnapshotBytes int64
-	MaxPendingBytes  int64
-	FlushInterval    time.Duration
-	ShardID          string
-	Catalog          bool
-	mu               sync.RWMutex
-	readers          sync.RWMutex
-	pending          map[string]pendingAcceptance
-	pendingBytes     int64
+	Store              *storage.TenantStore
+	Files              *storage.FileStore
+	Handler            http.Handler
+	MaxSnapshotBytes   int64
+	MaxPendingBytes    int64
+	FlushInterval      time.Duration
+	ShardID            string
+	Catalog            bool
+	mu                 sync.RWMutex
+	readers            sync.RWMutex
+	pending            map[string]pendingAcceptance
+	pendingBytes       int64
+	queueObservation   atomic.Pointer[queueObservation]
+	catalogObservation atomic.Pointer[catalogObservation]
+	catalogPending     *catalogObservation
 }
 
 func (a *Application) Applied() (uint64, error) {
@@ -88,6 +92,8 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pending = nil
+	a.queueObservation.Store(nil)
+	a.catalogObservation.Store(nil)
 	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes)
 }
 
@@ -107,6 +113,8 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pending = nil
+	a.queueObservation.Store(nil)
+	a.catalogObservation.Store(nil)
 	return a.Files.InstallReplicationSnapshotReader(ctx, index, source, a.MaxSnapshotBytes)
 }
 
@@ -160,10 +168,16 @@ func (a *Application) ApplyBatch(ctx context.Context, entries []replication.Appl
 		defer a.readers.Unlock()
 	}
 	a.mu.Lock()
+	a.catalogPending = nil
 	defer func() {
 		if err != nil {
 			a.pending = nil
+			a.catalogObservation.Store(nil)
+		} else if a.catalogPending != nil {
+			a.catalogObservation.Store(a.catalogPending)
 		}
+		a.catalogPending = nil
+		a.observePending()
 		a.mu.Unlock()
 	}()
 	for i, cmd := range commands {

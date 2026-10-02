@@ -529,6 +529,10 @@ func writeScalar(b *bytes.Buffer, name string, help string, metricType string, v
 }
 
 func (m *Metrics) observe(values map[string]*histogram, key string, buckets []float64, value float64) {
+	observeHistogram(values, key, buckets, value)
+}
+
+func observeHistogram(values map[string]*histogram, key string, buckets []float64, value float64) {
 	h := values[key]
 	if h == nil {
 		h = &histogram{Buckets: append([]float64(nil), buckets...), Counts: make([]uint64, len(buckets)+1)}

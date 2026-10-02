@@ -53,7 +53,9 @@ func (c *Cluster) runTaskBackground(ctx context.Context) {
 	}
 }
 
-func (c *Cluster) runQueuedTask(ctx context.Context) error {
+func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
+	finish := c.metrics.Start("maintenance_poll")
+	defer func() { finish(err) }()
 	c.App.mu.RLock()
 	tenants, err := c.App.Store.ListManagedTenants(ctx)
 	if err != nil {
@@ -78,6 +80,7 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 	ready := false
 	capture := false
 	if queued != nil {
+		c.metrics.Event("maintenance_selected")
 		if err := c.App.Store.CheckTaskDiskSpace(ctx, *queued); err != nil {
 			c.App.mu.RUnlock()
 			return err
@@ -87,14 +90,18 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 		generation, err := c.App.Store.ReplicationTenantGeneration(ctx, queued.TenantID)
 		var source *storage.ReplicatedMaintenanceSource
 		if err == nil {
+			finish := c.metrics.Start("maintenance_capture")
 			source, err = c.App.Store.CaptureReplicatedMaintenance(ctx, *queued)
+			finish(err)
 		}
 		c.App.mu.RUnlock()
 		if err != nil {
 			return err
 		}
 		defer source.Close()
+		finish := c.metrics.Start("maintenance_prepare")
 		input, err := source.Build(ctx, c.App.MaxSnapshotBytes)
+		finish(err)
 		if err != nil {
 			return err
 		}
@@ -116,7 +123,9 @@ func (c *Cluster) runQueuedTask(ctx context.Context) error {
 		capture = !captured
 	}
 	if queued != nil && !capture && !ready && err == nil {
+		finish := c.metrics.Start("maintenance_prepare")
 		restore, err = c.App.Store.PrepareReplicatedTask(ctx, *queued)
+		finish(err)
 	}
 	c.App.mu.RUnlock()
 	if queued == nil {

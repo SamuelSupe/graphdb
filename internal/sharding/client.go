@@ -12,14 +12,19 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 )
 
 type Client struct {
-	Token   string
-	HTTP    *http.Client
-	mu      sync.Mutex
-	leaders map[string]cachedLeader
+	Token         string
+	HTTP          *http.Client
+	mu            sync.Mutex
+	leaders       map[string]cachedLeader
+	metrics       *observability.OperationMetrics
+	lastDiscovery atomic.Int64
 }
 
 type cachedLeader struct {
@@ -36,13 +41,15 @@ type HTTPError struct {
 func (e *HTTPError) Error() string { return fmt.Sprintf("shard HTTP %d: %s", e.Status, e.Body) }
 
 func NewClient(token string) *Client {
-	return &Client{Token: token, HTTP: &http.Client{
+	return &Client{Token: token, metrics: observability.NewOperationMetrics(), HTTP: &http.Client{
 		Transport:     &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: time.Minute},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 }
 
-func (c *Client) Leader(ctx context.Context, shard Shard) (string, error) {
+func (c *Client) Leader(ctx context.Context, shard Shard) (origin string, err error) {
+	finish := c.metrics.Start("leader_lookup")
+	defer func() { finish(err) }()
 	definition, err := json.Marshal(shard.Peers)
 	if err != nil {
 		return "", err
@@ -52,8 +59,12 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (string, error) {
 	cached := c.leaders[key]
 	c.mu.Unlock()
 	if cached.definition == string(definition) && time.Now().Before(cached.expires) {
+		c.metrics.Event("leader_cache_hit")
 		return cached.origin, nil
 	}
+	c.metrics.Event("leader_cache_miss")
+	finishDiscovery := c.metrics.Start("leader_discovery")
+	defer func() { finishDiscovery(err) }()
 	remember := func(origin string) (string, error) {
 		origin = strings.TrimRight(origin, "/")
 		c.mu.Lock()
@@ -62,6 +73,7 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (string, error) {
 		}
 		c.leaders[key] = cachedLeader{origin: origin, definition: string(definition), expires: time.Now().Add(2 * time.Second)}
 		c.mu.Unlock()
+		c.lastDiscovery.Store(time.Now().UnixNano())
 		return origin, nil
 	}
 	ids := make([]uint64, 0, len(shard.Peers))
@@ -98,6 +110,7 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (string, error) {
 }
 
 func (c *Client) ForgetLeader(shard Shard) {
+	c.metrics.Event("leader_cache_invalidation")
 	c.mu.Lock()
 	delete(c.leaders, shard.ClusterID+"/"+shard.ID)
 	c.mu.Unlock()
@@ -114,9 +127,20 @@ func (c *Client) request(ctx context.Context, shard Shard, origin, method, path 
 	return c.HTTP.Do(r)
 }
 
-func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body any) (*http.Response, error) {
+func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body any) (response *http.Response, err error) {
+	operation := "write_request"
+	if method == http.MethodGet {
+		operation = "read_request"
+	}
+	finish := c.metrics.Start(operation)
+	defer func() {
+		observed := err
+		if observed == nil && response != nil && response.StatusCode >= 400 {
+			observed = &HTTPError{Status: response.StatusCode}
+		}
+		finish(observed)
+	}()
 	var data []byte
-	var err error
 	if body != nil {
 		data, err = json.Marshal(body)
 		if err != nil {
@@ -129,10 +153,11 @@ func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body 
 	}
 	// Once sent, a mutation may have committed even if its response is lost.
 	// The caller retries by operation identity, never by blindly replaying HTTP.
-	response, err := c.request(ctx, shard, origin, method, path, data)
+	response, err = c.request(ctx, shard, origin, method, path, data)
 	if err != nil || response.StatusCode == http.StatusServiceUnavailable {
 		c.ForgetLeader(shard)
 		if method == http.MethodGet && ctx.Err() == nil {
+			c.metrics.Event("read_retry")
 			if response != nil {
 				response.Body.Close()
 			}

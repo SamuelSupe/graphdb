@@ -32,6 +32,9 @@ func (c *Cluster) runShardMigrations(ctx context.Context) {
 func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 	c.App.mu.RLock()
 	state, err := c.App.catalog(ctx)
+	if err == nil {
+		c.App.catalogObservation.Store(summarizeCatalog(state))
+	}
 	c.App.mu.RUnlock()
 	if err != nil {
 		return err
@@ -46,7 +49,9 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 		if placement.State != "assigning" {
 			continue
 		}
+		finish := c.metrics.Start("tenant_assignment")
 		err := c.shards.JSON(ctx, state.Shards[placement.Shard], http.MethodPost, "/cluster/action", sharding.Action{Operation: "own", Tenant: id, Epoch: placement.Epoch}, nil)
+		finish(err)
 		if err != nil {
 			continue
 		}
@@ -70,7 +75,14 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 	return nil
 }
 
-func (c *Cluster) advanceTenantMove(ctx context.Context, state sharding.Catalog, p sharding.Placement) error {
+func (c *Cluster) advanceTenantMove(ctx context.Context, state sharding.Catalog, p sharding.Placement) (err error) {
+	operation := "migration_other"
+	switch p.Move.Phase {
+	case "copy", "activate", "cleanup", "cancel", "discard":
+		operation = "migration_" + p.Move.Phase
+	}
+	finish := c.metrics.Start(operation)
+	defer func() { finish(err) }()
 	m := p.Move
 	source, target := state.Shards[m.Source], state.Shards[m.Target]
 	call := func(shard sharding.Shard, operation string, epoch uint64) error {

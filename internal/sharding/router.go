@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -27,6 +28,7 @@ type Router struct {
 	mu         sync.Mutex
 	placements map[string]cachedPlacement
 	draining   atomic.Bool
+	metrics    *observability.OperationMetrics
 }
 
 type cachedPlacement struct {
@@ -35,13 +37,17 @@ type cachedPlacement struct {
 }
 
 func NewRouter(catalog Shard, token string) *Router {
-	return &Router{Catalog: catalog, Client: NewClient(token)}
+	return &Router{Catalog: catalog, Client: NewClient(token), metrics: observability.NewOperationMetrics()}
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Minute)
 	defer cancel()
 	request = request.WithContext(ctx)
+	if request.URL.Path == "/metrics" || request.URL.Path == "/v1/diagnostics" {
+		r.diagnostics(w, request)
+		return
+	}
 	if request.URL.Path == "/v1/router/drain" || request.URL.Path == "/v1/router/resume" {
 		if request.Method != http.MethodPost || subtle.ConstantTimeCompare([]byte(request.Header.Get("Authorization")), []byte("Bearer "+r.Client.Token)) != 1 {
 			http.Error(w, "router maintenance requires POST and the router token", http.StatusUnauthorized)
@@ -153,15 +159,18 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	r.proxy(w, request, resolution.Shard, resolution.Placement.Epoch, tenant)
 }
 
-func (r *Router) resolve(ctx context.Context, tenant string) (Resolution, error) {
+func (r *Router) resolve(ctx context.Context, tenant string) (resolution Resolution, err error) {
+	finish := r.metrics.Start("placement_lookup")
+	defer func() { finish(err) }()
 	r.mu.Lock()
 	cached := r.placements[tenant]
 	r.mu.Unlock()
 	if time.Now().Before(cached.expires) {
+		r.metrics.Event("placement_cache_hit")
 		return cached.resolution, nil
 	}
-	var resolution Resolution
-	err := r.Client.JSON(ctx, r.Catalog, http.MethodGet, "/cluster/placement/"+url.PathEscape(tenant), nil, &resolution)
+	r.metrics.Event("placement_cache_miss")
+	err = r.Client.JSON(ctx, r.Catalog, http.MethodGet, "/cluster/placement/"+url.PathEscape(tenant), nil, &resolution)
 	if err == nil && resolution.Placement.State != "active" {
 		err = &HTTPError{Status: http.StatusServiceUnavailable, Body: "tenant assignment or migration is in progress"}
 	}
@@ -177,6 +186,7 @@ func (r *Router) resolve(ctx context.Context, tenant string) (Resolution, error)
 }
 
 func (r *Router) forgetPlacement(tenant string) {
+	r.metrics.Event("placement_cache_invalidation")
 	r.mu.Lock()
 	delete(r.placements, tenant)
 	r.mu.Unlock()
@@ -207,7 +217,23 @@ func (r *Router) assign(ctx context.Context, tenant, shard string) (Resolution, 
 }
 
 func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard, epoch uint64, tenant string) {
+	operation := "proxy_write"
+	if request.Method == http.MethodGet || request.Method == http.MethodHead {
+		operation = "proxy_read"
+	}
+	finish := r.metrics.Start(operation)
 	origin, err := r.Client.Leader(request.Context(), shard)
+	defer func() {
+		if aborted := recover(); aborted != nil {
+			failure := request.Context().Err()
+			if failure == nil {
+				failure = fmt.Errorf("proxy response aborted")
+			}
+			finish(failure)
+			panic(aborted)
+		}
+		finish(err)
+	}()
 	if err != nil {
 		r.writeError(w, err)
 		return
@@ -230,6 +256,22 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			p.Out.Header.Set("X-Tenant-ID", tenant)
 		},
 		ModifyResponse: func(response *http.Response) error {
+			switch {
+			case response.StatusCode < 300:
+				r.metrics.Event("proxy_response_2xx")
+			case response.StatusCode < 400:
+				r.metrics.Event("proxy_response_3xx")
+			case response.StatusCode < 500:
+				r.metrics.Event("proxy_response_4xx")
+			default:
+				r.metrics.Event("proxy_response_5xx")
+			}
+			if response.StatusCode >= 400 {
+				err = &HTTPError{Status: response.StatusCode}
+			}
+			if response.StatusCode == http.StatusTooManyRequests {
+				r.metrics.Event("proxy_backpressure")
+			}
 			if response.StatusCode == http.StatusConflict || response.StatusCode >= 500 {
 				r.forgetPlacement(tenant)
 			}
@@ -238,10 +280,12 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			}
 			return nil
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, failure error) {
+			err = failure
+			r.metrics.Event("proxy_transport_failure")
 			r.Client.ForgetLeader(shard)
 			r.forgetPlacement(tenant)
-			r.writeError(w, err)
+			r.writeError(w, failure)
 		},
 	}
 	proxy.ServeHTTP(w, request)

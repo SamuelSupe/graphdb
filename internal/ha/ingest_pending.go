@@ -48,6 +48,7 @@ func (a *Application) ensurePending(ctx context.Context) error {
 		size += info.objectBytes
 	}
 	a.pending, a.pendingBytes = pending, size
+	a.observePending()
 	return nil
 }
 

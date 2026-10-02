@@ -1,10 +1,12 @@
 package sharding
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -55,6 +57,18 @@ func TestLeaderCacheInvalidationDoesNotReplayMutations(t *testing.T) {
 	if response.StatusCode != http.StatusOK || mutations.Load() != 2 || probes.Load() != 2 {
 		t.Fatalf("explicit retry did not discover the new leader: status=%d attempts=%d probes=%d", response.StatusCode, mutations.Load(), probes.Load())
 	}
+	var metrics bytes.Buffer
+	client.WriteMetrics(&metrics)
+	for _, want := range []string{
+		`graphdb_sharding_client_events_total{event="leader_cache_hit"} 100`,
+		`graphdb_sharding_client_operation_seconds_count{operation="write_request",status="error"} 1`,
+		`graphdb_sharding_client_operation_seconds_count{operation="write_request",status="ok"} 1`,
+		`graphdb_sharding_client_operations_inflight{operation="write_request"} 0`,
+	} {
+		if !strings.Contains(metrics.String(), want) {
+			t.Fatalf("leader retry diagnostics missing %s: %s", want, &metrics)
+		}
+	}
 }
 
 func TestRouterDrainRemovesReadinessButKeepsInFlightRouting(t *testing.T) {
@@ -91,5 +105,24 @@ func TestRouterDrainRemovesReadinessButKeepsInFlightRouting(t *testing.T) {
 	}
 	if call("POST", "/v1/router/resume", "secret") != http.StatusNoContent || call("GET", "/v1/readiness", "") != http.StatusOK {
 		t.Fatal("router did not resume")
+	}
+	server.Close()
+	call("POST", "/v1/router/drain", "secret")
+	for _, path := range []string{"/metrics", "/v1/diagnostics"} {
+		if call("GET", path, "wrong") != http.StatusUnauthorized || call("POST", path, "secret") != http.StatusMethodNotAllowed {
+			t.Fatalf("diagnostics authorization/method contract failed: %s", path)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		request := httptest.NewRequest("GET", path, nil).WithContext(ctx)
+		request.Header.Set("Authorization", "Bearer secret")
+		writer := httptest.NewRecorder()
+		router.ServeHTTP(writer, request)
+		if writer.Code != http.StatusOK {
+			t.Fatalf("drained router diagnostics contacted unavailable catalog: %d %s", writer.Code, writer.Body)
+		}
+		if path == "/metrics" && !strings.Contains(writer.Body.String(), "graphdb_router_draining 1") {
+			t.Fatalf("missing local drain metric: %s", writer.Body)
+		}
 	}
 }

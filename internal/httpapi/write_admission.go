@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,6 +14,8 @@ type WriteAdmission struct {
 	queueTimeout time.Duration
 	mu           sync.Mutex
 	tenants      map[string]*writeTenantAdmission
+	active       atomic.Int64
+	waiting      atomic.Int64
 }
 
 type writeTenantAdmission struct {
@@ -33,6 +36,8 @@ func (a *WriteAdmission) Acquire(ctx context.Context, tenantID string) (func(), 
 	if a == nil {
 		return func() {}, 0, nil
 	}
+	a.waiting.Add(1)
+	defer a.waiting.Add(-1)
 	ctx, cancel := a.withQueueTimeout(ctx)
 	tenant := a.retainTenant(tenantID)
 	if err := acquireWriteSlot(ctx, writeTenantSlot(tenant)); err != nil {
@@ -46,7 +51,9 @@ func (a *WriteAdmission) Acquire(ctx context.Context, tenantID string) (func(), 
 		cancel()
 		return nil, time.Since(start), err
 	}
+	a.active.Add(1)
 	return func() {
+		a.active.Add(-1)
 		releaseSlot(a.global)
 		releaseSlot(writeTenantSlot(tenant))
 		a.releaseTenant(tenantID, tenant)

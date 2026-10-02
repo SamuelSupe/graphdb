@@ -93,6 +93,15 @@ func (r *RunningQueryRegistry) List(tenantID string) []RunningQueryInfo {
 	return result
 }
 
+func (r *RunningQueryRegistry) Count() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.queries)
+}
+
 func (r *RunningQueryRegistry) Kill(tenantID string, queryID string) (RunningQueryInfo, bool) {
 	if r == nil {
 		return RunningQueryInfo{}, false

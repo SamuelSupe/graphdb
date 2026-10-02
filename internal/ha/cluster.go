@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -36,6 +37,7 @@ type Cluster struct {
 	config           config.RaftConfig
 	diskPolicy       storage.DiskSpacePolicy
 	shards           *sharding.Client
+	metrics          *observability.OperationMetrics
 }
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
@@ -44,6 +46,7 @@ func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
+	c.metrics = observability.NewOperationMetrics()
 	if _, err := c.App.Applied(); err != nil {
 		return err
 	}
@@ -125,7 +128,7 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		return
 	}
 	if runtimeOnly {
-		if c.App.Catalog {
+		if c.App.Catalog && r.URL.Path != "/metrics" && r.URL.Path != "/v1/diagnostics" {
 			http.NotFound(w, r)
 			return
 		}
@@ -354,7 +357,14 @@ func (c *Cluster) Close() error {
 	})
 	return c.closeErr
 }
-func (c *Cluster) Status() map[string]any { return c.Node.Status() }
+func (c *Cluster) Status() map[string]any {
+	status := c.Node.Status()
+	status["ingest_queue"] = c.App.queueObservation.Load()
+	if c.App.Catalog {
+		status["catalog"] = c.App.catalogObservation.Load()
+	}
+	return status
+}
 
 func (c *Cluster) checkAdmissionDiskSpace(ctx context.Context, additional int64) error {
 	if err := c.App.Store.CheckWriteDiskSpace(ctx, additional); err != nil {

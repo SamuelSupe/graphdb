@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
@@ -15,6 +16,8 @@ type QueryAdmission struct {
 	queueTimeout time.Duration
 	mu           sync.Mutex
 	tenants      map[string]*tenantAdmission
+	active       atomic.Int64
+	waiting      atomic.Int64
 }
 
 type tenantAdmission struct {
@@ -34,6 +37,8 @@ func (a *QueryAdmission) Acquire(ctx context.Context, tenantID string) (func(), 
 	if a == nil {
 		return func() {}, nil
 	}
+	a.waiting.Add(1)
+	defer a.waiting.Add(-1)
 	ctx, cancel := a.withQueueTimeout(ctx)
 	tenant := a.retainTenant(tenantID)
 	if err := acquireSlot(ctx, tenantSlot(tenant)); err != nil {
@@ -47,7 +52,9 @@ func (a *QueryAdmission) Acquire(ctx context.Context, tenantID string) (func(), 
 		cancel()
 		return nil, err
 	}
+	a.active.Add(1)
 	return func() {
+		a.active.Add(-1)
 		releaseSlot(a.global)
 		releaseSlot(tenantSlot(tenant))
 		a.releaseTenant(tenantID, tenant)

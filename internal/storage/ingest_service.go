@@ -247,6 +247,10 @@ type IngestService struct {
 	closeErr    error
 }
 
+func (s *IngestService) DiskSpace(ctx context.Context) (DiskSpaceStatus, error) {
+	return InspectDiskSpace(ctx, s.config.WAL.Dir, s.config.WAL.DiskSpace)
+}
+
 func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestService, error) {
 	recoveryStarted := time.Now()
 	if store == nil {

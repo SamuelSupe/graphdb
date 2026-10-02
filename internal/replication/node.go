@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 	"go.etcd.io/raft/v3/tracker"
@@ -94,6 +95,10 @@ type Node struct {
 	activeProposals    int
 	draining           atomic.Bool
 	protocolValidated  atomic.Bool
+	metrics            *observability.OperationMetrics
+	leaderChanges      atomic.Uint64
+	snapshotIndex      atomic.Uint64
+	snapshotBytes      atomic.Int64
 }
 
 type snapshotRequest struct {
@@ -188,6 +193,8 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	}
 	ctx, cancel := context.WithCancel(parent)
 	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]chan packet), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
+	n.metrics = observability.NewOperationMetrics()
+	n.observeSnapshot(snapshot)
 	n.applied.Store(applied)
 	for id, address := range cfg.Peers {
 		n.peers[id] = address
@@ -259,7 +266,9 @@ func randomID() (string, error) {
 	return hex.EncodeToString(id[:]), nil
 }
 
-func (n *Node) Propose(ctx context.Context, data []byte) ([]byte, error) {
+func (n *Node) Propose(ctx context.Context, data []byte) (response []byte, err error) {
+	finish := n.metrics.Start("proposal")
+	defer func() { finish(err) }()
 	if err := n.beginProposal(ctx); err != nil {
 		return nil, err
 	}
@@ -342,7 +351,9 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 	}
 }
 
-func (n *Node) ReadBarrier(ctx context.Context) error {
+func (n *Node) ReadBarrier(ctx context.Context) (err error) {
+	finish := n.metrics.Start("read_barrier")
+	defer func() { finish(err) }()
 	index, err := n.readIndex(ctx)
 	if err != nil {
 		return err
@@ -367,7 +378,9 @@ func (n *Node) ReadBarrier(ctx context.Context) error {
 // QuorumBarrier checks current leadership without waiting for application.
 // It keeps the entry point available during maintenance; graph operations
 // must still use ReadBarrier before accessing the state machine.
-func (n *Node) QuorumBarrier(ctx context.Context) error {
+func (n *Node) QuorumBarrier(ctx context.Context) (err error) {
+	finish := n.metrics.Start("quorum_barrier")
+	defer func() { finish(err) }()
 	if _, err := n.readIndex(ctx); err != nil {
 		return err
 	}
@@ -457,9 +470,19 @@ func (n *Node) run() {
 		case <-n.ctx.Done():
 			return
 		case request := <-n.snapshotRequests:
+			finish := n.metrics.Start("snapshot_persist")
 			snapshot, err := n.disk.CreateSnapshot(request.index, &request.conf, request.data)
 			if err == nil {
 				err = n.disk.saveSnapshot(snapshot, request.index)
+			}
+			observed := err
+			if errors.Is(err, raft.ErrSnapOutOfDate) {
+				observed = nil
+				n.metrics.Event("snapshot_superseded")
+			}
+			finish(observed)
+			if err == nil {
+				n.observeSnapshot(snapshot)
 			}
 			request.done <- err
 			if errors.Is(err, raft.ErrSnapOutOfDate) {
@@ -479,11 +502,16 @@ func (n *Node) run() {
 				}
 				envelope = &decoded
 			}
-			if err := n.disk.save(ready, envelope); err != nil {
+			finish := n.metrics.Start("persist")
+			err := n.disk.save(ready, envelope)
+			finish(err)
+			if err != nil {
 				n.fail(err)
 				return
 			}
 			if envelope != nil {
+				n.snapshotIndex.Store(ready.Snapshot.Metadata.Index)
+				n.snapshotBytes.Store(snapshotPayloadBytes(ready.Snapshot.Data, envelope))
 				n.peerMu.Lock()
 				for id, address := range envelope.Peers {
 					n.peers[id] = address
@@ -491,7 +519,9 @@ func (n *Node) run() {
 				n.peerMu.Unlock()
 			}
 			if ready.SoftState != nil {
-				n.leader.Store(ready.SoftState.Lead)
+				if n.leader.Swap(ready.SoftState.Lead) != ready.SoftState.Lead {
+					n.leaderChanges.Add(1)
+				}
 				n.signalChanged()
 			}
 			for _, state := range ready.ReadStates {
@@ -548,7 +578,10 @@ func (n *Node) run() {
 				}
 			}
 			if confIndex != n.disk.confIndex {
-				if err := n.disk.saveConf(conf, confIndex); err != nil {
+				finish := n.metrics.Start("configuration_persist")
+				err := n.disk.saveConf(conf, confIndex)
+				finish(err)
+				if err != nil {
 					n.fail(err)
 					return
 				}
@@ -647,7 +680,10 @@ func (n *Node) applyLoop() {
 		case batch := <-n.application:
 			lastConf = batch.conf
 			if !raft.IsEmptySnap(batch.snapshot) && batch.snapshot.Metadata.Index > n.applied.Load() {
-				if err := restoreSnapshot(n.ctx, n.machine, n.cfg.Dir, batch.snapshot); err != nil {
+				finish := n.metrics.Start("snapshot_restore")
+				err := restoreSnapshot(n.ctx, n.machine, n.cfg.Dir, batch.snapshot)
+				finish(err)
+				if err != nil {
 					n.fail(err)
 					return
 				}
@@ -688,6 +724,7 @@ func (n *Node) applyLoop() {
 					}
 					continue
 				}
+				finish := n.metrics.Start("snapshot_build")
 				data, err := n.machine.Snapshot(n.ctx)
 				if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
 					err = ErrSnapshotTooLarge
@@ -698,6 +735,7 @@ func (n *Node) applyLoop() {
 				if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
 					err = ErrSnapshotTooLarge
 				}
+				finish(err)
 				if errors.Is(err, ErrSnapshotTooLarge) {
 					n.mu.Lock()
 					n.snapshotFailure = err
@@ -762,6 +800,7 @@ func (n *Node) Status() map[string]any {
 	n.mu.Lock()
 	failure := n.failure
 	snapshotFailure := n.snapshotFailure
+	proposals, reads := len(n.proposals), len(n.reads)
 	n.mu.Unlock()
 	raftStatus := n.raft.Status()
 	applied := n.applied.Load()
@@ -773,6 +812,31 @@ func (n *Node) Status() map[string]any {
 	status["protocol_max"] = MaxProtocolVersion
 	status["snapshot_format_max"] = 2
 	status["stream_snapshots"] = n.cfg.StreamSnapshots
+	status["state"] = raftStatus.RaftState.String()
+	status["pending_proposals"], status["pending_reads"] = proposals, reads
+	status["snapshot_index"], status["snapshot_bytes"] = n.snapshotIndex.Load(), n.snapshotBytes.Load()
+	members := conf.Voters
+	members = append(append([]uint64(nil), members...), conf.Learners...)
+	var peers []PeerProgress
+	n.peerMu.RLock()
+	for _, id := range members {
+		progress, known := raftStatus.Progress[id]
+		peer := PeerProgress{ID: id, Known: known, Match: progress.Match, Next: progress.Next, RecentActive: progress.RecentActive, Learner: progress.IsLearner, SendQueue: len(n.senders[id])}
+		if !known {
+			for _, learner := range conf.Learners {
+				peer.Learner = peer.Learner || learner == id
+			}
+		} else {
+			peer.Lag = raftStatus.Commit - min(raftStatus.Commit, progress.Match)
+			peer.Paused = progress.IsPaused()
+			if progress.Inflights != nil {
+				peer.InflightMessages = progress.Inflights.Count()
+			}
+		}
+		peers = append(peers, peer)
+	}
+	n.peerMu.RUnlock()
+	status["replicas"] = peers
 	if failure != nil {
 		status["error"] = failure.Error()
 	}

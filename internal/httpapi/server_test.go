@@ -1871,6 +1871,9 @@ func TestQueryAdmissionTenantWaiterDoesNotStarveOtherTenant(t *testing.T) {
 		waiterDone <- err
 	}()
 	waitAdmissionTenantRefs(t, admission, "tenant-a", 2)
+	if state := admission.observation(); state.Active != 1 || state.Waiting != 1 {
+		t.Fatalf("queued tenant admission diagnostics: %+v", state)
+	}
 
 	releaseB, err := admission.Acquire(context.Background(), "tenant-b")
 	if err != nil {
@@ -1886,6 +1889,9 @@ func TestQueryAdmissionTenantWaiterDoesNotStarveOtherTenant(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("tenant-a waiter did not finish after release")
+	}
+	if state := admission.observation(); state.Active != 0 || state.Waiting != 0 {
+		t.Fatalf("finished admission retained diagnostic pressure: %+v", state)
 	}
 }
 

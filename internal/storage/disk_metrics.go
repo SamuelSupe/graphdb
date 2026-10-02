@@ -25,7 +25,7 @@ func syncStorageFile(file interface{ Sync() error }) error {
 // WriteDiskMetrics reports this process's data, directory, and ingest WAL syncs.
 // It does not include syncs performed by other processes or external services.
 func WriteDiskMetrics(w io.Writer) {
-	fmt.Fprintf(w, "# TYPE graphdb_disk_sync_total counter\ngraphdb_disk_sync_total %d\n", diskSyncCalls.Load())
-	fmt.Fprintf(w, "# TYPE graphdb_disk_sync_failures_total counter\ngraphdb_disk_sync_failures_total %d\n", diskSyncFailures.Load())
-	fmt.Fprintf(w, "# TYPE graphdb_disk_sync_seconds_total counter\ngraphdb_disk_sync_seconds_total %g\n", float64(diskSyncNanos.Load())/float64(time.Second))
+	fmt.Fprintf(w, "# HELP graphdb_disk_sync_total Storage file and directory sync attempts in this process, excluding the Raft database.\n# TYPE graphdb_disk_sync_total counter\ngraphdb_disk_sync_total %d\n", diskSyncCalls.Load())
+	fmt.Fprintf(w, "# HELP graphdb_disk_sync_failures_total Failed storage file and directory sync attempts in this process.\n# TYPE graphdb_disk_sync_failures_total counter\ngraphdb_disk_sync_failures_total %d\n", diskSyncFailures.Load())
+	fmt.Fprintf(w, "# HELP graphdb_disk_sync_seconds_total Cumulative storage file and directory sync latency in this process.\n# TYPE graphdb_disk_sync_seconds_total counter\ngraphdb_disk_sync_seconds_total %g\n", float64(diskSyncNanos.Load())/float64(time.Second))
 }

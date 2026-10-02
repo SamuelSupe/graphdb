@@ -113,7 +113,9 @@ func restoreSnapshot(ctx context.Context, machine StateMachine, dir string, snap
 	return streaming.RestoreSnapshot(ctx, snapshot.Metadata.Index, file)
 }
 
-func (n *Node) startStreamSnapshot(conf raftpb.ConfState) (chan snapshotBuild, error) {
+func (n *Node) startStreamSnapshot(conf raftpb.ConfState) (result chan snapshotBuild, err error) {
+	finish := n.metrics.Start("snapshot_capture")
+	defer func() { finish(err) }()
 	machine, ok := n.machine.(StreamingStateMachine)
 	if !ok {
 		return nil, fmt.Errorf("state machine does not support streaming snapshots")
@@ -188,6 +190,8 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 	defer source.Close()
 	dir := filepath.Join(n.cfg.Dir, "snapshots")
 	err := prepareSnapshotDirectory(n.cfg.Dir)
+	finish := n.metrics.Start("snapshot_build")
+	defer func() { finish(err) }()
 	var data []byte
 	if err == nil {
 		file, createErr := os.CreateTemp(dir, ".build-")

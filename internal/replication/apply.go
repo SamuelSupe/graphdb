@@ -20,7 +20,9 @@ type BatchStateMachine interface {
 	ApplyBatch(context.Context, []ApplyEntry) ([][]byte, error)
 }
 
-func (n *Node) applyEntries(entries []raftpb.Entry) error {
+func (n *Node) applyEntries(entries []raftpb.Entry) (err error) {
+	finish := n.metrics.Start("apply")
+	defer func() { finish(err) }()
 	batcher, canBatch := n.machine.(BatchStateMachine)
 	for offset := 0; offset < len(entries); {
 		var commands []proposal

@@ -47,6 +47,8 @@ graphdb runtime-restore /backup/node.runtime --max-bytes 1099511627776
 
 监控应抓取每个节点的私有管理端口，不能只抓取 Leader 网关。`leader_known` 不是实时 quorum 证明；结合入口 readiness、所有副本状态和请求错误率判断。索引健康指标是最近一次检查结果，安排周期检查才能发现新损坏。Prometheus 的 `up` 和抓取失败告警应由监控平台配置。
 
+后续诊断补齐 Raft 内部耗时、逐副本复制状态、独立 WAL/Raft 磁盘、准入并发与排队、catalog 迁移状态、router 缓存与上游错误、进程内存/GC。catalog 和 router 的本地入口同样在故障或 drain 期间可读。指标口径、采集配置和诊断示例见[诊断指标说明](diagnostics-metrics.zh-CN.md)；本轮实际验证见[诊断验证记录](diagnostics-validation-2026-10-02.zh-CN.md)。
+
 ## 受保护的部署示例
 
 [单机模板](../deploy/production/standalone.yml) 仅发布 TLS 网关端口，数据和管理端口分离并限制在内部网络。[Raft 覆盖配置](../deploy/production/raft.override.yml) 同样取消裸后端端口暴露，管理入口独立代理。二者复用现有 [Nginx 认证契约](../deploy/nginx/graphdb.conf.example)。

@@ -517,6 +517,10 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 		`graphdb_ingest_flush_total{status="ok"} 1`,
 		`graphdb_ingest_flush_manifest_publishes_count{status="ok"} 1`,
 		`graphdb_ingest_wal_recovery_total{status="ok"} 1`,
+		`graphdb_filesystem_inspection_success{role="wal"} 1`,
+		`graphdb_filesystem_write_ready{role="wal"} 1`,
+		`graphdb_build_info{`,
+		`graphdb_go_heap_objects_bytes`,
 	} {
 		if !strings.Contains(metrics, want) {
 			t.Fatalf("metrics missing %q:\n%s", want, metrics)

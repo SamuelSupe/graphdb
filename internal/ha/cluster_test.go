@@ -351,13 +351,38 @@ func TestHADiagnosticsRemainLocalWithoutQuorum(t *testing.T) {
 	if err := group.nodes[leader].cluster.Node.ReadBarrier(ctx); err == nil {
 		t.Fatal("strong read succeeded without quorum")
 	}
+	app := group.nodes[leader].cluster.App
+	catalogGate := &Cluster{App: &Application{Catalog: true}}
+	app.mu.Lock()
+	defer app.mu.Unlock()
 	for _, uri := range []string{"/v1/diagnostics", "/metrics"} {
 		request := httptest.NewRequest("GET", uri, nil)
 		request = request.WithContext(ctx)
 		writer := httptest.NewRecorder()
-		group.nodes[leader].handler.ServeHTTP(writer, request)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			catalogGate.ServeRoute(writer, request, false, true, group.nodes[leader].handler)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("local diagnostics %s blocked on the application barrier", uri)
+		}
 		if writer.Code != http.StatusOK {
 			t.Fatalf("local observation %s: %d %s", uri, writer.Code, writer.Body.String())
+		}
+		if uri == "/metrics" {
+			for _, want := range []string{
+				`graphdb_raft_operation_seconds_count{operation="read_barrier",status="timeout"}`,
+				`graphdb_raft_voters 3`,
+				`graphdb_filesystem_inspection_success{role="raft"} 0`,
+				`graphdb_go_goroutines`,
+			} {
+				if !strings.Contains(writer.Body.String(), want) {
+					t.Fatalf("missing local diagnostic %s: %s", want, writer.Body)
+				}
+			}
 		}
 	}
 }

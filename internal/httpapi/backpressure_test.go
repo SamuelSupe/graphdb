@@ -61,6 +61,12 @@ func TestHTTPWriteAdmissionQueueTimeoutReturns429(t *testing.T) {
 	if rr.Code != 429 || !strings.Contains(body, `"code":"write_admission_queue_timeout"`) {
 		t.Fatalf("status=%d body=%s, want admission backpressure", rr.Code, body)
 	}
+	metrics := serveJSON(handler, "GET", "/metrics", "", nil)
+	for _, want := range []string{`graphdb_admission_active{pool="write"} 1`, `graphdb_admission_waiting{pool="write"} 0`, `graphdb_admission_global_limit{pool="write"} 1`} {
+		if metrics.Code != 200 || !strings.Contains(metrics.Body.String(), want) {
+			t.Fatalf("write admission saturation diagnostics missing %s: %s", want, metrics.Body)
+		}
+	}
 }
 
 func TestHTTPIngestBackpressureReturns429WithoutFailedItems(t *testing.T) {
