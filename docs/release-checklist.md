@@ -18,7 +18,7 @@ The 2.1.2 capacity envelope remains `performance_unqualified`.
 
 ## Runtime and compatibility
 
-- [ ] Only local storage, local coordination, and `all` mode are accepted.
+- [ ] Standalone accepts local storage, local coordination, and `all`; complete Raft configuration enables the separate replicated path.
 - [ ] The data directory is exclusively locked; clean exit and process death permit reopening.
 - [ ] PostgreSQL-marked data is rejected without automatic takeover.
 - [ ] The local Parquet/WAL format introduced in 2.0, `data_hash` and matching SDKs pass; existing 2.0/2.1 directory reuse is documented.
@@ -52,15 +52,15 @@ The 2.1.2 capacity envelope remains `performance_unqualified`.
 - [ ] Large restore, replica replacement, shard addition, migration interruption/cancellation and old-directory role protection pass.
 - [ ] Thirty-minute Raft WAL mixed workload with compact, GC and index rebuild passes; record its actual size and rate without a capacity claim.
 - [ ] Three independent fault domains pass host-loss/network/recovery qualification, or record NOT RUN with the release boundary explicitly restricted.
-- [ ] Whole-group upgrade, unsupported downgrade combinations, protected private transport, redundant entry points and backup recovery are documented and validated for the deployment.
+- [ ] Qualified rolling windows, separate protocol activation, unsupported downgrade combinations, protected private transport, redundant entry points and backup recovery are documented and validated for the deployment.
 - [ ] Include both Raft Compose examples, HAProxy configuration, gate fixtures and reports in the extracted release archive; validate their configuration there.
 
 See [Raft release readiness](raft-release-readiness.zh-CN.md) for current gaps and
-[operations](raft-operations.zh-CN.md) for the maintenance upgrade boundary.
+[operations](raft-operations.zh-CN.md) for the qualified upgrade boundary.
 
 ## Main release
 
-- [ ] Fast-forward GitHub `main` to the verified local-disk implementation; preserve historical tags.
+- [ ] Fast-forward GitHub `main` to the verified standalone/Raft implementation; preserve historical tags.
 - [ ] Publish a new annotated tag matching `VERSION` on that commit.
 - [ ] Publish as a stable Release with `latest=true`, after gates pass or the release-specific exception is recorded as above.
 - [ ] Verify remote main/tag, workflow conclusions and SDK/module versions; verify GitHub Pages when site content changes.

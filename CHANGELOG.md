@@ -3,27 +3,38 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## Unreleased: Raft release preparation
+## [2.2.0] - 2026-10-02
 
-- Retain standalone direct/WAL deployments alongside three-replica Raft and
-  independent tenant shard groups.
-- Replicate restore input in 1 MiB parts, resume after leader loss, verify the
-  complete digest before publication, and clean up terminal transfers.
-- Discover queued restores into absent tenants and preserve empty query-template
-  lists after task persistence so restore drills do not run phantom queries.
-- Keep a quorum-confirmed leader eligible at the gateway during maintenance;
-  graph reads still wait for committed application and never bypass it.
-- Allow up to two minutes of internal Raft request waiting during maintenance,
-  while preserving shorter caller deadlines; this is not a latency guarantee.
-- Read bounded HTTP input before waiting for application, preventing maintenance
-  waits from exhausting the socket read deadline and producing false HTTP 413s.
-- Add real-container failure, coexistence and sharding gates to CI, require a
-  thirty-minute Raft workload for release, and package deployment/evidence files.
-- Require the packaged Linux binary to match the Raft-qualified binary digest.
+- Add optional Share-Nothing Raft with majority durability and strong reads,
+  alongside the default standalone direct/WAL deployment.
+- Add a replicated tenant catalog, independent data groups, stable placement,
+  shard expansion, explicit migration/cancellation, and disk-backed resumable
+  transfer. One tenant remains entirely within one data group.
+- Support qualified protocol-1 rolling upgrades with safe draining, leadership
+  transfer, follower forwarding, redundant routers and a serial coordinator.
+  Protocol 2/3 features require separate activation after all voters support them.
+- Fix replica admission divergence, accepted WAL application stalls, membership
+  races, stale tasks and migration flushes, and corrupted import publication.
+- Stream optional snapshots and large recovery input, preserve resumable transfer
+  identity, and protect full-runtime cold restore and replica directory roles.
+- Make maintenance fair across tenants, pause only conflicting tenant writes,
+  prepare protocol-3 GC outside the application barrier, and batch durable
+  before-images before final publication.
+- Separate Raft control transport, configure election timing independently,
+  isolate disk probes, and align gateway withdrawal with upgrade drain waits.
+- Retain verified active routes for a bounded catalog outage; unknown or expired
+  routes fail closed and data groups continue enforcing epoch and majority rules.
+- Expose local diagnostics, timing, queue, drain, maintenance and router metrics,
+  with operational alert examples and deployable failure/soak gates.
+- Align SDK/OpenAPI versions, build identity, deployment documentation and release
+  packages; verify protocol 1/2/3 evidence against the packaged Linux binary.
 
-The new restore commands require a whole-group maintenance upgrade; older
-binaries cannot execute them or safely downgrade the existing replica directory.
-Cross-host qualification remains pending. See [release readiness](docs/raft-release-readiness.zh-CN.md).
+Standalone 2.0/2.1 directories remain compatible after shutdown. Raft compatibility
+is limited to the tested source/target/protocol window; protocol 3 persists a
+minimum supported version and prevents reopening with a protocol-2-only binary.
+Cross-host, production capacity and day-scale stability remain pending. Tenant
+maintenance can return 429 and exhibit long waits; no general throughput or
+latency guarantee is claimed. See [2.2.0 qualification](docs/validation-v2.2.0.md).
 
 ## [2.1.2] - 2026-09-29
 

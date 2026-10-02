@@ -75,7 +75,9 @@ requirement and must evaluate the original method, URI, identity, and tenant
 together.
 
 WAL responses use `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`.
-Send data and status requests to the same GraphDB process. No owner routing is needed.
+Standalone data and status requests address the same process. Raft uses the same HA
+entry point and forwards to the leader; sharded routers select the tenant data group.
+WAL 202 confirms acceptance, not graph publication.
 
 ## Required Network Controls
 
@@ -89,3 +91,17 @@ Send data and status requests to the same GraphDB process. No owner routing is n
 GGraphDB does not currently implement row-level authorization inside a tenant.
 If users need sub-tenant visibility, enforce it upstream or use separate
 tenants.
+
+## Private Raft and sharding boundary
+
+Use distinct ports for private Raft and a separate admin listener; if Raft uses
+8081, admin can use 8082. `/raft/*` validates a shared Bearer token and cluster
+identity. Catalog/shard administration and router drain/diagnostics also require
+the private token. These tokens are not user identity or tenant RBAC. Business
+traffic still needs gateway authentication, and cross-host transport needs a
+protected network or TLS tunnel. The example HAProxy provides health routing,
+not authentication or TLS; do not expose it directly to the Internet.
+
+Scrape diagnostics on every replica/router. Readable metrics or successful
+readiness do not prove whole-group health. See [Raft operations](raft-operations.zh-CN.md)
+and [diagnostic metrics](diagnostics-metrics.zh-CN.md).

@@ -8,7 +8,7 @@ GGraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务
 当前 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
 `200/207` 结果，并提供 WAL 的 `202` acceptance、`Location`/local status
 资源、轮询/等待，以及 ingest CAS、条件和 atomic 选项。Go 和 Python SDK
-包版本均为 `2.1.2`。
+包版本均为 `2.2.0`。
 
 SDK 覆盖：
 
@@ -21,6 +21,8 @@ SDK 覆盖：
 - saved query 和运行中查询控制；
 - task、索引健康/重建、reader freshness、writer lease、审计/修复；
 - 带错误码和重试提示的结构化 API 错误。
+
+SDK 不自动重试结果不确定的变更，也不自动保存 Raft 租户代次。HA 的 `min_version` 读取须保存写响应的 `X-GraphDB-Tenant-Generation`，并传 `X-GraphDB-Read-Generation`；需要响应头时使用 HTTP 客户端显式处理。集群管理、迁移和滚动升级使用专用 API/脚本，见 [Raft 运维](../raft-operations.zh-CN.md)。
 
 ## Go SDK
 
@@ -43,11 +45,11 @@ if err != nil {
 }
 ```
 
-读写分离时使用不同客户端：
+可以使用不同客户端配置，但它们应指向同一个单机服务或已鉴权的 HA 入口；不提供独立 reader/writer 进程：
 
 ```go
 writer, _ := graphdb.NewClient("http://127.0.0.1:38080", graphdb.WithTenant("demo"))
-reader, _ := graphdb.NewClient("http://127.0.0.1:38081", graphdb.WithTenant("demo"))
+reader, _ := graphdb.NewClient("http://127.0.0.1:38080", graphdb.WithTenant("demo"))
 ```
 
 ### Go：直接 Commit

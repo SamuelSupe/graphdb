@@ -2,19 +2,19 @@
 
 [English](naming-and-compatibility.md)
 
-当前发行版为 **2.1.2**，由 `main` 开发。每个本地数据目录只由一个进程占用；
-S3 兼容对象存储仅用于可选快照备份与按需恢复。不支持远端在线存储、PostgreSQL
+当前发行版为 **2.2.0**，由 `main` 开发。每个本地数据目录只由一个进程占用；
+默认单机，亦可启用独立副本的 Raft 和租户分片；S3 兼容对象存储仅用于可选快照备份与按需恢复。不支持远端在线存储、PostgreSQL
 协调、独立 reader/writer、多实例共享目录或网络文件系统。
 
 ## 版本标识
 
 | 标识 | 当前契约 |
 | --- | --- |
-| 产品与发行标签 | `VERSION` 为 `2.1.2`；标签为 `v2.1.2` |
-| Go/Python SDK 与 OpenAPI 文档版本 | `2.1.2` |
+| 产品与发行标签 | `VERSION` 为 `2.2.0`；标签为 `v2.2.0` |
+| Go/Python SDK 与 OpenAPI 文档版本 | `2.2.0` |
 | Go 模块 | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP 路由命名空间 | `/v1/...`，不代表产品主版本 |
-| Parquet/WAL 与快照格式 | 2.0 引入，2.1 沿用 |
+| Parquet/WAL 与快照格式 | 单机沿用 2.0/2.1；Raft 另有协议和目录角色标记 |
 
 Go SDK 导入路径为 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`。
 `extensions/v1.1/` 等目录名是布局标识，不是产品版本，也不构成跨主版本兼容承诺。
@@ -24,7 +24,7 @@ Go SDK 导入路径为 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`。
 
 - 新安装及替换 1.x 时使用新目录。不提供 1.x 自动迁移或旧 `data_md5` 响应。
   1.x 安装与备份独立保留，不得用 1.x 二进制打开 2.x 数据。
-- 2.1 沿用 2.0 本地数据与快照格式。停止旧进程后，可以在相同数据根目录和 prefix 下
+- 单机 2.2 沿用 2.0/2.1 本地数据与快照格式。停止旧进程后，可以在相同数据根目录和 prefix 下
   复用 2.0/2.1 目录。允许复用目录不代表允许不同进程或版本同时访问。
 - 升级兼容不承诺直接降级二进制或跨主版本回滚。保留经过验证的升级前备份，并遵循
   [升级步骤](user/release-deployment.zh-CN.md#从-20-升级)。
@@ -42,12 +42,18 @@ Go SDK 导入路径为 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`。
 GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然是文本 DSL。
 兼容控制路由中的 `reader`、`writer`、`fleet` 名称描述本地状态，不是 Raft 成员管理接口；可选分布式部署见 [Raft 运行说明](raft-ha.zh-CN.md)。
 
+## Raft 协议与升级
+
+产品版本、Raft 协议和快照格式分别管理。默认 Raft 协议为 1，最高支持 3。
+协议 2 的流式快照/准备维护、协议 3 的准备 GC 须在全组具备支持后独立启用；
+已持久化协议 3 的目录不能由最高协议为 2 的程序打开。滚动升级只限于
+[已验证来源、目标和协议窗口](raft-rolling-upgrade.zh-CN.md)。
+单机与副本目录不能直接互换；跨部署使用 API 导入或备份恢复到新目录。
+
 ## 发行状态与性能承诺
 
-2.1.2 已发行，单元/vet/race、SDK、HTTP/重启、S3 备份恢复和发行包检查通过。
-30 分钟混合负载按本次发布要求提前停止，状态为**未完成**，不能计为持续负载通过。
-后续发行的默认标签工作流仍保留该门禁。
-
-具体证据见 [2.1.2 验证记录](validation-v2.1.2.md)和[写入长尾实测](performance-write-tail.md)。
-容量状态仍为 `performance_unqualified`；稳定发行标签不代表所有规模和延迟目标均获认证。
+2.2.0 的验收范围见 [版本验证](validation-v2.2.0.md)，实际发布工作流和包内证据核对具体发行二进制。
+候选已通过本机 30 分钟 Raft 维护负载，但存在预期 429 与十秒级写入长尾。
+跨宿主机、真实容量与天级稳定性尚未验收，稳定标签不代表所有规模和延迟目标均获认证。
+`release/capacity-envelope.yaml` 保留 2.1.2 的历史 `performance_unqualified` 记录，不能用作 2.2.0/Raft 容量承诺。
 历史报告仅描述各自版本。

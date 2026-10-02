@@ -1,4 +1,4 @@
-# GGraphDB 2.1
+# GGraphDB 2.2
 
 [简体中文](README.zh-CN.md)
 
@@ -11,20 +11,24 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.1.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.2) is the main
-release, developed on `main`. Local disk holds the live graph; optional
-S3-compatible object storage holds snapshot backups for on-demand recovery.
-See the [2.1.2 release notes](release/local-disk.md) and
-[version boundaries](docs/naming-and-compatibility.md). There is no 1.x migration
-or legacy digest compatibility layer. Upgrading from 1.x requires a new directory;
-2.0/2.1 installations can reuse their directory after stopping the old process.
-2.1 adds [scheduled S3 backups, retries, retention, and restore drills](docs/object-backup.md#automatic-backups), disabled by default.
+[2.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.0) is the main
+release, developed on `main`. The same binary supports standalone direct/WAL,
+Raft with independent local replicas, and tenant sharding across Raft groups.
+It adds protected cluster administration, resumable migration and recovery,
+compatible rolling upgrades, and local diagnostics. See the
+[release notes](release/local-disk.md) and [version boundaries](docs/naming-and-compatibility.md).
 
-2.1.2 reduces GC work under the tenant lock by deferring validation of orphan
-index files still protected by active queries. It keeps the existing data format,
-API and synchronous durability defaults. Unit/race, HTTP and S3 checks passed;
-the 30-minute endurance run was stopped by explicit release decision and remains
-unvalidated for this release.
+Standalone 2.0/2.1 data directories remain compatible after stopping the old
+process. Raft directories have separate ownership and protocol requirements;
+use the [qualified rolling upgrade window](docs/raft-rolling-upgrade.zh-CN.md).
+S3 backup automation remains available in standalone mode; Raft uses external
+scheduling of cluster backup APIs. No 1.x migration is provided.
+
+The candidate passed local failure, recovery, sharding and rolling checks, plus
+a thirty-minute Raft workload. Cross-host qualification and production capacity
+remain pending. Maintenance can return retryable 429s and cause long write waits;
+this release does not promise a throughput gain or low-latency SLO. See the
+[2.2.0 validation scope](docs/validation-v2.2.0.md).
 
 ## Capabilities
 
@@ -55,13 +59,13 @@ The same binary supports standalone and both Raft deployment options:
 
 Disk guards, streaming snapshots, prepared maintenance, full runtime recovery and operational diagnostics are described in the [operations guide](docs/product-operations.zh-CN.md).
 
-Raft qualification and the remaining release gates are tracked in the
+Raft qualification and the remaining deployment acceptance work are tracked in the
 [release readiness report](docs/raft-release-readiness.zh-CN.md).
 
 | Deployment | Selection | Durability | Operations |
 | --- | --- | --- | --- |
 | Standalone (default) | Leave `GRAPHDB_RAFT_*` unset; use `docker-compose.yml` | Local synchronous direct / WAL writes | Scheduled maintenance, automatic S3 backups, offline CLI after shutdown |
-| Three-replica Raft | Configure `GRAPHDB_RAFT_NODE_ID` and the other required Raft settings; use `docker-compose.raft.yml` | Majority persistence, a full copy per node | Leader failover and cluster API maintenance; external backup scheduling in the first version |
+| Raft (three replicas by default) | Configure `GRAPHDB_RAFT_NODE_ID` and the other required Raft settings; use `docker-compose.raft.yml` | Majority persistence, a full copy per node | Leader failover and cluster API maintenance; external backup scheduling in the first version |
 | Sharded Raft | Add catalog / shard roles and `serve-router`; use `docker-compose.sharded.yml` | Independent majority persistence in each shard and the catalog | Add shards, assign new tenants and explicitly move existing tenants |
 
 All accept direct and WAL ingestion and can run independently with separate
@@ -117,18 +121,25 @@ select columns and row groups. Reads use bounded caches and local invalidation.
 GC defers files protected by active read views; destructive lifecycle operations
 wait for those views to finish.
 
-In a focused OrbStack workload with four writers, sixteen readers and background
-maintenance, write P95 fell from 11.77–12.34 s to 8.08 s. This is a limited
-measurement, not a production latency guarantee: writes still have second-scale
-tails, and compaction duration showed an unresolved regression signal. See the
-[write-tail report](docs/performance-write-tail.md) for the method and limits and
-[2.1.2 validation](docs/validation-v2.1.2.md) for release checks.
-Historical reports, including [2.0](docs/performance-v2.0.md), describe their own builds.
+Raft maintenance preparation runs outside the application barrier where the
+protocol permits; conflicting writes pause only the maintenance tenant. Control
+messages use separate bounded transport queues, and migration uses disk-backed
+chunks. Final publication, graph decoding and rollback still have resource costs.
+
+The local candidate's thirty-minute workload recorded 71,140 operations without
+unexpected operation errors, while ingestion included 90 expected 429s and a
+40.154-second maximum wait. These are scoped correctness observations, not a
+capacity or latency guarantee. See [qualification](docs/validation-v2.2.0.md).
+Historical [2.1.2 write-tail measurements](docs/performance-write-tail.md) and
+[2.0 results](docs/performance-v2.0.md) apply only to their recorded builds.
 
 ## Documentation
 
 - [Local disk operation and validation](docs/local-disk.md)
-- [2.1.2 write-tail measurements and limits](docs/performance-write-tail.md)
+- [2.2.0 validation and remaining limits](docs/validation-v2.2.0.md)
+- [Raft operations and rolling upgrades](docs/raft-operations.zh-CN.md)
+- [Tenant sharding and migration](docs/sharding.zh-CN.md)
+- [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md)
 - [Architecture](docs/architecture.en.md)
 - [User guide](docs/user/README.md)
 - [Query capabilities](docs/query_capabilities.md)

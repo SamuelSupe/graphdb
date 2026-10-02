@@ -5,9 +5,10 @@ layout. Do not commit generated graph state, credentials, capacity runs, or
 customer data.
 
 `main` ships GGraphDB 2.x: one process owns local disk; object storage holds
-snapshot backups. The release version is recorded in `VERSION`; HTTP `/v1`, the
+snapshot backups. Optional Raft uses independent replica directories and tenant-sharded
+groups; its protocol and upgrade contracts are separate. The release version is recorded in `VERSION`; HTTP `/v1`, the
 Go module `/v2`, and the persisted format are separate version identifiers.
-2.1 retains the 2.0 data format. A fresh directory is required for a new
+Standalone 2.2 retains the 2.0/2.1 data format. A fresh directory is required for a new
 installation or replacement of 1.x; stop the old process before reusing an
 existing 2.0/2.1 directory. There is no 1.x migration. See
 [version boundaries](docs/naming-and-compatibility.md).

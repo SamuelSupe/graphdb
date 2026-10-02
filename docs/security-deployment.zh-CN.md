@@ -68,7 +68,7 @@ header。
 租户一起校验。
 
 WAL 响应使用 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`。
-数据请求和状态查询都发送到同一个 GraphDB 进程，无需 owner 路由。
+单机的数据请求和状态查询都发送到同一个 GraphDB 进程。Raft 请求使用同一 HA 入口，副本转发到 Leader；分片入口按租户路由到数据组。WAL 202 是受理，不能视为图已经发布。
 
 ## 必须落实的网络控制
 
@@ -81,3 +81,13 @@ WAL 响应使用 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`。
 
 GGraphDB 当前不提供租户内部的行级授权。需要子租户可见性时，应在上游
 强制执行，或拆成独立租户。
+
+## Raft 与分片的私有边界
+
+Raft 私有监听器与独立 admin listener 使用不同端口；例如 Raft 使用 8081 时，admin 可配置 8082，不能复用同一地址。
+`/raft/*` 校验共享 Bearer 令牌和集群身份；目录、分片管理及 router 的摘流/诊断接口也要求私有令牌。
+这些令牌不是用户身份或租户 RBAC。业务流量仍须经过上述网关认证，生产跨主机传输须配置私有网络或 TLS 隧道。
+示例 HAProxy 只提供健康选路，不提供认证或 TLS；不要直接作为互联网入口。
+
+所有副本与 router 逐进程采集诊断，禁止把指标可读或 readiness 成功视为整组健康证明。
+部署及升级边界见 [Raft 运维](raft-operations.zh-CN.md) 和 [诊断指标](diagnostics-metrics.zh-CN.md)。

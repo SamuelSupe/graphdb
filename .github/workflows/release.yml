@@ -187,10 +187,14 @@ jobs:
           from pathlib import Path
           report = json.loads(Path('release/evidence/raft-gate/metadata.json').read_text())
           enhanced = json.loads(Path('release/evidence/raft-gate/enhanced/metadata.json').read_text())
+          protocol3 = json.loads(Path('release/evidence/raft-gate/protocol3/metadata.json').read_text())
+          rolling = json.loads(Path('release/evidence/raft-gate/rolling/metadata.json').read_text())
           digest = hashlib.file_digest(Path('bin/graphdb-linux-amd64').open('rb'), 'sha256').hexdigest()
           assert report['result'] == 'PASS', report
           assert digest == report['binary_sha256'], 'packaged binary differs from the Raft-qualified binary'
           assert enhanced['result'] == 'PASS' and enhanced['binary_sha256'] == digest, 'enhanced Raft qualification differs from the packaged binary'
+          assert protocol3['result'] == 'PASS' and protocol3['protocol'] == 3 and protocol3['binary_sha256'] == digest, 'protocol 3 qualification differs from the packaged binary'
+          assert rolling['result'] == 'PASS' and rolling['target']['binary_sha256'] == digest, 'rolling target differs from the packaged binary'
           PY
           bin/graphdb-linux-amd64 version
           export GRAPHDB_RAFT_TOKEN=release-configuration-check-only-0123456789

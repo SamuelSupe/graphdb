@@ -9,7 +9,7 @@ internal services, and operations tools.
 The current SDKs expose the current ingest contract. Both preserve direct-mode
 terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
 local status resource, polling/waiting, and ingest CAS/conditional/atomic
-options. The Go and Python SDK package versions are `2.1.2`.
+options. The Go and Python SDK package versions are `2.2.0`.
 
 SDK scope:
 
@@ -22,6 +22,12 @@ SDK scope:
 - saved query and running query control.
 - task, index health/rebuild, reader freshness, writer lease, audit/repair.
 - structured API errors with code and retry hints.
+
+The SDKs do not automatically retry mutations with uncertain results or retain Raft
+tenant generations. HA `min_version` reads must retain the write response
+`X-GraphDB-Tenant-Generation` and send `X-GraphDB-Read-Generation`; use an HTTP client
+to handle response headers explicitly. Cluster administration, migration and rolling
+upgrades use their dedicated APIs/scripts; see [Raft operations](../raft-operations.zh-CN.md).
 
 ## Go SDK
 
@@ -44,11 +50,12 @@ if err != nil {
 }
 ```
 
-Use separate writer and reader clients when deployed separately:
+Clients may use separate configurations, but both must address the same standalone
+service or authenticated HA entry point; separate reader/writer processes are unsupported:
 
 ```go
 writer, _ := graphdb.NewClient("http://127.0.0.1:38080", graphdb.WithTenant("demo"))
-reader, _ := graphdb.NewClient("http://127.0.0.1:38081", graphdb.WithTenant("demo"))
+reader, _ := graphdb.NewClient("http://127.0.0.1:38080", graphdb.WithTenant("demo"))
 ```
 
 ### Go: Direct Commit

@@ -31,8 +31,9 @@ disclosure.
 
 ## Deployment Boundary
 
-GGraphDB does not authenticate callers itself. `X-Tenant-ID` is routing metadata,
-not identity. Production deployments must use the controls in
+Business APIs rely on gateway authentication and authorization. `X-Tenant-ID` is
+routing metadata, not identity. Private Raft, catalog and router administration
+validate their shared Bearer token; this does not provide per-user tenant authorization. Production deployments must use the controls in
 [docs/security-deployment.md](docs/security-deployment.md), including TLS,
 authentication, tenant-header replacement, RBAC, listener isolation, and
 credential scoping.

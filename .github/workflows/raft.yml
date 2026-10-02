@@ -13,10 +13,13 @@ permissions:
 jobs:
   raft:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 80
+    env:
+      DOCKER_CONTEXT: default
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Build candidate image
         run: |
@@ -29,6 +32,28 @@ jobs:
           GRAPHDB_GATE_IMAGE: graphdb:raft-gate
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate
         run: scripts/raft_gate.sh
+      - name: Qualify rolling upgrade from the diagnostic development build
+        if: inputs.soak
+        env:
+          GRAPHDB_ROLLING_BASE_IMAGE: graphdb:raft-rolling-source
+          GRAPHDB_ROLLING_TARGET_IMAGE: graphdb:raft-gate
+          GRAPHDB_ROLLING_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate/rolling
+          GRAPHDB_ROLLING_BASE_COMMIT: b22cac8b046a695f14e7d02909d6570f546e989a
+        run: |
+          set -euo pipefail
+          baseline="$RUNNER_TEMP/raft-rolling-source"
+          mkdir -p "$baseline"
+          git archive "$GRAPHDB_ROLLING_BASE_COMMIT" | tar -x -C "$baseline"
+          docker build --build-arg VERSION=2.1.2-raft-diagnostics1 \
+            --build-arg COMMIT="$GRAPHDB_ROLLING_BASE_COMMIT" \
+            --build-arg BUILD_DATE="$(git show -s --format=%cI "$GRAPHDB_ROLLING_BASE_COMMIT")" \
+            -t "$GRAPHDB_ROLLING_BASE_IMAGE" "$baseline"
+          export GRAPHDB_ROLLING_BASE_SHA256="$(docker run --rm --entrypoint sha256sum \
+            "$GRAPHDB_ROLLING_BASE_IMAGE" /usr/local/bin/graphdb | cut -d' ' -f1)"
+          export GRAPHDB_ROLLING_TARGET_VERSION="$GITHUB_REF_NAME"
+          export GRAPHDB_ROLLING_TARGET_COMMIT="$GITHUB_SHA"
+          export GRAPHDB_RAFT_TOKEN="$(openssl rand -hex 32)"
+          python3 scripts/raft_rolling_gate.py
       - name: Run streaming snapshots, prepared maintenance and runtime recovery gate
         env:
           GRAPHDB_GATE_IMAGE: graphdb:raft-gate

@@ -1,4 +1,4 @@
-# GGraphDB 2.1
+# GGraphDB 2.2
 
 [English](README.md)
 
@@ -8,15 +8,18 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 
 ## 当前版本
 
-[2.1.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.1.2) 是主版本，由 `main` 发布。
-在线图数据存放在本地盘，S3 兼容对象存储用于快照备份与按需恢复。
-不提供 1.x 迁移或旧摘要兼容层；从 1.x 升级需要新目录。2.0/2.1 用户停止旧进程后可沿用原目录。
-2.1 新增[定时 S3 备份、重试、保留清理和恢复演练](docs/object-backup.zh-CN.md#自动备份)，默认关闭。
-二进制、契约变化及验证证据见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+[2.2.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.0) 是主版本，由 `main` 发布。
+同一二进制支持单机 direct/WAL、使用独立磁盘的 Raft 副本，以及按租户分片的多个 Raft 组。
+本版增加受保护的集群管理、可续传迁移和恢复、兼容窗口内的滚动升级及本地诊断。
+二进制、契约和验证范围见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
-2.1.2 延后校验仍被活跃查询保护的孤儿索引文件，减少 GC 在租户锁内的无效工作。
-磁盘格式、API 和同步持久化默认值保持不变。单元/race、HTTP 和 S3 检查通过；
-本次按发布要求提前停止 30 分钟持续负载，该项未完成，不计为通过。
+单机 2.0/2.1 用户停止旧进程后可沿用原目录；Raft 目录具有独立的角色和协议要求，
+升级遵循[已验收的滚动兼容窗口](docs/raft-rolling-upgrade.zh-CN.md)。单机继续支持自动 S3 备份，
+Raft 由外部调度调用集群备份 API。不提供 1.x 迁移。
+
+候选已通过本机故障、恢复、分片、滚动升级和 30 分钟 Raft 负载验证。
+跨宿主机与生产容量仍待验收；维护会产生可重试 429 和写入长尾，不承诺统一吞吐增幅或低延迟 SLO。
+范围见 [2.2.0 验证说明](docs/validation-v2.2.0.md)。
 
 ## 核心能力
 
@@ -43,12 +46,12 @@ docker compose up -d --build
 
 本轮磁盘保护、流式快照、维护隔离、完整灾备和诊断告警见 [产品运维说明](docs/product-operations.zh-CN.md)。
 
-Raft 正式发布的验收范围与剩余项目见 [发布准备状态](docs/raft-release-readiness.zh-CN.md)。
+Raft 验收范围与剩余部署验收见 [发布验收状态](docs/raft-release-readiness.zh-CN.md)。
 
 | 部署方式 | 启用方式 | 数据持久化 | 运维 |
 | --- | --- | --- | --- |
 | 单机（默认） | 不设置 `GRAPHDB_RAFT_*`；使用 `docker-compose.yml` | 本机同步 direct / WAL | 定时维护、自动 S3 备份、停机后离线 CLI |
-| 三副本 Raft | 完整配置 `GRAPHDB_RAFT_NODE_ID` 等参数；使用 `docker-compose.raft.yml` | 多数派持久化，节点各持完整副本 | Leader 接管、集群 API 维护；首版自动备份由外部调度 |
+| Raft（默认三副本） | 完整配置 `GRAPHDB_RAFT_NODE_ID` 等参数；使用 `docker-compose.raft.yml` | 多数派持久化，节点各持完整副本 | Leader 接管、集群 API 维护；首版自动备份由外部调度 |
 | 分片 Raft | 配置目录组、数据分片角色及 `serve-router`；使用 `docker-compose.sharded.yml` | 每个分片及目录组分别多数派持久化 | 新增分片、分配新租户、迁移已有租户，见 [分片运行说明](docs/sharding.zh-CN.md) |
 
 所有部署均支持 direct 和 WAL 接入，可在同一环境中使用不同端口、不同数据目录独立运行。已有单机目录保持兼容；Raft 副本目录不能通过删除配置切换成单机，单机数据也不能直接作为新 Raft 副本。跨部署迁移使用 API 导入或备份恢复到新目录。
@@ -95,15 +98,21 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/query/graphql \
 Parquet 直接通过文件随机读取选择列和行组，读缓存按本地发布通知失效。
 GC 延迟回收被活跃读视图保护的文件；清理提交、清空和恢复会等待相关读视图结束。
 
-在 OrbStack 的 4 写入、16 查询客户端并行运行后台维护的重点负载中，写入 P95 从
-11.77–12.34 秒降至 8.08 秒。这是有限范围的实测结果，不是生产延迟保证：仍有秒级写入
-长尾，压实耗时也出现尚未稳定归因的退化信号。方法与限制见[写入长尾报告](docs/performance-write-tail.md)，
-发布检查见 [2.1.2 验证记录](docs/validation-v2.1.2.md)。历史报告仅代表各自版本。
+Raft 在协议允许时把维护准备移出应用屏障，冲突持续时只暂停维护租户的新写入。
+控制消息使用独立有界队列，迁移按块落盘；最终发布、图解码和回滚仍有资源开销。
+
+本机候选 30 分钟负载记录 71,140 次操作、零非预期操作错误；写入包含 90 次预期 429，
+最大等待 40.154 秒。这些是限定范围的正确性观测，不构成容量或延迟保证，见
+[验收范围](docs/validation-v2.2.0.md)。历史 [2.1.2 写入长尾报告](docs/performance-write-tail.md)
+仅适用于其记录的构建。
 
 ## 文档与验证
 
 - [本地磁盘运行与验证](docs/local-disk.zh-CN.md)
-- [2.1.2 写入长尾实测与限制](docs/performance-write-tail.md)
+- [2.2.0 验证范围与限制](docs/validation-v2.2.0.md)
+- [Raft 运维与滚动升级](docs/raft-operations.zh-CN.md)
+- [租户分片与迁移](docs/sharding.zh-CN.md)
+- [诊断指标](docs/diagnostics-metrics.zh-CN.md)
 - [架构](docs/architecture.md)
 - [用户手册](docs/user/README.zh-CN.md)
 - [查询能力](docs/query_capabilities.md)、[GraphQL](docs/graphql.zh-CN.md)

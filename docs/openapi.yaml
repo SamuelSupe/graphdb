@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.1.2
-  description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Version 2.1 retains the 2.0 data format and adds optional S3 backup automation. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
+  version: 2.2.0
+  description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Standalone 2.2 retains the 2.0/2.1 data format and optional S3 backup automation; Raft has separate replica-directory and protocol upgrade requirements. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
 security:
@@ -190,7 +190,7 @@ paths:
       summary: Report whether this process is ready to receive traffic.
       responses:
         '200':
-          description: The process, object store, and configured coordinator are ready. Raft HA additionally requires the leader to complete a majority read barrier.
+          description: The process, object store, and configured coordinator are ready. Raft HA additionally requires leader majority confirmation without waiting for committed application; graph operations still wait for application. Router readiness may use bounded verified active-route fallback during catalog outages.
           content:
             application/json:
               schema:
