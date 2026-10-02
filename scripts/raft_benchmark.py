@@ -94,6 +94,9 @@ class Cluster:
                 raise RuntimeError('replica exited; inspect server logs')
             for i in range(1, self.replicas+1):
                 try:
+                    status = request(f'http://127.0.0.1:{port+i}', '/v1/health').get('raft', {})
+                    if status.get('leader_id') != i or status.get('draining'):
+                        continue
                     request(f'http://127.0.0.1:{port+i}', '/v1/readiness')
                     return i
                 except (OSError, urllib.error.URLError):

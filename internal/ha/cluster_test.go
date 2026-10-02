@@ -34,6 +34,7 @@ type testReplica struct {
 	store               *storage.TenantStore
 	peer                *httptest.Server
 	blocked             atomic.Bool
+	blockedMessages     atomic.Bool
 	loseInstallResponse atomic.Bool
 	loseStageResponse   atomic.Bool
 	stageRequests       atomic.Int64
@@ -60,7 +61,7 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 	for i := 0; i < 3; i++ {
 		replica := &testReplica{}
 		replica.peer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if replica.blocked.Load() {
+			if replica.blocked.Load() || (replica.blockedMessages.Load() && r.URL.Path == "/raft/message") {
 				http.Error(w, "partitioned", http.StatusServiceUnavailable)
 				return
 			}
@@ -273,7 +274,7 @@ func TestHAReplicationFailoverAndSnapshot(t *testing.T) {
 	group.mustRequest(leader, "POST", "/v1/commits", body, http.StatusOK)
 	initial := group.manifest(leader)
 	follower := (leader + 1) % 3
-	group.mustRequest(follower, "GET", "/v1/entities", "", http.StatusServiceUnavailable)
+	group.mustRequest(follower, "GET", "/v1/entities", "", http.StatusOK)
 	group.stop(follower)
 	for i := 0; i < 8; i++ {
 		group.mustRequest(leader, "POST", "/v1/commits", fmt.Sprintf(`{"idempotency_key":"update-%d","mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"name":"value-%d"}}]}}`, i, i), http.StatusOK)

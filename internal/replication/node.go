@@ -12,8 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 var ErrNotLeader = errors.New("Raft node is not the leader")
@@ -28,20 +30,22 @@ type StateMachine interface {
 }
 
 type Config struct {
-	ID               uint64
-	ClusterID        string
-	Dir              string
-	Peers            map[uint64]string
-	Bootstrap        bool
-	Token            string
-	Tick             time.Duration
-	SnapshotEntries  uint64
-	MaxSnapshotBytes int64
+	ID                  uint64
+	ClusterID           string
+	Dir                 string
+	Peers               map[uint64]string
+	Bootstrap           bool
+	Token               string
+	Tick                time.Duration
+	SnapshotEntries     uint64
+	MaxSnapshotBytes    int64
+	AllowLegacyProtocol bool
 }
 
 type proposal struct {
-	ID   string `json:"id"`
-	Data []byte `json:"data"`
+	ID       string `json:"id"`
+	Data     []byte `json:"data"`
+	Protocol int    `json:"protocol,omitempty"`
 }
 
 type result struct {
@@ -82,6 +86,10 @@ type Node struct {
 	client             transportClient
 	application        chan applicationBatch
 	snapshotRequests   chan snapshotRequest
+	maintenanceMu      sync.Mutex
+	handoff            bool
+	activeProposals    int
+	draining           atomic.Bool
 }
 
 type snapshotRequest struct {
@@ -224,6 +232,14 @@ func randomID() (string, error) {
 }
 
 func (n *Node) Propose(ctx context.Context, data []byte) ([]byte, error) {
+	if err := n.beginProposal(ctx); err != nil {
+		return nil, err
+	}
+	defer n.endProposal()
+	return n.propose(ctx, data)
+}
+
+func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 	if err := n.available(true); err != nil {
 		return nil, err
 	}
@@ -237,7 +253,7 @@ func (n *Node) Propose(ctx context.Context, data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(proposal{ID: id, Data: data})
+	payload, err := json.Marshal(proposal{ID: id, Data: data, Protocol: ProtocolVersion})
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +279,7 @@ func (n *Node) Propose(ctx context.Context, data []byte) ([]byte, error) {
 		changed := n.changed
 		n.mu.Unlock()
 		if err := n.available(true); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("proposal outcome is unknown after submission: %v", err)
 		}
 		select {
 		case result := <-ch:
@@ -358,7 +374,7 @@ func (n *Node) available(leader bool) error {
 	if leader && n.raft != nil && (n.raft.Status().Commit-n.applied.Load() > 1024 || n.applicationBytes.Load() > 64<<20) {
 		return fmt.Errorf("%w: application backlog exceeds 1024 entries or 64 MiB", ErrUnavailable)
 	}
-	if leader && n.leader.Load() != n.cfg.ID {
+	if leader && (n.leader.Load() != n.cfg.ID || n.draining.Load()) {
 		return ErrNotLeader
 	}
 	return nil
@@ -635,7 +651,9 @@ func (n *Node) Status() map[string]any {
 	n.mu.Unlock()
 	raftStatus := n.raft.Status()
 	applied := n.applied.Load()
-	status := map[string]any{"node_id": n.cfg.ID, "leader_id": n.leader.Load(), "term": raftStatus.Term, "commit_index": raftStatus.Commit, "applied_index": applied, "application_lag": raftStatus.Commit - min(raftStatus.Commit, applied), "application_bytes": n.applicationBytes.Load(), "proposal_bytes": n.proposalBytes.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID}
+	configuration := tracker.ProgressTracker{Config: raftStatus.Config}
+	conf := configuration.ConfState()
+	status := map[string]any{"node_id": n.cfg.ID, "cluster_id": n.cfg.ClusterID, "leader_id": n.leader.Load(), "term": raftStatus.Term, "commit_index": raftStatus.Commit, "applied_index": applied, "application_lag": raftStatus.Commit - min(raftStatus.Commit, applied), "application_bytes": n.applicationBytes.Load(), "proposal_bytes": n.proposalBytes.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID && !n.draining.Load(), "protocol_version": ProtocolVersion, "allow_legacy_protocol": n.cfg.AllowLegacyProtocol, "draining": n.draining.Load(), "voters": conf.Voters, "learners": conf.Learners, "build": buildinfo.Current()}
 	status["application_commits"] = n.applicationCommits.Load()
 	status["application_entries"] = n.applicationEntries.Load()
 	if failure != nil {

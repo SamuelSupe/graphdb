@@ -20,12 +20,12 @@ flowchart TD
 
 ## 启动与新增分片
 
-[docker-compose.sharded.yml](../docker-compose.sharded.yml) 提供目录组、两个数据组和一个入口，十个进程，九个独立数据卷。默认入口为本机 8080，未发布节点的 8080/8081。示例中的容器同属一台宿主机；生产副本需分布到不同故障域。
+[docker-compose.sharded.yml](../docker-compose.sharded.yml) 提供目录组、两个数据组、两个 router 和 HAProxy 入口，十二个进程，九个独立数据卷。默认入口为本机 8080，未发布节点的 8080/8081。示例中的容器同属一台宿主机；生产副本需分布到不同故障域。
 
 ```sh
 export GRAPHDB_RAFT_TOKEN="$(openssl rand -hex 32)"
 # 先启动目录、一个数据组及入口。
-docker --context orbstack compose -f docker-compose.sharded.yml up --build -d catalog1 catalog2 catalog3 a1 a2 a3 router
+docker --context orbstack compose -f docker-compose.sharded.yml up --build -d catalog1 catalog2 catalog3 a1 a2 a3 router router2 gateway
 
 curl -fsS http://127.0.0.1:8080/v1/cluster/shards \
   -H "Authorization: Bearer $GRAPHDB_RAFT_TOKEN" -H 'Content-Type: application/json' \
@@ -118,3 +118,5 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/cluster/moves/demo/cancel \
 迁移期间该租户不可用，没有增量双写或不停机迁移。单次租户迁移的 JSON 封装和各组完整快照受 `GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES` 约束，默认 512MiB；目录、源和目标都需足够预算。目标暂存块与安装数据会同时存在，需要额外磁盘和快照空间。分块避免超大单条提案，但导出/安装仍在内存中组装完整租户，超预算会停留在迁移状态，可在切换前取消。大租户容量、迁移延迟和跨故障域部署尚需专项资格验证。
 
 运行验证见 [分片验收记录](sharding-validation.zh-CN.md)。
+
+至少三投票副本的各组及双 router 支持按 [滚动升级手册](raft-rolling-upgrade.zh-CN.md) 逐个摘流和替换；跨版本仅限已经验收的兼容窗口。

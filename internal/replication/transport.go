@@ -78,6 +78,7 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 				}
 				request.Header.Set("Authorization", "Bearer "+n.cfg.Token)
 				request.Header.Set("X-Raft-Cluster", n.cfg.ClusterID)
+				request.Header.Set(protocolHeader, fmt.Sprint(ProtocolVersion))
 				response, err := n.client.Do(request)
 				if err != nil {
 					return err
@@ -86,6 +87,9 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 				io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 				if response.StatusCode != http.StatusNoContent {
 					return fmt.Errorf("peer %d returned %d", id, response.StatusCode)
+				}
+				if !n.protocolCompatible(response.Header.Get(protocolHeader)) {
+					return fmt.Errorf("peer %d has an incompatible Raft protocol", id)
 				}
 				return nil
 			}()
@@ -106,6 +110,10 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /raft/message", func(w http.ResponseWriter, r *http.Request) {
+		if !n.protocolCompatible(r.Header.Get(protocolHeader)) {
+			http.Error(w, "incompatible Raft protocol", http.StatusUpgradeRequired)
+			return
+		}
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, n.cfg.MaxSnapshotBytes+32<<20))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
@@ -146,11 +154,13 @@ func (n *Node) Handler() http.Handler {
 		json.NewEncoder(w).Encode(status)
 	})
 	mux.HandleFunc("POST /raft/members", n.changeMember)
+	n.rollingHandlers(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+n.cfg.Token)) != 1 || r.Header.Get("X-Raft-Cluster") != n.cfg.ClusterID {
 			http.Error(w, "unauthorized Raft request", http.StatusUnauthorized)
 			return
 		}
+		w.Header().Set(protocolHeader, fmt.Sprint(ProtocolVersion))
 		mux.ServeHTTP(w, r)
 	})
 }

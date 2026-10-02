@@ -24,6 +24,7 @@ fixture = (Path(__file__).parent/'raft-gate'/'dual.yml').read_text()
 (OUT/'override.yml').write_text(re.sub(r'(?<=127.0.0.1:)\d+', lambda match: str(int(match[0])+PORT_OFFSET), fixture))
 TENANT = 'same-tenant'
 results = []
+request_retries = []
 
 def docker(*args, check=True):
     return subprocess.run(DOCKER + list(args), check=check, text=True, capture_output=True)
@@ -50,9 +51,23 @@ def request(base, method, path, body=None, headers=None):
         return err.code, value
 
 def expect(base, method, path, body=None, status=200, headers=None):
-    code, value = request(base, method, path, body, headers)
-    assert code == status, (base, method, path, code, value)
-    return value
+    safe = status < 400 and (method == 'GET' or isinstance(body, dict) and body.get('idempotency_key'))
+    deadline = time.monotonic()+25
+    while True:
+        try:
+            code, value = request(base, method, path, body, headers)
+            if code == status:
+                return value
+        except (OSError, TimeoutError) as err:
+            if not safe:
+                raise
+            code, value = 0, str(err)
+        assert safe and code in [0,502,503,504] and time.monotonic() < deadline, (base, method, path, code, value)
+        # Fault injection can invalidate a health probe already in flight. Only
+        # safe reads and the same durable write identity are retried here.
+        request_retries.append({'base':base,'method':method,'path':path,'status':code,'error':value})
+        (OUT/'request-retries.json').write_text(json.dumps(request_retries,indent=2)+'\n')
+        time.sleep(.1)
 
 def wait_ready(base):
     deadline = time.monotonic()+30
@@ -75,7 +90,8 @@ def leader(exclude=None):
             if i == exclude:
                 continue
             try:
-                if request(node(i), 'GET', '/v1/readiness')[0] == 200:
+                status = request(node(i), 'GET', '/v1/health')[1].get('raft', {})
+                if status.get('leader_id') == i and not status.get('draining') and request(node(i), 'GET', '/v1/readiness')[0] == 200:
                     return i
             except (OSError, TimeoutError):
                 pass

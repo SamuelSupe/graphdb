@@ -1,12 +1,38 @@
 package replication
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
+
+func TestUnsupportedReplicationProtocolDoesNotApply(t *testing.T) {
+	data, err := json.Marshal(proposal{ID: "future", Data: []byte("mutate"), Protocol: ProtocolVersion + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := &membershipMachine{}
+	node := &Node{machine: machine}
+	if err := node.applyEntries([]raftpb.Entry{{Index: 1, Type: raftpb.EntryNormal, Data: data}}); err == nil {
+		t.Fatal("future command protocol was applied")
+	}
+	if machine.applied.Load() != 0 {
+		t.Fatal("unsupported command advanced the application checkpoint")
+	}
+	for _, protocol := range []int{0, ProtocolVersion, ProtocolVersion + 1} {
+		data, err := json.Marshal(snapshotEnvelope{Version: 1, Protocol: protocol, State: []byte("state"), Peers: map[uint64]string{1: "http://node1:8081"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = decodeSnapshot(data)
+		if (err != nil) != (protocol > ProtocolVersion) {
+			t.Fatalf("snapshot protocol %d: %v", protocol, err)
+		}
+	}
+}
 
 func TestDurableLogTruncationCompactionAndReopen(t *testing.T) {
 	dir := t.TempDir()

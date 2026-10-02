@@ -44,14 +44,14 @@ def request(base, method, path, body=None, tenant=None, headers=None):
     req = urllib.request.Request(base+path, data=None if body is None else json.dumps(body).encode(), method=method, headers=hdr)
     try:
         with urllib.request.urlopen(req, timeout=12) as response:
-            return response.status, json.loads(response.read() or b'{}'), dict(response.headers)
+            return response.status, json.loads(response.read() or b'{}'), {name.lower():value for name,value in response.headers.items()}
     except urllib.error.HTTPError as err:
         raw = err.read()
         try:
             body = json.loads(raw)
         except ValueError:
             body = {'error':raw.decode()}
-        return err.code, body, dict(err.headers)
+        return err.code, body, {name.lower():value for name,value in err.headers.items()}
 
 def expect(method, path, body=None, tenant=None, status=200, base=ROUTER, headers=None):
     code, value, hdr = request(base,method,path,body,tenant,headers)
@@ -92,7 +92,8 @@ def leader(group):
     def find():
         for i in range(1,4):
             try:
-                if request(node(group,i),'GET','/v1/readiness')[0]==200:
+                status = request(node(group,i),'GET','/v1/health')[1].get('raft', {})
+                if status.get('leader_id') == i and not status.get('draining') and request(node(group,i),'GET','/v1/readiness')[0]==200:
                     return i
             except (OSError,TimeoutError):
                 pass
@@ -111,7 +112,7 @@ def step(name, **details):
     (OUT/'results.json').write_text(json.dumps(results,indent=2)+'\n')
 
 try:
-    compose('up','-d','--no-build','catalog1','catalog2','catalog3','a1','a2','a3','router')
+    compose('up','-d','--no-build','catalog1','catalog2','catalog3','a1','a2','a3','router','router2','gateway')
     for mode,port in [('direct',47081),('wal',47082)]:
         port += PORT_OFFSET
         docker('run','-d','--name',PROJECT+'-standalone-'+mode,'--restart=no',
@@ -122,19 +123,20 @@ try:
         expect('POST','/v1/tenants',{'tenant_id':'tenant-a'},base=base)
         expect('POST','/v1/commits',commit('same-key',mode),tenant='tenant-a',base=base)
     leader('catalog'); leader('a')
+    wait(lambda: request(ROUTER,'GET','/v1/readiness')[0] == 200)
     register('a')
     with urllib.request.urlopen(ROUTER+'/openapi.yaml',timeout=10) as response:
         assert b'/v1/cluster/moves:' in response.read()
     expect('POST','/v1/tenants',{'tenant_id':'tenant-a'})
     expect('POST','/v1/commits',commit('same-key','sharded'),tenant='tenant-a')
-    step('standalone direct/WAL coexist with sharded Raft',processes_before_expansion=9)
+    step('standalone direct/WAL coexist with sharded Raft',processes_before_expansion=11)
     compose('up','-d','--no-build','b1','b2','b3')
     leader('b'); register('b')
     assert placement('tenant-a','shard-a',1,complete=True)
     expect('POST','/v1/tenants',{'tenant_id':'tenant-b'})
     assert placement('tenant-b','shard-b',1,complete=True)
     expect('POST','/v1/commits',commit('new-shard','new-group'),tenant='tenant-b')
-    step('add three-replica shard without remapping existing tenant',processes=12)
+    step('add three-replica shard without remapping existing tenant',processes=14)
     accepted,_ = expect('POST','/v1/ingest/batches',{
         'source':'agent','collector_id':'expansion','batch_id':'large','idempotency_key':'large',
         'items':[{'external_id':'host:2','entity':{'id':'host:2','kind':'host','fields':{'payload':'transfer-data'*750000}}}]},tenant='tenant-a',status=202)
@@ -172,7 +174,7 @@ try:
     status,_ = expect('GET','/v1/ingest/writers/raft-graphdb-shard-a/batches/agent/expansion/large',tenant='tenant-a')
     assert status['accepted_lsn']==accepted['accepted_lsn'] and status['state']=='committed',status
     _,headers = expect('POST','/v1/query',{'op':'match','kind':'host','min_version':2,'limit':10},tenant='tenant-a')
-    assert headers['X-Graphdb-Shard-Id']=='shard-b',headers
+    assert headers['x-graphdb-shard-id']=='shard-b',headers
     source = leader('a')
     assert request(node('a',source),'POST','/v1/commits',commit('stale','bad'),tenant='tenant-a',headers={'X-GraphDB-Route-Epoch':'1'})[0]==409
     files = docker('exec',service('a'+str(source)),'sh','-c','find /var/lib/graphdb/graphdb/tenants/tenant-a -type f 2>/dev/null',check=False)

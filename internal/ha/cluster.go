@@ -62,7 +62,7 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	c.shards = sharding.NewClient(cfg.Token)
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
-	node, err := replication.Open(ctx, replication.Config{ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes}, c.App)
+	node, err := replication.Open(ctx, replication.Config{ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes, AllowLegacyProtocol: cfg.AllowLegacyProtocol}, c.App)
 	if err != nil {
 		cancel()
 		return err
@@ -130,9 +130,17 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		next.ServeHTTP(w, r)
 		return
 	case "/v1/readiness":
+		if c.Node.Draining() {
+			c.writeError(w, replication.ErrUnavailable)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := c.Node.QuorumBarrier(ctx); err != nil {
+			if errors.Is(err, replication.ErrNotLeader) {
+				c.forward(w, r.WithContext(ctx), nil, false)
+				return
+			}
 			c.writeError(w, err)
 			return
 		}
@@ -157,6 +165,10 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 	if err := c.Node.ReadBarrier(ctx); err != nil {
+		if errors.Is(err, replication.ErrNotLeader) {
+			c.forward(w, r.WithContext(ctx), body, false)
+			return
+		}
 		c.writeError(w, err)
 		return
 	}
@@ -278,6 +290,10 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	}
 	data, err := c.propose(ctx, cmd)
 	if err != nil {
+		if errors.Is(err, replication.ErrNotLeader) {
+			c.forward(w, r.WithContext(ctx), body, false)
+			return
+		}
 		c.writeError(w, err)
 		return
 	}

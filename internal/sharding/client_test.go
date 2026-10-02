@@ -56,3 +56,40 @@ func TestLeaderCacheInvalidationDoesNotReplayMutations(t *testing.T) {
 		t.Fatalf("explicit retry did not discover the new leader: status=%d attempts=%d probes=%d", response.StatusCode, mutations.Load(), probes.Load())
 	}
 }
+
+func TestRouterDrainRemovesReadinessButKeepsInFlightRouting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/raft/status":
+			json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+		case "/cluster/identity":
+			json.NewEncoder(w).Encode(map[string]any{"catalog": true})
+		case "/cluster/catalog":
+			json.NewEncoder(w).Encode(Catalog{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	router := NewRouter(Shard{ID: "catalog", ClusterID: "catalog", Peers: map[uint64]string{1: server.URL}}, "secret")
+	defer router.Client.HTTP.CloseIdleConnections()
+	call := func(method, path, token string) int {
+		r := httptest.NewRequest(method, path, nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w.Code
+	}
+	if call("POST", "/v1/router/drain", "wrong") != http.StatusUnauthorized || call("GET", "/v1/readiness", "") != http.StatusOK {
+		t.Fatal("unauthorized request drained router")
+	}
+	if call("POST", "/v1/router/drain", "secret") != http.StatusNoContent || call("GET", "/v1/readiness", "") != http.StatusServiceUnavailable {
+		t.Fatal("drain did not remove router readiness")
+	}
+	if call("GET", "/v1/tenants", "") != http.StatusOK {
+		t.Fatal("drain interrupted an existing data route")
+	}
+	if call("POST", "/v1/router/resume", "secret") != http.StatusNoContent || call("GET", "/v1/readiness", "") != http.StatusOK {
+		t.Fatal("router did not resume")
+	}
+}

@@ -1,0 +1,524 @@
+{
+  "date": "2026-10-02",
+  "environment": "OrbStack Linux arm64 / Go 1.26.7",
+  "branch": "codex/raft-ha",
+  "source_base_commit": "d7b535b06a1b0d8fc438d4ebb8f5f3d8408127f7",
+  "source_sha256": "df184c1d08b36255ae255f905106aa40199f2a637bb997789ce45bedd65ffc63",
+  "binary_sha256": "b577a8ffedf8beb4c9021843a1669fe3761a978c2430c8d94f0190b38f8637c3",
+  "candidate": {
+    "image": "graphdb:raft-rolling-20261002",
+    "image_id": "sha256:5669c7843bd05b796f993348954e93d288772e54617434e955cc7c71a8760217",
+    "binary_sha256": "b577a8ffedf8beb4c9021843a1669fe3761a978c2430c8d94f0190b38f8637c3",
+    "version_output": "GGraphDB 2.1.2-raft-rolling1 commit=d7b535b0-rolling-dirty built=2026-10-02T00:03:26Z go=go1.26.7"
+  },
+  "qualified_source": {
+    "image": "graphdb:raft-read-io-p1-review-20261002",
+    "image_id": "sha256:210fd3651c8ff582b9eb123e76f85114e06fcafc3e9d5aa2062a62b439f61b55",
+    "binary_sha256": "cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a",
+    "version_output": "GGraphDB 2.1.2-raft-review4 commit=5dc7c08c-read-io-review-dirty built=2026-10-01T22:59:18Z go=go1.26.7"
+  },
+  "qualified_source_commit": "d7b535b06a1b0d8fc438d4ebb8f5f3d8408127f7",
+  "qualified_source_sha256": "0fece2e1612a961f9e48f18a001a97dea3599971daf69d1cbd07bde3f2c79e13",
+  "compatibility_scope": [
+    "qualified source to candidate",
+    "candidate to qualified source snapshot replay",
+    "candidate serial restart with strict protocol"
+  ],
+  "rolling_gate": {
+    "started_at": "2026-10-02T00:07:16.886067+00:00",
+    "result": "PASS",
+    "base": {
+      "image": "graphdb:raft-read-io-p1-review-20261002",
+      "image_id": "sha256:210fd3651c8ff582b9eb123e76f85114e06fcafc3e9d5aa2062a62b439f61b55",
+      "binary_sha256": "cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a",
+      "version_output": "GGraphDB 2.1.2-raft-review4 commit=5dc7c08c-read-io-review-dirty built=2026-10-01T22:59:18Z go=go1.26.7"
+    },
+    "target": {
+      "image": "graphdb:raft-rolling-20261002",
+      "image_id": "sha256:5669c7843bd05b796f993348954e93d288772e54617434e955cc7c71a8760217",
+      "binary_sha256": "b577a8ffedf8beb4c9021843a1669fe3761a978c2430c8d94f0190b38f8637c3",
+      "version_output": "GGraphDB 2.1.2-raft-rolling1 commit=d7b535b0-rolling-dirty built=2026-10-02T00:03:26Z go=go1.26.7"
+    },
+    "cross_host_qualification": "NOT RUN",
+    "finished_at": "2026-10-02T00:13:57.301596+00:00"
+  },
+  "rolling_checks": [
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 2,
+      "image": "graphdb:raft-read-io-p1-review-20261002",
+      "legacy": true
+    },
+    {
+      "check": "new commands and snapshots replay on qualified previous binary",
+      "result": "PASS",
+      "source_commit": "d7b535b0",
+      "deployment": "graphdb-rolling-verified-20261002-single"
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "group": "graphdb-ha",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "rolling bridge and strict controller preserve direct/WAL writes and strong reads",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-single",
+      "traffic": [
+        {
+          "tenant": "rolling",
+          "writes": 337,
+          "reads": 337,
+          "wal": 42,
+          "attempts": 837,
+          "retries": 5,
+          "failures": []
+        }
+      ]
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-catalog",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-catalog",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-catalog",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-a",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-a",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-a",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-b",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-b",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-b",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": true
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-catalog",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-catalog",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-catalog",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-a",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-a",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-a",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-b",
+      "node": 1,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-b",
+      "node": 2,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "replica replaced and caught up",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "group": "graphdb-shard-b",
+      "node": 3,
+      "image": "graphdb:raft-rolling-20261002",
+      "legacy": false
+    },
+    {
+      "check": "rolling bridge and strict controller preserve direct/WAL writes and strong reads",
+      "result": "PASS",
+      "deployment": "graphdb-rolling-verified-20261002-sharded",
+      "traffic": [
+        {
+          "tenant": "rolling-a",
+          "writes": 966,
+          "reads": 966,
+          "wal": 120,
+          "attempts": 2334,
+          "retries": 16,
+          "failures": []
+        },
+        {
+          "tenant": "rolling-b",
+          "writes": 950,
+          "reads": 950,
+          "wal": 118,
+          "attempts": 2305,
+          "retries": 18,
+          "failures": []
+        }
+      ]
+    }
+  ],
+  "traffic_totals": {
+    "writes": 2253,
+    "reads": 2253,
+    "wal": 280,
+    "attempts": 5476,
+    "retries": 39
+  },
+  "final_logical_failures": 0,
+  "graph_version_verification": [
+    {
+      "tenant": "rolling",
+      "expected_graph_version": 379,
+      "observed_commit_applied_version": 379,
+      "result": "PASS"
+    },
+    {
+      "tenant": "rolling-a",
+      "expected_graph_version": 1086,
+      "observed_commit_applied_version": 1086,
+      "result": "PASS"
+    },
+    {
+      "tenant": "rolling-b",
+      "expected_graph_version": 1068,
+      "observed_commit_applied_version": 1068,
+      "result": "PASS"
+    }
+  ],
+  "tests": [
+    {
+      "command": "go test ./... -count=1",
+      "result": "PASS",
+      "tested_packages": 16,
+      "evidence": "full-verified.log"
+    },
+    {
+      "command": "go vet ./...",
+      "result": "PASS",
+      "type": "static",
+      "evidence": "build-vet-verified.log"
+    },
+    {
+      "command": "go test -race -p=1 ./internal/ha ./internal/replication ./internal/sharding -count=1",
+      "result": "PASS",
+      "seconds": {
+        "ha": 324.224,
+        "replication": 4.345,
+        "sharding": 1.021
+      },
+      "evidence": "race-isolated.log"
+    },
+    {
+      "command": "go test -race ./internal/replication -run TestMembershipRejectsStaleChanges -count=10",
+      "result": "PASS",
+      "seconds": 32.363,
+      "evidence": "race-isolated.log"
+    },
+    {
+      "check": "unsafe drain with reachable HTTP but failed replication",
+      "original_result": "FAIL",
+      "final_result": "PASS",
+      "evidence": [
+        "stale-baseline.log",
+        "probe-focused.log",
+        "full-verified.log"
+      ]
+    },
+    {
+      "check": "Compose, HAProxy syntax, Python syntax, local documentation links, diff",
+      "result": "PASS",
+      "type": "static"
+    }
+  ],
+  "deployment": {
+    "metadata": {
+      "started_at": "2026-10-02T00:10:21.605370+00:00",
+      "image": "graphdb:raft-rolling-20261002",
+      "image_id": "sha256:5669c7843bd05b796f993348954e93d288772e54617434e955cc7c71a8760217",
+      "binary_sha256": "b577a8ffedf8beb4c9021843a1669fe3761a978c2430c8d94f0190b38f8637c3",
+      "binary_version": "GGraphDB 2.1.2-raft-rolling1 commit=d7b535b0-rolling-dirty built=2026-10-02T00:03:26Z go=go1.26.7",
+      "image_labels": {
+        "graphdb.source.sha256": "df184c1d08b36255ae255f905106aa40199f2a637bb997789ce45bedd65ffc63",
+        "org.opencontainers.image.created": "2026-10-02T00:06:11Z",
+        "org.opencontainers.image.description": "Local rolling upgrade qualification; unreleased",
+        "org.opencontainers.image.revision": "d7b535b0-rolling-dirty",
+        "org.opencontainers.image.version": "2.1.2-raft-rolling1"
+      },
+      "port_offset": 5000,
+      "cross_host_qualification": "NOT RUN",
+      "result": "PASS",
+      "finished_at": "2026-10-02T00:12:11.389406+00:00"
+    },
+    "dual_checks": [
+      {
+        "check": "same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent",
+        "result": "PASS"
+      },
+      {
+        "check": "standalone direct commits and ingest survive SIGKILL; compact and GC remain available",
+        "result": "PASS"
+      },
+      {
+        "check": "standalone WAL accepted response is durable; SIGKILL recovery publishes once and idempotent retry preserves identity",
+        "result": "PASS"
+      },
+      {
+        "check": "live isolated leader rejects strong reads and writes; majority serves and confirmed write survives reconnection",
+        "result": "PASS",
+        "old": 1,
+        "new": 3
+      },
+      {
+        "check": "Raft majority WAL and leader takeover remain available alongside standalone services",
+        "result": "PASS",
+        "old": 3,
+        "new": 2,
+        "seconds": 3.079
+      },
+      {
+        "check": "standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access",
+        "result": "PASS"
+      },
+      {
+        "check": "Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works",
+        "result": "PASS"
+      },
+      {
+        "check": "36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation",
+        "result": "PASS",
+        "old": 2,
+        "new": 3,
+        "payload_bytes": 37748736
+      }
+    ],
+    "sharded_checks": [
+      {
+        "check": "standalone direct/WAL coexist with sharded Raft",
+        "result": "PASS",
+        "processes_before_expansion": 11
+      },
+      {
+        "check": "add three-replica shard without remapping existing tenant",
+        "result": "PASS",
+        "processes": 14
+      },
+      {
+        "check": "chunked migration survives catalog and destination leader interruption",
+        "result": "PASS",
+        "accepted_lsn": 8,
+        "destination_interrupted_during_transfer": true
+      },
+      {
+        "check": "tenant can return to retired source and commit again",
+        "result": "PASS"
+      },
+      {
+        "check": "one shard loses quorum while other shard and standalones serve",
+        "result": "PASS"
+      },
+      {
+        "check": "cancel before cutover resumes source before unavailable target cleanup",
+        "result": "PASS"
+      },
+      {
+        "check": "replica cannot remove shard role; original configuration recovers",
+        "result": "PASS",
+        "image_id": "sha256:5669c7843bd05b796f993348954e93d288772e54617434e955cc7c71a8760217"
+      }
+    ],
+    "request_retries": [
+      {
+        "base": "http://127.0.0.1:51080",
+        "method": "GET",
+        "path": "/v1/tasks/7198b082e6c9204f2e1fca0e",
+        "status": 0,
+        "error": "timed out"
+      }
+    ]
+  },
+  "prior_final_source_race_run": {
+    "result": "FAIL",
+    "data_race_reported": false,
+    "evidence": "race-verified.log",
+    "failures": [
+      "slow follower missed existing 10 second catch-up deadline at applied=22 commit=25",
+      "20ms tick membership fixture changed leader and returned HTTP 503"
+    ],
+    "cause": "resource contention suspected, not proven",
+    "isolated_unchanged_source_recheck": "PASS"
+  },
+  "cross_host_qualification": "NOT RUN",
+  "production_capacity_qualification": "NOT RUN",
+  "remote_ci": "NOT RUN",
+  "public_release": false,
+  "evidence_directory": "/tmp/graphdb-rolling-20261002",
+  "local_evidence_archive": "dist/graphdb-raft-rolling-20261002-evidence.tar.gz"
+}

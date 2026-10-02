@@ -32,6 +32,11 @@ type membershipResult struct {
 }
 
 func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
+	if err := n.beginProposal(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer n.endProposal()
 	if err := n.ReadBarrier(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return

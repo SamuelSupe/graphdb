@@ -41,6 +41,9 @@ func (n *Node) applyEntries(entries []raftpb.Entry) error {
 					}
 					return err
 				}
+				if command.Protocol != 0 && command.Protocol != ProtocolVersion {
+					return fmt.Errorf("unsupported Raft command protocol %d", command.Protocol)
+				}
 			}
 			commands = append(commands, command)
 			work = append(work, ApplyEntry{Index: entry.Index, Data: command.Data})

@@ -13,26 +13,27 @@ import (
 )
 
 type RaftConfig struct {
-	Enabled          bool
-	ID               uint64
-	ClusterID        string
-	Addr             string
-	Dir              string
-	Peers            map[uint64]string
-	Token            string
-	Bootstrap        bool
-	Tick             time.Duration
-	SnapshotEntries  uint64
-	MaxSnapshotBytes int64
-	ShardID          string
-	Catalog          bool
+	Enabled             bool
+	ID                  uint64
+	ClusterID           string
+	Addr                string
+	Dir                 string
+	Peers               map[uint64]string
+	Token               string
+	Bootstrap           bool
+	Tick                time.Duration
+	SnapshotEntries     uint64
+	MaxSnapshotBytes    int64
+	ShardID             string
+	Catalog             bool
+	AllowLegacyProtocol bool
 }
 
 func loadRaftConfig(dataDir string) (RaftConfig, error) {
 	cfg := RaftConfig{Bootstrap: true, Tick: 100 * time.Millisecond, SnapshotEntries: 1000, MaxSnapshotBytes: 512 << 20}
 	raw := strings.TrimSpace(os.Getenv("GRAPHDB_RAFT_NODE_ID"))
 	if raw == "" {
-		for _, key := range []string{"GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES", "GRAPHDB_RAFT_SHARD_ID", "GRAPHDB_RAFT_CATALOG"} {
+		for _, key := range []string{"GRAPHDB_RAFT_CLUSTER_ID", "GRAPHDB_RAFT_ADDR", "GRAPHDB_RAFT_PEERS", "GRAPHDB_RAFT_TOKEN", "GRAPHDB_RAFT_DIR", "GRAPHDB_RAFT_BOOTSTRAP", "GRAPHDB_RAFT_TICK", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES", "GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES", "GRAPHDB_RAFT_SHARD_ID", "GRAPHDB_RAFT_CATALOG", "GRAPHDB_RAFT_ALLOW_LEGACY_PROTOCOL"} {
 			if os.Getenv(key) != "" {
 				return cfg, fmt.Errorf("GRAPHDB_RAFT_NODE_ID is required with %s", key)
 			}
@@ -89,6 +90,9 @@ func loadRaftConfig(dataDir string) (RaftConfig, error) {
 		return cfg, fmt.Errorf("Raft peers must contain this node's ID")
 	}
 	if err := loadBoolEnv("GRAPHDB_RAFT_BOOTSTRAP", &cfg.Bootstrap); err != nil {
+		return cfg, err
+	}
+	if err := loadBoolEnv("GRAPHDB_RAFT_ALLOW_LEGACY_PROTOCOL", &cfg.AllowLegacyProtocol); err != nil {
 		return cfg, err
 	}
 	if err := loadDurationEnv("GRAPHDB_RAFT_TICK", &cfg.Tick); err != nil {

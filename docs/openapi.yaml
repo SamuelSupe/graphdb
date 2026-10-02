@@ -9,6 +9,28 @@ security:
   - GatewayBearer: []
     TenantHeader: []
 paths:
+  /v1/router/drain:
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Remove this router from readiness during rolling maintenance (serve-router only).
+      description: Requires the router token and a direct connection to the selected router. Existing data routes remain usable until the process exits. Wait for the load balancer health check to remove this router before restarting it. Process restart clears draining state.
+      responses:
+        '204':
+          description: Router readiness now returns 503.
+        '401':
+          description: Router token missing or invalid.
+  /v1/router/resume:
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Resume this router after canceling rolling maintenance (serve-router only).
+      description: Requires the router token and a direct connection to the selected router. Readiness still checks the catalog group.
+      responses:
+        '204':
+          description: Router draining state cleared.
+        '401':
+          description: Router token missing or invalid.
   /v1/cluster:
     get:
       security:

@@ -8,10 +8,11 @@ import (
 )
 
 type snapshotEnvelope struct {
-	Retired []uint64          `json:"retired,omitempty"`
-	Version int               `json:"version"`
-	State   []byte            `json:"state"`
-	Peers   map[uint64]string `json:"peers"`
+	Protocol int               `json:"protocol,omitempty"`
+	Retired  []uint64          `json:"retired,omitempty"`
+	Version  int               `json:"version"`
+	State    []byte            `json:"state"`
+	Peers    map[uint64]string `json:"peers"`
 }
 
 func decodeSnapshot(data []byte) (snapshotEnvelope, error) {
@@ -19,7 +20,7 @@ func decodeSnapshot(data []byte) (snapshotEnvelope, error) {
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return snapshot, err
 	}
-	if snapshot.Version != 1 || len(snapshot.State) == 0 || len(snapshot.Peers) == 0 {
+	if snapshot.Version != 1 || (snapshot.Protocol != 0 && snapshot.Protocol != ProtocolVersion) || len(snapshot.State) == 0 || len(snapshot.Peers) == 0 {
 		return snapshot, fmt.Errorf("invalid Raft snapshot envelope")
 	}
 	return snapshot, nil
@@ -45,7 +46,7 @@ func (n *Node) snapshotData(state []byte, index uint64) ([]byte, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return json.Marshal(snapshotEnvelope{Version: 1, State: state, Peers: n.peers, Retired: retired})
+	return json.Marshal(snapshotEnvelope{Version: 1, Protocol: ProtocolVersion, State: state, Peers: n.peers, Retired: retired})
 }
 
 func (n *Node) installRetired(ids []uint64, index uint64) error {

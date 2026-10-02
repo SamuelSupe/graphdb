@@ -14,8 +14,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -24,6 +26,7 @@ type Router struct {
 	Client     *Client
 	mu         sync.Mutex
 	placements map[string]cachedPlacement
+	draining   atomic.Bool
 }
 
 type cachedPlacement struct {
@@ -39,12 +42,25 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Minute)
 	defer cancel()
 	request = request.WithContext(ctx)
+	if request.URL.Path == "/v1/router/drain" || request.URL.Path == "/v1/router/resume" {
+		if request.Method != http.MethodPost || subtle.ConstantTimeCompare([]byte(request.Header.Get("Authorization")), []byte("Bearer "+r.Client.Token)) != 1 {
+			http.Error(w, "router maintenance requires POST and the router token", http.StatusUnauthorized)
+			return
+		}
+		r.draining.Store(request.URL.Path == "/v1/router/drain")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if request.URL.Path == "/v1/cluster" || strings.HasPrefix(request.URL.Path, "/v1/cluster/") {
 		r.admin(w, request)
 		return
 	}
 	switch request.URL.Path {
 	case "/v1/health", "/v1/readiness":
+		if request.URL.Path == "/v1/readiness" && r.draining.Load() {
+			http.Error(w, "router is draining", http.StatusServiceUnavailable)
+			return
+		}
 		var identity struct {
 			Catalog bool `json:"catalog"`
 		}
@@ -55,7 +71,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 			r.writeError(w, err)
 			return
 		}
-		r.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deployment": "sharded_raft"})
+		r.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deployment": "sharded_raft", "draining": r.draining.Load(), "build": buildinfo.Current()})
 		return
 	case "/v1/tenants":
 		if request.Method == http.MethodGet {

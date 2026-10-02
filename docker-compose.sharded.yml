@@ -93,8 +93,22 @@ services:
       GRAPHDB_ROUTER_TOKEN: ${GRAPHDB_RAFT_TOKEN:?set a random token of at least 32 bytes}
       GRAPHDB_ROUTER_CATALOG_CLUSTER_ID: graphdb-catalog
       GRAPHDB_ROUTER_CATALOG_PEERS: '{"1":"http://catalog1:8081","2":"http://catalog2:8081","3":"http://catalog3:8081"}'
-    ports: ["127.0.0.1:8080:8080"]
     depends_on: [catalog1, catalog2, catalog3]
+  router2:
+    <<: *node
+    command: [serve-router]
+    environment:
+      GRAPHDB_ADDR: :8080
+      GRAPHDB_ROUTER_TOKEN: ${GRAPHDB_RAFT_TOKEN:?set a random token of at least 32 bytes}
+      GRAPHDB_ROUTER_CATALOG_CLUSTER_ID: graphdb-catalog
+      GRAPHDB_ROUTER_CATALOG_PEERS: '{"1":"http://catalog1:8081","2":"http://catalog2:8081","3":"http://catalog3:8081"}'
+    depends_on: [catalog1, catalog2, catalog3]
+  gateway:
+    image: haproxy:3.0-alpine
+    restart: unless-stopped
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: ["./deploy/sharded/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"]
+    depends_on: [router, router2]
 
 volumes:
   catalog1:

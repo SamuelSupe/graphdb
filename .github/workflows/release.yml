@@ -132,7 +132,7 @@ jobs:
           buildinfo_package="github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
           ldflags="-s -w -X ${buildinfo_package}.Version=${tag} -X ${buildinfo_package}.Commit=${commit} -X ${buildinfo_package}.Date=${build_date}"
           mkdir -p "$root/bin" "$root/docs" "$root/examples" "$root/scripts" \
-            "$root/deploy/nginx" "$root/deploy/raft" "$root/release/evidence"
+            "$root/deploy/nginx" "$root/deploy/raft" "$root/deploy/sharded" "$root/release/evidence"
 
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             os="${target%/*}"
@@ -153,6 +153,7 @@ jobs:
           cp deploy/object-backup.env.example "$root/deploy/"
           cp deploy/nginx/graphdb.conf.example "$root/deploy/nginx/"
           cp deploy/raft/haproxy.cfg "$root/deploy/raft/"
+          cp deploy/sharded/haproxy.cfg "$root/deploy/sharded/"
           cp -R artifacts/local-gate artifacts/object-backup-gate artifacts/raft-gate "$root/release/evidence/"
           cp release/capacity-envelope.yaml release/local-disk.md "$root/release/"
           cp scripts/capacity_baseline.sh \
@@ -161,6 +162,7 @@ jobs:
             scripts/local_disk_report.py scripts/local_disk_optimization.py \
             scripts/object_backup_gate.sh scripts/object_backup_http.py "$root/scripts/"
           cp scripts/raft_gate.sh scripts/raft_gate_dual.py scripts/raft_gate_sharded.py "$root/scripts/"
+          cp scripts/raft_rolling_upgrade.py scripts/raft_rolling_gate.py "$root/scripts/"
           cp -R scripts/raft-gate "$root/scripts/"
           printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
             "$tag" "$commit" "$build_date" "$(go version | cut -d' ' -f3)" > "$root/BUILD-METADATA.json"

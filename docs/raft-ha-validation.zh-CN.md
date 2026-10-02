@@ -2,6 +2,8 @@
 
 日期：2026-10-01（Asia/Singapore）。分支：`codex/raft-ha`。实现基线：GraphDB 2.1.2，`2942a175`。
 
+2026-10-02 的兼容窗口滚动升级、最终源码验证和单机共存回归见 [滚动升级验收](raft-rolling-validation-2026-10-02.zh-CN.md)。下文各候选和历史升级限制保留原验证范围，不替代该版本矩阵。
+
 ## 环境与方法
 
 - OrbStack Linux aarch64，Go 1.26.7。

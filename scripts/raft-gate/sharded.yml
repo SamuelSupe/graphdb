@@ -1,5 +1,5 @@
 services:
-  router:
+  gateway:
     ports: !override ["127.0.0.1:47080:8080"]
   catalog1:
     ports: ["127.0.0.1:47101:8080"]
