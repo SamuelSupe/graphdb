@@ -191,4 +191,4 @@ GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh
 
 ## 备份自动化
 
-`backup` 配置控制 S3 定时快照、失败退避、保留清理和可选恢复演练，详见[备份自动化指南](../object-backup.zh-CN.md#自动备份)。
+单机的 `backup` 配置控制 S3 定时快照、失败退避、保留清理和可选恢复演练。Raft 拒绝开启内置备份自动化，应由外部调度调用[集群备份 API](../raft-operations.zh-CN.md)；详见[备份自动化指南](../object-backup.zh-CN.md#自动备份)。

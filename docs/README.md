@@ -1,4 +1,4 @@
-# GGraphDB 2.1 Documentation
+# GGraphDB 2.2.2 Documentation
 
 [中文](README.zh-CN.md)
 
@@ -9,9 +9,11 @@ with a language-switch link at the top.
 
 - [三副本 Raft 高可用运行说明](raft-ha.zh-CN.md) · [设计](high-availability-design.zh-CN.md) · [验收记录](raft-ha-validation.zh-CN.md)
 
+- [Tenant sharding and migration](sharding.zh-CN.md) · [Raft operations](raft-operations.zh-CN.md) · [Diagnostic metrics](diagnostics-metrics.zh-CN.md)
+
 ## User guides
 
-- [2.1.2 release notes](../release/local-disk.md) · [Validation](validation-v2.1.2.md) · [Write-tail measurements and limits](performance-write-tail.md)
+- [2.2.2 release notes](../release/local-disk.md) · [Validation](validation-v2.2.2.md) · [Historical 2.1.2 write-tail measurements](performance-write-tail.md)
 
 - [User Guide](user/README.md) · [中文](user/README.zh-CN.md)
 - [Local disk deployment and durability](local-disk.md) · [中文](local-disk.zh-CN.md)

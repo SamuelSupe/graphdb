@@ -2,7 +2,7 @@
 
 [English](naming-and-compatibility.md)
 
-当前发行版为 **2.2.1**，由 `main` 开发。每个本地数据目录只由一个进程占用；
+当前发行版为 **2.2.2**，由 `main` 开发。每个本地数据目录只由一个进程占用；
 默认单机，亦可启用独立副本的 Raft 和租户分片；S3 兼容对象存储仅用于可选快照备份与按需恢复。不支持远端在线存储、PostgreSQL
 协调、独立 reader/writer、多实例共享目录或网络文件系统。
 
@@ -10,8 +10,8 @@
 
 | 标识 | 当前契约 |
 | --- | --- |
-| 产品与发行标签 | `VERSION` 为 `2.2.1`；标签为 `v2.2.1` |
-| Go/Python SDK 与 OpenAPI 文档版本 | `2.2.1` |
+| 产品与发行标签 | `VERSION` 为 `2.2.2`；标签为 `v2.2.2` |
+| Go/Python SDK 与 OpenAPI 文档版本 | `2.2.2` |
 | Go 模块 | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP 路由命名空间 | `/v1/...`，不代表产品主版本 |
 | Parquet/WAL 与快照格式 | 单机沿用 2.0/2.1；Raft 另有协议和目录角色标记 |
@@ -52,8 +52,8 @@ GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然
 
 ## 发行状态与性能承诺
 
-2.2.1 的验收范围见 [版本验证](validation-v2.2.1.md)，实际发布工作流和包内证据核对具体发行二进制。
+2.2.2 的验收范围见 [版本验证](validation-v2.2.2.md)，实际发布工作流和包内证据核对具体发行二进制。
 候选已通过本机 30 分钟 Raft 维护负载，但存在预期 429 与十秒级写入长尾。
 跨宿主机、真实容量与天级稳定性尚未验收，稳定标签不代表所有规模和延迟目标均获认证。
-`release/capacity-envelope.yaml` 保留 2.1.2 的历史 `performance_unqualified` 记录，不能用作 2.2.1/Raft 容量承诺。
+`release/capacity-envelope.yaml` 保留 2.1.2 的历史 `performance_unqualified` 记录，不能用作 2.2.2/Raft 容量承诺。
 历史报告仅描述各自版本。

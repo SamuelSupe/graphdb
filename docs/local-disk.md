@@ -1,9 +1,11 @@
 # GGraphDB 2.x local disk operation
 
-The main release runs one process with concurrent tenant workloads. The process owns
+The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
 local files. PostgreSQL and remote online-storage backends are unavailable.
 Optional [S3-compatible snapshot backups](object-backup.md) support recovery after local disk loss.
+
+This guide describes the local storage and standalone path. The same release also supports independent [Raft replicas](raft-ha.zh-CN.md) and [tenant sharding](sharding.zh-CN.md); replicated durability, administration, recovery and rolling upgrades have their own contracts.
 
 ## Configuration
 
@@ -166,9 +168,7 @@ a different restore or backup.
 
 ## Validation and performance
 
-Current release status is in [2.1.2 validation](validation-v2.1.2.md); measured
-write-tail improvements and remaining limits are in [the focused report](performance-write-tail.md).
-The 30-minute run was stopped by explicit release decision and is not a pass.
+Current release scope is in [2.2 validation](validation-v2.2.2.md); actual release workflow conclusions and packaged evidence qualify its binary. Historical [2.1.2 validation](validation-v2.1.2.md) and [write-tail measurements](performance-write-tail.md) describe that older build. Its 30-minute run was stopped by explicit release decision and is not a pass; that historical waiver does not apply to the current release gates.
 The [2.0 report](performance-v2.0.md) and earlier reports below are historical.
 
 Start performance work with one representative comparison and repeat only to

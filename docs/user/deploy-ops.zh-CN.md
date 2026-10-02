@@ -2,8 +2,10 @@
 
 [English](deploy-ops.md)
 
-本版使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1
+默认部署使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1
 目录可在停止旧进程后沿用。版本与兼容性见[版本边界](../naming-and-compatibility.zh-CN.md)。
+
+同一发行程序支持独立副本目录的 [Raft](../raft-ha.zh-CN.md) 和[租户分片](../sharding.zh-CN.md)。集群管理与升级见 [Raft 运维手册](../raft-operations.zh-CN.md)；以下示例启动默认单机。
 
 - [启动、写入和查询](../../README.zh-CN.md)
 - [配置、目录独占、备份恢复与验证](../local-disk.zh-CN.md)

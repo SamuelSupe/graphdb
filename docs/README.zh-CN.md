@@ -1,4 +1,4 @@
-# GGraphDB 2.1 文档
+# GGraphDB 2.2.2 文档
 
 [English](README.md)
 
@@ -8,9 +8,11 @@
 
 - [三副本 Raft 高可用运行说明](raft-ha.zh-CN.md) · [设计](high-availability-design.zh-CN.md) · [验收记录](raft-ha-validation.zh-CN.md)
 
+- [租户分片与迁移](sharding.zh-CN.md) · [Raft 运维](raft-operations.zh-CN.md) · [诊断指标](diagnostics-metrics.zh-CN.md)
+
 ## 用户指南
 
-- [2.1.2 发行说明](../release/local-disk.md) · [发布验证](validation-v2.1.2.md) · [写入长尾实测与限制](performance-write-tail.md)
+- [2.2.2 发行说明](../release/local-disk.md) · [发布验证](validation-v2.2.2.md) · [历史 2.1.2 写入长尾实测与限制](performance-write-tail.md)
 
 - [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)
 - [对象存储快照备份与恢复](object-backup.zh-CN.md) · [English](object-backup.md)

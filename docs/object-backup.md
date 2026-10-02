@@ -4,6 +4,8 @@ This guide covers the current 2.x backup features. Version 2.1 adds optional
 automation while retaining the 2.0 snapshot format. There is no 1.x backup
 migration; keep older backups separate.
 
+Internal scheduled backups, retries, retention and restore drills below apply to standalone deployments. Raft rejects enabling this internal automation; use an external scheduler with the cluster backup API, as described in [Raft operations](raft-operations.zh-CN.md).
+
 
 Online graph data stays on local disk. An optional S3-compatible repository stores
 full logical graph snapshots with tenant configuration, not all operational state

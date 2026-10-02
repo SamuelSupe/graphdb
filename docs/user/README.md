@@ -13,10 +13,10 @@ entity-relationship applications.
 - Schemaless entities with optional type definitions, including CI types for
   CMDB-style modeling.
 - Typed directed edges with `(type, from, to)` canonical identity.
-- One process owns the local data directory; tenants support concurrent clients.
+- Default standalone with one process per local directory; optional [Raft replicas](../raft-ha.zh-CN.md) and [tenant sharding](../sharding.zh-CN.md) use independent directories.
 - Parquet manifests, commits, snapshots, entity pages, edge shards and indexes
   persist on local disk. Direct ingest and synchronous WAL are supported.
-- Optional S3-compatible snapshots, scheduled backups/retries/retention, restore drills and on-demand restore.
+- Optional S3-compatible snapshots and on-demand restore; internal scheduling/retries/retention and restore drills apply to standalone. Raft uses external scheduling through the cluster backup API.
 - The `data_hash` digest contract and 2.0/2.1-compatible directories; no 1.x migration.
 - GraphQL, JSON Query DSL, scan/export APIs, saved queries, and running-query
   control.
@@ -71,6 +71,10 @@ export BASE=http://127.0.0.1:8080
 - [API Map](api-map.md) · [中文](api-map.zh-CN.md)
 
 Reference documents:
+
+- [Raft operations and rolling upgrades](../raft-operations.zh-CN.md)
+- [Tenant sharding and migration](../sharding.zh-CN.md)
+- [Diagnostic metrics](../diagnostics-metrics.zh-CN.md)
 
 - [GraphQL](../graphql.md) · [中文](../graphql.zh-CN.md)
 - [Legacy text DSL compatibility](../gql.md)

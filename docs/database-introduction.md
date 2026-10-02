@@ -150,7 +150,7 @@ X-Tenant-ID: demo
 
 ## Current boundaries
 
-- A single process owns each directory. Optional [Raft HA](raft-ha.zh-CN.md) uses three independent directories and one leader; sharding and cross-tenant transactions are unsupported.
+- A single process owns each directory. Optional [Raft HA](raft-ha.zh-CN.md) defaults to three independent full replicas per group and one leader. [Tenant sharding](sharding.zh-CN.md) adds capacity through explicit whole-tenant migration; intra-tenant graph partitioning and cross-tenant transactions are unsupported.
 - Reuse a 2.0/2.1 directory after stopping the old process. Replacing 1.x requires a fresh directory; no 1.x migration or cross-major rollback is provided.
 - A durable WAL `202` means acceptance, not a published graph version. WAL covers
   process failure with a recoverable volume; backups cover recovery to another disk.

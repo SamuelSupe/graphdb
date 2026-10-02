@@ -2,7 +2,7 @@
 
 [中文](architecture.md)
 
-The default deployment runs as one process on one machine, with concurrent reads and writes across tenants. Optional [Raft HA](raft-ha.zh-CN.md) uses three independent local-disk replicas.
+The default deployment runs as one process on one machine, with concurrent reads and writes across tenants. Optional [Raft HA](raft-ha.zh-CN.md) defaults to three independent local-disk replicas per group. [Tenant sharding](sharding.zh-CN.md) places and migrates whole tenants across data groups.
 Parquet commits, snapshots and indexes remain the durable representation. An optional WAL
 provides durable ingestion acceptance and replay. Object storage is an optional backup destination.
 
@@ -79,6 +79,8 @@ directory. WAL shutdown is included and errors propagate to service/CLI callers.
 retains directory ownership until a successful shutdown retry.
 
 ## Backup automation
+
+This internal automation applies to standalone. Raft uses external scheduling through the cluster backup API; see [Raft operations](raft-operations.zh-CN.md).
 
 The maintenance runner schedules durable ordinary backup tasks, with restart recovery, retry
 backoff, full download verification, optional isolated restore drills and bounded S3 retention.

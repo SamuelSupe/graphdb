@@ -11,9 +11,9 @@ API 也可以服务其他实体关系应用。
 - 通过 `X-Tenant-ID` 隔离多租户图数据；
 - 无模式实体和可选类型定义，其中 CI type 适合 CMDB 风格的建模；
 - 以 `(type, from, to)` 作为规范身份的有向类型化边；
-- 一个进程独占本地数据目录，多租户支持客户端并发读写；
+- 默认单机，由一个进程独占本地目录；可选 [Raft 副本](../raft-ha.zh-CN.md) 与[租户分片](../sharding.zh-CN.md)，各副本使用独立目录；
 - Parquet manifest、commit、snapshot、entity page、edge shard 和索引在本地盘持久化；
-- direct 和同步 WAL 写入，可选 S3 快照备份、定时调度/重试/保留清理、恢复演练与按需恢复；
+- direct 和同步 WAL 写入，可选 S3 快照备份与按需恢复；内置定时调度/重试/保留清理及恢复演练适用于单机，Raft 使用外部调度调用集群备份 API；
 - 使用 `data_hash` 契约，2.0/2.1 数据目录兼容，不提供 1.x 迁移；
 - GraphQL、JSON Query DSL、scan/export、saved query 和运行中查询控制；
 - 可选的实体字段、边字段和边存在性 source priority 治理；
@@ -70,3 +70,5 @@ export BASE=http://127.0.0.1:8080
 - [查询能力](../query_capabilities.md)
 - [错误码](../error_codes.md)
 - [OpenAPI](../openapi.yaml)
+
+分布式部署参考：[Raft 运维与滚动升级](../raft-operations.zh-CN.md)、[租户分片与迁移](../sharding.zh-CN.md)、[诊断指标](../diagnostics-metrics.zh-CN.md)。

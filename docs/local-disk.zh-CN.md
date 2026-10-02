@@ -1,8 +1,10 @@
 # GGraphDB 2.x 本地磁盘运行指南
 
-本版采用单进程、多租户并发读写。`GRAPHDB_DATA_DIR` 保存图数据、控制元数据、后台任务
+默认单机部署采用单进程、多租户并发读写。`GRAPHDB_DATA_DIR` 保存图数据、控制元数据、后台任务
 及本地备份，运行时无需 PostgreSQL 或远端在线存储。可选的
 [对象存储快照备份](object-backup.zh-CN.md) 用于本地磁盘丢失后的恢复。
+
+本文描述本地存储与单机路径。同一发行程序还支持独立的 [Raft 副本](raft-ha.zh-CN.md) 和[租户分片](sharding.zh-CN.md)；复制持久化、管理、恢复及滚动升级须遵循对应契约。
 
 ## 配置
 
@@ -117,8 +119,7 @@ WAL 绑定的租户代次保存在租户目录之外，并在清空或恢复时�
 
 ## 验证与性能
 
-当前发行状态见 [2.1.2 验证记录](validation-v2.1.2.md)，实测改善及剩余限制见
-[写入长尾报告](performance-write-tail.md)。30 分钟持续负载按本次发布要求提前停止，不计为通过。
+当前发行范围见 [2.2 验证记录](validation-v2.2.2.md)，具体二进制资格以完整发行流程与包内证据为准。[2.1.2 验证记录](validation-v2.1.2.md) 和[写入长尾报告](performance-write-tail.md) 属于旧版；该历史版本的 30 分钟负载提前停止，不计为通过，也不豁免当前发行门禁。
 [2.0 验证报告](performance-v2.0.md)及以下旧版报告仅作历史参考。
 
 日常优化先运行代表性单轮对比，出现明确退化后才定向复测。已有工具
@@ -196,4 +197,4 @@ GC 每批至多访问 512 个候选，在对象之间检查 50 ms / 16 MiB 预�
 `graphdb_maintenance_phase_seconds` 区分等待、构建、持锁和同步；
 `graphdb_maintenance_estimated_bytes` 显示执行和排队预留，不表示实测 RSS。
 
-详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](validation-v2.1.2.md)。
+详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](validation-v2.2.2.md)。

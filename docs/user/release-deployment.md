@@ -2,9 +2,9 @@
 
 [中文](release-deployment.zh-CN.md)
 
-GGraphDB 2.x uses one process and a persistent local directory. Upgrades from 1.x need a fresh directory; no 1.x data migration is provided.
+GGraphDB 2.x defaults to standalone with one process and a persistent local directory. Upgrades from 1.x need a fresh directory; no 1.x data migration is provided.
 
-The current branch also supports optional single-group and tenant-sharded Raft,
+This release also supports optional single-group and tenant-sharded Raft,
 with an independent local directory per replica. The packaged examples are
 `docker-compose.raft.yml` and `docker-compose.sharded.yml`. See the
 [Raft operations guide](../raft-operations.zh-CN.md) and
@@ -28,13 +28,13 @@ Stop the service before using offline tools on its directory. Use HTTP for live 
 
 ## Release archive
 
-Download the archive and checksum from the [2.2 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.1).
+Download the archive and checksum from the [2.2 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.2).
 Verify the outer archive and inner `SHA256SUMS`, then choose the binary for your platform:
 
 ```sh
-sha256sum -c graphdb-v2.2.1.tar.gz.sha256
-tar -xzf graphdb-v2.2.1.tar.gz
-cd v2.2.1
+sha256sum -c graphdb-v2.2.2.tar.gz.sha256
+tar -xzf graphdb-v2.2.2.tar.gz
+cd v2.2.2
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 bin/graphdb-linux-amd64 serve
@@ -47,10 +47,10 @@ Commit responses use `data_hash`; use the matching SDK release listed in [versio
 
 ## Upgrade from 2.0
 
-Use this process to upgrade standalone 2.0/2.1 installations to 2.2.1.
+Use this process to upgrade standalone 2.0/2.1 installations to 2.2.2.
 
 Create and verify a snapshot, stop the old process, replace the binary, then start
-2.2.1 with the same `GRAPHDB_DATA_DIR` and prefix. The directory remains exclusive;
+2.2.2 with the same `GRAPHDB_DATA_DIR` and prefix. The directory remains exclusive;
 never run both versions against it. Validate readiness, representative queries,
 and WAL status before reopening traffic. Preserve the pre-upgrade backup for
 rollback; downgrading after enabling new automation is not a supported workflow.

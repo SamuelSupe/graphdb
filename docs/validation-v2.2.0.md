@@ -1,6 +1,6 @@
 # GGraphDB 2.2.0 验证范围 / Validation scope
 
-**未发布的发行候选。** `v2.2.0` 标签保留，但[发行门禁](https://github.com/SamuelSupe/graphdb/actions/runs/37038030855) 检出测试处理器替换的数据竞争和 GC 用例的完成超时，未发布正式下载包。本文件保留候选与失败记录；后续发行范围见 [2.2.1 验证说明](validation-v2.2.1.md)。
+**未发布的发行候选。** `v2.2.0` 标签保留，但[发行门禁](https://github.com/SamuelSupe/graphdb/actions/runs/37038030855) 检出测试处理器替换的数据竞争和 GC 用例的完成超时，未发布正式下载包。本文件保留候选与失败记录；后续发行范围见 [2.2.2 验证说明](validation-v2.2.2.md)。
 
 2.2.0 从 `codex/raft-ha` 合并到 `main`，使用同一发行二进制支持默认单机、单组 Raft 和租户分片。
 版本、SDK 和 OpenAPI 对齐为 2.2.0；HTTP `/v1`、Go 模块 `/v2` 与单机 2.0/2.1 数据格式保持兼容。

@@ -196,4 +196,4 @@ GRAPHDB_BIN=./graphdb scripts/purge_all_tenants.sh
 
 ## Backup Automation
 
-The `backup` config section controls scheduled S3 snapshots, retry backoff, retention and optional restore drills. See the [backup automation guide](../object-backup.md#automatic-backups).
+In standalone, the `backup` config section controls scheduled S3 snapshots, retry backoff, retention and optional restore drills. Raft rejects enabling internal backup automation; use external scheduling through the [cluster backup API](../raft-operations.zh-CN.md). See the [backup automation guide](../object-backup.md#automatic-backups).

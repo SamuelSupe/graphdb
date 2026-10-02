@@ -11,7 +11,7 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.2.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.1) is the main
+[2.2.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.2) is the main
 release, developed on `main`. The same binary supports standalone direct/WAL,
 Raft with independent local replicas, and tenant sharding across Raft groups.
 It adds protected cluster administration, resumable migration and recovery,
@@ -28,7 +28,7 @@ The candidate passed local failure, recovery, sharding and rolling checks, plus
 a thirty-minute Raft workload. Cross-host qualification and production capacity
 remain pending. Maintenance can return retryable 429s and cause long write waits;
 this release does not promise a throughput gain or low-latency SLO. See the
-[2.2.1 validation scope](docs/validation-v2.2.1.md).
+[2.2.2 validation scope](docs/validation-v2.2.2.md).
 
 ## Capabilities
 
@@ -129,14 +129,14 @@ chunks. Final publication, graph decoding and rollback still have resource costs
 The local candidate's thirty-minute workload recorded 71,140 operations without
 unexpected operation errors, while ingestion included 90 expected 429s and a
 40.154-second maximum wait. These are scoped correctness observations, not a
-capacity or latency guarantee. See [qualification](docs/validation-v2.2.1.md).
+capacity or latency guarantee. See [qualification](docs/validation-v2.2.2.md).
 Historical [2.1.2 write-tail measurements](docs/performance-write-tail.md) and
 [2.0 results](docs/performance-v2.0.md) apply only to their recorded builds.
 
 ## Documentation
 
 - [Local disk operation and validation](docs/local-disk.md)
-- [2.2.1 validation and remaining limits](docs/validation-v2.2.1.md)
+- [2.2.2 validation and remaining limits](docs/validation-v2.2.2.md)
 - [Raft operations and rolling upgrades](docs/raft-operations.zh-CN.md)
 - [Tenant sharding and migration](docs/sharding.zh-CN.md)
 - [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md)
