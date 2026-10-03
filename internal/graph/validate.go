@@ -66,7 +66,9 @@ func normalizeEdge(edge Edge) (Edge, error) {
 
 func normalizeSources(entity Entity) []EntitySource {
 	sources := append([]EntitySource(nil), entity.Sources...)
-	if entity.Source != "" || entity.ExternalID != "" {
+	// Provenance and ExternalID can belong to different sources. Explicit
+	// identities are authoritative; only legacy records need this backfill.
+	if len(sources) == 0 && (entity.Source != "" || entity.ExternalID != "") {
 		sources = append(sources, EntitySource{
 			Source:     entity.Source,
 			ExternalID: entity.ExternalID,

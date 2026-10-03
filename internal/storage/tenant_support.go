@@ -15,6 +15,8 @@ import (
 
 var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
+var errMissingGraphManifest = errors.New("manifest missing while graph objects exist; explicit repair is required")
+
 func ValidateTenantID(tenantID string) error {
 	if !tenantIDPattern.MatchString(tenantID) || strings.Contains(tenantID, "..") {
 		return fmt.Errorf("invalid tenant id %q", tenantID)
@@ -22,7 +24,13 @@ func ValidateTenantID(tenantID string) error {
 	return nil
 }
 
-func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (manifest Manifest, meta ObjectMeta, err error) {
+func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (Manifest, ObjectMeta, error) {
+	return s.readManifest(ctx, tenantID, false)
+}
+
+// allowMissing is only for acquiring a fence or explicitly rebuilding a head.
+// Ordinary reads must not reinterpret persisted graph objects as a new tenant.
+func (s *TenantStore) readManifest(ctx context.Context, tenantID string, allowMissing bool) (manifest Manifest, meta ObjectMeta, err error) {
 	defer func() { recordReplicationFailure(ctx, err) }()
 	key := s.manifestKey(tenantID)
 	files := s.localFileStore()
@@ -40,6 +48,15 @@ func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (manifes
 	}
 	data, meta, err := objects.GetWithMeta(ctx, key)
 	if errors.Is(err, ErrNotFound) {
+		if !allowMissing {
+			exists, scanErr := s.tenantGraphObjectsExist(ctx, tenantID)
+			if scanErr != nil {
+				return Manifest{}, ObjectMeta{}, scanErr
+			}
+			if exists {
+				return Manifest{}, ObjectMeta{}, fmt.Errorf("%w: tenant %q", errMissingGraphManifest, tenantID)
+			}
+		}
 		return Manifest{TenantID: tenantID}, ObjectMeta{Key: key}, nil
 	}
 	if err != nil {
@@ -124,7 +141,7 @@ func (s *TenantStore) publishWriterFence(ctx context.Context, tenantID string, l
 	key := s.manifestKey(tenantID)
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
 		s.clearWriterObjectKey(key)
-		manifest, meta, err := s.getManifest(ctx, tenantID)
+		manifest, meta, err := s.readManifest(ctx, tenantID, true)
 		if err != nil {
 			return err
 		}

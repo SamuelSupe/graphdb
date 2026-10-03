@@ -1,0 +1,108 @@
+{
+  "review_date": "2026-10-03",
+  "baseline_commit": "dbafd81c63897726207f7e7ac86ce7d2c1ed33b2",
+  "confirmed_findings": {
+    "P0": 0,
+    "P1": 3
+  },
+  "fixes": [
+    "missing graph head rejects ordinary reads and publication",
+    "cold full-graph load binds current digest; recovery updates digest",
+    "explicit snapshot source identities do not invent aliases or merge independent entities"
+  ],
+  "status": "local unreleased candidate",
+  "environment": {
+    "runtime": "OrbStack Linux arm64",
+    "go": "go version go1.26.7 linux/arm64",
+    "minio": "RELEASE.2025-09-07T16-13-09Z"
+  },
+  "production_source_sha256": "39bd7c7d090f34ad70f06569aa2f70721b751f0cfb6d5b20b4a1ce76e3bec73e",
+  "production_source_digest_rule": "sorted path + NUL + bytes + NUL; cmd/internal non-test Go sources and go.mod/go.sum",
+  "production_source_file_count": 457,
+  "binary_sha256": "ec7d47f679f4323cf9a1f0fa636321fbd6baaf1030e630b7fe3db1a39d7fe11a",
+  "candidate_image": {
+    "started_at": "2026-10-03T03:44:34.673459+00:00",
+    "image": "graphdb:product-p1-review6-final-20261003",
+    "image_id": "sha256:23427095c984d68fb0e996be54e2dfc806fb382478d5180b0cebd19daaf037a0",
+    "binary_sha256": "ec7d47f679f4323cf9a1f0fa636321fbd6baaf1030e630b7fe3db1a39d7fe11a",
+    "binary_version": "GGraphDB 2.2.2-review6 commit=dbafd81c-review6 built=2026-10-03T03:43:46Z go=go1.26.7",
+    "image_labels": null,
+    "port_offset": 1700,
+    "cross_host_qualification": "NOT RUN",
+    "enhanced": false,
+    "runtime_recovery": false,
+    "protocol": 1,
+    "disk_pressure": false,
+    "result": "PASS",
+    "finished_at": "2026-10-03T03:46:34.680158+00:00"
+  },
+  "ordinary_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "0.565s",
+    "github.com/SamuelSupe/graphdb/v2/docs": "0.004s",
+    "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "0.541s",
+    "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "0.061s",
+    "github.com/SamuelSupe/graphdb/v2/internal/config": "0.025s",
+    "github.com/SamuelSupe/graphdb/v2/internal/graph": "0.016s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "241.357s",
+    "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "4.322s",
+    "github.com/SamuelSupe/graphdb/v2/internal/query": "0.075s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "12.609s",
+    "github.com/SamuelSupe/graphdb/v2/internal/sharding": "0.014s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "214.408s",
+    "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "0.867s",
+    "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "0.080s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "0.001s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "0.053s"
+  },
+  "race_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/internal/graph": "1.157s",
+    "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "19.212s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "415.227s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "781.837s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "13.643s"
+  },
+  "object_backup_race_packages": {
+    "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "2.010s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "18.400s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "27.733s"
+  },
+  "standalone_direct_wal": "PASS: e2e, four writers/sixteen readers, 12 Python SDK tests, restart snapshot equality",
+  "object_backup_gate": "PASS: real S3 integration/race, HA restore resumes after leader loss, standalone WAL automation/restore/restart",
+  "deployment_checks": 23,
+  "vet": "PASS (static)",
+  "workspace_hygiene_release_freeze_diff_check": "PASS (static)",
+  "main_files_preserved": "PASS",
+  "standard_dockerfile_build": "NOT RUN this round; round 5 recorded dependency TLS trust failure",
+  "offline_build": "PASS: cached modules, network none, repository Dockerfile Go flags",
+  "earlier_runs": [
+    {
+      "result": "FAIL",
+      "evidence": "full-unit-boundaries-before.log",
+      "scope": "intermediate guard exposed first-write retry, source normalization, and usage fixture boundaries; fixed, final full run supersedes"
+    },
+    {
+      "result": "FAIL",
+      "evidence": "standalone-gate-initial.log and standalone-initial/python-sdk.log",
+      "scope": "intermediate guard rejected verified clone publication; fixed and final standalone gate passes"
+    },
+    {
+      "result": "FAIL",
+      "evidence": "object-backup-gate.log",
+      "scope": "HA S3 first restore part lost leader before intended stop during concurrent validation; cause unconfirmed, serial final gate passes"
+    },
+    {
+      "result": "FAIL",
+      "evidence": "deployment/metadata.json",
+      "scope": "dual 12 checks passed; sharded catalog HTTP readiness failed at host offset 2300 (inside macOS ephemeral range); cause unconfirmed, final isolated offset 1700 gate passes"
+    },
+    {
+      "result": "NOT RUN",
+      "evidence": "deployment-preflight-image-not-ready.log",
+      "scope": "gate preflight ran before image build completed; runtime tests did not start"
+    }
+  ],
+  "cross_host": "NOT RUN (user deferred)",
+  "physical_bad_disk_production_capacity_cloud_s3_day_scale_and_new_mixed_binary_matrix": "NOT RUN",
+  "upgrade_boundary": "Affected multi-source identity groups cannot mix old interpretation and this candidate. Existing rolling qualification does not apply; back up/audit identities and use whole-group maintenance upgrade until a separate compatible window is qualified.",
+  "evidence_directory": "/tmp/graphdb-p0p1-review6-20261003"
+}

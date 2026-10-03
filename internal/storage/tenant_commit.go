@@ -497,6 +497,21 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	if err != nil {
 		return CommitResult{}, err
 	}
+	if !loaded.Meta.Exists {
+		// Persist the initial head before staging a commit. A failed first
+		// publication must remain distinguishable from a lost published head.
+		initial := loaded.Manifest
+		initial.LayoutVersion = CurrentObjectLayoutVersion
+		initial.DataHash, err = loaded.Graph.ContentHash()
+		if err != nil {
+			return CommitResult{}, err
+		}
+		loaded.Meta, err = s.putManifestMeta(ctx, tenantID, initial, loaded.Meta)
+		if err != nil {
+			s.deleteWriteCache(tenantID)
+			return CommitResult{}, err
+		}
+	}
 	commitKey := s.commitKey(tenantID, version, commitID)
 	putCommitCtx, putCommitSpan := startStorageSpan(ctx, "graphdb.storage.commit.put_commit_object",
 		tenantTraceAttr(tenantID),

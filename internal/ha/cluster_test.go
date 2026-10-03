@@ -1780,9 +1780,10 @@ func (s *replicaReadFaultStore) UnwrapObjectStore() storage.ObjectStore { return
 
 func TestHAReferencedGraphFailureStopsReplicaUntilReplay(t *testing.T) {
 	for _, fault := range []struct {
-		name string
-		err  error
-	}{{"missing_commit", storage.ErrNotFound}, {"corrupt_commit", nil}} {
+		name     string
+		err      error
+		manifest bool
+	}{{"missing_commit", storage.ErrNotFound, false}, {"corrupt_commit", nil, false}, {"missing_manifest", nil, true}} {
 		t.Run(fault.name, func(t *testing.T) {
 			var target atomic.Pointer[Application]
 			group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
@@ -1806,7 +1807,22 @@ func TestHAReferencedGraphFailureStopsReplicaUntilReplay(t *testing.T) {
 			for i := range group.nodes {
 				group.waitApplied(i, checkpoint.Index)
 			}
-			target.Store(group.nodes[follower].cluster.App)
+			var savedManifest []byte
+			manifestPath := filepath.Join(group.nodes[follower].cfg.DataDir, "graphdb", "tenants", "tenant-a", "manifest.parquet")
+			if fault.manifest {
+				group.stop(follower)
+				var err error
+				savedManifest, err = os.ReadFile(manifestPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(manifestPath); err != nil {
+					t.Fatal(err)
+				}
+				group.start(follower)
+			} else {
+				target.Store(group.nodes[follower].cluster.App)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			if err := group.nodes[leader].cluster.runQueuedTask(ctx); err != nil {
@@ -1838,6 +1854,11 @@ func TestHAReferencedGraphFailureStopsReplicaUntilReplay(t *testing.T) {
 			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:quorum","kind":"host"}]}}`, http.StatusOK)
 			group.stop(follower)
 			target.Store(nil)
+			if fault.manifest {
+				if err := os.WriteFile(manifestPath, savedManifest, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			group.start(follower)
 			checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
 			if err != nil {

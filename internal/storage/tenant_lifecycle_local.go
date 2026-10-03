@@ -45,6 +45,11 @@ func (s *TenantStore) publishLocalTenantLifecycle(ctx context.Context, tenantID 
 			return s.tenantInfoFromMetadata(ctx, metadata, true)
 		}
 	}
+	// Check the live directory before building an empty stage; the stage does
+	// not yet contain the existing graph objects needed to detect a lost head.
+	if _, _, err := s.getManifest(ctx, tenantID); err != nil {
+		return TenantInfo{}, err
+	}
 	if err := s.prepareTenantCreateLease(ctx, tenantID); err != nil {
 		return TenantInfo{}, err
 	}

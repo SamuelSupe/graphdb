@@ -5,6 +5,18 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+- Reject missing tenant heads when graph objects remain, instead of exposing an
+  empty graph and resetting its version on the next write. Explicit standalone
+  repair and initial orphan recovery remain available; Raft faults stop replay.
+  Implicit first writes publish an empty head before staging a commit so failed
+  publication and idempotent retry do not look like a lost published head.
+- Verify the current logical graph digest on cold full-graph loads. Recovery and
+  manifest reconstruction publish a matching digest; legacy digests stay readable.
+- Preserve explicit entity and edge source identities when loading snapshots,
+  preventing provenance metadata from inventing aliases and merging independent
+  entities. Affected datasets require a separate upgrade qualification; mixing
+  the old and corrected interpretation is outside the rolling-upgrade window.
+
 - Preserve the S3 restore input digest across Raft leader changes by using the
   admitted task time for the integrity report. Standalone checks retain real time.
 - Roll back and stop a replica when published graph dependencies are missing or

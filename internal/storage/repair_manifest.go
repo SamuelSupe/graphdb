@@ -116,7 +116,11 @@ func (s *TenantStore) reconstructManifestFromObjects(ctx context.Context, tenant
 	if manifest.Version != g.Version {
 		return loadedGraph{}, fmt.Errorf("reconstructed manifest version %d does not match graph version %d", manifest.Version, g.Version)
 	}
-	return loadedGraph{Graph: g, Manifest: manifest, Meta: ObjectMeta{Key: s.manifestKey(tenantID)}}, nil
+	manifest.DataHash, err = g.ContentHash()
+	if err != nil {
+		return loadedGraph{}, err
+	}
+	return loadedGraph{Graph: g, Manifest: manifest, DataHash: manifest.DataHash, Meta: ObjectMeta{Key: s.manifestKey(tenantID)}}, nil
 }
 
 func applyReconstructedCommitTail(g *graph.Graph, manifest *Manifest, segments []commitSegmentObject, loose []commitObject) *graph.Graph {

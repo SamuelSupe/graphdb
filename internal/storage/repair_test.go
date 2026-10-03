@@ -309,6 +309,136 @@ func TestRepairRebuildsCorruptManifestFromCommitObjects(t *testing.T) {
 	}
 }
 
+func TestMissingManifestRejectsColdReadAndWriteUntilRepair(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("snapshot_%t", compact), func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			files, err := OpenFileStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := NewTenantStore(files, "test")
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if compact {
+				if _, err := store.Compact(ctx, "tenant-a"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := files.Delete(ctx, store.manifestKey("tenant-a")); err != nil {
+				t.Fatal(err)
+			}
+			store.StopBackground()
+			if err := files.Close(); err != nil {
+				t.Fatal(err)
+			}
+			files, err = OpenFileStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store = NewTenantStore(files, "test")
+			defer store.StopBackground()
+			if g, m, err := store.Load(ctx, "tenant-a"); err == nil {
+				_, seed := g.GetEntity("host:seed")
+				t.Errorf("missing manifest became a readable graph: version=%d seed_present=%t", m.Version, seed)
+			}
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:new", Kind: "host"}}}, CommitOptions{}); err == nil {
+				g, m, loadErr := store.Load(ctx, "tenant-a")
+				if loadErr != nil {
+					t.Fatal(loadErr)
+				}
+				_, seed := g.GetEntity("host:seed")
+				t.Errorf("missing manifest allowed a write: version=%d seed_present=%t", m.Version, seed)
+			}
+			if t.Failed() {
+				t.FailNow()
+			}
+			if _, err := store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err == nil {
+				t.Fatal("same-name tenant creation replaced a missing published head")
+			}
+			if _, err := store.RepairTenant(ctx, "tenant-a", RepairOptions{Apply: true}); err != nil {
+				t.Fatalf("explicit manifest repair: %v", err)
+			}
+			g, m, err := store.Load(ctx, "tenant-a")
+			if err != nil || m.Version != 1 {
+				t.Fatalf("repaired graph: version=%d error=%v", m.Version, err)
+			}
+			if _, ok := g.GetEntity("host:seed"); !ok {
+				t.Fatal("repair lost the confirmed entity")
+			}
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:new", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatalf("write after repair: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsSnapshotWithDifferentLogicalContent(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	defer store.StopBackground()
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Compact(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	_, m, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, legacyHash := range []string{"", "md5"} {
+		legacy := m
+		legacy.DataHash = legacyHash
+		if err := putManifestFixture(ctx, store, "tenant-a", legacy); err != nil {
+			t.Fatal(err)
+		}
+		cold := NewTenantStore(objects, "test")
+		_, got, err := cold.Load(ctx, "tenant-a")
+		cold.StopBackground()
+		if err != nil || got.Version != m.Version {
+			t.Fatalf("legacy digest %q rejected: version=%d error=%v", legacyHash, got.Version, err)
+		}
+	}
+	if err := putManifestFixture(ctx, store, "tenant-a", m); err != nil {
+		t.Fatal(err)
+	}
+	// Copy a self-consistent snapshot from another recovery generation,
+	// retaining the live manifest and its digest unchanged.
+	wrongObjects := NewMemoryStore()
+	wrong := NewTenantStore(wrongObjects, "test")
+	defer wrong.StopBackground()
+	if _, err := wrong.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "changed"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrong.Compact(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	files, err := wrongObjects.List(ctx, wrong.snapshotPrefix("tenant-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		data, err := wrongObjects.Get(ctx, file.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := objects.Put(ctx, file.Key, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cold := NewTenantStore(objects, "test")
+	defer cold.StopBackground()
+	if loaded, _, err := cold.Load(ctx, "tenant-a"); err == nil {
+		entity, _ := loaded.GetEntity("host:seed")
+		t.Fatalf("snapshot disagrees with published data_hash but loaded successfully: %+v", entity)
+	}
+}
+
 func TestRepairRebuildsCorruptManifestFromCommitSegment(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

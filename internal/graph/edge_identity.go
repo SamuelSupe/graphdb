@@ -30,33 +30,17 @@ func canonicalizeEdge(edge Edge, version int64, updatedAt time.Time) Edge {
 
 func normalizeEdgeSources(edge Edge, incomingID string, observedAt time.Time) []EdgeSource {
 	sources := append([]EdgeSource(nil), edge.Sources...)
-	if edge.Source != "" || edge.ExternalID != "" || incomingID != "" {
-		if incomingID != "" || !edgeSourcesContainPrimary(sources, edge.Source, edge.ExternalID) {
-			sources = append(sources, EdgeSource{
-				Source:     edge.Source,
-				ExternalID: edge.ExternalID,
-				EdgeID:     incomingID,
-				Confidence: edge.Confidence,
-				Priority:   edge.SourceRank,
-				ObservedAt: observedAt,
-			})
-		}
+	if incomingID != "" || (len(sources) == 0 && (edge.Source != "" || edge.ExternalID != "")) {
+		sources = append(sources, EdgeSource{
+			Source:     edge.Source,
+			ExternalID: edge.ExternalID,
+			EdgeID:     incomingID,
+			Confidence: edge.Confidence,
+			Priority:   edge.SourceRank,
+			ObservedAt: observedAt,
+		})
 	}
 	return normalizeEdgeSourceList(sources, observedAt)
-}
-
-func edgeSourcesContainPrimary(sources []EdgeSource, source string, externalID string) bool {
-	source = strings.TrimSpace(source)
-	externalID = strings.TrimSpace(externalID)
-	if source == "" && externalID == "" {
-		return false
-	}
-	for _, item := range sources {
-		if strings.TrimSpace(item.Source) == source && strings.TrimSpace(item.ExternalID) == externalID {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeEdgeSourceList(sources []EdgeSource, observedAt time.Time) []EdgeSource {

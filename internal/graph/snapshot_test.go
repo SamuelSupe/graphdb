@@ -55,3 +55,42 @@ func TestFromSnapshotRebuildsAuthoritativeIndexes(t *testing.T) {
 		t.Fatalf("snapshot loaded stale embedded index: %#v", matches)
 	}
 }
+
+func TestFromSnapshotPreservesExplicitSourceIdentities(t *testing.T) {
+	owner := FieldSource{Source: "manual", Priority: 1000}
+	t.Run("entities", func(t *testing.T) {
+		g, err := FromSnapshot(Snapshot{Version: 3, Entities: []Entity{
+			{ID: "host:aws", Kind: "host", Source: "manual", ExternalID: "host-1", SourceRank: 1000, ExistenceSource: &owner,
+				Sources: []EntitySource{{Source: "aws", ExternalID: "host-1", Priority: 50}}},
+			{ID: "host:manual", Kind: "host", Source: "manual", ExternalID: "host-1", SourceRank: 1000, ExistenceSource: &owner,
+				Sources: []EntitySource{{Source: "manual", ExternalID: "host-1", Priority: 1000}}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.Entities.Len() != 2 {
+			t.Fatalf("snapshot invented an identity shared by independent sources: entities=%+v", g.Snapshot().Entities)
+		}
+		entity, ok := g.Entities.Get("host:aws")
+		if !ok || len(entity.Sources) != 1 || entity.Sources[0].Source != "aws" {
+			t.Fatalf("explicit AWS identity changed: %+v", entity)
+		}
+	})
+	t.Run("edges", func(t *testing.T) {
+		edge := Edge{Type: "calls", From: "host:left", To: "host:right", Source: "manual", ExternalID: "cloud-edge", SourceRank: 1000,
+			ExistenceSource: &owner, Sources: []EdgeSource{{Source: "aws", ExternalID: "cloud-edge", EdgeID: "aws-edge-id", Priority: 50}}}
+		edge.ID = CanonicalEdgeID(edge)
+		g, err := FromSnapshot(Snapshot{Version: 3,
+			Entities:      []Entity{{ID: "host:left", Kind: "host"}, {ID: "host:right", Kind: "host"}},
+			RelationTypes: []RelationType{{Name: "calls", FromKind: "host", ToKind: "host", Directed: true, Cardinality: ManyToMany}},
+			Edges:         []Edge{edge},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := g.Edges.Get(edge.ID)
+		if !ok || len(got.Sources) != 1 || got.Sources[0].Source != "aws" || got.Sources[0].EdgeID != "aws-edge-id" {
+			t.Fatalf("snapshot invented a source alias for the edge: %+v", got)
+		}
+	})
+}

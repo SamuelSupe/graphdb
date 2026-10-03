@@ -469,7 +469,8 @@ func (s *TenantStore) cloneTenantRecord(ctx context.Context, sourceTenantID stri
 	}
 
 	{
-		_, targetManifestMeta, err := s.getManifest(ctx, targetTenantID)
+		// This new target already contains the verified source snapshot.
+		_, targetManifestMeta, err := s.readManifest(ctx, targetTenantID, true)
 		if err != nil {
 			return TenantInfo{}, err
 		}

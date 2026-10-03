@@ -33,6 +33,21 @@ Partition encoding shares four slots and cooperative file-count, 16 MiB and 50 m
 
 Entities, edges, adjacency and field indexes use 256 copy-on-write partitions; small collections
 of up to 32 entries use compact maps. Incremental partitioned SHA-256 produces `data_hash`.
+
+The [unreleased head-integrity fix](product-p0-p1-review2-2026-10-03.zh-CN.md)
+rejects ordinary reads and publication when the manifest is missing but graph
+objects remain. Cold full-graph loads also verify `sha256-shards-v2` digests;
+empty or legacy digests remain readable without that additional check. Partial
+Parquet/index queries and published memory views do not recompute the full graph
+digest on every request. This does not replace deep integrity audits or detect
+replacement of the entire directory with another internally consistent dataset.
+
+An implicit first write persists its empty head before staging the commit, preserving
+failed-publication retries. Explicit snapshot source identities are authoritative:
+provenance ownership and the external ID may originate from different sources and
+must not be combined into a new identity. The review documents the upgrade limits
+for datasets affected by the source-identity correction.
+
 WAL acceptance, grouped publication, idempotency and crash replay retain their existing protocol.
 An accepted request is not yet a published graph version.
 

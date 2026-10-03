@@ -161,10 +161,14 @@ type blockingTenantUsageStore struct {
 
 func (s *blockingTenantUsageStore) ListPage(
 	ctx context.Context,
-	_ string,
+	prefix string,
 	_ string,
 	_ int,
 ) ([]storage.ObjectInfo, string, error) {
+	if prefix != "test/tenants/tenant-a/" {
+		items, err := s.ObjectStore.List(ctx, prefix)
+		return items, "", err
+	}
 	s.mu.Lock()
 	s.calls++
 	s.mu.Unlock()
@@ -187,10 +191,14 @@ type cancelFirstTenantUsageStore struct {
 
 func (s *cancelFirstTenantUsageStore) ListPage(
 	ctx context.Context,
-	_ string,
+	prefix string,
 	_ string,
 	_ int,
 ) ([]storage.ObjectInfo, string, error) {
+	if prefix != "test/tenants/tenant-a/" {
+		items, err := s.ObjectStore.List(ctx, prefix)
+		return items, "", err
+	}
 	s.mu.Lock()
 	s.calls++
 	call := s.calls

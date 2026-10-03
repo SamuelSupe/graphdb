@@ -380,6 +380,9 @@ func TestCommitIngestAndCompactApplySourcePolicyFieldPriorities(t *testing.T) {
 	if entity.Fields["private_ip"] != "10.0.0.2" || entity.FieldSources["private_ip"].Priority != 1200 {
 		t.Fatalf("compacted entity = %#v", entity)
 	}
+	if len(entity.Sources) != 1 || entity.Sources[0].Source != "aws" || entity.Sources[0].ExternalID != "host-1" {
+		t.Fatalf("compaction invented a source identity: %+v", entity.Sources)
+	}
 }
 
 func TestIngestFieldAliasConflictIsSuppressedNotFailure(t *testing.T) {

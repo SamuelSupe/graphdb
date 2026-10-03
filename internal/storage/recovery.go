@@ -66,6 +66,15 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 		return RecoveryReport{}, err
 	}
 	loaded, err := s.loadWithMeta(ctx, tenantID)
+	if errors.Is(err, errMissingGraphManifest) && !IsReplicatedContext(ctx) {
+		// Standalone recovery can adopt the first unpublished commit. A Raft
+		// replica must instead stop and recover its published head from a peer.
+		manifest, meta, readErr := s.readManifest(ctx, tenantID, true)
+		if readErr != nil {
+			return RecoveryReport{}, readErr
+		}
+		loaded, err = s.loadManifestGraph(ctx, tenantID, manifest, meta)
+	}
 	if err != nil {
 		return RecoveryReport{}, err
 	}
@@ -97,11 +106,16 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 			continue
 		}
 		previousGraph := loaded.Graph
+		dataHash, err := nextGraph.ContentHash()
+		if err != nil {
+			return report, err
+		}
 		loaded.Manifest.LayoutVersion = CurrentObjectLayoutVersion
 		loaded.Manifest.Version = item.Commit.Version
 		loaded.Manifest.HeadCommitID = item.Commit.ID
 		loaded.Manifest.CommitKeys = append(loaded.Manifest.CommitKeys, item.Key)
 		loaded.Manifest.UpdatedAt = item.Commit.CreatedAt
+		loaded.Manifest.DataHash = dataHash
 		meta, err := s.putManifestMeta(ctx, tenantID, loaded.Manifest, loaded.Meta)
 		if err != nil {
 			s.deleteWriteCache(tenantID)
@@ -109,6 +123,7 @@ func (s *TenantStore) RecoverTenant(ctx context.Context, tenantID string) (Recov
 		}
 		loaded.Meta = meta
 		loaded.Graph = nextGraph
+		loaded.DataHash = dataHash
 		if err := s.updateIndexesAfterCommit(ctx, tenantID, previousGraph, nextGraph, item.Commit.Mutations, applyReport, item.Commit.Version-1, item.Commit.Version, false, false); err != nil {
 			report.IndexWarnings = append(report.IndexWarnings, "incremental index update failed for "+item.Key+": "+err.Error())
 		}

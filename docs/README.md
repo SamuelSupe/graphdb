@@ -11,6 +11,7 @@ with a language-switch link at the top.
 
 - [Tenant sharding and migration](sharding.zh-CN.md) · [Raft operations](raft-operations.zh-CN.md) · [Diagnostic metrics](diagnostics-metrics.zh-CN.md)
 - [Product P0/P1 review after 2.2.2](product-p0-p1-review-2026-10-03.zh-CN.md)
+- [Follow-up review: missing heads, graph digests and source identities](product-p0-p1-review2-2026-10-03.zh-CN.md)
 
 ## User guides
 

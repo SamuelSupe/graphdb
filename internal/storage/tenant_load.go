@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"go.opentelemetry.io/otel/attribute"
@@ -260,6 +261,16 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 
 	if g.Version != manifest.Version {
 		return loadedGraph{}, fmt.Errorf("manifest version mismatch: manifest version %d loaded graph version %d", manifest.Version, g.Version)
+	}
+	// Legacy heads may have an empty digest or a different hash algorithm.
+	if strings.HasPrefix(manifest.DataHash, graph.ContentHashAlgorithm+":") {
+		digest, err := g.ContentHash()
+		if err != nil {
+			return loadedGraph{}, err
+		}
+		if digest != manifest.DataHash {
+			return loadedGraph{}, fmt.Errorf("graph content hash mismatch for tenant %q at version %d", tenantID, manifest.Version)
+		}
 	}
 	if _, err := g.ContentFingerprint(); err != nil {
 		return loadedGraph{}, err

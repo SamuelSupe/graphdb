@@ -68,6 +68,9 @@ func TestTenantUsageUsesBoundedObjectPages(t *testing.T) {
 	base := NewMemoryStore()
 	paged := &pagingOnlyStore{ObjectStore: base}
 	store := NewTenantStore(paged, "test")
+	if err := putManifestFixture(ctx, store, "tenant-a", Manifest{TenantID: "tenant-a"}); err != nil {
+		t.Fatal(err)
+	}
 	prefix := store.tenantObjectPrefix("tenant-a")
 	for i := 0; i < objectPrefixScanPageSize+1; i++ {
 		key := fmt.Sprintf("%scommits/item-%04d.parquet", prefix, i)
@@ -80,8 +83,8 @@ func TestTenantUsageUsesBoundedObjectPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tenant usage: %v", err)
 	}
-	if report.ObjectCount != objectPrefixScanPageSize+1 {
-		t.Fatalf("object count=%d, want %d", report.ObjectCount, objectPrefixScanPageSize+1)
+	if report.ObjectCount != objectPrefixScanPageSize+2 {
+		t.Fatalf("object count=%d, want %d", report.ObjectCount, objectPrefixScanPageSize+2)
 	}
 	if paged.listCalls != 0 || paged.pageCalls != 2 {
 		t.Fatalf("list calls=%d page calls=%d, want 0 and 2", paged.listCalls, paged.pageCalls)

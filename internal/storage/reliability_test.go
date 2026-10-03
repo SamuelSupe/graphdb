@@ -730,12 +730,17 @@ func TestRecoverTenantAndCleanupStaleCommits(t *testing.T) {
 	if report.Recovered != 1 || report.EndVersion != 2 {
 		t.Fatalf("recovery report = %#v", report)
 	}
-	g, _, err := store.Load(ctx, "tenant-a")
+	store.deleteWriteCache("tenant-a")
+	g, manifest, err := store.Load(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if _, ok := g.GetEntity("host:b"); !ok {
 		t.Fatal("recovered entity missing")
+	}
+	digest, err := g.ContentHash()
+	if err != nil || manifest.DataHash != digest {
+		t.Fatalf("recovered head does not bind its content: manifest=%q graph=%q error=%v", manifest.DataHash, digest, err)
 	}
 	stale := orphan
 	stale.ID = "stale-v2"
@@ -752,6 +757,31 @@ func TestRecoverTenantAndCleanupStaleCommits(t *testing.T) {
 	}
 	if _, err := store.Objects.Get(ctx, staleKey); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("stale commit still exists: %v", err)
+	}
+}
+
+func TestRecoverInitialUnpublishedCommit(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	defer store.StopBackground()
+	commit := graph.Commit{
+		ID: "first-unpublished", TenantID: "tenant-a", Version: 1, CreatedAt: time.Now().UTC(),
+		Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:first", Kind: "host"}}},
+	}
+	if err := store.putCommitObjectIfAbsent(ctx, store.commitKey("tenant-a", 1, commit.ID), commit); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.RecoverTenant(ctx, "tenant-a")
+	if err != nil || report.Recovered != 1 || report.EndVersion != 1 {
+		t.Fatalf("recover first unpublished commit: report=%+v error=%v", report, err)
+	}
+	store.deleteWriteCache("tenant-a")
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil || manifest.Version != 1 {
+		t.Fatalf("cold load after initial recovery: version=%d error=%v", manifest.Version, err)
+	}
+	if _, ok := g.GetEntity("host:first"); !ok {
+		t.Fatal("initial recovery lost the unpublished entity")
 	}
 }
 

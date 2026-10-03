@@ -418,7 +418,9 @@ func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Tas
 		}
 		currentMeta := ObjectMeta{}
 
-		_, currentMeta, err = s.getManifest(ctx, task.TenantID)
+		// The verified restore has deliberately written its snapshot before
+		// publishing the new tenant head.
+		_, currentMeta, err = s.readManifest(ctx, task.TenantID, true)
 
 		if err != nil {
 			unlock()
