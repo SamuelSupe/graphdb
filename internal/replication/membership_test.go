@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,6 +56,8 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			action := scenario.action
 			var endpoints [4]atomic.Pointer[Node]
+			var endpointLocks [4]sync.RWMutex
+			var rejectAppend [4]atomic.Bool
 			var nodes [4]*Node
 			var configs [4]Config
 			var machines [4]membershipMachine
@@ -61,6 +65,17 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 			for i := range endpoints {
 				i := i
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					endpointLocks[i].RLock()
+					defer endpointLocks[i].RUnlock()
+					if rejectAppend[i].Load() && r.URL.Path == "/raft/message" {
+						data, err := io.ReadAll(r.Body)
+						var message raftpb.Message
+						if err != nil || message.Unmarshal(data) != nil || message.Type == raftpb.MsgApp {
+							http.Error(w, "append isolated", http.StatusServiceUnavailable)
+							return
+						}
+						r.Body = io.NopCloser(bytes.NewReader(data))
+					}
 					if node := endpoints[i].Load(); node != nil {
 						node.Handler().ServeHTTP(w, r)
 					} else {
@@ -154,7 +169,12 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("follower application did not block")
 				}
+				// Drain existing handlers and keep queued appends isolated until
+				// snapshot persistence; otherwise an append can make it obsolete.
+				endpointLocks[victim].Lock()
+				rejectAppend[victim].Store(true)
 				endpoints[victim].Store(nil)
+				endpointLocks[victim].Unlock()
 				request(memberChange{ID: 4, URL: peers[4], Action: "add_learner"})
 				index := leader.raft.Status().Commit
 				wait("leader compacted old entries", func() bool {
@@ -166,6 +186,7 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 					snapshot, _ := nodes[victim].disk.Snapshot()
 					return snapshot.Metadata.Index >= index
 				})
+				rejectAppend[victim].Store(false)
 				request(memberChange{ID: 5, URL: "http://127.0.0.1:1", Action: "add_learner"})
 				index = leader.raft.Status().Commit
 				wait("follower applied subsequent membership", func() bool {

@@ -3,12 +3,14 @@ package replication
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/dirlock"
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
@@ -19,6 +21,9 @@ type diskStorage struct {
 	mu           sync.RWMutex
 	snapshotMeta raftpb.SnapshotMetadata
 	db           *bolt.DB
+	lock         *os.File
+	closeOnce    sync.Once
+	closeErr     error
 	conf         raftpb.ConfState
 	confIndex    uint64
 }
@@ -27,11 +32,16 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, false, err
 	}
-	db, err := bolt.Open(filepath.Join(dir, "raft.db"), 0600, &bolt.Options{Timeout: time.Second})
+	lock, err := dirlock.Acquire(filepath.Join(dir, ".lock"))
 	if err != nil {
 		return nil, false, err
 	}
-	disk := &diskStorage{db: db, dir: dir}
+	db, err := bolt.Open(filepath.Join(dir, "raft.db"), 0600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		lock.Close()
+		return nil, false, err
+	}
+	disk := &diskStorage{db: db, dir: dir, lock: lock}
 	existing := false
 	err = db.Update(func(tx *bolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists([]byte("meta"))
@@ -80,7 +90,7 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 		return nil
 	})
 	if err != nil {
-		db.Close()
+		disk.Close()
 		return nil, false, err
 	}
 	file, err := os.Open(dir)
@@ -89,10 +99,15 @@ func openStorage(dir string, id uint64, cluster string) (*diskStorage, bool, err
 		file.Close()
 	}
 	if err != nil {
-		db.Close()
+		disk.Close()
 		return nil, false, err
 	}
 	return disk, existing, nil
+}
+
+func (s *diskStorage) Close() error {
+	s.closeOnce.Do(func() { s.closeErr = errors.Join(s.db.Close(), s.lock.Close()) })
+	return s.closeErr
 }
 
 func (s *diskStorage) InitialState() (hard raftpb.HardState, conf raftpb.ConfState, err error) {

@@ -28,6 +28,12 @@ Do not change files underneath a running service. The directory lock also covers
 offline CLI tools, including local-to-local tenant copy. A second opener fails
 immediately; the operating system releases the lock after process death.
 
+The [unreleased runtime recovery fix](product-p0-p1-review5-2026-10-03.zh-CN.md)
+also locks independent WAL/Raft roots, preventing backup of active logs or replacement
+during interrupted restore when the data root is idle. Keep ownership lock files
+in place. Runtime recovery and nested-root constraints are described in the
+[operations guide](product-operations.zh-CN.md#完整运行状态灾备).
+
 ## Publication and reads
 
 Immutable data files are individually synced and renamed. Groups of at most 64

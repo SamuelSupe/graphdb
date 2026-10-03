@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/SamuelSupe/graphdb/v2/internal/dirlock"
 	"hash/crc32"
 	"io"
 	"os"
@@ -207,13 +208,12 @@ func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (
 	if err := os.Chmod(config.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("secure ingest WAL directory: %w", err)
 	}
-	lockFile, err := os.OpenFile(filepath.Join(config.Dir, ingestWALLockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	lockFile, err := dirlock.Acquire(filepath.Join(config.Dir, ingestWALLockFile))
 	if err != nil {
+		if errors.Is(err, dirlock.ErrLocked) {
+			return nil, fmt.Errorf("%w: %v", ErrIngestWALLocked, err)
+		}
 		return nil, fmt.Errorf("open ingest WAL process lock: %w", err)
-	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = lockFile.Close()
-		return nil, fmt.Errorf("%w: %v", ErrIngestWALLocked, err)
 	}
 	segments, nextLSN, totalBytes, err := scanIngestWAL(config.Dir, replay)
 	if err != nil {

@@ -13,6 +13,7 @@
 - [后续审核：manifest、图摘要与来源身份](product-p0-p1-review2-2026-10-03.zh-CN.md)
 - [后续审核：迁移完整性与本地覆盖复制](product-p0-p1-review3-2026-10-03.zh-CN.md)
 - [后续审核：迁移分块、Raft 快照与数据前缀完整性](product-p0-p1-review4-2026-10-03.zh-CN.md)
+- [后续审核：完整恢复路径与 WAL/Raft 目录占用](product-p0-p1-review5-2026-10-03.zh-CN.md)
 
 ## 用户指南
 

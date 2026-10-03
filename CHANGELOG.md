@@ -5,6 +5,15 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+- Reject runtime archives whose data/WAL/Raft objects would share a destination
+  subtree after relocating roots. Validate this before creating restore targets;
+  publish staged files without replacing unexpected existing files.
+- Hold data, WAL and Raft ownership locks throughout offline runtime backup and
+  restore, including interrupted restore cleanup. Raft retains a separate directory
+  lock and recovery also locks raft.db for older binaries. Process lock files are
+  not archived or replaced; older archives and journals that contain WAL .lock
+  remain readable without replacing the live lock inode.
+
 - Bind Raft data directories and new replicated commands to `GRAPHDB_PREFIX`.
   Reject prefix changes on restart and foreign objects in incoming snapshots
   before replacing healthy state. Existing directories without a prefix marker

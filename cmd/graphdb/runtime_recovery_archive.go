@@ -54,7 +54,7 @@ func inspectRuntimeArchive(input io.ReadSeeker, roots map[string]string, expecte
 		if err != nil {
 			return nil, err
 		}
-		role, _, err := runtimeArchiveName(header.Name, roots)
+		role, relative, err := runtimeArchiveName(header.Name, roots)
 		if err != nil {
 			return nil, err
 		}
@@ -62,7 +62,9 @@ func inspectRuntimeArchive(input io.ReadSeeker, roots map[string]string, expecte
 			return nil, fmt.Errorf("invalid or duplicate runtime archive object")
 		}
 		seen[header.Name] = true
-		contents.Files = append(contents.Files, header.Name)
+		if !runtimeLockObject(role, relative) {
+			contents.Files = append(contents.Files, header.Name)
+		}
 		if header.Size > limit-usage[role] {
 			return nil, fmt.Errorf("runtime archive exceeds byte budget")
 		}

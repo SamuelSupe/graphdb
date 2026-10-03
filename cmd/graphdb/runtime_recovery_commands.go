@@ -111,6 +111,11 @@ func backupRuntime(filename string, roots map[string]string, manifest runtimeArc
 		return err
 	}
 	defer files.Close()
+	locks, err := lockRuntimeAuxiliaryRoots(roots, false)
+	if err != nil {
+		return err
+	}
+	defer closeRuntimeLocks(locks)
 	if _, err := os.Lstat(filename); !os.IsNotExist(err) {
 		return fmt.Errorf("backup target already exists or cannot be inspected")
 	}
@@ -170,7 +175,7 @@ func backupRuntime(filename string, roots map[string]string, manifest runtimeArc
 			if entry.IsDir() {
 				return nil
 			}
-			if rootEntry && (name == ".graphdb.lock" || name == runtimeRestoreJournal) {
+			if rootEntry && (name == ".graphdb.lock" || name == runtimeRestoreJournal || runtimeLockObject(role, name)) {
 				return nil
 			}
 			if !entry.Type().IsRegular() {
@@ -237,6 +242,18 @@ func runtimeArchiveName(name string, roots map[string]string) (string, string, e
 	if root == ".graphdb.lock" || root == runtimeRestoreJournal || strings.HasPrefix(root, ".runtime-restore-") {
 		return "", "", fmt.Errorf("reserved runtime archive path")
 	}
+	destination := filepath.Join(roots[role], filepath.FromSlash(relative))
+	for other, otherRoot := range roots {
+		if other == role {
+			continue
+		}
+		// A nested root owns its entire subtree, even if the archive has no
+		// matching file in that role. Mixing it with its parent loses state.
+		inside, err := filepath.Rel(otherRoot, destination)
+		if err == nil && (inside == "." || (inside != ".." && !strings.HasPrefix(inside, ".."+string(filepath.Separator)))) && strings.HasPrefix(otherRoot, roots[role]+string(filepath.Separator)) {
+			return "", "", fmt.Errorf("runtime archive object %q overlaps %s root", name, other)
+		}
+	}
 	return role, relative, nil
 }
 
@@ -291,6 +308,11 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 		return err
 	}
 	defer files.Close()
+	locks, err := lockRuntimeAuxiliaryRoots(roots, true)
+	if err != nil {
+		return err
+	}
+	defer func() { closeRuntimeLocks(locks) }()
 	journal := filepath.Join(roots["data"], runtimeRestoreJournal)
 	if info, statErr := os.Lstat(journal); statErr == nil {
 		if !info.Mode().IsRegular() {
@@ -301,7 +323,11 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 			return err
 		}
 		var previous runtimeRestorePlan
-		if json.Unmarshal(data, &previous) != nil || previous.SHA256 != plan.SHA256 || !slices.Equal(previous.Files, contents.Files) {
+		if json.Unmarshal(data, &previous) != nil || previous.SHA256 != plan.SHA256 {
+			return fmt.Errorf("interrupted restore requires its original archive and file plan")
+		}
+		previous.Files = runtimeStateFiles(previous.Files)
+		if !slices.Equal(previous.Files, contents.Files) {
 			return fmt.Errorf("interrupted restore requires its original archive and file plan")
 		}
 		if err := checkRuntimeTargets(roots, journal, contents.Files, stages); err != nil {
@@ -394,8 +420,14 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 			return fmt.Errorf("invalid or duplicate runtime archive object")
 		}
 		seen[header.Name] = true
-		stagedFiles = append(stagedFiles, header.Name)
 		usage[role] += header.Size
+		if runtimeLockObject(role, relative) {
+			if _, err := io.Copy(io.Discard, archive); err != nil {
+				return err
+			}
+			continue
+		}
+		stagedFiles = append(stagedFiles, header.Name)
 		destination := filepath.Join(stages[role], filepath.FromSlash(relative))
 		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
 			return err
@@ -433,6 +465,19 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 			return err
 		}
 	}
+	// Keep the new Raft database inode locked through publication as well,
+	// including against older binaries that only lock raft.db.
+	if stage := stages["raft"]; stage != "" {
+		if _, err := os.Lstat(filepath.Join(stage, "raft.db")); err == nil {
+			lock, err := lockRuntimeRaftDB(stage)
+			if err != nil {
+				return err
+			}
+			locks = append(locks, lock)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	directories := map[string]bool{}
 	for _, name := range plan.Files {
 		role, relative, _ := runtimeArchiveName(name, roots)
@@ -440,7 +485,7 @@ func restoreRuntime(filename string, roots map[string]string, expected runtimeAr
 		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
 			return err
 		}
-		if err := os.Rename(filepath.Join(stages[role], filepath.FromSlash(relative)), destination); err != nil {
+		if err := os.Link(filepath.Join(stages[role], filepath.FromSlash(relative)), destination); err != nil {
 			return err
 		}
 		for dir := filepath.Dir(destination); ; dir = filepath.Dir(dir) {
@@ -476,6 +521,11 @@ func syncRuntimeDirectory(dir string) error {
 
 func checkRuntimeTargets(roots map[string]string, journal string, planned []string, stages map[string]string) error {
 	allowed := map[string]bool{}
+	for role, root := range roots {
+		if role != "data" {
+			allowed[filepath.Join(root, ".lock")] = true
+		}
+	}
 	for _, name := range planned {
 		role, relative, err := runtimeArchiveName(name, roots)
 		if err != nil {

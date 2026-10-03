@@ -1,0 +1,348 @@
+{
+  "review_date": "2026-10-03",
+  "baseline_commit": "3e5252ad6eb424c3db9dfd8233215e79fd30ed25",
+  "confirmed_findings": {
+    "P0": 0,
+    "P1": 2
+  },
+  "status": "local unreleased candidate",
+  "fixes": [
+    "reject archive objects entering another role destination subtree before restore target creation; publish without replacing existing files",
+    "hold all root ownership locks during backup and restore, including legacy raft.db and staged database locks; preserve lock file inodes"
+  ],
+  "environment": {
+    "runtime": "OrbStack Linux arm64",
+    "go": "go version go1.26.7 linux/arm64",
+    "GOMAXPROCS": "2 for Go tests and standalone candidate processes; deployment uses fixture defaults"
+  },
+  "production_source_sha256": "ff58139bd1c9e90d098d15ef9a4ba5083aa6bf292cc1c3a87fff79074835053d",
+  "production_source_file_count": 459,
+  "production_source_digest_rule": "sha256 of sorted relative_path + NUL + bytes + NUL; non-test cmd/internal Go and go.mod/go.sum",
+  "source_frozen_at": "2026-10-03T08:55:47Z",
+  "tenantmigrate_source_sha256": "e76bb3115ae787d3d531deb230e9ef739e1bacf28f5576d1166d001545372222",
+  "binary_sha256": "91aeaaec244e0f5c7eac34f3b497be594b780e120f813587811893f9ac484436",
+  "tenantmigrate_binary_sha256": "014ce8a859e4c25809ecba1165277f32080f1e62d1e2f5ed1b15db9c04907108",
+  "candidate_image": {
+    "started_at": "2026-10-03T09:06:32.491537+00:00",
+    "image": "graphdb:product-p1-review9-final-20261003",
+    "image_id": "sha256:9ba2cc404328ece3e06cac46ce8f7122ac33702127986771969d1c4e67f4ea40",
+    "binary_sha256": "91aeaaec244e0f5c7eac34f3b497be594b780e120f813587811893f9ac484436",
+    "binary_version": "GGraphDB 2.2.2-review9 commit=3e5252ad-review9 built=2026-10-03T08:55:47Z go=go1.26.7",
+    "image_labels": null,
+    "port_offset": 1800,
+    "cross_host_qualification": "NOT RUN",
+    "enhanced": true,
+    "runtime_recovery": true,
+    "protocol": 2,
+    "disk_pressure": false,
+    "result": "PASS",
+    "finished_at": "2026-10-03T09:09:15.162220+00:00"
+  },
+  "ordinary_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "0.692s",
+    "github.com/SamuelSupe/graphdb/v2/docs": "0.004s",
+    "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "0.006s",
+    "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "0.072s",
+    "github.com/SamuelSupe/graphdb/v2/internal/config": "0.023s",
+    "github.com/SamuelSupe/graphdb/v2/internal/graph": "0.014s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "257.844s",
+    "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "5.502s",
+    "github.com/SamuelSupe/graphdb/v2/internal/query": "0.106s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "12.972s",
+    "github.com/SamuelSupe/graphdb/v2/internal/sharding": "0.017s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "218.054s",
+    "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "0.910s",
+    "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "0.105s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "0.002s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "0.050s"
+  },
+  "race_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "1.826s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "1.676s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "13.727s"
+  },
+  "race_scope": "cmd runtime recovery; storage IngestWAL/FileStore; complete replication package; not full repository race",
+  "standalone_direct_wal": "PASS: exact candidate binary; E2E, 4 writers/16 readers, Python SDK 12 tests and restart snapshot equality",
+  "cli_migration": [
+    {
+      "case": "missing published commit rejects overwrite and preserves cold target",
+      "result": "PASS"
+    },
+    {
+      "case": "SIGKILL during copy staging preserves cold target and cleans abandoned stage",
+      "result": "PASS"
+    },
+    {
+      "case": "validated overwrite publishes source snapshot and supports subsequent write/restart",
+      "result": "PASS"
+    }
+  ],
+  "deployment_check_count": 24,
+  "deployment_checks": {
+    "dual": [
+      {
+        "check": "same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent",
+        "result": "PASS"
+      },
+      {
+        "check": "local standalone/WAL and every Raft replica expose finite diagnostic samples",
+        "result": "PASS",
+        "observations": [
+          {
+            "name": "metrics-direct",
+            "samples": 312,
+            "deployment": "standalone"
+          },
+          {
+            "name": "metrics-wal",
+            "samples": 333,
+            "deployment": "standalone"
+          },
+          {
+            "name": "metrics-node1",
+            "samples": 740,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-node2",
+            "samples": 543,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-node3",
+            "samples": 528,
+            "deployment": "raft"
+          }
+        ]
+      },
+      {
+        "check": "standalone direct commits and ingest survive SIGKILL; compact and GC remain available",
+        "result": "PASS"
+      },
+      {
+        "check": "standalone WAL accepted response is durable; SIGKILL recovery publishes once and idempotent retry preserves identity",
+        "result": "PASS"
+      },
+      {
+        "check": "isolated replica diagnostics remain locally readable without quorum",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-isolated-node",
+          "samples": 836,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "live isolated leader rejects strong reads and writes; majority serves and confirmed write survives reconnection",
+        "result": "PASS",
+        "old": 1,
+        "new": 2
+      },
+      {
+        "check": "Raft majority WAL and leader takeover remain available alongside standalone services",
+        "result": "PASS",
+        "old": 2,
+        "new": 3,
+        "seconds": 6.118
+      },
+      {
+        "check": "standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access",
+        "result": "PASS"
+      },
+      {
+        "check": "Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works",
+        "result": "PASS"
+      },
+      {
+        "check": "maintenance diagnostic counters reflect completed real work",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-maintenance",
+          "samples": 1032,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation",
+        "result": "PASS",
+        "old": 3,
+        "new": 2,
+        "payload_bytes": 37748736
+      },
+      {
+        "check": "snapshot diagnostic counters reflect completed real work",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-snapshot",
+          "samples": 907,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "cold full three-replica runtime backup/restore preserves graph, templates, accepted identities and streaming snapshots; writes resume",
+        "result": "PASS"
+      }
+    ],
+    "sharded": [
+      {
+        "check": "standalone direct/WAL coexist with sharded Raft",
+        "result": "PASS",
+        "processes_before_expansion": 11
+      },
+      {
+        "check": "catalog, shard replicas and authenticated router expose local diagnostics",
+        "result": "PASS",
+        "observations": [
+          {
+            "name": "metrics-catalog1",
+            "samples": 660,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-catalog2",
+            "samples": 336,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-catalog3",
+            "samples": 336,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-a1",
+            "samples": 491,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-a2",
+            "samples": 672,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-a3",
+            "samples": 476,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-router",
+            "samples": 262,
+            "deployment": "sharded_raft"
+          }
+        ]
+      },
+      {
+        "check": "add three-replica shard without remapping existing tenant",
+        "result": "PASS",
+        "processes": 14
+      },
+      {
+        "check": "catalog diagnostics expose the blocked migration phase and retained error",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-migration-error",
+          "samples": 772,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "chunked migration survives catalog and destination leader interruption",
+        "result": "PASS",
+        "accepted_lsn": 8,
+        "destination_interrupted_during_transfer": true
+      },
+      {
+        "check": "tenant can return to retired source and commit again",
+        "result": "PASS"
+      },
+      {
+        "check": "one shard loses quorum while other shard and standalones serve",
+        "result": "PASS"
+      },
+      {
+        "check": "cancel before cutover resumes source before unavailable target cleanup",
+        "result": "PASS"
+      },
+      {
+        "check": "replica cannot remove shard role; original configuration recovers",
+        "result": "PASS",
+        "image_id": "sha256:9ba2cc404328ece3e06cac46ce8f7122ac33702127986771969d1c4e67f4ea40"
+      },
+      {
+        "check": "gateway keeps known tenant strong reads and idempotent writes during catalog outage; unknown routes fail closed",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-router-catalog-fallback",
+          "samples": 265,
+          "deployment": "sharded_raft"
+        }
+      },
+      {
+        "check": "drained router diagnostics do not require a reachable catalog",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-router-no-catalog",
+          "samples": 265,
+          "deployment": "sharded_raft"
+        }
+      }
+    ]
+  },
+  "vet": "PASS (static)",
+  "full_repository_race": "NOT RUN",
+  "30_minute_soak": "NOT RUN",
+  "fresh_minio_s3_gate": "NOT RUN",
+  "cross_host": "NOT RUN (user deferred)",
+  "new_mixed_binary_matrix": "NOT RUN; existing source-identity maintenance-upgrade restrictions retained",
+  "physical_bad_disk_production_capacity_day_scale": "NOT RUN",
+  "compatibility": "archive/protocol encodings unchanged; legacy auxiliary lock objects and restore plans read without inode replacement; recovery holds old bbolt database lock; not a new mixed-version qualification",
+  "intermediate_evidence": [
+    {
+      "file": "runtime-before-final.log",
+      "result": "FAIL",
+      "scope": "baseline valid archives overwrite relocated role state; backup and restore accept live auxiliary owners and lose durable subsequent writes"
+    },
+    {
+      "file": "runtime-fixed.log",
+      "result": "FAIL",
+      "scope": "intermediate new lock was not yet allowed in a nested restore target"
+    },
+    {
+      "file": "replication-target.log",
+      "result": "FAIL",
+      "scope": "snapshot metadata fixture timing: queued append made snapshot obsolete"
+    },
+    {
+      "file": "membership-target-final.log",
+      "result": "FAIL",
+      "scope": "draining active handlers alone still allowed a queued append to obsolete snapshot"
+    },
+    {
+      "file": "membership-target-stable.log",
+      "result": "PASS",
+      "scope": "correctly isolated append traffic until snapshot persistence, repeated five times"
+    },
+    {
+      "file": "runtime-baseline-complete.log",
+      "result": "SUPERSEDED",
+      "scope": "early fixture duplicated legacy lock object on baseline; not counted as regression evidence"
+    }
+  ],
+  "standard_dockerfile_dependency_download": "NOT RUN; offline cached compilation uses repository build flags and matching runtime stage",
+  "evidence_directory": "/tmp/graphdb-p0p1-review9-20261003",
+  "evidence_archive": "dist/graphdb-product-p0-p1-review5-20261003-evidence.tar.gz",
+  "build_commit_label": "3e5252ad-review9 is a dirty-baseline candidate label; production digest binds tested sources; not final Git SHA",
+  "document_links": {
+    "scope": "changed documentation files; local target existence, not anchor or remote URL validation",
+    "checked_links": 218,
+    "broken": [],
+    "result": "PASS"
+  },
+  "main_files_preserved": {
+    "docs/high-availability-design.zh-CN.md": true,
+    "docs/performance-v1.3.3 2.md": true,
+    "internal/graph/read_range 2.go": true,
+    "internal/httpapi/scan_graph 2.go": true
+  },
+  "workspace_hygiene_release_contracts_format_diff": "PASS (static)",
+  "evidence_archive_sha256": "d54b4e380aa4373aa1cd576e9a511ea4fc6cbdd7c74c8b0d24f95a663d53ea92"
+}

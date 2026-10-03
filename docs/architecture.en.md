@@ -111,6 +111,14 @@ The runtime cancels and joins task, index and maintenance workers before releasi
 directory. WAL shutdown is included and errors propagate to service/CLI callers. A worker timeout
 retains directory ownership until a successful shutdown retry.
 
+The [unreleased runtime recovery fix](product-p0-p1-review5-2026-10-03.zh-CN.md)
+holds ownership locks for all configured roots throughout offline backup and restore.
+Raft also retains a directory lock, while recovery locks both existing and staged
+raft.db inodes for older processes. An archive object cannot enter another role's
+nested root. Legacy lock objects are checked but never published; staged state is
+linked on the destination filesystem without replacing existing files. The restore
+journal still governs recovery across roots after interruption.
+
 ## Backup automation
 
 This internal automation applies to standalone. Raft uses external scheduling through the cluster backup API; see [Raft operations](raft-operations.zh-CN.md).

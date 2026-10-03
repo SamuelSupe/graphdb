@@ -1,17 +1,22 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +25,160 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+	bolt "go.etcd.io/bbolt"
 )
+
+func TestRuntimeRecoveryRejectsCrossRoleDestinations(t *testing.T) {
+	for _, role := range []string{"wal", "raft"} {
+		t.Run(role, func(t *testing.T) {
+			base := t.TempDir()
+			source := map[string]string{"data": filepath.Join(base, "data"), role: filepath.Join(base, role)}
+			for _, name := range []string{filepath.Join(source["data"], role, "state"), filepath.Join(source[role], "state")} {
+				if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(name, []byte(name), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			manifest := runtimeArchiveManifest{Format: 1, IngestMode: "wal", Roles: []string{"data", role}}
+			if role == "raft" {
+				manifest.IngestMode, manifest.NodeID, manifest.ClusterID = "direct", 1, "recovery"
+			}
+			sort.Strings(manifest.Roles)
+			archive := filepath.Join(t.TempDir(), "runtime.backup")
+			if err := backupRuntime(archive, source, manifest, 32<<20); err != nil {
+				t.Fatal(err)
+			}
+			root := filepath.Join(t.TempDir(), "nested-target")
+			target := map[string]string{"data": root, role: filepath.Join(root, role)}
+			if err := restoreRuntime(archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+				actual, _ := os.ReadFile(filepath.Join(target[role], "state"))
+				t.Errorf("restore accepted two roles for the same destination and retained only %q", actual)
+			}
+			if _, err := os.Stat(root); !os.IsNotExist(err) {
+				t.Errorf("rejected archive changed target: %v", err)
+			}
+			target = map[string]string{"data": filepath.Join(t.TempDir(), "data"), role: filepath.Join(t.TempDir(), role)}
+			if err := restoreRuntime(archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"data/" + role + "/state", role + "/state"} {
+				part, relative, _ := strings.Cut(name, "/")
+				got, err := os.ReadFile(filepath.Join(target[part], relative))
+				want, sourceErr := os.ReadFile(filepath.Join(source[part], relative))
+				if err != nil || sourceErr != nil || !bytes.Equal(got, want) {
+					t.Fatalf("nonoverlapping restore lost %s: %v/%v", name, err, sourceErr)
+				}
+			}
+		})
+	}
+}
+
+func TestRuntimeRecoveryRejectsLiveAuxiliaryDirectory(t *testing.T) {
+	for _, role := range []string{"wal", "raft"} {
+		t.Run(role, func(t *testing.T) {
+			roots := map[string]string{"data": filepath.Join(t.TempDir(), "data"), role: t.TempDir()}
+			manifest := runtimeArchiveManifest{Format: 1, IngestMode: "wal", Roles: []string{"data", role}}
+			var closeOwner func() error
+			if role == "wal" {
+				wal, err := storage.OpenIngestWAL(storage.DefaultIngestWALConfig(roots[role]), func(storage.IngestWALRecord) error { return nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				closeOwner = wal.Close
+			} else {
+				manifest.IngestMode, manifest.NodeID, manifest.ClusterID = "direct", 1, "recovery"
+				db, err := bolt.Open(filepath.Join(roots[role], "raft.db"), 0600, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				closeOwner = db.Close
+			}
+			defer closeOwner()
+			archive := filepath.Join(t.TempDir(), "runtime.backup")
+			if err := backupRuntime(archive, roots, manifest, 32<<20); err == nil {
+				t.Error("backup accepted a live " + role + " directory under an independently owned data root")
+			}
+			if _, err := os.Stat(archive); !os.IsNotExist(err) {
+				t.Errorf("failed backup published an archive: %v", err)
+			}
+			if err := closeOwner(); err != nil {
+				t.Fatal(err)
+			}
+			archive = filepath.Join(t.TempDir(), "offline.backup")
+			if err := backupRuntime(archive, roots, manifest, 32<<20); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(archive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents, err := inspectRuntimeArchive(bytes.NewReader(raw), roots, manifest, 32<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := runtimeRestorePlan{SHA256: hex.EncodeToString(raw[:sha256.Size]), Files: contents.Files}
+			if err := writeRuntimeRestorePlan(filepath.Join(roots["data"], runtimeRestoreJournal), plan); err != nil {
+				t.Fatal(err)
+			}
+			if role == "wal" {
+				config := storage.DefaultIngestWALConfig(roots[role])
+				wal, err := storage.OpenIngestWAL(config, func(storage.IngestWALRecord) error { return nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer wal.Close()
+				if _, err := wal.Append(context.Background(), storage.IngestWALAccepted, []byte("acknowledged after backup")); err != nil {
+					t.Fatal(err)
+				}
+				if err := restoreRuntime(archive, roots, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+					t.Error("resume replaced a live WAL")
+				}
+				if err := wal.Close(); err != nil {
+					t.Fatal(err)
+				}
+				var recovered []storage.IngestWALRecord
+				wal, err = storage.OpenIngestWAL(config, func(record storage.IngestWALRecord) error { recovered = append(recovered, record); return nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer wal.Close()
+				if len(recovered) != 1 || string(recovered[0].Payload) != "acknowledged after backup" {
+					t.Fatalf("resume lost a durable WAL acknowledgement: %+v", recovered)
+				}
+			} else {
+				db, err := bolt.Open(filepath.Join(roots[role], "raft.db"), 0600, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				if err := db.Update(func(tx *bolt.Tx) error { _, err := tx.CreateBucket([]byte("committed-after-backup")); return err }); err != nil {
+					t.Fatal(err)
+				}
+				if err := restoreRuntime(archive, roots, manifest, 32<<20, storage.DiskSpacePolicy{}); err == nil {
+					t.Error("resume replaced a live Raft database")
+				}
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db, err = bolt.Open(filepath.Join(roots[role], "raft.db"), 0600, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				if err := db.View(func(tx *bolt.Tx) error {
+					if tx.Bucket([]byte("committed-after-backup")) == nil {
+						t.Error("resume lost committed Raft state")
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	ctx, cancelTest := context.WithTimeout(context.Background(), 15*time.Second)
@@ -67,6 +225,47 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	if err := backupRuntime(archive, map[string]string{"data": data, "wal": walDir}, manifest, 32<<20); err != nil {
 		t.Fatal(err)
 	}
+	// Older backups included the process lock as a regular WAL object.
+	raw, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(raw[sha256.Size:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy bytes.Buffer
+	compressed := gzip.NewWriter(&legacy)
+	w := tar.NewWriter(compressed)
+	r := tar.NewReader(reader)
+	for {
+		header, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name == "wal/.lock" {
+			continue
+		}
+		if err := w.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(w, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.WriteHeader(&tar.Header{Name: "wal/.lock", Mode: 0600, Size: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(w.Close(), compressed.Close(), reader.Close()); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(legacy.Bytes())
+	if err := os.WriteFile(archive, append(digest[:], legacy.Bytes()...), 0600); err != nil {
+		t.Fatal(err)
+	}
 	target := map[string]string{"data": filepath.Join(t.TempDir(), "data"), "wal": filepath.Join(t.TempDir(), "wal")}
 	if err := restoreRuntime(archive, target, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
 		t.Fatal(err)
@@ -101,7 +300,7 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 		if err := os.WriteFile(path, original, 0600); err != nil {
 			t.Fatal(err)
 		}
-		plan := runtimeRestorePlan{SHA256: hex.EncodeToString(raw[:sha256.Size]), Files: contents.Files}
+		plan := runtimeRestorePlan{SHA256: hex.EncodeToString(raw[:sha256.Size]), Files: append(append([]string{}, contents.Files...), "wal/.lock")}
 		journal, _ := json.Marshal(plan)
 		stage := filepath.Join(partial["wal"], ".runtime-restore-"+plan.SHA256[:16])
 		if err := os.MkdirAll(stage, 0700); err != nil {
@@ -126,8 +325,16 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 			t.Fatalf("failed resume deleted existing files: %v", err)
 		}
 		os.Remove(unexpected)
+		lockInfo, err := os.Stat(filepath.Join(partial["wal"], ".lock"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := restoreRuntime(archive, partial, manifest, 32<<20, storage.DiskSpacePolicy{}); err != nil {
 			t.Fatal(err)
+		}
+		afterLock, err := os.Stat(filepath.Join(partial["wal"], ".lock"))
+		if err != nil || !os.SameFile(lockInfo, afterLock) {
+			t.Fatalf("resume replaced process lock inode: %v", err)
 		}
 		if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, original) {
 			t.Fatalf("resumed data differs: %v", err)

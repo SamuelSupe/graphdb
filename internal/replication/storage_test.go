@@ -188,14 +188,14 @@ func TestDurableLogTruncationCompactionAndReopen(t *testing.T) {
 	if err := s.saveSnapshot(snapshot, 2); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.db.Close(); err != nil {
+	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 	s, existing, err = openStorage(dir, 1, "test")
 	if err != nil || !existing {
 		t.Fatalf("reopen: %v, %v", existing, err)
 	}
-	defer s.db.Close()
+	defer s.Close()
 	first, _ := s.FirstIndex()
 	last, _ := s.LastIndex()
 	if first != 3 || last != 4 {
@@ -374,7 +374,7 @@ func TestStreamingSnapshotRetriesAndRejectsCorruptDurableFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap, err := disk.Snapshot()
-	disk.db.Close()
+	disk.Close()
 	if err != nil {
 		t.Fatal(err)
 	}

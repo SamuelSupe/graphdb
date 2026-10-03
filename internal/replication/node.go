@@ -144,22 +144,22 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	}
 	minimum, err := disk.minimumProtocol()
 	if err != nil || minimum > MaxProtocolVersion {
-		disk.db.Close()
+		disk.Close()
 		return nil, fmt.Errorf("Raft data requires protocol %d: %v", minimum, err)
 	}
 	cfg.Protocol = max(cfg.Protocol, minimum)
 	applied, err := machine.Applied()
 	if err != nil {
-		disk.db.Close()
+		disk.Close()
 		return nil, err
 	}
 	if !existing && applied > 0 {
-		disk.db.Close()
+		disk.Close()
 		return nil, fmt.Errorf("application checkpoint exists without its Raft log; replace this replica using a fresh node ID and empty directories")
 	}
 	snapshot, err := disk.Snapshot()
 	if err != nil {
-		disk.db.Close()
+		disk.Close()
 		return nil, err
 	}
 	var snapshotPeers map[uint64]string
@@ -167,12 +167,12 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	if snapshot.Metadata.Index > 0 {
 		envelope, decodeErr := decodeSnapshot(snapshot.Data)
 		if decodeErr != nil {
-			disk.db.Close()
+			disk.Close()
 			return nil, decodeErr
 		}
 		if envelope.File != nil {
 			if err := validateSnapshotFile(cfg.Dir, snapshot.Metadata.Index, *envelope.File); err != nil {
-				disk.db.Close()
+				disk.Close()
 				return nil, err
 			}
 		}
@@ -181,22 +181,22 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	}
 	if snapshot.Metadata.Index > applied {
 		if err := restoreSnapshot(parent, machine, cfg.Dir, snapshot); err != nil {
-			disk.db.Close()
+			disk.Close()
 			return nil, err
 		}
 		applied = snapshot.Metadata.Index
 	}
 	if err := pruneSnapshotFiles(cfg.Dir, snapshot, true); err != nil {
-		disk.db.Close()
+		disk.Close()
 		return nil, err
 	}
 	hard, _, err := disk.InitialState()
 	if err != nil {
-		disk.db.Close()
+		disk.Close()
 		return nil, err
 	}
 	if existing && applied > hard.Commit {
-		disk.db.Close()
+		disk.Close()
 		return nil, fmt.Errorf("application checkpoint %d exceeds durable Raft commit %d", applied, hard.Commit)
 	}
 	ctx, cancel := context.WithCancel(parent)
@@ -212,20 +212,20 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	}
 	if err := n.loadPeers(); err != nil {
 		cancel()
-		disk.db.Close()
+		disk.Close()
 		return nil, err
 	}
 	// Recover snapshots saved by versions that persisted peers separately.
 	if len(snapshotPeers) > 0 && disk.confIndex <= snapshot.Metadata.Index {
 		if err := n.installPeers(snapshotPeers); err != nil {
 			cancel()
-			disk.db.Close()
+			disk.Close()
 			return nil, err
 		}
 	}
 	if err := n.installRetired(snapshotRetired, snapshot.Metadata.Index); err != nil {
 		cancel()
-		disk.db.Close()
+		disk.Close()
 		return nil, err
 	}
 	n.client = newTransportClient()
@@ -237,7 +237,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		if cfg.Bootstrap {
 			if len(cfg.Peers) != 3 {
 				cancel()
-				disk.db.Close()
+				disk.Close()
 				return nil, fmt.Errorf("bootstrap requires exactly three voting nodes")
 			}
 			for id := range cfg.Peers {
@@ -804,7 +804,7 @@ func (n *Node) Close() error {
 		drainPackets(queue)
 	}
 	n.client.CloseIdleConnections()
-	return n.disk.db.Close()
+	return n.disk.Close()
 }
 
 func (n *Node) Status() map[string]any {
