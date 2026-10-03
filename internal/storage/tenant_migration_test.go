@@ -87,6 +87,82 @@ func TestCopyTenantObjectsDryRunAndCopy(t *testing.T) {
 	}
 }
 
+func TestCopyTenantObjectsFailurePreservesLocalTarget(t *testing.T) {
+	for _, failure := range []string{"missing_commit", "wrong_digest", "read_error"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			sourceObjects := NewMemoryStore()
+			source := NewTenantStore(sourceObjects, "source")
+			result, err := source.Commit(ctx, "tenant-a", graph.Mutations{
+				UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}},
+			}, CommitOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			files, err := OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := NewTenantStore(files, "target")
+			if _, err := target.Commit(ctx, "tenant-a", graph.Mutations{
+				UpsertEntities: []graph.Entity{{ID: "host:target", Kind: "host"}},
+			}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := files.Get(ctx, target.manifestKey("tenant-a"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch failure {
+			case "missing_commit":
+				if err := sourceObjects.Delete(ctx, result.CommitKeys[0]); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong_digest":
+				manifest := result
+				manifest.DataHash = "sha256-shards-v2:" + strings.Repeat("0", 64)
+				if err := putManifestFixture(ctx, source, "tenant-a", manifest); err != nil {
+					t.Fatal(err)
+				}
+			case "read_error":
+				source = NewTenantStore(&tenantMigrationReadFailureStore{ObjectStore: sourceObjects, key: result.CommitKeys[0]}, "source")
+			}
+			_, copyErr := CopyTenantObjects(ctx, source, "tenant-a", target, "tenant-a", TenantMigrationOptions{Overwrite: true})
+			after, headErr := files.Get(ctx, target.manifestKey("tenant-a"))
+			if err := files.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			cold := NewTenantStore(reopened, "target")
+			g, _, loadErr := cold.Load(ctx, "tenant-a")
+			preserved := false
+			if loadErr == nil {
+				_, preserved = g.GetEntity("host:target")
+			}
+			if copyErr == nil || headErr != nil || string(before) != string(after) || !preserved {
+				t.Fatalf("failed copy must reject input and preserve published target: copy=%v head=%v cold_load=%v preserved=%v head_equal=%v", copyErr, headErr, loadErr, preserved, string(before) == string(after))
+			}
+		})
+	}
+}
+
+type tenantMigrationReadFailureStore struct {
+	ObjectStore
+	key string
+}
+
+func (s *tenantMigrationReadFailureStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == s.key {
+		return nil, errors.New("injected source read failure")
+	}
+	return s.ObjectStore.Get(ctx, key)
+}
+
 func TestCopyTenantObjectsRejectsTenantRename(t *testing.T) {
 	ctx := context.Background()
 	source := NewTenantStore(NewMemoryStore(), "source")

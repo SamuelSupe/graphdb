@@ -5,6 +5,18 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+- Validate tenant migration graphs and relation schemas from actual copied files,
+  including required commits/snapshots, the current logical digest, tenant controls
+  and objects that copy rewrites. Both export
+  formats and the Raft install path reject invalid graphs before cutover or source
+  cleanup; rejected installs preserve incarnation controls and keep replicas running.
+  Lost files already declared by the transfer remain replica faults; malformed
+  optional index catalogs cannot stop the entire destination group.
+- Stage tenant copies before replacement. Exclusively opened local targets publish
+  with the existing recoverable directory journal, preserving the old graph when
+  copying or validation fails. The offline tenantmigrate tool uses this path;
+  dry-run remains an inventory, and arbitrary object-store replacement is not atomic.
+
 - Reject missing tenant heads when graph objects remain, instead of exposing an
   empty graph and resetting its version on the next write. Explicit standalone
   repair and initial orphan recovery remain available; Raft faults stop replay.

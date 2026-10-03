@@ -15,9 +15,149 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestHAShardRejectsInvalidGraphTransferWithoutStoppingReplicas(t *testing.T) {
+	group := newTestClusterRole(t, true, "b", false)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	leader := group.leader(-1)
+	action := func(input sharding.Action, want int) {
+		t.Helper()
+		result, err := group.nodes[leader].cluster.shardAction(ctx, input)
+		if err != nil {
+			t.Fatalf("%s stopped shard application: %v", input.Operation, err)
+		}
+		var outcome httpResult
+		if json.Unmarshal(result, &outcome) != nil || outcome.Status != want {
+			t.Fatalf("%s status want %d: %s", input.Operation, want, result)
+		}
+	}
+	for _, failure := range []string{"missing-commit", "malformed-manifest", "malformed-index"} {
+		tenant, move := "tenant-"+failure, "move-"+failure
+		objects := storage.NewMemoryStore()
+		source := storage.NewTenantStore(objects, "graphdb")
+		manifest, err := source.Commit(ctx, tenant, graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}}}, storage.CommitOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed, err := objects.List(ctx, "graphdb/tenants/"+tenant+"/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		transfer := sharding.Transfer{Tenant: tenant, MoveID: move}
+		for _, item := range listed {
+			if failure == "missing-commit" && item.Key == manifest.CommitKeys[0] {
+				continue
+			}
+			data, err := objects.Get(ctx, item.Key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failure == "malformed-manifest" && strings.HasSuffix(item.Key, "/manifest.parquet") {
+				data = []byte("broken manifest")
+			}
+			transfer.Objects = append(transfer.Objects, sharding.Object{Key: item.Key, Data: data})
+		}
+		if failure == "malformed-index" {
+			transfer.Objects = append(transfer.Objects, sharding.Object{Key: "graphdb/tenants/" + tenant + "/indexes/catalog.parquet", Data: []byte("broken index catalog")})
+		}
+		app := group.nodes[leader].cluster.App
+		transfer.Objects = append(transfer.Objects, sharding.Object{Key: app.generationKey(tenant), Data: []byte("3")}, sharding.Object{Key: app.purgeKey(tenant)})
+		encoded, err := json.Marshal(transfer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
+		input := sharding.Action{Tenant: tenant, MoveID: move, Epoch: 1, Digest: digest, Parts: 1, Bytes: int64(len(encoded))}
+		input.Operation = "reserve"
+		action(input, http.StatusOK)
+		input.Operation, input.Data = "stage", encoded
+		action(input, http.StatusOK)
+		input.Operation, input.Data = "install", nil
+		action(input, http.StatusConflict)
+		checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, replica := range group.nodes {
+			group.waitApplied(i, checkpoint.Index)
+			replica.cluster.App.mu.RLock()
+			owner, ownerErr := replica.cluster.App.ownership(ctx, tenant)
+			tenantObjects, listErr := replica.files.List(ctx, "graphdb/tenants/"+tenant+"/")
+			_, generationErr := replica.files.Get(ctx, app.generationKey(tenant))
+			_, purgeErr := replica.files.Get(ctx, app.purgeKey(tenant))
+			replica.cluster.App.mu.RUnlock()
+			if ownerErr != nil || listErr != nil || owner.State != "importing" || len(tenantObjects) != 0 || !errors.Is(generationErr, storage.ErrNotFound) || !errors.Is(purgeErr, storage.ErrNotFound) {
+				t.Fatalf("replica %d published invalid input: owner=%+v objects=%d errors=%v/%v/%v/%v", i, owner, len(tenantObjects), ownerErr, listErr, generationErr, purgeErr)
+			}
+		}
+	}
+	action(sharding.Action{Operation: "own", Tenant: "tenant-a", Epoch: 1}, http.StatusOK)
+	for _, input := range []struct{ path, body string }{
+		{"/v1/tenants", `{"tenant_id":"tenant-a"}`},
+		{"/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:after-rejection","kind":"host"}]}}`},
+	} {
+		request := httptest.NewRequest(http.MethodPost, input.path, strings.NewReader(input.body)).WithContext(ctx)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Tenant-ID", "tenant-a")
+		request.Header.Set(sharding.EpochHeader, "1")
+		response := httptest.NewRecorder()
+		group.nodes[leader].handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("write after rejection: %d %s", response.Code, response.Body.String())
+		}
+	}
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, replica := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		replica.cluster.App.mu.RLock()
+		g, _, err := replica.store.Load(ctx, "tenant-a")
+		replica.cluster.App.mu.RUnlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := g.GetEntity("host:after-rejection"); !ok {
+			t.Fatalf("replica %d cannot apply a write after rejecting input", i)
+		}
+	}
+}
+
+func TestHAShardExportRejectsMissingPublishedCommit(t *testing.T) {
+	ctx := context.Background()
+	files := storage.NewFileStore(t.TempDir())
+	store := storage.NewTenantStore(files, "graphdb")
+	manifest, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}}}, storage.CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &Application{Files: files, Store: store, MaxSnapshotBytes: 8 << 20}
+	action := sharding.Action{Tenant: "tenant-a", MoveID: "move-corrupt", Epoch: 1}
+	owner, _ := json.Marshal(sharding.Ownership{State: "frozen", Epoch: 1, MoveID: action.MoveID})
+	if err := files.Put(ctx, app.ownershipKey(action.Tenant), owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Delete(ctx, manifest.CommitKeys[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.tenantTransfer(ctx, action.Tenant, action.MoveID, action.Epoch); err == nil {
+		t.Error("legacy export accepted a missing published commit")
+	}
+	cluster := &Cluster{App: app}
+	exported, err := cluster.buildTenantExport(ctx, action)
+	if exported != nil {
+		exported.close()
+	}
+	if err == nil {
+		t.Fatal("chunked export accepted a missing published commit")
+	}
+}
 
 func TestHAShardDelayedFlushAfterRetirement(t *testing.T) {
 	group := newTestClusterRole(t, true, "a", false)

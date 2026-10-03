@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func TestReplicationApplicationCrashRecovery(t *testing.T) {
@@ -371,7 +373,7 @@ func TestReplicationApplicationDirectoryReplacement(t *testing.T) {
 }
 
 func TestReplicationApplicationDoesNotCheckpointHiddenIOFailure(t *testing.T) {
-	for _, operation := range []string{"put", "get", "get_with_meta", "head", "list", "list_page", "open_reader", "read_at", "seek", "read_admission", "cached_read"} {
+	for _, operation := range []string{"put", "get", "get_with_meta", "head", "list", "list_page", "open_reader", "read_at", "seek", "read_admission", "cached_read", "migration_validation"} {
 		t.Run(operation, func(t *testing.T) {
 			files, err := OpenFileStore(t.TempDir())
 			if err != nil {
@@ -390,6 +392,8 @@ func TestReplicationApplicationDoesNotCheckpointHiddenIOFailure(t *testing.T) {
 				switch operation {
 				case "put":
 					_ = files.Put(canceled, "graphdb/next", []byte("never-written"))
+				case "migration_validation":
+					_ = ValidateTenantMigrationSource(canceled, NewTenantStore(files, "graphdb"), "tenant-a", nil)
 				case "get":
 					_, _ = files.Get(canceled, "graphdb/original")
 				case "get_with_meta":
@@ -442,6 +446,56 @@ func TestReplicationApplicationDoesNotCheckpointHiddenIOFailure(t *testing.T) {
 			}
 			if _, err := files.Get(context.Background(), "graphdb/original"); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("failed transaction retained partial data: %v", err)
+			}
+		})
+	}
+}
+
+func TestReplicationMigrationValidationDistinguishesMissingInputFromLocalLoss(t *testing.T) {
+	for _, localLoss := range []bool{false, true} {
+		t.Run(fmt.Sprintf("local_loss_%v", localLoss), func(t *testing.T) {
+			ctx := context.Background()
+			inputFiles := NewFileStore(t.TempDir())
+			source := NewTenantStore(inputFiles, "input")
+			manifest, err := source.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:input", Kind: "host"}}}, CommitOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed, err := inputFiles.List(ctx, "input/tenants/tenant-a/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			declared := make(map[string]bool)
+			for _, item := range listed {
+				declared[item.Key] = true
+			}
+			if !localLoss {
+				delete(declared, manifest.CommitKeys[0])
+			}
+			if err := inputFiles.Delete(ctx, manifest.CommitKeys[0]); err != nil {
+				t.Fatal(err)
+			}
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			_, applyErr := files.ApplyReplicated(ctx, 1, "migration-validation", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				if err := ValidateTenantMigrationSource(ctx, source, "tenant-a", declared); err == nil {
+					return nil, errors.New("missing input was accepted")
+				}
+				return []byte("409 rejected input"), nil
+			})
+			checkpoint, err := files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if localLoss {
+				if applyErr == nil || checkpoint.Index != 0 {
+					t.Fatalf("local loss consumed application: error=%v checkpoint=%d", applyErr, checkpoint.Index)
+				}
+			} else if applyErr != nil || checkpoint.Index != 1 {
+				t.Fatalf("invalid declared input stopped application: error=%v checkpoint=%d", applyErr, checkpoint.Index)
 			}
 		})
 	}

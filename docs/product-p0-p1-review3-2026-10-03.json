@@ -1,0 +1,139 @@
+{
+  "review_date": "2026-10-03",
+  "baseline_commit": "99fefcb104a0fc5b5de777dfd9646aaa22a9b73e",
+  "confirmed_findings": {
+    "P0": 0,
+    "P1": 3
+  },
+  "status": "local unreleased candidate",
+  "fixes": [
+    "validate published graph, digest and relation schemas before migration install/cutover",
+    "stage copies and atomically publish exclusive local directories, preserving old targets on failed copy",
+    "reject malformed migration metadata before live changes; separate omitted input from local loss of declared objects"
+  ],
+  "environment": {
+    "runtime": "OrbStack Linux arm64",
+    "go": "go version go1.26.7 linux/arm64"
+  },
+  "production_source_sha256": "812444e288ab5fecdbb479620e6b7f307269b843dc7e81863048a8ab10933501",
+  "production_source_file_count": 456,
+  "production_source_digest_rule": "sorted path + NUL + bytes + NUL; cmd/internal non-test Go sources and go.mod/go.sum",
+  "tenantmigrate_source_sha256": "e76bb3115ae787d3d531deb230e9ef739e1bacf28f5576d1166d001545372222",
+  "binary_sha256": "95acfd550e44e5834c86a9a47d159b4a893b9abf0d95130f01c271b019128a46",
+  "tenantmigrate_binary_sha256": "9edf28a06ca4400e6aa9511cb2713868a7e19da1524d102b3c2e83de00e0fe94",
+  "candidate_image": {
+    "started_at": "2026-10-03T05:41:17.895909+00:00",
+    "image": "graphdb:product-p1-review7-final-20261003",
+    "image_id": "sha256:48b4904a719920f7082319f1d0bceb708d1918c09a2d813b6e49a88bb2ead956",
+    "binary_sha256": "95acfd550e44e5834c86a9a47d159b4a893b9abf0d95130f01c271b019128a46",
+    "binary_version": "GGraphDB 2.2.2-review7 commit=99fefcb1-review7 built=2026-10-03T05:22:16Z go=go1.26.7",
+    "image_labels": null,
+    "port_offset": 1700,
+    "cross_host_qualification": "NOT RUN",
+    "enhanced": false,
+    "runtime_recovery": false,
+    "protocol": 1,
+    "disk_pressure": false,
+    "result": "PASS",
+    "finished_at": "2026-10-03T05:45:51.525190+00:00"
+  },
+  "ordinary_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "0.605s",
+    "github.com/SamuelSupe/graphdb/v2/docs": "0.004s",
+    "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "0.007s",
+    "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "0.069s",
+    "github.com/SamuelSupe/graphdb/v2/internal/config": "0.035s",
+    "github.com/SamuelSupe/graphdb/v2/internal/graph": "0.016s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "270.680s",
+    "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "7.875s",
+    "github.com/SamuelSupe/graphdb/v2/internal/query": "0.197s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "13.223s",
+    "github.com/SamuelSupe/graphdb/v2/internal/sharding": "0.024s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "385.436s",
+    "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "0.913s",
+    "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "0.083s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "0.002s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "0.044s"
+  },
+  "race_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "11.008s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "248.697s"
+  },
+  "race_scope": "storage migration, relation schemas, replication application/validation and directory recovery; HA shard tests, not full repository race",
+  "standalone_direct_wal": "PASS: exact candidate binary; E2E, 4 writers/16 readers, Python SDK and restart snapshot equality",
+  "cli_migration": [
+    {
+      "case": "missing published commit rejects overwrite and preserves cold target",
+      "result": "PASS"
+    },
+    {
+      "case": "SIGKILL during copy staging preserves cold target and cleans abandoned stage",
+      "result": "PASS"
+    },
+    {
+      "case": "validated overwrite publishes source snapshot and supports subsequent write/restart",
+      "result": "PASS"
+    }
+  ],
+  "deployment_checks": 23,
+  "vet": "PASS (static)",
+  "workspace_hygiene_release_contracts_diff": "PASS (static)",
+  "document_links": {
+    "scope": "changed documentation files; local target existence, not anchor or remote URL validation",
+    "checked_links": 186,
+    "broken": [],
+    "result": "PASS"
+  },
+  "historical_missing_links": 27,
+  "main_files_preserved": {
+    "docs/high-availability-design.zh-CN.md": true,
+    "docs/performance-v1.3.3 2.md": true,
+    "internal/graph/read_range 2.go": true,
+    "internal/httpapi/scan_graph 2.go": true
+  },
+  "intermediate_evidence": [
+    {
+      "file": "migration-before.log",
+      "result": "FAIL",
+      "scope": "baseline API accepts missing commit/wrong digest and destroys target on source read failure"
+    },
+    {
+      "file": "ha-before.log",
+      "result": "FAIL",
+      "scope": "baseline three-replica install accepts missing commit; legacy export accepts missing published commit"
+    },
+    {
+      "file": "declared-loss-before.log",
+      "result": "FAIL",
+      "scope": "intermediate validator checkpoints local loss of a declared file; final guard fixes it"
+    },
+    {
+      "file": "index-input-before.log",
+      "result": "FAIL",
+      "scope": "intermediate graph validator still lets malformed optional index metadata stop destination application"
+    },
+    {
+      "file": "final-target.log",
+      "result": "FAIL",
+      "scope": "intermediate metadata check rejects legitimate tenants without indexes; final optional-index compatibility fixes it"
+    },
+    {
+      "file": "full-unit-pre-freeze-interrupted.log",
+      "result": "INTERRUPTED",
+      "scope": "started before source freeze; not final evidence"
+    },
+    {
+      "file": "full-unit-before-declared-boundary.log",
+      "result": "INTERRUPTED",
+      "scope": "superseded by final code and full run"
+    }
+  ],
+  "cross_host": "NOT RUN (user deferred)",
+  "new_mixed_binary_matrix": "NOT RUN; previous multi-source interpretation upgrade restriction retained",
+  "physical_bad_disk_production_capacity_day_scale": "NOT RUN",
+  "fresh_minio_s3_gate": "NOT RUN this round; previous round evidence is not counted as current qualification",
+  "standard_dockerfile_dependency_download": "NOT RUN; offline cache build uses repository flags and final runtime image stage",
+  "evidence_directory": "/tmp/graphdb-p0p1-review7-20261003",
+  "evidence_archive": "dist/graphdb-product-p0-p1-review3-20261003-evidence.tar.gz",
+  "build_commit_label": "99fefcb1-review7 is a dirty-baseline candidate label, not a Git commit SHA; production source digest binds the tested changes"
+}

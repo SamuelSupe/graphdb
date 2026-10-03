@@ -56,6 +56,8 @@ recovery and compaction use this shared path. HTTP handlers and WAL bootstrap no
 read caches separately. Publication does not depend on whether the writer cache retains the graph.
 File replacement invalidates views, including restore to a lower or equal version.
 
+The [unreleased migration fix](product-p0-p1-review3-2026-10-03.zh-CN.md) validates the complete graph, current digest and relation schemas from the copied files. Exclusively opened local targets publish a staged directory using the recovery journal. Source read or validation failure preserves the previous target; Raft rejects invalid install input before changing incarnation or ownership. Dry-run is an inventory, and arbitrary non-local object-store replacement has no directory-level atomicity.
+
 ## Reads and reclamation
 
 Parquet reads use closable random-access files with column and row-group selection. Decode

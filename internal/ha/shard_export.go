@@ -149,6 +149,9 @@ func (c *Cluster) buildTenantExport(ctx context.Context, action sharding.Action)
 			view.Close()
 		}
 	}()
+	if err := storage.ValidateTenantMigrationSource(ctx, storage.NewTenantStore(view.Store, c.App.Store.Prefix), action.Tenant, nil); err != nil {
+		return nil, err
+	}
 	data, _ := json.Marshal(generation)
 	virtual := map[string][]byte{c.App.generationKey(action.Tenant): data, c.App.purgeKey(action.Tenant): tombstone}
 	for key := range virtual {

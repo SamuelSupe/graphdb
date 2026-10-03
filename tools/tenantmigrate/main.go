@@ -31,7 +31,7 @@ func run() error {
 	tenantID := flag.String("tenant", "", "source tenant id")
 	targetTenantID := flag.String("target-tenant", "", "target tenant id; must match -tenant for byte-copy migration")
 	dryRun := flag.Bool("dry-run", false, "report planned copy without writing target objects")
-	overwrite := flag.Bool("overwrite", false, "delete existing target tenant prefix before copying")
+	overwrite := flag.Bool("overwrite", false, "replace existing target tenant after staging and validation")
 
 	addStoreFlags("source", &source)
 	addStoreFlags("target", &target)

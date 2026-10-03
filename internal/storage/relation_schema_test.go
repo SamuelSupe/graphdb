@@ -207,10 +207,8 @@ func TestTenantMigrationRejectsInvalidStaleRelationSchemaData(t *testing.T) {
 		t.Fatalf("restore relation schema: %v", err)
 	}
 
-	if _, _, err := captureTenantMigrationSource(
-		ctx,
-		store,
-		"tenant-a",
+	if _, err := CopyTenantObjects(
+		ctx, store, "tenant-a", NewTenantStore(NewMemoryStore(), "target"), "tenant-a", TenantMigrationOptions{},
 	); err == nil {
 		t.Fatal("migration accepted graph that violates its relation schema")
 	}

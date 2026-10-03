@@ -40,6 +40,10 @@ type TenantMigrationObject struct {
 	SHA256    string `json:"sha256,omitempty"`
 }
 
+// CopyTenantObjects stages and validates a pinned tenant before replacement.
+// An exclusively opened local target uses recoverable directory publication;
+// other object stores publish individual objects and cannot guarantee atomic
+// replacement on target IO failure. DryRun inventories objects without validation.
 func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID string, target *TenantStore, targetTenantID string, options TenantMigrationOptions) (TenantMigrationReport, error) {
 	if source == nil || target == nil {
 		return TenantMigrationReport{}, fmt.Errorf("source and target stores are required")
@@ -109,6 +113,11 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 		report.FinishedAt = mutationTime(ctx)
 		return report, nil
 	}
+	release, err := source.PinReadView(ctx, sourceTenantID)
+	if err != nil {
+		return report, err
+	}
+	defer release()
 	sourceManifest, meta, err := source.getManifest(ctx, sourceTenantID)
 	if err != nil {
 		return report, err
@@ -116,6 +125,13 @@ func CopyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	if !meta.Exists {
 		return report, ErrNotFound
 	}
+	return copyTenantMigrationStaged(ctx, source, sourceTenantID, target, targetTenantID, options, report, sourceManifest)
+}
+
+func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID string, target *TenantStore, targetTenantID string, options TenantMigrationOptions, report TenantMigrationReport, sourceManifest Manifest) (TenantMigrationReport, error) {
+	sourcePrefix := source.tenantObjectPrefix(sourceTenantID)
+	targetPrefix := target.tenantObjectPrefix(targetTenantID)
+	var err error
 	report.TargetExists, err = target.tenantDataExists(ctx, targetTenantID)
 	if err != nil {
 		return report, err

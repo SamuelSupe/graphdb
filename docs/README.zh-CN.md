@@ -11,6 +11,7 @@
 - [租户分片与迁移](sharding.zh-CN.md) · [Raft 运维](raft-operations.zh-CN.md) · [诊断指标](diagnostics-metrics.zh-CN.md)
 - [2.2.2 发布后的产品 P0/P1 审核](product-p0-p1-review-2026-10-03.zh-CN.md)
 - [后续审核：manifest、图摘要与来源身份](product-p0-p1-review2-2026-10-03.zh-CN.md)
+- [后续审核：迁移完整性与本地覆盖复制](product-p0-p1-review3-2026-10-03.zh-CN.md)
 
 ## 用户指南
 

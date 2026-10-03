@@ -26,6 +26,9 @@ func (a *Application) tenantTransfer(ctx context.Context, tenant, move string, e
 	if owner.State != "frozen" || owner.Epoch != epoch || owner.MoveID != move {
 		return nil, fmt.Errorf("source is not frozen for this migration")
 	}
+	if err := storage.ValidateTenantMigrationSource(ctx, a.Store, tenant, nil); err != nil {
+		return nil, err
+	}
 	transfer := sharding.Transfer{Tenant: tenant, MoveID: move}
 	objects, err := a.Files.List(ctx, path.Join(a.Store.Prefix, "tenants", tenant)+"/")
 	if err != nil {
@@ -203,6 +206,10 @@ func (a *Application) installTenantTransfer(ctx context.Context, action sharding
 	if !seen[a.generationKey(action.Tenant)] || !seen[a.purgeKey(action.Tenant)] || !seen[tenantPrefix+"manifest.parquet"] {
 		return invalid("migration is missing tenant incarnation metadata")
 	}
+	source := storage.NewTenantStore(objects, a.Store.Prefix)
+	if err := storage.ValidateTenantMigrationSource(ctx, source, action.Tenant, seen); err != nil {
+		return fmt.Errorf("%w: tenant graph validation failed: %v", errInvalidTenantTransfer, err)
+	}
 	// Restore the source incarnation before acquiring the destination writer
 	// fence: a previously retired shard still has a local purge tombstone.
 	// These controls and the graph replacement share the replication journal.
@@ -222,7 +229,6 @@ func (a *Application) installTenantTransfer(ctx context.Context, action sharding
 			return err
 		}
 	}
-	source := storage.NewTenantStore(objects, a.Store.Prefix)
 	if _, err := storage.CopyTenantObjects(ctx, source, action.Tenant, a.Store, action.Tenant, storage.TenantMigrationOptions{Overwrite: true}); err != nil {
 		return err
 	}
