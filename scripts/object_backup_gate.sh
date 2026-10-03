@@ -13,6 +13,10 @@ if ! go test -mod=readonly -race ./internal/backupstore ./internal/storage \
   cat "$RUN_DIR/integration.log" >&2
   exit 1
 fi
+if ! go test -mod=readonly -race ./internal/ha -run '^TestHAObject' -count=1 -v >"$RUN_DIR/raft-integration.log" 2>&1; then
+  cat "$RUN_DIR/raft-integration.log" >&2
+  exit 1
+fi
 go build -mod=readonly -o "$RUN_DIR/graphdb" ./cmd/graphdb
 export GRAPHDB_BACKUP_S3_ENDPOINT="$GRAPHDB_TEST_BACKUP_S3_ENDPOINT"
 export GRAPHDB_BACKUP_S3_BUCKET="$GRAPHDB_TEST_BACKUP_S3_BUCKET"

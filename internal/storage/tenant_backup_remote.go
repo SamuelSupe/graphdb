@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 )
@@ -172,7 +171,7 @@ func (s *TenantStore) loadObjectBackupInput(ctx context.Context, uri string) (te
 		return tenantBackupInput{}, fmt.Errorf("object backup manifest does not match snapshot")
 	}
 	return tenantBackupInput{Record: record, ManifestKey: uri, SHA256: m.SHA256, Integrity: BackupIntegrityReport{
-		Status: "ok", CheckedAt: time.Now().UTC(), Objects: 1, Bytes: m.Bytes, ManifestKey: uri,
+		Status: "ok", CheckedAt: mutationTime(ctx), Objects: 1, Bytes: m.Bytes, ManifestKey: uri,
 	}}, nil
 }
 

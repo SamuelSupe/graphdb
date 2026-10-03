@@ -5,6 +5,8 @@
 
 以下内置定时备份、重试、保留清理和恢复演练适用于单机。Raft 拒绝开启该内置自动化，应由外部调度调用集群备份 API，见 [Raft 运维手册](raft-operations.zh-CN.md)。
 
+本轮尚未发布的修复将 Raft 恢复传输的校验报告固定为任务受理时间，切主后重新准备同一份 S3 快照可保持相同摘要；单机仍记录实际检查时间。2.2.2 及此前程序的部分 S3 恢复可能报 `restore input changed during transfer`。切换到包含修复的程序后，通过 `POST /v1/tasks/{id}/retry` 重试已失败任务；旧程序留下的 queued 传输先取消再重试。混部升级前先完成或取消这些传输，并暂停发起新的 S3 恢复，直到所有投票节点使用包含修复的程序；窗口内旧 Leader 接管仍可能复现缺陷。本轮修复与回归证据见 [产品审核](product-p0-p1-review-2026-10-03.zh-CN.md)。
+
 
 在线图数据继续使用本地磁盘。可选的 S3 兼容备份库保存独立、完整的租户逻辑快照；
 恢复时下载快照到本地并重建索引。AWS S3 和 MinIO 使用同一接口，不需要 PostgreSQL。
@@ -173,6 +175,7 @@ Python 客户端的 `get_backup_automation()` 查询当前租户的自动化状�
 在 Linux/OrbStack 中提供独立测试桶及 `GRAPHDB_TEST_BACKUP_S3_ENDPOINT`、`_BUCKET`、
 `_ACCESS_KEY_ID`、`_SECRET_ACCESS_KEY` 后运行 `scripts/object_backup_gate.sh`。
 流程包含分片上传、清单发布故障、取消回收、重启后重试、损坏快照拒绝、race 检查，
-以及 Python SDK 驱动的真实 WAL 写入、定时备份/演练、关闭与重置策略、状态重启恢复、
+三副本使用 Leader 备份仓库和 S3 恢复传输中换主续传的回归；
+Python SDK 驱动真实 WAL 写入、定时备份/演练、关闭与重置策略、状态重启恢复、
 空目录恢复、覆盖恢复和重启查询。
 CI 有独立 MinIO 验证任务；原 release gate 可用 `GRAPHDB_GATE_OBJECT_BACKUP=1` 加入该流程。

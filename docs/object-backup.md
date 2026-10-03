@@ -6,6 +6,8 @@ migration; keep older backups separate.
 
 Internal scheduled backups, retries, retention and restore drills below apply to standalone deployments. Raft rejects enabling this internal automation; use an external scheduler with the cluster backup API, as described in [Raft operations](raft-operations.zh-CN.md).
 
+The unreleased correction uses the admitted task time for the Raft input integrity report, so preparing the same S3 snapshot after a leader change preserves its transfer digest. Standalone reports retain the actual check time. Versions through 2.2.2 may fail a partially transferred S3 restore with `restore input changed during transfer`; after switching to a binary containing the correction, retry a failed task through `POST /v1/tasks/{id}/retry`, or cancel and retry a queued transfer created by an older program. Complete or cancel these transfers before a mixed-version upgrade, and pause new S3 restore admissions until all voters run the correction. An older leader can still reproduce the defect during the upgrade. The correction and regression evidence are tracked in the [product review](product-p0-p1-review-2026-10-03.zh-CN.md).
+
 
 Online graph data stays on local disk. An optional S3-compatible repository stores
 full logical graph snapshots with tenant configuration, not all operational state
@@ -213,6 +215,8 @@ On Linux/OrbStack, supply a dedicated test bucket and
 `GRAPHDB_TEST_BACKUP_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY_ID`, and `_SECRET_ACCESS_KEY`,
 then run `scripts/object_backup_gate.sh`. It checks multipart transfer, publication
 failure, cancellation cleanup, retry after reopening, corrupt snapshots, and race
-behavior. The Python SDK drives real WAL writes, discovery on an empty data
+behavior. Raft regressions cover using the leader's backup repository and resuming
+an S3 restore after leader loss during transfer. The Python SDK drives real WAL
+writes, discovery on an empty data
 directory, restore, overwrite, and queries after restart. CI has a dedicated MinIO
 job; `GRAPHDB_GATE_OBJECT_BACKUP=1` adds this flow to the existing release gate.

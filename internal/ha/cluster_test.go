@@ -974,10 +974,16 @@ func TestHAObjectBackupUsesLeaderRepository(t *testing.T) {
 		defer server.Close()
 		endpoint = server.URL
 	}
-	repo, err := backupstore.New(context.Background(), backupstore.Config{
+	repositoryConfig := backupstore.Config{
 		Bucket: "test-bucket", Prefix: fmt.Sprintf("replica-%d", time.Now().UnixNano()), Endpoint: endpoint, PathStyle: true,
 		AccessKeyID: "test", SecretAccessKey: "test-secret",
-	})
+	}
+	if os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT") != "" {
+		repositoryConfig.Bucket = os.Getenv("GRAPHDB_TEST_BACKUP_S3_BUCKET")
+		repositoryConfig.AccessKeyID = os.Getenv("GRAPHDB_TEST_BACKUP_S3_ACCESS_KEY_ID")
+		repositoryConfig.SecretAccessKey = os.Getenv("GRAPHDB_TEST_BACKUP_S3_SECRET_ACCESS_KEY")
+	}
+	repo, err := backupstore.New(context.Background(), repositoryConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1066,6 +1072,106 @@ func TestHAObjectBackupUsesLeaderRepository(t *testing.T) {
 	leader = group.leader(leader)
 	group.mustRequest(leader, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK)
 	group.mustRequest(leader, "GET", "/v1/entities/host:1", "", http.StatusOK)
+}
+
+func TestHAObjectRestoreResumesAfterLeaderLoss(t *testing.T) {
+	endpoint := os.Getenv("GRAPHDB_TEST_BACKUP_S3_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set GRAPHDB_TEST_BACKUP_S3_ENDPOINT for S3 integration")
+	}
+	repo, err := backupstore.New(context.Background(), backupstore.Config{
+		Bucket: os.Getenv("GRAPHDB_TEST_BACKUP_S3_BUCKET"), Prefix: fmt.Sprintf("raft-resume-%d", time.Now().UnixNano()), Endpoint: endpoint, PathStyle: true,
+		AccessKeyID: os.Getenv("GRAPHDB_TEST_BACKUP_S3_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("GRAPHDB_TEST_BACKUP_S3_SECRET_ACCESS_KEY"),
+	})
+	if err != nil || repo == nil {
+		t.Fatalf("backup repository: %v", err)
+	}
+	group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
+		app.Store.Backups = repo
+		return next
+	})
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	payload := strings.Repeat("x", 2<<20)
+	group.mustRequest(leader, "POST", "/v1/commits", fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"host:1","kind":"host","fields":{"payload":%q}}]}}`, payload), http.StatusOK, time.Minute)
+	response := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"tenant_backup","params":{"destination":"object"}}`, http.StatusAccepted)
+	var task storage.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cluster := group.nodes[leader].cluster
+	for range 2 {
+		if err := cluster.runQueuedTask(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response = group.mustRequest(leader, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK)
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil || task.Status != storage.TaskStatusSucceeded {
+		t.Fatalf("object backup did not succeed: %+v, %v", task, err)
+	}
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"delete_entities":["host:1"]}}`, http.StatusOK, time.Minute)
+	response = group.mustRequest(leader, "POST", "/v1/tenants/tenant-a/restore", fmt.Sprintf(`{"backup_key":%q,"overwrite":true}`, task.Result["backup_key"]), http.StatusAccepted)
+	task = storage.Task{}
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	cluster.App.mu.RLock()
+	input, err := cluster.App.Store.PrepareReplicatedTask(ctx, task)
+	generation, generationErr := cluster.App.Store.ReplicationTenantGeneration(ctx, task.TenantID)
+	cluster.App.mu.RUnlock()
+	if err != nil || generationErr != nil || len(input) <= restoreChunkBytes {
+		t.Fatalf("restore input: %d bytes, errors=%v/%v", len(input), err, generationErr)
+	}
+	digest := sha256.Sum256(input)
+	manifest := restoreManifest{Bytes: int64(len(input)), SHA256: hex.EncodeToString(digest[:]), Generation: generation}
+	cmd, err := newCommand("restore_part")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Tenant, cmd.IDs, cmd.ExpectedGeneration = task.TenantID, []string{task.ID}, generation
+	cmd.Restore = input[:restoreChunkBytes]
+	cmd.Body, _ = json.Marshal(restorePart{restoreManifest: manifest, Part: 0})
+	if _, err := cluster.propose(ctx, cmd); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+	}
+	group.stop(leader)
+	replacement := group.leader(leader)
+	if err := group.nodes[replacement].cluster.runQueuedTask(ctx); err != nil {
+		t.Fatal(err)
+	}
+	response = group.mustRequest(replacement, "GET", "/v1/tasks/"+task.ID, "", http.StatusOK)
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil || task.Status != storage.TaskStatusSucceeded {
+		t.Fatalf("S3 restore did not resume after leader loss: %+v, %v", task, err)
+	}
+	group.start(leader)
+	checkpoint, err = group.nodes[replacement].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, replica := range group.nodes {
+		group.waitApplied(i, checkpoint.Index, time.Minute)
+		replica.cluster.App.mu.RLock()
+		g, m, loadErr := replica.store.Load(ctx, "tenant-a")
+		staging, listErr := replica.files.List(ctx, replica.cluster.App.restorePrefix("tenant-a", task.ID))
+		replica.cluster.App.mu.RUnlock()
+		if loadErr != nil || listErr != nil || m.Version != 1 || len(staging) != 0 {
+			t.Fatalf("replica %d restore: version=%d staging=%d errors=%v/%v", i, m.Version, len(staging), loadErr, listErr)
+		}
+		entity, ok := g.GetEntity("host:1")
+		if !ok || entity.Fields["payload"] != payload {
+			t.Fatalf("replica %d did not restore the backed-up entity", i)
+		}
+	}
+	group.mustRequest(replacement, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:2","kind":"host"}]}}`, http.StatusOK, time.Minute)
 }
 
 func TestHAWALBackpressureLeavesClusterAvailable(t *testing.T) {
@@ -1645,16 +1751,24 @@ func TestHAAcceptedWALIsFencedByRestore(t *testing.T) {
 	}
 }
 
-type importReadFaultStore struct {
+type replicaReadFaultStore struct {
 	storage.ObjectStore
 	app    *Application
 	target *atomic.Pointer[Application]
 	err    error
+	graph  bool
 }
 
-func (s *importReadFaultStore) Get(ctx context.Context, key string) ([]byte, error) {
-	if s.app == s.target.Load() && strings.Contains(key, "/tasks/imports/") {
+func (s *replicaReadFaultStore) Get(ctx context.Context, key string) ([]byte, error) {
+	matched := strings.Contains(key, "/tasks/imports/")
+	if s.graph {
+		matched = strings.Contains(key, "/commits/")
+	}
+	if s.app == s.target.Load() && matched {
 		if s.err == nil {
+			if s.graph {
+				return []byte("corrupt commit"), nil
+			}
 			return []byte(`{"entity":{"id":"host:corrupt","kind":"host"}}`), nil
 		}
 		return nil, s.err
@@ -1662,7 +1776,89 @@ func (s *importReadFaultStore) Get(ctx context.Context, key string) ([]byte, err
 	return s.ObjectStore.Get(ctx, key)
 }
 
-func (s *importReadFaultStore) UnwrapObjectStore() storage.ObjectStore { return s.ObjectStore }
+func (s *replicaReadFaultStore) UnwrapObjectStore() storage.ObjectStore { return s.ObjectStore }
+
+func TestHAReferencedGraphFailureStopsReplicaUntilReplay(t *testing.T) {
+	for _, fault := range []struct {
+		name string
+		err  error
+	}{{"missing_commit", storage.ErrNotFound}, {"corrupt_commit", nil}} {
+		t.Run(fault.name, func(t *testing.T) {
+			var target atomic.Pointer[Application]
+			group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
+				app.Store.MaxWriteCacheTenants = 0
+				app.Store.Objects = storage.NewMeteredObjectStore(&replicaReadFaultStore{ObjectStore: app.Store.Objects, app: app, target: &target, err: fault.err, graph: true}, nil, nil)
+				return next
+			})
+			leader := group.leader(-1)
+			follower := (leader + 1) % len(group.nodes)
+			group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:seed","kind":"host"}]}}`, http.StatusOK)
+			response := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"compact"}`, http.StatusAccepted)
+			var task storage.Task
+			if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range group.nodes {
+				group.waitApplied(i, checkpoint.Index)
+			}
+			target.Store(group.nodes[follower].cluster.App)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if err := group.nodes[leader].cluster.runQueuedTask(ctx); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.waitApplied((leader+2)%len(group.nodes), checkpoint.Index)
+			faulted := group.nodes[follower].cluster
+			for faulted.Status()["error"] == nil && ctx.Err() == nil {
+				current, err := group.nodes[follower].files.ReplicationCheckpoint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if current.Index >= checkpoint.Index {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			faulted.App.mu.RLock()
+			current, checkpointErr := group.nodes[follower].files.ReplicationCheckpoint()
+			stored, taskErr := group.nodes[follower].store.GetTask(ctx, "tenant-a", task.ID)
+			faulted.App.mu.RUnlock()
+			if faulted.Status()["error"] == nil || checkpointErr != nil || taskErr != nil || current.Index >= checkpoint.Index || stored.Status != storage.TaskStatusQueued {
+				t.Fatalf("graph fault became a durable task outcome: node_error=%v checkpoint=%d task_status=%s task_error=%s errors=%v/%v", faulted.Status()["error"], current.Index, stored.Status, stored.Error, checkpointErr, taskErr)
+			}
+			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:quorum","kind":"host"}]}}`, http.StatusOK)
+			group.stop(follower)
+			target.Store(nil)
+			group.start(follower)
+			checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.waitApplied(follower, checkpoint.Index)
+			group.nodes[follower].cluster.App.mu.RLock()
+			g, m, loadErr := group.nodes[follower].store.Load(ctx, "tenant-a")
+			stored, taskErr = group.nodes[follower].store.GetTask(ctx, "tenant-a", task.ID)
+			group.nodes[follower].cluster.App.mu.RUnlock()
+			if loadErr != nil || taskErr != nil || stored.Status != storage.TaskStatusSucceeded || m.SnapshotVersion != 1 || m.Version != 2 {
+				t.Fatalf("replayed graph/task: manifest=%+v task=%+v errors=%v/%v", m, stored, loadErr, taskErr)
+			}
+			for _, id := range []string{"host:seed", "host:quorum"} {
+				if _, ok := g.GetEntity(id); !ok {
+					t.Fatalf("repaired replica is missing %s", id)
+				}
+			}
+		})
+	}
+}
 
 func TestHAImportReadFailureStopsReplicaUntilReplay(t *testing.T) {
 	for _, fault := range []struct {
@@ -1672,7 +1868,7 @@ func TestHAImportReadFailureStopsReplicaUntilReplay(t *testing.T) {
 		t.Run(fault.name, func(t *testing.T) {
 			var faultTarget atomic.Pointer[Application]
 			group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
-				app.Store.Objects = storage.NewMeteredObjectStore(&importReadFaultStore{ObjectStore: app.Store.Objects, app: app, target: &faultTarget, err: fault.err}, nil, nil)
+				app.Store.Objects = storage.NewMeteredObjectStore(&replicaReadFaultStore{ObjectStore: app.Store.Objects, app: app, target: &faultTarget, err: fault.err}, nil, nil)
 				return next
 			})
 			leader := group.leader(-1)

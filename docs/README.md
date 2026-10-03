@@ -10,6 +10,7 @@ with a language-switch link at the top.
 - [三副本 Raft 高可用运行说明](raft-ha.zh-CN.md) · [设计](high-availability-design.zh-CN.md) · [验收记录](raft-ha-validation.zh-CN.md)
 
 - [Tenant sharding and migration](sharding.zh-CN.md) · [Raft operations](raft-operations.zh-CN.md) · [Diagnostic metrics](diagnostics-metrics.zh-CN.md)
+- [Product P0/P1 review after 2.2.2](product-p0-p1-review-2026-10-03.zh-CN.md)
 
 ## User guides
 

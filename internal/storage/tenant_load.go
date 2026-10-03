@@ -136,6 +136,11 @@ func (s *TenantStore) loadManifestGraph(ctx context.Context, tenantID string, ma
 	defer func() {
 		if err == nil {
 			span.SetAttributes(graphTraceAttrs("graphdb.graph", loaded.Graph)...)
+		} else {
+			// These objects are required by an already-published manifest.
+			// A missing or malformed dependency is a replica failure, even
+			// when a task converts the returned error into a failed outcome.
+			recordReplicationFailure(ctx, fmt.Errorf("load persisted graph for tenant %q: %v", tenantID, err))
 		}
 		endStorageSpan(span, err)
 	}()

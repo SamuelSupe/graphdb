@@ -3,6 +3,16 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## Unreleased
+
+- Preserve the S3 restore input digest across Raft leader changes by using the
+  admitted task time for the integrity report. Standalone checks retain real time.
+- Roll back and stop a replica when published graph dependencies are missing or
+  malformed, instead of consuming the Raft command as an ordinary failed task.
+  Healthy replicas continue; repaired replicas can replay the command.
+- Add fault/replay and S3 transfer failover regressions, including the existing
+  real S3 gate, and document recovery for partial transfers from older binaries.
+
 ## [2.2.2] - 2026-10-03
 
 - Publish the standalone, Raft, tenant sharding, rolling-upgrade and diagnostic

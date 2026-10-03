@@ -9,6 +9,7 @@
 - [三副本 Raft 高可用运行说明](raft-ha.zh-CN.md) · [设计](high-availability-design.zh-CN.md) · [验收记录](raft-ha-validation.zh-CN.md)
 
 - [租户分片与迁移](sharding.zh-CN.md) · [Raft 运维](raft-operations.zh-CN.md) · [诊断指标](diagnostics-metrics.zh-CN.md)
+- [2.2.2 发布后的产品 P0/P1 审核](product-p0-p1-review-2026-10-03.zh-CN.md)
 
 ## 用户指南
 

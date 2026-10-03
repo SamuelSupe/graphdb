@@ -22,8 +22,8 @@ func ValidateTenantID(tenantID string) error {
 	return nil
 }
 
-func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (Manifest, ObjectMeta, error) {
-	var manifest Manifest
+func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (manifest Manifest, meta ObjectMeta, err error) {
+	defer func() { recordReplicationFailure(ctx, err) }()
 	key := s.manifestKey(tenantID)
 	files := s.localFileStore()
 	objects := s.Objects

@@ -1,0 +1,69 @@
+{
+  "review_date": "2026-10-03",
+  "baseline_commit": "d279a53ec87f7c24b46779f65ec6efbc6391aec0",
+  "confirmed_findings": {
+    "P0": 0,
+    "P1": 2
+  },
+  "fixes": [
+    "stable S3 restore input after leader loss",
+    "required graph dependency failures abort replica publication"
+  ],
+  "status": "local unreleased candidate",
+  "environment": {
+    "runtime": "OrbStack Linux arm64",
+    "go": "go version go1.26.7 linux/arm64",
+    "minio": "RELEASE.2025-09-07T16-13-09Z"
+  },
+  "production_go_source_sha256": "9c972dcc1cb4f1fc36ab29f56078ce1669a2852d00b5271f9419c0010f81859c",
+  "binary_sha256": "40235ad2899642c7a989613d30c6a9b4ad2ae25b69be4c9c9c521ea50ce554f2",
+  "candidate_image": {
+    "started_at": "2026-10-03T01:46:04.093124+00:00",
+    "image": "graphdb:product-p1-review-20261003",
+    "image_id": "sha256:dbf6451145fa43c97d123c52891fcafeea053af561fbc245243ba72f77d40c56",
+    "binary_sha256": "40235ad2899642c7a989613d30c6a9b4ad2ae25b69be4c9c9c521ea50ce554f2",
+    "binary_version": "GGraphDB 2.2.2-review5 commit=d279a53e-review5 built=2026-10-03T01:45:03Z go=go1.26.7",
+    "image_labels": null,
+    "port_offset": 1800,
+    "cross_host_qualification": "NOT RUN",
+    "enhanced": false,
+    "runtime_recovery": false,
+    "protocol": 1,
+    "disk_pressure": false,
+    "result": "PASS",
+    "finished_at": "2026-10-03T01:49:04.873271+00:00"
+  },
+  "ordinary_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "0.631s",
+    "github.com/SamuelSupe/graphdb/v2/docs": "0.004s",
+    "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "0.635s",
+    "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "0.077s",
+    "github.com/SamuelSupe/graphdb/v2/internal/config": "0.027s",
+    "github.com/SamuelSupe/graphdb/v2/internal/graph": "0.018s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "263.724s",
+    "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "4.547s",
+    "github.com/SamuelSupe/graphdb/v2/internal/query": "0.107s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "12.864s",
+    "github.com/SamuelSupe/graphdb/v2/internal/sharding": "0.020s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "307.543s",
+    "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "0.919s",
+    "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "0.083s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "0.002s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "0.053s"
+  },
+  "race_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "405.252s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "806.289s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "14.147s"
+  },
+  "standalone_direct_wal": "PASS: e2e, concurrent reads/writes, 12 Python SDK tests, restart snapshot equality",
+  "object_backup_gate": "PASS: S3 integration and race, two HA S3 regressions, standalone WAL automation/restore/restart via Python SDK",
+  "deployment_checks": 23,
+  "vet": "PASS (static)",
+  "main_files_preserved": "PASS",
+  "standard_dockerfile_build": "FAIL: dependency download TLS certificate verification (x509: certificate signed by unknown authority); image-build.log",
+  "offline_build": "PASS: cached modules, network none, repository Dockerfile Go flags",
+  "cross_host": "NOT RUN (user deferred)",
+  "physical_bad_disk_production_capacity_cloud_s3_day_scale_and_new_mixed_binary_matrix": "NOT RUN",
+  "evidence_directory": "/tmp/graphdb-p0p1-review5-20261003"
+}
