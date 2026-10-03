@@ -27,6 +27,7 @@ type command struct {
 	At                 time.Time                   `json:"at"`
 	Kind               string                      `json:"kind"`
 	Role               string                      `json:"role,omitempty"`
+	Prefix             string                      `json:"prefix,omitempty"`
 	Tenant             string                      `json:"tenant,omitempty"`
 	Method             string                      `json:"method,omitempty"`
 	URI                string                      `json:"uri,omitempty"`
@@ -82,7 +83,13 @@ func (a *Application) Applied() (uint64, error) {
 func (a *Application) Snapshot(ctx context.Context) ([]byte, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	data, err := a.Files.ReplicationSnapshot(ctx, a.MaxSnapshotBytes)
+	source, err := a.Files.CaptureReplicationSnapshot(ctx, a.MaxSnapshotBytes)
+	var data []byte
+	if err == nil {
+		defer source.Close()
+		source.TenantPrefix = a.snapshotTenantPrefix()
+		data, err = source.Bytes(ctx)
+	}
 	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
 		err = replication.ErrSnapshotTooLarge
 	}
@@ -97,13 +104,16 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
-	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes)
+	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes, a.snapshotTenantPrefix())
 }
 
 func (a *Application) CaptureSnapshot(ctx context.Context) (replication.SnapshotSource, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	source, err := a.Files.CaptureReplicationSnapshot(ctx, a.MaxSnapshotBytes)
+	if err == nil {
+		source.TenantPrefix = a.snapshotTenantPrefix()
+	}
 	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
 		err = replication.ErrSnapshotTooLarge
 	}
@@ -119,7 +129,14 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
-	return a.Files.InstallReplicationSnapshotReader(ctx, index, source, a.MaxSnapshotBytes)
+	return a.Files.InstallReplicationSnapshotReader(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix())
+}
+
+func (a *Application) snapshotTenantPrefix() string {
+	if a.Store != nil {
+		return a.Store.Prefix
+	}
+	return ""
 }
 
 func publicationCommand(cmd command) bool {
@@ -152,7 +169,8 @@ func (a *Application) ApplyBatch(ctx context.Context, entries []replication.Appl
 			}
 		}
 		if len(commands) > 0 && (!publicationCommand(cmd) || cmd.ID == "" || cmd.At.IsZero() ||
-			(cmd.Role != "" && cmd.Role != a.replicationRole()) || entry.Index != entries[len(commands)-1].Index+1 ||
+			(cmd.Role != "" && cmd.Role != a.replicationRole()) ||
+			(cmd.Prefix != "" && cmd.Prefix != a.snapshotTenantPrefix()) || entry.Index != entries[len(commands)-1].Index+1 ||
 			cmd.Kind != commands[0].Kind || cmd.URI != commands[0].URI) {
 			break
 		}
@@ -197,6 +215,9 @@ func (a *Application) ApplyBatch(ctx context.Context, entries []replication.Appl
 		}
 		if cmd.Role != "" && cmd.Role != a.replicationRole() {
 			return nil, fmt.Errorf("replicated group role %q differs from configured role %q", cmd.Role, a.replicationRole())
+		}
+		if cmd.Prefix != "" && cmd.Prefix != a.snapshotTenantPrefix() {
+			return nil, fmt.Errorf("replicated data prefix %q differs from configured prefix %q", cmd.Prefix, a.snapshotTenantPrefix())
 		}
 		if !publication {
 			a.pending = nil

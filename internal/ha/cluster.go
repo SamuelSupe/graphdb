@@ -57,6 +57,9 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	if _, err := c.App.Applied(); err != nil {
 		return err
 	}
+	if err := c.App.Files.ConfigureReplicationPrefix(ctx, c.App.Store.Prefix); err != nil {
+		return err
+	}
 	if err := c.App.Files.RequireReplicatedWrites(); err != nil {
 		return err
 	}
@@ -114,6 +117,7 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 	}
 	defer release()
 	cmd.Role = c.App.replicationRole()
+	cmd.Prefix = c.App.Store.Prefix
 	c.App.mu.RLock()
 	if cmd.Kind == "http" || cmd.Kind == "accept" || cmd.Kind == "flush" || cmd.Kind == "task" {
 		policy := storage.BackpressureConfig{}

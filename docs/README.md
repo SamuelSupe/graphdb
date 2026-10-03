@@ -13,6 +13,7 @@ with a language-switch link at the top.
 - [Product P0/P1 review after 2.2.2](product-p0-p1-review-2026-10-03.zh-CN.md)
 - [Follow-up review: missing heads, graph digests and source identities](product-p0-p1-review2-2026-10-03.zh-CN.md)
 - [Follow-up review: migration validation and atomic local replacement](product-p0-p1-review3-2026-10-03.zh-CN.md)
+- [Follow-up review: migration chunks, Raft snapshots and data prefixes](product-p0-p1-review4-2026-10-03.zh-CN.md)
 
 ## User guides
 

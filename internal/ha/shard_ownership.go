@@ -2,6 +2,7 @@ package ha
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,6 +129,9 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 		if owner.State == "installed" {
 			return resultJSON(http.StatusOK, owner)
 		}
+		if action.Bytes <= 0 || action.Bytes > a.MaxSnapshotBytes || int64(action.Part)*sharding.ChunkBytes >= action.Bytes || int64(len(action.Data)) != min(sharding.ChunkBytes, action.Bytes-int64(action.Part)*sharding.ChunkBytes) || (owner.TransferBytes != 0 && owner.TransferBytes != action.Bytes) {
+			return conflict("migration chunk size or transfer size changed")
+		}
 		if action.Part > owner.NextPart || (owner.Digest != "" && action.Digest != "" && owner.Digest != action.Digest) {
 			return conflict("migration chunk sequence or snapshot digest changed")
 		}
@@ -137,14 +141,24 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 		key := a.transferKey(action.Tenant, action.MoveID, action.Part)
 		previous, err := a.Files.Get(ctx, key)
 		if err == nil {
+			if action.Part < len(owner.ChunkDigests) && owner.ChunkDigests[action.Part] != "" && fmt.Sprintf("%x", sha256.Sum256(previous)) != owner.ChunkDigests[action.Part] {
+				return nil, fmt.Errorf("persisted migration chunk %d integrity failed", action.Part)
+			}
 			if string(previous) != string(action.Data) {
 				return conflict("migration chunk identity was reused for different data")
 			}
 		} else if !errors.Is(err, storage.ErrNotFound) {
 			return nil, err
+		} else if action.Part < owner.NextPart {
+			return nil, fmt.Errorf("persisted migration chunk %d is missing: %w", action.Part, err)
 		} else if err := a.Files.Put(ctx, key, action.Data); err != nil {
 			return nil, err
 		}
+		owner.TransferBytes = action.Bytes
+		for len(owner.ChunkDigests) <= action.Part {
+			owner.ChunkDigests = append(owner.ChunkDigests, "")
+		}
+		owner.ChunkDigests[action.Part] = fmt.Sprintf("%x", sha256.Sum256(action.Data))
 		if action.Part == owner.NextPart {
 			owner.NextPart++
 		}
@@ -158,13 +172,14 @@ func (a *Application) applyOwnership(ctx context.Context, action sharding.Action
 		if !match || owner.State != "importing" {
 			return conflict("destination is not reserved for this migration")
 		}
-		if err := a.installTenantTransfer(ctx, action); err != nil {
+		if err := a.installTenantTransfer(ctx, action, owner); err != nil {
 			if errors.Is(err, errInvalidTenantTransfer) {
 				return conflict(err.Error())
 			}
 			return nil, err
 		}
 		owner.State, owner.Digest = "installed", action.Digest
+		owner.ChunkDigests = nil
 	default:
 		return conflict("unsupported ownership operation")
 	}

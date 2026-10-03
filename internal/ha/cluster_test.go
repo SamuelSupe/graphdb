@@ -2122,6 +2122,57 @@ func TestHARejectsDataWithoutRaftHistory(t *testing.T) {
 	}
 }
 
+func TestHARejectsChangedDataPrefixOnRestart(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:seed","kind":"host"}]}}`, http.StatusOK)
+	follower := (leader + 1) % len(group.nodes)
+	group.waitApplied(follower, group.nodes[leader].cluster.Node.Status()["applied_index"].(uint64))
+	group.stop(follower)
+	replica := group.nodes[follower]
+	// An upgraded directory may not have the new local identity marker yet.
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			if legacy {
+				if err := os.Remove(filepath.Join(replica.cfg.DataDir, ".graphdb-replication", "prefix")); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+			}
+			files, err := storage.OpenFileStore(replica.cfg.DataDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			before, err := files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := storage.NewTenantStoreWithOptions(files, "other", storage.TenantStoreOptions{InstanceID: replica.cfg.InstanceID})
+			cluster := New(replica.cfg, store, files)
+			if err := cluster.Start(context.Background(), replica.cfg.Raft); err == nil {
+				cluster.Close()
+				t.Error("changed data prefix was accepted for a checkpointed replica")
+			}
+			after, err := files.ReplicationCheckpoint()
+			if err != nil || after.Index != before.Index {
+				t.Fatalf("rejected restart changed checkpoint: %d -> %d, err=%v", before.Index, after.Index, err)
+			}
+			g, _, err := storage.NewTenantStore(files, "graphdb").Load(context.Background(), "tenant-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := g.GetEntity("host:seed"); !ok {
+				t.Fatal("rejected restart lost the original graph")
+			}
+		})
+	}
+	group.start(follower)
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:after","kind":"host"}]}}`, http.StatusOK)
+	group.mustRequest(follower, "GET", "/v1/entities/host:seed", "", http.StatusOK)
+	group.mustRequest(follower, "GET", "/v1/entities/host:after", "", http.StatusOK)
+}
+
 func TestHASnapshotBudgetKeepsReadsAvailable(t *testing.T) {
 	group := newTestCluster(t, false)
 	leader := group.leader(-1)

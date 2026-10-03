@@ -101,20 +101,33 @@ func (a *Application) purgeKey(tenant string) string {
 	return path.Join(a.Store.Prefix, "control/tenant-purges", url.PathEscape(tenant)+".parquet")
 }
 
-func (a *Application) installTenantTransfer(ctx context.Context, action sharding.Action) error {
+func (a *Application) installTenantTransfer(ctx context.Context, action sharding.Action, owner sharding.Ownership) (err error) {
 	invalid := func(message string) error { return fmt.Errorf("%w: %s", errInvalidTenantTransfer, message) }
 	if action.Bytes <= 0 || action.Bytes > a.MaxSnapshotBytes || action.Parts <= 0 || int64(action.Parts) != (action.Bytes+sharding.ChunkBytes-1)/sharding.ChunkBytes {
 		return invalid("invalid migration size or chunk count")
 	}
+	if owner.NextPart != action.Parts || (owner.TransferBytes != 0 && owner.TransferBytes != action.Bytes) || (owner.Digest != "" && owner.Digest != action.Digest) {
+		return invalid("migration size, chunk count or snapshot identity changed")
+	}
+	// Legacy in-flight transfers have no per-chunk binding. Reject them before
+	// cutover rather than consuming local corruption as a business rejection.
+	if len(owner.ChunkDigests) != action.Parts {
+		return invalid("migration lacks chunk integrity metadata; cancel and restart transfer")
+	}
+	for _, digest := range owner.ChunkDigests {
+		if digest == "" {
+			return invalid("migration lacks chunk integrity metadata; cancel and restart transfer")
+		}
+	}
 	reader := func() *restoreReader {
-		return &restoreReader{ctx: ctx, app: a, manifest: restoreManifest{Bytes: action.Bytes}, partKey: func(part int64) string { return a.transferKey(action.Tenant, action.MoveID, int(part)) }}
+		return &restoreReader{ctx: ctx, app: a, manifest: restoreManifest{Bytes: action.Bytes}, partDigests: owner.ChunkDigests, partKey: func(part int64) string { return a.transferKey(action.Tenant, action.MoveID, int(part)) }}
 	}
 	sourceReader := reader()
 	digest := sha256.New()
 	size, err := io.Copy(digest, sourceReader)
 	err = errors.Join(err, sourceReader.Close())
 	if errors.Is(err, storage.ErrNotFound) {
-		return invalid("migration chunk is missing; retry transfer")
+		return fmt.Errorf("persisted migration chunk is missing: %w", err)
 	}
 	if err != nil {
 		return err
@@ -129,7 +142,16 @@ func (a *Application) installTenantTransfer(ctx context.Context, action sharding
 	defer view.Close()
 	objects := view.Store
 	sourceReader = reader()
-	defer sourceReader.Close()
+	defer func() {
+		closeErr := sourceReader.Close()
+		if sourceReader.readError != nil {
+			// JSON validation can hide a local read/integrity failure. Preserve
+			// the replica fault even when the decoder reports invalid input.
+			err = fmt.Errorf("persisted migration input failed: %w", errors.Join(sourceReader.readError, closeErr))
+		} else {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	decoder := json.NewDecoder(sourceReader)
 	expect := func(want any) error {
 		token, err := decoder.Token()

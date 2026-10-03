@@ -46,11 +46,13 @@ type Resolution struct {
 }
 
 type Ownership struct {
-	Epoch    uint64 `json:"epoch"`
-	State    string `json:"state"`
-	MoveID   string `json:"move_id,omitempty"`
-	Digest   string `json:"digest,omitempty"`
-	NextPart int    `json:"next_part,omitempty"`
+	Epoch         uint64   `json:"epoch"`
+	State         string   `json:"state"`
+	MoveID        string   `json:"move_id,omitempty"`
+	Digest        string   `json:"digest,omitempty"`
+	NextPart      int      `json:"next_part,omitempty"`
+	TransferBytes int64    `json:"transfer_bytes,omitempty"`
+	ChunkDigests  []string `json:"chunk_digests,omitempty"`
 }
 
 type Action struct {

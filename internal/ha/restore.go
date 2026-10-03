@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/url"
 	"path"
@@ -156,16 +157,25 @@ func (a *Application) runStagedRestore(ctx context.Context, cmd command) (storag
 }
 
 type restoreReader struct {
-	ctx      context.Context
-	app      *Application
-	prefix   string
-	manifest restoreManifest
-	part     int64
-	current  io.ReadCloser
-	partKey  func(int64) string
+	ctx            context.Context
+	app            *Application
+	prefix         string
+	manifest       restoreManifest
+	part           int64
+	current        io.ReadCloser
+	partKey        func(int64) string
+	partDigests    []string
+	digest         hash.Hash
+	expectedDigest string
+	readError      error
 }
 
-func (r *restoreReader) Read(buffer []byte) (int, error) {
+func (r *restoreReader) Read(buffer []byte) (n int, err error) {
+	defer func() {
+		if err != nil && !errors.Is(err, io.EOF) {
+			r.readError = err
+		}
+	}()
 	for {
 		if err := r.ctx.Err(); err != nil {
 			return 0, err
@@ -193,12 +203,22 @@ func (r *restoreReader) Read(buffer []byte) (int, error) {
 			if err != nil {
 				return 0, errors.Join(err, file.Close())
 			}
-			r.current = &sectionReadCloser{Reader: io.NewSectionReader(file, 0, size), Closer: file}
+			var source io.Reader = io.NewSectionReader(file, 0, size)
+			if r.part < int64(len(r.partDigests)) && r.partDigests[r.part] != "" {
+				r.digest = sha256.New()
+				r.expectedDigest = r.partDigests[r.part]
+				source = io.TeeReader(source, r.digest)
+			}
+			r.current = &sectionReadCloser{Reader: source, Closer: file}
 			r.part++
 		}
-		n, err := r.current.Read(buffer)
+		n, err = r.current.Read(buffer)
 		if err == io.EOF {
-			err = r.Close()
+			var integrityErr error
+			if r.digest != nil && hex.EncodeToString(r.digest.Sum(nil)) != r.expectedDigest {
+				integrityErr = fmt.Errorf("persisted migration chunk %d integrity failed", r.part-1)
+			}
+			err = errors.Join(integrityErr, r.Close())
 			if n == 0 && err == nil {
 				continue
 			}
@@ -218,6 +238,7 @@ func (r *restoreReader) Close() error {
 	}
 	err := r.current.Close()
 	r.current = nil
+	r.digest, r.expectedDigest = nil, ""
 	return err
 }
 

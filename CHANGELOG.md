@@ -5,6 +5,20 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+- Bind Raft data directories and new replicated commands to `GRAPHDB_PREFIX`.
+  Reject prefix changes on restart and foreign objects in incoming snapshots
+  before replacing healthy state. Existing directories without a prefix marker
+  are checked before the marker is first written; legacy commands remain readable.
+- Bind acknowledged migration chunks to their byte count and per-chunk SHA256
+  in replicated ownership. Missing or changed persisted chunks stop only the
+  faulty replica without advancing its checkpoint; invalid transfer requests
+  remain business conflicts. Legacy unfinished staging requires cancellation
+  and a fresh transfer before cutover.
+- Cold-validate tenant graphs and relation schemas in captured Raft snapshot
+  views and decoded incoming snapshots before replacement. Legacy and streaming
+  formats cannot export or install detected graph corruption while relying only
+  on the archive checksum. Streaming validation runs in the snapshot builder.
+
 - Validate tenant migration graphs and relation schemas from actual copied files,
   including required commits/snapshots, the current logical digest, tenant controls
   and objects that copy rewrites. Both export

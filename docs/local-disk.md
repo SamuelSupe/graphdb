@@ -12,7 +12,7 @@ This guide describes the local storage and standalone path. The same release als
 | Setting | Default / contract |
 | --- | --- |
 | `GRAPHDB_DATA_DIR` | `.graphdb`; persistent local directory |
-| `GRAPHDB_PREFIX` | `graphdb`; existing tenant layout retained |
+| `GRAPHDB_PREFIX` | `graphdb`; existing tenant layout retained. Raft voters must share the original prefix; a bound directory rejects changes on restart. See [prefix protection](raft-operations.zh-CN.md). |
 | `GRAPHDB_MODE` | `all`; other modes fail startup |
 | `GRAPHDB_STORAGE` | `local`; other values fail startup |
 | `GRAPHDB_COORDINATION` | `local`; PostgreSQL settings fail startup |

@@ -12,13 +12,200 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestApplicationSnapshotRejectsCorruptPublishedGraph(t *testing.T) {
+	for _, failure := range []string{"missing-head", "missing-commit", "corrupt-commit"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			files, err := storage.OpenFileStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := storage.NewTenantStore(files, "graphdb")
+			var manifest storage.Manifest
+			if _, err := files.ApplyReplicated(ctx, 1, "seed", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				var err error
+				manifest, err = store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}}}, storage.CommitOptions{})
+				return nil, err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := files.ApplyReplicated(ctx, 2, "next-position", time.Unix(2, 0), func(context.Context) ([]byte, error) { return nil, nil }); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.Load(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			app := &Application{Store: store, Files: files, MaxSnapshotBytes: 8 << 20}
+			var captured replication.SnapshotSource
+			if failure != "corrupt-commit" {
+				captured, err = app.CaptureSnapshot(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer captured.Close()
+			}
+			object := manifest.CommitKeys[0]
+			if failure == "missing-head" {
+				object = "graphdb/tenants/tenant-a/manifest.parquet"
+			}
+			filename := filepath.Join(root, object)
+			if failure == "corrupt-commit" {
+				err = os.WriteFile(filename, []byte("corrupt committed graph"), 0600)
+			} else {
+				err = os.Remove(filename)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if captured != nil {
+				output, err := os.CreateTemp(t.TempDir(), "captured-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer output.Close()
+				if err := captured.WriteTo(ctx, output); err != nil {
+					t.Fatalf("valid captured view read later damaged live files: %v", err)
+				}
+				if _, err := output.Seek(0, io.SeekStart); err != nil {
+					t.Fatal(err)
+				}
+				target := storage.NewFileStore(t.TempDir())
+				if err := target.InstallReplicationSnapshotReader(ctx, 2, output, app.MaxSnapshotBytes); err != nil {
+					t.Fatal(err)
+				}
+				g, manifest, err := storage.NewTenantStore(target, "graphdb").Load(ctx, "tenant-a")
+				if err != nil || manifest.Version != 1 {
+					t.Fatalf("captured graph restore: version=%d err=%v", manifest.Version, err)
+				}
+				if _, ok := g.GetEntity("host:seed"); !ok {
+					t.Fatal("captured graph lost its entity")
+				}
+			}
+			if data, err := app.Snapshot(ctx); err == nil {
+				t.Errorf("legacy snapshot accepted %s: %d encoded bytes", failure, len(data))
+			}
+			source, err := app.CaptureSnapshot(ctx)
+			if err != nil {
+				return
+			}
+			defer source.Close()
+			output, err := os.CreateTemp(t.TempDir(), "snapshot-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
+			if err := source.WriteTo(ctx, output); err == nil {
+				t.Errorf("streaming snapshot accepted %s", failure)
+			}
+			legacyInput, err := files.ReplicationSnapshot(ctx, app.MaxSnapshotBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, format := range []string{"legacy", "streaming"} {
+				target, err := storage.OpenFileStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer target.Close()
+				targetStore := storage.NewTenantStore(target, "graphdb")
+				if _, err := target.ApplyReplicated(ctx, 1, "healthy", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+					_, err := targetStore.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:healthy", Kind: "host"}}}, storage.CommitOptions{})
+					return nil, err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				targetApp := &Application{Files: target, Store: targetStore, MaxSnapshotBytes: app.MaxSnapshotBytes}
+				if format == "legacy" {
+					err = targetApp.Restore(ctx, 2, legacyInput)
+				} else {
+					err = targetApp.RestoreSnapshot(ctx, 2, bytes.NewReader(legacyInput))
+				}
+				if err == nil {
+					t.Errorf("%s receiver accepted a checksummed %s snapshot", format, failure)
+				}
+				g, _, loadErr := storage.NewTenantStore(target, "graphdb").Load(ctx, "tenant-a")
+				checkpoint, checkpointErr := target.ReplicationCheckpoint()
+				if loadErr != nil || checkpointErr != nil || checkpoint.Index != 1 {
+					t.Errorf("%s receiver changed healthy state: checkpoint=%d errors=%v/%v", format, checkpoint.Index, loadErr, checkpointErr)
+				} else if _, ok := g.GetEntity("host:healthy"); !ok {
+					t.Errorf("%s receiver lost its healthy graph", format)
+				}
+			}
+		})
+	}
+}
+
+func TestApplicationRejectsForeignDataPrefix(t *testing.T) {
+	ctx := context.Background()
+	source := storage.NewFileStore(t.TempDir())
+	if err := source.Put(ctx, "other/control/identity", []byte("foreign namespace")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.ApplyReplicated(ctx, 2, "source", time.Unix(2, 0), func(context.Context) ([]byte, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	input, err := source.ReplicationSnapshot(ctx, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"legacy", "streaming", "command"} {
+		t.Run(format, func(t *testing.T) {
+			files := storage.NewFileStore(t.TempDir())
+			store := storage.NewTenantStore(files, "graphdb")
+			if _, err := files.ApplyReplicated(ctx, 1, "healthy", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				_, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:healthy", Kind: "host"}}}, storage.CommitOptions{})
+				return nil, err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			app := &Application{Files: files, Store: store, MaxSnapshotBytes: 8 << 20}
+			switch format {
+			case "legacy":
+				err = app.Restore(ctx, 2, input)
+			case "streaming":
+				err = app.RestoreSnapshot(ctx, 2, bytes.NewReader(input))
+			case "command":
+				data := []byte(`{"id":"foreign","at":"2026-10-03T00:00:00Z","kind":"http","prefix":"other","method":"POST","uri":"/v1/commits"}`)
+				app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, commitErr := store.Commit(r.Context(), "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:foreign", Kind: "host"}}}, storage.CommitOptions{})
+					if commitErr != nil {
+						t.Error(commitErr)
+					}
+				})
+				_, err = app.Apply(ctx, 2, data)
+			}
+			if err == nil {
+				t.Errorf("%s accepted a foreign data prefix", format)
+			}
+			checkpoint, err := files.ReplicationCheckpoint()
+			if err != nil || checkpoint.Index != 1 {
+				t.Errorf("%s changed checkpoint to %d, err=%v", format, checkpoint.Index, err)
+			}
+			g, _, err := storage.NewTenantStore(files, "graphdb").Load(ctx, "tenant-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := g.GetEntity("host:healthy"); !ok {
+				t.Error("lost the healthy graph")
+			}
+			if _, ok := g.GetEntity("host:foreign"); ok {
+				t.Error("applied the foreign command")
+			}
+		})
+	}
+}
 
 func TestApplicationBatchRecovery(t *testing.T) {
 	root := os.Getenv("GRAPHDB_TEST_BATCH_CRASH_ROOT")

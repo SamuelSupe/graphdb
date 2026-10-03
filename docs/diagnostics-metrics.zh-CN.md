@@ -54,6 +54,10 @@ sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{
 
 ## 观察边界与部署
 
+[未发布候选的完整性保护](product-p0-p1-review4-2026-10-03.zh-CN.md)将已确认迁移分块的本地丢失/摘要变化作为副本应用故障；结合节点诊断的 `error`、应用位置和 `apply` 错误计数判断，不能只看提案是否多数派成功。Raft 快照图校验错误计入既有 `snapshot_build`（源端构建）或 `snapshot_restore`（接收端）操作失败，错误包含租户；源文件恢复或成员重建后再核对应用位置。合法的输入拒绝仍可能成功消费日志，需结合 409 和 catalog 的 `move.error`；缺少分块绑定的旧 importing 状态也返回 409，不是物理坏盘诊断。
+
+数据前缀绑定不一致会在启动日志中报告原值和配置值；启动拒绝时没有新的 HTTP 指标。已运行节点收到前缀不符的命令，按 `apply` 故障观察；快照命名空间不符按上述构建/恢复故障观察。错误包含对象键或前缀，先核对全组 `GRAPHDB_PREFIX`，恢复原配置后检查应用位置和已确认数据。
+
 Raft state/leader_known/recent_active 均不是实时 quorum 证明；副本 match 是日志复制位置，不是远端图应用位置。逐节点 applied_index/application_lag 才能判断各副本应用积压。Follower 没有 Leader 的 progress 时 `progress_known=0`，其余进度零值表示未知。catalog/接入数量是本地缓存，结合 known 与观测时间判断，不能当作线性一致集群总量。
 
 JSON 诊断保留构建、部署、协调、磁盘、WAL、Raft 和问题列表，并增加准入、查询数量、逐副本状态和已有接入/catalog 观察。HTTP 200 表示诊断接口可读，不能据此放流；router JSON 返回本地 drain/cache 状态，不主动探测集群，也不声称集群健康。数据库诊断的可选 `X-Tenant-ID` 任务查询会读取该租户最多 100 条任务，通用周期采集不带此头。

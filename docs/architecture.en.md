@@ -51,6 +51,22 @@ for datasets affected by the source-identity correction.
 WAL acceptance, grouped publication, idempotency and crash replay retain their existing protocol.
 An accepted request is not yet a published graph version.
 
+The [unreleased replication-integrity fix](product-p0-p1-review4-2026-10-03.zh-CN.md)
+binds staged migration chunks to their actual SHA256 and total byte count in
+replicated ownership. Loss or alteration of acknowledged chunks stops the faulty
+replica without consuming the install entry. Raft snapshots cold-load graphs and
+relation schemas in the captured source view and decoded target before replacement;
+streaming source validation runs in the background builder. Legacy unfinished
+staging must be cancelled and transferred again before cutover.
+
+The same fix binds Raft data directories and new commands to `GRAPHDB_PREFIX`.
+An older directory is checked for foreign business objects before its local
+prefix identity is first saved. Restart mismatches are rejected. Snapshot
+validation checks every object namespace before replacement, including archives
+with no tenants under the configured prefix, and preserves the target's local
+identity. Legacy commands without the field remain readable; all voters must
+retain the original prefix during mixed-version operation.
+
 `TenantStore` publishes durable immutable graphs to attached read caches. Direct commits, WAL,
 recovery and compaction use this shared path. HTTP handlers and WAL bootstrap no longer update
 read caches separately. Publication does not depend on whether the writer cache retains the graph.

@@ -30,8 +30,12 @@ func (s *FileStore) ReplicationSnapshot(ctx context.Context, budgets ...int64) (
 	if len(budgets) > 0 {
 		budget = budgets[0]
 	}
+	return replicationSnapshotBytes(ctx, s.root, checkpoint, budget)
+}
+
+func replicationSnapshotBytes(ctx context.Context, root string, checkpoint ReplicationCheckpoint, budget int64) ([]byte, error) {
 	var raw bytes.Buffer
-	if err := writeSnapshotArchive(ctx, s.root, checkpoint, budget, &raw); err != nil {
+	if err := writeSnapshotArchive(ctx, root, checkpoint, budget, &raw); err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(raw.Bytes())
@@ -115,11 +119,14 @@ func (w *snapshotBudgetWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64, data []byte, maxBytes int64) error {
-	return s.InstallReplicationSnapshotReader(ctx, index, bytes.NewReader(data), maxBytes)
+func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64, data []byte, maxBytes int64, tenantPrefix ...string) error {
+	return s.InstallReplicationSnapshotReader(ctx, index, bytes.NewReader(data), maxBytes, tenantPrefix...)
 }
 
-func (s *FileStore) InstallReplicationSnapshotReader(ctx context.Context, index uint64, source io.ReadSeeker, maxBytes int64) error {
+// InstallReplicationSnapshotReader validates the archive before changing live
+// objects. An optional tenant prefix also cold-validates published graphs and
+// relation schemas in the decoded input; an empty prefix retains generic storage.
+func (s *FileStore) InstallReplicationSnapshotReader(ctx context.Context, index uint64, source io.ReadSeeker, maxBytes int64, tenantPrefix ...string) error {
 	var checksum [sha256.Size]byte
 	if _, err := io.ReadFull(source, checksum[:]); err != nil {
 		return fmt.Errorf("truncated replication snapshot: %w", err)
@@ -216,6 +223,21 @@ func (s *FileStore) InstallReplicationSnapshotReader(ctx context.Context, index 
 	}
 	if !metadataFound || checkpoint.Index != index {
 		return fmt.Errorf("snapshot applied position mismatch")
+	}
+	if len(tenantPrefix) > 0 && tenantPrefix[0] != "" {
+		view := NewFileStore(filepath.Join(staging, "view"))
+		for key, filename := range objects {
+			destination := filepath.Join(view.root, key)
+			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+				return err
+			}
+			if err := os.Link(filename, destination); err != nil {
+				return err
+			}
+		}
+		if err := validateReplicationSnapshotTenantGraphs(ctx, view, tenantPrefix[0]); err != nil {
+			return err
+		}
 	}
 	_, err = s.ApplyReplicated(ctx, index, "snapshot", time.Time{}, func(applyCtx context.Context) ([]byte, error) {
 		existing, err := s.List(applyCtx, "")

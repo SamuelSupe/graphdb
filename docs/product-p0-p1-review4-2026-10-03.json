@@ -1,0 +1,138 @@
+{
+  "review_date": "2026-10-03",
+  "baseline_commit": "926cac73c2094b5b46c1498c2ee10b8e6afd2ea3",
+  "confirmed_findings": {
+    "P0": 0,
+    "P1": 3
+  },
+  "status": "local unreleased candidate",
+  "fixes": [
+    "bind acknowledged migration chunks and stop faulty replicas before checkpointing install",
+    "cold-validate graphs and schemas in captured and decoded Raft snapshots before replacement",
+    "bind local Raft directories and new commands to the data prefix; reject foreign snapshot objects before replacement"
+  ],
+  "environment": {
+    "runtime": "OrbStack Linux arm64",
+    "go": "go version go1.26.7 linux/arm64",
+    "GOMAXPROCS": "2 for Go tests and standalone candidate processes; deployment processes use fixture defaults"
+  },
+  "production_source_sha256": "13fd979b43f0b04b0887f048f9bf3f5f924c19aadf209808985db744e72ccc26",
+  "production_source_file_count": 457,
+  "production_source_digest_rule": "sorted path + NUL + bytes + NUL; cmd/internal non-test Go sources and go.mod/go.sum",
+  "tenantmigrate_source_sha256": "e76bb3115ae787d3d531deb230e9ef739e1bacf28f5576d1166d001545372222",
+  "binary_sha256": "4b004d1c01357c5935f6eb6475013e61ca5797781ef89a2e5deed427c921aaf1",
+  "tenantmigrate_binary_sha256": "2f40f8af98b77b96d1e2acdf23c0f779f08fae56699cc1d34d6930628e18e13c",
+  "candidate_image": {
+    "started_at": "2026-10-03T08:29:01.124118+00:00",
+    "image": "graphdb:product-p1-review8-final-20261003",
+    "image_id": "sha256:2d6825732ab623f561ca538ec2cae4a4918b66630badd3340e9dc4fbb06fbce7",
+    "binary_sha256": "4b004d1c01357c5935f6eb6475013e61ca5797781ef89a2e5deed427c921aaf1",
+    "binary_version": "GGraphDB 2.2.2-review8 commit=926cac73-review8 built=2026-10-03T08:06:46Z go=go1.26.7",
+    "image_labels": null,
+    "port_offset": 1700,
+    "cross_host_qualification": "NOT RUN",
+    "enhanced": false,
+    "runtime_recovery": false,
+    "protocol": 1,
+    "disk_pressure": false,
+    "result": "PASS",
+    "finished_at": "2026-10-03T08:31:11.241384+00:00"
+  },
+  "ordinary_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "0.547s",
+    "github.com/SamuelSupe/graphdb/v2/docs": "0.006s",
+    "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "0.009s",
+    "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "0.081s",
+    "github.com/SamuelSupe/graphdb/v2/internal/config": "0.033s",
+    "github.com/SamuelSupe/graphdb/v2/internal/graph": "0.018s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "270.965s",
+    "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "4.527s",
+    "github.com/SamuelSupe/graphdb/v2/internal/query": "0.080s",
+    "github.com/SamuelSupe/graphdb/v2/internal/replication": "12.547s",
+    "github.com/SamuelSupe/graphdb/v2/internal/sharding": "0.017s",
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "220.408s",
+    "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "0.989s",
+    "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "0.084s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "0.003s",
+    "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "0.053s"
+  },
+  "race_test_packages": {
+    "github.com/SamuelSupe/graphdb/v2/internal/storage": "8.107s",
+    "github.com/SamuelSupe/graphdb/v2/internal/ha": "727.532s"
+  },
+  "race_scope": "storage replication application, snapshots and captured views; HA applications, shards, snapshot/restore/membership, maintenance and prefix restart; not full repository race",
+  "standalone_direct_wal": "PASS: exact candidate binary; E2E, 4 writers/16 readers, Python SDK and restart snapshot equality",
+  "cli_migration": [
+    {
+      "case": "missing published commit rejects overwrite and preserves cold target",
+      "result": "PASS"
+    },
+    {
+      "case": "SIGKILL during copy staging preserves cold target and cleans abandoned stage",
+      "result": "PASS"
+    },
+    {
+      "case": "validated overwrite publishes source snapshot and supports subsequent write/restart",
+      "result": "PASS"
+    }
+  ],
+  "deployment_checks": 23,
+  "vet": "PASS (static)",
+  "workspace_hygiene_release_contracts_diff": "PASS (static)",
+  "full_repository_race": "NOT RUN",
+  "30_minute_soak": "NOT RUN",
+  "compatibility": "legacy snapshot encodings and commands readable; no new mixed-binary qualification",
+  "document_links": {
+    "scope": "changed documentation files; local target existence, not anchor or remote URL validation",
+    "checked_links": 232,
+    "broken": [],
+    "result": "PASS"
+  },
+  "main_files_preserved": {
+    "docs/high-availability-design.zh-CN.md": true,
+    "docs/performance-v1.3.3 2.md": true,
+    "internal/graph/read_range 2.go": true,
+    "internal/httpapi/scan_graph 2.go": true
+  },
+  "intermediate_evidence": [
+    {
+      "file": "chunk-before.log",
+      "result": "FAIL",
+      "scope": "baseline three-voter install consumes missing or changed acknowledged chunk"
+    },
+    {
+      "file": "snapshot-before.log",
+      "result": "FAIL",
+      "scope": "baseline legacy and streaming source exports detected published graph corruption"
+    },
+    {
+      "file": "restore-before.log",
+      "result": "FAIL",
+      "scope": "source-only intermediate fix still allows six corrupt-graph receiver scenarios to replace healthy state"
+    },
+    {
+      "file": "prefix-before.log",
+      "result": "FAIL",
+      "scope": "pre-prefix fix accepts changed-prefix restart and foreign snapshots; also verifies new command constraint"
+    },
+    {
+      "file": "prefix-fixed.log",
+      "result": "PASS",
+      "scope": "all three final fixes targeted together; superseded for full coverage by final suite"
+    },
+    {
+      "file": "superseded/full-unit.log",
+      "result": "INTERRUPTED",
+      "scope": "initial full suite stopped after finding prefix P1; not final PASS evidence"
+    }
+  ],
+  "cross_host": "NOT RUN (user deferred)",
+  "new_mixed_binary_matrix": "NOT RUN; retain source identity maintenance-upgrade restriction, finish/cancel old migrations before target-group upgrade, keep original prefix on all voters",
+  "physical_bad_disk_production_capacity_day_scale": "NOT RUN",
+  "fresh_minio_s3_gate": "NOT RUN this round; previous round evidence is not counted as current qualification",
+  "standard_dockerfile_dependency_download": "NOT RUN; offline cache build uses repository flags and final runtime image stage",
+  "superseded_validation": "initial full suite interrupted after discovering prefix P1; retained under superseded and not counted as PASS",
+  "evidence_directory": "/tmp/graphdb-p0p1-review8-20261003",
+  "evidence_archive": "dist/graphdb-product-p0-p1-review4-20261003-evidence.tar.gz",
+  "build_commit_label": "926cac73-review8 is a dirty-baseline candidate label, not a Git commit SHA; production source digest binds the tested changes"
+}

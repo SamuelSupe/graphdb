@@ -11,6 +11,9 @@ import (
 )
 
 type ReplicationSnapshotSource struct {
+	// TenantPrefix enables cold graph validation in the captured view before
+	// encoding. It does not limit which objects the replication snapshot includes.
+	TenantPrefix   string
 	root           string
 	checkpoint     ReplicationCheckpoint
 	budget         int64
@@ -96,7 +99,18 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 
 func (s *ReplicationSnapshotSource) SnapshotBytes() int64 { return s.estimatedBytes + (1 << 20) }
 
+// Bytes encodes the captured application position in the legacy snapshot format.
+func (s *ReplicationSnapshotSource) Bytes(ctx context.Context) ([]byte, error) {
+	if err := s.validateTenantGraphs(ctx); err != nil {
+		return nil, err
+	}
+	return replicationSnapshotBytes(ctx, s.root, s.checkpoint, s.budget)
+}
+
 func (s *ReplicationSnapshotSource) WriteTo(ctx context.Context, output io.WriteSeeker) error {
+	if err := s.validateTenantGraphs(ctx); err != nil {
+		return err
+	}
 	if _, err := output.Write(make([]byte, sha256.Size)); err != nil {
 		return err
 	}

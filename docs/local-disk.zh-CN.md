@@ -11,7 +11,7 @@
 | 配置 | 默认值与约束 |
 | --- | --- |
 | `GRAPHDB_DATA_DIR` | `.graphdb`，使用持久化本地目录 |
-| `GRAPHDB_PREFIX` | `graphdb`，沿用现有租户目录布局 |
+| `GRAPHDB_PREFIX` | `graphdb`，沿用现有租户目录布局；Raft 同组须一致，已绑定目录重启时不可更改，见[前缀保护](raft-operations.zh-CN.md) |
 | `GRAPHDB_MODE` | 仅支持 `all` |
 | `GRAPHDB_STORAGE` | 仅支持 `local` |
 | `GRAPHDB_COORDINATION` | 仅支持 `local`，拒绝 PostgreSQL 配置 |

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,133 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestHAShardPersistedChunkFailureStopsReplicaUntilReplay(t *testing.T) {
+	for _, failure := range []string{"missing", "changed"} {
+		t.Run(failure, func(t *testing.T) {
+			group := newTestClusterRole(t, true, "b", false)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			leader := group.leader(-1)
+			follower := (leader + 1) % len(group.nodes)
+			app := group.nodes[leader].cluster.App
+			objects := storage.NewMemoryStore()
+			source := storage.NewTenantStore(objects, "graphdb")
+			if _, err := source.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			listed, err := objects.List(ctx, "graphdb/tenants/tenant-a/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			transfer := sharding.Transfer{Tenant: "tenant-a", MoveID: "move-chunk"}
+			for _, item := range listed {
+				data, err := objects.Get(ctx, item.Key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				transfer.Objects = append(transfer.Objects, sharding.Object{Key: item.Key, Data: data})
+			}
+			transfer.Objects = append(transfer.Objects, sharding.Object{Key: app.generationKey("tenant-a"), Data: []byte("3")}, sharding.Object{Key: app.purgeKey("tenant-a")})
+			encoded, err := json.Marshal(transfer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := sharding.Action{Tenant: transfer.Tenant, MoveID: transfer.MoveID, Epoch: 1, Digest: fmt.Sprintf("%x", sha256.Sum256(encoded)), Parts: 1, Bytes: int64(len(encoded))}
+			action := func(operation string, want int) {
+				t.Helper()
+				input.Operation = operation
+				result, err := group.nodes[leader].cluster.shardAction(ctx, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var response httpResult
+				if json.Unmarshal(result, &response) != nil || response.Status != want {
+					t.Fatalf("%s: %s", operation, result)
+				}
+			}
+			action("reserve", http.StatusOK)
+			input.Data = encoded
+			action("stage", http.StatusOK)
+			input.Data = nil
+			staged, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range group.nodes {
+				group.waitApplied(i, staged.Index)
+			}
+			group.stop(follower)
+			chunkPath := filepath.Join(group.nodes[follower].cfg.DataDir, app.transferKey(input.Tenant, input.MoveID, 0))
+			if failure == "missing" {
+				err = os.Remove(chunkPath)
+			} else {
+				changed := bytes.Clone(encoded)
+				changed[len(changed)/2] ^= 1
+				err = os.WriteFile(chunkPath, changed, 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.start(follower)
+			action("install", http.StatusOK)
+			installed, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.waitApplied((leader+2)%len(group.nodes), installed.Index)
+			faulted := group.nodes[follower].cluster
+			for faulted.Status()["error"] == nil && ctx.Err() == nil {
+				current, err := group.nodes[follower].files.ReplicationCheckpoint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if current.Index >= installed.Index {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			faulted.App.mu.RLock()
+			current, checkpointErr := group.nodes[follower].files.ReplicationCheckpoint()
+			owner, ownerErr := faulted.App.ownership(ctx, input.Tenant)
+			faulted.App.mu.RUnlock()
+			if faulted.Status()["error"] == nil || checkpointErr != nil || ownerErr != nil || current.Index >= installed.Index || owner.State != "importing" {
+				t.Fatalf("persisted chunk fault was consumed: error=%v checkpoint=%d installed=%d owner=%+v errors=%v/%v", faulted.Status()["error"], current.Index, installed.Index, owner, checkpointErr, ownerErr)
+			}
+			action("activate", http.StatusOK)
+			request := httptest.NewRequest(http.MethodPost, "/v1/commits", strings.NewReader(`{"mutations":{"upsert_entities":[{"id":"host:quorum","kind":"host"}]}}`)).WithContext(ctx)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Tenant-ID", input.Tenant)
+			request.Header.Set(sharding.EpochHeader, "1")
+			response := httptest.NewRecorder()
+			group.nodes[leader].handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("healthy majority write: %d %s", response.Code, response.Body.String())
+			}
+			group.stop(follower)
+			if err := os.WriteFile(chunkPath, encoded, 0600); err != nil {
+				t.Fatal(err)
+			}
+			group.start(follower)
+			latest, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.waitApplied(follower, latest.Index)
+			group.nodes[follower].cluster.App.mu.RLock()
+			g, _, loadErr := group.nodes[follower].store.Load(ctx, input.Tenant)
+			group.nodes[follower].cluster.App.mu.RUnlock()
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			for _, id := range []string{"host:source", "host:quorum"} {
+				if _, ok := g.GetEntity(id); !ok {
+					t.Fatalf("replayed replica is missing %s", id)
+				}
+			}
+		})
+	}
+}
 
 func TestHAShardRejectsInvalidGraphTransferWithoutStoppingReplicas(t *testing.T) {
 	group := newTestClusterRole(t, true, "b", false)
@@ -36,7 +165,7 @@ func TestHAShardRejectsInvalidGraphTransferWithoutStoppingReplicas(t *testing.T)
 			t.Fatalf("%s status want %d: %s", input.Operation, want, result)
 		}
 	}
-	for _, failure := range []string{"missing-commit", "malformed-manifest", "malformed-index"} {
+	for _, failure := range []string{"missing-commit", "malformed-manifest", "malformed-index", "wrong-checksum", "wrong-install-size", "missing-stage", "legacy-staging"} {
 		tenant, move := "tenant-"+failure, "move-"+failure
 		objects := storage.NewMemoryStore()
 		source := storage.NewTenantStore(objects, "graphdb")
@@ -72,11 +201,38 @@ func TestHAShardRejectsInvalidGraphTransferWithoutStoppingReplicas(t *testing.T)
 			t.Fatal(err)
 		}
 		digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
+		if failure == "wrong-checksum" {
+			digest = fmt.Sprintf("%x", sha256.Sum256([]byte("wrong checksum")))
+		}
 		input := sharding.Action{Tenant: tenant, MoveID: move, Epoch: 1, Digest: digest, Parts: 1, Bytes: int64(len(encoded))}
 		input.Operation = "reserve"
 		action(input, http.StatusOK)
 		input.Operation, input.Data = "stage", encoded
-		action(input, http.StatusOK)
+		if failure != "missing-stage" {
+			action(input, http.StatusOK)
+		}
+		if failure == "wrong-install-size" {
+			input.Bytes++
+		}
+		if failure == "legacy-staging" {
+			checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range group.nodes {
+				group.waitApplied(i, checkpoint.Index)
+				group.stop(i)
+			}
+			for i, replica := range group.nodes {
+				ownerPath := filepath.Join(replica.cfg.DataDir, app.ownershipKey(tenant))
+				legacy, _ := json.Marshal(sharding.Ownership{State: "importing", Epoch: 1, MoveID: move, Digest: digest, NextPart: 1})
+				if err := os.WriteFile(ownerPath, legacy, 0600); err != nil {
+					t.Fatal(err)
+				}
+				group.start(i)
+			}
+			leader = group.leader(-1)
+		}
 		input.Operation, input.Data = "install", nil
 		action(input, http.StatusConflict)
 		checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
