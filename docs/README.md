@@ -1,4 +1,4 @@
-# GGraphDB 2.2.2 Documentation
+# GGraphDB 2.2.3 Documentation
 
 [中文](README.zh-CN.md)
 
@@ -16,13 +16,22 @@ with a language-switch link at the top.
 - [Follow-up review: migration chunks, Raft snapshots and data prefixes](product-p0-p1-review4-2026-10-03.zh-CN.md)
 - [Follow-up review: runtime restore destinations and auxiliary directory ownership](product-p0-p1-review5-2026-10-03.zh-CN.md)
 
+- [Full test and fixes for the unpublished candidate](full-validation-2026-10-03.zh-CN.md)
+- [Availability and rolling-upgrade fixes for the unpublished candidate](availability-rolling-validation-2026-10-04.zh-CN.md)
+- [Three-replica Raft 30-minute soak rerun: FAIL](raft-long-validation-2026-10-04.zh-CN.md)
+
+- [Raft availability fixes and 30-minute soak: PASS](raft-availability-fixes-2026-10-04.zh-CN.md)
+- [Raft snapshot and maintenance transfer optimization and qualification](performance-raft-batching-2026-10-04.zh-CN.md)
+
 ## User guides
 
-- [2.2.2 release notes](../release/local-disk.md) · [Validation](validation-v2.2.2.md) · [Historical 2.1.2 write-tail measurements](performance-write-tail.md)
+- [2.2.3 release notes](../release/local-disk.md) · [Validation](validation-v2.2.3.md) · [JSON](validation-v2.2.3.json) · [Historical 2.1.2 write-tail measurements](performance-write-tail.md)
 
 - [User Guide](user/README.md) · [中文](user/README.zh-CN.md)
 - [Local disk deployment and durability](local-disk.md) · [中文](local-disk.zh-CN.md)
 - [Object-storage snapshots, automation and restore](object-backup.md) · [中文](object-backup.zh-CN.md)
+- [Standalone and Raft backup automation](backup-automation.md) · [中文](backup-automation.zh-CN.md)
+- [Deep backup fault tests and fixes](backup-deep-validation-2026-10-04.zh-CN.md)
 - [Historical local disk v2 validation and focused benchmark (Chinese)](performance-local-disk-v2.md)
 - [Historical local disk performance: pagination, JSON encoding and Parquet layout (Chinese)](performance-local-disk-optimization-2.md)
 - [Quick Start](user/quickstart.md) · [中文](user/quickstart.zh-CN.md)

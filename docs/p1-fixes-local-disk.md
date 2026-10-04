@@ -1,5 +1,7 @@
 # 本地磁盘版：5 类 P1 修复记录
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-16。工作区：`/Users/livesite/Documents/GraphDB-local-disk-v2`，
 分支 `codex/local-disk-v2`。本轮以已有迁移和性能实现为起点，没有提交或推送。
 
@@ -48,8 +50,8 @@
 
 ## 证据与复查
 
-- [本轮补丁、源码哈希与日志](../capacity-runs/p1-fixes-20260916/)
-- [原审查及复现](../capacity-runs/p0p1-review-20260916/README.md)
+- 本轮补丁、源码哈希与日志（历史本地路径 `capacity-runs/p1-fixes-20260916/`）
+- 原审查及复现（历史本地路径 `capacity-runs/p0p1-review-20260916/README.md`）
 - [本地磁盘运行指南](local-disk.zh-CN.md)
 - [对象备份与恢复指南](object-backup.zh-CN.md)
 

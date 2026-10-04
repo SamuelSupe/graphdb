@@ -24,13 +24,13 @@ docker compose up -d --build
 
 ## 发行包
 
-从 [2.2 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.2) 下载压缩包和校验和，
+从 [2.2 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.3) 下载压缩包和校验和，
 校验压缩包及内部二进制后启动：
 
 ```sh
-sha256sum -c graphdb-v2.2.2.tar.gz.sha256
-tar -xzf graphdb-v2.2.2.tar.gz
-cd v2.2.2
+sha256sum -c graphdb-v2.2.3.tar.gz.sha256
+tar -xzf graphdb-v2.2.3.tar.gz
+cd v2.2.3
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 bin/graphdb-linux-amd64 serve
@@ -42,9 +42,9 @@ ARM Linux 使用 `graphdb-linux-arm64`，Apple Silicon 使用 `graphdb-darwin-ar
 
 ## 从 2.0 升级
 
-从单机 2.0/2.1 升级到 2.2.2 也使用以下步骤。
+从单机 2.0/2.1 升级到 2.2.3 也使用以下步骤。
 
 先创建并验证快照，停止旧进程，再替换二进制，使用相同的 `GRAPHDB_DATA_DIR` 和 prefix 启动
-2.2.2。数据格式兼容，目录仍为进程独占，不能同时运行两个版本。恢复流量前检查 readiness、
+2.2.3。数据格式兼容，目录仍为进程独占，不能同时运行两个版本。恢复流量前检查 readiness、
 代表性查询和 WAL 状态。保留升级前备份用于回滚；不支持启用新自动化后直接降级旧进程。
 S3 自动化需显式开启，见[调度与保留策略](../object-backup.zh-CN.md#自动备份)。

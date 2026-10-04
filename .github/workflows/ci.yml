@@ -40,6 +40,9 @@ jobs:
       - name: Test Python SDK
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
+      - name: Test backup automation recovery
+        run: python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
+
   integration:
     name: Local disk, WAL recovery, load, and restore
     runs-on: ubuntu-latest
@@ -63,6 +66,9 @@ jobs:
 
   object-backup:
     uses: ./.github/workflows/object-backup.yml
+
+  gateway:
+    uses: ./.github/workflows/gateway.yml
 
   raft:
     uses: ./.github/workflows/raft.yml

@@ -1,0 +1,148 @@
+{
+  "result": "PASS",
+  "scope": "backup automation only",
+  "date": "2026-10-04",
+  "worktree": "/Users/livesite/Documents/GraphDB-raft-ha",
+  "branch": "codex/raft-ha",
+  "base_commit": "5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a",
+  "published": false,
+  "environment": "OrbStack Ubuntu Linux arm64; dedicated containers, network and S3 bucket; Linux named volumes",
+  "runtime_checks": [
+    {
+      "check": "standalone_retry_preserves_capture_and_drills",
+      "result": "PASS",
+      "version": 1,
+      "backup_posts": 1
+    },
+    {
+      "check": "standalone_restart_respects_next_run",
+      "result": "PASS"
+    },
+    {
+      "check": "daemon_restart_lock_and_private_state",
+      "result": "PASS",
+      "uid": 10001,
+      "backup_posts": 1
+    },
+    {
+      "check": "raft_lost_202_and_leader_failover_resume",
+      "result": "PASS",
+      "old_leader": 2,
+      "backup_posts": 1,
+      "version": 1
+    },
+    {
+      "check": "raft_drill_isolation_preserves_live_graph",
+      "result": "PASS",
+      "cleanup_deleted": 13
+    },
+    {
+      "check": "raft_restart_respects_next_run",
+      "result": "PASS"
+    }
+  ],
+  "checks": [
+    {
+      "check": "backend_source_binding",
+      "result": "PASS",
+      "files": 508
+    },
+    {
+      "check": "worker-image-source",
+      "result": "PASS"
+    },
+    {
+      "check": "worker-image-id",
+      "result": "PASS"
+    },
+    {
+      "check": "backend-image-id",
+      "result": "PASS"
+    },
+    {
+      "check": "backend-binary",
+      "result": "PASS"
+    },
+    {
+      "check": "linux-unit-final",
+      "result": "PASS"
+    },
+    {
+      "check": "systemd-verify",
+      "result": "PASS"
+    },
+    {
+      "check": "compose-single",
+      "result": "PASS"
+    },
+    {
+      "check": "compose-raft",
+      "result": "PASS"
+    },
+    {
+      "check": "diff-check",
+      "result": "PASS"
+    },
+    {
+      "check": "unrelated_main_changes_preserved",
+      "result": "PASS"
+    },
+    {
+      "check": "cleanup-container",
+      "result": "PASS"
+    },
+    {
+      "check": "cleanup-volume",
+      "result": "PASS"
+    },
+    {
+      "check": "cleanup-network",
+      "result": "PASS"
+    },
+    {
+      "check": "local_documentation_links",
+      "result": "PASS",
+      "links": 265
+    }
+  ],
+  "worker_image_id": "sha256:528b070800a305a80cfd789f8c7597740d0cd92d987fc8258429263f3d92cd1f",
+  "backend_image_id": "sha256:65f8e45f5c712c5408c58bbd597126a083f998d1fd0870cc26c1f1168ff926ef",
+  "backend_binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+  "backend_production_go_sha256": "c0a4e33983c5730235a9897c65f11b52e5e5620781786a680557293ba310c093",
+  "source_files": {
+    "scripts/backup_automation.py": "7d966298518a8905046b58046a2f3bb6887d0053c85e5cbadbfc553bcc070469",
+    "scripts/backup_automation_test.py": "94325e1cd3f349428415b3d3fcff3d38d1bf82199b26e4bb18be192b495ebc77",
+    "deploy/backup-automation/Dockerfile": "bfacdee41926c2525bfa8381ce5ffa2a0bfc5e0a889118f6eb2bce47318fd441",
+    "deploy/backup-automation.env.example": "d74d84577c054486033460958f4b4a40fd883f55f0fdd124897deab3e15088b3",
+    "deploy/systemd/graphdb-backup-automation.service": "cbe7e3fcea9d043bb9db88bdcf978d126bbf491a6a4bdac160c4b72d3fcf2269",
+    "deploy/systemd/graphdb-backup-automation.timer": "3e4db24e336d553b27e0641696b57c84de99319d076559159547d3b7ca418bca",
+    "docker-compose.backup-automation.yml": "3389e3f46bcfa8428080eb7cc7ef5143aefe969becaeb0e7525230d7c543cc6a",
+    "docker-compose.raft.backup.yml": "18c7b4603b9784afedf6c5eeb01317dfd5a191da1b121d402afc215b249dc276",
+    "sdk/python/graphdb_sdk/__init__.py": "1f5e635bde3d9159ded93ae8f1eeee4a9c798dcd6c2dad8b2fee06bc55289df5",
+    "sdk/python/graphdb_sdk/client.py": "be1c580b30bb26b01bb5912c7cee3afa54d3e409d0bf34746404bda6730ec814",
+    "sdk/python/graphdb_sdk/errors.py": "8f30db510ac5c94f0d4603e8d7f7e5b221bc99174162b04edc5da704bca01390",
+    "sdk/python/graphdb_sdk/ops.py": "126665404ba82cf50dbc94f7d9e4149c8152254ca0ee0ef47644c8e88b2807bc",
+    "sdk/python/graphdb_sdk/query.py": "2d67556726ecc025f3b84ad6ffd152756d5f431390bdb980195601f13615b76d",
+    "sdk/python/graphdb_sdk/read.py": "f548ece723dbfdc4e5451f9d0743cec8f91613028e309089ccb6ff91f8c39c1a",
+    "sdk/python/graphdb_sdk/stream.py": "e07f699999b17a7c32b8c97901d441c1fafc44ed1d60f2a8971bb8fc83535b03",
+    "sdk/python/graphdb_sdk/tenant.py": "9eb502911d8661fe59828c23ccb7669cd923a88925aa7445dd36df0514982263",
+    "sdk/python/graphdb_sdk/transport.py": "91efbb6e6c91f3888793dde4d3b9a245abdef89187d72cc1a42e9f97b2bb6dd4",
+    "sdk/python/graphdb_sdk/write.py": "c97722b64f7d22937015c1a4b4a66af2b73004a3c9686c0d5b4b1a7ea4e57608"
+  },
+  "minio_sha256": "5c83cd2cf151717ba0243f73e1c7802ff36e272b67144bdd7f1f7d684fd6f03d",
+  "unit_tests": 6,
+  "test_fixture_failures": [
+    "First run used the wrong export response shape; corrected to observable entity reads.",
+    "Second run created the bucket after liveness, before S3 write readiness; corrected to retry bucket creation."
+  ],
+  "not_run": [
+    "cross-host deployment",
+    "sharded router backup worker combination",
+    "production AWS IAM/versioning/Object Lock/lifecycle expiration",
+    "installed systemd timer firing",
+    "large-graph capacity and restore transfer matrix",
+    "GitHub CI"
+  ],
+  "prior_raft_availability_qualification": "FAIL remains; this backup gate does not qualify the prior 30-minute Raft workload",
+  "retention": "standalone native cleanup unchanged; external worker has no remote deletion, operator-configured S3 lifecycle required"
+}

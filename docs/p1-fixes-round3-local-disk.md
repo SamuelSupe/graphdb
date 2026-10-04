@@ -1,5 +1,7 @@
 # 本地磁盘版：第三轮 P1 修复
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-16。工作区：`/Users/livesite/Documents/GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。
 
 修复第三轮审查确认的 3 项 P1，同时修复该轮缓存重新验证竞态。保留已有迁移、备份及前两轮修复；没有提交、推送或合并。
@@ -43,8 +45,8 @@ WAL 状态折叠逻辑集中到 `internal/storage/ingest_recovery.go`，与扫�
 
 ## 证据与未验证项
 
-- [本轮增量、测试日志和内存复现](../capacity-runs/p1-fixes-round3-20260916/README.md)
-- [原审查及失败复现](../capacity-runs/p0p1-review-round3-20260916/README.md)
+- 本轮增量、测试日志和内存复现（历史本地路径 `capacity-runs/p1-fixes-round3-20260916/README.md`）
+- 原审查及失败复现（历史本地路径 `capacity-runs/p0p1-review-round3-20260916/README.md`）
 - Linux 原始目录：`graphdb-local-disk-v2-validation:/validation/p1-fixes-round3-20260916/`。
 
 本轮未进行整机断电、30 分钟持续负载、旧版本二进制双向兼容门禁或新一轮性能对比。未据此宣称所有 P0/P1 已被穷尽。

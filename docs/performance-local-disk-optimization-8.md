@@ -1,5 +1,7 @@
 # 本地磁盘性能优化，第八轮
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-18。工作区 `GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。
 
 ## 结论
@@ -105,7 +107,7 @@ WAL accept p95 增加 6.1%，readable p99 增加 6.7%，写入完成 p99 增加 
 
 ## 证据与复查
 
-[`capacity-runs/local-disk-optimization-8-20260918`](../capacity-runs/local-disk-optimization-8-20260918/)：
+`capacity-runs/local-disk-optimization-8-20260918`（历史本地路径 `capacity-runs/local-disk-optimization-8-20260918/`）：
 
 - `incremental.patch`、`changed-files.sha256`、`source.sha256`：四个生产文件、四个测试/基准文件的增量与源码、二进制摘要。
 - `conflict-before.log`：读取隔离缺陷的旧实现失败证据；最终通过记录在 `unit.jsonl`、`graph-race.jsonl`。

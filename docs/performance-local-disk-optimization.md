@@ -1,5 +1,7 @@
 # 本地磁盘实现：性能定位与优化
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-16。工作区 `GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。
 本次比较的是**增加对象快照备份后的本地实现**与本轮优化后的实现，不是 `main` 与本地版的比较。
 代码尚未提交。原 GraphDB 和 GraphDB-local-disk 工作区保持原样。
@@ -115,7 +117,7 @@ WAL 可读 p95 下降 92.5%，同时 RSS 增加 86.5%，查询 p95 增加约 7%�
 | 真实 HTTP/Python SDK 对象备份 | WAL 提交、两份快照、全新目录发现、dry-run、按需恢复、覆盖恢复及重启通过 |
 | Python SDK 单元测试 | 11 项，其中 1 项旧 E2E 环境检查跳过，其余通过；上项独立实际执行 HTTP |
 
-本机证据目录：[capacity-runs/local-disk-optimization-20260916](../capacity-runs/local-disk-optimization-20260916)。
+本机证据目录：capacity-runs/local-disk-optimization-20260916（历史本地路径 `capacity-runs/local-disk-optimization-20260916`）。
 最终 HTTP 数据在 `paced-fixed/`，维护复核在 `maintenance-check/`。
 `http/`、`http-final/` 是定位阶段的中间版本；`pack-probe/`、`paced/` 属于失败的打包预算实验，
 不能当作最终通过的性能数据。

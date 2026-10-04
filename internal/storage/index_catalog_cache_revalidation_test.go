@@ -39,7 +39,7 @@ func TestIndexCatalogAtVersionRevalidatesSameVersion(t *testing.T) {
 	base := NewMemoryStore()
 	objects := newPathCountingStore(base)
 	store := NewTenantStore(objects, "test")
-	store.LifecycleCacheTTL = 10 * time.Millisecond
+	store.LifecycleCacheTTL = time.Hour
 	putIndexCatalogCacheFixture(t, ctx, store, base, IndexCatalog{
 		TenantID: "tenant-a",
 		Version:  1,
@@ -76,7 +76,13 @@ func TestIndexCatalogAtVersionRevalidatesSameVersion(t *testing.T) {
 			Status: "ready",
 		}},
 	})
-	time.Sleep(20 * time.Millisecond)
+	// Expire this entry explicitly so scheduler delays cannot expire the cache
+	// between the initial read and cursor binding checks.
+	store.lockMu.Lock()
+	cached := store.indexCatalogCache["tenant-a"]
+	cached.checkedAt = time.Now().Add(-2 * store.LifecycleCacheTTL)
+	store.indexCatalogCache["tenant-a"] = cached
+	store.lockMu.Unlock()
 
 	refreshed, err := store.GetIndexCatalogAtVersion(ctx, "tenant-a", 1)
 	if err != nil || len(refreshed.Indexes) != 1 {

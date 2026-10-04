@@ -1,5 +1,7 @@
 # 本地磁盘性能优化，第五轮
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-17。工作区：`GraphDB-local-disk-v2`，分支：`codex/local-disk-v2`。
 
 ## 结论
@@ -94,7 +96,7 @@
 
 ## 证据与复查
 
-证据目录：[`capacity-runs/local-disk-optimization-5-20260917`](../capacity-runs/local-disk-optimization-5-20260917/)。
+证据目录：`capacity-runs/local-disk-optimization-5-20260917`（历史本地路径 `capacity-runs/local-disk-optimization-5-20260917/`）。
 
 - `incremental.patch`：相对于本轮开始的三个生产文件改动。
 - `changed-files.sha256`、`source.sha256`：最终源文件、隔离源码归档及二进制摘要。

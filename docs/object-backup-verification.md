@@ -1,5 +1,7 @@
 # 对象存储快照备份验证记录
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-16。工作区：`GraphDB-local-disk-v2`，分支：`codex/local-disk-v2`，
 基于 `ffa854149b7d481cd56da58f4a1f2bf61a58af92` 的未提交实现。
 本记录仅对应新增对象快照备份功能，不替代此前的本地磁盘性能报告。
@@ -10,7 +12,7 @@
 - 独立 MinIO：`RELEASE.2025-09-07T16-13-09Z`；独立测试桶和 Linux 命名卷。
 - 最终 HTTP 验证二进制 SHA-256：
   `2b6f3d6e6228c8ab817d672d27ea3fc3618b72256490093ef20f4fdd51935efa`。
-- 本机证据目录：[capacity-runs/object-backup-20260916](../capacity-runs/object-backup-20260916)。
+- 本机证据目录：capacity-runs/object-backup-20260916（历史本地路径 `capacity-runs/object-backup-20260916`）。
   测试二进制和恢复后的本地数据保留在 `graphdb-local-disk-v2-validation` 卷的
   `/validation/object-backup-20260916-final3`。
 

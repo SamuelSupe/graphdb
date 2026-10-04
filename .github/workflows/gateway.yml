@@ -1,0 +1,35 @@
+name: Production gateway authorization gate
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build candidate image
+        run: |
+          version="$(cat VERSION)"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then version="$GITHUB_REF_NAME"; fi
+          docker build --build-arg VERSION="$version" --build-arg COMMIT="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$(git show -s --format=%cI "$GITHUB_SHA")" -t graphdb:gateway-gate .
+      - name: Verify production TLS, roles and tenant headers
+        env:
+          GRAPHDB_GATE_IMAGE: graphdb:gateway-gate
+          GRAPHDB_GATEWAY_OUTPUT: ${{ github.workspace }}/artifacts/gateway
+        run: bash scripts/gateway_gate.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gateway-gate
+          path: |
+            artifacts/gateway/*.json
+            artifacts/gateway/*.log

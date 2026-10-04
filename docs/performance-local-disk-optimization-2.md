@@ -1,5 +1,7 @@
 # 本地磁盘版：第二轮性能优化
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 2026-09-16。实现位于 `codex/local-disk-v2` worktree，未提交或推送。
 本轮基于[上一轮热点诊断](performance-local-disk-opportunities.md)，保留同步落盘、版本及游标契约。
 
@@ -140,7 +142,7 @@ WAL 为 56.07–70.95 → 51.43–53.35 ms。样本数和页缓存控制不足�
 ## 证据
 
 运行日志、原始分位数、逐次资源采样、HTTP/SDK 结果和回归记录保存于
-[capacity-runs/local-disk-optimization-2-20260916](../capacity-runs/local-disk-optimization-2-20260916)。
+capacity-runs/local-disk-optimization-2-20260916（历史本地路径 `capacity-runs/local-disk-optimization-2-20260916`）。
 Linux 测试数据和本轮前后二进制保留在独立卷 `graphdb-local-disk-v2-validation` 的
 `/validation/optimization2-20260916/`，没有清理或改写用户原有数据。
 

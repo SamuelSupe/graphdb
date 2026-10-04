@@ -12,7 +12,7 @@
 | 并发与排队 | `graphdb_admission_{enabled,active,waiting,global_limit,per_tenant_limit,queue_timeout_seconds}{pool}（query/read/write）`；已有读、写准入等待直方图和背压原因计数 |
 | 存储容量 | `graphdb_filesystem_{inspection_success,total_bytes,available_bytes,minimum_free_bytes,write_ready}{role}（data/wal/raft）`；分别检查配置的真实目录。相同文件系统的各角色容量不能相加；JSON 中 `filesystem_id` 可识别共享磁盘。旧 `graphdb_disk_*` 数据磁盘指标继续保留 |
 | 单机 WAL | 既有 WAL append、字节、fsync 耗时/失败、写入及持久化 LSN、磁盘/缓冲占用、接入积压数量/字节/最老年龄、flush 批量/耗时、恢复及去重指标 |
-| Raft 状态 | `graphdb_raft_node_info`、`state`、`term`、`commit_index`、`applied_index`、`application_lag`、`leader_known`、`leader_changes_total`、`voters`、`learners`、`draining`、`protocol_version`、`failed`、`tick_seconds`、`election_timeout_seconds` |
+| Raft 状态 | `graphdb_raft_node_info`、`state`、`term`、`commit_index`、`applied_index`、`application_lag`、`leader_known`、`leader_changes_total`、`voters`、`learners`、`draining`、`protocol_version`、`failed`、`tick_seconds`、`election_timeout_seconds`；`status_observation_known`、`status_age_seconds` 表示状态采样有效性和年龄；`durable_commit_index`、`durable_application_lag` 为当前本地持久化提交位置和应用积压 |
 | Raft 提案与应用 | `proposal_bytes`、`pending_proposals`、`pending_reads`、`application_bytes`、`application_commits_total`、`application_entries_total`；操作耗时和当前并发见下文 |
 | 副本复制与发送 | `graphdb_raft_peer_{progress_known,match_index,next_index,replication_lag,recent_active,learner,paused,send_queue,control_send_queue,inflight_messages}{peer_id}`；`graphdb_raft_events_total{event="transport_queue_full"}` 记录有界发送队列丢弃 |
 | 快照与 Raft 磁盘 | `graphdb_raft_snapshot_{index,bytes,failed}`、`graphdb_raft_storage_{inspection_success,bytes}`；快照捕获、构建、持久化、发送、恢复的耗时/失败；数据库大小包含可重用页面，不代表有效日志大小 |
@@ -31,6 +31,11 @@
 `graphdb_{raft,ha,router,sharding_client}_operation_seconds{operation,status}` 为直方图，提供 `_bucket`、`_sum` 和 `_count`；`*_operations_inflight{operation}` 为当前执行数。status 固定为 `ok/error/timeout/canceled`。操作名固定，不使用租户、URL、请求身份或错误内容作为标签。
 
 有限耗时桶从 1ms 到 1800s，覆盖短请求与长时间快照/维护操作，超过上限进入 `+Inf` 桶。
+
+
+`snapshot_cleanup` 独立记录旧快照文件清理，失败后每 5 秒重试。`graphdb_raft_snapshot_cleanup_failed=1`、JSON 的 `raft.snapshot_cleanup_error` 和 `problems` 中的 `raft_snapshot_cleanup_failed` 表示清理积压；它不会设置 `raft.error`、暂停写入或否定多数派就绪。仍应检查容量和权限。快照构建、持久化或恢复失败继续遵循原有保护。
+
+`status_sample` 记录每秒一次的本地 Raft 状态采样。采样卡住时只有这个后台任务等待，周期诊断不重复向 Raft 发起同步状态请求；`status_age_seconds` 从采样开始计时，超过 10 秒时 JSON 增加 `raft_status_stale`。持续阻塞可同时观察 `operations_inflight{operation="status_sample"}` 和采样年龄。
 
 Raft 主要操作为 `proposal`、`read_barrier`、`quorum_barrier`、`persist`、`configuration_persist`、`apply`、`snapshot_capture/build/persist/restore/send`、`message_send`、`control_send`。`proposal` 从节点提案入口到本地应用回应；业务拒绝的 HTTP 命令仍可能成功提交，应同时看 HTTP 状态。`apply` 包含一个有界日志窗口中的应用批次，不等于一条业务请求。`persist` 记录 Ready 持久化检查，包括无需磁盘事务的纯控制状态；这些快速检查会稀释百分位，排查慢盘应结合较慢耗时桶的增量、文件同步及 OS 指标。发送耗时包含编码后的传输准备和 HTTP 回应。`control_send` 记录独立发送的心跳、选主和响应消息，日志追加和快照仍使用数据队列；`send_queue` 为两个队列的合计，`control_send_queue` 为控制队列，两个队列分别最多 128 包。
 
@@ -54,16 +59,18 @@ sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{
 
 ## 观察边界与部署
 
-[未发布候选的离线恢复保护](product-p0-p1-review5-2026-10-03.zh-CN.md)在 CLI 错误中区分角色目录锁、Raft 数据库锁和归档目标子目录冲突；失败命令以非零状态退出。这些命令在 HTTP 服务之外运行，没有新增服务指标。Raft 启动的目录锁冲突也记录在启动日志；先检查所有角色目录的真实占用进程，不要删除锁文件绕过检查。
+[2.2.3 的离线恢复保护](product-p0-p1-review5-2026-10-03.zh-CN.md)在 CLI 错误中区分角色目录锁、Raft 数据库锁和归档目标子目录冲突；失败命令以非零状态退出。这些命令在 HTTP 服务之外运行，没有新增服务指标。Raft 启动的目录锁冲突也记录在启动日志；先检查所有角色目录的真实占用进程，不要删除锁文件绕过检查。
 
-[未发布候选的完整性保护](product-p0-p1-review4-2026-10-03.zh-CN.md)将已确认迁移分块的本地丢失/摘要变化作为副本应用故障；结合节点诊断的 `error`、应用位置和 `apply` 错误计数判断，不能只看提案是否多数派成功。Raft 快照图校验错误计入既有 `snapshot_build`（源端构建）或 `snapshot_restore`（接收端）操作失败，错误包含租户；源文件恢复或成员重建后再核对应用位置。合法的输入拒绝仍可能成功消费日志，需结合 409 和 catalog 的 `move.error`；缺少分块绑定的旧 importing 状态也返回 409，不是物理坏盘诊断。
+[2.2.3 的完整性保护](product-p0-p1-review4-2026-10-03.zh-CN.md)将已确认迁移分块的本地丢失/摘要变化作为副本应用故障；结合节点诊断的 `error`、应用位置和 `apply` 错误计数判断，不能只看提案是否多数派成功。Raft 快照图校验错误计入既有 `snapshot_build`（源端构建）或 `snapshot_restore`（接收端）操作失败，错误包含租户；源文件恢复或成员重建后再核对应用位置。合法的输入拒绝仍可能成功消费日志，需结合 409 和 catalog 的 `move.error`；缺少分块绑定的旧 importing 状态也返回 409，不是物理坏盘诊断。
 
 数据前缀绑定不一致会在启动日志中报告原值和配置值；启动拒绝时没有新的 HTTP 指标。已运行节点收到前缀不符的命令，按 `apply` 故障观察；快照命名空间不符按上述构建/恢复故障观察。错误包含对象键或前缀，先核对全组 `GRAPHDB_PREFIX`，恢复原配置后检查应用位置和已确认数据。
 
-Raft state/leader_known/recent_active 均不是实时 quorum 证明；副本 match 是日志复制位置，不是远端图应用位置。逐节点 applied_index/application_lag 才能判断各副本应用积压。Follower 没有 Leader 的 progress 时 `progress_known=0`，其余进度零值表示未知。catalog/接入数量是本地缓存，结合 known 与观测时间判断，不能当作线性一致集群总量。
+`/metrics` 和 `/v1/diagnostics` 使用最近一次本地 Raft 状态采样，JSON 提供 `status_known`、`status_age_seconds`、`status_observed_at`。term、配置、复制进度等值可能在存储或 Raft 阻塞期间变旧；本地错误、Leader ID、摘流状态及 `durable_commit_index/durable_application_lag` 直接读取当前进程状态。后两项只表示本地已经持久化的提交，不包含尚未持久化的 Raft 内存进度。`/v1/health`、私有控制接口和升级预检继续读取实时状态，阻塞时可能等待。文件系统检查等 OS 调用仍可能受到宿主机停顿影响。
+
+Raft state/leader_known/recent_active 均不是实时 quorum 证明；副本 match 是日志复制位置，不是远端图应用位置。逐节点 applied_index/application_lag 判断应用积压时需同时检查采样年龄。Follower 没有 Leader 的 progress 时 `progress_known=0`，其余进度零值表示未知。catalog/接入数量是本地缓存，结合 known 与观测时间判断，不能当作线性一致集群总量。
 
 JSON 诊断保留构建、部署、协调、磁盘、WAL、Raft 和问题列表，并增加准入、查询数量、逐副本状态和已有接入/catalog 观察。HTTP 200 表示诊断接口可读，不能据此放流；router JSON 返回本地 drain/cache 状态，不主动探测集群，也不声称集群健康。数据库诊断的可选 `X-Tenant-ID` 任务查询会读取该租户最多 100 条任务，通用周期采集不带此头。
 
 [采集配置示例](../deploy/prometheus/scrape.yml.example) 列出全部部署形态。只保留实际使用的 job，替换地址；单机示例使用生产模板的管理端口 8081，Raft 为 8082，分片节点需显式配置 `GRAPHDB_ADMIN_ADDR=:8082`。监控连接管理网络，router token 挂载为只读文件，不能把 Raft 8081 传输端口当作管理端口。每组配置固定 `raft_group` 标签，避免不同组的 peer_id 混淆。混部升级期间旧程序没有新增指标，两条磁盘告警切换到新 `graphdb_filesystem_*` 后需保留旧版本的监控直至完成升级。
 
-[20 条告警示例](../deploy/prometheus/graphdb.rules.yml) 覆盖容量、Raft 状态/应用/复制积压、持久化/传输、频繁选主、准入压力、迁移错误、router 上游故障、目录失联及单机 WAL 积压。目录失联指标表示最近一次读取结果，readiness 不主动探测时可能保留历史值；结合最后成功时间和实际请求判断。阈值与持续时间需依据实际容量和 SLO 调整；`up`/抓取丢失告警由监控平台提供。OS CPU、RSS、文件描述符、磁盘 IOPS/延迟和网络吞吐需配合 node_exporter/容器监控，不能把 Go runtime 保留内存当 RSS。在线接口不执行全图完整性审计，索引健康仍需周期运行既有检查。
+[22 条告警示例](../deploy/prometheus/graphdb.rules.yml) 覆盖容量、Raft 状态采样失效/过期、应用/复制积压、持久化/传输、频繁选主、准入压力、迁移错误、router 上游故障、目录失联及单机 WAL 积压。目录失联指标表示最近一次读取结果，readiness 不主动探测时可能保留历史值；结合最后成功时间和实际请求判断。阈值与持续时间需依据实际容量和 SLO 调整；`up`/抓取丢失告警由监控平台提供。OS CPU、RSS、文件描述符、磁盘 IOPS/延迟和网络吞吐需配合 node_exporter/容器监控，不能把 Go runtime 保留内存当 RSS。在线接口不执行全图完整性审计，索引健康仍需周期运行既有检查。

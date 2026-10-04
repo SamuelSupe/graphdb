@@ -1,5 +1,7 @@
 # 本地磁盘版：第六轮 P1 修复
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-17。工作区 `/Users/livesite/Documents/GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。
 
 修复第六轮审查确认的三项 P1，保留既有改动。本轮未提交、推送或合并。
@@ -57,7 +59,7 @@ HTTP recover 使用带维护名额的上下文。等待 WAL 时让出租户任�
 
 本轮未重复性能对比矩阵、30 分钟持续负载、独立对象备份集成、旧二进制双向兼容或整机断电测试。新增故障和竞争场景使用真实存储、WAL 和任务入口；HTTP 门禁另外验证实际网络接口，但没有通过 HTTP 注入磁盘故障。
 
-- [增量补丁、源码哈希及验证日志](../capacity-runs/p1-fixes-round6-20260917/README.md)
-- [第六轮审查和修复前复现](../capacity-runs/p0p1-review-round6-20260917/README.md)
+- 增量补丁、源码哈希及验证日志（历史本地路径 `capacity-runs/p1-fixes-round6-20260917/README.md`）
+- 第六轮审查和修复前复现（历史本地路径 `capacity-runs/p0p1-review-round6-20260917/README.md`）
 
 增量补丁以本轮开始前的脏工作区为基准，包含 9 个代码及测试文件，不混入此前改动。

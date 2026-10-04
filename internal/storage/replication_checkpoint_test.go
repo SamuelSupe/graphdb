@@ -717,3 +717,34 @@ func BenchmarkReplicationJournalWrites(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkReplicationSnapshotCapture(b *testing.B) {
+	for _, objects := range []int{1000, 5000} {
+		b.Run(fmt.Sprint(objects), func(b *testing.B) {
+			files, err := OpenFileStore(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer files.Close()
+			for object := range objects {
+				key := fmt.Sprintf("graphdb/tenants/%d/records/%d", object%32, object)
+				if err := files.Put(context.Background(), key, make([]byte, 256)); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				source, err := files.CaptureReplicationSnapshot(context.Background(), 64<<20)
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				if err := source.Close(); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+			}
+		})
+	}
+}

@@ -1,4 +1,4 @@
-# GGraphDB 2.2.2 文档
+# GGraphDB 2.2.3 文档
 
 [English](README.md)
 
@@ -15,12 +15,21 @@
 - [后续审核：迁移分块、Raft 快照与数据前缀完整性](product-p0-p1-review4-2026-10-03.zh-CN.md)
 - [后续审核：完整恢复路径与 WAL/Raft 目录占用](product-p0-p1-review5-2026-10-03.zh-CN.md)
 
+- [未发布候选完整测试与修复](full-validation-2026-10-03.zh-CN.md)
+- [未发布候选可用性与滚动升级修复验证](availability-rolling-validation-2026-10-04.zh-CN.md)
+- [Raft 三副本三十分钟长测复验：FAIL](raft-long-validation-2026-10-04.zh-CN.md)
+
+- [Raft 可用性缺陷修复与三十分钟复验：PASS](raft-availability-fixes-2026-10-04.zh-CN.md)
+- [Raft 快照与维护传输优化及性能验收](performance-raft-batching-2026-10-04.zh-CN.md)
+
 ## 用户指南
 
-- [2.2.2 发行说明](../release/local-disk.md) · [发布验证](validation-v2.2.2.md) · [历史 2.1.2 写入长尾实测与限制](performance-write-tail.md)
+- [2.2.3 发行说明](../release/local-disk.md) · [发布验证](validation-v2.2.3.md) · [JSON](validation-v2.2.3.json) · [历史 2.1.2 写入长尾实测与限制](performance-write-tail.md)
 
 - [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)
 - [对象存储快照备份与恢复](object-backup.zh-CN.md) · [English](object-backup.md)
+- [单机与 Raft 自动备份](backup-automation.zh-CN.md) · [English](backup-automation.md)
+- [备份深度故障测试与修复](backup-deep-validation-2026-10-04.zh-CN.md)
 - [历史记录：本地磁盘 v2 验证与性能抽查](performance-local-disk-v2.md)
 - [历史记录：本地磁盘第二轮优化：分页、JSON 编码与 Parquet 布局](performance-local-disk-optimization-2.md)
 

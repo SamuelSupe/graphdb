@@ -510,6 +510,8 @@ func parquetSavedQueryArrowSchema() *arrow.Schema {
 
 func savedQueryPayloadJSON(saved SavedQuery) ([]byte, error) {
 	saved.Name = strings.TrimSpace(saved.Name)
+	saved.CreatedAt = saved.CreatedAt.UTC()
+	saved.UpdatedAt = saved.UpdatedAt.UTC()
 	return json.Marshal(saved)
 }
 

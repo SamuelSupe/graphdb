@@ -209,6 +209,8 @@ func replayDirectCommitResult(record DirectCommitRecord) CommitResult {
 func directCommitRequestEqual(stored DirectCommitRequest, incoming DirectCommitRequest) bool {
 	stored.IdempotencyKey = strings.TrimSpace(stored.IdempotencyKey)
 	incoming.IdempotencyKey = strings.TrimSpace(incoming.IdempotencyKey)
+	stored.Mutations = mutationTimesUTC(stored.Mutations)
+	incoming.Mutations = mutationTimesUTC(incoming.Mutations)
 	storedJSON, err := json.Marshal(stored)
 	if err != nil {
 		return false

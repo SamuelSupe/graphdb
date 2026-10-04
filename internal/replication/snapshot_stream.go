@@ -294,33 +294,43 @@ func (n *Node) receiveSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func pruneSnapshotFiles(dir string, snapshot raftpb.Snapshot, allOrphans bool) error {
+func pruneSnapshotFiles(dir string, snapshot raftpb.Snapshot, allOrphans bool) ([]os.FileInfo, error) {
 	envelope, err := decodeSnapshot(snapshot.Data)
 	if err != nil {
-		return nil
-	}
-	files, err := os.ReadDir(filepath.Join(dir, "snapshots"))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
+		return nil, nil
 	}
 	keep := ""
 	if envelope.File != nil {
 		keep = filepath.Base(snapshotPath(dir, snapshot.Metadata.Index, *envelope.File))
 	}
+	return pruneSnapshotFilesBefore(dir, snapshot.Metadata.Index, keep, allOrphans)
+}
+
+func pruneSnapshotFilesBefore(dir string, index uint64, keep string, allOrphans bool) ([]os.FileInfo, error) {
+	files, err := os.ReadDir(filepath.Join(dir, "snapshots"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var failed []os.FileInfo
+	var cleanupErr error
 	for _, file := range files {
 		if file.Name() == keep {
 			continue
 		}
-		if allOrphans || (!strings.HasPrefix(file.Name(), ".") && file.Name() < fmt.Sprintf("%020d-", snapshot.Metadata.Index)) {
+		if allOrphans || (!strings.HasPrefix(file.Name(), ".") && file.Name() < fmt.Sprintf("%020d-", index)) {
 			if err := os.Remove(filepath.Join(dir, "snapshots", file.Name())); err != nil && !os.IsNotExist(err) {
-				return err
+				info, infoErr := file.Info()
+				if infoErr == nil {
+					failed = append(failed, info)
+				}
+				cleanupErr = errors.Join(cleanupErr, err, infoErr)
 			}
 		}
 	}
-	return nil
+	return failed, cleanupErr
 }
 
 func prepareSnapshotDirectory(dir string) error {

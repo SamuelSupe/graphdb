@@ -1,6 +1,7 @@
 # Reference gateway contract. Replace upstreams, certificates, and auth backend.
 
-map $request_uri $graphdb_data_roles {
+# Authorize the normalized path so escaped route names cannot bypass write roles.
+map $graphdb_request_path $graphdb_data_roles {
     default                                      "reader,writer,operator,admin";
     ~^/v1/commits(?:\?|$)                        "writer,operator,admin";
     ~^/v1/ingest/batches(?:\?|$)                 "writer,operator,admin";
@@ -36,6 +37,7 @@ server {
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Original-Method $graphdb_request_method;
         proxy_set_header X-Original-URI $request_uri;
         proxy_set_header X-GraphDB-Required-Roles $graphdb_data_roles;
     }
@@ -46,12 +48,16 @@ server {
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Original-Method $graphdb_request_method;
         proxy_set_header X-Original-URI $request_uri;
         proxy_set_header X-GraphDB-Required-Roles "operator,admin";
     }
 
     # Public product API. GGraphDB's DataHandler makes admin routes return 404.
     location / {
+        # Capture before auth_request changes $uri to the internal auth endpoint.
+        set $graphdb_request_path $uri;
+        set $graphdb_request_method $request_method;
         auth_request /_graphdb_auth;
         auth_request_set $graphdb_tenant $upstream_http_x_graphdb_tenant_id;
 
@@ -66,6 +72,7 @@ server {
     # Operator API is deliberately namespaced only at the gateway.
     # /admin/v1/tasks becomes /v1/tasks on the private admin listener.
     location /admin/ {
+        set $graphdb_request_method $request_method;
         auth_request /_graphdb_admin_auth;
         auth_request_set $graphdb_tenant $upstream_http_x_graphdb_tenant_id;
 

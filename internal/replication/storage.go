@@ -352,9 +352,6 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 		s.snapshotMeta = ready.Snapshot.Metadata
 		s.conf = ready.Snapshot.Metadata.ConfState
 		s.confIndex = ready.Snapshot.Metadata.Index
-		if err := pruneSnapshotFiles(s.dir, ready.Snapshot, false); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -405,5 +402,5 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 		return err
 	}
 	s.snapshotMeta = snapshot.Metadata
-	return pruneSnapshotFiles(s.dir, snapshot, false)
+	return nil
 }

@@ -12,11 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SamuelSupe/graphdb/v2/internal/buildinfo"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
-	"go.etcd.io/raft/v3/tracker"
 )
 
 var ErrNotLeader = errors.New("Raft node is not the leader")
@@ -66,41 +64,45 @@ type applicationBatch struct {
 }
 
 type Node struct {
-	cfg                Config
-	raft               raft.Node
-	disk               *diskStorage
-	machine            StateMachine
-	ctx                context.Context
-	cancel             context.CancelFunc
-	workers            sync.WaitGroup
-	applied            atomic.Uint64
-	applicationBytes   atomic.Int64
-	applicationCommits atomic.Uint64
-	applicationEntries atomic.Uint64
-	proposalBytes      atomic.Int64
-	leader             atomic.Uint64
-	mu                 sync.Mutex
-	changed            chan struct{}
-	failure            error
-	snapshotFailure    error
-	proposals          map[string]chan result
-	reads              map[string]chan uint64
-	peerMu             sync.RWMutex
-	peers              map[uint64]string
-	senders            map[uint64]chan packet
-	controlSenders     map[uint64]chan packet
-	client             transportClient
-	application        chan applicationBatch
-	snapshotRequests   chan snapshotRequest
-	maintenanceMu      sync.Mutex
-	handoff            bool
-	activeProposals    int
-	draining           atomic.Bool
-	protocolValidated  atomic.Bool
-	metrics            *observability.OperationMetrics
-	leaderChanges      atomic.Uint64
-	snapshotIndex      atomic.Uint64
-	snapshotBytes      atomic.Int64
+	cfg                     Config
+	raft                    raft.Node
+	disk                    *diskStorage
+	machine                 StateMachine
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	workers                 sync.WaitGroup
+	applied                 atomic.Uint64
+	committed               atomic.Uint64
+	applicationBytes        atomic.Int64
+	applicationCommits      atomic.Uint64
+	applicationEntries      atomic.Uint64
+	proposalBytes           atomic.Int64
+	leader                  atomic.Uint64
+	mu                      sync.Mutex
+	changed                 chan struct{}
+	failure                 error
+	snapshotFailure         error
+	snapshotCleanupFailure  error
+	proposals               map[string]chan result
+	reads                   map[string]chan uint64
+	peerMu                  sync.RWMutex
+	peers                   map[uint64]string
+	senders                 map[uint64]chan packet
+	controlSenders          map[uint64]chan packet
+	client                  transportClient
+	application             chan applicationBatch
+	snapshotRequests        chan snapshotRequest
+	snapshotCleanupRequests chan uint64
+	maintenanceMu           sync.Mutex
+	handoff                 bool
+	activeProposals         int
+	draining                atomic.Bool
+	protocolValidated       atomic.Bool
+	metrics                 *observability.OperationMetrics
+	leaderChanges           atomic.Uint64
+	snapshotIndex           atomic.Uint64
+	snapshotBytes           atomic.Int64
+	diagnostics             atomic.Pointer[diagnosticObservation]
 }
 
 type snapshotRequest struct {
@@ -186,10 +188,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		}
 		applied = snapshot.Metadata.Index
 	}
-	if err := pruneSnapshotFiles(cfg.Dir, snapshot, true); err != nil {
-		disk.Close()
-		return nil, err
-	}
+	cleanupOrphans, cleanupErr := pruneSnapshotFiles(cfg.Dir, snapshot, true)
 	hard, _, err := disk.InitialState()
 	if err != nil {
 		disk.Close()
@@ -202,8 +201,12 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 	ctx, cancel := context.WithCancel(parent)
 	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]chan packet), controlSenders: make(map[uint64]chan packet), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
 	n.metrics = observability.NewOperationMetrics()
+	n.snapshotCleanupRequests = make(chan uint64, 1)
+	n.snapshotCleanupFailure = cleanupErr
+	n.scheduleSnapshotCleanup(snapshot.Metadata.Index)
 	n.observeSnapshot(snapshot)
 	n.applied.Store(applied)
+	n.committed.Store(hard.Commit)
 	for id, address := range cfg.Peers {
 		n.peers[id] = address
 	}
@@ -247,9 +250,12 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
 		n.raft = raft.StartNode(rc, peers)
 	}
-	n.workers.Add(3)
+	n.observeDiagnostics()
+	n.workers.Add(5)
 	go n.run()
 	go n.applyLoop()
+	go n.snapshotCleanupLoop(cleanupOrphans)
+	go n.diagnosticsLoop()
 	go func() {
 		defer n.workers.Done()
 		ticker := time.NewTicker(cfg.Tick)
@@ -441,7 +447,10 @@ func (n *Node) available(leader bool) error {
 	if n.ctx.Err() != nil {
 		return ErrUnavailable
 	}
-	if leader && n.raft != nil && (n.raft.Status().Commit-n.applied.Load() > 1024 || n.applicationBytes.Load() > 64<<20) {
+	// Request deadlines must not wait on Raft's synchronous status channel.
+	// Application can advance between the two atomic progress observations.
+	committed := n.committed.Load()
+	if leader && (committed-min(committed, n.applied.Load()) > 1024 || n.applicationBytes.Load() > 64<<20) {
 		return fmt.Errorf("%w: application backlog exceeds 1024 entries or 64 MiB", ErrUnavailable)
 	}
 	if leader && (n.leader.Load() != n.cfg.ID || n.draining.Load()) {
@@ -491,6 +500,7 @@ func (n *Node) run() {
 			finish(observed)
 			if err == nil {
 				n.observeSnapshot(snapshot)
+				n.scheduleSnapshotCleanup(snapshot.Metadata.Index)
 			}
 			request.done <- err
 			if errors.Is(err, raft.ErrSnapOutOfDate) {
@@ -517,7 +527,11 @@ func (n *Node) run() {
 				n.fail(err)
 				return
 			}
+			if !raft.IsEmptyHardState(ready.HardState) {
+				n.committed.Store(ready.HardState.Commit)
+			}
 			if envelope != nil {
+				n.scheduleSnapshotCleanup(ready.Snapshot.Metadata.Index)
 				n.snapshotIndex.Store(ready.Snapshot.Metadata.Index)
 				n.snapshotBytes.Store(snapshotPayloadBytes(ready.Snapshot.Data, envelope))
 				n.peerMu.Lock()
@@ -805,56 +819,4 @@ func (n *Node) Close() error {
 	}
 	n.client.CloseIdleConnections()
 	return n.disk.Close()
-}
-
-func (n *Node) Status() map[string]any {
-	n.mu.Lock()
-	failure := n.failure
-	snapshotFailure := n.snapshotFailure
-	proposals, reads := len(n.proposals), len(n.reads)
-	n.mu.Unlock()
-	raftStatus := n.raft.Status()
-	applied := n.applied.Load()
-	configuration := tracker.ProgressTracker{Config: raftStatus.Config}
-	conf := configuration.ConfState()
-	status := map[string]any{"node_id": n.cfg.ID, "cluster_id": n.cfg.ClusterID, "leader_id": n.leader.Load(), "term": raftStatus.Term, "commit_index": raftStatus.Commit, "applied_index": applied, "application_lag": raftStatus.Commit - min(raftStatus.Commit, applied), "application_bytes": n.applicationBytes.Load(), "proposal_bytes": n.proposalBytes.Load(), "ready": failure == nil && n.ctx.Err() == nil && n.leader.Load() == n.cfg.ID && !n.draining.Load(), "protocol_version": n.protocolVersion(), "allow_legacy_protocol": n.cfg.AllowLegacyProtocol, "draining": n.draining.Load(), "voters": conf.Voters, "learners": conf.Learners, "build": buildinfo.Current()}
-	status["application_commits"] = n.applicationCommits.Load()
-	status["application_entries"] = n.applicationEntries.Load()
-	status["protocol_max"] = MaxProtocolVersion
-	status["snapshot_format_max"] = 2
-	status["stream_snapshots"] = n.cfg.StreamSnapshots
-	status["tick_seconds"] = n.cfg.Tick.Seconds()
-	status["election_timeout_seconds"] = n.cfg.Tick.Seconds() * float64(n.cfg.ElectionTicks)
-	status["state"] = raftStatus.RaftState.String()
-	status["pending_proposals"], status["pending_reads"] = proposals, reads
-	status["snapshot_index"], status["snapshot_bytes"] = n.snapshotIndex.Load(), n.snapshotBytes.Load()
-	members := conf.Voters
-	members = append(append([]uint64(nil), members...), conf.Learners...)
-	var peers []PeerProgress
-	n.peerMu.RLock()
-	for _, id := range members {
-		progress, known := raftStatus.Progress[id]
-		peer := PeerProgress{ID: id, Known: known, Match: progress.Match, Next: progress.Next, RecentActive: progress.RecentActive, Learner: progress.IsLearner, SendQueue: len(n.senders[id]) + len(n.controlSenders[id]), ControlSendQueue: len(n.controlSenders[id])}
-		if !known {
-			for _, learner := range conf.Learners {
-				peer.Learner = peer.Learner || learner == id
-			}
-		} else {
-			peer.Lag = raftStatus.Commit - min(raftStatus.Commit, progress.Match)
-			peer.Paused = progress.IsPaused()
-			if progress.Inflights != nil {
-				peer.InflightMessages = progress.Inflights.Count()
-			}
-		}
-		peers = append(peers, peer)
-	}
-	n.peerMu.RUnlock()
-	status["replicas"] = peers
-	if failure != nil {
-		status["error"] = failure.Error()
-	}
-	if snapshotFailure != nil {
-		status["snapshot_error"] = snapshotFailure.Error()
-	}
-	return status
 }

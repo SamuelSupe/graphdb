@@ -42,12 +42,12 @@ def step(name, **details):
     print(json.dumps(row), flush=True)
     (OUT/'results.json').write_text(json.dumps(results, indent=2)+'\n')
 
-def request(base, method, path, body=None, headers=None):
+def request(base, method, path, body=None, headers=None, request_timeout=5):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(base+path, method=method, data=data,
         headers={'Content-Type': 'application/json', 'X-Tenant-ID': TENANT, **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=request_timeout) as response:
             return response.status, json.loads(response.read() or b'{}')
     except urllib.error.HTTPError as err:
         raw = err.read()
@@ -57,12 +57,12 @@ def request(base, method, path, body=None, headers=None):
             value = {'error': raw.decode()}
         return err.code, value
 
-def expect(base, method, path, body=None, status=200, headers=None):
+def expect(base, method, path, body=None, status=200, headers=None, request_timeout=5):
     safe = status < 400 and (method == 'GET' or isinstance(body, dict) and body.get('idempotency_key'))
     deadline = time.monotonic()+25
     while True:
         try:
-            code, value = request(base, method, path, body, headers)
+            code, value = request(base, method, path, body, headers, request_timeout)
             if code == status:
                 return value
         except (OSError, TimeoutError) as err:
@@ -256,7 +256,8 @@ try:
     payload = 'x' * (4 << 20)
     for i in range(9):
         expect(raft, 'POST', '/v1/commits', {'mutations': {'upsert_entities': [
-            {'id': f'host:{i}', 'kind': 'host', 'fields': {'payload': payload}}]}}, headers=large_headers)
+            {'id': f'host:{i}', 'kind': 'host', 'fields': {'payload': payload}}]}}, headers=large_headers,
+            request_timeout=120)
     backup = expect(raft, 'POST', '/v1/tenants/large-restore/backup', {}, 202, large_headers)
 
     def completed_task(id):

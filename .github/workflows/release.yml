@@ -31,6 +31,9 @@ jobs:
       - name: Test Python SDK
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
+      - name: Test backup automation recovery
+        run: python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
+
   integration:
     name: Local disk, WAL recovery, load, and restore
     runs-on: ubuntu-latest
@@ -51,6 +54,9 @@ jobs:
 
   object-backup:
     uses: ./.github/workflows/object-backup.yml
+
+  gateway:
+    uses: ./.github/workflows/gateway.yml
 
   raft:
     uses: ./.github/workflows/raft.yml
@@ -87,7 +93,7 @@ jobs:
 
   release:
     name: Build and publish release assets
-    needs: [verify, integration, object-backup, local-soak, raft]
+    needs: [verify, integration, object-backup, gateway, local-soak, raft]
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -119,6 +125,12 @@ jobs:
           name: raft-gate
           path: artifacts/raft-gate
 
+      - name: Download gateway authorization evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gateway-gate
+          path: artifacts/gateway-gate
+
       - name: Build release package
         shell: bash
         run: |
@@ -146,25 +158,31 @@ jobs:
           cp VERSION README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md LICENSE SECURITY.md \
             Dockerfile .dockerignore docker-compose.yml docker-compose.backup.yml \
             docker-compose.raft.yml docker-compose.sharded.yml \
+            docker-compose.backup-automation.yml docker-compose.raft.backup.yml \
             go.mod go.sum "$root/"
           cp -R cmd internal tools "$root/"
           cp -R docs/. "$root/docs/"
           cp -R examples/. "$root/examples/"
           cp -R sdk "$root/"
           cp deploy/object-backup.env.example "$root/deploy/"
+          cp deploy/backup-automation.env.example "$root/deploy/"
+          cp -R deploy/backup-automation deploy/systemd "$root/deploy/"
           cp deploy/nginx/graphdb.conf.example "$root/deploy/nginx/"
           cp deploy/raft/haproxy.cfg "$root/deploy/raft/"
           cp deploy/sharded/haproxy.cfg "$root/deploy/sharded/"
           cp -R deploy/production deploy/prometheus "$root/deploy/"
-          cp -R artifacts/local-gate artifacts/object-backup-gate artifacts/raft-gate "$root/release/evidence/"
+          cp -R artifacts/local-gate artifacts/object-backup-gate artifacts/raft-gate artifacts/gateway-gate "$root/release/evidence/"
           cp release/capacity-envelope.yaml release/local-disk.md "$root/release/"
           cp scripts/capacity_baseline.sh \
             scripts/check_release_freeze.sh scripts/check_workspace_hygiene.sh \
             scripts/release_gate.sh scripts/local_disk_compare.sh scripts/local_disk_benchmark.py \
             scripts/local_disk_report.py scripts/local_disk_optimization.py \
             scripts/object_backup_gate.sh scripts/object_backup_http.py "$root/scripts/"
-          cp scripts/raft_gate.sh scripts/raft_gate_dual.py scripts/raft_gate_sharded.py "$root/scripts/"
+          cp scripts/raft_gate.sh scripts/raft_gate_dual.py scripts/raft_gate_sharded.py scripts/raft_gate_metrics.py "$root/scripts/"
+          cp scripts/gateway_gate.sh scripts/gateway_auth_gate.py "$root/scripts/"
+          cp -R scripts/gateway-gate "$root/scripts/"
           cp scripts/raft_rolling_upgrade.py scripts/raft_rolling_gate.py "$root/scripts/"
+          cp scripts/backup_automation.py scripts/backup_automation_test.py "$root/scripts/"
           cp -R scripts/raft-gate "$root/scripts/"
           printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
             "$tag" "$commit" "$build_date" "$(go version | cut -d' ' -f3)" > "$root/BUILD-METADATA.json"
@@ -190,17 +208,33 @@ jobs:
           enhanced = json.loads(Path('release/evidence/raft-gate/enhanced/metadata.json').read_text())
           protocol3 = json.loads(Path('release/evidence/raft-gate/protocol3/metadata.json').read_text())
           rolling = json.loads(Path('release/evidence/raft-gate/rolling/metadata.json').read_text())
+          gateway = json.loads(Path('release/evidence/gateway-gate/metadata.json').read_text())
           digest = hashlib.file_digest(Path('bin/graphdb-linux-amd64').open('rb'), 'sha256').hexdigest()
           assert report['result'] == 'PASS', report
           assert digest == report['binary_sha256'], 'packaged binary differs from the Raft-qualified binary'
           assert enhanced['result'] == 'PASS' and enhanced['binary_sha256'] == digest, 'enhanced Raft qualification differs from the packaged binary'
           assert protocol3['result'] == 'PASS' and protocol3['protocol'] == 3 and protocol3['binary_sha256'] == digest, 'protocol 3 qualification differs from the packaged binary'
           assert rolling['result'] == 'PASS' and rolling['target']['binary_sha256'] == digest, 'rolling target differs from the packaged binary'
+          assert gateway['result'] == 'PASS' and gateway['binary_sha256'] == digest, 'gateway qualification differs from the packaged binary'
+          config_digest = hashlib.sha256(Path('deploy/nginx/graphdb.conf.example').read_bytes()).hexdigest()
+          assert gateway['gateway_config_sha256'] == config_digest, 'gateway configuration differs from the qualified configuration'
+          for field, file in [('identity_fixture_sha256', 'scripts/gateway-gate/identity.py'), ('gate_client_sha256', 'scripts/gateway_auth_gate.py')]:
+              assert gateway[field] == hashlib.sha256(Path(file).read_bytes()).hexdigest(), 'packaged gateway gate differs from qualification: ' + file
           PY
           bin/graphdb-linux-amd64 version
           export GRAPHDB_RAFT_TOKEN=release-configuration-check-only-0123456789
           docker compose -f docker-compose.raft.yml config --quiet
           docker compose -f docker-compose.sharded.yml config --quiet
+          export GRAPHDB_BACKUP_S3_BUCKET=release-configuration-check-only
+          export GRAPHDB_BACKUP_AUTOMATION_TENANT=release-configuration-check-only
+          GRAPHDB_BACKUP_AUTOMATION_URL=http://graphdb:8080 docker compose \
+            -f docker-compose.yml -f docker-compose.backup.yml \
+            -f docker-compose.backup-automation.yml config --quiet
+          GRAPHDB_BACKUP_AUTOMATION_URL=http://gateway:8080 docker compose \
+            -f docker-compose.raft.yml -f docker-compose.raft.backup.yml \
+            -f docker-compose.backup-automation.yml config --quiet
+          python3 scripts/backup_automation.py --help
+          python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
           docker build --build-arg VERSION="$GITHUB_REF_NAME" \
             --build-arg COMMIT="$GITHUB_SHA" \
             --build-arg BUILD_DATE="$build_date" \

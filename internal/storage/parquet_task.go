@@ -632,10 +632,16 @@ func taskResultContentHash(result map[string]any) (string, error) {
 }
 
 func taskPayloadJSON(task Task) ([]byte, error) {
+	task.StartedAt = task.StartedAt.UTC()
+	task.UpdatedAt = task.UpdatedAt.UTC()
+	task.FinishedAt = task.FinishedAt.UTC()
 	return json.Marshal(task)
 }
 
 func indexTaskPayloadJSON(task IndexTask) ([]byte, error) {
+	task.StartedAt = task.StartedAt.UTC()
+	task.UpdatedAt = task.UpdatedAt.UTC()
+	task.FinishedAt = task.FinishedAt.UTC()
 	return json.Marshal(task)
 }
 

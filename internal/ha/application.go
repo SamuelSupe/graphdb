@@ -81,13 +81,10 @@ func (a *Application) Applied() (uint64, error) {
 	return checkpoint.Index, err
 }
 func (a *Application) Snapshot(ctx context.Context) ([]byte, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	source, err := a.Files.CaptureReplicationSnapshot(ctx, a.MaxSnapshotBytes)
+	source, err := a.captureSnapshot(ctx)
 	var data []byte
 	if err == nil {
 		defer source.Close()
-		source.TenantPrefix = a.snapshotTenantPrefix()
 		data, err = source.Bytes(ctx)
 	}
 	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
@@ -108,8 +105,12 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 }
 
 func (a *Application) CaptureSnapshot(ctx context.Context) (replication.SnapshotSource, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	return a.captureSnapshot(ctx)
+}
+
+func (a *Application) captureSnapshot(ctx context.Context) (*storage.ReplicationSnapshotSource, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	source, err := a.Files.CaptureReplicationSnapshot(ctx, a.MaxSnapshotBytes)
 	if err == nil {
 		source.TenantPrefix = a.snapshotTenantPrefix()

@@ -40,10 +40,6 @@ func (s *TenantStore) publishLocalCompaction(
 	); err != nil {
 		return Manifest{}, ObjectMeta{}, err
 	}
-	if err := s.settleDirectCommitsBeforeCompaction(ctx, tenantID, snapshotVersion); err != nil {
-		return Manifest{}, ObjectMeta{}, err
-	}
-
 	candidate := current
 	candidate.LayoutVersion = CurrentObjectLayoutVersion
 	candidate.TenantID = tenantID

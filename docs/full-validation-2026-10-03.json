@@ -1,0 +1,998 @@
+{
+  "schema_version": 1,
+  "completed_at": "2026-10-03T14:38:08.381545+00:00",
+  "overall_result": "FAIL",
+  "release_qualified": false,
+  "published": false,
+  "baseline_commit": "5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a",
+  "branch": "codex/raft-ha",
+  "candidate_version": "2.2.2-fulltest3",
+  "production_source_sha256": "d55b69a27501e78e6d299e8b3b2b8e51385fc4c197a99afcedbc399742f41706",
+  "full_suite_test_source_sha256": "bcd8623a7766e1bd413718c7b3b0c7e363baccbb90bd6fce8fa86403604cad88",
+  "final_test_source_sha256": "691a0dacc7bb10cd187aad021dae2876686e05fd7c765366e0e641e9da2ea0e2",
+  "test_source_change_after_full_suites": "Only TestIndexCatalogAtVersionRevalidatesSameVersion fixture was changed to expire the entry explicitly; focused race ran 3 times on native and Linux. Full suite records remain unmodified.",
+  "binary_sha256": {
+    "graphdb-linux-amd64": "fddaf8811db307e7a9c3e9a7e1842ea0d5aa9b4818346527d995f4a31c248ca7",
+    "graphdb-linux-arm64": "0ba21757a083fc14b64d1abccb95ed76e2a78317815386372b2181335c68a4db",
+    "graphdb-darwin-arm64": "4285dc46c5aad5e23fd72164506e245b27f7df2f153eacca33e6abcbd1f04349"
+  },
+  "confirmed_fixes": [
+    {
+      "priority": "P1",
+      "issue": "Encoded route bypass of gateway reader authorization",
+      "validation": "17 real TLS cases PASS"
+    },
+    {
+      "priority": "P1",
+      "issue": "Non-UTC typed time content hash differs after Parquet persistence",
+      "validation": "Roundtrip, cold reopen and idempotency regressions PASS"
+    },
+    {
+      "priority": "P1",
+      "issue": "Post-write validation read failure deletes published tasks or advances Raft checkpoint",
+      "validation": "Old guard fails all four injected scenarios; new native/Linux focused race PASS"
+    }
+  ],
+  "checks": {
+    "native-unit-final": {
+      "result": "PASS",
+      "top_level_tests": {
+        "pass": 1338
+      },
+      "packages": {
+        "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "pass",
+        "github.com/SamuelSupe/graphdb/v2/docs": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/config": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/graph": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/ha": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/query": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/replication": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/sharding": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/storage": "pass",
+        "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "pass"
+      },
+      "failed_tests": [],
+      "detected_data_races": [],
+      "evidence": "final3/native-unit-final.jsonl"
+    },
+    "native-race-final": {
+      "result": "PASS",
+      "top_level_tests": {
+        "pass": 1338
+      },
+      "packages": {
+        "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "pass",
+        "github.com/SamuelSupe/graphdb/v2/docs": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/config": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/graph": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/ha": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/query": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/replication": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/sharding": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/storage": "pass",
+        "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "pass"
+      },
+      "failed_tests": [],
+      "detected_data_races": [],
+      "evidence": "final3/native-race-final.jsonl"
+    },
+    "linux-race-final": {
+      "result": "FAIL",
+      "top_level_tests": {
+        "pass": 1304,
+        "fail": 34
+      },
+      "packages": {
+        "github.com/SamuelSupe/graphdb/v2/cmd/graphdb": "pass",
+        "github.com/SamuelSupe/graphdb/v2/docs": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/backupstore": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/bootstrap": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/config": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/graph": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/ha": "fail",
+        "github.com/SamuelSupe/graphdb/v2/internal/httpapi": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/query": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/replication": "fail",
+        "github.com/SamuelSupe/graphdb/v2/internal/sharding": "pass",
+        "github.com/SamuelSupe/graphdb/v2/internal/storage": "fail",
+        "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/loadtest": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/soakreport": "pass",
+        "github.com/SamuelSupe/graphdb/v2/tools/soaktest": "pass"
+      },
+      "failed_tests": [
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAStreamingReplicationFailoverAndSnapshot",
+          "diagnostics": [
+            "cluster_test.go:608: POST /v1/commits on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAPreparedMaintenanceKeepsOtherTenantWritable",
+          "diagnostics": [
+            "cluster_test.go:370: maintenance did not complete with foreground progress: {ID:3db2fef704bdc2479df27cf6 TenantID:tenant-a Type:index_rebuild Status:queued Phase:queued ProgressCompleted:0 ProgressTotal:1 OwnerID:raft-test Params:map[] Checkpoint:map[] Result:map[] ResultKey: Error: StartedAt:2026-10-03 13:55:51.38411558 +0000 UTC UpdatedAt:2026-10-03 13:55:51.38411558 +0000 UTC FinishedAt:0001-01-01 00:00:00 +0000 UTC} writes=15 err=<nil>"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAMaintenanceWritePauseDrainsAcceptedWAL",
+          "diagnostics": [
+            "cluster_test.go:409: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHADiskPressureDoesNotBlockOtherTenantGC",
+          "diagnostics": [
+            "cluster_test.go:497: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAConcurrentPublicationBatch",
+          "diagnostics": [
+            "cluster_test.go:688: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAPendingQueueBudgetSurvivesFlushAndRestart",
+          "diagnostics": [
+            "cluster_test.go:849: POST /v1/tenants on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAWALAcceptanceUsesLeaderQueueBudget",
+          "diagnostics": [
+            "cluster_test.go:900: POST /v1/tenants on 1: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAWritesUseLeaderQuota",
+          "diagnostics": [
+            "cluster_test.go:932: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}",
+            "cluster_test.go:932: POST /v1/tenants on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAObjectBackupUsesLeaderRepository",
+          "diagnostics": [
+            "cluster_test.go:980: POST /v1/tenants on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAObjectRestoreResumesAfterLeaderLoss",
+          "diagnostics": [
+            "cluster_test.go:1107: POST /v1/tenants on 1: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAWALBackpressureLeavesClusterAvailable",
+          "diagnostics": [
+            "cluster_test.go:1193: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAMembershipReplacementAndTenantRestore",
+          "diagnostics": [
+            "cluster_test.go:1285: POST /v1/tenants on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHALargeRestoreResumesAfterLeaderLoss",
+          "diagnostics": [
+            "cluster_test.go:1536: node 0: map[allow_legacy_protocol:false application_bytes:0 application_commits:7 application_entries:7 application_lag:0 applied_index:9 build:{dev unknown unknown go1.26.7} cluster_id:test commit_index:9 draining:false election_timeout_seconds:3 leader_id:2 learners:[] node_id:1 pending_proposals:0 pending_reads:0 proposal_bytes:0 protocol_max:3 protocol_version:1 ready:false replicas:[{1 false 0 0 0 false false false 0 0 0} {2 false 0 0 0 false false false 41 41 0} {3 false 0 0 0 false false false 0 0 0}] snapshot_bytes:0 snapshot_format_max:2 snapshot_index:0 state:StateFollower stream_snapshots:false term:3 tick_seconds:0.1 voters:[1 2 3]]",
+            "cluster_test.go:1536: node 1: map[allow_legacy_protocol:false application_bytes:0 application_commits:8 application_entries:8 application_lag:2 applied_index:9 build:{dev unknown unknown go1.26.7} cluster_id:test commit_index:11 draining:false election_timeout_seconds:3 leader_id:2 learners:[] node_id:2 pending_proposals:0 pending_reads:1 proposal_bytes:0 protocol_max:3 protocol_version:1 ready:true replicas:[{1 true 11 12 0 true false false 0 0 0} {2 true 11 12 0 true false false 0 0 0} {3 true 0 11 11 false false true 23 23 0}] snapshot_bytes:0 snapshot_format_max:2 snapshot_index:0 state:StateLeader stream_snapshots:false term:3 tick_seconds:0.1 voters:[1 2 3]]",
+            "cluster_test.go:1536: node 2: map[allow_legacy_protocol:false application_bytes:0 application_commits:8 application_entries:8 application_lag:0 applied_index:9 build:{dev unknown unknown go1.26.7} cluster_id:test commit_index:9 draining:false election_timeout_seconds:3 leader_id:2 learners:[] node_id:3 pending_proposals:0 pending_reads:0 proposal_bytes:0 protocol_max:3 protocol_version:1 ready:false replicas:[{1 false 0 0 0 false false false 0 0 0} {2 false 0 0 0 false false false 18 18 0} {3 false 0 0 0 false false false 0 0 0}] snapshot_bytes:0 snapshot_format_max:2 snapshot_index:0 state:StateFollower stream_snapshots:false term:3 tick_seconds:0.1 voters:[1 2 3]]",
+            "cluster_test.go:1536: cluster did not elect a ready leader"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAReadinessDuringMaintenanceStillRequiresFreshReads",
+          "diagnostics": [
+            "cluster_test.go:1656: GET /v1/readiness on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"Raft node is not the leader\",\"leader_id\":0,\"message\":\"Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAAcceptedWALIsFencedByRestore",
+          "diagnostics": [
+            "cluster_test.go:1723: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAReferencedGraphFailureStopsReplicaUntilReplay",
+          "diagnostics": [
+            "cluster_test.go:1809: POST /v1/tenants on 1: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":2,\"message\":\"context deadline exceeded\",\"retryable\":true}",
+            "cluster_test.go:1809: POST /v1/tenants on 1: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}",
+            "cluster_test.go:1809: POST /v1/tenants on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAImportReadFailureStopsReplicaUntilReplay",
+          "diagnostics": [
+            "cluster_test.go:1914: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}",
+            "cluster_test.go:1914: POST /v1/tenants on 1: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}",
+            "cluster_test.go:1914: POST /v1/tenants on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}",
+            "cluster_test.go:1914: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHADelayedTaskAfterPurge",
+          "diagnostics": [
+            "cluster_test.go:2035: cluster did not elect a ready leader",
+            "cluster_test.go:2035: node 0: map[allow_legacy_protocol:false application_bytes:0 application_commits:3 application_entries:3 application_lag:0 applied_index:3 build:{dev unknown unknown go1.26.7} cluster_id:test commit_index:3 draining:false election_timeout_seconds:1 leader_id:0 learners:[] node_id:1 pending_proposals:0 pending_reads:0 proposal_bytes:0 protocol_max:3 protocol_version:1 ready:false replicas:[{1 false 0 0 0 false false false 0 0 0} {2 false 0 0 0 false false false 0 0 0} {3 false 0 0 0 false false false 0 0 0}] snapshot_bytes:0 snapshot_format_max:2 snapshot_index:0 state:StateFollower stream_snapshots:false term:5 tick_seconds:0.1 voters:[1 2 3]]",
+            "cluster_test.go:2035: node 1: map[allow_legacy_protocol:false application_bytes:0 application_commits:4 application_entries:4 application_lag:1 applied_index:4 build:{dev unknown unknown go1.26.7} cluster_id:test commit_index:5 draining:false election_timeout_seconds:1 leader_id:0 learners:[] node_id:2 pending_proposals:0 pending_reads:0 proposal_bytes:0 protocol_max:3 protocol_version:1 ready:false replicas:[{1 false 0 0 0 false false false 0 0 0} {2 false 0 0 0 false false false 0 0 0} {3 false 0 0 0 false false false 0 0 0}] snapshot_bytes:0 snapshot_format_max:2 snapshot_index:0 state:StateFollower stream_snapshots:false term:5 tick_seconds:0.1 voters:[1 2 3]]",
+            "cluster_test.go:2035: node 2: map[allow_legacy_protocol:false application_bytes:0 application_commits:5 application_entries:5 application_lag:0 applied_index:5 build:{dev unknown unknown go1.26.7} cluster_id:test commit_index:5 draining:false election_timeout_seconds:1 leader_id:0 learners:[] node_id:3 pending_proposals:0 pending_reads:0 proposal_bytes:0 protocol_max:3 protocol_version:1 ready:false replicas:[{1 false 0 0 0 false false false 0 0 0} {2 false 0 0 0 false false false 0 0 0} {3 false 0 0 0 false false false 0 0 0}] snapshot_bytes:326 snapshot_format_max:2 snapshot_index:5 state:StateFollower stream_snapshots:false term:5 tick_seconds:0.1 voters:[1 2 3]]",
+            "cluster_test.go:2035: cluster did not elect a ready leader"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHARejectsDataWithoutRaftHistory",
+          "diagnostics": [
+            "cluster_test.go:2102: POST /v1/tenants on 1: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHARejectsChangedDataPrefixOnRestart",
+          "diagnostics": [
+            "cluster_test.go:2142: POST /v1/commits on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHASnapshotBudgetKeepsReadsAvailable",
+          "diagnostics": [
+            "cluster_test.go:2192: POST /v1/tenants on 2: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHALongReadAllowsPublicationAndCancellation",
+          "diagnostics": [
+            "cluster_test.go:2218: POST /v1/tenants on 2: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":3,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHASlowFollowerKeepsApplicationMemoryBounded",
+          "diagnostics": [
+            "cluster_test.go:2286: POST /v1/tenants on 2: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHARollingDrainPreservesReadWriteService",
+          "diagnostics": [
+            "rolling_test.go:17: POST /v1/tenants on 0: status 503, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHADrainWaitsForCommittedProposal",
+          "diagnostics": [
+            "rolling_test.go:99: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHADrainRequiresFreshReplicationOnRemainingVoters",
+          "diagnostics": [
+            "rolling_test.go:133: POST /v1/tenants on 0: status 504, expected 200: {\"code\":\"raft_unavailable\",\"error\":\"context deadline exceeded\",\"leader_id\":1,\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAShardPersistedChunkFailureStopsReplicaUntilReplay",
+          "diagnostics": [
+            "sharding_test.go:71: proposal outcome is unknown after submission: Raft node is not the leader",
+            "sharding_test.go:136: node 0 did not catch up to 10: map[allow_legacy_protocol:false application_bytes:604 application_commits:0 application_entries:0 application_lag:3 applied_index:7 build:{dev unknown unknown go1.26.7} cluster_id:b commit_index:10 draining:false election_timeout_seconds:1 leader_id:3 learners:[] node_id:1 pending_proposals:0 pending_reads:0 proposal_bytes:0 protocol_max:3 protocol_version:1 ready:false replicas:[{1 false 0 0 0 false false false 0 0 0} {2 false 0 0 0 false false false 0 0 0} {3 false 0 0 0 false false false 0 0 0}] snapshot_bytes:326 snapshot_format_max:2 snapshot_index:5 state:StateFollower stream_snapshots:false term:3 tick_seconds:0.1 voters:[1 2 3]]"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAShardRejectsInvalidGraphTransferWithoutStoppingReplicas",
+          "diagnostics": [
+            "sharding_test.go:209: reserve stopped shard application: proposal outcome is unknown after submission: Raft node is not the leader"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAShardDelayedFlushAfterRetirement",
+          "diagnostics": [
+            "sharding_test.go:358: POST /v1/tenants: 503: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+          "test": "TestHAShardExpansionMigrationAndCancellation",
+          "diagnostics": [
+            "sharding_test.go:542: POST /v1/ingest/batches: 503, want 202: {\"code\":\"shard_unavailable\",\"error\":\"context deadline exceeded\",\"message\":\"context deadline exceeded\",\"retryable\":true}"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/replication",
+          "test": "TestMembershipRejectsStaleChanges",
+          "diagnostics": [
+            "membership_test.go:242: membership {\"id\":4,\"action\":\"promote\"}: 503: Raft node is not the leader",
+            "membership_test.go:330: membership {\"id\":4,\"action\":\"promote\"}: 503: Raft node is not the leader",
+            "membership_test.go:303: proposal after rejected membership: \"\", proposal outcome is unknown after submission: Raft node is not the leader",
+            "membership_test.go:190: membership {\"id\":5,\"url\":\"http://127.0.0.1:1\",\"action\":\"add_learner\"}: 503: Raft node is not the leader"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+          "test": "TestLocalPublishedRestoreRetryPreservesLaterCommit",
+          "diagnostics": [
+            "file_restore_test.go:245: task never became terminal",
+            "file_restore_test.go:245: task never became terminal"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+          "test": "TestLocalRestoreRetainsEntityIndexLayout",
+          "diagnostics": [
+            "file_restore_test.go:395: task never became terminal"
+          ]
+        },
+        {
+          "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+          "test": "TestIndexCatalogAtVersionRevalidatesSameVersion",
+          "diagnostics": [
+            "index_catalog_cache_revalidation_test.go:86: catalog reads = 3, want one initial and one refresh"
+          ]
+        }
+      ],
+      "detected_data_races": [],
+      "evidence": "final3/linux-race-final.jsonl"
+    },
+    "linux-fence-race": {
+      "result": "PASS",
+      "top_level_tests": {
+        "pass": 10
+      },
+      "packages": {
+        "github.com/SamuelSupe/graphdb/v2/internal/storage": "pass"
+      },
+      "failed_tests": [],
+      "detected_data_races": [],
+      "evidence": "final3/linux-fence-race.jsonl"
+    },
+    "cache-expiry-native-race": {
+      "result": "PASS",
+      "top_level_tests": {
+        "pass": 3
+      },
+      "packages": {
+        "github.com/SamuelSupe/graphdb/v2/internal/storage": "pass"
+      },
+      "failed_tests": [],
+      "detected_data_races": [],
+      "evidence": "final3/cache-expiry-native-race.jsonl"
+    },
+    "cache-expiry-linux-race": {
+      "result": "PASS",
+      "top_level_tests": {
+        "pass": 3
+      },
+      "packages": {
+        "github.com/SamuelSupe/graphdb/v2/internal/storage": "pass"
+      },
+      "failed_tests": [],
+      "detected_data_races": [],
+      "evidence": "final3/cache-expiry-linux-race.jsonl"
+    },
+    "gateway": {
+      "result": "PASS",
+      "image": "graphdb:complete-test3-runtime-20261003",
+      "image_id": "sha256:387e6b86e981bfb42beb2141b3b7ac99c873fc33fa7fc73bb188cdf7fc90f561",
+      "binary_sha256": "0ba21757a083fc14b64d1abccb95ed76e2a78317815386372b2181335c68a4db",
+      "gateway_config_sha256": "e5fb9a95b916c2183f5aa6ba85a40f8e82d2caab955245ad463a10015015f31b",
+      "identity_fixture_sha256": "7171bb74630d3f760a2a3750f8c1e93b220560934d05b8efa0aa621ff769f684",
+      "gate_client_sha256": "14782385ec57cdf6da04399b68ebc2ef9af89f2e696a7bf3cdf74813e3e39276",
+      "identity_provider": "disposable role fixture; no external identity integration qualified"
+    },
+    "raft-soak": {
+      "result": "FAIL",
+      "started_at": "2026-10-03T13:59:09.468223+00:00",
+      "image": "graphdb:complete-test3-runtime-20261003",
+      "binary_sha256": "0ba21757a083fc14b64d1abccb95ed76e2a78317815386372b2181335c68a4db",
+      "scope": "original 30-minute three-replica WAL soak workload, independently executed; combined fault gate remains FAIL",
+      "exit_code": 1,
+      "finished_at": "2026-10-03T14:31:27.072404+00:00"
+    },
+    "sharded": {
+      "result": "FAIL",
+      "started_at": "2026-10-03T13:58:33.726305+00:00",
+      "image": "graphdb:complete-test3-runtime-20261003",
+      "binary_sha256": "0ba21757a083fc14b64d1abccb95ed76e2a78317815386372b2181335c68a4db",
+      "scope": "existing sharded gate, run independently after dual gate failures; no claim that the combined release gate passed",
+      "exit_code": 1,
+      "finished_at": "2026-10-03T14:03:30.584641+00:00"
+    },
+    "rolling-review8-final": {
+      "started_at": "2026-10-03T13:53:43.543415+00:00",
+      "result": "FAIL",
+      "base": {
+        "image": "graphdb:complete-test2-review8-base-20261003",
+        "image_id": "sha256:130e58924a3251a3e366ffb5db6f15d7451f42f5203a921eda2189330db02e10",
+        "binary_sha256": "4b004d1c01357c5935f6eb6475013e61ca5797781ef89a2e5deed427c921aaf1",
+        "version_output": "GGraphDB 2.2.2-review8 commit=926cac73-review8 built=2026-10-03T08:06:46Z go=go1.26.7"
+      },
+      "target": {
+        "image": "graphdb:complete-test3-runtime-20261003",
+        "image_id": "sha256:387e6b86e981bfb42beb2141b3b7ac99c873fc33fa7fc73bb188cdf7fc90f561",
+        "binary_sha256": "0ba21757a083fc14b64d1abccb95ed76e2a78317815386372b2181335c68a4db",
+        "version_output": "GGraphDB 2.2.2-fulltest3 commit=5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a built=2026-10-03T13:47:15.640101+00:00 go=go1.26.7"
+      },
+      "cross_host_qualification": "NOT RUN",
+      "error": "('timed out', False)",
+      "finished_at": "2026-10-03T14:03:24.114388+00:00"
+    },
+    "rolling-diagnostics-final": {
+      "started_at": "2026-10-03T14:03:24.656764+00:00",
+      "result": "FAIL",
+      "base": {
+        "image": "graphdb:complete-test3-diagnostics-base-20261003",
+        "image_id": "sha256:fae98bdc075617c1301589fc58ea06dc195d34e28fc794f5a898684ad4f2fc14",
+        "binary_sha256": "020554227daf2738c56823cec9116f7e3b989c6763205e355f61de88369f42da",
+        "version_output": "GGraphDB 2.1.2-raft-diagnostics1 commit=b22cac8b046a695f14e7d02909d6570f546e989a built=2026-10-02T12:29:47+08:00 go=go1.26.7"
+      },
+      "target": {
+        "image": "graphdb:complete-test3-runtime-20261003",
+        "image_id": "sha256:387e6b86e981bfb42beb2141b3b7ac99c873fc33fa7fc73bb188cdf7fc90f561",
+        "binary_sha256": "0ba21757a083fc14b64d1abccb95ed76e2a78317815386372b2181335c68a4db",
+        "version_output": "GGraphDB 2.2.2-fulltest3 commit=5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a built=2026-10-03T13:47:15.640101+00:00 go=go1.26.7"
+      },
+      "cross_host_qualification": "NOT RUN",
+      "error": "('http://127.0.0.1:61480', 'POST', '/v1/cluster/shards', 503, {'code': 'raft_unavailable', 'error': 'proposal outcome is unknown after submission: Raft node is not the leader', 'leader_id': 0, 'message': 'proposal outcome is unknown after submission: Raft node is not the leader', 'retryable': True})",
+      "finished_at": "2026-10-03T14:21:50.054624+00:00"
+    },
+    "standalone-soak": {
+      "result": "FAIL",
+      "duration": "30m",
+      "error_events": {
+        "write_error": 13
+      },
+      "first_error_at": "2026-10-03T13:57:09.258465691Z",
+      "last_error_at": "2026-10-03T14:20:17.49881736Z",
+      "evidence": "final3/standalone/soak.ndjson"
+    },
+    "raft-soak-errors": {
+      "result": "FAIL",
+      "duration": "30m",
+      "error_events": {
+        "query_error": 448,
+        "write_error": 15,
+        "index_catalog_sample_error": 3,
+        "gc_error": 2,
+        "index_rebuild_error": 2,
+        "index_health_sample_error": 3,
+        "reader_freshness_error": 3,
+        "reader_fleet_error": 3,
+        "compact_error": 2,
+        "usage_sample_error": 2
+      },
+      "first_error_at": "2026-10-03T14:16:58.614831702Z",
+      "last_error_at": "2026-10-03T14:26:03.133515474Z",
+      "evidence": "final3/raft-soak/soak.ndjson"
+    },
+    "linux-vet": {
+      "result": "PASS",
+      "evidence": "final3/linux-driver.log",
+      "note": "exit code 0 after failed whole race"
+    },
+    "native-vet": {
+      "result": "PASS",
+      "evidence": "final3/native-vet.log"
+    },
+    "native-http": {
+      "result": "PASS",
+      "evidence": "final3/native/results.json",
+      "details": [
+        {
+          "case": "direct live HTTP commit/read/export and exclusive data lock",
+          "result": "PASS"
+        },
+        {
+          "case": "direct cold restart preserves published snapshot",
+          "result": "PASS"
+        },
+        {
+          "case": "wal live HTTP commit/read/export and exclusive data lock",
+          "result": "PASS"
+        },
+        {
+          "case": "wal cold restart preserves published snapshot",
+          "result": "PASS"
+        }
+      ]
+    },
+    "offset-time-http": {
+      "result": "PASS",
+      "evidence": "final3/offset-native2/results.json",
+      "details": [
+        {
+          "case": "direct non-UTC source cold restart and opaque field",
+          "result": "PASS",
+          "direct_idempotent_replay": true
+        },
+        {
+          "case": "wal non-UTC source cold restart and opaque field",
+          "result": "PASS",
+          "direct_idempotent_replay": false
+        }
+      ]
+    },
+    "linux-amd64-http": {
+      "result": "PASS",
+      "evidence": "final3/linux-amd64-http.json",
+      "details": {
+        "result": "PASS",
+        "execution": "linux/amd64 emulation on OrbStack Ubuntu",
+        "checks": [
+          "unprivileged readiness",
+          "commit and strong read",
+          "restart preserves snapshot"
+        ]
+      }
+    },
+    "cli": {
+      "result": "PASS",
+      "evidence": "final3/cli/results.json",
+      "details": [
+        {
+          "case": "missing published commit rejects overwrite and preserves cold target",
+          "result": "PASS"
+        },
+        {
+          "case": "SIGKILL during copy staging preserves cold target and cleans abandoned stage",
+          "result": "PASS"
+        },
+        {
+          "case": "validated overwrite publishes source snapshot and supports subsequent write/restart",
+          "result": "PASS"
+        }
+      ]
+    },
+    "object-backup-native": {
+      "result": "PASS",
+      "evidence": "final3/object-backup-native/results.json",
+      "details": [
+        {
+          "phase": "capture",
+          "result": "PASS",
+          "exit_code": 0
+        },
+        {
+          "phase": "automation-restart",
+          "result": "PASS",
+          "exit_code": 0
+        },
+        {
+          "phase": "restore",
+          "result": "PASS",
+          "exit_code": 0
+        },
+        {
+          "phase": "verify",
+          "result": "PASS",
+          "exit_code": 0
+        }
+      ]
+    },
+    "object-backup-linux-fresh": {
+      "result": "PASS",
+      "evidence": "final3/object-backup-linux-fresh/http-evidence.json",
+      "details": {
+        "automatic_key": "s3://graphdb-fulltest/http-gate-1791035865-1/backup-automated/scheduled-3494b2274d5e732136f6b6a1/manifest.json",
+        "snapshot": {
+          "snapshot": {
+            "version": 1,
+            "entities": [
+              {
+                "id": "host:a",
+                "kind": "host",
+                "fields": {
+                  "name": "snapshot"
+                },
+                "field_sources": {
+                  "name": {
+                    "source": "backup-gate",
+                    "priority": 0,
+                    "version": 1,
+                    "updated_at": "2026-10-03T13:57:56.932729517Z"
+                  }
+                },
+                "existence_source": {
+                  "source": "backup-gate",
+                  "priority": 0,
+                  "version": 1,
+                  "updated_at": "2026-10-03T13:57:56.932729517Z"
+                },
+                "source": "backup-gate",
+                "external_id": "host-a",
+                "identity_keys": {
+                  "source:backup-gate": "host-a"
+                },
+                "sources": [
+                  {
+                    "source": "backup-gate",
+                    "external_id": "host-a",
+                    "observed_at": "0001-01-01T00:00:00Z",
+                    "stale_at": "0001-01-01T00:00:00Z"
+                  }
+                ],
+                "version": 1,
+                "created_at": "2026-10-03T13:57:56.932729517Z",
+                "updated_at": "2026-10-03T13:57:56.932729517Z"
+              }
+            ],
+            "relation_types": [
+              {
+                "name": "connects_to",
+                "display_name": "connects to",
+                "reverse_name": "connected_from",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "both",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "contains",
+                "display_name": "contains",
+                "reverse_name": "contained_by",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "reverse",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "depends_on",
+                "display_name": "depends on",
+                "reverse_name": "dependency_of",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "forward",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "owned_by",
+                "display_name": "owned by",
+                "reverse_name": "owns",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "none",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "runs_on",
+                "display_name": "runs on",
+                "reverse_name": "runs",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "forward",
+                "allow_cross_kind": true,
+                "standard": true
+              }
+            ],
+            "edges": []
+          },
+          "tenant_id": "backup-source",
+          "version": 1
+        },
+        "backup_key": "s3://graphdb-fulltest/http-gate-1791035865-1/backup-source/015b72b549ff00bfcb516664/manifest.json",
+        "second_key": "s3://graphdb-fulltest/http-gate-1791035865-1/backup-source/7dd21ac0e24266e6756551f7/manifest.json"
+      }
+    },
+    "object-backup-mac-bind": {
+      "result": "PASS",
+      "evidence": "final3/object-backup-mac-bind/http-evidence.json",
+      "details": {
+        "automatic_key": "s3://graphdb-fulltest/http-gate-1791036168-1/backup-automated/scheduled-3de4751b1d46c2938e82b2fa/manifest.json",
+        "snapshot": {
+          "snapshot": {
+            "version": 1,
+            "entities": [
+              {
+                "id": "host:a",
+                "kind": "host",
+                "fields": {
+                  "name": "snapshot"
+                },
+                "field_sources": {
+                  "name": {
+                    "source": "backup-gate",
+                    "priority": 0,
+                    "version": 1,
+                    "updated_at": "2026-10-03T14:02:49.409913374Z"
+                  }
+                },
+                "existence_source": {
+                  "source": "backup-gate",
+                  "priority": 0,
+                  "version": 1,
+                  "updated_at": "2026-10-03T14:02:49.409913374Z"
+                },
+                "source": "backup-gate",
+                "external_id": "host-a",
+                "identity_keys": {
+                  "source:backup-gate": "host-a"
+                },
+                "sources": [
+                  {
+                    "source": "backup-gate",
+                    "external_id": "host-a",
+                    "observed_at": "0001-01-01T00:00:00Z",
+                    "stale_at": "0001-01-01T00:00:00Z"
+                  }
+                ],
+                "version": 1,
+                "created_at": "2026-10-03T14:02:49.409913374Z",
+                "updated_at": "2026-10-03T14:02:49.409913374Z"
+              }
+            ],
+            "relation_types": [
+              {
+                "name": "connects_to",
+                "display_name": "connects to",
+                "reverse_name": "connected_from",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "both",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "contains",
+                "display_name": "contains",
+                "reverse_name": "contained_by",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "reverse",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "depends_on",
+                "display_name": "depends on",
+                "reverse_name": "dependency_of",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "forward",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "owned_by",
+                "display_name": "owned by",
+                "reverse_name": "owns",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "none",
+                "allow_cross_kind": true,
+                "standard": true
+              },
+              {
+                "name": "runs_on",
+                "display_name": "runs on",
+                "reverse_name": "runs",
+                "directed": true,
+                "cardinality": "many_to_many",
+                "impact_direction": "forward",
+                "allow_cross_kind": true,
+                "standard": true
+              }
+            ],
+            "edges": []
+          },
+          "tenant_id": "backup-source",
+          "version": 1
+        },
+        "backup_key": "s3://graphdb-fulltest/http-gate-1791036168-1/backup-source/480114ca4202e9f521dbba3f/manifest.json",
+        "second_key": "s3://graphdb-fulltest/http-gate-1791036168-1/backup-source/ad695e8dcfd569762fe213b0/manifest.json"
+      }
+    },
+    "nonroot-readiness": {
+      "result": "PASS",
+      "evidence": "final3/readiness-unprivileged.log",
+      "test": "TestHTTPReadinessRequiresWritableLocalDirectory",
+      "uid": 65532
+    },
+    "chrome": {
+      "result": "PASS",
+      "evidence": "website-qa.json",
+      "details": {
+        "url": "http://127.0.0.1:47831/graphdb/",
+        "build": "PASS",
+        "chrome_interactions": "PASS",
+        "browser_plugin": "ABSENT",
+        "driver": "cua_repl native Google Chrome app accessibility",
+        "blocker": null,
+        "playwright_installed": false,
+        "planned_interactions": [
+          "theme toggle and persistence",
+          "query tabs",
+          "copy query",
+          "copy command",
+          "mobile menu"
+        ],
+        "setup_correction": "Vite base is /graphdb/; preview server now exposes this prefix",
+        "finished_at": "2026-10-03T11:04:21.670575+00:00",
+        "viewports": [
+          "native desktop window",
+          "Chrome device emulation 390x789"
+        ],
+        "checks": {
+          "page_identity": "PASS",
+          "meaningful_content": "PASS",
+          "framework_overlay_absent": "PASS",
+          "console_errors": 0,
+          "console_warnings": 0,
+          "rendered_screenshots": "PASS; emitted in cua_repl tool results",
+          "theme_toggle": "PASS",
+          "theme_persists_after_reload": "PASS",
+          "query_tabs": "PASS",
+          "query_copy_feedback": "PASS",
+          "command_copy_keyboard_feedback": "PASS",
+          "mobile_menu_open": "PASS",
+          "mobile_navigation_closes_menu": "PASS",
+          "mobile_escape_closes_menu": "PASS"
+        },
+        "source_changes": false,
+        "not_run": [
+          "other browsers",
+          "physical mobile device",
+          "remote published site",
+          "external GitHub navigation"
+        ],
+        "initial_browser_tab_driver_failure": "request-header policy could not be loaded; native app accessibility control used"
+      }
+    },
+    "alert-rules": {
+      "result": "PASS",
+      "evidence": "alerts.log",
+      "rules": 20,
+      "kind": "promtool rule validation"
+    },
+    "runtime-metrics": {
+      "result": "PASS",
+      "samples": 20,
+      "evidence": "final3/runtime-metrics-check-final.log",
+      "exit_code": 0
+    },
+    "deployment-protocols": {
+      "result": "FAIL",
+      "details": [
+        {
+          "stage": "raft-protocol3",
+          "result": "FAIL",
+          "started_at": "2026-10-03T13:50:37.523717+00:00",
+          "exit_code": 1,
+          "finished_at": "2026-10-03T13:53:34.145679+00:00"
+        },
+        {
+          "stage": "raft-protocol2",
+          "result": "FAIL",
+          "started_at": "2026-10-03T13:53:34.149628+00:00",
+          "exit_code": 1,
+          "finished_at": "2026-10-03T13:55:04.817343+00:00"
+        },
+        {
+          "stage": "raft-protocol1",
+          "result": "FAIL",
+          "started_at": "2026-10-03T13:55:04.821262+00:00",
+          "exit_code": 1,
+          "finished_at": "2026-10-03T13:56:45.205167+00:00"
+        }
+      ]
+    },
+    "diagnostics-rolling-single-group": {
+      "result": "PASS",
+      "details": {
+        "check": "rolling bridge and strict controller preserve direct/WAL writes and strong reads",
+        "result": "PASS",
+        "deployment": "graphdb-ubuntu-fulltest3-diagnostics-20261003-single",
+        "traffic": [
+          {
+            "tenant": "rolling",
+            "writes": 281,
+            "reads": 281,
+            "wal": 35,
+            "attempts": 1150,
+            "retries": 496,
+            "failures": []
+          }
+        ]
+      },
+      "scope": "single group only; full sharded rolling matrix FAIL"
+    },
+    "static": {
+      "result": "PASS",
+      "scope": [
+        "Python AST and Shell syntax",
+        "workflow YAML",
+        "Compose config (6)",
+        "gofmt",
+        "workspace hygiene",
+        "release freeze",
+        "site build"
+      ],
+      "note": "Static checks do not qualify runtime or GitHub CI"
+    },
+    "workspace-preservation": {
+      "result": "PASS",
+      "evidence": "final3/preserved-main-files-final.json",
+      "files": 4
+    },
+    "doc-links": {
+      "result": "PASS",
+      "relative_links": 511,
+      "evidence": "final3/docs-links-final.json"
+    }
+  },
+  "unresolved": [
+    "Linux whole race originally failed 34 top-level cases. One deterministic cache-expiry fixture repaired and separately rechecked; other timing, leader and restore completion failures remain unqualified.",
+    "Standalone mixed load has 13 write timeouts; Raft mixed load has 15 write and 448 query errors plus maintenance/sample failures.",
+    "Raft protocol 1/2/3, independent sharded and both full rolling matrices FAIL.",
+    "Earlier candidate macOS bind-mount task query transient 404 was not conclusively attributed; all final candidate native/Linux ext4/macOS bind S3 HTTP flows PASS."
+  ],
+  "environment": {
+    "backend": "OrbStack Ubuntu Linux/ext4 and Docker; independent MinIO",
+    "native": "macOS native Go/Chrome",
+    "pressure": "Shared VM observed load average above 900 and about 10 GiB swap. Environment pressure is evidence, not proof that all failures are environmental.",
+    "interference": "Other tasks were not stopped, restarted, reniced or pruned."
+  },
+  "not_run": [
+    "Three independent host fault domains (user deferred)",
+    "Long cycle and production capacity acceptance",
+    "Bad-media failure",
+    "External IdP integration and certificate rotation",
+    "Final candidate standard Dockerfile cold source build",
+    "GitHub CI and release publication"
+  ],
+  "raw_evidence_root": "/private/tmp/graphdb-complete-test-20261003",
+  "safe_evidence_sha256": {
+    "final3/native-unit-final.jsonl": "598d671e898a5ab742dda2b70cc9fee6e8c0e7b341d070a60d8159c8ed456195",
+    "final3/native-race-final.jsonl": "471e4c2cd9b688a6de81b3e22f17f2fef00249f80fea7ae43d1dee8ae0ee6070",
+    "final3/linux-race-final.jsonl": "f55bb1b194097473a3c350d8a20f3120b777b3229df3ad0e99dfba1c8b8cb7fd",
+    "final3/linux-fence-race.jsonl": "13a36aff919e71f51360761d7c62a28b9ff32944516f7035d9f61f61bc51d02f",
+    "final3/task-validation-both-before.jsonl": "90b3fcfcd37b9541fe96a7fefb48823c52b0f9d503bb130b25711c8f0fa21dbc",
+    "final3/cache-expiry-native-race.jsonl": "c377e437dde111fb61968083c50d70986891e39f7205f281985798739af6ea2b",
+    "final3/cache-expiry-linux-race.jsonl": "ac6f4e391ca293121623ec7cc4636d5e8185263e807fe6c4d23d21974ad8d48a",
+    "final3/standalone/soak.ndjson": "7a5751433b6092e71aca4e3c1a22d33074e5771394ec993683a8726010044f09",
+    "final3/raft-soak/soak.ndjson": "f53b391d8d8ae7c950dd43c53c9ac2ad697004473dec705d69cbf376a80e3467",
+    "final3/gateway/results.json": "375b7018a4f52b0a8608c280f3e79bb687a04f83a3039b889f8942019648a77a"
+  }
+}

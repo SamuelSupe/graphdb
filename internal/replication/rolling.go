@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -138,7 +139,19 @@ func (n *Node) UpgradeStatus(ctx context.Context) UpgradeStatus {
 	for id := range ids {
 		ordered = append(ordered, id)
 	}
-	slices.Sort(ordered)
+	// Pin the leader's commit before sampling followers. Sampling the leader
+	// last makes continuing writes move the catch-up target past earlier reads.
+	slices.SortFunc(ordered, func(a, b uint64) int {
+		if a != b {
+			if a == report.LeaderID {
+				return -1
+			}
+			if b == report.LeaderID {
+				return 1
+			}
+		}
+		return cmp.Compare(a, b)
+	})
 	for _, id := range ordered {
 		var peer PeerStatus
 		var err error
@@ -160,6 +173,7 @@ func (n *Node) UpgradeStatus(ctx context.Context) UpgradeStatus {
 		}
 		report.Members = append(report.Members, peer)
 	}
+	slices.SortFunc(report.Members, func(a, b PeerStatus) int { return cmp.Compare(a.ID, b.ID) })
 	var commit uint64
 	for _, peer := range report.Members {
 		if peer.ID == report.LeaderID && peer.Ready {

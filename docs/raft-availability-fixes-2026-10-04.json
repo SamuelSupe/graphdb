@@ -1,0 +1,2503 @@
+{
+  "recorded_at": "2026-10-04T05:57:38.026354+00:00",
+  "scope": "Availability defects in unpublished candidate; OrbStack Ubuntu Linux arm64; shared host",
+  "fixes": [
+    "nonfatal background snapshot cleanup with protected restore files and inode-bound startup retry",
+    "cached periodic diagnostic status with sample freshness; live health and control unchanged",
+    "deadline-aware request admission using durable commit position and clamped application lag"
+  ],
+  "build": {
+    "version": "2.2.2-availability3",
+    "build_commit": "5fd0c970-availability3-dirty",
+    "base_commit": "5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a",
+    "production_go_sha256": "a88917f9dc35953d43278f4d9c83f76674dc047339f7d975a2f4a99454a58dde",
+    "built_at": "2026-10-04T05:04:57Z",
+    "binaries": {
+      "graphdb": "92c4b30641a347db53ef1816a96b4627d5a8f0768d5303f7b083f63cfcaa573b"
+    },
+    "image": "graphdb:availability3-20261004",
+    "image_id": "sha256:f18f7069a9358633f616ab5ac08ca78a4c7ad0f8e9721228bbb040d9162fd022",
+    "go.mod_sha256": "bbc193c872a0f9fe04ad610bc60c5311c850bd9f09de0a743262e4f38e787823",
+    "go.sum_sha256": "969ff20ab462e4645716f58701e4e5574b5e674070a60ad507ba45e2020acf62",
+    "docs_openapi.yaml_sha256": "3c9332202f6883089569da6dabf88062a6fcd2ff8e255291cf86613e2e03182d",
+    "test_tool_binaries": {
+      "soaktest": "cab45f0ba813de5c6048da515d35abf38da76e799a050e96a64e18de0f922278",
+      "soakreport": "fd724bc2b33f9d53c1ef78b0ab5a2215acbc8aaeb05a09c1e1b24ed5482b615f",
+      "e2echeck": "067b16c5c5f596a253a477a3693288ca4e98e28e6acbb1eb5bb88e7228d2fc48",
+      "loadtest": "28bbc3a08503034390ca12e333fb55edf9efb64a12a7680c8395c9da76e0efbe"
+    }
+  },
+  "ha_race": {
+    "result": "PASS",
+    "elapsed_seconds": 600.129,
+    "test_entries": {
+      "pass": 69,
+      "skip": 1
+    },
+    "skipped": [
+      "TestHAObjectRestoreResumesAfterLeaderLoss"
+    ]
+  },
+  "replication_http_race": {
+    "result": "PASS",
+    "replication_seconds": 13.917,
+    "httpapi_seconds": 17.966,
+    "log": "final3-race.log",
+    "final_backlog_regression_seconds": 1.016,
+    "final_backlog_log": "backlog-v3-race.log"
+  },
+  "static_checks": {
+    "go_vet": "PASS",
+    "git_diff_check": "PASS",
+    "promtool_rules": 22
+  },
+  "runtime_stages": [
+    {
+      "stage": "fault-rolling3",
+      "result": "PASS",
+      "started_at": "2026-10-04T05:15:03.356877+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-10-04T05:16:00.934451+00:00"
+    },
+    {
+      "stage": "deployment-gate3",
+      "result": "PASS",
+      "started_at": "2026-10-04T05:16:00.940563+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-10-04T05:18:24.293836+00:00"
+    },
+    {
+      "stage": "mixed-rolling3",
+      "result": "PASS",
+      "started_at": "2026-10-04T05:18:24.295597+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-10-04T05:24:23.083650+00:00"
+    },
+    {
+      "stage": "candidate-soak3",
+      "result": "FAIL",
+      "started_at": "2026-10-04T05:24:23.086614+00:00",
+      "exit_code": 1,
+      "finished_at": "2026-10-04T05:24:27.255435+00:00"
+    },
+    {
+      "stage": "candidate-soak4",
+      "result": "PASS",
+      "started_at": "2026-10-04T05:25:57.045244+00:00",
+      "exit_code": 0,
+      "finished_at": "2026-10-04T05:56:17.874943+00:00"
+    }
+  ],
+  "cleanup_fault_rolling": {
+    "result": "PASS",
+    "started_at": "2026-10-04T05:15:03.399570+00:00",
+    "protocol": 3,
+    "stream_snapshots": true,
+    "image": "graphdb:availability3-20261004",
+    "binary_sha256": "92c4b30641a347db53ef1816a96b4627d5a8f0768d5303f7b083f63cfcaa573b",
+    "three_replica_fault_diagnostics": "PASS",
+    "rolling_cleanup_fault": "PASS",
+    "cold_reopen_snapshot_equality": "PASS",
+    "cleanup_retry_recovery": "PASS",
+    "traffic": {
+      "writes": 264,
+      "reads": 264,
+      "wal": 33,
+      "attempts": 821,
+      "retries": 95,
+      "failures": []
+    },
+    "finished_at": "2026-10-04T05:15:58.738177+00:00"
+  },
+  "deployment_gate": {
+    "dual": [
+      {
+        "check": "same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent",
+        "result": "PASS"
+      },
+      {
+        "check": "local standalone/WAL and every Raft replica expose finite diagnostic samples",
+        "result": "PASS",
+        "observations": [
+          {
+            "name": "metrics-direct",
+            "samples": 312,
+            "deployment": "standalone"
+          },
+          {
+            "name": "metrics-wal",
+            "samples": 333,
+            "deployment": "standalone"
+          },
+          {
+            "name": "metrics-node1",
+            "samples": 774,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-node2",
+            "samples": 562,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-node3",
+            "samples": 607,
+            "deployment": "raft"
+          }
+        ]
+      },
+      {
+        "check": "standalone direct commits and ingest survive SIGKILL; compact and GC remain available",
+        "result": "PASS"
+      },
+      {
+        "check": "standalone WAL accepted response is durable; SIGKILL recovery publishes once and idempotent retry preserves identity",
+        "result": "PASS"
+      },
+      {
+        "check": "isolated replica diagnostics remain locally readable without quorum",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-isolated-node",
+          "samples": 885,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "live isolated leader rejects strong reads and writes; majority serves and confirmed write survives reconnection",
+        "result": "PASS",
+        "old": 1,
+        "new": 2
+      },
+      {
+        "check": "Raft majority WAL and leader takeover remain available alongside standalone services",
+        "result": "PASS",
+        "old": 2,
+        "new": 3,
+        "seconds": 6.218
+      },
+      {
+        "check": "standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access",
+        "result": "PASS"
+      },
+      {
+        "check": "Raft replica refuses standalone service and offline writes when Raft settings are omitted; configured restart works",
+        "result": "PASS"
+      },
+      {
+        "check": "maintenance diagnostic counters reflect completed real work",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-maintenance",
+          "samples": 1088,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "36 MiB backup restore resumes after leader SIGKILL and invalidates old read generation",
+        "result": "PASS",
+        "old": 3,
+        "new": 1,
+        "payload_bytes": 37748736
+      },
+      {
+        "check": "snapshot diagnostic counters reflect completed real work",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-snapshot",
+          "samples": 940,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "cold full three-replica runtime backup/restore preserves graph, templates, accepted identities and streaming snapshots; writes resume",
+        "result": "PASS"
+      },
+      {
+        "check": "protocol 3 serial drain/restart/rejoin preserves data with the same qualified binary",
+        "result": "PASS"
+      }
+    ],
+    "sharded": [
+      {
+        "check": "standalone direct/WAL coexist with sharded Raft",
+        "result": "PASS",
+        "processes_before_expansion": 11
+      },
+      {
+        "check": "catalog, shard replicas and authenticated router expose local diagnostics",
+        "result": "PASS",
+        "observations": [
+          {
+            "name": "metrics-catalog1",
+            "samples": 385,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-catalog2",
+            "samples": 385,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-catalog3",
+            "samples": 709,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-a1",
+            "samples": 540,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-a2",
+            "samples": 540,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-a3",
+            "samples": 721,
+            "deployment": "raft"
+          },
+          {
+            "name": "metrics-router",
+            "samples": 218,
+            "deployment": "sharded_raft"
+          }
+        ]
+      },
+      {
+        "check": "add three-replica shard without remapping existing tenant",
+        "result": "PASS",
+        "processes": 14
+      },
+      {
+        "check": "catalog diagnostics expose the blocked migration phase and retained error",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-migration-error",
+          "samples": 821,
+          "deployment": "raft"
+        }
+      },
+      {
+        "check": "chunked migration survives catalog and destination leader interruption",
+        "result": "PASS",
+        "accepted_lsn": 8,
+        "destination_interrupted_during_transfer": true
+      },
+      {
+        "check": "tenant can return to retired source and commit again",
+        "result": "PASS"
+      },
+      {
+        "check": "one shard loses quorum while other shard and standalones serve",
+        "result": "PASS"
+      },
+      {
+        "check": "cancel before cutover resumes source before unavailable target cleanup",
+        "result": "PASS"
+      },
+      {
+        "check": "replica cannot remove shard role; original configuration recovers",
+        "result": "PASS",
+        "image_id": "sha256:f18f7069a9358633f616ab5ac08ca78a4c7ad0f8e9721228bbb040d9162fd022"
+      },
+      {
+        "check": "gateway keeps known tenant strong reads and idempotent writes during catalog outage; unknown routes fail closed",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-router-catalog-fallback",
+          "samples": 265,
+          "deployment": "sharded_raft"
+        }
+      },
+      {
+        "check": "drained router diagnostics do not require a reachable catalog",
+        "result": "PASS",
+        "observation": {
+          "name": "metrics-router-no-catalog",
+          "samples": 265,
+          "deployment": "sharded_raft"
+        }
+      }
+    ]
+  },
+  "mixed_rolling": {
+    "started_at": "2026-10-04T05:18:24.320653+00:00",
+    "result": "PASS",
+    "base": {
+      "image": "graphdb:availability1-20261004",
+      "image_id": "sha256:65f8e45f5c712c5408c58bbd597126a083f998d1fd0870cc26c1f1168ff926ef",
+      "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+      "version_output": "GGraphDB 2.2.2-availability1 commit=5fd0c970-availability1-dirty built=2026-10-03T21:30:48Z go=go1.26.7"
+    },
+    "target": {
+      "image": "graphdb:availability3-20261004",
+      "image_id": "sha256:f18f7069a9358633f616ab5ac08ca78a4c7ad0f8e9721228bbb040d9162fd022",
+      "binary_sha256": "92c4b30641a347db53ef1816a96b4627d5a8f0768d5303f7b083f63cfcaa573b",
+      "version_output": "GGraphDB 2.2.2-availability3 commit=5fd0c970-availability3-dirty built=2026-10-04T05:04:57Z go=go1.26.7"
+    },
+    "cross_host_qualification": "NOT RUN",
+    "finished_at": "2026-10-04T05:24:23.057110+00:00"
+  },
+  "soaks": {
+    "old-reference": {
+      "metadata": {
+        "result": "FAIL",
+        "started_at": "2026-10-04T03:20:09.153141+00:00",
+        "image": "graphdb:availability1-20261004",
+        "duration": "30m",
+        "writers": 4,
+        "readers": 16,
+        "batch_size": 1,
+        "write_interval": "5s",
+        "http_timeout": "120s",
+        "maintenance_timeout": "10m",
+        "compact_interval": "5m",
+        "gc_interval": "10m",
+        "index_rebuild_interval": "10m",
+        "protocol": 3,
+        "stream_snapshots": true,
+        "snapshot_entries": 5,
+        "nodes": 3,
+        "cpus_per_node": 2,
+        "memory_per_node": "2GiB",
+        "gomaxprocs_per_node": 2,
+        "priority": "normal; no renice or ionice changes",
+        "scope": "Same 30-minute maintenance workload in dedicated containers; shared VM, cross-host pending",
+        "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+        "image_id": "sha256:65f8e45f5c712c5408c58bbd597126a083f998d1fd0870cc26c1f1168ff926ef",
+        "load_started_at": "2026-10-04T03:20:14.882477+00:00",
+        "exit_code": 1,
+        "finished_at": "2026-10-04T03:50:23.629226+00:00"
+      },
+      "complete": true,
+      "total_operations": 50481,
+      "total_operation_errors": 19,
+      "operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 78,
+          "name": "commit-schema",
+          "p50_ms": 78,
+          "p95_ms": 78,
+          "p99_ms": 78,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 125,
+          "name": "create-tenant",
+          "p50_ms": 125,
+          "p95_ms": 125,
+          "p99_ms": 125,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 2,
+          "name": "health",
+          "p50_ms": 0,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "statuses": {
+            "200": 2
+          }
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 1,
+          "max_ms": 645787,
+          "name": "rebuild-indexes",
+          "p50_ms": 169416,
+          "p95_ms": 645787,
+          "p99_ms": 645787,
+          "statuses": {
+            "202": 3
+          }
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 132,
+          "name": "save-query",
+          "p50_ms": 55,
+          "p95_ms": 132,
+          "p99_ms": 132,
+          "statuses": {
+            "200": 5
+          }
+        },
+        "tenant-usage": {
+          "count": 59,
+          "errors": 1,
+          "max_ms": 27984,
+          "name": "tenant-usage",
+          "p50_ms": 1012,
+          "p95_ms": 15695,
+          "p99_ms": 27984,
+          "statuses": {
+            "200": 58,
+            "503": 1
+          }
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 5,
+          "name": "warm-reader",
+          "p50_ms": 5,
+          "p95_ms": 5,
+          "p99_ms": 5,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 22332,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 5,
+          "p95_ms": 1573,
+          "p99_ms": 6050,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "cmdb-owner-service-match": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 31415,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 6,
+          "p95_ms": 1597,
+          "p99_ms": 7649,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "cmdb-service-to-database-path": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 22335,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 6,
+          "p95_ms": 1658,
+          "p99_ms": 6120,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "max_ms": 1160,
+          "name": "export-snapshot-stream",
+          "p50_ms": 499,
+          "p95_ms": 1160,
+          "p99_ms": 1160,
+          "statuses": {
+            "200": 6
+          }
+        },
+        "fuzzy-service-match": {
+          "count": 1975,
+          "errors": 0,
+          "max_ms": 31862,
+          "name": "fuzzy-service-match",
+          "p50_ms": 8,
+          "p95_ms": 1569,
+          "p99_ms": 7591,
+          "statuses": {
+            "200": 1975
+          }
+        },
+        "impact-service": {
+          "count": 1974,
+          "errors": 1,
+          "max_ms": 22458,
+          "name": "impact-service",
+          "p50_ms": 6,
+          "p95_ms": 1664,
+          "p99_ms": 5459,
+          "statuses": {
+            "200": 1973,
+            "503": 1
+          }
+        },
+        "index-catalog": {
+          "count": 58,
+          "errors": 1,
+          "max_ms": 11905,
+          "name": "index-catalog",
+          "p50_ms": 109,
+          "p95_ms": 6109,
+          "p99_ms": 11905,
+          "statuses": {
+            "200": 57,
+            "503": 1
+          }
+        },
+        "index-health": {
+          "count": 58,
+          "errors": 0,
+          "max_ms": 16386,
+          "name": "index-health",
+          "p50_ms": 67,
+          "p95_ms": 5425,
+          "p99_ms": 16386,
+          "statuses": {
+            "200": 58
+          }
+        },
+        "indexed-match-allow-stale": {
+          "count": 1975,
+          "errors": 0,
+          "max_ms": 31880,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 12,
+          "p95_ms": 1571,
+          "p99_ms": 6123,
+          "statuses": {
+            "200": 1975
+          }
+        },
+        "indexed-match-min-version": {
+          "count": 1975,
+          "errors": 0,
+          "max_ms": 31885,
+          "name": "indexed-match-min-version",
+          "p50_ms": 13,
+          "p95_ms": 1553,
+          "p99_ms": 6178,
+          "statuses": {
+            "200": 1975
+          }
+        },
+        "ingest": {
+          "count": 804,
+          "errors": 5,
+          "max_ms": 61628,
+          "name": "ingest",
+          "p50_ms": 1680,
+          "p95_ms": 20830,
+          "p99_ms": 34674,
+          "statuses": {
+            "200": 708,
+            "429": 91,
+            "503": 4,
+            "504": 1
+          }
+        },
+        "neighbors-host-out": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 31454,
+          "name": "neighbors-host-out",
+          "p50_ms": 7,
+          "p95_ms": 1579,
+          "p99_ms": 7676,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "path-filter-traverse": {
+          "count": 1974,
+          "errors": 1,
+          "max_ms": 22325,
+          "name": "path-filter-traverse",
+          "p50_ms": 5,
+          "p95_ms": 1673,
+          "p99_ms": 6051,
+          "statuses": {
+            "200": 1973,
+            "503": 1
+          }
+        },
+        "profile-indexed-match": {
+          "count": 1975,
+          "errors": 0,
+          "max_ms": 31855,
+          "name": "profile-indexed-match",
+          "p50_ms": 14,
+          "p95_ms": 1542,
+          "p99_ms": 5819,
+          "statuses": {
+            "200": 1975
+          }
+        },
+        "range-aggregate-match": {
+          "count": 1975,
+          "errors": 0,
+          "max_ms": 31907,
+          "name": "range-aggregate-match",
+          "p50_ms": 12,
+          "p95_ms": 1567,
+          "p99_ms": 6136,
+          "statuses": {
+            "200": 1975
+          }
+        },
+        "reader-fleet": {
+          "count": 58,
+          "errors": 0,
+          "max_ms": 22362,
+          "name": "reader-fleet",
+          "p50_ms": 31,
+          "p95_ms": 20899,
+          "p99_ms": 22362,
+          "statuses": {
+            "200": 58
+          }
+        },
+        "reader-freshness": {
+          "count": 58,
+          "errors": 0,
+          "max_ms": 30900,
+          "name": "reader-freshness",
+          "p50_ms": 48,
+          "p95_ms": 10226,
+          "p99_ms": 30900,
+          "statuses": {
+            "200": 58
+          }
+        },
+        "saved-host-query": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 31856,
+          "name": "saved-host-query",
+          "p50_ms": 16,
+          "p95_ms": 1592,
+          "p99_ms": 6073,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "saved-prod-containment": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 30769,
+          "name": "saved-prod-containment",
+          "p50_ms": 14,
+          "p95_ms": 1558,
+          "p99_ms": 5840,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "saved-prod-services": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 31918,
+          "name": "saved-prod-services",
+          "p50_ms": 18,
+          "p95_ms": 1574,
+          "p99_ms": 5910,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "saved-service-impact": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 32062,
+          "name": "saved-service-impact",
+          "p50_ms": 16,
+          "p95_ms": 1572,
+          "p99_ms": 5938,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "saved-team-services": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 31806,
+          "name": "saved-team-services",
+          "p50_ms": 16,
+          "p95_ms": 1575,
+          "p99_ms": 5912,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "scan-edges": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 32065,
+          "name": "scan-edges",
+          "p50_ms": 18,
+          "p95_ms": 1589,
+          "p99_ms": 6083,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "scan-edges-allow-stale": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 32001,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 16,
+          "p95_ms": 1518,
+          "p99_ms": 6092,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "scan-entities": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 30904,
+          "name": "scan-entities",
+          "p50_ms": 23,
+          "p95_ms": 1564,
+          "p99_ms": 5804,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "scan-entities-allow-stale": {
+          "count": 1975,
+          "errors": 1,
+          "max_ms": 32008,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 20,
+          "p95_ms": 1630,
+          "p99_ms": 6093,
+          "statuses": {
+            "200": 1974,
+            "503": 1
+          }
+        },
+        "scan-entities-min-version": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 32046,
+          "name": "scan-entities-min-version",
+          "p50_ms": 23,
+          "p95_ms": 1504,
+          "p99_ms": 6138,
+          "statuses": {
+            "200": 1973,
+            "503": 1
+          }
+        },
+        "shortest-service-cluster": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 30722,
+          "name": "shortest-service-cluster",
+          "p50_ms": 5,
+          "p95_ms": 1525,
+          "p99_ms": 5862,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "stream-all-host-page": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 30970,
+          "name": "stream-all-host-page",
+          "p50_ms": 30,
+          "p95_ms": 1619,
+          "p99_ms": 6009,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "stream-large-indexed-hosts": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 30854,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 14,
+          "p95_ms": 1544,
+          "p99_ms": 5846,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 1974,
+          "errors": 0,
+          "max_ms": 30740,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 17,
+          "p95_ms": 1540,
+          "p99_ms": 5555,
+          "statuses": {
+            "200": 1974
+          }
+        },
+        "compact": {
+          "count": 3,
+          "errors": 0,
+          "max_ms": 36248,
+          "name": "compact",
+          "p50_ms": 23751,
+          "p95_ms": 36248,
+          "p99_ms": 36248,
+          "statuses": {
+            "202": 3
+          }
+        },
+        "gc": {
+          "count": 1,
+          "errors": 1,
+          "max_ms": 329949,
+          "name": "gc",
+          "p50_ms": 329949,
+          "p95_ms": 329949,
+          "p99_ms": 329949,
+          "statuses": {
+            "202": 1
+          }
+        }
+      },
+      "error_events": 20,
+      "errors_by_event": {
+        "query_error": 11,
+        "write_error": 5,
+        "gc_error": 1,
+        "usage_sample_error": 1,
+        "index_catalog_sample_error": 1,
+        "index_rebuild_error": 1
+      },
+      "error_windows": [
+        {
+          "first_at": "2026-10-04T03:36:23.905995662Z",
+          "last_at": "2026-10-04T03:36:23.95464852Z",
+          "events": 18,
+          "by_event": {
+            "query_error": 11,
+            "write_error": 4,
+            "gc_error": 1,
+            "usage_sample_error": 1,
+            "index_catalog_sample_error": 1
+          }
+        },
+        {
+          "first_at": "2026-10-04T03:37:28.972667693Z",
+          "last_at": "2026-10-04T03:37:28.972667693Z",
+          "events": 1,
+          "by_event": {
+            "write_error": 1
+          }
+        },
+        {
+          "first_at": "2026-10-04T03:47:09.694494174Z",
+          "last_at": "2026-10-04T03:47:09.694494174Z",
+          "events": 1,
+          "by_event": {
+            "index_rebuild_error": 1
+          }
+        }
+      ],
+      "maintenance_success": {
+        "compact_ok": 2,
+        "index_rebuild_ok": 1
+      },
+      "node_resources": {
+        "1": {
+          "process_state_samples": {
+            "S": 895
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 1386550963,
+            "nr_periods": 17862,
+            "nr_throttled": 24,
+            "throttled_usec": 1475774
+          },
+          "max_cgroup_memory_bytes": 1102311424,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            2.0,
+            3.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            3.0
+          ],
+          "persist_over_1s": 9,
+          "persist_over_5s": 0,
+          "metrics_http_timeouts": 2,
+          "metrics_http_non_200": 0
+        },
+        "2": {
+          "process_state_samples": {
+            "S": 895
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 1093685155,
+            "nr_periods": 17619,
+            "nr_throttled": 12,
+            "throttled_usec": 340342
+          },
+          "max_cgroup_memory_bytes": 242659328,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            2.0,
+            3.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            3.0
+          ],
+          "persist_over_1s": 7,
+          "persist_over_5s": 0,
+          "metrics_http_timeouts": 2,
+          "metrics_http_non_200": 0
+        },
+        "3": {
+          "process_state_samples": {
+            "S": 895
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 1251306275,
+            "nr_periods": 17790,
+            "nr_throttled": 29,
+            "throttled_usec": 1494828
+          },
+          "max_cgroup_memory_bytes": 263028736,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            2.0,
+            3.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            4.0
+          ],
+          "persist_over_1s": 6,
+          "persist_over_5s": 1,
+          "metrics_http_timeouts": 1,
+          "metrics_http_non_200": 0
+        }
+      },
+      "resource_samples": 895,
+      "endpoint_samples": 347,
+      "gateway_readiness": {
+        "http_statuses": {
+          "200": 325,
+          "TimeoutError": 22
+        },
+        "max_elapsed_ms": 1071.68
+      },
+      "load_average_range": [
+        14.46,
+        224.49
+      ],
+      "min_available_memory_kib": 1887600,
+      "max_swap_used_kib": 12322052,
+      "pressure_support": "UNAVAILABLE",
+      "cross_host": "NOT_RUN",
+      "performance_qualified": false,
+      "published": false
+    },
+    "candidate-soak": {
+      "metadata": {
+        "result": "FAIL",
+        "started_at": "2026-10-04T03:58:47.838660+00:00",
+        "image": "graphdb:availability2-20261004",
+        "duration": "30m",
+        "writers": 4,
+        "readers": 16,
+        "batch_size": 1,
+        "write_interval": "5s",
+        "http_timeout": "120s",
+        "maintenance_timeout": "10m",
+        "compact_interval": "5m",
+        "gc_interval": "10m",
+        "index_rebuild_interval": "10m",
+        "protocol": 3,
+        "stream_snapshots": true,
+        "snapshot_entries": 5,
+        "nodes": 3,
+        "cpus_per_node": 2,
+        "memory_per_node": "2GiB",
+        "gomaxprocs_per_node": 2,
+        "priority": "normal; no renice or ionice changes",
+        "scope": "Same 30-minute maintenance workload in dedicated containers; shared VM, cross-host pending",
+        "binary_sha256": "144a067e9c473deab8f5b2d18add9d625f4effa21eb6b762f05daf5e92f5e3ac",
+        "image_id": "sha256:8e12cc1dc9280b838c964b093ece87d4dffca717bccd60bd5d3c3d4864968b1a",
+        "load_started_at": "2026-10-04T03:58:52.393468+00:00",
+        "exit_code": 1,
+        "finished_at": "2026-10-04T04:29:02.212220+00:00"
+      },
+      "complete": true,
+      "total_operations": 33373,
+      "total_operation_errors": 117,
+      "operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 58,
+          "name": "commit-schema",
+          "p50_ms": 58,
+          "p95_ms": 58,
+          "p99_ms": 58,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 129,
+          "name": "create-tenant",
+          "p50_ms": 129,
+          "p95_ms": 129,
+          "p99_ms": 129,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 2,
+          "name": "health",
+          "p50_ms": 0,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "statuses": {
+            "200": 2
+          }
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 0,
+          "max_ms": 256258,
+          "name": "rebuild-indexes",
+          "p50_ms": 61236,
+          "p95_ms": 256258,
+          "p99_ms": 256258,
+          "statuses": {
+            "202": 3
+          }
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 67,
+          "name": "save-query",
+          "p50_ms": 41,
+          "p95_ms": 67,
+          "p99_ms": 67,
+          "statuses": {
+            "200": 5
+          }
+        },
+        "tenant-usage": {
+          "count": 60,
+          "errors": 4,
+          "max_ms": 12214,
+          "name": "tenant-usage",
+          "p50_ms": 896,
+          "p95_ms": 9548,
+          "p99_ms": 12214,
+          "statuses": {
+            "200": 56,
+            "503": 4
+          }
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 5,
+          "name": "warm-reader",
+          "p50_ms": 5,
+          "p95_ms": 5,
+          "p99_ms": 5,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 1296,
+          "errors": 2,
+          "max_ms": 94178,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 7,
+          "p95_ms": 3179,
+          "p99_ms": 7761,
+          "statuses": {
+            "200": 1293,
+            "503": 2
+          }
+        },
+        "cmdb-owner-service-match": {
+          "count": 1296,
+          "errors": 2,
+          "max_ms": 31394,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 8,
+          "p95_ms": 3228,
+          "p99_ms": 7878,
+          "statuses": {
+            "200": 1293,
+            "503": 2
+          }
+        },
+        "cmdb-service-to-database-path": {
+          "count": 1296,
+          "errors": 2,
+          "max_ms": 31388,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 7,
+          "p95_ms": 3492,
+          "p99_ms": 7904,
+          "statuses": {
+            "200": 1293,
+            "503": 2
+          }
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "max_ms": 3409,
+          "name": "export-snapshot-stream",
+          "p50_ms": 94,
+          "p95_ms": 3409,
+          "p99_ms": 3409,
+          "statuses": {
+            "200": 6
+          }
+        },
+        "fuzzy-service-match": {
+          "count": 1296,
+          "errors": 2,
+          "max_ms": 94218,
+          "name": "fuzzy-service-match",
+          "p50_ms": 9,
+          "p95_ms": 3655,
+          "p99_ms": 8289,
+          "statuses": {
+            "200": 1293,
+            "503": 2
+          }
+        },
+        "impact-service": {
+          "count": 1295,
+          "errors": 1,
+          "max_ms": 31386,
+          "name": "impact-service",
+          "p50_ms": 7,
+          "p95_ms": 3742,
+          "p99_ms": 8273,
+          "statuses": {
+            "200": 1293,
+            "503": 1
+          }
+        },
+        "index-catalog": {
+          "count": 59,
+          "errors": 4,
+          "max_ms": 15000,
+          "name": "index-catalog",
+          "p50_ms": 199,
+          "p95_ms": 7949,
+          "p99_ms": 15000,
+          "statuses": {
+            "200": 55,
+            "503": 4
+          }
+        },
+        "index-health": {
+          "count": 59,
+          "errors": 6,
+          "max_ms": 60041,
+          "name": "index-health",
+          "p50_ms": 63,
+          "p95_ms": 8422,
+          "p99_ms": 60041,
+          "statuses": {
+            "200": 53,
+            "503": 5,
+            "504": 1
+          }
+        },
+        "indexed-match-allow-stale": {
+          "count": 1295,
+          "errors": 3,
+          "max_ms": 60071,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 12,
+          "p95_ms": 3279,
+          "p99_ms": 7981,
+          "statuses": {
+            "200": 1292,
+            "503": 2,
+            "504": 1
+          }
+        },
+        "indexed-match-min-version": {
+          "count": 1295,
+          "errors": 0,
+          "max_ms": 94213,
+          "name": "indexed-match-min-version",
+          "p50_ms": 13,
+          "p95_ms": 3470,
+          "p99_ms": 8275,
+          "statuses": {
+            "200": 1293,
+            "503": 2
+          }
+        },
+        "ingest": {
+          "count": 672,
+          "errors": 44,
+          "max_ms": 101630,
+          "name": "ingest",
+          "p50_ms": 2844,
+          "p95_ms": 18693,
+          "p99_ms": 44980,
+          "statuses": {
+            "200": 531,
+            "429": 95,
+            "503": 42,
+            "504": 2
+          }
+        },
+        "neighbors-host-out": {
+          "count": 1296,
+          "errors": 3,
+          "max_ms": 60063,
+          "name": "neighbors-host-out",
+          "p50_ms": 8,
+          "p95_ms": 3498,
+          "p99_ms": 8109,
+          "statuses": {
+            "200": 1292,
+            "503": 2,
+            "504": 1
+          }
+        },
+        "path-filter-traverse": {
+          "count": 1296,
+          "errors": 2,
+          "max_ms": 31390,
+          "name": "path-filter-traverse",
+          "p50_ms": 7,
+          "p95_ms": 3673,
+          "p99_ms": 7959,
+          "statuses": {
+            "200": 1293,
+            "503": 2
+          }
+        },
+        "profile-indexed-match": {
+          "count": 1295,
+          "errors": 2,
+          "max_ms": 94222,
+          "name": "profile-indexed-match",
+          "p50_ms": 16,
+          "p95_ms": 3250,
+          "p99_ms": 6865,
+          "statuses": {
+            "200": 1293,
+            "503": 2
+          }
+        },
+        "range-aggregate-match": {
+          "count": 1296,
+          "errors": 2,
+          "max_ms": 31526,
+          "name": "range-aggregate-match",
+          "p50_ms": 15,
+          "p95_ms": 3278,
+          "p99_ms": 8191,
+          "statuses": {
+            "200": 1294,
+            "503": 2
+          }
+        },
+        "reader-fleet": {
+          "count": 59,
+          "errors": 6,
+          "max_ms": 10471,
+          "name": "reader-fleet",
+          "p50_ms": 43,
+          "p95_ms": 4516,
+          "p99_ms": 10471,
+          "statuses": {
+            "200": 53,
+            "503": 6
+          }
+        },
+        "reader-freshness": {
+          "count": 59,
+          "errors": 6,
+          "max_ms": 9576,
+          "name": "reader-freshness",
+          "p50_ms": 48,
+          "p95_ms": 7104,
+          "p99_ms": 9576,
+          "statuses": {
+            "200": 53,
+            "503": 6
+          }
+        },
+        "saved-host-query": {
+          "count": 1294,
+          "errors": 1,
+          "max_ms": 12016,
+          "name": "saved-host-query",
+          "p50_ms": 18,
+          "p95_ms": 3153,
+          "p99_ms": 8333,
+          "statuses": {
+            "200": 1293,
+            "503": 1
+          }
+        },
+        "saved-prod-containment": {
+          "count": 1295,
+          "errors": 3,
+          "max_ms": 60075,
+          "name": "saved-prod-containment",
+          "p50_ms": 18,
+          "p95_ms": 3548,
+          "p99_ms": 8295,
+          "statuses": {
+            "200": 1292,
+            "503": 2,
+            "504": 1
+          }
+        },
+        "saved-prod-services": {
+          "count": 1294,
+          "errors": 1,
+          "max_ms": 12025,
+          "name": "saved-prod-services",
+          "p50_ms": 25,
+          "p95_ms": 3438,
+          "p99_ms": 8478,
+          "statuses": {
+            "200": 1293,
+            "503": 1
+          }
+        },
+        "saved-service-impact": {
+          "count": 1295,
+          "errors": 3,
+          "max_ms": 60015,
+          "name": "saved-service-impact",
+          "p50_ms": 22,
+          "p95_ms": 3677,
+          "p99_ms": 8452,
+          "statuses": {
+            "200": 1292,
+            "503": 2,
+            "504": 1
+          }
+        },
+        "saved-team-services": {
+          "count": 1295,
+          "errors": 2,
+          "max_ms": 60002,
+          "name": "saved-team-services",
+          "p50_ms": 21,
+          "p95_ms": 3601,
+          "p99_ms": 8896,
+          "statuses": {
+            "200": 1293,
+            "503": 1,
+            "504": 1
+          }
+        },
+        "scan-edges": {
+          "count": 1294,
+          "errors": 1,
+          "max_ms": 12960,
+          "name": "scan-edges",
+          "p50_ms": 24,
+          "p95_ms": 3024,
+          "p99_ms": 8435,
+          "statuses": {
+            "200": 1292,
+            "503": 1
+          }
+        },
+        "scan-edges-allow-stale": {
+          "count": 1294,
+          "errors": 1,
+          "max_ms": 11792,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 20,
+          "p95_ms": 3318,
+          "p99_ms": 8157,
+          "statuses": {
+            "200": 1292,
+            "503": 1
+          }
+        },
+        "scan-entities": {
+          "count": 1295,
+          "errors": 2,
+          "max_ms": 60019,
+          "name": "scan-entities",
+          "p50_ms": 30,
+          "p95_ms": 3686,
+          "p99_ms": 8745,
+          "statuses": {
+            "200": 1292,
+            "503": 1,
+            "504": 1
+          }
+        },
+        "scan-entities-allow-stale": {
+          "count": 1295,
+          "errors": 1,
+          "max_ms": 62494,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 30,
+          "p95_ms": 3403,
+          "p99_ms": 8500,
+          "statuses": {
+            "200": 1293,
+            "503": 1
+          }
+        },
+        "scan-entities-min-version": {
+          "count": 1295,
+          "errors": 1,
+          "max_ms": 60073,
+          "name": "scan-entities-min-version",
+          "p50_ms": 30,
+          "p95_ms": 3509,
+          "p99_ms": 9445,
+          "statuses": {
+            "200": 1292,
+            "503": 1,
+            "504": 1
+          }
+        },
+        "shortest-service-cluster": {
+          "count": 1295,
+          "errors": 3,
+          "max_ms": 60026,
+          "name": "shortest-service-cluster",
+          "p50_ms": 7,
+          "p95_ms": 3658,
+          "p99_ms": 8158,
+          "statuses": {
+            "200": 1291,
+            "503": 2,
+            "504": 1
+          }
+        },
+        "stream-all-host-page": {
+          "count": 1295,
+          "errors": 1,
+          "max_ms": 62671,
+          "name": "stream-all-host-page",
+          "p50_ms": 36,
+          "p95_ms": 3593,
+          "p99_ms": 8866,
+          "statuses": {
+            "200": 1293,
+            "503": 1
+          }
+        },
+        "stream-large-indexed-hosts": {
+          "count": 1295,
+          "errors": 3,
+          "max_ms": 60044,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 17,
+          "p95_ms": 3657,
+          "p99_ms": 8823,
+          "statuses": {
+            "200": 1291,
+            "503": 2,
+            "504": 1
+          }
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 1296,
+          "errors": 1,
+          "max_ms": 60009,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 21,
+          "p95_ms": 3566,
+          "p99_ms": 8126,
+          "statuses": {
+            "200": 1292,
+            "503": 2,
+            "504": 1
+          }
+        },
+        "compact": {
+          "count": 5,
+          "errors": 2,
+          "max_ms": 50941,
+          "name": "compact",
+          "p50_ms": 5766,
+          "p95_ms": 50941,
+          "p99_ms": 50941,
+          "statuses": {
+            "202": 3,
+            "503": 2
+          }
+        },
+        "gc": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 234475,
+          "name": "gc",
+          "p50_ms": 34638,
+          "p95_ms": 234475,
+          "p99_ms": 234475,
+          "statuses": {
+            "202": 2
+          }
+        }
+      },
+      "error_events": 122,
+      "errors_by_event": {
+        "query_error": 50,
+        "write_error": 44,
+        "index_health_sample_error": 6,
+        "reader_freshness_error": 6,
+        "reader_fleet_error": 6,
+        "usage_sample_error": 4,
+        "index_catalog_sample_error": 4,
+        "compact_error": 2
+      },
+      "error_windows": [
+        {
+          "first_at": "2026-10-04T04:02:10.139015327Z",
+          "last_at": "2026-10-04T04:02:11.885184822Z",
+          "events": 30,
+          "by_event": {
+            "query_error": 24,
+            "write_error": 3,
+            "index_health_sample_error": 1,
+            "reader_freshness_error": 1,
+            "reader_fleet_error": 1
+          }
+        },
+        {
+          "first_at": "2026-10-04T04:03:46.352606232Z",
+          "last_at": "2026-10-04T04:04:01.370712631Z",
+          "events": 42,
+          "by_event": {
+            "query_error": 16,
+            "write_error": 15,
+            "usage_sample_error": 2,
+            "index_catalog_sample_error": 2,
+            "index_health_sample_error": 2,
+            "reader_freshness_error": 2,
+            "reader_fleet_error": 2,
+            "compact_error": 1
+          }
+        },
+        {
+          "first_at": "2026-10-04T04:23:55.309030522Z",
+          "last_at": "2026-10-04T04:23:55.309030522Z",
+          "events": 1,
+          "by_event": {
+            "compact_error": 1
+          }
+        },
+        {
+          "first_at": "2026-10-04T04:24:21.585953225Z",
+          "last_at": "2026-10-04T04:25:14.758870652Z",
+          "events": 49,
+          "by_event": {
+            "write_error": 26,
+            "index_health_sample_error": 3,
+            "reader_freshness_error": 3,
+            "reader_fleet_error": 3,
+            "usage_sample_error": 2,
+            "index_catalog_sample_error": 2,
+            "query_error": 10
+          }
+        }
+      ],
+      "maintenance_success": {
+        "index_rebuild_ok": 2,
+        "gc_ok": 2,
+        "compact_ok": 3
+      },
+      "node_resources": {
+        "1": {
+          "process_state_samples": {
+            "S": 896
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 791021033,
+            "nr_periods": 16597,
+            "nr_throttled": 3,
+            "throttled_usec": 87515
+          },
+          "max_cgroup_memory_bytes": 184360960,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            2.0,
+            3.0,
+            6.0,
+            7.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            7.0
+          ],
+          "persist_over_1s": 16,
+          "persist_over_5s": 1,
+          "metrics_http_timeouts": 1,
+          "metrics_http_non_200": 0
+        },
+        "2": {
+          "process_state_samples": {
+            "S": 896
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 760920442,
+            "nr_periods": 16450,
+            "nr_throttled": 5,
+            "throttled_usec": 64315
+          },
+          "max_cgroup_memory_bytes": 181403648,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            2.0,
+            3.0,
+            4.0,
+            6.0,
+            7.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            9.0
+          ],
+          "persist_over_1s": 11,
+          "persist_over_5s": 2,
+          "metrics_http_timeouts": 3,
+          "metrics_http_non_200": 0
+        },
+        "3": {
+          "process_state_samples": {
+            "S": 896
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 1052074912,
+            "nr_periods": 16916,
+            "nr_throttled": 22,
+            "throttled_usec": 535747
+          },
+          "max_cgroup_memory_bytes": 533270528,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            2.0,
+            3.0,
+            4.0,
+            6.0,
+            7.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            7.0
+          ],
+          "persist_over_1s": 17,
+          "persist_over_5s": 3,
+          "metrics_http_timeouts": 4,
+          "metrics_http_non_200": 0
+        }
+      },
+      "resource_samples": 896,
+      "endpoint_samples": 339,
+      "gateway_readiness": {
+        "http_statuses": {
+          "200": 282,
+          "TimeoutError": 42,
+          "503": 15
+        },
+        "max_elapsed_ms": 1120.43
+      },
+      "load_average_range": [
+        13.07,
+        536.72
+      ],
+      "min_available_memory_kib": 1364748,
+      "max_swap_used_kib": 9328140,
+      "pressure_support": "UNAVAILABLE",
+      "cross_host": "NOT_RUN",
+      "performance_qualified": false,
+      "published": false
+    },
+    "candidate-soak4": {
+      "metadata": {
+        "result": "PASS",
+        "started_at": "2026-10-04T05:25:57.070417+00:00",
+        "image": "graphdb:availability3-20261004",
+        "duration": "30m",
+        "writers": 4,
+        "readers": 16,
+        "batch_size": 1,
+        "write_interval": "5s",
+        "http_timeout": "120s",
+        "maintenance_timeout": "10m",
+        "compact_interval": "5m",
+        "gc_interval": "10m",
+        "index_rebuild_interval": "10m",
+        "protocol": 3,
+        "stream_snapshots": true,
+        "snapshot_entries": 5,
+        "nodes": 3,
+        "cpus_per_node": 2,
+        "memory_per_node": "2GiB",
+        "gomaxprocs_per_node": 2,
+        "priority": "normal; no renice or ionice changes",
+        "scope": "Same 30-minute maintenance workload in dedicated containers; shared VM, cross-host pending",
+        "binary_sha256": "92c4b30641a347db53ef1816a96b4627d5a8f0768d5303f7b083f63cfcaa573b",
+        "image_id": "sha256:f18f7069a9358633f616ab5ac08ca78a4c7ad0f8e9721228bbb040d9162fd022",
+        "load_started_at": "2026-10-04T05:26:01.668764+00:00",
+        "exit_code": 0,
+        "finished_at": "2026-10-04T05:56:17.850630+00:00"
+      },
+      "complete": true,
+      "total_operations": 62029,
+      "total_operation_errors": 0,
+      "operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 91,
+          "name": "commit-schema",
+          "p50_ms": 91,
+          "p95_ms": 91,
+          "p99_ms": 91,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 170,
+          "name": "create-tenant",
+          "p50_ms": 170,
+          "p95_ms": 170,
+          "p99_ms": 170,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 3,
+          "name": "health",
+          "p50_ms": 1,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "statuses": {
+            "200": 2
+          }
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 0,
+          "max_ms": 158859,
+          "name": "rebuild-indexes",
+          "p50_ms": 98883,
+          "p95_ms": 158859,
+          "p99_ms": 158859,
+          "statuses": {
+            "202": 3
+          }
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 159,
+          "name": "save-query",
+          "p50_ms": 72,
+          "p95_ms": 159,
+          "p99_ms": 159,
+          "statuses": {
+            "200": 5
+          }
+        },
+        "tenant-usage": {
+          "count": 61,
+          "errors": 0,
+          "max_ms": 10405,
+          "name": "tenant-usage",
+          "p50_ms": 605,
+          "p95_ms": 3778,
+          "p99_ms": 10405,
+          "statuses": {
+            "200": 61
+          }
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 27,
+          "name": "warm-reader",
+          "p50_ms": 27,
+          "p95_ms": 27,
+          "p99_ms": 27,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 5245,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 5,
+          "p95_ms": 1453,
+          "p99_ms": 2553,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "cmdb-owner-service-match": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 5243,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 6,
+          "p95_ms": 1430,
+          "p99_ms": 2609,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "cmdb-service-to-database-path": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 5236,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 5,
+          "p95_ms": 1441,
+          "p99_ms": 2653,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "max_ms": 1379,
+          "name": "export-snapshot-stream",
+          "p50_ms": 79,
+          "p95_ms": 1379,
+          "p99_ms": 1379,
+          "statuses": {
+            "200": 6
+          }
+        },
+        "fuzzy-service-match": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 5260,
+          "name": "fuzzy-service-match",
+          "p50_ms": 7,
+          "p95_ms": 1443,
+          "p99_ms": 2626,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "impact-service": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 5232,
+          "name": "impact-service",
+          "p50_ms": 6,
+          "p95_ms": 1431,
+          "p99_ms": 2595,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "index-catalog": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 3214,
+          "name": "index-catalog",
+          "p50_ms": 166,
+          "p95_ms": 1881,
+          "p99_ms": 3214,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "index-health": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 2431,
+          "name": "index-health",
+          "p50_ms": 88,
+          "p95_ms": 1680,
+          "p99_ms": 2431,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "indexed-match-allow-stale": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 10739,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 10,
+          "p95_ms": 1439,
+          "p99_ms": 2698,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "indexed-match-min-version": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14180,
+          "name": "indexed-match-min-version",
+          "p50_ms": 12,
+          "p95_ms": 1424,
+          "p99_ms": 2613,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "ingest": {
+          "count": 994,
+          "errors": 0,
+          "max_ms": 13566,
+          "name": "ingest",
+          "p50_ms": 1889,
+          "p95_ms": 5436,
+          "p99_ms": 8178,
+          "statuses": {
+            "200": 890,
+            "429": 101
+          }
+        },
+        "neighbors-host-out": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 5256,
+          "name": "neighbors-host-out",
+          "p50_ms": 6,
+          "p95_ms": 1420,
+          "p99_ms": 2585,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "path-filter-traverse": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 5228,
+          "name": "path-filter-traverse",
+          "p50_ms": 5,
+          "p95_ms": 1440,
+          "p99_ms": 2630,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "profile-indexed-match": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14106,
+          "name": "profile-indexed-match",
+          "p50_ms": 12,
+          "p95_ms": 1434,
+          "p99_ms": 2725,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "range-aggregate-match": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 5251,
+          "name": "range-aggregate-match",
+          "p50_ms": 12,
+          "p95_ms": 1453,
+          "p99_ms": 2615,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "reader-fleet": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 2496,
+          "name": "reader-fleet",
+          "p50_ms": 29,
+          "p95_ms": 1701,
+          "p99_ms": 2496,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "reader-freshness": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 2769,
+          "name": "reader-freshness",
+          "p50_ms": 37,
+          "p95_ms": 1705,
+          "p99_ms": 2769,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "saved-host-query": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14370,
+          "name": "saved-host-query",
+          "p50_ms": 16,
+          "p95_ms": 1467,
+          "p99_ms": 2488,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "saved-prod-containment": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 13677,
+          "name": "saved-prod-containment",
+          "p50_ms": 13,
+          "p95_ms": 1423,
+          "p99_ms": 2458,
+          "statuses": {
+            "200": 2427
+          }
+        },
+        "saved-prod-services": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14360,
+          "name": "saved-prod-services",
+          "p50_ms": 17,
+          "p95_ms": 1486,
+          "p99_ms": 2532,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "saved-service-impact": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14397,
+          "name": "saved-service-impact",
+          "p50_ms": 15,
+          "p95_ms": 1424,
+          "p99_ms": 2475,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "saved-team-services": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14350,
+          "name": "saved-team-services",
+          "p50_ms": 15,
+          "p95_ms": 1444,
+          "p99_ms": 2506,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "scan-edges": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14437,
+          "name": "scan-edges",
+          "p50_ms": 18,
+          "p95_ms": 1440,
+          "p99_ms": 2559,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "scan-edges-allow-stale": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14431,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 16,
+          "p95_ms": 1431,
+          "p99_ms": 2569,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "scan-entities": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 14481,
+          "name": "scan-entities",
+          "p50_ms": 23,
+          "p95_ms": 1391,
+          "p99_ms": 2727,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "scan-entities-allow-stale": {
+          "count": 2428,
+          "errors": 0,
+          "max_ms": 14308,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 21,
+          "p95_ms": 1434,
+          "p99_ms": 2560,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "scan-entities-min-version": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 14413,
+          "name": "scan-entities-min-version",
+          "p50_ms": 22,
+          "p95_ms": 1418,
+          "p99_ms": 2587,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "shortest-service-cluster": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 14228,
+          "name": "shortest-service-cluster",
+          "p50_ms": 5,
+          "p95_ms": 1423,
+          "p99_ms": 2607,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "stream-all-host-page": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 14482,
+          "name": "stream-all-host-page",
+          "p50_ms": 30,
+          "p95_ms": 1422,
+          "p99_ms": 2763,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "stream-large-indexed-hosts": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 14426,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 13,
+          "p95_ms": 1444,
+          "p99_ms": 2729,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 2429,
+          "errors": 0,
+          "max_ms": 14343,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 17,
+          "p95_ms": 1401,
+          "p99_ms": 2769,
+          "statuses": {
+            "200": 2428
+          }
+        },
+        "compact": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 49970,
+          "name": "compact",
+          "p50_ms": 38380,
+          "p95_ms": 49970,
+          "p99_ms": 49970,
+          "statuses": {
+            "202": 5
+          }
+        },
+        "gc": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 181641,
+          "name": "gc",
+          "p50_ms": 133020,
+          "p95_ms": 181641,
+          "p99_ms": 181641,
+          "statuses": {
+            "202": 2
+          }
+        }
+      },
+      "error_events": 0,
+      "errors_by_event": {},
+      "error_windows": [],
+      "maintenance_success": {
+        "compact_ok": 5,
+        "index_rebuild_ok": 2,
+        "gc_ok": 2
+      },
+      "node_resources": {
+        "1": {
+          "process_state_samples": {
+            "S": 902
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 1785759242,
+            "nr_periods": 18056,
+            "nr_throttled": 45,
+            "throttled_usec": 856560
+          },
+          "max_cgroup_memory_bytes": 1041973248,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            1.0,
+            2.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            1.0
+          ],
+          "persist_over_1s": 1,
+          "persist_over_5s": 0,
+          "metrics_http_timeouts": 0,
+          "metrics_http_non_200": 0,
+          "status_sample_max_age_seconds": 1.052737546,
+          "status_sample_over_10s": 0,
+          "durable_application_lag_max": 3.0
+        },
+        "2": {
+          "process_state_samples": {
+            "S": 902
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 1293859051,
+            "nr_periods": 17935,
+            "nr_throttled": 13,
+            "throttled_usec": 278463
+          },
+          "max_cgroup_memory_bytes": 226971648,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            1.0,
+            2.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            1.0
+          ],
+          "persist_over_1s": 1,
+          "persist_over_5s": 0,
+          "metrics_http_timeouts": 0,
+          "metrics_http_non_200": 0,
+          "status_sample_max_age_seconds": 0.99559406,
+          "status_sample_over_10s": 0,
+          "durable_application_lag_max": 10.0
+        },
+        "3": {
+          "process_state_samples": {
+            "S": 902
+          },
+          "cpu_cgroup_delta": {
+            "usage_usec": 1298537251,
+            "nr_periods": 17942,
+            "nr_throttled": 13,
+            "throttled_usec": 284002
+          },
+          "max_cgroup_memory_bytes": 231358464,
+          "oom_events": [
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0"
+          ],
+          "terms_observed": [
+            1.0,
+            2.0
+          ],
+          "leader_change_counter_range": [
+            1.0,
+            1.0
+          ],
+          "persist_over_1s": 2,
+          "persist_over_5s": 0,
+          "metrics_http_timeouts": 0,
+          "metrics_http_non_200": 0,
+          "status_sample_max_age_seconds": 0.990500148,
+          "status_sample_over_10s": 0,
+          "durable_application_lag_max": 10.0
+        }
+      },
+      "resource_samples": 902,
+      "endpoint_samples": 356,
+      "gateway_readiness": {
+        "http_statuses": {
+          "200": 356
+        },
+        "max_elapsed_ms": 763.15
+      },
+      "load_average_range": [
+        18.67,
+        142.35
+      ],
+      "min_available_memory_kib": 2133888,
+      "max_swap_used_kib": 8651132,
+      "pressure_support": "UNAVAILABLE",
+      "cross_host": "NOT_RUN",
+      "performance_qualified": false,
+      "published": false
+    }
+  },
+  "candidate_startup_failure": {
+    "result": "FAIL",
+    "started_at": "2026-10-04T05:24:23.140029+00:00",
+    "image": "graphdb:availability3-20261004",
+    "duration": "30m",
+    "writers": 4,
+    "readers": 16,
+    "batch_size": 1,
+    "write_interval": "5s",
+    "http_timeout": "120s",
+    "maintenance_timeout": "10m",
+    "compact_interval": "5m",
+    "gc_interval": "10m",
+    "index_rebuild_interval": "10m",
+    "protocol": 3,
+    "stream_snapshots": true,
+    "snapshot_entries": 5,
+    "nodes": 3,
+    "cpus_per_node": 2,
+    "memory_per_node": "2GiB",
+    "gomaxprocs_per_node": 2,
+    "priority": "normal; no renice or ionice changes",
+    "scope": "Same 30-minute maintenance workload in dedicated containers; shared VM, cross-host pending",
+    "binary_sha256": "92c4b30641a347db53ef1816a96b4627d5a8f0768d5303f7b083f63cfcaa573b",
+    "image_id": "sha256:f18f7069a9358633f616ab5ac08ca78a4c7ad0f8e9721228bbb040d9162fd022",
+    "driver_error": "Command '['/mnt/mac/private/tmp/graphdb-complete-test-20261003/final2/docker-compose-linux-aarch64', '-p', 'graphdb-availability2-20261004-soak3', '-f', '/mnt/mac/Users/livesite/Documents/GraphDB-raft-ha/docker-compose.raft.yml', '-f', '/mnt/mac/private/tmp/graphdb-availability2-20261004/candidate-soak3/override.yml', '-f', '/mnt/mac/private/tmp/graphdb-availability2-20261004/candidate-soak3/resources.yml', 'up', '-d', '--no-build']' returned non-zero exit status 1.",
+    "finished_at": "2026-10-04T05:24:27.234461+00:00"
+  },
+  "source_binding_verified": true,
+  "cross_host": "NOT_RUN",
+  "24h_72h": "NOT_RUN",
+  "production_capacity": "NOT_QUALIFIED",
+  "new_real_S3_run": "NOT_RUN",
+  "github_CI": "NOT_RUN",
+  "published": false,
+  "committed": false,
+  "final_container_states": {
+    "graphdb-availability2-20261004-soak4-node1-1": {
+      "state": {
+        "Dead": false,
+        "Error": "",
+        "ExitCode": 0,
+        "FinishedAt": "0001-01-01T00:00:00Z",
+        "OOMKilled": false,
+        "Paused": false,
+        "Pid": 960252,
+        "Restarting": false,
+        "Running": true,
+        "StartedAt": "2026-10-04T05:25:58.030586615Z",
+        "Status": "running"
+      },
+      "restart_count": 0,
+      "memory": 2147483648,
+      "nano_cpus": 2000000000
+    },
+    "graphdb-availability2-20261004-soak4-node2-1": {
+      "state": {
+        "Dead": false,
+        "Error": "",
+        "ExitCode": 0,
+        "FinishedAt": "0001-01-01T00:00:00Z",
+        "OOMKilled": false,
+        "Paused": false,
+        "Pid": 960275,
+        "Restarting": false,
+        "Running": true,
+        "StartedAt": "2026-10-04T05:25:58.032689001Z",
+        "Status": "running"
+      },
+      "restart_count": 0,
+      "memory": 2147483648,
+      "nano_cpus": 2000000000
+    },
+    "graphdb-availability2-20261004-soak4-node3-1": {
+      "state": {
+        "Dead": false,
+        "Error": "",
+        "ExitCode": 0,
+        "FinishedAt": "0001-01-01T00:00:00Z",
+        "OOMKilled": false,
+        "Paused": false,
+        "Pid": 960228,
+        "Restarting": false,
+        "Running": true,
+        "StartedAt": "2026-10-04T05:25:58.022287114Z",
+        "Status": "running"
+      },
+      "restart_count": 0,
+      "memory": 2147483648,
+      "nano_cpus": 2000000000
+    }
+  },
+  "owned_resource_cleanup": {
+    "removed_unused_test_volumes": [
+      "graphdb-availability2-20261004-gate3-dual_raft-node1",
+      "graphdb-availability2-20261004-gate3-dual_raft-node2",
+      "graphdb-availability2-20261004-gate3-dual_raft-node3",
+      "graphdb-availability2-20261004-gate-dual_raft-node1",
+      "graphdb-availability2-20261004-gate-dual_raft-node2",
+      "graphdb-availability2-20261004-gate-dual_raft-node3"
+    ],
+    "remaining": {
+      "containers": [],
+      "volumes": [],
+      "networks": []
+    }
+  }
+}

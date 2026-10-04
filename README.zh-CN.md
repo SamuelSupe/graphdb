@@ -8,7 +8,7 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 
 ## 当前版本
 
-[2.2.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.2) 是主版本，由 `main` 发布。
+[2.2.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.3) 是本轮发行目标，全部确切标签门禁通过后由 `main` 发布。
 同一二进制支持单机 direct/WAL、使用独立磁盘的 Raft 副本，以及按租户分片的多个 Raft 组。
 本版增加受保护的集群管理、可续传迁移和恢复、兼容窗口内的滚动升级及本地诊断。
 二进制、契约和验证范围见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
@@ -17,9 +17,8 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 升级遵循[已验收的滚动兼容窗口](docs/raft-rolling-upgrade.zh-CN.md)。单机继续支持自动 S3 备份，
 Raft 由外部调度调用集群备份 API。不提供 1.x 迁移。
 
-候选已通过本机故障、恢复、分片、滚动升级和 30 分钟 Raft 负载验证。
 跨宿主机与生产容量仍待验收；维护会产生可重试 429 和写入长尾，不承诺统一吞吐增幅或低延迟 SLO。
-范围见 [2.2.2 验证说明](docs/validation-v2.2.2.md)。
+本版须通过确切标签的全部发行门禁。此前性能候选的三十分钟长测仍有四次入口 503，记录为 FAIL；不承诺整体吞吐收益。范围见 [2.2.3 验证说明](docs/validation-v2.2.3.md)。
 
 ## 核心能力
 
@@ -47,6 +46,8 @@ docker compose up -d --build
 本轮磁盘保护、流式快照、维护隔离、完整灾备和诊断告警见 [产品运维说明](docs/product-operations.zh-CN.md)。
 
 Raft 验收范围与剩余部署验收见 [发布验收状态](docs/raft-release-readiness.zh-CN.md)。
+
+[自动备份 worker](docs/backup-automation.zh-CN.md)支持单机与 Raft 外部定时调度、持久化重试、校验和隔离演练，并提供 Compose/systemd 示例；单机内置策略继续支持。
 
 | 部署方式 | 启用方式 | 数据持久化 | 运维 |
 | --- | --- | --- | --- |
@@ -103,13 +104,13 @@ Raft 在协议允许时把维护准备移出应用屏障，冲突持续时只暂
 
 本机候选 30 分钟负载记录 71,140 次操作、零非预期操作错误；写入包含 90 次预期 429，
 最大等待 40.154 秒。这些是限定范围的正确性观测，不构成容量或延迟保证，见
-[验收范围](docs/validation-v2.2.2.md)。历史 [2.1.2 写入长尾报告](docs/performance-write-tail.md)
+[验收范围](docs/validation-v2.2.3.md)。历史 [2.1.2 写入长尾报告](docs/performance-write-tail.md)
 仅适用于其记录的构建。
 
 ## 文档与验证
 
 - [本地磁盘运行与验证](docs/local-disk.zh-CN.md)
-- [2.2.2 验证范围与限制](docs/validation-v2.2.2.md)
+- [2.2.3 验证范围与限制](docs/validation-v2.2.3.md)
 - [Raft 运维与滚动升级](docs/raft-operations.zh-CN.md)
 - [租户分片与迁移](docs/sharding.zh-CN.md)
 - [诊断指标](docs/diagnostics-metrics.zh-CN.md)

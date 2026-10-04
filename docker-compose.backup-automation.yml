@@ -1,0 +1,30 @@
+services:
+  backup-automation:
+    image: graphdb-backup-automation:local
+    build:
+      context: .
+      dockerfile: deploy/backup-automation/Dockerfile
+    restart: unless-stopped
+    command:
+      - --daemon
+      - --url
+      - ${GRAPHDB_BACKUP_AUTOMATION_URL:?Set the standalone or cluster endpoint}
+      - --tenant
+      - ${GRAPHDB_BACKUP_AUTOMATION_TENANT:?Set the tenant to back up}
+      - --state-dir
+      - /state
+      - --metrics-dir
+      - /metrics
+      - --interval
+      - ${GRAPHDB_BACKUP_AUTOMATION_INTERVAL:-86400}
+      - --drill-interval
+      - ${GRAPHDB_BACKUP_AUTOMATION_DRILL_INTERVAL:-604800}
+    environment:
+      GRAPHDB_BACKUP_AUTOMATION_TOKEN: ${GRAPHDB_BACKUP_AUTOMATION_TOKEN:-}
+    volumes:
+      - backup-automation-state:/state
+      - backup-automation-metrics:/metrics
+
+volumes:
+  backup-automation-state:
+  backup-automation-metrics:

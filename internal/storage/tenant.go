@@ -316,6 +316,9 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 		if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
 			return Manifest{}, err
 		}
+		if err := s.settleDirectCommitsBeforeCompaction(ctx, tenantID, manifest.Version); err != nil {
+			return Manifest{}, err
+		}
 	}
 
 	unlock, err := s.lockTenantMaintenance(ctx, tenantID)

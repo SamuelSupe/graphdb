@@ -440,6 +440,9 @@ func normalizeIngestRecordForParquet(record IngestBatchRecord) (IngestBatchRecor
 }
 
 func ingestRecordPayloadJSON(record IngestBatchRecord) ([]byte, error) {
+	record.StartedAt = record.StartedAt.UTC()
+	record.FinishedAt = record.FinishedAt.UTC()
+	record.Request = ingestRequestTimesUTC(record.Request)
 	if record.Request.Items == nil {
 		record.Request.Items = []IngestItem{}
 	}

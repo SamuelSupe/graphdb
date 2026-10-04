@@ -384,7 +384,14 @@ func (c *Cluster) Close() error {
 	return c.closeErr
 }
 func (c *Cluster) Status() map[string]any {
-	status := c.Node.Status()
+	return c.applicationStatus(c.Node.Status())
+}
+
+func (c *Cluster) DiagnosticStatus() map[string]any {
+	return c.applicationStatus(c.Node.DiagnosticStatus())
+}
+
+func (c *Cluster) applicationStatus(status map[string]any) map[string]any {
 	status["ingest_queue"] = c.App.queueObservation.Load()
 	status["maintenance_writes_paused"] = c.maintenanceWritesPaused()
 	if c.App.Catalog {

@@ -1,0 +1,1962 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-04",
+  "published": false,
+  "release_qualified": false,
+  "result": "FAIL",
+  "candidate": {
+    "version": "2.2.2-availability1",
+    "build_commit": "5fd0c970-availability1-dirty",
+    "base_commit": "5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a",
+    "production_go_sha256": "c0a4e33983c5730235a9897c65f11b52e5e5620781786a680557293ba310c093",
+    "built_at": "2026-10-03T21:30:48Z",
+    "binaries": {
+      "graphdb": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+      "soaktest": "cab45f0ba813de5c6048da515d35abf38da76e799a050e96a64e18de0f922278",
+      "soakreport": "fd724bc2b33f9d53c1ef78b0ab5a2215acbc8aaeb05a09c1e1b24ed5482b615f",
+      "e2echeck": "067b16c5c5f596a253a477a3693288ca4e98e28e6acbb1eb5bb88e7228d2fc48",
+      "loadtest": "28bbc3a08503034390ca12e333fb55edf9efb64a12a7680c8395c9da76e0efbe"
+    }
+  },
+  "fixes": [
+    "leader_commit_sampled_before_followers",
+    "compaction_idempotency_scan_before_publication_lock"
+  ],
+  "regressions": {
+    "upgrade-before": {
+      "result": "FAIL_EXPECTED_BEFORE_FIX",
+      "pass_events": 1,
+      "failed_tests": [
+        "TestUpgradeStatusPinsCommitBeforeSamplingFollowers/lagging=false",
+        "TestUpgradeStatusPinsCommitBeforeSamplingFollowers"
+      ],
+      "evidence_sha256": "39f5fe7816c772e694d0343a01c52c17d656648ceb78aedf08e8bf7689e72e2b"
+    },
+    "upgrade-after": {
+      "result": "PASS",
+      "pass_events": 15,
+      "failed_tests": [],
+      "evidence_sha256": "4d3616f620104856a2c906fdd1983153be787c562029b30949216744ba1b548f"
+    },
+    "compact-before-valid": {
+      "result": "FAIL_EXPECTED_BEFORE_FIX",
+      "pass_events": 0,
+      "failed_tests": [
+        "TestCompactIdempotencySettlementDoesNotBlockCommit/direct",
+        "TestCompactIdempotencySettlementDoesNotBlockCommit/task",
+        "TestCompactIdempotencySettlementDoesNotBlockCommit"
+      ],
+      "evidence_sha256": "464238c3cf423a2dfd681f907079d3cc0da74acbd2191ae64b1d0c15f54b0a8a"
+    },
+    "native-focused": {
+      "result": "PASS",
+      "pass_events": 204,
+      "failed_tests": [],
+      "evidence_sha256": "98d6445722c39a9760f4eea38b319f018b0342ffe086068bdba21afaf52aeffa"
+    },
+    "linux-focused": {
+      "result": "PASS",
+      "pass_events": 68,
+      "failed_tests": [],
+      "evidence_sha256": "098a465e6a6096e0935ee1da439774b23c16ff815ed13bd373a713023257b82b"
+    }
+  },
+  "rolling": {
+    "diagnostics": {
+      "metadata": {
+        "started_at": "2026-10-03T21:32:19.674997+00:00",
+        "result": "PASS",
+        "base": {
+          "image": "graphdb:complete-test3-diagnostics-base-20261003",
+          "image_id": "sha256:fae98bdc075617c1301589fc58ea06dc195d34e28fc794f5a898684ad4f2fc14",
+          "binary_sha256": "020554227daf2738c56823cec9116f7e3b989c6763205e355f61de88369f42da",
+          "version_output": "GGraphDB 2.1.2-raft-diagnostics1 commit=b22cac8b046a695f14e7d02909d6570f546e989a built=2026-10-02T12:29:47+08:00 go=go1.26.7"
+        },
+        "target": {
+          "image": "graphdb:availability1-20261004",
+          "image_id": "sha256:65f8e45f5c712c5408c58bbd597126a083f998d1fd0870cc26c1f1168ff926ef",
+          "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+          "version_output": "GGraphDB 2.2.2-availability1 commit=5fd0c970-availability1-dirty built=2026-10-03T21:30:48Z go=go1.26.7"
+        },
+        "cross_host_qualification": "NOT RUN",
+        "finished_at": "2026-10-03T21:38:45.228308+00:00"
+      },
+      "traffic": [
+        {
+          "tenant": "rolling",
+          "writes": 272,
+          "reads": 272,
+          "wal": 34,
+          "attempts": 672,
+          "retries": 2,
+          "failures": []
+        },
+        {
+          "tenant": "rolling-a",
+          "writes": 904,
+          "reads": 904,
+          "wal": 113,
+          "attempts": 2174,
+          "retries": 0,
+          "failures": []
+        },
+        {
+          "tenant": "rolling-b",
+          "writes": 913,
+          "reads": 913,
+          "wal": 114,
+          "attempts": 2236,
+          "retries": 2,
+          "failures": []
+        }
+      ],
+      "totals": {
+        "writes": 2089,
+        "reads": 2089,
+        "wal": 261,
+        "retries": 4
+      },
+      "failed": 0
+    },
+    "review8": {
+      "metadata": {
+        "started_at": "2026-10-03T21:38:45.274941+00:00",
+        "result": "PASS",
+        "base": {
+          "image": "graphdb:complete-test2-review8-base-20261003",
+          "image_id": "sha256:130e58924a3251a3e366ffb5db6f15d7451f42f5203a921eda2189330db02e10",
+          "binary_sha256": "4b004d1c01357c5935f6eb6475013e61ca5797781ef89a2e5deed427c921aaf1",
+          "version_output": "GGraphDB 2.2.2-review8 commit=926cac73-review8 built=2026-10-03T08:06:46Z go=go1.26.7"
+        },
+        "target": {
+          "image": "graphdb:availability1-20261004",
+          "image_id": "sha256:65f8e45f5c712c5408c58bbd597126a083f998d1fd0870cc26c1f1168ff926ef",
+          "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+          "version_output": "GGraphDB 2.2.2-availability1 commit=5fd0c970-availability1-dirty built=2026-10-03T21:30:48Z go=go1.26.7"
+        },
+        "cross_host_qualification": "NOT RUN",
+        "finished_at": "2026-10-03T21:54:59.716903+00:00"
+      },
+      "traffic": [
+        {
+          "tenant": "rolling",
+          "writes": 277,
+          "reads": 277,
+          "wal": 34,
+          "attempts": 676,
+          "retries": 1,
+          "failures": []
+        },
+        {
+          "tenant": "rolling-a",
+          "writes": 800,
+          "reads": 800,
+          "wal": 100,
+          "attempts": 1905,
+          "retries": 1,
+          "failures": []
+        },
+        {
+          "tenant": "rolling-b",
+          "writes": 815,
+          "reads": 815,
+          "wal": 101,
+          "attempts": 1953,
+          "retries": 2,
+          "failures": []
+        }
+      ],
+      "totals": {
+        "writes": 1892,
+        "reads": 1892,
+        "wal": 235,
+        "retries": 4
+      },
+      "failed": 0
+    }
+  },
+  "protocol3_rolling": {
+    "result": "PASS",
+    "started_at": "2026-10-03T21:55:00.721359+00:00",
+    "protocol": 3,
+    "stream_snapshots": true,
+    "image": "graphdb:availability1-20261004",
+    "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+    "traffic": {
+      "writes": 165,
+      "reads": 165,
+      "wal": 20,
+      "attempts": 483,
+      "retries": 62,
+      "failures": []
+    },
+    "finished_at": "2026-10-03T21:56:53.232730+00:00"
+  },
+  "soak": {
+    "standalone3": {
+      "metadata": {
+        "result": "PASS",
+        "duration": "30m",
+        "writers": 4,
+        "readers": 16,
+        "batch_size": 20,
+        "http_timeout": "120s",
+        "maintenance_timeout": "10m",
+        "started_at": "2026-10-03T21:48:51.178542+00:00",
+        "mode": "standalone WAL",
+        "server_memory_limit": "12g",
+        "server_cpu_limit": 2,
+        "reader_cache_bytes": 2147483648,
+        "write_cache_bytes": 2147483648,
+        "image": "graphdb:availability1-20261004",
+        "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+        "exit_code": 0,
+        "finished_at": "2026-10-03T22:19:21.208664+00:00"
+      },
+      "operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 29,
+          "name": "commit-schema",
+          "p50_ms": 29,
+          "p95_ms": 29,
+          "p99_ms": 29,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 745,
+          "name": "create-tenant",
+          "p50_ms": 745,
+          "p95_ms": 745,
+          "p99_ms": 745,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "health": {
+          "count": 3,
+          "errors": 0,
+          "max_ms": 3,
+          "name": "health",
+          "p50_ms": 1,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "statuses": {
+            "200": 3
+          }
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 0,
+          "max_ms": 78225,
+          "name": "rebuild-indexes",
+          "p50_ms": 30664,
+          "p95_ms": 78225,
+          "p99_ms": 78225,
+          "statuses": {
+            "202": 3
+          }
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 21,
+          "name": "save-query",
+          "p50_ms": 16,
+          "p95_ms": 21,
+          "p99_ms": 21,
+          "statuses": {
+            "200": 5
+          }
+        },
+        "tenant-usage": {
+          "count": 61,
+          "errors": 0,
+          "max_ms": 19603,
+          "name": "tenant-usage",
+          "p50_ms": 23,
+          "p95_ms": 2177,
+          "p99_ms": 19603,
+          "statuses": {
+            "200": 61
+          }
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 2,
+          "name": "warm-reader",
+          "p50_ms": 2,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1130,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 3,
+          "p95_ms": 58,
+          "p99_ms": 173,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "cmdb-owner-service-match": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1539,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 10,
+          "p95_ms": 82,
+          "p99_ms": 197,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "cmdb-service-to-database-path": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 593,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 2,
+          "p95_ms": 51,
+          "p99_ms": 151,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "max_ms": 3213,
+          "name": "export-snapshot-stream",
+          "p50_ms": 1231,
+          "p95_ms": 3213,
+          "p99_ms": 3213,
+          "statuses": {
+            "200": 6
+          }
+        },
+        "fuzzy-service-match": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1245,
+          "name": "fuzzy-service-match",
+          "p50_ms": 17,
+          "p95_ms": 93,
+          "p99_ms": 215,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "impact-service": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 1339,
+          "name": "impact-service",
+          "p50_ms": 10,
+          "p95_ms": 65,
+          "p99_ms": 181,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "index-catalog": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 684,
+          "name": "index-catalog",
+          "p50_ms": 39,
+          "p95_ms": 257,
+          "p99_ms": 684,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "index-health": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 198,
+          "name": "index-health",
+          "p50_ms": 15,
+          "p95_ms": 132,
+          "p99_ms": 198,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "indexed-match-allow-stale": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1193,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 13,
+          "p95_ms": 105,
+          "p99_ms": 244,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "indexed-match-min-version": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1243,
+          "name": "indexed-match-min-version",
+          "p50_ms": 20,
+          "p95_ms": 121,
+          "p99_ms": 272,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "ingest": {
+          "count": 369,
+          "errors": 0,
+          "max_ms": 96738,
+          "name": "ingest",
+          "p50_ms": 9552,
+          "p95_ms": 48769,
+          "p99_ms": 82964,
+          "statuses": {
+            "200": 365
+          }
+        },
+        "neighbors-host-out": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 844,
+          "name": "neighbors-host-out",
+          "p50_ms": 7,
+          "p95_ms": 70,
+          "p99_ms": 163,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "path-filter-traverse": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 442,
+          "name": "path-filter-traverse",
+          "p50_ms": 3,
+          "p95_ms": 53,
+          "p99_ms": 147,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "profile-indexed-match": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1113,
+          "name": "profile-indexed-match",
+          "p50_ms": 22,
+          "p95_ms": 131,
+          "p99_ms": 275,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "range-aggregate-match": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1020,
+          "name": "range-aggregate-match",
+          "p50_ms": 20,
+          "p95_ms": 116,
+          "p99_ms": 268,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "reader-fleet": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 229,
+          "name": "reader-fleet",
+          "p50_ms": 9,
+          "p95_ms": 127,
+          "p99_ms": 229,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "reader-freshness": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 175,
+          "name": "reader-freshness",
+          "p50_ms": 11,
+          "p95_ms": 96,
+          "p99_ms": 175,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "saved-host-query": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1421,
+          "name": "saved-host-query",
+          "p50_ms": 36,
+          "p95_ms": 190,
+          "p99_ms": 425,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "saved-prod-containment": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1561,
+          "name": "saved-prod-containment",
+          "p50_ms": 24,
+          "p95_ms": 172,
+          "p99_ms": 363,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "saved-prod-services": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1502,
+          "name": "saved-prod-services",
+          "p50_ms": 39,
+          "p95_ms": 197,
+          "p99_ms": 411,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "saved-service-impact": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1605,
+          "name": "saved-service-impact",
+          "p50_ms": 33,
+          "p95_ms": 184,
+          "p99_ms": 382,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "saved-team-services": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1249,
+          "name": "saved-team-services",
+          "p50_ms": 38,
+          "p95_ms": 193,
+          "p99_ms": 413,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "scan-edges": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1194,
+          "name": "scan-edges",
+          "p50_ms": 26,
+          "p95_ms": 159,
+          "p99_ms": 346,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "scan-edges-allow-stale": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 2099,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 91,
+          "p95_ms": 378,
+          "p99_ms": 683,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "scan-entities": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 1245,
+          "name": "scan-entities",
+          "p50_ms": 40,
+          "p95_ms": 174,
+          "p99_ms": 367,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "scan-entities-allow-stale": {
+          "count": 4326,
+          "errors": 0,
+          "max_ms": 1506,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 33,
+          "p95_ms": 269,
+          "p99_ms": 716,
+          "statuses": {
+            "200": 4326
+          }
+        },
+        "scan-entities-min-version": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 1213,
+          "name": "scan-entities-min-version",
+          "p50_ms": 36,
+          "p95_ms": 176,
+          "p99_ms": 348,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "shortest-service-cluster": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 668,
+          "name": "shortest-service-cluster",
+          "p50_ms": 3,
+          "p95_ms": 60,
+          "p99_ms": 153,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "stream-all-host-page": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 1241,
+          "name": "stream-all-host-page",
+          "p50_ms": 111,
+          "p95_ms": 364,
+          "p99_ms": 579,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "stream-large-indexed-hosts": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 1323,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 100,
+          "p95_ms": 365,
+          "p99_ms": 624,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 4325,
+          "errors": 0,
+          "max_ms": 1123,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 109,
+          "p95_ms": 384,
+          "p99_ms": 610,
+          "statuses": {
+            "200": 4325
+          }
+        },
+        "compact": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 37080,
+          "name": "compact",
+          "p50_ms": 24602,
+          "p95_ms": 37080,
+          "p99_ms": 37080,
+          "statuses": {
+            "202": 5
+          }
+        },
+        "gc": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 10830,
+          "name": "gc",
+          "p50_ms": 6212,
+          "p95_ms": 10830,
+          "p99_ms": 10830,
+          "statuses": {
+            "202": 2
+          }
+        }
+      },
+      "total_operation_count": 108838,
+      "total_errors": 0,
+      "maintenance_events": [
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T21:54:37.856302776Z"
+        },
+        {
+          "event": "index_rebuild_ok",
+          "ts": "2026-10-03T22:00:31.475035313Z"
+        },
+        {
+          "event": "gc_ok",
+          "ts": "2026-10-03T22:00:42.308967054Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:01:11.611190243Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:04:50.335968026Z"
+        },
+        {
+          "event": "index_rebuild_ok",
+          "ts": "2026-10-03T22:09:43.915212661Z"
+        },
+        {
+          "event": "gc_ok",
+          "ts": "2026-10-03T22:09:50.12738713Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:09:58.170749255Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:14:33.952125975Z"
+        }
+      ],
+      "complete": true,
+      "error_events": {
+        "total": 0,
+        "by_event": {},
+        "first_at": null,
+        "last_at": null
+      }
+    },
+    "raft-soak": {
+      "metadata": {
+        "result": "FAIL",
+        "started_at": "2026-10-03T21:37:22.533528+00:00",
+        "image": "graphdb:availability1-20261004",
+        "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+        "scope": "original 30-minute three-replica WAL soak workload, independently executed; cross-host validation remains pending",
+        "exit_code": 1,
+        "finished_at": "2026-10-03T22:07:55.013850+00:00"
+      },
+      "operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 248,
+          "name": "commit-schema",
+          "p50_ms": 248,
+          "p95_ms": 248,
+          "p99_ms": 248,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 376,
+          "name": "create-tenant",
+          "p50_ms": 376,
+          "p95_ms": 376,
+          "p99_ms": 376,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 2,
+          "name": "health",
+          "p50_ms": 1,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "statuses": {
+            "200": 2
+          }
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 0,
+          "max_ms": 238617,
+          "name": "rebuild-indexes",
+          "p50_ms": 103044,
+          "p95_ms": 238617,
+          "p99_ms": 238617,
+          "statuses": {
+            "202": 3
+          }
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 163,
+          "name": "save-query",
+          "p50_ms": 126,
+          "p95_ms": 163,
+          "p99_ms": 163,
+          "statuses": {
+            "200": 5
+          }
+        },
+        "tenant-usage": {
+          "count": 61,
+          "errors": 1,
+          "max_ms": 11303,
+          "name": "tenant-usage",
+          "p50_ms": 1556,
+          "p95_ms": 8766,
+          "p99_ms": 11303,
+          "statuses": {
+            "200": 60,
+            "503": 1
+          }
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 9,
+          "name": "warm-reader",
+          "p50_ms": 9,
+          "p95_ms": 9,
+          "p99_ms": 9,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 16469,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 9,
+          "p95_ms": 4106,
+          "p99_ms": 9612,
+          "statuses": {
+            "200": 1228
+          }
+        },
+        "cmdb-owner-service-match": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 14825,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 11,
+          "p95_ms": 3976,
+          "p99_ms": 9645,
+          "statuses": {
+            "200": 1228
+          }
+        },
+        "cmdb-service-to-database-path": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 16469,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 9,
+          "p95_ms": 4181,
+          "p99_ms": 9642,
+          "statuses": {
+            "200": 1228
+          }
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "max_ms": 6595,
+          "name": "export-snapshot-stream",
+          "p50_ms": 3331,
+          "p95_ms": 6595,
+          "p99_ms": 6595,
+          "statuses": {
+            "200": 6
+          }
+        },
+        "fuzzy-service-match": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 13862,
+          "name": "fuzzy-service-match",
+          "p50_ms": 14,
+          "p95_ms": 4152,
+          "p99_ms": 9473,
+          "statuses": {
+            "200": 1228
+          }
+        },
+        "impact-service": {
+          "count": 1230,
+          "errors": 0,
+          "max_ms": 16471,
+          "name": "impact-service",
+          "p50_ms": 10,
+          "p95_ms": 4152,
+          "p99_ms": 7960,
+          "statuses": {
+            "200": 1229
+          }
+        },
+        "index-catalog": {
+          "count": 60,
+          "errors": 1,
+          "max_ms": 11112,
+          "name": "index-catalog",
+          "p50_ms": 527,
+          "p95_ms": 8177,
+          "p99_ms": 11112,
+          "statuses": {
+            "200": 59,
+            "503": 1
+          }
+        },
+        "index-health": {
+          "count": 60,
+          "errors": 1,
+          "max_ms": 10943,
+          "name": "index-health",
+          "p50_ms": 175,
+          "p95_ms": 7403,
+          "p99_ms": 10943,
+          "statuses": {
+            "200": 59,
+            "503": 1
+          }
+        },
+        "indexed-match-allow-stale": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17201,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 20,
+          "p95_ms": 4394,
+          "p99_ms": 9996,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "indexed-match-min-version": {
+          "count": 1230,
+          "errors": 0,
+          "max_ms": 17204,
+          "name": "indexed-match-min-version",
+          "p50_ms": 20,
+          "p95_ms": 4239,
+          "p99_ms": 9799,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "ingest": {
+          "count": 662,
+          "errors": 8,
+          "max_ms": 37477,
+          "name": "ingest",
+          "p50_ms": 3361,
+          "p95_ms": 20763,
+          "p99_ms": 31974,
+          "statuses": {
+            "200": 521,
+            "429": 132,
+            "503": 8
+          }
+        },
+        "neighbors-host-out": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 14318,
+          "name": "neighbors-host-out",
+          "p50_ms": 11,
+          "p95_ms": 3884,
+          "p99_ms": 9464,
+          "statuses": {
+            "200": 1228
+          }
+        },
+        "path-filter-traverse": {
+          "count": 1230,
+          "errors": 0,
+          "max_ms": 16471,
+          "name": "path-filter-traverse",
+          "p50_ms": 9,
+          "p95_ms": 4200,
+          "p99_ms": 8687,
+          "statuses": {
+            "200": 1229
+          }
+        },
+        "profile-indexed-match": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17211,
+          "name": "profile-indexed-match",
+          "p50_ms": 21,
+          "p95_ms": 4177,
+          "p99_ms": 9655,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "range-aggregate-match": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 17064,
+          "name": "range-aggregate-match",
+          "p50_ms": 20,
+          "p95_ms": 4268,
+          "p99_ms": 9671,
+          "statuses": {
+            "200": 1228
+          }
+        },
+        "reader-fleet": {
+          "count": 60,
+          "errors": 1,
+          "max_ms": 16020,
+          "name": "reader-fleet",
+          "p50_ms": 84,
+          "p95_ms": 6041,
+          "p99_ms": 16020,
+          "statuses": {
+            "200": 59,
+            "503": 1
+          }
+        },
+        "reader-freshness": {
+          "count": 60,
+          "errors": 1,
+          "max_ms": 11024,
+          "name": "reader-freshness",
+          "p50_ms": 132,
+          "p95_ms": 7851,
+          "p99_ms": 11024,
+          "statuses": {
+            "200": 59,
+            "503": 1
+          }
+        },
+        "saved-host-query": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17348,
+          "name": "saved-host-query",
+          "p50_ms": 27,
+          "p95_ms": 4410,
+          "p99_ms": 9810,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "saved-prod-containment": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17318,
+          "name": "saved-prod-containment",
+          "p50_ms": 24,
+          "p95_ms": 4410,
+          "p99_ms": 9616,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "saved-prod-services": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17354,
+          "name": "saved-prod-services",
+          "p50_ms": 28,
+          "p95_ms": 4239,
+          "p99_ms": 9724,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "saved-service-impact": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17339,
+          "name": "saved-service-impact",
+          "p50_ms": 29,
+          "p95_ms": 4245,
+          "p99_ms": 9708,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "saved-team-services": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17349,
+          "name": "saved-team-services",
+          "p50_ms": 25,
+          "p95_ms": 4271,
+          "p99_ms": 9809,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "scan-edges": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17365,
+          "name": "scan-edges",
+          "p50_ms": 30,
+          "p95_ms": 4239,
+          "p99_ms": 9088,
+          "statuses": {
+            "200": 1229,
+            "503": 1
+          }
+        },
+        "scan-edges-allow-stale": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17356,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 28,
+          "p95_ms": 4026,
+          "p99_ms": 9717,
+          "statuses": {
+            "200": 1229,
+            "503": 1
+          }
+        },
+        "scan-entities": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17388,
+          "name": "scan-entities",
+          "p50_ms": 35,
+          "p95_ms": 4342,
+          "p99_ms": 9400,
+          "statuses": {
+            "200": 1229,
+            "503": 1
+          }
+        },
+        "scan-entities-allow-stale": {
+          "count": 1230,
+          "errors": 1,
+          "max_ms": 17384,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 33,
+          "p95_ms": 4174,
+          "p99_ms": 8933,
+          "statuses": {
+            "200": 1229,
+            "503": 1
+          }
+        },
+        "scan-entities-min-version": {
+          "count": 1230,
+          "errors": 0,
+          "max_ms": 17379,
+          "name": "scan-entities-min-version",
+          "p50_ms": 35,
+          "p95_ms": 4296,
+          "p99_ms": 9200,
+          "statuses": {
+            "200": 1229,
+            "503": 1
+          }
+        },
+        "shortest-service-cluster": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 16465,
+          "name": "shortest-service-cluster",
+          "p50_ms": 9,
+          "p95_ms": 4116,
+          "p99_ms": 8167,
+          "statuses": {
+            "200": 1229
+          }
+        },
+        "stream-all-host-page": {
+          "count": 1229,
+          "errors": 1,
+          "max_ms": 17434,
+          "name": "stream-all-host-page",
+          "p50_ms": 46,
+          "p95_ms": 4324,
+          "p99_ms": 8952,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "stream-large-indexed-hosts": {
+          "count": 1229,
+          "errors": 1,
+          "max_ms": 16489,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 21,
+          "p95_ms": 4147,
+          "p99_ms": 8286,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 1229,
+          "errors": 0,
+          "max_ms": 17303,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 27,
+          "p95_ms": 4187,
+          "p99_ms": 9099,
+          "statuses": {
+            "200": 1228,
+            "503": 1
+          }
+        },
+        "compact": {
+          "count": 5,
+          "errors": 1,
+          "max_ms": 258979,
+          "name": "compact",
+          "p50_ms": 106422,
+          "p95_ms": 258979,
+          "p99_ms": 258979,
+          "statuses": {
+            "202": 4,
+            "503": 1
+          }
+        },
+        "gc": {
+          "count": 2,
+          "errors": 1,
+          "max_ms": 149669,
+          "name": "gc",
+          "p50_ms": 8950,
+          "p95_ms": 149669,
+          "p99_ms": 149669,
+          "statuses": {
+            "202": 1,
+            "503": 1
+          }
+        }
+      },
+      "total_operation_count": 31729,
+      "total_errors": 28,
+      "maintenance_events": [
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T21:46:54.080462784Z"
+        },
+        {
+          "event": "gc_ok",
+          "ts": "2026-10-03T21:50:04.77216456Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T21:51:03.400643678Z"
+        },
+        {
+          "event": "index_rebuild_ok",
+          "ts": "2026-10-03T21:52:46.444459132Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T21:54:32.866541545Z"
+        },
+        {
+          "event": "index_rebuild_ok",
+          "ts": "2026-10-03T22:01:33.716947082Z"
+        },
+        {
+          "error": "/v1/tasks returned 503, want [202]: {\"code\":\"raft_unavailable\",\"error\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"leader_id\":0,\"message\":\"proposal outcome is unknown after submission: Raft node is not the leader\",\"retryable\":true}\n",
+          "event": "gc_error",
+          "ts": "2026-10-03T22:01:42.671740901Z"
+        },
+        {
+          "error": "/v1/tasks returned 503, want [202]: <html><body><h1>503 Service Unavailable</h1>\nNo server is available to handle this request.\n</body></html>\n",
+          "event": "compact_error",
+          "ts": "2026-10-03T22:01:42.672642448Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:06:30.23375196Z"
+        }
+      ],
+      "complete": true,
+      "error_events": {
+        "total": 31,
+        "by_event": {
+          "query_error": 16,
+          "write_error": 8,
+          "usage_sample_error": 1,
+          "gc_error": 1,
+          "compact_error": 1,
+          "index_catalog_sample_error": 1,
+          "index_health_sample_error": 1,
+          "reader_freshness_error": 1,
+          "reader_fleet_error": 1
+        },
+        "first_at": "2026-10-03T22:01:42.627880494Z",
+        "last_at": "2026-10-03T22:01:47.716246499Z"
+      }
+    },
+    "raft-soak-serial-priority": {
+      "metadata": {
+        "result": "FAIL",
+        "started_at": "2026-10-03T22:19:27.552990+00:00",
+        "image": "graphdb:availability1-20261004",
+        "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+        "scope": "same workload after this task standalone test ends; own server threads nice=-10 and IO best-effort priority=0; other workloads untouched; cross-host validation pending",
+        "exit_code": 1,
+        "finished_at": "2026-10-03T22:49:42.690038+00:00"
+      },
+      "operation_metrics": {
+        "commit-schema": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 106,
+          "name": "commit-schema",
+          "p50_ms": 106,
+          "p95_ms": 106,
+          "p99_ms": 106,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "create-tenant": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 245,
+          "name": "create-tenant",
+          "p50_ms": 245,
+          "p95_ms": 245,
+          "p99_ms": 245,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "health": {
+          "count": 2,
+          "errors": 0,
+          "max_ms": 6,
+          "name": "health",
+          "p50_ms": 1,
+          "p95_ms": 6,
+          "p99_ms": 6,
+          "statuses": {
+            "200": 2
+          }
+        },
+        "rebuild-indexes": {
+          "count": 3,
+          "errors": 1,
+          "max_ms": 172490,
+          "name": "rebuild-indexes",
+          "p50_ms": 2087,
+          "p95_ms": 172490,
+          "p99_ms": 172490,
+          "statuses": {
+            "202": 2,
+            "503": 1
+          }
+        },
+        "save-query": {
+          "count": 5,
+          "errors": 0,
+          "max_ms": 89,
+          "name": "save-query",
+          "p50_ms": 75,
+          "p95_ms": 89,
+          "p99_ms": 89,
+          "statuses": {
+            "200": 5
+          }
+        },
+        "tenant-usage": {
+          "count": 61,
+          "errors": 0,
+          "max_ms": 4924,
+          "name": "tenant-usage",
+          "p50_ms": 420,
+          "p95_ms": 2094,
+          "p99_ms": 4924,
+          "statuses": {
+            "200": 61
+          }
+        },
+        "warm-reader": {
+          "count": 1,
+          "errors": 0,
+          "max_ms": 12,
+          "name": "warm-reader",
+          "p50_ms": 12,
+          "p95_ms": 12,
+          "p99_ms": 12,
+          "statuses": {
+            "200": 1
+          }
+        },
+        "cmdb-env-containment-traverse": {
+          "count": 2506,
+          "errors": 11,
+          "max_ms": 7025,
+          "name": "cmdb-env-containment-traverse",
+          "p50_ms": 5,
+          "p95_ms": 1344,
+          "p99_ms": 2428,
+          "statuses": {
+            "200": 2495,
+            "503": 11
+          }
+        },
+        "cmdb-owner-service-match": {
+          "count": 2506,
+          "errors": 11,
+          "max_ms": 8925,
+          "name": "cmdb-owner-service-match",
+          "p50_ms": 6,
+          "p95_ms": 1347,
+          "p99_ms": 2434,
+          "statuses": {
+            "200": 2495,
+            "503": 11
+          }
+        },
+        "cmdb-service-to-database-path": {
+          "count": 2506,
+          "errors": 11,
+          "max_ms": 7020,
+          "name": "cmdb-service-to-database-path",
+          "p50_ms": 5,
+          "p95_ms": 1306,
+          "p99_ms": 2379,
+          "statuses": {
+            "200": 2495,
+            "503": 11
+          }
+        },
+        "export-snapshot-stream": {
+          "count": 6,
+          "errors": 0,
+          "max_ms": 2083,
+          "name": "export-snapshot-stream",
+          "p50_ms": 253,
+          "p95_ms": 2083,
+          "p99_ms": 2083,
+          "statuses": {
+            "200": 6
+          }
+        },
+        "fuzzy-service-match": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9459,
+          "name": "fuzzy-service-match",
+          "p50_ms": 7,
+          "p95_ms": 1335,
+          "p99_ms": 2454,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "impact-service": {
+          "count": 2507,
+          "errors": 11,
+          "max_ms": 6994,
+          "name": "impact-service",
+          "p50_ms": 6,
+          "p95_ms": 1320,
+          "p99_ms": 2416,
+          "statuses": {
+            "200": 2496,
+            "503": 11
+          }
+        },
+        "index-catalog": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 3045,
+          "name": "index-catalog",
+          "p50_ms": 58,
+          "p95_ms": 2176,
+          "p99_ms": 3045,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "index-health": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 2877,
+          "name": "index-health",
+          "p50_ms": 18,
+          "p95_ms": 1280,
+          "p99_ms": 2877,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "indexed-match-allow-stale": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9537,
+          "name": "indexed-match-allow-stale",
+          "p50_ms": 11,
+          "p95_ms": 1326,
+          "p99_ms": 2523,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "indexed-match-min-version": {
+          "count": 2506,
+          "errors": 0,
+          "max_ms": 9328,
+          "name": "indexed-match-min-version",
+          "p50_ms": 12,
+          "p95_ms": 1376,
+          "p99_ms": 2601,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "ingest": {
+          "count": 1019,
+          "errors": 4,
+          "max_ms": 9477,
+          "name": "ingest",
+          "p50_ms": 1608,
+          "p95_ms": 5376,
+          "p99_ms": 7543,
+          "statuses": {
+            "200": 918,
+            "429": 97,
+            "503": 4
+          }
+        },
+        "neighbors-host-out": {
+          "count": 2506,
+          "errors": 11,
+          "max_ms": 8841,
+          "name": "neighbors-host-out",
+          "p50_ms": 6,
+          "p95_ms": 1329,
+          "p99_ms": 2443,
+          "statuses": {
+            "200": 2495,
+            "503": 11
+          }
+        },
+        "path-filter-traverse": {
+          "count": 2507,
+          "errors": 11,
+          "max_ms": 7012,
+          "name": "path-filter-traverse",
+          "p50_ms": 5,
+          "p95_ms": 1296,
+          "p99_ms": 2425,
+          "statuses": {
+            "200": 2496,
+            "503": 11
+          }
+        },
+        "profile-indexed-match": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9196,
+          "name": "profile-indexed-match",
+          "p50_ms": 12,
+          "p95_ms": 1381,
+          "p99_ms": 2542,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "range-aggregate-match": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9370,
+          "name": "range-aggregate-match",
+          "p50_ms": 11,
+          "p95_ms": 1335,
+          "p99_ms": 2522,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "reader-fleet": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 1663,
+          "name": "reader-fleet",
+          "p50_ms": 18,
+          "p95_ms": 434,
+          "p99_ms": 1663,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "reader-freshness": {
+          "count": 60,
+          "errors": 0,
+          "max_ms": 3673,
+          "name": "reader-freshness",
+          "p50_ms": 17,
+          "p95_ms": 1388,
+          "p99_ms": 3673,
+          "statuses": {
+            "200": 60
+          }
+        },
+        "saved-host-query": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9571,
+          "name": "saved-host-query",
+          "p50_ms": 15,
+          "p95_ms": 1411,
+          "p99_ms": 2527,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "saved-prod-containment": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 8279,
+          "name": "saved-prod-containment",
+          "p50_ms": 12,
+          "p95_ms": 1393,
+          "p99_ms": 2476,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "saved-prod-services": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9661,
+          "name": "saved-prod-services",
+          "p50_ms": 16,
+          "p95_ms": 1403,
+          "p99_ms": 2543,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "saved-service-impact": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9798,
+          "name": "saved-service-impact",
+          "p50_ms": 14,
+          "p95_ms": 1393,
+          "p99_ms": 2587,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "saved-team-services": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9423,
+          "name": "saved-team-services",
+          "p50_ms": 14,
+          "p95_ms": 1391,
+          "p99_ms": 2557,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "scan-edges": {
+          "count": 2507,
+          "errors": 12,
+          "max_ms": 9724,
+          "name": "scan-edges",
+          "p50_ms": 18,
+          "p95_ms": 1387,
+          "p99_ms": 2507,
+          "statuses": {
+            "200": 2495,
+            "503": 12
+          }
+        },
+        "scan-edges-allow-stale": {
+          "count": 2506,
+          "errors": 12,
+          "max_ms": 9725,
+          "name": "scan-edges-allow-stale",
+          "p50_ms": 15,
+          "p95_ms": 1377,
+          "p99_ms": 2563,
+          "statuses": {
+            "200": 2494,
+            "503": 12
+          }
+        },
+        "scan-entities": {
+          "count": 2507,
+          "errors": 12,
+          "max_ms": 6211,
+          "name": "scan-entities",
+          "p50_ms": 24,
+          "p95_ms": 1342,
+          "p99_ms": 2428,
+          "statuses": {
+            "200": 2495,
+            "503": 12
+          }
+        },
+        "scan-entities-allow-stale": {
+          "count": 2507,
+          "errors": 12,
+          "max_ms": 9682,
+          "name": "scan-entities-allow-stale",
+          "p50_ms": 21,
+          "p95_ms": 1381,
+          "p99_ms": 2463,
+          "statuses": {
+            "200": 2495,
+            "503": 12
+          }
+        },
+        "scan-entities-min-version": {
+          "count": 2507,
+          "errors": 0,
+          "max_ms": 9668,
+          "name": "scan-entities-min-version",
+          "p50_ms": 24,
+          "p95_ms": 1389,
+          "p99_ms": 2534,
+          "statuses": {
+            "200": 2495,
+            "503": 12
+          }
+        },
+        "shortest-service-cluster": {
+          "count": 2507,
+          "errors": 11,
+          "max_ms": 7004,
+          "name": "shortest-service-cluster",
+          "p50_ms": 5,
+          "p95_ms": 1335,
+          "p99_ms": 2342,
+          "statuses": {
+            "200": 2496,
+            "503": 11
+          }
+        },
+        "stream-all-host-page": {
+          "count": 2507,
+          "errors": 12,
+          "max_ms": 6249,
+          "name": "stream-all-host-page",
+          "p50_ms": 31,
+          "p95_ms": 1392,
+          "p99_ms": 2482,
+          "statuses": {
+            "200": 2495,
+            "503": 12
+          }
+        },
+        "stream-large-indexed-hosts": {
+          "count": 2507,
+          "errors": 11,
+          "max_ms": 6990,
+          "name": "stream-large-indexed-hosts",
+          "p50_ms": 13,
+          "p95_ms": 1332,
+          "p99_ms": 2366,
+          "statuses": {
+            "200": 2496,
+            "503": 11
+          }
+        },
+        "stream-large-indexed-hosts-min-version": {
+          "count": 2507,
+          "errors": 0,
+          "max_ms": 6328,
+          "name": "stream-large-indexed-hosts-min-version",
+          "p50_ms": 17,
+          "p95_ms": 1317,
+          "p99_ms": 2368,
+          "statuses": {
+            "200": 2495,
+            "503": 12
+          }
+        },
+        "compact": {
+          "count": 5,
+          "errors": 1,
+          "max_ms": 46977,
+          "name": "compact",
+          "p50_ms": 33017,
+          "p95_ms": 46977,
+          "p99_ms": 46977,
+          "statuses": {
+            "202": 4,
+            "503": 1
+          }
+        },
+        "gc": {
+          "count": 2,
+          "errors": 1,
+          "max_ms": 179810,
+          "name": "gc",
+          "p50_ms": 26778,
+          "p95_ms": 179810,
+          "p99_ms": 179810,
+          "statuses": {
+            "202": 2
+          }
+        }
+      },
+      "total_operation_count": 64006,
+      "total_errors": 263,
+      "maintenance_events": [
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:25:03.462575316Z"
+        },
+        {
+          "error": "/v1/tasks/ba7164a3d31218650b6145ff returned 503, want [200]: <html><body><h1>503 Service Unavailable</h1>\nNo server is available to handle this request.\n</body></html>\n",
+          "event": "gc_error",
+          "ts": "2026-10-03T22:30:02.125842294Z"
+        },
+        {
+          "error": "/v1/tasks returned 503, want [202]: <html><body><h1>503 Service Unavailable</h1>\nNo server is available to handle this request.\n</body></html>\n",
+          "event": "compact_error",
+          "ts": "2026-10-03T22:30:02.126305088Z"
+        },
+        {
+          "error": "/v1/tasks returned 503, want [202]: <html><body><h1>503 Service Unavailable</h1>\nNo server is available to handle this request.\n</body></html>\n",
+          "event": "index_rebuild_error",
+          "ts": "2026-10-03T22:30:02.12820614Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:35:13.904602435Z"
+        },
+        {
+          "event": "index_rebuild_ok",
+          "ts": "2026-10-03T22:42:27.836210717Z"
+        },
+        {
+          "event": "gc_ok",
+          "ts": "2026-10-03T22:45:27.646293228Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:46:14.623136281Z"
+        },
+        {
+          "event": "compact_ok",
+          "ts": "2026-10-03T22:46:47.640400011Z"
+        }
+      ],
+      "complete": true,
+      "error_events": {
+        "total": 299,
+        "by_event": {
+          "write_error": 4,
+          "query_error": 292,
+          "gc_error": 1,
+          "compact_error": 1,
+          "index_rebuild_error": 1
+        },
+        "first_at": "2026-10-03T22:30:00.131021335Z",
+        "last_at": "2026-10-03T22:30:03.997871697Z"
+      }
+    }
+  },
+  "failed_attempts": {
+    "standalone_wrong_admin_listener": {
+      "result": "FAIL",
+      "duration": "30m",
+      "writers": 4,
+      "readers": 16,
+      "batch_size": 20,
+      "http_timeout": "120s",
+      "maintenance_timeout": "10m",
+      "started_at": "2026-10-03T21:34:23.602646+00:00",
+      "mode": "standalone WAL",
+      "image": "graphdb:availability1-20261004",
+      "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+      "exit_code": 1,
+      "finished_at": "2026-10-03T21:34:27.555407+00:00"
+    },
+    "standalone_2g_limit": {
+      "metadata": {
+        "result": "FAIL",
+        "duration": "30m",
+        "writers": 4,
+        "readers": 16,
+        "batch_size": 20,
+        "http_timeout": "120s",
+        "maintenance_timeout": "10m",
+        "started_at": "2026-10-03T21:36:00.635747+00:00",
+        "mode": "standalone WAL",
+        "image": "graphdb:availability1-20261004",
+        "binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+        "exit_code": 137,
+        "finished_at": "2026-10-03T21:48:55.958322+00:00"
+      },
+      "state": {
+        "State": {
+          "Status": "exited",
+          "Running": false,
+          "Paused": false,
+          "Restarting": false,
+          "OOMKilled": true,
+          "Dead": false,
+          "Pid": 0,
+          "ExitCode": 137,
+          "Error": "",
+          "StartedAt": "2026-10-03T21:36:05.595878824Z",
+          "FinishedAt": "2026-10-03T21:46:39.169378422Z"
+        },
+        "Memory": 2147483648,
+        "MemorySwap": 2147483648
+      }
+    }
+  },
+  "boundaries": {
+    "cross_host": "PENDING_NO_THREE_HOSTS",
+    "production_capacity": "UNQUALIFIED",
+    "github_ci": "NOT_RUN",
+    "standard_dockerfile_cold_build": "NOT_RUN",
+    "prior_large_restore_fault_gates": "NOT_REPEATED",
+    "legacy_affected_source_identity_dot_paths_and_in_progress_migrations": "EXISTING_RESTRICTIONS_RETAINED"
+  },
+  "updated_at": "2026-10-03T22:49:57.135356+00:00"
+}

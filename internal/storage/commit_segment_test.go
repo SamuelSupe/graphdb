@@ -94,7 +94,8 @@ func (s *concurrentCommitTailReadStore) Get(ctx context.Context, key string) ([]
 }
 
 func TestTenantStoreSegmentsCommitTailAndLoadsAfterLooseCleanup(t *testing.T) {
-	ctx := context.Background()
+	ctx := ReplicatedContext(context.Background(), "offset-segment-clock",
+		time.Date(2026, 10, 3, 10, 11, 12, 13, time.FixedZone("UTC+8", 8*60*60)))
 	store := NewTenantStore(NewMemoryStore(), "test")
 	for i := 0; i < commitSegmentTargetCount; i++ {
 		if _, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{

@@ -183,6 +183,10 @@ func normalizeDeadLetterForParquet(letter DeadLetter) (DeadLetter, string, error
 }
 
 func deadLetterPayloadJSON(letter DeadLetter) ([]byte, error) {
+	letter.CreatedAt = letter.CreatedAt.UTC()
+	letter.UpdatedAt = letter.UpdatedAt.UTC()
+	letter.ReplayedAt = letter.ReplayedAt.UTC()
+	letter.Request = ingestRequestTimesUTC(letter.Request)
 	letter.objectKey = ""
 	letter.objectMeta = ObjectMeta{}
 	if letter.Request.Items == nil {

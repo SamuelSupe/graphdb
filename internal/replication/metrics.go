@@ -45,15 +45,20 @@ func (n *Node) observeSnapshot(snapshot raftpb.Snapshot) {
 	n.snapshotBytes.Store(size)
 }
 
-// WriteMetrics reads local Raft status and bounded transport queues. Match
+// WriteMetrics reads sampled local Raft status and bounded transport queues. Match
 // indexes describe replicated logs, not remote application acknowledgement.
 func (n *Node) WriteMetrics(w io.Writer) {
-	status := n.Status()
+	status := n.DiagnosticStatus()
 	n.metrics.WritePrometheus(w, "graphdb_raft")
+	observability.WriteScalar(w, "graphdb_raft_status_observation_known", "Whether a local Raft status sample is available; not a quorum guarantee.", "gauge", boolFloat(status["status_known"] == true))
+	observability.WriteScalar(w, "graphdb_raft_status_age_seconds", "Seconds since the last completed status sample began; a stalled Raft loop prevents refresh.", "gauge", status["status_age_seconds"].(float64))
+	observability.WriteScalar(w, "graphdb_raft_snapshot_cleanup_failed", "Old snapshot file cleanup needs retry; durable replication remains active.", "gauge", boolFloat(status["snapshot_cleanup_error"] != nil))
 	observability.WriteInfo(w, "graphdb_raft_node_info", "Local Raft group identity.", []string{"cluster_id", "node_id"}, []string{n.cfg.ClusterID, strconv.FormatUint(n.cfg.ID, 10)})
 	for _, gauge := range []struct{ key, name, help string }{
 		{"term", "term", "Current local Raft term."},
 		{"commit_index", "commit_index", "Local Raft committed log index."},
+		{"durable_commit_index", "durable_commit_index", "Latest committed log index durably recorded locally."},
+		{"durable_application_lag", "durable_application_lag", "Locally durable committed entries not yet applied; sampled without waiting for Raft."},
 		{"applied_index", "applied_index", "Local durably applied log index."},
 		{"application_bytes", "application_bytes", "Bytes loaded for application from the durable log."},
 		{"proposal_bytes", "proposal_bytes", "Bytes charged to locally waiting proposals."},

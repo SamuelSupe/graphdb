@@ -32,19 +32,19 @@ jobs:
           GRAPHDB_GATE_IMAGE: graphdb:raft-gate
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate
         run: scripts/raft_gate.sh
-      - name: Qualify rolling upgrade from the diagnostic development build
+      - name: Qualify rolling upgrade from the integrity development build
         if: inputs.soak
         env:
           GRAPHDB_ROLLING_BASE_IMAGE: graphdb:raft-rolling-source
           GRAPHDB_ROLLING_TARGET_IMAGE: graphdb:raft-gate
           GRAPHDB_ROLLING_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate/rolling
-          GRAPHDB_ROLLING_BASE_COMMIT: b22cac8b046a695f14e7d02909d6570f546e989a
+          GRAPHDB_ROLLING_BASE_COMMIT: 5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a
         run: |
           set -euo pipefail
           baseline="$RUNNER_TEMP/raft-rolling-source"
           mkdir -p "$baseline"
           git archive "$GRAPHDB_ROLLING_BASE_COMMIT" | tar -x -C "$baseline"
-          docker build --build-arg VERSION=2.1.2-raft-diagnostics1 \
+          docker build --build-arg VERSION=2.2.2-raft-integrity1 \
             --build-arg COMMIT="$GRAPHDB_ROLLING_BASE_COMMIT" \
             --build-arg BUILD_DATE="$(git show -s --format=%cI "$GRAPHDB_ROLLING_BASE_COMMIT")" \
             -t "$GRAPHDB_ROLLING_BASE_IMAGE" "$baseline"

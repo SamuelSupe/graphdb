@@ -1,89 +1,63 @@
-# GGraphDB v2.2.2
+# GGraphDB v2.2.3
 
 ## 中文
 
-本版承接 2.2.0 候选功能。`v2.2.0` 标签的发行全量测试检出测试处理器替换的数据竞争和 GC 用例完成超时，未发布正式下载包；本版修正测试初始化顺序和分阶段预算，保留原行为断言，并重新执行完整发行门禁。2.2.1 候选随后因文档补查取消发行；本版补齐中英文产品、部署、架构和索引说明，并明确单机 S3 自动化边界。旧标签与失败/取消记录保留。
+本版修复 2.2.2 发布后发现的持久化和恢复完整性问题：副本缺失已发布依赖时停止应用、S3 恢复切主摘要稳定性、迁移分块与图快照冷校验、来源身份与前缀绑定、离线备份恢复的独占锁和目标目录保护、非 UTC 类型时间的内容校验，以及写后校验 I/O 错误误删发布对象。生产 NGINX 示例同时修复编码写路径的角色绕过；现有部署需更新配置并重新加载。
 
-同一二进制现在支持默认单机 direct/WAL、独立磁盘的 Raft 副本，以及按租户拆分的多个 Raft 数据组。
-单组默认三个完整副本，多数派持久化并提供强一致读取；分片目录保存稳定归属，新增组不会自动搬迁已有租户。
-通过显式迁移增加容量，每个租户仍由一个数据组完整管理，不支持租户内部图分区。
+新增持久化外部备份 worker，支持单机和 Raft 的定时任务、结果不确定时的核对、重试、下载校验、隔离恢复演练和诊断指标，提供 Compose/systemd 示例。保留单机内置备份策略；Raft 不启用内部策略，外部备份历史由显式 S3 生命周期管理。
 
-本版包含受保护的集群管理、兼容窗口内的滚动升级、租户迁移/取消、分块续传恢复、可选流式快照、
-维护公平推进和租户写入背压、协议 3 的 GC 准备/发布分离，以及本地诊断、Prometheus 指标和告警示例。
-同时修复副本配置分歧、成员变更竞态、过期任务/WAL 发布、导入损坏和维护期间误摘流等问题。
+可用性修复将旧快照清理放到后台，保留有年龄的诊断采样，避免同步 Raft 状态阻塞取消；滚动预检先固定 Leader 的提交位置，压缩幂等记录扫描不再长时间持有前台写锁。快照捕获按目录复用检查与创建，允许读者，编码在捕获锁外执行；维护传输确认首块后最多并发四块。多数派、强读、回滚日志与 fsync 顺序保持原契约。默认单机 direct/WAL、Raft 和租户分片均继续支持。
 
-单机 2.0/2.1 目录保持兼容，替换程序前必须停止旧进程。单机升级仍需重启；Raft 滚动升级只限于
-[已验收窗口](https://github.com/SamuelSupe/graphdb/blob/v2.2.2/docs/raft-rolling-upgrade.zh-CN.md)，不能推广到任意版本。
-默认 Raft 协议仍为 1；协议 2/3 必须在全部投票节点具备支持后独立启用。协议 3 生效后，最高协议为 2 的旧程序不能打开原副本目录。
-保留原 WAL 受理/终态区分、幂等键、租户代次和多数派/应用屏障；超时可能已经提交，重试须使用原身份。
+**性能与可用性边界：** 最终本机性能候选长测完成 45,116 次操作，出现四次入口 503，为 FAIL，故障记录保留。共享内核有严重争用，但根因没有据此被认定为完全解决。捕获微基准分配字节减少约 63–66%，不等于整体读写吞吐收益。本版通过完整标签门禁后才发布，确切资产的运行证据位于包内 `release/evidence/`；跨宿主机、真实容量和天级稳定性仍未认证。
 
-SDK/OpenAPI 版本为 2.2.2，Go 模块仍为 `/v2`，HTTP 仍为 `/v1`。单机自动 S3 备份继续支持；Raft 使用外部调度调用集群备份 API。
-业务认证、租户授权与 TLS 由网关负责，私有 Raft/目录/router 管理令牌不代替用户授权。完整运行态灾备仍要求一致离线边界。
+SDK/OpenAPI 为 2.2.3，Go 模块 `/v2`、HTTP `/v1` 不变。单机升级先备份并停止旧进程；不要让两个版本共用目录。Raft 滚动资格仅限包内记录的已修复开发基线 `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` 与本版的协议 1 窗口，不代表已发布 2.2.2 的无条件滚动兼容。受来源身份修复影响的数据组不能与旧解释程序混部。升级前完成或取消旧迁移、部分 S3 恢复；全组升级完成前暂停新迁移/恢复，协议 2/3 在全组支持后独立激活。
 
-候选在 OrbStack 通过单机、协议 1/2/3、分片、故障恢复与实际混部滚动验证。
-30 分钟 Raft 负载记录 71,140 次操作、零非预期错误，同时有 90 次预期写入 429，最大写入等待 40.154 秒。
-这些数据属于本机候选正确性观测，不是发行资产性能基线。
-跨宿主机、真实容量、天级稳定性、生产认证/TLS 与真实告警通知仍待验收；不承诺统一吞吐增幅、固定 RTO 或低延迟 SLO。
-
-发行标签工作流另行执行完整测试、vet/race、SDK、HTTP/重启、S3 恢复、单机及 Raft 30 分钟负载，并从该提交构建和核验发行包。
-实际结论以 [GitHub Actions](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml)、包内 `release/evidence/` 和
-[2.2.2 验证范围](https://github.com/SamuelSupe/graphdb/blob/v2.2.2/docs/validation-v2.2.2.md) 为准；历史候选证据不代替发行二进制资格。
+实际门禁、下载核对和未验收项见 [2.2.3 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.2.3.md)及 [升级说明](https://github.com/SamuelSupe/graphdb/blob/v2.2.3/docs/raft-rolling-upgrade.zh-CN.md)。历史报告只证明对应候选，不将失败或跳过变为 PASS。
 
 ## English
 
-This release carries forward the 2.2.0 candidate features. The `v2.2.0` tag
-failed its full test gate and has no published distribution. This version fixes
-a test-handler initialization race and separates the GC fairness and completion
-budgets while retaining the behavioral assertions. The complete release gates
-run again. The 2.2.1 distribution candidate was then cancelled for documentation
-corrections. This version aligns the bilingual product, deployment and architecture
-guides and scopes internal S3 automation to standalone. The original tags and
-failure/cancellation records remain available.
+This patch fixes replica dependency integrity, S3 restore identity after leader
+loss, migration/snapshot validation, source identity and prefix binding, offline
+recovery locks/targets, UTC timestamp content hashes and post-write I/O handling.
+Update and reload the production NGINX template to receive the encoded-path
+write authorization correction.
 
-The same binary supports default standalone direct/WAL, independent local Raft
-replicas, and tenant sharding across data groups. A group defaults to three full
-replicas with majority durability and strong reads. The catalog keeps placement
-stable; adding a group does not automatically move existing tenants. Migration
-moves whole tenants, and intra-tenant graph partitioning is not supported.
+It adds a persistent external backup scheduler for standalone and Raft, with
+uncertain-outcome reconciliation, retries, mandatory readback, isolated drills,
+metrics and Compose/systemd examples. Standalone built-in scheduling remains;
+Raft uses the external worker and explicit S3 lifecycle policies.
 
-This release adds protected cluster administration, qualified rolling upgrades,
-resumable migration/recovery, optional streaming snapshots, fair maintenance,
-tenant write backpressure, protocol-3 prepared GC, and local diagnostic metrics.
-It fixes replica configuration divergence, membership races, obsolete background
-work, corrupt imports, and maintenance-induced gateway withdrawal.
+Background snapshot cleanup, deadline-aware admission and rolling preflight fixes
+improve operational behavior. Snapshot capture reuses directory work and permits
+readers; prepared maintenance can pipeline four chunks after its first manifest
+is acknowledged. Majority durability, strong reads and fsync ordering remain.
 
-Standalone 2.0/2.1 directories remain compatible after stopping the old process.
-Raft rolling compatibility is limited to the documented source/target/protocol
-window. The default protocol remains 1; separately activate 2/3 after all voters
-support them. A protocol-2-only binary cannot reopen a directory after protocol 3
-has been persisted. Keep idempotency identities when retrying uncertain writes.
-SDK/OpenAPI versions are 2.2.2; HTTP `/v1` and the Go module `/v2` remain unchanged.
-Standalone automatic S3 backups remain available; Raft uses external scheduling.
+The prior local performance candidate completed 45,116 operations but had four
+HAProxy 503 query failures: **FAIL**, retained in the report. Resource interference
+does not establish that the server is fault-free. Capture allocation reductions
+are phase-specific; overall throughput, cross-host and production capacity remain
+unqualified. Publication requires the complete exact-tag gates, with evidence
+included in the distribution.
 
-The local candidate passed standalone, protocol 1/2/3, sharding, recovery and
-actual dual-binary rolling checks. Its thirty-minute Raft workload recorded
-71,140 operations without unexpected errors, but included 90 expected ingestion
-429s and a 40.154-second maximum write wait. Cross-host, capacity, day-scale
-stability and production integration remain unqualified. No general throughput,
-low-latency or fixed recovery-time guarantee is claimed.
-
-The tag workflow independently qualifies and packages the release commit.
-Consult its actual conclusions and packaged `release/evidence/`; local candidate
-results do not certify a different binary. See the
-[upgrade guide](https://github.com/SamuelSupe/graphdb/blob/v2.2.2/docs/user/release-deployment.md).
+SDK/OpenAPI are 2.2.3; module `/v2` and HTTP `/v1` are unchanged. Standalone upgrades
+require stopping the prior process. Rolling qualification binds the fixed
+`5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` development build to this target,
+not every published 2.2.2 deployment. Affected multi-source identity graphs cannot
+mix with the old interpretation. Finish/cancel old migration and partial S3
+restore work, and activate protocol 2/3 separately after all voters support it.
 
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.2.2.tar.gz.sha256
-tar -xzf graphdb-v2.2.2.tar.gz
-cd v2.2.2
+sha256sum -c graphdb-v2.2.3.tar.gz.sha256
+tar -xzf graphdb-v2.2.3.tar.gz
+cd v2.2.3
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/path/to/v2-data bin/graphdb-linux-amd64 serve
 ```
 
-Includes Linux amd64/arm64 and macOS arm64 binaries, source, SDKs, OpenAPI,
-bilingual documentation, standalone/Raft/sharded deployment examples, serial
+Includes Linux amd64/arm64 and macOS arm64 binaries, source, matching SDKs and
+OpenAPI, bilingual docs, standalone/Raft/sharded and backup automation examples,
 upgrade scripts, alert rules, build identity and gate evidence. No registry image
-or production fault-domain qualification is implied by the download archive.
+or production fault-domain certification is implied.

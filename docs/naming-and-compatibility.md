@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release is **2.2.2**, developed on `main`. GGraphDB runs one process
+The current release is **2.2.3**, developed on `main`. GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,8 +12,8 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION`: `2.2.2`; tag: `v2.2.2` |
-| Go/Python SDKs and OpenAPI document version | `2.2.2` |
+| Product and release tag | `VERSION`: `2.2.3`; tag: `v2.2.3` |
+| Go/Python SDKs and OpenAPI document version | `2.2.3` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
 | Persisted Parquet/WAL and snapshot format | Standalone retains 2.0/2.1; Raft has separate protocol and directory-role markers |
@@ -48,6 +48,15 @@ No-op writes retain the current version and hash; idempotent retries return the
 recorded result. `expected_version`, `min_version`, cursor version checks and
 WAL accepted/published/terminal distinctions remain supported.
 
+Version 2.2.3 canonicalizes typed timestamps to UTC in both Parquet
+columns and object content hashes, including entity/edge provenance, task and
+idempotency metadata. The represented instant and opaque user field values are
+preserved; existing UTC encodings and logical `data_hash` remain compatible.
+Older objects whose non-UTC hash disagrees with their UTC columns remain rejected
+by integrity checks. Restore from a verified backup or replay trusted input into
+a fresh directory; this correction does not recover lost timestamp offsets or
+bypass content checks.
+
 GraphQL is served by `POST /v1/query/graphql`. The deprecated text DSL aliases
 remain text DSL endpoints. Compatibility control routes named `reader`, `writer`
 or `fleet` describe local state, not Raft membership. Distributed deployments use
@@ -66,10 +75,13 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See [2.2.2 validation](validation-v2.2.2.md), actual workflow conclusions and
-packaged evidence for the specific release binary. The local candidate passed a
-thirty-minute Raft maintenance workload, with expected 429s and long write waits.
-Cross-host, capacity and day-scale stability remain unqualified. A stable label
-does not certify every workload size or latency target. The capacity envelope
-retains the historical 2.1.2 `performance_unqualified` record and does not qualify
-2.2.2 or Raft capacity. Older reports describe their own builds.
+See [2.2.3 validation](validation-v2.2.3.md), the tag workflow and packaged
+evidence for the exact release binary. A local performance candidate completed
+45,116 operations but recorded four HAProxy 503 query failures under severe
+shared-kernel resource pressure. That failed result remains documented; it is
+not a release PASS or a proof that the server has no availability defect.
+Cross-host, capacity and day-scale stability remain unqualified. The capture
+microbenchmark does not establish an overall read/write throughput gain.
+The capacity envelope retains the historical 2.1.2 `performance_unqualified`
+record and does not qualify this release or Raft capacity. Older reports describe
+their own frozen builds.

@@ -74,9 +74,11 @@ func (s *TenantStore) directCommitPreparedPublished(ctx context.Context, tenantI
 	return false, false, fmt.Errorf("%w: current manifest does not identify commit version %d", ErrConflict, targetVersion)
 }
 
-// Called under the tenant lock before compaction discards commit identities.
-// Scan in bounded pages; terminal records need no write and unresolved outcomes
-// stop publication rather than turning an uncertain request into a success.
+// Settle before taking the publication lock so scanning historical records
+// cannot block foreground writes. New graph commits have versions above the
+// captured snapshot; conditional updates protect concurrent retries, and the
+// publication lock still verifies that the head descends from that snapshot.
+// Unresolved outcomes stop compaction before it discards commit identities.
 func (s *TenantStore) settleDirectCommitsBeforeCompaction(ctx context.Context, tenantID string, snapshotVersion int64) error {
 	prefix := path.Join(s.tenantObjectPrefix(tenantID), "idempotency", "commits") + "/"
 	return scanObjectPrefixFresh(ctx, s.Objects, prefix, func(objects []ObjectInfo) error {

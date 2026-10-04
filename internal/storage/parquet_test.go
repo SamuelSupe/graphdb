@@ -189,7 +189,7 @@ func TestParquetRebuildSkipsUnchangedObjectWrites(t *testing.T) {
 func TestParquetIngestRecordRoundTripsTransactionalOptionsAndErrorCode(t *testing.T) {
 	ctx := context.Background()
 	expectedVersion := int64(7)
-	now := time.Date(2026, 9, 1, 1, 2, 3, 4, time.UTC)
+	now := time.Date(2026, 9, 1, 1, 2, 3, 4, time.FixedZone("UTC-7", -7*60*60))
 	record := IngestBatchRecord{
 		TenantID: "tenant-a",
 		Request: IngestRequest{
@@ -271,7 +271,7 @@ func TestParquetIngestRecordRoundTripsTransactionalOptionsAndErrorCode(t *testin
 
 func TestParquetSchemasAvoidJSONPayloadColumns(t *testing.T) {
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := time.Date(2026, 10, 3, 10, 11, 12, 13, time.FixedZone("UTC+8", 8*60*60))
 	lease, err := marshalParquetWriterLease(ctx, WriterLease{
 		TenantID:  "tenant-a",
 		OwnerID:   "writer-a",
@@ -450,6 +450,9 @@ func TestParquetSchemasAvoidJSONPayloadColumns(t *testing.T) {
 		t.Fatalf("marshal saved query: %v", err)
 	}
 	assertNoJSONPayloadColumns(t, ctx, "saved query", savedQuery)
+	if _, err := decodeParquetSavedQuery(ctx, savedQuery); err != nil {
+		t.Fatalf("decode saved query: %v", err)
+	}
 
 	entity := graph.Entity{
 		ID:         "host:app-01",
@@ -480,6 +483,10 @@ func TestParquetSchemasAvoidJSONPayloadColumns(t *testing.T) {
 		t.Fatalf("marshal entity page: %v", err)
 	}
 	assertNoJSONPayloadColumns(t, ctx, "entity page", entityPage)
+	decodedPage, err := decodeParquetEntityPage(ctx, entityPage, "tenant-a", "ab", 4)
+	if err != nil || entityPageContentHash(decodedPage) != entityPageContentHash(EntityPageData{Shard: "ab", Entities: []graph.Entity{entity}}) {
+		t.Fatalf("entity page changed logical hash after timestamp encoding: %v", err)
+	}
 
 	entityRecord, err := marshalParquetEntityRecord(ctx, EntityRecord{
 		TenantID:    "tenant-a",
@@ -530,6 +537,10 @@ func TestParquetSchemasAvoidJSONPayloadColumns(t *testing.T) {
 		t.Fatalf("marshal edge shard: %v", err)
 	}
 	assertNoJSONPayloadColumns(t, ctx, "edge shard", edgeShard)
+	decodedShard, err := decodeParquetEdgeShard(ctx, edgeShard, "tenant-a", "runs_on", "ab", 4)
+	if err != nil || edgeShardContentHash(decodedShard) != edgeShardContentHash(EdgeShardData{RelationType: "runs_on", Shard: "ab", Edges: []graph.Edge{edge}}) {
+		t.Fatalf("edge shard changed logical hash after timestamp encoding: %v", err)
+	}
 
 	snapshotRecordBytes, err := marshalParquetSnapshotRecord(ctx, snapshotRecord{
 		TenantID: "tenant-a",

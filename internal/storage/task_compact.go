@@ -68,6 +68,9 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	if err := s.compactTaskSnapshotRecord(ctx, task, snapshotKey, snapshot, total); err != nil {
 		return nil, "", err
 	}
+	if err := s.settleDirectCommitsBeforeCompaction(ctx, task.TenantID, snapshot.Version); err != nil {
+		return nil, "", err
+	}
 	unlock, err := s.lockTenantMaintenance(ctx, task.TenantID)
 	if err != nil {
 		return nil, "", err

@@ -4,10 +4,36 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
+
+func TestStartupContainmentQueriesBeforeFirstWrite(t *testing.T) {
+	g := graph.New()
+	if err := g.ApplyCommit(graph.Commit{Version: 1, Mutations: schemaMutations()}); err != nil {
+		t.Fatal(err)
+	}
+	roots := map[string]bool{}
+	for round := int64(0); round < 3; round++ {
+		for _, item := range queryCases(0, round, 1) {
+			if item.request.Op != "traverse" || !strings.HasPrefix(item.request.ID, "environment:") {
+				continue
+			}
+			if _, err := query.Execute(g, item.request); err != nil {
+				t.Fatalf("startup traversal %s before any writer: %v", item.request.ID, err)
+			}
+			roots[item.request.ID] = true
+		}
+	}
+	if len(roots) != 3 {
+		t.Fatalf("startup environment coverage: %v", roots)
+	}
+}
 
 func TestMaintenancePreservesFailuresAndIgnoresRunCancellation(t *testing.T) {
 	for _, test := range []struct {

@@ -35,6 +35,10 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 		release()
 		return nil, err
 	}
+	if err := s.verifySafeParent(filepath.Join(s.root, ".snapshot-view")); err != nil {
+		release()
+		return nil, err
+	}
 	dir, err := os.MkdirTemp(s.root, ".snapshot-view-")
 	if err != nil {
 		release()
@@ -62,8 +66,14 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 			}
 			return nil
 		}
+		destination := filepath.Join(dir, relative)
 		if entry.IsDir() {
-			return nil
+			// Application is excluded throughout capture. Validate each directory
+			// once rather than walking the same ancestors for every object.
+			if err := s.verifySafeParent(filepath.Join(filename, ".snapshot-view")); err != nil {
+				return err
+			}
+			return os.Mkdir(destination, 0700)
 		}
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("snapshot object is not a regular file: %s", filename)
@@ -77,13 +87,6 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 		}
 		total += info.Size()
 		source.estimatedBytes += 512 + (info.Size()+511)/512*512
-		if err := s.verifySafeParent(filename); err != nil {
-			return err
-		}
-		destination := filepath.Join(dir, relative)
-		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
-			return err
-		}
 		return os.Link(filename, destination)
 	})
 	if err != nil {

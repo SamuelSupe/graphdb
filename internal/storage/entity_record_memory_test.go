@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
@@ -30,6 +31,8 @@ func TestParquetEntityRecordUsesSingleRowGroup(t *testing.T) {
 func TestDecodeParquetEntityRecordAcceptsLegacyRowGroups(t *testing.T) {
 	ctx := context.Background()
 	want := benchmarkEntityRecord("host:a")
+	want.Entity.UpdatedAt = want.Entity.UpdatedAt.In(time.FixedZone("UTC+8", 8*60*60))
+	stampEntityRecordHash(&want)
 	current, err := marshalParquetEntityRecord(ctx, want)
 	if err != nil {
 		t.Fatalf("marshal current entity record: %v", err)

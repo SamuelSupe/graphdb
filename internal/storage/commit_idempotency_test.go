@@ -139,6 +139,75 @@ func TestCompactionKeepsHistoryWhenIdempotencySettlementFails(t *testing.T) {
 	}
 }
 
+func TestCompactIdempotencySettlementDoesNotBlockCommit(t *testing.T) {
+	for _, mode := range []string{"direct", "task"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			store := NewTenantStore(NewMemoryStore(), "test")
+			request := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+			opts := CommitOptions{IdempotencyKey: "settled"}
+			if _, err := store.CommitWithReport(ctx, "tenant", request, opts); err != nil {
+				t.Fatal(err)
+			}
+			task := Task{ID: "compact", TenantID: "tenant", Type: TaskTypeCompact,
+				Status: TaskStatusRunning, OwnerID: store.InstanceID}
+			if mode == "task" {
+				store.registerTaskCancel("tenant", task.ID, cancel)
+				defer store.unregisterTaskCancel("tenant", task.ID)
+				if err := store.saveTask(ctx, task); err != nil {
+					t.Fatal(err)
+				}
+			}
+			blocking := &blockOnceGetWithMetaStore{ObjectStore: store.Objects,
+				substring: store.commitIdempotencyKey("tenant", opts.IdempotencyKey),
+				paused:    make(chan struct{}), resume: make(chan struct{})}
+			store.Objects = blocking
+			release := sync.OnceFunc(func() { close(blocking.resume) })
+			defer release()
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				if mode == "task" {
+					_, _, err = store.compactTask(ctx, task)
+				} else {
+					_, err = store.Compact(ctx, "tenant")
+				}
+				done <- err
+			}()
+			select {
+			case <-blocking.paused:
+			case err := <-done:
+				t.Fatalf("compaction stopped before idempotency settlement: %v", err)
+			case <-ctx.Done():
+				t.Fatal("compaction did not reach idempotency settlement")
+			}
+			commitCtx, commitCancel := context.WithTimeout(ctx, time.Second)
+			_, commitErr := store.Commit(commitCtx, "tenant", graph.Mutations{
+				UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}},
+			}, CommitOptions{})
+			commitCancel()
+			release()
+			if compactErr := <-done; compactErr != nil {
+				t.Fatalf("compaction after concurrent commit: %v", compactErr)
+			}
+			if commitErr != nil {
+				t.Fatalf("commit blocked by idempotency settlement: %v", commitErr)
+			}
+			store.deleteWriteCache("tenant")
+			g, manifest, err := store.Load(ctx, "tenant")
+			if err != nil || manifest.Version != 2 || manifest.SnapshotVersion != 1 ||
+				manifestCommitTailLength(manifest) != 1 || g.Entities.Len() != 2 {
+				t.Fatalf("concurrent commit lost: manifest=%+v err=%v", manifest, err)
+			}
+			if result, err := store.CommitWithReport(ctx, "tenant", request, opts); err != nil ||
+				!result.IdempotentReplay || result.Version != 1 {
+				t.Fatalf("compacted replay=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestCompactionPreservesUnpublishedIdempotentRetry(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()
@@ -165,7 +234,11 @@ func TestDirectCommitIdempotencyReplaysSameRequest(t *testing.T) {
 	ctx := context.Background()
 	objects := NewMemoryStore()
 	store := NewTenantStore(objects, "test")
-	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	observedAt := time.Date(2026, 10, 3, 10, 11, 12, 13, time.FixedZone("UTC+8", 8*60*60))
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{
+		ID: "host:a", Kind: "host", Source: "agent",
+		Sources: []graph.EntitySource{{Source: "agent", ObservedAt: observedAt}},
+	}}}
 
 	first, err := store.CommitWithReport(ctx, "tenant-a", mutations, CommitOptions{IdempotencyKey: "idem-1"})
 	if err != nil {

@@ -1,5 +1,7 @@
 # 本地磁盘版：第三轮性能优化
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 2026-09-17。工作区 `/Users/livesite/Documents/GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。基于包含六轮 P1 修复的当前代码开展优化，保留原工作区和全部既有改动，未提交或推送。
 
 ## 热点与改动
@@ -104,7 +106,7 @@ OrbStack，Go 1.25.14 Linux arm64，4 CPU / 6 GiB；前后各运行一次，每�
 
 ## 复查
 
-- [源码增量补丁、profile、基准和运行日志](../capacity-runs/local-disk-optimization-3-20260917/README.md)
+- 源码增量补丁、profile、基准和运行日志（历史本地路径 `capacity-runs/local-disk-optimization-3-20260917/README.md`）
 - Linux 数据和前后二进制保存在 `graphdb-local-disk-v2-validation:/validation/optimization3-20260917`。
 
 本轮没有重跑 10 万实体、受控冷页缓存、30 分钟持续负载、独立对象存储备份集成或旧二进制双向兼容。磁盘格式和备份存储实现未修改；本轮不宣称原定的全部性能门槛已完成验收。

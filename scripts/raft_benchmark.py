@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -42,9 +43,11 @@ def request(base, path, body=None, cluster_id=None):
 
 
 class Cluster:
-    def __init__(self, binary, folder, mode, topology, replicas):
+    def __init__(self, binary, folder, mode, topology, replicas, protocol=1,
+                 stream_snapshots=False, snapshot_entries=1000):
         self.binary, self.folder, self.mode, self.topology = binary, folder, mode, topology
         self.replicas = replicas
+        self.protocol, self.stream_snapshots, self.snapshot_entries = protocol, stream_snapshots, snapshot_entries
         self.processes, self.logs = [], []
 
     def spawn(self, name, environment, command='serve'):
@@ -66,6 +69,9 @@ class Cluster:
                 'GRAPHDB_RAFT_PEERS': peers if reopen or i > 3 else initial_peers,
                 'GRAPHDB_RAFT_BOOTSTRAP': 'false' if reopen or i > 3 else 'true',
                 'GRAPHDB_RAFT_TOKEN': TOKEN,
+                'GRAPHDB_RAFT_PROTOCOL_VERSION': str(self.protocol),
+                'GRAPHDB_RAFT_STREAM_SNAPSHOTS': str(self.stream_snapshots).lower(),
+                'GRAPHDB_RAFT_SNAPSHOT_ENTRIES': str(self.snapshot_entries),
                 'GRAPHDB_INGEST_MODE': self.mode, 'GRAPHDB_INGEST_FLUSH_INTERVAL': '100ms',
                 **({'GRAPHDB_ADMIN_ADDR': f'127.0.0.1:{port+2000+i}',
                     'GRAPHDB_PPROF_ENABLED': 'true'} if self.profiling else {}), **role})
@@ -181,6 +187,46 @@ class Cluster:
                 values[key] += status[key]
         return values
 
+    def raft_metrics(self):
+        port = DATA_PORT+2000 if self.profiling else DATA_PORT
+        values = {'read_index_rounds': 0, 'read_index_unbatched': 0, 'read_index_confirmed': 0, 'read_barrier_requests': 0,
+                  'quorum_barrier_requests': 0, 'snapshot_capture_count': 0,
+                  'snapshot_capture_seconds': 0}
+        rounds_known = True
+        unbatched_known = True
+        for i in range(1, self.replicas+1):
+            req = urllib.request.Request(f'http://127.0.0.1:{port+i}/metrics',
+                headers={'Authorization': 'Bearer ' + TOKEN})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                lines = response.read().decode().splitlines()
+            rounds = [line.split()[1] for line in lines
+                      if line.startswith('graphdb_raft_read_index_rounds_total ')]
+            rounds_known = rounds_known and bool(rounds)
+            if rounds:
+                values['read_index_rounds'] += float(rounds[0])
+            unbatched = [line.split()[1] for line in lines
+                         if line.startswith('graphdb_raft_read_index_unbatched_total ')]
+            unbatched_known = unbatched_known and bool(unbatched)
+            if unbatched:
+                values['read_index_unbatched'] += float(unbatched[0])
+            for line in lines:
+                match = re.fullmatch(r'graphdb_raft_operation_seconds_(count|sum)\{operation="([^"]+)",status="ok"\} (\S+)', line)
+                if not match:
+                    continue
+                kind, operation, value = match.groups()
+                if kind == 'count' and operation in ('read_barrier', 'quorum_barrier', 'read_index'):
+                    key = 'read_index_confirmed' if operation == 'read_index' else operation+'_requests'
+                    values[key] += float(value)
+                elif operation == 'snapshot_capture':
+                    key = 'snapshot_capture_count' if kind == 'count' else 'snapshot_capture_seconds'
+                    values[key] += float(value)
+        if not rounds_known:
+            values['read_index_rounds'] = None
+            values['read_index_confirmed'] = None
+        if not unbatched_known:
+            values['read_index_unbatched'] = None
+        return values
+
     def wait_applied(self):
         leader = self.leader(DATA_PORT)
         target = request(f'http://127.0.0.1:{DATA_PORT+leader}', '/v1/health')['raft']['commit_index']
@@ -217,7 +263,8 @@ def run(args, name, binary, case, iteration):
         data_folder = args.data_dir / folder.name
         data_folder.mkdir(parents=True, exist_ok=False)
     writers, readers, mode = CASES[case]
-    cluster = Cluster(binary, data_folder, mode, args.topology, args.replicas)
+    cluster = Cluster(binary, data_folder, mode, args.topology, args.replicas,
+                      args.protocol, args.stream_snapshots, args.snapshot_entries)
     profile_errors = []
     def profile():
         try:
@@ -241,13 +288,15 @@ def run(args, name, binary, case, iteration):
                 raise RuntimeError(f'replica {i} did not complete seed index rebuild')
         if args.profile:
             cluster.stop()
-            cluster = Cluster(binary, data_folder, mode, args.topology, args.replicas)
+            cluster = Cluster(binary, data_folder, mode, args.topology, args.replicas,
+                              args.protocol, args.stream_snapshots, args.snapshot_entries)
             cluster.start(profiling=True, reopen=True)
         if args.warmup > 0:
             load(args, cluster, folder, 'warm', 0, max(1, readers), mode, args.warmup)
         replica_states_before = cluster.wait_applied()
         disk_before = cluster.disk_metrics()
         application_before = cluster.application_metrics()
+        raft_before = cluster.raft_metrics()
         before = [proc_sample(p.pid) for p in cluster.processes]
         sampler = threading.Thread(target=profile) if args.profile else None
         if sampler:
@@ -257,6 +306,7 @@ def run(args, name, binary, case, iteration):
         after = [proc_sample(p.pid) for p in cluster.processes]
         disk_after = cluster.disk_metrics()
         application_after = cluster.application_metrics()
+        raft_after = cluster.raft_metrics()
         if sampler:
             sampler.join()
         if profile_errors:
@@ -268,6 +318,8 @@ def run(args, name, binary, case, iteration):
             raise RuntimeError('loadtest integrity or freshness check failed')
         row = {'variant': name, 'case': case, 'round': iteration, 'topology': args.topology,
             'replicas': args.replicas,
+            'protocol': args.protocol, 'stream_snapshots': args.stream_snapshots,
+            'snapshot_entries': args.snapshot_entries,
             'data_directory': str(data_folder),
             'replica_states_before': replica_states_before,
             'replica_states_after': replica_states_after,
@@ -277,6 +329,8 @@ def run(args, name, binary, case, iteration):
             'disk_syncs': {key: disk_after[key]-disk_before[key] for key in disk_before},
             'application': None if application_before is None or application_after is None else
                 {key: application_after[key]-application_before[key] for key in application_before},
+            'raft_operations': {key: None if raft_before[key] is None or raft_after[key] is None else
+                raft_after[key]-raft_before[key] for key in raft_before},
             'resources_before': before, 'resources_after': after, 'load': report}
         (folder/'result.json').write_text(json.dumps(row, indent=2)+'\n')
         print(json.dumps({k: row[k] for k in ['variant','case','round','cpu_seconds','write_bytes']}), flush=True)
@@ -297,14 +351,17 @@ def main():
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--topology', choices=['raft', 'sharded'], default='raft')
     parser.add_argument('--replicas', type=int, choices=[3, 5], default=3)
+    parser.add_argument('--protocol', type=int, choices=[1, 2, 3], default=1)
+    parser.add_argument('--stream-snapshots', action='store_true')
+    parser.add_argument('--snapshot-entries', type=int, default=1000)
     parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--seconds', type=int, default=20)
     parser.add_argument('--warmup', type=int, default=5)
     parser.add_argument('--entities', type=int, default=1002)
     parser.add_argument('--profile', action='store_true')
     args = parser.parse_args()
-    if args.rounds < 1 or args.seconds < 1 or args.warmup < 0 or args.entities < 2:
-        parser.error('rounds and seconds must be positive, warmup nonnegative, and entities at least 2')
+    if args.rounds < 1 or args.seconds < 1 or args.warmup < 0 or args.entities < 2 or args.snapshot_entries < 1:
+        parser.error('rounds, seconds and snapshot entries must be positive, warmup nonnegative, and entities at least 2')
     variants = [v.split('=', 1) for v in args.variant]
     if any(len(v) != 2 or not v[0] or not Path(v[1]).is_file() for v in variants):
         parser.error('each variant must be label=/absolute/binary/path pointing to an existing file')

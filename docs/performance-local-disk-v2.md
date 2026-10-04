@@ -1,5 +1,7 @@
 # 本地磁盘 v2：验证与性能记录
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 本文保留首次改造的历史测量。后续瓶颈修复和当前前后对比见[性能优化记录](performance-local-disk-optimization.md)。
 
 状态：功能改造和正确性验证已完成。单轮抽查未显示整体性能提升，冷读和已发布写入吞吐较差；本轮不宣称性能目标达成。
@@ -154,11 +156,11 @@ CPU 平均值以墙上时间计算，不能用于有效工作时的性能比较�
 
 ### 可复查证据
 
-- [原始汇总和完整 p50/p95/p99](../capacity-runs/local-disk-v2-focused-20260916/reports/summary.md)
-- [结构化测量结果](../capacity-runs/local-disk-v2-focused-20260916/reports/summary.json)
-- [环境暂停说明](../capacity-runs/local-disk-v2-focused-20260916/reports/measurement-notes.json)
-- [30 分钟持续负载报告](../capacity-runs/local-disk-v2/final-gate4/soak-report.txt)
-- [完整验证日志](../capacity-runs/local-disk-v2/final-gate4/final-gate4.log)
+- 原始汇总和完整 p50/p95/p99（历史本地路径 `capacity-runs/local-disk-v2-focused-20260916/reports/summary.md`）
+- 结构化测量结果（历史本地路径 `capacity-runs/local-disk-v2-focused-20260916/reports/summary.json`）
+- 环境暂停说明（历史本地路径 `capacity-runs/local-disk-v2-focused-20260916/reports/measurement-notes.json`）
+- 30 分钟持续负载报告（历史本地路径 `capacity-runs/local-disk-v2/final-gate4/soak-report.txt`）
+- 完整验证日志（历史本地路径 `capacity-runs/local-disk-v2/final-gate4/final-gate4.log`）
 
 性能原始文件、源码归档和镜像信息位于 `capacity-runs/local-disk-v2-focused-20260916/`，
 对应 Linux 卷为 `graphdb-local-disk-v2-focused-20260916`。这些证据保留在本机，不纳入 Git。

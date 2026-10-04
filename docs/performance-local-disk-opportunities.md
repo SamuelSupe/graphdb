@@ -1,5 +1,7 @@
 # 本地磁盘版：下一轮性能优化空间
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 2026-09-16。基于当前 `codex/local-disk-v2` 未提交实现重新检查；本轮未修改生产代码。
 
 后续实现和实测结果见[第二轮优化记录](performance-local-disk-optimization-2.md)；本文保留优化前的诊断证据。
@@ -14,7 +16,7 @@ WAL 同步落盘，每客户端写入间隔 2 秒。容器上限 8 CPU / 8 GiB�
 为隔离请求与增量索引开销，此次关闭自动维护。44 批写入对应版本增加 44，所有请求无错误。
 这是热点诊断，不能和上一轮包含维护的吞吐/RSS 数字直接比较，也不是新的性能收益证明。
 
-证据保存在 [capacity-runs/local-disk-opportunities-20260916](../capacity-runs/local-disk-opportunities-20260916)：
+证据保存在 capacity-runs/local-disk-opportunities-20260916（历史本地路径 `capacity-runs/local-disk-opportunities-20260916`）：
 `cpu.txt`、`alloc.txt`、`heap.txt`、`profile-current/` 及两个行组检查 JSONL。
 `run.log` 是首次诊断脚本访问错误 metrics 端口的失败记录；有效采样为 `profile-current`。
 

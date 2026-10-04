@@ -335,6 +335,8 @@ func marshalCommitSegmentPayload(items []commitSegmentItem) ([]byte, error) {
 	var buf bytes.Buffer
 	for _, item := range items {
 		item.Commit.LayoutVersion = CurrentObjectLayoutVersion
+		item.Commit.CreatedAt = item.Commit.CreatedAt.UTC()
+		item.Commit.Mutations = mutationTimesUTC(item.Commit.Mutations)
 		data, err := json.Marshal(item)
 		if err != nil {
 			return nil, err

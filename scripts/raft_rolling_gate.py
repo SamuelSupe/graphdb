@@ -151,12 +151,15 @@ class Deployment:
         return [expect(self.node(group, i), 'GET', '/raft/status', cluster=group['cluster_id']) for i in range(1,4)]
 
     def caught_up(self, group):
+        leader = expect(self.node(group, 1), 'GET', '/raft/status', cluster=group['cluster_id'])['leader_id']
+        if not leader:
+            return False
+        position = expect(self.node(group, leader), 'GET', '/raft/status', cluster=group['cluster_id'])
+        commit = position['commit_index']
         values = self.statuses(group)
-        leader = values[0]['leader_id']
         if not leader or any(value.get('error') or value.get('snapshot_error') or value['leader_id'] != leader for value in values):
             return False
-        commit = values[leader-1]['commit_index']
-        return values if commit and all(value['applied_index'] >= commit for value in values) else False
+        return values if position['leader_id'] == leader and commit and all(value['applied_index'] >= commit for value in values) else False
 
     def transfer(self, group, target):
         def attempt():
@@ -171,6 +174,8 @@ class Deployment:
 
     def replace(self, group, i, image, legacy=True, drain=False):
         service = group['services'][i-1]
+        (self.folder/f'{service}-before-replace-{len(events)}.log').write_text(
+            self.command('logs', '--no-color', '--tail', '2000', service).stdout)
         if drain:
             expect(self.node(group, i), 'POST', '/raft/drain', cluster=group['cluster_id'], code=204)
         self.images[service], self.legacy[service] = image, legacy
@@ -258,9 +263,10 @@ class Deployment:
             target = followers[0]
             self.transfer(group,target)
             wait(lambda: self.statuses(group)[0]['leader_id'] == target)
-            # The bridge leader has no drain/forwarding API. Background traffic
-            # records identity-preserving retries while health checks propagate.
-            time.sleep(1.2)
+            # The bridge leader has no drain/forwarding API. Observe the proxy's
+            # health-check convergence before issuing a non-idempotent request.
+            # Background traffic still measures identity-preserving retries.
+            wait(lambda: request(self.gateway, 'GET', '/v1/readiness')[0] == 200, timeout=25)
             if not self.sharded:
                 # New leader prepares the SHA256 task execution payload while
                 # the remaining old voter still applies it.
@@ -304,6 +310,8 @@ class Deployment:
         inventory_path.write_text(json.dumps(inventory,indent=2)+'\n')
         command = [sys.executable,str(ROOT/'scripts/raft_rolling_upgrade.py'),'--inventory',str(inventory_path),
             '--execute','--force','--target-version',TARGET_VERSION,'--target-commit',TARGET_COMMIT,'--report',str(self.folder/'controller.json')]
+        (self.folder/'before-controller.log').write_text(
+            self.command('logs', '--no-color', '--tail', '2000').stdout)
         result = run(command,env={**os.environ,'GRAPHDB_HA_IMAGE':BASE})
         (self.folder/'controller.log').write_text(result.stdout+result.stderr)
         self.stop.set()

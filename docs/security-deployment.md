@@ -73,6 +73,23 @@ The reference role matrix is:
 The identity provider must treat each comma-separated value as an any-of
 requirement and must evaluate the original method, URI, identity, and tenant
 together.
+`X-Original-Method` carries the saved client method and `X-Original-URI` the
+original URI; the gateway replaces any caller-supplied values.
+
+The gateway captures NGINX's normalized `$uri` in the public data location
+before the auth subrequest, and selects roles from that saved path. Encoded
+paths such as `/v1/%63ommits` require the same write role as `/v1/commits`.
+Replace older copies that use `map $request_uri $graphdb_data_roles`, then run
+`nginx -t` and reload the gateway. Updating GraphDB alone does not update a
+mounted gateway configuration. Mapping `$uri` directly inside the auth
+subrequest is also incorrect because it then names the internal auth endpoint.
+
+`GRAPHDB_GATE_IMAGE=<candidate> bash scripts/gateway_gate.sh` checks the actual
+TLS gateway with a disposable role provider: read-only tokens cannot use encoded
+write routes, writer requests retain the verified tenant, and admin routes stay
+protected. It also verifies that auth subrequests retain the original GET/POST
+method despite forged client headers. CI and release workflows run this gate;
+the fixture does not qualify your external identity provider.
 
 WAL responses use `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`.
 Standalone data and status requests address the same process. Raft uses the same HA

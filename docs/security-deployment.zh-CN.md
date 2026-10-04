@@ -66,6 +66,19 @@ header。
 
 身份服务必须把逗号分隔角色解释为 any-of，并把原始 method、URI、身份和
 租户一起校验。
+网关用 `X-Original-Method` 传递保存的客户端方法，用 `X-Original-URI` 传递原始
+URI；两个值都由网关覆盖，不能信任调用方自行提交的同名 header。
+
+网关在公共数据 location 中先保存 NGINX 规范化后的 `$uri`，再执行鉴权子请求，
+按保存的路径选择角色。因此 `/v1/%63ommits` 与 `/v1/commits` 都要求写入角色。
+旧配置若使用 `map $request_uri $graphdb_data_roles`，须替换为当前模板，执行
+`nginx -t` 后重新加载网关；仅升级 GraphDB 程序不会更新已挂载的网关配置。
+也不能直接在鉴权子请求中按 `$uri` 分类，因为此时它已经是内部鉴权端点。
+
+`GRAPHDB_GATE_IMAGE=<候选镜像> bash scripts/gateway_gate.sh` 使用真实 TLS 网关和
+一次性角色服务，检查编码写路径拒绝只读角色、写入与读取保留认证租户、管理面受保护。
+同时验证鉴权子请求保留原始 GET/POST 方法，覆盖调用方伪造的同名 header。
+CI 和发布流程运行此门禁；测试服务不代表实际生产身份后端已经通过验收。
 
 WAL 响应使用 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`。
 单机的数据请求和状态查询都发送到同一个 GraphDB 进程。Raft 请求使用同一 HA 入口，副本转发到 Leader；分片入口按租户路由到数据组。WAL 202 是受理，不能视为图已经发布。

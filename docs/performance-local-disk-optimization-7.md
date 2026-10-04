@@ -1,5 +1,7 @@
 # 本地磁盘性能优化，第七轮
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-17。工作区 `GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。
 
 ## 结论与实现
@@ -101,7 +103,7 @@ OrbStack Linux arm64、Go 1.25.14、4 CPU / 6 GiB，独立 Linux 本地卷。bef
 
 ## 证据
 
-[`capacity-runs/local-disk-optimization-7-20260917`](../capacity-runs/local-disk-optimization-7-20260917/)：
+`capacity-runs/local-disk-optimization-7-20260917`（历史本地路径 `capacity-runs/local-disk-optimization-7-20260917/`）：
 
 - `incremental.patch`、`changed-files.sha256`、`source.sha256`：本轮实现增量和源码/二进制摘要。
 - `profile-before/`、`cpu*.txt`、`alloc.txt`、`query-cpu.txt`：热点采样与分析。

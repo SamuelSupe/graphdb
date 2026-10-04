@@ -142,6 +142,12 @@ func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string,
 	checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.writerFenceStillCurrent(checkCtx, tenantID, fence); err != nil {
+		if !errors.Is(err, ErrLeaseHeld) {
+			// A failed validation read does not establish that this write is stale.
+			// Preserve the published object; Raft must roll back the whole application.
+			recordReplicationFailure(ctx, err)
+			return ObjectMeta{}, err
+		}
 		rollbackErr := s.Objects.DeleteConditional(checkCtx, key, PutCondition{IfMatch: meta.ETag})
 		if rollbackErr != nil && !errors.Is(rollbackErr, ErrConflict) && !errors.Is(rollbackErr, ErrNotFound) {
 			return ObjectMeta{}, errors.Join(err, fmt.Errorf("rollback stale tenant write %q: %w", key, rollbackErr))
@@ -166,6 +172,10 @@ func (s *TenantStore) putTenantGenerationConditional(ctx context.Context, tenant
 	checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.tenantGenerationStillCurrent(checkCtx, tenantID, generation); err != nil {
+		if !errors.Is(err, ErrTenantDeleted) {
+			recordReplicationFailure(ctx, err)
+			return ObjectMeta{}, err
+		}
 		rollbackErr := s.Objects.DeleteConditional(checkCtx, key, PutCondition{IfMatch: meta.ETag})
 		if rollbackErr != nil && !errors.Is(rollbackErr, ErrConflict) && !errors.Is(rollbackErr, ErrNotFound) {
 			return ObjectMeta{}, errors.Join(err, fmt.Errorf("rollback stale tenant generation write %q: %w", key, rollbackErr))

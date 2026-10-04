@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,122 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
+
+func TestTaskProgressValidationReadFailurePreservesTask(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprint("bound=", bound), func(t *testing.T) {
+			ctx := context.Background()
+			objects := &taskValidationReadFailureStore{ObjectStore: NewMemoryStore()}
+			store := NewTenantStore(objects, "test")
+			if _, err := store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if bound {
+				var err error
+				ctx, err = store.acquireAndBindWriterFence(ctx, "tenant-a")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			task := Task{ID: "published-task", TenantID: "tenant-a", Type: TaskTypeCompact,
+				Status: TaskStatusRunning, StartedAt: time.Now().UTC()}
+			if err := store.saveTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			objects.writeKey = store.taskKey(task.TenantID, task.ID)
+			objects.readKey = store.manifestKey(task.TenantID)
+			if bound {
+				objects.readKey = store.writerLeaseKey(task.TenantID)
+			}
+			err := store.updateTaskProgress(ctx, task, "compacting", 1, 2, nil)
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("validation read error was masked: %v", err)
+			}
+			if _, err := store.GetTask(context.Background(), task.TenantID, task.ID); err != nil {
+				t.Fatalf("published task became unreadable after a validation read failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestTaskProgressValidationReadFailureRollsBackRaftApplication(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprint("bound=", bound), func(t *testing.T) {
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			if err := files.RequireReplicatedWrites(); err != nil {
+				t.Fatal(err)
+			}
+			objects := &taskValidationReadFailureStore{ObjectStore: files}
+			store := NewTenantStore(objects, "test")
+			task := Task{ID: "published-task", TenantID: "tenant-a", Type: TaskTypeCompact,
+				Status: TaskStatusRunning, StartedAt: time.Now().UTC()}
+			_, err = files.ApplyReplicated(context.Background(), 1, "create-task", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				if _, err := store.CreateTenant(ctx, task.TenantID, TenantCreateOptions{}); err != nil {
+					return nil, err
+				}
+				return nil, store.saveTask(ctx, task)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			objects.writeKey = store.taskKey(task.TenantID, task.ID)
+			objects.readKey = store.manifestKey(task.TenantID)
+			if bound {
+				objects.readKey = store.writerLeaseKey(task.TenantID)
+			}
+			_, err = files.ApplyReplicated(context.Background(), 2, "task-progress", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+				if bound {
+					var err error
+					ctx, err = store.acquireAndBindWriterFence(ctx, task.TenantID)
+					if err != nil {
+						return nil, err
+					}
+				}
+				// HTTP handlers can translate a storage error into a response.
+				_ = store.updateTaskProgress(ctx, task, "compacting", 1, 2, nil)
+				return []byte("translated-error"), nil
+			})
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("validation I/O failure was checkpointed: %v", err)
+			}
+			checkpoint, err := files.ReplicationCheckpoint()
+			if err != nil || checkpoint.Index != 1 {
+				t.Fatalf("failed validation advanced checkpoint: %+v, %v", checkpoint, err)
+			}
+			current, err := store.GetTask(context.Background(), task.TenantID, task.ID)
+			if err != nil || current.ProgressCompleted != 0 || current.Phase != "" {
+				t.Fatalf("failed validation did not restore the acknowledged task: %+v, %v", current, err)
+			}
+		})
+	}
+}
+
+type taskValidationReadFailureStore struct {
+	ObjectStore
+	writeKey string
+	readKey  string
+	armed    bool
+}
+
+func (s *taskValidationReadFailureStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	meta, err := s.ObjectStore.PutConditional(ctx, key, data, condition)
+	if err == nil && key == s.writeKey {
+		s.armed = true
+	}
+	return meta, err
+}
+
+func (s *taskValidationReadFailureStore) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
+	if s.armed && key == s.readKey {
+		s.armed = false
+		return nil, ObjectMeta{Key: key}, io.ErrUnexpectedEOF
+	}
+	return s.ObjectStore.GetWithMeta(ctx, key)
+}
 
 func TestLateTenantConfigWriteIsRolledBackAfterPurge(t *testing.T) {
 	ctx := context.Background()

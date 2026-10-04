@@ -552,6 +552,7 @@ func sameShardedSnapshotCatalogMetadata(left ShardedSnapshotCatalog, right Shard
 
 func snapshotSchemaPayloadJSON(schemaData snapshotSchemaData) ([]byte, error) {
 	schemaData.LayoutVersion = CurrentObjectLayoutVersion
+	schemaData.UpdatedAt = schemaData.UpdatedAt.UTC()
 	return json.Marshal(schemaData)
 }
 

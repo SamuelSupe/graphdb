@@ -30,6 +30,7 @@ The 2.1.2 capacity envelope remains `performance_unqualified`.
 
 - [ ] Full unit/integration, vet, race, binary identity, and SDK gates pass.
 - [ ] Real HTTP direct/WAL ingest, queries, export, backup, restore, and restart pass.
+- [ ] The real TLS gateway rejects ordinary and encoded writes from readers, preserves authenticated tenant headers, and separates admin routes (`scripts/gateway_gate.sh`).
 - [ ] S3 snapshot gate passes multipart publication/cancellation, corrupt backup rejection, retry after reopen, and restore on an empty local directory.
 - [ ] Thirty-minute mixed workload with compact/GC/index rebuild passes, or its release-specific waiver and NOT COMPLETED status are explicitly recorded.
 - [ ] Focused performance reports state fixed inputs, warmup/measurement durations, repetitions, latency, published throughput, resources, and page-cache conditions; omitted large comparisons are explicit.
@@ -50,6 +51,7 @@ The 2.1.2 capacity envelope remains `performance_unqualified`.
 - [ ] Standalone direct/WAL and Raft remain usable concurrently with independent directories.
 - [ ] Live network isolation rejects reads/writes at the old leader while the majority continues; accepted writes survive takeover and reconnect.
 - [ ] Large restore, replica replacement, shard addition, migration interruption/cancellation and old-directory role protection pass.
+  The large-restore fixture allows 120 seconds for each 4 MiB setup commit; ordinary and isolation probes retain their five-second client budget. Rolling gates observe gateway readiness after transfer before starting a non-idempotent operation; background requests keep their 25-second identity-preserving retry budget.
 - [ ] Thirty-minute Raft WAL mixed workload with compact, GC and index rebuild passes; record its actual size and rate without a capacity claim.
 - [ ] Three independent fault domains pass host-loss/network/recovery qualification, or record NOT RUN with the release boundary explicitly restricted.
 - [ ] Qualified rolling windows, separate protocol activation, unsupported downgrade combinations, protected private transport, redundant entry points and backup recovery are documented and validated for the deployment.

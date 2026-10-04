@@ -12,6 +12,13 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+func (s *Server) clusterDiagnosticStatus() map[string]any {
+	if cluster, ok := s.Cluster.(interface{ DiagnosticStatus() map[string]any }); ok {
+		return cluster.DiagnosticStatus()
+	}
+	return s.Cluster.Status()
+}
+
 // Diagnostics are observations from this process, including when quorum is
 // unavailable. They do not promise a linearizable cluster-wide snapshot.
 func (s *Server) diagnostics(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +49,7 @@ func (s *Server) diagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Cluster != nil {
 		deployment = "raft"
-		status := s.Cluster.Status()
+		status := s.clusterDiagnosticStatus()
 		report["raft"] = status
 		if status["leader_id"] == uint64(0) {
 			problems = append(problems, "raft_no_leader")
@@ -52,6 +59,12 @@ func (s *Server) diagnostics(w http.ResponseWriter, r *http.Request) {
 		}
 		if status["snapshot_error"] != nil {
 			problems = append(problems, "raft_snapshot_failed")
+		}
+		if status["snapshot_cleanup_error"] != nil {
+			problems = append(problems, "raft_snapshot_cleanup_failed")
+		}
+		if age, ok := status["status_age_seconds"].(float64); ok && age > 10 {
+			problems = append(problems, "raft_status_stale")
 		}
 	}
 	if s.IngestService != nil {
@@ -129,7 +142,7 @@ func (s *Server) writeResourceMetrics(w http.ResponseWriter, ctx context.Context
 	observability.WriteRuntimeMetrics(w)
 	s.writeAdmissionMetrics(w)
 	if s.Cluster != nil {
-		status := s.Cluster.Status()
+		status := s.clusterDiagnosticStatus()
 		leader := 0
 		if id, ok := status["leader_id"].(uint64); ok && id != 0 {
 			leader = 1

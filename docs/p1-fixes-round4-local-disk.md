@@ -1,5 +1,7 @@
 # 本地磁盘版：第四轮 P1 修复
 
+> 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
+
 日期：2026-09-16。工作区 `/Users/livesite/Documents/GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。
 
 修复第四轮审查确认的两类 P1。保留已有本地磁盘、对象备份及前三轮改动；没有提交、推送或合并。
@@ -63,7 +65,7 @@
 
 ## 证据
 
-- [本轮补丁、源码哈希与最终日志](../capacity-runs/p1-fixes-round4-20260916/README.md)
-- [第四轮审查及失败复现](../capacity-runs/p0p1-review-round4-20260916/README.md)
+- 本轮补丁、源码哈希与最终日志（历史本地路径 `capacity-runs/p1-fixes-round4-20260916/README.md`）
+- 第四轮审查及失败复现（历史本地路径 `capacity-runs/p0p1-review-round4-20260916/README.md`）
 
 补丁比较本轮开始前的脏工作区与最终源码，不混入先前迁移和修复。

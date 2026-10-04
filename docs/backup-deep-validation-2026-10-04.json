@@ -1,0 +1,355 @@
+{
+  "result": "PASS",
+  "scope": "backup automation fault recovery and native object-backup gate only",
+  "date": "2026-10-04",
+  "worktree": "/Users/livesite/Documents/GraphDB-raft-ha",
+  "branch": "codex/raft-ha",
+  "base_commit": "5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a",
+  "published": false,
+  "production_scheduler_installed": false,
+  "environment": "OrbStack Ubuntu Linux arm64; dedicated containers, network, MinIO and Linux named volumes",
+  "fixed_issues": [
+    {
+      "priority": "P1",
+      "issue": "Shared polling deadline starved later tenants",
+      "fix": "Independent polling budget per tenant"
+    },
+    {
+      "priority": "P1",
+      "issue": "One corrupt or unwritable tenant state aborted every tenant",
+      "fix": "Isolate tenant failures and preserve unsafe state"
+    },
+    {
+      "priority": "P1",
+      "issue": "Inconsistent valid JSON could discard an unresolved cycle",
+      "fix": "Validate persisted phase, task input, cycle, submission identity and timestamps"
+    },
+    {
+      "priority": "P2",
+      "issue": "Optional metrics I/O blocked durable backup",
+      "fix": "Keep state persistence mandatory and log metrics publication failure"
+    }
+  ],
+  "runtime_phases": [
+    {
+      "evidence": "runtime2/results.json",
+      "result": "PASS",
+      "scope": "standalone phase",
+      "checks": 19,
+      "overall_attempt": "FAIL at subsequent Raft client timeout"
+    },
+    {
+      "evidence": "raft-final/results.json",
+      "result": "PASS",
+      "scope": "Raft phase",
+      "checks": 7
+    }
+  ],
+  "runtime_checks": [
+    {
+      "check": "standalone_retry_preserves_capture_and_drills",
+      "result": "PASS",
+      "version": 1,
+      "backup_posts": 1
+    },
+    {
+      "check": "standalone_restart_respects_next_run",
+      "result": "PASS"
+    },
+    {
+      "check": "daemon_restart_lock_and_private_state",
+      "result": "PASS",
+      "uid": 10001,
+      "backup_posts": 1
+    },
+    {
+      "check": "sigkill_after_backup_admission",
+      "result": "PASS",
+      "backup_posts": 1,
+      "version": 1
+    },
+    {
+      "check": "sigkill_after_verify_admission",
+      "result": "PASS",
+      "backup_posts": 1,
+      "version": 1
+    },
+    {
+      "check": "sigkill_after_drill_admission",
+      "result": "PASS",
+      "backup_posts": 1,
+      "version": 1
+    },
+    {
+      "check": "http_401_admission_recovery",
+      "result": "PASS",
+      "server_backup_tasks": 1,
+      "backup_posts": 2
+    },
+    {
+      "check": "http_429_admission_recovery",
+      "result": "PASS",
+      "server_backup_tasks": 1,
+      "backup_posts": 2
+    },
+    {
+      "check": "http_400_admission_recovery",
+      "result": "PASS",
+      "server_backup_tasks": 1,
+      "backup_posts": 1
+    },
+    {
+      "check": "http_409_admission_recovery",
+      "result": "PASS",
+      "server_backup_tasks": 1,
+      "backup_posts": 1
+    },
+    {
+      "check": "http_503_admission_recovery",
+      "result": "PASS",
+      "server_backup_tasks": 1,
+      "backup_posts": 1
+    },
+    {
+      "check": "read_only_metrics_does_not_block_backup",
+      "result": "PASS"
+    },
+    {
+      "check": "queued_tenant_and_resume_do_not_starve_other_tenant",
+      "result": "PASS"
+    },
+    {
+      "check": "corrupt_state_isolated_and_preserved",
+      "result": "PASS"
+    },
+    {
+      "check": "daemon_survives_repeated_corrupt_tenant_state",
+      "result": "PASS"
+    },
+    {
+      "check": "corrupt-payload_fails_closed_then_retries_same_backup",
+      "result": "PASS"
+    },
+    {
+      "check": "missing-payload_fails_closed_then_retries_same_backup",
+      "result": "PASS"
+    },
+    {
+      "check": "missing-manifest_fails_closed_then_retries_same_backup",
+      "result": "PASS"
+    },
+    {
+      "check": "task_gc_requires_reconciliation_without_recapture",
+      "result": "PASS"
+    },
+    {
+      "check": "raft_bounded_scheduler_recovery",
+      "result": "PASS",
+      "attempts": 1
+    },
+    {
+      "check": "raft_lost_202_and_leader_failover_resume",
+      "result": "PASS",
+      "old_leader": 1,
+      "backup_posts": 1,
+      "version": 1
+    },
+    {
+      "check": "raft_drill_isolation_preserves_live_graph",
+      "result": "PASS",
+      "cleanup_deleted": 13
+    },
+    {
+      "check": "raft_restart_respects_next_run",
+      "result": "PASS"
+    },
+    {
+      "check": "raft_quorum_loss_then_recovery_preserves_known_task",
+      "result": "PASS"
+    },
+    {
+      "check": "raft_lost_verify_response_no_duplicate_drill",
+      "result": "PASS"
+    },
+    {
+      "check": "raft_lost_drill_response_no_duplicate_drill",
+      "result": "PASS"
+    }
+  ],
+  "unit_tests": 11,
+  "native_real_s3_gate": {
+    "result": "PASS",
+    "binary_sha256": "8fb927f0bd863923843ea87638daced80bdffaa09d5d4b328750c1931c98d702",
+    "environment": "OrbStack Linux native Go 1.26.7, Linux test/temp/data directories and dedicated MinIO",
+    "command": "scripts/object_backup_gate.sh",
+    "production_aws": "NOT_RUN",
+    "race_tests": [
+      "TestManifestCannotRedirectRestore",
+      "TestObjectBackupMultipartAndPublication",
+      "TestObjectBackupRetentionProtectsReadersAndResumesDeletion",
+      "TestObjectBackupRetryAfterReopenAndVerifiedRestore",
+      "TestObjectBackupAutomationReopenRetryRetentionAndDrill",
+      "TestObjectBackupRetentionStopsListingAtDeleteBudget",
+      "TestHAObjectBackupUsesLeaderRepository",
+      "TestHAObjectRestoreResumesAfterLeaderLoss"
+    ],
+    "http_phases": [
+      "http-capture",
+      "http-automation-restart",
+      "http-restore",
+      "http-restart"
+    ]
+  },
+  "focused_go_race": {
+    "result": "PASS",
+    "tests_pass": 25,
+    "tests_skip": 5,
+    "skip_reason": "S3 environment absent for this run; separate real-S3 gate completed"
+  },
+  "worker_image_id": "sha256:3e093e2bf29ee1e74cc34dd47eeb945a99e3d67245cdcb5fe23548e021a9388c",
+  "backend_image_id": "sha256:65f8e45f5c712c5408c58bbd597126a083f998d1fd0870cc26c1f1168ff926ef",
+  "backend_binary_sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81",
+  "backend_production_go_sha256": "c0a4e33983c5730235a9897c65f11b52e5e5620781786a680557293ba310c093",
+  "minio_sha256": "5c83cd2cf151717ba0243f73e1c7802ff36e272b67144bdd7f1f7d684fd6f03d",
+  "source_files": {
+    "scripts/backup_automation.py": "571bb1e2e48466ef74b742cdd63109ce028f885debccda6cc3da5fa4a832c42a",
+    "sdk/python/graphdb_sdk/__init__.py": "1f5e635bde3d9159ded93ae8f1eeee4a9c798dcd6c2dad8b2fee06bc55289df5",
+    "sdk/python/graphdb_sdk/client.py": "be1c580b30bb26b01bb5912c7cee3afa54d3e409d0bf34746404bda6730ec814",
+    "sdk/python/graphdb_sdk/errors.py": "8f30db510ac5c94f0d4603e8d7f7e5b221bc99174162b04edc5da704bca01390",
+    "sdk/python/graphdb_sdk/ops.py": "126665404ba82cf50dbc94f7d9e4149c8152254ca0ee0ef47644c8e88b2807bc",
+    "sdk/python/graphdb_sdk/query.py": "2d67556726ecc025f3b84ad6ffd152756d5f431390bdb980195601f13615b76d",
+    "sdk/python/graphdb_sdk/read.py": "f548ece723dbfdc4e5451f9d0743cec8f91613028e309089ccb6ff91f8c39c1a",
+    "sdk/python/graphdb_sdk/stream.py": "e07f699999b17a7c32b8c97901d441c1fafc44ed1d60f2a8971bb8fc83535b03",
+    "sdk/python/graphdb_sdk/tenant.py": "9eb502911d8661fe59828c23ccb7669cd923a88925aa7445dd36df0514982263",
+    "sdk/python/graphdb_sdk/transport.py": "91efbb6e6c91f3888793dde4d3b9a245abdef89187d72cc1a42e9f97b2bb6dd4",
+    "sdk/python/graphdb_sdk/write.py": "c97722b64f7d22937015c1a4b4a66af2b73004a3c9686c0d5b4b1a7ea4e57608",
+    "scripts/backup_automation_test.py": "5b8718c6591ab9642b005bc3fe3e48200972341efb31c8240370761d8ec38604",
+    "scripts/object_backup_gate.sh": "d7e20af88fab9e0fd3c1b4c88cefc9b656aef1c403020c869df3942596bd4f49",
+    "scripts/object_backup_http.py": "4910d9b8b627cac0a2b12e36f170634a92103ad76256e900f2b01b9c4378c79a",
+    "deploy/backup-automation/Dockerfile": "bfacdee41926c2525bfa8381ce5ffa2a0bfc5e0a889118f6eb2bce47318fd441",
+    "deploy/backup-automation.env.example": "d74d84577c054486033460958f4b4a40fd883f55f0fdd124897deab3e15088b3",
+    "deploy/systemd/graphdb-backup-automation.service": "cbe7e3fcea9d043bb9db88bdcf978d126bbf491a6a4bdac160c4b72d3fcf2269",
+    "deploy/systemd/graphdb-backup-automation.timer": "3e4db24e336d553b27e0641696b57c84de99319d076559159547d3b7ca418bca",
+    "docker-compose.backup-automation.yml": "3389e3f46bcfa8428080eb7cc7ef5143aefe969becaeb0e7525230d7c543cc6a",
+    "docker-compose.raft.backup.yml": "18c7b4603b9784afedf6c5eeb01317dfd5a191da1b121d402afc215b249dc276",
+    "docs/backup-automation.md": "d9bad2bd470ee97b06ccb2ca9576d1a5b9779e9995719b68c0bab53be2640b52",
+    "docs/backup-automation.zh-CN.md": "99d6c9784feb06d0531d5349c34f34c17d17bf9bd5fe90aea8ffad88486d697a",
+    "docs/backup-deep-validation-2026-10-04.zh-CN.md": "854fd371627b94c07db5d544ecad25686cbedfb8d9170ffebb23bc8bbd519cd1"
+  },
+  "checks": [
+    {
+      "check": "linux_unit_regressions",
+      "result": "PASS",
+      "tests": 11
+    },
+    {
+      "check": "real_s3_native_gate",
+      "result": "PASS",
+      "race_tests": 8,
+      "http_phases": 4
+    },
+    {
+      "check": "focused_go_race",
+      "result": "PASS",
+      "tests_pass": 25,
+      "tests_skip": 5
+    },
+    {
+      "check": "backend_production_source_binding",
+      "result": "PASS",
+      "files": 508,
+      "aggregate_sha256": "c0a4e33983c5730235a9897c65f11b52e5e5620781786a680557293ba310c093"
+    },
+    {
+      "check": "worker_image_source_binding",
+      "result": "PASS",
+      "files": 11
+    },
+    {
+      "check": "backend_image_binary_binding",
+      "result": "PASS",
+      "sha256": "c35f935bb5ee07ce41429d0933b9abc293ee23fdb555fc8b6da8d01fc1e81d81"
+    },
+    {
+      "check": "unrelated_worktree_files_preserved",
+      "result": "PASS",
+      "baseline_files": 1028,
+      "changed": [
+        "CHANGELOG.md",
+        "docs/README.md",
+        "docs/README.zh-CN.md",
+        "docs/backup-automation.md",
+        "docs/backup-automation.zh-CN.md",
+        "scripts/backup_automation.py",
+        "scripts/backup_automation_test.py"
+      ]
+    },
+    {
+      "check": "main_checkout_user_files_preserved",
+      "result": "PASS",
+      "files": 4
+    },
+    {
+      "check": "python_ast_and_git_diff_check",
+      "result": "PASS"
+    },
+    {
+      "check": "owned_containers_cleaned",
+      "result": "PASS"
+    },
+    {
+      "check": "owned_volumes_cleaned",
+      "result": "PASS"
+    },
+    {
+      "check": "owned_networks_cleaned",
+      "result": "PASS"
+    },
+    {
+      "check": "native_gate_server_stopped",
+      "result": "PASS"
+    },
+    {
+      "check": "local_documentation_links",
+      "result": "PASS",
+      "links": 160
+    }
+  ],
+  "failed_attempts": [
+    {
+      "evidence": "runtime1",
+      "result": "FAIL",
+      "reason": "Empty Docker volume permissions were reinitialized; fixture did not induce read-only metrics",
+      "resolution": "Actual read-only mount"
+    },
+    {
+      "evidence": "runtime2",
+      "result": "FAIL",
+      "reason": "10-second Raft HTTP client timeout after 19 passing standalone checks",
+      "resolution": "Bounded 180-second persisted recovery loop verified in final Raft phase"
+    },
+    {
+      "evidence": "runtime3",
+      "result": "FAIL",
+      "reason": "60-second schedule legitimately became due during daemon test",
+      "resolution": "3600-second scheduling window in final phase"
+    },
+    {
+      "evidence": "backup-race.jsonl",
+      "result": "SETUP_FAIL",
+      "reason": "Incomplete Docker module cache and missing proxy CA trust",
+      "resolution": "Trusted existing native Linux Go runtime, TLS remains enabled"
+    }
+  ],
+  "not_run": [
+    "cross-host deployment",
+    "sharded router and migration with backup worker",
+    "installed production timer firing",
+    "production AWS IAM/versioning/Object Lock/lifecycle expiration",
+    "large-graph capacity/performance matrix",
+    "GitHub CI",
+    "whole-product test suite"
+  ],
+  "prior_raft_availability_qualification": "FAIL remains; these backup recovery checks do not supersede the prior 30-minute Raft workload failures",
+  "evidence_archive": "/Users/livesite/Documents/GraphDB-test-results-2026-10-04/backup-deep-evidence.tar.gz"
+}

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -38,7 +39,7 @@ func TestCommitObjectParquetRoundTrip(t *testing.T) {
 }
 
 func TestCommitObjectParquetRoundTripAllMutationKinds(t *testing.T) {
-	now := time.Date(2026, 6, 25, 10, 11, 12, 13, time.UTC)
+	now := time.Date(2026, 6, 25, 10, 11, 12, 13, time.FixedZone("UTC+8", 8*60*60))
 	commit := graph.Commit{
 		ID:        "commit-all",
 		TenantID:  "tenant-a",
@@ -64,11 +65,12 @@ func TestCommitObjectParquetRoundTripAllMutationKinds(t *testing.T) {
 			}},
 			DeleteRelationTypes: []string{"legacy_relation"},
 			UpsertEntities: []graph.Entity{{
-				ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "app-01", "cpu": float64(4), "tags": []any{"blue"}}, Source: "agent", ExternalID: "i-a",
+				ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "app-01", "cpu": float64(4), "tags": []any{"blue"}, "timestamp_string": now.Format(time.RFC3339Nano)}, Source: "agent", ExternalID: "i-a",
 				Confidence: 0.8, SourceRank: 100, Version: 8, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
 				FieldSources:    map[string]graph.FieldSource{"hostname": {Source: "agent", Priority: 100, Version: 8, UpdatedAt: now}},
 				FieldWriteModes: map[string]string{"tags": graph.FieldMergeReplace},
-				Sources:         []graph.EntitySource{{Source: "agent", ExternalID: "i-a", Confidence: 0.8, Priority: 100, ObservedAt: now}},
+				Sources:         []graph.EntitySource{{Source: "agent", ExternalID: "i-a", Confidence: 0.8, Priority: 100, ObservedAt: now, Stale: true, StaleAt: now}},
+				ExistenceSource: &graph.FieldSource{Source: "agent", Priority: 100, Version: 8, UpdatedAt: now},
 				MergedFrom:      []string{"host:old-a"}, SplitFrom: "host:split",
 			}},
 			DeleteEntities: []string{"host:deleted"},
@@ -96,6 +98,10 @@ func TestCommitObjectParquetRoundTripAllMutationKinds(t *testing.T) {
 			}},
 		},
 	}
+	original, err := json.Marshal(commit)
+	if err != nil {
+		t.Fatal(err)
+	}
 	normalized, _, err := normalizeCommitForParquet(commit)
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
@@ -110,6 +116,16 @@ func TestCommitObjectParquetRoundTripAllMutationKinds(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decoded, normalized) {
 		t.Fatalf("decoded mismatch\n got: %#v\nwant: %#v", decoded, normalized)
+	}
+	if !decoded.CreatedAt.Equal(now) || decoded.CreatedAt.Location() != time.UTC {
+		t.Fatalf("commit timestamp changed instant or was not persisted in UTC: %v", decoded.CreatedAt)
+	}
+	if decoded.Mutations.UpsertEntities[0].Fields["timestamp_string"] != now.Format(time.RFC3339Nano) {
+		t.Fatal("encoding changed an opaque timestamp string field")
+	}
+	after, err := json.Marshal(commit)
+	if err != nil || string(after) != string(original) {
+		t.Fatalf("encoding modified caller's commit: %v", err)
 	}
 }
 
@@ -130,7 +146,8 @@ func TestCommitObjectRejectsNonParquetJSON(t *testing.T) {
 }
 
 func TestTenantStoreWritesCommitEnvelope(t *testing.T) {
-	ctx := context.Background()
+	at := time.Date(2026, 10, 3, 10, 11, 12, 13, time.FixedZone("UTC-7", -7*60*60))
+	ctx := ReplicatedContext(context.Background(), "offset-clock", at)
 	store := NewTenantStore(NewMemoryStore(), "test")
 	result, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{
 		ID: "host:a", Kind: "host", Fields: graph.Fields{"hostname": "app-01"},

@@ -382,6 +382,10 @@ func normalizeDirectCommitRecordForParquet(record DirectCommitRecord) (DirectCom
 }
 
 func directCommitRecordPayloadJSON(record DirectCommitRecord) ([]byte, error) {
+	record.StartedAt = record.StartedAt.UTC()
+	record.FinishedAt = record.FinishedAt.UTC()
+	record.Result.UpdatedAt = record.Result.UpdatedAt.UTC()
+	record.Request.Mutations = mutationTimesUTC(record.Request.Mutations)
 	record.Request.IdempotencyKey = strings.TrimSpace(record.Request.IdempotencyKey)
 	return json.Marshal(record)
 }

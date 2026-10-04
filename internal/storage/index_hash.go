@@ -96,7 +96,7 @@ func edgeShardContentHash(shard EdgeShardData) string {
 	}{
 		RelationType: shard.RelationType,
 		Shard:        shard.Shard,
-		Edges:        edges,
+		Edges:        edgeSliceTimesUTC(edges),
 	})
 }
 

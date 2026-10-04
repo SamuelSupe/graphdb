@@ -46,7 +46,7 @@ func legacyCommitWire(commit graph.Commit) legacyCommit {
 		ID:            commit.ID,
 		TenantID:      commit.TenantID,
 		Version:       commit.Version,
-		CreatedAt:     commit.CreatedAt,
+		CreatedAt:     commit.CreatedAt.UTC(),
 		Mutations:     legacyMutationWire(commit.Mutations),
 	}
 }
@@ -61,7 +61,7 @@ func legacyMutationWire(mutations graph.Mutations) legacyMutations {
 		DeleteEntities:       mutations.DeleteEntities,
 		DeleteEntityRequests: mutations.DeleteEntityRequests,
 		MarkSourceStale:      mutations.MarkSourceStale,
-		UpsertEdges:          mutations.UpsertEdges,
+		UpsertEdges:          edgeSliceTimesUTC(mutations.UpsertEdges),
 		DeleteEdges:          mutations.DeleteEdges,
 		DeleteEdgeRequests:   mutations.DeleteEdgeRequests,
 		MergeEntities:        mutations.MergeEntities,
@@ -75,7 +75,7 @@ func legacyEntities(entities []graph.Entity) []legacyEntity {
 	}
 	result := make([]legacyEntity, len(entities))
 	for i := range entities {
-		result[i] = legacyEntity(entities[i])
+		result[i] = legacyEntity(entityTimesUTC(entities[i]))
 	}
 	return result
 }

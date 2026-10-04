@@ -30,6 +30,18 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: "GraphDB replica stopped after a persistence or application failure"
+      - alert: GraphDBRaftSnapshotCleanupFailed
+        expr: graphdb_raft_snapshot_cleanup_failed == 1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB cannot clean old snapshot files; replication continues, inspect disk space and filesystem access"
+      - alert: GraphDBRaftDiagnosticsStale
+        expr: (graphdb_raft_status_observation_known == 0) or (graphdb_raft_status_age_seconds > 10)
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "GraphDB Raft status sampling stalled; inspect persistence, CPU scheduling and application progress"
       - alert: GraphDBRaftApplyLag
         expr: graphdb_raft_application_lag > 1000
         for: 5m

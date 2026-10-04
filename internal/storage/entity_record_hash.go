@@ -15,7 +15,7 @@ func entityRecordContentHash(record EntityRecord) string {
 		Page:     record.Page,
 		PageHash: record.PageHash,
 		PageETag: record.PageETag,
-		Entity:   record.Entity,
+		Entity:   entityTimesUTC(record.Entity),
 		Deleted:  record.Deleted,
 	})
 }

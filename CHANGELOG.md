@@ -5,6 +5,61 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+## [2.2.3] - 2026-10-04
+
+- Reuse directory checks during snapshot and maintenance capture, allow readers
+  through snapshot capture, and encode legacy snapshots outside the application
+  lock. Retain immutable-file pinning, full graph validation and snapshot budgets.
+- Pipeline up to four prepared-maintenance chunks after confirming the first
+  manifest, then publish only after all chunks are acknowledged. Preserve full
+  transfer digests, generation checks, rollback durability and resumable input.
+- Seed every environment traversal root before the soak readers start, avoiding
+  a startup race against the first writer; preserve failures rather than retrying
+  an invalid query into success.
+
+- Isolate backup worker failures by tenant and give each tenant its own polling
+  budget. Reject inconsistent persisted cycle/task state before admission, keep
+  corrupt state untouched, and let durable backups continue when only textfile
+  metrics publication fails.
+
+- Add a durable external backup worker for standalone and Raft entry points,
+  with interval scheduling, checkpoint-preserving retries, uncertain-admission
+  reconciliation, mandatory S3 readback, isolated restore drills, Prometheus
+  textfile diagnostics and Compose/systemd deployment examples. Retain the
+  standalone built-in policy; external remote retention uses explicit S3 lifecycle.
+
+- Pin the leader's committed position before sampling followers during rolling
+  upgrade preflight. Continuing writes no longer make healthy replicas appear
+  behind a later sample; lagging replicas and fresh-quorum drain checks still
+  block an unsafe restart. Apply the same sampling order to the rolling gate.
+- Settle historical direct-commit idempotency records before acquiring the
+  compaction publication lock, in both synchronous and background compaction.
+  Slow record scans no longer hold up foreground commits. Keep conditional
+  settlement, history validation and the concurrent commit tail at publication.
+
+- Preserve published tenant objects when post-write fence validation encounters
+  an I/O error. Return the original error instead of a retryable CAS conflict;
+  a Raft application records the failure and rolls back without advancing its
+  checkpoint. Conclusively stale leases and deleted tenant generations still
+  remove the stale publication.
+
+- Canonicalize typed timestamps to UTC before hashing Parquet commits, snapshots,
+  indexes, tasks, saved queries, ingest/dead-letter and idempotency records. This
+  prevents valid non-UTC timestamps from producing unreadable persisted objects.
+  Retain opaque field values and existing UTC encodings; idempotent retries compare
+  equivalent typed timestamps consistently. Existing inconsistent objects still
+  fail integrity checks and require a trusted restore or replay.
+
+- Fix encoded write-route authorization bypasses in the production NGINX template.
+  Capture the normalized public request path before the auth subrequest selects
+  required roles. Existing gateways must reload the updated configuration.
+  Preserve the original HTTP method for identity checks and replace forged client
+  method/URI headers. CI and release gates exercise real TLS, role rejection and tenant-header replacement;
+  archives retain the matching gateway configuration and validation evidence.
+  Include the diagnostic helper required by the packaged Raft gates.
+- Mark unavailable historical capacity-run artifacts as local paths instead of
+  broken repository links; retain the original historical result boundaries.
+
 - Reject runtime archives whose data/WAL/Raft objects would share a destination
   subtree after relocating roots. Validate this before creating restore targets;
   publish staged files without replacing unexpected existing files.
@@ -59,6 +114,12 @@ versioning; release tags and binaries expose the exact build commit and date.
   Healthy replicas continue; repaired replicas can replay the command.
 - Add fault/replay and S3 transfer failover regressions, including the existing
   real S3 gate, and document recovery for partial transfers from older binaries.
+
+The performance candidate's 30-minute maintenance soak recorded four HTTP 503
+query failures; that failed result remains in the qualification report. Capture
+microbenchmarks show lower allocation costs, but overall throughput, cross-host
+availability and production capacity remain unqualified. The exact release
+binary is independently checked by the complete tag workflow.
 
 ## [2.2.2] - 2026-10-03
 

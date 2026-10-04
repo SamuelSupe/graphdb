@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -680,8 +681,11 @@ func TestFileStoreProcessDeathReleasesDirectory(t *testing.T) {
 		if _, err := temporary.Write([]byte("unfinished export")); err != nil {
 			t.Fatal(err)
 		}
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, os.Interrupt)
+		defer signal.Stop(stop)
 		fmt.Println("ready")
-		select {}
+		<-stop
 	}
 	root := t.TempDir()
 	unowned := filepath.Join(root, ".snapshot-view-unowned")

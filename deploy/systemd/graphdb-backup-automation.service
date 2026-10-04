@@ -1,0 +1,20 @@
+[Unit]
+Description=GraphDB verified object backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=graphdb-backup
+EnvironmentFile=/etc/graphdb/backup-automation.env
+StateDirectory=graphdb-backup-automation
+StateDirectoryMode=0700
+RuntimeDirectory=graphdb-backup-automation-metrics
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 /opt/graphdb/scripts/backup_automation.py --url ${GRAPHDB_BACKUP_AUTOMATION_URL} --tenant ${GRAPHDB_BACKUP_AUTOMATION_TENANT} --state-dir /var/lib/graphdb-backup-automation --metrics-dir /run/graphdb-backup-automation-metrics --interval ${GRAPHDB_BACKUP_AUTOMATION_INTERVAL} --drill-interval ${GRAPHDB_BACKUP_AUTOMATION_DRILL_INTERVAL}
+TimeoutStartSec=660
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

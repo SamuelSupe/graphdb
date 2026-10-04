@@ -23,7 +23,7 @@ func legacySnapshotRecordWire(record snapshotRecord) legacySnapshotRecord {
 		CITypes:       record.Snapshot.CITypes,
 		Entities:      legacyEntities(record.Snapshot.Entities),
 		RelationTypes: record.Snapshot.RelationTypes,
-		Edges:         record.Snapshot.Edges,
+		Edges:         edgeSliceTimesUTC(record.Snapshot.Edges),
 		Index:         record.Snapshot.Index,
 	}
 }

@@ -90,6 +90,7 @@ func (s *TenantStore) CaptureReplicatedMaintenance(ctx context.Context, task Tas
 	source := &ReplicatedMaintenanceSource{root: root, store: s, task: task, token: token, release: release, originals: map[string]os.FileInfo{}}
 	objects, err := files.List(ctx, s.tenantObjectPrefix(task.TenantID))
 	if err == nil {
+		capturedDirectories := make(map[string]bool)
 		for _, object := range objects {
 			if err = ctx.Err(); err != nil {
 				break
@@ -99,12 +100,16 @@ func (s *TenantStore) CaptureReplicatedMaintenance(ctx context.Context, task Tas
 				err = pathErr
 				break
 			}
-			if err = files.verifySafeParent(filename); err != nil {
-				break
-			}
 			destination := filepath.Join(root, "build", filepath.FromSlash(object.Key))
-			if err = os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
-				break
+			parent := filepath.Dir(filename)
+			if !capturedDirectories[parent] {
+				if err = files.verifySafeParent(filename); err != nil {
+					break
+				}
+				if err = os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+					break
+				}
+				capturedDirectories[parent] = true
 			}
 			if err = os.Link(filename, destination); err != nil {
 				break

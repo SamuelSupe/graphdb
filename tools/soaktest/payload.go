@@ -48,6 +48,10 @@ func schemaMutations() graph.Mutations {
 
 func seedEntities() []graph.Entity {
 	group := cmdbGroup(0)
+	// Readers traverse all environments before the first writer has completed.
+	for _, env := range []string{"staging", "dev"} {
+		group.entities = append(group.entities, sourceEntity("environment:"+env, "environment", graph.Fields{"name": env}))
+	}
 	return group.entities
 }
 

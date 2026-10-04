@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import time
 
-from graphdb_sdk import GraphDBClient
+from graphdb_sdk import GraphDBAPIError, GraphDBClient
 
 
 def wait(client, task):
@@ -17,6 +17,19 @@ def wait(client, task):
         assert current["status"] not in ("failed", "canceled"), current
         time.sleep(0.05)
     raise AssertionError(f"task timed out: {task['id']}")
+
+
+def commit(client, mutations, key):
+    # The one-second automation loop may start an index rebuild during seeding.
+    # Retry only an explicit admission rejection, retaining the request identity.
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            return client.commit(mutations, idempotency_key=key)
+        except GraphDBAPIError as error:
+            if error.status_code != 429 or error.code != "index_rebuild_running" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
 
 
 def main():
@@ -42,10 +55,10 @@ def main():
         })
         snapshot = source.export_snapshot()
         backup = wait(source, admin.backup_tenant("backup-source", destination="object"))
-        source.commit({"upsert_entities": [{"id": "host:later", "kind": "host"}]})
+        commit(source, {"upsert_entities": [{"id": "host:later", "kind": "host"}]}, "backup-gate-later")
         second = wait(source, admin.backup_tenant("backup-source", destination="object"))
         admin.create_tenant("backup-automated")
-        automated.commit({"upsert_entities": [{"id": "host:auto", "kind": "host"}]})
+        commit(automated, {"upsert_entities": [{"id": "host:auto", "kind": "host"}]}, "backup-gate-automatic")
         automated.put_tenant_config({"backup": {"enabled": True, "keep_count": 1, "restore_drill_interval_seconds": 60}})
         deadline = time.monotonic() + 60
         while not automated.get_backup_automation().get("task_id"):
@@ -76,7 +89,7 @@ def main():
         assert dry["result"]["dry_run"] and not dry["result"].get("target_exists", False), dry
         wait(target, admin.restore_tenant("backup-target", saved["backup_key"]))
         assert target.export_snapshot() == expected
-        target.commit({"upsert_entities": [{"id": "host:a", "kind": "host", "fields": {"name": "changed"}}]})
+        commit(target, {"upsert_entities": [{"id": "host:a", "kind": "host", "fields": {"name": "changed"}}]}, "backup-gate-overwrite")
         assert target.get_entity("host:a")["fields"]["name"] == "changed"
         wait(target, admin.restore_tenant("backup-target", saved["backup_key"], overwrite=True))
         drill = wait(target, admin.restore_drill_tenant("backup-target", {
