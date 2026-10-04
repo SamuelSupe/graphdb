@@ -1,6 +1,6 @@
 # GGraphDB 2.2.3 发布门禁失败 / Unpublished tag
 
-v2.2.3 标签指向 `f687cf213b227e2984979f3895e1b9e6407ad7a3`。[正式发布工作流 37204045846](https://github.com/SamuelSupe/graphdb/actions/runs/37204045846)为 **FAIL**，发布作业跳过，未创建 GitHub Release 或发行资产；标签不删除、不重写。最新成功发行仍为 v2.2.2，后续发行状态见 [2.2.4](validation-v2.2.4.md)。
+v2.2.3 标签指向 `f687cf213b227e2984979f3895e1b9e6407ad7a3`。[正式发布工作流 37204045846](https://github.com/SamuelSupe/graphdb/actions/runs/37204045846)为 **FAIL**，发布作业跳过，未创建 GitHub Release 或发行资产；标签不删除、不重写。该失败发生时最新成功发行为 v2.2.2；后续 v2.2.4 已发布，实际状态见 [2.2.4](validation-v2.2.4.md)。
 
 - 全仓 unit/vet/race、SDK/备份 worker、单机集成、MinIO/S3、TLS 网关与单机三十分钟长测通过。
 - 协议 1/2/3、限定旧开发基线的混部滚动、故障恢复和串行重启通过。

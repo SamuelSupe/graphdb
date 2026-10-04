@@ -1,7 +1,7 @@
 {
   "version": "2.2.4",
-  "status": "PENDING_EXACT_TAG_WORKFLOW",
-  "published": false,
+  "status": "PUBLISHED_AND_VERIFIED",
+  "published": true,
   "release_gate_waiver": false,
   "cross_host": "NOT_RUN",
   "stable_overall_throughput": "UNQUALIFIED",
@@ -35,6 +35,644 @@
       "writer_lease",
       "compact",
       "index_rebuild"
-    ]
+    ],
+    "full_storage_httpapi_ha_race": "PASS"
+  },
+  "verification_scope": "GitHub release and downloaded backend package",
+  "source_commit": "043d082cf8a73032c702d7c6c3d7676ee3f6d7dc",
+  "tag": "v2.2.4",
+  "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4",
+  "published_at": "2026-10-04T15:13:52Z",
+  "stable_latest": true,
+  "archive": {
+    "archive": "graphdb-v2.2.4.tar.gz",
+    "archive_sha256": "4909186b7fecf740e4289481e0034aa6cf82a3e4742f9cc7dee57ee425fc1591",
+    "build_metadata": {
+      "version": "v2.2.4",
+      "commit": "043d082cf8a73032c702d7c6c3d7676ee3f6d7dc",
+      "build_date": "2026-10-04T22:11:48+08:00",
+      "go_version": "go1.26.7"
+    },
+    "binary_hashes": {
+      "bin/graphdb-darwin-arm64": "70ffdf4f91e932dffc6082500f1122adb1a5f6ee2d0646228fe4351888fa7ee3",
+      "bin/graphdb-linux-amd64": "224df57d837aa6cd475881681c286bfae1c2670da245c24a5399820ec22fb86a",
+      "bin/graphdb-linux-arm64": "e093656c102ad36e51e4032f4bec853b3fa5cbeffaa3cc4cb6bca58f7b48a2c0"
+    },
+    "tested_binary_binding": "PASS",
+    "tag_source_file_comparison_count": 1010
+  },
+  "exact_tag_workflow": {
+    "run_id": 37208814068,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/37208814068",
+    "status": "PASS"
+  },
+  "branch_ci": {
+    "run_id": 37208366118,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/37208366118",
+    "status": "PASS"
+  },
+  "main_ci": {
+    "run_id": 37208813941,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/37208813941",
+    "attempt": 2,
+    "status": "PASS",
+    "first_attempt": {
+      "status": "FAIL",
+      "test": "TestRestoreDrillCleansOwnedTargetAfterPostRestoreFailure",
+      "observed": "task did not finish within the existing two-second test polling window",
+      "root_cause": "UNPROVEN",
+      "focused_linux_arm64_race_repetitions": 30,
+      "focused_result": "PASS",
+      "code_assertions_timeouts_changed": false
+    }
+  },
+  "local_soak": {
+    "result": "PASS",
+    "operations": 125770,
+    "operation_errors": 0,
+    "duration": "30m0s",
+    "maintenance": "compact=5 gc=2 index_rebuild=2 reader_restart=0",
+    "operations_by_kind": [
+      {
+        "name": "cmdb-env-containment-traverse",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 18.0
+      },
+      {
+        "name": "cmdb-owner-service-match",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 49.0
+      },
+      {
+        "name": "cmdb-service-to-database-path",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 17.0
+      },
+      {
+        "name": "commit-schema",
+        "count": 1,
+        "errors": 0,
+        "p99_ms": 19.0
+      },
+      {
+        "name": "compact",
+        "count": 5,
+        "errors": 0,
+        "p99_ms": 30118.0
+      },
+      {
+        "name": "create-tenant",
+        "count": 1,
+        "errors": 0,
+        "p99_ms": 18.0
+      },
+      {
+        "name": "export-snapshot-stream",
+        "count": 6,
+        "errors": 0,
+        "p99_ms": 4771.0
+      },
+      {
+        "name": "fuzzy-service-match",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 36.0
+      },
+      {
+        "name": "gc",
+        "count": 2,
+        "errors": 0,
+        "p99_ms": 4151.0
+      },
+      {
+        "name": "health",
+        "count": 2,
+        "errors": 0,
+        "p99_ms": 1.0
+      },
+      {
+        "name": "impact-service",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 26.0
+      },
+      {
+        "name": "index-catalog",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 103.0
+      },
+      {
+        "name": "index-health",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 53.0
+      },
+      {
+        "name": "indexed-match-allow-stale",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 37.0
+      },
+      {
+        "name": "indexed-match-min-version",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 48.0
+      },
+      {
+        "name": "ingest",
+        "count": 608,
+        "errors": 0,
+        "p99_ms": 29556.0
+      },
+      {
+        "name": "neighbors-host-out",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 22.0
+      },
+      {
+        "name": "path-filter-traverse",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 17.0
+      },
+      {
+        "name": "profile-indexed-match",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 53.0
+      },
+      {
+        "name": "range-aggregate-match",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 51.0
+      },
+      {
+        "name": "reader-fleet",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 50.0
+      },
+      {
+        "name": "reader-freshness",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 33.0
+      },
+      {
+        "name": "rebuild-indexes",
+        "count": 3,
+        "errors": 0,
+        "p99_ms": 56552.0
+      },
+      {
+        "name": "save-query",
+        "count": 5,
+        "errors": 0,
+        "p99_ms": 4.0
+      },
+      {
+        "name": "saved-host-query",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 86.0
+      },
+      {
+        "name": "saved-prod-containment",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 69.0
+      },
+      {
+        "name": "saved-prod-services",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 96.0
+      },
+      {
+        "name": "saved-service-impact",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 80.0
+      },
+      {
+        "name": "saved-team-services",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 102.0
+      },
+      {
+        "name": "scan-edges",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 75.0
+      },
+      {
+        "name": "scan-edges-allow-stale",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 194.0
+      },
+      {
+        "name": "scan-entities",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 105.0
+      },
+      {
+        "name": "scan-entities-allow-stale",
+        "count": 4994,
+        "errors": 0,
+        "p99_ms": 364.0
+      },
+      {
+        "name": "scan-entities-min-version",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 93.0
+      },
+      {
+        "name": "shortest-service-cluster",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 20.0
+      },
+      {
+        "name": "stream-all-host-page",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 227.0
+      },
+      {
+        "name": "stream-large-indexed-hosts",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 237.0
+      },
+      {
+        "name": "stream-large-indexed-hosts-min-version",
+        "count": 4993,
+        "errors": 0,
+        "p99_ms": 247.0
+      },
+      {
+        "name": "tenant-usage",
+        "count": 61,
+        "errors": 0,
+        "p99_ms": 1054.0
+      },
+      {
+        "name": "warm-reader",
+        "count": 1,
+        "errors": 0,
+        "p99_ms": 1.0
+      }
+    ],
+    "reader": {
+      "samples": "59",
+      "unready": "0",
+      "unready_ratio": "0.000",
+      "max_version_lag": "0",
+      "max_lag_ms": "0"
+    },
+    "index_health": {
+      "samples": "59",
+      "unhealthy": "0",
+      "stale": "28",
+      "last_status": "stale"
+    }
+  },
+  "raft_soak": {
+    "result": "PASS",
+    "operations": 65570,
+    "operation_errors": 0,
+    "duration": "30m2s",
+    "maintenance": "compact=5 gc=2 index_rebuild=2 reader_restart=0",
+    "operations_by_kind": [
+      {
+        "name": "cmdb-env-containment-traverse",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5304.0
+      },
+      {
+        "name": "cmdb-owner-service-match",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5152.0
+      },
+      {
+        "name": "cmdb-service-to-database-path",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5250.0
+      },
+      {
+        "name": "commit-schema",
+        "count": 1,
+        "errors": 0,
+        "p99_ms": 92.0
+      },
+      {
+        "name": "compact",
+        "count": 5,
+        "errors": 0,
+        "p99_ms": 87136.0
+      },
+      {
+        "name": "create-tenant",
+        "count": 1,
+        "errors": 0,
+        "p99_ms": 39.0
+      },
+      {
+        "name": "export-snapshot-stream",
+        "count": 6,
+        "errors": 0,
+        "p99_ms": 3916.0
+      },
+      {
+        "name": "fuzzy-service-match",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5051.0
+      },
+      {
+        "name": "gc",
+        "count": 2,
+        "errors": 0,
+        "p99_ms": 274914.0
+      },
+      {
+        "name": "health",
+        "count": 2,
+        "errors": 0,
+        "p99_ms": 2.0
+      },
+      {
+        "name": "impact-service",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5001.0
+      },
+      {
+        "name": "index-catalog",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 6024.0
+      },
+      {
+        "name": "index-health",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 1913.0
+      },
+      {
+        "name": "indexed-match-allow-stale",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 4881.0
+      },
+      {
+        "name": "indexed-match-min-version",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 4680.0
+      },
+      {
+        "name": "ingest",
+        "count": 947,
+        "errors": 0,
+        "p99_ms": 10680.0
+      },
+      {
+        "name": "neighbors-host-out",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5176.0
+      },
+      {
+        "name": "path-filter-traverse",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 4641.0
+      },
+      {
+        "name": "profile-indexed-match",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5053.0
+      },
+      {
+        "name": "range-aggregate-match",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 4982.0
+      },
+      {
+        "name": "reader-fleet",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 968.0
+      },
+      {
+        "name": "reader-freshness",
+        "count": 60,
+        "errors": 0,
+        "p99_ms": 6231.0
+      },
+      {
+        "name": "rebuild-indexes",
+        "count": 3,
+        "errors": 0,
+        "p99_ms": 223704.0
+      },
+      {
+        "name": "save-query",
+        "count": 5,
+        "errors": 0,
+        "p99_ms": 243.0
+      },
+      {
+        "name": "saved-host-query",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5224.0
+      },
+      {
+        "name": "saved-prod-containment",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5118.0
+      },
+      {
+        "name": "saved-prod-services",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5163.0
+      },
+      {
+        "name": "saved-service-impact",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5157.0
+      },
+      {
+        "name": "saved-team-services",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5233.0
+      },
+      {
+        "name": "scan-edges",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5360.0
+      },
+      {
+        "name": "scan-edges-allow-stale",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5257.0
+      },
+      {
+        "name": "scan-entities",
+        "count": 2571,
+        "errors": 0,
+        "p99_ms": 4818.0
+      },
+      {
+        "name": "scan-entities-allow-stale",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5075.0
+      },
+      {
+        "name": "scan-entities-min-version",
+        "count": 2571,
+        "errors": 0,
+        "p99_ms": 4692.0
+      },
+      {
+        "name": "shortest-service-cluster",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5196.0
+      },
+      {
+        "name": "stream-all-host-page",
+        "count": 2571,
+        "errors": 0,
+        "p99_ms": 4776.0
+      },
+      {
+        "name": "stream-large-indexed-hosts",
+        "count": 2572,
+        "errors": 0,
+        "p99_ms": 5255.0
+      },
+      {
+        "name": "stream-large-indexed-hosts-min-version",
+        "count": 2571,
+        "errors": 0,
+        "p99_ms": 5200.0
+      },
+      {
+        "name": "tenant-usage",
+        "count": 61,
+        "errors": 0,
+        "p99_ms": 18748.0
+      },
+      {
+        "name": "warm-reader",
+        "count": 1,
+        "errors": 0,
+        "p99_ms": 2.0
+      }
+    ],
+    "reader": {
+      "samples": "59",
+      "unready": "0",
+      "unready_ratio": "0.000",
+      "max_version_lag": "0",
+      "max_lag_ms": "0"
+    },
+    "index_health": {
+      "samples": "59",
+      "unhealthy": "0",
+      "stale": "0",
+      "last_status": "ready"
+    }
+  },
+  "downloaded_native_platforms": [
+    {
+      "result": "PASS",
+      "platform": "darwin-arm64",
+      "metadata": {
+        "version": "v2.2.4",
+        "commit": "043d082cf8a73032c702d7c6c3d7676ee3f6d7dc",
+        "build_date": "2026-10-04T22:11:48+08:00",
+        "go_version": "go1.26.7"
+      },
+      "binary_sha256": "70ffdf4f91e932dffc6082500f1122adb1a5f6ee2d0646228fe4351888fa7ee3",
+      "version_output": "GGraphDB v2.2.4 commit=043d082cf8a73032c702d7c6c3d7676ee3f6d7dc built=2026-10-04T22:11:48+08:00 go=go1.26.7",
+      "modes": [
+        {
+          "mode": "direct",
+          "http_e2e": "PASS",
+          "same_directory_restart": "PASS"
+        },
+        {
+          "mode": "wal",
+          "http_e2e": "PASS",
+          "same_directory_restart": "PASS",
+          "persisted_wal_terminal_state": "PASS"
+        }
+      ]
+    },
+    {
+      "result": "PASS",
+      "platform": "linux-arm64",
+      "metadata": {
+        "version": "v2.2.4",
+        "commit": "043d082cf8a73032c702d7c6c3d7676ee3f6d7dc",
+        "build_date": "2026-10-04T22:11:48+08:00",
+        "go_version": "go1.26.7"
+      },
+      "binary_sha256": "e093656c102ad36e51e4032f4bec853b3fa5cbeffaa3cc4cb6bca58f7b48a2c0",
+      "version_output": "GGraphDB v2.2.4 commit=043d082cf8a73032c702d7c6c3d7676ee3f6d7dc built=2026-10-04T22:11:48+08:00 go=go1.26.7",
+      "modes": [
+        {
+          "mode": "direct",
+          "http_e2e": "PASS",
+          "same_directory_restart": "PASS"
+        },
+        {
+          "mode": "wal",
+          "http_e2e": "PASS",
+          "same_directory_restart": "PASS",
+          "persisted_wal_terminal_state": "PASS"
+        }
+      ]
+    }
+  ],
+  "native_probe_correction": {
+    "first_probe_status": 207,
+    "reason": "test probe omitted the required hostname field in the E2E-installed host schema",
+    "action": "corrected fixture and used fresh directories",
+    "product_code_or_timeout_changed": false
+  },
+  "site": {
+    "version": "2.2.4",
+    "build": "PASS",
+    "deployment": "PENDING",
+    "http": "PENDING",
+    "native_chrome": "NOT_RUN_MAC_LOCKED"
   }
 }

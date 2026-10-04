@@ -11,7 +11,7 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) is this release target; publication requires all exact-tag gates.
+[2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) is published as stable Latest; all exact-tag gates and downloaded asset checks passed.
 Development continues on `main`. The same binary supports standalone direct/WAL,
 Raft with independent local replicas, and tenant sharding across Raft groups.
 It adds protected cluster administration, resumable migration and recovery,

@@ -1,57 +1,67 @@
-# GGraphDB 2.2.4 validation and release scope
+# GGraphDB 2.2.4 发布验证 / Release validation
 
 ## 中文
 
-2.2.4 包含 2.2.2 发布后的持久化、恢复、租户迁移、来源身份、网关路径授权、UTC 内容摘要与可用性修复，以及持久化外部备份 worker、快照捕获和维护分块传输优化。同一二进制继续支持单机 direct/WAL、单组 Raft 和租户分片。SDK/OpenAPI 为 2.2.4，Go 模块 `/v2`、HTTP `/v1` 不变。
+[v2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) 已于 2026-10-04T15:13:52Z 发布为 GitHub 的稳定 Latest。标签和发行程序固定在提交 `043d082cf8a73032c702d7c6c3d7676ee3f6d7dc`，Go 1.26.7；后续说明更新不重写标签或资产。同一程序继续支持单机 direct/WAL、单组 Raft 与租户分片。
 
-本页在标签门禁启动前记录验收范围；不能把以下清单当作 PASS。正式发行由 [GitHub 标签工作流](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml) 的全部依赖成功后创建。实际工作流和包内 `release/evidence/` 绑定确切提交与二进制 SHA256；下载资产另行核对外层校验文件、内层 SHA256SUMS 和版本信息。
+### 发行门禁与下载验证
 
-### 2.2.3 发布阻断与本次修复
+| 范围 | 结果与实际证据 |
+| --- | --- |
+| 全仓 unit、vet、race、Go/Python SDK、备份 worker、版本契约 | [精确标签工作流](https://github.com/SamuelSupe/graphdb/actions/runs/37208814068) PASS |
+| 单机 direct/WAL 集成、负载、恢复与重启 | Linux amd64 正式门禁 PASS |
+| 单机三十分钟维护长测 | 125,770 次记录操作，零操作错误；compact 5、GC 2、index rebuild 2；读取就绪采样 59 次、unready 0 |
+| 单机索引与写入长尾 | unhealthy 0、stale 28、最后采样 stale；强读查询仍通过。ingest P99 29.556 秒；不将 stale 算作 ready，也不声明立即索引就绪或低延迟 SLO |
+| 真实 MinIO/S3 | 备份、拒绝损坏、重开与全新目录恢复 PASS |
+| TLS 网关 | 真实角色、编码路径、租户头替换与配置绑定 PASS |
+| Raft 协议 1/2/3、分片、故障与恢复 | 流式快照、准备维护、运行态恢复、磁盘压力、协议 3 GC 与串行重启 PASS |
+| 三副本三十分钟维护长测 | 65,570 次记录操作，零操作错误；compact 5、GC 2、index rebuild 2；读取 unready 0、索引 unhealthy 0/stale 0，最后 ready。ingest P99 10.680 秒 |
+| 限定基线的双版本滚动 | 开发提交 `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` 到本版、协议 1 PASS；来源不是已发布 v2.2.2 |
+| 解压发行包 | 工作流验证 Compose、备份 worker、容器构建与 readiness PASS |
+| 实际 GitHub 下载包 | GitHub 资产摘要、外层校验文件、三程序 SHA256、构建身份和 1,010 个标签源文件逐一比较 PASS |
+| 下载的 macOS arm64 / Linux arm64 程序 | 两平台分别完成 direct/WAL HTTP E2E、同目录优雅停止与重启、图导出一致性；有效 WAL 批次的 committed 终态在重启后保持一致 |
 
-v2.2.3 标签 `f687cf213b227e2984979f3895e1b9e6407ad7a3` 的[正式工作流](https://github.com/SamuelSupe/graphdb/actions/runs/37204045846)失败，未创建 GitHub Release。单机三十分钟为 PASS；Raft 三十分钟中 `saved-service-impact` 一次返回 504（五秒查询预算），故为 FAIL，完整记录见 [2.2.3](validation-v2.2.3.md)。原标签保留，不重写历史。
+操作数是各类操作指标的累计值合计，包含查询、控制、维护与写入，不作为业务 QPS 或容量承诺。Linux amd64 包内程序与协议 1、增强门禁、协议 3、滚动目标、网关门禁的 SHA256 全部相同。arm64 的上述下载验收只认证单机路径；amd64 的 Raft 结果不转移为 arm64/macOS 的 Raft 全量认证。结构化证据见 [JSON](validation-v2.2.4.json)，包内门禁文件见 `release/evidence/`。
 
-2.2.4 保留写租约更新和准备维护发布前的不可变读图，标记为过期后仍需核对当前 manifest 身份或相同逻辑摘要；写入、控制、索引和来源配置缓存仍失效。完整租户失效（包括接管、恢复和重建边界）继续删除读图。回归捕获旧代码中的三次不必要整图重载；修复后的 Linux arm64 race 三轮通过。这证明缓存缺陷已修复，不证明该缺陷是历史 504 的唯一原因；新标签必须独立完成完整门禁，不增加五秒超时，不豁免错误。
+### 下载与身份
 
-### 历史候选结果
+- 归档：`graphdb-v2.2.4.tar.gz`
+- 外层 SHA256：`4909186b7fecf740e4289481e0034aa6cf82a3e4742f9cc7dee57ee425fc1591`
+- Linux amd64：`224df57d837aa6cd475881681c286bfae1c2670da245c24a5399820ec22fb86a`
+- Linux arm64：`e093656c102ad36e51e4032f4bec853b3fa5cbeffaa3cc4cb6bca58f7b48a2c0`
+- macOS arm64：`70ffdf4f91e932dffc6082500f1122adb1a5f6ee2d0646228fe4351888fa7ee3`
+- 构建日期：`2026-10-04T22:11:48+08:00`
 
-- [完整测试及修复](full-validation-2026-10-03.zh-CN.md)、[备份自动化](backup-automation-validation-2026-10-04.zh-CN.md)和[备份深度故障测试](backup-deep-validation-2026-10-04.zh-CN.md)只认证各自固定候选，保留失败及未运行项。
-- [可用性修复候选](raft-availability-fixes-2026-10-04.zh-CN.md)在本机完成 62,029 次操作、零非预期错误；该结果不转移到后续候选或发行二进制。
-- [最终性能候选](performance-raft-batching-2026-10-04.zh-CN.md)的相关 race、单机/Raft/分片、混部滚动和 42 个集群正确性窗口通过。三十分钟维护长测完成 45,116 次操作，但四次查询收到 HAProxy 503；该轮为 **FAIL**，不会因重新构建或新的门禁通过而改写。共享内核负载达到 174，并有严重换页；环境争用不是排除服务端缺陷的证明。
-- 捕获微基准分配字节下降约 63–66%，分配次数下降约 60–64%；阶段耗时测量改善不构成整体吞吐或维护任务提速保证。整体吞吐仍未获得稳定 A/A 对照结论，出现回退的强读合并实验已撤回。
+发行包中的本页为门禁启动前的冻结快照；确切 PASS 证据位于包内 `release/evidence/`，本 GitHub main 页面补记发行和下载后验收。
 
-### 本次标签必须通过的门禁
+### 修复与保留的失败
 
-全仓 unit、vet、race、Go/Python SDK、备份 worker 回归和版本契约；单机 direct/WAL HTTP、重启一致性和三十分钟维护负载；真实 MinIO/S3 备份、拒绝损坏、重开和全新目录恢复；真实 TLS/角色/租户头网关；Raft 协议 1/2/3、分片、故障恢复、磁盘压力、串行重启和三十分钟维护负载；告警规则和实际指标格式；发行包解压后的 Compose、备份 worker 和容器启动。
+2.2.4 保留写租约更新和准备维护发布前的不可变读图，标记过期后仍核对当前 manifest 身份或相同逻辑摘要；写入、控制、索引和来源配置缓存仍失效。接管、恢复、清空与重建边界继续完整失效。新增回归在 v2.2.3 旧代码稳定复现租约更新、compact 和索引重建的三次不必要整图重载；修复后 Linux arm64 的三轮针对性 race 与完整存储/HTTP/HA race 通过。未延长五秒查询预算，未改变多数派、强读、回滚日志或 fsync 顺序。
 
-发行滚动门禁的来源为已修复图/来源身份、迁移、前缀和离线恢复完整性的开发提交 `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a`，不是已发布的 v2.2.2。来源与目标摘要记录在 `release/evidence/raft-gate/rolling/metadata.json`；资格仅限协议 1 和实际验证窗口。受来源身份解释修复影响的数据组不能与旧解释程序混部。升级前完成或取消旧迁移和部分 S3 恢复，窗口内暂停这些新任务；未验证版本使用维护升级或经过校验的备份恢复到新组。协议 3 激活仍是全组升级后的独立变更。
+[v2.2.3 的正式标签门禁](validation-v2.2.3.md)因一次保存查询 HTTP 504 失败，未发布；原标签和失败记录保留。缓存缺陷已被独立复现和修复，但没有据此断言历史 504 只有该根因。本版重新完成全部精确标签门禁，不申请豁免。
 
-Linux amd64 发行程序必须与协议 1/2/3、滚动目标和网关门禁二进制摘要相同。Linux arm64 与 macOS arm64 单独构建并校验；amd64 运行结果不能转移为其他架构的全量运行认证。发行包包含备份自动化脚本、SDK、Compose、worker Dockerfile、systemd 示例和诊断/恢复证据。
+[主分支 CI 首轮](https://github.com/SamuelSupe/graphdb/actions/runs/37208813941/attempts/1)中，一个使用内存存储的恢复演练测试未在原两秒轮询窗口内结束。该路径不进入本次本地缓存修改；Linux arm64/GOMAXPROCS=2 的针对性 race 连续 30 轮通过，根因未获完整复现。同提交[分支 CI](https://github.com/SamuelSupe/graphdb/actions/runs/37208366118)、正式标签全仓检查和 OrbStack 完整 race 通过；主分支失败作业按原代码、原断言和原超时重跑后通过。首轮仍为 FAIL，不改写为 PASS，也不据重跑排除所有时序问题。
 
-### 尚未验收
+下载验收的补充 WAL 探针最初缺少已安装 host schema 的必需 `hostname` 字段，服务按契约返回 207。修正探针输入后用新目录完成两个平台验证；原日志保留，产品代码和超时未改。
 
-按用户决定，跨宿主机保留 NOT RUN。真实容量、慢盘/网络长尾、24/72 小时稳定性、生产身份系统、告警通知和分片 router 的备份调度联测仍待验收。默认快照预算 512MiB；逻辑备份不含全部运行态或待发布 WAL，不提供 PITR、自动租户均衡或租户内部图分区。历史 `release/capacity-envelope.yaml` 不认证本版或 Raft 容量，不承诺固定 RTO、统一吞吐增幅或低延迟 SLO。
+历史[最终性能候选](performance-raft-batching-2026-10-04.zh-CN.md)的四次入口 503、45,116 次操作与 FAIL 状态继续保留。捕获微基准约 63–66% 分配字节减少不代表整体吞吐收益；稳定 A/A 和生产容量仍未认证。
+
+### 升级与尚未验收
+
+单机先备份并停止旧进程，再用同一 prefix 和目录启动新版，不允许两个进程共享目录。Raft 滚动资格仅限上述固定开发基线到本版的协议 1 窗口，不代表已发布 v2.2.2 的无条件滚动兼容。受来源身份修复影响的数据组不能与旧解释程序混部；升级前完成或取消旧迁移、部分 S3 恢复，窗口内暂停新迁移/恢复。未验证组合采用维护升级或经过校验的备份恢复到新组；协议 2/3 在全组支持后独立激活。见[滚动说明](raft-rolling-upgrade.zh-CN.md)。
+
+按用户决定，跨宿主机保留 **NOT RUN**。真实容量、慢盘/网络长尾、24/72 小时稳定性、生产身份、告警通知和分片 router 的备份调度联测仍待验收。默认快照预算 512MiB；逻辑备份不含全部运行态或待发布 WAL，不提供 PITR、自动租户均衡或租户内部图分区。历史容量包络不认证本版或 Raft 容量。
+
+官网版本文本已做构建检查；部署/HTTP 结果另补记。Mac 锁定导致本次 Chrome 复验 **NOT RUN**，不把静态构建或 HTTP 文本检查表述为浏览器呈现/交互验证。
 
 ## English
 
-The v2.2.3 tag was not published: its exact-tag Raft soak had one saved-query
-HTTP 504. This candidate retains reader graphs across writer-fence updates and
-prepared maintenance, with manifest identity revalidation. The original timeout
-is not established to have a single root cause; every gate must pass independently.
+[v2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) is published as the stable Latest release, pinned to `043d082cf8a73032c702d7c6c3d7676ee3f6d7dc` and Go 1.26.7. All exact-tag gates passed: unit/vet/race and SDK/worker contracts; standalone direct/WAL and a 30-minute workload; real S3 recovery and TLS authorization; Raft protocols 1/2/3, sharding, failure/recovery, disk pressure, bounded-source rolling and a 30-minute maintenance workload; extracted package checks.
 
-This patch retains standalone direct/WAL, Raft and tenant-sharded deployments,
-and includes integrity, recovery, gateway authorization, rolling preflight,
-UTC timestamp, availability and backup automation fixes. Capture and maintenance
-transfer optimizations preserve majority durability and strong reads.
+The local workload recorded 125,770 metric operations with no operation errors, but its final index sample was stale and ingest P99 was 29.556 seconds. The Raft workload recorded 65,570 metric operations with no operation errors and ingest P99 of 10.680 seconds. These totals include control/query/maintenance work and are not a capacity or throughput qualification.
 
-The prior performance candidate's 30-minute workload **failed** with four
-HAProxy 503 query errors among 45,116 operations. That historical result remains
-unchanged. Severe shared-kernel pressure was observed but does not exonerate the
-server. Phase-specific allocation reductions do not qualify overall throughput.
+Downloaded assets matched GitHub digests, outer/inner checksums, build identity and 1,010 tag source files. The packaged amd64 binary matches Raft, rolling and gateway evidence. Downloaded macOS/Linux arm64 binaries independently passed standalone direct/WAL HTTP E2E, graph consistency across graceful restart and persisted committed WAL terminal state. Their Raft paths were not independently qualified.
 
-The exact tag workflow must independently pass all release gates and bind the
-packaged amd64 binary to Raft/rolling/gateway evidence. Its rolling source is the
-fixed development commit `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a`, not the published
-v2.2.2 artifact. Affected multi-source graphs cannot mix with programs retaining
-the old identity interpretation. See the [upgrade boundary](raft-rolling-upgrade.zh-CN.md).
-Cross-host, production capacity, day-scale stability and external integrations
-remain unqualified. No release-specific gate waiver is requested or applied.
+The failed v2.2.3 tag, prior performance failures and first main CI test polling timeout remain recorded. The main failure was not reproduced in 30 focused Linux arm64 race runs; rerunning unchanged assertions/timeouts passed, without proving its root cause. The supplemental native WAL probe initially omitted a schema-required hostname; the fixture was corrected in fresh directories without product changes.
+
+Rolling only qualifies development commit `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` to this target in protocol 1, not all published v2.2.2 deployments. Cross-host, day-scale stability, production capacity and integrations remain unqualified. Native Chrome revalidation was blocked by the locked Mac. Package documentation retains its pre-gate snapshot; packaged evidence and this main record provide the actual results.

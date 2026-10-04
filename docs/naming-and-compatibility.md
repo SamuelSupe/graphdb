@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release target is **2.2.4**; see its [publication status](validation-v2.2.4.md). GGraphDB runs one process
+The current release is **2.2.4**; see its [publication status](validation-v2.2.4.md). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer

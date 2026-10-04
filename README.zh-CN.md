@@ -8,7 +8,7 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 
 ## 当前版本
 
-[2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) 是本轮发行目标，全部确切标签门禁通过后由 `main` 发布。
+[2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) 已从 `main` 发布为稳定 Latest，全部确切标签门禁及下载资产核验通过。
 同一二进制支持单机 direct/WAL、使用独立磁盘的 Raft 副本，以及按租户分片的多个 Raft 组。
 本版增加受保护的集群管理、可续传迁移和恢复、兼容窗口内的滚动升级及本地诊断。
 二进制、契约和验证范围见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
@@ -18,7 +18,7 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 Raft 由外部调度调用集群备份 API。不提供 1.x 迁移。
 
 跨宿主机与生产容量仍待验收；维护会产生可重试 429 和写入长尾，不承诺统一吞吐增幅或低延迟 SLO。
-本版须通过确切标签的全部发行门禁。此前性能候选的三十分钟长测仍有四次入口 503，记录为 FAIL；不承诺整体吞吐收益。范围见 [2.2.4 验证说明](docs/validation-v2.2.4.md)。
+本版已通过确切标签的全部发行门禁。此前性能候选的三十分钟长测仍有四次入口 503，记录为 FAIL；不承诺整体吞吐收益。范围见 [2.2.4 验证说明](docs/validation-v2.2.4.md)。
 
 ## 核心能力
 
