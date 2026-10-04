@@ -339,3 +339,54 @@ func TestLocalDirectAndWALPublishReadViewWithoutHTTPCallbacks(t *testing.T) {
 		t.Fatal("publication mutated the prior read view")
 	}
 }
+
+func TestLocalWriterLeaseUpdateRevalidatesReadView(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	cache := NewReaderCache(store, time.Hour)
+	if _, err := store.Commit(ctx, "tenant-a", sampleMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var before *graph.Graph
+	if err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 1, func(g *graph.Graph, _ Manifest) error {
+		before = g
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lease, meta, err := store.getWriterLease(ctx, "tenant-a", store.writerLeaseKey("tenant-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.UpdatedAt = lease.UpdatedAt.Add(time.Second)
+	if _, err := store.putLease(ctx, store.writerLeaseKey("tenant-a"), lease, meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 1, func(g *graph.Graph, _ Manifest) error {
+		if g != before {
+			t.Fatal("lease update reloaded the unchanged graph")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "new", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 2, func(g *graph.Graph, manifest Manifest) error {
+		if g == before || manifest.Version != 2 {
+			t.Fatal("lease retention masked a subsequent publication")
+		}
+		if _, ok := g.GetEntity("new"); !ok {
+			t.Fatal("new publication missing")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

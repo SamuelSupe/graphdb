@@ -1,4 +1,4 @@
-# GGraphDB 2.2.3 Documentation
+# GGraphDB 2.2.4 Documentation
 
 [中文](README.zh-CN.md)
 
@@ -25,7 +25,7 @@ with a language-switch link at the top.
 
 ## User guides
 
-- [2.2.3 release notes](../release/local-disk.md) · [Validation](validation-v2.2.3.md) · [JSON](validation-v2.2.3.json) · [Historical 2.1.2 write-tail measurements](performance-write-tail.md)
+- [2.2.4 release notes](../release/local-disk.md) · [Validation](validation-v2.2.4.md) · [JSON](validation-v2.2.4.json) · [Historical 2.1.2 write-tail measurements](performance-write-tail.md)
 
 - [User Guide](user/README.md) · [中文](user/README.zh-CN.md)
 - [Local disk deployment and durability](local-disk.md) · [中文](local-disk.zh-CN.md)

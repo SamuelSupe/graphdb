@@ -340,7 +340,10 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 			return task, err
 		}
 	}
-	s.invalidateTenantState(tenant)
+	// These tasks change storage layout or indexes, not logical graph content.
+	// Expire the view so reuse still checks the authoritative manifest identity.
+	s.invalidateReadViews(tenant, true)
+	s.invalidateTenantObjectCaches(tenant)
 	if prepared.Task.Status == TaskStatusFailed {
 		if observer, ok := s.backpressureObserver.(interface{ RecordTaskFailure(string, string) }); ok {
 			observer.RecordTaskFailure(tenant, task.Type)

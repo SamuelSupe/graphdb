@@ -5,7 +5,14 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
-## [2.2.3] - 2026-10-04
+## [2.2.4] - 2026-10-04
+
+- Retain immutable reader graphs across local writer-fence updates and prepared
+  maintenance publication. Expire and revalidate the manifest identity instead
+  of replaying the entire graph; writer/control/index caches and full tenant
+  invalidation boundaries remain intact. Preserve query deadlines and durability.
+- Preserve the failed v2.2.3 tag and its Raft saved-query 504 evidence. It was not
+  released; v2.2.4 independently repeats all official release gates.
 
 - Reuse directory checks during snapshot and maintenance capture, allow readers
   through snapshot capture, and encode legacy snapshots outside the application
@@ -120,6 +127,13 @@ query failures; that failed result remains in the qualification report. Capture
 microbenchmarks show lower allocation costs, but overall throughput, cross-host
 availability and production capacity remain unqualified. The exact release
 binary is independently checked by the complete tag workflow.
+
+## [2.2.3] - Unpublished, 2026-10-04
+
+The exact-tag release workflow failed with one HTTP 504 in its 30-minute Raft
+maintenance workload. No Release or assets were created. Keep the original tag
+and [failure record](docs/validation-v2.2.3.md); the changes above are carried
+forward into the next candidate without treating this failure as a pass.
 
 ## [2.2.2] - 2026-10-03
 

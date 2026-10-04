@@ -1,13 +1,37 @@
 {
   "version": "2.2.3",
-  "status": "PENDING_EXACT_TAG_WORKFLOW",
+  "status": "FAILED_EXACT_TAG_WORKFLOW",
   "published": false,
   "release_gate_waiver": false,
   "cross_host": "NOT_RUN",
   "stable_overall_throughput": "UNQUALIFIED",
   "production_capacity": "UNQUALIFIED",
-  "historical_performance_candidate": {"version": "2.2.2-perf10", "operations": 45116, "operation_errors": 4, "maintenance_soak": "FAIL"},
+  "historical_performance_candidate": {
+    "version": "2.2.2-perf10",
+    "operations": 45116,
+    "operation_errors": 4,
+    "maintenance_soak": "FAIL"
+  },
   "rolling_source_commit": "5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a",
   "rolling_protocol": 1,
-  "published_v2_2_2_unconditional_rolling": false
+  "published_v2_2_2_unconditional_rolling": false,
+  "source_commit": "f687cf213b227e2984979f3895e1b9e6407ad7a3",
+  "workflow_run_id": 37204045846,
+  "workflow_url": "https://github.com/SamuelSupe/graphdb/actions/runs/37204045846",
+  "local_soak": {
+    "status": "PASS",
+    "operations": 125770,
+    "operation_errors": 0,
+    "ingest_p99_ms": 28959
+  },
+  "raft_soak": {
+    "status": "FAIL",
+    "saved_service_impact_count": 2569,
+    "saved_service_impact_errors": 1,
+    "status_504": 1,
+    "compact": 5,
+    "gc": 2,
+    "index_rebuild": 2
+  },
+  "publication_job": "SKIPPED"
 }

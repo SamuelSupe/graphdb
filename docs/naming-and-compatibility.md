@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release is **2.2.3**, developed on `main`. GGraphDB runs one process
+The current release target is **2.2.4**; see its [publication status](validation-v2.2.4.md). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,8 +12,8 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION`: `2.2.3`; tag: `v2.2.3` |
-| Go/Python SDKs and OpenAPI document version | `2.2.3` |
+| Product and release tag | `VERSION`: `2.2.4`; tag: `v2.2.4` |
+| Go/Python SDKs and OpenAPI document version | `2.2.4` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
 | Persisted Parquet/WAL and snapshot format | Standalone retains 2.0/2.1; Raft has separate protocol and directory-role markers |
@@ -48,7 +48,7 @@ No-op writes retain the current version and hash; idempotent retries return the
 recorded result. `expected_version`, `min_version`, cursor version checks and
 WAL accepted/published/terminal distinctions remain supported.
 
-Version 2.2.3 canonicalizes typed timestamps to UTC in both Parquet
+Version 2.2.4 canonicalizes typed timestamps to UTC in both Parquet
 columns and object content hashes, including entity/edge provenance, task and
 idempotency metadata. The represented instant and opaque user field values are
 preserved; existing UTC encodings and logical `data_hash` remain compatible.
@@ -75,7 +75,7 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See [2.2.3 validation](validation-v2.2.3.md), the tag workflow and packaged
+See [2.2.4 validation](validation-v2.2.4.md), the tag workflow and packaged
 evidence for the exact release binary. A local performance candidate completed
 45,116 operations but recorded four HAProxy 503 query failures under severe
 shared-kernel resource pressure. That failed result remains documented; it is

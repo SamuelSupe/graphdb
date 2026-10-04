@@ -11,7 +11,7 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.2.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.3) is this release target; publication requires all exact-tag gates.
+[2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) is this release target; publication requires all exact-tag gates.
 Development continues on `main`. The same binary supports standalone direct/WAL,
 Raft with independent local replicas, and tenant sharding across Raft groups.
 It adds protected cluster administration, resumable migration and recovery,
@@ -32,7 +32,7 @@ Release artifacts are published only after the exact-tag gates pass. The prior
 local performance candidate failed its 30-minute maintenance soak with four
 HAProxy 503 query errors; that failure remains documented. Cross-host, overall
 throughput and production capacity remain unqualified. Maintenance may return
-retryable 429s and cause long waits. See [2.2.3 validation](docs/validation-v2.2.3.md).
+retryable 429s and cause long waits. See [2.2.4 validation](docs/validation-v2.2.4.md).
 
 ## Capabilities
 
@@ -133,14 +133,14 @@ chunks. Final publication, graph decoding and rollback still have resource costs
 The local candidate's thirty-minute workload recorded 71,140 operations without
 unexpected operation errors, while ingestion included 90 expected 429s and a
 40.154-second maximum wait. These are scoped correctness observations, not a
-capacity or latency guarantee. See [qualification](docs/validation-v2.2.3.md).
+capacity or latency guarantee. See [qualification](docs/validation-v2.2.4.md).
 Historical [2.1.2 write-tail measurements](docs/performance-write-tail.md) and
 [2.0 results](docs/performance-v2.0.md) apply only to their recorded builds.
 
 ## Documentation
 
 - [Local disk operation and validation](docs/local-disk.md)
-- [2.2.3 validation and remaining limits](docs/validation-v2.2.3.md)
+- [2.2.4 validation and remaining limits](docs/validation-v2.2.4.md)
 - [Raft operations and rolling upgrades](docs/raft-operations.zh-CN.md)
 - [Tenant sharding and migration](docs/sharding.zh-CN.md)
 - [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md)

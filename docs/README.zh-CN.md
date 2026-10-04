@@ -1,4 +1,4 @@
-# GGraphDB 2.2.3 文档
+# GGraphDB 2.2.4 文档
 
 [English](README.md)
 
@@ -24,7 +24,7 @@
 
 ## 用户指南
 
-- [2.2.3 发行说明](../release/local-disk.md) · [发布验证](validation-v2.2.3.md) · [JSON](validation-v2.2.3.json) · [历史 2.1.2 写入长尾实测与限制](performance-write-tail.md)
+- [2.2.4 发行说明](../release/local-disk.md) · [发布验证](validation-v2.2.4.md) · [JSON](validation-v2.2.4.json) · [历史 2.1.2 写入长尾实测与限制](performance-write-tail.md)
 
 - [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)
 - [对象存储快照备份与恢复](object-backup.zh-CN.md) · [English](object-backup.md)

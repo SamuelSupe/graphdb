@@ -51,6 +51,10 @@ func (s *TenantStore) invalidateWriterTakeoverState(tenantID string) {
 
 func (s *TenantStore) invalidateTenantState(tenantID string) {
 	s.invalidateReadViews(tenantID, false)
+	s.invalidateTenantObjectCaches(tenantID)
+}
+
+func (s *TenantStore) invalidateTenantObjectCaches(tenantID string) {
 	s.deleteWriteCache(tenantID)
 	s.deleteCachedTenantMetadata(tenantID)
 	s.deleteCachedTenantConfig(tenantID)

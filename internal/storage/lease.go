@@ -99,7 +99,7 @@ func (s *TenantStore) acquireWriterLeaseMode(ctx context.Context, tenantID strin
 				if err := s.finishWriterLeaseAcquire(ctx, tenantID, next, meta); err != nil {
 					return err
 				}
-				// Local lease notifications invalidate all tenant caches. An
+				// Local lease notifications invalidate writer caches. An
 				// unchanged fence can retain its immutable graph after checking
 				// the manifest identity, including restore/recreation boundaries.
 				if retainCache {

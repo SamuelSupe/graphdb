@@ -59,9 +59,25 @@ func TestPreparedMaintenanceRejectsSupersededGraphAndPublishesCurrent(t *testing
 			if _, err := input.Seek(0, io.SeekStart); err != nil {
 				t.Fatal(err)
 			}
+			cache := NewReaderCache(store, time.Hour)
+			var before *graph.Graph
+			if err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 2, func(g *graph.Graph, _ Manifest) error {
+				before = g
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 			published, err := store.PublishReplicatedMaintenance(ctx, "tenant-a", task.ID, input, 32<<20)
 			if err != nil || published.Status != TaskStatusSucceeded {
 				t.Fatalf("publication: %+v, %v", published, err)
+			}
+			if err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 2, func(g *graph.Graph, manifest Manifest) error {
+				if g != before || manifest.Version != 2 {
+					t.Fatal("layout maintenance reloaded the unchanged graph")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 			g, manifest, err := store.Load(ctx, "tenant-a")
 			if err != nil || len(g.Snapshot().Entities) != 2 || manifest.Version != 2 {

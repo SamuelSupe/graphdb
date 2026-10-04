@@ -44,7 +44,10 @@ func (s *TenantStore) localFileChanged(key string) {
 	}
 	if name == "control/writer-lease.parquet" {
 		s.deleteCachedWriterLease(tenant)
-		s.invalidateTenantState(tenant)
+		// A fence update does not change the graph. Retain the immutable view
+		// for manifest revalidation while still discarding all writer state.
+		s.invalidateReadViews(tenant, true)
+		s.invalidateTenantObjectCaches(tenant)
 		return
 	}
 	manifest := name == "manifest.parquet"

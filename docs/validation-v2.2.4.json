@@ -1,0 +1,40 @@
+{
+  "version": "2.2.4",
+  "status": "PENDING_EXACT_TAG_WORKFLOW",
+  "published": false,
+  "release_gate_waiver": false,
+  "cross_host": "NOT_RUN",
+  "stable_overall_throughput": "UNQUALIFIED",
+  "production_capacity": "UNQUALIFIED",
+  "historical_performance_candidate": {
+    "version": "2.2.2-perf10",
+    "operations": 45116,
+    "operation_errors": 4,
+    "maintenance_soak": "FAIL"
+  },
+  "rolling_source_commit": "5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a",
+  "rolling_protocol": 1,
+  "published_v2_2_2_unconditional_rolling": false,
+  "prior_tag_gate": {
+    "version": "2.2.3",
+    "source_commit": "f687cf213b227e2984979f3895e1b9e6407ad7a3",
+    "workflow_run_id": 37204045846,
+    "status": "FAIL",
+    "published": false,
+    "local_soak": "PASS",
+    "raft_soak": "FAIL",
+    "query_504": 1
+  },
+  "cache_retention_regression": {
+    "platform": "Linux arm64 / OrbStack",
+    "race_repetitions": 3,
+    "fixed": "PASS",
+    "old_code": "EXPECTED_FAIL_REPRODUCED",
+    "historic_504_single_root_cause": "UNPROVEN",
+    "old_code_cases": [
+      "writer_lease",
+      "compact",
+      "index_rebuild"
+    ]
+  }
+}

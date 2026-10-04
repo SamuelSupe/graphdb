@@ -2,7 +2,7 @@
 
 单机可以继续使用[内置租户备份策略](object-backup.zh-CN.md#自动备份)。新增的外部 worker 适用于单机写入/管理入口、单组 Raft 的集群入口及分片 router：通过现有任务 API 创建 S3 逻辑备份，下载验证，每七天执行一次隔离恢复演练。默认每天备份，首次运行立即开始。未配置的租户不会自动加入计划。
 
-该能力纳入 2.2.3，不改变 Raft 协议或此前的混部资格。Raft 的 `backup.enabled` 仍拒绝开启；外部 worker 的计划和诊断保存到自己的持久目录，不由 `GET /v1/backup-automation` 返回。后者仍查询单机内置调度状态。
+该能力纳入 2.2.4，不改变 Raft 协议或此前的混部资格。Raft 的 `backup.enabled` 仍拒绝开启；外部 worker 的计划和诊断保存到自己的持久目录，不由 `GET /v1/backup-automation` 返回。后者仍查询单机内置调度状态。
 
 单机和单组三副本的实际 S3、换主、重试、常驻重启及互斥结果见[本轮验证报告](backup-automation-validation-2026-10-04.zh-CN.md)。
 

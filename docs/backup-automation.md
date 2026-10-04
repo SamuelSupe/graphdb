@@ -2,7 +2,7 @@
 
 Standalone deployments retain the [built-in tenant policy](object-backup.md). The new external worker uses the existing task API through a standalone writer/admin endpoint, a Raft entry point, or a shard router. It creates an object backup every day by default, verifies each downloaded snapshot, and runs a full isolated restore drill initially and every seven days. Tenants are explicitly selected.
 
-This worker is included in 2.2.3. It changes no Raft protocol or mixed-version qualification. Raft still rejects `backup.enabled`; external state is stored in the worker's persistent directory, while `GET /v1/backup-automation` continues to expose the standalone built-in scheduler only. See the [detailed Chinese guide](backup-automation.zh-CN.md).
+This worker is included in 2.2.4. It changes no Raft protocol or mixed-version qualification. Raft still rejects `backup.enabled`; external state is stored in the worker's persistent directory, while `GET /v1/backup-automation` continues to expose the standalone built-in scheduler only. See the [detailed Chinese guide](backup-automation.zh-CN.md).
 
 Actual standalone/three-voter S3, failover, retry, daemon restart and exclusion results are recorded in the [validation report](backup-automation-validation-2026-10-04.zh-CN.md).
 
