@@ -671,8 +671,29 @@
   "site": {
     "version": "2.2.4",
     "build": "PASS",
-    "deployment": "PENDING",
-    "http": "PENDING",
-    "native_chrome": "NOT_RUN_MAC_LOCKED"
+    "deployment": "PASS",
+    "http": "PASS",
+    "native_chrome": "NOT_RUN_MAC_LOCKED",
+    "deployment_run_id": 37213612569,
+    "deployment_url": "https://github.com/SamuelSupe/graphdb/actions/runs/37213612569",
+    "deployment_commit": "820c5f225955f18266e78c24d64ca39a34d152ca",
+    "url": "https://samuelsupe.github.io/graphdb/",
+    "http_checked_at": "2026-10-04T15:37:39.409024+00:00",
+    "http_scope": "HTTP source and assets, not browser rendering/interaction",
+    "html_sha256": "cebf0bc46bc491a70c22c17a31f1b88d6965c5352cc9c02f9e6e80a5f8642560",
+    "assets": [
+      {
+        "url": "https://samuelsupe.github.io/graphdb/assets/index-D1b8eCKz.js",
+        "http_status": 200,
+        "bytes": 3729,
+        "sha256": "908e8f08351b0c1b06acce5649a09c2f9cd003e4959b571e0e97951e3a475ddd"
+      },
+      {
+        "url": "https://samuelsupe.github.io/graphdb/assets/index-u9FvXL2z.css",
+        "http_status": 200,
+        "bytes": 44356,
+        "sha256": "e0c1a5562f516aec0e2d944e407332339067315ac2975a05e15104c23edfcfb9"
+      }
+    ]
   }
 }

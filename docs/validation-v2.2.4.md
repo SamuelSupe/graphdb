@@ -52,7 +52,7 @@
 
 按用户决定，跨宿主机保留 **NOT RUN**。真实容量、慢盘/网络长尾、24/72 小时稳定性、生产身份、告警通知和分片 router 的备份调度联测仍待验收。默认快照预算 512MiB；逻辑备份不含全部运行态或待发布 WAL，不提供 PITR、自动租户均衡或租户内部图分区。历史容量包络不认证本版或 Raft 容量。
 
-官网版本文本已做构建检查；部署/HTTP 结果另补记。Mac 锁定导致本次 Chrome 复验 **NOT RUN**，不把静态构建或 HTTP 文本检查表述为浏览器呈现/交互验证。
+官网版本文本构建通过，[Pages 部署](https://github.com/SamuelSupe/graphdb/actions/runs/37213612569)已成功。2026-10-04T15:37:39Z 对[公网官网](https://samuelsupe.github.io/graphdb/)的 HTTP 检查确认版本描述与页首均为 2.2.4，页面及其 JS/CSS 返回 200。Mac 锁定导致本次 Chrome 复验 **NOT RUN**，不把静态构建或 HTTP 文本检查表述为浏览器呈现/交互验证。
 
 ## English
 
@@ -64,4 +64,4 @@ Downloaded assets matched GitHub digests, outer/inner checksums, build identity 
 
 The failed v2.2.3 tag, prior performance failures and first main CI test polling timeout remain recorded. The main failure was not reproduced in 30 focused Linux arm64 race runs; rerunning unchanged assertions/timeouts passed, without proving its root cause. The supplemental native WAL probe initially omitted a schema-required hostname; the fixture was corrected in fresh directories without product changes.
 
-Rolling only qualifies development commit `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` to this target in protocol 1, not all published v2.2.2 deployments. Cross-host, day-scale stability, production capacity and integrations remain unqualified. Native Chrome revalidation was blocked by the locked Mac. Package documentation retains its pre-gate snapshot; packaged evidence and this main record provide the actual results.
+Rolling only qualifies development commit `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` to this target in protocol 1, not all published v2.2.2 deployments. Cross-host, day-scale stability, production capacity and integrations remain unqualified. The website build and Pages deployment passed; public HTTP checks confirmed 2.2.4 text and successful JS/CSS responses. Native Chrome revalidation was blocked by the locked Mac. Package documentation retains its pre-gate snapshot; packaged evidence and this main record provide the actual results.
