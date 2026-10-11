@@ -11,7 +11,7 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-**2.3.0** adds an embedded English / Simplified Chinese
+**[2.3.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)** is published as stable Latest and adds an embedded English / Simplified Chinese
 management console, chart-based overview, structured editors and tenant ID search
 with bounded server-side pages. The same binary supports standalone direct/WAL,
 independent Raft replicas and tenant-sharded Raft groups. See the
@@ -28,7 +28,7 @@ The [backup automation worker](docs/backup-automation.md) now provides
 that external schedule for standalone and Raft, with persistent retries,
 readback verification, isolated drills and Compose/systemd examples.
 
-Release artifacts are published only after the exact-tag gates pass. The prior
+The exact-tag gates and downloaded release artifacts have passed verification. The prior
 local performance candidate failed its 30-minute maintenance soak with four
 HAProxy 503 query errors; that failure remains documented. Cross-host, overall
 throughput and production capacity remain unqualified. Maintenance may return
@@ -48,7 +48,7 @@ retryable 429s and cause long waits. See [2.3.0 validation](docs/validation-v2.3
 
 ## Start
 
-The current source includes a bilingual [management console](docs/management-ui.md)
+The release includes a bilingual [management console](docs/management-ui.md)
 at `/ui/`, embedded in the server binary. With split listeners, use the management
 port. Previously released 2.2.4 binaries do not include this addition.
 

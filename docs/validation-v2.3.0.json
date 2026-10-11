@@ -1,0 +1,185 @@
+{
+  "version": "2.3.0",
+  "status": "PUBLISHED_AND_VERIFIED",
+  "published": true,
+  "stable_latest": true,
+  "release_gate_waiver": false,
+  "source_commit": "91ffe5033e58d49ca38ef9dbb40efd414264538e",
+  "tag": "v2.3.0",
+  "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0",
+  "published_at": "2026-10-11T08:03:59Z",
+  "archive": {
+    "name": "graphdb-v2.3.0.tar.gz",
+    "size_bytes": 57560379,
+    "sha256": "8fca98251d098010ec7bdc12049de3eadc38a472cc7c70eb4270529cb64c3a9a",
+    "build_metadata": {
+      "version": "v2.3.0",
+      "commit": "91ffe5033e58d49ca38ef9dbb40efd414264538e",
+      "build_date": "2026-10-11T15:10:05+08:00",
+      "go_version": "go1.26.7"
+    },
+    "binary_hashes": {
+      "bin/graphdb-darwin-arm64": "f0ce31d82f2d4d5cc1f8bbb17d5ce2375a4530dee88ac09d55fd7e75d08bff24",
+      "bin/graphdb-linux-amd64": "18ee1a1574decd40cb0d82841406230b4e9d695d04ebbf94525e64d0dd4e0307",
+      "bin/graphdb-linux-arm64": "236411ec0a272f023c1b4be46248dcb8673df72657c0ea1c55a9b174dcf30499"
+    },
+    "tag_source_file_comparison_count": 1030,
+    "tested_binary_binding": "PASS"
+  },
+  "exact_tag_workflow": {
+    "run_id": 38120462949,
+    "status": "PASS",
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/38120462949"
+  },
+  "release_commit_main_ci": {
+    "run_id": 38120462973,
+    "attempt": 2,
+    "status": "PASS",
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/38120462973",
+    "first_attempt": {
+      "status": "FAIL",
+      "test": "TestRestoreDrillCleanupFailureFailsTaskAndRetriesCleanup",
+      "failure": "2-second task wait timed out under race detector",
+      "root_cause": "UNPROVEN",
+      "code_or_timeout_changed": false,
+      "unchanged_local_race_repeats": [
+        30,
+        30
+      ],
+      "repeats_status": "PASS"
+    }
+  },
+  "gates": {
+    "unit": "PASS",
+    "vet": "PASS",
+    "race": "PASS",
+    "version_freeze": "PASS",
+    "go_python_sdk": "PASS",
+    "node_console_12": "PASS",
+    "backup_worker_11": "PASS",
+    "direct_wal_http": "PASS",
+    "s3": "PASS",
+    "tls_gateway": "PASS",
+    "raft_protocol_1": "PASS",
+    "raft_protocol_2": "PASS",
+    "raft_protocol_3": "PASS",
+    "rolling": "PASS",
+    "local_soak": "PASS",
+    "raft_soak": "PASS",
+    "package_smoke": "PASS"
+  },
+  "rolling": {
+    "protocol": 1,
+    "source_version": "v2.2.4",
+    "source_commit": "043d082cf8a73032c702d7c6c3d7676ee3f6d7dc",
+    "source_binary_sha256": "224df57d837aa6cd475881681c286bfae1c2670da245c24a5399820ec22fb86a",
+    "target_binary_sha256": "18ee1a1574decd40cb0d82841406230b4e9d695d04ebbf94525e64d0dd4e0307",
+    "both_published_binary_bindings": "PASS"
+  },
+  "soaks": {
+    "standalone": {
+      "duration_seconds": 1800,
+      "operations": 130126,
+      "operation_errors": 0,
+      "reader_samples": 59,
+      "reader_unready": 0,
+      "max_version_lag": 0,
+      "index_samples": 59,
+      "index_unhealthy": 0,
+      "index_stale": 31,
+      "last_index_status": "stale",
+      "compact": 5,
+      "gc": 2,
+      "index_rebuild": 2,
+      "ingest_p99_ms": 17200
+    },
+    "raft_protocol_3": {
+      "duration_seconds": 1800,
+      "operations": 66222,
+      "operation_errors": 0,
+      "reader_samples": 59,
+      "reader_unready": 0,
+      "max_version_lag": 0,
+      "index_samples": 59,
+      "index_unhealthy": 0,
+      "index_stale": 0,
+      "last_index_status": "ready",
+      "compact": 5,
+      "gc": 2,
+      "index_rebuild": 2,
+      "ingest_p99_ms": 9500
+    }
+  },
+  "downloaded_binary_runtime": {
+    "linux_arm64_orbstack": {
+      "platform": "linux-arm64",
+      "version": "GGraphDB v2.3.0 commit=91ffe5033e58d49ca38ef9dbb40efd414264538e built=2026-10-11T15:10:05+08:00 go=go1.26.7",
+      "modes": {
+        "direct": {
+          "sdk": "PASS",
+          "http_e2e": "PASS",
+          "load": "PASS",
+          "snapshot_restart": "PASS",
+          "embedded_ui": "PASS"
+        },
+        "wal": {
+          "sdk": "PASS",
+          "http_e2e": "PASS",
+          "load": "PASS",
+          "snapshot_restart": "PASS",
+          "embedded_ui": "PASS"
+        }
+      }
+    },
+    "darwin_arm64_native": {
+      "platform": "darwin-arm64",
+      "version": "GGraphDB v2.3.0 commit=91ffe5033e58d49ca38ef9dbb40efd414264538e built=2026-10-11T15:10:05+08:00 go=go1.26.7",
+      "modes": {
+        "direct": {
+          "sdk": "PASS",
+          "http_e2e": "PASS",
+          "load": "PASS",
+          "snapshot_restart": "PASS",
+          "embedded_ui": "PASS"
+        },
+        "wal": {
+          "sdk": "PASS",
+          "http_e2e": "PASS",
+          "load": "PASS",
+          "snapshot_restart": "PASS",
+          "embedded_ui": "PASS"
+        }
+      }
+    },
+    "linux_amd64": "GitHub Linux gates; no local emulated full rerun"
+  },
+  "console": {
+    "native_chrome": "PASS",
+    "local_url": "http://127.0.0.1:18787/ui/",
+    "languages": [
+      "en",
+      "zh-CN"
+    ],
+    "narrow_width_px": 390,
+    "narrow_document_width_px": 390,
+    "warn_error_count": 0,
+    "actual_registry_fixture_tenants": 10000,
+    "simulated_cluster_catalog_placements": 10000,
+    "downloaded_binary_overview_language_search": "PASS"
+  },
+  "cross_host": "NOT_RUN",
+  "day_scale": "NOT_RUN",
+  "production_capacity": "UNQUALIFIED",
+  "stable_overall_throughput": "UNQUALIFIED",
+  "low_latency_slo": "UNQUALIFIED",
+  "tenant_paging_boundary": "Registry/catalog IDs still read in full; detail I/O and browser rendering are page-bounded",
+  "historical_performance_candidate": {
+    "maintenance_soak": "FAIL",
+    "haproxy_query_503": 4
+  },
+  "prior_go_1_25_migration_election_failures": {
+    "count": 2,
+    "unchanged_go_1_26_7_rerun": "PASS",
+    "root_cause": "UNPROVEN"
+  }
+}
