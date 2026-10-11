@@ -34,6 +34,10 @@ def request(method, path, role, body=None, expected=200):
 
 
 request('POST', '/admin/v1/tenants', 'operator', {'tenant_id': 'tenant-a'})
+for path in ('/admin/ui/', '/admin/ui/app.js', '/admin/ui/styles.css'):
+    request('GET', path, None)
+request('GET', '/admin/ui/%2e%2e/v1/tenants', None, expected=401)
+request('GET', '/admin/ui/%2e%2e/v1/tenants', 'reader', expected=403)
 mutation = {'mutations': {'upsert_entities': [{'id': 'host:gateway-auth', 'kind': 'host'}]}}
 for path in (
     '/v1/commits', '/v1/%63ommits', '/%76%31/commits', '/v1/commits?test=1',

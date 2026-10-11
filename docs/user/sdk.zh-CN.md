@@ -8,7 +8,7 @@ GGraphDB 提供基于 HTTP API 的轻量 Go 和 Python SDK。SDK 不导入服务
 当前 SDK 已对齐当前 ingest 合同。两套 SDK 都保留 direct 模式的终态
 `200/207` 结果，并提供 WAL 的 `202` acceptance、`Location`/local status
 资源、轮询/等待，以及 ingest CAS、条件和 atomic 选项。Go 和 Python SDK
-包版本均为 `2.2.2`。
+包版本均为 `2.3.0`。
 
 SDK 覆盖：
 
@@ -23,6 +23,14 @@ SDK 覆盖：
 - 带错误码和重试提示的结构化 API 错误。
 
 SDK 不自动重试结果不确定的变更，也不自动保存 Raft 租户代次。HA 的 `min_version` 读取须保存写响应的 `X-GraphDB-Tenant-Generation`，并传 `X-GraphDB-Read-Generation`；需要响应头时使用 HTTP 客户端显式处理。集群管理、迁移和滚动升级使用专用 API/脚本，见 [Raft 运维](../raft-operations.zh-CN.md)。
+
+## 租户分页
+
+Go 使用 `ListTenantPage(ctx, TenantListOptions{Limit: 25, Query: "team"})`；Python
+使用 `list_tenants(limit=25, q="team")`。返回匹配总数 `total` 和可选的 `next_cursor`；
+保持搜索条件，用最后一条租户 ID 请求下一页。Go 的零 limit 默认 50，服务端接受
+1–200 条。原 Go `ListTenants` 和不传分页参数的 Python 调用保持全量行为。搜索匹配
+ID，不匹配名称；历史发现需显式启用，会扫描存储对象。分页读取实时数据。
 
 ## Go SDK
 

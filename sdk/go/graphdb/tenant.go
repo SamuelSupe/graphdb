@@ -61,6 +61,39 @@ func (c *Client) ListTenants(ctx context.Context, includeLegacy bool) ([]TenantI
 	return out.Tenants, nil
 }
 
+type TenantListOptions struct {
+	Limit         int
+	Query         string
+	Cursor        string
+	IncludeLegacy bool
+}
+
+type TenantListPage struct {
+	Tenants    []TenantInfo `json:"tenants"`
+	Total      int          `json:"total"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+}
+
+// ListTenantPage searches IDs and reads a live page, using a default limit of 50.
+// Reuse Query and NextCursor for the next page; the server accepts limits 1–200.
+// IncludeLegacy opts into a potentially expensive storage-prefix scan.
+func (c *Client) ListTenantPage(ctx context.Context, options TenantListOptions) (out TenantListPage, err error) {
+	limit := options.Limit
+	if limit == 0 {
+		limit = 50
+	}
+	values := url.Values{"limit": {strconv.Itoa(limit)}}
+	if options.Query != "" {
+		values.Set("q", options.Query)
+	}
+	if options.Cursor != "" {
+		values.Set("cursor", options.Cursor)
+	}
+	setBool(values, "include_legacy", options.IncludeLegacy)
+	err = c.doJSON(ctx, "GET", "/v1/tenants", "", values, nil, &out)
+	return out, err
+}
+
 func (c *Client) CreateTenant(ctx context.Context, request TenantCreateRequest) (out TenantInfo, err error) {
 	err = c.doJSON(ctx, "POST", "/v1/tenants", "", nil, request, &out)
 	return out, err

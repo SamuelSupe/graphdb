@@ -1,69 +1,73 @@
-# GGraphDB v2.2.4
+# GGraphDB v2.3.0
 
 ## 中文
 
-本版修复 2.2.2 发布后发现的持久化和恢复完整性问题：副本缺失已发布依赖时停止应用、S3 恢复切主摘要稳定性、迁移分块与图快照冷校验、来源身份与前缀绑定、离线备份恢复的独占锁和目标目录保护、非 UTC 类型时间的内容校验，以及写后校验 I/O 错误误删发布对象。生产 NGINX 示例同时修复编码写路径的角色绕过；现有部署需更新配置并重新加载。
+本版新增内置中英文管理控制台。通过管理或组合监听器的 `/ui/` 访问；路由入口也支持。
+控制台覆盖图数据、查询、模型、租户、索引、任务与备份、接入、治理和集群运维。
+概览采用图表，详情和配置采用结构化展示与有类型的编辑器，原始 JSON 按需展开。
+支持独立查询草稿、未完成编辑保护、键盘标签切换、可滚动对话框和窄屏布局。
+运行时无需 Node、npm 或独立前端服务；沿用部署网关的认证与授权，令牌仅保存在页面内存。
 
-新增持久化外部备份 worker，支持单机和 Raft 的定时任务、结果不确定时的核对、重试、下载校验、隔离恢复演练和诊断指标，提供 Compose/systemd 示例。保留单机内置备份策略；Raft 不启用内部策略，外部备份历史由显式 S3 生命周期管理。
+大量租户场景使用服务端 ID 搜索和分页。切换器每次加载 20 条，管理表格默认 25 条，
+集群归属也按页加载。只读取当前页的租户详情，历史对象扫描改为手动启用。
+Go/Python SDK 增加对应分页能力；不传分页参数的 HTTP 请求与原 SDK 全量方法保持兼容。
+ID 注册表／集群目录仍整体读取，本次优化不表示注册表可无限扩展。
 
-可用性修复将旧快照清理放到后台，保留有年龄的诊断采样，避免同步 Raft 状态阻塞取消；滚动预检先固定 Leader 的提交位置，压缩幂等记录扫描不再长时间持有前台写锁。快照捕获按目录复用检查与创建，允许读者，编码在捕获锁外执行；维护传输确认首块后最多并发四块。多数派、强读、回滚日志与 fsync 顺序保持原契约。默认单机 direct/WAL、Raft 和租户分片均继续支持。
+页面性能优化延迟展开详情与原始数据，合并字段验证，减少重复列表请求和隐藏结果渲染。
+清理已失效的历史代码及 CI 门禁，不更改 Parquet/WAL 数据格式、Raft 协议、多数派或 fsync 契约。
 
-读缓存修复保留写租约更新和准备维护发布前的不可变图，仍核对当前 manifest 身份或逻辑摘要。原 v2.2.3 正式门禁因一次保存查询 504 失败，未发布；原标签和失败证据保留，本版独立重跑全部门禁。未延长五秒查询预算或忽略错误。
+版本、SDK 和 OpenAPI 为 2.3.0；Go 模块 `/v2`、HTTP `/v1` 不变。
+单机升级先备份、停止旧进程，再以相同数据目录和前缀启动。Raft 升级遵循
+[滚动资格窗口](https://github.com/SamuelSupe/graphdb/blob/v2.3.0/docs/raft-rolling-upgrade.zh-CN.md)。
+协议激活和混部限制仍适用，不提供 1.x 迁移或任意版本降级保证。
 
-**性能与可用性边界：** 最终本机性能候选长测完成 45,116 次操作，出现四次入口 503，为 FAIL，故障记录保留。共享内核有严重争用，但根因没有据此被认定为完全解决。捕获微基准分配字节减少约 63–66%，不等于整体读写吞吐收益。本版通过完整标签门禁后才发布，确切资产的运行证据位于包内 `release/evidence/`；跨宿主机、真实容量和天级稳定性仍未认证。
-
-SDK/OpenAPI 为 2.2.4，Go 模块 `/v2`、HTTP `/v1` 不变。单机升级先备份并停止旧进程；不要让两个版本共用目录。Raft 滚动资格仅限包内记录的已修复开发基线 `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` 与本版的协议 1 窗口，不代表已发布 2.2.2 的无条件滚动兼容。受来源身份修复影响的数据组不能与旧解释程序混部。升级前完成或取消旧迁移、部分 S3 恢复；全组升级完成前暂停新迁移/恢复，协议 2/3 在全组支持后独立激活。
-
-实际门禁、下载核对和未验收项见 [2.2.4 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.2.4.md)及 [升级说明](https://github.com/SamuelSupe/graphdb/blob/v2.2.4/docs/raft-rolling-upgrade.zh-CN.md)。历史报告只证明对应候选，不将失败或跳过变为 PASS。
+发行需要通过确切标签的全量 unit/vet/race、SDK、direct/WAL、S3、TLS 网关、Raft、
+已发布 2.2.4 到本版的协议 1 滚动和两个三十分钟维护长测。门禁证据在压缩包的 `release/evidence/`，
+后续发布及下载验证状态见 [2.3.0 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.0.md)。
+本机 Chrome 已验证双语、390px 和一万租户样本。浏览器局部性能收益不代表数据库吞吐收益；
+跨宿主机、天级稳定性和生产容量仍未认证。历史失败记录不因本版发行而变为通过。
 
 ## English
 
-This patch fixes replica dependency integrity, S3 restore identity after leader
-loss, migration/snapshot validation, source identity and prefix binding, offline
-recovery locks/targets, UTC timestamp content hashes and post-write I/O handling.
-Update and reload the production NGINX template to receive the encoded-path
-write authorization correction.
+This release embeds an English / Simplified Chinese management console at `/ui/`
+on the management/combined listener and sharding router. It covers graph data,
+queries, schemas, tenants, indexes, tasks/backups, ingestion, governance and cluster
+operations. Charts replace overview lists; typed editors and structured details
+retain optional raw JSON. Draft protection, keyboard tabs, scrollable dialogs and
+responsive layouts improve routine operation. No Node, npm or separate frontend
+service is needed at runtime. Existing gateway authorization remains in force;
+bearer tokens stay in page memory.
 
-It adds a persistent external backup scheduler for standalone and Raft, with
-uncertain-outcome reconciliation, retries, mandatory readback, isolated drills,
-metrics and Compose/systemd examples. Standalone built-in scheduling remains;
-Raft uses the external worker and explicit S3 lifecycle policies.
+Server-side tenant ID search and cursor pages bound switching, tenant tables and
+cluster placements. The picker loads 20 matches; the tenant table defaults to 25.
+Only page metadata/manifests are loaded; legacy prefix scans are opt-in. Go/Python
+SDKs support paging while original unpaged requests remain compatible. The complete
+ID registry/catalog is still read: this is not an unlimited registry-capacity claim.
 
-Background snapshot cleanup, deadline-aware admission and rolling preflight fixes
-improve operational behavior. Snapshot capture reuses directory work and permits
-readers; prepared maintenance can pipeline four chunks after its first manifest
-is acknowledged. Majority durability, strong reads and fsync ordering remain.
+Collapsed details render on demand, input validation is coalesced, and redundant
+list requests/hidden query rendering are avoided. Obsolete source helpers and CI
+jobs are removed. Parquet/WAL formats, Raft protocols, majority and fsync contracts
+remain unchanged. SDK/OpenAPI are 2.3.0; module `/v2` and HTTP `/v1` remain unchanged.
 
-Reader views survive writer-fence updates and prepared maintenance, with manifest
-identity revalidation. The v2.2.3 tag was not published after one saved-query 504;
-its failure remains recorded. This version reruns every gate independently.
-
-The prior local performance candidate completed 45,116 operations but had four
-HAProxy 503 query failures: **FAIL**, retained in the report. Resource interference
-does not establish that the server is fault-free. Capture allocation reductions
-are phase-specific; overall throughput, cross-host and production capacity remain
-unqualified. Publication requires the complete exact-tag gates, with evidence
-included in the distribution.
-
-SDK/OpenAPI are 2.2.4; module `/v2` and HTTP `/v1` are unchanged. Standalone upgrades
-require stopping the prior process. Rolling qualification binds the fixed
-`5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` development build to this target,
-not every published 2.2.2 deployment. Affected multi-source identity graphs cannot
-mix with the old interpretation. Finish/cancel old migration and partial S3
-restore work, and activate protocol 2/3 separately after all voters support it.
+Publication requires exact-tag unit/vet/race, SDK, standalone direct/WAL, S3, TLS
+gateway, Raft, protocol-1 rolling from published v2.2.4 and two 30-minute maintenance soak gates. Evidence is packaged
+under `release/evidence/`; the main validation record reports publication/download
+results. Native Chrome checks cover both languages, 390px and 10,000 fixture tenants.
+Frontend measurements do not establish database throughput, production capacity,
+cross-host or day-scale reliability. Earlier failures remain recorded.
 
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.2.4.tar.gz.sha256
-tar -xzf graphdb-v2.2.4.tar.gz
-cd v2.2.4
+sha256sum -c graphdb-v2.3.0.tar.gz.sha256
+tar -xzf graphdb-v2.3.0.tar.gz
+cd v2.3.0
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/path/to/v2-data bin/graphdb-linux-amd64 serve
 ```
 
-Includes Linux amd64/arm64 and macOS arm64 binaries, source, matching SDKs and
-OpenAPI, bilingual docs, standalone/Raft/sharded and backup automation examples,
-upgrade scripts, alert rules, build identity and gate evidence. No registry image
-or production fault-domain certification is implied.
+Includes Linux amd64/arm64 and macOS arm64 binaries, console sources, matching
+SDKs/OpenAPI, bilingual guides, deployment/backup examples, build identity and gate
+evidence. No published container image or production fault-domain certification
+is implied.

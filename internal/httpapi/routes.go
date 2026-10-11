@@ -6,6 +6,7 @@ import (
 	"net/http/pprof"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/adminui"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 )
 
@@ -32,6 +33,7 @@ func (s *Server) handler(data, admin, enablePprof bool) http.Handler {
 		s.registerDataRoutes(mux)
 	}
 	if admin {
+		adminui.Register(mux)
 		s.registerAdminRoutes(mux)
 	}
 	if enablePprof {

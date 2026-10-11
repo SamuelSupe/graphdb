@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.2.4
+  version: 2.3.0
   description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Standalone 2.2 retains the 2.0/2.1 data format and optional S3 backup automation; Raft has separate replica-directory and protocol upgrade requirements. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
@@ -9,6 +9,20 @@ security:
   - GatewayBearer: []
     TenantHeader: []
 paths:
+  /ui/:
+    get:
+      security: []
+      summary: Open the embedded English and Simplified Chinese management console.
+      description: Static UI shell on management or combined database listeners and serve-router. Data-only listeners return 404. Every API call from the console retains its own authorization requirements. A deployment gateway can require session login for the shell as well.
+      responses:
+        '200':
+          description: Management console HTML. Assets are served under the same path.
+          content:
+            text/html:
+              schema:
+                type: string
+        '404':
+          description: Console unavailable on a data-only listener.
   /v1/router/drain:
     post:
       security:
@@ -36,7 +50,11 @@ paths:
       security:
         - GatewayBearer: []
       summary: Read the strongly consistent shard catalog (serve-router only).
-      description: Requires the router token. Returns shard definitions, persistent tenant placements and resumable migration phases. Data-shard health is reported separately by each node.
+      description: Requires the router token. Returns shard definitions, persistent tenant placements and resumable migration phases. Optional tenant paging bounds the placements map while retaining all shard definitions. Data-shard health is reported separately by each node.
+      parameters:
+        - $ref: '#/components/parameters/TenantListLimit'
+        - $ref: '#/components/parameters/TenantListQuery'
+        - $ref: '#/components/parameters/TenantListCursor'
       responses:
         '200':
           description: Current catalog.
@@ -44,6 +62,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ShardCatalog'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           description: Router token missing or invalid.
         '503':
@@ -836,7 +856,11 @@ paths:
   /v1/tenants:
     get:
       summary: List tenants.
+      description: Optional limit, q and cursor bound detail reads to the page. The store still reads the ID registry; the router reads the catalog and loads only selected tenant details from their owning shards with routing epochs. Without paging parameters the original full list remains available.
       parameters:
+        - $ref: '#/components/parameters/TenantListLimit'
+        - $ref: '#/components/parameters/TenantListQuery'
+        - $ref: '#/components/parameters/TenantListCursor'
         - name: include_legacy
           in: query
           required: false
@@ -851,10 +875,18 @@ paths:
               schema:
                 type: object
                 properties:
+                  total:
+                    type: integer
+                    description: Count across all matching pages before applying the cursor; present in paged mode.
+                  next_cursor:
+                    type: string
+                    description: Last returned tenant ID when more matches remain; absent on the final page.
                   tenants:
                     type: array
                     items:
                       $ref: '#/components/schemas/TenantInfo'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '503':
           $ref: '#/components/responses/CoordinatorUnavailable'
     post:
@@ -1889,6 +1921,28 @@ components:
       name: X-Tenant-ID
       description: Tenant routing metadata injected by a trusted gateway; this header is not proof of identity.
   parameters:
+    TenantListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Supplying limit, q or cursor enables bounded tenant paging; when none are supplied the original unpaged response is retained. Only page tenant details are loaded.
+    TenantListQuery:
+      name: q
+      in: query
+      schema:
+        type: string
+        maxLength: 128
+      description: Case-insensitive substring of tenant ID, at most 128 UTF-8 bytes; names and metadata are not searched.
+    TenantListCursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+      description: Last tenant ID from the previous page. IDs use ascending case-sensitive order. Reuse the same q; pages are live and concurrent inserts before the cursor require restarting at page one.
     TenantID:
       name: tenant_id
       in: path
@@ -2078,6 +2132,12 @@ components:
       type: object
       required: [version, shards, tenants]
       properties:
+        total:
+          type: integer
+          description: Matching placement count, present in paged mode.
+        next_cursor:
+          type: string
+          description: Last returned tenant ID if more placements remain.
         version:
           type: integer
           format: int64

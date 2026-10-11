@@ -28,6 +28,14 @@ jobs:
       - name: Run static release gate
         run: RELEASE_GATE_VERIFY_ONLY=1 scripts/release_gate.sh
 
+      - name: Set up Node for console boundary checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Test management console boundaries
+        run: node --test internal/adminui/console_test.mjs
+
       - name: Test Python SDK
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 

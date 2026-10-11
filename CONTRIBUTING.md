@@ -21,7 +21,16 @@ go test -mod=readonly ./...
 go vet -mod=readonly ./...
 go test -mod=readonly -race ./...
 python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
+node --test internal/adminui/console_test.mjs
 ```
+
+The management console sources in `internal/adminui/static/` are embedded in the
+Go binary. No frontend build is needed; rebuild/restart after edits and validate
+affected pages and interactions in native Chrome. See [console setup](docs/management-ui.md).
+
+GitLab release builds use the current local disk/WAL release gate. Historical
+PostgreSQL coordination, CAS soak and 1.x rollback jobs have been retired with
+their removed backend/scripts. UI boundary checks also run in both CI workflows.
 
 Release candidates use OrbStack/Docker with a Linux local data volume:
 

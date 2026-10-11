@@ -5,6 +5,26 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+## [2.3.0] - 2026-10-11
+
+- Embed an English / Simplified Chinese management console at `/ui/` on the
+  management/combined listener and sharding router. Cover graph data, queries,
+  schemas, tenants, indexes, tasks/backups, ingestion, governance and cluster APIs;
+  show overview snapshots as status gauges and storage/workload/version charts,
+  use structured record/response details and typed forms with optional advanced JSON,
+  retain drafts across query-language switches, protect unfinished ingestion edits,
+  provide blank repeatable items, keyboard tabs and grouped connection settings,
+  defer collapsed details, coalesce input validation and avoid redundant list
+  requests and hidden query-result rendering; use server-paged tenant ID search,
+  bounded tenant switching and cluster placements with opt-in legacy discovery,
+  preserve existing authorization boundaries and keep tokens in page memory.
+- Add matching tenant-page support to Go/Python SDKs; retain unpaged list behavior
+  for existing clients and the current Parquet/WAL and Raft protocol contracts.
+- Remove obsolete duplicate source/report copies, unused storage/config helpers
+  and tenant registry cache metadata. Retire GitLab jobs for removed PostgreSQL
+  coordination and 1.x rollback gates; use the current local disk/WAL gate and
+  run the console boundary checks in GitHub/GitLab CI.
+
 ## [2.2.4] - 2026-10-04
 
 - Retain immutable reader graphs across local writer-fence updates and prepared

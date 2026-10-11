@@ -9,7 +9,7 @@ internal services, and operations tools.
 The current SDKs expose the current ingest contract. Both preserve direct-mode
 terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
 local status resource, polling/waiting, and ingest CAS/conditional/atomic
-options. The Go and Python SDK package versions are `2.2.2`.
+options. The Go and Python SDK package versions are `2.3.0`.
 
 SDK scope:
 
@@ -28,6 +28,15 @@ tenant generations. HA `min_version` reads must retain the write response
 `X-GraphDB-Tenant-Generation` and send `X-GraphDB-Read-Generation`; use an HTTP client
 to handle response headers explicitly. Cluster administration, migration and rolling
 upgrades use their dedicated APIs/scripts; see [Raft operations](../raft-operations.zh-CN.md).
+
+## Tenant pages
+
+Go uses `ListTenantPage(ctx, TenantListOptions{Limit: 25, Query: "team"})`. Python
+uses `list_tenants(limit=25, q="team")`. Both return matching `total` and optional
+`next_cursor`; keep the query and pass that last tenant ID for the next live page.
+Go's zero limit defaults to 50; the server accepts 1–200. The original Go
+`ListTenants` and Python call without paging parameters retain full-list behavior.
+Search matches IDs, not names; legacy discovery is opt-in and scans objects.
 
 ## Go SDK
 

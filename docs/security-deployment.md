@@ -2,6 +2,11 @@
 
 [中文](security-deployment.zh-CN.md)
 
+The embedded [management console](management-ui.md) is served at `/ui/` on the
+management/combined listener. The gateway example serves its static shell at
+`/admin/ui/`; every API request retains the existing authorization checks.
+Add session login to the static route if access to the shell must be restricted.
+
 GGraphDB 2.x keeps authentication and authorization at the gateway or service
 mesh. The database does not treat `X-Tenant-ID` as proof of identity. A
 production deployment must prevent clients from reaching either GGraphDB

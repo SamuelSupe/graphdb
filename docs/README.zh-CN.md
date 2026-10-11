@@ -24,6 +24,8 @@
 
 ## 用户指南
 
+- [管理控制台](management-ui.zh-CN.md) · [English](management-ui.md)
+
 - [2.2.4 发行说明](../release/local-disk.md) · [发布验证](validation-v2.2.4.md) · [JSON](validation-v2.2.4.json) · [历史 2.1.2 写入长尾实测与限制](performance-write-tail.md)
 
 - [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)

@@ -69,6 +69,14 @@ server {
         proxy_pass http://graphdb_data;
     }
 
+    # Static assets carry no tenant data. Add session login here to restrict the
+    # UI shell; API authorization below remains unchanged.
+    location ^~ /admin/ui/ {
+        rewrite ^/admin/(.*)$ /$1 break;
+        proxy_set_header Host $host;
+        proxy_pass http://graphdb_admin;
+    }
+
     # Operator API is deliberately namespaced only at the gateway.
     # /admin/v1/tasks becomes /v1/tasks on the private admin listener.
     location /admin/ {

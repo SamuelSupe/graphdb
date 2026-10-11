@@ -397,3 +397,27 @@ func repoRootFromTest(t *testing.T) string {
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
 }
+
+func TestGoSDKTenantPagesAgainstRealServer(t *testing.T) {
+	ctx := context.Background()
+	server := newSDKTestServer(t)
+	defer server.Close()
+	client := newSDKTestClient(t, server.URL, "unrelated-tenant")
+	for _, id := range []string{"page-a", "page-b", "other"} {
+		if _, err := client.CreateTenant(ctx, TenantCreateRequest{TenantID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := client.ListTenantPage(ctx, TenantListOptions{Limit: 1, Query: "PAGE"})
+	if err != nil || len(first.Tenants) != 1 || first.Tenants[0].TenantID != "page-a" || first.Total != 2 || first.NextCursor != "page-a" {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := client.ListTenantPage(ctx, TenantListOptions{Limit: 1, Query: "PAGE", Cursor: first.NextCursor})
+	if err != nil || len(second.Tenants) != 1 || second.Tenants[0].TenantID != "page-b" || second.NextCursor != "" {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	all, err := client.ListTenants(ctx, false)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("unpaged=%+v err=%v", all, err)
+	}
+}

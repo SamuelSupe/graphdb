@@ -2,6 +2,10 @@
 
 [English](security-deployment.md)
 
+内嵌[管理控制台](management-ui.zh-CN.md)位于管理／合并监听器的 `/ui/`。
+网关示例通过 `/admin/ui/` 提供静态界面；每项 API 请求仍执行原有授权检查。
+需要限制界面本身访问时，请在静态路由接入会话登录。
+
 GGraphDB 2.x 把认证与授权放在网关或服务网格层。数据库不会把
 `X-Tenant-ID` 当成身份凭证；生产部署必须阻止客户端直接访问任一
 GGraphDB listener。

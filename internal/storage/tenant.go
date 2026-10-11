@@ -91,7 +91,7 @@ type TenantStore struct {
 	writeCacheOrder          []string
 	writeCacheBytes          int64
 	writerLeaseCache         map[string]cachedWriterLease
-	registeredTenantCache    map[string]registeredTenantCacheEntry
+	registeredTenantCache    map[string]struct{}
 	collectorStatusCache     map[string]cachedCollectorStatus
 	readerHeartbeatCache     map[string]cachedReaderHeartbeat
 	objectKeyCache           map[string]struct{}
@@ -171,7 +171,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		tenantLocks:              map[string]*tenantLock{},
 		writeCache:               map[string]loadedGraph{},
 		writerLeaseCache:         map[string]cachedWriterLease{},
-		registeredTenantCache:    map[string]registeredTenantCacheEntry{},
+		registeredTenantCache:    map[string]struct{}{},
 		collectorStatusCache:     map[string]cachedCollectorStatus{},
 		readerHeartbeatCache:     map[string]cachedReaderHeartbeat{},
 		objectKeyCache:           map[string]struct{}{},

@@ -13,6 +13,7 @@
 | `GET` | `/v1/readiness` | 流量就绪状态；本地磁盘不可写或 WAL 恢复未完成时返回 HTTP 503。 |
 | `GET` | `/metrics` | Prometheus 指标。 |
 | `GET` | `/openapi.yaml` | OpenAPI 合同。 |
+| `GET` | `/ui/` | 管理／合并监听器及 router 的内嵌双语控制台；数据监听器返回 404。 |
 | `GET` | `/debug/pprof/` | 可选的仅管理 listener profiling 入口，默认关闭。 |
 | `GET` | `/debug/pprof/profile?seconds=30` | 可选的仅管理 listener CPU profile。 |
 | `GET` | `/debug/pprof/trace?seconds=1` | 可选的仅管理 listener execution trace。 |
@@ -21,7 +22,7 @@
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| `GET` | `/v1/tenants` | 列出租户。 |
+| `GET` | `/v1/tenants` | 列出租户；支持 ID 搜索和游标分页（`limit=1..200`、`q`、`cursor`）。 |
 | `POST` | `/v1/tenants` | 创建租户。 |
 | `GET` | `/v1/tenants/{tenant}` | 获取租户信息。 |
 | `PUT` | `/v1/tenants/{tenant}` | 更新租户元数据。 |

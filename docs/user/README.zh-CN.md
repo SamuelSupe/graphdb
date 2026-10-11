@@ -49,6 +49,8 @@ export BASE=http://127.0.0.1:8080
 
 ## 文档地图
 
+- [管理控制台](../management-ui.zh-CN.md) · [English](../management-ui.md)
+
 - [快速开始](quickstart.zh-CN.md) · [English](quickstart.md)
 - [发行版部署](release-deployment.zh-CN.md) · [English](release-deployment.md)
 - [使用手册](usage-manual.zh-CN.md) · [English](usage-manual.md)

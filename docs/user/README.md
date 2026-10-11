@@ -56,6 +56,8 @@ export BASE=http://127.0.0.1:8080
 
 ## Document map
 
+- [Management console](../management-ui.md) · [中文](../management-ui.zh-CN.md)
+
 - [Quick Start](quickstart.md) · [中文](quickstart.zh-CN.md)
 - [Release Deployment](release-deployment.md) · [中文](release-deployment.zh-CN.md)
 - [Usage Manual](usage-manual.md) · [中文](usage-manual.zh-CN.md)

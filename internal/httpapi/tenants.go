@@ -46,9 +46,22 @@ type tenantRestoreDrillRequest struct {
 }
 
 func (s *Server) listTenants(w http.ResponseWriter, r *http.Request) {
+	options, err := storage.ParseTenantListOptions(r.URL.Query())
+	if err != nil {
+		writeErrorErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if options.Limit > 0 {
+		page, err := s.Store.ListTenantInfoPage(r.Context(), options)
+		if err != nil {
+			writeErrorErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+		return
+	}
 	var (
 		tenants []storage.TenantInfo
-		err     error
 	)
 	if r.URL.Query().Get("include_legacy") == "true" {
 		tenants, err = s.Store.ListTenantInfosIncludingLegacy(r.Context())

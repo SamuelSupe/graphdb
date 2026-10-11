@@ -232,16 +232,3 @@ func (s *TenantStore) entityIDFromRecordKey(tenantID string, key string) (string
 	}
 	return id, true, nil
 }
-
-func (s *TenantStore) deleteListedObject(ctx context.Context, object ObjectInfo) error {
-	if object.ETag != "" {
-		err := s.Objects.DeleteConditional(ctx, object.Key, PutCondition{IfMatch: object.ETag})
-		if err == nil || errors.Is(err, ErrNotFound) {
-			return nil
-		}
-		if !errors.Is(err, ErrConditionalDeleteUnsupported) {
-			return err
-		}
-	}
-	return s.Objects.Delete(ctx, object.Key)
-}

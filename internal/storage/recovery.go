@@ -172,8 +172,6 @@ type commitObject struct {
 type commitObjectScan struct {
 	Items       []commitObject
 	InvalidKeys []string
-	NextCursor  string
-	Truncated   bool
 }
 
 func (s *TenantStore) loadCommitObjects(
@@ -211,47 +209,6 @@ func (s *TenantStore) loadCommitObjects(
 	)
 	if err != nil {
 		return commitObjectScan{}, err
-	}
-	sortCommitObjectScan(&scan)
-	return scan, nil
-}
-
-func (s *TenantStore) loadCommitObjectsPage(ctx context.Context, tenantID string, referenced map[string]struct{}, cursor string, limit int) (commitObjectScan, error) {
-	objects, nextCursor, err := listObjectPage(ctx, s.Objects, s.commitPrefix(tenantID), cursor, limit)
-	if err != nil {
-		return commitObjectScan{}, err
-	}
-	capacity := len(objects)
-	if limit > 0 && capacity > limit {
-		capacity = limit
-	}
-	scan := commitObjectScan{Items: make([]commitObject, 0, capacity)}
-	reachedSegments := false
-	for _, object := range objects {
-		if strings.HasPrefix(object.Key, s.commitSegmentPrefix(tenantID)) {
-			if limit > 0 {
-				reachedSegments = true
-				break
-			}
-			continue
-		}
-		scan.NextCursor = object.Key
-		if err := s.appendCommitObject(
-			ctx,
-			tenantID,
-			object,
-			referenced,
-			0,
-			&scan,
-		); err != nil {
-			return commitObjectScan{}, err
-		}
-	}
-	scan.Truncated = nextCursor != "" && !reachedSegments
-	if scan.Truncated {
-		scan.NextCursor = nextCursor
-	} else {
-		scan.NextCursor = ""
 	}
 	sortCommitObjectScan(&scan)
 	return scan, nil

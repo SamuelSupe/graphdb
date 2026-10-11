@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/adminui"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
@@ -45,6 +46,10 @@ func NewRouter(catalog Shard, token string) *Router {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	if request.URL.Path == "/ui" || strings.HasPrefix(request.URL.Path, "/ui/") {
+		adminui.Handler().ServeHTTP(w, request)
+		return
+	}
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Minute)
 	defer cancel()
 	request = request.WithContext(ctx)
@@ -310,9 +315,28 @@ func (r *Router) admin(w http.ResponseWriter, request *http.Request) {
 			http.NotFound(w, request)
 			return
 		}
+		options, err := storage.ParseTenantListOptions(request.URL.Query())
+		if err != nil {
+			r.writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 		var state Catalog
 		if err := r.Client.JSON(request.Context(), r.Catalog, http.MethodGet, "/cluster/catalog", nil, &state); err != nil {
 			r.writeError(w, err)
+			return
+		}
+		if options.Limit > 0 {
+			ids := make([]string, 0, len(state.Tenants))
+			for id := range state.Tenants {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			page, total, next := storage.PageTenantIDs(ids, options)
+			placements := make(map[string]Placement, len(page))
+			for _, id := range page {
+				placements[id] = state.Tenants[id]
+			}
+			r.writeJSON(w, http.StatusOK, map[string]any{"version": state.Version, "shards": state.Shards, "tenants": placements, "total": total, "next_cursor": next})
 			return
 		}
 		r.writeJSON(w, http.StatusOK, state)
@@ -374,9 +398,38 @@ func (r *Router) admin(w http.ResponseWriter, request *http.Request) {
 }
 
 func (r *Router) listTenants(w http.ResponseWriter, request *http.Request) {
+	options, err := storage.ParseTenantListOptions(request.URL.Query())
+	if err != nil {
+		r.writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	var state Catalog
 	if err := r.Client.JSON(request.Context(), r.Catalog, http.MethodGet, "/cluster/catalog", nil, &state); err != nil {
 		r.writeError(w, err)
+		return
+	}
+	if options.Limit > 0 {
+		ids := make([]string, 0, len(state.Tenants))
+		for id := range state.Tenants {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		page, total, next := storage.PageTenantIDs(ids, options)
+		items := make([]storage.TenantInfo, 0, len(page))
+		for _, id := range page {
+			shard, ok := state.Shards[state.Tenants[id].Shard]
+			if !ok {
+				r.writeError(w, fmt.Errorf("tenant %s has an unavailable shard", id))
+				return
+			}
+			var info storage.TenantInfo
+			if err := r.Client.JSON(request.Context(), shard, http.MethodGet, "/cluster/data/v1/tenants/"+url.PathEscape(id), nil, &info, http.Header{"X-Tenant-ID": {id}, EpochHeader: {fmt.Sprint(state.Tenants[id].Epoch)}}); err != nil {
+				r.writeError(w, err)
+				return
+			}
+			items = append(items, info)
+		}
+		r.writeJSON(w, http.StatusOK, storage.TenantInfoPage{Tenants: items, Total: total, NextCursor: next})
 		return
 	}
 	var tenants []storage.TenantInfo

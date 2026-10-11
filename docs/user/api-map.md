@@ -13,6 +13,7 @@ This is a user-facing endpoint map. The detailed schema contract is
 | `GET` | `/v1/readiness` | Traffic readiness; returns HTTP 503 when the local disk is unwritable or WAL recovery is incomplete. |
 | `GET` | `/metrics` | Prometheus metrics. |
 | `GET` | `/openapi.yaml` | OpenAPI contract. |
+| `GET` | `/ui/` | Embedded bilingual management console on management/combined listeners and routers; data-only listeners return 404. |
 | `GET` | `/debug/pprof/` | Optional admin-listener-only profiling index; disabled by default. |
 | `GET` | `/debug/pprof/profile?seconds=30` | Optional admin-listener-only CPU profile. |
 | `GET` | `/debug/pprof/trace?seconds=1` | Optional admin-listener-only execution trace. |
@@ -21,7 +22,7 @@ This is a user-facing endpoint map. The detailed schema contract is
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/tenants` | List managed tenants. |
+| `GET` | `/v1/tenants` | List managed tenants; optional ID search and cursor paging (`limit=1..200`, `q`, `cursor`). |
 | `POST` | `/v1/tenants` | Create tenant. |
 | `GET` | `/v1/tenants/{tenant}` | Get tenant info. |
 | `PUT` | `/v1/tenants/{tenant}` | Update tenant metadata. |

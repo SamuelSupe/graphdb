@@ -116,10 +116,15 @@ func (c *Client) ForgetLeader(shard Shard) {
 	c.mu.Unlock()
 }
 
-func (c *Client) request(ctx context.Context, shard Shard, origin, method, path string, data []byte) (*http.Response, error) {
+func (c *Client) request(ctx context.Context, shard Shard, origin, method, path string, data []byte, headers ...http.Header) (*http.Response, error) {
 	r, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(origin, "/")+path, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
+	}
+	for _, values := range headers {
+		for key, value := range values {
+			r.Header[key] = append([]string(nil), value...)
+		}
 	}
 	r.Header.Set("Authorization", "Bearer "+c.Token)
 	r.Header.Set("X-Raft-Cluster", shard.ClusterID)
@@ -127,7 +132,7 @@ func (c *Client) request(ctx context.Context, shard Shard, origin, method, path 
 	return c.HTTP.Do(r)
 }
 
-func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body any) (response *http.Response, err error) {
+func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body any, headers ...http.Header) (response *http.Response, err error) {
 	operation := "write_request"
 	if method == http.MethodGet {
 		operation = "read_request"
@@ -153,7 +158,7 @@ func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body 
 	}
 	// Once sent, a mutation may have committed even if its response is lost.
 	// The caller retries by operation identity, never by blindly replaying HTTP.
-	response, err = c.request(ctx, shard, origin, method, path, data)
+	response, err = c.request(ctx, shard, origin, method, path, data, headers...)
 	if err != nil || response.StatusCode == http.StatusServiceUnavailable {
 		c.ForgetLeader(shard)
 		if method == http.MethodGet && ctx.Err() == nil {
@@ -165,14 +170,14 @@ func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body 
 			if discoverErr != nil {
 				return nil, discoverErr
 			}
-			return c.request(ctx, shard, origin, method, path, data)
+			return c.request(ctx, shard, origin, method, path, data, headers...)
 		}
 	}
 	return response, err
 }
 
-func (c *Client) JSON(ctx context.Context, shard Shard, method, path string, body, result any) error {
-	response, err := c.Do(ctx, shard, method, path, body)
+func (c *Client) JSON(ctx context.Context, shard Shard, method, path string, body, result any, headers ...http.Header) error {
+	response, err := c.Do(ctx, shard, method, path, body, headers...)
 	if err != nil {
 		return err
 	}

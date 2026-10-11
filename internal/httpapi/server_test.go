@@ -138,6 +138,27 @@ func TestHTTPPprofDisabledOnCombinedHandler(t *testing.T) {
 	}
 }
 
+func TestManagementConsoleListenerBoundary(t *testing.T) {
+	api := &Server{Mode: "all"}
+	for _, handler := range []http.Handler{api.Handler(), api.AdminHandler(false)} {
+		for _, path := range []string{"/ui/", "/ui/app.js", "/ui/styles.css"} {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusOK || response.Body.Len() == 0 {
+				t.Fatalf("console asset %s: status=%d bytes=%d", path, response.Code, response.Body.Len())
+			}
+			if response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatalf("console asset %s missing browser security headers", path)
+			}
+		}
+	}
+	response := httptest.NewRecorder()
+	api.DataHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui/", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("console exposed on the data-only listener: %d", response.Code)
+	}
+}
+
 func TestHTTPCompactRejectsWhenMaintenanceCapacityIsBusy(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	release, err := store.TryAcquireMaintenance("tenant-a")

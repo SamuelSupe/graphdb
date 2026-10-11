@@ -23,6 +23,12 @@ class RealServerE2ETest(unittest.TestCase):
         self.assertEqual(c.get_tenant(tenant)["status"], "active")
         self.assertTrue(any(item["tenant_id"] == tenant for item in c.list_tenants()["tenants"]))
 
+        page = c.list_tenants(limit=1, q=tenant)
+        self.assertEqual(page["tenants"][0]["tenant_id"], tenant)
+        self.assertGreaterEqual(page["total"], 1)
+        remaining = c.list_tenants(limit=1, q=tenant, cursor=tenant)
+        self.assertTrue(all(item["tenant_id"] > tenant for item in remaining["tenants"]))
+
         policy = {
             "default_priority": 0,
             "sources": [

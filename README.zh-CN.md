@@ -1,4 +1,4 @@
-# GGraphDB 2.2
+# GGraphDB 2.3
 
 [English](README.md)
 
@@ -8,17 +8,17 @@ GGraphDB 是多租户属性图数据库，提供实体关系管理、来源治�
 
 ## 当前版本
 
-[2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) 已从 `main` 发布为稳定 Latest，全部确切标签门禁及下载资产核验通过。
-同一二进制支持单机 direct/WAL、使用独立磁盘的 Raft 副本，以及按租户分片的多个 Raft 组。
-本版增加受保护的集群管理、可续传迁移和恢复、兼容窗口内的滚动升级及本地诊断。
-二进制、契约和验证范围见[发行说明](release/local-disk.md)和[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+**2.3.0** 新增内置中英文管理控制台、图表概览、结构化编辑器
+和服务端租户 ID 搜索／分页。同一二进制继续支持单机 direct/WAL、独立磁盘 Raft 副本
+和租户分片。参见[发行说明](release/local-disk.md)、[发布与验证状态](docs/validation-v2.3.0.md)
+及[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
-单机 2.0/2.1 用户停止旧进程后可沿用原目录；Raft 目录具有独立的角色和协议要求，
+单机 2.0/2.1/2.2 用户停止旧进程后可沿用原目录；Raft 目录具有独立的角色和协议要求，
 升级遵循[已验收的滚动兼容窗口](docs/raft-rolling-upgrade.zh-CN.md)。单机继续支持自动 S3 备份，
 Raft 由外部调度调用集群备份 API。不提供 1.x 迁移。
 
 跨宿主机与生产容量仍待验收；维护会产生可重试 429 和写入长尾，不承诺统一吞吐增幅或低延迟 SLO。
-本版已通过确切标签的全部发行门禁。此前性能候选的三十分钟长测仍有四次入口 503，记录为 FAIL；不承诺整体吞吐收益。范围见 [2.2.4 验证说明](docs/validation-v2.2.4.md)。
+本版需通过确切标签的全部发行门禁后发布。此前性能候选的三十分钟长测仍有四次入口 503，记录为 FAIL；不承诺整体吞吐收益。范围见 [2.3.0 验证说明](docs/validation-v2.3.0.md)。
 
 ## 核心能力
 
@@ -29,6 +29,9 @@ Raft 由外部调度调用集群备份 API。不提供 1.x 迁移。
 - Go/Python SDK、Prometheus 指标、JSON 日志与可选 OTLP 链路。
 
 ## 启动
+
+当前源码新增中英文[管理控制台](docs/management-ui.zh-CN.md)，内嵌于服务程序，
+通过 `/ui/` 打开。分离监听器时使用管理端口；此前发行的 2.2.4 二进制不包含此功能。
 
 ```sh
 go build -o bin/graphdb ./cmd/graphdb
@@ -104,13 +107,13 @@ Raft 在协议允许时把维护准备移出应用屏障，冲突持续时只暂
 
 本机候选 30 分钟负载记录 71,140 次操作、零非预期操作错误；写入包含 90 次预期 429，
 最大等待 40.154 秒。这些是限定范围的正确性观测，不构成容量或延迟保证，见
-[验收范围](docs/validation-v2.2.4.md)。历史 [2.1.2 写入长尾报告](docs/performance-write-tail.md)
+[验收范围](docs/validation-v2.3.0.md)。历史 [2.1.2 写入长尾报告](docs/performance-write-tail.md)
 仅适用于其记录的构建。
 
 ## 文档与验证
 
 - [本地磁盘运行与验证](docs/local-disk.zh-CN.md)
-- [2.2.4 验证范围与限制](docs/validation-v2.2.4.md)
+- [2.3.0 验证范围与限制](docs/validation-v2.3.0.md)
 - [Raft 运维与滚动升级](docs/raft-operations.zh-CN.md)
 - [租户分片与迁移](docs/sharding.zh-CN.md)
 - [诊断指标](docs/diagnostics-metrics.zh-CN.md)

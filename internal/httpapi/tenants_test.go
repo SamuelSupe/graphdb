@@ -127,3 +127,34 @@ func TestLocalHTTPLifecyclePurgeWithTenantHeader(t *testing.T) {
 		t.Fatalf("purge holding its own read view returned %d after %v: %s", recorder.Code, time.Since(start), recorder.Body.String())
 	}
 }
+
+func TestHTTPTenantPaginationAndSearch(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	for _, id := range []string{"team-a", "team-b", "other"} {
+		if _, err := store.CreateTenant(context.Background(), id, storage.TenantCreateOptions{Name: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	for _, sample := range []struct {
+		path  string
+		id    string
+		total int
+		next  string
+	}{
+		{"/v1/tenants?limit=1&q=TEAM", "team-a", 2, "team-a"},
+		{"/v1/tenants?limit=1&q=team&cursor=team-a", "team-b", 2, ""},
+	} {
+		rr := serveJSON(handler, http.MethodGet, sample.path, "", nil)
+		var page storage.TenantInfoPage
+		if rr.Code != http.StatusOK || json.Unmarshal(rr.Body.Bytes(), &page) != nil || len(page.Tenants) != 1 || page.Tenants[0].TenantID != sample.id || page.Total != sample.total || page.NextCursor != sample.next {
+			t.Fatalf("%s: %d %s", sample.path, rr.Code, rr.Body.String())
+		}
+	}
+	for _, query := range []string{"limit=0", "limit=201", "limit=abc", "cursor=../invalid", "q=" + strings.Repeat("a", 129)} {
+		rr := serveJSON(handler, http.MethodGet, "/v1/tenants?"+query, "", nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("query %s: %d %s", query, rr.Code, rr.Body.String())
+		}
+	}
+}

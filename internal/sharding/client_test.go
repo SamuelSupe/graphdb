@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 func TestLeaderCacheInvalidationDoesNotReplayMutations(t *testing.T) {
@@ -198,5 +201,56 @@ func TestRouterCatalogFallbackRemainsBoundedAndFenced(t *testing.T) {
 	unavailable.Store(true)
 	if _, err := router.resolve(ctx, "known"); err == nil {
 		t.Fatal("resurrected route invalidated by migration")
+	}
+}
+
+func TestRouterTenantPagesUseCatalogOrderAndOwnershipHeaders(t *testing.T) {
+	state := Catalog{Shards: map[string]Shard{}, Tenants: map[string]Placement{}}
+	var detailReads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/raft/status":
+			json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+		case "/cluster/catalog":
+			json.NewEncoder(w).Encode(state)
+		default:
+			id := strings.TrimPrefix(r.URL.Path, "/cluster/data/v1/tenants/")
+			if _, ok := state.Tenants[id]; !ok {
+				http.NotFound(w, r)
+				return
+			}
+			detailReads.Add(1)
+			if r.Header.Get("X-Tenant-ID") != id || r.Header.Get(EpochHeader) != "7" || r.Header.Get("Authorization") != "Bearer secret" || r.Header.Get("X-Raft-Cluster") != "data" {
+				t.Errorf("routing headers=%v", r.Header)
+			}
+			json.NewEncoder(w).Encode(storage.TenantInfo{TenantMetadata: storage.TenantMetadata{TenantID: id}})
+		}
+	}))
+	defer server.Close()
+	state.Shards["data"] = Shard{ID: "data", ClusterID: "data", Peers: map[uint64]string{1: server.URL}}
+	for i := 0; i < 10000; i++ {
+		id := fmt.Sprintf("tenant-%05d", i)
+		state.Tenants[id] = Placement{Tenant: id, Shard: "data", Epoch: 7}
+	}
+	router := NewRouter(Shard{ID: "catalog", ClusterID: "catalog", Peers: map[uint64]string{1: server.URL}}, "secret")
+	defer router.Client.HTTP.CloseIdleConnections()
+	request := httptest.NewRequest(http.MethodGet, "/v1/tenants?limit=25&cursor=tenant-09974", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, request)
+	var page storage.TenantInfoPage
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Tenants) != 25 || page.Total != 10000 || page.Tenants[0].TenantID != "tenant-09975" || page.NextCursor != "" || detailReads.Load() != 25 {
+		t.Fatalf("page=%s reads=%d", w.Body.String(), detailReads.Load())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v1/cluster?limit=25&q=TENANT-099", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, request)
+	var catalogPage struct {
+		Tenants map[string]Placement `json:"tenants"`
+		Total   int                  `json:"total"`
+		Next    string               `json:"next_cursor"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &catalogPage) != nil || len(catalogPage.Tenants) != 25 || catalogPage.Total != 100 || catalogPage.Next != "tenant-09924" {
+		t.Fatalf("catalog page=%s", w.Body.String())
 	}
 }

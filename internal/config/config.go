@@ -478,10 +478,6 @@ func (cfg Config) coordinationMode() string {
 	return normalizeCoordination(cfg.Coordination)
 }
 
-func (cfg Config) CoordinationMode() string {
-	return cfg.coordinationMode()
-}
-
 func normalizeCoordination(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {

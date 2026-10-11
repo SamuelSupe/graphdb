@@ -8,8 +8,20 @@ class TenantMixin:
     def create_tenant(self, tenant_id: str, **metadata: Any) -> dict:
         return self._json("POST", "/v1/tenants", tenant_id=None, body={"tenant_id": tenant_id, **metadata})
 
-    def list_tenants(self, include_legacy: bool = False) -> dict:
-        return self._json("GET", "/v1/tenants", tenant_id=None, query={"include_legacy": include_legacy})
+    def list_tenants(self, include_legacy: bool = False, *, limit: int | None = None, q: str = "", cursor: str = "") -> dict:
+        """List all tenants, or a live ID-search page when limit/q/cursor is supplied.
+
+        Paged responses include total and optional next_cursor. Reuse the same q
+        with next_cursor. Limits are 1–200; legacy discovery scans storage objects.
+        """
+        query = {"include_legacy": include_legacy}
+        if limit is not None:
+            query["limit"] = limit
+        if q:
+            query["q"] = q
+        if cursor:
+            query["cursor"] = cursor
+        return self._json("GET", "/v1/tenants", tenant_id=None, query=query)
 
     def get_tenant(self, tenant_id: str) -> dict:
         return self._json("GET", f"/v1/tenants/{self._escape(tenant_id)}", tenant_id=None)

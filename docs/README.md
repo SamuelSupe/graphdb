@@ -25,6 +25,8 @@ with a language-switch link at the top.
 
 ## User guides
 
+- [Management console](management-ui.md) · [中文](management-ui.zh-CN.md)
+
 - [2.2.4 release notes](../release/local-disk.md) · [Validation](validation-v2.2.4.md) · [JSON](validation-v2.2.4.json) · [Historical 2.1.2 write-tail measurements](performance-write-tail.md)
 
 - [User Guide](user/README.md) · [中文](user/README.zh-CN.md)

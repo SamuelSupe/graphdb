@@ -1,4 +1,4 @@
-# GGraphDB 2.2
+# GGraphDB 2.3
 
 [简体中文](README.zh-CN.md)
 
@@ -11,14 +11,14 @@ Optional [S3-compatible snapshot backups](docs/object-backup.md) support recover
 
 ## Current release
 
-[2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) is published as stable Latest; all exact-tag gates and downloaded asset checks passed.
-Development continues on `main`. The same binary supports standalone direct/WAL,
-Raft with independent local replicas, and tenant sharding across Raft groups.
-It adds protected cluster administration, resumable migration and recovery,
-compatible rolling upgrades, and local diagnostics. See the
-[release notes](release/local-disk.md) and [version boundaries](docs/naming-and-compatibility.md).
+**2.3.0** adds an embedded English / Simplified Chinese
+management console, chart-based overview, structured editors and tenant ID search
+with bounded server-side pages. The same binary supports standalone direct/WAL,
+independent Raft replicas and tenant-sharded Raft groups. See the
+[release notes](release/local-disk.md), [publication and validation](docs/validation-v2.3.0.md)
+and [version boundaries](docs/naming-and-compatibility.md).
 
-Standalone 2.0/2.1 data directories remain compatible after stopping the old
+Standalone 2.0/2.1/2.2 data directories remain compatible after stopping the old
 process. Raft directories have separate ownership and protocol requirements;
 use the [qualified rolling upgrade window](docs/raft-rolling-upgrade.zh-CN.md).
 S3 backup automation remains available in standalone mode; Raft uses external
@@ -32,7 +32,7 @@ Release artifacts are published only after the exact-tag gates pass. The prior
 local performance candidate failed its 30-minute maintenance soak with four
 HAProxy 503 query errors; that failure remains documented. Cross-host, overall
 throughput and production capacity remain unqualified. Maintenance may return
-retryable 429s and cause long waits. See [2.2.4 validation](docs/validation-v2.2.4.md).
+retryable 429s and cause long waits. See [2.3.0 validation](docs/validation-v2.3.0.md).
 
 ## Capabilities
 
@@ -47,6 +47,10 @@ retryable 429s and cause long waits. See [2.2.4 validation](docs/validation-v2.2
 - Go/Python SDKs, Prometheus metrics, JSON logs, and optional OTLP traces.
 
 ## Start
+
+The current source includes a bilingual [management console](docs/management-ui.md)
+at `/ui/`, embedded in the server binary. With split listeners, use the management
+port. Previously released 2.2.4 binaries do not include this addition.
 
 ```sh
 go build -o bin/graphdb ./cmd/graphdb
@@ -133,14 +137,14 @@ chunks. Final publication, graph decoding and rollback still have resource costs
 The local candidate's thirty-minute workload recorded 71,140 operations without
 unexpected operation errors, while ingestion included 90 expected 429s and a
 40.154-second maximum wait. These are scoped correctness observations, not a
-capacity or latency guarantee. See [qualification](docs/validation-v2.2.4.md).
+capacity or latency guarantee. See [qualification](docs/validation-v2.3.0.md).
 Historical [2.1.2 write-tail measurements](docs/performance-write-tail.md) and
 [2.0 results](docs/performance-v2.0.md) apply only to their recorded builds.
 
 ## Documentation
 
 - [Local disk operation and validation](docs/local-disk.md)
-- [2.2.4 validation and remaining limits](docs/validation-v2.2.4.md)
+- [2.3.0 validation and remaining limits](docs/validation-v2.3.0.md)
 - [Raft operations and rolling upgrades](docs/raft-operations.zh-CN.md)
 - [Tenant sharding and migration](docs/sharding.zh-CN.md)
 - [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md)

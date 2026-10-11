@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -208,4 +209,73 @@ func (s *tenantRegistryReadStore) registryReads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reads
+}
+
+func TestTenantInfoPagesBoundDetailReadsAndResumeAfterDeletion(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	ids := make([]string, 10000)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("tenant-%05d", i)
+	}
+	if err := store.putTenantRegistryWithMeta(ctx, tenantRegistry{TenantIDs: ids}, ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range append(append([]string{}, ids[:50]...), ids[9990:]...) {
+		data, err := marshalParquetManifest(ctx, Manifest{TenantID: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := base.Put(ctx, store.manifestKey(id), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	objects := &tenantPageReadStore{ObjectStore: noListTenantObjectStore{ObjectStore: base}}
+	store.Objects = objects
+	page, err := store.ListTenantInfoPage(ctx, TenantListOptions{Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Tenants) != 25 || page.Total != 10000 || page.NextCursor != "tenant-00024" || objects.detailReads != 50 {
+		t.Fatalf("page=%+v detail reads=%d", page, objects.detailReads)
+	}
+	// Removing earlier IDs must not shift the next page past unseen records.
+	_, meta, err := base.GetWithMeta(ctx, store.tenantRegistryKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.putTenantRegistryWithMeta(ctx, tenantRegistry{TenantIDs: ids[25:]}, meta); err != nil {
+		t.Fatal(err)
+	}
+	page, err = store.ListTenantInfoPage(ctx, TenantListOptions{Limit: 25, Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Tenants[0].TenantID != "tenant-00025" || page.Total != 9975 {
+		t.Fatalf("resumed page=%+v", page)
+	}
+	page, err = store.ListTenantInfoPage(ctx, TenantListOptions{Limit: 25, Query: "TENANT-0999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Tenants) != 10 || page.Total != 10 || page.NextCursor != "" || page.Tenants[9].TenantID != "tenant-09999" {
+		t.Fatalf("filtered page=%+v", page)
+	}
+	page, err = store.ListTenantInfoPage(ctx, TenantListOptions{Limit: 25, Query: "absent"})
+	if err != nil || page.Tenants == nil || len(page.Tenants) != 0 || page.Total != 0 {
+		t.Fatalf("empty page=%+v err=%v", page, err)
+	}
+}
+
+type tenantPageReadStore struct {
+	ObjectStore
+	detailReads int
+}
+
+func (s *tenantPageReadStore) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
+	if strings.HasSuffix(key, "/metadata.parquet") || strings.HasSuffix(key, "/manifest.parquet") {
+		s.detailReads++
+	}
+	return s.ObjectStore.GetWithMeta(ctx, key)
 }

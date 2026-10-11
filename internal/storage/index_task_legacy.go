@@ -112,14 +112,6 @@ func (s *TenantStore) getIndexRebuildRunningMarker(ctx context.Context, tenantID
 	return task, nil
 }
 
-func (s *TenantStore) saveIndexRebuildRunningMarker(ctx context.Context, task IndexTask) error {
-	data, err := marshalParquetIndexTask(ctx, task)
-	if err != nil {
-		return err
-	}
-	return s.putTenantGenerationObject(ctx, task.TenantID, s.indexRebuildRunningTaskKey(task.TenantID), data)
-}
-
 func (s *TenantStore) clearIndexRebuildRunningMarker(ctx context.Context, tenantID string, taskID string) error {
 	task, err := s.getIndexRebuildRunningMarker(ctx, tenantID)
 	if errors.Is(err, ErrNotFound) {

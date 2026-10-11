@@ -742,3 +742,54 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	catalog.leader(-1)
 	request("GET", "/v1/entities/host:after-return", "tenant-a", nil, http.StatusOK)
 }
+
+func TestHAShardPagedTenantListing(t *testing.T) {
+	catalog := newTestClusterRole(t, false, "", true)
+	data := newTestClusterRole(t, false, "data", false)
+	catalog.leader(-1)
+	data.leader(-1)
+	definition := func(group *testCluster, id string) sharding.Shard {
+		cfg := group.nodes[0].cfg.Raft
+		return sharding.Shard{ID: id, ClusterID: cfg.ClusterID, Peers: cfg.Peers}
+	}
+	token := catalog.nodes[0].cfg.Raft.Token
+	router := sharding.NewRouter(definition(catalog, "catalog"), token)
+	defer router.Client.HTTP.CloseIdleConnections()
+	request := func(method, path string, body any) *httptest.ResponseRecorder {
+		t.Helper()
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(method, path, bytes.NewReader(encoded))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		if w.Code >= 300 {
+			t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body.String())
+		}
+		return w
+	}
+	request(http.MethodPost, "/v1/cluster/shards", definition(data, "data"))
+	for _, id := range []string{"tenant-a", "tenant-b"} {
+		request(http.MethodPost, "/v1/tenants", map[string]any{"tenant_id": id})
+	}
+	for _, sample := range []struct{ path, id, next string }{
+		{"/v1/tenants?limit=1&q=TENANT", "tenant-a", "tenant-a"},
+		{"/v1/tenants?limit=1&q=TENANT&cursor=tenant-a", "tenant-b", ""},
+	} {
+		w := request(http.MethodGet, sample.path, nil)
+		var page storage.TenantInfoPage
+		if json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Tenants) != 1 || page.Total != 2 || page.Tenants[0].TenantID != sample.id || page.NextCursor != sample.next {
+			t.Fatalf("page=%s", w.Body.String())
+		}
+	}
+	w := request(http.MethodGet, "/v1/cluster?limit=1&q=tenant-b", nil)
+	var page struct {
+		Tenants map[string]sharding.Placement `json:"tenants"`
+		Total   int                           `json:"total"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Tenants) != 1 || page.Total != 1 || page.Tenants["tenant-b"].Shard != "data" {
+		t.Fatalf("catalog=%s", w.Body.String())
+	}
+}
