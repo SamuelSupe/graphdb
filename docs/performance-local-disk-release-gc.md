@@ -1,5 +1,7 @@
 # 本地磁盘版发布验证：旧索引 GC
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 ## 发现的问题
 
 `e24593f3` 的[30 分钟发布负载](https://github.com/SamuelSupe/graphdb/actions/runs/35315450339)

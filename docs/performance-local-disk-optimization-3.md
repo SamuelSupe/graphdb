@@ -1,5 +1,7 @@
 # 本地磁盘版：第三轮性能优化
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 > 本文列出的 `capacity-runs/` 是历史本地验收产物路径，未纳入 Git；当前仓库及本轮工作区不包含这些原始文件。文中的历史结果不等于当前候选已重新通过验收。
 
 2026-09-17。工作区 `/Users/livesite/Documents/GraphDB-local-disk-v2`，分支 `codex/local-disk-v2`。基于包含六轮 P1 修复的当前代码开展优化，保留原工作区和全部既有改动，未提交或推送。

@@ -1,5 +1,7 @@
 # GGraphDB 2.x: deploy-ops
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](deploy-ops.zh-CN.md)
 
 GGraphDB 2.x defaults to standalone with one process and a persistent local directory. New installations

@@ -1,5 +1,7 @@
 # GGraphDB Usage Manual
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](usage-manual.zh-CN.md)
 
 This manual gives the shortest path from creating a tenant and writing general

@@ -1,5 +1,7 @@
 # GGraphDB 用户指南
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](README.md)
 
 本指南面向服务负责人、写入客户端作者和运维人员，介绍如何使用 GGraphDB
@@ -8,13 +10,14 @@ API 也可以服务其他实体关系应用。
 
 ## GGraphDB 提供什么
 
+- 内嵌中英文[管理控制台](../management-ui.zh-CN.md)，提供图表、结构化编辑及租户分页；
 - 通过 `X-Tenant-ID` 隔离多租户图数据；
 - 无模式实体和可选类型定义，其中 CI type 适合 CMDB 风格的建模；
 - 以 `(type, from, to)` 作为规范身份的有向类型化边；
 - 默认单机，由一个进程独占本地目录；可选 [Raft 副本](../raft-ha.zh-CN.md) 与[租户分片](../sharding.zh-CN.md)，各副本使用独立目录；
 - Parquet manifest、commit、snapshot、entity page、edge shard 和索引在本地盘持久化；
 - direct 和同步 WAL 写入，可选 S3 快照备份与按需恢复；内置定时调度/重试/保留清理及恢复演练适用于单机，Raft 使用外部调度调用集群备份 API；
-- 使用 `data_hash` 契约，2.0/2.1 数据目录兼容，不提供 1.x 迁移；
+- 使用 `data_hash` 契约，2.0/2.1/2.2 单机数据目录兼容，不提供 1.x 迁移；
 - GraphQL、JSON Query DSL、scan/export、saved query 和运行中查询控制；
 - 可选的实体字段、边字段和边存在性 source priority 治理；
 - 租户生命周期、source policy、tenant config、索引、统一 task、维护、

@@ -1,5 +1,7 @@
 # GGraphDB 2.x：deploy-ops
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](deploy-ops.md)
 
 默认部署使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1

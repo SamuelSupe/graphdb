@@ -1,5 +1,7 @@
 # GGraphDB 2.x Local Disk Architecture
 
+Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+
 [中文](architecture.md)
 
 The default deployment runs as one process on one machine, with concurrent reads and writes across tenants. Optional [Raft HA](raft-ha.zh-CN.md) defaults to three independent local-disk replicas per group. [Tenant sharding](sharding.zh-CN.md) places and migrates whole tenants across data groups.
@@ -34,7 +36,7 @@ Partition encoding shares four slots and cooperative file-count, 16 MiB and 50 m
 Entities, edges, adjacency and field indexes use 256 copy-on-write partitions; small collections
 of up to 32 entries use compact maps. Incremental partitioned SHA-256 produces `data_hash`.
 
-The [unreleased head-integrity fix](product-p0-p1-review2-2026-10-03.zh-CN.md)
+The [2.3.0 head-integrity fix](product-p0-p1-review2-2026-10-03.zh-CN.md)
 rejects ordinary reads and publication when the manifest is missing but graph
 objects remain. Cold full-graph loads also verify `sha256-shards-v2` digests;
 empty or legacy digests remain readable without that additional check. Partial
@@ -51,7 +53,7 @@ for datasets affected by the source-identity correction.
 WAL acceptance, grouped publication, idempotency and crash replay retain their existing protocol.
 An accepted request is not yet a published graph version.
 
-The [unreleased replication-integrity fix](product-p0-p1-review4-2026-10-03.zh-CN.md)
+The [2.3.0 replication-integrity fix](product-p0-p1-review4-2026-10-03.zh-CN.md)
 binds staged migration chunks to their actual SHA256 and total byte count in
 replicated ownership. Loss or alteration of acknowledged chunks stops the faulty
 replica without consuming the install entry. Raft snapshots cold-load graphs and
@@ -72,7 +74,7 @@ recovery and compaction use this shared path. HTTP handlers and WAL bootstrap no
 read caches separately. Publication does not depend on whether the writer cache retains the graph.
 File replacement invalidates views, including restore to a lower or equal version.
 
-The [unreleased migration fix](product-p0-p1-review3-2026-10-03.zh-CN.md) validates the complete graph, current digest and relation schemas from the copied files. Exclusively opened local targets publish a staged directory using the recovery journal. Source read or validation failure preserves the previous target; Raft rejects invalid install input before changing incarnation or ownership. Dry-run is an inventory, and arbitrary non-local object-store replacement has no directory-level atomicity.
+The [2.3.0 migration fix](product-p0-p1-review3-2026-10-03.zh-CN.md) validates the complete graph, current digest and relation schemas from the copied files. Exclusively opened local targets publish a staged directory using the recovery journal. Source read or validation failure preserves the previous target; Raft rejects invalid install input before changing incarnation or ownership. Dry-run is an inventory, and arbitrary non-local object-store replacement has no directory-level atomicity.
 
 ## Reads and reclamation
 
@@ -111,7 +113,7 @@ The runtime cancels and joins task, index and maintenance workers before releasi
 directory. WAL shutdown is included and errors propagate to service/CLI callers. A worker timeout
 retains directory ownership until a successful shutdown retry.
 
-The [unreleased runtime recovery fix](product-p0-p1-review5-2026-10-03.zh-CN.md)
+The [2.3.0 runtime recovery fix](product-p0-p1-review5-2026-10-03.zh-CN.md)
 holds ownership locks for all configured roots throughout offline backup and restore.
 Raft also retains a directory lock, while recovery locks both existing and staged
 raft.db inodes for older processes. An archive object cannot enter another role's
@@ -131,7 +133,10 @@ No separate scheduler or task execution engine is introduced. See [object backup
 
 | Module | Responsibility |
 | --- | --- |
+| `internal/adminui` | Embedded bilingual console, charts and structured operations using existing APIs; gateway authorization |
 | `internal/httpapi` | HTTP/GraphQL protocol, tenant routing, admission, responses and tracing; external gateways handle authentication/authorization |
+| `internal/ha` / `internal/replication` | Raft majority replication, membership/protocols, snapshots and replica recovery |
+| `internal/sharding` | Catalog groups, tenant placement, routing and cross-group migration |
 | `internal/storage` | Persistence, tenant generations, read views, publication, query index selection and task lifecycle |
 | `internal/maintenance` | Scheduling and decisions using storage operations/budgets, with usage and audit callbacks |
 | `internal/graph` / `internal/query` | Graph structures, planning and execution |
@@ -152,3 +157,6 @@ Remote primary storage, PostgreSQL coordination and split reader/writer modes ar
 Optional [Raft HA](raft-ha.zh-CN.md) provides replication and leader failover using fresh independent directories. See the [local disk guide](local-disk.md) for
 configuration and validation, and [version boundaries](naming-and-compatibility.md) for the
 2.0 break from 1.x data and the old MD5 contract.
+
+Standalone 2.3.0 retains 2.0/2.1/2.2 directory formats after stopping the old process.
+Raft upgrades retain their separate role, protocol and qualified rolling-window requirements.

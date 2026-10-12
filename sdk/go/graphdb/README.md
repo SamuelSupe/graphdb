@@ -1,5 +1,7 @@
 # GGraphDB Go SDK
 
+Version **2.3.0**, matching the [published server release](../../../docs/validation-v2.3.0.md).
+
 Import path inside this repository:
 
 ```go
@@ -21,5 +23,5 @@ result, err := client.Commit(ctx, graphdb.Mutations{
 }, &graphdb.CommitOptions{IdempotencyKey: "batch-001"})
 ```
 
-See [../../docs/user/sdk.md](../../../docs/user/sdk.md) for the full user
+See [SDK user guide](../../../docs/user/sdk.md) for the full user
 guide.

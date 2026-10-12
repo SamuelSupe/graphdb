@@ -1,5 +1,7 @@
 # 数据模型
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](data-model.md)
 
 GGraphDB 为每个租户保存一张当前态属性知识图谱，不提供历史版本查询；每次
@@ -194,4 +196,4 @@ edge:<sha256(type + "\x00" + from + "\x00" + to) first 32 hex chars>
 
 ## 2.0 数据格式
 
-2.0 使用本地数据布局和 `data_hash` 契约，见[版本边界](../naming-and-compatibility.zh-CN.md)。2.1 沿用该格式，复用目录前须停止旧进程。替换 1.x 时须使用新目录；不提供 1.x 迁移，也不允许不同进程或版本同时写入。
+2.0 使用本地数据布局和 `data_hash` 契约，见[版本边界](../naming-and-compatibility.zh-CN.md)。2.3.0 沿用 2.0/2.1/2.2 的单机格式，复用目录前须停止旧进程；Raft 另有协议与目录角色要求。替换 1.x 时须使用新目录；不提供 1.x 迁移，也不允许不同进程或版本同时写入。

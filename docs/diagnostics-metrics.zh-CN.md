@@ -1,5 +1,7 @@
 # 诊断指标与采集
 
+适用于 **GGraphDB 2.3.0**；发行资格见[版本验证](validation-v2.3.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+
 单机 direct/WAL、单组 Raft、catalog、数据分片和 router 均提供本地诊断。数据库节点使用管理监听器 `GET /metrics`、`GET /v1/diagnostics`；兼容单监听器部署也保留入口。router 使用自身监听器上的同名路径，必须携带 `Authorization: Bearer <router token>`，只接受 GET。
 
 采集每个进程的私有地址，不能经过只选择 Leader 或 readiness 正常成员的负载均衡器。drain、quorum 丢失、catalog 不可达时仍能采集。指标采集不访问 Leader、请求读屏障、遍历持久化对象或获取共享应用屏障。磁盘检查使用文件系统状态调用；缓存仅遍历已受限的本地 leader/placement 缓存及当前 Raft 成员。

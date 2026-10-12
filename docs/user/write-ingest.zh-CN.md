@@ -1,5 +1,7 @@
 # 写入与采集
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](write-ingest.md)
 
 GGraphDB 有三条写入路径：

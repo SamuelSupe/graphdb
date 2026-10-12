@@ -1,5 +1,7 @@
 # GGraphDB 2.1.2 validation / 验证记录
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 Date: 2026-09-29. The annotated `v2.1.2` tag identifies the release; archives
 record its exact commit in `BUILD-METADATA.json` and binary `version` output.
 

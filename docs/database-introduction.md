@@ -1,5 +1,7 @@
 # GGraphDB Database Introduction
 
+Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+
 [中文](database-introduction.zh-CN.md)
 
 GGraphDB is a lightweight, general-purpose Go current-state property knowledge
@@ -12,6 +14,9 @@ SPARQL, ontology reasoning, or historical graph queries.
 
 ## Core capabilities
 
+- **Management console**: embedded English / Simplified Chinese UI with chart
+  overview, structured editors and server-side tenant ID search/paging at `/ui/`.
+  See the [console guide](management-ui.md) for connections and authorization.
 - **Graph data model**: use `Entity` for domain objects and directed `Edge`
   values for relationships such as dependencies, ownership, containment, or
   other application-defined links.
@@ -115,20 +120,29 @@ go run ./cmd/graphdb serve
 Create a tenant:
 
 ```sh
-go run ./cmd/graphdb create-tenant demo
+curl -fsS -X POST http://127.0.0.1:8080/v1/tenants \
+  -H 'Content-Type: application/json' -d '{"tenant_id":"demo"}'
 ```
 
 Write example data:
 
 ```sh
-go run ./cmd/graphdb commit demo examples/commit.json
+curl -fsS -X POST http://127.0.0.1:8080/v1/commits \
+  -H 'Content-Type: application/json' -H 'X-Tenant-ID: demo' \
+  -d @examples/commit.json
 ```
 
 Run a query:
 
 ```sh
-go run ./cmd/graphdb query demo examples/query-match.json
+curl -fsS -X POST http://127.0.0.1:8080/v1/query \
+  -H 'Content-Type: application/json' -H 'X-Tenant-ID: demo' \
+  -d @examples/query-match.json
 ```
+
+Use a second terminal for these HTTP calls while the server runs. Offline CLI
+commands need exclusive directory ownership and require stopping the service.
+Open `/ui/` on the management/combined listener for the bilingual console.
 
 Tenant-scoped HTTP requests require:
 
@@ -141,6 +155,8 @@ X-Tenant-ID: demo
 | Directory | Responsibility |
 | --- | --- |
 | `cmd/graphdb` | CLI commands and service startup |
+| `internal/adminui` | embedded bilingual management console |
+| `internal/ha`, `internal/replication`, `internal/sharding` | independent Raft replicas, catalogs, routing and tenant migration |
 | `internal/graph` | entities, relations, types, validation, reconciliation, and source governance |
 | `internal/query` | GraphQL adapter, query DSL, planning, execution, traversal, and streaming |
 | `internal/storage` | local file storage, manifests, commits, snapshots, indexes, and ingestion metadata |
@@ -151,7 +167,7 @@ X-Tenant-ID: demo
 ## Current boundaries
 
 - A single process owns each directory. Optional [Raft HA](raft-ha.zh-CN.md) defaults to three independent full replicas per group and one leader. [Tenant sharding](sharding.zh-CN.md) adds capacity through explicit whole-tenant migration; intra-tenant graph partitioning and cross-tenant transactions are unsupported.
-- Reuse a 2.0/2.1 directory after stopping the old process. Replacing 1.x requires a fresh directory; no 1.x migration or cross-major rollback is provided.
+- Reuse a 2.0/2.1/2.2 directory after stopping the old process. Replacing 1.x requires a fresh directory; no 1.x migration or cross-major rollback is provided.
 - A durable WAL `202` means acceptance, not a published graph version. WAL covers
   process failure with a recoverable volume; backups cover recovery to another disk.
 - Use `min_version` for read-after-write consistency and `allow_stale` only when

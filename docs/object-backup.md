@@ -1,5 +1,7 @@
 # Object-storage snapshots and on-demand restore
 
+Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+
 This guide covers the current 2.x backup features. Version 2.1 adds optional
 automation while retaining the 2.0 snapshot format. There is no 1.x backup
 migration; keep older backups separate.

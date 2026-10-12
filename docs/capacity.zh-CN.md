@@ -1,5 +1,7 @@
 # 本地磁盘容量与测量
 
+适用于 **GGraphDB 2.3.0**；发行资格见[版本验证](validation-v2.3.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+
 [English](capacity.md)
 
 本版采用单进程、多客户端、多租户并发。容量取决于内存、本地磁盘延迟、字段

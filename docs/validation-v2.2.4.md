@@ -1,5 +1,7 @@
 # GGraphDB 2.2.4 发布验证 / Release validation
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 ## 中文
 
 [v2.2.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.2.4) 已于 2026-10-04T15:13:52Z 发布为 GitHub 的稳定 Latest。标签和发行程序固定在提交 `043d082cf8a73032c702d7c6c3d7676ee3f6d7dc`，Go 1.26.7；后续说明更新不重写标签或资产。同一程序继续支持单机 direct/WAL、单组 Raft 与租户分片。

@@ -1,5 +1,7 @@
 # API Map
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](api-map.md)
 
 这是面向用户的 endpoint 速查表，详细 schema 见

@@ -21,9 +21,10 @@ ID 注册表／集群目录仍整体读取，本次优化不表示注册表可�
 [滚动资格窗口](https://github.com/SamuelSupe/graphdb/blob/v2.3.0/docs/raft-rolling-upgrade.zh-CN.md)。
 协议激活和混部限制仍适用，不提供 1.x 迁移或任意版本降级保证。
 
-发行需要通过确切标签的全量 unit/vet/race、SDK、direct/WAL、S3、TLS 网关、Raft、
-已发布 2.2.4 到本版的协议 1 滚动和两个三十分钟维护长测。门禁证据在压缩包的 `release/evidence/`，
-后续发布及下载验证状态见 [2.3.0 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.0.md)。
+本版已发布为稳定 Latest，确切标签的全量 unit/vet/race、SDK、direct/WAL、S3、TLS 网关、Raft、
+已发布 2.2.4 到本版的协议 1 滚动和两个三十分钟维护长测全部通过，无门禁豁免。
+下载包、包内二进制及标签源码核验通过。门禁证据在压缩包的 `release/evidence/`，
+发布与下载验证见 [2.3.0 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.0.md)。
 本机 Chrome 已验证双语、390px 和一万租户样本。浏览器局部性能收益不代表数据库吞吐收益；
 跨宿主机、天级稳定性和生产容量仍未认证。历史失败记录不因本版发行而变为通过。
 
@@ -49,10 +50,12 @@ list requests/hidden query rendering are avoided. Obsolete source helpers and CI
 jobs are removed. Parquet/WAL formats, Raft protocols, majority and fsync contracts
 remain unchanged. SDK/OpenAPI are 2.3.0; module `/v2` and HTTP `/v1` remain unchanged.
 
-Publication requires exact-tag unit/vet/race, SDK, standalone direct/WAL, S3, TLS
-gateway, Raft, protocol-1 rolling from published v2.2.4 and two 30-minute maintenance soak gates. Evidence is packaged
-under `release/evidence/`; the main validation record reports publication/download
-results. Native Chrome checks cover both languages, 390px and 10,000 fixture tenants.
+The stable Latest release passed exact-tag unit/vet/race, SDK, standalone direct/WAL,
+S3, TLS gateway, Raft, protocol-1 rolling from published v2.2.4 and two 30-minute
+maintenance soak gates without a waiver. Downloaded archives, binaries and tagged
+source files were verified. Evidence is packaged under `release/evidence/`; the
+main validation record reports publication/download results. Native Chrome checks
+cover both languages, 390px and 10,000 fixture tenants.
 Frontend measurements do not establish database throughput, production capacity,
 cross-host or day-scale reliability. Earlier failures remain recorded.
 

@@ -1,5 +1,7 @@
 # Tenant And Config
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](tenant-config.zh-CN.md)
 
 Tenant lifecycle APIs are not tenant-header scoped. Data APIs remain scoped by
@@ -25,6 +27,26 @@ List:
 curl -sS "$WRITER/v1/tenants"
 curl -sS "$WRITER/v1/tenants?include_legacy=true"
 ```
+
+For large registries, request a bounded page and search tenant IDs:
+
+```sh
+curl -sS "$WRITER/v1/tenants?limit=25&q=team"
+curl -sS --get "$WRITER/v1/tenants" \
+  --data-urlencode 'limit=25' --data-urlencode 'q=team' \
+  --data-urlencode 'cursor=team-025'
+```
+
+The response contains `tenants`, the matching `total`, and `next_cursor` only
+when another page exists. Use the returned cursor, keeping the same query;
+`team-025` above is illustrative. Limits are 1–200; supplying only `q` or
+`cursor` defaults to 50. Search is a case-insensitive ID substring match, not
+a name search. Pages read live data rather than one isolated snapshot.
+Unpaged requests retain the original full-list response. `include_legacy=true`
+scans storage prefixes and should be enabled only for explicit discovery.
+The registry IDs still load in full; only page metadata/manifest reads are bounded.
+The [console](../management-ui.md#large-tenant-registries) and
+[SDKs](sdk.md#tenant-pages) use this API.
 
 Get:
 

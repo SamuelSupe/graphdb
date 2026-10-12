@@ -1,5 +1,7 @@
 # GGraphDB User Guide
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](README.zh-CN.md)
 
 This guide is for service owners, ingest-client authors, and operators using
@@ -9,6 +11,7 @@ entity-relationship applications.
 
 ## What GGraphDB provides
 
+- Embedded bilingual [management console](../management-ui.md) with charts, structured editors and tenant paging.
 - Multi-tenant graph data isolated by `X-Tenant-ID`.
 - Schemaless entities with optional type definitions, including CI types for
   CMDB-style modeling.
@@ -17,7 +20,7 @@ entity-relationship applications.
 - Parquet manifests, commits, snapshots, entity pages, edge shards and indexes
   persist on local disk. Direct ingest and synchronous WAL are supported.
 - Optional S3-compatible snapshots and on-demand restore; internal scheduling/retries/retention and restore drills apply to standalone. Raft uses external scheduling through the cluster backup API.
-- The `data_hash` digest contract and 2.0/2.1-compatible directories; no 1.x migration.
+- The `data_hash` digest contract and 2.0/2.1/2.2-compatible standalone directories; no 1.x migration.
 - GraphQL, JSON Query DSL, scan/export APIs, saved queries, and running-query
   control.
 - Optional source-priority governance for entity fields, edge fields, and edge

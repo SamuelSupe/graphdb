@@ -1,5 +1,7 @@
 # Raft 写入性能优化
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 日期：2026-10-01（Asia/Singapore）。基于 `b4d5b0f3`，分支 `codex/raft-ha`，独立 worktree `GraphDB-raft-ha`。默认单机、单组 Raft 和租户分片部署继续共存。
 
 ## 改动与持久化边界

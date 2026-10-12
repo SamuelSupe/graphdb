@@ -4,7 +4,7 @@ Keep changes small, tenant-safe, and compatible with the published object
 layout. Do not commit generated graph state, credentials, capacity runs, or
 customer data.
 
-`main` ships GGraphDB 2.x: one process owns local disk; object storage holds
+`main` documents the published GGraphDB 2.3.0 release: one process owns local disk; object storage holds
 snapshot backups. Optional Raft uses independent replica directories and tenant-sharded
 groups; its protocol and upgrade contracts are separate. The release version is recorded in `VERSION`; HTTP `/v1`, the
 Go module `/v2`, and the persisted format are separate version identifiers.
@@ -42,7 +42,8 @@ GRAPHDB_GATE_SOAK=1 RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
 See [local disk validation](docs/local-disk.md) for the reproducible performance
 comparison. Historical release evidence does not certify a new candidate.
 The [release checklist](docs/release-checklist.md) distinguishes default gates
-from the documented 2.1.2 endurance-test waiver; skipped checks are not passes.
+from the historical 2.1.2 endurance-test waiver; 2.3.0 passed without a waiver,
+and skipped checks are not passes.
 
 Update OpenAPI, SDK types, error codes, both English and Chinese user
 documentation, and `CHANGELOG.md` when the public contract changes. A new

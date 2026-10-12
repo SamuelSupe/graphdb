@@ -1,5 +1,7 @@
 # 扫描与导出
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](scan-export.md)
 
 Scan/export API 在不经过查询 planner 的情况下返回当前状态，适合运维、

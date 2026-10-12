@@ -4,7 +4,13 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
-## Current documented exception
+## Current release qualification
+
+[2.3.0](validation-v2.3.0.md) passed every exact-tag gate and downloaded-asset
+verification with no waiver. The immutable tag and packaged evidence identify the
+qualified binary; later documentation commits do not rebuild or replace it.
+
+## Historical 2.1.2 exception
 
 For [2.1.2](validation-v2.1.2.md), the release owner explicitly requested stopping
 the 30-minute workload and publishing after the other checks. That run is
@@ -21,7 +27,7 @@ The 2.1.2 capacity envelope remains `performance_unqualified`.
 - [ ] Standalone accepts local storage, local coordination, and `all`; complete Raft configuration enables the separate replicated path.
 - [ ] The data directory is exclusively locked; clean exit and process death permit reopening.
 - [ ] PostgreSQL-marked data is rejected without automatic takeover.
-- [ ] The local Parquet/WAL format introduced in 2.0, `data_hash` and matching SDKs pass; existing 2.0/2.1 directory reuse is documented.
+- [ ] The local Parquet/WAL format introduced in 2.0, `data_hash` and matching SDKs pass; existing 2.0/2.1/2.2 directory reuse is documented.
 - [ ] `expected_version`, `min_version`, cursors, idempotency, and WAL state contracts pass.
 - [ ] File/parent-directory sync and publication failures preserve a readable committed head.
 - [ ] Restore/delete wait for active read views; GC defers pinned files without excluding new reads, including shared loads after HTTP cancellation.

@@ -12,6 +12,14 @@ Published as stable Latest, with every exact-tag gate passing and no waiver.
 The release source is the commit above. This post-publication main record does
 not rewrite the tag or the pre-publication record embedded in the archive.
 
+发行后的文档／官网提交 `692ac94009ed971eccef74f5ffa0c10a63ef3e33` 的
+[CI](https://github.com/SamuelSupe/graphdb/actions/runs/38123988348) 和
+[Pages 构建／部署](https://github.com/SamuelSupe/graphdb/actions/runs/38123988172)
+共 8 项检查全部成功。官网已显示 2.3.0；此文档提交不替换发行二进制或标签。
+
+The post-publication documentation/site commit passed all eight CI and Pages
+checks. The live website shows 2.3.0; release binaries and the tag remain unchanged.
+
 ## GitHub 发行门禁 / Exact-tag qualification
 
 | 范围 / Scope | 结果 / Result |

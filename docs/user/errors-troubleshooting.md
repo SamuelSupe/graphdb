@@ -1,5 +1,7 @@
 # Errors And Troubleshooting
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](errors-troubleshooting.zh-CN.md)
 
 ## Error Envelope

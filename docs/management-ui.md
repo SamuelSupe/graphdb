@@ -2,7 +2,7 @@
 
 [简体中文](management-ui.zh-CN.md)
 
-The current source embeds an English / Simplified Chinese console in the Go binary.
+The published 2.3.0 release embeds an English / Simplified Chinese console in the Go binary.
 No Node, npm, frontend build or separate UI service is required at runtime.
 Previously released 2.2.4 binaries do not contain this addition.
 

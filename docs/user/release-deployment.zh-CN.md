@@ -1,8 +1,8 @@
-# GGraphDB 2.x：release-deployment
+# GGraphDB 2.3.0 发行版部署
 
 [English](release-deployment.md)
 
-默认部署使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1
+默认部署使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1/2.2
 目录可在停止旧进程后沿用。版本与兼容性见[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 本版还支持可选的单组 Raft 和按租户分片的 Raft，每个副本使用独立本地目录。
@@ -24,7 +24,7 @@ docker compose up -d --build
 
 ## 发行包
 
-从 [2.3 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0) 下载压缩包和校验和，
+从 [2.3.0 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0) 下载压缩包和校验和，
 校验压缩包及内部二进制后启动：
 
 ```sh
@@ -42,7 +42,7 @@ ARM Linux 使用 `graphdb-linux-arm64`，Apple Silicon 使用 `graphdb-darwin-ar
 
 ## 从 2.0 升级
 
-从单机 2.0/2.1/2.2 升级到 2.3.0 也使用以下步骤。
+从单机 2.0/2.1/2.2/2.2 升级到 2.3.0 也使用以下步骤。
 
 先创建并验证快照，停止旧进程，再替换二进制，使用相同的 `GRAPHDB_DATA_DIR` 和 prefix 启动
 2.3.0。数据格式兼容，目录仍为进程独占，不能同时运行两个版本。恢复流量前检查 readiness、

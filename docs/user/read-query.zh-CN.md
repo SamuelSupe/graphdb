@@ -1,5 +1,7 @@
 # 读取与查询
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](read-query.md)
 
 查询 API 用于图遍历和过滤读取；运维抽取使用 scan/export API，详见

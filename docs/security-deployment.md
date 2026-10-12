@@ -1,5 +1,7 @@
 # Production Security Boundary
 
+Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+
 [中文](security-deployment.zh-CN.md)
 
 The embedded [management console](management-ui.md) is served at `/ui/` on the

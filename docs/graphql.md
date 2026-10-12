@@ -1,5 +1,7 @@
 # GraphQL API
 
+Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+
 [中文](graphql.zh-CN.md)
 
 GGraphDB exposes GraphQL at `POST /v1/query/graphql`. The endpoint accepts

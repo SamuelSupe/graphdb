@@ -1,5 +1,7 @@
 # Data Model
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](data-model.zh-CN.md)
 
 GGraphDB stores one current-state property knowledge graph per tenant. It does
@@ -205,4 +207,4 @@ If a write is logically identical to the current graph, GGraphDB returns
 
 ## 2.0 Data Format
 
-2.0 uses the local data layout and the `data_hash` contract described in [version boundaries](../naming-and-compatibility.md). Version 2.1 reuses this format after the old process stops. A new directory is required when replacing 1.x; migration and concurrent writers from different processes/versions are unsupported.
+2.0 uses the local data layout and the `data_hash` contract described in [version boundaries](../naming-and-compatibility.md). Version 2.3.0 retains the 2.0/2.1/2.2 standalone format after the old process stops; Raft has separate protocol and directory-role requirements. A new directory is required when replacing 1.x; migration and concurrent writers from different processes/versions are unsupported.

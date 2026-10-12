@@ -181,5 +181,19 @@
     "count": 2,
     "unchanged_go_1_26_7_rerun": "PASS",
     "root_cause": "UNPROVEN"
+  },
+  "post_publication_docs_ci": {
+    "source_commit": "692ac94009ed971eccef74f5ffa0c10a63ef3e33",
+    "run_id": 38123988348,
+    "status": "PASS",
+    "first_attempt": true,
+    "jobs_passed": 6
+  },
+  "post_publication_pages": {
+    "run_id": 38123988172,
+    "status": "PASS",
+    "jobs_passed": 2,
+    "live_version": "2.3.0",
+    "url": "https://samuelsupe.github.io/graphdb/"
   }
 }

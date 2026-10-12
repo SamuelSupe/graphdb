@@ -1,5 +1,7 @@
 # GGraphDB 使用手册
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](usage-manual.md)
 
 本文档给出从创建租户、写入通用图数据到查询和维护的最短操作路径；其中的

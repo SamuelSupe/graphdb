@@ -1,5 +1,7 @@
 # 任务与维护
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](tasks-maintenance.md)
 
 长时间运行的操作统一使用 task 模型。

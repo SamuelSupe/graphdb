@@ -1,5 +1,7 @@
 # Raft 可用性缺陷修复与验证（2026-10-04）
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 修复三处具体可用性缺陷，最终候选三十分钟 Raft 维护负载结果 **PASS**。单机、Raft 和分片继续共同支持。本轮修改属于 `codex/raft-ha` 未发布工作树，没有提交、推送或发布。机器可读证据见 [JSON](raft-availability-fixes-2026-10-04.json)。
 
 ## 修复与保护边界

@@ -1,4 +1,4 @@
-# GGraphDB 2.x: release-deployment
+# GGraphDB 2.3.0 Release Deployment
 
 [中文](release-deployment.zh-CN.md)
 
@@ -28,7 +28,7 @@ Stop the service before using offline tools on its directory. Use HTTP for live 
 
 ## Release archive
 
-Download the archive and checksum from the [2.3 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0).
+Download the archive and checksum from the [2.3.0 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0).
 Verify the outer archive and inner `SHA256SUMS`, then choose the binary for your platform:
 
 ```sh

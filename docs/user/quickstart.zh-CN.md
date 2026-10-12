@@ -1,8 +1,10 @@
 # GGraphDB 2.x：quickstart
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](quickstart.md)
 
-默认部署使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1
+默认部署使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1/2.2
 目录可在停止旧进程后沿用。版本与兼容性见[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 同一发行程序支持独立副本目录的 [Raft](../raft-ha.zh-CN.md) 和[租户分片](../sharding.zh-CN.md)。集群管理与升级见 [Raft 运维手册](../raft-operations.zh-CN.md)；以下示例启动默认单机。
@@ -18,3 +20,8 @@ docker compose up -d --build
 ```
 
 停止服务后才能对同一目录执行离线 CLI。在线操作使用 HTTP API。
+
+## 管理控制台
+
+服务启动后，在合并或管理监听器打开 `/ui/`。控制台支持中英文切换、租户搜索／分页、
+数据浏览、查询、模型和运维。分离监听器时使用管理端口，见[控制台连接与授权](../management-ui.zh-CN.md#连接与授权)。

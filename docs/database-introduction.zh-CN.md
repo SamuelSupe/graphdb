@@ -1,5 +1,7 @@
 # GGraphDB 数据库简介
 
+适用于 **GGraphDB 2.3.0**；发行资格见[版本验证](validation-v2.3.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+
 [English](database-introduction.md)
 
 GGraphDB 是一个使用 Go 编写的轻量级通用当前态属性知识图谱，面向实体关系
@@ -9,6 +11,8 @@ GGraphDB 是一个使用 Go 编写的轻量级通用当前态属性知识图谱�
 
 ## 核心特点
 
+- **管理控制台**：Go 程序内嵌中英文 UI，提供图表概览、结构化编辑及服务端租户 ID 搜索／分页。
+  在管理或合并监听器打开 `/ui/`，连接与授权见[控制台指南](management-ui.zh-CN.md)。
 - **图数据模型**：以 `Entity` 表示领域对象，以有向 `Edge` 表示关系，关系类型和字段由应用定义。
 - **多租户隔离**：每个租户使用独立的数据前缀，数据 API 通过 `X-Tenant-ID` 选择租户。
 - **灵活的数据结构**：实体字段可保持无模式，也可使用可选 `EntityType`
@@ -97,20 +101,28 @@ go run ./cmd/graphdb serve
 创建租户：
 
 ```sh
-go run ./cmd/graphdb create-tenant demo
+curl -fsS -X POST http://127.0.0.1:8080/v1/tenants \
+  -H 'Content-Type: application/json' -d '{"tenant_id":"demo"}'
 ```
 
 写入示例数据：
 
 ```sh
-go run ./cmd/graphdb commit demo examples/commit.json
+curl -fsS -X POST http://127.0.0.1:8080/v1/commits \
+  -H 'Content-Type: application/json' -H 'X-Tenant-ID: demo' \
+  -d @examples/commit.json
 ```
 
 执行查询：
 
 ```sh
-go run ./cmd/graphdb query demo examples/query-match.json
+curl -fsS -X POST http://127.0.0.1:8080/v1/query \
+  -H 'Content-Type: application/json' -H 'X-Tenant-ID: demo' \
+  -d @examples/query-match.json
 ```
+
+服务运行时，在另一个终端执行上述 HTTP 请求。离线 CLI 必须独占目录，需先停止服务。
+在合并或管理监听器打开 `/ui/` 即可使用中英文控制台。
 
 HTTP API 的租户级请求需要携带：
 
@@ -123,6 +135,8 @@ X-Tenant-ID: demo
 | 目录 | 职责 |
 | --- | --- |
 | `cmd/graphdb` | CLI 命令和服务启动入口 |
+| `internal/adminui` | 内嵌中英文管理控制台 |
+| `internal/ha`、`internal/replication`、`internal/sharding` | 独立 Raft 副本、目录组、路由与租户迁移 |
 | `internal/graph` | 实体、关系、类型、校验、合并和来源治理 |
 | `internal/query` | GraphQL adapter、查询 DSL、规划、执行、遍历和流式查询 |
 | `internal/storage` | 本地文件存储、manifest、commit、快照、索引和采集元数据 |
@@ -133,7 +147,7 @@ X-Tenant-ID: demo
 ## 当前边界
 
 - 每个目录由一个进程独占。可选 [Raft 高可用](raft-ha.zh-CN.md) 默认每组使用三个独立完整副本和一个 Leader。[租户分片](sharding.zh-CN.md) 通过显式迁移完整租户扩容；不支持租户内部图分区或跨租户事务。
-- 已有 2.0/2.1 目录可在停止旧进程后沿用；替换 1.x 须使用新目录，不提供 1.x 迁移或跨主版本回滚。
+- 已有 2.0/2.1/2.2 目录可在停止旧进程后沿用；替换 1.x 须使用新目录，不提供 1.x 迁移或跨主版本回滚。
 - 同步 WAL 的 durable `202` 表示已受理，不代表版本已发布。WAL 覆盖磁盘可恢复的进程故障，备份支持恢复到另一块磁盘。
 - 使用 `min_version` 保证写后读，只有业务允许旧读时才开启 `allow_stale`。
 - 数据 API 的租户选择依赖 `X-Tenant-ID`；实际部署时应由网关或上游系统提供认证与授权。

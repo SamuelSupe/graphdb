@@ -1,5 +1,7 @@
 # Raft 空事务优化与性能验证
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 日期：2026-10-01（Asia/Singapore）。分支：`codex/raft-ha`，独立 worktree：`GraphDB-raft-ha`。本次优化基于已实现分片扩容的 `984cb692`，保留默认单机、单组 Raft 和目录组加数据组的分片部署。
 
 ## 改动及一致性边界

@@ -1,5 +1,7 @@
 # Write And Ingest
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](write-ingest.zh-CN.md)
 
 GGraphDB has three write paths:

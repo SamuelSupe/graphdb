@@ -1,4 +1,4 @@
-# GGraphDB 2.3
+# GGraphDB 2.3.0
 
 [简体中文](README.zh-CN.md)
 

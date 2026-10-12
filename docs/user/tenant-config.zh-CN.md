@@ -1,5 +1,7 @@
 # 租户与配置
 
+适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+
 [English](tenant-config.md)
 
 租户生命周期 API 不受租户 header 限制；数据 API 仍通过 `X-Tenant-ID`
@@ -25,6 +27,24 @@ curl -sS -X POST "$WRITER/v1/tenants" \
 curl -sS "$WRITER/v1/tenants"
 curl -sS "$WRITER/v1/tenants?include_legacy=true"
 ```
+
+大量租户使用有界分页和租户 ID 搜索：
+
+```sh
+curl -sS "$WRITER/v1/tenants?limit=25&q=team"
+curl -sS --get "$WRITER/v1/tenants" \
+  --data-urlencode 'limit=25' --data-urlencode 'q=team' \
+  --data-urlencode 'cursor=team-025'
+```
+
+响应包含 `tenants`、匹配的 `total`，存在后续页时才包含 `next_cursor`。
+下一页使用响应中的游标并保持原搜索条件；上面的 `team-025` 仅为示例。
+`limit` 范围为 1–200；只传 `q` 或 `cursor` 时默认 50。搜索按 ID 子串匹配、
+不区分大小写，不匹配名称。分页读取实时数据，不提供同一快照的隔离。
+不传分页参数仍返回原有全量列表。`include_legacy=true` 会扫描存储前缀，
+只在需要显式发现历史租户时启用。注册表 ID 仍整体读取，仅当前页的元数据和
+manifest 读取量受限。[控制台](../management-ui.zh-CN.md#大量租户)和
+[SDK](sdk.zh-CN.md#租户分页)使用此接口。
 
 查看：
 

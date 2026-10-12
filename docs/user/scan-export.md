@@ -1,5 +1,7 @@
 # Scan And Export
 
+Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+
 [中文](scan-export.zh-CN.md)
 
 Scan/export APIs return current state without the query planner. Use them for

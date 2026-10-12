@@ -1,5 +1,7 @@
 # GGraphDB Python SDK
 
+Version **2.3.0**, matching the [published server release](../../docs/validation-v2.3.0.md).
+
 Install locally:
 
 ```sh
@@ -19,4 +21,4 @@ result = client.commit({
 }, idempotency_key="batch-001")
 ```
 
-See [../../docs/user/sdk.md](../../docs/user/sdk.md) for the full user guide.
+See [SDK user guide](../../docs/user/sdk.md) for the full user guide.

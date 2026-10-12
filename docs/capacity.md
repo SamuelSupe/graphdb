@@ -1,5 +1,7 @@
 # Local disk capacity and measurement
 
+Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+
 [中文](capacity.zh-CN.md)
 
 This edition runs one process with concurrent clients and tenants. Memory,

@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current source version is **2.3.0**; see its [publication status](validation-v2.3.0.md). GGraphDB runs one process
+The current stable release is **2.3.0**; see its [publication and verification](validation-v2.3.0.md). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -19,8 +19,6 @@ modes and shared network filesystems are unsupported.
 | Persisted Parquet/WAL and snapshot format | Standalone retains 2.0/2.1; Raft has separate protocol and directory-role markers |
 
 Import the Go SDK from `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`.
-Existing extension directory names such as `extensions/v1.1/` are layout
-identifiers, not product versions or a cross-major compatibility promise.
 Security support is described in [SECURITY.md](../SECURITY.md).
 
 ## Installation and upgrades

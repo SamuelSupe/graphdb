@@ -1,5 +1,7 @@
 # 旧文本查询 DSL（1.0 兼容入口）
 
+适用于 **GGraphDB 2.3.0**；发行资格见[版本验证](validation-v2.3.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+
 1.0 文档曾把这套 `FIND`/`MATCH` 语法称为 `GQL`。GGraphDB 1.1 不再把
 这个名称作为产品查询语言名称：它不是 GraphQL，也不是 ISO GQL。该入口仅为
 1.0 客户端兼容而保留，并编译成现有 JSON Query DSL，继续走同一套 planner、

@@ -1,5 +1,7 @@
 # 生产安全边界
 
+适用于 **GGraphDB 2.3.0**；发行资格见[版本验证](validation-v2.3.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+
 [English](security-deployment.md)
 
 内嵌[管理控制台](management-ui.zh-CN.md)位于管理／合并监听器的 `/ui/`。

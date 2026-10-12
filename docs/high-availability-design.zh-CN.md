@@ -1,5 +1,7 @@
 # GraphDB 高可用版本设计方案
 
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+
 - 状态：设计基线。2026-10-01 已在独立 `codex/raft-ha` 分支实现首版，保留单机并支持单组与分片 Raft；运行范围见 [单组说明](raft-ha.zh-CN.md) 和 [分片说明](sharding.zh-CN.md)，验证状态见 [单组验收](raft-ha-validation.zh-CN.md) 和 [分片验收](sharding-validation.zh-CN.md)。
 - 日期：2026-09-28。
 - 基础版本：GraphDB 2.0 本地盘版。

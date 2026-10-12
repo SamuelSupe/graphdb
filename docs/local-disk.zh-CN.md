@@ -1,5 +1,7 @@
 # GGraphDB 2.x 本地磁盘运行指南
 
+适用于 **GGraphDB 2.3.0**；发行资格见[版本验证](validation-v2.3.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+
 默认单机部署采用单进程、多租户并发读写。`GRAPHDB_DATA_DIR` 保存图数据、控制元数据、后台任务
 及本地备份，运行时无需 PostgreSQL 或远端在线存储。可选的
 [对象存储快照备份](object-backup.zh-CN.md) 用于本地磁盘丢失后的恢复。
@@ -27,7 +29,7 @@
 也不能在运行中从外部修改数据文件。目录锁覆盖服务和离线 CLI；在线管理使用 HTTP API。
 第二个进程立即失败，进程异常退出后操作系统自动释放锁。
 
-[尚未发布的完整恢复保护](product-p0-p1-review5-2026-10-03.zh-CN.md)还锁定独立 WAL/Raft 目录，避免在 data 目录空闲时备份活动日志或在恢复续跑时替换它。完整运行状态命令及嵌套目录限制见[产品运维](product-operations.zh-CN.md#完整运行状态灾备)。锁文件保留原 inode，不能手工删除来解除占用。
+[2.3.0 已包含的完整恢复保护](product-p0-p1-review5-2026-10-03.zh-CN.md)还锁定独立 WAL/Raft 目录，避免在 data 目录空闲时备份活动日志或在恢复续跑时替换它。完整运行状态命令及嵌套目录限制见[产品运维](product-operations.zh-CN.md#完整运行状态灾备)。锁文件保留原 inode，不能手工删除来解除占用。
 
 ## 持久化和读取
 
@@ -121,7 +123,7 @@ WAL 绑定的租户代次保存在租户目录之外，并在清空或恢复时�
 
 ## 验证与性能
 
-当前发行范围见 [2.2 验证记录](validation-v2.2.2.md)，具体二进制资格以完整发行流程与包内证据为准。[2.1.2 验证记录](validation-v2.1.2.md) 和[写入长尾报告](performance-write-tail.md) 属于旧版；该历史版本的 30 分钟负载提前停止，不计为通过，也不豁免当前发行门禁。
+当前发行范围见 [2.3.0 验证记录](validation-v2.3.0.md)，具体二进制资格以完整发行流程与包内证据为准。[2.1.2 验证记录](validation-v2.1.2.md) 和[写入长尾报告](performance-write-tail.md) 属于旧版；该历史版本的 30 分钟负载提前停止，不计为通过，也不豁免当前发行门禁。
 [2.0 验证报告](performance-v2.0.md)及以下旧版报告仅作历史参考。
 
 日常优化先运行代表性单轮对比，出现明确退化后才定向复测。已有工具
@@ -199,4 +201,4 @@ GC 每批至多访问 512 个候选，在对象之间检查 50 ms / 16 MiB 预�
 `graphdb_maintenance_phase_seconds` 区分等待、构建、持锁和同步；
 `graphdb_maintenance_estimated_bytes` 显示执行和排队预留，不表示实测 RSS。
 
-详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](validation-v2.2.2.md)。
+详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](validation-v2.3.0.md)。
