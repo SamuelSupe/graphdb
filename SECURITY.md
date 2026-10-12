@@ -8,7 +8,7 @@
 | 1.x / local prereleases | Superseded by 2.x; no migration support |
 | Older | No |
 
-The current stable release is [2.3.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0).
+The current stable release is [2.3.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.1).
 Security fixes are delivered in the current 2.x release line; separate patch
 backports to each older minor version are not promised. Current version and data
 compatibility are documented in [version boundaries](docs/naming-and-compatibility.md).

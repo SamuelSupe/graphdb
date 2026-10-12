@@ -1,6 +1,6 @@
 # 产品 P0/P1 后续审核与修复
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 本轮审核基于独立工作树 `codex/raft-ha` 的 `dbafd81c63897726207f7e7ac86ce7d2c1ed33b2`，包含上一轮尚未发布的修复。覆盖单机 direct/WAL、Raft 复制、持久化图加载、孤儿提交恢复、备份恢复和分片迁移边界。未复现新增 P0，复现并修复三项 P1；本轮不是新版本发布。
 

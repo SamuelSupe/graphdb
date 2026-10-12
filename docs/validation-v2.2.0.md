@@ -1,6 +1,6 @@
 # GGraphDB 2.2.0 验证范围 / Validation scope
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 **未发布的发行候选。** `v2.2.0` 标签保留，但[发行门禁](https://github.com/SamuelSupe/graphdb/actions/runs/37038030855) 检出测试处理器替换的数据竞争和 GC 用例的完成超时，未发布正式下载包。本文件保留候选与失败记录；后续发行范围见 [2.2.2 验证说明](validation-v2.2.2.md)。
 

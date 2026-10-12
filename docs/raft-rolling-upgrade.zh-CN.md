@@ -8,10 +8,12 @@ Leader 切换、连接关闭或健康检查传播期间，单次请求仍可能�
 
 ## 兼容窗口
 
-2.3.1 候选的标签门禁验证 **已发布 v2.3.0 → v2.3.1，协议 1**。
-门禁完成与下载身份绑定前，该窗口保持 PENDING，见[2.3.1 验证](validation-v2.3.1.md)。
+当前发行已核验 **已发布 v2.3.0 → v2.3.1，协议 1**。标签门禁 PASS，
+来源 `18ee1a1574decd40cb0d82841406230b4e9d695d04ebbf94525e64d0dd4e0307`、
+目标 `d1c4c09654fe52d359075ff109d7c59eea746845c84b673ab27f7805b64e837c` 分别与独立下载的发行包绑定，
+见[2.3.1 验证](validation-v2.3.1.md)。协议 2/3 激活仍是全组升级后的独立操作。
 
-最近已发布发行的核验滚动窗口为已发布 **v2.2.4 → v2.3.0，协议 1**。
+此前发行的核验滚动窗口为已发布 **v2.2.4 → v2.3.0，协议 1**。
 来源二进制 SHA256 为 `224df57d837aa6cd475881681c286bfae1c2670da245c24a5399820ec22fb86a`，
 目标为 `18ee1a1574decd40cb0d82841406230b4e9d695d04ebbf94525e64d0dd4e0307`。
 两者分别与下载发布包绑定，详见[2.3.0 验证](validation-v2.3.0.md)。下表较早的候选窗口保留其历史身份，
@@ -27,6 +29,7 @@ Leader 切换、连接关闭或健康检查传播期间，单次请求仍可能�
 | 诊断开发基线 `b22cac8b046a695f14e7d02909d6570f546e989a` 的发行门禁构建 | `v2.2.2` 发行二进制 | 协议 1；以包内 `release/evidence/raft-gate/rolling/metadata.json` 的 PASS 与来源/目标 SHA256 为准，发行流水线同时核对目标与下载包二进制一致 |
 | 完整性开发提交 `5fd0c9704ca573b902c66eaa1cbbffd2dc8c9b4a` 的发行门禁构建 | `v2.2.4` 发行二进制 | 协议 1；资格以本版包内滚动 metadata 的 PASS 和两端 SHA256 为准。来源不是已发布的 v2.2.2；受来源身份修复影响的数据组不能与旧解释程序混部 |
 | 已发布 `v2.2.4`（`043d082cf8a73032c702d7c6c3d7676ee3f6d7dc`） | 已发布 `v2.3.0` | 协议 1；确切标签门禁 PASS，包内 `release/evidence/raft-gate/rolling/metadata.json` 两端 SHA256 已与各自下载发布包核对一致，见 [2.3.0 验证记录](validation-v2.3.0.md)。协议 2/3 需全组升级后独立激活 |
+| 已发布 `v2.3.0`（`91ffe5033e58d49ca38ef9dbb40efd414264538e`） | 已发布 `v2.3.1` | 协议 1；标签门禁与两端下载二进制摘要核验 PASS，见[2.3.1 验证](validation-v2.3.1.md) |
 | 本轮来源身份修复候选 | 旧解释程序与修复候选互换 | 含受影响多来源身份的数据组不允许混部；本候选尚未做双版本资格验证，见[后续审核](product-p0-p1-review2-2026-10-03.zh-CN.md) |
 | 未做双版本验收的未来补丁 | 任意版本 | 尚未资格验证 |
 | 更早的 Raft 程序、协议不同的版本 | 本轮或未来版本 | 不套用此流程，保持相应版本的维护或迁移要求 |
@@ -97,17 +100,17 @@ python3 scripts/raft_rolling_upgrade.py --inventory upgrade.json --execute \
 
 ## 验收入口
 
-当前窗口的标签门禁、来源／目标身份及下载绑定见[2.3.0 验证](validation-v2.3.0.md)。历史首次桥接窗口见[滚动验收报告](raft-rolling-validation-2026-10-02.zh-CN.md)；历史诊断候选至隔离候选见[故障隔离与迁移验收](raft-isolation-validation-2026-10-02.zh-CN.md)。
+当前窗口的标签门禁、来源／目标身份及下载绑定见[2.3.1 验证](validation-v2.3.1.md)。历史首次桥接窗口见[滚动验收报告](raft-rolling-validation-2026-10-02.zh-CN.md)；历史诊断候选至隔离候选见[故障隔离与迁移验收](raft-isolation-validation-2026-10-02.zh-CN.md)。
 
 [`scripts/raft_rolling_gate.py`](../scripts/raft_rolling_gate.py) 绑定真实来源二进制，验收两个不同二进制的混部、换主、旧程序安装新版快照、导入任务、单组与分片持续读写、关闭 legacy 窗口以及严格模式协调脚本。负载按原幂等身份重试，记录尝试次数、重试和最终失败；每个副本轮流成为 Leader 后核对自己的强一致导出。临时独立项目和卷结束后清理。
 
 ```sh
 export GRAPHDB_ROLLING_BASE_IMAGE='<已核验的 v2.3.0 镜像>'
-export GRAPHDB_ROLLING_TARGET_IMAGE='<v2.3.1 候选镜像>'
+export GRAPHDB_ROLLING_TARGET_IMAGE='<已核验的 v2.3.1 镜像>'
 export GRAPHDB_ROLLING_BASE_COMMIT=91ffe5033e58d49ca38ef9dbb40efd414264538e
 export GRAPHDB_ROLLING_BASE_SHA256='<来源镜像内二进制 SHA256>'
 export GRAPHDB_ROLLING_TARGET_VERSION=v2.3.1
-export GRAPHDB_ROLLING_TARGET_COMMIT='<候选的完整提交>'
+export GRAPHDB_ROLLING_TARGET_COMMIT='8512db095030dcff86a154df3082e582f99a3937'
 export GRAPHDB_ROLLING_OUTPUT='<新的证据目录>'
 export GRAPHDB_RAFT_TOKEN='<本次临时验收令牌>'
 DOCKER_CONTEXT=orbstack python3 scripts/raft_rolling_gate.py

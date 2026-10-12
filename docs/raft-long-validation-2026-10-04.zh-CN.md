@@ -1,6 +1,6 @@
 # Raft 三副本长测复验（2026-10-04）
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 本轮完整执行同一候选的三十分钟 Raft 维护负载，结果 **FAIL**。共 24,071 次操作，操作指标错误 407 次，错误事件 456 条。两项计数的语义不同，不相加。新结果没有覆盖或改写[此前可用性长测失败](availability-rolling-validation-2026-10-04.zh-CN.md)，仍不具备正式发布资格。
 

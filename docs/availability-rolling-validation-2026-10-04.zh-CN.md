@@ -1,6 +1,6 @@
 # 可用性与滚动升级修复验证（2026-10-04）
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 本轮为未发布候选，保留单机 direct/WAL、单组 Raft 和租户分片。修复两个已稳定复现的可用性问题；两套限定来源的滚动矩阵和单机长测通过，三副本维护压力长测两次失败，本候选不具备发布资格。上一轮失败记录保留在[完整测试报告](full-validation-2026-10-03.zh-CN.md)，本轮汇总见[机器可读记录](availability-rolling-validation-2026-10-04.json)。
 

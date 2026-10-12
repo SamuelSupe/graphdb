@@ -2,7 +2,7 @@
 
 [English](README.md) · [项目首页](../README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.1)
 
-当前发行候选为 **2.3.1**。从下面的任务入口进入指南，或先按推荐路径阅读。
+当前稳定发行版本为 **2.3.1**。从下面的任务入口进入指南，或先按推荐路径阅读。
 用户指南与控制台文档均提供中英文版本；部分集群运维专题目前仅有中文。
 
 ## 推荐阅读路径
@@ -64,7 +64,7 @@
 | API 契约 | [API 地图](user/api-map.zh-CN.md) · [English](user/api-map.md) · [OpenAPI](openapi.yaml) · [错误码](error_codes.md) |
 | 查询语言 | [查询能力](query_capabilities.md) · [GraphQL](graphql.zh-CN.md) · [English](graphql.md) · [旧文本 DSL](gql.md) |
 | 版本与缺口 | [命名与兼容](naming-and-compatibility.zh-CN.md) · [English](naming-and-compatibility.md) · [功能缺口](product_function_gaps.md) |
-| 2.3.1 发行证据 | [发行说明](../release/local-disk.md) · [发布验证](validation-v2.3.1.md) · [历史 2.3.0 JSON](validation-v2.3.0.json) |
+| 2.3.1 发行证据 | [发行说明](../release/local-disk.md) · [发布验证](validation-v2.3.1.md) · [机器可读 JSON](validation-v2.3.1.json) |
 
 SDK/OpenAPI 版本为 2.3.1；Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
 各自遵循兼容契约，不能用产品版本号替换。

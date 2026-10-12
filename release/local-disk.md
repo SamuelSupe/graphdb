@@ -2,6 +2,13 @@
 
 ## 中文
 
+本版已发布为稳定 Latest，完整标签门禁及独立下载资产校验、运行验证全部通过，无门禁豁免。
+正式单机三十分钟长测原始错误为 0，但写入 P99 22.028 秒、最大 36.052 秒，
+索引 24/59 次 stale，最后采样 stale。Raft 原始错误为 0、59 次索引样本均 ready，
+但主要查询 P99 3.509–4.003 秒，单项索引查询最大 9.642 秒。秒级长尾、stale 和
+极端查询延迟仍存在；本版不提供统一低延迟 SLO 或生产容量认证。
+
+
 本版修复并缓解单机写入长尾、索引追平和 Raft 维护期间的延迟：合并同一写入栅栏内
 排队的同步索引更新；为控制元数据和发布装载保留 Parquet 解码容量；减少文件打开、
 图重放、快照解码、稠密分片扫描和准备维护中的重复工作。恢复回滚仍在修改前持久化
@@ -21,7 +28,7 @@
 冷启动相同 4 个写入由全部 120 秒超时变为全部成功，耗时 13.425–13.431 秒；
 480 次查询的 5 秒超时由 318 次降到 22 次。单机瞬时 stale 和冷查询超时仍存在。
 旧约 6 秒 Raft 极端查询没有在固定基线中复现，不能声称已完全消除。
-详见[固定负载报告](https://github.com/SamuelSupe/graphdb/blob/v2.3.1/docs/maintenance-tailfix-2026-10-13.zh-CN.md)。
+详见[固定负载报告](https://github.com/SamuelSupe/graphdb/blob/main/docs/maintenance-tailfix-2026-10-13.zh-CN.md)。
 这些对照使用修复后的诊断构建；确切发行二进制由标签门禁另行验证。
 
 发行流程要求全量 unit/vet/race、SDK、direct/WAL、S3、TLS 网关、Raft 协议 1–3、
@@ -32,10 +39,19 @@
 
 产品、SDK 和 OpenAPI 为 2.3.1，Go 模块 `/v2` 和 HTTP `/v1` 不变。
 单机先备份、停止旧进程，再以原目录和前缀启动；Raft 遵循
-[滚动升级手册](https://github.com/SamuelSupe/graphdb/blob/v2.3.1/docs/raft-rolling-upgrade.zh-CN.md)。
+[滚动升级手册](https://github.com/SamuelSupe/graphdb/blob/main/docs/raft-rolling-upgrade.zh-CN.md)。
 协议激活仍是全组升级后的独立操作，不提供任意版本混部或降级保证。
 
 ## English
+
+Published as stable Latest after all exact-tag gates and independent downloaded-asset
+checksum/runtime checks passed, without a waiver. The standalone thirty-minute soak
+had zero raw errors, but write P99 was 22.028 seconds (maximum 36.052) and 24/59 index
+samples were stale, including the last sample. Raft had zero raw errors and 59 ready
+index samples, but main-query P99 was 3.509–4.003 seconds and one indexed-query maximum
+was 9.642 seconds. Seconds-long tails, staleness and extreme query delays remain;
+this patch does not certify a general latency SLO or production capacity.
+
 
 This patch reduces standalone write tails, index catch-up work and Raft maintenance
 latency. It coalesces queued synchronous index updates, reserves decode capacity

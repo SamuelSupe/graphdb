@@ -1,6 +1,6 @@
 # Raft 第三轮 P0/P1 审核与修复
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 2026-10-02，在独立工作树 `GraphDB-raft-ha`、分支 `codex/raft-ha` 上，基于 `127f3c20c9237a327f37961d0887f559f4101c38` 继续审核。前两轮记录见 [首轮报告](raft-p0-p1-review-2026-10-02.zh-CN.md) 和 [第二轮报告](raft-p0-p1-review2-2026-10-02.zh-CN.md)。本轮检查恢复发布、租户迁移、后台维护命令及其与清除操作的日志顺序边界。
 

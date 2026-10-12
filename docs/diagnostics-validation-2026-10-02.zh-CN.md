@@ -1,6 +1,6 @@
 # 诊断指标验证记录：2026-10-02
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 已在 `codex/raft-ha` 补齐单机 direct/WAL、单组 Raft、catalog、数据分片和 router 的诊断指标。指标契约及采集方式见[诊断说明](diagnostics-metrics.zh-CN.md)。本记录是本地候选验证，不代表正式发布或跨宿主机资格。
 

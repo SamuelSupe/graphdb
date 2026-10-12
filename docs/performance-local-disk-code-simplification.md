@@ -1,6 +1,6 @@
 # 本地磁盘版代码简化与验证（2026-09-19）
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 基线：`codex/local-disk-v2` 的 `aa2c9f4c841f7cf00f1b57fbf33dcbf67f11ab36`。
 对比对象：本轮代码简化实现；索引基准采集于维护修复前的候选代码，后续修复不改变该索引路径。原 `main` 和已有发行版本未修改。

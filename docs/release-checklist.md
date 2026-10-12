@@ -6,9 +6,10 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
-[2.3.1](validation-v2.3.1.md) is PREPARING. Its exact-tag gates, thirty-minute
-soaks, released-v2.3.0 rolling window and downloaded assets must be verified
-before recording publication.
+[2.3.1](validation-v2.3.1.md) passed all exact-tag gates, both thirty-minute
+soaks, released-v2.3.0 rolling and independent downloaded-asset checks without
+a waiver. Seconds-long standalone/Raft tails remain explicitly recorded; this
+qualification does not establish production latency or capacity.
 
 ## Previous release qualification
 

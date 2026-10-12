@@ -1,6 +1,6 @@
 # 固定数据量的维护长尾复测与修复（2026-10-13）
 
-本轮基线是上一轮修复后的本地版本，HEAD 为 `693d47172d5368fd867dc36bc014619d3eb68be5`，已包含共享写入预算、字符串编码、快照装载和默认冷读期限的未提交修复。本轮最终二进制为 `graphdb-after-final7`。代码与报告均未提交、未发布；基线、候选、源码、测试脚本及原始结果保存在 `.workflow/maintenance-tailfix-20261012/`。
+本轮基线是上一轮修复后的本地版本，HEAD 为 `693d47172d5368fd867dc36bc014619d3eb68be5`，已包含共享写入预算、字符串编码、快照装载和默认冷读期限的未提交修复。本轮最终二进制为 `graphdb-after-final7`。复测完成时，代码与报告均未提交、未发布；基线、候选、源码、测试脚本及原始结果保存在 `.workflow/maintenance-tailfix-20261012/`。
 
 ## 定位和修复
 
@@ -55,3 +55,10 @@
 运行验证：存储、索引、Parquet、缓存、控制容量、队列合并、复制事务、GC 和恢复相关 race；完整 HA／storage 包普通测试；最终准备维护及分块复制的 HA race；两种部署固定负载、冷启动、重启、独立副本全量核对和旧版读取。具体通过时间、失败项和包结果记录于 `tests-summary.json`。`go vet`、格式和 `git diff --check` 属于静态检查，另行记录。
 
 证据包括 `summary.json`、`final-paired-check.json`、`cold-payload-check.json`、`tests-summary.json`、`final-binary-sha256.txt`、`final-build-info.txt`、各部署的 `events.ndjson`／`report.txt`／`snapshot.json`／`integrity.json`／`quiet-*.json`，以及逐副本独立审计、重启、兼容性日志。测试工具故障和失败候选原始记录也保留；包含测试凭证的 `.env` 不进入源码证据副本。
+
+## 后续发行
+
+本报告对应修复随后纳入已发布的 [v2.3.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.1)。
+确切标签门禁与下载资产核验见[发行验证](validation-v2.3.1.md)。正式长测仍见单机写入
+P99 22.028 秒、24/59 次 stale 和 Raft 单项查询最大 9.642 秒；这些高负载结果与本报告
+固定数据量的诊断对照分别保留，不能声称长尾、stale 或极端延迟已经消除。

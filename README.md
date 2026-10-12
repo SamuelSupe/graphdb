@@ -14,7 +14,7 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.3.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.1)** is the release candidate. Exact-tag qualification and publication are tracked in the validation record.
+**[2.3.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.1)** is the stable Latest release. Exact-tag gates and independently downloaded assets passed verification.
 
 | Area | What 2.3.1 provides |
 | --- | --- |
@@ -148,9 +148,9 @@ both. Configure authentication, tenant authorization and TLS at your
 
 ## Validation and limits
 
-Version 2.3.1 adds write/index/maintenance latency fixes. The release workflow
-requires standalone direct/WAL, S3/TLS, Raft protocols 1–3, rolling upgrade,
-packaging and both thirty-minute maintenance gates before publication.
+Version 2.3.1 adds write/index/maintenance latency fixes. Exact-tag qualification
+passed standalone direct/WAL, S3/TLS, Raft protocols 1–3,
+released-v2.3.0 rolling, packaging and both thirty-minute maintenance gates.
 
 Fixed-data six-minute diagnostic pairs reduced standalone write P99 from 12.123
 to 9.658 seconds and Raft write P99 from 1.885 to 0.908 seconds. Standalone stale
@@ -159,6 +159,12 @@ The topologies use different batch sizes and cannot be compared directly.
 See the [comparison report](docs/maintenance-tailfix-2026-10-13.zh-CN.md) and
 [exact release status](docs/validation-v2.3.1.md). Transient staleness, cold-query
 timeouts, cross-host reliability and production latency/capacity remain limits.
+
+The tag-source standalone soak still observed write P99 22.028 seconds and
+24/59 stale index samples, with the last sample stale. The Raft soak observed
+main-query P99 3.509–4.003 seconds and a 9.642-second indexed-query maximum.
+These higher-load soaks retain seconds-long tails; fixed-pair improvements do
+not establish a general latency SLO.
 
 <details>
 <summary>Historical performance evidence</summary>

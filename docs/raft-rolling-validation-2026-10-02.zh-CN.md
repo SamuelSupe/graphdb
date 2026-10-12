@@ -1,6 +1,6 @@
 # Raft 滚动升级验收（2026-10-02）
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 本轮在独立 `codex/raft-ha` worktree 实现了兼容窗口内的逐副本滚动升级，包括安全摘流、Leader 交接、重新追赶、失败停止和双 router 入口。默认单机、单组 Raft 和按租户分片的 Raft 继续同时支持。实际两个不同二进制的升级、有限回退和严格协议模式下的协调脚本均已通过本机容器验收。
 

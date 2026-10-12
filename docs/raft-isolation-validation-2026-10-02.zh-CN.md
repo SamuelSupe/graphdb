@@ -1,6 +1,6 @@
 # 故障隔离与迁移验证：2026-10-02
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 本轮在独立 worktree `GraphDB-raft-ha`、分支 `codex/raft-ha` 实现维护队列公平推进、目录故障隔离、磁盘分块迁移和协议 3 GC 准备/发布分离。单机 direct/WAL、单组 Raft 和租户分片继续同时支持。本记录属于本机候选验收，不代表正式发行或跨宿主机资格。
 

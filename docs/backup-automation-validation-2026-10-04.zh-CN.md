@@ -1,6 +1,6 @@
 # 单机与 Raft 备份自动化验证
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.0 的使用说明见[文档入口](README.md)，发行资格见[2.3.0 验证](validation-v2.3.0.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
 
 日期：2026-10-04。工作区：`GraphDB-raft-ha`，分支：`codex/raft-ha`。
 本轮实现和验证通过；尚未提交、推送、发布或向生产环境安装计划。
