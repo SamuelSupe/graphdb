@@ -1,128 +1,171 @@
 # Management console
 
-[简体中文](management-ui.zh-CN.md)
+**GGraphDB 2.3.0** · [简体中文](management-ui.zh-CN.md) · [Documentation](README.md) · [API guide](user/README.md)
 
-The published 2.3.0 release embeds an English / Simplified Chinese console in the Go binary.
-No Node, npm, frontend build or separate UI service is required at runtime.
-Previously released 2.2.4 binaries do not contain this addition.
+The console is embedded in the Go binary and supports English and Simplified
+Chinese. Runtime needs no Node, npm, frontend build or separate UI service.
+Previously released 2.2.4 binaries do not include it.
 
-```sh
-go build -o bin/graphdb ./cmd/graphdb
-GRAPHDB_ADDR=127.0.0.1:8080 GRAPHDB_DATA_DIR=./.graphdb bin/graphdb serve
-```
+[Open the console](#open-the-console) · [Page map](#pages) · [Tenant paging](#large-tenant-registries) · [Connections](#connections-and-authorization)
 
-Open `http://127.0.0.1:8080/ui/`. With `GRAPHDB_ADMIN_ADDR`, only the management
-listener serves `/ui/`; the data-only listener returns 404. `serve-router` also
-serves `/ui/`. Select a tenant in the top bar. Language controls are at the bottom
-of the sidebar; initial language follows the browser, and manual choice is saved.
+## Open the console
 
-## Large tenant registries
+1. Start the service from the repository root:
 
-The top-bar picker searches tenant IDs on the server and loads 20 matches at a time.
-The tenant table defaults to 25 rows, with 50/100-row options, ID search and next/previous
-pages. Cluster placements also use server-side ID search and 25-row pages; the shard view
-does not fetch every tenant placement. Page/filter state survives console refresh and language
-changes. Switching tenants still asks before discarding unfinished edits.
+   ```sh
+   go build -o bin/graphdb ./cmd/graphdb
+   GRAPHDB_ADDR=127.0.0.1:8080 GRAPHDB_DATA_DIR=./.graphdb bin/graphdb serve
+   ```
 
-Normal navigation and refresh do not fetch all tenants. Only the current page's metadata
-and manifest are read. Legacy prefix discovery is opt-in on the tenant page because it scans
-storage objects; select a discovered tenant there to use it. Search matches IDs, not names.
+2. Open **[http://127.0.0.1:8080/ui/](http://127.0.0.1:8080/ui/)**.
+3. Select a tenant in the top bar. Change language at the bottom of the sidebar.
+   The first language follows the browser; a manual choice is saved locally.
 
-`GET /v1/tenants?limit=25&q=team` returns `tenants`, matching `total` and an optional
-`next_cursor`. Pass that last tenant ID with the same query for the next page.
-`GET /v1/cluster?limit=25&q=team` bounds the catalog's `tenants` map similarly. Limits are
-1–200; supplying `q` or `cursor` alone defaults to 50. Requests without paging parameters
-retain the original full response. Pages are live rather than snapshot-isolated. The ID
-registry/catalog is still read in full, so this bounds detail I/O and browser rendering,
-not the cost of registry storage itself.
+| Listener | Where to open the UI |
+| --- | --- |
+| Combined | `/ui/` on the normal service address |
+| Split with `GRAPHDB_ADMIN_ADDR` | `/ui/` on the management listener; the data listener returns 404 |
+| `serve-router` | `/ui/` on the router address |
 
 ## Pages
 
-| Page | Operations |
+| Page | Main workflows |
 | --- | --- |
-| Overview | Status gauges, disk/task donuts, storage/concurrency/version charts; diagnostic, traffic-gate, writer-generation and metrics dialogs |
-| Data explorer | Filtered entity/edge scans, cursor pagination, details, version-checked edits/deletes, neighbor graph, bounded graph view, snapshot export |
-| Query workbench | JSON DSL, GraphQL and legacy DSL; examples, plan/profile, table/JSON/graph, next page, saved queries, running-query cancellation |
+| Overview | Current status, disk, storage, concurrency, task and version charts; diagnostics in Inspect dialogs |
+| Data explorer | Entity/edge filters, cursor pages, details, version-checked edits/deletes, neighbors, bounded graph and snapshot export |
+| Query workbench | JSON DSL, GraphQL and legacy DSL; examples, plan/profile, table/JSON/graph results, next page, saved queries and process-local cancellation |
 | Schema | Inspect/create/edit/delete entity types, relation types and relation field schemas |
 | Tenants | Create/edit/select, enable/disable, clone, soft delete and permanent purge |
-| Indexes | Create/drop, async rebuild, definitions, catalog and health |
-| Tasks & backups | Filter/inspect/cancel/retry tasks; backup, restore/drill, audit, recovery, repair, cleanup, GC, automation status/reset |
-| Ingestion | Atomic commit, collector batches, CSV/JSONL import, collector/batch status, dead letters/replay |
+| Indexes | Create/drop, asynchronous rebuild, definitions, catalog and health |
+| Tasks & backups | Inspect/filter/cancel/retry; backup, restore/drill, audit, recovery, repair, cleanup, GC and automation status/reset |
+| Ingestion | Atomic commits, collector batches, CSV/JSONL import, collector/batch status, dead letters and replay |
 | Governance | Source policy, tenant configuration and storage usage |
-| Cluster | Shard registration/drain/resume/removal; tenant assignment/migration/cancellation; router drain/resume; private Raft status/upgrade/membership/transfer/barrier/drain/resume |
+| Cluster | Shard registration/drain/resume/removal; tenant assignment/migration/cancellation; router drain/resume; private Raft status, upgrades, membership, transfer, barrier and drain/resume |
 | Connection | Separate data, management, router and private Raft URLs and tokens |
 
-Records and responses use grouped properties, typed field summaries, tables, status
-indicators and task progress/timelines. Entity/schema edits, writes, labels/metadata,
-task parameters and governance settings use structured forms with repeatable fields
-and items. Advanced JSON editing retains access to complex and unknown API fields;
-switching views preserves the values, including large numeric tokens. Duplicate field
-names and values that do not match their selected type are rejected before submission.
-Raw JSON is collapsed by default. The query language editor and explicit JSON result
-tab remain available. Long dialogs scroll their content while keeping the title and
-action buttons visible. Controls and explanatory copy are bilingual; API identifiers,
-user-defined field names and original data remain verbatim. Graph views show returned
-data only, up to 100 nodes and 200 edges.
+## Read the overview charts
 
-Collapsed response details, task checkpoints and raw JSON are rendered on first
-expansion. Query results build only the selected table/JSON/graph view. Query-list
-tabs fetch their own API, and inspecting a task fetches its latest detail without
-reloading the entire list. Form input validation is coalesced after 150 ms of idle
-time; submission, navigation and language switching read the current fields
-synchronously, so pending validation cannot lose edits or submit stale values.
+Charts use the current API snapshot and update on Refresh or tenant changes.
 
-Overview charts use the current API snapshot and update on Refresh or tenant changes.
-They show local health/readiness, data-filesystem used/available space, the selected
-tenant's six largest storage categories plus the remaining categories, active requests
-against each instance admission limit (queue counts separately), up to 100 most recent
-tenant tasks, and published/visible/snapshot versions. Unknown or failed measurements
-show unavailable rather than zero; valid empty samples show zero. Versions retain their
-exact numeric labels. These charts do not imply historical throughput, task totals beyond
-the sample, or cluster-wide health. Inspect opens the original response in a dialog;
-raw diagnostics do not occupy the overview.
+| Chart | Scope and meaning |
+| --- | --- |
+| Health / readiness | Local instance status |
+| Disk | Used and available space on the data filesystem |
+| Tenant storage | Six largest storage categories plus the remaining categories combined |
+| Concurrency | Active requests against each instance admission limit; queue counts shown separately |
+| Tasks | Up to 100 most recent tasks for the selected tenant |
+| Versions | Published, visible and snapshot versions, with exact numeric labels |
+
+Missing or failed measurements show **unavailable**; valid empty samples show zero.
+Charts do not establish historical throughput, totals beyond the task sample or
+cluster-wide health. Inspect opens diagnostic, traffic-gate, writer-generation
+and metrics responses in dialogs.
+
+## Edit and inspect records
+
+Records use grouped properties, typed field summaries, tables, status indicators
+and task progress/timelines. Entity/schema edits, writes, labels/metadata, task
+parameters and governance settings use structured forms with repeatable fields.
+
+| Action | Behavior |
+| --- | --- |
+| Add a field or array item | Starts empty or with defaults; does not copy an existing record |
+| Use advanced JSON | Supports complex/unknown fields; switching views preserves values and large numeric tokens |
+| Submit invalid fields | Duplicate names or values incompatible with the selected type block submission |
+| Inspect raw responses | Raw JSON is collapsed by default; explicit query JSON results remain available |
+| Use a long dialog | Content scrolls while its title and action buttons stay visible |
+| Navigate tabs | Arrow, Home and End keys switch tabs |
+
+Controls and explanatory copy are bilingual. API identifiers, custom field names
+and original data remain verbatim.
+
+### Complete an operation
+
+1. Review the destination and payload shown before submission.
+2. For a destructive action, enter the resource ID. Restore defaults to dry run.
+3. For HTTP 202, inspect task or WAL status to confirm completion.
+
+Requests do not retry automatically. After a timeout, inspect server state before
+resubmitting. Stopping browser waiting does not guarantee server cancellation;
+use Running queries on the relevant process. Deployment and backup requirements
+still apply; unsupported operations show the backend error.
+
+## Large tenant registries
+
+| Surface | Search and page size |
+| --- | --- |
+| Top-bar picker | Server-side ID search; 20 matches per load |
+| Tenant table | 25 rows by default, 50/100 options, ID search and next/previous pages |
+| Cluster placements | Server-side ID search and 25-row pages; the shard view does not fetch all placements |
+| Legacy discovery | Explicit opt-in on the tenant page; scans storage objects; select a discovered tenant there |
+
+Refresh and language changes preserve page/filter state. Tenant changes ask
+before discarding unfinished edits. Search matches **IDs, not names**. Normal
+navigation reads metadata/manifests only for the current page.
+
+### API paging contract
+
+```http
+GET /v1/tenants?limit=25&q=team
+GET /v1/cluster?limit=25&q=team
+```
+
+| Parameter / response | Contract |
+| --- | --- |
+| `limit` | 1–200; supplying only `q` or `cursor` defaults to 50 |
+| `q` | Tenant ID substring search |
+| `next_cursor` | Last tenant ID; pass it as `cursor` with the same query for the next page |
+| Tenant response | `tenants`, matching `total`, optional `next_cursor` |
+| Cluster response | Similarly bounds the catalog's `tenants` map |
+| No paging parameters | Original full response remains supported |
+
+Pages are live, without snapshot isolation. The ID registry/catalog is still read
+in full: paging bounds detail I/O and browser rendering, not registry storage cost.
+See [tenant API examples](user/tenant-config.md).
 
 ## Connections and authorization
 
-Combined listeners use the page origin for both APIs. For split listeners, use
-same-origin gateway paths. The [gateway example](../deploy/nginx/graphdb.conf.example)
-maps `/admin/ui/` to `/ui/` for static assets; `/admin/v1/...` still requires
-operator/admin authorization. Set data to the gateway origin and management to
-`<origin>/admin`. Same-origin session cookies and entered Bearer tokens are supported.
-Cross-origin calls require gateway CORS/preflight, including `Authorization`,
-`Content-Type`, `X-Tenant-ID` and `X-Raft-Cluster`. The database adds no permissive CORS.
+| Deployment | Connection settings |
+| --- | --- |
+| Combined listener | Page origin for data and management APIs |
+| Split behind a same-origin gateway | Data: gateway origin; management: `<origin>/admin` |
+| Router / private Raft | Separate URLs and tokens; Raft also needs a cluster ID |
+| Cross-origin gateway | Configure CORS/preflight for `Authorization`, `Content-Type`, `X-Tenant-ID` and `X-Raft-Cluster` |
 
-The console adds no authentication or arbitrary-destination server proxy, does not
-relax roles, and does not expose private APIs. Router/Raft tokens are separate; Raft
-also needs a cluster ID. Use an authorized management network/gateway for private APIs.
-Protect static UI routes with your deployment's session login when required.
-See [security deployment](security-deployment.md).
+The [gateway example](../deploy/nginx/graphdb.conf.example) maps `/admin/ui/` to
+`/ui/` for static assets. `/admin/v1/...` still requires operator/admin authorization.
+Same-origin session cookies and entered Bearer tokens are supported. The database
+adds no permissive CORS.
 
-URLs, tenant and language are saved locally. Tokens stay in memory and clear on reload.
-Query/ingestion drafts last for the page lifetime. Configuration editors warn before
-discarding changes. Each query language keeps its own draft; selecting an example
-does not replace the editor until Load example is clicked. Ingestion tabs keep valid
-drafts and block switching while fields/JSON are unfinished. New repeatable items start
-with empty/default values rather than copying existing records. Tabs support arrow,
-Home and End keys. Connection settings group the core APIs separately from optional
-router/Raft endpoints, which expand automatically when configured.
-Requests never retry automatically; after a timeout inspect server
-state first. Stopping browser waiting does not guarantee query cancellation; use the
-process-local Running queries page to cancel on the server.
+The console adds no authentication system, arbitrary-destination server proxy or
+role relaxation, and does not expose private APIs. Reach private APIs through an
+authorized management network/gateway; protect static UI routes with session login
+when required. See [security deployment](security-deployment.md).
 
-Changes show destination/payload before submission. Destructive actions require a
-resource ID confirmation. Restore defaults to dry run. HTTP 202 means accepted;
-check task/WAL status to confirm completion. Backend mode and backup requirements
-still apply. Unsupported operations display the backend error.
+## Saved settings and drafts
 
-Use current Chrome for lossless native JSON parsing of integers returned by the API.
-This does not recover precision already lost in backend numeric fields; represent
-precision-sensitive large field values as strings under the existing API contract.
-Browser exports
-use memory; use CLI/streaming clients for large exports.
+| State | Lifetime / behavior |
+| --- | --- |
+| URLs, tenant, language | Saved locally |
+| Tokens | Memory only; clear on page reload |
+| Query drafts | Page lifetime, separately for each language; examples replace content only after Load example |
+| Ingestion drafts | Page lifetime; valid drafts survive tab changes; unfinished fields/JSON block switching |
+| Configuration edits | Warn before discarding changes |
+| Connection groups | Core APIs separate from optional router/Raft endpoints; configured optional groups expand automatically |
+
+## Display and export limits
+
+| Area | Limit |
+| --- | --- |
+| Graph views | Returned data only, up to 100 nodes and 200 edges; not the tenant's full graph |
+| Numeric precision | Use current Chrome for native lossless parsing of API integers; precision-sensitive field values should use strings under the API contract |
+| Browser exports | Use memory; large exports should use CLI or streaming clients |
+
+Lossless browser parsing cannot recover precision already lost in backend numeric fields.
 
 ## Development
 
-Sources in `internal/adminui/static/` are embedded with `go:embed`; rebuild/restart after edits.
+Sources in `internal/adminui/static/` use `go:embed`; rebuild and restart after edits.
 
 ```sh
 node --test internal/adminui/console_test.mjs
@@ -131,3 +174,14 @@ go test -mod=readonly ./internal/httpapi ./internal/sharding
 
 Validate rendering/interactions in native Chrome and Linux services in OrbStack.
 Static checks do not replace runtime browser validation.
+
+<details>
+<summary>Rendering and request behavior</summary>
+
+Collapsed details, task checkpoints and raw JSON render on first expansion.
+Query results build only the selected table/JSON/graph view; query-list tabs fetch
+only their own API. Task inspection fetches the latest detail without reloading
+the list. Form validation coalesces after 150 ms idle; submission, navigation and
+language changes read current fields synchronously to preserve edits.
+
+</details>

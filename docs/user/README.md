@@ -1,55 +1,70 @@
 # GGraphDB User Guide
 
-Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.0**; [简体中文](README.zh-CN.md) · [Documentation](../README.md) · [Release validation](../validation-v2.3.0.md)
 
-[中文](README.zh-CN.md)
+For service owners, client developers and operators. Start with a complete data
+workflow. GGraphDB is a general-purpose property graph database; CMDB is one
+supported scenario.
 
-This guide is for service owners, ingest-client authors, and operators using
-GGraphDB as a general-purpose graph database. CMDB is one supported scenario;
-the same entity, relationship, query, and storage APIs can serve other
-entity-relationship applications.
+## Follow a complete workflow
+
+1. [Start the service](quickstart.md) and create a tenant in the [console](../management-ui.md) or through the API.
+2. Design entities and relationships with the [data model](data-model.md), then [write or ingest](write-ingest.md) data.
+3. Read results with [queries](read-query.md) or [scan/export](scan-export.md).
+4. Configure [tenant policies](tenant-config.md) and manage runtime state through [tasks and maintenance](tasks-maintenance.md).
+
+## Document map
+
+| Stage | Guides |
+| --- | --- |
+| First use and browser workflows | [Quick start](quickstart.md) · [Console](../management-ui.md) · [Usage manual](usage-manual.md) |
+| Modeling and ingestion | [Data model](data-model.md) · [Write and ingest](write-ingest.md) |
+| Queries and integration | [Read and query](read-query.md) · [Scan and export](scan-export.md) · [Go/Python SDKs](sdk.md) |
+| Configuration and operations | [Tenants and configuration](tenant-config.md) · [Tasks and maintenance](tasks-maintenance.md) · [Troubleshooting](errors-troubleshooting.md) |
+| Installation and deployment | [Release deployment](release-deployment.md) · [Deployment and operations](deploy-ops.md) |
+| API reference | [API map](api-map.md) · [OpenAPI](../openapi.yaml) · [Error codes](../error_codes.md) |
+
+Each guide links to its Chinese counterpart at the top. The [documentation index](../README.md#user-guides) lists both languages side by side.
 
 ## What GGraphDB provides
 
-- Embedded bilingual [management console](../management-ui.md) with charts, structured editors and tenant paging.
-- Multi-tenant graph data isolated by `X-Tenant-ID`.
-- Schemaless entities with optional type definitions, including CI types for
-  CMDB-style modeling.
-- Typed directed edges with `(type, from, to)` canonical identity.
-- Default standalone with one process per local directory; optional [Raft replicas](../raft-ha.zh-CN.md) and [tenant sharding](../sharding.zh-CN.md) use independent directories.
-- Parquet manifests, commits, snapshots, entity pages, edge shards and indexes
-  persist on local disk. Direct ingest and synchronous WAL are supported.
-- Optional S3-compatible snapshots and on-demand restore; internal scheduling/retries/retention and restore drills apply to standalone. Raft uses external scheduling through the cluster backup API.
-- The `data_hash` digest contract and 2.0/2.1/2.2-compatible standalone directories; no 1.x migration.
-- GraphQL, JSON Query DSL, scan/export APIs, saved queries, and running-query
-  control.
-- Optional source-priority governance for entity fields, edge fields, and edge
-  existence.
-- Tenant lifecycle, source policy, tenant config, index management, unified
-  tasks, maintenance, integrity audit, and reader freshness checks.
+| Area | Behavior |
+| --- | --- |
+| Isolation | `X-Tenant-ID` selects a tenant; directed edges use `(type, from, to)` as canonical identity |
+| Modeling and governance | Schemaless entities, optional types and CI types; source priority for entity fields, edge fields and edge existence |
+| Query and management | JSON DSL, GraphQL, saved queries, running-query control, indexes, tenant lifecycle and a structured console |
+| Persistence | One process owns each local directory; Parquet manifests, commits, snapshots, entity pages, edge shards and indexes persist on disk; direct/WAL supported |
+| Expansion and recovery | Optional independent Raft replicas, tenant sharding, S3-compatible snapshots and restore |
+
+Standalone has built-in backup scheduling, retries, retention and drills. Raft
+uses externally scheduled cluster APIs. Commits follow the `data_hash` contract;
+standalone 2.0/2.1/2.2 directories remain compatible. No 1.x migration is provided.
+See [version boundaries](../naming-and-compatibility.md).
 
 ## Common HTTP conventions
 
-All tenant-scoped data APIs require:
+### Tenant and request headers
+
+Tenant-scoped data APIs use the tenant header; JSON requests also set the content type:
 
 ```http
 X-Tenant-ID: <tenant-id>
 Content-Type: application/json
 ```
 
-Read APIs support freshness controls:
+### Read freshness
 
-- body: `min_version`, `allow_stale`;
-- query: `?min_version=123&allow_stale=true`;
-- headers: `X-GraphDB-Min-Version`, `X-GraphDB-Allow-Stale`.
+| Location | Parameters |
+| --- | --- |
+| JSON body | `min_version`, `allow_stale` |
+| URL query | `?min_version=123&allow_stale=true` |
+| HTTP headers | `X-GraphDB-Min-Version`, `X-GraphDB-Allow-Stale` |
 
-`GRAPHDB_MODE=all` is the supported mode. Separate reader/writer modes,
-remote online storage and PostgreSQL coordination are rejected.
+When a query must observe a write, use the write response's `version` as `min_version`.
 
-Examples use three names for the same process, not separate reader/writer services.
-They assume the default combined listener. If `GRAPHDB_ADMIN_ADDR` is set, send
-management requests to that listener or its authenticated gateway route; see
-[listener responsibilities](../security-deployment.md#listener-responsibilities).
+### Example addresses and listeners
+
+These three variables name the same process. Examples assume a combined listener:
 
 ```sh
 export WRITER=http://127.0.0.1:8080
@@ -57,32 +72,15 @@ export READER=http://127.0.0.1:8080
 export BASE=http://127.0.0.1:8080
 ```
 
-## Document map
+Only `GRAPHDB_MODE=all` is supported. Separate reader/writer modes, remote online
+storage and PostgreSQL coordination are rejected. With `GRAPHDB_ADMIN_ADDR`, send
+management requests to that listener or its authenticated gateway route. See
+[listener responsibilities](../security-deployment.md#listener-responsibilities).
 
-- [Management console](../management-ui.md) · [中文](../management-ui.zh-CN.md)
+## Further reading
 
-- [Quick Start](quickstart.md) · [中文](quickstart.zh-CN.md)
-- [Release Deployment](release-deployment.md) · [中文](release-deployment.zh-CN.md)
-- [Usage Manual](usage-manual.md) · [中文](usage-manual.zh-CN.md)
-- [Data Model](data-model.md) · [中文](data-model.zh-CN.md)
-- [Write And Ingest](write-ingest.md) · [中文](write-ingest.zh-CN.md)
-- [Read And Query](read-query.md) · [中文](read-query.zh-CN.md)
-- [Scan And Export](scan-export.md) · [中文](scan-export.zh-CN.md)
-- [Tenant And Config](tenant-config.md) · [中文](tenant-config.zh-CN.md)
-- [Deployment And Operations](deploy-ops.md) · [中文](deploy-ops.zh-CN.md)
-- [Tasks And Maintenance](tasks-maintenance.md) · [中文](tasks-maintenance.zh-CN.md)
-- [Errors And Troubleshooting](errors-troubleshooting.md) · [中文](errors-troubleshooting.zh-CN.md)
-- [Go And Python SDK](sdk.md) · [中文](sdk.zh-CN.md)
-- [API Map](api-map.md) · [中文](api-map.zh-CN.md)
-
-Reference documents:
-
-- [Raft operations and rolling upgrades](../raft-operations.zh-CN.md)
-- [Tenant sharding and migration](../sharding.zh-CN.md)
-- [Diagnostic metrics](../diagnostics-metrics.zh-CN.md)
-
-- [GraphQL](../graphql.md) · [中文](../graphql.zh-CN.md)
-- [Legacy text DSL compatibility](../gql.md)
-- [Query capabilities](../query_capabilities.md)
-- [Error codes](../error_codes.md)
-- [OpenAPI](../openapi.yaml)
+| Topic | Documentation |
+| --- | --- |
+| Query languages | [GraphQL](../graphql.md) · [Query capabilities](../query_capabilities.md) · [Legacy text DSL](../gql.md) |
+| Clusters | [Raft operations and upgrades](../raft-operations.zh-CN.md) · [Tenant sharding and migration](../sharding.zh-CN.md) |
+| Observability | [Diagnostic metrics](../diagnostics-metrics.zh-CN.md) |

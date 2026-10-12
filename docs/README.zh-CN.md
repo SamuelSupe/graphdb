@@ -1,56 +1,78 @@
-# GGraphDB 2.3.0 文档
+# GGraphDB 2.3.0 文档中心
 
-[English](README.md)
+[English](README.md) · [项目首页](../README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)
 
-当前稳定版本为 **[2.3.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)**。
-本文档入口及下列使用指南描述当前实现，覆盖单机、Raft、租户分片与内嵌双语控制台。
-Go/Python SDK 和 OpenAPI 为 2.3.0；Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号保持原契约。
-用户指南位于 [user/](user/README.zh-CN.md)，每份都有对应英文文件与语言切换链接。
+当前稳定版本为 **2.3.0**。从下面的任务入口进入指南，或先按推荐路径阅读。
+用户指南与控制台文档均提供中英文版本；部分集群运维专题目前仅有中文。
+
+## 推荐阅读路径
+
+| 你的目标 | 推荐顺序 |
+| --- | --- |
+| 首次体验 | [快速开始](user/quickstart.zh-CN.md) → [控制台](management-ui.zh-CN.md) → [使用手册](user/usage-manual.zh-CN.md) |
+| 接入业务数据 | [数据模型](user/data-model.zh-CN.md) → [写入与采集](user/write-ingest.zh-CN.md) → [查询](user/read-query.zh-CN.md) → [SDK](user/sdk.zh-CN.md) |
+| 准备部署 | [发行版部署](user/release-deployment.zh-CN.md) → [生产安全](security-deployment.zh-CN.md) → [备份恢复](object-backup.zh-CN.md) → [发布验证](validation-v2.3.0.md) |
 
 ## 用户指南
 
-- [管理控制台](management-ui.zh-CN.md) · [English](management-ui.md)
+### 开始使用
 
-- [2.3.0 发行说明](../release/local-disk.md) · [发布验证](validation-v2.3.0.md) · [JSON](validation-v2.3.0.json)
+| 任务 | 中文指南 | English |
+| --- | --- | --- |
+| 运行第一个示例 | [快速开始](user/quickstart.zh-CN.md) | [Quick start](user/quickstart.md) |
+| 安装发行程序 | [发行版部署](user/release-deployment.zh-CN.md) | [Release deployment](user/release-deployment.md) |
+| 通过浏览器操作 | [管理控制台](management-ui.zh-CN.md) | [Management console](management-ui.md) |
+| 了解完整使用流程 | [使用手册](user/usage-manual.zh-CN.md) | [Usage manual](user/usage-manual.md) |
+| 查找 API 约定 | [用户指南](user/README.zh-CN.md) | [User guide](user/README.md) |
 
-- [本地磁盘部署与持久化](local-disk.zh-CN.md) · [English](local-disk.md)
-- [对象存储快照备份与恢复](object-backup.zh-CN.md) · [English](object-backup.md)
-- [单机与 Raft 自动备份](backup-automation.zh-CN.md) · [English](backup-automation.md)
+### 建模、写入与查询
 
-- [用户指南](user/README.zh-CN.md) · [English](user/README.md)
-- [快速开始](user/quickstart.zh-CN.md) · [English](user/quickstart.md)
-- [使用手册](user/usage-manual.zh-CN.md) · [English](user/usage-manual.md)
-- [发行版部署](user/release-deployment.zh-CN.md) · [English](user/release-deployment.md)
-- [部署与运维](user/deploy-ops.zh-CN.md) · [English](user/deploy-ops.md)
-- [数据模型](user/data-model.zh-CN.md) · [English](user/data-model.md)
-- [写入与采集](user/write-ingest.zh-CN.md) · [English](user/write-ingest.md)
-- [读取与查询](user/read-query.zh-CN.md) · [English](user/read-query.md)
-- [扫描与导出](user/scan-export.zh-CN.md) · [English](user/scan-export.md)
-- [租户与配置](user/tenant-config.zh-CN.md) · [English](user/tenant-config.md)
-- [任务与维护](user/tasks-maintenance.zh-CN.md) · [English](user/tasks-maintenance.md)
-- [错误与故障排查](user/errors-troubleshooting.zh-CN.md) · [English](user/errors-troubleshooting.md)
-- [Go 与 Python SDK](user/sdk.zh-CN.md) · [English](user/sdk.md)
-- [API Map](user/api-map.zh-CN.md) · [English](user/api-map.md)
+| 任务 | 中文指南 | English |
+| --- | --- | --- |
+| 设计实体与关系 | [数据模型](user/data-model.zh-CN.md) | [Data model](user/data-model.md) |
+| 提交数据与采集批次 | [写入与采集](user/write-ingest.zh-CN.md) | [Write and ingest](user/write-ingest.md) |
+| 读取、遍历与聚合 | [读取与查询](user/read-query.zh-CN.md) | [Read and query](user/read-query.md) |
+| 扫描或导出数据 | [扫描与导出](user/scan-export.zh-CN.md) | [Scan and export](user/scan-export.md) |
+| 接入 Go 或 Python 客户端 | [SDK 指南](user/sdk.zh-CN.md) | [SDK guide](user/sdk.md) |
+
+### 运维与恢复
+
+| 任务 | 中文指南 | English |
+| --- | --- | --- |
+| 配置租户生命周期与分页 | [租户与配置](user/tenant-config.zh-CN.md) | [Tenants and configuration](user/tenant-config.md) |
+| 安排服务运维 | [部署与运维](user/deploy-ops.zh-CN.md) | [Deployment and operations](user/deploy-ops.md) |
+| 管理任务与维护 | [任务与维护](user/tasks-maintenance.zh-CN.md) | [Tasks and maintenance](user/tasks-maintenance.md) |
+| 排查 API 故障 | [故障排查](user/errors-troubleshooting.zh-CN.md) | [Troubleshooting](user/errors-troubleshooting.md) |
+| 了解磁盘持久化 | [本地磁盘指南](local-disk.zh-CN.md) | [Local disk guide](local-disk.md) |
+| 备份与恢复快照 | [对象备份](object-backup.zh-CN.md) | [Object backups](object-backup.md) |
+| 调度单机或 Raft 备份 | [自动备份](backup-automation.zh-CN.md) | [Backup automation](backup-automation.md) |
 
 ## 集群与生产运维
 
-- [三副本 Raft](raft-ha.zh-CN.md) · [租户分片与迁移](sharding.zh-CN.md)
-- [Raft 运维](raft-operations.zh-CN.md) · [滚动升级窗口](raft-rolling-upgrade.zh-CN.md) · [发布与部署验收](raft-release-readiness.zh-CN.md)
-- [生产安全](security-deployment.zh-CN.md) · [产品运维](product-operations.zh-CN.md) · [诊断指标](diagnostics-metrics.zh-CN.md)
+| 任务 | 文档 |
+| --- | --- |
+| 配置副本或分片 | [三副本 Raft](raft-ha.zh-CN.md) · [租户分片与迁移](sharding.zh-CN.md) |
+| 运维或升级集群 | [Raft 运维](raft-operations.zh-CN.md) · [滚动升级窗口](raft-rolling-upgrade.zh-CN.md) |
+| 保护与诊断服务 | [生产安全](security-deployment.zh-CN.md) · [产品运维](product-operations.zh-CN.md) · [诊断指标](diagnostics-metrics.zh-CN.md) |
+| 核对部署验收范围 | [发布与部署验收](raft-release-readiness.zh-CN.md) |
 
 ## 参考文档
 
-- [数据库简介](database-introduction.zh-CN.md) · [English](database-introduction.md)
-- [GraphQL](graphql.zh-CN.md) · [English](graphql.md)
-- [旧文本 DSL 兼容入口](gql.md)
-- [命名与兼容](naming-and-compatibility.zh-CN.md) · [English](naming-and-compatibility.md)
-- [查询能力](query_capabilities.md)
-- [错误码](error_codes.md)
-- [整体架构](architecture.md)
-- [OpenAPI](openapi.yaml)
-- [功能缺口](product_function_gaps.md)
+| 主题 | 文档 |
+| --- | --- |
+| 定位与架构 | [数据库简介](database-introduction.zh-CN.md) · [English](database-introduction.md) · [整体架构](architecture.md) |
+| API 契约 | [API 地图](user/api-map.zh-CN.md) · [English](user/api-map.md) · [OpenAPI](openapi.yaml) · [错误码](error_codes.md) |
+| 查询语言 | [查询能力](query_capabilities.md) · [GraphQL](graphql.zh-CN.md) · [English](graphql.md) · [旧文本 DSL](gql.md) |
+| 版本与缺口 | [命名与兼容](naming-and-compatibility.zh-CN.md) · [English](naming-and-compatibility.md) · [功能缺口](product_function_gaps.md) |
+| 2.3.0 发行证据 | [发行说明](../release/local-disk.md) · [发布验证](validation-v2.3.0.md) · [机器可读 JSON](validation-v2.3.0.json) |
+
+SDK/OpenAPI 版本为 2.3.0；Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
+各自遵循兼容契约，不能用产品版本号替换。
 
 ## 历史设计与验证记录
+
+<details>
+<summary>展开历史设计、审核与验证档案</summary>
 
 以下记录固定于各自日期和构建，保留原有 PASS、FAIL、跳过和未发布状态。
 当前发行资格以[2.3.0 验证](validation-v2.3.0.md)为准；历史性能结果不构成当前容量保证。
@@ -71,3 +93,5 @@ Go/Python SDK 和 OpenAPI 为 2.3.0；Go 模块 `/v2`、HTTP `/v1` 和独立 Raf
 - [历史记录：本地磁盘 v2 验证与性能抽查](performance-local-disk-v2.md)
 - [历史记录：本地磁盘第二轮优化：分页、JSON 编码与 Parquet 布局](performance-local-disk-optimization-2.md)
 - [历史 HA 设计](high-availability-design.zh-CN.md) · [HA 验证](raft-ha-validation.zh-CN.md) · [分片验证](sharding-validation.zh-CN.md)
+
+</details>

@@ -1,174 +1,222 @@
 # GGraphDB 2.3.0
 
-[简体中文](README.zh-CN.md)
+**A multi-tenant property graph database, with a built-in management console.**
 
-GGraphDB is a multi-tenant property graph database for entities, relationships,
-source-governed ingestion, graph queries, and operational workflows. GGraphDB 2.x
-runs one process on local disk, without a required object-storage or PostgreSQL service.
-Optional [three-replica Raft HA](docs/raft-ha.zh-CN.md) uses independent local disks with leader failover and majority durability.
-Optional [tenant sharding](docs/sharding.zh-CN.md) adds independent Raft groups, persistent placement and tenant migration for horizontal expansion.
-Optional [S3-compatible snapshot backups](docs/object-backup.md) support recovery onto a new local disk.
+[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+
+Manage entities, relationships and source-governed ingestion; query the graph with
+JSON DSL or GraphQL. Start with one process and one local disk. Add independent
+Raft replicas for high availability or tenant-sharded Raft groups for horizontal
+expansion. Object storage and PostgreSQL are not required at runtime; S3-compatible
+storage is optional for snapshot backups.
+
+[Start](#start) · [Write and query](#write-and-query) · [Choose a deployment](#deployment-options) · [Validation](#validation-and-limits)
 
 ## Current release
 
-**[2.3.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)** is published as stable Latest and adds an embedded English / Simplified Chinese
-management console, chart-based overview, structured editors and tenant ID search
-with bounded server-side pages. The same binary supports standalone direct/WAL,
-independent Raft replicas and tenant-sharded Raft groups. See the
-[release notes](release/local-disk.md), [publication and validation](docs/validation-v2.3.0.md)
-and [version boundaries](docs/naming-and-compatibility.md).
+**[2.3.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)** is the stable Latest release. Exact-tag gates and downloaded artifacts passed verification.
 
-Standalone 2.0/2.1/2.2 data directories remain compatible after stopping the old
-process. Raft directories have separate ownership and protocol requirements;
-use the [qualified rolling upgrade window](docs/raft-rolling-upgrade.zh-CN.md).
-S3 backup automation remains available in standalone mode; Raft uses external
-scheduling of cluster backup APIs. No 1.x migration is provided.
+| Area | What 2.3.0 provides |
+| --- | --- |
+| Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
+| Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
+| Large tenant registries | Server-side tenant ID search and bounded pages for tenant selection and cluster placements |
+| Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups |
 
-The [backup automation worker](docs/backup-automation.md) now provides
-that external schedule for standalone and Raft, with persistent retries,
-readback verification, isolated drills and Compose/systemd examples.
-
-The exact-tag gates and downloaded release artifacts have passed verification. The prior
-local performance candidate failed its 30-minute maintenance soak with four
-HAProxy 503 query errors; that failure remains documented. Cross-host, overall
-throughput and production capacity remain unqualified. Maintenance may return
-retryable 429s and cause long waits. See [2.3.0 validation](docs/validation-v2.3.0.md).
-
-## Capabilities
-
-- JSON query DSL and GraphQL: match, pattern, neighbors, traversal, impact,
-  shortest path, aggregation, pagination, and streaming.
-- Entity and relationship types, field constraints, identity keys, source
-  priority, idempotency, and collector state.
-- Direct commits and durable WAL ingestion; Parquet commits, snapshots, and
-  persistent indexes with durable local publication.
-- Import/export, saved queries, tenant lifecycle, backup/restore, repair,
-  compaction, GC, and persistent background tasks.
-- Go/Python SDKs, Prometheus metrics, JSON logs, and optional OTLP traces.
+See [release validation](docs/validation-v2.3.0.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
-The release includes a bilingual [management console](docs/management-ui.md)
-at `/ui/`, embedded in the server binary. With split listeners, use the management
-port. Previously released 2.2.4 binaries do not include this addition.
+### 1. Run the service
+
+From the repository root, with the Go version in [go.mod](go.mod):
 
 ```sh
 go build -o bin/graphdb ./cmd/graphdb
 GRAPHDB_DATA_DIR=./.graphdb bin/graphdb serve
 ```
 
-Or start the single-service container deployment:
+Prefer a packaged binary? Follow [release deployment](docs/user/release-deployment.md) to download and verify it.
+
+<details>
+<summary>Container alternative</summary>
+
+Run from the repository root. The default Compose deployment has one service and one persistent volume.
 
 ```sh
 docker compose up -d --build
 ```
 
-The same binary supports standalone and both Raft deployment options:
+</details>
 
-Disk guards, streaming snapshots, prepared maintenance, full runtime recovery and operational diagnostics are described in the [operations guide](docs/product-operations.zh-CN.md).
+### 2. Open the console
 
-Raft qualification and the remaining deployment acceptance work are tracked in the
-[release readiness report](docs/raft-release-readiness.zh-CN.md).
+Open **[http://127.0.0.1:8080/ui/](http://127.0.0.1:8080/ui/)**. Choose a tenant in
+the top bar and a language at the bottom of the sidebar. With split listeners,
+open the management port. See the [console guide](docs/management-ui.md).
 
-| Deployment | Selection | Durability | Operations |
-| --- | --- | --- | --- |
-| Standalone (default) | Leave `GRAPHDB_RAFT_*` unset; use `docker-compose.yml` | Local synchronous direct / WAL writes | Scheduled maintenance, automatic S3 backups, offline CLI after shutdown |
-| Raft (three replicas by default) | Configure `GRAPHDB_RAFT_NODE_ID` and the other required Raft settings; use `docker-compose.raft.yml` | Majority persistence, a full copy per node | Leader failover and cluster API maintenance; external backup scheduling in the first version |
-| Sharded Raft | Add catalog / shard roles and `serve-router`; use `docker-compose.sharded.yml` | Independent majority persistence in each shard and the catalog | Add shards, assign new tenants and explicitly move existing tenants |
+### 3. Check the service
 
-All accept direct and WAL ingestion and can run independently with separate
-ports and data directories. Existing standalone directories remain compatible.
-Removing Raft settings cannot turn a replica directory into a standalone database;
-existing standalone data cannot bootstrap a new replica. Migrate through API
-imports or backup restoration into a new directory.
+In another terminal:
 
-The data directory is exclusive to one process. Stop the service before using
-an offline CLI on its directory; use the HTTP APIs for live administration.
-Linux and macOS local filesystems are supported. Separate readers/writers,
-and shared network filesystems are unsupported. For multi-machine replicas, use the optional [Raft deployment](docs/raft-ha.zh-CN.md) with independent directories.
+```sh
+curl -fsS http://127.0.0.1:8080/v1/health
+```
+
+Health is a liveness check. Use the [readiness checks](docs/local-disk.md#readiness-and-memory-budgets) before sending production traffic.
 
 ## Write and query
 
+Keep the service running. Execute these commands from the repository root so the
+[example files](examples/) resolve correctly. They use the default combined listener.
+
+### 1. Create a tenant
+
 ```sh
-# 1. Create a tenant
 curl -fsS -X POST http://127.0.0.1:8080/v1/tenants \
   -H 'Content-Type: application/json' \
   -d '{"tenant_id":"demo","name":"Demo"}'
+```
 
-# 2. Write example graph data
+### 2. Write example graph data
+
+```sh
 curl -fsS -X POST http://127.0.0.1:8080/v1/commits \
   -H 'X-Tenant-ID: demo' \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: demo-commit-001' \
   --data @examples/commit.json
+```
 
-# 3. Query with the JSON Query DSL
+### 3. Query with JSON DSL
+
+```sh
 curl -fsS -X POST http://127.0.0.1:8080/v1/query \
   -H 'X-Tenant-ID: demo' \
   -H 'Content-Type: application/json' \
   --data @examples/query-match.json
-
-# 4. Query the generic graph with GraphQL
-curl -fsS -X POST http://127.0.0.1:8080/v1/query/graphql \
-  -H 'X-Tenant-ID: demo' \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"query Find($request: QueryRequest!) { graph(request: $request) { version results stats } }","operationName":"Find","variables":{"request":{"op":"match","kind":"person","where":[{"field":"name","op":"eq","value":"Alice"}],"project":["id","name"],"limit":10}}}'
 ```
 
+For GraphQL, follow the [GraphQL examples](docs/graphql.md). The console also
+provides a query workbench with table, JSON and graph result views.
 
-Use the write response's `version` as `min_version` when a query must observe it.
-Commit responses include `data_hash` (`sha256-shards-v2:<hex>`).
-For WAL ingestion, set `GRAPHDB_INGEST_MODE=wal`; a 202 response confirms WAL
-acceptance, while `Prefer: wait=committed` waits for the terminal result.
+| Contract | Meaning |
+| --- | --- |
+| `X-Tenant-ID` | Selects the tenant for data APIs |
+| `version` | Pass the write response's version as `min_version` when the read must observe that write |
+| `data_hash` | Commit digest, identified as `sha256-shards-v2:<hex>` |
+| WAL acceptance | `GRAPHDB_INGEST_MODE=wal` enables WAL; HTTP 202 confirms acceptance, and `Prefer: wait=committed` waits for the terminal result |
 
-## Architecture and performance
+## Capabilities
 
-Data files are synced before their manifest/catalog is published. A bounded
-four-worker write path coalesces directory syncs with file, byte and time budgets; random file reads let Parquet
-select columns and row groups. Reads use bounded caches and local invalidation.
-GC defers files protected by active read views; destructive lifecycle operations
-wait for those views to finish.
+| Workflow | Supported operations |
+| --- | --- |
+| Model and govern | Entity/relationship types, field constraints, identity keys, source priority, idempotency and collector state |
+| Query | Match, pattern, neighbors, traversal, impact, shortest path, aggregation, pagination and streaming |
+| Store and ingest | Direct commits, durable WAL ingestion, Parquet commits, snapshots and persistent indexes |
+| Operate | Import/export, saved queries, tenant lifecycle, backup/restore, repair, compaction, GC and persistent tasks |
+| Integrate and observe | Go/Python SDKs, Prometheus metrics, JSON logs and optional OTLP traces |
 
-Raft maintenance preparation runs outside the application barrier where the
-protocol permits; conflicting writes pause only the maintenance tenant. Control
-messages use separate bounded transport queues, and migration uses disk-backed
-chunks. Final publication, graph decoding and rollback still have resource costs.
+## Deployment options
 
-The local candidate's thirty-minute workload recorded 71,140 operations without
-unexpected operation errors, while ingestion included 90 expected 429s and a
-40.154-second maximum wait. These are scoped correctness observations, not a
-capacity or latency guarantee. See [qualification](docs/validation-v2.3.0.md).
-Historical [2.1.2 write-tail measurements](docs/performance-write-tail.md) and
-[2.0 results](docs/performance-v2.0.md) apply only to their recorded builds.
+| Deployment | Use when | Start here |
+| --- | --- | --- |
+| Standalone | One process with synchronous local direct/WAL writes | [Local disk guide](docs/local-disk.md) · [Compose](docker-compose.yml) |
+| Raft | Majority persistence and leader failover; each replica holds a full copy on its own disk | [Three-replica guide](docs/raft-ha.zh-CN.md) · [Compose](docker-compose.raft.yml) |
+| Sharded Raft | Independent catalog/shard groups, tenant placement and explicit migration | [Sharding guide](docs/sharding.zh-CN.md) · [Compose](docker-compose.sharded.yml) |
+
+All three support direct and WAL ingestion. Standalone leaves `GRAPHDB_RAFT_*`
+unset; Raft requires the complete node configuration. Sharding adds catalog/shard
+roles and `serve-router`. Separate deployments need separate ports and directories.
+
+**Directory ownership.** One process exclusively owns each data directory. Stop
+it before running offline CLI tools on that directory; use HTTP for live
+administration. Linux and macOS local filesystems are supported. Separate
+reader/writer processes and shared network filesystems are unsupported.
+
+**Upgrade and recovery.** Stop the old standalone 2.0/2.1/2.2 process before reusing
+its directory. Raft directories cannot become standalone by removing settings,
+and standalone data cannot bootstrap a replica. Use API imports or backup restore
+into a new directory when moving between deployments. Raft upgrades follow the
+[qualified rolling window](docs/raft-rolling-upgrade.zh-CN.md). No 1.x migration is provided.
+
+**Backups and access.** Standalone supports built-in S3 scheduling; Raft uses
+external scheduling of cluster backup APIs. The [backup worker](docs/backup-automation.md)
+provides retries, verification, isolated drills and Compose/systemd examples for
+both. Configure authentication, tenant authorization and TLS at your
+[gateway](docs/security-deployment.md) before exposing the service.
+
+## Validation and limits
+
+The exact **v2.3.0** tag passed standalone direct/WAL, S3/TLS, Raft protocols 1–3,
+qualified rolling upgrade, packaging and 30-minute maintenance gates.
+
+| Exact-tag maintenance soak | Standalone | Raft protocol 3 |
+| --- | --- | --- |
+| Duration | 30 minutes | 30 minutes |
+| Mixed operations / errors | 130,126 / 0 | 66,222 / 0 |
+| Ingestion P99 | 17.2 seconds | 9.5 seconds |
+| Index observations | 31 stale samples; last sample stale | All samples ready |
+
+These operation totals mix queries, control, writes and maintenance; they are not
+QPS or capacity measurements. Maintenance can return retryable 429s and produce
+long waits. Cross-host, day-scale stability, production capacity and a low-latency
+SLO remain unqualified. See the [full validation record](docs/validation-v2.3.0.md)
+and [deployment readiness](docs/raft-release-readiness.zh-CN.md).
+
+<details>
+<summary>Historical performance evidence</summary>
+
+An earlier local candidate recorded 71,140 operations, 90 expected ingestion 429s
+and a 40.154-second maximum wait. Its maintenance soak also had four HAProxy 503
+query errors and remains a historical FAIL. It is separate from the exact-tag
+results above. [2.1.2 write-tail measurements](docs/performance-write-tail.md)
+and [2.0 results](docs/performance-v2.0.md) apply only to their recorded builds.
+
+</details>
+
+<details>
+<summary>Storage and publication design</summary>
+
+Data files are synced before manifest/catalog publication. A bounded four-worker
+write path coalesces directory syncs with file, byte and time budgets; Parquet
+random reads select columns and row groups. Bounded caches invalidate on local
+publication. GC protects active read views; destructive lifecycle operations wait
+for them to finish.
+
+Raft prepares maintenance outside the application barrier where the protocol
+permits, pauses conflicting writes for the maintenance tenant, uses separate
+bounded control queues and migrates with disk-backed chunks. Publication, graph
+decoding and rollback still consume resources. See [architecture](docs/architecture.en.md).
+
+</details>
 
 ## Documentation
 
-- [Local disk operation and validation](docs/local-disk.md)
-- [2.3.0 validation and remaining limits](docs/validation-v2.3.0.md)
-- [Raft operations and rolling upgrades](docs/raft-operations.zh-CN.md)
-- [Tenant sharding and migration](docs/sharding.zh-CN.md)
-- [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md)
-- [Architecture](docs/architecture.en.md)
-- [User guide](docs/user/README.md)
-- [Query capabilities](docs/query_capabilities.md)
-- [GraphQL](docs/graphql.md)
-- [OpenAPI](docs/openapi.yaml)
-- [Go SDK](sdk/go/graphdb/README.md), [Python SDK](sdk/python/README.md)
+| I want to… | Read |
+| --- | --- |
+| Browse all guides | [Documentation index](docs/README.md) · [User guide](docs/user/README.md) |
+| Use the console | [Management UI](docs/management-ui.md) |
+| Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
+| Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
+| Check release evidence | [2.3.0 validation](docs/validation-v2.3.0.md) · [Compatibility](docs/naming-and-compatibility.md) |
+
+Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 
 ## Development
 
-Run Linux backend validation in OrbStack with a Linux volume for database data:
+Use OrbStack Linux with a Linux volume for backend runtime validation.
 
-```sh
-go test -mod=readonly ./...
-go vet -mod=readonly ./...
-RELEASE_GATE_VERIFY_ONLY=1 scripts/release_gate.sh
-RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
-GRAPHDB_GATE_SOAK=1 RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh
-```
+| Check | Command |
+| --- | --- |
+| Unit tests | `go test -mod=readonly ./...` |
+| Static analysis | `go vet -mod=readonly ./...` |
+| Full static release gate | `RELEASE_GATE_VERIFY_ONLY=1 scripts/release_gate.sh` |
+| Runtime integration | `RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh` |
+| 30-minute maintenance soak | `GRAPHDB_GATE_SOAK=1 RELEASE_GATE_SKIP_STATIC=1 scripts/release_gate.sh` |
 
-The gate exercises direct/WAL ingestion, graph APIs, maintenance, and restart
-consistency. The optional soak runs for 30 minutes. It manages only its own process
-and retains evidence in the printed output directory.
+The runtime gate exercises direct/WAL ingestion, graph APIs, maintenance and
+restart consistency. Scripts manage their own processes and retain evidence in
+the printed output directory.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [LICENSE](LICENSE).
+[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [License — rights reserved](LICENSE)

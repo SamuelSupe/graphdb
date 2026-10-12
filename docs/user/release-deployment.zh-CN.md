@@ -1,50 +1,103 @@
 # GGraphDB 2.3.0 发行版部署
 
-[English](release-deployment.md)
+[English](release-deployment.md) · [用户指南](README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)
 
-默认部署使用单机单进程和持久化本地目录。新安装及替换 1.x 使用新目录；已有 2.0/2.1/2.2
-目录可在停止旧进程后沿用。版本与兼容性见[版本边界](../naming-and-compatibility.zh-CN.md)。
+先选择部署，再校验发行包并启动。单机使用一个进程和一个持久化本地目录，
+每个 Raft 副本使用独立目录。
 
-本版还支持可选的单组 Raft 和按租户分片的 Raft，每个副本使用独立本地目录。
-部署包提供 `docker-compose.raft.yml` 和 `docker-compose.sharded.yml`，见
-[Raft 运维手册](../raft-operations.zh-CN.md) 与 [发布验收状态](../raft-release-readiness.zh-CN.md)。
-下文升级步骤适用于单机；Raft 滚动升级只覆盖[已验收的兼容窗口](../raft-rolling-upgrade.zh-CN.md)。未验证版本使用维护或迁移流程；协议 3 启用后不能用最高协议为 2 的旧程序打开原目录。
+## 选择部署
 
-- [启动、写入和查询](../../README.zh-CN.md)
-- [配置、目录独占、备份恢复与验证](../local-disk.zh-CN.md)
-- [API 用户手册](README.zh-CN.md)
+| 模式 | 包内示例 | 运维指南 |
+| --- | --- | --- |
+| 单机 | [docker-compose.yml](../../docker-compose.yml) | [本地磁盘、持久化与恢复](../local-disk.zh-CN.md) |
+| 单组 Raft | [docker-compose.raft.yml](../../docker-compose.raft.yml) | [Raft 运维](../raft-operations.zh-CN.md) |
+| 租户分片 Raft | [docker-compose.sharded.yml](../../docker-compose.sharded.yml) | [分片与迁移](../sharding.zh-CN.md) |
 
-容器启动：
+以下步骤启动单机。集群部署及验收范围见对应指南与[发布验收状态](../raft-release-readiness.zh-CN.md)。
 
-```sh
-docker compose up -d --build
-```
+## 安装发行包
 
-停止服务后才能对同一目录执行离线 CLI。在线操作使用 HTTP API。
+### 1. 下载并校验
 
-## 发行包
+从 [2.3.0 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)
+下载 `graphdb-v2.3.0.tar.gz` 和 `graphdb-v2.3.0.tar.gz.sha256`，放在同一目录。
 
-从 [2.3.0 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0) 下载压缩包和校验和，
-校验压缩包及内部二进制后启动：
+Linux 上执行：
 
 ```sh
 sha256sum -c graphdb-v2.3.0.tar.gz.sha256
 tar -xzf graphdb-v2.3.0.tar.gz
 cd v2.3.0
 sha256sum -c SHA256SUMS
+```
+
+macOS 上将两处 `sha256sum -c` 换成 `shasum -a 256 -c`。
+
+### 2. 选择程序
+
+| 平台 | 程序 |
+| --- | --- |
+| Linux amd64 | `bin/graphdb-linux-amd64` |
+| Linux arm64 | `bin/graphdb-linux-arm64` |
+| macOS Apple Silicon | `bin/graphdb-darwin-arm64` |
+
+### 3. 启动服务
+
+以 Linux amd64 为例，在解压后的目录执行：
+
+```sh
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 bin/graphdb-linux-amd64 serve
 ```
 
-ARM Linux 使用 `graphdb-linux-arm64`，Apple Silicon 使用 `graphdb-darwin-arm64`。
-从 1.x 升级需使用全新的目录，不提供 1.x 数据迁移。对外开放前，在网关配置认证、租户授权和 TLS；
-跨机器恢复配置见[对象快照备份](../object-backup.zh-CN.md)。提交结果改为 `data_hash`，客户端使用[版本边界](../naming-and-compatibility.zh-CN.md)列出的配套 SDK。
+服务用户必须有数据目录的写权限。其他平台使用表中对应程序，并选择可写目录。
 
-## 从 2.0 升级
+### 4. 检查并打开
 
-从单机 2.0/2.1/2.2/2.2 升级到 2.3.0 也使用以下步骤。
+在另一个终端检查进程存活：
 
-先创建并验证快照，停止旧进程，再替换二进制，使用相同的 `GRAPHDB_DATA_DIR` 和 prefix 启动
-2.3.0。数据格式兼容，目录仍为进程独占，不能同时运行两个版本。恢复流量前检查 readiness、
-代表性查询和 WAL 状态。保留升级前备份用于回滚；不支持启用新自动化后直接降级旧进程。
-S3 自动化需显式开启，见[调度与保留策略](../object-backup.zh-CN.md#自动备份)。
+```sh
+curl -fsS http://127.0.0.1:8080/v1/health
+```
+
+打开 **[http://127.0.0.1:8080/ui/](http://127.0.0.1:8080/ui/)**，按[写入与查询示例](../../README.zh-CN.md#写入与查询)
+操作。接入流量前检查[就绪状态](../local-disk.zh-CN.md#就绪与内存预算)。
+
+## 使用容器
+
+在仓库根目录或解压后的 `v2.3.0/` 目录执行：
+
+```sh
+docker compose up -d --build
+```
+
+对数据目录执行离线 CLI 前必须停止服务，在线管理使用 HTTP API。
+
+<a id="从-20-升级"></a>
+
+## 升级已有安装
+
+| 已有安装 | 升级规则 |
+| --- | --- |
+| 单机 2.0／2.1／2.2 | 停止旧进程，使用 2.3.0 沿用兼容目录 |
+| Raft | 遵循[已验收的滚动窗口](../raft-rolling-upgrade.zh-CN.md)；未验证版本使用维护或迁移流程 |
+| 1.x | 使用新目录，不提供 1.x 数据迁移 |
+
+### 单机升级步骤
+
+1. 创建并验证快照，保留升级前备份用于回滚。
+2. 停止旧进程，禁止两个版本同时使用同一目录。
+3. 替换程序，使用相同 `GRAPHDB_DATA_DIR` 和 prefix 启动 2.3.0。
+4. 检查就绪、代表性查询和 WAL 状态，再恢复流量。
+
+不支持启用新自动化后直接降级旧进程。Raft 协议 3 启用后，最高协议为 2 的旧程序
+不能打开同一副本目录。详见[版本边界](../naming-and-compatibility.zh-CN.md)。
+
+## 对外开放前
+
+| 需求 | 配置 |
+| --- | --- |
+| 认证、租户授权与 TLS | 配置[网关](../security-deployment.zh-CN.md) |
+| 跨机器恢复 | 配置[对象快照](../object-backup.zh-CN.md) |
+| 定时备份 | 显式开启[单机调度与保留策略](../object-backup.zh-CN.md#自动备份)，或使用[备份 worker](../backup-automation.zh-CN.md) |
+| 客户端兼容 | 按[版本边界](../naming-and-compatibility.zh-CN.md)选择配套 SDK，使用 `data_hash` 契约 |

@@ -1,56 +1,79 @@
 # GGraphDB 2.3.0 Documentation
 
-[中文](README.zh-CN.md)
+[简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)
 
-The current stable release is **[2.3.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)**.
-This index and its user guides describe standalone, Raft, tenant sharding and the
-embedded bilingual console. SDK/OpenAPI versions are 2.3.0; module `/v2`, HTTP `/v1`
-and separate Raft protocol identifiers retain their contracts.
-Guides under [user/](user/README.md) have matching English and Simplified Chinese files.
+The stable release is **2.3.0**. Choose a task below or follow a suggested reading path.
+User guides and console documentation have English and Simplified Chinese versions;
+some cluster operations guides are currently Chinese-only.
+
+## Suggested reading paths
+
+| Your goal | Suggested order |
+| --- | --- |
+| Try the database | [Quick start](user/quickstart.md) → [Console](management-ui.md) → [Usage manual](user/usage-manual.md) |
+| Integrate business data | [Data model](user/data-model.md) → [Ingestion](user/write-ingest.md) → [Queries](user/read-query.md) → [SDKs](user/sdk.md) |
+| Prepare a deployment | [Release deployment](user/release-deployment.md) → [Security](security-deployment.md) → [Backup/restore](object-backup.md) → [Validation](validation-v2.3.0.md) |
 
 ## User guides
 
-- [Management console](management-ui.md) · [中文](management-ui.zh-CN.md)
+### Get started
 
-- [2.3.0 release notes](../release/local-disk.md) · [Validation](validation-v2.3.0.md) · [JSON](validation-v2.3.0.json)
+| Task | English guide | 中文 |
+| --- | --- | --- |
+| Run a first example | [Quick start](user/quickstart.md) | [快速开始](user/quickstart.zh-CN.md) |
+| Install a published binary | [Release deployment](user/release-deployment.md) | [发行版部署](user/release-deployment.zh-CN.md) |
+| Explore in the browser | [Management console](management-ui.md) | [管理控制台](management-ui.zh-CN.md) |
+| Follow the full workflow | [Usage manual](user/usage-manual.md) | [使用手册](user/usage-manual.zh-CN.md) |
+| Find API conventions | [User guide](user/README.md) | [用户指南](user/README.zh-CN.md) |
 
-- [User Guide](user/README.md) · [中文](user/README.zh-CN.md)
-- [Local disk deployment and durability](local-disk.md) · [中文](local-disk.zh-CN.md)
-- [Object-storage snapshots, automation and restore](object-backup.md) · [中文](object-backup.zh-CN.md)
-- [Standalone and Raft backup automation](backup-automation.md) · [中文](backup-automation.zh-CN.md)
-- [Quick Start](user/quickstart.md) · [中文](user/quickstart.zh-CN.md)
-- [Usage Manual](user/usage-manual.md) · [中文](user/usage-manual.zh-CN.md)
-- [Release Deployment](user/release-deployment.md) · [中文](user/release-deployment.zh-CN.md)
-- [Deployment And Operations](user/deploy-ops.md) · [中文](user/deploy-ops.zh-CN.md)
-- [Data Model](user/data-model.md) · [中文](user/data-model.zh-CN.md)
-- [Write And Ingest](user/write-ingest.md) · [中文](user/write-ingest.zh-CN.md)
-- [Read And Query](user/read-query.md) · [中文](user/read-query.zh-CN.md)
-- [Scan And Export](user/scan-export.md) · [中文](user/scan-export.zh-CN.md)
-- [Tenant And Config](user/tenant-config.md) · [中文](user/tenant-config.zh-CN.md)
-- [Tasks And Maintenance](user/tasks-maintenance.md) · [中文](user/tasks-maintenance.zh-CN.md)
-- [Errors And Troubleshooting](user/errors-troubleshooting.md) · [中文](user/errors-troubleshooting.zh-CN.md)
-- [Go And Python SDK](user/sdk.md) · [中文](user/sdk.zh-CN.md)
-- [API Map](user/api-map.md) · [中文](user/api-map.zh-CN.md)
+### Model, ingest and query
+
+| Task | English guide | 中文 |
+| --- | --- | --- |
+| Design entities and relationships | [Data model](user/data-model.md) | [数据模型](user/data-model.zh-CN.md) |
+| Write commits and collector batches | [Write and ingest](user/write-ingest.md) | [写入与采集](user/write-ingest.zh-CN.md) |
+| Read, traverse and aggregate | [Read and query](user/read-query.md) | [读取与查询](user/read-query.zh-CN.md) |
+| Scan or export data | [Scan and export](user/scan-export.md) | [扫描与导出](user/scan-export.zh-CN.md) |
+| Build a Go or Python client | [SDK guide](user/sdk.md) | [SDK 指南](user/sdk.zh-CN.md) |
+
+### Operate and recover
+
+| Task | English guide | 中文 |
+| --- | --- | --- |
+| Configure tenant lifecycle and paging | [Tenants and configuration](user/tenant-config.md) | [租户与配置](user/tenant-config.zh-CN.md) |
+| Plan service operations | [Deployment and operations](user/deploy-ops.md) | [部署与运维](user/deploy-ops.zh-CN.md) |
+| Manage tasks and maintenance | [Tasks and maintenance](user/tasks-maintenance.md) | [任务与维护](user/tasks-maintenance.zh-CN.md) |
+| Diagnose API failures | [Troubleshooting](user/errors-troubleshooting.md) | [故障排查](user/errors-troubleshooting.zh-CN.md) |
+| Understand disk durability | [Local disk guide](local-disk.md) | [本地磁盘指南](local-disk.zh-CN.md) |
+| Back up and restore snapshots | [Object backups](object-backup.md) | [对象备份](object-backup.zh-CN.md) |
+| Schedule standalone or Raft backups | [Backup automation](backup-automation.md) | [自动备份](backup-automation.zh-CN.md) |
 
 ## Cluster and production operations
 
-- [Three-replica Raft](raft-ha.zh-CN.md) · [Tenant sharding and migration](sharding.zh-CN.md)
-- [Raft operations](raft-operations.zh-CN.md) · [Rolling upgrade window](raft-rolling-upgrade.zh-CN.md) · [Release and deployment qualification](raft-release-readiness.zh-CN.md)
-- [Production security](security-deployment.md) · [Product operations](product-operations.zh-CN.md) · [Diagnostic metrics](diagnostics-metrics.zh-CN.md)
+| Task | Documentation |
+| --- | --- |
+| Configure replicas or shards | [Three-replica Raft](raft-ha.zh-CN.md) · [Tenant sharding and migration](sharding.zh-CN.md) |
+| Operate or upgrade a cluster | [Raft operations](raft-operations.zh-CN.md) · [Rolling upgrade window](raft-rolling-upgrade.zh-CN.md) |
+| Protect and diagnose the service | [Production security](security-deployment.md) · [Product operations](product-operations.zh-CN.md) · [Diagnostic metrics](diagnostics-metrics.zh-CN.md) |
+| Check deployment qualification | [Release and deployment readiness](raft-release-readiness.zh-CN.md) |
 
 ## Reference documents
 
-- [Database Introduction](database-introduction.md) · [中文](database-introduction.zh-CN.md)
-- [GraphQL](graphql.md) · [中文](graphql.zh-CN.md)
-- [Legacy Text DSL compatibility](gql.md)
-- [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md)
-- [Query capabilities](query_capabilities.md)
-- [Error codes](error_codes.md)
-- [Architecture](architecture.en.md)
-- [OpenAPI](openapi.yaml)
-- [Product function gaps](product_function_gaps.md)
+| Topic | Documentation |
+| --- | --- |
+| Positioning and architecture | [Database introduction](database-introduction.md) · [中文](database-introduction.zh-CN.md) · [Architecture](architecture.en.md) |
+| API contracts | [API map](user/api-map.md) · [中文](user/api-map.zh-CN.md) · [OpenAPI](openapi.yaml) · [Error codes](error_codes.md) |
+| Query languages | [Query capabilities](query_capabilities.md) · [GraphQL](graphql.md) · [中文](graphql.zh-CN.md) · [Legacy text DSL](gql.md) |
+| Versions and gaps | [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md) · [Product gaps](product_function_gaps.md) |
+| 2.3.0 release evidence | [Release notes](../release/local-disk.md) · [Validation](validation-v2.3.0.md) · [Machine-readable JSON](validation-v2.3.0.json) |
+
+SDK/OpenAPI versions are 2.3.0. Module `/v2`, HTTP `/v1` and separate Raft protocol
+identifiers follow their own contracts; do not substitute the product version.
 
 ## Historical designs and validation
+
+<details>
+<summary>Browse historical designs, reviews and validation</summary>
 
 These records retain their own dates, builds and PASS/FAIL/skipped/unpublished
 conclusions. [2.3.0 validation](validation-v2.3.0.md) qualifies the current release;
@@ -72,3 +95,5 @@ historical performance measurements do not establish current production capacity
 - [Historical local disk v2 validation and focused benchmark (Chinese)](performance-local-disk-v2.md)
 - [Historical local disk performance: pagination, JSON encoding and Parquet layout (Chinese)](performance-local-disk-optimization-2.md)
 - [Historical HA design](high-availability-design.zh-CN.md) · [HA validation](raft-ha-validation.zh-CN.md) · [Sharding validation](sharding-validation.zh-CN.md)
+
+</details>

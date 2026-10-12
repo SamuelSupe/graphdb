@@ -1,57 +1,107 @@
 # GGraphDB 2.3.0 Release Deployment
 
-[中文](release-deployment.zh-CN.md)
+[简体中文](release-deployment.zh-CN.md) · [User guide](README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)
 
-GGraphDB 2.x defaults to standalone with one process and a persistent local directory. Upgrades from 1.x need a fresh directory; no 1.x data migration is provided.
+Choose a deployment, verify the package, then start the service. Standalone uses
+one process and one persistent local directory; each Raft replica owns a separate directory.
 
-This release also supports optional single-group and tenant-sharded Raft,
-with an independent local directory per replica. The packaged examples are
-`docker-compose.raft.yml` and `docker-compose.sharded.yml`. See the
-[Raft operations guide](../raft-operations.zh-CN.md) and
-[release qualification status](../raft-release-readiness.zh-CN.md). The upgrade
-instructions below concern standalone deployments. Raft rolling upgrades are limited
-to the [qualified compatibility window](../raft-rolling-upgrade.zh-CN.md); untested
-versions require maintenance or migration. After protocol 3 activation, a binary
-whose maximum supported protocol is 2 cannot reopen the same replica directory.
+## Choose your deployment
 
-- [Start, write, and query](../../README.md)
-- [Configuration, directory ownership, recovery, and validation](../local-disk.md)
-- [API user guide](README.md)
+| Mode | Packaged example | Operations guide |
+| --- | --- | --- |
+| Standalone | [docker-compose.yml](../../docker-compose.yml) | [Local disk, durability and recovery](../local-disk.md) |
+| Single-group Raft | [docker-compose.raft.yml](../../docker-compose.raft.yml) | [Raft operations](../raft-operations.zh-CN.md) |
+| Tenant-sharded Raft | [docker-compose.sharded.yml](../../docker-compose.sharded.yml) | [Sharding and migration](../sharding.zh-CN.md) |
 
-Start the container:
+The steps below start standalone. Cluster deployment and qualification follow the
+linked guides and [readiness report](../raft-release-readiness.zh-CN.md).
 
-```sh
-docker compose up -d --build
-```
+## Install a release archive
 
-Stop the service before using offline tools on its directory. Use HTTP for live administration.
+### 1. Download and verify
 
-## Release archive
+Download `graphdb-v2.3.0.tar.gz` and `graphdb-v2.3.0.tar.gz.sha256` from the
+[2.3.0 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0) into the same directory.
 
-Download the archive and checksum from the [2.3.0 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0).
-Verify the outer archive and inner `SHA256SUMS`, then choose the binary for your platform:
+On Linux:
 
 ```sh
 sha256sum -c graphdb-v2.3.0.tar.gz.sha256
 tar -xzf graphdb-v2.3.0.tar.gz
 cd v2.3.0
 sha256sum -c SHA256SUMS
+```
+
+On macOS, use `shasum -a 256 -c` in place of `sha256sum -c` for both checks.
+
+### 2. Select the binary
+
+| Platform | Binary |
+| --- | --- |
+| Linux amd64 | `bin/graphdb-linux-amd64` |
+| Linux arm64 | `bin/graphdb-linux-arm64` |
+| macOS Apple Silicon | `bin/graphdb-darwin-arm64` |
+
+### 3. Start the service
+
+For Linux amd64, after unpacking:
+
+```sh
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 bin/graphdb-linux-amd64 serve
 ```
 
-Use `graphdb-linux-arm64` on ARM Linux or `graphdb-darwin-arm64` on Apple Silicon.
-Configure authentication, tenant authorization and TLS at the gateway before
-exposing the API. For off-machine recovery, configure [object snapshots](../object-backup.md).
-Commit responses use `data_hash`; use the matching SDK release listed in [version boundaries](../naming-and-compatibility.md).
+The service user must be able to write to the data directory. Use the matching
+binary from the table and a writable directory on other platforms.
 
-## Upgrade from 2.0
+### 4. Verify and open
 
-Use this process to upgrade standalone 2.0/2.1/2.2 installations to 2.3.0.
+In another terminal, check liveness:
 
-Create and verify a snapshot, stop the old process, replace the binary, then start
-2.3.0 with the same `GRAPHDB_DATA_DIR` and prefix. The directory remains exclusive;
-never run both versions against it. Validate readiness, representative queries,
-and WAL status before reopening traffic. Preserve the pre-upgrade backup for
-rollback; downgrading after enabling new automation is not a supported workflow.
-S3 automation is opt-in; see [schedules and retention](../object-backup.md#automatic-backups).
+```sh
+curl -fsS http://127.0.0.1:8080/v1/health
+```
+
+Open **[http://127.0.0.1:8080/ui/](http://127.0.0.1:8080/ui/)** and follow the
+[write/query example](../../README.md#write-and-query). Check
+[readiness](../local-disk.md#readiness-and-memory-budgets) before reopening traffic.
+
+## Container alternative
+
+From the repository root, or the unpacked archive's `v2.3.0/` directory:
+
+```sh
+docker compose up -d --build
+```
+
+Stop the service before using offline CLI tools on its directory. Use HTTP for live administration.
+
+<a id="upgrade-from-20"></a>
+
+## Upgrade an existing installation
+
+| Existing installation | Upgrade rule |
+| --- | --- |
+| Standalone 2.0 / 2.1 / 2.2 | Stop the old process; reuse the compatible directory with 2.3.0 |
+| Raft | Follow the [qualified rolling window](../raft-rolling-upgrade.zh-CN.md); untested versions require maintenance or migration |
+| 1.x | Start with a fresh directory; no 1.x data migration is provided |
+
+### Standalone upgrade checklist
+
+1. Create and verify a snapshot; retain the pre-upgrade backup for rollback.
+2. Stop the old process. Never run two versions against the same directory.
+3. Replace the binary and start 2.3.0 with the same `GRAPHDB_DATA_DIR` and prefix.
+4. Check readiness, representative queries and WAL status before reopening traffic.
+
+Downgrading after enabling new automation is unsupported. After Raft protocol 3
+activation, a binary with maximum protocol 2 cannot reopen the same replica directory.
+See [version boundaries](../naming-and-compatibility.md).
+
+## Before exposing the service
+
+| Need | Configuration |
+| --- | --- |
+| Authentication, tenant authorization, TLS | Configure the [gateway](../security-deployment.md) |
+| Off-machine recovery | Configure [object snapshots](../object-backup.md) |
+| Scheduled backups | Opt in to [standalone schedules and retention](../object-backup.md#automatic-backups), or use the [backup worker](../backup-automation.md) |
+| Client compatibility | Use matching SDKs and the `data_hash` contract in [version boundaries](../naming-and-compatibility.md) |
