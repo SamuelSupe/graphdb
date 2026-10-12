@@ -184,24 +184,14 @@ func (s *TenantStore) secondaryIndexGroupUsesVersion(tenantID string, spec Index
 
 func (s *TenantStore) writeChangedParquetEdgeShardsFast(ctx context.Context, tenantID string, shards []EdgeShardData, catalog IndexCatalog, version int64) error {
 	specs := edgeShardSpecMap(catalog)
-	for _, group := range edgeShardDataPackGroups(shards) {
-		for i := range group.Shards {
-			group.Shards[i].TenantID = tenantID
-		}
-		if !s.edgeShardGroupUsesVersion(tenantID, specs, group, version) {
-			continue
-		}
-		pack := mergeEdgeShardPack(group)
-		pack.TenantID = tenantID
-		key := s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, pack.Shard)
-		if len(group.Shards) > 1 {
-			key = s.parquetEdgeShardPackVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
-		}
-		if err := s.putParquetEdgeShardObject(ctx, key, tenantID, pack, false); err != nil {
-			return err
+	groups := edgeShardDataPackGroups(shards)
+	changed := groups[:0]
+	for _, group := range groups {
+		if s.edgeShardGroupUsesVersion(tenantID, specs, group, version) {
+			changed = append(changed, group)
 		}
 	}
-	return nil
+	return s.writeParquetEdgeShardGroups(ctx, tenantID, changed, false)
 }
 
 func (s *TenantStore) edgeShardGroupUsesVersion(tenantID string, specs map[string]EdgeShard, group edgeShardDataPackGroup, version int64) bool {
@@ -220,45 +210,35 @@ func (s *TenantStore) edgeShardGroupUsesVersion(tenantID string, specs map[strin
 }
 
 func (s *TenantStore) writeChangedParquetEntityPagesFast(ctx context.Context, tenantID string, pages []EntityPageData, catalog IndexCatalog, before *graph.Graph, after *graph.Graph, changedEntityIDs []string, version int64) error {
-	recordJobs := []entityRecordWriteJob{}
 	writeRecords := s.WriteEntityRecords
 	changed := make(map[string]struct{}, len(changedEntityIDs))
 	for _, entityID := range changedEntityIDs {
 		changed[entityID] = struct{}{}
 	}
 	specs := entityPageSpecMap(catalog)
-	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes) {
-		for i := range group.Pages {
-			group.Pages[i].TenantID = tenantID
-		}
-		if !s.entityPageGroupUsesVersion(tenantID, specs, group, version) {
-			continue
-		}
-		pack := mergeEntityPagePack(group)
-		pack.TenantID = tenantID
-		key := s.parquetEntityPageVersionKey(tenantID, pack.Version, pack.Shard)
-		if len(group.Pages) > 1 {
-			key = s.parquetEntityPagePackVersionKey(tenantID, pack.Version, group.ID)
-		}
-		pageMeta, err := s.putParquetEntityPageObject(ctx, key, tenantID, pack, false)
-		if err != nil {
-			return err
-		}
-		if writeRecords {
-			for _, page := range group.Pages {
-				pageHash := entityPageContentHash(page)
-				for _, entity := range page.Entities {
-					if _, ok := changed[entity.ID]; !ok {
-						continue
-					}
-					record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
-					recordJobs = append(recordJobs, entityRecordWriteJob{Key: s.entityRecordKey(tenantID, entity.ID), Record: record})
-				}
-			}
+	groups := entityPageDataPackGroups(pages, !writeRecords, s.EntityPagePackMaxBytes)
+	changedGroups := groups[:0]
+	for _, group := range groups {
+		if s.entityPageGroupUsesVersion(tenantID, specs, group, version) {
+			changedGroups = append(changedGroups, group)
 		}
 	}
-	if !writeRecords {
-		return nil
+	metas, err := s.writeParquetEntityPageGroups(ctx, tenantID, changedGroups, false)
+	if err != nil || !writeRecords {
+		return err
+	}
+	recordJobs := []entityRecordWriteJob{}
+	for index, group := range changedGroups {
+		for _, page := range group.Pages {
+			pageHash := entityPageContentHash(page)
+			for _, entity := range page.Entities {
+				if _, ok := changed[entity.ID]; !ok {
+					continue
+				}
+				record := newEntityRecord(tenantID, entity, page.Shard, pageHash, metas[index].ETag, page.Version, page.UpdatedAt)
+				recordJobs = append(recordJobs, entityRecordWriteJob{Key: s.entityRecordKey(tenantID, entity.ID), Record: record})
+			}
+		}
 	}
 	if err := s.putEntityRecordBatch(ctx, recordJobs); err != nil {
 		return err

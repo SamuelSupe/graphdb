@@ -5,6 +5,26 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+## [2.3.1] - 2026-10-13
+
+- Coalesce queued standalone synchronous-index writes under the existing writer
+  fence, preserving consecutive versions and publication acknowledgement.
+- Reserve Parquet decode capacity for control/publication loads, acquire read
+  admission before opening files, and reuse immutable graphs only after verifying
+  the authoritative manifest and complete read set. Protect cold-write progress.
+- Improve dense shard row groups and data-column compression; remove redundant
+  graph index rebuilds and normalized-snapshot decoding without changing hashes.
+- Reuse captured graphs for prepared Raft maintenance and omit non-transferable
+  staged GC during index preparation. Batch rollback before-images without
+  weakening pre-mutation durability or checkpoint recovery.
+- Give ordinary cold reads the bounded reader-load budget; preserve caller
+  deadlines and explicit minimum-version catch-up limits.
+- Use bounded terminal-task waits in restore-drill tests instead of a two-second
+  scheduling assumption; production recovery deadlines are unchanged.
+- Record fixed-data, identical-load before/after comparisons separately for
+  standalone and Raft. Transient index staleness and cold-query timeouts remain;
+  no universal latency or production-capacity claim is made.
+
 ## [2.3.0] - 2026-10-11
 
 - Embed an English / Simplified Chinese management console at `/ui/` on the

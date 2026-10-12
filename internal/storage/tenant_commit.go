@@ -25,6 +25,8 @@ type commitIndexUpdate struct {
 	fence       writerFenceRef
 	waitFor     <-chan struct{}
 	done        chan struct{}
+	joined      *commitIndexUpdate
+	err         error
 }
 
 func (work *commitIndexUpdate) retainIndexInputs() {
@@ -35,22 +37,48 @@ func (work *commitIndexUpdate) retainIndexInputs() {
 
 type orderedIndexUpdateKey struct{}
 
-func (s *TenantStore) enqueueCommitIndexUpdate(tenantID string, work *commitIndexUpdate) {
+func (s *TenantStore) enqueueCommitIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) {
 	if work == nil {
 		return
 	}
 	work.retainIndexInputs()
 	work.done = make(chan struct{})
+	bound, local := s.writerFenceFromContext(ctx, tenantID)
+	local = local && s.localFileStore() != nil && !IsReplicatedContext(ctx)
+	if local {
+		work.fence = bound.fence
+	}
 	s.indexUpdateMu.Lock()
+	if pending := s.pendingIngestIndexes[tenantID]; local && pending != nil && pending.reservation == nil &&
+		s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
+		len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
+			len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges {
+		mergePendingIndexUpdate(pending, work)
+		// Both callers wait for the merged catalog publication. Drop the later
+		// work's graph references instead of retaining every intermediate view.
+		*work = commitIndexUpdate{joined: pending}
+		s.indexUpdateMu.Unlock()
+		return
+	}
 	work.waitFor = s.indexUpdateTails[tenantID]
 	s.indexUpdateTails[tenantID] = work.done
 	s.indexUnreservedTails[tenantID] = work.done
+	if local {
+		if s.pendingIngestIndexes == nil {
+			s.pendingIngestIndexes = make(map[string]*commitIndexUpdate)
+		}
+		s.pendingIngestIndexes[tenantID] = work
+	}
 	s.indexUpdateMu.Unlock()
 }
 
 func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) (indexErr error) {
 	if work == nil {
 		return nil
+	}
+	if work.joined != nil {
+		<-work.joined.done
+		return work.joined.err
 	}
 	if work.waitFor != nil {
 		started := time.Now()
@@ -64,6 +92,7 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 	}
 	s.indexUpdateMu.Unlock()
 	defer func() {
+		work.err = indexErr
 		close(work.done)
 		s.indexUpdateMu.Lock()
 		if s.indexUnreservedTails[tenantID] == work.done {
@@ -280,7 +309,7 @@ func (s *TenantStore) commitWithinTenantLock(ctx context.Context, tenantID strin
 	}
 	indexWork := result.indexUpdate
 	result.indexUpdate = nil
-	s.enqueueCommitIndexUpdate(tenantID, indexWork)
+	s.enqueueCommitIndexUpdate(criticalCtx, tenantID, indexWork)
 	releaseCritical()
 	s.finishCommitIndexUpdate(criticalCtx, tenantID, indexWork, &result)
 	return result, reservation, nil

@@ -1,6 +1,6 @@
 # Scan And Export
 
-Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.1**; see [release validation](../validation-v2.3.1.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](scan-export.zh-CN.md)
 
@@ -103,3 +103,9 @@ curl -sS "$READER/v1/export/snapshot/stream?min_version=123" \
 
 If the reader cannot reach the version within `GRAPHDB_READER_CATCHUP_TIMEOUT`,
 the response is `reader_not_fresh` with a retry hint.
+
+An explicit `min_version` and a cached view behind the target use that catch-up
+deadline. A default cold read still pins the committed manifest version, but
+uses the existing reader load timeout and request context for initial graph
+materialization. It does not serve an older version to avoid the wait. Cold
+loads remain subject to reader load admission; a client deadline still applies.

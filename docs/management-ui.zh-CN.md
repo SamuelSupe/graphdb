@@ -1,6 +1,6 @@
 # 管理控制台
 
-**GGraphDB 2.3.0** · [English](management-ui.md) · [文档中心](README.zh-CN.md) · [API 指南](user/README.zh-CN.md)
+**GGraphDB 2.3.1** · [English](management-ui.md) · [文档中心](README.zh-CN.md) · [API 指南](user/README.zh-CN.md)
 
 控制台内嵌于 Go 程序，支持英文和简体中文。运行时无需 Node、npm、前端构建或
 独立 UI 服务；此前发行的 2.2.4 二进制不包含此功能。

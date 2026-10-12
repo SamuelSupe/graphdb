@@ -1,76 +1,81 @@
-# GGraphDB v2.3.0
+# GGraphDB v2.3.1
 
 ## 中文
 
-本版新增内置中英文管理控制台。通过管理或组合监听器的 `/ui/` 访问；路由入口也支持。
-控制台覆盖图数据、查询、模型、租户、索引、任务与备份、接入、治理和集群运维。
-概览采用图表，详情和配置采用结构化展示与有类型的编辑器，原始 JSON 按需展开。
-支持独立查询草稿、未完成编辑保护、键盘标签切换、可滚动对话框和窄屏布局。
-运行时无需 Node、npm 或独立前端服务；沿用部署网关的认证与授权，令牌仅保存在页面内存。
+本版修复并缓解单机写入长尾、索引追平和 Raft 维护期间的延迟：合并同一写入栅栏内
+排队的同步索引更新；为控制元数据和发布装载保留 Parquet 解码容量；减少文件打开、
+图重放、快照解码、稠密分片扫描和准备维护中的重复工作。恢复回滚仍在修改前持久化
+全部前镜像。保持 fsync、多数派确认、逻辑摘要、Parquet/WAL 和 Raft 协议契约。
 
-大量租户场景使用服务端 ID 搜索和分页。切换器每次加载 20 条，管理表格默认 25 条，
-集群归属也按页加载。只读取当前页的租户详情，历史对象扫描改为手动启用。
-Go/Python SDK 增加对应分页能力；不传分页参数的 HTTP 请求与原 SDK 全量方法保持兼容。
-ID 注册表／集群目录仍整体读取，本次优化不表示注册表可无限扩展。
+同一部署分别从相同停止状态数据、资源和请求计划做一次 6 分钟前后对照；每组均为
+4 writer / 16 reader、288 次写入和 5,760 次查询。单机批量 20、Raft 批量 1，
+两种部署的结果不能直接比较：
 
-页面性能优化延迟展开详情与原始数据，合并字段验证，减少重复列表请求和隐藏结果渲染。
-清理已失效的历史代码及 CI 门禁，不更改 Parquet/WAL 数据格式、Raft 协议、多数派或 fsync 契约。
+| 指标 | 单机：基线 → 修复 | Raft：基线 → 修复 |
+| --- | --- | --- |
+| 写入 P99 | 12.123 → 9.658 秒 | 1.885 → 0.908 秒 |
+| 查询 P99 | 104–116 → 66–81 毫秒 | 323–329 → 101–107 毫秒 |
+| 索引 stale 样本 | 7/36 → 3/36 | 0/36 → 0/36 |
+| 写入／查询错误 | 0 → 0 | 0 → 0 |
 
-版本、SDK 和 OpenAPI 为 2.3.0；Go 模块 `/v2`、HTTP `/v1` 不变。
-单机升级先备份、停止旧进程，再以相同数据目录和前缀启动。Raft 升级遵循
-[滚动资格窗口](https://github.com/SamuelSupe/graphdb/blob/v2.3.0/docs/raft-rolling-upgrade.zh-CN.md)。
-协议激活和混部限制仍适用，不提供 1.x 迁移或任意版本降级保证。
+冷启动相同 4 个写入由全部 120 秒超时变为全部成功，耗时 13.425–13.431 秒；
+480 次查询的 5 秒超时由 318 次降到 22 次。单机瞬时 stale 和冷查询超时仍存在。
+旧约 6 秒 Raft 极端查询没有在固定基线中复现，不能声称已完全消除。
+详见[固定负载报告](https://github.com/SamuelSupe/graphdb/blob/v2.3.1/docs/maintenance-tailfix-2026-10-13.zh-CN.md)。
+这些对照使用修复后的诊断构建；确切发行二进制由标签门禁另行验证。
 
-本版已发布为稳定 Latest，确切标签的全量 unit/vet/race、SDK、direct/WAL、S3、TLS 网关、Raft、
-已发布 2.2.4 到本版的协议 1 滚动和两个三十分钟维护长测全部通过，无门禁豁免。
-下载包、包内二进制及标签源码核验通过。门禁证据在压缩包的 `release/evidence/`，
-发布与下载验证见 [2.3.0 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.0.md)。
-本机 Chrome 已验证双语、390px 和一万租户样本。浏览器局部性能收益不代表数据库吞吐收益；
-跨宿主机、天级稳定性和生产容量仍未认证。历史失败记录不因本版发行而变为通过。
+发行流程要求全量 unit/vet/race、SDK、direct/WAL、S3、TLS 网关、Raft 协议 1–3、
+已发布 v2.3.0 到本版的协议 1 滚动，以及单机和 Raft 各 30 分钟维护长测全部通过后
+才创建稳定发行，无门禁豁免。发行证据随包提供，最终状态见
+[2.3.1 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.1.md)。
+单宿主机测试不认证跨宿主机故障域、日级稳定性、生产容量或统一低延迟 SLO。
+
+产品、SDK 和 OpenAPI 为 2.3.1，Go 模块 `/v2` 和 HTTP `/v1` 不变。
+单机先备份、停止旧进程，再以原目录和前缀启动；Raft 遵循
+[滚动升级手册](https://github.com/SamuelSupe/graphdb/blob/v2.3.1/docs/raft-rolling-upgrade.zh-CN.md)。
+协议激活仍是全组升级后的独立操作，不提供任意版本混部或降级保证。
 
 ## English
 
-This release embeds an English / Simplified Chinese management console at `/ui/`
-on the management/combined listener and sharding router. It covers graph data,
-queries, schemas, tenants, indexes, tasks/backups, ingestion, governance and cluster
-operations. Charts replace overview lists; typed editors and structured details
-retain optional raw JSON. Draft protection, keyboard tabs, scrollable dialogs and
-responsive layouts improve routine operation. No Node, npm or separate frontend
-service is needed at runtime. Existing gateway authorization remains in force;
-bearer tokens stay in page memory.
+This patch reduces standalone write tails, index catch-up work and Raft maintenance
+latency. It coalesces queued synchronous index updates, reserves decode capacity
+for control/publication loads, reuses verified immutable graphs, improves dense
+Parquet row groups and removes redundant snapshot/index preparation. Rollback
+before-images remain durable before mutation; fsync, quorum, logical hashes,
+Parquet/WAL formats and Raft protocol contracts are preserved.
 
-Server-side tenant ID search and cursor pages bound switching, tenant tables and
-cluster placements. The picker loads 20 matches; the tenant table defaults to 25.
-Only page metadata/manifests are loaded; legacy prefix scans are opt-in. Go/Python
-SDKs support paging while original unpaged requests remain compatible. The complete
-ID registry/catalog is still read: this is not an unlimited registry-capacity claim.
+Separate fixed-data six-minute pairs used identical resources and request plans
+within each topology: four writers, sixteen readers, 288 writes and 5,760 queries.
+Standalone batches contain twenty items; Raft batches contain one, so the two
+topologies cannot be compared directly. Standalone write P99 fell from 12.123 to
+9.658 seconds and stale samples from 7/36 to 3/36. Raft write P99 fell from 1.885
+to 0.908 seconds, with zero stale samples. Both final warm runs had zero write or
+query errors. These comparisons qualify the diagnostic build, not a differently
+stamped release binary.
 
-Collapsed details render on demand, input validation is coalesced, and redundant
-list requests/hidden query rendering are avoided. Obsolete source helpers and CI
-jobs are removed. Parquet/WAL formats, Raft protocols, majority and fsync contracts
-remain unchanged. SDK/OpenAPI are 2.3.0; module `/v2` and HTTP `/v1` remain unchanged.
+Cold writes changed from four 120-second timeouts to four successes in about
+13.43 seconds; five-second query timeouts fell from 318/480 to 22/480. Transient
+standalone staleness and cold-query failures remain. The older six-second Raft
+extreme was not reproduced in the fixed baseline. One shared host and one pair
+do not establish statistical confidence, cross-host reliability or production SLOs.
 
-The stable Latest release passed exact-tag unit/vet/race, SDK, standalone direct/WAL,
-S3, TLS gateway, Raft, protocol-1 rolling from published v2.2.4 and two 30-minute
-maintenance soak gates without a waiver. Downloaded archives, binaries and tagged
-source files were verified. Evidence is packaged under `release/evidence/`; the
-main validation record reports publication/download results. Native Chrome checks
-cover both languages, 390px and 10,000 fixture tenants.
-Frontend measurements do not establish database throughput, production capacity,
-cross-host or day-scale reliability. Earlier failures remain recorded.
+The tag workflow publishes only after all unit/vet/race, SDK, direct/WAL, S3,
+TLS gateway, Raft protocol, released-v2.3.0 rolling and both thirty-minute soak
+gates pass. Evidence is packaged under `release/evidence/`; the validation record
+tracks the exact release binary and downloaded assets. SDK/OpenAPI versions are
+2.3.1; module `/v2` and HTTP `/v1` retain their existing contracts.
 
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.3.0.tar.gz.sha256
-tar -xzf graphdb-v2.3.0.tar.gz
-cd v2.3.0
+sha256sum -c graphdb-v2.3.1.tar.gz.sha256
+tar -xzf graphdb-v2.3.1.tar.gz
+cd v2.3.1
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/path/to/v2-data bin/graphdb-linux-amd64 serve
 ```
 
-Includes Linux amd64/arm64 and macOS arm64 binaries, console sources, matching
-SDKs/OpenAPI, bilingual guides, deployment/backup examples, build identity and gate
-evidence. No published container image or production fault-domain certification
-is implied.
+Includes Linux amd64/arm64 and macOS arm64 binaries, matching SDKs/OpenAPI,
+console sources, bilingual guides, deployment/backup examples, build identity and
+gate evidence. No container image publication is implied.

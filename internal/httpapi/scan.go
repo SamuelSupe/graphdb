@@ -31,7 +31,7 @@ func (s *Server) listEntities(w http.ResponseWriter, r *http.Request) {
 	if enforceTarget {
 		options.MinVersion = target.TargetVersion
 	}
-	result, err := s.listEntitiesPage(r.Context(), tenantID, options)
+	result, err := s.listEntitiesPage(r.Context(), tenantID, options, target)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -75,7 +75,7 @@ func (s *Server) streamEntities(w http.ResponseWriter, r *http.Request) {
 		options.MinVersion = 0
 	}
 	options.Limit = scanStreamPageSize
-	result, err := s.listEntitiesPage(r.Context(), tenantID, options)
+	result, err := s.listEntitiesPage(r.Context(), tenantID, options, target)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -106,7 +106,7 @@ func (s *Server) streamEntities(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		options.Cursor = result.NextCursor
-		result, err = s.listEntitiesPage(r.Context(), tenantID, options)
+		result, err = s.listEntitiesPage(r.Context(), tenantID, options, target)
 		if err != nil {
 			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
 			return
@@ -170,7 +170,7 @@ func (s *Server) listEdges(w http.ResponseWriter, r *http.Request) {
 	if enforceTarget {
 		options.MinVersion = target.TargetVersion
 	}
-	result, err := s.listEdgesPage(r.Context(), tenantID, options)
+	result, err := s.listEdgesPage(r.Context(), tenantID, options, target)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -214,7 +214,7 @@ func (s *Server) streamEdges(w http.ResponseWriter, r *http.Request) {
 		options.MinVersion = 0
 	}
 	options.Limit = scanStreamPageSize
-	result, err := s.listEdgesPage(r.Context(), tenantID, options)
+	result, err := s.listEdgesPage(r.Context(), tenantID, options, target)
 	if err != nil {
 		writeReadError(w, err)
 		return
@@ -245,7 +245,7 @@ func (s *Server) streamEdges(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		options.Cursor = result.NextCursor
-		result, err = s.listEdgesPage(r.Context(), tenantID, options)
+		result, err = s.listEdgesPage(r.Context(), tenantID, options, target)
 		if err != nil {
 			_ = encodeStreamItem(r.Context(), encoder, streamErrorResponse(buildErrorResponse(ErrorCodeBadRequest, err.Error(), false, nil)), flush)
 			return
@@ -289,7 +289,7 @@ func (s *Server) streamEdgesFromCatalog(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
-func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options storage.EntityScanOptions) (result storage.EntityScanResult, err error) {
+func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options storage.EntityScanOptions, target readTarget) (result storage.EntityScanResult, err error) {
 	binding, err := s.Store.ValidateScanCursor(ctx, tenantID, options.Cursor)
 	if err != nil {
 		return result, err
@@ -319,14 +319,15 @@ func (s *Server) listEntitiesPage(ctx context.Context, tenantID string, options 
 	if !errors.Is(err, storage.ErrGraphScanFallbackRequired) || s.Cache == nil {
 		return result, err
 	}
-	err = s.withReadOnlyGraphForRead(ctx, tenantID, readTarget{TargetVersion: options.MinVersion}, func(g *graph.Graph, manifest storage.Manifest) error {
+	target.TargetVersion = options.MinVersion
+	err = s.withReadOnlyGraphForRead(ctx, tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
 		result, err = s.Cache.ListEntitiesFromReadView(ctx, tenantID, g, manifest, options)
 		return err
 	})
 	return result, err
 }
 
-func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options storage.EdgeScanOptions) (result storage.EdgeScanResult, err error) {
+func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options storage.EdgeScanOptions, target readTarget) (result storage.EdgeScanResult, err error) {
 	binding, err := s.Store.ValidateScanCursor(ctx, tenantID, options.Cursor)
 	if err != nil {
 		return result, err
@@ -356,7 +357,8 @@ func (s *Server) listEdgesPage(ctx context.Context, tenantID string, options sto
 	if !errors.Is(err, storage.ErrGraphScanFallbackRequired) || s.Cache == nil {
 		return result, err
 	}
-	err = s.withReadOnlyGraphForRead(ctx, tenantID, readTarget{TargetVersion: options.MinVersion}, func(g *graph.Graph, manifest storage.Manifest) error {
+	target.TargetVersion = options.MinVersion
+	err = s.withReadOnlyGraphForRead(ctx, tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
 		result, err = storage.ListEdgesFromGraph(ctx, tenantID, g, manifest, options)
 		return err
 	})

@@ -1140,7 +1140,7 @@ func (s *TenantStore) publishIngestBatch(
 		// acceptance or publication; reads retain their version-checked fallback.
 		return nil, nil
 	}
-	s.enqueueCommitIndexUpdate(tenantID, indexWork)
+	s.enqueueCommitIndexUpdate(ctx, tenantID, indexWork)
 	return indexWork, nil
 }
 

@@ -1,6 +1,6 @@
 # Management console
 
-**GGraphDB 2.3.0** · [简体中文](management-ui.zh-CN.md) · [Documentation](README.md) · [API guide](user/README.md)
+**GGraphDB 2.3.1** · [简体中文](management-ui.zh-CN.md) · [Documentation](README.md) · [API guide](user/README.md)
 
 The console is embedded in the Go binary and supports English and Simplified
 Chinese. Runtime needs no Node, npm, frontend build or separate UI service.

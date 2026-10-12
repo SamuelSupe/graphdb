@@ -11,7 +11,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/compress"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
@@ -32,7 +31,7 @@ func marshalParquetSnapshotRecord(ctx context.Context, record snapshotRecord) ([
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
 	var buf bytes.Buffer
-	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
+	writerProps := parquetDataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
 	writer, err := pqarrow.NewFileWriter(schema, &buf, writerProps, arrowProps)
 	if err != nil {
@@ -195,6 +194,14 @@ func normalizeSnapshotRecordForParquet(record snapshotRecord) (snapshotRecord, s
 	payload, err := snapshotRecordPayloadJSON(record)
 	if err != nil {
 		return snapshotRecord{}, "", err
+	}
+	if record.normalized {
+		// Compaction borrows an already-normalized immutable graph. Repeating
+		// a whole-snapshot JSON decode would retain another full graph while
+		// encoding; the existing payload still defines the exact stored hash.
+		record.LayoutVersion = CurrentObjectLayoutVersion
+		record.Snapshot.Index = nil
+		return record, objectContentHash(payload), nil
 	}
 	var normalized snapshotRecord
 	if err := json.Unmarshal(payload, &normalized); err != nil {

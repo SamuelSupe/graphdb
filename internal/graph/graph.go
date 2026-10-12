@@ -78,7 +78,6 @@ func FromSnapshot(snapshot Snapshot) (*Graph, error) {
 		}
 		g.Entities.Set(normalized.ID, normalized)
 	}
-	g.rebuildIndexes()
 	entityAliases := g.canonicalizeEntitySet(snapshot.Version, snapshotVersionTime(snapshot))
 	edges := make([]Edge, 0, len(snapshot.Edges))
 	for _, edge := range snapshot.Edges {
@@ -95,7 +94,9 @@ func FromSnapshot(snapshot Snapshot) (*Graph, error) {
 		edges = append(edges, normalized)
 	}
 	g.Edges, _ = mergeEdgeList(edges, snapshot.Version, snapshotVersionTime(snapshot))
-	g.rebuildIndexes()
+	for id, edge := range g.Edges.All() {
+		g.addEdgeToIndexes(id, edge)
+	}
 	if err := g.validateAllEdges(); err != nil {
 		return nil, err
 	}

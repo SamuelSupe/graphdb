@@ -1,6 +1,6 @@
 # Errors And Troubleshooting
 
-Applies to **GGraphDB 2.3.0**; see [release validation](../validation-v2.3.0.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.1**; see [release validation](../validation-v2.3.1.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](errors-troubleshooting.zh-CN.md)
 
@@ -86,6 +86,8 @@ curl -sS "$BASE/v1/control/reader-traffic-gate" -H 'X-Tenant-ID: demo'
 - Confirm local disk access and WAL recovery. A `202` is acceptance; check whether
   the batch has reached `committed`.
 - Compare `min_version` with the committed version and check `GRAPHDB_READER_CATCHUP_TIMEOUT`.
+- Default cold reads use the graph load timeout and request deadline. The catch-up
+  timeout applies to explicit `min_version` requests and cached views behind the target.
 - Use `allow_stale=true` only when the application permits it; lowering the requested
   version does not replace checking write completion.
 - For persistent lag, inspect WAL, index tasks and local recovery logs before restarting.

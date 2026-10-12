@@ -83,7 +83,7 @@ func marshalParquetSnapshotSchema(ctx context.Context, schemaData snapshotSchema
 }
 
 func decodeParquetSnapshotSchema(ctx context.Context, data []byte) (snapshotSchemaData, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return snapshotSchemaData{}, err
 	}
@@ -241,7 +241,7 @@ func marshalParquetShardedSnapshotCatalog(ctx context.Context, catalog ShardedSn
 }
 
 func decodeParquetShardedSnapshotCatalog(ctx context.Context, data []byte) (ShardedSnapshotCatalog, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return ShardedSnapshotCatalog{}, err
 	}

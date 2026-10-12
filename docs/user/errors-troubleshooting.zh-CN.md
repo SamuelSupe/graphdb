@@ -1,6 +1,6 @@
 # 错误与故障排查
 
-适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.1**；[发行验证](../validation-v2.3.1.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](errors-troubleshooting.md)
 
@@ -82,6 +82,7 @@ curl -sS "$BASE/v1/control/reader-traffic-gate" -H 'X-Tenant-ID: demo'
 
 - 确认本地盘可读写、WAL 恢复完成；`202` 仅表示接管，需要查询批次是否 committed。
 - 核对请求的 `min_version` 与已提交版本，检查 `GRAPHDB_READER_CATCHUP_TIMEOUT`。
+- 默认冷读使用图加载期限和请求期限；追平期限用于显式 `min_version` 请求及已缓存视图落后于目标的情况。
 - 仅在业务允许旧读时使用 `allow_stale=true`，不能通过降低版本要求替代写入完成检查。
 - 持续落后时检查 WAL、索引任务和本地恢复日志，再决定是否重启进程。
 

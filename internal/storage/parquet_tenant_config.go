@@ -82,7 +82,7 @@ func marshalParquetTenantConfig(ctx context.Context, record tenantConfigRecord) 
 }
 
 func decodeParquetTenantConfig(ctx context.Context, data []byte) (tenantConfigRecord, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return tenantConfigRecord{}, err
 	}

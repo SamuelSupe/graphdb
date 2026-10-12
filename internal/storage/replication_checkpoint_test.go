@@ -17,6 +17,8 @@ import (
 )
 
 func TestReplicationApplicationCrashRecovery(t *testing.T) {
+	// Old and new keys cross the prepared journal's 4096-object batch boundary.
+	const preparedObjects = 2050
 	if root := os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_ROOT"); root != "" {
 		files, err := OpenFileStore(root)
 		if err != nil {
@@ -51,13 +53,16 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			}
 			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "prepared" {
 				var keys []string
-				for object := range 130 {
+				for object := range preparedObjects {
 					keys = append(keys, fmt.Sprintf("graphdb/prepared/old/%d", object), fmt.Sprintf("graphdb/prepared/new/%d", object))
 				}
 				if err := files.journalObjects(ctx, keys); err != nil {
 					return nil, err
 				}
-				for object := range 65 {
+				for object := range preparedObjects {
+					if object >= 65 && object < preparedObjects-2 {
+						continue
+					}
 					old := fmt.Sprintf("graphdb/prepared/old/%d", object)
 					if err := files.Delete(ctx, old); err != nil {
 						return nil, err
@@ -109,7 +114,14 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 			}
 			_, err = files.ApplyReplicated(context.Background(), 1, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
 				if stage == "prepared" {
-					for object := range 130 {
+					keys := make([]string, preparedObjects)
+					for object := range keys {
+						keys[object] = fmt.Sprintf("graphdb/prepared/old/%d", object)
+					}
+					if err := files.journalObjects(ctx, keys); err != nil {
+						return nil, err
+					}
+					for object := range preparedObjects {
 						if err := files.Put(ctx, fmt.Sprintf("graphdb/prepared/old/%d", object), []byte("old")); err != nil {
 							return nil, err
 						}
@@ -164,7 +176,7 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 				}
 			}
 			if stage == "prepared" {
-				for object := range 130 {
+				for object := range preparedObjects {
 					data, err := files.Get(context.Background(), fmt.Sprintf("graphdb/prepared/old/%d", object))
 					if err != nil || string(data) != "old" {
 						t.Fatalf("prepared before-image was not restored: %q, %v", data, err)

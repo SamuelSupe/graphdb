@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,91 @@ func TestParquetDecodeAdmissionHonorsContext(t *testing.T) {
 	cancel()
 	if _, err := acquireParquetDecode(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("blocked acquire error = %v, want context canceled", err)
+	}
+}
+
+func TestBulkDecodeLeavesControlMetadataCapacityWithinTotalLimit(t *testing.T) {
+	data, err := marshalParquetTenantMetadata(context.Background(), TenantMetadata{TenantID: "tenant-a", Status: TenantStatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ConfigureParquetDecodeMaxConcurrent(3)
+	t.Cleanup(func() { ConfigureParquetDecodeMaxConcurrent(0) })
+	for range 2 {
+		release, err := acquireParquetDecode(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(release)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	metadata, err := decodeParquetTenantMetadata(ctx, data)
+	if err != nil || metadata.TenantID != "tenant-a" || metadata.Status != TenantStatusActive {
+		t.Fatalf("control metadata blocked by bulk decoders: %+v, %v", metadata, err)
+	}
+	blocked, stop := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	if _, err := acquireParquetDecode(blocked); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bulk decoder consumed reserved capacity: %v", err)
+	}
+	stop()
+	control := context.WithValue(context.Background(), parquetControlDecodeKey{}, true)
+	release, err := acquireParquetDecode(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	blocked, stop = context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer stop()
+	if _, err := decodeParquetTenantMetadata(blocked, data); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("control decoder exceeded configured total concurrency: %v", err)
+	}
+}
+
+func TestQueuedEntityDecodeLeavesControlReadsAvailable(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { files.Close() })
+	ctx := context.Background()
+	if err := files.Put(ctx, "control", []byte("ready")); err != nil {
+		t.Fatal(err)
+	}
+	guarded := NewReadProtectedObjectStore(files, ReadProtectionConfig{MaxConcurrent: 1})
+	store := NewTenantStore(guarded, "test")
+	page := EntityPageData{TenantID: "tenant-a", Shard: "00", Version: 1, Entities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	meta, err := store.putParquetEntityPage(ctx, "tenant-a", page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ConfigureParquetDecodeMaxConcurrent(1)
+	t.Cleanup(func() { ConfigureParquetDecodeMaxConcurrent(0) })
+	release, err := acquireParquetDecode(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release = sync.OnceFunc(release)
+	t.Cleanup(release)
+	loadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.loadLocalEntityPage(loadCtx, "tenant-a", 1, EntityPageSpec{Shard: "00", Objects: []IndexObject{{Role: "page", Key: meta.Key}}}, EntityScanOptions{}, scanCursor{})
+		done <- err
+	}()
+	// The decoder is held by this test. Give the queued lookup a chance to
+	// open its object, which previously consumed the only read permit.
+	time.Sleep(30 * time.Millisecond)
+	readCtx, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+	data, _, err := guarded.GetWithMeta(readCtx, "control")
+	stop()
+	release()
+	if decodeErr := <-done; decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if err != nil || string(data) != "ready" {
+		t.Fatalf("control read behind queued decoder: data=%q error=%v", data, err)
 	}
 }
 

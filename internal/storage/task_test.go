@@ -21,7 +21,7 @@ func TestPreparedMaintenanceRejectsSupersededGraphAndPublishesCurrent(t *testing
 			defer files.Close()
 			store := NewTenantStore(files, "test")
 			defer store.ShutdownTasks(context.Background())
-			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, CommitOptions{}); err != nil {
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"revision": "first"}}}}, CommitOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			task, err := store.StartTask(ctx, "tenant-a", kind, nil)
@@ -32,12 +32,45 @@ func TestPreparedMaintenanceRejectsSupersededGraphAndPublishesCurrent(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
+			replicaFiles, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer replicaFiles.Close()
+			replica := NewTenantStoreWithOptions(replicaFiles, store.Prefix, TenantStoreOptions{InstanceID: store.InstanceID})
+			defer replica.ShutdownTasks(context.Background())
+			objects, err := files.List(ctx, store.tenantObjectPrefix("tenant-a"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, object := range objects {
+				data, err := files.Get(ctx, object.Key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := replicaFiles.Put(ctx, object.Key, data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"revision": "second"}}, {ID: "host:b", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
 			input, err := source.Build(ctx, 32<<20)
 			if err != nil {
 				source.Close()
 				t.Fatal(err)
 			}
-			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:b", Kind: "host"}}}, CommitOptions{}); err != nil {
+			if _, err := replica.PublishReplicatedMaintenance(ctx, "tenant-a", task.ID, input, 32<<20); err != nil {
+				t.Fatal(err)
+			}
+			captured, manifest, err := replica.Load(ctx, "tenant-a")
+			if err != nil || manifest.Version != 1 || captured.Entities.Len() != 1 {
+				t.Fatalf("captured graph changed with live writes: %+v, %v", manifest, err)
+			}
+			if entity, ok := captured.GetEntity("host:a"); !ok || entity.Fields["revision"] != "first" {
+				t.Fatal("live field update reached captured maintenance graph")
+			}
+			if _, err := input.Seek(0, io.SeekStart); err != nil {
 				t.Fatal(err)
 			}
 			_, err = store.PublishReplicatedMaintenance(ctx, "tenant-a", task.ID, input, 32<<20)
@@ -500,8 +533,17 @@ func TestUpdateTaskProgressSeesPersistedCancel(t *testing.T) {
 
 func waitForTask(t *testing.T, ctx context.Context, store *TenantStore, tenantID string, taskID string) Task {
 	t.Helper()
-	// File-backed restore syncs many Parquet files. This helper checks terminal
-	// state, not a two-second latency SLA under the race detector on shared CI.
+	task := waitForTerminalTask(t, ctx, store, tenantID, taskID)
+	if task.Status == TaskStatusFailed {
+		t.Fatalf("task failed: %#v", task)
+	}
+	return task
+}
+
+func waitForTerminalTask(t *testing.T, ctx context.Context, store *TenantStore, tenantID string, taskID string) Task {
+	t.Helper()
+	// Parquet restore and audit can outlast two seconds under race or CPU
+	// contention. This helper checks terminal state, not a latency SLA.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var last Task
@@ -512,9 +554,6 @@ func waitForTask(t *testing.T, ctx context.Context, store *TenantStore, tenantID
 		}
 		last = task
 		if task.Status != "queued" && task.Status != "running" {
-			if task.Status == "failed" {
-				t.Fatalf("task failed: %#v", task)
-			}
 			return task
 		}
 		select {

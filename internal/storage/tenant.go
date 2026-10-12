@@ -53,6 +53,7 @@ type snapshotRecord struct {
 	LayoutVersion int    `json:"layout_version,omitempty"`
 	TenantID      string `json:"tenant_id,omitempty"`
 	graph.Snapshot
+	normalized bool
 }
 
 type CommitOptions struct {
@@ -312,7 +313,7 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 			return Manifest{}, err
 		}
 		snapshotKey = s.snapshotKey(tenantID, snapshot.Version)
-		record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Snapshot: snapshot}
+		record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Snapshot: snapshot, normalized: true}
 		if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
 			return Manifest{}, err
 		}

@@ -28,9 +28,10 @@ type readFreshness struct {
 }
 
 type readTarget struct {
-	ManifestVersion int64
-	TargetVersion   int64
-	AllowStale      bool
+	ManifestVersion    int64
+	TargetVersion      int64
+	AllowStale         bool
+	ExplicitMinVersion bool
 }
 
 type readerNotFreshError struct {
@@ -88,7 +89,7 @@ func (s *Server) readTarget(r *http.Request, tenantID string, body readFreshness
 	if freshness.AllowStale {
 		targetVersion = freshness.MinVersion
 	}
-	return readTarget{ManifestVersion: manifest.Version, TargetVersion: targetVersion, AllowStale: freshness.AllowStale}, nil
+	return readTarget{ManifestVersion: manifest.Version, TargetVersion: targetVersion, AllowStale: freshness.AllowStale, ExplicitMinVersion: freshness.MinVersion > 0}, nil
 }
 
 func parseReadFreshness(r *http.Request, body readFreshness) (readFreshness, error) {
@@ -147,13 +148,13 @@ func (s *Server) loadGraphForRead(ctx context.Context, tenantID string, target r
 	cancel := func() {}
 	catchupStart := time.Time{}
 	if target.TargetVersion > 0 {
-		loadCtx, cancel = context.WithTimeout(ctx, s.readerCatchupTimeout())
+		loadCtx, cancel = s.readGraphLoadContext(ctx, tenantID, target)
 		catchupStart = time.Now()
 	}
 	defer cancel()
 	g, manifest, err = s.loadGraphAtLeast(loadCtx, tenantID, target.TargetVersion)
 	if err != nil {
-		if target.TargetVersion > 0 && readCatchupFailed(loadCtx, err) {
+		if target.TargetVersion > 0 && ctx.Err() == nil && readCatchupFailed(loadCtx, err) {
 			if cached, cachedManifest, ok, cacheErr := s.cachedGraphAtLeast(tenantID, target.TargetVersion); cacheErr != nil {
 				return nil, storage.Manifest{}, cacheErr
 			} else if ok {
@@ -239,6 +240,20 @@ func (s *Server) readerCatchupTimeout() time.Duration {
 		return s.ReaderCatchupTimeout
 	}
 	return defaultCatchupTimeout
+}
+
+func (s *Server) readGraphLoadContext(ctx context.Context, tenantID string, target readTarget) (context.Context, context.CancelFunc) {
+	if target.ExplicitMinVersion {
+		return context.WithTimeout(ctx, s.readerCatchupTimeout())
+	}
+	if s.Cache != nil {
+		if version, ok := s.Cache.CachedVersion(tenantID); ok && version < target.TargetVersion {
+			return context.WithTimeout(ctx, s.readerCatchupTimeout())
+		}
+	}
+	// A first load has no stale view to catch up. Its existing load admission,
+	// LoadTimeout and request context bound materialization of the pinned version.
+	return ctx, func() {}
 }
 
 func (s *Server) readerNotFresh(tenantID string, visible int64, required int64, reason string, err error) error {

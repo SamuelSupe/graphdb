@@ -1,8 +1,8 @@
-# GGraphDB 2.3.0 文档中心
+# GGraphDB 2.3.1 文档中心
 
-[English](README.md) · [项目首页](../README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)
+[English](README.md) · [项目首页](../README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.1)
 
-当前稳定版本为 **2.3.0**。从下面的任务入口进入指南，或先按推荐路径阅读。
+当前发行候选为 **2.3.1**。从下面的任务入口进入指南，或先按推荐路径阅读。
 用户指南与控制台文档均提供中英文版本；部分集群运维专题目前仅有中文。
 
 ## 推荐阅读路径
@@ -11,7 +11,7 @@
 | --- | --- |
 | 首次体验 | [快速开始](user/quickstart.zh-CN.md) → [控制台](management-ui.zh-CN.md) → [使用手册](user/usage-manual.zh-CN.md) |
 | 接入业务数据 | [数据模型](user/data-model.zh-CN.md) → [写入与采集](user/write-ingest.zh-CN.md) → [查询](user/read-query.zh-CN.md) → [SDK](user/sdk.zh-CN.md) |
-| 准备部署 | [发行版部署](user/release-deployment.zh-CN.md) → [生产安全](security-deployment.zh-CN.md) → [备份恢复](object-backup.zh-CN.md) → [发布验证](validation-v2.3.0.md) |
+| 准备部署 | [发行版部署](user/release-deployment.zh-CN.md) → [生产安全](security-deployment.zh-CN.md) → [备份恢复](object-backup.zh-CN.md) → [发布验证](validation-v2.3.1.md) |
 
 ## 用户指南
 
@@ -64,9 +64,9 @@
 | API 契约 | [API 地图](user/api-map.zh-CN.md) · [English](user/api-map.md) · [OpenAPI](openapi.yaml) · [错误码](error_codes.md) |
 | 查询语言 | [查询能力](query_capabilities.md) · [GraphQL](graphql.zh-CN.md) · [English](graphql.md) · [旧文本 DSL](gql.md) |
 | 版本与缺口 | [命名与兼容](naming-and-compatibility.zh-CN.md) · [English](naming-and-compatibility.md) · [功能缺口](product_function_gaps.md) |
-| 2.3.0 发行证据 | [发行说明](../release/local-disk.md) · [发布验证](validation-v2.3.0.md) · [机器可读 JSON](validation-v2.3.0.json) |
+| 2.3.1 发行证据 | [发行说明](../release/local-disk.md) · [发布验证](validation-v2.3.1.md) · [历史 2.3.0 JSON](validation-v2.3.0.json) |
 
-SDK/OpenAPI 版本为 2.3.0；Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
+SDK/OpenAPI 版本为 2.3.1；Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
 各自遵循兼容契约，不能用产品版本号替换。
 
 ## 历史设计与验证记录
@@ -75,7 +75,7 @@ SDK/OpenAPI 版本为 2.3.0；Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议
 <summary>展开历史设计、审核与验证档案</summary>
 
 以下记录固定于各自日期和构建，保留原有 PASS、FAIL、跳过和未发布状态。
-当前发行资格以[2.3.0 验证](validation-v2.3.0.md)为准；历史性能结果不构成当前容量保证。
+当前发行资格以[2.3.1 验证](validation-v2.3.1.md)为准；历史性能结果不构成当前容量保证。
 
 - [2.2.2 发布后的产品 P0/P1 审核](product-p0-p1-review-2026-10-03.zh-CN.md)
 - [后续审核：manifest、图摘要与来源身份](product-p0-p1-review2-2026-10-03.zh-CN.md)

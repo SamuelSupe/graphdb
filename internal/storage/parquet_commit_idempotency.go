@@ -77,7 +77,7 @@ func marshalParquetDirectCommitRecord(ctx context.Context, record DirectCommitRe
 }
 
 func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCommitRecord, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return DirectCommitRecord{}, err
 	}

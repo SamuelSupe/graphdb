@@ -67,7 +67,7 @@ func marshalParquetReaderHeartbeat(ctx context.Context, heartbeat ReaderHeartbea
 }
 
 func decodeParquetReaderHeartbeat(ctx context.Context, data []byte) (ReaderHeartbeat, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}

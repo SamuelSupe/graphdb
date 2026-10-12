@@ -13,6 +13,9 @@ const minimumWriteCacheBytes = int64(4 * 1024)
 const writeCacheLogicalBytesMultiplier = int64(8)
 
 func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (loaded loadedGraph, err error) {
+	// Publication must be able to load its base graph while cold query scans
+	// occupy bulk decode capacity. It still shares the process-wide total.
+	ctx = context.WithValue(ctx, parquetControlDecodeKey{}, true)
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.load_for_write", tenantTraceAttr(tenantID))
 	defer func() {
 		if err == nil {
@@ -34,6 +37,15 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 		attribute.Bool("graphdb.write_cache.found", false),
 		attribute.Bool("graphdb.write_cache.hit", false),
 	)
+	if len(s.readerCaches()) > 0 {
+		manifest, meta, manifestErr := s.getManifest(ctx, tenantID)
+		if manifestErr != nil {
+			return loadedGraph{}, manifestErr
+		}
+		if cached, ok := s.readerGraphForWrite(tenantID, manifest, meta); ok {
+			return cached, nil
+		}
+	}
 	loaded, err = s.loadWithMeta(ctx, tenantID)
 	if err == nil {
 		span.SetAttributes(attribute.Int64("graphdb.write_cache.current_manifest_version", loaded.Manifest.Version))
@@ -42,8 +54,12 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 }
 
 func (s *TenantStore) loadForExpectedVersionLocked(ctx context.Context, tenantID string, expectedVersion int64, manifest Manifest, meta ObjectMeta) (loadedGraph, error) {
+	ctx = context.WithValue(ctx, parquetControlDecodeKey{}, true)
 	for attempt := 0; ; attempt++ {
 		if cached, ok := s.getWriteCache(tenantID); ok && cachedManifestMatches(cached, manifest, meta) {
+			return cached, nil
+		}
+		if cached, ok := s.readerGraphForWrite(tenantID, manifest, meta); ok {
 			return cached, nil
 		}
 		loaded, err := s.loadManifestGraph(ctx, tenantID, manifest, meta)
@@ -62,6 +78,32 @@ func (s *TenantStore) loadForExpectedVersionLocked(ctx context.Context, tenantID
 		}
 		manifest, meta = nextManifest, nextMeta
 	}
+}
+
+// Readers retain immutable graphs. Reuse only the exact authoritative read set;
+// later writes use storage copy-on-write and cannot modify the borrowed view.
+func (s *TenantStore) readerGraphForWrite(tenantID string, manifest Manifest, meta ObjectMeta) (loadedGraph, bool) {
+	for _, cache := range s.readerCaches() {
+		cache.mu.RLock()
+		entry, ok := cache.entries[tenantID]
+		cache.mu.RUnlock()
+		if !ok || entry.graph == nil || entry.graph.Version != manifest.Version {
+			continue
+		}
+		loaded := loadedGraph{Graph: entry.graph, Manifest: entry.manifest, Meta: entry.meta}
+		if cachedManifestMatches(loaded, manifest, meta) {
+			// A legacy manifest can carry an older hash format; the writer's
+			// loaded graph uses the current logical hash, just like a disk load.
+			dataHash, err := entry.graph.ContentHash()
+			if err != nil {
+				continue
+			}
+			loaded.DataHash = dataHash
+			loaded.CacheBytes = normalizedWriteCacheBytes(loaded)
+			return loaded, true
+		}
+	}
+	return loadedGraph{}, false
 }
 
 func cachedManifestMatches(cached loadedGraph, manifest Manifest, meta ObjectMeta) bool {

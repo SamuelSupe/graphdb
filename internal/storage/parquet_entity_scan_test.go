@@ -13,47 +13,72 @@ import (
 )
 
 func TestPackedEntityRowsPruneShardsWithoutChangingLogicalHashes(t *testing.T) {
-	ctx := context.Background()
-	entities := make([]graph.Entity, 2200)
-	for i := range entities {
-		entities[i] = graph.Entity{ID: fmt.Sprintf("host:%05d", i), Kind: "host", Fields: graph.Fields{"name": fmt.Sprint(i)}}
-	}
-	pages := buildEntityPagesFromEntities(entities, 7)
-	pack := mergeEntityPagePack(entityPageDataPackGroup{ID: indexPackPrefix + "test", Pages: pages})
-	pack.TenantID = "tenant-a"
-	wantHash := entityPageContentHash(pack)
-	data, err := marshalParquetEntityPage(ctx, pack)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entityPageContentHash(pack) != wantHash {
-		t.Fatal("physical encoding mutated logical page order")
-	}
-	reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	for _, page := range pages {
-		groups := parquetEntityShardRowGroups(reader, page.Shard)
-		if len(groups) >= reader.NumRowGroups() {
-			t.Fatalf("shard %s cannot prune any row groups", page.Shard)
-		}
-		decoded, err := decodeParquetEntityPage(ctx, data, pack.TenantID, page.Shard, pack.Version)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if entityPageContentHash(decoded) != entityPageContentHash(page) {
-			t.Fatalf("shard %s logical hash changed after packing", page.Shard)
-		}
-	}
-	decoded, err := decodeParquetEntityPage(ctx, data, pack.TenantID, "", pack.Version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded.Shard = pack.Shard
-	if entityPageContentHash(decoded) != wantHash {
-		t.Fatal("full pack read changed its logical hash")
+	for _, fieldCount := range []int{0, 32} {
+		t.Run(fmt.Sprintf("extra-fields-%d", fieldCount), func(t *testing.T) {
+			ctx := context.Background()
+			entities := make([]graph.Entity, 2200)
+			for i := range entities {
+				fields := graph.Fields{"name": fmt.Sprint(i)}
+				for field := range fieldCount {
+					fields[fmt.Sprintf("field-%d", field)] = "value"
+				}
+				entities[i] = graph.Entity{ID: fmt.Sprintf("host:%05d", i), Kind: "host", Fields: fields}
+			}
+			pages := buildEntityPagesFromEntities(entities, 7)
+			pack := mergeEntityPagePack(entityPageDataPackGroup{ID: indexPackPrefix + "test", Pages: pages})
+			pack.TenantID = "tenant-a"
+			wantHash := entityPageContentHash(pack)
+			data, err := marshalParquetEntityPage(ctx, pack)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entityPageContentHash(pack) != wantHash {
+				t.Fatal("physical encoding mutated logical page order")
+			}
+			reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			if fieldCount == 0 && reader.NumRowGroups() >= len(pages)/2 {
+				t.Fatalf("sparse pack has %d row groups for %d shards; tiny shards should share groups", reader.NumRowGroups(), len(pages))
+			}
+			for group := 0; group < reader.NumRowGroups(); group++ {
+				metadata := reader.MetaData().RowGroup(group)
+				column, err := metadata.ColumnChunk(parquetEntityColumnShard)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stats, err := column.Statistics()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fieldCount > 0 && !bytes.Equal(stats.EncodeMin(), stats.EncodeMax()) {
+					t.Fatalf("row group %d spans logical shards", group)
+				}
+			}
+			for _, page := range pages {
+				groups := parquetEntityShardRowGroups(reader, page.Shard)
+				if len(groups) >= reader.NumRowGroups() {
+					t.Fatalf("shard %s cannot prune any row groups", page.Shard)
+				}
+				decoded, err := decodeParquetEntityPage(ctx, data, pack.TenantID, page.Shard, pack.Version)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if entityPageContentHash(decoded) != entityPageContentHash(page) {
+					t.Fatalf("shard %s logical hash changed after packing", page.Shard)
+				}
+			}
+			decoded, err := decodeParquetEntityPage(ctx, data, pack.TenantID, "", pack.Version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded.Shard = pack.Shard
+			if entityPageContentHash(decoded) != wantHash {
+				t.Fatal("full pack read changed its logical hash")
+			}
+		})
 	}
 }
 

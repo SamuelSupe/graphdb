@@ -204,7 +204,7 @@ func (s *TenantStore) compactTaskSnapshotRecord(ctx context.Context, task Task, 
 	}, nil); err != nil {
 		return err
 	}
-	record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: task.TenantID, Snapshot: snapshot}
+	record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: task.TenantID, Snapshot: snapshot, normalized: true}
 	if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "compact_write_snapshot_record", 3, total, taskActionUpdate{ID: "write_snapshot_record", Err: err}, nil)
 		return err

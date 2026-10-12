@@ -110,7 +110,7 @@ func marshalParquetManifest(ctx context.Context, manifest Manifest) ([]byte, err
 }
 
 func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return Manifest{}, err
 	}

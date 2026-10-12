@@ -14,7 +14,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/compress"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
 
@@ -157,7 +156,7 @@ func marshalParquetSecondaryIndex(ctx context.Context, index SecondaryIndex) ([]
 	if rowGroupSize < 1 {
 		rowGroupSize = 1
 	}
-	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
+	writerProps := parquetDataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
 	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
 		return nil, err
@@ -460,6 +459,12 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 		s.dropCachedIndexObject("secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash)
 	}
 	if s.localFileStore() != nil {
+		releaseDecode, err := acquireParquetDecode(ctx)
+		if err != nil {
+			return SecondaryIndex{}, false, err
+		}
+		defer releaseDecode()
+		ctx = context.WithValue(ctx, parquetDecodeAdmissionKey{}, true)
 		reader, err := openFileReader(ctx, s.Objects, object.Key)
 		if errors.Is(err, ErrNotFound) {
 			return SecondaryIndex{}, false, nil

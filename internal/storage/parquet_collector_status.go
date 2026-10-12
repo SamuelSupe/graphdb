@@ -63,7 +63,7 @@ func marshalParquetCollectorStatus(ctx context.Context, status CollectorStatus) 
 }
 
 func decodeParquetCollectorStatus(ctx context.Context, data []byte) (CollectorStatus, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return CollectorStatus{}, err
 	}

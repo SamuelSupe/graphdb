@@ -1,8 +1,8 @@
-# GGraphDB 2.3.0 Documentation
+# GGraphDB 2.3.1 Documentation
 
-[简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.0)
+[简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.1)
 
-The stable release is **2.3.0**. Choose a task below or follow a suggested reading path.
+The release candidate is **2.3.1**. Choose a task below or follow a suggested reading path.
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 
@@ -12,7 +12,7 @@ some cluster operations guides are currently Chinese-only.
 | --- | --- |
 | Try the database | [Quick start](user/quickstart.md) → [Console](management-ui.md) → [Usage manual](user/usage-manual.md) |
 | Integrate business data | [Data model](user/data-model.md) → [Ingestion](user/write-ingest.md) → [Queries](user/read-query.md) → [SDKs](user/sdk.md) |
-| Prepare a deployment | [Release deployment](user/release-deployment.md) → [Security](security-deployment.md) → [Backup/restore](object-backup.md) → [Validation](validation-v2.3.0.md) |
+| Prepare a deployment | [Release deployment](user/release-deployment.md) → [Security](security-deployment.md) → [Backup/restore](object-backup.md) → [Validation](validation-v2.3.1.md) |
 
 ## User guides
 
@@ -65,9 +65,9 @@ some cluster operations guides are currently Chinese-only.
 | API contracts | [API map](user/api-map.md) · [中文](user/api-map.zh-CN.md) · [OpenAPI](openapi.yaml) · [Error codes](error_codes.md) |
 | Query languages | [Query capabilities](query_capabilities.md) · [GraphQL](graphql.md) · [中文](graphql.zh-CN.md) · [Legacy text DSL](gql.md) |
 | Versions and gaps | [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md) · [Product gaps](product_function_gaps.md) |
-| 2.3.0 release evidence | [Release notes](../release/local-disk.md) · [Validation](validation-v2.3.0.md) · [Machine-readable JSON](validation-v2.3.0.json) |
+| 2.3.1 release evidence | [Release notes](../release/local-disk.md) · [Validation](validation-v2.3.1.md) · [Historical 2.3.0 JSON](validation-v2.3.0.json) |
 
-SDK/OpenAPI versions are 2.3.0. Module `/v2`, HTTP `/v1` and separate Raft protocol
+SDK/OpenAPI versions are 2.3.1. Module `/v2`, HTTP `/v1` and separate Raft protocol
 identifiers follow their own contracts; do not substitute the product version.
 
 ## Historical designs and validation
@@ -76,7 +76,7 @@ identifiers follow their own contracts; do not substitute the product version.
 <summary>Browse historical designs, reviews and validation</summary>
 
 These records retain their own dates, builds and PASS/FAIL/skipped/unpublished
-conclusions. [2.3.0 validation](validation-v2.3.0.md) qualifies the current release;
+conclusions. [2.3.1 validation](validation-v2.3.1.md) qualifies the current release;
 historical performance measurements do not establish current production capacity.
 
 - [Product P0/P1 review after 2.2.2](product-p0-p1-review-2026-10-03.zh-CN.md)

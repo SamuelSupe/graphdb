@@ -75,7 +75,7 @@ func marshalParquetIndexDefinitions(ctx context.Context, record IndexDefinitionR
 }
 
 func decodeParquetIndexDefinitions(ctx context.Context, data []byte) (IndexDefinitionRecord, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return IndexDefinitionRecord{}, err
 	}

@@ -15,9 +15,14 @@ import (
 type parquetDecodeAdmission struct {
 	mu    sync.RWMutex
 	limit chan struct{}
+	data  chan struct{}
 }
 
 var processParquetDecodeAdmission parquetDecodeAdmission
+
+type parquetDecodeAdmissionKey struct{}
+
+type parquetControlDecodeKey struct{}
 
 type parquetDecodeTraceKey struct{}
 
@@ -51,37 +56,73 @@ func (s *parquetDecodeTraceStats) snapshot() (int, time.Duration) {
 }
 
 // ConfigureParquetDecodeMaxConcurrent bounds Arrow/Parquet decoding for this
-// process. A non-positive value leaves decoding unbounded.
+// process. Limits above one reserve capacity for control metadata and publication
+// loads; bulk decoding uses at most one fewer slot. Non-positive is unbounded.
 func ConfigureParquetDecodeMaxConcurrent(maxConcurrent int) {
-	var limit chan struct{}
+	var limit, data chan struct{}
 	if maxConcurrent > 0 {
 		limit = make(chan struct{}, maxConcurrent)
+		if maxConcurrent > 1 {
+			data = make(chan struct{}, maxConcurrent-1)
+		}
 	}
 	processParquetDecodeAdmission.mu.Lock()
 	processParquetDecodeAdmission.limit = limit
+	processParquetDecodeAdmission.data = data
 	processParquetDecodeAdmission.mu.Unlock()
 }
 
 func acquireParquetDecode(ctx context.Context) (func(), error) {
+	if admitted, _ := ctx.Value(parquetDecodeAdmissionKey{}).(bool); admitted {
+		return func() {}, nil
+	}
 	processParquetDecodeAdmission.mu.RLock()
 	limit := processParquetDecodeAdmission.limit
+	data := processParquetDecodeAdmission.data
 	processParquetDecodeAdmission.mu.RUnlock()
 	if limit == nil {
 		return func() {}, nil
 	}
 	waitStarted := time.Now()
+	// Bulk pages must leave room for lifecycle, lease and publication metadata.
+	// Both classes still share the configured total concurrency limit.
+	control, _ := ctx.Value(parquetControlDecodeKey{}).(bool)
+	if data != nil && !control {
+		select {
+		case data <- struct{}{}:
+		case <-ctx.Done():
+			if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
+				stats.recordAdmission(time.Since(waitStarted))
+			}
+			return nil, ctx.Err()
+		}
+	} else {
+		data = nil
+	}
 	select {
 	case limit <- struct{}{}:
 		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
 			stats.recordAdmission(time.Since(waitStarted))
 		}
-		return func() { <-limit }, nil
+		return func() {
+			<-limit
+			if data != nil {
+				<-data
+			}
+		}, nil
 	case <-ctx.Done():
+		if data != nil {
+			<-data
+		}
 		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
 			stats.recordAdmission(time.Since(waitStarted))
 		}
 		return nil, ctx.Err()
 	}
+}
+
+func readParquetControlTable(ctx context.Context, data []byte) (arrow.Table, func(), error) {
+	return readParquetTable(context.WithValue(ctx, parquetControlDecodeKey{}, true), data)
 }
 
 // readParquetTable keeps its admission slot until the caller releases the

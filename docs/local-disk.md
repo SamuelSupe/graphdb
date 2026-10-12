@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.1**; see [release validation](validation-v2.3.1.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -249,11 +249,23 @@ GC checks read-view protection before decoding orphan index files, avoiding repe
 
 Incremental entity, forward-edge and reverse-edge pages use a reusable 64-partition entity directory and adjacency maps. Membership changes copy only affected directory partitions. Persisted layouts remain unchanged; each affected page is still rewritten in full. Pending deltas stop coalescing at 8192 changed IDs and continue in bounded publication order instead of forcing a full rebuild. Schema changes, catalog gaps and corrupt inputs can still require rebuilding.
 
+The same bounded coalescing applies to local updates waiting behind a synchronous index update, including oversized graphs. All joined callers wait for the merged catalog publication and receive its index error. Coalescing requires consecutive versions and the same writer fence; Raft applications keep their existing per-entry transaction boundaries.
+
 Index health reports `updating: true` while a published graph is ahead of its queued or running index update. Automatic maintenance waits for that update instead of starting a redundant full rebuild and throttling writes. Failed updates remain eligible for repair on the next maintenance cycle. Explicit rebuild requests still run.
 
 `GRAPHDB_MAINTENANCE_MAX_BYTES` defaults to `512MiB`. It is one shared estimate budget for active index/snapshot builds and queued asynchronous index graphs. Queue reservations transfer into execution without releasing and reacquiring memory. At most two builds and four partition encoding/write jobs run concurrently. An oversized build runs alone to preserve progress. On the retained-byte or eight-work-item limit, callers catch up synchronously after releasing the tenant lock.
 
+Entity-page builds, incremental entity/forward-edge pages, and reverse-edge pages use the same bounded file-write queue. Independent packs may finish concurrently; entity records and catalogs still wait for their referenced packs and directory barriers. The local queue admits at most 64 files per batch and checks 16 MiB / 50 ms cooperative budgets between files. The same queue applies during Raft application without relaxing its rollback journal or commit barriers.
+
+Entity/edge pages, secondary-index data, commit/ingest rows, and full snapshot records use Parquet delta byte-array encoding for strings, dictionaries for numeric values, and Snappy compression. String prefix encoding avoids per-row dictionary allocation in their wide typed row schemas while retaining compact repeated metadata. Entity-page row groups contain at most 4096 rows and align with logical shards when every shard contains at least 512 physical rows. Packs containing smaller shards retain 512-row groups to avoid a wide footer for each tiny shard. Both layouts retain shard-statistics pruning. Column schemas and logical hashes remain compatible with existing readers; encoded file sizes can differ. Snapshot loading builds entity indexes once after canonicalization and adds edge indexes without rebuilding the entity indexes.
+
 These are admission estimates, not RSS limits. Caches, waiting requests and all encoding temporaries are not covered. Size the shared maintenance pool, caches and runtime overhead together with `GOMEMLIMIT` and container limits. Queueing can increase response latency; already-published data remains readable through version-checked graph fallback.
+
+Local entity-page, secondary-index and edge-shard lookups acquire Parquet decode admission before opening their file reader. Queued decoders therefore do not occupy object-read permits needed by WAL publication and graph-load metadata. Candidate scans and the subsequent decode share that admission until the reader closes. With a configured decode limit of at least two, query data uses at most one fewer slot, leaving capacity for control metadata and the base graph load needed to publish a write. Both classes share the original total limit; a limit of one serializes all decoding, and an unlimited configuration remains unlimited.
+
+When the write cache is empty, a resident reader graph can serve the first write after an authoritative manifest check. Its ETag, complete manifest read set and graph version must match. Writes use copy-on-write to preserve the old reader view; a different manifest still requires loading the current graph. This also applies to writes with an expected version.
+
+Compaction encodes its already-normalized graph snapshot directly instead of decoding a second full graph through JSON. The stored content hash still uses the same legacy JSON payload, and externally supplied snapshot records continue through normalization. Full snapshot records, sharded snapshots and their publication barriers remain present.
 
 `graphdb_maintenance_phase_seconds` exposes `gc_wait_views`, `gc_wait_tenant`, `gc_hold`, `gc_sync`, `index_wait_previous`, `index_work`, `memory_wait`, `tenant_wait`, `tenant_hold`, and `file_batch_sync`. Phases can nest and must not be added as independent durations. `graphdb_maintenance_estimated_bytes{pool="active"}` and `{pool="pending_indexes"}` report charged estimates, not measured RSS.
 

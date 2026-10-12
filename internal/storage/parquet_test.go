@@ -1002,30 +1002,34 @@ func TestParquetSnapshotRecordRoundTripAcrossRowGroups(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			data, err := marshalParquetSnapshotRecord(ctx, record)
-			if err != nil {
-				t.Fatal(err)
+			for _, normalized := range []bool{false, true} {
+				record.normalized = normalized
+				data, err := marshalParquetSnapshotRecord(ctx, record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				groups := reader.NumRowGroups()
+				reader.Close()
+				if fieldCount > 0 && groups < 3 {
+					t.Fatalf("wide entity and edge must cross row groups: got %d", groups)
+				}
+				decoded, err := decodeParquetSnapshotRecord(ctx, data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := snapshotRecordPayloadJSON(decoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatal("snapshot lost content across row groups")
+				}
 			}
-			reader, err := pqfile.NewParquetReader(bytes.NewReader(data))
-			if err != nil {
-				t.Fatal(err)
-			}
-			groups := reader.NumRowGroups()
-			reader.Close()
-			if fieldCount > 0 && groups < 3 {
-				t.Fatalf("wide entity and edge must cross row groups: got %d", groups)
-			}
-			decoded, err := decodeParquetSnapshotRecord(ctx, data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := snapshotRecordPayloadJSON(decoded)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(got, want) {
-				t.Fatal("snapshot lost content across row groups")
-			}
+
 		})
 	}
 }

@@ -137,7 +137,7 @@ func decodeParquetIndexCatalog(ctx context.Context, data []byte) (IndexCatalog, 
 }
 
 func decodeParquetIndexCatalogReader(ctx context.Context, source parquet.ReaderAtSeeker) (IndexCatalog, error) {
-	table, release, err := readParquetTableReader(ctx, source)
+	table, release, err := readParquetTableReader(context.WithValue(ctx, parquetControlDecodeKey{}, true), source)
 	if err != nil {
 		return IndexCatalog{}, err
 	}

@@ -53,7 +53,7 @@ func marshalParquetWriterLease(ctx context.Context, lease WriterLease) ([]byte, 
 }
 
 func decodeParquetWriterLease(ctx context.Context, data []byte) (WriterLease, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return WriterLease{}, err
 	}

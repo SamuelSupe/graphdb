@@ -1,6 +1,6 @@
 # 扫描与导出
 
-适用于 **GGraphDB 2.3.0**；[发行验证](../validation-v2.3.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.1**；[发行验证](../validation-v2.3.1.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](scan-export.md)
 
@@ -100,3 +100,7 @@ curl -sS "$READER/v1/export/snapshot/stream?min_version=123" \
 
 如果 reader 在 `GRAPHDB_READER_CATCHUP_TIMEOUT` 内无法追上该版本，会返回
 带重试提示的 `reader_not_fresh`。
+
+显式 `min_version` 和已缓存视图落后于目标版本时使用上述追平期限。默认冷读仍固定
+已提交 manifest 的版本，但首次整图装载使用既有 reader load 超时及请求上下文；
+不会通过返回旧版本绕过等待。冷读仍受装载并发和排队限制，客户端期限也继续生效。

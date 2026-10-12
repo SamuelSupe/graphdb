@@ -6,6 +6,12 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
+[2.3.1](validation-v2.3.1.md) is PREPARING. Its exact-tag gates, thirty-minute
+soaks, released-v2.3.0 rolling window and downloaded assets must be verified
+before recording publication.
+
+## Previous release qualification
+
 [2.3.0](validation-v2.3.0.md) passed every exact-tag gate and downloaded-asset
 verification with no waiver. The immutable tag and packaged evidence identify the
 qualified binary; later documentation commits do not rebuild or replace it.

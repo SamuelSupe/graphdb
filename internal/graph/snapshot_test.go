@@ -36,7 +36,9 @@ func TestFromSnapshotRebuildsAuthoritativeIndexes(t *testing.T) {
 		}},
 		Entities: []Entity{{
 			ID: "host:app-01", Kind: "host", Fields: Fields{"hostname": "app-01"},
-		}},
+		}, {ID: "host:db-01", Kind: "host", Fields: Fields{"hostname": "db-01"}}},
+		RelationTypes: []RelationType{{Name: "links", FromKind: "host", ToKind: "host", Directed: true}},
+		Edges:         []Edge{{ID: "app-to-db", Type: "links", From: "host:app-01", To: "host:db-01"}},
 		Index: &IndexSnapshot{
 			Version: 1,
 			Field: map[string]map[string]map[string][]string{
@@ -53,6 +55,12 @@ func TestFromSnapshotRebuildsAuthoritativeIndexes(t *testing.T) {
 	matches := loaded.MatchEntities("host", Fields{"hostname": "app-01"})
 	if len(matches) != 1 || matches[0].ID != "host:app-01" {
 		t.Fatalf("snapshot loaded stale embedded index: %#v", matches)
+	}
+	if out := loaded.Neighbors("host:app-01", "out", "links"); len(out) != 1 || out[0].Entity.ID != "host:db-01" {
+		t.Fatalf("snapshot outgoing index = %#v", out)
+	}
+	if in := loaded.Neighbors("host:db-01", "in", "links"); len(in) != 1 || in[0].Entity.ID != "host:app-01" {
+		t.Fatalf("snapshot incoming index = %#v", in)
 	}
 }
 

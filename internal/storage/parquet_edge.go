@@ -13,7 +13,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/compress"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
@@ -68,29 +67,27 @@ func (s *TenantStore) writeParquetEdgeShards(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) writeParquetEdgeShardsWithOptions(ctx context.Context, tenantID string, shards []EdgeShardData, checkExisting bool) error {
-	jobs := make([]func(context.Context) error, 0, len(shards))
-	for _, group := range edgeShardDataPackGroups(shards) {
-		group := group
+	return s.writeParquetEdgeShardGroups(ctx, tenantID, edgeShardDataPackGroups(shards), checkExisting)
+}
+
+func (s *TenantStore) writeParquetEdgeShardGroups(ctx context.Context, tenantID string, groups []edgeShardDataPackGroup, checkExisting bool) error {
+	return s.runFileWriteJobs(ctx, len(groups), func(workCtx context.Context, index int) error {
+		group := groups[index]
 		for i := range group.Shards {
 			group.Shards[i].TenantID = tenantID
 		}
-		jobs = append(jobs, func(workCtx context.Context) error {
-			pack := mergeEdgeShardPack(group)
-			pack.TenantID = tenantID
-			key := s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, pack.Shard)
-			if len(group.Shards) > 1 {
-				key = s.parquetEdgeShardPackVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
-				if checkExisting {
-					if _, ok, err := s.existingParquetEdgeShardPackMeta(workCtx, key, tenantID, group.Shards); err != nil || ok {
-						return err
-					}
+		pack := mergeEdgeShardPack(group)
+		pack.TenantID = tenantID
+		key := s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, pack.Shard)
+		if len(group.Shards) > 1 {
+			key = s.parquetEdgeShardPackVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
+			if checkExisting {
+				if _, ok, err := s.existingParquetEdgeShardPackMeta(workCtx, key, tenantID, group.Shards); err != nil || ok {
+					return err
 				}
 			}
-			return s.putParquetEdgeShardObject(workCtx, key, tenantID, pack, checkExisting)
-		})
-	}
-	return s.runFileWriteJobs(ctx, len(jobs), func(workCtx context.Context, index int) error {
-		return jobs[index](workCtx)
+		}
+		return s.putParquetEdgeShardObject(workCtx, key, tenantID, pack, checkExisting)
 	})
 }
 
@@ -243,7 +240,7 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 	if rowGroupSize < 1 {
 		rowGroupSize = 1
 	}
-	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
+	writerProps := parquetDataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
 	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
 		return nil, err
@@ -697,6 +694,12 @@ func (l *PersistedIndexLookup) inEdgesFromParquetShard(ctx context.Context, spec
 func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID string, version int64, spec EdgeShard) (EdgeShardData, bool, error) {
 	key := firstIndexObjectKey(spec.Objects, "shard", s.parquetEdgeShardVersionKey(tenantID, version, spec.RelationType, spec.Shard))
 	if exclusiveFileStore(s.Objects) != nil {
+		releaseDecode, err := acquireParquetDecode(ctx)
+		if err != nil {
+			return EdgeShardData{}, false, err
+		}
+		defer releaseDecode()
+		ctx = context.WithValue(ctx, parquetDecodeAdmissionKey{}, true)
 		reader, err := openFileReader(ctx, s.Objects, key)
 		if errors.Is(err, ErrNotFound) {
 			return EdgeShardData{}, false, nil

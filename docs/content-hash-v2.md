@@ -1,6 +1,6 @@
 # Logical content hash in 2.0
 
-Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.1**; see [release validation](validation-v2.3.1.md) and [version boundaries](naming-and-compatibility.md).
 
 The API field is `data_hash`, with algorithm prefix `sha256-shards-v2:` and a
 64-character lowercase SHA-256 digest. It is independent of graph version,

@@ -125,7 +125,7 @@ func marshalParquetTenantMetadata(ctx context.Context, metadata TenantMetadata) 
 }
 
 func decodeParquetTenantMetadata(ctx context.Context, data []byte) (TenantMetadata, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return TenantMetadata{}, err
 	}
@@ -231,7 +231,7 @@ func marshalParquetTenantRegistry(ctx context.Context, registry tenantRegistry) 
 }
 
 func decodeParquetTenantRegistry(ctx context.Context, data []byte) (tenantRegistry, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return tenantRegistry{}, err
 	}

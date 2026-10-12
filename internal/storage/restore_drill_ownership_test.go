@@ -28,7 +28,7 @@ func TestRestoreDrillRejectsExistingTargetWithoutChangingIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start restore drill: %v", err)
 	}
-	task = waitForRestoreDrillTerminalTask(t, ctx, source, "tenant-a", task.ID)
+	task = waitForTerminalTask(t, ctx, source, "tenant-a", task.ID)
 	if task.Status != TaskStatusFailed || !strings.Contains(task.Error, "not empty") {
 		t.Fatalf("restore drill task = %#v", task)
 	}
@@ -58,7 +58,7 @@ func TestRestoreDrillRejectsLiveTenantNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start restore drill: %v", err)
 	}
-	task = waitForRestoreDrillTerminalTask(t, ctx, store, "tenant-a", task.ID)
+	task = waitForTerminalTask(t, ctx, store, "tenant-a", task.ID)
 	if task.Status != TaskStatusFailed || !strings.Contains(task.Error, "isolated") {
 		t.Fatalf("restore drill task = %#v", task)
 	}
@@ -227,7 +227,7 @@ func TestRestoreDrillCleanupFailureFailsTaskAndRetriesCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start restore drill: %v", err)
 	}
-	task = waitForRestoreDrillTerminalTask(t, ctx, source, "tenant-a", task.ID)
+	task = waitForTerminalTask(t, ctx, source, "tenant-a", task.ID)
 	if task.Status != TaskStatusFailed ||
 		!strings.Contains(task.Error, "injected cleanup delete failure") {
 		t.Fatalf("restore drill task = %#v", task)
@@ -260,7 +260,7 @@ func TestRestoreDrillCleansOwnedTargetAfterPostRestoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start restore drill: %v", err)
 	}
-	task = waitForRestoreDrillTerminalTask(t, ctx, source, "tenant-a", task.ID)
+	task = waitForTerminalTask(t, ctx, source, "tenant-a", task.ID)
 	if task.Status != TaskStatusFailed ||
 		!strings.Contains(task.Error, "injected restored usage failure") {
 		t.Fatalf("restore drill task = %#v", task)
@@ -298,7 +298,7 @@ func TestRestoreDrillCleansClaimedTargetAfterPartialRestoreFailure(t *testing.T)
 	if err != nil {
 		t.Fatalf("start restore drill: %v", err)
 	}
-	task = waitForRestoreDrillTerminalTask(t, ctx, source, "tenant-a", task.ID)
+	task = waitForTerminalTask(t, ctx, source, "tenant-a", task.ID)
 	if task.Status != TaskStatusFailed ||
 		!strings.Contains(task.Error, "injected target manifest failure") {
 		t.Fatalf("restore drill task = %#v", task)
@@ -346,23 +346,6 @@ func seedRestoreDrillTenant(t *testing.T, ctx context.Context, store *TenantStor
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("commit %s: %v", tenantID, err)
 	}
-}
-
-func waitForRestoreDrillTerminalTask(t *testing.T, ctx context.Context, store *TenantStore, tenantID string, taskID string) Task {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		task, err := store.GetTask(ctx, tenantID, taskID)
-		if err != nil {
-			t.Fatalf("get task: %v", err)
-		}
-		if task.Status != TaskStatusQueued && task.Status != TaskStatusRunning {
-			return task
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("task %s did not finish", taskID)
-	return Task{}
 }
 
 type failNthTargetListStore struct {

@@ -141,7 +141,7 @@ func marshalParquetSourcePolicy(ctx context.Context, record sourcePolicyRecord) 
 }
 
 func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRecord, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := readParquetControlTable(ctx, data)
 	if err != nil {
 		return sourcePolicyRecord{}, err
 	}

@@ -338,7 +338,7 @@ func decodeParquetTaskRows(ctx context.Context, data []byte) (parquetTaskIdentit
 }
 
 func decodeParquetTaskRowsReader(ctx context.Context, source parquet.ReaderAtSeeker) (parquetTaskIdentity, []parquetTaskRow, error) {
-	table, release, err := readParquetTableReader(ctx, source)
+	table, release, err := readParquetTableReader(context.WithValue(ctx, parquetControlDecodeKey{}, true), source)
 	if err != nil {
 		return parquetTaskIdentity{}, nil, err
 	}

@@ -21,6 +21,7 @@ type ReplicatedMaintenanceSource struct {
 	token     string
 	release   func()
 	originals map[string]os.FileInfo
+	loaded    loadedGraph
 	once      sync.Once
 }
 
@@ -30,6 +31,8 @@ type preparedMaintenanceHeader struct {
 	Task      Task     `json:"task"`
 	Deleted   []string `json:"deleted,omitempty"`
 }
+
+type preparedMaintenanceBuildKey struct{}
 
 func PreparedMaintenanceTask(task Task) bool {
 	return task.Type == TaskTypeCompact || task.Type == TaskTypeIndexRebuild || task.Type == TaskTypeGC
@@ -88,6 +91,18 @@ func (s *TenantStore) CaptureReplicatedMaintenance(ctx context.Context, task Tas
 		return nil, err
 	}
 	source := &ReplicatedMaintenanceSource{root: root, store: s, task: task, token: token, release: release, originals: map[string]os.FileInfo{}}
+	if task.Type != TaskTypeGC {
+		if cached, ok := s.getWriteCache(task.TenantID); ok {
+			manifest, meta, err := s.getManifest(ctx, task.TenantID)
+			if err != nil {
+				source.Close()
+				return nil, err
+			}
+			if cachedManifestMatches(cached, manifest, meta) {
+				source.loaded = cached
+			}
+		}
+	}
 	objects, err := files.List(ctx, s.tenantObjectPrefix(task.TenantID))
 	if err == nil {
 		capturedDirectories := make(map[string]bool)
@@ -145,8 +160,14 @@ func (s *ReplicatedMaintenanceSource) Build(ctx context.Context, maxBytes int64)
 	stage.UseEntityRecordsForRead = s.store.UseEntityRecordsForRead
 	stage.EntityPagePackMaxBytes = s.store.EntityPagePackMaxBytes
 	stage.MaxMaintenanceBytes = s.store.MaxMaintenanceBytes
+	// The captured graph is immutable and belongs to the pinned manifest.
+	// Replaying its commit tail on every preparation prolongs write conflicts.
+	if s.loaded.Graph != nil {
+		stage.setWriteCache(s.task.TenantID, s.loaded)
+	}
 	defer stage.ShutdownTasks(context.Background())
 	fixed := ReplicatedContext(ctx, s.task.ID, s.task.StartedAt)
+	fixed = context.WithValue(fixed, preparedMaintenanceBuildKey{}, true)
 	task, err := stage.RunReplicatedTask(fixed, s.task.TenantID, s.task.ID, nil)
 	if err != nil {
 		return nil, err

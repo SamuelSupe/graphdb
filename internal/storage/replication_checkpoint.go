@@ -220,6 +220,8 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 // Prepared publication owns the application barrier, so none of these objects
 // can change while their before-images are captured. Persist bounded groups
 // before any mutation instead of syncing one rollback transaction per object.
+// Small GC objects share up to 4096 entries; the 16 MiB bound still limits
+// retained before-images. A 64-entry limit amplifies fsync for small files.
 func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 	journal := s.replicationJournal(ctx)
 	if journal == nil {
@@ -228,7 +230,7 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 	for start := 0; start < len(keys); {
 		before := make(map[string][]byte)
 		bytes := 0
-		for start < len(keys) && len(before) < 64 && bytes < 16<<20 {
+		for start < len(keys) && len(before) < 4096 && bytes < 16<<20 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}

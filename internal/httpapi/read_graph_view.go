@@ -31,7 +31,7 @@ func (s *Server) withReadOnlyGraphForRead(ctx context.Context, tenantID string, 
 	cancel := func() {}
 	catchupStart := time.Time{}
 	if target.TargetVersion > 0 {
-		loadCtx, cancel = context.WithTimeout(ctx, s.readerCatchupTimeout())
+		loadCtx, cancel = s.readGraphLoadContext(ctx, tenantID, target)
 		catchupStart = time.Now()
 	}
 	defer cancel()
@@ -51,7 +51,7 @@ func (s *Server) withReadOnlyGraphForRead(ctx context.Context, tenantID string, 
 	if err == nil {
 		return callbackErr
 	}
-	if target.TargetVersion <= 0 || !readCatchupFailed(loadCtx, err) {
+	if target.TargetVersion <= 0 || ctx.Err() != nil || !readCatchupFailed(loadCtx, err) {
 		if target.TargetVersion > 0 {
 			s.recordReaderCatchup(tenantID, "error", catchupStart)
 		}

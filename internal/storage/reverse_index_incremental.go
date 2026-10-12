@@ -146,18 +146,20 @@ func (s *TenantStore) writeChangedReverseEdgeShards(
 	}
 	// Reverse point reads decode the selected pack. Keep packs small so fewer
 	// writes do not turn into large cold-read amplification.
-	for _, group := range edgeShardDataPackGroupsWithTargetRows(changed, 128) {
+	groups := edgeShardDataPackGroupsWithTargetRows(changed, 128)
+	return s.runFileWriteJobs(ctx, len(groups), func(workCtx context.Context, index int) error {
+		group := groups[index]
 		pack := mergeEdgeShardPack(group)
 		// Reverse index rows must retain their destination shard inside a pack.
 		pack.reverse = true
 		key := s.reverseEdgeShardVersionKey(tenantID, version, pack.RelationType, pack.Shard)
-		if err := s.putParquetEdgeShardObject(ctx, key, tenantID, pack, false); err != nil {
+		if err := s.putParquetEdgeShardObject(workCtx, key, tenantID, pack, false); err != nil {
 			return err
 		}
 		for _, shard := range group.Shards {
 			index := byKey[edgeShardTargetKey(shard.RelationType, shard.Shard)]
 			specs[index].Objects[0].Key = key
 		}
-	}
-	return nil
+		return nil
+	})
 }

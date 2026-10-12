@@ -15,7 +15,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
-	"github.com/apache/arrow-go/v18/parquet/compress"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
@@ -67,7 +66,7 @@ const (
 )
 
 const (
-	parquetEntityPageRowGroupSize  int64 = 512
+	parquetEntityPageRowGroupSize  int64 = 4096
 	parquetEntityPageReadBatchSize int64 = 128
 )
 
@@ -76,10 +75,35 @@ func (s *TenantStore) writeParquetEntityPages(ctx context.Context, tenantID stri
 }
 
 func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, tenantID string, pages []EntityPageData, version int64, checkExisting bool) error {
+	writeRecords := s.WriteEntityRecords
+	groups := entityPageDataPackGroups(pages, !writeRecords, s.EntityPagePackMaxBytes)
+	metas, err := s.writeParquetEntityPageGroups(ctx, tenantID, groups, checkExisting)
+	if err != nil || !writeRecords {
+		return err
+	}
 	recordJobs := []entityRecordWriteJob{}
 	currentIDs := map[string]struct{}{}
-	writeRecords := s.WriteEntityRecords
-	for _, group := range entityPageDataPackGroups(pages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes) {
+	for index, group := range groups {
+		for _, page := range group.Pages {
+			pageHash := entityPageContentHash(page)
+			for _, entity := range page.Entities {
+				record := newEntityRecord(tenantID, entity, page.Shard, pageHash, metas[index].ETag, page.Version, page.UpdatedAt)
+				key := s.entityRecordKey(tenantID, entity.ID)
+				currentIDs[entity.ID] = struct{}{}
+				recordJobs = append(recordJobs, entityRecordWriteJob{Key: key, Record: record})
+			}
+		}
+	}
+	if err := s.putEntityRecordBatch(ctx, recordJobs); err != nil {
+		return err
+	}
+	return s.tombstoneStaleEntityRecords(ctx, tenantID, currentIDs, version)
+}
+
+func (s *TenantStore) writeParquetEntityPageGroups(ctx context.Context, tenantID string, groups []entityPageDataPackGroup, checkExisting bool) ([]ObjectMeta, error) {
+	metas := make([]ObjectMeta, len(groups))
+	err := s.runFileWriteJobs(ctx, len(groups), func(workCtx context.Context, index int) error {
+		group := groups[index]
 		for i := range group.Pages {
 			group.Pages[i].TenantID = tenantID
 		}
@@ -89,48 +113,17 @@ func (s *TenantStore) writeParquetEntityPagesWithOptions(ctx context.Context, te
 		if len(group.Pages) > 1 {
 			key = s.parquetEntityPagePackVersionKey(tenantID, pack.Version, group.ID)
 			if checkExisting {
-				if pageMeta, ok, err := s.existingParquetEntityPagePackMeta(ctx, key, tenantID, group.Pages); err != nil || ok {
-					if err != nil {
-						return err
-					}
-					if writeRecords {
-						for _, page := range group.Pages {
-							pageHash := entityPageContentHash(page)
-							for _, entity := range page.Entities {
-								record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
-								recordKey := s.entityRecordKey(tenantID, entity.ID)
-								currentIDs[entity.ID] = struct{}{}
-								recordJobs = append(recordJobs, entityRecordWriteJob{Key: recordKey, Record: record})
-							}
-						}
-					}
-					continue
+				if pageMeta, ok, err := s.existingParquetEntityPagePackMeta(workCtx, key, tenantID, group.Pages); err != nil || ok {
+					metas[index] = pageMeta
+					return err
 				}
 			}
 		}
-		pageMeta, err := s.putParquetEntityPageObject(ctx, key, tenantID, pack, checkExisting)
-		if err != nil {
-			return err
-		}
-		if writeRecords {
-			for _, page := range group.Pages {
-				pageHash := entityPageContentHash(page)
-				for _, entity := range page.Entities {
-					record := newEntityRecord(tenantID, entity, page.Shard, pageHash, pageMeta.ETag, page.Version, page.UpdatedAt)
-					key := s.entityRecordKey(tenantID, entity.ID)
-					currentIDs[entity.ID] = struct{}{}
-					recordJobs = append(recordJobs, entityRecordWriteJob{Key: key, Record: record})
-				}
-			}
-		}
-	}
-	if !writeRecords {
-		return nil
-	}
-	if err := s.putEntityRecordBatch(ctx, recordJobs); err != nil {
+		pageMeta, err := s.putParquetEntityPageObject(workCtx, key, tenantID, pack, checkExisting)
+		metas[index] = pageMeta
 		return err
-	}
-	return s.tombstoneStaleEntityRecords(ctx, tenantID, currentIDs, version)
+	})
+	return metas, err
 }
 
 func (s *TenantStore) putParquetEntityPage(ctx context.Context, tenantID string, page EntityPageData) (ObjectMeta, error) {
@@ -249,6 +242,8 @@ func marshalParquetEntityPage(ctx context.Context, page EntityPageData) ([]byte,
 			return page.Entities[order[i].index].ID < page.Entities[order[j].index].ID
 		})
 	}
+	var shardRowEnds []int64
+	lastShard := ""
 	for i := range page.Entities {
 		if i&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -261,6 +256,10 @@ func marshalParquetEntityPage(ctx context.Context, page EntityPageData) ([]byte,
 			entity = page.Entities[order[i].index]
 			rowShard = order[i].shard
 		}
+		if i > 0 && rowShard != lastShard {
+			shardRowEnds = append(shardRowEnds, int64(builder.Field(0).Len()))
+		}
+		lastShard = rowShard
 		rows, err := entityPageRows(entity)
 		if err != nil {
 			return nil, err
@@ -306,20 +305,46 @@ func marshalParquetEntityPage(ctx context.Context, page EntityPageData) ([]byte,
 
 	record := builder.NewRecordBatch()
 	defer record.Release()
-	table := array.NewTableFromRecords(schema, []arrow.RecordBatch{record})
-	defer table.Release()
-
 	var buf bytes.Buffer
-	rowGroupSize := parquetEntityPageRowGroupSize
-	if table.NumRows() > 0 && table.NumRows() < rowGroupSize {
-		rowGroupSize = table.NumRows()
-	}
-	if rowGroupSize < 1 {
-		rowGroupSize = 1
-	}
-	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
+	writerProps := parquetDataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
+	writer, err := pqarrow.NewFileWriter(schema, &buf, writerProps, arrowProps)
+	if err != nil {
+		return nil, err
+	}
+	defer writer.Close()
+	// Align larger shards while avoiding a wide footer for each tiny shard.
+	// Small packs retain the existing 512-row statistics-pruning granularity.
+	shardRowEnds = append(shardRowEnds, record.NumRows())
+	rowGroupSize := parquetEntityPageRowGroupSize
+	previousEnd := int64(0)
+	for _, end := range shardRowEnds {
+		if end-previousEnd < 512 {
+			shardRowEnds = []int64{record.NumRows()}
+			rowGroupSize = 512
+			break
+		}
+		previousEnd = end
+	}
+	start := int64(0)
+	for _, end := range shardRowEnds {
+		for start < end {
+			stop := min(start+rowGroupSize, end)
+			slice := record.NewSlice(start, stop)
+			err := writer.Write(slice)
+			slice.Release()
+			if err != nil {
+				return nil, err
+			}
+			start = stop
+		}
+	}
+	if record.NumRows() == 0 {
+		if err := writer.Write(record); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)

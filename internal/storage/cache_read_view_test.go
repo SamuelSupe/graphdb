@@ -9,6 +9,39 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func TestColdWriteLoadProgressesWhileBulkDecodeSaturated(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	defer store.ShutdownTasks(ctx)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"name": "original"}}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cold := NewTenantStoreWithOptions(files, store.Prefix, TenantStoreOptions{InstanceID: store.InstanceID})
+	defer cold.ShutdownTasks(ctx)
+	ConfigureParquetDecodeMaxConcurrent(2)
+	t.Cleanup(func() { ConfigureParquetDecodeMaxConcurrent(0) })
+	release, err := acquireParquetDecode(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	loadCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	loaded, err := cold.loadForWriteLocked(loadCtx, "tenant-a")
+	if err != nil {
+		t.Fatalf("cold publication load behind bulk decoder: %v", err)
+	}
+	entity, ok := loaded.Graph.GetEntity("host:a")
+	if !ok || entity.Fields["name"] != "original" || loaded.Manifest.Version != 1 {
+		t.Fatalf("cold publication loaded incorrect graph: %+v", loaded.Manifest)
+	}
+}
+
 func TestReaderCacheReadOnlyViewReusesSnapshotAndKeepsLoadIsolated(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
@@ -147,6 +180,64 @@ func TestReaderCacheReusesExactWriteCacheForCatchupAndKeepsPublicResultsIsolated
 		t.Fatal("exact write-cache refresh skipped the authoritative manifest read")
 	}
 	refreshed.Entities.Delete("host:c")
+	assertReaderCacheEntityPresent(t, ctx, cache, store, "host:c", 3)
+}
+
+func TestWriteReusesExactReaderGraphAndPreservesOldView(t *testing.T) {
+	for _, expected := range []bool{false, true} {
+		t.Run("expected-version-"+strconv.FormatBool(expected), func(t *testing.T) {
+			ctx := context.Background()
+			objects := newCountingReadStore(NewMemoryStore())
+			store := NewTenantStore(objects, "test")
+			cache := NewReaderCache(store, time.Minute)
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"revision": 1}}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cache.mu.RLock()
+			old := cache.entries["tenant-a"].graph
+			cache.mu.RUnlock()
+			cache.expirePublishedView("tenant-a")
+			store.deleteWriteCache("tenant-a")
+			objects.Reset()
+			opts := CommitOptions{}
+			version := int64(1)
+			if expected {
+				opts.ExpectedVersion = &version
+			}
+			result, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"revision": 2}}, {ID: "host:b", Kind: "host"}}}, opts)
+			if err != nil || result.Version != 2 {
+				t.Fatalf("commit result: %#v, %v", result, err)
+			}
+			if reads := objects.CountContains("/commits/") + objects.CountContains("/snapshots/"); reads != 0 {
+				t.Fatalf("resident reader graph required %d commit/snapshot reads", reads)
+			}
+			if reads := objects.CountContains("manifest.parquet"); reads == 0 {
+				t.Fatal("reader graph was reused without checking the authoritative manifest")
+			}
+			if entity, ok := old.GetEntity("host:a"); !ok || entity.Fields["revision"] != float64(1) || old.Version != 1 {
+				t.Fatalf("write modified the old reader view: %#v, version=%d", entity, old.Version)
+			}
+			if _, ok := old.GetEntity("host:b"); ok {
+				t.Fatal("new entity leaked into the old reader view")
+			}
+			assertReaderCacheEntityPresent(t, ctx, cache, store, "host:b", 2)
+		})
+	}
+}
+
+func TestWriteRejectsReaderGraphFromPreviousManifest(t *testing.T) {
+	ctx := context.Background()
+	objects, store, cache, _ := newReaderCacheWriteReuseFixture(t)
+	store.readViews = []*ReaderCache{cache}
+	store.deleteWriteCache("tenant-a")
+	objects.Reset()
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:c", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if reads := objects.CountContains("/commits/") + objects.CountContains("/snapshots/"); reads == 0 {
+		t.Fatal("writer reused a reader graph from an older manifest")
+	}
+	assertReaderCacheEntityPresent(t, ctx, cache, store, "host:b", 3)
 	assertReaderCacheEntityPresent(t, ctx, cache, store, "host:c", 3)
 }
 

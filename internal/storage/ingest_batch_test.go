@@ -522,7 +522,8 @@ func TestLocalIngestByteBudgetFallsBackAfterPublishing(t *testing.T) {
 	blocked := &blockOncePutStore{ObjectStore: files, substring: "/indexes/parquet/", paused: make(chan struct{}), resume: make(chan struct{})}
 	resume := sync.OnceFunc(func() { close(blocked.resume) })
 	t.Cleanup(resume)
-	store.Objects = blocked
+	counted := newIngestBatchCountingStore(blocked)
+	store.Objects = counted
 	done := make(chan error, 1)
 	go func() { _, err := store.Ingest(ctx, "tenant-a", ingestEntityRequest("bytes", "host:new")); done <- err }()
 	select {
@@ -544,9 +545,55 @@ func TestLocalIngestByteBudgetFallsBackAfterPublishing(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock()
+	queued := make(chan error, 3)
+	for revision, id := range []string{"host:queued-a", "host:queued-b", "host:queued-a"} {
+		request := ingestEntityRequest(fmt.Sprintf("queued-%d", revision), id)
+		request.Items[0].Entity.Fields["revision"] = revision
+		go func() {
+			_, err := store.Ingest(ctx, "tenant-a", request)
+			queued <- err
+		}()
+		for {
+			manifest, err := store.CurrentManifest(ctx, "tenant-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manifest.Version == int64(3+revision) {
+				break
+			}
+			if ctx.Err() != nil {
+				t.Fatal("queued commit did not publish")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	select {
+	case err := <-queued:
+		t.Fatalf("queued caller returned before index publication: %v", err)
+	default:
+	}
 	resume()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	for range 3 {
+		if err := <-queued; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := counted.count(store.indexCatalogKey("tenant-a")); got != 2 {
+		t.Fatalf("catalog publications = %d, want active update plus merged tail", got)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil || catalog.Version != 5 {
+		t.Fatalf("merged catalog version = %d, error = %v", catalog.Version, err)
+	}
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	for _, id := range []string{"host:new", "host:queued-a", "host:queued-b"} {
+		entity, ok, err := lookup.GetEntity(ctx, id, nil)
+		if err != nil || !ok || (id == "host:queued-a" && entity.Fields["revision"] != float64(2)) {
+			t.Fatalf("merged entity %s: %#v, available=%v error=%v", id, entity, ok, err)
+		}
 	}
 }
 

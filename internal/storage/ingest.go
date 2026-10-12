@@ -233,7 +233,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 	if indexWork != nil && s.localFileStore() != nil && s.enqueueLocalIngestIndexUpdate(ctx, tenantID, indexWork) {
 		indexWork = nil
 	} else {
-		s.enqueueCommitIndexUpdate(tenantID, indexWork)
+		s.enqueueCommitIndexUpdate(ctx, tenantID, indexWork)
 	}
 	if foregroundLockHeld {
 		unlock()

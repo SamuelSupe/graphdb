@@ -15,6 +15,67 @@ import (
 
 var benchmarkIndexBuildArtifacts indexBuildArtifacts
 
+func TestPageAndEdgeWritesUseSharedEncodeBudget(t *testing.T) {
+	g, err := graph.FromSnapshot(graph.Snapshot{
+		Version:       2,
+		CITypes:       []graph.CIType{{Name: "host"}},
+		RelationTypes: []graph.RelationType{{Name: "links", FromKind: "host", ToKind: "host", Directed: true}},
+		Entities:      []graph.Entity{{ID: "host:a", Kind: "host"}, {ID: "host:b", Kind: "host"}},
+		Edges:         []graph.Edge{{ID: "link:a:b", Type: "links", From: "host:a", To: "host:b"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"pages", "incremental_pages", "incremental_edges", "reverse_edges"} {
+		t.Run(mode, func(t *testing.T) {
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { files.Close() })
+			blocked := &blockOncePutStore{ObjectStore: files, substring: "/", paused: make(chan struct{}), resume: make(chan struct{})}
+			store := NewTenantStore(blocked, "test")
+			store.WriteEntityRecords = false
+			store.maintenance.encodes = make(chan struct{}, 1)
+			artifacts, err := buildIndexArtifactsWithDefinitions(g, 2, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.decorateIndexCatalog(&artifacts.Catalog, "tenant-a")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			t.Cleanup(cancel)
+			done := make(chan error, 1)
+			go func() {
+				switch mode {
+				case "pages":
+					done <- store.writeParquetEntityPages(ctx, "tenant-a", artifacts.EntityPages, 2)
+				case "incremental_pages":
+					done <- store.writeChangedParquetEntityPagesFast(ctx, "tenant-a", artifacts.EntityPages, artifacts.Catalog, nil, g, nil, 2)
+				case "incremental_edges":
+					done <- store.writeChangedParquetEdgeShardsFast(ctx, "tenant-a", artifacts.EdgeShards, artifacts.Catalog, 2)
+				case "reverse_edges":
+					_, _, err := store.prepareReverseIndex(ctx, "tenant-a", g, 2)
+					done <- err
+				}
+			}()
+			t.Cleanup(func() {
+				close(blocked.resume)
+				if err := <-done; err != nil {
+					t.Errorf("index write did not finish: %v", err)
+				}
+			})
+			select {
+			case <-blocked.paused:
+			case <-ctx.Done():
+				t.Fatal("index write did not start")
+			}
+			if got := len(store.maintenance.encodes); got != 1 {
+				t.Fatalf("active index encoding used %d budget slots, want 1", got)
+			}
+		})
+	}
+}
+
 func TestLocalMaintenanceMemoryBudgetCancellationAndProgress(t *testing.T) {
 	ctx := context.Background()
 	files, err := OpenFileStore(t.TempDir())
@@ -357,7 +418,7 @@ func TestIndexQueueDoesNotReserveBehindSynchronousPredecessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	predecessor := &commitIndexUpdate{}
-	store.enqueueCommitIndexUpdate("tenant-a", predecessor)
+	store.enqueueCommitIndexUpdate(ctx, "tenant-a", predecessor)
 	next := &commitIndexUpdate{before: graph.New(), after: graph.New()}
 	accepted := store.enqueueLocalIngestIndexUpdate(ctx, "tenant-a", next)
 	// Always drain the predecessor, including on failure, so no background worker

@@ -1,6 +1,6 @@
 # Raft 不停机滚动升级
 
-适用于 **GGraphDB 2.3.0**；发行资格见[版本验证](validation-v2.3.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.1**；发行资格见[版本验证](validation-v2.3.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 滚动升级适用于至少三个投票副本的 Raft 组。分片的目录组和每个数据组分别遵守同一流程，入口至少两个 router。Compose 的 HAProxy 持续解析 Docker 服务名，避免替换容器改变 IP 后仍连接旧地址；其他部署需配置对应 DNS/服务发现。每次只替换一个进程，保留节点 ID、配置、数据目录和 Raft 日志；该副本追赶并恢复健康后才操作下一个。始终保留多数派，正常图请求继续执行强一致屏障。
 
@@ -8,7 +8,10 @@ Leader 切换、连接关闭或健康检查传播期间，单次请求仍可能�
 
 ## 兼容窗口
 
-当前发行已核验的滚动窗口为已发布 **v2.2.4 → v2.3.0，协议 1**。
+2.3.1 候选的标签门禁验证 **已发布 v2.3.0 → v2.3.1，协议 1**。
+门禁完成与下载身份绑定前，该窗口保持 PENDING，见[2.3.1 验证](validation-v2.3.1.md)。
+
+最近已发布发行的核验滚动窗口为已发布 **v2.2.4 → v2.3.0，协议 1**。
 来源二进制 SHA256 为 `224df57d837aa6cd475881681c286bfae1c2670da245c24a5399820ec22fb86a`，
 目标为 `18ee1a1574decd40cb0d82841406230b4e9d695d04ebbf94525e64d0dd4e0307`。
 两者分别与下载发布包绑定，详见[2.3.0 验证](validation-v2.3.0.md)。下表较早的候选窗口保留其历史身份，
@@ -99,8 +102,12 @@ python3 scripts/raft_rolling_upgrade.py --inventory upgrade.json --execute \
 [`scripts/raft_rolling_gate.py`](../scripts/raft_rolling_gate.py) 绑定真实来源二进制，验收两个不同二进制的混部、换主、旧程序安装新版快照、导入任务、单组与分片持续读写、关闭 legacy 窗口以及严格模式协调脚本。负载按原幂等身份重试，记录尝试次数、重试和最终失败；每个副本轮流成为 Leader 后核对自己的强一致导出。临时独立项目和卷结束后清理。
 
 ```sh
-export GRAPHDB_ROLLING_BASE_IMAGE='<已核验的 v2.2.4 镜像>'
-export GRAPHDB_ROLLING_TARGET_IMAGE='<已核验的 v2.3.0 镜像>'
+export GRAPHDB_ROLLING_BASE_IMAGE='<已核验的 v2.3.0 镜像>'
+export GRAPHDB_ROLLING_TARGET_IMAGE='<v2.3.1 候选镜像>'
+export GRAPHDB_ROLLING_BASE_COMMIT=91ffe5033e58d49ca38ef9dbb40efd414264538e
+export GRAPHDB_ROLLING_BASE_SHA256='<来源镜像内二进制 SHA256>'
+export GRAPHDB_ROLLING_TARGET_VERSION=v2.3.1
+export GRAPHDB_ROLLING_TARGET_COMMIT='<候选的完整提交>'
 export GRAPHDB_ROLLING_OUTPUT='<新的证据目录>'
 export GRAPHDB_RAFT_TOKEN='<本次临时验收令牌>'
 DOCKER_CONTEXT=orbstack python3 scripts/raft_rolling_gate.py

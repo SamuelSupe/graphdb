@@ -70,6 +70,11 @@ func indexTaskFromTask(task Task) IndexTask {
 }
 
 func (s *TenantStore) finishIndexTaskCleanup(ctx context.Context, task Task, catalog IndexCatalog) (map[string]any, string, error) {
+	if prepared, _ := ctx.Value(preparedMaintenanceBuildKey{}).(bool); prepared {
+		// Index publication transfers rewritten objects, not staged deletions.
+		// Only a prepared GC publishes deletions to the replicas.
+		return taskResult(catalog), "", nil
+	}
 	if err := s.updateTaskProgress(ctx, task, "cleanup", 1, 2, map[string]any{"version": catalog.Version}); err != nil {
 		return nil, "", err
 	}
