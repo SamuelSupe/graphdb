@@ -1,5 +1,7 @@
 # GGraphDB 2.x local disk operation
 
+[中文](local-disk.zh-CN.md)
+
 Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns

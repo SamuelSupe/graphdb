@@ -1,5 +1,7 @@
 # Object-storage snapshots and on-demand restore
 
+[中文](object-backup.zh-CN.md)
+
 Applies to **GGraphDB 2.3.0**; see [release validation](validation-v2.3.0.md) and [version boundaries](naming-and-compatibility.md).
 
 This guide covers the current 2.x backup features. Version 2.1 adds optional
