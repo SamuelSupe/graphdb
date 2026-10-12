@@ -178,7 +178,7 @@ a different restore or backup.
 
 ## Validation and performance
 
-Current release scope is in [2.3.0 validation](validation-v2.3.0.md); actual release workflow conclusions and packaged evidence qualify its binary. Historical [2.1.2 validation](validation-v2.1.2.md) and [write-tail measurements](performance-write-tail.md) describe that older build. Its 30-minute run was stopped by explicit release decision and is not a pass; that historical waiver does not apply to the current release gates.
+Current release scope is in [2.3.1 validation](validation-v2.3.1.md); actual release workflow conclusions and packaged evidence qualify its binary. Historical [2.1.2 validation](validation-v2.1.2.md) and [write-tail measurements](performance-write-tail.md) describe that older build. Its 30-minute run was stopped by explicit release decision and is not a pass; that historical waiver does not apply to the current release gates.
 The [2.0 report](performance-v2.0.md) and earlier reports below are historical.
 
 Start performance work with one representative comparison and repeat only to
