@@ -1,6 +1,6 @@
 # Raft 不停机滚动升级
 
-适用于 **GGraphDB 2.3.5**；发行资格见[版本验证](validation-v2.3.5.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.6**；发行资格见[版本验证](validation-v2.3.6.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 滚动升级适用于至少三个投票副本的 Raft 组。分片的目录组和每个数据组分别遵守同一流程，入口至少两个 router。Compose 的 HAProxy 持续解析 Docker 服务名，避免替换容器改变 IP 后仍连接旧地址；其他部署需配置对应 DNS/服务发现。每次只替换一个进程，保留节点 ID、配置、数据目录和 Raft 日志；该副本追赶并恢复健康后才操作下一个。始终保留多数派，正常图请求继续执行强一致屏障。
 
@@ -8,8 +8,8 @@ Leader 切换、连接关闭或健康检查传播期间，单次请求仍可能�
 
 ## 兼容窗口
 
-本版计划核验已发布 **v2.3.0 → v2.3.5，协议 1** 的单组与分片滚动；
-确切标签结果与来源／目标下载摘要绑定待完成，见[本版验证](validation-v2.3.5.md)。
+本版计划核验已发布 **v2.3.0 → v2.3.6，协议 1** 的单组与分片滚动；
+确切标签结果与来源／目标下载摘要绑定待完成，见[本版验证](validation-v2.3.6.md)。
 此前 v2.3.0 → v2.3.4 的 PASS 和摘要见[2.3.4 验证](validation-v2.3.4.md)。
 
 上一发行已核验 **已发布 v2.3.0 → v2.3.1，协议 1**。标签门禁 PASS，
@@ -108,7 +108,7 @@ python3 scripts/raft_rolling_upgrade.py --inventory upgrade.json --execute \
 
 ## 验收入口
 
-当前窗口的标签门禁、来源／目标身份及下载绑定见[2.3.5 验证](validation-v2.3.5.md)。历史首次桥接窗口见[滚动验收报告](raft-rolling-validation-2026-10-02.zh-CN.md)；历史诊断候选至隔离候选见[故障隔离与迁移验收](raft-isolation-validation-2026-10-02.zh-CN.md)。
+当前窗口的标签门禁、来源／目标身份及下载绑定见[2.3.6 验证](validation-v2.3.6.md)。历史首次桥接窗口见[滚动验收报告](raft-rolling-validation-2026-10-02.zh-CN.md)；历史诊断候选至隔离候选见[故障隔离与迁移验收](raft-isolation-validation-2026-10-02.zh-CN.md)。
 
 [`scripts/raft_rolling_gate.py`](../scripts/raft_rolling_gate.py) 绑定真实来源二进制，验收两个不同二进制的混部、换主、旧程序安装新版快照、导入任务、单组与分片持续读写、关闭 legacy 窗口以及严格模式协调脚本。负载按原幂等身份重试，记录尝试次数、重试和最终失败；每个副本轮流成为 Leader 后核对自己的强一致导出。临时独立项目和卷结束后清理。
 

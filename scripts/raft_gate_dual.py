@@ -121,7 +121,7 @@ def wait_committed(base, mode):
     raise AssertionError(('batch did not commit', value))
 
 try:
-    subprocess.run(COMPOSE+['up','-d','--no-build'], env=ENV, check=True, capture_output=True, text=True)
+    subprocess.run(COMPOSE+['up','-d','--no-build'], env=ENV, check=True, text=True)
     for mode, port in [('direct',46081),('wal',46082)]:
         port += PORT_OFFSET
         name = PROJECT+'-standalone-'+mode
@@ -332,7 +332,7 @@ try:
         saved = expect(raft, 'POST', '/v1/query/templates', {'name':'dr-hosts','request':{'op':'match','kind':'host'}})
         before = expect(raft, 'GET', '/v1/export/snapshot')
         old_terminal = wait_committed(raft, 'raft')
-        subprocess.run(COMPOSE+['stop','--timeout','30','node1','node2','node3'], env=ENV, check=True, capture_output=True)
+        subprocess.run(COMPOSE+['stop','--timeout','30','node1','node2','node3'], env=ENV, check=True)
         archives = PROJECT+'-runtime-archives'
         recovery_volumes.append(archives)
         docker('run','--rm','-v',archives+':/backup','alpine:3.20','chown','1000:1000','/backup')
@@ -358,7 +358,7 @@ try:
         recovery_config = OUT/'runtime-restore.yml'
         recovery_config.write_text('\n'.join(lines)+'\n')
         COMPOSE += ['-f', str(recovery_config)]
-        subprocess.run(COMPOSE+['up','-d','--no-build','--no-deps','--force-recreate','node1','node2','node3'], env=ENV, check=True, capture_output=True)
+        subprocess.run(COMPOSE+['up','-d','--no-build','--no-deps','--force-recreate','node1','node2','node3'], env=ENV, check=True)
         wait_ready(raft)
         assert before == expect(raft, 'GET', '/v1/export/snapshot')
         templates = expect(raft, 'GET', '/v1/query/templates')

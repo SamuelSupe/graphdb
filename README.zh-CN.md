@@ -1,8 +1,8 @@
-# GGraphDB 2.3.5
+# GGraphDB 2.3.6
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.5) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.6) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,16 +12,16 @@
 
 ## 当前版本
 
-**2.3.5 为待发布候选**；稳定 Latest 仍为 [2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4)。确切标签门禁和独立下载核验尚待完成。
+**2.3.6 为待发布候选**；稳定 Latest 仍为 [2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4)。确切标签门禁和独立下载核验尚待完成。
 
-| 领域 | 2.3.5 提供的能力 |
+| 领域 | 2.3.6 提供的能力 |
 | --- | --- |
 | 管理 UI | `/ui/` 内嵌英文／简体中文控制台，无需独立前端服务 |
 | 日常操作 | 图表概览、结构化表单与详情、查询工作台、数据接入和维护 |
 | 大量租户 | 服务端租户 ID 搜索，租户切换和集群归属使用有界分页 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组 |
 
-验证证据见[发布验证](docs/validation-v2.3.5.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验证](docs/validation-v2.3.6.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -140,16 +140,16 @@ GraphQL 的完整示例见 [GraphQL 指南](docs/graphql.zh-CN.md)。控制台�
 
 ## 验证与限制
 
-2.3.5 解除本地维护索引工作对 WAL 确认的前台阻塞，统一并发重建的发布顺序，
+2.3.6 解除本地维护索引工作对 WAL 确认的前台阻塞，统一并发重建的发布顺序，
 减少 Raft 屏障内重复文件系统操作，并在原有共享编码限额内准备 compact 两种表示。
 
 相同输入的候选对照中，单机写入 P99 **9.470 → 3.948 秒**；原始 30 分钟增长计划下，
 Raft 查询最大 **13.132 → 5.584 秒**。比较对象是工作区候选 C3 与 C7，不能当作已发布
-2.3.4 与 2.3.5 二进制的对照。单机 stale 频率**未改善（131/327 → 134/327）**，
+2.3.4 与 2.3.6 二进制的对照。单机 stale 频率**未改善（131/327 → 134/327）**，
 全部 stale 样本均在更新中，静默后索引追平。单机容器内存峰值增加 **6.4%**；
 Raft 基线资源计数缺失。查询和接入仍有秒级长尾。两种部署各自保持输入一致，不能跨部署直接比较。
 
-详见[确切发行证据](docs/validation-v2.3.5.md)与[前后对照报告](docs/performance-tail-validation-2026-10-20.zh-CN.md)。
+详见[确切发行证据](docs/validation-v2.3.6.md)与[前后对照报告](docs/performance-tail-validation-2026-10-20.zh-CN.md)。
 确切标签资格尚待验收；跨宿主机可靠性、日级稳定性、生产容量和统一低延迟 SLO 仍未验收。
 
 <details>
@@ -182,7 +182,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.3.5 验证](docs/validation-v2.3.5.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.3.6 验证](docs/validation-v2.3.6.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 

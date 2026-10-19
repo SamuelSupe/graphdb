@@ -4,6 +4,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 PYTHON="${PYTHON:-python3}"
 export GRAPHDB_GATE_IMAGE="${GRAPHDB_GATE_IMAGE:?set the candidate Docker image}"
+# Sequential phases must not reuse listeners from Linux outbound ephemeral ports.
+export GRAPHDB_GATE_PORT_OFFSET="${GRAPHDB_GATE_PORT_OFFSET:--20000}"
 export GRAPHDB_GATE_OUTPUT="${GRAPHDB_GATE_OUTPUT:-$(mktemp -d "${TMPDIR:-/tmp}/graphdb-raft-gate.XXXXXX")}"
 export GRAPHDB_GATE_PROJECT="${GRAPHDB_GATE_PROJECT:-graphdb-gate-$(date +%s)-$$}"
 export GRAPHDB_RAFT_TOKEN="${GRAPHDB_RAFT_TOKEN:-$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32))')}"

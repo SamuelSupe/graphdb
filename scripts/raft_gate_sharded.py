@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -36,7 +37,12 @@ def docker(*args, check=True):
     return subprocess.run(DOCKER+list(args), check=check, capture_output=True, text=True)
 
 def compose(*args, check=True):
-    return subprocess.run(COMPOSE+list(args), env=ENV, check=check, capture_output=True, text=True)
+    try:
+        return subprocess.run(COMPOSE+list(args), env=ENV, check=check, capture_output=True, text=True)
+    except subprocess.CalledProcessError as err:
+        sys.stderr.write(err.stdout or '')
+        sys.stderr.write(err.stderr or '')
+        raise
 
 def service(name):
     return PROJECT+'-'+name+'-1'

@@ -1,23 +1,48 @@
 {
   "version": "2.3.5",
-  "status": "PENDING_EXACT_TAG_GATES",
-  "waivers": [],
-  "candidate_validation": {
-    "environment": "OrbStack Linux/arm64, Go 1.26.7",
-    "go_pass_events": 1827,
-    "go_skipped": 7,
-    "vet": "PASS",
-    "focused_race": "PASS",
-    "direct_rebuild_regression": "PASS",
-    "single_pending_index_sigkill": "PASS",
-    "raft_cold_disk_clones": 6
+  "status": "NOT_RELEASED",
+  "commit": "84d269daebf1e7440341239a0dc297f4e96edd60",
+  "workflow": "https://github.com/SamuelSupe/graphdb/actions/runs/39307798093",
+  "reason": "Enhanced recovery Compose up failed before business checks; original stderr was not retained",
+  "exact_ci_trigger": "UNCONFIRMED",
+  "local_port_reproducer": {
+    "environment": "OrbStack Linux host network",
+    "outgoing_client_port": 36082,
+    "docker_bind_old_exit": 125,
+    "fixed_port": 16082,
+    "fixed_exit": 0
   },
-  "performance_report": "performance-tail-validation-2026-10-20.json",
-  "limitations": [
-    "Stale frequency did not improve",
-    "Seconds-long Raft queries and ingestion remain",
-    "Standalone container memory peak increased 6.4%",
-    "Raft baseline resource counters unavailable",
-    "Cross-host failure domains, day-scale reliability and production capacity not qualified"
-  ]
+  "jobs_at_failure": [
+    {
+      "name": "Unit, vet, race, and 2.0 contracts",
+      "status": "in_progress",
+      "conclusion": ""
+    },
+    {
+      "name": "Local disk, WAL recovery, load, and restore",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "object-backup / Object snapshots and fresh-directory restore",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Local disk 30-minute mixed read/write soak",
+      "status": "in_progress",
+      "conclusion": ""
+    },
+    {
+      "name": "gateway / gateway",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "raft / raft",
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  ],
+  "follow_up": "v2.3.6 moves default gate listeners below common ephemeral ports and retains Compose error diagnostics; production optimization source unchanged"
 }

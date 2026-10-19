@@ -1,10 +1,10 @@
-# GGraphDB v2.3.5
+# GGraphDB v2.3.6
 
 ## 中文
 
-本版发布本地维护窗口和 Raft 文件系统路径的优化。确切标签门禁及下载核验尚待完成；
+本版发布本地维护窗口和 Raft 文件系统路径的优化。v2.3.5 因增强门禁 Compose 启动失败未发布；本版修正默认门禁端口范围并输出完整诊断，优化实现未变。确切标签门禁及下载核验尚待完成；
 全部门禁通过后由既有流水线发布，无门禁豁免。最终结果见
-[2.3.5 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.5.md)。
+[2.3.6 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.6.md)。
 
 - 本地重建在短暂前台锁内捕获不可变图，进入有序索引队列；并发 WAL 推进图头时，
   不再因旧版本发布检查触发 `manifest ... changed while rebuilding indexes`。
@@ -31,7 +31,7 @@
 **stale 频率未改善，秒级长尾仍在。** 单机 stale 样本均在更新中，静默后追平；
 并发重建版本冲突有独立回归验证。单机容器内存峰值增加 6.4%，Raft 基线资源计数缺失，
 不比较其 CPU/RSS。上述是工作区候选之间的优化对照，包含相同私有 pprof 初始化，
-不是已发布 v2.3.4 与 v2.3.5 二进制对照。两种部署各自保持输入一致，不能直接跨部署比较。
+不是已发布 v2.3.4 与 v2.3.6 二进制对照。两种部署各自保持输入一致，不能直接跨部署比较。
 详见[完整对照与边界](https://github.com/SamuelSupe/graphdb/blob/main/docs/performance-tail-validation-2026-10-20.zh-CN.md)。
 
 发布要求确切标签全量 unit/vet/race、SDK、控制台边界、direct/WAL、S3、TLS 网关、
@@ -39,12 +39,16 @@ Raft 协议 1–3、已发布 v2.3.0 到本版的协议 1 滚动，以及单机�
 证据随发行包提供。此前候选的 1827 项 Go 测试／子测试通过、7 项跳过，vet、聚焦 race、
 单机索引待追平时 SIGKILL 恢复及六份 Raft 磁盘冷读通过；候选检查与确切标签门禁分开记录。
 
-产品、SDK 和 OpenAPI 为 2.3.5，Go 模块 `/v2`、HTTP `/v1`、Parquet/WAL 格式及
+产品、SDK 和 OpenAPI 为 2.3.6，Go 模块 `/v2`、HTTP `/v1`、Parquet/WAL 格式及
 Raft 协议编号不变。单机先备份、停止旧进程，再沿用原目录和前缀；Raft 按
 [滚动升级手册](https://github.com/SamuelSupe/graphdb/blob/main/docs/raft-rolling-upgrade.zh-CN.md)操作，
 协议激活仍是全组升级后的独立步骤。跨宿主机故障域、日级稳定性、生产容量及统一延迟 SLO 未验收。
 
 ## English
+
+The unreleased v2.3.5 tag is retained after enhanced-gate Compose startup failed.
+This version moves all default gate ports below the common Linux ephemeral range
+and prints Compose failures; its production optimization source is unchanged.
 
 This patch orders local maintenance rebuilds through the existing index queue,
 allows WAL publication while bounded catch-up waits for existing build capacity,
@@ -63,7 +67,7 @@ seconds and the thirty-minute Raft growth-plan query maximum from 13.132 to 5.58
 seconds. Standalone stale frequency did not improve (131/327 to 134/327), container
 memory peak rose 6.4%, and Raft baseline resource counters are unavailable.
 Seconds-long tails remain. These measured workspace candidates share private pprof
-instrumentation; they are not published v2.3.4/v2.3.5 binary measurements. Each
+instrumentation; they are not published v2.3.4/v2.3.6 binary measurements. Each
 deployment has its own matched inputs; cross-topology comparisons are invalid.
 
 Publication requires all exact-tag gates, including both thirty-minute soaks and
@@ -76,9 +80,9 @@ general latency SLO remain unqualified.
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.3.5.tar.gz.sha256
-tar -xzf graphdb-v2.3.5.tar.gz
-cd v2.3.5
+sha256sum -c graphdb-v2.3.6.tar.gz.sha256
+tar -xzf graphdb-v2.3.6.tar.gz
+cd v2.3.6
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/path/to/v2-data bin/graphdb-linux-amd64 serve

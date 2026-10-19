@@ -1,0 +1,24 @@
+{
+  "version": "2.3.6",
+  "status": "PENDING_EXACT_TAG_GATES",
+  "waivers": [],
+  "candidate_validation": {
+    "environment": "OrbStack Linux/arm64, Go 1.26.7",
+    "go_pass_events": 1827,
+    "go_skipped": 7,
+    "vet": "PASS",
+    "focused_race": "PASS",
+    "direct_rebuild_regression": "PASS",
+    "single_pending_index_sigkill": "PASS",
+    "raft_cold_disk_clones": 6
+  },
+  "performance_report": "performance-tail-validation-2026-10-20.json",
+  "limitations": [
+    "Stale frequency did not improve",
+    "Seconds-long Raft queries and ingestion remain",
+    "Standalone container memory peak increased 6.4%",
+    "Raft baseline resource counters unavailable",
+    "Cross-host failure domains, day-scale reliability and production capacity not qualified"
+  ],
+  "previous_unreleased_tag": "v2.3.5"
+}

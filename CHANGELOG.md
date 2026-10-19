@@ -5,7 +5,16 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
-## [2.3.5] - 2026-10-20
+## [2.3.6] - 2026-10-20
+
+- Include the maintenance publication and Raft filesystem optimizations below.
+  Move all default Raft gate listeners below common Linux ephemeral ports and
+  print Compose startup/recovery errors. The v2.3.5 tag is retained without a
+  release after enhanced-gate Compose startup failed; its exact CI trigger lacked
+  captured stderr. A real outbound-port collision is independently reproduced.
+  Production Go source is unchanged from that optimization candidate.
+
+## [2.3.5] - 2026-10-20 (not released)
 
 - Order local rebuilds through the index queue, retaining writer fencing, read
   views and catalog CAS while allowing concurrent WAL publication to advance.

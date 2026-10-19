@@ -2,7 +2,7 @@
 
 [English](local-disk.md)
 
-适用于 **GGraphDB 2.3.5**；发行资格见[版本验证](validation-v2.3.5.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.6**；发行资格见[版本验证](validation-v2.3.6.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 默认单机部署采用单进程、多租户并发读写。`GRAPHDB_DATA_DIR` 保存图数据、控制元数据、后台任务
 及本地备份，运行时无需 PostgreSQL 或远端在线存储。可选的

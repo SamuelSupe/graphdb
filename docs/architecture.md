@@ -1,6 +1,6 @@
 # GGraphDB 2.x 本地磁盘架构
 
-适用于 **GGraphDB 2.3.5**；发行资格见[版本验证](validation-v2.3.5.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.6**；发行资格见[版本验证](validation-v2.3.6.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 [English](architecture.en.md)
 

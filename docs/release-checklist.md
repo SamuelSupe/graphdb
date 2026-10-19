@@ -6,9 +6,10 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
-[2.3.5](validation-v2.3.5.md) is pending exact-tag qualification and downloaded
+[2.3.6](validation-v2.3.6.md) is pending exact-tag qualification and downloaded
 asset verification, with no waiver requested. Local candidate tests and matched
 performance replay are recorded separately from official release gates.
+The [v2.3.5 failed tag](validation-v2.3.5.md) remains unreleased.
 
 ## Previous 2.3.4 qualification
 
