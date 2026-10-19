@@ -163,6 +163,79 @@ func TestCompactSnapshotBuildDoesNotBlockCommit(t *testing.T) {
 	}
 }
 
+func TestLocalCompactPreparesBothSnapshotsBeforePublication(t *testing.T) {
+	for _, taskMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("task=%v", taskMode), func(t *testing.T) {
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			blocking := &blockOncePutStore{ObjectStore: files, substring: "/snapshots/sharded/", paused: make(chan struct{}), resume: make(chan struct{})}
+			store := NewTenantStore(blocking, "test")
+			defer store.ShutdownTasks(context.Background())
+			store.maintenance.encodes = make(chan struct{}, 2)
+			if _, err := store.Commit(ctx, "tenant-a", sampleMutations(), CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			var compactErr error
+			done := make(chan struct{})
+			var task Task
+			if taskMode {
+				task, compactErr = store.StartTask(ctx, "tenant-a", TaskTypeCompact, nil)
+				if compactErr != nil {
+					t.Fatal(compactErr)
+				}
+				close(done)
+			} else {
+				go func() { _, compactErr = store.Compact(ctx, "tenant-a"); close(done) }()
+			}
+			resume := sync.OnceFunc(func() { close(blocking.resume) })
+			defer func() { resume(); <-done }()
+			select {
+			case <-blocking.paused:
+			case <-ctx.Done():
+				t.Fatal("sharded snapshot preparation did not start")
+			}
+			for {
+				if _, err := files.Get(ctx, store.snapshotKey("tenant-a", 1)); err == nil {
+					break
+				} else if !errors.Is(err, ErrNotFound) {
+					t.Fatal(err)
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal("compatibility snapshot waited for the blocked sharded snapshot")
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			manifest, err := store.CurrentManifest(ctx, "tenant-a")
+			if err != nil || manifest.SnapshotVersion != 0 {
+				t.Fatalf("published an incomplete snapshot: %#v, %v", manifest, err)
+			}
+			resume()
+			<-done
+			if compactErr != nil {
+				t.Fatal(compactErr)
+			}
+			if taskMode {
+				finished := waitForTask(t, ctx, store, "tenant-a", task.ID)
+				if finished.Status != TaskStatusSucceeded {
+					t.Fatalf("compact task: %+v", finished)
+				}
+			}
+			manifest, err = store.CurrentManifest(ctx, "tenant-a")
+			if err != nil || manifest.SnapshotVersion != 1 || manifest.SnapshotCatalogKey == "" {
+				t.Fatalf("completed snapshots were not published: %#v, %v", manifest, err)
+			}
+
+		})
+	}
+}
+
 func TestCompactSkipsIngestBarrierDuringRecovery(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")

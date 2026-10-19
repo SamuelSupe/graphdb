@@ -1,6 +1,6 @@
 # Tasks And Maintenance
 
-Applies to **GGraphDB 2.3.4**; see [release validation](../validation-v2.3.4.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.5**; see [release validation](../validation-v2.3.5.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](tasks-maintenance.zh-CN.md)
 
@@ -207,6 +207,8 @@ same task ID under `/v1/tasks` to inspect, cancel or retry them. Index endpoints
 status response shape. Previously stored separate index task records remain readable, but
 cancellation of those legacy records is unsupported. Post-rebuild cleanup warnings appear in
 `result.cleanup_warning` and in the index status response's `error`; the rebuild can still succeed.
+
+Local rebuilds run in the ordered index queue while ingest continues publishing. Task success covers the captured graph version; concurrent writes can leave newer index work queued. Check `/v1/indexes/health` for current freshness. Replicated and remote backfills retain their write-admission barriers.
 
 The local runtime tracks task liveness and signals cancellation directly, without task heartbeats.
 After restart, inspecting an active record without an executor marks it failed. Retry explicitly

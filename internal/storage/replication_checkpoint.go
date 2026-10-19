@@ -152,12 +152,14 @@ func (j *replicationJournal) syncDirectories() error {
 		dirs = append(dirs, dir)
 	}
 	sort.Strings(dirs)
-	for _, dir := range dirs {
-		if err := syncDir(dir); err != nil {
-			return err
-		}
-		delete(j.directories, dir)
+	// Independent directory barriers may complete together, but all must
+	// finish before ApplyReplicated writes the durable commit marker.
+	if err := runIndexWriteJobs(context.Background(), len(dirs), func(_ context.Context, index int) error {
+		return syncDir(dirs[index])
+	}); err != nil {
+		return err
 	}
+	clear(j.directories)
 	return nil
 }
 
@@ -244,7 +246,7 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 			if err != nil {
 				return err
 			}
-			if err := s.verifySafeParent(filename); err != nil && !errors.Is(err, ErrNotFound) {
+			if err := s.verifySafeMutationParent(ctx, filename); err != nil && !errors.Is(err, ErrNotFound) {
 				return err
 			}
 			if info, err := os.Lstat(filename); err == nil && !info.Mode().IsRegular() {

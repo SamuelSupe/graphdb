@@ -272,6 +272,20 @@ func TestApplyCommitStorageCopyMutationClassesKeepSourceImmutable(t *testing.T) 
 				t.Fatal("borrowed snapshot changed across a commit")
 			}
 			for _, g := range []*Graph{source, updated} {
+				for _, reverse := range []bool{false, true} {
+					allEdges := NewShardedMap[Edge]()
+					for shard := range 64 {
+						if err := g.VisitEdgeStorageShard(context.Background(), "", fmt.Sprintf("%02x", shard), reverse, func(edge Edge) error {
+							allEdges.Set(edge.ID, edge)
+							return nil
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if !reflect.DeepEqual(maps.Collect(allEdges.All()), maps.Collect(g.Edges.All())) {
+						t.Fatal("unfiltered partition adjacency differs from graph edges")
+					}
+				}
 				entities := NewShardedMap[Entity]()
 				for shard := 0; shard < 64; shard++ {
 					if err := g.VisitEntityStorageShard(fmt.Sprintf("%02x", shard), func(entity Entity) error {

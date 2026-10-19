@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.3.4**; see [release validation](validation-v2.3.4.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.5**; see [release validation](validation-v2.3.5.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -103,8 +103,12 @@ Deletions share directory durability barriers, flushed before releasing locks,
 including on failure or cancellation. Index orphan validation reads directly
 from file handles while retaining its content and tenant checks. Local GC yields
 task execution capacity between batches so compaction can relieve WAL backpressure.
-Index rebuild still blocks write admission during backfill; its cleanup uses the
-same batch locks. Live workers are tracked in process; task liveness does not depend on heartbeats.
+Local index rebuilds join the ordered index publication queue. Ingest can publish
+while a rebuild runs; later index work catches up behind it. A rebuild completes
+for its captured version, so ongoing writes can leave a newer head still queued.
+Replicated and remote
+backfills retain their admission barriers. Cleanup uses the same batch locks.
+Live workers are tracked in process; task liveness does not depend on heartbeats.
 
 ## Readiness and memory budgets
 
@@ -267,11 +271,17 @@ Incremental entity, forward-edge and reverse-edge pages use a reusable 64-partit
 
 The same bounded coalescing applies to local updates waiting behind a synchronous index update, including oversized graphs. All joined callers wait for the merged catalog publication and receive its index error. Coalescing requires consecutive versions and the same writer fence; Raft applications keep their existing per-entry transaction boundaries.
 
-Index health reports `updating: true` while a published graph is ahead of its queued or running index update. Automatic maintenance waits for that update instead of starting a redundant full rebuild and throttling writes. Failed updates remain eligible for repair on the next maintenance cycle. Explicit rebuild requests still run.
+Index health reports `updating: true` while a published graph is ahead of its queued or running index update. Automatic maintenance waits for that update instead of starting a redundant full rebuild that competes for maintenance resources. Failed updates remain eligible for repair on the next maintenance cycle. Explicit rebuild requests still run.
 
 `GRAPHDB_MAINTENANCE_MAX_BYTES` defaults to `512MiB`. It is one shared estimate budget for active index/snapshot builds and queued asynchronous index graphs. Queue reservations transfer into execution without releasing and reacquiring memory. At most two builds and four partition encoding/write jobs run concurrently. An oversized build runs alone to preserve progress. On the retained-byte or eight-work-item limit, callers catch up synchronously after releasing the tenant lock.
 
+During local compact or rebuild, ingest coalesces bounded catch-up demand without retaining intermediate graphs or reserving memory needed by maintenance. Demand retains only old scalar values and edge endpoints, bounded by 8192 changed IDs and an estimated byte cap of min(maintenance budget / 64, 8 MiB). The worker waits for its predecessor and the existing graph-build budget before loading the latest head, then catches up incrementally against a matching base catalog. Limit overflow, schema changes or a catalog gap fall back to a full build. Explicit commit requests still wait for their own ordered index work. A process interruption can lose in-memory catch-up demand; configured automatic maintenance repairs a stale catalog, or an operator can explicitly rebuild when automatic repair is disabled.
+
 Entity-page builds, incremental entity/forward-edge pages, and reverse-edge pages use the same bounded file-write queue. Independent packs may finish concurrently; entity records and catalogs still wait for their referenced packs and directory barriers. The local queue admits at most 64 files per batch and checks 16 MiB / 50 ms cooperative budgets between files. The same queue applies during Raft application without relaxing its rollback journal or commit barriers.
+
+Primary index publication retains priority over reverse-index preparation. Compact prepares the sharded snapshot and compatibility record within the same shared write limit and waits for both before manifest publication, including the resumable task path.
+
+Streaming Raft capture recreates only parents of retained files; empty version directories left by GC do not enter the file-only archive. Prepared maintenance reuses ancestry checks only within its application barrier. Independent journal directory syncs run with bounded concurrency and all complete before the durable commit marker; before-images and rollback remain required.
 
 Entity/edge pages, secondary-index data, commit/ingest rows, and full snapshot records use Parquet delta byte-array encoding for strings, dictionaries for numeric values, and Snappy compression. String prefix encoding avoids per-row dictionary allocation in their wide typed row schemas while retaining compact repeated metadata. Entity-page row groups contain at most 4096 rows and align with logical shards when every shard contains at least 512 physical rows. Packs containing smaller shards retain 512-row groups to avoid a wide footer for each tiny shard. Both layouts retain shard-statistics pruning. Column schemas and logical hashes remain compatible with existing readers; encoded file sizes can differ. Snapshot loading builds entity indexes once after canonicalization and adds edge indexes without rebuilding the entity indexes.
 

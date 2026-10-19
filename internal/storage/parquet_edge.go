@@ -426,7 +426,6 @@ type parquetEdgeShardColumnSet struct {
 }
 
 func edgeShardRows(edge graph.Edge) ([]edgeShardRow, error) {
-	edge = graph.CopyEdge(edge)
 	rowCount := len(edge.Fields) + len(edge.FieldSources) + len(edge.Sources)
 	if edge.ExistenceSource != nil {
 		rowCount++

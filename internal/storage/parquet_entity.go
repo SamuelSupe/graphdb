@@ -539,7 +539,6 @@ type parquetEntityPageColumnSet struct {
 }
 
 func entityPageRows(entity graph.Entity) ([]entityPageRow, error) {
-	entity = graph.CopyEntity(entity)
 	rowCount := len(entity.Fields) + len(entity.FieldSources) + len(entity.Identity) + len(entity.Sources) + len(entity.MergedFrom)
 	if entity.ExistenceSource != nil {
 		rowCount++

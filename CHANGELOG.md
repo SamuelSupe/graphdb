@@ -5,6 +5,25 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+## [2.3.5] - 2026-10-20
+
+- Order local rebuilds through the index queue, retaining writer fencing, read
+  views and catalog CAS while allowing concurrent WAL publication to advance.
+- Coalesce maintenance catch-up with bounded old scalar values and edge endpoints;
+  wait for existing build capacity before capturing the latest graph, with full
+  rebuild fallback for schema changes, gaps or metadata limits.
+- Drain buffered WAL admissions before an expired dispatch; prepare compact's two
+  durable representations within the shared encoder limit. Avoid redundant graph
+  copies and repeated edge-partition scans.
+- Reuse ancestry checks only inside a replicated maintenance application barrier,
+  bound directory fsync concurrency and wait before the commit marker, and omit
+  empty-directory recreation during streaming snapshot capture.
+- Record matched C3/C7 candidate replays: standalone write P99 9.470 → 3.948 seconds,
+  thirty-minute Raft query maximum 13.132 → 5.584 seconds. Stale frequency did not
+  improve (131/327 → 134/327); standalone container memory peak rose 6.4%. Seconds
+  tails remain, and Raft baseline resource counters are unavailable. These are not
+  measurements of published v2.3.4 versus v2.3.5 binaries.
+
 ## [2.3.4] - 2026-10-19
 
 - Remove retired evidence-search tests and redundant scalar-key wrappers;

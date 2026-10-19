@@ -46,6 +46,7 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 	}
 	source := &ReplicationSnapshotSource{root: dir, checkpoint: checkpoint, budget: budget, release: release}
 	var total int64
+	preparedParents := make(map[string]bool)
 	err = filepath.WalkDir(s.root, func(filename string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -66,14 +67,8 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 			}
 			return nil
 		}
-		destination := filepath.Join(dir, relative)
 		if entry.IsDir() {
-			// Application is excluded throughout capture. Validate each directory
-			// once rather than walking the same ancestors for every object.
-			if err := s.verifySafeParent(filepath.Join(filename, ".snapshot-view")); err != nil {
-				return err
-			}
-			return os.Mkdir(destination, 0700)
+			return nil
 		}
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("snapshot object is not a regular file: %s", filename)
@@ -87,6 +82,19 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 		}
 		total += info.Size()
 		source.estimatedBytes += 512 + (info.Size()+511)/512*512
+		destination := filepath.Join(dir, relative)
+		parent := filepath.Dir(filename)
+		if !preparedParents[parent] {
+			// GC leaves empty version directories behind. Archives contain files,
+			// so only validate and recreate parents that still contain an object.
+			if err := s.verifySafeParent(filename); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+				return err
+			}
+			preparedParents[parent] = true
+		}
 		return os.Link(filename, destination)
 	})
 	if err != nil {

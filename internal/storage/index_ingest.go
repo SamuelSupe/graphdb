@@ -47,40 +47,64 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	work.fence = bound.fence
 	work.background = true
 	s.indexUpdateMu.Lock()
-	// Do not reserve memory behind a synchronous predecessor: that predecessor
-	// may need the same memory before it can complete and release this work.
-	if s.indexUnreservedTails[tenantID] != nil {
-		s.indexUpdateMu.Unlock()
-		release()
-		return false
-	}
-	if pending := s.pendingIngestIndexes[tenantID]; pending != nil &&
-		s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
-		len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
-			len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges &&
-		pending.reservation.resize(pendingIndexBytes(pending.before, work.after)) {
-		mergePendingIndexUpdate(pending, work)
-		s.indexUpdateMu.Unlock()
-		release()
-		return true
-	}
-	// Do not wait for capacity while holding the tenant lock: a queued rebuild
-	// can need that lock. The caller falls back to finishing after unlocking.
-	if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
-		s.indexUpdateMu.Unlock()
-		release()
-		return false
-	}
-	work.reservation = s.reserveIndexMemory(pendingIndexBytes(work.before, work.after))
-	if work.reservation == nil {
-		s.indexUpdateMu.Unlock()
-		release()
-		return false
+	if s.localIndexMaintenance[tenantID] > 0 {
+		// Foreground durability does not wait for an online rebuild. Coalesce
+		// one deferred catch-up without retaining graphs or reserving memory
+		// that the predecessor still needs in order to finish.
+		if pending := s.pendingIngestIndexes[tenantID]; pending != nil && pending.onlineRebuild && pending.after == nil && pending.fence == work.fence && s.indexUpdateTails[tenantID] == pending.done {
+			s.mergeDeferredIndexUpdate(pending, work)
+			s.indexUpdateMu.Unlock()
+			release()
+			return true
+		}
+		if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
+			s.indexUpdateMu.Unlock()
+			release()
+			return false
+		}
+		input := *work
+		*work = commitIndexUpdate{baseVersion: input.baseVersion, version: input.baseVersion, onlineRebuild: true, background: true, fence: input.fence}
+		s.mergeDeferredIndexUpdate(work, &input)
+		s.localIndexMaintenance[tenantID]++
+	} else {
+		// Do not reserve memory behind a synchronous predecessor: that predecessor
+		// may need the same memory before it can complete and release this work.
+		if s.indexUnreservedTails[tenantID] != nil {
+			s.indexUpdateMu.Unlock()
+			release()
+			return false
+		}
+		if pending := s.pendingIngestIndexes[tenantID]; pending != nil &&
+			s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
+			len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
+				len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges &&
+			pending.reservation.resize(pendingIndexBytes(pending.before, work.after)) {
+			mergePendingIndexUpdate(pending, work)
+			s.indexUpdateMu.Unlock()
+			release()
+			return true
+		}
+		// Do not wait for capacity while holding the tenant lock: a queued rebuild
+		// can need that lock. The caller falls back to finishing after unlocking.
+		if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
+			s.indexUpdateMu.Unlock()
+			release()
+			return false
+		}
+		work.reservation = s.reserveIndexMemory(pendingIndexBytes(work.before, work.after))
+		if work.reservation == nil {
+			s.indexUpdateMu.Unlock()
+			release()
+			return false
+		}
 	}
 	s.activeIngestIndexUpdates++
 	work.done = make(chan struct{})
 	work.waitFor = s.indexUpdateTails[tenantID]
 	s.indexUpdateTails[tenantID] = work.done
+	if work.onlineRebuild {
+		s.indexUnreservedTails[tenantID] = work.done
+	}
 	if s.pendingIngestIndexes == nil {
 		s.pendingIngestIndexes = make(map[string]*commitIndexUpdate)
 	}
@@ -89,7 +113,9 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	launched = true
 	go func() {
 		defer finish()
-		defer work.reservation.release()
+		if work.reservation != nil {
+			defer work.reservation.release()
+		}
 		defer release()
 		defer func() {
 			s.indexUpdateMu.Lock()
@@ -130,4 +156,26 @@ func (s *TenantStore) backgroundIndexByteLimit() int64 {
 
 func pendingIndexBytes(before, after *graph.Graph) int64 {
 	return addWriteCacheBytes(maintenanceGraphBytes(before), maintenanceGraphBytes(after))
+}
+
+// While immutable maintenance objects are prepared, retain coalesced index
+// demand rather than letting foreground WAL completion wait for build memory.
+func (s *TenantStore) beginLocalIndexMaintenance(ctx context.Context, tenantID string) func() {
+	if s.localFileStore() == nil || s.ReplicationMode || IsReplicatedContext(ctx) {
+		return func() {}
+	}
+	s.indexUpdateMu.Lock()
+	if s.localIndexMaintenance == nil {
+		s.localIndexMaintenance = make(map[string]int)
+	}
+	s.localIndexMaintenance[tenantID]++
+	s.indexUpdateMu.Unlock()
+	return func() {
+		s.indexUpdateMu.Lock()
+		s.localIndexMaintenance[tenantID]--
+		if s.localIndexMaintenance[tenantID] == 0 {
+			delete(s.localIndexMaintenance, tenantID)
+		}
+		s.indexUpdateMu.Unlock()
+	}
 }

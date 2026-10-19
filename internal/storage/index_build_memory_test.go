@@ -194,49 +194,60 @@ func TestIncrementalEdgeShardsPreserveNormalizedHashes(t *testing.T) {
 		before := graph.New()
 		before.Version = 1
 		after, err := graph.FromSnapshot(graph.Snapshot{
-			Version:       2,
-			CITypes:       []graph.CIType{{Name: "host"}},
-			RelationTypes: []graph.RelationType{{Name: "links", FromKind: "host", ToKind: "host", Directed: true}},
-			Entities:      []graph.Entity{{ID: "host:a", Kind: "host"}, {ID: "host:b", Kind: "host"}},
-			Edges:         []graph.Edge{{Type: "links", From: "host:a", To: "host:b"}},
+			Version: 2,
+			CITypes: []graph.CIType{{Name: "host"}},
+			RelationTypes: []graph.RelationType{
+				{Name: "links", FromKind: "host", ToKind: "host", Directed: true},
+				{Name: "observes", FromKind: "host", ToKind: "host", Directed: true},
+			},
+			Entities: []graph.Entity{{ID: "host:a", Kind: "host"}, {ID: "host:b", Kind: "host"}},
+			Edges: []graph.Edge{
+				{Type: "links", From: "host:a", To: "host:b"},
+				{Type: "observes", From: "host:a", To: "host:b"},
+			},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		var edgeID string
+		var edgeIDs []string
 		for id, edge := range after.Edges.All() {
-			edgeID = id
+			edgeIDs = append(edgeIDs, id)
 			edge.Fields = graph.Fields{"nested": map[string]any{"count": number}}
 			after.Edges.Set(id, edge)
 		}
 		for _, reverse := range []bool{false, true} {
-			shards, _, err := store.buildIncrementalEdgeShardsFor(context.Background(), "tenant-a", 1, nil, before, after, []string{edgeID}, 2, time.Now(), reverse, func(edge graph.Edge) string {
+			shards, _, err := store.buildIncrementalEdgeShardsFor(context.Background(), "tenant-a", 1, nil, before, after, edgeIDs, 2, time.Now(), reverse, func(edge graph.Edge) string {
 				if reverse {
 					return edgeShardID(edge.To)
 				}
 				return edgeShardID(edge.From)
 			}, func(*IndexCatalog) {})
-			if err != nil || len(shards) != 1 {
+			if err != nil || len(shards) != 2 {
 				t.Fatalf("incremental edges: %v, %v", shards, err)
 			}
-			legacy := shards[0]
-			legacy.logicalContentHash, legacy.hashCanonical = "", false
-			if edgeShardContentHash(shards[0]) != edgeShardContentHash(legacy) {
-				t.Fatalf("normalized hash changed for %T (reverse=%v)", number, reverse)
-			}
-			data, err := marshalParquetEdgeShard(context.Background(), shards[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			decoded, err := decodeParquetEdgeShard(context.Background(), data, "tenant-a", shards[0].RelationType, shards[0].Shard, 2)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if edgeShardContentHash(decoded) != edgeShardContentHash(shards[0]) {
-				t.Fatal("persisted edge shard hash changed")
-			}
-			if after.Edges.At(edgeID).Fields["nested"].(map[string]any)["count"] != number {
-				t.Fatal("index preparation mutated graph fields")
+			for _, shard := range shards {
+				if len(shard.Edges) != 1 || shard.Edges[0].Type != shard.RelationType {
+					t.Fatal("incremental shard lost or mixed relation types")
+				}
+				legacy := shard
+				legacy.logicalContentHash, legacy.hashCanonical = "", false
+				if edgeShardContentHash(shard) != edgeShardContentHash(legacy) {
+					t.Fatalf("normalized hash changed for %T (reverse=%v)", number, reverse)
+				}
+				data, err := marshalParquetEdgeShard(context.Background(), shard)
+				if err != nil {
+					t.Fatal(err)
+				}
+				decoded, err := decodeParquetEdgeShard(context.Background(), data, "tenant-a", shard.RelationType, shard.Shard, 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if edgeShardContentHash(decoded) != edgeShardContentHash(shard) {
+					t.Fatal("persisted edge shard hash changed")
+				}
+				if after.Edges.At(shard.Edges[0].ID).Fields["nested"].(map[string]any)["count"] != number {
+					t.Fatal("index preparation mutated graph fields")
+				}
 			}
 		}
 	}

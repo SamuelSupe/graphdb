@@ -1,6 +1,6 @@
 # 任务与维护
 
-适用于 **GGraphDB 2.3.4**；[发行验证](../validation-v2.3.4.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.5**；[发行验证](../validation-v2.3.5.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](tasks-maintenance.md)
 
@@ -194,6 +194,8 @@ curl -sS -X DELETE "$WRITER/v1/indexes/definitions/host_hostname" \
 在 `/v1/tasks` 下查询、取消或重试。索引接口仍保留原有状态响应。以前单独保存的索引任务
 记录继续可读，但不支持取消旧任务记录。重建后的清理问题记录为 `result.cleanup_warning`；
 索引接口同时通过 `error` 展示该警告，此时重建本身仍可成功。
+
+本地重建进入有序索引队列，ingest 可继续发布。任务成功表示已处理捕获的图版本；持续写入时，更新的索引工作仍可能排队。请通过 `/v1/indexes/health` 核对当前新鲜度。副本和远程回填仍保留写入准入屏障。
 
 本地进程直接管理任务存活与取消，不需要任务心跳。重启后查询到没有执行者的活动任务时，
 将其标记为失败，可显式重试并复用支持的 checkpoint；不会自动重跑所有维护任务。

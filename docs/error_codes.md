@@ -1,6 +1,6 @@
 # Error Code Contract
 
-Applies to **GGraphDB 2.3.4**; see [release validation](validation-v2.3.4.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.5**; see [release validation](validation-v2.3.5.md) and [version boundaries](naming-and-compatibility.md).
 
 All non-2xx HTTP errors use this envelope:
 
@@ -47,7 +47,7 @@ The following top-level `code` values are stable:
 | `write_conflict` | 409 | yes | A direct/preconditioned write observed a changed tenant head. Inspect the local WAL status before retrying an accepted request. |
 | `coordinator_unavailable` | 503 | yes | Reserved compatibility code; external coordination is unsupported in the local-disk edition. |
 | `commit_tail_too_long` | 429 | yes | Commit tail is above the write threshold. |
-| `index_rebuild_running` | 429 | yes | Index rebuild is running for this tenant. |
+| `index_rebuild_running` | 429 | yes | A replicated or remote index backfill blocks admission; local ordered rebuilds allow ingest publication. |
 | `maintenance_task_running` | 429 | yes | Maintenance work is blocking ordinary writes. |
 | `write_admission_queue_timeout` | 429 | yes | Write admission queue timed out. |
 | `write_backpressure` | 429 | yes | Generic write backpressure category. |

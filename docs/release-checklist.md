@@ -6,6 +6,12 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
+[2.3.5](validation-v2.3.5.md) is pending exact-tag qualification and downloaded
+asset verification, with no waiver requested. Local candidate tests and matched
+performance replay are recorded separately from official release gates.
+
+## Previous 2.3.4 qualification
+
 [2.3.4](validation-v2.3.4.md) passed every exact-tag gate, both thirty-minute
 soaks and independent downloaded-asset/runtime checks, without a waiver. The failed
 2.3.2/2.3.3 tags and their limits remain recorded; production latency is unqualified.

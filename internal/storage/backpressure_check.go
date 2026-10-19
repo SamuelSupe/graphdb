@@ -117,11 +117,13 @@ func (s *TenantStore) checkWriteBackpressureWithOptions(
 			attribute.Bool("graphdb.write_backpressure.index_rebuild_running", true),
 			attribute.String("graphdb.write_backpressure.index_rebuild_task_id", taskID),
 		)
-		reasons = append(reasons, BackpressureReason{
-			Code:    "index_rebuild_running",
-			Current: 1,
-			Message: "index rebuild is running",
-		})
+		if s.localFileStore() == nil || s.ReplicationMode {
+			reasons = append(reasons, BackpressureReason{
+				Code:    "index_rebuild_running",
+				Current: 1,
+				Message: "index rebuild is running",
+			})
+		}
 	} else {
 		span.SetAttributes(attribute.Bool("graphdb.write_backpressure.index_rebuild_running", false))
 	}

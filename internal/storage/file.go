@@ -228,7 +228,7 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	}
 	unlock := s.lockObject(key)
 	defer unlock()
-	if err := s.verifySafeParent(path); err != nil {
+	if err := s.verifySafeMutationParent(ctx, path); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			if checkErr := checkCondition(condition, "", false); checkErr != nil {
 				return checkErr

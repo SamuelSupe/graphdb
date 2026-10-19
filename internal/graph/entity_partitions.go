@@ -63,7 +63,8 @@ func (g *Graph) VisitEntityStorageShard(shard string, visit func(Entity) error) 
 }
 
 // VisitEdgeStorageShard uses endpoint membership and adjacency to visit only
-// the selected persisted edge shard. Values are borrowed and read-only.
+// the selected persisted edge shard. An empty relationType visits all types.
+// Values are borrowed and read-only.
 func (g *Graph) VisitEdgeStorageShard(ctx context.Context, relationType, shard string, reverse bool, visit func(Edge) error) error {
 	return g.VisitEntityStorageShard(shard, func(entity Entity) error {
 		if err := ctx.Err(); err != nil {
@@ -75,7 +76,7 @@ func (g *Graph) VisitEdgeStorageShard(ctx context.Context, relationType, shard s
 		}
 		for id := range ids {
 			edge := g.Edges.At(id)
-			if edge.Type == relationType {
+			if relationType == "" || edge.Type == relationType {
 				if err := visit(edge); err != nil {
 					return err
 				}

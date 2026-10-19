@@ -1,6 +1,6 @@
 # 写入与采集
 
-适用于 **GGraphDB 2.3.4**；[发行验证](../validation-v2.3.4.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.5**；[发行验证](../validation-v2.3.5.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](write-ingest.md)
 
@@ -506,6 +506,6 @@ commit 和 ingest 作用于当前图。如果结果 logical content hash 与当�
 
 - 对象存储延迟或错误；
 - manifest CAS 冲突；
-- 索引重建或维护任务运行中；
+- 副本／远程索引重建，或其他阻塞性维护；本地有序重建允许 ingest 继续发布；
 - commit tail 过长；
 - 租户实体/边/对象/字节配额超限。

@@ -13,20 +13,24 @@ import (
 )
 
 type commitIndexUpdate struct {
-	before      *graph.Graph
-	after       *graph.Graph
-	mutations   graph.Mutations
-	report      graph.ApplyReport
-	version     int64
-	baseVersion int64
-	reservation *maintenanceReservation
-	background  bool
-	rebuild     bool
-	fence       writerFenceRef
-	waitFor     <-chan struct{}
-	done        chan struct{}
-	joined      *commitIndexUpdate
-	err         error
+	before           *graph.Graph
+	after            *graph.Graph
+	mutations        graph.Mutations
+	report           graph.ApplyReport
+	version          int64
+	baseVersion      int64
+	reservation      *maintenanceReservation
+	background       bool
+	rebuild          bool
+	onlineRebuild    bool
+	deferredEntities map[string]graph.Entity
+	deferredEdges    map[string]graph.Edge
+	deferredBytes    int64
+	fence            writerFenceRef
+	waitFor          <-chan struct{}
+	done             chan struct{}
+	joined           *commitIndexUpdate
+	err              error
 }
 
 func (work *commitIndexUpdate) retainIndexInputs() {
@@ -49,7 +53,7 @@ func (s *TenantStore) enqueueCommitIndexUpdate(ctx context.Context, tenantID str
 		work.fence = bound.fence
 	}
 	s.indexUpdateMu.Lock()
-	if pending := s.pendingIngestIndexes[tenantID]; local && pending != nil && pending.reservation == nil &&
+	if pending := s.pendingIngestIndexes[tenantID]; local && !work.rebuild && pending != nil && !pending.onlineRebuild && pending.reservation == nil &&
 		s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
 		len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
 			len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges {
@@ -63,7 +67,13 @@ func (s *TenantStore) enqueueCommitIndexUpdate(ctx context.Context, tenantID str
 	work.waitFor = s.indexUpdateTails[tenantID]
 	s.indexUpdateTails[tenantID] = work.done
 	s.indexUnreservedTails[tenantID] = work.done
-	if local {
+	if work.onlineRebuild {
+		if s.localIndexMaintenance == nil {
+			s.localIndexMaintenance = make(map[string]int)
+		}
+		s.localIndexMaintenance[tenantID]++
+	}
+	if local && !work.rebuild {
 		if s.pendingIngestIndexes == nil {
 			s.pendingIngestIndexes = make(map[string]*commitIndexUpdate)
 		}
@@ -87,22 +97,68 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 	}
 	defer s.recordMaintenance("index_work", time.Now())
 	s.indexUpdateMu.Lock()
-	if s.pendingIngestIndexes[tenantID] == work {
+	deferred := work.onlineRebuild && work.after == nil
+	if !deferred && s.pendingIngestIndexes[tenantID] == work {
 		delete(s.pendingIngestIndexes, tenantID)
 	}
 	s.indexUpdateMu.Unlock()
 	defer func() {
 		work.err = indexErr
-		close(work.done)
 		s.indexUpdateMu.Lock()
+		if s.pendingIngestIndexes[tenantID] == work {
+			delete(s.pendingIngestIndexes, tenantID)
+		}
+		if work.onlineRebuild {
+			s.localIndexMaintenance[tenantID]--
+			if s.localIndexMaintenance[tenantID] == 0 {
+				delete(s.localIndexMaintenance, tenantID)
+			}
+		}
 		if s.indexUnreservedTails[tenantID] == work.done {
 			delete(s.indexUnreservedTails, tenantID)
 		}
 		if s.indexUpdateTails[tenantID] == work.done {
 			delete(s.indexUpdateTails, tenantID)
 		}
+		close(work.done)
 		s.indexUpdateMu.Unlock()
 	}()
+	if deferred {
+		// Wait without retaining a graph, then isolate this coalesced update
+		// within the existing budget before loading its latest head.
+		buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
+		buildCtx, releaseMemory, err := s.admitMaintenance(buildCtx, s.backgroundIndexByteLimit())
+		if err != nil {
+			return err
+		}
+		defer releaseMemory()
+		ctx = buildCtx
+		unlock, err := s.lockTenantForeground(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		loaded, err := s.loadForWriteLocked(ctx, tenantID)
+		if err != nil {
+			unlock()
+			return err
+		}
+		s.indexUpdateMu.Lock()
+		// A direct commit or rebuild can have joined behind this demand. Its
+		// changes are not in our delta, so only a full build can cover that head.
+		if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
+			work.baseVersion = -1
+		}
+		if s.pendingIngestIndexes[tenantID] == work {
+			delete(s.pendingIngestIndexes, tenantID)
+		}
+		work.after = loaded.Graph
+		work.version = loaded.Manifest.Version
+		s.indexUpdateMu.Unlock()
+		unlock()
+		if err := s.prepareDeferredIndexBase(ctx, tenantID, work); err != nil {
+			return err
+		}
+	}
 	if work.reservation != nil {
 		var err error
 		ctx, err = work.reservation.activate(ctx)

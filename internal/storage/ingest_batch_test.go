@@ -503,6 +503,176 @@ func TestLocalIngestPublishesWhileIndexesCatchUp(t *testing.T) {
 	}
 }
 
+func TestLocalMaintenanceAllowsWALPublicationAndCatchesUp(t *testing.T) {
+	for _, maintenanceType := range []string{TaskTypeIndexRebuild, TaskTypeCompact, "direct_rebuild"} {
+		for _, byteLimit := range []int64{1, defaultMaintenanceBytes} {
+			t.Run(fmt.Sprintf("%s/budget_%d", maintenanceType, byteLimit), func(t *testing.T) {
+
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				files, err := OpenFileStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer files.Close()
+				store := NewTenantStore(files, "test")
+				store.WriteEntityRecords = false
+				store.MaxMaintenanceBytes = byteLimit
+				store.Backpressure = NewWritePressure(BackpressureConfig{})
+				defer store.ShutdownTasks(context.Background())
+				seed := indexMutations()
+				for i := range seed.UpsertEntities {
+					seed.UpsertEntities[i].Source = "agent"
+					seed.UpsertEntities[i].ExternalID = seed.UpsertEntities[i].ID
+				}
+				seed.UpsertEdges[0].Source = "agent"
+				if _, err := store.Commit(ctx, "tenant-a", seed, CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				substring := "/indexes/parquet/"
+				if maintenanceType == TaskTypeCompact {
+					if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+						t.Fatal(err)
+					}
+					substring = "/snapshots/sharded/"
+				}
+				blocked := &blockOncePutStore{ObjectStore: files, substring: substring, paused: make(chan struct{}), resume: make(chan struct{})}
+				resume := sync.OnceFunc(func() { close(blocked.resume) })
+				defer resume()
+				store.Objects = blocked
+				var task Task
+				var directDone chan struct{}
+				var directErr error
+				if maintenanceType == "direct_rebuild" {
+					directDone = make(chan struct{})
+					go func() {
+						_, directErr = store.RebuildIndexes(ctx, "tenant-a")
+						close(directDone)
+					}()
+					defer func() { resume(); <-directDone }()
+				} else {
+					task, err = store.StartTask(ctx, "tenant-a", maintenanceType, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				select {
+				case <-blocked.paused:
+				case <-ctx.Done():
+					t.Fatal("rebuild did not start")
+				}
+				committed := make(chan error, 1)
+				go func() {
+					for i := 0; i < 32; i++ {
+						request := ingestEntityRequest(fmt.Sprint(i), fmt.Sprintf("host:online-%d", i))
+						request.Items = append(request.Items, IngestItem{ExternalID: "host:app-01", Entity: &graph.Entity{ID: "host:app-01", Kind: "host", Fields: graph.Fields{"hostname": fmt.Sprintf("renamed-%d", i)}}})
+						switch i {
+						case 0:
+							request.Items = append(request.Items, IngestItem{ExternalID: "old-edge", DeleteEdge: &graph.EdgeDeleteRequest{Type: "runs_on", From: "service:api", To: "host:app-01"}})
+						case 1, 3:
+							request.Items = append(request.Items, IngestItem{ExternalID: "new-edge", Edge: &graph.Edge{Type: "runs_on", From: "service:api", To: "host:online-0"}})
+						case 2:
+							request.Items = append(request.Items, IngestItem{ExternalID: "new-edge", DeleteEdge: &graph.EdgeDeleteRequest{Type: "runs_on", From: "service:api", To: "host:online-0"}})
+						}
+						results, err := store.IngestDurableBatch(ctx, "tenant-a", []IngestBatchEntry{{Request: request}})
+						if err != nil {
+							committed <- err
+							return
+						}
+						if results[0].Version != int64(i+2) {
+							committed <- fmt.Errorf("publication version = %d, want %d", results[0].Version, i+2)
+							return
+						}
+					}
+					committed <- nil
+				}()
+				select {
+				case err := <-committed:
+					if err != nil {
+						t.Fatalf("WAL publication during rebuild: %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					resume()
+					<-committed
+					t.Fatal("WAL acknowledgment waited for the blocked rebuild")
+				}
+				store.indexUpdateMu.Lock()
+				pending := store.pendingIngestIndexes["tenant-a"]
+				retainedGraphs := directDone == nil && (pending == nil || pending.before != nil || pending.after != nil)
+				done := store.indexUpdateTails["tenant-a"]
+				store.indexUpdateMu.Unlock()
+				if retainedGraphs {
+					t.Fatal("deferred catch-up retained intermediate graph inputs")
+				}
+				store.maintenance.mu.Lock()
+				queuedBytes := store.maintenance.queued
+				store.maintenance.mu.Unlock()
+				if directDone == nil && queuedBytes != 0 {
+					t.Fatalf("catch-up reserved %d bytes needed by its predecessor", queuedBytes)
+				}
+				resume()
+				if directDone != nil {
+					select {
+					case <-directDone:
+						if directErr != nil {
+							t.Fatalf("rebuild rejected its captured version after WAL publication advanced the head: %v", directErr)
+						}
+					case <-ctx.Done():
+						t.Fatal("direct rebuild did not finish")
+					}
+				}
+				select {
+				case <-done:
+				case <-ctx.Done():
+					t.Fatal("deferred index catch-up did not finish")
+				}
+				if directDone == nil {
+					if finished := waitForTask(t, ctx, store, "tenant-a", task.ID); finished.Status != TaskStatusSucceeded {
+						t.Fatalf("rebuild task: %+v", finished)
+					}
+				}
+				catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+				if err != nil || catalog.Version != 33 {
+					t.Fatalf("catalog version = %d, %v", catalog.Version, err)
+				}
+				lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: 33, Catalog: catalog}
+				for i := 0; i < 32; i++ {
+					id := fmt.Sprintf("host:online-%d", i)
+					if entity, ok, err := lookup.GetEntity(ctx, id, nil); err != nil || !ok || entity.ID != id {
+						t.Fatalf("indexed entity %s: found=%v err=%v", id, ok, err)
+					}
+				}
+				ids, available, err := lookup.MatchFieldIndex(ctx, "host", "hostname", []any{"renamed-31"})
+				if err != nil || !available || len(ids) != 1 || ids[0] != "host:app-01" {
+					t.Fatalf("coalesced field update: %v, available=%v, %v", ids, available, err)
+				}
+				ids, available, err = lookup.MatchFieldIndex(ctx, "host", "hostname", []any{"app-01"})
+				if err != nil || !available || len(ids) != 0 {
+					t.Fatalf("old field value retained: %v, available=%v, %v", ids, available, err)
+				}
+				edges, available, err := lookup.OutEdges(ctx, "service:api", nil)
+				if err != nil || !available || len(edges) != 1 || edges[0].To != "host:online-0" {
+					t.Fatalf("coalesced edge replacement: %v, available=%v, %v", edges, available, err)
+				}
+				reverse, err := store.GetReverseIndexCatalog(ctx, "tenant-a", 33)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lookup.ReverseCatalog = &reverse
+				edges, available, err = lookup.InEdges(ctx, "host:app-01", nil)
+				if err != nil || !available || len(edges) != 0 {
+					t.Fatalf("old reverse edge retained: %v, available=%v, %v", edges, available, err)
+				}
+				edges, available, err = lookup.InEdges(ctx, "host:online-0", nil)
+				if err != nil || !available || len(edges) != 1 {
+					t.Fatalf("new reverse edge missing: %v, available=%v, %v", edges, available, err)
+				}
+
+			})
+		}
+	}
+}
+
 func TestLocalIngestByteBudgetFallsBackAfterPublishing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

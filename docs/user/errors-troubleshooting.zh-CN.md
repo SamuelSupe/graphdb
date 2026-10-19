@@ -1,6 +1,6 @@
 # 错误与故障排查
 
-适用于 **GGraphDB 2.3.4**；[发行验证](../validation-v2.3.4.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.5**；[发行验证](../validation-v2.3.5.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](errors-troubleshooting.md)
 
@@ -34,14 +34,14 @@
 | `write_admission_queue_timeout` | 写入队列已满 | 用相同幂等键重试并降低并发。 |
 | `write_backpressure` | 系统背压 | 遵守 `Retry-After` 并检查 `reasons`。 |
 | `commit_tail_too_long` | 可见 commit 过多 | 执行 compact 或等待自动 compact。 |
-| `index_rebuild_running` | 索引重建阻塞写入 | 等待，或在合适时取消任务。 |
+| `index_rebuild_running` | 副本或远程索引回填阻塞准入 | 等待，或在合适时取消任务；本地有序重建允许 ingest 继续发布。 |
 | `quota_exceeded` | 将超过租户配额 | 提高配额或删除数据。 |
 | `idempotency_conflict` | 相同 key 对应不同 payload | 使用新 key，或重发完全相同 body。 |
 | `idempotency_in_progress` | 另一个请求正在处理相同 key | 退避后用相同 key 重试完全相同的请求。 |
 | `write_conflict` | 并发提交或前置条件冲突 | 查看本地状态并保持幂等键；带前置条件的写入重新读取 head 并解决冲突。 |
 | `version_conflict` | `expected_version` 已不匹配 | 重新读取 head 并处理调用方前置条件，不要盲目重试。 |
 | `lease_held` | 本地模式重复/陈旧 writer 保护 | 确保每租户只有一个本地协调 writer。 |
-| `index_stale` | 索引缺失或过期 | 重建索引，或在支持时允许 fallback。 |
+| `index_stale` | 索引缺失或过期 | 先检查健康状态：`updating` 时等待追平；否则重建，或在支持时使用 fallback。 |
 | `repair_required` | 完整性问题阻断操作 | 执行 audit 和 repair。 |
 
 ## 429 处理

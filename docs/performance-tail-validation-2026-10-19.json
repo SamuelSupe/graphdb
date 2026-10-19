@@ -1,0 +1,611 @@
+{
+  "status": "unreleased_candidate_validated_with_residual_tail",
+  "baseline_revision": "adddc6c75cdc656e8a43309f40a4db32fe5f44f2",
+  "baseline_release": "v2.3.4",
+  "platform": "OrbStack Linux arm64",
+  "go_version": "1.26.7",
+  "diagnostic_build": "Both builds include identical private block and mutex profiling initialization; neither is an official release artifact.",
+  "candidate_file_sha256": {
+    "internal/graph/entity_partitions.go": "113db3b515f4c0fecfd49c1578e24f7c29a1e69dd4c447347118d4f94d5adab6",
+    "internal/graph/storage_apply_test.go": "8ceb92380e734ee00abe1ae566352d93fab42155819d5b1fa0c1e41addf77fdc",
+    "internal/storage/index_incremental_edges.go": "1b96b3bbad563a675fb3e8314fca94469da143f72807039b5b1349a51ecd2273",
+    "internal/storage/index_build_memory_test.go": "8fcf218f8baaf9cc97302a3cdb51e8b16243bac77909092b3435d5f6425f0bf1",
+    "internal/storage/parquet_entity.go": "e8b3a7e08d40fde8a654d977a82b4b22531975e5cc2da3d9458d4632daf0289b",
+    "internal/storage/parquet_edge.go": "4e4d4fd561ba7624c1d65f801179abaf155788e2f63d9a678e84b91215896daf",
+    "internal/storage/tenant.go": "0e664665eed51def188bdd6fbcc53c9fdc959a9c3a79cb6dedaa21d114b2c626",
+    "internal/storage/tenant_test.go": "9a4c09c9c03c3e2d7e082307c25ce6f03eb01eb8fe638bd468935b2bb63b32b1",
+    "internal/storage/ingest_service.go": "d9534207a5fb92a02a3741a48af3523d5f1728c0328b1152f7e6af9cb235a999",
+    "internal/storage/ingest_service_test.go": "201d3ace4935b96e6e80444cb3b5a001ddccf703decf07f551819492b8ef7cb5"
+  },
+  "binary_sha256": {
+    "before": "627f6548e8d2f8b652704237deba68ad955f0258cbc5cd62c73f7572a73a09b6",
+    "after": "7cf1d33eb712ad48456d46788181303bab29f6ca1ac60922c539a821ef5edb1b",
+    "after-v2": "1a2d77958a501de667d6cd62dbfa2e32ba860483ba6198d1acc936feb1e4c90e",
+    "after-v3": "6cfc4b0f6802775a32f14be297de9e6ca4b64a38778840b413f86f9b9c93d273"
+  },
+  "plan": {
+    "duration_seconds": 360,
+    "writers": 4,
+    "readers": 16,
+    "write_interval_seconds": 5,
+    "query_interval_seconds": 1,
+    "planned_writes": 288,
+    "planned_queries": 5760,
+    "standalone_batch_size": 20,
+    "raft_batch_size": 1,
+    "maintenance_schedule_seconds": [
+      [
+        90,
+        "compact"
+      ],
+      [
+        180,
+        "compact"
+      ],
+      [
+        240,
+        "gc"
+      ],
+      [
+        270,
+        "index_rebuild"
+      ]
+    ]
+  },
+  "health_sample_interval_seconds": 1.1,
+  "runner_sha256": "109e5172b4e68e4ec38a0b17bf2510550b57e3624e5c5b02c5bce47bf3228637",
+  "raft_runner_sha256": "12f19c4de147a79b4a23dece0956d77afc09f3fc68f1d9f5f042d62e26344f00",
+  "comparisons": {
+    "single": {
+      "before": {
+        "name": "single-before4",
+        "start": {
+          "batch_size": 20,
+          "duration": "6m0s",
+          "edges": 105491,
+          "entities": 63247,
+          "event": "paired_start",
+          "groups": 21060,
+          "readers": 16,
+          "ts": "2026-10-19T15:26:25.617622334Z",
+          "writers": 4
+        },
+        "done": {
+          "elapsed_ms": 415442,
+          "event": "paired_done",
+          "planned_queries": 5760,
+          "planned_writes": 288,
+          "ts": "2026-10-19T15:33:21.060262218Z"
+        },
+        "write": {
+          "count": 288,
+          "p50_ms": 4377.093,
+          "p95_ms": 9889.265,
+          "p99_ms": 16799.316,
+          "max_ms": 17452.721
+        },
+        "write_errors": [],
+        "query_errors": [],
+        "index_errors": [],
+        "write_request_fingerprint": "31cd427b09dfb6d09e90b38b3e086034957b4a898b716e2d850e300a67dedc77",
+        "unique_write_versions": 288,
+        "write_version_range": [
+          2,
+          289
+        ],
+        "queries": {
+          "neighbors-host-out": {
+            "count": 1920,
+            "p50_ms": 20.98,
+            "p95_ms": 69.189,
+            "p99_ms": 112.108,
+            "max_ms": 201.359
+          },
+          "profile-indexed-match": {
+            "count": 1920,
+            "p50_ms": 26.416,
+            "p95_ms": 74.15,
+            "p99_ms": 113.461,
+            "max_ms": 204.746
+          },
+          "range-aggregate-match": {
+            "count": 1920,
+            "p50_ms": 35.15,
+            "p95_ms": 88.383,
+            "p99_ms": 133.314,
+            "max_ms": 217.794
+          }
+        },
+        "index_status_counts": {
+          "ready": 134,
+          "stale": 193
+        },
+        "max_index_lag": 4,
+        "maintenance": [
+          "compact",
+          "compact",
+          "gc",
+          "index_rebuild"
+        ],
+        "quiet": {
+          "status": "ready",
+          "manifest_version": 289,
+          "catalog_version": 289,
+          "snapshot_version": 101
+        },
+        "integrity": {
+          "status": "ok",
+          "manifest_version": 289,
+          "snapshot_version": 101,
+          "index_catalog_version": 289,
+          "objects": 1779,
+          "bytes": 97256304
+        }
+      },
+      "after": {
+        "name": "single-after4",
+        "start": {
+          "batch_size": 20,
+          "duration": "6m0s",
+          "edges": 105491,
+          "entities": 63247,
+          "event": "paired_start",
+          "groups": 21060,
+          "readers": 16,
+          "ts": "2026-10-19T15:47:46.103592747Z",
+          "writers": 4
+        },
+        "done": {
+          "elapsed_ms": 359032,
+          "event": "paired_done",
+          "planned_queries": 5760,
+          "planned_writes": 288,
+          "ts": "2026-10-19T15:53:45.136314405Z"
+        },
+        "write": {
+          "count": 288,
+          "p50_ms": 3217.219,
+          "p95_ms": 4538.162,
+          "p99_ms": 11975.407,
+          "max_ms": 11979.587
+        },
+        "write_errors": [],
+        "query_errors": [],
+        "index_errors": [],
+        "write_request_fingerprint": "31cd427b09dfb6d09e90b38b3e086034957b4a898b716e2d850e300a67dedc77",
+        "unique_write_versions": 288,
+        "write_version_range": [
+          2,
+          289
+        ],
+        "queries": {
+          "neighbors-host-out": {
+            "count": 1920,
+            "p50_ms": 17.578,
+            "p95_ms": 52.055,
+            "p99_ms": 70.955,
+            "max_ms": 108.742
+          },
+          "profile-indexed-match": {
+            "count": 1920,
+            "p50_ms": 22.957,
+            "p95_ms": 56.891,
+            "p99_ms": 85.235,
+            "max_ms": 114.317
+          },
+          "range-aggregate-match": {
+            "count": 1920,
+            "p50_ms": 31.528,
+            "p95_ms": 66.955,
+            "p99_ms": 97.703,
+            "max_ms": 128.173
+          }
+        },
+        "index_status_counts": {
+          "ready": 196,
+          "stale": 131
+        },
+        "max_index_lag": 4,
+        "maintenance": [
+          "compact",
+          "compact",
+          "gc",
+          "index_rebuild"
+        ],
+        "quiet": {
+          "status": "ready",
+          "manifest_version": 289,
+          "catalog_version": 289,
+          "snapshot_version": 145
+        },
+        "integrity": {
+          "status": "ok",
+          "manifest_version": 289,
+          "snapshot_version": 145,
+          "index_catalog_version": 289,
+          "objects": 1779,
+          "bytes": 97594856
+        }
+      },
+      "request_fingerprints_equal": true,
+      "query_request_fingerprints_equal": null,
+      "before_projection": {
+        "version": 289,
+        "entities": 63247,
+        "edges": 105491,
+        "entity_kinds": {
+          "cluster": 64,
+          "database": 21060,
+          "environment": 3,
+          "host": 21060,
+          "service": 21060
+        },
+        "entity_fields_sha256": "a2982fcb3a8cdd857e8afcb610e2d4cf76a3ec484f47615d25207e7720095e14",
+        "topology_sha256": "e82d928ca4ec4c9f9b818cee16647e397254cb17f6862dcb9e71fd5d49669171",
+        "schema_sha256": "2afe18a89834b0efea994f801dd7f0317023998768ee51dcdd3142051ee97abe"
+      },
+      "after_projection": {
+        "version": 289,
+        "entities": 63247,
+        "edges": 105491,
+        "entity_kinds": {
+          "cluster": 64,
+          "database": 21060,
+          "environment": 3,
+          "host": 21060,
+          "service": 21060
+        },
+        "entity_fields_sha256": "a2982fcb3a8cdd857e8afcb610e2d4cf76a3ec484f47615d25207e7720095e14",
+        "topology_sha256": "e82d928ca4ec4c9f9b818cee16647e397254cb17f6862dcb9e71fd5d49669171",
+        "schema_sha256": "2afe18a89834b0efea994f801dd7f0317023998768ee51dcdd3142051ee97abe"
+      },
+      "entity_fields_differences": [],
+      "edge_fields_difference_ids": [],
+      "topology_equal": true,
+      "schema_equal": true
+    },
+    "raft": {
+      "before": {
+        "name": "raft-before2",
+        "start": {
+          "batch_size": 1,
+          "duration": "6m0s",
+          "edges": 2561,
+          "entities": 1489,
+          "event": "paired_start",
+          "groups": 474,
+          "readers": 16,
+          "ts": "2026-10-19T15:34:13.060752456Z",
+          "writers": 4
+        },
+        "done": {
+          "elapsed_ms": 359038,
+          "event": "paired_done",
+          "planned_queries": 5760,
+          "planned_writes": 288,
+          "ts": "2026-10-19T15:40:12.09965161Z"
+        },
+        "write": {
+          "count": 288,
+          "p50_ms": 1051.833,
+          "p95_ms": 1720.109,
+          "p99_ms": 2298.204,
+          "max_ms": 2325.954
+        },
+        "write_errors": [],
+        "query_errors": [],
+        "index_errors": [],
+        "write_request_fingerprint": "85e46f9b3488373608fc04a3732737fdb3391d35c43a6b899739b1c44ad918c1",
+        "unique_write_versions": 288,
+        "write_version_range": [
+          17,
+          304
+        ],
+        "queries": {
+          "indexed-match-min-version": {
+            "count": 1920,
+            "p50_ms": 16.384,
+            "p95_ms": 278.88,
+            "p99_ms": 492.103,
+            "max_ms": 835.571
+          },
+          "path-filter-traverse": {
+            "count": 1920,
+            "p50_ms": 14.76,
+            "p95_ms": 286.172,
+            "p99_ms": 499.47,
+            "max_ms": 838.408
+          },
+          "profile-indexed-match": {
+            "count": 1920,
+            "p50_ms": 16.476,
+            "p95_ms": 287.45,
+            "p99_ms": 490.209,
+            "max_ms": 839.051
+          }
+        },
+        "index_status_counts": {
+          "ready": 327
+        },
+        "max_index_lag": 0,
+        "maintenance": [
+          "compact",
+          "compact",
+          "gc",
+          "index_rebuild"
+        ],
+        "query_request_fingerprint": "a1e98d77746fb1bd2a7550596658d02dc100148ae73662c4a3d1dab1684c9446",
+        "quiet": {
+          "status": "ready",
+          "manifest_version": 304,
+          "catalog_version": 304,
+          "snapshot_version": 164
+        },
+        "integrity": {
+          "status": "ok",
+          "manifest_version": 304,
+          "snapshot_version": 164,
+          "index_catalog_version": 304,
+          "objects": 1706,
+          "bytes": 23920807
+        }
+      },
+      "after": {
+        "name": "raft-after3",
+        "start": {
+          "batch_size": 1,
+          "duration": "6m0s",
+          "edges": 2561,
+          "entities": 1489,
+          "event": "paired_start",
+          "groups": 474,
+          "readers": 16,
+          "ts": "2026-10-19T15:54:33.908917611Z",
+          "writers": 4
+        },
+        "done": {
+          "elapsed_ms": 359020,
+          "event": "paired_done",
+          "planned_queries": 5760,
+          "planned_writes": 288,
+          "ts": "2026-10-19T16:00:32.929144032Z"
+        },
+        "write": {
+          "count": 288,
+          "p50_ms": 706.468,
+          "p95_ms": 921.175,
+          "p99_ms": 963.943,
+          "max_ms": 1360.632
+        },
+        "write_errors": [],
+        "query_errors": [],
+        "index_errors": [],
+        "write_request_fingerprint": "85e46f9b3488373608fc04a3732737fdb3391d35c43a6b899739b1c44ad918c1",
+        "unique_write_versions": 288,
+        "write_version_range": [
+          17,
+          304
+        ],
+        "queries": {
+          "indexed-match-min-version": {
+            "count": 1920,
+            "p50_ms": 12.757,
+            "p95_ms": 57.341,
+            "p99_ms": 96.607,
+            "max_ms": 363.776
+          },
+          "path-filter-traverse": {
+            "count": 1920,
+            "p50_ms": 11.179,
+            "p95_ms": 56.368,
+            "p99_ms": 118.394,
+            "max_ms": 356.938
+          },
+          "profile-indexed-match": {
+            "count": 1920,
+            "p50_ms": 12.671,
+            "p95_ms": 56.091,
+            "p99_ms": 98.62,
+            "max_ms": 362.234
+          }
+        },
+        "index_status_counts": {
+          "ready": 327
+        },
+        "max_index_lag": 0,
+        "maintenance": [
+          "compact",
+          "compact",
+          "gc",
+          "index_rebuild"
+        ],
+        "query_request_fingerprint": "a1e98d77746fb1bd2a7550596658d02dc100148ae73662c4a3d1dab1684c9446",
+        "quiet": {
+          "status": "ready",
+          "manifest_version": 304,
+          "catalog_version": 304,
+          "snapshot_version": 164
+        },
+        "integrity": {
+          "status": "ok",
+          "manifest_version": 304,
+          "snapshot_version": 164,
+          "index_catalog_version": 304,
+          "objects": 1706,
+          "bytes": 27231887
+        }
+      },
+      "request_fingerprints_equal": true,
+      "query_request_fingerprints_equal": true,
+      "before_projection": {
+        "version": 304,
+        "entities": 1489,
+        "edges": 2561,
+        "entity_kinds": {
+          "cluster": 64,
+          "database": 474,
+          "environment": 3,
+          "host": 474,
+          "service": 474
+        },
+        "entity_fields_sha256": "4d47d86569c51b269ec85485df1a80c1cdbe32b4f1ecac18554889b2611390c3",
+        "topology_sha256": "785f95120f469082fa0e3095f89939c1ee8f0e6743cc5f040adf9216f0ebe00a",
+        "schema_sha256": "2afe18a89834b0efea994f801dd7f0317023998768ee51dcdd3142051ee97abe"
+      },
+      "after_projection": {
+        "version": 304,
+        "entities": 1489,
+        "edges": 2561,
+        "entity_kinds": {
+          "cluster": 64,
+          "database": 474,
+          "environment": 3,
+          "host": 474,
+          "service": 474
+        },
+        "entity_fields_sha256": "4d47d86569c51b269ec85485df1a80c1cdbe32b4f1ecac18554889b2611390c3",
+        "topology_sha256": "785f95120f469082fa0e3095f89939c1ee8f0e6743cc5f040adf9216f0ebe00a",
+        "schema_sha256": "2afe18a89834b0efea994f801dd7f0317023998768ee51dcdd3142051ee97abe"
+      },
+      "entity_fields_differences": [],
+      "edge_fields_difference_ids": [],
+      "topology_equal": true,
+      "schema_equal": true
+    }
+  },
+  "recovery": {
+    "single": {
+      "main_snapshot_exactly_equal_after_recovery": true,
+      "main_version": 289,
+      "ack": {
+        "batch_id": "ack-before-kill",
+        "version": 2,
+        "applied": 1,
+        "failed": 0,
+        "skipped": false
+      },
+      "replicas": []
+    },
+    "raft": {
+      "main_snapshot_exactly_equal_after_recovery": true,
+      "main_version": 304,
+      "ack": {
+        "batch_id": "ack-before-kill",
+        "version": 2,
+        "applied": 1,
+        "failed": 0,
+        "skipped": false
+      },
+      "replicas": [
+        {
+          "node": "node1",
+          "applied_index": 423,
+          "commit_index": 423,
+          "both_disk_snapshots_exactly_equal": true
+        },
+        {
+          "node": "node2",
+          "applied_index": 423,
+          "commit_index": 423,
+          "both_disk_snapshots_exactly_equal": true
+        },
+        {
+          "node": "node3",
+          "applied_index": 423,
+          "commit_index": 423,
+          "both_disk_snapshots_exactly_equal": true
+        }
+      ]
+    }
+  },
+  "validation": {
+    "full_go": "pass",
+    "passed_cases_including_subtests": 1818,
+    "skipped_cases": [
+      {
+        "package": "github.com/SamuelSupe/graphdb/v2/internal/backupstore",
+        "test": "TestObjectBackupMultipartAndPublication"
+      },
+      {
+        "package": "github.com/SamuelSupe/graphdb/v2/internal/backupstore",
+        "test": "TestObjectBackupRetentionProtectsReadersAndResumesDeletion"
+      },
+      {
+        "package": "github.com/SamuelSupe/graphdb/v2/internal/httpapi",
+        "test": "TestHTTPReadinessRequiresWritableLocalDirectory"
+      },
+      {
+        "package": "github.com/SamuelSupe/graphdb/v2/internal/ha",
+        "test": "TestHAObjectRestoreResumesAfterLeaderLoss"
+      },
+      {
+        "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+        "test": "TestObjectBackupRetryAfterReopenAndVerifiedRestore"
+      },
+      {
+        "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+        "test": "TestObjectBackupAutomationReopenRetryRetentionAndDrill"
+      },
+      {
+        "package": "github.com/SamuelSupe/graphdb/v2/internal/storage",
+        "test": "TestObjectBackupRetentionStopsListingAtDeleteBudget"
+      }
+    ],
+    "go_vet": "pass",
+    "focused_race": "pass",
+    "focused_race_rounds": 2,
+    "focused_race_packages_seconds": {
+      "graph": 1.123,
+      "storage": 26.704,
+      "ha": 173.349
+    },
+    "source_hashes_match_tested_candidate": true,
+    "evidence_sha256": {
+      "final-all-go.jsonl": "97e7014c1a4b120b1c975a7452466b8494c732cb494b6af95c2b3d7c40021e7b",
+      "final-vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "final-race.log": "195bc3bdb65a6b60ddebf6ebdfc41515e75cda06bde81ffb8de098a2629218ab",
+      "recovery-verification.json": "5796672f9310751dce580150377e2cd9f3b87a8c6bdfce0734d0689993df205a"
+    }
+  },
+  "resource_notes": {
+    "single": {
+      "before_cpu_seconds": 881.045272,
+      "after_cpu_seconds": 625.430511,
+      "before_cgroup_memory_peak_bytes": 4210147328,
+      "after_cgroup_memory_peak_bytes": 4323008512,
+      "before_observed_process_vmhwm_bytes": 3958910976,
+      "after_process_vmhwm_bytes": 3968720896,
+      "rss_coverage": "Baseline VmHWM sampled every 10 seconds; candidate VmHWM read after exports. Do not calculate a precise RSS improvement from these differently sampled values."
+    },
+    "raft": {
+      "before_three_node_cpu_seconds": 486.495493,
+      "after_three_node_cpu_seconds": 364.009153,
+      "before_per_node_cgroup_peak_bytes": [
+        297541632,
+        287145984,
+        328282112
+      ],
+      "after_per_node_cgroup_peak_bytes": [
+        256372736,
+        258461696,
+        247771136
+      ]
+    }
+  },
+  "remaining": {
+    "standalone_maintenance_write_tail": "Known: compaction and index rebuild windows still block writes for about 9-12 seconds.",
+    "standalone_stale": "Known: 131/327 samples stale; max lag remains 4 versions; caught up after load.",
+    "historical_raft_12_second_extreme": "Not reproduced in either final 6-minute matched run. Not proven eliminated."
+  },
+  "scope_limits": [
+    "Do not compare standalone and Raft directly: data size, batch size and resource limits differ.",
+    "Short fixed-cardinality runs do not replace a 30-minute growth workload or production qualification.",
+    "Reported combination effects do not isolate each code change; earlier rounds show variability.",
+    "No new GitHub release or cross-architecture binary qualification."
+  ],
+  "local_raw_evidence": ".workflow/perf-tail-20261019/",
+  "excluded_runs": [
+    "single-before1: preparation and compilation overlap plus artificial obsolete seed commit",
+    "single-before2: artificial obsolete seed commit"
+  ]
+}

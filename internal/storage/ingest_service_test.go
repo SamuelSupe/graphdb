@@ -104,6 +104,51 @@ func TestIngestServiceRecoveryBoundsTerminalHistory(t *testing.T) {
 	}
 }
 
+func TestIngestSchedulerCollectsAcceptedWorkBeforeExpiredDispatch(t *testing.T) {
+	for _, recovered := range []bool{false, true} {
+		for range 32 {
+			ctx, cancel := context.WithCancel(context.Background())
+			service := &IngestService{
+				config: IngestServiceConfig{FlushInterval: time.Second, FlushMaxRequests: 4, FlushMaxBytes: 1024},
+				runCtx: ctx, enqueueCh: make(chan *ingestPending, 4), readyCh: make(chan ingestTenantFlush),
+				forceCh: make(chan ingestForceRequest), completeCh: make(chan ingestWorkerCompletion),
+				shutdownCh: make(chan struct{}), schedulerOK: make(chan struct{}),
+			}
+			order := []uint64{3, 1, 4, 2}
+			if recovered {
+				order = []uint64{1, 2, 3, 4}
+			}
+			for _, sequence := range order {
+				pending := &ingestPending{acceptedLSN: sequence, acceptedSequence: sequence, bytes: 1,
+					envelope: walIngestEnvelope{RecordID: fmt.Sprint(sequence), TenantID: "tenant-a", AcceptedAt: time.Now().Add(-time.Hour)}}
+				if recovered {
+					pending.acceptedSequence = 0
+				}
+				service.enqueueCh <- pending
+			}
+			go service.schedule()
+			var flush ingestTenantFlush
+			select {
+			case flush = <-service.readyCh:
+			case <-time.After(time.Second):
+				cancel()
+				<-service.schedulerOK
+				t.Fatal("expired accepted work was not dispatched")
+			}
+			cancel()
+			<-service.schedulerOK
+			if len(flush.items) != 4 {
+				t.Fatalf("split already accepted work into another publication: got %d items, recovered=%v", len(flush.items), recovered)
+			}
+			for index, pending := range flush.items {
+				if pending.envelope.RecordID != fmt.Sprint(index+1) {
+					t.Fatal("dispatch changed WAL admission order")
+				}
+			}
+		}
+	}
+}
+
 func TestIngestSchedulerPreservesForceDuringFailedFlush(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &IngestService{

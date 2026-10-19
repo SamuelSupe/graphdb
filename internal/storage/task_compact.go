@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"golang.org/x/sync/errgroup"
 )
 
 func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]any, string, error) {
@@ -35,6 +36,8 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 		}, map[string]any{"version": current.Version, "snapshot_catalog_key": current.SnapshotCatalogKey})
 		return taskResult(current), "", nil
 	}
+	finishIndexMaintenance := s.beginLocalIndexMaintenance(ctx, task.TenantID)
+	defer finishIndexMaintenance()
 	ctx, releaseMemory, err := s.admitMaintenance(ctx, maintenanceGraphBytes(g))
 	if err != nil {
 		return nil, "", err
@@ -60,12 +63,9 @@ func (s *TenantStore) compactTask(ctx context.Context, task Task) (map[string]an
 	}, map[string]any{"version": version}); err != nil {
 		return nil, "", err
 	}
-	catalog, err := s.compactTaskSnapshotCatalog(ctx, task, snapshot, total)
-	if err != nil {
-		return nil, "", err
-	}
 	snapshotKey := s.snapshotKey(task.TenantID, snapshot.Version)
-	if err := s.compactTaskSnapshotRecord(ctx, task, snapshotKey, snapshot, total); err != nil {
+	catalog, err := s.compactTaskSnapshots(ctx, task, snapshotKey, snapshot, total)
+	if err != nil {
 		return nil, "", err
 	}
 	if err := s.settleDirectCommitsBeforeCompaction(ctx, task.TenantID, snapshot.Version); err != nil {
@@ -185,38 +185,54 @@ func (s *TenantStore) compactTaskSnapshotCatalog(ctx context.Context, task Task,
 	return catalog, nil
 }
 
-func (s *TenantStore) compactTaskSnapshotRecord(ctx context.Context, task Task, snapshotKey string, snapshot graph.Snapshot, total int) error {
+func (s *TenantStore) compactTaskSnapshots(ctx context.Context, task Task, snapshotKey string, snapshot graph.Snapshot, total int) (ShardedSnapshotCatalog, error) {
 	current := s.taskStateOrLocal(ctx, task)
-	if taskActionCompleted(current, "write_snapshot_record") && s.snapshotRecordMatches(ctx, snapshotKey, task.TenantID, snapshot.Version) {
-		return s.updateTaskActionProgress(ctx, task, "compact_snapshot_record_done", 3, total, taskActionUpdate{
-			ID:     "write_snapshot_record",
-			Status: "completed",
-			Output: map[string]any{"snapshot_key": snapshotKey, "version": snapshot.Version, "resumed": true},
-			Verification: map[string]any{
-				"snapshot_version": snapshot.Version,
-			},
-		}, map[string]any{"snapshot_key": snapshotKey})
+	resumed := taskActionCompleted(current, "write_snapshot_record") && s.snapshotRecordMatches(ctx, snapshotKey, task.TenantID, snapshot.Version)
+	if !resumed {
+		if err := s.updateTaskActionProgress(ctx, task, "compact_write_snapshot_record", 1, total, taskActionUpdate{
+			ID: "write_snapshot_record", Status: "running", Input: map[string]any{"snapshot_key": snapshotKey, "version": snapshot.Version},
+		}, nil); err != nil {
+			return ShardedSnapshotCatalog{}, err
+		}
 	}
-	if err := s.updateTaskActionProgress(ctx, task, "compact_write_snapshot_record", 3, total, taskActionUpdate{
-		ID:     "write_snapshot_record",
-		Status: "running",
-		Input:  map[string]any{"snapshot_key": snapshotKey, "version": snapshot.Version},
-	}, nil); err != nil {
-		return err
+	writeRecord := func(workCtx context.Context) error {
+		if resumed {
+			return nil
+		}
+		record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: task.TenantID, Snapshot: snapshot, normalized: true}
+		return s.putSnapshotRecordIfAbsentOrEquivalent(workCtx, snapshotKey, record)
 	}
-	record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: task.TenantID, Snapshot: snapshot, normalized: true}
-	if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
+	var catalog ShardedSnapshotCatalog
+	var err error
+	if s.localFileStore() != nil {
+		group, buildCtx := errgroup.WithContext(ctx)
+		group.Go(func() error {
+			var buildErr error
+			catalog, buildErr = s.compactTaskSnapshotCatalog(buildCtx, task, snapshot, total)
+			return buildErr
+		})
+		group.Go(func() error {
+			return s.runFileWriteJobs(buildCtx, 1, func(workCtx context.Context, _ int) error { return writeRecord(workCtx) })
+		})
+		err = group.Wait()
+	} else {
+		catalog, err = s.compactTaskSnapshotCatalog(ctx, task, snapshot, total)
+		if err == nil {
+			err = writeRecord(ctx)
+		}
+	}
+	if err != nil {
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "compact_write_snapshot_record", 3, total, taskActionUpdate{ID: "write_snapshot_record", Err: err}, nil)
-		return err
+		return ShardedSnapshotCatalog{}, err
 	}
-	return s.updateTaskActionProgress(ctx, task, "compact_snapshot_record_done", 3, total, taskActionUpdate{
-		ID:     "write_snapshot_record",
-		Status: "completed",
-		Output: map[string]any{"snapshot_key": snapshotKey, "version": snapshot.Version},
-		Verification: map[string]any{
-			"snapshot_version": snapshot.Version,
-		},
+	output := map[string]any{"snapshot_key": snapshotKey, "version": snapshot.Version}
+	if resumed {
+		output["resumed"] = true
+	}
+	err = s.updateTaskActionProgress(ctx, task, "compact_snapshot_record_done", 3, total, taskActionUpdate{
+		ID: "write_snapshot_record", Status: "completed", Output: output, Verification: map[string]any{"snapshot_version": snapshot.Version},
 	}, map[string]any{"snapshot_key": snapshotKey})
+	return catalog, err
 }
 
 func manifestCompacted(manifest Manifest, version int64) bool {

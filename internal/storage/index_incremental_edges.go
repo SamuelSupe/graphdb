@@ -47,15 +47,15 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 	if before.Version != previousVersion || after.Version != version {
 		return nil, nil, fmt.Errorf("incremental edge shards require graph versions %d and %d", previousVersion, version)
 	}
-	changedByKey := map[string][]string{}
+	changedByKey := map[string]struct{}{}
 	for _, edgeID := range edgeIDs {
 		if edge, ok := before.Edges.Get(edgeID); ok {
 			key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
-			changedByKey[key] = append(changedByKey[key], edgeID)
+			changedByKey[key] = struct{}{}
 		}
 		if edge, ok := after.Edges.Get(edgeID); ok {
 			key := edgeShardTargetKey(edge.Type, shardIDFor(edge))
-			changedByKey[key] = append(changedByKey[key], edgeID)
+			changedByKey[key] = struct{}{}
 		}
 	}
 	keys := sortedStringKeys(changedByKey)
@@ -65,29 +65,43 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(
 	shards := make([]EdgeShardData, 0, len(keys))
 	rawSpecs := make([]EdgeShard, 0, len(keys))
 	removed := map[string]struct{}{}
+	// Several relation types can change in the same endpoint partition. Scan
+	// its adjacency once, especially when a shared endpoint has many edges.
+	edgesByKey := make(map[string][]graph.Edge, len(keys))
+	keysByShard := make(map[string]map[string]string)
+	for _, key := range keys {
+		relationType, shardID := splitShard(key)
+		if keysByShard[shardID] == nil {
+			keysByShard[shardID] = make(map[string]string)
+		}
+		keysByShard[shardID][relationType] = key
+	}
 	for _, key := range keys {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
 		relationType, shardID := splitShard(key)
-		var edges []graph.Edge
-		canonical := true
-		err := after.VisitEdgeStorageShard(ctx, relationType, shardID, reverse, func(edge graph.Edge) error {
-			if len(edges)&255 == 0 {
-				if err := ctx.Err(); err != nil {
-					return err
+		if types, unvisited := keysByShard[shardID]; unvisited {
+			err := after.VisitEdgeStorageShard(ctx, "", shardID, reverse, func(edge graph.Edge) error {
+				if edgeKey, changed := types[edge.Type]; changed {
+					edgesByKey[edgeKey] = append(edgesByKey[edgeKey], edge)
 				}
+				return ctx.Err()
+			})
+			if err != nil {
+				return nil, nil, err
 			}
-			edges = append(edges, edge)
-			canonical = canonical && graphEdgeHashCanonical(edge)
-			return nil
-		})
-		if err != nil {
-			return nil, nil, err
+			delete(keysByShard, shardID)
 		}
+		edges := edgesByKey[key]
+		delete(edgesByKey, key)
 		if len(edges) == 0 {
 			removed[key] = struct{}{}
 			continue
+		}
+		canonical := true
+		for _, edge := range edges {
+			canonical = canonical && graphEdgeHashCanonical(edge)
 		}
 		shard := EdgeShardData{
 			LayoutVersion: CurrentObjectLayoutVersion,

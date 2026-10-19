@@ -1,6 +1,6 @@
 # Write And Ingest
 
-Applies to **GGraphDB 2.3.4**; see [release validation](../validation-v2.3.4.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.5**; see [release validation](../validation-v2.3.5.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](write-ingest.zh-CN.md)
 
@@ -529,6 +529,6 @@ Common reasons:
 
 - object store latency or errors.
 - manifest CAS conflicts.
-- index rebuild or maintenance task running.
+- a replicated/remote index rebuild, or other blocking maintenance. Local ordered rebuilds allow ingest publication.
 - commit tail too long.
 - tenant entity/edge/object/byte quota exceeded.

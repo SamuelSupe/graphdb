@@ -906,6 +906,22 @@ func (s *IngestService) schedule() {
 			heap.Fix(&deadlines, queue.index)
 		}
 	}
+	admit := func(pending *ingestPending) {
+		if pending.acceptedSequence == 0 {
+			// Recovered records were already sorted by their persisted LSN.
+			enqueue(pending)
+			return
+		}
+		// WAL append responses can resume their callers in a different order.
+		// This process-local sequence excludes prepared and terminal records.
+		awaitingAdmission[pending.acceptedSequence] = pending
+		for awaitingAdmission[nextAcceptedSequence] != nil {
+			next := awaitingAdmission[nextAcceptedSequence]
+			delete(awaitingAdmission, nextAcceptedSequence)
+			nextAcceptedSequence++
+			enqueue(next)
+		}
+	}
 
 	resetTimer := func() <-chan time.Time {
 		if deadlines.Len() == 0 {
@@ -943,6 +959,16 @@ func (s *IngestService) schedule() {
 	}
 
 	for {
+		// Collect already accepted work before dispatching an expired queue.
+		// A bounded drain keeps completion, force and shutdown handling live.
+		for range min(len(s.enqueueCh), max(1, s.config.FlushMaxRequests)) {
+			select {
+			case pending := <-s.enqueueCh:
+				admit(pending)
+			case <-s.runCtx.Done():
+				return
+			}
+		}
 		queue := nextQueue(time.Now())
 		var readyCh chan ingestTenantFlush
 		var flush ingestTenantFlush
@@ -965,20 +991,7 @@ func (s *IngestService) schedule() {
 			delete(queues, queue.tenantID)
 			busy[queue.tenantID] = true
 		case pending := <-s.enqueueCh:
-			if pending.acceptedSequence == 0 {
-				// Recovered records were already sorted by their persisted LSN.
-				enqueue(pending)
-				continue
-			}
-			// WAL append responses can resume their callers in a different order.
-			// This process-local sequence excludes prepared and terminal records.
-			awaitingAdmission[pending.acceptedSequence] = pending
-			for awaitingAdmission[nextAcceptedSequence] != nil {
-				next := awaitingAdmission[nextAcceptedSequence]
-				delete(awaitingAdmission, nextAcceptedSequence)
-				nextAcceptedSequence++
-				enqueue(next)
-			}
+			admit(pending)
 		case force := <-s.forceCh:
 			forceThrough[force.tenantID] = max(forceThrough[force.tenantID], force.throughLSN)
 			if busy[force.tenantID] {

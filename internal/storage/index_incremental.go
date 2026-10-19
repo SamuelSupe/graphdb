@@ -9,6 +9,11 @@ import (
 )
 
 func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID string, before *graph.Graph, after *graph.Graph, mutations graph.Mutations, report graph.ApplyReport, baseVersion, version int64, rebuild, rebuildOnGap bool) error {
+	ordered, _ := ctx.Value(orderedIndexUpdateKey{}).(bool)
+	if rebuild && ordered {
+		_, err := s.rebuildIndexesFromGraph(ctx, tenantID, after, Manifest{Version: version})
+		return err
+	}
 	if !rebuild && !canIncrementIndexes(mutations) {
 		return nil
 	}
@@ -30,6 +35,10 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 	if rebuild || catalog.Version != baseVersion {
 		if !rebuild && !rebuildOnGap {
 			return fmt.Errorf("index catalog version %d does not match previous graph version %d", catalog.Version, baseVersion)
+		}
+		if ordered {
+			_, err := s.rebuildIndexesFromGraph(ctx, tenantID, after, Manifest{Version: version})
+			return err
 		}
 		_, err := s.RebuildIndexes(ctx, tenantID)
 		return err

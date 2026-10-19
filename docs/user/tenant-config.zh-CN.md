@@ -1,6 +1,6 @@
 # 租户与配置
 
-适用于 **GGraphDB 2.3.4**；[发行验证](../validation-v2.3.4.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.5**；[发行验证](../validation-v2.3.5.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](tenant-config.md)
 

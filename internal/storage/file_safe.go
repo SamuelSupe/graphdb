@@ -1,11 +1,39 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+type preparedFileParentsKey struct{}
+
+type preparedFileParents struct {
+	files   *FileStore
+	mu      sync.Mutex
+	checked map[string]bool
+}
+
+func (s *FileStore) verifySafeMutationParent(ctx context.Context, filename string) error {
+	parents, ok := ctx.Value(preparedFileParentsKey{}).(*preparedFileParents)
+	if !ok || parents.files != s {
+		return s.verifySafeParent(filename)
+	}
+	parents.mu.Lock()
+	defer parents.mu.Unlock()
+	parent := filepath.Dir(filename)
+	if parents.checked[parent] {
+		return nil
+	}
+	if err := s.verifySafeParent(filename); err != nil {
+		return err
+	}
+	parents.checked[parent] = true
+	return nil
+}
 
 func (s *FileStore) verifySafeParent(filePath string) error {
 	return s.walkSafeDir(filepath.Dir(filePath), false, nil)

@@ -156,7 +156,43 @@ func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (Inde
 		return IndexCatalog{}, err
 	}
 	defer releaseView()
+	if s.localFileStore() != nil && !s.ReplicationMode && !IsReplicatedContext(ctx) {
+		return s.rebuildLocalIndexes(ctx, tenantID)
+	}
 	return s.rebuildIndexesWithView(ctx, tenantID)
+}
+
+func (s *TenantStore) rebuildLocalIndexes(ctx context.Context, tenantID string) (IndexCatalog, error) {
+	unlock, err := s.lockTenantForeground(ctx, tenantID)
+	if err != nil {
+		return IndexCatalog{}, err
+	}
+	work, runCtx, err := func() (*commitIndexUpdate, context.Context, error) {
+		defer unlock()
+		boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+		if err != nil {
+			return nil, ctx, err
+		}
+		if err := s.EnsureTenantWritable(boundCtx, tenantID); err != nil {
+			return nil, ctx, err
+		}
+		loaded, err := s.loadForWriteLocked(boundCtx, tenantID)
+		if err != nil {
+			return nil, ctx, err
+		}
+		// Serialize catalog publication with incremental updates, while later
+		// graph commits remain free to publish and queue behind this rebuild.
+		work := &commitIndexUpdate{before: loaded.Graph, after: loaded.Graph, baseVersion: loaded.Manifest.Version, version: loaded.Manifest.Version, rebuild: true, onlineRebuild: true}
+		s.enqueueCommitIndexUpdate(boundCtx, tenantID, work)
+		return work, boundCtx, nil
+	}()
+	if err != nil {
+		return IndexCatalog{}, err
+	}
+	if err := s.runCommitIndexUpdate(runCtx, tenantID, work); err != nil {
+		return IndexCatalog{}, err
+	}
+	return s.GetIndexCatalog(runCtx, tenantID)
 }
 
 // The caller retains a shared or exclusive view until catalog publication.
@@ -175,8 +211,10 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 	if err != nil {
 		return IndexCatalog{}, err
 	}
-	g := loaded.Graph
-	manifest := loaded.Manifest
+	return s.rebuildIndexesFromGraph(ctx, tenantID, loaded.Graph, loaded.Manifest)
+}
+
+func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID string, g *graph.Graph, manifest Manifest) (IndexCatalog, error) {
 	_, previousMeta, _ := s.previousIndexCatalog(ctx, tenantID)
 	definitions, err := s.getIndexDefinitions(ctx, tenantID)
 	if err != nil {
@@ -249,6 +287,9 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) ensureIndexRebuildCurrent(ctx context.Context, tenantID string, loaded Manifest) error {
+	if ordered, _ := ctx.Value(orderedIndexUpdateKey{}).(bool); ordered {
+		return s.ensureIncrementalIndexCurrent(ctx, tenantID, loaded.Version)
+	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
 		return err
 	}

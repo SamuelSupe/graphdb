@@ -1,8 +1,8 @@
-# GGraphDB 2.3.4
+# GGraphDB 2.3.5
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.5) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,16 +14,16 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4)** is the stable Latest release. All exact-tag gates and independent downloaded-asset/runtime checks passed; see the validation record.
+**2.3.5 is the release candidate**; stable Latest remains [2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4). Exact-tag gates and downloaded-asset checks are pending; see the validation record.
 
-| Area | What 2.3.4 provides |
+| Area | What 2.3.5 provides |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
 | Large tenant registries | Server-side tenant ID search and bounded pages for tenant selection and cluster placements |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups |
 
-See [release validation](docs/validation-v2.3.4.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release validation](docs/validation-v2.3.5.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -148,22 +148,23 @@ both. Configure authentication, tenant authorization and TLS at your
 
 ## Validation and limits
 
-Version 2.3.4 fixes query/index/time/sort correctness, snapshot membership/retry,
-local filesystem compatibility and export completion, while removing retired tests
-and redundant key wrappers. All exact-tag gates passed, including both thirty-minute
-maintenance soaks; downloaded Linux/macOS binaries passed checksum, identity,
-direct/WAL SDK, HTTP, load and SIGKILL/reopen checks.
+Version 2.3.5 removes foreground WAL waits on local maintenance index work,
+orders concurrent rebuild publication, reduces repeated Raft filesystem work,
+and prepares compact representations within the existing shared encoding limit.
 
-The standalone tag-source soak had zero raw errors, but write P99 was **19.929
-seconds** (maximum **26.633**) and **21/59** index samples were stale, including
-the last sample. Raft had zero raw errors and 59 ready index samples, but
-path-filter traversal P99 was **2.814 seconds**, with a **12.028-second** maximum.
-The topologies have different batch sizes and completed data volumes; these are
-qualification runs, not a before/after comparison or a general latency SLO.
+In the matched candidate replay, standalone write P99 fell **9.470 → 3.948 seconds**;
+Raft query maximum fell **13.132 → 5.584 seconds** during the original thirty-minute
+growth plan. These compare C3 and C7 workspace candidates, not published 2.3.4 and
+2.3.5 binaries. Standalone stale frequency did not improve (**131/327 → 134/327**),
+all stale samples were updating, and quiet-state indexes caught up. Standalone
+container memory peak rose **6.4%**; Raft baseline resource counters are unavailable.
+Seconds-long query and ingestion tails remain. Each deployment uses its own matched
+inputs; the two deployments cannot be compared directly.
 
-See [exact release evidence](docs/validation-v2.3.4.md). Historical v2.3.1 fixed-data
-diagnostic comparisons remain in the [comparison report](docs/maintenance-tailfix-2026-10-13.zh-CN.md).
-Cross-host reliability, day-scale stability and production capacity remain unqualified.
+See [exact release evidence](docs/validation-v2.3.5.md) and the
+[matched performance report](docs/performance-tail-validation-2026-10-20.zh-CN.md).
+Exact-tag qualification is pending. Cross-host reliability, day-scale stability,
+production capacity and a general latency SLO remain unqualified.
 
 <details>
 <summary>Historical performance evidence</summary>
@@ -200,7 +201,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.3.4 validation](docs/validation-v2.3.4.md) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.3.5 validation](docs/validation-v2.3.5.md) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 

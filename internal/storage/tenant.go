@@ -8,6 +8,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"golang.org/x/sync/errgroup"
 )
 
 type Manifest struct {
@@ -104,6 +105,7 @@ type TenantStore struct {
 	indexCatalogLoads        map[string]*indexCatalogLoad
 	indexUpdateMu            sync.Mutex
 	indexUpdateTails         map[string]chan struct{}
+	localIndexMaintenance    map[string]int
 	indexUnreservedTails     map[string]chan struct{}
 	pendingIngestIndexes     map[string]*commitIndexUpdate
 	maintenance              *maintenanceResources
@@ -297,6 +299,8 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 			return Manifest{}, err
 		}
 	}
+	finishIndexMaintenance := s.beginLocalIndexMaintenance(ctx, tenantID)
+	defer finishIndexMaintenance()
 	ctx, releaseMemory, err := s.admitMaintenance(ctx, maintenanceGraphBytes(g))
 	if err != nil {
 		return Manifest{}, err
@@ -308,13 +312,30 @@ func (s *TenantStore) Compact(ctx context.Context, tenantID string) (Manifest, e
 		// Snapshot objects are versioned and immutable, so their expensive build
 		// can run concurrently with foreground commits.
 		snapshot := g.SnapshotForStorage()
-		snapshotCatalog, err = s.putShardedSnapshot(ctx, tenantID, snapshot)
-		if err != nil {
-			return Manifest{}, err
-		}
 		snapshotKey = s.snapshotKey(tenantID, snapshot.Version)
 		record := snapshotRecord{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Snapshot: snapshot, normalized: true}
-		if err := s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record); err != nil {
+		if s.localFileStore() != nil {
+			// Both immutable representations must finish before publication.
+			// Share the encode limit so parallel preparation stays bounded.
+			group, buildCtx := errgroup.WithContext(ctx)
+			group.Go(func() error {
+				catalog, buildErr := s.putShardedSnapshot(buildCtx, tenantID, snapshot)
+				snapshotCatalog = catalog
+				return buildErr
+			})
+			group.Go(func() error {
+				return s.runFileWriteJobs(buildCtx, 1, func(workCtx context.Context, _ int) error {
+					return s.putSnapshotRecordIfAbsentOrEquivalent(workCtx, snapshotKey, record)
+				})
+			})
+			err = group.Wait()
+		} else {
+			snapshotCatalog, err = s.putShardedSnapshot(ctx, tenantID, snapshot)
+			if err == nil {
+				err = s.putSnapshotRecordIfAbsentOrEquivalent(ctx, snapshotKey, record)
+			}
+		}
+		if err != nil {
 			return Manifest{}, err
 		}
 		if err := s.settleDirectCommitsBeforeCompaction(ctx, tenantID, manifest.Version); err != nil {

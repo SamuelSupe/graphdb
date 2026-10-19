@@ -343,6 +343,9 @@ func (s *TenantStore) PublishReplicatedMaintenance(ctx context.Context, tenant, 
 		return task, fmt.Errorf("prepared maintenance is missing its terminal task")
 	}
 	mutationKeys := append(append([]string(nil), keys...), prepared.Deleted...)
+	// This publication replaces or deletes files under an application barrier;
+	// directory ancestry cannot change. Reuse checks only within this scope.
+	ctx = context.WithValue(ctx, preparedFileParentsKey{}, &preparedFileParents{files: s.localFileStore(), checked: make(map[string]bool)})
 	if err := s.localFileStore().journalObjects(ctx, mutationKeys); err != nil {
 		return task, err
 	}

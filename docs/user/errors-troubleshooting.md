@@ -1,6 +1,6 @@
 # Errors And Troubleshooting
 
-Applies to **GGraphDB 2.3.4**; see [release validation](../validation-v2.3.4.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.5**; see [release validation](../validation-v2.3.5.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](errors-troubleshooting.zh-CN.md)
 
@@ -35,14 +35,14 @@ Full contract: [../error_codes.md](../error_codes.md).
 | `write_admission_queue_timeout` | Write queue full | Retry with same idempotency key and reduce concurrency. |
 | `write_backpressure` | System pressure | Honor `Retry-After`; inspect `reasons`. |
 | `commit_tail_too_long` | Too many visible commits | Run compact or wait for auto compact. |
-| `index_rebuild_running` | Index rebuild blocks writes | Wait or cancel task if appropriate. |
+| `index_rebuild_running` | Replicated or remote index backfill blocks admission | Wait or cancel task if appropriate; local ordered rebuilds allow ingest publication. |
 | `quota_exceeded` | Tenant quota would be exceeded | Raise quota or delete data. |
 | `idempotency_conflict` | Same key, different payload | Use a new key or resend exact original body. |
 | `idempotency_in_progress` | Another request is processing the same key | Retry the exact request with the same key after backoff. |
 | `write_conflict` | Concurrent publication or precondition conflict | Inspect local status and retain the idempotency key. For preconditioned writes, reload the head and resolve the conflict. |
 | `version_conflict` | `expected_version` no longer matches | Reload the head and resolve the caller's precondition; do not blind-retry. |
 | `lease_held` | Duplicate/stale local writer protection | Ensure only one local-coordination writer per tenant. |
-| `index_stale` | Index missing/stale | Rebuild indexes or allow fallback where supported. |
+| `index_stale` | Missing/stale indexes | Check index health: wait for `updating` work to catch up; otherwise rebuild, or use supported fallback. |
 | `repair_required` | Integrity issue blocks operation | Run audit and repair. |
 
 ## 429 Handling

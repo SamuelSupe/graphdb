@@ -622,7 +622,7 @@ func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 
 func TestStreamingSnapshotPinsPublishedPosition(t *testing.T) {
 	ctx := context.Background()
-	dotKeys := []string{".namespace/queries/.hidden.parquet", "graphdb/queries/.tmp-hosts.parquet", "graphdb/indexes/.tmp-kind/data.parquet", "graphdb/queries/.runtime-restore-hosts.parquet"}
+	dotKeys := []string{"graphdb/tenants/tenant-a/indexes/parquet/versions/v1/node/name/shard.parquet", ".namespace/queries/.hidden.parquet", "graphdb/queries/.tmp-hosts.parquet", "graphdb/indexes/.tmp-kind/data.parquet", "graphdb/queries/.runtime-restore-hosts.parquet"}
 	files, err := OpenFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -731,8 +731,9 @@ func BenchmarkReplicationJournalWrites(b *testing.B) {
 }
 
 func BenchmarkReplicationSnapshotCapture(b *testing.B) {
-	for _, objects := range []int{1000, 5000} {
-		b.Run(fmt.Sprint(objects), func(b *testing.B) {
+	for _, fixture := range []struct{ objects, emptyVersions int }{{1000, 0}, {5000, 0}, {1000, 5000}} {
+		objects := fixture.objects
+		b.Run(fmt.Sprintf("objects_%d_empty_versions_%d", objects, fixture.emptyVersions), func(b *testing.B) {
 			files, err := OpenFileStore(b.TempDir())
 			if err != nil {
 				b.Fatal(err)
@@ -741,6 +742,12 @@ func BenchmarkReplicationSnapshotCapture(b *testing.B) {
 			for object := range objects {
 				key := fmt.Sprintf("graphdb/tenants/%d/records/%d", object%32, object)
 				if err := files.Put(context.Background(), key, make([]byte, 256)); err != nil {
+					b.Fatal(err)
+				}
+			}
+			for version := 0; version < fixture.emptyVersions; version++ {
+				dir := filepath.Join(files.root, "graphdb", "tenants", "0", "indexes", "parquet", "versions", fmt.Sprint(version), "node", "name")
+				if err := os.MkdirAll(dir, 0700); err != nil {
 					b.Fatal(err)
 				}
 			}
