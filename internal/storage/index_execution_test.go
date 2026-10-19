@@ -2354,3 +2354,52 @@ func (s *failConditionalDeleteStore) DeleteConditional(ctx context.Context, key 
 	}
 	return s.ObjectStore.DeleteConditional(ctx, key, condition)
 }
+
+func TestIntegerLiteralIndexesAndDottedKinds(t *testing.T) {
+	ctx := context.Background()
+	store := newParquetIndexTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+		UpsertCITypes:  []graph.CIType{{Name: "aws.ec2", Fields: map[string]graph.FieldSpec{"cpu": {Type: "number", Indexed: true}}}},
+		UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "aws.ec2", Fields: graph.Fields{"cpu": float64(1000000)}}, {ID: "host:b", Kind: "aws.ec2", Fields: graph.Fields{"cpu": float64(-1000000)}}},
+	}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := store.RebuildIndexes(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	full, _, err := store.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy := graph.New()
+	lazy.Version = catalog.Version
+	options := query.ExecuteOptions{IndexLookup: lookup, EntityLookup: lookup, PlannerStats: catalog.PlannerStats()}
+	for _, text := range []string{"FIND aws.ec2 WHERE cpu = 1000000", "FIND aws.ec2 WHERE cpu = -1000000"} {
+		request, err := query.ParseGQL(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		materialized, err := query.Execute(full, request)
+		if err != nil || len(materialized.Results) != 1 {
+			t.Fatalf("runtime index %s: result=%+v err=%v", text, materialized, err)
+		}
+		for _, g := range []*graph.Graph{full, lazy} {
+			result, err := query.ExecuteContextWithOptions(ctx, g, request, options)
+			if err != nil || len(result.Results) != 1 {
+				t.Fatalf("%s: result=%+v err=%v", text, result, err)
+			}
+		}
+		var results []query.Result
+		used, err := query.StreamContextWithOptions(ctx, lazy, request, options, func(value any) error {
+			if result, ok := value.(query.Result); ok {
+				results = append(results, result)
+			}
+			return nil
+		})
+		if err != nil || !used || len(results) != 1 {
+			t.Fatalf("stream %s: used=%v results=%+v err=%v", text, used, results, err)
+		}
+	}
+}

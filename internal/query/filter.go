@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -20,6 +21,9 @@ func requestFilters(request Request) []Filter {
 }
 
 func requestEntityMatches(request *Request, entity *graph.Entity) bool {
+	if request.Kind != "" && entity.Kind != request.Kind {
+		return false
+	}
 	if !entityMatches(entity, request.Where) {
 		return false
 	}
@@ -145,6 +149,13 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 	if !exists {
 		return false
 	}
+	if timestamp, ok := actual.(time.Time); ok {
+		switch op {
+		case "eq", "neq", "in", "gt", "gte", "lt", "lte":
+			return timestampFilterMatches(timestamp, filter.Value, op)
+		}
+		actual = timestamp.UTC().Format(timeSortLayout)
+	}
 	switch op {
 	case "eq":
 		return valuesEqual(actual, filter.Value)
@@ -178,6 +189,37 @@ func filterMatches(actual any, exists bool, filter Filter) bool {
 	}
 }
 
+func timestampFilterMatches(actual time.Time, expected any, op string) bool {
+	if op == "in" {
+		for _, value := range anySlice(expected) {
+			if timestampFilterMatches(actual, value, "eq") {
+				return true
+			}
+		}
+		return false
+	}
+	right, err := time.Parse(time.RFC3339Nano, fmt.Sprint(expected))
+	if err != nil {
+		return false
+	}
+	comparison := actual.Compare(right)
+	switch op {
+	case "eq":
+		return comparison == 0
+	case "neq":
+		return comparison != 0
+	case "gt":
+		return comparison > 0
+	case "gte":
+		return comparison >= 0
+	case "lt":
+		return comparison < 0
+	case "lte":
+		return comparison <= 0
+	}
+	return false
+}
+
 func edgeFilterValue(edge graph.Edge, field string) (any, bool) {
 	switch field {
 	case "", "id":
@@ -197,9 +239,9 @@ func edgeFilterValue(edge graph.Edge, field string) (any, bool) {
 	case "source_priority":
 		return edge.SourceRank, true
 	case "created_at":
-		return edge.CreatedAt.Format(timeSortLayout), true
+		return edge.CreatedAt, true
 	case "updated_at":
-		return edge.UpdatedAt.Format(timeSortLayout), true
+		return edge.UpdatedAt, true
 	}
 	if strings.HasPrefix(field, "fields.") {
 		name := strings.TrimPrefix(field, "fields.")
@@ -233,9 +275,9 @@ func entityFilterValue(entity *graph.Entity, field string) (any, bool) {
 	case "source_priority":
 		return entity.SourceRank, true
 	case "created_at":
-		return entity.CreatedAt.Format(timeSortLayout), true
+		return entity.CreatedAt, true
 	case "updated_at":
-		return entity.UpdatedAt.Format(timeSortLayout), true
+		return entity.UpdatedAt, true
 	}
 	if strings.HasPrefix(field, "identity.") {
 		name := strings.TrimPrefix(field, "identity.")
@@ -277,9 +319,9 @@ func entityValue(entity *graph.Entity, field string) any {
 	case "source_priority":
 		return entity.SourceRank
 	case "created_at":
-		return entity.CreatedAt.Format(timeSortLayout)
+		return entity.CreatedAt.UTC().Format(timeSortLayout)
 	case "updated_at":
-		return entity.UpdatedAt.Format(timeSortLayout)
+		return entity.UpdatedAt.UTC().Format(timeSortLayout)
 	}
 	if strings.HasPrefix(field, "identity.") {
 		name := strings.TrimPrefix(field, "identity.")
@@ -321,6 +363,9 @@ func compareFilter(actual any, expected any, op string) bool {
 }
 
 func valuesEqual(left any, right any) bool {
+	if timestamp, ok := left.(time.Time); ok {
+		return timestampFilterMatches(timestamp, right, "eq")
+	}
 	if text, ok := left.(string); ok {
 		other, ok := right.(string)
 		return ok && text == other

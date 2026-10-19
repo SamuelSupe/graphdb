@@ -6,7 +6,9 @@ import (
 	"reflect"
 )
 
-func scalarKey(value any) (string, bool) {
+// ScalarIndexKey uses the same float64 representation as persisted numeric
+// fields so integer query literals address the same index entries.
+func ScalarIndexKey(value any) (string, bool) {
 	switch v := value.(type) {
 	case nil:
 		return "null", true
@@ -19,10 +21,14 @@ func scalarKey(value any) (string, bool) {
 		return "b:false", true
 	case float64:
 		return fmt.Sprintf("n:%g", v), true
+	case float32:
+		return fmt.Sprintf("n:%g", float64(v)), true
 	case int:
-		return fmt.Sprintf("n:%d", v), true
+		return fmt.Sprintf("n:%g", float64(v)), true
 	case int64:
-		return fmt.Sprintf("n:%d", v), true
+		return fmt.Sprintf("n:%g", float64(v)), true
+	case int32:
+		return fmt.Sprintf("n:%g", float64(v)), true
 	case json.Number:
 		value, err := v.Float64()
 		if err != nil {
@@ -86,8 +92,8 @@ func valueInEnum(value any, enum []any) bool {
 }
 
 func fieldValuesEqual(left any, right any) bool {
-	leftKey, leftOK := scalarKey(left)
-	rightKey, rightOK := scalarKey(right)
+	leftKey, leftOK := ScalarIndexKey(left)
+	rightKey, rightOK := ScalarIndexKey(right)
 	if leftOK && rightOK {
 		return leftKey == rightKey
 	}

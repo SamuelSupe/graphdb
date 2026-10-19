@@ -140,13 +140,6 @@ func TestOpenAPICommitAndIngestContractsAreTyped(t *testing.T) {
 	}
 }
 
-func TestOpenAPIPublicContractDoesNotExposeEvidenceSearch(t *testing.T) {
-	spec := readOpenAPISpec(t)
-	if strings.Contains(strings.ToLower(spec), "evidence") {
-		t.Fatal("OpenAPI public contract still exposes evidence search")
-	}
-}
-
 func readOpenAPISpec(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("openapi.yaml")

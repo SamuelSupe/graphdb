@@ -253,7 +253,7 @@ func secondaryIndexEntityValue(g *graph.Graph, entityID string, spec IndexSpec) 
 	if !ok {
 		return "", false
 	}
-	return secondaryIndexValue(value)
+	return graph.ScalarIndexKey(value)
 }
 
 func removeSecondaryIndexID(values map[string][]string, value string, entityID string) (bool, bool) {

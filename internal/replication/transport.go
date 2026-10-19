@@ -32,6 +32,21 @@ type packet struct {
 	file     *os.File
 }
 
+type peerSender struct {
+	queue  chan packet
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// Call with peerMu held so no producer can enqueue after cancellation/drain.
+func (n *Node) stopPeerSenders(id uint64) {
+	for _, sender := range []peerSender{n.senders[id], n.controlSenders[id]} {
+		if sender.cancel != nil {
+			sender.cancel()
+		}
+	}
+}
+
 func (n *Node) send(messages []raftpb.Message) {
 	for _, message := range messages {
 		if message.To == 0 || message.To == n.cfg.ID {
@@ -51,6 +66,11 @@ func (n *Node) send(messages []raftpb.Message) {
 			}
 			if envelope.File != nil {
 				snapshotFile, err = os.Open(snapshotPath(n.cfg.Dir, message.Snapshot.Metadata.Index, *envelope.File))
+				if os.IsNotExist(err) {
+					n.metrics.Event("snapshot_send_missing")
+					n.raft.ReportSnapshot(message.To, raft.SnapshotFailure)
+					continue
+				}
 				if err != nil {
 					n.fail(err)
 					return
@@ -65,17 +85,41 @@ func (n *Node) send(messages []raftpb.Message) {
 		if control {
 			senders = n.controlSenders
 		}
-		queue := senders[message.To]
-		if queue == nil {
-			queue = make(chan packet, 128)
-			senders[message.To] = queue
+		sender := senders[message.To]
+		if sender.queue == nil {
+			retired, err := n.memberRetired(message.To)
+			if err != nil || retired {
+				n.peerMu.Unlock()
+				if snapshotFile != nil {
+					snapshotFile.Close()
+				}
+				if err != nil {
+					n.fail(err)
+					return
+				}
+				continue
+			}
+			ctx, cancel := context.WithCancel(n.ctx)
+			sender = peerSender{queue: make(chan packet, 128), ctx: ctx, cancel: cancel}
+			senders[message.To] = sender
 			n.workers.Add(1)
-			go n.sendLoop(message.To, queue)
+			go n.sendLoop(message.To, sender)
+		}
+		if sender.ctx.Err() != nil {
+			n.peerMu.Unlock()
+			if snapshotFile != nil {
+				snapshotFile.Close()
+			}
+			continue
+		}
+		queued := false
+		select {
+		case sender.queue <- packet{data: data, snapshot: message.Type == raftpb.MsgSnap, control: control, file: snapshotFile}:
+			queued = true
+		default:
 		}
 		n.peerMu.Unlock()
-		select {
-		case queue <- packet{data: data, snapshot: message.Type == raftpb.MsgSnap, control: control, file: snapshotFile}:
-		default:
+		if !queued {
 			n.metrics.Event("transport_queue_full")
 			if snapshotFile != nil {
 				snapshotFile.Close()
@@ -88,7 +132,8 @@ func (n *Node) send(messages []raftpb.Message) {
 	}
 }
 
-func (n *Node) sendLoop(id uint64, queue <-chan packet) {
+func (n *Node) sendLoop(id uint64, sender peerSender) {
+	queue := sender.queue
 	defer n.workers.Done()
 	defer func() {
 		for {
@@ -104,9 +149,15 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 	}()
 	for {
 		select {
-		case <-n.ctx.Done():
+		case <-sender.ctx.Done():
 			return
 		case packet := <-queue:
+			if sender.ctx.Err() != nil {
+				if packet.file != nil {
+					packet.file.Close()
+				}
+				return
+			}
 			operation := "message_send"
 			if packet.snapshot {
 				operation = "snapshot_send"
@@ -127,7 +178,7 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 				var body io.Reader = bytes.NewReader(packet.data)
 				endpoint := "/raft/message"
 				if packet.file != nil {
-					peer, err := n.peerStatus(n.ctx, id)
+					peer, err := n.peerStatus(sender.ctx, id)
 					if err != nil {
 						return err
 					}
@@ -165,7 +216,7 @@ func (n *Node) sendLoop(id uint64, queue <-chan packet) {
 						endpoint = "/raft/snapshot"
 					}
 				}
-				request, err := http.NewRequestWithContext(n.ctx, http.MethodPost, strings.TrimRight(address, "/")+endpoint, body)
+				request, err := http.NewRequestWithContext(sender.ctx, http.MethodPost, strings.TrimRight(address, "/")+endpoint, body)
 				if err != nil {
 					return err
 				}

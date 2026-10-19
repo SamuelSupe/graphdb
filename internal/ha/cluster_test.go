@@ -23,6 +23,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -1358,9 +1359,18 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 			if seed == nil || r.Method != "POST" || r.URL.Path != "/v1/tenants/tenant-a/restore" {
 				return
 			}
+			response := w.(*httptest.ResponseRecorder)
+			if response.Code != http.StatusAccepted {
+				return
+			}
 			var task storage.Task
-			if err := json.Unmarshal(w.(*httptest.ResponseRecorder).Body.Bytes(), &task); err != nil {
+			if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
 				t.Error(err)
+				return
+			}
+			// A lagging replica can still apply earlier restore admissions after
+			// this fixture is armed. Seed only the unavailable-source scenario.
+			if task.Params["backup_key"] != "graphdb/unavailable-backup" {
 				return
 			}
 			if _, err := app.stageRestore(r.Context(), command{Tenant: task.TenantID, IDs: []string{task.ID}, Body: seed.body, Restore: seed.input}); err != nil {
@@ -1895,6 +1905,11 @@ func TestHAReferencedGraphFailureStopsReplicaUntilReplay(t *testing.T) {
 			follower := (leader + 1) % len(group.nodes)
 			group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
 			group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:seed","kind":"host"}]}}`, http.StatusOK)
+			// Install the follower fault before any background worker can consume
+			// this task; otherwise a slow test host can compact before injection.
+			group.nodes[leader].cluster.maintenanceMu.Lock()
+			resumeMaintenance := sync.OnceFunc(group.nodes[leader].cluster.maintenanceMu.Unlock)
+			defer resumeMaintenance()
 			response := group.mustRequest(leader, "POST", "/v1/tasks", `{"type":"compact"}`, http.StatusAccepted)
 			var task storage.Task
 			if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
@@ -1923,6 +1938,7 @@ func TestHAReferencedGraphFailureStopsReplicaUntilReplay(t *testing.T) {
 			} else {
 				target.Store(group.nodes[follower].cluster.App)
 			}
+			resumeMaintenance()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			if err := group.nodes[leader].cluster.runQueuedTask(ctx); err != nil {
@@ -2403,5 +2419,58 @@ func TestHASlowFollowerKeepsApplicationMemoryBounded(t *testing.T) {
 	group.waitApplied(follower, checkpoint.Index, 30*time.Second)
 	if group.manifest(follower).Version != 20 {
 		t.Fatal("follower lost publications while resuming its durable backlog")
+	}
+}
+
+type prepareUnavailableStore struct {
+	storage.ObjectStore
+	key string
+	err error
+}
+
+func (s *prepareUnavailableStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == s.key && s.err != nil {
+		return nil, s.err
+	}
+	return s.ObjectStore.Get(ctx, key)
+}
+
+type preparationHTTPError int
+
+func (e preparationHTTPError) Error() string       { return "temporary object store response" }
+func (e preparationHTTPError) HTTPStatusCode() int { return int(e) }
+
+func TestTransientTaskPreparationRemainsQueued(t *testing.T) {
+	for _, failure := range []error{storage.ErrObjectStoreUnavailable, context.DeadlineExceeded, preparationHTTPError(503)} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			ctx := context.Background()
+			sourceKey := "graphdb/tenants/tenant-a/tasks/imports/input.jsonl"
+			objects := &prepareUnavailableStore{ObjectStore: storage.NewMemoryStore(), key: sourceKey, err: failure}
+			store := storage.NewTenantStore(objects, "graphdb")
+			if _, err := store.CreateTenant(ctx, "tenant-a", storage.TenantCreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			store.ReplicationMode = true
+			admission := storage.ReplicatedContext(ctx, "queued-import", time.Now().UTC())
+			task, err := store.StartTask(admission, "tenant-a", storage.TaskTypeBulkImport, map[string]any{"import_id": "input", "source_key": sourceKey, "format": "jsonl"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cluster := &Cluster{App: &Application{Store: store}, metrics: observability.NewOperationMetrics()}
+			if err := cluster.runQueuedTask(ctx); !errors.Is(err, failure) {
+				t.Fatalf("preparation error: %v", err)
+			}
+			current, err := store.GetTask(ctx, task.TenantID, task.ID)
+			if err != nil || current.Status != storage.TaskStatusQueued {
+				t.Fatalf("task=%+v err=%v", current, err)
+			}
+			objects.err = nil
+			if err := objects.Put(ctx, sourceKey, []byte("{}\n")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.PrepareReplicatedTask(ctx, current); err != nil {
+				t.Fatalf("recovered preparation: %v", err)
+			}
+		})
 	}
 }

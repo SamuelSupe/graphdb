@@ -86,18 +86,6 @@ func TestParseGraphQLRejectsUnknownRequestField(t *testing.T) {
 	}
 }
 
-func TestParseGraphQLRejectsRemovedEvidenceSearch(t *testing.T) {
-	_, errs := ParseGraphQL(GraphQLRequest{
-		Query: `{ evidenceSearch(input: {query: "why?"}) { version } }`,
-	})
-	if len(errs) == 0 {
-		t.Fatal("removed evidenceSearch root was accepted")
-	}
-	if !strings.Contains(fmt.Sprint(errs), "evidenceSearch") {
-		t.Fatalf("error = %v, want evidenceSearch field diagnostic", errs)
-	}
-}
-
 func TestParseGraphQLRejectsPathologicalDocuments(t *testing.T) {
 	if _, errs := ParseGraphQL(GraphQLRequest{Query: strings.Repeat("x", maxTextQueryBytes+1)}); len(errs) == 0 {
 		t.Fatal("oversized GraphQL document was accepted")

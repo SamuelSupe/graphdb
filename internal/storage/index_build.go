@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -136,7 +134,7 @@ func addEntitiesToIndex(g *graph.Graph, index *SecondaryIndex) {
 		if !ok {
 			continue
 		}
-		key, ok := secondaryIndexValue(value)
+		key, ok := graph.ScalarIndexKey(value)
 		if !ok {
 			continue
 		}
@@ -195,32 +193,4 @@ func splitShard(value string) (string, string) {
 		}
 	}
 	return value, "default"
-}
-
-func secondaryIndexValue(value any) (string, bool) {
-	switch typed := value.(type) {
-	case nil:
-		return "null", true
-	case string:
-		return "s:" + typed, true
-	case bool:
-		if typed {
-			return "b:true", true
-		}
-		return "b:false", true
-	case float64:
-		return fmt.Sprintf("n:%g", typed), true
-	case int:
-		return fmt.Sprintf("n:%d", typed), true
-	case int64:
-		return fmt.Sprintf("n:%d", typed), true
-	case json.Number:
-		value, err := typed.Float64()
-		if err != nil {
-			return "", false
-		}
-		return fmt.Sprintf("n:%g", value), true
-	default:
-		return "", false
-	}
 }

@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -100,7 +98,7 @@ func repairIdentitySignature(entity graph.Entity, key graph.IdentityKey) (string
 		if !ok {
 			return "", false
 		}
-		scalar, ok := repairScalarKey(value)
+		scalar, ok := graph.ScalarIndexKey(value)
 		if !ok {
 			return "", false
 		}
@@ -110,30 +108,6 @@ func repairIdentitySignature(entity graph.Entity, key graph.IdentityKey) (string
 		return "", false
 	}
 	return strings.Join(parts, "|"), true
-}
-
-func repairScalarKey(value any) (string, bool) {
-	switch typed := value.(type) {
-	case nil:
-		return "null", true
-	case string:
-		return "s:" + typed, true
-	case bool:
-		if typed {
-			return "b:true", true
-		}
-		return "b:false", true
-	case float64:
-		return fmt.Sprintf("n:%g", typed), true
-	case int:
-		return fmt.Sprintf("n:%d", typed), true
-	case int64:
-		return fmt.Sprintf("n:%d", typed), true
-	case json.Number:
-		return "n:" + typed.String(), true
-	default:
-		return "", false
-	}
 }
 
 func edgeEndpointIssues(g *graph.Graph) []RepairIssue {

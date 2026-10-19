@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -280,7 +281,7 @@ func (l *PersistedIndexLookup) matchParquetFieldIndex(ctx context.Context, spec 
 	if shards, hasShards := secondaryIndexShardObjectMap(spec.Objects); hasShards {
 		seen := map[string]struct{}{}
 		for _, value := range values {
-			key, ok := secondaryIndexValue(value)
+			key, ok := graph.ScalarIndexKey(value)
 			if !ok {
 				return nil, false, nil
 			}
@@ -327,7 +328,7 @@ func (l *PersistedIndexLookup) matchParquetFieldIndex(ctx context.Context, spec 
 	}
 	seen := map[string]struct{}{}
 	for _, value := range values {
-		key, ok := secondaryIndexValue(value)
+		key, ok := graph.ScalarIndexKey(value)
 		if !ok {
 			return nil, false, nil
 		}

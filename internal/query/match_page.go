@@ -32,7 +32,7 @@ func measuredCandidateIDs(g *graph.Graph, request Request, plan Plan, budget *bu
 	var ok bool
 	err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
 		var err error
-		ids, ok, err = candidateIDsForPlan(plan, budget)
+		ids, ok, err = candidateIDsForPlan(request.Kind, plan, budget)
 		if ok || err != nil {
 			return len(ids), err
 		}

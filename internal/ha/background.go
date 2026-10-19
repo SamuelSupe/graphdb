@@ -3,6 +3,7 @@ package ha
 import (
 	"context"
 	"errors"
+	"net"
 	"sort"
 	"time"
 
@@ -182,6 +183,16 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	prepareErr := err
 	var pressure *storage.BackpressureError
 	if errors.As(prepareErr, &pressure) {
+		return prepareErr
+	}
+	var networkError net.Error
+	var responseError interface{ HTTPStatusCode() int }
+	if errors.Is(prepareErr, context.Canceled) || errors.Is(prepareErr, context.DeadlineExceeded) ||
+		errors.Is(prepareErr, storage.ErrObjectStoreUnavailable) || errors.As(prepareErr, &networkError) ||
+		(errors.As(prepareErr, &responseError) && (responseError.HTTPStatusCode() == 429 || responseError.HTTPStatusCode() >= 500)) {
+		// Preparation has no replicated effects. Keep transient failures queued
+		// for the next fair background pass instead of committing a failed task.
+		c.metrics.Event("maintenance_prepare_deferred")
 		return prepareErr
 	}
 	cmd, commandErr := newCommand("task")

@@ -318,6 +318,9 @@ func streamFlush(w http.ResponseWriter) func() error {
 			return nil
 		}
 		pending = 0
+		if err := controller.SetWriteDeadline(time.Now().Add(10 * time.Minute)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return err
+		}
 		if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return err
 		}

@@ -56,7 +56,7 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	}); err != nil {
 		return true, err
 	}
-	ids, ok, err := candidateIDsForPlan(plan, budget)
+	ids, ok, err := candidateIDsForPlan(request.Kind, plan, budget)
 	if err != nil {
 		return true, err
 	}
@@ -205,7 +205,7 @@ func streamLazyKindMatch(g *graph.Graph, request Request, cursor cursorState, bu
 	return results, next, nil
 }
 
-func candidateIDsForPlan(plan Plan, budget *budget) ([]string, bool, error) {
+func candidateIDsForPlan(kind string, plan Plan, budget *budget) ([]string, bool, error) {
 	switch plan.Strategy {
 	case "entity-id":
 		if len(plan.IndexValues) != 1 {
@@ -220,25 +220,10 @@ func candidateIDsForPlan(plan Plan, budget *budget) ([]string, bool, error) {
 		if budget.lookup == nil {
 			return nil, false, nil
 		}
-		return budget.lookup.MatchFieldIndex(budget.ctx, planIndexKind(plan), plan.IndexField, plan.IndexValues)
+		return budget.lookup.MatchFieldIndex(budget.ctx, kind, plan.IndexField, plan.IndexValues)
 	default:
 		return nil, false, nil
 	}
-}
-
-func planIndexKind(plan Plan) string {
-	prefix := "field:"
-	value := plan.Index
-	if len(value) <= len(prefix) || value[:len(prefix)] != prefix {
-		return ""
-	}
-	rest := value[len(prefix):]
-	for i, ch := range rest {
-		if ch == '.' {
-			return rest[:i]
-		}
-	}
-	return ""
 }
 
 func streamPlan(plan Plan, request Request) *Plan {

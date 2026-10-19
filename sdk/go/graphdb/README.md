@@ -1,6 +1,6 @@
 # GGraphDB Go SDK
 
-Version **2.3.1**, matching the [published server release](../../../docs/validation-v2.3.1.md).
+Version **2.3.2**, matching the [server release](../../../docs/validation-v2.3.2.md).
 
 Import path inside this repository:
 
@@ -25,3 +25,7 @@ result, err := client.Commit(ctx, graphdb.Mutations{
 
 See [SDK user guide](../../../docs/user/sdk.md) for the full user
 guide.
+
+Since 2.3.2: consume snapshot streams through EOF and check `Stream.Err()`; a
+missing final `done:true` is reported as `io.ErrUnexpectedEOF`. Early `Close()`
+remains a caller cancellation, not a successful export.

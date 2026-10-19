@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -77,19 +79,34 @@ func TestGraphQLExecutionErrorUsesGraphQLEnvelope(t *testing.T) {
 	}
 }
 
-func TestGraphQLRejectsRemovedEvidenceSearch(t *testing.T) {
+func TestGraphQLExplainAndProfileWrappers(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
-	if _, err := store.InitTenant(context.Background(), "tenant-a"); err != nil {
-		t.Fatalf("init: %v", err)
+	if _, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
 	}
 	handler := (&Server{Store: store, Mode: "all"}).Handler()
-	response := serveJSON(handler, http.MethodPost, "/v1/query/graphql", "tenant-a", map[string]any{
-		"query": `{ evidenceSearch(input: {query: "why?"}) { version } }`,
-	})
-	body := response.Body.String()
-	if response.Code != http.StatusBadRequest ||
-		!strings.Contains(body, `"errors"`) ||
-		!strings.Contains(body, "evidenceSearch") {
-		t.Fatalf("removed GraphQL evidenceSearch = %d %s", response.Code, body)
+	for _, op := range []string{"explain", "profile"} {
+		response := serveJSON(handler, http.MethodPost, "/v1/query/graphql", "tenant-a", map[string]any{
+			"query":     `query Q($request: QueryRequest!) { graph(request: $request) { plan profile results } }`,
+			"variables": map[string]any{"request": map[string]any{"op": op, "targetOp": "match", "kind": "host"}},
+		})
+		var body struct {
+			Data map[string]struct {
+				Plan    *query.Plan          `json:"plan"`
+				Profile []query.OperatorStat `json:"profile"`
+				Results []query.Result       `json:"results"`
+			} `json:"data"`
+			Errors json.RawMessage `json:"errors"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		root := body.Data["graph"]
+		if response.Code != 200 || len(body.Errors) > 0 || root.Plan == nil {
+			t.Fatalf("%s: %d %s", op, response.Code, response.Body.String())
+		}
+		if op == "profile" && (len(root.Profile) == 0 || len(root.Results) != 1) {
+			t.Fatalf("profile: %s", response.Body.String())
+		}
 	}
 }

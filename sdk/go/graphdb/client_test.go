@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -232,5 +233,38 @@ func TestStreamDecodesNDJSON(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("stream item count = %d", count)
+	}
+}
+
+func TestSnapshotStreamRequiresCompletionMarker(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		t.Run(fmt.Sprint(complete), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				io.WriteString(w, "{\"stream\":\"snapshot\"}\n{\"entity\":{\"fields\":{\"done\":true}}}\n")
+				if complete {
+					io.WriteString(w, "{\"done\":true}\n")
+				}
+			}))
+			defer server.Close()
+			client, err := NewClient(server.URL, WithTenant("tenant-a"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := client.StreamSnapshot(context.Background(), ReadOptions{}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			var item map[string]any
+			for stream.Next(&item) {
+			}
+			if complete && stream.Err() != nil {
+				t.Fatal(stream.Err())
+			}
+			if !complete && !errors.Is(stream.Err(), io.ErrUnexpectedEOF) {
+				t.Fatalf("incomplete stream: %v", stream.Err())
+			}
+		})
 	}
 }

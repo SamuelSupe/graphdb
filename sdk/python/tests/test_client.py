@@ -56,6 +56,13 @@ class Handler(BaseHTTPRequestHandler):
         self.__class__.requests.append((self.command, self.path, dict(self.headers), b""))
         if self.path == "/v1/entities/host%3A1":
             self._json({"id": "host:1", "kind": "host", "fields": {"hostname": "app-01"}})
+        elif self.path.startswith("/v1/export/snapshot/stream?"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+            self.wfile.write(b'{"stream":"snapshot"}\n{"entity":{"fields":{"done":true}}}\n')
+            if parse.parse_qs(parse.urlsplit(self.path).query).get("min_version") == ["2"]:
+                self.wfile.write(b'{"done":true}\n')
         else:
             self.send_error(404)
 
@@ -257,6 +264,14 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "write_backpressure")
         self.assertEqual(caught.exception.retry_after_ms, 2000)
         self.assertTrue(caught.exception.retryable)
+
+    def test_snapshot_stream_requires_completion_marker(self):
+        client = GraphDBClient(self.base_url, tenant_id="tenant-a")
+        with client.stream_snapshot(min_version=1) as stream:
+            with self.assertRaises(EOFError):
+                list(stream)
+        with client.stream_snapshot(min_version=2) as stream:
+            self.assertEqual(len(list(stream)), 3)
 
     def test_gql_and_stream(self):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")

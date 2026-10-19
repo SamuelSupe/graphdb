@@ -667,3 +667,36 @@ func recoverIngestWAL(dir string) ([]IngestWALRecord, []ingestWALSegment, uint64
 	})
 	return records, segments, nextLSN, totalBytes, err
 }
+
+func TestIngestWALPruneRetryKeepsAccurateBytes(t *testing.T) {
+	dir := t.TempDir()
+	first, blocked, current := filepath.Join(dir, "first"), filepath.Join(dir, "blocked"), filepath.Join(dir, "current")
+	if err := os.WriteFile(first, make([]byte, 10), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blocked, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "child"), []byte{1}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := ingestWALWriterState{wal: &IngestWAL{config: IngestWALConfig{Dir: dir}}, current: 2, totalBytes: 60, segments: []ingestWALSegment{{path: first, size: 10, maxLSN: 1}, {path: blocked, size: 20, maxLSN: 2}, {path: current, size: 30, maxLSN: 3}}}
+	if err := state.prune(3); err == nil {
+		t.Fatal("expected removal failure")
+	}
+	if state.totalBytes != 50 || len(state.segments) != 2 || state.segments[state.current].path != current {
+		t.Fatalf("partial prune: %+v", state)
+	}
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.prune(3); err != nil {
+		t.Fatal(err)
+	}
+	if state.totalBytes != 30 || len(state.segments) != 1 || state.current != 0 {
+		t.Fatalf("retry: %+v", state)
+	}
+	if err := state.prune(3); err != nil || state.totalBytes != 30 {
+		t.Fatalf("repeated prune: bytes=%d err=%v", state.totalBytes, err)
+	}
+}

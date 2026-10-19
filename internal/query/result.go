@@ -1,6 +1,7 @@
 package query
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -98,13 +99,13 @@ func compareAny(left, right any) int {
 	lf, lok := asFloat(left)
 	rf, rok := asFloat(right)
 	if lok && rok {
-		if lf < rf {
+		return cmp.Compare(lf, rf)
+	}
+	if lok != rok {
+		if lok {
 			return -1
 		}
-		if lf > rf {
-			return 1
-		}
-		return 0
+		return 1
 	}
 	return strings.Compare(filterText(left), filterText(right))
 }

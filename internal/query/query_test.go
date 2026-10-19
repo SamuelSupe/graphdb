@@ -144,3 +144,22 @@ func seedGraph(t *testing.T) *graph.Graph {
 	}
 	return g
 }
+
+func TestIDLookupRespectsKind(t *testing.T) {
+	g := traversalPagingGraph(t)
+	for _, op := range []string{"match", "pattern"} {
+		request := Request{Op: op, Kind: "host", Where: []Filter{{Field: "id", Value: "service:start"}}}
+		if op == "pattern" {
+			request.Path = PathFilter{Steps: []PathStep{{Direction: "out", NodeKinds: []string{"host"}}}}
+		}
+		response, err := Execute(g, request)
+		if err != nil || len(response.Results) != 0 {
+			t.Fatalf("%s: results=%+v err=%v", op, response.Results, err)
+		}
+		request.Kind = "service"
+		response, err = Execute(g, request)
+		if err != nil || len(response.Results) == 0 {
+			t.Fatalf("valid %s: results=%+v err=%v", op, response.Results, err)
+		}
+	}
+}

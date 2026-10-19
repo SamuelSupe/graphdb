@@ -61,14 +61,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		return checkpoint.Response, nil
 	}
 	dir := filepath.Join(s.root, replicationDirectory)
-	if s.replicatedWrites.Load() {
-		// RequireReplicatedWrites durably initialized the ancestors at startup.
-		// Validate the path and sync newly created directories without repeating
-		// those ancestor barriers for every committed entry.
-		err = s.ensureSafeDirectory(dir, nil)
-	} else {
-		err = ensureDurableDirectory(dir)
-	}
+	err = s.ensureSafeDirectory(dir, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +417,7 @@ func (s *FileStore) CheckStandaloneDirectory() error {
 // Persist the mode before joining, even when the Raft log is stored elsewhere
 // and this replica has not applied its first entry yet.
 func (s *FileStore) RequireReplicatedWrites() error {
-	if err := ensureDurableDirectory(filepath.Join(s.root, replicationDirectory)); err != nil {
+	if err := s.ensureSafeDirectory(filepath.Join(s.root, replicationDirectory), nil); err != nil {
 		return err
 	}
 	s.replicatedWrites.Store(true)

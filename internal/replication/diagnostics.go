@@ -108,7 +108,7 @@ func (n *Node) Status() map[string]any {
 	n.peerMu.RLock()
 	for _, id := range members {
 		progress, known := raftStatus.Progress[id]
-		peer := PeerProgress{ID: id, Known: known, Match: progress.Match, Next: progress.Next, RecentActive: progress.RecentActive, Learner: progress.IsLearner, SendQueue: len(n.senders[id]) + len(n.controlSenders[id]), ControlSendQueue: len(n.controlSenders[id])}
+		peer := PeerProgress{ID: id, Known: known, Match: progress.Match, Next: progress.Next, RecentActive: progress.RecentActive, Learner: progress.IsLearner, SendQueue: len(n.senders[id].queue) + len(n.controlSenders[id].queue), ControlSendQueue: len(n.controlSenders[id].queue)}
 		if !known {
 			for _, learner := range conf.Learners {
 				peer.Learner = peer.Learner || learner == id

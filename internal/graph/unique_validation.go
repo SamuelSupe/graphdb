@@ -105,7 +105,7 @@ func (v *uniqueEntityValidator) validate(entity Entity) error {
 		if !ok {
 			continue
 		}
-		if key, scalar := scalarKey(value); scalar {
+		if key, scalar := ScalarIndexKey(value); scalar {
 			for id := range v.graph.fieldIndex[entity.Kind][field].At(key).Keys() {
 				if id != entity.ID {
 					return uniqueFieldError(entity, field)
@@ -148,7 +148,7 @@ func (v *uniqueEntityValidator) addComplexValues(id string, entity Entity) {
 		if !ok {
 			continue
 		}
-		if _, scalar := scalarKey(value); scalar {
+		if _, scalar := ScalarIndexKey(value); scalar {
 			continue
 		}
 		key, ok := complexUniqueKey(value)

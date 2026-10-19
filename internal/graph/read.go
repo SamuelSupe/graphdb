@@ -34,7 +34,7 @@ func (g *Graph) FieldIndexCount(kind string, field string, values []any) int {
 		return 0
 	}
 	if len(values) == 1 {
-		key, ok := scalarKey(values[0])
+		key, ok := ScalarIndexKey(values[0])
 		if !ok {
 			return 0
 		}
@@ -64,7 +64,7 @@ func distinctScalarKeys(values []any) []string {
 	seen := make(map[string]struct{}, len(values))
 	keys := make([]string, 0, len(values))
 	for _, value := range values {
-		key, ok := scalarKey(value)
+		key, ok := ScalarIndexKey(value)
 		if !ok {
 			continue
 		}
@@ -90,7 +90,7 @@ func (g *Graph) matchCandidates(kind string, filters Fields) []Entity {
 	}
 	var best *ShardedMap[struct{}]
 	for field, value := range filters {
-		key, ok := scalarKey(value)
+		key, ok := ScalarIndexKey(value)
 		if !ok {
 			continue
 		}

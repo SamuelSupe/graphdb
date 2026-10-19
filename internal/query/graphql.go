@@ -113,7 +113,7 @@ func ParseGraphQL(request GraphQLRequest) (GraphQLPlan, gqlerror.List) {
 		if err != nil {
 			return GraphQLPlan{}, graphQLError(root.Position, "%v", err)
 		}
-		if err := validateRequest(queryRequest); err != nil {
+		if err := ValidateRequest(queryRequest); err != nil {
 			return GraphQLPlan{}, graphQLError(root.Position, "%v", err)
 		}
 		plan.Request = queryRequest

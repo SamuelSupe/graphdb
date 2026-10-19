@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/quorum"
 	"go.etcd.io/raft/v3/raftpb"
@@ -687,5 +688,212 @@ func TestStreamingSnapshotRetriesAndRejectsCorruptDurableFile(t *testing.T) {
 	if reopened, err := Open(ctx, cfg, &machines[leader]); err == nil {
 		reopened.Close()
 		t.Fatal("already applied corrupt snapshot passed startup")
+	}
+}
+
+type snapshotFailureReporter struct {
+	raft.Node
+	reports chan uint64
+}
+
+func (r snapshotFailureReporter) ReportSnapshot(id uint64, status raft.SnapshotStatus) {
+	if status == raft.SnapshotFailure {
+		r.reports <- id
+	}
+}
+
+func TestMissingOutgoingSnapshotReportsFailureWithoutStoppingNode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reports := make(chan uint64, 1)
+	n := &Node{cfg: Config{ID: 1, Dir: t.TempDir()}, ctx: ctx, cancel: cancel, changed: make(chan struct{}), raft: snapshotFailureReporter{reports: reports}, metrics: observability.NewOperationMetrics()}
+	file, err := persistSnapshotFile(n.cfg.Dir, 10, strings.NewReader(strings.Repeat("state", 16)), nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(snapshotEnvelope{Version: 2, Peers: map[uint64]string{1: "http://one", 2: "http://two"}, File: &file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pruneSnapshotFilesBefore(n.cfg.Dir, 20, "", false); err != nil {
+		t.Fatal(err)
+	}
+	n.send([]raftpb.Message{{To: 2, Type: raftpb.MsgSnap, Snapshot: &raftpb.Snapshot{Data: data, Metadata: raftpb.SnapshotMetadata{Index: 10}}}})
+	select {
+	case id := <-reports:
+		if id != 2 {
+			t.Fatalf("reported peer %d", id)
+		}
+	default:
+		t.Fatal("missing SnapshotFailure report")
+	}
+	if n.failure != nil || ctx.Err() != nil {
+		t.Fatalf("node stopped: failure=%v context=%v", n.failure, ctx.Err())
+	}
+}
+
+type budgetSnapshotMachine struct {
+	membershipMachine
+	small atomic.Bool
+}
+
+func (m *budgetSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
+	if m.small.Load() {
+		return []byte("state"), nil
+	}
+	return []byte(strings.Repeat("state", 512)), nil
+}
+
+func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var endpoints [3]atomic.Pointer[Node]
+	var nodes [3]*Node
+	var machines [3]budgetSnapshotMachine
+	peers := map[uint64]string{}
+	for i := range endpoints {
+		i := i
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if n := endpoints[i].Load(); n != nil {
+				n.Handler().ServeHTTP(w, r)
+			} else {
+				w.WriteHeader(503)
+			}
+		}))
+		defer server.Close()
+		peers[uint64(i+1)] = server.URL
+	}
+	defer func() {
+		for i, n := range nodes {
+			endpoints[i].Store(nil)
+			if n != nil {
+				n.Close()
+			}
+		}
+	}()
+	for i := range nodes {
+		n, err := Open(ctx, Config{ID: uint64(i + 1), ClusterID: "budget", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 20 * time.Millisecond, ElectionTicks: 10, SnapshotEntries: 1, MaxSnapshotBytes: 1024}, &machines[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[i] = n
+		endpoints[i].Store(n)
+	}
+	var leader *Node
+	for leader == nil {
+		for i, n := range nodes {
+			if n.LeaderID() == uint64(i+1) && n.applied.Load() >= 4 && n.Status()["snapshot_error"] != nil {
+				leader = n
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if _, err := leader.Propose(ctx, []byte("blocked")); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("oversize mutation: %v", err)
+	}
+	if err := leader.ReadBarrier(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := range machines {
+		machines[i].small.Store(true)
+	}
+	for leader.Status()["snapshot_error"] != nil {
+		select {
+		case <-ctx.Done():
+			t.Fatal("snapshot did not recover without proposals: ", ctx.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if _, err := leader.Propose(ctx, []byte("after retry")); err != nil {
+		t.Fatalf("recovered mutation: %v", err)
+	}
+}
+
+func TestRemovingPeerStopsIdleSendersAndClosesQueuedFiles(t *testing.T) {
+	disk, _, err := openStorage(t.TempDir(), 1, "senders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := &Node{ctx: ctx, disk: disk, peers: map[uint64]string{1: "http://one", 2: "http://two"}, senders: map[uint64]peerSender{}, controlSenders: map[uint64]peerSender{}}
+	var stopped []chan struct{}
+	var files []*os.File
+	for _, senders := range []map[uint64]peerSender{n.senders, n.controlSenders} {
+		peerCtx, stop := context.WithCancel(ctx)
+		sender := peerSender{ctx: peerCtx, cancel: stop, queue: make(chan packet, 1)}
+		file, err := os.CreateTemp(t.TempDir(), "queued")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		files = append(files, file)
+		senders[2] = sender
+		done := make(chan struct{})
+		stopped = append(stopped, done)
+		n.workers.Add(1)
+		go func() { <-peerCtx.Done(); n.sendLoop(2, sender); close(done) }()
+		sender.queue <- packet{file: file}
+	}
+	data, _ := json.Marshal(memberChange{ID: 2, Action: "remove"})
+	if err := n.applyPeerChange(data, 10); err != nil {
+		t.Fatal(err)
+	}
+	for _, done := range stopped {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("removed peer sender did not exit")
+		}
+	}
+	for _, file := range files {
+		if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("queued snapshot file not closed: %v", err)
+		}
+	}
+	n.send([]raftpb.Message{{To: 2, Type: raftpb.MsgHeartbeat}})
+	for _, senders := range []map[uint64]peerSender{n.senders, n.controlSenders} {
+		if len(senders[2].queue) != 0 {
+			t.Fatal("removed peer accepted another packet")
+		}
+	}
+}
+
+func TestInstalledSnapshotClearsPreviousBuildFailure(t *testing.T) {
+	disk, _, err := openStorage(t.TempDir(), 1, "restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	machine := &membershipMachine{}
+	n := &Node{cfg: Config{SnapshotEntries: 10}, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), application: make(chan applicationBatch), snapshotFailure: ErrSnapshotTooLarge, metrics: observability.NewOperationMetrics()}
+	n.workers.Add(1)
+	go n.applyLoop()
+	defer func() { cancel(); n.workers.Wait() }()
+	data, err := json.Marshal(snapshotEnvelope{Version: 1, State: []byte("valid"), Peers: map[uint64]string{1: "http://one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.application <- applicationBatch{snapshot: raftpb.Snapshot{Data: data, Metadata: raftpb.SnapshotMetadata{Index: 10}}}
+	deadline := time.Now().Add(time.Second)
+	for {
+		n.mu.Lock()
+		failure := n.snapshotFailure
+		n.mu.Unlock()
+		if n.applied.Load() == 10 && failure == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("installed snapshot retained failure: applied=%d error=%v", n.applied.Load(), failure)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

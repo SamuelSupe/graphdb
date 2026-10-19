@@ -1,6 +1,6 @@
 # Scan And Export
 
-Applies to **GGraphDB 2.3.1**; see [release validation](../validation-v2.3.1.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.2**; see [release validation](../validation-v2.3.2.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](scan-export.zh-CN.md)
 

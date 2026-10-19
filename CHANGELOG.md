@@ -5,6 +5,27 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+## [2.3.2] - 2026-10-19
+
+- Remove retired evidence-search tests and redundant scalar-key wrappers;
+  retain current compatibility, recovery and persistence regressions. Scope restore
+  fault injection to its admitted target instead of unrelated delayed responses.
+- Enforce entity kinds after ID lookups, including pattern starts and lazy streams.
+- Share numeric index-key encoding across graph, persisted indexes and planner
+  statistics; preserve dotted kind names in lazy/streaming index lookups.
+- Compare timestamp predicates as instants, normalize timestamp sort keys to UTC,
+  and keep mixed numeric/text sorting transitive for pagination and top-K.
+- Accept GraphQL explain/profile wrappers through the common query validator.
+- Retry oversized non-streaming Raft snapshots independently of new proposals;
+  report missing outgoing snapshots to Raft without stopping the node. Cancel
+  removed-peer senders and retain transient task preparation failures for retry.
+- Allow symlink ancestors above local data roots, retain internal path checks,
+  and keep WAL disk accounting consistent after partially failed pruning.
+- Encode ordinary JSON exports record by record without a copied snapshot or a
+  tenant-sized JSON buffer; the materialized read view still requires memory.
+  Renew streaming write deadlines on progress and reject snapshot streams that
+  end without a completion marker in both SDKs.
+
 ## [2.3.1] - 2026-10-13
 
 - Coalesce queued standalone synchronous-index writes under the existing writer

@@ -380,22 +380,14 @@ func (s *Server) exportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeReadError(w, err)
 		return
 	}
-	var snapshot graph.Snapshot
-	var version int64
+	started := false
 	err = s.withReadOnlyGraphForRead(r.Context(), tenantID, target, func(g *graph.Graph, manifest storage.Manifest) error {
-		snapshot = g.Snapshot()
-		version = manifest.Version
-		return nil
+		started = true
+		return writeGraphSnapshotJSON(w, r.Context(), tenantID, manifest.Version, g)
 	})
-	if err != nil {
+	if err != nil && !started {
 		writeReadError(w, err)
-		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"tenant_id": tenantID,
-		"version":   version,
-		"snapshot":  snapshot,
-	})
 }
 
 func (s *Server) streamSnapshot(w http.ResponseWriter, r *http.Request) {

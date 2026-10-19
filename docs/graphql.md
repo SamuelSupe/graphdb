@@ -1,6 +1,6 @@
 # GraphQL API
 
-Applies to **GGraphDB 2.3.1**; see [release validation](validation-v2.3.1.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.2**; see [release validation](validation-v2.3.2.md) and [version boundaries](naming-and-compatibility.md).
 
 [中文](graphql.zh-CN.md)
 
@@ -56,6 +56,11 @@ type GraphQueryResult {
 [query_capabilities.md](query_capabilities.md). Both JSON-style
 `min_version` and GraphQL-style `minVersion` names are accepted for the
 documented camel-case fields.
+
+Since 2.3.2: `graph(request: {op: "explain", targetOp: "match", kind: "host"})`
+and the equivalent `op: "profile"` wrapper use the same validator as JSON queries.
+Select `plan` and `profile` in the GraphQL result. Ordinary requests may also set
+`profile: true`.
 
 ## Response and errors
 

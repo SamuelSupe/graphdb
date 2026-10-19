@@ -442,3 +442,42 @@ func TestLocalRestoreRetainsEntityIndexLayout(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalDirectoryAllowsSymlinkAncestors(t *testing.T) {
+	base := t.TempDir()
+	real, alias := filepath.Join(base, "real"), filepath.Join(base, "alias")
+	if err := os.Mkdir(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(alias, "nested", "data")
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Put(context.Background(), "tenant/value", []byte("persisted")); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if data, err := files.Get(context.Background(), "tenant/value"); err != nil || string(data) != "persisted" {
+		t.Fatalf("reopened: %q %v", data, err)
+	}
+	if err := os.Symlink(real, filepath.Join(files.root, "inside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Put(context.Background(), "inside/value", []byte("unsafe")); err == nil {
+		t.Fatal("internal symlink accepted")
+	}
+	if _, err := OpenFileStore(alias); err == nil {
+		t.Fatal("symlink data root accepted")
+	}
+}

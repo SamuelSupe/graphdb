@@ -218,9 +218,6 @@ func ensureDurableDirectoryMode(dir string, mode os.FileMode) error {
 			return fmt.Errorf("unsafe data directory %q", dir)
 		}
 		if parent := filepath.Dir(dir); parent != dir {
-			if err := ensureDurableDirectoryMode(parent, mode); err != nil {
-				return err
-			}
 			return syncDir(parent)
 		}
 		return nil
@@ -229,11 +226,26 @@ func ensureDurableDirectoryMode(dir string, mode os.FileMode) error {
 		return err
 	}
 	parent := filepath.Dir(dir)
-	if err := ensureDurableDirectoryMode(parent, mode); err != nil {
+	// Parents above the requested data root may be mount-point aliases. Only
+	// the data root itself and paths managed inside it must reject symlinks.
+	if info, err := os.Stat(parent); os.IsNotExist(err) {
+		if err := ensureDurableDirectoryMode(parent, mode); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
+	} else if !info.IsDir() {
+		return fmt.Errorf("unsafe data directory %q", parent)
 	}
 	if err := os.Mkdir(dir, mode); err != nil && !os.IsExist(err) {
 		return err
+	}
+	info, err = os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("unsafe data directory %q", dir)
 	}
 	return syncDir(parent)
 }

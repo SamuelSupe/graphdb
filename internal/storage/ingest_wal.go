@@ -742,13 +742,16 @@ func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
 	kept := make([]ingestWALSegment, 0, len(s.segments))
 	removed := 0
 	var reclaimed int64
+	var removeErr error
 	for index, segment := range s.segments {
 		if index == s.current || segment.maxLSN == 0 || segment.maxLSN >= beforeLSN {
 			kept = append(kept, segment)
 			continue
 		}
 		if err := os.Remove(segment.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+			kept = append(kept, s.segments[index:]...)
+			removeErr = err
+			break
 		}
 		s.totalBytes -= segment.size
 		reclaimed += segment.size
@@ -762,9 +765,7 @@ func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
 			break
 		}
 	}
-	if err := syncDirectory(s.wal.config.Dir); err != nil {
-		return err
-	}
+	syncErr := syncDirectory(s.wal.config.Dir)
 	s.observeState(0)
 	if removed > 0 && s.wal.config.Logger != nil {
 		s.wal.config.Logger.Info("ingest_wal_segments_pruned", map[string]any{
@@ -774,7 +775,7 @@ func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
 			"before_lsn":      beforeLSN,
 		})
 	}
-	return nil
+	return errors.Join(removeErr, syncErr)
 }
 
 func (s *ingestWALWriterState) syncAndClose() error {

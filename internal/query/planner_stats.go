@@ -1,8 +1,9 @@
 package query
 
 import (
-	"encoding/json"
 	"fmt"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 func (stats PlannerStats) field(kind string, field string) (PlannerIndexStat, bool) {
@@ -48,33 +49,8 @@ func estimateValueCount(index PlannerIndexStat, key string) int {
 }
 
 func canonicalPlannerValue(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return "null"
-	case string:
-		return "s:" + typed
-	case bool:
-		if typed {
-			return "b:true"
-		}
-		return "b:false"
-	case float64:
-		return fmt.Sprintf("n:%g", typed)
-	case float32:
-		return fmt.Sprintf("n:%g", typed)
-	case int:
-		return fmt.Sprintf("n:%d", typed)
-	case int64:
-		return fmt.Sprintf("n:%d", typed)
-	case int32:
-		return fmt.Sprintf("n:%d", typed)
-	case json.Number:
-		value, err := typed.Float64()
-		if err != nil {
-			return fmt.Sprintf("v:%v", typed)
-		}
-		return fmt.Sprintf("n:%g", value)
-	default:
-		return fmt.Sprintf("v:%v", typed)
+	if key, ok := graph.ScalarIndexKey(value); ok {
+		return key
 	}
+	return fmt.Sprintf("v:%v", value)
 }

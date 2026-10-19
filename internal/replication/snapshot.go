@@ -5,7 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	bolt "go.etcd.io/bbolt"
+	"go.etcd.io/raft/v3/raftpb"
 )
+
+func (n *Node) startSnapshot(conf raftpb.ConfState) (built chan snapshotBuild, err error) {
+	if n.cfg.StreamSnapshots {
+		return n.startStreamSnapshot(conf)
+	}
+	finish := n.metrics.Start("snapshot_build")
+	defer func() { finish(err) }()
+	data, err := n.machine.Snapshot(n.ctx)
+	if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
+		err = ErrSnapshotTooLarge
+	}
+	index := n.applied.Load()
+	if err == nil {
+		data, err = n.snapshotData(data, index)
+	}
+	if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
+		err = ErrSnapshotTooLarge
+	}
+	if err != nil {
+		return nil, err
+	}
+	built = make(chan snapshotBuild, 1)
+	built <- snapshotBuild{request: snapshotRequest{index: index, data: data, conf: conf, done: make(chan error, 1)}}
+	return built, nil
+}
 
 type snapshotEnvelope struct {
 	Protocol int               `json:"protocol,omitempty"`

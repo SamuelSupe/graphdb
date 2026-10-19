@@ -97,7 +97,7 @@ func (g *Graph) ciIdentitySignatures(entity Entity, confidence float64) []identi
 				if !ok {
 					value, ok = entity.Fields[field]
 				}
-				scalar, scalarOK := scalarKey(value)
+				scalar, scalarOK := ScalarIndexKey(value)
 				if !ok || !scalarOK {
 					parts = nil
 					break

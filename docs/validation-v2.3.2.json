@@ -1,0 +1,10 @@
+{
+  "version": "v2.3.2",
+  "status": "PENDING",
+  "waivers": [],
+  "boundaries": [
+    "standalone write tails and staleness remain unqualified",
+    "Raft extreme latency remains unqualified",
+    "cross-host and day-scale production qualification NOT RUN"
+  ]
+}

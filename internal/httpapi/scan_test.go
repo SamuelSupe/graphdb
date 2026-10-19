@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -714,5 +715,73 @@ func seedHTTPScanTenant(t *testing.T, ctx context.Context, store *storage.Tenant
 	}, storage.CommitOptions{})
 	if err != nil {
 		t.Fatalf("seed commit: %v", err)
+	}
+}
+
+type delayedSnapshotWriter struct {
+	http.ResponseWriter
+	delayed bool
+}
+
+func (w *delayedSnapshotWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *delayedSnapshotWriter) Write(data []byte) (int, error) {
+	if bytes.Contains(data, []byte(`"entity":`)) && !w.delayed {
+		w.delayed = true
+		time.Sleep(100 * time.Millisecond)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func TestSnapshotStreamRenewsWriteDeadlineAfterProgress(t *testing.T) {
+	g := graph.New()
+	if err := g.ApplyCommit(graph.Commit{ID: "stream", Version: 1, Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	api := &Server{}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.streamGraphSnapshot(&delayedSnapshotWriter{ResponseWriter: w}, r, "tenant-a", g, 1)
+	}))
+	server.Config.WriteTimeout = 40 * time.Millisecond
+	server.Start()
+	defer server.Close()
+	response, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil || !bytes.Contains(data, []byte(`"done":true`)) {
+		t.Fatalf("incomplete stream: %s err=%v", data, err)
+	}
+}
+
+func TestIncrementalSnapshotJSONMatchesSnapshotContract(t *testing.T) {
+	for _, populated := range []bool{false, true} {
+		store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+		if populated {
+			seedHTTPScanTenant(t, context.Background(), store)
+		}
+		g, manifest, err := store.Load(context.Background(), "tenant-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		if err := writeGraphSnapshotJSON(response, context.Background(), "tenant-a", manifest.Version, g); err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(map[string]any{"tenant_id": "tenant-a", "version": manifest.Version, "snapshot": g.Snapshot()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var actual, expected any
+		if err := json.Unmarshal(response.Body.Bytes(), &actual); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(want, &expected); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("snapshot changed: got=%s want=%s", response.Body.Bytes(), want)
+		}
 	}
 }

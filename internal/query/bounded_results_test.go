@@ -137,3 +137,42 @@ func appendBoundedSortedReference(results []Result, result Result, specs []SortS
 	}
 	return results
 }
+
+func TestMixedNumericSortHasConsistentPagesAndTopK(t *testing.T) {
+	values := []any{float64(2), float64(10), "11", nil, false, "2"}
+	for _, a := range values {
+		for _, b := range values {
+			for _, c := range values {
+				if compareAny(a, b) < 0 && compareAny(b, c) < 0 && compareAny(a, c) >= 0 {
+					t.Fatalf("nontransitive: %v < %v < %v", a, b, c)
+				}
+			}
+		}
+	}
+	g := graph.New()
+	var entities []graph.Entity
+	for i, value := range values {
+		entities = append(entities, graph.Entity{ID: fmt.Sprintf("item:%d", i), Kind: "item", Fields: graph.Fields{"value": value}})
+	}
+	if err := g.ApplyCommit(graph.Commit{ID: "mixed-sort", Version: 1, Mutations: graph.Mutations{UpsertEntities: entities}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, desc := range []bool{false, true} {
+		request := Request{Op: "match", Kind: "item", Sort: []SortSpec{{Field: "value", Desc: desc}}, Limit: 100}
+		all, err := Execute(g, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Limit = 1
+		for i, want := range all.Results {
+			page, err := Execute(g, request)
+			if err != nil || len(page.Results) != 1 || page.Results[0].Entity.ID != want.Entity.ID {
+				t.Fatalf("desc=%v page=%d results=%+v err=%v", desc, i, page.Results, err)
+			}
+			request.Cursor = page.NextCursor
+		}
+		if request.Cursor != "" {
+			t.Fatal("unexpected final cursor")
+		}
+	}
+}

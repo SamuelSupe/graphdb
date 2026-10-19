@@ -87,8 +87,8 @@ type Node struct {
 	reads                   map[string]chan uint64
 	peerMu                  sync.RWMutex
 	peers                   map[uint64]string
-	senders                 map[uint64]chan packet
-	controlSenders          map[uint64]chan packet
+	senders                 map[uint64]peerSender
+	controlSenders          map[uint64]peerSender
 	client                  transportClient
 	application             chan applicationBatch
 	snapshotRequests        chan snapshotRequest
@@ -199,7 +199,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, fmt.Errorf("application checkpoint %d exceeds durable Raft commit %d", applied, hard.Commit)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]chan packet), controlSenders: make(map[uint64]chan packet), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
+	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]peerSender), controlSenders: make(map[uint64]peerSender), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
 	n.metrics = observability.NewOperationMetrics()
 	n.snapshotCleanupRequests = make(chan uint64, 1)
 	n.snapshotCleanupFailure = cleanupErr
@@ -535,6 +535,9 @@ func (n *Node) run() {
 				n.snapshotIndex.Store(ready.Snapshot.Metadata.Index)
 				n.snapshotBytes.Store(snapshotPayloadBytes(ready.Snapshot.Data, envelope))
 				n.peerMu.Lock()
+				for _, id := range envelope.Retired {
+					n.stopPeerSenders(id)
+				}
 				for id, address := range envelope.Peers {
 					n.peers[id] = address
 				}
@@ -657,13 +660,13 @@ func (n *Node) applyLoop() {
 			return
 		case built := <-building:
 			building = nil
+			if built.request.index <= snapshotIndex {
+				continue
+			}
 			if built.err != nil {
 				n.mu.Lock()
 				n.snapshotFailure = built.err
 				n.mu.Unlock()
-				continue
-			}
-			if built.request.index <= snapshotIndex {
 				continue
 			}
 			select {
@@ -690,9 +693,9 @@ func (n *Node) applyLoop() {
 			n.mu.Lock()
 			failed := n.snapshotFailure != nil
 			n.mu.Unlock()
-			if failed && n.cfg.StreamSnapshots && building == nil && n.applied.Load() > snapshotIndex {
+			if failed && building == nil && n.applied.Load() > snapshotIndex {
 				var err error
-				building, err = n.startStreamSnapshot(lastConf)
+				building, err = n.startSnapshot(lastConf)
 				if err != nil {
 					n.mu.Lock()
 					n.snapshotFailure = err
@@ -711,6 +714,9 @@ func (n *Node) applyLoop() {
 				}
 				n.progress(batch.snapshot.Metadata.Index)
 				snapshotIndex = batch.snapshot.Metadata.Index
+				n.mu.Lock()
+				n.snapshotFailure = nil
+				n.mu.Unlock()
 			}
 			for first := max(batch.first, n.applied.Load()+1); first <= batch.last; {
 				entries, err := n.disk.Entries(first, batch.last+1, 4<<20)
@@ -733,64 +739,20 @@ func (n *Node) applyLoop() {
 				first = entries[len(entries)-1].Index + 1
 			}
 			if n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || batch.configurationChanged {
-				if n.cfg.StreamSnapshots {
-					if building != nil {
-						continue
-					}
-					var err error
-					building, err = n.startStreamSnapshot(lastConf)
-					if err != nil {
-						n.mu.Lock()
-						n.snapshotFailure = err
-						n.mu.Unlock()
-					}
+				if building != nil {
 					continue
 				}
-				finish := n.metrics.Start("snapshot_build")
-				data, err := n.machine.Snapshot(n.ctx)
-				if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
-					err = ErrSnapshotTooLarge
-				}
-				if err == nil {
-					data, err = n.snapshotData(data, n.applied.Load())
-				}
-				if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
-					err = ErrSnapshotTooLarge
-				}
-				finish(err)
-				if errors.Is(err, ErrSnapshotTooLarge) {
+				var err error
+				building, err = n.startSnapshot(lastConf)
+				if err != nil {
+					if !n.cfg.StreamSnapshots && !errors.Is(err, ErrSnapshotTooLarge) {
+						n.fail(err)
+						return
+					}
 					n.mu.Lock()
 					n.snapshotFailure = err
 					n.mu.Unlock()
-					snapshotIndex = n.applied.Load()
-					continue
 				}
-				if err != nil {
-					n.fail(err)
-					return
-				}
-				n.mu.Lock()
-				n.snapshotFailure = nil
-				n.mu.Unlock()
-				request := snapshotRequest{index: n.applied.Load(), data: data, conf: batch.conf, done: make(chan error, 1)}
-				select {
-				case n.snapshotRequests <- request:
-				case <-n.ctx.Done():
-					return
-				}
-				select {
-				case err = <-request.done:
-				case <-n.ctx.Done():
-					return
-				}
-				if errors.Is(err, raft.ErrSnapOutOfDate) {
-					continue
-				}
-				if err != nil {
-					n.fail(err)
-					return
-				}
-				snapshotIndex = request.index
 			}
 		}
 	}
@@ -811,11 +773,11 @@ func (n *Node) signalChanged() {
 func (n *Node) Close() error {
 	n.cancel()
 	n.workers.Wait()
-	for _, queue := range n.senders {
-		drainPackets(queue)
+	for _, sender := range n.senders {
+		drainPackets(sender.queue)
 	}
-	for _, queue := range n.controlSenders {
-		drainPackets(queue)
+	for _, sender := range n.controlSenders {
+		drainPackets(sender.queue)
 	}
 	n.client.CloseIdleConnections()
 	return n.disk.Close()

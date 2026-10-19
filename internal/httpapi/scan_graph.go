@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"net/http"
 	"slices"
@@ -11,6 +12,69 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+// Keep the read view for the entire response and encode one record at a time;
+// neither a copied snapshot nor a tenant-sized encoder buffer is required.
+func writeGraphSnapshotJSON(w http.ResponseWriter, ctx context.Context, tenant string, version int64, g *graph.Graph) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encoder := json.NewEncoder(w)
+	var err error
+	write := func(text string) {
+		if err == nil {
+			_, err = io.WriteString(w, text)
+		}
+	}
+	encode := func(value any) {
+		if err == nil {
+			err = ctx.Err()
+			if err == nil {
+				err = encoder.Encode(value)
+			}
+		}
+	}
+	write(`{"tenant_id":`)
+	encode(tenant)
+	write(`,"version":`)
+	encode(version)
+	write(`,"snapshot":{"version":`)
+	encode(g.Version)
+	if len(g.CITypes) > 0 {
+		write(`,"ci_types":`)
+		encode(g.ListCITypes())
+	}
+	write(`,"relation_types":`)
+	encode(g.ListRelationTypes())
+	write(`,"entities":[`)
+	first := true
+	if err == nil {
+		err = g.VisitEntitiesByID("", "", func(entity graph.Entity) (bool, error) {
+			if !first {
+				write(",")
+			}
+			first = false
+			encode(entity.JSONValue())
+			return err == nil, err
+		})
+	}
+	write(`],"edges":[`)
+	if err != nil {
+		return err
+	}
+	for i, id := range slices.Sorted(g.Edges.Keys()) {
+		if err != nil {
+			break
+		}
+		if i > 0 {
+			write(",")
+		}
+		encode(g.Edges.At(id))
+	}
+	write("]}}\n")
+	return err
+}
 
 func (s *Server) withCachedScanGraph(ctx context.Context, tenantID string, minVersion int64, visit func(*graph.Graph, storage.Manifest, storage.ScanCursorBinding) error) (bool, error) {
 	if s.Mode != "all" || s.Cache == nil {

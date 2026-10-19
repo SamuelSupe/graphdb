@@ -29,7 +29,7 @@ func (g *Graph) rebuildIndexes() {
 			g.identityIndex[entity.Kind][signature.Value] = id
 		}
 		for field, value := range entity.Fields {
-			key, ok := scalarKey(value)
+			key, ok := ScalarIndexKey(value)
 			if !ok {
 				continue
 			}
@@ -71,7 +71,7 @@ func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
 		}
 	}
 	for field, value := range entity.Fields {
-		if key, ok := scalarKey(value); ok {
+		if key, ok := ScalarIndexKey(value); ok {
 			g.removeEntityFieldIndex(id, entity.Kind, field, key)
 		}
 	}
@@ -99,7 +99,7 @@ func (g *Graph) addEntityToIndexes(id string, entity Entity) {
 		g.writableIdentityKind(entity.Kind)[signature.Value] = id
 	}
 	for field, value := range entity.Fields {
-		key, ok := scalarKey(value)
+		key, ok := ScalarIndexKey(value)
 		if !ok {
 			continue
 		}
@@ -130,17 +130,17 @@ func (g *Graph) updateEntityIndexes(id string, before, after Entity) {
 		}
 	}
 	for field, value := range before.Fields {
-		key, indexed := scalarKey(value)
+		key, indexed := ScalarIndexKey(value)
 		nextValue, exists := after.Fields[field]
-		nextKey, nextIndexed := scalarKey(nextValue)
+		nextKey, nextIndexed := ScalarIndexKey(nextValue)
 		if indexed && (!exists || !nextIndexed || key != nextKey) {
 			g.removeEntityFieldIndex(id, before.Kind, field, key)
 		}
 	}
 	for field, value := range after.Fields {
-		key, indexed := scalarKey(value)
+		key, indexed := ScalarIndexKey(value)
 		previousValue, exists := before.Fields[field]
-		previousKey, previousIndexed := scalarKey(previousValue)
+		previousKey, previousIndexed := ScalarIndexKey(previousValue)
 		if indexed && (!exists || !previousIndexed || key != previousKey) {
 			g.addEntityFieldIndex(id, after.Kind, field, key)
 		}

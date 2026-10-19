@@ -218,7 +218,7 @@ func (n *Node) applyPeerChange(data []byte, index uint64) error {
 	if err != nil {
 		return err
 	}
-	return n.disk.db.Update(func(tx *bolt.Tx) error {
+	err = n.disk.db.Update(func(tx *bolt.Tx) error {
 		if change.Action == "remove" {
 			if err := persistRetired(tx, []uint64{change.ID}, index); err != nil {
 				return err
@@ -226,4 +226,8 @@ func (n *Node) applyPeerChange(data []byte, index uint64) error {
 		}
 		return tx.Bucket([]byte("meta")).Put([]byte("peers"), encoded)
 	})
+	if err == nil && change.Action == "remove" {
+		n.stopPeerSenders(change.ID)
+	}
+	return err
 }
