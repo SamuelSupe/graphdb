@@ -652,6 +652,7 @@ func (n *Node) applyLoop() {
 	snapshotIndex := lastSnapshot.Metadata.Index
 	var building chan snapshotBuild
 	lastConf := lastSnapshot.Metadata.ConfState
+	var configurationIndex uint64
 	retry := time.NewTicker(5 * time.Second)
 	defer retry.Stop()
 	for {
@@ -661,7 +662,7 @@ func (n *Node) applyLoop() {
 		case built := <-building:
 			building = nil
 			if built.request.index <= snapshotIndex {
-				continue
+				break
 			}
 			if built.err != nil {
 				n.mu.Lock()
@@ -702,6 +703,7 @@ func (n *Node) applyLoop() {
 					n.mu.Unlock()
 				}
 			}
+			continue
 		case batch := <-n.application:
 			lastConf = batch.conf
 			if !raft.IsEmptySnap(batch.snapshot) && batch.snapshot.Metadata.Index > n.applied.Load() {
@@ -738,21 +740,23 @@ func (n *Node) applyLoop() {
 				}
 				first = entries[len(entries)-1].Index + 1
 			}
-			if n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || batch.configurationChanged {
-				if building != nil {
-					continue
+			if batch.configurationChanged {
+				configurationIndex = batch.last
+			}
+		}
+		// A configuration applied during a build still needs its own snapshot,
+		// even when no further proposals arrive to reach SnapshotEntries.
+		if building == nil && (n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || configurationIndex > snapshotIndex) {
+			var err error
+			building, err = n.startSnapshot(lastConf)
+			if err != nil {
+				if !n.cfg.StreamSnapshots && !errors.Is(err, ErrSnapshotTooLarge) {
+					n.fail(err)
+					return
 				}
-				var err error
-				building, err = n.startSnapshot(lastConf)
-				if err != nil {
-					if !n.cfg.StreamSnapshots && !errors.Is(err, ErrSnapshotTooLarge) {
-						n.fail(err)
-						return
-					}
-					n.mu.Lock()
-					n.snapshotFailure = err
-					n.mu.Unlock()
-				}
+				n.mu.Lock()
+				n.snapshotFailure = err
+				n.mu.Unlock()
 			}
 		}
 	}

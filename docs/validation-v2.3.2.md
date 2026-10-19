@@ -1,16 +1,12 @@
-# GGraphDB v2.3.2 验证记录
+# GGraphDB v2.3.2 失败候选记录
 
-状态：待验收。本文在标签源码中记录计划；最终结果在发布后更新，不能把计划视为通过。
+**NOT_RELEASED**：标签 `v2.3.2` 保留在 `f8592dd8254bffd72c846fd83ba71f599a020849`，没有创建发行版。
+[标签流水线](https://github.com/SamuelSupe/graphdb/actions/runs/39251439319) 的全量普通测试失败：
+`TestHAMembershipReplacementAndTenantRestore` 中，新节点反复拒绝不包含自己的旧成员快照，无法追平。
 
-本版包含非安全审查中已定位的查询、快照、目录、WAL 和导出修复，并删除三处退休接口测试及重复标量索引键包装。
+根因：快照构建期间应用成员变更时，后续快照触发条件被丢弃；没有新提案时，旧快照一直保留。
+新增确定性回归 `TestSnapshotIncludesMembershipChangedDuringBuild` 在此标签生产代码下稳定失败，
+修正后连续 20 轮普通、5 轮 race 通过。后续版本继续独立验收，见 [2.3.3 验证](validation-v2.3.3.md)。
 
-发布必须通过全量 Go unit/vet/race、Go/Python SDK、管理控制台边界、备份自动化、
-单机 direct/WAL 与重启恢复、S3/TLS、Raft 协议 1–3、已发布 v2.3.0 的协议 1 滚动，
-以及单机和 Raft 各 30 分钟维护长测。无门禁豁免。
-
-最终需核对远端 main、标签提交、发行流水线及下载包的两层 SHA256、构建元数据和实际运行。
-确切标签的长测数字以包内 `release/evidence/` 和本记录更新为准。
-
-历史 v2.3.1 性能结果见[原记录](validation-v2.3.1.md)。本版不预先声称消除长尾或 stale。
-普通 JSON 导出仍需物化图；已提交 5xx 日志、CRC 损坏 WAL 和大小写文件系统边界未作策略变更；
-跨宿主机、日级稳定性、生产容量和统一延迟 SLO 未验收。
+本候选单机 direct/WAL、S3、TLS 网关门禁已通过；因候选失效而停止其余运行，
+未完成的长测不算通过。没有门禁豁免，没有移动或覆盖失败标签。

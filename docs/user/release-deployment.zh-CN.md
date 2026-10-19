@@ -1,6 +1,6 @@
-# GGraphDB 2.3.2 发行版部署
+# GGraphDB 2.3.3 发行版部署
 
-[English](release-deployment.md) · [用户指南](README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.2)
+[English](release-deployment.md) · [用户指南](README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3)
 
 先选择部署，再校验发行包并启动。单机使用一个进程和一个持久化本地目录，
 每个 Raft 副本使用独立目录。
@@ -19,15 +19,15 @@
 
 ### 1. 下载并校验
 
-从 [2.3.2 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.2)
-下载 `graphdb-v2.3.2.tar.gz` 和 `graphdb-v2.3.2.tar.gz.sha256`，放在同一目录。
+从 [2.3.3 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3)
+下载 `graphdb-v2.3.3.tar.gz` 和 `graphdb-v2.3.3.tar.gz.sha256`，放在同一目录。
 
 Linux 上执行：
 
 ```sh
-sha256sum -c graphdb-v2.3.2.tar.gz.sha256
-tar -xzf graphdb-v2.3.2.tar.gz
-cd v2.3.2
+sha256sum -c graphdb-v2.3.3.tar.gz.sha256
+tar -xzf graphdb-v2.3.3.tar.gz
+cd v2.3.3
 sha256sum -c SHA256SUMS
 ```
 
@@ -65,7 +65,7 @@ curl -fsS http://127.0.0.1:8080/v1/health
 
 ## 使用容器
 
-在仓库根目录或解压后的 `v2.3.2/` 目录执行：
+在仓库根目录或解压后的 `v2.3.3/` 目录执行：
 
 ```sh
 docker compose up -d --build
@@ -79,7 +79,7 @@ docker compose up -d --build
 
 | 已有安装 | 升级规则 |
 | --- | --- |
-| 单机 2.0／2.1／2.2 | 停止旧进程，使用 2.3.2 沿用兼容目录 |
+| 单机 2.0／2.1／2.2 | 停止旧进程，使用 2.3.3 沿用兼容目录 |
 | Raft | 遵循[已验收的滚动窗口](../raft-rolling-upgrade.zh-CN.md)；未验证版本使用维护或迁移流程 |
 | 1.x | 使用新目录，不提供 1.x 数据迁移 |
 
@@ -87,7 +87,7 @@ docker compose up -d --build
 
 1. 创建并验证快照，保留升级前备份用于回滚。
 2. 停止旧进程，禁止两个版本同时使用同一目录。
-3. 替换程序，使用相同 `GRAPHDB_DATA_DIR` 和 prefix 启动 2.3.2。
+3. 替换程序，使用相同 `GRAPHDB_DATA_DIR` 和 prefix 启动 2.3.3。
 4. 检查就绪、代表性查询和 WAL 状态，再恢复流量。
 
 不支持启用新自动化后直接降级旧进程。Raft 协议 3 启用后，最高协议为 2 的旧程序

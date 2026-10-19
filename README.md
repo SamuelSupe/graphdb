@@ -1,8 +1,8 @@
-# GGraphDB 2.3.2
+# GGraphDB 2.3.3
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.2) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,16 +14,16 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.3.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.2)** is the release candidate. Publication requires all exact-tag gates and independent downloaded-asset checks; see the validation record.
+**[2.3.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3)** is the release candidate. Publication requires all exact-tag gates and independent downloaded-asset checks; see the validation record.
 
-| Area | What 2.3.2 provides |
+| Area | What 2.3.3 provides |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
 | Large tenant registries | Server-side tenant ID search and bounded pages for tenant selection and cluster placements |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups |
 
-See [release validation](docs/validation-v2.3.2.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release validation](docs/validation-v2.3.3.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -148,7 +148,7 @@ both. Configure authentication, tenant authorization and TLS at your
 
 ## Validation and limits
 
-Version 2.3.2 fixes query kind/index/time/sort semantics, snapshot retries, local
+Version 2.3.3 fixes query kind/index/time/sort semantics, snapshot retries, local
 filesystem compatibility and export completion. It removes retired evidence-search
 tests and redundant index-key wrappers. Exact-tag qualification is pending; the
 validation record tracks all gates and downloaded assets.
@@ -158,7 +158,7 @@ to 9.658 seconds and Raft write P99 from 1.885 to 0.908 seconds. Standalone stal
 samples fell from 7/36 to 3/36; cold-query timeouts fell from 318/480 to 22/480.
 The topologies use different batch sizes and cannot be compared directly.
 See the [comparison report](docs/maintenance-tailfix-2026-10-13.zh-CN.md) and
-[exact release status](docs/validation-v2.3.2.md). Transient staleness, cold-query
+[exact release status](docs/validation-v2.3.3.md). Transient staleness, cold-query
 timeouts, cross-host reliability and production latency/capacity remain limits.
 
 The previous v2.3.1 tag-source standalone soak observed write P99 22.028 seconds and
@@ -202,7 +202,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.3.2 validation](docs/validation-v2.3.2.md) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.3.3 validation](docs/validation-v2.3.3.md) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 

@@ -1,6 +1,6 @@
-# GGraphDB 2.3.2 Release Deployment
+# GGraphDB 2.3.3 Release Deployment
 
-[简体中文](release-deployment.zh-CN.md) · [User guide](README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.2)
+[简体中文](release-deployment.zh-CN.md) · [User guide](README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3)
 
 Choose a deployment, verify the package, then start the service. Standalone uses
 one process and one persistent local directory; each Raft replica owns a separate directory.
@@ -20,15 +20,15 @@ linked guides and [readiness report](../raft-release-readiness.zh-CN.md).
 
 ### 1. Download and verify
 
-Download `graphdb-v2.3.2.tar.gz` and `graphdb-v2.3.2.tar.gz.sha256` from the
-[2.3.2 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.2) into the same directory.
+Download `graphdb-v2.3.3.tar.gz` and `graphdb-v2.3.3.tar.gz.sha256` from the
+[2.3.3 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3) into the same directory.
 
 On Linux:
 
 ```sh
-sha256sum -c graphdb-v2.3.2.tar.gz.sha256
-tar -xzf graphdb-v2.3.2.tar.gz
-cd v2.3.2
+sha256sum -c graphdb-v2.3.3.tar.gz.sha256
+tar -xzf graphdb-v2.3.3.tar.gz
+cd v2.3.3
 sha256sum -c SHA256SUMS
 ```
 
@@ -68,7 +68,7 @@ Open **[http://127.0.0.1:8080/ui/](http://127.0.0.1:8080/ui/)** and follow the
 
 ## Container alternative
 
-From the repository root, or the unpacked archive's `v2.3.2/` directory:
+From the repository root, or the unpacked archive's `v2.3.3/` directory:
 
 ```sh
 docker compose up -d --build
@@ -82,7 +82,7 @@ Stop the service before using offline CLI tools on its directory. Use HTTP for l
 
 | Existing installation | Upgrade rule |
 | --- | --- |
-| Standalone 2.0 / 2.1 / 2.2 | Stop the old process; reuse the compatible directory with 2.3.2 |
+| Standalone 2.0 / 2.1 / 2.2 | Stop the old process; reuse the compatible directory with 2.3.3 |
 | Raft | Follow the [qualified rolling window](../raft-rolling-upgrade.zh-CN.md); untested versions require maintenance or migration |
 | 1.x | Start with a fresh directory; no 1.x data migration is provided |
 
@@ -90,7 +90,7 @@ Stop the service before using offline CLI tools on its directory. Use HTTP for l
 
 1. Create and verify a snapshot; retain the pre-upgrade backup for rollback.
 2. Stop the old process. Never run two versions against the same directory.
-3. Replace the binary and start 2.3.2 with the same `GRAPHDB_DATA_DIR` and prefix.
+3. Replace the binary and start 2.3.3 with the same `GRAPHDB_DATA_DIR` and prefix.
 4. Check readiness, representative queries and WAL status before reopening traffic.
 
 Downgrading after enabling new automation is unsupported. After Raft protocol 3

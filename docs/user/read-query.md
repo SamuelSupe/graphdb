@@ -1,6 +1,6 @@
 # Read And Query
 
-Applies to **GGraphDB 2.3.2**; see [release validation](../validation-v2.3.2.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.3**; see [release validation](../validation-v2.3.3.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](read-query.zh-CN.md)
 

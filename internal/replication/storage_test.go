@@ -897,3 +897,62 @@ func TestInstalledSnapshotClearsPreviousBuildFailure(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestSnapshotIncludesMembershipChangedDuringBuild(t *testing.T) {
+	disk, _, err := openStorage(t.TempDir(), 1, "membership-snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	if err := disk.save(raft.Ready{Entries: []raftpb.Entry{{Index: 1, Term: 1}, {Index: 2, Term: 1}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var pause sync.Once
+	n := &Node{cfg: Config{Dir: disk.dir, StreamSnapshots: true, SnapshotEntries: 100, MaxSnapshotBytes: 1 << 20,
+		SnapshotPreflight: func(ctx context.Context, _ int64) error {
+			pause.Do(func() {
+				close(entered)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			})
+			return ctx.Err()
+		}}, disk: disk, machine: &retrySnapshotMachine{}, ctx: ctx, cancel: cancel,
+		changed: make(chan struct{}), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest),
+		peers: map[uint64]string{1: "http://one", 2: "http://two", 3: "http://three", 4: "http://four"}, metrics: observability.NewOperationMetrics()}
+	n.workers.Add(1)
+	go n.applyLoop()
+	defer func() { cancel(); n.workers.Wait() }()
+	conf := raftpb.ConfState{Voters: []uint64{1, 2, 3}}
+	n.application <- applicationBatch{first: 1, last: 1, conf: conf, configurationChanged: true}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	conf.Learners = []uint64{4}
+	n.application <- applicationBatch{first: 2, last: 2, conf: conf, configurationChanged: true}
+	for n.applied.Load() != 2 {
+		select {
+		case <-time.After(time.Millisecond):
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	close(release)
+	for _, index := range []uint64{1, 2} {
+		select {
+		case snapshot := <-n.snapshotRequests:
+			if snapshot.index != index || (index == 2 && (len(snapshot.conf.Learners) != 1 || snapshot.conf.Learners[0] != 4)) {
+				t.Fatalf("membership snapshot: index=%d conf=%+v", snapshot.index, snapshot.conf)
+			}
+			snapshot.done <- nil
+		case <-ctx.Done():
+			t.Fatalf("no snapshot for applied membership at %d: %v", index, ctx.Err())
+		}
+	}
+}

@@ -1,6 +1,6 @@
 # GGraphDB 数据库简介
 
-适用于 **GGraphDB 2.3.2**；发行资格见[版本验证](validation-v2.3.2.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.3**；发行资格见[版本验证](validation-v2.3.3.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 [English](database-introduction.md)
 
