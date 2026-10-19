@@ -6,7 +6,7 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
-[2.3.3](validation-v2.3.3.md) is pending all exact-tag gates and downloaded-asset
+[2.3.4](validation-v2.3.4.md) is pending all exact-tag gates and downloaded-asset
 verification. No gate waiver is authorized.
 
 ## Previous 2.3.1 qualification

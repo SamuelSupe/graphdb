@@ -1,6 +1,6 @@
 # Raft P0/P1 审核与修复
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前使用说明与发行状态见[文档入口](README.md)。
 
 2026-10-02，在独立工作树 `GraphDB-raft-ha`、分支 `codex/raft-ha` 上，基于 `5d33e0e1f203d4ff8689eb3d515a42a7b71af8c1` 审核并修复。范围包括 Raft 日志持久化与应用、确认写入、强一致读取、快照安装、WAL 受理与发布、恢复分块、租户迁移、成员替换，以及这些路径复用的单机存储和 S3 备份逻辑。
 

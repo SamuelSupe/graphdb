@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.3.3**; see [release validation](validation-v2.3.3.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.4**; see [release validation](validation-v2.3.4.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -11,7 +11,7 @@ Optional [S3-compatible snapshot backups](object-backup.md) support recovery aft
 
 This guide describes the local storage and standalone path. The same release also supports independent [Raft replicas](raft-ha.zh-CN.md) and [tenant sharding](sharding.zh-CN.md); replicated durability, administration, recovery and rolling upgrades have their own contracts.
 
-Since 2.3.3: parent directories above the data root may be
+Since 2.3.4: parent directories above the data root may be
 symlinks (for example macOS `/tmp` or a Linux mount alias). The data root itself
 and managed paths inside it must remain real directories. Directory publication
 still syncs the parent of a new directory.
@@ -20,7 +20,7 @@ Tenant IDs retain case. On a case-insensitive filesystem, IDs differing only in
 case cannot coexist; existing tenant/lease identity checks reject such aliases.
 Use a case-sensitive volume when distinct case variants are required.
 
-Since 2.3.3: ordinary JSON snapshot export encodes one record at a
+Since 2.3.4: ordinary JSON snapshot export encodes one record at a
 time while retaining its immutable read view, avoiding a copied snapshot and a
 full-response JSON buffer. It still materializes the graph. Prefer the NDJSON
 snapshot endpoint for large tenants and check its final `done:true`; a stream

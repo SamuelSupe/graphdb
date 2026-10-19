@@ -5,7 +5,7 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
-## [2.3.3] - 2026-10-19
+## [2.3.4] - 2026-10-19
 
 - Remove retired evidence-search tests and redundant scalar-key wrappers;
   retain current compatibility, recovery and persistence regressions. Scope restore
@@ -13,6 +13,9 @@ versioning; release tags and binaries expose the exact build commit and date.
 - Preserve membership changes applied during snapshot construction and rebuild
   with the latest configuration even without further proposals. The v2.3.2 tag
   failed this boundary in CI and was not released.
+- Move default rolling-gate listeners below the Linux ephemeral port range and
+  print captured command output on failure. Preserve the unreleased v2.3.3 tag
+  and its Compose startup failure; the exact CI trigger lacked retained stderr.
 - Enforce entity kinds after ID lookups, including pattern starts and lazy streams.
 - Share numeric index-key encoding across graph, persisted indexes and planner
   statistics; preserve dotted kind names in lazy/streaming index lookups.

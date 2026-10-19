@@ -4,7 +4,7 @@ Keep changes small, tenant-safe, and compatible with the published object
 layout. Do not commit generated graph state, credentials, capacity runs, or
 customer data.
 
-`main` documents the GGraphDB 2.3.3 release candidate: one process owns local disk; object storage holds
+`main` documents the GGraphDB 2.3.4 release candidate: one process owns local disk; object storage holds
 snapshot backups. Optional Raft uses independent replica directories and tenant-sharded
 groups; its protocol and upgrade contracts are separate. The release version is recorded in `VERSION`; HTTP `/v1`, the
 Go module `/v2`, and the persisted format are separate version identifiers.

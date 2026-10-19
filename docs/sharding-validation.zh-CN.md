@@ -1,6 +1,6 @@
 # 分片扩容验收记录
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前使用说明与发行状态见[文档入口](README.md)。
 
 日期：2026-10-01（Asia/Singapore）。独立 worktree：`GraphDB-raft-ha`，分支：`codex/raft-ha`。本次在原有单机和单组 Raft 实现上增加租户分片，没有发布或推送远程。
 

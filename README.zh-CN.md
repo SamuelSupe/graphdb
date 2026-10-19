@@ -1,8 +1,8 @@
-# GGraphDB 2.3.3
+# GGraphDB 2.3.4
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,16 +12,16 @@
 
 ## 当前版本
 
-**[2.3.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.3)** 为待发布候选；完整标签门禁及独立下载资产核验通过后发布，状态见验证记录。
+**[2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4)** 为待发布候选；完整标签门禁及独立下载资产核验通过后发布，状态见验证记录。
 
-| 领域 | 2.3.3 提供的能力 |
+| 领域 | 2.3.4 提供的能力 |
 | --- | --- |
 | 管理 UI | `/ui/` 内嵌英文／简体中文控制台，无需独立前端服务 |
 | 日常操作 | 图表概览、结构化表单与详情、查询工作台、数据接入和维护 |
 | 大量租户 | 服务端租户 ID 搜索，租户切换和集群归属使用有界分页 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组 |
 
-验证证据见[发布验证](docs/validation-v2.3.3.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验证](docs/validation-v2.3.4.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -140,14 +140,14 @@ GraphQL 的完整示例见 [GraphQL 指南](docs/graphql.zh-CN.md)。控制台�
 
 ## 验证与限制
 
-2.3.3 修复查询类型、数值索引、时间和排序语义，以及快照重试、本地目录兼容和导出完整性；
+2.3.4 修复查询类型、数值索引、时间和排序语义，以及快照重试、本地目录兼容和导出完整性；
 删除过期 evidence-search 测试及重复索引键包装函数。完整标签门禁与下载资产核验待完成，
 实际状态见本版验证记录。
 
 固定数据量的六分钟诊断对照中，单机写入 P99 从 12.123 降到 9.658 秒，Raft 从
 1.885 降到 0.908 秒；单机 stale 从 7/36 降到 3/36，冷查询超时从 318/480 降到
 22/480。两种部署批量不同，不能直接比较。详见[对照报告](docs/maintenance-tailfix-2026-10-13.zh-CN.md)
-和[确切发行状态](docs/validation-v2.3.3.md)。瞬时 stale、冷查询超时、跨宿主机可靠性及
+和[确切发行状态](docs/validation-v2.3.4.md)。瞬时 stale、冷查询超时、跨宿主机可靠性及
 生产延迟／容量仍有未验收边界。
 
 上一版 v2.3.1 正式标签源码的单机长测见写入 P99 22.028 秒、24/59 次 stale、最后采样 stale。
@@ -184,7 +184,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.3.3 验证](docs/validation-v2.3.3.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.3.4 验证](docs/validation-v2.3.4.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 

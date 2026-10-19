@@ -1,6 +1,6 @@
 # 产品可靠性与运维完善验证记录
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前使用说明与发行状态见[文档入口](README.md)。
 
 本轮按[设计说明](product-hardening-design.zh-CN.md)实现，在独立 `GraphDB-raft-ha` worktree 的 `codex/raft-ha` 分支验证。基线为 `5b01a1f93e9808be86d8ff285415f7354783a908`，保留单机 direct/WAL、单组 Raft 和租户分片。当前为本地候选，未推送、打标签或发布。
 

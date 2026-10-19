@@ -1,6 +1,6 @@
 # Raft 第四轮 P0/P1 审核与修复
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前使用说明与发行状态见[文档入口](README.md)。
 
 2026-10-02，在独立工作树 `GraphDB-raft-ha`、分支 `codex/raft-ha` 上，基于 `5dc7c08c362b71b9f4cd5c7277bce526d310b158` 检查后台任务、对象读取与复制事务的错误边界。此前记录见 [第三轮审核](raft-p0-p1-review3-2026-10-02.zh-CN.md)。
 

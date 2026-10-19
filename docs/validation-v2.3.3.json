@@ -1,5 +1,12 @@
 {
   "version": "v2.3.3",
-  "status": "PENDING",
+  "status": "NOT_RELEASED",
+  "commit": "bceffaf5e2bb21643dbf9496078a94f567c63c45",
+  "workflow": "https://github.com/SamuelSupe/graphdb/actions/runs/39255915387",
+  "failedStage": "rolling sharded Compose startup",
+  "exactCITrigger": "UNCONFIRMED: captured stderr was not retained",
+  "confirmedGateHazard": "outgoing ephemeral client can occupy fixed test listener ports",
+  "mainCI": "https://github.com/SamuelSupe/graphdb/actions/runs/39252692568",
+  "mainCIResult": "PASS",
   "waivers": []
 }

@@ -1,6 +1,6 @@
 # GGraphDB 2.2.2 验证范围与发行身份
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前使用说明与发行状态见[文档入口](README.md)。
 
 同一程序支持默认单机 direct/WAL，以及独立磁盘的 Raft 副本和租户分片。
 本版包含 [2.2.0 候选](validation-v2.2.0.md) 的全部功能；保留已推送的 `v2.2.0` 标签，使用新的 `v2.2.2` 发行身份，不重写历史标签。`v2.2.1` 在文档补查发现旧说明后取消了尚未完成的[发行流程](https://github.com/SamuelSupe/graphdb/actions/runs/37043288065)，也没有正式下载包。

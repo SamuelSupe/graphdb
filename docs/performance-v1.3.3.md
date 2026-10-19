@@ -1,6 +1,6 @@
 # GGraphDB 1.3.3 performance report
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前使用说明与发行状态见[文档入口](README.md)。
 
 This report keeps two comparisons separate. **Round 1** is the historical
 v1.3.2-to-round1 service and micro comparison. **Round 2** starts from that

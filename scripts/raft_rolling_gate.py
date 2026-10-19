@@ -25,7 +25,9 @@ BASE = os.environ['GRAPHDB_ROLLING_BASE_IMAGE']
 TARGET = os.environ['GRAPHDB_ROLLING_TARGET_IMAGE']
 TOKEN = os.environ['GRAPHDB_RAFT_TOKEN']
 PROJECT = os.environ.get('GRAPHDB_ROLLING_PROJECT', 'graphdb-rolling-'+str(os.getpid()))
-OFFSET = int(os.environ.get('GRAPHDB_ROLLING_PORT_OFFSET', '0'))
+# Keep default listeners below the Linux ephemeral range so traffic from the
+# single-group phase cannot occupy ports needed by the sharded phase.
+OFFSET = int(os.environ.get('GRAPHDB_ROLLING_PORT_OFFSET', '-30000'))
 DOCKER = ['docker', '--context', os.environ.get('DOCKER_CONTEXT', 'orbstack')]
 BASE_SHA = os.environ.get('GRAPHDB_ROLLING_BASE_SHA256', 'cb3688cfd2433fd644458a42fffc35211b9471abdd261d7fd22cfcbbe706783a')
 BASE_COMMIT = os.environ.get('GRAPHDB_ROLLING_BASE_COMMIT', 'd7b535b0')
@@ -36,7 +38,12 @@ events = []
 
 
 def run(argv, **kwargs):
-    return subprocess.run(argv, check=True, text=True, capture_output=True, **kwargs)
+    try:
+        return subprocess.run(argv, check=True, text=True, capture_output=True, **kwargs)
+    except subprocess.CalledProcessError as err:
+        sys.stderr.write(err.stdout or '')
+        sys.stderr.write(err.stderr or '')
+        raise
 
 
 def event(check, **details):

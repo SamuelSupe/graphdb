@@ -1,6 +1,6 @@
 # GraphQL API
 
-适用于 **GGraphDB 2.3.3**；发行资格见[版本验证](validation-v2.3.3.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.4**；发行资格见[版本验证](validation-v2.3.4.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 [English](graphql.md)
 
@@ -56,7 +56,7 @@ type GraphQueryResult {
 列出的 camel-case 字段同时接受 JSON 风格的 `min_version` 和 GraphQL 风格
 的 `minVersion`。
 
-2.3.3 起：`graph(request: {op: "explain", targetOp: "match", kind: "host"})` 和对应的 `op: "profile"` 包装操作复用 JSON 查询的统一校验入口；在 GraphQL 结果中选择 `plan`、`profile` 字段即可读取诊断结果。普通查询的 `profile: true` 仍可使用。
+2.3.4 起：`graph(request: {op: "explain", targetOp: "match", kind: "host"})` 和对应的 `op: "profile"` 包装操作复用 JSON 查询的统一校验入口；在 GraphQL 结果中选择 `plan`、`profile` 字段即可读取诊断结果。普通查询的 `profile: true` 仍可使用。
 
 ## 响应与错误
 

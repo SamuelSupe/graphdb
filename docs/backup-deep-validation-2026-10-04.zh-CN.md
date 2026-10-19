@@ -1,6 +1,6 @@
 # 备份自动化深度故障验证与修复
 
-> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前 2.3.1 的使用说明见[文档入口](README.md)，发行资格见[2.3.1 验证](validation-v2.3.1.md)。
+> 历史记录 / Historical record: 本文保留当时构建、版本及 PASS/FAIL/未运行结论。当前使用说明与发行状态见[文档入口](README.md)。
 
 日期：2026-10-04。工作区 `GraphDB-raft-ha`，分支 `codex/raft-ha`。
 本轮验证范围为外部备份 worker、单机内置 S3 备份，以及单组三投票副本的备份/恢复故障边界。没有提交、推送、发布或安装生产计划。

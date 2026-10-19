@@ -1,4 +1,4 @@
-# GGraphDB v2.3.3
+# GGraphDB v2.3.4
 
 ## 中文
 
@@ -11,12 +11,13 @@
 - 丢失待发送快照时向 Raft 报告失败；失败快照每 5 秒独立重试；取消已移除节点的发送任务，临时准备错误保持可重试。
 - 允许数据目录以上的父目录为符号链接；修复 WAL 部分清理失败后的字节统计。
 - 普通 JSON 导出逐条编码；流式写入有进展时续期超时；Go/Python SDK 拒绝缺少完成标记的快照流。
-- 删除三处只检查已移除 evidenceSearch 的过期测试，以及三层重复数值索引键包装；保留恢复、持久化及当前兼容性回归测试。
+- 滚动门禁默认端口避开常见 Linux 临时端口范围，命令失败输出完整诊断；保留未发布 v2.3.3 的启动失败记录，确切 CI 触发原因未证实。
+- 删除三处只检查已移除 evidenceSearch 的过期测试，以及3 个重复数值索引键包装函数；保留恢复、持久化及当前兼容性回归测试。
 
 标签流程要求全量 unit/vet/race、SDK、direct/WAL、S3、TLS 网关、Raft 协议 1–3、
 已发布 v2.3.0 到本版的协议 1 滚动，以及单机和 Raft 各 30 分钟维护长测通过后才发布；
 无门禁豁免。标签源码中的验证记录是待验收计划，最终结果见
-[2.3.3 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.3.md)，
+[2.3.4 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.4.md)，
 确切构建证据随发行包提供。
 
 本版不声称消除单机写入长尾、瞬时 stale 或 Raft 极端延迟。上一版测量属于各自负载，
@@ -24,7 +25,7 @@
 已提交日志应用失败和 CRC 损坏 WAL 仍按现有保护策略停止。单宿主机验收不构成
 跨宿主机、日级稳定性、生产容量或统一低延迟 SLO 认证。
 
-产品、SDK 和 OpenAPI 为 2.3.3，Go 模块 `/v2` 和 HTTP `/v1` 不变。
+产品、SDK 和 OpenAPI 为 2.3.4，Go 模块 `/v2` 和 HTTP `/v1` 不变。
 单机先备份、停止旧进程，再以原目录和前缀启动；Raft 遵循
 [滚动升级手册](https://github.com/SamuelSupe/graphdb/blob/main/docs/raft-rolling-upgrade.zh-CN.md)。
 协议激活仍是全组升级后的独立操作，不提供任意版本混部或降级保证。
@@ -54,9 +55,9 @@ remain. Module `/v2`, HTTP `/v1` and Raft protocol numbering are unchanged.
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.3.3.tar.gz.sha256
-tar -xzf graphdb-v2.3.3.tar.gz
-cd v2.3.3
+sha256sum -c graphdb-v2.3.4.tar.gz.sha256
+tar -xzf graphdb-v2.3.4.tar.gz
+cd v2.3.4
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 GRAPHDB_DATA_DIR=/path/to/v2-data bin/graphdb-linux-amd64 serve
