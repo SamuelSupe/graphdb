@@ -6,9 +6,10 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
-[2.3.6](validation-v2.3.6.md) is pending exact-tag qualification and downloaded
-asset verification, with no waiver requested. Local candidate tests and matched
-performance replay are recorded separately from official release gates.
+[2.3.6](validation-v2.3.6.md) passed every exact-tag gate, both thirty-minute
+soaks and independent downloaded-asset/runtime checks, without a waiver. Matched
+C3/C7 performance replay is separate from official release qualification; stale
+frequency and seconds-long tails remain explicit limitations.
 The [v2.3.5 failed tag](validation-v2.3.5.md) remains unreleased.
 
 ## Previous 2.3.4 qualification

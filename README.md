@@ -14,7 +14,7 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**2.3.6 is the release candidate**; stable Latest remains [2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4). Exact-tag gates and downloaded-asset checks are pending; see the validation record.
+**[2.3.6](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.6)** is the stable Latest release. All exact-tag gates and independent downloaded-asset/runtime checks passed; see the validation record.
 
 | Area | What 2.3.6 provides |
 | --- | --- |
@@ -161,9 +161,13 @@ container memory peak rose **6.4%**; Raft baseline resource counters are unavail
 Seconds-long query and ingestion tails remain. Each deployment uses its own matched
 inputs; the two deployments cannot be compared directly.
 
+The separate exact-tag standalone thirty-minute qualification recorded write P99 **5.627 seconds** (maximum **7.652**) and **53/59 stale index samples**, with the last sample **stale**. A passing gate does not mean staleness is resolved. Its growing workload differs from the fixed-data candidate replay.
+
+The separate exact-tag Raft thirty-minute qualification recorded a **16.042-second** query maximum and **10.968-second** ingestion maximum, with **0/59** stale index samples. Seconds-long tails remain; this qualification workload is separate from the matched candidate replay.
+
 See [exact release evidence](docs/validation-v2.3.6.md) and the
 [matched performance report](docs/performance-tail-validation-2026-10-20.zh-CN.md).
-Exact-tag qualification is pending. Cross-host reliability, day-scale stability,
+All exact-tag gates and downloaded Linux/macOS runtime checks passed. Cross-host reliability, day-scale stability,
 production capacity and a general latency SLO remain unqualified.
 
 <details>

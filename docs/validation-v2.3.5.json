@@ -44,5 +44,36 @@
       "conclusion": "failure"
     }
   ],
-  "follow_up": "v2.3.6 moves default gate listeners below common ephemeral ports and retains Compose error diagnostics; production optimization source unchanged"
+  "follow_up": "v2.3.6 moves default gate listeners below common ephemeral ports and retains Compose error diagnostics; production optimization source unchanged",
+  "final_workflow_conclusion": "cancelled",
+  "final_jobs": [
+    {
+      "name": "Unit, vet, race, and 2.0 contracts",
+      "conclusion": "cancelled"
+    },
+    {
+      "name": "Local disk, WAL recovery, load, and restore",
+      "conclusion": "success"
+    },
+    {
+      "name": "object-backup / Object snapshots and fresh-directory restore",
+      "conclusion": "success"
+    },
+    {
+      "name": "Local disk 30-minute mixed read/write soak",
+      "conclusion": "cancelled"
+    },
+    {
+      "name": "gateway / gateway",
+      "conclusion": "success"
+    },
+    {
+      "name": "raft / raft",
+      "conclusion": "failure"
+    },
+    {
+      "name": "Build and publish release assets",
+      "conclusion": "cancelled"
+    }
+  ]
 }

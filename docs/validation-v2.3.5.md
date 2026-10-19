@@ -7,7 +7,8 @@
 
 此前 direct/WAL 集成、S3、TLS 网关、Raft 基础检查、已发布 v2.3.0 的单组及分片滚动均通过；
 失败时全仓 race 和单机长测仍运行，后续取消本次发布流水线，未完成的门禁不记通过。
-确切时间点的作业结论见[JSON](validation-v2.3.5.json)。
+最终流水线为 CANCELLED；Raft 作业为 FAILURE，unit/race、单机长测和发布作业均为 CANCELLED。
+失败时间点与最终作业结论见[JSON](validation-v2.3.5.json)。
 
 调查发现普通/增强门禁的默认端口（如 36082、39082、46080）仍在常见 Linux 动态端口范围中；
 先前 2.3.4 只移动了滚动脚本的默认端口。OrbStack 实际复现：出站客户端占用 36082 时，

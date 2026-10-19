@@ -2,9 +2,11 @@
 
 ## 中文
 
-本版发布本地维护窗口和 Raft 文件系统路径的优化。v2.3.5 因增强门禁 Compose 启动失败未发布；本版修正默认门禁端口范围并输出完整诊断，优化实现未变。确切标签门禁及下载核验尚待完成；
-全部门禁通过后由既有流水线发布，无门禁豁免。最终结果见
+本版已发布为稳定 Latest：全部确切标签门禁、两项 30 分钟长测及独立下载的
+Linux/macOS 运行核验均通过，无门禁豁免。本版优化本地维护窗口和 Raft 文件系统路径，最终结果见
 [2.3.6 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.6.md)。
+
+v2.3.5 因增强门禁 Compose 启动失败未发布，保留[原标签与失败记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.5.md)。本版统一默认门禁端口并输出失败诊断；原 CI 的确切触发原因未证实，端口冲突风险已独立复现。
 
 - 本地重建在短暂前台锁内捕获不可变图，进入有序索引队列；并发 WAL 推进图头时，
   不再因旧版本发布检查触发 `manifest ... changed while rebuilding indexes`。
@@ -18,6 +20,10 @@
 - Raft 维护只在同一次应用屏障内复用祖先检查，有界并行同步独立目录并等待全部完成
   后写入提交标记。流式快照仅为实际文件创建父目录，减少 GC 空目录的重复工作。
   保留 before-image 回滚、持久化屏障和 Raft 强一致读取约束。
+
+另行完成的确切标签单机 30 分钟门禁中，写入 P99 **5.627 秒**、最大 **7.652 秒**，索引 **53/59 次 stale**，最后采样仍为 **stale**。门禁通过不表示 stale 已解决；它的增长型负载与固定数据候选对照不同。
+
+另行完成的确切标签 Raft 30 分钟门禁中，查询最大 **16.042 秒**、写入最大 **10.968 秒**，索引 **0/59 次 stale**。秒级长尾仍在；这组发行门禁负载与候选固定计划对照分开记录。
 
 相同数据和逻辑计划的候选 C3 → C7 对照：
 
@@ -62,6 +68,10 @@ syncs independent directories with bounded concurrency before the commit marker,
 and creates snapshot parents only for retained files. Rollback and durability
 barriers remain enforced.
 
+The separate exact-tag standalone thirty-minute qualification recorded write P99 **5.627 seconds** (maximum **7.652**) and **53/59 stale index samples**, with the last sample **stale**. A passing gate does not mean staleness is resolved. Its growing workload differs from the fixed-data candidate replay.
+
+The separate exact-tag Raft thirty-minute qualification recorded a **16.042-second** query maximum and **10.968-second** ingestion maximum, with **0/59** stale index samples. Seconds-long tails remain; this qualification workload is separate from the matched candidate replay.
+
 Matched C3/C7 candidate replays reduced standalone write P99 from 9.470 to 3.948
 seconds and the thirty-minute Raft growth-plan query maximum from 13.132 to 5.584
 seconds. Standalone stale frequency did not improve (131/327 to 134/327), container
@@ -70,10 +80,10 @@ Seconds-long tails remain. These measured workspace candidates share private ppr
 instrumentation; they are not published v2.3.4/v2.3.6 binary measurements. Each
 deployment has its own matched inputs; cross-topology comparisons are invalid.
 
-Publication requires all exact-tag gates, including both thirty-minute soaks and
-released-v2.3.0 rolling qualification, without a waiver. Tag-source records are
-pending plans; the linked validation record will retain final downloaded-asset
-checks. Module `/v2`, HTTP `/v1`, persisted formats and protocol numbering are
+Published as stable Latest after all exact-tag gates, including both thirty-minute
+soaks and released-v2.3.0 rolling qualification, passed without a waiver.
+Independent downloaded Linux/macOS checks passed. The immutable tag-source record
+retains pending plans; the linked main validation record retains final results. Module `/v2`, HTTP `/v1`, persisted formats and protocol numbering are
 unchanged. Cross-host reliability, day-scale stability, production capacity and a
 general latency SLO remain unqualified.
 

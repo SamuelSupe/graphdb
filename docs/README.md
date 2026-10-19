@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.6)
 
-The candidate is **2.3.6** (stable: **2.3.4**); see its validation record for evidence. Choose a task below or follow a suggested reading path.
+The stable release is **2.3.6**; see its validation record for evidence. Choose a task below or follow a suggested reading path.
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 
@@ -77,7 +77,7 @@ identifiers follow their own contracts; do not substitute the product version.
 <summary>Browse historical designs, reviews and validation</summary>
 
 These records retain their own dates, builds and PASS/FAIL/skipped/unpublished
-conclusions. [2.3.6 validation](validation-v2.3.6.md) tracks pending exact-tag qualification;
+conclusions. [2.3.6 validation](validation-v2.3.6.md) qualifies the current release;
 historical performance measurements do not establish current production capacity.
 
 - [Product P0/P1 review after 2.2.2](product-p0-p1-review-2026-10-03.zh-CN.md)
