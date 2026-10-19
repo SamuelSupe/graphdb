@@ -1,5 +1,901 @@
 {
-  "version": "v2.3.4",
-  "status": "PENDING",
-  "waivers": []
+  "result": "PASS",
+  "tag": "v2.3.4",
+  "commit": "a097ebc35b98efe707d94ea63f01dca48033a0c3",
+  "releaseURL": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4",
+  "publishedAt": "2026-10-19T13:59:42Z",
+  "archiveSHA256": "58b0bb5448bf54f37bb161eda2f5ca2417f577baadeca6390d05ea2700270bbd",
+  "archiveBytes": 57861092,
+  "binaries": {
+    "bin/graphdb-darwin-arm64": "8b50c0868c69bd83281959d64fe3161f5c90e5c11534522371a579a3191cc2d9",
+    "bin/graphdb-linux-amd64": "ce875d413e263c957525bddf472d1f696094e0aa66c84dcbf7a09f3a064bf37b",
+    "bin/graphdb-linux-arm64": "642c2fa2a047679d9da764bc535d388d7de98746815cf61754be88ee68bba0e6"
+  },
+  "metadata": {
+    "version": "v2.3.4",
+    "commit": "a097ebc35b98efe707d94ea63f01dca48033a0c3",
+    "build_date": "2026-10-19T21:07:28+08:00",
+    "go_version": "go1.26.7"
+  },
+  "trackedFilesCompared": 1043,
+  "binaryQualificationBindings": "PASS",
+  "rollingSourceMatchesDownloadedV230": true,
+  "soaks": {
+    "standalone": {
+      "duration": "30m0s",
+      "operationCount": 121118,
+      "operationErrors": 0,
+      "rawErrorEvents": {},
+      "errorClassifications": [],
+      "index": "index_health samples=59 unhealthy=0 stale=21 last_status=stale",
+      "reader": "reader samples=59 unready=0 unready_ratio=0.000 max_version_lag=0 max_lag_ms=0",
+      "maintenance": "maintenance compact=5 gc=2 index_rebuild=2 reader_restart=0",
+      "operations": [
+        {
+          "name": "cmdb-env-containment-traverse",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "1.000",
+          "p95_ms": "17.000",
+          "p99_ms": "33.000",
+          "max_ms": "91.000"
+        },
+        {
+          "name": "cmdb-owner-service-match",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "43.000",
+          "p99_ms": "66.000",
+          "max_ms": "142.000"
+        },
+        {
+          "name": "cmdb-service-to-database-path",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "1.000",
+          "p95_ms": "16.000",
+          "p99_ms": "30.000",
+          "max_ms": "63.000"
+        },
+        {
+          "name": "commit-schema",
+          "count": "1",
+          "errors": "0",
+          "p50_ms": "10.000",
+          "p95_ms": "10.000",
+          "p99_ms": "10.000",
+          "max_ms": "10.000"
+        },
+        {
+          "name": "compact",
+          "count": "5",
+          "errors": "0",
+          "p50_ms": "18147.000",
+          "p95_ms": "32183.000",
+          "p99_ms": "32183.000",
+          "max_ms": "32183.000"
+        },
+        {
+          "name": "create-tenant",
+          "count": "1",
+          "errors": "0",
+          "p50_ms": "19.000",
+          "p95_ms": "19.000",
+          "p99_ms": "19.000",
+          "max_ms": "19.000"
+        },
+        {
+          "name": "export-snapshot-stream",
+          "count": "6",
+          "errors": "0",
+          "p50_ms": "1586.000",
+          "p95_ms": "4103.000",
+          "p99_ms": "4103.000",
+          "max_ms": "4103.000"
+        },
+        {
+          "name": "fuzzy-service-match",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "12.000",
+          "p95_ms": "39.000",
+          "p99_ms": "63.000",
+          "max_ms": "110.000"
+        },
+        {
+          "name": "gc",
+          "count": "2",
+          "errors": "0",
+          "p50_ms": "4016.000",
+          "p95_ms": "6135.000",
+          "p99_ms": "6135.000",
+          "max_ms": "6135.000"
+        },
+        {
+          "name": "health",
+          "count": "2",
+          "errors": "0",
+          "p50_ms": "0.000",
+          "p95_ms": "1.000",
+          "p99_ms": "1.000",
+          "max_ms": "1.000"
+        },
+        {
+          "name": "impact-service",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "9.000",
+          "p95_ms": "26.000",
+          "p99_ms": "45.000",
+          "max_ms": "120.000"
+        },
+        {
+          "name": "index-catalog",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "25.000",
+          "p95_ms": "76.000",
+          "p99_ms": "160.000",
+          "max_ms": "160.000"
+        },
+        {
+          "name": "index-health",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "9.000",
+          "p95_ms": "38.000",
+          "p99_ms": "90.000",
+          "max_ms": "90.000"
+        },
+        {
+          "name": "indexed-match-allow-stale",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "36.000",
+          "p99_ms": "57.000",
+          "max_ms": "156.000"
+        },
+        {
+          "name": "indexed-match-min-version",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "41.000",
+          "p99_ms": "64.000",
+          "max_ms": "122.000"
+        },
+        {
+          "name": "ingest",
+          "count": "732",
+          "errors": "0",
+          "p50_ms": "4558.000",
+          "p95_ms": "13314.000",
+          "p99_ms": "19929.000",
+          "max_ms": "26633.000"
+        },
+        {
+          "name": "neighbors-host-out",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "1.000",
+          "p95_ms": "22.000",
+          "p99_ms": "40.000",
+          "max_ms": "76.000"
+        },
+        {
+          "name": "path-filter-traverse",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "1.000",
+          "p95_ms": "16.000",
+          "p99_ms": "30.000",
+          "max_ms": "80.000"
+        },
+        {
+          "name": "profile-indexed-match",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "9.000",
+          "p95_ms": "43.000",
+          "p99_ms": "69.000",
+          "max_ms": "138.000"
+        },
+        {
+          "name": "range-aggregate-match",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "17.000",
+          "p95_ms": "58.000",
+          "p99_ms": "89.000",
+          "max_ms": "152.000"
+        },
+        {
+          "name": "reader-fleet",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "36.000",
+          "p99_ms": "66.000",
+          "max_ms": "66.000"
+        },
+        {
+          "name": "reader-freshness",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "19.000",
+          "p99_ms": "57.000",
+          "max_ms": "57.000"
+        },
+        {
+          "name": "rebuild-indexes",
+          "count": "3",
+          "errors": "0",
+          "p50_ms": "14147.000",
+          "p95_ms": "32313.000",
+          "p99_ms": "32313.000",
+          "max_ms": "32313.000"
+        },
+        {
+          "name": "save-query",
+          "count": "5",
+          "errors": "0",
+          "p50_ms": "3.000",
+          "p95_ms": "4.000",
+          "p99_ms": "4.000",
+          "max_ms": "4.000"
+        },
+        {
+          "name": "saved-host-query",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "18.000",
+          "p95_ms": "160.000",
+          "p99_ms": "276.000",
+          "max_ms": "416.000"
+        },
+        {
+          "name": "saved-prod-containment",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "4.000",
+          "p95_ms": "157.000",
+          "p99_ms": "262.000",
+          "max_ms": "408.000"
+        },
+        {
+          "name": "saved-prod-services",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "19.000",
+          "p95_ms": "170.000",
+          "p99_ms": "290.000",
+          "max_ms": "442.000"
+        },
+        {
+          "name": "saved-service-impact",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "14.000",
+          "p95_ms": "174.000",
+          "p99_ms": "283.000",
+          "max_ms": "415.000"
+        },
+        {
+          "name": "saved-team-services",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "22.000",
+          "p95_ms": "178.000",
+          "p99_ms": "293.000",
+          "max_ms": "434.000"
+        },
+        {
+          "name": "scan-edges",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "13.000",
+          "p95_ms": "70.000",
+          "p99_ms": "112.000",
+          "max_ms": "217.000"
+        },
+        {
+          "name": "scan-edges-allow-stale",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "20.000",
+          "p95_ms": "246.000",
+          "p99_ms": "359.000",
+          "max_ms": "1392.000"
+        },
+        {
+          "name": "scan-entities",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "21.000",
+          "p95_ms": "71.000",
+          "p99_ms": "118.000",
+          "max_ms": "344.000"
+        },
+        {
+          "name": "scan-entities-allow-stale",
+          "count": "4803",
+          "errors": "0",
+          "p50_ms": "16.000",
+          "p95_ms": "94.000",
+          "p99_ms": "344.000",
+          "max_ms": "1620.000"
+        },
+        {
+          "name": "scan-entities-min-version",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "18.000",
+          "p95_ms": "66.000",
+          "p99_ms": "111.000",
+          "max_ms": "320.000"
+        },
+        {
+          "name": "shortest-service-cluster",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "1.000",
+          "p95_ms": "18.000",
+          "p99_ms": "36.000",
+          "max_ms": "79.000"
+        },
+        {
+          "name": "stream-all-host-page",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "69.000",
+          "p95_ms": "198.000",
+          "p99_ms": "273.000",
+          "max_ms": "379.000"
+        },
+        {
+          "name": "stream-large-indexed-hosts",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "68.000",
+          "p95_ms": "219.000",
+          "p99_ms": "307.000",
+          "max_ms": "6304.000"
+        },
+        {
+          "name": "stream-large-indexed-hosts-min-version",
+          "count": "4802",
+          "errors": "0",
+          "p50_ms": "70.000",
+          "p95_ms": "231.000",
+          "p99_ms": "311.000",
+          "max_ms": "5221.000"
+        },
+        {
+          "name": "tenant-usage",
+          "count": "61",
+          "errors": "0",
+          "p50_ms": "2.000",
+          "p95_ms": "1084.000",
+          "p99_ms": "1279.000",
+          "max_ms": "1279.000"
+        },
+        {
+          "name": "warm-reader",
+          "count": "1",
+          "errors": "0",
+          "p50_ms": "1.000",
+          "p95_ms": "1.000",
+          "p99_ms": "1.000",
+          "max_ms": "1.000"
+        }
+      ]
+    },
+    "raft": {
+      "duration": "30m0s",
+      "operationCount": 76551,
+      "operationErrors": 0,
+      "rawErrorEvents": {},
+      "errorClassifications": [],
+      "index": "index_health samples=59 unhealthy=0 stale=0 last_status=ready",
+      "reader": "reader samples=59 unready=0 unready_ratio=0.000 max_version_lag=0 max_lag_ms=0",
+      "maintenance": "maintenance compact=5 gc=2 index_rebuild=2 reader_restart=0",
+      "operations": [
+        {
+          "name": "cmdb-env-containment-traverse",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "779.000",
+          "p99_ms": "2765.000",
+          "max_ms": "11986.000"
+        },
+        {
+          "name": "cmdb-owner-service-match",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "10.000",
+          "p95_ms": "768.000",
+          "p99_ms": "2796.000",
+          "max_ms": "11993.000"
+        },
+        {
+          "name": "cmdb-service-to-database-path",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "9.000",
+          "p95_ms": "788.000",
+          "p99_ms": "2755.000",
+          "max_ms": "12030.000"
+        },
+        {
+          "name": "commit-schema",
+          "count": "1",
+          "errors": "0",
+          "p50_ms": "63.000",
+          "p95_ms": "63.000",
+          "p99_ms": "63.000",
+          "max_ms": "63.000"
+        },
+        {
+          "name": "compact",
+          "count": "5",
+          "errors": "0",
+          "p50_ms": "46834.000",
+          "p95_ms": "56163.000",
+          "p99_ms": "56163.000",
+          "max_ms": "56163.000"
+        },
+        {
+          "name": "create-tenant",
+          "count": "1",
+          "errors": "0",
+          "p50_ms": "33.000",
+          "p95_ms": "33.000",
+          "p99_ms": "33.000",
+          "max_ms": "33.000"
+        },
+        {
+          "name": "export-snapshot-stream",
+          "count": "6",
+          "errors": "0",
+          "p50_ms": "242.000",
+          "p95_ms": "2346.000",
+          "p99_ms": "2346.000",
+          "max_ms": "2346.000"
+        },
+        {
+          "name": "fuzzy-service-match",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "11.000",
+          "p95_ms": "753.000",
+          "p99_ms": "2811.000",
+          "max_ms": "5714.000"
+        },
+        {
+          "name": "gc",
+          "count": "2",
+          "errors": "0",
+          "p50_ms": "167157.000",
+          "p95_ms": "240202.000",
+          "p99_ms": "240202.000",
+          "max_ms": "240202.000"
+        },
+        {
+          "name": "health",
+          "count": "2",
+          "errors": "0",
+          "p50_ms": "1.000",
+          "p95_ms": "2.000",
+          "p99_ms": "2.000",
+          "max_ms": "2.000"
+        },
+        {
+          "name": "impact-service",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "10.000",
+          "p95_ms": "772.000",
+          "p99_ms": "2741.000",
+          "max_ms": "12069.000"
+        },
+        {
+          "name": "index-catalog",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "82.000",
+          "p95_ms": "839.000",
+          "p99_ms": "4612.000",
+          "max_ms": "4612.000"
+        },
+        {
+          "name": "index-health",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "37.000",
+          "p95_ms": "602.000",
+          "p99_ms": "2231.000",
+          "max_ms": "2231.000"
+        },
+        {
+          "name": "indexed-match-allow-stale",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "19.000",
+          "p95_ms": "739.000",
+          "p99_ms": "2793.000",
+          "max_ms": "5743.000"
+        },
+        {
+          "name": "indexed-match-min-version",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "21.000",
+          "p95_ms": "773.000",
+          "p99_ms": "2649.000",
+          "max_ms": "5791.000"
+        },
+        {
+          "name": "ingest",
+          "count": "1048",
+          "errors": "0",
+          "p50_ms": "1165.000",
+          "p95_ms": "5698.000",
+          "p99_ms": "7448.000",
+          "max_ms": "9390.000"
+        },
+        {
+          "name": "neighbors-host-out",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "9.000",
+          "p95_ms": "749.000",
+          "p99_ms": "2792.000",
+          "max_ms": "12001.000"
+        },
+        {
+          "name": "path-filter-traverse",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "774.000",
+          "p99_ms": "2814.000",
+          "max_ms": "12028.000"
+        },
+        {
+          "name": "profile-indexed-match",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "23.000",
+          "p95_ms": "729.000",
+          "p99_ms": "2401.000",
+          "max_ms": "5819.000"
+        },
+        {
+          "name": "range-aggregate-match",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "23.000",
+          "p95_ms": "770.000",
+          "p99_ms": "2848.000",
+          "max_ms": "5735.000"
+        },
+        {
+          "name": "reader-fleet",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "29.000",
+          "p95_ms": "133.000",
+          "p99_ms": "1924.000",
+          "max_ms": "1924.000"
+        },
+        {
+          "name": "reader-freshness",
+          "count": "60",
+          "errors": "0",
+          "p50_ms": "36.000",
+          "p95_ms": "233.000",
+          "p99_ms": "1383.000",
+          "max_ms": "1383.000"
+        },
+        {
+          "name": "rebuild-indexes",
+          "count": "3",
+          "errors": "0",
+          "p50_ms": "11344.000",
+          "p95_ms": "29048.000",
+          "p99_ms": "29048.000",
+          "max_ms": "29048.000"
+        },
+        {
+          "name": "save-query",
+          "count": "5",
+          "errors": "0",
+          "p50_ms": "139.000",
+          "p95_ms": "145.000",
+          "p99_ms": "145.000",
+          "max_ms": "145.000"
+        },
+        {
+          "name": "saved-host-query",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "42.000",
+          "p95_ms": "854.000",
+          "p99_ms": "2964.000",
+          "max_ms": "11617.000"
+        },
+        {
+          "name": "saved-prod-containment",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "36.000",
+          "p95_ms": "774.000",
+          "p99_ms": "2454.000",
+          "max_ms": "5964.000"
+        },
+        {
+          "name": "saved-prod-services",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "43.000",
+          "p95_ms": "846.000",
+          "p99_ms": "2869.000",
+          "max_ms": "6153.000"
+        },
+        {
+          "name": "saved-service-impact",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "40.000",
+          "p95_ms": "771.000",
+          "p99_ms": "2700.000",
+          "max_ms": "6160.000"
+        },
+        {
+          "name": "saved-team-services",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "38.000",
+          "p95_ms": "804.000",
+          "p99_ms": "2552.000",
+          "max_ms": "6155.000"
+        },
+        {
+          "name": "scan-edges",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "33.000",
+          "p95_ms": "803.000",
+          "p99_ms": "2906.000",
+          "max_ms": "11915.000"
+        },
+        {
+          "name": "scan-edges-allow-stale",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "30.000",
+          "p95_ms": "801.000",
+          "p99_ms": "2863.000",
+          "max_ms": "12499.000"
+        },
+        {
+          "name": "scan-entities",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "41.000",
+          "p95_ms": "849.000",
+          "p99_ms": "3138.000",
+          "max_ms": "11903.000"
+        },
+        {
+          "name": "scan-entities-allow-stale",
+          "count": "3008",
+          "errors": "0",
+          "p50_ms": "40.000",
+          "p95_ms": "813.000",
+          "p99_ms": "3082.000",
+          "max_ms": "11963.000"
+        },
+        {
+          "name": "scan-entities-min-version",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "43.000",
+          "p95_ms": "837.000",
+          "p99_ms": "3150.000",
+          "max_ms": "12612.000"
+        },
+        {
+          "name": "shortest-service-cluster",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "8.000",
+          "p95_ms": "756.000",
+          "p99_ms": "2716.000",
+          "max_ms": "11927.000"
+        },
+        {
+          "name": "stream-all-host-page",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "82.000",
+          "p95_ms": "908.000",
+          "p99_ms": "3053.000",
+          "max_ms": "11915.000"
+        },
+        {
+          "name": "stream-large-indexed-hosts",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "36.000",
+          "p95_ms": "825.000",
+          "p99_ms": "2747.000",
+          "max_ms": "11932.000"
+        },
+        {
+          "name": "stream-large-indexed-hosts-min-version",
+          "count": "3007",
+          "errors": "0",
+          "p50_ms": "43.000",
+          "p95_ms": "850.000",
+          "p99_ms": "2790.000",
+          "max_ms": "11934.000"
+        },
+        {
+          "name": "tenant-usage",
+          "count": "61",
+          "errors": "0",
+          "p50_ms": "221.000",
+          "p95_ms": "2157.000",
+          "p99_ms": "3482.000",
+          "max_ms": "3482.000"
+        },
+        {
+          "name": "warm-reader",
+          "count": "1",
+          "errors": "0",
+          "p50_ms": "4.000",
+          "p95_ms": "4.000",
+          "p99_ms": "4.000",
+          "max_ms": "4.000"
+        }
+      ]
+    }
+  },
+  "status": "PUBLISHED_AND_VERIFIED",
+  "waivers": [],
+  "releaseWorkflow": "https://github.com/SamuelSupe/graphdb/actions/runs/39257513975",
+  "releaseWorkflowConclusion": "success",
+  "releaseJobs": [
+    {
+      "name": "Local disk 30-minute mixed read/write soak",
+      "conclusion": "success"
+    },
+    {
+      "name": "Local disk, WAL recovery, load, and restore",
+      "conclusion": "success"
+    },
+    {
+      "name": "gateway / gateway",
+      "conclusion": "success"
+    },
+    {
+      "name": "Unit, vet, race, and 2.0 contracts",
+      "conclusion": "success"
+    },
+    {
+      "name": "raft / raft",
+      "conclusion": "success"
+    },
+    {
+      "name": "object-backup / Object snapshots and fresh-directory restore",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build and publish release assets",
+      "conclusion": "success"
+    }
+  ],
+  "localPreflight": {
+    "result": "PASS",
+    "checks": [
+      "version_freeze",
+      "docs_contract",
+      "go_sdk_unit",
+      "python_sdk_unit_12_e2e_skipped",
+      "rolling_default_port_collision_reproduction",
+      "python_compile"
+    ],
+    "inheritedProductionChecks": {
+      "commit": "bceffaf5e2bb21643dbf9496078a94f567c63c45",
+      "scope": "internal and cmd source unchanged",
+      "unitAll": "PASS",
+      "vetAll": "PASS",
+      "haRaceAll": "PASS",
+      "haRaceSeconds": 482.264,
+      "mainCI": "https://github.com/SamuelSupe/graphdb/actions/runs/39252692568",
+      "mainCIFullRace": "PASS"
+    },
+    "logs": {
+      "version-preflight.log": "2ff05b388647a1104517c8e599d301acf34e4e2077582e8de98a8cbff9c66a46",
+      "python.log": "7c3c9d58d04bfc1475e3eb6bbcf102f42626901479f042eec73a3656d21997db",
+      "previous-port.log": "cd847ec2f3edc6a26a8e79bcedb0652ab2aaaa5617f11f614b40849e016669ff",
+      "fixed-port.log": "eff64b343dcb2b1dc113648e7089b9ce9f8a7f6c7808a03a2cffb4ad7302f606"
+    },
+    "commit": "a097ebc35b98efe707d94ea63f01dca48033a0c3",
+    "exactTagAllChecksAtPreflight": "PENDING_GITHUB_RELEASE_GATE"
+  },
+  "downloadedRuntime": {
+    "linux_arm64": "OrbStack direct/WAL SDK, HTTP E2E, load and exact restart snapshots PASS",
+    "darwin_arm64": "native direct/WAL SDK, HTTP E2E, load and exact restart snapshots PASS"
+  },
+  "boundaries": [
+    "standalone staleness and write tails are measured below, not eliminated",
+    "Raft extreme latency has no uniform SLO",
+    "committed apply failure and corrupt WAL policies unchanged",
+    "JSON export still materializes graph",
+    "cross-host and day-scale production qualification NOT RUN"
+  ],
+  "goModuleResolution": {
+    "Path": "github.com/SamuelSupe/graphdb/v2",
+    "Version": "v2.3.4",
+    "Time": "2026-10-19T13:07:28Z",
+    "GoMod": "/tmp/mod/cache/download/github.com/!samuel!supe/graphdb/v2/@v/v2.3.4.mod",
+    "GoVersion": "1.25.0",
+    "Origin": {
+      "VCS": "git",
+      "URL": "https://github.com/SamuelSupe/graphdb",
+      "Hash": "a097ebc35b98efe707d94ea63f01dca48033a0c3",
+      "Ref": "refs/tags/v2.3.4"
+    }
+  },
+  "runtimeVersions": {
+    "linux": "GGraphDB v2.3.4 commit=a097ebc35b98efe707d94ea63f01dca48033a0c3 built=2026-10-19T21:07:28+08:00 go=go1.26.7",
+    "macos": "GGraphDB v2.3.4 commit=a097ebc35b98efe707d94ea63f01dca48033a0c3 built=2026-10-19T21:07:28+08:00 go=go1.26.7"
+  },
+  "runtimeChecks": {
+    "linux_arm64": {
+      "direct": {
+        "pythonSDKTests": 13,
+        "httpE2E": "PASS",
+        "load": "PASS",
+        "sigkillRestartSnapshotEqual": true
+      },
+      "wal": {
+        "pythonSDKTests": 13,
+        "httpE2E": "PASS",
+        "load": "PASS",
+        "sigkillRestartSnapshotEqual": true
+      }
+    },
+    "darwin_arm64": {
+      "direct": {
+        "pythonSDKTests": 13,
+        "httpE2E": "PASS",
+        "load": "PASS",
+        "sigkillRestartSnapshotEqual": true
+      },
+      "wal": {
+        "pythonSDKTests": 13,
+        "httpE2E": "PASS",
+        "load": "PASS",
+        "sigkillRestartSnapshotEqual": true
+      }
+    }
+  },
+  "nativeDataRootUsesSymlinkAncestor": true,
+  "priorCandidates": {
+    "v2.3.2": "NOT_RELEASED: lost membership snapshot demand",
+    "v2.3.3": "NOT_RELEASED: Compose startup failure, exact trigger unconfirmed"
+  },
+  "websiteVersionFollowup": {
+    "change": "two version labels in site/index.html",
+    "build": "PASS",
+    "chrome": "version label, Releases link and query example switch PASS; no console errors",
+    "managementConsoleFullQA": "NOT RERUN: unchanged"
+  }
 }

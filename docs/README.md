@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4)
 
-The release candidate is **2.3.4**; see its validation record for final status. Choose a task below or follow a suggested reading path.
+The stable release is **2.3.4**; see its validation record for evidence. Choose a task below or follow a suggested reading path.
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 

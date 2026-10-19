@@ -14,7 +14,7 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4)** is the release candidate. Publication requires all exact-tag gates and independent downloaded-asset checks; see the validation record.
+**[2.3.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.4)** is the stable Latest release. All exact-tag gates and independent downloaded-asset/runtime checks passed; see the validation record.
 
 | Area | What 2.3.4 provides |
 | --- | --- |
@@ -148,24 +148,22 @@ both. Configure authentication, tenant authorization and TLS at your
 
 ## Validation and limits
 
-Version 2.3.4 fixes query kind/index/time/sort semantics, snapshot retries, local
-filesystem compatibility and export completion. It removes retired evidence-search
-tests and redundant index-key wrappers. Exact-tag qualification is pending; the
-validation record tracks all gates and downloaded assets.
+Version 2.3.4 fixes query/index/time/sort correctness, snapshot membership/retry,
+local filesystem compatibility and export completion, while removing retired tests
+and redundant key wrappers. All exact-tag gates passed, including both thirty-minute
+maintenance soaks; downloaded Linux/macOS binaries passed checksum, identity,
+direct/WAL SDK, HTTP, load and SIGKILL/reopen checks.
 
-Fixed-data six-minute diagnostic pairs reduced standalone write P99 from 12.123
-to 9.658 seconds and Raft write P99 from 1.885 to 0.908 seconds. Standalone stale
-samples fell from 7/36 to 3/36; cold-query timeouts fell from 318/480 to 22/480.
-The topologies use different batch sizes and cannot be compared directly.
-See the [comparison report](docs/maintenance-tailfix-2026-10-13.zh-CN.md) and
-[exact release status](docs/validation-v2.3.4.md). Transient staleness, cold-query
-timeouts, cross-host reliability and production latency/capacity remain limits.
+The standalone tag-source soak had zero raw errors, but write P99 was **19.929
+seconds** (maximum **26.633**) and **21/59** index samples were stale, including
+the last sample. Raft had zero raw errors and 59 ready index samples, but
+path-filter traversal P99 was **2.814 seconds**, with a **12.028-second** maximum.
+The topologies have different batch sizes and completed data volumes; these are
+qualification runs, not a before/after comparison or a general latency SLO.
 
-The previous v2.3.1 tag-source standalone soak observed write P99 22.028 seconds and
-24/59 stale index samples, with the last sample stale. The Raft soak observed
-main-query P99 3.509–4.003 seconds and a 9.642-second indexed-query maximum.
-These higher-load soaks retain seconds-long tails; fixed-pair improvements do
-not establish a general latency SLO.
+See [exact release evidence](docs/validation-v2.3.4.md). Historical v2.3.1 fixed-data
+diagnostic comparisons remain in the [comparison report](docs/maintenance-tailfix-2026-10-13.zh-CN.md).
+Cross-host reliability, day-scale stability and production capacity remain unqualified.
 
 <details>
 <summary>Historical performance evidence</summary>

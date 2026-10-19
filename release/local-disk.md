@@ -2,6 +2,9 @@
 
 ## 中文
 
+本版已发布为稳定 Latest：全部标签门禁、两项 30 分钟长测及独立下载的 Linux/macOS 运行核验通过，无门禁豁免。
+单机写入 P99 19.929 秒、21/59 次 stale，Raft 路径过滤遍历最大 12.028 秒，仍保留延迟与 stale 限制。
+
 本版修复查询、Raft 恢复、文件系统兼容和导出完整性问题，并做聚焦精简：
 
 - ID 查询和 pattern 起点遵守 kind；整数 DSL 与持久化索引共享数值编码，保留含点类型名。
@@ -31,6 +34,8 @@
 协议激活仍是全组升级后的独立操作，不提供任意版本混部或降级保证。
 
 ## English
+
+Published as stable Latest after all exact-tag gates and independent downloaded Linux/macOS checksum, identity and runtime checks passed, without a waiver. Standalone write P99 remains 19.929 seconds with 21/59 stale index samples; Raft path-filter traversal reached 12.028 seconds. No general latency SLO is certified.
 
 This patch fixes kind-aware ID lookups, integer and dotted-kind index access,
 timestamp predicates, mixed-type ordering and GraphQL explain/profile wrappers.

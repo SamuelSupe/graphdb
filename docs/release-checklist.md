@@ -6,8 +6,9 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
-[2.3.4](validation-v2.3.4.md) is pending all exact-tag gates and downloaded-asset
-verification. No gate waiver is authorized.
+[2.3.4](validation-v2.3.4.md) passed every exact-tag gate, both thirty-minute
+soaks and independent downloaded-asset/runtime checks, without a waiver. The failed
+2.3.2/2.3.3 tags and their limits remain recorded; production latency is unqualified.
 
 ## Previous 2.3.1 qualification
 
