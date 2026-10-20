@@ -20,9 +20,18 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	release, ok := s.enterWrite(w, r, tenantID)
-	if !ok {
-		return
+	var release func()
+	if s.IngestService != nil {
+		var err error
+		release, _, err = s.acquireWriteSlot(w, r, tenantID)
+		if err != nil {
+			return
+		}
+	} else {
+		release, ok = s.enterWrite(w, r, tenantID)
+		if !ok {
+			return
+		}
 	}
 	release = sync.OnceFunc(release)
 	defer release()

@@ -15,6 +15,7 @@ import (
 type localIngestPublicationFault struct {
 	ObjectStore
 	key      string
+	err      error
 	failing  atomic.Bool
 	attempts atomic.Int32
 }
@@ -24,6 +25,9 @@ func (s *localIngestPublicationFault) UnwrapObjectStore() ObjectStore { return s
 func (s *localIngestPublicationFault) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
 	if key == s.key && s.failing.Load() {
 		s.attempts.Add(1)
+		if s.err != nil {
+			return ObjectMeta{}, s.err
+		}
 		return ObjectMeta{}, errors.New("injected local ingest publication failure")
 	}
 	return s.ObjectStore.PutConditional(ctx, key, data, condition)
@@ -809,7 +813,7 @@ func TestDeferredIndexUsesTenantEstimateAndRetriesPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer files.Close()
-			objects := &localIngestPublicationFault{ObjectStore: files}
+			objects := &localIngestPublicationFault{ObjectStore: files, err: ErrObjectStoreUnavailable}
 			store := NewTenantStore(objects, "test")
 			store.MaxMaintenanceBytes = 32 << 20
 			store.WriteEntityRecords = false
@@ -851,5 +855,70 @@ func TestDeferredIndexUsesTenantEstimateAndRetriesPublication(t *testing.T) {
 				t.Fatal("publication fault was not exercised")
 			}
 		})
+	}
+}
+
+func TestWALUsesRemainingCommitTailBeforeCompaction(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	store.Backpressure = NewWritePressure(BackpressureConfig{MaxCommitTail: 4, RetryAfter: time.Millisecond})
+	config := testIngestServiceConfig(t)
+	config.FlushInterval, config.FlushMaxRequests = time.Hour, 10
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests []IngestRequest
+	var accepted []IngestAcceptance
+	for i := 0; i < 4; i++ {
+		request := ingestEntityRequest(fmt.Sprint(i), fmt.Sprintf("host:%d", i))
+		a, err := service.Accept(ctx, "tenant-a", request)
+		if err != nil {
+			crashIngestService(t, service)
+			t.Fatal(err)
+		}
+		requests = append(requests, request)
+		accepted = append(accepted, a)
+	}
+	service.forceCh <- ingestForceRequest{tenantID: "tenant-a", throughLSN: accepted[3].acceptedLSN}
+	_, err = service.Wait(ctx, accepted[2])
+	manifest, manifestErr := store.CurrentManifest(ctx, "tenant-a")
+	crashIngestService(t, service)
+	if err != nil || manifestErr != nil || manifest.Version != 4 {
+		t.Fatalf("remaining capacity not used exactly: version=%d flush=%v manifest=%v", manifest.Version, err, manifestErr)
+	}
+	// The full tail must retain the final request durably until compact frees
+	// capacity. Recovery must preserve order and each batch's original result.
+	if _, err := store.Compact(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, recovered)
+	if err := recovered.FlushTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	for i, request := range requests {
+		a, err := recovered.Accept(ctx, "tenant-a", request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := recovered.FlushTenant(ctx, "tenant-a"); err != nil {
+			t.Fatal(err)
+		}
+		result, err := recovered.Wait(ctx, a)
+		if err != nil || result.Failed != 0 || result.Applied != 1 || result.Version != int64(i+2) {
+			t.Fatalf("replayed batch %d lost order/result: %+v err=%v", i, result, err)
+		}
+	}
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil || manifest.Version != 5 || g.Entities.Len() != 5 {
+		t.Fatalf("recovery duplicated or lost writes: version=%d err=%v", manifest.Version, err)
 	}
 }

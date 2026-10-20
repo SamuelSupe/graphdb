@@ -1225,7 +1225,7 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 		split := errors.Is(err, ErrIngestWALRecordTooLarge) || errors.Is(err, ErrIngestWALRecordExceedsSegment)
 		if errors.As(err, &pressure) {
 			for _, reason := range pressure.Reasons {
-				if reason.Code == "commit_tail_too_long" && float64(len(items)) > reason.Threshold {
+				if reason.Code == "commit_tail_too_long" {
 					split = true
 				}
 			}

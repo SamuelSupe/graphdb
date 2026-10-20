@@ -6,6 +6,11 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
+The [2.3.8 candidate](validation-v2.3.8.md) must complete every required exact-tag
+job and independent asset/runtime verification. No gate waiver is requested.
+
+## Previous 2.3.6 qualification
+
 [2.3.6](validation-v2.3.6.md) passed every exact-tag gate, both thirty-minute
 soaks and independent downloaded-asset/runtime checks, without a waiver. Matched
 C3/C7 performance replay is separate from official release qualification; stale

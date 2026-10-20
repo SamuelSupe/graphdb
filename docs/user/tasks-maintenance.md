@@ -1,6 +1,6 @@
 # Tasks And Maintenance
 
-Applies to **GGraphDB 2.3.7**; see [release validation](../validation-v2.3.7.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.8**; see [release validation](../validation-v2.3.8.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](tasks-maintenance.zh-CN.md)
 
@@ -270,7 +270,7 @@ go run ./cmd/graphdb restore-drill-tenant demo params.json
 
 Automatic backups reuse `tenant_backup` tasks and the maintenance loop. Configure scheduling, retry, verification, restore drills and retention in the [object backup guide](../object-backup.md#automatic-backups). GC reports `checkpoint.deferred_files` when active older read views delay reclamation; a completed scan does not imply every orphan was deleted.
 
-In 2.3.7, tenant-scoped restores require a backup from the same tenant, including
+In 2.3.8, tenant-scoped restores require a backup from the same tenant, including
 requests through `/v1/tasks`. Scoped restore drills keep automatic isolated
 targets; custom targets and cross-tenant migration use the private platform
 lifecycle API without a tenant header. See [the security contract](../security-deployment.md).

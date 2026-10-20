@@ -1,6 +1,6 @@
 # GGraphDB Usage Manual
 
-Applies to **GGraphDB 2.3.7**; see [release validation](../validation-v2.3.7.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.8**; see [release validation](../validation-v2.3.8.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](usage-manual.zh-CN.md)
 

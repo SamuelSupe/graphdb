@@ -2,13 +2,16 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 const (
-	maxPendingIndexChanges    = 8192
-	maxBackgroundIndexUpdates = 8
+	maxPendingIndexChanges     = 8192
+	maxBackgroundIndexUpdates  = 8
+	maxBackgroundIndexAttempts = 3
 )
 
 // Retain bounded incremental batches in publication order. Coalesce only the
@@ -116,16 +119,31 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	launched = true
 	go func() {
 		defer finish()
-		if work.reservation != nil {
-			defer work.reservation.release()
-		}
-		defer release()
 		defer func() {
 			s.indexUpdateMu.Lock()
 			s.activeIngestIndexUpdates--
 			s.indexUpdateMu.Unlock()
 		}()
-		s.finishCommitIndexUpdate(ctx, tenantID, work, nil)
+		indexErr := func() error {
+			defer release()
+			if work.reservation != nil {
+				defer work.reservation.release()
+			}
+			return s.runCommitIndexUpdate(ctx, tenantID, work)
+		}()
+		work = nil
+		// Retry recognized transient failures after releasing the old view,
+		// reservation and queue position. Capture a fresh head in publication
+		// order; reusing old inputs after GC or restore would be unsafe.
+		for attempt := 1; attempt < maxBackgroundIndexAttempts && ctx.Err() == nil &&
+			(isObjectStorePressureError(indexErr) || errors.Is(indexErr, ErrConflict)); attempt++ {
+			started := time.Now()
+			if err := retryDelay(ctx, attempt-1); err != nil {
+				return
+			}
+			s.recordMaintenance("index_retry", started)
+			_, indexErr = s.RebuildIndexes(runCtx, tenantID)
+		}
 	}()
 	return true
 }

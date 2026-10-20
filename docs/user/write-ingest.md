@@ -1,6 +1,6 @@
 # Write And Ingest
 
-Applies to **GGraphDB 2.3.7**; see [release validation](../validation-v2.3.7.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.8**; see [release validation](../validation-v2.3.8.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](write-ingest.zh-CN.md)
 
@@ -537,6 +537,25 @@ WAL flush thresholds also bound each unprepared coalesced group. If an aggregate
 PREPARED record exceeds the WAL frame/segment size, the service splits the group
 before any plan is durable; prepared recovery groups retain their original
 atomic publication. Commit-tail pressure still requires compaction once the
-actual tail is full. HTTP decode admission now precedes JSON allocation in both
-direct and WAL modes. Deferred index catch-up reserves the tenant graph estimate
-and retains its ordered work across temporary publication failures.
+actual tail is full.
+
+WAL HTTP requests acquire a bounded write slot before decoding JSON, but do not
+apply graph-publication backpressure at acceptance. Commit-tail, object-store and
+CAS pressure are checked by the flush worker; accepted batch retries can still
+retrieve their acknowledgement. WAL disk/queue limits and tenant lifecycle checks
+remain enforced. Direct ingest still checks publication pressure before decoding.
+Unprepared groups split to use remaining commit-tail capacity, even when the group
+itself is smaller than the total limit. A full tail waits for compaction; prepared
+cohorts retain their original atomic publication and are never split.
+
+Background index publication makes at most three attempts, including the initial
+update. Only object-store-unavailable, CAS-conflict and operation-deadline errors
+are retried. Each retry releases the old read view, build/memory reservation and
+queue position before backoff, then captures the current head in a fresh ordered
+rebuild under the original writer fence. The eight-worker limit includes retrying
+workers so retries cannot create an unbounded background queue. Permanent failures
+and exhausted retries leave index health stale and eligible for automatic
+maintenance or an explicit rebuild. Published graph commits remain durable.
+Joined and predecessor waits honor cancellation; a canceled queue entry still
+preserves its predecessor's ordering barrier for successors. Cancellation after
+graph publication does not roll back the committed data.

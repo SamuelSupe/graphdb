@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -686,5 +687,91 @@ func TestUnroutedAndUnknownTenantsAreNotMonitored(t *testing.T) {
 	serveJSON(handler, http.MethodGet, "/v1/entities", "tenant-a", nil)
 	if !server.obs().HasTenant("tenant-a") {
 		t.Fatal("existing tenant was not registered")
+	}
+}
+
+func TestHTTPWALAcceptsAndReplaysDuringPublicationBackpressure(t *testing.T) {
+	for _, reason := range []string{"commit_tail", "cas_conflicts", "object_errors"} {
+		t.Run(reason, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+			for i := 0; i < 2; i++ {
+				if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host", Fields: graph.Fields{"revision": i}}}}, storage.CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pressureConfig := storage.BackpressureConfig{CASConflictThreshold: 1, CASConflictWindow: time.Hour, ObjectErrorThreshold: 1, ObjectErrorWindow: time.Hour}
+			if reason == "commit_tail" {
+				pressureConfig.MaxCommitTail = 1
+			}
+			pressure := storage.NewWritePressure(pressureConfig)
+			store.Backpressure = pressure
+			config := storage.DefaultIngestServiceConfig(t.TempDir())
+			config.FlushInterval, config.FlushMaxRequests = time.Hour, 100
+			service, err := storage.OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closePending := func() {
+				stopCtx, stop := context.WithCancel(context.Background())
+				stop()
+				_ = service.Close(stopCtx)
+			}
+			defer closePending()
+			handler := (&Server{Store: store, Mode: "all", IngestService: service, WriteAdmission: NewWriteAdmission(1, 1, time.Millisecond)}).Handler()
+			request := storage.IngestRequest{Source: "agent", CollectorID: "c", BatchID: "first", Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "host:first", Kind: "host"}}}}
+			first := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+			if first.Code != http.StatusAccepted {
+				t.Fatalf("initial acceptance: %d %s", first.Code, first.Body)
+			}
+			switch reason {
+			case "cas_conflicts":
+				pressure.RecordManifestCASConflict("tenant-a")
+			case "object_errors":
+				pressure.RecordObjectOperation(time.Millisecond, storage.ErrObjectStoreUnavailable)
+			}
+			if err := store.CheckWriteBackpressure(ctx, "tenant-a"); err == nil {
+				t.Fatal("test failed to establish publication pressure")
+			}
+			replay := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+			if replay.Code != http.StatusAccepted || replay.Body.String() != first.Body.String() {
+				t.Fatalf("replay lost original acknowledgement: first=%s replay=%d %s", first.Body, replay.Code, replay.Body)
+			}
+			request.BatchID = "second"
+			request.Items[0].Entity = &graph.Entity{ID: "host:second", Kind: "host"}
+			next := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
+			if next.Code != http.StatusAccepted {
+				t.Fatalf("new WAL acceptance: %d %s", next.Code, next.Body)
+			}
+			direct := (&Server{Store: store, Mode: "all"}).Handler()
+			if response := serveJSON(direct, http.MethodPost, "/v1/ingest/batches", "tenant-a", request); response.Code != http.StatusTooManyRequests {
+				t.Fatalf("direct ingest bypassed pressure: %d %s", response.Code, response.Body)
+			}
+			flushCtx, stop := context.WithTimeout(ctx, 50*time.Millisecond)
+			err = service.FlushTenant(flushCtx, "tenant-a")
+			stop()
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("publication should still wait: %v", err)
+			}
+			manifest, err := store.CurrentManifest(ctx, "tenant-a")
+			if err != nil || manifest.Version != 2 {
+				t.Fatalf("WAL bypassed publication pressure: version=%d err=%v", manifest.Version, err)
+			}
+			closePending()
+			store.Backpressure = nil // No workers remain; simulate pressure recovery at restart.
+			recovered, err := storage.OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer recovered.Close(ctx)
+			if err := recovered.FlushTenant(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			g, manifest, err := store.Load(ctx, "tenant-a")
+			if err != nil || manifest.Version != 4 || g.Entities.Len() != 3 {
+				t.Fatalf("accepted WAL was not recovered exactly once: version=%d err=%v", manifest.Version, err)
+			}
+		})
 	}
 }

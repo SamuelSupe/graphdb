@@ -1,6 +1,6 @@
 # Raft 运维与升级
 
-适用于 **GGraphDB 2.3.7**；发行资格见[版本验证](validation-v2.3.7.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.8**；发行资格见[版本验证](validation-v2.3.8.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 适用于单组 Raft，以及租户分片的目录组和数据组。默认单机仍使用原有 [本地磁盘部署](local-disk.md)。当前验收范围和发布缺口见 [发布准备状态](raft-release-readiness.zh-CN.md)。
 
@@ -95,7 +95,7 @@ GRAPHDB_GATE_SOAK=1 scripts/raft_gate.sh
 
 三十分钟任务用现有 soak 工具，四个写入者、十六个查询者、每批一个应用组、每个写入者间隔五秒，执行 compact、GC 和索引重建。它验证持续正确性和维护交错，不用于声明最大吞吐或容量。报告校验持续时间与错误事件；失败保留 FAIL，不能以此前短测代替。
 
-2.3.7 起，非流式快照的磁盘准入或存储暂时不可用会记录 `snapshot_error` 并定时重试，
+2.3.8 起，非流式快照的磁盘准入或存储暂时不可用会记录 `snapshot_error` 并定时重试，
 Raft 复制、选举及满足条件的读取继续运行；新写入暂停，空间恢复后自动恢复，不需要重启。
 损坏或不可恢复的快照错误仍拒绝继续。Drain 副本继续 Raft tick 和投票，被重新选中时自动向
 健康、非 Drain 副本转移领导权；若没有这样的副本，仍需要运维恢复容量或显式 resume。

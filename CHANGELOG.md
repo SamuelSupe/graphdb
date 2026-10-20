@@ -5,6 +5,21 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+## [2.3.8] - 2026-10-20
+
+- Bound background index retries to three attempts for recognized transient errors;
+  release read views, build reservations and publication queue positions before
+  retrying against a fresh head. Permanent failures remain eligible for repair.
+- Honor cancellation for joined and predecessor index waits without allowing
+  successor publications to overtake an unfinished predecessor.
+- Keep HTTP decode concurrency bounded while restoring WAL acceptance during
+  commit-tail, object-store and CAS publication pressure, including batch replay.
+- Split unprepared WAL groups to use remaining commit-tail capacity; preserve
+  prepared cohort atomicity, ordering and idempotency across restart/compaction.
+- Add regression probes for sustained faults, retry resource release, cancellation,
+  publication ordering, durable buffering and partial-tail recovery. Formats and
+  Raft protocol numbers remain unchanged.
+
 ## [2.3.7] - 2026-10-20
 
 - Bound WAL groups and split oversized, still-unprepared groups; enforce generation

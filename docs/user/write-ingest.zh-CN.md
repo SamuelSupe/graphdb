@@ -1,6 +1,6 @@
 # 写入与采集
 
-适用于 **GGraphDB 2.3.7**；[发行验证](../validation-v2.3.7.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.8**；[发行验证](../validation-v2.3.8.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](write-ingest.md)
 
@@ -512,5 +512,16 @@ commit 和 ingest 作用于当前图。如果结果 logical content hash 与当�
 
 WAL flush 的条数和字节阈值也限制每个未准备的合并组。合并 PREPARED 超过帧／段上限时，
 只在计划尚未持久化前拆分；已准备的恢复组保持原子发布。实际 commit tail 满时仍须 compact。
-直接写入和 WAL 写入都在 JSON 解码前获取 HTTP 准入。延迟索引追平按租户图估算预留内存，
-临时发布失败时保留工作及顺序并重试。
+
+WAL HTTP 请求在解码 JSON 前获取有界写入槽，但受理时不执行图发布背压检查。
+commit tail、对象存储与 CAS 压力由 flush worker 检查；已受理批次重发仍能取得原确认。
+WAL 磁盘／队列上限及租户生命周期检查保持生效。直接 ingest 仍在解码前检查发布背压。
+未准备分组会拆分以利用剩余 commit-tail 容量，即使组大小未超过总上限；tail 满时仍等待
+compact。已持久化 PREPARED 的组保留原子发布，不能拆开。
+
+后台索引发布最多尝试三次，包含首次更新；只重试明确的对象存储不可用、CAS 冲突和
+操作超时。每次重试前释放旧读视图、构建／内存预留及队列位置，然后重新捕获当前图，
+在原 writer fence 下排队重建。八个后台 worker 的总限额包含正在退避的任务，避免重试
+扩张为无界队列。永久错误或重试耗尽后，索引健康仍显示 stale，由自动维护或显式 rebuild
+修复；已经发布的图提交仍然持久化。合并等待及前驱等待均响应取消，取消的队列项仍保留
+前驱顺序屏障，后继不能提前发布。图已发布后的取消不会回滚已提交数据。

@@ -1,6 +1,6 @@
 # 任务与维护
 
-适用于 **GGraphDB 2.3.7**；[发行验证](../validation-v2.3.7.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.8**；[发行验证](../validation-v2.3.8.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](tasks-maintenance.md)
 
@@ -255,6 +255,6 @@ go run ./cmd/graphdb restore-drill-tenant demo params.json
 
 自动备份复用 `tenant_backup` 任务和维护循环。定时、重试、校验、恢复演练及保留清理见[对象备份指南](../object-backup.zh-CN.md#自动备份)。GC 在旧读视图阻止回收时报告 `checkpoint.deferred_files`，扫描完成不代表所有孤儿文件都已删除。
 
-2.3.7 起，带租户作用域的恢复只接受同租户备份，包括 `/v1/tasks` 入口。
+2.3.8 起，带租户作用域的恢复只接受同租户备份，包括 `/v1/tasks` 入口。
 恢复演练可使用自动隔离目标；自定义目标、跨租户迁移通过不带租户头的私有平台生命周期接口执行。
 具体鉴权约束见[安全部署](../security-deployment.zh-CN.md)。

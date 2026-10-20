@@ -89,21 +89,14 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		return nil
 	}
 	if work.joined != nil {
-		<-work.joined.done
-		return work.joined.err
-	}
-	if work.waitFor != nil {
-		started := time.Now()
-		<-work.waitFor
-		s.recordMaintenance("index_wait_previous", started)
+		select {
+		case <-work.joined.done:
+			return work.joined.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	defer s.recordMaintenance("index_work", time.Now())
-	s.indexUpdateMu.Lock()
-	deferred := work.onlineRebuild && work.after == nil
-	if !deferred && s.pendingIngestIndexes[tenantID] == work {
-		delete(s.pendingIngestIndexes, tenantID)
-	}
-	s.indexUpdateMu.Unlock()
 	defer func() {
 		work.err = indexErr
 		s.indexUpdateMu.Lock()
@@ -116,15 +109,37 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 				delete(s.localIndexMaintenance, tenantID)
 			}
 		}
-		if s.indexUnreservedTails[tenantID] == work.done {
-			delete(s.indexUnreservedTails, tenantID)
-		}
-		if s.indexUpdateTails[tenantID] == work.done {
-			delete(s.indexUpdateTails, tenantID)
-		}
-		close(work.done)
 		s.indexUpdateMu.Unlock()
+		// Cancellation releases inputs immediately, but successors must still
+		// wait for the predecessor. The bridge retains only completion channels.
+		if previous := work.waitFor; previous != nil {
+			select {
+			case <-previous:
+			default:
+				go func(done chan struct{}) {
+					<-previous
+					s.completeIndexUpdate(tenantID, done)
+				}(work.done)
+				return
+			}
+		}
+		s.completeIndexUpdate(tenantID, work.done)
 	}()
+	if work.waitFor != nil {
+		started := time.Now()
+		select {
+		case <-work.waitFor:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		s.recordMaintenance("index_wait_previous", started)
+	}
+	s.indexUpdateMu.Lock()
+	deferred := work.onlineRebuild && work.after == nil
+	if !deferred && s.pendingIngestIndexes[tenantID] == work {
+		delete(s.pendingIngestIndexes, tenantID)
+	}
+	s.indexUpdateMu.Unlock()
 	if work.maintenanceDone != nil {
 		select {
 		case <-work.maintenanceDone:
@@ -139,97 +154,80 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 			return err
 		}
 	}
-	attempt := func() error {
-		ctx := ctx
-		if deferred {
-			// Reserve the latest coalesced graph estimate, not the entire shared
-			// budget, so a small tenant does not block unrelated maintenance.
-			buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
-			s.indexUpdateMu.Lock()
-			estimatedBytes := addWriteCacheBytes(work.deferredGraphBytes, work.deferredBytes)
-			s.indexUpdateMu.Unlock()
-			buildCtx, releaseMemory, err := s.admitMaintenance(buildCtx, estimatedBytes)
-			if err != nil {
-				return err
-			}
-			defer releaseMemory()
-			ctx = buildCtx
-			unlock, err := s.lockTenantForeground(ctx, tenantID)
-			if err != nil {
-				return err
-			}
-			loaded, err := s.loadForWriteLocked(ctx, tenantID)
-			if err != nil {
-				unlock()
-				return err
-			}
-			s.indexUpdateMu.Lock()
-			// A direct commit or rebuild can have joined behind this demand. Its
-			// changes are not in our delta, so only a full build can cover that head.
-			if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
-				work.baseVersion = -1
-			}
-			if s.pendingIngestIndexes[tenantID] == work {
-				delete(s.pendingIngestIndexes, tenantID)
-			}
-			work.after = loaded.Graph
-			work.version = loaded.Manifest.Version
-			s.indexUpdateMu.Unlock()
+	if deferred {
+		// Reserve the latest coalesced graph estimate, not the entire shared
+		// budget, so a small tenant does not block unrelated maintenance.
+		buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
+		s.indexUpdateMu.Lock()
+		estimatedBytes := addWriteCacheBytes(work.deferredGraphBytes, work.deferredBytes)
+		s.indexUpdateMu.Unlock()
+		buildCtx, releaseMemory, err := s.admitMaintenance(buildCtx, estimatedBytes)
+		if err != nil {
+			return err
+		}
+		defer releaseMemory()
+		ctx = buildCtx
+		unlock, err := s.lockTenantForeground(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		loaded, err := s.loadForWriteLocked(ctx, tenantID)
+		if err != nil {
 			unlock()
-			if err := s.prepareDeferredIndexBase(ctx, tenantID, work); err != nil {
-				return err
-			}
+			return err
 		}
-		indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
-			tenantTraceAttr(tenantID),
-			attribute.Int64("graphdb.commit.version", work.version),
-			attribute.Int("graphdb.commit.affected_entities", len(work.report.AffectedEntityIDs)),
-			attribute.Bool("graphdb.commit.outside_tenant_lock", true),
-		)
-		if s.localFileStore() != nil && s.writerFenceBound(ctx, tenantID) {
-			indexCtx = context.WithValue(indexCtx, orderedIndexUpdateKey{}, true)
-		}
-		indexErr = s.updateIndexesAfterCommit(
-			indexCtx,
-			tenantID,
-			work.before,
-			work.after,
-			work.mutations,
-			work.report,
-			work.baseVersion,
-			work.version,
-			work.rebuild,
-			work.waitFor != nil || work.background,
-		)
-		endStorageSpan(indexSpan, indexErr)
-		return indexErr
-	}
-	delay := 100 * time.Millisecond
-	for {
-		indexErr = attempt()
-		if indexErr != nil && deferred {
-			// A failed attempt may have consumed its delta or partially written
-			// artifacts. Rebuild the captured latest head on the next attempt.
-			s.indexUpdateMu.Lock()
+		s.indexUpdateMu.Lock()
+		// A direct commit or rebuild can have joined behind this demand. Its
+		// changes are not in our delta, so only a full build can cover that head.
+		if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
 			work.baseVersion = -1
-			s.indexUpdateMu.Unlock()
 		}
-		if indexErr == nil || !work.background || ctx.Err() != nil || errors.Is(indexErr, ErrTenantDeleted) || errors.Is(indexErr, ErrTenantDisabled) || errors.Is(indexErr, ErrLeaseHeld) {
-			return indexErr
+		if s.pendingIngestIndexes[tenantID] == work {
+			delete(s.pendingIngestIndexes, tenantID)
 		}
-		// Retain the demand and queue position across temporary I/O failures.
-		// Shutdown cancels the wait; a later startup rebuild can catch up.
-		started := time.Now()
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		work.after = loaded.Graph
+		work.version = loaded.Manifest.Version
+		s.indexUpdateMu.Unlock()
+		unlock()
+		if err := s.prepareDeferredIndexBase(ctx, tenantID, work); err != nil {
+			return err
 		}
-		s.recordMaintenance("index_retry", started)
-		delay = min(delay*2, 5*time.Second)
 	}
+	indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
+		tenantTraceAttr(tenantID),
+		attribute.Int64("graphdb.commit.version", work.version),
+		attribute.Int("graphdb.commit.affected_entities", len(work.report.AffectedEntityIDs)),
+		attribute.Bool("graphdb.commit.outside_tenant_lock", true),
+	)
+	if s.localFileStore() != nil && s.writerFenceBound(ctx, tenantID) {
+		indexCtx = context.WithValue(indexCtx, orderedIndexUpdateKey{}, true)
+	}
+	indexErr = s.updateIndexesAfterCommit(
+		indexCtx,
+		tenantID,
+		work.before,
+		work.after,
+		work.mutations,
+		work.report,
+		work.baseVersion,
+		work.version,
+		work.rebuild,
+		work.waitFor != nil || work.background,
+	)
+	endStorageSpan(indexSpan, indexErr)
+	return indexErr
+}
+
+func (s *TenantStore) completeIndexUpdate(tenantID string, done chan struct{}) {
+	s.indexUpdateMu.Lock()
+	defer s.indexUpdateMu.Unlock()
+	if s.indexUnreservedTails[tenantID] == done {
+		delete(s.indexUnreservedTails, tenantID)
+	}
+	if s.indexUpdateTails[tenantID] == done {
+		delete(s.indexUpdateTails, tenantID)
+	}
+	close(done)
 }
 
 func (s *TenantStore) finishCommitIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate, result *CommitResult) {

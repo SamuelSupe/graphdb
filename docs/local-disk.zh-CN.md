@@ -2,7 +2,7 @@
 
 [English](local-disk.md)
 
-适用于 **GGraphDB 2.3.7**；发行资格见[版本验证](validation-v2.3.7.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.8**；发行资格见[版本验证](validation-v2.3.8.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 默认单机部署采用单进程、多租户并发读写。`GRAPHDB_DATA_DIR` 保存图数据、控制元数据、后台任务
 及本地备份，运行时无需 PostgreSQL 或远端在线存储。可选的
@@ -256,3 +256,18 @@ GC 每批至多访问 512 个候选，在对象之间检查 50 ms / 16 MiB 预�
 `graphdb_maintenance_estimated_bytes` 显示执行和排队预留，不表示实测 RSS。
 
 详见[版本边界](naming-and-compatibility.zh-CN.md)、[摘要规范](content-hash-v2.md)和[当前发行验证](validation-v2.3.0.md)。
+
+## 索引失败与 WAL 准入
+
+WAL HTTP 请求在解码 JSON 前获取有界写入槽，但受理时不执行图发布背压检查。
+commit tail、对象存储与 CAS 压力由 flush worker 检查；已受理批次重发仍能取得原确认。
+WAL 磁盘／队列上限及租户生命周期检查保持生效。直接 ingest 仍在解码前检查发布背压。
+未准备分组会拆分以利用剩余 commit-tail 容量，即使组大小未超过总上限；tail 满时仍等待
+compact。已持久化 PREPARED 的组保留原子发布，不能拆开。
+
+后台索引发布最多尝试三次，包含首次更新；只重试明确的对象存储不可用、CAS 冲突和
+操作超时。每次重试前释放旧读视图、构建／内存预留及队列位置，然后重新捕获当前图，
+在原 writer fence 下排队重建。八个后台 worker 的总限额包含正在退避的任务，避免重试
+扩张为无界队列。永久错误或重试耗尽后，索引健康仍显示 stale，由自动维护或显式 rebuild
+修复；已经发布的图提交仍然持久化。合并等待及前驱等待均响应取消，取消的队列项仍保留
+前驱顺序屏障，后继不能提前发布。图已发布后的取消不会回滚已提交数据。

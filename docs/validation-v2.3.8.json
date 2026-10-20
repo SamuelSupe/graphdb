@@ -1,0 +1,33 @@
+{
+  "result": "CANDIDATE",
+  "version": "2.3.8",
+  "baseline": "35fbf0a0c8859acbabaefd83b3a9b72c24bf3995",
+  "local": {
+    "environment": "OrbStack Ubuntu arm64, Go 1.25.0",
+    "unit": "PASS",
+    "vet": "PASS",
+    "race": "PASS",
+    "focusedRaceRepeated5": "PASS",
+    "retryLifecycleRaceRepeated3": "PASS",
+    "directWALIntegration": "PASS",
+    "pythonSDK": {
+      "tests": 12,
+      "skippedWithoutEndpoint": 1,
+      "result": "PASS",
+      "realServerGate": "PASS"
+    },
+    "backupAutomationTests": 11,
+    "consoleNodeTests": 12,
+    "freezeHygiene": "PASS",
+    "chromeVersionLabel": "PASS",
+    "oldSourceRegressionAssertions": "EXPECTED FAILURES"
+  },
+  "exactTagQualification": "PENDING",
+  "downloadVerification": "PENDING",
+  "limits": [
+    "Cross-host recovery not qualified",
+    "No production capacity or latency guarantee",
+    "Permanent storage faults still require repair",
+    "Full commit tail still needs compaction"
+  ]
+}

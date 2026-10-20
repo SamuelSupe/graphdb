@@ -1,6 +1,6 @@
 # 查询能力说明
 
-适用于 **GGraphDB 2.3.7**；发行资格见[版本验证](validation-v2.3.7.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.8**；发行资格见[版本验证](validation-v2.3.8.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本文说明当前 GGraphDB 的用户侧查询能力。查询对象是租户当前可见快照，不提供历史版本查询；读一致性通过 `min_version` 和 `allow_stale` 控制。
 
@@ -168,7 +168,7 @@ path 排序支持：
 
 数值比较会尽量按数字比较，包括 JSON number；无法按数字比较时退化为字符串比较。
 
-2.3.4 起：整数查询常量与持久化 float64 字段使用相同的数值索引键，包含百万级整数及负数；正常持久化字段的索引编码不变。`kind` 约束在 ID 查询和 pattern 起点上同样生效。`created_at`、`updated_at` 的相等、集合和范围谓词按 RFC3339/RFC3339Nano 时间点比较，保留纳秒精度，并识别等价的时区偏移。2.3.7 起还接受 `YYYY-MM-DD`（UTC 零点）及整数 Unix 毫秒；非法值返回 `invalid_query`，包括 `neq` / `in`。
+2.3.4 起：整数查询常量与持久化 float64 字段使用相同的数值索引键，包含百万级整数及负数；正常持久化字段的索引编码不变。`kind` 约束在 ID 查询和 pattern 起点上同样生效。`created_at`、`updated_at` 的相等、集合和范围谓词按 RFC3339/RFC3339Nano 时间点比较，保留纳秒精度，并识别等价的时区偏移。2.3.8 起还接受 `YYYY-MM-DD`（UTC 零点）及整数 Unix 毫秒；非法值返回 `invalid_query`，包括 `neq` / `in`。
 
 布尔表达式：
 

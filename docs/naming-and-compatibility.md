@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current patch candidate is **2.3.7**; see its [publication and verification](validation-v2.3.7.md). GGraphDB runs one process
+The current patch candidate is **2.3.8**; see its [publication and verification](validation-v2.3.8.md). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,8 +12,8 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION`: `2.3.7`; tag: `v2.3.7` |
-| Go/Python SDKs and OpenAPI document version | `2.3.7` |
+| Product and release tag | `VERSION`: `2.3.8`; tag: `v2.3.8` |
+| Go/Python SDKs and OpenAPI document version | `2.3.8` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
 | Persisted Parquet/WAL and snapshot format | Standalone retains 2.0/2.1; Raft has separate protocol and directory-role markers |
@@ -73,7 +73,7 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See [2.3.7 validation](validation-v2.3.7.md), the tag workflow and packaged
+See [2.3.8 validation](validation-v2.3.8.md), the tag workflow and packaged
 evidence for the exact release binary. A local performance candidate completed
 45,116 operations but recorded four HAProxy 503 query failures under severe
 shared-kernel resource pressure. That failed result remains documented; it is
@@ -84,7 +84,7 @@ The capacity envelope retains the historical 2.1.2 `performance_unqualified`
 record and does not qualify this release or Raft capacity. Older reports describe
 their own frozen builds.
 
-For the 2.3.7 Raft upgrade, finish or cancel lifecycle/restore work before rolling
+For the 2.3.8 Raft upgrade, finish or cancel lifecycle/restore work before rolling
 and pause these management operations until every replica is upgraded. Normal
 qualified read/write traffic can continue. Historical commands preserve their
 logged authorization semantics; the new scope checks do not retroactively reject

@@ -20,28 +20,13 @@ func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID str
 	var enterErr error
 	defer func() { endHTTPSpan(enterSpan, enterErr) }()
 
-	tracer := otel.Tracer("graphdb/http")
-	prefix := apiTracePrefix(r.Context(), "graphdb.commit")
-	acquireCtx, acquireSpan := tracer.Start(r.Context(), prefix+".write_admission.acquire", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
-	release, waited, err := s.WriteAdmission.Acquire(acquireCtx, tenantID)
-	acquireSpan.SetAttributes(attribute.Int64("graphdb.write_admission.wait_ms", waited.Milliseconds()))
+	release, waited, err := s.acquireWriteSlot(w, r, tenantID)
 	if err != nil {
 		enterErr = err
-		acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "rejected"))
-		endHTTPSpan(acquireSpan, err)
-		s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "rejected", waited)
-		s.writeBackpressure(w, tenantID, &storage.BackpressureError{
-			Reasons: []storage.BackpressureReason{{
-				Code:    "write_admission_queue_timeout",
-				Message: "write admission queue timeout",
-			}},
-			RetryAfter: retryAfterFromStore(s.Store),
-		})
 		return nil, false
 	}
-	acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "accepted"))
-	endHTTPSpan(acquireSpan, nil)
-	s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "accepted", waited)
+	tracer := otel.Tracer("graphdb/http")
+	prefix := apiTracePrefix(r.Context(), "graphdb.commit")
 
 	checkCtx, checkSpan := tracer.Start(r.Context(), prefix+".check_backpressure", trace.WithAttributes(
 		attribute.String("graphdb.tenant", tenantID),
@@ -59,6 +44,34 @@ func (s *Server) enterWrite(w http.ResponseWriter, r *http.Request, tenantID str
 	}
 	endHTTPSpan(checkSpan, nil)
 	return release, true
+}
+
+// acquireWriteSlot bounds request decoding and execution without imposing graph
+// publication pressure on durable WAL acceptance.
+func (s *Server) acquireWriteSlot(w http.ResponseWriter, r *http.Request, tenantID string) (func(), time.Duration, error) {
+	tracer := otel.Tracer("graphdb/http")
+	prefix := apiTracePrefix(r.Context(), "graphdb.commit")
+	acquireCtx, acquireSpan := tracer.Start(r.Context(), prefix+".write_admission.acquire", trace.WithAttributes(attribute.String("graphdb.tenant", tenantID)))
+	release, waited, err := s.WriteAdmission.Acquire(acquireCtx, tenantID)
+	acquireSpan.SetAttributes(attribute.Int64("graphdb.write_admission.wait_ms", waited.Milliseconds()))
+	if err != nil {
+		acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "rejected"))
+		endHTTPSpan(acquireSpan, err)
+		s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "rejected", waited)
+		s.writeBackpressure(w, tenantID, &storage.BackpressureError{
+			Reasons: []storage.BackpressureReason{{
+				Code:    "write_admission_queue_timeout",
+				Message: "write admission queue timeout",
+			}},
+			RetryAfter: retryAfterFromStore(s.Store),
+		})
+		return nil, waited, err
+	}
+	acquireSpan.SetAttributes(attribute.String("graphdb.write_admission.result", "accepted"))
+	endHTTPSpan(acquireSpan, nil)
+	s.obs().Metrics.RecordWriteAdmissionQueue(tenantID, "accepted", waited)
+
+	return release, waited, nil
 }
 
 func (s *Server) enterMaintenance(w http.ResponseWriter, tenantID string) (func(), bool) {

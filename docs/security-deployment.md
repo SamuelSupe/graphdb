@@ -1,6 +1,6 @@
 # Production Security Boundary
 
-Applies to **GGraphDB 2.3.7**; see [release validation](validation-v2.3.7.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.8**; see [release validation](validation-v2.3.8.md) and [version boundaries](naming-and-compatibility.md).
 
 [中文](security-deployment.zh-CN.md)
 
@@ -132,7 +132,7 @@ and [diagnostic metrics](diagnostics-metrics.zh-CN.md).
 
 ## Tenant-scoped and platform management
 
-From 2.3.7, a supplied `X-Tenant-ID` must match every tenant named by lifecycle
+From 2.3.8, a supplied `X-Tenant-ID` must match every tenant named by lifecycle
 operations, including clone targets. Scoped restore tasks bind the backup's source
 tenant before exposing its contents or changing the target. Scoped restore drills
 use a server-generated isolated target; explicit target tenants/prefixes require

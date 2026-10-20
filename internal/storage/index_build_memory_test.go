@@ -442,3 +442,249 @@ func TestIndexQueueDoesNotReserveBehindSynchronousPredecessor(t *testing.T) {
 		t.Fatal("later index work reserved memory needed by its synchronous predecessor")
 	}
 }
+
+func TestIndexUpdateCancellationPreservesPublicationOrder(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	first, middle, last := &commitIndexUpdate{}, &commitIndexUpdate{onlineRebuild: true}, &commitIndexUpdate{}
+	for _, work := range []*commitIndexUpdate{first, middle, last} {
+		store.enqueueCommitIndexUpdate(ctx, "tenant-a", work)
+	}
+	canceled, stop := context.WithCancel(ctx)
+	stop()
+	for _, work := range []*commitIndexUpdate{{joined: first}, middle} {
+		returned := make(chan error, 1)
+		go func() { returned <- store.runCommitIndexUpdate(canceled, "tenant-a", work) }()
+		select {
+		case err := <-returned:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled waiter returned %v", err)
+			}
+		case <-ctx.Done():
+			close(first.done)
+			t.Fatal("index waiter ignored cancellation")
+		}
+	}
+	lastDone := make(chan error, 1)
+	go func() { lastDone <- store.runCommitIndexUpdate(ctx, "tenant-a", last) }()
+	select {
+	case err := <-lastDone:
+		t.Fatalf("successor overtook unfinished predecessor: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := store.runCommitIndexUpdate(ctx, "tenant-a", first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-lastDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("cancellation stranded the publication chain")
+	}
+	store.indexUpdateMu.Lock()
+	defer store.indexUpdateMu.Unlock()
+	if len(store.indexUpdateTails) != 0 || len(store.indexUnreservedTails) != 0 || len(store.localIndexMaintenance) != 0 {
+		t.Fatal("finished/canceled updates retained queue or maintenance state")
+	}
+}
+
+func TestBackgroundIndexFailureReleasesResourcesAndAllowsRepair(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		for _, transient := range []bool{false, true} {
+			t.Run(fmt.Sprintf("deferred=%v/transient=%v", deferred, transient), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				files, err := OpenFileStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer files.Close()
+				fault := errors.New("persistent corrupt catalog")
+				if transient {
+					fault = ErrObjectStoreUnavailable
+				}
+				objects := &localIngestPublicationFault{ObjectStore: files, err: fault}
+				store := NewTenantStore(objects, "test")
+				store.WriteEntityRecords = false
+				defer store.ShutdownTasks(context.Background())
+				if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+					t.Fatal(err)
+				}
+				objects.key = store.indexCatalogKey("tenant-a")
+				objects.failing.Store(true)
+				endMaintenance := func() {}
+				if deferred {
+					endMaintenance = store.beginLocalIndexMaintenance(ctx, "tenant-a")
+				}
+				result, err := store.Ingest(ctx, "tenant-a", ingestEntityRequest("fault", "host:new"))
+				endMaintenance()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for {
+					store.indexUpdateMu.Lock()
+					active := store.activeIngestIndexUpdates
+					store.indexUpdateMu.Unlock()
+					if active == 0 {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						t.Fatal("persistent index error stranded a background worker")
+					case <-time.After(time.Millisecond):
+					}
+				}
+				wantAttempts := int32(1)
+				if transient {
+					wantAttempts = 3
+				}
+				if got := objects.attempts.Load(); got != wantAttempts {
+					t.Fatalf("publication attempts=%d want=%d", got, wantAttempts)
+				}
+				store.maintenance.mu.Lock()
+				activeBytes, queuedBytes := store.maintenance.bytes, store.maintenance.queued
+				store.maintenance.mu.Unlock()
+				if activeBytes != 0 || queuedBytes != 0 || len(store.maintenance.builds) != 0 {
+					t.Fatalf("leaked resources: active=%d queued=%d slots=%d", activeBytes, queuedBytes, len(store.maintenance.builds))
+				}
+				health, err := store.IndexHealthWithOptions(ctx, "tenant-a", IndexHealthOptions{})
+				if err != nil || health.Status != "stale" || health.Updating || health.ManifestVersion != result.Version {
+					t.Fatalf("failed work hidden from repair: health=%+v err=%v", health, err)
+				}
+				// Purge/recover/restore use this exclusive view. An index failure
+				// must not retain a reader that prevents those repairs.
+				release, err := store.lockReadViews(ctx, "tenant-a", true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				release()
+				if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:later", Kind: "host"}}}, CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.RebuildIndexes(ctx, "tenant-a"); !errors.Is(err, fault) {
+					t.Fatalf("rebuild should return its failure: %v", err)
+				}
+				objects.failing.Store(false)
+				if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+					t.Fatal(err)
+				}
+				health, err = store.IndexHealth(ctx, "tenant-a")
+				if err != nil || health.Status != "ready" || health.ManifestVersion <= result.Version {
+					t.Fatalf("repair did not reach latest head: %+v err=%v", health, err)
+				}
+			})
+		}
+	}
+}
+
+type indexRetryPause struct {
+	once           sync.Once
+	paused, resume chan struct{}
+}
+
+func (*indexRetryPause) RecordManifestCASConflict(string)      {}
+func (*indexRetryPause) RecordCommitTail(string, int)          {}
+func (*indexRetryPause) RecordMaintenanceMemory(string, int64) {}
+func (p *indexRetryPause) RecordMaintenancePhase(phase string, _ time.Duration) {
+	if phase == "index_retry" {
+		p.once.Do(func() { close(p.paused); <-p.resume })
+	}
+}
+
+func TestBackgroundIndexRetryReleasesViewAndCapturesFreshHead(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		t.Run(fmt.Sprintf("purge=%v", purge), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			objects := &localIngestPublicationFault{ObjectStore: files, err: ErrObjectStoreUnavailable}
+			store := NewTenantStore(objects, "test")
+			store.WriteEntityRecords = false
+			defer store.ShutdownTasks(context.Background())
+			if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			pause := &indexRetryPause{paused: make(chan struct{}), resume: make(chan struct{})}
+			resume := sync.OnceFunc(func() { close(pause.resume) })
+			defer resume()
+			store.backpressureObserver = pause
+			objects.key = store.indexCatalogKey("tenant-a")
+			objects.failing.Store(true)
+			if _, err := store.Ingest(ctx, "tenant-a", ingestEntityRequest("retry", "host:new")); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-pause.paused:
+			case <-ctx.Done():
+				t.Fatal("transient retry was not reached")
+			}
+			release, err := store.lockReadViews(ctx, "tenant-a", true)
+			if err != nil {
+				t.Fatal("retry retained read view: ", err)
+			}
+			release()
+			_, releaseMemory, err := store.admitMaintenance(ctx, store.backgroundIndexByteLimit())
+			if err != nil {
+				t.Fatal("retry retained maintenance resources: ", err)
+			}
+			releaseMemory()
+			objects.failing.Store(false)
+			if purge {
+				if _, err := store.PurgeTenant(ctx, "tenant-a", true); err != nil {
+					t.Fatal("repair could not purge during backoff: ", err)
+				}
+				resume()
+				for {
+					store.indexUpdateMu.Lock()
+					active := store.activeIngestIndexUpdates
+					store.indexUpdateMu.Unlock()
+					if active == 0 {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						t.Fatal("retry did not stop after tenant purge")
+					case <-time.After(time.Millisecond):
+					}
+				}
+				if _, err := store.GetIndexCatalog(ctx, "tenant-a"); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("retry resurrected a purged catalog: %v", err)
+				}
+				return
+			}
+			later, err := store.CommitWithReport(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:later", Kind: "host"}}}, CommitOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resume()
+			for {
+				catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+				if err == nil && catalog.Version == later.Version {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatalf("retry did not capture latest head: catalog=%d latest=%d err=%v", catalog.Version, later.Version, err)
+				case <-time.After(time.Millisecond):
+				}
+			}
+			health, err := store.IndexHealth(ctx, "tenant-a")
+			if err != nil || health.Status != "ready" {
+				t.Fatalf("retry lost intervening data: %+v err=%v", health, err)
+			}
+		})
+	}
+}

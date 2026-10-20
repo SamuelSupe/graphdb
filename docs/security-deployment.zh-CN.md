@@ -1,6 +1,6 @@
 # 生产安全边界
 
-适用于 **GGraphDB 2.3.7**；发行资格见[版本验证](validation-v2.3.7.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.8**；发行资格见[版本验证](validation-v2.3.8.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 [English](security-deployment.md)
 
@@ -113,7 +113,7 @@ Raft 私有监听器与独立 admin listener 使用不同端口；例如 Raft �
 
 ## 租户作用域与平台管理
 
-2.3.7 起，请求带 `X-Tenant-ID` 时，生命周期路径、创建目标与克隆目标必须属于该租户。
+2.3.8 起，请求带 `X-Tenant-ID` 时，生命周期路径、创建目标与克隆目标必须属于该租户。
 恢复任务在返回备份内容或修改目标前校验备份源租户；通用任务入口也强制绑定来源，不能通过参数绕过。
 带作用域的恢复演练只允许服务端自动生成的隔离目标；自定义目标租户、前缀及跨租户恢复属于平台操作。
 作用域冲突返回 403（`operation_disabled`）。
