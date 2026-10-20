@@ -16,7 +16,13 @@ mkdir -p "$RUN_DIR"
 PORT="${GRAPHDB_PORT:-38080}"
 BASE="http://127.0.0.1:$PORT"
 SERVER_PID=""
+SOAK_WATCH_PID=""
 cleanup() {
+  if [[ -n "$SOAK_WATCH_PID" ]]; then
+    kill "$SOAK_WATCH_PID" 2>/dev/null || true
+    wait "$SOAK_WATCH_PID" 2>/dev/null || true
+    SOAK_WATCH_PID=""
+  fi
   if [[ -n "$SERVER_PID" ]]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
@@ -66,8 +72,27 @@ PY
     SERVER_PID=""
     GRAPHDB_GATE_READER_CACHE_BYTES=2147483648
     export GRAPHDB_WRITE_CACHE_MAX_BYTES=2147483648
-    start_server wal
-    go run -mod=readonly ./tools/soaktest -writer "$BASE" -reader "$BASE" \
+    SOAK_ADMIN="$BASE"
+    if [[ "${GRAPHDB_GATE_SOAK_DIAGNOSTICS:-0}" == 1 ]]; then
+      SOAK_ADMIN="http://127.0.0.1:$((PORT+1))"
+      GRAPHDB_ADMIN_ADDR="127.0.0.1:$((PORT+1))" GRAPHDB_PPROF_ENABLED=true start_server wal
+    else
+      start_server wal
+    fi
+    if [[ "${GRAPHDB_GATE_SOAK_DIAGNOSTICS:-0}" == 1 ]]; then
+      (
+        while kill -0 "$SERVER_PID" 2>/dev/null; do
+          if [[ -f "$RUN_DIR/soak.ndjson" ]] && grep -q '"event":"query_error"' "$RUN_DIR/soak.ndjson"; then
+            curl -fsS --max-time 15 "$SOAK_ADMIN/debug/pprof/goroutine?debug=2" >"$RUN_DIR/timeout-goroutines.txt" || true
+            curl -fsS --max-time 15 "$SOAK_ADMIN/debug/pprof/profile?seconds=10" >"$RUN_DIR/timeout-cpu.pprof" || true
+            break
+          fi
+          sleep 1
+        done
+      ) &
+      SOAK_WATCH_PID="$!"
+    fi
+    go run -mod=readonly ./tools/soaktest -writer "$BASE" -reader "$BASE" -admin "$SOAK_ADMIN" \
       -tenant local-disk-soak -duration 30m -writers 4 -readers 16 -batch-size 20 -write-interval 5s \
       -http-timeout 120s \
       -maintenance-timeout 10m \

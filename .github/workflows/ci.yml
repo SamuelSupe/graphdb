@@ -48,8 +48,41 @@ jobs:
       - name: Test Python SDK
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
-      - name: Test backup automation recovery
-        run: python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
+      - name: Test backup automation and rolling catch-up
+        run: |
+          python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
+          python3 -m unittest discover -s scripts -p 'raft_rolling_gate_test.py'
+
+  local-soak:
+    name: Local disk 30-minute mixed read/write soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.7"
+          cache: true
+      - name: Run local recovery and soak gate
+        env:
+          RELEASE_GATE_SKIP_STATIC: 1
+          GRAPHDB_GATE_SOAK: 1
+          GRAPHDB_GATE_SOAK_DIAGNOSTICS: 1
+          GRAPHDB_INDEX_RANGE_PAGES: 'true'
+          GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/local-gate
+        run: scripts/release_gate.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-disk-soak
+          path: |
+            artifacts/local-gate/*.json
+            artifacts/local-gate/*.ndjson
+            artifacts/local-gate/*.txt
+            artifacts/local-gate/*.log
+            artifacts/local-gate/*.pprof
 
   integration:
     name: Local disk, WAL recovery, load, and restore

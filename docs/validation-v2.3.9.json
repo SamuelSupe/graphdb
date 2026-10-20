@@ -31,9 +31,10 @@
     "status": "FAILED_REQUIRED_JOBS",
     "failed": [
       "static unit: stale leader after snapshot retry",
-      "released-v2.3.0 rolling catch-up timeout"
+      "released-v2.3.0 rolling catch-up timeout",
+      "local30m soak: 36 query504 responses"
     ],
-    "localSoak": "RUNNING_AT_RECORD_TIME"
+    "localSoak": "FAILED: 36 query timeouts; 1335 successful writes, zero write errors"
   },
   "downloadedAssets": {
     "status": "NOT_PUBLISHED"

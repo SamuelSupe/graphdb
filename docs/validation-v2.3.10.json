@@ -36,12 +36,24 @@
     }
   },
   "rollingFailure": {
-    "status": "CI_FAILURE_NOT_REPRODUCED_LOCALLY",
-    "change": "Record last replica statuses on catch-up failure; move the unchanged existing rolling gate into main CI as well as tag CI",
-    "catchUpTrafficConsistencyAndTimeoutsUnchanged": true
+    "status": "REPRODUCED_BARRIER_WAIT_FIXED_REMOTE_REVALIDATION_PENDING",
+    "failedMainRun": 39481677556,
+    "failedMainCommit": "80eb0ddc2e5d9f65b40766320bfe36b779eb3b94",
+    "controlledBefore": {
+      "oldCpuLimit": 0.25,
+      "targetCpuLimit": 2,
+      "result": "120s TIMEOUT; 105 observations; initial committed barrier131 reached in1.010s; moving head never passed",
+      "source": "91ffe503 old / 8416525b target core"
+    },
+    "change": "Capture a committed barrier per wait; recapture after leader/term change; reset after success or replacement. Keep actual progress, error, same-leader and applied-index validation.",
+    "regressionTests": "PASS 5 tests; the progressing-follower regression failed before the fix",
+    "controlledAfter": "PASS complete single-group and sharded mixed-version flows, strict controller, per-replica strong exports; zero logical traffic failures",
+    "trafficConsistencyAndTimeoutsUnchanged": true
   },
   "mainCI": {
-    "status": "PENDING"
+    "status": "PREVIOUS_MAIN_ROLLING_FAILED_FOLLOW_UP_PENDING",
+    "run": 39481677556,
+    "commit": "80eb0ddc2e5d9f65b40766320bfe36b779eb3b94"
   },
   "exactTagCI": {
     "status": "PENDING"
@@ -61,6 +73,15 @@
   "limits": [
     "No physical cross-host, power-loss, day-scale stability or production-capacity qualification.",
     "Flat index catalog cost still grows with page count.",
-    "A rolling timeout remains unresolved until the new main and exact-tag gates pass; local probes alone do not waive it."
-  ]
+    "Latest main and exact-tag rolling/soak gates must pass; local probes do not waive remote failures."
+  ],
+  "localSoakFailure": {
+    "failedTagRun": 39477688507,
+    "status": "UNRESOLVED",
+    "queryTimeouts": 36,
+    "successfulWrites": 1335,
+    "writeErrors": 0,
+    "followUp": "Same full30m load now required in main CI; first query failure captures goroutines/CPU. Native ARM64 repro still running.",
+    "loadTimeoutAndZeroErrorCriteriaUnchanged": true
+  }
 }

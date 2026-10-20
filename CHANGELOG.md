@@ -9,9 +9,12 @@ versioning; release tags and binaries expose the exact build commit and date.
   the unpublished v2.3.9 qualification tag; keep that tag unchanged.
 - Re-select the current healthy leader after snapshot retry in the recovery
   regression and cover a real leadership transfer during that interval.
-- Record replica status when rolling catch-up fails and run the existing
-  v2.3.0 rolling gate on main as well as release tags. Preserve all catch-up,
-  traffic, consistency, timeout and thirty-minute soak requirements.
+- Validate rolling catch-up against a committed barrier while writes continue;
+  restart that proof after leadership changes and reject stalled or failed replicas.
+  Preserve traffic, consistency, timeout and final per-replica export requirements.
+- Require the existing v2.3.0 rolling and full local thirty-minute soak gates
+  on main before tagging. Capture replica status and first-timeout profiles
+  for failures; keep both release soaks and their zero-error requirements.
 
 ## [2.3.9] - Unpublished qualification tag
 

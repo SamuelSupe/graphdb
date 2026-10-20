@@ -39,8 +39,10 @@ jobs:
       - name: Test Python SDK
         run: python3 -m unittest discover -s sdk/python/tests -p 'test_*.py'
 
-      - name: Test backup automation recovery
-        run: python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
+      - name: Test backup automation and rolling catch-up
+        run: |
+          python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
+          python3 -m unittest discover -s scripts -p 'raft_rolling_gate_test.py'
 
   integration:
     name: Local disk, WAL recovery, load, and restore
@@ -87,6 +89,7 @@ jobs:
         env:
           RELEASE_GATE_SKIP_STATIC: 1
           GRAPHDB_GATE_SOAK: 1
+          GRAPHDB_GATE_SOAK_DIAGNOSTICS: 1
           GRAPHDB_INDEX_RANGE_PAGES: 'true'
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/local-gate
         run: scripts/release_gate.sh
@@ -99,6 +102,7 @@ jobs:
             artifacts/local-gate/*.ndjson
             artifacts/local-gate/*.txt
             artifacts/local-gate/*.log
+            artifacts/local-gate/*.pprof
 
   release:
     name: Build and publish release assets
@@ -190,7 +194,7 @@ jobs:
           cp scripts/raft_gate.sh scripts/raft_gate_dual.py scripts/raft_gate_sharded.py scripts/raft_gate_metrics.py "$root/scripts/"
           cp scripts/gateway_gate.sh scripts/gateway_auth_gate.py "$root/scripts/"
           cp -R scripts/gateway-gate "$root/scripts/"
-          cp scripts/raft_rolling_upgrade.py scripts/raft_rolling_gate.py "$root/scripts/"
+          cp scripts/raft_rolling_upgrade.py scripts/raft_rolling_gate.py scripts/raft_rolling_gate_test.py "$root/scripts/"
           cp scripts/backup_automation.py scripts/backup_automation_test.py "$root/scripts/"
           cp -R scripts/raft-gate "$root/scripts/"
           printf '{"version":"%s","commit":"%s","build_date":"%s","go_version":"%s"}\n' \
@@ -244,6 +248,7 @@ jobs:
             -f docker-compose.backup-automation.yml config --quiet
           python3 scripts/backup_automation.py --help
           python3 -m unittest discover -s scripts -p 'backup_automation_test.py'
+          python3 -m unittest discover -s scripts -p 'raft_rolling_gate_test.py'
           docker build --build-arg VERSION="$GITHUB_REF_NAME" \
             --build-arg COMMIT="$GITHUB_SHA" \
             --build-arg BUILD_DATE="$build_date" \

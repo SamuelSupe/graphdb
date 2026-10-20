@@ -131,6 +131,7 @@ class Deployment:
         self.gateway = 'http://127.0.0.1:'+str((57080 if sharded else 56080)+OFFSET)
         self.stop = threading.Event()
         self.workers, self.stats = [], []
+        self.catchup_barriers = {}
         self.write_override()
 
     def write_override(self):
@@ -158,17 +159,32 @@ class Deployment:
         return [expect(self.node(group, i), 'GET', '/raft/status', cluster=group['cluster_id']) for i in range(1,4)]
 
     def caught_up(self, group):
+        key = group['cluster_id']
         leader = expect(self.node(group, 1), 'GET', '/raft/status', cluster=group['cluster_id'])['leader_id']
         self.last_catchup = {'leader_id': leader}
         if not leader:
+            self.catchup_barriers.pop(key, None)
             return False
         position = expect(self.node(group, leader), 'GET', '/raft/status', cluster=group['cluster_id'])
-        commit = position['commit_index']
-        values = self.statuses(group)
-        self.last_catchup = {'position': position, 'nodes': values}
-        if not leader or any(value.get('error') or value.get('snapshot_error') or value['leader_id'] != leader for value in values):
+        if position['leader_id'] != leader or not position['commit_index']:
+            self.catchup_barriers.pop(key, None)
             return False
-        return values if position['leader_id'] == leader and commit and all(value['applied_index'] >= commit for value in values) else False
+        barrier = self.catchup_barriers.get(key)
+        if barrier is None or (barrier['leader_id'], barrier['term']) != (leader, position['term']):
+            # Traffic continues during replacement. Prove application through a
+            # committed read barrier; chasing every later write can starve even
+            # a replica that keeps applying entries. A new leader starts a new proof.
+            barrier = {'leader_id': leader, 'term': position['term'], 'commit_index': position['commit_index']}
+            self.catchup_barriers[key] = barrier
+        values = self.statuses(group)
+        self.last_catchup = {'barrier': barrier.copy(), 'position': position, 'nodes': values}
+        if any(value.get('error') or value.get('snapshot_error') or value['leader_id'] != leader for value in values):
+            return False
+        commit = barrier['commit_index']
+        if all(value['applied_index'] >= commit for value in values):
+            self.catchup_barriers.pop(key, None)
+            return values
+        return False
 
     def transfer(self, group, target):
         def attempt():
@@ -191,6 +207,7 @@ class Deployment:
         self.write_override()
         self.command('up', '-d', '--no-build', '--no-deps', '--force-recreate', service)
         self.last_catchup = None
+        self.catchup_barriers.pop(group['cluster_id'], None)
         try:
             values = wait(lambda: self.caught_up(group))
         except Exception as err:

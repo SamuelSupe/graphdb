@@ -52,7 +52,7 @@ HTTP `/v1`、Go 模块 `/v2` 和 Raft 协议编号不变。完整备份必须保
 
 ## English
 
-The v2.3.9 qualification tag produced no release assets. This patch carries its fixes forward with snapshot-retry leadership coverage and rolling-failure diagnostics; both earlier tags remain unchanged.
+The v2.3.9 qualification tag produced no release assets. This patch carries its fixes forward with snapshot-retry leadership coverage and committed-barrier rolling validation. Main CI also requires the full local soak and captures first-timeout diagnostics; both earlier tags remain unchanged. Pending failures are recorded in the version validation report.
 
 This patch fixes reproduced v2.3.8 restore, browser-write, preparation-retry,
 cursor and resource-lifecycle defects. Restore defaults to the target tenant;

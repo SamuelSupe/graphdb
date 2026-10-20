@@ -1,7 +1,7 @@
 # GGraphDB v2.3.9 发布验证 / Release validation
 
 **UNPUBLISHED — qualification failed.** v2.3.9 标签固定于 `8bc9884e`，没有发行资产。
-[确切标签门禁](https://github.com/SamuelSupe/graphdb/actions/runs/39477688507)的静态测试及 v2.3.0 滚动追赶检查失败；未豁免，也未移动标签。
+[确切标签门禁](https://github.com/SamuelSupe/graphdb/actions/runs/39477688507)的静态测试、v2.3.0 滚动追赶及单机 30 分钟长测失败；未豁免，也未移动标签。
 下文保留候选验证历史，后续修正及完整资格见 [v2.3.10 候选记录](validation-v2.3.10.md)。v2.3.8 标签与资产不变。
 
 ## 优先复核：快照准备失败与成员地址发布
