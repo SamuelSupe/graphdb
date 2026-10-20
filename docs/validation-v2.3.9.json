@@ -1,6 +1,6 @@
 {
   "version": "v2.3.9",
-  "status": "CANDIDATE",
+  "status": "UNPUBLISHED_QUALIFICATION_FAILED",
   "localVerification": {
     "scope": "Final production source 8416525b; full Go 1.26.7 unit/vet/race in OrbStack, with prior targeted behavior evidence separately recorded",
     "environment": "OrbStack Ubuntu arm64",
@@ -25,10 +25,18 @@
     "goVersion": "go1.26.7"
   },
   "exactTagCI": {
-    "status": "PENDING"
+    "run": 39477688507,
+    "commit": "8bc9884eae04c1ca9e7ae0c4183a425fa7053263",
+    "tagObject": "8690c46231ebb4259702201d5727c3a875b88e76",
+    "status": "FAILED_REQUIRED_JOBS",
+    "failed": [
+      "static unit: stale leader after snapshot retry",
+      "released-v2.3.0 rolling catch-up timeout"
+    ],
+    "localSoak": "RUNNING_AT_RECORD_TIME"
   },
   "downloadedAssets": {
-    "status": "PENDING"
+    "status": "NOT_PUBLISHED"
   },
   "gateWaiver": false,
   "preservedRelease": "v2.3.8 tag and assets unchanged",
@@ -44,7 +52,7 @@
     "F11": "Confirmed legacy identity-free config disclosure through case alias; fixed at filesystem directory boundary."
   },
   "performanceReview": {
-    "status": "TEST_FIXTURES_REPRODUCED_AND_FIXED_CI_PENDING",
+    "status": "MAIN_CI_PASSED_EXACT_TAG_FAILED",
     "releaseBlocker": "Latest main CI, original exact-tag gates including both 30-minute soaks, and independent downloaded-artifact verification",
     "sourcePublication": "Range implementation and narrow GC follow-up committed to GitHub; source publication is separate from release qualification",
     "currentVerification": {
@@ -55,13 +63,13 @@
       "fullUnitAndRace": "PASS final production source 8416525b with Go 1.26.7"
     },
     "mainCI": {
-      "commit": "cbabed2cea883cb192081620db149b283ab749db",
-      "run": 39468905556,
-      "status": "FIVE_RUNTIME_JOBS_SUCCESS; RACE_JOB_FAILED_TWO_TEST_FIXTURES; FOLLOW_UP_PENDING"
+      "commit": "8bc9884eae04c1ca9e7ae0c4183a425fa7053263",
+      "run": 39473614582,
+      "status": "ALL_SIX_JOBS_SUCCESS"
     },
     "sourceEvidenceDirectory": ".workflow/release-v2.3.9",
     "runtimeQualification": "PASS final production source 8416525b in OrbStack: range-enabled direct/WAL, protocol3, sharding, migration, GC isolation and cold three-replica backup/fresh restore",
-    "tagCreated": false
+    "tagCreated": true
   },
   "priorityReview": {
     "status": "LOCAL_VERIFIED_RELEASE_PENDING",
@@ -170,6 +178,7 @@
     },
     "affectedPackageUnit": "PASS; replication42.579s/storage66.102s",
     "vet": "PASS all packages",
-    "affectedPackageRace": "RUNNING in OrbStack, Go1.26.7, 2 CPUs"
-  }
+    "affectedPackageRace": "PASS; replication44.025s/storage345.526s"
+  },
+  "followUpCandidate": "v2.3.10"
 }

@@ -3,7 +3,17 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [2.3.9] - 2026-10-20
+## [2.3.10] - 2026-10-21
+
+- Carry the bounded-index and reliability candidate fixes below forward from
+  the unpublished v2.3.9 qualification tag; keep that tag unchanged.
+- Re-select the current healthy leader after snapshot retry in the recovery
+  regression and cover a real leadership transfer during that interval.
+- Record replica status when rolling catch-up fails and run the existing
+  v2.3.0 rolling gate on main as well as release tags. Preserve all catch-up,
+  traffic, consistency, timeout and thirty-minute soak requirements.
+
+## [2.3.9] - Unpublished qualification tag
 
 - Reclaim unpinned historical index and snapshot files in one GC sweep;
   historical removal no longer invalidates the current-root proof. Preserve

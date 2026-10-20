@@ -2,7 +2,7 @@
 
 [English](object-backup.md)
 
-适用于 **GGraphDB 2.3.9**；发行资格见[版本验证](validation-v2.3.9.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.10**；发行资格见[版本验证](validation-v2.3.10.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本指南覆盖当前 2.x 备份能力。2.1 新增可选自动化并沿用 2.0 快照格式；
 不提供 1.x 备份迁移，旧版备份独立保留。
@@ -137,7 +137,7 @@ curl -X POST http://localhost:8080/v1/tenants/target/restore \
 ```
 
 先使用 `dry_run:true` 验证内容，正式恢复时改为 `false` 或省略。
-2.3.9 起，来源默认必须等于目标租户。私有平台跨租户迁移须显式声明
+2.3.10 起，来源默认必须等于目标租户。私有平台跨租户迁移须显式声明
 `source_tenant_id`，且恢复调用不带租户头；通用 task 使用 `params.required_source_tenant`。
 带认证租户作用域的调用方不能更改来源。legacy 备份键中的租户也必须与记录一致。
 目标租户已存在时，必须显式传 `overwrite:true`。轮询返回的任务 ID，并携带目标租户的

@@ -33,7 +33,6 @@ jobs:
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate
         run: scripts/raft_gate.sh
       - name: Qualify rolling upgrade from released v2.3.0
-        if: inputs.soak
         env:
           GRAPHDB_ROLLING_BASE_IMAGE: graphdb:raft-rolling-source
           GRAPHDB_ROLLING_TARGET_IMAGE: graphdb:raft-gate
@@ -50,7 +49,8 @@ jobs:
             -t "$GRAPHDB_ROLLING_BASE_IMAGE" "$baseline"
           export GRAPHDB_ROLLING_BASE_SHA256="$(docker run --rm --entrypoint sha256sum \
             "$GRAPHDB_ROLLING_BASE_IMAGE" /usr/local/bin/graphdb | cut -d' ' -f1)"
-          export GRAPHDB_ROLLING_TARGET_VERSION="$GITHUB_REF_NAME"
+          export GRAPHDB_ROLLING_TARGET_VERSION="$(cat VERSION)"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then export GRAPHDB_ROLLING_TARGET_VERSION="$GITHUB_REF_NAME"; fi
           export GRAPHDB_ROLLING_TARGET_COMMIT="$GITHUB_SHA"
           export GRAPHDB_RAFT_TOKEN="$(openssl rand -hex 32)"
           python3 scripts/raft_rolling_gate.py

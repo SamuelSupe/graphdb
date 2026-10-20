@@ -1,6 +1,6 @@
 # GGraphDB 用户指南
 
-适用于 **GGraphDB 2.3.9**；[English](README.md) · [文档中心](../README.zh-CN.md) · [发布验证](../validation-v2.3.9.md)
+适用于 **GGraphDB 2.3.10**；[English](README.md) · [文档中心](../README.zh-CN.md) · [发布验证](../validation-v2.3.10.md)
 
 面向服务负责人、客户端开发者和运维人员，从一次完整的数据流程开始使用。
 GGraphDB 是通用属性图数据库；CMDB 是支持的场景之一。

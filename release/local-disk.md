@@ -1,6 +1,8 @@
-# GGraphDB v2.3.9
+# GGraphDB v2.3.10
 
 ## 中文
+
+v2.3.9 的资格标签未生成发行资产。本版承接其全部修复，并补充重试期间换主的回归与滚动失败诊断；v2.3.9 和 v2.3.8 标签均保持不变。
 
 本补丁修复 v2.3.8 审查中稳定复现的安全、查询及资源生命周期问题：
 
@@ -37,7 +39,7 @@
   迁移导出不跨网络输出持锁，构建和输出均有并发上限；全量二级索引逐字段写入释放，
   已有目录安全检查允许并行读取。旧视图仍保护其物理页，释放后完整 GC 可回收无引用旧页。
 
-[版本验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.9.md)
+[版本验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.10.md)
 区分本地回归、确切标签 CI、单机和 Raft 各 30 分钟长测，以及独立下载验证。
 发布资产由全部必需门禁通过后自动生成，无门禁豁免；包内保留标签时的候选记录与门禁证据，
 最终下载核验记录更新于 main。v2.3.8 标签和资产保持不变。
@@ -49,6 +51,8 @@ HTTP `/v1`、Go 模块 `/v2` 和 Raft 协议编号不变。完整备份必须保
 不能把索引布局转换验证当作整个 WAL／Raft 目录的降级资格。
 
 ## English
+
+The v2.3.9 qualification tag produced no release assets. This patch carries its fixes forward with snapshot-retry leadership coverage and rolling-failure diagnostics; both earlier tags remain unchanged.
 
 This patch fixes reproduced v2.3.8 restore, browser-write, preparation-retry,
 cursor and resource-lifecycle defects. Restore defaults to the target tenant;
@@ -100,9 +104,9 @@ recovery claim is made.
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.3.9.tar.gz.sha256
-tar -xzf graphdb-v2.3.9.tar.gz
-cd v2.3.9
+sha256sum -c graphdb-v2.3.10.tar.gz.sha256
+tar -xzf graphdb-v2.3.10.tar.gz
+cd v2.3.10
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 ```

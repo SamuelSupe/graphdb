@@ -892,14 +892,16 @@ func (m *budgetSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
 
 func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
 	for _, scenario := range []struct {
-		name        string
-		preparation bool
-		err         error
-		fileCapture bool
-		fileWrite   bool
+		name         string
+		preparation  bool
+		err          error
+		fileCapture  bool
+		fileWrite    bool
+		changeLeader bool
 	}{
 		{name: "budget"}, {name: "temporary_unavailable", preparation: true}, {name: "temporary_io", err: &os.PathError{Op: "write", Path: "temporary snapshot", Err: syscall.EAGAIN}},
 		{name: "default_capture_io", fileCapture: true}, {name: "default_write_io", fileWrite: true},
+		{name: "leader_change", preparation: true, changeLeader: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -990,6 +992,37 @@ func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("snapshot did not recover without proposals: ", ctx.Err())
 				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			if scenario.changeLeader {
+				target := leader.ID()%3 + 1
+				leader.raft.TransferLeadership(ctx, leader.ID(), target)
+				for nodes[target-1].LeaderID() != target {
+					select {
+					case <-ctx.Done():
+						t.Fatal("leader transfer did not finish: ", ctx.Err())
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+			// Snapshot retry can outlast a leadership term. The recovered write
+			// must use the current healthy leader, not the one seen before retry.
+			for {
+				current := false
+				for _, node := range nodes {
+					if node.LeaderID() == node.ID() && node.Status()["snapshot_error"] == nil {
+						leader = node
+						current = true
+						break
+					}
+				}
+				if current {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal("no recovered leader: ", ctx.Err())
+				case <-time.After(10 * time.Millisecond):
 				}
 			}
 			if _, err := leader.Propose(ctx, []byte("after retry")); err != nil {

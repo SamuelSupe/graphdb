@@ -159,11 +159,13 @@ class Deployment:
 
     def caught_up(self, group):
         leader = expect(self.node(group, 1), 'GET', '/raft/status', cluster=group['cluster_id'])['leader_id']
+        self.last_catchup = {'leader_id': leader}
         if not leader:
             return False
         position = expect(self.node(group, leader), 'GET', '/raft/status', cluster=group['cluster_id'])
         commit = position['commit_index']
         values = self.statuses(group)
+        self.last_catchup = {'position': position, 'nodes': values}
         if not leader or any(value.get('error') or value.get('snapshot_error') or value['leader_id'] != leader for value in values):
             return False
         return values if position['leader_id'] == leader and commit and all(value['applied_index'] >= commit for value in values) else False
@@ -188,7 +190,15 @@ class Deployment:
         self.images[service], self.legacy[service] = image, legacy
         self.write_override()
         self.command('up', '-d', '--no-build', '--no-deps', '--force-recreate', service)
-        values = wait(lambda: self.caught_up(group))
+        self.last_catchup = None
+        try:
+            values = wait(lambda: self.caught_up(group))
+        except Exception as err:
+            (self.folder/'catchup-failure.json').write_text(json.dumps({
+                'group': group['cluster_id'], 'node': i, 'image': image,
+                'error': str(err), 'last_observation': self.last_catchup,
+            }, indent=2)+'\n')
+            raise
         assert run(DOCKER+['inspect', '--format', '{{.Image}}', self.name+'-'+service+'-1']).stdout.strip() == metadata['target' if image == TARGET else 'base']['image_id']
         if image == TARGET:
             assert values[i-1]['protocol_version'] == 1 and values[i-1]['build']['version'] == TARGET_VERSION and values[i-1]['build']['commit'] == TARGET_COMMIT

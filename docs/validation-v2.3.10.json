@@ -1,0 +1,66 @@
+{
+  "version": "v2.3.10",
+  "status": "CANDIDATE",
+  "gateWaiver": false,
+  "predecessor": {
+    "tag": "v2.3.9",
+    "commit": "8bc9884eae04c1ca9e7ae0c4183a425fa7053263",
+    "tagObject": "8690c46231ebb4259702201d5727c3a875b88e76",
+    "releaseGate": 39477688507,
+    "status": "UNPUBLISHED_REQUIRED_GATES_FAILED",
+    "tagUnchanged": true
+  },
+  "localVerification": {
+    "environment": "OrbStack Linux ARM64 / Go1.26.7",
+    "productionCore": "Storage/replication production source unchanged from 8416525b; prior full unit/vet/race and range-enabled protocol3/direct/WAL/restore gates PASS",
+    "snapshotRetryLeaderChange": {
+      "before": "Three stable failures after real leadership transfer during retry",
+      "after": "PASS all six scenarios, race, three repetitions, 91.408s"
+    },
+    "replicationUnit": "PASS 47.009s",
+    "replicationVet": "PASS",
+    "replicationRace": "PASS 49.310s",
+    "rollingProbes": {
+      "previousSource": "91ffe5033e58d49ca38ef9dbb40efd414264538e",
+      "targetCore": "8416525b",
+      "fullFlow": "PASS 2026-10-20T19:06:38Z",
+      "twoCpuFlow": "PASS 2026-10-20T19:08:35Z",
+      "scope": "Actual source-built old binary; default and 2-CPU probes retain original traffic/assertions/deadlines. Not exact v2.3.10 tag qualification."
+    },
+    "sdkDocsVersionChecks": {
+      "goDocsSdkCmd": "PASS",
+      "versionFreeze": "PASS 2.3.10",
+      "pythonSdk": "PASS 13 tests, 1 optional live-API check skipped",
+      "workflowYamlAndShell": "PASS in OrbStack",
+      "catchupDiagnostic": "PASS controlled failure; preserves failure and records commit/applied state"
+    }
+  },
+  "rollingFailure": {
+    "status": "CI_FAILURE_NOT_REPRODUCED_LOCALLY",
+    "change": "Record last replica statuses on catch-up failure; move the unchanged existing rolling gate into main CI as well as tag CI",
+    "catchUpTrafficConsistencyAndTimeoutsUnchanged": true
+  },
+  "mainCI": {
+    "status": "PENDING"
+  },
+  "exactTagCI": {
+    "status": "PENDING"
+  },
+  "downloadedAssets": {
+    "status": "PENDING"
+  },
+  "tagCreated": false,
+  "preservedRelease": "v2.3.8 tag/assets unchanged; unpublished v2.3.9 tag also unchanged",
+  "rangePaging": {
+    "writeFlag": "GRAPHDB_INDEX_RANGE_PAGES",
+    "defaultEnabled": false,
+    "maxRecords": 1024,
+    "targetEncodedBytes": 8388608,
+    "compatibility": "Enable only after all readers/replicas upgrade; rebuild legacy indexes before index downgrade; this does not qualify WAL/Raft directory downgrade"
+  },
+  "limits": [
+    "No physical cross-host, power-loss, day-scale stability or production-capacity qualification.",
+    "Flat index catalog cost still grows with page count.",
+    "A rolling timeout remains unresolved until the new main and exact-tag gates pass; local probes alone do not waive it."
+  ]
+}

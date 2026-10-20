@@ -1,9 +1,8 @@
 # GGraphDB v2.3.9 发布验证 / Release validation
 
-**CANDIDATE — exact-tag CI and downloaded assets pending.** 本记录只把已完成的本地检查记为通过；
-确切标签流水线、单机和 Raft 各 30 分钟长测、发布及独立下载核验待完成。
-没有门禁豁免，不复用 v2.3.8 的长测结果作为本版结果。
-[机器可读记录](validation-v2.3.9.json)跟踪实际状态；最终核验将在 main 更新，标签及资产不替换。
+**UNPUBLISHED — qualification failed.** v2.3.9 标签固定于 `8bc9884e`，没有发行资产。
+[确切标签门禁](https://github.com/SamuelSupe/graphdb/actions/runs/39477688507)的静态测试及 v2.3.0 滚动追赶检查失败；未豁免，也未移动标签。
+下文保留候选验证历史，后续修正及完整资格见 [v2.3.10 候选记录](validation-v2.3.10.md)。v2.3.8 标签与资产不变。
 
 ## 优先复核：快照准备失败与成员地址发布
 

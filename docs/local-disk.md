@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.3.9**; see [release validation](validation-v2.3.9.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.10**; see [release validation](validation-v2.3.10.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -17,7 +17,7 @@ and managed paths inside it must remain real directories. Directory publication
 still syncs the parent of a new directory.
 
 Tenant IDs retain case. On a case-insensitive filesystem, IDs differing only in
-case cannot coexist. From 2.3.9, the file layer checks actual directory spelling,
+case cannot coexist. From 2.3.10, the file layer checks actual directory spelling,
 including legacy records without tenant identity. It detects the filesystem once;
 case-sensitive filesystems retain their existing path lookup behavior.
 Use a case-sensitive volume when distinct case variants are required.
@@ -156,7 +156,7 @@ the service error promptly. Caller cancellation and deadlines also end the wait.
 These errors do not revoke durable acceptance: retain `Location` and check status
 after recovery, or retry the same batch identity. Results completed before a
 graceful shutdown remain available.
-From 2.3.9, sync-mode WAL ACKs follow both frame fsync and atomic publication of
+From 2.3.10, sync-mode WAL ACKs follow both frame fsync and atomic publication of
 a checksummed `.durable` boundary. Recovery truncates a final bad header, CRC or
 zero suffix only beyond that verified boundary. Damage within the durable prefix,
 a damaged boundary, or an ambiguous complete bad frame in a legacy WAL remains
@@ -351,7 +351,7 @@ Joined and predecessor waits honor cancellation; a canceled queue entry still
 preserves its predecessor's ordering barrier for successors. Cancellation after
 graph publication does not roll back the committed data.
 
-## 2.3.9 candidate review changes
+## 2.3.10 candidate review changes
 
 Existing directory checks can proceed concurrently. Directory creation and retries of a failed parent-directory fsync remain exclusive, so a writer cannot acknowledge an object beneath an unpublished directory.
 

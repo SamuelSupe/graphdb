@@ -2,7 +2,7 @@
 
 [中文](object-backup.zh-CN.md)
 
-Applies to **GGraphDB 2.3.9**; see [release validation](validation-v2.3.9.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.10**; see [release validation](validation-v2.3.10.md) and [version boundaries](naming-and-compatibility.md).
 
 This guide covers the current 2.x backup features. Version 2.1 adds optional
 automation while retaining the 2.0 snapshot format. There is no 1.x backup
@@ -164,7 +164,7 @@ curl -X POST http://localhost:8080/v1/tenants/target/restore \
 ```
 
 Use `dry_run:true` for validation; omit it or set it to false to apply the snapshot.
-From 2.3.9, the source defaults to the target tenant. Cross-tenant platform
+From 2.3.10, the source defaults to the target tenant. Cross-tenant platform
 migration must declare `source_tenant_id` explicitly and omit the tenant header
 on the private restore call. Generic tasks use `params.required_source_tenant`.
 Tenant-scoped callers cannot override their authenticated source.

@@ -1,6 +1,6 @@
 # Production Security Boundary
 
-Applies to **GGraphDB 2.3.9**; see [release validation](validation-v2.3.9.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.10**; see [release validation](validation-v2.3.10.md) and [version boundaries](naming-and-compatibility.md).
 
 [中文](security-deployment.zh-CN.md)
 
@@ -16,7 +16,7 @@ listener directly.
 
 ## Secure Defaults
 
-From 2.3.9, write protection rejects browser mutations whose `Origin` authority differs
+From 2.3.10, write protection rejects browser mutations whose `Origin` authority differs
 from `Host`, opaque/null origins, and `Sec-Fetch-Site: cross-site`. Nonempty write
 bodies require `application/json`; imports also accept JSONL, CSV and octet-stream.
 Bodyless non-browser commands remain supported. The NGINX example preserves the
