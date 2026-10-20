@@ -44,7 +44,7 @@
     "F11": "Confirmed legacy identity-free config disclosure through case alias; fixed at filesystem directory boundary."
   },
   "performanceReview": {
-    "status": "LOCAL_VERIFIED_MAIN_CI_PENDING",
+    "status": "TEST_FIXTURES_REPRODUCED_AND_FIXED_CI_PENDING",
     "releaseBlocker": "Latest main CI, original exact-tag gates including both 30-minute soaks, and independent downloaded-artifact verification",
     "sourcePublication": "Range implementation and narrow GC follow-up committed to GitHub; source publication is separate from release qualification",
     "currentVerification": {
@@ -55,9 +55,9 @@
       "fullUnitAndRace": "PASS final production source 8416525b with Go 1.26.7"
     },
     "mainCI": {
-      "commit": "8416525ba51bbb089df77eeb581e74a379ffe510",
-      "run": 39467565650,
-      "status": "IN_PROGRESS"
+      "commit": "cbabed2cea883cb192081620db149b283ab749db",
+      "run": 39468905556,
+      "status": "FIVE_RUNTIME_JOBS_SUCCESS; RACE_JOB_FAILED_TWO_TEST_FIXTURES; FOLLOW_UP_PENDING"
     },
     "sourceEvidenceDirectory": ".workflow/release-v2.3.9",
     "runtimeQualification": "PASS final production source 8416525b in OrbStack: range-enabled direct/WAL, protocol3, sharding, migration, GC isolation and cold three-replica backup/fresh restore",
@@ -140,5 +140,36 @@
     },
     "realProtocol3RangeEnabled": "PASS exact 8416525b image; Go1.26.7 binary sha256 764e38f02fb0cfad0d461212df61ab7d22ddb4f3c4a4ccc80e53273da2b972a0",
     "finalSourceVet": "PASS 8416525b Go1.26.7"
+  },
+  "ciFixtureFollowUp": {
+    "failedRun": 39468905556,
+    "productionCodeChanged": false,
+    "gateTimeoutsChanged": false,
+    "membership": {
+      "before": "Controlled 600ms bbolt writer delay reproduced the setup election/unknown proposal three times with the 200ms test election window",
+      "fix": "Only snapshot_metadata uses the production-default election window; membership, restart and snapshot assertions remain",
+      "sameDelayedWriterRace": {
+        "result": "PASS",
+        "repetitions": 3,
+        "seconds": 15.486
+      }
+    },
+    "rangeRestore": {
+      "before": "Two of three race runs failed the 10s polling helper with 8 bounded CPU contenders on the same 2 CPUs",
+      "fix": "The isolated fixture waits for actual task workers and asserts backup/restore success and runtime release; all data, routing and page-read bounds remain",
+      "sameContentionRace": {
+        "result": "PASS",
+        "repetitions": 3,
+        "seconds": 115.01,
+        "successfulRestoreSeconds": [
+          27.168,
+          6.578,
+          6.876
+        ]
+      }
+    },
+    "affectedPackageUnit": "PASS; replication42.579s/storage66.102s",
+    "vet": "PASS all packages",
+    "affectedPackageRace": "RUNNING in OrbStack, Go1.26.7, 2 CPUs"
   }
 }

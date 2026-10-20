@@ -362,12 +362,24 @@ func TestBoundedIndexPagesRoundTrip(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				backup = waitForTask(t, ctx, store, "tenant-a", backup.ID)
+				// This fixture has no concurrent task producers. Wait for real
+				// completion; rebuilding thousands of records is not a latency SLA.
+				store.taskWorkers.Wait()
+				backup, err = store.GetTask(ctx, "tenant-a", backup.ID)
+				if err != nil || backup.Status != TaskStatusSucceeded {
+					t.Fatalf("backup=%+v err=%v", backup, err)
+				}
 				restore, err := store.StartTask(ctx, "tenant-restored", TaskTypeTenantRestore, map[string]any{"backup_key": backup.ResultKey, "required_source_tenant": "tenant-a"})
 				if err != nil {
 					t.Fatal(err)
 				}
-				waitForLocalRestoreTask(t, store, "tenant-restored", restore.ID)
+				restoreStarted := time.Now()
+				store.taskWorkers.Wait()
+				restore, err = store.GetTask(ctx, "tenant-restored", restore.ID)
+				if err != nil || restore.Status != TaskStatusSucceeded || store.taskRuntimeActive("tenant-restored", restore.ID) {
+					t.Fatalf("restore=%+v err=%v", restore, err)
+				}
+				t.Logf("bounded-page restore completed in %s", time.Since(restoreStarted))
 				restored, err := store.GetIndexCatalog(ctx, "tenant-restored")
 				if err != nil {
 					t.Fatal(err)

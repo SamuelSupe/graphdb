@@ -222,6 +222,12 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 					}
 				}
 				configs[i] = Config{ID: uint64(i + 1), ClusterID: "membership", Dir: t.TempDir(), Peers: members, Bootstrap: i < 3, ElectionTicks: 10, Token: "membership-test-token-32-bytes-long", Tick: 20 * time.Millisecond, SnapshotEntries: 1000}
+				if action == "snapshot_metadata" {
+					// This scenario checks metadata across a paused application, not
+					// election latency. Use the production election window for disk IO.
+					configs[i].Tick = 0
+					configs[i].ElectionTicks = 0
+				}
 				start(i)
 			}
 			wait := func(description string, condition func() bool) {
