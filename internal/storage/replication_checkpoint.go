@@ -391,7 +391,7 @@ func (s *FileStore) recoverReplication() error {
 			} else {
 				return fmt.Errorf("invalid replication before-image")
 			}
-			s.changed(name, "")
+			s.changed(name, "", false)
 			return nil
 		})
 	})

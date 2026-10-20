@@ -404,20 +404,12 @@ func TestRangeSplitDeleteReinsertAndPinnedGC(t *testing.T) {
 		t.Fatal("GC lost a pinned range page", err)
 	}
 	release()
-	// Removing an obsolete catalog invalidates the local retirement proof.
-	// A subsequent complete sweep must reclaim the now-unpinned data page.
-	for pass := 0; pass < 8; pass++ {
-		reclaimed, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = objects.Get(ctx, original.EntityPages[0].Objects[0].Key)
-		if errors.Is(err, ErrNotFound) {
-			break
-		}
-		if err != nil || pass == 7 || reclaimed.Checkpoint.DeferredFiles == 0 {
-			t.Fatalf("unreferenced range page was not reclaimed after unpinning: %v report=%+v", err, reclaimed)
-		}
+	reclaimed, err := store.RunGC(ctx, "tenant-a", GCOptions{KeepSnapshots: 1, CleanupIndexOrphans: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := objects.Get(ctx, original.EntityPages[0].Objects[0].Key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unreferenced range page was not reclaimed after unpinning: %v report=%+v", err, reclaimed)
 	}
 	catalog, err = store.GetIndexCatalog(ctx, "tenant-a")
 	if err != nil {

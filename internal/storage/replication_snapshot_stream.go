@@ -172,6 +172,6 @@ func (s *FileStore) putReader(ctx context.Context, key string, reader io.Reader)
 	if err := writeReaderAtomicContext(ctx, filename, io.TeeReader(reader, digest), journal); err != nil {
 		return err
 	}
-	s.changed(key, fmt.Sprintf("%x", digest.Sum(nil)))
+	s.changed(key, fmt.Sprintf("%x", digest.Sum(nil)), false)
 	return ctx.Err()
 }

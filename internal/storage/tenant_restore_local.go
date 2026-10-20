@@ -222,6 +222,6 @@ func (files *FileStore) publishTenantDirectory(ctx context.Context, dir, targetK
 func (s *TenantStore) invalidateLocalRestoredTenant(tenantID string) {
 	s.invalidateTenantState(tenantID)
 	files := s.localFileStore()
-	files.changed(s.manifestKey(tenantID), "")
-	files.changed(s.tenantMetadataKey(tenantID), "")
+	files.changed(s.manifestKey(tenantID), "", false)
+	files.changed(s.tenantMetadataKey(tenantID), "", false)
 }

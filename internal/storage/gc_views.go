@@ -98,7 +98,7 @@ func (s *TenantStore) protectCatalogObjects(tenant string, catalog IndexCatalog)
 	}
 }
 
-func (r *fileRuntime) invalidateViewFile(key string) {
+func (r *fileRuntime) invalidateViewFile(key string, removed bool) {
 	for end := strings.LastIndexByte(key, '/'); end >= 0; end = strings.LastIndexByte(key[:end], '/') {
 		view := r.views[key[:end+1]]
 		if view == nil {
@@ -106,7 +106,11 @@ func (r *fileRuntime) invalidateViewFile(key string) {
 		}
 		delete(view.retired, key)
 		name := key[end+1:]
-		if name == "manifest.parquet" || strings.HasSuffix(name, "/catalog.parquet") || strings.HasSuffix(name, "/catalog.json") || name == "metadata.parquet" {
+		catalog := strings.HasSuffix(name, "/catalog.parquet") || strings.HasSuffix(name, "/catalog.json")
+		// Removing historical catalogs cannot introduce a reference. Keep
+		// publication invalidation, including version aliases and failed writes.
+		historicalRemoval := removed && (strings.HasPrefix(name, "indexes/parquet/versions/") || strings.HasPrefix(name, "snapshots/sharded/"))
+		if name == "manifest.parquet" || (catalog && !historicalRemoval) || name == "metadata.parquet" {
 			view.rootGeneration++
 		}
 	}

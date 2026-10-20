@@ -133,13 +133,13 @@ func (s *FileStore) OnChange(listener func(string)) func() {
 	return sync.OnceFunc(func() { r.mu.Lock(); delete(r.listeners, id); r.mu.Unlock() })
 }
 
-func (s *FileStore) changed(key, etag string) {
+func (s *FileStore) changed(key, etag string, removed bool) {
 	if s.runtime == nil {
 		return
 	}
 	s.runtime.mu.Lock()
 	s.runtime.generation++
-	s.runtime.invalidateViewFile(key)
+	s.runtime.invalidateViewFile(key, removed)
 	delete(s.runtime.walGenerations, key)
 	delete(s.runtime.etags, key)
 	if entry, ok := s.runtime.manifests[key]; ok {

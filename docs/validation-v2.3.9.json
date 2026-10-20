@@ -44,14 +44,14 @@
   },
   "performanceReview": {
     "status": "RANGE_PAGING_IMPLEMENTED_FINAL_SOURCE_VALIDATION_RUNNING",
-    "releaseBlocker": "Final main CI and original exact-tag release gates pending; the bounded-write regression is fixed under the explicitly enabled range layout",
+    "releaseBlocker": "GC historical-removal follow-up requires verification and source publication, then latest main CI and original exact-tag release gates",
     "sourcePublication": "User requested committing and pushing current source before completing the remaining fix; no release tag is authorized by this checkpoint",
     "currentVerification": {
       "compileAllPackages": "PASS",
       "vet": "PASS",
       "docs": "PASS",
       "boundedWriteRegression": "PASS; entity, forward edge and reverse edge each <=1024 rows",
-      "fullUnitAndRace": "Earlier functional candidate PASS; final source rerun RUNNING"
+      "fullUnitAndRace": "PASS exact17fd70f2; subsequent narrow GC follow-up pending"
     },
     "mainCI": {
       "commit": "17996b13e4b536a242188dd48edc98da79b77a95",
@@ -93,8 +93,8 @@
     "legacyIndexRebuildDowngradeProbe": "PASS with v2.3.8 source-built storage executable, GC, old write and new read/write; not whole WAL/Raft directory downgrade qualification",
     "targetedRace": "PASS; bounded rewrites, deep reads, split/empty/delete/reinsert, sparse query budgets, cancellation, CAS/ambiguous publication, GC and restore",
     "rangeEnabledDirectWalLoadRestart": "PASS in OrbStack",
-    "finalSourceUnit": "RUNNING",
-    "finalSourceRace": "RUNNING",
+    "finalSourceUnit": "PASS for 17fd70f2; HA214.673s/storage59.334s",
+    "finalSourceRace": "PASS for 17fd70f2; HA456.073s/storage365.114s",
     "benchmark": {
       "entities": [
         10000,
@@ -114,6 +114,18 @@
       "evidence": "docs/entity-range-paging-implementation.zh-CN.md"
     },
     "lowOccupancyMerge": "DEFERRED",
-    "originalReleaseGateDurationsUnchanged": true
+    "originalReleaseGateDurationsUnchanged": true,
+    "gcFollowUp": {
+      "status": "FOCUSED_RACE_PASS_FULL_SOURCE_VALIDATION_RUNNING",
+      "before": "Three stable failures: removing a historical catalog invalidated the current-root proof and deferred the remaining orphan files",
+      "fix": "Only historical catalog removals skip invalidation; every publication and mutable root deletion preserve the previous invalidation behavior",
+      "assertion": "One complete sweep after unpinning reclaims the old range page",
+      "focusedRace": {
+        "repetitions": 3,
+        "seconds": 52.372,
+        "scope": "GC, read views, root publication and retirement; narrow removal-only fix"
+      }
+    },
+    "realProtocol3RangeEnabled": "PASS for exact 17fd70f2 image; Go1.26.7 binary sha256 b35ea9829418df78b42d12c372f8d764728b0e57a43753ab57ec5d92a3ec77ef"
   }
 }

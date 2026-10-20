@@ -60,7 +60,7 @@ func BenchmarkLocalViewInvalidation(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				runtime.invalidateViewFile("test/tenants/tenant-0/indexes/catalog.parquet")
+				runtime.invalidateViewFile("test/tenants/tenant-0/indexes/catalog.parquet", false)
 			}
 		})
 	}

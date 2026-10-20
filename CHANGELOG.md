@@ -5,6 +5,9 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [2.3.9] - 2026-10-20
 
+- Reclaim unpinned historical index and snapshot files in one GC sweep;
+  historical removal no longer invalidates the current-root proof. Preserve
+  invalidation for every publication and for mutable-root removal.
 - Retry unpublished snapshot capture/build failures in default mode, including
   ordinary temporary I/O errors. Retain write backpressure and quorum reads;
   errors persisting or restoring durable Raft state still stop the node.

@@ -188,7 +188,7 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 		}
 	}
 	etag := ""
-	defer func() { s.changed(key, etag) }()
+	defer func() { s.changed(key, etag, false) }()
 	if err := s.journalObject(ctx, key); err != nil {
 		return ObjectMeta{}, err
 	}
@@ -271,7 +271,7 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	if view, ok := ctx.Value(gcViewKey{}).(*gcView); ok && !view.canDelete(key) {
 		return errGCViewPinned
 	}
-	defer s.changed(key, "")
+	defer s.changed(key, "", true)
 	journal := s.replicationJournal(ctx)
 	files, batched := ctx.Value(fileBatchKey{}).(*FileStore)
 	batched = batched && files == s && journal == nil

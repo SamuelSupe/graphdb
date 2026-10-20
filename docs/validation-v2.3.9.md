@@ -81,7 +81,9 @@ OrbStack Ubuntu arm64：全量 unit 和 vet 通过；全量 race 通过，最终
 
 [实现、兼容边界和基准](entity-range-paging-implementation.zh-CN.md)记录新布局。`GRAPHDB_INDEX_RANGE_PAGES` 默认关闭；所有相关节点完成读兼容升级后才开启写入。真实 v2.3.8 存储探针已通过重建旧布局后的读取、GC 和写入，再由新程序继续读取和写入。范围目录不能直接交给旧程序分页；首次旧程序互操作发现少返回，故不声明新写格式混部兼容。
 
-当前功能候选的全量 unit、vet 和 race 已通过一轮（HA unit 196.977 秒、race 453.573 秒；storage unit 56.559 秒、race 357.293 秒）。随后范围校验和批量读取边界作了补充，专项 race、备份恢复及旧 pack 兼容已通过；最终源码的整套 unit/race 正在重新执行，尚不记为完成。
+源码 `17fd70f2` 在 OrbStack 的最终全量 unit／vet／race 已通过（HA unit 214.673 秒、race 456.073 秒；storage unit 59.334 秒、race 365.114 秒）。Go 1.26.7 的容器和独立原生构建得到相同二进制 SHA256；开启范围页的真实 protocol 3 Raft／分片、迁移中断、滚动重启、GC 隔离、冷备份新目录恢复门禁通过。
+
+最后增加的一轮 GC 回收断言，连续三次复现历史目录删除误增 `rootGeneration`，导致同轮其余旧页延后。修复只区分历史目录的删除事件，所有发布（包括版本目录别名及失败写入）继续使原证明失效，当前可变根删除和 epoch 钉住也不变。强断言恢复为释放后单轮完整 GC 回收旧页；删除事件与发布事件区分后的 GC／read-view／根发布／retirement 专项三轮 race 已通过（52.372 秒）；该后续修复的完整 unit／vet／race 正在用 Go 1.26.7 重跑，不用旧源码的绿灯代替。
 
 开启范围页的真实 direct/WAL HTTP、负载与重启恢复门禁通过。10⁴/10⁵/10⁶ 实体的隔离基准均重写 1024 条、约 25 KiB 数据页；目录仍由约 25 KiB 增长到 176 KiB，不能声称整个 commit 恒定成本。
 
