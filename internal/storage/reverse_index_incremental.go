@@ -90,6 +90,21 @@ func (s *TenantStore) decorateReverseEdgeCatalog(
 ) {
 	for i := range catalog.EdgeShards {
 		spec := &catalog.EdgeShards[i]
+		if hasIndexRanges(spec.Objects) {
+			spec.RowCount = spec.EdgeCount
+			spec.Format = IndexFormatParquet
+			spec.Codec, spec.SchemaHash = parquetEdgeRangeCodec, parquetEdgeShardSchemaHash()
+			for j := range spec.Objects {
+				object := &spec.Objects[j]
+				object.Format, object.Codec, object.SchemaHash = IndexFormatParquet, parquetEdgeShardCodec, spec.SchemaHash
+				if object.Key == "" {
+					object.Key = s.reverseEdgeShardVersionKey(tenantID, catalog.Version, spec.RelationType, boundedPageObjectID(spec.Shard, object.ContentHash))
+				}
+			}
+			finishRangeBounds(spec.Objects)
+			spec.ContentHash = rangeObjectsHash(spec.Objects)
+			continue
+		}
 		key := s.reverseEdgeShardVersionKey(
 			tenantID,
 			catalog.Version,
@@ -97,7 +112,7 @@ func (s *TenantStore) decorateReverseEdgeCatalog(
 			spec.Shard,
 		)
 		spec.Format = IndexFormatParquet
-		spec.Codec = parquetEdgeShardCodec
+		spec.Codec = parquetEdgeSingleCodec
 		spec.RowCount = spec.EdgeCount
 		spec.SchemaHash = parquetEdgeShardSchemaHash()
 		spec.Objects = []IndexObject{{
@@ -124,7 +139,35 @@ func (s *TenantStore) writeChangedReverseEdgeShards(
 		byKey[edgeShardTargetKey(spec.RelationType, spec.Shard)] = i
 	}
 	changed := make([]EdgeShardData, 0, len(shards))
+	var bounded []EdgeShardData
 	for _, shard := range shards {
+		if shard.pageRole == "" {
+			continue
+		}
+		index, ok := byKey[edgeShardTargetKey(shard.RelationType, shard.Shard)]
+		if !ok {
+			continue
+		}
+		key := s.reverseEdgeShardVersionKey(tenantID, version, shard.RelationType, boundedPageObjectID(shard.Shard, edgeShardContentHash(shard)))
+		for _, object := range specs[index].Objects {
+			if object.Key == key {
+				shard.TenantID = tenantID
+				bounded = append(bounded, shard)
+				break
+			}
+		}
+	}
+	if err := s.runFileWriteJobs(ctx, len(bounded), func(workCtx context.Context, index int) error {
+		shard := bounded[index]
+		key := s.reverseEdgeShardVersionKey(tenantID, version, shard.RelationType, boundedPageObjectID(shard.Shard, edgeShardContentHash(shard)))
+		return s.putParquetEdgeShardObject(workCtx, key, tenantID, shard, false)
+	}); err != nil {
+		return err
+	}
+	for _, shard := range shards {
+		if shard.pageRole != "" {
+			continue
+		}
 		index, ok := byKey[edgeShardTargetKey(
 			shard.RelationType,
 			shard.Shard,

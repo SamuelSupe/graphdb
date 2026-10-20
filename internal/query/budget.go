@@ -40,7 +40,25 @@ func newBudget(parent context.Context, request Request, profiler *profiler, look
 		ctx: ctx, cancel: cancel, limit: limit, profiler: profiler,
 		lookup: lookup, entities: entities, planner: planner,
 	}
+	b.ctx = context.WithValue(ctx, indexScanCostKey{}, func(cost int) error {
+		b.scanned += cost
+		return b.add(cost)
+	})
 	return b, cancel
+}
+
+type indexScanCostKey struct{}
+
+// ConsumeIndexScanCost charges candidates discarded inside an index iterator,
+// before the query's result callback can account for them. Call synchronously.
+func ConsumeIndexScanCost(ctx context.Context, cost int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if consume, ok := ctx.Value(indexScanCostKey{}).(func(int) error); ok {
+		return consume(cost)
+	}
+	return nil
 }
 
 func normalizedCostLimit(limit int) int {

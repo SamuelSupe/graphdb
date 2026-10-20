@@ -75,14 +75,27 @@ func entityPagePackIDs(pages []EntityPageSpec, packPages bool, maxBytes int64) m
 	}
 	items := make([]indexPackItem, 0, len(pages))
 	for _, page := range pages {
+		if hasIndexRanges(page.Objects) {
+			continue
+		}
 		items = append(items, indexPackItem{ID: page.Shard, Group: "entities", Rows: page.EntityCount, Bytes: page.estimatedBytes})
 	}
 	return indexPackMap(planIndexPacksWithMaxBytes(items, maxBytes))
 }
 
 func entityPageDataPackGroups(pages []EntityPageData, packPages bool, maxBytes int64) []entityPageDataPackGroup {
+	var bounded []entityPageDataPackGroup
+	var legacy []EntityPageData
+	for _, page := range pages {
+		if page.pageRole != "" {
+			bounded = append(bounded, entityPageDataPackGroup{ID: boundedPageObjectID(page.Shard, entityPageContentHash(page)), Pages: []EntityPageData{page}})
+		} else {
+			legacy = append(legacy, page)
+		}
+	}
+	pages = legacy
 	if !packPages {
-		out := make([]entityPageDataPackGroup, 0, len(pages))
+		out := bounded
 		for _, page := range pages {
 			out = append(out, entityPageDataPackGroup{ID: page.Shard, Pages: []EntityPageData{page}})
 		}
@@ -95,7 +108,7 @@ func entityPageDataPackGroups(pages []EntityPageData, packPages bool, maxBytes i
 		byShard[page.Shard] = page
 	}
 	groups := planIndexPacksWithMaxBytes(items, maxBytes)
-	out := make([]entityPageDataPackGroup, 0, len(groups))
+	out := bounded
 	for _, group := range groups {
 		packed := entityPageDataPackGroup{ID: group.ID}
 		for _, item := range group.Items {

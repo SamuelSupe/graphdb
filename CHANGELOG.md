@@ -16,7 +16,17 @@ versioning; release tags and binaries expose the exact build commit and date.
 - Build default Raft snapshots in the background and persist large payloads outside the control loop while retaining legacy inline wire compatibility. Keep preparation retries; Raft persistence and restore failures remain fatal.
 - Seek unsorted field-index and materialized-neighbor pages; bound and share decoded postings. Honor graph-cache TTL and keep directory creation barriers exclusive while validating existing directories concurrently.
 - Release postings after writing each field during full rebuild, and move migration builds/network writes and membership disk transactions outside their shared control locks.
-- Fixed 64-bucket write amplification remains an open release blocker; this candidate is not qualified for publication yet.
+- Add opt-in bounded entity, forward-edge and reverse-edge range pages within
+  the existing 64 logical buckets. Rewrite only touched pages, split at 1024
+  records or an 8 MiB encoded target, and retain oversized single records.
+- Seek physical pages for point/batch reads, scans and neighbor pagination;
+  charge discarded candidates to query budgets and retain cancellation, CAS,
+  read-view, GC and restore guarantees. Flat directory cost still grows with
+  page count. Low-occupancy page merging is deferred.
+- Keep `GRAPHDB_INDEX_RANGE_PAGES=false` through the reader rollout. Enable
+  explicitly after all readers and replicas upgrade; rebuild to the legacy
+  index layout before a version downgrade. Old binaries cannot safely page
+  range catalogs. Release soaks and the protocol-3 gate exercise the new mode.
 
 - Roll back and record deterministic HTTP application failures without poisoning
   later Raft commands; isolate failed entries from successful batch neighbours.

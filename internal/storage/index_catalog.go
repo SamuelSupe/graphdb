@@ -93,6 +93,7 @@ type SecondaryIndex struct {
 }
 
 type EdgeShardData struct {
+	pageRole           string
 	LayoutVersion      int          `json:"layout_version,omitempty"`
 	TenantID           string       `json:"tenant_id,omitempty"`
 	RelationType       string       `json:"relation_type"`
@@ -107,6 +108,7 @@ type EdgeShardData struct {
 }
 
 type EntityPageData struct {
+	pageRole           string
 	LayoutVersion      int            `json:"layout_version,omitempty"`
 	TenantID           string         `json:"tenant_id,omitempty"`
 	Shard              string         `json:"shard"`

@@ -11,6 +11,11 @@ import (
 )
 
 type PersistedIndexLookup struct {
+	reverseOnce    sync.Once
+	reverseErr     error
+	compiledOnce   sync.Once
+	compiled       *compiledScanCatalog
+	compiledErr    error
 	Store          *TenantStore
 	TenantID       string
 	Version        int64
@@ -57,34 +62,10 @@ func (l *PersistedIndexLookup) OutEdges(ctx context.Context, from string, allowe
 		return nil, false, nil
 	}
 	edges := make([]graph.Edge, 0)
-	for _, shardID := range indexShardIDCandidates(from) {
-		relationTypes := l.relationTypesForShard(shardID, allowed)
-		for i, relationType := range relationTypes {
-			if i == 0 {
-				continue
-			}
-			if spec, ok := l.catalogEdgeShardSpec(relationType, shardID); ok && specFormat(spec.Format) == IndexFormatParquet {
-				l.Store.prefetchParquetEdgeShardObject(ctx, l.TenantID, l.Version, spec)
-			}
-		}
-		for _, relationType := range relationTypes {
-			spec, ok := l.catalogEdgeShardSpec(relationType, shardID)
-			if !ok {
-				return nil, false, nil
-			}
-			if specFormat(spec.Format) == IndexFormatParquet {
-				shardEdges, ok, err := l.outEdgesFromParquetShard(ctx, spec, from, allowed)
-				if err != nil || !ok {
-					return nil, ok, err
-				}
-				edges = append(edges, shardEdges...)
-				continue
-			}
-			return nil, false, nil
-		}
+	ok, err := l.visitRangeEdges(ctx, from, allowed, "", "out", func(edge graph.Edge, _ string) (bool, error) { edges = append(edges, edge); return true, nil })
+	if err != nil || !ok {
+		return nil, ok, err
 	}
-	edges = uniqueEdgesByID(edges)
-	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
 	return edges, true, nil
 }
 
@@ -93,30 +74,10 @@ func (l *PersistedIndexLookup) InEdges(ctx context.Context, to string, allowed m
 		return nil, false, nil
 	}
 	edges := make([]graph.Edge, 0)
-	for _, shardID := range indexShardIDCandidates(to) {
-		relationTypes := l.reverseRelationTypesForShard(shardID, allowed)
-		for i, relationType := range relationTypes {
-			if i == 0 {
-				continue
-			}
-			if spec, ok := l.reverseEdgeShardSpec(relationType, shardID); ok && specFormat(spec.Format) == IndexFormatParquet {
-				l.Store.prefetchParquetEdgeShardObject(ctx, l.TenantID, l.Version, spec)
-			}
-		}
-		for _, relationType := range relationTypes {
-			spec, ok := l.reverseEdgeShardSpec(relationType, shardID)
-			if !ok || specFormat(spec.Format) != IndexFormatParquet {
-				return nil, false, nil
-			}
-			shardEdges, ok, err := l.inEdgesFromParquetShard(ctx, spec, to, allowed)
-			if err != nil || !ok {
-				return nil, ok, err
-			}
-			edges = append(edges, shardEdges...)
-		}
+	ok, err := l.visitRangeEdges(ctx, to, allowed, "", "in", func(edge graph.Edge, _ string) (bool, error) { edges = append(edges, edge); return true, nil })
+	if err != nil || !ok {
+		return nil, ok, err
 	}
-	edges = uniqueEdgesByID(edges)
-	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
 	return edges, true, nil
 }
 
@@ -140,13 +101,27 @@ func (l *PersistedIndexLookup) GetEntity(ctx context.Context, id string, fields 
 	if l == nil || l.Catalog.Version != l.Version {
 		return graph.Entity{}, false, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return graph.Entity{}, false, err
+	}
+	if err := l.compileCatalog(); err != nil {
+		return graph.Entity{}, false, nil
+	}
+	for _, shard := range indexShardIDCandidates(id) {
+		if spec, ok := l.catalogEntityPageSpec(shard); ok && hasIndexRanges(spec.Objects) {
+			entity, found, err := l.getEntityFromRangePage(ctx, id, fields, spec)
+			if err != nil || found {
+				return entity, found, err
+			}
+		}
+	}
 	if l.Store.UseEntityRecordsForRead {
 		record, err := l.loadEntityRecord(ctx, id)
 		if err != nil && ctx.Err() != nil {
 			return graph.Entity{}, false, err
 		}
 		if err == nil && l.entityRecordMatchesCatalog(record, id) {
-			if spec, ok := l.catalogEntityPageSpec(record.Page); ok && specFormat(spec.Format) == IndexFormatParquet {
+			if spec, ok := l.catalogEntityPageSpec(record.Page); ok && !hasIndexRanges(spec.Objects) && specFormat(spec.Format) == IndexFormatParquet {
 				entity, found, err := l.getEntityFromParquetPage(ctx, record, fields, spec)
 				if err != nil || found {
 					return entity, found, err
@@ -155,7 +130,7 @@ func (l *PersistedIndexLookup) GetEntity(ctx context.Context, id string, fields 
 		}
 	}
 	for _, shard := range indexShardIDCandidates(id) {
-		if spec, ok := l.catalogEntityPageSpec(shard); ok {
+		if spec, ok := l.catalogEntityPageSpec(shard); ok && !hasIndexRanges(spec.Objects) {
 			entity, found, err := l.getEntityByIDFromParquetPage(ctx, id, fields, spec)
 			if err != nil || found {
 				return entity, found, err
@@ -431,4 +406,9 @@ func relationAllowedForLookup(relationType string, allowed map[string]struct{}) 
 	}
 	_, ok := allowed[relationType]
 	return ok
+}
+
+func (l *PersistedIndexLookup) compileCatalog() error {
+	l.compiledOnce.Do(func() { l.compiled, l.compiledErr = l.Store.compiledScanCatalog(l.TenantID, l.Catalog, "") })
+	return l.compiledErr
 }

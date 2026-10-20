@@ -20,17 +20,7 @@ func (l *PersistedIndexLookup) VisitBothEdges(
 		l.ReverseCatalog.Version != l.Version {
 		return false, nil
 	}
-	out, ok, err := l.outEdgeVisitSlices(ctx, entityID, allowed)
-	if err != nil || !ok {
-		return ok, err
-	}
-	in, ok, err := l.inEdgeVisitSlices(ctx, entityID, allowed)
-	if err != nil || !ok {
-		return ok, err
-	}
-	return visitSortedBothEdgeSlices(
-		ctx, out, in, startEdgeID, visit,
-	)
+	return l.visitRangeEdges(ctx, entityID, allowed, startEdgeID, "both", visit)
 }
 
 func visitSortedBothEdgeSlices(

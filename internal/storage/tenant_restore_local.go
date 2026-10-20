@@ -71,6 +71,7 @@ func (s *TenantStore) restoreLocalTenantBackupTask(ctx context.Context, task Tas
 	stage.InstanceID = s.InstanceID
 	// Constructor defaults enable per-entity files, unlike the service defaults.
 	// Preserve the live index layout and pack budget during the staged rebuild.
+	stage.WriteIndexRangePages = s.WriteIndexRangePages
 	stage.WriteEntityRecords = s.WriteEntityRecords
 	stage.UseEntityRecordsForRead = s.UseEntityRecordsForRead
 	stage.EntityPagePackMaxBytes = s.EntityPagePackMaxBytes

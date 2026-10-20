@@ -14,6 +14,7 @@ import (
 func TestCopyTenantObjectsDryRunAndCopy(t *testing.T) {
 	ctx := context.Background()
 	source := NewTenantStore(NewMemoryStore(), "source")
+	source.WriteIndexRangePages = true
 	target := NewTenantStore(NewMemoryStore(), "target")
 	if _, err := source.CreateTenant(ctx, "tenant-a", TenantCreateOptions{Name: "Tenant A"}); err != nil {
 		t.Fatalf("create tenant: %v", err)

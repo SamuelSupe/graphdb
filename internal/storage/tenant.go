@@ -138,11 +138,13 @@ type TenantStore struct {
 	TaskPersistenceTimeout   time.Duration
 	MaxRetries               int
 
-	MaxWriteCacheTenants       int
-	MaxMaintenanceBytes        int64
-	MaxWriteCacheBytes         int64
-	EntityPagePackMaxBytes     int64
-	IndexPrefetchTimeout       time.Duration
+	MaxWriteCacheTenants   int
+	MaxMaintenanceBytes    int64
+	MaxWriteCacheBytes     int64
+	EntityPagePackMaxBytes int64
+	IndexPrefetchTimeout   time.Duration
+	// WriteIndexRangePages requires all readers upgraded; false writes the downgrade-compatible layout.
+	WriteIndexRangePages       bool
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool

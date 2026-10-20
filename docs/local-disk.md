@@ -133,7 +133,15 @@ file access and other caches. Validate the actual dataset with maintenance enabl
 
 ## Ingestion
 
-Entity page packing defaults to a 32 MiB estimated-memory budget
+`GRAPHDB_INDEX_RANGE_PAGES=true` enables bounded ID range pages for entities,
+forward edges and reverse edges: at most 1024 records and an 8 MiB encoded target
+per file; one oversized record remains legal. The default is `false` for a staged
+reader upgrade. Upgrade every reader and replica before enabling it, then rebuild
+indexes to migrate existing large pages. Before downgrading, disable the flag and
+rebuild every tenant with the new binary; old binaries cannot safely paginate a
+range catalog. See [range page implementation and rollout](entity-range-paging-implementation.zh-CN.md).
+
+With the legacy write layout, entity page packing defaults to a 32 MiB estimated-memory budget
 (`GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES`). One logical shard can exceed this budget.
 The decoded entity-page cache is capped at half of the configured
 `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES`. The decoded edge and field-postings caches each use a quarter of that configured budget. Field postings are immutable, bounded by LRU capacity, and shared across pages at the same catalog version.

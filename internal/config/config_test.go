@@ -468,6 +468,23 @@ func TestLoadParsesIndexEntityRecordsConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRangePagesRequireExplicitEnable(t *testing.T) {
+	setLocalConfigEnv(t)
+	for _, value := range []string{"", "true", "false", "invalid"} {
+		t.Setenv("GRAPHDB_INDEX_RANGE_PAGES", value)
+		cfg, err := Load()
+		if value == "invalid" {
+			if err == nil {
+				t.Fatal("invalid range-page rollout toggle accepted")
+			}
+			continue
+		}
+		if err != nil || cfg.IndexRangePages != (value == "true") {
+			t.Fatalf("range-page toggle %q: enabled=%v err=%v", value, cfg.IndexRangePages, err)
+		}
+	}
+}
+
 func TestLoadParsesIngestCollectorStatusMaterializedConfig(t *testing.T) {
 	setLocalConfigEnv(t)
 	cfg, err := Load()

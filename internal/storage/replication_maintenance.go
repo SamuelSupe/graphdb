@@ -156,6 +156,7 @@ func (s *ReplicatedMaintenanceSource) Build(ctx context.Context, maxBytes int64)
 	}
 	defer files.Close()
 	stage := NewTenantStoreWithOptions(files, s.store.Prefix, TenantStoreOptions{InstanceID: s.store.InstanceID, MaxWriteCacheBytes: s.store.MaxWriteCacheBytes})
+	stage.WriteIndexRangePages = s.store.WriteIndexRangePages
 	stage.WriteEntityRecords = s.store.WriteEntityRecords
 	stage.UseEntityRecordsForRead = s.store.UseEntityRecordsForRead
 	stage.EntityPagePackMaxBytes = s.store.EntityPagePackMaxBytes

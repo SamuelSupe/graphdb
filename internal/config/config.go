@@ -84,6 +84,7 @@ type Config struct {
 	ReaderIndexCacheEntries           int
 	ReaderIndexCacheMaxBytes          int64
 	ReaderIndexCacheDir               string
+	IndexRangePages                   bool
 	IndexEntityRecords                bool
 	EntityPagePackMaxBytes            int64
 	FaultObjectReadDelay              time.Duration
@@ -364,6 +365,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.ReaderIndexCacheDir = strings.TrimSpace(os.Getenv("GRAPHDB_READER_INDEX_CACHE_DIR"))
+	if err := loadBoolEnv("GRAPHDB_INDEX_RANGE_PAGES", &cfg.IndexRangePages); err != nil {
+		return Config{}, err
+	}
 	if err := loadBoolEnv("GRAPHDB_INDEX_ENTITY_RECORDS", &cfg.IndexEntityRecords); err != nil {
 		return Config{}, err
 	}

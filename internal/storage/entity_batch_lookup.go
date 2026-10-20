@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -17,9 +18,31 @@ func (l *PersistedIndexLookup) GetEntities(ctx context.Context, ids []string, fi
 	if len(ids) == 0 {
 		return map[string]graph.Entity{}, true, nil
 	}
+	if err := l.compileCatalog(); err != nil {
+		return nil, false, nil
+	}
 	groups := map[string][]string{}
+	specs := map[string]EntityPageSpec{}
+	parents := map[string]EntityPageSpec{}
+	rangeIndexes := map[string]int{}
 	for _, id := range ids {
-		groups[entityShardID(id)] = append(groups[entityShardID(id)], id)
+		for _, shard := range indexShardIDCandidates(id) {
+			spec, exists := l.catalogEntityPageSpec(shard)
+			if !exists {
+				continue
+			}
+			key := shard
+			if hasIndexRanges(spec.Objects) {
+				n := rangeObjectIndex(spec.Objects, id)
+				object := spec.Objects[n]
+				key = object.Key
+				parents[key] = spec
+				rangeIndexes[key] = n
+				spec = entityRangeSpec(spec, object)
+			}
+			specs[key] = spec
+			groups[key] = append(groups[key], id)
+		}
 	}
 
 	out := make(map[string]graph.Entity, len(ids))
@@ -42,7 +65,7 @@ func (l *PersistedIndexLookup) GetEntities(ctx context.Context, ids []string, fi
 	}
 
 	for shard, shardIDs := range groups {
-		if _, ok := l.catalogEntityPageSpec(shard); !ok {
+		if _, ok := specs[shard]; !ok {
 			return nil, false, nil
 		}
 		shard := shard
@@ -57,7 +80,17 @@ func (l *PersistedIndexLookup) GetEntities(ctx context.Context, ids []string, fi
 				setErr(ctx.Err())
 				return
 			}
-			page, err := l.loadEntityPage(ctx, shard)
+			var page EntityPageData
+			var available bool
+			var err error
+			if parent, ranged := parents[shard]; ranged {
+				page, available, err = l.Store.borrowEntityRange(ctx, l.TenantID, l.Version, parent, rangeIndexes[shard])
+			} else {
+				page, _, available, err = l.Store.borrowValidatedParquetEntityPageObject(ctx, l.TenantID, l.Version, specs[shard])
+			}
+			if !available && err == nil {
+				err = ErrNotFound
+			}
 			if errors.Is(err, ErrNotFound) {
 				setUnavailable()
 				return
@@ -68,11 +101,11 @@ func (l *PersistedIndexLookup) GetEntities(ctx context.Context, ids []string, fi
 			}
 			local := map[string]graph.Entity{}
 			for _, id := range shardIDs {
-				entity, ok := l.entityFromCachedPage(shard, id, page)
-				if !ok {
-					setUnavailable()
+				n := sort.Search(len(page.Entities), func(n int) bool { return page.Entities[n].ID >= id })
+				if n == len(page.Entities) || page.Entities[n].ID != id {
 					continue
 				}
+				entity := page.Entities[n]
 				local[id] = trimEntityFields(entity, fields)
 			}
 			mu.Lock()
@@ -88,6 +121,11 @@ func (l *PersistedIndexLookup) GetEntities(ctx context.Context, ids []string, fi
 	}
 	if unavailable {
 		return nil, false, nil
+	}
+	for _, id := range ids {
+		if _, exists := out[id]; !exists {
+			return nil, false, nil
+		}
 	}
 	return out, true, nil
 }

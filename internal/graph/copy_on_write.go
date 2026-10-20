@@ -60,7 +60,6 @@ func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 	fingerprint, fingerprintReady := g.contentFingerprintState()
 	logicalHashCache := g.shareLogicalHashCache()
 	clone := &Graph{
-		entityPartitions:        g.shareEntityPartitions(),
 		Version:                 g.Version,
 		CITypes:                 storageMutationMap(g.CITypes, impact.ciTypes),
 		Entities:                g.Entities.Clone(),

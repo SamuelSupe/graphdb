@@ -55,6 +55,13 @@ func (s *entityPageVisitSession) objectKey(spec EntityPageSpec) string {
 }
 
 func (s *entityPageVisitSession) visitPage(ctx context.Context, spec EntityPageSpec, visit func(EntityPageData) error) (available bool, skipped bool, err error) {
+	if hasIndexRanges(spec.Objects) {
+		page, ok, err := s.store.loadEntityRangePage(ctx, s.tenantID, s.version, spec)
+		if err != nil || !ok {
+			return ok, false, err
+		}
+		return true, false, visit(page)
+	}
 	key := s.objectKey(spec)
 	s.stats.markObject(key)
 	if _, _, hit := s.store.borrowCachedEntityPage(s.tenantID, s.version, key, spec.ContentHash, spec.SchemaHash); hit {

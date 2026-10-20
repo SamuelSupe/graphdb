@@ -175,6 +175,11 @@ func (s *TenantStore) auditSecondaryIndexObjects(ctx context.Context, tenantID s
 
 func (s *TenantStore) auditIndexEdgeShardObjects(ctx context.Context, tenantID string, version int64, spec EdgeShard, report *IntegrityAuditReport) {
 	resourceID := spec.RelationType + "/" + spec.Shard
+	if hasIndexRanges(spec.Objects) {
+		if err := validateRangeObjects(spec.Objects, spec.EdgeCount, spec.ContentHash); err != nil {
+			report.addIssue("edge_range_manifest_invalid", "error", "edge_shard", resourceID, "", err.Error())
+		}
+	}
 	for _, object := range spec.Objects {
 		data, _, ok := s.auditReadObject(ctx, object.Key, "edge_shard", true, report)
 		if !ok {
@@ -187,7 +192,11 @@ func (s *TenantStore) auditIndexEdgeShardObjects(ctx context.Context, tenantID s
 		}
 		contentHash := edgeShardContentHash(shard)
 		report.updateLastCheck(len(shard.Edges), contentHash, parquetEdgeShardSchemaHash())
-		if len(shard.Edges) != spec.EdgeCount {
+		expectedRows := spec.EdgeCount
+		if hasIndexRanges(spec.Objects) {
+			expectedRows = object.RowCount
+		}
+		if len(shard.Edges) != expectedRows {
 			report.addIssue("edge_shard_row_count_mismatch", "error", "edge_shard", resourceID, object.Key, "edge shard row count does not match catalog")
 		}
 		if object.ContentHash != "" && contentHash != object.ContentHash {
@@ -197,6 +206,11 @@ func (s *TenantStore) auditIndexEdgeShardObjects(ctx context.Context, tenantID s
 }
 
 func (s *TenantStore) auditIndexEntityPageObjects(ctx context.Context, tenantID string, version int64, spec EntityPageSpec, expected map[string]entityRecordExpectation, report *IntegrityAuditReport) {
+	if hasIndexRanges(spec.Objects) {
+		if err := validateRangeObjects(spec.Objects, spec.EntityCount, spec.ContentHash); err != nil {
+			report.addIssue("entity_range_manifest_invalid", "error", "entity_page", spec.Shard, "", err.Error())
+		}
+	}
 	for _, object := range spec.Objects {
 		data, meta, ok := s.auditReadObject(ctx, object.Key, "entity_page", true, report)
 		if !ok {
@@ -209,7 +223,11 @@ func (s *TenantStore) auditIndexEntityPageObjects(ctx context.Context, tenantID 
 		}
 		contentHash := entityPageContentHash(page)
 		report.updateLastCheck(len(page.Entities), contentHash, parquetEntityPageSchemaHash())
-		if len(page.Entities) != spec.EntityCount {
+		expectedRows := spec.EntityCount
+		if hasIndexRanges(spec.Objects) {
+			expectedRows = object.RowCount
+		}
+		if len(page.Entities) != expectedRows {
 			report.addIssue("entity_page_row_count_mismatch", "error", "entity_page", spec.Shard, object.Key, "entity page row count does not match catalog")
 		}
 		if object.ContentHash != "" && contentHash != object.ContentHash {

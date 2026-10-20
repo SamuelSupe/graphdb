@@ -30,7 +30,8 @@
 | `GRAPHDB_INGEST_WAL_DIR` | 默认 `<data-dir>/wal/ingest` |
 | `GRAPHDB_READER_CACHE_MAX_BYTES` | 默认 512 MiB |
 | `GRAPHDB_READER_CACHE_MAX_TENANTS` | 默认 64 |
-| `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES` | 默认 32 MiB，限制合并实体页的估算内存；单个逻辑分片可以超过此值 |
+| `GRAPHDB_INDEX_RANGE_PAGES` | 默认 `false`；所有读节点和副本升级后显式开启，实体、正向边、反向边按 ID 范围分页，每页最多 1024 条、编码目标 8 MiB，单条超大记录允许独立成页 |
+| `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES` | 仅旧写布局生效；默认 32 MiB，限制合并实体页的估算内存；旧单个逻辑分片可以超过此值 |
 | `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES` | 默认 256 MiB；解码实体页缓存另受该值一半的上限约束 |
 
 文件系统必须支持文件锁、原子重命名及文件/目录同步。不支持网络共享目录、多进程共享目录，
@@ -294,3 +295,5 @@ compact。已持久化 PREPARED 的组保留原子发布，不能拆开。
 全量索引重建逐字段写入并释放 postings，复用 kind 的 ID 顺序，schema 与显式重复定义只扫描一次。输出所有索引字段仍须处理相应字段值，不承诺重建耗时与字段数无关或整个过程恒定内存。
 
 固定 64 桶导致的实体页／边分片写放大仍在处理；缓存、WAL 和重建修复并未解决它。其有界写入回归通过前，发行资格保持未完成。
+
+范围页必须分两阶段启用：先升级所有读取节点和 Raft 副本，再配置 `GRAPHDB_INDEX_RANGE_PAGES=true` 并重建索引。旧二进制不能安全分页新范围目录。降级前用新二进制关闭该开关，逐租户重建索引并验证，再切换旧程序。详见[实现与启用说明](entity-range-paging-implementation.zh-CN.md)。

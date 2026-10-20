@@ -117,6 +117,32 @@ func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, 
 		if !ok {
 			return EdgeScanResult{}, false, nil
 		}
+		if hasIndexRanges(spec.Objects) {
+			after := ""
+			prefix := target.RelationType + "\x00" + target.Shard + "\x00"
+			if strings.HasPrefix(cursor.After, prefix) {
+				after = strings.TrimPrefix(cursor.After, prefix)
+			}
+			for n := rangeObjectIndex(spec.Objects, after); n < len(spec.Objects); n++ {
+				rows, ok, err := s.borrowEdgeRange(ctx, tenantID, version, spec, n)
+				if err != nil || !ok {
+					return EdgeScanResult{}, false, err
+				}
+				for _, edge := range rows {
+					if err := ctx.Err(); err != nil {
+						return EdgeScanResult{}, false, err
+					}
+					if !edgeMatchesScan(edge, options) || scanKey(target.RelationType+"\x00"+target.Shard, edge.ID) <= cursor.After {
+						continue
+					}
+					items = append(items, edge)
+					if len(items) > normalizedScanLimit(options.Limit) {
+						return edgeScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
+					}
+				}
+			}
+			continue
+		}
 		if specFormat(spec.Format) == IndexFormatParquet {
 			if i+1 < len(targets) {
 				nextTarget := targets[i+1]

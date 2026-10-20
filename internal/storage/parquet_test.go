@@ -964,12 +964,12 @@ func assertCatalogParquet(t *testing.T, catalog IndexCatalog) {
 		}
 	}
 	for _, page := range catalog.EntityPages {
-		if page.Format != IndexFormatParquet || page.Codec != parquetEntityPageCodec || len(page.Objects) != 1 || page.SchemaHash == "" {
+		if page.Format != IndexFormatParquet || page.Codec != parquetEntitySingleCodec || len(page.Objects) != 1 || page.SchemaHash == "" {
 			t.Fatalf("page spec not parquet-ready: %#v", page)
 		}
 	}
 	for _, shard := range catalog.EdgeShards {
-		if shard.Format != IndexFormatParquet || shard.Codec != parquetEdgeShardCodec || len(shard.Objects) != 1 || shard.Objects[0].Format != IndexFormatParquet {
+		if shard.Format != IndexFormatParquet || shard.Codec != parquetEdgeSingleCodec || len(shard.Objects) != 1 || shard.Objects[0].Format != IndexFormatParquet {
 			t.Fatalf("edge shard should be parquet-ready: %#v", shard)
 		}
 	}

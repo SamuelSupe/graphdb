@@ -44,6 +44,21 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 	edgePackIDs := edgeShardPackIDs(catalog.EdgeShards)
 	for i := range catalog.EdgeShards {
 		shard := &catalog.EdgeShards[i]
+		if hasIndexRanges(shard.Objects) {
+			shard.RowCount = shard.EdgeCount
+			shard.Format = IndexFormatParquet
+			shard.Codec, shard.SchemaHash = parquetEdgeRangeCodec, parquetEdgeShardSchemaHash()
+			for j := range shard.Objects {
+				object := &shard.Objects[j]
+				object.Format, object.Codec, object.SchemaHash = IndexFormatParquet, parquetEdgeShardCodec, shard.SchemaHash
+				if object.Key == "" {
+					object.Key = s.parquetEdgeShardVersionKey(tenantID, catalog.Version, shard.RelationType, boundedPageObjectID(shard.Shard, object.ContentHash))
+				}
+			}
+			finishRangeBounds(shard.Objects)
+			shard.ContentHash = rangeObjectsHash(shard.Objects)
+			continue
+		}
 		shard.Format = IndexFormatParquet
 		shard.RowCount = shard.EdgeCount
 		packID := edgePackIDs[shard.RelationType+"\x00"+shard.Shard]
@@ -51,16 +66,31 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 		if packID != "" && packID != shard.Shard {
 			key = s.parquetEdgeShardPackVersionKey(tenantID, catalog.Version, shard.RelationType, packID)
 		}
-		shard.Codec = parquetEdgeShardCodec
+		shard.Codec = parquetEdgeSingleCodec
 		shard.SchemaHash = parquetEdgeShardSchemaHash()
 		shard.Objects = []IndexObject{{Role: "shard", Key: key, Format: IndexFormatParquet, Codec: parquetEdgeShardCodec, RowCount: shard.EdgeCount, ContentHash: shard.ContentHash, SchemaHash: shard.SchemaHash}}
 	}
 	entityPackIDs := entityPagePackIDs(catalog.EntityPages, !s.WriteEntityRecords, s.EntityPagePackMaxBytes)
 	for i := range catalog.EntityPages {
 		page := &catalog.EntityPages[i]
+		if hasIndexRanges(page.Objects) {
+			page.RowCount = page.EntityCount
+			page.Format = IndexFormatParquet
+			page.Codec, page.SchemaHash = parquetEntityRangeCodec, parquetEntityPageSchemaHash()
+			for j := range page.Objects {
+				object := &page.Objects[j]
+				object.Format, object.Codec, object.SchemaHash = IndexFormatParquet, parquetEntityPageCodec, page.SchemaHash
+				if object.Key == "" {
+					object.Key = s.parquetEntityPageVersionKey(tenantID, catalog.Version, boundedPageObjectID(page.Shard, object.ContentHash))
+				}
+			}
+			finishRangeBounds(page.Objects)
+			page.ContentHash = rangeObjectsHash(page.Objects)
+			continue
+		}
 		page.Format = IndexFormatParquet
 		page.RowCount = page.EntityCount
-		page.Codec = parquetEntityPageCodec
+		page.Codec = parquetEntitySingleCodec
 		page.SchemaHash = parquetEntityPageSchemaHash()
 		packID := entityPackIDs["entities\x00"+page.Shard]
 		key := s.parquetEntityPageVersionKey(tenantID, catalog.Version, page.Shard)

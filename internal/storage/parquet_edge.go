@@ -79,6 +79,9 @@ func (s *TenantStore) writeParquetEdgeShardGroups(ctx context.Context, tenantID 
 		pack := mergeEdgeShardPack(group)
 		pack.TenantID = tenantID
 		key := s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, pack.Shard)
+		if pack.pageRole != "" {
+			key = s.parquetEdgeShardVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
+		}
 		if len(group.Shards) > 1 {
 			key = s.parquetEdgeShardPackVersionKey(tenantID, pack.Version, pack.RelationType, group.ID)
 			if checkExisting {
@@ -691,6 +694,9 @@ func (l *PersistedIndexLookup) inEdgesFromParquetShard(ctx context.Context, spec
 }
 
 func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID string, version int64, spec EdgeShard) (EdgeShardData, bool, error) {
+	if hasIndexRanges(spec.Objects) {
+		return s.loadEdgeRangePage(ctx, tenantID, version, spec)
+	}
 	key := firstIndexObjectKey(spec.Objects, "shard", s.parquetEdgeShardVersionKey(tenantID, version, spec.RelationType, spec.Shard))
 	if exclusiveFileStore(s.Objects) != nil {
 		releaseDecode, err := acquireParquetDecode(ctx)

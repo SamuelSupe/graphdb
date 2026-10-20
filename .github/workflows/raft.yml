@@ -65,6 +65,7 @@ jobs:
       - name: Run protocol 3 GC isolation and rolling restart gate
         env:
           GRAPHDB_GATE_IMAGE: graphdb:raft-gate
+          GRAPHDB_INDEX_RANGE_PAGES: 'true'
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate/protocol3
           GRAPHDB_GATE_ENHANCED: 'true'
           GRAPHDB_GATE_PROTOCOL_VERSION: '3'

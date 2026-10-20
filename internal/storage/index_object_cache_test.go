@@ -280,7 +280,7 @@ func TestIndexObjectCacheAvoidsRepeatedEntityPageReadsAndIsolatesResults(t *test
 			}
 		}
 	}
-	pageKey := store.parquetEntityPageVersionKey("tenant-a", catalog.Version, entityShardID(ids[0]))
+	pageKey := requireIndexObjectKey(t, requireEntityPageSpec(t, catalog, entityShardID(ids[0])).Objects, "page")
 	if got := counting.GetWithMetaCount(pageKey); got != 1 {
 		t.Fatalf("entity page GetWithMeta count = %d, want one object-store read", got)
 	}

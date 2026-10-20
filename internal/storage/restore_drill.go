@@ -327,6 +327,7 @@ func (s *TenantStore) restoreDrillTargetStore(targetPrefix string, objects Objec
 	target.InstanceID = s.InstanceID
 	target.TaskPersistenceTimeout = s.TaskPersistenceTimeout
 	target.IndexPrefetchTimeout = s.IndexPrefetchTimeout
+	target.WriteIndexRangePages = s.WriteIndexRangePages
 	target.MaxRetries = s.MaxRetries
 	target.MaxMaintenanceBytes = s.MaxMaintenanceBytes
 	target.maintenance = s.maintenance

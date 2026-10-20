@@ -45,6 +45,13 @@ func (s *TenantStore) rebuildReverseIndex(ctx context.Context, tenantID string, 
 
 func (s *TenantStore) prepareReverseIndex(ctx context.Context, tenantID string, g *graph.Graph, version int64) (ReverseIndexCatalog, ObjectMeta, error) {
 	shards := buildReverseEdgeShards(g, version, mutationTime(ctx))
+	var err error
+	if s.WriteIndexRangePages {
+		shards, err = prepareBoundedEdgeShards(s.rangeEncodeContext(ctx), tenantID, shards)
+	}
+	if err != nil {
+		return ReverseIndexCatalog{}, ObjectMeta{}, err
+	}
 	now := mutationTime(ctx)
 	catalog := ReverseIndexCatalog{
 		LayoutVersion: reverseIndexLayoutVersion,
@@ -54,32 +61,13 @@ func (s *TenantStore) prepareReverseIndex(ctx context.Context, tenantID string, 
 		UpdatedAt:     now,
 	}
 	for i := range shards {
-		shard := &shards[i]
-		shard.TenantID = tenantID
-		shard.logicalContentHash = edgeShardContentHash(*shard)
-		key := s.reverseEdgeShardVersionKey(tenantID, version, shard.RelationType, shard.Shard)
-		catalog.EdgeShards = append(catalog.EdgeShards, EdgeShard{
-			RelationType:    shard.RelationType,
-			ImpactDirection: relationImpactDirection(g, shard.RelationType),
-			Shard:           shard.Shard,
-			Format:          IndexFormatParquet,
-			Codec:           parquetEdgeShardCodec,
-			Objects: []IndexObject{{
-				Role:        "reverse_shard",
-				Key:         key,
-				Format:      IndexFormatParquet,
-				Codec:       parquetEdgeShardCodec,
-				RowCount:    len(shard.Edges),
-				ContentHash: shard.logicalContentHash,
-				SchemaHash:  parquetEdgeShardSchemaHash(),
-			}},
-			RowCount:    len(shard.Edges),
-			EdgeCount:   len(shard.Edges),
-			ContentHash: shard.logicalContentHash,
-			SchemaHash:  parquetEdgeShardSchemaHash(),
-			UpdatedAt:   now,
-		})
+		shards[i].TenantID = tenantID
+		shards[i].logicalContentHash = edgeShardContentHash(shards[i])
 	}
+	catalog.EdgeShards = edgePageSpecs(shards, g)
+	mini := IndexCatalog{Version: version, EdgeShards: catalog.EdgeShards}
+	s.decorateReverseEdgeCatalog(&mini, tenantID)
+	catalog.EdgeShards = mini.EdgeShards
 	if err := s.writeChangedReverseEdgeShards(ctx, tenantID, shards, catalog.EdgeShards, version); err != nil {
 		return ReverseIndexCatalog{}, ObjectMeta{}, err
 	}
@@ -144,14 +132,21 @@ func (s *TenantStore) getReverseIndexCatalogWithMeta(ctx context.Context, tenant
 		return ReverseIndexCatalog{}, ObjectMeta{}, fmt.Errorf("reverse index tenant mismatch: path tenant %q contains tenant %q", tenantID, catalog.TenantID)
 	}
 	for _, shard := range catalog.EdgeShards {
-		if shard.RelationType == "" || shard.Shard == "" || shard.EdgeCount < 0 || shard.ContentHash == "" || len(shard.Objects) != 1 {
+		if shard.RelationType == "" || shard.Shard == "" || shard.EdgeCount < 0 || shard.ContentHash == "" || (!hasIndexRanges(shard.Objects) && len(shard.Objects) != 1) {
 			return ReverseIndexCatalog{}, ObjectMeta{}, fmt.Errorf("invalid reverse edge shard catalog entry")
 		}
 		if shard.ImpactDirection != "" && !validImpactDirection(shard.ImpactDirection) {
 			return ReverseIndexCatalog{}, ObjectMeta{}, fmt.Errorf("invalid reverse edge shard impact direction %q", shard.ImpactDirection)
 		}
-		if err := s.validateTenantObjectKey(tenantID, shard.Objects[0].Key); err != nil {
-			return ReverseIndexCatalog{}, ObjectMeta{}, err
+		if hasIndexRanges(shard.Objects) {
+			if err := validateRangeObjects(shard.Objects, shard.EdgeCount, shard.ContentHash); err != nil {
+				return ReverseIndexCatalog{}, ObjectMeta{}, err
+			}
+		}
+		for _, object := range shard.Objects {
+			if err := s.validateTenantObjectKey(tenantID, object.Key); err != nil {
+				return ReverseIndexCatalog{}, ObjectMeta{}, err
+			}
 		}
 	}
 	return catalog, meta, nil
@@ -180,6 +175,7 @@ func buildReverseEdgeShards(g *graph.Graph, version int64, at ...time.Time) []Ed
 		shardID := edgeShardID(edge.To)
 		key := edge.Type + "\x00" + shardID
 		shard := shards[key]
+		shard.reverse = true
 		shard.Edges = append(shard.Edges, edge)
 		shard.hashCanonical = shard.hashCanonical && graphEdgeHashCanonical(edge)
 		shards[key] = shard

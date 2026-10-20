@@ -50,6 +50,9 @@ func requireIndexObjectKey(t *testing.T, objects []IndexObject, role string) str
 			return object.Key
 		}
 	}
+	if (role == "page" || role == "shard") && hasIndexRanges(objects) && len(objects) == 1 {
+		return objects[0].Key
+	}
 	t.Fatalf("missing index object role %q in %#v", role, objects)
 	return ""
 }

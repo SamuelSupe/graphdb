@@ -362,10 +362,13 @@ func TestLocalRestoreRetainsEntityIndexLayout(t *testing.T) {
 		records   bool
 		packBytes int64
 		packed    bool
+		ranges    bool
 	}{
-		{"records", true, 1 << 20, false},
-		{"packed", false, 1 << 20, true},
-		{"bounded-packs", false, 1, false},
+		{"records", true, 1 << 20, false, false},
+		{"packed", false, 1 << 20, true, false},
+		{"bounded-packs", false, 1, false, false},
+		{"ranges", false, 1 << 20, false, true},
+		{"ranges-records", true, 1 << 20, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -379,6 +382,7 @@ func TestLocalRestoreRetainsEntityIndexLayout(t *testing.T) {
 			store.WriteEntityRecords = tc.records
 			store.UseEntityRecordsForRead = tc.records
 			store.EntityPagePackMaxBytes = tc.packBytes
+			store.WriteIndexRangePages = tc.ranges
 			entities := make([]graph.Entity, 32)
 			for i := range entities {
 				id := fmt.Sprintf("host:%02d", i)

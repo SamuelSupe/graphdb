@@ -27,6 +27,14 @@ func buildIndexArtifactsWithDefinitions(g *graph.Graph, version int64, definitio
 }
 
 func buildIndexArtifacts(ctx context.Context, g *graph.Graph, version int64, definitions []IndexDefinition, emit func(SecondaryIndex) error, at ...time.Time) (indexBuildArtifacts, error) {
+	return buildTenantIndexArtifacts(ctx, "", g, version, definitions, emit, at...)
+}
+
+func buildTenantIndexArtifacts(ctx context.Context, tenantID string, g *graph.Graph, version int64, definitions []IndexDefinition, emit func(SecondaryIndex) error, at ...time.Time) (indexBuildArtifacts, error) {
+	return buildTenantIndexArtifactsMode(ctx, tenantID, g, version, definitions, true, emit, at...)
+}
+
+func buildTenantIndexArtifactsMode(ctx context.Context, tenantID string, g *graph.Graph, version int64, definitions []IndexDefinition, ranges bool, emit func(SecondaryIndex) error, at ...time.Time) (indexBuildArtifacts, error) {
 	indexes, err := secondaryIndexDefinitions(g, version, definitions, at...)
 	if err != nil {
 		return indexBuildArtifacts{}, err
@@ -67,31 +75,24 @@ func buildIndexArtifacts(ctx context.Context, g *graph.Graph, version int64, def
 	}
 	edgeShards := buildEdgeShards(g, version, at...)
 	entityPages := buildEntityPages(g, version, at...)
+	if ranges {
+		edgeShards, err = prepareBoundedEdgeShards(ctx, tenantID, edgeShards)
+		if err != nil {
+			return indexBuildArtifacts{}, err
+		}
+		entityPages, err = prepareBoundedEntityPages(ctx, tenantID, entityPages)
+		if err != nil {
+			return indexBuildArtifacts{}, err
+		}
+	}
 	for i := range edgeShards {
 		edgeShards[i].logicalContentHash = edgeShardContentHash(edgeShards[i])
 	}
 	for i := range entityPages {
 		entityPages[i].logicalContentHash = entityPageContentHash(entityPages[i])
 	}
-	for _, shard := range edgeShards {
-		catalog.EdgeShards = append(catalog.EdgeShards, EdgeShard{
-			RelationType:    shard.RelationType,
-			ImpactDirection: relationImpactDirection(g, shard.RelationType),
-			Shard:           shard.Shard,
-			EdgeCount:       len(shard.Edges),
-			ContentHash:     edgeShardContentHash(shard),
-			UpdatedAt:       now,
-		})
-	}
-	for _, page := range entityPages {
-		catalog.EntityPages = append(catalog.EntityPages, EntityPageSpec{
-			Shard:          page.Shard,
-			EntityCount:    len(page.Entities),
-			ContentHash:    entityPageContentHash(page),
-			UpdatedAt:      now,
-			estimatedBytes: entityPagePackBytes(page),
-		})
-	}
+	catalog.EdgeShards = edgePageSpecs(edgeShards, g)
+	catalog.EntityPages = entityPageSpecs(entityPages)
 	sortIndexCatalog(&catalog)
 	return indexBuildArtifacts{
 		Catalog:     catalog,
@@ -131,7 +132,7 @@ func prepareSecondaryIndexArtifact(index *SecondaryIndex) {
 // Full rebuilds publish one field at a time. Only its postings remain live;
 // catalog publication still validates the captured manifest and definitions.
 func (s *TenantStore) buildAndWriteIndexArtifacts(ctx context.Context, tenantID string, g *graph.Graph, version int64, definitions []IndexDefinition) (indexBuildArtifacts, error) {
-	return buildIndexArtifacts(ctx, g, version, definitions, func(index SecondaryIndex) error {
+	return buildTenantIndexArtifactsMode(s.rangeEncodeContext(ctx), tenantID, g, version, definitions, s.WriteIndexRangePages, func(index SecondaryIndex) error {
 		if err := objectContextErr(ctx); err != nil {
 			return err
 		}

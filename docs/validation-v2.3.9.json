@@ -43,19 +43,19 @@
     "F11": "Confirmed legacy identity-free config disclosure through case alias; fixed at filesystem directory boundary."
   },
   "performanceReview": {
-    "status": "IN_PROGRESS_SOURCE_CHECKPOINT",
-    "releaseBlocker": "Fixed 64-bucket entity and edge write amplification: TestIncrementalEntityPageRewriteIsBounded still fails; one changed entity rewrites 4096 rows",
+    "status": "RANGE_PAGING_IMPLEMENTED_FINAL_SOURCE_VALIDATION_RUNNING",
+    "releaseBlocker": "Final main CI and original exact-tag release gates pending; the bounded-write regression is fixed under the explicitly enabled range layout",
     "sourcePublication": "User requested committing and pushing current source before completing the remaining fix; no release tag is authorized by this checkpoint",
     "currentVerification": {
       "compileAllPackages": "PASS",
       "vet": "PASS",
       "docs": "PASS",
-      "boundedWriteRegression": "FAIL_CONFIRMED",
-      "fullUnitAndRace": "NOT_ALL_GREEN; earlier passing runs do not cover all subsequent changes"
+      "boundedWriteRegression": "PASS; entity, forward edge and reverse edge each <=1024 rows",
+      "fullUnitAndRace": "Earlier functional candidate PASS; final source rerun RUNNING"
     },
     "mainCI": {
-      "commit": "689cf32fe82a9769784e0277e357042dbd24d586",
-      "run": 39451412539,
+      "commit": "17996b13e4b536a242188dd48edc98da79b77a95",
+      "run": 39456268483,
       "status": "FAIL_KNOWN_BOUNDED_WRITE_REGRESSION; OTHER_FIVE_JOBS_SUCCESS"
     },
     "sourceEvidenceDirectory": ".workflow/release-v2.3.9",
@@ -81,6 +81,39 @@
       "seconds": 4.938,
       "sourceScope": "689cf32f plus only the four priority replication source/test files"
     },
-    "boundedPageWork": "Still separate and uncommitted; no release qualification inferred"
+    "boundedPageWork": "Implemented per range design, with explicit staged enablement; see rangePaging"
+  },
+  "rangePaging": {
+    "writeFlag": "GRAPHDB_INDEX_RANGE_PAGES",
+    "defaultEnabled": false,
+    "pageMaxRecords": 1024,
+    "pageTargetEncodedBytes": 8388608,
+    "oversizedSingleRecordAllowed": true,
+    "legacyReaderRangeCompatibility": "FAILED: old binary pagination may lose rows; staged reader rollout required",
+    "legacyIndexRebuildDowngradeProbe": "PASS with v2.3.8 source-built storage executable, GC, old write and new read/write; not whole WAL/Raft directory downgrade qualification",
+    "targetedRace": "PASS; bounded rewrites, deep reads, split/empty/delete/reinsert, sparse query budgets, cancellation, CAS/ambiguous publication, GC and restore",
+    "rangeEnabledDirectWalLoadRestart": "PASS in OrbStack",
+    "finalSourceUnit": "RUNNING",
+    "finalSourceRace": "RUNNING",
+    "benchmark": {
+      "entities": [
+        10000,
+        100000,
+        1000000
+      ],
+      "modifiedPageRecords": 1024,
+      "dataBytes": 25497,
+      "directoryBytesApprox": [
+        25006,
+        36094,
+        180122
+      ],
+      "sourcePageReadsCold": 1,
+      "sourcePageReadsWarm": 0,
+      "scope": "Isolated data page plus flat directory, not complete commit; CPU/RSS include fixture setup where stated",
+      "evidence": "docs/entity-range-paging-implementation.zh-CN.md"
+    },
+    "lowOccupancyMerge": "DEFERRED",
+    "originalReleaseGateDurationsUnchanged": true
   }
 }

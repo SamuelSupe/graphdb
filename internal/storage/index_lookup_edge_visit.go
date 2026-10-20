@@ -18,11 +18,7 @@ func (l *PersistedIndexLookup) VisitOutEdges(
 	if l == nil || l.Catalog.Version != l.Version {
 		return false, nil
 	}
-	slices, ok, err := l.outEdgeVisitSlices(ctx, from, allowed)
-	if err != nil || !ok {
-		return ok, err
-	}
-	return visitSortedEdgeSlices(ctx, slices, startEdgeID, visit)
+	return l.visitRangeEdges(ctx, from, allowed, startEdgeID, "out", func(edge graph.Edge, _ string) (bool, error) { return visit(edge) })
 }
 
 func (l *PersistedIndexLookup) VisitInEdges(
@@ -36,11 +32,7 @@ func (l *PersistedIndexLookup) VisitInEdges(
 		l.ReverseCatalog.Version != l.Version {
 		return false, nil
 	}
-	slices, ok, err := l.inEdgeVisitSlices(ctx, to, allowed)
-	if err != nil || !ok {
-		return ok, err
-	}
-	return visitSortedEdgeSlices(ctx, slices, startEdgeID, visit)
+	return l.visitRangeEdges(ctx, to, allowed, startEdgeID, "in", func(edge graph.Edge, _ string) (bool, error) { return visit(edge) })
 }
 
 func visitSortedEdgeSlices(

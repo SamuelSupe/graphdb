@@ -376,6 +376,17 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 				catalog.EntityPages[i].Objects[j].Key = rewriteTenantObjectKey(catalog.EntityPages[i].Objects[j].Key, sourcePrefix, targetPrefix)
 			}
 		}
+		for i := range catalog.EntityPages {
+			if hasIndexRanges(catalog.EntityPages[i].Objects) {
+				catalog.EntityPages[i].ContentHash = rangeObjectsHash(catalog.EntityPages[i].Objects)
+			}
+		}
+		for i := range catalog.EdgeShards {
+			if hasIndexRanges(catalog.EdgeShards[i].Objects) {
+				catalog.EdgeShards[i].ContentHash = rangeObjectsHash(catalog.EdgeShards[i].Objects)
+			}
+		}
+		catalog.contentHash = ""
 		rewritten, err := marshalParquetIndexCatalog(ctx, catalog)
 		return rewritten, true, err
 	case relative == "extensions/v1.1/reverse-index/catalog.json":
@@ -387,6 +398,11 @@ func (s *TenantStore) rewriteTenantMigrationObject(ctx context.Context, data []b
 		for i := range catalog.EdgeShards {
 			for j := range catalog.EdgeShards[i].Objects {
 				catalog.EdgeShards[i].Objects[j].Key = rewriteTenantObjectKey(catalog.EdgeShards[i].Objects[j].Key, sourcePrefix, targetPrefix)
+			}
+		}
+		for i := range catalog.EdgeShards {
+			if hasIndexRanges(catalog.EdgeShards[i].Objects) {
+				catalog.EdgeShards[i].ContentHash = rangeObjectsHash(catalog.EdgeShards[i].Objects)
 			}
 		}
 		rewritten, err := json.Marshal(catalog)

@@ -140,6 +140,9 @@ func (l *PersistedIndexLookup) VisitEntities(ctx context.Context, kind string, f
 	if l == nil || l.Catalog.Version != l.Version || visit == nil {
 		return false, nil
 	}
+	if err := l.compileCatalog(); err != nil {
+		return false, nil
+	}
 	ctx = withEntityPageVisitSession(ctx, newEntityPageVisitSession(l, kind, stats))
 	groups := make(map[string][]EntityPageSpec)
 	shards := make([]string, 0, len(l.Catalog.EntityPages))
@@ -223,6 +226,9 @@ func (l *PersistedIndexLookup) visitEntityPageGroup(ctx context.Context, specs [
 }
 
 func (l *PersistedIndexLookup) visitEntitiesFromPage(ctx context.Context, spec EntityPageSpec, kind string, fields []string, afterID string, visit func(graph.Entity) (bool, error)) (bool, bool, error) {
+	if hasIndexRanges(spec.Objects) {
+		return l.visitEntityRanges(ctx, spec, kind, fields, afterID, visit)
+	}
 	stats := entityPageVisitTraceStatsFromContext(ctx)
 	if stats != nil {
 		stats.pageSpecsVisited++

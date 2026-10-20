@@ -7,8 +7,10 @@ import (
 )
 
 const maxCompiledScanCatalogEntries = 512
+const maxCompiledScanCatalogBytes int64 = 64 << 20
 
 type compiledScanCatalog struct {
+	bytes        int64
 	contentHash  string
 	entityShards []string
 	entitySpecs  map[string]EntityPageSpec
@@ -39,11 +41,29 @@ func (s *TenantStore) compiledScanCatalog(tenantID string, catalog IndexCatalog,
 	}
 	compiled.entityShards = make([]string, 0, len(catalog.EntityPages))
 	for _, page := range catalog.EntityPages {
+		if hasIndexRanges(page.Objects) {
+			if page.Codec != parquetEntityRangeCodec {
+				return nil, fmt.Errorf("unsupported entity range layout")
+			}
+			if err := validateRangeObjects(page.Objects, page.EntityCount, page.ContentHash); err != nil {
+				return nil, err
+			}
+		}
+		compiled.bytes += 256 + int64(len(page.Shard)) + rangeReferenceBytes(page.Objects)
 		compiled.entityShards = append(compiled.entityShards, page.Shard)
 	}
 	sort.Strings(compiled.entityShards)
 	compiled.edgeTargets = make([]edgeShardTarget, 0, len(catalog.EdgeShards))
 	for _, shard := range catalog.EdgeShards {
+		if hasIndexRanges(shard.Objects) {
+			if shard.Codec != parquetEdgeRangeCodec {
+				return nil, fmt.Errorf("unsupported edge range layout")
+			}
+			if err := validateRangeObjects(shard.Objects, shard.EdgeCount, shard.ContentHash); err != nil {
+				return nil, err
+			}
+		}
+		compiled.bytes += 256 + int64(len(shard.Shard)+len(shard.RelationType)) + rangeReferenceBytes(shard.Objects)
 		compiled.edgeTargets = append(compiled.edgeTargets, edgeShardTarget{RelationType: shard.RelationType, Shard: shard.Shard})
 	}
 	sort.Slice(compiled.edgeTargets, func(i, j int) bool {
@@ -55,10 +75,32 @@ func (s *TenantStore) compiledScanCatalog(tenantID string, catalog IndexCatalog,
 		s.lockMu.Unlock()
 		return cached, nil
 	}
-	evictOneCacheEntry(s.compiledScanCatalogCache, key, maxCompiledScanCatalogEntries)
+	if compiled.bytes > maxCompiledScanCatalogBytes {
+		s.lockMu.Unlock()
+		return compiled, nil
+	}
+	var used int64
+	for _, entry := range s.compiledScanCatalogCache {
+		used += entry.bytes
+	}
+	for cacheKey, entry := range s.compiledScanCatalogCache {
+		if len(s.compiledScanCatalogCache) < maxCompiledScanCatalogEntries && used+compiled.bytes <= maxCompiledScanCatalogBytes {
+			break
+		}
+		delete(s.compiledScanCatalogCache, cacheKey)
+		used -= entry.bytes
+	}
 	s.compiledScanCatalogCache[key] = compiled
 	s.lockMu.Unlock()
 	return compiled, nil
+}
+
+func rangeReferenceBytes(objects []IndexObject) int64 {
+	var bytes int64
+	for _, o := range objects {
+		bytes += 256 + int64(len(o.Role)+len(o.Key)+len(o.Format)+len(o.Codec)+len(o.ContentHash)+len(o.SchemaHash))
+	}
+	return bytes
 }
 
 func (s *TenantStore) getCompiledScanCatalog(key string) (*compiledScanCatalog, bool) {

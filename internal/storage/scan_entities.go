@@ -252,6 +252,10 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		return false
 	}
 	loadPage := func(spec EntityPageSpec, key string) (loaded loadedEntityScanPage, loadErr error) {
+		if hasIndexRanges(spec.Objects) {
+			loaded.page, loaded.available, loadErr = s.loadEntityRangePage(ctx, tenantID, version, spec)
+			return loaded, loadErr
+		}
 		if exclusiveFileStore(s.Objects) != nil {
 			return s.loadLocalEntityPage(ctx, tenantID, version, spec, options, cursor)
 		}
@@ -338,6 +342,23 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		spec, ok := specs[shard]
 		if !ok {
 			return EntityScanResult{}, false, nil
+		}
+		if hasIndexRanges(spec.Objects) {
+			after := ""
+			prefix := shard + "\x00"
+			if strings.HasPrefix(cursor.After, prefix) {
+				after = strings.TrimPrefix(cursor.After, prefix)
+			}
+			for n := rangeObjectIndex(spec.Objects, after); n < len(spec.Objects); n++ {
+				page, ok, err := s.borrowEntityRange(ctx, tenantID, version, spec, n)
+				if err != nil || !ok {
+					return EntityScanResult{}, false, err
+				}
+				if consumePage(page, shard, nil, false) {
+					return pageResult(true), true, nil
+				}
+			}
+			continue
 		}
 		if specFormat(spec.Format) == IndexFormatParquet {
 			key := firstIndexObjectKey(spec.Objects, "page", s.parquetEntityPageVersionKey(tenantID, version, spec.Shard))

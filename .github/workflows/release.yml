@@ -87,6 +87,7 @@ jobs:
         env:
           RELEASE_GATE_SKIP_STATIC: 1
           GRAPHDB_GATE_SOAK: 1
+          GRAPHDB_INDEX_RANGE_PAGES: 'true'
           GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/local-gate
         run: scripts/release_gate.sh
       - uses: actions/upload-artifact@v4

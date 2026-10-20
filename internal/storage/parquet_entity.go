@@ -110,6 +110,9 @@ func (s *TenantStore) writeParquetEntityPageGroups(ctx context.Context, tenantID
 		pack := mergeEntityPagePack(group)
 		pack.TenantID = tenantID
 		key := s.parquetEntityPageVersionKey(tenantID, pack.Version, pack.Shard)
+		if pack.pageRole != "" {
+			key = s.parquetEntityPageVersionKey(tenantID, pack.Version, group.ID)
+		}
 		if len(group.Pages) > 1 {
 			key = s.parquetEntityPagePackVersionKey(tenantID, pack.Version, group.ID)
 			if checkExisting {
@@ -977,6 +980,13 @@ func (s *TenantStore) borrowValidatedParquetEntityPageObject(ctx context.Context
 }
 
 func (s *TenantStore) withParquetEntityPageObject(ctx context.Context, tenantID string, version int64, spec EntityPageSpec, visit func(EntityPageData, string, bool) error) (bool, error) {
+	if hasIndexRanges(spec.Objects) {
+		page, ok, err := s.loadEntityRangePage(ctx, tenantID, version, spec)
+		if err != nil || !ok {
+			return ok, err
+		}
+		return true, visit(page, "", true)
+	}
 	traceStats := entityPageVisitTraceStatsFromContext(ctx)
 	key := firstIndexObjectKey(spec.Objects, "page", s.parquetEntityPageVersionKey(tenantID, version, spec.Shard))
 	if entry, revalidate, ok := s.borrowCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash); ok {

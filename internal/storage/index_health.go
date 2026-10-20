@@ -478,8 +478,25 @@ func (s *TenantStore) checkEntityPageObjects(ctx context.Context, tenantID strin
 			health.Issues = append(health.Issues, "entity page "+pageSpec.Shard+" content mismatch")
 		}
 		checkRecords = true
+		rangeETags := map[string]string{}
 		for _, entity := range page.Entities {
-			expectedRecords[entity.ID] = entityRecordExpectation{Entity: entity, Page: page.Shard, PageHash: pageHash, PageETag: pageETag}
+			hash, etag := pageHash, pageETag
+			if hasIndexRanges(pageSpec.Objects) {
+				object := pageSpec.Objects[rangeObjectIndex(pageSpec.Objects, entity.ID)]
+				hash = object.ContentHash
+				var found bool
+				etag, found = rangeETags[object.Key]
+				if !found {
+					meta, err := objectMeta(ctx, s.Objects, object.Key)
+					if err != nil {
+						health.Issues = append(health.Issues, err.Error())
+						return
+					}
+					etag = meta.ETag
+					rangeETags[object.Key] = etag
+				}
+			}
+			expectedRecords[entity.ID] = entityRecordExpectation{Entity: entity, Page: page.Shard, PageHash: hash, PageETag: etag}
 		}
 	}
 	if checkRecords {
