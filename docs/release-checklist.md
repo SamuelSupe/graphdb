@@ -6,8 +6,8 @@ checklist, not a record that every published version passed every item.
 
 ## Current release qualification
 
-The [2.3.8 candidate](validation-v2.3.8.md) must complete every required exact-tag
-job and independent asset/runtime verification. No gate waiver is requested.
+[2.3.8](validation-v2.3.8.md) passed all required exact-tag jobs, both thirty-minute
+soaks and independent downloaded-asset/runtime/fault probes. No gate waiver.
 
 ## Previous 2.3.6 qualification
 

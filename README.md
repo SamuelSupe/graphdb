@@ -14,7 +14,7 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.3.8](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.8)** is the next correctness patch candidate. Its validation record separates local regression results, required exact-tag gates and downloaded-asset verification.
+**[2.3.8](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.8)** is the published correctness patch. Exact-tag gates and independent downloaded Linux/macOS recovery, WAL-upgrade and catalog-failure checks passed; see the validation record for evidence and limits.
 
 | Area | What 2.3.8 provides |
 | --- | --- |

@@ -42,6 +42,19 @@ including both thirty-minute soaks, and independent downloaded-asset checks.
 Data formats and protocol numbers are unchanged. No production capacity,
 latency or cross-host recovery claim is made.
 
+## Verified publication / 发布核验
+
+已发布为稳定 Latest。完整标签门禁及单机、Raft 各 30 分钟长测通过。
+独立下载的源码／构建身份、双层 SHA256 及 GitHub digest 一致；Linux arm64 与 macOS arm64
+真实写入、重启恢复、旧版积压 WAL 升级、背压下确认重放和损坏 catalog 后的写入／purge 检查通过。
+损坏 catalog 下手动 rebuild 返回 409，未被误记为修复成功。实际长测指标与限制见版本验证记录。
+最终验证文档位于 main；标签、发行二进制及资产保持不变。
+
+Published as stable Latest after all required gates and both thirty-minute soaks.
+Independent Linux/macOS downloads passed identity, checksums, recovery, old-WAL
+upgrade and persistent-index-failure probes. A corrupt catalog still needs repair;
+its explicit rebuild conflict is recorded, not counted as successful recovery.
+
 ## Download and verify / 下载与校验
 
 ```sh

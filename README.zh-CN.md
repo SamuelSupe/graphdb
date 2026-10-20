@@ -12,7 +12,7 @@
 
 ## 当前版本
 
-**[2.3.8](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.8)** 为下一正确性补丁候选；验证记录区分本地回归、必需标签门禁和下载后资产核验。
+**[2.3.8](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.8)** 已发布为正确性补丁；确切标签门禁、独立下载的 Linux/macOS 恢复、旧 WAL 升级与 catalog 故障检查通过，证据及边界见验证记录。
 
 | 领域 | 2.3.8 提供的能力 |
 | --- | --- |
