@@ -2,11 +2,11 @@
   "version": "v2.3.9",
   "status": "CANDIDATE",
   "localVerification": {
-    "scope": "Earlier source baseline; current source checkpoint verification is recorded under performanceReview and is not all green",
+    "scope": "Final production source 8416525b; full Go 1.26.7 unit/vet/race in OrbStack, with prior targeted behavior evidence separately recorded",
     "environment": "OrbStack Ubuntu arm64",
     "unit": "PASS",
     "vet": "PASS",
-    "race": "PASS; final HTTP/SDK whole-package and focused HA/storage regressions rechecked",
+    "race": "PASS full repository, including all appended storage, HA and range-page regressions",
     "criticalRegressionRepetitions": 3,
     "walAndIndexBudgetRaceRepetitions": 5,
     "slowElectionMigrationRaceSeconds": [
@@ -21,7 +21,8 @@
     "pythonSdk": {
       "passed": 12,
       "optionalLiveApiSkipped": 1
-    }
+    },
+    "goVersion": "go1.26.7"
   },
   "exactTagCI": {
     "status": "PENDING"
@@ -37,29 +38,29 @@
     "No physical cross-host fault-domain, power-loss, day-scale stability or production-capacity qualification."
   ],
   "additionalReview": {
-    "status": "IN_PROGRESS",
+    "status": "LOCAL_VERIFIED_CI_PENDING",
     "F7": "Real 300-character idempotency-key request poisoned three replicas before fix; deterministic application rejection is transactionally rolled back, and file errors remain fail-closed.",
     "F8": "A durable checksummed boundary distinguishes unacknowledged corrupt suffixes; acknowledged/ambiguous damage is preserved.",
     "F11": "Confirmed legacy identity-free config disclosure through case alias; fixed at filesystem directory boundary."
   },
   "performanceReview": {
-    "status": "RANGE_PAGING_IMPLEMENTED_FINAL_SOURCE_VALIDATION_RUNNING",
-    "releaseBlocker": "GC historical-removal follow-up requires verification and source publication, then latest main CI and original exact-tag release gates",
-    "sourcePublication": "User requested committing and pushing current source before completing the remaining fix; no release tag is authorized by this checkpoint",
+    "status": "LOCAL_VERIFIED_MAIN_CI_PENDING",
+    "releaseBlocker": "Latest main CI, original exact-tag gates including both 30-minute soaks, and independent downloaded-artifact verification",
+    "sourcePublication": "Range implementation and narrow GC follow-up committed to GitHub; source publication is separate from release qualification",
     "currentVerification": {
       "compileAllPackages": "PASS",
       "vet": "PASS",
       "docs": "PASS",
       "boundedWriteRegression": "PASS; entity, forward edge and reverse edge each <=1024 rows",
-      "fullUnitAndRace": "PASS exact17fd70f2; subsequent narrow GC follow-up pending"
+      "fullUnitAndRace": "PASS final production source 8416525b with Go 1.26.7"
     },
     "mainCI": {
-      "commit": "17996b13e4b536a242188dd48edc98da79b77a95",
-      "run": 39456268483,
-      "status": "FAIL_KNOWN_BOUNDED_WRITE_REGRESSION; OTHER_FIVE_JOBS_SUCCESS"
+      "commit": "8416525ba51bbb089df77eeb581e74a379ffe510",
+      "run": 39467565650,
+      "status": "IN_PROGRESS"
     },
     "sourceEvidenceDirectory": ".workflow/release-v2.3.9",
-    "runtimeQualification": "PENDING_AFTER_ALL_FIXES",
+    "runtimeQualification": "PASS final production source 8416525b in OrbStack: range-enabled direct/WAL, protocol3, sharding, migration, GC isolation and cold three-replica backup/fresh restore",
     "tagCreated": false
   },
   "priorityReview": {
@@ -93,8 +94,8 @@
     "legacyIndexRebuildDowngradeProbe": "PASS with v2.3.8 source-built storage executable, GC, old write and new read/write; not whole WAL/Raft directory downgrade qualification",
     "targetedRace": "PASS; bounded rewrites, deep reads, split/empty/delete/reinsert, sparse query budgets, cancellation, CAS/ambiguous publication, GC and restore",
     "rangeEnabledDirectWalLoadRestart": "PASS in OrbStack",
-    "finalSourceUnit": "PASS for 17fd70f2; HA214.673s/storage59.334s",
-    "finalSourceRace": "PASS for 17fd70f2; HA456.073s/storage365.114s",
+    "finalSourceUnit": "PASS 8416525b Go1.26.7; HA197.275s/storage50.814s",
+    "finalSourceRace": "PASS 8416525b Go1.26.7; HA456.692s/storage357.728s",
     "benchmark": {
       "entities": [
         10000,
@@ -104,19 +105,30 @@
       "modifiedPageRecords": 1024,
       "dataBytes": 25497,
       "directoryBytesApprox": [
-        25006,
-        36094,
-        180122
+        25012,
+        36089,
+        180124
       ],
       "sourcePageReadsCold": 1,
       "sourcePageReadsWarm": 0,
       "scope": "Isolated data page plus flat directory, not complete commit; CPU/RSS include fixture setup where stated",
-      "evidence": "docs/entity-range-paging-implementation.zh-CN.md"
+      "evidence": "docs/entity-range-paging-implementation.zh-CN.md",
+      "sourceCommit": "17fd70f2a1c769a4aa0001bbf52fb27cb313b3ad",
+      "medianColdMilliseconds": [
+        47.1,
+        31.3,
+        35.8
+      ],
+      "medianWarmMilliseconds": [
+        23.5,
+        13.7,
+        19.5
+      ]
     },
     "lowOccupancyMerge": "DEFERRED",
     "originalReleaseGateDurationsUnchanged": true,
     "gcFollowUp": {
-      "status": "FOCUSED_RACE_PASS_FULL_SOURCE_VALIDATION_RUNNING",
+      "status": "FULL_SOURCE_UNIT_VET_RACE_PASS",
       "before": "Three stable failures: removing a historical catalog invalidated the current-root proof and deferred the remaining orphan files",
       "fix": "Only historical catalog removals skip invalidation; every publication and mutable root deletion preserve the previous invalidation behavior",
       "assertion": "One complete sweep after unpinning reclaims the old range page",
@@ -126,6 +138,7 @@
         "scope": "GC, read views, root publication and retirement; narrow removal-only fix"
       }
     },
-    "realProtocol3RangeEnabled": "PASS for exact 17fd70f2 image; Go1.26.7 binary sha256 b35ea9829418df78b42d12c372f8d764728b0e57a43753ab57ec5d92a3ec77ef"
+    "realProtocol3RangeEnabled": "PASS exact 8416525b image; Go1.26.7 binary sha256 764e38f02fb0cfad0d461212df61ab7d22ddb4f3c4a4ccc80e53273da2b972a0",
+    "finalSourceVet": "PASS 8416525b Go1.26.7"
   }
 }
