@@ -1,6 +1,6 @@
 {
   "version": "v2.3.10",
-  "status": "CANDIDATE",
+  "status": "RELEASED_AND_INDEPENDENTLY_VERIFIED",
   "gateWaiver": false,
   "predecessor": {
     "tag": "v2.3.9",
@@ -12,14 +12,14 @@
   },
   "localVerification": {
     "environment": "OrbStack Linux ARM64 / Go1.26.7",
-    "productionCore": "8416525b storage/replication core plus current ReaderCache publication supersession fix; prior full qualification is historical and does not qualify this new production change",
+    "productionCore": "67381932ed309a2d778d0f8afa529d57485c8acf (8416525b bounded pages/GC plus ReaderCache publication supersession)",
     "snapshotRetryLeaderChange": {
       "before": "Three stable failures after real leadership transfer during retry",
       "after": "PASS all six scenarios, race, three repetitions, 91.408s"
     },
-    "replicationUnit": "PASS 47.009s",
+    "replicationUnit": "PASS current full-unit run46.843s",
     "replicationVet": "PASS",
-    "replicationRace": "PASS 49.310s",
+    "replicationRace": "PASS current full-race run49.283s",
     "rollingProbes": {
       "previousSource": "91ffe5033e58d49ca38ef9dbb40efd414264538e",
       "targetCore": "8416525b",
@@ -33,10 +33,13 @@
       "pythonSdk": "PASS 13 tests, 1 optional live-API check skipped",
       "workflowYamlAndShell": "PASS in OrbStack",
       "catchupDiagnostic": "PASS controlled failure; preserves failure and records commit/applied state"
-    }
+    },
+    "wholeUnit": "PASS all packages, HA210.195s/storage73.337s",
+    "wholeVet": "PASS all packages",
+    "wholeRace": "PASS all packages, HA674.285s/HTTP19.742s/replication49.283s/storage444.993s"
   },
   "rollingFailure": {
-    "status": "REPRODUCED_BARRIER_WAIT_FIXED_REMOTE_PASS_587643be",
+    "status": "REPRODUCED_BARRIER_WAIT_FIXED_MAIN_AND_EXACT_TAG_PASS",
     "failedMainRun": 39481677556,
     "failedMainCommit": "80eb0ddc2e5d9f65b40766320bfe36b779eb3b94",
     "controlledBefore": {
@@ -49,22 +52,98 @@
     "regressionTests": "PASS 5 tests; the progressing-follower regression failed before the fix",
     "controlledAfter": "PASS complete single-group and sharded mixed-version flows, strict controller, per-replica strong exports; zero logical traffic failures",
     "trafficConsistencyAndTimeoutsUnchanged": true,
-    "remote587643beRaftJob": "PASS realv230rolling + enhanced + protocol3, job118843765826; wholemain not yet qualified"
+    "remote587643beRaftJob": "PASS realv230rolling + enhanced + protocol3, job118843765826; all7 jobs of run39485142533 subsequently passed before the final cache change",
+    "exactTagRolling": "PASS realv2.3.0 rolling, identical LinuxAMD64 target binary digest verified in package"
   },
   "mainCI": {
-    "status": "PASS_BEFORE_NEW_CACHE_FIX",
-    "run": 39485142533,
-    "commit": "587643be49dfd0fb80ff006fde9737b2f20e1eff",
-    "jobs": 7,
-    "scope": "All seven jobs passed, including static, realv230rolling and full local30m soak; does not qualify the uncommitted cache production fix"
+    "status": "PASS",
+    "scope": "Released source checkpoint",
+    "run": 39490319732,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39490319732",
+    "commit": "67381932ed309a2d778d0f8afa529d57485c8acf",
+    "jobs": 7
   },
   "exactTagCI": {
-    "status": "PENDING"
+    "status": "PASS",
+    "run": 39495023203,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39495023203",
+    "jobs": 7,
+    "requiredGates": [
+      "unit/vet/race/contracts/SDK",
+      "direct/WAL/recovery",
+      "S3/fresh-directory object restore",
+      "gateway authorization",
+      "realv2.3.0 rolling",
+      "default/enhanced/protocol3 Raft",
+      "local30m",
+      "three-replica Raft30m",
+      "build/extract/asset publication"
+    ],
+    "gateWaiver": false
   },
   "downloadedAssets": {
-    "status": "PENDING"
+    "status": "PASS",
+    "source": {
+      "result": "PASS",
+      "tag": "v2.3.10",
+      "tagObject": "b81d44bd0755faa45b6e3f2d9be0ee018ea1508b",
+      "commit": "67381932ed309a2d778d0f8afa529d57485c8acf",
+      "sourceArchiveSha256": "8bea2691bdeb1159aa466ac6c50decffeb5cb78bb158b1999bcad01d4724cded",
+      "trackedFilesVerified": 1112,
+      "method": "Independently downloaded GitHub tag source; all file Git blob IDs match immutable tagged tree"
+    },
+    "package": {
+      "result": "PASS",
+      "releaseUrl": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.10",
+      "releasePublishedAt": "2026-10-20T21:38:00Z",
+      "releaseId": 418906931,
+      "assetSha256": "a410dbbfaf6d9e73826cd146010f24e18c22fa8583787e18ba2b20c695946181",
+      "metadata": {
+        "version": "v2.3.10",
+        "commit": "67381932ed309a2d778d0f8afa529d57485c8acf",
+        "build_date": "2026-10-21T04:14:38+08:00",
+        "go_version": "go1.26.7"
+      },
+      "binaries": {
+        "bin/graphdb-darwin-arm64": "c3af61674348bebdfcf3316ce996492cbabdc930b66cda913d565cc31fdf2c6f",
+        "bin/graphdb-linux-amd64": "ed03fded3273724b892cf5a07824195c7292b9c5d77bfb1caeb82f6f5c52f75a",
+        "bin/graphdb-linux-arm64": "e3811eae46c116e6c4149eddf9890ff8f6a862c3cc59d4158b14aa4c93376ff1"
+      },
+      "packagedSourceFilesVerified": 1080,
+      "allRequiredSourceTreesPresent": true,
+      "gateMetadataAndBinaryIdentity": "PASS",
+      "packagedCompletedZeroErrorSoaks": [
+        "release/evidence/local-gate/soak.ndjson",
+        "release/evidence/raft-gate/protocol3/dual/soak.ndjson"
+      ]
+    },
+    "nativeRuntime": {
+      "result": "PASS",
+      "environment": "OrbStack native Linux ARM64 / Go1.26.7",
+      "binarySha256": "e3811eae46c116e6c4149eddf9890ff8f6a862c3cc59d4158b14aa4c93376ff1",
+      "rangePagesEnabled": true,
+      "source": "Actually downloaded release package; e2e/load/SDK tools built or run from its extracted source",
+      "reproducibleRebuild": "PASS byte-identical LinuxARM64 rebuild from downloaded source with original release flags",
+      "modes": [
+        "direct",
+        "wal"
+      ],
+      "checks": [
+        "Python live SDK",
+        "e2e API",
+        "4 writers / 16 readers load",
+        "SIGKILL restart",
+        "accepted batch ID replay preserves version and graph",
+        "runtime backup",
+        "new-directory runtime restore",
+        "restored graph equals pre-crash graph"
+      ],
+      "exitCode": 0
+    },
+    "binaryBuildInfo": "All three binaries Go1.26.7, CGO_ENABLED=0 and expected OS/architecture",
+    "runtimeDataAndTools": "Fresh native OrbStack directories; downloaded binary and downloaded source SDK/e2e/load tools"
   },
-  "tagCreated": false,
+  "tagCreated": true,
   "preservedRelease": "v2.3.8 tag/assets unchanged; unpublished v2.3.9 tag also unchanged",
   "rangePaging": {
     "writeFlag": "GRAPHDB_INDEX_RANGE_PAGES",
@@ -76,15 +155,16 @@
   "limits": [
     "No physical cross-host, power-loss, day-scale stability or production-capacity qualification.",
     "Flat index catalog cost still grows with page count.",
-    "Latest main and exact-tag rolling/soak gates must pass; local probes do not waive remote failures."
+    "Range index writes remain opt-in until all relevant readers/replicas upgrade.",
+    "The old AMD64/Rosetta diagnostic had one unexplained closed-connection write error before server acceptance; it was not treated as passing qualification. Native local, main and exact-tag gates passed without hiding errors."
   ],
   "localSoakFailure": {
     "failedTagRun": 39477688507,
-    "status": "REPRODUCED_CACHE_FIX_UNIT_VET_RACE_PASS_FULL_SOAK_RUNNING",
+    "status": "REPRODUCED_FIXED_AND_VERIFIED",
     "queryTimeouts": 36,
     "successfulWrites": 1335,
     "writeErrors": 0,
-    "followUp": "Same full30m load required in main CI; native ARM64 before-fix repro completed with20 query504; AMD64/Rosetta completed with30 query504 andone separate unexplained closed-connection write error. Both shared-load stacks captured. Neither diagnostic run passed.",
+    "followUp": "Stable blocked-load regression and native full30m pass; latest main and exact-tag original full30m gates also passed. Earlier emulated diagnostic remains a failed diagnostic, not qualification.",
     "loadTimeoutAndZeroErrorCriteriaUnchanged": true,
     "nativeArm64QueryTimeouts": 20,
     "rootCause": "Existing readers remain blocked behind obsolete shared disk work after a committed resident graph is published",
@@ -96,7 +176,7 @@
       "vet": "PASS all packages",
       "race": "PASS all packages,HA674.285s/httpapi19.742s/replication49.283s/storage444.993s"
     },
-    "fullOriginalNativeSoak": "RUNNING; full30m, original load/query budgets/zero-error criteria",
+    "fullOriginalNativeSoak": "PASS full30m original load/query budgets, 1354 HTTP200 ingest, all errors0",
     "amd64RosettaDiagnostic": {
       "queryTimeouts": 30,
       "writeErrors": 1,
@@ -105,5 +185,41 @@
       "queryStacks": "Shared ReaderCache wait behind snapshot297parts; matches native ARM64 query regression",
       "writeError": "One closed network connection before server acceptance; cause not established and not waived"
     }
+  },
+  "release": {
+    "url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.10",
+    "id": 418906931,
+    "publishedAt": "2026-10-20T21:38:00Z",
+    "tag": "v2.3.10",
+    "tagObject": "b81d44bd0755faa45b6e3f2d9be0ee018ea1508b",
+    "commit": "67381932ed309a2d778d0f8afa529d57485c8acf",
+    "buildDate": "2026-10-21T04:14:38+08:00",
+    "goVersion": "go1.26.7",
+    "draft": false,
+    "prerelease": false
+  },
+  "releaseSoaks": {
+    "local": {
+      "duration": "30m",
+      "ingestHttp200": 1344,
+      "operationErrors": 0,
+      "queryErrors": 0,
+      "writeErrors": 0
+    },
+    "threeReplicaRaft": {
+      "duration": "30m",
+      "ingestAttempts": 1078,
+      "ingestHttp200": 967,
+      "expectedBackpressureHttp429": 110,
+      "operationErrors": 0,
+      "queryErrors": 0,
+      "writeErrors": 0,
+      "note": "Original Raft gate permits backpressure; shutdown cancellation accounts for the remaining attempt. No criteria changed."
+    },
+    "packagedEvidence": "Completed soak_start/soak_done, zero error events and metrics in both packaged ndjson files"
+  },
+  "finalDocumentationCI": {
+    "required": true,
+    "rule": "Verify all seven jobs of the main run triggered by this record before reporting task completion; that run is linked in the final delivery message."
   }
 }
