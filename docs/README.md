@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.7)
 
-The patch candidate is **2.3.7**; see its validation record for evidence. Choose a task below or follow a suggested reading path.
+The current published patch is **2.3.7**; its exact-tag gates and independent downloaded-asset checks passed. See the validation record for evidence and limits. Choose a task below or follow a suggested reading path.
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 

@@ -12,7 +12,7 @@
 
 ## 当前版本
 
-**[2.3.7](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.7)** 为正确性修复候选版；发布需通过完整标签门禁，实际结果与下载资产核验单独记录。
+**[2.3.7](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.7)** 已作为正确性修复版发布；完整标签门禁与下载后 Linux/macOS 运行核验全部通过，范围与限制见验证记录。
 
 | 领域 | 2.3.7 提供的能力 |
 | --- | --- |

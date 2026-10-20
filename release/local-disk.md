@@ -51,6 +51,18 @@ Finish or cancel lifecycle/restore tasks before a Raft rolling upgrade and pause
 these management operations until all replicas are upgraded. Historical committed
 commands keep their original authorization semantics during replay.
 
+## Verified publication / 发布核验
+
+已作为稳定 Latest 发布。完整标签流水线全部通过，包含单机与 Raft 各 30 分钟长测。
+独立下载后双层 SHA256、构建提交及包内源码一致；Linux arm64（OrbStack）与 macOS arm64
+真实写入、重启、幂等重放及新目录恢复通过。Linux amd64 由原生 GitHub 门禁验证。
+单机仍有 55/59 次 stale 采样；长测通过不表示消除索引滞后或秒级长尾。
+完整逐项处理和证据见上方版本验证记录，最终记录位于 main，标签及二进制保持不变。
+
+Published as stable Latest after all mandatory exact-tag gates passed, including both thirty-minute soaks.
+Independent downloads passed SHA256, source/build identity and native Linux/macOS runtime recovery checks.
+Transient index staleness and seconds-long tails remain; detailed results and limits are in the validation record.
+
 ## Download and verify / 下载与校验
 
 ```sh

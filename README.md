@@ -14,7 +14,7 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.3.7](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.7)** is the correctness patch candidate. Publication requires the exact-tag gates; their results and downloaded-asset verification are recorded separately.
+**[2.3.7](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.7)** is the published correctness patch. All exact-tag gates and independent downloaded Linux/macOS runtime checks passed; see the validation record for scope and limits.
 
 | Area | What 2.3.7 provides |
 | --- | --- |
