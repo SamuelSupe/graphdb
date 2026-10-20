@@ -38,6 +38,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"code":"write_backpressure","message":"slow down","retryable":true}')
         elif self.path.startswith("/v1/imports?"):
             self._json({"id": "task-import", "type": "bulk_import", "status": "queued"})
+        elif self.path == "/v1/tenants/target/restore":
+            self._json({"id": "task-restore", "type": "tenant_restore", "status": "queued"})
         else:
             self.send_error(404)
 
@@ -256,6 +258,20 @@ class ClientTest(unittest.TestCase):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")
         entity = client.get_entity("host:1")
         self.assertEqual(entity["fields"]["hostname"], "app-01")
+
+    def test_restore_declares_source_only_for_explicit_migration(self):
+        client = GraphDBClient(self.base_url, tenant_id="tenant-a")
+        for source in (None, "source"):
+            with self.subTest(source=source):
+                result = client.restore_tenant("target", "backup-key", dry_run=True, source_tenant_id=source)
+                self.assertEqual(result["id"], "task-restore")
+                method, path, headers, body = Handler.requests[-1]
+                self.assertEqual((method, path), ("POST", "/v1/tenants/target/restore"))
+                self.assertNotIn("x-tenant-id", {key.lower(): value for key, value in headers.items()})
+                expected = {"backup_key": "backup-key", "overwrite": False, "dry_run": True}
+                if source is not None:
+                    expected["source_tenant_id"] = source
+                self.assertEqual(json.loads(body), expected)
 
     def test_api_error(self):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")

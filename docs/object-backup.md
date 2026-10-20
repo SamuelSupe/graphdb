@@ -2,7 +2,7 @@
 
 [中文](object-backup.zh-CN.md)
 
-Applies to **GGraphDB 2.3.8**; see [release validation](validation-v2.3.8.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.9**; see [release validation](validation-v2.3.9.md) and [version boundaries](naming-and-compatibility.md).
 
 This guide covers the current 2.x backup features. Version 2.1 adds optional
 automation while retaining the 2.0 snapshot format. There is no 1.x backup
@@ -160,10 +160,14 @@ original tenant ID or a new one:
 ```sh
 curl -X POST http://localhost:8080/v1/tenants/target/restore \
   -H 'Content-Type: application/json' \
-  -d '{"backup_key":"s3://graphdb-backups/production/source/BACKUP_ID/manifest.json","dry_run":true}'
+  -d '{"backup_key":"s3://graphdb-backups/production/source/BACKUP_ID/manifest.json","source_tenant_id":"source","dry_run":true}'
 ```
 
 Use `dry_run:true` for validation; omit it or set it to false to apply the snapshot.
+From 2.3.9, the source defaults to the target tenant. Cross-tenant platform
+migration must declare `source_tenant_id` explicitly and omit the tenant header
+on the private restore call. Generic tasks use `params.required_source_tenant`.
+Tenant-scoped callers cannot override their authenticated source.
 An existing target requires explicit `overwrite:true`. Poll the task with the
 target tenant's `X-Tenant-ID`. Manifest identity, size, SHA-256, Parquet content,
 and graph constraints are checked before changing the target. Failed downloads
@@ -212,8 +216,12 @@ also check that the remote snapshot hash has not changed.
 ## SDK and validation
 
 Python: `backup_tenant("source", destination="object")` and
-`list_object_backups("source")`; tenant-scoped `get_backup_automation()` reports scheduling. Restore keeps the existing `restore_tenant` method.
-Go: `BackupTenantToObjectStorage`, `ListObjectBackups`, `GetBackupAutomation`, and existing `RestoreTenant`.
+`list_object_backups("source")`; tenant-scoped `get_backup_automation()` reports scheduling.
+`restore_tenant("target", backup_key)` requires a backup from the target tenant.
+For a private platform migration, explicitly pass `source_tenant_id="source"`.
+Go: `BackupTenantToObjectStorage`, `ListObjectBackups`, `GetBackupAutomation`, and
+`RestoreTenant` for the same tenant; `RestoreTenantFromSource` explicitly declares
+the source for a private platform migration.
 
 On Linux/OrbStack, supply a dedicated test bucket and
 `GRAPHDB_TEST_BACKUP_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY_ID`, and `_SECRET_ACCESS_KEY`,

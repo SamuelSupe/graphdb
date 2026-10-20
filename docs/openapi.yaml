@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.3.8
+  version: 2.3.9
   description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Standalone 2.2 retains the 2.0/2.1 data format and optional S3 backup automation; Raft has separate replica-directory and protocol upgrade requirements. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
@@ -287,7 +287,7 @@ paths:
           schema:
             type: string
             enum: [wait=committed]
-          description: In WAL mode, wait for a terminal ingest result instead of returning after durable local takeover. Servers that cannot finish before the request context ends return a request error; clients may omit this preference and poll the 202 status_url instead.
+          description: In WAL mode, wait for a terminal ingest result instead of returning after durable local takeover. Caller cancellation or deadline ends the wait with a request error; WAL service failure or forced shutdown ends it with a storage error. These wait errors do not revoke durable acceptance. Retain Location to check status after recovery, or retry with the same batch identity. Clients may omit this preference and poll the 202 status_url instead.
       requestBody:
         required: true
         content:
@@ -1919,7 +1919,7 @@ components:
       type: apiKey
       in: header
       name: X-Tenant-ID
-      description: Tenant routing metadata injected by a trusted gateway; this header is not proof of identity. When present, lifecycle paths and create/clone targets must match it, and restore backup sources must belong to that tenant. Private platform lifecycle calls may omit it for cross-tenant migration; the gateway must authenticate and isolate access independently.
+      description: Tenant routing metadata injected by a trusted gateway; this header is not proof of identity. When present, lifecycle paths and create/clone targets must match it, and restore backup sources must belong to that tenant. A private platform restore without this header must explicitly declare source_tenant_id for cross-tenant migration; otherwise the source must match the target. The gateway must authenticate and isolate access independently.
   parameters:
     TenantListLimit:
       name: limit
@@ -4096,6 +4096,9 @@ components:
       type: object
       required: [backup_key]
       properties:
+        source_tenant_id:
+          type: string
+          description: Defaults to the target tenant. An alternate source is allowed only for private platform calls without a tenant header; tenant-scoped callers cannot override their authenticated source. Generic restore tasks use params.required_source_tenant.
         backup_key:
           type: string
           description: Local backup key or s3:// manifest URI from an object backup task or backup listing. Remote files are verified before changing the target.
@@ -4106,6 +4109,9 @@ components:
     TenantRestoreDrillRequest:
       type: object
       properties:
+        source_tenant_id:
+          type: string
+          description: Defaults to the task tenant. Private platform calls may explicitly name another backup source; tenant-scoped calls cannot override their authenticated source.
         backup_key:
           type: string
           description: Optional backup result key or backup manifest key. If omitted, the drill creates a fresh backup first.

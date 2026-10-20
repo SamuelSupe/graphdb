@@ -32,7 +32,7 @@ func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]b
 		}
 		digest := sha256Hex(data)
 		if expected := stringTaskParam(task.Checkpoint, importSourceDigestCheckpoint); expected != "" && expected != digest {
-			return nil, fmt.Errorf("import source %q differs from the admitted input", key)
+			return nil, fmt.Errorf("%w: import source %q differs from the admitted input", ErrInvalidArgument, key)
 		}
 		return json.Marshal(digest)
 	}
@@ -73,7 +73,10 @@ func (s *TenantStore) PrepareReplicatedTask(ctx context.Context, task Task) ([]b
 		return nil, err
 	}
 	if input.Integrity.Status == "error" {
-		return nil, fmt.Errorf("restore backup integrity failed")
+		return nil, fmt.Errorf("%w: restore backup integrity failed", ErrInvalidArgument)
+	}
+	if err := validateTenantRestoreSource(task, input.Record); err != nil {
+		return nil, err
 	}
 	if err := s.checkRestoreDiskSpace(ctx, input.Record); err != nil {
 		return nil, err

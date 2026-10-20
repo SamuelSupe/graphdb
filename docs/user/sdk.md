@@ -9,7 +9,7 @@ internal services, and operations tools.
 The current SDKs expose the current ingest contract. Both preserve direct-mode
 terminal `200/207` results and expose WAL `202` acceptance, the `Location`/
 local status resource, polling/waiting, and ingest CAS/conditional/atomic
-options. The Go and Python SDK package versions are `2.3.1`.
+options. The Go and Python SDK package versions are `2.3.9`.
 
 SDK scope:
 
@@ -28,6 +28,13 @@ tenant generations. HA `min_version` reads must retain the write response
 `X-GraphDB-Tenant-Generation` and send `X-GraphDB-Read-Generation`; use an HTTP client
 to handle response headers explicitly. Cluster administration, migration and rolling
 upgrades use their dedicated APIs/scripts; see [Raft operations](../raft-operations.zh-CN.md).
+
+From 2.3.9, restores default to same-tenant backups. Private platform migrations
+must explicitly declare the source using Python
+`restore_tenant("target", backup_key, source_tenant_id="source")` or Go
+`RestoreTenantFromSource(ctx, "target", "source", backupKey, false, false)`.
+These platform calls omit the tenant header; a tenant-scoped caller cannot
+override its source. See [object backups](../object-backup.md).
 
 ## Tenant pages
 

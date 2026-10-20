@@ -21,6 +21,7 @@ func TestHTTPGenericEntityTypeAndLabelsCompatibility(t *testing.T) {
 		}
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/commits", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -75,6 +76,7 @@ func TestHTTPGenericAndLegacyTypeMutationNamesCannotConflict(t *testing.T) {
 	handler := (&Server{Store: storage.NewTenantStore(storage.NewMemoryStore(), "test"), Mode: "all"}).Handler()
 	body := []byte(`{"mutations":{"upsert_ci_types":[{"name":"legacy"}],"upsert_entity_types":[{"name":"generic"}]}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/commits", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -93,6 +95,7 @@ func TestHTTPIngestAcceptsEntityTypeAlias(t *testing.T) {
 		]
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -122,6 +125,7 @@ func TestHTTPRelationSchemaSidecar(t *testing.T) {
 	handler := (&Server{Store: store, Mode: "all"}).Handler()
 	body := []byte(`{"strict":true,"fields":{"page":{"type":"number","required":true}}}`)
 	req := httptest.NewRequest(http.MethodPut, "/v1/relation-schemas/references", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -139,6 +143,7 @@ func TestHTTPRelationSchemaSidecar(t *testing.T) {
 
 	commit := []byte(`{"mutations":{"upsert_edges":[{"type":"references","from":"document:a","to":"document:b","fields":{"page":"one"}}]}}`)
 	req = httptest.NewRequest(http.MethodPost, "/v1/commits", bytes.NewReader(commit))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

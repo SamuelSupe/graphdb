@@ -1,0 +1,27 @@
+{
+  "version": "v2.3.9",
+  "status": "CANDIDATE",
+  "localVerification": {
+    "environment": "OrbStack Ubuntu arm64",
+    "unit": "PASS",
+    "vet": "PASS",
+    "race": "PASS; final HTTP/SDK whole-package and focused HA/storage regressions rechecked",
+    "criticalRegressionRepetitions": 3,
+    "walAndIndexBudgetRaceRepetitions": 5,
+    "slowElectionMigrationRaceSeconds": [93.94, 89.61, 83.37],
+    "directWalLoadRestart": "PASS",
+    "realMinioRestoreGate": "PASS",
+    "tlsGatewayRequests": 27,
+    "chromeSameOriginTenantCreation": "PASS",
+    "pythonSdk": {"passed": 12, "optionalLiveApiSkipped": 1}
+  },
+  "exactTagCI": {"status": "PENDING"},
+  "downloadedAssets": {"status": "PENDING"},
+  "gateWaiver": false,
+  "preservedRelease": "v2.3.8 tag and assets unchanged",
+  "limits": [
+    "Raft application failure and complete corrupt WAL frames remain fail-closed to preserve committed and acknowledged data.",
+    "Permanent storage faults still require repair.",
+    "No physical cross-host fault-domain, power-loss, day-scale stability or production-capacity qualification."
+  ]
+}

@@ -1,6 +1,6 @@
 # Error Code Contract
 
-Applies to **GGraphDB 2.3.8**; see [release validation](validation-v2.3.8.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.9**; see [release validation](validation-v2.3.9.md) and [version boundaries](naming-and-compatibility.md).
 
 All non-2xx HTTP errors use this envelope:
 
@@ -64,5 +64,9 @@ payload and do not replace the top-level contract above.
 Unclassified storage failures return HTTP 500 / `internal_error` with a generic
 message, without internal filesystem paths. Known validation errors remain 400;
 known transient storage/dependency errors retain their 429/503/504 contracts.
+Metadata failures after commit/ingest graph publication retain HTTP 500 /
+`internal_error`, a generic message and `retryable:false`, even for an underlying
+dependency outage: the graph may already be committed.
+Unsupported mutation Content-Type returns HTTP 415 / `bad_request` before execution.
 Do not blindly replay an uncertain non-idempotent mutation after a 500: check its
 batch or idempotency status first. Tenant scope denial uses 403 / `operation_disabled`.

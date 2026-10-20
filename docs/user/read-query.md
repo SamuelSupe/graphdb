@@ -1,6 +1,6 @@
 # Read And Query
 
-Applies to **GGraphDB 2.3.8**; see [release validation](../validation-v2.3.8.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.9**; see [release validation](../validation-v2.3.9.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](read-query.zh-CN.md)
 
@@ -256,6 +256,9 @@ For the next page, submit the same query with returned `cursor`:
 Cursors are tied to query shape and snapshot version. Reusing a cursor with a
 different query or incompatible version is rejected. Match cursors without an
 explicit sort also bind the internal scan order and must be treated as opaque.
+Legacy numeric offset cursors require `min_version` equal to the graph version;
+they are rejected after that version advances. Encoded cursors require a positive
+version even when they contain only an offset. Prefer the opaque returned cursor.
 
 ## Streaming
 

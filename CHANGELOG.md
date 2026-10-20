@@ -3,7 +3,25 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## Unreleased
+## [2.3.9] - 2026-10-20
+
+- Require same-tenant restore inputs by default, verify legacy backup key/record
+  identity, and require an explicit source tenant for private platform migrations.
+  Preserve that source through local staging and isolated restore drills.
+- Reject cross-origin browser mutations and unsupported write media types before
+  Raft proposal; retain the public Host including its port through NGINX, Raft and shard forwarding.
+  Preserve existing JSONL and CSV import media aliases.
+- Keep opaque preparation failures queued for fair retry; only recognized
+  permanent errors terminate a queued task. Sanitize post-publication errors.
+- Require an explicit matching `min_version` for legacy numeric query cursors;
+  encoded cursors always require their own version.
+
+- Stop WAL committed-result waits when the service fails or is forced to close,
+  returning the service error while preserving accepted batches for recovery.
+  HTTP waits report storage failures instead of misclassifying them as timeouts.
+- Recheck deferred index memory admission against the captured head; release and
+  reacquire an undersized reservation after concurrent ingest grows the graph.
+  Oversized builds retain exclusive access to the shared maintenance budget.
 
 ## [2.3.8] - 2026-10-20
 

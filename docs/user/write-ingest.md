@@ -1,6 +1,6 @@
 # Write And Ingest
 
-Applies to **GGraphDB 2.3.8**; see [release validation](../validation-v2.3.8.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.9**; see [release validation](../validation-v2.3.9.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](write-ingest.zh-CN.md)
 
@@ -333,7 +333,10 @@ Parquet commit segment, and publishes the manifest once.
 
 Sync durability returns `202 Accepted`, `Location`, and a status URL after the
 WAL fsync. Send `Prefer: wait=committed` to wait for the final `200/207` result,
-or query:
+or query status. Cancellation, timeout, service failure, or forced shutdown ends
+the wait without revoking durable acceptance. A service failure returns its
+storage error instead of a request timeout. Keep `Location` for a status query
+after recovery, or retry with the same batch identity:
 
 ```sh
 curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \

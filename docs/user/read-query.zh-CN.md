@@ -1,6 +1,6 @@
 # 读取与查询
 
-适用于 **GGraphDB 2.3.8**；[发行验证](../validation-v2.3.8.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.9**；[发行验证](../validation-v2.3.9.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](read-query.md)
 
@@ -254,6 +254,8 @@ curl -sS -X POST "$READER/v1/query" \
 cursor 绑定查询结构和 snapshot 版本。使用不同查询或不兼容版本复用 cursor
 会被拒绝。无显式排序的 match cursor 还会绑定内部扫描顺序，客户端必须将
 cursor 视为不透明值。
+旧版纯数字 offset 游标必须同时指定等于当前图版本的 `min_version`，图版本前进后
+会被拒绝。编码游标即使只含 offset，也必须包含正数版本。优先使用服务端返回的游标。
 
 ## 流式查询
 

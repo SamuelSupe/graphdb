@@ -91,6 +91,41 @@ func TestGetEntityEscapesPathSegmentExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestRestoreDeclaresSourceOnlyForExplicitMigration(t *testing.T) {
+	for _, source := range []string{"", "source"} {
+		t.Run("source="+source, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/target/restore" || r.Header.Get("X-Tenant-ID") != "" {
+					t.Errorf("unexpected restore request: %s %s headers=%v", r.Method, r.URL.Path, r.Header)
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				got, declared := body["source_tenant_id"]
+				if declared != (source != "") || (declared && got != source) || body["backup_key"] != "backup-key" || body["dry_run"] != true {
+					t.Errorf("restore body = %v", body)
+				}
+				_ = json.NewEncoder(w).Encode(Task{ID: "task-restore"})
+			}))
+			defer server.Close()
+			client, err := NewClient(server.URL, WithTenant("tenant-a"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result Task
+			if source == "" {
+				result, err = client.RestoreTenant(context.Background(), "target", "backup-key", false, true)
+			} else {
+				result, err = client.RestoreTenantFromSource(context.Background(), "target", source, "backup-key", false, true)
+			}
+			if err != nil || result.ID != "task-restore" {
+				t.Fatalf("restore = %+v, %v", result, err)
+			}
+		})
+	}
+}
+
 func TestAPIErrorParsesEnvelopeAndRetryAfter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "2")

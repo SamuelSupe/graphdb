@@ -1,6 +1,6 @@
 # API Map
 
-适用于 **GGraphDB 2.3.8**；[发行验证](../validation-v2.3.8.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.9**；[发行验证](../validation-v2.3.9.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](api-map.md)
 

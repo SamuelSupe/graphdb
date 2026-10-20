@@ -1383,7 +1383,7 @@ func TestIngestServiceFailsClosedAfterRuntimeWALFailure(t *testing.T) {
 	}()
 
 	prefixRequest := ingestEntityRequest("batch-wal-prefix", "host:prefix")
-	_, err = service.Accept(context.Background(), "tenant-a", prefixRequest)
+	prefixAccepted, err := service.Accept(context.Background(), "tenant-a", prefixRequest)
 	if err != nil {
 		t.Fatalf("accept valid WAL prefix: %v", err)
 	}
@@ -1411,6 +1411,12 @@ func TestIngestServiceFailsClosedAfterRuntimeWALFailure(t *testing.T) {
 	)
 	if !errors.Is(err, ErrIngestWALFailed) {
 		t.Fatalf("post-failure acceptance err = %v, want ErrIngestWALFailed", err)
+	}
+	waitCtx, stopWait := context.WithTimeout(context.Background(), time.Second)
+	_, waitErr := service.Wait(waitCtx, prefixAccepted)
+	stopWait()
+	if !errors.Is(waitErr, ErrIngestWALFailed) {
+		t.Errorf("wait after fatal WAL error = %v, want ErrIngestWALFailed", waitErr)
 	}
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -1464,11 +1470,12 @@ func TestIngestServiceFailsClosedWhenFlushRequiresRepair(t *testing.T) {
 	}
 	defer closeIngestService(t, service)
 
-	if _, err := service.Accept(
+	accepted, err := service.Accept(
 		context.Background(),
 		"tenant-a",
 		ingestEntityRequest("batch-repair", "host:repair"),
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("accept repair-triggering request: %v", err)
 	}
 	select {
@@ -1480,6 +1487,12 @@ func TestIngestServiceFailsClosedWhenFlushRequiresRepair(t *testing.T) {
 	case <-service.runCtx.Done():
 	case <-time.After(time.Second):
 		t.Fatal("ingest service did not fail closed after repair-required error")
+	}
+	waitCtx, stopWait := context.WithTimeout(context.Background(), time.Second)
+	_, waitErr := service.Wait(waitCtx, accepted)
+	stopWait()
+	if !errors.Is(waitErr, ErrIngestRepairRequired) {
+		t.Errorf("wait after repair-required error = %v, want ErrIngestRepairRequired", waitErr)
 	}
 
 	readiness := service.Readiness()

@@ -634,6 +634,7 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 	}
 	stale := httptest.NewRequest("POST", "/v1/commits", bytes.NewBufferString(`{"mutations":{}}`))
 	stale.Header.Set("X-Tenant-ID", "tenant-a")
+	stale.Header.Set("Content-Type", "application/json")
 	stale.Header.Set(sharding.EpochHeader, "1")
 	w := httptest.NewRecorder()
 	a.nodes[aleader].handler.ServeHTTP(w, stale)
@@ -764,7 +765,9 @@ func TestHAShardPagedTenantListing(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := httptest.NewRequest(method, path, bytes.NewReader(encoded))
+		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("Origin", "http://example.com")
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		if w.Code >= 300 {

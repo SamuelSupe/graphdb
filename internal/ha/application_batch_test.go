@@ -22,6 +22,54 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+func TestApplicationFailureDoesNotSkipCommittedMutation(t *testing.T) {
+	ctx := context.Background()
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	failed := true
+	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
+	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := files.Put(r.Context(), "test/object", []byte("published")); err != nil {
+			t.Error(err)
+		}
+		if failed {
+			http.Error(w, "deterministic application fault", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	cmd, err := newCommand("http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Method, cmd.URI = http.MethodPost, "/v1/test"
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Apply(ctx, 1, data); err == nil {
+		t.Fatal("failed application advanced the log")
+	}
+	checkpoint, err := files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 0 {
+		t.Fatalf("failed checkpoint: %+v %v", checkpoint, err)
+	}
+	if _, err := files.Get(ctx, "test/object"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("partial mutation survived rollback: %v", err)
+	}
+	failed = false
+	if _, err := app.Apply(ctx, 1, data); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err = files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 1 {
+		t.Fatalf("repaired replay failed: %+v %v", checkpoint, err)
+	}
+}
+
 func TestApplicationSnapshotRejectsCorruptPublishedGraph(t *testing.T) {
 	for _, failure := range []string{"missing-head", "missing-commit", "corrupt-commit"} {
 		t.Run(failure, func(t *testing.T) {

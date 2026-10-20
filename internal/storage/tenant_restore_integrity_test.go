@@ -10,6 +10,54 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func TestRestoreRequiresExplicitSourceForCrossTenantBackup(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	defer store.ShutdownTasks(ctx)
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:secret", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := store.StartTask(ctx, "tenant-a", TaskTypeTenantBackup, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup = waitForTask(t, ctx, store, "tenant-a", backup.ID)
+	for _, key := range []string{backup.ResultKey, backup.Result["backup_manifest_key"].(string)} {
+		restore, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": key, "dry_run": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitForTaskStatus(t, store, "tenant-b", restore.ID, TaskStatusFailed)
+		restore, err = store.GetTask(ctx, "tenant-b", restore.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if restore.Status != TaskStatusFailed {
+			t.Fatalf("implicit cross-tenant restore succeeded: %+v", restore)
+		}
+		restore, err = store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": key, "dry_run": true, "required_source_tenant": "tenant-a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		restore = waitForTask(t, ctx, store, "tenant-b", restore.ID)
+		if restore.Status != TaskStatusSucceeded {
+			t.Fatalf("explicit migration rejected: %+v", restore)
+		}
+	}
+}
+
+func TestLegacyBackupKeyMustMatchRecordTenant(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	ctx := context.Background()
+	record := TenantBackupRecord{TenantID: "tenant-a", Version: 1, Snapshot: graph.Snapshot{Version: 1}}
+	if err := store.putTaskResult(ctx, "tenant-b", "forged", taskResult(record)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.loadTenantBackupInput(ctx, store.taskResultKey("tenant-b", "forged")); err == nil {
+		t.Fatal("legacy key/record tenant mismatch accepted")
+	}
+}
+
 func TestTenantRestoreFailsWhenFinalIntegrityCheckCannotRun(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryStore()
@@ -35,7 +83,7 @@ func TestTenantRestoreFailsWhenFinalIntegrityCheckCannotRun(t *testing.T) {
 		ctx,
 		"tenant-b",
 		TaskTypeTenantRestore,
-		map[string]any{"backup_key": backupKey},
+		map[string]any{"backup_key": backupKey, "required_source_tenant": "tenant-a"},
 	)
 	if err != nil {
 		t.Fatalf("start restore: %v", err)
@@ -56,7 +104,7 @@ func TestTenantRestoreFailsWhenFinalIntegrityCheckCannotRun(t *testing.T) {
 		TenantID: "tenant-b",
 		Type:     TaskTypeTenantRestore,
 		Status:   TaskStatusRunning,
-		Params:   map[string]any{"backup_key": backupKey},
+		Params:   map[string]any{"backup_key": backupKey, "required_source_tenant": "tenant-a"},
 		Checkpoint: map[string]any{
 			"backup_key":       backupKey,
 			"snapshot_written": true,

@@ -36,7 +36,7 @@ func parseCursor(raw string) (cursorState, error) {
 	if cursor.Offset < 0 {
 		return cursorState{}, fmt.Errorf("%w: invalid cursor offset", ErrInvalid)
 	}
-	if cursor.After != "" && cursor.Version <= 0 {
+	if cursor.Version <= 0 {
 		return cursorState{}, fmt.Errorf("%w: cursor version is required", ErrInvalid)
 	}
 	if cursor.Order != "" {
@@ -48,6 +48,9 @@ func parseCursor(raw string) (cursorState, error) {
 }
 
 func validateCursor(cursor cursorState, version int64, request Request) error {
+	if cursor.Legacy && (request.MinVersion <= 0 || request.MinVersion != version) {
+		return fmt.Errorf("%w: numeric cursor requires min_version equal to the graph version", ErrInvalid)
+	}
 	if cursor.Version != 0 && cursor.Version != version {
 		return fmt.Errorf("%w: cursor version %d does not match graph version %d", ErrInvalid, cursor.Version, version)
 	}

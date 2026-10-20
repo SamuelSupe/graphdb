@@ -263,8 +263,8 @@ func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantR
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_load_backup", 1, total, taskActionUpdate{ID: "load_backup", Err: err}, nil)
 		return TenantRestoreReport{}, err
 	}
-	if source := stringTaskParam(task.Params, "required_source_tenant"); source != "" && input.Record.TenantID != source {
-		return TenantRestoreReport{}, fmt.Errorf("backup source is outside the authenticated tenant scope")
+	if err := validateTenantRestoreSource(task, input.Record); err != nil {
+		return TenantRestoreReport{}, err
 	}
 	if input.SHA256 != "" {
 		if previous := taskCheckpointString(task, "remote_snapshot_sha256"); previous != "" && previous != input.SHA256 {
@@ -288,6 +288,9 @@ func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantR
 }
 
 func (s *TenantStore) restoreTenantBackupInputTask(ctx context.Context, task Task, backupKey string, input tenantBackupInput) (TenantRestoreReport, error) {
+	if err := validateTenantRestoreSource(task, input.Record); err != nil {
+		return TenantRestoreReport{}, err
+	}
 	if s.localFileStore() != nil && !boolTaskParam(task.Params, "dry_run") {
 		return s.restoreLocalTenantBackupTask(ctx, task, backupKey, input)
 	}
@@ -621,9 +624,9 @@ func (s *TenantStore) loadTenantBackupInput(ctx context.Context, backupKey strin
 }
 
 func (s *TenantStore) loadTenantBackupRecord(ctx context.Context, backupKey string) (TenantBackupRecord, error) {
-	_, _, ok := s.taskResultIdentityFromKey(backupKey)
+	tenantID, _, ok := s.taskResultIdentityFromKey(backupKey)
 	if !ok {
-		return TenantBackupRecord{}, fmt.Errorf("invalid tenant backup key")
+		return TenantBackupRecord{}, fmt.Errorf("%w: invalid tenant backup key", ErrInvalidArgument)
 	}
 	result, found, err := s.loadTaskResultByKey(ctx, backupKey)
 	if err != nil {
@@ -632,7 +635,22 @@ func (s *TenantStore) loadTenantBackupRecord(ctx context.Context, backupKey stri
 	if !found {
 		return TenantBackupRecord{}, ErrNotFound
 	}
-	return tenantBackupRecordFromResult(result)
+	record, err := tenantBackupRecordFromResult(result)
+	if err == nil && record.TenantID != tenantID {
+		return TenantBackupRecord{}, fmt.Errorf("%w: backup key and record tenant mismatch", ErrInvalidArgument)
+	}
+	return record, err
+}
+
+func validateTenantRestoreSource(task Task, record TenantBackupRecord) error {
+	source := stringTaskParam(task.Params, "required_source_tenant")
+	if source == "" {
+		source = task.TenantID
+	}
+	if record.TenantID != source {
+		return fmt.Errorf("%w: backup source is outside the required tenant scope", ErrInvalidArgument)
+	}
+	return nil
 }
 
 func tenantBackupRecordFromResult(result map[string]any) (TenantBackupRecord, error) {

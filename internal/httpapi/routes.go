@@ -65,6 +65,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
 				s.Cluster.ServeRoute(w, r, route.mutation, route.runtimeOnly, next)
 			})
 		}
+		if route.mutation && s.writeAllowed() {
+			handler = protectBrowserWrite(handler)
+		}
 		mux.Handle(route.pattern, handler)
 	}
 }

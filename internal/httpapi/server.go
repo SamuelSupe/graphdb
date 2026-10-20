@@ -244,7 +244,7 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 			s.invalidate(tenantID)
 			s.auditError("commit_metadata_failed", tenantID, err, map[string]any{"idempotency_key": request.IdempotencyKey})
 			span.SetAttributes(attribute.String("graphdb.commit.result", "metadata_failed"))
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, "internal storage error")
 			return
 		}
 		s.auditError("commit_failed", tenantID, err, map[string]any{})

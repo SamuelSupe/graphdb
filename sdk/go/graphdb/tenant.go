@@ -182,6 +182,14 @@ func (c *Client) RestoreTenant(ctx context.Context, tenantID string, backupKey s
 	return out, err
 }
 
+// RestoreTenantFromSource declares the backup's source tenant for a cross-tenant
+// migration. It requires private platform access without a scoped tenant header.
+func (c *Client) RestoreTenantFromSource(ctx context.Context, tenantID, sourceTenantID, backupKey string, overwrite, dryRun bool) (out Task, err error) {
+	request := map[string]any{"backup_key": backupKey, "source_tenant_id": sourceTenantID, "overwrite": overwrite, "dry_run": dryRun}
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/restore", platformTenant, nil, request, &out)
+	return out, err
+}
+
 func (c *Client) RestoreDrillTenant(ctx context.Context, tenantID string, request map[string]any) (out Task, err error) {
 	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/restore-drill", platformTenant, nil, request, &out)
 	return out, err

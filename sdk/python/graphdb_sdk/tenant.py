@@ -56,8 +56,11 @@ class TenantMixin:
     def list_object_backups(self, tenant_id: str, *, cursor: str = "", limit: int = 20) -> dict:
         return self._json("GET", f"/v1/tenants/{self._escape(tenant_id)}/backups", tenant_id=None, query={"cursor": cursor, "limit": limit})
 
-    def restore_tenant(self, tenant_id: str, backup_key: str, overwrite: bool = False, dry_run: bool = False) -> dict:
+    def restore_tenant(self, tenant_id: str, backup_key: str, overwrite: bool = False, dry_run: bool = False, *, source_tenant_id: str | None = None) -> dict:
+        """Restore the same tenant, or declare a source for a private platform migration."""
         body = {"backup_key": backup_key, "overwrite": overwrite, "dry_run": dry_run}
+        if source_tenant_id is not None:
+            body["source_tenant_id"] = source_tenant_id
         return self._json("POST", f"/v1/tenants/{self._escape(tenant_id)}/restore", tenant_id=None, body=body)
 
     def restore_drill_tenant(self, tenant_id: str, params: dict | None = None) -> dict:

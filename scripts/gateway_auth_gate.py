@@ -13,11 +13,12 @@ context = ssl.create_default_context(cafile=os.environ['GRAPHDB_GATEWAY_TEST_CA'
 results = []
 
 
-def request(method, path, role, body=None, expected=200):
+def request(method, path, role, body=None, expected=200, extra_headers=None):
     headers = {'Content-Type': 'application/json', 'X-Tenant-ID': 'spoofed-tenant',
                'X-Original-Method': 'DELETE', 'X-Original-URI': '/forged'}
     if role:
         headers['Authorization'] = f'Bearer {role}-{method.lower()}-test'
+    headers.update(extra_headers or {})
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, method=method, data=data, headers=headers)
     try:
@@ -53,4 +54,12 @@ for path in ('/v1/commits', '/v1/%63ommits'):
     assert result['tenant_id'] == 'tenant-a', result
 result = request('GET', '/v1/entities/host:gateway-auth', 'reader')
 assert result['entity']['id'] == 'host:gateway-auth', result
+request('POST', '/v1/commits', 'writer', mutation, extra_headers={'Origin': base})
+request('POST', '/v1/commits', 'writer', mutation, expected=403,
+        extra_headers={'Origin': 'https://attacker.example'})
+request('POST', '/admin/v1/tenants/tenant-a/purge?force=true', 'operator', {}, expected=403,
+        extra_headers={'Origin': 'https://attacker.example'})
+request('POST', '/v1/commits', 'writer', mutation, expected=415,
+        extra_headers={'Content-Type': 'text/plain'})
+request('GET', '/v1/entities/host:gateway-auth', 'reader')
 print(f'Gateway role, encoded-route and tenant-isolation gate passed ({len(results)} requests)')

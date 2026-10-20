@@ -13,6 +13,59 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+func TestHTTPRestoreSourceRequiresExplicitPlatformMigration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	defer store.ShutdownTasks(context.Background())
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := store.StartTask(ctx, "tenant-a", storage.TaskTypeTenantBackup, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup = waitForHTTPTask(t, store, "tenant-a", backup.ID)
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	for _, test := range []struct {
+		target, scope, source, terminal string
+		status                          int
+	}{
+		{"implicit", "", "", storage.TaskStatusFailed, http.StatusAccepted},
+		{"explicit", "", "tenant-a", storage.TaskStatusSucceeded, http.StatusAccepted},
+		{"restricted", "restricted", "tenant-a", "", http.StatusForbidden},
+	} {
+		response := serveJSON(handler, http.MethodPost, "/v1/tenants/"+test.target+"/restore", test.scope, map[string]any{"backup_key": backup.ResultKey, "source_tenant_id": test.source})
+		if response.Code != test.status {
+			t.Fatalf("target=%s status=%d body=%s", test.target, response.Code, response.Body)
+		}
+		if test.terminal == "" {
+			continue
+		}
+		var task storage.Task
+		if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			current, err := store.GetTask(ctx, test.target, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Status != storage.TaskStatusQueued && current.Status != storage.TaskStatusRunning {
+				if current.Status != test.terminal {
+					t.Fatalf("target=%s status=%s error=%s", test.target, current.Status, current.Error)
+				}
+				break
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+}
+
 func TestHTTPTenantLifecycleCreateDisableEnableDeletePurge(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
 	handler := (&Server{Store: store, Mode: "all"}).Handler()

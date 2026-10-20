@@ -112,6 +112,12 @@ Clients that need to wait on the final result may send:
 Prefer: wait=committed
 ```
 
+The wait ends on caller cancellation, deadline, WAL service failure, or forced
+shutdown. Service failures use the normal storage error response, rather than a
+request timeout. This does not revoke durable acceptance: retain `Location` and
+check status after recovery, or retry with the same batch identity. Completed
+results remain available after a graceful shutdown.
+
 The status response may report `accepted`, `prepared`, `retrying`, `published`,
 `committed`, or `failed`. During writer startup recovery it reports
 `recovery_pending: true` rather than treating an owned durable record as a

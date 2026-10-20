@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -963,7 +964,7 @@ func TestHTTPCollectorStatusAllowsEscapedSlashScope(t *testing.T) {
 
 func TestHTTPIngestMetadataErrorInvalidatesCache(t *testing.T) {
 	objects := storage.NewMemoryStore()
-	store := storage.NewTenantStore(&httpFailPutStore{ObjectStore: objects, contains: "/ingest/aws/idempotency/"}, "test")
+	store := storage.NewTenantStore(&httpFailPutStore{ObjectStore: objects, contains: "/ingest/aws/idempotency/", err: storage.ErrObjectStoreUnavailable}, "test")
 	cache := storage.NewReaderCache(store, time.Hour)
 	handler := (&Server{Store: store, Cache: cache, Mode: "all"}).Handler()
 
@@ -986,7 +987,11 @@ func TestHTTPIngestMetadataErrorInvalidatesCache(t *testing.T) {
 		}},
 	}
 	rr = serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", body)
-	if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), "save ingest batch") {
+	var failure ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if rr.Code != http.StatusInternalServerError || failure.Code != ErrorCodeInternal || failure.Error != "internal storage error" {
 		t.Fatalf("ingest status = %d body=%s", rr.Code, rr.Body.String())
 	}
 
@@ -996,6 +1001,31 @@ func TestHTTPIngestMetadataErrorInvalidatesCache(t *testing.T) {
 	handler.ServeHTTP(rr, get)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("get after failed metadata status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPCommitMetadataErrorIsSanitized(t *testing.T) {
+	for _, injected := range []error{errors.New("internal path /private/data/commit"), storage.ErrObjectStoreUnavailable} {
+		t.Run(injected.Error(), func(t *testing.T) {
+			store := storage.NewTenantStore(&httpFailPutStore{ObjectStore: storage.NewMemoryStore(), contains: "/idempotency/commits/", failOn: 3, err: injected}, "test")
+			response := serveJSON((&Server{Store: store, Mode: "all"}).Handler(), http.MethodPost, "/v1/commits", "tenant-a", CommitRequest{
+				IdempotencyKey: "metadata-failure", Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:published", Kind: "host"}}},
+			})
+			var failure ErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusInternalServerError || failure.Code != ErrorCodeInternal || failure.Error != "internal storage error" || failure.Retryable {
+				t.Fatalf("unsanitized response: %d %s", response.Code, response.Body)
+			}
+			g, manifest, err := store.Load(context.Background(), "tenant-a")
+			if err != nil || manifest.Version != 1 {
+				t.Fatalf("metadata failure lost published commit: %+v %v", manifest, err)
+			}
+			if _, ok := g.GetEntity("host:published"); !ok {
+				t.Fatal("published entity missing")
+			}
+		})
 	}
 }
 
@@ -2011,17 +2041,26 @@ func (w *failingResponseWriter) Write(_ []byte) (int, error) {
 type httpFailPutStore struct {
 	storage.ObjectStore
 	contains string
+	failOn   int32
+	writes   atomic.Int32
+	err      error
 }
 
 func (s *httpFailPutStore) Put(ctx context.Context, key string, data []byte) error {
-	if strings.Contains(key, s.contains) {
+	if strings.Contains(key, s.contains) && (s.failOn == 0 || s.writes.Add(1) >= s.failOn) {
+		if s.err != nil {
+			return s.err
+		}
 		return errors.New("injected put failure")
 	}
 	return s.ObjectStore.Put(ctx, key, data)
 }
 
 func (s *httpFailPutStore) PutConditional(ctx context.Context, key string, data []byte, condition storage.PutCondition) (storage.ObjectMeta, error) {
-	if strings.Contains(key, s.contains) {
+	if strings.Contains(key, s.contains) && (s.failOn == 0 || s.writes.Add(1) >= s.failOn) {
+		if s.err != nil {
+			return storage.ObjectMeta{}, s.err
+		}
 		return storage.ObjectMeta{}, errors.New("injected put failure")
 	}
 	return s.ObjectStore.PutConditional(ctx, key, data, condition)

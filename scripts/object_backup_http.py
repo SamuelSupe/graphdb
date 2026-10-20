@@ -85,15 +85,16 @@ def main():
         assert len(first["backups"]) == 1 and first.get("next_cursor"), first
         second = admin.list_object_backups("backup-source", limit=1, cursor=first["next_cursor"])
         assert {first["backups"][0]["backup_key"], second["backups"][0]["backup_key"]} == {saved["backup_key"], saved["second_key"]}
-        dry = wait(target, admin.restore_tenant("backup-target", saved["backup_key"], dry_run=True))
+        dry = wait(target, admin.restore_tenant("backup-target", saved["backup_key"], dry_run=True, source_tenant_id="backup-source"))
         assert dry["result"]["dry_run"] and not dry["result"].get("target_exists", False), dry
-        wait(target, admin.restore_tenant("backup-target", saved["backup_key"]))
+        wait(target, admin.restore_tenant("backup-target", saved["backup_key"], source_tenant_id="backup-source"))
         assert target.export_snapshot() == expected
         commit(target, {"upsert_entities": [{"id": "host:a", "kind": "host", "fields": {"name": "changed"}}]}, "backup-gate-overwrite")
         assert target.get_entity("host:a")["fields"]["name"] == "changed"
-        wait(target, admin.restore_tenant("backup-target", saved["backup_key"], overwrite=True))
+        wait(target, admin.restore_tenant("backup-target", saved["backup_key"], overwrite=True, source_tenant_id="backup-source"))
         drill = wait(target, admin.restore_drill_tenant("backup-target", {
             "backup_key": saved["backup_key"], "target_tenant_id": "backup-drill", "cleanup": True,
+            "source_tenant_id": "backup-source",
         }))
         assert drill["result"]["recoverable"], drill
         print("Fresh-directory discovery, dry-run, restore, and overwrite passed")

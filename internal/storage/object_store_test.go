@@ -18,6 +18,50 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func TestCaseInsensitiveFilesystemRejectsTenantAliases(t *testing.T) {
+	root := t.TempDir()
+	probe := filepath.Join(root, "CaseProbe")
+	if err := os.Mkdir(probe, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "caseprobe")); os.IsNotExist(err) {
+		t.Skip("requires case-insensitive filesystem")
+	}
+	files, err := OpenFileStore(filepath.Join(root, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	defer store.ShutdownTasks(context.Background())
+	ctx := context.Background()
+	if _, err := store.Commit(ctx, "TenantA", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:secret", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "TenantA"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Load(ctx, "tenanta"); err == nil {
+		t.Fatal("alias read source graph")
+	}
+	if _, err := store.GetIndexCatalog(ctx, "tenanta"); err == nil {
+		t.Fatal("alias read source catalog")
+	}
+	if _, err := store.CreateTenant(ctx, "tenanta", TenantCreateOptions{}); err == nil {
+		t.Fatal("alias created a conflicting tenant")
+	}
+	if _, err := store.PurgeTenant(ctx, "tenanta", true); err == nil {
+		t.Fatal("alias purged source tenant")
+	}
+	g, _, err := store.Load(ctx, "TenantA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.GetEntity("host:secret"); !ok {
+		t.Fatal("source tenant changed")
+	}
+}
+
 func TestFileStorePagesPreserveKeyOrderAndExcludeNewGCCandidates(t *testing.T) {
 	ctx := context.Background()
 	files, err := OpenFileStore(t.TempDir())

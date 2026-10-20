@@ -1,6 +1,6 @@
 # 生产安全边界
 
-适用于 **GGraphDB 2.3.8**；发行资格见[版本验证](validation-v2.3.8.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.9**；发行资格见[版本验证](validation-v2.3.9.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 [English](security-deployment.md)
 
@@ -13,6 +13,12 @@ GGraphDB 2.x 把认证与授权放在网关或服务网格层。数据库不会�
 GGraphDB listener。
 
 ## 安全默认值
+
+2.3.9 起，写接口拒绝 Origin authority 与 Host 不一致、null Origin，以及
+`Sec-Fetch-Site: cross-site` 的浏览器请求。非空写入 body 要求 `application/json`；
+import 另支持 JSONL、CSV 和 octet-stream。无 body 的非浏览器命令继续可用。
+反代须保留含端口的公共 Host，NGINX 示例已采用该设置。检查发生在 Raft 提议前，
+仍需由网关完成身份认证。
 
 - 默认 `GRAPHDB_PPROF_ENABLED=false`。
 - `GRAPHDB_ADDR` 兼容监听永不暴露 pprof。

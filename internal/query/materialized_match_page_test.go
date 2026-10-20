@@ -209,10 +209,11 @@ func TestMaterializedKindPageLegacyCursorPastEndIsEmpty(t *testing.T) {
 	g.Version = 1
 	g.Entities.Set("host:a", graph.Entity{ID: "host:a", Kind: "host"})
 	response, err := Execute(g, Request{
-		Op:        "match",
-		Kind:      "host",
-		Cursor:    "10",
-		CostLimit: 20,
+		Op:         "match",
+		Kind:       "host",
+		Cursor:     "10",
+		MinVersion: 1,
+		CostLimit:  20,
 	})
 	if err != nil {
 		t.Fatal(err)

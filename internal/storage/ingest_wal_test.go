@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -177,6 +178,46 @@ func TestIngestWALRejectsChecksumCorruptionAndSecondProcess(t *testing.T) {
 	}
 	if _, _, err := openIngestWALRecords(config); !errors.Is(err, ErrIngestWALCorrupt) {
 		t.Fatalf("corrupt open err = %v, want ErrIngestWALCorrupt", err)
+	}
+}
+
+func TestIngestWALPreservesCorruptAcknowledgedFinalFrame(t *testing.T) {
+	for _, zero := range []bool{false, true} {
+		t.Run(fmt.Sprint("zero=", zero), func(t *testing.T) {
+			config := testIngestWALConfig(t)
+			wal, _, err := openIngestWALRecords(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, payload := range []string{"first", "acknowledged"} {
+				if _, err := wal.Append(context.Background(), IngestWALAccepted, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := wal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			filename := filepath.Join(config.Dir, ingestWALSegmentName(1))
+			data, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if zero {
+				clear(data[len(encodeIngestWALFrame(IngestWALAccepted, 1, []byte("first"))):])
+			} else {
+				data[len(data)-1] ^= 1
+			}
+			if err := os.WriteFile(filename, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := openIngestWALRecords(config); !errors.Is(err, ErrIngestWALCorrupt) {
+				t.Fatalf("corruption accepted: %v", err)
+			}
+			after, err := os.ReadFile(filename)
+			if err != nil || string(after) != string(data) {
+				t.Fatalf("acknowledged data was silently truncated: %v", err)
+			}
+		})
 	}
 }
 

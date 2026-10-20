@@ -168,6 +168,54 @@ func TestHTTPIngestWALBatchIdentityConflictUsesStableErrorCode(t *testing.T) {
 	}
 }
 
+type repairRequiredWALStore struct{ *storage.TenantStore }
+
+func (s *repairRequiredWALStore) IngestDurableBatchWithHooks(context.Context, string, []storage.IngestBatchEntry, storage.IngestBatchHooks) ([]storage.IngestResult, error) {
+	return nil, storage.ErrIngestRepairRequired
+}
+
+func TestHTTPWALCommittedWaitReturnsServiceFailure(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	config := storage.DefaultIngestServiceConfig(t.TempDir())
+	config.FlushMaxRequests = 1
+	config.WAL.FsyncInterval = time.Millisecond
+	service, err := storage.OpenIngestService(&repairRequiredWALStore{store}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	admission := NewWriteAdmission(1, 1, time.Second)
+	server := &Server{Store: store, Mode: "all", IngestService: service, WriteAdmission: admission}
+	body := `{"source":"agent","collector_id":"collector-a","batch_id":"repair","items":[{"entity":{"id":"host:1","kind":"host"}}]}`
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", strings.NewReader(body)).WithContext(ctx)
+	request.Header.Set("X-Tenant-ID", "tenant-a")
+	request.Header.Set("Prefer", "wait=committed")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	var failure ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || failure.Code != ErrorCodeRepairRequired {
+		t.Fatalf("service failure response=%d %+v, want repair_required conflict", response.Code, failure)
+	}
+	if response.Header().Get("Location") == "" {
+		t.Fatal("durable acceptance lost its status URL")
+	}
+	if admission.active.Load() != 0 || admission.waiting.Load() != 0 {
+		t.Fatal("failed committed wait retained HTTP admission")
+	}
+}
+
 func TestWriteIngestResultMapsAsynchronousIdentityConflict(t *testing.T) {
 	response := httptest.NewRecorder()
 	writeIngestResult(response, storage.IngestResult{

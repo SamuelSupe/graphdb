@@ -98,6 +98,10 @@ status 请求。旧路径 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}
 Prefer: wait=committed
 ```
 
+请求取消、超时、WAL 服务故障或强制关闭都会结束等待。服务故障按存储错误返回，
+不会误报为请求超时。这不撤销持久化接管：保留 `Location`，恢复后查询状态，或复用
+相同批次身份重试。正常关闭前已完成的结果仍可取得。
+
 状态可以是 `accepted`、`prepared`、`retrying`、`published`、`committed` 或
 `failed`。writer 启动恢复期间应返回 `recovery_pending: true`，不能把已经持久接管
 的记录错误当成 404。客户端重试同一源页面时必须复用相同的 `batch_id` 和

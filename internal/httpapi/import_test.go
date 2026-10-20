@@ -58,3 +58,39 @@ func TestHTTPImportRejectsUnknownFormat(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestHTTPImportPreservesSupportedMediaTypes(t *testing.T) {
+	for _, mediaType := range []string{"application/ndjson", "application/jsonl", "application/csv", "text/csv"} {
+		t.Run(mediaType, func(t *testing.T) {
+			store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+			defer store.ShutdownTasks(context.Background())
+			body := `{"entity":{"id":"host:a","kind":"host"}}`
+			if strings.HasSuffix(mediaType, "csv") {
+				body = "record_type,id,entity_type\nentity,host:a,host\n"
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/imports", strings.NewReader(body))
+			req.Header.Set("X-Tenant-ID", "tenant-a")
+			req.Header.Set("Content-Type", mediaType)
+			rr := httptest.NewRecorder()
+			(&Server{Store: store, Mode: "all"}).Handler().ServeHTTP(rr, req)
+			if rr.Code != http.StatusAccepted {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body)
+			}
+			var task storage.Task
+			if err := json.Unmarshal(rr.Body.Bytes(), &task); err != nil {
+				t.Fatal(err)
+			}
+			task = waitForHTTPTask(t, store, "tenant-a", task.ID)
+			if task.Status != storage.TaskStatusSucceeded {
+				t.Fatalf("import task: %+v", task)
+			}
+			g, _, err := store.Load(context.Background(), "tenant-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := g.Entities.Get("host:a"); !ok {
+				t.Fatal("imported entity missing")
+			}
+		})
+	}
+}

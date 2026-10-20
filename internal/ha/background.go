@@ -3,7 +3,6 @@ package ha
 import (
 	"context"
 	"errors"
-	"net"
 	"sort"
 	"time"
 
@@ -185,13 +184,16 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	if errors.As(prepareErr, &pressure) {
 		return prepareErr
 	}
-	var networkError net.Error
 	var responseError interface{ HTTPStatusCode() int }
-	if errors.Is(prepareErr, context.Canceled) || errors.Is(prepareErr, context.DeadlineExceeded) ||
-		errors.Is(prepareErr, storage.ErrObjectStoreUnavailable) || errors.As(prepareErr, &networkError) ||
-		(errors.As(prepareErr, &responseError) && (responseError.HTTPStatusCode() == 429 || responseError.HTTPStatusCode() >= 500)) {
-		// Preparation has no replicated effects. Keep transient failures queued
-		// for the next fair background pass instead of committing a failed task.
+	permanent := errors.Is(prepareErr, storage.ErrInvalidArgument) || errors.Is(prepareErr, storage.ErrNotFound) ||
+		errors.Is(prepareErr, storage.ErrTenantDisabled) || errors.Is(prepareErr, storage.ErrTenantDeleted)
+	if errors.As(prepareErr, &responseError) {
+		status := responseError.HTTPStatusCode()
+		permanent = status >= 400 && status < 500 && status != 408 && status != 409 && status != 429
+	}
+	if prepareErr != nil && !permanent {
+		// Preparation has no replicated effects. An opaque transport wrapper
+		// is not evidence of permanent failure; leave it queued for a fair retry.
 		c.metrics.Event("maintenance_prepare_deferred")
 		return prepareErr
 	}

@@ -1,66 +1,62 @@
-# GGraphDB v2.3.8
+# GGraphDB v2.3.9
 
 ## 中文
 
-本补丁修复 v2.3.7 后续审查复现的三处写入推进问题：
+本补丁修复 v2.3.8 审查中稳定复现的安全、查询及资源生命周期问题：
 
-- 后台索引只对明确的瞬时错误最多尝试三次。重试前释放读视图、构建内存和队列位置，
-  重新读取当前图并有序重建。永久失败不再无限占用资源，索引 stale 状态可由维护修复。
-- 合并等待和前驱等待响应 ctx 取消，同时保留发布顺序。取消已发布提交的等待不会回滚图数据。
-- WAL HTTP 受理只获取解码／并发槽，图发布背压交给 flush；积压期间新批次可缓冲，
-  已受理批次重发仍可取回确认。WAL 磁盘、队列上限和生命周期检查继续生效。
-- 未准备组按剩余 commit-tail 容量拆分，避免有空位仍整组重试；tail 满时等待 compact，
-  PREPARED 组不拆分。回归覆盖顺序、重启恢复和幂等性。
+- 存储层默认只恢复同租户备份，校验 legacy key 与记录的租户身份。私有平台跨租户迁移
+  必须显式声明 `source_tenant_id`；受限租户调用方不能覆盖来源。Go/Python SDK 同步支持。
+- 写接口在 Raft 提案前拒绝跨站 Origin 和不支持的 Content-Type，包括不读 body 的 purge。
+  NGINX、Follower 和分片路由保留公开 Host 及端口，继续接受已有 JSONL/CSV 媒体类型。
+- 未分类的任务准备错误保留排队，释放锁后公平重试；只有明确的永久错误才记为失败。
+- commit/ingest 已发布图数据后的结果记录错误隐藏内部路径，保留 HTTP 500 和
+  `retryable:false`，避免客户端因依赖暂时不可用而盲目重放已经发布的写入。
+- 数字分页游标必须提供与实际图版本匹配的 `min_version`；编码游标必须包含版本。
+- WAL 结果等待在服务故障或强制关闭时退出，同时保留已受理批次供重启恢复。
+- 延迟索引在捕获最新图后复核内存预算；并发增长使原预留不足时释放资源后重新准入。
 
-[版本验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.8.md)
-分别记录本地回归、确切标签门禁和下载后资产验证。自动发布须等待所有必需门禁通过，
-包含单机和 Raft 各 30 分钟混合负载，无门禁豁免。
+复核保留了应用错误后的 Raft 回滚／重放及完整坏 WAL 帧拒绝启动：不能仅凭 HTTP 5xx、
+CRC 不符或全零帧就丢弃已提交／已确认数据。不区分大小写卷上的现有租户身份保护通过实测。
 
-HTTP `/v1`、Go 模块 `/v2`、WAL/Parquet 格式和 Raft 协议编号不变。升级前备份，
-单机停止旧进程后复用目录；Raft 按滚动升级手册执行。持续磁盘／索引故障仍需运维修复；
-本补丁不把长测通过解释为生产容量或跨主机容灾资格。
+[版本验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.9.md)
+区分本地回归、确切标签 CI、单机和 Raft 各 30 分钟长测，以及独立下载验证。
+发布资产由全部必需门禁通过后自动生成，无门禁豁免；包内保留标签时的候选记录与门禁证据，
+最终下载核验记录更新于 main。v2.3.8 标签和资产保持不变。
+
+升级前备份；单机停止旧进程后复用目录，Raft 遵循滚动升级手册。混合版本期间暂停恢复和
+恢复演练等生命周期任务。客户端应使用 JSON 写入类型，并在跨租户平台迁移时声明来源。
+HTTP `/v1`、Go 模块 `/v2`、WAL/Parquet 格式和 Raft 协议编号不变。
 
 ## English
 
-This patch fixes three write-progress regressions confirmed after v2.3.7:
+This patch fixes reproduced v2.3.8 restore, browser-write, preparation-retry,
+cursor and resource-lifecycle defects. Restore defaults to the target tenant;
+private platform migrations explicitly declare the backup source. Scoped callers
+cannot override it, and legacy backup keys must match their records.
 
-- Background index work attempts only recognized transient failures, at most three
-  times. It releases views, build memory and its queue position before retrying
-  from a fresh ordered snapshot. Persistent failures remain visible as stale
-  indexes and eligible for maintenance repair.
-- Joined and predecessor waits honor cancellation while preserving publication
-  order. Cancellation after graph publication does not roll back committed data.
-- WAL HTTP acceptance retains bounded decoding/concurrency but leaves publication
-  pressure to flushing. New requests and duplicate acknowledgements remain
-  available during tail, object-store or CAS pressure, within WAL limits.
-- Unprepared groups split to use remaining commit-tail capacity. Full tails wait
-  for compaction, and prepared cohorts keep atomic publication. Regression tests
-  cover persistent faults, resource release, cancellation, ordering and recovery.
+Browser mutations reject cross-site origins and unsafe media before proposal;
+proxies retain the public Host and imports retain existing JSONL/CSV aliases.
+Opaque preparation failures remain queued for fair retry. Post-publication
+commit/ingest metadata errors retain a generic non-retryable HTTP 500.
+Legacy numeric cursors require matching `min_version`; encoded cursors carry
+their own version. WAL waits stop on service failure without discarding accepted
+batches, and deferred indexing rechecks memory admission after graph growth.
 
-The linked validation record separates local results, required exact-tag gates,
-including both thirty-minute soaks, and independent downloaded-asset checks.
-Data formats and protocol numbers are unchanged. No production capacity,
-latency or cross-host recovery claim is made.
+Raft application failures still roll back and require repair/replay. Complete
+corrupt WAL frames remain preserved: automatic skipping/truncation could lose
+acknowledged data. These protections are covered by regression tests.
 
-## Verified publication / 发布核验
-
-已发布为稳定 Latest。完整标签门禁及单机、Raft 各 30 分钟长测通过。
-独立下载的源码／构建身份、双层 SHA256 及 GitHub digest 一致；Linux arm64 与 macOS arm64
-真实写入、重启恢复、旧版积压 WAL 升级、背压下确认重放和损坏 catalog 后的写入／purge 检查通过。
-损坏 catalog 下手动 rebuild 返回 409，未被误记为修复成功。实际长测指标与限制见版本验证记录。
-最终验证文档位于 main；标签、发行二进制及资产保持不变。
-
-Published as stable Latest after all required gates and both thirty-minute soaks.
-Independent Linux/macOS downloads passed identity, checksums, recovery, old-WAL
-upgrade and persistent-index-failure probes. A corrupt catalog still needs repair;
-its explicit rebuild conflict is recorded, not counted as successful recovery.
+The linked validation record separates local results, exact-tag gates, both
+thirty-minute soaks and independent downloaded-asset checks. Data formats and
+protocol numbers are unchanged. No production-capacity, day-scale stability or
+physical cross-host recovery claim is made.
 
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.3.8.tar.gz.sha256
-tar -xzf graphdb-v2.3.8.tar.gz
-cd v2.3.8
+sha256sum -c graphdb-v2.3.9.tar.gz.sha256
+tar -xzf graphdb-v2.3.9.tar.gz
+cd v2.3.9
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 ```

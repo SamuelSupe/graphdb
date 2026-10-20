@@ -88,7 +88,7 @@ func (s *TenantStore) restoreLocalTenantBackupTask(ctx context.Context, task Tas
 	if input.SHA256 != "" {
 		stagedTask.Checkpoint = map[string]any{"remote_snapshot_sha256": input.SHA256}
 	}
-	stagedTask.Params = map[string]any{"backup_key": backupKey}
+	stagedTask.Params = map[string]any{"backup_key": backupKey, "required_source_tenant": stringTaskParam(task.Params, "required_source_tenant")}
 	stagedTask.Status = TaskStatusRunning
 	stageCtx, finishStage := stage.inlineTask(ctx, stagedTask)
 	defer finishStage()

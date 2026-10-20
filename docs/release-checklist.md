@@ -4,7 +4,12 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
-## Current release qualification
+## Current candidate qualification
+
+[2.3.9](validation-v2.3.9.md) records local regressions; exact-tag CI and independent
+downloaded-asset verification must complete before qualification. No gate waiver.
+
+## Previous 2.3.8 qualification
 
 [2.3.8](validation-v2.3.8.md) passed all required exact-tag jobs, both thirty-minute
 soaks and independent downloaded-asset/runtime/fault probes. No gate waiver.

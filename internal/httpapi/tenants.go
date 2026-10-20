@@ -30,13 +30,15 @@ type tenantCloneRequest struct {
 }
 
 type tenantRestoreRequest struct {
-	BackupKey string `json:"backup_key"`
-	Overwrite bool   `json:"overwrite,omitempty"`
-	DryRun    bool   `json:"dry_run,omitempty"`
+	BackupKey      string `json:"backup_key"`
+	SourceTenantID string `json:"source_tenant_id,omitempty"`
+	Overwrite      bool   `json:"overwrite,omitempty"`
+	DryRun         bool   `json:"dry_run,omitempty"`
 }
 
 type tenantRestoreDrillRequest struct {
 	BackupKey      string   `json:"backup_key,omitempty"`
+	SourceTenantID string   `json:"source_tenant_id,omitempty"`
 	TargetTenantID string   `json:"target_tenant_id,omitempty"`
 	TargetPrefix   string   `json:"target_prefix,omitempty"`
 	Cleanup        *bool    `json:"cleanup,omitempty"`
@@ -273,11 +275,16 @@ func (s *Server) restoreTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params := map[string]any{
-		"backup_key": request.BackupKey,
-		"overwrite":  request.Overwrite,
-		"dry_run":    request.DryRun,
+		"backup_key":             request.BackupKey,
+		"overwrite":              request.Overwrite,
+		"dry_run":                request.DryRun,
+		"required_source_tenant": request.SourceTenantID,
 	}
 	if scope := r.Header.Get("X-Tenant-ID"); scope != "" && storage.EnforceTenantScope(r.Context()) {
+		if request.SourceTenantID != "" && request.SourceTenantID != scope {
+			writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "backup source is outside the authenticated tenant scope", false, nil)
+			return
+		}
 		params["required_source_tenant"] = scope
 	}
 	task, err := s.Store.StartTask(r.Context(), tenantID, storage.TaskTypeTenantRestore, params)
@@ -328,17 +335,22 @@ func (s *Server) restoreDrillTenant(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	params := map[string]any{
-		"backup_key":       request.BackupKey,
-		"target_tenant_id": request.TargetTenantID,
-		"target_prefix":    request.TargetPrefix,
-		"dry_run":          request.DryRun,
-		"query_templates":  request.QueryTemplates,
-		"query_timeout_ms": request.QueryTimeoutMS,
+		"backup_key":             request.BackupKey,
+		"target_tenant_id":       request.TargetTenantID,
+		"target_prefix":          request.TargetPrefix,
+		"dry_run":                request.DryRun,
+		"query_templates":        request.QueryTemplates,
+		"query_timeout_ms":       request.QueryTimeoutMS,
+		"required_source_tenant": request.SourceTenantID,
 	}
 	if request.Cleanup != nil {
 		params["cleanup"] = *request.Cleanup
 	}
 	if r.Header.Get("X-Tenant-ID") != "" && storage.EnforceTenantScope(r.Context()) {
+		if request.SourceTenantID != "" && request.SourceTenantID != tenantID {
+			writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "backup source is outside the authenticated tenant scope", false, nil)
+			return
+		}
 		if request.TargetTenantID != "" || request.TargetPrefix != "" {
 			writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "tenant-scoped restore drills require an automatically isolated target", false, nil)
 			return

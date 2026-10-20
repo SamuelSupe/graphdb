@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -701,6 +702,64 @@ func TestIngestServiceCloseDrainsManyTenantsWithoutChannelDeadlock(t *testing.T)
 		if result.Applied != 1 || result.Failed != 0 || result.Version != 1 {
 			t.Fatalf("tenant %s result after close = %#v; want one applied mutation at version 1", tenantIDs[index], result)
 		}
+	}
+}
+
+func TestIngestServiceWaitStopsOnForcedCloseAndBatchRecovers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	for _, id := range []string{"host:a", "host:b"} {
+		if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: id, Kind: "host"}},
+		}, CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.Backpressure = NewWritePressure(BackpressureConfig{MaxCommitTail: 1})
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ingestEntityRequest("forced-close", "host:pending")
+	defer func() {
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), time.Second)
+		defer cancelClose()
+		_ = service.Close(closeCtx)
+	}()
+	accepted, err := service.Accept(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped, stop := context.WithCancel(ctx)
+	stop()
+	if _, err := service.Wait(stopped, accepted); !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller cancellation: %v", err)
+	}
+	if err := service.Close(stopped); !errors.Is(err, context.Canceled) {
+		t.Fatalf("forced close: %v", err)
+	}
+	if _, err := service.Wait(ctx, accepted); !errors.Is(err, ErrIngestWALClosed) {
+		t.Fatalf("wait after forced close: %v", err)
+	}
+	store.Backpressure = nil
+	recovered, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, recovered)
+	accepted, err = recovered.Accept(ctx, "tenant-a", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.FlushTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := recovered.Wait(ctx, accepted)
+	if err != nil || result.Version != 3 || result.Applied != 1 {
+		t.Fatalf("accepted batch did not recover exactly once: %+v err=%v", result, err)
 	}
 }
 

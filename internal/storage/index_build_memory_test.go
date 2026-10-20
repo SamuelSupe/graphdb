@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -586,15 +587,129 @@ func TestBackgroundIndexFailureReleasesResourcesAndAllowsRepair(t *testing.T) {
 type indexRetryPause struct {
 	once           sync.Once
 	paused, resume chan struct{}
+	phase          string
 }
 
 func (*indexRetryPause) RecordManifestCASConflict(string)      {}
 func (*indexRetryPause) RecordCommitTail(string, int)          {}
 func (*indexRetryPause) RecordMaintenanceMemory(string, int64) {}
 func (p *indexRetryPause) RecordMaintenancePhase(phase string, _ time.Duration) {
-	if phase == "index_retry" {
+	if phase == p.phase || (p.phase == "" && phase == "index_retry") {
 		p.once.Do(func() { close(p.paused); <-p.resume })
 	}
+}
+
+type versionedCatalogPause struct {
+	ObjectStore
+	version        int64
+	once           sync.Once
+	paused, resume chan struct{}
+}
+
+func (s *versionedCatalogPause) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
+
+func (s *versionedCatalogPause) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if strings.HasSuffix(key, "/indexes/catalog.parquet") {
+		catalog, err := decodeParquetIndexCatalog(ctx, data)
+		if err != nil {
+			return ObjectMeta{}, err
+		}
+		if catalog.Version == s.version {
+			s.once.Do(func() { close(s.paused) })
+			select {
+			case <-s.resume:
+			case <-ctx.Done():
+				return ObjectMeta{}, ctx.Err()
+			}
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
+func TestDeferredIndexBudgetCoversConcurrentGrowth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	objects := &versionedCatalogPause{ObjectStore: files, version: 3, paused: make(chan struct{}), resume: make(chan struct{})}
+	store := NewTenantStore(objects, "test")
+	store.WriteEntityRecords = false
+	store.MaxMaintenanceBytes = 1 << 20
+	defer store.ShutdownTasks(context.Background())
+	resumeCatalog := sync.OnceFunc(func() { close(objects.resume) })
+	defer resumeCatalog()
+	if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	pause := &indexRetryPause{phase: "memory_wait", paused: make(chan struct{}), resume: make(chan struct{})}
+	resumeAdmission := sync.OnceFunc(func() { close(pause.resume) })
+	defer resumeAdmission()
+	store.backpressureObserver = pause
+	endMaintenance := store.beginLocalIndexMaintenance(ctx, "tenant-a")
+	_, err = store.Ingest(ctx, "tenant-a", ingestEntityRequest("small", "host:small"))
+	endMaintenance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-pause.paused:
+	case <-ctx.Done():
+		t.Fatal("deferred catch-up did not reach memory admission")
+	}
+	request := ingestEntityRequest("large", "host:large")
+	request.Items[0].Entity.Fields["payload"] = strings.Repeat("x", 2<<20)
+	if _, err := store.Ingest(ctx, "tenant-a", request); err != nil {
+		t.Fatal(err)
+	}
+	resumeAdmission()
+	select {
+	case <-objects.paused:
+	case <-ctx.Done():
+		t.Fatal("catch-up did not build the larger head")
+	}
+	// A graph larger than the shared budget must run alone, including when
+	// it was ingested while an earlier catch-up was entering the budget.
+	waitCtx, cancelWait := context.WithTimeout(ctx, 50*time.Millisecond)
+	_, release, err := store.admitMaintenance(waitCtx, 1)
+	cancelWait()
+	if err == nil {
+		release()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("oversized catch-up allowed concurrent maintenance: %v", err)
+	}
+	resumeCatalog()
+	for {
+		store.indexUpdateMu.Lock()
+		active := store.activeIngestIndexUpdates
+		store.indexUpdateMu.Unlock()
+		if active == 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("catch-up did not finish")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	health, err := store.IndexHealth(ctx, "tenant-a")
+	if err != nil || health.Status != "ready" || health.ManifestVersion != 3 {
+		t.Fatalf("catch-up lost concurrent growth: %+v err=%v", health, err)
+	}
+	if err := store.ShutdownTasks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, release, err = store.admitMaintenance(ctx, store.MaxMaintenanceBytes)
+	if err != nil {
+		t.Fatalf("catch-up leaked maintenance budget: %v", err)
+	}
+	release()
 }
 
 func TestBackgroundIndexRetryReleasesViewAndCapturesFreshHead(t *testing.T) {

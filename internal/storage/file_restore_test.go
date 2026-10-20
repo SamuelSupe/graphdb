@@ -238,7 +238,7 @@ func TestLocalPublishedRestoreRetryPreservesLaterCommit(t *testing.T) {
 			store.MaxRetries = 1
 			backupKey := seedLocalRestoreBackup(t, store)
 			objects.fail.Store(true)
-			restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey, "overwrite": true})
+			restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey, "overwrite": true, "required_source_tenant": "source"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -248,7 +248,7 @@ func TestLocalPublishedRestoreRetryPreservesLaterCommit(t *testing.T) {
 			}
 			objects.fail.Store(false)
 			if replaced {
-				replacement, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey, "overwrite": true})
+				replacement, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey, "overwrite": true, "required_source_tenant": "source"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -318,7 +318,7 @@ func TestLocalRestoreWhileRemoteStagingRemainsOpen(t *testing.T) {
 	if _, err := file.Write([]byte("download in progress")); err != nil {
 		t.Fatal(err)
 	}
-	restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey})
+	restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey, "required_source_tenant": "source"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestLocalRestoreRetainsEntityIndexLayout(t *testing.T) {
 				t.Fatal(err)
 			}
 			backupKey := seedLocalRestoreBackup(t, store)
-			restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey})
+			restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backupKey, "required_source_tenant": "source"})
 			if err != nil {
 				t.Fatal(err)
 			}

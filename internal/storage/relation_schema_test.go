@@ -241,7 +241,7 @@ func TestRelationSchemasSurviveCloneAndBackupRestore(t *testing.T) {
 	if manifestKey == "" || backup.Result["relation_schemas"] != float64(1) {
 		t.Fatalf("backup result=%#v", backup.Result)
 	}
-	restore, err := store.StartTask(ctx, "tenant-c", TaskTypeTenantRestore, map[string]any{"backup_key": manifestKey})
+	restore, err := store.StartTask(ctx, "tenant-c", TaskTypeTenantRestore, map[string]any{"backup_key": manifestKey, "required_source_tenant": "tenant-a"})
 	if err != nil {
 		t.Fatal(err)
 	}

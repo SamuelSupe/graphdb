@@ -38,6 +38,7 @@ func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, p
 	proxy := &httputil.ReverseProxy{Transport: c.shards.HTTP.Transport, FlushInterval: -1,
 		Rewrite: func(p *httputil.ProxyRequest) {
 			p.SetURL(target)
+			p.Out.Host = p.In.Host
 			if !private {
 				p.Out.URL.Path = "/cluster/data" + p.In.URL.Path
 				if p.In.URL.RawPath != "" {

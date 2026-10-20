@@ -365,7 +365,7 @@ func TestLocalScanCursorsRejectReplacedTenant(t *testing.T) {
 				t.Fatal(err)
 			}
 			backup = waitForLocalRestoreTask(t, store, "source", backup.ID)
-			restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backup.Result["backup_manifest_key"], "overwrite": true})
+			restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": backup.Result["backup_manifest_key"], "overwrite": true, "required_source_tenant": "source"})
 			if err != nil {
 				t.Fatal(err)
 			}

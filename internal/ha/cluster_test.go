@@ -185,7 +185,14 @@ func (g *testCluster) stop(i int) {
 
 func (g *testCluster) leader(exclude int) int {
 	g.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	budget := 10 * time.Second
+	for i, replica := range g.nodes {
+		if i != exclude {
+			// A split vote may require two randomized election rounds.
+			budget = max(budget, 4*time.Duration(replica.cfg.Raft.ElectionTicks)*replica.cfg.Raft.Tick+time.Second)
+		}
+	}
+	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		for i, replica := range g.nodes {
 			if i == exclude {
@@ -350,6 +357,7 @@ func testHAPreparedMaintenanceKeepsOtherTenantWritable(t *testing.T, protocol in
 			}
 			request := httptest.NewRequest("POST", "/v1/commits", strings.NewReader(fmt.Sprintf(`{"mutations":{"upsert_entities":[{"id":"other:%s:%d","kind":"host"}]}}`, kind, writes)))
 			request.Header.Set("X-Tenant-ID", "tenant-b")
+			request.Header.Set("Content-Type", "application/json")
 			writer := httptest.NewRecorder()
 			group.nodes[leader].handler.ServeHTTP(writer, request)
 			if writer.Code != http.StatusOK {
@@ -540,6 +548,7 @@ func TestHAMaintenanceWritePauseDrainsAcceptedWAL(t *testing.T) {
 	}
 	request := httptest.NewRequest("POST", "/v1/commits", strings.NewReader(`{"mutations":{"upsert_entities":[{"id":"host:other","kind":"host"}]}}`))
 	request.Header.Set("X-Tenant-ID", "tenant-b")
+	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	group.nodes[leader].handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -593,6 +602,7 @@ func testHADiskPressureDoesNotBlockOtherTenantGC(t *testing.T, protocol int) {
 	}
 	r := httptest.NewRequest("POST", "/v1/tasks", strings.NewReader(`{"type":"gc"}`))
 	r.Header.Set("X-Tenant-ID", "tenant-b")
+	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	group.nodes[leader].handler.ServeHTTP(w, r)
 	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &gc) != nil {
@@ -1402,7 +1412,7 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 	}
 	for _, dryRun := range []bool{true, false} {
 		response := group.mustRequest(leader, "POST", "/v1/tenants/tenant-cold/restore",
-			fmt.Sprintf(`{"backup_key":%q,"dry_run":%t}`, finished.ResultKey, dryRun), http.StatusAccepted)
+			fmt.Sprintf(`{"backup_key":%q,"dry_run":%t,"source_tenant_id":"tenant-a"}`, finished.ResultKey, dryRun), http.StatusAccepted)
 		var cold storage.Task
 		if err := json.Unmarshal(response.Body.Bytes(), &cold); err != nil {
 			t.Fatal(err)
@@ -1421,7 +1431,7 @@ func TestHAMembershipReplacementAndTenantRestore(t *testing.T) {
 		}
 	}
 	drillResponse := group.mustRequest(leader, "POST", "/v1/tenants/tenant-cold/restore-drill",
-		fmt.Sprintf(`{"backup_key":%q,"target_tenant_id":"tenant-proof","cleanup":true}`, finished.ResultKey), http.StatusAccepted)
+		fmt.Sprintf(`{"backup_key":%q,"source_tenant_id":"tenant-a","target_tenant_id":"tenant-proof","cleanup":true}`, finished.ResultKey), http.StatusAccepted)
 	var drill storage.Task
 	if err := json.Unmarshal(drillResponse.Body.Bytes(), &drill); err != nil {
 		t.Fatal(err)
@@ -2474,5 +2484,51 @@ func TestTransientTaskPreparationRemainsQueued(t *testing.T) {
 				t.Fatalf("recovered preparation: %v", err)
 			}
 		})
+	}
+}
+
+func TestOpaquePreparationFailureCanRecover(t *testing.T) {
+	var target atomic.Pointer[Application]
+	failure := errors.New("opaque upstream transport failure")
+	group := newTestCluster(t, false, func(app *Application, next http.Handler) http.Handler {
+		app.Store.Objects = &replicaReadFaultStore{ObjectStore: app.Store.Objects, app: app, target: &target, err: failure}
+		return next
+	})
+	leader := group.leader(-1)
+	cluster := group.nodes[leader].cluster
+	target.Store(cluster.App)
+	response := group.mustRequest(leader, "POST", "/v1/imports?format=jsonl", "{\"entity\":{\"id\":\"host:recovered\",\"kind\":\"host\"}}\n", http.StatusAccepted)
+	var task storage.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = cluster.runQueuedTask(ctx)
+	current, err := cluster.App.Store.GetTask(ctx, task.TenantID, task.ID)
+	if err != nil || current.Status != storage.TaskStatusQueued {
+		t.Fatalf("opaque preparation failure became terminal: status=%s err=%v", current.Status, err)
+	}
+	target.Store(nil)
+	if err := cluster.runQueuedTask(ctx); err != nil {
+		t.Fatal(err)
+	}
+	current, err = cluster.App.Store.GetTask(ctx, task.TenantID, task.ID)
+	if err != nil || current.Status != storage.TaskStatusSucceeded {
+		t.Fatalf("recovered preparation did not complete: status=%s err=%v", current.Status, err)
+	}
+}
+
+func TestBrowserMutationThroughFollowerPreservesOrigin(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	request := httptest.NewRequest(http.MethodPost, "http://graphdb.example/v1/commits", strings.NewReader(`{"mutations":{"upsert_entities":[{"id":"host:browser","kind":"host"}]}}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Tenant-ID", "tenant-a")
+	request.Header.Set("Origin", "http://graphdb.example")
+	response := httptest.NewRecorder()
+	group.nodes[(leader+1)%len(group.nodes)].handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("same-origin write through follower failed: %d %s", response.Code, response.Body)
 	}
 }

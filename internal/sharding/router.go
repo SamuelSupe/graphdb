@@ -263,6 +263,7 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 	proxy := &httputil.ReverseProxy{Transport: r.Client.HTTP.Transport, FlushInterval: -1,
 		Rewrite: func(p *httputil.ProxyRequest) {
 			p.SetURL(target)
+			p.Out.Host = p.In.Host
 			p.Out.URL.Path = "/cluster/data" + p.In.URL.Path
 			if p.In.URL.RawPath != "" {
 				p.Out.URL.RawPath = "/cluster/data" + p.In.URL.RawPath

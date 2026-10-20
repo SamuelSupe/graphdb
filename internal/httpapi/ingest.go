@@ -71,7 +71,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			s.auditError("ingest_metadata_failed", tenantID, err, map[string]any{
 				"source": request.Source, "collector_id": request.CollectorID, "batch_id": result.BatchID,
 			})
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, "internal storage error")
 			return
 		}
 		s.auditError("ingest_failed", tenantID, err, map[string]any{
@@ -125,7 +125,7 @@ func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantI
 		w.Header().Set("Preference-Applied", "wait=committed")
 		result, waitErr := s.IngestService.Wait(r.Context(), accepted)
 		if waitErr != nil {
-			writeRequestError(w, waitErr)
+			writeStorageError(w, waitErr)
 			return
 		}
 		s.writeCompletedIngest(w, tenantID, request, result)

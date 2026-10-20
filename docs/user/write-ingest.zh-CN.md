@@ -1,6 +1,6 @@
 # 写入与采集
 
-适用于 **GGraphDB 2.3.8**；[发行验证](../validation-v2.3.8.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.9**；[发行验证](../validation-v2.3.9.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](write-ingest.md)
 
@@ -320,7 +320,9 @@ atomic，或没有 expected version 但带前置条件的请求作为隔离 barr
 }
 ```
 
-需要等待最终结果的兼容调用方可以发送 `Prefer: wait=committed`。查询状态：
+需要等待最终结果的兼容调用方可以发送 `Prefer: wait=committed`。请求取消、超时、
+服务故障或强制关闭会结束等待，但不会撤销已持久化接管的批次。服务故障按存储错误
+返回，不会误报为请求超时。保留 `Location`，恢复后查询状态，或使用相同批次身份重试：
 
 ```sh
 curl -sS "$WRITER/v1/ingest/batches/aws/collector-a/aws-batch-001" \

@@ -1,6 +1,6 @@
 # Production Security Boundary
 
-Applies to **GGraphDB 2.3.8**; see [release validation](validation-v2.3.8.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.9**; see [release validation](validation-v2.3.9.md) and [version boundaries](naming-and-compatibility.md).
 
 [中文](security-deployment.zh-CN.md)
 
@@ -15,6 +15,13 @@ production deployment must prevent clients from reaching either GGraphDB
 listener directly.
 
 ## Secure Defaults
+
+From 2.3.9, write protection rejects browser mutations whose `Origin` authority differs
+from `Host`, opaque/null origins, and `Sec-Fetch-Site: cross-site`. Nonempty write
+bodies require `application/json`; imports also accept JSONL, CSV and octet-stream.
+Bodyless non-browser commands remain supported. The NGINX example preserves the
+public Host including its port; retain that header through any reverse proxy.
+These checks run before Raft proposal and do not replace gateway authentication.
 
 - `GRAPHDB_PPROF_ENABLED=false` by default.
 - The compatibility listener at `GRAPHDB_ADDR` never exposes pprof.

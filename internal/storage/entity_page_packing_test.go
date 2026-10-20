@@ -49,7 +49,7 @@ func TestIncrementalPackedPagesRemainReadableAndBackedUp(t *testing.T) {
 	if backup.Status != TaskStatusSucceeded {
 		t.Fatalf("backup failed: %#v", backup)
 	}
-	restore, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backup.ResultKey})
+	restore, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backup.ResultKey, "required_source_tenant": "tenant-a"})
 	if err != nil {
 		t.Fatal(err)
 	}

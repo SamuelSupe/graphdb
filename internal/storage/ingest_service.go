@@ -600,6 +600,9 @@ func (s *IngestService) failAcceptFlight(identity string, statusKey string, flig
 	s.mu.Unlock()
 }
 
+// Wait returns a completed outcome or stops when the caller or service stops.
+// A service error does not revoke durable acceptance; recovery can still finish
+// the batch. Already completed outcomes remain available after shutdown.
 func (s *IngestService) Wait(ctx context.Context, acceptance IngestAcceptance) (IngestResult, error) {
 	if acceptance.completion == nil {
 		return IngestResult{}, fmt.Errorf("invalid ingest acceptance")
@@ -608,6 +611,18 @@ func (s *IngestService) Wait(ctx context.Context, acceptance IngestAcceptance) (
 	case <-acceptance.completion:
 	case <-ctx.Done():
 		return IngestResult{}, ctx.Err()
+	case <-s.runCtx.Done():
+		select {
+		case <-acceptance.completion:
+		default:
+			s.mu.Lock()
+			err := s.fatalErr
+			s.mu.Unlock()
+			if err == nil {
+				err = ErrIngestWALClosed
+			}
+			return IngestResult{}, err
+		}
 	}
 	pending := acceptance.pending
 	if pending == nil || pending.envelope.RecordID != acceptance.recordID {

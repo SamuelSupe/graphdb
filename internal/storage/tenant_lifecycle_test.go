@@ -351,7 +351,7 @@ func TestObjectBackupRetryAfterReopenAndVerifiedRestore(t *testing.T) {
 		t.Fatalf("backup lost after source purge: %+v %v", page, err)
 	}
 	for _, dryRun := range []bool{true, false} {
-		restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": uri, "dry_run": dryRun})
+		restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": uri, "dry_run": dryRun, "required_source_tenant": "source"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -385,7 +385,7 @@ func TestObjectBackupRetryAfterReopenAndVerifiedRestore(t *testing.T) {
 	if _, err := client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(backupCfg.Bucket), Key: aws.String(manifest.SnapshotKey), Body: bytes.NewReader([]byte("corrupted"))}); err != nil {
 		t.Fatal(err)
 	}
-	restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": uri, "overwrite": true})
+	restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": uri, "overwrite": true, "required_source_tenant": "source"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -866,7 +866,7 @@ func TestTenantBackupAndRestoreTasks(t *testing.T) {
 			t.Fatalf("scoped restore wrote data: %v %v", exists, err)
 		}
 	}
-	dryRun, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "dry_run": true})
+	dryRun, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "dry_run": true, "required_source_tenant": "tenant-a"})
 	if err != nil {
 		t.Fatalf("start restore dry-run: %v", err)
 	}
@@ -879,7 +879,7 @@ func TestTenantBackupAndRestoreTasks(t *testing.T) {
 	if exists, err := store.tenantRestoreDataExists(ctx, "tenant-b"); err != nil || exists {
 		t.Fatalf("dry-run wrote target exists=%v err=%v", exists, err)
 	}
-	restore, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey})
+	restore, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "required_source_tenant": "tenant-a"})
 	if err != nil {
 		t.Fatalf("start restore: %v", err)
 	}
@@ -915,7 +915,7 @@ func TestTenantBackupAndRestoreTasks(t *testing.T) {
 	if err != nil || health.Status != "ready" {
 		t.Fatalf("restored index health=%#v err=%v", health, err)
 	}
-	overwrite, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "overwrite": true})
+	overwrite, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "overwrite": true, "required_source_tenant": "tenant-a"})
 	if err != nil {
 		t.Fatalf("start overwrite restore: %v", err)
 	}
@@ -1010,7 +1010,7 @@ func TestTenantRestoreRetrySkipsCheckpointedSnapshot(t *testing.T) {
 	}
 	backup = waitForTask(t, ctx, store, "tenant-a", backup.ID)
 	backupManifestKey, _ := backup.Result["backup_manifest_key"].(string)
-	restore, err := store.StartTask(ctx, "tenant-c", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey})
+	restore, err := store.StartTask(ctx, "tenant-c", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "required_source_tenant": "tenant-a"})
 	if err != nil {
 		t.Fatalf("start restore: %v", err)
 	}
@@ -1025,7 +1025,7 @@ func TestTenantRestoreRetrySkipsCheckpointedSnapshot(t *testing.T) {
 		Type:      TaskTypeTenantRestore,
 		Status:    TaskStatusFailed,
 		Phase:     TaskStatusFailed,
-		Params:    map[string]any{"backup_key": backupManifestKey},
+		Params:    map[string]any{"backup_key": backupManifestKey, "required_source_tenant": "tenant-a"},
 		StartedAt: now,
 		UpdatedAt: now,
 		Checkpoint: map[string]any{
@@ -1069,7 +1069,7 @@ func TestTenantRestoreRetryRecoversPublishedSnapshotBeforeCheckpoint(t *testing.
 	}
 	backup = waitForTask(t, ctx, store, "tenant-a", backup.ID)
 	backupManifestKey, _ := backup.Result["backup_manifest_key"].(string)
-	restore, err := store.StartTask(ctx, "tenant-c", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey})
+	restore, err := store.StartTask(ctx, "tenant-c", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "required_source_tenant": "tenant-a"})
 	if err != nil {
 		t.Fatalf("start restore: %v", err)
 	}
@@ -1085,7 +1085,7 @@ func TestTenantRestoreRetryRecoversPublishedSnapshotBeforeCheckpoint(t *testing.
 		Type:      TaskTypeTenantRestore,
 		Status:    TaskStatusFailed,
 		Phase:     TaskStatusFailed,
-		Params:    map[string]any{"backup_key": backupManifestKey},
+		Params:    map[string]any{"backup_key": backupManifestKey, "required_source_tenant": "tenant-a"},
 		StartedAt: now,
 		UpdatedAt: now,
 		Checkpoint: map[string]any{
@@ -1255,18 +1255,18 @@ func TestLocalRestoreAdmissionDistinguishesDryRun(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	dryRun, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": key, "dry_run": true})
+	dryRun, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": key, "dry_run": true, "required_source_tenant": "source"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": key, "overwrite": true})
+	restore, err := store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": key, "overwrite": true, "required_source_tenant": "source"})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("different restore params: task=%+v err=%v", restore, err)
 	}
 	release()
 	release = func() {}
 	dryRun = waitForTask(t, ctx, store, "target", dryRun.ID)
-	restore, err = store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": key, "overwrite": true})
+	restore, err = store.StartTask(ctx, "target", TaskTypeTenantRestore, map[string]any{"backup_key": key, "overwrite": true, "required_source_tenant": "source"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.3.8**; see [release validation](validation-v2.3.8.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.9**; see [release validation](validation-v2.3.9.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -141,6 +141,14 @@ acceptance; that is not yet a committed graph version. Poll the response's
 `status_url` or use `Prefer: wait=committed`. Status URLs use
 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`. Legacy writer-routed URLs
 return 501. A restart recovers accepted requests from the existing WAL format.
+If the WAL service fails or is forced to close, a committed-result wait returns
+the service error promptly. Caller cancellation and deadlines also end the wait.
+These errors do not revoke durable acceptance: retain `Location` and check status
+after recovery, or retry the same batch identity. Results completed before a
+graceful shutdown remain available.
+Recovery truncates only an incomplete final WAL frame. A complete frame with a
+bad header or checksum remains intact and prevents startup: it may contain an
+acknowledged request, so automatic truncation cannot preserve durable acceptance.
 
 After direct/WAL ingest manifest publication, an in-process worker advances indexes in version
 order. At most eight background updates are retained across all tenants; when
@@ -275,7 +283,7 @@ Index health reports `updating: true` while a published graph is ahead of its qu
 
 `GRAPHDB_MAINTENANCE_MAX_BYTES` defaults to `512MiB`. It is one shared estimate budget for active index/snapshot builds and queued asynchronous index graphs. Queue reservations transfer into execution without releasing and reacquiring memory. At most two builds and four partition encoding/write jobs run concurrently. An oversized build runs alone to preserve progress. On the retained-byte or eight-work-item limit, callers catch up synchronously after releasing the tenant lock.
 
-During local compact or rebuild, ingest coalesces bounded catch-up demand without retaining intermediate graphs or reserving memory needed by maintenance. Demand retains only old scalar values and edge endpoints, bounded by 8192 changed IDs and an estimated byte cap of min(maintenance budget / 64, 8 MiB). The worker waits for its predecessor and the existing graph-build budget before loading the latest head, then catches up incrementally against a matching base catalog. Limit overflow, schema changes or a catalog gap fall back to a full build. Explicit commit requests still wait for their own ordered index work. A process interruption can lose in-memory catch-up demand; configured automatic maintenance repairs a stale catalog, or an operator can explicitly rebuild when automatic repair is disabled.
+During local compact or rebuild, ingest coalesces bounded catch-up demand without retaining intermediate graphs or reserving memory needed by maintenance. Demand retains only old scalar values and edge endpoints, bounded by 8192 changed IDs and an estimated byte cap of min(maintenance budget / 64, 8 MiB). The worker waits for its predecessor and the graph-build budget before loading the latest head. If concurrent writes grew the graph beyond its reservation, it releases the reservation and retries admission with the latest estimate. Budget waits hold neither the tenant lock nor intermediate graphs, and demand continues coalescing; oversized builds run alone. Once adequately admitted, the worker freezes its inputs and catches up incrementally against a matching base catalog. Limit overflow, schema changes or a catalog gap fall back to a full build. Explicit commit requests still wait for their own ordered index work. A process interruption can lose in-memory catch-up demand; configured automatic maintenance repairs a stale catalog, or an operator can explicitly rebuild when automatic repair is disabled.
 
 Entity-page builds, incremental entity/forward-edge pages, and reverse-edge pages use the same bounded file-write queue. Independent packs may finish concurrently; entity records and catalogs still wait for their referenced packs and directory barriers. The local queue admits at most 64 files per batch and checks 16 MiB / 50 ms cooperative budgets between files. The same queue applies during Raft application without relaxing its rollback journal or commit barriers.
 

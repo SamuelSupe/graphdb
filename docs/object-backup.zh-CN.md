@@ -2,7 +2,7 @@
 
 [English](object-backup.md)
 
-适用于 **GGraphDB 2.3.8**；发行资格见[版本验证](validation-v2.3.8.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.9**；发行资格见[版本验证](validation-v2.3.9.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本指南覆盖当前 2.x 备份能力。2.1 新增可选自动化并沿用 2.0 快照格式；
 不提供 1.x 备份迁移，旧版备份独立保留。
@@ -133,10 +133,13 @@ curl http://localhost:8080/v1/backup-automation -H 'X-Tenant-ID: source'
 ```sh
 curl -X POST http://localhost:8080/v1/tenants/target/restore \
   -H 'Content-Type: application/json' \
-  -d '{"backup_key":"s3://graphdb-backups/production/source/BACKUP_ID/manifest.json","dry_run":true}'
+  -d '{"backup_key":"s3://graphdb-backups/production/source/BACKUP_ID/manifest.json","source_tenant_id":"source","dry_run":true}'
 ```
 
 先使用 `dry_run:true` 验证内容，正式恢复时改为 `false` 或省略。
+2.3.9 起，来源默认必须等于目标租户。私有平台跨租户迁移须显式声明
+`source_tenant_id`，且恢复调用不带租户头；通用 task 使用 `params.required_source_tenant`。
+带认证租户作用域的调用方不能更改来源。legacy 备份键中的租户也必须与记录一致。
 目标租户已存在时，必须显式传 `overwrite:true`。轮询返回的任务 ID，并携带目标租户的
 `X-Tenant-ID`。恢复先验证清单身份、文件长度、SHA-256、Parquet 内容校验和图约束，
 再在独立本地目录构建并校验快照和索引，最后切换目标目录。失败的下载或校验不会清空目标租户。
@@ -172,8 +175,10 @@ curl -X POST http://localhost:8080/v1/tenants/target/restore \
 ## SDK 和验证
 
 Python：`backup_tenant("source", destination="object")`、`list_object_backups("source")`；
-恢复沿用 `restore_tenant("target", backup_key, overwrite=False, dry_run=False)`。
-Go：`BackupTenantToObjectStorage`、`ListObjectBackups`、`GetBackupAutomation`，恢复沿用 `RestoreTenant`。
+`restore_tenant("target", backup_key, overwrite=False, dry_run=False)` 默认只接受目标租户的备份；
+私有平台跨租户迁移需显式传入 `source_tenant_id="source"`。
+Go：`BackupTenantToObjectStorage`、`ListObjectBackups`、`GetBackupAutomation`；
+`RestoreTenant` 用于同租户恢复，`RestoreTenantFromSource` 为私有平台迁移显式声明来源租户。
 Python 客户端的 `get_backup_automation()` 查询当前租户的自动化状态。
 
 在 Linux/OrbStack 中提供独立测试桶及 `GRAPHDB_TEST_BACKUP_S3_ENDPOINT`、`_BUCKET`、

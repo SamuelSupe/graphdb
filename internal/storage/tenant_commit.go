@@ -155,40 +155,55 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		}
 	}
 	if deferred {
-		// Reserve the latest coalesced graph estimate, not the entire shared
-		// budget, so a small tenant does not block unrelated maintenance.
-		buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
-		s.indexUpdateMu.Lock()
-		estimatedBytes := addWriteCacheBytes(work.deferredGraphBytes, work.deferredBytes)
-		s.indexUpdateMu.Unlock()
-		buildCtx, releaseMemory, err := s.admitMaintenance(buildCtx, estimatedBytes)
-		if err != nil {
-			return err
-		}
-		defer releaseMemory()
-		ctx = buildCtx
-		unlock, err := s.lockTenantForeground(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		loaded, err := s.loadForWriteLocked(ctx, tenantID)
-		if err != nil {
+		for {
+			buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
+			s.indexUpdateMu.Lock()
+			estimatedBytes := addWriteCacheBytes(work.deferredGraphBytes, work.deferredBytes)
+			s.indexUpdateMu.Unlock()
+			buildCtx, releaseMemory, err := s.admitMaintenance(buildCtx, estimatedBytes)
+			if err != nil {
+				return err
+			}
+			unlock, err := s.lockTenantForeground(buildCtx, tenantID)
+			if err != nil {
+				releaseMemory()
+				return err
+			}
+			loaded, err := s.loadForWriteLocked(buildCtx, tenantID)
+			if err != nil {
+				unlock()
+				releaseMemory()
+				return err
+			}
+			s.indexUpdateMu.Lock()
+			work.deferredGraphBytes = maintenanceGraphBytes(loaded.Graph)
+			actualBytes := addWriteCacheBytes(work.deferredGraphBytes, work.deferredBytes)
+			limit := s.backgroundIndexByteLimit()
+			// Demand can grow during admission. Release an undersized reservation
+			// before retrying; growing it in place can deadlock concurrent builds.
+			// Keep coalescing without retaining a graph until its budget fits.
+			if min(actualBytes, limit) > min(estimatedBytes, limit) {
+				s.indexUpdateMu.Unlock()
+				unlock()
+				releaseMemory()
+				continue
+			}
+			// A direct commit or rebuild can have joined behind this demand. Its
+			// changes are not in our delta, so only a full build can cover that head.
+			if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
+				work.baseVersion = -1
+			}
+			if s.pendingIngestIndexes[tenantID] == work {
+				delete(s.pendingIngestIndexes, tenantID)
+			}
+			work.after = loaded.Graph
+			work.version = loaded.Manifest.Version
+			s.indexUpdateMu.Unlock()
 			unlock()
-			return err
+			defer releaseMemory()
+			ctx = buildCtx
+			break
 		}
-		s.indexUpdateMu.Lock()
-		// A direct commit or rebuild can have joined behind this demand. Its
-		// changes are not in our delta, so only a full build can cover that head.
-		if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
-			work.baseVersion = -1
-		}
-		if s.pendingIngestIndexes[tenantID] == work {
-			delete(s.pendingIngestIndexes, tenantID)
-		}
-		work.after = loaded.Graph
-		work.version = loaded.Manifest.Version
-		s.indexUpdateMu.Unlock()
-		unlock()
 		if err := s.prepareDeferredIndexBase(ctx, tenantID, work); err != nil {
 			return err
 		}
