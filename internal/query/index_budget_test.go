@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -13,6 +14,71 @@ type oversizedIndexBatchLookup struct {
 	ids             []string
 	batchCalls      int
 	materializedIDs int
+}
+
+type seekingFieldLookup struct {
+	oversizedIndexBatchLookup
+	fullCalls int
+	visited   int
+}
+
+func (l *seekingFieldLookup) MatchFieldIndex(ctx context.Context, kind, field string, values []any) ([]string, bool, error) {
+	l.fullCalls++
+	return l.oversizedIndexBatchLookup.MatchFieldIndex(ctx, kind, field, values)
+}
+
+func (l *seekingFieldLookup) VisitFieldIndex(ctx context.Context, _, _ string, _ []any, afterID string, visit func(string) (bool, error)) (bool, error) {
+	for _, id := range l.ids[sort.SearchStrings(l.ids, afterID):] {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		l.visited++
+		more, err := visit(id)
+		if err != nil || !more {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
+func TestIndexedMatchCursorUsesSeekingVisitor(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint("stream=", stream), func(t *testing.T) {
+			g := graph.New()
+			g.Version = 1
+			lookup := &seekingFieldLookup{}
+			for i := range 10000 {
+				lookup.ids = append(lookup.ids, fmt.Sprintf("host:%05d", i))
+			}
+			request := Request{Op: "match", Kind: "host", Where: []Filter{{Field: "hostname", Op: "eq", Value: "shared"}}, Limit: 3}
+			request.Cursor = encodeCursor(cursorState{Version: 1, After: "entity:host:09000", Query: cursorQueryHash(request), Order: EntityPageOrderIdentity})
+			options := ExecuteOptions{IndexLookup: lookup, EntityLookup: lookup, PlannerStats: PlannerStats{Version: 1, Indexes: []PlannerIndexStat{{Kind: "host", Field: "hostname", Status: "ready", EntryCount: 10000, DistinctValues: 1}}, EntityPages: []PlannerEntityPageStat{{Shard: "00", EntityCount: 10000}}}}
+			var results []Result
+			if stream {
+				used, err := StreamContextWithOptions(context.Background(), g, request, options, func(value any) error {
+					if result, ok := value.(Result); ok {
+						results = append(results, result)
+					}
+					return nil
+				})
+				if err != nil || !used {
+					t.Fatalf("stream used=%v err=%v", used, err)
+				}
+			} else {
+				response, err := ExecuteContextWithOptions(context.Background(), g, request, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				results = response.Results
+			}
+			if len(results) != 3 || results[0].Entity.ID != "host:09001" {
+				t.Fatalf("page: %+v", results)
+			}
+			if lookup.fullCalls != 0 || lookup.visited > 5 || lookup.visited == 0 {
+				t.Fatalf("deep page materialized complete matches: full=%d visited=%d", lookup.fullCalls, lookup.visited)
+			}
+		})
+	}
 }
 
 func (l *oversizedIndexBatchLookup) MatchFieldIndex(

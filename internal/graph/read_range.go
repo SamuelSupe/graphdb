@@ -35,8 +35,16 @@ func (g *Graph) ScanFieldIndexRangeIDs(kind, field string, bounds []FieldIndexRa
 	if match == nil {
 		return nil, nil
 	}
+
+	var ids []string
+	err := g.VisitFilteredFieldIDs(kind, field, bounds, "", match, func(id string) (bool, error) { ids = append(ids, id); return true, nil })
+	return ids, err
+}
+
+// VisitFilteredFieldIDs seeks scalar ranges and then merges their immutable ID lists.
+func (g *Graph) VisitFilteredFieldIDs(kind, field string, bounds []FieldIndexRange, startID string, match func(string) (bool, error), visitor func(string) (bool, error)) error {
 	order := g.sortedFieldValues(kind, field)
-	ids := make([]string, 0)
+	var buckets [][]string
 	visit := func(values []orderedFieldValue) error {
 		for _, value := range values {
 			ok, err := match(value.key)
@@ -44,9 +52,7 @@ func (g *Graph) ScanFieldIndexRangeIDs(kind, field string, bounds []FieldIndexRa
 				return err
 			}
 			if ok {
-				for id := range g.fieldIndex[kind][field].At(value.key).Keys() {
-					ids = append(ids, id)
-				}
+				buckets = append(buckets, g.sortedFieldIndexIDs(kind, field, value.key))
 			}
 		}
 		return nil
@@ -64,10 +70,10 @@ func (g *Graph) ScanFieldIndexRangeIDs(kind, field string, bounds []FieldIndexRa
 			}
 		}
 		if err := visit(numeric); err != nil {
-			return nil, err
+			return err
 		}
 		if err := visit(other); err != nil {
-			return nil, err
+			return err
 		}
 	} else {
 		values := order.text
@@ -75,11 +81,10 @@ func (g *Graph) ScanFieldIndexRangeIDs(kind, field string, bounds []FieldIndexRa
 			values = fieldValuesInRange(values, bound, false)
 		}
 		if err := visit(values); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	sort.Strings(ids)
-	return ids, nil
+	return VisitSortedIDs(buckets, startID, visitor)
 }
 
 func (g *Graph) sortedFieldValues(kind, field string) fieldValueOrder {

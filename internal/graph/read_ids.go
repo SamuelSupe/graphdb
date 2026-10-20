@@ -82,6 +82,9 @@ func (g *Graph) invalidateFieldIndexOrder() {
 }
 
 func (g *Graph) inheritReadOrder(source *Graph) {
+	source.neighborOrderMu.Lock()
+	neighborOrder := maps.Clone(source.neighborOrder)
+	source.neighborOrderMu.Unlock()
 	source.entityOrderMu.Lock()
 	entityOrder := maps.Clone(source.entityOrder)
 	source.entityOrderMu.Unlock()
@@ -97,6 +100,9 @@ func (g *Graph) inheritReadOrder(source *Graph) {
 	g.fieldIndexOrder = fieldOrder
 	g.fieldValueOrder = valueOrder
 	g.fieldIndexOrderMu.Unlock()
+	g.neighborOrderMu.Lock()
+	g.neighborOrder = neighborOrder
+	g.neighborOrderMu.Unlock()
 }
 
 // HasEntityOrder reports whether visiting a kind can reuse its sorted IDs.
@@ -246,6 +252,50 @@ type fieldIndexIDCursor struct {
 }
 
 type fieldIndexIDHeap []fieldIndexIDCursor
+
+// VisitSortedIDs merges immutable sorted postings, seeking each list to startID
+// (inclusive) and releasing no result-sized copies. Duplicate IDs are visited once.
+func VisitSortedIDs(buckets [][]string, startID string, visit func(string) (bool, error)) error {
+	if visit == nil {
+		return nil
+	}
+	queue := make(fieldIndexIDHeap, 0, len(buckets))
+	for _, ids := range buckets {
+		offset := sort.SearchStrings(ids, startID)
+		if offset < len(ids) {
+			queue = append(queue, fieldIndexIDCursor{ids: ids, offset: offset})
+		}
+	}
+	heap.Init(&queue)
+	last := ""
+	for queue.Len() > 0 {
+		cursor := heap.Pop(&queue).(fieldIndexIDCursor)
+		id := cursor.ids[cursor.offset]
+		cursor.offset++
+		if cursor.offset < len(cursor.ids) {
+			heap.Push(&queue, cursor)
+		}
+		if id == last {
+			continue
+		}
+		last = id
+		more, err := visit(id)
+		if err != nil || !more {
+			return err
+		}
+	}
+	return nil
+}
+
+// VisitMatchingFieldIDs lends matching IDs in identity order from startID,
+// including that ID so callers can validate cursor membership.
+func (g *Graph) VisitMatchingFieldIDs(kind, field string, values []any, startID string, visit func(string) (bool, error)) error {
+	var buckets [][]string
+	for _, key := range distinctScalarKeys(values) {
+		buckets = append(buckets, g.sortedFieldIndexIDs(kind, field, key))
+	}
+	return VisitSortedIDs(buckets, startID, visit)
+}
 
 func (values fieldIndexIDHeap) Len() int { return len(values) }
 

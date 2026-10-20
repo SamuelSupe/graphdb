@@ -14,10 +14,12 @@ import (
 )
 
 type FileStore struct {
+	caseMu               sync.Mutex
+	caseMode             atomic.Int32
 	diskPolicy           DiskSpacePolicy
 	diskProbe            func(string) (DiskSpaceStatus, error)
 	replicatedWrites     atomic.Bool
-	directoryMu          sync.Mutex
+	directoryMu          sync.RWMutex
 	pendingDirectorySync string
 	runtime              *fileRuntime
 	root                 string
@@ -367,6 +369,9 @@ func validateFileStoreKey(key string) error {
 		return fmt.Errorf("invalid object key %q", key)
 	}
 	for _, part := range strings.Split(key, "/") {
+		if len(part) > 255 {
+			return fmt.Errorf("%w: path component exceeds 255 bytes", errFileStoreKey)
+		}
 		if part == "" || part == "." || part == ".." {
 			return fmt.Errorf("invalid object key %q", key)
 		}

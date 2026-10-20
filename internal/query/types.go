@@ -157,6 +157,16 @@ type IndexLookup interface {
 	OutEdges(ctx context.Context, from string, allowedRelationTypes map[string]struct{}) ([]graph.Edge, bool, error)
 }
 
+// FieldIndexVisitLookup seeks immutable postings in identity order, including
+// startID for cursor validation. Returning false stops without scanning the tail.
+type FieldIndexVisitLookup interface {
+	VisitFieldIndex(ctx context.Context, kind, field string, values []any, startID string, visit func(string) (bool, error)) (bool, error)
+}
+
+type FilteredFieldIndexVisitLookup interface {
+	VisitFilteredFieldIndex(ctx context.Context, kind, field string, filters []Filter, startID string, visit func(string) (bool, error)) (bool, error)
+}
+
 type ReverseIndexLookup interface {
 	InEdges(ctx context.Context, to string, allowedRelationTypes map[string]struct{}) ([]graph.Edge, bool, error)
 }

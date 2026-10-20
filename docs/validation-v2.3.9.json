@@ -2,26 +2,64 @@
   "version": "v2.3.9",
   "status": "CANDIDATE",
   "localVerification": {
+    "scope": "Earlier source baseline; current source checkpoint verification is recorded under performanceReview and is not all green",
     "environment": "OrbStack Ubuntu arm64",
     "unit": "PASS",
     "vet": "PASS",
     "race": "PASS; final HTTP/SDK whole-package and focused HA/storage regressions rechecked",
     "criticalRegressionRepetitions": 3,
     "walAndIndexBudgetRaceRepetitions": 5,
-    "slowElectionMigrationRaceSeconds": [93.94, 89.61, 83.37],
+    "slowElectionMigrationRaceSeconds": [
+      93.94,
+      89.61,
+      83.37
+    ],
     "directWalLoadRestart": "PASS",
     "realMinioRestoreGate": "PASS",
     "tlsGatewayRequests": 27,
     "chromeSameOriginTenantCreation": "PASS",
-    "pythonSdk": {"passed": 12, "optionalLiveApiSkipped": 1}
+    "pythonSdk": {
+      "passed": 12,
+      "optionalLiveApiSkipped": 1
+    }
   },
-  "exactTagCI": {"status": "PENDING"},
-  "downloadedAssets": {"status": "PENDING"},
+  "exactTagCI": {
+    "status": "PENDING"
+  },
+  "downloadedAssets": {
+    "status": "PENDING"
+  },
   "gateWaiver": false,
   "preservedRelease": "v2.3.8 tag and assets unchanged",
   "limits": [
-    "Raft application failure and complete corrupt WAL frames remain fail-closed to preserve committed and acknowledged data.",
+    "File failures, failed rollback, acknowledged WAL corruption and ambiguous legacy WAL damage remain fail-closed; proven unacknowledged suffixes may be truncated.",
     "Permanent storage faults still require repair.",
     "No physical cross-host fault-domain, power-loss, day-scale stability or production-capacity qualification."
-  ]
+  ],
+  "additionalReview": {
+    "status": "IN_PROGRESS",
+    "F7": "Real 300-character idempotency-key request poisoned three replicas before fix; deterministic application rejection is transactionally rolled back, and file errors remain fail-closed.",
+    "F8": "A durable checksummed boundary distinguishes unacknowledged corrupt suffixes; acknowledged/ambiguous damage is preserved.",
+    "F11": "Confirmed legacy identity-free config disclosure through case alias; fixed at filesystem directory boundary."
+  },
+  "performanceReview": {
+    "status": "IN_PROGRESS_SOURCE_CHECKPOINT",
+    "releaseBlocker": "Fixed 64-bucket entity and edge write amplification: TestIncrementalEntityPageRewriteIsBounded still fails; one changed entity rewrites 4096 rows",
+    "sourcePublication": "User requested committing and pushing current source before completing the remaining fix; no release tag is authorized by this checkpoint",
+    "currentVerification": {
+      "compileAllPackages": "PASS",
+      "vet": "PASS",
+      "docs": "PASS",
+      "boundedWriteRegression": "FAIL_CONFIRMED",
+      "fullUnitAndRace": "NOT_ALL_GREEN; earlier passing runs do not cover all subsequent changes"
+    },
+    "mainCI": {
+      "commit": "14a1235ffc925b4ef03d85935a571aa5703c3d26",
+      "run": 39439315788,
+      "status": "SUCCESS_BEFORE_ADDITIONAL_CHANGES"
+    },
+    "sourceEvidenceDirectory": ".workflow/release-v2.3.9",
+    "runtimeQualification": "PENDING_AFTER_ALL_FIXES",
+    "tagCreated": false
+  }
 }

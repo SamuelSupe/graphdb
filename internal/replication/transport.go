@@ -182,7 +182,7 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 					if err != nil {
 						return err
 					}
-					if peer.SnapshotFormat < 2 {
+					if !n.cfg.StreamSnapshots || peer.SnapshotFormat < 2 {
 						var message raftpb.Message
 						if err := message.Unmarshal(packet.data); err != nil {
 							return err
@@ -294,6 +294,32 @@ func (n *Node) Handler() http.Handler {
 			http.Error(w, "drained replica cannot accept leadership", http.StatusServiceUnavailable)
 			return
 		}
+		if message.Type == raftpb.MsgSnap && message.Snapshot != nil {
+			envelope, err := decodeSnapshot(message.Snapshot.Data)
+			if err != nil || envelope.Version != 1 || int64(len(message.Snapshot.Data)) > n.cfg.MaxSnapshotBytes {
+				http.Error(w, "invalid inline snapshot envelope", http.StatusBadRequest)
+				return
+			}
+			if _, ok := n.machine.(StreamingStateMachine); ok {
+				if n.cfg.SnapshotPreflight != nil {
+					if err := n.cfg.SnapshotPreflight(r.Context(), int64(len(envelope.State))); err != nil {
+						http.Error(w, err.Error(), http.StatusServiceUnavailable)
+						return
+					}
+				}
+				stored, err := persistSnapshotFile(n.cfg.Dir, message.Snapshot.Metadata.Index, bytes.NewReader(envelope.State), nil, n.cfg.MaxSnapshotBytes)
+				if err != nil {
+					http.Error(w, "persist inline snapshot failed", http.StatusServiceUnavailable)
+					return
+				}
+				envelope.Version, envelope.State, envelope.File = 2, nil, &stored
+				message.Snapshot.Data, err = json.Marshal(envelope)
+				if err != nil {
+					http.Error(w, "encode snapshot metadata failed", http.StatusInternalServerError)
+					return
+				}
+			}
+		}
 		if err := n.raft.Step(r.Context(), message); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
@@ -339,8 +365,6 @@ func (n *Node) ID() uint64                      { return n.cfg.ID }
 func (n *Node) Check(ctx context.Context) error { return n.ReadBarrier(ctx) }
 
 func (n *Node) installPeers(peers map[uint64]string) error {
-	n.peerMu.Lock()
-	defer n.peerMu.Unlock()
 	data, err := json.Marshal(peers)
 	if err != nil {
 		return err
@@ -348,6 +372,8 @@ func (n *Node) installPeers(peers map[uint64]string) error {
 	if err := n.disk.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("meta")).Put([]byte("peers"), data) }); err != nil {
 		return err
 	}
+	n.peerMu.Lock()
+	defer n.peerMu.Unlock()
 	for id, address := range peers {
 		n.peers[id] = address
 	}

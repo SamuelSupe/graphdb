@@ -62,7 +62,50 @@ func (c *Cluster) tenantExport(ctx context.Context, action sharding.Action) (*te
 		return nil, fmt.Errorf("source is not frozen for this migration")
 	}
 	key := action.Tenant + "/" + action.MoveID
+	c.exportMu.Lock()
+	if c.exportClosed {
+		c.exportMu.Unlock()
+		return nil, context.Canceled
+	}
 	if cached := c.exports[key]; cached != nil {
+		cached.used = time.Now()
+		c.exportMu.Unlock()
+		return cached, nil
+	}
+	if c.exportBuildSlots == nil {
+		c.exportBuildSlots = make(chan struct{}, 4)
+	}
+	slots := c.exportBuildSlots
+	c.exportMu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	c.exportMu.Lock()
+	cached := c.exports[key]
+	if cached != nil {
+		cached.used = time.Now()
+	}
+	c.exportMu.Unlock()
+	if cached != nil {
+		return cached, nil
+	}
+	finish := c.metrics.Start("migration_export_build")
+	entry, err := c.buildTenantExport(ctx, action)
+	finish(err)
+	if err != nil {
+		return nil, err
+	}
+	c.exportMu.Lock()
+	defer c.exportMu.Unlock()
+	if ctx.Err() != nil || c.exportClosed {
+		entry.close()
+		return nil, errors.Join(ctx.Err(), context.Canceled)
+	}
+	if cached := c.exports[key]; cached != nil {
+		entry.close()
 		cached.used = time.Now()
 		return cached, nil
 	}
@@ -76,17 +119,44 @@ func (c *Cluster) tenantExport(ctx context.Context, action sharding.Action) (*te
 		c.exports[oldest].close()
 		delete(c.exports, oldest)
 	}
-	finish := c.metrics.Start("migration_export_build")
-	entry, err := c.buildTenantExport(ctx, action)
-	finish(err)
-	if err != nil {
-		return nil, err
-	}
 	if c.exports == nil {
 		c.exports = make(map[string]*tenantExport)
 	}
 	c.exports[key] = entry
 	return entry, nil
+}
+
+// Copy one bounded chunk while pinning its cached file. Builds and network
+// writes run outside exportMu; cleanup can never close a file during ReadAt.
+func (c *Cluster) exportPayload(ctx context.Context, action sharding.Action, manifest bool) (sharding.TransferInfo, []byte, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return sharding.TransferInfo{}, nil, err
+		}
+		entry, err := c.tenantExport(ctx, action)
+		if err != nil {
+			return sharding.TransferInfo{}, nil, err
+		}
+		c.exportMu.Lock()
+		if c.exports[action.Tenant+"/"+action.MoveID] != entry {
+			c.exportMu.Unlock()
+			continue
+		}
+		info := entry.info
+		if manifest {
+			c.exportMu.Unlock()
+			return info, nil, nil
+		}
+		if action.Part < 0 || action.Part >= info.Parts || action.Digest != info.Digest {
+			c.exportMu.Unlock()
+			return info, nil, storage.ErrConflict
+		}
+		size := min(int64(sharding.ChunkBytes), info.Bytes-int64(action.Part)*sharding.ChunkBytes)
+		data := make([]byte, size)
+		_, err = entry.file.ReadAt(data, int64(action.Part)*sharding.ChunkBytes)
+		c.exportMu.Unlock()
+		return info, data, err
+	}
 }
 
 func (c *Cluster) buildTenantExport(ctx context.Context, action sharding.Action) (_ *tenantExport, err error) {
@@ -260,8 +330,6 @@ func (c *Cluster) exportChunk(w http.ResponseWriter, request *http.Request) {
 		c.writeError(w, err)
 		return
 	}
-	c.exportMu.Lock()
-	defer c.exportMu.Unlock()
 	c.App.mu.RLock()
 	owner, err := c.App.ownership(request.Context(), action.Tenant)
 	c.App.mu.RUnlock()
@@ -273,23 +341,38 @@ func (c *Cluster) exportChunk(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, "source is not frozen for this migration", http.StatusConflict)
 		return
 	}
-	entry, err := c.tenantExport(request.Context(), action)
+	manifest := request.URL.Path == "/cluster/export/manifest"
+	if !manifest {
+		c.exportMu.Lock()
+		if c.exportChunkSlots == nil {
+			c.exportChunkSlots = make(chan struct{}, 4)
+		}
+		slots := c.exportChunkSlots
+		c.exportMu.Unlock()
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-request.Context().Done():
+			c.writeError(w, request.Context().Err())
+			return
+		}
+	}
+	info, data, err := c.exportPayload(request.Context(), action, manifest)
 	if err != nil {
+		if errors.Is(err, storage.ErrConflict) {
+			http.Error(w, "migration range or digest changed", http.StatusConflict)
+			return
+		}
 		c.writeError(w, err)
 		return
 	}
-	if request.URL.Path == "/cluster/export/manifest" {
+	if manifest {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(entry.info)
-		return
-	}
-	if action.Part < 0 || action.Part >= entry.info.Parts || action.Digest != entry.info.Digest {
-		http.Error(w, "migration range or digest changed", http.StatusConflict)
+		json.NewEncoder(w).Encode(info)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	size := min(int64(sharding.ChunkBytes), entry.info.Bytes-int64(action.Part)*sharding.ChunkBytes)
-	_, err = io.CopyN(w, io.NewSectionReader(entry.file, int64(action.Part)*sharding.ChunkBytes, size), size)
+	_, err = w.Write(data)
 	if err == nil {
 		c.metrics.Event("migration_export_chunk")
 	}

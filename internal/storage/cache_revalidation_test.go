@@ -19,6 +19,35 @@ type pausedManifestReadStore struct {
 	release chan struct{}
 }
 
+func TestReaderCacheTTLRevalidatesExternalPublication(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	writer := NewTenantStore(objects, "test")
+	reader := NewTenantStore(objects, "test")
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cache := NewReaderCache(reader, 5*time.Millisecond)
+	if _, _, err := cache.Load(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	expiry := cache.Status("tenant-a").ExpiresAt
+	if expiry.IsZero() {
+		t.Fatal("cache entry has no revalidation deadline")
+	}
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "two", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(max(0, time.Until(expiry)))
+	g, manifest, err := cache.Load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.GetEntity("two"); !ok || manifest.Version != 2 {
+		t.Fatalf("external publication remained stale: version=%d present=%v", manifest.Version, ok)
+	}
+}
+
 func (s *pausedManifestReadStore) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
 	data, meta, err := s.ObjectStore.GetWithMeta(ctx, key)
 	if err == nil && strings.HasSuffix(key, "/manifest.parquet") && s.block.Swap(false) {

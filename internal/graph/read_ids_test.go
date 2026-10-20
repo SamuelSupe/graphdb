@@ -134,6 +134,38 @@ func TestStorageCopyReadOrderCachesAreVersionIsolated(t *testing.T) {
 
 }
 
+func TestNeighborPageOrderSurvivesStorageCopyMutation(t *testing.T) {
+	source, err := FromSnapshot(Snapshot{Version: 1, RelationTypes: []RelationType{{Name: "links", FromKind: "host", ToKind: "host", Directed: true}}, Entities: []Entity{{ID: "host:a", Kind: "host"}, {ID: "host:b", Kind: "host"}}, Edges: []Edge{{ID: "one", Type: "links", From: "host:a", To: "host:b"}, {ID: "self", Type: "links", From: "host:a", To: "host:a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(g *Graph) {
+		t.Helper()
+		for _, direction := range []string{"out", "in", "both"} {
+			want := g.Neighbors("host:a", direction, "")
+			var got []Neighbor
+			if err := g.VisitNeighborsByEdgeID("host:a", direction, nil, nil, false, "", nil, func(neighbor Neighbor) (bool, error) { got = append(got, neighbor); return true, nil }); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(want) {
+				t.Fatalf("%s count=%d want=%d", direction, len(got), len(want))
+			}
+			for i := range got {
+				if got[i].Edge.ID != want[i].Edge.ID || got[i].Direction != want[i].Direction {
+					t.Fatalf("%s neighbor order changed", direction)
+				}
+			}
+		}
+	}
+	check(source)
+	next, _, err := source.ApplyCommitStorageCopyWithOptions(Commit{ID: "replace", Version: 2, Mutations: Mutations{DeleteEdges: []string{"one"}, UpsertEdges: []Edge{{ID: "two", Type: "links", From: "host:a", To: "host:b"}}}}, ApplyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(next)
+	check(source)
+}
+
 func BenchmarkStorageCopyFirstKindPageAfterFieldUpdate(b *testing.B) {
 	for _, entityCount := range []int{10_000, 100_000} {
 		entityCount := entityCount

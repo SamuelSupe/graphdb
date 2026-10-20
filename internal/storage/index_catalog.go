@@ -228,7 +228,7 @@ func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID stri
 		return IndexCatalog{}, err
 	}
 	defer releaseMemory()
-	artifacts, err := buildIndexArtifactsWithDefinitions(g, manifest.Version, definitions, mutationTime(ctx))
+	artifacts, err := s.buildAndWriteIndexArtifacts(ctx, tenantID, g, manifest.Version, definitions)
 	if err != nil {
 		return IndexCatalog{}, err
 	}

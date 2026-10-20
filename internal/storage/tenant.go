@@ -117,6 +117,7 @@ type TenantStore struct {
 	indexCache               *indexObjectCache
 	entityPageCache          *entityPageCache
 	edgeLookupCache          *edgeLookupCache
+	fieldLookupCache         *decodedLookupCache[map[string][]string]
 	taskMu                   sync.Mutex
 	taskCancels              map[string]context.CancelFunc
 	taskActive               map[string]Task
@@ -193,6 +194,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		indexCache:               newIndexObjectCache(4096),
 		entityPageCache:          newEntityPageCache(2048),
 		edgeLookupCache:          newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
+		fieldLookupCache:         newDecodedLookupCache(2048, 64<<20, estimateFieldLookupBytes),
 		taskCancels:              map[string]context.CancelFunc{},
 		taskActive:               map[string]Task{},
 		taskQueueSlots:           make(chan struct{}, defaultTaskQueueLimit),

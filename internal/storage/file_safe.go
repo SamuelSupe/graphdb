@@ -2,12 +2,15 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
+
+var errFileStoreKey = fmt.Errorf("%w: invalid local object path", ErrInvalidArgument)
 
 type preparedFileParentsKey struct{}
 
@@ -46,6 +49,17 @@ func (s *FileStore) ensureSafeParent(filePath string, journal *replicationJourna
 func (s *FileStore) ensureSafeDirectory(dir string, journal *replicationJournal) error {
 	// Standalone writers require an immediate parent barrier. Replicated
 	// writers share the journal's rollback and final publication barrier.
+	s.directoryMu.RLock()
+	if s.pendingDirectorySync == "" {
+		err := s.walkSafeDir(dir, false, nil)
+		if !errors.Is(err, ErrNotFound) {
+			s.directoryMu.RUnlock()
+			return err
+		}
+	}
+	s.directoryMu.RUnlock()
+	// Creation and failed directory barriers stay exclusive: another writer
+	// must not publish beneath a mkdir whose parent has not been synced yet.
 	s.directoryMu.Lock()
 	defer s.directoryMu.Unlock()
 	if s.pendingDirectorySync != "" {
@@ -79,16 +93,62 @@ func (s *FileStore) walkSafeDir(dir string, create bool, journal *replicationJou
 	if rel == "." {
 		return nil
 	}
+	if err := s.detectDirectoryCase(rootAbs); err != nil {
+		return err
+	}
 	current := rootAbs
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		if part == "" || part == "." {
 			continue
+		}
+		if s.caseMode.Load() == 2 {
+			entries, err := os.ReadDir(current)
+			if err != nil {
+				return err
+			}
+			for _, entry := range entries {
+				if entry.Name() != part && strings.EqualFold(entry.Name(), part) {
+					return fmt.Errorf("%w: directory %q already uses spelling %q", errFileStoreKey, part, entry.Name())
+				}
+			}
 		}
 		current = filepath.Join(current, part)
 		if err := s.ensureSafeDirComponent(current, create, journal); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// Cache the filesystem capability, not tenant names: aliases must also be
+// rejected for legacy records and after directory replacement or creation.
+func (s *FileStore) detectDirectoryCase(root string) error {
+	if s.caseMode.Load() != 0 {
+		return nil
+	}
+	s.caseMu.Lock()
+	defer s.caseMu.Unlock()
+	if s.caseMode.Load() != 0 {
+		return nil
+	}
+	probe, err := os.CreateTemp(root, ".tmp-case-A-*")
+	if err != nil {
+		return err
+	}
+	info, statErr := probe.Stat()
+	alias, aliasErr := os.Stat(filepath.Join(root, strings.ToLower(filepath.Base(probe.Name()))))
+	err = errors.Join(statErr, probe.Close(), os.Remove(probe.Name()))
+	if aliasErr != nil && !os.IsNotExist(aliasErr) {
+		err = errors.Join(err, aliasErr)
+	}
+	if err != nil {
+		return err
+	}
+	mode := int32(1)
+	if aliasErr == nil && os.SameFile(info, alias) {
+		mode = 2
+	}
+	s.caseMode.Store(mode)
 	return nil
 }
 

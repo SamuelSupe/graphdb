@@ -1,15 +1,16 @@
 package replication
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/raft/v3/raftpb"
+	"slices"
 )
 
 func (n *Node) startSnapshot(conf raftpb.ConfState) (built chan snapshotBuild, err error) {
-	if n.cfg.StreamSnapshots {
+	_, capture := n.machine.(StreamingStateMachine)
+	if n.cfg.StreamSnapshots || capture {
 		return n.startStreamSnapshot(conf)
 	}
 	finish := n.metrics.Start("snapshot_build")
@@ -66,29 +67,23 @@ func (n *Node) snapshotMetadata(index uint64) (snapshotEnvelope, error) {
 }
 
 func (n *Node) snapshotData(state []byte, index uint64) ([]byte, error) {
-	n.peerMu.RLock()
-	defer n.peerMu.RUnlock()
-	var retired []uint64
-	if err := n.disk.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("retired"))
-		if bucket == nil {
-			return nil
-		}
-		return bucket.ForEach(func(key, value []byte) error {
-			// Membership application can run ahead of this graph snapshot.
-			// Older one-byte tombstones predate the indexed encoding.
-			if len(value) != 8 || binary.BigEndian.Uint64(value) <= index {
-				retired = append(retired, binary.BigEndian.Uint64(key))
-			}
-			return nil
-		})
-	}); err != nil {
+	members, err := n.retiredMembers()
+	if err != nil {
 		return nil, err
 	}
+	var retired []uint64
+	for id, removedAt := range members {
+		if removedAt <= index {
+			retired = append(retired, id)
+		}
+	}
+	slices.Sort(retired)
 	minimum, err := n.disk.minimumProtocol()
 	if err != nil {
 		return nil, err
 	}
+	n.peerMu.RLock()
+	defer n.peerMu.RUnlock()
 	return json.Marshal(snapshotEnvelope{Version: 1, Protocol: max(ProtocolVersion, minimum), State: state, Peers: n.peers, Retired: retired})
 }
 

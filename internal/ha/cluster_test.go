@@ -2487,6 +2487,68 @@ func TestTransientTaskPreparationRemainsQueued(t *testing.T) {
 	}
 }
 
+func TestInvalidObjectKeyDoesNotPoisonRaftApplication(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	body := `{"idempotency_key":"` + strings.Repeat("x", 300) + `","mutations":{"upsert_entities":[{"id":"host:bad","kind":"host"}]}}`
+	response := group.request(leader, http.MethodPost, "/v1/commits", body)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid object key poisoned application: status=%d body=%s", response.Code, response.Body)
+	}
+	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:good","kind":"host"}]}}`, http.StatusOK)
+	for i := range group.nodes {
+		group.mustRequest(i, http.MethodGet, "/v1/entities/host:good", "", http.StatusOK)
+	}
+}
+
+func TestDeterministicHTTPFailureRollsBackAcrossReplicas(t *testing.T) {
+	group := newTestCluster(t, false, func(_ *Application, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/commits" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			result := httptest.NewRecorder()
+			next.ServeHTTP(result, r)
+			if bytes.Contains(body, []byte("host:logical-failure")) && result.Code == http.StatusOK {
+				http.Error(w, "deterministic failure after mutation", http.StatusInternalServerError)
+				return
+			}
+			for key, values := range result.Header() {
+				w.Header()[key] = values
+			}
+			w.WriteHeader(result.Code)
+			_, _ = w.Write(result.Body.Bytes())
+		})
+	})
+	leader := group.leader(-1)
+	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:logical-failure","kind":"host"}]}}`, http.StatusInternalServerError)
+	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:good","kind":"host"}]}}`, http.StatusOK)
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, replica := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		g, _, err := replica.store.Load(context.Background(), "tenant-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := g.GetEntity("host:logical-failure"); ok {
+			t.Fatalf("replica %d retained failed mutation", i)
+		}
+		if _, ok := g.GetEntity("host:good"); !ok {
+			t.Fatalf("replica %d lost subsequent mutation", i)
+		}
+	}
+}
+
 func TestOpaquePreparationFailureCanRecover(t *testing.T) {
 	var target atomic.Pointer[Application]
 	failure := errors.New("opaque upstream transport failure")

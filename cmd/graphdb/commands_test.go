@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -203,6 +204,8 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	walConfig := storage.DefaultIngestServiceConfig(walDir)
 	walConfig.OwnerID = "recovery"
 	walConfig.FlushInterval = time.Hour
+	walConfig.WAL.MaxBytes, walConfig.WAL.SegmentBytes = 32<<10, 16<<10
+	walConfig.WAL.ControlReserveBytes = 16 << 10
 	service, err := storage.OpenIngestService(store, walConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +216,17 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	accepted, err := service.Accept(ctx, "tenant-a", request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for i := range 128 {
+		fill := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: fmt.Sprintf("fill-%d", i), Items: []storage.IngestItem{{Entity: &graph.Entity{ID: fmt.Sprintf("host:fill-%d", i), Kind: "host"}}}}
+		if _, err := service.Accept(ctx, "checkpoint-fill", fill); errors.Is(err, storage.ErrIngestWALFull) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(walDir, ".checkpoint")); err != nil || info.Size() == 0 {
+		t.Fatalf("WAL history was not checkpointed before runtime backup: %v", err)
 	}
 	closing, cancel := context.WithCancel(ctx)
 	cancel()

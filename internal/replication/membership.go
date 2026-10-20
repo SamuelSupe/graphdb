@@ -2,8 +2,10 @@ package replication
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -149,13 +151,53 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (n *Node) memberRetired(id uint64) (bool, error) {
-	var retired bool
+	members, err := n.retiredMembers()
+	_, retired := members[id]
+	return retired, err
+}
+
+func (n *Node) retiredMembers() (map[uint64]uint64, error) {
+	if members := n.retired.Load(); members != nil {
+		return *members, nil
+	}
+	members := map[uint64]uint64{}
 	err := n.disk.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte("retired"))
-		retired = bucket != nil && bucket.Get(indexKey(id)) != nil
-		return nil
+		if bucket == nil {
+			return nil
+		}
+		return bucket.ForEach(func(key, value []byte) error {
+			var index uint64
+			if len(value) == 8 {
+				index = binary.BigEndian.Uint64(value)
+			}
+			members[binary.BigEndian.Uint64(key)] = index
+			return nil
+		})
 	})
-	return retired, err
+	if err != nil {
+		return nil, err
+	}
+	n.retired.CompareAndSwap(nil, &members)
+	return *n.retired.Load(), nil
+}
+
+func (n *Node) cacheRetired(ids []uint64, index uint64) error {
+	if _, err := n.retiredMembers(); err != nil {
+		return err
+	}
+	for {
+		previous := n.retired.Load()
+		members := maps.Clone(*previous)
+		for _, id := range ids {
+			if _, found := members[id]; !found {
+				members[id] = index
+			}
+		}
+		if n.retired.CompareAndSwap(previous, &members) {
+			return nil
+		}
+	}
 }
 
 func (n *Node) applyMembership(change raftpb.ConfChangeV2, current raftpb.ConfState, index uint64) (raftpb.ConfState, membershipResult, error) {
@@ -208,13 +250,14 @@ func (n *Node) applyPeerChange(data []byte, index uint64) error {
 	if err := json.Unmarshal(data, &change); err != nil {
 		return err
 	}
-	n.peerMu.Lock()
-	defer n.peerMu.Unlock()
+	n.peerMu.RLock()
+	peers := maps.Clone(n.peers)
+	n.peerMu.RUnlock()
 	if change.Action == "add_learner" {
-		n.peers[change.ID] = change.URL
+		peers[change.ID] = change.URL
 	}
 	// Retain removed IDs as tombstones, so they can never be reused.
-	encoded, err := json.Marshal(n.peers)
+	encoded, err := json.Marshal(peers)
 	if err != nil {
 		return err
 	}
@@ -227,6 +270,17 @@ func (n *Node) applyPeerChange(data []byte, index uint64) error {
 		return tx.Bucket([]byte("meta")).Put([]byte("peers"), encoded)
 	})
 	if err == nil && change.Action == "remove" {
+		if err := n.cacheRetired([]uint64{change.ID}, index); err != nil {
+			return err
+		}
+	}
+	if err != nil {
+		return err
+	}
+	n.peerMu.Lock()
+	defer n.peerMu.Unlock()
+	n.peers = peers
+	if change.Action == "remove" {
 		n.stopPeerSenders(change.ID)
 	}
 	return err

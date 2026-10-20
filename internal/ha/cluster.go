@@ -45,6 +45,9 @@ type Cluster struct {
 	admissions         map[string]*tenantAdmission
 	exportMu           sync.Mutex
 	exports            map[string]*tenantExport
+	exportBuildSlots   chan struct{}
+	exportChunkSlots   chan struct{}
+	exportClosed       bool
 }
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
@@ -77,7 +80,7 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	node, err := replication.Open(ctx, replication.Config{Protocol: cfg.Protocol, ID: cfg.ID, ClusterID: cfg.ClusterID, Dir: cfg.Dir, Peers: cfg.Peers, Bootstrap: cfg.Bootstrap, Token: cfg.Token, Tick: cfg.Tick, ElectionTicks: cfg.ElectionTicks, SnapshotEntries: cfg.SnapshotEntries, MaxSnapshotBytes: cfg.MaxSnapshotBytes, AllowLegacyProtocol: cfg.AllowLegacyProtocol, StreamSnapshots: cfg.StreamSnapshots, SnapshotPreflight: func(ctx context.Context, bytes int64) error {
-		return storage.CheckDiskSpace(ctx, cfg.Dir, c.diskPolicy, bytes)
+		return replicationSnapshotError(storage.CheckDiskSpace(ctx, cfg.Dir, c.diskPolicy, bytes))
 	}}, c.App)
 	if err != nil {
 		cancel()
@@ -387,6 +390,7 @@ func (c *Cluster) Close() error {
 		c.shards.HTTP.CloseIdleConnections()
 		c.closeErr = c.Node.Close()
 		c.exportMu.Lock()
+		c.exportClosed = true
 		for key, transfer := range c.exports {
 			transfer.close()
 			delete(c.exports, key)

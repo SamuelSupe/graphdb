@@ -21,7 +21,7 @@ func scanFieldIndexIDs(ctx context.Context, scanner FieldIndexScanLookup, kind s
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	matchesKey := newIndexScanKeyMatcher(fieldFilters)
+	matchesKey := IndexScanKeyMatcher(fieldFilters)
 	seen := map[string]struct{}{}
 	for key, ids := range entries {
 		if err := ctx.Err(); err != nil {
@@ -53,23 +53,14 @@ func scanRuntimeFieldIndexIDs(
 		return nil, err
 	}
 	fieldFilters := filtersForIndexField(field, filters)
-	matchesKey := newIndexScanKeyMatcher(fieldFilters)
+	matchesKey := IndexScanKeyMatcher(fieldFilters)
 	match := func(key string) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
 		return matchesKey(key), nil
 	}
-	bounds := make([]graph.FieldIndexRange, 0, len(fieldFilters))
-	for _, filter := range fieldFilters {
-		switch filter.Op {
-		case "gt", "gte", "lt", "lte", "prefix":
-			number, numeric := asFloat(filter.Value)
-			bounds = append(bounds, graph.FieldIndexRange{
-				Op: filter.Op, Text: fmt.Sprint(filter.Value), Number: number, Numeric: numeric,
-			})
-		}
-	}
+	bounds := runtimeIndexBounds(fieldFilters)
 	if len(bounds) > 0 {
 		return g.ScanFieldIndexRangeIDs(kind, field, bounds, match)
 	}
@@ -94,4 +85,18 @@ func indexKeyComparableValue(value any) bool {
 	default:
 		return false
 	}
+}
+
+func runtimeIndexBounds(fieldFilters []Filter) []graph.FieldIndexRange {
+	bounds := make([]graph.FieldIndexRange, 0, len(fieldFilters))
+	for _, filter := range fieldFilters {
+		switch filter.Op {
+		case "gt", "gte", "lt", "lte", "prefix":
+			number, numeric := asFloat(filter.Value)
+			bounds = append(bounds, graph.FieldIndexRange{
+				Op: filter.Op, Text: fmt.Sprint(filter.Value), Number: number, Numeric: numeric,
+			})
+		}
+	}
+	return bounds
 }

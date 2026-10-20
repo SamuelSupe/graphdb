@@ -650,11 +650,15 @@ func TestIngestServiceClearsWALFullAfterShortCompletion(t *testing.T) {
 	}
 
 	for index, item := range pending {
-		service.completePendingState(item, IngestResult{
+		// Completion must have a durable terminal record before history can
+		// be folded; an in-memory notification alone cannot release WAL data.
+		if _, err := service.appendTerminalBatch([]*ingestPending{item}, []IngestResult{{
 			BatchID: item.envelope.Request.BatchID,
 			Version: int64(index + 1),
 			Applied: 1,
-		}, nil, IngestStateCommitted)
+		}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if readiness := service.Readiness(); !readiness.Writable {
 		t.Fatalf("readiness after %d completions = %#v, want writable after WAL prune", len(pending), readiness)
@@ -664,11 +668,13 @@ func TestIngestServiceClearsWALFullAfterShortCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accept after short completion = %v, want WAL capacity reclaimed", err)
 	}
-	service.completePendingState(acceptance.pending, IngestResult{
+	if _, err := service.appendTerminalBatch([]*ingestPending{acceptance.pending}, []IngestResult{{
 		BatchID: acceptance.BatchID,
 		Version: int64(len(pending) + 1),
 		Applied: 1,
-	}, nil, IngestStateCommitted)
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	crashIngestService(t, service)
 	serviceClosed = true
 }

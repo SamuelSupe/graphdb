@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -70,7 +71,7 @@ func (s *TenantStore) decorateIndexCatalog(catalog *IndexCatalog, tenantID strin
 	}
 }
 
-func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition, at ...time.Time) ([]SecondaryIndex, error) {
+func secondaryIndexDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition, at ...time.Time) ([]SecondaryIndex, error) {
 	now := artifactTime(at)
 	indexes := map[string]SecondaryIndex{}
 	for _, ciType := range g.ListCITypes() {
@@ -92,7 +93,6 @@ func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definit
 				UpdatedAt:     now,
 				hashCanonical: true,
 			}
-			addEntitiesToIndex(g, &index)
 			indexes[index.Kind+"\x00"+index.Field] = index
 		}
 	}
@@ -110,7 +110,6 @@ func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definit
 		if existing, ok := indexes[index.Kind+"\x00"+index.Field]; ok && existing.Unique {
 			index.Unique = true
 		}
-		addEntitiesToIndex(g, &index)
 		indexes[index.Kind+"\x00"+index.Field] = index
 	}
 	items := make([]SecondaryIndex, 0, len(indexes))
@@ -125,24 +124,38 @@ func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definit
 	return items, nil
 }
 
+func buildSecondaryIndexesWithDefinitions(g *graph.Graph, version int64, definitions []IndexDefinition, at ...time.Time) ([]SecondaryIndex, error) {
+	indexes, err := secondaryIndexDefinitions(g, version, definitions, at...)
+	if err != nil {
+		return nil, err
+	}
+	for i := range indexes {
+		addEntitiesToIndex(g, &indexes[i])
+	}
+	return indexes, nil
+}
+
 func addEntitiesToIndex(g *graph.Graph, index *SecondaryIndex) {
-	for id, entity := range g.Entities.All() {
+	_ = addEntitiesToIndexContext(context.Background(), g, index)
+}
+
+func addEntitiesToIndexContext(ctx context.Context, g *graph.Graph, index *SecondaryIndex) error {
+	// The kind's ID order is shared by every field and graph snapshot. Avoid
+	// revisiting unrelated kinds and sorting every postings bucket again.
+	return g.VisitEntitiesByID(index.Kind, "", func(entity graph.Entity) (bool, error) {
+		if err := objectContextErr(ctx); err != nil {
+			return false, err
+		}
 		if entity.Kind != index.Kind {
-			continue
+			return true, nil
 		}
-		value, ok := entity.Fields[index.Field]
-		if !ok {
-			continue
+		if value, present := entity.Fields[index.Field]; present {
+			if key, ok := graph.ScalarIndexKey(value); ok {
+				index.Values[key] = append(index.Values[key], entity.ID)
+			}
 		}
-		key, ok := graph.ScalarIndexKey(value)
-		if !ok {
-			continue
-		}
-		index.Values[key] = append(index.Values[key], id)
-	}
-	for key := range index.Values {
-		sort.Strings(index.Values[key])
-	}
+		return true, nil
+	})
 }
 
 type secondaryIndexSummaryData struct {

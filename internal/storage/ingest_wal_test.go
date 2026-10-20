@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -178,6 +179,173 @@ func TestIngestWALRejectsChecksumCorruptionAndSecondProcess(t *testing.T) {
 	}
 	if _, _, err := openIngestWALRecords(config); !errors.Is(err, ErrIngestWALCorrupt) {
 		t.Fatalf("corrupt open err = %v, want ErrIngestWALCorrupt", err)
+	}
+}
+
+func TestIngestWALRecoversUnacknowledgedCorruptTail(t *testing.T) {
+	for _, kind := range []string{"zero", "checksum"} {
+		t.Run(kind, func(t *testing.T) {
+			config := DefaultIngestWALConfig(t.TempDir())
+			wal, err := OpenIngestWAL(config, func(IngestWALRecord) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := wal.Append(context.Background(), IngestWALAccepted, []byte("acknowledged"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := wal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			name := filepath.Join(config.Dir, first.Segment)
+			prefix, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tail := encodeIngestWALFrame(IngestWALAccepted, first.LSN+1, []byte("not acknowledged"))
+			if kind == "zero" {
+				clear(tail)
+			} else {
+				tail[len(tail)-1] ^= 1
+			}
+			file, err := os.OpenFile(name, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.Write(tail); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			var records []IngestWALRecord
+			wal, err = OpenIngestWAL(config, func(record IngestWALRecord) error { records = append(records, record); return nil })
+			if err != nil {
+				t.Fatalf("unacknowledged corrupt suffix blocked recovery: %v", err)
+			}
+			defer wal.Close()
+			if len(records) != 1 || string(records[0].Payload) != "acknowledged" {
+				t.Fatalf("recovered records: %+v", records)
+			}
+			data, err := os.ReadFile(name)
+			if err != nil || !bytes.Equal(data, prefix) {
+				t.Fatalf("acknowledged prefix changed: %v", err)
+			}
+			next, err := wal.Append(context.Background(), IngestWALAccepted, []byte("after recovery"))
+			if err != nil || next.LSN != first.LSN+1 {
+				t.Fatalf("append after recovery: %+v %v", next, err)
+			}
+		})
+	}
+}
+
+func TestIngestWALDurableBoundaryFailurePreventsAcknowledgement(t *testing.T) {
+	config := DefaultIngestWALConfig(t.TempDir())
+	wal, err := OpenIngestWAL(config, func(IngestWALRecord) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wal.Append(context.Background(), IngestWALAccepted, []byte("acknowledged")); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(config.Dir, ingestWALDurableFile)
+	marker, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(name, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := wal.Append(context.Background(), IngestWALAccepted, []byte("uncertain")); err == nil || result.Durable {
+		t.Fatalf("acknowledged without durable boundary: %+v %v", result, err)
+	}
+	if err := wal.Close(); err == nil {
+		t.Fatal("boundary persistence failure was not retained")
+	}
+	if err := os.Remove(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name, marker, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var records []IngestWALRecord
+	wal, err = OpenIngestWAL(config, func(record IngestWALRecord) error { records = append(records, record); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	if len(records) != 2 || string(records[0].Payload) != "acknowledged" {
+		t.Fatalf("lost acknowledged data: %+v", records)
+	}
+}
+
+func TestIngestWALDurableBoundaryRejectsAmbiguousDamage(t *testing.T) {
+	for _, kind := range []string{"boundary-checksum", "short-acknowledged-frame", "legacy-bad-frame"} {
+		t.Run(kind, func(t *testing.T) {
+			config := DefaultIngestWALConfig(t.TempDir())
+			wal, err := OpenIngestWAL(config, func(IngestWALRecord) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := wal.Append(context.Background(), IngestWALAccepted, []byte("acknowledged"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := wal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(config.Dir, ingestWALDurableFile)
+			segment := filepath.Join(config.Dir, first.Segment)
+			switch kind {
+			case "boundary-checksum":
+				data, err := os.ReadFile(marker)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data[len(data)-1] ^= 1
+				if err := os.WriteFile(marker, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "short-acknowledged-frame":
+				if err := os.Truncate(segment, 12); err != nil {
+					t.Fatal(err)
+				}
+			case "legacy-bad-frame":
+				if err := os.Remove(marker); err != nil {
+					t.Fatal(err)
+				}
+				file, err := os.OpenFile(segment, os.O_APPEND|os.O_WRONLY, 0600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.Write(make([]byte, 24)); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(segment)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if opened, err := OpenIngestWAL(config, func(IngestWALRecord) error { return nil }); !errors.Is(err, ErrIngestWALCorrupt) {
+				if opened != nil {
+					_ = opened.Close()
+				}
+				t.Fatalf("ambiguous damage accepted: %v", err)
+			}
+			after, err := os.ReadFile(segment)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("changed damaged evidence: %v", err)
+			}
+		})
 	}
 }
 

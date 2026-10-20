@@ -317,6 +317,101 @@ func TestHAShardExportRejectsMissingPublishedCommit(t *testing.T) {
 	}
 }
 
+type pausedExportResponse struct {
+	*httptest.ResponseRecorder
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *pausedExportResponse) Write(data []byte) (int, error) {
+	select {
+	case <-w.started:
+	default:
+		close(w.started)
+	}
+	<-w.release
+	return w.ResponseRecorder.Write(data)
+}
+
+func TestHAShardSlowExportDoesNotHoldControlLock(t *testing.T) {
+	group := newTestClusterRole(t, true, "a", false)
+	leader := group.leader(-1)
+	c := group.nodes[leader].cluster
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	action := sharding.Action{Tenant: "tenant-a", Epoch: 1, MoveID: "move-slow"}
+	for _, operation := range []string{"own", "freeze"} {
+		action.Operation = operation
+		result, err := c.shardAction(ctx, action)
+		var response httpResult
+		if err != nil || json.Unmarshal(result, &response) != nil || response.Status != http.StatusOK {
+			t.Fatalf("%s: %s %v", operation, result, err)
+		}
+		if operation == "own" {
+			request := httptest.NewRequest(http.MethodPost, "/v1/commits", strings.NewReader(`{"mutations":{"upsert_entities":[{"id":"host:export","kind":"host"}]}}`)).WithContext(ctx)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Tenant-ID", action.Tenant)
+			request.Header.Set(sharding.EpochHeader, "1")
+			written := httptest.NewRecorder()
+			group.nodes[leader].handler.ServeHTTP(written, request)
+			if written.Code != http.StatusOK {
+				t.Fatalf("seed export: %d %s", written.Code, written.Body.String())
+			}
+		}
+	}
+	data, _ := json.Marshal(action)
+	manifest := httptest.NewRecorder()
+	c.exportChunk(manifest, httptest.NewRequest(http.MethodPost, "/cluster/export/manifest", bytes.NewReader(data)).WithContext(ctx))
+	var info sharding.TransferInfo
+	if manifest.Code != http.StatusOK || json.Unmarshal(manifest.Body.Bytes(), &info) != nil {
+		t.Fatalf("manifest: %d %s", manifest.Code, manifest.Body.String())
+	}
+	action.Digest = info.Digest
+	data, _ = json.Marshal(action)
+	w := &pausedExportResponse{httptest.NewRecorder(), make(chan struct{}), make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.exportChunk(w, httptest.NewRequest(http.MethodPost, "/cluster/export/chunk", bytes.NewReader(data)).WithContext(ctx))
+	}()
+	defer func() { close(w.release); <-done }()
+	select {
+	case <-w.started:
+	case <-ctx.Done():
+		t.Fatal("export never reached network writer")
+	}
+	if !c.exportMu.TryLock() {
+		t.Fatal("slow export holds the global export control lock")
+	}
+	c.exportMu.Unlock()
+	for range 3 {
+		writer := &pausedExportResponse{httptest.NewRecorder(), make(chan struct{}), make(chan struct{})}
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			c.exportChunk(writer, httptest.NewRequest(http.MethodPost, "/cluster/export/chunk", bytes.NewReader(data)).WithContext(ctx))
+		}()
+		defer func() { close(writer.release); <-finished }()
+		select {
+		case <-writer.started:
+		case <-ctx.Done():
+			t.Fatal("bounded export never reached writer")
+		}
+	}
+	timed, stop := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer stop()
+	rejected := httptest.NewRecorder()
+	c.exportChunk(rejected, httptest.NewRequest(http.MethodPost, "/cluster/export/chunk", bytes.NewReader(data)).WithContext(timed))
+	if rejected.Code != http.StatusGatewayTimeout {
+		t.Fatalf("blocked chunk cancellation: %d %s", rejected.Code, rejected.Body.String())
+	}
+	available := httptest.NewRecorder()
+	c.exportChunk(available, httptest.NewRequest(http.MethodPost, "/cluster/export/manifest", bytes.NewReader(data)).WithContext(ctx))
+	if available.Code != http.StatusOK {
+		t.Fatalf("slow chunks blocked manifest: %d %s", available.Code, available.Body.String())
+	}
+}
+
 func TestHAShardDelayedFlushAfterRetirement(t *testing.T) {
 	group := newTestClusterRole(t, true, "a", false)
 	leader := group.leader(-1)

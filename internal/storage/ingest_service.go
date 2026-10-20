@@ -296,6 +296,7 @@ func OpenIngestService(store IngestStore, config IngestServiceConfig) (*IngestSe
 		cancel:      cancel,
 	}
 	recovered, err := recovery.finish(service)
+	service.highestLSN = max(service.highestLSN, wal.recoveredLSN)
 	if err != nil {
 		recordIngestRecovery(config, "error", recovery.records, 0, 0, recoveryStarted, err)
 		endStorageSpan(recoverySpan, err)
@@ -1658,19 +1659,10 @@ func failedIngestResult(request IngestRequest, failure error) IngestResult {
 }
 
 func (s *IngestService) prune(ctx context.Context) error {
-	s.mu.Lock()
-	before := s.highestLSN + 1
-	// A durable append can still be returning to Accept and not yet be in active.
-	for _, flight := range s.accepting {
-		before = min(before, flight.retainLSN)
+	err := s.wal.prune(ctx, 0, true)
+	if err != nil {
+		s.recordError(err)
 	}
-	for _, pending := range s.active {
-		if pending.acceptedLSN < before {
-			before = pending.acceptedLSN
-		}
-	}
-	s.mu.Unlock()
-	err := s.wal.Prune(ctx, before)
 	if err == nil {
 		s.mu.Lock()
 		s.walFull = false

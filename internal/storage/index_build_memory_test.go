@@ -16,6 +16,43 @@ import (
 
 var benchmarkIndexBuildArtifacts indexBuildArtifacts
 
+func TestStreamedIndexBuildMatchesRetainedArtifacts(t *testing.T) {
+	g, err := graph.FromSnapshot(graph.Snapshot{Version: 1, CITypes: []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{"name": {Type: "string", Unique: true}, "state": {Type: "string", Indexed: true}}}}, Entities: []graph.Entity{{ID: "host:a", Kind: "host", Fields: graph.Fields{"name": "a", "state": "ready"}}, {ID: "host:b", Kind: "host", Fields: graph.Fields{"name": "b", "state": "ready"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := []IndexDefinition{{Kind: "host", Field: "name"}, {Kind: "host", Field: "state"}}
+	at := time.Unix(100, 0).UTC()
+	retained, err := buildIndexArtifactsWithDefinitions(g, 1, definitions, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := map[string]SecondaryIndex{}
+	streamed, err := buildIndexArtifacts(context.Background(), g, 1, definitions, func(index SecondaryIndex) error {
+		data, err := marshalParquetSecondaryIndex(context.Background(), index)
+		if err != nil {
+			return err
+		}
+		decoded, err := decodeParquetSecondaryIndex(context.Background(), data, "", index.Kind, index.Field, 1, index.Unique)
+		written[index.Kind+"."+index.Field] = decoded
+		return err
+	}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, _ := json.Marshal(retained.Catalog)
+	right, _ := json.Marshal(streamed.Catalog)
+	if !bytes.Equal(left, right) {
+		t.Fatal("streaming changed the published index catalog")
+	}
+	for _, index := range retained.Indexes {
+		decoded, ok := written[index.Kind+"."+index.Field]
+		if !ok || secondaryIndexContentHash(index) != secondaryIndexContentHash(decoded) {
+			t.Fatal("streaming changed persisted postings")
+		}
+	}
+}
+
 func TestPageAndEdgeWritesUseSharedEncodeBudget(t *testing.T) {
 	g, err := graph.FromSnapshot(graph.Snapshot{
 		Version:       2,

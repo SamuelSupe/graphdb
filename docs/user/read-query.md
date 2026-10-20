@@ -327,3 +327,5 @@ case-sensitive value semantics. Scalar indexes on `any`/array/object fields and
 cold catalogs without the graph schema fall back to entity scanning when needed.
 A loaded graph can use scalar indexes once its schema or values prove coverage. Signed zero compares
 and indexes identically to zero, including existing persisted negative-zero keys.
+
+Unsorted field-index pages now seek and merge immutable postings from the cursor in both JSON and streaming queries, with a bounded decoded-postings cache. Materialized neighbor pages reuse an ordered adjacency view; a cold view charges the initial edge scan, and later pages charge their visited candidates. Explicit sorts/aggregations and legacy cursors can still require broader work and remain subject to query cost limits.

@@ -44,6 +44,41 @@ func (m *membershipMachine) Restore(_ context.Context, index uint64, _ []byte) e
 	return nil
 }
 
+func TestMembershipPersistenceDoesNotHoldPeerReaders(t *testing.T) {
+	disk, _, err := openStorage(t.TempDir(), 1, "membership-lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	n := &Node{disk: disk, peers: map[uint64]string{1: "http://one", 2: "http://two"}}
+	if _, err := n.memberRetired(3); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := disk.db.Begin(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	data, _ := json.Marshal(memberChange{Action: "add_learner", ID: 3, URL: "http://three"})
+	go func() { done <- n.applyPeerChange(data, 10) }()
+	// Give the membership transaction time to reach the held disk writer.
+	time.Sleep(30 * time.Millisecond)
+	read := make(chan struct{})
+	go func() { n.peerMu.RLock(); n.peerMu.RUnlock(); close(read) }()
+	select {
+	case <-read:
+	case <-time.After(200 * time.Millisecond):
+		t.Error("pending membership durability blocked peer readers")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	<-read
+}
+
 func TestMembershipRejectsStaleChanges(t *testing.T) {
 	for _, scenario := range []struct {
 		action string

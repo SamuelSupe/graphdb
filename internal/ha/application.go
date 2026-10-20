@@ -88,14 +88,7 @@ func (a *Application) Snapshot(ctx context.Context) ([]byte, error) {
 		defer source.Close()
 		data, err = source.Bytes(ctx)
 	}
-	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
-		err = replication.ErrSnapshotTooLarge
-	}
-	var pressure *storage.BackpressureError
-	if errors.As(err, &pressure) || errors.Is(err, storage.ErrObjectStoreUnavailable) {
-		err = fmt.Errorf("%w: %w", replication.ErrSnapshotTemporarilyUnavailable, err)
-	}
-	return data, err
+	return data, replicationSnapshotError(err)
 }
 func (a *Application) Restore(ctx context.Context, index uint64, data []byte) error {
 	a.readers.Lock()
@@ -110,7 +103,30 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 }
 
 func (a *Application) CaptureSnapshot(ctx context.Context) (replication.SnapshotSource, error) {
-	return a.captureSnapshot(ctx)
+	source, err := a.captureSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return applicationSnapshotSource{source}, nil
+}
+
+type applicationSnapshotSource struct {
+	*storage.ReplicationSnapshotSource
+}
+
+func (s applicationSnapshotSource) WriteTo(ctx context.Context, output io.WriteSeeker) error {
+	return replicationSnapshotError(s.ReplicationSnapshotSource.WriteTo(ctx, output))
+}
+
+func replicationSnapshotError(err error) error {
+	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
+		return fmt.Errorf("%w: %w", replication.ErrSnapshotTooLarge, err)
+	}
+	var pressure *storage.BackpressureError
+	if errors.As(err, &pressure) || errors.Is(err, storage.ErrObjectStoreUnavailable) {
+		return fmt.Errorf("%w: %w", replication.ErrSnapshotTemporarilyUnavailable, err)
+	}
+	return err
 }
 
 func (a *Application) captureSnapshot(ctx context.Context) (*storage.ReplicationSnapshotSource, error) {
@@ -120,10 +136,7 @@ func (a *Application) captureSnapshot(ctx context.Context) (*storage.Replication
 	if err == nil {
 		source.TenantPrefix = a.snapshotTenantPrefix()
 	}
-	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
-		err = replication.ErrSnapshotTooLarge
-	}
-	return source, err
+	return source, replicationSnapshotError(err)
 }
 
 func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source io.ReadSeeker) error {
@@ -160,6 +173,34 @@ func (a *Application) Apply(ctx context.Context, index uint64, data []byte) ([]b
 }
 
 func (a *Application) ApplyBatch(ctx context.Context, entries []replication.ApplyEntry) (responses [][]byte, err error) {
+	responses, err = a.applyBatch(ctx, entries)
+	rejected, ok := err.(*storage.ReplicationRejectedError)
+	if !ok {
+		return responses, err
+	}
+	if len(entries) > 1 {
+		// The shared journal was rolled back. Retry one entry so successful
+		// neighbours are committed independently of the rejected command.
+		return a.ApplyBatch(ctx, entries[:1])
+	}
+	var cmd command
+	if err := json.Unmarshal(entries[0].Data, &cmd); err != nil {
+		return nil, err
+	}
+	a.readers.Lock()
+	defer a.readers.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	response, err := a.Files.ApplyReplicated(ctx, entries[0].Index, cmd.ID, cmd.At, func(context.Context) ([]byte, error) {
+		return rejected.Response, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{response}, nil
+}
+
+func (a *Application) applyBatch(ctx context.Context, entries []replication.ApplyEntry) (responses [][]byte, err error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -342,7 +383,11 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		writer := httptest.NewRecorder()
 		a.Handler.ServeHTTP(writer, request)
 		if writer.Code >= 500 {
-			return nil, fmt.Errorf("replicated mutation failed locally: HTTP %d: %s", writer.Code, writer.Body.String())
+			response, err := json.Marshal(httpResult{Status: writer.Code, Header: writer.Header(), Body: writer.Body.Bytes()})
+			if err != nil {
+				return nil, err
+			}
+			return nil, &storage.ReplicationRejectedError{Response: response}
 		}
 		if writer.Code < 400 && strings.HasPrefix(request.URL.Path, "/v1/tasks/") && strings.HasSuffix(request.URL.Path, "/cancel") {
 			var task storage.Task

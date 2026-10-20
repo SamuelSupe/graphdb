@@ -5,6 +5,22 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [2.3.9] - 2026-10-20
 
+- Candidate review: fold standalone WAL history into durable outstanding-request checkpoints so one poisoned tenant cannot pin healthy history; preserve PREPARED replay and fail closed on checkpoint damage.
+- Build default Raft snapshots in the background and persist large payloads outside the control loop while retaining legacy inline wire compatibility. Keep transient budget retries and fail-closed integrity errors.
+- Seek unsorted field-index and materialized-neighbor pages; bound and share decoded postings. Honor graph-cache TTL and keep directory creation barriers exclusive while validating existing directories concurrently.
+- Release postings after writing each field during full rebuild, and move migration builds/network writes and membership disk transactions outside their shared control locks.
+- Fixed 64-bucket write amplification remains an open release blocker; this candidate is not qualified for publication yet.
+
+- Roll back and record deterministic HTTP application failures without poisoning
+  later Raft commands; isolate failed entries from successful batch neighbours.
+  Retain fail-closed handling for file/cancellation/rollback errors. Reject local
+  object path components over 255 bytes before filesystem I/O.
+- Persist a checksummed durable WAL boundary after frame fsync and before sync
+  ACKs. Recover only corrupt final suffixes proven outside that boundary; retain
+  acknowledged and ambiguous legacy damage. Move the boundary before pruning.
+- Enforce actual directory spelling on case-insensitive filesystems, covering
+  legacy tenant records that omit identity as well as current manifests.
+
 - Require same-tenant restore inputs by default, verify legacy backup key/record
   identity, and require an explicit source tenant for private platform migrations.
   Preserve that source through local staging and isolated restore drills.

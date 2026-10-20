@@ -15,8 +15,11 @@
 - WAL 结果等待在服务故障或强制关闭时退出，同时保留已受理批次供重启恢复。
 - 延迟索引在捕获最新图后复核内存预算；并发增长使原预留不足时释放资源后重新准入。
 
-复核保留了应用错误后的 Raft 回滚／重放及完整坏 WAL 帧拒绝启动：不能仅凭 HTTP 5xx、
-CRC 不符或全零帧就丢弃已提交／已确认数据。不区分大小写卷上的现有租户身份保护通过实测。
+- 确定性 HTTP 应用 5xx 完整回滚后记录失败响应，后续命令继续；批量失败不丢成功邻居。
+  真实文件／完整性／取消错误仍停止应用并等待修复。过长的对象路径组件直接返回 400。
+- WAL 在 sync 组确认前持久化带校验和的 `.durable` 边界；只自动裁掉边界之后的坏末尾。
+  已确认前缀及无法证明未确认的旧坏帧继续保留，边界随整个 WAL 目录备份。
+- 文件层在不区分大小写的卷上检查真实目录拼写，封住 legacy 无身份配置的租户别名读取。
 
 [版本验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.9.md)
 区分本地回归、确切标签 CI、单机和 Raft 各 30 分钟长测，以及独立下载验证。
@@ -42,9 +45,13 @@ Legacy numeric cursors require matching `min_version`; encoded cursors carry
 their own version. WAL waits stop on service failure without discarding accepted
 batches, and deferred indexing rechecks memory admission after graph growth.
 
-Raft application failures still roll back and require repair/replay. Complete
-corrupt WAL frames remain preserved: automatic skipping/truncation could lose
-acknowledged data. These protections are covered by regression tests.
+Deterministic HTTP application failures roll back and durably record a failed
+response so later commands continue; file failures and unsuccessful rollback still
+require repair/replay. Object path components over 255 bytes return HTTP 400.
+A checksummed durable WAL boundary is published before sync-mode ACKs, allowing
+recovery to truncate only proven unacknowledged corrupt suffixes. Acknowledged
+prefixes and ambiguous legacy damage remain preserved. Filesystem directory
+spelling checks also reject aliases of legacy tenant records without identity.
 
 The linked validation record separates local results, exact-tag gates, both
 thirty-minute soaks and independent downloaded-asset checks. Data formats and

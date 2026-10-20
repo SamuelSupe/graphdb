@@ -13,6 +13,9 @@ func canPageMatchEarly(request Request) bool {
 }
 
 func executeMatchPage(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, error) {
+	if response, used, err := executeFieldIndexPage(g, request, plan, cursor, budget); used || err != nil {
+		return response, err
+	}
 	ids, ok, err := measuredCandidateIDs(g, request, plan, budget)
 	if err != nil {
 		return Response{}, err
@@ -25,6 +28,65 @@ func executeMatchPage(g *graph.Graph, request Request, plan Plan, cursor cursorS
 		return Response{}, err
 	}
 	return pageMatchedEntities(g, request, cursor, budget, entities)
+}
+
+func executeFieldIndexPage(g *graph.Graph, request Request, plan Plan, cursor cursorState, budget *budget) (Response, bool, error) {
+	if (plan.Strategy != "field-index" && plan.Strategy != "field-index-scan") || cursor.Legacy || matchPageOrder(cursor, EntityPageOrderIdentity) != EntityPageOrderIdentity {
+		return Response{}, false, nil
+	}
+	visitor, supported := budget.lookup.(FieldIndexVisitLookup)
+	scanner, scanSupported := budget.lookup.(FilteredFieldIndexVisitLookup)
+	if plan.Strategy == "field-index-scan" {
+		supported = scanSupported
+	}
+	if budget.lookup != nil && !supported {
+		return Response{}, false, nil
+	}
+	results := make([]Result, 0, normalizedLimit(request.Limit))
+	state := newMatchPageState(cursor)
+	startID, _ := cursorEntityID(cursor)
+	used := true
+	err := budget.measure(matchOperatorName(plan), plan.Index, plan.EstimatedCost, func() (int, error) {
+		err := budget.measure("filter-project", "", plan.EstimatedRows, func() (int, error) {
+			visit := func(id string) (bool, error) {
+				if cursor.After != "" && !state.pastCursor && id != startID {
+					return false, invalidCursorAfter(cursor)
+				}
+				entity, ok, err := materializeEntity(g, id, request, budget)
+				if err != nil {
+					return false, err
+				}
+				if !ok {
+					return false, ErrIndexUnavailable
+				}
+				stop, err := appendPageMatch(&results, entity, request, cursor, state, budget)
+				return !stop, err
+			}
+			var err error
+			if plan.Strategy == "field-index-scan" {
+				filters := filtersForIndexField(plan.IndexField, requestFilters(request))
+				if budget.lookup == nil {
+					match := IndexScanKeyMatcher(filters)
+					err = g.VisitFilteredFieldIDs(request.Kind, plan.IndexField, runtimeIndexBounds(filters), startID, func(key string) (bool, error) { return match(key), budget.check() }, visit)
+				} else {
+					used, err = scanner.VisitFilteredFieldIndex(budget.ctx, request.Kind, plan.IndexField, filters, startID, visit)
+				}
+			} else if budget.lookup == nil {
+				err = g.VisitMatchingFieldIDs(request.Kind, plan.IndexField, plan.IndexValues, startID, visit)
+			} else {
+				used, err = visitor.VisitFieldIndex(budget.ctx, request.Kind, plan.IndexField, plan.IndexValues, startID, visit)
+			}
+			return len(results), err
+		})
+		return len(results), err
+	})
+	if err != nil || !used {
+		return Response{}, used, err
+	}
+	if err := validatePageCursor(cursor, state); err != nil {
+		return Response{}, true, err
+	}
+	return matchPageResponse(g.Version, results, state.hasNext, request, budget, EntityPageOrderIdentity), true, nil
 }
 
 func measuredCandidateIDs(g *graph.Graph, request Request, plan Plan, budget *budget) ([]string, bool, error) {

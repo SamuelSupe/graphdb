@@ -20,7 +20,8 @@ type indexScanValue struct {
 	text    string
 }
 
-func newIndexScanKeyMatcher(filters []Filter) func(string) bool {
+// IndexScanKeyMatcher compiles scalar-key predicates shared by in-memory and persisted index visitors.
+func IndexScanKeyMatcher(filters []Filter) func(string) bool {
 	compiled := make([]indexScanFilter, 0, len(filters))
 	for _, filter := range filters {
 		op := filter.Op

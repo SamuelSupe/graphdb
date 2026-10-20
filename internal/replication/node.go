@@ -87,6 +87,7 @@ type Node struct {
 	proposals               map[string]chan result
 	reads                   map[string]chan uint64
 	peerMu                  sync.RWMutex
+	retired                 atomic.Pointer[map[uint64]uint64]
 	peers                   map[uint64]string
 	senders                 map[uint64]peerSender
 	controlSenders          map[uint64]peerSender
@@ -228,6 +229,11 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		}
 	}
 	if err := n.installRetired(snapshotRetired, snapshot.Metadata.Index); err != nil {
+		cancel()
+		disk.Close()
+		return nil, err
+	}
+	if _, err := n.retiredMembers(); err != nil {
 		cancel()
 		disk.Close()
 		return nil, err
@@ -537,6 +543,10 @@ func (n *Node) run() {
 				n.committed.Store(ready.HardState.Commit)
 			}
 			if envelope != nil {
+				if err := n.cacheRetired(envelope.Retired, ready.Snapshot.Metadata.Index); err != nil {
+					n.fail(err)
+					return
+				}
 				n.scheduleSnapshotCleanup(ready.Snapshot.Metadata.Index)
 				n.snapshotIndex.Store(ready.Snapshot.Metadata.Index)
 				n.snapshotBytes.Store(snapshotPayloadBytes(ready.Snapshot.Data, envelope))
@@ -671,6 +681,10 @@ func (n *Node) applyLoop() {
 				break
 			}
 			if built.err != nil {
+				if !n.cfg.StreamSnapshots && !errors.Is(built.err, ErrSnapshotTooLarge) && !errors.Is(built.err, ErrSnapshotTemporarilyUnavailable) {
+					n.fail(built.err)
+					return
+				}
 				n.mu.Lock()
 				n.snapshotFailure = built.err
 				n.mu.Unlock()

@@ -56,13 +56,23 @@ func StreamContextWithOptions(ctx context.Context, g *graph.Graph, request Reque
 	}); err != nil {
 		return true, err
 	}
-	ids, ok, err := candidateIDsForPlan(request.Kind, plan, budget)
+	var results []Result
+	var nextCursor string
+	page, paged, err := executeFieldIndexPage(g, request, plan, cursor, budget)
 	if err != nil {
 		return true, err
 	}
-	var results []Result
-	var nextCursor string
-	if ok {
+	var ids []string
+	var ok bool
+	if !paged {
+		ids, ok, err = candidateIDsForPlan(request.Kind, plan, budget)
+		if err != nil {
+			return true, err
+		}
+	}
+	if paged {
+		results, nextCursor = page.Results, page.NextCursor
+	} else if ok {
 		results, nextCursor, err = streamLazyMatch(g, request, cursor, budget, ids)
 	} else if lazyKindScanAvailable(g, request, plan, budget) {
 		if cursor.Order != "" && cursor.Order != lazyEntityPageOrder(budget) {

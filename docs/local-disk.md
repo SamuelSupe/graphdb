@@ -17,7 +17,9 @@ and managed paths inside it must remain real directories. Directory publication
 still syncs the parent of a new directory.
 
 Tenant IDs retain case. On a case-insensitive filesystem, IDs differing only in
-case cannot coexist; existing tenant/lease identity checks reject such aliases.
+case cannot coexist. From 2.3.9, the file layer checks actual directory spelling,
+including legacy records without tenant identity. It detects the filesystem once;
+case-sensitive filesystems retain their existing path lookup behavior.
 Use a case-sensitive volume when distinct case variants are required.
 
 Since 2.3.4: ordinary JSON snapshot export encodes one record at a
@@ -134,7 +136,7 @@ file access and other caches. Validate the actual dataset with maintenance enabl
 Entity page packing defaults to a 32 MiB estimated-memory budget
 (`GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES`). One logical shard can exceed this budget.
 The decoded entity-page cache is capped at half of the configured
-`GRAPHDB_READER_INDEX_CACHE_MAX_BYTES`, matching the decoded edge-cache policy.
+`GRAPHDB_READER_INDEX_CACHE_MAX_BYTES`. The decoded edge and field-postings caches each use a quarter of that configured budget. Field postings are immutable, bounded by LRU capacity, and shared across pages at the same catalog version.
 
 Direct writes return their published result. WAL mode returns 202 after durable
 acceptance; that is not yet a committed graph version. Poll the response's
@@ -146,9 +148,16 @@ the service error promptly. Caller cancellation and deadlines also end the wait.
 These errors do not revoke durable acceptance: retain `Location` and check status
 after recovery, or retry the same batch identity. Results completed before a
 graceful shutdown remain available.
-Recovery truncates only an incomplete final WAL frame. A complete frame with a
-bad header or checksum remains intact and prevents startup: it may contain an
-acknowledged request, so automatic truncation cannot preserve durable acceptance.
+From 2.3.9, sync-mode WAL ACKs follow both frame fsync and atomic publication of
+a checksummed `.durable` boundary. Recovery truncates a final bad header, CRC or
+zero suffix only beyond that verified boundary. Damage within the durable prefix,
+a damaged boundary, or an ambiguous complete bad frame in a legacy WAL remains
+intact and prevents startup. Legacy valid WALs gain the boundary on first open;
+legacy incomplete final frames retain their previous recovery behavior. Retain
+`.durable` with the WAL directory in backups; do not edit it to bypass corruption.
+OS durability still permits loss of its unflushed suffix; clean close/rotation
+syncs data before advancing the boundary. Boundary persistence adds a metadata
+sync to each sync-mode group; no throughput improvement is claimed.
 
 After direct/WAL ingest manifest publication, an in-process worker advances indexes in version
 order. At most eight background updates are retained across all tenants; when
@@ -333,3 +342,15 @@ maintenance or an explicit rebuild. Published graph commits remain durable.
 Joined and predecessor waits honor cancellation; a canceled queue entry still
 preserves its predecessor's ordering barrier for successors. Cancellation after
 graph publication does not roll back the committed data.
+
+## 2.3.9 candidate review changes
+
+Existing directory checks can proceed concurrently. Directory creation and retries of a failed parent-directory fsync remain exclusive, so a writer cannot acknowledge an object beneath an unpublished directory.
+
+The graph-cache TTL again schedules manifest revalidation in addition to local publication invalidation. `GRAPHDB_POLL_INTERVAL` defaults to 2 seconds; this does not add a shared-directory or multi-process reader deployment mode.
+
+The standalone WAL can fold completed history into a checksummed `.checkpoint` containing every outstanding request and PREPARED plan. The writer syncs the checkpoint before removing old segments. A poisoned tenant therefore retains its own input rather than all later tenants' history; it remains pending until the underlying problem is repaired. `.durable` marks when the checkpoint is required. A missing or damaged required checkpoint fails closed. Back up and restore the whole WAL directory, including both companion files. Do not downgrade with pending checkpointed WAL; drain it first or preserve the current binary and complete directory.
+
+Full index rebuilds write and release one field's postings before building the next. Kind ID order is reused and overlapping schema/explicit definitions are scanned once. Producing postings for every indexed field still requires work proportional to the indexed field values; this is not a constant-memory or constant-time rebuild guarantee.
+
+The fixed 64-bucket entity/edge rewrite limit remains under review; it is not fixed by these cache, WAL, or rebuild changes. Release qualification remains pending until its bounded-write regression is resolved.

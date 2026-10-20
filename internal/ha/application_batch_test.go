@@ -22,7 +22,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func TestApplicationFailureDoesNotSkipCommittedMutation(t *testing.T) {
+func TestApplicationRejectsDeterministicFailureAndContinues(t *testing.T) {
 	ctx := context.Background()
 	files, err := storage.OpenFileStore(t.TempDir())
 	if err != nil {
@@ -30,8 +30,10 @@ func TestApplicationFailureDoesNotSkipCommittedMutation(t *testing.T) {
 	}
 	defer files.Close()
 	failed := true
+	calls := 0
 	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
 	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
 		if err := files.Put(r.Context(), "test/object", []byte("published")); err != nil {
 			t.Error(err)
 		}
@@ -50,23 +52,160 @@ func TestApplicationFailureDoesNotSkipCommittedMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	response, err := app.Apply(ctx, 1, data)
+	if err != nil {
+		t.Fatalf("deterministic failure stopped application: %v", err)
+	}
+	var result httpResult
+	if err := json.Unmarshal(response, &result); err != nil || result.Status != http.StatusInternalServerError {
+		t.Fatalf("rejection response: %+v, %v", result, err)
+	}
+	checkpoint, err := files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 1 {
+		t.Fatalf("rejected checkpoint: %+v %v", checkpoint, err)
+	}
+	if _, err := files.Get(ctx, "test/object"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("partial mutation survived rejection: %v", err)
+	}
+	if _, err := app.Apply(ctx, 1, data); err != nil || calls != 1 {
+		t.Fatalf("replayed rejected mutation: calls=%d err=%v", calls, err)
+	}
+	failed = false
+	cmd, err = newCommand("http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Method, cmd.URI = http.MethodPost, "/v1/test"
+	data, err = json.Marshal(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Apply(ctx, 2, data); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err = files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 2 {
+		t.Fatalf("next mutation failed: %+v %v", checkpoint, err)
+	}
+	if _, err := files.Get(ctx, "test/object"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplicationFileFailureStillRequiresRepair(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := storage.OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := os.WriteFile(filepath.Join(root, "blocked"), []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
+	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := files.Put(r.Context(), "blocked/object", []byte("published")); err != nil {
+			http.Error(w, "storage unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	cmd, err := newCommand("http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Method, cmd.URI = http.MethodPost, "/v1/test"
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := app.Apply(ctx, 1, data); err == nil {
-		t.Fatal("failed application advanced the log")
+		t.Fatal("file failure became a terminal rejection")
 	}
 	checkpoint, err := files.ReplicationCheckpoint()
 	if err != nil || checkpoint.Index != 0 {
-		t.Fatalf("failed checkpoint: %+v %v", checkpoint, err)
+		t.Fatalf("file failure advanced checkpoint: %+v %v", checkpoint, err)
 	}
-	if _, err := files.Get(ctx, "test/object"); !errors.Is(err, storage.ErrNotFound) {
-		t.Fatalf("partial mutation survived rollback: %v", err)
+	if err := os.Remove(filepath.Join(root, "blocked")); err != nil {
+		t.Fatal(err)
 	}
-	failed = false
 	if _, err := app.Apply(ctx, 1, data); err != nil {
 		t.Fatal(err)
 	}
 	checkpoint, err = files.ReplicationCheckpoint()
 	if err != nil || checkpoint.Index != 1 {
 		t.Fatalf("repaired replay failed: %+v %v", checkpoint, err)
+	}
+}
+
+func TestApplicationBatchRejectsOnlyFailedMutation(t *testing.T) {
+	ctx := context.Background()
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
+	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := files.Put(r.Context(), "test/"+string(name), name); err != nil {
+			t.Fatal(err)
+		}
+		if string(name) == "bad" {
+			http.Error(w, "logical failure", 500)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	var entries []replication.ApplyEntry
+	for i, name := range []string{"good-a", "bad", "good-b"} {
+		cmd, err := newCommand("http")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Method, cmd.URI, cmd.Body = http.MethodPost, "/v1/commits", []byte(name)
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, replication.ApplyEntry{Index: uint64(i + 1), Data: data})
+	}
+	var responses [][]byte
+	for len(responses) < len(entries) {
+		batch, err := app.ApplyBatch(ctx, entries[len(responses):])
+		if err != nil || len(batch) == 0 {
+			t.Fatalf("batch application: %d, %v", len(batch), err)
+		}
+		responses = append(responses, batch...)
+	}
+	for i, name := range []string{"good-a", "bad", "good-b"} {
+		var result httpResult
+		if err := json.Unmarshal(responses[i], &result); err != nil {
+			t.Fatal(err)
+		}
+		want := http.StatusOK
+		if name == "bad" {
+			want = http.StatusInternalServerError
+		}
+		if result.Status != want {
+			t.Fatalf("response %s: %+v", name, result)
+		}
+		data, err := files.Get(ctx, "test/"+name)
+		if name == "bad" {
+			if !errors.Is(err, storage.ErrNotFound) {
+				t.Fatalf("failed command retained data: %s, %v", data, err)
+			}
+		} else if err != nil || string(data) != name {
+			t.Fatalf("successful neighbour lost: %s %v", name, err)
+		}
+	}
+	checkpoint, err := files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 3 {
+		t.Fatalf("checkpoint: %+v %v", checkpoint, err)
 	}
 }
 
@@ -303,6 +442,11 @@ func TestApplicationBatchRecovery(t *testing.T) {
 				os.Exit(0)
 			}
 			if fail {
+				// Inject a recorded file failure; deterministic handler failures
+				// are covered separately and may become durable rejections.
+				if err := app.Files.Put(r.Context(), "graphdb/manifest/child", value); err == nil {
+					t.Error("expected an object-file parent failure")
+				}
 				w.WriteHeader(500)
 				return
 			}
@@ -575,11 +719,19 @@ func TestApplicationBatchAcceptanceIdentity(t *testing.T) {
 		if err != nil || len(results) != 1 {
 			t.Fatalf("acceptance waited for a later %s operation: %d results, %v", barrier.Kind, len(results), err)
 		}
-		if _, err := app.ApplyBatch(context.Background(), boundary[1:]); err == nil {
+		results, err = app.ApplyBatch(context.Background(), boundary[1:])
+		wantCheckpoint := index
+		if barrier.Kind == "http" {
+			var rejection httpResult
+			if err != nil || len(results) != 1 || json.Unmarshal(results[0], &rejection) != nil || rejection.Status != http.StatusInternalServerError {
+				t.Fatalf("HTTP rejection: %v, %v", results, err)
+			}
+			wantCheckpoint++
+		} else if err == nil {
 			t.Fatalf("failed %s operation was acknowledged", barrier.Kind)
 		}
 		checkpoint, err := files.ReplicationCheckpoint()
-		if err != nil || checkpoint.Index != index {
+		if err != nil || checkpoint.Index != wantCheckpoint {
 			t.Fatalf("later %s failure rolled back acceptance: %+v, %v", barrier.Kind, checkpoint, err)
 		}
 		if record, err := app.accepted(context.Background(), app.ingestKey("tenant-a", "test", "test", id, 1)); err != nil || record.Index != index {

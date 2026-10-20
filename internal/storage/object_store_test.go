@@ -60,6 +60,40 @@ func TestCaseInsensitiveFilesystemRejectsTenantAliases(t *testing.T) {
 	if _, ok := g.GetEntity("host:secret"); !ok {
 		t.Fatal("source tenant changed")
 	}
+	keep := 37
+	legacy := tenantConfigRecord{Config: DefaultTenantConfig()}
+	legacy.Config.Maintenance.KeepSnapshots = &keep
+	data, err := marshalParquetTenantConfig(ctx, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Put(ctx, store.tenantConfigKey("TenantA"), data); err != nil {
+		t.Fatal(err)
+	}
+	if config, configured, err := store.GetTenantConfig(ctx, "tenanta"); err == nil {
+		t.Fatalf("alias exposed legacy tenant config: configured=%v config=%+v", configured, config)
+	}
+
+}
+
+func BenchmarkFileStoreExistingParentWalk(b *testing.B) {
+	files := NewFileStore(b.TempDir())
+	for i := range 32 {
+		if err := files.Put(context.Background(), fmt.Sprintf("tenants/t%d/objects/seed", i), []byte("seed")); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			name := filepath.Join(files.root, fmt.Sprintf("tenants/t%d/objects/next", i%32))
+			if err := files.ensureSafeParent(name, nil); err != nil {
+				b.Error(err)
+			}
+			i++
+		}
+	})
 }
 
 func TestFileStorePagesPreserveKeyOrderAndExcludeNewGCCandidates(t *testing.T) {

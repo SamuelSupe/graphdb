@@ -738,6 +738,126 @@ type budgetSnapshotMachine struct {
 	small atomic.Bool
 }
 
+type pausedSnapshotMachine struct {
+	membershipMachine
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func TestDefaultSnapshotBudgetLeavesNoPublishedOrphan(t *testing.T) {
+	dir := t.TempDir()
+	n := &Node{cfg: Config{Dir: dir, MaxSnapshotBytes: 64}, ctx: context.Background(), metrics: observability.NewOperationMetrics()}
+	built := make(chan snapshotBuild, 1)
+	n.workers.Add(1)
+	n.buildStreamSnapshot(testSnapshotSource{}, 1, raftpb.ConfState{}, snapshotEnvelope{Version: 1, Peers: map[uint64]string{1: "http://one"}}, built)
+	if result := <-built; !errors.Is(result.err, ErrSnapshotTooLarge) {
+		t.Fatalf("snapshot error=%v", result.err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "snapshots"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".snap") {
+			t.Fatalf("over-budget snapshot published orphan %s", entry.Name())
+		}
+	}
+}
+
+func (m *pausedSnapshotMachine) pause() {
+	m.once.Do(func() { close(m.started) })
+	<-m.release
+}
+
+func (m *pausedSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
+	m.pause()
+	return []byte(strings.Repeat("state", 16)), nil
+}
+
+func (m *pausedSnapshotMachine) CaptureSnapshot(context.Context) (SnapshotSource, error) {
+	return pausedSnapshotSource{m}, nil
+}
+
+func (m *pausedSnapshotMachine) RestoreSnapshot(ctx context.Context, index uint64, _ io.ReadSeeker) error {
+	return m.Restore(ctx, index, nil)
+}
+
+type pausedSnapshotSource struct{ machine *pausedSnapshotMachine }
+
+func (s pausedSnapshotSource) Close() error { return nil }
+func (s pausedSnapshotSource) WriteTo(_ context.Context, w io.WriteSeeker) error {
+	s.machine.pause()
+	_, err := w.Write([]byte(strings.Repeat("state", 16)))
+	return err
+}
+
+func TestDefaultSnapshotBuildDoesNotBlockApplication(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var endpoints [3]atomic.Pointer[Node]
+	var nodes [3]*Node
+	var machines [3]pausedSnapshotMachine
+	peers := map[uint64]string{}
+	for i := range machines {
+		machines[i].started, machines[i].release = make(chan struct{}), make(chan struct{})
+		i := i
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if n := endpoints[i].Load(); n != nil {
+				n.Handler().ServeHTTP(w, r)
+			} else {
+				w.WriteHeader(503)
+			}
+		}))
+		defer server.Close()
+		peers[uint64(i+1)] = server.URL
+	}
+	defer func() {
+		for i := range machines {
+			close(machines[i].release)
+		}
+		for i, n := range nodes {
+			endpoints[i].Store(nil)
+			if n != nil {
+				n.Close()
+			}
+		}
+	}()
+	for i := range nodes {
+		n, err := Open(ctx, Config{ID: uint64(i + 1), ClusterID: "default-snapshot", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 20 * time.Millisecond, ElectionTicks: 10, SnapshotEntries: 1}, &machines[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[i] = n
+		endpoints[i].Store(n)
+	}
+	for i := range machines {
+		select {
+		case <-machines[i].started:
+		case <-ctx.Done():
+			t.Fatal("snapshot did not start")
+		}
+	}
+	var leader *Node
+	for leader == nil {
+		for i, node := range nodes {
+			if node.LeaderID() == uint64(i+1) {
+				leader = node
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("no leader during snapshot build")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	writeCtx, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	if _, err := leader.Propose(writeCtx, []byte("during snapshot")); err != nil {
+		t.Fatalf("default snapshot blocked committed application: %v", err)
+	}
+}
+
 func (m *budgetSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
 	if m.small.Load() {
 		return []byte("state"), nil

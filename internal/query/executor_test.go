@@ -114,7 +114,7 @@ func TestNeighborsWithoutSortStopsAfterPageBoundary(t *testing.T) {
 	if response.Stats.Visited != 6 {
 		t.Fatalf("visited = %d, want limit+1", response.Stats.Visited)
 	}
-	next, err := Execute(g, Request{Op: "neighbors", ID: "service:start", Direction: "out", Limit: 5, Cursor: response.NextCursor})
+	next, err := Execute(g, Request{Op: "neighbors", ID: "service:start", Direction: "out", Limit: 5, Cursor: response.NextCursor, CostLimit: 8})
 	if err != nil {
 		t.Fatalf("neighbors page 2: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/SamuelSupe/graphdb/v2/internal/dirlock"
@@ -160,8 +161,9 @@ type ingestWALBatchRecord struct {
 }
 
 type ingestWALPruneRequest struct {
-	beforeLSN uint64
-	done      chan error
+	beforeLSN  uint64
+	checkpoint bool
+	done       chan error
 }
 
 type ingestWALSegment struct {
@@ -178,8 +180,9 @@ type ingestWALWriteFile interface {
 }
 
 type IngestWAL struct {
-	config   IngestWALConfig
-	lockFile *os.File
+	recoveredLSN uint64
+	config       IngestWALConfig
+	lockFile     *os.File
 
 	appendCh chan ingestWALAppendRequest
 	pruneCh  chan ingestWALPruneRequest
@@ -222,13 +225,14 @@ func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (
 		return nil, err
 	}
 	wal := &IngestWAL{
-		config:   config,
-		lockFile: lockFile,
-		appendCh: make(chan ingestWALAppendRequest, config.AppendQueue),
-		pruneCh:  make(chan ingestWALPruneRequest),
-		closeCh:  make(chan struct{}),
-		done:     make(chan struct{}),
-		ready:    make(chan error, 1),
+		recoveredLSN: nextLSN - 1,
+		config:       config,
+		lockFile:     lockFile,
+		appendCh:     make(chan ingestWALAppendRequest, config.AppendQueue),
+		pruneCh:      make(chan ingestWALPruneRequest),
+		closeCh:      make(chan struct{}),
+		done:         make(chan struct{}),
+		ready:        make(chan error, 1),
 	}
 	go wal.run(segments, nextLSN, totalBytes)
 	if err := <-wal.ready; err != nil {
@@ -386,10 +390,14 @@ func (w *IngestWAL) appendBatch(ctx context.Context, records []ingestWALBatchRec
 // Prune removes closed segments whose records are all older than beforeLSN.
 // The caller must only advance beforeLSN past requests that no longer need WAL recovery.
 func (w *IngestWAL) Prune(ctx context.Context, beforeLSN uint64) error {
+	return w.prune(ctx, beforeLSN, false)
+}
+
+func (w *IngestWAL) prune(ctx context.Context, beforeLSN uint64, checkpoint bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	request := ingestWALPruneRequest{beforeLSN: beforeLSN, done: make(chan error, 1)}
+	request := ingestWALPruneRequest{beforeLSN: beforeLSN, checkpoint: checkpoint, done: make(chan error, 1)}
 	select {
 	case w.pruneCh <- request:
 	case <-ctx.Done():
@@ -455,7 +463,16 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 		writtenLSN: nextLSN - 1,
 		durableLSN: nextLSN - 1,
 	}
-	if err := state.openCurrent(); err != nil {
+	_, checkpointErr := os.Stat(filepath.Join(w.config.Dir, ingestWALCheckpointFile))
+	state.checkpointRequired = checkpointErr == nil
+	err := state.openCurrent()
+	if err == nil {
+		err = state.initializeDurableTail()
+	}
+	if err != nil {
+		if state.file != nil {
+			err = errors.Join(err, state.file.Close())
+		}
 		w.recordError(err)
 		w.ready <- err
 		state.failPending(err)
@@ -475,7 +492,12 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 				return
 			}
 		case request := <-w.pruneCh:
-			err := state.prune(request.beforeLSN)
+			var err error
+			if request.checkpoint {
+				err = state.checkpoint()
+			} else {
+				err = state.prune(request.beforeLSN)
+			}
 			if errors.Is(err, ErrIngestWALFailed) {
 				w.recordError(err)
 				request.done <- err
@@ -490,15 +512,16 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 }
 
 type ingestWALWriterState struct {
-	wal              *IngestWAL
-	file             ingestWALWriteFile
-	segments         []ingestWALSegment
-	current          int
-	nextLSN          uint64
-	totalBytes       int64
-	writtenLSN       uint64
-	durableLSN       uint64
-	acceptedSequence uint64
+	checkpointRequired bool
+	wal                *IngestWAL
+	file               ingestWALWriteFile
+	segments           []ingestWALSegment
+	current            int
+	nextLSN            uint64
+	totalBytes         int64
+	writtenLSN         uint64
+	durableLSN         uint64
+	acceptedSequence   uint64
 }
 
 func (s *ingestWALWriterState) openCurrent() error {
@@ -597,6 +620,13 @@ func (s *ingestWALWriterState) writeRequests(requests []ingestWALAppendRequest) 
 		s.totalBytes += int64(written)
 		if s.wal.config.Durability == IngestWALDurabilitySync {
 			if err := syncStorageFile(s.file); err != nil {
+				s.observeSync("error", groupRecords, groupBytes, time.Since(groupStarted), err)
+				endStorageSpan(groupSpan, err)
+				return err
+			}
+			// The boundary becomes durable after the frames, before any ACK.
+			// Recovery may discard a corrupt suffix only beyond this proof.
+			if err := s.persistDurableTail(results[len(results)-1].LSN); err != nil {
 				s.observeSync("error", groupRecords, groupBytes, time.Since(groupStarted), err)
 				endStorageSpan(groupSpan, err)
 				return err
@@ -726,7 +756,12 @@ func (s *ingestWALWriterState) rotate() error {
 			"disk_bytes": s.totalBytes,
 		})
 	}
-	return s.openCurrent()
+	if err := s.openCurrent(); err != nil {
+		return err
+	}
+	// Pruning may immediately remove the previous segment. Move the durable
+	// boundary to the new empty segment before its predecessor can disappear.
+	return s.persistDurableTail(s.writtenLSN)
 }
 
 func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
@@ -783,6 +818,9 @@ func (s *ingestWALWriterState) syncAndClose() error {
 		return nil
 	}
 	syncErr := syncStorageFile(s.file)
+	if syncErr == nil && s.writtenLSN != s.durableLSN {
+		syncErr = s.persistDurableTail(s.writtenLSN)
+	}
 	closeErr := s.file.Close()
 	s.file = nil
 	return errors.Join(syncErr, closeErr)
@@ -827,6 +865,35 @@ func (s *ingestWALWriterState) observeState(bufferBytes int) {
 }
 
 func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALSegment, uint64, int64, error) {
+	durable, err := loadIngestWALDurableTail(dir)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	checkpoint, checkpointBytes, err := loadIngestWALCheckpoint(dir)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if checkpoint.Version != 0 && (durable == nil || checkpoint.Through > durable.lastLSN) {
+		return nil, 0, 0, fmt.Errorf("%w: checkpoint exceeds durable WAL boundary", ErrIngestWALCorrupt)
+	}
+	if durable != nil && durable.checkpoint && checkpoint.Version == 0 {
+		return nil, 0, 0, fmt.Errorf("%w: required ingest checkpoint is missing", ErrIngestWALCorrupt)
+	}
+	for _, envelope := range checkpoint.Pending {
+		payload, err := json.Marshal(envelope)
+		if err == nil && replay != nil {
+			err = replay(IngestWALRecord{Type: IngestWALAccepted, LSN: envelope.AcceptedLSN, Payload: payload})
+		}
+		if err != nil {
+			return nil, 0, 0, err
+		}
+	}
+	visitor := func(record IngestWALRecord) error {
+		if record.LSN <= checkpoint.Through || replay == nil {
+			return nil
+		}
+		return replay(record)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, 0, err
@@ -840,12 +907,25 @@ func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALS
 		}
 	}
 	sort.Strings(paths)
+	if durable != nil {
+		found := false
+		for _, name := range paths {
+			start, _ := parseIngestWALSegmentName(filepath.Base(name))
+			found = found || start == durable.startLSN
+		}
+		if !found {
+			return nil, 0, 0, fmt.Errorf("%w: durable WAL segment is missing", ErrIngestWALCorrupt)
+		}
+	}
 	segments := make([]ingestWALSegment, 0, len(paths))
 	var lastLSN uint64
-	var totalBytes int64
+	totalBytes := checkpointBytes
 	for index, path := range paths {
 		startLSN, _ := parseIngestWALSegmentName(filepath.Base(path))
 		if index == 0 {
+			if checkpoint.Version != 0 && startLSN > checkpoint.Through+1 {
+				return nil, 0, 0, fmt.Errorf("%w: WAL suffix after checkpoint is missing", ErrIngestWALCorrupt)
+			}
 			lastLSN = startLSN - 1
 		} else if startLSN != lastLSN+1 {
 			return nil, 0, 0, fmt.Errorf(
@@ -854,7 +934,7 @@ func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALS
 			)
 		}
 		isLast := index == len(paths)-1
-		segmentLastLSN, size, err := scanIngestWALSegment(path, isLast, lastLSN, replay)
+		segmentLastLSN, size, err := scanIngestWALSegment(path, isLast, lastLSN, visitor, durable)
 		if err != nil {
 			return nil, 0, 0, err
 		}
@@ -869,7 +949,7 @@ func scanIngestWAL(dir string, replay func(IngestWALRecord) error) ([]ingestWALS
 	return segments, lastLSN + 1, totalBytes, nil
 }
 
-func scanIngestWALSegment(path string, isLast bool, previousLSN uint64, replay func(IngestWALRecord) error) (uint64, int64, error) {
+func scanIngestWALSegment(path string, isLast bool, previousLSN uint64, replay func(IngestWALRecord) error, durable *ingestWALDurableTail) (uint64, int64, error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return 0, 0, err
@@ -880,45 +960,62 @@ func scanIngestWALSegment(path string, isLast bool, previousLSN uint64, replay f
 		return 0, 0, err
 	}
 	size := info.Size()
+	start, _ := parseIngestWALSegmentName(filepath.Base(path))
+	boundaryVerified := durable != nil && (start > durable.startLSN || (start == durable.startLSN && durable.offset == 0 && previousLSN == durable.lastLSN))
+	if durable != nil && start == durable.startLSN && size < durable.offset {
+		return 0, 0, fmt.Errorf("%w: WAL is shorter than its durable boundary", ErrIngestWALCorrupt)
+	}
 	var offset int64
 	var lastLSN = previousLSN
+	badTail := func(at int64, reason string, incomplete bool) (uint64, int64, error) {
+		provenUnacknowledged := durable != nil && boundaryVerified && (start > durable.startLSN || (start == durable.startLSN && at >= durable.offset))
+		if isLast && (provenUnacknowledged || (durable == nil && incomplete)) {
+			length, err := truncateIngestWALTail(file, path, at)
+			return lastLSN, length, err
+		}
+		return 0, 0, fmt.Errorf("%w: %s at %s:%d", ErrIngestWALCorrupt, reason, path, at)
+	}
 	checksumTable := crc32.MakeTable(crc32.Castagnoli)
 	for offset < size {
 		recordOffset := offset
 		header := make([]byte, ingestWALHeaderBytes)
 		read, readErr := io.ReadFull(file, header)
 		if readErr != nil {
-			if isLast && errors.Is(readErr, io.ErrUnexpectedEOF) {
-				truncatedSize, truncateErr := truncateIngestWALTail(file, path, recordOffset)
-				return lastLSN, truncatedSize, truncateErr
+			if !errors.Is(readErr, io.ErrUnexpectedEOF) {
+				return 0, 0, fmt.Errorf("read WAL header: %w", readErr)
 			}
-			return 0, 0, fmt.Errorf("%w: read header at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
+			return badTail(recordOffset, "incomplete header", true)
 		}
 		offset += int64(read)
 		if string(header[:4]) != ingestWALMagic || binary.BigEndian.Uint16(header[4:6]) != ingestWALFormatVersion {
-			return 0, 0, fmt.Errorf("%w: invalid header at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return badTail(recordOffset, "invalid header", false)
 		}
 		kind := IngestWALRecordType(header[6])
 		lsn := binary.BigEndian.Uint64(header[8:16])
 		payloadBytes := binary.BigEndian.Uint32(header[16:20])
 		if !validIngestWALRecordType(kind) || payloadBytes > ingestWALMaxPayload || lsn != lastLSN+1 {
-			return 0, 0, fmt.Errorf("%w: invalid record metadata at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return badTail(recordOffset, "invalid record metadata", false)
 		}
 		body := make([]byte, int(payloadBytes)+ingestWALChecksumBytes)
 		read, readErr = io.ReadFull(file, body)
 		if readErr != nil {
-			if isLast && errors.Is(readErr, io.ErrUnexpectedEOF) {
-				truncatedSize, truncateErr := truncateIngestWALTail(file, path, recordOffset)
-				return lastLSN, truncatedSize, truncateErr
+			if !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
+				return 0, 0, fmt.Errorf("read WAL payload: %w", readErr)
 			}
-			return 0, 0, fmt.Errorf("%w: read payload at %s:%d: %v", ErrIngestWALCorrupt, path, recordOffset, readErr)
+			return badTail(recordOffset, "incomplete payload", true)
 		}
 		offset += int64(read)
 		payload := body[:payloadBytes]
 		wantCRC := binary.BigEndian.Uint32(body[payloadBytes:])
 		checksum := crc32.Update(crc32.Checksum(header, checksumTable), checksumTable, payload)
 		if checksum != wantCRC {
-			return 0, 0, fmt.Errorf("%w: checksum mismatch at %s:%d", ErrIngestWALCorrupt, path, recordOffset)
+			return badTail(recordOffset, "checksum mismatch", false)
+		}
+		if durable != nil && start == durable.startLSN && !boundaryVerified && offset >= durable.offset {
+			if offset != durable.offset || lsn != durable.lastLSN {
+				return 0, 0, fmt.Errorf("%w: WAL durable boundary is not a record boundary", ErrIngestWALCorrupt)
+			}
+			boundaryVerified = true
 		}
 		if err := replay(IngestWALRecord{
 			Type:    kind,
@@ -931,12 +1028,15 @@ func scanIngestWALSegment(path string, isLast bool, previousLSN uint64, replay f
 		}
 		lastLSN = lsn
 	}
+	if durable != nil && start == durable.startLSN && !boundaryVerified {
+		return 0, 0, fmt.Errorf("%w: WAL durable boundary is not present", ErrIngestWALCorrupt)
+	}
 	return lastLSN, size, nil
 }
 
 func truncateIngestWALTail(file *os.File, path string, size int64) (int64, error) {
 	if err := file.Truncate(size); err != nil {
-		return 0, fmt.Errorf("truncate incomplete ingest WAL tail %q: %w", path, err)
+		return 0, fmt.Errorf("truncate recoverable ingest WAL tail %q: %w", path, err)
 	}
 	if err := syncStorageFile(file); err != nil {
 		return 0, err

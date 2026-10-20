@@ -3,6 +3,7 @@ package replication
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -207,6 +208,16 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 			if err == nil {
 				err = source.WriteTo(n.ctx, file)
 			}
+			if err == nil && !n.cfg.StreamSnapshots {
+				info, statErr := file.Stat()
+				err = statErr
+				if err == nil {
+					metadata, _ := json.Marshal(envelope)
+					if info.Size() > n.cfg.MaxSnapshotBytes || int64(base64.StdEncoding.EncodedLen(int(info.Size()))+len(metadata)) > n.cfg.MaxSnapshotBytes {
+						err = ErrSnapshotTooLarge
+					}
+				}
+			}
 			if err == nil {
 				_, err = file.Seek(0, io.SeekStart)
 			}
@@ -214,10 +225,14 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 				var stored snapshotFile
 				stored, err = sealSnapshotFile(n.cfg.Dir, index, file, n.cfg.MaxSnapshotBytes+(32<<20))
 				if err == nil {
+					// Only the descriptor enters Raft persistence. Default-mode
+					// transport expands the file for format-1 peers off that loop.
 					envelope.Version = 2
 					envelope.State = nil
 					envelope.File = &stored
-					data, err = json.Marshal(envelope)
+					if err == nil {
+						data, err = json.Marshal(envelope)
+					}
 				}
 			}
 			file.Close()

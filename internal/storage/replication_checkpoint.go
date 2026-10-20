@@ -22,6 +22,16 @@ type ReplicationCheckpoint struct {
 	Response []byte `json:"response,omitempty"`
 }
 
+// ReplicationRejectedError carries a deterministic application rejection. Only
+// a clean rollback without a recorded file failure may return it directly.
+type ReplicationRejectedError struct {
+	Response []byte
+}
+
+func (*ReplicationRejectedError) Error() string {
+	return "replicated application rejected the mutation"
+}
+
 type replicationJournal struct {
 	db          *bolt.DB
 	files       *FileStore
@@ -84,11 +94,15 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	journal.mu.Lock()
 	// A handler can translate cancellation into an HTTP response before any
 	// file operation records a failure. That response must not become durable.
-	applyErr = errors.Join(applyErr, journal.failure, ctx.Err())
+	failure := errors.Join(journal.failure, ctx.Err())
 	journal.mu.Unlock()
-	if applyErr != nil {
-		db.Close()
-		return nil, errors.Join(applyErr, s.recoverReplication())
+	if applyErr != nil || failure != nil {
+		closeErr := db.Close()
+		rollbackErr := errors.Join(closeErr, s.recoverReplication())
+		if rejected, ok := applyErr.(*ReplicationRejectedError); ok && failure == nil && rollbackErr == nil {
+			return nil, rejected
+		}
+		return nil, errors.Join(applyErr, failure, rollbackErr)
 	}
 	if err := s.syncPendingDirectories(); err != nil {
 		db.Close()
@@ -392,7 +406,7 @@ func (s *FileStore) recoverReplication() error {
 }
 
 func recordReplicationFailure(ctx context.Context, err error) {
-	if err == nil || errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+	if err == nil || errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || errors.Is(err, errFileStoreKey) {
 		return
 	}
 	if journal, ok := ctx.Value(replicationJournalKey{}).(*replicationJournal); ok {

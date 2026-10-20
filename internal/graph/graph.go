@@ -32,6 +32,8 @@ type Graph struct {
 	fieldIndexOrder    map[fieldIndexOrderKey][]string
 	fieldValueOrder    map[fieldValueOrderKey]fieldValueOrder
 	fieldIndexOrderMu  sync.Mutex
+	neighborOrder      map[string][]neighborRef
+	neighborOrderMu    sync.Mutex
 
 	contentFingerprint      [32]byte
 	contentFingerprintReady bool

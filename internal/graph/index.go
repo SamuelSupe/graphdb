@@ -6,6 +6,9 @@ import (
 )
 
 func (g *Graph) rebuildIndexes() {
+	g.neighborOrderMu.Lock()
+	g.neighborOrder = nil
+	g.neighborOrderMu.Unlock()
 	g.entityPartitions = nil
 	g.invalidateEntityOrder()
 	g.invalidateFieldIndexOrder()
@@ -185,6 +188,7 @@ func entityAliasValues(entity Entity) []string {
 }
 
 func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
+	g.invalidateNeighborOrder(edge.From, edge.To)
 	if edges := g.out.At(edge.From); edges != nil {
 		edges = g.writableOut(edge.From)
 		delete(edges, id)
@@ -220,6 +224,7 @@ func (g *Graph) removeEdgeFromIndexes(id string, edge Edge) {
 }
 
 func (g *Graph) addEdgeToIndexes(id string, edge Edge) {
+	g.invalidateNeighborOrder(edge.From, edge.To)
 	g.writableOut(edge.From)[id] = struct{}{}
 	g.writableIn(edge.To)[id] = struct{}{}
 	g.addEdgeAliasesToIndex(id, edge)

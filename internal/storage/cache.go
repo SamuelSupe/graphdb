@@ -801,5 +801,8 @@ func cacheEntryIdle(entry cacheEntry, now time.Time, ttl time.Duration) bool {
 }
 
 func (c *ReaderCache) expiry(now time.Time) time.Time {
-	return time.Time{}
+	if c.TTL <= 0 {
+		return time.Time{}
+	}
+	return now.Add(c.TTL)
 }

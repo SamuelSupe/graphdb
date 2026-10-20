@@ -2,8 +2,11 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +21,75 @@ type localIngestPublicationFault struct {
 	err      error
 	failing  atomic.Bool
 	attempts atomic.Int32
+}
+
+func TestLocalWALPoisonTenantDoesNotRetainHealthyHistory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	seed := NewTenantStore(files, "test")
+	manifest, err := seed.Commit(ctx, "poison", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:seed", Kind: "host"}}}, CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := manifest.CommitKeys[0]
+	original, err := files.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	config := testIngestServiceConfig(t)
+	config.WAL.MaxBytes, config.WAL.SegmentBytes = 64<<10, 16<<10
+	config.FlushMaxRequests, config.RetryInterval = 1, time.Millisecond
+	service, err := OpenIngestService(NewTenantStore(files, "test"), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if service != nil {
+			crashIngestService(t, service)
+		}
+	}()
+	if _, err := service.Accept(ctx, "poison", ingestEntityRequest("pending", "host:pending")); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 80 {
+		request := ingestEntityRequest(fmt.Sprintf("healthy-%d", i), fmt.Sprintf("host:healthy-%d", i))
+		request.Items[0].Entity.Fields = graph.Fields{"payload": strings.Repeat("h", 2048)}
+		accepted, err := service.Accept(ctx, "healthy", request)
+		if err != nil {
+			t.Fatalf("healthy request %d blocked by poisoned tenant: %v", i, err)
+		}
+		if _, err := service.Wait(ctx, accepted); err != nil {
+			t.Fatalf("healthy request %d: %v", i, err)
+		}
+	}
+	crashIngestService(t, service)
+	service = nil
+	if err := files.Put(ctx, key, original); err != nil {
+		t.Fatal(err)
+	}
+	store := NewTenantStore(files, "test")
+	reopened, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, reopened)
+	if err := reopened.FlushTenant(ctx, "poison"); err != nil {
+		t.Fatal(err)
+	}
+	for tenant, count := range map[string]int{"poison": 2, "healthy": 80} {
+		g, _, err := store.Load(ctx, tenant)
+		if err != nil || g.Entities.Len() != count {
+			t.Fatalf("%s recovered entities=%d want=%d err=%v", tenant, g.Entities.Len(), count, err)
+		}
+	}
 }
 
 func (s *localIngestPublicationFault) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
@@ -69,6 +141,9 @@ func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			attempts := objects.attempts.Load()
+			if err := service.prune(ctx); err != nil {
+				t.Fatal(err)
+			}
 			crashIngestService(t, service)
 			if attempts < 8 {
 				t.Fatalf("retry stopped before reaching the failing store: attempts=%d", attempts)
@@ -77,6 +152,14 @@ func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
 			_, _, _, err = scanIngestWAL(config.WAL.Dir, func(record IngestWALRecord) error {
 				if record.Type == IngestWALPrepared {
 					prepared++
+				} else if record.Type == IngestWALAccepted {
+					var envelope walIngestEnvelope
+					if err := json.Unmarshal(record.Payload, &envelope); err != nil {
+						return err
+					}
+					if envelope.Prepared != nil {
+						prepared++
+					}
 				}
 				return nil
 			})
@@ -110,6 +193,44 @@ func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
 				t.Fatalf("replay=%+v err=%v", result, err)
 			}
 			t.Logf("%d failed publications used %d PREPARED; reopened and replayed at version %d", attempts, prepared, result.Version)
+		})
+	}
+}
+
+func TestIngestCheckpointDamageFailsClosed(t *testing.T) {
+	for _, damage := range []string{"missing", "corrupt"} {
+		t.Run(damage, func(t *testing.T) {
+			store := NewTenantStore(NewMemoryStore(), "test")
+			config := testIngestServiceConfig(t)
+			config.FlushInterval = time.Hour
+			service, err := OpenIngestService(store, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Accept(context.Background(), "tenant-a", ingestEntityRequest("retained", "host:retained")); err != nil {
+				crashIngestService(t, service)
+				t.Fatal(err)
+			}
+			if err := service.prune(context.Background()); err != nil {
+				crashIngestService(t, service)
+				t.Fatal(err)
+			}
+			crashIngestService(t, service)
+			filename := filepath.Join(config.WAL.Dir, ingestWALCheckpointFile)
+			if damage == "missing" {
+				err = os.Remove(filename)
+			} else {
+				err = os.WriteFile(filename, []byte("corrupt checkpoint"), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reopened, err := OpenIngestService(store, config); !errors.Is(err, ErrIngestWALCorrupt) {
+				if reopened != nil {
+					crashIngestService(t, reopened)
+				}
+				t.Fatalf("damaged checkpoint accepted: %v", err)
+			}
 		})
 	}
 }

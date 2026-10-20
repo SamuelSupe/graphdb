@@ -20,7 +20,7 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 		if definitionErr != nil {
 			return definitionErr
 		}
-		artifacts, err = buildIndexArtifactsWithDefinitions(g, version, definitions, mutationTime(ctx))
+		artifacts, err = s.buildAndWriteIndexArtifacts(ctx, tenantID, g, version, definitions)
 		if err != nil {
 			return err
 		}

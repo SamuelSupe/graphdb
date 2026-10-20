@@ -58,6 +58,9 @@ func (r *ingestRecovery) apply(record IngestWALRecord) error {
 			state:       IngestStateAccepted,
 			done:        make(chan struct{}),
 		}
+		if envelope.Prepared != nil {
+			pending.state = IngestStatePrepared
+		}
 		r.pending[envelope.RecordID] = pending
 	case IngestWALPrepared, IngestWALPublished:
 		if pending := r.pending[envelope.RecordID]; pending != nil {
