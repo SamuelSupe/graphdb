@@ -1,6 +1,6 @@
 # Write And Ingest
 
-Applies to **GGraphDB 2.3.6**; see [release validation](../validation-v2.3.6.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.7**; see [release validation](../validation-v2.3.7.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](write-ingest.zh-CN.md)
 
@@ -532,3 +532,11 @@ Common reasons:
 - a replicated/remote index rebuild, or other blocking maintenance. Local ordered rebuilds allow ingest publication.
 - commit tail too long.
 - tenant entity/edge/object/byte quota exceeded.
+
+WAL flush thresholds also bound each unprepared coalesced group. If an aggregate
+PREPARED record exceeds the WAL frame/segment size, the service splits the group
+before any plan is durable; prepared recovery groups retain their original
+atomic publication. Commit-tail pressure still requires compaction once the
+actual tail is full. HTTP decode admission now precedes JSON allocation in both
+direct and WAL modes. Deferred index catch-up reserves the tenant graph estimate
+and retains its ordered work across temporary publication failures.

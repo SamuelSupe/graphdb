@@ -21,7 +21,7 @@ func (s *TenantStore) replayDeadLettersTask(ctx context.Context, task Task) (Rep
 	}
 	limit := intTaskParam(task.Params, "limit")
 	if limit < 0 {
-		return ReplayReport{}, fmt.Errorf("limit must be a non-negative integer")
+		return ReplayReport{}, fmt.Errorf("%w: limit must be a non-negative integer", ErrInvalidArgument)
 	}
 	cursor := stringTaskParam(task.Params, "cursor")
 	candidateTotal, windowEnd, err := s.replayTaskWindow(

@@ -50,7 +50,7 @@ func (s *TenantStore) PutRelationSchema(ctx context.Context, tenantID string, sc
 	}
 	normalized, err := normalizeRelationSchema(schema)
 	if err != nil {
-		return RelationSchemaCatalog{}, err
+		return RelationSchemaCatalog{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
@@ -70,7 +70,7 @@ func (s *TenantStore) PutRelationSchema(ctx context.Context, tenantID string, sc
 		return RelationSchemaCatalog{}, err
 	}
 	if _, exists := loaded.Graph.RelationTypes[normalized.RelationType]; !exists {
-		return RelationSchemaCatalog{}, fmt.Errorf("relation schema references missing relation type %q", normalized.RelationType)
+		return RelationSchemaCatalog{}, fmt.Errorf("%w: relation schema references missing relation type %q", ErrInvalidArgument, normalized.RelationType)
 	}
 	catalog, meta, err := s.getRelationSchemaCatalogWithMeta(ctx, tenantID)
 	if err != nil {
@@ -79,7 +79,7 @@ func (s *TenantStore) PutRelationSchema(ctx context.Context, tenantID string, sc
 	catalog = upsertRelationSchema(catalog, normalized)
 	prepareRelationSchemaCatalog(ctx, &catalog, tenantID, loaded.Manifest.Version)
 	if err := validateRelationSchemaGraph(loaded.Graph, catalog); err != nil {
-		return RelationSchemaCatalog{}, err
+		return RelationSchemaCatalog{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if err := s.putRelationSchemaCatalog(ctx, tenantID, catalog, meta); err != nil {
 		if errors.Is(err, ErrConflict) {

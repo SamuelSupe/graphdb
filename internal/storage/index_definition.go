@@ -42,7 +42,7 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 	}
 	normalized, err := normalizeIndexDefinition(definition)
 	if err != nil {
-		return IndexDefinitionResult{}, err
+		return IndexDefinitionResult{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {
@@ -67,7 +67,7 @@ func (s *TenantStore) CreateIndex(ctx context.Context, tenantID string, definiti
 	normalized.UpdatedAt = now
 	for _, existing := range record.Indexes {
 		if existing.Name == normalized.Name {
-			return IndexDefinitionResult{}, fmt.Errorf("index %q already exists", normalized.Name)
+			return IndexDefinitionResult{}, fmt.Errorf("%w: index %q already exists", ErrConflict, normalized.Name)
 		}
 	}
 	record.TenantID = tenantID
@@ -122,7 +122,7 @@ func (s *TenantStore) DropIndex(ctx context.Context, tenantID string, name strin
 		next = append(next, definition)
 	}
 	if removed.Name == "" {
-		return IndexDefinitionResult{}, fmt.Errorf("index %q not found", name)
+		return IndexDefinitionResult{}, fmt.Errorf("%w: index %q", ErrNotFound, name)
 	}
 	record.TenantID = tenantID
 	record.Indexes = next

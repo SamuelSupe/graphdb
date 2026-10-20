@@ -45,7 +45,7 @@ def step(name, **details):
 def request(base, method, path, body=None, headers=None, request_timeout=5):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(base+path, method=method, data=data,
-        headers={'Content-Type': 'application/json', 'X-Tenant-ID': TENANT, **(headers or {})})
+        headers={'Content-Type': 'application/json', **({} if path.startswith('/v1/tenants') else {'X-Tenant-ID': TENANT}), **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=request_timeout) as response:
             return response.status, json.loads(response.read() or b'{}')
@@ -345,7 +345,7 @@ try:
             docker('run','--rm','--volumes-from',source,'-v',archives+':/backup',*args,IMAGE,'runtime-backup',archive)
             recovered = PROJECT+f'-runtime-node{i}'
             recovery_volumes.append(recovered)
-            docker('run','--rm','-v',recovered+':/var/lib/graphdb','-v',archives+':/backup:ro',*args,IMAGE,'runtime-restore',archive)
+            docker('run','--rm','-v',recovered+':/var/lib/graphdb','-v',archives+':/backup:ro',*args,IMAGE,'runtime-restore',archive,'--isolated-cluster-recovery')
             copier = docker('create','-v',archives+':/backup',IMAGE).stdout.strip()
             try:
                 docker('cp',copier+':'+archive,str(OUT/f'node{i}.runtime'))

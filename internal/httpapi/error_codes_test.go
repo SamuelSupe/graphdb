@@ -104,7 +104,8 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 		{name: "ingest repair", err: storage.ErrIngestRepairRequired, wantStatus: http.StatusConflict, wantCode: ErrorCodeRepairRequired},
 		{name: "maintenance busy", err: storage.ErrMaintenanceBusy, wantStatus: http.StatusTooManyRequests, wantCode: ErrorCodeMaintenanceTaskRunning},
 		{name: "timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: ErrorCodeRequestTimeout},
-		{name: "validation", err: fmt.Errorf("invalid field"), wantStatus: http.StatusBadRequest, wantCode: ErrorCodeBadRequest},
+		{name: "unclassified IO", err: fmt.Errorf("read /private/database/data.parquet: device error"), wantStatus: http.StatusInternalServerError, wantCode: ErrorCodeInternal},
+		{name: "validation", err: query.ErrInvalid, wantStatus: http.StatusBadRequest, wantCode: ErrorCodeInvalidQuery},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,6 +113,9 @@ func TestWriteStorageErrorUsesContractStatus(t *testing.T) {
 			writeStorageError(rr, tt.err)
 			var body ErrorResponse
 			decodeResponse(t, rr, &body)
+			if body.Code == ErrorCodeInternal && strings.Contains(body.Message, "/private/") {
+				t.Fatal("internal path leaked")
+			}
 			if rr.Code != tt.wantStatus || body.Code != tt.wantCode {
 				t.Fatalf("status/code = %d/%s, want %d/%s", rr.Code, body.Code, tt.wantStatus, tt.wantCode)
 			}
@@ -362,5 +366,27 @@ func TestHTTPReaderModeUsesOperationDisabledCode(t *testing.T) {
 	decodeResponse(t, rr, &body)
 	if rr.Code != http.StatusMethodNotAllowed || body.Code != ErrorCodeOperationDisabled {
 		t.Fatalf("status=%d body=%#v raw=%s", rr.Code, body, rr.Body.String())
+	}
+}
+
+func TestClientValidationDoesNotBecomeStorageFailure(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	defer store.ShutdownTasks(context.Background())
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	for _, test := range []struct {
+		path string
+		body any
+	}{
+		{"/v1/tasks", map[string]any{"type": "unknown"}},
+		{"/v1/tasks", map[string]any{"type": "tenant_restore"}},
+		{"/v1/ingest/batches", map[string]any{"source": "", "collector_id": "a"}},
+		{"/v1/indexes", map[string]any{"name": "missing-fields"}},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			response := serveJSON(handler, http.MethodPost, test.path, "tenant-a", test.body)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("validation status = %d: %s", response.Code, response.Body.String())
+			}
+		})
 	}
 }

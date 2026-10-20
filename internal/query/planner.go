@@ -139,7 +139,7 @@ func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) 
 			}
 			continue
 		}
-		if indexScanFilterSupported(filter) {
+		if indexScanFilterSupported(filter) && scalarIndexCoversField(g, request.Kind, field) {
 			count, source := estimateIndexScanCount(g, request.Kind, field, stats)
 			if count < bestScan.count {
 				bestScan = indexChoice{field: field, op: "scan", count: count, source: source}
@@ -471,4 +471,28 @@ func directionDetail(request Request) string {
 		direction = "both"
 	}
 	return "direction=" + direction
+}
+
+// Scalar postings omit arrays and objects, while range predicates can compare
+// their textual form. Without the graph's schema or values, use entity pages.
+func scalarIndexCoversField(g *graph.Graph, kind, field string) bool {
+	fields, _ := g.EffectiveFields(kind)
+	switch fields[field].Type {
+	case "string", "number", "bool":
+		return true
+	}
+	if g.Entities.Len() == 0 {
+		return false
+	}
+	for _, entity := range g.Entities.All() {
+		if entity.Kind != kind {
+			continue
+		}
+		if value, exists := entity.Fields[field]; exists {
+			if _, scalar := graph.ScalarIndexKey(value); !scalar {
+				return false
+			}
+		}
+	}
+	return true
 }

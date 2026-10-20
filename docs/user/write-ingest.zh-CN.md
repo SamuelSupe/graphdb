@@ -1,6 +1,6 @@
 # 写入与采集
 
-适用于 **GGraphDB 2.3.6**；[发行验证](../validation-v2.3.6.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.7**；[发行验证](../validation-v2.3.7.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](write-ingest.md)
 
@@ -509,3 +509,8 @@ commit 和 ingest 作用于当前图。如果结果 logical content hash 与当�
 - 副本／远程索引重建，或其他阻塞性维护；本地有序重建允许 ingest 继续发布；
 - commit tail 过长；
 - 租户实体/边/对象/字节配额超限。
+
+WAL flush 的条数和字节阈值也限制每个未准备的合并组。合并 PREPARED 超过帧／段上限时，
+只在计划尚未持久化前拆分；已准备的恢复组保持原子发布。实际 commit tail 满时仍须 compact。
+直接写入和 WAL 写入都在 JSON 解码前获取 HTTP 准入。延迟索引追平按租户图估算预留内存，
+临时发布失败时保留工作及顺序并重试。

@@ -733,6 +733,7 @@ func TestMissingOutgoingSnapshotReportsFailureWithoutStoppingNode(t *testing.T) 
 }
 
 type budgetSnapshotMachine struct {
+	preparationFailure bool
 	membershipMachine
 	small atomic.Bool
 }
@@ -741,79 +742,88 @@ func (m *budgetSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
 	if m.small.Load() {
 		return []byte("state"), nil
 	}
+	if m.preparationFailure {
+		return nil, ErrSnapshotTemporarilyUnavailable
+	}
 	return []byte(strings.Repeat("state", 512)), nil
 }
 
 func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	var endpoints [3]atomic.Pointer[Node]
-	var nodes [3]*Node
-	var machines [3]budgetSnapshotMachine
-	peers := map[uint64]string{}
-	for i := range endpoints {
-		i := i
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if n := endpoints[i].Load(); n != nil {
-				n.Handler().ServeHTTP(w, r)
-			} else {
-				w.WriteHeader(503)
+	for _, preparationFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint("preparation_failure_", preparationFailure), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			var endpoints [3]atomic.Pointer[Node]
+			var nodes [3]*Node
+			var machines [3]budgetSnapshotMachine
+			for i := range machines {
+				machines[i].preparationFailure = preparationFailure
 			}
-		}))
-		defer server.Close()
-		peers[uint64(i+1)] = server.URL
-	}
-	defer func() {
-		for i, n := range nodes {
-			endpoints[i].Store(nil)
-			if n != nil {
-				n.Close()
+			peers := map[uint64]string{}
+			for i := range endpoints {
+				i := i
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if n := endpoints[i].Load(); n != nil {
+						n.Handler().ServeHTTP(w, r)
+					} else {
+						w.WriteHeader(503)
+					}
+				}))
+				defer server.Close()
+				peers[uint64(i+1)] = server.URL
 			}
-		}
-	}()
-	for i := range nodes {
-		n, err := Open(ctx, Config{ID: uint64(i + 1), ClusterID: "budget", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 20 * time.Millisecond, ElectionTicks: 10, SnapshotEntries: 1, MaxSnapshotBytes: 1024}, &machines[i])
-		if err != nil {
-			t.Fatal(err)
-		}
-		nodes[i] = n
-		endpoints[i].Store(n)
-	}
-	var leader *Node
-	for leader == nil {
-		for i, n := range nodes {
-			if n.LeaderID() == uint64(i+1) && n.applied.Load() >= 4 && n.Status()["snapshot_error"] != nil {
-				leader = n
-				break
+			defer func() {
+				for i, n := range nodes {
+					endpoints[i].Store(nil)
+					if n != nil {
+						n.Close()
+					}
+				}
+			}()
+			for i := range nodes {
+				n, err := Open(ctx, Config{ID: uint64(i + 1), ClusterID: "budget", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 20 * time.Millisecond, ElectionTicks: 10, SnapshotEntries: 1, MaxSnapshotBytes: 1024}, &machines[i])
+				if err != nil {
+					t.Fatal(err)
+				}
+				nodes[i] = n
+				endpoints[i].Store(n)
 			}
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	if _, err := leader.Propose(ctx, []byte("blocked")); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("oversize mutation: %v", err)
-	}
-	if err := leader.ReadBarrier(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for i := range machines {
-		machines[i].small.Store(true)
-	}
-	for leader.Status()["snapshot_error"] != nil {
-		select {
-		case <-ctx.Done():
-			t.Fatal("snapshot did not recover without proposals: ", ctx.Err())
-		case <-time.After(20 * time.Millisecond):
-		}
-	}
-	if _, err := leader.Propose(ctx, []byte("after retry")); err != nil {
-		t.Fatalf("recovered mutation: %v", err)
+			var leader *Node
+			for leader == nil {
+				for i, n := range nodes {
+					if n.LeaderID() == uint64(i+1) && n.applied.Load() >= 4 && n.Status()["snapshot_error"] != nil {
+						leader = n
+						break
+					}
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			if _, err := leader.Propose(ctx, []byte("blocked")); !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("oversize mutation: %v", err)
+			}
+			if err := leader.ReadBarrier(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for i := range machines {
+				machines[i].small.Store(true)
+			}
+			for leader.Status()["snapshot_error"] != nil {
+				select {
+				case <-ctx.Done():
+					t.Fatal("snapshot did not recover without proposals: ", ctx.Err())
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			if _, err := leader.Propose(ctx, []byte("after retry")); err != nil {
+				t.Fatalf("recovered mutation: %v", err)
+			}
+		})
 	}
 }
-
 func TestRemovingPeerStopsIdleSendersAndClosesQueuedFiles(t *testing.T) {
 	disk, _, err := openStorage(t.TempDir(), 1, "senders")
 	if err != nil {

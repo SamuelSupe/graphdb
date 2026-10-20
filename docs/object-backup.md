@@ -2,7 +2,7 @@
 
 [中文](object-backup.zh-CN.md)
 
-Applies to **GGraphDB 2.3.6**; see [release validation](validation-v2.3.6.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.7**; see [release validation](validation-v2.3.7.md) and [version boundaries](naming-and-compatibility.md).
 
 This guide covers the current 2.x backup features. Version 2.1 adds optional
 automation while retaining the 2.0 snapshot format. There is no 1.x backup
@@ -224,3 +224,8 @@ an S3 restore after leader loss during transfer. The Python SDK drives real WAL
 writes, discovery on an empty data
 directory, restore, overwrite, and queries after restart. CI has a dedicated MinIO
 job; `GRAPHDB_GATE_OBJECT_BACKUP=1` adds this flow to the existing release gate.
+
+In 2.3.7, tenant-scoped restores require a backup from the same tenant, including
+requests through `/v1/tasks`. Scoped restore drills keep automatic isolated
+targets; custom targets and cross-tenant migration use the private platform
+lifecycle API without a tenant header. See [the security contract](security-deployment.md).

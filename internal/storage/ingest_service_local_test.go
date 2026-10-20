@@ -708,3 +708,148 @@ func waitForLocalIngestPause(t *testing.T, ctx context.Context, files *FileStore
 	}
 	t.Fatal("operation did not pause WAL admission: ", ctx.Err())
 }
+
+func TestWALCoalescedPreparedOversizeSplitsBeforePublication(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	config := testIngestServiceConfig(t)
+	config.WAL.SegmentBytes = 12 << 10
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 100
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	var accepted []IngestAcceptance
+	var requests []IngestRequest
+	for i := 0; i < 3; i++ {
+		request := ingestEntityRequest(fmt.Sprint("batch-", i), fmt.Sprint("host:", i))
+		request.Items[0].Entity.Fields["payload"] = strings.Repeat("x", 4<<10)
+		a, e := service.Accept(ctx, "tenant-a", request)
+		if e != nil {
+			t.Fatal(e)
+		}
+		accepted = append(accepted, a)
+		requests = append(requests, request)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	flushErr := service.FlushTenant(waitCtx, "tenant-a")
+	t.Logf("flush=%v", flushErr)
+	for i, a := range accepted {
+		result, e := service.Wait(waitCtx, a)
+		replayed, re := store.Ingest(ctx, "tenant-a", requests[i])
+		t.Logf("accepted result applied=%d failed=%d err=%v; same batch replay applied=%d failed=%d skipped=%v err=%v", result.Applied, result.Failed, e, replayed.Applied, replayed.Failed, replayed.Skipped, re)
+		if e != nil || result.Failed > 0 || result.Applied != 1 || re != nil || replayed.Failed > 0 || !replayed.Skipped {
+			t.Errorf("valid accepted request became permanently failed")
+		}
+	}
+}
+
+type deadlineGenerationStore struct{ *TenantStore }
+
+func (s *deadlineGenerationStore) CaptureIngestWALGeneration(ctx context.Context, tenant string) (int64, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		return 0, errors.New("capture has no deadline")
+	}
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+func TestWALGenerationCaptureTimeoutReleasesIdentity(t *testing.T) {
+	store := &deadlineGenerationStore{NewTenantStore(NewMemoryStore(), "test")}
+	service, err := OpenIngestService(store, testIngestServiceConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	request := ingestEntityRequest("capture", "host:a")
+	for i := 0; i < 2; i++ {
+		_, err := service.Accept(ctx, "tenant-a", request)
+		if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			t.Fatalf("capture %d: %v, caller=%v", i, err, ctx.Err())
+		}
+	}
+}
+
+func TestWALBacklogLargerThanCommitTailMakesProgress(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.Backpressure = NewWritePressure(BackpressureConfig{MaxCommitTail: 4, RetryAfter: time.Millisecond})
+	config := testIngestServiceConfig(t)
+	config.FlushInterval, config.FlushMaxRequests = time.Hour, 20
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crashIngestService(t, service)
+	for i := 0; i < 10; i++ {
+		if _, err := service.Accept(ctx, "tenant-a", ingestEntityRequest(fmt.Sprint(i), fmt.Sprintf("host:%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flushCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_ = service.FlushTenant(flushCtx, "tenant-a")
+	manifest, err := store.CurrentManifest(ctx, "tenant-a")
+	if err != nil || manifest.Version == 0 || manifest.Version > 4 {
+		t.Fatalf("oversized backlog made no bounded progress: version=%d error=%v", manifest.Version, err)
+	}
+}
+
+func TestDeferredIndexUsesTenantEstimateAndRetriesPublication(t *testing.T) {
+	for _, failPublication := range []bool{false, true} {
+		t.Run(fmt.Sprint("publication_failure_", failPublication), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			objects := &localIngestPublicationFault{ObjectStore: files}
+			store := NewTenantStore(objects, "test")
+			store.MaxMaintenanceBytes = 32 << 20
+			store.WriteEntityRecords = false
+			defer store.ShutdownTasks(context.Background())
+			if _, err := store.Commit(ctx, "tenant-a", indexMutations(), CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			_, releaseHeld, err := store.admitMaintenance(ctx, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer releaseHeld()
+			objects.key = store.indexCatalogKey("tenant-a")
+			objects.failing.Store(failPublication)
+			endMaintenance := store.beginLocalIndexMaintenance(ctx, "tenant-a")
+			result, err := store.Ingest(ctx, "tenant-a", ingestEntityRequest("catchup", "host:new"))
+			endMaintenance()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for {
+				if objects.attempts.Load() > 0 {
+					objects.failing.Store(false)
+				}
+				catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+				if err == nil && catalog.Version == result.Version {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatalf("catch-up failed with one byte held: attempts=%d catalog=%d result=%d error=%v", objects.attempts.Load(), catalog.Version, result.Version, err)
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+			if failPublication && objects.attempts.Load() == 0 {
+				t.Fatal("publication fault was not exercised")
+			}
+		})
+	}
+}

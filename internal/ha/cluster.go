@@ -108,7 +108,7 @@ func newCommand(kind string) (command, error) {
 	if _, err := rand.Read(id[:]); err != nil {
 		return command{}, err
 	}
-	return command{ID: hex.EncodeToString(id[:]), At: time.Now().UTC(), Kind: kind}, nil
+	return command{ID: hex.EncodeToString(id[:]), At: time.Now().UTC(), Kind: kind, TenantScopeValidation: true}, nil
 }
 func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 	release, err := c.admitTenantMutation(cmd)
@@ -205,6 +205,18 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		return
 	}
 	tenant := r.Header.Get("X-Tenant-ID")
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/tenants" {
+		var input struct {
+			Tenant string `json:"tenant_id"`
+		}
+		if err := json.Unmarshal(body, &input); err != nil {
+			http.Error(w, "invalid tenant request", http.StatusBadRequest)
+			return
+		}
+		// Routing follows the object being created; the original header remains
+		// the caller's authorization scope for the replicated HTTP handler.
+		tenant = input.Tenant
+	}
 	if c.App.Catalog {
 		http.Error(w, "catalog groups only expose cluster administration on their private listener", http.StatusNotFound)
 		return

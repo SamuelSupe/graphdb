@@ -170,12 +170,17 @@ func writeErrorErr(w http.ResponseWriter, status int, err error) {
 }
 
 func writeStorageError(w http.ResponseWriter, err error) {
-	response := errorResponseFor(http.StatusBadRequest, err, "", nil)
+	response := errorResponseFor(http.StatusInternalServerError, err, "", nil)
+	if response.Code == ErrorCodeInternal {
+		response = buildErrorResponse(ErrorCodeInternal, "internal storage error", false, nil)
+	}
 	writeJSON(w, storageErrorStatus(response.Code), response)
 }
 
 func storageErrorStatus(code ErrorCode) int {
 	switch code {
+	case ErrorCodeInternal:
+		return http.StatusInternalServerError
 	case ErrorCodeNotFound:
 		return http.StatusNotFound
 	case ErrorCodeTenantDisabled:
@@ -302,6 +307,8 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeObjectWriteConflict, true
 	case errors.Is(err, storage.ErrNotFound):
 		return ErrorCodeNotFound, false
+	case errors.Is(err, storage.ErrInvalidArgument):
+		return ErrorCodeBadRequest, false
 	case errors.Is(err, query.ErrInvalid):
 		return ErrorCodeInvalidQuery, false
 	case errors.Is(err, query.ErrLimitExceeded):

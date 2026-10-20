@@ -149,3 +149,22 @@ func TestHADrainRequiresFreshReplicationOnRemainingVoters(t *testing.T) {
 		t.Fatal("unsafe drain removed the only healthy voting peer")
 	}
 }
+
+func TestDrainedReplicaHandsOffAfterLeaderLoss(t *testing.T) {
+	group := newTestCluster(t, false)
+	drained := group.leader(-1)
+	group.mustRequest(drained, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := group.nodes[drained].cluster.Node.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	leader := group.leader(drained)
+	group.stop(leader)
+	replacement := group.leader(leader)
+	if replacement == drained {
+		t.Fatal("drained replica became leader")
+	}
+	group.mustRequest(replacement, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:after-drain","kind":"host"}]}}`, http.StatusOK)
+	group.mustRequest(drained, "GET", "/v1/entities/host:after-drain", "", http.StatusOK)
+}

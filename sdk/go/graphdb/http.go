@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const platformTenant = "\x00"
+
 func (c *Client) doJSON(ctx context.Context, method string, path string, tenantID string, query url.Values, body any, out any) error {
 	_, _, err := c.doJSONWithHeaders(ctx, method, path, tenantID, query, body, nil, out)
 	return err
@@ -125,7 +127,7 @@ func (c *Client) setHeaders(req *http.Request, tenantID string, contentType stri
 	if tenantID == "" {
 		tenantID = c.tenantID
 	}
-	if tenantID != "" {
+	if tenantID != "" && tenantID != platformTenant {
 		req.Header.Set("X-Tenant-ID", tenantID)
 	}
 }

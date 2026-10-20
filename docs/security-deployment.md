@@ -1,6 +1,6 @@
 # Production Security Boundary
 
-Applies to **GGraphDB 2.3.6**; see [release validation](validation-v2.3.6.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.7**; see [release validation](validation-v2.3.7.md) and [version boundaries](naming-and-compatibility.md).
 
 [中文](security-deployment.zh-CN.md)
 
@@ -129,3 +129,24 @@ not authentication or TLS; do not expose it directly to the Internet.
 Scrape diagnostics on every replica/router. Readable metrics or successful
 readiness do not prove whole-group health. See [Raft operations](raft-operations.zh-CN.md)
 and [diagnostic metrics](diagnostics-metrics.zh-CN.md).
+
+## Tenant-scoped and platform management
+
+From 2.3.7, a supplied `X-Tenant-ID` must match every tenant named by lifecycle
+operations, including clone targets. Scoped restore tasks bind the backup's source
+tenant before exposing its contents or changing the target. Scoped restore drills
+use a server-generated isolated target; explicit target tenants/prefixes require
+platform authorization. These constraints also apply to generic task submission
+and retry. A scope violation returns 403 (`operation_disabled`).
+
+Platform operators can still migrate between tenants through the **private**
+management API without `X-Tenant-ID`. Both SDKs omit the implicit default tenant
+on lifecycle methods. An authenticated gateway may still inject a scope. Do not
+remove the header merely on a client request: provide a separate platform-only
+route whose authorization covers both source and target, and strip client headers.
+The reference gateway continues to supply a scope for every authenticated request.
+These checks supplement gateway authorization; an absent header is not proof of
+platform identity on an exposed database listener.
+
+The default Compose host binding is `127.0.0.1`. `GRAPHDB_BIND_ADDRESS` explicitly
+changes it; only expose the listener behind the authenticated gateway.

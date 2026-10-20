@@ -1,103 +1,62 @@
-# GGraphDB v2.3.6
+# GGraphDB v2.3.7
 
 ## 中文
 
-本版已发布为稳定 Latest：全部确切标签门禁、两项 30 分钟长测及独立下载的
-Linux/macOS 运行核验均通过，无门禁豁免。本版优化本地维护窗口和 Raft 文件系统路径，最终结果见
-[2.3.6 验证](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.6.md)。
+本补丁修复 v2.3.6 审查中复现的 WAL 推进、查询结果、索引追平、快照重试和租户作用域问题。
+[版本验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.7.md)
+区分源码回归、确切标签门禁及独立下载资产核验；发布流水线仅在全部必需门禁成功后发布。
 
-v2.3.5 因增强门禁 Compose 启动失败未发布，保留[原标签与失败记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.5.md)。本版统一默认门禁端口并输出失败诊断；原 CI 的确切触发原因未证实，端口冲突风险已独立复现。
+- WAL 按条数／字节分组，过大的未准备组拆分重试；捕获生成号超时生效，JSON 解码先获取准入。
+- 延迟索引追平按租户估算预留内存，临时失败保留并重试；旧 rebuild 不覆盖新 catalog。
+- 修复拆分分片等值漏行、大小写／空串范围裁剪、负零、非标量字段扫描及旧 catalog 分页。
+- 时间谓词支持 RFC3339/Nano、UTC 日期和整数 Unix 毫秒；非法字面值返回错误。
+- 快照磁盘压力采用可恢复状态，保持 Raft 运行；Drain 节点重新当选时自动移交健康副本。
+- 带租户头的生命周期和恢复操作校验目标及备份来源。平台跨租户迁移保留在无租户头的私有接口；
+  SDK 生命周期方法不附加隐式默认租户。自动隔离恢复演练继续支持租户作用域。
+- Raft 离线恢复须确认 `--isolated-cluster-recovery`。参数不是网络隔离机制，禁止把旧身份接回在线集群。
+- 默认 Compose 仅绑定回环；未知存储错误返回脱敏 500；无效／不存在的 HTTP 租户不进入健康监控。
 
-- 本地重建在短暂前台锁内捕获不可变图，进入有序索引队列；并发 WAL 推进图头时，
-  不再因旧版本发布检查触发 `manifest ... changed while rebuilding indexes`。
-  保留 writer fence、读取视图和 catalog CAS。
-- compact／重建期间合并有界索引追平需求，仅保存首次变更前的标量值和边端点，
-  不排队保留中间图。最多 8192 个变更引用，元数据预算不超过
-  `min(维护预算 / 64, 8 MiB)`；超过预算、schema 变化或基准不匹配时回退全量构建。
-  获得原有内存预算后才捕获最新图，WAL 确认可继续推进；显式 commit 仍等待自身索引。
-- WAL 调度在过期派发前有界排空已缓冲请求；compact 在原有共享编码限额内准备
-  分片快照和兼容全量记录，两者持久化后才发布。减少冗余图复制和重复分区扫描。
-- Raft 维护只在同一次应用屏障内复用祖先检查，有界并行同步独立目录并等待全部完成
-  后写入提交标记。流式快照仅为实际文件创建父目录，减少 GC 空目录的重复工作。
-  保留 before-image 回滚、持久化屏障和 Raft 强一致读取约束。
-
-另行完成的确切标签单机 30 分钟门禁中，写入 P99 **5.627 秒**、最大 **7.652 秒**，索引 **53/59 次 stale**，最后采样仍为 **stale**。门禁通过不表示 stale 已解决；它的增长型负载与固定数据候选对照不同。
-
-另行完成的确切标签 Raft 30 分钟门禁中，查询最大 **16.042 秒**、写入最大 **10.968 秒**，索引 **0/59 次 stale**。秒级长尾仍在；这组发行门禁负载与候选固定计划对照分开记录。
-
-相同数据和逻辑计划的候选 C3 → C7 对照：
-
-| 指标 | 优化前 | 优化后 |
-| --- | --- | --- |
-| 单机 6 分钟写入 P99 | 9.470 秒 | 3.948 秒 |
-| 单机 stale 采样 | 131/327 | 134/327 |
-| 原始 30 分钟增长计划下 Raft 查询最大值 | 13.132 秒 | 5.584 秒 |
-| Raft 接入最大值，含 429 重试 | 50.137 秒 | 27.789 秒 |
-
-**stale 频率未改善，秒级长尾仍在。** 单机 stale 样本均在更新中，静默后追平；
-并发重建版本冲突有独立回归验证。单机容器内存峰值增加 6.4%，Raft 基线资源计数缺失，
-不比较其 CPU/RSS。上述是工作区候选之间的优化对照，包含相同私有 pprof 初始化，
-不是已发布 v2.3.4 与 v2.3.6 二进制对照。两种部署各自保持输入一致，不能直接跨部署比较。
-详见[完整对照与边界](https://github.com/SamuelSupe/graphdb/blob/main/docs/performance-tail-validation-2026-10-20.zh-CN.md)。
-
-发布要求确切标签全量 unit/vet/race、SDK、控制台边界、direct/WAL、S3、TLS 网关、
-Raft 协议 1–3、已发布 v2.3.0 到本版的协议 1 滚动，以及单机和 Raft 各 30 分钟维护长测。
-证据随发行包提供。此前候选的 1827 项 Go 测试／子测试通过、7 项跳过，vet、聚焦 race、
-单机索引待追平时 SIGKILL 恢复及六份 Raft 磁盘冷读通过；候选检查与确切标签门禁分开记录。
-
-产品、SDK 和 OpenAPI 为 2.3.6，Go 模块 `/v2`、HTTP `/v1`、Parquet/WAL 格式及
-Raft 协议编号不变。单机先备份、停止旧进程，再沿用原目录和前缀；Raft 按
-[滚动升级手册](https://github.com/SamuelSupe/graphdb/blob/main/docs/raft-rolling-upgrade.zh-CN.md)操作，
-协议激活仍是全组升级后的独立步骤。跨宿主机故障域、日级稳定性、生产容量及统一延迟 SLO 未验收。
+完整 WAL 帧 CRC 损坏仍拒绝启动，不能把可能已确认的数据自动截掉。已有合法跨租户迁移不被删除。
+HTTP `/v1`、Go 模块 `/v2`、WAL/Parquet 布局及 Raft 协议编号不变；缺少类型信息的冷 catalog
+必要时回退实体扫描。升级前备份，停止旧单机进程后复用目录；Raft 遵循滚动升级手册。
+Raft 混合版本窗口暂停租户生命周期与恢复操作，先完成或取消已有任务，全部副本升级后恢复。
+旧版已持久化为失败的 batch 不会被本版自动改写成功；需核对源数据并用新 batch ID 重放。
+本版不承诺消除秒级长尾、持续索引滞后或提供生产容量资格。
 
 ## English
 
-The unreleased v2.3.5 tag is retained after enhanced-gate Compose startup failed.
-This version moves all default gate ports below the common Linux ephemeral range
-and prints Compose failures; its production optimization source is unchanged.
+This correctness patch bounds WAL coalescing, retries oversized unprepared groups,
+uses tenant-sized deferred index reservations, retains failed catch-up work, and
+prevents catalog rollback. It fixes split-shard equality, unsafe range pruning,
+signed-zero lookup, non-scalar scan parity and legacy list cursors. Timestamp
+predicates accept RFC3339/Nano, UTC dates and integer Unix milliseconds; invalid
+literals return a query error.
 
-This patch orders local maintenance rebuilds through the existing index queue,
-allows WAL publication while bounded catch-up waits for existing build capacity,
-and fixes concurrent rebuild publication conflicts. It retains writer fences,
-read views, catalog CAS and full-rebuild fallbacks. Compact prepares its two durable
-representations within the shared encoder limit. WAL dispatch drains buffered
-admissions; graph encoding avoids redundant copies and partition scans.
+Transient snapshot preparation pressure keeps Raft running and retries without
+restart. A drained node elected again hands leadership to a healthy peer. Scoped
+lifecycle/restore requests check their tenants; private platform migration remains
+available without a tenant header. Go/Python lifecycle SDK methods omit the
+implicit default tenant. Raft runtime restore requires explicit isolated-cluster
+acknowledgement, not a substitute for actual network isolation.
 
-Replicated maintenance reuses ancestry checks only within its application barrier,
-syncs independent directories with bounded concurrency before the commit marker,
-and creates snapshot parents only for retained files. Rollback and durability
-barriers remain enforced.
-
-The separate exact-tag standalone thirty-minute qualification recorded write P99 **5.627 seconds** (maximum **7.652**) and **53/59 stale index samples**, with the last sample **stale**. A passing gate does not mean staleness is resolved. Its growing workload differs from the fixed-data candidate replay.
-
-The separate exact-tag Raft thirty-minute qualification recorded a **16.042-second** query maximum and **10.968-second** ingestion maximum, with **0/59** stale index samples. Seconds-long tails remain; this qualification workload is separate from the matched candidate replay.
-
-Matched C3/C7 candidate replays reduced standalone write P99 from 9.470 to 3.948
-seconds and the thirty-minute Raft growth-plan query maximum from 13.132 to 5.584
-seconds. Standalone stale frequency did not improve (131/327 to 134/327), container
-memory peak rose 6.4%, and Raft baseline resource counters are unavailable.
-Seconds-long tails remain. These measured workspace candidates share private pprof
-instrumentation; they are not published v2.3.4/v2.3.6 binary measurements. Each
-deployment has its own matched inputs; cross-topology comparisons are invalid.
-
-Published as stable Latest after all exact-tag gates, including both thirty-minute
-soaks and released-v2.3.0 rolling qualification, passed without a waiver.
-Independent downloaded Linux/macOS checks passed. The immutable tag-source record
-retains pending plans; the linked main validation record retains final results. Module `/v2`, HTTP `/v1`, persisted formats and protocol numbering are
-unchanged. Cross-host reliability, day-scale stability, production capacity and a
-general latency SLO remain unqualified.
+All mandatory exact-tag gates, including both thirty-minute soaks, must pass
+before automated publication. See the linked validation record for actual results
+and independent downloaded-asset verification. Complete-frame WAL corruption
+remains fail-closed. Old terminal failed batches require source reconciliation and
+a new batch ID; this patch does not rewrite historical outcomes. Existing data
+formats and protocol numbers are retained; cold catalogs without type information
+use conservative entity-scan fallback. No production latency/capacity
+or cross-host reliability claim is made.
+Finish or cancel lifecycle/restore tasks before a Raft rolling upgrade and pause
+these management operations until all replicas are upgraded. Historical committed
+commands keep their original authorization semantics during replay.
 
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.3.6.tar.gz.sha256
-tar -xzf graphdb-v2.3.6.tar.gz
-cd v2.3.6
+sha256sum -c graphdb-v2.3.7.tar.gz.sha256
+tar -xzf graphdb-v2.3.7.tar.gz
+cd v2.3.7
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
-GRAPHDB_DATA_DIR=/path/to/v2-data bin/graphdb-linux-amd64 serve
 ```
-
-Includes Linux amd64/arm64 and macOS arm64 binaries, matching SDKs/OpenAPI,
-console sources, bilingual guides, deployment/backup examples, build identity and
-gate evidence. No container image publication is implied.

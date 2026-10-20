@@ -52,7 +52,7 @@ def node(group, i):
 
 def request(base, method, path, body=None, tenant=None, headers=None):
     hdr = {'Content-Type':'application/json', 'Authorization':'Bearer '+TOKEN, **(headers or {})}
-    if tenant:
+    if tenant and not path.startswith("/v1/tenants"):
         hdr['X-Tenant-ID'] = tenant
     req = urllib.request.Request(base+path, data=None if body is None else json.dumps(body).encode(), method=method, headers=hdr)
     try:

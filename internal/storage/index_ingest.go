@@ -66,6 +66,9 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 		*work = commitIndexUpdate{baseVersion: input.baseVersion, version: input.baseVersion, onlineRebuild: true, background: true, fence: input.fence}
 		s.mergeDeferredIndexUpdate(work, &input)
 		s.localIndexMaintenance[tenantID]++
+		if maintenance := s.localMaintenanceWait[tenantID]; maintenance != nil {
+			work.maintenanceDone = maintenance.done
+		}
 	} else {
 		// Do not reserve memory behind a synchronous predecessor: that predecessor
 		// may need the same memory before it can complete and release this work.
@@ -158,6 +161,11 @@ func pendingIndexBytes(before, after *graph.Graph) int64 {
 	return addWriteCacheBytes(maintenanceGraphBytes(before), maintenanceGraphBytes(after))
 }
 
+type localMaintenanceCompletion struct {
+	active int
+	done   chan struct{}
+}
+
 // While immutable maintenance objects are prepared, retain coalesced index
 // demand rather than letting foreground WAL completion wait for build memory.
 func (s *TenantStore) beginLocalIndexMaintenance(ctx context.Context, tenantID string) func() {
@@ -169,9 +177,23 @@ func (s *TenantStore) beginLocalIndexMaintenance(ctx context.Context, tenantID s
 		s.localIndexMaintenance = make(map[string]int)
 	}
 	s.localIndexMaintenance[tenantID]++
+	if s.localMaintenanceWait == nil {
+		s.localMaintenanceWait = make(map[string]*localMaintenanceCompletion)
+	}
+	completion := s.localMaintenanceWait[tenantID]
+	if completion == nil {
+		completion = &localMaintenanceCompletion{done: make(chan struct{})}
+		s.localMaintenanceWait[tenantID] = completion
+	}
+	completion.active++
 	s.indexUpdateMu.Unlock()
 	return func() {
 		s.indexUpdateMu.Lock()
+		completion.active--
+		if completion.active == 0 {
+			delete(s.localMaintenanceWait, tenantID)
+			close(completion.done)
+		}
 		s.localIndexMaintenance[tenantID]--
 		if s.localIndexMaintenance[tenantID] == 0 {
 			delete(s.localIndexMaintenance, tenantID)

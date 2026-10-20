@@ -261,6 +261,9 @@ func (s *TenantStore) restoreDrillBackupInput(ctx context.Context, task Task) (t
 	backupKey := stringTaskParam(task.Params, "backup_key")
 	if backupKey != "" {
 		input, err := s.loadTenantBackupInput(ctx, backupKey)
+		if source := stringTaskParam(task.Params, "required_source_tenant"); err == nil && source != "" && input.Record.TenantID != source {
+			return tenantBackupInput{}, "", false, BackupManifestStats{}, fmt.Errorf("backup source is outside the authenticated tenant scope")
+		}
 		stats := BackupManifestStats{Entities: len(input.Record.Snapshot.Entities), Edges: len(input.Record.Snapshot.Edges)}
 		if input.ManifestKey != "" {
 			if manifest, manifestErr := s.loadBackupManifest(ctx, input.ManifestKey); manifestErr == nil {

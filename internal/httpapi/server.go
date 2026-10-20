@@ -470,7 +470,6 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		obs := s.obs()
 		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 		tenantID := r.Header.Get("X-Tenant-ID")
-		obs.RegisterTenant(tenantID)
 		tracer := otel.Tracer("graphdb/http")
 		ctx, span := tracer.Start(ctx, "HTTP request")
 		defer span.End()
@@ -484,6 +483,11 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		}
 		start := time.Now()
 		next.ServeHTTP(recorder, r)
+		if recorder.status < 400 && r.Pattern != "" && s.Store != nil && storage.ValidateTenantID(tenantID) == nil && !obs.HasTenant(tenantID) {
+			if version, err := s.Store.CurrentVersion(r.Context(), tenantID); err == nil && version > 0 {
+				obs.RegisterTenant(tenantID)
+			}
+		}
 		duration := time.Since(start)
 		route := observedRoute(r)
 		span.SetName(route)

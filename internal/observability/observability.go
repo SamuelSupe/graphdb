@@ -34,6 +34,16 @@ func (o *Observability) RegisterTenant(tenantID string) {
 	o.tenants[tenantID] = struct{}{}
 }
 
+func (o *Observability) HasTenant(tenantID string) bool {
+	if o == nil {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, ok := o.tenants[tenantID]
+	return ok
+}
+
 func (o *Observability) Tenants() []string {
 	if o == nil {
 		return nil

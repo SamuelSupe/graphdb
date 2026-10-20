@@ -106,6 +106,7 @@ type TenantStore struct {
 	indexUpdateMu            sync.Mutex
 	indexUpdateTails         map[string]chan struct{}
 	localIndexMaintenance    map[string]int
+	localMaintenanceWait     map[string]*localMaintenanceCompletion
 	indexUnreservedTails     map[string]chan struct{}
 	pendingIngestIndexes     map[string]*commitIndexUpdate
 	maintenance              *maintenanceResources

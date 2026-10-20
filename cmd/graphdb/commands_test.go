@@ -539,3 +539,12 @@ func httptestResponse(handler http.Handler, method, path string) *httptest.Respo
 	handler.ServeHTTP(response, httptest.NewRequest(method, path, nil))
 	return response
 }
+
+func TestRaftRuntimeRestoreRequiresIsolatedClusterAcknowledgement(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Raft.Enabled = true
+	err := runRuntimeRecovery([]string{"runtime-restore", filepath.Join(t.TempDir(), "archive")}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "--isolated-cluster-recovery") {
+		t.Fatalf("unacknowledged Raft rollback: %v", err)
+	}
+}

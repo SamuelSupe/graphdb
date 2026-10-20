@@ -221,6 +221,8 @@ func TestHAShardRejectsInvalidGraphTransferWithoutStoppingReplicas(t *testing.T)
 			}
 			for i := range group.nodes {
 				group.waitApplied(i, checkpoint.Index)
+			}
+			for i := range group.nodes {
 				group.stop(i)
 			}
 			for i, replica := range group.nodes {
@@ -465,7 +467,7 @@ func TestHAShardExpansionMigrationAndCancellation(t *testing.T) {
 			r := httptest.NewRequest(method, uri, bytes.NewReader(data)).WithContext(ctx)
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Authorization", "Bearer "+token)
-			if tenant != "" {
+			if tenant != "" && !strings.HasPrefix(uri, "/v1/tenants") {
 				r.Header.Set("X-Tenant-ID", tenant)
 			}
 			if uri == "/v1/query" && tenant == "tenant-a" {

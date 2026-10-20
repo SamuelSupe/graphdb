@@ -3,6 +3,7 @@ package query
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -198,7 +199,7 @@ func timestampFilterMatches(actual time.Time, expected any, op string) bool {
 		}
 		return false
 	}
-	right, err := time.Parse(time.RFC3339Nano, fmt.Sprint(expected))
+	right, err := parseTimestampFilterValue(expected)
 	if err != nil {
 		return false
 	}
@@ -218,6 +219,28 @@ func timestampFilterMatches(actual time.Time, expected any, op string) bool {
 		return comparison <= 0
 	}
 	return false
+}
+
+// Date literals represent UTC midnight; numeric literals are Unix milliseconds.
+func parseTimestampFilterValue(value any) (time.Time, error) {
+	if timestamp, ok := value.(time.Time); ok {
+		return timestamp, nil
+	}
+	if number, ok := asFloat(value); ok {
+		if math.IsNaN(number) || math.IsInf(number, 0) || number < -62135596800000 || number >= 253402300800000 || math.Trunc(number) != number {
+			return time.Time{}, fmt.Errorf("invalid Unix millisecond timestamp")
+		}
+		return time.UnixMilli(int64(number)).UTC(), nil
+	}
+	if text, ok := value.(string); ok {
+		if timestamp, err := time.Parse(time.RFC3339Nano, text); err == nil {
+			return timestamp, nil
+		}
+		if timestamp, err := time.Parse("2006-01-02", text); err == nil {
+			return timestamp, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("timestamp must be RFC3339, YYYY-MM-DD, or integer Unix milliseconds")
 }
 
 func edgeFilterValue(edge graph.Edge, field string) (any, bool) {

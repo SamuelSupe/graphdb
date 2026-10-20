@@ -20,6 +20,7 @@ import (
 var ErrNotLeader = errors.New("Raft node is not the leader")
 var ErrUnavailable = errors.New("Raft node is unavailable")
 var ErrSnapshotTooLarge = errors.New("replication snapshot exceeds configured byte budget")
+var ErrSnapshotTemporarilyUnavailable = errors.New("replication snapshot temporarily unavailable")
 
 type StateMachine interface {
 	Applied() (uint64, error)
@@ -260,10 +261,15 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		defer n.workers.Done()
 		ticker := time.NewTicker(cfg.Tick)
 		defer ticker.Stop()
+		var lastDrainHandoff time.Time
 		for {
 			select {
-			case <-ticker.C:
+			case now := <-ticker.C:
 				n.raft.Tick()
+				if n.draining.Load() && n.LeaderID() == n.cfg.ID && now.Sub(lastDrainHandoff) >= cfg.Tick*time.Duration(cfg.ElectionTicks) {
+					lastDrainHandoff = now
+					n.handoffDrainedLeadership()
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -750,7 +756,7 @@ func (n *Node) applyLoop() {
 			var err error
 			building, err = n.startSnapshot(lastConf)
 			if err != nil {
-				if !n.cfg.StreamSnapshots && !errors.Is(err, ErrSnapshotTooLarge) {
+				if !n.cfg.StreamSnapshots && !errors.Is(err, ErrSnapshotTooLarge) && !errors.Is(err, ErrSnapshotTemporarilyUnavailable) {
 					n.fail(err)
 					return
 				}

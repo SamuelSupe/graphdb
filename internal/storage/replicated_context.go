@@ -13,6 +13,18 @@ import (
 type replicatedContextKey struct{}
 type replicatedBackpressureKey struct{}
 type replicatedBackupNamespaceKey struct{}
+type legacyTenantScopeKey struct{}
+
+// LegacyTenantScopeContext preserves the authorization semantics of commands
+// already committed before tenant scope validation was introduced.
+func LegacyTenantScopeContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, legacyTenantScopeKey{}, true)
+}
+
+func EnforceTenantScope(ctx context.Context) bool {
+	legacy, _ := ctx.Value(legacyTenantScopeKey{}).(bool)
+	return !legacy || !IsReplicatedContext(ctx)
+}
 
 // ReplicatedBackpressureContext carries the proposing leader's base limits.
 // Tenant overrides are still read from replicated state in log order.

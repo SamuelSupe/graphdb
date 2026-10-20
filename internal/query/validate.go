@@ -298,6 +298,18 @@ func validateFilter(filter Filter) error {
 	if op == "in" && !isFilterListValue(filter.Value) {
 		return fmt.Errorf("%w: in filter value must be an array", ErrInvalid)
 	}
+	if (filter.Field == "created_at" || filter.Field == "updated_at") &&
+		(op == "" || op == "eq" || op == "neq" || op == "in" || op == "gt" || op == "gte" || op == "lt" || op == "lte") {
+		values := []any{filter.Value}
+		if op == "in" {
+			values = anySlice(filter.Value)
+		}
+		for _, value := range values {
+			if _, err := parseTimestampFilterValue(value); err != nil {
+				return fmt.Errorf("%w: %s: %v", ErrInvalid, filter.Field, err)
+			}
+		}
+	}
 	return nil
 }
 

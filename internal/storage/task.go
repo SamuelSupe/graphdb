@@ -56,31 +56,31 @@ func (s *TenantStore) StartTask(ctx context.Context, tenantID string, taskType s
 	}
 	taskType, err := normalizeTaskType(taskType)
 	if err != nil {
-		return Task{}, err
+		return Task{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if s.ReplicationMode && boolTaskParam(params, "automatic") {
-		return Task{}, fmt.Errorf("automatic task scheduling is unavailable in HA; start tasks through the cluster API")
+		return Task{}, fmt.Errorf("%w: automatic task scheduling is unavailable in HA; start tasks through the cluster API", ErrInvalidArgument)
 	}
 	if s.ReplicationMode && taskType == TaskTypeTenantRestoreDrill && stringTaskParam(params, "backup_key") == "" {
-		return Task{}, fmt.Errorf("HA restore drills require an explicit backup_key")
+		return Task{}, fmt.Errorf("%w: HA restore drills require an explicit backup_key", ErrInvalidArgument)
 	}
 	params = cloneTaskParams(params)
 	if err := validateTaskParams(taskType, params); err != nil {
-		return Task{}, err
+		return Task{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	namespace := s.Backups.Namespace()
 	if replicated, ok := ctx.Value(replicatedBackupNamespaceKey{}).(backupstore.Namespace); ok {
 		namespace = replicated
 	}
 	if taskType == TaskTypeTenantBackup && stringTaskParam(params, "destination") == "object" && namespace.Bucket == "" {
-		return Task{}, fmt.Errorf("object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET")
+		return Task{}, fmt.Errorf("%w: object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET", ErrInvalidArgument)
 	}
 	if (taskType == TaskTypeTenantRestore || taskType == TaskTypeTenantRestoreDrill) && strings.HasPrefix(stringTaskParam(params, "backup_key"), "s3://") {
 		if namespace.Bucket == "" {
-			return Task{}, fmt.Errorf("object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET")
+			return Task{}, fmt.Errorf("%w: object backups are not configured; set GRAPHDB_BACKUP_S3_BUCKET", ErrInvalidArgument)
 		}
 		if _, _, err := namespace.ParseURI(stringTaskParam(params, "backup_key")); err != nil {
-			return Task{}, err
+			return Task{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 		}
 	}
 

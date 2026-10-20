@@ -1,6 +1,6 @@
 # 读取与查询
 
-适用于 **GGraphDB 2.3.6**；[发行验证](../validation-v2.3.6.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.7**；[发行验证](../validation-v2.3.7.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](read-query.md)
 
@@ -310,3 +310,8 @@ curl -sS "$READER/v1/queries/running" -H 'X-Tenant-ID: demo'
 curl -sS -X DELETE "$READER/v1/queries/running/<query-id>" \
   -H 'X-Tenant-ID: demo'
 ```
+
+时间元字段 `created_at` / `updated_at` 支持 RFC3339/Nano、`YYYY-MM-DD`（UTC 零点）
+和整数 Unix 毫秒；非法值返回 `invalid_query`，包含 `neq`、`in`。范围／前缀保持实际值的大小写语义。
+`any`、数组、对象字段以及缺少图 schema 的冷 catalog 必要时回退实体扫描。加载图后，
+能够由 schema 或实际值证明标量覆盖时可使用索引。`-0` 与 `0` 使用相同索引键，并兼容读取旧的负零键。

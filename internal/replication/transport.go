@@ -290,6 +290,10 @@ func (n *Node) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
+		if n.draining.Load() && message.Type == raftpb.MsgTimeoutNow {
+			http.Error(w, "drained replica cannot accept leadership", http.StatusServiceUnavailable)
+			return
+		}
 		if err := n.raft.Step(r.Context(), message); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return

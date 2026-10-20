@@ -71,19 +71,31 @@ func runtimeArchiveRoots(cfg config.Config) (map[string]string, runtimeArchiveMa
 }
 
 func runRuntimeRecovery(args []string, cfg config.Config) error {
-	if len(args) != 2 && len(args) != 4 {
-		return fmt.Errorf("usage: graphdb %s <archive> [--max-bytes <bytes>]", args[0])
+	if len(args) < 2 {
+		return fmt.Errorf("usage: graphdb %s <archive> [--max-bytes <bytes>] [--isolated-cluster-recovery]", args[0])
 	}
 	limit := int64(1 << 40)
-	if len(args) == 4 {
-		if args[2] != "--max-bytes" {
-			return fmt.Errorf("unknown runtime recovery option")
+	isolated := false
+	for i := 2; i < len(args); i++ {
+		switch args[i] {
+		case "--isolated-cluster-recovery":
+			isolated = true
+		case "--max-bytes":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("max-bytes requires a byte count")
+			}
+			var err error
+			limit, err = strconv.ParseInt(args[i], 10, 64)
+			if err != nil || limit < 4096 || limit > 1<<40 {
+				return fmt.Errorf("max-bytes must be between 4096 and 1099511627776")
+			}
+		default:
+			return fmt.Errorf("unknown runtime recovery option %q", args[i])
 		}
-		var err error
-		limit, err = strconv.ParseInt(args[3], 10, 64)
-		if err != nil || limit < 4096 || limit > 1<<40 {
-			return fmt.Errorf("max-bytes must be between 4096 and 1099511627776")
-		}
+	}
+	if args[0] == "runtime-restore" && cfg.Raft.Enabled && !isolated {
+		return fmt.Errorf("Raft runtime restore rolls back term, vote and log: stop and isolate the whole cluster, then explicitly pass --isolated-cluster-recovery; replace a live cluster replica with a new node ID instead")
 	}
 	roots, manifest, err := runtimeArchiveRoots(cfg)
 	if err != nil {

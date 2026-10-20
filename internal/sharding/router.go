@@ -121,7 +121,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, "a valid X-Tenant-ID or tenant lifecycle path is required", http.StatusBadRequest)
 		return
 	}
-	request.Header.Set("X-Tenant-ID", tenant)
+	if scope := request.Header.Get("X-Tenant-ID"); scope != "" && (scope != tenant || (clone && scope != target)) {
+		http.Error(w, "tenant scope does not authorize the requested tenant", http.StatusForbidden)
+		return
+	}
 	resolution, err := r.resolve(ctx, tenant)
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) && httpErr.Status == http.StatusNotFound && (create || (request.Method == http.MethodPost && (request.URL.Path == "/v1/commits" || request.URL.Path == "/v1/ingest/batches" || request.URL.Path == "/v1/imports"))) {
@@ -267,7 +270,9 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			p.Out.Header.Set("Authorization", "Bearer "+r.Client.Token)
 			p.Out.Header.Set("X-Raft-Cluster", shard.ClusterID)
 			p.Out.Header.Set(EpochHeader, fmt.Sprint(epoch))
-			p.Out.Header.Set("X-Tenant-ID", tenant)
+			if !strings.HasPrefix(p.In.URL.Path, "/v1/tenants") {
+				p.Out.Header.Set("X-Tenant-ID", tenant)
+			}
 		},
 		ModifyResponse: func(response *http.Response) error {
 			switch {

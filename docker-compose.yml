@@ -16,7 +16,7 @@ services:
       GRAPHDB_WRITE_CACHE_MAX_BYTES: "${GRAPHDB_WRITE_CACHE_MAX_BYTES:-512MiB}"
     mem_limit: "${GRAPHDB_MEMORY_LIMIT:-0}"
     ports:
-      - "${GRAPHDB_PORT:-8080}:8080"
+      - "${GRAPHDB_BIND_ADDRESS:-127.0.0.1}:${GRAPHDB_PORT:-8080}:8080"
     volumes:
       - graphdb-data:/var/lib/graphdb
     stop_grace_period: 60s

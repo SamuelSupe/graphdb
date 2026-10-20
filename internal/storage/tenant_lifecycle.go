@@ -207,7 +207,7 @@ func (s *TenantStore) UpdateTenantMetadata(ctx context.Context, tenantID string,
 
 func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, status string) (TenantInfo, error) {
 	if status != TenantStatusActive && status != TenantStatusDisabled && status != TenantStatusDeleted {
-		return TenantInfo{}, fmt.Errorf("unsupported tenant status %q", status)
+		return TenantInfo{}, fmt.Errorf("%w: unsupported tenant status %q", ErrInvalidArgument, status)
 	}
 
 	if status != TenantStatusActive && s.ingestBarrier != nil {
@@ -307,7 +307,7 @@ func (s *TenantStore) purgeTenantLocked(
 			return TenantPurgeReport{}, err
 		}
 		if !force && info.Status != TenantStatusDeleted {
-			return TenantPurgeReport{}, fmt.Errorf("tenant must be soft deleted before purge")
+			return TenantPurgeReport{}, fmt.Errorf("%w: tenant must be soft deleted before purge", ErrInvalidArgument)
 		}
 	}
 	operationID, alreadyComplete, err := s.beginTenantPurge(
@@ -390,7 +390,7 @@ func (s *TenantStore) CloneTenant(ctx context.Context, sourceTenantID string, op
 		return TenantInfo{}, err
 	}
 	if sourceTenantID == targetTenantID {
-		return TenantInfo{}, fmt.Errorf("target tenant must differ from source tenant")
+		return TenantInfo{}, fmt.Errorf("%w: target tenant must differ from source tenant", ErrInvalidArgument)
 	}
 	if s.ingestBarrier != nil {
 		if err := s.ingestBarrier(ctx, sourceTenantID); err != nil {

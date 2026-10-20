@@ -21,24 +21,25 @@ import (
 )
 
 type command struct {
-	ExpectedGeneration int64                       `json:"expected_generation,omitempty"`
-	RouteEpoch         uint64                      `json:"route_epoch,omitempty"`
-	ID                 string                      `json:"id"`
-	At                 time.Time                   `json:"at"`
-	Kind               string                      `json:"kind"`
-	Role               string                      `json:"role,omitempty"`
-	Prefix             string                      `json:"prefix,omitempty"`
-	Tenant             string                      `json:"tenant,omitempty"`
-	Method             string                      `json:"method,omitempty"`
-	URI                string                      `json:"uri,omitempty"`
-	Header             http.Header                 `json:"header,omitempty"`
-	Body               []byte                      `json:"body,omitempty"`
-	IDs                []string                    `json:"ids,omitempty"`
-	Restore            []byte                      `json:"restore,omitempty"`
-	Error              string                      `json:"error,omitempty"`
-	QueueBudget        *int64                      `json:"queue_budget,omitempty"`
-	Backpressure       *storage.BackpressureConfig `json:"backpressure,omitempty"`
-	BackupNamespace    *backupstore.Namespace      `json:"backup_namespace,omitempty"`
+	TenantScopeValidation bool                        `json:"tenant_scope_validation,omitempty"`
+	ExpectedGeneration    int64                       `json:"expected_generation,omitempty"`
+	RouteEpoch            uint64                      `json:"route_epoch,omitempty"`
+	ID                    string                      `json:"id"`
+	At                    time.Time                   `json:"at"`
+	Kind                  string                      `json:"kind"`
+	Role                  string                      `json:"role,omitempty"`
+	Prefix                string                      `json:"prefix,omitempty"`
+	Tenant                string                      `json:"tenant,omitempty"`
+	Method                string                      `json:"method,omitempty"`
+	URI                   string                      `json:"uri,omitempty"`
+	Header                http.Header                 `json:"header,omitempty"`
+	Body                  []byte                      `json:"body,omitempty"`
+	IDs                   []string                    `json:"ids,omitempty"`
+	Restore               []byte                      `json:"restore,omitempty"`
+	Error                 string                      `json:"error,omitempty"`
+	QueueBudget           *int64                      `json:"queue_budget,omitempty"`
+	Backpressure          *storage.BackpressureConfig `json:"backpressure,omitempty"`
+	BackupNamespace       *backupstore.Namespace      `json:"backup_namespace,omitempty"`
 }
 
 type httpResult struct {
@@ -89,6 +90,10 @@ func (a *Application) Snapshot(ctx context.Context) ([]byte, error) {
 	}
 	if errors.Is(err, storage.ErrReplicationSnapshotTooLarge) {
 		err = replication.ErrSnapshotTooLarge
+	}
+	var pressure *storage.BackpressureError
+	if errors.As(err, &pressure) || errors.Is(err, storage.ErrObjectStoreUnavailable) {
+		err = fmt.Errorf("%w: %w", replication.ErrSnapshotTemporarilyUnavailable, err)
 	}
 	return data, err
 }
@@ -326,6 +331,9 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		}
 		return resultJSON(http.StatusBadRequest, map[string]any{"error": "Raft group has no sharding role"})
 	case "http":
+		if !cmd.TenantScopeValidation {
+			applyCtx = storage.LegacyTenantScopeContext(applyCtx)
+		}
 		request, err := http.NewRequestWithContext(applyCtx, cmd.Method, cmd.URI, bytes.NewReader(cmd.Body))
 		if err != nil {
 			return nil, err

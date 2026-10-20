@@ -18,6 +18,10 @@ func TestTimestampPredicatesUseInstants(t *testing.T) {
 			want  bool
 		}{
 			{"gte", "2026-10-19T00:00:00Z", true},
+			{"gte", "2026-10-19", true},
+			{"eq", created.UnixMilli(), true},
+			{"neq", "2026-10-19", true},
+			{"in", []any{created.UnixMilli(), "2026-10-20"}, true},
 			{"gt", "2026-10-19T01:00:00+01:00", true},
 			{"eq", "2026-10-19T01:00:00.5+01:00", true},
 			{"neq", "2026-10-19T01:00:00.500000000+01:00", false},
@@ -42,5 +46,18 @@ func TestTimestampPredicatesUseInstants(t *testing.T) {
 	other.CreatedAt = created.Add(time.Second).In(time.FixedZone("west", -3600))
 	if compareResults(Result{Entity: &entity}, Result{Entity: &other}, []SortSpec{{Field: "created_at"}}) >= 0 {
 		t.Fatal("timestamps with different zones did not sort chronologically")
+	}
+}
+
+func TestTimestampFilterRejectsInvalidValues(t *testing.T) {
+	for _, op := range []string{"eq", "neq", "gt", "gte", "lt", "lte", "in"} {
+		value := any("not-a-date")
+		if op == "in" {
+			value = []any{"2026-10-01", value}
+		}
+		err := ValidateRequest(Request{Op: "match", Where: []Filter{{Field: "created_at", Op: op, Value: value}}})
+		if err == nil {
+			t.Fatalf("invalid %s timestamp accepted", op)
+		}
 	}
 }

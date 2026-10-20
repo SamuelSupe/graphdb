@@ -29,13 +29,13 @@ func (s *TenantStore) StartImport(ctx context.Context, tenantID string, data []b
 	}
 	options, err := normalizeImportOptions(options)
 	if err != nil {
-		return Task{}, err
+		return Task{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if len(data) == 0 {
-		return Task{}, fmt.Errorf("import source must not be empty")
+		return Task{}, fmt.Errorf("%w: import source must not be empty", ErrInvalidArgument)
 	}
 	if len(data) > maxImportSourceBytes {
-		return Task{}, fmt.Errorf("import source exceeds %d bytes", maxImportSourceBytes)
+		return Task{}, fmt.Errorf("%w: import source exceeds %d bytes", ErrInvalidArgument, maxImportSourceBytes)
 	}
 	importID, err := mutationID(ctx, "import")
 	if err != nil {

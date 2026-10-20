@@ -641,3 +641,50 @@ func TestHTTPWALDiskPressurePreservesRetryContract(t *testing.T) {
 		t.Fatal("disk admission rejection failed the WAL writer")
 	}
 }
+
+type unreadIngestBody struct{ reads int }
+
+func (b *unreadIngestBody) Read(p []byte) (int, error) { b.reads++; return 0, context.Canceled }
+func (b *unreadIngestBody) Close() error               { return nil }
+func TestIngestAdmissionPrecedesBodyDecode(t *testing.T) {
+	for _, wal := range []bool{false, true} {
+		store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+		admission := NewWriteAdmission(1, 1, time.Millisecond)
+		release, _, err := admission.Acquire(context.Background(), "tenant-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &Server{Store: store, Mode: "all", WriteAdmission: admission}
+		if wal {
+			server.IngestService = &storage.IngestService{}
+		}
+		body := &unreadIngestBody{}
+		request := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", body)
+		request.Header.Set("X-Tenant-ID", "tenant-a")
+		rr := httptest.NewRecorder()
+		server.ingest(rr, request)
+		release()
+		if rr.Code != http.StatusTooManyRequests || body.reads != 0 {
+			t.Fatalf("wal=%v status=%d body reads=%d", wal, rr.Code, body.reads)
+		}
+	}
+}
+func TestUnroutedAndUnknownTenantsAreNotMonitored(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	server := &Server{Store: store, Mode: "all"}
+	handler := server.Handler()
+	for _, tenant := range []string{"../invalid", "unknown"} {
+		serveJSON(handler, http.MethodGet, "/does-not-exist", tenant, nil)
+		serveJSON(handler, http.MethodGet, "/v1/readiness", tenant, nil)
+	}
+	if got := server.obs().Tenants(); len(got) != 0 {
+		t.Fatalf("untrusted tenants registered: %v", got)
+	}
+	if _, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	serveJSON(handler, http.MethodGet, "/v1/entities", "tenant-a", nil)
+	if !server.obs().HasTenant("tenant-a") {
+		t.Fatal("existing tenant was not registered")
+	}
+}

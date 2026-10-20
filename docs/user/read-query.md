@@ -1,6 +1,6 @@
 # Read And Query
 
-Applies to **GGraphDB 2.3.6**; see [release validation](../validation-v2.3.6.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.7**; see [release validation](../validation-v2.3.7.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](read-query.zh-CN.md)
 
@@ -316,3 +316,11 @@ Cancel:
 curl -sS -X DELETE "$READER/v1/queries/running/<query-id>" \
   -H 'X-Tenant-ID: demo'
 ```
+
+Timestamp metadata predicates (`created_at`, `updated_at`) accept RFC3339/Nano,
+`YYYY-MM-DD` (UTC midnight), and integer Unix milliseconds. Invalid literals return
+`invalid_query`, including `neq` and `in`. Range and prefix queries preserve
+case-sensitive value semantics. Scalar indexes on `any`/array/object fields and
+cold catalogs without the graph schema fall back to entity scanning when needed.
+A loaded graph can use scalar indexes once its schema or values prove coverage. Signed zero compares
+and indexes identically to zero, including existing persisted negative-zero keys.

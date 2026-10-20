@@ -224,7 +224,9 @@ func (g *testCluster) request(i int, method, uri, body string, timeout ...time.D
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	request := httptest.NewRequest(method, uri, bytes.NewBufferString(body)).WithContext(ctx)
-	request.Header.Set("X-Tenant-ID", "tenant-a")
+	if !strings.HasPrefix(uri, "/v1/tenants") {
+		request.Header.Set("X-Tenant-ID", "tenant-a")
+	}
 	request.Header.Set("Content-Type", "application/json")
 	writer := httptest.NewRecorder()
 	g.nodes[i].handler.ServeHTTP(writer, request)

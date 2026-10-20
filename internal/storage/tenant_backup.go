@@ -263,6 +263,9 @@ func (s *TenantStore) tenantRestoreTask(ctx context.Context, task Task) (TenantR
 		_ = s.updateTaskActionProgress(context.WithoutCancel(ctx), task, "restore_load_backup", 1, total, taskActionUpdate{ID: "load_backup", Err: err}, nil)
 		return TenantRestoreReport{}, err
 	}
+	if source := stringTaskParam(task.Params, "required_source_tenant"); source != "" && input.Record.TenantID != source {
+		return TenantRestoreReport{}, fmt.Errorf("backup source is outside the authenticated tenant scope")
+	}
 	if input.SHA256 != "" {
 		if previous := taskCheckpointString(task, "remote_snapshot_sha256"); previous != "" && previous != input.SHA256 {
 			return TenantRestoreReport{}, fmt.Errorf("remote snapshot changed since this restore started")

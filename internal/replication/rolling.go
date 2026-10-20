@@ -414,3 +414,29 @@ func (n *Node) rollingHandlers(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 }
+
+// Drain does not suspend Raft ticks: followers need their election lease to
+// expire so they can vote. If elected again, retain drain and hand off promptly.
+func (n *Node) handoffDrainedLeadership() {
+	if !n.maintenanceMu.TryLock() {
+		return
+	}
+	n.workers.Add(1)
+	go func() {
+		defer n.workers.Done()
+		defer n.maintenanceMu.Unlock()
+		ctx, cancel := context.WithTimeout(n.ctx, n.cfg.Tick*time.Duration(n.cfg.ElectionTicks))
+		defer cancel()
+		status := n.raft.Status()
+		for id := range status.Config.Voters.IDs() {
+			if id == n.cfg.ID || !status.Progress[id].RecentActive {
+				continue
+			}
+			peer, err := n.peerStatus(ctx, id)
+			if err == nil && peer.Ready && !peer.Draining && peer.Error == "" && peer.SnapshotError == "" {
+				_ = n.transferLeadership(ctx, id)
+				return
+			}
+		}
+	}()
+}

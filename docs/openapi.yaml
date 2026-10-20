@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.3.6
+  version: 2.3.7
   description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Standalone 2.2 retains the 2.0/2.1 data format and optional S3 backup automation; Raft has separate replica-directory and protocol upgrade requirements. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
@@ -1919,7 +1919,7 @@ components:
       type: apiKey
       in: header
       name: X-Tenant-ID
-      description: Tenant routing metadata injected by a trusted gateway; this header is not proof of identity.
+      description: Tenant routing metadata injected by a trusted gateway; this header is not proof of identity. When present, lifecycle paths and create/clone targets must match it, and restore backup sources must belong to that tenant. Private platform lifecycle calls may omit it for cross-tenant migration; the gateway must authenticate and isolate access independently.
   parameters:
     TenantListLimit:
       name: limit
@@ -1947,6 +1947,7 @@ components:
       name: tenant_id
       in: path
       required: true
+      description: Must match X-Tenant-ID when the trusted gateway supplies that header.
       schema:
         type: string
     Kind:

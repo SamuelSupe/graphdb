@@ -1768,7 +1768,7 @@ func TestHTTPDeadLetterReplayErrorInvalidatesCacheAfterCommit(t *testing.T) {
 		t.Fatalf("initial neighbors = %d body=%s", rr.Code, rr.Body.String())
 	}
 	rr = serveJSON(handler, http.MethodPost, "/v1/ingest/deadletters/agent/replay", "tenant-a", nil)
-	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "save collector status") {
+	if rr.Code != http.StatusInternalServerError || strings.Contains(rr.Body.String(), "save collector status") {
 		t.Fatalf("replay = %d body=%s", rr.Code, rr.Body.String())
 	}
 	rr = serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", neighbors)

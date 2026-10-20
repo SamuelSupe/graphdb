@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
@@ -19,19 +20,22 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.enterWrite(w, r, tenantID)
+	if !ok {
+		return
+	}
+	release = sync.OnceFunc(release)
+	defer release()
 	var request storage.IngestRequest
 	if !decodeJSONBody(w, r, &request, maxWriteRequestBytes) {
 		return
 	}
 	if s.IngestService != nil {
-		s.acceptWALIngest(w, r, tenantID, request)
+		// The WAL owns publication admission. Release the HTTP slot before
+		// an optional wait=committed response holds the connection open.
+		s.acceptWALIngest(w, r, tenantID, request, release)
 		return
 	}
-	release, ok := s.enterWrite(w, r, tenantID)
-	if !ok {
-		return
-	}
-	defer release()
 	writeCtx, cancel := s.writeExecutionContext(r.Context())
 	defer cancel()
 	result, err := s.Store.Ingest(writeCtx, tenantID, request)
@@ -83,8 +87,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	writeIngestResult(w, result)
 }
 
-func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantID string, request storage.IngestRequest) {
+func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantID string, request storage.IngestRequest, release func()) {
 	accepted, err := s.IngestService.Accept(r.Context(), tenantID, request)
+	release()
 	if err != nil {
 		if s.writeBackpressureIfNeeded(w, tenantID, err) {
 			return

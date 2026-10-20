@@ -1,6 +1,6 @@
 # Error Code Contract
 
-Applies to **GGraphDB 2.3.6**; see [release validation](validation-v2.3.6.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.3.7**; see [release validation](validation-v2.3.7.md) and [version boundaries](naming-and-compatibility.md).
 
 All non-2xx HTTP errors use this envelope:
 
@@ -60,3 +60,9 @@ The following top-level `code` values are stable:
 Write backpressure responses may include `reasons[]` with more specific reason
 codes. Those reason codes are intentionally scoped to the backpressure detail
 payload and do not replace the top-level contract above.
+
+Unclassified storage failures return HTTP 500 / `internal_error` with a generic
+message, without internal filesystem paths. Known validation errors remain 400;
+known transient storage/dependency errors retain their 429/503/504 contracts.
+Do not blindly replay an uncertain non-idempotent mutation after a 500: check its
+batch or idempotency status first. Tenant scope denial uses 403 / `operation_disabled`.

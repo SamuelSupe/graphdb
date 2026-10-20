@@ -849,6 +849,23 @@ func TestTenantBackupAndRestoreTasks(t *testing.T) {
 	if integrity.Status != "ok" {
 		t.Fatalf("backup integrity = %#v", integrity)
 	}
+	for _, key := range []string{backupManifestKey, backup.ResultKey} {
+		scoped, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": key, "required_source_tenant": "tenant-b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitForTaskStatus(t, store, "tenant-b", scoped.ID, TaskStatusFailed)
+		scoped, err = store.GetTask(ctx, "tenant-b", scoped.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scoped.Status != TaskStatusFailed {
+			t.Fatalf("cross-tenant scoped restore: %#v", scoped)
+		}
+		if exists, err := store.tenantRestoreDataExists(ctx, "tenant-b"); err != nil || exists {
+			t.Fatalf("scoped restore wrote data: %v %v", exists, err)
+		}
+	}
 	dryRun, err := store.StartTask(ctx, "tenant-b", TaskTypeTenantRestore, map[string]any{"backup_key": backupManifestKey, "dry_run": true})
 	if err != nil {
 		t.Fatalf("start restore dry-run: %v", err)

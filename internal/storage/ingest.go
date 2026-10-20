@@ -397,10 +397,10 @@ func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest
 	}
 	request = normalizeIngestRequest(request)
 	if request.Source == "" || request.CollectorID == "" {
-		return IngestRequest{}, fmt.Errorf("source and collector_id are required")
+		return IngestRequest{}, fmt.Errorf("%w: source and collector_id are required", ErrInvalidArgument)
 	}
 	if err := normalizeIngestTransactionalOptions(&request); err != nil {
-		return IngestRequest{}, err
+		return IngestRequest{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if request.BatchID == "" {
 		batchID, err := defaultIngestBatchID(request)
@@ -429,7 +429,7 @@ func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest
 
 func validateIngestStatusPathIdentifier(name string, value string) error {
 	if value == "." || value == ".." {
-		return fmt.Errorf("%s must not be a dot path segment", name)
+		return fmt.Errorf("%w: %s must not be a dot path segment", ErrInvalidArgument, name)
 	}
 	return nil
 }

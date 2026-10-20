@@ -158,3 +158,20 @@ func TestHTTPTenantPaginationAndSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestTenantLifecycleRejectsMismatchedAuthenticatedScope(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	if _, err := store.CreateTenant(context.Background(), "tenant-b", storage.TenantCreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ method, path string }{{"POST", "/v1/tenants/tenant-b/purge"}, {"DELETE", "/v1/tenants/tenant-b"}, {"GET", "/v1/tenants/tenant-b/backups"}} {
+		rr := serveJSON(handler, tc.method, tc.path, "tenant-a", nil)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("%s: %d %s", tc.path, rr.Code, rr.Body.String())
+		}
+	}
+	if _, err := store.GetTenantInfo(context.Background(), "tenant-b"); err != nil {
+		t.Fatal(err)
+	}
+}

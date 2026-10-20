@@ -46,7 +46,7 @@ export async function tenantsPage(ctx) {
         if (!tenant) setTenant(tenantID);
         toast(t('success')); await after();
       }, operation === 'create' ? 'create' : 'save');
-    } else if (operation === 'clone') await confirmRequest(ctx, 'clone', 'admin', '/v1/tenants/' + pathID(id) + '/clone', { target_tenant_id: '', name: '' }, { tenantID: id, after });
+    } else if (operation === 'clone') await confirmRequest(ctx, 'clone', 'admin', '/v1/tenants/' + pathID(id) + '/clone', { target_tenant_id: '', name: '' }, { tenantID: '', after });
     else if (['enable', 'disable', 'delete', 'purge'].includes(operation)) {
       const path = '/v1/tenants/' + pathID(id) + (operation === 'delete' ? '' : '/' + operation);
       await confirmRequest(ctx, operation === 'delete' ? 'softDelete' : operation, 'admin', path, undefined, { method: operation === 'delete' ? 'DELETE' : 'POST', tenantID: id, destructive: operation !== 'enable', resource: id, after: async () => { if (operation === 'purge' && tenant === id) setTenant(''); await after(); } });

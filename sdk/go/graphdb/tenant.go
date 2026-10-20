@@ -55,7 +55,7 @@ func (c *Client) ListTenants(ctx context.Context, includeLegacy bool) ([]TenantI
 	var out struct {
 		Tenants []TenantInfo `json:"tenants"`
 	}
-	if err := c.doJSON(ctx, "GET", "/v1/tenants", "", values, nil, &out); err != nil {
+	if err := c.doJSON(ctx, "GET", "/v1/tenants", platformTenant, values, nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Tenants, nil
@@ -90,22 +90,22 @@ func (c *Client) ListTenantPage(ctx context.Context, options TenantListOptions) 
 		values.Set("cursor", options.Cursor)
 	}
 	setBool(values, "include_legacy", options.IncludeLegacy)
-	err = c.doJSON(ctx, "GET", "/v1/tenants", "", values, nil, &out)
+	err = c.doJSON(ctx, "GET", "/v1/tenants", platformTenant, values, nil, &out)
 	return out, err
 }
 
 func (c *Client) CreateTenant(ctx context.Context, request TenantCreateRequest) (out TenantInfo, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/tenants", "", nil, request, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants", platformTenant, nil, request, &out)
 	return out, err
 }
 
 func (c *Client) GetTenant(ctx context.Context, tenantID string) (out TenantInfo, err error) {
-	err = c.doJSON(ctx, "GET", "/v1/tenants/"+pathEscape(tenantID), "", nil, nil, &out)
+	err = c.doJSON(ctx, "GET", "/v1/tenants/"+pathEscape(tenantID), platformTenant, nil, nil, &out)
 	return out, err
 }
 
 func (c *Client) UpdateTenant(ctx context.Context, tenantID string, request TenantCreateRequest) (out TenantInfo, err error) {
-	err = c.doJSON(ctx, "PUT", "/v1/tenants/"+pathEscape(tenantID), "", nil, request, &out)
+	err = c.doJSON(ctx, "PUT", "/v1/tenants/"+pathEscape(tenantID), platformTenant, nil, request, &out)
 	return out, err
 }
 
@@ -118,31 +118,31 @@ func (c *Client) EnableTenant(ctx context.Context, tenantID string) (TenantInfo,
 }
 
 func (c *Client) DeleteTenant(ctx context.Context, tenantID string) (out TenantInfo, err error) {
-	err = c.doJSON(ctx, "DELETE", "/v1/tenants/"+pathEscape(tenantID), "", nil, nil, &out)
+	err = c.doJSON(ctx, "DELETE", "/v1/tenants/"+pathEscape(tenantID), platformTenant, nil, nil, &out)
 	return out, err
 }
 
 func (c *Client) PurgeTenant(ctx context.Context, tenantID string, force bool) (out TenantPurgeReport, err error) {
 	values := url.Values{}
 	setBool(values, "force", force)
-	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/purge", "", values, nil, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/purge", platformTenant, values, nil, &out)
 	return out, err
 }
 
 func (c *Client) CloneTenant(ctx context.Context, sourceTenantID string, request TenantCloneRequest) (out TenantInfo, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(sourceTenantID)+"/clone", "", nil, request, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(sourceTenantID)+"/clone", platformTenant, nil, request, &out)
 	return out, err
 }
 
 func (c *Client) BackupTenant(ctx context.Context, tenantID string) (out Task, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/backup", "", nil, nil, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/backup", platformTenant, nil, nil, &out)
 	return out, err
 }
 
 // BackupTenantToObjectStorage captures a committed snapshot in the server's
 // configured S3 repository. The completed task result contains its backup_key.
 func (c *Client) BackupTenantToObjectStorage(ctx context.Context, tenantID string) (out Task, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/backup", "", nil, map[string]any{"destination": "object"}, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/backup", platformTenant, nil, map[string]any{"destination": "object"}, &out)
 	return out, err
 }
 
@@ -172,23 +172,23 @@ func (c *Client) ListObjectBackups(ctx context.Context, tenantID, cursor string,
 	if limit != 0 {
 		values.Set("limit", strconv.Itoa(limit))
 	}
-	err = c.doJSON(ctx, "GET", "/v1/tenants/"+pathEscape(tenantID)+"/backups", "", values, nil, &out)
+	err = c.doJSON(ctx, "GET", "/v1/tenants/"+pathEscape(tenantID)+"/backups", platformTenant, values, nil, &out)
 	return out, err
 }
 
 func (c *Client) RestoreTenant(ctx context.Context, tenantID string, backupKey string, overwrite bool, dryRun bool) (out Task, err error) {
 	request := map[string]any{"backup_key": backupKey, "overwrite": overwrite, "dry_run": dryRun}
-	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/restore", "", nil, request, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/restore", platformTenant, nil, request, &out)
 	return out, err
 }
 
 func (c *Client) RestoreDrillTenant(ctx context.Context, tenantID string, request map[string]any) (out Task, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/restore-drill", "", nil, request, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/restore-drill", platformTenant, nil, request, &out)
 	return out, err
 }
 
 func (c *Client) tenantAction(ctx context.Context, tenantID string, action string) (out TenantInfo, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/"+action, "", nil, nil, &out)
+	err = c.doJSON(ctx, "POST", "/v1/tenants/"+pathEscape(tenantID)+"/"+action, platformTenant, nil, nil, &out)
 	return out, err
 }
 
@@ -205,13 +205,13 @@ type BackupAutomationStatus struct {
 }
 
 func (c *Client) GetBackupAutomation(ctx context.Context) (out BackupAutomationStatus, err error) {
-	err = c.doJSON(ctx, "GET", "/v1/backup-automation", "", nil, nil, &out)
+	err = c.doJSON(ctx, "GET", "/v1/backup-automation", platformTenant, nil, nil, &out)
 	return out, err
 }
 
 // ResetBackupAutomation abandons the current retry; an enabled policy starts a
 // fresh capture on its next tick. Returns a conflict while a backup is active.
 func (c *Client) ResetBackupAutomation(ctx context.Context) (out BackupAutomationStatus, err error) {
-	err = c.doJSON(ctx, "POST", "/v1/backup-automation/reset", "", nil, nil, &out)
+	err = c.doJSON(ctx, "POST", "/v1/backup-automation/reset", platformTenant, nil, nil, &out)
 	return out, err
 }

@@ -427,11 +427,7 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		defer s.acceptors.Done()
 
 		generationCtx, cancelGeneration := context.WithTimeout(ctx, ingestWALGenerationCaptureTimeout)
-		captureCtx := generationCtx
-
-		captureCtx = ctx
-
-		generation, generationErr := s.captureIngestWALGeneration(captureCtx, tenantID)
+		generation, generationErr := s.captureIngestWALGeneration(generationCtx, tenantID)
 		cancelGeneration()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			s.failAcceptFlight(identity, statusKey, flight, ctxErr)
@@ -1072,8 +1068,11 @@ func (s *IngestService) flushTenant(items []*ingestPending) []*ingestPending {
 			}
 		} else {
 			generation := s.pendingAcceptedGeneration(items[start])
-			for end < len(items) && items[end].envelope.Prepared == nil &&
+			bytes := items[start].bytes
+			for end < len(items) && end-start < s.config.FlushMaxRequests &&
+				bytes+items[end].bytes <= s.config.FlushMaxBytes && items[end].envelope.Prepared == nil &&
 				s.pendingAcceptedGeneration(items[end]) == generation {
+				bytes += items[end].bytes
 				end++
 			}
 		}
@@ -1219,6 +1218,33 @@ func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPendin
 	}
 	if err != nil {
 		flushErr = err
+		// A coalesced group can exceed publication or WAL frame limits even
+		// though every request was admitted. Split only before a durable plan
+		// exists: a prepared cohort must retain its original atomic publication.
+		var pressure *BackpressureError
+		split := errors.Is(err, ErrIngestWALRecordTooLarge) || errors.Is(err, ErrIngestWALRecordExceedsSegment)
+		if errors.As(err, &pressure) {
+			for _, reason := range pressure.Reasons {
+				if reason.Code == "commit_tail_too_long" && float64(len(items)) > reason.Threshold {
+					split = true
+				}
+			}
+		}
+		if split && len(items) > 1 {
+			for _, item := range items {
+				if item.envelope.Prepared != nil {
+					split = false
+					break
+				}
+			}
+			if split {
+				middle := len(items) / 2
+				if retry := s.flushTenantGroup(items[:middle]); len(retry) > 0 {
+					return append(retry, items[middle:]...)
+				}
+				return s.flushTenantGroup(items[middle:])
+			}
+		}
 		if terminalIngestFlushError(err) {
 			if errors.Is(err, ErrTenantDisabled) || errors.Is(err, ErrTenantDeleted) {
 			}

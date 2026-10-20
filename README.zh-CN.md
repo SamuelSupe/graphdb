@@ -1,8 +1,8 @@
-# GGraphDB 2.3.6
+# GGraphDB 2.3.7
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.6) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.7) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,16 +12,17 @@
 
 ## 当前版本
 
-**[2.3.6](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.6)** 为稳定 Latest 版本；完整标签门禁、独立下载资产及 Linux/macOS 运行核验均已通过，无门禁豁免。
+**[2.3.7](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.7)** 为正确性修复候选版；发布需通过完整标签门禁，实际结果与下载资产核验单独记录。
 
-| 领域 | 2.3.6 提供的能力 |
+| 领域 | 2.3.7 提供的能力 |
 | --- | --- |
 | 管理 UI | `/ui/` 内嵌英文／简体中文控制台，无需独立前端服务 |
 | 日常操作 | 图表概览、结构化表单与详情、查询工作台、数据接入和维护 |
 | 大量租户 | 服务端租户 ID 搜索，租户切换和集群归属使用有界分页 |
+| 正确性 | WAL 分组上限、索引查询一致性、快照重试与租户恢复边界 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组 |
 
-验证证据见[发布验证](docs/validation-v2.3.6.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验证](docs/validation-v2.3.7.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -116,6 +117,7 @@ GraphQL 的完整示例见 [GraphQL 指南](docs/graphql.zh-CN.md)。控制台�
 
 ## 部署方式
 
+| 正确性 | WAL 分组上限、索引查询一致性、快照重试与租户恢复边界 |
 | 部署 | 适用需求 | 从这里开始 |
 | --- | --- | --- |
 | 单机 | 一个进程，同步持久化本地 direct/WAL 写入 | [本地磁盘指南](docs/local-disk.zh-CN.md) · [Compose](docker-compose.yml) |
@@ -186,7 +188,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.3.6 验证](docs/validation-v2.3.6.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.3.7 验证](docs/validation-v2.3.7.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 

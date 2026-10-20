@@ -25,6 +25,18 @@ func (s *Server) startTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
 		return
 	}
+	request.Type = strings.TrimSpace(request.Type)
+	if storage.EnforceTenantScope(r.Context()) && (request.Type == storage.TaskTypeTenantRestore || request.Type == storage.TaskTypeTenantRestoreDrill) {
+		if request.Params == nil {
+			request.Params = make(map[string]any)
+		}
+		if request.Type == storage.TaskTypeTenantRestoreDrill &&
+			((request.Params["target_tenant_id"] != nil && request.Params["target_tenant_id"] != "") || (request.Params["target_prefix"] != nil && request.Params["target_prefix"] != "")) {
+			writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "tenant-scoped restore drills require an automatically isolated target", false, nil)
+			return
+		}
+		request.Params["required_source_tenant"] = tenantID
+	}
 	task, err := s.Store.StartTask(r.Context(), tenantID, request.Type, request.Params)
 	if err != nil {
 		s.auditError("task_start_failed", tenantID, err, map[string]any{"type": request.Type})
@@ -89,6 +101,15 @@ func (s *Server) taskAction(w http.ResponseWriter, r *http.Request) {
 	case "cancel":
 		task, err = s.Store.CancelTask(r.Context(), tenantID, parts[0])
 	case "retry":
+		previous, getErr := s.Store.GetTask(r.Context(), tenantID, parts[0])
+		if getErr != nil {
+			writeStorageError(w, getErr)
+			return
+		}
+		if storage.EnforceTenantScope(r.Context()) && (previous.Type == storage.TaskTypeTenantRestoreDrill || previous.Type == storage.TaskTypeTenantRestore) && previous.Params["required_source_tenant"] != tenantID {
+			writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "platform restore must be restarted through the private tenant lifecycle API", false, nil)
+			return
+		}
 		task, err = s.Store.RetryTask(r.Context(), tenantID, parts[0])
 	default:
 		writeError(w, http.StatusBadRequest, "unsupported task action")

@@ -88,6 +88,9 @@ func (s *Server) createTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "tenant_id is required")
 		return
 	}
+	if !tenantScopeAllows(w, r, request.TenantID) {
+		return
+	}
 	info, err := s.Store.CreateTenant(r.Context(), request.TenantID, storage.TenantCreateOptions{
 		Name: request.Name, Description: request.Description, Labels: request.Labels, Metadata: request.Metadata, Config: request.Config, SourcePolicy: request.SourcePolicy,
 	})
@@ -212,6 +215,9 @@ func (s *Server) cloneTenant(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
 		return
 	}
+	if !tenantScopeAllows(w, r, request.TargetTenantID) {
+		return
+	}
 	info, err := s.Store.CloneTenant(r.Context(), sourceTenantID, storage.TenantCloneOptions{
 		TargetTenantID: request.TargetTenantID,
 		Name:           request.Name,
@@ -266,11 +272,15 @@ func (s *Server) restoreTenant(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &request, maxConfigRequestBytes) {
 		return
 	}
-	task, err := s.Store.StartTask(r.Context(), tenantID, storage.TaskTypeTenantRestore, map[string]any{
+	params := map[string]any{
 		"backup_key": request.BackupKey,
 		"overwrite":  request.Overwrite,
 		"dry_run":    request.DryRun,
-	})
+	}
+	if scope := r.Header.Get("X-Tenant-ID"); scope != "" && storage.EnforceTenantScope(r.Context()) {
+		params["required_source_tenant"] = scope
+	}
+	task, err := s.Store.StartTask(r.Context(), tenantID, storage.TaskTypeTenantRestore, params)
 	if err != nil {
 		s.auditError("tenant_restore_start_failed", tenantID, err, map[string]any{"backup_key": request.BackupKey})
 		writeTenantLifecycleError(w, err)
@@ -327,6 +337,13 @@ func (s *Server) restoreDrillTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Cleanup != nil {
 		params["cleanup"] = *request.Cleanup
+	}
+	if r.Header.Get("X-Tenant-ID") != "" && storage.EnforceTenantScope(r.Context()) {
+		if request.TargetTenantID != "" || request.TargetPrefix != "" {
+			writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "tenant-scoped restore drills require an automatically isolated target", false, nil)
+			return
+		}
+		params["required_source_tenant"] = tenantID
 	}
 	task, err := s.Store.StartTask(r.Context(), tenantID, storage.TaskTypeTenantRestoreDrill, params)
 	if err != nil {
@@ -438,6 +455,9 @@ func tenantIDFromLifecyclePath(w http.ResponseWriter, r *http.Request, count int
 		writeError(w, http.StatusBadRequest, err.Error())
 		return "", false
 	}
+	if !tenantScopeAllows(w, r, parts[0]) {
+		return "", false
+	}
 	setAPITraceTenant(r.Context(), parts[0])
 	if span != nil {
 		span.SetAttributes(
@@ -463,6 +483,19 @@ func writeTenantLifecycleError(w http.ResponseWriter, err error) {
 	case errors.Is(err, storage.ErrTenantDeleted):
 		writeErrorErr(w, http.StatusGone, err)
 	default:
-		writeErrorErr(w, http.StatusBadRequest, err)
+		writeStorageError(w, err)
 	}
+}
+
+// An authenticated tenant header scopes every tenant named by a lifecycle
+// operation. Trusted platform operators use the private API without this header.
+func tenantScopeAllows(w http.ResponseWriter, r *http.Request, target string) bool {
+	if !storage.EnforceTenantScope(r.Context()) {
+		return true
+	}
+	if scope := r.Header.Get("X-Tenant-ID"); scope != "" && scope != target {
+		writeErrorDetail(w, http.StatusForbidden, ErrorCodeOperationDisabled, "tenant scope does not authorize the requested tenant", false, nil)
+		return false
+	}
+	return true
 }

@@ -80,7 +80,7 @@ export async function tasksPage(ctx) {
         const body = { backup_key: form.elements.namedItem('backupKey').value, dry_run: form.elements.namedItem('dryRun').checked };
         if (drill) { body.target_tenant_id = form.elements.namedItem('targetTenant').value; body.cleanup = form.elements.namedItem('cleanup').checked; }
         else body.overwrite = form.elements.namedItem('overwrite').checked;
-        const result = await request('admin', '/v1/tenants/' + pathID(id) + (drill ? '/restore-drill' : '/restore'), { method: 'POST', body, tenantID: id }); toast(t('accepted')); await load(); ctx.result(result.data);
+        const result = await request('admin', '/v1/tenants/' + pathID(id) + (drill ? '/restore-drill' : '/restore'), { method: 'POST', body, tenantID: '' }); toast(t('accepted')); await load(); ctx.result(result.data);
       }, 'execute', true);
     } else if (action === 'audit') ctx.result(await ctx.get('admin', '/v1/control/integrity-audit?deep=true'));
     else if (action === 'recover') await confirmRequest(ctx, 'recover', 'admin', '/v1/control/recover', undefined);

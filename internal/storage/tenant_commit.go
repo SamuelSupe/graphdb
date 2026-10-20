@@ -13,24 +13,26 @@ import (
 )
 
 type commitIndexUpdate struct {
-	before           *graph.Graph
-	after            *graph.Graph
-	mutations        graph.Mutations
-	report           graph.ApplyReport
-	version          int64
-	baseVersion      int64
-	reservation      *maintenanceReservation
-	background       bool
-	rebuild          bool
-	onlineRebuild    bool
-	deferredEntities map[string]graph.Entity
-	deferredEdges    map[string]graph.Edge
-	deferredBytes    int64
-	fence            writerFenceRef
-	waitFor          <-chan struct{}
-	done             chan struct{}
-	joined           *commitIndexUpdate
-	err              error
+	maintenanceDone    <-chan struct{}
+	before             *graph.Graph
+	after              *graph.Graph
+	mutations          graph.Mutations
+	report             graph.ApplyReport
+	version            int64
+	baseVersion        int64
+	reservation        *maintenanceReservation
+	background         bool
+	rebuild            bool
+	onlineRebuild      bool
+	deferredEntities   map[string]graph.Entity
+	deferredEdges      map[string]graph.Edge
+	deferredBytes      int64
+	deferredGraphBytes int64
+	fence              writerFenceRef
+	waitFor            <-chan struct{}
+	done               chan struct{}
+	joined             *commitIndexUpdate
+	err                error
 }
 
 func (work *commitIndexUpdate) retainIndexInputs() {
@@ -123,40 +125,11 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		close(work.done)
 		s.indexUpdateMu.Unlock()
 	}()
-	if deferred {
-		// Wait without retaining a graph, then isolate this coalesced update
-		// within the existing budget before loading its latest head.
-		buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
-		buildCtx, releaseMemory, err := s.admitMaintenance(buildCtx, s.backgroundIndexByteLimit())
-		if err != nil {
-			return err
-		}
-		defer releaseMemory()
-		ctx = buildCtx
-		unlock, err := s.lockTenantForeground(ctx, tenantID)
-		if err != nil {
-			return err
-		}
-		loaded, err := s.loadForWriteLocked(ctx, tenantID)
-		if err != nil {
-			unlock()
-			return err
-		}
-		s.indexUpdateMu.Lock()
-		// A direct commit or rebuild can have joined behind this demand. Its
-		// changes are not in our delta, so only a full build can cover that head.
-		if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
-			work.baseVersion = -1
-		}
-		if s.pendingIngestIndexes[tenantID] == work {
-			delete(s.pendingIngestIndexes, tenantID)
-		}
-		work.after = loaded.Graph
-		work.version = loaded.Manifest.Version
-		s.indexUpdateMu.Unlock()
-		unlock()
-		if err := s.prepareDeferredIndexBase(ctx, tenantID, work); err != nil {
-			return err
+	if work.maintenanceDone != nil {
+		select {
+		case <-work.maintenanceDone:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	if work.reservation != nil {
@@ -166,29 +139,97 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 			return err
 		}
 	}
-	indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
-		tenantTraceAttr(tenantID),
-		attribute.Int64("graphdb.commit.version", work.version),
-		attribute.Int("graphdb.commit.affected_entities", len(work.report.AffectedEntityIDs)),
-		attribute.Bool("graphdb.commit.outside_tenant_lock", true),
-	)
-	if s.localFileStore() != nil && s.writerFenceBound(ctx, tenantID) {
-		indexCtx = context.WithValue(indexCtx, orderedIndexUpdateKey{}, true)
+	attempt := func() error {
+		ctx := ctx
+		if deferred {
+			// Reserve the latest coalesced graph estimate, not the entire shared
+			// budget, so a small tenant does not block unrelated maintenance.
+			buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
+			s.indexUpdateMu.Lock()
+			estimatedBytes := addWriteCacheBytes(work.deferredGraphBytes, work.deferredBytes)
+			s.indexUpdateMu.Unlock()
+			buildCtx, releaseMemory, err := s.admitMaintenance(buildCtx, estimatedBytes)
+			if err != nil {
+				return err
+			}
+			defer releaseMemory()
+			ctx = buildCtx
+			unlock, err := s.lockTenantForeground(ctx, tenantID)
+			if err != nil {
+				return err
+			}
+			loaded, err := s.loadForWriteLocked(ctx, tenantID)
+			if err != nil {
+				unlock()
+				return err
+			}
+			s.indexUpdateMu.Lock()
+			// A direct commit or rebuild can have joined behind this demand. Its
+			// changes are not in our delta, so only a full build can cover that head.
+			if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
+				work.baseVersion = -1
+			}
+			if s.pendingIngestIndexes[tenantID] == work {
+				delete(s.pendingIngestIndexes, tenantID)
+			}
+			work.after = loaded.Graph
+			work.version = loaded.Manifest.Version
+			s.indexUpdateMu.Unlock()
+			unlock()
+			if err := s.prepareDeferredIndexBase(ctx, tenantID, work); err != nil {
+				return err
+			}
+		}
+		indexCtx, indexSpan := startStorageSpan(ctx, "graphdb.storage.commit.update_indexes",
+			tenantTraceAttr(tenantID),
+			attribute.Int64("graphdb.commit.version", work.version),
+			attribute.Int("graphdb.commit.affected_entities", len(work.report.AffectedEntityIDs)),
+			attribute.Bool("graphdb.commit.outside_tenant_lock", true),
+		)
+		if s.localFileStore() != nil && s.writerFenceBound(ctx, tenantID) {
+			indexCtx = context.WithValue(indexCtx, orderedIndexUpdateKey{}, true)
+		}
+		indexErr = s.updateIndexesAfterCommit(
+			indexCtx,
+			tenantID,
+			work.before,
+			work.after,
+			work.mutations,
+			work.report,
+			work.baseVersion,
+			work.version,
+			work.rebuild,
+			work.waitFor != nil || work.background,
+		)
+		endStorageSpan(indexSpan, indexErr)
+		return indexErr
 	}
-	indexErr = s.updateIndexesAfterCommit(
-		indexCtx,
-		tenantID,
-		work.before,
-		work.after,
-		work.mutations,
-		work.report,
-		work.baseVersion,
-		work.version,
-		work.rebuild,
-		work.waitFor != nil || work.background,
-	)
-	endStorageSpan(indexSpan, indexErr)
-	return indexErr
+	delay := 100 * time.Millisecond
+	for {
+		indexErr = attempt()
+		if indexErr != nil && deferred {
+			// A failed attempt may have consumed its delta or partially written
+			// artifacts. Rebuild the captured latest head on the next attempt.
+			s.indexUpdateMu.Lock()
+			work.baseVersion = -1
+			s.indexUpdateMu.Unlock()
+		}
+		if indexErr == nil || !work.background || ctx.Err() != nil || errors.Is(indexErr, ErrTenantDeleted) || errors.Is(indexErr, ErrTenantDisabled) || errors.Is(indexErr, ErrLeaseHeld) {
+			return indexErr
+		}
+		// Retain the demand and queue position across temporary I/O failures.
+		// Shutdown cancels the wait; a later startup rebuild can catch up.
+		started := time.Now()
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		s.recordMaintenance("index_retry", started)
+		delay = min(delay*2, 5*time.Second)
+	}
 }
 
 func (s *TenantStore) finishCommitIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate, result *CommitResult) {
@@ -522,7 +563,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	}
 	endStorageSpan(applySpan, err)
 	if err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
 	}
 	report.Suppressed = append(policyReport.Suppressed, report.Suppressed...)
 	if opts.rejectSuppressed && len(report.Suppressed) > 0 {

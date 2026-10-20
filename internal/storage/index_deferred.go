@@ -9,6 +9,7 @@ import (
 // Keep old scalar values and edge endpoints, not graphs or source histories.
 // A small byte cap also bounds an unusually large indexed scalar value.
 func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate) {
+	pending.deferredGraphBytes = maintenanceGraphBytes(next.after)
 	defer func() {
 		pending.version = next.version
 		if pending.baseVersion < 0 {

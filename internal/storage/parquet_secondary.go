@@ -281,26 +281,32 @@ func (l *PersistedIndexLookup) matchParquetFieldIndex(ctx context.Context, spec 
 	if shards, hasShards := secondaryIndexShardObjectMap(spec.Objects); hasShards {
 		seen := map[string]struct{}{}
 		for _, value := range values {
-			key, ok := graph.ScalarIndexKey(value)
+			keys, ok := secondaryIndexLookupKeys(value)
 			if !ok {
 				return nil, false, nil
 			}
-			object, ok := secondaryIndexShardObjectForValue(shards, key)
-			if !ok {
-				continue
-			}
-			index, ok, err := l.Store.loadParquetSecondaryIndexShardObject(ctx, l.TenantID, l.Version, spec, object)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, false, err
+			for _, key := range keys {
+				objects := make([]IndexObject, 0, 1)
+				for shardID, object := range shards {
+					if secondaryIndexShardMayContainValue(shardID, key) {
+						objects = append(objects, object)
+					}
 				}
-				return nil, false, nil
-			}
-			if !ok {
-				return nil, false, nil
-			}
-			for _, id := range index.Values[key] {
-				seen[id] = struct{}{}
+				for _, object := range uniqueIndexObjects(objects) {
+					index, ok, err := l.Store.loadParquetSecondaryIndexShardObject(ctx, l.TenantID, l.Version, spec, object)
+					if err != nil {
+						if ctx.Err() != nil {
+							return nil, false, err
+						}
+						return nil, false, nil
+					}
+					if !ok {
+						return nil, false, nil
+					}
+					for _, id := range index.Values[key] {
+						seen[id] = struct{}{}
+					}
+				}
 			}
 		}
 		ids := make([]string, 0, len(seen))
@@ -328,12 +334,14 @@ func (l *PersistedIndexLookup) matchParquetFieldIndex(ctx context.Context, spec 
 	}
 	seen := map[string]struct{}{}
 	for _, value := range values {
-		key, ok := graph.ScalarIndexKey(value)
+		keys, ok := secondaryIndexLookupKeys(value)
 		if !ok {
 			return nil, false, nil
 		}
-		for _, id := range index.Values[key] {
-			seen[id] = struct{}{}
+		for _, key := range keys {
+			for _, id := range index.Values[key] {
+				seen[id] = struct{}{}
+			}
 		}
 	}
 	ids := make([]string, 0, len(seen))
@@ -537,7 +545,10 @@ func secondaryIndexShardObjectsForFilters(objects []IndexObject, filters []query
 	constrained := false
 	for shardID, object := range shards {
 		prefix, ok := secondaryIndexStringShardPrefix(shardID)
-		if !ok {
+		if !ok || shardID == "s_empty" {
+			// Scalars also participate in textual predicates. The empty-string
+			// sentinel is not a literal prefix.
+			needed[shardID] = object
 			continue
 		}
 		match, used, supported := secondaryIndexStringShardMatchesFilters(prefix, filters)
@@ -570,9 +581,6 @@ func secondaryIndexShardObjectMap(objects []IndexObject) (map[string]IndexObject
 }
 
 func secondaryIndexShardObjectForValue(shards map[string]IndexObject, valueKey string) (IndexObject, bool) {
-	if object, ok := shards[secondaryIndexShardID(valueKey)]; ok {
-		return object, true
-	}
 	bestID := ""
 	var best IndexObject
 	for shardID, object := range shards {
@@ -588,6 +596,9 @@ func secondaryIndexShardObjectForValue(shards map[string]IndexObject, valueKey s
 }
 
 func secondaryIndexShardMayContainValue(shardID string, valueKey string) bool {
+	if shardID == secondaryIndexShardID(valueKey) {
+		return true
+	}
 	switch {
 	case shardID == "null":
 		return valueKey == "null"
@@ -664,32 +675,10 @@ func secondaryIndexStringShardMatchesFilters(shardPrefix string, filters []query
 			if !strings.HasPrefix(shardPrefix, prefix) && !strings.HasPrefix(prefix, shardPrefix) {
 				return false, true, true
 			}
-		case "gt", "gte":
-			value, ok := filter.Value.(string)
-			if !ok {
-				return false, false, false
-			}
-			lower, ok := secondaryIndexFilterString(value)
-			if !ok {
-				return false, false, false
-			}
-			used = true
-			if shardPrefix+"\xff" <= lower {
-				return false, true, true
-			}
-		case "lt", "lte":
-			value, ok := filter.Value.(string)
-			if !ok {
-				return false, false, false
-			}
-			upper, ok := secondaryIndexFilterString(value)
-			if !ok {
-				return false, false, false
-			}
-			used = true
-			if shardPrefix >= upper {
-				return false, true, true
-			}
+		case "gt", "gte", "lt", "lte":
+			// Shard names are lowercased and sanitized; they cannot establish
+			// bounds for the case-sensitive values stored in the index.
+			return false, false, false
 		default:
 			return false, false, false
 		}
@@ -770,4 +759,15 @@ func parquetFloat64Column(record arrow.RecordBatch, index int, name string) (*ar
 		return nil, fmt.Errorf("parquet column %q has unexpected type", name)
 	}
 	return column, nil
+}
+
+func secondaryIndexLookupKeys(value any) ([]string, bool) {
+	key, ok := graph.ScalarIndexKey(value)
+	if !ok {
+		return nil, false
+	}
+	if key == "n:0" {
+		return []string{"n:0", "n:-0"}, true
+	}
+	return []string{key}, true
 }

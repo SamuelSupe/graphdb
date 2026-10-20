@@ -456,6 +456,7 @@ func TestExecutorUsesExternalFieldIndexLookup(t *testing.T) {
 
 func TestExecutorUsesFieldIndexScanForRangeAggregateSort(t *testing.T) {
 	g := graph.New()
+	g.CITypes["host"] = graph.CIType{Name: "host", Fields: map[string]graph.FieldSpec{"hostname": {Type: "string", Indexed: true}}}
 	g.Version = 1
 	lookup := &rangeScanLookup{entities: graph.ShardedMapFrom[graph.Entity](map[string]graph.Entity{
 		"host:1": {ID: "host:1", Kind: "host", Fields: graph.Fields{"hostname": "app-01", "region": "r1"}},

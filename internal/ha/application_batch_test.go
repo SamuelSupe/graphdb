@@ -539,3 +539,42 @@ func TestApplicationBatchAcceptanceIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestApplicationPreservesCommittedLegacyTenantScope(t *testing.T) {
+	for _, scoped := range []bool{false, true} {
+		t.Run(fmt.Sprint(scoped), func(t *testing.T) {
+			ctx := context.Background()
+			files, err := storage.OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := storage.NewTenantStore(files, "graphdb")
+			defer store.ShutdownTasks(ctx)
+			store.ReplicationMode = true
+			app := &Application{Files: files, Store: store}
+			app.Handler = (&httpapi.Server{Store: store, Mode: "all"}).Handler()
+			cmd := command{ID: "historical-create", Kind: "http", At: time.Unix(1, 0), Method: "POST", URI: "/v1/tenants",
+				Tenant: "tenant-b", Header: http.Header{"X-Tenant-Id": {"tenant-a"}}, Body: []byte(`{"tenant_id":"tenant-b"}`), TenantScopeValidation: scoped}
+			data, err := json.Marshal(cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := app.Apply(ctx, 1, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result httpResult
+			if err := json.Unmarshal(response, &result); err != nil {
+				t.Fatal(err)
+			}
+			want := http.StatusOK
+			if scoped {
+				want = http.StatusForbidden
+			}
+			if result.Status != want {
+				t.Fatalf("applied status = %d, want %d: %s", result.Status, want, result.Body)
+			}
+		})
+	}
+}

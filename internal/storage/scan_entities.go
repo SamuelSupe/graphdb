@@ -208,6 +208,14 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		return EntityScanResult{}, false, err
 	}
 	items := make([]graph.Entity, 0, normalizedScanLimit(options.Limit)+1)
+	lastScanKey := ""
+	pageResult := func(hasMore bool) EntityScanResult {
+		result := entityScanPage(tenantID, version, items, options, hasMore, compiled.contentHash)
+		if hasMore && len(result.Entities) > 0 {
+			result.NextCursor = encodeScanCursor(scanCursor{Version: version, CatalogHash: compiled.contentHash, After: lastScanKey, Query: entityScanQueryHash(options)})
+		}
+		return result
+	}
 	shards := compiled.entityTargets(options.Shard)
 	stats.shardsTotal = len(shards)
 	specs := compiled.entitySpecs
@@ -233,6 +241,9 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				continue
 			}
 			items = append(items, entity)
+			if len(items) <= normalizedScanLimit(options.Limit) {
+				lastScanKey = scanKey(shard, entity.ID)
+			}
 			if len(items) > normalizedScanLimit(options.Limit) {
 				stats.earlyStop = true
 				return true
@@ -343,7 +354,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				stats.decodedCacheHits++
 				if !revalidate {
 					if consumePage(entry.page, shard, nil, false) {
-						return entityScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
+						return pageResult(true), true, nil
 					}
 					continue
 				}
@@ -365,7 +376,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 					return EntityScanResult{}, false, nil
 				}
 				if done {
-					return entityScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
+					return pageResult(true), true, nil
 				}
 				continue
 			}
@@ -398,13 +409,13 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 			s.putCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash, loaded.data, loaded.meta)
 			s.putCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash, loaded.page, loaded.meta.ETag)
 			if consumePage(loaded.page, shard, loaded.candidates, shouldScanParquetEntityCandidates(options, cursor)) {
-				return entityScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
+				return pageResult(true), true, nil
 			}
 			continue
 		}
 		return EntityScanResult{}, false, nil
 	}
-	return entityScanPage(tenantID, version, items, options, false, compiled.contentHash), true, nil
+	return pageResult(false), true, nil
 }
 
 func pageEntities(candidates []graph.Entity, version int64, options EntityScanOptions, cursor scanCursor) ([]graph.Entity, string) {

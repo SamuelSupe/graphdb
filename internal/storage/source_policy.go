@@ -55,7 +55,7 @@ func (s *TenantStore) PutSourcePolicy(ctx context.Context, tenantID string, poli
 	}
 	normalized, err := graph.NormalizeSourcePolicy(policy)
 	if err != nil {
-		return graph.SourcePolicy{}, err
+		return graph.SourcePolicy{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 
 	unlock, err := s.lockTenantForeground(ctx, tenantID)

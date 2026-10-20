@@ -26,7 +26,7 @@ type commandSpec struct {
 
 var commandSpecs = []commandSpec{
 	{name: "runtime-backup", usage: []string{"graphdb runtime-backup <archive> [--max-bytes <bytes>] (offline)"}, kind: commandRecovery},
-	{name: "runtime-restore", usage: []string{"graphdb runtime-restore <archive> [--max-bytes <bytes>] (offline, empty target)"}, kind: commandRecovery, mutation: true},
+	{name: "runtime-restore", usage: []string{"graphdb runtime-restore <archive> [--max-bytes <bytes>] [--isolated-cluster-recovery] (offline, empty target; isolation acknowledgement required for Raft)"}, kind: commandRecovery, mutation: true},
 	{name: "serve", usage: []string{"graphdb serve"}, kind: commandServe},
 	{name: "serve-router", usage: []string{"graphdb serve-router"}, kind: commandRouter},
 	{name: "version", usage: []string{"graphdb version"}, kind: commandVersion},

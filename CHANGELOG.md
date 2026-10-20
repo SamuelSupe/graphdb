@@ -5,6 +5,25 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## Unreleased
 
+## [2.3.7] - 2026-10-20
+
+- Bound WAL groups and split oversized, still-unprepared groups; enforce generation
+  capture deadlines and HTTP admission before ingest JSON decoding.
+- Reserve tenant-sized deferred index work, retry temporary catch-up failures,
+  and prevent an ordered rebuild from replacing a newer catalog.
+- Fix split-shard equality, case-sensitive range pruning, signed-zero lookup,
+  scalar/non-scalar scan parity and legacy entity-page cursors. Accept date-only
+  and Unix-millisecond timestamp predicates; reject invalid timestamp literals.
+- Retry transient non-streaming snapshot preparation failures while keeping Raft
+  available. Hand off leadership if a drained node is elected again.
+- Enforce authenticated tenant scope on lifecycle and backup source operations;
+  preserve private platform migration and automatic isolated restore drills.
+  Require explicit isolated-cluster acknowledgement for Raft runtime restore.
+- Bind default Compose ports to loopback. Avoid registering unknown HTTP tenants
+  for monitoring and sanitize unclassified storage failures as HTTP 500.
+- Keep complete-frame WAL checksum failures fail-closed. No new performance or
+  cross-host availability claim accompanies this correctness patch.
+
 ## [2.3.6] - 2026-10-20
 
 - Include the maintenance publication and Raft filesystem optimizations below.

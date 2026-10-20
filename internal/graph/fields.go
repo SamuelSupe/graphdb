@@ -20,24 +20,31 @@ func ScalarIndexKey(value any) (string, bool) {
 		}
 		return "b:false", true
 	case float64:
-		return fmt.Sprintf("n:%g", v), true
+		return numericIndexKey(v), true
 	case float32:
-		return fmt.Sprintf("n:%g", float64(v)), true
+		return numericIndexKey(float64(v)), true
 	case int:
-		return fmt.Sprintf("n:%g", float64(v)), true
+		return numericIndexKey(float64(v)), true
 	case int64:
-		return fmt.Sprintf("n:%g", float64(v)), true
+		return numericIndexKey(float64(v)), true
 	case int32:
-		return fmt.Sprintf("n:%g", float64(v)), true
+		return numericIndexKey(float64(v)), true
 	case json.Number:
 		value, err := v.Float64()
 		if err != nil {
 			return "", false
 		}
-		return fmt.Sprintf("n:%g", value), true
+		return numericIndexKey(value), true
 	default:
 		return "", false
 	}
+}
+
+func numericIndexKey(value float64) string {
+	if value == 0 {
+		return "n:0"
+	}
+	return fmt.Sprintf("n:%g", value)
 }
 
 func validFieldType(fieldType string) bool {

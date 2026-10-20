@@ -215,7 +215,10 @@ func (s *TenantStore) rebuildIndexesWithView(ctx context.Context, tenantID strin
 }
 
 func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID string, g *graph.Graph, manifest Manifest) (IndexCatalog, error) {
-	_, previousMeta, _ := s.previousIndexCatalog(ctx, tenantID)
+	previous, previousMeta, found := s.previousIndexCatalog(ctx, tenantID)
+	if found && previous.Version > manifest.Version {
+		return previous, nil
+	}
 	definitions, err := s.getIndexDefinitions(ctx, tenantID)
 	if err != nil {
 		return IndexCatalog{}, err

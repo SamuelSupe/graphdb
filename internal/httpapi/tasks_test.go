@@ -101,3 +101,30 @@ func waitForHTTPTask(t *testing.T, store *storage.TenantStore, tenantID string, 
 	t.Fatalf("task %s did not finish", taskID)
 	return storage.Task{}
 }
+
+func TestScopedRestoreTaskCannotOverrideSource(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	defer store.ShutdownTasks(context.Background())
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	response := serveJSON(handler, http.MethodPost, "/v1/tasks", "tenant-a", TaskStartRequest{
+		Type: " tenant_restore ", Params: map[string]any{"backup_key": "foreign/backup.parquet", "required_source_tenant": "tenant-b", "dry_run": true},
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start = %d: %s", response.Code, response.Body.String())
+	}
+	var task storage.Task
+	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Params["required_source_tenant"] != "tenant-a" {
+		t.Fatalf("source scope was overridden: %+v", task.Params)
+	}
+	for _, param := range []string{"target_tenant_id", "target_prefix"} {
+		response = serveJSON(handler, http.MethodPost, "/v1/tasks", "tenant-a", TaskStartRequest{
+			Type: " tenant_restore_drill ", Params: map[string]any{param: "tenant-b"},
+		})
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("explicit target %s = %d: %s", param, response.Code, response.Body.String())
+		}
+	}
+}

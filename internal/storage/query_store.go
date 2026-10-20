@@ -26,7 +26,7 @@ func (s *TenantStore) SaveQuery(ctx context.Context, tenantID string, saved Save
 	}
 	saved.Name = strings.TrimSpace(saved.Name)
 	if saved.Name == "" {
-		return SavedQuery{}, errors.New("saved query name is required")
+		return SavedQuery{}, fmt.Errorf("%w: saved query name is required", ErrInvalidArgument)
 	}
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
 	if err != nil {

@@ -1,6 +1,6 @@
 # 生产安全边界
 
-适用于 **GGraphDB 2.3.6**；发行资格见[版本验证](validation-v2.3.6.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.3.7**；发行资格见[版本验证](validation-v2.3.7.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 [English](security-deployment.md)
 
@@ -110,3 +110,17 @@ Raft 私有监听器与独立 admin listener 使用不同端口；例如 Raft �
 
 所有副本与 router 逐进程采集诊断，禁止把指标可读或 readiness 成功视为整组健康证明。
 部署及升级边界见 [Raft 运维](raft-operations.zh-CN.md) 和 [诊断指标](diagnostics-metrics.zh-CN.md)。
+
+## 租户作用域与平台管理
+
+2.3.7 起，请求带 `X-Tenant-ID` 时，生命周期路径、创建目标与克隆目标必须属于该租户。
+恢复任务在返回备份内容或修改目标前校验备份源租户；通用任务入口也强制绑定来源，不能通过参数绕过。
+带作用域的恢复演练只允许服务端自动生成的隔离目标；自定义目标租户、前缀及跨租户恢复属于平台操作。
+作用域冲突返回 403（`operation_disabled`）。
+
+平台管理员仍可通过**私有管理接口**，不带 `X-Tenant-ID` 执行跨租户迁移。两种 SDK 的生命周期
+方法不再自动附加默认租户；网关仍可注入身份对应的作用域。平台入口必须单独鉴权、校验源和目标权限、
+清除客户端伪造头；不能因为客户端要求就去掉作用域。参考网关继续给所有请求注入租户。
+数据库没有内置身份认证，因此不带头本身不代表平台身份，不能直接暴露数据库端口。
+
+默认 Compose 仅绑定 `127.0.0.1`；显式设置 `GRAPHDB_BIND_ADDRESS` 才更改主机监听地址。

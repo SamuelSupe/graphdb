@@ -133,13 +133,13 @@ func (s *TenantStore) GetTenantConfig(ctx context.Context, tenantID string) (Ten
 
 func (s *TenantStore) PutTenantConfig(ctx context.Context, tenantID string, config TenantConfig) (TenantConfig, error) {
 	if s.ReplicationMode && config.Backup.Enabled != nil && *config.Backup.Enabled {
-		return TenantConfig{}, fmt.Errorf("automatic backup scheduling is unavailable in HA; start tenant_backup tasks through the cluster API")
+		return TenantConfig{}, fmt.Errorf("%w: automatic backup scheduling is unavailable in HA; start tenant_backup tasks through the cluster API", ErrInvalidArgument)
 	}
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantConfig{}, err
 	}
 	if err := validateTenantConfig(config); err != nil {
-		return TenantConfig{}, err
+		return TenantConfig{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 
 	unlock, err := s.lockTenantForeground(ctx, tenantID)
