@@ -433,7 +433,9 @@ func (n *Node) handoffDrainedLeadership() {
 				continue
 			}
 			peer, err := n.peerStatus(ctx, id)
-			if err == nil && peer.Ready && !peer.Draining && peer.Error == "" && peer.SnapshotError == "" {
+			// Ready is a leader-only flag; a healthy transfer target is still
+			// a follower. Require it to have applied this leader's commit.
+			if err == nil && peer.LeaderID == n.cfg.ID && peer.Applied >= status.Commit && !peer.Draining && peer.Error == "" && peer.SnapshotError == "" {
 				_ = n.transferLeadership(ctx, id)
 				return
 			}

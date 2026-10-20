@@ -966,3 +966,40 @@ func TestSnapshotIncludesMembershipChangedDuringBuild(t *testing.T) {
 		}
 	}
 }
+
+type drainedHandoffRaft struct {
+	raft.Node
+	node *Node
+}
+
+func (r drainedHandoffRaft) Status() raft.Status {
+	return raft.Status{
+		BasicStatus: raft.BasicStatus{HardState: raftpb.HardState{Commit: 8}},
+		Config:      tracker.Config{Voters: quorum.JointConfig{quorum.MajorityConfig{1: {}, 2: {}}}},
+		Progress:    map[uint64]tracker.Progress{2: {RecentActive: true}},
+	}
+}
+
+func (r drainedHandoffRaft) TransferLeadership(_ context.Context, _, target uint64) {
+	r.node.leader.Store(target)
+}
+
+func TestDrainedHandoffAcceptsCaughtUpFollower(t *testing.T) {
+	node := &Node{cfg: Config{ID: 1, ClusterID: "handoff", Tick: 10 * time.Millisecond, ElectionTicks: 10}, ctx: context.Background(), peers: map[uint64]string{}, client: newTransportClient()}
+	node.raft = drainedHandoffRaft{node: node}
+	node.leader.Store(1)
+	node.draining.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(protocolHeader, "1")
+		leader := node.LeaderID()
+		json.NewEncoder(w).Encode(PeerStatus{ID: 2, ClusterID: "handoff", LeaderID: leader, Commit: 8, Applied: 8, Protocol: 1, Ready: leader == 2})
+	}))
+	defer server.Close()
+	defer node.client.CloseIdleConnections()
+	node.peers[2] = server.URL
+	node.handoffDrainedLeadership()
+	node.workers.Wait()
+	if node.LeaderID() != 2 || !node.Draining() {
+		t.Fatal("drained leader failed to hand off to its caught-up follower")
+	}
+}
