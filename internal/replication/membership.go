@@ -253,21 +253,32 @@ func (n *Node) applyPeerChange(data []byte, index uint64) error {
 	n.peerMu.RLock()
 	peers := maps.Clone(n.peers)
 	n.peerMu.RUnlock()
-	if change.Action == "add_learner" {
-		peers[change.ID] = change.URL
-	}
-	// Retain removed IDs as tombstones, so they can never be reused.
-	encoded, err := json.Marshal(peers)
-	if err != nil {
-		return err
-	}
-	err = n.disk.db.Update(func(tx *bolt.Tx) error {
+	err := n.disk.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		// Read the durable table under the writer transaction so the initial
+		// in-memory clone cannot overwrite newer persisted addresses.
+		if data := meta.Get([]byte("peers")); len(data) > 0 {
+			if err := json.Unmarshal(data, &peers); err != nil {
+				return err
+			}
+			if peers == nil {
+				return errors.New("invalid persisted peer table")
+			}
+		}
+		if change.Action == "add_learner" {
+			peers[change.ID] = change.URL
+		}
+		encoded, err := json.Marshal(peers)
+		if err != nil {
+			return err
+		}
+		// Retain removed IDs as tombstones, so they can never be reused.
 		if change.Action == "remove" {
 			if err := persistRetired(tx, []uint64{change.ID}, index); err != nil {
 				return err
 			}
 		}
-		return tx.Bucket([]byte("meta")).Put([]byte("peers"), encoded)
+		return meta.Put([]byte("peers"), encoded)
 	})
 	if err == nil && change.Action == "remove" {
 		if err := n.cacheRetired([]uint64{change.ID}, index); err != nil {
@@ -279,7 +290,9 @@ func (n *Node) applyPeerChange(data []byte, index uint64) error {
 	}
 	n.peerMu.Lock()
 	defer n.peerMu.Unlock()
-	n.peers = peers
+	if change.Action == "add_learner" {
+		n.peers[change.ID] = change.URL
+	}
 	if change.Action == "remove" {
 		n.stopPeerSenders(change.ID)
 	}

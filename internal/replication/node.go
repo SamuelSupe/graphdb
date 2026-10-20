@@ -681,10 +681,9 @@ func (n *Node) applyLoop() {
 				break
 			}
 			if built.err != nil {
-				if !n.cfg.StreamSnapshots && !errors.Is(built.err, ErrSnapshotTooLarge) && !errors.Is(built.err, ErrSnapshotTemporarilyUnavailable) {
-					n.fail(built.err)
-					return
-				}
+				// Construction has not published a snapshot or compacted the log.
+				// Keep the durable state, block mutations and retry preparation.
+				// Persistence and restore errors still stop the node below.
 				n.mu.Lock()
 				n.snapshotFailure = built.err
 				n.mu.Unlock()
@@ -770,10 +769,6 @@ func (n *Node) applyLoop() {
 			var err error
 			building, err = n.startSnapshot(lastConf)
 			if err != nil {
-				if !n.cfg.StreamSnapshots && !errors.Is(err, ErrSnapshotTooLarge) && !errors.Is(err, ErrSnapshotTemporarilyUnavailable) {
-					n.fail(err)
-					return
-				}
 				n.mu.Lock()
 				n.snapshotFailure = err
 				n.mu.Unlock()

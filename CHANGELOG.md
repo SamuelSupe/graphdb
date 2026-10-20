@@ -5,8 +5,15 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [2.3.9] - 2026-10-20
 
+- Retry unpublished snapshot capture/build failures in default mode, including
+  ordinary temporary I/O errors. Retain write backpressure and quorum reads;
+  errors persisting or restoring durable Raft state still stop the node.
+- Merge peer addresses against the latest durable table inside the membership
+  transaction and publish only the requested in-memory member change. Preserve
+  unrelated addresses without holding the peer lock over disk I/O.
+
 - Candidate review: fold standalone WAL history into durable outstanding-request checkpoints so one poisoned tenant cannot pin healthy history; preserve PREPARED replay and fail closed on checkpoint damage.
-- Build default Raft snapshots in the background and persist large payloads outside the control loop while retaining legacy inline wire compatibility. Keep transient budget retries and fail-closed integrity errors.
+- Build default Raft snapshots in the background and persist large payloads outside the control loop while retaining legacy inline wire compatibility. Keep preparation retries; Raft persistence and restore failures remain fatal.
 - Seek unsorted field-index and materialized-neighbor pages; bound and share decoded postings. Honor graph-cache TTL and keep directory creation barriers exclusive while validating existing directories concurrently.
 - Release postings after writing each field during full rebuild, and move migration builds/network writes and membership disk transactions outside their shared control locks.
 - Fixed 64-bucket write amplification remains an open release blocker; this candidate is not qualified for publication yet.

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -527,13 +528,30 @@ func TestDurableLogTruncationCompactionAndReopen(t *testing.T) {
 type retrySnapshotMachine struct {
 	membershipMachine
 	failCapture atomic.Bool
+	failWrite   atomic.Bool
+	opened      atomic.Int64
+	closed      atomic.Int64
 }
 
 func (m *retrySnapshotMachine) CaptureSnapshot(context.Context) (SnapshotSource, error) {
 	if m.failCapture.Load() {
 		return nil, fmt.Errorf("temporary snapshot disk failure")
 	}
-	return testSnapshotSource{}, nil
+	m.opened.Add(1)
+	return retrySnapshotSource{m}, nil
+}
+
+type retrySnapshotSource struct{ machine *retrySnapshotMachine }
+
+func (s retrySnapshotSource) Close() error { s.machine.closed.Add(1); return nil }
+func (s retrySnapshotSource) WriteTo(ctx context.Context, w io.WriteSeeker) error {
+	if s.machine.failWrite.Load() {
+		if _, err := w.Write([]byte("partial")); err != nil {
+			return err
+		}
+		return &os.PathError{Op: "write", Path: "temporary snapshot", Err: syscall.EAGAIN}
+	}
+	return (testSnapshotSource{}).WriteTo(ctx, w)
 }
 func (m *retrySnapshotMachine) RestoreSnapshot(_ context.Context, index uint64, _ io.ReadSeeker) error {
 	m.applied.Store(index)
@@ -733,6 +751,7 @@ func TestMissingOutgoingSnapshotReportsFailureWithoutStoppingNode(t *testing.T) 
 }
 
 type budgetSnapshotMachine struct {
+	preparationError   error
 	preparationFailure bool
 	membershipMachine
 	small atomic.Bool
@@ -862,6 +881,9 @@ func (m *budgetSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
 	if m.small.Load() {
 		return []byte("state"), nil
 	}
+	if m.preparationError != nil {
+		return nil, m.preparationError
+	}
 	if m.preparationFailure {
 		return nil, ErrSnapshotTemporarilyUnavailable
 	}
@@ -869,15 +891,28 @@ func (m *budgetSnapshotMachine) Snapshot(context.Context) ([]byte, error) {
 }
 
 func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
-	for _, preparationFailure := range []bool{false, true} {
-		t.Run(fmt.Sprint("preparation_failure_", preparationFailure), func(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		preparation bool
+		err         error
+		fileCapture bool
+		fileWrite   bool
+	}{
+		{name: "budget"}, {name: "temporary_unavailable", preparation: true}, {name: "temporary_io", err: &os.PathError{Op: "write", Path: "temporary snapshot", Err: syscall.EAGAIN}},
+		{name: "default_capture_io", fileCapture: true}, {name: "default_write_io", fileWrite: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			var endpoints [3]atomic.Pointer[Node]
 			var nodes [3]*Node
 			var machines [3]budgetSnapshotMachine
+			var fileMachines [3]retrySnapshotMachine
 			for i := range machines {
-				machines[i].preparationFailure = preparationFailure
+				machines[i].preparationFailure = scenario.preparation
+				machines[i].preparationError = scenario.err
+				fileMachines[i].failCapture.Store(scenario.fileCapture)
+				fileMachines[i].failWrite.Store(scenario.fileWrite)
 			}
 			peers := map[uint64]string{}
 			for i := range endpoints {
@@ -897,11 +932,22 @@ func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
 					endpoints[i].Store(nil)
 					if n != nil {
 						n.Close()
+						if fileMachines[i].opened.Load() != fileMachines[i].closed.Load() {
+							t.Errorf("snapshot source leak: opened=%d closed=%d", fileMachines[i].opened.Load(), fileMachines[i].closed.Load())
+						}
+						temporary, _ := filepath.Glob(filepath.Join(n.cfg.Dir, "snapshots", ".build-*"))
+						if len(temporary) != 0 {
+							t.Errorf("temporary snapshot files retained: %v", temporary)
+						}
 					}
 				}
 			}()
 			for i := range nodes {
-				n, err := Open(ctx, Config{ID: uint64(i + 1), ClusterID: "budget", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 20 * time.Millisecond, ElectionTicks: 10, SnapshotEntries: 1, MaxSnapshotBytes: 1024}, &machines[i])
+				var machine StateMachine = &machines[i]
+				if scenario.fileCapture || scenario.fileWrite {
+					machine = &fileMachines[i]
+				}
+				n, err := Open(ctx, Config{ID: uint64(i + 1), ClusterID: "budget", Dir: t.TempDir(), Peers: peers, Token: strings.Repeat("t", 32), Bootstrap: true, Tick: 20 * time.Millisecond, ElectionTicks: 10, SnapshotEntries: 1, MaxSnapshotBytes: 1024}, machine)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -911,6 +957,12 @@ func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
 			var leader *Node
 			for leader == nil {
 				for i, n := range nodes {
+					if n.ctx.Err() != nil {
+						n.mu.Lock()
+						failure := n.failure
+						n.mu.Unlock()
+						t.Fatalf("snapshot preparation stopped replica: %v", failure)
+					}
 					if n.LeaderID() == uint64(i+1) && n.applied.Load() >= 4 && n.Status()["snapshot_error"] != nil {
 						leader = n
 						break
@@ -930,6 +982,8 @@ func TestNonStreamingSnapshotRetriesWithoutNewProposals(t *testing.T) {
 			}
 			for i := range machines {
 				machines[i].small.Store(true)
+				fileMachines[i].failCapture.Store(false)
+				fileMachines[i].failWrite.Store(false)
 			}
 			for leader.Status()["snapshot_error"] != nil {
 				select {

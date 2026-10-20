@@ -79,6 +79,82 @@ func TestMembershipPersistenceDoesNotHoldPeerReaders(t *testing.T) {
 	<-read
 }
 
+func TestMembershipPersistencePreservesConcurrentPeers(t *testing.T) {
+	for _, action := range []string{"add_learner", "promote", "remove"} {
+		t.Run(action, func(t *testing.T) {
+			disk, _, err := openStorage(t.TempDir(), 1, "peer-publication")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer disk.Close()
+			n := &Node{disk: disk, peers: map[uint64]string{1: "http://one", 2: "http://two", 3: "http://three"}}
+			if _, err := n.memberRetired(3); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := disk.db.Begin(true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			started, done := make(chan struct{}), make(chan error, 1)
+			data, _ := json.Marshal(memberChange{Action: action, ID: 3, URL: "http://three-new"})
+			go func() { close(started); done <- n.applyPeerChange(data, 10) }()
+			<-started
+			time.Sleep(30 * time.Millisecond)
+			// Model another durable peer update while membership waits for the disk.
+			n.peerMu.Lock()
+			n.peers[2] = "http://two-new"
+			n.peers[4] = "http://four"
+			durable, _ := json.Marshal(n.peers)
+			n.peerMu.Unlock()
+			if err := tx.Bucket([]byte("meta")).Put([]byte("peers"), durable); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			n.peerMu.RLock()
+			four, two := n.peers[4], n.peers[2]
+			n.peerMu.RUnlock()
+			if four != "http://four" || two != "http://two-new" {
+				t.Errorf("peer publication lost concurrent updates: four=%q two=%q", four, two)
+			}
+			recovered := &Node{disk: disk, peers: map[uint64]string{}}
+			if err := recovered.loadPeers(); err != nil {
+				t.Fatal(err)
+			}
+			if recovered.peers[4] != "http://four" || recovered.peers[2] != "http://two-new" {
+				t.Errorf("durable peer update lost: %v", recovered.peers)
+			}
+			if action == "add_learner" && recovered.peers[3] != "http://three-new" {
+				t.Errorf("membership update missing: %v", recovered.peers)
+			}
+		})
+	}
+}
+
+func TestMembershipPersistenceRejectsInvalidPeerTable(t *testing.T) {
+	disk, _, err := openStorage(t.TempDir(), 1, "invalid-peer-table")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	n := &Node{disk: disk, peers: map[uint64]string{1: "http://one"}}
+	if err := disk.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte("meta")).Put([]byte("peers"), []byte("null")) }); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(memberChange{Action: "add_learner", ID: 2, URL: "http://two"})
+	if err := n.applyPeerChange(data, 10); err == nil {
+		t.Fatal("invalid durable peers accepted")
+	}
+	if len(n.peers) != 1 || n.peers[1] != "http://one" {
+		t.Fatalf("failed membership changed runtime peers: %v", n.peers)
+	}
+}
+
 func TestMembershipRejectsStaleChanges(t *testing.T) {
 	for _, scenario := range []struct {
 		action string

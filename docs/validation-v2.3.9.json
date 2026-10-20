@@ -54,12 +54,33 @@
       "fullUnitAndRace": "NOT_ALL_GREEN; earlier passing runs do not cover all subsequent changes"
     },
     "mainCI": {
-      "commit": "14a1235ffc925b4ef03d85935a571aa5703c3d26",
-      "run": 39439315788,
-      "status": "SUCCESS_BEFORE_ADDITIONAL_CHANGES"
+      "commit": "689cf32fe82a9769784e0277e357042dbd24d586",
+      "run": 39451412539,
+      "status": "FAIL_KNOWN_BOUNDED_WRITE_REGRESSION; OTHER_FIVE_JOBS_SUCCESS"
     },
     "sourceEvidenceDirectory": ".workflow/release-v2.3.9",
     "runtimeQualification": "PENDING_AFTER_ALL_FIXES",
     "tagCreated": false
+  },
+  "priorityReview": {
+    "status": "LOCAL_VERIFIED_RELEASE_PENDING",
+    "P3": "Ordinary preparation/capture/temporary-write errors reproduced across three replicas; unpublished snapshot construction retries every five seconds while mutations pause and quorum reads remain. Raft persistence and restore errors remain fatal.",
+    "P10": "Production callers currently serialize in run(); controlled writer interleavings reproduced runtime and durable peer overwrite. Membership merges latest durable peers inside its transaction and publishes only its own runtime member change, without peerMu across I/O.",
+    "focusedRace": {
+      "repetitions": 3,
+      "seconds": 76.729
+    },
+    "finalMembershipRace": {
+      "repetitions": 10,
+      "seconds": 2.408
+    },
+    "replicationPackageRace": "PASS",
+    "replicationVet": "PASS",
+    "haBudgetRace": {
+      "repetitions": 3,
+      "seconds": 4.938,
+      "sourceScope": "689cf32f plus only the four priority replication source/test files"
+    },
+    "boundedPageWork": "Still separate and uncommitted; no release qualification inferred"
   }
 }
