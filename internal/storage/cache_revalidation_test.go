@@ -144,6 +144,73 @@ func (s *blockingGraphReadStore) Get(ctx context.Context, key string) ([]byte, e
 	return s.ObjectStore.Get(ctx, key)
 }
 
+func (s *blockingGraphReadStore) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
+
+func TestReaderCachePublicationReleasesObsoleteSharedLoad(t *testing.T) {
+	for _, timeout := range []time.Duration{0, time.Minute} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			writer := NewTenantStore(files, "test")
+			defer writer.ShutdownTasks(context.Background())
+			if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			published, ok := writer.getWriteCache("tenant-a")
+			if !ok {
+				t.Fatal("committed graph was not retained")
+			}
+			blocked := &blockingGraphReadStore{ObjectStore: files, started: make(chan struct{}), release: make(chan struct{})}
+			release := sync.OnceFunc(func() { close(blocked.release) })
+			defer release()
+			reader := NewTenantStore(blocked, "test")
+			defer reader.ShutdownTasks(context.Background())
+			cache := NewReaderCache(reader, time.Minute)
+			cache.LoadTimeout = timeout
+			cache.ConfigureLoadAdmission(1, time.Second)
+			done := make(chan error, 2)
+			read := func() {
+				err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 1, func(g *graph.Graph, manifest Manifest) error {
+					if _, ok := g.GetEntity("one"); !ok || manifest.Version != 1 {
+						return errors.New("published graph was not returned")
+					}
+					return nil
+				})
+				done <- err
+			}
+			go read()
+			select {
+			case <-blocked.started:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			go read()
+			// Deliver the same durable graph publication used by direct/WAL
+			// commits while the shared disk read still owns its view and slot.
+			reader.setWriteCache("tenant-a", published)
+			for range 2 {
+				if err := <-done; err != nil {
+					t.Fatalf("read waited for obsolete disk work despite publication: %v", err)
+				}
+			}
+			if cache.Status("tenant-a").Loading || len(cache.loadSlots) != 0 {
+				t.Fatal("obsolete shared load retained registration or global admission")
+			}
+			files.runtime.mu.Lock()
+			views := len(files.runtime.views)
+			files.runtime.mu.Unlock()
+			if views != 0 {
+				t.Fatal("obsolete shared load retained its local read view")
+			}
+		})
+	}
+}
+
 func TestReaderCacheIdleRetentionIsIndependentFromRefreshTTL(t *testing.T) {
 	cache := NewReaderCache(nil, time.Second)
 	cache.IdleTTL = time.Hour

@@ -50,6 +50,10 @@ type cacheLoad struct {
 	err      error
 	uncached cacheEntry
 	bypass   bool
+
+	minVersion int64
+	cancel     context.CancelFunc
+	superseded bool
 }
 
 type ReaderCacheStatus struct {
@@ -306,15 +310,25 @@ func (c *ReaderCache) startStoreLoad(
 	// A cold load is shared by later requests, so the first caller must not be
 	// able to abandon it after admission. LoadTimeout still bounds the work.
 	loadCtx := context.WithoutCancel(parent)
-	cancel := func() {}
+	var cancel context.CancelFunc
 	if c.LoadTimeout > 0 {
 		loadCtx, cancel = context.WithTimeout(loadCtx, c.LoadTimeout)
+	} else {
+		loadCtx, cancel = context.WithCancel(loadCtx)
 	}
 	releaseStoreLoad := sync.OnceFunc(func() {
 		cancel()
 		release()
 		releaseView()
 	})
+	c.mu.Lock()
+	load.minVersion = minVersion
+	load.cancel = cancel
+	if entry, ok := c.entries[tenantID]; ok && cacheEntryFresh(entry, time.Now(), minVersion) {
+		load.superseded = true
+		cancel()
+	}
+	c.mu.Unlock()
 	go func() {
 		defer releaseStoreLoad()
 		loaded, err := c.loadStoreAtLeastFromEntry(
@@ -326,6 +340,13 @@ func (c *ReaderCache) startStoreLoad(
 		// rejected by admission for work that has already stopped.
 		releaseStoreLoad()
 		if err != nil {
+			c.mu.RLock()
+			superseded := load.superseded
+			c.mu.RUnlock()
+			if superseded && errors.Is(err, context.Canceled) {
+				c.finishLoad(tenantID, load, nil)
+				return
+			}
 			c.recordCache(tenantID, "miss_error")
 			c.finishLoad(tenantID, load, err)
 			return
@@ -487,8 +508,14 @@ func (c *ReaderCache) beginLoad(ctx context.Context, tenantID string) (*cacheLoa
 }
 
 func waitCacheLoad(ctx context.Context, load *cacheLoad) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case <-load.done:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return load.err
 	case <-ctx.Done():
 		return ctx.Err()
@@ -742,7 +769,17 @@ func (c *ReaderCache) publishGraph(tenantID string, loaded loadedGraph) bool {
 		c.mu.Unlock()
 		return false
 	}
+	var cancel context.CancelFunc
+	if load := c.loading[tenantID]; load != nil && load.cancel != nil && loaded.Manifest.Version >= load.minVersion {
+		// A durable resident graph makes the shared disk load obsolete. Cancel
+		// it so waiters can reuse publication after its slot and view are released.
+		load.superseded = true
+		cancel = load.cancel
+	}
 	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	c.recordCache(tenantID, "write_through")
 	c.recordVisible(tenantID, loaded.Manifest.Version)
 	return true

@@ -5,6 +5,9 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [2.3.10] - 2026-10-21
 
+- Cancel obsolete shared cold loads when a committed resident graph satisfies
+  their version, releasing decode work, admission and read views before waking
+  readers. Preserve independent caller cancellation and cold-load timeouts.
 - Carry the bounded-index and reliability candidate fixes below forward from
   the unpublished v2.3.9 qualification tag; keep that tag unchanged.
 - Re-select the current healthy leader after snapshot retry in the recovery

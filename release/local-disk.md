@@ -54,6 +54,11 @@ HTTP `/v1`、Go 模块 `/v2` 和 Raft 协议编号不变。完整备份必须保
 
 The v2.3.9 qualification tag produced no release assets. This patch carries its fixes forward with snapshot-retry leadership coverage and committed-barrier rolling validation. Main CI also requires the full local soak and captures first-timeout diagnostics; both earlier tags remain unchanged. Pending failures are recorded in the version validation report.
 
+Committed graph publication cancels obsolete shared cold loads after installing
+the resident view. Waiting queries resume after the old work releases its global
+load slot and local read view; individual request cancellation and load deadlines
+retain their existing behavior.
+
 This patch fixes reproduced v2.3.8 restore, browser-write, preparation-retry,
 cursor and resource-lifecycle defects. Restore defaults to the target tenant;
 private platform migrations explicitly declare the backup source. Scoped callers
