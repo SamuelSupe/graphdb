@@ -38,6 +38,7 @@ type IndexObject struct {
 	ContentHash string `json:"content_hash,omitempty"`
 	SchemaHash  string `json:"schema_hash,omitempty"`
 
+	rangeBounds         *cachedIndexRange
 	inspectKind         string
 	inspectField        string
 	inspectUnique       bool

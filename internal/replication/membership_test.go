@@ -157,12 +157,16 @@ func TestMembershipPersistenceRejectsInvalidPeerTable(t *testing.T) {
 
 func TestMembershipRejectsStaleChanges(t *testing.T) {
 	for _, scenario := range []struct {
-		action string
-		legacy bool
-	}{{"remove", false}, {"add_learner", false}, {"remove", true}, {"add_learner", true}, {"snapshot_metadata", false}} {
+		action   string
+		legacy   bool
+		transfer bool
+	}{{"remove", false, false}, {"add_learner", false, false}, {"remove", true, false}, {"add_learner", true, false}, {"snapshot_metadata", false, false}, {"add_learner", false, true}} {
 		name := scenario.action
 		if scenario.legacy {
 			name += "/legacy"
+		}
+		if scenario.transfer {
+			name += "/leader_change"
 		}
 		t.Run(name, func(t *testing.T) {
 			action := scenario.action
@@ -221,13 +225,8 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 						members[id] = origin
 					}
 				}
-				configs[i] = Config{ID: uint64(i + 1), ClusterID: "membership", Dir: t.TempDir(), Peers: members, Bootstrap: i < 3, ElectionTicks: 10, Token: "membership-test-token-32-bytes-long", Tick: 20 * time.Millisecond, SnapshotEntries: 1000}
-				if action == "snapshot_metadata" {
-					// This scenario checks metadata across a paused application, not
-					// election latency. Use the production election window for disk IO.
-					configs[i].Tick = 0
-					configs[i].ElectionTicks = 0
-				}
+				// These scenarios test persisted membership, not election latency.
+				configs[i] = Config{ID: uint64(i + 1), ClusterID: "membership", Dir: t.TempDir(), Peers: members, Bootstrap: i < 3, Token: "membership-test-token-32-bytes-long", SnapshotEntries: 1000}
 				start(i)
 			}
 			wait := func(description string, condition func() bool) {
@@ -374,6 +373,34 @@ func TestMembershipRejectsStaleChanges(t *testing.T) {
 				proposal.Expected = nil
 			}
 			data, _ := json.Marshal(proposal)
+			if scenario.transfer {
+				target := leader.ID()%3 + 1
+				index := leader.raft.Status().Commit
+				wait("transfer target applied membership", func() bool {
+					return nodes[target-1].applied.Load() >= index && nodes[target-1].raft.Status().Applied >= index
+				})
+				leader.raft.TransferLeadership(context.Background(), leader.ID(), target)
+				wait("controlled leader change", func() bool { return nodes[target-1].LeaderID() == target && leader.LeaderID() == target })
+			}
+			// Raw Raft proposals deliberately do not forward from followers.
+			// Bind the result to the current leader, just as the HTTP admission
+			// barrier does; unrelated election progress is not this rejection.
+			wait("leader before delayed change", func() bool {
+				for _, node := range nodes {
+					if node.LeaderID() != node.ID() {
+						continue
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					err := node.ReadBarrier(ctx)
+					cancel()
+					if err == nil {
+						leader = node
+						return true
+					}
+				}
+				return false
+			})
+
 			outcomes := make(chan result, 1)
 			leader.mu.Lock()
 			leader.proposals[proposal.RequestID] = outcomes

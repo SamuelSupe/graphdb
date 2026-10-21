@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -32,6 +33,44 @@ type indexRange struct {
 	Lower string `json:"lower"`
 	Upper string `json:"upper"`
 	Bytes int64  `json:"bytes"`
+}
+
+// Bounds are immutable after catalog compilation. Keep the source role so
+// a copied object whose persisted role changes cannot use stale routing.
+type cachedIndexRange struct {
+	role   string
+	bounds indexRange
+}
+
+func objectIndexRange(object IndexObject) (indexRange, error) {
+	if cached := object.rangeBounds; cached != nil && cached.role == object.Role {
+		return cached.bounds, nil
+	}
+	return decodeIndexRange(object.Role)
+}
+
+func cacheIndexRanges(objects []IndexObject) []IndexObject {
+	if !hasIndexRanges(objects) {
+		return objects
+	}
+	ready := true
+	for _, object := range objects {
+		if object.rangeBounds == nil || object.rangeBounds.role != object.Role {
+			ready = false
+			break
+		}
+	}
+	if ready {
+		return objects
+	}
+	cached := slices.Clone(objects)
+	for i := range cached {
+		bounds, err := objectIndexRange(cached[i])
+		if err == nil && (cached[i].rangeBounds == nil || cached[i].rangeBounds.role != cached[i].Role) {
+			cached[i].rangeBounds = &cachedIndexRange{cached[i].Role, bounds}
+		}
+	}
+	return cached
 }
 
 func (r indexRange) contains(id string) bool { return id >= r.Lower && (r.Upper == "" || id < r.Upper) }
@@ -96,7 +135,7 @@ func validateRangeObjects(objects []IndexObject, rows int, contentHash string) e
 	return nil
 }
 func rangeObjectIndex(objects []IndexObject, id string) int {
-	return max(0, sort.Search(len(objects), func(i int) bool { lower, _ := rangeLower(objects[i].Role); return lower > id })-1)
+	return max(0, sort.Search(len(objects), func(i int) bool { bounds, _ := objectIndexRange(objects[i]); return bounds.Lower > id })-1)
 }
 func splitBoundedEntityPages(pages []EntityPageData) []EntityPageData {
 	var result []EntityPageData

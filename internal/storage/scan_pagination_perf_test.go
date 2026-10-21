@@ -1,8 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -177,4 +180,83 @@ func exactObjectReads(store *countingReadStore, key string) int {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	return store.gets[key]
+}
+
+func TestRangeRoutingHasNoPerLookupAllocations(t *testing.T) {
+	objects := make([]IndexObject, 4096)
+	for i := range objects {
+		lower := ""
+		if i > 0 {
+			lower = fmt.Sprintf("id:%08d", i*10)
+		}
+		objects[i] = IndexObject{Role: encodeRangeRole(indexRange{Lower: lower, Bytes: 1024}), Key: fmt.Sprint(i), RowCount: 1, Format: IndexFormatParquet, ContentHash: "hash", SchemaHash: "schema"}
+	}
+	finishRangeBounds(objects)
+	spec := EntityPageSpec{Shard: "00", Codec: parquetEntityRangeCodec, Objects: objects, EntityCount: len(objects), ContentHash: rangeObjectsHash(objects)}
+	store := NewTenantStore(NewMemoryStore(), "test")
+	compiled, err := store.compiledScanCatalog("tenant-a", IndexCatalog{Version: 1, EntityPages: []EntityPageSpec{spec}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routed := compiled.entitySpecs["00"].Objects
+	if got := rangeObjectIndex(routed, "id:00020005"); got != 2000 {
+		t.Fatal(got)
+	}
+	allocations := testing.AllocsPerRun(100, func() { rangeObjectIndex(routed, "id:00020005") })
+	if allocations != 0 {
+		t.Fatalf("each routing lookup allocates %.0f times decoding immutable boundaries", allocations)
+	}
+	before, _ := json.Marshal(objects)
+	after, _ := json.Marshal(routed)
+	if !bytes.Equal(before, after) || rangeObjectsHash(routed) != spec.ContentHash {
+		t.Fatal("memory routing changed persisted references or their hash")
+	}
+	changed := append([]IndexObject(nil), routed...)
+	changed[1].Role = encodeRangeRole(indexRange{Lower: "id:00000005", Bytes: 1024})
+	finishRangeBounds(changed)
+	if err := validateRangeObjects(changed, len(changed), rangeObjectsHash(changed)); err != nil {
+		t.Fatal(err)
+	}
+	if rangeObjectIndex(changed, "id:00000007") != 1 || rangeObjectIndex(routed, "id:00000007") != 0 {
+		t.Fatal("copied catalog reused stale boundaries or mutated the old routing")
+	}
+}
+
+func TestRangeEntityScanPrunesBeforePayloadDecode(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	store.WriteIndexRangePages = true
+	var entities []graph.Entity
+	for i := 0; i < 1024; i++ {
+		entities = append(entities, graph.Entity{ID: fmt.Sprintf("host:%06d", i), Kind: "host", Source: "agent", Fields: graph.Fields{"blob": strings.Repeat("x", 1024)}})
+	}
+	pages, err := prepareBoundedEntityPages(ctx, "tenant-a", []EntityPageData{{Shard: "00", Version: 1, Entities: entities}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := IndexCatalog{TenantID: "tenant-a", Version: 1, EntityPages: entityPageSpecs(pages)}
+	store.decorateIndexCatalog(&catalog, "tenant-a")
+	if err := store.writeParquetEntityPages(ctx, "tenant-a", pages, 1); err != nil {
+		t.Fatal(err)
+	}
+	recorder := installStorageSpanRecorder(t)
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: 1, Catalog: catalog}
+	if ok, err := lookup.VisitEntities(ctx, "service", nil, "", func(graph.Entity) (bool, error) { t.Fatal("absent kind returned an entity"); return false, nil }); err != nil || !ok {
+		t.Fatalf("visit: %v %v", ok, err)
+	}
+	span := requireStorageSpan(t, recorder.Ended(), "graphdb.storage.index_lookup.visit_entities")
+	assertStorageSpanAttribute(t, span, "graphdb.index_lookup.parquet_decodes", int64(0))
+	if storageSpanInt64(t, span, "graphdb.index_lookup.candidate_row_groups_skipped") == 0 {
+		t.Fatal("range visitor bypassed pruning")
+	}
+	for _, options := range []EntityScanOptions{{Kind: "service"}, {Source: "absent"}} {
+		stats := newEntityScanTraceStats()
+		result, ok, err := store.listEntitiesFromPages(ctx, "tenant-a", 1, catalog, options, scanCursor{}, stats)
+		if err != nil || !ok || len(result.Entities) != 0 {
+			t.Fatalf("scan: %+v %v %v", result, ok, err)
+		}
+		if stats.parquetDecodes != 0 || stats.candidateRowGroupsSkip == 0 {
+			t.Fatalf("filtered range decoded payload instead of pruning: decodes=%d skipped=%d", stats.parquetDecodes, stats.candidateRowGroupsSkip)
+		}
+	}
 }

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -114,9 +115,11 @@ type delayedGraphReadStore struct {
 
 type blockingGraphReadStore struct {
 	ObjectStore
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	started      chan struct{}
+	release      chan struct{}
+	once         sync.Once
+	cancelError  error
+	holdCanceled bool
 }
 
 func (s *delayedGraphReadStore) Get(ctx context.Context, key string) ([]byte, error) {
@@ -137,8 +140,17 @@ func (s *blockingGraphReadStore) Get(ctx context.Context, key string) ([]byte, e
 		s.once.Do(func() { close(s.started) })
 		select {
 		case <-ctx.Done():
+			if s.holdCanceled {
+				<-s.release
+			}
+			if s.cancelError != nil {
+				return nil, s.cancelError
+			}
 			return nil, ctx.Err()
 		case <-s.release:
+		}
+		if s.cancelError != nil {
+			return nil, s.cancelError
 		}
 	}
 	return s.ObjectStore.Get(ctx, key)
@@ -148,66 +160,73 @@ func (s *blockingGraphReadStore) UnwrapObjectStore() ObjectStore { return s.Obje
 
 func TestReaderCachePublicationReleasesObsoleteSharedLoad(t *testing.T) {
 	for _, timeout := range []time.Duration{0, time.Minute} {
-		t.Run(timeout.String(), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			files, err := OpenFileStore(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer files.Close()
-			writer := NewTenantStore(files, "test")
-			defer writer.ShutdownTasks(context.Background())
-			if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
-				t.Fatal(err)
-			}
-			published, ok := writer.getWriteCache("tenant-a")
-			if !ok {
-				t.Fatal("committed graph was not retained")
-			}
-			blocked := &blockingGraphReadStore{ObjectStore: files, started: make(chan struct{}), release: make(chan struct{})}
-			release := sync.OnceFunc(func() { close(blocked.release) })
-			defer release()
-			reader := NewTenantStore(blocked, "test")
-			defer reader.ShutdownTasks(context.Background())
-			cache := NewReaderCache(reader, time.Minute)
-			cache.LoadTimeout = timeout
-			cache.ConfigureLoadAdmission(1, time.Second)
-			done := make(chan error, 2)
-			read := func() {
-				err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 1, func(g *graph.Graph, manifest Manifest) error {
-					if _, ok := g.GetEntity("one"); !ok || manifest.Version != 1 {
-						return errors.New("published graph was not returned")
-					}
-					return nil
-				})
-				done <- err
-			}
-			go read()
-			select {
-			case <-blocked.started:
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			go read()
-			// Deliver the same durable graph publication used by direct/WAL
-			// commits while the shared disk read still owns its view and slot.
-			reader.setWriteCache("tenant-a", published)
-			for range 2 {
-				if err := <-done; err != nil {
-					t.Fatalf("read waited for obsolete disk work despite publication: %v", err)
+		for _, cancelError := range []error{nil, errors.New("read on closed connection")} {
+			t.Run(fmt.Sprintf("%s/%v", timeout, cancelError), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				files, err := OpenFileStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			if cache.Status("tenant-a").Loading || len(cache.loadSlots) != 0 {
-				t.Fatal("obsolete shared load retained registration or global admission")
-			}
-			files.runtime.mu.Lock()
-			views := len(files.runtime.views)
-			files.runtime.mu.Unlock()
-			if views != 0 {
-				t.Fatal("obsolete shared load retained its local read view")
-			}
-		})
+				defer files.Close()
+				writer := NewTenantStore(files, "test")
+				defer writer.ShutdownTasks(context.Background())
+				if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				if cancelError != nil {
+					if _, err := writer.Compact(ctx, "tenant-a"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				published, ok := writer.getWriteCache("tenant-a")
+				if !ok {
+					t.Fatal("committed graph was not retained")
+				}
+				blocked := &blockingGraphReadStore{ObjectStore: files, started: make(chan struct{}), release: make(chan struct{}), cancelError: cancelError}
+				release := sync.OnceFunc(func() { close(blocked.release) })
+				defer release()
+				reader := NewTenantStore(blocked, "test")
+				defer reader.ShutdownTasks(context.Background())
+				cache := NewReaderCache(reader, time.Minute)
+				cache.LoadTimeout = timeout
+				cache.ConfigureLoadAdmission(1, time.Second)
+				done := make(chan error, 2)
+				read := func() {
+					err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 1, func(g *graph.Graph, manifest Manifest) error {
+						if _, ok := g.GetEntity("one"); !ok || manifest.Version != 1 {
+							return errors.New("published graph was not returned")
+						}
+						return nil
+					})
+					done <- err
+				}
+				go read()
+				select {
+				case <-blocked.started:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				go read()
+				// Deliver the same durable graph publication used by direct/WAL
+				// commits while the shared disk read still owns its view and slot.
+				reader.setWriteCache("tenant-a", published)
+				for range 2 {
+					if err := <-done; err != nil {
+						t.Fatalf("read waited for obsolete disk work despite publication: %v", err)
+					}
+				}
+				if cache.Status("tenant-a").Loading || len(cache.loadSlots) != 0 {
+					t.Fatal("obsolete shared load retained registration or global admission")
+				}
+				files.runtime.mu.Lock()
+				views := len(files.runtime.views)
+				files.runtime.mu.Unlock()
+				if views != 0 {
+					t.Fatal("obsolete shared load retained its local read view")
+				}
+			})
+		}
 	}
 }
 
@@ -392,5 +411,50 @@ func TestReaderCacheRefreshLoadTimeoutReleasesAdmission(t *testing.T) {
 	defer loadCancel()
 	if _, _, err := cache.Load(loadCtx, "tenant-b"); err != nil {
 		t.Fatalf("tenant-b load after timed out refresh: %v", err)
+	}
+}
+
+func TestReaderCacheFailedLoadRequiresValidReplacement(t *testing.T) {
+	for _, invalidate := range []bool{false, true} {
+		t.Run(fmt.Sprint(invalidate), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			base := NewMemoryStore()
+			writer := NewTenantStore(base, "test")
+			if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Compact(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			published, ok := writer.getWriteCache("tenant-a")
+			if !ok {
+				t.Fatal("missing graph")
+			}
+			failure := errors.New("object read failed")
+			blocked := &blockingGraphReadStore{ObjectStore: base, started: make(chan struct{}), release: make(chan struct{}), cancelError: failure, holdCanceled: true}
+			release := sync.OnceFunc(func() { close(blocked.release) })
+			defer release()
+			reader := NewTenantStore(blocked, "test")
+			cache := NewReaderCache(reader, time.Minute)
+			done := make(chan error, 1)
+			go func() { _, _, err := cache.Load(ctx, "tenant-a"); done <- err }()
+			select {
+			case <-blocked.started:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if invalidate {
+				reader.setWriteCache("tenant-a", published)
+				reader.invalidateReadViews("tenant-a", false)
+			}
+			release()
+			if err := <-done; !errors.Is(err, failure) {
+				t.Fatalf("real failure without usable replacement was hidden: %v", err)
+			}
+			if cache.Status("tenant-a").Loading || len(cache.loadSlots) != 0 {
+				t.Fatal("failed load retained resources")
+			}
+		})
 	}
 }

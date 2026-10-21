@@ -147,6 +147,9 @@ func (l *PersistedIndexLookup) VisitEntities(ctx context.Context, kind string, f
 	groups := make(map[string][]EntityPageSpec)
 	shards := make([]string, 0, len(l.Catalog.EntityPages))
 	for _, spec := range l.Catalog.EntityPages {
+		if compiled, ok := l.compiled.entitySpecs[spec.Shard]; ok {
+			spec = compiled
+		}
 		shard := currentEntityScanShard(spec.Shard)
 		if _, ok := groups[shard]; !ok {
 			shards = append(shards, shard)

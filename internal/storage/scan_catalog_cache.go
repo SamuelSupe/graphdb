@@ -49,6 +49,8 @@ func (s *TenantStore) compiledScanCatalog(tenantID string, catalog IndexCatalog,
 				return nil, err
 			}
 		}
+		page.Objects = cacheIndexRanges(page.Objects)
+		compiled.entitySpecs[page.Shard] = page
 		compiled.bytes += 256 + int64(len(page.Shard)) + rangeReferenceBytes(page.Objects)
 		compiled.entityShards = append(compiled.entityShards, page.Shard)
 	}
@@ -69,6 +71,8 @@ func (s *TenantStore) compiledScanCatalog(tenantID string, catalog IndexCatalog,
 				return nil, err
 			}
 		}
+		shard.Objects = cacheIndexRanges(shard.Objects)
+		compiled.edgeSpecs[edgeShardTargetKey(shard.RelationType, shard.Shard)] = shard
 		compiled.bytes += 256 + int64(len(shard.Shard)+len(shard.RelationType)) + rangeReferenceBytes(shard.Objects)
 		compiled.edgeTargets = append(compiled.edgeTargets, edgeShardTarget{RelationType: shard.RelationType, Shard: shard.Shard})
 	}
@@ -104,7 +108,7 @@ func (s *TenantStore) compiledScanCatalog(tenantID string, catalog IndexCatalog,
 func rangeReferenceBytes(objects []IndexObject) int64 {
 	var bytes int64
 	for _, o := range objects {
-		bytes += 256 + int64(len(o.Role)+len(o.Key)+len(o.Format)+len(o.Codec)+len(o.ContentHash)+len(o.SchemaHash))
+		bytes += 384 + int64(len(o.Role)*2+len(o.Key)+len(o.Format)+len(o.Codec)+len(o.ContentHash)+len(o.SchemaHash))
 	}
 	return bytes
 }

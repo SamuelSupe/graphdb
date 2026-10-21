@@ -18,7 +18,7 @@ func (s *TenantStore) loadEntityRangePage(ctx context.Context, tenantID string, 
 	}
 	page := EntityPageData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, Shard: spec.Shard, UpdatedAt: spec.UpdatedAt, hashCanonical: true, logicalContentHash: spec.ContentHash}
 	for _, object := range spec.Objects {
-		routing, _ := decodeIndexRange(object.Role)
+		routing, _ := objectIndexRange(object)
 		part, _, ok, err := s.borrowValidatedParquetEntityPageObject(ctx, tenantID, version, entityRangeSpec(spec, object))
 		if err != nil || !ok {
 			return EntityPageData{}, false, err
@@ -43,7 +43,7 @@ func (s *TenantStore) loadEdgeRangePage(ctx context.Context, tenantID string, ve
 	}
 	shard := EdgeShardData{LayoutVersion: CurrentObjectLayoutVersion, TenantID: tenantID, RelationType: spec.RelationType, Shard: spec.Shard, UpdatedAt: spec.UpdatedAt, hashCanonical: true, logicalContentHash: spec.ContentHash, cacheVerified: true}
 	for _, object := range spec.Objects {
-		routing, _ := decodeIndexRange(object.Role)
+		routing, _ := objectIndexRange(object)
 		partSpec := edgeRangeSpec(spec, object)
 		part, ok, err := s.loadParquetEdgeShardObject(ctx, tenantID, version, partSpec)
 		if err != nil || !ok {
@@ -84,7 +84,7 @@ func (s *TenantStore) borrowEntityRange(ctx context.Context, tenantID string, ve
 	if err != nil || !ok {
 		return EntityPageData{}, false, err
 	}
-	routing, _ := decodeIndexRange(spec.Objects[n].Role)
+	routing, _ := objectIndexRange(spec.Objects[n])
 	for _, entity := range page.Entities {
 		if !routing.contains(entity.ID) {
 			return EntityPageData{}, false, fmt.Errorf("entity is outside its index range")
@@ -94,26 +94,64 @@ func (s *TenantStore) borrowEntityRange(ctx context.Context, tenantID string, ve
 }
 
 func (l *PersistedIndexLookup) visitEntityRanges(ctx context.Context, spec EntityPageSpec, kind string, fields []string, afterID string, visit func(graph.Entity) (bool, error)) (bool, bool, error) {
+	prefetch := rangeScanPrefetch{store: l.Store, ctx: ctx}
+	defer prefetch.close()
 	for n := rangeObjectIndex(spec.Objects, afterID); n < len(spec.Objects); n++ {
-		page, ok, err := l.Store.borrowEntityRange(ctx, l.TenantID, l.Version, spec, n)
-		if err != nil || !ok {
+		if err := prefetch.advance("entity_page", l.TenantID, l.Version, spec.Objects, n); err != nil {
 			return false, false, err
 		}
-		start := sort.Search(len(page.Entities), func(i int) bool { return page.Entities[i].ID >= afterID })
-		for _, entity := range page.Entities[start:] {
-			if err := ctx.Err(); err != nil {
+		object := spec.Objects[n]
+		routing, _ := objectIndexRange(object)
+		keepGoing := true
+		consume := func(page EntityPageData) error {
+			for _, entity := range page.Entities {
+				if !routing.contains(entity.ID) {
+					return fmt.Errorf("entity is outside its index range")
+				}
+			}
+			start := sort.Search(len(page.Entities), func(i int) bool { return page.Entities[i].ID >= afterID })
+			for _, entity := range page.Entities[start:] {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if kind != "" && entity.Kind != kind {
+					if err := query.ConsumeIndexScanCost(ctx, 1); err != nil {
+						return err
+					}
+					continue
+				}
+				var err error
+				keepGoing, err = visit(trimEntityFields(entity, fields))
+				if err != nil || !keepGoing {
+					return err
+				}
+			}
+			return nil
+		}
+		if session := entityPageVisitSessionFromContext(ctx); session != nil {
+			session.stats.pageSpecsVisited++
+			ok, skipped, err := session.visitPage(ctx, entityRangeSpec(spec, object), consume)
+			if err != nil || !ok {
 				return false, false, err
 			}
-			if kind != "" && entity.Kind != kind {
-				if err := query.ConsumeIndexScanCost(ctx, 1); err != nil {
+			if skipped {
+				// Metadata pruning saves decoding, not the logical scan allowance.
+				if err := query.ConsumeIndexScanCost(ctx, object.RowCount); err != nil {
 					return false, false, err
 				}
 				continue
 			}
-			keep, err := visit(trimEntityFields(entity, fields))
-			if err != nil || !keep {
-				return true, keep, err
+		} else {
+			page, ok, err := l.Store.borrowEntityRange(ctx, l.TenantID, l.Version, spec, n)
+			if err != nil || !ok {
+				return false, false, err
 			}
+			if err := consume(page); err != nil {
+				return false, false, err
+			}
+		}
+		if !keepGoing {
+			return true, false, nil
 		}
 	}
 	return true, true, nil

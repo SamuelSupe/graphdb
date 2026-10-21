@@ -83,6 +83,9 @@ type Node struct {
 	changed                 chan struct{}
 	failure                 error
 	snapshotFailure         error
+	snapshotFailedSince     time.Time
+	snapshotFailureIndex    uint64
+	snapshotHandoffAttempt  time.Time
 	snapshotCleanupFailure  error
 	proposals               map[string]chan result
 	reads                   map[string]chan uint64
@@ -258,11 +261,12 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		n.raft = raft.StartNode(rc, peers)
 	}
 	n.observeDiagnostics()
-	n.workers.Add(5)
+	n.workers.Add(6)
 	go n.run()
 	go n.applyLoop()
 	go n.snapshotCleanupLoop(cleanupOrphans)
 	go n.diagnosticsLoop()
+	go n.snapshotHandoffLoop()
 	go func() {
 		defer n.workers.Done()
 		ticker := time.NewTicker(cfg.Tick)
@@ -684,9 +688,7 @@ func (n *Node) applyLoop() {
 				// Construction has not published a snapshot or compacted the log.
 				// Keep the durable state, block mutations and retry preparation.
 				// Persistence and restore errors still stop the node below.
-				n.mu.Lock()
-				n.snapshotFailure = built.err
-				n.mu.Unlock()
+				n.recordSnapshotFailure(built.err, built.request.index)
 				continue
 			}
 			select {
@@ -702,9 +704,7 @@ func (n *Node) applyLoop() {
 				}
 				if err == nil {
 					snapshotIndex = built.request.index
-					n.mu.Lock()
-					n.snapshotFailure = nil
-					n.mu.Unlock()
+					n.recordSnapshotFailure(nil, 0)
 				}
 			case <-n.ctx.Done():
 				return
@@ -717,9 +717,7 @@ func (n *Node) applyLoop() {
 				var err error
 				building, err = n.startSnapshot(lastConf)
 				if err != nil {
-					n.mu.Lock()
-					n.snapshotFailure = err
-					n.mu.Unlock()
+					n.recordSnapshotFailure(err, n.applied.Load())
 				}
 			}
 			continue
@@ -735,9 +733,7 @@ func (n *Node) applyLoop() {
 				}
 				n.progress(batch.snapshot.Metadata.Index)
 				snapshotIndex = batch.snapshot.Metadata.Index
-				n.mu.Lock()
-				n.snapshotFailure = nil
-				n.mu.Unlock()
+				n.recordSnapshotFailure(nil, 0)
 			}
 			for first := max(batch.first, n.applied.Load()+1); first <= batch.last; {
 				entries, err := n.disk.Entries(first, batch.last+1, 4<<20)
@@ -769,9 +765,7 @@ func (n *Node) applyLoop() {
 			var err error
 			building, err = n.startSnapshot(lastConf)
 			if err != nil {
-				n.mu.Lock()
-				n.snapshotFailure = err
-				n.mu.Unlock()
+				n.recordSnapshotFailure(err, n.applied.Load())
 			}
 		}
 	}

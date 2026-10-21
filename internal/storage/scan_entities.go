@@ -252,10 +252,6 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		return false
 	}
 	loadPage := func(spec EntityPageSpec, key string) (loaded loadedEntityScanPage, loadErr error) {
-		if hasIndexRanges(spec.Objects) {
-			loaded.page, loaded.available, loadErr = s.loadEntityRangePage(ctx, tenantID, version, spec)
-			return loaded, loadErr
-		}
 		if exclusiveFileStore(s.Objects) != nil {
 			return s.loadLocalEntityPage(ctx, tenantID, version, spec, options, cursor)
 		}
@@ -337,6 +333,72 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		return loaded, loadErr
 	}
 
+	consumeSpec := func(spec EntityPageSpec, key string, bounds *indexRange) (done, available bool, err error) {
+		consume := func(page EntityPageData, candidates map[string]struct{}, filtered bool) (bool, bool, error) {
+			if bounds != nil {
+				for _, entity := range page.Entities {
+					if !bounds.contains(entity.ID) {
+						return false, false, fmt.Errorf("entity is outside its index range")
+					}
+				}
+			}
+			return consumePage(page, spec.Shard, candidates, filtered), true, ctx.Err()
+		}
+		if entry, revalidate, hit := s.borrowCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash); hit {
+			stats.decodedCacheHits++
+			if !revalidate {
+				return consume(entry.page, nil, false)
+			}
+			stats.cacheRevalidations++
+			valid := false
+			ok, err := s.withParquetEntityPageObject(ctx, tenantID, version, spec, func(page EntityPageData, _ string, validated bool) error {
+				if !validated {
+					return nil
+				}
+				valid = true
+				var consumeErr error
+				done, _, consumeErr = consume(page, nil, false)
+				return consumeErr
+			})
+			return done, ok && valid, err
+		}
+		stats.decodedCacheMisses++
+		loaded, err := loadPage(spec, key)
+		if !loaded.available || (err != nil && !loaded.cached) {
+			return false, loaded.available, err
+		}
+		if loaded.skip {
+			return false, true, nil
+		}
+		if (err != nil || !entityPageReadable(loaded.page, tenantID, version, spec)) && loaded.cached {
+			s.dropCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
+			delete(candidateScans, key)
+			delete(objectBytes, key)
+			loaded, err = loadPage(spec, key)
+			if err != nil || !loaded.available {
+				return false, loaded.available, err
+			}
+			if loaded.skip {
+				return false, true, nil
+			}
+		}
+		if err != nil {
+			return false, false, err
+		}
+		if !entityPageReadable(loaded.page, tenantID, version, spec) {
+			return false, false, nil
+		}
+		done, available, err = consume(loaded.page, loaded.candidates, shouldScanParquetEntityCandidates(options, cursor))
+		if err != nil {
+			return false, false, err
+		}
+		s.putCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash, loaded.data, loaded.meta)
+		s.putCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash, loaded.page, loaded.meta.ETag)
+		return done, available, nil
+	}
+	prefetch := rangeScanPrefetch{store: s, ctx: ctx}
+	defer prefetch.close()
+
 	for i, shard := range shards {
 		stats.shardsVisited++
 		spec, ok := specs[shard]
@@ -350,11 +412,17 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				after = strings.TrimPrefix(cursor.After, prefix)
 			}
 			for n := rangeObjectIndex(spec.Objects, after); n < len(spec.Objects); n++ {
-				page, ok, err := s.borrowEntityRange(ctx, tenantID, version, spec, n)
+				if err := prefetch.advance("entity_page", tenantID, version, spec.Objects, n); err != nil {
+					return EntityScanResult{}, false, err
+				}
+				object := spec.Objects[n]
+				stats.markObject(object.Key)
+				bounds, _ := objectIndexRange(object)
+				done, ok, err := consumeSpec(entityRangeSpec(spec, object), object.Key, &bounds)
 				if err != nil || !ok {
 					return EntityScanResult{}, false, err
 				}
-				if consumePage(page, shard, nil, false) {
+				if done {
 					return pageResult(true), true, nil
 				}
 			}
@@ -371,65 +439,11 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 					}
 				}
 			}
-			if entry, revalidate, hit := s.borrowCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash); hit {
-				stats.decodedCacheHits++
-				if !revalidate {
-					if consumePage(entry.page, shard, nil, false) {
-						return pageResult(true), true, nil
-					}
-					continue
-				}
-				stats.cacheRevalidations++
-				pageReadable := false
-				done := false
-				ok, err := s.withParquetEntityPageObject(ctx, tenantID, version, spec, func(page EntityPageData, _ string, validated bool) error {
-					if !validated {
-						return nil
-					}
-					pageReadable = true
-					done = consumePage(page, shard, nil, false)
-					return nil
-				})
-				if err != nil || !ok {
-					return EntityScanResult{}, ok, err
-				}
-				if !pageReadable {
-					return EntityScanResult{}, false, nil
-				}
-				if done {
-					return pageResult(true), true, nil
-				}
-				continue
+			done, ok, err := consumeSpec(spec, key, nil)
+			if err != nil || !ok {
+				return EntityScanResult{}, ok, err
 			}
-			stats.decodedCacheMisses++
-			loaded, err := loadPage(spec, key)
-			if !loaded.available || (err != nil && !loaded.cached) {
-				return EntityScanResult{}, loaded.available, err
-			}
-			if loaded.skip {
-				continue
-			}
-			if (err != nil || !entityPageReadable(loaded.page, tenantID, version, spec)) && loaded.cached {
-				s.dropCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash)
-				delete(candidateScans, key)
-				delete(objectBytes, key)
-				loaded, err = loadPage(spec, key)
-				if err != nil || !loaded.available {
-					return EntityScanResult{}, loaded.available, err
-				}
-				if loaded.skip {
-					continue
-				}
-			}
-			if err != nil {
-				return EntityScanResult{}, false, err
-			}
-			if !entityPageReadable(loaded.page, tenantID, version, spec) {
-				return EntityScanResult{}, false, nil
-			}
-			s.putCachedIndexObject("entity_page", tenantID, version, key, spec.ContentHash, spec.SchemaHash, loaded.data, loaded.meta)
-			s.putCachedEntityPage(tenantID, version, key, spec.ContentHash, spec.SchemaHash, loaded.page, loaded.meta.ETag)
-			if consumePage(loaded.page, shard, loaded.candidates, shouldScanParquetEntityCandidates(options, cursor)) {
+			if done {
 				return pageResult(true), true, nil
 			}
 			continue

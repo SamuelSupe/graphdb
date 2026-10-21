@@ -11,16 +11,17 @@ import (
 )
 
 type PersistedIndexLookup struct {
-	reverseOnce    sync.Once
-	reverseErr     error
-	compiledOnce   sync.Once
-	compiled       *compiledScanCatalog
-	compiledErr    error
-	Store          *TenantStore
-	TenantID       string
-	Version        int64
-	Catalog        IndexCatalog
-	ReverseCatalog *ReverseIndexCatalog
+	reverseOnce     sync.Once
+	reverseErr      error
+	reverseCompiled *compiledScanCatalog
+	compiledOnce    sync.Once
+	compiled        *compiledScanCatalog
+	compiledErr     error
+	Store           *TenantStore
+	TenantID        string
+	Version         int64
+	Catalog         IndexCatalog
+	ReverseCatalog  *ReverseIndexCatalog
 
 	pageMu    sync.Mutex
 	pageCache map[string]EntityPageData
@@ -298,6 +299,10 @@ func indexTenantMatches(objectTenantID string, tenantID string) bool {
 }
 
 func (l *PersistedIndexLookup) catalogEntityPageSpec(shard string) (EntityPageSpec, bool) {
+	if l.Store != nil && l.compileCatalog() == nil {
+		page, ok := l.compiled.entitySpecs[shard]
+		return page, ok
+	}
 	l.entityCatalogMu.Lock()
 	defer l.entityCatalogMu.Unlock()
 	if l.entityCatalogByShard == nil {

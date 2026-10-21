@@ -112,6 +112,8 @@ func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, 
 	targets := compiled.edgeScanTargets(options)
 	specs := compiled.edgeSpecs
 	targets = targets[edgeScanStart(targets, cursor.After):]
+	prefetch := rangeScanPrefetch{store: s, ctx: ctx}
+	defer prefetch.close()
 	for i, target := range targets {
 		spec, ok := specs[edgeShardTargetKey(target.RelationType, target.Shard)]
 		if !ok {
@@ -124,6 +126,9 @@ func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, 
 				after = strings.TrimPrefix(cursor.After, prefix)
 			}
 			for n := rangeObjectIndex(spec.Objects, after); n < len(spec.Objects); n++ {
+				if err := prefetch.advance("edge_shard", tenantID, version, spec.Objects, n); err != nil {
+					return EdgeScanResult{}, false, err
+				}
 				rows, ok, err := s.borrowEdgeRange(ctx, tenantID, version, spec, n)
 				if err != nil || !ok {
 					return EdgeScanResult{}, false, err

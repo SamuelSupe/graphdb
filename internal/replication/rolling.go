@@ -33,6 +33,7 @@ type PeerStatus struct {
 	Draining       bool           `json:"draining"`
 	Ready          bool           `json:"ready"`
 	Error          string         `json:"error,omitempty"`
+	SnapshotIndex  uint64         `json:"snapshot_index,omitempty"`
 	SnapshotError  string         `json:"snapshot_error,omitempty"`
 	MaxProtocol    int            `json:"protocol_max,omitempty"`
 	SnapshotFormat int            `json:"snapshot_format_max,omitempty"`

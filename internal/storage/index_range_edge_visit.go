@@ -44,7 +44,7 @@ func (s *TenantStore) borrowEdgeRange(ctx context.Context, tenantID string, vers
 		return nil, false, err
 	}
 	rows := decoded[""]
-	routing, _ := decodeIndexRange(object.Role)
+	routing, _ := objectIndexRange(object)
 	for _, edge := range rows {
 		if !routing.contains(edge.ID) {
 			return nil, false, fmt.Errorf("%w: edge is outside its index range", ErrNotFound)
@@ -197,10 +197,7 @@ func (l *PersistedIndexLookup) visitRangeEdges(ctx context.Context, endpoint str
 		return false, nil
 	}
 	if direction != "out" {
-		l.reverseOnce.Do(func() {
-			_, l.reverseErr = l.Store.compiledScanCatalog(l.TenantID, IndexCatalog{Version: l.Version, EdgeShards: l.ReverseCatalog.EdgeShards}, "")
-		})
-		if l.reverseErr != nil {
+		if l.compileReverseCatalog() != nil {
 			for _, spec := range l.ReverseCatalog.EdgeShards {
 				if spec.AdjacencyRoot != nil {
 					return false, l.reverseErr

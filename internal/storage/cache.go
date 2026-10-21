@@ -51,9 +51,10 @@ type cacheLoad struct {
 	uncached cacheEntry
 	bypass   bool
 
-	minVersion int64
-	cancel     context.CancelFunc
-	superseded bool
+	minVersion           int64
+	cancel               context.CancelFunc
+	superseded           bool
+	supersededGeneration uint64
 }
 
 type ReaderCacheStatus struct {
@@ -326,6 +327,7 @@ func (c *ReaderCache) startStoreLoad(
 	load.cancel = cancel
 	if entry, ok := c.entries[tenantID]; ok && cacheEntryFresh(entry, time.Now(), minVersion) {
 		load.superseded = true
+		load.supersededGeneration = c.Store.readGeneration(tenantID)
 		cancel()
 	}
 	c.mu.Unlock()
@@ -342,8 +344,12 @@ func (c *ReaderCache) startStoreLoad(
 		if err != nil {
 			c.mu.RLock()
 			superseded := load.superseded
+			entry, exists := c.entries[tenantID]
+			usable := exists && cacheEntryFresh(entry, time.Now(), minVersion) && c.Store.readGeneration(tenantID) == load.supersededGeneration
 			c.mu.RUnlock()
-			if superseded && errors.Is(err, context.Canceled) {
+			// Some object readers report a closed handle instead of cancellation.
+			// Only a still-valid resident publication can replace that failed work.
+			if superseded && (errors.Is(err, context.Canceled) || usable) {
 				c.finishLoad(tenantID, load, nil)
 				return
 			}
@@ -774,6 +780,7 @@ func (c *ReaderCache) publishGraph(tenantID string, loaded loadedGraph) bool {
 		// A durable resident graph makes the shared disk load obsolete. Cancel
 		// it so waiters can reuse publication after its slot and view are released.
 		load.superseded = true
+		load.supersededGeneration = c.Store.readGeneration(tenantID)
 		cancel = load.cancel
 	}
 	c.mu.Unlock()

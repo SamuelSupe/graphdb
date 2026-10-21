@@ -8,6 +8,10 @@ type edgeShardCatalog struct {
 }
 
 func (l *PersistedIndexLookup) edgeCatalogForShard(shard string) edgeShardCatalog {
+	var compiled *compiledScanCatalog
+	if l.Store != nil && l.compileCatalog() == nil {
+		compiled = l.compiled
+	}
 	l.edgeCatalogMu.Lock()
 	defer l.edgeCatalogMu.Unlock()
 	if catalog, ok := l.edgeCatalogByShard[shard]; ok {
@@ -15,6 +19,11 @@ func (l *PersistedIndexLookup) edgeCatalogForShard(shard string) edgeShardCatalo
 	}
 
 	catalog := buildEdgeShardCatalog(l.Catalog.EdgeShards, shard)
+	if compiled != nil {
+		for relation, spec := range catalog.specs {
+			catalog.specs[relation] = compiled.edgeSpecs[edgeShardTargetKey(relation, spec.Shard)]
+		}
+	}
 	if l.edgeCatalogByShard == nil {
 		l.edgeCatalogByShard = make(map[string]edgeShardCatalog)
 	}
@@ -23,6 +32,7 @@ func (l *PersistedIndexLookup) edgeCatalogForShard(shard string) edgeShardCatalo
 }
 
 func (l *PersistedIndexLookup) reverseCatalogForShard(shard string) edgeShardCatalog {
+	err := l.compileReverseCatalog()
 	l.reverseCatalogMu.Lock()
 	defer l.reverseCatalogMu.Unlock()
 	if catalog, ok := l.reverseCatalogByShard[shard]; ok {
@@ -33,6 +43,11 @@ func (l *PersistedIndexLookup) reverseCatalogForShard(shard string) edgeShardCat
 		specs = l.ReverseCatalog.EdgeShards
 	}
 	catalog := buildEdgeShardCatalog(specs, shard)
+	if err == nil && l.reverseCompiled != nil {
+		for relation, spec := range catalog.specs {
+			catalog.specs[relation] = l.reverseCompiled.edgeSpecs[edgeShardTargetKey(relation, spec.Shard)]
+		}
+	}
 	if l.reverseCatalogByShard == nil {
 		l.reverseCatalogByShard = make(map[string]edgeShardCatalog)
 	}
@@ -87,4 +102,16 @@ func filterAllowedRelations(relations []string, allowed map[string]struct{}) []s
 		}
 	}
 	return filtered
+}
+
+func (l *PersistedIndexLookup) compileReverseCatalog() error {
+	if l.Store == nil {
+		return nil
+	}
+	l.reverseOnce.Do(func() {
+		if l.ReverseCatalog != nil {
+			l.reverseCompiled, l.reverseErr = l.Store.compiledScanCatalog(l.TenantID, IndexCatalog{Version: l.Version, EdgeShards: l.ReverseCatalog.EdgeShards}, "")
+		}
+	})
+	return l.reverseErr
 }
