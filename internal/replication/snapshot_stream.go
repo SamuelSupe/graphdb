@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"go.etcd.io/raft/v3/raftpb"
 )
@@ -188,7 +189,8 @@ func validateSnapshotFile(dir string, index uint64, descriptor snapshotFile) err
 
 func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raftpb.ConfState, envelope snapshotEnvelope, done chan<- snapshotBuild) {
 	defer n.workers.Done()
-	defer source.Close()
+	closeSource := sync.OnceFunc(func() { _ = source.Close() })
+	defer closeSource()
 	dir := filepath.Join(n.cfg.Dir, "snapshots")
 	err := prepareSnapshotDirectory(n.cfg.Dir)
 	finish := n.metrics.Start("snapshot_build")
@@ -239,6 +241,9 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 			os.Remove(file.Name())
 		}
 	}
+	// Completing a probe can permit another capture. Release the pinned source
+	// before exposing this result, including when construction failed.
+	closeSource()
 	select {
 	case done <- snapshotBuild{request: snapshotRequest{index: index, conf: conf, data: data, done: make(chan error, 1)}, err: err}:
 	case <-n.ctx.Done():

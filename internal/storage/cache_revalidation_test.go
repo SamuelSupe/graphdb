@@ -18,6 +18,7 @@ type pausedManifestReadStore struct {
 	block   atomic.Bool
 	started chan struct{}
 	release chan struct{}
+	failure error
 }
 
 func TestReaderCacheTTLRevalidatesExternalPublication(t *testing.T) {
@@ -55,11 +56,243 @@ func (s *pausedManifestReadStore) GetWithMeta(ctx context.Context, key string) (
 		close(s.started)
 		select {
 		case <-ctx.Done():
+			if s.failure != nil {
+				return nil, ObjectMeta{}, s.failure
+			}
 			return nil, ObjectMeta{}, ctx.Err()
 		case <-s.release:
 		}
+		if s.failure != nil {
+			return nil, ObjectMeta{}, s.failure
+		}
 	}
 	return data, meta, err
+}
+
+func TestReaderCachePublicationSupersedesManifestFailure(t *testing.T) {
+	for _, refresh := range []bool{false, true} {
+		t.Run(fmt.Sprint(refresh), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			base := NewMemoryStore()
+			writer := NewTenantStore(base, "test")
+			if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			published, _ := writer.getWriteCache("tenant-a")
+			blocked := &pausedManifestReadStore{ObjectStore: base, started: make(chan struct{}), release: make(chan struct{}), failure: errors.New("old manifest reader closed")}
+			blocked.block.Store(true)
+			release := sync.OnceFunc(func() { close(blocked.release) })
+			defer release()
+			reader := NewTenantStore(blocked, "test")
+			cache := NewReaderCache(reader, time.Minute)
+			done := make(chan error, 1)
+			go func() {
+				var g *graph.Graph
+				var manifest Manifest
+				var err error
+				if refresh {
+					g, manifest, err = cache.Refresh(ctx, "tenant-a")
+				} else {
+					g, manifest, err = cache.Load(ctx, "tenant-a")
+				}
+				if err == nil && (g == nil || manifest.Version != 1) {
+					err = errors.New("missing published graph")
+				}
+				done <- err
+			}()
+			select {
+			case <-blocked.started:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			reader.setWriteCache("tenant-a", published)
+			release()
+			if err := <-done; err != nil {
+				t.Fatalf("manifest failure escaped after publication: %v", err)
+			}
+		})
+	}
+}
+
+func TestReaderCachePublicationSupersedesQueuedLoad(t *testing.T) {
+	for _, queueTimeout := range []time.Duration{time.Second, 0} {
+		t.Run(queueTimeout.String(), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			writer := NewTenantStore(files, "test")
+			if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			published, _ := writer.getWriteCache("tenant-a")
+			reader := NewTenantStore(files, "test")
+			cache := NewReaderCache(reader, time.Minute)
+			cache.ConfigureLoadAdmission(1, queueTimeout)
+			releaseSlot, err := cache.acquireStoreLoad(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer releaseSlot()
+			done := make(chan error, 1)
+			go func() { _, _, err := cache.Load(ctx, "tenant-a"); done <- err }()
+			for {
+				files.runtime.mu.Lock()
+				views := len(files.runtime.views)
+				files.runtime.mu.Unlock()
+				if views != 0 {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-time.After(time.Millisecond):
+				}
+			}
+			reader.setWriteCache("tenant-a", published)
+			if err := <-done; err != nil {
+				t.Fatalf("publication did not bypass obsolete admission: %v", err)
+			}
+			if cache.Status("tenant-a").Loading || len(cache.loadSlots) != 1 {
+				t.Fatal("publication retained load registration or changed another load's admission")
+			}
+			files.runtime.mu.Lock()
+			views := len(files.runtime.views)
+			files.runtime.mu.Unlock()
+			if views != 0 {
+				t.Fatal("queued load retained its read view")
+			}
+		})
+	}
+}
+
+func TestReaderCachePublicationSupersedesRefresh(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	base := NewMemoryStore()
+	writer := NewTenantStore(base, "test")
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Compact(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	published, _ := writer.getWriteCache("tenant-a")
+	blocked := &blockingGraphReadStore{ObjectStore: base, started: make(chan struct{}), release: make(chan struct{}), cancelError: errors.New("obsolete object reader closed")}
+	release := sync.OnceFunc(func() { close(blocked.release) })
+	defer release()
+	reader := NewTenantStore(blocked, "test")
+	cache := NewReaderCache(reader, time.Minute)
+	cache.LoadTimeout = 100 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { _, _, err := cache.Refresh(ctx, "tenant-a"); done <- err }()
+	select {
+	case <-blocked.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	reader.setWriteCache("tenant-a", published)
+	if err := <-done; err != nil {
+		t.Fatalf("refresh ignored publication: %v", err)
+	}
+	if cache.Status("tenant-a").Loading || len(cache.loadSlots) != 0 {
+		t.Fatal("obsolete refresh retained registration or admission")
+	}
+}
+
+func TestReaderCacheCanceledHotLoadDoesNotInvokeCallback(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	cache := NewReaderCache(store, time.Minute)
+	if _, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := cache.WithReadOnlyGraphAtLeast(ctx, "tenant-a", 1, func(*graph.Graph, Manifest) error { called = true; return nil })
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("canceled hot load: callback=%v err=%v", called, err)
+	}
+}
+
+type cacheWaitContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (c *cacheWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.Context.Done()
+}
+
+func TestReaderCacheInitiatorCancellationDoesNotFailLiveWaiter(t *testing.T) {
+	for _, phase := range []string{"load-metadata", "refresh-metadata", "refresh-graph"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			base := NewMemoryStore()
+			writer := NewTenantStore(base, "test")
+			if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			started, release := make(chan struct{}), make(chan struct{})
+			var objects ObjectStore
+			if phase == "refresh-graph" {
+				objects = &blockingGraphReadStore{ObjectStore: base, started: started, release: release}
+			} else {
+				blocked := &pausedManifestReadStore{ObjectStore: base, started: started, release: release}
+				blocked.block.Store(true)
+				objects = blocked
+			}
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			cache := NewReaderCache(NewTenantStore(objects, "test"), time.Minute)
+			ownerCtx, cancelOwner := context.WithCancel(ctx)
+			defer cancelOwner()
+			owner := make(chan error, 1)
+			go func() {
+				var err error
+				if phase == "load-metadata" {
+					_, _, err = cache.Load(ownerCtx, "tenant-a")
+				} else {
+					_, _, err = cache.Refresh(ownerCtx, "tenant-a")
+				}
+				owner <- err
+			}()
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			waitCtx := &cacheWaitContext{Context: ctx, entered: make(chan struct{})}
+			waiter := make(chan error, 1)
+			go func() {
+				g, manifest, err := cache.Load(waitCtx, "tenant-a")
+				if err == nil && (g == nil || manifest.Version != 1) {
+					err = errors.New("waiter did not load its own valid view")
+				}
+				waiter <- err
+			}()
+			select {
+			case <-waitCtx.entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			cancelOwner()
+			if err := <-owner; !errors.Is(err, context.Canceled) {
+				t.Fatalf("initiator cancellation lost: %v", err)
+			}
+			unblock()
+			if err := <-waiter; err != nil {
+				t.Fatalf("another caller's cancellation failed the live waiter: %v", err)
+			}
+		})
+	}
 }
 
 func TestReaderCacheRevalidationPreservesConcurrentPublication(t *testing.T) {
@@ -415,8 +648,10 @@ func TestReaderCacheRefreshLoadTimeoutReleasesAdmission(t *testing.T) {
 }
 
 func TestReaderCacheFailedLoadRequiresValidReplacement(t *testing.T) {
-	for _, invalidate := range []bool{false, true} {
-		t.Run(fmt.Sprint(invalidate), func(t *testing.T) {
+	for _, scenario := range []struct {
+		invalidate, refresh, tooOld bool
+	}{{}, {invalidate: true}, {refresh: true}, {refresh: true, invalidate: true}, {tooOld: true}} {
+		t.Run(fmt.Sprintf("invalidate=%v/refresh=%v/tooOld=%v", scenario.invalidate, scenario.refresh, scenario.tooOld), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			base := NewMemoryStore()
@@ -438,14 +673,26 @@ func TestReaderCacheFailedLoadRequiresValidReplacement(t *testing.T) {
 			reader := NewTenantStore(blocked, "test")
 			cache := NewReaderCache(reader, time.Minute)
 			done := make(chan error, 1)
-			go func() { _, _, err := cache.Load(ctx, "tenant-a"); done <- err }()
+			go func() {
+				var err error
+				if scenario.refresh {
+					_, _, err = cache.Refresh(ctx, "tenant-a")
+				} else if scenario.tooOld {
+					_, _, err = cache.LoadAtLeast(ctx, "tenant-a", 2)
+				} else {
+					_, _, err = cache.Load(ctx, "tenant-a")
+				}
+				done <- err
+			}()
 			select {
 			case <-blocked.started:
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			if invalidate {
+			if scenario.invalidate || scenario.tooOld {
 				reader.setWriteCache("tenant-a", published)
+			}
+			if scenario.invalidate {
 				reader.invalidateReadViews("tenant-a", false)
 			}
 			release()

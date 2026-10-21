@@ -52,7 +52,11 @@ type cacheLoad struct {
 	bypass   bool
 
 	minVersion           int64
+	phaseCtx             context.Context
+	cancelPhase          context.CancelFunc
 	cancel               context.CancelFunc
+	independent          bool
+	abandoned            bool
 	superseded           bool
 	supersededGeneration uint64
 }
@@ -162,6 +166,9 @@ func (c *ReaderCache) WithCachedReadOnlyGraph(ctx context.Context, tenantID stri
 
 func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int64, shared bool) (*graph.Graph, Manifest, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, Manifest{}, err
+		}
 		now := time.Now()
 		c.mu.RLock()
 		entry, ok := c.entries[tenantID]
@@ -175,7 +182,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 		startGen := c.Store.readGeneration(tenantID)
 		c.mu.RUnlock()
 
-		load, acquired, err := c.beginLoad(ctx, tenantID)
+		load, acquired, err := c.beginLoad(ctx, tenantID, minVersion)
 		if err != nil {
 			return nil, Manifest{}, err
 		}
@@ -198,10 +205,12 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 			c.recordVisible(tenantID, entry.manifest.Version)
 			return cacheEntryGraph(entry, shared)
 		}
-		manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
+		manifest, manifestMeta, err := c.Store.getManifest(load.phaseCtx, tenantID)
 		if err != nil {
-			c.finishLoad(tenantID, load, err)
-			return nil, Manifest{}, err
+			if err = c.finishLoad(tenantID, load, err); err != nil {
+				return nil, Manifest{}, err
+			}
+			continue
 		}
 		c.mu.Lock()
 		now = time.Now()
@@ -259,7 +268,7 @@ func (c *ReaderCache) load(ctx context.Context, tenantID string, minVersion int6
 
 		c.recordCache(tenantID, "miss")
 		if err := c.startStoreLoad(
-			ctx, tenantID, minVersion, startGen, load,
+			load.phaseCtx, tenantID, minVersion, startGen, load,
 			entry, ok, manifest, manifestMeta,
 		); err != nil {
 			return nil, Manifest{}, err
@@ -298,14 +307,15 @@ func (c *ReaderCache) startStoreLoad(
 ) error {
 	parent, releaseView, err := c.Store.ReadViewContext(parent, tenantID)
 	if err != nil {
-		c.finishLoad(tenantID, load, err)
-		return err
+		return c.finishLoad(tenantID, load, err)
 	}
 	release, err := c.acquireStoreLoad(parent)
 	if err != nil {
 		releaseView()
-		c.recordCache(tenantID, "miss_rejected")
-		c.finishLoad(tenantID, load, err)
+		err = c.finishLoad(tenantID, load, err)
+		if err != nil {
+			c.recordCache(tenantID, "miss_rejected")
+		}
 		return err
 	}
 	// A cold load is shared by later requests, so the first caller must not be
@@ -322,15 +332,7 @@ func (c *ReaderCache) startStoreLoad(
 		release()
 		releaseView()
 	})
-	c.mu.Lock()
-	load.minVersion = minVersion
-	load.cancel = cancel
-	if entry, ok := c.entries[tenantID]; ok && cacheEntryFresh(entry, time.Now(), minVersion) {
-		load.superseded = true
-		load.supersededGeneration = c.Store.readGeneration(tenantID)
-		cancel()
-	}
-	c.mu.Unlock()
+	c.setLoadCancel(load, cancel, true)
 	go func() {
 		defer releaseStoreLoad()
 		loaded, err := c.loadStoreAtLeastFromEntry(
@@ -342,24 +344,9 @@ func (c *ReaderCache) startStoreLoad(
 		// rejected by admission for work that has already stopped.
 		releaseStoreLoad()
 		if err != nil {
-			// Generation changes and all cache publications are one tenant-scoped
-			// operation. Do not complete an obsolete error between those steps.
-			publication := c.Store.readPublication(tenantID)
-			publication.mu.RLock()
-			defer publication.mu.RUnlock()
-			c.mu.RLock()
-			superseded := load.superseded
-			entry, exists := c.entries[tenantID]
-			usable := exists && cacheEntryFresh(entry, time.Now(), minVersion) && c.Store.readGeneration(tenantID) == load.supersededGeneration
-			c.mu.RUnlock()
-			// Some object readers report a closed handle instead of cancellation.
-			// Only a still-valid resident publication can replace that failed work.
-			if superseded && (errors.Is(err, context.Canceled) || usable) {
-				c.finishLoad(tenantID, load, nil)
-				return
+			if c.finishLoad(tenantID, load, err) != nil {
+				c.recordCache(tenantID, "miss_error")
 			}
-			c.recordCache(tenantID, "miss_error")
-			c.finishLoad(tenantID, load, err)
 			return
 		}
 
@@ -500,16 +487,20 @@ func (c *ReaderCache) recordVisible(tenantID string, version int64) {
 	}
 }
 
-func (c *ReaderCache) beginLoad(ctx context.Context, tenantID string) (*cacheLoad, bool, error) {
+func (c *ReaderCache) beginLoad(ctx context.Context, tenantID string, minVersion int64) (*cacheLoad, bool, error) {
 	c.mu.Lock()
 	if current := c.loading[tenantID]; current != nil {
 		c.mu.Unlock()
 		if err := waitCacheLoad(ctx, current); err != nil {
+			if ctx.Err() == nil && current.abandoned {
+				return current, false, nil
+			}
 			return nil, false, err
 		}
 		return current, false, nil
 	}
-	load := &cacheLoad{done: make(chan struct{})}
+	phaseCtx, cancel := context.WithCancel(ctx)
+	load := &cacheLoad{done: make(chan struct{}), phaseCtx: phaseCtx, cancelPhase: cancel, cancel: cancel, minVersion: minVersion}
 	if c.loading == nil {
 		c.loading = map[string]*cacheLoad{}
 	}
@@ -533,18 +524,57 @@ func waitCacheLoad(ctx context.Context, load *cacheLoad) error {
 	}
 }
 
-func (c *ReaderCache) finishLoad(tenantID string, load *cacheLoad, err error) {
+func (c *ReaderCache) setLoadCancel(load *cacheLoad, cancel context.CancelFunc, independent bool) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	load.cancel = cancel
+	load.independent = independent
+	if load.superseded {
+		cancel()
+	}
+}
+
+func (c *ReaderCache) finishLoad(tenantID string, load *cacheLoad, err error) error {
+	if err != nil {
+		// Cover metadata, admission and refresh failures as well as background
+		// reads. Publication across all caches must finish before this decision.
+		publication := c.Store.readPublication(tenantID)
+		publication.mu.RLock()
+		defer publication.mu.RUnlock()
+	}
+	c.mu.Lock()
+	entry, exists := c.entries[tenantID]
+	usable := exists && cacheEntryFresh(entry, time.Now(), load.minVersion) && c.Store.readGeneration(tenantID) == load.supersededGeneration
+	if load.superseded && (errors.Is(err, context.Canceled) || usable) {
+		err = nil
+	}
+	// Synchronous metadata/admission and refresh still follow their initiating
+	// caller. Its cancellation must not fail a different live waiter.
+	load.abandoned = !load.independent && load.phaseCtx.Err() != nil &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+	if load.cancel != nil {
+		load.cancel()
+	}
+	if load.cancelPhase != nil {
+		load.cancelPhase()
+	}
 	load.err = err
 	if c.loading[tenantID] == load {
 		delete(c.loading, tenantID)
 	}
 	close(load.done)
 	c.mu.Unlock()
+	return err
 }
 
 func (c *ReaderCache) finishUncachedLoad(tenantID string, load *cacheLoad, entry cacheEntry) {
 	c.mu.Lock()
+	if load.cancel != nil {
+		load.cancel()
+	}
+	if load.cancelPhase != nil {
+		load.cancelPhase()
+	}
 	load.uncached = entry
 	load.bypass = true
 	if c.loading[tenantID] == load {
@@ -573,7 +603,7 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 	if !revalidationOK && !markAccess {
 		return nil, Manifest{}, nil
 	}
-	load, acquired, err := c.beginLoad(ctx, tenantID)
+	load, acquired, err := c.beginLoad(ctx, tenantID, 0)
 	if err != nil {
 		return nil, Manifest{}, err
 	}
@@ -583,10 +613,12 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		}
 		return c.Load(ctx, tenantID)
 	}
-	manifest, manifestMeta, err := c.Store.getManifest(ctx, tenantID)
+	manifest, manifestMeta, err := c.Store.getManifest(load.phaseCtx, tenantID)
 	if err != nil {
-		c.finishLoad(tenantID, load, err)
-		return nil, Manifest{}, err
+		if err = c.finishLoad(tenantID, load, err); err != nil {
+			return nil, Manifest{}, err
+		}
+		return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 	}
 	c.mu.RLock()
 	entry, ok := c.entries[tenantID]
@@ -638,25 +670,41 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 		c.recordCache(tenantID, "revalidated_logical_graph")
 		return cacheEntryGraph(entry, !markAccess)
 	}
-	release, err := c.acquireStoreLoad(ctx)
+	viewCtx, releaseView, err := c.Store.ReadViewContext(load.phaseCtx, tenantID)
 	if err != nil {
-		c.finishLoad(tenantID, load, err)
-		return nil, Manifest{}, err
+		if err = c.finishLoad(tenantID, load, err); err != nil {
+			return nil, Manifest{}, err
+		}
+		return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 	}
-	loadCtx := ctx
-	cancel := func() {}
+	release, err := c.acquireStoreLoad(viewCtx)
+	if err != nil {
+		releaseView()
+		if err = c.finishLoad(tenantID, load, err); err != nil {
+			return nil, Manifest{}, err
+		}
+		return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
+	}
+	var loadCtx context.Context
+	var cancel context.CancelFunc
 	if c.LoadTimeout > 0 {
-		loadCtx, cancel = context.WithTimeout(ctx, c.LoadTimeout)
+		loadCtx, cancel = context.WithTimeout(viewCtx, c.LoadTimeout)
+	} else {
+		loadCtx, cancel = context.WithCancel(viewCtx)
 	}
+	c.setLoadCancel(load, cancel, false)
+	releaseLoad := sync.OnceFunc(func() { cancel(); release(); releaseView() })
+	defer releaseLoad()
 	loaded, err := c.loadStoreAtLeastFromEntry(
 		loadCtx, tenantID, 0,
 		entry, ok, manifest, manifestMeta,
 	)
-	cancel()
-	release()
+	releaseLoad()
 	if err != nil {
-		c.finishLoad(tenantID, load, err)
-		return nil, Manifest{}, err
+		if err = c.finishLoad(tenantID, load, err); err != nil {
+			return nil, Manifest{}, err
+		}
+		return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 	}
 	c.mu.Lock()
 	if c.Store.readGeneration(tenantID) != startGen {

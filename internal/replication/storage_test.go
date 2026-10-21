@@ -527,10 +527,12 @@ func TestDurableLogTruncationCompactionAndReopen(t *testing.T) {
 
 type retrySnapshotMachine struct {
 	membershipMachine
-	failCapture atomic.Bool
-	failWrite   atomic.Bool
-	opened      atomic.Int64
-	closed      atomic.Int64
+	failCapture  atomic.Bool
+	failWrite    atomic.Bool
+	opened       atomic.Int64
+	closed       atomic.Int64
+	closeStarted chan struct{}
+	closeRelease chan struct{}
 }
 
 func (m *retrySnapshotMachine) CaptureSnapshot(context.Context) (SnapshotSource, error) {
@@ -543,7 +545,51 @@ func (m *retrySnapshotMachine) CaptureSnapshot(context.Context) (SnapshotSource,
 
 type retrySnapshotSource struct{ machine *retrySnapshotMachine }
 
-func (s retrySnapshotSource) Close() error { s.machine.closed.Add(1); return nil }
+func (s retrySnapshotSource) Close() error {
+	if s.machine.closeStarted != nil {
+		close(s.machine.closeStarted)
+		<-s.machine.closeRelease
+	}
+	s.machine.closed.Add(1)
+	return nil
+}
+
+func TestSnapshotBuildReleasesSourceBeforeCompletion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	disk, _, err := openStorage(t.TempDir(), 1, "build-close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	machine := &retrySnapshotMachine{closeStarted: make(chan struct{}), closeRelease: make(chan struct{})}
+	n := &Node{cfg: Config{Dir: disk.dir, StreamSnapshots: true, MaxSnapshotBytes: 1 << 20}, disk: disk, machine: machine, ctx: ctx, cancel: cancel, peers: map[uint64]string{1: "http://one"}, metrics: observability.NewOperationMetrics()}
+	releaseClose := sync.OnceFunc(func() { close(machine.closeRelease) })
+	defer func() { releaseClose(); n.workers.Wait() }()
+	built, err := n.startSnapshot(raftpb.ConfState{Voters: []uint64{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-machine.closeStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case <-built:
+		t.Fatal("snapshot completion published before its captured source was released")
+	default:
+	}
+	releaseClose()
+	select {
+	case result := <-built:
+		if result.err != nil || machine.closed.Load() != 1 {
+			t.Fatalf("build completion: closed=%d err=%v", machine.closed.Load(), result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
 func (s retrySnapshotSource) WriteTo(ctx context.Context, w io.WriteSeeker) error {
 	if s.machine.failWrite.Load() {
 		if _, err := w.Write([]byte("partial")); err != nil {
