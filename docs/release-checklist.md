@@ -6,8 +6,12 @@ checklist, not a record that every published version passed every item.
 
 ## Current candidate qualification
 
-[2.3.10](validation-v2.3.10.md) records local regressions; exact-tag CI and independent
+[2.4.0](validation-v2.4.0.md) records local qualification; exact-tag CI and independent
 downloaded-asset verification must complete before qualification. No gate waiver.
+
+## Previous 2.3.10 qualification
+
+[2.3.10](validation-v2.3.10.md) passed all exact-tag gates, both thirty-minute soaks and independent downloaded-asset/runtime checks. Its immutable tag and assets remain unchanged.
 
 ## Unpublished 2.3.9 qualification
 

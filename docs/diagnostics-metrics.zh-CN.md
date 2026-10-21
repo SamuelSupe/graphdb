@@ -1,6 +1,6 @@
 # 诊断指标与采集
 
-适用于 **GGraphDB 2.3.10**；发行资格见[版本验证](validation-v2.3.10.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.0**；发行资格见[版本验证](validation-v2.4.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 单机 direct/WAL、单组 Raft、catalog、数据分片和 router 均提供本地诊断。数据库节点使用管理监听器 `GET /metrics`、`GET /v1/diagnostics`；兼容单监听器部署也保留入口。router 使用自身监听器上的同名路径，必须携带 `Authorization: Bearer <router token>`，只接受 GET。
 

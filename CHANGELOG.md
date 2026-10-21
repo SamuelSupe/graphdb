@@ -3,6 +3,27 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [2.4.0] - 2026-10-21
+
+- Add opt-in bounded adjacency ID trees while retaining ID-ordered edge data,
+  existing global ListEdges cursors and legacy layouts. Copy only touched tree
+  paths; reuse roots for payload-only updates.
+- Merge neighboring underfilled data/adjacency pages with bounded work and
+  hysteresis. Limit standalone background maintenance concurrency and I/O;
+  retain replicated publication and flat-directory cost boundaries.
+- Compile range boundaries once, prune entity/edge scans conservatively,
+  prefetch at most one page and reuse decoded hot pages. Cache reverse-directory
+  fingerprints and charge only remaining continuation candidates.
+- Recover persistent snapshot failures using authenticated, term-fenced,
+  on-demand candidate snapshots before leadership transfer. Cover default
+  snapshot intervals, skewed replicas, shared failures and source cleanup.
+- Order cache publication with failed-load completion across metadata,
+  admission, shared reads and refresh. Preserve independent cancellation,
+  deadlines and real errors; release slots and read views before waking waiters.
+- Keep both range/adjacency write flags disabled by default. Upgrade all
+  readers and replicas before activation; rebuild legacy layouts before an
+  index downgrade. HTTP, module, data-hash and Raft protocol identifiers stay unchanged.
+
 ## [2.3.10] - 2026-10-21
 
 - Cancel obsolete shared cold loads when a committed resident graph satisfies

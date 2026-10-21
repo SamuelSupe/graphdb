@@ -1,117 +1,49 @@
-# GGraphDB v2.3.10
+# GGraphDB v2.4.0
 
 ## 中文
 
-v2.3.9 的资格标签未生成发行资产。本版承接其全部修复，并补充重试期间换主的回归与滚动失败诊断；v2.3.9 和 v2.3.8 标签均保持不变。
+2.4.0 承接 2.3.10，重点改进大租户索引的读取成本、局部整理，以及快照失败和缓存发布时的恢复行为。
 
-本补丁修复 v2.3.8 审查中稳定复现的安全、查询及资源生命周期问题：
+- 新增可选的邻接 ID 树。完整边数据继续按 edge.ID 排列，稀疏的正向／反向遍历按端点定位邻接项，避免逐页扫描完整边桶。邻接更新只复制触及的叶页和祖先路径，字段更新不改端点时复用原根；不以整桶重写换取读优化。
+- 实体、边和邻接页在删除或缩小时有界地合并相邻小页，保留拆分／合并滞回。单机后台整理只有一个 worker，按片释放资源并限制平均 I/O；Raft 不执行独立的非复制目录发布。完整目录的成本仍随页数增长。
+- 范围扫描使用编译好的边界、保守的 Parquet 行组裁剪和最多一页的网络预取。已解码的热页不会因原始字节缓存淘汰而重新 GET；反向目录复用一次性指纹。续页按 afterID 之后的候选精确计费，取消、失败与提前结束均释放预取名额。
+- 快照持续失败时，Leader 在原五秒重试和拒写保护下探测健康候选，再有条件让位。候选可按需生成并持久化快照，避免默认 1000 条间隔及副本快照错位阻止恢复；身份、任期、成员、应用屏障和持久化证明均受检查。共享磁盘故障不会触发无依据的反复切主。
+- 缓存发布与失败加载完成按租户排序；元数据读取、排队、异步加载和显式刷新都能响应新图发布。先释放加载名额、ReadView 再唤醒等待者；独立调用方的取消和期限继续生效，有效等待者不继承首个调用方的取消。只有有效且满足版本的替代图才能消化旧读取错误。
+- 快照构建先关闭捕获源，再发布完成结果，确保单构建限制覆盖捕获目录和读视图的释放阶段。
 
-- 存储层默认只恢复同租户备份，校验 legacy key 与记录的租户身份。私有平台跨租户迁移
-  必须显式声明 `source_tenant_id`；受限租户调用方不能覆盖来源。Go/Python SDK 同步支持。
-- 写接口在 Raft 提案前拒绝跨站 Origin 和不支持的 Content-Type，包括不读 body 的 purge。
-  NGINX、Follower 和分片路由保留公开 Host 及端口，继续接受已有 JSONL/CSV 媒体类型。
-- 未分类的任务准备错误保留排队，释放锁后公平重试；只有明确的永久错误才记为失败。
-- commit/ingest 已发布图数据后的结果记录错误隐藏内部路径，保留 HTTP 500 和
-  `retryable:false`，避免客户端因依赖暂时不可用而盲目重放已经发布的写入。
-- 数字分页游标必须提供与实际图版本匹配的 `min_version`；编码游标必须包含版本。
-- WAL 结果等待在服务故障或强制关闭时退出，同时保留已受理批次供重启恢复。
-- 延迟索引在捕获最新图后复核内存预算；并发增长使原预留不足时释放资源后重新准入。
+### 启用与兼容
 
-- 确定性 HTTP 应用 5xx 完整回滚后记录失败响应，后续命令继续；批量失败不丢成功邻居。
-  真实文件／完整性／取消错误仍停止应用并等待修复。过长的对象路径组件直接返回 400。
-- WAL 在 sync 组确认前持久化带校验和的 `.durable` 边界；只自动裁掉边界之后的坏末尾。
-  已确认前缀及无法证明未确认的旧坏帧继续保留，边界随整个 WAL 目录备份。
-- 文件层在不区分大小写的卷上检查真实目录拼写，封住 legacy 无身份配置的租户别名读取。
+`GRAPHDB_INDEX_RANGE_PAGES` 与 `GRAPHDB_INDEX_ADJACENCY_PAGES` 仍默认关闭，后者依赖前者。先升级全部相关读者、写者、GC 节点及 Raft 副本，再统一开启；已有邻接索引须显式重建，无根旧桶不会在业务写入时自动整桶转换。
 
-本版还修复后续审查确认的写放大及性能／稳定性问题：
+旧布局继续读写。全局 `ListEdges` 的顺序、游标编码、版本、查询绑定及 generation 契约不变。旧二进制不支持新目录；索引降级须先使用新程序关闭相关开关并重建旧布局。此流程不构成整个 WAL／Raft 数据目录的降级许可。升级前保留已验证备份，滚动期间暂停生命周期／恢复操作。HTTP `/v1`、Go 模块 `/v2`、逻辑 `data_hash` 和独立 Raft 协议编号不变。
 
-- 实体、正向边和反向边在 64 个逻辑桶内按 ID 范围分页，增量更新只重写触及的物理页。
-  每页最多 1024 条，以实际编码后 8 MiB 为目标上限，单条超大记录仍合法。
-  完整目录的编码与写入仍随页数增长；首次拆分旧大页也需要处理原页。
-- `GRAPHDB_INDEX_RANGE_PAGES` 默认关闭。先升级全部相关读写节点及副本，再统一开启并重建
-  大租户索引。旧程序不能安全读取范围目录；降级索引须先由新程序关闭开关并重建旧布局。
-  [实现、测量及兼容边界](https://github.com/SamuelSupe/graphdb/blob/main/docs/entity-range-paging-implementation.zh-CN.md)。
-- WAL 可将未完成的受理／PREPARED 状态折叠到校验过的 `.checkpoint`，让已完成租户的历史
-  可以回收，避免一个故障租户永久钉住共享日志。未完成状态仍计入容量，真实持久化故障仍须修复。
-- 默认 Raft 快照在后台构建文件，持久化循环处理描述符；准备及临时写入失败按五秒间隔重试，
-  不因瞬时准备错误直接停节点。成员地址持久化不跨 peer 读锁，并保留并发更新。
-- match 和 neighbors 分页按游标定位，过滤工作计入成本且支持取消；恢复 ReaderCache TTL。
-  迁移导出不跨网络输出持锁，构建和输出均有并发上限；全量二级索引逐字段写入释放，
-  已有目录安全检查允许并行读取。旧视图仍保护其物理页，释放后完整 GC 可回收无引用旧页。
+[索引实现与成本边界](https://github.com/SamuelSupe/graphdb/blob/main/docs/entity-range-paging-implementation.zh-CN.md) · [升级手册](https://github.com/SamuelSupe/graphdb/blob/main/docs/raft-rolling-upgrade.zh-CN.md) · [2.4.0 验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.4.0.md)
 
-[版本验证记录](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.3.10.md)
-区分本地回归、确切标签 CI、单机和 Raft 各 30 分钟长测，以及独立下载验证。
-发布资产由全部必需门禁通过后自动生成，无门禁豁免；包内保留标签时的候选记录与门禁证据，
-最终下载核验记录更新于 main。v2.3.8 标签和资产保持不变。
-
-升级前备份；单机停止旧进程后复用目录，Raft 遵循滚动升级手册。混合版本期间暂停恢复和
-恢复演练等生命周期任务。客户端应使用 JSON 写入类型，并在跨租户平台迁移时声明来源。
-HTTP `/v1`、Go 模块 `/v2` 和 Raft 协议编号不变。完整备份必须保留 WAL 的 `.durable`、
-已生成的 `.checkpoint` 及 Raft `snapshots/`；本地快照现在使用已有 format-2 文件布局。
-不能把索引布局转换验证当作整个 WAL／Raft 目录的降级资格。
+原发行门禁保持不变：全量 unit／vet／race／SDK、direct／WAL 恢复、S3／网关、真实 v2.3.0 滚动、增强及协议 3、单机与 Raft 各 30 分钟长测、构建解包与校验。资产仅在全部必需门禁通过后生成；最终独立下载和新目录恢复记录更新于 main。既有标签和资产不变，不作生产容量、跨宿主机或天级稳定性承诺。
 
 ## English
 
-The v2.3.9 qualification tag produced no release assets. This patch carries its fixes forward with snapshot-retry leadership coverage and committed-barrier rolling validation. Main CI also requires the full local soak and captures first-timeout diagnostics; both earlier tags remain unchanged. Pending failures are recorded in the version validation report.
+2.4.0 builds on 2.3.10 with bounded adjacency reads and local page merging, more efficient range scans, and recovery fixes around snapshots and cache publication.
 
-Committed graph publication cancels obsolete shared cold loads after installing
-the resident view. Waiting queries resume after the old work releases its global
-load slot and local read view; individual request cancellation and load deadlines
-retain their existing behavior.
+- Optional copy-on-write adjacency ID trees seek sparse outgoing/incoming edges without scanning every full data page. Data pages remain ordered by edge ID. Updates copy touched leaves and ancestor paths; payload-only updates reuse the adjacency root.
+- Local page merging uses bounded neighbor work and split/merge hysteresis. A single standalone background worker limits average I/O and releases resources between slices; Raft replicas do not publish independent catalogs. Flat-directory work still grows with page count.
+- Compiled range boundaries, conservative Parquet pruning and one-page network prefetch reduce read work. Decoded hot pages avoid unnecessary object GETs after raw-byte eviction. Reverse directories reuse a cached fingerprint. Continuation cost excludes rows before afterID; cancellation and early termination release prefetch capacity.
+- Persistent snapshot failure can trigger a fenced candidate probe and controlled leadership transfer while preserving five-second retries and write refusal. A caught-up candidate may persist an on-demand snapshot, including with the default 1,000-entry interval and skewed snapshot positions. Identity, membership, term, applied barrier and persistence proof remain required; shared capacity failure does not cause blind leadership rotation.
+- Tenant-ordered cache publication covers metadata, admission, asynchronous loading and explicit refresh. Old work releases its slot and read view before completing. Caller cancellation and deadlines remain independent; live waiters retry an abandoned initiating caller. Real storage errors remain errors unless a valid resident replacement satisfies the requested version.
+- Snapshot workers close captured sources before reporting completion, so the single-build limit also bounds checkpoint and read-view lifetimes.
 
-This patch fixes reproduced v2.3.8 restore, browser-write, preparation-retry,
-cursor and resource-lifecycle defects. Restore defaults to the target tenant;
-private platform migrations explicitly declare the backup source. Scoped callers
-cannot override it, and legacy backup keys must match their records.
+Both `GRAPHDB_INDEX_RANGE_PAGES` and `GRAPHDB_INDEX_ADJACENCY_PAGES` remain disabled by default; adjacency requires range pages. Upgrade all readers, writers, GC nodes and replicas before activation, then explicitly rebuild existing adjacency indexes. Legacy buckets without roots do not undergo automatic whole-bucket conversion on business writes.
 
-Browser mutations reject cross-site origins and unsafe media before proposal;
-proxies retain the public Host and imports retain existing JSONL/CSV aliases.
-Opaque preparation failures remain queued for fair retry. Post-publication
-commit/ingest metadata errors retain a generic non-retryable HTTP 500.
-Legacy numeric cursors require matching `min_version`; encoded cursors carry
-their own version. WAL waits stop on service failure without discarding accepted
-batches, and deferred indexing rechecks memory admission after graph growth.
+Legacy layouts remain readable and writable. Global `ListEdges` ordering and cursor encoding, version/query binding and generation contracts are unchanged. Old binaries cannot read new catalogs. Use the new program with the relevant flags disabled to rebuild the legacy layout before an index downgrade; this does not qualify a complete WAL/Raft directory downgrade. Keep verified backups and pause lifecycle/restore operations during rolling upgrades. HTTP `/v1`, Go module `/v2`, logical `data_hash` and Raft protocol identifiers remain unchanged.
 
-Deterministic HTTP application failures roll back and durably record a failed
-response so later commands continue; file failures and unsuccessful rollback still
-require repair/replay. Object path components over 255 bytes return HTTP 400.
-A checksummed durable WAL boundary is published before sync-mode ACKs, allowing
-recovery to truncate only proven unacknowledged corrupt suffixes. Acknowledged
-prefixes and ambiguous legacy damage remain preserved. Filesystem directory
-spelling checks also reject aliases of legacy tenant records without identity.
-
-Entity and forward/reverse edge indexes can now use bounded ID ranges within the
-existing 64 logical buckets: at most 1,024 records and an 8 MiB encoded target per
-page, allowing oversized single records. Incremental writes replace touched pages;
-the flat catalog still grows with page count, and initial legacy-page conversion
-still reads the old page. `GRAPHDB_INDEX_RANGE_PAGES` defaults to false. Upgrade
-every reader and replica before enabling it; old binaries cannot safely paginate
-range catalogs. Use the new binary with the flag disabled to rebuild the legacy
-index layout before an index downgrade.
-
-WAL checkpoints retain accepted/PREPARED work while reclaiming completed history,
-preventing a faulted tenant from pinning all shared log segments indefinitely.
-Pending work still counts against capacity. Default Raft snapshots build files in
-the background and retry preparation errors; durable Raft and restore failures
-remain fatal. Peer persistence preserves concurrent address changes without
-holding the peer read lock across disk I/O. Cursor-seeking queries, TTL expiry,
-bounded migration exports, one-field-at-a-time index builds, parallel safe directory
-checks and old-view GC reclamation also have regression coverage.
-
-The linked validation record separates local results, exact-tag gates, both
-thirty-minute soaks and independent downloaded-asset checks. HTTP/module and Raft
-protocol numbers are unchanged. Full backups must retain WAL `.durable` and any
-`.checkpoint`, plus Raft `snapshots/`; local snapshots now use the existing format-2
-file layout. Index conversion does not qualify a complete WAL/Raft directory
-downgrade. No production-capacity, day-scale stability or physical cross-host
-recovery claim is made.
+All original gates remain required, including both thirty-minute soaks. The validation record separates local results, exact-tag gates, publication and independent downloaded-asset/new-directory recovery checks. Existing tags and assets remain immutable. No production-capacity, cross-host or day-scale stability claim is made.
 
 ## Download and verify / 下载与校验
 
 ```sh
-sha256sum -c graphdb-v2.3.10.tar.gz.sha256
-tar -xzf graphdb-v2.3.10.tar.gz
-cd v2.3.10
+sha256sum -c graphdb-v2.4.0.tar.gz.sha256
+tar -xzf graphdb-v2.4.0.tar.gz
+cd v2.4.0
 sha256sum -c SHA256SUMS
 bin/graphdb-linux-amd64 version
 ```

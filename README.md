@@ -1,8 +1,8 @@
-# GGraphDB 2.3.10
+# GGraphDB 2.4.0
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.10) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.0) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,17 +14,18 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.3.10](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.10)** contains restore-source, browser-write, retry, cursor and resource-lifecycle fixes. See the validation record for exact-tag CI, publication status and independent downloaded-asset checks.
+**[2.4.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.0)** adds opt-in bounded adjacency trees and local page merging, improves range scans, and fixes snapshot handoff and cache cancellation/resource lifetimes. See the validation record for exact-tag CI, publication status and independent downloaded-asset checks.
 
-| Area | What 2.3.10 provides |
+| Area | What 2.4.0 provides |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
 | Large tenant registries | Server-side tenant ID search and bounded pages for tenant selection and cluster placements |
-| Correctness | Tenant-safe restore defaults, browser-write protection, versioned cursors and cancelable WAL waits |
+| Bounded indexes | Opt-in adjacency trees, local page merging and pruned range scans; legacy layouts and global edge cursors retained |
+| Reliability | Snapshot-failure recovery and publication-aware, cancelable graph loads |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups |
 
-See [release validation](docs/validation-v2.3.10.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release validation](docs/validation-v2.4.0.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -120,7 +121,6 @@ provides a query workbench with table, JSON and graph result views.
 
 ## Deployment options
 
-| Correctness | Tenant-safe restore defaults, browser-write protection, versioned cursors and cancelable WAL waits |
 | Deployment | Use when | Start here |
 | --- | --- | --- |
 | Standalone | One process with synchronous local direct/WAL writes | [Local disk guide](docs/local-disk.md) · [Compose](docker-compose.yml) |
@@ -207,7 +207,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.3.10 validation](docs/validation-v2.3.10.md) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.4.0 validation](docs/validation-v2.4.0.md) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 

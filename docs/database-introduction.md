@@ -1,6 +1,6 @@
 # GGraphDB Database Introduction
 
-Applies to **GGraphDB 2.3.10**; see [release validation](validation-v2.3.10.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.0**; see [release validation](validation-v2.4.0.md) and [version boundaries](naming-and-compatibility.md).
 
 [中文](database-introduction.zh-CN.md)
 

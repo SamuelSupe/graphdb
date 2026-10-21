@@ -1,8 +1,8 @@
-# GGraphDB 2.3.10
+# GGraphDB 2.4.0
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.10) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.0) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,17 +12,18 @@
 
 ## 当前版本
 
-**[2.3.10](https://github.com/SamuelSupe/graphdb/releases/tag/v2.3.10)** 包含恢复来源、浏览器写入、重试、游标及资源生命周期修复；确切标签 CI、发布状态和独立下载核验见验证记录。
+**[2.4.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.0)** 新增可选的有界邻接树与局部页合并，改进范围扫描，修复快照让位及缓存取消与资源生命周期；确切标签 CI、发布状态和独立下载核验见验证记录。
 
-| 领域 | 2.3.10 提供的能力 |
+| 领域 | 2.4.0 提供的能力 |
 | --- | --- |
 | 管理 UI | `/ui/` 内嵌英文／简体中文控制台，无需独立前端服务 |
 | 日常操作 | 图表概览、结构化表单与详情、查询工作台、数据接入和维护 |
 | 大量租户 | 服务端租户 ID 搜索，租户切换和集群归属使用有界分页 |
-| 正确性 | 恢复来源默认隔离、浏览器写入保护、版本游标与可取消 WAL 等待 |
+| 有界索引 | 可选邻接树、局部页合并和范围裁剪，保留旧布局与全局边游标 |
+| 稳定性 | 快照失败恢复，以及感知新图发布、支持取消的缓存加载 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组 |
 
-验证证据见[发布验证](docs/validation-v2.3.10.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验证](docs/validation-v2.4.0.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -188,7 +189,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.3.10 验证](docs/validation-v2.3.10.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.4.0 验证](docs/validation-v2.4.0.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 

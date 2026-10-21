@@ -1,6 +1,6 @@
 # Raft 运维与升级
 
-适用于 **GGraphDB 2.3.10**；发行资格见[版本验证](validation-v2.3.10.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.0**；发行资格见[版本验证](validation-v2.4.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 适用于单组 Raft，以及租户分片的目录组和数据组。默认单机仍使用原有 [本地磁盘部署](local-disk.md)。当前验收范围和发布缺口见 [发布准备状态](raft-release-readiness.zh-CN.md)。
 

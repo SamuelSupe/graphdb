@@ -2,7 +2,7 @@
 
 [English](local-disk.md)
 
-适用于 **GGraphDB 2.3.10**；发行资格见[版本验证](validation-v2.3.10.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.0**；发行资格见[版本验证](validation-v2.4.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 默认单机部署采用单进程、多租户并发读写。`GRAPHDB_DATA_DIR` 保存图数据、控制元数据、后台任务
 及本地备份，运行时无需 PostgreSQL 或远端在线存储。可选的
@@ -31,7 +31,7 @@
 | `GRAPHDB_READER_CACHE_MAX_BYTES` | 默认 512 MiB |
 | `GRAPHDB_READER_CACHE_MAX_TENANTS` | 默认 64 |
 | `GRAPHDB_INDEX_RANGE_PAGES` | 默认 `false`；所有读节点和副本升级后显式开启，实体、正向边、反向边按 ID 范围分页，每页最多 1024 条、编码目标 8 MiB，单条超大记录允许独立成页 |
-| `GRAPHDB_INDEX_ADJACENCY_PAGES` | v2.3.10 之后的当前源码新增，默认 `false`；依赖范围页，升级全部相关节点后显式重建；业务写入不自动转换无根桶。详见[邻接与合并契约](entity-range-paging-implementation.zh-CN.md#邻接-id-树与局部合并) |
+| `GRAPHDB_INDEX_ADJACENCY_PAGES` | v2.4.0 新增，默认 `false`；依赖范围页，升级全部相关节点后显式重建；业务写入不自动转换无根桶。详见[邻接与合并契约](entity-range-paging-implementation.zh-CN.md#邻接-id-树与局部合并) |
 | `GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES` | 仅旧写布局生效；默认 32 MiB，限制合并实体页的估算内存；旧单个逻辑分片可以超过此值 |
 | `GRAPHDB_READER_INDEX_CACHE_MAX_BYTES` | 默认 256 MiB；解码实体页缓存另受该值一半的上限约束 |
 

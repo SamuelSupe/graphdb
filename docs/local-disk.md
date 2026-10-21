@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.3.10**; see [release validation](validation-v2.3.10.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.0**; see [release validation](validation-v2.4.0.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -141,7 +141,7 @@ indexes to migrate existing large pages. Before downgrading, disable the flag an
 rebuild every tenant with the new binary; old binaries cannot safely paginate a
 range catalog. See [range page implementation and rollout](entity-range-paging-implementation.zh-CN.md).
 
-Current source after v2.3.10 adds `GRAPHDB_INDEX_ADJACENCY_PAGES`, independently
+Version 2.4.0 adds `GRAPHDB_INDEX_ADJACENCY_PAGES`, independently
 defaulting to `false` and requiring
 range pages. Upgrade all readers, writers, GC nodes and replicas before enabling
 it, then explicitly rebuild indexes. It adds a copy-on-write `(endpoint, edge.ID)`

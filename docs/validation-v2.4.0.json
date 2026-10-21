@@ -1,0 +1,25 @@
+{
+  "version": "v2.4.0",
+  "baseline_commit": "dc4a6ca43b427a1b881d464aa86e855c480c9eda",
+  "baseline_ci": "https://github.com/SamuelSupe/graphdb/actions/runs/39561408303",
+  "baseline_ci_result": "PASS",
+  "candidate_checks": {
+    "environment": "OrbStack Ubuntu ARM64",
+    "go": "1.26.7",
+    "docs_sdk_cmd_tests": "PASS",
+    "whole_repository_vet": "PASS",
+    "version_contracts": "PASS",
+    "workspace_hygiene": "PASS",
+    "python_sdk": {"tests": 13, "optional_live_server_skips": 1, "result": "PASS"},
+    "backup_automation": {"tests": 11, "result": "PASS"},
+    "rolling_barrier": {"tests": 5, "result": "PASS"}
+  },
+  "tag_created": false,
+  "release_published": false,
+  "candidate_main_ci": "PENDING",
+  "exact_tag_ci": "PENDING",
+  "independent_download": "PENDING",
+  "downloaded_runtime": "PENDING",
+  "gate_waivers": [],
+  "limitations": ["cross-host recovery not qualified", "production capacity not qualified", "day-scale stability not qualified", "flat-directory work grows with page count"]
+}

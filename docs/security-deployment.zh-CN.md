@@ -1,6 +1,6 @@
 # 生产安全边界
 
-适用于 **GGraphDB 2.3.10**；发行资格见[版本验证](validation-v2.3.10.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.0**；发行资格见[版本验证](validation-v2.4.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 [English](security-deployment.md)
 
