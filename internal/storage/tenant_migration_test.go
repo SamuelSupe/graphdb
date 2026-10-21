@@ -15,6 +15,7 @@ func TestCopyTenantObjectsDryRunAndCopy(t *testing.T) {
 	ctx := context.Background()
 	source := NewTenantStore(NewMemoryStore(), "source")
 	source.WriteIndexRangePages = true
+	source.WriteIndexAdjacencyPages = true
 	target := NewTenantStore(NewMemoryStore(), "target")
 	if _, err := source.CreateTenant(ctx, "tenant-a", TenantCreateOptions{Name: "Tenant A"}); err != nil {
 		t.Fatalf("create tenant: %v", err)
@@ -71,6 +72,9 @@ func TestCopyTenantObjectsDryRunAndCopy(t *testing.T) {
 	indexCatalog, err := target.GetIndexCatalog(ctx, "tenant-a")
 	if err != nil {
 		t.Fatalf("get migrated index catalog: %v", err)
+	}
+	if indexCatalog.EdgeShards[0].AdjacencyRoot == nil {
+		t.Fatal("migration lost adjacency root")
 	}
 	reverseCatalog, err := target.GetReverseIndexCatalog(ctx, "tenant-a", indexCatalog.Version)
 	if err != nil {

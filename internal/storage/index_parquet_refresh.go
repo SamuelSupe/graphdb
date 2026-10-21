@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -13,6 +14,9 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 	}
 	artifacts, err := s.buildIncrementalIndexArtifacts(ctx, tenantID, previous, before, g, report, version)
 	if err != nil {
+		if errors.Is(err, errAdjacencyIndex) {
+			return err
+		}
 		if ctx.Err() != nil {
 			return err
 		}
@@ -63,6 +67,9 @@ func (s *TenantStore) refreshParquetIndexesAfterCommit(ctx context.Context, tena
 		previous.Version,
 		version,
 	); err != nil {
+		if errors.Is(err, errAdjacencyIndex) {
+			return err
+		}
 		if err := s.rebuildReverseIndex(
 			ctx,
 			tenantID,

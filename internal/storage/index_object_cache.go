@@ -113,7 +113,9 @@ func (s *TenantStore) ConfigureIndexObjectCache(config IndexObjectCacheConfig) {
 	if config.MaxBytes <= 0 {
 		fieldBytes = indexCacheByteLimit(config.MaxEntries, defaultEdgeLookupCacheMaxBytes) / 4
 	}
-	s.fieldLookupCache = newDecodedLookupCache(config.MaxEntries, fieldBytes, estimateFieldLookupBytes)
+	adjacencyBytes := min(fieldBytes/4, 16<<20)
+	s.fieldLookupCache = newDecodedLookupCache(config.MaxEntries, fieldBytes-adjacencyBytes, estimateFieldLookupBytes)
+	s.adjacencyCache = newDecodedLookupCache(min(config.MaxEntries, 256), adjacencyBytes, adjacencyNodeBytes)
 }
 
 func (s *TenantStore) cachedIndexObject(ctx context.Context, kind string, tenantID string, version int64, objectKey string, contentHash string, schemaHash string) ([]byte, ObjectMeta, bool, error) {

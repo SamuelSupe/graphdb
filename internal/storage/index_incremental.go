@@ -40,7 +40,7 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 			_, err := s.rebuildIndexesFromGraph(ctx, tenantID, after, Manifest{Version: version})
 			return err
 		}
-		_, err := s.RebuildIndexes(ctx, tenantID)
+		_, err := s.rebuildIndexes(ctx, tenantID)
 		return err
 	}
 	return s.refreshParquetIndexesAfterCommit(ctx, tenantID, catalog, catalogMeta, before, after, report, version)

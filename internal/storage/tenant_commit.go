@@ -124,6 +124,9 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 			}
 		}
 		s.completeIndexUpdate(tenantID, work.done)
+		if indexErr == nil {
+			s.scheduleRangeCompaction(tenantID)
+		}
 	}()
 	if work.waitFor != nil {
 		started := time.Now()

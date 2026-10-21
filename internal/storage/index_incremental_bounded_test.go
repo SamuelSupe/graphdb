@@ -142,6 +142,7 @@ func TestBoundedIndexPagesRoundTrip(t *testing.T) {
 			store := NewTenantStore(objects, "test")
 			store.WriteIndexRangePages = true
 			defer store.ShutdownTasks(ctx)
+			store.WriteIndexAdjacencyPages = true
 			store.WriteEntityRecords = !local
 			store.UseEntityRecordsForRead = !local
 			var entities []graph.Entity

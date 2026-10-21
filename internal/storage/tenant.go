@@ -117,6 +117,7 @@ type TenantStore struct {
 	indexCache               *indexObjectCache
 	entityPageCache          *entityPageCache
 	edgeLookupCache          *edgeLookupCache
+	adjacencyCache           *decodedLookupCache[adjacencyNode]
 	fieldLookupCache         *decodedLookupCache[map[string][]string]
 	taskMu                   sync.Mutex
 	taskCancels              map[string]context.CancelFunc
@@ -145,6 +146,7 @@ type TenantStore struct {
 	IndexPrefetchTimeout   time.Duration
 	// WriteIndexRangePages requires all readers upgraded; false writes the downgrade-compatible layout.
 	WriteIndexRangePages       bool
+	WriteIndexAdjacencyPages   bool
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
 	MaterializeCollectorStatus bool
@@ -196,6 +198,7 @@ func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
 		indexCache:               newIndexObjectCache(4096),
 		entityPageCache:          newEntityPageCache(2048),
 		edgeLookupCache:          newEdgeLookupCache(2048, defaultEdgeLookupCacheMaxBytes),
+		adjacencyCache:           newDecodedLookupCache(256, 16<<20, adjacencyNodeBytes),
 		fieldLookupCache:         newDecodedLookupCache(2048, 64<<20, estimateFieldLookupBytes),
 		taskCancels:              map[string]context.CancelFunc{},
 		taskActive:               map[string]Task{},

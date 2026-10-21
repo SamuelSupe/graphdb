@@ -81,6 +81,21 @@ func (s *TenantStore) protectCatalogObjects(tenant string, catalog IndexCatalog)
 	if g == nil || len(g.retired) == 0 {
 		return
 	}
+	for _, shard := range catalog.EdgeShards {
+		if shard.AdjacencyRoot == nil {
+			continue
+		}
+		// COW children can become reachable again without rewriting their
+		// files. Clear their old retirement proofs without walking the tree
+		// on every commit. This bounded retirement table is conservative; GC
+		// still recursively marks current and retained roots before deletion.
+		for key := range g.retired {
+			if isAdjacencyObjectKey(key) {
+				delete(g.retired, key)
+			}
+		}
+		break
+	}
 	for _, index := range catalog.Indexes {
 		for _, object := range index.Objects {
 			delete(g.retired, object.Key)

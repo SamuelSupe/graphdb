@@ -12,6 +12,7 @@ type TenantStoreOptions struct {
 	MaxWriteCacheBytes  int64
 	// WriteIndexRangePages requires all readers upgraded; false writes the downgrade-compatible layout.
 	WriteIndexRangePages       bool
+	WriteIndexAdjacencyPages   bool
 	WriteEntityRecords         bool
 	UseEntityRecordsForRead    bool
 	EntityPagePackMaxBytes     int64
@@ -33,6 +34,7 @@ func NewTenantStoreWithOptions(objects ObjectStore, prefix string, options Tenan
 	store.MaxWriteCacheBytes = options.MaxWriteCacheBytes
 
 	store.WriteIndexRangePages = options.WriteIndexRangePages
+	store.WriteIndexAdjacencyPages = options.WriteIndexAdjacencyPages
 	store.WriteEntityRecords = options.WriteEntityRecords
 	store.UseEntityRecordsForRead = options.UseEntityRecordsForRead
 	store.EntityPagePackMaxBytes = options.EntityPagePackMaxBytes

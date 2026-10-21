@@ -3480,6 +3480,8 @@ components:
     EdgeShardSpec:
       type: object
       properties:
+        adjacency_root:
+          $ref: '#/components/schemas/AdjacencyRoot'
         relation_type:
           type: string
         shard:
@@ -3500,6 +3502,40 @@ components:
         content_hash:
           type: string
         schema_hash:
+          type: string
+    AdjacencyRoot:
+      type: object
+      description: Optional copy-on-write adjacency tree, enabled by explicit post-v2.3.10 format rollout and index rebuild. Payload pages remain ordered by edge ID.
+      required: [key, hash, count, height, bytes, first, last]
+      properties:
+        key:
+          type: string
+          description: Immutable object key relative to the configured storage prefix.
+        hash:
+          type: string
+          description: SHA-256 of the encoded node.
+        count:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 0
+          maximum: 32
+        bytes:
+          type: integer
+          minimum: 1
+        first:
+          $ref: '#/components/schemas/AdjacencyTuple'
+        last:
+          $ref: '#/components/schemas/AdjacencyTuple'
+    AdjacencyTuple:
+      type: object
+      description: Endpoint and edge ID are compared as separate string fields.
+      required: [endpoint, id]
+      properties:
+        endpoint:
+          type: string
+        id:
           type: string
     EntityPageSpec:
       type: object

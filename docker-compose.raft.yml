@@ -16,6 +16,7 @@ x-environment: &environment
   GRAPHDB_RAFT_PEERS: '{"1":"http://node1:8081","2":"http://node2:8081","3":"http://node3:8081"}'
   GRAPHDB_INGEST_MODE: ${GRAPHDB_INGEST_MODE:-direct}
   GRAPHDB_INDEX_RANGE_PAGES: "${GRAPHDB_INDEX_RANGE_PAGES:-false}"
+  GRAPHDB_INDEX_ADJACENCY_PAGES: "${GRAPHDB_INDEX_ADJACENCY_PAGES:-false}"
 
 services:
   node1:

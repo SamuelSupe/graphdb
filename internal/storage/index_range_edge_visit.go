@@ -21,6 +21,9 @@ type rangeEdgeCursor struct {
 	rows                       []graph.Edge
 	current                    graph.Edge
 	legacyLoaded               bool
+	adjacency                  *adjacencyIterator
+	adjacencyReady             bool
+	payloadObject              int
 }
 
 func (s *TenantStore) borrowEdgeRange(ctx context.Context, tenantID string, version int64, spec EdgeShard, n int) ([]graph.Edge, bool, error) {
@@ -51,6 +54,29 @@ func (s *TenantStore) borrowEdgeRange(ctx context.Context, tenantID string, vers
 }
 
 func (c *rangeEdgeCursor) advance(ctx context.Context) (bool, error) {
+	if c.spec.AdjacencyRoot != nil {
+		if !c.adjacencyReady {
+			c.adjacencyReady = true
+			root := c.spec.AdjacencyRoot
+			// Dense buckets already have exactly the required ID order. Validate
+			// the root once, then avoid reading a duplicate stream of IDs.
+			if root.First.Endpoint == c.endpoint && root.Last.Endpoint == c.endpoint {
+				if _, err := c.lookup.Store.loadAdjacencyNode(ctx, c.lookup.TenantID, *root); err != nil {
+					return false, fmt.Errorf("adjacency root: %v", err)
+				}
+			} else {
+				var err error
+				c.adjacency, err = c.lookup.Store.seekAdjacency(ctx, c.lookup.TenantID, *root, adjacencyKey{c.endpoint, c.start})
+				if err != nil {
+					return false, fmt.Errorf("adjacency seek: %v", err)
+				}
+				c.payloadObject = -1
+			}
+		}
+		if c.adjacency != nil {
+			return c.advanceAdjacency(ctx)
+		}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -105,6 +131,37 @@ func (c *rangeEdgeCursor) advance(ctx context.Context) (bool, error) {
 	}
 }
 
+func (c *rangeEdgeCursor) advanceAdjacency(ctx context.Context) (bool, error) {
+	id, ok, err := c.adjacency.next(ctx)
+	if err != nil {
+		return false, fmt.Errorf("adjacency read: %v", err)
+	}
+	if !ok {
+		return false, nil
+	}
+	if err := query.ConsumeIndexScanCost(ctx, 1); err != nil {
+		return false, err
+	}
+	n := rangeObjectIndex(c.spec.Objects, id)
+	if n != c.payloadObject {
+		c.rows, ok, err = c.lookup.Store.borrowEdgeRange(ctx, c.lookup.TenantID, c.lookup.Version, c.spec, n)
+		if err != nil || !ok {
+			return false, fmt.Errorf("adjacency payload unavailable: %v", err)
+		}
+		c.payloadObject = n
+	}
+	i := sort.Search(len(c.rows), func(i int) bool { return c.rows[i].ID >= id })
+	if i == len(c.rows) || c.rows[i].ID != id {
+		return false, fmt.Errorf("adjacency payload ID mismatch")
+	}
+	e := c.rows[i]
+	if c.direction == "out" && e.From != c.endpoint || c.direction == "in" && e.To != c.endpoint {
+		return false, fmt.Errorf("adjacency endpoint mismatch")
+	}
+	c.current = e
+	return true, nil
+}
+
 type rangeEdgeHeap []*rangeEdgeCursor
 
 func (h rangeEdgeHeap) Len() int { return len(h) }
@@ -132,6 +189,11 @@ func (h *rangeEdgeHeap) Pop() any {
 
 func (l *PersistedIndexLookup) visitRangeEdges(ctx context.Context, endpoint string, allowed map[string]struct{}, start, direction string, visit func(graph.Edge, string) (bool, error)) (bool, error) {
 	if err := l.compileCatalog(); err != nil {
+		for _, spec := range l.Catalog.EdgeShards {
+			if spec.AdjacencyRoot != nil {
+				return false, err
+			}
+		}
 		return false, nil
 	}
 	if direction != "out" {
@@ -139,6 +201,11 @@ func (l *PersistedIndexLookup) visitRangeEdges(ctx context.Context, endpoint str
 			_, l.reverseErr = l.Store.compiledScanCatalog(l.TenantID, IndexCatalog{Version: l.Version, EdgeShards: l.ReverseCatalog.EdgeShards}, "")
 		})
 		if l.reverseErr != nil {
+			for _, spec := range l.ReverseCatalog.EdgeShards {
+				if spec.AdjacencyRoot != nil {
+					return false, l.reverseErr
+				}
+			}
 			return false, nil
 		}
 	}
@@ -167,6 +234,9 @@ func (l *PersistedIndexLookup) visitRangeEdges(ctx context.Context, endpoint str
 				}
 				found, err := cursor.advance(ctx)
 				if errors.Is(err, ErrNotFound) {
+					if cursor.spec.AdjacencyRoot != nil {
+						return false, fmt.Errorf("adjacency payload unavailable: %v", err)
+					}
 					return false, nil
 				}
 				if err != nil {
@@ -192,6 +262,9 @@ func (l *PersistedIndexLookup) visitRangeEdges(ctx context.Context, endpoint str
 		}
 		found, err := cursor.advance(ctx)
 		if errors.Is(err, ErrNotFound) {
+			if cursor.spec.AdjacencyRoot != nil {
+				return false, fmt.Errorf("adjacency payload unavailable after traversal: %v", err)
+			}
 			return false, nil
 		}
 		if err != nil {

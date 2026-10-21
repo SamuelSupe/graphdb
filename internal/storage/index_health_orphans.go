@@ -13,6 +13,11 @@ func (s *TenantStore) checkOrphanIndexObjects(ctx context.Context, tenantID stri
 			ctx, s.Objects, prefix,
 			func(objects []ObjectInfo) error {
 				for _, object := range objects {
+					// Derived tree construction can leave immutable intermediate
+					// nodes until the next GC epoch, including failed publications.
+					if isAdjacencyObjectKey(object.Key) {
+						continue
+					}
 					if _, ok := keep[object.Key]; ok {
 						continue
 					}

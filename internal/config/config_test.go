@@ -485,6 +485,29 @@ func TestLoadRangePagesRequireExplicitEnable(t *testing.T) {
 	}
 }
 
+func TestLoadAdjacencyPagesRequireIndependentExplicitEnable(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_INDEX_RANGE_PAGES", "true")
+	for _, value := range []string{"", "true", "false", "invalid"} {
+		t.Setenv("GRAPHDB_INDEX_ADJACENCY_PAGES", value)
+		cfg, err := Load()
+		if value == "invalid" {
+			if err == nil {
+				t.Fatal("invalid adjacency toggle accepted")
+			}
+			continue
+		}
+		if err != nil || cfg.IndexAdjacencyPages != (value == "true") {
+			t.Fatalf("adjacency toggle %q: %v %v", value, cfg.IndexAdjacencyPages, err)
+		}
+	}
+	t.Setenv("GRAPHDB_INDEX_ADJACENCY_PAGES", "true")
+	t.Setenv("GRAPHDB_INDEX_RANGE_PAGES", "false")
+	if _, err := Load(); err == nil {
+		t.Fatal("adjacency enabled without range layout")
+	}
+}
+
 func TestLoadParsesIngestCollectorStatusMaterializedConfig(t *testing.T) {
 	setLocalConfigEnv(t)
 	cfg, err := Load()

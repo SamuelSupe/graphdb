@@ -55,6 +55,12 @@ func (s *TenantStore) compiledScanCatalog(tenantID string, catalog IndexCatalog,
 	sort.Strings(compiled.entityShards)
 	compiled.edgeTargets = make([]edgeShardTarget, 0, len(catalog.EdgeShards))
 	for _, shard := range catalog.EdgeShards {
+		if r := shard.AdjacencyRoot; r != nil {
+			if !hasIndexRanges(shard.Objects) || r.Count != shard.EdgeCount || r.Height < 0 || r.Height > 32 || len(r.Hash) != 64 || r.Key == "" || r.Last.less(r.First) {
+				return nil, fmt.Errorf("invalid adjacency root")
+			}
+			compiled.bytes += int64(256 + len(r.Key) + len(r.Hash) + len(r.First.Endpoint) + len(r.First.ID) + len(r.Last.Endpoint) + len(r.Last.ID))
+		}
 		if hasIndexRanges(shard.Objects) {
 			if shard.Codec != parquetEdgeRangeCodec {
 				return nil, fmt.Errorf("unsupported edge range layout")

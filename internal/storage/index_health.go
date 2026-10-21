@@ -90,6 +90,7 @@ func (s *TenantStore) IndexHealthWithOptions(ctx context.Context, tenantID strin
 	}
 	s.checkFieldIndexObjects(ctx, tenantID, catalog, loaded.Graph, definitions, &health)
 	s.checkEdgeShardObjects(ctx, tenantID, catalog, loaded.Graph, &health)
+	s.checkAdjacencyShards(ctx, tenantID, catalog.EdgeShards, loaded.Graph, false, &health)
 	s.checkReverseIndexObjects(ctx, tenantID, catalog.Version, loaded.Graph, &health)
 	s.checkEntityPageObjects(ctx, tenantID, catalog, loaded.Graph, &health)
 	s.checkOrphanIndexObjects(ctx, tenantID, catalog, &health)

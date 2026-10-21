@@ -82,6 +82,7 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(ctx context.Context, tenantI
 			byRange[n] = append(byRange[n], id)
 		}
 		var nextObjects []IndexObject
+		shrank := map[string]bool{}
 		var nextLegacy EdgeShard
 		for n, object := range objects {
 			ids, touched := byRange[n]
@@ -164,16 +165,29 @@ func (s *TenantStore) buildIncrementalEdgeShardsFor(ctx context.Context, tenantI
 						shards = append(shards, part)
 					}
 					nextObjects = append(nextObjects, next)
+					if ranged && len(parts) == 1 && rangePageShrank(object, next) {
+						shrank[next.ContentHash] = true
+					}
 				}
 			}
 		}
 		if len(nextObjects) > 0 {
+			if len(shrank) > 0 {
+				var err error
+				nextObjects, shards, err = s.mergeEdgeRanges(ctx, tenantID, version, old, nextObjects, shards, shrank, reverse)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
 			routing, _ := decodeIndexRange(nextObjects[0].Role)
 			routing.Lower = ""
 			nextObjects[0].Role = encodeRangeRole(routing)
 			spec := EdgeShard{RelationType: relationType, ImpactDirection: relationImpactDirection(after, relationType), Shard: shardID, Format: IndexFormatParquet, Objects: nextObjects, UpdatedAt: now}
 			for _, object := range nextObjects {
 				spec.EdgeCount += object.RowCount
+			}
+			if err := s.updateEdgeAdjacency(ctx, tenantID, old, &spec, before, after, changed[key], version, reverse); err != nil {
+				return nil, nil, err
 			}
 			replacements[key] = spec
 		} else if nextLegacy.EdgeCount > 0 {

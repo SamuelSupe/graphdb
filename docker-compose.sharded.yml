@@ -14,6 +14,7 @@ x-common: &common
   GRAPHDB_RAFT_TOKEN: ${GRAPHDB_RAFT_TOKEN:?set a random token of at least 32 bytes}
   GRAPHDB_INGEST_MODE: ${GRAPHDB_INGEST_MODE:-direct}
   GRAPHDB_INDEX_RANGE_PAGES: "${GRAPHDB_INDEX_RANGE_PAGES:-false}"
+  GRAPHDB_INDEX_ADJACENCY_PAGES: "${GRAPHDB_INDEX_ADJACENCY_PAGES:-false}"
 
 x-catalog: &catalog
   <<: *common

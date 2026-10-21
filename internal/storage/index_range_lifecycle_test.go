@@ -17,6 +17,7 @@ func TestRangeEdgesMoveBetweenBucketsAndPreserveSelfLoops(t *testing.T) {
 	ctx := context.Background()
 	store := NewTenantStore(NewMemoryStore(), "test")
 	store.WriteIndexRangePages = true
+	store.WriteIndexAdjacencyPages = true
 	store.WriteEntityRecords = false
 	defer store.ShutdownTasks(ctx)
 	entities := entitiesForDistinctShards("host", "range-endpoints", 3, entityShardID)

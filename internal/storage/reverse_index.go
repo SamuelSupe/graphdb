@@ -65,6 +65,9 @@ func (s *TenantStore) prepareReverseIndex(ctx context.Context, tenantID string, 
 		shards[i].logicalContentHash = edgeShardContentHash(shards[i])
 	}
 	catalog.EdgeShards = edgePageSpecs(shards, g)
+	if err := s.buildAdjacencyRoots(ctx, tenantID, version, catalog.EdgeShards, shards, true); err != nil {
+		return ReverseIndexCatalog{}, ObjectMeta{}, err
+	}
 	mini := IndexCatalog{Version: version, EdgeShards: catalog.EdgeShards}
 	s.decorateReverseEdgeCatalog(&mini, tenantID)
 	catalog.EdgeShards = mini.EdgeShards

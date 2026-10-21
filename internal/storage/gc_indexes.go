@@ -31,6 +31,22 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 		return err
 	}
 	keep := indexObjectKeys(s, tenantID, catalog)
+	markAdjacency := false
+	for _, spec := range catalog.EdgeShards {
+		markAdjacency = markAdjacency || spec.AdjacencyRoot != nil
+	}
+	for _, o := range objects {
+		markAdjacency = markAdjacency || isAdjacencyObjectKey(o.Key)
+	}
+	if markAdjacency {
+		adjacency, err := s.retainedAdjacencyKeys(ctx, tenantID, catalog)
+		if err != nil {
+			return err
+		}
+		for key := range adjacency {
+			keep[key] = struct{}{}
+		}
+	}
 	for _, object := range objects {
 		if err := checkpoint.visit(object); err != nil {
 			return err
@@ -39,7 +55,7 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 			continue
 		}
 		version, ok := s.parquetVersionFromKey(tenantID, object.Key)
-		if !ok || version >= catalog.Version || !strings.HasSuffix(object.Key, ".parquet") {
+		if !ok || version >= catalog.Version || (!strings.HasSuffix(object.Key, ".parquet") && !isAdjacencyObjectKey(object.Key)) {
 			continue
 		}
 		// A pinned orphan cannot be removed in this pass. Retire it before
@@ -49,6 +65,12 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 			checkpoint.checkpoint.ScannedKeys++
 			checkpoint.checkpoint.LastKey = object.Key
 			checkpoint.checkpoint.DeferredFiles++
+			continue
+		}
+		if isAdjacencyObjectKey(object.Key) {
+			if _, err := checkpoint.deleteKey(ctx, s.Objects, object.Key); err != nil {
+				return err
+			}
 			continue
 		}
 		source, err := openFileReader(ctx, s.Objects, object.Key)

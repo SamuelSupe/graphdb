@@ -141,10 +141,25 @@ indexes to migrate existing large pages. Before downgrading, disable the flag an
 rebuild every tenant with the new binary; old binaries cannot safely paginate a
 range catalog. See [range page implementation and rollout](entity-range-paging-implementation.zh-CN.md).
 
+Current source after v2.3.10 adds `GRAPHDB_INDEX_ADJACENCY_PAGES`, independently
+defaulting to `false` and requiring
+range pages. Upgrade all readers, writers, GC nodes and replicas before enabling
+it, then explicitly rebuild indexes. It adds a copy-on-write `(endpoint, edge.ID)`
+tree while retaining both ID-ordered edge payloads and the existing `ListEdges`
+cursor order. Field-only changes reuse the adjacency root. Buckets without a root
+keep their old path until an explicit rebuild. Delete/shrink updates may merge
+one neighboring pair (at most 768 rows and 6 MiB encoded). An optional standalone
+worker merges one pair per slice with an average 16 MiB/s I/O budget; replicas
+never publish independent background catalog changes. Disable the adjacency flag
+and rebuild with the new binary before downgrading.
+
 With the legacy write layout, entity page packing defaults to a 32 MiB estimated-memory budget
 (`GRAPHDB_ENTITY_PAGE_PACK_MAX_BYTES`). One logical shard can exceed this budget.
 The decoded entity-page cache is capped at half of the configured
-`GRAPHDB_READER_INDEX_CACHE_MAX_BYTES`. The decoded edge and field-postings caches each use a quarter of that configured budget. Field postings are immutable, bounded by LRU capacity, and shared across pages at the same catalog version.
+`GRAPHDB_READER_INDEX_CACHE_MAX_BYTES`. The decoded edge cache uses a quarter of
+that budget; the field-postings share allocates up to 16 MiB to adjacency nodes.
+Field postings are immutable, bounded by LRU capacity, and shared across pages at
+the same catalog version.
 
 Direct writes return their published result. WAL mode returns 202 after durable
 acceptance; that is not yet a committed graph version. Poll the response's

@@ -51,6 +51,7 @@ type IndexValueStat struct {
 }
 
 type EdgeShard struct {
+	AdjacencyRoot   *AdjacencyRef `json:"adjacency_root,omitempty"`
 	RelationType    string        `json:"relation_type"`
 	ImpactDirection string        `json:"impact_direction,omitempty"`
 	Shard           string        `json:"shard"`
@@ -147,6 +148,13 @@ type IndexCatalog struct {
 }
 
 func (s *TenantStore) RebuildIndexes(ctx context.Context, tenantID string) (IndexCatalog, error) {
+	ctx = context.WithValue(ctx, adjacencyBuildKey{}, true)
+	return s.rebuildIndexes(ctx, tenantID)
+}
+
+// Business catch-up can rebuild missing derived indexes, but only an explicit
+// maintenance call opts existing buckets into the adjacency format.
+func (s *TenantStore) rebuildIndexes(ctx context.Context, tenantID string) (IndexCatalog, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IndexCatalog{}, err
 	}
@@ -287,6 +295,7 @@ func (s *TenantStore) rebuildIndexesFromGraph(ctx context.Context, tenantID stri
 	if err := s.putReverseIndexCatalogWithMeta(ctx, tenantID, reverseCatalog, reverseMeta); err != nil {
 		return IndexCatalog{}, fmt.Errorf("rebuild reverse index: %w", err)
 	}
+	s.scheduleRangeCompaction(tenantID)
 
 	return catalog, nil
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -330,6 +331,10 @@ func indexCatalogRows(catalog IndexCatalog) []indexCatalogRow {
 		for j, object := range shard.Objects {
 			rows = append(rows, indexCatalogRowFromObject(indexCatalogRowEdgeShardObject, i, j, object))
 		}
+		if shard.AdjacencyRoot != nil {
+			data, _ := json.Marshal(shard.AdjacencyRoot)
+			rows = append(rows, indexCatalogRow{Kind: "edge_adjacency_v1", ParentOrdinal: i, Role: string(data)})
+		}
 	}
 	for i, page := range catalog.EntityPages {
 		rows = append(rows, indexCatalogRow{
@@ -414,6 +419,18 @@ func applyIndexCatalogRow(catalog *IndexCatalog, row indexCatalogRow) error {
 			SchemaHash:   row.SchemaHash,
 			UpdatedAt:    row.UpdatedAt,
 		})
+	case "edge_adjacency_v1":
+		if row.ParentOrdinal >= len(catalog.EdgeShards) || catalog.EdgeShards[row.ParentOrdinal].AdjacencyRoot != nil {
+			return fmt.Errorf("invalid adjacency root ordinal")
+		}
+		var root AdjacencyRef
+		if err := json.Unmarshal([]byte(row.Role), &root); err != nil {
+			return err
+		}
+		if root.Count != catalog.EdgeShards[row.ParentOrdinal].EdgeCount || root.Height < 0 || root.Height > 32 || root.Key == "" || len(root.Hash) != 64 {
+			return fmt.Errorf("invalid adjacency root")
+		}
+		catalog.EdgeShards[row.ParentOrdinal].AdjacencyRoot = &root
 	case indexCatalogRowEdgeShardObject:
 		if row.ParentOrdinal >= len(catalog.EdgeShards) || len(catalog.EdgeShards[row.ParentOrdinal].Objects) != row.ChildOrdinal {
 			return fmt.Errorf("index catalog edge shard object ordinal mismatch")

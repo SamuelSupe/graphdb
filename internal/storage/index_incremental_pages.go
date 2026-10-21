@@ -57,6 +57,7 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 			byRange[n] = append(byRange[n], id)
 		}
 		var nextObjects []IndexObject
+		shrank := map[string]bool{}
 		var nextLegacy EntityPageSpec
 		for n, object := range objects {
 			ids, touched := byRange[n]
@@ -128,10 +129,20 @@ func (s *TenantStore) buildIncrementalEntityPages(ctx context.Context, tenantID 
 						pages = append(pages, part)
 					}
 					nextObjects = append(nextObjects, next)
+					if ranged && len(parts) == 1 && rangePageShrank(object, next) {
+						shrank[next.ContentHash] = true
+					}
 				}
 			}
 		}
 		if len(nextObjects) > 0 {
+			if len(shrank) > 0 {
+				var err error
+				nextObjects, pages, err = s.mergeEntityRanges(ctx, tenantID, version, old, nextObjects, pages, shrank)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
 			routing, _ := decodeIndexRange(nextObjects[0].Role)
 			routing.Lower = ""
 			nextObjects[0].Role = encodeRangeRole(routing)

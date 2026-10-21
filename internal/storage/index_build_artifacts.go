@@ -132,10 +132,14 @@ func prepareSecondaryIndexArtifact(index *SecondaryIndex) {
 // Full rebuilds publish one field at a time. Only its postings remain live;
 // catalog publication still validates the captured manifest and definitions.
 func (s *TenantStore) buildAndWriteIndexArtifacts(ctx context.Context, tenantID string, g *graph.Graph, version int64, definitions []IndexDefinition) (indexBuildArtifacts, error) {
-	return buildTenantIndexArtifactsMode(s.rangeEncodeContext(ctx), tenantID, g, version, definitions, s.WriteIndexRangePages, func(index SecondaryIndex) error {
+	artifacts, err := buildTenantIndexArtifactsMode(s.rangeEncodeContext(ctx), tenantID, g, version, definitions, s.WriteIndexRangePages, func(index SecondaryIndex) error {
 		if err := objectContextErr(ctx); err != nil {
 			return err
 		}
 		return s.writeParquetSecondaryIndexes(ctx, tenantID, []SecondaryIndex{index})
 	}, mutationTime(ctx))
+	if err == nil {
+		err = s.buildAdjacencyRoots(ctx, tenantID, version, artifacts.Catalog.EdgeShards, artifacts.EdgeShards, false)
+	}
+	return artifacts, err
 }

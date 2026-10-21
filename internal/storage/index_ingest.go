@@ -142,7 +142,7 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 				return
 			}
 			s.recordMaintenance("index_retry", started)
-			_, indexErr = s.RebuildIndexes(runCtx, tenantID)
+			_, indexErr = s.rebuildIndexes(runCtx, tenantID)
 		}
 	}()
 	return true

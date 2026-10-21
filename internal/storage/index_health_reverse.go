@@ -39,6 +39,7 @@ func (s *TenantStore) checkReverseIndexObjects(
 	}
 
 	expected := expectedReverseShards(g, version)
+	s.checkAdjacencyShards(ctx, tenantID, catalog.EdgeShards, g, true, health)
 	seen := make(map[string]struct{}, len(catalog.EdgeShards))
 	for _, spec := range catalog.EdgeShards {
 		key := edgeShardCatalogKey(spec.RelationType, spec.Shard)
