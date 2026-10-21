@@ -10,16 +10,200 @@
     "whole_repository_vet": "PASS",
     "version_contracts": "PASS",
     "workspace_hygiene": "PASS",
-    "python_sdk": {"tests": 13, "optional_live_server_skips": 1, "result": "PASS"},
-    "backup_automation": {"tests": 11, "result": "PASS"},
-    "rolling_barrier": {"tests": 5, "result": "PASS"}
+    "python_sdk": {
+      "tests": 13,
+      "optional_live_server_skips": 1,
+      "result": "PASS"
+    },
+    "backup_automation": {
+      "tests": 11,
+      "result": "PASS"
+    },
+    "rolling_barrier": {
+      "tests": 5,
+      "result": "PASS"
+    }
   },
-  "tag_created": false,
-  "release_published": false,
-  "candidate_main_ci": "PENDING",
-  "exact_tag_ci": "PENDING",
-  "independent_download": "PENDING",
-  "downloaded_runtime": "PENDING",
+  "tag_created": true,
+  "release_published": true,
+  "candidate_main_ci": {
+    "result": "PASS",
+    "all_jobs_success": 7,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39566127462"
+  },
+  "exact_tag_ci": {
+    "result": "PASS",
+    "all_jobs_success": 7,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39570572123",
+    "jobs": [
+      {
+        "name": "Unit, vet, race, and 2.0 contracts",
+        "conclusion": "success"
+      },
+      {
+        "name": "Local disk, WAL recovery, load, and restore",
+        "conclusion": "success"
+      },
+      {
+        "name": "Local disk 30-minute mixed read/write soak",
+        "conclusion": "success"
+      },
+      {
+        "name": "object-backup / Object snapshots and fresh-directory restore",
+        "conclusion": "success"
+      },
+      {
+        "name": "raft / raft",
+        "conclusion": "success"
+      },
+      {
+        "name": "gateway / gateway",
+        "conclusion": "success"
+      },
+      {
+        "name": "Build and publish release assets",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "independent_download": {
+    "result": "PASS",
+    "source": {
+      "result": "PASS",
+      "tag": "v2.4.0",
+      "tag_object": "c881d4b5517ee0ece95ccff6c47b198aeb064260",
+      "commit": "4e08c5ad5cf7e88e7ca31f8d2ff79ba2026acefb",
+      "source_archive_sha256": "57be52f5915d8a70d84d429fb88d4c7edfe86d2929e0af777303ec8a62e20dbc",
+      "tracked_files_verified": 1135,
+      "method": "Independent GitHub source archive; every Git blob matches the immutable tag tree"
+    },
+    "asset": {
+      "result": "PASS",
+      "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.0",
+      "published_at": "2026-10-21T09:29:54Z",
+      "release_id": 419373065,
+      "asset_sha256": "7662c8f814a0751f4791ac8634c53a5a3ecf202a7403956e45c4c5947edc5fbb",
+      "metadata": {
+        "version": "v2.4.0",
+        "commit": "4e08c5ad5cf7e88e7ca31f8d2ff79ba2026acefb",
+        "build_date": "2026-10-21T16:01:01+08:00",
+        "go_version": "go1.26.7"
+      },
+      "binaries": {
+        "bin/graphdb-darwin-arm64": "9139a3eb8e8d03166079afc767542a405cfa35ffc606a5117ba81e4f3b6cff55",
+        "bin/graphdb-linux-amd64": "95c16426a54e24fe17ac921735c891ce7ee3e64f8f76dbe2f46185dedbae7abf",
+        "bin/graphdb-linux-arm64": "fe7d8d8d18cfd0cfcc6b8427d0fd08a74fced926fd56a7c85140ec16b3e9be47"
+      },
+      "packaged_source_files_verified": 1103,
+      "required_source_trees_complete": true,
+      "gate_binary_identity": {
+        "raft-gate/metadata.json": "PASS",
+        "raft-gate/enhanced/metadata.json": "PASS",
+        "raft-gate/protocol3/metadata.json": "PASS",
+        "raft-gate/rolling/metadata.json": "PASS",
+        "gateway-gate/metadata.json": "PASS"
+      },
+      "soaks": {
+        "local-gate/soak.ndjson": {
+          "result": "PASS",
+          "duration": "30m0s",
+          "operation_errors": 0,
+          "ingest": {
+            "count": 1347,
+            "statuses": {
+              "200": 1347
+            }
+          }
+        },
+        "raft-gate/protocol3/dual/soak.ndjson": {
+          "result": "PASS",
+          "duration": "30m0s",
+          "operation_errors": 0,
+          "ingest": {
+            "count": 1006,
+            "statuses": {
+              "200": 861,
+              "429": 145
+            }
+          }
+        }
+      }
+    },
+    "binary": {
+      "result": "PASS",
+      "binaries": {
+        "graphdb-linux-amd64": {
+          "go": "go1.26.7",
+          "os": "linux",
+          "arch": "amd64",
+          "cgo_enabled": 0,
+          "release_identity": "PASS",
+          "executed_version": "GGraphDB v2.4.0 commit=4e08c5ad5cf7e88e7ca31f8d2ff79ba2026acefb built=2026-10-21T16:01:01+08:00 go=go1.26.7"
+        },
+        "graphdb-linux-arm64": {
+          "go": "go1.26.7",
+          "os": "linux",
+          "arch": "arm64",
+          "cgo_enabled": 0,
+          "release_identity": "PASS",
+          "executed_version": "GGraphDB v2.4.0 commit=4e08c5ad5cf7e88e7ca31f8d2ff79ba2026acefb built=2026-10-21T16:01:01+08:00 go=go1.26.7"
+        },
+        "graphdb-darwin-arm64": {
+          "go": "go1.26.7",
+          "os": "darwin",
+          "arch": "arm64",
+          "cgo_enabled": 0,
+          "release_identity": "PASS",
+          "executed_version": "GGraphDB v2.4.0 commit=4e08c5ad5cf7e88e7ca31f8d2ff79ba2026acefb built=2026-10-21T16:01:01+08:00 go=go1.26.7"
+        }
+      }
+    }
+  },
+  "downloaded_runtime": {
+    "result": "PASS",
+    "environment": "OrbStack Ubuntu ARM64 / Go1.26.7",
+    "binary_sha256": "fe7d8d8d18cfd0cfcc6b8427d0fd08a74fced926fd56a7c85140ec16b3e9be47",
+    "source": "Actually downloaded release binary; SDK/e2e/load tools from verified downloaded package",
+    "reproducible_rebuild": "PASS: byte-identical native LinuxARM64 rebuild from downloaded source with original release flags",
+    "range_pages_enabled": true,
+    "adjacency_pages_enabled": true,
+    "checks": [
+      "live Python SDK",
+      "e2e API",
+      "4 writers / 16 readers",
+      "SIGKILL restart",
+      "accepted batch ID replay retains version/data",
+      "runtime backup",
+      "fresh-directory runtime restore",
+      "complete graph equality"
+    ],
+    "modes": {
+      "direct": {
+        "operations": 98,
+        "errors": 0,
+        "restart_graph_equal": true,
+        "new_directory_restore_graph_equal": true
+      },
+      "wal": {
+        "operations": 98,
+        "errors": 0,
+        "restart_graph_equal": true,
+        "new_directory_restore_graph_equal": true
+      }
+    },
+    "exit_code": 0,
+    "native_data_root": "/tmp/graphdb-v240-downloaded-runtime"
+  },
   "gate_waivers": [],
-  "limitations": ["cross-host recovery not qualified", "production capacity not qualified", "day-scale stability not qualified", "flat-directory work grows with page count"]
+  "limitations": [
+    "cross-host recovery not qualified",
+    "production capacity not qualified",
+    "day-scale stability not qualified",
+    "flat-directory work grows with page count"
+  ],
+  "release_commit": "4e08c5ad5cf7e88e7ca31f8d2ff79ba2026acefb",
+  "tag_object": "c881d4b5517ee0ece95ccff6c47b198aeb064260",
+  "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.0",
+  "published_at": "2026-10-21T09:29:54Z",
+  "record_commit_ci": "Checked separately after this documentation-only record is pushed; does not replace the immutable release binary"
 }
