@@ -264,6 +264,7 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /raft/snapshot", n.receiveSnapshot)
+	mux.HandleFunc("POST /raft/snapshot/probe", n.snapshotProbeHandler)
 	mux.HandleFunc("POST /raft/message", func(w http.ResponseWriter, r *http.Request) {
 		if !n.protocolCompatible(r.Header.Get(protocolHeader)) {
 			http.Error(w, "incompatible Raft protocol", http.StatusUpgradeRequired)

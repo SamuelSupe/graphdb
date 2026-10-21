@@ -26,10 +26,14 @@ type rangeEdgeCursor struct {
 	payloadObject              int
 }
 
+func edgeRangeRowsCacheKey(tenantID string, version int64, spec EdgeShard, object IndexObject) string {
+	return edgeLookupCacheKey(tenantID, version, edgeRangeSpec(spec, object), "range_rows") + "\x00" + object.Key
+}
+
 func (s *TenantStore) borrowEdgeRange(ctx context.Context, tenantID string, version int64, spec EdgeShard, n int) ([]graph.Edge, bool, error) {
 	object := spec.Objects[n]
 	partSpec := edgeRangeSpec(spec, object)
-	key := edgeLookupCacheKey(tenantID, version, partSpec, "range_rows") + "\x00" + object.Key
+	key := edgeRangeRowsCacheKey(tenantID, version, spec, object)
 	decoded, ok, err := s.edgeLookupCache.load(ctx, key, func() (map[string][]graph.Edge, bool, error) {
 		part, ok, err := s.loadParquetEdgeShardObject(ctx, tenantID, version, partSpec)
 		if err != nil || !ok {
@@ -44,13 +48,18 @@ func (s *TenantStore) borrowEdgeRange(ctx context.Context, tenantID string, vers
 		return nil, false, err
 	}
 	rows := decoded[""]
+	err = validateEdgeRangeRows(rows, object)
+	return rows, err == nil, err
+}
+
+func validateEdgeRangeRows(rows []graph.Edge, object IndexObject) error {
 	routing, _ := objectIndexRange(object)
 	for _, edge := range rows {
 		if !routing.contains(edge.ID) {
-			return nil, false, fmt.Errorf("%w: edge is outside its index range", ErrNotFound)
+			return fmt.Errorf("%w: edge is outside its index range", ErrNotFound)
 		}
 	}
-	return rows, true, nil
+	return nil
 }
 
 func (c *rangeEdgeCursor) advance(ctx context.Context) (bool, error) {

@@ -458,3 +458,71 @@ func TestReaderCacheFailedLoadRequiresValidReplacement(t *testing.T) {
 		})
 	}
 }
+
+func TestReaderCachePublicationFencesLoadErrorAcrossCaches(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	base := NewMemoryStore()
+	writer := NewTenantStore(base, "test")
+	defer writer.ShutdownTasks(ctx)
+	if _, err := writer.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "one", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Compact(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	published, _ := writer.getWriteCache("tenant-a")
+	blocked := &blockingGraphReadStore{ObjectStore: base, started: make(chan struct{}), release: make(chan struct{}), cancelError: errors.New("closed object reader"), holdCanceled: true}
+	release := sync.OnceFunc(func() { close(blocked.release) })
+	defer release()
+	reader := NewTenantStore(blocked, "test")
+	first := NewReaderCache(reader, time.Minute)
+	cache := NewReaderCache(reader, time.Minute)
+	done := make(chan error, 1)
+	go func() { _, _, err := cache.Load(ctx, "tenant-a"); done <- err }()
+	select {
+	case <-blocked.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	first.mu.Lock()
+	unlock := sync.OnceFunc(first.mu.Unlock)
+	defer unlock()
+	before := reader.readGeneration("tenant-a")
+	publishedDone := make(chan struct{})
+	go func() { reader.publishGraph("tenant-a", published); close(publishedDone) }()
+	for reader.readGeneration("tenant-a") == before {
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	release()
+	var early error
+	completed := false
+	select {
+	case early = <-done:
+		completed = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-publishedDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if !completed {
+		select {
+		case early = <-done:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if early != nil {
+		t.Fatalf("publication leaked obsolete read failure: %v", early)
+	}
+	if cache.Status("tenant-a").Loading {
+		t.Fatal("load registration retained")
+	}
+}

@@ -110,7 +110,16 @@ func (l *PersistedIndexLookup) compileReverseCatalog() error {
 	}
 	l.reverseOnce.Do(func() {
 		if l.ReverseCatalog != nil {
-			l.reverseCompiled, l.reverseErr = l.Store.compiledScanCatalog(l.TenantID, IndexCatalog{Version: l.Version, EdgeShards: l.ReverseCatalog.EdgeShards}, "")
+			catalog := IndexCatalog{Version: l.Version, EdgeShards: l.ReverseCatalog.EdgeShards}
+			if cached := l.ReverseCatalog.compilation; cached != nil {
+				cached.once.Do(func() { cached.hash, cached.err = indexCatalogContentHash(catalog) })
+				if cached.err != nil {
+					l.reverseErr = cached.err
+					return
+				}
+				catalog.contentHash = cached.hash
+			}
+			l.reverseCompiled, l.reverseErr = l.Store.compiledScanCatalog(l.TenantID, catalog, "")
 		}
 	})
 	return l.reverseErr

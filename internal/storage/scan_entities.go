@@ -412,7 +412,7 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 				after = strings.TrimPrefix(cursor.After, prefix)
 			}
 			for n := rangeObjectIndex(spec.Objects, after); n < len(spec.Objects); n++ {
-				if err := prefetch.advance("entity_page", tenantID, version, spec.Objects, n); err != nil {
+				if err := prefetch.entity(tenantID, version, spec, n); err != nil {
 					return EntityScanResult{}, false, err
 				}
 				object := spec.Objects[n]

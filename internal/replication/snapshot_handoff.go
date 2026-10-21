@@ -81,13 +81,13 @@ func (n *Node) handoffSnapshotLeadership(now time.Time) {
 	n.snapshotHandoffAttempt = now
 	n.mu.Unlock()
 	timeout := min(5*time.Second, max(time.Second, n.cfg.Tick*time.Duration(n.cfg.ElectionTicks)))
-	ctx, cancel := context.WithTimeout(n.ctx, timeout)
-	defer cancel()
 	for _, id := range targets {
-		peer, err := n.peerStatus(ctx, id)
-		// Require a completed snapshot covering the failed capture, not merely
-		// an absent error (including older peers without snapshot status).
-		if err != nil || peer.LeaderID != n.cfg.ID || peer.Error != "" || peer.SnapshotError != "" || peer.Draining || peer.Applied < barrier || peer.SnapshotIndex < failedAt {
+		// A stalled snapshot on one replica must not consume another's probe
+		// deadline; all network waits remain outside the tick/apply loops.
+		ctx, cancel := context.WithTimeout(n.ctx, timeout)
+		ready := n.snapshotCandidateReady(ctx, id, barrier, failedAt, status.Term)
+		cancel()
+		if !ready {
 			continue
 		}
 		current := n.raft.Status()
@@ -100,7 +100,26 @@ func (n *Node) handoffSnapshotLeadership(now time.Time) {
 		if _, voter := current.Config.Voters[0][id]; !voter || len(current.Config.Voters[1]) != 0 {
 			return
 		}
+		ctx, cancel = context.WithTimeout(n.ctx, timeout)
 		_ = n.transferLeadership(ctx, id)
+		cancel()
 		return
 	}
+}
+
+func (n *Node) snapshotCandidateReady(ctx context.Context, id, barrier, failedAt, term uint64) bool {
+	for attempt := 0; attempt < 2; attempt++ {
+		peer, err := n.peerStatus(ctx, id)
+		if err != nil || peer.LeaderID != n.cfg.ID || peer.Error != "" || peer.SnapshotError != "" || peer.Draining || peer.Applied < barrier {
+			return false
+		}
+		if peer.SnapshotIndex >= failedAt {
+			return true
+		}
+		// A successful HTTP probe alone is not proof: re-read persisted state.
+		if attempt != 0 || n.probePeerSnapshot(ctx, id, barrier, term) != nil {
+			return false
+		}
+	}
+	return false
 }

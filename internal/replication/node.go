@@ -97,6 +97,8 @@ type Node struct {
 	client                  transportClient
 	application             chan applicationBatch
 	snapshotRequests        chan snapshotRequest
+	snapshotProbes          chan snapshotProbe
+	snapshotProbeMu         sync.Mutex
 	snapshotCleanupRequests chan uint64
 	maintenanceMu           sync.Mutex
 	handoff                 bool
@@ -204,7 +206,7 @@ func Open(parent context.Context, cfg Config, machine StateMachine) (*Node, erro
 		return nil, fmt.Errorf("application checkpoint %d exceeds durable Raft commit %d", applied, hard.Commit)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]peerSender), controlSenders: make(map[uint64]peerSender), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest)}
+	n := &Node{cfg: cfg, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), proposals: make(map[string]chan result), reads: make(map[string]chan uint64), peers: make(map[uint64]string), senders: make(map[uint64]peerSender), controlSenders: make(map[uint64]peerSender), application: make(chan applicationBatch), snapshotRequests: make(chan snapshotRequest), snapshotProbes: make(chan snapshotProbe)}
 	n.metrics = observability.NewOperationMetrics()
 	n.snapshotCleanupRequests = make(chan uint64, 1)
 	n.snapshotCleanupFailure = cleanupErr
@@ -671,6 +673,13 @@ func (n *Node) applyLoop() {
 	lastSnapshot, _ := n.disk.Snapshot()
 	snapshotIndex := lastSnapshot.Metadata.Index
 	var building chan snapshotBuild
+	var probe *snapshotProbe
+	finishProbe := func(err error) {
+		if probe != nil && (err != nil || snapshotIndex >= probe.Index) {
+			probe.done <- err
+			probe = nil
+		}
+	}
 	lastConf := lastSnapshot.Metadata.ConfState
 	var configurationIndex uint64
 	retry := time.NewTicker(5 * time.Second)
@@ -679,9 +688,28 @@ func (n *Node) applyLoop() {
 		select {
 		case <-n.ctx.Done():
 			return
+		case request := <-n.snapshotProbes:
+			if err := request.ctx.Err(); err != nil {
+				request.done <- err
+				continue
+			}
+			if err := n.validateSnapshotProbe(request); err != nil {
+				request.done <- err
+				continue
+			}
+			if probe != nil {
+				if probe.ctx.Err() == nil {
+					request.done <- ErrUnavailable
+					continue
+				}
+				finishProbe(probe.ctx.Err())
+			}
+			probe = &request
+			finishProbe(nil)
 		case built := <-building:
 			building = nil
 			if built.request.index <= snapshotIndex {
+				finishProbe(nil)
 				break
 			}
 			if built.err != nil {
@@ -689,6 +717,7 @@ func (n *Node) applyLoop() {
 				// Keep the durable state, block mutations and retry preparation.
 				// Persistence and restore errors still stop the node below.
 				n.recordSnapshotFailure(built.err, built.request.index)
+				finishProbe(built.err)
 				continue
 			}
 			select {
@@ -706,6 +735,7 @@ func (n *Node) applyLoop() {
 					snapshotIndex = built.request.index
 					n.recordSnapshotFailure(nil, 0)
 				}
+				finishProbe(nil)
 			case <-n.ctx.Done():
 				return
 			}
@@ -734,6 +764,7 @@ func (n *Node) applyLoop() {
 				n.progress(batch.snapshot.Metadata.Index)
 				snapshotIndex = batch.snapshot.Metadata.Index
 				n.recordSnapshotFailure(nil, 0)
+				finishProbe(nil)
 			}
 			for first := max(batch.first, n.applied.Load()+1); first <= batch.last; {
 				entries, err := n.disk.Entries(first, batch.last+1, 4<<20)
@@ -761,11 +792,15 @@ func (n *Node) applyLoop() {
 		}
 		// A configuration applied during a build still needs its own snapshot,
 		// even when no further proposals arrive to reach SnapshotEntries.
-		if building == nil && (n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || configurationIndex > snapshotIndex) {
+		if probe != nil && probe.ctx.Err() != nil {
+			finishProbe(probe.ctx.Err())
+		}
+		if building == nil && (probe != nil || n.applied.Load()-snapshotIndex >= n.cfg.SnapshotEntries || configurationIndex > snapshotIndex) {
 			var err error
 			building, err = n.startSnapshot(lastConf)
 			if err != nil {
 				n.recordSnapshotFailure(err, n.applied.Load())
+				finishProbe(err)
 			}
 		}
 	}

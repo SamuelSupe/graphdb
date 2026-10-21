@@ -23,7 +23,21 @@ func (p *rangeScanPrefetch) close() {
 	}
 }
 
-func (p *rangeScanPrefetch) advance(kind, tenant string, version int64, objects []IndexObject, n int) error {
+func (p *rangeScanPrefetch) entity(tenant string, version int64, spec EntityPageSpec, n int) error {
+	cached := false
+	if n+1 < len(spec.Objects) {
+		o := spec.Objects[n+1]
+		_, _, cached = p.store.borrowCachedEntityPage(tenant, version, o.Key, o.ContentHash, o.SchemaHash)
+	}
+	return p.advance("entity_page", tenant, version, spec.Objects, n, cached)
+}
+
+func (p *rangeScanPrefetch) edge(tenant string, version int64, spec EdgeShard, n int) error {
+	cached := n+1 < len(spec.Objects) && p.store.edgeLookupCache.has(edgeRangeRowsCacheKey(tenant, version, spec, spec.Objects[n+1]))
+	return p.advance("edge_shard", tenant, version, spec.Objects, n, cached)
+}
+
+func (p *rangeScanPrefetch) advance(kind, tenant string, version int64, objects []IndexObject, n int, decoded bool) error {
 	if p.done != nil {
 		select {
 		case <-p.done:
@@ -36,7 +50,7 @@ func (p *rangeScanPrefetch) advance(kind, tenant string, version int64, objects 
 		return err
 	}
 	s := p.store
-	if n+1 >= len(objects) || exclusiveFileStore(s.Objects) != nil || s.indexCache == nil || s.indexCache.max == 0 {
+	if decoded || n+1 >= len(objects) || exclusiveFileStore(s.Objects) != nil || s.indexCache == nil || s.indexCache.max == 0 {
 		return nil
 	}
 	object := objects[n+1]

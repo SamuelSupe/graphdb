@@ -31,6 +31,15 @@ type decodedLookupLoad[T any] struct {
 	canceled bool
 }
 
+func (c *decodedLookupCache[T]) has(key string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.data[key] != nil
+}
+
 func (c *decodedLookupCache[T]) load(
 	ctx context.Context,
 	key string,

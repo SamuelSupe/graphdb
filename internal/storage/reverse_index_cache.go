@@ -159,6 +159,9 @@ func (s *TenantStore) setReverseIndexCatalogCacheEntryLocked(
 func copyReverseIndexCatalog(
 	catalog ReverseIndexCatalog,
 ) ReverseIndexCatalog {
+	if catalog.compilation == nil {
+		catalog.compilation = &reverseCatalogCompilation{}
+	}
 	catalog.EdgeShards = append([]EdgeShard(nil), catalog.EdgeShards...)
 	for i := range catalog.EdgeShards {
 		catalog.EdgeShards[i].Objects =

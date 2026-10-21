@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -22,7 +23,10 @@ func (s *TenantStore) publishCommittedGraph(ctx context.Context, tenantID string
 // All commit paths install immutable graphs here after durable manifest
 // publication. Cache retention never controls whether a committed view exists.
 func (s *TenantStore) publishGraph(tenantID string, loaded loadedGraph) {
-	s.bumpReadGeneration(tenantID)
+	publication := s.readPublication(tenantID)
+	publication.mu.Lock()
+	defer publication.mu.Unlock()
+	publication.generation.Add(1)
 	for _, cache := range s.readerCaches() {
 		cache.publishGraph(tenantID, loaded)
 	}
@@ -71,18 +75,29 @@ func (s *TenantStore) readerCaches() []*ReaderCache {
 
 func (s *TenantStore) readGeneration(tenant string) uint64 {
 	if value, ok := s.viewGenerations.Load(tenant); ok {
-		return value.(*atomic.Uint64).Load()
+		return value.(*readPublicationState).generation.Load()
 	}
 	return 0
 }
 
-func (s *TenantStore) bumpReadGeneration(tenant string) {
-	value, _ := s.viewGenerations.LoadOrStore(tenant, &atomic.Uint64{})
-	value.(*atomic.Uint64).Add(1)
+type readPublicationState struct {
+	mu         sync.RWMutex
+	generation atomic.Uint64
+}
+
+func (s *TenantStore) readPublication(tenant string) *readPublicationState {
+	if value, ok := s.viewGenerations.Load(tenant); ok {
+		return value.(*readPublicationState)
+	}
+	value, _ := s.viewGenerations.LoadOrStore(tenant, &readPublicationState{})
+	return value.(*readPublicationState)
 }
 
 func (s *TenantStore) invalidateReadViews(tenant string, keepGraph bool) {
-	s.bumpReadGeneration(tenant)
+	publication := s.readPublication(tenant)
+	publication.mu.Lock()
+	defer publication.mu.Unlock()
+	publication.generation.Add(1)
 	for _, cache := range s.readerCaches() {
 		if keepGraph {
 			cache.expirePublishedView(tenant)

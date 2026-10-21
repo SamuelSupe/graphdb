@@ -1115,6 +1115,47 @@ func TestInstalledSnapshotClearsPreviousBuildFailure(t *testing.T) {
 	}
 }
 
+func TestInstalledSnapshotCompletesPendingProbeDuringBuild(t *testing.T) {
+	dir := t.TempDir()
+	disk, _, err := openStorage(dir, 1, "restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	machine := &pausedSnapshotMachine{started: make(chan struct{}), release: make(chan struct{})}
+	n := &Node{cfg: Config{ID: 1, Dir: dir, SnapshotEntries: 1000, MaxSnapshotBytes: 1 << 20}, disk: disk, machine: machine, ctx: ctx, cancel: cancel, changed: make(chan struct{}), application: make(chan applicationBatch), snapshotProbes: make(chan snapshotProbe), snapshotRequests: make(chan snapshotRequest), peers: map[uint64]string{1: "http://one", 2: "http://two", 3: "http://three"}, metrics: observability.NewOperationMetrics()}
+	n.raft = snapshotHandoffRaft{node: n}
+	n.leader.Store(2)
+	n.applied.Store(8)
+	n.workers.Add(1)
+	go n.applyLoop()
+	defer func() { close(machine.release); cancel(); n.workers.Wait() }()
+	probe := snapshotProbe{Index: 8, Leader: 2, Term: 3, ctx: ctx, done: make(chan error, 1)}
+	n.snapshotProbes <- probe
+	select {
+	case <-machine.started:
+	case <-time.After(time.Second):
+		t.Fatal("probe build did not start")
+	}
+	data, err := json.Marshal(snapshotEnvelope{Version: 1, State: []byte("valid"), Peers: n.peers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The Raft run loop persists and observes an incoming snapshot before
+	// handing it to application. An older captured build is still paused.
+	n.snapshotIndex.Store(9)
+	n.application <- applicationBatch{snapshot: raftpb.Snapshot{Data: data, Metadata: raftpb.SnapshotMetadata{Index: 9}}}
+	select {
+	case err := <-probe.done:
+		if err != nil || n.applied.Load() != 9 {
+			t.Fatalf("covered probe: applied=%d err=%v", n.applied.Load(), err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("installed snapshot did not complete the covered probe")
+	}
+}
+
 func TestSnapshotIncludesMembershipChangedDuringBuild(t *testing.T) {
 	disk, _, err := openStorage(t.TempDir(), 1, "membership-snapshot")
 	if err != nil {

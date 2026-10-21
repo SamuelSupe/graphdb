@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -19,6 +20,14 @@ type ReverseIndexCatalog struct {
 	Version       int64       `json:"version"`
 	EdgeShards    []EdgeShard `json:"edge_shards"`
 	UpdatedAt     time.Time   `json:"updated_at"`
+	compilation   *reverseCatalogCompilation
+}
+
+// Shared by immutable cache copies, so new queries do not hash the directory.
+type reverseCatalogCompilation struct {
+	once sync.Once
+	hash string
+	err  error
 }
 
 func (s *TenantStore) GetReverseIndexCatalog(ctx context.Context, tenantID string, version int64) (ReverseIndexCatalog, error) {

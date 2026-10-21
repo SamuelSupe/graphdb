@@ -342,6 +342,11 @@ func (c *ReaderCache) startStoreLoad(
 		// rejected by admission for work that has already stopped.
 		releaseStoreLoad()
 		if err != nil {
+			// Generation changes and all cache publications are one tenant-scoped
+			// operation. Do not complete an obsolete error between those steps.
+			publication := c.Store.readPublication(tenantID)
+			publication.mu.RLock()
+			defer publication.mu.RUnlock()
 			c.mu.RLock()
 			superseded := load.superseded
 			entry, exists := c.entries[tenantID]

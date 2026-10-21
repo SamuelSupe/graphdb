@@ -274,6 +274,7 @@ func (l *PersistedIndexLookup) visitEntitiesFromPage(ctx context.Context, spec E
 		return nil
 	}
 	if session := entityPageVisitSessionFromContext(ctx); session != nil {
+		session.resumeID = ""
 		ok, skipped, err := session.visitPage(ctx, spec, consumePage)
 		if skipped {
 			return true, true, nil

@@ -18,6 +18,8 @@ type entityPageVisitSession struct {
 	objectRefCounts map[string]int
 	objectBytes     map[string]entityScanObjectBytes
 	candidateScans  map[string]parquetEntityCandidateScan
+	resumeID        string
+	skippedRows     int
 }
 
 func newEntityPageVisitSession(lookup *PersistedIndexLookup, kind string, stats *entityPageVisitTraceStats) *entityPageVisitSession {
@@ -80,8 +82,7 @@ func (s *entityPageVisitSession) visitPage(ctx context.Context, spec EntityPageS
 		return loaded.available, false, err
 	}
 	if loaded.skip {
-		s.stats.pagesSkippedByKind++
-		return true, true, nil
+		return s.skipPage(ctx, spec, key, loaded)
 	}
 	if (err != nil || !entityPageReadable(loaded.page, s.tenantID, s.version, spec)) && loaded.cached {
 		s.store.dropCachedIndexObject("entity_page", s.tenantID, s.version, key, spec.ContentHash, spec.SchemaHash)
@@ -92,8 +93,7 @@ func (s *entityPageVisitSession) visitPage(ctx context.Context, spec EntityPageS
 			return loaded.available, false, err
 		}
 		if loaded.skip {
-			s.stats.pagesSkippedByKind++
-			return true, true, nil
+			return s.skipPage(ctx, spec, key, loaded)
 		}
 	}
 	if err != nil {
@@ -105,6 +105,37 @@ func (s *entityPageVisitSession) visitPage(ctx context.Context, spec EntityPageS
 	s.store.putCachedIndexObject("entity_page", s.tenantID, s.version, key, spec.ContentHash, spec.SchemaHash, loaded.data, loaded.meta)
 	s.store.putCachedEntityPage(s.tenantID, s.version, key, spec.ContentHash, spec.SchemaHash, loaded.page, loaded.meta.ETag)
 	return true, false, visit(loaded.page)
+}
+
+func (s *entityPageVisitSession) skipPage(ctx context.Context, spec EntityPageSpec, key string, loaded loadedEntityScanPage) (bool, bool, error) {
+	s.skippedRows = spec.EntityCount
+	if s.resumeID != "" {
+		// Only the first partial range needs exact accounting. Read candidate
+		// columns, never the discarded field payload, using the same bytes/view.
+		var scan parquetEntityCandidateScan
+		var err error
+		if exclusiveFileStore(s.store.Objects) != nil {
+			reader, openErr := openFileReader(ctx, s.store.Objects, key)
+			if openErr != nil {
+				return false, false, openErr
+			}
+			scan, err = scanParquetEntityObjectCandidatesReader(ctx, reader, EntityScanOptions{})
+			reader.Close()
+		} else {
+			scan, err = scanParquetEntityObjectCandidates(ctx, loaded.data, EntityScanOptions{})
+		}
+		if err != nil {
+			return false, false, err
+		}
+		s.skippedRows = 0
+		for id := range filterParquetEntityCandidates(scan, spec.Shard, scanCursor{}) {
+			if id >= s.resumeID {
+				s.skippedRows++
+			}
+		}
+	}
+	s.stats.pagesSkippedByKind++
+	return true, true, nil
 }
 
 func (s *entityPageVisitSession) loadAndDecodePage(ctx context.Context, spec EntityPageSpec, key string) (loaded loadedEntityScanPage, err error) {

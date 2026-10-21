@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
 
 func TestEntityCursorSkipsEarlierPageObjects(t *testing.T) {
@@ -258,5 +261,156 @@ func TestRangeEntityScanPrunesBeforePayloadDecode(t *testing.T) {
 		if stats.parquetDecodes != 0 || stats.candidateRowGroupsSkip == 0 {
 			t.Fatalf("filtered range decoded payload instead of pruning: decodes=%d skipped=%d", stats.parquetDecodes, stats.candidateRowGroupsSkip)
 		}
+	}
+}
+
+func TestReverseCatalogWarmCompilationHasBoundedAllocations(t *testing.T) {
+	store := NewTenantStore(NewMemoryStore(), "test")
+	reverse := ReverseIndexCatalog{TenantID: "tenant-a", Version: 1}
+	for i := 0; i < 2048; i++ {
+		reverse.EdgeShards = append(reverse.EdgeShards, EdgeShard{RelationType: fmt.Sprint(i), Shard: "00", ContentHash: "hash"})
+	}
+	store.setCachedReverseIndexCatalog("tenant-a", reverse, ObjectMeta{Exists: true})
+	store.lockMu.Lock()
+	cached, _, _ := store.getCachedReverseIndexCatalogLocked("tenant-a", time.Now())
+	store.lockMu.Unlock()
+	compile := func() {
+		lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: 1, ReverseCatalog: &cached}
+		if err := lookup.compileReverseCatalog(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compile()
+	if allocations := testing.AllocsPerRun(3, compile); allocations > 10 {
+		t.Fatalf("warm reverse lookup reprocessed the whole catalog: %.0f allocations", allocations)
+	}
+}
+
+type resumedEntityLookup struct {
+	*PersistedIndexLookup
+	after string
+}
+
+func (l resumedEntityLookup) VisitEntities(ctx context.Context, kind string, fields []string, _ string, visit func(graph.Entity) (bool, error)) (bool, error) {
+	return l.PersistedIndexLookup.VisitEntities(ctx, kind, fields, l.after, visit)
+}
+
+func TestRangeResumeChargesOnlyRemainingEntities(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	var ids []string
+	for i := 0; len(ids) < 100; i++ {
+		id := fmt.Sprintf("host:resume-budget-%07d", i)
+		if entityShardID(id) == "00" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	var entities []graph.Entity
+	for _, id := range ids {
+		entities = append(entities, graph.Entity{ID: id, Kind: "host"})
+	}
+	pages, err := prepareBoundedEntityPages(ctx, "tenant-a", []EntityPageData{{Shard: entityShardID(ids[0]), Version: 1, Entities: entities}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := IndexCatalog{TenantID: "tenant-a", Version: 1, EntityPages: entityPageSpecs(pages)}
+	store.decorateIndexCatalog(&catalog, "tenant-a")
+	if err := store.writeParquetEntityPages(ctx, "tenant-a", pages, 1); err != nil {
+		t.Fatal(err)
+	}
+	lookup := resumedEntityLookup{&PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: 1, Catalog: catalog}, ids[98]}
+	g := graph.New()
+	g.Version = 1
+	result, err := query.ExecuteContextWithOptions(ctx, g, query.Request{Op: "match", Kind: "missing", Limit: 1, CostLimit: 8}, query.ExecuteOptions{IndexLookup: lookup, EntityLookup: lookup})
+	if err != nil {
+		t.Fatalf("resumed scan charged entities preceding its start: %v", err)
+	}
+	if result.Stats.Scanned != 2 {
+		t.Fatalf("charged %d rows, want 2", result.Stats.Scanned)
+	}
+}
+
+func TestRangeEdgeScanPrunesBeforePayloadDecode(t *testing.T) {
+	ConfigureParquetDecodeMaxConcurrent(2)
+	defer ConfigureParquetDecodeMaxConcurrent(0)
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	var edges []graph.Edge
+	for i := 0; i < 128; i++ {
+		edges = append(edges, graph.Edge{ID: fmt.Sprintf("edge:%03d", i), Type: "links", From: "host:a", To: "host:b", Source: "agent", Fields: graph.Fields{"blob": strings.Repeat("x", 4096)}})
+	}
+	edges[0].ExistenceSource = &graph.FieldSource{Source: "existence"}
+	edges[1].Sources = []graph.EdgeSource{{Source: "provenance"}}
+	shards, err := prepareBoundedEdgeShards(ctx, "tenant-a", []EdgeShardData{{RelationType: "links", Shard: edgeShardID("host:a"), Version: 1, Edges: edges}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := IndexCatalog{TenantID: "tenant-a", Version: 1, EdgeShards: edgePageSpecs(shards, graph.New())}
+	store.decorateIndexCatalog(&catalog, "tenant-a")
+	if err := store.writeParquetEdgeShards(ctx, "tenant-a", shards); err != nil {
+		t.Fatal(err)
+	}
+	stats := &parquetDecodeTraceStats{}
+	result, ok, err := store.listEdgesFromShards(withParquetDecodeTraceStats(ctx, stats), "tenant-a", 1, catalog, EdgeScanOptions{Source: "zzzz-missing"}, scanCursor{})
+	if err != nil || !ok || len(result.Edges) != 0 {
+		t.Fatalf("filtered scan: %v %v %d", ok, err, len(result.Edges))
+	}
+	if decodes, _ := stats.snapshot(); decodes != 0 {
+		t.Fatalf("range edge scan decoded rejected payload: %d admissions", decodes)
+	}
+	for _, cacheEntries := range []int{0, 8} {
+		for _, source := range []string{"agent", "existence", "provenance", "missing", "zzzz-missing"} {
+			reads := newCountingReadStore(store.Objects)
+			reader := NewTenantStore(reads, "test")
+			reader.ConfigureIndexObjectCache(IndexObjectCacheConfig{MaxEntries: cacheEntries})
+			result, ok, err := reader.listEdgesFromShards(ctx, "tenant-a", 1, catalog, EdgeScanOptions{Source: source, Limit: 1000}, scanCursor{})
+			want := 1
+			if source == "missing" || source == "zzzz-missing" {
+				want = 0
+			}
+			if source == "agent" {
+				want = 128
+			}
+			if err != nil || !ok || len(result.Edges) != want {
+				t.Fatalf("source %s cache=%d: rows=%d ok=%v err=%v", source, cacheEntries, len(result.Edges), ok, err)
+			}
+			for _, o := range catalog.EdgeShards[0].Objects {
+				if got := exactObjectReads(reads, o.Key); got > 1 {
+					t.Fatalf("filtered range loaded twice with cache=%d: %d", cacheEntries, got)
+				}
+			}
+			if cacheEntries > 0 && source == "zzzz-missing" {
+				if _, ok, err := reader.listEdgesFromShards(ctx, "tenant-a", 1, catalog, EdgeScanOptions{Source: source}, scanCursor{}); err != nil || !ok {
+					t.Fatalf("repeat pruned scan: %v %v", ok, err)
+				}
+				for _, o := range catalog.EdgeShards[0].Objects {
+					if got := exactObjectReads(reads, o.Key); got != 1 {
+						t.Fatalf("pruned scan discarded reusable raw bytes: GETs=%d", got)
+					}
+				}
+			}
+		}
+	}
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	local := NewTenantStore(files, "test")
+	if err := local.writeParquetEdgeShards(ctx, "tenant-a", shards); err != nil {
+		t.Fatal(err)
+	}
+	stats = &parquetDecodeTraceStats{}
+	result, ok, err = local.listEdgesFromShards(withParquetDecodeTraceStats(ctx, stats), "tenant-a", 1, catalog, EdgeScanOptions{Source: "zzzz-missing"}, scanCursor{})
+	if err != nil || !ok || len(result.Edges) != 0 {
+		t.Fatalf("local pruning: %v %v", ok, err)
+	}
+	if n, _ := stats.snapshot(); n != 0 {
+		t.Fatalf("local rejected page decoded: %d", n)
+	}
+	result, ok, err = local.listEdgesFromShards(ctx, "tenant-a", 1, catalog, EdgeScanOptions{Source: "existence"}, scanCursor{})
+	if err != nil || !ok || len(result.Edges) != 1 {
+		t.Fatalf("local matching source: %v %v %d", ok, err, len(result.Edges))
 	}
 }

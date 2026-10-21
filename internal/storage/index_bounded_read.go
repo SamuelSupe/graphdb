@@ -97,7 +97,7 @@ func (l *PersistedIndexLookup) visitEntityRanges(ctx context.Context, spec Entit
 	prefetch := rangeScanPrefetch{store: l.Store, ctx: ctx}
 	defer prefetch.close()
 	for n := rangeObjectIndex(spec.Objects, afterID); n < len(spec.Objects); n++ {
-		if err := prefetch.advance("entity_page", l.TenantID, l.Version, spec.Objects, n); err != nil {
+		if err := prefetch.entity(l.TenantID, l.Version, spec, n); err != nil {
 			return false, false, err
 		}
 		object := spec.Objects[n]
@@ -130,13 +130,17 @@ func (l *PersistedIndexLookup) visitEntityRanges(ctx context.Context, spec Entit
 		}
 		if session := entityPageVisitSessionFromContext(ctx); session != nil {
 			session.stats.pageSpecsVisited++
+			session.resumeID = ""
+			if afterID != "" && routing.contains(afterID) {
+				session.resumeID = afterID
+			}
 			ok, skipped, err := session.visitPage(ctx, entityRangeSpec(spec, object), consume)
 			if err != nil || !ok {
 				return false, false, err
 			}
 			if skipped {
 				// Metadata pruning saves decoding, not the logical scan allowance.
-				if err := query.ConsumeIndexScanCost(ctx, object.RowCount); err != nil {
+				if err := query.ConsumeIndexScanCost(ctx, session.skippedRows); err != nil {
 					return false, false, err
 				}
 				continue
