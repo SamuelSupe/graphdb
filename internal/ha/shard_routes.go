@@ -155,7 +155,7 @@ func (c *Cluster) PrivateHandler() http.Handler {
 		}
 		r = r.WithContext(forwardedContext(r))
 		if strings.HasPrefix(r.URL.Path, "/cluster/") && !strings.HasPrefix(r.URL.Path, "/cluster/data/") && (c.Node.LeaderID() != c.Node.ID() || c.Node.Draining()) {
-			c.forward(w, r, nil, true)
+			c.forward(w, r, nil, true, r.Method != http.MethodGet && r.Method != http.MethodHead)
 			return
 		}
 		mux.ServeHTTP(w, r)

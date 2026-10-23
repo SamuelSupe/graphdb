@@ -1,0 +1,23 @@
+{
+  "version": "v2.4.2",
+  "status": "candidate_not_published",
+  "required_go": "go1.27.3",
+  "supersedes_failed_qualification": "v2.4.1",
+  "regressions": {
+    "completing_read_before": "3/3 FAIL",
+    "forwarded_post_query_before": "3/3 FAIL",
+    "focused_race_after": "PASS 3 repetitions, 37.856s",
+    "original_slow_reader_control_deadlines": "retained and PASS",
+    "unknown_write_nonretryability": "retained and PASS"
+  },
+  "full_unit_vet_race": "PENDING",
+  "candidate_runtime": "PENDING",
+  "candidate_protocol3_30m": "PENDING",
+  "main_ci": "PENDING",
+  "tag_created": false,
+  "tag_ci": "PENDING",
+  "published": false,
+  "independent_download": "PENDING",
+  "downloaded_fresh_directory_recovery": "PENDING",
+  "existing_tags_assets": "immutable"
+}

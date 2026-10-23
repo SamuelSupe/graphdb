@@ -2640,6 +2640,56 @@ func TestHALongReadsDoNotFreezeApplication(t *testing.T) {
 	}
 }
 
+func TestHAControlAllowsCompletingReadToDrain(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	cluster := group.nodes[leader].cluster
+	entered, finish := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	complete := func() { once.Do(func() { close(finish) }) }
+	defer complete()
+	readDone := make(chan error, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodGet, "/v1/entities", nil)
+		request.Header.Set("X-Tenant-ID", "tenant-a")
+		cluster.ServeRoute(httptest.NewRecorder(), request, false, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-finish
+			readDone <- r.Context().Err()
+		}))
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("read did not enter")
+	}
+	writeDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		writeDone <- group.request(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-b"}`)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for cluster.App.readers.TryRLock() {
+		cluster.App.readers.RUnlock()
+		if time.Now().After(deadline) {
+			t.Fatal("control operation did not wait for the read barrier")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	complete()
+	if err := <-readDone; err != nil {
+		t.Fatalf("control operation canceled a completing read: %v", err)
+	}
+	select {
+	case response := <-writeDone:
+		if response.Code != http.StatusOK {
+			t.Fatalf("control operation after read: %d %s", response.Code, response.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("completed read retained the control barrier")
+	}
+}
+
 func TestHAFlushSkipsBlockedTenant(t *testing.T) {
 	group := newTestCluster(t, true)
 	leader := group.leader(-1)
@@ -2776,14 +2826,15 @@ func TestHACommitAcceptsStandaloneBodyLimitThroughRaftEncoding(t *testing.T) {
 	}
 }
 
-type lostRaftWriteResponse struct {
+type lostRaftResponse struct {
 	base     http.RoundTripper
+	path     string
 	attempts atomic.Int64
 }
 
-func (t *lostRaftWriteResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+func (t *lostRaftResponse) RoundTrip(r *http.Request) (*http.Response, error) {
 	response, err := t.base.RoundTrip(r)
-	if err == nil && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/v1/commits") {
+	if err == nil && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, t.path) {
 		response.Body.Close()
 		t.attempts.Add(1)
 		return nil, io.ErrUnexpectedEOF
@@ -2798,7 +2849,7 @@ func TestFollowerLostWriteResponseDoesNotSuggestBlindRetry(t *testing.T) {
 	client := sharding.NewClient("")
 	base := client.HTTP.Transport
 	defer base.(*http.Transport).CloseIdleConnections()
-	transport := &lostRaftWriteResponse{base: base}
+	transport := &lostRaftResponse{base: base, path: "/v1/commits"}
 	client.HTTP.Transport = transport
 	proxy := &Cluster{Node: follower.Node, config: follower.config, shards: client}
 	body := []byte(`{"mutations":{"upsert_entities":[{"id":"host:lost-response","kind":"host"}]}}`)
@@ -2806,7 +2857,7 @@ func TestFollowerLostWriteResponseDoesNotSuggestBlindRetry(t *testing.T) {
 	request.Header.Set("X-Tenant-ID", "tenant-a")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
-	proxy.forward(response, request, body, false)
+	proxy.forward(response, request, body, false, true)
 	var failure struct {
 		Code      string
 		Error     string
@@ -2822,5 +2873,31 @@ func TestFollowerLostWriteResponseDoesNotSuggestBlindRetry(t *testing.T) {
 	}
 	if _, ok := graph.GetEntity("host:lost-response"); !ok {
 		t.Fatal("forwarded mutation missing")
+	}
+}
+
+func TestFollowerLostReadResponseRemainsRetryable(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	follower := group.nodes[(leader+1)%len(group.nodes)].cluster
+	client := sharding.NewClient("")
+	base := client.HTTP.Transport
+	defer base.(*http.Transport).CloseIdleConnections()
+	transport := &lostRaftResponse{base: base, path: "/v1/query"}
+	client.HTTP.Transport = transport
+	proxy := &Cluster{Node: follower.Node, config: follower.config, shards: client}
+	body := []byte(`{"op":"match","kind":"host","limit":1}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(body))
+	request.Header.Set("X-Tenant-ID", "tenant-a")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	proxy.forward(response, request, body, false, false)
+	var failure struct {
+		Code      string
+		Retryable bool
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || response.Code != http.StatusServiceUnavailable || failure.Code != "raft_unavailable" || !failure.Retryable || transport.attempts.Load() != 1 {
+		t.Fatalf("lost forwarded read response: %d %s attempts=%d err=%v", response.Code, response.Body.String(), transport.attempts.Load(), err)
 	}
 }

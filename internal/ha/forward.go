@@ -16,7 +16,7 @@ type forwardHopKey struct{}
 
 const forwardHopHeader = "X-GraphDB-Raft-Forward-Hop"
 
-func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, private bool) {
+func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, private, mutation bool) {
 	hops, _ := r.Context().Value(forwardHopKey{}).(int)
 	if hops >= 3 {
 		http.Error(w, "Raft forwarding limit reached", http.StatusServiceUnavailable)
@@ -52,7 +52,7 @@ func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, p
 			p.Out.Header.Set(forwardHopHeader, strconv.Itoa(hops+1))
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if mutation {
 				err = fmt.Errorf("%w: %v", replication.ErrOutcomeUnknown, err)
 			}
 			c.writeError(w, err)

@@ -1,6 +1,8 @@
 # 读取与查询
 
-适用于 **GGraphDB 2.4.1**；[发行验证](../validation-v2.4.1.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+控制操作先允许普通在途读取在最多 1 秒内排空，仅对仍阻塞的读者撤销上下文并打断网络写入。POST 查询转发错误仍属于读取错误，不会标记为写入结果未知。原查询和控制请求期限不变。
+
+适用于 **GGraphDB 2.4.2**；[发行验证](../validation-v2.4.2.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](read-query.md)
 

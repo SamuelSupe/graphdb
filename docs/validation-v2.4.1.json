@@ -1,6 +1,6 @@
 {
   "version": "v2.4.1",
-  "status": "candidate_not_published",
+  "status": "release_qualification_failed_no_assets",
   "required_go": "go1.27.3",
   "source_baseline": "05a8fbac24c01dce6f5189ba8fb37af18980fb9d",
   "historical_review_qualification": {
@@ -16,20 +16,34 @@
     "lost_response_envelope_regressions_3x": "PASS; both failed before message correction",
     "python_sdk": "PASS 13 tests, one optional live skip",
     "backup_and_rolling_script_regressions": "PASS 11 and 5 tests",
-    "full_unit_vet_race": "PENDING",
-    "runtime": "PENDING"
+    "full_unit_vet_race": "PASS",
+    "runtime": "PASS: direct/WAL SIGKILL, accepted batch replay and fresh-directory backup restore"
   },
-  "main_ci": "PENDING",
-  "tag_created": false,
-  "tag_ci": "PENDING",
+  "main_ci": {
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39964701917",
+    "result": "PASS",
+    "jobs": 7
+  },
+  "tag_created": true,
+  "tag_ci": {
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39969581663",
+    "result": "FAIL",
+    "failed_job": "raft / raft",
+    "failed_stage": "protocol3 three-replica thirty-minute soak",
+    "query_errors": 23,
+    "publication": "SKIPPED"
+  },
   "published": false,
-  "independent_download": "PENDING",
-  "downloaded_fresh_directory_recovery": "PENDING",
+  "independent_download": "NOT RUN: no release assets",
+  "downloaded_fresh_directory_recovery": "NOT RUN: no release assets",
   "compatibility": {
     "wal_marker": "v1 migrated to two-slot v2; drain before downgrade; preserve whole directory",
     "range_pages_default": false,
     "adjacency_pages_default": false,
     "old_layout_and_ListEdges_cursors": "retained"
   },
-  "existing_tags_assets": "immutable"
+  "existing_tags_assets": "immutable",
+  "candidate_commit": "ff0592897a138f963d98eb9986f2b706c115627b",
+  "tag_object": "8877f66e27ccf7d8bd2a12b662e8f8dba44de359",
+  "followup_version": "v2.4.2"
 }

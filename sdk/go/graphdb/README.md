@@ -1,6 +1,6 @@
 # GGraphDB Go SDK
 
-Version **2.4.1**, matching the [server release](../../../docs/validation-v2.4.1.md).
+Version **2.4.2**, matching the [server release](../../../docs/validation-v2.4.2.md).
 
 Import path inside this repository:
 

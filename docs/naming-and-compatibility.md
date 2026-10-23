@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release is **2.4.1**; see its [publication and verification](validation-v2.4.1.md). GGraphDB runs one process
+The current release is **2.4.2**; see its [publication and verification](validation-v2.4.2.md). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,11 +12,11 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION`: `2.4.1`; tag: `v2.4.1` |
-| Go/Python SDKs and OpenAPI document version | `2.4.1` |
+| Product and release tag | `VERSION`: `2.4.2`; tag: `v2.4.2` |
+| Go/Python SDKs and OpenAPI document version | `2.4.2` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
-| Persisted Parquet/WAL and snapshot format | Parquet/logical snapshots retain2.x;2.4.1 migrates the WAL durable marker to two-slot v2; Raft has separate protocol/directory-role markers |
+| Persisted Parquet/WAL and snapshot format | Parquet/logical snapshots retain2.x;2.4.2 migrates the WAL durable marker to two-slot v2; Raft has separate protocol/directory-role markers |
 
 Import the Go SDK from `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`.
 Security support is described in [SECURITY.md](../SECURITY.md).
@@ -26,7 +26,7 @@ Security support is described in [SECURITY.md](../SECURITY.md).
 - New installations and replacements of 1.x require a fresh data directory.
   No automatic 1.x migration or legacy `data_md5` response is provided. Keep 1.x
   installations and backups separate; never open 2.x data with a 1.x binary.
-- Standalone 2.4.1 opens existing2.x Parquet and logical snapshots, but migrates the WAL durable marker to two-slot v2. Drain WAL before downgrade; old programs cannot open the new marker. Stop the old process before
+- Standalone 2.4.2 opens existing2.x Parquet and logical snapshots, but migrates the WAL durable marker to two-slot v2. Drain WAL before downgrade; old programs cannot open the new marker. Stop the old process before
   reusing a 2.0/2.1/2.2 directory with the same data root and prefix. Directory reuse
   does not permit concurrent processes or versions.
 - Upgrade compatibility does not promise direct binary downgrade or cross-major
@@ -73,7 +73,7 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See [2.4.1 validation](validation-v2.4.1.md), the tag workflow and packaged
+See [2.4.2 validation](validation-v2.4.2.md), the tag workflow and packaged
 evidence for the exact release binary. A local performance candidate completed
 45,116 operations but recorded four HAProxy 503 query failures under severe
 shared-kernel resource pressure. That failed result remains documented; it is
@@ -84,7 +84,7 @@ The capacity envelope retains the historical 2.1.2 `performance_unqualified`
 record and does not qualify this release or Raft capacity. Older reports describe
 their own frozen builds.
 
-For the 2.4.1 Raft upgrade, finish or cancel lifecycle/restore work before rolling
+For the 2.4.2 Raft upgrade, finish or cancel lifecycle/restore work before rolling
 and pause these management operations until every replica is upgraded. Normal
 qualified read/write traffic can continue. Historical commands preserve their
 logged authorization semantics; the new scope checks do not retroactively reject

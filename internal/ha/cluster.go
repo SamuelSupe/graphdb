@@ -181,7 +181,7 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		defer cancel()
 		if err := c.Node.QuorumBarrier(ctx); err != nil {
 			if errors.Is(err, replication.ErrNotLeader) {
-				c.forward(w, r.WithContext(ctx), nil, false)
+				c.forward(w, r.WithContext(ctx), nil, false, false)
 				return
 			}
 			c.writeError(w, err)
@@ -216,7 +216,7 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	defer cancel()
 	if err := c.Node.ReadBarrier(ctx); err != nil {
 		if errors.Is(err, replication.ErrNotLeader) {
-			c.forward(w, r.WithContext(ctx), body, false)
+			c.forward(w, r.WithContext(ctx), body, false, mutation)
 			return
 		}
 		c.writeError(w, err)
@@ -365,7 +365,7 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	data, err := c.propose(ctx, cmd)
 	if err != nil {
 		if errors.Is(err, replication.ErrNotLeader) {
-			c.forward(w, r.WithContext(ctx), body, false)
+			c.forward(w, r.WithContext(ctx), body, false, mutation)
 			return
 		}
 		c.writeError(w, err)

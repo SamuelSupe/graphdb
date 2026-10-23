@@ -1,6 +1,6 @@
 # 查询能力说明
 
-适用于 **GGraphDB 2.4.1**；发行资格见[版本验证](validation-v2.4.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.2**；发行资格见[版本验证](validation-v2.4.2.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本文说明当前 GGraphDB 的用户侧查询能力。查询对象是租户当前可见快照，不提供历史版本查询；读一致性通过 `min_version` 和 `allow_stale` 控制。
 

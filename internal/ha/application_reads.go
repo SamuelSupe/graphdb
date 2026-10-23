@@ -1,6 +1,9 @@
 package ha
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type applicationRead struct {
 	cancel    context.CancelFunc
@@ -32,10 +35,23 @@ func (a *Application) readContext(parent context.Context, interrupt func()) (con
 }
 func (a *Application) lockReaders() {
 	a.readMu.Lock()
-	for read := range a.activeReads {
-		read.cancel()
-		read.interrupt()
+	if a.readers.TryLock() {
+		a.readMu.Unlock()
+		return
 	}
+	// Drain ordinary reads before revoking a slow or blocked network peer.
+	// readMu prevents new registrations and map changes until the callback joins.
+	interrupted := make(chan struct{})
+	timer := time.AfterFunc(time.Second, func() {
+		for read := range a.activeReads {
+			read.cancel()
+			read.interrupt()
+		}
+		close(interrupted)
+	})
 	a.readers.Lock()
+	if !timer.Stop() {
+		<-interrupted
+	}
 	a.readMu.Unlock()
 }
