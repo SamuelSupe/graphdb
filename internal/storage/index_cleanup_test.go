@@ -865,11 +865,11 @@ func TestLocalGCYieldsTaskExecutionBetweenBatches(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		runCtx, release, err := store.TryAcquireMaintenanceContext(ctx, "tenant-a")
+		defer func() { done <- err }()
 		if err == nil {
 			defer release()
 			_, err = store.RunGC(runCtx, "tenant-a", GCOptions{CleanupIndexOrphans: true})
 		}
-		done <- err
 	}()
 	select {
 	case <-entered:
