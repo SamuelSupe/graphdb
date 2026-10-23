@@ -1,4 +1,5 @@
-FROM golang:1.26.7-bookworm AS build
+FROM golang:1.27.3-bookworm AS build
+ENV GOTOOLCHAIN=local
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
@@ -7,7 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN buildinfo_package=github.com/SamuelSupe/graphdb/v2/internal/buildinfo && \
+RUN test "$(go env GOVERSION)" = go1.27.3 && buildinfo_package=github.com/SamuelSupe/graphdb/v2/internal/buildinfo && \
     CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false \
     -ldflags="-s -w -X ${buildinfo_package}.Version=${VERSION} -X ${buildinfo_package}.Commit=${COMMIT} -X ${buildinfo_package}.Date=${BUILD_DATE}" \
     -o /out/graphdb ./cmd/graphdb

@@ -316,21 +316,44 @@ func (c *Cluster) flushPendingTenant(ctx context.Context, tenant string) (err er
 	if err != nil {
 		return err
 	}
-	type pending struct {
-		key    string
-		record pendingAcceptance
-	}
-	var requests []pending
+	var requests []pendingFlushRequest
 	for key, record := range queue {
 		if tenant != "" && record.tenant != tenant {
 			continue
 		}
-		requests = append(requests, pending{key, record})
+		requests = append(requests, pendingFlushRequest{key, record})
 	}
 	sort.Slice(requests, func(i, j int) bool { return requests[i].record.index < requests[j].record.index })
 	if len(requests) == 0 {
 		return nil
 	}
+
+	var failures error
+	for len(requests) > 0 {
+		selected := requests[0].record.tenant
+		var group, remaining []pendingFlushRequest
+		for _, request := range requests {
+			if request.record.tenant == selected {
+				group = append(group, request)
+			} else {
+				remaining = append(remaining, request)
+			}
+		}
+		failures = errors.Join(failures, c.flushPendingBatch(ctx, group))
+		if ctx.Err() != nil {
+			return errors.Join(failures, ctx.Err())
+		}
+		requests = remaining
+	}
+	return failures
+}
+
+type pendingFlushRequest struct {
+	key    string
+	record pendingAcceptance
+}
+
+func (c *Cluster) flushPendingBatch(ctx context.Context, requests []pendingFlushRequest) error {
 	cmd, err := newCommand("flush")
 	if err != nil {
 		return err
@@ -367,4 +390,50 @@ func (c *Cluster) flushPendingTenant(ctx context.Context, tenant string) (err er
 	}
 	_, err = c.propose(ctx, cmd)
 	return err
+}
+
+// A bounded queue snapshot drives each pass. Failed tenants retain their WAL
+// and cannot prevent other tenants from publishing; new arrivals wake another pass.
+func (c *Cluster) flushReady(ctx context.Context, all bool) error {
+	queue, err := c.App.pendingSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	counts := make(map[string]int)
+	bytes := make(map[string]int64)
+	for _, r := range queue {
+		counts[r.tenant]++
+		bytes[r.tenant] += r.requestBytes
+	}
+	tenants := make([]string, 0, len(counts))
+	for tenant := range counts {
+		tenants = append(tenants, tenant)
+	}
+	sort.Strings(tenants)
+	var failures error
+	for _, tenant := range tenants {
+		for counts[tenant] > 0 && (all || counts[tenant] >= max(c.FlushMaxRequests, 1) || bytes[tenant] >= max(c.FlushMaxBytes, 1)) {
+			if err := c.flushPendingTenant(ctx, tenant); err != nil {
+				failures = errors.Join(failures, err)
+				break
+			}
+			next, err := c.App.pendingSnapshot(ctx)
+			if err != nil {
+				return errors.Join(failures, err)
+			}
+			count := 0
+			var size int64
+			for _, r := range next {
+				if r.tenant == tenant {
+					count++
+					size += r.requestBytes
+				}
+			}
+			if count >= counts[tenant] {
+				break
+			}
+			counts[tenant], bytes[tenant] = count, size
+		}
+	}
+	return failures
 }

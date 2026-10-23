@@ -120,6 +120,7 @@ type TenantStore struct {
 	adjacencyCache           *decodedLookupCache[adjacencyNode]
 	fieldLookupCache         *decodedLookupCache[map[string][]string]
 	taskMu                   sync.Mutex
+	queuedTaskCatalogs       map[string]*queuedTaskCatalog
 	taskCancels              map[string]context.CancelFunc
 	taskActive               map[string]Task
 	taskWorkers              sync.WaitGroup

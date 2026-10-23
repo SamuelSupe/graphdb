@@ -83,6 +83,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		r.proxy(w, request, r.Catalog, 0, "")
 		return
 	}
+	if !publicDataRoute(request) && subtle.ConstantTimeCompare([]byte(request.Header.Get("Authorization")), []byte("Bearer "+r.Client.Token)) != 1 {
+		http.Error(w, "administrative routing requires the operator token", http.StatusForbidden)
+		return
+	}
 	tenant := request.Header.Get("X-Tenant-ID")
 	if strings.HasPrefix(request.URL.EscapedPath(), "/v1/tenants/") {
 		first := strings.Split(strings.TrimPrefix(request.URL.EscapedPath(), "/v1/tenants/"), "/")[0]
@@ -305,7 +309,12 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			r.metrics.Event("proxy_transport_failure")
 			r.Client.ForgetLeader(shard)
 			r.forgetPlacement(tenant)
-			r.writeError(w, failure)
+			if request.Method != http.MethodGet && request.Method != http.MethodHead && request.Method != http.MethodOptions {
+				message := "the write response was lost; check its status or reuse the same idempotency key"
+				r.writeJSON(w, http.StatusBadGateway, map[string]any{"code": "write_outcome_unknown", "error": message, "message": message, "retryable": false})
+			} else {
+				r.writeError(w, failure)
+			}
 		},
 	}
 	proxy.ServeHTTP(w, request)
@@ -482,4 +491,28 @@ func (r *Router) writeError(w http.ResponseWriter, err error) {
 	}
 	w.Header().Set("Retry-After", "1")
 	r.writeJSON(w, status, map[string]any{"code": "shard_unavailable", "error": err.Error(), "message": err.Error(), "retryable": status >= 500})
+}
+
+// Preserve the router's data and discovery API while requiring the original
+// caller's operator token before adding our private shard credentials.
+func publicDataRoute(r *http.Request) bool {
+	if r.Method == http.MethodGet {
+		switch r.URL.Path {
+		case "/v1/entities", "/v1/entities/stream", "/v1/edges", "/v1/edges/stream", "/v1/export/snapshot", "/v1/export/snapshot/stream", "/v1/ci-types", "/v1/entity-types", "/v1/relation-types", "/v1/relation-schemas", "/v1/source-policy", "/v1/tenant-config", "/v1/backup-automation", "/v1/query/templates":
+			return true
+		}
+		for _, prefix := range []string{"/v1/entities/", "/v1/ingest/batches/", "/v1/ingest/writers/"} {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				return true
+			}
+		}
+	}
+	if r.Method == http.MethodPost {
+		switch r.URL.Path {
+		case "/v1/commits", "/v1/ingest/batches", "/v1/imports", "/v1/query", "/v1/query/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream":
+			return true
+		}
+		return strings.HasPrefix(r.URL.Path, "/v1/query/templates/")
+	}
+	return false
 }

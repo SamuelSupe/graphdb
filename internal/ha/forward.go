@@ -3,6 +3,8 @@ package ha
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -49,7 +51,12 @@ func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, p
 			p.Out.Header.Set("X-Raft-Cluster", c.config.ClusterID)
 			p.Out.Header.Set(forwardHopHeader, strconv.Itoa(hops+1))
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) { c.writeError(w, err) },
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				err = fmt.Errorf("%w: %v", replication.ErrOutcomeUnknown, err)
+			}
+			c.writeError(w, err)
+		},
 	}
 	// A transport failure or a submitted proposal may have committed. Only
 	// requests rejected before proposal admission enter this forwarding path.

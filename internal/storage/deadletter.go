@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/url"
@@ -164,12 +165,19 @@ func (s *TenantStore) replayDeadLetter(ctx context.Context, tenantID string, sou
 		return IngestResult{}, ok, err
 	}
 	request := claimed.Request
-	request.BatchID = request.BatchID + "-replay-" + mutationTime(ctx).Format("20060102150405.000000000")
-	request.IdempotencyKey = ""
-	result, err := s.ingest(ctx, tenantID, request, false, false)
+	// Reclaiming an expired in-flight attempt must recover its original commit,
+	// even when the previous worker died before writing replay metadata.
+	identity := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", deadLetterObjectKey(s, tenantID, source, claimed), claimed.Attempts)))
+	request.BatchID = fmt.Sprintf("replay-%x", identity)
+	request.IdempotencyKey = request.BatchID
+	result, err := s.ingest(ctx, tenantID, request, false, true)
 	claimed.LastResult = result
 	claimed.UpdatedAt = mutationTime(ctx)
-	finalizeDeadLetterReplay(&claimed, result)
+	if err == nil || result.Version > 0 {
+		finalizeDeadLetterReplay(&claimed, result)
+	} else {
+		claimed.Status = "pending"
+	}
 	if err != nil {
 		claimed.Error = err.Error()
 		_, saveErr := s.putDeadLetterWithMeta(ctx, tenantID, deadLetterObjectKey(s, tenantID, source, claimed), claimed, meta)
@@ -228,7 +236,9 @@ func (s *TenantStore) claimDeadLetterReplay(ctx context.Context, tenantID string
 	if claimed.Source == "" {
 		claimed.Source = source
 	}
-	claimed.Attempts++
+	if letter.Status != "replaying" {
+		claimed.Attempts++
+	}
 	claimed.Status = "replaying"
 	claimed.Error = ""
 	claimed.UpdatedAt = mutationTime(ctx)

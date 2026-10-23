@@ -309,6 +309,7 @@ func (s *FileStore) journalDirectory(ctx context.Context, targetKey, incoming st
 	if err != nil {
 		return err
 	}
+	keys := make(map[string]struct{})
 	for _, root := range []string{target, incoming} {
 		err := filepath.WalkDir(root, func(filename string, entry os.DirEntry, walkErr error) error {
 			if os.IsNotExist(walkErr) {
@@ -327,13 +328,19 @@ func (s *FileStore) journalDirectory(ctx context.Context, targetKey, incoming st
 			if err != nil {
 				return err
 			}
-			return s.journalObject(ctx, filepath.ToSlash(filepath.Join(targetKey, relative)))
+			keys[filepath.ToSlash(filepath.Join(targetKey, relative))] = struct{}{}
+			return ctx.Err()
 		})
 		if err != nil {
 			return err
 		}
 	}
-	return nil
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	return s.journalObjects(ctx, ordered)
 }
 
 func (s *FileStore) recoverReplication() error {

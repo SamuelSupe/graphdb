@@ -1274,3 +1274,101 @@ func (s *deleteListedCommitStore) List(ctx context.Context, prefix string) ([]Ob
 	}
 	return items, nil
 }
+
+func TestDeadLetterReplayTransientFailureStaysPending(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	req := IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "retry", Items: []IngestItem{{ExternalID: "a", Entity: &graph.Entity{ID: "host:a", Kind: "host"}}}}
+	if err := store.saveDeadLetter(ctx, "tenant-a", req, IngestResult{}); err != nil {
+		t.Fatal(err)
+	}
+	store.Backpressure = NewWritePressure(BackpressureConfig{ObjectLatencyThreshold: time.Millisecond})
+	store.Backpressure.RecordObjectLatency(time.Second)
+	_, err := store.ReplayDeadLetters(ctx, "tenant-a", "agent", 1)
+	if !errors.Is(err, ErrBackpressure) {
+		t.Fatalf("expected transient pressure: %v", err)
+	}
+	store.Backpressure = nil
+	letters, err := store.ListDeadLetters(ctx, "tenant-a", "agent")
+	if err != nil || len(letters) != 1 || letters[0].Status != "pending" {
+		t.Fatalf("failed replay lost retry eligibility: %+v %v", letters, err)
+	}
+	report, err := store.ReplayDeadLetters(ctx, "tenant-a", "agent", 1)
+	if err != nil || report.Resolved != 1 {
+		t.Fatalf("retry: %+v %v", report, err)
+	}
+}
+
+type failResolvedDeadLetterStore struct{ ObjectStore }
+
+func (s failResolvedDeadLetterStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if strings.Contains(key, "/deadletters/") {
+		if record, err := decodeParquetDeadLetter(ctx, data); err == nil && record.Status == "resolved" {
+			return ObjectMeta{}, errors.New("lost replay finalization")
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+func TestDeadLetterExpiredClaimReusesDurableAttempt(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	store := NewTenantStore(base, "test")
+	if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}, {ID: "host:b", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	request := IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "expired", Items: []IngestItem{{ExternalID: "edge", Entity: &graph.Entity{ID: "host:replay", Kind: "host", Fields: graph.Fields{"state": "original"}}}}}
+	if err := store.saveDeadLetter(ctx, "tenant-a", request, IngestResult{}); err != nil {
+		t.Fatal(err)
+	}
+	store.Objects = failResolvedDeadLetterStore{base}
+	if _, err := store.ReplayDeadLetters(ctx, "tenant-a", "agent", 1); err == nil {
+		t.Fatal("expected finalization failure")
+	}
+	store.Objects = base
+	newer := request
+	newer.BatchID = "newer"
+	newer.Items = []IngestItem{{ExternalID: "edge", Entity: &graph.Entity{ID: "host:replay", Kind: "host", Fields: graph.Fields{"state": "newer"}}}}
+	if result, err := store.Ingest(ctx, "tenant-a", newer); err != nil || result.Failed > 0 {
+		t.Fatalf("intervening write: %+v %v", result, err)
+	}
+
+	letters, err := store.ListDeadLetters(ctx, "tenant-a", "agent")
+	if err != nil || len(letters) != 1 {
+		t.Fatalf("letters: %+v %v", letters, err)
+	}
+	letter := letters[0]
+	letter.UpdatedAt = time.Now().UTC().Add(-deadLetterReplayLease - time.Minute)
+	if _, err := store.putDeadLetterWithMeta(ctx, "tenant-a", letter.objectKey, letter, letter.objectMeta); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.ReplayDeadLetters(ctx, "tenant-a", "agent", 1)
+	if err != nil || report.Resolved != 1 {
+		t.Fatalf("retry: %+v %v", report, err)
+	}
+	_, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil || manifest.Version != 3 {
+		t.Fatalf("expired replay applied twice: %+v %v", manifest, err)
+	}
+}
+
+// A HA follower may have no local worker for legitimately queued work.
+func TestGCDoesNotExpireQueuedReplicatedTask(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "root")
+	store.ReplicationMode = true
+	if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	task := Task{ID: "queued-old", TenantID: "tenant-a", Type: TaskTypeCompact, Status: TaskStatusQueued, OwnerID: "old-leader", StartedAt: old, UpdatedAt: old}
+	if err := store.saveTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{TaskMaxAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetTask(ctx, "tenant-a", task.ID); err != nil {
+		t.Fatalf("queued replicated task expired: %v", err)
+	}
+}

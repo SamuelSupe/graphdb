@@ -402,7 +402,7 @@ try:
                 subprocess.run(DOCKER+['run','--rm','--name',runner,'--network',PROJECT+'_default',
                     '-v',ROOT+':/src:ro','-v',str(OUT)+':/evidence',
                     '-v','graphdb-raft-go-mod:/go/pkg/mod','-v','graphdb-raft-go-build:/root/.cache/go-build',
-                    '-w','/src','-e','GOMAXPROCS=2', 'golang:1.26.7-bookworm','bash','-c',command],
+                    '-w','/src','-e','GOMAXPROCS=2', 'golang:1.27.3-bookworm','bash','-c',command],
                     check=True, stdout=log, stderr=subprocess.STDOUT)
             finally:
                 for i in range(1, 4):

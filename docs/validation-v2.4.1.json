@@ -1,0 +1,35 @@
+{
+  "version": "v2.4.1",
+  "status": "candidate_not_published",
+  "required_go": "go1.27.3",
+  "source_baseline": "05a8fbac24c01dce6f5189ba8fb37af18980fb9d",
+  "historical_review_qualification": {
+    "toolchain": "go1.26.7",
+    "result": "PASS",
+    "scope": "all unit/vet; complete storage/HA/HTTP race and other packages; final GC integration; native filesystem; not current release qualification",
+    "evidence": ".workflow/review-20261022/FINAL-VERIFICATION.json"
+  },
+  "candidate_go1273_qualification": {
+    "compiler": "go1.27.3 linux/arm64",
+    "official_linux_arm64_sdk_sha256": "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49",
+    "contracts_docs_sdk_cmd": "PASS",
+    "lost_response_envelope_regressions_3x": "PASS; both failed before message correction",
+    "python_sdk": "PASS 13 tests, one optional live skip",
+    "backup_and_rolling_script_regressions": "PASS 11 and 5 tests",
+    "full_unit_vet_race": "PENDING",
+    "runtime": "PENDING"
+  },
+  "main_ci": "PENDING",
+  "tag_created": false,
+  "tag_ci": "PENDING",
+  "published": false,
+  "independent_download": "PENDING",
+  "downloaded_fresh_directory_recovery": "PENDING",
+  "compatibility": {
+    "wal_marker": "v1 migrated to two-slot v2; drain before downgrade; preserve whole directory",
+    "range_pages_default": false,
+    "adjacency_pages_default": false,
+    "old_layout_and_ListEdges_cursors": "retained"
+  },
+  "existing_tags_assets": "immutable"
+}

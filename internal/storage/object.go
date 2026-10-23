@@ -27,7 +27,13 @@ type ObjectMeta struct {
 	Exists bool
 }
 
+type objectBeforeImage struct {
+	data []byte
+	meta ObjectMeta
+}
+
 type PutCondition struct {
+	previous    *objectBeforeImage
 	IfMatch     string
 	IfNoneMatch bool
 }

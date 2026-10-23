@@ -8,6 +8,8 @@ import (
 
 var ErrBatchApplyRequiresIsolation = errors.New("batch apply requires per-commit isolation")
 
+// ApplyCommit requires exclusive ownership of g. Concurrent readers must use
+// an immutable published graph and ApplyCommitStorageCopyWithOptions.
 func (g *Graph) ApplyCommit(commit Commit) error {
 	_, err := g.ApplyCommitWithOptions(commit, ApplyOptions{})
 	return err
@@ -41,6 +43,8 @@ func (g *Graph) replaceState(next *Graph) {
 	g.edgeTypeIndex = next.edgeTypeIndex
 	g.entityAliasIndex = next.entityAliasIndex
 	g.kindCounts = next.kindCounts
+	g.kindEntityIDs = next.kindEntityIDs
+	g.nonScalarFields = next.nonScalarFields
 	g.fieldIndex = next.fieldIndex
 	g.identityIndex = next.identityIndex
 	g.cow = next.cow

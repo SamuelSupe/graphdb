@@ -14,7 +14,7 @@ func filesystemSpace(path string) (DiskSpaceStatus, error) {
 	}
 	return DiskSpaceStatus{
 		FilesystemID:   fmt.Sprint(status.Fsid),
-		TotalBytes:     int64(status.Blocks) * int64(status.Bsize),
-		AvailableBytes: int64(status.Bavail) * int64(status.Bsize),
+		TotalBytes:     int64(status.Blocks) * filesystemBlockUnit(status),
+		AvailableBytes: int64(status.Bavail) * filesystemBlockUnit(status),
 	}, nil
 }

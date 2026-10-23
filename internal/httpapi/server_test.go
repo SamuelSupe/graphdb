@@ -2166,3 +2166,16 @@ func TestHTTPLocalRunningQueryControlWhileGCWaits(t *testing.T) {
 		t.Error("HTTP query cancellation cannot pass the maintenance writer that is waiting for that query")
 	}
 }
+
+func TestUnknownHTTPPathsHaveBoundedMetricLabels(t *testing.T) {
+	api := &Server{Store: storage.NewTenantStore(storage.NewMemoryStore(), "test"), Mode: "all"}
+	handler := api.DataHandler()
+	for i := range 100 {
+		r := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/missing/%d", i), nil)
+		handler.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	metrics := api.obs().Metrics.SnapshotPrometheus()
+	if bytes.Contains(metrics, []byte("/missing/")) {
+		t.Fatal("raw unknown paths retained as metric series")
+	}
+}

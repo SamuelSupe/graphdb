@@ -88,12 +88,13 @@ func (g *Graph) VisitFilteredFieldIDs(kind, field string, bounds []FieldIndexRan
 }
 
 func (g *Graph) sortedFieldValues(kind, field string) fieldValueOrder {
-	g.fieldIndexOrderMu.Lock()
-	defer g.fieldIndexOrderMu.Unlock()
 	key := fieldValueOrderKey{kind: kind, field: field}
+	g.fieldIndexOrderMu.Lock()
 	if order, ok := g.fieldValueOrder[key]; ok {
+		g.fieldIndexOrderMu.Unlock()
 		return order
 	}
+	g.fieldIndexOrderMu.Unlock()
 	var order fieldValueOrder
 	for key := range g.fieldIndex[kind][field].Keys() {
 		value := orderedFieldValue{key: key}
@@ -123,6 +124,11 @@ func (g *Graph) sortedFieldValues(kind, field string) fieldValueOrder {
 	sort.Slice(order.text, func(i, j int) bool { return order.text[i].text < order.text[j].text })
 	sort.Slice(order.nonNumeric, func(i, j int) bool { return order.nonNumeric[i].text < order.nonNumeric[j].text })
 	sort.Slice(order.numeric, func(i, j int) bool { return order.numeric[i].number < order.numeric[j].number })
+	g.fieldIndexOrderMu.Lock()
+	defer g.fieldIndexOrderMu.Unlock()
+	if existing, ok := g.fieldValueOrder[key]; ok {
+		return existing
+	}
 	if g.fieldValueOrder == nil {
 		g.fieldValueOrder = make(map[fieldValueOrderKey]fieldValueOrder)
 	}

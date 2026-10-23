@@ -1,6 +1,6 @@
 # 读取与查询
 
-适用于 **GGraphDB 2.4.0**；[发行验证](../validation-v2.4.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.1**；[发行验证](../validation-v2.4.1.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](read-query.md)
 
@@ -319,3 +319,5 @@ curl -sS -X DELETE "$READER/v1/queries/running/<query-id>" \
 能够由 schema 或实际值证明标量覆盖时可使用索引。`-0` 与 `0` 使用相同索引键，并兼容读取旧的负零键。
 
 无排序字段索引分页在 JSON 和流式接口中均从游标定位并合并不可变 postings，解码缓存有容量上限。物化图的 neighbors 分页复用有序邻接视图；首次构建计入原始边扫描成本，后续页只计入实际访问候选。显式排序／聚合及 legacy 游标仍可能处理更多数据，并受查询成本限制。
+
+未发布的审查修正：路径结果的 sort/group_by/aggregate 字段取终点实体；length/depth、end_id仍保留路径含义。默认路径身份顺序及旧游标编码不变。timeout_ms=0仍表示不设超时，超出 Go duration 范围的数值会被拒绝；混合数字/文本过滤及 neq 对缺失值的语义不变。无类型字段的标量索引覆盖信息随写入维护，规划不再全图扫描。冷顺序构建不占用全图缓存锁，邻接顺序缓存最多256条/32MiB。旧 shard 分页保留原顺序/游标，在运行时类型索引可用时只检查目标 kind。返回值仍是调用方拥有的副本，原位修改图要求独占所有权。

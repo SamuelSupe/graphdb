@@ -3,7 +3,6 @@ package replication
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -214,8 +213,7 @@ func (n *Node) buildStreamSnapshot(source SnapshotSource, index uint64, conf raf
 				info, statErr := file.Stat()
 				err = statErr
 				if err == nil {
-					metadata, _ := json.Marshal(envelope)
-					if info.Size() > n.cfg.MaxSnapshotBytes || int64(base64.StdEncoding.EncodedLen(int(info.Size()))+len(metadata)) > n.cfg.MaxSnapshotBytes {
+					if info.Size() > n.cfg.MaxSnapshotBytes {
 						err = ErrSnapshotTooLarge
 					}
 				}

@@ -14,17 +14,19 @@ import (
 )
 
 type FileStore struct {
-	caseMu               sync.Mutex
-	caseMode             atomic.Int32
-	diskPolicy           DiskSpacePolicy
-	diskProbe            func(string) (DiskSpaceStatus, error)
-	replicatedWrites     atomic.Bool
-	directoryMu          sync.RWMutex
-	pendingDirectorySync string
-	runtime              *fileRuntime
-	root                 string
-	lockMu               sync.Mutex
-	objectLocks          map[string]*fileObjectLock
+	caseMu                 sync.Mutex
+	caseMode               atomic.Int32
+	directorySpellings     map[string]directorySpellings
+	directorySpellingBytes int
+	diskPolicy             DiskSpacePolicy
+	diskProbe              func(string) (DiskSpaceStatus, error)
+	replicatedWrites       atomic.Bool
+	directoryMu            sync.RWMutex
+	pendingDirectorySync   string
+	runtime                *fileRuntime
+	root                   string
+	lockMu                 sync.Mutex
+	objectLocks            map[string]*fileObjectLock
 }
 
 func (s *FileStore) Probe(ctx context.Context) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 )
 
 func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID string, checkpoint *gcCheckpointRunner, report *GCReport) error {
@@ -39,7 +40,7 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 		markAdjacency = markAdjacency || isAdjacencyObjectKey(o.Key)
 	}
 	if markAdjacency {
-		adjacency, err := s.retainedAdjacencyKeys(ctx, tenantID, catalog)
+		adjacency, err := s.cachedRetainedAdjacencyKeys(ctx, tenantID, catalog, checkpoint.options.retainedAdjacency)
 		if err != nil {
 			return err
 		}
@@ -96,4 +97,30 @@ func (s *TenantStore) cleanupIndexOrphansLocked(ctx context.Context, tenantID st
 		}
 	}
 	return checkpoint.pauseAfterPage(next)
+}
+
+// Only shared by sequential batches in one GC run. Any root publication
+// invalidates the mark set; deletion still checks the freshly acquired GC view.
+type gcAdjacencyCache struct {
+	generation       atomic.Uint64
+	markedGeneration uint64
+	version          int64
+	keys             map[string]struct{}
+}
+
+func (s *TenantStore) cachedRetainedAdjacencyKeys(ctx context.Context, tenant string, catalog IndexCatalog, cache *gcAdjacencyCache) (map[string]struct{}, error) {
+	if cache == nil {
+		return s.retainedAdjacencyKeys(ctx, tenant, catalog)
+	}
+	generation := cache.generation.Load()
+	if cache.keys != nil && cache.version == catalog.Version && cache.markedGeneration == generation {
+		return cache.keys, nil
+	}
+	keys, err := s.retainedAdjacencyKeys(ctx, tenant, catalog)
+	if err == nil && cache.generation.Load() == generation {
+		cache.keys = keys
+		cache.markedGeneration = generation
+		cache.version = catalog.Version
+	}
+	return keys, err
 }

@@ -46,6 +46,7 @@ func TestLocalWALPoisonTenantDoesNotRetainHealthyHistory(t *testing.T) {
 	}
 	config := testIngestServiceConfig(t)
 	config.WAL.MaxBytes, config.WAL.SegmentBytes = 64<<10, 16<<10
+	config.QueueMemoryBytes = config.WAL.MaxBytes / 4
 	config.FlushMaxRequests, config.RetryInterval = 1, time.Millisecond
 	service, err := OpenIngestService(NewTenantStore(files, "test"), config)
 	if err != nil {
@@ -128,6 +129,7 @@ func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
 			objects.failing.Store(true)
 			config := testIngestServiceConfig(t)
 			config.WAL.MaxBytes, config.WAL.SegmentBytes = 32<<10, 16<<10
+			config.QueueMemoryBytes = config.WAL.MaxBytes / 4
 			config.FlushMaxRequests, config.RetryInterval = 1, time.Millisecond
 			service, err := OpenIngestService(store, config)
 			if err != nil {

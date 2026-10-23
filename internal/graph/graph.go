@@ -22,6 +22,8 @@ type Graph struct {
 	edgeTypeIndex      map[string]map[string]struct{}
 	entityAliasIndex   map[string]map[string]struct{}
 	kindCounts         map[string]int
+	kindEntityIDs      *ShardedMap[*ShardedMap[struct{}]]
+	nonScalarFields    *ShardedMap[int]
 	fieldIndex         map[string]map[string]*fieldValueIndex
 	identityIndex      map[string]map[string]string
 	entityPartitions   *entityPartitions
@@ -34,6 +36,7 @@ type Graph struct {
 	fieldIndexOrderMu  sync.Mutex
 	neighborOrder      map[string][]neighborRef
 	neighborOrderMu    sync.Mutex
+	neighborOrderBytes int64
 
 	contentFingerprint      [32]byte
 	contentFingerprintReady bool
@@ -120,6 +123,8 @@ func (g *Graph) Clone() *Graph {
 		edgeTypeIndex:           copySetMap(g.edgeTypeIndex),
 		entityAliasIndex:        copySetMap(g.entityAliasIndex),
 		kindCounts:              shallowCopyMap(g.kindCounts),
+		kindEntityIDs:           cloneKindEntityIDs(g.kindEntityIDs),
+		nonScalarFields:         g.nonScalarFields.Clone(),
 		fieldIndex:              copyFieldIndex(g.fieldIndex),
 		identityIndex:           copyStringMap(g.identityIndex),
 		contentFingerprint:      fingerprint,

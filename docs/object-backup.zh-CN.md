@@ -2,7 +2,7 @@
 
 [English](object-backup.md)
 
-适用于 **GGraphDB 2.4.0**；发行资格见[版本验证](validation-v2.4.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.1**；发行资格见[版本验证](validation-v2.4.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本指南覆盖当前 2.x 备份能力。2.1 新增可选自动化并沿用 2.0 快照格式；
 不提供 1.x 备份迁移，旧版备份独立保留。
@@ -192,3 +192,5 @@ CI 有独立 MinIO 验证任务；原 release gate 可用 `GRAPHDB_GATE_OBJECT_B
 2.3.8 起，带租户作用域的恢复只接受同租户备份，包括 `/v1/tasks` 入口。
 恢复演练可使用自动隔离目标；自定义目标、跨租户迁移通过不带租户头的私有平台生命周期接口执行。
 具体鉴权约束见[安全部署](security-deployment.zh-CN.md)。
+
+未发布的保留修正：任务 TTL 不删除本地手动备份依赖的任务元数据或结果。死信重放在发布前失败时保持 pending。快照下载允许没有 Content-Length 的分块响应，但必须通过 manifest 的实际字节数和 SHA256；已提供却不一致的长度仍拒绝。

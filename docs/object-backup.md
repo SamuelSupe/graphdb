@@ -2,7 +2,7 @@
 
 [中文](object-backup.zh-CN.md)
 
-Applies to **GGraphDB 2.4.0**; see [release validation](validation-v2.4.0.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.1**; see [release validation](validation-v2.4.1.md) and [version boundaries](naming-and-compatibility.md).
 
 This guide covers the current 2.x backup features. Version 2.1 adds optional
 automation while retaining the 2.0 snapshot format. There is no 1.x backup
@@ -237,3 +237,5 @@ In 2.3.8, tenant-scoped restores require a backup from the same tenant, includin
 requests through `/v1/tasks`. Scoped restore drills keep automatic isolated
 targets; custom targets and cross-tenant migration use the private platform
 lifecycle API without a tenant header. See [the security contract](security-deployment.md).
+
+Unreleased retention correction: task TTL does not delete metadata or results referenced by a local manual backup. Failed dead-letter replay remains pending unless publication committed. Snapshot downloads accept chunked responses without Content-Length, but always require the manifest byte count and SHA256; a supplied conflicting length is rejected.

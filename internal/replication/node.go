@@ -17,6 +17,13 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
+// ErrOutcomeUnknown means proposal submission succeeded but completion could not
+// be observed. Callers must resolve its identity before repeating a mutation.
+var ErrOutcomeUnknown = errors.New("proposal outcome is unknown after submission")
+
+// Two JSON/base64 envelopes must fit the32MiB public HTTP body contract.
+const MaxProposalBytes = 64 << 20
+
 var ErrNotLeader = errors.New("Raft node is not the leader")
 var ErrUnavailable = errors.New("Raft node is unavailable")
 var ErrSnapshotTooLarge = errors.New("replication snapshot exceeds configured byte budget")
@@ -347,8 +354,8 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(payload) > 32<<20 {
-		return nil, fmt.Errorf("Raft proposal exceeds 32 MiB")
+	if len(payload) > MaxProposalBytes {
+		return nil, fmt.Errorf("Raft proposal exceeds64MiB encoded budget")
 	}
 	bytes := int64(len(payload))
 	if n.proposalBytes.Add(bytes) > 64<<20 {
@@ -369,16 +376,16 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 		changed := n.changed
 		n.mu.Unlock()
 		if err := n.available(true); err != nil {
-			return nil, fmt.Errorf("proposal outcome is unknown after submission: %v", err)
+			return nil, fmt.Errorf("%w: %v", ErrOutcomeUnknown, err)
 		}
 		select {
 		case result := <-ch:
 			return result.data, result.err
 		case <-changed:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, ctx.Err())
 		case <-n.ctx.Done():
-			return nil, n.available(false)
+			return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, n.available(false))
 		}
 	}
 }

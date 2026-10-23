@@ -24,6 +24,7 @@ type GCOptions struct {
 	listings                map[string]gcListing
 	listBefore              time.Time
 	view                    *gcView
+	retainedAdjacency       *gcAdjacencyCache
 	replicated              bool
 }
 
@@ -147,16 +148,18 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	if err != nil {
 		return finish(err)
 	}
+	var indexErr error
 	if options.CleanupIndexOrphans {
 		report.IndexCleanupAttempt = true
 		before := len(checkpoint.checkpoint.DeletedKeys)
 		err := s.cleanupIndexOrphansLocked(ctx, tenantID, checkpoint, &report)
 		report.DeletedKeys = append(report.DeletedKeys, checkpoint.checkpoint.DeletedKeys[before:]...)
 		if err != nil {
-			if !gcPaused(err) {
-				report.IndexCleanupError = err.Error()
+			if gcPaused(err) || ctx.Err() != nil {
+				return finish(errors.Join(indexErr, err))
 			}
-			return finish(err)
+			report.IndexCleanupError = err.Error()
+			indexErr = err
 		}
 	}
 	var deleted int
@@ -165,7 +168,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		cutoff := mutationTime(ctx).Add(-options.TaskMaxAge)
 		taskReport := taskCleanupReport{}
 		if err := s.cleanupIndexTasksLocked(ctx, tenantID, cutoff, &taskReport, checkpoint); err != nil {
-			return finish(err)
+			return finish(errors.Join(indexErr, err))
 		}
 		report.DeletedIndexTasks = taskReport.DeletedIndexTasks
 		report.DeletedKeys = append(report.DeletedKeys, taskReport.DeletedKeys...)
@@ -175,7 +178,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		report.DeletedDeadLetters = deleted
 		report.DeletedKeys = append(report.DeletedKeys, keys...)
 		if err != nil {
-			return finish(err)
+			return finish(errors.Join(indexErr, err))
 		}
 	}
 
@@ -183,7 +186,7 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 	report.DeletedSnapshots = deleted
 	report.DeletedKeys = append(report.DeletedKeys, keys...)
 	if err != nil {
-		return finish(err)
+		return finish(errors.Join(indexErr, err))
 	}
 
 	if options.TaskMaxAge > 0 {
@@ -195,19 +198,19 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		report.DeletedImportSources = taskReport.DeletedImportSources
 		report.DeletedKeys = append(report.DeletedKeys, taskReport.DeletedKeys...)
 		if err != nil {
-			return finish(err)
+			return finish(errors.Join(indexErr, err))
 		}
 	}
 
-	return finish(nil)
+	return finish(indexErr)
 }
 
 func (s *TenantStore) validateGCSnapshotCursor(tenantID string, manifest Manifest, cursor string) error {
 	version, ok := shardedSnapshotVersionFromCursor(s.snapshotPrefix(tenantID), cursor)
-	if !ok || manifest.SnapshotKey == "" || version != manifest.SnapshotVersion {
+	if !ok || manifest.SnapshotKey == "" || version < manifest.SnapshotVersion {
 		return nil
 	}
-	return fmt.Errorf("gc checkpoint cursor references current snapshot version %d", version)
+	return fmt.Errorf("gc checkpoint cursor references current or future snapshot version %d", version)
 }
 
 func (s *TenantStore) cleanupCommitsLocked(ctx context.Context, tenantID string, manifest Manifest, checkpoint *gcCheckpointRunner) (CleanupReport, error) {
@@ -392,7 +395,9 @@ func (s *TenantStore) cleanupSnapshotsLocked(ctx context.Context, tenantID strin
 		checkpoint.pauseAt(resume)
 		return deleted, keys, errGCPaused
 	}
-	return deleted, keys, nil
+	orphanKeys, err := s.cleanupShardedSnapshotOrphansLocked(ctx, tenantID, manifest, checkpoint)
+	keys = append(keys, orphanKeys...)
+	return deleted, keys, err
 }
 
 func (s *TenantStore) deleteShardedSnapshotVersionObjectsLocked(ctx context.Context, tenantID string, version int64, checkpoint *gcCheckpointRunner) ([]string, error) {
@@ -568,13 +573,18 @@ func (s *TenantStore) cleanupUnifiedTasksLocked(ctx context.Context, tenantID st
 		if task.ID == schedule.TaskID || task.TenantID != tenantID ||
 			task.ID != taskID ||
 			(taskStillActive(task) &&
-				!s.taskOwnerStopped(task)) ||
+				(s.ReplicationMode || !s.taskOwnerStopped(task))) ||
 			!taskExpired(
 				task.StartedAt,
 				task.UpdatedAt,
 				task.FinishedAt,
 				cutoff,
 			) {
+			continue
+		}
+		// Local manifests reference the task result as their durable backup.
+		// Task retention must not remove either the record or its lookup metadata.
+		if task.Type == TaskTypeTenantBackup && task.ResultKey != "" && stringTaskParam(task.Params, "destination") != "object" {
 			continue
 		}
 		if checkpoint.options.DryRun {
@@ -725,4 +735,59 @@ func taskExpired(startedAt time.Time, updatedAt time.Time, finishedAt time.Time,
 		at = startedAt
 	}
 	return !at.IsZero() && at.Before(cutoff)
+}
+
+func (s *TenantStore) cleanupShardedSnapshotOrphansLocked(ctx context.Context, tenant string, manifest Manifest, checkpoint *gcCheckpointRunner) ([]string, error) {
+	prefix := s.snapshotPrefix(tenant) + "sharded/"
+	// The older sharded cursor resumes deletion of an entire snapshot version.
+	// An orphan scan also visits retained/current/future versions, so its cursor
+	// must identify this phase and cannot enter that deletion branch on resume.
+	cursorPrefix := s.snapshotPrefix(tenant) + "~sharded-orphans/"
+	optionsCursor, reportCursor := checkpoint.options.CheckpointCursor, checkpoint.checkpoint.Cursor
+	resume := optionsCursor
+	if strings.HasPrefix(resume, cursorPrefix) {
+		resume = prefix + strings.TrimPrefix(resume, cursorPrefix)
+	}
+	checkpoint.options.CheckpointCursor, checkpoint.checkpoint.Cursor = resume, resume
+	defer func() {
+		checkpoint.options.CheckpointCursor, checkpoint.checkpoint.Cursor = optionsCursor, reportCursor
+		if next := checkpoint.checkpoint.NextCursor; checkpoint.checkpoint.Paused && strings.HasPrefix(next, prefix) {
+			checkpoint.checkpoint.NextCursor = cursorPrefix + strings.TrimPrefix(next, prefix)
+		}
+	}()
+	objects, next, skip, err := checkpoint.listPage(ctx, s.Objects, prefix)
+	if err != nil || skip {
+		return nil, err
+	}
+	var keys []string
+	anchors := make(map[int64]bool)
+	for _, object := range objects {
+		if err := checkpoint.visit(object); err != nil {
+			return keys, err
+		}
+		version, ok := shardedSnapshotVersionFromCursor(s.snapshotPrefix(tenant), object.Key)
+		if !ok || version >= manifest.SnapshotVersion {
+			continue
+		}
+		anchored, checked := anchors[version]
+		if !checked {
+			_, err := objectMeta(ctx, s.Objects, s.snapshotKey(tenant, version))
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return keys, err
+			}
+			anchored = err == nil
+			anchors[version] = anchored
+		}
+		if anchored {
+			continue
+		}
+		removed, err := checkpoint.deleteKey(ctx, s.Objects, object.Key)
+		if err != nil {
+			return keys, err
+		}
+		if removed {
+			keys = append(keys, object.Key)
+		}
+	}
+	return keys, checkpoint.pauseAfterPage(next)
 }

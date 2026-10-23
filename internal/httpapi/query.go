@@ -312,13 +312,14 @@ func encodeStreamItem(ctx context.Context, encoder *json.Encoder, item any, flus
 func streamFlush(w http.ResponseWriter) func() error {
 	controller := http.NewResponseController(w)
 	pending := streamFlushEvery - 1
+	deadline := time.Now().Add(10 * time.Minute)
 	return func() error {
 		pending++
 		if pending < streamFlushEvery {
 			return nil
 		}
 		pending = 0
-		if err := controller.SetWriteDeadline(time.Now().Add(10 * time.Minute)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return err
 		}
 		if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {

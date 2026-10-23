@@ -1,6 +1,6 @@
 # 诊断指标与采集
 
-适用于 **GGraphDB 2.4.0**；发行资格见[版本验证](validation-v2.4.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.1**；发行资格见[版本验证](validation-v2.4.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 单机 direct/WAL、单组 Raft、catalog、数据分片和 router 均提供本地诊断。数据库节点使用管理监听器 `GET /metrics`、`GET /v1/diagnostics`；兼容单监听器部署也保留入口。router 使用自身监听器上的同名路径，必须携带 `Authorization: Bearer <router token>`，只接受 GET。
 
@@ -76,3 +76,5 @@ JSON 诊断保留构建、部署、协调、磁盘、WAL、Raft 和问题列表�
 [采集配置示例](../deploy/prometheus/scrape.yml.example) 列出全部部署形态。只保留实际使用的 job，替换地址；单机示例使用生产模板的管理端口 8081，Raft 为 8082，分片节点需显式配置 `GRAPHDB_ADMIN_ADDR=:8082`。监控连接管理网络，router token 挂载为只读文件，不能把 Raft 8081 传输端口当作管理端口。每组配置固定 `raft_group` 标签，避免不同组的 peer_id 混淆。混部升级期间旧程序没有新增指标，两条磁盘告警切换到新 `graphdb_filesystem_*` 后需保留旧版本的监控直至完成升级。
 
 [22 条告警示例](../deploy/prometheus/graphdb.rules.yml) 覆盖容量、Raft 状态采样失效/过期、应用/复制积压、持久化/传输、频繁选主、准入压力、迁移错误、router 上游故障、目录失联及单机 WAL 积压。目录失联指标表示最近一次读取结果，readiness 不主动探测时可能保留历史值；结合最后成功时间和实际请求判断。阈值与持续时间需依据实际容量和 SLO 调整；`up`/抓取丢失告警由监控平台提供。OS CPU、RSS、文件描述符、磁盘 IOPS/延迟和网络吞吐需配合 node_exporter/容器监控，不能把 Go runtime 保留内存当 RSS。在线接口不执行全图完整性审计，索引健康仍需周期运行既有检查。
+
+未发布的基数保护：未匹配 HTTP 路径统一使用 unmatched；未知方法使用 OTHER。租户标签共用1024个已准入值的上限，其余及非法值汇总到 __other__，总计数不丢失。已有旧指标标签可能在升级后合并。

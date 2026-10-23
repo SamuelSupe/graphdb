@@ -3,16 +3,40 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
 const gcBatchDeletes = 4096
 
-func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOptions) (GCReport, error) {
+func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOptions) (report GCReport, err error) {
 	if s.localFileStore() == nil {
 		return s.runGCBatch(ctx, tenantID, options)
 	}
+	cache := &gcAdjacencyCache{}
+	options.retainedAdjacency = cache
+	prefix := s.tenantObjectPrefix(tenantID)
+	stop := s.localFileStore().OnChange(func(key string) {
+		if !strings.HasPrefix(key, prefix) {
+			return
+		}
+		name := strings.TrimPrefix(key, prefix)
+		if name == "manifest.parquet" || name == "metadata.parquet" || strings.HasSuffix(name, "/catalog.parquet") || strings.HasSuffix(name, "/catalog.json") {
+			// Historical removal cannot introduce a reference. GC itself removes
+			// catalogs; treating those deletions as publication defeats the mark cache.
+			if strings.HasPrefix(name, "indexes/parquet/versions/") || strings.HasPrefix(name, "snapshots/sharded/") {
+				if filename, err := s.localFileStore().path(key); err == nil {
+					if _, err = os.Lstat(filename); os.IsNotExist(err) {
+						return
+					}
+				}
+			}
+			cache.generation.Add(1)
+		}
+	})
+	defer stop()
 	// Each batch reacquires the read-view and tenant locks, then reloads the
 	// manifest and catalogs. A listing is only a candidate list, never a root.
 	maxDeletes := max(0, options.MaxDeletes)
@@ -30,9 +54,13 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 	if parent, ok := ctx.Value(taskIngestAdmissionKey{}).(*taskExecutionAdmission); ok {
 		parent.release()
 		admission = &taskExecutionAdmission{execution: parent.execution}
-		defer admission.release()
+		defer func() {
+			admission.release()
+			if !parent.acquire(ctx) && err == nil {
+				err = ctx.Err()
+			}
+		}()
 	}
-	var report GCReport
 	for {
 		if admission != nil && !admission.acquire(ctx) {
 			return report, ctx.Err()

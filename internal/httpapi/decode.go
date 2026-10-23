@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	maxWriteRequestBytes  = 32 << 20
+	MaxWriteRequestBytes  = 32 << 20
+	maxWriteRequestBytes  = MaxWriteRequestBytes
 	maxQueryRequestBytes  = 4 << 20
 	maxConfigRequestBytes = 1 << 20
 )

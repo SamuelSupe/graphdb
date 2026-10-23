@@ -309,6 +309,9 @@ func TestIngestWALDurableBoundaryRejectsAmbiguousDamage(t *testing.T) {
 					t.Fatal(err)
 				}
 				data[len(data)-1] ^= 1
+				if len(data) == 2*ingestWALTailSlotBytes {
+					data[ingestWALTailSlotBytes-1] ^= 1
+				}
 				if err := os.WriteFile(marker, data, 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -907,5 +910,90 @@ func TestIngestWALPruneRetryKeepsAccurateBytes(t *testing.T) {
 	}
 	if err := state.prune(3); err != nil || state.totalBytes != 30 {
 		t.Fatalf("repeated prune: bytes=%d err=%v", state.totalBytes, err)
+	}
+}
+
+func TestIngestWALTailSyncCostIsBounded(t *testing.T) {
+	config := DefaultIngestWALConfig(t.TempDir())
+	wal, err := OpenIngestWAL(config, func(IngestWALRecord) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+	before, err := os.Stat(filepath.Join(config.Dir, ingestWALDurableFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := diskSyncCalls.Load()
+	if _, err := wal.Append(context.Background(), IngestWALAccepted, []byte("durable")); err != nil {
+		t.Fatal(err)
+	}
+	if count := diskSyncCalls.Load() - calls; count > 2 {
+		t.Errorf("group used %d syncs; want WAL plus durable-tail file", count)
+	}
+	after, err := os.Stat(filepath.Join(config.Dir, ingestWALDurableFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Error("group recreated/renamed the durable boundary file")
+	}
+}
+
+func TestIngestWALRedundantBoundaryNeverHidesAcknowledgedDamage(t *testing.T) {
+	for _, damageFrame := range []bool{false, true} {
+		t.Run(fmt.Sprint(damageFrame), func(t *testing.T) {
+			cfg := DefaultIngestWALConfig(t.TempDir())
+			wal, err := OpenIngestWAL(cfg, func(IngestWALRecord) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := wal.Append(context.Background(), IngestWALAccepted, []byte("ack"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = wal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			tail, err := loadIngestWALDurableTail(cfg.Dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := filepath.Join(cfg.Dir, ingestWALDurableFile)
+			data, _ := os.ReadFile(name)
+			data[int(tail.sequence%2)*ingestWALTailSlotBytes+40] ^= 1
+			if err = os.WriteFile(name, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if damageFrame {
+				f, err := os.OpenFile(filepath.Join(cfg.Dir, result.Segment), os.O_RDWR, 0600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = f.WriteAt([]byte{0}, result.Offset)
+				f.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			recovered := 0
+			again, err := OpenIngestWAL(cfg, func(IngestWALRecord) error { recovered++; return nil })
+			if damageFrame {
+				if again != nil {
+					again.Close()
+				}
+				if !errors.Is(err, ErrIngestWALCorrupt) {
+					t.Fatalf("ACK corruption accepted: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				again.Close()
+				if recovered != 1 {
+					t.Fatalf("recovered %d records", recovered)
+				}
+			}
+		})
 	}
 }

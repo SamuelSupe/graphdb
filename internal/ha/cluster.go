@@ -34,6 +34,7 @@ type Cluster struct {
 	FlushInterval      time.Duration
 	FlushMaxRequests   int
 	FlushMaxBytes      int64
+	flushWake          chan struct{}
 	config             config.RaftConfig
 	diskPolicy         storage.DiskSpacePolicy
 	shards             *sharding.Client
@@ -52,7 +53,7 @@ type Cluster struct {
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{diskPolicy: storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent}, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{flushWake: make(chan struct{}, 1), diskPolicy: storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent}, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
@@ -142,7 +143,14 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.Node.Propose(ctx, data)
+	response, err := c.Node.Propose(ctx, data)
+	if err == nil && cmd.Kind == "accept" {
+		select {
+		case c.flushWake <- struct{}{}:
+		default:
+		}
+	}
+	return response, err
 }
 
 func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, runtimeOnly bool, next http.Handler) {
@@ -189,7 +197,14 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		var err error
 		body, err = readBody(w, r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			status := http.StatusBadRequest
+			var oversized *http.MaxBytesError
+			if errors.As(err, &oversized) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]any{"error": http.StatusText(status), "retryable": false})
 			return
 		}
 		if !mutation {
@@ -246,10 +261,9 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	if !mutation {
 		graphRead := tenant != "" && (strings.HasPrefix(r.URL.Path, "/v1/query") && r.URL.Path != "/v1/query/templates" ||
 			strings.HasPrefix(r.URL.Path, "/v1/entities") || strings.HasPrefix(r.URL.Path, "/v1/edges") || strings.HasPrefix(r.URL.Path, "/v1/export/snapshot"))
-		if graphRead {
-			c.App.readers.RLock()
-			defer c.App.readers.RUnlock()
-		}
+		readCtx, releaseRead := c.App.readContext(r.Context(), func() { _ = http.NewResponseController(w).SetWriteDeadline(time.Now()) })
+		defer releaseRead()
+		r = r.WithContext(readCtx)
 		c.App.mu.RLock()
 		locked := true
 		defer func() {
@@ -279,6 +293,8 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 			w.Header().Set("X-GraphDB-Tenant-Generation", fmt.Sprint(generation))
 		}
 		if c.WAL && (strings.HasPrefix(r.URL.Path, "/v1/ingest/batches/") || strings.HasPrefix(r.URL.Path, "/v1/ingest/writers/")) {
+			c.App.mu.RUnlock()
+			locked = false
 			c.batchStatus(w, r)
 			return
 		}
@@ -290,9 +306,9 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 			}
 			defer release()
 			r = r.WithContext(readCtx)
-			c.App.mu.RUnlock()
-			locked = false
 		}
+		c.App.mu.RUnlock()
+		locked = false
 		next.ServeHTTP(w, r)
 		return
 	}
@@ -364,6 +380,18 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 }
 
 func (c *Cluster) writeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, replication.ErrOutcomeUnknown) {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, context.DeadlineExceeded) {
+			status = http.StatusGatewayTimeout
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		message := "the write may have committed; check its status or reuse the same idempotency key"
+		json.NewEncoder(w).Encode(map[string]any{"code": "write_outcome_unknown", "error": message, "message": message, "retryable": false})
+		return
+	}
+
 	var pressure *storage.BackpressureError
 	if errors.As(err, &pressure) {
 		w.Header().Set("Retry-After", fmt.Sprint(max(1, int(pressure.RetryAfter.Seconds()))))

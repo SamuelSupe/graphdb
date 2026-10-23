@@ -29,9 +29,6 @@ type tenantGenerationRef struct {
 
 func (s *TenantStore) prepareTenantWrite(ctx context.Context, tenantID string) (writerFenceRef, error) {
 	if bound, ok := s.writerFenceFromContext(ctx, tenantID); ok {
-		if err := s.ensureBoundWriterLease(ctx, tenantID, bound.fence); err != nil {
-			return writerFenceRef{}, err
-		}
 		return bound.fence, nil
 	}
 	if err := s.acquireWriterLease(ctx, tenantID); err != nil {
@@ -135,6 +132,26 @@ func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string,
 	if err := s.writerFenceStillCurrent(ctx, tenantID, fence); err != nil {
 		return ObjectMeta{}, err
 	}
+	var previous []byte
+	var previousMeta ObjectMeta
+	if !condition.IfNoneMatch {
+		if condition.previous != nil && condition.previous.meta.Exists && condition.IfMatch == condition.previous.meta.ETag {
+			previous, previousMeta = condition.previous.data, condition.previous.meta
+		} else {
+			previous, previousMeta, err = s.Objects.GetWithMeta(ctx, key)
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return ObjectMeta{}, err
+		}
+	}
+	if !condition.IfNoneMatch && condition.IfMatch == "" {
+		if previousMeta.Exists {
+			condition.IfMatch = previousMeta.ETag
+		} else {
+			condition.IfNoneMatch = true
+		}
+	}
+	condition.previous = nil
 	meta, err := s.Objects.PutConditional(ctx, key, data, condition)
 	if err != nil {
 		return meta, err
@@ -148,7 +165,7 @@ func (s *TenantStore) putTenantConditional(ctx context.Context, tenantID string,
 			recordReplicationFailure(ctx, err)
 			return ObjectMeta{}, err
 		}
-		rollbackErr := s.Objects.DeleteConditional(checkCtx, key, PutCondition{IfMatch: meta.ETag})
+		rollbackErr := s.rollbackTenantWrite(checkCtx, key, meta, previous, previousMeta)
 		if rollbackErr != nil && !errors.Is(rollbackErr, ErrConflict) && !errors.Is(rollbackErr, ErrNotFound) {
 			return ObjectMeta{}, errors.Join(err, fmt.Errorf("rollback stale tenant write %q: %w", key, rollbackErr))
 		}
@@ -165,6 +182,26 @@ func (s *TenantStore) putTenantGenerationConditional(ctx context.Context, tenant
 	if err != nil {
 		return ObjectMeta{}, err
 	}
+	var previous []byte
+	var previousMeta ObjectMeta
+	if !condition.IfNoneMatch {
+		if condition.previous != nil && condition.previous.meta.Exists && condition.IfMatch == condition.previous.meta.ETag {
+			previous, previousMeta = condition.previous.data, condition.previous.meta
+		} else {
+			previous, previousMeta, err = s.Objects.GetWithMeta(ctx, key)
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return ObjectMeta{}, err
+		}
+	}
+	if !condition.IfNoneMatch && condition.IfMatch == "" {
+		if previousMeta.Exists {
+			condition.IfMatch = previousMeta.ETag
+		} else {
+			condition.IfNoneMatch = true
+		}
+	}
+	condition.previous = nil
 	meta, err := s.Objects.PutConditional(ctx, key, data, condition)
 	if err != nil {
 		return meta, err
@@ -176,7 +213,7 @@ func (s *TenantStore) putTenantGenerationConditional(ctx context.Context, tenant
 			recordReplicationFailure(ctx, err)
 			return ObjectMeta{}, err
 		}
-		rollbackErr := s.Objects.DeleteConditional(checkCtx, key, PutCondition{IfMatch: meta.ETag})
+		rollbackErr := s.rollbackTenantWrite(checkCtx, key, meta, previous, previousMeta)
 		if rollbackErr != nil && !errors.Is(rollbackErr, ErrConflict) && !errors.Is(rollbackErr, ErrNotFound) {
 			return ObjectMeta{}, errors.Join(err, fmt.Errorf("rollback stale tenant generation write %q: %w", key, rollbackErr))
 		}
@@ -307,4 +344,13 @@ func (s *TenantStore) deleteTenantGenerationObject(ctx context.Context, tenantID
 		return nil
 	}
 	return err
+}
+
+func (s *TenantStore) rollbackTenantWrite(ctx context.Context, key string, published ObjectMeta, previous []byte, previousMeta ObjectMeta) error {
+	condition := PutCondition{IfMatch: published.ETag}
+	if previousMeta.Exists {
+		_, err := s.Objects.PutConditional(ctx, key, previous, condition)
+		return err
+	}
+	return s.Objects.DeleteConditional(ctx, key, condition)
 }

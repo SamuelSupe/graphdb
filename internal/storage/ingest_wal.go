@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -163,6 +164,7 @@ type ingestWALBatchRecord struct {
 type ingestWALPruneRequest struct {
 	beforeLSN  uint64
 	checkpoint bool
+	generation uint64
 	done       chan error
 }
 
@@ -180,9 +182,10 @@ type ingestWALWriteFile interface {
 }
 
 type IngestWAL struct {
-	recoveredLSN uint64
-	config       IngestWALConfig
-	lockFile     *os.File
+	checkpointGeneration atomic.Uint64
+	recoveredLSN         uint64
+	config               IngestWALConfig
+	lockFile             *os.File
 
 	appendCh chan ingestWALAppendRequest
 	pruneCh  chan ingestWALPruneRequest
@@ -217,6 +220,11 @@ func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (
 			return nil, fmt.Errorf("%w: %v", ErrIngestWALLocked, err)
 		}
 		return nil, fmt.Errorf("open ingest WAL process lock: %w", err)
+	}
+	if err := cleanupIngestWALTemps(config.Dir); err != nil {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, err
 	}
 	segments, nextLSN, totalBytes, err := scanIngestWAL(config.Dir, replay)
 	if err != nil {
@@ -393,11 +401,15 @@ func (w *IngestWAL) Prune(ctx context.Context, beforeLSN uint64) error {
 	return w.prune(ctx, beforeLSN, false)
 }
 
-func (w *IngestWAL) prune(ctx context.Context, beforeLSN uint64, checkpoint bool) error {
+func (w *IngestWAL) prune(ctx context.Context, beforeLSN uint64, checkpoint bool, since ...uint64) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	request := ingestWALPruneRequest{beforeLSN: beforeLSN, checkpoint: checkpoint, done: make(chan error, 1)}
+	generation := w.checkpointGeneration.Load()
+	if len(since) > 0 {
+		generation = since[0]
+	}
+	request := ingestWALPruneRequest{beforeLSN: beforeLSN, checkpoint: checkpoint, generation: generation, done: make(chan error, 1)}
 	select {
 	case w.pruneCh <- request:
 	case <-ctx.Done():
@@ -473,6 +485,9 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 		if state.file != nil {
 			err = errors.Join(err, state.file.Close())
 		}
+		if state.tailFile != nil {
+			err = errors.Join(err, state.tailFile.Close())
+		}
 		w.recordError(err)
 		w.ready <- err
 		state.failPending(err)
@@ -494,7 +509,12 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 		case request := <-w.pruneCh:
 			var err error
 			if request.checkpoint {
-				err = state.checkpoint()
+				if request.generation >= w.checkpointGeneration.Load() {
+					err = state.checkpoint()
+					if err == nil {
+						w.checkpointGeneration.Add(1)
+					}
+				}
 			} else {
 				err = state.prune(request.beforeLSN)
 			}
@@ -513,6 +533,8 @@ func (w *IngestWAL) run(segments []ingestWALSegment, nextLSN uint64, totalBytes 
 
 type ingestWALWriterState struct {
 	checkpointRequired bool
+	tailFile           *os.File
+	tailSequence       uint64
 	wal                *IngestWAL
 	file               ingestWALWriteFile
 	segments           []ingestWALSegment
@@ -813,7 +835,13 @@ func (s *ingestWALWriterState) prune(beforeLSN uint64) error {
 	return errors.Join(removeErr, syncErr)
 }
 
-func (s *ingestWALWriterState) syncAndClose() error {
+func (s *ingestWALWriterState) syncAndClose() (err error) {
+	defer func() {
+		if s.tailFile != nil {
+			err = errors.Join(err, s.tailFile.Close())
+			s.tailFile = nil
+		}
+	}()
 	if s.file == nil {
 		return nil
 	}
@@ -968,7 +996,7 @@ func scanIngestWALSegment(path string, isLast bool, previousLSN uint64, replay f
 	var offset int64
 	var lastLSN = previousLSN
 	badTail := func(at int64, reason string, incomplete bool) (uint64, int64, error) {
-		provenUnacknowledged := durable != nil && boundaryVerified && (start > durable.startLSN || (start == durable.startLSN && at >= durable.offset))
+		provenUnacknowledged := durable != nil && !durable.uncertain && boundaryVerified && (start > durable.startLSN || (start == durable.startLSN && at >= durable.offset))
 		if isLast && (provenUnacknowledged || (durable == nil && incomplete)) {
 			length, err := truncateIngestWALTail(file, path, at)
 			return lastLSN, length, err

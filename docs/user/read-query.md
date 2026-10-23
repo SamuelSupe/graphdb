@@ -1,6 +1,6 @@
 # Read And Query
 
-Applies to **GGraphDB 2.4.0**; see [release validation](../validation-v2.4.0.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.1**; see [release validation](../validation-v2.4.1.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](read-query.zh-CN.md)
 
@@ -329,3 +329,5 @@ A loaded graph can use scalar indexes once its schema or values prove coverage. 
 and indexes identically to zero, including existing persisted negative-zero keys.
 
 Unsorted field-index pages now seek and merge immutable postings from the cursor in both JSON and streaming queries, with a bounded decoded-postings cache. Materialized neighbor pages reuse an ordered adjacency view; a cold view charges the initial edge scan, and later pages charge their visited candidates. Explicit sorts/aggregations and legacy cursors can still require broader work and remain subject to query cost limits.
+
+Unreleased review corrections: path sort/group/aggregate fields resolve against the endpoint entity; length/depth and end_id retain their path meanings. Default path identity ordering and existing cursor encodings are unchanged. timeout_ms=0 remains unlimited; values that overflow a Go duration are rejected. Mixed numeric/text filtering and neq behavior are unchanged. Untyped scalar-index coverage is maintained incrementally rather than scanning all entities during planning. Cold order builds do not retain graph-wide locks; adjacency orders are bounded to256entries/32MiB. Legacy shard pagination still uses its original order and cursor while examining only the requested kind when its runtime kind index is available. Returned values remain owned copies; graph mutation requires exclusive ownership.

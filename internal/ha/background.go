@@ -17,24 +17,30 @@ func (c *Cluster) RunBackground(ctx context.Context) {
 	nextFlush := time.Now().Add(interval)
 	ticker := time.NewTicker(min(interval, time.Second))
 	defer ticker.Stop()
+
 	for {
+		tick := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			operationCtx, cancel := context.WithTimeout(ctx, time.Minute)
-			if c.Node.ReadBarrier(operationCtx) == nil {
-				if time.Now().After(nextFlush) {
-					_ = c.flushPending(operationCtx)
-					nextFlush = time.Now().Add(interval)
-				}
-				if c.config.Protocol < 2 {
-					_ = c.runQueuedTask(operationCtx)
-				}
-			}
-			cancel()
+			tick = true
+		case <-c.flushWake:
 		}
+		operationCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		if c.Node.ReadBarrier(operationCtx) == nil {
+			all := time.Now().After(nextFlush)
+			_ = c.flushReady(operationCtx, all)
+			if all {
+				nextFlush = time.Now().Add(interval)
+			}
+			if tick && c.config.Protocol < 2 {
+				_ = c.runQueuedTask(operationCtx)
+			}
+		}
+		cancel()
 	}
+
 }
 
 func (c *Cluster) runTaskBackground(ctx context.Context) {

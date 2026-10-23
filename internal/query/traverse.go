@@ -119,7 +119,6 @@ func visitPaths(
 	queue := []pendingPath{{
 		entityID: start.ID,
 		path:     graph.Path{Entities: []graph.Entity{start}},
-		visited:  map[string]struct{}{start.ID: {}},
 	}}
 	matched := 0
 	depth := normalizedDepth(request.Depth)
@@ -139,7 +138,7 @@ func visitPaths(
 				neighbor graph.Neighbor,
 			) (bool, error) {
 				budget.visited++
-				if _, seen := current.visited[neighbor.Entity.ID]; seen {
+				if pathContainsEntity(current.path, neighbor.Entity.ID) {
 					return true, nil
 				}
 				newPath := clonePath(current.path)
@@ -161,9 +160,7 @@ func visitPaths(
 				if finalLevel {
 					return true, nil
 				}
-				visited := copyVisited(current.visited)
-				visited[neighbor.Entity.ID] = struct{}{}
-				next = append(next, pendingPath{entityID: neighbor.Entity.ID, path: newPath, visited: visited})
+				next = append(next, pendingPath{entityID: neighbor.Entity.ID, path: newPath})
 				return true, nil
 			}
 			used, err := visitIndexedPathNeighbors(

@@ -211,7 +211,7 @@ func (r *Repository) Download(ctx context.Context, m Manifest, dst io.Writer) er
 		return err
 	}
 	defer out.Body.Close()
-	if out.ContentLength == nil || *out.ContentLength != m.Bytes {
+	if out.ContentLength != nil && *out.ContentLength >= 0 && *out.ContentLength != m.Bytes {
 		return fmt.Errorf("backup snapshot length mismatch")
 	}
 	hash := sha256.New()

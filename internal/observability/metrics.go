@@ -17,7 +17,8 @@ var ingestGroupBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 128, 256}
 var ingestSegmentBuckets = []float64{0, 1, 2, 4, 8}
 
 type Metrics struct {
-	mu sync.Mutex
+	mu           sync.Mutex
+	tenantLabels map[string]struct{}
 
 	httpRequests        map[string]float64
 	httpDuration        map[string]*histogram
@@ -157,6 +158,11 @@ func (m *Metrics) RecordHTTPRequest(method string, route string, status int, dur
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+	default:
+		method = "OTHER"
+	}
 	key := labelKey(method, route, strconv.Itoa(status))
 	m.httpRequests[key]++
 	m.observe(m.httpDuration, key, httpBuckets, duration.Seconds())
@@ -177,6 +183,7 @@ func (m *Metrics) RecordTaskFailure(tenantID, taskType string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.taskFailures[labelKey(tenantID, taskType)]++
 }
 
@@ -186,6 +193,7 @@ func (m *Metrics) RecordWriteBackpressure(tenantID string, reason string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.writeBackpressure[labelKey(tenantID, reason)]++
 }
 
@@ -195,6 +203,7 @@ func (m *Metrics) RecordWriteAdmissionQueue(tenantID string, status string, dura
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.observe(m.writeAdmission, labelKey(tenantID, status), writeBuckets, duration.Seconds())
 }
 
@@ -204,6 +213,7 @@ func (m *Metrics) RecordManifestCASConflict(tenantID string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.manifestConflicts[tenantID]++
 }
 
@@ -213,6 +223,7 @@ func (m *Metrics) RecordCommitTail(tenantID string, length int) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.commitTailLength[tenantID] = float64(length)
 }
 
@@ -222,6 +233,7 @@ func (m *Metrics) RecordCoordinatorCAS(tenantID string, status string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.coordinatorCAS[labelKey(tenantID, status)]++
 }
 
@@ -231,6 +243,7 @@ func (m *Metrics) RecordCoordinatorHeadRevision(tenantID string, revision int64)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	if value := float64(revision); value > m.coordinatorHeads[tenantID] {
 		m.coordinatorHeads[tenantID] = value
 	}
@@ -269,6 +282,7 @@ func (m *Metrics) RecordQuery(tenantID string, op string, status string, duratio
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	key := labelKey(tenantID, op, status)
 	m.queries[key]++
 	m.observe(m.queryDuration, key, queryBuckets, duration.Seconds())
@@ -283,6 +297,7 @@ func (m *Metrics) RecordReadAdmissionQueue(tenantID string, status string, durat
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.observe(m.readAdmission, labelKey(tenantID, status), writeBuckets, duration.Seconds())
 }
 
@@ -292,6 +307,7 @@ func (m *Metrics) RecordReaderNotFresh(tenantID string, reason string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.readerNotFresh[labelKey(tenantID, reason)]++
 }
 
@@ -301,6 +317,7 @@ func (m *Metrics) RecordReaderVisibleVersion(tenantID string, version int64) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.readerVisibleVersion[tenantID] = float64(version)
 }
 
@@ -310,6 +327,7 @@ func (m *Metrics) RecordReaderCatchup(tenantID string, status string, duration t
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	key := labelKey(tenantID, status)
 	m.readerCatchup[key]++
 	m.observe(m.readerCatchupLatency, key, queryBuckets, duration.Seconds())
@@ -321,6 +339,7 @@ func (m *Metrics) RecordReaderCache(tenantID string, status string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.readerCache[labelKey(tenantID, status)]++
 }
 
@@ -330,6 +349,7 @@ func (m *Metrics) RecordSuppressed(tenantID string, resourceType string, count i
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.suppressed[labelKey(tenantID, resourceType)] += float64(count)
 }
 
@@ -339,6 +359,7 @@ func (m *Metrics) RecordIngestSuppressed(tenantID string, source string, count i
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.ingestSuppressed[labelKey(tenantID, source)] += float64(count)
 }
 
@@ -348,6 +369,7 @@ func (m *Metrics) RecordIngestSkipped(tenantID string, source string, reason str
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.ingestSkipped[labelKey(tenantID, source, reason)]++
 }
 
@@ -453,6 +475,7 @@ func (m *Metrics) RecordIndexHealth(tenantID string, status string, issues int) 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	tenantID = m.metricTenantLocked(tenantID)
 	m.indexHealthChecks[labelKey(tenantID, status)]++
 	m.indexHealthStatus[tenantID] = status
 	m.indexHealthIssues[tenantID] = float64(issues)
@@ -663,4 +686,28 @@ func sortedKeysString(values map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// Invalid or excess tenant labels are aggregated, never discarded. The same
+// process-wide bound covers all tenant metric families, including failed reads.
+func (m *Metrics) metricTenantLocked(tenant string) string {
+	if tenant == "" {
+		return ""
+	}
+	if len(tenant) > 128 || strings.IndexFunc(tenant, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+	}) >= 0 {
+		return "__other__"
+	}
+	if _, ok := m.tenantLabels[tenant]; ok {
+		return tenant
+	}
+	if len(m.tenantLabels) >= 1024 {
+		return "__other__"
+	}
+	if m.tenantLabels == nil {
+		m.tenantLabels = make(map[string]struct{})
+	}
+	m.tenantLabels[tenant] = struct{}{}
+	return tenant
 }

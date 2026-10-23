@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -625,6 +626,9 @@ func parseBytes(raw string) (int64, error) {
 			parsed, err := strconv.ParseInt(number, 10, 64)
 			if err != nil {
 				return 0, err
+			}
+			if parsed > math.MaxInt64/multiplier.mul || parsed < math.MinInt64/multiplier.mul {
+				return 0, fmt.Errorf("byte size overflows int64")
 			}
 			return parsed * multiplier.mul, nil
 		}

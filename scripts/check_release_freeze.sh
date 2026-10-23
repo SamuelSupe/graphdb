@@ -4,6 +4,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 version="$(cat VERSION)"
 [[ "$version" == 2.* ]]
+grep -Fx "toolchain go1.27.3" go.mod >/dev/null
+[[ "$(go env GOVERSION)" == go1.27.3 ]] || { echo "Release qualification requires Go 1.27.3" >&2; exit 1; }
 grep -Fx "  version: $version" docs/openapi.yaml >/dev/null
 grep -F 'SDKVersion       = "'"$version"'"' sdk/go/graphdb/client.go >/dev/null
 grep -Fx 'version = "'"$version"'"' sdk/python/pyproject.toml >/dev/null

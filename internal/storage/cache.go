@@ -642,7 +642,12 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 			c.finishLoad(tenantID, load, nil)
 			return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 		}
-		c.entries[tenantID] = entry
+		if current, exists := c.entries[tenantID]; exists && current.graph == entry.graph {
+			current.cachedAt, current.expiresAt, current.lastAccess = entry.cachedAt, entry.expiresAt, entry.lastAccess
+			current.manifest, current.meta = entry.manifest, entry.meta
+			entry = current
+			c.entries[tenantID] = current
+		}
 		c.mu.Unlock()
 		c.finishLoad(tenantID, load, nil)
 		return cacheEntryGraph(entry, !markAccess)
@@ -664,7 +669,12 @@ func (c *ReaderCache) refresh(ctx context.Context, tenantID string, markAccess b
 			c.finishLoad(tenantID, load, nil)
 			return c.reloadAfterGenerationChange(ctx, tenantID, markAccess)
 		}
-		c.entries[tenantID] = entry
+		if current, exists := c.entries[tenantID]; exists && current.graph == entry.graph {
+			current.cachedAt, current.expiresAt, current.lastAccess = entry.cachedAt, entry.expiresAt, entry.lastAccess
+			current.manifest, current.meta = entry.manifest, entry.meta
+			entry = current
+			c.entries[tenantID] = current
+		}
 		c.mu.Unlock()
 		c.finishLoad(tenantID, load, nil)
 		c.recordCache(tenantID, "revalidated_logical_graph")

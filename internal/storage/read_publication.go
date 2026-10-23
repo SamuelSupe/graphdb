@@ -46,6 +46,9 @@ func (s *TenantStore) localFileChanged(key string) {
 	if !ok {
 		return
 	}
+	if strings.HasPrefix(name, "tasks/") && !strings.Contains(strings.TrimPrefix(name, "tasks/"), "/") {
+		s.taskObjectChanged(tenant, name)
+	}
 	if name == "control/writer-lease.parquet" {
 		s.deleteCachedWriterLease(tenant)
 		// A fence update does not change the graph. Retain the immutable view
@@ -53,6 +56,11 @@ func (s *TenantStore) localFileChanged(key string) {
 		s.invalidateReadViews(tenant, true)
 		s.invalidateTenantObjectCaches(tenant)
 		return
+	}
+	if name == "metadata.parquet" {
+		s.taskMu.Lock()
+		delete(s.queuedTaskCatalogs, tenant)
+		s.taskMu.Unlock()
 	}
 	manifest := name == "manifest.parquet"
 	invalidate := name == "metadata.parquet" || (strings.HasPrefix(name, "config/") && name != "config/backup-schedule.parquet")

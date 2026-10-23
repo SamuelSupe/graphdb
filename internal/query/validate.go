@@ -3,8 +3,10 @@ package query
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
+	"time"
 )
 
 const (
@@ -252,6 +254,9 @@ func validateRequestShapeLimits(request Request) error {
 func validateRequestControls(request Request) error {
 	if request.Limit < 0 {
 		return fmt.Errorf("%w: limit must be >= 0", ErrInvalid)
+	}
+	if int64(request.TimeoutMS) > math.MaxInt64/int64(time.Millisecond) {
+		return fmt.Errorf("%w: timeout_ms exceeds duration range", ErrInvalid)
 	}
 	if request.TimeoutMS < 0 {
 		return fmt.Errorf("%w: timeout_ms must be >= 0", ErrInvalid)

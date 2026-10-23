@@ -50,6 +50,10 @@ func (s *TenantStore) invalidateWriterTakeoverState(tenantID string) {
 }
 
 func (s *TenantStore) invalidateTenantState(tenantID string) {
+	s.taskMu.Lock()
+	delete(s.queuedTaskCatalogs, tenantID)
+	s.taskMu.Unlock()
+
 	s.invalidateReadViews(tenantID, false)
 	s.invalidateTenantObjectCaches(tenantID)
 }

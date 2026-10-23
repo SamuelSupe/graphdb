@@ -8,6 +8,7 @@ import (
 func (g *Graph) rebuildIndexes() {
 	g.neighborOrderMu.Lock()
 	g.neighborOrder = nil
+	g.neighborOrderBytes = 0
 	g.neighborOrderMu.Unlock()
 	g.entityPartitions = nil
 	g.invalidateEntityOrder()
@@ -19,11 +20,14 @@ func (g *Graph) rebuildIndexes() {
 	g.edgeTypeIndex = map[string]map[string]struct{}{}
 	g.entityAliasIndex = map[string]map[string]struct{}{}
 	g.kindCounts = map[string]int{}
+	g.kindEntityIDs = NewShardedMap[*ShardedMap[struct{}]]()
+	g.nonScalarFields = NewShardedMap[int]()
 	g.fieldIndex = map[string]map[string]*fieldValueIndex{}
 	g.identityIndex = map[string]map[string]string{}
 
 	for id, entity := range g.Entities.All() {
 		g.kindCounts[entity.Kind]++
+		g.writableKindEntityIDs(entity.Kind).Set(id, struct{}{})
 		g.addEntityAliasesToIndex(id, entity)
 		if g.identityIndex[entity.Kind] == nil {
 			g.identityIndex[entity.Kind] = map[string]string{}
@@ -34,6 +38,7 @@ func (g *Graph) rebuildIndexes() {
 		for field, value := range entity.Fields {
 			key, ok := ScalarIndexKey(value)
 			if !ok {
+				g.adjustNonScalarField(entity.Kind, field, 1)
 				continue
 			}
 			byKind := g.fieldIndex[entity.Kind]
@@ -61,6 +66,11 @@ func (g *Graph) rebuildIndexes() {
 }
 
 func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
+	ids := g.writableKindEntityIDs(entity.Kind)
+	ids.Delete(id)
+	if ids.Len() == 0 {
+		g.kindEntityIDs.Delete(entity.Kind)
+	}
 	g.invalidateEntityKindOrder(entity.Kind)
 	if count := g.kindCounts[entity.Kind]; count <= 1 {
 		delete(g.kindCounts, entity.Kind)
@@ -76,6 +86,8 @@ func (g *Graph) removeEntityFromIndexes(id string, entity Entity) {
 	for field, value := range entity.Fields {
 		if key, ok := ScalarIndexKey(value); ok {
 			g.removeEntityFieldIndex(id, entity.Kind, field, key)
+		} else {
+			g.adjustNonScalarField(entity.Kind, field, -1)
 		}
 	}
 }
@@ -97,6 +109,7 @@ func (g *Graph) removeEntityAliasesFromIndex(id string, entity Entity) {
 func (g *Graph) addEntityToIndexes(id string, entity Entity) {
 	g.invalidateEntityKindOrder(entity.Kind)
 	g.kindCounts[entity.Kind]++
+	g.writableKindEntityIDs(entity.Kind).Set(id, struct{}{})
 	g.addEntityAliasesToIndex(id, entity)
 	for _, signature := range g.identitySignatures(entity) {
 		g.writableIdentityKind(entity.Kind)[signature.Value] = id
@@ -104,6 +117,7 @@ func (g *Graph) addEntityToIndexes(id string, entity Entity) {
 	for field, value := range entity.Fields {
 		key, ok := ScalarIndexKey(value)
 		if !ok {
+			g.adjustNonScalarField(entity.Kind, field, 1)
 			continue
 		}
 		g.addEntityFieldIndex(id, entity.Kind, field, key)
@@ -136,6 +150,9 @@ func (g *Graph) updateEntityIndexes(id string, before, after Entity) {
 		key, indexed := ScalarIndexKey(value)
 		nextValue, exists := after.Fields[field]
 		nextKey, nextIndexed := ScalarIndexKey(nextValue)
+		if !indexed && (!exists || nextIndexed) {
+			g.adjustNonScalarField(before.Kind, field, -1)
+		}
 		if indexed && (!exists || !nextIndexed || key != nextKey) {
 			g.removeEntityFieldIndex(id, before.Kind, field, key)
 		}
@@ -144,6 +161,9 @@ func (g *Graph) updateEntityIndexes(id string, before, after Entity) {
 		key, indexed := ScalarIndexKey(value)
 		previousValue, exists := before.Fields[field]
 		previousKey, previousIndexed := ScalarIndexKey(previousValue)
+		if !indexed && (!exists || previousIndexed) {
+			g.adjustNonScalarField(after.Kind, field, 1)
+		}
 		if indexed && (!exists || !previousIndexed || key != previousKey) {
 			g.addEntityFieldIndex(id, after.Kind, field, key)
 		}

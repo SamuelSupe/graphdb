@@ -230,3 +230,33 @@ func TestObjectBackupRetentionProtectsReadersAndResumesDeletion(t *testing.T) {
 		t.Fatalf("manual backup damaged: %v", err)
 	}
 }
+
+func TestDownloadChunkedSnapshotStillChecksLengthAndHash(t *testing.T) {
+	data := []byte("snapshot")
+	hash := sha256.Sum256(data)
+	digest := hex.EncodeToString(hash[:])
+	var corrupt atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		if corrupt.Load() {
+			_, _ = w.Write([]byte("snapshot-extra"))
+		} else {
+			_, _ = w.Write(data)
+		}
+	}))
+	defer server.Close()
+	repo, err := New(context.Background(), Config{Bucket: "test-bucket", Prefix: "backups", Endpoint: server.URL, PathStyle: true, AccessKeyID: "test", SecretAccessKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := Manifest{Format: Format, TenantID: "tenant-a", BackupID: "backup-a", Version: 1, CreatedAt: time.Now().UTC(), SnapshotKey: "backups/tenant-a/backup-a/" + digest + ".parquet", Bytes: int64(len(data)), SHA256: digest}
+	var out bytes.Buffer
+	if err = repo.Download(context.Background(), manifest, &out); err != nil || !bytes.Equal(data, out.Bytes()) {
+		t.Fatalf("chunked download: %q %v", out.Bytes(), err)
+	}
+	corrupt.Store(true)
+	if err = repo.Download(context.Background(), manifest, io.Discard); err == nil {
+		t.Fatal("oversized chunked response accepted")
+	}
+}

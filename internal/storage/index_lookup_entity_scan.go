@@ -67,13 +67,15 @@ func (s *entityPageVisitSession) visitPage(ctx context.Context, spec EntityPageS
 	key := s.objectKey(spec)
 	s.stats.markObject(key)
 	if _, _, hit := s.store.borrowCachedEntityPage(s.tenantID, s.version, key, spec.ContentHash, spec.SchemaHash); hit {
+		readable := false
 		ok, err := s.store.withParquetEntityPageObject(ctx, s.tenantID, s.version, spec, func(page EntityPageData, _ string, validated bool) error {
 			if !validated {
 				return nil
 			}
+			readable = true
 			return visit(page)
 		})
-		return ok, false, err
+		return ok && readable, false, err
 	}
 
 	s.stats.decodedCacheMisses++

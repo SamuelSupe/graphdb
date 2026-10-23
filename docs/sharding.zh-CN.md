@@ -1,6 +1,6 @@
 # 租户分片与扩容
 
-适用于 **GGraphDB 2.4.0**；发行资格见[版本验证](validation-v2.4.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.1**；发行资格见[版本验证](validation-v2.4.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 分片模式使用独立的 Raft 数据组承载不同租户，保留默认单机和原有单组 Raft 部署。每个租户的完整图、版本、接入身份和维护记录都归一个组管理。新增组可以增加多个租户的存储和写入容量；单个租户仍由一个 Leader 服务，没有单租户图切分或跨分片关联查询。
 
@@ -130,3 +130,7 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/cluster/moves/demo/cancel \
 目录读取复用提交成功后发布的不可变内存状态，避免逐次反序列化全目录；目录变更仍重写完整 JSON，尚未拆分为逐租户存储。运行验证见 [分片验收记录](sharding-validation.zh-CN.md) 和 [本轮故障隔离验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
 
 至少三投票副本的各组及双 router 支持按 [滚动升级手册](raft-rolling-upgrade.zh-CN.md) 逐个摘流和替换；跨版本仅限已经验收的兼容窗口。
+
+### 未发布的路由边界修正
+
+数据路由之外的管理转发（包括 purge、GC、restore、tenant-config）要求原始调用方提供路由管理令牌，随后路由才添加私有分片认证；不能仅凭访问公开端口借用该私有认证。允许的数据路由和发现接口保留原行为。写请求的传输失败返回502 write_outcome_unknown、retryable=false，客户端应通过批次/幂等身份核对结果。分片客户端响应头超时为10分钟；发出的写请求不自动重放。Leader发现按分片合并并发请求，优先探测已知/首个节点，50ms后对慢节点使用有界并行回退；独立调用方取消不会取消其他等待者的发现。

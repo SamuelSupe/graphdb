@@ -6,8 +6,12 @@ checklist, not a record that every published version passed every item.
 
 ## Current candidate qualification
 
-[2.4.0](validation-v2.4.0.md) records local qualification; exact-tag CI and independent
+[2.4.1](validation-v2.4.1.md) records local qualification; exact-tag CI and independent
 downloaded-asset verification must complete before qualification. No gate waiver.
+
+## Previous 2.4.0 qualification
+
+[2.4.0](validation-v2.4.0.md) passed all exact-tag gates and independent downloaded-asset checks. Its tag and assets remain unchanged.
 
 ## Previous 2.3.10 qualification
 

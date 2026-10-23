@@ -596,3 +596,23 @@ func seedFilteredOutEdgeGraph(t *testing.T, ignoredEdges int) *graph.Graph {
 	}
 	return g
 }
+
+func BenchmarkPlannerUntypedRangeCoverage(b *testing.B) {
+	for _, size := range []int{1024, 65536} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			snapshot := graph.Snapshot{Entities: make([]graph.Entity, size)}
+			for i := range snapshot.Entities {
+				snapshot.Entities[i] = graph.Entity{ID: fmt.Sprintf("host:%d", i), Kind: "host", Fields: graph.Fields{"load": i}}
+			}
+			g, err := graph.FromSnapshot(snapshot)
+			if err != nil {
+				b.Fatal(err)
+			}
+			request := Request{Op: "match", Kind: "host", Where: []Filter{{Field: "load", Op: "gt", Value: 1}}}
+			b.ResetTimer()
+			for b.Loop() {
+				_ = PlanQuery(g, request)
+			}
+		})
+	}
+}

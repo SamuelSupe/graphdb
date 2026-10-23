@@ -232,3 +232,21 @@ func resultEntityIDs(results []Result) []string {
 	}
 	return ids
 }
+
+func TestLegacyKindPageBudgetExcludesUnrelatedKinds(t *testing.T) {
+	entities := []graph.Entity{{ID: "small:a", Kind: "small"}, {ID: "small:b", Kind: "small"}}
+	for i := range 1000 {
+		entities = append(entities, graph.Entity{ID: fmt.Sprintf("other:%d", i), Kind: "other"})
+	}
+	g, err := graph.FromSnapshot(graph.Snapshot{Version: 1, Entities: entities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := Execute(g, Request{Op: "match", Kind: "small", Cursor: "0", MinVersion: 1, Limit: 10, CostLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 2 || response.NextCursor != "" || response.Stats.Scanned > 2 {
+		t.Fatalf("kind page consumed unrelated rows: %+v", response)
+	}
+}

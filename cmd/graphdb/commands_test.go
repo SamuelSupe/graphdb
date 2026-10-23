@@ -205,6 +205,7 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	walConfig.OwnerID = "recovery"
 	walConfig.FlushInterval = time.Hour
 	walConfig.WAL.MaxBytes, walConfig.WAL.SegmentBytes = 32<<10, 16<<10
+	walConfig.QueueMemoryBytes = 12 << 10
 	walConfig.WAL.ControlReserveBytes = 16 << 10
 	service, err := storage.OpenIngestService(store, walConfig)
 	if err != nil {
@@ -217,14 +218,19 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range 128 {
-		fill := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: fmt.Sprintf("fill-%d", i), Items: []storage.IngestItem{{Entity: &graph.Entity{ID: fmt.Sprintf("host:fill-%d", i), Kind: "host"}}}}
-		if _, err := service.Accept(ctx, "checkpoint-fill", fill); errors.Is(err, storage.ErrIngestWALFull) {
-			break
-		} else if err != nil {
+	// Completed traffic folds history while the original tenant stays pending.
+	// The memory budget is deliberately smaller than WAL payload capacity.
+	for i := range 32 {
+		fill := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: fmt.Sprintf("fill-%d", i), FullSync: true, Items: []storage.IngestItem{{Entity: &graph.Entity{ID: fmt.Sprintf("host:fill-%d", i), Kind: "host"}}}}
+		item, err := service.Accept(ctx, "checkpoint-fill", fill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = service.Wait(ctx, item); err != nil {
 			t.Fatal(err)
 		}
 	}
+
 	if info, err := os.Stat(filepath.Join(walDir, ".checkpoint")); err != nil || info.Size() == 0 {
 		t.Fatalf("WAL history was not checkpointed before runtime backup: %v", err)
 	}

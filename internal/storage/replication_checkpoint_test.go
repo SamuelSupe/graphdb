@@ -767,3 +767,48 @@ func BenchmarkReplicationSnapshotCapture(b *testing.B) {
 		})
 	}
 }
+
+func TestRestoreDirectoryJournalsBoundedTransactions(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	for i := range 100 {
+		if err = files.Put(ctx, fmt.Sprintf("test/old/%03d", i), []byte("old")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	incoming := t.TempDir()
+	for i := range 100 {
+		if err = os.WriteFile(filepath.Join(incoming, fmt.Sprintf("%03d", i)), []byte("incoming"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sentinel := errors.New("rollback probe")
+	_, err = files.ApplyReplicated(ctx, 1, "replace", time.Now(), func(ctx context.Context) ([]byte, error) {
+		journal := files.replicationJournal(ctx)
+		stats := journal.db.Stats()
+		before := stats.TxStats.GetWrite()
+		if err := files.journalDirectory(ctx, "test/old", incoming); err != nil {
+			return nil, err
+		}
+		stats = journal.db.Stats()
+		writes := stats.TxStats.GetWrite() - before
+		if writes > 10 {
+			t.Errorf("100 small before-images required %d bolt writes", writes)
+		}
+		if err := files.Put(ctx, "test/old/000", []byte("mutated")); err != nil {
+			return nil, err
+		}
+		return nil, sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatal(err)
+	}
+	data, err := files.Get(ctx, "test/old/000")
+	if err != nil || string(data) != "old" {
+		t.Fatalf("rollback lost old object: %q %v", data, err)
+	}
+}

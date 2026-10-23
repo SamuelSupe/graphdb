@@ -1,8 +1,10 @@
 # 错误与故障排查
 
-适用于 **GGraphDB 2.4.0**；[发行验证](../validation-v2.4.0.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.1**；[发行验证](../validation-v2.4.1.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](errors-troubleshooting.md)
+
+`write_outcome_unknown` 表示写入已提交或转发，但响应未被观察到，HTTP 可为502/503/504且 `retryable:false`。先按原批次或幂等身份查询状态；需要重试时保留相同身份与完全相同请求，不能换新身份盲重试。
 
 ## 错误响应
 

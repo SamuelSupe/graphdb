@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -108,6 +110,11 @@ func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, 
 	if err != nil {
 		return EdgeScanResult{}, false, err
 	}
+	cursor, err = s.normalizeLegacyEdgeCursor(ctx, tenantID, version, catalog, cursor)
+	if err != nil {
+		return EdgeScanResult{}, false, err
+	}
+	lastAfter := ""
 	items := make([]graph.Edge, 0, normalizedScanLimit(options.Limit)+1)
 	targets := compiled.edgeScanTargets(options)
 	specs := compiled.edgeSpecs
@@ -141,8 +148,11 @@ func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, 
 						continue
 					}
 					items = append(items, edge)
+					if len(items) <= normalizedScanLimit(options.Limit) {
+						lastAfter = scanKey(target.RelationType+"\x00"+target.Shard, edge.ID)
+					}
 					if len(items) > normalizedScanLimit(options.Limit) {
-						return edgeScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
+						return edgeScanPage(tenantID, version, items, options, true, compiled.contentHash, lastAfter), true, nil
 					}
 				}
 			}
@@ -167,8 +177,11 @@ func (s *TenantStore) listEdgesFromShards(ctx context.Context, tenantID string, 
 					continue
 				}
 				items = append(items, edge)
+				if len(items) <= normalizedScanLimit(options.Limit) {
+					lastAfter = scanKey(target.RelationType+"\x00"+target.Shard, edge.ID)
+				}
 				if len(items) > normalizedScanLimit(options.Limit) {
-					return edgeScanPage(tenantID, version, items, options, true, compiled.contentHash), true, nil
+					return edgeScanPage(tenantID, version, items, options, true, compiled.contentHash, lastAfter), true, nil
 				}
 			}
 			continue
@@ -194,7 +207,7 @@ func pageEdges(candidates []graph.Edge, version int64, options EdgeScanOptions, 
 	return page.Edges, page.NextCursor
 }
 
-func edgeScanPage(tenantID string, version int64, items []graph.Edge, options EdgeScanOptions, hasMore bool, catalogHash string) EdgeScanResult {
+func edgeScanPage(tenantID string, version int64, items []graph.Edge, options EdgeScanOptions, hasMore bool, catalogHash string, afterOverride ...string) EdgeScanResult {
 	limit := normalizedScanLimit(options.Limit)
 	page := items
 	if len(page) > limit {
@@ -203,7 +216,11 @@ func edgeScanPage(tenantID string, version int64, items []graph.Edge, options Ed
 	next := ""
 	if hasMore && len(page) > 0 {
 		last := page[len(page)-1]
-		next = encodeScanCursor(scanCursor{Version: version, CatalogHash: catalogHash, After: scanKey(last.Type+"\x00"+edgeShardID(last.From), last.ID), Query: edgeScanQueryHash(options)})
+		after := scanKey(last.Type+"\x00"+edgeShardID(last.From), last.ID)
+		if len(afterOverride) > 0 && afterOverride[0] != "" {
+			after = afterOverride[0]
+		}
+		next = encodeScanCursor(scanCursor{Version: version, CatalogHash: catalogHash, After: after, Query: edgeScanQueryHash(options)})
 	}
 	return EdgeScanResult{TenantID: tenantID, Version: version, Edges: append([]graph.Edge(nil), page...), NextCursor: next, IndexedRead: true}
 }
@@ -256,4 +273,47 @@ func (options *EdgeScanOptions) normalize() {
 	options.From = strings.TrimSpace(options.From)
 	options.FromShard = strings.TrimSpace(options.FromShard)
 	options.Source = strings.TrimSpace(options.Source)
+}
+
+// Older readers encoded the 64-bucket hash even when scanning a 256-bucket
+// catalog. At most four legacy buckets can contain that cursor edge; repair
+// its position without changing the cursor format or current range-page path.
+func (s *TenantStore) normalizeLegacyEdgeCursor(ctx context.Context, tenant string, version int64, catalog IndexCatalog, cursor scanCursor) (scanCursor, error) {
+	parts := strings.SplitN(cursor.After, "\x00", 3)
+	if len(parts) != 3 {
+		return cursor, nil
+	}
+	bucket, err := strconv.ParseUint(parts[1], 16, 8)
+	if err != nil || bucket >= 64 {
+		return cursor, nil
+	}
+	legacy := false
+	for _, spec := range catalog.EdgeShards {
+		if spec.RelationType == parts[0] && spec.Shard > "3f" && spec.Shard != "default" {
+			legacy = true
+			break
+		}
+	}
+	if !legacy {
+		return cursor, nil
+	}
+	for _, spec := range catalog.EdgeShards {
+		n, err := strconv.ParseUint(spec.Shard, 16, 8)
+		if err != nil || spec.RelationType != parts[0] || n%64 != bucket || hasIndexRanges(spec.Objects) {
+			continue
+		}
+		rows, ok, err := s.loadParquetEdgeShardObject(ctx, tenant, version, spec)
+		if err != nil {
+			return cursor, err
+		}
+		if !ok || !edgeShardReadable(rows, tenant, version, spec) {
+			continue
+		}
+		nrow := sort.Search(len(rows.Edges), func(i int) bool { return rows.Edges[i].ID >= parts[2] })
+		if nrow < len(rows.Edges) && rows.Edges[nrow].ID == parts[2] {
+			cursor.After = scanKey(spec.RelationType+"\x00"+spec.Shard, parts[2])
+			return cursor, nil
+		}
+	}
+	return cursor, nil
 }

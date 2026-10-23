@@ -50,17 +50,34 @@ func (g *Graph) VisitEntitiesByID(kind string, afterID string, visit func(Entity
 
 func (g *Graph) sortedEntityIDs(kind string) []string {
 	g.entityOrderMu.Lock()
-	defer g.entityOrderMu.Unlock()
 	if ids, ok := g.entityOrder[kind]; ok {
+		g.entityOrderMu.Unlock()
 		return ids
 	}
+	g.entityOrderMu.Unlock()
 	ids := make([]string, 0, g.KindCount(kind))
-	for id, entity := range g.Entities.All() {
-		if kind == "" || entity.Kind == kind {
+	if kind == "" {
+		for id := range g.Entities.Keys() {
+			ids = append(ids, id)
+		}
+	} else if g.kindEntityIDs.Len() == 0 && g.Entities.Len() > 0 {
+		// Raw, deliberately unindexed graphs remain a supported scan fallback.
+		for id, entity := range g.Entities.All() {
+			if entity.Kind == kind {
+				ids = append(ids, id)
+			}
+		}
+	} else {
+		for id := range g.kindEntityIDs.At(kind).Keys() {
 			ids = append(ids, id)
 		}
 	}
 	sort.Strings(ids)
+	g.entityOrderMu.Lock()
+	defer g.entityOrderMu.Unlock()
+	if existing, ok := g.entityOrder[kind]; ok {
+		return existing
+	}
 	if g.entityOrder == nil {
 		g.entityOrder = map[string][]string{}
 	}
@@ -84,6 +101,7 @@ func (g *Graph) invalidateFieldIndexOrder() {
 func (g *Graph) inheritReadOrder(source *Graph) {
 	source.neighborOrderMu.Lock()
 	neighborOrder := maps.Clone(source.neighborOrder)
+	neighborOrderBytes := source.neighborOrderBytes
 	source.neighborOrderMu.Unlock()
 	source.entityOrderMu.Lock()
 	entityOrder := maps.Clone(source.entityOrder)
@@ -102,6 +120,7 @@ func (g *Graph) inheritReadOrder(source *Graph) {
 	g.fieldIndexOrderMu.Unlock()
 	g.neighborOrderMu.Lock()
 	g.neighborOrder = neighborOrder
+	g.neighborOrderBytes = neighborOrderBytes
 	g.neighborOrderMu.Unlock()
 }
 
@@ -140,11 +159,17 @@ func (g *Graph) sortedFieldIndexIDs(kind, field, value string) []string {
 
 	cacheKey := fieldIndexOrderKey{kind: kind, field: field, value: value}
 	g.fieldIndexOrderMu.Lock()
-	defer g.fieldIndexOrderMu.Unlock()
 	if ids, ok := g.fieldIndexOrder[cacheKey]; ok {
+		g.fieldIndexOrderMu.Unlock()
 		return ids
 	}
+	g.fieldIndexOrderMu.Unlock()
 	ids := sortedFieldIDs(valueIDs)
+	g.fieldIndexOrderMu.Lock()
+	defer g.fieldIndexOrderMu.Unlock()
+	if existing, ok := g.fieldIndexOrder[cacheKey]; ok {
+		return existing
+	}
 	if g.fieldIndexOrder == nil {
 		g.fieldIndexOrder = map[fieldIndexOrderKey][]string{}
 	}

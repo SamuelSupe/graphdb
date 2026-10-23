@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,24 +66,90 @@ func (s *ingestWALWriterState) checkpoint() error {
 		checkpoint.Pending = append(checkpoint.Pending, pending.envelope)
 	}
 	sort.Slice(checkpoint.Pending, func(i, j int) bool { return checkpoint.Pending[i].AcceptedLSN < checkpoint.Pending[j].AcceptedLSN })
-	payload, err := json.Marshal(checkpoint)
+	previousBytes := int64(0)
+	if info, err := os.Stat(filepath.Join(s.wal.config.Dir, ingestWALCheckpointFile)); err == nil {
+		previousBytes = info.Size()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	size, err := writeIngestWALCheckpoint(s.wal.config.Dir, checkpoint, s.wal.config.MaxBytes-s.wal.config.controlReserveBytes())
 	if err != nil {
 		return err
 	}
-	data := make([]byte, 4, len(payload)+4)
-	binary.BigEndian.PutUint32(data, crc32.Checksum(payload, crc32.MakeTable(crc32.Castagnoli)))
-	data = append(data, payload...)
-	_, previousBytes, err := loadIngestWALCheckpoint(s.wal.config.Dir)
-	if err != nil {
-		return errors.Join(ErrIngestWALFailed, err)
-	}
-	if int64(len(data)) >= s.wal.config.MaxBytes-s.wal.config.controlReserveBytes() {
-		return ErrIngestWALFull
-	}
-	if err := writeFileAtomic(filepath.Join(s.wal.config.Dir, ingestWALCheckpointFile), data); err != nil {
-		return err
-	}
-	s.totalBytes += int64(len(data)) - previousBytes
+	s.totalBytes += size - previousBytes
 	s.checkpointRequired = true
 	return s.prune(checkpoint.Through + 1)
+}
+
+// Preserve the v1 CRC+JSON checkpoint format without a second pending-sized
+// encoded buffer. Each encoder allocation is bounded by one accepted request.
+func writeIngestWALCheckpoint(dir string, checkpoint ingestWALCheckpoint, limit int64) (size int64, err error) {
+	file, err := os.CreateTemp(dir, ".tmp-.checkpoint-")
+	if err != nil {
+		return 0, err
+	}
+	name := file.Name()
+	defer func() { file.Close(); os.Remove(name) }()
+	if err = file.Chmod(0600); err != nil {
+		return 0, err
+	}
+	if _, err = file.Write(make([]byte, 4)); err != nil {
+		return 0, err
+	}
+	crc := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	writer := &ingestCheckpointWriter{writer: io.MultiWriter(file, crc), remaining: limit - 5}
+	if _, err = fmt.Fprintf(writer, `{"version":1,"through_lsn":%d,"pending":[`, checkpoint.Through); err != nil {
+		return 0, err
+	}
+	encoder := json.NewEncoder(writer)
+	for i := range checkpoint.Pending {
+		if i > 0 {
+			if _, err = io.WriteString(writer, ","); err != nil {
+				return 0, err
+			}
+		}
+		if err = encoder.Encode(checkpoint.Pending[i]); err != nil {
+			return 0, err
+		}
+	}
+	if _, err = io.WriteString(writer, "]}"); err != nil {
+		return 0, err
+	}
+	var checksum [4]byte
+	binary.BigEndian.PutUint32(checksum[:], crc.Sum32())
+	if _, err = file.WriteAt(checksum[:], 0); err != nil {
+		return 0, err
+	}
+	if err = syncStorageFile(file); err != nil {
+		return 0, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size = info.Size()
+	if err = file.Close(); err != nil {
+		return 0, err
+	}
+	if err = os.Rename(name, filepath.Join(dir, ingestWALCheckpointFile)); err != nil {
+		return 0, err
+	}
+	if err = syncDir(dir); err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
+type ingestCheckpointWriter struct {
+	writer    io.Writer
+	remaining int64
+}
+
+func (w *ingestCheckpointWriter) Write(data []byte) (int, error) {
+	if int64(len(data)) > w.remaining {
+		return 0, ErrIngestWALFull
+	}
+	n, err := w.writer.Write(data)
+	w.remaining -= int64(n)
+	return n, err
 }

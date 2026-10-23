@@ -2,6 +2,8 @@ module github.com/SamuelSupe/graphdb/v2
 
 go 1.25.0
 
+toolchain go1.27.3
+
 require (
 	github.com/apache/arrow-go/v18 v18.6.0
 	github.com/aws/aws-sdk-go-v2 v1.40.0

@@ -103,8 +103,16 @@ func (s *TenantStore) startTaskLocked(ctx context.Context, tenantID, taskType st
 }
 
 func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType string, params map[string]any, replace bool, id string) (Task, error) {
+	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
+	if err != nil {
+		return Task{}, err
+	}
+	ctx = boundCtx
+	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
+		return Task{}, err
+	}
 	if s.ReplicationMode && !replace {
-		tasks, err := s.listTasks(ctx, tenantID, TaskListOptions{Type: taskType, Status: TaskStatusQueued, Limit: 1})
+		tasks, err := s.queuedTasksForStart(ctx, tenantID, taskType)
 		if err != nil {
 			return Task{}, err
 		}
@@ -123,14 +131,7 @@ func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType 
 			return tasks[0], nil
 		}
 	}
-	boundCtx, err := s.acquireAndBindWriterFence(ctx, tenantID)
-	if err != nil {
-		return Task{}, err
-	}
-	ctx = boundCtx
-	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
-		return Task{}, err
-	}
+
 	_, resuming := params[taskResumeCheckpointParam]
 	resuming = resuming || stringTaskParam(params, "retry_of") != ""
 	checkpoint := taskInitialCheckpoint(params)

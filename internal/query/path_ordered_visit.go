@@ -16,7 +16,6 @@ func visitPathsInIdentityOrder(
 	root := pendingPath{
 		entityID: start.ID,
 		path:     graph.Path{Entities: []graph.Entity{start}},
-		visited:  map[string]struct{}{start.ID: {}},
 	}
 	if !pathPrefixMatches(root.path, request.Path, false) {
 		return 0, nil
@@ -32,7 +31,7 @@ func visitPathsInIdentityOrder(
 		levelRequest := requestForPathLevel(request, level)
 		processNeighbor := func(neighbor graph.Neighbor) (bool, error) {
 			budget.visited++
-			if _, seen := current.visited[neighbor.Entity.ID]; seen {
+			if pathContainsEntity(current.path, neighbor.Entity.ID) {
 				return true, nil
 			}
 			nextPath := clonePath(current.path)
@@ -53,12 +52,9 @@ func visitPathsInIdentityOrder(
 			if finalLevel {
 				return true, nil
 			}
-			visited := copyVisited(current.visited)
-			visited[neighbor.Entity.ID] = struct{}{}
 			return walk(pendingPath{
 				entityID: neighbor.Entity.ID,
 				path:     nextPath,
-				visited:  visited,
 			}, level+1)
 		}
 		used, err := visitIndexedPathNeighbors(

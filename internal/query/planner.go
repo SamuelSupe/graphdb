@@ -183,6 +183,9 @@ func planMatch(plan *Plan, g *graph.Graph, request Request, stats PlannerStats) 
 
 func estimatedKindScanRows(g *graph.Graph, request Request, stats PlannerStats) int {
 	rows := g.Entities.Len()
+	if request.Kind != "" && canPageMatchEarly(request) && g.KindCount(request.Kind) > 0 {
+		rows = g.KindCount(request.Kind)
+	}
 	lazyPageScan := g.Entities.Len() == 0 && stats.Version == g.Version
 	if lazyPageScan {
 		rows = estimateEntityPageTotal(stats)
@@ -305,9 +308,19 @@ func estimateTraversalCost(g *graph.Graph, request Request, stats PlannerStats) 
 	}
 	cost := 0
 	level := 1
+	fanouts := map[string]int{}
 	for i := 0; i < depth; i++ {
 		levelRequest := requestForPathLevel(request, i)
-		fanout := estimateFanout(g, levelRequest, stats)
+		fanout, known := estimateFanoutFromStats(g, levelRequest, stats)
+		if !known {
+			key := fmt.Sprint(levelRequest.Direction, relationTypeSet(levelRequest), levelRequest.Path.NodeKinds, levelRequest.Op, levelRequest.DirectionStrategy)
+			var exists bool
+			fanout, exists = fanouts[key]
+			if !exists {
+				fanout = estimateFanout(g, levelRequest, stats)
+				fanouts[key] = fanout
+			}
+		}
 		if fanout < 1 {
 			break
 		}
@@ -481,18 +494,5 @@ func scalarIndexCoversField(g *graph.Graph, kind, field string) bool {
 	case "string", "number", "bool":
 		return true
 	}
-	if g.Entities.Len() == 0 {
-		return false
-	}
-	for _, entity := range g.Entities.All() {
-		if entity.Kind != kind {
-			continue
-		}
-		if value, exists := entity.Fields[field]; exists {
-			if _, scalar := graph.ScalarIndexKey(value); !scalar {
-				return false
-			}
-		}
-	}
-	return true
+	return g.ScalarIndexCoversField(kind, field)
 }

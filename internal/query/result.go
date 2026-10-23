@@ -12,6 +12,9 @@ import (
 const timeSortLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 func compareResults(left, right Result, specs []SortSpec) int {
+	if len(specs) == 0 && left.Path != nil && right.Path != nil {
+		return strings.Compare(resultIdentity(left), resultIdentity(right))
+	}
 	if len(specs) == 0 {
 		specs = []SortSpec{{Field: "id"}}
 	}
@@ -54,11 +57,18 @@ func resultValue(result Result, field string) any {
 		case "end_id":
 			return pathEnd(*result.Path).ID
 		}
+		if len(result.Path.Entities) > 0 {
+			end := pathEnd(*result.Path)
+			return entityValue(&end, field)
+		}
 	}
 	return nil
 }
 
 func resultIdentity(result Result) string {
+	if result.identity != "" {
+		return result.identity
+	}
 	if result.Edge != nil {
 		if result.Direction != "" {
 			return "edge:" + result.Direction + ":" + result.Edge.ID

@@ -126,6 +126,7 @@ func pathResults(paths []graph.Path, projection []string) []Result {
 
 func pathResult(path graph.Path, projection []string) Result {
 	result := Result{Path: &path}
+	result.identity = resultIdentity(result)
 	if len(path.Entities) > 0 {
 		entity := pathEnd(path)
 		result.Entity = &entity
@@ -192,7 +193,6 @@ func normalizedDepth(depth int) int {
 type pendingPath struct {
 	entityID string
 	path     graph.Path
-	visited  map[string]struct{}
 }
 
 func clonePath(path graph.Path) graph.Path {
@@ -201,10 +201,13 @@ func clonePath(path graph.Path) graph.Path {
 	return graph.Path{Entities: entities, Edges: edges}
 }
 
-func copyVisited(visited map[string]struct{}) map[string]struct{} {
-	out := make(map[string]struct{}, len(visited)+1)
-	for key := range visited {
-		out[key] = struct{}{}
+// Query depth is capped at16; a bounded path scan avoids cloning a map on
+// every expansion without changing breadth-first traversal or cycle semantics.
+func pathContainsEntity(path graph.Path, id string) bool {
+	for _, entity := range path.Entities {
+		if entity.ID == id {
+			return true
+		}
 	}
-	return out
+	return false
 }

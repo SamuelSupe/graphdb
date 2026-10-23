@@ -566,3 +566,17 @@ func hasRepairAction(actions []RepairAction, actionType string) bool {
 	}
 	return false
 }
+
+func TestManifestRepairRejectsAmbiguousCommitVersion(t *testing.T) {
+	ctx := context.Background()
+	store := NewTenantStore(NewMemoryStore(), "test")
+	for _, id := range []string{"candidate-a", "candidate-b"} {
+		commit := graph.Commit{ID: id, TenantID: "tenant-a", Version: 1, Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:" + id, Kind: "host"}}}}
+		if err := store.putCommitObjectIfAbsent(ctx, store.commitKey("tenant-a", 1, id), commit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.reconstructManifestFromObjects(ctx, "tenant-a"); err == nil {
+		t.Fatal("repair guessed which conflicting version was published")
+	}
+}

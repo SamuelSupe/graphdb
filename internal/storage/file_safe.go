@@ -102,16 +102,11 @@ func (s *FileStore) walkSafeDir(dir string, create bool, journal *replicationJou
 			continue
 		}
 		if s.caseMode.Load() == 2 {
-			entries, err := os.ReadDir(current)
-			if err != nil {
+			if err := s.checkDirectorySpelling(current, part); err != nil {
 				return err
 			}
-			for _, entry := range entries {
-				if entry.Name() != part && strings.EqualFold(entry.Name(), part) {
-					return fmt.Errorf("%w: directory %q already uses spelling %q", errFileStoreKey, part, entry.Name())
-				}
-			}
 		}
+
 		current = filepath.Join(current, part)
 		if err := s.ensureSafeDirComponent(current, create, journal); err != nil {
 			return err

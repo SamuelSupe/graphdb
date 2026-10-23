@@ -1066,3 +1066,25 @@ func TestManifestRejectsPreV2DigestColumn(t *testing.T) {
 		t.Fatal("pre-2.0 manifest accepted with a different digest contract")
 	}
 }
+
+func TestCorruptCommitOrdinalIsRejectedBeforeMutationAllocation(t *testing.T) {
+	for _, ordinal := range []int{-1, 1000000} {
+		t.Run(fmt.Sprint(ordinal), func(t *testing.T) {
+			schema := parquetCommitArrowSchema()
+			builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
+			defer builder.Release()
+			appendParquetCommitRow(builder, "tenant-a", "key", graph.Commit{ID: "bad", TenantID: "tenant-a", Version: 1}, "hash", parquetCommitRow{Kind: commitRowDeleteEntity, ParentOrdinal: ordinal, ID: "host:a"})
+			batch := builder.NewRecordBatch()
+			defer batch.Release()
+			table := array.NewTableFromRecords(schema, []arrow.RecordBatch{batch})
+			defer table.Release()
+			var data bytes.Buffer
+			if err := pqarrow.WriteTable(table, &data, 1, parquetDataWriterProperties(schema), pqarrow.DefaultWriterProps()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeParquetCommitItems(context.Background(), data.Bytes()); err == nil || !strings.Contains(err.Error(), "ordinal") {
+				t.Fatalf("invalid ordinal did not fail at decode boundary: %v", err)
+			}
+		})
+	}
+}

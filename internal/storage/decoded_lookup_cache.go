@@ -73,19 +73,24 @@ func (c *decodedLookupCache[T]) load(
 		c.loading[key] = active
 		c.mu.Unlock()
 
-		value, ok, err := loader()
-		if err == nil && ok {
-			value = c.put(key, value)
-		}
-		c.mu.Lock()
-		active.value = value
-		active.ok = ok
-		active.err = err
-		active.canceled = loadCanceledByContext(ctx, err)
-		delete(c.loading, key)
-		close(active.done)
-		c.mu.Unlock()
-		return value, ok, err
+		return func() (value T, ok bool, err error) {
+			completed := false
+			defer func() {
+				c.mu.Lock()
+				active.value, active.ok, active.err = value, ok, err
+				// A panicking owner still releases waiters, which may retry.
+				active.canceled = !completed || loadCanceledByContext(ctx, err)
+				delete(c.loading, key)
+				close(active.done)
+				c.mu.Unlock()
+			}()
+			value, ok, err = loader()
+			if err == nil && ok {
+				value = c.put(key, value)
+			}
+			completed = true
+			return
+		}()
 	}
 }
 

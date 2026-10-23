@@ -70,6 +70,13 @@ func (c IngestServiceConfig) validate() error {
 		c.FlushMaxBytes <= 0 || c.FlushWorkers <= 0 || c.FlushTimeout <= 0 || c.RetryInterval <= 0 {
 		return fmt.Errorf("ingest WAL queue and flush limits must be positive")
 	}
+	reserve := c.WAL.ControlReserveBytes
+	if reserve == 0 {
+		reserve = defaultIngestWALControlReserve(c.WAL)
+	}
+	if c.QueueMemoryBytes >= c.WAL.MaxBytes-reserve {
+		return fmt.Errorf("ingest memory queue must be smaller than WAL payload capacity")
+	}
 	return nil
 }
 
@@ -223,7 +230,7 @@ type IngestService struct {
 	acceptingStatus   map[string]*ingestAcceptFlight
 	pendingBytes      int64
 	highestLSN        uint64
-	completedSince    int
+	completedBytes    int64
 	closed            bool
 	lastError         string
 	oldestPending     time.Time
@@ -491,9 +498,10 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		s.pendingBytes += recordBytes
 		s.mu.Unlock()
 
+		checkpointGeneration := s.wal.checkpointGeneration.Load()
 		appendResult, appendErr := s.wal.Append(ctx, IngestWALAccepted, payload)
 		if errors.Is(appendErr, ErrIngestWALFull) {
-			if pruneErr := s.prune(ctx); pruneErr == nil {
+			if pruneErr := s.prune(ctx, checkpointGeneration); pruneErr == nil {
 				appendResult, appendErr = s.wal.Append(ctx, IngestWALAccepted, payload)
 			}
 		}
@@ -1038,7 +1046,7 @@ func (s *IngestService) schedule() {
 				}
 				// A force received during this flush must survive a failed attempt,
 				// but only bypass backoff once so persistent faults cannot spin.
-				if draining || forced {
+				if forced {
 					queue.deadline = time.Now()
 					heap.Fix(&deadlines, queue.index)
 				}
@@ -1398,6 +1406,7 @@ func (s *IngestService) appendTerminalBatch(items []*ingestPending, results []In
 }
 
 func (s *IngestService) appendWALBatchWithPrune(records []ingestWALBatchRecord) []ingestWALAppendResponse {
+	checkpointGeneration := s.wal.checkpointGeneration.Load()
 	responses := s.wal.appendBatch(s.runCtx, records)
 	retryIndexes := make([]int, 0)
 	for index, response := range responses {
@@ -1406,7 +1415,7 @@ func (s *IngestService) appendWALBatchWithPrune(records []ingestWALBatchRecord) 
 		}
 	}
 	if len(retryIndexes) > 0 {
-		if err := s.prune(s.runCtx); err == nil {
+		if err := s.prune(s.runCtx, checkpointGeneration); err == nil {
 			retryRecords := make([]ingestWALBatchRecord, len(retryIndexes))
 			for index, recordIndex := range retryIndexes {
 				retryRecords[index] = records[recordIndex]
@@ -1440,6 +1449,7 @@ func (s *IngestService) appendPreparedBatchState(
 		return fmt.Errorf("prepared ingest plan count mismatch")
 	}
 	envelopes := make([]walPreparedEnvelope, 0, len(items))
+	planBytes := make(map[string]int64, len(items))
 	for index, pending := range items {
 		if plans[index] == nil {
 			continue
@@ -1455,6 +1465,11 @@ func (s *IngestService) appendPreparedBatchState(
 			}
 			continue
 		}
+		encoded, err := json.Marshal(plans[index])
+		if err != nil {
+			return err
+		}
+		planBytes[pending.envelope.RecordID] = int64(len(encoded))
 		envelopes = append(envelopes, walPreparedEnvelope{
 			RecordID: pending.envelope.RecordID,
 			Prepared: plans[index],
@@ -1467,9 +1482,10 @@ func (s *IngestService) appendPreparedBatchState(
 	if err != nil {
 		return err
 	}
+	checkpointGeneration := s.wal.checkpointGeneration.Load()
 	appendResult, err := s.wal.Append(ctx, IngestWALPrepared, payload)
 	if errors.Is(err, ErrIngestWALFull) {
-		if pruneErr := s.prune(ctx); pruneErr == nil {
+		if pruneErr := s.prune(ctx, checkpointGeneration); pruneErr == nil {
 			appendResult, err = s.wal.Append(ctx, IngestWALPrepared, payload)
 		}
 	}
@@ -1492,6 +1508,8 @@ func (s *IngestService) appendPreparedBatchState(
 			s.mu.Unlock()
 			return fmt.Errorf("prepared ingest request is no longer active")
 		}
+		current.bytes += planBytes[current.envelope.RecordID]
+		s.pendingBytes += planBytes[current.envelope.RecordID]
 		current.envelope.State = IngestStatePrepared
 		current.envelope.Prepared = plans[index]
 		current.envelope.Result = &plans[index].Result
@@ -1608,7 +1626,7 @@ func (s *IngestService) completePendingStateLocked(pending *ingestPending, resul
 	if pending.envelope.AcceptedAt.Equal(s.oldestPending) {
 		s.oldestPending = time.Time{}
 	}
-	s.completedSince++
+	s.completedBytes += pending.bytes
 	pending.completedOnce.Do(func() { close(pending.done) })
 }
 
@@ -1620,9 +1638,9 @@ func (s *IngestService) finishPendingCompletionsLocked() bool {
 			}
 		}
 	}
-	shouldPrune := s.walFull || s.completedSince >= 128
+	shouldPrune := s.walFull || s.completedBytes >= max(s.pendingBytes, s.config.WAL.SegmentBytes)
 	if shouldPrune {
-		s.completedSince = 0
+		s.completedBytes = 0
 	}
 	s.observeQueueLocked()
 	return shouldPrune
@@ -1658,8 +1676,8 @@ func failedIngestResult(request IngestRequest, failure error) IngestResult {
 	return result
 }
 
-func (s *IngestService) prune(ctx context.Context) error {
-	err := s.wal.prune(ctx, 0, true)
+func (s *IngestService) prune(ctx context.Context, generation ...uint64) error {
+	err := s.wal.prune(ctx, 0, true, generation...)
 	if err != nil {
 		s.recordError(err)
 	}

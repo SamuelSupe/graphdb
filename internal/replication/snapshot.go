@@ -23,7 +23,7 @@ func (n *Node) startSnapshot(conf raftpb.ConfState) (built chan snapshotBuild, e
 	if err == nil {
 		data, err = n.snapshotData(data, index)
 	}
-	if err == nil && int64(len(data)) > n.cfg.MaxSnapshotBytes {
+	if err == nil && int64(len(data)) > inlineSnapshotLimit(n.cfg.MaxSnapshotBytes) {
 		err = ErrSnapshotTooLarge
 	}
 	if err != nil {
@@ -112,4 +112,10 @@ func persistRetired(tx *bolt.Tx, ids []uint64, index uint64) error {
 		}
 	}
 	return nil
+}
+
+// MaxSnapshotBytes measures raw state. JSON base64 and bounded peer metadata
+// are wire overhead, not a reduction of the state machine's snapshot budget.
+func inlineSnapshotLimit(raw int64) int64 {
+	return (raw+2)/3*4 + snapshotMetadataLimit
 }

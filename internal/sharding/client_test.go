@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -252,5 +254,86 @@ func TestRouterTenantPagesUseCatalogOrderAndOwnershipHeaders(t *testing.T) {
 	}
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &catalogPage) != nil || len(catalogPage.Tenants) != 25 || catalogPage.Total != 100 || catalogPage.Next != "tenant-09924" {
 		t.Fatalf("catalog page=%s", w.Body.String())
+	}
+}
+
+func TestRouterRequiresOperatorTokenForAdministrativeForwarding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }))
+	defer server.Close()
+	router := NewRouter(Shard{ID: "catalog", ClusterID: "catalog", Peers: map[uint64]string{1: server.URL}}, "secret")
+	defer router.Client.HTTP.CloseIdleConnections()
+	for _, route := range []struct{ method, path string }{{"POST", "/v1/tenants/tenant-a/purge"}, {"POST", "/v1/control/gc"}, {"POST", "/v1/control/recover"}, {"PUT", "/v1/tenant-config"}} {
+		request := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
+		request.Header.Set("X-Tenant-ID", "tenant-a")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("unauthorized administration %s returned %d", route.path, response.Code)
+		}
+	}
+}
+
+func TestLeaderDiscoveryHedgesAndCoalesces(t *testing.T) {
+	var probes atomic.Int64
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { probes.Add(1); <-r.Context().Done() }))
+	defer slow.Close()
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		json.NewEncoder(w).Encode(map[string]any{"leader_id": 2})
+	}))
+	defer fast.Close()
+	client := NewClient("token")
+	shard := Shard{ClusterID: "cluster", ID: "a", Peers: map[uint64]string{1: slow.URL, 2: fast.URL}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	for range 24 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			origin, err := client.Leader(context.Background(), shard)
+			if err != nil || origin != fast.URL {
+				t.Errorf("leader=%s err=%v", origin, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("dead peer stalls discovery: %s", elapsed)
+	}
+	if n := probes.Load(); n > 3 {
+		t.Errorf("discovery stampede: %d probes", n)
+	}
+}
+
+func TestRouterLostMutationResponseIsNotRetryable(t *testing.T) {
+	var mutations atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/raft/status" {
+			json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		mutations.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	}))
+	defer backend.Close()
+	shard := Shard{ID: "a", ClusterID: "c", Peers: map[uint64]string{1: backend.URL}}
+	router := NewRouter(shard, "token")
+	defer router.Client.HTTP.CloseIdleConnections()
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/commits", strings.NewReader("{}"))
+	router.proxy(response, request, shard, 1, "tenant-a")
+	var failure struct {
+		Code      string
+		Error     string
+		Message   string
+		Retryable bool
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Code != "write_outcome_unknown" || failure.Message == "" || failure.Message != failure.Error || failure.Retryable || response.Code != http.StatusBadGateway || mutations.Load() != 1 {
+		t.Fatalf("lost response outcome: %d %s mutations=%d err=%v", response.Code, response.Body.String(), mutations.Load(), err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,7 +39,7 @@ func TestApplicationRejectsDeterministicFailureAndContinues(t *testing.T) {
 			t.Error(err)
 		}
 		if failed {
-			http.Error(w, "deterministic application fault", http.StatusInternalServerError)
+			http.Error(w, "deterministic application fault", http.StatusUnprocessableEntity)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -57,7 +58,7 @@ func TestApplicationRejectsDeterministicFailureAndContinues(t *testing.T) {
 		t.Fatalf("deterministic failure stopped application: %v", err)
 	}
 	var result httpResult
-	if err := json.Unmarshal(response, &result); err != nil || result.Status != http.StatusInternalServerError {
+	if err := json.Unmarshal(response, &result); err != nil || result.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("rejection response: %+v, %v", result, err)
 	}
 	checkpoint, err := files.ReplicationCheckpoint()
@@ -156,7 +157,7 @@ func TestApplicationBatchRejectsOnlyFailedMutation(t *testing.T) {
 			t.Fatal(err)
 		}
 		if string(name) == "bad" {
-			http.Error(w, "logical failure", 500)
+			http.Error(w, "logical failure", http.StatusUnprocessableEntity)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -189,7 +190,7 @@ func TestApplicationBatchRejectsOnlyFailedMutation(t *testing.T) {
 		}
 		want := http.StatusOK
 		if name == "bad" {
-			want = http.StatusInternalServerError
+			want = http.StatusUnprocessableEntity
 		}
 		if result.Status != want {
 			t.Fatalf("response %s: %+v", name, result)
@@ -702,7 +703,7 @@ func TestApplicationBatchAcceptanceIdentity(t *testing.T) {
 			t.Fatalf("durable acceptance differs from response: %+v, %v", record, err)
 		}
 	}
-	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) })
+	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnprocessableEntity) })
 	barriers := []command{
 		{ID: "control", Kind: "http", Method: "POST", URI: "/v1/tenants"},
 		{ID: "flush", Kind: "flush", Tenant: "tenant-a", IDs: []string{"invalid-key"}},
@@ -723,7 +724,7 @@ func TestApplicationBatchAcceptanceIdentity(t *testing.T) {
 		wantCheckpoint := index
 		if barrier.Kind == "http" {
 			var rejection httpResult
-			if err != nil || len(results) != 1 || json.Unmarshal(results[0], &rejection) != nil || rejection.Status != http.StatusInternalServerError {
+			if err != nil || len(results) != 1 || json.Unmarshal(results[0], &rejection) != nil || rejection.Status != http.StatusUnprocessableEntity {
 				t.Fatalf("HTTP rejection: %v, %v", results, err)
 			}
 			wantCheckpoint++
@@ -776,5 +777,69 @@ func TestApplicationPreservesCommittedLegacyTenantScope(t *testing.T) {
 				t.Fatalf("applied status = %d, want %d: %s", result.Status, want, result.Body)
 			}
 		})
+	}
+}
+
+func TestApplicationUnclassifiedServerErrorDoesNotAdvance(t *testing.T) {
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
+	failed := true
+	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := files.Put(r.Context(), "test/object", []byte("value")); err != nil {
+			t.Fatal(err)
+		}
+		if failed {
+			http.Error(w, "transient failure", http.StatusGatewayTimeout)
+		}
+	})
+	cmd, _ := newCommand("http")
+	cmd.Method, cmd.URI = http.MethodPost, "/v1/test"
+	data, _ := json.Marshal(cmd)
+	if _, err := app.Apply(context.Background(), 1, data); err == nil {
+		t.Fatal("transient server error became a durable rejection")
+	}
+	cp, err := files.ReplicationCheckpoint()
+	if err != nil || cp.Index != 0 {
+		t.Fatalf("checkpoint %+v %v", cp, err)
+	}
+	if _, err := files.Get(context.Background(), "test/object"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("rollback: %v", err)
+	}
+	failed = false
+	if _, err := app.Apply(context.Background(), 1, data); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplicatedBodyLimitMatchesStandaloneAndPreservesReadErrors(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1/commits", bytes.NewReader(make([]byte, 17<<20)))
+	data, err := readBody(httptest.NewRecorder(), request)
+	if err != nil || len(data) != 17<<20 {
+		t.Fatalf("HA rejected standalone-sized body: %d %v", len(data), err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/commits", bytes.NewReader(make([]byte, 33<<20)))
+	_, err = readBody(httptest.NewRecorder(), request)
+	var oversized *http.MaxBytesError
+	if !errors.As(err, &oversized) {
+		t.Fatalf("oversize error: %v", err)
+	}
+}
+
+func TestAmbiguousRaftWriteNeverAdvertisesBlindRetry(t *testing.T) {
+	for _, cause := range []error{replication.ErrUnavailable, context.DeadlineExceeded} {
+		recorder := httptest.NewRecorder()
+		cluster := &Cluster{}
+		cluster.writeError(recorder, fmt.Errorf("%w: %w", replication.ErrOutcomeUnknown, cause))
+		var body struct {
+			Code      string
+			Retryable bool
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.Code != "write_outcome_unknown" || body.Retryable || recorder.Header().Get("Retry-After") != "" {
+			t.Fatalf("ambiguous write suggested retry: %s %v", recorder.Body.String(), err)
+		}
 	}
 }

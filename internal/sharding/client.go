@@ -16,15 +16,18 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"golang.org/x/sync/singleflight"
 )
 
 type Client struct {
-	Token         string
-	HTTP          *http.Client
-	mu            sync.Mutex
-	leaders       map[string]cachedLeader
-	metrics       *observability.OperationMetrics
-	lastDiscovery atomic.Int64
+	Token          string
+	HTTP           *http.Client
+	mu             sync.Mutex
+	leaders        map[string]cachedLeader
+	metrics        *observability.OperationMetrics
+	lastDiscovery  atomic.Int64
+	discovery      singleflight.Group
+	discoveryEpoch atomic.Uint64
 }
 
 type cachedLeader struct {
@@ -42,7 +45,7 @@ func (e *HTTPError) Error() string { return fmt.Sprintf("shard HTTP %d: %s", e.S
 
 func NewClient(token string) *Client {
 	return &Client{Token: token, metrics: observability.NewOperationMetrics(), HTTP: &http.Client{
-		Transport:     &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: time.Minute},
+		Transport:     &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: 10 * time.Minute},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 }
@@ -63,47 +66,120 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (origin string, err er
 		return cached.origin, nil
 	}
 	c.metrics.Event("leader_cache_miss")
-	finishDiscovery := c.metrics.Start("leader_discovery")
-	defer func() { finishDiscovery(err) }()
-	remember := func(origin string) (string, error) {
-		origin = strings.TrimRight(origin, "/")
-		c.mu.Lock()
-		if len(c.leaders) >= 1024 || c.leaders == nil {
-			c.leaders = make(map[string]cachedLeader)
+	epoch := c.discoveryEpoch.Load()
+	flight := c.discovery.DoChan(fmt.Sprintf("%s/%s/%d", key, definition, epoch), func() (any, error) {
+		// One bounded discovery serves independent callers; one caller's cancellation
+		// must not abort every waiter. A forgotten result cannot repopulate the cache.
+		discoveryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		finishDiscovery := c.metrics.Start("leader_discovery")
+		origin, err := c.discoverLeader(discoveryCtx, shard, cached.origin)
+		finishDiscovery(err)
+		if err != nil {
+			return "", err
 		}
-		c.leaders[key] = cachedLeader{origin: origin, definition: string(definition), expires: time.Now().Add(2 * time.Second)}
+		c.mu.Lock()
+		if c.discoveryEpoch.Load() == epoch {
+			if len(c.leaders) >= 1024 || c.leaders == nil {
+				c.leaders = make(map[string]cachedLeader)
+			}
+			c.leaders[key] = cachedLeader{origin: origin, definition: string(definition), expires: time.Now().Add(2 * time.Second)}
+		}
 		c.mu.Unlock()
 		c.lastDiscovery.Store(time.Now().UnixNano())
 		return origin, nil
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result := <-flight:
+		if result.Err != nil {
+			return "", result.Err
+		}
+		return result.Val.(string), nil
 	}
+}
+func (c *Client) discoverLeader(ctx context.Context, shard Shard, preferred string) (string, error) {
 	ids := make([]uint64, 0, len(shard.Peers))
 	for id := range shard.Peers {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	for _, id := range ids {
+	for i, id := range ids {
+		if strings.TrimRight(shard.Peers[id], "/") == preferred {
+			ids[0], ids[i] = ids[i], ids[0]
+			break
+		}
+	}
+	if len(ids) == 0 {
+		return "", fmt.Errorf("no peers for shard %s", shard.ID)
+	}
+	results := make(chan string, len(ids))
+	probe := func(id uint64) {
 		probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer cancel()
 		response, err := c.request(probeCtx, shard, shard.Peers[id], http.MethodGet, "/raft/status", nil)
 		if err != nil {
-			cancel()
-			continue
+			results <- ""
+			return
 		}
+		defer response.Body.Close()
 		var status struct {
 			LeaderID uint64            `json:"leader_id"`
 			Peers    map[uint64]string `json:"peers"`
 		}
 		err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&status)
-		response.Body.Close()
-		cancel()
-		if err == nil && response.StatusCode == http.StatusOK && shard.Peers[status.LeaderID] != "" {
-			return remember(shard.Peers[status.LeaderID])
+		if err != nil || response.StatusCode != http.StatusOK {
+			results <- ""
+			return
 		}
-		if err == nil && response.StatusCode == http.StatusOK {
-			origin := status.Peers[status.LeaderID]
-			u, parseErr := url.Parse(origin)
-			if parseErr == nil && status.LeaderID > 0 && u.Scheme == "http" && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/") {
-				return remember(origin)
+		origin := shard.Peers[status.LeaderID]
+		if origin == "" {
+			origin = status.Peers[status.LeaderID]
+		}
+		u, err := url.Parse(origin)
+		if err != nil || status.LeaderID == 0 || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+			results <- ""
+			return
+		}
+		results <- strings.TrimRight(origin, "/")
+	}
+	go probe(ids[0])
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
+	received := 0
+	select {
+	case origin := <-results:
+		received++
+		if origin != "" {
+			return origin, nil
+		}
+	case <-timer.C:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	// Hedge a slow first peer, with at most four further probes in flight.
+	work := make(chan uint64, len(ids)-1)
+	for _, id := range ids[1:] {
+		work <- id
+	}
+	close(work)
+	for range min(4, len(ids)-1) {
+		go func() {
+			for id := range work {
+				probe(id)
 			}
+		}()
+	}
+	for received < len(ids) {
+		select {
+		case origin := <-results:
+			received++
+			if origin != "" {
+				return origin, nil
+			}
+		case <-ctx.Done():
+			return "", ctx.Err()
 		}
 	}
 	return "", fmt.Errorf("no leader discovered for shard %s", shard.ID)
@@ -112,6 +188,7 @@ func (c *Client) Leader(ctx context.Context, shard Shard) (origin string, err er
 func (c *Client) ForgetLeader(shard Shard) {
 	c.metrics.Event("leader_cache_invalidation")
 	c.mu.Lock()
+	c.discoveryEpoch.Add(1)
 	delete(c.leaders, shard.ClusterID+"/"+shard.ID)
 	c.mu.Unlock()
 }

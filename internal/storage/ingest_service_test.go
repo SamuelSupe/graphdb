@@ -619,6 +619,7 @@ func TestIngestServiceClearsWALFullAfterShortCompletion(t *testing.T) {
 	config := testIngestServiceConfig(t)
 	config.FlushInterval = time.Hour
 	config.WAL.MaxBytes = 4096
+	config.QueueMemoryBytes = config.WAL.MaxBytes / 4
 	config.WAL.SegmentBytes = config.WAL.MaxBytes
 	config.WAL.ControlReserveBytes = 512
 	service, err := OpenIngestService(store, config)
@@ -637,7 +638,7 @@ func TestIngestServiceClearsWALFullAfterShortCompletion(t *testing.T) {
 		acceptance, acceptErr := service.Accept(context.Background(), "tenant-a", ingestEntityRequest(
 			fmt.Sprintf("batch-full-%d", index), fmt.Sprintf("host:%d", index),
 		))
-		if errors.Is(acceptErr, ErrIngestWALFull) {
+		if errors.Is(acceptErr, ErrIngestWALFull) || errors.Is(acceptErr, ErrIngestQueueFull) {
 			break
 		}
 		if acceptErr != nil {
@@ -645,6 +646,12 @@ func TestIngestServiceClearsWALFullAfterShortCompletion(t *testing.T) {
 		}
 		pending = append(pending, acceptance.pending)
 	}
+	// A queue larger than WAL payload capacity is now rejected at startup.
+	// Preserve the completion/readiness regression with the full signal already
+	// observed by an appender, without requiring an invalid configuration.
+	service.mu.Lock()
+	service.walFull = true
+	service.mu.Unlock()
 	if len(pending) == 0 || len(pending) >= 128 || service.Readiness().Writable {
 		t.Fatalf("WAL did not enter full state with a short pending queue: pending=%d readiness=%#v", len(pending), service.Readiness())
 	}
@@ -1911,6 +1918,7 @@ func testIngestServiceConfig(t *testing.T) IngestServiceConfig {
 	config.WAL.FsyncInterval = time.Millisecond
 	config.WAL.BufferBytes = 1024
 	config.WAL.MaxBytes = 16 * 1024 * 1024
+	config.QueueMemoryBytes = config.WAL.MaxBytes / 4
 	config.WAL.SegmentBytes = 1024 * 1024
 	config.FlushInterval = 10 * time.Millisecond
 	config.FlushTimeout = 5 * time.Second

@@ -48,18 +48,29 @@ func (s *TenantStore) QueryManifest(ctx context.Context, tenantID string) (manif
 		version, versionErr := s.CurrentVersion(ctx, tenantID)
 		return Manifest{TenantID: tenantID, Version: version}, versionErr
 	}
+
 	memo.mu.Lock()
-	defer memo.mu.Unlock()
 	memo.resetForTenant(s, tenantID)
 	if memo.manifestSet {
 		cached = true
-		return memo.manifest, memo.manifestErr
+		manifest, err = memo.manifest, memo.manifestErr
+		memo.mu.Unlock()
+		return
 	}
-	version, versionErr := s.CurrentVersion(ctx, tenantID)
-	memo.manifest = Manifest{TenantID: tenantID, Version: version}
-	memo.manifestErr = versionErr
-	memo.manifestSet = true
-	return memo.manifest, memo.manifestErr
+	memo.mu.Unlock()
+	version, loadErr := s.CurrentVersion(ctx, tenantID)
+	manifest, err = Manifest{TenantID: tenantID, Version: version}, loadErr
+	memo.mu.Lock()
+	defer memo.mu.Unlock()
+	if memo.store == s && memo.tenantID == tenantID && cacheableMemoError(ctx, err) {
+		if memo.manifestSet {
+			cached = true
+			return memo.manifest, memo.manifestErr
+		}
+		memo.manifest, memo.manifestErr, memo.manifestSet = manifest, err, true
+	}
+	return
+
 }
 
 func (s *TenantStore) QueryCatalog(ctx context.Context, tenantID string, expectedVersion int64) (catalog IndexCatalog, err error) {
@@ -83,20 +94,24 @@ func (s *TenantStore) QueryCatalog(ctx context.Context, tenantID string, expecte
 	if memo == nil {
 		return s.GetIndexCatalogAtVersion(ctx, tenantID, expectedVersion)
 	}
+
+	memo.mu.Lock()
+	memo.resetForTenant(s, tenantID)
+	if memo.catalogSet && (memo.catalogVer == expectedVersion || memo.catalogErr == nil && memo.catalog.Version == expectedVersion) {
+		cached = true
+		catalog, err = memo.catalog, memo.catalogErr
+		memo.mu.Unlock()
+		return
+	}
+	memo.mu.Unlock()
+	catalog, err = s.GetIndexCatalogAtVersion(ctx, tenantID, expectedVersion)
 	memo.mu.Lock()
 	defer memo.mu.Unlock()
-	memo.resetForTenant(s, tenantID)
-	if memo.catalogSet &&
-		(memo.catalogVer == expectedVersion ||
-			memo.catalogErr == nil &&
-				memo.catalog.Version == expectedVersion) {
-		cached = true
-		return memo.catalog, memo.catalogErr
+	if memo.store == s && memo.tenantID == tenantID && cacheableMemoError(ctx, err) {
+		memo.catalog, memo.catalogErr, memo.catalogSet, memo.catalogVer = catalog, err, true, expectedVersion
 	}
-	memo.catalog, memo.catalogErr = s.GetIndexCatalogAtVersion(ctx, tenantID, expectedVersion)
-	memo.catalogSet = true
-	memo.catalogVer = expectedVersion
-	return memo.catalog, memo.catalogErr
+	return
+
 }
 
 func (s *TenantStore) QueryReverseCatalog(
@@ -121,18 +136,24 @@ func (s *TenantStore) QueryReverseCatalog(
 	if memo == nil {
 		return s.GetReverseIndexCatalog(ctx, tenantID, version)
 	}
+
 	memo.mu.Lock()
-	defer memo.mu.Unlock()
 	memo.resetForTenant(s, tenantID)
 	if memo.reverseSet && memo.reverseVer == version {
 		cached = true
-		return memo.reverse, memo.reverseErr
+		catalog, err = memo.reverse, memo.reverseErr
+		memo.mu.Unlock()
+		return
 	}
-	memo.reverse, memo.reverseErr =
-		s.GetReverseIndexCatalog(ctx, tenantID, version)
-	memo.reverseSet = true
-	memo.reverseVer = version
-	return memo.reverse, memo.reverseErr
+	memo.mu.Unlock()
+	catalog, err = s.GetReverseIndexCatalog(ctx, tenantID, version)
+	memo.mu.Lock()
+	defer memo.mu.Unlock()
+	if memo.store == s && memo.tenantID == tenantID && cacheableMemoError(ctx, err) {
+		memo.reverse, memo.reverseErr, memo.reverseSet, memo.reverseVer = catalog, err, true, version
+	}
+	return
+
 }
 
 func setReadMemoSpanAttributes(span trace.Span, cached bool, version int64) {
@@ -162,4 +183,8 @@ func (m *queryReadMemo) resetForTenant(store *TenantStore, tenantID string) {
 	m.reverseErr = nil
 	m.reverseSet = false
 	m.reverseVer = 0
+}
+
+func cacheableMemoError(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }

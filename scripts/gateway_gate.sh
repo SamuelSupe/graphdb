@@ -35,7 +35,7 @@ docker run -d --name "$PROJECT-data" --network "$PROJECT" --network-alias graphd
 docker run -d --name "$PROJECT-identity" --network "$PROJECT" --network-alias identity-provider \
   --cpus 1 --cpu-shares 4096 --memory 256m --memory-swap 256m \
   -v "$ROOT/scripts/gateway-gate/identity.py:/identity.py:ro" \
-  --entrypoint python3 golang:1.26.7-bookworm /identity.py >/dev/null
+  --entrypoint python3 golang:1.27.3-bookworm /identity.py >/dev/null
 docker run -d --name "$PROJECT-nginx" --network "$PROJECT" -p "127.0.0.1:$PORT:443" \
   --cpus 1 --cpu-shares 4096 --memory 256m --memory-swap 256m \
   -e NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE=1 \

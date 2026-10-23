@@ -324,6 +324,11 @@ func decodeParquetCommitItems(ctx context.Context, data []byte) ([]parquetCommit
 			return nil, err
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
+			for _, ordinal := range []int64{columns.parentOrdinal.Value(i), columns.childOrdinal.Value(i), columns.nestedOrdinal.Value(i)} {
+				if ordinal < 0 || ordinal >= table.NumRows() {
+					return nil, fmt.Errorf("invalid parquet commit ordinal %d for %d rows", ordinal, table.NumRows())
+				}
+			}
 			key := commitBuildKey(columns.segmentKey.Value(i), columns.commitID.Value(i), columns.version.Value(i))
 			build := builders[key]
 			if build == nil {

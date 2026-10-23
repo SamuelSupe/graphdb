@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -1301,8 +1303,10 @@ func TestHAWALBackpressureLeavesClusterAvailable(t *testing.T) {
 		body := fmt.Sprintf(`{"source":"agent","collector_id":"collector","batch_id":"tail-%d","items":[{"external_id":"host:%d","entity":{"id":"host:%d","kind":"host"}}]}`, i, i, i)
 		group.mustRequest(leader, "POST", "/v1/ingest/batches", body, http.StatusAccepted)
 	}
+	// Full batches may already have been published by the acceptance wakeup.
+	// Drive the same committed barrier without assuming a manual flush count.
 	for range 2 {
-		if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil {
+		if err := group.nodes[leader].cluster.flushPending(context.Background()); err != nil && !errors.Is(err, storage.ErrBackpressure) {
 			t.Fatal(err)
 		}
 	}
@@ -2517,7 +2521,7 @@ func TestDeterministicHTTPFailureRollsBackAcrossReplicas(t *testing.T) {
 			result := httptest.NewRecorder()
 			next.ServeHTTP(result, r)
 			if bytes.Contains(body, []byte("host:logical-failure")) && result.Code == http.StatusOK {
-				http.Error(w, "deterministic failure after mutation", http.StatusInternalServerError)
+				http.Error(w, "deterministic failure after mutation", http.StatusUnprocessableEntity)
 				return
 			}
 			for key, values := range result.Header() {
@@ -2528,7 +2532,7 @@ func TestDeterministicHTTPFailureRollsBackAcrossReplicas(t *testing.T) {
 		})
 	})
 	leader := group.leader(-1)
-	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:logical-failure","kind":"host"}]}}`, http.StatusInternalServerError)
+	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:logical-failure","kind":"host"}]}}`, http.StatusUnprocessableEntity)
 	group.mustRequest(leader, http.MethodPost, "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"host:good","kind":"host"}]}}`, http.StatusOK)
 	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
 	if err != nil {
@@ -2592,5 +2596,196 @@ func TestBrowserMutationThroughFollowerPreservesOrigin(t *testing.T) {
 	group.nodes[(leader+1)%len(group.nodes)].handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("same-origin write through follower failed: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestHALongReadsDoNotFreezeApplication(t *testing.T) {
+	for _, control := range []bool{false, true} {
+		t.Run(fmt.Sprint("control=", control), func(t *testing.T) {
+			group := newTestCluster(t, false)
+			leader := group.leader(-1)
+			group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+			cluster := group.nodes[leader].cluster
+			readCtx, cancelRead := context.WithCancel(context.Background())
+			defer cancelRead()
+			r := httptest.NewRequest(http.MethodGet, "/v1/control/integrity-audit", nil).WithContext(readCtx)
+			if control {
+				r.URL.Path = "/v1/entities"
+			}
+			r.Header.Set("X-Tenant-ID", "tenant-a")
+			entered, done := make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(done)
+				cluster.ServeRoute(httptest.NewRecorder(), r, false, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-r.Context().Done() }))
+			}()
+			defer func() { cancelRead(); <-done }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("read did not enter")
+			}
+			cmd, _ := newCommand("http")
+			cmd.Method, cmd.URI, cmd.Tenant = http.MethodPost, "/v1/commits", "tenant-a"
+			cmd.Body = []byte(`{"mutations":{"upsert_entities":[{"id":"host:a","kind":"host"}]}}`)
+			if control {
+				cmd.URI = "/v1/compact"
+				cmd.Body = []byte(`{}`)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if _, err := cluster.propose(ctx, cmd); err != nil {
+				t.Fatalf("long read blocked apply: %v", err)
+			}
+		})
+	}
+}
+
+func TestHAFlushSkipsBlockedTenant(t *testing.T) {
+	group := newTestCluster(t, true)
+	leader := group.leader(-1)
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		group.mustRequest(leader, "POST", "/v1/tenants", fmt.Sprintf(`{"tenant_id":%q}`, tenant), http.StatusOK)
+		request := httptest.NewRequest("POST", "/v1/ingest/batches", strings.NewReader(`{"source":"agent","collector_id":"collector","batch_id":"batch","items":[{"external_id":"a","entity":{"id":"host:a","kind":"host"}}]}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Tenant-ID", tenant)
+		response := httptest.NewRecorder()
+		group.nodes[leader].handler.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("accept %s: %d %s", tenant, response.Code, response.Body.String())
+		}
+	}
+	cluster := group.nodes[leader].cluster
+	cluster.App.mu.Lock()
+	cluster.App.Store.Backpressure = storage.NewWritePressure(storage.BackpressureConfig{CASConflictThreshold: 1})
+	cluster.App.Store.Backpressure.RecordManifestCASConflict("tenant-a")
+	cluster.App.mu.Unlock()
+	if err := cluster.flushPending(context.Background()); !errors.Is(err, storage.ErrBackpressure) {
+		t.Fatalf("missing blocked tenant diagnostic: %v", err)
+	}
+	cluster.App.mu.RLock()
+	version, err := cluster.App.Store.CurrentVersion(context.Background(), "tenant-b")
+	cluster.App.mu.RUnlock()
+	if err != nil || version != 1 {
+		t.Fatalf("healthy tenant starved behind blocked head: version=%d err=%v", version, err)
+	}
+}
+
+func TestHASlowNetworkReadCannotRetainControlBarrier(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	entered, finished := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		group.nodes[leader].cluster.ServeRoute(w, r, false, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_ = http.NewResponseController(w).Flush()
+			close(entered)
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 32<<20))
+			close(finished)
+		}))
+	}))
+	defer server.Close()
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetReadBuffer(1024)
+	}
+	if _, err = fmt.Fprintf(conn, "POST /v1/query HTTP/1.1\r\nHost: localhost\r\nX-Tenant-ID: tenant-a\r\nContent-Length: 0\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("network read never entered")
+	}
+	select {
+	case <-finished:
+		t.Fatal("fixture did not retain a blocked socket write")
+	case <-time.After(50 * time.Millisecond):
+	}
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-b"}`, http.StatusOK, 3*time.Second)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("revoked socket writer did not release")
+	}
+}
+
+func TestHACommitAcceptsStandaloneBodyLimitThroughRaftEncoding(t *testing.T) {
+	group := newTestCluster(t, false)
+	// This checks the encoded request budget, not election timing. Race
+	// instrumentation of both base64 envelopes can outlast the normal election
+	// window; keep quorum changes from masking a size rejection in this fixture.
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i, replica := range group.nodes {
+		replica.cfg.Raft.ElectionTicks = 100
+		group.start(i)
+	}
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	core := `{"mutations":{"upsert_entities":[{"id":"host:body-limit","kind":"host"}]}}`
+	body := core + strings.Repeat(" ", httpapi.MaxWriteRequestBytes-len(core))
+	group.mustRequest(leader, "POST", "/v1/commits", body, http.StatusOK, time.Minute)
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+	}
+	group.mustRequest(leader, "GET", "/v1/entities/host:body-limit", "", http.StatusOK)
+}
+
+type lostRaftWriteResponse struct {
+	base     http.RoundTripper
+	attempts atomic.Int64
+}
+
+func (t *lostRaftWriteResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(r)
+	if err == nil && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/v1/commits") {
+		response.Body.Close()
+		t.attempts.Add(1)
+		return nil, io.ErrUnexpectedEOF
+	}
+	return response, err
+}
+func TestFollowerLostWriteResponseDoesNotSuggestBlindRetry(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	follower := group.nodes[(leader+1)%len(group.nodes)].cluster
+	client := sharding.NewClient("")
+	base := client.HTTP.Transport
+	defer base.(*http.Transport).CloseIdleConnections()
+	transport := &lostRaftWriteResponse{base: base}
+	client.HTTP.Transport = transport
+	proxy := &Cluster{Node: follower.Node, config: follower.config, shards: client}
+	body := []byte(`{"mutations":{"upsert_entities":[{"id":"host:lost-response","kind":"host"}]}}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/commits", bytes.NewReader(body))
+	request.Header.Set("X-Tenant-ID", "tenant-a")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	proxy.forward(response, request, body, false)
+	var failure struct {
+		Code      string
+		Error     string
+		Message   string
+		Retryable bool
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Code != "write_outcome_unknown" || failure.Message == "" || failure.Message != failure.Error || failure.Retryable || transport.attempts.Load() != 1 {
+		t.Fatalf("lost forwarded response: %s attempts=%d err=%v", response.Body.String(), transport.attempts.Load(), err)
+	}
+	graph, manifest, err := group.nodes[leader].store.Load(context.Background(), "tenant-a")
+	if err != nil || manifest.Version != 1 {
+		t.Fatalf("write did not commit exactly once: %d %v", manifest.Version, err)
+	}
+	if _, ok := graph.GetEntity("host:lost-response"); !ok {
+		t.Fatal("forwarded mutation missing")
 	}
 }

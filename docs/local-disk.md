@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.4.0**; see [release validation](validation-v2.4.0.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.1**; see [release validation](validation-v2.4.1.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are
@@ -96,6 +96,9 @@ manifest and catalogs. Local candidate pages contain at most 512 files. Between
 objects, GC yields after 50 ms of work or 16 MiB of candidate bytes; a single
 object always makes progress, so this is a cooperative budget, not a hard latency
 limit. The explicit total deletion budget and dry-run cursor remain supported.
+Resume cursors are opaque and can identify a cleanup phase. Orphan-snapshot
+scans preserve retained, current and unfinished future versions across pauses;
+their cursors never resume whole-version deletion. Pass returned cursors unchanged.
 Files modified after the scan starts are left for a later run. Only the current
 candidate pages and directory entries on the listing path are retained, rather
 than a complete prefix listing. Very large individual directories still require
@@ -377,3 +380,13 @@ The standalone WAL can fold completed history into a checksummed `.checkpoint` c
 Full index rebuilds write and release one field's postings before building the next. Kind ID order is reused and overlapping schema/explicit definitions are scanned once. Producing postings for every indexed field still requires work proportional to the indexed field values; this is not a constant-memory or constant-time rebuild guarantee.
 
 The fixed 64-bucket entity/edge rewrite limit remains under review; it is not fixed by these cache, WAL, or rebuild changes. Release qualification remains pending until its bounded-write regression is resolved.
+
+### Unreleased review corrections
+
+Sync WAL group ACKs follow a segment sync and an in-place sync of a preallocated, checksummed two-slot `.durable` file. The older36-byte marker is read and migrated on open. A damaged slot never licenses truncation using an older boundary; corrupt acknowledged frames still stop recovery. Both slots invalid also stop recovery. Older binaries cannot read the new marker: drain WAL before downgrading and preserve the complete directory in backups. Temporary marker/checkpoint files abandoned by a killed owner are reclaimed only under the WAL lock.
+
+Checkpoint work is amortized by completed bytes (at least the larger of pending bytes and one segment), rather than128 completed requests. Concurrent pressure requests coalesce by checkpoint generation. JSON is streamed per pending request, retaining the v1 checkpoint format; recovery still scans WAL and checkpoint construction still runs on the WAL writer. Queue capacity must be smaller than WAL capacity minus the control reserve. Resident durable prepared plans count toward queue pressure; already admitted flushes may exceed that admission budget, which is not a hard process RSS limit. Shutdown retries keep backoff. Latency pressure expires with its observation window, even without new successful writes.
+
+Local path spelling checks retain a bounded cache (256directories,8MiB), revalidated by parent identity, timestamp and size; component symlink checks remain. GC reuses adjacency reachability only within one run and invalidates it on root publication. A bad catalog leaves index cleanup failed while allowing independent snapshot, task and dead-letter retention to run. Local manual-backup task metadata/results are retained because the backup manifest requires them; queued HA tasks are not expired by task retention. Dead-letter replay keeps precommit failures pending and reuses a durable attempt identity after claim expiry. Manifest repair rejects conflicting commit IDs at the same version; the commit format has no parent-ID chain, so this does not prove publication of an otherwise ambiguous orphan.
+
+Pruned remote edge pages retain only compact footer statistics (up to256KiB per footer) in the existing bounded object cache, preserving repeated-scan reuse without retaining or writing the rejected payload.

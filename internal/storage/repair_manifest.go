@@ -112,6 +112,29 @@ func (s *TenantStore) reconstructManifestFromObjects(ctx context.Context, tenant
 	if err != nil {
 		return loadedGraph{}, err
 	}
+	identities := make(map[int64]string)
+	check := func(commit graph.Commit) error {
+		if commit.Version <= manifest.SnapshotVersion {
+			return nil
+		}
+		if previous, exists := identities[commit.Version]; exists && previous != commit.ID {
+			return fmt.Errorf("ambiguous commit version %d (%q, %q); restore a verified backup instead of guessing publication history", commit.Version, previous, commit.ID)
+		}
+		identities[commit.Version] = commit.ID
+		return nil
+	}
+	for _, item := range scan.Items {
+		if err := check(item.Commit); err != nil {
+			return loadedGraph{}, err
+		}
+	}
+	for _, segment := range segments {
+		for _, item := range segment.Items {
+			if err := check(item.Commit); err != nil {
+				return loadedGraph{}, err
+			}
+		}
+	}
 	g = applyReconstructedCommitTail(g, &manifest, segments, scan.Items)
 	if manifest.Version != g.Version {
 		return loadedGraph{}, fmt.Errorf("reconstructed manifest version %d does not match graph version %d", manifest.Version, g.Version)

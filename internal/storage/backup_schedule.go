@@ -217,7 +217,9 @@ func (s *TenantStore) ScheduleObjectBackup(ctx context.Context, tenant string, n
 			"keep_count": *policy.KeepCount, "max_age_seconds": *policy.MaxAgeSeconds,
 			"restore_drill": *policy.RestoreDrillIntervalSeconds > 0 && !now.Before(state.LastDrill.Add(time.Duration(*policy.RestoreDrillIntervalSeconds)*time.Second)),
 		}
-		if state.Failures > 0 {
+		// Retries keep the captured version within one bounded attempt cycle.
+		// A permanently damaged capture must not suppress all future backups.
+		if state.Failures > 0 && state.Failures < 64 && state.Failures%max(s.retryCount(), 1) != 0 {
 			params = retryTaskParams(previous)
 			params["retry_of"] = previous.ID
 		}

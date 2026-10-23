@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -273,5 +274,56 @@ func TestReadTerminalTaskAllowsNewAdmission(t *testing.T) {
 				t.Fatalf("completed task blocked new work: %+v %v", next, err)
 			}
 		})
+	}
+}
+
+type taskHistoryCounter struct {
+	ObjectStore
+	reads int
+}
+
+func (s *taskHistoryCounter) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
+	if strings.Contains(key, "/tasks/") {
+		s.reads++
+	}
+	return s.ObjectStore.GetWithMeta(ctx, key)
+}
+func TestReplicatedTaskAdmissionDoesNotDecodeHistoryAgain(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	store.ReplicationMode = true
+	ctx := context.Background()
+	if _, err = store.InitTenant(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 30 {
+		if err = store.saveTask(ctx, Task{ID: fmt.Sprintf("history-%d", i), TenantID: "tenant-a", Type: TaskTypeCompact, Status: TaskStatusSucceeded, StartedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counted := &taskHistoryCounter{ObjectStore: files}
+	store.Objects = counted
+	first, err := store.StartTask(ReplicatedContext(ctx, "start-a", time.Now()), "tenant-a", TaskTypeCompact, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted.reads = 0
+	next, err := store.StartTask(ReplicatedContext(ctx, "start-b", time.Now()), "tenant-a", TaskTypeCompact, nil)
+	if err != nil || first.ID != next.ID {
+		t.Fatalf("queued task reuse: %+v %v", next, err)
+	}
+	if counted.reads > 2 {
+		t.Fatalf("decoded historical tasks again: %d reads", counted.reads)
+	}
+	if _, err = store.CancelTask(ctx, "tenant-a", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	next, err = store.StartTask(ReplicatedContext(ctx, "start-c", time.Now()), "tenant-a", TaskTypeCompact, nil)
+	if err != nil || next.ID == first.ID {
+		t.Fatalf("cancelled task remained in queue index: %+v %v", next, err)
 	}
 }

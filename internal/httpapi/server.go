@@ -582,7 +582,7 @@ func observedRoute(r *http.Request) string {
 	case path == "/v1/control/integrity-audit":
 		return "GET /v1/control/integrity-audit"
 	default:
-		return r.Method + " " + path
+		return "unmatched"
 	}
 }
 

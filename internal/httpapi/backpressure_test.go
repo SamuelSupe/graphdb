@@ -243,3 +243,17 @@ func (s *timeoutMatchingPutStore) PutConditional(ctx context.Context, key string
 	}
 	return s.ObjectStore.PutConditional(ctx, key, data, condition)
 }
+
+func TestReplicatedWriteKeepsCallerCancellationWithoutLocalTimeout(t *testing.T) {
+	server := &Server{WriteExecutionTimeout: time.Nanosecond}
+	parent, cancelParent := context.WithCancel(context.Background())
+	ctx, release := server.writeExecutionContext(storage.ReplicatedContext(parent, "committed", time.Now()))
+	defer release()
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("local execution deadline applied to committed replication")
+	}
+	cancelParent()
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("caller cancellation lost: %v", ctx.Err())
+	}
+}

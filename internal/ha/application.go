@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -59,6 +60,8 @@ type Application struct {
 	Catalog             bool
 	mu                  sync.RWMutex
 	readers             sync.RWMutex
+	readMu              sync.Mutex
+	activeReads         map[*applicationRead]struct{}
 	pending             map[string]pendingAcceptance
 	pendingBytes        int64
 	queueObservation    atomic.Pointer[queueObservation]
@@ -91,7 +94,7 @@ func (a *Application) Snapshot(ctx context.Context) ([]byte, error) {
 	return data, replicationSnapshotError(err)
 }
 func (a *Application) Restore(ctx context.Context, index uint64, data []byte) error {
-	a.readers.Lock()
+	a.lockReaders()
 	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -140,7 +143,7 @@ func (a *Application) captureSnapshot(ctx context.Context) (*storage.Replication
 }
 
 func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source io.ReadSeeker) error {
-	a.readers.Lock()
+	a.lockReaders()
 	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -187,7 +190,7 @@ func (a *Application) ApplyBatch(ctx context.Context, entries []replication.Appl
 	if err := json.Unmarshal(entries[0].Data, &cmd); err != nil {
 		return nil, err
 	}
-	a.readers.Lock()
+	a.lockReaders()
 	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -233,7 +236,7 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 	// Keep acceptance separate from graph publication so its durable response
 	// does not wait for a later flush in the same log window.
 	if !publication {
-		a.readers.Lock()
+		a.lockReaders()
 		defer a.readers.Unlock()
 	}
 	a.mu.Lock()
@@ -266,7 +269,7 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		if cmd.Prefix != "" && cmd.Prefix != a.snapshotTenantPrefix() {
 			return nil, fmt.Errorf("replicated data prefix %q differs from configured prefix %q", cmd.Prefix, a.snapshotTenantPrefix())
 		}
-		if !publication {
+		if cmd.Kind == "sharding" {
 			a.pending = nil
 		}
 	}
@@ -382,7 +385,17 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		request.Header = cmd.Header
 		writer := httptest.NewRecorder()
 		a.Handler.ServeHTTP(writer, request)
-		if writer.Code >= 500 {
+		// Local deadlines, pressure and unknown server failures cannot establish
+		// a deterministic rejection of a committed command on every replica.
+		var applicationError struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(writer.Body.Bytes(), &applicationError)
+		transient429 := writer.Code == 429 && applicationError.Code != string(httpapi.ErrorCodeQuotaExceeded)
+		if writer.Code >= 500 || writer.Code == 408 || transient429 || writer.Code == 499 {
+			return nil, fmt.Errorf("replicated HTTP application failed with status %d", writer.Code)
+		}
+		if writer.Code >= 400 {
 			response, err := json.Marshal(httpResult{Status: writer.Code, Header: writer.Header(), Body: writer.Body.Bytes()})
 			if err != nil {
 				return nil, err
@@ -468,5 +481,5 @@ func writeResult(w http.ResponseWriter, data []byte) {
 }
 
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	return io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<20))
+	return io.ReadAll(http.MaxBytesReader(w, r.Body, httpapi.MaxWriteRequestBytes))
 }

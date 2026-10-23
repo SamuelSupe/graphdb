@@ -61,14 +61,14 @@ func (s *TenantStore) adjacencyObjectKey(ref AdjacencyRef) string {
 	return path.Join(s.Prefix, ref.Key)
 }
 func (s *TenantStore) loadAdjacencyNode(ctx context.Context, tenant string, ref AdjacencyRef) (adjacencyNode, error) {
+	key := s.adjacencyObjectKey(ref)
+	if ref.Key != path.Clean(ref.Key) || strings.HasPrefix(ref.Key, "/") || !strings.HasPrefix(ref.Key, "tenants/"+tenant+"/indexes/parquet/versions/") || !isAdjacencyObjectKey(ref.Key) {
+		return adjacencyNode{}, fmt.Errorf("invalid adjacency object key")
+	}
+	if err := s.validateTenantObjectKey(tenant, key); err != nil {
+		return adjacencyNode{}, err
+	}
 	n, ok, err := s.adjacencyCache.load(ctx, ref.Key+"\x00"+ref.Hash, func() (adjacencyNode, bool, error) {
-		key := s.adjacencyObjectKey(ref)
-		if ref.Key != path.Clean(ref.Key) || strings.HasPrefix(ref.Key, "/") || !strings.HasPrefix(ref.Key, "tenants/"+tenant+"/indexes/parquet/versions/") || !isAdjacencyObjectKey(ref.Key) {
-			return adjacencyNode{}, false, fmt.Errorf("invalid adjacency object key")
-		}
-		if err := s.validateTenantObjectKey(tenant, key); err != nil {
-			return adjacencyNode{}, false, err
-		}
 		data, _, err := s.Objects.GetWithMeta(ctx, key)
 		if err != nil {
 			return adjacencyNode{}, false, err

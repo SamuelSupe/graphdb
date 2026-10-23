@@ -1,6 +1,6 @@
 # Error Code Contract
 
-Applies to **GGraphDB 2.4.0**; see [release validation](validation-v2.4.0.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.1**; see [release validation](validation-v2.4.1.md) and [version boundaries](naming-and-compatibility.md).
 
 All non-2xx HTTP errors use this envelope:
 
@@ -53,6 +53,7 @@ The following top-level `code` values are stable:
 | `write_backpressure` | 429 | yes | Generic write backpressure category. |
 | `request_timeout` | 504 | yes | Request execution timed out. |
 | `raft_unavailable` | 503/504 | yes | Raft leader, quorum, application, or snapshot capacity is unavailable. Use the HA entry point and retain write idempotency on retries. |
+| `write_outcome_unknown` | 502/503/504 | no | A submitted or forwarded mutation may have committed but its result was not observed. Check its batch/idempotency status; repeat only the exact request with the same durable identity. |
 | `tenant_generation_changed` | 409 | no | Restore or purge replaced the tenant incarnation. Obtain a new generation before using min_version or retrying fenced mutations. |
 | `ingest_queue_full` | 503 | yes | Replicated accepted requests reached their byte budget. |
 | `request_canceled` | 499 | no | Client or caller canceled the request. |

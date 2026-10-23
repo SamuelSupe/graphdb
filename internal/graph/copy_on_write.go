@@ -5,18 +5,19 @@ import "maps"
 // copyOnWriteState tracks index buckets shared with the source graph by a
 // storage-only mutation copy. Public graph copies continue to be fully deep.
 type copyOnWriteState struct {
-	outNodes        map[string]struct{}
-	inNodes         map[string]struct{}
-	edgeAliases     map[string]struct{}
-	edgeAliasCopy   bool
-	edgeTypes       map[string]struct{}
-	edgeTypeCopy    bool
-	entityAliases   map[string]struct{}
-	entityAliasCopy bool
-	identityKinds   map[string]struct{}
-	fieldKinds      map[string]struct{}
-	fieldNames      map[string]map[string]struct{}
-	fieldValues     map[string]map[string]map[string]struct{}
+	outNodes         map[string]struct{}
+	inNodes          map[string]struct{}
+	edgeAliases      map[string]struct{}
+	edgeAliasCopy    bool
+	edgeTypes        map[string]struct{}
+	edgeTypeCopy     bool
+	entityAliases    map[string]struct{}
+	entityAliasCopy  bool
+	identityKinds    map[string]struct{}
+	fieldKinds       map[string]struct{}
+	kindEntityCopies map[string]struct{}
+	fieldNames       map[string]map[string]struct{}
+	fieldValues      map[string]map[string]map[string]struct{}
 }
 
 type storageMutationImpact struct {
@@ -71,6 +72,8 @@ func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 		edgeTypeIndex:           g.edgeTypeIndex,
 		entityAliasIndex:        g.entityAliasIndex,
 		kindCounts:              storageMutationMap(g.kindCounts, impact.entities),
+		kindEntityIDs:           g.kindEntityIDs.Clone(),
+		nonScalarFields:         g.nonScalarFields.Clone(),
 		fieldIndex:              storageMutationMap(g.fieldIndex, impact.entities),
 		identityIndex:           storageMutationMap(g.identityIndex, impact.entities || impact.ciTypes),
 		contentFingerprint:      fingerprint,

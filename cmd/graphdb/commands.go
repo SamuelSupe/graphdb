@@ -305,7 +305,7 @@ Environment:
   GRAPHDB_RAFT_DIR=${GRAPHDB_DATA_DIR}/.graphdb-raft
   GRAPHDB_RAFT_SNAPSHOT_ENTRIES=1000
   GRAPHDB_RAFT_MAX_SNAPSHOT_BYTES=512MiB
-  GRAPHDB_RAFT_STREAM_SNAPSHOTS=false (enable after all members support format 2)
+  GRAPHDB_RAFT_STREAM_SNAPSHOTS=true (negotiated format2; false forces inline compatibility)
   GRAPHDB_RAFT_PROTOCOL_VERSION=1 (2 enables prepared compact/index maintenance)
   GRAPHDB_DISK_MIN_FREE_BYTES=256MiB
   GRAPHDB_DISK_MIN_FREE_PERCENT=5

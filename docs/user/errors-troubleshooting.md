@@ -1,6 +1,6 @@
 # Errors And Troubleshooting
 
-Applies to **GGraphDB 2.4.0**; see [release validation](../validation-v2.4.0.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.1**; see [release validation](../validation-v2.4.1.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](errors-troubleshooting.zh-CN.md)
 
@@ -40,6 +40,7 @@ Full contract: [../error_codes.md](../error_codes.md).
 | `idempotency_conflict` | Same key, different payload | Use a new key or resend exact original body. |
 | `idempotency_in_progress` | Another request is processing the same key | Retry the exact request with the same key after backoff. |
 | `write_conflict` | Concurrent publication or precondition conflict | Inspect local status and retain the idempotency key. For preconditioned writes, reload the head and resolve the conflict. |
+| `write_outcome_unknown` | Write result was lost after submission or forwarding | Query its identity/status first; never create a new identity for a blind retry. An exact retry must retain the same idempotency key. |
 | `version_conflict` | `expected_version` no longer matches | Reload the head and resolve the caller's precondition; do not blind-retry. |
 | `lease_held` | Duplicate/stale local writer protection | Ensure only one local-coordination writer per tenant. |
 | `index_stale` | Missing/stale indexes | Check index health: wait for `updating` work to catch up; otherwise rebuild, or use supported fallback. |

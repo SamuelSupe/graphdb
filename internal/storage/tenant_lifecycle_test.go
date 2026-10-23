@@ -1275,3 +1275,45 @@ func TestLocalRestoreAdmissionDistinguishesDryRun(t *testing.T) {
 		t.Fatalf("real restore silently returned dry-run task: same_id=%s returned_dry_run=%v requested_overwrite=true", restore.ID, restore.Params["dry_run"])
 	}
 }
+
+func TestAutomaticBackupEventuallyRecapturesPoisonedInput(t *testing.T) {
+	for _, failures := range []int{3, 64} {
+		t.Run(fmt.Sprint(failures), func(t *testing.T) {
+			ctx := context.Background()
+			store := NewTenantStore(NewMemoryStore(), "test")
+			// Hold execution while inspecting the admitted replacement input.
+			store.taskExecutionSlots = make(chan struct{})
+			defer store.ShutdownTasks(ctx)
+			var err error
+			store.Backups, err = backupstore.New(ctx, backupstore.Config{Bucket: "test", Prefix: "backups", Endpoint: "http://127.0.0.1:1", AccessKeyID: "test", SecretAccessKey: "test", PathStyle: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = store.InitTenant(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			enabled := true
+			if _, err = store.PutTenantConfig(ctx, "tenant-a", TenantConfig{Backup: TenantBackupConfig{Enabled: &enabled}}); err != nil {
+				t.Fatal(err)
+			}
+			old := Task{ID: "poison", TenantID: "tenant-a", Type: TaskTypeTenantBackup, Status: TaskStatusFailed, Params: map[string]any{"automatic": true, "destination": "object"}, Checkpoint: map[string]any{"remote_backup_id": "scheduled-poison", "snapshot_captured": true}, FinishedAt: time.Now().Add(-time.Hour)}
+			if err = store.saveTask(ctx, old); err != nil {
+				t.Fatal(err)
+			}
+			if err = store.saveBackupSchedule(ctx, "tenant-a", BackupAutomationStatus{TaskID: old.ID, ObservedTaskID: old.ID, Failures: failures}); err != nil {
+				t.Fatal(err)
+			}
+			state, err := store.ScheduleObjectBackup(ctx, "tenant-a", time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			queued, err := store.GetTask(ctx, "tenant-a", state.TaskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued.ID == old.ID || stringTaskParam(queued.Checkpoint, "remote_backup_id") != "" || stringTaskParam(queued.Params, "retry_of") != "" {
+				t.Fatalf("poisoned capture reused indefinitely: %+v", queued)
+			}
+		})
+	}
+}

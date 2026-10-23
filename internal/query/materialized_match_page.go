@@ -49,19 +49,21 @@ func executeMaterializedKindPage(
 				"",
 				g.Entities.Len(),
 				func() (int, error) {
-					for _, entity := range g.Entities.All() {
+					err := g.VisitEntitiesByID(request.Kind, "", func(entity graph.Entity) (bool, error) {
 						if err := budget.add(1); err != nil {
-							return ids.Len(), err
+							return false, err
 						}
 						budget.scanned++
-						if (request.Kind != "" && entity.Kind != request.Kind) ||
-							!requestEntityMatches(&request, &entity) ||
-							(afterID != "" &&
-								compareEntityPageOrder(entity.ID, afterID, order) <= 0) {
-							continue
+						if !requestEntityMatches(&request, &entity) || (afterID != "" && compareEntityPageOrder(entity.ID, afterID, order) <= 0) {
+							return true, nil
 						}
 						addBoundedEntityID(&ids, entity.ID, keep)
+						return true, nil
+					})
+					if err != nil {
+						return ids.Len(), err
 					}
+
 					return ids.Len(), nil
 				},
 			)

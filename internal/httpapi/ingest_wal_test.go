@@ -25,6 +25,7 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 	config.WAL.FsyncInterval = time.Millisecond
 	config.WAL.BufferBytes = 1024
 	config.WAL.MaxBytes = 16 * 1024 * 1024
+	config.QueueMemoryBytes = 4 << 20
 	config.WAL.SegmentBytes = 1024 * 1024
 	config.FlushInterval = time.Hour
 	config.FlushMaxRequests = 1
@@ -128,6 +129,7 @@ func TestHTTPIngestWALBatchIdentityConflictUsesStableErrorCode(t *testing.T) {
 	config.WAL.FsyncInterval = time.Millisecond
 	config.WAL.BufferBytes = 1024
 	config.WAL.MaxBytes = 16 * 1024 * 1024
+	config.QueueMemoryBytes = 4 << 20
 	config.WAL.SegmentBytes = 1024 * 1024
 	config.FlushInterval = time.Hour
 	config.FlushMaxRequests = 8
@@ -357,6 +359,7 @@ func TestHTTPIngestWALPreferCommittedStrictFailureStatusMappings(t *testing.T) {
 	config.WAL.FsyncInterval = time.Millisecond
 	config.WAL.BufferBytes = 1024
 	config.WAL.MaxBytes = 16 * 1024 * 1024
+	config.QueueMemoryBytes = 4 << 20
 	config.WAL.SegmentBytes = 1024 * 1024
 	config.FlushInterval = time.Millisecond
 	config.FlushMaxRequests = 1
@@ -484,6 +487,7 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	config.WAL.FsyncInterval = time.Millisecond
 	config.WAL.BufferBytes = 1024
 	config.WAL.MaxBytes = 16 * 1024 * 1024
+	config.QueueMemoryBytes = 4 << 20
 	config.WAL.SegmentBytes = 1024 * 1024
 	config.FlushInterval = time.Hour
 	config.FlushMaxRequests = 2
@@ -767,7 +771,7 @@ func TestHTTPWALAcceptsAndReplaysDuringPublicationBackpressure(t *testing.T) {
 				_ = service.Close(stopCtx)
 			}
 			defer closePending()
-			handler := (&Server{Store: store, Mode: "all", IngestService: service, WriteAdmission: NewWriteAdmission(1, 1, time.Millisecond)}).Handler()
+			handler := (&Server{Store: store, Mode: "all", IngestService: service, WriteAdmission: NewWriteAdmission(1, 1, 2*time.Second)}).Handler()
 			request := storage.IngestRequest{Source: "agent", CollectorID: "c", BatchID: "first", Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "host:first", Kind: "host"}}}}
 			first := serveJSON(handler, http.MethodPost, "/v1/ingest/batches", "tenant-a", request)
 			if first.Code != http.StatusAccepted {

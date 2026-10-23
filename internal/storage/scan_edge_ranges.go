@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -61,6 +62,21 @@ func (s *TenantStore) scanEdgeRange(ctx context.Context, tenant string, version 
 		}
 		return s.borrowEdgeRange(ctx, tenant, version, spec, n)
 	}
+	// Reuse only compact footer statistics for rejected pages. Keeping their
+	// payload would displace hot data and synchronously write megabytes to disk.
+	footer, _, hasFooter, err := s.cachedIndexObject(ctx, "edge_footer", tenant, version, o.Key, o.ContentHash, o.SchemaHash)
+	if err != nil {
+		return nil, false, err
+	}
+	if hasFooter {
+		matches, err := edgeRangeMayMatch(bytes.NewReader(footer), options)
+		if err == nil && !matches {
+			return nil, true, nil
+		}
+		if err != nil {
+			s.dropCachedIndexObject("edge_footer", tenant, version, o.Key, o.ContentHash, o.SchemaHash)
+		}
+	}
 	data, meta, cached, err := s.cachedIndexObject(ctx, "edge_shard", tenant, version, o.Key, o.ContentHash, o.SchemaHash)
 	if err != nil {
 		return nil, false, err
@@ -76,7 +92,9 @@ func (s *TenantStore) scanEdgeRange(ctx context.Context, tenant string, version 
 	}
 	mayMatch, err := edgeRangeMayMatch(bytes.NewReader(data), options)
 	if err == nil && !mayMatch {
-		s.putCachedIndexObject("edge_shard", tenant, version, o.Key, o.ContentHash, o.SchemaHash, data, meta)
+		if footer := compactParquetFooter(data); len(footer) > 0 {
+			s.putCachedIndexObject("edge_footer", tenant, version, o.Key, o.ContentHash, o.SchemaHash, footer, meta)
+		}
 		return nil, true, nil
 	}
 	if err != nil {
@@ -107,4 +125,20 @@ func (s *TenantStore) scanEdgeRange(ctx context.Context, tenant string, version 
 	rows := decoded[""]
 	err = validateEdgeRangeRows(rows, o)
 	return rows, err == nil, err
+}
+
+// Parquet statistics are in the footer. Column payload offsets are irrelevant
+// to pruning, which never opens a column reader against this compact view.
+func compactParquetFooter(data []byte) []byte {
+	if len(data) < 12 || string(data[:4]) != "PAR1" || string(data[len(data)-4:]) != "PAR1" {
+		return nil
+	}
+	size := int64(binary.LittleEndian.Uint32(data[len(data)-8:])) + 8
+	if size > 256<<10 || size > int64(len(data)-4) {
+		return nil
+	}
+	footer := make([]byte, 4+int(size))
+	copy(footer, "PAR1")
+	copy(footer[4:], data[len(data)-int(size):])
+	return footer
 }

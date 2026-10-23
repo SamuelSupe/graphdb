@@ -35,6 +35,7 @@ type DirectCommitRecord struct {
 }
 
 type directCommitReservation struct {
+	before []byte
 	key    string
 	record DirectCommitRecord
 	meta   ObjectMeta
@@ -69,13 +70,13 @@ func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, re
 	meta, err := s.putTenantConditionalIfBound(ctx, tenantID, key, data, PutCondition{IfNoneMatch: true})
 	if err == nil {
 		s.markObjectKeyCached(key)
-		return &directCommitReservation{key: key, record: pending, meta: meta}, nil, nil
+		return &directCommitReservation{key: key, record: pending, meta: meta, before: data}, nil, nil
 	}
 	if !errors.Is(err, ErrConflict) {
 		return nil, nil, err
 	}
 
-	existing, meta, err := s.loadDirectCommitRecordWithMeta(ctx, key)
+	existing, meta, data, err := s.loadDirectCommitRecordWithData(ctx, key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load existing commit idempotency record: %w", err)
 	}
@@ -87,14 +88,14 @@ func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, re
 		result := replayDirectCommitResult(existing)
 		return nil, &result, nil
 	case directCommitStatusPending:
-		return &directCommitReservation{key: key, record: existing, meta: meta}, nil, nil
+		return &directCommitReservation{key: key, record: existing, meta: meta, before: data}, nil, nil
 	case directCommitStatusPrepared:
 		published, decisive, err := s.directCommitPreparedPublished(ctx, tenantID, existing)
 		if err != nil {
 			return nil, nil, err
 		}
 		if published {
-			reservation := &directCommitReservation{key: key, record: existing, meta: meta}
+			reservation := &directCommitReservation{key: key, record: existing, meta: meta, before: data}
 			if err := s.completeDirectCommit(ctx, reservation, existing.Result, existing.FinishedAt); err != nil {
 				return nil, nil, err
 			}
@@ -104,7 +105,7 @@ func (s *TenantStore) beginDirectCommit(ctx context.Context, tenantID string, re
 		if !decisive {
 			return nil, nil, fmt.Errorf("%w: commit idempotency key %q has an ambiguous prepared outcome", ErrConflict, request.IdempotencyKey)
 		}
-		return &directCommitReservation{key: key, record: existing, meta: meta}, nil, nil
+		return &directCommitReservation{key: key, record: existing, meta: meta, before: data}, nil, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported commit idempotency status %q", existing.Status)
 	}
@@ -155,11 +156,15 @@ func (s *TenantStore) updateDirectCommitReservation(ctx context.Context, reserva
 	condition := PutCondition{IfNoneMatch: !reservation.meta.Exists}
 	if reservation.meta.Exists {
 		condition.IfMatch = reservation.meta.ETag
+		if reservation.before != nil {
+			condition.previous = &objectBeforeImage{data: reservation.before, meta: reservation.meta}
+		}
 	}
 	meta, err := s.putTenantConditionalIfBound(ctx, record.TenantID, reservation.key, data, condition)
 	if err != nil {
 		return err
 	}
+	reservation.before = data
 	reservation.record = record
 	reservation.meta = meta
 	s.markObjectKeyCached(reservation.key)
@@ -167,15 +172,19 @@ func (s *TenantStore) updateDirectCommitReservation(ctx context.Context, reserva
 }
 
 func (s *TenantStore) loadDirectCommitRecordWithMeta(ctx context.Context, key string) (DirectCommitRecord, ObjectMeta, error) {
+	record, meta, _, err := s.loadDirectCommitRecordWithData(ctx, key)
+	return record, meta, err
+}
+func (s *TenantStore) loadDirectCommitRecordWithData(ctx context.Context, key string) (DirectCommitRecord, ObjectMeta, []byte, error) {
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
-		return DirectCommitRecord{}, ObjectMeta{}, err
+		return DirectCommitRecord{}, meta, nil, err
 	}
 	if !isParquetBytes(data) {
-		return DirectCommitRecord{}, ObjectMeta{}, fmt.Errorf("unsupported commit idempotency record: only parquet records are readable")
+		return DirectCommitRecord{}, meta, nil, fmt.Errorf("unsupported commit idempotency record: only parquet records are readable")
 	}
 	record, err := decodeParquetDirectCommitRecord(ctx, data)
-	return record, meta, err
+	return record, meta, data, err
 }
 
 func validateDirectCommitRecord(tenantID string, request DirectCommitRequest, record DirectCommitRecord) error {

@@ -60,6 +60,7 @@ type Response struct {
 }
 
 type Result struct {
+	identity  string
 	Entity    *graph.Entity  `json:"entity,omitempty"`
 	Edge      *graph.Edge    `json:"edge,omitempty"`
 	Direction string         `json:"direction,omitempty"`

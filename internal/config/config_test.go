@@ -724,3 +724,33 @@ func setPostgresConfigEnv(t *testing.T) {
 	t.Setenv("S3_PROVIDER", storage.ObjectProviderGenericS3)
 	t.Setenv("GRAPHDB_WRITER_TOPOLOGY", storage.WriterTopologyCAS)
 }
+
+func TestByteSizesRejectOverflow(t *testing.T) {
+	for _, input := range []string{"9223372036854775807gib", "-9223372036854775808kb"} {
+		if value, err := parseBytes(input); err == nil {
+			t.Errorf("%s overflow accepted as %d", input, value)
+		}
+	}
+	if value, err := parseBytes("4GiB"); err != nil || value != 4<<30 {
+		t.Fatalf("valid size: %d %v", value, err)
+	}
+}
+
+func TestDefaultStreamSnapshotsRetainsExplicitCompatibilityOptOut(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_RAFT_NODE_ID", "1")
+	t.Setenv("GRAPHDB_RAFT_CLUSTER_ID", "test")
+	t.Setenv("GRAPHDB_RAFT_ADDR", ":8081")
+	t.Setenv("GRAPHDB_RAFT_PEERS", "{\"1\":\"http://node1:8081\",\"2\":\"http://node2:8081\",\"3\":\"http://node3:8081\"}")
+	t.Setenv("GRAPHDB_RAFT_TOKEN", "01234567890123456789012345678901")
+	t.Setenv("GRAPHDB_RAFT_STREAM_SNAPSHOTS", "")
+	cfg, err := Load()
+	if err != nil || !cfg.Raft.StreamSnapshots {
+		t.Fatalf("default retains full inline snapshot payloads: %+v %v", cfg.Raft, err)
+	}
+	t.Setenv("GRAPHDB_RAFT_STREAM_SNAPSHOTS", "false")
+	cfg, err = Load()
+	if err != nil || cfg.Raft.StreamSnapshots {
+		t.Fatalf("explicit compatibility setting lost: %+v %v", cfg.Raft, err)
+	}
+}

@@ -7,21 +7,24 @@ func (g *Graph) invalidateNeighborOrder(ids ...string) {
 	defer g.neighborOrderMu.Unlock()
 	for _, id := range ids {
 		for _, direction := range []string{"out", "in", "both"} {
-			delete(g.neighborOrder, id+"\x00"+direction)
+			key := id + "\x00" + direction
+			g.neighborOrderBytes -= int64(len(g.neighborOrder[key])) * 48
+			delete(g.neighborOrder, key)
 		}
 	}
 }
 
 func (g *Graph) sortedNeighborRefs(id, selectedDirection string, charge func() error) ([]neighborRef, error) {
-	g.neighborOrderMu.Lock()
-	defer g.neighborOrderMu.Unlock()
 	if selectedDirection == "" {
 		selectedDirection = "both"
 	}
 	key := id + "\x00" + selectedDirection
+	g.neighborOrderMu.Lock()
 	if refs, ok := g.neighborOrder[key]; ok {
+		g.neighborOrderMu.Unlock()
 		return refs, nil
 	}
+	g.neighborOrderMu.Unlock()
 	var refs []neighborRef
 	for _, direction := range []string{"out", "in"} {
 		if selectedDirection != "both" && direction != selectedDirection {
@@ -54,6 +57,24 @@ func (g *Graph) sortedNeighborRefs(id, selectedDirection string, charge func() e
 		}
 		return refs[i].direction < refs[j].direction
 	})
+	g.neighborOrderMu.Lock()
+	defer g.neighborOrderMu.Unlock()
+	if existing, ok := g.neighborOrder[key]; ok {
+		return existing, nil
+	}
+	// Bound both retained adjacency memory and the map copied by a commit.
+	bytes := int64(len(refs)) * 48
+	if bytes > 32<<20 {
+		return refs, nil
+	}
+	for len(g.neighborOrder) >= 256 || g.neighborOrderBytes+bytes > 32<<20 {
+		for key, old := range g.neighborOrder {
+			g.neighborOrderBytes -= int64(len(old)) * 48
+			delete(g.neighborOrder, key)
+			break
+		}
+	}
+	g.neighborOrderBytes += bytes
 	if g.neighborOrder == nil {
 		g.neighborOrder = map[string][]neighborRef{}
 	}

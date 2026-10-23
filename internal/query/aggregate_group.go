@@ -33,8 +33,7 @@ func (a *groupAccumulator) add(result Result) error {
 	if a == nil {
 		return nil
 	}
-	key, identity := aggregateGroupKey(result, a.groupBy)
-	group, err := a.groupFor(key, identity)
+	group, err := a.groupForValues(func(field string) any { return resultValue(result, field) })
 	if err != nil {
 		return err
 	}
@@ -45,23 +44,35 @@ func (a *groupAccumulator) addEntity(entity *graph.Entity) error {
 	if a == nil {
 		return nil
 	}
-	key, identity := aggregateGroupEntityKey(entity, a.groupBy)
-	group, err := a.groupFor(key, identity)
+	group, err := a.groupForValues(func(field string) any { return entityValue(entity, field) })
 	if err != nil {
 		return err
 	}
 	return group.acc.addEntity(entity)
 }
 
-func (a *groupAccumulator) groupFor(key map[string]any, identity string) (*aggregateGroupState, error) {
-	group := a.groups[identity]
-	if group == nil {
-		if len(a.groups) >= maxAggregateBuckets {
-			return nil, fmt.Errorf("%w: group_by supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
-		}
-		group = &aggregateGroupState{key: key, acc: newAggregateAccumulator(a.specs)}
-		a.groups[identity] = group
+func (a *groupAccumulator) groupForValues(valueFor func(string) any) (*aggregateGroupState, error) {
+	values := make([]any, 0, len(a.groupBy)*2)
+	for _, field := range a.groupBy {
+		values = append(values, field, valueFor(field))
 	}
+	encoded, err := json.Marshal(values)
+	identity := string(encoded)
+	if err != nil {
+		identity = fmt.Sprintf("%#v", values)
+	}
+	if group := a.groups[identity]; group != nil {
+		return group, nil
+	}
+	if len(a.groups) >= maxAggregateBuckets {
+		return nil, fmt.Errorf("%w: group_by supports at most %d buckets", ErrLimitExceeded, maxAggregateBuckets)
+	}
+	key := make(map[string]any, len(a.groupBy))
+	for i, field := range a.groupBy {
+		key[field] = values[i*2+1]
+	}
+	group := &aggregateGroupState{key: key, acc: newAggregateAccumulator(a.specs)}
+	a.groups[identity] = group
 	return group, nil
 }
 
@@ -94,33 +105,6 @@ func aggregateGroups(results []Result, groupBy []string, specs []Aggregation, ha
 		}
 	}
 	return acc.results(having, havingExpr), nil
-}
-
-func aggregateGroupKey(result Result, fields []string) (map[string]any, string) {
-	return aggregateGroupKeyValues(fields, func(field string) any {
-		return resultValue(result, field)
-	})
-}
-
-func aggregateGroupEntityKey(entity *graph.Entity, fields []string) (map[string]any, string) {
-	return aggregateGroupKeyValues(fields, func(field string) any {
-		return entityValue(entity, field)
-	})
-}
-
-func aggregateGroupKeyValues(fields []string, valueFor func(string) any) (map[string]any, string) {
-	key := make(map[string]any, len(fields))
-	identityParts := make([]any, 0, len(fields)*2)
-	for _, field := range fields {
-		value := valueFor(field)
-		key[field] = value
-		identityParts = append(identityParts, field, value)
-	}
-	identity, err := json.Marshal(identityParts)
-	if err != nil {
-		return key, fmt.Sprintf("%#v", identityParts)
-	}
-	return key, string(identity)
 }
 
 func aggregateGroupMatches(group AggregateGroup, filters []Filter, expr *FilterExpr) bool {

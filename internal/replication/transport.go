@@ -195,13 +195,16 @@ func (n *Node) sendLoop(id uint64, sender peerSender) {
 						if err != nil {
 							return err
 						}
+						if int64(len(envelope.State)) > n.cfg.MaxSnapshotBytes {
+							return ErrSnapshotTooLarge
+						}
 						envelope.Version = 1
 						envelope.File = nil
 						message.Snapshot.Data, err = json.Marshal(envelope)
 						if err != nil {
 							return err
 						}
-						if int64(len(message.Snapshot.Data)) > n.cfg.MaxSnapshotBytes {
+						if int64(len(message.Snapshot.Data)) > inlineSnapshotLimit(n.cfg.MaxSnapshotBytes) {
 							return ErrSnapshotTooLarge
 						}
 						data, err := message.Marshal()
@@ -270,7 +273,7 @@ func (n *Node) Handler() http.Handler {
 			http.Error(w, "incompatible Raft protocol", http.StatusUpgradeRequired)
 			return
 		}
-		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, n.cfg.MaxSnapshotBytes+32<<20))
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, max(inlineSnapshotLimit(n.cfg.MaxSnapshotBytes), MaxProposalBytes)+(32<<20)))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
@@ -297,7 +300,7 @@ func (n *Node) Handler() http.Handler {
 		}
 		if message.Type == raftpb.MsgSnap && message.Snapshot != nil {
 			envelope, err := decodeSnapshot(message.Snapshot.Data)
-			if err != nil || envelope.Version != 1 || int64(len(message.Snapshot.Data)) > n.cfg.MaxSnapshotBytes {
+			if err != nil || envelope.Version != 1 || int64(len(envelope.State)) > n.cfg.MaxSnapshotBytes || int64(len(message.Snapshot.Data)) > inlineSnapshotLimit(n.cfg.MaxSnapshotBytes) {
 				http.Error(w, "invalid inline snapshot envelope", http.StatusBadRequest)
 				return
 			}

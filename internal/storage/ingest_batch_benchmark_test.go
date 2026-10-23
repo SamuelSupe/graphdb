@@ -113,6 +113,7 @@ func setupIngestTerminalCompletionBenchmark(
 	config.WAL.BufferBytes = 1 << 20
 	config.WAL.FsyncInterval = time.Millisecond
 	config.WAL.MaxBytes = 32 << 20
+	config.QueueMemoryBytes = config.WAL.MaxBytes / 4
 	config.WAL.SegmentBytes = 16 << 20
 	config.WAL.AppendQueue = activeCount
 	wal, _, err := openIngestWALRecords(config.WAL)

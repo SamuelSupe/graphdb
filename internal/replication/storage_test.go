@@ -1297,3 +1297,19 @@ func TestDrainedHandoffAcceptsCaughtUpFollower(t *testing.T) {
 		t.Fatal("drained leader failed to hand off to its caught-up follower")
 	}
 }
+
+func TestInlineSnapshotBudgetCountsRawState(t *testing.T) {
+	dir := t.TempDir()
+	node := &Node{cfg: Config{Dir: dir, MaxSnapshotBytes: 80}, ctx: context.Background(), metrics: observability.NewOperationMetrics()}
+	done := make(chan snapshotBuild, 1)
+	node.workers.Add(1)
+	node.buildStreamSnapshot(testSnapshotSource{}, 1, raftpb.ConfState{Voters: []uint64{1}}, snapshotEnvelope{Version: 1, Peers: map[uint64]string{1: "http://one"}}, done)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("raw state at budget rejected due to encoding: %v", result.err)
+	}
+	envelope, err := decodeSnapshot(result.request.data)
+	if err != nil || envelope.File == nil || envelope.File.Bytes != 80 {
+		t.Fatalf("snapshot: %+v %v", envelope, err)
+	}
+}

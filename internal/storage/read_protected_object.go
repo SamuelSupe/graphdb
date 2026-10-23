@@ -25,6 +25,7 @@ type readObjectCall struct {
 	meta     ObjectMeta
 	err      error
 	canceled bool
+	joined   bool
 }
 
 func NewReadProtectedObjectStore(inner ObjectStore, config ReadProtectionConfig) *ReadProtectedObjectStore {
@@ -61,19 +62,27 @@ func (s *ReadProtectedObjectStore) Head(ctx context.Context, key string) (Object
 }
 
 func (s *ReadProtectedObjectStore) Put(ctx context.Context, key string, data []byte) error {
-	return s.Inner.Put(ctx, key, data)
+	err := s.Inner.Put(ctx, key, data)
+	s.invalidateRead(key)
+	return err
 }
 
 func (s *ReadProtectedObjectStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
-	return s.Inner.PutConditional(ctx, key, data, condition)
+	meta, err := s.Inner.PutConditional(ctx, key, data, condition)
+	s.invalidateRead(key)
+	return meta, err
 }
 
 func (s *ReadProtectedObjectStore) Delete(ctx context.Context, key string) error {
-	return s.Inner.Delete(ctx, key)
+	err := s.Inner.Delete(ctx, key)
+	s.invalidateRead(key)
+	return err
 }
 
 func (s *ReadProtectedObjectStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
-	return s.Inner.DeleteConditional(ctx, key, condition)
+	err := s.Inner.DeleteConditional(ctx, key, condition)
+	s.invalidateRead(key)
+	return err
 }
 
 func (s *ReadProtectedObjectStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
@@ -107,7 +116,10 @@ func (s *ReadProtectedObjectStore) getWithMeta(ctx context.Context, key string) 
 		}
 		call.data, call.meta, call.err = s.loadWithMeta(ctx, key)
 		call.canceled = loadCanceledByContext(ctx, call.err)
-		s.finishRead(key, call)
+		unique := s.finishRead(key, call)
+		if unique {
+			return call.data, call.meta, call.err
+		}
 		return cloneReadCall(call)
 	}
 }
@@ -140,6 +152,7 @@ func (s *ReadProtectedObjectStore) beginRead(ctx context.Context, key string) (*
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if call := s.reads[key]; call != nil {
+		call.joined = true
 		return call, false, nil
 	}
 	call := &readObjectCall{done: make(chan struct{})}
@@ -147,16 +160,26 @@ func (s *ReadProtectedObjectStore) beginRead(ctx context.Context, key string) (*
 	return call, true, nil
 }
 
-func (s *ReadProtectedObjectStore) finishRead(key string, call *readObjectCall) {
+func (s *ReadProtectedObjectStore) finishRead(key string, call *readObjectCall) bool {
 	s.mu.Lock()
 	if s.reads[key] == call {
 		delete(s.reads, key)
 	}
+	unique := !call.joined
 	s.mu.Unlock()
 	close(call.done)
+	return unique
 }
 
 func cloneReadCall(call *readObjectCall) ([]byte, ObjectMeta, error) {
 	data := append([]byte(nil), call.data...)
 	return data, call.meta, call.err
+}
+
+// A reader starting after a mutation must not join an older GET. Existing
+// callers retain their own result; finishRead cannot remove a newer call.
+func (s *ReadProtectedObjectStore) invalidateRead(key string) {
+	s.mu.Lock()
+	delete(s.reads, key)
+	s.mu.Unlock()
 }
