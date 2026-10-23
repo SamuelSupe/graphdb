@@ -51,6 +51,7 @@ const (
 	ErrorCodeWriteBackpressure       ErrorCode = "write_backpressure"
 	ErrorCodeRequestTimeout          ErrorCode = "request_timeout"
 	ErrorCodeRaftUnavailable         ErrorCode = "raft_unavailable"
+	ErrorCodeWriteOutcomeUnknown     ErrorCode = "write_outcome_unknown"
 	ErrorCodeTenantGenerationChanged ErrorCode = "tenant_generation_changed"
 	ErrorCodeIngestQueueFull         ErrorCode = "ingest_queue_full"
 	ErrorCodeRequestCanceled         ErrorCode = "request_canceled"
@@ -97,6 +98,7 @@ var stableErrorCodes = []ErrorCode{
 	ErrorCodeWriteBackpressure,
 	ErrorCodeRequestTimeout,
 	ErrorCodeRaftUnavailable,
+	ErrorCodeWriteOutcomeUnknown,
 	ErrorCodeTenantGenerationChanged,
 	ErrorCodeIngestQueueFull,
 	ErrorCodeRequestCanceled,

@@ -2293,6 +2293,7 @@ components:
             - write_backpressure
             - request_timeout
             - raft_unavailable
+            - write_outcome_unknown
             - tenant_generation_changed
             - ingest_queue_full
             - request_canceled
