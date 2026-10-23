@@ -1,23 +1,278 @@
 {
   "version": "v2.4.2",
-  "status": "candidate_not_published",
+  "status": "published_independently_verified",
   "required_go": "go1.27.3",
+  "published": true,
+  "published_at": "2026-10-23T17:30:18Z",
+  "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.2",
+  "release_commit": "3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5",
+  "build_date": "2026-10-23T23:44:24+08:00",
+  "tag_created": true,
+  "tag_object": "4508023e34661e10c3524500fb024de6bdf28fb3",
   "supersedes_failed_qualification": "v2.4.1",
   "regressions": {
     "completing_read_before": "3/3 FAIL",
     "forwarded_post_query_before": "3/3 FAIL",
     "focused_race_after": "PASS 3 repetitions, 37.856s",
     "original_slow_reader_control_deadlines": "retained and PASS",
-    "unknown_write_nonretryability": "retained and PASS"
+    "unknown_write_nonretryability": "retained and PASS",
+    "gc_fixture_completion": {
+      "initial_full_race": "FAIL on 543809f: completion send preceded deferred admission release",
+      "diagnostic_scheduling_before": "3/3 FAIL; ordinary focused repetitions 6 PASS retained",
+      "same_diagnostic_scheduling_after": "3 race repetitions PASS, 15.598s",
+      "fix": "test-only deferred notification after resource release; original capacity, batch and deadline assertions retained"
+    }
   },
-  "full_unit_vet_race": "PENDING",
-  "candidate_runtime": "PENDING",
-  "candidate_protocol3_30m": "PENDING",
-  "main_ci": "PENDING",
-  "tag_created": false,
-  "tag_ci": "PENDING",
-  "published": false,
-  "independent_download": "PENDING",
-  "downloaded_fresh_directory_recovery": "PENDING",
-  "existing_tags_assets": "immutable"
+  "full_unit_vet_race": {
+    "result": "PASS",
+    "commit": "3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5",
+    "go": "go1.27.3",
+    "environment": "OrbStack Ubuntu ARM64",
+    "exit_code": 0,
+    "race_seconds": {
+      "ha": 640.019,
+      "httpapi": 20.969,
+      "replication": 162.271,
+      "storage": 479.688
+    }
+  },
+  "candidate_runtime": {
+    "result": "PASS",
+    "provenance": "locally built exact candidate binary, not an independently downloaded release asset",
+    "commit": "3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5",
+    "compiler": "go1.27.3",
+    "binary_sha256": "7c104a6c356c7fe108ff2ab04b076a27c1fce2b0f7f5f780d7fa27580865ec4e",
+    "binary_version": "GGraphDB v2.4.2 commit=3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5 built=2026-10-23T23:44:24+08:00 go=go1.27.3",
+    "range_pages": true,
+    "adjacency_pages": true,
+    "session": 90518,
+    "exit_code": 0,
+    "modes": {
+      "direct": {
+        "result": "PASS",
+        "load_operations": 98,
+        "load_errors": 0,
+        "sdk_live_tests": 14,
+        "sigkill_batch_identity_version_data_replay": "PASS",
+        "runtime_backup_new_directory_restore_whole_graph": "PASS"
+      },
+      "wal": {
+        "result": "PASS",
+        "load_operations": 98,
+        "load_errors": 0,
+        "sdk_live_tests": 14,
+        "sigkill_batch_identity_version_data_replay": "PASS",
+        "runtime_backup_new_directory_restore_whole_graph": "PASS"
+      }
+    }
+  },
+  "candidate_protocol3_30m": {
+    "result": "PASS",
+    "binary_commit": "543809f251398cee2340ad87a914ce0473aa7f1f",
+    "same_production_implementation_as_release": true,
+    "only_later_change": "GC regression fixture completion ordering in 3f72cac",
+    "wall_seconds": 1800.610744,
+    "ingest_statuses": {
+      "200": 1017,
+      "429": 74
+    },
+    "operation_errors": 0,
+    "query_errors": 0,
+    "write_errors": 0,
+    "original_parameters": "unchanged"
+  },
+  "main_ci": {
+    "result": "PASS",
+    "jobs_success": 7,
+    "commit": "3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5",
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39983403910"
+  },
+  "tag_ci": {
+    "result": "PASS",
+    "jobs_success": 7,
+    "url": "https://github.com/SamuelSupe/graphdb/actions/runs/39988418183",
+    "jobs": [
+      {
+        "name": "Unit, vet, race, and 2.0 contracts",
+        "conclusion": "success"
+      },
+      {
+        "name": "Local disk 30-minute mixed read/write soak",
+        "conclusion": "success"
+      },
+      {
+        "name": "gateway / gateway",
+        "conclusion": "success"
+      },
+      {
+        "name": "object-backup / Object snapshots and fresh-directory restore",
+        "conclusion": "success"
+      },
+      {
+        "name": "raft / raft",
+        "conclusion": "success"
+      },
+      {
+        "name": "Local disk, WAL recovery, load, and restore",
+        "conclusion": "success"
+      },
+      {
+        "name": "Build and publish release assets",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "independent_download": {
+    "result": "PASS",
+    "source": {
+      "result": "PASS",
+      "tag": "v2.4.2",
+      "tag_object": "4508023e34661e10c3524500fb024de6bdf28fb3",
+      "commit": "3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5",
+      "source_archive_sha256": "2450c8cdb70ece531d2d06c9230221b8e053d21d8d53e0ecb74e192ca490502d",
+      "tracked_files_verified": 1153,
+      "method": "Independent GitHub source archive; every Git blob matches the immutable tag tree"
+    },
+    "archive": {
+      "release_id": 422127547,
+      "asset_sha256": "a3e9b35114ea506cdc9dda0751322aa3950391c0361f9655a416b9bb5ea903d6",
+      "metadata": {
+        "version": "v2.4.2",
+        "commit": "3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5",
+        "build_date": "2026-10-23T23:44:24+08:00",
+        "go_version": "go1.27.3"
+      },
+      "binaries": {
+        "bin/graphdb-darwin-arm64": "e7f373f522ea790a7c6804b738655ebf5a804d865f7a8c484aae0842578a4442",
+        "bin/graphdb-linux-amd64": "c4041621c0a17d0b30a871f45de8fef6f91fe8273d58a809886878cad969348e",
+        "bin/graphdb-linux-arm64": "7c104a6c356c7fe108ff2ab04b076a27c1fce2b0f7f5f780d7fa27580865ec4e"
+      },
+      "packaged_source_files_verified": 1121,
+      "required_source_trees_complete": true,
+      "gate_binary_identity": {
+        "raft-gate/metadata.json": "PASS",
+        "raft-gate/enhanced/metadata.json": "PASS",
+        "raft-gate/protocol3/metadata.json": "PASS",
+        "raft-gate/rolling/metadata.json": "PASS",
+        "gateway-gate/metadata.json": "PASS"
+      }
+    },
+    "binary_execution": {
+      "result": "PASS",
+      "binaries": {
+        "graphdb-linux-amd64": {
+          "result": "PASS",
+          "go": "go1.27.3",
+          "os": "linux",
+          "arch": "amd64",
+          "cgo_enabled": 0,
+          "executed_version": "GGraphDB v2.4.2 commit=3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5 built=2026-10-23T23:44:24+08:00 go=go1.27.3",
+          "sha256": "c4041621c0a17d0b30a871f45de8fef6f91fe8273d58a809886878cad969348e"
+        },
+        "graphdb-linux-arm64": {
+          "result": "PASS",
+          "go": "go1.27.3",
+          "os": "linux",
+          "arch": "arm64",
+          "cgo_enabled": 0,
+          "executed_version": "GGraphDB v2.4.2 commit=3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5 built=2026-10-23T23:44:24+08:00 go=go1.27.3",
+          "sha256": "7c104a6c356c7fe108ff2ab04b076a27c1fce2b0f7f5f780d7fa27580865ec4e"
+        },
+        "graphdb-darwin-arm64": {
+          "result": "PASS",
+          "go": "go1.27.3",
+          "os": "darwin",
+          "arch": "arm64",
+          "cgo_enabled": 0,
+          "executed_version": "GGraphDB v2.4.2 commit=3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5 built=2026-10-23T23:44:24+08:00 go=go1.27.3",
+          "sha256": "e7f373f522ea790a7c6804b738655ebf5a804d865f7a8c484aae0842578a4442"
+        }
+      }
+    }
+  },
+  "exact_tag_soaks": {
+    "local-gate/soak.ndjson": {
+      "result": "PASS",
+      "configured_duration": "30m0s",
+      "wall_seconds": 1800.161764,
+      "start": "2026-10-23T16:38:47.834400819Z",
+      "finish": "2026-10-23T17:08:47.996164212Z",
+      "writers": 4,
+      "readers": 16,
+      "batch_size": 20,
+      "query_errors": 0,
+      "write_errors": 0,
+      "operation_errors": 0,
+      "ingest_count": 1350,
+      "ingest_statuses": {
+        "200": 1350
+      },
+      "ingest_end_cancellations": 0,
+      "original_parameters_deadlines_and_error_rules": "unchanged"
+    },
+    "raft-gate/protocol3/dual/soak.ndjson": {
+      "result": "PASS",
+      "configured_duration": "30m0s",
+      "wall_seconds": 1802.442666,
+      "start": "2026-10-23T16:53:12.928577718Z",
+      "finish": "2026-10-23T17:23:15.371243872Z",
+      "writers": 4,
+      "readers": 16,
+      "batch_size": 1,
+      "query_errors": 0,
+      "write_errors": 0,
+      "operation_errors": 0,
+      "ingest_count": 1017,
+      "ingest_statuses": {
+        "200": 883,
+        "429": 132
+      },
+      "ingest_end_cancellations": 2,
+      "original_parameters_deadlines_and_error_rules": "unchanged"
+    }
+  },
+  "downloaded_fresh_directory_recovery": {
+    "result": "PASS",
+    "environment": "OrbStack Ubuntu ARM64 / Go1.27.3",
+    "source": "Actually downloaded LinuxARM64 release asset and independently downloaded/verified GitHub tag source SDK/e2e/load tools",
+    "session": 56537,
+    "exit_code": 0,
+    "actual_completion_marker": "Fri Oct 23 17:35:41 UTC 2026",
+    "binary_sha256": "7c104a6c356c7fe108ff2ab04b076a27c1fce2b0f7f5f780d7fa27580865ec4e",
+    "range_pages_enabled": true,
+    "adjacency_pages_enabled": true,
+    "modes": {
+      "direct": {
+        "result": "PASS",
+        "load_operations": 98,
+        "load_errors": 0,
+        "live_sdk_tests": 14,
+        "e2e_api": "PASS",
+        "sigkill_accepted_batch_identity_version_data_replay": "PASS",
+        "runtime_backup_fresh_directory_restore_whole_graph": "PASS"
+      },
+      "wal": {
+        "result": "PASS",
+        "load_operations": 98,
+        "load_errors": 0,
+        "live_sdk_tests": 14,
+        "e2e_api": "PASS",
+        "sigkill_accepted_batch_identity_version_data_replay": "PASS",
+        "runtime_backup_fresh_directory_restore_whole_graph": "PASS"
+      }
+    },
+    "reproducible_rebuild": "PASS: downloaded source, original release flags/date, byte-identical to downloaded LinuxARM64 binary",
+    "byte_identical_candidate": true
+  },
+  "existing_tags_assets": "immutable; prior public tags/assets preserved, v2.3.9 and v2.4.1 retain no release assets",
+  "compatibility": {
+    "range_pages_default": false,
+    "adjacency_pages_default": false,
+    "upgrade_all_related_programs_before_enabling": true,
+    "legacy_layout_and_listedges_cursors": "retained",
+    "index_downgrade": "rebuild legacy layout using the new binary first",
+    "wal_downgrade": "v1 durable marker migrates to two-slot v2, unreadable by old binaries; drain WAL and preserve the whole directory plus verified pre-upgrade backups",
+    "cross_host_production_capacity_day_scale_qualification": "NOT RUN"
+  },
+  "record_commit_ci": "Checked separately after pushing this documentation record; this file does not certify its own future CI run."
 }
