@@ -2729,7 +2729,22 @@ func TestHASlowNetworkReadCannotRetainControlBarrier(t *testing.T) {
 }
 
 func TestHACommitAcceptsStandaloneBodyLimitThroughRaftEncoding(t *testing.T) {
-	group := newTestCluster(t, false)
+	core := `{"mutations":{"upsert_entities":[{"id":"host:body-limit","kind":"host"}]}}`
+	var appliedBodyBytes atomic.Int64
+	group := newTestCluster(t, false, func(_ *Application, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/v1/commits" {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				appliedBodyBytes.Store(int64(len(body)))
+				r.Body = io.NopCloser(bytes.NewReader(body))
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
 	// This checks the encoded request budget, not election timing. Race
 	// instrumentation of both base64 envelopes can outlast the normal election
 	// window; keep quorum changes from masking a size rejection in this fixture.
@@ -2742,8 +2757,8 @@ func TestHACommitAcceptsStandaloneBodyLimitThroughRaftEncoding(t *testing.T) {
 	}
 	leader := group.leader(-1)
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
-	core := `{"mutations":{"upsert_entities":[{"id":"host:body-limit","kind":"host"}]}}`
-	body := core + strings.Repeat(" ", httpapi.MaxWriteRequestBytes-len(core))
+	prefix := "\t\r\n "
+	body := prefix + core + strings.Repeat(" ", httpapi.MaxWriteRequestBytes-len(prefix)-len(core))
 	group.mustRequest(leader, "POST", "/v1/commits", body, http.StatusOK, time.Minute)
 	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
 	if err != nil {
@@ -2752,7 +2767,13 @@ func TestHACommitAcceptsStandaloneBodyLimitThroughRaftEncoding(t *testing.T) {
 	for i := range group.nodes {
 		group.waitApplied(i, checkpoint.Index)
 	}
+	if got := appliedBodyBytes.Load(); got != int64(len(core)) {
+		t.Fatalf("replicated JSON retained outer whitespace: %d bytes, want %d", got, len(core))
+	}
 	group.mustRequest(leader, "GET", "/v1/entities/host:body-limit", "", http.StatusOK)
+	for _, invalid := range []string{"\u00a0" + core, core + "\u2003"} {
+		group.mustRequest(leader, "POST", "/v1/commits", invalid, http.StatusBadRequest)
+	}
 }
 
 type lostRaftWriteResponse struct {

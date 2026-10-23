@@ -320,6 +320,11 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	cmd.Method = r.Method
 	cmd.URI = r.URL.RequestURI()
 	cmd.Body = body
+	if r.URL.Path == "/v1/commits" {
+		// Avoid replicating JSON framing whitespace. Other Unicode whitespace
+		// remains subject to the normal JSON validation.
+		cmd.Body = bytes.Trim(body, " \t\r\n")
+	}
 	cmd.Header = make(http.Header)
 	for _, name := range []string{"X-Tenant-ID", "Content-Type", "Idempotency-Key", sharding.TargetEpochHeader} {
 		if value := r.Header.Get(name); value != "" {

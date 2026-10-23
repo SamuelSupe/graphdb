@@ -46,6 +46,9 @@ mutation 不要同时发送两种名称。
 提交。`idempotency_key` 可选但建议使用。相同 key 和相同 payload 会返回
 已保存结果；相同 key 配合不同 payload 会返回 `idempotency_conflict`。
 
+提交请求的 32 MiB 上限按完整接收体计算，包括 JSON 空白。Raft 在写入复制日志前
+移除 JSON 外围的 ASCII 空白；字段值与 JSON 校验语义保持不变。
+
 示例：
 
 ```sh

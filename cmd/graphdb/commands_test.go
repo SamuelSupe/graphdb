@@ -220,14 +220,22 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	}
 	// Completed traffic folds history while the original tenant stays pending.
 	// The memory budget is deliberately smaller than WAL payload capacity.
+	// Bounded groups preserve group publication while building the fixture.
+	completed := make([]storage.IngestAcceptance, 0, 8)
 	for i := range 32 {
 		fill := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: fmt.Sprintf("fill-%d", i), FullSync: true, Items: []storage.IngestItem{{Entity: &graph.Entity{ID: fmt.Sprintf("host:fill-%d", i), Kind: "host"}}}}
 		item, err := service.Accept(ctx, "checkpoint-fill", fill)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = service.Wait(ctx, item); err != nil {
-			t.Fatal(err)
+		completed = append(completed, item)
+		if len(completed) == cap(completed) {
+			for _, accepted := range completed {
+				if _, err := service.Wait(ctx, accepted); err != nil {
+					t.Fatal(err)
+				}
+			}
+			completed = completed[:0]
 		}
 	}
 

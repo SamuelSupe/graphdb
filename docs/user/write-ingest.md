@@ -50,6 +50,10 @@ tenant manifest is currently at that version.
 same key with the same payload returns the stored result; reusing it with a
 different payload returns `idempotency_conflict`.
 
+The 32 MiB commit request limit counts the entire received body, including JSON
+whitespace. Raft removes outer JSON ASCII whitespace before journal replication;
+field values and JSON validation retain their existing semantics.
+
 Example:
 
 ```sh
