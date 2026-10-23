@@ -2670,20 +2670,34 @@ func TestHAFlushSkipsBlockedTenant(t *testing.T) {
 	}
 }
 
+type controlledReadGate struct {
+	*Cluster
+	read http.Handler
+}
+
+func (c controlledReadGate) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, runtime bool, next http.Handler) {
+	if !mutation {
+		next = c.read
+	}
+	c.Cluster.ServeRoute(w, r, mutation, runtime, next)
+}
+
 func TestHASlowNetworkReadCannotRetainControlBarrier(t *testing.T) {
 	group := newTestCluster(t, false)
 	leader := group.leader(-1)
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
 	entered, finished := make(chan struct{}), make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		group.nodes[leader].cluster.ServeRoute(w, r, false, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := &httpapi.Server{Store: group.nodes[leader].store, Mode: "all", Cluster: controlledReadGate{
+		Cluster: group.nodes[leader].cluster,
+		read: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_ = http.NewResponseController(w).Flush()
 			close(entered)
 			_, _ = w.Write(bytes.Repeat([]byte("x"), 32<<20))
 			close(finished)
-		}))
-	}))
+		}),
+	}}
+	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 	conn, err := net.Dial("tcp", server.Listener.Addr().String())
 	if err != nil {

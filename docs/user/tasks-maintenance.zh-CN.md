@@ -30,6 +30,10 @@ curl -sS "$WRITER/v1/tasks?type=compact&status=running&limit=20" \
 curl -sS "$WRITER/v1/tasks/<task-id>" -H 'X-Tenant-ID: demo'
 ```
 
+任务不存在时返回 `404`。取消、超时和存储不可用分别保留 `499`、`504` 和 `503`
+状态，未分类的存储故障返回不包含内部细节的 `500`。Raft 控制操作屏障可能中断
+正在进行的读取；重新连接后使用同一个任务 ID 重试状态 GET，不要重复创建任务。
+
 取消：
 
 ```sh

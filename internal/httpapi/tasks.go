@@ -76,7 +76,7 @@ func (s *Server) task(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := s.Store.GetTask(r.Context(), tenantID, taskID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)

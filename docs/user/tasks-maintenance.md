@@ -30,6 +30,11 @@ Get:
 curl -sS "$WRITER/v1/tasks/<task-id>" -H 'X-Tenant-ID: demo'
 ```
 
+A missing task returns `404`. Cancellation, deadlines and unavailable storage retain
+their `499`, `504` and `503` statuses; unexpected storage failures return a sanitized
+`500`. Raft control barriers can interrupt in-flight reads. Reconnect and repeat the
+status GET with the same task ID instead of creating another task.
+
 Cancel:
 
 ```sh

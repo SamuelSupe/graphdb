@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,43 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+type taskLookupErrorStore struct {
+	storage.ObjectStore
+	err error
+}
+
+func (s taskLookupErrorStore) GetWithMeta(context.Context, string) ([]byte, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, s.err
+}
+
+func TestHTTPTaskLookupPreservesStorageErrors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+		code   ErrorCode
+	}{
+		{"missing", storage.ErrNotFound, http.StatusNotFound, ErrorCodeNotFound},
+		{"canceled", context.Canceled, statusClientClosedRequest, ErrorCodeRequestCanceled},
+		{"deadline", context.DeadlineExceeded, http.StatusGatewayTimeout, ErrorCodeRequestTimeout},
+		{"unavailable", storage.ErrObjectStoreUnavailable, http.StatusServiceUnavailable, ErrorCodeObjectStoreUnavailable},
+		{"private IO failure", errors.New("read /private/tenant/tasks: device error"), http.StatusInternalServerError, ErrorCodeInternal},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := storage.NewTenantStore(taskLookupErrorStore{ObjectStore: storage.NewMemoryStore(), err: test.err}, "test")
+			request := httptest.NewRequest(http.MethodGet, "/v1/tasks/task-a", nil)
+			request.Header.Set("X-Tenant-ID", "tenant-a")
+			response := httptest.NewRecorder()
+			(&Server{Store: store, Mode: "all"}).task(response, request)
+			var body ErrorResponse
+			decodeResponse(t, response, &body)
+			if response.Code != test.status || body.Code != test.code || strings.Contains(body.Message, "/private/") {
+				t.Fatalf("task lookup: status=%d body=%+v", response.Code, body)
+			}
+		})
+	}
+}
 
 func TestHTTPTaskStartGetAndList(t *testing.T) {
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
