@@ -1,0 +1,35 @@
+# v2.4.2 相邻路径复审（2026-10-26，未发布）
+
+基线为 GitHub main `98c3c1a09cd8abc17200ea7f718319fdb08a8769`，其生产源码与 v2.4.2 标签 `3f72cac3a8dfe2d8f6ae068fc48533714bb30bf5` 相同。本轮检查 Raft 读排空、取消、转发重试、读取视图及维护资源释放；只修复已稳定复现的问题。版本号、公开标签和发行资产不变，本记录不表示新版本发布。
+
+## 发现与修复
+
+| 问题 | 修前复现 | 修复 |
+| --- | --- | --- |
+| 已完成读取与阻塞读取并存时，控制操作持有注册表锁；正常读在注销阶段阻塞，定时器仍能中断其尚未由 net/http 刷出的响应 | 真实 HTTP 中间件和三节点集群，正常读完成、另一读阻塞；连续三次收到 EOF | 等待读屏障时不持有注册表锁；读取先注销回调再释放屏障。保留一秒排空窗口、慢读取消、写期限及回调 join |
+| 分片 router 按 HTTP 方法将 POST 查询误判为未知写入 | JSON、GraphQL、GQL、流式及模板查询断连，每条路径连续三次返回 `write_outcome_unknown` | 按已有数据路由语义分类，读取返回可重试 `shard_unavailable`；模板保存及其他写入仍返回未知写结果 |
+| Go HTTP Transport 对带幂等请求头的写入隐式重放 | 实际复用连接并在服务端消费请求后断开：Follower、router 的无请求体写入，以及内部 shard 客户端的空/JSON 写入均复现发送两次；连续三轮失败。Follower 和内部客户端覆盖两个幂等请求头，router 修前覆盖 `Idempotency-Key`，修后回归覆盖两者 | 三个入口共同禁用写请求体回放。空负载使用不可回放的空流，保留幂等头、原始负载和连接复用；响应丢失后不自动重新提交 |
+
+回归使用真实网络断连，核对服务端收到请求的次数，不仅检查返回错误。router 原有提交回归保留，并覆盖模板保存与模板执行的语义差异。读回归核对完整正常响应、控制操作继续推进及读取注册释放；原有 2 秒/3 秒控制边界和 32MiB 慢网络场景未放宽。
+
+## 成本、兼容与资源边界
+
+生产改动限于读注册锁顺序和 HTTP 请求分类/回放保护，没有新增存储 I/O、索引重写、扫描或持久化字段。范围页和邻接开关仍默认关闭；旧布局、全局 `ListEdges` 顺序与旧游标契约不变。既有索引局部改写成本、缓存/预取并发预算、读取视图和取消释放测试用于验证这些边界。
+
+相邻检查还覆盖提案准入及在途字节预算的延迟释放、维护暂停的恢复、导出视图/临时文件关闭、共享缓存加载的取消隔离与加载超时。没有以本轮检查替代完整故障模型或宣称新的性能提升。
+
+## 验证
+
+验证环境为 OrbStack Ubuntu ARM64，实际工具链 `go1.27.3 linux/arm64`。完整资格进程于 2026-10-26 05:56:15 UTC 实际退出 0，成功标记存在；参与测试的六个代码/测试文件与提交前工作区 SHA256 一致。模块使用本机已有下载缓存作为文件代理，仍保留正常校验和验证。
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 修后关键边界 `go test -race ... -count=3` | PASS：HA 48.089 秒，sharding 1.060 秒 |
+| `go test -mod=readonly -p=2 -timeout 20m ./... -count=1` | 全部 PASS：HA 235.041 秒，storage 99.895 秒 |
+| `go vet -mod=readonly -p=2 ./...` | PASS |
+| `go test -mod=readonly -p=2 -race -timeout 20m ./... -count=1` | 全部 PASS：HA 611.127 秒、HTTP 24.323 秒、replication 162.425 秒、sharding 1.414 秒、storage 439.659 秒 |
+| 发行契约检查、Python SDK 单测 | PASS；Python 报告 13 tests，另有 1 个需外部运行服务器的集成项跳过 |
+
+上述 Go 检查统一使用 `GOMAXPROCS=2`。完整存储测试包含 `TestAdjacencyTreeLocalWriteAndReadCosts`、两项 `TestIncremental*RewriteIsBounded`、`TestListEdgesOldCursorSurvivesAdjacencyMigrationAndMerge`、`TestLegacyEdgePaginationUsesCatalogShard`，以及缓存加载取消隔离、超时释放准入和读取视图生命周期回归。没有修改这些断言、负载或期限。
+
+原始修前及修后日志保留于本地 `.workflow/review-v2.4.2-adjacent/`。本轮未重新发布资产或执行新的发行下载验收；GitHub 提交触发的 CI 结果在提交后单独核验，不能由本记录自证通过。

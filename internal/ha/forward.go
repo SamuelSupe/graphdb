@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
+	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 )
 
 type forwardHopKey struct{}
@@ -50,6 +52,9 @@ func (c *Cluster) forward(w http.ResponseWriter, r *http.Request, body []byte, p
 			p.Out.Header.Set("Authorization", "Bearer "+c.config.Token)
 			p.Out.Header.Set("X-Raft-Cluster", c.config.ClusterID)
 			p.Out.Header.Set(forwardHopHeader, strconv.Itoa(hops+1))
+			if mutation {
+				sharding.PreventMutationReplay(p.Out)
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			if mutation {

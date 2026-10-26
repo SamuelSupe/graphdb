@@ -307,14 +307,65 @@ func TestLeaderDiscoveryHedgesAndCoalesces(t *testing.T) {
 }
 
 func TestRouterLostMutationResponseIsNotRetryable(t *testing.T) {
-	var mutations atomic.Int64
+	for _, test := range []struct{ name, path, body, key string }{
+		{"commit", "/v1/commits", "{}", ""},
+		{"bodyless", "/v1/tasks/task-a/retry", "", "Idempotency-Key"},
+		{"bodyless-alternate-key", "/v1/tasks/task-a/retry", "", "X-Idempotency-Key"},
+		{"template-save", "/v1/query/templates", "{}", "Idempotency-Key"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mutations atomic.Int64
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/raft/status" {
+					json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+					return
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != test.body || (test.key != "" && r.Header.Get(test.key) != "caller-key") {
+					t.Errorf("forwarded mutation changed: body=%q headers=%v err=%v", body, r.Header, err)
+				}
+				mutations.Add(1)
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					conn.Close()
+				}
+			}))
+			defer backend.Close()
+			shard := Shard{ID: "a", ClusterID: "c", Peers: map[uint64]string{1: backend.URL}}
+			router := NewRouter(shard, "token")
+			defer router.Client.HTTP.CloseIdleConnections()
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, test.path, nil)
+			if test.body != "" {
+				request.Body = io.NopCloser(strings.NewReader(test.body))
+				request.ContentLength = int64(len(test.body))
+			}
+			if test.key != "" {
+				request.Header.Set(test.key, "caller-key")
+			}
+			router.proxy(response, request, shard, 1, "tenant-a")
+			var failure struct {
+				Code      string
+				Error     string
+				Message   string
+				Retryable bool
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Code != "write_outcome_unknown" || failure.Message == "" || failure.Message != failure.Error || failure.Retryable || response.Code != http.StatusBadGateway || mutations.Load() != 1 {
+				t.Fatalf("lost response outcome: %d %s mutations=%d err=%v", response.Code, response.Body.String(), mutations.Load(), err)
+			}
+		})
+	}
+}
+
+func TestRouterLostQueryResponseRemainsRetryable(t *testing.T) {
+	var queries atomic.Int64
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/raft/status" {
 			json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
 			return
 		}
 		_, _ = io.Copy(io.Discard, r.Body)
-		mutations.Add(1)
+		queries.Add(1)
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
 			conn.Close()
@@ -324,16 +375,53 @@ func TestRouterLostMutationResponseIsNotRetryable(t *testing.T) {
 	shard := Shard{ID: "a", ClusterID: "c", Peers: map[uint64]string{1: backend.URL}}
 	router := NewRouter(shard, "token")
 	defer router.Client.HTTP.CloseIdleConnections()
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/commits", strings.NewReader("{}"))
-	router.proxy(response, request, shard, 1, "tenant-a")
-	var failure struct {
-		Code      string
-		Error     string
-		Message   string
-		Retryable bool
+	for _, path := range []string{"/v1/query", "/v1/query/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream", "/v1/query/templates/example"} {
+		t.Run(path, func(t *testing.T) {
+			before := queries.Load()
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+			router.proxy(response, request, shard, 1, "tenant-a")
+			var failure struct {
+				Code      string
+				Retryable bool
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Code != "shard_unavailable" || !failure.Retryable || queries.Load()-before != 1 {
+				t.Fatalf("lost query response: %d %s attempts=%d err=%v", response.Code, response.Body, queries.Load()-before, err)
+			}
+		})
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Code != "write_outcome_unknown" || failure.Message == "" || failure.Message != failure.Error || failure.Retryable || response.Code != http.StatusBadGateway || mutations.Load() != 1 {
-		t.Fatalf("lost response outcome: %d %s mutations=%d err=%v", response.Code, response.Body.String(), mutations.Load(), err)
+}
+
+func TestClientLostMutationResponseDoesNotReplay(t *testing.T) {
+	for _, body := range []any{nil, map[string]any{"operation": "cancel"}} {
+		t.Run(fmt.Sprint(body), func(t *testing.T) {
+			var attempts atomic.Int64
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/raft/status" {
+					json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+					return
+				}
+				_, _ = io.Copy(io.Discard, r.Body)
+				attempts.Add(1)
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					conn.Close()
+				}
+			}))
+			defer backend.Close()
+			shard := Shard{ID: "a", ClusterID: "c", Peers: map[uint64]string{1: backend.URL}}
+			client := NewClient("token")
+			defer client.HTTP.CloseIdleConnections()
+			for _, key := range []string{"Idempotency-Key", "X-Idempotency-Key"} {
+				before := attempts.Load()
+				response, err := client.Do(context.Background(), shard, http.MethodPost, "/cluster/action", body, http.Header{key: []string{"caller-key"}})
+				if response != nil {
+					response.Body.Close()
+				}
+				if err == nil || attempts.Load()-before != 1 {
+					t.Errorf("lost mutation response with %s: attempts=%d err=%v", key, attempts.Load()-before, err)
+				}
+			}
+		})
 	}
 }

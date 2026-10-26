@@ -239,7 +239,7 @@ func (r *Router) assign(ctx context.Context, tenant, shard string) (Resolution, 
 
 func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard, epoch uint64, tenant string) {
 	operation := "proxy_write"
-	if request.Method == http.MethodGet || request.Method == http.MethodHead {
+	if readRequest(request) {
 		operation = "proxy_read"
 	}
 	finish := r.metrics.Start(operation)
@@ -275,6 +275,9 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			p.Out.Header.Set("Authorization", "Bearer "+r.Client.Token)
 			p.Out.Header.Set("X-Raft-Cluster", shard.ClusterID)
 			p.Out.Header.Set(EpochHeader, fmt.Sprint(epoch))
+			if !readRequest(p.In) {
+				PreventMutationReplay(p.Out)
+			}
 			if !strings.HasPrefix(p.In.URL.Path, "/v1/tenants") {
 				p.Out.Header.Set("X-Tenant-ID", tenant)
 			}
@@ -309,7 +312,7 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			r.metrics.Event("proxy_transport_failure")
 			r.Client.ForgetLeader(shard)
 			r.forgetPlacement(tenant)
-			if request.Method != http.MethodGet && request.Method != http.MethodHead && request.Method != http.MethodOptions {
+			if !readRequest(request) {
 				message := "the write response was lost; check its status or reuse the same idempotency key"
 				r.writeJSON(w, http.StatusBadGateway, map[string]any{"code": "write_outcome_unknown", "error": message, "message": message, "retryable": false})
 			} else {
@@ -509,9 +512,24 @@ func publicDataRoute(r *http.Request) bool {
 	}
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
-		case "/v1/commits", "/v1/ingest/batches", "/v1/imports", "/v1/query", "/v1/query/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream":
+		case "/v1/commits", "/v1/ingest/batches", "/v1/imports":
 			return true
 		}
+		return readRequest(r)
+	}
+	return false
+}
+
+func readRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	case http.MethodPost:
+		switch r.URL.Path {
+		case "/v1/query", "/v1/query/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream":
+			return true
+		}
+		// Executing a saved template reads; POST /v1/query/templates saves one.
 		return strings.HasPrefix(r.URL.Path, "/v1/query/templates/")
 	}
 	return false

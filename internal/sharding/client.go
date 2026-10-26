@@ -206,7 +206,22 @@ func (c *Client) request(ctx context.Context, shard Shard, origin, method, path 
 	r.Header.Set("Authorization", "Bearer "+c.Token)
 	r.Header.Set("X-Raft-Cluster", shard.ClusterID)
 	r.Header.Set("Content-Type", "application/json")
+	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
+		PreventMutationReplay(r)
+	}
 	return c.HTTP.Do(r)
+}
+
+// PreventMutationReplay leaves idempotency headers and payloads intact but stops
+// net/http from replaying a mutation after losing a response on a reused socket.
+// Even an empty body must be non-rewindable: a header alone does not guarantee
+// that the receiving endpoint deduplicates the operation.
+func PreventMutationReplay(r *http.Request) {
+	r.GetBody = nil
+	if r.Body == nil || r.Body == http.NoBody {
+		r.Body = io.NopCloser(bytes.NewReader(nil))
+		r.ContentLength = -1
+	}
 }
 
 func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body any, headers ...http.Header) (response *http.Response, err error) {

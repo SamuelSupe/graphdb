@@ -16,8 +16,8 @@ type applicationRead struct {
 func (a *Application) readContext(parent context.Context, interrupt func()) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(parent)
 	read := &applicationRead{cancel: cancel, interrupt: interrupt}
-	a.readMu.Lock()
 	a.readers.RLock()
+	a.readMu.Lock()
 	if a.activeReads == nil {
 		a.activeReads = make(map[*applicationRead]struct{})
 	}
@@ -25,33 +25,31 @@ func (a *Application) readContext(parent context.Context, interrupt func()) (con
 	a.readMu.Unlock()
 	return ctx, func() {
 		cancel()
-		// Release the barrier before removing the registration: lockReaders may
-		// hold readMu while waiting for every handler to observe cancellation.
-		a.readers.RUnlock()
 		a.readMu.Lock()
 		delete(a.activeReads, read)
 		a.readMu.Unlock()
+		a.readers.RUnlock()
 	}
 }
 func (a *Application) lockReaders() {
-	a.readMu.Lock()
 	if a.readers.TryLock() {
-		a.readMu.Unlock()
 		return
 	}
 	// Drain ordinary reads before revoking a slow or blocked network peer.
-	// readMu prevents new registrations and map changes until the callback joins.
+	// The pending writer gates new reads. Leave readMu available for completed
+	// handlers to unregister before net/http flushes their buffered responses.
 	interrupted := make(chan struct{})
 	timer := time.AfterFunc(time.Second, func() {
+		a.readMu.Lock()
 		for read := range a.activeReads {
 			read.cancel()
 			read.interrupt()
 		}
+		a.readMu.Unlock()
 		close(interrupted)
 	})
 	a.readers.Lock()
 	if !timer.Stop() {
 		<-interrupted
 	}
-	a.readMu.Unlock()
 }

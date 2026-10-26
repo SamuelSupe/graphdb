@@ -2690,6 +2690,94 @@ func TestHAControlAllowsCompletingReadToDrain(t *testing.T) {
 	}
 }
 
+func TestHAControlDrainsCompletedReadBesideSlowRead(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	cluster := group.nodes[leader].cluster
+	entered := make(chan struct{}, 2)
+	finish := make(chan struct{})
+	var once sync.Once
+	complete := func() { once.Do(func() { close(finish) }) }
+	defer complete()
+	api := &httpapi.Server{Store: group.nodes[leader].store, Mode: "all", Cluster: controlledReadGate{
+		Cluster: cluster,
+		read: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			entered <- struct{}{}
+			if r.URL.Query().Get("slow") == "true" {
+				<-r.Context().Done()
+				return
+			}
+			select {
+			case <-finish:
+			case <-r.Context().Done():
+				return
+			}
+			_, _ = io.WriteString(w, `{"complete":true}`)
+		}),
+	}}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	responses := make(chan error, 2)
+	for _, slow := range []bool{false, true} {
+		go func() {
+			request, _ := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/query?slow=%t", server.URL, slow), nil)
+			request.Header.Set("X-Tenant-ID", "tenant-a")
+			response, err := server.Client().Do(request)
+			if err == nil {
+				defer response.Body.Close()
+				var body []byte
+				body, err = io.ReadAll(response.Body)
+				if !slow && (response.StatusCode != http.StatusOK || string(body) != `{"complete":true}`) {
+					err = fmt.Errorf("completed read: status=%d body=%q err=%v", response.StatusCode, body, err)
+				}
+			}
+			if slow {
+				err = nil // This intentionally blocked read is allowed to be revoked.
+			}
+			responses <- err
+		}()
+	}
+	for range 2 {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("reads did not enter")
+		}
+	}
+	writeDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { writeDone <- group.request(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-b"}`) }()
+	for cluster.App.readers.TryRLock() {
+		cluster.App.readers.RUnlock()
+		if ctx.Err() != nil {
+			t.Fatal("control operation did not wait for readers")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	complete()
+	for range 2 {
+		if err := <-responses; err != nil {
+			t.Errorf("control operation interrupted a completed response: %v", err)
+		}
+	}
+	select {
+	case response := <-writeDone:
+		if response.Code != http.StatusOK {
+			t.Fatalf("control after read drain: %d %s", response.Code, response.Body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("read resources retained the control barrier")
+	}
+	cluster.App.readMu.Lock()
+	remaining := len(cluster.App.activeReads)
+	cluster.App.readMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("read registrations retained after handlers returned: %d", remaining)
+	}
+}
+
 func TestHAFlushSkipsBlockedTenant(t *testing.T) {
 	group := newTestCluster(t, true)
 	leader := group.leader(-1)
@@ -2899,5 +2987,48 @@ func TestFollowerLostReadResponseRemainsRetryable(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || response.Code != http.StatusServiceUnavailable || failure.Code != "raft_unavailable" || !failure.Retryable || transport.attempts.Load() != 1 {
 		t.Fatalf("lost forwarded read response: %d %s attempts=%d err=%v", response.Code, response.Body.String(), transport.attempts.Load(), err)
+	}
+}
+
+func TestFollowerLostBodylessMutationDoesNotReplay(t *testing.T) {
+	var attempts atomic.Int64
+	group := newTestCluster(t, false, func(_ *Application, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/v1/compact" && !storage.IsReplicatedContext(r.Context()) {
+				attempts.Add(1)
+				next.ServeHTTP(httptest.NewRecorder(), r)
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					conn.Close()
+				}
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	follower := group.nodes[(leader+1)%len(group.nodes)].cluster
+	for _, key := range []string{"Idempotency-Key", "X-Idempotency-Key"} {
+		t.Run(key, func(t *testing.T) {
+			warm := httptest.NewRecorder()
+			follower.forward(warm, httptest.NewRequest(http.MethodGet, "/v1/health", nil), nil, false, false)
+			if warm.Code != http.StatusOK {
+				t.Fatalf("warm forwarded connection: %d %s", warm.Code, warm.Body)
+			}
+			before := attempts.Load()
+			request := httptest.NewRequest(http.MethodPost, "/v1/compact", nil)
+			request.Header.Set("X-Tenant-ID", "tenant-a")
+			request.Header.Set(key, "caller-key")
+			response := httptest.NewRecorder()
+			follower.forward(response, request, nil, false, true)
+			var failure struct {
+				Code      string
+				Retryable bool
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil || failure.Code != "write_outcome_unknown" || failure.Retryable || attempts.Load()-before != 1 {
+				t.Fatalf("lost bodyless write: %d %s attempts=%d err=%v", response.Code, response.Body, attempts.Load()-before, err)
+			}
+		})
 	}
 }
