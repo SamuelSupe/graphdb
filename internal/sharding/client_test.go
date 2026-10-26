@@ -206,6 +206,120 @@ func TestRouterCatalogFallbackRemainsBoundedAndFenced(t *testing.T) {
 	}
 }
 
+func TestRouterCachedPlacementDuringMigration(t *testing.T) {
+	const fenced = `{"code":"shard_epoch_changed","error":"tenant is moving or belongs to another shard","retryable":true}`
+	for _, tc := range []struct {
+		name, method, state, rejection string
+		status, refreshes              int
+	}{
+		{"read", http.MethodGet, "moving", fenced, 503, 1},
+		{"write", http.MethodPost, "moving", fenced, 503, 1},
+		{"completed_move", http.MethodGet, "active", fenced, 409, 1},
+		{"catalog_unavailable", http.MethodPost, "unavailable", fenced, 409, 2},
+		{"catalog_timeout", http.MethodGet, "timeout", fenced, 409, 1},
+		{"business_conflict", http.MethodPost, "moving", `{"code":"batch_conflict","retryable":false}`, 409, 0},
+		{"nonretryable", http.MethodPost, "moving", `{"code":"shard_epoch_changed","retryable":false}`, 409, 0},
+		{"large_conflict", http.MethodGet, "moving", `{"code":"shard_epoch_changed","retryable":true,"error":"` + strings.Repeat("x", 8192) + `"}`, 409, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var moving atomic.Bool
+			var lookups, attempts atomic.Int64
+			shard := Shard{ID: "data", ClusterID: "data", Peers: map[uint64]string{}}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/raft/status":
+					json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+				case "/cluster/placement/tenant-a":
+					lookups.Add(1)
+					if moving.Load() && tc.state == "unavailable" {
+						http.Error(w, "catalog unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					if moving.Load() && tc.state == "timeout" {
+						<-request.Context().Done()
+						return
+					}
+					placement := Placement{Tenant: "tenant-a", Shard: "data", Epoch: 1, State: "active"}
+					if moving.Load() {
+						placement.State = tc.state
+						placement.Epoch = 2
+					}
+					json.NewEncoder(w).Encode(Resolution{Placement: placement, Shard: shard})
+				case "/cluster/action":
+					moving.Store(true)
+					io.WriteString(w, `{}`)
+				default:
+					attempts.Add(1)
+					if request.Header.Get(EpochHeader) != "1" {
+						t.Error("request was replayed with a different epoch")
+					}
+					if moving.Load() {
+						w.Header().Set("Content-Type", "application/json")
+						w.Header().Set("Content-Length", fmt.Sprint(len(tc.rejection)))
+						w.WriteHeader(http.StatusConflict)
+						io.WriteString(w, tc.rejection)
+					} else {
+						io.WriteString(w, `{}`)
+					}
+				}
+			}))
+			defer server.Close()
+			shard.Peers[1] = server.URL
+			first, second := NewRouter(shard, "secret"), NewRouter(shard, "secret")
+			defer first.Client.HTTP.CloseIdleConnections()
+			defer second.Client.HTTP.CloseIdleConnections()
+			call := func(router *Router, method, path, body string) *httptest.ResponseRecorder {
+				request := httptest.NewRequest(method, path, strings.NewReader(body))
+				request.Header.Set("Authorization", "Bearer secret")
+				request.Header.Set("X-Tenant-ID", "tenant-a")
+				writer := httptest.NewRecorder()
+				router.ServeHTTP(writer, request)
+				return writer
+			}
+			for _, router := range []*Router{first, second} {
+				for range 2 {
+					if w := call(router, http.MethodGet, "/v1/entities/host:1", ""); w.Code != http.StatusOK {
+						t.Fatalf("warm route: %d %s", w.Code, w.Body)
+					}
+				}
+			}
+			if lookups.Load() != 2 {
+				t.Fatalf("normal requests stopped using the placement cache: %d", lookups.Load())
+			}
+			if w := call(first, http.MethodPost, "/v1/cluster/moves", `{"tenant_id":"tenant-a","target":"other"}`); w.Code != http.StatusAccepted {
+				t.Fatalf("move: %d %s", w.Code, w.Body)
+			}
+			path, body := "/v1/entities/host:1", ""
+			if tc.method == http.MethodPost {
+				path, body = "/v1/commits", `{"source":"test"}`
+			}
+			started := time.Now()
+			w := call(second, tc.method, path, body)
+			if w.Code != tc.status {
+				t.Fatalf("cached router response: %d %s, want %d", w.Code, w.Body, tc.status)
+			}
+			if attempts.Load() != 5 || lookups.Load() > int64(2+tc.refreshes) {
+				t.Fatalf("request replay or unbounded catalog work: data=%d catalog=%d", attempts.Load(), lookups.Load())
+			}
+			if tc.state == "timeout" && time.Since(started) >= 2*time.Second {
+				t.Fatal("placement refresh exceeded the bounded catalog probe")
+			}
+			if tc.status == 409 && w.Body.String() != tc.rejection {
+				t.Fatalf("conflict response was changed: %s", w.Body)
+			}
+			if tc.status == 503 {
+				var result struct {
+					Code      string `json:"code"`
+					Retryable bool   `json:"retryable"`
+				}
+				if json.Unmarshal(w.Body.Bytes(), &result) != nil || result.Code != "shard_unavailable" || !result.Retryable || w.Header().Get("Retry-After") != "1" || w.Header().Get("Content-Length") != fmt.Sprint(w.Body.Len()) {
+					t.Fatalf("migration response lost retry contract: %s %v", w.Body, w.Header())
+				}
+			}
+		})
+	}
+}
+
 func TestRouterTenantPagesUseCatalogOrderAndOwnershipHeaders(t *testing.T) {
 	state := Catalog{Shards: map[string]Shard{}, Tenants: map[string]Placement{}}
 	var detailReads atomic.Int64

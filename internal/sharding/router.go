@@ -283,6 +283,17 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			}
 		},
 		ModifyResponse: func(response *http.Response) error {
+			if response.StatusCode == http.StatusConflict || response.StatusCode >= 500 {
+				r.forgetPlacement(tenant)
+			}
+			if response.StatusCode == http.StatusServiceUnavailable {
+				r.Client.ForgetLeader(shard)
+			}
+			if response.StatusCode == http.StatusConflict && tenant != "" {
+				if err := r.migrationResponse(request.Context(), response, tenant); err != nil {
+					return err
+				}
+			}
 			switch {
 			case response.StatusCode < 300:
 				r.metrics.Event("proxy_response_2xx")
@@ -298,12 +309,6 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			}
 			if response.StatusCode == http.StatusTooManyRequests {
 				r.metrics.Event("proxy_backpressure")
-			}
-			if response.StatusCode == http.StatusConflict || response.StatusCode >= 500 {
-				r.forgetPlacement(tenant)
-			}
-			if response.StatusCode == http.StatusServiceUnavailable {
-				r.Client.ForgetLeader(shard)
 			}
 			return nil
 		},
@@ -321,6 +326,41 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 		},
 	}
 	proxy.ServeHTTP(w, request)
+}
+
+func (r *Router) migrationResponse(ctx context.Context, response *http.Response, tenant string) error {
+	// Another router can start a move while this router still has a cached
+	// active placement. Refresh only explicit fencing rejections; never replay
+	// the data request or turn an ordinary business conflict into a retry.
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
+	if err != nil {
+		return err
+	}
+	response.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(body), response.Body), response.Body}
+	var rejection struct {
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if len(body) > 4096 || json.Unmarshal(body, &rejection) != nil || rejection.Code != "shard_epoch_changed" || !rejection.Retryable {
+		return nil
+	}
+	var resolution Resolution
+	if r.catalogRead(ctx, "/cluster/placement/"+url.PathEscape(tenant), &resolution) != nil || resolution.Placement.State == "active" {
+		return nil
+	}
+	response.Body.Close()
+	body = []byte(`{"code":"shard_unavailable","error":"tenant assignment or migration is in progress","message":"tenant assignment or migration is in progress","retryable":true}` + "\n")
+	response.StatusCode = http.StatusServiceUnavailable
+	response.Status = "503 Service Unavailable"
+	response.Header.Set("Content-Type", "application/json")
+	response.Header.Set("Content-Length", fmt.Sprint(len(body)))
+	response.Header.Set("Retry-After", "1")
+	response.ContentLength = int64(len(body))
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	return nil
 }
 
 func (r *Router) admin(w http.ResponseWriter, request *http.Request) {
