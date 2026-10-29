@@ -628,5 +628,20 @@
     }
   },
   "performance_scope": "Local metadata microbenchmark only; no production capacity or latency qualification",
-  "documentation_ci": "The CI for this later documentation commit is checked separately after push."
+  "documentation_ci": "The CI for this later documentation commit is checked separately after push.",
+  "post_publication_fixture_correction": {
+    "first_documentation_ci": "https://github.com/SamuelSupe/graphdb/actions/runs/40882942708",
+    "failed_test": "TestListEdgesOldCursorSurvivesAdjacencyMigrationAndMerge/old_ranges=true",
+    "failure": "object write conflict during controlled downgrade while background compaction could publish",
+    "change": "Wait for existing background tasks before changing layout configuration; all cursor and downgrade assertions retained",
+    "runtime_tag_and_assets_unchanged": true,
+    "focused_race": {
+      "result": "PASS",
+      "repetitions": 12,
+      "layouts_per_repetition": 2,
+      "elapsed_seconds": 437.878,
+      "environment": "OrbStack Linux ARM64, Go 1.27.3"
+    },
+    "final_main_ci": "Checked separately after pushing the correction; not self-certified by this record"
+  }
 }

@@ -124,6 +124,9 @@ func TestListEdgesOldCursorSurvivesAdjacencyMigrationAndMerge(t *testing.T) {
 			}
 			// Controlled downgrade publishes payload-only catalogs; it does not
 			// claim that an old binary can consume a newly issued cursor.
+			// Finish the old layout's background compaction before changing
+			// configuration; otherwise its catalog publication can conflict.
+			s.taskWorkers.Wait()
 			s.WriteIndexAdjacencyPages = false
 			s.WriteIndexRangePages = ranges
 			downgraded, err := s.RebuildIndexes(ctx, "tenant-a")

@@ -6,6 +6,15 @@ All required gates and independent downloaded-asset checks passed with
 record and completed gate evidence. This final record is on main; the CI for this
 later documentation commit is checked separately after push.
 
+The later documentation CI exposed a timing dependency in the controlled
+index-downgrade fixture: background compaction could still publish a catalog
+while the fixture changed layout configuration and rebuilt. The fixture now
+waits for that work before changing configuration; cursor and downgrade
+assertions are unchanged. This test-only correction does not alter the released
+runtime, tag or assets. Twelve focused race repetitions across both old layouts
+passed on OrbStack Linux ARM64 (437.878s). Its final CI is checked separately
+from the release gate.
+
 ## Release identity and gates
 
 - Annotated tag `v2.4.3`, object `72635c319bb7d75310c12d5281190e6a03e97554`.
