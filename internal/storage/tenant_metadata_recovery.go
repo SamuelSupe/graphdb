@@ -44,6 +44,13 @@ type tenantMetadataRecord struct {
 func (s *TenantStore) readTenantMetadataRecord(ctx context.Context, key string) (tenantMetadataRecord, error) {
 	s.clearWriterObjectKey(key)
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
+	if err == nil || errors.Is(err, ErrNotFound) {
+		// Disk damage bypasses FileStore mutation notifications. Reconcile the
+		// CAS cache with this fresh read so repair cannot loop on a stale ETag.
+		if files := s.recoverableMetadataFiles(ctx); files != nil {
+			files.invalidateStaleObjectMeta(key, meta)
+		}
+	}
 	record := tenantMetadataRecord{data: data, meta: meta}
 	if errors.Is(err, ErrNotFound) {
 		return record, nil

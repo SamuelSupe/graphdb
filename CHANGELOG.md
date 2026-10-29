@@ -12,6 +12,8 @@ versioning; release tags and binaries expose the exact build commit and date.
   configuration. Preserve valid pending/backup state and fields, respect purge
   fences, and reconstruct active metadata only from a valid manifest when no
   valid copy remains. Bound background repair work and honor cancellation.
+  Invalidate stale conditional-write digests after directly observed disk damage
+  so recovery does not loop on conflicts from pre-damage cache entries.
 - Persist management metadata before an initial manifest in direct writes,
   batch ingest and init-tenant. Reject missing, corrupt or mismatched migration
   metadata before graph decoding and before replacing the target tenant.

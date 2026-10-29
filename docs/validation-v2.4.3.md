@@ -24,6 +24,14 @@ operation to 1.948 ms / 1,044,528 B. This measures metadata reads and decoding,
 not service throughput, peak RSS or production latency. Primary-inode retention
 is covered separately by the backup-repair regression.
 
+An independent candidate-binary probe then found cached conditional-write
+digests preventing recovery after files were damaged or removed outside the
+storage API. Direct filesystem regressions reproduced missing-primary,
+missing-both, corrupt-primary and corrupt-pending conflicts before repair.
+Fresh metadata reads now invalidate only disagreeing cached digests; conditional
+writes and healthy cache entries remain intact. The final candidate must pass
+the new regressions and actual runtime probe as well as the full release gates.
+
 Local evidence remains under `.workflow/inode-analysis-20261029/` and
 `.workflow/release-v2.4.3/`. These directories are not published as source.
 

@@ -170,6 +170,60 @@ func TestTenantMetadataOnlineRecoveryPreservesState(t *testing.T) {
 	}
 }
 
+func TestTenantMetadataRepairAfterExternalFileDamage(t *testing.T) {
+	for _, damage := range []string{"missing_primary", "missing_both", "corrupt_primary", "corrupt_backup", "corrupt_pending"} {
+		t.Run(damage, func(t *testing.T) {
+			ctx := context.Background()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := NewTenantStore(files, "test")
+			defer store.ShutdownTasks(ctx)
+			if _, err := store.CreateTenant(ctx, "tenant-a", TenantCreateOptions{Name: "retained"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled); err != nil {
+				t.Fatal(err)
+			}
+			primary, backup, pending := store.tenantMetadataKey("tenant-a"), store.tenantMetadataBackupKey("tenant-a"), store.tenantMetadataPendingKey("tenant-a")
+			if damage == "corrupt_pending" {
+				putTenantMetadataFixture(t, ctx, files, pending, TenantMetadata{TenantID: "tenant-a", Status: TenantStatusDisabled})
+			}
+			// Bypass FileStore notifications to model disk damage after the CAS
+			// cache has been populated by successful management writes.
+			filePath := func(key string) string { return filepath.Join(files.root, filepath.FromSlash(key)) }
+			wantStatus := TenantStatusDisabled
+			switch damage {
+			case "missing_primary", "missing_both":
+				err = os.Remove(filePath(primary))
+				if err == nil && damage == "missing_both" {
+					err = os.Remove(filePath(backup))
+					wantStatus = TenantStatusActive
+				}
+			default:
+				key := map[string]string{"corrupt_primary": primary, "corrupt_backup": backup, "corrupt_pending": pending}[damage]
+				err = os.WriteFile(filePath(key), []byte("damaged on disk"), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.repairLocalTenantMetadata(ctx, "tenant-a"); err != nil {
+				t.Fatalf("repair conflicts with stale disk metadata: %v", err)
+			}
+			info, err := store.GetTenantInfo(ctx, "tenant-a")
+			if err != nil || info.Status != wantStatus || (damage != "missing_both" && info.Name != "retained") {
+				t.Fatalf("recovered metadata: %+v %v", info, err)
+			}
+			waitForRecoveredTenantMetadata(t, files, store, "tenant-a", wantStatus)
+			if _, err := files.Get(ctx, pending); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("recovery left pending metadata: %v", err)
+			}
+		})
+	}
+}
+
 func TestTenantMetadataWaitHonorsCancellation(t *testing.T) {
 	ctx := context.Background()
 	files, err := OpenFileStore(t.TempDir())

@@ -194,6 +194,17 @@ func (s *FileStore) objectState(key, path string, hash bool) (string, bool, erro
 	return etag, exists, err
 }
 
+func (s *FileStore) invalidateStaleObjectMeta(key string, observed ObjectMeta) {
+	if s.runtime == nil {
+		return
+	}
+	s.runtime.mu.Lock()
+	if cached, ok := s.runtime.etags[key]; ok && (!observed.Exists || cached != observed.ETag) {
+		delete(s.runtime.etags, key)
+	}
+	s.runtime.mu.Unlock()
+}
+
 func exclusiveFileStore(objects ObjectStore) *FileStore {
 	for objects != nil {
 		if file, ok := objects.(*FileStore); ok {
