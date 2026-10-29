@@ -12,7 +12,7 @@ groups:
         for: 1m
         labels: {severity: critical}
         annotations:
-          summary: "GraphDB {{ $labels.role }} disk reserve is below its admission threshold"
+          summary: "GraphDB {{ $labels.role }} byte or inode reserve is below its admission threshold"
       - alert: GraphDBRaftNoLeader
         expr: graphdb_raft_leader_known == 0
         for: 30s

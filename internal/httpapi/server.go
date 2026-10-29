@@ -499,8 +499,8 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 			attribute.Int("http.response.status_code", recorder.status),
 			attribute.String("graphdb.tenant", tenantID),
 		)
-		if recorder.status >= 500 {
-			span.SetStatus(codes.Error, http.StatusText(recorder.status))
+		if recorder.status >= 500 || recorder.status == statusClientClosedRequest {
+			span.SetStatus(codes.Error, traceHTTPStatusText(recorder.status))
 		}
 		obs.Logger.Info("http_request", map[string]any{
 			"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,

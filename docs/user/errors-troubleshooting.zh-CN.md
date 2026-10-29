@@ -1,6 +1,6 @@
 # 错误与故障排查
 
-适用于 **GGraphDB 2.4.2**；[发行验证](../validation-v2.4.2.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.3**；[发行验证](../validation-v2.4.3.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](errors-troubleshooting.md)
 

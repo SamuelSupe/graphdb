@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -238,6 +239,59 @@ type localLifecycleFailureStore struct{ *failPutStore }
 
 func (s *localLifecycleFailureStore) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
 
+func TestLocalCreateLegacyMetadataPreservesDirectoryDuringRetries(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := NewTenantStore(files, "test")
+	defer store.ShutdownTasks(ctx)
+	if _, err := store.Commit(ctx, "legacy", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:existing", Kind: "host"}}}, CommitOptions{IdempotencyKey: "original"}); err != nil {
+		t.Fatal(err)
+	}
+	removeTenantMetadataFixture(t, store, "legacy")
+	if _, err := files.Get(ctx, store.tenantMetadataKey("legacy")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected implicit tenant: %v", err)
+	}
+	tenantDir := filepath.Join(files.root, filepath.FromSlash(store.tenantObjectPrefix("legacy")))
+	for i := range 1000 {
+		key := store.tenantObjectPrefix("legacy") + fmt.Sprintf("history/v%d/record.bin", i)
+		if err := files.Put(ctx, key, []byte("historical")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.Stat(tenantDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Go(func() {
+			info, err := store.CreateTenant(ctx, "legacy", TenantCreateOptions{Name: "managed"})
+			if err != nil || info.Name != "managed" || info.ManifestVersion != 1 {
+				t.Errorf("create retry: %+v %v", info, err)
+			}
+		})
+	}
+	workers.Wait()
+	t.Logf("eight concurrent metadata create requests with 1000 history directories: %s", time.Since(started))
+	after, err := os.Stat(tenantDir)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("metadata create traversed/replaced the graph tree: %v", err)
+	}
+	result, err := store.CommitWithReport(ctx, "legacy", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:existing", Kind: "host"}}}, CommitOptions{IdempotencyKey: "original"})
+	if err != nil || !result.IdempotentReplay || result.Version != 1 {
+		t.Fatalf("create lost existing receipt: %+v %v", result, err)
+	}
+	data, err := files.Get(ctx, store.tenantObjectPrefix("legacy")+"history/v999/record.bin")
+	if err != nil || string(data) != "historical" {
+		t.Fatalf("create changed historical object: %q %v", data, err)
+	}
+}
+
 func TestLocalCreateRetainsExistingDataAndLateControlWrites(t *testing.T) {
 	ctx := context.Background()
 	files, err := OpenFileStore(t.TempDir())
@@ -247,6 +301,12 @@ func TestLocalCreateRetainsExistingDataAndLateControlWrites(t *testing.T) {
 	defer files.Close()
 	store := NewTenantStore(files, "test")
 	if _, err := store.Commit(ctx, "tenant", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}, CommitOptions{IdempotencyKey: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	removeTenantMetadataFixture(t, store, "tenant")
+	tenantDir := filepath.Join(files.root, filepath.FromSlash(store.tenantObjectPrefix("tenant")))
+	before, err := os.Stat(tenantDir)
+	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = store.publishLocalTenantLifecycle(ctx, "tenant", false, func(stage *TenantStore) (TenantInfo, error) {
@@ -260,6 +320,10 @@ func TestLocalCreateRetainsExistingDataAndLateControlWrites(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	after, err := os.Stat(tenantDir)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("metadata-only create replaced the graph directory: %v", err)
 	}
 	if task, err := store.GetTask(ctx, "tenant", "late"); err != nil || task.Status != TaskStatusSucceeded {
 		t.Fatalf("late task=%+v err=%v", task, err)

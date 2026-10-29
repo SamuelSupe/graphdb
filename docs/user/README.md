@@ -1,6 +1,6 @@
 # GGraphDB User Guide
 
-Applies to **GGraphDB 2.4.2**; [简体中文](README.zh-CN.md) · [Documentation](../README.md) · [Release validation](../validation-v2.4.2.md)
+Applies to **GGraphDB 2.4.3**; [简体中文](README.zh-CN.md) · [Documentation](../README.md) · [Release validation](../validation-v2.4.3.md)
 
 For service owners, client developers and operators. Start with a complete data
 workflow. GGraphDB is a general-purpose property graph database; CMDB is one

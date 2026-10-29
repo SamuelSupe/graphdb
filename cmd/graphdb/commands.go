@@ -106,6 +106,7 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		_ = shutdownTrace(shutdownCtx)
 	}()
 	obs := observability.New(os.Stdout, cfg.SlowQueryThreshold)
+	store.MetadataRecoveryLogger = obs.Logger
 	cache := storage.NewReaderCache(store, cfg.PollInterval)
 	cache.IdleTTL = cfg.ReaderCacheIdleTTL
 	cache.ConfigureCapacity(cfg.ReaderCacheMaxTenants, cfg.ReaderCacheMaxBytes)

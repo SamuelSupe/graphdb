@@ -57,13 +57,15 @@ func (s *TenantStore) localFileChanged(key string) {
 		s.invalidateTenantObjectCaches(tenant)
 		return
 	}
-	if name == "metadata.parquet" {
+	metadata := name == "metadata.parquet" || name == "control/tenant-metadata-backup.parquet" || name == "control/tenant-metadata-pending.parquet"
+	if metadata {
+		s.deleteCachedTenantMetadata(tenant)
 		s.taskMu.Lock()
 		delete(s.queuedTaskCatalogs, tenant)
 		s.taskMu.Unlock()
 	}
 	manifest := name == "manifest.parquet"
-	invalidate := name == "metadata.parquet" || (strings.HasPrefix(name, "config/") && name != "config/backup-schedule.parquet")
+	invalidate := metadata || (strings.HasPrefix(name, "config/") && name != "config/backup-schedule.parquet")
 	if manifest || invalidate || name == "indexes/catalog.parquet" {
 		s.queryMu.Lock()
 		delete(s.queryUnavailable, tenant)

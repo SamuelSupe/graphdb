@@ -39,7 +39,13 @@ func (s *Server) diagnostics(w http.ResponseWriter, r *http.Request) {
 		if observation.Error != "" {
 			problems = append(problems, prefix+"disk_inspection_failed")
 		} else if !observation.Space.WriteReady {
-			problems = append(problems, prefix+"disk_space_low")
+			space := observation.Space
+			if space.AvailableBytes < space.MinimumFreeBytes {
+				problems = append(problems, prefix+"disk_space_low")
+			}
+			if space.InodesKnown && space.AvailableInodes < max(1, space.MinimumFreeInodes) {
+				problems = append(problems, prefix+"disk_inodes_low")
+			}
 		}
 	}
 	if data := disks["data"]; data.Error != "" {
@@ -124,6 +130,15 @@ func (s *Server) writeResourceMetrics(w http.ResponseWriter, ctx context.Context
 		{"total_bytes", "Total filesystem capacity; roles sharing a filesystem must not be summed.", func(d diskObservation) float64 { return float64(d.Space.TotalBytes) }},
 		{"available_bytes", "Filesystem bytes available to this process.", func(d diskObservation) float64 { return float64(d.Space.AvailableBytes) }},
 		{"minimum_free_bytes", "Configured free space admission floor for this storage role.", func(d diskObservation) float64 { return float64(d.Space.MinimumFreeBytes) }},
+		{"inodes_known", "Filesystem reports a finite inode capacity.", func(d diskObservation) float64 {
+			if d.Error == "" && d.Space.InodesKnown {
+				return 1
+			}
+			return 0
+		}},
+		{"total_inodes", "Total filesystem inodes; roles sharing a filesystem must not be summed.", func(d diskObservation) float64 { return float64(d.Space.TotalInodes) }},
+		{"available_inodes", "Available filesystem inodes.", func(d diskObservation) float64 { return float64(d.Space.AvailableInodes) }},
+		{"minimum_free_inodes", "Configured free inode admission floor for this storage role.", func(d diskObservation) float64 { return float64(d.Space.MinimumFreeInodes) }},
 		{"write_ready", "Inspection succeeded and the filesystem is above its configured admission floor.", func(d diskObservation) float64 {
 			if d.Error == "" && d.Space.WriteReady {
 				return 1

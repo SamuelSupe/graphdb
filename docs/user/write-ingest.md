@@ -1,6 +1,6 @@
 # Write And Ingest
 
-Applies to **GGraphDB 2.4.2**; see [release validation](../validation-v2.4.2.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.3**; see [release validation](../validation-v2.4.3.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](write-ingest.zh-CN.md)
 
@@ -13,6 +13,13 @@ GGraphDB has three write paths:
   batches, with task checkpoints and resumability.
 
 All three require `X-Tenant-ID`. In reader mode they return `405`.
+
+Version 2.4.3 persists active management metadata before a new
+tenant's first manifest, including direct commits, ingestion and `init-tenant`.
+Metadata failures fail initialization and can be retried; existing disabled or
+deleted tenants remain blocked. Existing heads do not incur a metadata rewrite
+on each commit. Missing metadata in older standalone tenants follows the
+[online recovery rules](../product-operations.zh-CN.md).
 
 These are general graph write APIs. The request and file examples below use
 CMDB-style collector data where that makes the ingestion and reconciliation

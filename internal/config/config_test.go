@@ -8,6 +8,32 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+func TestLoadInodeAdmissionPolicy(t *testing.T) {
+	setLocalConfigEnv(t)
+	t.Setenv("GRAPHDB_DISK_MIN_FREE_INODES", "2048")
+	t.Setenv("GRAPHDB_DISK_MIN_FREE_INODES_PERCENT", "8")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := cfg.DiskSpacePolicy()
+	if policy.MinFreeInodes != 2048 || policy.MinFreeInodesPercent != 8 || cfg.IngestServiceConfig().WAL.DiskSpace != policy {
+		t.Fatalf("inode admission configuration not propagated: %+v", cfg)
+	}
+	for _, setting := range []struct{ key, value string }{
+		{"GRAPHDB_DISK_MIN_FREE_INODES", "-1"},
+		{"GRAPHDB_DISK_MIN_FREE_INODES_PERCENT", "-1"},
+		{"GRAPHDB_DISK_MIN_FREE_INODES_PERCENT", "100"},
+	} {
+		t.Run(setting.key+setting.value, func(t *testing.T) {
+			t.Setenv(setting.key, setting.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("invalid inode floor accepted")
+			}
+		})
+	}
+}
+
 func TestLoadSupportsStandaloneAndRaftIngestion(t *testing.T) {
 	for _, mode := range []string{"direct", "wal"} {
 		t.Run(mode, func(t *testing.T) {

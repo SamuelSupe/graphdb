@@ -98,6 +98,10 @@ type TenantStore struct {
 	readerHeartbeatCache     map[string]cachedReaderHeartbeat
 	objectKeyCache           map[string]struct{}
 	tenantMetadataCache      map[string]cachedTenantMetadata
+	metadataRepairMu         sync.Mutex
+	metadataRepairs          map[string]bool
+	metadataRepairQueue      chan string
+	MetadataRecoveryLogger   IngestLogger
 	purgeTombstoneCache      map[string]cachedTenantPurgeTombstone
 	sourcePolicyCache        map[string]cachedSourcePolicy
 	tenantConfigCache        map[string]cachedTenantConfig

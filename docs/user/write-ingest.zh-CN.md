@@ -1,6 +1,6 @@
 # 写入与采集
 
-适用于 **GGraphDB 2.4.2**；[发行验证](../validation-v2.4.2.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.3**；[发行验证](../validation-v2.4.3.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](write-ingest.md)
 
@@ -13,6 +13,11 @@ GGraphDB 有三条写入路径：
   task checkpoint 和恢复。
 
 三者都需要 `X-Tenant-ID`；在 reader 模式都返回 `405`。
+
+2.4.3会在新租户的首次 manifest 发布前持久化 active 管理元数据，
+覆盖直接提交、批量摄取和 `init-tenant`。元数据写入失败则初始化失败，可在故障解除后重试；
+已有 disabled/deleted 租户仍禁止写入。已有 head 的正常提交不会逐次重写管理元数据。
+旧单机租户的元数据缺失按[在线自愈规则](../product-operations.zh-CN.md)处理。
 
 这些都是通用图数据写入接口。下面的请求和文件示例在需要具体说明采集与
 身份合并时使用 CMDB 风格数据；其他领域可以不使用 CI type 和 source governance。

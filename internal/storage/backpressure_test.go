@@ -61,6 +61,61 @@ func TestDiskPressurePreservesReadsDrainAndCleanup(t *testing.T) {
 	}
 }
 
+func TestInodePressurePreservesReadsDrainAndCleanup(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := files.ConfigureDiskSpace(DiskSpacePolicy{MinFreeInodes: 128, MinFreeInodesPercent: 5}); err != nil {
+		t.Fatal(err)
+	}
+	available := int64(1000)
+	files.diskProbe = func(string) (DiskSpaceStatus, error) {
+		return DiskSpaceStatus{TotalBytes: 2 << 30, AvailableBytes: 1 << 30, TotalInodes: 10000, AvailableInodes: available, InodesKnown: true}, nil
+	}
+	store := NewTenantStore(files, "test")
+	mutations := graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:a", Kind: "host"}}}
+	before, err := store.Commit(ctx, "tenant-a", mutations, CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	available = 128
+	_, err = store.Commit(ctx, "tenant-a", mutations, CommitOptions{})
+	assertBackpressureReason(t, err, "disk_inodes_low")
+	_, err = store.Compact(ctx, "tenant-a")
+	assertBackpressureReason(t, err, "disk_inodes_low")
+	status, err := store.DiskSpace(ctx)
+	if err != nil || status.WriteReady || status.MinimumFreeInodes != 500 {
+		t.Fatalf("disk status=%+v err=%v", status, err)
+	}
+	if err := store.CheckAcceptedWALBackpressure(ctx, "tenant-a"); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	_, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil || manifest.Version != before.Version {
+		t.Fatalf("read=%+v err=%v", manifest, err)
+	}
+	if _, err := store.RunGC(ctx, "tenant-a", GCOptions{}); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	available = 0
+	assertBackpressureReason(t, store.CheckAcceptedWALBackpressure(ctx, "tenant-a"), "disk_inodes_low")
+	status, err = store.DiskSpace(ctx)
+	if err != nil || status.WriteReady {
+		t.Fatalf("exhausted disk=%+v err=%v", status, err)
+	}
+	available = 1000
+	if _, err := store.Commit(ctx, "tenant-a", mutations, CommitOptions{}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	files.diskProbe = func(string) (DiskSpaceStatus, error) { return DiskSpaceStatus{AvailableBytes: 1 << 30}, nil }
+	if err := store.CheckWriteDiskSpace(ctx, 0); err != nil {
+		t.Fatalf("filesystem without inode accounting: %v", err)
+	}
+}
+
 func TestCommitBackpressureRejectsHighObjectLatency(t *testing.T) {
 	store := NewTenantStore(NewMemoryStore(), "test")
 	pressure := NewWritePressure(BackpressureConfig{ObjectLatencyThreshold: time.Millisecond})

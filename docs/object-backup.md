@@ -2,7 +2,7 @@
 
 [中文](object-backup.zh-CN.md)
 
-Applies to **GGraphDB 2.4.2**; see [release validation](validation-v2.4.2.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.3**; see [release validation](validation-v2.4.3.md) and [version boundaries](naming-and-compatibility.md).
 
 This guide covers the current 2.x backup features. Version 2.1 adds optional
 automation while retaining the 2.0 snapshot format. There is no 1.x backup

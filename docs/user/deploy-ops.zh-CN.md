@@ -1,6 +1,6 @@
 # GGraphDB 2.x：deploy-ops
 
-适用于 **GGraphDB 2.4.2**；[发行验证](../validation-v2.4.2.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.3**；[发行验证](../validation-v2.4.3.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](deploy-ops.md)
 
@@ -21,3 +21,5 @@ docker compose up -d --build
 ```
 
 停止服务后才能对同一目录执行离线 CLI。在线操作使用 HTTP API。
+
+2.4.3默认支持单机元数据在线自愈，无需额外配置。缺失或损坏的管理记录优先从恢复副本补回；无副本但 manifest 有效且无生效中的 purge 标记时按 active 重建。恢复字段、资源限制及 Raft 边界见[运维说明](../product-operations.zh-CN.md)。

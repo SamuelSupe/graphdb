@@ -63,6 +63,10 @@ func openFileStore(root string, recovery bool) (*FileStore, error) {
 			return nil, fmt.Errorf("runtime restore is incomplete; rerun runtime-restore with the original archive")
 		}
 	}
+	if err := cleanAbandonedObjectFiles(root); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("clean abandoned object files: %w", err)
+	}
 	if err := s.recoverRestoreDirectories(); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("recover local restore: %w", err)
@@ -99,6 +103,7 @@ type fileRuntime struct {
 	listenerID         uint64
 	closeOnce          sync.Once
 	closeErr           error
+	restoreCleanup     chan string
 }
 
 func (s *FileStore) Close() error {
@@ -108,6 +113,9 @@ func (s *FileStore) Close() error {
 	s.runtime.closeOnce.Do(func() {
 		s.runtime.mu.Lock()
 		s.runtime.closed = true
+		if s.runtime.restoreCleanup != nil {
+			close(s.runtime.restoreCleanup)
+		}
 		s.runtime.mu.Unlock()
 		s.runtime.active.Wait()
 		s.runtime.closeErr = errors.Join(syscall.Flock(int(s.runtime.lock.Fd()), syscall.LOCK_UN), s.runtime.lock.Close())

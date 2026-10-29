@@ -13,6 +13,90 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+func TestHTTPMissingTenantMetadataRequiresExplicitState(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	if _, err := store.Commit(ctx, "legacy", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Objects.Delete(ctx, "test/tenants/legacy/metadata.parquet"); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	response := serveJSON(handler, http.MethodPut, "/v1/tenants/legacy", "", map[string]any{"name": "recovered"})
+	var failure struct {
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || failure.Code != string(ErrorCodeRepairRequired) || failure.Retryable {
+		t.Fatalf("missing state silently accepted: %d %s", response.Code, response.Body.String())
+	}
+	response = serveJSON(handler, http.MethodPost, "/v1/tenants/legacy/disable", "", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("explicit disable: %d %s", response.Code, response.Body.String())
+	}
+	response = serveJSON(handler, http.MethodPut, "/v1/tenants/legacy", "", map[string]any{"name": "recovered"})
+	var info storage.TenantInfo
+	if err := json.Unmarshal(response.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || info.Status != storage.TenantStatusDisabled || info.ManifestVersion != 1 {
+		t.Fatalf("metadata update changed confirmed state: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHTTPStandaloneMetadataRecoversWithoutConfiguration(t *testing.T) {
+	ctx := context.Background()
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	store := storage.NewTenantStore(files, "test")
+	defer store.ShutdownTasks(ctx)
+	if _, err := store.Commit(ctx, "legacy", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, storage.CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"test/tenants/legacy/metadata.parquet", "test/tenants/legacy/control/tenant-metadata-backup.parquet"} {
+		if err := files.Delete(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	response := serveJSON(handler, http.MethodPut, "/v1/tenants/legacy", "", map[string]any{"name": "recovered"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("ordinary PUT requires manual recovery: %d %s", response.Code, response.Body.String())
+	}
+	response = serveJSON(handler, http.MethodPost, "/v1/tenants/legacy/disable", "", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", response.Code, response.Body.String())
+	}
+	if err := files.Put(ctx, "test/tenants/legacy/metadata.parquet", []byte("damaged")); err != nil {
+		t.Fatal(err)
+	}
+	response = serveJSON(handler, http.MethodGet, "/v1/tenants/legacy", "", nil)
+	var info storage.TenantInfo
+	if err := json.Unmarshal(response.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || info.Status != storage.TenantStatusDisabled || info.Name != "recovered" || info.ManifestVersion != 1 {
+		t.Fatalf("GET did not preserve recovered state: %d %s", response.Code, response.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		primary, err := files.Get(ctx, "test/tenants/legacy/metadata.parquet")
+		backup, backupErr := files.Get(ctx, "test/tenants/legacy/control/tenant-metadata-backup.parquet")
+		if err == nil && backupErr == nil && string(primary) == string(backup) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("GET did not trigger durable online recovery")
+}
+
 func TestHTTPRestoreSourceRequiresExplicitPlatformMigration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

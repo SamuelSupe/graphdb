@@ -1,6 +1,6 @@
 # GGraphDB 2.x: deploy-ops
 
-Applies to **GGraphDB 2.4.2**; see [release validation](../validation-v2.4.2.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.3**; see [release validation](../validation-v2.4.3.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](deploy-ops.zh-CN.md)
 
@@ -22,3 +22,5 @@ docker compose up -d --build
 ```
 
 Stop the service before using offline tools on its directory. Use HTTP for live administration.
+
+Version 2.4.3 automatically repairs standalone management metadata during normal access, without extra configuration. A valid recovery copy preserves the original state and fields; without one, a valid manifest and no active purge fence permit reconstruction as active. See the [operations notes](../product-operations.zh-CN.md) for recovery semantics, resource limits and the Raft boundary.

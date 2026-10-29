@@ -10,7 +10,8 @@ import (
 
 // ValidateTenantMigrationSource cold-loads the published graph and relation
 // schemas, including required objects and the current graph digest. It also
-// validates tenant controls and encodings that copy will rewrite. The caller
+// requires valid management metadata and validates the remaining tenant controls
+// and encodings that copy will rewrite. The caller
 // must pin or freeze the input until it is copied. Invalid imported data is a
 // rejected input; local object IO failures still poison a replicated application.
 // declared, when non-nil, is the complete set of objects decoded from a transfer:
@@ -38,6 +39,21 @@ func ValidateTenantMigrationSource(ctx context.Context, source *TenantStore, ten
 	if !meta.Exists {
 		return ErrNotFound
 	}
+	// Reject incomplete management state before decoding the graph, which can
+	// be large even though its manifest and tenant metadata are small.
+	if metadata, configured, _, err := cold.getTenantMetadataWithMeta(ctx, tenantID); err != nil {
+		return err
+	} else if !configured {
+		return fmt.Errorf("%w: migration source tenant %q has no management metadata", ErrTenantMetadataMissing, tenantID)
+	} else if metadata.TenantID != tenantID {
+		return fmt.Errorf("migration metadata tenant mismatch: want %q, got %q", tenantID, metadata.TenantID)
+	}
+	if _, _, err := cold.GetTenantConfig(ctx, tenantID); err != nil {
+		return err
+	}
+	if _, _, err := cold.GetSourcePolicy(ctx, tenantID); err != nil {
+		return err
+	}
 	loaded, err := cold.loadManifestGraph(ctx, tenantID, manifest, meta)
 	if err != nil {
 		return err
@@ -47,15 +63,6 @@ func ValidateTenantMigrationSource(ctx context.Context, source *TenantStore, ten
 		return err
 	}
 	if err := validateRelationSchemaGraph(loaded.Graph, schemas); err != nil {
-		return err
-	}
-	if _, _, _, err := cold.getTenantMetadataWithMeta(ctx, tenantID); err != nil {
-		return err
-	}
-	if _, _, err := cold.GetTenantConfig(ctx, tenantID); err != nil {
-		return err
-	}
-	if _, _, err := cold.GetSourcePolicy(ctx, tenantID); err != nil {
 		return err
 	}
 	catalog, err := cold.GetIndexCatalog(ctx, tenantID)

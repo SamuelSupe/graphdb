@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -1501,6 +1502,115 @@ func TestIngestDurableBatchReplaysPreparedPlanAfterManifestFailure(t *testing.T)
 	}
 	if len(segments) != 1 {
 		t.Fatalf("commit segment objects = %#v", segments)
+	}
+}
+
+func TestIngestFirstBatchRetriesAfterManifestPublicationFailure(t *testing.T) {
+	ctx := context.Background()
+	objects := &failFirstNonemptyManifestStore{ObjectStore: NewMemoryStore()}
+	store := NewTenantStore(objects, "test")
+	objects.key = store.manifestKey("tenant-a")
+	entries := []IngestBatchEntry{{Request: ingestEntityRequest("first", "host:1")}}
+	_, err := store.IngestDurableBatchWithHooks(ctx, "tenant-a", entries, IngestBatchHooks{
+		Prepared: func(_ context.Context, plans []*IngestPreparedRequest) error {
+			entries[0].Prepared = plans[0]
+			return nil
+		},
+	})
+	if err == nil || !objects.failed || entries[0].Prepared == nil {
+		t.Fatalf("expected failed publication of a prepared first batch: %v", err)
+	}
+	// Drop writer caches as a restart would. The segment is already durable;
+	// the empty head must keep it distinguishable from a lost published graph.
+	cold := NewTenantStore(objects, "test")
+	cold.InstanceID = store.InstanceID
+	results, err := cold.IngestDurableBatch(ctx, "tenant-a", entries)
+	if err != nil || len(results) != 1 || results[0].Version != 1 {
+		t.Fatalf("retry first prepared batch: %+v %v", results, err)
+	}
+	g, manifest, err := cold.Load(ctx, "tenant-a")
+	if err != nil || manifest.Version != 1 || g.Entities.Len() != 1 {
+		t.Fatalf("retried graph: manifest=%+v err=%v", manifest, err)
+	}
+}
+
+type failFirstNonemptyManifestStore struct {
+	ObjectStore
+	key    string
+	failed bool
+}
+
+func (s *failFirstNonemptyManifestStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	if key == s.key && !s.failed {
+		manifest, err := decodeParquetManifest(ctx, data)
+		if err != nil {
+			return ObjectMeta{}, err
+		}
+		if manifest.Version > 0 {
+			s.failed = true
+			return ObjectMeta{}, errors.New("injected first manifest publication failure")
+		}
+	}
+	return s.ObjectStore.PutConditional(ctx, key, data, condition)
+}
+
+func TestPreparedAliasRecoveryRetainsResultValidation(t *testing.T) {
+	for _, damage := range []string{"none", "applied_count", "non_alias_conflict", "digest", "commit_version"} {
+		t.Run(damage, func(t *testing.T) {
+			ctx := context.Background()
+			objects := &failIngestRecordOnceStore{ObjectStore: NewMemoryStore()}
+			store := NewTenantStore(objects, "test")
+			if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.PutSourcePolicy(ctx, "tenant-a", graph.SourcePolicy{
+				FieldAliases: []graph.FieldAliasRule{{Source: "agent", Aliases: map[string]string{"host_name": "hostname"}}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			request := ingestEntityRequest("alias-retry", "host:1")
+			request.Items[0].Entity.Fields = graph.Fields{"hostname": "canonical", "host_name": "alias"}
+			entries := []IngestBatchEntry{{Request: request}}
+			objects.failKey = store.manifestKey("tenant-a")
+			var prepared *IngestPreparedRequest
+			_, err := store.IngestDurableBatchWithHooks(ctx, "tenant-a", entries, IngestBatchHooks{
+				Prepared: func(_ context.Context, plans []*IngestPreparedRequest) error {
+					data, err := json.Marshal(plans[0])
+					if err != nil {
+						return err
+					}
+					return json.Unmarshal(data, &prepared)
+				},
+			})
+			if err == nil || prepared == nil || prepared.Result.Suppressed != 1 {
+				t.Fatalf("missing failed prepared alias plan: %+v %v", prepared, err)
+			}
+			switch damage {
+			case "applied_count":
+				prepared.Result.Applied++
+			case "non_alias_conflict":
+				prepared.Result.Conflicts[0].AliasField = ""
+			case "digest":
+				prepared.DataHash = "changed"
+			case "commit_version":
+				prepared.Commit.Version++
+			}
+			entries[0].Prepared = prepared
+			results, err := store.IngestDurableBatch(ctx, "tenant-a", entries)
+			if damage != "none" {
+				if !errors.Is(err, ErrIngestRepairRequired) {
+					t.Fatalf("inconsistent prepared plan accepted: %v", err)
+				}
+				manifest, err := store.CurrentManifest(ctx, "tenant-a")
+				if err != nil || manifest.Version != 0 {
+					t.Fatalf("inconsistent plan published: %+v %v", manifest, err)
+				}
+				return
+			}
+			if err != nil || len(results) != 1 || results[0].Suppressed != 1 || results[0].Version != 1 {
+				t.Fatalf("prepared alias recovery: %+v %v", results, err)
+			}
+		})
 	}
 }
 

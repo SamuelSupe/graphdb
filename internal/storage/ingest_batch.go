@@ -136,7 +136,9 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	}
 
 	preparedEntries := make([]IngestBatchEntry, len(entries))
+	validatePlans := hooks.Prepared != nil
 	for index, entry := range entries {
+		validatePlans = validatePlans || entry.Prepared != nil
 		request, err := PrepareIngestRequest(tenantID, entry.Request)
 		if err != nil {
 			return nil, err
@@ -349,13 +351,15 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 		attribute.Int("graphdb.ingest.batch.cas_merged", stats.CASMerged),
 		attribute.Bool("graphdb.ingest.batch.fallback", stats.Fallback),
 	)
-	if hooks.Prepared != nil {
+	if validatePlans {
 		plans, err := s.preparedIngestBatchPlans(ctx, tenantID, preparedEntries, candidates, loaded.Manifest, finalManifest)
 		if err != nil {
 			return results, err
 		}
-		if err := hooks.Prepared(ctx, plans); err != nil {
-			return results, err
+		if hooks.Prepared != nil {
+			if err := hooks.Prepared(ctx, plans); err != nil {
+				return results, err
+			}
 		}
 	}
 	if len(commitItems) > 0 {
@@ -1089,6 +1093,9 @@ func (s *TenantStore) publishIngestBatch(
 		attribute.Int64("graphdb.ingest.publish.final_version", manifest.Version),
 	)
 	defer func() { endStorageSpan(span, err) }()
+	if err := s.persistInitialTenantHead(ctx, tenantID, &loaded); err != nil {
+		return nil, err
+	}
 	ref, err := s.putPreparedCommitSegment(ctx, tenantID, preparedSegment)
 	if err != nil {
 		return nil, err
@@ -1324,7 +1331,27 @@ func validatePreparedIngestResults(candidates []*ingestBatchCandidate) error {
 		if candidate.preparedPlan == nil || candidate.preparedPlan.Commit == nil {
 			continue
 		}
-		actual, err := json.Marshal(candidate.result)
+		result := candidate.result
+		durable := candidate.preparedPlan.Result
+		// Alias decisions precede graph conflicts in the durable result. The
+		// prepared commit already has canonical fields, so replay cannot emit
+		// that prefix again. Restore only this missing prefix; every recomputed
+		// field, graph conflict, commit identity and graph digest must still agree.
+		missing := len(durable.Conflicts) - len(result.Conflicts)
+		if candidate.prepared && missing > 0 && durable.Suppressed-result.Suppressed == missing {
+			aliases := true
+			for _, conflict := range durable.Conflicts[:missing] {
+				if conflict.AliasField == "" {
+					aliases = false
+					break
+				}
+			}
+			if aliases {
+				result.Conflicts = append(append([]IngestConflict(nil), durable.Conflicts[:missing]...), result.Conflicts...)
+				result.Suppressed += missing
+			}
+		}
+		actual, err := json.Marshal(result)
 		if err != nil {
 			return err
 		}
@@ -1335,6 +1362,7 @@ func validatePreparedIngestResults(candidates []*ingestBatchCandidate) error {
 		if string(actual) != string(expected) {
 			return fmt.Errorf("%w: prepared ingest result changed", ErrIngestRepairRequired)
 		}
+		candidate.result = result
 	}
 	return nil
 }

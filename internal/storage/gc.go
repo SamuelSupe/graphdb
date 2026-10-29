@@ -123,6 +123,9 @@ func (s *TenantStore) runGCBatch(ctx context.Context, tenantID string, options G
 		defer func() {
 			started := time.Now()
 			err = errors.Join(err, files.syncPendingDirectories())
+			if err == nil {
+				err = files.pruneEmptyObjectParents(ctx, report.Checkpoint.DeletedKeys)
+			}
 			s.recordMaintenance("gc_sync", started)
 			if err != nil {
 				report.Checkpoint.Completed = false

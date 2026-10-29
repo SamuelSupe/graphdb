@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -107,7 +108,7 @@ func (s *localIngestPublicationFault) PutConditional(ctx context.Context, key st
 }
 
 func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
-	for _, failure := range []string{"manifest", "batch_metadata"} {
+	for _, failure := range []string{"manifest", "batch_metadata", "manifest_aliases", "batch_metadata_aliases"} {
 		t.Run(failure, func(t *testing.T) {
 			ctx := context.Background()
 			files, err := OpenFileStore(t.TempDir())
@@ -115,15 +116,26 @@ func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer files.Close()
-			objects := &localIngestPublicationFault{ObjectStore: files}
+			objects := &localIngestPublicationFault{ObjectStore: files, err: syscall.ENOSPC}
 			store := NewTenantStore(objects, "test")
 			if _, err := store.InitTenant(ctx, "tenant-a"); err != nil {
 				t.Fatal(err)
 			}
 			request := ingestEntityRequest("retry", "host:retry")
 			request.Items[0].Entity.Fields = map[string]any{"payload": strings.Repeat("x", 4<<10)}
+			aliases := strings.HasSuffix(failure, "_aliases")
+			if aliases {
+				if _, err := store.PutSourcePolicy(ctx, "tenant-a", graph.SourcePolicy{
+					Sources:      []graph.SourcePolicyItem{{Name: request.Source, Priority: 50}},
+					FieldAliases: []graph.FieldAliasRule{{Source: request.Source, Aliases: map[string]string{"host_name": "hostname"}}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				request.Items[0].Entity.Fields["hostname"] = "canonical"
+				request.Items[0].Entity.Fields["host_name"] = "alias"
+			}
 			objects.key = store.manifestKey("tenant-a")
-			if failure == "batch_metadata" {
+			if strings.HasPrefix(failure, "batch_metadata") {
 				objects.key = store.ingestBatchKey("tenant-a", request.Source, request.CollectorID, request.BatchID)
 			}
 			objects.failing.Store(true)
@@ -193,6 +205,15 @@ func TestLocalWALPreparedRetryReusesDurablePlan(t *testing.T) {
 			result, err := reopened.Wait(flushCtx, accepted)
 			if err != nil || result.Version != 1 || result.SkipReason != IngestSkipReasonIdempotentReplay {
 				t.Fatalf("replay=%+v err=%v", result, err)
+			}
+			if aliases {
+				entity, ok := g.GetEntity("host:retry")
+				if !ok || entity.Fields["hostname"] != "canonical" || result.Suppressed != 1 || len(result.Conflicts) != 1 || result.Conflicts[0].AliasField != "host_name" {
+					t.Fatalf("alias decision changed: entity=%+v result=%+v", entity, result)
+				}
+			}
+			if readiness := reopened.Readiness(); !readiness.Ready || !readiness.Writable || readiness.Pending != 0 {
+				t.Fatalf("service did not recover: %+v", readiness)
 			}
 			t.Logf("%d failed publications used %d PREPARED; reopened and replayed at version %d", attempts, prepared, result.Version)
 		})

@@ -98,7 +98,7 @@ func (s *FileStore) restoreRename(from, to string) error {
 	if err := s.walkSafeDir(from, false, nil); err != nil {
 		return err
 	}
-	if err := s.verifySafeParent(to); err != nil {
+	if err := s.ensureSafeParent(to, nil); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(to); err == nil && info.Mode()&os.ModeSymlink != 0 {

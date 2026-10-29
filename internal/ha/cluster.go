@@ -53,7 +53,7 @@ type Cluster struct {
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{flushWake: make(chan struct{}, 1), diskPolicy: storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent}, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{flushWake: make(chan struct{}, 1), diskPolicy: cfg.DiskSpacePolicy(), App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {

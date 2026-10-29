@@ -3,6 +3,28 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [2.4.3] - 2026-10-29
+
+- Check available inodes as well as bytes on data, WAL and Raft filesystems;
+  expose inode diagnostics and backpressure. Prune empty object directories and
+  safely reclaim abandoned local staging directories under exclusive ownership.
+- Recover standalone tenant management metadata online for all tenants without
+  configuration. Preserve valid pending/backup state and fields, respect purge
+  fences, and reconstruct active metadata only from a valid manifest when no
+  valid copy remains. Bound background repair work and honor cancellation.
+- Persist management metadata before an initial manifest in direct writes,
+  batch ingest and init-tenant. Reject missing, corrupt or mismatched migration
+  metadata before graph decoding and before replacing the target tenant.
+- Avoid whole-tree linking for metadata-only tenant creation and move completed
+  staging cleanup off request locks. Repair only the secondary copy when the
+  primary remains valid, and avoid redundant metadata decoding.
+- Replay legacy prepared ingest alias results consistently after resource
+  failures while retaining commit identity, version, graph hash and result checks.
+  Mark HTTP 499 spans as canceled errors.
+- Include post-2.4.2 read-drain ordering, implicit mutation-replay prevention and
+  cached-router migration-status repairs. HTTP/module namespaces, logical graph
+  hashes and Raft protocol identifiers remain unchanged.
+
 ## [2.4.0] - 2026-10-21
 
 - Add opt-in bounded adjacency ID trees while retaining ID-ordered edge data,

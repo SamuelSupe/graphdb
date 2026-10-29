@@ -125,6 +125,9 @@ func TestHAShardPersistedChunkFailureStopsReplicaUntilReplay(t *testing.T) {
 				t.Fatalf("healthy majority write: %d %s", response.Code, response.Body.String())
 			}
 			group.stop(follower)
+			if err := os.MkdirAll(filepath.Dir(chunkPath), 0755); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(chunkPath, encoded, 0600); err != nil {
 				t.Fatal(err)
 			}

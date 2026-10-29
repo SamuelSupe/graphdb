@@ -31,6 +31,8 @@ type Config struct {
 	DataDir                           string
 	DiskMinFreeBytes                  int64
 	DiskMinFreePercent                int
+	DiskMinFreeInodes                 int64
+	DiskMinFreeInodesPercent          int
 	StoreKind                         string
 	QueryMaxConcurrent                int
 	QueryMaxPerTenant                 int
@@ -127,6 +129,8 @@ func Load() (Config, error) {
 		DataDir:                           getenv("GRAPHDB_DATA_DIR", ".graphdb"),
 		DiskMinFreeBytes:                  256 << 20,
 		DiskMinFreePercent:                5,
+		DiskMinFreeInodes:                 1024,
+		DiskMinFreeInodesPercent:          5,
 		StoreKind:                         os.Getenv("GRAPHDB_STORAGE"),
 		QueryMaxConcurrent:                64,
 		QueryMaxPerTenant:                 32,
@@ -278,7 +282,13 @@ func Load() (Config, error) {
 	if err := loadIntEnv("GRAPHDB_DISK_MIN_FREE_PERCENT", &cfg.DiskMinFreePercent); err != nil {
 		return Config{}, err
 	}
-	if err := (storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent}).Validate(); err != nil {
+	if err := loadInt64Env("GRAPHDB_DISK_MIN_FREE_INODES", &cfg.DiskMinFreeInodes); err != nil {
+		return Config{}, err
+	}
+	if err := loadIntEnv("GRAPHDB_DISK_MIN_FREE_INODES_PERCENT", &cfg.DiskMinFreeInodesPercent); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.DiskSpacePolicy().Validate(); err != nil {
 		return Config{}, err
 	}
 	if err := loadIntEnv("GRAPHDB_WRITE_MAX_ENTITIES_PER_TENANT", &cfg.WriteMaxEntitiesPerTenant); err != nil {
@@ -448,11 +458,18 @@ func (cfg Config) validateIngest() error {
 	return cfg.IngestServiceConfig().Validate()
 }
 
+func (cfg Config) DiskSpacePolicy() storage.DiskSpacePolicy {
+	return storage.DiskSpacePolicy{
+		MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent,
+		MinFreeInodes: cfg.DiskMinFreeInodes, MinFreeInodesPercent: cfg.DiskMinFreeInodesPercent,
+	}
+}
+
 func (cfg Config) IngestServiceConfig() storage.IngestServiceConfig {
 	return storage.IngestServiceConfig{
 		OwnerID: cfg.InstanceID,
 		WAL: storage.IngestWALConfig{
-			DiskSpace:     storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent},
+			DiskSpace:     cfg.DiskSpacePolicy(),
 			Dir:           cfg.IngestWALDir,
 			Durability:    cfg.IngestWALDurability,
 			BufferBytes:   int(cfg.IngestWALBufferBytes),

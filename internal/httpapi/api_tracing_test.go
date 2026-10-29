@@ -150,6 +150,29 @@ func TestEntityListEmitsDetailedAPITrace(t *testing.T) {
 	assertSpanAttribute(t, scan, "graphdb.scan.returned", int64(1))
 }
 
+func TestCanceledTenantCreateMarksBothHTTPSpans(t *testing.T) {
+	recorder := installSpanRecorder(t)
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants", strings.NewReader(`{"tenant_id":"tenant-canceled"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != statusClientClosedRequest {
+		t.Fatalf("canceled create: %d %s", rr.Code, rr.Body.String())
+	}
+	spans := recorder.Ended()
+	for _, name := range []string{"/v1/tenants", "graphdb.tenant.create.http"} {
+		span := requireRecordedSpan(t, spans, name)
+		if span.Status().Code != codes.Error || span.Status().Description == "" {
+			t.Fatalf("cancellation reported as success in %s: %+v", name, span.Status())
+		}
+	}
+	assertSpanAttribute(t, requireRecordedSpan(t, spans, "graphdb.tenant.create.http"), "graphdb.api.result", "canceled")
+}
+
 func TestMalformedRequestRecordsDecodeFailure(t *testing.T) {
 	recorder := installSpanRecorder(t)
 	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")

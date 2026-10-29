@@ -9,13 +9,19 @@ import (
 )
 
 type DiskSpacePolicy struct {
-	MinFreeBytes   int64
-	MinFreePercent int
+	MinFreeBytes         int64
+	MinFreePercent       int
+	MinFreeInodes        int64
+	MinFreeInodesPercent int
+}
+
+func (p DiskSpacePolicy) enabled() bool {
+	return p.MinFreeBytes != 0 || p.MinFreePercent != 0 || p.MinFreeInodes != 0 || p.MinFreeInodesPercent != 0
 }
 
 func (s *TenantStore) checkRestoreDiskSpace(ctx context.Context, record TenantBackupRecord) error {
 	files := s.localFileStore()
-	if IsReplicatedContext(ctx) || files == nil || (files.diskPolicy.MinFreeBytes == 0 && files.diskPolicy.MinFreePercent == 0) {
+	if IsReplicatedContext(ctx) || files == nil || !files.diskPolicy.enabled() {
 		return nil
 	}
 	var size int64
@@ -44,16 +50,23 @@ func (s *TenantStore) checkRestoreDiskSpace(ctx context.Context, record TenantBa
 }
 
 type DiskSpaceStatus struct {
-	FilesystemID     string `json:"filesystem_id,omitempty"`
-	TotalBytes       int64  `json:"total_bytes"`
-	AvailableBytes   int64  `json:"available_bytes"`
-	MinimumFreeBytes int64  `json:"minimum_free_bytes"`
-	WriteReady       bool   `json:"write_ready"`
+	FilesystemID      string `json:"filesystem_id,omitempty"`
+	TotalBytes        int64  `json:"total_bytes"`
+	AvailableBytes    int64  `json:"available_bytes"`
+	MinimumFreeBytes  int64  `json:"minimum_free_bytes"`
+	TotalInodes       int64  `json:"total_inodes"`
+	AvailableInodes   int64  `json:"available_inodes"`
+	MinimumFreeInodes int64  `json:"minimum_free_inodes"`
+	InodesKnown       bool   `json:"inodes_known"`
+	WriteReady        bool   `json:"write_ready"`
 }
 
 func (p DiskSpacePolicy) Validate() error {
 	if p.MinFreeBytes < 0 || p.MinFreePercent < 0 || p.MinFreePercent >= 100 {
 		return fmt.Errorf("disk minimum free bytes must be non-negative and percent must be between 0 and 99")
+	}
+	if p.MinFreeInodes < 0 || p.MinFreeInodesPercent < 0 || p.MinFreeInodesPercent >= 100 {
+		return fmt.Errorf("disk minimum free inodes must be non-negative and inode percent must be between 0 and 99")
 	}
 	return nil
 }
@@ -78,7 +91,7 @@ func InspectDiskSpace(ctx context.Context, path string, policy DiskSpacePolicy) 
 }
 
 func CheckDiskSpace(ctx context.Context, path string, policy DiskSpacePolicy, additionalBytes int64) error {
-	if policy.MinFreeBytes == 0 && policy.MinFreePercent == 0 {
+	if !policy.enabled() {
 		return nil
 	}
 	status, err := InspectDiskSpace(ctx, path, policy)
@@ -100,12 +113,16 @@ func inspectDiskSpace(ctx context.Context, path string, policy DiskSpacePolicy, 
 		return status, fmt.Errorf("%w: inspect disk space: %v", ErrObjectStoreUnavailable, err)
 	}
 	status.MinimumFreeBytes = max(policy.MinFreeBytes, status.TotalBytes/100*int64(policy.MinFreePercent))
+	status.MinimumFreeInodes = max(policy.MinFreeInodes, status.TotalInodes/100*int64(policy.MinFreeInodesPercent))
 	status.WriteReady = status.AvailableBytes >= status.MinimumFreeBytes
+	if status.InodesKnown {
+		status.WriteReady = status.WriteReady && status.AvailableInodes >= max(1, status.MinimumFreeInodes)
+	}
 	return status, nil
 }
 
 func (s *FileStore) checkDiskSpace(ctx context.Context, additionalBytes int64, accepted bool) error {
-	if IsReplicatedContext(ctx) || (s.diskPolicy.MinFreeBytes == 0 && s.diskPolicy.MinFreePercent == 0) {
+	if IsReplicatedContext(ctx) || !s.diskPolicy.enabled() {
 		return nil
 	}
 	status, err := s.DiskSpace(ctx)
@@ -120,10 +137,12 @@ func (s *FileStore) checkDiskSpace(ctx context.Context, additionalBytes int64, a
 
 func checkAvailableDiskSpace(status DiskSpaceStatus, additionalBytes int64, accepted bool) error {
 	minimum := status.MinimumFreeBytes
+	minimumInodes := status.MinimumFreeInodes
 	// Accepted work can consume the admission reserve to reach a durable terminal
 	// result. New requests and maintenance builds cannot consume that reserve.
 	if accepted {
 		minimum = min(minimum, 64<<20)
+		minimumInodes = min(minimumInodes, 64)
 	}
 	if additionalBytes < 0 || additionalBytes > math.MaxInt64-minimum {
 		return fmt.Errorf("invalid disk space estimate")
@@ -133,6 +152,12 @@ func checkAvailableDiskSpace(status DiskSpaceStatus, additionalBytes int64, acce
 		return &BackpressureError{RetryAfter: 2 * time.Second, Reasons: []BackpressureReason{{
 			Code: "disk_space_low", Current: float64(status.AvailableBytes), Threshold: float64(needed),
 			Message: "insufficient available disk space for admission and temporary files",
+		}}}
+	}
+	if status.InodesKnown && status.AvailableInodes < max(1, minimumInodes) {
+		return &BackpressureError{RetryAfter: 2 * time.Second, Reasons: []BackpressureReason{{
+			Code: "disk_inodes_low", Current: float64(status.AvailableInodes), Threshold: float64(max(1, minimumInodes)),
+			Message: "insufficient available filesystem inodes for admission and temporary files",
 		}}}
 	}
 	return nil
@@ -162,7 +187,7 @@ func (s *TenantStore) CheckAcceptedWALBackpressure(ctx context.Context, tenantID
 
 func (s *TenantStore) CheckTaskDiskSpace(ctx context.Context, task Task) error {
 	files := s.localFileStore()
-	if IsReplicatedContext(ctx) || files == nil || (files.diskPolicy.MinFreeBytes == 0 && files.diskPolicy.MinFreePercent == 0) {
+	if IsReplicatedContext(ctx) || files == nil || !files.diskPolicy.enabled() {
 		return nil
 	}
 	switch task.Type {

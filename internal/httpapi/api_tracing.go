@@ -53,7 +53,9 @@ func endAPIRequestTrace(span trace.Span, status int) {
 		return
 	}
 	result := "ok"
-	if status >= 500 {
+	if status == statusClientClosedRequest {
+		result = "canceled"
+	} else if status >= 500 {
 		result = "server_error"
 	} else if status >= 400 {
 		result = "client_error"
@@ -63,9 +65,16 @@ func endAPIRequestTrace(span trace.Span, status int) {
 		attribute.String("graphdb.api.result", result),
 	)
 	if status >= 400 {
-		span.SetStatus(codes.Error, http.StatusText(status))
+		span.SetStatus(codes.Error, traceHTTPStatusText(status))
 	}
 	span.End()
+}
+
+func traceHTTPStatusText(status int) string {
+	if status == statusClientClosedRequest {
+		return "client closed request"
+	}
+	return http.StatusText(status)
 }
 
 func startAPIPhase(ctx context.Context, phase string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {

@@ -114,7 +114,7 @@ func runRuntimeRecovery(args []string, cfg config.Config) error {
 	if args[0] == "runtime-backup" {
 		return backupRuntime(archive, roots, manifest, limit)
 	}
-	return restoreRuntime(archive, roots, manifest, limit, storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent})
+	return restoreRuntime(archive, roots, manifest, limit, cfg.DiskSpacePolicy())
 }
 
 func backupRuntime(filename string, roots map[string]string, manifest runtimeArchiveManifest, limit int64) (err error) {

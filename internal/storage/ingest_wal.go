@@ -287,7 +287,7 @@ func (w *IngestWAL) Append(ctx context.Context, kind IngestWALRecordType, payloa
 	if len(payload) > ingestWALMaxPayload {
 		return IngestWALAppendResult{}, fmt.Errorf("%w: %d bytes", ErrIngestWALRecordTooLarge, len(payload))
 	}
-	if kind == IngestWALAccepted && (w.config.DiskSpace.MinFreeBytes > 0 || w.config.DiskSpace.MinFreePercent > 0) {
+	if kind == IngestWALAccepted && w.config.DiskSpace.enabled() {
 		status, spaceErr := inspectDiskSpace(ctx, w.config.Dir, w.config.DiskSpace, nil)
 		if spaceErr != nil {
 			return result, spaceErr

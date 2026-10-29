@@ -1,8 +1,10 @@
 # 诊断指标与采集
 
-适用于 **GGraphDB 2.4.2**；发行资格见[版本验证](validation-v2.4.2.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.3**；发行资格见[版本验证](validation-v2.4.3.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 单机 direct/WAL、单组 Raft、catalog、数据分片和 router 均提供本地诊断。数据库节点使用管理监听器 `GET /metrics`、`GET /v1/diagnostics`；兼容单监听器部署也保留入口。router 使用自身监听器上的同名路径，必须携带 `Authorization: Bearer <router token>`，只接受 GET。
+
+2.4.3将 HTTP 499（调用方取消）在外层 HTTP span 和 API span 均标记为错误；API 属性 `graphdb.api.result=canceled`，并保留实际 HTTP 状态码。不能将旧版外层 span 的非错误状态当作请求成功。
 
 采集每个进程的私有地址，不能经过只选择 Leader 或 readiness 正常成员的负载均衡器。drain、quorum 丢失、catalog 不可达时仍能采集。指标采集不访问 Leader、请求读屏障、遍历持久化对象或获取共享应用屏障。磁盘检查使用文件系统状态调用；缓存仅遍历已受限的本地 leader/placement 缓存及当前 Raft 成员。
 
@@ -13,6 +15,7 @@
 | 请求与查询 | 既有 `graphdb_http_requests_total`、`graphdb_http_request_duration_seconds`、`graphdb_queries_total`、查询耗时、慢查询、读版本及 catch-up；`graphdb_queries_running` 为本进程运行或等待准入的查询数 |
 | 并发与排队 | `graphdb_admission_{enabled,active,waiting,global_limit,per_tenant_limit,queue_timeout_seconds}{pool}（query/read/write）`；已有读、写准入等待直方图和背压原因计数 |
 | 存储容量 | `graphdb_filesystem_{inspection_success,total_bytes,available_bytes,minimum_free_bytes,write_ready}{role}（data/wal/raft）`；分别检查配置的真实目录。相同文件系统的各角色容量不能相加；JSON 中 `filesystem_id` 可识别共享磁盘。旧 `graphdb_disk_*` 数据磁盘指标继续保留 |
+| inode（2.4.3） | `graphdb_filesystem_{inodes_known,total_inodes,available_inodes,minimum_free_inodes}{role}`；`inodes_known=0` 表示文件系统未提供有限 inode 总量或检查失败。`write_ready` 同时考虑字节与已知 inode 余量；不足时 diagnostics 标记 `disk_inodes_low`（独立 WAL/Raft 带角色前缀）。共享文件系统的 inode 数不能按角色相加 |
 | 单机 WAL | 既有 WAL append、字节、fsync 耗时/失败、写入及持久化 LSN、磁盘/缓冲占用、接入积压数量/字节/最老年龄、flush 批量/耗时、恢复及去重指标 |
 | Raft 状态 | `graphdb_raft_node_info`、`state`、`term`、`commit_index`、`applied_index`、`application_lag`、`leader_known`、`leader_changes_total`、`voters`、`learners`、`draining`、`protocol_version`、`failed`、`tick_seconds`、`election_timeout_seconds`；`status_observation_known`、`status_age_seconds` 表示状态采样有效性和年龄；`durable_commit_index`、`durable_application_lag` 为当前本地持久化提交位置和应用积压 |
 | Raft 提案与应用 | `proposal_bytes`、`pending_proposals`、`pending_reads`、`application_bytes`、`application_commits_total`、`application_entries_total`；操作耗时和当前并发见下文 |

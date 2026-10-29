@@ -1,6 +1,6 @@
 # API Map
 
-Applies to **GGraphDB 2.4.2**; see [release validation](../validation-v2.4.2.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.3**; see [release validation](../validation-v2.4.3.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](api-map.zh-CN.md)
 
@@ -27,7 +27,7 @@ This is a user-facing endpoint map. The detailed schema contract is
 | `GET` | `/v1/tenants` | List managed tenants; optional ID search and cursor paging (`limit=1..200`, `q`, `cursor`). |
 | `POST` | `/v1/tenants` | Create tenant. |
 | `GET` | `/v1/tenants/{tenant}` | Get tenant info. |
-| `PUT` | `/v1/tenants/{tenant}` | Update tenant metadata. |
+| `PUT` | `/v1/tenants/{tenant}` | Update tenant metadata. Version 2.4.3 automatically repairs missing/corrupt standalone metadata, preserving a valid recovery copy's state and fields. Without a valid copy, a valid manifest and no active purge fence permit reconstruction as active. Raft still returns `409 repair_required` for missing management state. |
 | `DELETE` | `/v1/tenants/{tenant}` | Soft delete tenant. |
 | `POST` | `/v1/tenants/{tenant}/disable` | Disable tenant writes. |
 | `POST` | `/v1/tenants/{tenant}/enable` | Enable tenant. |

@@ -34,6 +34,11 @@ func (s *TenantStore) beginTenantPurge(
 	tenantID string,
 	replaceRunning bool,
 ) (string, bool, error) {
+	unlockMetadata, err := s.lockLocalTenantMetadata(ctx, tenantID)
+	if err != nil {
+		return "", false, err
+	}
+	defer unlockMetadata()
 	operationID, err := mutationID(ctx, "tenant_purge_tombstone")
 	if err != nil {
 		return "", false, err

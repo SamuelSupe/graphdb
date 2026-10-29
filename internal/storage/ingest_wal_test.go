@@ -15,27 +15,41 @@ import (
 )
 
 func TestIngestWALDiskPressureRejectsAcceptanceButPersistsTerminal(t *testing.T) {
-	config := testIngestWALConfig(t)
-	config.DiskSpace = DiskSpacePolicy{MinFreeBytes: math.MaxInt64 - ingestWALMaxPayload}
-	wal, _, err := openIngestWALRecords(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = wal.Append(context.Background(), IngestWALAccepted, []byte("new"))
-	assertBackpressureReason(t, err, "disk_space_low")
-	if _, err := wal.Append(context.Background(), IngestWALPublished, []byte("terminal")); err != nil {
-		t.Fatalf("terminal: %v", err)
-	}
-	if err := wal.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, records, err := openIngestWALRecords(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	if len(records) != 1 || records[0].Type != IngestWALPublished {
-		t.Fatalf("recovered: %#v", records)
+	for _, reason := range []string{"disk_space_low", "disk_inodes_low"} {
+		t.Run(reason, func(t *testing.T) {
+			config := testIngestWALConfig(t)
+			config.DiskSpace = DiskSpacePolicy{MinFreeBytes: math.MaxInt64 - ingestWALMaxPayload}
+			if reason == "disk_inodes_low" {
+				status, err := InspectDiskSpace(context.Background(), config.Dir, DiskSpacePolicy{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !status.InodesKnown {
+					t.Skip("filesystem does not report finite inode capacity")
+				}
+				config.DiskSpace = DiskSpacePolicy{MinFreeInodes: math.MaxInt64}
+			}
+			wal, _, err := openIngestWALRecords(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = wal.Append(context.Background(), IngestWALAccepted, []byte("new"))
+			assertBackpressureReason(t, err, reason)
+			if _, err := wal.Append(context.Background(), IngestWALPublished, []byte("terminal")); err != nil {
+				t.Fatalf("terminal: %v", err)
+			}
+			if err := wal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, records, err := openIngestWALRecords(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			if len(records) != 1 || records[0].Type != IngestWALPublished {
+				t.Fatalf("recovered: %#v", records)
+			}
+		})
 	}
 }
 

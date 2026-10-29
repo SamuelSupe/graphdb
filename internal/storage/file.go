@@ -216,7 +216,13 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 		err := operationErr
 		return err
 	}
-	defer releaseOperation()
+	prune := false
+	defer func() {
+		releaseOperation()
+		if prune {
+			err = errors.Join(err, s.pruneEmptyObjectParents(ctx, []string{key}))
+		}
+	}()
 	if err := objectContextErr(ctx); err != nil {
 		return err
 	}
@@ -301,7 +307,11 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 			s.runtime.pendingDirectories[filepath.Dir(path)] = struct{}{}
 			return nil
 		}
-		return syncDir(filepath.Dir(path))
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return err
+		}
+		prune = true
+		return nil
 	}
 	return err
 }

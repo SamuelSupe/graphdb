@@ -34,7 +34,7 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 	if err != nil {
 		return nil, err
 	}
-	if err := files.ConfigureDiskSpace(storage.DiskSpacePolicy{MinFreeBytes: cfg.DiskMinFreeBytes, MinFreePercent: cfg.DiskMinFreePercent}); err != nil {
+	if err := files.ConfigureDiskSpace(cfg.DiskSpacePolicy()); err != nil {
 		files.Close()
 		return nil, err
 	}

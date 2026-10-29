@@ -1,6 +1,6 @@
 # Production Security Boundary
 
-Applies to **GGraphDB 2.4.2**; see [release validation](validation-v2.4.2.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.3**; see [release validation](validation-v2.4.3.md) and [version boundaries](naming-and-compatibility.md).
 
 [中文](security-deployment.zh-CN.md)
 

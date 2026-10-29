@@ -2,7 +2,7 @@
 
 [中文](local-disk.zh-CN.md)
 
-Applies to **GGraphDB 2.4.2**; see [release validation](validation-v2.4.2.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.3**; see [release validation](validation-v2.4.3.md) and [version boundaries](naming-and-compatibility.md).
 
 The default standalone deployment runs one process with concurrent tenant workloads. The process owns
 `GRAPHDB_DATA_DIR`; graph data, control metadata, background tasks and backups are

@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,116 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
+
+func TestInitialManifestRequiresManagementMetadata(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		for _, operation := range []string{"init", "commit", "ingest"} {
+			t.Run(fmt.Sprintf("local=%t/%s", local, operation), func(t *testing.T) {
+				ctx := context.Background()
+				var objects ObjectStore = NewMemoryStore()
+				if local {
+					files, err := OpenFileStore(t.TempDir())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer files.Close()
+					objects = files
+				}
+				store := NewTenantStore(objects, "test")
+				defer store.ShutdownTasks(ctx)
+				initialize := func() (err error) {
+					switch operation {
+					case "init":
+						_, err = store.InitTenant(ctx, "tenant-a")
+					case "commit":
+						_, err = store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, CommitOptions{})
+					case "ingest":
+						_, err = store.IngestDurableBatch(ctx, "tenant-a", []IngestBatchEntry{{Request: IngestRequest{Source: "test", CollectorID: "collector", BatchID: "batch", Items: []IngestItem{{Entity: &graph.Entity{ID: "host:1", Kind: "host"}}}}}})
+					}
+					return err
+				}
+				store.Objects = &localLifecycleFailureStore{&failPutStore{ObjectStore: objects, contains: "/metadata.parquet"}}
+				if err := initialize(); err == nil {
+					t.Fatal("initialization accepted a failed metadata write")
+				}
+				if _, err := objects.Get(ctx, store.manifestKey("tenant-a")); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("manifest published before management metadata: %v", err)
+				}
+				store.Objects = objects
+				if err := initialize(); err != nil {
+					t.Fatalf("retry initialization: %v", err)
+				}
+				data, err := objects.Get(ctx, store.tenantMetadataKey("tenant-a"))
+				if err != nil {
+					t.Fatalf("published manifest without metadata: %v", err)
+				}
+				metadata, err := decodeParquetTenantMetadata(ctx, data)
+				if err != nil || metadata.TenantID != "tenant-a" || metadata.Status != TenantStatusActive || metadata.CreatedAt.IsZero() {
+					t.Fatalf("initial metadata: %+v %v", metadata, err)
+				}
+				if local {
+					backup, err := objects.Get(ctx, store.tenantMetadataBackupKey("tenant-a"))
+					if err != nil || !bytes.Equal(data, backup) {
+						t.Fatalf("initial recovery copy: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestMissingTenantMetadataHonorsPurgePhase(t *testing.T) {
+	for _, phase := range []string{"absent", tenantPurgePhaseCleared, tenantPurgePhaseRunning, tenantPurgePhaseComplete, "unknown"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx := context.Background()
+			files, err := OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := NewTenantStore(files, "test")
+			if _, err := store.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, CommitOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			removeTenantMetadataFixture(t, store, "tenant-a")
+			if phase != "absent" {
+				data, err := marshalParquetTenantMetadata(ctx, TenantMetadata{TenantID: "tenant-a", Status: TenantStatusDeleted, Metadata: map[string]any{tenantPurgePhaseKey: phase}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := files.Put(ctx, store.tenantPurgeTombstoneKey("tenant-a"), data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			updated, err := store.UpdateTenantMetadata(ctx, "tenant-a", TenantCreateOptions{Name: "recovered"})
+			blocked := phase != "absent" && phase != tenantPurgePhaseCleared
+			if blocked {
+				if !errors.Is(err, ErrTenantDeleted) {
+					t.Fatalf("metadata update bypassed purge: %v", err)
+				}
+			} else if err != nil || updated.Status != TenantStatusActive {
+				t.Fatalf("online recovery: %+v %v", updated, err)
+			}
+			info, err := store.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled)
+			if blocked {
+				if !errors.Is(err, ErrTenantDeleted) {
+					t.Fatalf("purge fence bypassed: %v", err)
+				}
+				if _, err := store.SetTenantStatus(ctx, "tenant-a", TenantStatusActive); !errors.Is(err, ErrTenantDeleted) {
+					t.Fatalf("enable bypassed purge: %v", err)
+				}
+				return
+			}
+			if err != nil || info.Status != TenantStatusDisabled || info.ManifestVersion != 1 {
+				t.Fatalf("explicit state recovery: %+v %v", info, err)
+			}
+			info, err = store.UpdateTenantMetadata(ctx, "tenant-a", TenantCreateOptions{Name: "recovered"})
+			if err != nil || info.Status != TenantStatusDisabled || info.Name != "recovered" {
+				t.Fatalf("metadata update changed state: %+v %v", info, err)
+			}
+		})
+	}
+}
 
 func TestTenantDisableWaitsForPublishingCommit(t *testing.T) {
 	ctx := context.Background()

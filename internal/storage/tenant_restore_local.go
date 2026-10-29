@@ -61,11 +61,7 @@ func (s *TenantStore) restoreLocalTenantBackupTask(ctx context.Context, task Tas
 	}
 	// An interrupted pre-publication build owns no live data. Once journaled,
 	// only the recovery routine may remove this directory.
-	defer func() {
-		if _, err := os.Lstat(filepath.Join(dir, "journal.json")); os.IsNotExist(err) {
-			_ = removeRestoreDirectory(dir)
-		}
-	}()
+	defer files.scheduleRestoreCleanup(dir)
 	stageFiles := NewFileStore(filepath.Join(dir, "build"))
 	stage := NewTenantStore(stageFiles, s.Prefix)
 	stage.InstanceID = s.InstanceID
@@ -160,6 +156,11 @@ func (s *TenantStore) resumePublishedLocalRestore(ctx context.Context, task Task
 }
 
 func (s *TenantStore) publishLocalTenantRestore(ctx context.Context, files *FileStore, stage *TenantStore, dir string, task Task) error {
+	unlockMetadata, err := s.lockLocalTenantMetadata(ctx, task.TenantID)
+	if err != nil {
+		return err
+	}
+	defer unlockMetadata()
 	targetKey := strings.TrimSuffix(s.tenantObjectPrefix(task.TenantID), "/")
 	unlock, err := files.beginDirectoryChange(ctx, targetKey)
 	if err != nil {

@@ -15,6 +15,10 @@ const (
 	TenantStatusDeleted  = "deleted"
 )
 
+// ErrTenantMetadataMissing requires an explicit lifecycle decision before a
+// metadata-only update can repair a tenant whose previous state is unknown.
+var ErrTenantMetadataMissing = errors.New("tenant management metadata is missing; confirm its state and explicitly enable or disable the tenant before updating metadata")
+
 type TenantMetadata struct {
 	TenantID    string            `json:"tenant_id"`
 	Status      string            `json:"status"`
@@ -196,7 +200,7 @@ func (s *TenantStore) tenantInfos(ctx context.Context, tenants []string) ([]Tena
 }
 
 func (s *TenantStore) UpdateTenantMetadata(ctx context.Context, tenantID string, options TenantCreateOptions) (TenantInfo, error) {
-	return s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
+	return s.mutateTenantMetadata(ctx, tenantID, false, func(metadata *TenantMetadata) {
 		metadata.Name = options.Name
 		metadata.Description = options.Description
 		metadata.Labels = cloneStringMap(options.Labels)
@@ -215,7 +219,7 @@ func (s *TenantStore) SetTenantStatus(ctx context.Context, tenantID string, stat
 			return TenantInfo{}, err
 		}
 	}
-	info, err := s.mutateTenantMetadata(ctx, tenantID, func(metadata *TenantMetadata) {
+	info, err := s.mutateTenantMetadata(ctx, tenantID, true, func(metadata *TenantMetadata) {
 		now := mutationTime(ctx)
 		metadata.Status = status
 		metadata.UpdatedAt = now
@@ -543,7 +547,7 @@ func (s *TenantStore) TenantStatus(ctx context.Context, tenantID string) (string
 	return s.tenantMetadataStatus(ctx, tenantID)
 }
 
-func (s *TenantStore) mutateTenantMetadata(ctx context.Context, tenantID string, mutate func(*TenantMetadata)) (TenantInfo, error) {
+func (s *TenantStore) mutateTenantMetadata(ctx context.Context, tenantID string, allowMissing bool, mutate func(*TenantMetadata)) (TenantInfo, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantInfo{}, err
 	}
@@ -558,15 +562,26 @@ func (s *TenantStore) mutateTenantMetadata(ctx context.Context, tenantID string,
 	}
 	ctx = boundCtx
 	for attempt := 0; attempt < s.retryCount(); attempt++ {
+		// A cleared marker is historical. Running, complete and unknown purge
+		// phases remain fenced; metadata repair must never clear that fence.
+		if purged, err := s.tenantPurgeTombstoneExists(ctx, tenantID); err != nil {
+			return TenantInfo{}, err
+		} else if purged {
+			return TenantInfo{}, ErrTenantDeleted
+		}
 		metadata, configured, meta, err := s.getTenantMetadataWithMeta(ctx, tenantID)
 		if err != nil {
 			return TenantInfo{}, err
 		}
 		if !configured {
-			if exists, err := s.tenantPrefixExists(ctx, tenantID); err != nil {
+			_, manifestMeta, err := s.getManifest(ctx, tenantID)
+			if err != nil {
 				return TenantInfo{}, err
-			} else if !exists {
+			} else if !manifestMeta.Exists {
 				return TenantInfo{}, ErrNotFound
+			}
+			if !allowMissing && s.recoverableMetadataFiles(ctx) == nil {
+				return TenantInfo{}, ErrTenantMetadataMissing
 			}
 			metadata = legacyTenantMetadata(tenantID)
 		}
@@ -592,6 +607,9 @@ func (s *TenantStore) mutateTenantMetadata(ctx context.Context, tenantID string,
 func (s *TenantStore) getTenantMetadataWithMeta(ctx context.Context, tenantID string) (TenantMetadata, bool, ObjectMeta, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return TenantMetadata{}, false, ObjectMeta{}, err
+	}
+	if files := s.recoverableMetadataFiles(ctx); files != nil && files.Exclusive() {
+		return s.getLocalTenantMetadata(ctx, tenantID)
 	}
 	var metadata TenantMetadata
 	key := s.tenantMetadataKey(tenantID)
@@ -705,6 +723,14 @@ func (s *TenantStore) applyTenantCreateTemplates(ctx context.Context, tenantID s
 }
 
 func (s *TenantStore) putTenantMetadata(ctx context.Context, tenantID string, metadata TenantMetadata) error {
+	if s.recoverableMetadataFiles(ctx) != nil {
+		_, meta, err := s.Objects.GetWithMeta(ctx, s.tenantMetadataKey(tenantID))
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		_, err = s.putTenantMetadataWithMeta(ctx, tenantID, metadata, meta)
+		return err
+	}
 	metadata.TenantID = tenantID
 	data, err := marshalParquetTenantMetadata(ctx, metadata)
 	if err != nil {
@@ -725,7 +751,12 @@ func (s *TenantStore) putTenantMetadataWithMeta(ctx context.Context, tenantID st
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	next, err := s.putTenantBytesWithMetaResult(ctx, tenantID, s.tenantMetadataKey(tenantID), data, meta)
+	var next ObjectMeta
+	if s.recoverableMetadataFiles(ctx) != nil {
+		next, err = s.putRecoverableTenantMetadata(ctx, tenantID, data, meta)
+	} else {
+		next, err = s.putTenantBytesWithMetaResult(ctx, tenantID, s.tenantMetadataKey(tenantID), data, meta)
+	}
 	if err != nil {
 		return ObjectMeta{}, err
 	}

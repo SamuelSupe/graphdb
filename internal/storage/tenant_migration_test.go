@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,113 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
+
+func TestMigrationRejectsMissingMetadataBeforeGraphReads(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	seed := NewTenantStore(base, "test")
+	if _, err := seed.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	removeTenantMetadataFixture(t, seed, "tenant-a")
+	objects := &countingGetStore{ObjectStore: base, gets: make(map[string]int)}
+	err := ValidateTenantMigrationSource(ctx, NewTenantStore(objects, "test"), "tenant-a", nil)
+	if !errors.Is(err, ErrTenantMetadataMissing) {
+		t.Fatalf("missing management state: %v", err)
+	}
+	for key, count := range objects.gets {
+		if count > 0 && key != seed.manifestKey("tenant-a") && key != seed.tenantMetadataKey("tenant-a") {
+			t.Errorf("read graph object %q before rejecting incomplete metadata (%d reads)", key, count)
+		}
+	}
+}
+
+func TestCopyTenantObjectsMissingMetadataPreservesTarget(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		for _, damage := range []string{"missing", "omitted_from_listing", "corrupt", "wrong_tenant"} {
+			t.Run(fmt.Sprintf("local=%t/%s", local, damage), func(t *testing.T) {
+				ctx := context.Background()
+				sourceObjects := NewMemoryStore()
+				source := NewTenantStore(sourceObjects, "source")
+				if _, err := source.CreateTenant(ctx, "tenant-a", TenantCreateOptions{Name: "source"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := source.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:source", Kind: "host"}}}, CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				key := source.tenantMetadataKey("tenant-a")
+				switch damage {
+				case "missing":
+					if err := sourceObjects.Delete(ctx, key); err != nil {
+						t.Fatal(err)
+					}
+				case "omitted_from_listing":
+					source.Objects = &tenantMigrationOmittedObjectStore{ObjectStore: sourceObjects, key: key}
+				case "corrupt":
+					if err := sourceObjects.Put(ctx, key, []byte("damaged")); err != nil {
+						t.Fatal(err)
+					}
+				case "wrong_tenant":
+					putTenantMetadataFixture(t, ctx, sourceObjects, key, TenantMetadata{TenantID: "another-tenant", Status: TenantStatusActive})
+				}
+				var targetObjects ObjectStore = NewMemoryStore()
+				if local {
+					files, err := OpenFileStore(t.TempDir())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer files.Close()
+					targetObjects = files
+				}
+				target := NewTenantStore(targetObjects, "target")
+				defer target.ShutdownTasks(ctx)
+				if _, err := target.CreateTenant(ctx, "tenant-a", TenantCreateOptions{Name: "keep", Labels: map[string]string{"owner": "original"}}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := target.Commit(ctx, "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:target", Kind: "host"}}}, CommitOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := target.SetTenantStatus(ctx, "tenant-a", TenantStatusDisabled); err != nil {
+					t.Fatal(err)
+				}
+				before := make(map[string][]byte)
+				for _, key := range []string{target.manifestKey("tenant-a"), target.tenantMetadataKey("tenant-a")} {
+					data, err := targetObjects.Get(ctx, key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					before[key] = data
+				}
+				_, copyErr := CopyTenantObjects(ctx, source, "tenant-a", target, "tenant-a", TenantMigrationOptions{Overwrite: true})
+				if copyErr == nil {
+					t.Error("accepted migration without valid management metadata")
+				}
+				for key, data := range before {
+					after, err := targetObjects.Get(ctx, key)
+					if err != nil || !bytes.Equal(after, data) {
+						t.Errorf("target changed after rejected migration: %s: %v", key, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+type tenantMigrationOmittedObjectStore struct {
+	ObjectStore
+	key string
+}
+
+func (s *tenantMigrationOmittedObjectStore) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	objects, err := s.ObjectStore.List(ctx, prefix)
+	filtered := objects[:0]
+	for _, object := range objects {
+		if object.Key != s.key {
+			filtered = append(filtered, object)
+		}
+	}
+	return filtered, err
+}
 
 func TestCopyTenantObjectsDryRunAndCopy(t *testing.T) {
 	ctx := context.Background()

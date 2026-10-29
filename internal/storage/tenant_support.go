@@ -106,6 +106,11 @@ func (s *TenantStore) putManifestMeta(ctx context.Context, tenantID string, mani
 	if err := s.EnsureTenantWritable(ctx, tenantID); err != nil {
 		return ObjectMeta{}, err
 	}
+	if !meta.Exists {
+		if err := s.ensureInitialTenantMetadata(ctx, tenantID); err != nil {
+			return ObjectMeta{}, err
+		}
+	}
 	manifest.WriterFence = lease.FenceToken
 	manifest.WriterFenceEpoch = lease.FenceEpoch
 	return s.putManifestMetaUnchecked(ctx, tenantID, manifest, meta)

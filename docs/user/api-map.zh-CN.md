@@ -1,6 +1,6 @@
 # API Map
 
-适用于 **GGraphDB 2.4.2**；[发行验证](../validation-v2.4.2.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.3**；[发行验证](../validation-v2.4.3.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](api-map.md)
 
@@ -27,7 +27,7 @@
 | `GET` | `/v1/tenants` | 列出租户；支持 ID 搜索和游标分页（`limit=1..200`、`q`、`cursor`）。 |
 | `POST` | `/v1/tenants` | 创建租户。 |
 | `GET` | `/v1/tenants/{tenant}` | 获取租户信息。 |
-| `PUT` | `/v1/tenants/{tenant}` | 更新租户元数据。 |
+| `PUT` | `/v1/tenants/{tenant}` | 更新租户元数据。2.4.3默认在单机在线恢复缺失/损坏记录：优先保留有效副本的状态与字段，无有效副本但 manifest 有效且无生效中的 purge 标记时按 active 重建。Raft 缺失管理状态仍返回 `409 repair_required`。 |
 | `DELETE` | `/v1/tenants/{tenant}` | 软删除租户。 |
 | `POST` | `/v1/tenants/{tenant}/disable` | 禁止租户写入。 |
 | `POST` | `/v1/tenants/{tenant}/enable` | 启用租户。 |

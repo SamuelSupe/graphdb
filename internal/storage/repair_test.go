@@ -243,6 +243,7 @@ func TestRepairRebuildsTenantMetadataAndRegistry(t *testing.T) {
 	}, CommitOptions{}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+	removeTenantMetadataFixture(t, store, "tenant-a")
 	if err := store.Objects.Delete(ctx, store.tenantRegistryKey()); err != nil {
 		t.Fatalf("delete registry: %v", err)
 	}

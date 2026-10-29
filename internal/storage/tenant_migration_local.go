@@ -53,6 +53,10 @@ func copyTenantMigrationStaged(ctx context.Context, source *TenantStore, sourceT
 		return report, err
 	}
 	defer func() {
+		if files != nil {
+			files.scheduleRestoreCleanup(dir)
+			return
+		}
 		if _, err := os.Lstat(filepath.Join(dir, "journal.json")); os.IsNotExist(err) {
 			_ = removeRestoreDirectory(dir)
 		}
@@ -90,6 +94,11 @@ func copyTenantMigrationStaged(ctx context.Context, source *TenantStore, sourceT
 		return stagedReport, err
 	}
 	targetKey := strings.TrimSuffix(target.tenantObjectPrefix(targetTenantID), "/")
+	unlockMetadata, err := target.lockLocalTenantMetadata(ctx, targetTenantID)
+	if err != nil {
+		return stagedReport, err
+	}
+	defer unlockMetadata()
 	unlockIO, err := files.beginDirectoryChange(ctx, targetKey)
 	if err != nil {
 		return stagedReport, err

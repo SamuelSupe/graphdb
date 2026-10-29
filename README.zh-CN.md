@@ -1,8 +1,8 @@
-# GGraphDB 2.4.2
+# GGraphDB 2.4.3
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.2) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,9 +12,9 @@
 
 ## 当前版本
 
-**[2.4.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.2)** 修复复制错误处理、读取与维护取消、WAL 持久化成本、死信与备份保留，以及查询和缓存成本。发行二进制统一使用 **Go 1.27.3**；本地检查、确切标签门禁、发布和独立下载结果分别记录。
+**[2.4.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3)** 增加 inode 准入与清理、单机租户元数据自动恢复、初始化与迁移保护，并修复旧 WAL 重试一致性及 2.4.2 之后的读排空和转发问题。发行二进制统一使用 **Go 1.27.3**；本地检查、确切标签门禁、发布和独立下载结果分别记录。
 
-| 领域 | 2.4.2 提供的能力 |
+| 领域 | 2.4.3 提供的能力 |
 | --- | --- |
 | 管理 UI | `/ui/` 内嵌英文／简体中文控制台，无需独立前端服务 |
 | 日常操作 | 图表概览、结构化表单与详情、查询工作台、数据接入和维护 |
@@ -23,7 +23,7 @@
 | 稳定性 | 复制错误确定性、可取消读取、持久化重放和受保护的 GC 续跑 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组 |
 
-验证证据见[发布验证](docs/validation-v2.4.2.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验证](docs/validation-v2.4.3.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -189,7 +189,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.4.2 验证](docs/validation-v2.4.2.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.4.3 验证](docs/validation-v2.4.3.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 
