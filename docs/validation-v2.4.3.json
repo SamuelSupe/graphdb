@@ -1,0 +1,632 @@
+{
+  "version": "v2.4.3",
+  "result": "PASS",
+  "published_at": "2026-10-29T13:30:00Z",
+  "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3",
+  "commit": "e50be0c383eeb4ea1224f2103ab25fac7c484f59",
+  "tag_object": "72635c319bb7d75310c12d5281190e6a03e97554",
+  "main_ci": "https://github.com/SamuelSupe/graphdb/actions/runs/40870664907",
+  "tag_ci": "https://github.com/SamuelSupe/graphdb/actions/runs/40875224140",
+  "gate_waiver": false,
+  "local": {
+    "result": "PASS",
+    "commit": "e50be0c383eeb4ea1224f2103ab25fac7c484f59",
+    "environment": "OrbStack Linux ARM64, Go 1.27.3",
+    "exit_code": 0,
+    "checks": [
+      "full unit/integration",
+      "go vet",
+      "full race",
+      "Python SDK",
+      "direct/WAL real HTTP and restart"
+    ],
+    "logs": [
+      "final-unit.log",
+      "final-vet.log",
+      "final-race.log",
+      "final-sdk.log",
+      "final-integration.log"
+    ]
+  },
+  "source": {
+    "result": "PASS",
+    "tag": "v2.4.3",
+    "tag_object": "72635c319bb7d75310c12d5281190e6a03e97554",
+    "commit": "e50be0c383eeb4ea1224f2103ab25fac7c484f59",
+    "source_archive_sha256": "1a02c7c6cbc941bf3a9a068b3af28dca2d7fdfa43d81371f037e732d7a8e16bc",
+    "tracked_files_verified": 1161,
+    "method": "Independent GitHub source archive; every Git blob matches the immutable tag tree"
+  },
+  "assets": {
+    "result": "PASS",
+    "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3",
+    "published_at": "2026-10-29T13:30:00Z",
+    "release_id": 427903702,
+    "asset_sha256": "e5bc58254c35c408c7845d78ca49693aa4b89123d9f25d6972af00d6f38105de",
+    "metadata": {
+      "version": "v2.4.3",
+      "commit": "e50be0c383eeb4ea1224f2103ab25fac7c484f59",
+      "build_date": "2026-10-29T20:05:01+08:00",
+      "go_version": "go1.27.3"
+    },
+    "binaries": {
+      "bin/graphdb-darwin-arm64": "64ad94fe9bdcade72dae2add2db5dd3df10bf5b6c41b74b5c516ac5cfb2450d6",
+      "bin/graphdb-linux-amd64": "481c254b2b1b19e3abad42fba6a2f0da75439979d74e78b74635c4f7eb9ebed4",
+      "bin/graphdb-linux-arm64": "c36aeeb72a7cce1f5702c5b94a1e60abdea0ca1ae107c89409d440cbe917486b"
+    },
+    "packaged_source_files_verified": 1129,
+    "required_source_trees_complete": true,
+    "gate_binary_identity": {
+      "raft-gate/metadata.json": "PASS",
+      "raft-gate/enhanced/metadata.json": "PASS",
+      "raft-gate/protocol3/metadata.json": "PASS",
+      "raft-gate/rolling/metadata.json": "PASS",
+      "gateway-gate/metadata.json": "PASS"
+    },
+    "soaks": {
+      "local-gate/soak.ndjson": {
+        "result": "PASS",
+        "duration": "30m0s",
+        "operation_errors": 0,
+        "operations": {
+          "commit-schema": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "create-tenant": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "health": {
+            "count": 3,
+            "statuses": {
+              "200": 3
+            }
+          },
+          "rebuild-indexes": {
+            "count": 3,
+            "statuses": {
+              "202": 3
+            }
+          },
+          "save-query": {
+            "count": 5,
+            "statuses": {
+              "200": 5
+            }
+          },
+          "tenant-usage": {
+            "count": 61,
+            "statuses": {
+              "200": 61
+            }
+          },
+          "warm-reader": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "cmdb-env-containment-traverse": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "cmdb-owner-service-match": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "cmdb-service-to-database-path": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "export-snapshot-stream": {
+            "count": 6,
+            "statuses": {
+              "200": 6
+            }
+          },
+          "fuzzy-service-match": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "impact-service": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "index-catalog": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "index-health": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "indexed-match-allow-stale": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "indexed-match-min-version": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "ingest": {
+            "count": 1342,
+            "statuses": {
+              "200": 1342
+            }
+          },
+          "neighbors-host-out": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "path-filter-traverse": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "profile-indexed-match": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "range-aggregate-match": {
+            "count": 4643,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "reader-fleet": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "reader-freshness": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "saved-host-query": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "saved-prod-containment": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "saved-prod-services": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "saved-service-impact": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "saved-team-services": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "scan-edges": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "scan-edges-allow-stale": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "scan-entities": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "scan-entities-allow-stale": {
+            "count": 4643,
+            "statuses": {
+              "200": 4643
+            }
+          },
+          "scan-entities-min-version": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "shortest-service-cluster": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "stream-all-host-page": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "stream-large-indexed-hosts": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "stream-large-indexed-hosts-min-version": {
+            "count": 4642,
+            "statuses": {
+              "200": 4642
+            }
+          },
+          "compact": {
+            "count": 5,
+            "statuses": {
+              "202": 5
+            }
+          },
+          "gc": {
+            "count": 2,
+            "statuses": {
+              "202": 2
+            }
+          }
+        }
+      },
+      "raft-gate/protocol3/dual/soak.ndjson": {
+        "result": "PASS",
+        "duration": "30m0s",
+        "operation_errors": 0,
+        "operations": {
+          "commit-schema": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "create-tenant": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "health": {
+            "count": 2,
+            "statuses": {
+              "200": 2
+            }
+          },
+          "rebuild-indexes": {
+            "count": 3,
+            "statuses": {
+              "202": 3
+            }
+          },
+          "save-query": {
+            "count": 5,
+            "statuses": {
+              "200": 5
+            }
+          },
+          "tenant-usage": {
+            "count": 61,
+            "statuses": {
+              "200": 61
+            }
+          },
+          "warm-reader": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "cmdb-env-containment-traverse": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "cmdb-owner-service-match": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "cmdb-service-to-database-path": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "export-snapshot-stream": {
+            "count": 6,
+            "statuses": {
+              "200": 6
+            }
+          },
+          "fuzzy-service-match": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "impact-service": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "index-catalog": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "index-health": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "indexed-match-allow-stale": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "indexed-match-min-version": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "ingest": {
+            "count": 1086,
+            "statuses": {
+              "200": 982,
+              "429": 104
+            }
+          },
+          "neighbors-host-out": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "path-filter-traverse": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "profile-indexed-match": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "range-aggregate-match": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "reader-fleet": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "reader-freshness": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "saved-host-query": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "saved-prod-containment": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "saved-prod-services": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "saved-service-impact": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "saved-team-services": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "scan-edges": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "scan-edges-allow-stale": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "scan-entities": {
+            "count": 2761,
+            "statuses": {
+              "200": 2761
+            }
+          },
+          "scan-entities-allow-stale": {
+            "count": 2762,
+            "statuses": {
+              "200": 2762
+            }
+          },
+          "scan-entities-min-version": {
+            "count": 2761,
+            "statuses": {
+              "200": 2761
+            }
+          },
+          "shortest-service-cluster": {
+            "count": 2762,
+            "statuses": {
+              "200": 2761
+            }
+          },
+          "stream-all-host-page": {
+            "count": 2761,
+            "statuses": {
+              "200": 2761
+            }
+          },
+          "stream-large-indexed-hosts": {
+            "count": 2761,
+            "statuses": {
+              "200": 2761
+            }
+          },
+          "stream-large-indexed-hosts-min-version": {
+            "count": 2761,
+            "statuses": {
+              "200": 2761
+            }
+          },
+          "compact": {
+            "count": 5,
+            "statuses": {
+              "202": 5
+            }
+          },
+          "gc": {
+            "count": 2,
+            "statuses": {
+              "202": 2
+            }
+          }
+        }
+      }
+    }
+  },
+  "binaries": {
+    "result": "PASS",
+    "binaries": {
+      "graphdb-linux-amd64": {
+        "go": "go1.27.3",
+        "os": "linux",
+        "arch": "amd64",
+        "cgo_enabled": 0,
+        "executed_version": "GGraphDB v2.4.3 commit=e50be0c383eeb4ea1224f2103ab25fac7c484f59 built=2026-10-29T20:05:01+08:00 go=go1.27.3"
+      },
+      "graphdb-linux-arm64": {
+        "go": "go1.27.3",
+        "os": "linux",
+        "arch": "arm64",
+        "cgo_enabled": 0,
+        "executed_version": "GGraphDB v2.4.3 commit=e50be0c383eeb4ea1224f2103ab25fac7c484f59 built=2026-10-29T20:05:01+08:00 go=go1.27.3"
+      },
+      "graphdb-darwin-arm64": {
+        "go": "go1.27.3",
+        "os": "darwin",
+        "arch": "arm64",
+        "cgo_enabled": 0,
+        "executed_version": "GGraphDB v2.4.3 commit=e50be0c383eeb4ea1224f2103ab25fac7c484f59 built=2026-10-29T20:05:01+08:00 go=go1.27.3"
+      }
+    }
+  },
+  "downloaded_runtime": {
+    "result": "PASS",
+    "environment": "OrbStack Linux ARM64, Go 1.27.3",
+    "source": "Actual downloaded release binary and verified packaged SDK/e2e/load source",
+    "exit_code": 0,
+    "binary_sha256": "c36aeeb72a7cce1f5702c5b94a1e60abdea0ca1ae107c89409d440cbe917486b",
+    "byte_identical_candidate": true,
+    "byte_identical_source_rebuild": true,
+    "range_pages_enabled": true,
+    "adjacency_pages_enabled": true,
+    "modes": {
+      "direct": {
+        "result": "PASS",
+        "load_operations": 98,
+        "load_errors": 0,
+        "live_sdk_tests": 14,
+        "e2e_api": "PASS",
+        "sigkill_batch_replay": "PASS",
+        "backup_fresh_directory_restore": "PASS"
+      },
+      "wal": {
+        "result": "PASS",
+        "load_operations": 98,
+        "load_errors": 0,
+        "live_sdk_tests": 14,
+        "e2e_api": "PASS",
+        "sigkill_batch_replay": "PASS",
+        "backup_fresh_directory_restore": "PASS"
+      }
+    }
+  },
+  "downloaded_metadata_recovery": {
+    "result": "PASS",
+    "checks": {
+      "missing_both_copies_active_fallback_preserves_graph": "PASS",
+      "corrupt_primary_restores_disabled_state_and_fields": "PASS",
+      "backup_only_repair_preserves_primary_inode": "PASS",
+      "corrupt_purge_fence_blocks_active_reconstruction": "PASS"
+    }
+  },
+  "performance_scope": "Local metadata microbenchmark only; no production capacity or latency qualification",
+  "documentation_ci": "The CI for this later documentation commit is checked separately after push."
+}

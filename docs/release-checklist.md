@@ -6,8 +6,7 @@ checklist, not a record that every published version passed every item.
 
 ## Current candidate qualification
 
-[2.4.3](validation-v2.4.3.md) records local qualification; exact-tag CI and independent
-downloaded-asset verification must complete before qualification. No gate waiver.
+[2.4.3](validation-v2.4.3.md) passed all exact-tag gates and independent downloaded-asset/runtime checks. No gate waiver; its tag and assets remain immutable.
 
 ## Previous 2.4.2 qualification
 

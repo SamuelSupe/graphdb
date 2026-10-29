@@ -1,78 +1,112 @@
 # GGraphDB 2.4.3 validation
 
-Candidate record, 2026-10-29. Publication is **PENDING**; this document does not
-certify its own future main/tag CI or downloaded assets. No gate waiver.
+Published **2026-10-29T13:30:00Z**: [GitHub release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3).
+All required gates and independent downloaded-asset checks passed with
+**Go 1.27.3**, without a waiver. The immutable archive contains its candidate-time
+record and completed gate evidence. This final record is on main; the CI for this
+later documentation commit is checked separately after push.
 
-## Scope and local evidence
+## Release identity and gates
 
-This patch includes inode admission/cleanup, protected prepared-WAL replay,
-automatic standalone tenant metadata recovery, metadata-first initialization,
-validated migration inputs and metadata-only create/secondary-copy repair.
-It also includes the read-drain, forwarding and cached-router status repairs
-already merged after the immutable v2.4.2 release.
+- Annotated tag `v2.4.3`, object `72635c319bb7d75310c12d5281190e6a03e97554`.
+- Release commit `e50be0c383eeb4ea1224f2103ab25fac7c484f59`; build date `2026-10-29T20:05:01+08:00`.
+- [Exact candidate main CI](https://github.com/SamuelSupe/graphdb/actions/runs/40870664907): all required jobs passed.
+- [Exact-tag release CI](https://github.com/SamuelSupe/graphdb/actions/runs/40875224140): all required jobs passed, including publication.
 
-OrbStack Linux ARM64 with Go 1.27.3 passed the full repository tests and vet on
-the final implementation before the version/documentation update. Focused race
-tests passed metadata recovery, pending replay, disabled/deleted state, purge
-fences, initialization, ingest retry and migration boundaries. Baseline
-regressions demonstrate duplicate decoding, primary replacement during backup
-repair and unnecessary graph reads before missing-metadata rejection.
+Full unit/vet/race/SDK, direct/WAL/restart, S3 backup, gateway authorization,
+released-v2.3.0 rolling upgrade, enhanced snapshots/recovery, protocol-3 GC,
+standalone and Raft thirty-minute soaks, package extraction and checksums retain
+their original workloads and failure rules. Both packaged soaks have zero
+operation, query and write errors. Expected backpressure and configured-end
+cancellation semantics are unchanged. The packaged AMD64 binary matches the
+Raft, enhanced, protocol-3, rolling and gateway gate identities.
 
-The same local metadata-candidate microbenchmark, three one-second repetitions
-with GOMAXPROCS=4, changed its median from 3.913 ms / 2,068,871 B allocated per
-operation to 1.948 ms / 1,044,528 B. This measures metadata reads and decoding,
-not service throughput, peak RSS or production latency. Primary-inode retention
-is covered separately by the backup-repair regression.
+## Recovery regression and local qualification
 
-An independent candidate-binary probe then found cached conditional-write
-digests preventing recovery after files were damaged or removed outside the
-storage API. Direct filesystem regressions reproduced missing-primary,
-missing-both, corrupt-primary and corrupt-pending conflicts before repair.
-Fresh metadata reads now invalidate only disagreeing cached digests; conditional
-writes and healthy cache entries remain intact. The final candidate must pass
-the new regressions and actual runtime probe as well as the full release gates.
+The candidate includes inode admission/cleanup, protected legacy prepared-WAL
+replay, automatic standalone metadata recovery, metadata-first initialization,
+validated migration inputs, metadata-only creation and secondary-copy repair.
+It also includes the read-drain, mutation-forwarding and cached-router status
+repairs merged after v2.4.2.
 
-Local evidence remains under `.workflow/inode-analysis-20261029/` and
-`.workflow/release-v2.4.3/`. These directories are not published as source.
+An independent process probe reproduced a stale conditional-write cache blocking
+recovery after actual metadata files were removed or damaged. Missing-primary,
+missing-both, corrupt-primary and corrupt-pending regressions failed before the
+fix. Fresh recovery reads now invalidate only cached digests that disagree with
+disk. Conditional writes, healthy cache entries and original state/purge rules
+remain intact. Focused race regressions and actual process recovery passed.
 
-## Required release qualification
+The exact final source passed full OrbStack Linux ARM64 Go 1.27.3 unit/vet/race,
+SDK and direct/WAL real HTTP/restart gates. Full race package times were HA
+461.805s, storage 338.689s, replication 156.154s and HTTP 15.229s.
 
-| Stage | Status |
+Three one-second metadata-candidate benchmark repetitions with GOMAXPROCS=4
+reported a final median of 1.933 ms and 1,044,784 bytes allocated per operation;
+the initial baseline was 3.913 ms and 2,068,871 bytes. This measures local
+metadata reads/decoding, not service throughput, peak RSS or production latency.
+Backup-only repair separately verifies that the primary file inode is retained.
+
+## Independent source and assets
+
+All **1161 GitHub source files** match the immutable
+tag's Git blobs. The archive SHA-256 `e5bc58254c35c408c7845d78ca49693aa4b89123d9f25d6972af00d6f38105de` matches both
+the external checksum and GitHub asset digest; the checksum asset digest also
+matches. All **1129 packaged source/configuration
+files** match the tag, and required source trees are complete.
+
+All three binary checksums, target architectures, CGO-disabled build settings,
+Go 1.27.3 and executed version/commit/date identities passed. Linux AMD64 version
+execution used OrbStack's compatibility runtime; ARM64 service execution was native.
+
+| Binary | SHA-256 |
 | --- | --- |
-| Versioned candidate local static/integration checks | PENDING |
-| Exact candidate main CI | PENDING |
-| Exact annotated-tag release CI | PENDING |
-| Standalone and Raft thirty-minute soaks | PENDING |
-| Stable GitHub Release and archive checksums | PENDING |
-| Independent downloaded source/binary/runtime verification | PENDING |
+| bin/graphdb-darwin-arm64 | `64ad94fe9bdcade72dae2add2db5dd3df10bf5b6c41b74b5c516ac5cfb2450d6` |
+| bin/graphdb-linux-amd64 | `481c254b2b1b19e3abad42fba6a2f0da75439979d74e78b74635c4f7eb9ebed4` |
+| bin/graphdb-linux-arm64 | `c36aeeb72a7cce1f5702c5b94a1e60abdea0ca1ae107c89409d440cbe917486b` |
 
-All original unit/vet/full-race/SDK, direct/WAL/restart, S3 backup, gateway,
-released-v2.3.0 rolling, enhanced snapshot and protocol-3 gates remain required.
-The tag workflow verifies packaged binary identity against its gate evidence.
-Existing tags and assets remain immutable; failed historical qualification tags
-are not repurposed.
+The downloaded ARM64 binary matches the locally qualified exact candidate.
 
-## Upgrade and recovery boundaries
+## Downloaded-binary runtime and recovery
 
-Standalone recovery is on for every tenant without an allowlist. A valid
-pending/backup preserves the original state and fields. Without a valid copy,
-only a valid manifest and no active purge fence permit an active fallback;
-running/completed, unknown or corrupt purge state does not authorize revival.
-Raft reads never repair local metadata independently of replication.
+The actual downloaded Linux ARM64 binary and verified packaged SDK/e2e/load
+tools passed in fresh OrbStack directories with both range and adjacency pages
+enabled, independently in direct and WAL modes:
 
-One stable recovery copy per tenant and a temporary pending record are added.
-Complete pending recovery with this version before downgrade; old programs do
-not honor that intent. The existing two-slot WAL-marker downgrade restriction
-from 2.4.2 remains. Range and adjacency indexes remain off by default; upgrade
-all participants before activation and rebuild legacy layouts before downgrade.
+| Mode | Load operations | Errors | SDK, SIGKILL replay, backup/fresh restore |
+| --- | ---: | ---: | --- |
+| direct | 98 | 0 | PASS |
+| wal | 98 | 0 | PASS |
 
-Inode admission reduces exhaustion risk but is not an atomic resource
-reservation. A filesystem already exhausted may still require capacity recovery
-or migration before replay can proceed. Automatic metadata recovery does not
-reconstruct missing graph data, bypass prepared-result checks, or prove the
-historical cause of missing metadata. Migration validation does not eliminate
-staging-copy IO; non-local target IO failures still lack whole-copy rollback.
+The complete exported graph and accepted batch identity/version survived
+SIGKILL/restart and runtime backup/restore to a new directory. A separate actual
+downloaded-binary probe passed missing-both-copy active reconstruction with an
+unchanged graph, corrupt-primary recovery retaining disabled state and fields,
+backup-only repair retaining the primary inode, and corrupt-purge rejection of
+automatic reconstruction.
 
+## Compatibility and limits
+
+Standalone recovery is enabled for every tenant without configuration. Valid
+pending/backup records retain state and fields. Without a valid copy, only a
+valid manifest and no active purge fence permit an active fallback; active,
+unknown or corrupt purge state does not authorize revival. Raft reads never
+perform independent local repair writes.
+
+One stable metadata backup and a temporary pending record are added per tenant.
+Complete pending recovery with the new binary before downgrade. The existing
+two-slot WAL-marker restriction from 2.4.2 remains. Range/adjacency indexes stay
+off by default; upgrade all participants before activation and rebuild legacy
+layouts before downgrade. HTTP/module namespaces, logical hashes and Raft
+protocol identifiers remain unchanged.
+
+Inode admission is not an atomic resource reservation. An exhausted filesystem
+may still need capacity recovery or migration before replay. Automatic metadata
+recovery does not reconstruct missing graph data, bypass PREPARED checks or
+establish the historical cause of missing metadata. Migration validation still
+requires staging-copy IO; non-local target IO failures lack whole-copy rollback.
 Cross-host recovery, production capacity/latency and day-scale stability remain
-unqualified. See [operations](product-operations.zh-CN.md) for recovery and
-[compatibility](naming-and-compatibility.md) for version boundaries.
+unqualified. Existing tags/assets are unchanged; unrelated local design documents
+are excluded from this release.
+
+[Machine-readable evidence](validation-v2.4.3.json) ·
+[Operations](product-operations.zh-CN.md) · [Compatibility](naming-and-compatibility.md).
