@@ -32,22 +32,24 @@ type legacyMutations struct {
 }
 
 type legacyCommit struct {
-	LayoutVersion int             `json:"layout_version,omitempty"`
-	ID            string          `json:"id"`
-	TenantID      string          `json:"tenant_id"`
-	Version       int64           `json:"version"`
-	CreatedAt     time.Time       `json:"created_at"`
-	Mutations     legacyMutations `json:"mutations"`
+	IdentityEncoding int             `json:"identity_encoding,omitempty"`
+	LayoutVersion    int             `json:"layout_version,omitempty"`
+	ID               string          `json:"id"`
+	TenantID         string          `json:"tenant_id"`
+	Version          int64           `json:"version"`
+	CreatedAt        time.Time       `json:"created_at"`
+	Mutations        legacyMutations `json:"mutations"`
 }
 
 func legacyCommitWire(commit graph.Commit) legacyCommit {
 	return legacyCommit{
-		LayoutVersion: commit.LayoutVersion,
-		ID:            commit.ID,
-		TenantID:      commit.TenantID,
-		Version:       commit.Version,
-		CreatedAt:     commit.CreatedAt.UTC(),
-		Mutations:     legacyMutationWire(commit.Mutations),
+		IdentityEncoding: commit.IdentityEncoding,
+		LayoutVersion:    commit.LayoutVersion,
+		ID:               commit.ID,
+		TenantID:         commit.TenantID,
+		Version:          commit.Version,
+		CreatedAt:        commit.CreatedAt.UTC(),
+		Mutations:        legacyMutationWire(commit.Mutations),
 	}
 }
 

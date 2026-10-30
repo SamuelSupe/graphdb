@@ -351,7 +351,7 @@ def main():
     parser.add_argument('--cases', nargs='+', choices=CASES, default=list(CASES))
     parser.add_argument('--topology', choices=['raft', 'sharded'], default='raft')
     parser.add_argument('--replicas', type=int, choices=[3, 5], default=3)
-    parser.add_argument('--protocol', type=int, choices=[1, 2, 3], default=1)
+    parser.add_argument('--protocol', type=int, choices=[1, 2, 3, 4], default=1)
     parser.add_argument('--stream-snapshots', action='store_true')
     parser.add_argument('--snapshot-entries', type=int, default=1000)
     parser.add_argument('--rounds', type=int, default=3)

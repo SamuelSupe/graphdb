@@ -3,6 +3,23 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [2.4.4] - 2026-10-30
+
+- Encode composite CI and source identities without delimiter ambiguity. Persist
+  matching semantics per commit, preserve historical replay, and retain upgraded
+  indexes across no-op writes without changing entity metadata.
+- Reject unpersistable ingest identifiers before WAL acceptance. Record durable
+  failures for invalid legacy unprepared batches and continue valid writes;
+  use bounded temporary file names for maximum-length object paths.
+- Replace quadratic append_unique scans with indexed deduplication while retaining
+  order, existing duplicates and scalar/composite equality semantics.
+- Compute finite averages without an overflowing sum, report sum overflow, and
+  return a structured error when JSON encoding fails before sending HTTP success.
+- Add Raft protocol 4 for new identity semantics and invalid accepted-batch
+  retirement. Defaults and protocols 1–3 retain old semantics; activate 4 only
+  after every voter is upgraded. Preserve all existing release gates and add
+  protocol-4 process/recovery qualification. Previously merged data is not undone.
+
 ## [2.4.3] - 2026-10-29
 
 - Check available inodes as well as bytes on data, WAL and Raft filesystems;

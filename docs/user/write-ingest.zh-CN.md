@@ -1,6 +1,6 @@
 # 写入与采集
 
-适用于 **GGraphDB 2.4.3**；[发行验证](../validation-v2.4.3.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.4**；[发行验证](../validation-v2.4.4.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](write-ingest.md)
 
@@ -535,3 +535,7 @@ compact。已持久化 PREPARED 的组保留原子发布，不能拆开。
 扩张为无界队列。永久错误或重试耗尽后，索引健康仍显示 stale，由自动维护或显式 rebuild
 修复；已经发布的图提交仍然持久化。合并等待及前驱等待均响应取消，取消的队列项仍保留
 前驱顺序屏障，后继不能提前发布。图已发布后的取消不会回滚已提交数据。
+
+## 2.4.4 写入保护
+
+新版本的批量摄取在确认接收前检查路径长度：按 URL path 转义后的字节数，`source` 最多 255 字节，`collector_id`、`batch_id`、`idempotency_key` 最多 247 字节，均不允许 NUL。无效请求返回 `400 / bad_request`，不进入 WAL。旧版已接收且尚未准备发布的此类请求会自动记录为 `failed`，后续合法批次继续处理；可通过原状态 URL 查询失败结果。身份编码、历史数据及 Raft 升级限制见[运维说明](../product-operations.zh-CN.md)。

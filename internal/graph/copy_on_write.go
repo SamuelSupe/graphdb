@@ -76,6 +76,7 @@ func (g *Graph) cloneForStorageImpact(impact storageMutationImpact) *Graph {
 		nonScalarFields:         g.nonScalarFields.Clone(),
 		fieldIndex:              storageMutationMap(g.fieldIndex, impact.entities),
 		identityIndex:           storageMutationMap(g.identityIndex, impact.entities || impact.ciTypes),
+		legacyIdentity:          g.legacyIdentity,
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
 		logicalHashCache:        logicalHashCache,

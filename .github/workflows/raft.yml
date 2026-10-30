@@ -72,6 +72,15 @@ jobs:
           GRAPHDB_GATE_RECOVERY: 'true'
           GRAPHDB_GATE_SOAK: ${{ inputs.soak && '1' || '0' }}
         run: scripts/raft_gate.sh
+      - name: Run protocol 4 identity, recovery and rolling restart gate
+        env:
+          GRAPHDB_GATE_IMAGE: graphdb:raft-gate
+          GRAPHDB_INDEX_RANGE_PAGES: 'true'
+          GRAPHDB_GATE_OUTPUT: ${{ github.workspace }}/artifacts/raft-gate/protocol4
+          GRAPHDB_GATE_ENHANCED: 'true'
+          GRAPHDB_GATE_PROTOCOL_VERSION: '4'
+          GRAPHDB_GATE_RECOVERY: 'true'
+        run: scripts/raft_gate.sh
       - name: Validate operational alerts
         run: |
           docker run --rm -v "$PWD/deploy/prometheus/graphdb.rules.yml:/rules.yml:ro" \

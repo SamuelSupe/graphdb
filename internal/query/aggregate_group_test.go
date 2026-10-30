@@ -3,6 +3,7 @@ package query
 import (
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -49,5 +50,30 @@ func TestAggregateCardinalityIsBounded(t *testing.T) {
 	}
 	if _, err := aggregateGroups(results, []string{"bucket"}, nil, nil, nil); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("group_by err = %v, want ErrLimitExceeded", err)
+	}
+}
+
+func TestAggregateFiniteExtremes(t *testing.T) {
+	for _, values := range [][]float64{{1e308, 1e308}, {math.MaxFloat64, math.MaxFloat64}, {math.MaxFloat64, -math.MaxFloat64}} {
+		results := make([]Result, len(values))
+		for i, value := range values {
+			results[i].Entity = &graph.Entity{Fields: graph.Fields{"value": value, "group": "a"}}
+		}
+		aggregate, err := aggregateResults(results, []Aggregation{{Op: "avg", Field: "value"}, {Op: "min", Field: "value"}, {Op: "max", Field: "value"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := values[0]/2 + values[1]/2
+		if aggregate["avg_value"] != want {
+			t.Fatalf("avg=%v want %v", aggregate, want)
+		}
+		groups, err := aggregateGroups(results, []string{"group"}, []Aggregation{{Op: "avg", Field: "value"}}, nil, nil)
+		if err != nil || len(groups) != 1 || groups[0].Aggregates["avg_value"] != want {
+			t.Fatalf("groups=%+v err=%v", groups, err)
+		}
+		_, err = aggregateResults(results, []Aggregation{{Op: "sum", Field: "value"}})
+		if values[0] == values[1] && !errors.Is(err, ErrLimitExceeded) {
+			t.Fatalf("overflow error=%v", err)
+		}
 	}
 }

@@ -139,7 +139,7 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 	validatePlans := hooks.Prepared != nil
 	for index, entry := range entries {
 		validatePlans = validatePlans || entry.Prepared != nil
-		request, err := PrepareIngestRequest(tenantID, entry.Request)
+		request, err := prepareIngestRequest(tenantID, entry.Request, entry.Prepared == nil && commitIdentityEncoding(ctx) != 0)
 		if err != nil {
 			return nil, err
 		}
@@ -340,6 +340,9 @@ func (s *TenantStore) ingestDurableBatchWithHooks(
 			if err != nil {
 				return results, err
 			}
+		} else if finalGraph != loaded.Graph {
+			loaded.Graph = finalGraph
+			s.setWriteCache(tenantID, loaded)
 		}
 	}
 	stats := ingestBatchStats(candidates, commitItems, fallback)
@@ -673,12 +676,13 @@ func (s *TenantStore) applyIngestBatchCandidateGroup(
 				return nil, nil, false, err
 			}
 			candidate.commit = graph.Commit{
-				LayoutVersion: CurrentObjectLayoutVersion,
-				ID:            commitID,
-				TenantID:      tenantID,
-				Version:       nextVersion,
-				CreatedAt:     mutationTime(ctx),
-				Mutations:     candidate.mutations,
+				LayoutVersion:    CurrentObjectLayoutVersion,
+				IdentityEncoding: commitIdentityEncoding(ctx),
+				ID:               commitID,
+				TenantID:         tenantID,
+				Version:          nextVersion,
+				CreatedAt:        mutationTime(ctx),
+				Mutations:        candidate.mutations,
 			}
 		}
 		commits[index] = candidate.commit
@@ -933,19 +937,25 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolatedWithGuards(
 					return nil, nil, err
 				}
 				candidate.commit = graph.Commit{
-					LayoutVersion: CurrentObjectLayoutVersion,
-					ID:            commitID,
-					TenantID:      tenantID,
-					Mutations:     candidate.mutations,
+					LayoutVersion:    CurrentObjectLayoutVersion,
+					IdentityEncoding: commitIdentityEncoding(ctx),
+					ID:               commitID,
+					TenantID:         tenantID,
+					Mutations:        candidate.mutations,
 				}
 			}
 			candidate.commit.Version = expectedVersion
 			candidate.commit.CreatedAt = mutationTime(ctx)
 		}
-		report, entityNoop, err := current.PreviewStorageEntityNoop(candidate.commit)
-		next := current
+		identityGraph, err := current.WithCommitIdentity(candidate.commit)
+		if err != nil {
+			markIngestCandidateFailure(candidate, err)
+			continue
+		}
+		report, entityNoop, err := identityGraph.PreviewStorageEntityNoop(candidate.commit)
+		next := identityGraph
 		if err == nil && !entityNoop {
-			next, report, err = current.ApplyCommitStorageCopyWithOptions(candidate.commit, graph.ApplyOptions{})
+			next, report, err = identityGraph.ApplyCommitStorageCopyWithOptions(candidate.commit, graph.ApplyOptions{})
 		}
 		if err == nil {
 			if relationSchemaCommitCanValidateIncrementally(candidate.relationSchema, current.Version) {
@@ -973,6 +983,7 @@ func (s *TenantStore) applyIngestBatchCandidatesIsolatedWithGuards(
 			if candidate.prepared {
 				return nil, nil, fmt.Errorf("%w: prepared commit became a logical no-op", ErrIngestRepairRequired)
 			}
+			current = identityGraph
 			candidate.result.Version = current.Version
 			candidate.result.Skipped = true
 			candidate.result.SkipReason = IngestSkipReasonLogicalNoop

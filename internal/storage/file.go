@@ -404,7 +404,8 @@ func writeFileAtomicContext(ctx context.Context, path string, data []byte, journ
 
 func writeReaderAtomicContext(ctx context.Context, path string, reader io.Reader, journal *replicationJournal) error {
 	dir := filepath.Dir(path)
-	file, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(path)+"-")
+	// The destination may already use the filesystem's full component limit.
+	file, err := os.CreateTemp(dir, ".tmp-")
 	if err != nil {
 		return err
 	}

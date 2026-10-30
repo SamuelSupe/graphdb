@@ -161,6 +161,8 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 	var records []acceptedRequest
 	var keys []string
 	var entries []storage.IngestBatchEntry
+	var entryIndexes []int
+	var results []storage.IngestResult
 	for _, key := range cmd.IDs {
 		if !strings.HasPrefix(key, a.ingestPrefix()) {
 			return nil, fmt.Errorf("invalid replicated acceptance key")
@@ -177,23 +179,36 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 		}
 		records = append(records, record)
 		keys = append(keys, key)
+		results = append(results, storage.IngestResult{})
+		if cmd.TupleIdentity {
+			if err := storage.ValidateIngestStorageIdentifiers(record.Request); err != nil {
+				results[len(results)-1] = storage.IngestResult{BatchID: record.Request.BatchID, Failed: max(1, len(record.Request.Items)), Failures: []storage.IngestFailure{{Error: err.Error()}}}
+				continue
+			}
+		}
+		entryIndexes = append(entryIndexes, len(records)-1)
 		entries = append(entries, storage.IngestBatchEntry{Request: record.Request, AcceptedAt: record.AcceptedAt, AcceptedGeneration: record.Generation})
 	}
-	if len(entries) == 0 {
+	if len(records) == 0 {
 		return json.Marshal([]storage.IngestResult{})
 	}
-	results, err := a.Store.IngestDurableBatch(ctx, cmd.Tenant, entries)
-	if err != nil {
-		if !errors.Is(err, storage.ErrTenantDeleted) && !errors.Is(err, storage.ErrTenantDisabled) {
-			return nil, err
+	if len(entries) > 0 {
+		applied, err := a.Store.IngestDurableBatch(ctx, cmd.Tenant, entries)
+		if err != nil {
+			if !errors.Is(err, storage.ErrTenantDeleted) && !errors.Is(err, storage.ErrTenantDisabled) {
+				return nil, err
+			}
+			applied = make([]storage.IngestResult, len(entries))
+			for i, entry := range entries {
+				applied[i] = storage.IngestResult{BatchID: entry.Request.BatchID, Failed: len(entry.Request.Items), Failures: []storage.IngestFailure{{Error: err.Error()}}}
+			}
 		}
-		results = make([]storage.IngestResult, len(records))
-		for i, record := range records {
-			results[i] = storage.IngestResult{BatchID: record.Request.BatchID, Failed: len(record.Request.Items), Failures: []storage.IngestFailure{{Error: err.Error()}}}
+		if len(applied) != len(entries) {
+			return nil, fmt.Errorf("replicated flush result count mismatch")
 		}
-	}
-	if len(results) != len(records) {
-		return nil, fmt.Errorf("replicated flush result count mismatch")
+		for i, result := range applied {
+			results[entryIndexes[i]] = result
+		}
 	}
 	for i, record := range records {
 		record.State = "committed"

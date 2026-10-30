@@ -9,7 +9,7 @@ import (
 // whether applying it would leave the logical graph unchanged. A false result
 // means the caller must use the normal mutation path.
 func (g *Graph) PreviewStorageEntityNoop(commit Commit) (ApplyReport, bool, error) {
-	if !onlyEntityUpserts(commit.Mutations) {
+	if g.legacyIdentity != legacyCommitIdentity(commit) || !onlyEntityUpserts(commit.Mutations) {
 		return ApplyReport{}, false, nil
 	}
 	if commit.Version <= g.Version {

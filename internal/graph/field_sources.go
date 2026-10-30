@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"encoding/json"
 	"reflect"
 	"time"
 )
@@ -128,9 +129,35 @@ func appendUniqueArrayField(existing any, incoming any) ([]any, bool, bool) {
 		return nil, false, false
 	}
 	merged := copyAnySlice(existingValues)
+	scalars := make(map[string]struct{}, len(existingValues))
+	objects := make(map[string][]any)
+	remember := func(value any) bool {
+		if key, ok := ScalarIndexKey(value); ok {
+			_, exists := scalars[key]
+			scalars[key] = struct{}{}
+			return exists
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return arrayContainsValue(merged, value)
+		}
+		key := string(encoded)
+		// JSON narrows the candidates; DeepEqual preserves composite value
+		// semantics for callers whose values have not been JSON-normalized.
+		for _, previous := range objects[key] {
+			if reflect.DeepEqual(previous, value) {
+				return true
+			}
+		}
+		objects[key] = append(objects[key], value)
+		return false
+	}
+	for _, value := range existingValues {
+		remember(value)
+	}
 	changed := false
 	for _, value := range incomingValues {
-		if arrayContainsValue(merged, value) {
+		if remember(value) {
 			continue
 		}
 		merged = append(merged, copyAny(value))

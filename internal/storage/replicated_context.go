@@ -8,12 +8,26 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
 type replicatedContextKey struct{}
 type replicatedBackpressureKey struct{}
 type replicatedBackupNamespaceKey struct{}
 type legacyTenantScopeKey struct{}
+type legacyIdentityKey struct{}
+
+// LegacyIdentityContext replays commands written before tuple identity matching.
+func LegacyIdentityContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, legacyIdentityKey{}, true)
+}
+
+func commitIdentityEncoding(ctx context.Context) int {
+	if legacy, _ := ctx.Value(legacyIdentityKey{}).(bool); legacy {
+		return 0
+	}
+	return graph.IdentityEncodingTuple
+}
 
 // LegacyTenantScopeContext preserves the authorization semantics of commands
 // already committed before tenant scope validation was introduced.

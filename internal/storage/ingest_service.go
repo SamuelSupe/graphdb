@@ -654,7 +654,11 @@ func (s *IngestService) Status(ctx context.Context, tenantID string, source stri
 		return status, nil
 	}
 	s.mu.Unlock()
-	record, err := s.store.GetIngestBatch(ctx, tenantID, source, collectorID, batchID)
+	var record IngestBatchRecord
+	err := ErrNotFound
+	if ValidateIngestStorageIdentifiers(IngestRequest{Source: source, CollectorID: collectorID, BatchID: batchID}) == nil {
+		record, err = s.store.GetIngestBatch(ctx, tenantID, source, collectorID, batchID)
+	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return IngestBatchStatus{}, err
 	}
@@ -1121,6 +1125,33 @@ func (s *IngestService) pendingAcceptedGeneration(pending *ingestPending) int64 
 }
 
 func (s *IngestService) flushTenantGroup(items []*ingestPending) []*ingestPending {
+	// Old binaries could acknowledge identifiers that cannot be persisted.
+	// Retire only unprepared requests, preserving any durable publication cohort.
+	unprepared := true
+	for _, item := range items {
+		unprepared = unprepared && item.envelope.Prepared == nil
+	}
+	if unprepared {
+		for index, item := range items {
+			if err := ValidateIngestStorageIdentifiers(item.envelope.Request); err != nil {
+				if index > 0 {
+					if retry := s.flushTenantGroup(items[:index]); len(retry) > 0 {
+						return append(retry, items[index:]...)
+					}
+				}
+				result := failedIngestResult(item.envelope.Request, err)
+				if _, err := s.appendTerminalBatch(items[index:index+1], []IngestResult{result}); err != nil {
+					s.recordError(err)
+					s.setPendingRetry(item, err)
+					return items[index:]
+				}
+				if index+1 < len(items) {
+					return s.flushTenantGroup(items[index+1:])
+				}
+				return nil
+			}
+		}
+	}
 	tenantID := items[0].envelope.TenantID
 	firstLSN, lastLSN := ingestPendingLSNRange(items)
 	started := time.Now()

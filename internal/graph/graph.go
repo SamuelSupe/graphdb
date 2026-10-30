@@ -26,6 +26,7 @@ type Graph struct {
 	nonScalarFields    *ShardedMap[int]
 	fieldIndex         map[string]map[string]*fieldValueIndex
 	identityIndex      map[string]map[string]string
+	legacyIdentity     bool
 	entityPartitions   *entityPartitions
 	entityPartitionsMu sync.Mutex
 	cow                *copyOnWriteState
@@ -127,6 +128,7 @@ func (g *Graph) Clone() *Graph {
 		nonScalarFields:         g.nonScalarFields.Clone(),
 		fieldIndex:              copyFieldIndex(g.fieldIndex),
 		identityIndex:           copyStringMap(g.identityIndex),
+		legacyIdentity:          g.legacyIdentity,
 		contentFingerprint:      fingerprint,
 		contentFingerprintReady: fingerprintReady,
 		logicalHashCache:        logicalHashCache,

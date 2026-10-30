@@ -1,6 +1,6 @@
 # 查询能力说明
 
-适用于 **GGraphDB 2.4.3**；发行资格见[版本验证](validation-v2.4.3.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.4**；发行资格见[版本验证](validation-v2.4.4.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本文说明当前 GGraphDB 的用户侧查询能力。查询对象是租户当前可见快照，不提供历史版本查询；读一致性通过 `min_version` 和 `allow_stale` 控制。
 
@@ -435,6 +435,8 @@ path 排序支持：
 ```
 
 聚合结果放在 `aggregates`。`count_by` 返回 value 到 count 的 map；数值聚合会忽略非数值。
+
+2.4.4 修复：`avg` 使用避免溢出的增量均值，有限输入的均值不依赖可溢出的总和；`sum` 中间累计超出 float64 范围时返回 `query_limit_exceeded`，不输出 Infinity。全局和分组聚合遵循相同规则。
 
 分组聚合：
 

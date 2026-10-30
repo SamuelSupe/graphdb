@@ -22,6 +22,7 @@ import (
 )
 
 type command struct {
+	TupleIdentity         bool                        `json:"tuple_identity,omitempty"`
 	TenantScopeValidation bool                        `json:"tenant_scope_validation,omitempty"`
 	ExpectedGeneration    int64                       `json:"expected_generation,omitempty"`
 	RouteEpoch            uint64                      `json:"route_epoch,omitempty"`
@@ -294,6 +295,9 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 			}
 			cmd := commands[i]
 			commandCtx := storage.ReplicatedContext(applyCtx, cmd.ID, cmd.At)
+			if !cmd.TupleIdentity {
+				commandCtx = storage.LegacyIdentityContext(commandCtx)
+			}
 			if cmd.Backpressure != nil {
 				commandCtx = storage.ReplicatedBackpressureContext(commandCtx, *cmd.Backpressure)
 			}

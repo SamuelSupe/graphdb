@@ -156,9 +156,14 @@ func tenantFromRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	data, err := json.Marshal(responseJSONValue(value))
+	if err != nil {
+		status = http.StatusInternalServerError
+		data, _ = json.Marshal(buildErrorResponse(ErrorCodeInternal, "response encoding failed", false, nil))
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(responseJSONValue(value))
+	_, _ = w.Write(append(data, '\n'))
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

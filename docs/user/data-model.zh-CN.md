@@ -1,6 +1,6 @@
 # 数据模型
 
-适用于 **GGraphDB 2.4.3**；[发行验证](../validation-v2.4.3.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.4**；[发行验证](../validation-v2.4.4.md)与[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 [English](data-model.md)
 

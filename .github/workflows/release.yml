@@ -221,6 +221,7 @@ jobs:
           report = json.loads(Path('release/evidence/raft-gate/metadata.json').read_text())
           enhanced = json.loads(Path('release/evidence/raft-gate/enhanced/metadata.json').read_text())
           protocol3 = json.loads(Path('release/evidence/raft-gate/protocol3/metadata.json').read_text())
+          protocol4 = json.loads(Path('release/evidence/raft-gate/protocol4/metadata.json').read_text())
           rolling = json.loads(Path('release/evidence/raft-gate/rolling/metadata.json').read_text())
           gateway = json.loads(Path('release/evidence/gateway-gate/metadata.json').read_text())
           digest = hashlib.file_digest(Path('bin/graphdb-linux-amd64').open('rb'), 'sha256').hexdigest()
@@ -228,6 +229,7 @@ jobs:
           assert digest == report['binary_sha256'], 'packaged binary differs from the Raft-qualified binary'
           assert enhanced['result'] == 'PASS' and enhanced['binary_sha256'] == digest, 'enhanced Raft qualification differs from the packaged binary'
           assert protocol3['result'] == 'PASS' and protocol3['protocol'] == 3 and protocol3['binary_sha256'] == digest, 'protocol 3 qualification differs from the packaged binary'
+          assert protocol4['result'] == 'PASS' and protocol4['protocol'] == 4 and protocol4['binary_sha256'] == digest, 'protocol 4 qualification differs from the packaged binary'
           assert rolling['result'] == 'PASS' and rolling['target']['binary_sha256'] == digest, 'rolling target differs from the packaged binary'
           assert gateway['result'] == 'PASS' and gateway['binary_sha256'] == digest, 'gateway qualification differs from the packaged binary'
           config_digest = hashlib.sha256(Path('deploy/nginx/graphdb.conf.example').read_bytes()).hexdigest()

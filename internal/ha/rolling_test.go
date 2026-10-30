@@ -11,6 +11,60 @@ import (
 	"time"
 )
 
+func TestHAProtocol4ReplicatesTupleIdentityAcrossRestart(t *testing.T) {
+	group := newTestCluster(t, false)
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i := range group.nodes {
+		group.nodes[i].cfg.Raft.Protocol = 4
+		group.start(i)
+	}
+	leader := group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"first","kind":"host","source":"alpha|external_id=beta","external_id":"gamma"},{"id":"second","kind":"host","source":"alpha","external_id":"beta|external_id=gamma"}]}}`, http.StatusOK)
+	checkpoint, err := group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		g, _, err := group.nodes[i].store.Load(context.Background(), "tenant-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.Entities.Len() != 2 {
+			t.Fatalf("replica %d entities=%d", i, g.Entities.Len())
+		}
+	}
+	for i := range group.nodes {
+		group.stop(i)
+	}
+	for i := range group.nodes {
+		// The durable protocol floor must survive a stale deployment default.
+		group.nodes[i].cfg.Raft.Protocol = 1
+		group.start(i)
+	}
+	leader = group.leader(-1)
+	group.mustRequest(leader, "POST", "/v1/commits", `{"mutations":{"upsert_entities":[{"id":"third","kind":"host","source":"alpha","external_id":"new"}]}}`, http.StatusOK)
+	checkpoint, err = group.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range group.nodes {
+		group.waitApplied(i, checkpoint.Index)
+		if group.nodes[i].cluster.Node.Status()["protocol_version"] != 4 {
+			t.Fatal("protocol 4 was downgraded on restart")
+		}
+		g, _, err := group.nodes[i].store.Load(context.Background(), "tenant-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.Entities.Len() != 3 {
+			t.Fatalf("restarted replica %d entities=%d", i, g.Entities.Len())
+		}
+	}
+}
+
 func TestHARollingDrainPreservesReadWriteService(t *testing.T) {
 	group := newTestCluster(t, false)
 	leader := group.leader(-1)
@@ -117,7 +171,7 @@ func TestHADrainWaitsForCommittedProposal(t *testing.T) {
 	request := httptest.NewRequest("POST", "/raft/message", bytes.NewReader(nil))
 	request.Header.Set("Authorization", "Bearer "+group.nodes[leader].cfg.Raft.Token)
 	request.Header.Set("X-Raft-Cluster", group.nodes[leader].cfg.Raft.ClusterID)
-	for _, protocol := range []string{"", "4"} {
+	for _, protocol := range []string{"", "5"} {
 		request.Header.Set("X-GraphDB-Raft-Protocol", protocol)
 		w := httptest.NewRecorder()
 		group.nodes[leader].cluster.PrivateHandler().ServeHTTP(w, request)

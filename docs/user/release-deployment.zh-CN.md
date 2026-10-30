@@ -1,6 +1,6 @@
-# GGraphDB 2.4.3 发行版部署
+# GGraphDB 2.4.4 发行版部署
 
-[English](release-deployment.md) · [用户指南](README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3)
+[English](release-deployment.md) · [用户指南](README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4)
 
 先选择部署，再校验发行包并启动。单机使用一个进程和一个持久化本地目录，
 每个 Raft 副本使用独立目录。
@@ -19,15 +19,15 @@
 
 ### 1. 下载并校验
 
-从 [2.4.3 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3)
-下载 `graphdb-v2.4.3.tar.gz` 和 `graphdb-v2.4.3.tar.gz.sha256`，放在同一目录。
+从 [2.4.4 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4)
+下载 `graphdb-v2.4.4.tar.gz` 和 `graphdb-v2.4.4.tar.gz.sha256`，放在同一目录。
 
 Linux 上执行：
 
 ```sh
-sha256sum -c graphdb-v2.4.3.tar.gz.sha256
-tar -xzf graphdb-v2.4.3.tar.gz
-cd v2.4.3
+sha256sum -c graphdb-v2.4.4.tar.gz.sha256
+tar -xzf graphdb-v2.4.4.tar.gz
+cd v2.4.4
 sha256sum -c SHA256SUMS
 ```
 
@@ -65,7 +65,7 @@ curl -fsS http://127.0.0.1:8080/v1/health
 
 ## 使用容器
 
-在仓库根目录或解压后的 `v2.4.3/` 目录执行：
+在仓库根目录或解压后的 `v2.4.4/` 目录执行：
 
 ```sh
 docker compose up -d --build
@@ -79,7 +79,7 @@ docker compose up -d --build
 
 | 已有安装 | 升级规则 |
 | --- | --- |
-| 单机 2.0／2.1／2.2 | 停止旧进程，使用 2.4.3 沿用兼容目录 |
+| 单机 2.0／2.1／2.2 | 停止旧进程，使用 2.4.4 沿用兼容目录 |
 | Raft | 遵循[已验收的滚动窗口](../raft-rolling-upgrade.zh-CN.md)；未验证版本使用维护或迁移流程 |
 | 1.x | 使用新目录，不提供 1.x 数据迁移 |
 
@@ -87,7 +87,7 @@ docker compose up -d --build
 
 1. 创建并验证快照，保留升级前备份用于回滚。
 2. 停止旧进程，禁止两个版本同时使用同一目录。
-3. 替换程序，使用相同 `GRAPHDB_DATA_DIR` 和 prefix 启动 2.4.3。
+3. 替换程序，使用相同 `GRAPHDB_DATA_DIR` 和 prefix 启动 2.4.4。
 4. 检查就绪、代表性查询和 WAL 状态，再恢复流量。
 
 不支持启用新自动化后直接降级旧进程。Raft 协议 3 启用后，最高协议为 2 的旧程序
@@ -105,3 +105,7 @@ docker compose up -d --build
 ### 2.4.2 WAL 边界迁移
 
 先保留升级前已验证备份。2.4.2 及之后版本启动可读取旧 v1 durable marker，并迁移为双槽 v2；旧程序不能读取新 marker。降级前先排空 WAL，备份/恢复包含整个 WAL 目录，不要单独替换 `.durable` 或 `.checkpoint`。需要时由新程序完成重放或恢复到新目录；索引重建降级不等于 WAL/Raft 目录降级资格。
+
+## 2.4.4 身份匹配与回退边界
+
+单机自动为新提交启用无歧义身份编码；旧提交保留原重放语义，历史误合并数据不自动拆分。首次无变化写入只转换索引，不更新实体时间、版本或归属。新格式写入后不能用旧二进制原目录回退，请保留升级前备份。Raft 默认仍为协议 1；全组副本和 router 升级完成后单独启用协议 4，协议 1–3 继续保留历史写入语义。详见[协议升级手册](../raft-rolling-upgrade.zh-CN.md)。

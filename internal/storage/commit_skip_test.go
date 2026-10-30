@@ -2,11 +2,63 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
+
+func TestUpgradedNoopWritesReuseIdentityIndex(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("batch=%t", batch), func(t *testing.T) {
+			ctx := context.Background()
+			store := NewTenantStore(NewMemoryStore(), "test")
+			write := func(ctx context.Context, index int) bool {
+				t.Helper()
+				if batch {
+					results, err := store.IngestDurableBatch(ctx, "tenant", []IngestBatchEntry{{Request: ingestEntityRequest(fmt.Sprintf("batch-%d", index), "host:1")}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return results[0].Skipped
+				}
+				result, err := store.CommitWithReport(ctx, "tenant", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}, CommitOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return result.Skipped
+			}
+			if write(LegacyIdentityContext(ctx), 0) {
+				t.Fatal("seed skipped")
+			}
+			original, ok := store.getWriteCache("tenant")
+			if !ok {
+				t.Fatal("seed write cache missing")
+			}
+			originalEntity, _ := original.Graph.GetEntityByReference("host:1")
+			if !write(ctx, 1) {
+				t.Fatal("first upgraded write changed graph")
+			}
+			first, ok := store.getWriteCache("tenant")
+			if !ok {
+				t.Fatal("write cache missing")
+			}
+			if !write(ctx, 2) {
+				t.Fatal("repeated write changed graph")
+			}
+			second, ok := store.getWriteCache("tenant")
+			if !ok || first.Graph != second.Graph || second.Graph.Version != 1 {
+				t.Fatal("no-op rebuilt upgraded graph or changed version")
+			}
+			currentEntity, _ := second.Graph.GetEntityByReference("host:1")
+			if !reflect.DeepEqual(originalEntity, currentEntity) {
+				t.Fatal("skipped upgrade changed entity timestamps, versions or ownership")
+			}
+		})
+	}
+}
 
 func TestInitTenantConcurrentFirstLoadAndCommit(t *testing.T) {
 	ctx := context.Background()

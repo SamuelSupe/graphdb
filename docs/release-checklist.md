@@ -6,6 +6,10 @@ checklist, not a record that every published version passed every item.
 
 ## Current candidate qualification
 
+[2.4.4](validation-v2.4.4.md) is the current release candidate. Publication requires every exact-tag gate and independent downloaded-asset verification; no gate waiver is requested.
+
+## Previous 2.4.3 qualification
+
 [2.4.3](validation-v2.4.3.md) passed all exact-tag gates and independent downloaded-asset/runtime checks. No gate waiver; its tag and assets remain immutable.
 
 ## Previous 2.4.2 qualification

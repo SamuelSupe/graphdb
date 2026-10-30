@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2177,5 +2178,40 @@ func TestUnknownHTTPPathsHaveBoundedMetricLabels(t *testing.T) {
 	metrics := api.obs().Metrics.SnapshotPrometheus()
 	if bytes.Contains(metrics, []byte("/missing/")) {
 		t.Fatal("raw unknown paths retained as metric series")
+	}
+}
+
+func TestJSONEncodingFailureDoesNotSendSuccess(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeJSON(rr, http.StatusOK, map[string]any{"number": math.Inf(1)})
+	var body ErrorResponse
+	if rr.Code != http.StatusInternalServerError || json.Unmarshal(rr.Body.Bytes(), &body) != nil || body.Code != ErrorCodeInternal {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPAggregateOverflowAndFiniteAverage(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	_, err := store.Commit(context.Background(), "tenant-a", graph.Mutations{UpsertEntities: []graph.Entity{
+		{ID: "a", Kind: "host", Fields: graph.Fields{"value": 1e308}},
+		{ID: "b", Kind: "host", Fields: graph.Fields{"value": 1e308}},
+	}}, storage.CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []string{"sum", "avg", "min"} {
+		rr := serveJSON(handler, http.MethodPost, "/v1/query", "tenant-a", query.Request{Op: "match", Kind: "host", Aggregate: []query.Aggregation{{Op: op, Field: "value"}}})
+		var body map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if op == "sum" {
+			if rr.Code < 400 || body["code"] != string(ErrorCodeQueryLimitExceeded) {
+				t.Fatalf("sum: %d %s", rr.Code, rr.Body.String())
+			}
+		} else if rr.Code != 200 || body["aggregates"].(map[string]any)[op+"_value"] != 1e308 {
+			t.Fatalf("%s: %d %s", op, rr.Code, rr.Body.String())
+		}
 	}
 }

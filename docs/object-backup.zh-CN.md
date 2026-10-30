@@ -2,7 +2,7 @@
 
 [English](object-backup.md)
 
-适用于 **GGraphDB 2.4.3**；发行资格见[版本验证](validation-v2.4.3.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.4**；发行资格见[版本验证](validation-v2.4.4.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本指南覆盖当前 2.x 备份能力。2.1 新增可选自动化并沿用 2.0 快照格式；
 不提供 1.x 备份迁移，旧版备份独立保留。

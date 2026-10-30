@@ -1,6 +1,10 @@
 package graph
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"testing"
+)
 
 func TestArrayFieldAppendUniqueAndOverrideMarker(t *testing.T) {
 	g := New()
@@ -234,5 +238,42 @@ func assertFieldSlice(t *testing.T, got any, want []any) {
 		if !fieldValuesEqual(values[i], want[i]) {
 			t.Fatalf("value = %#v, want %#v", values, want)
 		}
+	}
+}
+
+func TestAppendUniquePreservesCompositeEqualityAndOrder(t *testing.T) {
+	old := []any{float64(1), "1", nil, map[string]any{"n": float64(2)}, []any{"x"}, "duplicate", "duplicate"}
+	incoming := []any{int(1), "1", nil, map[string]any{"n": float64(2)}, []any{"x"}, map[string]any{"n": int(2)}, true, true}
+	merged, changed, ok := appendUniqueArrayField(old, incoming)
+	want := append(append([]any(nil), old...), map[string]any{"n": int(2)}, true)
+	if !ok || !changed || !reflect.DeepEqual(merged, want) {
+		t.Fatalf("merge = %#v, changed=%v", merged, changed)
+	}
+	merged[3].(map[string]any)["n"] = float64(3)
+	if old[3].(map[string]any)["n"] != float64(2) {
+		t.Fatal("merge aliases source graph")
+	}
+	again, changed, ok := appendUniqueArrayField(want, incoming)
+	if !ok || changed || !reflect.DeepEqual(again, want) {
+		t.Fatal("repeated update changed array")
+	}
+}
+
+func BenchmarkAppendUniqueRepeatedArray(b *testing.B) {
+	for _, size := range []int{4000, 8000, 16000} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			values := make([]any, size)
+			for i := range values {
+				values[i] = fmt.Sprint("tag-", i)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_, changed, ok := appendUniqueArrayField(values, values)
+				if !ok || changed {
+					b.Fatal("repeated array changed")
+				}
+			}
+		})
 	}
 }

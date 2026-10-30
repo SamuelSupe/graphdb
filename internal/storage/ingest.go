@@ -117,7 +117,7 @@ func (s *TenantStore) IngestDurable(ctx context.Context, tenantID string, reques
 }
 
 func (s *TenantStore) ingest(ctx context.Context, tenantID string, request IngestRequest, saveFailures bool, durableCommit bool) (IngestResult, error) {
-	request, err := PrepareIngestRequest(tenantID, request)
+	request, err := prepareIngestRequest(tenantID, request, commitIdentityEncoding(ctx) != 0)
 	if err != nil {
 		return IngestResult{}, err
 	}
@@ -392,6 +392,10 @@ func durableIngestCommitKey(tenantID string, request IngestRequest) string {
 }
 
 func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest, error) {
+	return prepareIngestRequest(tenantID, request, true)
+}
+
+func prepareIngestRequest(tenantID string, request IngestRequest, validatePaths bool) (IngestRequest, error) {
 	if err := ValidateTenantID(tenantID); err != nil {
 		return IngestRequest{}, err
 	}
@@ -417,7 +421,18 @@ func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest
 		{name: "collector_id", value: request.CollectorID},
 		{name: "batch_id", value: request.BatchID},
 	} {
+		if !validatePaths {
+			if identifier.value == "." || identifier.value == ".." {
+				return IngestRequest{}, fmt.Errorf("%w: %s must not be a dot path segment", ErrInvalidArgument, identifier.name)
+			}
+			continue
+		}
 		if err := validateIngestStatusPathIdentifier(identifier.name, identifier.value); err != nil {
+			return IngestRequest{}, err
+		}
+	}
+	if validatePaths && request.IdempotencyKey != "" {
+		if err := validateIngestStatusPathIdentifier("idempotency_key", request.IdempotencyKey); err != nil {
 			return IngestRequest{}, err
 		}
 	}
@@ -428,8 +443,29 @@ func PrepareIngestRequest(tenantID string, request IngestRequest) (IngestRequest
 }
 
 func validateIngestStatusPathIdentifier(name string, value string) error {
-	if value == "." || value == ".." {
+	if name != "idempotency_key" && (value == "." || value == "..") {
 		return fmt.Errorf("%w: %s must not be a dot path segment", ErrInvalidArgument, name)
+	}
+	limit := 255
+	if name == "collector_id" || name == "batch_id" || name == "idempotency_key" {
+		limit -= len(".parquet")
+	}
+	if strings.ContainsRune(value, 0) || len(objectSegment(value)) > limit {
+		return fmt.Errorf("%w: %s must contain no NUL and fit in %d escaped path bytes", ErrInvalidArgument, name, limit)
+	}
+	return nil
+}
+
+// ValidateIngestStorageIdentifiers checks path component limits for normalized
+// identifiers, including the suffixes used by batch and collector records.
+func ValidateIngestStorageIdentifiers(request IngestRequest) error {
+	for _, id := range []struct{ name, value string }{
+		{"source", request.Source}, {"collector_id", request.CollectorID},
+		{"batch_id", request.BatchID}, {"idempotency_key", request.IdempotencyKey},
+	} {
+		if err := validateIngestStatusPathIdentifier(id.name, id.value); err != nil {
+			return err
+		}
 	}
 	return nil
 }

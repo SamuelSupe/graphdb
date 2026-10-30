@@ -1,8 +1,8 @@
-# GGraphDB 2.4.3
+# GGraphDB 2.4.4
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,9 +12,9 @@
 
 ## 当前版本
 
-**[2.4.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3)** 增加 inode 准入与清理、单机租户元数据自动恢复、初始化与迁移保护，并修复旧 WAL 重试一致性及 2.4.2 之后的读排空和转发问题。发行二进制统一使用 **Go 1.27.3**；本地检查、确切标签门禁、发布和独立下载结果分别记录。
+**[2.4.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4)** 修复组合身份误合并、无效批次阻塞 WAL、大数组重复去重和数值聚合溢出。单机自动采用新身份规则，并继续提供 inode 保护与租户元数据在线自愈。发行二进制使用 **Go 1.27.3**。
 
-| 领域 | 2.4.3 提供的能力 |
+| 领域 | 2.4.4 提供的能力 |
 | --- | --- |
 | 管理 UI | `/ui/` 内嵌英文／简体中文控制台，无需独立前端服务 |
 | 日常操作 | 图表概览、结构化表单与详情、查询工作台、数据接入和维护 |
@@ -23,7 +23,7 @@
 | 稳定性 | 复制错误确定性、可取消读取、持久化重放和受保护的 GC 续跑 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组 |
 
-验证证据见[发布验证](docs/validation-v2.4.3.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验证](docs/validation-v2.4.4.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -143,31 +143,11 @@ GraphQL 的完整示例见 [GraphQL 指南](docs/graphql.zh-CN.md)。控制台�
 
 ## 验证与限制
 
-2.3.6 解除本地维护索引工作对 WAL 确认的前台阻塞，统一并发重建的发布顺序，
-减少 Raft 屏障内重复文件系统操作，并在原有共享编码限额内准备 compact 两种表示。
+本轮在 OrbStack Linux 上验证了旧提交冷加载、v2.4.3 无效 WAL 批次的升级恢复、重启后失败状态保留，以及 Raft 协议 4 的副本一致性。完整发行资格以[2.4.4 验证记录](docs/validation-v2.4.4.md)、标签门禁及包内证据为准。
 
-相同输入的候选对照中，单机写入 P99 **9.470 → 3.948 秒**；原始 30 分钟增长计划下，
-Raft 查询最大 **13.132 → 5.584 秒**。比较对象是工作区候选 C3 与 C7，不能当作已发布
-2.3.4 与 2.3.6 二进制的对照。单机 stale 频率**未改善（131/327 → 134/327）**，
-全部 stale 样本均在更新中，静默后索引追平。单机容器内存峰值增加 **6.4%**；
-Raft 基线资源计数缺失。查询和接入仍有秒级长尾。两种部署各自保持输入一致，不能跨部署直接比较。
+在同机直接 HTTP 重复写入 16,000 项字符串数组的三次采样中，`append_unique` 中位耗时从 v2.4.3 的约 **4.25 秒降至 7 毫秒**。这是局部回归对照，不代表生产吞吐、整体写入 P99 或容量保证；[历史长尾记录](docs/performance-tail-validation-2026-10-20.zh-CN.md)仍需参考。
 
-另行完成的确切标签单机 30 分钟门禁中，写入 P99 **5.627 秒**、最大 **7.652 秒**，索引 **53/59 次 stale**，最后采样仍为 **stale**。门禁通过不表示 stale 已解决；它的增长型负载与固定数据候选对照不同。
-
-另行完成的确切标签 Raft 30 分钟门禁中，查询最大 **16.042 秒**、写入最大 **10.968 秒**，索引 **0/59 次 stale**。秒级长尾仍在；这组发行门禁负载与候选固定计划对照分开记录。
-
-详见[确切发行证据](docs/validation-v2.3.6.md)与[前后对照报告](docs/performance-tail-validation-2026-10-20.zh-CN.md)。
-确切标签门禁与下载程序的 Linux/macOS 运行核验均通过；跨宿主机可靠性、日级稳定性、生产容量和统一低延迟 SLO 仍未验收。
-
-<details>
-<summary>历史性能证据</summary>
-
-此前本机候选记录 71,140 次操作、90 次预期写入 429、最大等待 40.154 秒。
-其维护长测还有四次 HAProxy 503 查询错误，结论仍为历史 FAIL，与上面的确切标签结果
-分开记录。[2.1.2 写入长尾](docs/performance-write-tail.md)和 [2.0 结果](docs/performance-v2.0.md)
-仅适用于各自记录的构建。
-
-</details>
+**升级边界：** 新提交记录身份匹配规则；旧提交保持原重放语义，历史误合并的实体不会自动拆分。新数据不能由旧程序原目录降级读取，应保留升级前备份。Raft 默认仍为协议 1；全组升级后单独启用协议 4，详见[升级手册](docs/raft-rolling-upgrade.zh-CN.md)。跨宿主机可靠性、日级稳定性和生产容量仍未验收。
 
 <details>
 <summary>存储与发布设计</summary>
@@ -189,7 +169,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.4.3 验证](docs/validation-v2.4.3.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.4.4 验证](docs/validation-v2.4.4.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 

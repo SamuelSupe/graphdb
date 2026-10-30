@@ -121,6 +121,7 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 	}
 	defer release()
 	cmd.Role = c.App.replicationRole()
+	cmd.TupleIdentity = c.config.Protocol >= 4
 	cmd.Prefix = c.App.Store.Prefix
 	c.App.mu.RLock()
 	if cmd.Kind == "http" || cmd.Kind == "accept" || cmd.Kind == "flush" || cmd.Kind == "task" {

@@ -383,6 +383,9 @@ func normalizeCommitForParquet(commit graph.Commit) (graph.Commit, string, error
 
 func commitRows(commit graph.Commit) ([]parquetCommitRow, error) {
 	rows := []parquetCommitRow{{Kind: commitRowMetadata}}
+	if commit.IdentityEncoding != 0 {
+		rows = append(rows, parquetCommitRow{Kind: "identity_encoding", Name: fmt.Sprint(commit.IdentityEncoding)})
+	}
 	for i, ciType := range commit.Mutations.UpsertCITypes {
 		rows = append(rows, ciTypeRows(i, ciType)...)
 	}
@@ -990,6 +993,11 @@ func (b *commitBuild) apply(row parquetCommitRow) error {
 	switch row.Kind {
 	case commitRowMetadata:
 		return nil
+	case "identity_encoding":
+		if row.Name != "1" || b.commit.IdentityEncoding != 0 {
+			return fmt.Errorf("invalid commit identity encoding %q", row.Name)
+		}
+		b.commit.IdentityEncoding = graph.IdentityEncodingTuple
 	case commitRowUpsertCIType, commitRowCITypeExtends, commitRowCITypeField, commitRowCITypeFieldEnum, commitRowCITypeFieldDefault, commitRowCITypeIdentity, commitRowCITypeIdentityField:
 		return b.applyCITypeRow(row)
 	case commitRowDeleteCIType:

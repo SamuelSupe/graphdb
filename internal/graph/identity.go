@@ -3,6 +3,7 @@ package graph
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -65,7 +66,7 @@ type identitySignature struct {
 func (g *Graph) identitySignatures(entity Entity) []identitySignature {
 	signatures := make([]identitySignature, 0)
 	signatures = append(signatures, g.ciIdentitySignatures(entity, entityConfidence(entity))...)
-	signatures = append(signatures, sourceIdentitySignatures(entity.Sources)...)
+	signatures = append(signatures, g.sourceIdentitySignatures(entity.Sources)...)
 	sortIdentitySignatures(signatures)
 	return signatures
 }
@@ -74,12 +75,12 @@ func (g *Graph) lookupIdentitySignatures(entity Entity) []identitySignature {
 	signatures := make([]identitySignature, 0)
 	signatures = append(signatures, g.ciIdentitySignatures(entity, entity.Confidence)...)
 	if entity.Source != "" && entity.ExternalID != "" {
-		signatures = append(signatures, sourceIdentitySignature(EntitySource{
+		signatures = append(signatures, g.sourceIdentitySignature(EntitySource{
 			Source:     entity.Source,
 			ExternalID: entity.ExternalID,
 		}))
 	}
-	signatures = append(signatures, sourceIdentitySignatures(entity.Sources)...)
+	signatures = append(signatures, g.sourceIdentitySignatures(entity.Sources)...)
 	sortIdentitySignatures(signatures)
 	return signatures
 }
@@ -91,43 +92,115 @@ func (g *Graph) ciIdentitySignatures(entity Entity, confidence float64) []identi
 			if key.ConfidenceThreshold > 0 && confidence < key.ConfidenceThreshold {
 				continue
 			}
-			parts := make([]string, 0, len(key.Fields))
-			for _, field := range key.Fields {
-				value, ok := entity.Identity[field]
-				if !ok {
-					value, ok = entity.Fields[field]
-				}
-				scalar, scalarOK := ScalarIndexKey(value)
-				if !ok || !scalarOK {
-					parts = nil
-					break
-				}
-				parts = append(parts, field+"="+scalar)
-			}
-			if len(parts) > 0 {
-				signatures = append(signatures, identitySignature{
-					Value:    "rule:" + key.Name + "|" + strings.Join(parts, "|"),
-					Strategy: key.Strategy,
-				})
+			if value, ok := ciIdentitySignature(entity, key, g.legacyIdentity); ok {
+				signatures = append(signatures, identitySignature{Value: value, Strategy: key.Strategy})
 			}
 		}
 	}
 	return signatures
 }
 
+// CIIdentitySignature uses the same tuple encoding as live entity matching.
+func CIIdentitySignature(entity Entity, key IdentityKey) (string, bool) {
+	return ciIdentitySignature(entity, key, false)
+}
+
+func ciIdentitySignature(entity Entity, key IdentityKey, legacy bool) (string, bool) {
+	parts := []string{"rule", key.Name}
+	var old []string
+	for _, field := range key.Fields {
+		value, ok := entity.Identity[field]
+		if !ok {
+			value, ok = entity.Fields[field]
+		}
+		scalar, scalarOK := ScalarIndexKey(value)
+		if !ok || !scalarOK {
+			return "", false
+		}
+		if legacy {
+			old = append(old, field+"="+scalar)
+		} else {
+			parts = append(parts, field, scalar)
+		}
+	}
+	if len(key.Fields) == 0 {
+		return "", false
+	}
+	if legacy {
+		return "rule:" + key.Name + "|" + strings.Join(old, "|"), true
+	}
+	return identityTuple(parts...), true
+}
+
+func identityTuple(parts ...string) string {
+	var key strings.Builder
+	for _, part := range parts {
+		key.WriteString(strconv.Itoa(len(part)))
+		key.WriteByte(':')
+		key.WriteString(part)
+	}
+	return key.String()
+}
+
 func sourceIdentitySignatures(sources []EntitySource) []identitySignature {
+	return (&Graph{}).sourceIdentitySignatures(sources)
+}
+
+func (g *Graph) sourceIdentitySignatures(sources []EntitySource) []identitySignature {
 	signatures := make([]identitySignature, 0, len(sources))
 	for _, source := range sources {
-		signatures = append(signatures, sourceIdentitySignature(source))
+		signatures = append(signatures, g.sourceIdentitySignature(source))
 	}
 	return signatures
 }
 
-func sourceIdentitySignature(source EntitySource) identitySignature {
-	return identitySignature{
-		Value:    "source:" + source.Source + "|external_id=" + source.ExternalID,
-		Strategy: "merge",
+func (g *Graph) sourceIdentitySignature(source EntitySource) identitySignature {
+	value := identityTuple("source", source.Source, source.ExternalID)
+	if g.legacyIdentity {
+		value = "source:" + source.Source + "|external_id=" + source.ExternalID
 	}
+	return identitySignature{Value: value, Strategy: "merge"}
+}
+
+func legacyCommitIdentity(commit Commit) bool {
+	return commit.LayoutVersion > 0 && commit.IdentityEncoding == 0
+}
+
+// WithCommitIdentity returns a graph with the requested matching rules, sharing
+// unchanged data. A rule transition rebuilds the index in a private copy without
+// applying mutations or updating entity timestamps and versions.
+func (g *Graph) WithCommitIdentity(commit Commit) (*Graph, error) {
+	if commit.IdentityEncoding >= 0 && commit.IdentityEncoding <= IdentityEncodingTuple && g.legacyIdentity == legacyCommitIdentity(commit) {
+		return g, nil
+	}
+	clone := g.cloneForStorageImpact(storageMutationImpact{})
+	if err := clone.useCommitIdentity(commit); err != nil {
+		return nil, err
+	}
+	return clone, nil
+}
+
+// Only the identity index changes when old persisted commits are replayed.
+// Published source graphs remain untouched when a mutation copy changes mode.
+func (g *Graph) useCommitIdentity(commit Commit) error {
+	if commit.IdentityEncoding < 0 || commit.IdentityEncoding > IdentityEncodingTuple {
+		return fmt.Errorf("unsupported commit identity encoding %d", commit.IdentityEncoding)
+	}
+	legacy := legacyCommitIdentity(commit)
+	if g.legacyIdentity == legacy {
+		return nil
+	}
+	g.legacyIdentity = legacy
+	g.identityIndex = make(map[string]map[string]string)
+	for id, entity := range g.Entities.All() {
+		if g.identityIndex[entity.Kind] == nil {
+			g.identityIndex[entity.Kind] = make(map[string]string)
+		}
+		for _, signature := range g.identitySignatures(entity) {
+			g.identityIndex[entity.Kind][signature.Value] = id
+		}
+	}
+	return nil
 }
 
 func sortIdentitySignatures(signatures []identitySignature) {

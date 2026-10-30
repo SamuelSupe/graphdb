@@ -47,6 +47,7 @@ func (g *Graph) replaceState(next *Graph) {
 	g.nonScalarFields = next.nonScalarFields
 	g.fieldIndex = next.fieldIndex
 	g.identityIndex = next.identityIndex
+	g.legacyIdentity = next.legacyIdentity
 	g.cow = next.cow
 	g.contentFingerprint = fingerprint
 	g.contentFingerprintReady = fingerprintReady
@@ -178,6 +179,9 @@ func (g *Graph) applyCommitToCopy(clone *Graph, commit Commit, options ApplyOpti
 }
 
 func (g *Graph) applyMutations(commit Commit, _ ApplyOptions) (ApplyReport, error) {
+	if err := g.useCommitIdentity(commit); err != nil {
+		return ApplyReport{}, err
+	}
 	report := ApplyReport{}
 	tracker := newMutationFingerprintTracker(g)
 	affected := newUniqueStringCollector(&report.AffectedEntityIDs)

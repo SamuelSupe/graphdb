@@ -1,6 +1,6 @@
 # Raft 高可用运行说明
 
-适用于 **GGraphDB 2.4.3**；发行资格见[版本验证](validation-v2.4.3.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.4.4**；发行资格见[版本验证](validation-v2.4.4.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 本页介绍 [高可用设计](high-availability-design.zh-CN.md) 的单组部署：三个完整副本、单主写入、强一致读取、自动接管。节点各自持有独立目录和磁盘，属于 Share-Nothing 部署；单组写入由一个 Leader 承担。需要扩容时，可选 [分片部署](sharding.zh-CN.md)，通过独立 Raft 数据组和租户迁移增加容量。
 

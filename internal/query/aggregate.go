@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -30,6 +31,7 @@ type aggregateState struct {
 	count  int
 	counts map[string]int
 	sum    float64
+	mean   float64
 	min    float64
 	max    float64
 }
@@ -76,14 +78,34 @@ func (a *aggregateAccumulator) addValues(valueFor func(string) any) error {
 			if !ok {
 				continue
 			}
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return fmt.Errorf("%w: aggregate %q requires finite numbers", ErrInvalid, aggregateName(spec))
+			}
 			if state.count == 0 || value < state.min {
 				state.min = value
 			}
 			if state.count == 0 || value > state.max {
 				state.max = value
 			}
-			state.sum += value
 			state.count++
+			switch spec.Op {
+			case "sum":
+				state.sum += value
+				if math.IsInf(state.sum, 0) {
+					return fmt.Errorf("%w: aggregate %q exceeds the numeric range", ErrLimitExceeded, aggregateName(spec))
+				}
+			case "avg":
+				if state.count == 1 {
+					state.mean = value
+				} else if math.Signbit(state.mean) == math.Signbit(value) {
+					state.mean += (value - state.mean) / float64(state.count)
+				} else {
+					// Opposite signs can overflow the subtraction above; each
+					// weighted term here stays within the input's finite range.
+					n := float64(state.count)
+					state.mean = state.mean*((n-1)/n) + value/n
+				}
+			}
 		}
 	}
 	return nil
@@ -115,7 +137,7 @@ func (s aggregateState) value(spec Aggregation) any {
 		if s.count == 0 {
 			return nil
 		}
-		return s.sum / float64(s.count)
+		return s.mean
 	case "min":
 		if s.count == 0 {
 			return nil

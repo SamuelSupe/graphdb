@@ -1,6 +1,6 @@
 # Error Code Contract
 
-Applies to **GGraphDB 2.4.3**; see [release validation](validation-v2.4.3.md) and [version boundaries](naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.4**; see [release validation](validation-v2.4.4.md) and [version boundaries](naming-and-compatibility.md).
 
 All non-2xx HTTP errors use this envelope:
 

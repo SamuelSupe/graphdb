@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,137 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestApplicationProtocol4RetiresInvalidLegacyAcceptances(t *testing.T) {
+	ctx := context.Background()
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
+	var keys []string
+	for i, source := range []string{strings.Repeat("s", 256), "source", strings.Repeat("s", 256)} {
+		request := storage.IngestRequest{Source: source, CollectorID: "collector", BatchID: fmt.Sprint("batch-", i), Items: []storage.IngestItem{{Entity: &graph.Entity{ID: fmt.Sprint("host:", i), Kind: "host"}}}}
+		cmd, err := newCommand("accept")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Tenant = "tenant"
+		cmd.Body, err = json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.Apply(ctx, uint64(i+1), data); err != nil {
+			t.Fatal(err)
+		}
+		generation, err := app.Store.ReplicationTenantGeneration(ctx, "tenant")
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, app.ingestKey("tenant", request.Source, request.CollectorID, request.BatchID, generation))
+	}
+	cmd, err := newCommand("flush")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Tenant, cmd.TupleIdentity, cmd.IDs = "tenant", true, keys
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Apply(ctx, 4, data); err != nil {
+		t.Fatal(err)
+	}
+	app = &Application{Files: files, Store: storage.NewTenantStore(files, "test")}
+	for i, key := range keys {
+		record, err := app.accepted(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "failed"
+		if i == 1 {
+			want = "committed"
+		}
+		if record.State != want || record.Result == nil {
+			t.Fatalf("acceptance %d state=%s want=%s", i, record.State, want)
+		}
+	}
+	g, _, err := app.Store.Load(ctx, "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Entities.Len() != 1 {
+		t.Fatalf("entities=%d want=1", g.Entities.Len())
+	}
+}
+
+func TestApplicationIdentitySemanticsFollowLoggedCommand(t *testing.T) {
+	for _, tuple := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tuple=%t", tuple), func(t *testing.T) {
+			files, err := storage.OpenFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer files.Close()
+			store := storage.NewTenantStore(files, "test")
+			app := &Application{Files: files, Store: store}
+			entities := []graph.Entity{{ID: "first", Kind: "host", Source: "alpha|external_id=beta", ExternalID: "gamma"}, {ID: "second", Kind: "host", Source: "alpha", ExternalID: "beta|external_id=gamma"}}
+			app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var entity graph.Entity
+				if err := json.NewDecoder(r.Body).Decode(&entity); err != nil {
+					t.Error(err)
+					w.WriteHeader(500)
+					return
+				}
+				if _, err := store.Commit(r.Context(), "tenant", graph.Mutations{UpsertEntities: []graph.Entity{entity}}, storage.CommitOptions{}); err != nil {
+					t.Error(err)
+					w.WriteHeader(500)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			})
+			for index, entity := range entities {
+				cmd, err := newCommand("http")
+				if err != nil {
+					t.Fatal(err)
+				}
+				cmd.TupleIdentity, cmd.Method, cmd.URI = tuple, http.MethodPost, "/v1/commits"
+				cmd.Body, err = json.Marshal(entity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := json.Marshal(cmd)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response, err := app.Apply(context.Background(), uint64(index+1), data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result httpResult
+				if err := json.Unmarshal(response, &result); err != nil || result.Status != http.StatusOK {
+					t.Fatalf("apply response=%s err=%v", response, err)
+				}
+			}
+			g, _, err := storage.NewTenantStore(files, "test").Load(context.Background(), "tenant")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if tuple {
+				want = 2
+			}
+			if g.Entities.Len() != want {
+				t.Fatalf("replayed entities=%d want=%d", g.Entities.Len(), want)
+			}
+		})
+	}
+}
 
 func TestApplicationRejectsDeterministicFailureAndContinues(t *testing.T) {
 	ctx := context.Background()

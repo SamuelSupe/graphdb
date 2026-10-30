@@ -540,21 +540,27 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		return CommitResult{}, err
 	}
 	commit := graph.Commit{
-		LayoutVersion: CurrentObjectLayoutVersion,
-		ID:            commitID,
-		TenantID:      tenantID,
-		Version:       version,
-		CreatedAt:     mutationTime(ctx),
-		Mutations:     mutations,
+		LayoutVersion:    CurrentObjectLayoutVersion,
+		IdentityEncoding: commitIdentityEncoding(ctx),
+		ID:               commitID,
+		TenantID:         tenantID,
+		Version:          version,
+		CreatedAt:        mutationTime(ctx),
+		Mutations:        mutations,
 	}
 	_, applySpan := startStorageSpan(ctx, "graphdb.storage.commit.apply_mutations",
 		tenantTraceAttr(tenantID),
 		attribute.Int64("graphdb.commit.version", version),
 	)
-	report, entityNoop, err := loaded.Graph.PreviewStorageEntityNoop(commit)
-	nextGraph := loaded.Graph
+	identityGraph, err := loaded.Graph.WithCommitIdentity(commit)
+	if err != nil {
+		endStorageSpan(applySpan, err)
+		return CommitResult{}, err
+	}
+	report, entityNoop, err := identityGraph.PreviewStorageEntityNoop(commit)
+	nextGraph := identityGraph
 	if err == nil && !entityNoop {
-		nextGraph, report, err = loaded.Graph.ApplyCommitStorageCopyWithOptions(
+		nextGraph, report, err = identityGraph.ApplyCommitStorageCopyWithOptions(
 			commit,
 			graph.ApplyOptions{},
 		)
@@ -596,6 +602,8 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	fingerprintSpan.SetAttributes(attribute.Bool("graphdb.commit.content_changed", report.Changed))
 	endStorageSpan(fingerprintSpan, nil)
 	if !report.Changed {
+		// Retain only the rebuilt index, never metadata from skipped mutations.
+		loaded.Graph = identityGraph
 		previousHash := loaded.DataHash
 		if previousHash == "" {
 			previousHash = manifest.DataHash

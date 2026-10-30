@@ -89,25 +89,7 @@ func duplicateCIIdentityIssues(g *graph.Graph) []RepairIssue {
 }
 
 func repairIdentitySignature(entity graph.Entity, key graph.IdentityKey) (string, bool) {
-	parts := make([]string, 0, len(key.Fields))
-	for _, field := range key.Fields {
-		value, ok := entity.Identity[field]
-		if !ok {
-			value, ok = entity.Fields[field]
-		}
-		if !ok {
-			return "", false
-		}
-		scalar, ok := graph.ScalarIndexKey(value)
-		if !ok {
-			return "", false
-		}
-		parts = append(parts, field+"="+scalar)
-	}
-	if len(parts) == 0 {
-		return "", false
-	}
-	return strings.Join(parts, "|"), true
+	return graph.CIIdentitySignature(entity, key)
 }
 
 func edgeEndpointIssues(g *graph.Graph) []RepairIssue {

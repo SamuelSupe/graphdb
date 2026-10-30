@@ -3,7 +3,9 @@ package storage
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -304,6 +306,12 @@ func (s *TenantStore) ingestIdempotencyKey(tenantID string, source string, colle
 func (s *TenantStore) ingestAttemptFailureKey(tenantID string, ownerID string, source string, collectorID string, batchID string) string {
 	if strings.TrimSpace(ownerID) == "" {
 		ownerID = "local"
+	}
+	if ValidateIngestStorageIdentifiers(IngestRequest{Source: source, CollectorID: collectorID, BatchID: batchID}) != nil {
+		// An invalid legacy identity still needs a durable, queryable outcome.
+		data, _ := json.Marshal([]string{ownerID, source, collectorID, batchID})
+		sum := sha256.Sum256(data)
+		return path.Join(s.tenantObjectPrefix(tenantID), "ingest", "invalid-attempt-failures", hex.EncodeToString(sum[:])+".parquet")
 	}
 	return path.Join(
 		s.Prefix,

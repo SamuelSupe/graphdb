@@ -61,8 +61,8 @@ def wait_group(group, timeout):
 
 def upgrade(inventory, execute, target_version, target_commit, timeout, emit, force=False):
     for group in inventory['groups']:
-        if group.get('protocol_version', 1) not in (1, 2, 3):
-            parser.error('each group protocol_version must be 1, 2 or 3')
+        if group.get('protocol_version', 1) not in (1, 2, 3, 4):
+            parser.error('each group protocol_version must be 1, 2, 3 or 4')
         report = wait_group(group, timeout)
         emit(group['cluster_id'], 'preflight', leader_id=report['leader_id'])
     router_group = {'cluster_id': '', 'token_env': inventory.get('router_token_env', 'GRAPHDB_RAFT_TOKEN')}

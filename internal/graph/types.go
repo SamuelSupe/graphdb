@@ -235,13 +235,17 @@ type SplitRequest struct {
 	Entities []Entity `json:"entities"`
 }
 
+// IdentityEncodingTuple separates identity components without delimiter collisions.
+const IdentityEncodingTuple = 1
+
 type Commit struct {
-	LayoutVersion int       `json:"layout_version,omitempty"`
-	ID            string    `json:"id"`
-	TenantID      string    `json:"tenant_id"`
-	Version       int64     `json:"version"`
-	CreatedAt     time.Time `json:"created_at"`
-	Mutations     Mutations `json:"mutations"`
+	IdentityEncoding int       `json:"identity_encoding,omitempty"`
+	LayoutVersion    int       `json:"layout_version,omitempty"`
+	ID               string    `json:"id"`
+	TenantID         string    `json:"tenant_id"`
+	Version          int64     `json:"version"`
+	CreatedAt        time.Time `json:"created_at"`
+	Mutations        Mutations `json:"mutations"`
 }
 
 type ApplyOptions struct {

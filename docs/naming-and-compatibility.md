@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release is **2.4.3**; see its [publication and verification](validation-v2.4.3.md). GGraphDB runs one process
+The current release is **2.4.4**; see its [publication and verification](validation-v2.4.4.md). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,8 +12,8 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION`: `2.4.3`; tag: `v2.4.3` |
-| Go/Python SDKs and OpenAPI document version | `2.4.3` |
+| Product and release tag | `VERSION`: `2.4.4`; tag: `v2.4.4` |
+| Go/Python SDKs and OpenAPI document version | `2.4.4` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
 | Persisted Parquet/WAL and snapshot format | Parquet/logical snapshots retain2.x;2.4.2 migrates the WAL durable marker to two-slot v2; Raft has separate protocol/directory-role markers |
@@ -26,7 +26,7 @@ Security support is described in [SECURITY.md](../SECURITY.md).
 - New installations and replacements of 1.x require a fresh data directory.
   No automatic 1.x migration or legacy `data_md5` response is provided. Keep 1.x
   installations and backups separate; never open 2.x data with a 1.x binary.
-- Standalone 2.4.3 opens existing2.x Parquet and logical snapshots, but migrates the WAL durable marker to two-slot v2. Drain WAL before downgrade; old programs cannot open the new marker. Stop the old process before
+- Standalone 2.4.4 opens existing 2.x Parquet and logical snapshots, but migrates the WAL durable marker to two-slot v2. Drain WAL before downgrade; old programs cannot open the new marker. Stop the old process before
   reusing a 2.0/2.1/2.2 directory with the same data root and prefix. Directory reuse
   does not permit concurrent processes or versions.
 - Upgrade compatibility does not promise direct binary downgrade or cross-major
@@ -63,7 +63,7 @@ the [Raft administration APIs](raft-ha.zh-CN.md).
 ## Raft protocols and upgrades
 
 Product versions, Raft protocols and snapshot formats are separate identifiers.
-Raft defaults to protocol 1 and supports up to 3. Activate protocol-2 streaming
+Raft defaults to protocol 1 and supports up to 4. Activate protocol-2 streaming
 snapshots/prepared maintenance or protocol-3 prepared GC only after all voters
 support them. A protocol-2-only binary cannot open a directory whose protocol-3
 minimum has been persisted. Rolling upgrades cover only the
@@ -73,7 +73,7 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See [2.4.3 validation](validation-v2.4.3.md), the tag workflow and packaged
+See [2.4.4 validation](validation-v2.4.4.md), the tag workflow and packaged
 evidence for the exact release binary. A local performance candidate completed
 45,116 operations but recorded four HAProxy 503 query failures under severe
 shared-kernel resource pressure. That failed result remains documented; it is
@@ -101,3 +101,7 @@ Standalone recovery is enabled by default for every tenant. Valid pending or bac
 ## Build toolchain
 
 Release binaries use Go1.27.3. The module toolchain, CI and Docker build pin that version; independent downloads check actual binary build information. The module language minimum is separate from the release compiler; HTTP/module namespaces stay unchanged.
+
+## 2.4.4 identity matching and rollback
+
+Standalone new commits automatically use unambiguous identity encoding. Historical commits retain their replay semantics; already merged entities are not automatically separated. Upgraded no-op writes only convert indexes and preserve entity timestamps, versions and ownership. Keep a pre-upgrade backup: older binaries must not reopen directories after new-format writes. Raft still defaults to protocol 1; separately activate protocol 4 after upgrading every voter and router. Protocols 1–3 retain historical write semantics.

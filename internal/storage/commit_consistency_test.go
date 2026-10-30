@@ -10,6 +10,58 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func TestIdentityEncodingPreservesLegacyReplayAndNewCommits(t *testing.T) {
+	ctx := context.Background()
+	objects := NewMemoryStore()
+	store := NewTenantStore(objects, "test")
+	a := graph.Entity{ID: "first", Kind: "host", Fields: graph.Fields{"a": "foo|b=s:bar", "b": "baz"}}
+	b := graph.Entity{ID: "second", Kind: "host", Fields: graph.Fields{"a": "foo", "b": "bar|b=s:baz"}}
+	types := []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{"a": {Type: "string"}, "b": {Type: "string"}}, IdentityKeys: []graph.IdentityKey{{Name: "pair", Fields: []string{"a", "b"}, Strategy: "merge"}}}}
+	for _, tenant := range []string{"legacy", "current"} {
+		writeCtx, encoding, want := ctx, graph.IdentityEncodingTuple, 2
+		if tenant == "legacy" {
+			writeCtx, encoding, want = LegacyIdentityContext(ctx), 0, 1
+		}
+		for i, entity := range []graph.Entity{a, b} {
+			mutations := graph.Mutations{UpsertEntities: []graph.Entity{entity}}
+			if i == 0 {
+				mutations.UpsertCITypes = types
+			}
+			manifest, err := store.Commit(writeCtx, tenant, mutations, CommitOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			commit, err := store.getCommitObject(ctx, manifest.CommitKeys[len(manifest.CommitKeys)-1])
+			if err != nil || commit.IdentityEncoding != encoding {
+				t.Fatalf("%s stored encoding=%d err=%v", tenant, commit.IdentityEncoding, err)
+			}
+		}
+		cold := NewTenantStore(objects, "test")
+		g, _, err := cold.Load(ctx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.Entities.Len() != want {
+			t.Fatalf("%s cold replay entities=%d want=%d", tenant, g.Entities.Len(), want)
+		}
+		// A new commit changes matching rules without changing old committed state.
+		if _, err := cold.Commit(ctx, tenant, graph.Mutations{UpsertEntities: []graph.Entity{{ID: "third", Kind: "host", Fields: graph.Fields{"a": "third", "b": "third"}}}}, CommitOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		g, _, err = NewTenantStore(objects, "test").Load(ctx, tenant)
+		if err != nil || g.Entities.Len() != want+1 {
+			t.Fatalf("%s mixed replay err=%v", tenant, err)
+		}
+		if _, err := cold.Compact(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		g, _, err = NewTenantStore(objects, "test").Load(ctx, tenant)
+		if err != nil || g.Entities.Len() != want+1 {
+			t.Fatalf("%s compacted replay err=%v", tenant, err)
+		}
+	}
+}
+
 func TestCommitDoesNotExposeUnpublishedGraphThroughWriteCache(t *testing.T) {
 	ctx := context.Background()
 	objects := newBlockingManifestStore(NewMemoryStore())

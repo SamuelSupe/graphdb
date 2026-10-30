@@ -1,8 +1,8 @@
-# GGraphDB 2.4.3
+# GGraphDB 2.4.4
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,9 +14,9 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.4.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.3)** adds inode admission and cleanup, automatic standalone tenant metadata recovery, protected initialization/migration and retryable legacy WAL replay. It also includes the read-drain and forwarding fixes since 2.4.2. Release binaries use **Go 1.27.3**. The validation record separates local checks, exact-tag gates, publication and independent downloaded-asset checks.
+**[2.4.4](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4)** fixes ambiguous entity identities, invalid batches blocking WAL progress, quadratic array deduplication and numeric aggregation overflow. Standalone writes adopt the new identity rules automatically, alongside inode protection and online tenant metadata recovery. Release binaries use **Go 1.27.3**.
 
-| Area | What 2.4.3 provides |
+| Area | What 2.4.4 provides |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
@@ -25,7 +25,7 @@ storage is optional for snapshot backups.
 | Reliability | Deterministic replication failures, cancelable reads, durable replay and protected GC continuation |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups |
 
-See [release validation](docs/validation-v2.4.3.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release validation](docs/validation-v2.4.4.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -150,38 +150,11 @@ both. Configure authentication, tenant authorization and TLS at your
 
 ## Validation and limits
 
-Version 2.3.6 removes foreground WAL waits on local maintenance index work,
-orders concurrent rebuild publication, reduces repeated Raft filesystem work,
-and prepares compact representations within the existing shared encoding limit.
+This round verified cold replay of old commits, recovery of invalid v2.4.3 WAL batches, durable failure status after restart and protocol-4 replica consistency on OrbStack Linux. The [2.4.4 validation record](docs/validation-v2.4.4.md), exact-tag gates and packaged evidence define release qualification.
 
-In the matched candidate replay, standalone write P99 fell **9.470 → 3.948 seconds**;
-Raft query maximum fell **13.132 → 5.584 seconds** during the original thirty-minute
-growth plan. These compare C3 and C7 workspace candidates, not published 2.3.4 and
-2.3.6 binaries. Standalone stale frequency did not improve (**131/327 → 134/327**),
-all stale samples were updating, and quiet-state indexes caught up. Standalone
-container memory peak rose **6.4%**; Raft baseline resource counters are unavailable.
-Seconds-long query and ingestion tails remain. Each deployment uses its own matched
-inputs; the two deployments cannot be compared directly.
+Across three same-host HTTP repetitions of a 16,000-string array, median `append_unique` latency fell from approximately **4.25 seconds in v2.4.3 to 7 milliseconds** in the candidate. This focused comparison does not establish production throughput, overall write P99 or capacity. [Historical tail measurements](docs/performance-tail-validation-2026-10-20.zh-CN.md) remain relevant.
 
-The separate exact-tag standalone thirty-minute qualification recorded write P99 **5.627 seconds** (maximum **7.652**) and **53/59 stale index samples**, with the last sample **stale**. A passing gate does not mean staleness is resolved. Its growing workload differs from the fixed-data candidate replay.
-
-The separate exact-tag Raft thirty-minute qualification recorded a **16.042-second** query maximum and **10.968-second** ingestion maximum, with **0/59** stale index samples. Seconds-long tails remain; this qualification workload is separate from the matched candidate replay.
-
-See [exact release evidence](docs/validation-v2.3.6.md) and the
-[matched performance report](docs/performance-tail-validation-2026-10-20.zh-CN.md).
-All exact-tag gates and downloaded Linux/macOS runtime checks passed. Cross-host reliability, day-scale stability,
-production capacity and a general latency SLO remain unqualified.
-
-<details>
-<summary>Historical performance evidence</summary>
-
-An earlier local candidate recorded 71,140 operations, 90 expected ingestion 429s
-and a 40.154-second maximum wait. Its maintenance soak also had four HAProxy 503
-query errors and remains a historical FAIL. It is separate from the exact-tag
-results above. [2.1.2 write-tail measurements](docs/performance-write-tail.md)
-and [2.0 results](docs/performance-v2.0.md) apply only to their recorded builds.
-
-</details>
+**Upgrade boundary:** New commits record their identity rules; old commits retain their original replay semantics. Already merged entities are not automatically separated. Keep a pre-upgrade backup: older binaries cannot safely reuse directories after new-format writes. Raft still defaults to protocol 1; activate protocol 4 separately after upgrading every voter. See the [upgrade guide](docs/raft-rolling-upgrade.zh-CN.md). Cross-host reliability, day-scale stability and production capacity remain unqualified.
 
 <details>
 <summary>Storage and publication design</summary>
@@ -207,7 +180,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.4.3 validation](docs/validation-v2.4.3.md) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.4.4 validation](docs/validation-v2.4.4.md) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 

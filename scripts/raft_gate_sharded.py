@@ -27,7 +27,7 @@ ROUTER_LOCAL = f'http://127.0.0.1:{47083+PORT_OFFSET}'
 fixture = (Path(__file__).parent/'raft-gate'/'sharded.yml').read_text()
 if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
     protocol = int(os.environ.get('GRAPHDB_GATE_PROTOCOL_VERSION', '2'))
-    assert protocol in (2, 3)
+    assert protocol in (2, 3, 4)
     fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', f'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "{protocol}"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
 (OUT/'override.yml').write_text(re.sub(r'(?<=127.0.0.1:)\d+', lambda match: str(int(match[0])+PORT_OFFSET), fixture))
 results = []

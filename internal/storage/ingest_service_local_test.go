@@ -16,6 +16,125 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
+func TestLocalWALRejectsUnpersistableIdentifiersBeforeAcceptance(t *testing.T) {
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	config := testIngestServiceConfig(t)
+	service, err := OpenIngestService(NewTenantStore(files, "test"), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	for _, field := range []string{"source", "collector", "batch", "idempotency"} {
+		for _, value := range []string{strings.Repeat("a", 256), strings.Repeat("界", 29), "a\x00b"} {
+			request := ingestEntityRequest("batch", "host:1")
+			switch field {
+			case "source":
+				request.Source = value
+			case "collector":
+				request.CollectorID = value
+			case "batch":
+				request.BatchID = value
+			case "idempotency":
+				request.IdempotencyKey = value
+			}
+			if _, err := service.Accept(context.Background(), "tenant", request); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("%s accepted invalid identifier: %v", field, err)
+			}
+		}
+	}
+	request := ingestEntityRequest(strings.Repeat("b", 247), "host:valid")
+	request.Source, request.CollectorID, request.IdempotencyKey = strings.Repeat("s", 255), strings.Repeat("c", 247), strings.Repeat("i", 247)
+	accepted, err := service.Accept(context.Background(), "tenant", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.acceptedLSN != 1 {
+		t.Fatalf("invalid input consumed WAL records: first accepted LSN=%d", accepted.acceptedLSN)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := service.Wait(ctx, accepted); err != nil {
+		status, _ := service.Status(context.Background(), "tenant", request.Source, request.CollectorID, request.BatchID)
+		t.Fatalf("boundary identifiers not persistable: %v; status=%+v", err, status)
+	}
+}
+
+func TestLocalWALRecoversLegacyInvalidIdentifierWithoutBlockingTenant(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	config := testIngestServiceConfig(t)
+	wal, _, err := openIngestWALRecords(config.WAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := []IngestRequest{ingestEntityRequest("before", "host:before"), ingestEntityRequest("invalid", "host:invalid"), ingestEntityRequest("after", "host:after")}
+	requests[1].Source = strings.Repeat("s", 256)
+	for i, request := range requests {
+		request, err = prepareIngestRequest("tenant", request, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requests[i] = request
+		data, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		envelope := walIngestEnvelope{RecordID: ingestRecordID(ingestRequestIdentity("tenant", request)), TenantID: "tenant", Request: request, Digest: sha256Sum(data), AcceptedAt: time.Now().UTC(), State: IngestStateAccepted}
+		payload, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := wal.Append(ctx, IngestWALAccepted, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for restart := range 2 {
+		store := NewTenantStore(files, "test")
+		service, err := OpenIngestService(store, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer closeIngestService(t, service)
+			if err := service.FlushTenant(ctx, "tenant"); err != nil {
+				t.Fatal(err)
+			}
+			for i, request := range requests {
+				status, err := service.Status(ctx, "tenant", request.Source, request.CollectorID, request.BatchID)
+				want := IngestStateCommitted
+				if i == 1 {
+					want = IngestStateFailed
+				}
+				if err != nil || status.State != want {
+					t.Fatalf("restart=%d batch=%d state=%s want=%s err=%v", restart, i, status.State, want, err)
+				}
+			}
+			g, _, err := store.Load(ctx, "tenant")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if g.Entities.Len() != 2 {
+				t.Fatalf("entities=%d want=2", g.Entities.Len())
+			}
+			if _, ok := g.GetEntity("host:invalid"); ok {
+				t.Fatal("invalid request changed graph")
+			}
+		}()
+	}
+}
+
 type localIngestPublicationFault struct {
 	ObjectStore
 	key      string

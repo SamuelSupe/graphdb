@@ -18,7 +18,7 @@ func (g *Graph) resolveEntityDeleteRequest(request EntityDeleteRequest) (string,
 		if request.Kind == "" || request.Source == "" || request.ExternalID == "" {
 			return "", fmt.Errorf("delete entity request requires kind, source and external_id when using source identity")
 		}
-		return g.identityIndex[request.Kind][sourceIdentitySignature(EntitySource{Source: request.Source, ExternalID: request.ExternalID}).Value], nil
+		return g.identityIndex[request.Kind][g.sourceIdentitySignature(EntitySource{Source: request.Source, ExternalID: request.ExternalID}).Value], nil
 	}
 	return "", fmt.Errorf("delete entity request requires id or kind/source/external_id")
 }

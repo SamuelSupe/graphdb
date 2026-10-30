@@ -24,7 +24,7 @@ ENV = {**os.environ, 'GRAPHDB_HA_IMAGE': IMAGE, 'GRAPHDB_RAFT_TOKEN': TOKEN}
 fixture = (Path(__file__).parent/'raft-gate'/'dual.yml').read_text()
 if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true':
     protocol = int(os.environ.get('GRAPHDB_GATE_PROTOCOL_VERSION', '2'))
-    assert protocol in (2, 3)
+    assert protocol in (2, 3, 4)
     fixture = fixture.replace('GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"', f'GRAPHDB_RAFT_SNAPSHOT_ENTRIES: "5"\n      GRAPHDB_RAFT_PROTOCOL_VERSION: "{protocol}"\n      GRAPHDB_RAFT_STREAM_SNAPSHOTS: "true"')
 (OUT/'override.yml').write_text(re.sub(r'(?<=127.0.0.1:)\d+', lambda match: str(int(match[0])+PORT_OFFSET), fixture))
 TENANT = 'same-tenant'
@@ -149,6 +149,23 @@ try:
         [PROJECT+'-standalone-direct', PROJECT+'-standalone-wal', PROJECT+'-node1-1', PROJECT+'-node2-1', PROJECT+'-node3-1']]
     assert len(set(ids)) == 1, ids
     step('same image concurrently serves standalone direct, standalone WAL and three-replica Raft; tenant data stays independent')
+
+    if os.environ.get('GRAPHDB_GATE_PROTOCOL_VERSION') == '4':
+        identity_headers = {'X-Tenant-ID': 'identity-tuples'}
+        expect(raft, 'POST', '/v1/tenants', {'tenant_id': 'identity-tuples'})
+        expect(raft, 'POST', '/v1/commits', {'idempotency_key': 'tuple-regression', 'mutations': {
+            'upsert_ci_types': [{'name': 'ci', 'fields': {'a': {'type': 'string'}, 'b': {'type': 'string'}},
+                'identity_keys': [{'name': 'pair', 'fields': ['a', 'b'], 'strategy': 'merge'}]}],
+            'upsert_entities': [
+                {'id': 'ci-a', 'kind': 'ci', 'fields': {'a': 'foo|b=s:bar', 'b': 'baz'}},
+                {'id': 'ci-b', 'kind': 'ci', 'fields': {'a': 'foo', 'b': 'bar|b=s:baz'}},
+                {'id': 'source-a', 'kind': 'host', 'source': 'alpha|external_id=beta', 'external_id': 'gamma'},
+                {'id': 'source-b', 'kind': 'host', 'source': 'alpha', 'external_id': 'beta|external_id=gamma'}]}}, headers=identity_headers)
+        for i in range(1, 4):
+            for kind in ['ci', 'host']:
+                value = expect(node(i), 'POST', '/v1/query', {'op': 'match', 'kind': kind, 'aggregate': [{'op': 'count'}]}, headers=identity_headers)
+                assert value['aggregates']['count'] == 2, value
+        step('protocol 4 preserves distinct CI and source tuples on all replicas')
 
     observations = []
     for mode, port in [('direct',46081),('wal',46082)]:
@@ -371,21 +388,27 @@ try:
         expect(raft, 'GET', '/v1/entities/host:0', headers=large_headers)
         step('cold full three-replica runtime backup/restore preserves graph, templates, accepted identities and streaming snapshots; writes resume')
 
-    if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true' and protocol == 3:
+    if os.environ.get('GRAPHDB_GATE_ENHANCED') == 'true' and protocol >= 3:
         identity = expect(node(leader()), 'GET', '/v1/health')['build']
-        inventory = {'groups':[{'cluster_id':'graphdb-ha','protocol_version':3,
+        inventory = {'groups':[{'cluster_id':'graphdb-ha','protocol_version':protocol,
             'nodes':[{'id':i,'url':f'http://127.0.0.1:{39080+i+PORT_OFFSET}',
                 'restart':COMPOSE+['up','-d','--no-deps','--no-build','--force-recreate','node'+str(i)]}
                 for i in range(1,4)]}]}
-        path = OUT/'rolling-protocol3.json'
+        path = OUT/f'rolling-protocol{protocol}.json'
         path.write_text(json.dumps(inventory,indent=2)+'\n')
-        with (OUT/'rolling-protocol3.log').open('w') as log:
+        with (OUT/f'rolling-protocol{protocol}.log').open('w') as log:
             subprocess.run([os.environ.get('PYTHON','python3'), ROOT+'/scripts/raft_rolling_upgrade.py',
                 '--inventory',str(path),'--execute','--force','--target-version',identity['version'],
-                '--target-commit',identity['commit'],'--report',str(OUT/'rolling-protocol3-results.json')],
+                '--target-commit',identity['commit'],'--report',str(OUT/f'rolling-protocol{protocol}-results.json')],
                 env=ENV,check=True,stdout=log,stderr=subprocess.STDOUT)
         expect(raft, 'GET', '/v1/entities/host:dr-resumed' if os.environ.get('GRAPHDB_GATE_RECOVERY') == 'true' else '/v1/entities/host:1')
-        step('protocol 3 serial drain/restart/rejoin preserves data with the same qualified binary')
+        step(f'protocol {protocol} serial drain/restart/rejoin preserves data with the same qualified binary')
+        if protocol == 4:
+            for i in range(1, 4):
+                for kind in ['ci', 'host']:
+                    value = expect(node(i), 'POST', '/v1/query', {'op': 'match', 'kind': kind, 'aggregate': [{'op': 'count'}]}, headers=identity_headers)
+                    assert value['aggregates']['count'] == 2, value
+            step('protocol 4 tuple identities survive recovery and serial restart on every replica')
 
     if os.environ.get('GRAPHDB_GATE_SOAK') == '1':
         runner = PROJECT+'-soak'

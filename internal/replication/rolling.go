@@ -20,7 +20,7 @@ import (
 // once enabled. Protocol-1 commands remain compatible with the format-1 bridge.
 // A new command or an incompatible application change requires a new protocol.
 const ProtocolVersion = 1
-const MaxProtocolVersion = 3
+const MaxProtocolVersion = 4
 const protocolHeader = "X-GraphDB-Raft-Protocol"
 
 type PeerStatus struct {

@@ -1,6 +1,6 @@
 # Write And Ingest
 
-Applies to **GGraphDB 2.4.3**; see [release validation](../validation-v2.4.3.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.4.4**; see [release validation](../validation-v2.4.4.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](write-ingest.zh-CN.md)
 
@@ -573,3 +573,7 @@ maintenance or an explicit rebuild. Published graph commits remain durable.
 Joined and predecessor waits honor cancellation; a canceled queue entry still
 preserves its predecessor's ordering barrier for successors. Cancellation after
 graph publication does not roll back the committed data.
+
+## 2.4.4 write protection
+
+Before accepting an ingest batch, the new implementation validates URL path escaped byte lengths: at most 255 bytes for `source`, and 247 bytes for `collector_id`, `batch_id`, and `idempotency_key`; NUL is not allowed. Invalid requests return `400 / bad_request` without entering the WAL. Previously accepted invalid requests without a durable publication plan automatically receive a durable `failed` outcome so subsequent valid batches can proceed. Their original status URL remains queryable. New identity matching requires Raft protocol 4 after all voters have been upgraded; single-node writes enable it automatically. Historical commits retain their original replay semantics, and previously merged entities are not automatically separated.
