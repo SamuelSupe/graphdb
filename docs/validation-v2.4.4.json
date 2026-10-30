@@ -1,0 +1,1357 @@
+{
+  "version": "v2.4.4",
+  "result": "PASS",
+  "gate_waiver": false,
+  "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4",
+  "published_at": "2026-10-30T02:30:27Z",
+  "commit": "66eb2144e3f0b03c75d80bdcbbf9c38ebcc40b04",
+  "tag_object": "366d3aa6943ec4f41aef76a2eaeb151fe710fa30",
+  "main_ci": "https://github.com/SamuelSupe/graphdb/actions/runs/40983575226",
+  "tag_ci": "https://github.com/SamuelSupe/graphdb/actions/runs/40986795151",
+  "source": {
+    "result": "PASS",
+    "tag": "v2.4.4",
+    "tag_object": "366d3aa6943ec4f41aef76a2eaeb151fe710fa30",
+    "commit": "66eb2144e3f0b03c75d80bdcbbf9c38ebcc40b04",
+    "source_archive_sha256": "f30cd20319c10f2dee264a6f355410c273d57ef3fa22c82a23aa7b69274b8007",
+    "tracked_files_verified": 1163,
+    "method": "Independent GitHub source archive; every Git blob matches the immutable tag tree"
+  },
+  "assets": {
+    "result": "PASS",
+    "release_url": "https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4",
+    "published_at": "2026-10-30T02:30:27Z",
+    "release_id": 428593627,
+    "asset_sha256": "0853e11e4da17b31302fc5934dd3875b51846199439e8a5f431f80bda02b26c1",
+    "metadata": {
+      "version": "v2.4.4",
+      "commit": "66eb2144e3f0b03c75d80bdcbbf9c38ebcc40b04",
+      "build_date": "2026-10-30T09:03:57+08:00",
+      "go_version": "go1.27.3"
+    },
+    "binaries": {
+      "bin/graphdb-darwin-arm64": "2d03a8273363c10ca7cd21f08ddc382c21d56c5c3a8fc186a3ddea02780d56d4",
+      "bin/graphdb-linux-amd64": "8f58b679d3ffb97169a9c2cde4506cba6efd4ab715e47ce1f75520f4d8868c2b",
+      "bin/graphdb-linux-arm64": "97e2479168fea673e86bd1e78097329d91d8e52b5d5585bd2d0d000f758befa3"
+    },
+    "packaged_source_files_verified": 1131,
+    "required_source_trees_complete": true,
+    "gate_binary_identity": {
+      "raft-gate/metadata.json": "PASS",
+      "raft-gate/enhanced/metadata.json": "PASS",
+      "raft-gate/protocol3/metadata.json": "PASS",
+      "raft-gate/protocol4/metadata.json": "PASS",
+      "raft-gate/rolling/metadata.json": "PASS",
+      "gateway-gate/metadata.json": "PASS"
+    },
+    "soaks": {
+      "local-gate/soak.ndjson": {
+        "result": "PASS",
+        "duration": "30m0s",
+        "operation_errors": 0,
+        "operations": {
+          "commit-schema": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "create-tenant": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "health": {
+            "count": 3,
+            "statuses": {
+              "200": 3
+            }
+          },
+          "rebuild-indexes": {
+            "count": 3,
+            "statuses": {
+              "202": 3
+            }
+          },
+          "save-query": {
+            "count": 5,
+            "statuses": {
+              "200": 5
+            }
+          },
+          "tenant-usage": {
+            "count": 61,
+            "statuses": {
+              "200": 61
+            }
+          },
+          "warm-reader": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "cmdb-env-containment-traverse": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "cmdb-owner-service-match": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "cmdb-service-to-database-path": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "export-snapshot-stream": {
+            "count": 6,
+            "statuses": {
+              "200": 6
+            }
+          },
+          "fuzzy-service-match": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "impact-service": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "index-catalog": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "index-health": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "indexed-match-allow-stale": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "indexed-match-min-version": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "ingest": {
+            "count": 1336,
+            "statuses": {
+              "200": 1336
+            }
+          },
+          "neighbors-host-out": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "path-filter-traverse": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "profile-indexed-match": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "range-aggregate-match": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "reader-fleet": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "reader-freshness": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "saved-host-query": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "saved-prod-containment": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "saved-prod-services": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "saved-service-impact": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "saved-team-services": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "scan-edges": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "scan-edges-allow-stale": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "scan-entities": {
+            "count": 4568,
+            "statuses": {
+              "200": 4567
+            }
+          },
+          "scan-entities-allow-stale": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "scan-entities-min-version": {
+            "count": 4567,
+            "statuses": {
+              "200": 4567
+            }
+          },
+          "shortest-service-cluster": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "stream-all-host-page": {
+            "count": 4568,
+            "statuses": {
+              "200": 4568
+            }
+          },
+          "stream-large-indexed-hosts": {
+            "count": 4568,
+            "statuses": {
+              "200": 4567
+            }
+          },
+          "stream-large-indexed-hosts-min-version": {
+            "count": 4568,
+            "statuses": {
+              "200": 4567
+            }
+          },
+          "compact": {
+            "count": 5,
+            "statuses": {
+              "202": 5
+            }
+          },
+          "gc": {
+            "count": 2,
+            "statuses": {
+              "202": 2
+            }
+          }
+        }
+      },
+      "raft-gate/protocol3/dual/soak.ndjson": {
+        "result": "PASS",
+        "duration": "30m0s",
+        "operation_errors": 0,
+        "operations": {
+          "commit-schema": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "create-tenant": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "health": {
+            "count": 2,
+            "statuses": {
+              "200": 2
+            }
+          },
+          "rebuild-indexes": {
+            "count": 3,
+            "statuses": {
+              "202": 3
+            }
+          },
+          "save-query": {
+            "count": 5,
+            "statuses": {
+              "200": 5
+            }
+          },
+          "tenant-usage": {
+            "count": 61,
+            "statuses": {
+              "200": 61
+            }
+          },
+          "warm-reader": {
+            "count": 1,
+            "statuses": {
+              "200": 1
+            }
+          },
+          "cmdb-env-containment-traverse": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "cmdb-owner-service-match": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "cmdb-service-to-database-path": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "export-snapshot-stream": {
+            "count": 6,
+            "statuses": {
+              "200": 6
+            }
+          },
+          "fuzzy-service-match": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "impact-service": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "index-catalog": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "index-health": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "indexed-match-allow-stale": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "indexed-match-min-version": {
+            "count": 2250,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "ingest": {
+            "count": 1022,
+            "statuses": {
+              "200": 886,
+              "429": 136
+            }
+          },
+          "neighbors-host-out": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "path-filter-traverse": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "profile-indexed-match": {
+            "count": 2250,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "range-aggregate-match": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "reader-fleet": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "reader-freshness": {
+            "count": 60,
+            "statuses": {
+              "200": 60
+            }
+          },
+          "saved-host-query": {
+            "count": 2250,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "saved-prod-containment": {
+            "count": 2250,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "saved-prod-services": {
+            "count": 2250,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "saved-service-impact": {
+            "count": 2250,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "saved-team-services": {
+            "count": 2250,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "scan-edges": {
+            "count": 2250,
+            "statuses": {
+              "200": 2250
+            }
+          },
+          "scan-edges-allow-stale": {
+            "count": 2250,
+            "statuses": {
+              "200": 2250
+            }
+          },
+          "scan-entities": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "scan-entities-allow-stale": {
+            "count": 2250,
+            "statuses": {
+              "200": 2250
+            }
+          },
+          "scan-entities-min-version": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "shortest-service-cluster": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "stream-all-host-page": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "stream-large-indexed-hosts": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "stream-large-indexed-hosts-min-version": {
+            "count": 2249,
+            "statuses": {
+              "200": 2249
+            }
+          },
+          "compact": {
+            "count": 5,
+            "statuses": {
+              "202": 5
+            }
+          },
+          "gc": {
+            "count": 2,
+            "statuses": {
+              "202": 2
+            }
+          }
+        }
+      }
+    }
+  },
+  "binaries": {
+    "result": "PASS",
+    "binaries": {
+      "graphdb-linux-amd64": {
+        "go": "go1.27.3",
+        "os": "linux",
+        "arch": "amd64",
+        "cgo_enabled": 0,
+        "executed_version": "GGraphDB v2.4.4 commit=66eb2144e3f0b03c75d80bdcbbf9c38ebcc40b04 built=2026-10-30T09:03:57+08:00 go=go1.27.3"
+      },
+      "graphdb-linux-arm64": {
+        "go": "go1.27.3",
+        "os": "linux",
+        "arch": "arm64",
+        "cgo_enabled": 0,
+        "executed_version": "GGraphDB v2.4.4 commit=66eb2144e3f0b03c75d80bdcbbf9c38ebcc40b04 built=2026-10-30T09:03:57+08:00 go=go1.27.3"
+      },
+      "graphdb-darwin-arm64": {
+        "go": "go1.27.3",
+        "os": "darwin",
+        "arch": "arm64",
+        "cgo_enabled": 0,
+        "executed_version": "GGraphDB v2.4.4 commit=66eb2144e3f0b03c75d80bdcbbf9c38ebcc40b04 built=2026-10-30T09:03:57+08:00 go=go1.27.3"
+      }
+    }
+  },
+  "metadata_recovery": {
+    "result": "PASS",
+    "checks": {
+      "missing_both_copies_active_fallback_preserves_graph": "PASS",
+      "corrupt_primary_restores_disabled_state_and_fields": "PASS",
+      "backup_only_repair_preserves_primary_inode": "PASS",
+      "corrupt_purge_fence_blocks_active_reconstruction": "PASS"
+    }
+  },
+  "review_regressions": {
+    "aggregate_avg": {
+      "status": 200,
+      "body": {
+        "version": 1,
+        "stats": {
+          "scanned": 2,
+          "visited": 0,
+          "returned": 2,
+          "cost": 2
+        },
+        "aggregates": {
+          "avg_value": 1e+308
+        },
+        "results": [
+          {
+            "entity": {
+              "id": "a",
+              "kind": "host",
+              "fields": {
+                "value": 1e+308
+              },
+              "field_sources": {
+                "value": {
+                  "priority": 0,
+                  "version": 1,
+                  "updated_at": "2026-10-30T02:33:03.383721507Z"
+                }
+              },
+              "existence_source": {
+                "priority": 0,
+                "version": 1,
+                "updated_at": "2026-10-30T02:33:03.383721507Z"
+              },
+              "version": 1,
+              "created_at": "2026-10-30T02:33:03.383721507Z",
+              "updated_at": "2026-10-30T02:33:03.383721507Z"
+            }
+          },
+          {
+            "entity": {
+              "id": "b",
+              "kind": "host",
+              "fields": {
+                "value": 1e+308
+              },
+              "field_sources": {
+                "value": {
+                  "priority": 0,
+                  "version": 1,
+                  "updated_at": "2026-10-30T02:33:03.383721507Z"
+                }
+              },
+              "existence_source": {
+                "priority": 0,
+                "version": 1,
+                "updated_at": "2026-10-30T02:33:03.383721507Z"
+              },
+              "version": 1,
+              "created_at": "2026-10-30T02:33:03.383721507Z",
+              "updated_at": "2026-10-30T02:33:03.383721507Z"
+            }
+          }
+        ]
+      }
+    },
+    "aggregate_sum": {
+      "status": 429,
+      "body": {
+        "error": "query limit exceeded: aggregate \"sum_value\" exceeds the numeric range",
+        "code": "query_limit_exceeded",
+        "message": "query limit exceeded: aggregate \"sum_value\" exceeds the numeric range",
+        "retryable": true
+      }
+    },
+    "identity_cold_counts": {
+      "legacy": 1,
+      "current": 2,
+      "source": 2
+    },
+    "wal_before": {
+      "invalid": {
+        "tenant_id": "wal",
+        "source": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+        "collector_id": "collector",
+        "batch_id": "invalid",
+        "state": "retrying",
+        "durability": "durable",
+        "accepted_lsn": 1,
+        "accepted_at": "2026-10-30T02:33:03.476213112Z",
+        "estimated_flush_at": "2026-10-30T02:33:03.496213112Z",
+        "finished_at": "0001-01-01T00:00:00Z",
+        "last_error": "invalid argument: invalid local object path: path component exceeds 255 bytes",
+        "recovery_pending": true
+      },
+      "valid": {
+        "tenant_id": "wal",
+        "source": "source",
+        "collector_id": "collector",
+        "batch_id": "valid",
+        "state": "retrying",
+        "durability": "durable",
+        "accepted_lsn": 2,
+        "accepted_at": "2026-10-30T02:33:03.48286733Z",
+        "estimated_flush_at": "2026-10-30T02:33:03.50286733Z",
+        "finished_at": "0001-01-01T00:00:00Z",
+        "last_error": "invalid argument: invalid local object path: path component exceeds 255 bytes",
+        "recovery_pending": true
+      }
+    },
+    "wal_after_0": {
+      "invalid": {
+        "tenant_id": "wal",
+        "source": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+        "collector_id": "collector",
+        "batch_id": "invalid",
+        "state": "failed",
+        "durability": "durable",
+        "accepted_lsn": 1,
+        "accepted_at": "2026-10-30T02:33:03.476213112Z",
+        "estimated_flush_at": "2026-10-30T02:33:03.797852452Z",
+        "finished_at": "2026-10-30T02:33:03.811178473Z",
+        "result": {
+          "batch_id": "invalid",
+          "version": 0,
+          "applied": 0,
+          "failed": 1,
+          "skipped": false,
+          "failures": [
+            {
+              "index": 0,
+              "error": "invalid argument: source must contain no NUL and fit in 255 escaped path bytes"
+            }
+          ],
+          "conflicts": [
+            {
+              "index": 0,
+              "message": "invalid argument: source must contain no NUL and fit in 255 escaped path bytes"
+            }
+          ]
+        }
+      },
+      "valid": {
+        "tenant_id": "wal",
+        "source": "source",
+        "collector_id": "collector",
+        "batch_id": "valid",
+        "state": "committed",
+        "durability": "durable",
+        "accepted_at": "2026-10-30T02:33:03.48286733Z",
+        "estimated_flush_at": "0001-01-01T00:00:00Z",
+        "finished_at": "2026-10-30T02:33:03.82429366Z",
+        "result": {
+          "batch_id": "valid",
+          "version": 1,
+          "applied": 1,
+          "failed": 0,
+          "skipped": false
+        }
+      }
+    },
+    "wal_after_1": {
+      "invalid": {
+        "tenant_id": "wal",
+        "source": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+        "collector_id": "collector",
+        "batch_id": "invalid",
+        "state": "failed",
+        "durability": "durable",
+        "accepted_at": "2026-10-30T02:33:03.476213112Z",
+        "estimated_flush_at": "0001-01-01T00:00:00Z",
+        "finished_at": "2026-10-30T02:33:03.799474371Z",
+        "result": {
+          "batch_id": "invalid",
+          "version": 0,
+          "applied": 0,
+          "failed": 1,
+          "skipped": false,
+          "failures": [
+            {
+              "index": 0,
+              "error": "invalid argument: source must contain no NUL and fit in 255 escaped path bytes"
+            }
+          ],
+          "conflicts": [
+            {
+              "index": 0,
+              "message": "invalid argument: source must contain no NUL and fit in 255 escaped path bytes"
+            }
+          ]
+        }
+      },
+      "valid": {
+        "tenant_id": "wal",
+        "source": "source",
+        "collector_id": "collector",
+        "batch_id": "valid",
+        "state": "committed",
+        "durability": "durable",
+        "accepted_at": "2026-10-30T02:33:03.48286733Z",
+        "estimated_flush_at": "0001-01-01T00:00:00Z",
+        "finished_at": "2026-10-30T02:33:03.82429366Z",
+        "result": {
+          "batch_id": "valid",
+          "version": 1,
+          "applied": 1,
+          "failed": 0,
+          "skipped": false
+        }
+      }
+    }
+  },
+  "downloaded_runtime": {
+    "result": "PASS",
+    "environment": "OrbStack Linux ARM64",
+    "direct_and_wal": "SDK, e2e, concurrent load, SIGKILL replay, backup and fresh restore",
+    "reproducible_arm64_rebuild": "PASS",
+    "direct": {
+      "schema_version": 1,
+      "generated_at": "2026-10-30T02:32:54.798314894Z",
+      "success": true,
+      "elapsed_ms": 385,
+      "workload": {
+        "tenant": "release-load-direct",
+        "writer_url": "http://127.0.0.1:39680",
+        "reader_url": "http://127.0.0.1:39680",
+        "writers": 4,
+        "readers": 16,
+        "batches": 10,
+        "batch_size": 20,
+        "allow_write_backpressure": false
+      },
+      "planned_graph": {
+        "entities": 402,
+        "edges": 201
+      },
+      "metrics": [
+        {
+          "p50_us": 644,
+          "p95_us": 644,
+          "p99_us": 644,
+          "name": "collector-status",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "p50_us": 3652,
+          "p95_us": 3652,
+          "p99_us": 3652,
+          "name": "commit-schema",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 3,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "max_ms": 3
+        },
+        {
+          "p50_us": 1642,
+          "p95_us": 5360,
+          "p99_us": 5360,
+          "name": "entities-allow-stale",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 1,
+          "p95_ms": 5,
+          "p99_ms": 5,
+          "max_ms": 5
+        },
+        {
+          "p50_us": 2123,
+          "p95_us": 8566,
+          "p99_us": 8566,
+          "name": "entity-min-version",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 2,
+          "p95_ms": 8,
+          "p99_ms": 8,
+          "max_ms": 8
+        },
+        {
+          "p50_us": 661,
+          "p95_us": 661,
+          "p99_us": 661,
+          "name": "health",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "p50_us": 1335,
+          "p95_us": 1335,
+          "p99_us": 1335,
+          "name": "index-health",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1
+        },
+        {
+          "p50_us": 31770,
+          "p95_us": 39122,
+          "p99_us": 39122,
+          "name": "ingest",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 31,
+          "p95_ms": 39,
+          "p99_ms": 39,
+          "max_ms": 39
+        },
+        {
+          "p50_us": 530,
+          "p95_us": 5185,
+          "p99_us": 5185,
+          "name": "query-allow-stale",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 5,
+          "p99_ms": 5,
+          "max_ms": 5
+        },
+        {
+          "p50_us": 5285,
+          "p95_us": 6220,
+          "p99_us": 6220,
+          "name": "query-match",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 5,
+          "p95_ms": 6,
+          "p99_ms": 6,
+          "max_ms": 6
+        },
+        {
+          "p50_us": 934,
+          "p95_us": 7831,
+          "p99_us": 7831,
+          "name": "query-min-version",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 7,
+          "p99_ms": 7,
+          "max_ms": 7
+        },
+        {
+          "p50_us": 990,
+          "p95_us": 3904,
+          "p99_us": 3904,
+          "name": "query-stream",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "max_ms": 3
+        },
+        {
+          "p50_us": 1293,
+          "p95_us": 3291,
+          "p99_us": 3291,
+          "name": "query-stream-min-version",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 1,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "max_ms": 3
+        },
+        {
+          "p50_us": 1027,
+          "p95_us": 3209,
+          "p99_us": 3209,
+          "name": "query-traverse",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 1,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "max_ms": 3
+        },
+        {
+          "p50_us": 292598,
+          "p95_us": 292598,
+          "p99_us": 292598,
+          "name": "rebuild-indexes",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 292,
+          "p95_ms": 292,
+          "p99_ms": 292,
+          "max_ms": 292
+        },
+        {
+          "p50_us": 1642,
+          "p95_us": 1642,
+          "p99_us": 1642,
+          "name": "run-saved-query",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1
+        },
+        {
+          "p50_us": 3656,
+          "p95_us": 3656,
+          "p99_us": 3656,
+          "name": "save-query",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 3,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "max_ms": 3
+        },
+        {
+          "p50_us": 289,
+          "p95_us": 289,
+          "p99_us": 289,
+          "name": "seed-query",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    },
+    "wal": {
+      "schema_version": 1,
+      "generated_at": "2026-10-30T02:33:01.605192205Z",
+      "success": true,
+      "elapsed_ms": 656,
+      "workload": {
+        "tenant": "release-load-wal",
+        "writer_url": "http://127.0.0.1:39680",
+        "reader_url": "http://127.0.0.1:39680",
+        "writers": 4,
+        "readers": 16,
+        "batches": 10,
+        "batch_size": 20,
+        "allow_write_backpressure": false
+      },
+      "planned_graph": {
+        "entities": 402,
+        "edges": 201
+      },
+      "metrics": [
+        {
+          "p50_us": 84,
+          "p95_us": 84,
+          "p99_us": 84,
+          "name": "collector-status",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "p50_us": 2658,
+          "p95_us": 2658,
+          "p99_us": 2658,
+          "name": "commit-schema",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 2,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "max_ms": 2
+        },
+        {
+          "p50_us": 157,
+          "p95_us": 717,
+          "p99_us": 717,
+          "name": "entities-allow-stale",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "max_ms": 0
+        },
+        {
+          "p50_us": 237,
+          "p95_us": 2645,
+          "p99_us": 2645,
+          "name": "entity-min-version",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "max_ms": 2
+        },
+        {
+          "p50_us": 1208,
+          "p95_us": 1208,
+          "p99_us": 1208,
+          "name": "health",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1
+        },
+        {
+          "p50_us": 1078,
+          "p95_us": 1078,
+          "p99_us": 1078,
+          "name": "index-health",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1
+        },
+        {
+          "p50_us": 133439,
+          "p95_us": 160339,
+          "p99_us": 160339,
+          "name": "ingest",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 133,
+          "p95_ms": 160,
+          "p99_ms": 160,
+          "max_ms": 160
+        },
+        {
+          "p50_us": 176,
+          "p95_us": 2734,
+          "p99_us": 2734,
+          "name": "query-allow-stale",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "max_ms": 2
+        },
+        {
+          "p50_us": 3788,
+          "p95_us": 5125,
+          "p99_us": 5125,
+          "name": "query-match",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 3,
+          "p95_ms": 5,
+          "p99_ms": 5,
+          "max_ms": 5
+        },
+        {
+          "p50_us": 368,
+          "p95_us": 2953,
+          "p99_us": 2953,
+          "name": "query-min-version",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 2,
+          "p99_ms": 2,
+          "max_ms": 2
+        },
+        {
+          "p50_us": 2048,
+          "p95_us": 3894,
+          "p99_us": 3894,
+          "name": "query-stream",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 2,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "max_ms": 3
+        },
+        {
+          "p50_us": 269,
+          "p95_us": 3194,
+          "p99_us": 3194,
+          "name": "query-stream-min-version",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 3,
+          "p99_ms": 3,
+          "max_ms": 3
+        },
+        {
+          "p50_us": 581,
+          "p95_us": 1790,
+          "p99_us": 1790,
+          "name": "query-traverse",
+          "count": 10,
+          "errors": 0,
+          "statuses": {
+            "200": 10
+          },
+          "p50_ms": 0,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1
+        },
+        {
+          "p50_us": 227401,
+          "p95_us": 227401,
+          "p99_us": 227401,
+          "name": "rebuild-indexes",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 227,
+          "p95_ms": 227,
+          "p99_ms": 227,
+          "max_ms": 227
+        },
+        {
+          "p50_us": 1151,
+          "p95_us": 1151,
+          "p99_us": 1151,
+          "name": "run-saved-query",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1
+        },
+        {
+          "p50_us": 1614,
+          "p95_us": 1614,
+          "p99_us": 1614,
+          "name": "save-query",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 1,
+          "p95_ms": 1,
+          "p99_ms": 1,
+          "max_ms": 1
+        },
+        {
+          "p50_us": 289,
+          "p95_us": 289,
+          "p99_us": 289,
+          "name": "seed-query",
+          "count": 1,
+          "errors": 0,
+          "statuses": {
+            "200": 1
+          },
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "max_ms": 0
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Cross-host recovery, day-scale stability and production capacity are unqualified",
+    "Raft protocol 4 activation is separate; the default remains 1",
+    "No in-place downgrade after new-format writes; keep a pre-upgrade backup"
+  ]
+}

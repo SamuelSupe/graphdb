@@ -4,9 +4,9 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
-## Current candidate qualification
+## Current 2.4.4 qualification
 
-[2.4.4](validation-v2.4.4.md) is the current release candidate. Publication requires every exact-tag gate and independent downloaded-asset verification; no gate waiver is requested.
+[2.4.4](validation-v2.4.4.md) passed every exact-tag gate, both thirty-minute soaks and independent downloaded-asset/runtime verification. No gate waiver; its tag and assets remain immutable.
 
 ## Previous 2.4.3 qualification
 
