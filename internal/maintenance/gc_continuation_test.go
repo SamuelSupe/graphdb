@@ -123,7 +123,9 @@ func TestInodePressureAdvancesScheduledGC(t *testing.T) {
 	if !disk.InodesKnown || disk.AvailableInodes < 4 {
 		t.Skip("filesystem does not report usable inode capacity")
 	}
-	if err := files.ConfigureDiskSpace(storage.DiskSpacePolicy{MinFreeInodes: disk.AvailableInodes/2 + 1}); err != nil {
+	// Leave room for changes in available inodes from other CI processes.
+	floor := disk.AvailableInodes - disk.AvailableInodes/4
+	if err := files.ConfigureDiskSpace(storage.DiskSpacePolicy{MinFreeInodes: floor}); err != nil {
 		t.Fatal(err)
 	}
 	runner := &Runner{Store: store}
