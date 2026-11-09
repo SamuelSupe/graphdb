@@ -20,6 +20,14 @@ type StorageRuntime struct {
 }
 
 func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime, error) {
+	return newStorageRuntime(ctx, cfg, true, false)
+}
+
+func NewOfflineStorageRuntime(ctx context.Context, cfg config.Config, mutate bool) (*StorageRuntime, error) {
+	return newStorageRuntime(ctx, cfg, false, mutate)
+}
+
+func newStorageRuntime(ctx context.Context, cfg config.Config, serve, mutate bool) (*StorageRuntime, error) {
 	if cfg.Mode != "" && cfg.Mode != "all" {
 		return nil, fmt.Errorf("only GRAPHDB_MODE=all is supported in the local disk edition")
 	}
@@ -43,7 +51,12 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 			files.Close()
 			return nil, err
 		}
-		if err := files.EnableLocalReceiptPacking(ctx, cfg.Prefix); err != nil {
+		if serve {
+			err = files.EnableLocalReceiptPacking(ctx, cfg.Prefix)
+		} else {
+			err = files.UseLocalReceiptsOffline(ctx, cfg.Prefix, mutate)
+		}
+		if err != nil {
 			files.Close()
 			return nil, err
 		}

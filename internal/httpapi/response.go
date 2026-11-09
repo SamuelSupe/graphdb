@@ -180,8 +180,6 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	response := errorResponseFor(http.StatusInternalServerError, err, "", nil)
 	if response.Code == ErrorCodeInternal {
 		response = buildErrorResponse(ErrorCodeInternal, "internal storage error", false, nil)
-	} else if errors.Is(err, storage.ErrReceiptStoreUnavailable) {
-		response = buildErrorResponse(ErrorCodeRepairRequired, "tenant receipt database is unavailable", false, nil)
 	}
 	writeJSON(w, storageErrorStatus(response.Code), response)
 }
@@ -275,7 +273,11 @@ func defaultRetryable(status int) bool {
 
 func errorResponseFor(status int, err error, message string, detail any) ErrorResponse {
 	if err != nil && message == "" {
-		message = err.Error()
+		if errors.Is(err, storage.ErrReceiptStoreUnavailable) {
+			message = storage.ErrReceiptStoreUnavailable.Error()
+		} else {
+			message = err.Error()
+		}
 	}
 	code := defaultErrorCode(status)
 	retryable := defaultRetryable(status)

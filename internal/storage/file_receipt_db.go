@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -26,6 +27,7 @@ type receiptDBHandle struct {
 	err      error
 	users    int
 	idle     chan struct{}
+	closing  chan struct{}
 	lastUsed time.Time
 }
 
@@ -38,6 +40,9 @@ func (s *FileStore) isReceiptDB(key string) bool {
 // Logical receipt operations hold a directory IO permit and pin the handle,
 // so a tenant rename, purge or shutdown cannot leave a writer on an old inode.
 func (s *FileStore) withReceiptDB(ctx context.Context, key string, write bool, operation func(*bolt.DB) error) (err error) {
+	if write && s.receiptReadOnly {
+		return fmt.Errorf("packed receipts are read-only for this command")
+	}
 	h, err := s.acquireReceiptDB(ctx, key, write)
 	if err != nil {
 		return err
@@ -55,17 +60,50 @@ func (s *FileStore) withReceiptDB(ctx context.Context, key string, write bool, o
 		if poison != nil {
 			return poison
 		}
+		// A published graph can reuse objects renamed by another file batch.
+		// Before a durable receipt can acknowledge it, drain that batch too.
+		if err := s.syncPendingDirectories(); err != nil {
+			return err
+		}
 	}
 	defer func() {
 		if value := recover(); value != nil {
-			err = fmt.Errorf("%w: %s: %v", ErrReceiptStoreUnavailable, key, value)
-			s.receiptMu.Lock()
-			h.err = err
-			s.receiptMu.Unlock()
+			err = fmt.Errorf("receipt transaction panic: %v", value)
+			if receiptDatabasePanic(value) {
+				err = fmt.Errorf("%w: %s: %w", ErrReceiptStoreUnavailable, key, err)
+				s.receiptMu.Lock()
+				h.err = err
+				s.receiptMu.Unlock()
+			}
 		}
 	}()
 	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
 	return operation(h.db)
+}
+
+// bbolt reports page assertions as ordinary panics. Check the panic origin
+// as well as mapped-memory faults, so a caller's own bug cannot poison a pack.
+func receiptDatabasePanic(value any) bool {
+	if _, ok := value.(interface {
+		runtime.Error
+		Addr() uintptr
+	}); ok {
+		return true
+	}
+	var pcs [32]uintptr
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
+	panicking := false
+	for {
+		frame, more := frames.Next()
+		if frame.Function == "runtime.gopanic" {
+			panicking = true
+		} else if panicking && !strings.HasPrefix(frame.Function, "runtime.") {
+			return strings.HasPrefix(frame.Function, "go.etcd.io/bbolt.") || strings.HasPrefix(frame.Function, "go.etcd.io/bbolt/")
+		}
+		if !more {
+			return false
+		}
+	}
 }
 
 func (s *FileStore) acquireReceiptDB(ctx context.Context, key string, write bool) (*receiptDBHandle, error) {
@@ -74,10 +112,32 @@ func (s *FileStore) acquireReceiptDB(ctx context.Context, key string, write bool
 		return nil, err
 	}
 	defer unlock()
-	s.receiptMu.Lock()
-	if h := s.receiptDBs[key]; h != nil {
+	for {
+		s.receiptMu.Lock()
+		h := s.receiptDBs[key]
+		if h == nil {
+			s.receiptMu.Unlock()
+			break
+		}
+		if h.closing != nil {
+			closing := h.closing
+			s.receiptMu.Unlock()
+			select {
+			case <-closing:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		err := h.err
 		if err == nil {
+			if write && h.db.IsReadOnly() {
+				s.receiptMu.Unlock()
+				if err := s.closeReceiptDB(ctx, key); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if h.users == 0 {
 				h.idle = make(chan struct{})
 			}
@@ -86,14 +146,12 @@ func (s *FileStore) acquireReceiptDB(ctx context.Context, key string, write bool
 		s.receiptMu.Unlock()
 		return h, err
 	}
-	s.receiptMu.Unlock()
 
 	h, err := s.openReceiptDB(key, write)
 	if err != nil && h.err == nil {
 		return nil, err
 	}
 	s.receiptMu.Lock()
-	defer s.receiptMu.Unlock()
 	if s.receiptDBs == nil {
 		s.receiptDBs = make(map[string]*receiptDBHandle)
 	}
@@ -103,38 +161,18 @@ func (s *FileStore) acquireReceiptDB(ctx context.Context, key string, write bool
 		h.idle = make(chan struct{})
 	}
 	s.receiptDBs[key] = h
+	s.receiptMu.Unlock()
 	s.trimReceiptDBs()
 	return h, err
 }
 
-func (s *FileStore) openReceiptDB(key string, create bool) (h *receiptDBHandle, err error) {
-	h = &receiptDBHandle{}
-	quarantine := false
-	defer func() {
-		if value := recover(); value != nil {
-			// Open can panic before it returns the DB handle. Release the file
-			// lock directly and quarantine the path until restart or replacement.
-			if h.file != nil {
-				_ = closePoisonedReceiptFile(h.file)
-				h.file = nil
-			}
-			err = fmt.Errorf("open bbolt: %v", value)
-			quarantine = true
-		}
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			err = fmt.Errorf("%w: %s: %w", ErrReceiptStoreUnavailable, key, err)
-			if quarantine {
-				h.err = err
-			}
-		}
-	}()
-	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
-
+func (s *FileStore) openReceiptDB(key string, write bool) (*receiptDBHandle, error) {
+	h := &receiptDBHandle{}
 	filename, err := s.path(key)
 	if err != nil {
 		return h, err
 	}
-	if create {
+	if write {
 		err = s.ensureSafeParent(filename, nil)
 	} else {
 		err = s.verifySafeParent(filename)
@@ -143,113 +181,174 @@ func (s *FileStore) openReceiptDB(key string, create bool) (h *receiptDBHandle, 
 		return h, err
 	}
 	info, err := os.Lstat(filename)
-	if os.IsNotExist(err) {
-		if !create {
+	switch {
+	case os.IsNotExist(err):
+		if !write {
 			return h, ErrNotFound
 		}
-	} else if err != nil {
-		return h, err
-	} else if !info.Mode().IsRegular() || info.Size() == 0 {
-		quarantine = true
-		return h, fmt.Errorf("receipt database is not a nonempty regular file")
-	}
-	options := &bolt.Options{Timeout: time.Second, OpenFile: func(name string, flags int, mode os.FileMode) (*os.File, error) {
-		if info != nil {
-			flags &^= os.O_CREATE
+		if err := installEmptyReceiptDB(filename); err != nil {
+			return h, err
 		}
-		file, err := os.OpenFile(name, flags|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
-		h.file = file
-		return file, err
-	}}
-	h.db, err = bolt.Open(filename, 0600, options)
+	case err != nil:
+		return h, err
+	case !info.Mode().IsRegular() || info.Size() == 0:
+		// A zero-length canonical file might be a previously committed
+		// database that was truncated. Never turn that into a missing receipt.
+		h.err = fmt.Errorf("%w: %s is not a nonempty regular file", ErrReceiptStoreUnavailable, key)
+		return h, h.err
+	}
+
+	h, err = openBoltReceipt(filename, !write, false)
+	if errors.Is(err, ErrReceiptStoreUnavailable) || errors.Is(err, bolt.ErrInvalid) ||
+		errors.Is(err, bolt.ErrChecksum) || errors.Is(err, bolt.ErrVersionMismatch) {
+		h.err = fmt.Errorf("%w: %s: %w", ErrReceiptStoreUnavailable, key, err)
+		return h, h.err
+	}
 	if err != nil {
-		if info == nil && h.file != nil {
-			// Failed initialization cannot have published any receipt.
-			err = errors.Join(err, os.Remove(filename))
-		} else {
-			quarantine = errors.Is(err, bolt.ErrInvalid) || errors.Is(err, bolt.ErrChecksum) || errors.Is(err, bolt.ErrVersionMismatch)
-		}
 		return h, err
 	}
-	// Establish the directory barrier before letting a transaction publish
-	// a receipt or maintenance remove its original loose copy.
-	if err := syncDir(filepath.Dir(filename)); err != nil {
-		_ = h.db.Close()
-		h.db, h.file = nil, nil
-		return h, err
+	if write {
+		// A failed barrier after install must be retried before any write.
+		if err := syncDir(filepath.Dir(filename)); err != nil {
+			return &receiptDBHandle{}, errors.Join(err, h.close())
+		}
 	}
 	return h, nil
 }
 
+func installEmptyReceiptDB(filename string) error {
+	temp, err := os.CreateTemp(filepath.Dir(filename), ".tmp-receipts-")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	h, err := openBoltReceipt(name, false, false)
+	if err != nil {
+		return err
+	}
+	if err := h.close(); err != nil {
+		return err
+	}
+	// bbolt has synced the initialization pages. The canonical name
+	// never refers to an incomplete database, even if creation is interrupted.
+	return os.Rename(name, filename)
+}
+
+func openBoltReceipt(filename string, readOnly, preloadFreelist bool) (h *receiptDBHandle, err error) {
+	h = &receiptDBHandle{}
+	defer func() {
+		if value := recover(); value != nil {
+			if h.file != nil {
+				_ = closePoisonedReceiptFile(h.file)
+				h.file = nil
+			}
+			err = fmt.Errorf("open bbolt: %v", value)
+			if receiptDatabasePanic(value) {
+				err = fmt.Errorf("%w: %w", ErrReceiptStoreUnavailable, err)
+			}
+		}
+	}()
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
+	h.db, err = bolt.Open(filename, 0600, &bolt.Options{
+		ReadOnly: readOnly, PreLoadFreelist: preloadFreelist, Timeout: time.Second,
+		OpenFile: func(name string, flags int, mode os.FileMode) (*os.File, error) {
+			file, err := os.OpenFile(name, flags&^os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
+			h.file = file
+			return file, err
+		},
+	})
+	return h, err
+}
+
 func (s *FileStore) releaseReceiptDB(h *receiptDBHandle) {
 	s.receiptMu.Lock()
-	defer s.receiptMu.Unlock()
 	h.users--
 	if h.users == 0 {
 		close(h.idle)
 		h.lastUsed = time.Now()
 	}
+	s.receiptMu.Unlock()
 	s.trimReceiptDBs()
 }
 
 func (s *FileStore) trimReceiptDBs() {
+	s.receiptMu.Lock()
 	if len(s.receiptDBs) <= maxOpenReceiptDBs {
+		s.receiptMu.Unlock()
 		return
 	}
 	var oldestKey string
 	var oldest *receiptDBHandle
 	open := 0
 	for key, h := range s.receiptDBs {
-		if h.db != nil {
+		if h.db != nil && h.closing == nil {
 			open++
 		}
-		if h.users == 0 && h.err == nil && (oldest == nil || h.lastUsed.Before(oldest.lastUsed)) {
+		if h.users == 0 && h.err == nil && h.closing == nil && (oldest == nil || h.lastUsed.Before(oldest.lastUsed)) {
 			oldestKey, oldest = key, h
 		}
 	}
-	if open > maxOpenReceiptDBs && oldest != nil {
-		_ = oldest.close()
-		delete(s.receiptDBs, oldestKey)
+	if open <= maxOpenReceiptDBs || oldest == nil {
+		s.receiptMu.Unlock()
+		return
 	}
+	// Keep a tombstone until flock is released. A concurrent open of this
+	// tenant waits without holding the cache lock or delaying other tenants.
+	oldest.closing = make(chan struct{})
+	s.receiptMu.Unlock()
+	_ = oldest.close()
+	s.receiptMu.Lock()
+	delete(s.receiptDBs, oldestKey)
+	close(oldest.closing)
+	s.receiptMu.Unlock()
 }
 
 // The caller holds the physical object's lock, preventing new handle users
-// from racing a direct file replacement or unlink.
+// from racing a direct file replacement, unlink or read-only handle upgrade.
 func (s *FileStore) closeReceiptDB(ctx context.Context, key string) error {
-	s.receiptMu.Lock()
-	h := s.receiptDBs[key]
-	if h == nil {
+	for {
+		s.receiptMu.Lock()
+		h := s.receiptDBs[key]
+		if h == nil {
+			s.receiptMu.Unlock()
+			return nil
+		}
+		wait := h.closing
+		if wait == nil && h.users == 0 {
+			delete(s.receiptDBs, key)
+			s.receiptMu.Unlock()
+			return h.close()
+		}
+		if wait == nil {
+			wait = h.idle
+		}
 		s.receiptMu.Unlock()
-		return nil
-	}
-	idle := h.idle
-	s.receiptMu.Unlock()
-	if idle != nil {
 		select {
-		case <-idle:
+		case <-wait:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	s.receiptMu.Lock()
-	defer s.receiptMu.Unlock()
-	if s.receiptDBs[key] == h {
-		delete(s.receiptDBs, key)
-		return h.close()
-	}
-	return nil
 }
 
 // All IO permits are drained during directory replacement or store shutdown.
 func (s *FileStore) closeReceiptDBs(prefix string) error {
 	s.receiptMu.Lock()
-	defer s.receiptMu.Unlock()
-	var err error
+	var handles []*receiptDBHandle
 	for key, h := range s.receiptDBs {
 		if strings.HasPrefix(key, prefix) {
-			err = errors.Join(err, h.close())
+			handles = append(handles, h)
 			delete(s.receiptDBs, key)
 		}
+	}
+	s.receiptMu.Unlock()
+	var err error
+	for _, h := range handles {
+		err = errors.Join(err, h.close())
 	}
 	return err
 }

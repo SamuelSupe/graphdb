@@ -16,7 +16,7 @@ import (
 
 func (s *TenantStore) LocalReceiptPackingEnabled() bool {
 	files := s.localFileStore()
-	return files != nil && files.receiptPrefix != "" && !files.replicatedWrites.Load()
+	return files != nil && files.receiptPrefix != "" && !files.receiptReadOnly && !files.replicatedWrites.Load()
 }
 
 // Discover pre-upgrade receipts once. Subsequent sweeps are requested by a

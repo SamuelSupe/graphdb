@@ -161,7 +161,7 @@ func (s *Runner) packLocalReceipts(ctx context.Context, discovered *bool, packs 
 	defer cancel()
 	if !*discovered {
 		if err := s.Store.QueueExistingLocalReceiptPacks(work); err != nil {
-			if work.Err() == nil {
+			if ctx.Err() == nil {
 				s.auditError("receipt_pack_list_failed", "", err, nil)
 			}
 			return

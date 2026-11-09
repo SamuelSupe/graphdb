@@ -3,6 +3,8 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,44 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestOfflineCommandsPreserveLegacyReceiptLayout(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{DataDir: t.TempDir(), Prefix: "graphdb", InstanceID: "standalone"}
+	marker := filepath.Join(cfg.DataDir, "graphdb", "coordination", "mode.json")
+	for _, mutate := range []bool{false, true} {
+		runtime, err := NewOfflineStorageRuntime(ctx, cfg, mutate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mutate {
+			_, err = runtime.Store.InitTenant(ctx, "legacy")
+		} else {
+			_, err = runtime.Store.ListManagedTenants(ctx)
+		}
+		if err := errors.Join(err, runtime.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("offline operation upgraded a legacy root: mutate=%v err=%v", mutate, err)
+		}
+	}
+	runtime, err := NewStorageRuntime(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("server did not install the rollback guard: %v", err)
+	}
+	runtime, err = NewOfflineStorageRuntime(ctx, cfg, false)
+	if err != nil {
+		t.Fatalf("read-only command could not open a guarded root: %v", err)
+	}
+	defer runtime.Close()
+}
 
 func TestStandaloneReopensExistingData(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir(), Prefix: "graphdb", InstanceID: "standalone"}

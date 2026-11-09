@@ -15,6 +15,7 @@ import (
 
 type FileStore struct {
 	receiptPrefix          string
+	receiptReadOnly        bool
 	receiptMu              sync.Mutex
 	receiptDBs             map[string]*receiptDBHandle
 	receiptWork            map[string]uint64

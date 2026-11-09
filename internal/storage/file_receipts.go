@@ -87,8 +87,6 @@ func (s *FileStore) putReceiptIfPacked(ctx context.Context, key, filename string
 		}
 		return ObjectMeta{Key: key, ETag: sha256Hex(stored), Exists: true}, true, ErrConflict
 	}
-	// Ingest metadata is written after the graph publication returns.
-	// Its own transaction does not publish pending graph renames.
 	meta := ObjectMeta{Key: key}
 	err := s.withReceiptDB(ctx, location.database, true, func(db *bolt.DB) error {
 		return db.Update(func(tx *bolt.Tx) error {

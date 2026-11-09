@@ -76,7 +76,13 @@ func run(args []string) (err error) {
 		}
 		return printJSON(map[string]any{"tenant_id": args[1], "receipts_checked": count})
 	}
-	runtime, err := bootstrap.NewStorageRuntime(context.Background(), cfg)
+	ctx := context.Background()
+	var runtime *bootstrap.StorageRuntime
+	if command.kind == commandServe {
+		runtime, err = bootstrap.NewStorageRuntime(ctx, cfg)
+	} else {
+		runtime, err = bootstrap.NewOfflineStorageRuntime(ctx, cfg, command.mutation)
+	}
 	if err != nil {
 		return err
 	}

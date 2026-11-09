@@ -2,12 +2,38 @@ package maintenance
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestReceiptPackDiscoveryReportsTimeout(t *testing.T) {
+	ctx := context.Background()
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+		t.Fatal(err)
+	}
+	store := storage.NewTenantStore(storage.NewDelayedReadObjectStore(files, 2*time.Second), "graphdb")
+	defer store.ShutdownTasks(ctx)
+	var audit error
+	runner := &Runner{Store: store, Audit: func(event, _ string, err error, _ map[string]any) {
+		if event == "receipt_pack_list_failed" {
+			audit = err
+		}
+	}}
+	discovered, offset := false, 0
+	runner.packLocalReceipts(ctx, &discovered, map[string]receiptPackProgress{}, &offset)
+	if discovered || !errors.Is(audit, context.DeadlineExceeded) {
+		t.Fatalf("expected a retryable discovery timeout in the audit log, discovered=%v err=%v", discovered, audit)
+	}
+}
 
 type receiptPackCounter struct{ passes int }
 

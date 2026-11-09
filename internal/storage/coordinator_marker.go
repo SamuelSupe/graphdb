@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"time"
 )
 
@@ -39,7 +41,8 @@ func (s *TenantStore) coordinationMarkerKey() string {
 }
 
 func (s *TenantStore) EnsureLocalWriterAllowed(ctx context.Context) error {
-	return s.ensureLocalWriterAllowed(ctx, s.LocalReceiptPackingEnabled())
+	files := s.localFileStore()
+	return s.ensureLocalWriterAllowed(ctx, files != nil && files.receiptPrefix != "" && !files.replicatedWrites.Load())
 }
 
 // An offline migration may copy an intact packed database as a physical file.
@@ -83,6 +86,60 @@ func (s *FileStore) EnableLocalReceiptPacking(ctx context.Context, prefix string
 		return err
 	}
 	s.receiptPrefix = path.Join(cleanPrefix(prefix), "tenants") + "/"
+	s.receiptReadOnly = false
+	return nil
+}
+
+// Offline inspection can read packed receipts without changing the format.
+// An offline mutation keeps a legacy directory on the loose-file layout.
+func (s *FileStore) UseLocalReceiptsOffline(ctx context.Context, prefix string, mutate bool) error {
+	tenantPrefix := path.Join(cleanPrefix(prefix), "tenants")
+	if !mutate {
+		s.receiptPrefix = tenantPrefix + "/"
+		s.receiptReadOnly = true
+		return nil
+	}
+	data, err := s.Get(ctx, path.Join(cleanPrefix(prefix), "coordination", "mode.json"))
+	if err == nil {
+		marker, err := decodeCoordinationMarker(data)
+		if err != nil {
+			return err
+		}
+		if marker.LayoutVersion == packedReceiptMarkerLayoutVersion {
+			return s.EnableLocalReceiptPacking(ctx, prefix)
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	// Preview builds could leave packs without a guard. Protect those
+	// directories before allowing an offline mutation to change their data.
+	dir, err := s.path(tenantPrefix)
+	if err != nil {
+		return err
+	}
+	if err := s.walkSafeDir(dir, false, nil); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(dir, entry.Name(), receiptDatabase)); err == nil {
+			return s.EnableLocalReceiptPacking(ctx, prefix)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	return nil
 }
 
