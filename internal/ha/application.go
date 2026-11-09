@@ -16,6 +16,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -103,7 +104,7 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
-	return a.Files.InstallReplicationSnapshot(ctx, index, data, a.MaxSnapshotBytes, a.snapshotTenantPrefix())
+	return a.Files.InstallReplicationSnapshotValidated(ctx, index, bytes.NewReader(data), a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
 }
 
 func (a *Application) CaptureSnapshot(ctx context.Context) (replication.SnapshotSource, error) {
@@ -139,6 +140,7 @@ func (a *Application) captureSnapshot(ctx context.Context) (*storage.Replication
 	source, err := a.Files.CaptureReplicationSnapshot(ctx, a.MaxSnapshotBytes)
 	if err == nil {
 		source.TenantPrefix = a.snapshotTenantPrefix()
+		source.Validate = a.validatePartitionSnapshot
 	}
 	return source, replicationSnapshotError(err)
 }
@@ -152,7 +154,7 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
-	return a.Files.InstallReplicationSnapshotReader(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix())
+	return a.Files.InstallReplicationSnapshotValidated(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
 }
 
 func (a *Application) snapshotTenantPrefix() string {
@@ -320,6 +322,15 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 }
 
 func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd command) ([]byte, error) {
+	if a.ShardID != "" && storage.ValidateTenantID(cmd.Tenant) == nil && (cmd.Kind == "http" || cmd.Kind == "accept" || cmd.Kind == "task" || cmd.Kind == "restore_part" || cmd.Kind == "capture_backup") {
+		_, err := a.partitionStore().GetGraph(applyCtx, cmd.Tenant)
+		if err == nil {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "graph_mode_changed", "error": "tenant uses partitioned graph commands", "retryable": true})
+		}
+		if !errors.Is(err, storage.ErrNotFound) {
+			return nil, err
+		}
+	}
 	if a.ShardID != "" && (cmd.Kind == "http" || cmd.Kind == "accept") {
 		valid, err := a.checkOwnership(applyCtx, cmd.Tenant, cmd.RouteEpoch)
 		if err != nil {
@@ -366,6 +377,83 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		}
 	}
 	switch cmd.Kind {
+	case "graph_partition":
+		var action partition.Action
+		if err := json.Unmarshal(cmd.Body, &action); err != nil {
+			return nil, err
+		}
+		if a.Catalog || a.ShardID == "" || action.Tenant != cmd.Tenant {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "graph_partition_conflict", "error": "graph actions require a matching data-group tenant"})
+		}
+		if action.Operation == "initialize" {
+			if action.Graph == nil {
+				return resultJSON(http.StatusBadRequest, map[string]any{"error": "graph descriptor is required"})
+			}
+			action.Graph.LastGCAt = cmd.At
+			manifest, err := a.Store.CurrentManifest(applyCtx, cmd.Tenant)
+			if err != nil {
+				return nil, err
+			}
+			generation, err := a.Store.ReplicationTenantGeneration(applyCtx, cmd.Tenant)
+			if err != nil {
+				return nil, err
+			}
+			if manifest.Version != action.Graph.Version || generation+1 != action.Generation {
+				return resultJSON(http.StatusConflict, map[string]any{"error": "source graph changed before partition initialization"})
+			}
+			valid, err := a.checkOwnership(applyCtx, cmd.Tenant, action.Epoch)
+			if err != nil {
+				return nil, err
+			}
+			if !valid {
+				return resultJSON(http.StatusConflict, map[string]any{"error": "tenant ownership changed before partition initialization"})
+			}
+			if err := a.ensurePending(applyCtx); err != nil {
+				return nil, err
+			}
+			for _, pending := range a.pending {
+				if pending.tenant == cmd.Tenant {
+					return resultJSON(http.StatusConflict, map[string]any{"error": "drain accepted writes before partition initialization"})
+				}
+			}
+		}
+		if action.Operation == "retire_source" {
+			g, err := a.partitionStore().GetGraph(applyCtx, cmd.Tenant)
+			if err != nil {
+				return nil, err
+			}
+			if g.Generation != action.Generation || g.State != "active" {
+				return resultJSON(http.StatusConflict, map[string]any{"error": "source cleanup generation is not active"})
+			}
+			if g.SourceRetired {
+				return resultJSON(http.StatusOK, g)
+			}
+			done, err := a.Store.RetirePartitionSource(applyCtx, cmd.Tenant)
+			if err != nil {
+				return nil, err
+			}
+			if !done {
+				return resultJSON(http.StatusOK, map[string]any{"done": false})
+			}
+			action.Operation = "source_retired"
+		}
+		value, err := a.partitionStore().Apply(applyCtx, action)
+		if err != nil {
+			status := 0
+			switch {
+			case errors.Is(err, storage.ErrInvalidArgument):
+				status = http.StatusBadRequest
+			case errors.Is(err, storage.ErrConflict):
+				status = http.StatusConflict
+			case errors.Is(err, storage.ErrNotFound):
+				status = http.StatusNotFound
+			}
+			if status == 0 {
+				return nil, err
+			}
+			return resultJSON(status, map[string]any{"code": "graph_partition_conflict", "error": err.Error()})
+		}
+		return resultJSON(http.StatusOK, value)
 	case "sharding":
 		var action sharding.Action
 		if err := json.Unmarshal(cmd.Body, &action); err != nil {

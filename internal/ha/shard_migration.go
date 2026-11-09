@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 )
 
@@ -42,6 +43,27 @@ func (c *Cluster) advanceShardMigration(ctx context.Context) error {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	for _, id := range ids {
+		p := state.Tenants[id]
+		if p.State != "partitioning" {
+			continue
+		}
+		groups := map[string]partition.Group{}
+		for _, id := range p.GraphGroups {
+			g := state.Shards[id]
+			groups[id] = partition.Group{ID: g.ID, ClusterID: g.ClusterID, Peers: g.Peers}
+		}
+		var descriptor partition.Graph
+		err := c.shards.JSON(ctx, state.Shards[p.Shard], http.MethodPost, "/cluster/graph/enable", partition.EnableRequest{Tenant: p.Tenant, Epoch: p.Epoch, Groups: groups}, &descriptor)
+		if err != nil {
+			_, _ = c.shardAction(ctx, sharding.Action{Operation: "partition_error", Tenant: p.Tenant, Epoch: p.Epoch, Error: err.Error()})
+			continue
+		}
+		if descriptor.State == "active" {
+			_, err = c.shardAction(ctx, sharding.Action{Operation: "partition_ready", Tenant: p.Tenant, Epoch: p.Epoch})
+			return err
+		}
+	}
 	for _, id := range ids {
 		placement := state.Tenants[id]
 		if placement.State != "assigning" {

@@ -48,7 +48,7 @@ GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然
 
 ## Raft 协议与升级
 
-产品版本、Raft 协议和快照格式分别管理。默认 Raft 协议为 1，最高支持 4。
+产品版本、Raft 协议和快照格式分别管理。默认 Raft 协议为 1；2.4.4 发行最高支持 4，当前开发分支新增协议 5 的[大图分片](large-graph-sharding-implementation.zh-CN.md)。
 协议 2 的流式快照/准备维护、协议 3 的准备 GC 须在全组具备支持后独立启用；
 已持久化协议 3 的目录不能由最高协议为 2 的程序打开。滚动升级只限于
 [已验证来源、目标和协议窗口](raft-rolling-upgrade.zh-CN.md)。

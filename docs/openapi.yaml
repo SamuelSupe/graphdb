@@ -182,6 +182,130 @@ paths:
           description: Move absent or already cut over.
         '503':
           description: Catalog unavailable.
+  /v1/cluster/graphs:
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Enable a partitioned graph (development, protocol 5, serve-router only).
+      description: Requires the router token and protocol 5 on the catalog, home and selected data groups. The tenant must exist. Nonempty sources need current paged indexes and a published digest; rebuild indexes before conversion. The maintenance-window conversion is resumable and preserves graph version and direct-commit identities. This development mode does not support WAL ingest, full lifecycle, cross-group backup/restore or supernode splitting; unsupported data APIs return 501. Poll the tenant graph endpoint for progress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, data_groups]
+              properties:
+                tenant_id:
+                  type: string
+                data_groups:
+                  type: array
+                  minItems: 2
+                  maxItems: 256
+                  uniqueItems: true
+                  items:
+                    type: string
+      responses:
+        '202':
+          description: Conversion persisted; this does not mean activation has completed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          description: Catalog, home or target majority unavailable.
+  /v1/cluster/graphs/{tenant_id}:
+    parameters:
+      - $ref: '#/components/parameters/GraphTenantID'
+    get:
+      security:
+        - GatewayBearer: []
+      summary: Read conversion progress or the active graph descriptor.
+      description: Requires the router token. During conversion the response is the catalog placement including partition_error. After activation it is a graph descriptor including version, data_hash, generation, layout_revision, partition owners and any running move or GC. Internal root references are diagnostic data and are not accepted by public data APIs.
+      responses:
+        '200':
+          description: Strongly consistent status or descriptor.
+        '404':
+          description: Tenant placement absent.
+        '503':
+          description: Required control majority unavailable.
+  /v1/cluster/graphs/{tenant_id}/partitions/{partition_id}/move:
+    parameters:
+      - $ref: '#/components/parameters/GraphTenantID'
+      - $ref: '#/components/parameters/GraphPartitionID'
+    get:
+      security:
+        - GatewayBearer: []
+      summary: Read the graph's current partition move or null.
+      responses:
+        '200':
+          description: Current persistent move state or null.
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Move a graph partition to a different registered data group.
+      description: Requires the router token. Copies immutable pages while capturing new pages, fences writes for final catch-up and switches placement with a newer epoch. Graph version and data_hash remain unchanged. Cleanup protects in-flight reads for two minutes. Same-target repeats return the current move; one move runs per graph and GC must finish first. Historical catalog associations conservatively prevent group unregistration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_group]
+              properties:
+                target_group:
+                  type: string
+      responses:
+        '202':
+          description: Current or newly started move.
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          description: Required majority unavailable; query state before retrying.
+  /v1/cluster/graphs/{tenant_id}/partitions/{partition_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/GraphTenantID'
+      - $ref: '#/components/parameters/GraphPartitionID'
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Cancel a partition move before cutover.
+      description: Requires the current move_id. Restores the source with a newer epoch and cleans the unexposed target. Cancellation after cutover is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [move_id]
+              properties:
+                move_id:
+                  type: string
+      responses:
+        '202':
+          description: Cancellation state persisted.
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/cluster/graphs/{tenant_id}/gc:
+    parameters:
+      - $ref: '#/components/parameters/GraphTenantID'
+    get:
+      security:
+        - GatewayBearer: []
+      summary: Read persistent graph GC state or null.
+      responses:
+        '200':
+          description: Phase and per-partition completion state, or null.
+    post:
+      security:
+        - GatewayBearer: []
+      summary: Start bounded graph garbage collection.
+      description: Requires the router token. Protects persistent read pins and prepared transactions. Graph writes pause during retention-boundary installation, then resume while new pages are protected in replicated prepare. Concurrent GC requests return the current operation. Migration and GC cannot overlap. The configured GC interval also triggers this operation in the background.
+      responses:
+        '202':
+          description: Current or newly started GC.
+        '409':
+          $ref: '#/components/responses/Conflict'
   /openapi.yaml:
     get:
       security: []
@@ -1921,6 +2045,20 @@ components:
       name: X-Tenant-ID
       description: Tenant routing metadata injected by a trusted gateway; this header is not proof of identity. When present, lifecycle paths and create/clone targets must match it, and restore backup sources must belong to that tenant. A private platform restore without this header must explicitly declare source_tenant_id for cross-tenant migration; otherwise the source must match the target. The gateway must authenticate and isolate access independently.
   parameters:
+    GraphTenantID:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+    GraphPartitionID:
+      name: partition_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 255
     TenantListLimit:
       name: limit
       in: query
@@ -2099,6 +2237,17 @@ components:
       type: object
       required: [tenant_id, shard_id, epoch, state]
       properties:
+        mode:
+          type: string
+          enum: [partitioned]
+          description: Absent for ordinary single-group tenants.
+        graph_groups:
+          type: array
+          items:
+            type: string
+        partition_error:
+          type: string
+          description: Last conversion error; the coordinator retries the durable conversion.
         tenant_id:
           type: string
         shard_id:
@@ -2109,7 +2258,7 @@ components:
           minimum: 1
         state:
           type: string
-          enum: [assigning, active, moving, activating, cancelling]
+          enum: [assigning, active, moving, activating, cancelling, partitioning]
         move:
           type: object
           required: [id, source, target, epoch, phase]

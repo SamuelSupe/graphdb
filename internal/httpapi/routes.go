@@ -66,7 +66,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux, routes ...routeSpec) {
 			})
 		}
 		if route.mutation && s.writeAllowed() {
-			handler = protectBrowserWrite(handler)
+			handler = ProtectBrowserWrite(handler)
 		}
 		mux.Handle(route.pattern, handler)
 	}

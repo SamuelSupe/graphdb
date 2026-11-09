@@ -33,7 +33,11 @@ func (c *Cluster) PrivateHandler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"shard_id": c.App.ShardID, "catalog": c.App.Catalog, "cluster_id": c.config.ClusterID, "prefix": c.App.Store.Prefix})
+		format := 0
+		if c.config.Protocol >= 5 {
+			format = 1
+		}
+		json.NewEncoder(w).Encode(map[string]any{"shard_id": c.App.ShardID, "catalog": c.App.Catalog, "cluster_id": c.config.ClusterID, "prefix": c.App.Store.Prefix, "protocol_version": c.config.Protocol, "graph_partition_format": format})
 	})
 	mux.HandleFunc("GET /cluster/catalog", func(w http.ResponseWriter, r *http.Request) {
 		if !c.App.Catalog {
@@ -148,6 +152,7 @@ func (c *Cluster) PrivateHandler() http.Handler {
 	mux.HandleFunc("POST /cluster/export/manifest", c.exportChunk)
 	mux.HandleFunc("POST /cluster/export/chunk", c.exportChunk)
 	mux.Handle("/cluster/data/", http.StripPrefix("/cluster/data", c.App.Handler))
+	c.registerPartitionRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+c.config.Token)) != 1 || r.Header.Get("X-Raft-Cluster") != c.config.ClusterID {
 			http.Error(w, "unauthorized cluster request", http.StatusUnauthorized)

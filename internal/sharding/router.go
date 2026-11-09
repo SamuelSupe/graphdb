@@ -139,6 +139,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if clone {
+		if resolution.Placement.Mode == "partitioned" {
+			r.writeJSON(w, http.StatusNotImplemented, map[string]any{"code": "operation_disabled", "error": "partitioned graph clone is not yet available"})
+			return
+		}
 		if storage.ValidateTenantID(target) != nil || target == tenant {
 			http.Error(w, "a distinct clone target tenant is required", http.StatusBadRequest)
 			return
@@ -157,6 +161,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 			request.URL.Path, _ = url.PathUnescape(escaped)
 			request.URL.RawPath = escaped
 		}
+	}
+	if resolution.Placement.Mode == "partitioned" && r.serveGraph(w, request, resolution, tenant) {
+		return
 	}
 	r.proxy(w, request, resolution.Shard, resolution.Placement.Epoch, tenant)
 }
@@ -366,6 +373,9 @@ func (r *Router) migrationResponse(ctx context.Context, response *http.Response,
 func (r *Router) admin(w http.ResponseWriter, request *http.Request) {
 	if subtle.ConstantTimeCompare([]byte(request.Header.Get("Authorization")), []byte("Bearer "+r.Client.Token)) != 1 {
 		http.Error(w, "cluster administration requires the router token", http.StatusUnauthorized)
+		return
+	}
+	if r.graphAdmin(w, request) {
 		return
 	}
 	if request.Method == http.MethodGet {

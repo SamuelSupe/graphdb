@@ -87,7 +87,7 @@ inventory 为 `{"groups":[{"cluster_id":"graphdb-ha","nodes":[...]}]}`，每个 
 {"id":1,"url":"http://127.0.0.1:19081","restart":["docker","compose","-p","graphdb-ha","-f","docker-compose.raft.yml","up","-d","--no-deps","--no-build","--force-recreate","node1"]}
 ```
 
-group 可配置 `protocol_version` 为 1、2、3 或 4，缺省为 1；协调器要求组内所有成员保持该协议，不能用一次滚动操作混合或激活不同协议。启用协议 3 前，先在原协议下升级全部副本和 router，并确认每个副本的 `protocol_max` 至少为 3，再按独立变更启用。协议 3 提案持久化后，最高支持协议为 2 的旧程序不能原目录回退。协议 3 同构建串行重启的本机证据见[本轮验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
+group 在当前开发分支可配置 `protocol_version` 为 1、2、3、4 或 5，缺省为 1（2.4.4 发行最高为 4）；协调器要求组内所有成员保持该协议，不能用一次滚动操作混合或激活不同协议。启用协议 3 前，先在原协议下升级全部副本和 router，并确认每个副本的 `protocol_max` 至少为 3，再按独立变更启用。协议 3 提案持久化后，最高支持协议为 2 的旧程序不能原目录回退。协议 3 同构建串行重启的本机证据见[本轮验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
 
 inventory 必须包含该组全部投票节点。restart 只替换对应进程并复用原数据卷，不经过 shell。相同 inventory 的本机文件锁防止本机重复执行；不同宿主机的串行约束由部署控制器保证。
 
@@ -135,3 +135,12 @@ DOCKER_CONTEXT=orbstack python3 scripts/raft_rolling_gate.py
 协议 4 为新写入启用无歧义的组合身份编码，并把匹配规则记录到提交中。协议 1–3 继续保留历史写入语义，默认协议仍为 1，避免二进制滚动替换意外激活新协议。单机不需要配置，自动采用新规则。
 
 Raft 先保持原协议升级全部副本和 router，确认所有投票成员的 `protocol_max >= 4`，再单独启用 `GRAPHDB_RAFT_PROTOCOL_VERSION=4`。首次提案检查全部投票成员能力；协议激活后不能用旧二进制原目录回退。历史日志仍按其记录的旧语义执行。此变更的本地回归不等于真实双版本滚动发布资格；发布前仍需执行完整升级门禁。
+
+
+## 开发分支：大图分片协议 5
+
+协议 5 增加图控制状态、分区准备/发布、持久化读 pin、分区迁移和分布式 GC。默认仍为协议 1，普通租户继续使用原路径。
+
+启用前先在原协议下升级全部 router、目录组和选中的数据组，确认所有投票成员的 `protocol_max >= 5`，再单独设置 `GRAPHDB_RAFT_PROTOCOL_VERSION=5`。目录组也必须启用协议 5。组内首次提案沿用现有的全部投票成员能力检查；不能通过仅升级 Leader 激活。
+
+协议 5 的持久化目录不能由最高只支持协议 4 的二进制打开。不得将分片图的旧租户 manifest 当成回退入口；转换成功后旧图对象会分批释放。当前运行验证属于同构建、多组多副本验证，尚未进行真实双版本协议 5 升级资格验证。当前接口和限制见[实施说明](large-graph-sharding-implementation.zh-CN.md)。

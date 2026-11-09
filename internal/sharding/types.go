@@ -27,11 +27,14 @@ type Move struct {
 }
 
 type Placement struct {
-	Tenant string `json:"tenant_id"`
-	Shard  string `json:"shard_id"`
-	Epoch  uint64 `json:"epoch"`
-	State  string `json:"state"`
-	Move   *Move  `json:"move,omitempty"`
+	Mode           string   `json:"mode,omitempty"`
+	GraphGroups    []string `json:"graph_groups,omitempty"`
+	PartitionError string   `json:"partition_error,omitempty"`
+	Tenant         string   `json:"tenant_id"`
+	Shard          string   `json:"shard_id"`
+	Epoch          uint64   `json:"epoch"`
+	State          string   `json:"state"`
+	Move           *Move    `json:"move,omitempty"`
 }
 
 type Catalog struct {
@@ -56,19 +59,20 @@ type Ownership struct {
 }
 
 type Action struct {
-	Operation string `json:"operation"`
-	Tenant    string `json:"tenant_id,omitempty"`
-	Shard     *Shard `json:"shard,omitempty"`
-	Target    string `json:"target,omitempty"`
-	Epoch     uint64 `json:"epoch,omitempty"`
-	MoveID    string `json:"move_id,omitempty"`
-	Phase     string `json:"phase,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Part      int    `json:"part,omitempty"`
-	Parts     int    `json:"parts,omitempty"`
-	Bytes     int64  `json:"bytes,omitempty"`
-	Digest    string `json:"digest,omitempty"`
-	Data      []byte `json:"data,omitempty"`
+	GraphGroups []string `json:"graph_groups,omitempty"`
+	Operation   string   `json:"operation"`
+	Tenant      string   `json:"tenant_id,omitempty"`
+	Shard       *Shard   `json:"shard,omitempty"`
+	Target      string   `json:"target,omitempty"`
+	Epoch       uint64   `json:"epoch,omitempty"`
+	MoveID      string   `json:"move_id,omitempty"`
+	Phase       string   `json:"phase,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	Part        int      `json:"part,omitempty"`
+	Parts       int      `json:"parts,omitempty"`
+	Bytes       int64    `json:"bytes,omitempty"`
+	Digest      string   `json:"digest,omitempty"`
+	Data        []byte   `json:"data,omitempty"`
 }
 
 type Object struct {

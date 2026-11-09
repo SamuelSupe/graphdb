@@ -227,6 +227,7 @@ type EntityPageOrderLookup interface {
 }
 
 type PlannerStats struct {
+	EntityScanAvailable       bool                    `json:"entity_scan_available,omitempty"`
 	Version                   int64                   `json:"version,omitempty"`
 	ForwardEdgeIndexAvailable bool                    `json:"forward_edge_index_available,omitempty"`
 	ReverseEdgeIndexAvailable bool                    `json:"reverse_edge_index_available,omitempty"`

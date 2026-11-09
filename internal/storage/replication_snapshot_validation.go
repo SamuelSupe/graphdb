@@ -6,7 +6,14 @@ import (
 )
 
 func (s *ReplicationSnapshotSource) validateTenantGraphs(ctx context.Context) error {
-	return validateReplicationSnapshotTenantGraphs(ctx, NewFileStore(s.root), s.TenantPrefix)
+	view := NewFileStore(s.root)
+	if err := validateReplicationSnapshotTenantGraphs(ctx, view, s.TenantPrefix); err != nil {
+		return err
+	}
+	if s.Validate != nil {
+		return s.Validate(ctx, view)
+	}
+	return nil
 }
 
 func validateReplicationSnapshotTenantGraphs(ctx context.Context, files *FileStore, prefix string) error {

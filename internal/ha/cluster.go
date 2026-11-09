@@ -101,6 +101,10 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 		go func() { defer c.background.Done(); c.runShardMigrations(ctx) }()
 	}
 	if cfg.ShardID != "" {
+		if cfg.Protocol >= 5 {
+			c.background.Add(1)
+			go func() { defer c.background.Done(); c.runPartitionBackground(ctx) }()
+		}
 		c.background.Add(1)
 		go func() { defer c.background.Done(); c.runExportCleanup(ctx) }()
 	}
@@ -248,6 +252,9 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	}
 	routeEpoch, valid := c.checkShardRequest(ctx, w, r, tenant)
 	if !valid {
+		return
+	}
+	if c.servePartitionedGraph(w, r, body, tenant) {
 		return
 	}
 	var expectedGeneration int64

@@ -62,6 +62,7 @@ some cluster operations guides are currently Chinese-only.
 | Topic | Documentation |
 | --- | --- |
 | Positioning and architecture | [Database introduction](database-introduction.md) · [中文](database-introduction.zh-CN.md) · [Architecture](architecture.en.md) |
+| Proposed architecture | [Large-graph sharding design](large-graph-sharding-design.zh-CN.md) · [Development implementation and limits](large-graph-sharding-implementation.zh-CN.md) · [Read-path optimization](large-graph-sharding-optimization-2026-11-09.zh-CN.md) |
 | API contracts | [API map](user/api-map.md) · [中文](user/api-map.zh-CN.md) · [OpenAPI](openapi.yaml) · [Error codes](error_codes.md) |
 | Query languages | [Query capabilities](query_capabilities.md) · [GraphQL](graphql.md) · [中文](graphql.zh-CN.md) · [Legacy text DSL](gql.md) |
 | Versions and gaps | [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md) · [Product gaps](product_function_gaps.md) |

@@ -61,6 +61,7 @@
 | 主题 | 文档 |
 | --- | --- |
 | 定位与架构 | [数据库简介](database-introduction.zh-CN.md) · [English](database-introduction.md) · [整体架构](architecture.md) |
+| 大图分片开发 | [设计](large-graph-sharding-design.zh-CN.md) · [实施范围、接口与限制](large-graph-sharding-implementation.zh-CN.md) · [读路径优化](large-graph-sharding-optimization-2026-11-09.zh-CN.md) |
 | API 契约 | [API 地图](user/api-map.zh-CN.md) · [English](user/api-map.md) · [OpenAPI](openapi.yaml) · [错误码](error_codes.md) |
 | 查询语言 | [查询能力](query_capabilities.md) · [GraphQL](graphql.zh-CN.md) · [English](graphql.md) · [旧文本 DSL](gql.md) |
 | 版本与缺口 | [命名与兼容](naming-and-compatibility.zh-CN.md) · [English](naming-and-compatibility.md) · [功能缺口](product_function_gaps.md) |

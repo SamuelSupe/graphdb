@@ -313,3 +313,13 @@ func (e *readerNotFreshError) detail() map[string]any {
 		"reason":           e.Reason,
 	}
 }
+
+// ReadFreshness combines a requested minimum graph version with optional stale
+// reads. HTTP headers and URL parameters take precedence over body values.
+type ReadFreshness = readFreshness
+
+// ParseReadFreshness applies the public API's shared parsing and validation
+// rules for freshness headers, URL parameters and JSON-body defaults.
+func ParseReadFreshness(r *http.Request, body ReadFreshness) (ReadFreshness, error) {
+	return parseReadFreshness(r, body)
+}

@@ -3,7 +3,7 @@ package query
 import "github.com/SamuelSupe/graphdb/v2/internal/graph"
 
 func lazyKindScanAvailable(g *graph.Graph, request Request, plan Plan, budget *budget) bool {
-	if !lazyExecution(g, budget) || plan.Strategy != "kind-scan" || request.Kind == "" {
+	if !lazyExecution(g, budget) || plan.Strategy != "kind-scan" || request.Kind == "" && !budget.planner.EntityScanAvailable {
 		return false
 	}
 	_, ok := entityPageLookup(budget)

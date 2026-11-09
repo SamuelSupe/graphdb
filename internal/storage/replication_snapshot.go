@@ -127,6 +127,16 @@ func (s *FileStore) InstallReplicationSnapshot(ctx context.Context, index uint64
 // objects. An optional tenant prefix also cold-validates published graphs and
 // relation schemas in the decoded input; an empty prefix retains generic storage.
 func (s *FileStore) InstallReplicationSnapshotReader(ctx context.Context, index uint64, source io.ReadSeeker, maxBytes int64, tenantPrefix ...string) error {
+	prefix := ""
+	if len(tenantPrefix) > 0 {
+		prefix = tenantPrefix[0]
+	}
+	return s.InstallReplicationSnapshotValidated(ctx, index, source, maxBytes, prefix, nil)
+}
+
+// InstallReplicationSnapshotValidated validates application-specific references
+// against the staged view before atomically replacing any live object.
+func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, index uint64, source io.ReadSeeker, maxBytes int64, prefix string, validate func(context.Context, ObjectStore) error) error {
 	var checksum [sha256.Size]byte
 	if _, err := io.ReadFull(source, checksum[:]); err != nil {
 		return fmt.Errorf("truncated replication snapshot: %w", err)
@@ -224,7 +234,7 @@ func (s *FileStore) InstallReplicationSnapshotReader(ctx context.Context, index 
 	if !metadataFound || checkpoint.Index != index {
 		return fmt.Errorf("snapshot applied position mismatch")
 	}
-	if len(tenantPrefix) > 0 && tenantPrefix[0] != "" {
+	if prefix != "" || validate != nil {
 		view := NewFileStore(filepath.Join(staging, "view"))
 		for key, filename := range objects {
 			destination := filepath.Join(view.root, key)
@@ -235,8 +245,13 @@ func (s *FileStore) InstallReplicationSnapshotReader(ctx context.Context, index 
 				return err
 			}
 		}
-		if err := validateReplicationSnapshotTenantGraphs(ctx, view, tenantPrefix[0]); err != nil {
+		if err := validateReplicationSnapshotTenantGraphs(ctx, view, prefix); err != nil {
 			return err
+		}
+		if validate != nil {
+			if err := validate(ctx, view); err != nil {
+				return err
+			}
 		}
 	}
 	_, err = s.ApplyReplicated(ctx, index, "snapshot", time.Time{}, func(applyCtx context.Context) ([]byte, error) {

@@ -105,8 +105,8 @@ func loadRaftConfig(dataDir string) (RaftConfig, error) {
 	if err := loadIntEnv("GRAPHDB_RAFT_PROTOCOL_VERSION", &cfg.Protocol); err != nil {
 		return cfg, err
 	}
-	if cfg.Protocol < 1 || cfg.Protocol > 4 {
-		return cfg, fmt.Errorf("Raft protocol version must be between 1 and 4")
+	if cfg.Protocol < 1 || cfg.Protocol > 5 {
+		return cfg, fmt.Errorf("Raft protocol version must be between 1 and 5")
 	}
 	if err := loadDurationEnv("GRAPHDB_RAFT_TICK", &cfg.Tick); err != nil {
 		return cfg, err

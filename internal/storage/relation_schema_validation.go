@@ -49,7 +49,7 @@ func validateRelationSchemaGraph(g *graph.Graph, catalog RelationSchemaCatalog) 
 		return err
 	}
 	for _, edge := range g.Edges.All() {
-		if err := validateRelationSchemaEdge(edge, catalog); err != nil {
+		if err := ValidateRelationSchemaEdge(edge, catalog); err != nil {
 			return err
 		}
 	}
@@ -68,7 +68,7 @@ func validateRelationSchemaCommit(g *graph.Graph, catalog RelationSchemaCatalog,
 		if !ok {
 			continue
 		}
-		if err := validateRelationSchemaEdge(edge, catalog); err != nil {
+		if err := ValidateRelationSchemaEdge(edge, catalog); err != nil {
 			return err
 		}
 	}
@@ -84,7 +84,9 @@ func validateRelationSchemaReferences(g *graph.Graph, catalog RelationSchemaCata
 	return nil
 }
 
-func validateRelationSchemaEdge(edge graph.Edge, catalog RelationSchemaCatalog) error {
+// ValidateRelationSchemaEdge checks one authoritative edge, including when its
+// endpoints and schema are read from separate distributed graph fragments.
+func ValidateRelationSchemaEdge(edge graph.Edge, catalog RelationSchemaCatalog) error {
 	schema, ok := catalog.Schema(edge.Type)
 	if !ok {
 		return nil

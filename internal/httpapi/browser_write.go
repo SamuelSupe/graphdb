@@ -9,7 +9,9 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func protectBrowserWrite(next http.Handler) http.Handler {
+// ProtectBrowserWrite applies the same origin and Content-Type boundary to
+// writes executed by the local server and by a stateless graph router.
+func ProtectBrowserWrite(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions || storage.IsReplicatedContext(r.Context()) {
 			next.ServeHTTP(w, r)

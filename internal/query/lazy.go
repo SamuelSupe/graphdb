@@ -107,6 +107,9 @@ func lazyTarget(request Request) Request {
 }
 
 func lazyMatchSupported(request Request, stats PlannerStats) bool {
+	if stats.EntityScanAvailable {
+		return true
+	}
 	if request.Kind != "" {
 		return true
 	}

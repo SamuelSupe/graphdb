@@ -22,6 +22,7 @@ import (
 type Client struct {
 	Token          string
 	HTTP           *http.Client
+	graphSlots     chan struct{}
 	mu             sync.Mutex
 	leaders        map[string]cachedLeader
 	metrics        *observability.OperationMetrics

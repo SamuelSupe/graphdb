@@ -63,7 +63,7 @@ the [Raft administration APIs](raft-ha.zh-CN.md).
 ## Raft protocols and upgrades
 
 Product versions, Raft protocols and snapshot formats are separate identifiers.
-Raft defaults to protocol 1 and supports up to 4. Activate protocol-2 streaming
+Raft defaults to protocol 1. Release 2.4.4 supports up to 4; the current development branch adds protocol 5 for [partitioned graphs](large-graph-sharding-implementation.zh-CN.md). Activate protocol-2 streaming
 snapshots/prepared maintenance or protocol-3 prepared GC only after all voters
 support them. A protocol-2-only binary cannot open a directory whose protocol-3
 minimum has been persisted. Rolling upgrades cover only the

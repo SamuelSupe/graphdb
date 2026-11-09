@@ -13,6 +13,7 @@ import (
 type ReplicationSnapshotSource struct {
 	// TenantPrefix enables cold graph validation in the captured view before
 	// encoding. It does not limit which objects the replication snapshot includes.
+	Validate       func(context.Context, ObjectStore) error
 	TenantPrefix   string
 	root           string
 	checkpoint     ReplicationCheckpoint

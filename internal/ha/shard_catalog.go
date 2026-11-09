@@ -79,6 +79,11 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 				return conflict("drain the shard before unregistering it")
 			}
 			for _, placement := range state.Tenants {
+				for _, group := range placement.GraphGroups {
+					if group == shard.ID {
+						return conflict("shard still owns graph partitions")
+					}
+				}
 				if placement.Shard == shard.ID || (placement.Move != nil && (placement.Move.Source == shard.ID || placement.Move.Target == shard.ID)) {
 					return conflict("shard still owns tenants or participates in a migration")
 				}
@@ -100,6 +105,57 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			placement.Move = &move
 		}
 		switch action.Operation {
+		case "begin_partition":
+			if !exists || placement.Move != nil || placement.Epoch != action.Epoch {
+				return conflict("tenant placement changed before partitioning")
+			}
+			if placement.Mode == "partitioned" {
+				return resultJSON(http.StatusOK, placement)
+			}
+			if placement.State == "partitioning" {
+				return resultJSON(http.StatusOK, placement)
+			}
+			if placement.State != "active" || len(action.GraphGroups) < 2 || len(action.GraphGroups) > 256 {
+				return conflict("partitioning requires an active tenant and 2 to 256 data groups")
+			}
+			groups := append([]string(nil), action.GraphGroups...)
+			sort.Strings(groups)
+			for i, id := range groups {
+				shard, ok := state.Shards[id]
+				if !ok || shard.Draining || i > 0 && groups[i-1] == id {
+					return conflict("partition data groups must be unique registered active groups")
+				}
+			}
+			placement.State = "partitioning"
+			placement.GraphGroups = groups
+			placement.PartitionError = ""
+		case "partition_ready":
+			if !exists || placement.State != "partitioning" || placement.Epoch != action.Epoch {
+				return conflict("tenant is not awaiting partition activation")
+			}
+			placement.Mode = "partitioned"
+			placement.State = "active"
+			placement.PartitionError = ""
+		case "graph_group":
+			if !exists || placement.Mode != "partitioned" || placement.State != "active" || placement.Epoch != action.Epoch || state.Shards[action.Target].ID == "" || state.Shards[action.Target].Draining {
+				return conflict("graph target group is not available")
+			}
+			found := false
+			for _, id := range placement.GraphGroups {
+				found = found || id == action.Target
+			}
+			if !found {
+				placement.GraphGroups = append(append([]string(nil), placement.GraphGroups...), action.Target)
+				sort.Strings(placement.GraphGroups)
+			}
+		case "partition_error":
+			if !exists || placement.State != "partitioning" || placement.Epoch != action.Epoch {
+				return conflict("tenant is not partitioning")
+			}
+			if placement.PartitionError == action.Error {
+				return resultJSON(http.StatusOK, placement)
+			}
+			placement.PartitionError = action.Error
 		case "assign":
 			if exists {
 				if action.Target != "" && action.Target != placement.Shard {
@@ -120,6 +176,9 @@ func (a *Application) applyCatalog(ctx context.Context, action sharding.Action) 
 			}
 			placement.State = "active"
 		case "move":
+			if placement.Mode == "partitioned" || placement.State == "partitioning" {
+				return conflict("use graph partition migration for partitioned tenants")
+			}
 			if !exists || state.Shards[action.Target].ID == "" || state.Shards[action.Target].Draining || action.Target == placement.Shard {
 				return conflict("move requires an existing tenant and a different registered target shard")
 			}
@@ -220,6 +279,10 @@ func leastPopulatedShard(state sharding.Catalog) string {
 }
 
 func (c *Cluster) shardAction(ctx context.Context, action sharding.Action) ([]byte, error) {
+	if c.config.Protocol < 5 && (action.Operation == "begin_partition" || action.Operation == "partition_ready" || action.Operation == "partition_error" || action.Operation == "graph_group") {
+		return resultJSON(http.StatusConflict, map[string]any{"error": "graph partitions require catalog Raft protocol 5"})
+	}
+
 	if action.Operation == "stage" && action.Part == 0 {
 		if err := c.App.Store.CheckWriteDiskSpace(ctx, max(int64(len(action.Data))*4, action.Bytes*2)); err != nil {
 			return nil, err
