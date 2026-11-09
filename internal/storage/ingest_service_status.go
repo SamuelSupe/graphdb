@@ -8,6 +8,24 @@ import (
 	"fmt"
 )
 
+// WaitCommitted skips the normal batching delay through this acceptance.
+// Earlier batches still run first, and a failed attempt keeps its retry delay.
+func (s *IngestService) WaitCommitted(ctx context.Context, acceptance IngestAcceptance) (IngestResult, error) {
+	if pending := acceptance.pending; pending != nil {
+		select {
+		case <-acceptance.completion:
+		default:
+			select {
+			case s.forceCh <- ingestForceRequest{tenantID: pending.envelope.TenantID, throughLSN: acceptance.acceptedLSN, pending: pending}:
+			case <-acceptance.completion:
+			case <-ctx.Done():
+			case <-s.runCtx.Done():
+			}
+		}
+	}
+	return s.Wait(ctx, acceptance)
+}
+
 // Wait returns a completed outcome or stops when the caller or service stops.
 // A service error does not revoke durable acceptance; recovery can still finish
 // the batch. Already completed outcomes remain available after shutdown.

@@ -28,7 +28,7 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 	config.QueueMemoryBytes = 4 << 20
 	config.WAL.SegmentBytes = 1024 * 1024
 	config.FlushInterval = time.Hour
-	config.FlushMaxRequests = 1
+	config.FlushMaxRequests = 256
 	config.FlushTimeout = 5 * time.Second
 	service, err := storage.OpenIngestService(store, config)
 	if err != nil {
@@ -74,26 +74,13 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 		t.Fatalf("accepted body = %#v", acceptedBody)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		status := serveJSON(handler, http.MethodGet, location, "tenant-a", nil)
-		if status.Code != http.StatusOK {
-			t.Fatalf("status = %d body=%s", status.Code, status.Body.String())
-		}
-		var body storage.IngestBatchStatus
-		if err := json.Unmarshal(status.Body.Bytes(), &body); err != nil {
-			t.Fatal(err)
-		}
-		if body.State == storage.IngestStateCommitted {
-			if body.Result == nil || body.Result.Version != 1 {
-				t.Fatalf("committed status = %#v", body)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("batch did not commit: %#v", body)
-		}
-		time.Sleep(5 * time.Millisecond)
+	status := serveJSON(handler, http.MethodGet, location, "tenant-a", nil)
+	var body storage.IngestBatchStatus
+	if err := json.Unmarshal(status.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if status.Code != http.StatusOK || body.State != storage.IngestStateAccepted {
+		t.Fatalf("pending status = %d, %+v", status.Code, body)
 	}
 
 	request.BatchID = "batch-2"
@@ -102,7 +89,9 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitRequest := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", bytes.NewReader(requestJSON))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	waitRequest := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/ingest/batches", bytes.NewReader(requestJSON))
 	waitRequest.Header.Set("X-Tenant-ID", "tenant-a")
 	waitRequest.Header.Set("Content-Type", "application/json")
 	waitRequest.Header.Set("Prefer", "wait=committed")
@@ -120,6 +109,14 @@ func TestHTTPIngestWALAcceptedStatusAndPreferCommitted(t *testing.T) {
 	}
 	if result.Version != 2 {
 		t.Fatalf("wait result = %#v", result)
+	}
+	status = serveJSON(handler, http.MethodGet, location, "tenant-a", nil)
+	body = storage.IngestBatchStatus{}
+	if err := json.Unmarshal(status.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if status.Code != http.StatusOK || body.State != storage.IngestStateCommitted || body.Result == nil || body.Result.Version != 1 {
+		t.Fatalf("earlier batch did not commit in order: %d, %+v", status.Code, body)
 	}
 }
 

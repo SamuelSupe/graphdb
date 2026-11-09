@@ -1107,23 +1107,42 @@ func TestLocalWALCommitsWhileOversizedIndexesCatchUp(t *testing.T) {
 	resume := sync.OnceFunc(func() { close(blocked.resume) })
 	defer resume()
 
-	for version := int64(2); version <= 4; version++ {
+	predecessor := make(chan error, 1)
+	go func() {
+		_, err := store.Commit(ctx, "tenant-a", graph.Mutations{
+			UpsertEntities: []graph.Entity{{ID: "host:direct", Kind: "host"}},
+		}, CommitOptions{})
+		predecessor <- err
+	}()
+	select {
+	case <-blocked.paused:
+	case err := <-predecessor:
+		t.Fatalf("synchronous predecessor finished before pausing: %v", err)
+	case <-ctx.Done():
+		t.Fatal("synchronous predecessor did not reach index publication")
+	}
+	for version := int64(3); version <= 4; version++ {
 		request := ingestEntityRequest(fmt.Sprint("batch-", version), "host:updated")
 		request.Items[0].Entity.Fields["hostname"] = fmt.Sprint("name-", version)
 		accepted, err := service.Accept(ctx, "tenant-a", request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if version == 2 {
-			select {
-			case <-blocked.paused:
-			case <-ctx.Done():
-				t.Fatal("index publication did not start")
-			}
-		}
 		result, err := service.Wait(ctx, accepted)
 		if err != nil || result.Version != version || result.Applied != 1 {
 			t.Fatalf("WAL did not commit while the catalog was paused: %+v, %v", result, err)
+		}
+		if version == 3 {
+			// Occupy the remaining slots without allowing these tenants to
+			// compete for build memory. The next batch must join version 3.
+			for i := 1; i < maxBackgroundIndexUpdates; i++ {
+				tenant := fmt.Sprint("held-", i)
+				end := store.beginLocalIndexMaintenance(ctx, tenant)
+				defer end()
+				if _, err := store.Ingest(ctx, tenant, ingestEntityRequest("held", "host:held")); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
 	g, manifest, err := store.Load(ctx, "tenant-a")
@@ -1138,6 +1157,14 @@ func TestLocalWALCommitsWhileOversizedIndexesCatchUp(t *testing.T) {
 		t.Fatalf("paused catalog health: %+v, %v", health, err)
 	}
 	resume()
+	select {
+	case err := <-predecessor:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("synchronous predecessor did not complete")
+	}
 	for {
 		catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
 		if err == nil && catalog.Version == 4 {
@@ -1156,6 +1183,112 @@ func TestLocalWALCommitsWhileOversizedIndexesCatchUp(t *testing.T) {
 			t.Fatalf("catalog did not catch up: version=%d, err=%v", catalog.Version, err)
 		case <-time.After(time.Millisecond):
 		}
+	}
+}
+
+func TestLocalWALBoundsIndexRebuildsDuringDeltaOverflow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	blocked := &versionedCatalogPause{
+		ObjectStore: files, version: 5, paused: make(chan struct{}), resume: make(chan struct{}),
+	}
+	store := NewTenantStore(blocked, "test")
+	store.MaxMaintenanceBytes = 256 << 10
+	defer store.ShutdownTasks(context.Background())
+	rebuild := &indexRetryPause{phase: "index_deferred_rebuild", paused: make(chan struct{}), resume: make(chan struct{})}
+	close(rebuild.resume)
+	store.backpressureObserver = rebuild
+	seed := indexMutations()
+	seed.UpsertEntities[0].Fields["padding"] = strings.Repeat("x", 256<<10)
+	if _, err := store.Commit(ctx, "tenant-a", seed, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	config := testIngestServiceConfig(t)
+	config.FlushMaxRequests = 1
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	resume := sync.OnceFunc(func() { close(blocked.resume) })
+	defer resume()
+	_, release, err := store.admitMaintenance(ctx, store.MaxMaintenanceBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release = sync.OnceFunc(release)
+	defer release()
+	accept := func(version int) IngestAcceptance {
+		t.Helper()
+		request := ingestEntityRequest(fmt.Sprint("overflow-", version), fmt.Sprint("host:overflow-", version))
+		accepted, err := service.Accept(ctx, "tenant-a", request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return accepted
+	}
+	for version := 2; version < 5; version++ {
+		if result, err := service.Wait(ctx, accept(version)); err != nil || result.Version != int64(version) {
+			t.Fatalf("batch before overflow did not commit: %+v, %v", result, err)
+		}
+	}
+	overflow := accept(5)
+	for {
+		manifest, _, err := store.getManifest(ctx, "tenant-a")
+		if err == nil && manifest.Version == 5 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("overflowing batch did not publish its manifest: %+v, %v", manifest, err)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	release()
+	select {
+	case <-blocked.paused:
+	case <-ctx.Done():
+		t.Fatal("overflow did not schedule a catalog rebuild")
+	}
+	const lastVersion = 21
+	var last IngestAcceptance
+	for version := 6; version <= lastVersion; version++ {
+		last = accept(version)
+	}
+	select {
+	case <-overflow.completion:
+		t.Fatal("overflowing batch completed before its repair released the backlog")
+	default:
+	}
+	manifest, _, err := store.getManifest(ctx, "tenant-a")
+	if err != nil || manifest.Version != 5 {
+		t.Fatalf("backlog advanced while repair was blocked: version=%d, err=%v", manifest.Version, err)
+	}
+	resume()
+	if result, err := service.WaitCommitted(ctx, last); err != nil || result.Version != lastVersion {
+		t.Fatalf("backlog did not commit after repair: %+v, %v", result, err)
+	}
+	for {
+		health, err := store.IndexHealth(ctx, "tenant-a")
+		if err == nil && health.CatalogVersion == lastVersion && !health.Updating {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("backlog indexes did not catch up: health=%+v, err=%v", health, err)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if got := rebuild.calls.Load(); got != 1 {
+		t.Fatalf("deferred rebuilds=%d, want 1", got)
 	}
 }
 

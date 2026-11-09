@@ -15,9 +15,8 @@ const (
 	maxBackgroundIndexAttempts = 3
 )
 
-// Retain bounded incremental batches in publication order. Coalesce only the
-// last queued batch; a full delta starts another batch rather than a rebuild.
-// Read views keep every queued version's inputs alive through publication.
+// Coalesce the last queued batch in publication order. Each worker retains a
+// read view through index publication.
 func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate, deferOversized bool) bool {
 	if IsReplicatedContext(ctx) {
 		return false
@@ -50,22 +49,35 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	work.retainIndexInputs()
 	work.fence = bound.fence
 	work.background = true
+	bytes := pendingIndexBytes(work.before, work.after)
+	oversized := deferOversized && bytes > s.backgroundIndexByteLimit()
 	s.indexUpdateMu.Lock()
-	deferred := s.localIndexMaintenance[tenantID] > 0
-	// An unreserved predecessor may need the full budget before it can finish.
-	if !deferred && s.indexUnreservedTails[tenantID] != nil {
+	maintenance := s.localIndexMaintenance[tenantID] > 0
+	deferred := maintenance || oversized
+	if s.indexDeferredRepairs[tenantID] != nil {
 		s.indexUpdateMu.Unlock()
 		release()
 		return false
 	}
 	if pending := s.pendingIngestIndexes[tenantID]; pending != nil && pending.fence == work.fence && s.indexUpdateTails[tenantID] == pending.done {
-		if deferred && pending.onlineRebuild && pending.after == nil {
-			s.mergeDeferredIndexUpdate(pending, work)
+		if pending.deferred && (deferred || pending.maintenanceDone != nil) {
+			overflow := s.mergeDeferredIndexUpdate(pending, work)
+			if overflow {
+				// This repair covers the new head. Slow down WAL publication
+				// until it finishes so another overflowing delta cannot pile up.
+				if s.indexDeferredRepairs == nil {
+					s.indexDeferredRepairs = make(map[string]chan struct{})
+				}
+				s.indexDeferredRepairs[tenantID] = pending.done
+			}
 			s.indexUpdateMu.Unlock()
 			release()
-			return true
+			if overflow {
+				s.recordMaintenance("index_deferred_overflow", time.Now())
+			}
+			return !overflow
 		}
-		if !deferred && pending.reservation != nil && pending.version == work.baseVersion &&
+		if !deferred && s.indexUnreservedTails[tenantID] == nil && pending.reservation != nil && pending.version == work.baseVersion &&
 			len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
 				len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges &&
 			pending.reservation.resize(pendingIndexBytes(pending.before, work.after)) {
@@ -75,42 +87,41 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 			return true
 		}
 	}
-	if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
+	// An unreserved predecessor may need the full budget before it can finish.
+	if (!deferred && s.indexUnreservedTails[tenantID] != nil) || s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
 		s.indexUpdateMu.Unlock()
 		release()
 		return false
 	}
 	if !deferred {
-		bytes := pendingIndexBytes(work.before, work.after)
-		deferred = deferOversized && bytes > s.backgroundIndexByteLimit()
-		if !deferred {
-			// Capacity can become available after the caller releases the tenant lock.
-			work.reservation = s.reserveIndexMemory(bytes)
-			if work.reservation == nil {
-				s.indexUpdateMu.Unlock()
-				release()
-				return false
-			}
+		// Capacity can become available after the caller releases the tenant lock.
+		work.reservation = s.reserveIndexMemory(bytes)
+		if work.reservation == nil {
+			s.indexUpdateMu.Unlock()
+			release()
+			return false
 		}
 	}
 	if deferred {
 		// Retain only the delta until the predecessor and build budget are ready.
-		input := *work
-		*work = commitIndexUpdate{baseVersion: input.baseVersion, version: input.baseVersion, onlineRebuild: true, background: true, fence: input.fence}
-		s.mergeDeferredIndexUpdate(work, &input)
-		if s.localIndexMaintenance == nil {
-			s.localIndexMaintenance = make(map[string]int)
+		next := commitIndexUpdate{baseVersion: work.baseVersion, version: work.baseVersion, deferred: true, background: true, fence: work.fence}
+		overflow := s.mergeDeferredIndexUpdate(&next, work)
+		if overflow && !maintenance {
+			// The original update can still apply a single large batch incrementally.
+			s.indexUpdateMu.Unlock()
+			release()
+			return false
 		}
-		s.localIndexMaintenance[tenantID]++
-		if maintenance := s.localMaintenanceWait[tenantID]; maintenance != nil {
-			work.maintenanceDone = maintenance.done
+		*work = next
+		if completion := s.localMaintenanceWait[tenantID]; completion != nil {
+			work.maintenanceDone = completion.done
 		}
 	}
 	s.activeIngestIndexUpdates++
 	work.done = make(chan struct{})
 	work.waitFor = s.indexUpdateTails[tenantID]
 	s.indexUpdateTails[tenantID] = work.done
-	if work.onlineRebuild {
+	if work.deferred {
 		s.indexUnreservedTails[tenantID] = work.done
 	}
 	if s.pendingIngestIndexes == nil {

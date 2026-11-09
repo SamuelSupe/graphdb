@@ -25,6 +25,7 @@ type commitIndexUpdate struct {
 	background         bool
 	rebuild            bool
 	onlineRebuild      bool
+	deferred           bool
 	deferredEntities   map[string]graph.Entity
 	deferredEdges      map[string]graph.Edge
 	deferredBytes      int64
@@ -56,7 +57,7 @@ func (s *TenantStore) enqueueCommitIndexUpdate(ctx context.Context, tenantID str
 		work.fence = bound.fence
 	}
 	s.indexUpdateMu.Lock()
-	if pending := s.pendingIngestIndexes[tenantID]; local && !work.rebuild && pending != nil && !pending.onlineRebuild && pending.reservation == nil &&
+	if pending := s.pendingIngestIndexes[tenantID]; local && !work.rebuild && pending != nil && !pending.deferred && !pending.onlineRebuild && pending.reservation == nil &&
 		s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
 		len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
 			len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges {
@@ -139,8 +140,7 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 		s.recordMaintenance("index_wait_previous", started)
 	}
 	s.indexUpdateMu.Lock()
-	deferred := work.onlineRebuild && work.after == nil
-	if !deferred && s.pendingIngestIndexes[tenantID] == work {
+	if !work.deferred && s.pendingIngestIndexes[tenantID] == work {
 		delete(s.pendingIngestIndexes, tenantID)
 	}
 	s.indexUpdateMu.Unlock()
@@ -158,7 +158,7 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 			return err
 		}
 	}
-	if deferred {
+	if work.deferred {
 		for {
 			buildCtx := context.WithValue(ctx, maintenanceBudgetKey{}, (*TenantStore)(nil))
 			s.indexUpdateMu.Lock()
@@ -194,7 +194,7 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 			}
 			// A direct commit or rebuild can have joined behind this demand. Its
 			// changes are not in our delta, so only a full build can cover that head.
-			if s.pendingIngestIndexes[tenantID] != work || s.indexUpdateTails[tenantID] != work.done || loaded.Manifest.Version != work.version {
+			if loaded.Manifest.Version != work.version {
 				work.baseVersion = -1
 			}
 			if s.pendingIngestIndexes[tenantID] == work {
@@ -242,6 +242,9 @@ func (s *TenantStore) completeIndexUpdate(tenantID string, done chan struct{}) {
 	defer s.indexUpdateMu.Unlock()
 	if s.indexUnreservedTails[tenantID] == done {
 		delete(s.indexUnreservedTails, tenantID)
+	}
+	if s.indexDeferredRepairs[tenantID] == done {
+		delete(s.indexDeferredRepairs, tenantID)
 	}
 	if s.indexUpdateTails[tenantID] == done {
 		delete(s.indexUpdateTails, tenantID)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -568,8 +569,12 @@ func TestBackgroundIndexFailureReleasesResourcesAndAllowsRepair(t *testing.T) {
 				for {
 					store.indexUpdateMu.Lock()
 					active := store.activeIngestIndexUpdates
+					queued := len(store.indexUpdateTails) + len(store.indexUnreservedTails) + len(store.indexDeferredRepairs) + len(store.localIndexMaintenance)
 					store.indexUpdateMu.Unlock()
 					if active == 0 {
+						if queued != 0 {
+							t.Fatal("failed work retained index queue or maintenance state")
+						}
 						break
 					}
 					select {
@@ -623,6 +628,7 @@ func TestBackgroundIndexFailureReleasesResourcesAndAllowsRepair(t *testing.T) {
 
 type indexRetryPause struct {
 	once           sync.Once
+	calls          atomic.Int64
 	paused, resume chan struct{}
 	phase          string
 }
@@ -632,6 +638,7 @@ func (*indexRetryPause) RecordCommitTail(string, int)          {}
 func (*indexRetryPause) RecordMaintenanceMemory(string, int64) {}
 func (p *indexRetryPause) RecordMaintenancePhase(phase string, _ time.Duration) {
 	if phase == p.phase || (p.phase == "" && phase == "index_retry") {
+		p.calls.Add(1)
 		p.once.Do(func() { close(p.paused); <-p.resume })
 	}
 }

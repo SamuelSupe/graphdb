@@ -18,6 +18,7 @@ type ingestWorkerCompletion struct {
 type ingestForceRequest struct {
 	tenantID   string
 	throughLSN uint64
+	pending    *ingestPending // a wait=committed request skips batching only
 }
 
 type ingestTenantQueue struct {
@@ -25,6 +26,7 @@ type ingestTenantQueue struct {
 	items    []*ingestPending
 	bytes    int64
 	deadline time.Time
+	retryAt  time.Time
 	index    int
 }
 
@@ -92,8 +94,12 @@ func (s *IngestService) schedule() {
 		if len(queue.items) >= s.config.FlushMaxRequests ||
 			queue.bytes >= s.config.FlushMaxBytes ||
 			pending.envelope.Request.FullSync ||
+			pending.flushRequested ||
 			pending.acceptedLSN <= forceThrough[tenantID] {
 			queue.deadline = time.Now()
+			if queue.deadline.Before(queue.retryAt) {
+				queue.deadline = queue.retryAt
+			}
 			heap.Fix(&deadlines, queue.index)
 		}
 	}
@@ -184,12 +190,24 @@ func (s *IngestService) schedule() {
 		case pending := <-s.enqueueCh:
 			admit(pending)
 		case force := <-s.forceCh:
+			if force.pending != nil {
+				force.pending.flushRequested = true
+				if queue := queues[force.tenantID]; queue != nil && queue.items[0].acceptedLSN <= force.throughLSN {
+					now := time.Now()
+					if queue.deadline.After(now) && !queue.retryAt.After(now) {
+						queue.deadline = now
+						heap.Fix(&deadlines, queue.index)
+					}
+				}
+				continue
+			}
 			forceThrough[force.tenantID] = max(forceThrough[force.tenantID], force.throughLSN)
 			if busy[force.tenantID] {
 				forceRetry[force.tenantID] = true
 			}
 			if queue := queues[force.tenantID]; queue != nil {
 				queue.deadline = time.Now()
+				queue.retryAt = time.Time{}
 				heap.Fix(&deadlines, queue.index)
 			}
 		case completion := <-s.completeCh:
@@ -207,7 +225,7 @@ func (s *IngestService) schedule() {
 					}
 					queues[completion.tenantID] = queue
 					heap.Push(&deadlines, queue)
-				} else if queue.deadline.Before(retryDeadline) {
+				} else {
 					queue.deadline = retryDeadline
 					heap.Fix(&deadlines, queue.index)
 				}
@@ -220,6 +238,8 @@ func (s *IngestService) schedule() {
 				if forced {
 					queue.deadline = time.Now()
 					heap.Fix(&deadlines, queue.index)
+				} else {
+					queue.retryAt = retryDeadline
 				}
 			}
 		case <-timerCh:

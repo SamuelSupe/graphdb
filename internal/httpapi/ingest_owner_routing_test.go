@@ -87,7 +87,7 @@ func (s *ownerRoutingIngestService) Accept(context.Context, string, storage.Inge
 	return s.acceptance, nil
 }
 
-func (s *ownerRoutingIngestService) Wait(context.Context, storage.IngestAcceptance) (storage.IngestResult, error) {
+func (s *ownerRoutingIngestService) WaitCommitted(context.Context, storage.IngestAcceptance) (storage.IngestResult, error) {
 	return storage.IngestResult{}, nil
 }
 

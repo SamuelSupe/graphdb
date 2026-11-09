@@ -67,6 +67,7 @@ sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{
 HTTP 202 的耗时衡量采集请求到 WAL 受理响应的时间。终态直方图
 `graphdb_ingest_wal_terminal_duration_seconds` 从批次的 `accepted_at` 起算，
 到后台完成 WAL 终态处理时记录，包含等待调度、发布和重试的时间。
+重启后完成的批次也从原始受理时间起算，包含停机时间，可能拉高恢复窗口的 P99。
 `state="committed"` 和 `state="failed"` 分开统计。每条已受理的 WAL 记录完成时记一次，
 包括重新进入 WAL 后以幂等结果完成的重试。用
 `graphdb_ingest_queue_oldest_seconds` 同时观察仍在等待的批次。

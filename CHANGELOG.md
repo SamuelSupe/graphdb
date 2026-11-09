@@ -3,6 +3,18 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [Unreleased]
+
+- **Breaking for standalone Compose ingest clients.** The default changes from
+  `direct` to a sync-durable local WAL. `POST /v1/ingest/batches` returns HTTP
+  202 after durable acceptance. Poll `status_url` for the terminal result before
+  relying on the write being visible. Use `GRAPHDB_INGEST_MODE=direct` to retain
+  the previous synchronous behavior. With WAL enabled, `Prefer: wait=committed`
+  requests an immediate flush in tenant order and returns the terminal result.
+- Allow oversized WAL index updates to queue behind a synchronous predecessor
+  and merge with pending work at the background limit. Bound repeated full
+  rebuilds under delta overflow and expose the fallback in maintenance metrics.
+
 ## [2.5.0] - 2026-11-09
 
 - Add opt-in large-graph partitioning across Raft groups with protocol 5.

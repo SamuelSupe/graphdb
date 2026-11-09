@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
@@ -37,6 +38,9 @@ func (s *TenantStore) updateIndexesAfterCommit(ctx context.Context, tenantID str
 			return fmt.Errorf("index catalog version %d does not match previous graph version %d", catalog.Version, baseVersion)
 		}
 		if ordered {
+			if baseVersion < 0 {
+				defer s.recordMaintenance("index_deferred_rebuild", time.Now())
+			}
 			_, err := s.rebuildIndexesFromGraph(ctx, tenantID, after, Manifest{Version: version})
 			return err
 		}

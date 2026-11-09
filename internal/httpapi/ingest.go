@@ -123,7 +123,7 @@ func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantI
 	w.Header().Set("Location", statusPath)
 	if preferCommitted(r.Header.Get("Prefer")) {
 		w.Header().Set("Preference-Applied", "wait=committed")
-		result, waitErr := s.IngestService.Wait(r.Context(), accepted)
+		result, waitErr := s.IngestService.WaitCommitted(r.Context(), accepted)
 		if waitErr != nil {
 			writeStorageError(w, waitErr)
 			return

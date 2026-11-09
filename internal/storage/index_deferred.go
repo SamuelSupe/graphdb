@@ -8,7 +8,7 @@ import (
 
 // Keep old scalar values and edge endpoints, not graphs or source histories.
 // A small byte cap also bounds an unusually large indexed scalar value.
-func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate) {
+func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate) (overflow bool) {
 	pending.deferredGraphBytes = maintenanceGraphBytes(next.after)
 	defer func() {
 		pending.version = next.version
@@ -17,10 +17,9 @@ func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate)
 			pending.deferredBytes = 0
 		}
 	}()
-	if pending.baseVersion < 0 || pending.version != next.baseVersion || next.before == nil || next.rebuild || !canIncrementIndexes(next.mutations) ||
-		len(pending.deferredEntities)+len(pending.deferredEdges)+len(next.report.AffectedEntityIDs)+len(next.report.AffectedEdgeIDs) > maxPendingIndexChanges {
+	if pending.baseVersion < 0 || pending.version != next.baseVersion || next.before == nil || next.rebuild || !canIncrementIndexes(next.mutations) {
 		pending.baseVersion = -1
-		return
+		return false
 	}
 	limit := min(s.backgroundIndexByteLimit()/64, int64(maxPendingIndexChanges)*1024)
 	if pending.deferredEntities == nil {
@@ -39,9 +38,9 @@ func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate)
 				}
 			}
 			pending.deferredBytes += bytes
-			if pending.deferredBytes > limit {
+			if pending.deferredBytes > limit || len(pending.deferredEntities)+len(pending.deferredEdges) == maxPendingIndexChanges {
 				pending.baseVersion = -1
-				return
+				return true
 			}
 			pending.deferredEntities[id] = image
 		}
@@ -50,13 +49,14 @@ func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate)
 		if _, seen := pending.deferredEdges[id]; !seen {
 			edge, _ := next.before.Edges.Get(id)
 			pending.deferredBytes += int64(1024 + len(id) + len(edge.Type) + len(edge.From) + len(edge.To))
-			if pending.deferredBytes > limit {
+			if pending.deferredBytes > limit || len(pending.deferredEntities)+len(pending.deferredEdges) == maxPendingIndexChanges {
 				pending.baseVersion = -1
-				return
+				return true
 			}
 			pending.deferredEdges[id] = graph.Edge{ID: edge.ID, Type: edge.Type, From: edge.From, To: edge.To}
 		}
 	}
+	return false
 }
 
 func (s *TenantStore) prepareDeferredIndexBase(ctx context.Context, tenantID string, work *commitIndexUpdate) error {

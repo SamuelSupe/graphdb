@@ -169,7 +169,9 @@ Direct writes return their published result. WAL mode returns 202 after durable
 acceptance; that is not yet a committed graph version. Poll the response's
 `status_url` or use `Prefer: wait=committed`. Status URLs use
 `/v1/ingest/batches/{source}/{collector_id}/{batch_id}`. Legacy writer-routed URLs
-return 501. A restart recovers accepted requests from the existing WAL format.
+return 501. A committed-result wait skips the normal batching interval while
+respecting tenant order and retry backoff. A restart recovers accepted requests
+from the existing WAL format.
 If the WAL service fails or is forced to close, a committed-result wait returns
 the service error promptly. Caller cancellation and deadlines also end the wait.
 These errors do not revoke durable acceptance: retain `Location` and check status
@@ -187,14 +189,20 @@ syncs data before advancing the boundary. Boundary persistence adds a metadata
 sync to each sync-mode group; no throughput improvement is claimed.
 
 After direct/WAL ingest manifest publication, an in-process worker advances indexes in version
-order. At most eight background updates are retained across all tenants; when
-full, ingest finishes its index work synchronously after releasing the tenant lock.
+order. At most eight background updates are retained across all tenants. When
+full, work that cannot merge with a queued update finishes synchronously after
+releasing the tenant lock.
 Adjacent pending batches share a bounded delta. Regular incremental batches
 start a new batch above 8192 change references. When a standalone WAL update's
 graph estimates exceed the maintenance budget, it queues only the bounded
 changes and captures the graph after the predecessor and build budget are
-ready. If the delta overflows or the catalog base no longer matches, the
-worker rebuilds from the current head. `committed` still means durable, readable graph
+ready, including behind synchronous index work. The sparse delta holds up to
+8192 unique references and `min(maintenance budget / 64, 8 MiB)` estimated bytes.
+A single oversized WAL delta that exceeds that bound ordinarily uses the
+synchronous incremental path. When coalescing crosses the bound, the queued
+update rebuilds from the current head, and the affected tenant's flush waits
+for the repair so another delta cannot overflow during that rebuild. A catalog
+base mismatch can also require a rebuild. `committed` still means durable, readable graph
 data. Queries use a graph view meeting `min_version` when indexes lag. The
 `/v1/commits` API still waits for its index update and shares that ordering chain. GC, restore, and directory close
 wait for those file references. A crash can leave indexes behind the durable
@@ -341,7 +349,7 @@ When the write cache is empty, a resident reader graph can serve the first write
 
 Compaction encodes its already-normalized graph snapshot directly instead of decoding a second full graph through JSON. The stored content hash still uses the same legacy JSON payload, and externally supplied snapshot records continue through normalization. Full snapshot records, sharded snapshots and their publication barriers remain present.
 
-`graphdb_maintenance_phase_seconds` exposes `gc_wait_views`, `gc_wait_tenant`, `gc_hold`, `gc_sync`, `index_wait_previous`, `index_work`, `memory_wait`, `tenant_wait`, `tenant_hold`, and `file_batch_sync`. Phases can nest and must not be added as independent durations. `graphdb_maintenance_estimated_bytes{pool="active"}` and `{pool="pending_indexes"}` report charged estimates, not measured RSS.
+`graphdb_maintenance_phase_seconds` exposes `gc_wait_views`, `gc_wait_tenant`, `gc_hold`, `gc_sync`, `index_wait_previous`, `index_work`, `memory_wait`, `tenant_wait`, `tenant_hold`, and `file_batch_sync`. Phases can nest and must not be added as independent durations. Use the histogram's `_count` with `phase="index_deferred_overflow"` for coalescing overflows and `phase="index_deferred_rebuild"` for deferred rebuild attempts. `graphdb_maintenance_estimated_bytes{pool="active"}` and `{pool="pending_indexes"}` report charged memory estimates.
 
 Entity, edge, top-level adjacency and field-index maps use 256 copy-on-write buckets;
 maps with at most 32 entries retain a compact representation. Published versions

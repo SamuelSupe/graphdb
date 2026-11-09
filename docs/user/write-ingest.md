@@ -348,7 +348,9 @@ WAL fsync. A collector can save the batch identity and `status_url`, continue
 submitting batches, and check for `committed` or `failed` separately. Use the
 same idempotency key when retrying an ambiguous submission. Send
 `Prefer: wait=committed` when the caller needs the terminal result before
-proceeding. Cancellation, timeout, service failure, or forced shutdown ends
+proceeding. On standalone WAL this wakes the tenant's flush through the accepted
+batch, skipping the normal batching interval. Earlier batches and retry backoff
+still apply. Cancellation, timeout, service failure, or forced shutdown ends
 the wait without revoking durable acceptance. A service failure returns its
 storage error instead of a request timeout. Keep `Location` for a status query
 after recovery, or retry with the same batch identity:

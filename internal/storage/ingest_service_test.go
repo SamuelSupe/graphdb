@@ -181,9 +181,11 @@ func TestIngestSchedulerPreservesForceDuringFailedFlush(t *testing.T) {
 		t.Fatal("forced flush was lost behind retry backoff")
 	}
 	service.completeCh <- completion
+	service.forceCh <- ingestForceRequest{tenantID: "tenant-a", throughLSN: 1, pending: pending}
+	service.enqueueCh <- &ingestPending{acceptedLSN: 2, envelope: walIngestEnvelope{TenantID: "tenant-a", AcceptedAt: time.Now()}}
 	select {
 	case <-service.readyCh:
-		t.Fatal("one force request disabled backoff for subsequent failures")
+		t.Fatal("a committed wait or a new batch disabled retry backoff")
 	case <-time.After(20 * time.Millisecond):
 	}
 	service.forceCh <- ingestForceRequest{tenantID: "tenant-a", throughLSN: 1}

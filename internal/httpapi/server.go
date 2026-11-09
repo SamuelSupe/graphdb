@@ -51,7 +51,7 @@ type Server struct {
 type IngestService interface {
 	WriterID() string
 	Accept(context.Context, string, storage.IngestRequest) (storage.IngestAcceptance, error)
-	Wait(context.Context, storage.IngestAcceptance) (storage.IngestResult, error)
+	WaitCommitted(context.Context, storage.IngestAcceptance) (storage.IngestResult, error)
 	Status(context.Context, string, string, string, string) (storage.IngestBatchStatus, error)
 	Readiness() storage.IngestServiceReadiness
 	ObserveMetrics()

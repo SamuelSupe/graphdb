@@ -204,7 +204,8 @@ type ingestPending struct {
 	done             chan struct{}
 	completedOnce    sync.Once
 
-	retryAttempts int
+	retryAttempts  int
+	flushRequested bool // scheduler-owned
 }
 
 type ingestAcceptFlight struct {
