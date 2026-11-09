@@ -12,7 +12,8 @@ import (
 )
 
 // CheckLocalReceiptDatabase verifies packed records and bbolt page consistency
-// under offline ownership.
+// under offline ownership. Run it in an isolated process when checking a
+// potentially corrupt database because bbolt walks pages in its own goroutine.
 func CheckLocalReceiptDatabase(ctx context.Context, root, prefix, tenant string) (count int, err error) {
 	if err := ValidateTenantID(tenant); err != nil {
 		return 0, err
@@ -30,7 +31,7 @@ func CheckLocalReceiptDatabase(ctx context.Context, root, prefix, tenant string)
 	}
 	if err := files.verifySafeParent(filename); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return 0, nil
+			return 0, fmt.Errorf("tenant %q directory: %w", tenant, err)
 		}
 		return 0, err
 	}

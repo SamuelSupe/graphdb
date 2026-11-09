@@ -10,7 +10,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func TestReceiptPackDiscoveryReportsTimeout(t *testing.T) {
+func TestReceiptPackDiscoveryRetriesWithBackoffAndSeparateBudget(t *testing.T) {
 	ctx := context.Background()
 	files, err := storage.OpenFileStore(t.TempDir())
 	if err != nil {
@@ -20,18 +20,52 @@ func TestReceiptPackDiscoveryReportsTimeout(t *testing.T) {
 	if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
 		t.Fatal(err)
 	}
-	store := storage.NewTenantStore(storage.NewDelayedReadObjectStore(files, 2*time.Second), "graphdb")
+	probe := &receiptDiscoveryProbe{ObjectStore: files}
+	store := storage.NewTenantStore(probe, "graphdb")
 	defer store.ShutdownTasks(ctx)
 	var audit error
+	audits := 0
 	runner := &Runner{Store: store, Audit: func(event, _ string, err error, _ map[string]any) {
 		if event == "receipt_pack_list_failed" {
 			audit = err
+			audits++
 		}
 	}}
-	discovered, offset := false, 0
-	runner.packLocalReceipts(ctx, &discovered, map[string]receiptPackProgress{}, &offset)
-	if discovered || !errors.Is(audit, context.DeadlineExceeded) {
-		t.Fatalf("expected a retryable discovery timeout in the audit log, discovered=%v err=%v", discovered, audit)
+	var discovery receiptPackDiscovery
+	offset := 0
+	packs := map[string]receiptPackProgress{}
+	runner.packLocalReceipts(ctx, &discovery, packs, &offset)
+	runner.packLocalReceipts(ctx, &discovery, packs, &offset)
+	if discovery.done || probe.calls != 1 || audits != 1 || !errors.Is(audit, context.DeadlineExceeded) {
+		t.Fatalf("expected one discovery attempt and one timeout audit, got state=%+v calls=%d audits=%d err=%v", discovery, probe.calls, audits, audit)
+	}
+	discovery.retryAt = time.Now().Add(-time.Second)
+	runner.packLocalReceipts(ctx, &discovery, packs, &offset)
+	if !discovery.done || probe.calls != 2 || audits != 1 {
+		t.Fatalf("discovery could not complete after backoff: state=%+v calls=%d audits=%d", discovery, probe.calls, audits)
+	}
+}
+
+type receiptDiscoveryProbe struct {
+	storage.ObjectStore
+	calls int
+}
+
+func (p *receiptDiscoveryProbe) UnwrapObjectStore() storage.ObjectStore { return p.ObjectStore }
+
+func (p *receiptDiscoveryProbe) GetWithMeta(ctx context.Context, key string) ([]byte, storage.ObjectMeta, error) {
+	p.calls++
+	if p.calls == 1 {
+		return nil, storage.ObjectMeta{}, context.DeadlineExceeded
+	}
+	// A registry read may take longer than one receipt packing page.
+	timer := time.NewTimer(800 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, storage.ObjectMeta{}, ctx.Err()
+	case <-timer.C:
+		return p.ObjectStore.GetWithMeta(ctx, key)
 	}
 }
 
@@ -71,14 +105,15 @@ func TestReceiptPackingStopsScanningAndReschedulesLooseWrites(t *testing.T) {
 	}
 	write("first")
 	runner := &Runner{Store: store}
-	discovered, offset := false, 0
+	var discovery receiptPackDiscovery
+	offset := 0
 	packs := map[string]receiptPackProgress{}
-	tick := func() { runner.packLocalReceipts(ctx, &discovered, packs, &offset) }
+	tick := func() { runner.packLocalReceipts(ctx, &discovery, packs, &offset) }
 
 	// The first page finishes the direct prefix. A new write to that
 	// prefix before the ingest page finishes requires another sweep.
 	tick()
-	if !discovered || packs[tenant].cursor == "" {
+	if !discovery.done || packs[tenant].cursor == "" {
 		t.Fatalf("initial receipt sweep did not start: %+v", packs)
 	}
 	write("second")

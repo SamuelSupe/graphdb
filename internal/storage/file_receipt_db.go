@@ -302,7 +302,9 @@ func (s *FileStore) trimReceiptDBs() {
 	s.receiptMu.Unlock()
 	_ = oldest.close()
 	s.receiptMu.Lock()
-	delete(s.receiptDBs, oldestKey)
+	if s.receiptDBs[oldestKey] == oldest {
+		delete(s.receiptDBs, oldestKey)
+	}
 	close(oldest.closing)
 	s.receiptMu.Unlock()
 }

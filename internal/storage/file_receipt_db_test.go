@@ -194,8 +194,8 @@ func TestReceiptReadOnlyHandlePromotesAndCallbackPanicRollsBack(t *testing.T) {
 func TestReceiptCheckDetectsLivePageMarkedFree(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	if count, err := CheckLocalReceiptDatabase(ctx, root, "graphdb", "absent"); err != nil || count != 0 {
-		t.Fatalf("empty tenant check = %d, %v", count, err)
+	if _, err := CheckLocalReceiptDatabase(ctx, root, "graphdb", "absent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing tenant check = %v", err)
 	}
 	files, err := OpenFileStore(root)
 	if err != nil {
@@ -206,12 +206,18 @@ func TestReceiptCheckDetectsLivePageMarkedFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewTenantStore(files, "graphdb")
+	if _, err := store.InitTenant(ctx, "unpacked"); err != nil {
+		t.Fatal(err)
+	}
 	request := ingestEntityRequest("checked", "host:checked")
 	if _, err := store.Ingest(ctx, "hot", request); err != nil {
 		t.Fatal(err)
 	}
 	if err := files.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if count, err := CheckLocalReceiptDatabase(ctx, root, "graphdb", "unpacked"); err != nil || count != 0 {
+		t.Fatalf("existing unpacked tenant check = %d, %v", count, err)
 	}
 	filename := filepath.Join(root, "graphdb", "tenants", "hot", receiptDatabase)
 	db, err := bolt.Open(filename, 0600, &bolt.Options{ReadOnly: true, PreLoadFreelist: true})

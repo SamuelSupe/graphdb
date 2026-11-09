@@ -131,7 +131,7 @@ func (s *Runner) Start(ctx context.Context, interval time.Duration) {
 			pressureTick = pressure.C
 		}
 		packs := map[string]receiptPackProgress{}
-		receiptsDiscovered := false
+		var discovery receiptPackDiscovery
 		receiptOffset, gcOffset := 0, 0
 		for {
 			select {
@@ -142,7 +142,7 @@ func (s *Runner) Start(ctx context.Context, interval time.Duration) {
 			case <-pressureTick:
 				_ = s.run(ctx, time.Now().UTC(), true)
 			case <-receiptTick:
-				s.packLocalReceipts(ctx, &receiptsDiscovered, packs, &receiptOffset)
+				s.packLocalReceipts(ctx, &discovery, packs, &receiptOffset)
 			case <-followup.C:
 				s.continueGC(ctx, &gcOffset)
 			}
@@ -156,18 +156,25 @@ type receiptPackProgress struct {
 	retryAt  time.Time
 }
 
-func (s *Runner) packLocalReceipts(ctx context.Context, discovered *bool, packs map[string]receiptPackProgress, offset *int) {
+type receiptPackDiscovery struct {
+	done    bool
+	retryAt time.Time
+}
+
+func (s *Runner) packLocalReceipts(ctx context.Context, discovery *receiptPackDiscovery, packs map[string]receiptPackProgress, offset *int) {
+	if !discovery.done && !time.Now().Before(discovery.retryAt) {
+		list, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := s.Store.QueueExistingLocalReceiptPacks(list)
+		cancel()
+		if err == nil {
+			discovery.done = true
+		} else if ctx.Err() == nil {
+			discovery.retryAt = time.Now().Add(30 * time.Second)
+			s.auditError("receipt_pack_list_failed", "", err, map[string]any{"retry_at": discovery.retryAt.UTC()})
+		}
+	}
 	work, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
 	defer cancel()
-	if !*discovered {
-		if err := s.Store.QueueExistingLocalReceiptPacks(work); err != nil {
-			if ctx.Err() == nil {
-				s.auditError("receipt_pack_list_failed", "", err, nil)
-			}
-			return
-		}
-		*discovered = true
-	}
 	pending := s.Store.PendingLocalReceiptPacks()
 	tenants := slices.Sorted(maps.Keys(pending))
 	for count := 0; count < len(tenants) && work.Err() == nil; count++ {
