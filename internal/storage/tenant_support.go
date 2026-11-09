@@ -2,29 +2,19 @@ package storage
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"path"
-	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 )
 
-var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
-
 var errMissingGraphManifest = errors.New("manifest missing while graph objects exist; explicit repair is required")
-
-func ValidateTenantID(tenantID string) error {
-	if !tenantIDPattern.MatchString(tenantID) || strings.Contains(tenantID, "..") {
-		return fmt.Errorf("invalid tenant id %q", tenantID)
-	}
-	return nil
-}
 
 func (s *TenantStore) getManifest(ctx context.Context, tenantID string) (Manifest, ObjectMeta, error) {
 	return s.readManifest(ctx, tenantID, false)
@@ -223,7 +213,7 @@ func (s *TenantStore) commitSegmentPrefix(tenantID string) string {
 }
 
 func (s *TenantStore) commitIdempotencyKey(tenantID string, idempotencyKey string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "idempotency", "commits", objectSegment(idempotencyKey)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "idempotency", "commits", identity.ObjectSegment(idempotencyKey)+".parquet")
 }
 
 func (s *TenantStore) snapshotKey(tenantID string, version int64) string {
@@ -244,11 +234,11 @@ func (s *TenantStore) snapshotSchemaKey(tenantID string, version int64) string {
 }
 
 func (s *TenantStore) snapshotEntityPageKey(tenantID string, version int64, shard string) string {
-	return path.Join(s.snapshotVersionPrefix(tenantID, version), "entities", "pages", objectSegment(shard)+".parquet")
+	return path.Join(s.snapshotVersionPrefix(tenantID, version), "entities", "pages", identity.ObjectSegment(shard)+".parquet")
 }
 
 func (s *TenantStore) snapshotEdgeShardKey(tenantID string, version int64, relationType string, shard string) string {
-	return path.Join(s.snapshotVersionPrefix(tenantID, version), "edges", objectSegment(relationType), objectSegment(shard)+".parquet")
+	return path.Join(s.snapshotVersionPrefix(tenantID, version), "edges", identity.ObjectSegment(relationType), identity.ObjectSegment(shard)+".parquet")
 }
 
 func (s *TenantStore) snapshotVersionPrefix(tenantID string, version int64) string {
@@ -284,23 +274,23 @@ func (s *TenantStore) reverseIndexPrefix(tenantID string) string {
 }
 
 func (s *TenantStore) reverseEdgeShardVersionKey(tenantID string, version int64, relationType string, shard string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "extensions", "v1.1", "reverse-index", "v"+strconv.FormatInt(version, 10), objectSegment(relationType), objectSegment(shard)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "extensions", "v1.1", "reverse-index", "v"+strconv.FormatInt(version, 10), identity.ObjectSegment(relationType), identity.ObjectSegment(shard)+".parquet")
 }
 
 func (s *TenantStore) ingestBatchKey(tenantID string, source string, collectorID string, batchID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "batches", objectSegment(collectorID), objectSegment(batchID)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", identity.ObjectSegment(source), "batches", identity.ObjectSegment(collectorID), identity.ObjectSegment(batchID)+".parquet")
 }
 
 func (s *TenantStore) ingestBatchPrefix(tenantID string, source string, collectorID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "batches", objectSegment(collectorID)) + "/"
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", identity.ObjectSegment(source), "batches", identity.ObjectSegment(collectorID)) + "/"
 }
 
 func (s *TenantStore) legacyIngestBatchKey(tenantID string, source string, batchID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "batches", objectSegment(batchID)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", identity.ObjectSegment(source), "batches", identity.ObjectSegment(batchID)+".parquet")
 }
 
 func (s *TenantStore) ingestIdempotencyKey(tenantID string, source string, collectorID string, idempotencyKey string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "idempotency", objectSegment(collectorID), objectSegment(idempotencyKey)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", identity.ObjectSegment(source), "idempotency", identity.ObjectSegment(collectorID), identity.ObjectSegment(idempotencyKey)+".parquet")
 }
 
 func (s *TenantStore) ingestAttemptFailureKey(tenantID string, ownerID string, source string, collectorID string, batchID string) string {
@@ -318,28 +308,28 @@ func (s *TenantStore) ingestAttemptFailureKey(tenantID string, ownerID string, s
 		"tenants",
 		tenantID,
 		"ingest",
-		objectSegment(source),
+		identity.ObjectSegment(source),
 		"attempt-failures",
-		objectSegment(ownerID),
-		objectSegment(collectorID),
-		objectSegment(batchID)+".parquet",
+		identity.ObjectSegment(ownerID),
+		identity.ObjectSegment(collectorID),
+		identity.ObjectSegment(batchID)+".parquet",
 	)
 }
 
 func (s *TenantStore) legacyIngestIdempotencyKey(tenantID string, source string, idempotencyKey string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "idempotency", objectSegment(idempotencyKey)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", identity.ObjectSegment(source), "idempotency", identity.ObjectSegment(idempotencyKey)+".parquet")
 }
 
 func (s *TenantStore) collectorStatusKey(tenantID string, source string, collectorID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "collectors", objectSegment(collectorID)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", identity.ObjectSegment(source), "collectors", identity.ObjectSegment(collectorID)+".parquet")
 }
 
 func (s *TenantStore) deadLetterPrefix(tenantID string, source string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "ingest", objectSegment(source), "deadletters") + "/"
+	return path.Join(s.Prefix, "tenants", tenantID, "ingest", identity.ObjectSegment(source), "deadletters") + "/"
 }
 
 func (s *TenantStore) deadLetterKey(tenantID string, source string, id string) string {
-	return path.Join(s.deadLetterPrefix(tenantID, source), objectSegment(id)+".parquet")
+	return path.Join(s.deadLetterPrefix(tenantID, source), identity.ObjectSegment(id)+".parquet")
 }
 
 func (s *TenantStore) savedQueryPrefix(tenantID string) string {
@@ -347,7 +337,7 @@ func (s *TenantStore) savedQueryPrefix(tenantID string) string {
 }
 
 func (s *TenantStore) savedQueryKey(tenantID string, name string) string {
-	return path.Join(s.savedQueryPrefix(tenantID), objectSegment(name)+".parquet")
+	return path.Join(s.savedQueryPrefix(tenantID), identity.ObjectSegment(name)+".parquet")
 }
 
 func (s *TenantStore) indexCatalogKey(tenantID string) string {
@@ -362,7 +352,7 @@ func (s *TenantStore) indexCatalogVersionHashKey(tenantID string, version int64,
 	if hash == "" {
 		return s.indexCatalogVersionKey(tenantID, version)
 	}
-	return path.Join(s.parquetVersionPrefix(tenantID, version), "catalogs", objectSegment(hash)+".parquet")
+	return path.Join(s.parquetVersionPrefix(tenantID, version), "catalogs", identity.ObjectSegment(hash)+".parquet")
 }
 
 func (s *TenantStore) indexDefinitionsKey(tenantID string) string {
@@ -370,7 +360,7 @@ func (s *TenantStore) indexDefinitionsKey(tenantID string) string {
 }
 
 func (s *TenantStore) indexTaskKey(tenantID string, taskID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "tasks", objectSegment(taskID)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "tasks", identity.ObjectSegment(taskID)+".parquet")
 }
 
 func (s *TenantStore) indexRebuildRunningTaskKey(tenantID string) string {
@@ -382,7 +372,7 @@ func (s *TenantStore) indexTaskPrefix(tenantID string) string {
 }
 
 func (s *TenantStore) taskKey(tenantID string, taskID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "tasks", objectSegment(taskID)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "tasks", identity.ObjectSegment(taskID)+".parquet")
 }
 
 func (s *TenantStore) taskPrefix(tenantID string) string {
@@ -390,11 +380,11 @@ func (s *TenantStore) taskPrefix(tenantID string) string {
 }
 
 func (s *TenantStore) taskResultKey(tenantID string, taskID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "tasks", "results", objectSegment(taskID)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "tasks", "results", identity.ObjectSegment(taskID)+".parquet")
 }
 
 func (s *TenantStore) backupManifestKey(tenantID string, backupID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "backups", objectSegment(backupID), "manifest.parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "backups", identity.ObjectSegment(backupID), "manifest.parquet")
 }
 
 func (s *TenantStore) secondaryIndexPrefix(tenantID string) string {
@@ -406,27 +396,27 @@ func (s *TenantStore) edgeShardPrefix(tenantID string) string {
 }
 
 func (s *TenantStore) parquetEntityPageVersionKey(tenantID string, version int64, shard string) string {
-	return path.Join(s.parquetVersionPrefix(tenantID, version), "entities", "pages", objectSegment(shard)+".parquet")
+	return path.Join(s.parquetVersionPrefix(tenantID, version), "entities", "pages", identity.ObjectSegment(shard)+".parquet")
 }
 
 func (s *TenantStore) parquetEntityPagePackVersionKey(tenantID string, version int64, packID string) string {
-	return path.Join(s.parquetVersionPrefix(tenantID, version), "entities", "pages", "packs", objectSegment(packID)+".parquet")
+	return path.Join(s.parquetVersionPrefix(tenantID, version), "entities", "pages", "packs", identity.ObjectSegment(packID)+".parquet")
 }
 
 func (s *TenantStore) parquetSecondaryIndexVersionKey(tenantID string, version int64, kind string, field string) string {
-	return path.Join(s.parquetVersionPrefix(tenantID, version), "fields", objectSegment(kind), objectSegment(field)+".parquet")
+	return path.Join(s.parquetVersionPrefix(tenantID, version), "fields", identity.ObjectSegment(kind), identity.ObjectSegment(field)+".parquet")
 }
 
 func (s *TenantStore) parquetSecondaryIndexShardVersionKey(tenantID string, version int64, kind string, field string, shard string) string {
-	return path.Join(s.parquetVersionPrefix(tenantID, version), "fields", objectSegment(kind), objectSegment(field), "shards", objectSegment(shard)+".parquet")
+	return path.Join(s.parquetVersionPrefix(tenantID, version), "fields", identity.ObjectSegment(kind), identity.ObjectSegment(field), "shards", identity.ObjectSegment(shard)+".parquet")
 }
 
 func (s *TenantStore) parquetEdgeShardVersionKey(tenantID string, version int64, relationType string, shard string) string {
-	return path.Join(s.parquetVersionPrefix(tenantID, version), "edges", objectSegment(relationType), objectSegment(shard)+".parquet")
+	return path.Join(s.parquetVersionPrefix(tenantID, version), "edges", identity.ObjectSegment(relationType), identity.ObjectSegment(shard)+".parquet")
 }
 
 func (s *TenantStore) parquetEdgeShardPackVersionKey(tenantID string, version int64, relationType string, packID string) string {
-	return path.Join(s.parquetVersionPrefix(tenantID, version), "edges", objectSegment(relationType), "packs", objectSegment(packID)+".parquet")
+	return path.Join(s.parquetVersionPrefix(tenantID, version), "edges", identity.ObjectSegment(relationType), "packs", identity.ObjectSegment(packID)+".parquet")
 }
 
 func (s *TenantStore) parquetVersionPrefix(tenantID string, version int64) string {
@@ -442,7 +432,7 @@ func (s *TenantStore) entityPagePrefix(tenantID string) string {
 }
 
 func (s *TenantStore) entityRecordKey(tenantID string, entityID string) string {
-	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "entities", "by-id", objectSegment(entityID)+".parquet")
+	return path.Join(s.Prefix, "tenants", tenantID, "indexes", "entities", "by-id", identity.ObjectSegment(entityID)+".parquet")
 }
 
 func (s *TenantStore) entityRecordPrefix(tenantID string) string {
@@ -451,24 +441,4 @@ func (s *TenantStore) entityRecordPrefix(tenantID string) string {
 
 func cleanPrefix(prefix string) string {
 	return strings.Trim(strings.TrimSpace(prefix), "/")
-}
-
-func objectSegment(value string) string {
-	escaped := url.PathEscape(strings.TrimSpace(value))
-	switch escaped {
-	case ".":
-		return "%2E"
-	case "..":
-		return "%2E%2E"
-	default:
-		return escaped
-	}
-}
-
-func newCommitID() (string, error) {
-	var bytes [12]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes[:]), nil
 }

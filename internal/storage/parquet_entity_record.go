@@ -6,7 +6,8 @@ import (
 	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -77,7 +78,7 @@ func marshalParquetEntityRecord(ctx context.Context, record EntityRecord) ([]byt
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
 
-	rows, err := entityPageRows(record.Entity)
+	rows, err := codec.EntityRows(record.Entity)
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +92,13 @@ func marshalParquetEntityRecord(ctx context.Context, record EntityRecord) ([]byt
 		builder.Field(parquetEntityRecordColumnContentHash).(*array.StringBuilder).Append(record.ContentHash)
 		builder.Field(parquetEntityRecordColumnDeleted).(*array.BooleanBuilder).Append(record.Deleted)
 		builder.Field(parquetEntityRecordColumnVersion).(*array.Int64Builder).Append(record.Version)
-		builder.Field(parquetEntityRecordColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(record.UpdatedAt))
+		builder.Field(parquetEntityRecordColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(record.UpdatedAt))
 		builder.Field(parquetEntityRecordColumnKind).(*array.StringBuilder).Append(record.Entity.Kind)
 		builder.Field(parquetEntityRecordColumnSource).(*array.StringBuilder).Append(record.Entity.Source)
 		builder.Field(parquetEntityRecordColumnExternalID).(*array.StringBuilder).Append(record.Entity.ExternalID)
 		builder.Field(parquetEntityRecordColumnEntityVersion).(*array.Int64Builder).Append(record.Entity.Version)
-		builder.Field(parquetEntityRecordColumnEntityCreatedAt).(*array.StringBuilder).Append(formatParquetTime(record.Entity.CreatedAt))
-		builder.Field(parquetEntityRecordColumnEntityUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(record.Entity.UpdatedAt))
+		builder.Field(parquetEntityRecordColumnEntityCreatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(record.Entity.CreatedAt))
+		builder.Field(parquetEntityRecordColumnEntityUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(record.Entity.UpdatedAt))
 		builder.Field(parquetEntityRecordColumnConfidence).(*array.Float64Builder).Append(record.Entity.Confidence)
 		builder.Field(parquetEntityRecordColumnSourceRank).(*array.Int64Builder).Append(int64(record.Entity.SourceRank))
 		builder.Field(parquetEntityRecordColumnSplitFrom).(*array.StringBuilder).Append(record.Entity.SplitFrom)
@@ -112,14 +113,14 @@ func marshalParquetEntityRecord(ctx context.Context, record EntityRecord) ([]byt
 		builder.Field(parquetEntityRecordColumnFieldSourcePriority).(*array.Int64Builder).Append(int64(row.FieldSource.Priority))
 		builder.Field(parquetEntityRecordColumnFieldSourceConfidence).(*array.Float64Builder).Append(row.FieldSource.Confidence)
 		builder.Field(parquetEntityRecordColumnFieldSourceVersion).(*array.Int64Builder).Append(row.FieldSource.Version)
-		builder.Field(parquetEntityRecordColumnFieldSourceUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(row.FieldSource.UpdatedAt))
+		builder.Field(parquetEntityRecordColumnFieldSourceUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(row.FieldSource.UpdatedAt))
 		builder.Field(parquetEntityRecordColumnEntitySourceSource).(*array.StringBuilder).Append(row.EntitySource.Source)
 		builder.Field(parquetEntityRecordColumnEntitySourceExternalID).(*array.StringBuilder).Append(row.EntitySource.ExternalID)
 		builder.Field(parquetEntityRecordColumnEntitySourceConfidence).(*array.Float64Builder).Append(row.EntitySource.Confidence)
 		builder.Field(parquetEntityRecordColumnEntitySourcePriority).(*array.Int64Builder).Append(int64(row.EntitySource.Priority))
-		builder.Field(parquetEntityRecordColumnEntitySourceObservedAt).(*array.StringBuilder).Append(formatParquetTime(row.EntitySource.ObservedAt))
+		builder.Field(parquetEntityRecordColumnEntitySourceObservedAt).(*array.StringBuilder).Append(parquetio.FormatTime(row.EntitySource.ObservedAt))
 		builder.Field(parquetEntityRecordColumnEntitySourceStale).(*array.BooleanBuilder).Append(row.EntitySource.Stale)
-		builder.Field(parquetEntityRecordColumnEntitySourceStaleAt).(*array.StringBuilder).Append(formatParquetTime(row.EntitySource.StaleAt))
+		builder.Field(parquetEntityRecordColumnEntitySourceStaleAt).(*array.StringBuilder).Append(parquetio.FormatTime(row.EntitySource.StaleAt))
 	}
 
 	batch := builder.NewRecordBatch()
@@ -133,7 +134,7 @@ func marshalParquetEntityRecord(ctx context.Context, record EntityRecord) ([]byt
 }
 
 func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string, id string) (EntityRecord, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := parquetio.ReadTable(ctx, data)
 	if err != nil {
 		return EntityRecord{}, err
 	}
@@ -168,7 +169,7 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 				ContentHash:   columns.contentHash.Value(i),
 				Deleted:       columns.deleted.Value(i),
 				Version:       columns.version.Value(i),
-				UpdatedAt:     parseParquetTime(columns.updatedAt.Value(i)),
+				UpdatedAt:     parquetio.ParseTime(columns.updatedAt.Value(i)),
 			}
 			if record.ID == "" {
 				record = rowRecord
@@ -182,8 +183,8 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 					Source:     columns.source.Value(i),
 					ExternalID: columns.externalID.Value(i),
 					Version:    columns.entityVersion.Value(i),
-					CreatedAt:  parseParquetTime(columns.entityCreatedAt.Value(i)),
-					UpdatedAt:  parseParquetTime(columns.entityUpdatedAt.Value(i)),
+					CreatedAt:  parquetio.ParseTime(columns.entityCreatedAt.Value(i)),
+					UpdatedAt:  parquetio.ParseTime(columns.entityUpdatedAt.Value(i)),
 					Confidence: columns.confidence.Value(i),
 					SourceRank: int(columns.sourceRank.Value(i)),
 					SplitFrom:  columns.splitFrom.Value(i),
@@ -191,7 +192,7 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 				entity = &created
 			}
 			if entity != nil {
-				if err := applyEntityPageRow(entity, entityRecordRowFromColumns(columns, i)); err != nil {
+				if err := codec.ApplyEntityRow(entity, entityRecordRowFromColumns(columns, i)); err != nil {
 					return EntityRecord{}, err
 				}
 			}
@@ -201,7 +202,7 @@ func decodeParquetEntityRecord(ctx context.Context, data []byte, tenantID string
 		return EntityRecord{}, fmt.Errorf("parquet entity record is empty")
 	}
 	if entity != nil {
-		record.Entity = decodedEntityPageCopy(*entity)
+		record.Entity = codec.DecodedEntityCopy(*entity)
 	}
 	if err := normalizeObjectAfterRead(&record, "entity record"); err != nil {
 		return EntityRecord{}, err
@@ -262,118 +263,118 @@ type parquetEntityRecordColumnSet struct {
 func parquetEntityRecordColumns(batch arrow.RecordBatch) (parquetEntityRecordColumnSet, error) {
 	var columns parquetEntityRecordColumnSet
 	var err error
-	if columns.tenantID, err = parquetStringColumn(batch, parquetEntityRecordColumnTenantID, "tenant_id"); err != nil {
+	if columns.tenantID, err = parquetio.StringColumn(batch, parquetEntityRecordColumnTenantID, "tenant_id"); err != nil {
 		return columns, err
 	}
-	if columns.id, err = parquetStringColumn(batch, parquetEntityRecordColumnID, "id"); err != nil {
+	if columns.id, err = parquetio.StringColumn(batch, parquetEntityRecordColumnID, "id"); err != nil {
 		return columns, err
 	}
-	if columns.page, err = parquetStringColumn(batch, parquetEntityRecordColumnPage, "page"); err != nil {
+	if columns.page, err = parquetio.StringColumn(batch, parquetEntityRecordColumnPage, "page"); err != nil {
 		return columns, err
 	}
-	if columns.ordinal, err = parquetInt64Column(batch, parquetEntityRecordColumnOrdinal, "ordinal"); err != nil {
+	if columns.ordinal, err = parquetio.Int64Column(batch, parquetEntityRecordColumnOrdinal, "ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.pageHash, err = parquetStringColumn(batch, parquetEntityRecordColumnPageHash, "page_hash"); err != nil {
+	if columns.pageHash, err = parquetio.StringColumn(batch, parquetEntityRecordColumnPageHash, "page_hash"); err != nil {
 		return columns, err
 	}
-	if columns.pageETag, err = parquetStringColumn(batch, parquetEntityRecordColumnPageETag, "page_etag"); err != nil {
+	if columns.pageETag, err = parquetio.StringColumn(batch, parquetEntityRecordColumnPageETag, "page_etag"); err != nil {
 		return columns, err
 	}
-	if columns.contentHash, err = parquetStringColumn(batch, parquetEntityRecordColumnContentHash, "content_hash"); err != nil {
+	if columns.contentHash, err = parquetio.StringColumn(batch, parquetEntityRecordColumnContentHash, "content_hash"); err != nil {
 		return columns, err
 	}
-	if columns.deleted, err = parquetBoolColumn(batch, parquetEntityRecordColumnDeleted, "deleted"); err != nil {
+	if columns.deleted, err = parquetio.BoolColumn(batch, parquetEntityRecordColumnDeleted, "deleted"); err != nil {
 		return columns, err
 	}
-	if columns.version, err = parquetInt64Column(batch, parquetEntityRecordColumnVersion, "version"); err != nil {
+	if columns.version, err = parquetio.Int64Column(batch, parquetEntityRecordColumnVersion, "version"); err != nil {
 		return columns, err
 	}
-	if columns.updatedAt, err = parquetStringColumn(batch, parquetEntityRecordColumnUpdatedAt, "updated_at"); err != nil {
+	if columns.updatedAt, err = parquetio.StringColumn(batch, parquetEntityRecordColumnUpdatedAt, "updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.kind, err = parquetStringColumn(batch, parquetEntityRecordColumnKind, "kind"); err != nil {
+	if columns.kind, err = parquetio.StringColumn(batch, parquetEntityRecordColumnKind, "kind"); err != nil {
 		return columns, err
 	}
-	if columns.source, err = parquetStringColumn(batch, parquetEntityRecordColumnSource, "source"); err != nil {
+	if columns.source, err = parquetio.StringColumn(batch, parquetEntityRecordColumnSource, "source"); err != nil {
 		return columns, err
 	}
-	if columns.externalID, err = parquetStringColumn(batch, parquetEntityRecordColumnExternalID, "external_id"); err != nil {
+	if columns.externalID, err = parquetio.StringColumn(batch, parquetEntityRecordColumnExternalID, "external_id"); err != nil {
 		return columns, err
 	}
-	if columns.entityVersion, err = parquetInt64Column(batch, parquetEntityRecordColumnEntityVersion, "entity_version"); err != nil {
+	if columns.entityVersion, err = parquetio.Int64Column(batch, parquetEntityRecordColumnEntityVersion, "entity_version"); err != nil {
 		return columns, err
 	}
-	if columns.entityCreatedAt, err = parquetStringColumn(batch, parquetEntityRecordColumnEntityCreatedAt, "entity_created_at"); err != nil {
+	if columns.entityCreatedAt, err = parquetio.StringColumn(batch, parquetEntityRecordColumnEntityCreatedAt, "entity_created_at"); err != nil {
 		return columns, err
 	}
-	if columns.entityUpdatedAt, err = parquetStringColumn(batch, parquetEntityRecordColumnEntityUpdatedAt, "entity_updated_at"); err != nil {
+	if columns.entityUpdatedAt, err = parquetio.StringColumn(batch, parquetEntityRecordColumnEntityUpdatedAt, "entity_updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.confidence, err = parquetFloat64Column(batch, parquetEntityRecordColumnConfidence, "confidence"); err != nil {
+	if columns.confidence, err = parquetio.Float64Column(batch, parquetEntityRecordColumnConfidence, "confidence"); err != nil {
 		return columns, err
 	}
-	if columns.sourceRank, err = parquetInt64Column(batch, parquetEntityRecordColumnSourceRank, "source_priority"); err != nil {
+	if columns.sourceRank, err = parquetio.Int64Column(batch, parquetEntityRecordColumnSourceRank, "source_priority"); err != nil {
 		return columns, err
 	}
-	if columns.splitFrom, err = parquetStringColumn(batch, parquetEntityRecordColumnSplitFrom, "split_from"); err != nil {
+	if columns.splitFrom, err = parquetio.StringColumn(batch, parquetEntityRecordColumnSplitFrom, "split_from"); err != nil {
 		return columns, err
 	}
-	if columns.rowKind, err = parquetStringColumn(batch, parquetEntityRecordColumnRowKind, "row_kind"); err != nil {
+	if columns.rowKind, err = parquetio.StringColumn(batch, parquetEntityRecordColumnRowKind, "row_kind"); err != nil {
 		return columns, err
 	}
-	if columns.rowOrdinal, err = parquetInt64Column(batch, parquetEntityRecordColumnRowOrdinal, "row_ordinal"); err != nil {
+	if columns.rowOrdinal, err = parquetio.Int64Column(batch, parquetEntityRecordColumnRowOrdinal, "row_ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.entryKey, err = parquetStringColumn(batch, parquetEntityRecordColumnEntryKey, "entry_key"); err != nil {
+	if columns.entryKey, err = parquetio.StringColumn(batch, parquetEntityRecordColumnEntryKey, "entry_key"); err != nil {
 		return columns, err
 	}
-	if columns.valueKind, err = parquetStringColumn(batch, parquetEntityRecordColumnValueKind, "value_kind"); err != nil {
+	if columns.valueKind, err = parquetio.StringColumn(batch, parquetEntityRecordColumnValueKind, "value_kind"); err != nil {
 		return columns, err
 	}
-	if columns.stringValue, err = parquetStringColumn(batch, parquetEntityRecordColumnStringValue, "string_value"); err != nil {
+	if columns.stringValue, err = parquetio.StringColumn(batch, parquetEntityRecordColumnStringValue, "string_value"); err != nil {
 		return columns, err
 	}
-	if columns.boolValue, err = parquetBoolColumn(batch, parquetEntityRecordColumnBoolValue, "bool_value"); err != nil {
+	if columns.boolValue, err = parquetio.BoolColumn(batch, parquetEntityRecordColumnBoolValue, "bool_value"); err != nil {
 		return columns, err
 	}
-	if columns.floatValue, err = parquetFloat64Column(batch, parquetEntityRecordColumnFloatValue, "float_value"); err != nil {
+	if columns.floatValue, err = parquetio.Float64Column(batch, parquetEntityRecordColumnFloatValue, "float_value"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceSource, err = parquetStringColumn(batch, parquetEntityRecordColumnFieldSourceSource, "field_source_source"); err != nil {
+	if columns.fieldSourceSource, err = parquetio.StringColumn(batch, parquetEntityRecordColumnFieldSourceSource, "field_source_source"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourcePriority, err = parquetInt64Column(batch, parquetEntityRecordColumnFieldSourcePriority, "field_source_priority"); err != nil {
+	if columns.fieldSourcePriority, err = parquetio.Int64Column(batch, parquetEntityRecordColumnFieldSourcePriority, "field_source_priority"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceConfidence, err = parquetFloat64Column(batch, parquetEntityRecordColumnFieldSourceConfidence, "field_source_confidence"); err != nil {
+	if columns.fieldSourceConfidence, err = parquetio.Float64Column(batch, parquetEntityRecordColumnFieldSourceConfidence, "field_source_confidence"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceVersion, err = parquetInt64Column(batch, parquetEntityRecordColumnFieldSourceVersion, "field_source_version"); err != nil {
+	if columns.fieldSourceVersion, err = parquetio.Int64Column(batch, parquetEntityRecordColumnFieldSourceVersion, "field_source_version"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceUpdatedAt, err = parquetStringColumn(batch, parquetEntityRecordColumnFieldSourceUpdatedAt, "field_source_updated_at"); err != nil {
+	if columns.fieldSourceUpdatedAt, err = parquetio.StringColumn(batch, parquetEntityRecordColumnFieldSourceUpdatedAt, "field_source_updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.entitySourceSource, err = parquetStringColumn(batch, parquetEntityRecordColumnEntitySourceSource, "entity_source_source"); err != nil {
+	if columns.entitySourceSource, err = parquetio.StringColumn(batch, parquetEntityRecordColumnEntitySourceSource, "entity_source_source"); err != nil {
 		return columns, err
 	}
-	if columns.entitySourceExternalID, err = parquetStringColumn(batch, parquetEntityRecordColumnEntitySourceExternalID, "entity_source_external_id"); err != nil {
+	if columns.entitySourceExternalID, err = parquetio.StringColumn(batch, parquetEntityRecordColumnEntitySourceExternalID, "entity_source_external_id"); err != nil {
 		return columns, err
 	}
-	if columns.entitySourceConfidence, err = parquetFloat64Column(batch, parquetEntityRecordColumnEntitySourceConfidence, "entity_source_confidence"); err != nil {
+	if columns.entitySourceConfidence, err = parquetio.Float64Column(batch, parquetEntityRecordColumnEntitySourceConfidence, "entity_source_confidence"); err != nil {
 		return columns, err
 	}
-	if columns.entitySourcePriority, err = parquetInt64Column(batch, parquetEntityRecordColumnEntitySourcePriority, "entity_source_priority"); err != nil {
+	if columns.entitySourcePriority, err = parquetio.Int64Column(batch, parquetEntityRecordColumnEntitySourcePriority, "entity_source_priority"); err != nil {
 		return columns, err
 	}
-	if columns.entitySourceObservedAt, err = parquetStringColumn(batch, parquetEntityRecordColumnEntitySourceObservedAt, "entity_source_observed_at"); err != nil {
+	if columns.entitySourceObservedAt, err = parquetio.StringColumn(batch, parquetEntityRecordColumnEntitySourceObservedAt, "entity_source_observed_at"); err != nil {
 		return columns, err
 	}
-	if columns.entitySourceStale, err = parquetBoolColumn(batch, parquetEntityRecordColumnEntitySourceStale, "entity_source_stale"); err != nil {
+	if columns.entitySourceStale, err = parquetio.BoolColumn(batch, parquetEntityRecordColumnEntitySourceStale, "entity_source_stale"); err != nil {
 		return columns, err
 	}
-	if columns.entitySourceStaleAt, err = parquetStringColumn(batch, parquetEntityRecordColumnEntitySourceStaleAt, "entity_source_stale_at"); err != nil {
+	if columns.entitySourceStaleAt, err = parquetio.StringColumn(batch, parquetEntityRecordColumnEntitySourceStaleAt, "entity_source_stale_at"); err != nil {
 		return columns, err
 	}
 	return columns, nil
@@ -406,16 +407,16 @@ func entityRecordRowFromColumns(columns parquetEntityRecordColumnSet, row int) e
 			Priority:   int(columns.fieldSourcePriority.Value(row)),
 			Confidence: columns.fieldSourceConfidence.Value(row),
 			Version:    columns.fieldSourceVersion.Value(row),
-			UpdatedAt:  parseParquetTime(columns.fieldSourceUpdatedAt.Value(row)),
+			UpdatedAt:  parquetio.ParseTime(columns.fieldSourceUpdatedAt.Value(row)),
 		},
 		EntitySource: graph.EntitySource{
 			Source:     columns.entitySourceSource.Value(row),
 			ExternalID: columns.entitySourceExternalID.Value(row),
 			Confidence: columns.entitySourceConfidence.Value(row),
 			Priority:   int(columns.entitySourcePriority.Value(row)),
-			ObservedAt: parseParquetTime(columns.entitySourceObservedAt.Value(row)),
+			ObservedAt: parquetio.ParseTime(columns.entitySourceObservedAt.Value(row)),
 			Stale:      columns.entitySourceStale.Value(row),
-			StaleAt:    parseParquetTime(columns.entitySourceStaleAt.Value(row)),
+			StaleAt:    parquetio.ParseTime(columns.entitySourceStaleAt.Value(row)),
 		},
 	}
 }

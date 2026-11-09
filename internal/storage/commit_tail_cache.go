@@ -1,5 +1,7 @@
 package storage
 
+import "github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+
 const (
 	commitTailCacheMaxBytes = int64(8 * 1024 * 1024)
 	commitTailCacheOverhead = int64(256)
@@ -54,7 +56,7 @@ func appendCommitTailCache(
 }
 
 func (cache *commitTailCache) add(item commitSegmentItem) bool {
-	payload, err := commitPayloadJSON(item.Commit)
+	payload, err := codec.CommitPayloadJSON(item.Commit)
 	if err != nil {
 		return false
 	}

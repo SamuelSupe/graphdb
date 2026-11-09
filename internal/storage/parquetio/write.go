@@ -1,4 +1,4 @@
-package storage
+package parquetio
 
 import (
 	"github.com/apache/arrow-go/v18/arrow"
@@ -6,7 +6,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/compress"
 )
 
-func parquetDataWriterProperties(schema *arrow.Schema) *parquet.WriterProperties {
+func DataWriterProperties(schema *arrow.Schema) *parquet.WriterProperties {
 	options := []parquet.WriterProperty{
 		parquet.WithCompression(compress.Codecs.Snappy),
 		parquet.WithDictionaryDefault(false),
@@ -24,11 +24,11 @@ func parquetDataWriterProperties(schema *arrow.Schema) *parquet.WriterProperties
 	return parquet.NewWriterProperties(options...)
 }
 
-const maxParquetMetadataRowGroupRows int64 = 1024
+const MaxParquetMetadataRowGroupRows int64 = 1024
 
-func parquetMetadataRowGroupRows(rows int64) int64 {
+func MetadataRowGroupRows(rows int64) int64 {
 	if rows < 1 {
 		return 1
 	}
-	return min(rows, maxParquetMetadataRowGroupRows)
+	return min(rows, MaxParquetMetadataRowGroupRows)
 }

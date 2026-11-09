@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func TestCommitPayloadKeepsVersion10CanonicalEntityJSON(t *testing.T) {
@@ -24,7 +25,7 @@ func TestCommitPayloadKeepsVersion10CanonicalEntityJSON(t *testing.T) {
 		CreatedAt: time.Unix(1, 0).UTC(),
 		Mutations: graph.Mutations{UpsertEntities: []graph.Entity{entity}},
 	}
-	payload, err := commitPayloadJSON(commit)
+	payload, err := codec.CommitPayloadJSON(commit)
 	if err != nil {
 		t.Fatal(err)
 	}

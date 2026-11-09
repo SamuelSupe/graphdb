@@ -10,7 +10,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -142,7 +142,7 @@ func marshalParquetSecondaryIndex(ctx context.Context, index SecondaryIndex) ([]
 			builder.Field(parquetSecondaryColumnField).(*array.StringBuilder).Append(index.Field)
 			builder.Field(parquetSecondaryColumnUnique).(*array.BooleanBuilder).Append(index.Unique)
 			builder.Field(parquetSecondaryColumnVersion).(*array.Int64Builder).Append(index.Version)
-			builder.Field(parquetSecondaryColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(index.UpdatedAt))
+			builder.Field(parquetSecondaryColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(index.UpdatedAt))
 			builder.Field(parquetSecondaryColumnValue).(*array.StringBuilder).Append(value)
 			builder.Field(parquetSecondaryColumnEntityID).(*array.StringBuilder).Append(id)
 		}
@@ -157,7 +157,7 @@ func marshalParquetSecondaryIndex(ctx context.Context, index SecondaryIndex) ([]
 	if rowGroupSize < 1 {
 		rowGroupSize = 1
 	}
-	writerProps := parquetDataWriterProperties(schema)
+	writerProps := parquetio.DataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
 	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
 		return nil, err
@@ -170,7 +170,7 @@ func decodeParquetSecondaryIndex(ctx context.Context, data []byte, tenantID stri
 }
 
 func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.ReaderAtSeeker, tenantID string, kind string, field string, version int64, unique bool) (SecondaryIndex, error) {
-	table, release, err := readParquetTableReader(ctx, source)
+	table, release, err := parquetio.ReadTableReader(ctx, source)
 	if err != nil {
 		return SecondaryIndex{}, err
 	}
@@ -195,35 +195,35 @@ func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.Reade
 		if record.NumCols() < int64(parquetSecondaryColumnEntityID+1) {
 			return SecondaryIndex{}, fmt.Errorf("parquet secondary record has %d columns, want at least %d", record.NumCols(), parquetSecondaryColumnEntityID+1)
 		}
-		tenantColumn, err := parquetStringColumn(record, parquetSecondaryColumnTenantID, "tenant_id")
+		tenantColumn, err := parquetio.StringColumn(record, parquetSecondaryColumnTenantID, "tenant_id")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
-		kindColumn, err := parquetStringColumn(record, parquetSecondaryColumnKind, "kind")
+		kindColumn, err := parquetio.StringColumn(record, parquetSecondaryColumnKind, "kind")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
-		fieldColumn, err := parquetStringColumn(record, parquetSecondaryColumnField, "field")
+		fieldColumn, err := parquetio.StringColumn(record, parquetSecondaryColumnField, "field")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
-		uniqueColumn, err := parquetBoolColumn(record, parquetSecondaryColumnUnique, "unique")
+		uniqueColumn, err := parquetio.BoolColumn(record, parquetSecondaryColumnUnique, "unique")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
-		versionColumn, err := parquetInt64Column(record, parquetSecondaryColumnVersion, "version")
+		versionColumn, err := parquetio.Int64Column(record, parquetSecondaryColumnVersion, "version")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
-		updatedAtColumn, err := parquetStringColumn(record, parquetSecondaryColumnUpdatedAt, "updated_at")
+		updatedAtColumn, err := parquetio.StringColumn(record, parquetSecondaryColumnUpdatedAt, "updated_at")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
-		valueColumn, err := parquetStringColumn(record, parquetSecondaryColumnValue, "value")
+		valueColumn, err := parquetio.StringColumn(record, parquetSecondaryColumnValue, "value")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
-		entityIDColumn, err := parquetStringColumn(record, parquetSecondaryColumnEntityID, "entity_id")
+		entityIDColumn, err := parquetio.StringColumn(record, parquetSecondaryColumnEntityID, "entity_id")
 		if err != nil {
 			return SecondaryIndex{}, err
 		}
@@ -262,7 +262,7 @@ func decodeParquetSecondaryIndexReader(ctx context.Context, source parquet.Reade
 				}
 			}
 			if index.UpdatedAt.IsZero() {
-				index.UpdatedAt = parseParquetTime(updatedAtColumn.Value(i))
+				index.UpdatedAt = parquetio.ParseTime(updatedAtColumn.Value(i))
 			}
 			value := valueColumn.Value(i)
 			index.Values[value] = append(index.Values[value], entityIDColumn.Value(i))
@@ -468,12 +468,12 @@ func (s *TenantStore) loadParquetSecondaryIndexObjectByObject(ctx context.Contex
 		s.dropCachedIndexObject("secondary_index", tenantID, version, object.Key, object.ContentHash, object.SchemaHash)
 	}
 	if s.localFileStore() != nil {
-		releaseDecode, err := acquireParquetDecode(ctx)
+		releaseDecode, err := parquetio.AcquireDecode(ctx)
 		if err != nil {
 			return SecondaryIndex{}, false, err
 		}
 		defer releaseDecode()
-		ctx = context.WithValue(ctx, parquetDecodeAdmissionKey{}, true)
+		ctx = parquetio.WithDecodeAdmission(ctx)
 		reader, err := openFileReader(ctx, s.Objects, object.Key)
 		if errors.Is(err, ErrNotFound) {
 			return SecondaryIndex{}, false, nil
@@ -743,22 +743,6 @@ func parquetSecondaryIndexSchemaHash() string {
 		"entity_id",
 		parquetSecondaryIndexCodec,
 	})
-}
-
-func parquetBoolColumn(record arrow.RecordBatch, index int, name string) (*array.Boolean, error) {
-	column, ok := record.Column(index).(*array.Boolean)
-	if !ok {
-		return nil, fmt.Errorf("parquet column %q has unexpected type", name)
-	}
-	return column, nil
-}
-
-func parquetFloat64Column(record arrow.RecordBatch, index int, name string) (*array.Float64, error) {
-	column, ok := record.Column(index).(*array.Float64)
-	if !ok {
-		return nil, fmt.Errorf("parquet column %q has unexpected type", name)
-	}
-	return column, nil
 }
 
 func secondaryIndexLookupKeys(value any) ([]string, bool) {

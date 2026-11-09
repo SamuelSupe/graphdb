@@ -8,7 +8,8 @@ import (
 	"sort"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -52,14 +53,6 @@ const (
 	parquetEdgeColumnEdgeSourceConfidence
 	parquetEdgeColumnEdgeSourcePriority
 	parquetEdgeColumnEdgeSourceObservedAt
-)
-
-const (
-	edgeShardRowMetadata        = "metadata"
-	edgeShardRowField           = "field"
-	edgeShardRowFieldSource     = "field_source"
-	edgeShardRowSource          = "source"
-	edgeShardRowExistenceSource = "existence_source"
 )
 
 func (s *TenantStore) writeParquetEdgeShards(ctx context.Context, tenantID string, shards []EdgeShardData) error {
@@ -177,7 +170,7 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 	schema := parquetEdgeShardArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
-	shardUpdatedAt := formatParquetTime(shard.UpdatedAt)
+	shardUpdatedAt := parquetio.FormatTime(shard.UpdatedAt)
 
 	edges := append([]graph.Edge(nil), shard.Edges...)
 	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
@@ -190,12 +183,12 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 				rowShard = edgeShardID(edge.From)
 			}
 		}
-		rows, err := edgeShardRows(edge)
+		rows, err := codec.EdgeRows(edge)
 		if err != nil {
 			return nil, err
 		}
-		createdAt := formatParquetTime(edge.CreatedAt)
-		updatedAt := formatParquetTime(edge.UpdatedAt)
+		createdAt := parquetio.FormatTime(edge.CreatedAt)
+		updatedAt := parquetio.FormatTime(edge.UpdatedAt)
 		for _, row := range rows {
 			builder.Field(parquetEdgeColumnTenantID).(*array.StringBuilder).Append(shard.TenantID)
 			builder.Field(parquetEdgeColumnRelationType).(*array.StringBuilder).Append(shard.RelationType)
@@ -224,13 +217,13 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 			builder.Field(parquetEdgeColumnFieldSourcePriority).(*array.Int64Builder).Append(int64(row.FieldSource.Priority))
 			builder.Field(parquetEdgeColumnFieldSourceConfidence).(*array.Float64Builder).Append(row.FieldSource.Confidence)
 			builder.Field(parquetEdgeColumnFieldSourceVersion).(*array.Int64Builder).Append(row.FieldSource.Version)
-			builder.Field(parquetEdgeColumnFieldSourceUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(row.FieldSource.UpdatedAt))
+			builder.Field(parquetEdgeColumnFieldSourceUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(row.FieldSource.UpdatedAt))
 			builder.Field(parquetEdgeColumnEdgeSourceSource).(*array.StringBuilder).Append(row.EdgeSource.Source)
 			builder.Field(parquetEdgeColumnEdgeSourceExternalID).(*array.StringBuilder).Append(row.EdgeSource.ExternalID)
 			builder.Field(parquetEdgeColumnEdgeSourceEdgeID).(*array.StringBuilder).Append(row.EdgeSource.EdgeID)
 			builder.Field(parquetEdgeColumnEdgeSourceConfidence).(*array.Float64Builder).Append(row.EdgeSource.Confidence)
 			builder.Field(parquetEdgeColumnEdgeSourcePriority).(*array.Int64Builder).Append(int64(row.EdgeSource.Priority))
-			builder.Field(parquetEdgeColumnEdgeSourceObservedAt).(*array.StringBuilder).Append(formatParquetTime(row.EdgeSource.ObservedAt))
+			builder.Field(parquetEdgeColumnEdgeSourceObservedAt).(*array.StringBuilder).Append(parquetio.FormatTime(row.EdgeSource.ObservedAt))
 		}
 	}
 	record := builder.NewRecordBatch()
@@ -243,7 +236,7 @@ func marshalParquetEdgeShard(ctx context.Context, shard EdgeShardData) ([]byte, 
 	if rowGroupSize < 1 {
 		rowGroupSize = 1
 	}
-	writerProps := parquetDataWriterProperties(schema)
+	writerProps := parquetio.DataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
 	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
 		return nil, err
@@ -280,7 +273,7 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 	if err != nil {
 		return EdgeShardData{}, err
 	}
-	reader, release, err := readParquetRecordReader(ctx, fileReader, nil, rowGroups)
+	reader, release, err := parquetio.ReadRecordReader(ctx, fileReader, nil, rowGroups)
 	if err != nil {
 		return EdgeShardData{}, err
 	}
@@ -343,7 +336,7 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 				}
 			}
 			if shard.UpdatedAt.IsZero() {
-				shard.UpdatedAt = parseParquetTime(columns.updatedAt.Value(i))
+				shard.UpdatedAt = parquetio.ParseTime(columns.updatedAt.Value(i))
 			}
 			edge := byID[columns.edgeID.Value(i)]
 			if edge == nil {
@@ -359,15 +352,15 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 					Source:     columns.source.Value(i),
 					ExternalID: columns.externalID.Value(i),
 					Version:    columns.edgeVersion.Value(i),
-					CreatedAt:  parseParquetTime(columns.edgeCreatedAt.Value(i)),
-					UpdatedAt:  parseParquetTime(columns.edgeUpdatedAt.Value(i)),
+					CreatedAt:  parquetio.ParseTime(columns.edgeCreatedAt.Value(i)),
+					UpdatedAt:  parquetio.ParseTime(columns.edgeUpdatedAt.Value(i)),
 					Confidence: columns.confidence.Value(i),
 					SourceRank: int(columns.sourceRank.Value(i)),
 				}
 				byID[created.ID] = &created
 				edge = &created
 			}
-			if err := applyEdgeShardRow(edge, edgeShardRowFromColumns(columns, i)); err != nil {
+			if err := codec.ApplyEdgeRow(edge, edgeShardRowFromColumns(columns, i)); err != nil {
 				return EdgeShardData{}, err
 			}
 		}
@@ -376,19 +369,10 @@ func decodeParquetEdgeShardReader(ctx context.Context, source parquet.ReaderAtSe
 		return EdgeShardData{}, err
 	}
 	for _, edge := range byID {
-		shard.Edges = append(shard.Edges, decodedEdgeShardCopy(*edge))
+		shard.Edges = append(shard.Edges, codec.DecodedEdgeCopy(*edge))
 	}
 	sort.Slice(shard.Edges, func(i, j int) bool { return shard.Edges[i].ID < shard.Edges[j].ID })
 	return shard, nil
-}
-
-type edgeShardRow struct {
-	Kind        string
-	Ordinal     int
-	Key         string
-	Value       parquetValue
-	FieldSource graph.FieldSource
-	EdgeSource  graph.EdgeSource
 }
 
 type parquetEdgeShardColumnSet struct {
@@ -428,191 +412,109 @@ type parquetEdgeShardColumnSet struct {
 	edgeSourceObservedAt  *array.String
 }
 
-func edgeShardRows(edge graph.Edge) ([]edgeShardRow, error) {
-	rowCount := len(edge.Fields) + len(edge.FieldSources) + len(edge.Sources)
-	if edge.ExistenceSource != nil {
-		rowCount++
-	}
-	rows := make([]edgeShardRow, 0, max(1, rowCount))
-	fieldNames := sortedAnyMapKeys(edge.Fields)
-	for i, field := range fieldNames {
-		value, err := parquetValueFromAny(edge.Fields[field])
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, edgeShardRow{Kind: edgeShardRowField, Ordinal: i, Key: field, Value: value})
-	}
-	sourceFields := sortedFieldSourceKeys(edge.FieldSources)
-	for i, field := range sourceFields {
-		rows = append(rows, edgeShardRow{Kind: edgeShardRowFieldSource, Ordinal: i, Key: field, FieldSource: edge.FieldSources[field]})
-	}
-	for i, source := range edge.Sources {
-		rows = append(rows, edgeShardRow{Kind: edgeShardRowSource, Ordinal: i, EdgeSource: source})
-	}
-	if edge.ExistenceSource != nil {
-		rows = append(rows, edgeShardRow{Kind: edgeShardRowExistenceSource, FieldSource: *edge.ExistenceSource})
-	}
-	if len(rows) == 0 {
-		rows = append(rows, edgeShardRow{Kind: edgeShardRowMetadata})
-	}
-	return rows, nil
-}
-
-func applyEdgeShardRow(edge *graph.Edge, row edgeShardRow) error {
-	switch row.Kind {
-	case edgeShardRowMetadata:
-		return nil
-	case edgeShardRowField:
-		if len(edge.Fields) != row.Ordinal {
-			return fmt.Errorf("edge shard field ordinal mismatch")
-		}
-		value, err := anyFromParquetValue(row.Value)
-		if err != nil {
-			return err
-		}
-		if edge.Fields == nil {
-			edge.Fields = graph.Fields{}
-		}
-		edge.Fields[row.Key] = value
-	case edgeShardRowFieldSource:
-		if len(edge.FieldSources) != row.Ordinal {
-			return fmt.Errorf("edge shard field source ordinal mismatch")
-		}
-		if edge.FieldSources == nil {
-			edge.FieldSources = map[string]graph.FieldSource{}
-		}
-		edge.FieldSources[row.Key] = row.FieldSource
-	case edgeShardRowSource:
-		if len(edge.Sources) != row.Ordinal {
-			return fmt.Errorf("edge shard source ordinal mismatch")
-		}
-		edge.Sources = append(edge.Sources, row.EdgeSource)
-	case edgeShardRowExistenceSource:
-		source := row.FieldSource
-		edge.ExistenceSource = &source
-	default:
-		return fmt.Errorf("unknown edge shard row kind %q", row.Kind)
-	}
-	return nil
-}
-
-func decodedEdgeShardCopy(edge graph.Edge) graph.Edge {
-	out := graph.CopyEdge(edge)
-	if len(out.Fields) == 0 {
-		out.Fields = nil
-	}
-	if len(out.FieldSources) == 0 {
-		out.FieldSources = nil
-	}
-	if len(out.Sources) == 0 {
-		out.Sources = nil
-	}
-	return out
-}
-
 func parquetEdgeShardColumns(record arrow.RecordBatch) (parquetEdgeShardColumnSet, error) {
 	var columns parquetEdgeShardColumnSet
 	var err error
-	if columns.tenantID, err = parquetStringColumn(record, parquetEdgeColumnTenantID, "tenant_id"); err != nil {
+	if columns.tenantID, err = parquetio.StringColumn(record, parquetEdgeColumnTenantID, "tenant_id"); err != nil {
 		return columns, err
 	}
-	if columns.relationType, err = parquetStringColumn(record, parquetEdgeColumnRelationType, "relation_type"); err != nil {
+	if columns.relationType, err = parquetio.StringColumn(record, parquetEdgeColumnRelationType, "relation_type"); err != nil {
 		return columns, err
 	}
-	if columns.shard, err = parquetStringColumn(record, parquetEdgeColumnShard, "shard"); err != nil {
+	if columns.shard, err = parquetio.StringColumn(record, parquetEdgeColumnShard, "shard"); err != nil {
 		return columns, err
 	}
-	if columns.version, err = parquetInt64Column(record, parquetEdgeColumnVersion, "version"); err != nil {
+	if columns.version, err = parquetio.Int64Column(record, parquetEdgeColumnVersion, "version"); err != nil {
 		return columns, err
 	}
-	if columns.updatedAt, err = parquetStringColumn(record, parquetEdgeColumnUpdatedAt, "updated_at"); err != nil {
+	if columns.updatedAt, err = parquetio.StringColumn(record, parquetEdgeColumnUpdatedAt, "updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.edgeID, err = parquetStringColumn(record, parquetEdgeColumnEdgeID, "edge_id"); err != nil {
+	if columns.edgeID, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeID, "edge_id"); err != nil {
 		return columns, err
 	}
-	if columns.edgeType, err = parquetStringColumn(record, parquetEdgeColumnEdgeType, "edge_type"); err != nil {
+	if columns.edgeType, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeType, "edge_type"); err != nil {
 		return columns, err
 	}
-	if columns.from, err = parquetStringColumn(record, parquetEdgeColumnFrom, "from"); err != nil {
+	if columns.from, err = parquetio.StringColumn(record, parquetEdgeColumnFrom, "from"); err != nil {
 		return columns, err
 	}
-	if columns.to, err = parquetStringColumn(record, parquetEdgeColumnTo, "to"); err != nil {
+	if columns.to, err = parquetio.StringColumn(record, parquetEdgeColumnTo, "to"); err != nil {
 		return columns, err
 	}
-	if columns.source, err = parquetStringColumn(record, parquetEdgeColumnSource, "source"); err != nil {
+	if columns.source, err = parquetio.StringColumn(record, parquetEdgeColumnSource, "source"); err != nil {
 		return columns, err
 	}
-	if columns.externalID, err = parquetStringColumn(record, parquetEdgeColumnExternalID, "external_id"); err != nil {
+	if columns.externalID, err = parquetio.StringColumn(record, parquetEdgeColumnExternalID, "external_id"); err != nil {
 		return columns, err
 	}
-	if columns.edgeVersion, err = parquetInt64Column(record, parquetEdgeColumnEdgeVersion, "edge_version"); err != nil {
+	if columns.edgeVersion, err = parquetio.Int64Column(record, parquetEdgeColumnEdgeVersion, "edge_version"); err != nil {
 		return columns, err
 	}
-	if columns.edgeCreatedAt, err = parquetStringColumn(record, parquetEdgeColumnEdgeCreatedAt, "edge_created_at"); err != nil {
+	if columns.edgeCreatedAt, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeCreatedAt, "edge_created_at"); err != nil {
 		return columns, err
 	}
-	if columns.edgeUpdatedAt, err = parquetStringColumn(record, parquetEdgeColumnEdgeUpdatedAt, "edge_updated_at"); err != nil {
+	if columns.edgeUpdatedAt, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeUpdatedAt, "edge_updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.confidence, err = parquetFloat64Column(record, parquetEdgeColumnConfidence, "confidence"); err != nil {
+	if columns.confidence, err = parquetio.Float64Column(record, parquetEdgeColumnConfidence, "confidence"); err != nil {
 		return columns, err
 	}
-	if columns.sourceRank, err = parquetInt64Column(record, parquetEdgeColumnSourceRank, "source_priority"); err != nil {
+	if columns.sourceRank, err = parquetio.Int64Column(record, parquetEdgeColumnSourceRank, "source_priority"); err != nil {
 		return columns, err
 	}
-	if columns.rowKind, err = parquetStringColumn(record, parquetEdgeColumnRowKind, "row_kind"); err != nil {
+	if columns.rowKind, err = parquetio.StringColumn(record, parquetEdgeColumnRowKind, "row_kind"); err != nil {
 		return columns, err
 	}
-	if columns.ordinal, err = parquetInt64Column(record, parquetEdgeColumnOrdinal, "ordinal"); err != nil {
+	if columns.ordinal, err = parquetio.Int64Column(record, parquetEdgeColumnOrdinal, "ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.entryKey, err = parquetStringColumn(record, parquetEdgeColumnEntryKey, "entry_key"); err != nil {
+	if columns.entryKey, err = parquetio.StringColumn(record, parquetEdgeColumnEntryKey, "entry_key"); err != nil {
 		return columns, err
 	}
-	if columns.valueKind, err = parquetStringColumn(record, parquetEdgeColumnValueKind, "value_kind"); err != nil {
+	if columns.valueKind, err = parquetio.StringColumn(record, parquetEdgeColumnValueKind, "value_kind"); err != nil {
 		return columns, err
 	}
-	if columns.stringValue, err = parquetStringColumn(record, parquetEdgeColumnStringValue, "string_value"); err != nil {
+	if columns.stringValue, err = parquetio.StringColumn(record, parquetEdgeColumnStringValue, "string_value"); err != nil {
 		return columns, err
 	}
-	if columns.boolValue, err = parquetBoolColumn(record, parquetEdgeColumnBoolValue, "bool_value"); err != nil {
+	if columns.boolValue, err = parquetio.BoolColumn(record, parquetEdgeColumnBoolValue, "bool_value"); err != nil {
 		return columns, err
 	}
-	if columns.floatValue, err = parquetFloat64Column(record, parquetEdgeColumnFloatValue, "float_value"); err != nil {
+	if columns.floatValue, err = parquetio.Float64Column(record, parquetEdgeColumnFloatValue, "float_value"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceSource, err = parquetStringColumn(record, parquetEdgeColumnFieldSourceSource, "field_source_source"); err != nil {
+	if columns.fieldSourceSource, err = parquetio.StringColumn(record, parquetEdgeColumnFieldSourceSource, "field_source_source"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourcePriority, err = parquetInt64Column(record, parquetEdgeColumnFieldSourcePriority, "field_source_priority"); err != nil {
+	if columns.fieldSourcePriority, err = parquetio.Int64Column(record, parquetEdgeColumnFieldSourcePriority, "field_source_priority"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceConfidence, err = parquetFloat64Column(record, parquetEdgeColumnFieldSourceConfidence, "field_source_confidence"); err != nil {
+	if columns.fieldSourceConfidence, err = parquetio.Float64Column(record, parquetEdgeColumnFieldSourceConfidence, "field_source_confidence"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceVersion, err = parquetInt64Column(record, parquetEdgeColumnFieldSourceVersion, "field_source_version"); err != nil {
+	if columns.fieldSourceVersion, err = parquetio.Int64Column(record, parquetEdgeColumnFieldSourceVersion, "field_source_version"); err != nil {
 		return columns, err
 	}
-	if columns.fieldSourceUpdatedAt, err = parquetStringColumn(record, parquetEdgeColumnFieldSourceUpdatedAt, "field_source_updated_at"); err != nil {
+	if columns.fieldSourceUpdatedAt, err = parquetio.StringColumn(record, parquetEdgeColumnFieldSourceUpdatedAt, "field_source_updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.edgeSourceSource, err = parquetStringColumn(record, parquetEdgeColumnEdgeSourceSource, "edge_source_source"); err != nil {
+	if columns.edgeSourceSource, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeSourceSource, "edge_source_source"); err != nil {
 		return columns, err
 	}
-	if columns.edgeSourceExternalID, err = parquetStringColumn(record, parquetEdgeColumnEdgeSourceExternalID, "edge_source_external_id"); err != nil {
+	if columns.edgeSourceExternalID, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeSourceExternalID, "edge_source_external_id"); err != nil {
 		return columns, err
 	}
-	if columns.edgeSourceEdgeID, err = parquetStringColumn(record, parquetEdgeColumnEdgeSourceEdgeID, "edge_source_edge_id"); err != nil {
+	if columns.edgeSourceEdgeID, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeSourceEdgeID, "edge_source_edge_id"); err != nil {
 		return columns, err
 	}
-	if columns.edgeSourceConfidence, err = parquetFloat64Column(record, parquetEdgeColumnEdgeSourceConfidence, "edge_source_confidence"); err != nil {
+	if columns.edgeSourceConfidence, err = parquetio.Float64Column(record, parquetEdgeColumnEdgeSourceConfidence, "edge_source_confidence"); err != nil {
 		return columns, err
 	}
-	if columns.edgeSourcePriority, err = parquetInt64Column(record, parquetEdgeColumnEdgeSourcePriority, "edge_source_priority"); err != nil {
+	if columns.edgeSourcePriority, err = parquetio.Int64Column(record, parquetEdgeColumnEdgeSourcePriority, "edge_source_priority"); err != nil {
 		return columns, err
 	}
-	if columns.edgeSourceObservedAt, err = parquetStringColumn(record, parquetEdgeColumnEdgeSourceObservedAt, "edge_source_observed_at"); err != nil {
+	if columns.edgeSourceObservedAt, err = parquetio.StringColumn(record, parquetEdgeColumnEdgeSourceObservedAt, "edge_source_observed_at"); err != nil {
 		return columns, err
 	}
 	return columns, nil
@@ -634,7 +536,7 @@ func edgeShardRowFromColumns(columns parquetEdgeShardColumnSet, row int) edgeSha
 			Priority:   int(columns.fieldSourcePriority.Value(row)),
 			Confidence: columns.fieldSourceConfidence.Value(row),
 			Version:    columns.fieldSourceVersion.Value(row),
-			UpdatedAt:  parseParquetTime(columns.fieldSourceUpdatedAt.Value(row)),
+			UpdatedAt:  parquetio.ParseTime(columns.fieldSourceUpdatedAt.Value(row)),
 		},
 		EdgeSource: graph.EdgeSource{
 			Source:     columns.edgeSourceSource.Value(row),
@@ -642,7 +544,7 @@ func edgeShardRowFromColumns(columns parquetEdgeShardColumnSet, row int) edgeSha
 			EdgeID:     columns.edgeSourceEdgeID.Value(row),
 			Confidence: columns.edgeSourceConfidence.Value(row),
 			Priority:   int(columns.edgeSourcePriority.Value(row)),
-			ObservedAt: parseParquetTime(columns.edgeSourceObservedAt.Value(row)),
+			ObservedAt: parquetio.ParseTime(columns.edgeSourceObservedAt.Value(row)),
 		},
 	}
 }
@@ -699,12 +601,12 @@ func (s *TenantStore) loadParquetEdgeShardObject(ctx context.Context, tenantID s
 	}
 	key := firstIndexObjectKey(spec.Objects, "shard", s.parquetEdgeShardVersionKey(tenantID, version, spec.RelationType, spec.Shard))
 	if exclusiveFileStore(s.Objects) != nil {
-		releaseDecode, err := acquireParquetDecode(ctx)
+		releaseDecode, err := parquetio.AcquireDecode(ctx)
 		if err != nil {
 			return EdgeShardData{}, false, err
 		}
 		defer releaseDecode()
-		ctx = context.WithValue(ctx, parquetDecodeAdmissionKey{}, true)
+		ctx = parquetio.WithDecodeAdmission(ctx)
 		reader, err := openFileReader(ctx, s.Objects, key)
 		if errors.Is(err, ErrNotFound) {
 			return EdgeShardData{}, false, nil

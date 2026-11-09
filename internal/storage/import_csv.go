@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 )
 
 type csvImportReader struct {
@@ -71,7 +72,7 @@ func csvRecordToIngestItem(headers []string, record []string) (IngestItem, error
 	case "entity", "node":
 		entity := graph.Entity{
 			ID:         cells["id"],
-			Kind:       firstValue(cells["entity_type"], cells["kind"]),
+			Kind:       ingest.FirstValue(cells["entity_type"], cells["kind"]),
 			Source:     cells["source"],
 			ExternalID: cells["external_id"],
 		}
@@ -96,18 +97,18 @@ func csvRecordToIngestItem(headers []string, record []string) (IngestItem, error
 			return IngestItem{}, err
 		}
 		item.Edge = &graph.Edge{
-			ID: cells["id"], Type: firstValue(cells["relation_type"], cells["type"]),
+			ID: cells["id"], Type: ingest.FirstValue(cells["relation_type"], cells["type"]),
 			From: cells["from"], To: cells["to"], Source: cells["source"],
 			ExternalID: cells["external_id"], Fields: fields,
 		}
 	case "delete_entity", "delete_node":
 		item.DeleteEntity = &graph.EntityDeleteRequest{
-			ID: cells["id"], Kind: firstValue(cells["entity_type"], cells["kind"]),
+			ID: cells["id"], Kind: ingest.FirstValue(cells["entity_type"], cells["kind"]),
 			Source: cells["source"], ExternalID: cells["external_id"], Reason: cells["reason"],
 		}
 	case "delete_edge", "delete_relationship":
 		item.DeleteEdge = &graph.EdgeDeleteRequest{
-			ID: cells["id"], Type: firstValue(cells["relation_type"], cells["type"]),
+			ID: cells["id"], Type: ingest.FirstValue(cells["relation_type"], cells["type"]),
 			From: cells["from"], To: cells["to"], Source: cells["source"], Reason: cells["reason"],
 		}
 	case "entity_type":
@@ -129,7 +130,7 @@ func csvRecordToIngestItem(headers []string, record []string) (IngestItem, error
 }
 
 func decodeCSVPayload(cells map[string]string, value any) error {
-	payload := firstValue(cells["payload"], cells["definition"])
+	payload := ingest.FirstValue(cells["payload"], cells["definition"])
 	if payload == "" {
 		return fmt.Errorf("record requires a JSON payload column")
 	}
@@ -141,7 +142,7 @@ func decodeCSVPayload(cells map[string]string, value any) error {
 
 func csvFields(headers []string, cells map[string]string) (graph.Fields, error) {
 	fields := graph.Fields{}
-	if raw := firstValue(cells["fields_json"], cells["fields"]); raw != "" {
+	if raw := ingest.FirstValue(cells["fields_json"], cells["fields"]); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &fields); err != nil {
 			return nil, fmt.Errorf("fields must be a JSON object: %w", err)
 		}

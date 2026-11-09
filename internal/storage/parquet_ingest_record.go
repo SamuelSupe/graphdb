@@ -7,7 +7,8 @@ import (
 	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -38,7 +39,7 @@ func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) (
 	if err != nil {
 		return nil, err
 	}
-	schema := parquetCommitArrowSchema()
+	schema := codec.ParquetCommitArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
 	header := graph.Commit{
@@ -49,7 +50,7 @@ func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) (
 		CreatedAt:     normalized.FinishedAt,
 	}
 	for _, row := range rows {
-		appendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
+		codec.AppendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
 	}
 
 	batch := builder.NewRecordBatch()
@@ -62,7 +63,7 @@ func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) (
 	if rowGroupSize < 1 {
 		rowGroupSize = 1
 	}
-	writerProps := parquetDataWriterProperties(schema)
+	writerProps := parquetio.DataWriterProperties(schema)
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
 	if err := pqarrow.WriteTable(table, &buf, rowGroupSize, writerProps, arrowProps); err != nil {
 		return nil, err
@@ -71,7 +72,7 @@ func marshalParquetIngestRecord(ctx context.Context, record IngestBatchRecord) (
 }
 
 func decodeParquetIngestRecord(ctx context.Context, data []byte) (IngestBatchRecord, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := parquetio.ReadTable(ctx, data)
 	if err != nil {
 		return IngestBatchRecord{}, err
 	}
@@ -93,16 +94,16 @@ func decodeParquetIngestRecord(ctx context.Context, data []byte) (IngestBatchRec
 	defer reader.Release()
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		columns, err := parquetCommitColumns(batch)
+		columns, err := codec.ParquetCommitColumns(batch)
 		if err != nil {
 			return IngestBatchRecord{}, err
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
-			rowTenant := columns.commitTenantID.Value(i)
-			rowBatch := columns.commitID.Value(i)
-			rowVersion := columns.version.Value(i)
-			rowHash := columns.contentHash.Value(i)
-			if columns.tenantID.Value(i) != rowTenant {
+			rowTenant := columns.CommitTenantIDAt(i)
+			rowBatch := columns.CommitIDAt(i)
+			rowVersion := columns.VersionAt(i)
+			rowHash := columns.ContentHashAt(i)
+			if columns.TenantIDAt(i) != rowTenant {
 				return IngestBatchRecord{}, fmt.Errorf("ingest record tenant mismatch")
 			}
 			if rows == 0 {
@@ -113,7 +114,7 @@ func decodeParquetIngestRecord(ctx context.Context, data []byte) (IngestBatchRec
 			} else if record.TenantID != rowTenant || record.Request.BatchID != rowBatch || record.Result.Version != rowVersion || expectedHash != rowHash {
 				return IngestBatchRecord{}, fmt.Errorf("ingest record identity mismatch")
 			}
-			row := parquetCommitRowFromColumns(columns, i)
+			row := codec.ParquetCommitRowFromColumns(columns, i)
 			if err := applyIngestRecordRow(&record, build, &deletes, row); err != nil {
 				return IngestBatchRecord{}, err
 			}
@@ -192,7 +193,7 @@ func applyIngestRecordRow(record *IngestBatchRecord, build *commitBuild, deletes
 			ValueFrom:    row.Strategy,
 		}
 		if row.Required {
-			value, err := anyFromParquetValue(row.Value)
+			value, err := parquetio.AnyFromValue(row.Value)
 			if err != nil {
 				return err
 			}
@@ -222,7 +223,7 @@ func applyIngestRecordRow(record *IngestBatchRecord, build *commitBuild, deletes
 			Message:          row.Reason,
 		})
 	case ingestRowConflictValue:
-		value, err := anyFromParquetValue(row.Value)
+		value, err := parquetio.AnyFromValue(row.Value)
 		if err != nil {
 			return err
 		}
@@ -236,38 +237,34 @@ func applyIngestRecordRow(record *IngestBatchRecord, build *commitBuild, deletes
 			return fmt.Errorf("unknown ingest conflict value role %q", row.ComponentKind)
 		}
 	default:
-		return build.apply(row)
+		return build.Apply(row)
 	}
 	return nil
 }
 
 func applyIngestBuildRows(record *IngestBatchRecord, build *commitBuild, deletes ingestDeleteRows) {
-	for _, ordinal := range sortedIntKeys(build.ciTypes) {
+	for ordinal, item := range build.CITypes() {
 		record.Request.Items = ensureIngestItemsLen(record.Request.Items, ordinal)
-		item := build.ciTypes[ordinal].item
 		record.Request.Items[ordinal].CIType = &item
 	}
-	for _, ordinal := range sortedIntKeys(build.relations) {
+	for ordinal, item := range build.Relations() {
 		record.Request.Items = ensureIngestItemsLen(record.Request.Items, ordinal)
-		item := build.relations[ordinal].item
 		record.Request.Items[ordinal].Relation = &item
 	}
-	for _, ordinal := range sortedIntKeys(build.entities) {
+	for ordinal, item := range build.Entities() {
 		record.Request.Items = ensureIngestItemsLen(record.Request.Items, ordinal)
-		item := decodedEntityPageCopy(build.entities[ordinal].item)
 		record.Request.Items[ordinal].Entity = &item
 	}
-	for _, ordinal := range sortedIntKeys(build.edges) {
+	for ordinal, item := range build.Edges() {
 		record.Request.Items = ensureIngestItemsLen(record.Request.Items, ordinal)
-		item := decodedEdgeShardCopy(build.edges[ordinal].item)
 		record.Request.Items[ordinal].Edge = &item
 	}
-	for _, ordinal := range sortedIntKeys(deletes.entities) {
+	for _, ordinal := range codec.SortedIntKeys(deletes.entities) {
 		record.Request.Items = ensureIngestItemsLen(record.Request.Items, ordinal)
 		item := deletes.entities[ordinal]
 		record.Request.Items[ordinal].DeleteEntity = &item
 	}
-	for _, ordinal := range sortedIntKeys(deletes.edges) {
+	for _, ordinal := range codec.SortedIntKeys(deletes.edges) {
 		record.Request.Items = ensureIngestItemsLen(record.Request.Items, ordinal)
 		item := deletes.edges[ordinal]
 		record.Request.Items[ordinal].DeleteEdge = &item
@@ -314,7 +311,7 @@ func ingestRecordRows(record IngestBatchRecord) ([]parquetCommitRow, error) {
 			Required:      condition.Value != nil,
 		}
 		if condition.Value != nil {
-			value, err := parquetValueFromAny(condition.Value)
+			value, err := parquetio.ValueFromAny(condition.Value)
 			if err != nil {
 				return nil, err
 			}
@@ -325,20 +322,20 @@ func ingestRecordRows(record IngestBatchRecord) ([]parquetCommitRow, error) {
 	for i, item := range record.Request.Items {
 		rows = append(rows, parquetCommitRow{Kind: ingestRowItem, ParentOrdinal: i, ExternalID: item.ExternalID})
 		if item.CIType != nil {
-			rows = append(rows, ciTypeRows(i, *item.CIType)...)
+			rows = append(rows, codec.CITypeRows(i, *item.CIType)...)
 		}
 		if item.Relation != nil {
-			rows = append(rows, relationTypeRows(i, *item.Relation)...)
+			rows = append(rows, codec.RelationTypeRows(i, *item.Relation)...)
 		}
 		if item.Entity != nil {
-			entityRows, err := entityMutationRows(commitRowUpsertEntity, i, 0, *item.Entity)
+			entityRows, err := codec.EntityMutationRows(commitRowUpsertEntity, i, 0, *item.Entity)
 			if err != nil {
 				return nil, err
 			}
 			rows = append(rows, entityRows...)
 		}
 		if item.Edge != nil {
-			edgeRows, err := edgeMutationRows(commitRowUpsertEdge, i, *item.Edge)
+			edgeRows, err := codec.EdgeMutationRows(commitRowUpsertEdge, i, *item.Edge)
 			if err != nil {
 				return nil, err
 			}
@@ -404,14 +401,14 @@ func ingestRecordRows(record IngestBatchRecord) ([]parquetCommitRow, error) {
 			Reason:         conflict.Message,
 		})
 		if conflict.ExistingValue != nil {
-			value, err := parquetValueFromAny(conflict.ExistingValue)
+			value, err := parquetio.ValueFromAny(conflict.ExistingValue)
 			if err != nil {
 				return nil, err
 			}
 			rows = append(rows, parquetCommitRow{Kind: ingestRowConflictValue, ComponentKind: ingestConflictValueOld, ParentOrdinal: i, Value: value})
 		}
 		if conflict.IncomingValue != nil {
-			value, err := parquetValueFromAny(conflict.IncomingValue)
+			value, err := parquetio.ValueFromAny(conflict.IncomingValue)
 			if err != nil {
 				return nil, err
 			}
@@ -434,13 +431,13 @@ func normalizeIngestRecordForParquet(record IngestBatchRecord) (IngestBatchRecor
 	if err != nil {
 		return IngestBatchRecord{}, "", err
 	}
-	return normalized, objectContentHash(canonical), nil
+	return normalized, codec.ContentHash(canonical), nil
 }
 
 func ingestRecordPayloadJSON(record IngestBatchRecord) ([]byte, error) {
 	record.StartedAt = record.StartedAt.UTC()
 	record.FinishedAt = record.FinishedAt.UTC()
-	record.Request = ingestRequestTimesUTC(record.Request)
+	record.Request = codec.IngestRequestTimesUTC(record.Request)
 	if record.Request.Items == nil {
 		record.Request.Items = []IngestItem{}
 	}

@@ -1,4 +1,4 @@
-package storage
+package parquetio
 
 import (
 	"encoding/json"
@@ -8,55 +8,55 @@ import (
 
 const (
 	parquetValueKindNull   = "null"
-	parquetValueKindString = "string"
+	ParquetValueKindString = "string"
 	parquetValueKindBool   = "bool"
 	parquetValueKindNumber = "number"
 	parquetValueKindRaw    = "raw"
 )
 
-type parquetValue struct {
+type Value struct {
 	Kind        string
 	StringValue string
 	BoolValue   bool
 	FloatValue  float64
 }
 
-func parquetValueFromAny(value any) (parquetValue, error) {
+func ValueFromAny(value any) (Value, error) {
 	switch typed := value.(type) {
 	case nil:
-		return parquetValue{Kind: parquetValueKindNull}, nil
+		return Value{Kind: parquetValueKindNull}, nil
 	case string:
-		return parquetValue{Kind: parquetValueKindString, StringValue: typed}, nil
+		return Value{Kind: ParquetValueKindString, StringValue: typed}, nil
 	case bool:
-		return parquetValue{Kind: parquetValueKindBool, BoolValue: typed}, nil
+		return Value{Kind: parquetValueKindBool, BoolValue: typed}, nil
 	case float64:
-		return parquetValue{Kind: parquetValueKindNumber, FloatValue: typed}, nil
+		return Value{Kind: parquetValueKindNumber, FloatValue: typed}, nil
 	case float32:
-		return parquetValue{Kind: parquetValueKindNumber, FloatValue: float64(typed)}, nil
+		return Value{Kind: parquetValueKindNumber, FloatValue: float64(typed)}, nil
 	case int:
-		return parquetValue{Kind: parquetValueKindNumber, FloatValue: float64(typed)}, nil
+		return Value{Kind: parquetValueKindNumber, FloatValue: float64(typed)}, nil
 	case int64:
-		return parquetValue{Kind: parquetValueKindNumber, FloatValue: float64(typed)}, nil
+		return Value{Kind: parquetValueKindNumber, FloatValue: float64(typed)}, nil
 	case json.Number:
 		parsed, err := strconv.ParseFloat(string(typed), 64)
 		if err != nil {
-			return parquetValue{}, err
+			return Value{}, err
 		}
-		return parquetValue{Kind: parquetValueKindNumber, FloatValue: parsed}, nil
+		return Value{Kind: parquetValueKindNumber, FloatValue: parsed}, nil
 	default:
 		data, err := json.Marshal(typed)
 		if err != nil {
-			return parquetValue{}, err
+			return Value{}, err
 		}
-		return parquetValue{Kind: parquetValueKindRaw, StringValue: string(data)}, nil
+		return Value{Kind: parquetValueKindRaw, StringValue: string(data)}, nil
 	}
 }
 
-func anyFromParquetValue(value parquetValue) (any, error) {
+func AnyFromValue(value Value) (any, error) {
 	switch value.Kind {
 	case parquetValueKindNull:
 		return nil, nil
-	case parquetValueKindString:
+	case ParquetValueKindString:
 		return value.StringValue, nil
 	case parquetValueKindBool:
 		return value.BoolValue, nil

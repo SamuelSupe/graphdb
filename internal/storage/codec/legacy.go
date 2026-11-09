@@ -1,4 +1,4 @@
-package storage
+package codec
 
 import (
 	"time"
@@ -6,13 +6,13 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
-// legacyEntity has the 1.0 Entity fields and JSON tags without 1.1's
+// LegacyEntity has the 1.0 Entity fields and JSON tags without 1.1's
 // API-only MarshalJSON method.
-type legacyEntity graph.Entity
+type LegacyEntity graph.Entity
 
 type legacySplitRequest struct {
 	SourceID string         `json:"source_id"`
-	Entities []legacyEntity `json:"entities"`
+	Entities []LegacyEntity `json:"entities"`
 }
 
 type legacyMutations struct {
@@ -20,7 +20,7 @@ type legacyMutations struct {
 	DeleteCITypes        []string                    `json:"delete_ci_types,omitempty"`
 	UpsertRelationTypes  []graph.RelationType        `json:"upsert_relation_types,omitempty"`
 	DeleteRelationTypes  []string                    `json:"delete_relation_types,omitempty"`
-	UpsertEntities       []legacyEntity              `json:"upsert_entities,omitempty"`
+	UpsertEntities       []LegacyEntity              `json:"upsert_entities,omitempty"`
 	DeleteEntities       []string                    `json:"delete_entities,omitempty"`
 	DeleteEntityRequests []graph.EntityDeleteRequest `json:"delete_entity_requests,omitempty"`
 	MarkSourceStale      []graph.SourceStaleRequest  `json:"mark_source_stale,omitempty"`
@@ -59,11 +59,11 @@ func legacyMutationWire(mutations graph.Mutations) legacyMutations {
 		DeleteCITypes:        mutations.DeleteCITypes,
 		UpsertRelationTypes:  mutations.UpsertRelationTypes,
 		DeleteRelationTypes:  mutations.DeleteRelationTypes,
-		UpsertEntities:       legacyEntities(mutations.UpsertEntities),
+		UpsertEntities:       LegacyEntities(mutations.UpsertEntities),
 		DeleteEntities:       mutations.DeleteEntities,
 		DeleteEntityRequests: mutations.DeleteEntityRequests,
 		MarkSourceStale:      mutations.MarkSourceStale,
-		UpsertEdges:          edgeSliceTimesUTC(mutations.UpsertEdges),
+		UpsertEdges:          EdgeSliceTimesUTC(mutations.UpsertEdges),
 		DeleteEdges:          mutations.DeleteEdges,
 		DeleteEdgeRequests:   mutations.DeleteEdgeRequests,
 		MergeEntities:        mutations.MergeEntities,
@@ -71,13 +71,13 @@ func legacyMutationWire(mutations graph.Mutations) legacyMutations {
 	}
 }
 
-func legacyEntities(entities []graph.Entity) []legacyEntity {
+func LegacyEntities(entities []graph.Entity) []LegacyEntity {
 	if entities == nil {
 		return nil
 	}
-	result := make([]legacyEntity, len(entities))
+	result := make([]LegacyEntity, len(entities))
 	for i := range entities {
-		result[i] = legacyEntity(entityTimesUTC(entities[i]))
+		result[i] = LegacyEntity(EntityTimesUTC(entities[i]))
 	}
 	return result
 }
@@ -90,7 +90,7 @@ func legacySplits(splits []graph.SplitRequest) []legacySplitRequest {
 	for i := range splits {
 		result[i] = legacySplitRequest{
 			SourceID: splits[i].SourceID,
-			Entities: legacyEntities(splits[i].Entities),
+			Entities: LegacyEntities(splits[i].Entities),
 		}
 	}
 	return result

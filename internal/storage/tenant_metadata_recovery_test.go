@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 )
 
 func TestTenantMetadataCandidateDecodeBudget(t *testing.T) {
@@ -40,11 +41,11 @@ func TestTenantMetadataCandidateDecodeBudget(t *testing.T) {
 				putTenantMetadataFixture(t, ctx, objects, key, TenantMetadata{TenantID: "tenant-a", Status: TenantStatusDisabled})
 			}
 			stats := &parquetDecodeTraceStats{}
-			_, candidate, _, repair, err := store.localTenantMetadataCandidate(withParquetDecodeTraceStats(ctx, stats), "tenant-a")
+			_, candidate, _, repair, err := store.localTenantMetadataCandidate(parquetio.WithDecodeTraceStats(ctx, stats), "tenant-a")
 			if err != nil || candidate.metadata.Status != wantStatus || repair != (state != "healthy") {
 				t.Fatalf("candidate=%+v repair=%t err=%v", candidate.metadata, repair, err)
 			}
-			if count, _ := stats.snapshot(); count != wantDecodes {
+			if count, _ := stats.Snapshot(); count != wantDecodes {
 				t.Fatalf("metadata decode admissions=%d, want %d; unused backup decoding consumes control capacity", count, wantDecodes)
 			}
 		})

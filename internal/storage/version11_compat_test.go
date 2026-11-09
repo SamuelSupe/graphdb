@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func TestLabelsUseExistingEntityPageFieldRows(t *testing.T) {
@@ -13,7 +14,7 @@ func TestLabelsUseExistingEntityPageFieldRows(t *testing.T) {
 	if err := graph.SetEntityLabels(&entity, []string{"article", "knowledge"}); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := entityPageRows(entity)
+	rows, err := codec.EntityRows(entity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +22,7 @@ func TestLabelsUseExistingEntityPageFieldRows(t *testing.T) {
 		t.Fatalf("labels changed entity page layout: %#v", rows)
 	}
 	decoded := graph.Entity{ID: entity.ID, Kind: entity.Kind}
-	if err := applyEntityPageRow(&decoded, rows[0]); err != nil {
+	if err := codec.ApplyEntityRow(&decoded, rows[0]); err != nil {
 		t.Fatal(err)
 	}
 	labels := graph.EntityLabels(decoded)
@@ -40,7 +41,7 @@ func TestEntityPageHashKeepsVersion10CanonicalEntityJSON(t *testing.T) {
 		Shard    string         `json:"shard"`
 		Entities []legacyEntity `json:"entities"`
 	}{
-		Shard: page.Shard, Entities: legacyEntities(page.Entities),
+		Shard: page.Shard, Entities: codec.LegacyEntities(page.Entities),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,8 +52,8 @@ func TestEntityPageHashKeepsVersion10CanonicalEntityJSON(t *testing.T) {
 	if !bytes.Contains(payload, []byte(`"__graphdb_labels":["article"]`)) {
 		t.Fatalf("persisted entity page hash lost compatible labels field: %s", payload)
 	}
-	if got := entityPageContentHash(page); got != objectContentHash(payload) {
-		t.Fatalf("entity page hash = %q, want legacy hash %q", got, objectContentHash(payload))
+	if got := entityPageContentHash(page); got != codec.ContentHash(payload) {
+		t.Fatalf("entity page hash = %q, want legacy hash %q", got, codec.ContentHash(payload))
 	}
 }
 

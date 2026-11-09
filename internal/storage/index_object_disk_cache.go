@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 type indexDiskCache struct {
@@ -206,7 +208,7 @@ func (c *indexDiskCache) removeFiles(id string) {
 }
 
 func indexDiskCacheID(cacheKey string) string {
-	return objectContentHash([]byte(cacheKey)) + ".parquet"
+	return codec.ContentHash([]byte(cacheKey)) + ".parquet"
 }
 
 func readIndexObjectCacheFile(dir string, id string, objectKey string) (cachedIndexObject, bool, error) {

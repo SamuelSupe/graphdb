@@ -10,7 +10,8 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -114,7 +115,7 @@ func TestEntityPageRowsDecodeOutOfOrdinalOrder(t *testing.T) {
 		{Kind: entityPageRowSource, Ordinal: 0, EntitySource: graph.EntitySource{Source: "manual"}},
 	}
 	for _, row := range rows {
-		if err := applyEntityPageRow(&entity, row); err != nil {
+		if err := codec.ApplyEntityRow(&entity, row); err != nil {
 			t.Fatalf("apply row %#v: %v", row, err)
 		}
 	}
@@ -1040,7 +1041,7 @@ func TestManifestRejectsPreV2DigestColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := parquetio.ReadTable(ctx, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1070,19 +1071,19 @@ func TestManifestRejectsPreV2DigestColumn(t *testing.T) {
 func TestCorruptCommitOrdinalIsRejectedBeforeMutationAllocation(t *testing.T) {
 	for _, ordinal := range []int{-1, 1000000} {
 		t.Run(fmt.Sprint(ordinal), func(t *testing.T) {
-			schema := parquetCommitArrowSchema()
+			schema := codec.ParquetCommitArrowSchema()
 			builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 			defer builder.Release()
-			appendParquetCommitRow(builder, "tenant-a", "key", graph.Commit{ID: "bad", TenantID: "tenant-a", Version: 1}, "hash", parquetCommitRow{Kind: commitRowDeleteEntity, ParentOrdinal: ordinal, ID: "host:a"})
+			codec.AppendParquetCommitRow(builder, "tenant-a", "key", graph.Commit{ID: "bad", TenantID: "tenant-a", Version: 1}, "hash", parquetCommitRow{Kind: commitRowDeleteEntity, ParentOrdinal: ordinal, ID: "host:a"})
 			batch := builder.NewRecordBatch()
 			defer batch.Release()
 			table := array.NewTableFromRecords(schema, []arrow.RecordBatch{batch})
 			defer table.Release()
 			var data bytes.Buffer
-			if err := pqarrow.WriteTable(table, &data, 1, parquetDataWriterProperties(schema), pqarrow.DefaultWriterProps()); err != nil {
+			if err := pqarrow.WriteTable(table, &data, 1, parquetio.DataWriterProperties(schema), pqarrow.DefaultWriterProps()); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := decodeParquetCommitItems(context.Background(), data.Bytes()); err == nil || !strings.Contains(err.Error(), "ordinal") {
+			if _, err := codec.DecodeCommitItems(context.Background(), data.Bytes()); err == nil || !strings.Contains(err.Error(), "ordinal") {
 				t.Fatalf("invalid ordinal did not fail at decode boundary: %v", err)
 			}
 		})

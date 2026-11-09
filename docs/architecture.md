@@ -97,12 +97,21 @@ GC 任务心跳。重启后没有执行者的活动记录会在查询/恢复检�
 | `internal/ha` / `internal/replication` | Raft 多数派复制、成员与协议、快照和副本恢复 |
 | `internal/sharding` | 目录组、租户归属、路由与跨数据组迁移 |
 | `internal/storage` | 持久化、租户代次、读视图与缓存发布、查询索引选择、任务生命周期 |
+| `internal/storage/ingest` | 写入请求和结果契约、路径校验、前置条件、mutation 转换与冲突定位 |
+| `internal/storage/codec` | 提交 Parquet 编解码、共享实体/边行、布局版本与兼容内容哈希 |
+| `internal/storage/parquetio` | Arrow 列访问、值转换、读写参数与进程级解码准入 |
+| `internal/storage/admission` | 写入背压采样、阈值计算与背压错误 |
+| `internal/storage/identity` | 租户标识校验、对象路径分段转义与提交 ID 生成 |
 | `internal/maintenance` | 维护调度和决策，复用存储任务与预算，通过回调接入用量缓存及审计 |
 | `internal/graph` / `internal/query` | 图结构、查询规划与执行 |
 | `internal/backupstore` | 可选对象存储备份传输，不参与在线读写 |
 
 文件存储直接使用本地随机读取与有界目录遍历；保留测试和观测所需的窄接口，移除无调用者的
 单写入者包装层。维护调度不依赖 HTTP，可由同进程其他入口调用。
+
+存储子包不反向依赖 `storage`。租户锁、WAL 调度、发布和恢复仍由 `storage` 协调；原有公共
+类型和入口通过类型别名及薄封装保留。文件职责和依赖方向见[存储模块说明](../internal/storage/README.md)。
+此拆分保持对象键、Parquet/WAL 编码、错误身份及发布顺序。
 
 ## 部署与数据格式
 

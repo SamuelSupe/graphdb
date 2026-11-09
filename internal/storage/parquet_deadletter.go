@@ -7,7 +7,8 @@ import (
 	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -29,7 +30,7 @@ func marshalParquetDeadLetter(ctx context.Context, letter DeadLetter) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	schema := parquetCommitArrowSchema()
+	schema := codec.ParquetCommitArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
 	header := graph.Commit{
@@ -40,7 +41,7 @@ func marshalParquetDeadLetter(ctx context.Context, letter DeadLetter) ([]byte, e
 		CreatedAt:     normalized.UpdatedAt,
 	}
 	for _, row := range rows {
-		appendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
+		codec.AppendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
 	}
 
 	batch := builder.NewRecordBatch()
@@ -62,7 +63,7 @@ func marshalParquetDeadLetter(ctx context.Context, letter DeadLetter) ([]byte, e
 }
 
 func decodeParquetDeadLetter(ctx context.Context, data []byte) (DeadLetter, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := parquetio.ReadTable(ctx, data)
 	if err != nil {
 		return DeadLetter{}, err
 	}
@@ -85,16 +86,16 @@ func decodeParquetDeadLetter(ctx context.Context, data []byte) (DeadLetter, erro
 	defer reader.Release()
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		columns, err := parquetCommitColumns(batch)
+		columns, err := codec.ParquetCommitColumns(batch)
 		if err != nil {
 			return DeadLetter{}, err
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
-			rowTenant := columns.commitTenantID.Value(i)
-			rowID := columns.commitID.Value(i)
-			rowVersion := columns.version.Value(i)
-			rowHash := columns.contentHash.Value(i)
-			if columns.tenantID.Value(i) != rowTenant {
+			rowTenant := columns.CommitTenantIDAt(i)
+			rowID := columns.CommitIDAt(i)
+			rowVersion := columns.VersionAt(i)
+			rowHash := columns.ContentHashAt(i)
+			if columns.TenantIDAt(i) != rowTenant {
 				return DeadLetter{}, fmt.Errorf("deadletter tenant mismatch")
 			}
 			if rows == 0 {
@@ -106,7 +107,7 @@ func decodeParquetDeadLetter(ctx context.Context, data []byte) (DeadLetter, erro
 			} else if letter.TenantID != rowTenant || letter.ID != rowID || letter.LastResult.Version != rowVersion || expectedHash != rowHash {
 				return DeadLetter{}, fmt.Errorf("deadletter identity mismatch")
 			}
-			row := parquetCommitRowFromColumns(columns, i)
+			row := codec.ParquetCommitRowFromColumns(columns, i)
 			switch row.Kind {
 			case deadLetterRowMetadata:
 				letter.ID = row.ID
@@ -179,14 +180,14 @@ func normalizeDeadLetterForParquet(letter DeadLetter) (DeadLetter, string, error
 	if err != nil {
 		return DeadLetter{}, "", err
 	}
-	return normalized, objectContentHash(canonical), nil
+	return normalized, codec.ContentHash(canonical), nil
 }
 
 func deadLetterPayloadJSON(letter DeadLetter) ([]byte, error) {
 	letter.CreatedAt = letter.CreatedAt.UTC()
 	letter.UpdatedAt = letter.UpdatedAt.UTC()
 	letter.ReplayedAt = letter.ReplayedAt.UTC()
-	letter.Request = ingestRequestTimesUTC(letter.Request)
+	letter.Request = codec.IngestRequestTimesUTC(letter.Request)
 	letter.objectKey = ""
 	letter.objectMeta = ObjectMeta{}
 	if letter.Request.Items == nil {

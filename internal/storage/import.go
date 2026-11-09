@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 )
 
 const (
@@ -132,7 +134,7 @@ func (s *TenantStore) importSourcePrefix(tenantID string) string {
 }
 
 func (s *TenantStore) importSourceKey(tenantID string, importID string, format string) string {
-	return path.Join(s.importSourcePrefix(tenantID), objectSegment(importID)+"."+format)
+	return path.Join(s.importSourcePrefix(tenantID), identity.ObjectSegment(importID)+"."+format)
 }
 
 func (s *TenantStore) validateImportSourceKey(tenantID string, key string) error {

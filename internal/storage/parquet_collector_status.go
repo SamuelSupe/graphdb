@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -42,8 +43,8 @@ func marshalParquetCollectorStatus(ctx context.Context, status CollectorStatus) 
 	builder.Field(parquetCollectorStatusColumnLastVersion).(*array.Int64Builder).Append(status.LastVersion)
 	builder.Field(parquetCollectorStatusColumnContentHash).(*array.StringBuilder).Append(collectorStatusContentHash(status))
 	builder.Field(parquetCollectorStatusColumnLastCursor).(*array.StringBuilder).Append(status.LastCursor)
-	builder.Field(parquetCollectorStatusColumnLastStartedAt).(*array.StringBuilder).Append(formatParquetTime(status.LastStartedAt))
-	builder.Field(parquetCollectorStatusColumnLastFinishedAt).(*array.StringBuilder).Append(formatParquetTime(status.LastFinishedAt))
+	builder.Field(parquetCollectorStatusColumnLastStartedAt).(*array.StringBuilder).Append(parquetio.FormatTime(status.LastStartedAt))
+	builder.Field(parquetCollectorStatusColumnLastFinishedAt).(*array.StringBuilder).Append(parquetio.FormatTime(status.LastFinishedAt))
 	builder.Field(parquetCollectorStatusColumnLastError).(*array.StringBuilder).Append(status.LastError)
 	builder.Field(parquetCollectorStatusColumnAppliedTotal).(*array.Int64Builder).Append(int64(status.AppliedTotal))
 	builder.Field(parquetCollectorStatusColumnFailedTotal).(*array.Int64Builder).Append(int64(status.FailedTotal))
@@ -56,14 +57,14 @@ func marshalParquetCollectorStatus(ctx context.Context, status CollectorStatus) 
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetCollectorStatus(ctx context.Context, data []byte) (CollectorStatus, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return CollectorStatus{}, err
 	}
@@ -82,51 +83,51 @@ func decodeParquetCollectorStatus(ctx context.Context, data []byte) (CollectorSt
 		return CollectorStatus{}, fmt.Errorf("parquet collector status is empty")
 	}
 	batch := reader.RecordBatch()
-	tenantColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnTenantID, "tenant_id")
+	tenantColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnTenantID, "tenant_id")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	sourceColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnSource, "source")
+	sourceColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnSource, "source")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	collectorColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnCollectorID, "collector_id")
+	collectorColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnCollectorID, "collector_id")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	lastBatchColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnLastBatchID, "last_batch_id")
+	lastBatchColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnLastBatchID, "last_batch_id")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	lastVersionColumn, err := parquetInt64Column(batch, parquetCollectorStatusColumnLastVersion, "last_version")
+	lastVersionColumn, err := parquetio.Int64Column(batch, parquetCollectorStatusColumnLastVersion, "last_version")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	hashColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnContentHash, "content_hash")
+	hashColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnContentHash, "content_hash")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	cursorColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnLastCursor, "last_cursor")
+	cursorColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnLastCursor, "last_cursor")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	startedColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnLastStartedAt, "last_started_at")
+	startedColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnLastStartedAt, "last_started_at")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	finishedColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnLastFinishedAt, "last_finished_at")
+	finishedColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnLastFinishedAt, "last_finished_at")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	errorColumn, err := parquetStringColumn(batch, parquetCollectorStatusColumnLastError, "last_error")
+	errorColumn, err := parquetio.StringColumn(batch, parquetCollectorStatusColumnLastError, "last_error")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	appliedColumn, err := parquetInt64Column(batch, parquetCollectorStatusColumnAppliedTotal, "applied_total")
+	appliedColumn, err := parquetio.Int64Column(batch, parquetCollectorStatusColumnAppliedTotal, "applied_total")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
-	failedColumn, err := parquetInt64Column(batch, parquetCollectorStatusColumnFailedTotal, "failed_total")
+	failedColumn, err := parquetio.Int64Column(batch, parquetCollectorStatusColumnFailedTotal, "failed_total")
 	if err != nil {
 		return CollectorStatus{}, err
 	}
@@ -137,8 +138,8 @@ func decodeParquetCollectorStatus(ctx context.Context, data []byte) (CollectorSt
 		LastBatchID:    lastBatchColumn.Value(0),
 		LastVersion:    lastVersionColumn.Value(0),
 		LastCursor:     cursorColumn.Value(0),
-		LastStartedAt:  parseParquetTime(startedColumn.Value(0)),
-		LastFinishedAt: parseParquetTime(finishedColumn.Value(0)),
+		LastStartedAt:  parquetio.ParseTime(startedColumn.Value(0)),
+		LastFinishedAt: parquetio.ParseTime(finishedColumn.Value(0)),
 		LastError:      errorColumn.Value(0),
 		AppliedTotal:   int(appliedColumn.Value(0)),
 		FailedTotal:    int(failedColumn.Value(0)),
@@ -182,8 +183,8 @@ func collectorStatusContentHash(status CollectorStatus) string {
 		status.LastBatchID,
 		formatInt64ForHash(status.LastVersion),
 		status.LastCursor,
-		formatParquetTime(status.LastStartedAt),
-		formatParquetTime(status.LastFinishedAt),
+		parquetio.FormatTime(status.LastStartedAt),
+		parquetio.FormatTime(status.LastFinishedAt),
 		status.LastError,
 		formatInt64ForHash(int64(status.AppliedTotal)),
 		formatInt64ForHash(int64(status.FailedTotal)),

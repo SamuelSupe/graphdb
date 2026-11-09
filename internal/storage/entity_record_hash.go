@@ -1,6 +1,9 @@
 package storage
 
-import "github.com/SamuelSupe/graphdb/v2/internal/graph"
+import (
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+)
 
 func entityRecordContentHash(record EntityRecord) string {
 	return indexContentHash(struct {
@@ -15,7 +18,7 @@ func entityRecordContentHash(record EntityRecord) string {
 		Page:     record.Page,
 		PageHash: record.PageHash,
 		PageETag: record.PageETag,
-		Entity:   entityTimesUTC(record.Entity),
+		Entity:   codec.EntityTimesUTC(record.Entity),
 		Deleted:  record.Deleted,
 	})
 }

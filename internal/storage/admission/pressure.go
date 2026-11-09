@@ -1,4 +1,5 @@
-package storage
+// Package admission samples storage pressure and computes write-admission reasons.
+package admission
 
 import (
 	"context"
@@ -81,7 +82,7 @@ type tenantPressureUsage struct {
 }
 
 func NewWritePressure(config BackpressureConfig) *WritePressure {
-	config = normalizeBackpressureConfig(config)
+	config = NormalizeConfig(config)
 	return &WritePressure{
 		config:       config,
 		conflicts:    map[string][]time.Time{},
@@ -91,7 +92,7 @@ func NewWritePressure(config BackpressureConfig) *WritePressure {
 	}
 }
 
-func normalizeBackpressureConfig(config BackpressureConfig) BackpressureConfig {
+func NormalizeConfig(config BackpressureConfig) BackpressureConfig {
 	if config.RetryAfter <= 0 {
 		config.RetryAfter = 2 * time.Second
 	}
@@ -147,7 +148,7 @@ func (p *WritePressure) RecordObjectOperation(duration time.Duration, err error)
 		return
 	}
 	p.RecordObjectLatency(duration)
-	if !isObjectStorePressureError(err) {
+	if !IsObjectStorePressureError(err) {
 		return
 	}
 	p.mu.Lock()
@@ -198,7 +199,7 @@ func (p *WritePressure) ReasonsWithConfig(tenantID string, config BackpressureCo
 	if p == nil {
 		return nil
 	}
-	config = normalizeBackpressureConfig(config)
+	config = NormalizeConfig(config)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
@@ -262,7 +263,7 @@ func (p *WritePressure) ReasonsWithConfig(tenantID string, config BackpressureCo
 	return reasons
 }
 
-func newBackpressureError(reasons []BackpressureReason, retryAfter time.Duration) error {
+func NewError(reasons []BackpressureReason, retryAfter time.Duration) error {
 	if len(reasons) == 0 {
 		return nil
 	}
@@ -281,7 +282,7 @@ func (p *WritePressure) trimConflictsLockedWithConfigLocked(tenantID string, now
 	if len(items) == 0 {
 		return nil
 	}
-	config = normalizeBackpressureConfig(config)
+	config = NormalizeConfig(config)
 	cutoff := now.Add(-config.CASConflictWindow)
 	start := 0
 	for start < len(items) && items[start].Before(cutoff) {
@@ -312,7 +313,7 @@ func (p *WritePressure) trimObjectErrorsLocked(now time.Time, config Backpressur
 	return p.objectErrors
 }
 
-func isObjectStorePressureError(err error) bool {
+func IsObjectStorePressureError(err error) bool {
 	return errors.Is(err, ErrObjectStoreUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }
 
@@ -338,6 +339,7 @@ func (p *WritePressure) now() time.Time {
 	}
 	return time.Now()
 }
+
 func (p *WritePressure) trimLatenciesLocked(now time.Time, config BackpressureConfig) {
 	window := config.ObjectErrorWindow
 	if window <= 0 {
@@ -363,7 +365,7 @@ func (p *WritePressure) trimLatenciesLocked(now time.Time, config BackpressureCo
 	}
 }
 
-func (p *WritePressure) recentTenantBytes(tenant string) (int64, bool) {
+func (p *WritePressure) RecentTenantBytes(tenant string) (int64, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	usage, ok := p.lastUsage[tenant]

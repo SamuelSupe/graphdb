@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 const (
@@ -175,6 +176,7 @@ func (s *TenantStore) loadDirectCommitRecordWithMeta(ctx context.Context, key st
 	record, meta, _, err := s.loadDirectCommitRecordWithData(ctx, key)
 	return record, meta, err
 }
+
 func (s *TenantStore) loadDirectCommitRecordWithData(ctx context.Context, key string) (DirectCommitRecord, ObjectMeta, []byte, error) {
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {
@@ -218,8 +220,8 @@ func replayDirectCommitResult(record DirectCommitRecord) CommitResult {
 func directCommitRequestEqual(stored DirectCommitRequest, incoming DirectCommitRequest) bool {
 	stored.IdempotencyKey = strings.TrimSpace(stored.IdempotencyKey)
 	incoming.IdempotencyKey = strings.TrimSpace(incoming.IdempotencyKey)
-	stored.Mutations = mutationTimesUTC(stored.Mutations)
-	incoming.Mutations = mutationTimesUTC(incoming.Mutations)
+	stored.Mutations = codec.MutationTimesUTC(stored.Mutations)
+	incoming.Mutations = codec.MutationTimesUTC(incoming.Mutations)
 	storedJSON, err := json.Marshal(stored)
 	if err != nil {
 		return false

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 )
 
@@ -17,7 +18,7 @@ func TestParquetDecodeAdmissionHonorsContext(t *testing.T) {
 	ConfigureParquetDecodeMaxConcurrent(1)
 	t.Cleanup(func() { ConfigureParquetDecodeMaxConcurrent(0) })
 
-	release, err := acquireParquetDecode(context.Background())
+	release, err := parquetio.AcquireDecode(context.Background())
 	if err != nil {
 		t.Fatalf("acquire first slot: %v", err)
 	}
@@ -25,7 +26,7 @@ func TestParquetDecodeAdmissionHonorsContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := acquireParquetDecode(ctx); !errors.Is(err, context.Canceled) {
+	if _, err := parquetio.AcquireDecode(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("blocked acquire error = %v, want context canceled", err)
 	}
 }
@@ -38,7 +39,7 @@ func TestBulkDecodeLeavesControlMetadataCapacityWithinTotalLimit(t *testing.T) {
 	ConfigureParquetDecodeMaxConcurrent(3)
 	t.Cleanup(func() { ConfigureParquetDecodeMaxConcurrent(0) })
 	for range 2 {
-		release, err := acquireParquetDecode(context.Background())
+		release, err := parquetio.AcquireDecode(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -51,12 +52,12 @@ func TestBulkDecodeLeavesControlMetadataCapacityWithinTotalLimit(t *testing.T) {
 		t.Fatalf("control metadata blocked by bulk decoders: %+v, %v", metadata, err)
 	}
 	blocked, stop := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	if _, err := acquireParquetDecode(blocked); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := parquetio.AcquireDecode(blocked); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("bulk decoder consumed reserved capacity: %v", err)
 	}
 	stop()
-	control := context.WithValue(context.Background(), parquetControlDecodeKey{}, true)
-	release, err := acquireParquetDecode(control)
+	control := parquetio.WithControlDecode(context.Background())
+	release, err := parquetio.AcquireDecode(control)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestQueuedEntityDecodeLeavesControlReadsAvailable(t *testing.T) {
 	}
 	ConfigureParquetDecodeMaxConcurrent(1)
 	t.Cleanup(func() { ConfigureParquetDecodeMaxConcurrent(0) })
-	release, err := acquireParquetDecode(ctx)
+	release, err := parquetio.AcquireDecode(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestSnapshotDecodeFailureReleasesReaderAndAdmission(t *testing.T) {
 			}
 			next, stop := context.WithTimeout(context.Background(), time.Second)
 			defer stop()
-			release, err := acquireParquetDecode(next)
+			release, err := parquetio.AcquireDecode(next)
 			if err != nil {
 				t.Fatalf("decode admission leaked: %v", err)
 			}

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -115,9 +117,9 @@ func marshalParquetTask(ctx context.Context, task Task) ([]byte, error) {
 		OwnerID:           normalized.OwnerID,
 		ResultKey:         normalized.ResultKey,
 		Error:             normalized.Error,
-		StartedAt:         formatParquetTime(normalized.StartedAt),
-		UpdatedAt:         formatParquetTime(normalized.UpdatedAt),
-		FinishedAt:        formatParquetTime(normalized.FinishedAt),
+		StartedAt:         parquetio.FormatTime(normalized.StartedAt),
+		UpdatedAt:         parquetio.FormatTime(normalized.UpdatedAt),
+		FinishedAt:        parquetio.FormatTime(normalized.FinishedAt),
 		ContentHash:       hash,
 	}
 	rows, err := taskRows(normalized.Params, normalized.Checkpoint, normalized.Result)
@@ -143,15 +145,15 @@ func decodeParquetTask(ctx context.Context, data []byte) (Task, error) {
 		OwnerID:           identity.OwnerID,
 		ResultKey:         identity.ResultKey,
 		Error:             identity.Error,
-		StartedAt:         parseParquetTime(identity.StartedAt),
-		UpdatedAt:         parseParquetTime(identity.UpdatedAt),
-		FinishedAt:        parseParquetTime(identity.FinishedAt),
+		StartedAt:         parquetio.ParseTime(identity.StartedAt),
+		UpdatedAt:         parquetio.ParseTime(identity.UpdatedAt),
+		FinishedAt:        parquetio.ParseTime(identity.FinishedAt),
 	}
 	for _, row := range rows {
 		switch row.Kind {
 		case taskRowMetadata:
 		case taskRowParam:
-			value, err := anyFromParquetValue(row.Value)
+			value, err := parquetio.AnyFromValue(row.Value)
 			if err != nil {
 				return Task{}, err
 			}
@@ -160,7 +162,7 @@ func decodeParquetTask(ctx context.Context, data []byte) (Task, error) {
 			}
 			task.Params[row.Key] = value
 		case taskRowCheckpoint:
-			value, err := anyFromParquetValue(row.Value)
+			value, err := parquetio.AnyFromValue(row.Value)
 			if err != nil {
 				return Task{}, err
 			}
@@ -169,7 +171,7 @@ func decodeParquetTask(ctx context.Context, data []byte) (Task, error) {
 			}
 			task.Checkpoint[row.Key] = value
 		case taskRowResult:
-			value, err := anyFromParquetValue(row.Value)
+			value, err := parquetio.AnyFromValue(row.Value)
 			if err != nil {
 				return Task{}, err
 			}
@@ -207,9 +209,9 @@ func marshalParquetIndexTask(ctx context.Context, task IndexTask) ([]byte, error
 		OwnerID:           normalized.OwnerID,
 		CatalogVersion:    normalized.CatalogVersion,
 		Error:             normalized.Error,
-		StartedAt:         formatParquetTime(normalized.StartedAt),
-		UpdatedAt:         formatParquetTime(normalized.UpdatedAt),
-		FinishedAt:        formatParquetTime(normalized.FinishedAt),
+		StartedAt:         parquetio.FormatTime(normalized.StartedAt),
+		UpdatedAt:         parquetio.FormatTime(normalized.UpdatedAt),
+		FinishedAt:        parquetio.FormatTime(normalized.FinishedAt),
 		ContentHash:       hash,
 	}, []parquetTaskRow{{Kind: taskRowMetadata}})
 }
@@ -235,9 +237,9 @@ func decodeParquetIndexTask(ctx context.Context, data []byte) (IndexTask, error)
 		OwnerID:           identity.OwnerID,
 		CatalogVersion:    identity.CatalogVersion,
 		Error:             identity.Error,
-		StartedAt:         parseParquetTime(identity.StartedAt),
-		UpdatedAt:         parseParquetTime(identity.UpdatedAt),
-		FinishedAt:        parseParquetTime(identity.FinishedAt),
+		StartedAt:         parquetio.ParseTime(identity.StartedAt),
+		UpdatedAt:         parquetio.ParseTime(identity.UpdatedAt),
+		FinishedAt:        parquetio.ParseTime(identity.FinishedAt),
 	}
 	hash, err := indexTaskContentHash(task)
 	if err != nil {
@@ -286,7 +288,7 @@ func decodeParquetTaskResultReader(ctx context.Context, source parquet.ReaderAtS
 		switch row.Kind {
 		case taskRowMetadata:
 		case taskRowResult:
-			value, err := anyFromParquetValue(row.Value)
+			value, err := parquetio.AnyFromValue(row.Value)
 			if err != nil {
 				return nil, err
 			}
@@ -338,7 +340,7 @@ func decodeParquetTaskRows(ctx context.Context, data []byte) (parquetTaskIdentit
 }
 
 func decodeParquetTaskRowsReader(ctx context.Context, source parquet.ReaderAtSeeker) (parquetTaskIdentity, []parquetTaskRow, error) {
-	table, release, err := readParquetTableReader(context.WithValue(ctx, parquetControlDecodeKey{}, true), source)
+	table, release, err := parquetio.ReadTableReader(parquetio.WithControlDecode(ctx), source)
 	if err != nil {
 		return parquetTaskIdentity{}, nil, err
 	}
@@ -425,23 +427,23 @@ func parquetTaskColumns(record arrow.RecordBatch) (parquetTaskColumnSet, error) 
 		{&columns.stringValue, parquetTaskColumnStringValue, "string_value"},
 	}
 	for _, item := range stringColumns {
-		if *item.target, err = parquetStringColumn(record, item.index, item.name); err != nil {
+		if *item.target, err = parquetio.StringColumn(record, item.index, item.name); err != nil {
 			return columns, err
 		}
 	}
-	if columns.progressCompleted, err = parquetInt64Column(record, parquetTaskColumnProgressCompleted, "progress_completed"); err != nil {
+	if columns.progressCompleted, err = parquetio.Int64Column(record, parquetTaskColumnProgressCompleted, "progress_completed"); err != nil {
 		return columns, err
 	}
-	if columns.progressTotal, err = parquetInt64Column(record, parquetTaskColumnProgressTotal, "progress_total"); err != nil {
+	if columns.progressTotal, err = parquetio.Int64Column(record, parquetTaskColumnProgressTotal, "progress_total"); err != nil {
 		return columns, err
 	}
-	if columns.catalogVersion, err = parquetInt64Column(record, parquetTaskColumnCatalogVersion, "catalog_version"); err != nil {
+	if columns.catalogVersion, err = parquetio.Int64Column(record, parquetTaskColumnCatalogVersion, "catalog_version"); err != nil {
 		return columns, err
 	}
-	if columns.boolValue, err = parquetBoolColumn(record, parquetTaskColumnBoolValue, "bool_value"); err != nil {
+	if columns.boolValue, err = parquetio.BoolColumn(record, parquetTaskColumnBoolValue, "bool_value"); err != nil {
 		return columns, err
 	}
-	if columns.floatValue, err = parquetFloat64Column(record, parquetTaskColumnFloatValue, "float_value"); err != nil {
+	if columns.floatValue, err = parquetio.Float64Column(record, parquetTaskColumnFloatValue, "float_value"); err != nil {
 		return columns, err
 	}
 	return columns, nil
@@ -519,7 +521,7 @@ func normalizeTaskForParquet(task Task) (Task, string, error) {
 	if err != nil {
 		return Task{}, "", err
 	}
-	return normalized, objectContentHash(canonical), nil
+	return normalized, codec.ContentHash(canonical), nil
 }
 
 func normalizeIndexTaskForParquet(task IndexTask) (IndexTask, string, error) {
@@ -535,7 +537,7 @@ func normalizeIndexTaskForParquet(task IndexTask) (IndexTask, string, error) {
 	if err != nil {
 		return IndexTask{}, "", err
 	}
-	return normalized, objectContentHash(canonical), nil
+	return normalized, codec.ContentHash(canonical), nil
 }
 
 func normalizeTaskResultForParquet(result map[string]any) (map[string]any, string, error) {
@@ -551,7 +553,7 @@ func normalizeTaskResultForParquet(result map[string]any) (map[string]any, strin
 	if err != nil {
 		return nil, "", err
 	}
-	return normalized, objectContentHash(canonical), nil
+	return normalized, codec.ContentHash(canonical), nil
 }
 
 func taskRows(params map[string]any, checkpoint map[string]any, result map[string]any) ([]parquetTaskRow, error) {
@@ -576,10 +578,10 @@ func taskRows(params map[string]any, checkpoint map[string]any, result map[strin
 }
 
 func taskValueRows(kind string, values map[string]any) ([]parquetTaskRow, error) {
-	keys := sortedAnyMapKeys(values)
+	keys := codec.SortedAnyMapKeys(values)
 	rows := make([]parquetTaskRow, 0, len(keys))
 	for _, key := range keys {
-		value, err := parquetValueFromAny(values[key])
+		value, err := parquetio.ValueFromAny(values[key])
 		if err != nil {
 			return nil, err
 		}
@@ -601,7 +603,7 @@ func taskContentHash(task Task) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return objectContentHash(canonical), nil
+	return codec.ContentHash(canonical), nil
 }
 
 func indexTaskContentHash(task IndexTask) (string, error) {
@@ -617,7 +619,7 @@ func indexTaskContentHash(task IndexTask) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return objectContentHash(canonical), nil
+	return codec.ContentHash(canonical), nil
 }
 
 func taskResultContentHash(result map[string]any) (string, error) {
@@ -628,7 +630,7 @@ func taskResultContentHash(result map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return objectContentHash(payload), nil
+	return codec.ContentHash(payload), nil
 }
 
 func taskPayloadJSON(task Task) ([]byte, error) {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/admission"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -140,7 +141,7 @@ func newCheckedBackpressureError(
 	retryAfter time.Duration,
 	options writeBackpressureCheckOptions,
 ) error {
-	return newBackpressureError(filterCheckedBackpressureReasons(reasons, options), retryAfter)
+	return admission.NewError(filterCheckedBackpressureReasons(reasons, options), retryAfter)
 }
 
 func filterCheckedBackpressureReasons(
@@ -217,7 +218,7 @@ func (s *TenantStore) objectStoreBackpressureError(err error) error {
 	if !ok {
 		return nil
 	}
-	return newBackpressureError([]BackpressureReason{reason}, s.Backpressure.Config().RetryAfter)
+	return admission.NewError([]BackpressureReason{reason}, s.Backpressure.Config().RetryAfter)
 }
 
 func (s *TenantStore) checkQuotaAfterApply(ctx context.Context, tenantID string, previous *graph.Graph, next *graph.Graph) error {
@@ -249,7 +250,7 @@ func (s *TenantStore) checkQuotaAfterApply(ctx context.Context, tenantID string,
 	if len(reasons) == 0 || quotaDecreased(previous, next, config) {
 		return nil
 	}
-	return newBackpressureError(reasons, config.RetryAfter)
+	return admission.NewError(reasons, config.RetryAfter)
 }
 
 func quotaDecreased(previous *graph.Graph, next *graph.Graph, config BackpressureConfig) bool {

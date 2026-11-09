@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/admission"
 )
 
 const (
@@ -136,7 +137,7 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 		// reservation and queue position. Capture a fresh head in publication
 		// order; reusing old inputs after GC or restore would be unsafe.
 		for attempt := 1; attempt < maxBackgroundIndexAttempts && ctx.Err() == nil &&
-			(isObjectStorePressureError(indexErr) || errors.Is(indexErr, ErrConflict)); attempt++ {
+			(admission.IsObjectStorePressureError(indexErr) || errors.Is(indexErr, ErrConflict)); attempt++ {
 			started := time.Now()
 			if err := retryDelay(ctx, attempt-1); err != nil {
 				return

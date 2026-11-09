@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -193,9 +193,9 @@ func (s *TenantStore) listEntitiesFromPages(ctx context.Context, tenantID string
 		attribute.Int("graphdb.scan.catalog_pages", len(catalog.EntityPages)),
 	)
 	decodeStats := &parquetDecodeTraceStats{}
-	ctx = withParquetDecodeTraceStats(ctx, decodeStats)
+	ctx = parquetio.WithDecodeTraceStats(ctx, decodeStats)
 	defer func() {
-		admissions, wait := decodeStats.snapshot()
+		admissions, wait := decodeStats.Snapshot()
 		stats.parquetAdmissions += admissions
 		stats.parquetAdmissionWait += wait
 		span.SetAttributes(append(entityScanResultTraceAttrs(result), stats.attrs()...)...)

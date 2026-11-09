@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 )
 
 func TestLocalWALRejectsUnpersistableIdentifiersBeforeAcceptance(t *testing.T) {
@@ -79,7 +80,7 @@ func TestLocalWALRecoversLegacyInvalidIdentifierWithoutBlockingTenant(t *testing
 	requests := []IngestRequest{ingestEntityRequest("before", "host:before"), ingestEntityRequest("invalid", "host:invalid"), ingestEntityRequest("after", "host:after")}
 	requests[1].Source = strings.Repeat("s", 256)
 	for i, request := range requests {
-		request, err = prepareIngestRequest("tenant", request, false)
+		request, err = ingest.PrepareRequestWithPathValidation("tenant", request, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -585,6 +586,7 @@ type localImportManifestPause struct {
 }
 
 func (s *localImportManifestPause) UnwrapObjectStore() ObjectStore { return s.ObjectStore }
+
 func (s *localImportManifestPause) PutConditional(ctx context.Context, key string, data []byte, c PutCondition) (ObjectMeta, error) {
 	if key == s.key && s.armed.Load() {
 		n := s.writes.Add(1)
@@ -741,6 +743,7 @@ func (s *localRecoveryOrphanFault) DeleteConditional(ctx context.Context, key st
 	}
 	return s.ObjectStore.DeleteConditional(ctx, key, c)
 }
+
 func TestLocalRecoverDrainsPreparedWALBeforeOrphans(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1023,6 +1026,7 @@ func (s *deadlineGenerationStore) CaptureIngestWALGeneration(ctx context.Context
 	<-ctx.Done()
 	return 0, ctx.Err()
 }
+
 func TestWALGenerationCaptureTimeoutReleasesIdentity(t *testing.T) {
 	store := &deadlineGenerationStore{NewTenantStore(NewMemoryStore(), "test")}
 	service, err := OpenIngestService(store, testIngestServiceConfig(t))

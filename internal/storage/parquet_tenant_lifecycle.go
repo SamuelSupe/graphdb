@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -87,10 +88,10 @@ func marshalParquetTenantMetadata(ctx context.Context, metadata TenantMetadata) 
 		builder.Field(parquetTenantMetadataColumnName).(*array.StringBuilder).Append(normalized.Name)
 		builder.Field(parquetTenantMetadataColumnDescription).(*array.StringBuilder).Append(normalized.Description)
 		builder.Field(parquetTenantMetadataColumnClonedFrom).(*array.StringBuilder).Append(normalized.ClonedFrom)
-		builder.Field(parquetTenantMetadataColumnCreatedAt).(*array.StringBuilder).Append(formatParquetTime(normalized.CreatedAt))
-		builder.Field(parquetTenantMetadataColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(normalized.UpdatedAt))
-		builder.Field(parquetTenantMetadataColumnDisabledAt).(*array.StringBuilder).Append(formatParquetTime(normalized.DisabledAt))
-		builder.Field(parquetTenantMetadataColumnDeletedAt).(*array.StringBuilder).Append(formatParquetTime(normalized.DeletedAt))
+		builder.Field(parquetTenantMetadataColumnCreatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(normalized.CreatedAt))
+		builder.Field(parquetTenantMetadataColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(normalized.UpdatedAt))
+		builder.Field(parquetTenantMetadataColumnDisabledAt).(*array.StringBuilder).Append(parquetio.FormatTime(normalized.DisabledAt))
+		builder.Field(parquetTenantMetadataColumnDeletedAt).(*array.StringBuilder).Append(parquetio.FormatTime(normalized.DeletedAt))
 		builder.Field(parquetTenantMetadataColumnContentHash).(*array.StringBuilder).Append(hash)
 		builder.Field(parquetTenantMetadataColumnLabelCount).(*array.Int64Builder).Append(int64(len(normalized.Labels)))
 		builder.Field(parquetTenantMetadataColumnMetadataCount).(*array.Int64Builder).Append(int64(len(normalized.Metadata)))
@@ -118,14 +119,14 @@ func marshalParquetTenantMetadata(ctx context.Context, metadata TenantMetadata) 
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetTenantMetadata(ctx context.Context, data []byte) (TenantMetadata, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return TenantMetadata{}, err
 	}
@@ -159,10 +160,10 @@ func decodeParquetTenantMetadata(ctx context.Context, data []byte) (TenantMetada
 				Name:        columns.name.Value(i),
 				Description: columns.description.Value(i),
 				ClonedFrom:  columns.clonedFrom.Value(i),
-				CreatedAt:   parseParquetTime(columns.createdAt.Value(i)),
-				UpdatedAt:   parseParquetTime(columns.updatedAt.Value(i)),
-				DisabledAt:  parseParquetTime(columns.disabledAt.Value(i)),
-				DeletedAt:   parseParquetTime(columns.deletedAt.Value(i)),
+				CreatedAt:   parquetio.ParseTime(columns.createdAt.Value(i)),
+				UpdatedAt:   parquetio.ParseTime(columns.updatedAt.Value(i)),
+				DisabledAt:  parquetio.ParseTime(columns.disabledAt.Value(i)),
+				DeletedAt:   parquetio.ParseTime(columns.deletedAt.Value(i)),
 			}
 			if rows == 0 {
 				metadata = rowMetadata
@@ -224,14 +225,14 @@ func marshalParquetTenantRegistry(ctx context.Context, registry tenantRegistry) 
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetTenantRegistry(ctx context.Context, data []byte) (tenantRegistry, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return tenantRegistry{}, err
 	}
@@ -252,23 +253,23 @@ func decodeParquetTenantRegistry(ctx context.Context, data []byte) (tenantRegist
 	rows := 0
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		countColumn, err := parquetInt64Column(batch, parquetTenantRegistryColumnCount, "count")
+		countColumn, err := parquetio.Int64Column(batch, parquetTenantRegistryColumnCount, "count")
 		if err != nil {
 			return tenantRegistry{}, err
 		}
-		updatedAtColumn, err := parquetStringColumn(batch, parquetTenantRegistryColumnUpdatedAt, "updated_at")
+		updatedAtColumn, err := parquetio.StringColumn(batch, parquetTenantRegistryColumnUpdatedAt, "updated_at")
 		if err != nil {
 			return tenantRegistry{}, err
 		}
-		hashColumn, err := parquetStringColumn(batch, parquetTenantRegistryColumnContentHash, "content_hash")
+		hashColumn, err := parquetio.StringColumn(batch, parquetTenantRegistryColumnContentHash, "content_hash")
 		if err != nil {
 			return tenantRegistry{}, err
 		}
-		ordinalColumn, err := parquetInt64Column(batch, parquetTenantRegistryColumnOrdinal, "ordinal")
+		ordinalColumn, err := parquetio.Int64Column(batch, parquetTenantRegistryColumnOrdinal, "ordinal")
 		if err != nil {
 			return tenantRegistry{}, err
 		}
-		tenantIDColumn, err := parquetStringColumn(batch, parquetTenantRegistryColumnTenantID, "tenant_id")
+		tenantIDColumn, err := parquetio.StringColumn(batch, parquetTenantRegistryColumnTenantID, "tenant_id")
 		if err != nil {
 			return tenantRegistry{}, err
 		}
@@ -336,61 +337,61 @@ type parquetTenantMetadataColumnSet struct {
 func parquetTenantMetadataColumns(batch arrow.RecordBatch) (parquetTenantMetadataColumnSet, error) {
 	var columns parquetTenantMetadataColumnSet
 	var err error
-	if columns.tenantID, err = parquetStringColumn(batch, parquetTenantMetadataColumnTenantID, "tenant_id"); err != nil {
+	if columns.tenantID, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnTenantID, "tenant_id"); err != nil {
 		return columns, err
 	}
-	if columns.status, err = parquetStringColumn(batch, parquetTenantMetadataColumnStatus, "status"); err != nil {
+	if columns.status, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnStatus, "status"); err != nil {
 		return columns, err
 	}
-	if columns.name, err = parquetStringColumn(batch, parquetTenantMetadataColumnName, "name"); err != nil {
+	if columns.name, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnName, "name"); err != nil {
 		return columns, err
 	}
-	if columns.description, err = parquetStringColumn(batch, parquetTenantMetadataColumnDescription, "description"); err != nil {
+	if columns.description, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnDescription, "description"); err != nil {
 		return columns, err
 	}
-	if columns.clonedFrom, err = parquetStringColumn(batch, parquetTenantMetadataColumnClonedFrom, "cloned_from"); err != nil {
+	if columns.clonedFrom, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnClonedFrom, "cloned_from"); err != nil {
 		return columns, err
 	}
-	if columns.createdAt, err = parquetStringColumn(batch, parquetTenantMetadataColumnCreatedAt, "created_at"); err != nil {
+	if columns.createdAt, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnCreatedAt, "created_at"); err != nil {
 		return columns, err
 	}
-	if columns.updatedAt, err = parquetStringColumn(batch, parquetTenantMetadataColumnUpdatedAt, "updated_at"); err != nil {
+	if columns.updatedAt, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnUpdatedAt, "updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.disabledAt, err = parquetStringColumn(batch, parquetTenantMetadataColumnDisabledAt, "disabled_at"); err != nil {
+	if columns.disabledAt, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnDisabledAt, "disabled_at"); err != nil {
 		return columns, err
 	}
-	if columns.deletedAt, err = parquetStringColumn(batch, parquetTenantMetadataColumnDeletedAt, "deleted_at"); err != nil {
+	if columns.deletedAt, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnDeletedAt, "deleted_at"); err != nil {
 		return columns, err
 	}
-	if columns.contentHash, err = parquetStringColumn(batch, parquetTenantMetadataColumnContentHash, "content_hash"); err != nil {
+	if columns.contentHash, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnContentHash, "content_hash"); err != nil {
 		return columns, err
 	}
-	if columns.labelCount, err = parquetInt64Column(batch, parquetTenantMetadataColumnLabelCount, "label_count"); err != nil {
+	if columns.labelCount, err = parquetio.Int64Column(batch, parquetTenantMetadataColumnLabelCount, "label_count"); err != nil {
 		return columns, err
 	}
-	if columns.metadataCount, err = parquetInt64Column(batch, parquetTenantMetadataColumnMetadataCount, "metadata_count"); err != nil {
+	if columns.metadataCount, err = parquetio.Int64Column(batch, parquetTenantMetadataColumnMetadataCount, "metadata_count"); err != nil {
 		return columns, err
 	}
-	if columns.rowKind, err = parquetStringColumn(batch, parquetTenantMetadataColumnRowKind, "row_kind"); err != nil {
+	if columns.rowKind, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnRowKind, "row_kind"); err != nil {
 		return columns, err
 	}
-	if columns.ordinal, err = parquetInt64Column(batch, parquetTenantMetadataColumnOrdinal, "ordinal"); err != nil {
+	if columns.ordinal, err = parquetio.Int64Column(batch, parquetTenantMetadataColumnOrdinal, "ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.entryKey, err = parquetStringColumn(batch, parquetTenantMetadataColumnEntryKey, "entry_key"); err != nil {
+	if columns.entryKey, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnEntryKey, "entry_key"); err != nil {
 		return columns, err
 	}
-	if columns.valueKind, err = parquetStringColumn(batch, parquetTenantMetadataColumnValueKind, "value_kind"); err != nil {
+	if columns.valueKind, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnValueKind, "value_kind"); err != nil {
 		return columns, err
 	}
-	if columns.stringValue, err = parquetStringColumn(batch, parquetTenantMetadataColumnStringValue, "string_value"); err != nil {
+	if columns.stringValue, err = parquetio.StringColumn(batch, parquetTenantMetadataColumnStringValue, "string_value"); err != nil {
 		return columns, err
 	}
-	if columns.boolValue, err = parquetBoolColumn(batch, parquetTenantMetadataColumnBoolValue, "bool_value"); err != nil {
+	if columns.boolValue, err = parquetio.BoolColumn(batch, parquetTenantMetadataColumnBoolValue, "bool_value"); err != nil {
 		return columns, err
 	}
-	if columns.floatValue, err = parquetFloat64Column(batch, parquetTenantMetadataColumnFloatValue, "float_value"); err != nil {
+	if columns.floatValue, err = parquetio.Float64Column(batch, parquetTenantMetadataColumnFloatValue, "float_value"); err != nil {
 		return columns, err
 	}
 	return columns, nil
@@ -457,10 +458,10 @@ func tenantMetadataContentHash(metadata TenantMetadata) (string, error) {
 		metadata.Name,
 		metadata.Description,
 		metadata.ClonedFrom,
-		formatParquetTime(metadata.CreatedAt),
-		formatParquetTime(metadata.UpdatedAt),
-		formatParquetTime(metadata.DisabledAt),
-		formatParquetTime(metadata.DeletedAt),
+		parquetio.FormatTime(metadata.CreatedAt),
+		parquetio.FormatTime(metadata.UpdatedAt),
+		parquetio.FormatTime(metadata.DisabledAt),
+		parquetio.FormatTime(metadata.DeletedAt),
 		formatInt64ForHash(int64(len(metadata.Labels))),
 		formatInt64ForHash(int64(len(metadata.Metadata))),
 	}
@@ -612,10 +613,10 @@ func sameTenantMetadataBase(left TenantMetadata, right TenantMetadata) bool {
 		left.Name == right.Name &&
 		left.Description == right.Description &&
 		left.ClonedFrom == right.ClonedFrom &&
-		formatParquetTime(left.CreatedAt) == formatParquetTime(right.CreatedAt) &&
-		formatParquetTime(left.UpdatedAt) == formatParquetTime(right.UpdatedAt) &&
-		formatParquetTime(left.DisabledAt) == formatParquetTime(right.DisabledAt) &&
-		formatParquetTime(left.DeletedAt) == formatParquetTime(right.DeletedAt)
+		parquetio.FormatTime(left.CreatedAt) == parquetio.FormatTime(right.CreatedAt) &&
+		parquetio.FormatTime(left.UpdatedAt) == parquetio.FormatTime(right.UpdatedAt) &&
+		parquetio.FormatTime(left.DisabledAt) == parquetio.FormatTime(right.DisabledAt) &&
+		parquetio.FormatTime(left.DeletedAt) == parquetio.FormatTime(right.DeletedAt)
 }
 
 func tenantRegistryContentHash(registry tenantRegistry) string {

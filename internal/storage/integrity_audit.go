@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 type IntegrityAuditOptions struct {
@@ -110,7 +112,7 @@ func (s *TenantStore) auditReadObject(ctx context.Context, key string, role stri
 		Key:         key,
 		Status:      "ok",
 		Bytes:       int64(len(data)),
-		ContentHash: objectContentHash(data),
+		ContentHash: codec.ContentHash(data),
 	})
 	return data, meta, true
 }

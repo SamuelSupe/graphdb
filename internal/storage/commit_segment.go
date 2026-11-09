@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 const (
@@ -153,7 +154,7 @@ func (s *TenantStore) prepareCommitSegment(
 	if err != nil {
 		return preparedCommitSegment{}, err
 	}
-	hash := objectContentHash(logicalPayload)
+	hash := codec.ContentHash(logicalPayload)
 	first, last := items[0].Commit.Version, items[len(items)-1].Commit.Version
 	key := s.commitSegmentKey(tenantID, first, last, hash)
 	var data []byte
@@ -277,7 +278,7 @@ func decodeCommitSegmentObject(ctx context.Context, data []byte, tenantID string
 }
 
 func validateCommitSegmentObject(object storedCommitSegment, items []commitSegmentItem, tenantID string, ref CommitSegmentRef, store *TenantStore) (storedCommitSegment, []commitSegmentItem, error) {
-	if _, err := readableLayoutVersion("commit segment", object.LayoutVersion); err != nil {
+	if _, err := codec.ReadableLayoutVersion("commit segment", object.LayoutVersion); err != nil {
 		return storedCommitSegment{}, nil, err
 	}
 	if object.Kind != "commit-segment" {
@@ -296,7 +297,7 @@ func validateCommitSegmentObject(object storedCommitSegment, items []commitSegme
 	if err != nil {
 		return storedCommitSegment{}, nil, err
 	}
-	hash := objectContentHash(payload)
+	hash := codec.ContentHash(payload)
 	if object.ContentHash == "" || object.ContentHash != hash || (ref.ContentHash != "" && ref.ContentHash != hash) {
 		return storedCommitSegment{}, nil, fmt.Errorf("commit segment content hash mismatch")
 	}
@@ -336,7 +337,7 @@ func marshalCommitSegmentPayload(items []commitSegmentItem) ([]byte, error) {
 	for _, item := range items {
 		item.Commit.LayoutVersion = CurrentObjectLayoutVersion
 		item.Commit.CreatedAt = item.Commit.CreatedAt.UTC()
-		item.Commit.Mutations = mutationTimesUTC(item.Commit.Mutations)
+		item.Commit.Mutations = codec.MutationTimesUTC(item.Commit.Mutations)
 		data, err := json.Marshal(item)
 		if err != nil {
 			return nil, err

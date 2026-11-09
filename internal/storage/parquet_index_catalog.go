@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -80,7 +81,7 @@ func marshalParquetIndexCatalog(ctx context.Context, catalog IndexCatalog) ([]by
 		builder.Field(parquetIndexCatalogColumnLayoutVersion).(*array.Int64Builder).Append(int64(catalog.LayoutVersion))
 		builder.Field(parquetIndexCatalogColumnTenantID).(*array.StringBuilder).Append(catalog.TenantID)
 		builder.Field(parquetIndexCatalogColumnVersion).(*array.Int64Builder).Append(catalog.Version)
-		builder.Field(parquetIndexCatalogColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(catalog.UpdatedAt))
+		builder.Field(parquetIndexCatalogColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(catalog.UpdatedAt))
 		builder.Field(parquetIndexCatalogColumnCatalogHash).(*array.StringBuilder).Append(hash)
 		builder.Field(parquetIndexCatalogColumnIndexCount).(*array.Int64Builder).Append(int64(len(catalog.Indexes)))
 		builder.Field(parquetIndexCatalogColumnEdgeShardCount).(*array.Int64Builder).Append(int64(len(catalog.EdgeShards)))
@@ -108,7 +109,7 @@ func marshalParquetIndexCatalog(ctx context.Context, catalog IndexCatalog) ([]by
 		builder.Field(parquetIndexCatalogColumnStatCount).(*array.Int64Builder).Append(int64(row.StatCount))
 		builder.Field(parquetIndexCatalogColumnObjectContentHash).(*array.StringBuilder).Append(row.ContentHash)
 		builder.Field(parquetIndexCatalogColumnSchemaHash).(*array.StringBuilder).Append(row.SchemaHash)
-		builder.Field(parquetIndexCatalogColumnSpecUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(row.UpdatedAt))
+		builder.Field(parquetIndexCatalogColumnSpecUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(row.UpdatedAt))
 	}
 
 	rows := indexCatalogRows(catalog)
@@ -127,7 +128,7 @@ func marshalParquetIndexCatalog(ctx context.Context, catalog IndexCatalog) ([]by
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
@@ -138,7 +139,7 @@ func decodeParquetIndexCatalog(ctx context.Context, data []byte) (IndexCatalog, 
 }
 
 func decodeParquetIndexCatalogReader(ctx context.Context, source parquet.ReaderAtSeeker) (IndexCatalog, error) {
-	table, release, err := readParquetTableReader(context.WithValue(ctx, parquetControlDecodeKey{}, true), source)
+	table, release, err := parquetio.ReadTableReader(parquetio.WithControlDecode(ctx), source)
 	if err != nil {
 		return IndexCatalog{}, err
 	}
@@ -171,7 +172,7 @@ func decodeParquetIndexCatalogReader(ctx context.Context, source parquet.ReaderA
 				LayoutVersion: int(columns.layoutVersion.Value(i)),
 				TenantID:      columns.tenantID.Value(i),
 				Version:       columns.version.Value(i),
-				UpdatedAt:     parseParquetTime(columns.updatedAt.Value(i)),
+				UpdatedAt:     parquetio.ParseTime(columns.updatedAt.Value(i)),
 			}
 			if rows == 0 {
 				catalog = rowCatalog
@@ -476,100 +477,100 @@ func (row indexCatalogRow) indexObject() IndexObject {
 func parquetIndexCatalogColumns(batch arrow.RecordBatch) (parquetIndexCatalogColumnSet, error) {
 	var columns parquetIndexCatalogColumnSet
 	var err error
-	if columns.layoutVersion, err = parquetInt64Column(batch, parquetIndexCatalogColumnLayoutVersion, "layout_version"); err != nil {
+	if columns.layoutVersion, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnLayoutVersion, "layout_version"); err != nil {
 		return columns, err
 	}
-	if columns.tenantID, err = parquetStringColumn(batch, parquetIndexCatalogColumnTenantID, "tenant_id"); err != nil {
+	if columns.tenantID, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnTenantID, "tenant_id"); err != nil {
 		return columns, err
 	}
-	if columns.version, err = parquetInt64Column(batch, parquetIndexCatalogColumnVersion, "version"); err != nil {
+	if columns.version, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnVersion, "version"); err != nil {
 		return columns, err
 	}
-	if columns.updatedAt, err = parquetStringColumn(batch, parquetIndexCatalogColumnUpdatedAt, "updated_at"); err != nil {
+	if columns.updatedAt, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnUpdatedAt, "updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.catalogHash, err = parquetStringColumn(batch, parquetIndexCatalogColumnCatalogHash, "catalog_hash"); err != nil {
+	if columns.catalogHash, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnCatalogHash, "catalog_hash"); err != nil {
 		return columns, err
 	}
-	if columns.indexCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnIndexCount, "index_count"); err != nil {
+	if columns.indexCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnIndexCount, "index_count"); err != nil {
 		return columns, err
 	}
-	if columns.edgeShardCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnEdgeShardCount, "edge_shard_count"); err != nil {
+	if columns.edgeShardCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnEdgeShardCount, "edge_shard_count"); err != nil {
 		return columns, err
 	}
-	if columns.entityPageCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnEntityPageCount, "entity_page_count"); err != nil {
+	if columns.entityPageCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnEntityPageCount, "entity_page_count"); err != nil {
 		return columns, err
 	}
-	if columns.rowKind, err = parquetStringColumn(batch, parquetIndexCatalogColumnRowKind, "row_kind"); err != nil {
+	if columns.rowKind, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnRowKind, "row_kind"); err != nil {
 		return columns, err
 	}
-	if columns.parentOrdinal, err = parquetInt64Column(batch, parquetIndexCatalogColumnParentOrdinal, "parent_ordinal"); err != nil {
+	if columns.parentOrdinal, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnParentOrdinal, "parent_ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.childOrdinal, err = parquetInt64Column(batch, parquetIndexCatalogColumnChildOrdinal, "child_ordinal"); err != nil {
+	if columns.childOrdinal, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnChildOrdinal, "child_ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.name, err = parquetStringColumn(batch, parquetIndexCatalogColumnName, "name"); err != nil {
+	if columns.name, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnName, "name"); err != nil {
 		return columns, err
 	}
-	if columns.kind, err = parquetStringColumn(batch, parquetIndexCatalogColumnKind, "kind"); err != nil {
+	if columns.kind, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnKind, "kind"); err != nil {
 		return columns, err
 	}
-	if columns.field, err = parquetStringColumn(batch, parquetIndexCatalogColumnField, "field"); err != nil {
+	if columns.field, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnField, "field"); err != nil {
 		return columns, err
 	}
-	if columns.relationType, err = parquetStringColumn(batch, parquetIndexCatalogColumnRelationType, "relation_type"); err != nil {
+	if columns.relationType, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnRelationType, "relation_type"); err != nil {
 		return columns, err
 	}
-	if columns.shard, err = parquetStringColumn(batch, parquetIndexCatalogColumnShard, "shard"); err != nil {
+	if columns.shard, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnShard, "shard"); err != nil {
 		return columns, err
 	}
-	if columns.indexType, err = parquetStringColumn(batch, parquetIndexCatalogColumnIndexType, "index_type"); err != nil {
+	if columns.indexType, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnIndexType, "index_type"); err != nil {
 		return columns, err
 	}
-	if columns.status, err = parquetStringColumn(batch, parquetIndexCatalogColumnStatus, "status"); err != nil {
+	if columns.status, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnStatus, "status"); err != nil {
 		return columns, err
 	}
-	if columns.format, err = parquetStringColumn(batch, parquetIndexCatalogColumnFormat, "format"); err != nil {
+	if columns.format, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnFormat, "format"); err != nil {
 		return columns, err
 	}
-	if columns.codec, err = parquetStringColumn(batch, parquetIndexCatalogColumnCodec, "codec"); err != nil {
+	if columns.codec, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnCodec, "codec"); err != nil {
 		return columns, err
 	}
-	if columns.role, err = parquetStringColumn(batch, parquetIndexCatalogColumnRole, "role"); err != nil {
+	if columns.role, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnRole, "role"); err != nil {
 		return columns, err
 	}
-	if columns.objectKey, err = parquetStringColumn(batch, parquetIndexCatalogColumnObjectKey, "object_key"); err != nil {
+	if columns.objectKey, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnObjectKey, "object_key"); err != nil {
 		return columns, err
 	}
-	if columns.rowCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnRowCount, "row_count"); err != nil {
+	if columns.rowCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnRowCount, "row_count"); err != nil {
 		return columns, err
 	}
-	if columns.entryCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnEntryCount, "entry_count"); err != nil {
+	if columns.entryCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnEntryCount, "entry_count"); err != nil {
 		return columns, err
 	}
-	if columns.distinctValues, err = parquetInt64Column(batch, parquetIndexCatalogColumnDistinctValues, "distinct_values"); err != nil {
+	if columns.distinctValues, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnDistinctValues, "distinct_values"); err != nil {
 		return columns, err
 	}
-	if columns.edgeCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnEdgeCount, "edge_count"); err != nil {
+	if columns.edgeCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnEdgeCount, "edge_count"); err != nil {
 		return columns, err
 	}
-	if columns.entityCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnEntityCount, "entity_count"); err != nil {
+	if columns.entityCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnEntityCount, "entity_count"); err != nil {
 		return columns, err
 	}
-	if columns.statValue, err = parquetStringColumn(batch, parquetIndexCatalogColumnStatValue, "stat_value"); err != nil {
+	if columns.statValue, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnStatValue, "stat_value"); err != nil {
 		return columns, err
 	}
-	if columns.statCount, err = parquetInt64Column(batch, parquetIndexCatalogColumnStatCount, "stat_count"); err != nil {
+	if columns.statCount, err = parquetio.Int64Column(batch, parquetIndexCatalogColumnStatCount, "stat_count"); err != nil {
 		return columns, err
 	}
-	if columns.objectContentHash, err = parquetStringColumn(batch, parquetIndexCatalogColumnObjectContentHash, "object_content_hash"); err != nil {
+	if columns.objectContentHash, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnObjectContentHash, "object_content_hash"); err != nil {
 		return columns, err
 	}
-	if columns.schemaHash, err = parquetStringColumn(batch, parquetIndexCatalogColumnSchemaHash, "schema_hash"); err != nil {
+	if columns.schemaHash, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnSchemaHash, "schema_hash"); err != nil {
 		return columns, err
 	}
-	if columns.specUpdatedAt, err = parquetStringColumn(batch, parquetIndexCatalogColumnSpecUpdatedAt, "spec_updated_at"); err != nil {
+	if columns.specUpdatedAt, err = parquetio.StringColumn(batch, parquetIndexCatalogColumnSpecUpdatedAt, "spec_updated_at"); err != nil {
 		return columns, err
 	}
 	return columns, nil
@@ -600,7 +601,7 @@ func indexCatalogRowFromColumns(columns parquetIndexCatalogColumnSet, row int) i
 		StatCount:      int(columns.statCount.Value(row)),
 		ContentHash:    columns.objectContentHash.Value(row),
 		SchemaHash:     columns.schemaHash.Value(row),
-		UpdatedAt:      parseParquetTime(columns.specUpdatedAt.Value(row)),
+		UpdatedAt:      parquetio.ParseTime(columns.specUpdatedAt.Value(row)),
 	}
 }
 
@@ -691,7 +692,7 @@ func sameIndexCatalogMetadata(left IndexCatalog, right IndexCatalog) bool {
 	return left.LayoutVersion == right.LayoutVersion &&
 		left.TenantID == right.TenantID &&
 		left.Version == right.Version &&
-		formatParquetTime(left.UpdatedAt) == formatParquetTime(right.UpdatedAt)
+		parquetio.FormatTime(left.UpdatedAt) == parquetio.FormatTime(right.UpdatedAt)
 }
 
 func indexCatalogContentHash(catalog IndexCatalog) (string, error) {

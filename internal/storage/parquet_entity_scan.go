@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/apache/arrow-go/v18/parquet"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet"
 	pqfile "github.com/apache/arrow-go/v18/parquet/file"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 )
@@ -70,7 +71,7 @@ func scanParquetEntityObjectCandidatesReader(ctx context.Context, source parquet
 	if err != nil {
 		return out, err
 	}
-	recordReader, release, err := readParquetRecordReader(ctx, fileReader, parquetEntityCandidateColumns, rowGroups)
+	recordReader, release, err := parquetio.ReadRecordReader(ctx, fileReader, parquetEntityCandidateColumns, rowGroups)
 	if err != nil {
 		return out, err
 	}
@@ -83,31 +84,31 @@ func scanParquetEntityObjectCandidatesReader(ctx context.Context, source parquet
 		if record.NumCols() < int64(len(parquetEntityCandidateColumns)) {
 			return out, fmt.Errorf("parquet entity candidate record has %d columns, want %d", record.NumCols(), len(parquetEntityCandidateColumns))
 		}
-		ids, err := parquetStringColumn(record, 0, "entity_id")
+		ids, err := parquetio.StringColumn(record, 0, "entity_id")
 		if err != nil {
 			return out, err
 		}
-		shards, err := parquetStringColumn(record, 1, "shard")
+		shards, err := parquetio.StringColumn(record, 1, "shard")
 		if err != nil {
 			return out, err
 		}
-		kinds, err := parquetStringColumn(record, 2, "kind")
+		kinds, err := parquetio.StringColumn(record, 2, "kind")
 		if err != nil {
 			return out, err
 		}
-		sources, err := parquetStringColumn(record, 3, "source")
+		sources, err := parquetio.StringColumn(record, 3, "source")
 		if err != nil {
 			return out, err
 		}
-		rowKinds, err := parquetStringColumn(record, 4, "row_kind")
+		rowKinds, err := parquetio.StringColumn(record, 4, "row_kind")
 		if err != nil {
 			return out, err
 		}
-		fieldSources, err := parquetStringColumn(record, 5, "field_source_source")
+		fieldSources, err := parquetio.StringColumn(record, 5, "field_source_source")
 		if err != nil {
 			return out, err
 		}
-		entitySources, err := parquetStringColumn(record, 6, "entity_source_source")
+		entitySources, err := parquetio.StringColumn(record, 6, "entity_source_source")
 		if err != nil {
 			return out, err
 		}

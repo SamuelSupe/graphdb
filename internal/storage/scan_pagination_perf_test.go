@@ -12,6 +12,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 )
 
 func TestEntityCursorSkipsEarlierPageObjects(t *testing.T) {
@@ -352,11 +353,11 @@ func TestRangeEdgeScanPrunesBeforePayloadDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := &parquetDecodeTraceStats{}
-	result, ok, err := store.listEdgesFromShards(withParquetDecodeTraceStats(ctx, stats), "tenant-a", 1, catalog, EdgeScanOptions{Source: "zzzz-missing"}, scanCursor{})
+	result, ok, err := store.listEdgesFromShards(parquetio.WithDecodeTraceStats(ctx, stats), "tenant-a", 1, catalog, EdgeScanOptions{Source: "zzzz-missing"}, scanCursor{})
 	if err != nil || !ok || len(result.Edges) != 0 {
 		t.Fatalf("filtered scan: %v %v %d", ok, err, len(result.Edges))
 	}
-	if decodes, _ := stats.snapshot(); decodes != 0 {
+	if decodes, _ := stats.Snapshot(); decodes != 0 {
 		t.Fatalf("range edge scan decoded rejected payload: %d admissions", decodes)
 	}
 	for _, cacheEntries := range []int{0, 8} {
@@ -402,11 +403,11 @@ func TestRangeEdgeScanPrunesBeforePayloadDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats = &parquetDecodeTraceStats{}
-	result, ok, err = local.listEdgesFromShards(withParquetDecodeTraceStats(ctx, stats), "tenant-a", 1, catalog, EdgeScanOptions{Source: "zzzz-missing"}, scanCursor{})
+	result, ok, err = local.listEdgesFromShards(parquetio.WithDecodeTraceStats(ctx, stats), "tenant-a", 1, catalog, EdgeScanOptions{Source: "zzzz-missing"}, scanCursor{})
 	if err != nil || !ok || len(result.Edges) != 0 {
 		t.Fatalf("local pruning: %v %v", ok, err)
 	}
-	if n, _ := stats.snapshot(); n != 0 {
+	if n, _ := stats.Snapshot(); n != 0 {
 		t.Fatalf("local rejected page decoded: %d", n)
 	}
 	result, ok, err = local.listEdgesFromShards(ctx, "tenant-a", 1, catalog, EdgeScanOptions{Source: "existence"}, scanCursor{})

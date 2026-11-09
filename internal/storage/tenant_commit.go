@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -516,7 +517,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 	if err != nil {
 		return CommitResult{}, err
 	}
-	if err := evaluateIngestPreconditions(loaded.Graph, opts.ingestPreconditions, opts.ingestAcceptedAt); err != nil {
+	if err := ingest.EvaluateIngestPreconditions(loaded.Graph, opts.ingestPreconditions, opts.ingestAcceptedAt); err != nil {
 		return CommitResult{}, err
 	}
 

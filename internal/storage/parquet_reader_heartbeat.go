@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -40,7 +41,7 @@ func marshalParquetReaderHeartbeat(ctx context.Context, heartbeat ReaderHeartbea
 	builder.Field(parquetReaderHeartbeatColumnTenantID).(*array.StringBuilder).Append(heartbeat.TenantID)
 	builder.Field(parquetReaderHeartbeatColumnReaderID).(*array.StringBuilder).Append(heartbeat.ReaderID)
 	builder.Field(parquetReaderHeartbeatColumnVisibleVersion).(*array.Int64Builder).Append(heartbeat.VisibleVersion)
-	builder.Field(parquetReaderHeartbeatColumnLastSeenAt).(*array.StringBuilder).Append(formatParquetTime(heartbeat.LastSeenAt))
+	builder.Field(parquetReaderHeartbeatColumnLastSeenAt).(*array.StringBuilder).Append(parquetio.FormatTime(heartbeat.LastSeenAt))
 	builder.Field(parquetReaderHeartbeatColumnContentHash).(*array.StringBuilder).Append(readerHeartbeatContentHash(heartbeat))
 	builder.Field(parquetReaderHeartbeatColumnInstanceID).(*array.StringBuilder).Append(heartbeat.InstanceID)
 	builder.Field(parquetReaderHeartbeatColumnMode).(*array.StringBuilder).Append(heartbeat.Mode)
@@ -60,14 +61,14 @@ func marshalParquetReaderHeartbeat(ctx context.Context, heartbeat ReaderHeartbea
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetReaderHeartbeat(ctx context.Context, data []byte) (ReaderHeartbeat, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
@@ -86,62 +87,62 @@ func decodeParquetReaderHeartbeat(ctx context.Context, data []byte) (ReaderHeart
 		return ReaderHeartbeat{}, fmt.Errorf("parquet reader heartbeat is empty")
 	}
 	batch := reader.RecordBatch()
-	tenantColumn, err := parquetStringColumn(batch, parquetReaderHeartbeatColumnTenantID, "tenant_id")
+	tenantColumn, err := parquetio.StringColumn(batch, parquetReaderHeartbeatColumnTenantID, "tenant_id")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	readerColumn, err := parquetStringColumn(batch, parquetReaderHeartbeatColumnReaderID, "reader_id")
+	readerColumn, err := parquetio.StringColumn(batch, parquetReaderHeartbeatColumnReaderID, "reader_id")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	versionColumn, err := parquetInt64Column(batch, parquetReaderHeartbeatColumnVisibleVersion, "visible_version")
+	versionColumn, err := parquetio.Int64Column(batch, parquetReaderHeartbeatColumnVisibleVersion, "visible_version")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	lastSeenColumn, err := parquetStringColumn(batch, parquetReaderHeartbeatColumnLastSeenAt, "last_seen_at")
+	lastSeenColumn, err := parquetio.StringColumn(batch, parquetReaderHeartbeatColumnLastSeenAt, "last_seen_at")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	hashColumn, err := parquetStringColumn(batch, parquetReaderHeartbeatColumnContentHash, "content_hash")
+	hashColumn, err := parquetio.StringColumn(batch, parquetReaderHeartbeatColumnContentHash, "content_hash")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	instanceColumn, err := parquetStringColumn(batch, parquetReaderHeartbeatColumnInstanceID, "instance_id")
+	instanceColumn, err := parquetio.StringColumn(batch, parquetReaderHeartbeatColumnInstanceID, "instance_id")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	modeColumn, err := parquetStringColumn(batch, parquetReaderHeartbeatColumnMode, "mode")
+	modeColumn, err := parquetio.StringColumn(batch, parquetReaderHeartbeatColumnMode, "mode")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	statusColumn, err := parquetStringColumn(batch, parquetReaderHeartbeatColumnStatus, "status")
+	statusColumn, err := parquetio.StringColumn(batch, parquetReaderHeartbeatColumnStatus, "status")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	freshColumn, err := parquetBoolColumn(batch, parquetReaderHeartbeatColumnFresh, "fresh")
+	freshColumn, err := parquetio.BoolColumn(batch, parquetReaderHeartbeatColumnFresh, "fresh")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	consistentColumn, err := parquetBoolColumn(batch, parquetReaderHeartbeatColumnConsistent, "consistent")
+	consistentColumn, err := parquetio.BoolColumn(batch, parquetReaderHeartbeatColumnConsistent, "consistent")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	manifestVersionColumn, err := parquetInt64Column(batch, parquetReaderHeartbeatColumnManifestVersion, "manifest_version")
+	manifestVersionColumn, err := parquetio.Int64Column(batch, parquetReaderHeartbeatColumnManifestVersion, "manifest_version")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	versionLagColumn, err := parquetInt64Column(batch, parquetReaderHeartbeatColumnVersionLag, "version_lag")
+	versionLagColumn, err := parquetio.Int64Column(batch, parquetReaderHeartbeatColumnVersionLag, "version_lag")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
-	lagMSColumn, err := parquetInt64Column(batch, parquetReaderHeartbeatColumnLagMS, "lag_ms")
+	lagMSColumn, err := parquetio.Int64Column(batch, parquetReaderHeartbeatColumnLagMS, "lag_ms")
 	if err != nil {
 		return ReaderHeartbeat{}, err
 	}
 	var snapshotVersion int64
 	hasSnapshotVersion := table.NumCols() > int64(parquetReaderHeartbeatColumnSnapshotVersion)
 	if hasSnapshotVersion {
-		snapshotVersionColumn, err := parquetInt64Column(batch, parquetReaderHeartbeatColumnSnapshotVersion, "snapshot_version")
+		snapshotVersionColumn, err := parquetio.Int64Column(batch, parquetReaderHeartbeatColumnSnapshotVersion, "snapshot_version")
 		if err != nil {
 			return ReaderHeartbeat{}, err
 		}
@@ -151,7 +152,7 @@ func decodeParquetReaderHeartbeat(ctx context.Context, data []byte) (ReaderHeart
 		TenantID:        tenantColumn.Value(0),
 		ReaderID:        readerColumn.Value(0),
 		VisibleVersion:  versionColumn.Value(0),
-		LastSeenAt:      parseParquetTime(lastSeenColumn.Value(0)),
+		LastSeenAt:      parquetio.ParseTime(lastSeenColumn.Value(0)),
 		InstanceID:      instanceColumn.Value(0),
 		Mode:            modeColumn.Value(0),
 		Status:          statusColumn.Value(0),
@@ -198,7 +199,7 @@ func readerHeartbeatContentHash(heartbeat ReaderHeartbeat) string {
 		heartbeat.TenantID,
 		heartbeat.ReaderID,
 		formatInt64ForHash(heartbeat.VisibleVersion),
-		formatParquetTime(heartbeat.LastSeenAt),
+		parquetio.FormatTime(heartbeat.LastSeenAt),
 		heartbeat.InstanceID,
 		heartbeat.Mode,
 		heartbeat.Status,
@@ -216,7 +217,7 @@ func legacyReaderHeartbeatContentHash(heartbeat ReaderHeartbeat) string {
 		heartbeat.TenantID,
 		heartbeat.ReaderID,
 		formatInt64ForHash(heartbeat.VisibleVersion),
-		formatParquetTime(heartbeat.LastSeenAt),
+		parquetio.FormatTime(heartbeat.LastSeenAt),
 		heartbeat.InstanceID,
 		heartbeat.Mode,
 		heartbeat.Status,

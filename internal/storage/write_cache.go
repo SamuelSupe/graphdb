@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -15,7 +16,7 @@ const writeCacheLogicalBytesMultiplier = int64(8)
 func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (loaded loadedGraph, err error) {
 	// Publication must be able to load its base graph while cold query scans
 	// occupy bulk decode capacity. It still shares the process-wide total.
-	ctx = context.WithValue(ctx, parquetControlDecodeKey{}, true)
+	ctx = parquetio.WithControlDecode(ctx)
 	ctx, span := startStorageSpan(ctx, "graphdb.storage.load_for_write", tenantTraceAttr(tenantID))
 	defer func() {
 		if err == nil {
@@ -54,7 +55,7 @@ func (s *TenantStore) loadForWriteLocked(ctx context.Context, tenantID string) (
 }
 
 func (s *TenantStore) loadForExpectedVersionLocked(ctx context.Context, tenantID string, expectedVersion int64, manifest Manifest, meta ObjectMeta) (loadedGraph, error) {
-	ctx = context.WithValue(ctx, parquetControlDecodeKey{}, true)
+	ctx = parquetio.WithControlDecode(ctx)
 	for attempt := 0; ; attempt++ {
 		if cached, ok := s.getWriteCache(tenantID); ok && cachedManifestMatches(cached, manifest, meta) {
 			return cached, nil
