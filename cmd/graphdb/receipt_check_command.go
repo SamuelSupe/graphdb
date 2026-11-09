@@ -59,8 +59,18 @@ func receiptCheckSubprocess(ctx context.Context, cmd *exec.Cmd) ([]byte, error) 
 	if !errors.As(err, &exit) {
 		return nil, err
 	}
+	if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		switch status.Signal() {
+		case syscall.SIGINT, syscall.SIGTERM:
+			return nil, context.Canceled
+		}
+	}
 	if exit.ExitCode() != 1 {
-		return nil, fmt.Errorf("%w: receipt checker terminated unexpectedly (%v)", storage.ErrReceiptStoreUnavailable, exit)
+		message := fmt.Sprintf("receipt checker terminated unexpectedly (%v)", exit)
+		if diagnostic := receiptCheckDiagnostic(exit.Stderr); diagnostic != "" {
+			message += fmt.Sprintf(": %q", diagnostic)
+		}
+		return nil, fmt.Errorf("%w: %s", storage.ErrReceiptStoreUnavailable, message)
 	}
 	// main exits with status 1 for reported errors, including lock conflicts
 	// and missing tenants. Preserve those diagnostics without relabeling them.
@@ -68,4 +78,14 @@ func receiptCheckSubprocess(ctx context.Context, cmd *exec.Cmd) ([]byte, error) 
 		return nil, errors.New(message)
 	}
 	return nil, err
+}
+
+func receiptCheckDiagnostic(stderr []byte) string {
+	const maxBytes = 512
+	lines := strings.Split(strings.TrimSpace(string(stderr)), "\n")
+	tail := strings.Join(lines[max(0, len(lines)-2):], "\n")
+	if len(tail) > maxBytes {
+		return "..." + tail[len(tail)-maxBytes:]
+	}
+	return tail
 }
