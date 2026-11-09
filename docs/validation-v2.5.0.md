@@ -4,6 +4,14 @@ The [v2.5.0 tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflow
 
 Both Linux platform archives carry a SHA-256 sidecar and build metadata. Packaging checks compare the executable and metadata against the full archive. See [release deployment](user/release-deployment.md) for download and verification steps.
 
+## Published release
+
+[GGraphDB v2.5.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0) was published on 2026-11-09 from commit `5d654cb2b3f111084e8c835d3d48c1955b916073`. The [exact-tag run](https://github.com/SamuelSupe/graphdb/actions/runs/42627507131) passed all gates, including both 30-minute soaks and the package-to-gate binary digest checks.
+
+Both Linux archives were independently downloaded and checked against their SHA-256 sidecars and the GitHub asset digests. The AMD64 and ARM64 executables matched their ELF architecture, reported the tagged commit and Go 1.27.3, and reached `/v1/readiness` on OrbStack Linux.
+
+An upgrade probe from the published v2.4.4 ARM64 binary exercised standalone direct and WAL ingestion on the same data directories. In both modes v2.5.0 preserved batch status and the graph snapshot on identical retries. The v2.4.4 binary rejected the upgraded directory.
+
 ## Development fault testing
 
 Five QEMU/Linux hard power-cut cases passed on the receipt durability fix at `6eb9c60`. Each case stopped the VM at the persistence boundary and restarted against the same disk.
