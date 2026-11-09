@@ -250,10 +250,11 @@ try:
         '-e','GRAPHDB_RAFT_NODE_ID=1','-e','GRAPHDB_RAFT_CLUSTER_ID=mode-check',
         '-e','GRAPHDB_RAFT_ADDR=:8081','-e','GRAPHDB_RAFT_TOKEN='+TOKEN,
         '-e','GRAPHDB_RAFT_PEERS={"1":"http://node1:8081","2":"http://node2:8081","3":"http://node3:8081"}',IMAGE,check=False)
-    assert bad.returncode != 0 and 'empty data directory' in bad.stderr, (bad.returncode,bad.stderr)
+    assert bad.returncode != 0 and 'packed receipts require standalone storage' in bad.stderr, (bad.returncode,bad.stderr)
     docker('start',PROJECT+'-standalone-direct')
     wait_ready(direct)
     expect(direct,'GET','/v1/tenants/offline-tenant')
+    expect(direct,'GET','/v1/entities/host:1')
     step('standalone offline CLI works; existing standalone directory refuses Raft bootstrap without losing standalone access')
 
     follower = next(i for i in range(1,4) if i != leader())
