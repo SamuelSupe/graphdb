@@ -1,8 +1,8 @@
-# GGraphDB 2.5.0
+# GGraphDB 2.5.1
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,9 +12,9 @@
 
 ## 当前版本
 
-**[2.5.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0)** 通过打包回执和可配置的自动 GC 降低单机 inode 占用，加强断电恢复，并提供跨 Raft 组大图分片预览。发行二进制使用 **Go 1.27.3**。
+**[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** 在单机 Compose 中默认启用持久化 WAL 异步接入，并将超出合并预算的索引增量分段追平。发行二进制使用 **Go 1.27.3**。
 
-| 领域 | 2.5.0 提供的能力 |
+| 领域 | 2.5.1 提供的能力 |
 | --- | --- |
 | 管理 UI | `/ui/` 内嵌英文／简体中文控制台，无需独立前端服务 |
 | 日常操作 | 图表概览、结构化表单与详情、查询工作台、数据接入和维护 |
@@ -23,7 +23,7 @@
 | 稳定性 | 回执持久发布、WAL 重放、离线回执校验和 inode 自动回收 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组，协议 5 可选启用大图分片 |
 
-验证证据见[发布验证](docs/validation-v2.5.0.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验证](docs/validation-v2.5.1.md)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -143,7 +143,7 @@ GraphQL 的完整示例见 [GraphQL 指南](docs/graphql.zh-CN.md)。控制台�
 
 ## 验证与限制
 
-开发阶段覆盖了复用图文件、首次建回执库和 WAL 重放时的虚拟机断电恢复。完整发行资格以[2.5.0 验证记录](docs/validation-v2.5.0.md)、标签门禁及包内证据为准。
+开发阶段覆盖了复用图文件、首次建回执库和 WAL 重放时的虚拟机断电恢复。断电场景见 [2.5.0 验证记录](docs/validation-v2.5.0.md)，本版资格见标签门禁和包内证据。
 
 在同机直接 HTTP 重复写入 16,000 项字符串数组的三次采样中，`append_unique` 中位耗时从 v2.4.3 的约 **4.25 秒降至 7 毫秒**。这是局部回归对照，不代表生产吞吐、整体写入 P99 或容量保证；[历史长尾记录](docs/performance-tail-validation-2026-10-20.zh-CN.md)仍需参考。
 
@@ -169,7 +169,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.5.0 验证](docs/validation-v2.5.0.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.5.1 验证](docs/validation-v2.5.1.md) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 

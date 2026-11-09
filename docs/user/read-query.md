@@ -2,7 +2,7 @@
 
 Control operations first let ordinary in-flight reads drain for up to one second; only remaining blocked readers are revoked. POST query forwarding errors are read errors, not unknown write outcomes. The original query and control deadlines remain in force.
 
-Applies to **GGraphDB 2.5.0**; see [release validation](../validation-v2.5.0.md) and [version boundaries](../naming-and-compatibility.md).
+Applies to **GGraphDB 2.5.1**; see [release validation](../validation-v2.5.1.md) and [version boundaries](../naming-and-compatibility.md).
 
 [中文](read-query.zh-CN.md)
 

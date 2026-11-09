@@ -2,7 +2,7 @@
 
 [English](naming-and-compatibility.md)
 
-当前发行版本为 **2.5.0**，发布及下载核验见[版本验证](validation-v2.5.0.md)。每个本地数据目录只由一个进程占用；
+当前发行版本为 **2.5.1**，发布及下载核验见[版本验证](validation-v2.5.1.md)。每个本地数据目录只由一个进程占用；
 默认单机，亦可启用独立副本的 Raft 和租户分片；S3 兼容对象存储仅用于可选快照备份与按需恢复。不支持远端在线存储、PostgreSQL
 协调、独立 reader/writer、多实例共享目录或网络文件系统。
 
@@ -10,8 +10,8 @@
 
 | 标识 | 当前契约 |
 | --- | --- |
-| 产品与发行标签 | `VERSION` 为 `2.5.0`；标签为 `v2.5.0` |
-| Go/Python SDK 与 OpenAPI 文档版本 | `2.5.0` |
+| 产品与发行标签 | `VERSION` 为 `2.5.1`；标签为 `v2.5.1` |
+| Go/Python SDK 与 OpenAPI 文档版本 | `2.5.1` |
 | Go 模块 | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP 路由命名空间 | `/v1/...`，不代表产品主版本 |
 | Parquet/WAL 与快照格式 | Parquet/逻辑快照沿用2.x；2.4.2把WAL durable marker迁移为双槽v2；Raft另有协议和目录角色标记 |
@@ -23,7 +23,7 @@ Go SDK 导入路径为 `github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb`。
 
 - 新安装及替换 1.x 时使用新目录。不提供 1.x 自动迁移或旧 `data_md5` 响应。
   1.x 安装与备份独立保留，不得用 1.x 二进制打开 2.x 数据。
-- 单机 2.5.0 可打开 2.x 的本地 Parquet 与逻辑快照，旧 WAL durable marker 会迁移为双槽 v2。复用目录前需停止旧进程。
+- 单机 2.5.1 可打开 2.x 的本地 Parquet 与逻辑快照，旧 WAL durable marker 会迁移为双槽 v2。复用目录前需停止旧进程。
 - 单机 `serve` 在启用打包回执前持久化 `coordination/mode.json` 的本地格式 v2。回退时将升级前的完整运行状态备份恢复到独立目录。见[回执和 inode 运维](product-operations.zh-CN.md#单机回执与-inode)。
 - 升级兼容不承诺直接降级二进制或跨主版本回滚。保留经过验证的升级前备份，并遵循
   [升级步骤](user/release-deployment.zh-CN.md#从-20-升级)。
@@ -48,7 +48,7 @@ GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然
 
 ## Raft 协议与升级
 
-产品版本、Raft 协议和快照格式分别管理。默认 Raft 协议为 1；2.5.0 提供协议 5 的[大图分片](large-graph-sharding-implementation.zh-CN.md)预览，需显式启用。
+产品版本、Raft 协议和快照格式分别管理。默认 Raft 协议为 1；2.5.1 提供协议 5 的[大图分片](large-graph-sharding-implementation.zh-CN.md)预览，需显式启用。
 协议 2 的流式快照/准备维护、协议 3 的准备 GC 须在全组具备支持后独立启用；
 已持久化协议 3 的目录不能由最高协议为 2 的程序打开。滚动升级只限于
 [已验证来源、目标和协议窗口](raft-rolling-upgrade.zh-CN.md)。
@@ -56,7 +56,7 @@ GraphQL 入口为 `POST /v1/query/graphql`；已弃用的文本 DSL 别名仍然
 
 ## 发行状态与性能承诺
 
-本发行的实际资格见 [2.5.0 验证](validation-v2.5.0.md)、标签工作流与包内证据。
+本发行的实际资格见 [2.5.1 验证](validation-v2.5.1.md)、标签工作流与包内证据。
 此前性能候选的三十分钟长测完成 45,116 次操作，在显著共享内核资源压力下仍有四次 HAProxy 503 查询失败。
 该轮为 FAIL，继续保留；不能将其转为发行 PASS，也不能据环境争用证明服务端无可用性缺陷。
 跨宿主机、生产容量和天级稳定性仍未资格验证。快照捕获微基准不代表整体读写吞吐提升。

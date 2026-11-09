@@ -4,7 +4,11 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
-## Current 2.5.0 qualification
+## Current 2.5.1 qualification
+
+See the [2.5.1 verification record](validation-v2.5.1.md) for the exact-tag gates, Linux archives and download checks.
+
+## Previous 2.5.0 qualification
 
 See the [2.5.0 verification record](validation-v2.5.0.md) for the exact-tag gates, Linux archives and download checks.
 

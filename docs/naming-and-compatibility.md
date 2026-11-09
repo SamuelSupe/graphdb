@@ -2,7 +2,7 @@
 
 [中文](naming-and-compatibility.zh-CN.md)
 
-The current release is **2.5.0**; see its [publication and verification](validation-v2.5.0.md). GGraphDB runs one process
+The current release is **2.5.1**; see its [publication and verification](validation-v2.5.1.md). GGraphDB runs one process
 per local data directory, with default standalone and optional independent Raft
 replicas/tenant sharding; S3-compatible storage is optional snapshot backup
 storage. Remote primary storage, PostgreSQL coordination, separate reader/writer
@@ -12,8 +12,8 @@ modes and shared network filesystems are unsupported.
 
 | Identifier | Current contract |
 | --- | --- |
-| Product and release tag | `VERSION`: `2.5.0`; tag: `v2.5.0` |
-| Go/Python SDKs and OpenAPI document version | `2.5.0` |
+| Product and release tag | `VERSION`: `2.5.1`; tag: `v2.5.1` |
+| Go/Python SDKs and OpenAPI document version | `2.5.1` |
 | Go module | `github.com/SamuelSupe/graphdb/v2` |
 | HTTP route namespace | `/v1/...`; not the product major version |
 | Persisted Parquet/WAL and snapshot format | Parquet/logical snapshots retain2.x;2.4.2 migrates the WAL durable marker to two-slot v2; Raft has separate protocol/directory-role markers |
@@ -26,7 +26,7 @@ Security support is described in [SECURITY.md](../SECURITY.md).
 - New installations and replacements of 1.x require a fresh data directory.
   No automatic 1.x migration or legacy `data_md5` response is provided. Keep 1.x
   installations and backups separate; never open 2.x data with a 1.x binary.
-- Standalone 2.5.0 opens existing 2.x Parquet and logical snapshots and migrates the old WAL durable marker to two-slot v2. Stop the old process before reusing its directory.
+- Standalone 2.5.1 opens existing 2.x Parquet and logical snapshots and migrates the old WAL durable marker to two-slot v2. Stop the old process before reusing its directory.
 - Standalone `serve` persists local format v2 in `coordination/mode.json` before enabling packed receipts. For rollback, restore the complete pre-upgrade runtime backup into a separate directory. See [receipt and inode operations](product-operations.zh-CN.md#单机回执与-inode).
 - Upgrade compatibility does not promise direct binary downgrade or cross-major
   rollback. Keep a verified pre-upgrade backup and follow the
@@ -62,7 +62,7 @@ the [Raft administration APIs](raft-ha.zh-CN.md).
 ## Raft protocols and upgrades
 
 Product versions, Raft protocols and snapshot formats are separate identifiers.
-Raft defaults to protocol 1. Version 2.5.0 includes protocol 5 for [partitioned graphs](large-graph-sharding-implementation.zh-CN.md) as an opt-in preview. Activate protocol-2 streaming
+Raft defaults to protocol 1. Version 2.5.1 includes protocol 5 for [partitioned graphs](large-graph-sharding-implementation.zh-CN.md) as an opt-in preview. Activate protocol-2 streaming
 snapshots/prepared maintenance or protocol-3 prepared GC only after all voters
 support them. A protocol-2-only binary cannot open a directory whose protocol-3
 minimum has been persisted. Rolling upgrades cover only the
@@ -72,7 +72,7 @@ imports or backup restoration into a fresh directory.
 
 ## Release status and performance claims
 
-See [2.5.0 validation](validation-v2.5.0.md), the tag workflow and packaged
+See [2.5.1 validation](validation-v2.5.1.md), the tag workflow and packaged
 evidence for the exact release binary. A local performance candidate completed
 45,116 operations but recorded four HAProxy 503 query failures under severe
 shared-kernel resource pressure. That failed result remains documented; it is

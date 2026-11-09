@@ -1,10 +1,10 @@
 # 租户分片与扩容
 
-适用于 **GGraphDB 2.5.0**；发行资格见[版本验证](validation-v2.5.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.5.1**；发行资格见[版本验证](validation-v2.5.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 分片模式使用独立的 Raft 数据组承载不同租户，保留默认单机和原有单组 Raft 部署。每个租户的完整图、版本、接入身份和维护记录都归一个组管理。新增组可以增加多个租户的存储和写入容量；单个租户仍由一个 Leader 服务，没有单租户图切分或跨分片关联查询。
 
-2.5.0 提供协议 5 的单图跨组分片预览，需显式启用。见[设计](large-graph-sharding-design.zh-CN.md)与[实施说明](large-graph-sharding-implementation.zh-CN.md)。本页其余部分描述按租户分片的运行方式。
+2.5.0 引入协议 5 的单图跨组分片预览，需显式启用。见[设计](large-graph-sharding-design.zh-CN.md)与[实施说明](large-graph-sharding-implementation.zh-CN.md)。本页其余部分描述按租户分片的运行方式。
 
 ## 拓扑与一致性
 

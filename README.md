@@ -1,8 +1,8 @@
-# GGraphDB 2.5.0
+# GGraphDB 2.5.1
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,9 +14,9 @@ storage is optional for snapshot backups.
 
 ## Current release
 
-**[2.5.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0)** reduces standalone inode use with packed receipts and tunable automatic GC, hardens crash recovery and adds a preview of partitioning a large graph across Raft groups. Release binaries use **Go 1.27.3**.
+**[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** enables durable asynchronous WAL ingestion in standalone Compose and splits oversized index catch-up into ordered incremental updates. Release binaries use **Go 1.27.3**.
 
-| Area | What 2.5.0 provides |
+| Area | What 2.5.1 provides |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
@@ -25,7 +25,7 @@ storage is optional for snapshot backups.
 | Reliability | Durable receipt publication, WAL replay, offline receipt checks and automatic inode reclamation |
 | Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups, with opt-in large-graph partitioning in protocol 5 |
 
-See [release validation](docs/validation-v2.5.0.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release validation](docs/validation-v2.5.1.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -150,7 +150,7 @@ both. Configure authentication, tenant authorization and TLS at your
 
 ## Validation and limits
 
-Development testing exercised power loss during shared graph-file publication, first receipt database creation and WAL replay. The [2.5.0 validation record](docs/validation-v2.5.0.md), exact-tag gates and packaged evidence define release qualification.
+Development testing exercised power loss during shared graph-file publication, first receipt database creation and WAL replay. The [2.5.0 power-cut record](docs/validation-v2.5.0.md), exact-tag gates and packaged evidence define release qualification.
 
 Across three same-host HTTP repetitions of a 16,000-string array, median `append_unique` latency fell from approximately **4.25 seconds in v2.4.3 to 7 milliseconds** in the candidate. This focused comparison does not establish production throughput, overall write P99 or capacity. [Historical tail measurements](docs/performance-tail-validation-2026-10-20.zh-CN.md) remain relevant.
 
@@ -180,7 +180,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.5.0 validation](docs/validation-v2.5.0.md) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.5.1 validation](docs/validation-v2.5.1.md) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 

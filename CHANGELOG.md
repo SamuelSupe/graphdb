@@ -3,7 +3,7 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
-## [Unreleased]
+## [2.5.1] - 2026-11-10
 
 - **Breaking for standalone Compose ingest clients.** The default changes from
   `direct` to a sync-durable local WAL. `POST /v1/ingest/batches` returns HTTP

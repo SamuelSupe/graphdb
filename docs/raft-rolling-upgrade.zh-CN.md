@@ -1,6 +1,6 @@
 # Raft 不停机滚动升级
 
-适用于 **GGraphDB 2.5.0**；发行资格见[版本验证](validation-v2.5.0.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+适用于 **GGraphDB 2.5.1**；发行资格见[版本验证](validation-v2.5.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
 
 滚动升级适用于至少三个投票副本的 Raft 组。分片的目录组和每个数据组分别遵守同一流程，入口至少两个 router。Compose 的 HAProxy 持续解析 Docker 服务名，避免替换容器改变 IP 后仍连接旧地址；其他部署需配置对应 DNS/服务发现。每次只替换一个进程，保留节点 ID、配置、数据目录和 Raft 日志；该副本追赶并恢复健康后才操作下一个。始终保留多数派，正常图请求继续执行强一致屏障。
 
@@ -137,7 +137,7 @@ DOCKER_CONTEXT=orbstack python3 scripts/raft_rolling_gate.py
 Raft 先保持原协议升级全部副本和 router，确认所有投票成员的 `protocol_max >= 4`，再单独启用 `GRAPHDB_RAFT_PROTOCOL_VERSION=4`。首次提案检查全部投票成员能力；协议激活后不能用旧二进制原目录回退。历史日志仍按其记录的旧语义执行。此变更的本地回归不等于真实双版本滚动发布资格；发布前仍需执行完整升级门禁。
 
 
-## 2.5.0 大图分片协议 5 预览
+## 2.5.0 引入的大图分片协议 5 预览
 
 协议 5 增加图控制状态、分区准备/发布、持久化版本读租约、分区迁移和分布式 GC。默认仍为协议 1，普通租户继续使用原路径。
 
