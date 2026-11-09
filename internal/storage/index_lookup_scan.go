@@ -9,7 +9,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -97,9 +97,9 @@ func (l *PersistedIndexLookup) VisitEntities(ctx context.Context, kind string, f
 	stats := &entityPageVisitTraceStats{uniqueObjects: map[string]struct{}{}}
 	ctx = withEntityPageVisitTraceStats(ctx, stats)
 	decodeStats := &parquetDecodeTraceStats{}
-	ctx = withParquetDecodeTraceStats(ctx, decodeStats)
+	ctx = parquetio.WithDecodeTraceStats(ctx, decodeStats)
 	defer func() {
-		stats.parquetAdmissions, stats.parquetAdmissionWait = decodeStats.snapshot()
+		stats.parquetAdmissions, stats.parquetAdmissionWait = decodeStats.Snapshot()
 		span.SetAttributes(
 			attribute.Bool("graphdb.index_lookup.available", available),
 			attribute.Int("graphdb.index_lookup.page_groups_total", stats.pageGroupsTotal),

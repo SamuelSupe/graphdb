@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -75,14 +76,14 @@ func marshalParquetTenantConfig(ctx context.Context, record tenantConfigRecord) 
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetTenantConfig(ctx context.Context, data []byte) (tenantConfigRecord, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return tenantConfigRecord{}, err
 	}
@@ -104,31 +105,31 @@ func decodeParquetTenantConfig(ctx context.Context, data []byte) (tenantConfigRe
 	seen := 0
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		tenantColumn, err := parquetStringColumn(batch, parquetTenantConfigColumnTenantID, "tenant_id")
+		tenantColumn, err := parquetio.StringColumn(batch, parquetTenantConfigColumnTenantID, "tenant_id")
 		if err != nil {
 			return tenantConfigRecord{}, err
 		}
-		hashColumn, err := parquetStringColumn(batch, parquetTenantConfigColumnContentHash, "content_hash")
+		hashColumn, err := parquetio.StringColumn(batch, parquetTenantConfigColumnContentHash, "content_hash")
 		if err != nil {
 			return tenantConfigRecord{}, err
 		}
-		countColumn, err := parquetInt64Column(batch, parquetTenantConfigColumnSettingCount, "setting_count")
+		countColumn, err := parquetio.Int64Column(batch, parquetTenantConfigColumnSettingCount, "setting_count")
 		if err != nil {
 			return tenantConfigRecord{}, err
 		}
-		settingColumn, err := parquetStringColumn(batch, parquetTenantConfigColumnSetting, "setting")
+		settingColumn, err := parquetio.StringColumn(batch, parquetTenantConfigColumnSetting, "setting")
 		if err != nil {
 			return tenantConfigRecord{}, err
 		}
-		kindColumn, err := parquetStringColumn(batch, parquetTenantConfigColumnValueKind, "value_kind")
+		kindColumn, err := parquetio.StringColumn(batch, parquetTenantConfigColumnValueKind, "value_kind")
 		if err != nil {
 			return tenantConfigRecord{}, err
 		}
-		intColumn, err := parquetInt64Column(batch, parquetTenantConfigColumnIntValue, "int_value")
+		intColumn, err := parquetio.Int64Column(batch, parquetTenantConfigColumnIntValue, "int_value")
 		if err != nil {
 			return tenantConfigRecord{}, err
 		}
-		boolColumn, err := parquetBoolColumn(batch, parquetTenantConfigColumnBoolValue, "bool_value")
+		boolColumn, err := parquetio.BoolColumn(batch, parquetTenantConfigColumnBoolValue, "bool_value")
 		if err != nil {
 			return tenantConfigRecord{}, err
 		}

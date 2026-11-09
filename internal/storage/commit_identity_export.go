@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 // NormalizeDirectCommitRequest preserves the canonical request comparison
 // used by direct-commit idempotency across storage layouts and time zones.
 func NormalizeDirectCommitRequest(request DirectCommitRequest) DirectCommitRequest {
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
-	request.Mutations = mutationTimesUTC(request.Mutations)
+	request.Mutations = codec.MutationTimesUTC(request.Mutations)
 	return request
 }
 

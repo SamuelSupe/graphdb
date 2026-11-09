@@ -1,4 +1,5 @@
-package storage
+// Package parquetio owns Arrow I/O helpers and process-wide decode admission.
+package parquetio
 
 import (
 	"bytes"
@@ -26,17 +27,17 @@ type parquetControlDecodeKey struct{}
 
 type parquetDecodeTraceKey struct{}
 
-type parquetDecodeTraceStats struct {
+type DecodeTraceStats struct {
 	mu         sync.Mutex
 	admissions int
 	wait       time.Duration
 }
 
-func withParquetDecodeTraceStats(ctx context.Context, stats *parquetDecodeTraceStats) context.Context {
+func WithDecodeTraceStats(ctx context.Context, stats *DecodeTraceStats) context.Context {
 	return context.WithValue(ctx, parquetDecodeTraceKey{}, stats)
 }
 
-func (s *parquetDecodeTraceStats) recordAdmission(wait time.Duration) {
+func (s *DecodeTraceStats) recordAdmission(wait time.Duration) {
 	if s == nil {
 		return
 	}
@@ -46,7 +47,7 @@ func (s *parquetDecodeTraceStats) recordAdmission(wait time.Duration) {
 	s.mu.Unlock()
 }
 
-func (s *parquetDecodeTraceStats) snapshot() (int, time.Duration) {
+func (s *DecodeTraceStats) Snapshot() (int, time.Duration) {
 	if s == nil {
 		return 0, 0
 	}
@@ -72,7 +73,7 @@ func ConfigureParquetDecodeMaxConcurrent(maxConcurrent int) {
 	processParquetDecodeAdmission.mu.Unlock()
 }
 
-func acquireParquetDecode(ctx context.Context) (func(), error) {
+func AcquireDecode(ctx context.Context) (func(), error) {
 	if admitted, _ := ctx.Value(parquetDecodeAdmissionKey{}).(bool); admitted {
 		return func() {}, nil
 	}
@@ -91,7 +92,7 @@ func acquireParquetDecode(ctx context.Context) (func(), error) {
 		select {
 		case data <- struct{}{}:
 		case <-ctx.Done():
-			if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
+			if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*DecodeTraceStats); stats != nil {
 				stats.recordAdmission(time.Since(waitStarted))
 			}
 			return nil, ctx.Err()
@@ -101,7 +102,7 @@ func acquireParquetDecode(ctx context.Context) (func(), error) {
 	}
 	select {
 	case limit <- struct{}{}:
-		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
+		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*DecodeTraceStats); stats != nil {
 			stats.recordAdmission(time.Since(waitStarted))
 		}
 		return func() {
@@ -114,25 +115,25 @@ func acquireParquetDecode(ctx context.Context) (func(), error) {
 		if data != nil {
 			<-data
 		}
-		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*parquetDecodeTraceStats); stats != nil {
+		if stats, _ := ctx.Value(parquetDecodeTraceKey{}).(*DecodeTraceStats); stats != nil {
 			stats.recordAdmission(time.Since(waitStarted))
 		}
 		return nil, ctx.Err()
 	}
 }
 
-func readParquetControlTable(ctx context.Context, data []byte) (arrow.Table, func(), error) {
-	return readParquetTable(context.WithValue(ctx, parquetControlDecodeKey{}, true), data)
+func ReadControlTable(ctx context.Context, data []byte) (arrow.Table, func(), error) {
+	return ReadTable(WithControlDecode(ctx), data)
 }
 
-// readParquetTable keeps its admission slot until the caller releases the
+// ReadTable keeps its admission slot until the caller releases the
 // returned table. Arrow owns the large decode buffers for that whole period.
-func readParquetTable(ctx context.Context, data []byte) (arrow.Table, func(), error) {
-	return readParquetTableReader(ctx, bytes.NewReader(data))
+func ReadTable(ctx context.Context, data []byte) (arrow.Table, func(), error) {
+	return ReadTableReader(ctx, bytes.NewReader(data))
 }
 
-func readParquetTableReader(ctx context.Context, source parquet.ReaderAtSeeker) (arrow.Table, func(), error) {
-	release, err := acquireParquetDecode(ctx)
+func ReadTableReader(ctx context.Context, source parquet.ReaderAtSeeker) (arrow.Table, func(), error) {
+	release, err := AcquireDecode(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -144,10 +145,10 @@ func readParquetTableReader(ctx context.Context, source parquet.ReaderAtSeeker) 
 	return table, release, nil
 }
 
-// readParquetRecordReader holds one admission slot while a streaming reader
+// ReadRecordReader holds one admission slot while a streaming reader
 // owns its Arrow decode buffers. Callers must release both returned values.
-func readParquetRecordReader(ctx context.Context, reader *pqarrow.FileReader, columns []int, rowGroups []int) (pqarrow.RecordReader, func(), error) {
-	release, err := acquireParquetDecode(ctx)
+func ReadRecordReader(ctx context.Context, reader *pqarrow.FileReader, columns []int, rowGroups []int) (pqarrow.RecordReader, func(), error) {
+	release, err := AcquireDecode(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -157,4 +158,15 @@ func readParquetRecordReader(ctx context.Context, reader *pqarrow.FileReader, co
 		return nil, nil, err
 	}
 	return recordReader, release, nil
+}
+
+// WithControlDecode allows metadata loads to use the reserved control capacity.
+func WithControlDecode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, parquetControlDecodeKey{}, true)
+}
+
+// WithDecodeAdmission reuses a slot already held by an enclosing decode.
+// The enclosing caller must retain that slot until all nested decoding finishes.
+func WithDecodeAdmission(ctx context.Context) context.Context {
+	return context.WithValue(ctx, parquetDecodeAdmissionKey{}, true)
 }

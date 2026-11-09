@@ -8,7 +8,8 @@ import (
 	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -57,12 +58,12 @@ func marshalParquetSnapshotSchema(ctx context.Context, schemaData snapshotSchema
 		return nil, err
 	}
 	rows := snapshotSchemaRows(normalized)
-	schema := parquetCommitArrowSchema()
+	schema := codec.ParquetCommitArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
 	header := graphCommitHeaderForSnapshotSchema(normalized)
 	for _, row := range rows {
-		appendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
+		codec.AppendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
 	}
 	batch := builder.NewRecordBatch()
 	defer batch.Release()
@@ -83,7 +84,7 @@ func marshalParquetSnapshotSchema(ctx context.Context, schemaData snapshotSchema
 }
 
 func decodeParquetSnapshotSchema(ctx context.Context, data []byte) (snapshotSchemaData, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return snapshotSchemaData{}, err
 	}
@@ -104,32 +105,32 @@ func decodeParquetSnapshotSchema(ctx context.Context, data []byte) (snapshotSche
 	defer reader.Release()
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		columns, err := parquetCommitColumns(batch)
+		columns, err := codec.ParquetCommitColumns(batch)
 		if err != nil {
 			return snapshotSchemaData{}, err
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
 			rowSchema := snapshotSchemaData{
 				LayoutVersion: CurrentObjectLayoutVersion,
-				TenantID:      columns.commitTenantID.Value(i),
-				Version:       columns.version.Value(i),
-				UpdatedAt:     parseParquetTime(columns.createdAt.Value(i)),
+				TenantID:      columns.CommitTenantIDAt(i),
+				Version:       columns.VersionAt(i),
+				UpdatedAt:     parquetio.ParseTime(columns.CreatedTimeAt(i)),
 			}
 			if rows == 0 {
 				schemaData = rowSchema
-				expectedHash = columns.contentHash.Value(i)
-			} else if schemaData.TenantID != rowSchema.TenantID || schemaData.Version != rowSchema.Version || !schemaData.UpdatedAt.Equal(rowSchema.UpdatedAt) || expectedHash != columns.contentHash.Value(i) {
+				expectedHash = columns.ContentHashAt(i)
+			} else if schemaData.TenantID != rowSchema.TenantID || schemaData.Version != rowSchema.Version || !schemaData.UpdatedAt.Equal(rowSchema.UpdatedAt) || expectedHash != columns.ContentHashAt(i) {
 				return snapshotSchemaData{}, fmt.Errorf("snapshot schema identity mismatch")
 			}
-			row := parquetCommitRowFromColumns(columns, i)
+			row := codec.ParquetCommitRowFromColumns(columns, i)
 			switch row.Kind {
 			case commitRowMetadata:
 			case commitRowUpsertCIType, commitRowCITypeExtends, commitRowCITypeField, commitRowCITypeFieldEnum, commitRowCITypeFieldDefault, commitRowCITypeIdentity, commitRowCITypeIdentityField:
-				if err := build.applyCITypeRow(row); err != nil {
+				if err := build.Apply(row); err != nil {
 					return snapshotSchemaData{}, err
 				}
 			case commitRowUpsertRelationType, commitRowRelationFromKind, commitRowRelationToKind:
-				if err := build.applyRelationRow(row); err != nil {
+				if err := build.Apply(row); err != nil {
 					return snapshotSchemaData{}, err
 				}
 			default:
@@ -138,11 +139,11 @@ func decodeParquetSnapshotSchema(ctx context.Context, data []byte) (snapshotSche
 			rows++
 		}
 	}
-	for _, ordinal := range sortedIntKeys(build.ciTypes) {
-		schemaData.CITypes = setCITypeAt(schemaData.CITypes, ordinal, build.ciTypes[ordinal].item)
+	for ordinal, item := range build.CITypes() {
+		schemaData.CITypes = codec.SetCITypeAt(schemaData.CITypes, ordinal, item)
 	}
-	for _, ordinal := range sortedIntKeys(build.relations) {
-		schemaData.RelationTypes = setRelationTypeAt(schemaData.RelationTypes, ordinal, build.relations[ordinal].item)
+	for ordinal, item := range build.Relations() {
+		schemaData.RelationTypes = codec.SetRelationTypeAt(schemaData.RelationTypes, ordinal, item)
 	}
 	if err := normalizeObjectAfterRead(&schemaData, "snapshot schema"); err != nil {
 		return snapshotSchemaData{}, err
@@ -165,7 +166,7 @@ func normalizeSnapshotSchemaForParquet(schemaData snapshotSchemaData) (snapshotS
 	if err := normalizeObjectAfterRead(&normalized, "snapshot schema"); err != nil {
 		return snapshotSchemaData{}, "", err
 	}
-	return normalized, objectContentHash(payload), nil
+	return normalized, codec.ContentHash(payload), nil
 }
 
 func graphCommitHeaderForSnapshotSchema(schemaData snapshotSchemaData) graph.Commit {
@@ -181,10 +182,10 @@ func graphCommitHeaderForSnapshotSchema(schemaData snapshotSchemaData) graph.Com
 func snapshotSchemaRows(schemaData snapshotSchemaData) []parquetCommitRow {
 	rows := []parquetCommitRow{{Kind: commitRowMetadata}}
 	for i, ciType := range schemaData.CITypes {
-		rows = append(rows, ciTypeRows(i, ciType)...)
+		rows = append(rows, codec.CITypeRows(i, ciType)...)
 	}
 	for i, relationType := range schemaData.RelationTypes {
-		rows = append(rows, relationTypeRows(i, relationType)...)
+		rows = append(rows, codec.RelationTypeRows(i, relationType)...)
 	}
 	return rows
 }
@@ -202,7 +203,7 @@ func marshalParquetShardedSnapshotCatalog(ctx context.Context, catalog ShardedSn
 		builder.Field(parquetSnapshotCatalogColumnVersion).(*array.Int64Builder).Append(catalog.Version)
 		builder.Field(parquetSnapshotCatalogColumnKey).(*array.StringBuilder).Append(catalog.Key)
 		builder.Field(parquetSnapshotCatalogColumnFormat).(*array.StringBuilder).Append(catalog.Format)
-		builder.Field(parquetSnapshotCatalogColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(catalog.UpdatedAt))
+		builder.Field(parquetSnapshotCatalogColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(catalog.UpdatedAt))
 		builder.Field(parquetSnapshotCatalogColumnContentHash).(*array.StringBuilder).Append(hash)
 		builder.Field(parquetSnapshotCatalogColumnSchemaKey).(*array.StringBuilder).Append(catalog.Schema.Key)
 		builder.Field(parquetSnapshotCatalogColumnSchemaFormat).(*array.StringBuilder).Append(catalog.Schema.Format)
@@ -234,14 +235,14 @@ func marshalParquetShardedSnapshotCatalog(ctx context.Context, catalog ShardedSn
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetShardedSnapshotCatalog(ctx context.Context, data []byte) (ShardedSnapshotCatalog, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return ShardedSnapshotCatalog{}, err
 	}
@@ -280,7 +281,7 @@ func decodeParquetShardedSnapshotCatalog(ctx context.Context, data []byte) (Shar
 					Format:      columns.schemaFormat.Value(i),
 					ContentHash: columns.schemaContentHash.Value(i),
 				},
-				UpdatedAt: parseParquetTime(columns.updatedAt.Value(i)),
+				UpdatedAt: parquetio.ParseTime(columns.updatedAt.Value(i)),
 			}
 			if rows == 0 {
 				catalog = rowCatalog
@@ -406,64 +407,64 @@ func applySnapshotCatalogRow(catalog *ShardedSnapshotCatalog, row snapshotCatalo
 func parquetSnapshotCatalogColumns(batch arrow.RecordBatch) (parquetSnapshotCatalogColumnSet, error) {
 	var columns parquetSnapshotCatalogColumnSet
 	var err error
-	if columns.layoutVersion, err = parquetInt64Column(batch, parquetSnapshotCatalogColumnLayoutVersion, "layout_version"); err != nil {
+	if columns.layoutVersion, err = parquetio.Int64Column(batch, parquetSnapshotCatalogColumnLayoutVersion, "layout_version"); err != nil {
 		return columns, err
 	}
-	if columns.tenantID, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnTenantID, "tenant_id"); err != nil {
+	if columns.tenantID, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnTenantID, "tenant_id"); err != nil {
 		return columns, err
 	}
-	if columns.version, err = parquetInt64Column(batch, parquetSnapshotCatalogColumnVersion, "version"); err != nil {
+	if columns.version, err = parquetio.Int64Column(batch, parquetSnapshotCatalogColumnVersion, "version"); err != nil {
 		return columns, err
 	}
-	if columns.key, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnKey, "key"); err != nil {
+	if columns.key, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnKey, "key"); err != nil {
 		return columns, err
 	}
-	if columns.format, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnFormat, "format"); err != nil {
+	if columns.format, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnFormat, "format"); err != nil {
 		return columns, err
 	}
-	if columns.updatedAt, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnUpdatedAt, "updated_at"); err != nil {
+	if columns.updatedAt, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnUpdatedAt, "updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.contentHash, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnContentHash, "content_hash"); err != nil {
+	if columns.contentHash, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnContentHash, "content_hash"); err != nil {
 		return columns, err
 	}
-	if columns.schemaKey, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnSchemaKey, "schema_key"); err != nil {
+	if columns.schemaKey, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnSchemaKey, "schema_key"); err != nil {
 		return columns, err
 	}
-	if columns.schemaFormat, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnSchemaFormat, "schema_format"); err != nil {
+	if columns.schemaFormat, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnSchemaFormat, "schema_format"); err != nil {
 		return columns, err
 	}
-	if columns.schemaContentHash, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnSchemaContentHash, "schema_content_hash"); err != nil {
+	if columns.schemaContentHash, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnSchemaContentHash, "schema_content_hash"); err != nil {
 		return columns, err
 	}
-	if columns.entityPageCount, err = parquetInt64Column(batch, parquetSnapshotCatalogColumnEntityPageCount, "entity_page_count"); err != nil {
+	if columns.entityPageCount, err = parquetio.Int64Column(batch, parquetSnapshotCatalogColumnEntityPageCount, "entity_page_count"); err != nil {
 		return columns, err
 	}
-	if columns.edgeShardCount, err = parquetInt64Column(batch, parquetSnapshotCatalogColumnEdgeShardCount, "edge_shard_count"); err != nil {
+	if columns.edgeShardCount, err = parquetio.Int64Column(batch, parquetSnapshotCatalogColumnEdgeShardCount, "edge_shard_count"); err != nil {
 		return columns, err
 	}
-	if columns.rowKind, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnRowKind, "row_kind"); err != nil {
+	if columns.rowKind, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnRowKind, "row_kind"); err != nil {
 		return columns, err
 	}
-	if columns.ordinal, err = parquetInt64Column(batch, parquetSnapshotCatalogColumnOrdinal, "ordinal"); err != nil {
+	if columns.ordinal, err = parquetio.Int64Column(batch, parquetSnapshotCatalogColumnOrdinal, "ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.shard, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnShard, "shard"); err != nil {
+	if columns.shard, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnShard, "shard"); err != nil {
 		return columns, err
 	}
-	if columns.relationType, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnRelationType, "relation_type"); err != nil {
+	if columns.relationType, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnRelationType, "relation_type"); err != nil {
 		return columns, err
 	}
-	if columns.objectKey, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnObjectKey, "object_key"); err != nil {
+	if columns.objectKey, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnObjectKey, "object_key"); err != nil {
 		return columns, err
 	}
-	if columns.objectFormat, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnObjectFormat, "object_format"); err != nil {
+	if columns.objectFormat, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnObjectFormat, "object_format"); err != nil {
 		return columns, err
 	}
-	if columns.objectCount, err = parquetInt64Column(batch, parquetSnapshotCatalogColumnObjectCount, "object_count"); err != nil {
+	if columns.objectCount, err = parquetio.Int64Column(batch, parquetSnapshotCatalogColumnObjectCount, "object_count"); err != nil {
 		return columns, err
 	}
-	if columns.objectContentHash, err = parquetStringColumn(batch, parquetSnapshotCatalogColumnObjectContentHash, "object_content_hash"); err != nil {
+	if columns.objectContentHash, err = parquetio.StringColumn(batch, parquetSnapshotCatalogColumnObjectContentHash, "object_content_hash"); err != nil {
 		return columns, err
 	}
 	return columns, nil
@@ -547,7 +548,7 @@ func sameShardedSnapshotCatalogMetadata(left ShardedSnapshotCatalog, right Shard
 		left.Version == right.Version &&
 		left.Format == right.Format &&
 		left.Schema == right.Schema &&
-		formatParquetTime(left.UpdatedAt) == formatParquetTime(right.UpdatedAt)
+		parquetio.FormatTime(left.UpdatedAt) == parquetio.FormatTime(right.UpdatedAt)
 }
 
 func snapshotSchemaPayloadJSON(schemaData snapshotSchemaData) ([]byte, error) {
@@ -617,7 +618,7 @@ func snapshotSchemaContentHash(schemaData snapshotSchemaData) string {
 	if err != nil {
 		return ""
 	}
-	return objectContentHash(payload)
+	return codec.ContentHash(payload)
 }
 
 func shardedSnapshotCatalogContentHash(catalog ShardedSnapshotCatalog) string {
@@ -631,7 +632,7 @@ func shardedSnapshotCatalogContentHash(catalog ShardedSnapshotCatalog) string {
 		catalog.Schema.Key,
 		catalog.Schema.Format,
 		catalog.Schema.ContentHash,
-		formatParquetTime(catalog.UpdatedAt),
+		parquetio.FormatTime(catalog.UpdatedAt),
 		formatInt64ForHash(int64(len(catalog.EntityPages))),
 		formatInt64ForHash(int64(len(catalog.EdgeShards))),
 	}

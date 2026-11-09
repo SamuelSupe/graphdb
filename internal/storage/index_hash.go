@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func secondaryIndexObjectSetContentHash(objects []IndexObject) string {
@@ -47,17 +48,12 @@ func indexContentHash(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func objectContentHash(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 func objectSchemaHash(value any) string {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return ""
 	}
-	return objectContentHash(data)
+	return codec.ContentHash(data)
 }
 
 func secondaryIndexContentHash(index SecondaryIndex) string {
@@ -96,7 +92,7 @@ func edgeShardContentHash(shard EdgeShardData) string {
 	}{
 		RelationType: shard.RelationType,
 		Shard:        shard.Shard,
-		Edges:        edgeSliceTimesUTC(edges),
+		Edges:        codec.EdgeSliceTimesUTC(edges),
 	})
 }
 
@@ -113,7 +109,7 @@ func entityPageContentHash(page EntityPageData) string {
 		Entities []legacyEntity `json:"entities"`
 	}{
 		Shard:    page.Shard,
-		Entities: legacyEntities(entities),
+		Entities: codec.LegacyEntities(entities),
 	})
 }
 

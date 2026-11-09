@@ -9,12 +9,17 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 )
 
 type replicatedContextKey struct{}
+
 type replicatedBackpressureKey struct{}
+
 type replicatedBackupNamespaceKey struct{}
+
 type legacyTenantScopeKey struct{}
+
 type legacyIdentityKey struct{}
 
 // LegacyIdentityContext replays commands written before tuple identity matching.
@@ -86,7 +91,7 @@ func mutationID(ctx context.Context, purpose string) (string, error) {
 		sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%d", execution.id, purpose, sequence)))
 		return fmt.Sprintf("%x", sum[:12]), nil
 	}
-	return newCommitID()
+	return identity.NewCommitID()
 }
 
 func artifactTime(at []time.Time) time.Time {

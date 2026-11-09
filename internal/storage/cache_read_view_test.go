@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 )
 
 func TestColdWriteLoadProgressesWhileBulkDecodeSaturated(t *testing.T) {
@@ -25,7 +26,7 @@ func TestColdWriteLoadProgressesWhileBulkDecodeSaturated(t *testing.T) {
 	defer cold.ShutdownTasks(ctx)
 	ConfigureParquetDecodeMaxConcurrent(2)
 	t.Cleanup(func() { ConfigureParquetDecodeMaxConcurrent(0) })
-	release, err := acquireParquetDecode(ctx)
+	release, err := parquetio.AcquireDecode(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

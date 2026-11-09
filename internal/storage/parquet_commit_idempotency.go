@@ -8,7 +8,8 @@ import (
 	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -44,7 +45,7 @@ func marshalParquetDirectCommitRecord(ctx context.Context, record DirectCommitRe
 	if err != nil {
 		return nil, err
 	}
-	schema := parquetCommitArrowSchema()
+	schema := codec.ParquetCommitArrowSchema()
 	builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer builder.Release()
 	header := graph.Commit{
@@ -55,7 +56,7 @@ func marshalParquetDirectCommitRecord(ctx context.Context, record DirectCommitRe
 		CreatedAt:     normalized.FinishedAt,
 	}
 	for _, row := range rows {
-		appendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
+		codec.AppendParquetCommitRow(builder, normalized.TenantID, "", header, hash, row)
 	}
 
 	batch := builder.NewRecordBatch()
@@ -77,7 +78,7 @@ func marshalParquetDirectCommitRecord(ctx context.Context, record DirectCommitRe
 }
 
 func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCommitRecord, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return DirectCommitRecord{}, err
 	}
@@ -98,16 +99,16 @@ func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCo
 	defer reader.Release()
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		columns, err := parquetCommitColumns(batch)
+		columns, err := codec.ParquetCommitColumns(batch)
 		if err != nil {
 			return DirectCommitRecord{}, err
 		}
 		for i := 0; i < int(batch.NumRows()); i++ {
-			rowTenant := columns.commitTenantID.Value(i)
-			rowKey := columns.commitID.Value(i)
-			rowVersion := columns.version.Value(i)
-			rowHash := columns.contentHash.Value(i)
-			if columns.tenantID.Value(i) != rowTenant {
+			rowTenant := columns.CommitTenantIDAt(i)
+			rowKey := columns.CommitIDAt(i)
+			rowVersion := columns.VersionAt(i)
+			rowHash := columns.ContentHashAt(i)
+			if columns.TenantIDAt(i) != rowTenant {
 				return DirectCommitRecord{}, fmt.Errorf("direct commit record tenant mismatch")
 			}
 			if rows == 0 {
@@ -119,24 +120,24 @@ func decodeParquetDirectCommitRecord(ctx context.Context, data []byte) (DirectCo
 			} else if record.TenantID != rowTenant || record.Request.IdempotencyKey != rowKey || record.Result.Version != rowVersion || expectedHash != rowHash {
 				return DirectCommitRecord{}, fmt.Errorf("direct commit record identity mismatch")
 			}
-			row := parquetCommitRowFromColumns(columns, i)
+			row := codec.ParquetCommitRowFromColumns(columns, i)
 			if err := applyDirectCommitRow(&record, build, row); err != nil {
 				return DirectCommitRecord{}, err
 			}
 			rows++
 		}
 	}
-	for _, ordinal := range sortedIntKeys(build.ciTypes) {
-		record.Request.Mutations.UpsertCITypes = setCITypeAt(record.Request.Mutations.UpsertCITypes, ordinal, build.ciTypes[ordinal].item)
+	for ordinal, item := range build.CITypes() {
+		record.Request.Mutations.UpsertCITypes = codec.SetCITypeAt(record.Request.Mutations.UpsertCITypes, ordinal, item)
 	}
-	for _, ordinal := range sortedIntKeys(build.relations) {
-		record.Request.Mutations.UpsertRelationTypes = setRelationTypeAt(record.Request.Mutations.UpsertRelationTypes, ordinal, build.relations[ordinal].item)
+	for ordinal, item := range build.Relations() {
+		record.Request.Mutations.UpsertRelationTypes = codec.SetRelationTypeAt(record.Request.Mutations.UpsertRelationTypes, ordinal, item)
 	}
-	for _, ordinal := range sortedIntKeys(build.entities) {
-		record.Request.Mutations.UpsertEntities = setEntityAt(record.Request.Mutations.UpsertEntities, ordinal, decodedEntityPageCopy(build.entities[ordinal].item))
+	for ordinal, item := range build.Entities() {
+		record.Request.Mutations.UpsertEntities = codec.SetEntityAt(record.Request.Mutations.UpsertEntities, ordinal, item)
 	}
-	for _, ordinal := range sortedIntKeys(build.edges) {
-		record.Request.Mutations.UpsertEdges = setEdgeAt(record.Request.Mutations.UpsertEdges, ordinal, decodedEdgeShardCopy(build.edges[ordinal].item))
+	for ordinal, item := range build.Edges() {
+		record.Request.Mutations.UpsertEdges = codec.SetEdgeAt(record.Request.Mutations.UpsertEdges, ordinal, item)
 	}
 	hash, err := directCommitRecordContentHash(record)
 	if err != nil {
@@ -180,7 +181,7 @@ func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row pa
 			record.Request.ExpectedVersion = &expected
 		}
 	case directCommitRowSegment:
-		hash, err := stringFromCommitValue(row.Value)
+		hash, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
 			return err
 		}
@@ -193,11 +194,11 @@ func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row pa
 			ContentHash:  hash,
 		})
 	case directCommitRowCommitKey:
-		value, err := stringFromCommitValue(row.Value)
+		value, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
 			return err
 		}
-		record.Result.CommitKeys = setStringAt(record.Result.CommitKeys, row.ParentOrdinal, value)
+		record.Result.CommitKeys = codec.SetStringAt(record.Result.CommitKeys, row.ParentOrdinal, value)
 	case directCommitRowSuppressed:
 		record.Result.Suppressed = setFieldConflictAt(record.Result.Suppressed, row.ParentOrdinal, graph.FieldConflict{
 			ResourceType:     row.ComponentKind,
@@ -214,7 +215,7 @@ func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row pa
 			Message:          row.Reason,
 		})
 	case directCommitRowSuppressedValue:
-		value, err := anyFromParquetValue(row.Value)
+		value, err := parquetio.AnyFromValue(row.Value)
 		if err != nil {
 			return err
 		}
@@ -244,13 +245,13 @@ func applyDirectCommitRow(record *DirectCommitRecord, build *commitBuild, row pa
 			To:          row.To,
 		})
 	case directCommitRowIndexWarning:
-		value, err := stringFromCommitValue(row.Value)
+		value, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
 			return err
 		}
-		record.Result.IndexWarnings = setStringAt(record.Result.IndexWarnings, row.ParentOrdinal, value)
+		record.Result.IndexWarnings = codec.SetStringAt(record.Result.IndexWarnings, row.ParentOrdinal, value)
 	default:
-		return build.apply(row)
+		return build.Apply(row)
 	}
 	return nil
 }
@@ -281,7 +282,7 @@ func directCommitRecordRows(record DirectCommitRecord) ([]parquetCommitRow, erro
 		metadata.EntitySource.Priority = int(*record.Request.ExpectedVersion)
 	}
 	rows := []parquetCommitRow{metadata}
-	mutationRows, err := commitRows(graph.Commit{Mutations: record.Request.Mutations})
+	mutationRows, err := codec.CommitRows(graph.Commit{Mutations: record.Request.Mutations})
 	if err != nil {
 		return nil, err
 	}
@@ -298,12 +299,12 @@ func directCommitRecordRows(record DirectCommitRecord) ([]parquetCommitRow, erro
 			Action:         ref.Codec,
 			VersionValue:   ref.FirstVersion,
 			SourcePriority: ref.Count,
-			Value:          stringCommitValue(ref.ContentHash),
+			Value:          codec.StringCommitValue(ref.ContentHash),
 			FieldSource:    graph.FieldSource{Version: ref.LastVersion},
 		})
 	}
 	for i, key := range record.Result.CommitKeys {
-		rows = append(rows, parquetCommitRow{Kind: directCommitRowCommitKey, ParentOrdinal: i, Value: stringCommitValue(key)})
+		rows = append(rows, parquetCommitRow{Kind: directCommitRowCommitKey, ParentOrdinal: i, Value: codec.StringCommitValue(key)})
 	}
 	for i, conflict := range record.Result.Suppressed {
 		rows = append(rows, parquetCommitRow{
@@ -323,14 +324,14 @@ func directCommitRecordRows(record DirectCommitRecord) ([]parquetCommitRow, erro
 			Reason:         conflict.Message,
 		})
 		if conflict.ExistingValue != nil {
-			value, err := parquetValueFromAny(conflict.ExistingValue)
+			value, err := parquetio.ValueFromAny(conflict.ExistingValue)
 			if err != nil {
 				return nil, err
 			}
 			rows = append(rows, parquetCommitRow{Kind: directCommitRowSuppressedValue, ComponentKind: directCommitValueExisting, ParentOrdinal: i, Value: value})
 		}
 		if conflict.IncomingValue != nil {
-			value, err := parquetValueFromAny(conflict.IncomingValue)
+			value, err := parquetio.ValueFromAny(conflict.IncomingValue)
 			if err != nil {
 				return nil, err
 			}
@@ -360,7 +361,7 @@ func directCommitRecordRows(record DirectCommitRecord) ([]parquetCommitRow, erro
 		})
 	}
 	for i, warning := range record.Result.IndexWarnings {
-		rows = append(rows, parquetCommitRow{Kind: directCommitRowIndexWarning, ParentOrdinal: i, Value: stringCommitValue(warning)})
+		rows = append(rows, parquetCommitRow{Kind: directCommitRowIndexWarning, ParentOrdinal: i, Value: codec.StringCommitValue(warning)})
 	}
 	return rows, nil
 }
@@ -378,14 +379,14 @@ func normalizeDirectCommitRecordForParquet(record DirectCommitRecord) (DirectCom
 	if err != nil {
 		return DirectCommitRecord{}, "", err
 	}
-	return normalized, objectContentHash(canonical), nil
+	return normalized, codec.ContentHash(canonical), nil
 }
 
 func directCommitRecordPayloadJSON(record DirectCommitRecord) ([]byte, error) {
 	record.StartedAt = record.StartedAt.UTC()
 	record.FinishedAt = record.FinishedAt.UTC()
 	record.Result.UpdatedAt = record.Result.UpdatedAt.UTC()
-	record.Request.Mutations = mutationTimesUTC(record.Request.Mutations)
+	record.Request.Mutations = codec.MutationTimesUTC(record.Request.Mutations)
 	record.Request.IdempotencyKey = strings.TrimSpace(record.Request.IdempotencyKey)
 	return json.Marshal(record)
 }

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 )
 
 const (
@@ -258,7 +260,7 @@ func (s *TenantStore) readerHeartbeatPrefix(tenantID string) string {
 }
 
 func (s *TenantStore) readerHeartbeatKey(tenantID string, readerID string) string {
-	return path.Join(s.readerHeartbeatPrefix(tenantID), objectSegment(readerID)+".parquet")
+	return path.Join(s.readerHeartbeatPrefix(tenantID), identity.ObjectSegment(readerID)+".parquet")
 }
 
 func readerIDFromHeartbeatKey(key string) (string, bool) {

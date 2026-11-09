@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/admission"
 )
 
 type TenantConfig struct {
@@ -229,7 +231,7 @@ func (s *TenantStore) effectiveBackpressureConfig(ctx context.Context, tenantID 
 	}
 	applyTenantBackpressureConfig(&base, config.Backpressure)
 	applyTenantQuotaConfig(&base, config.Quota)
-	return normalizeBackpressureConfig(base), nil
+	return admission.NormalizeConfig(base), nil
 }
 
 func (s *TenantStore) getTenantConfigForWrite(ctx context.Context, tenantID string) (TenantConfig, bool, ObjectMeta, error) {

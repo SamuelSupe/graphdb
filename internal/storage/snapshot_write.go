@@ -9,6 +9,7 @@ import (
 	"reflect"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func (s *TenantStore) putSnapshotRecordIfAbsentOrEquivalent(ctx context.Context, key string, record snapshotRecord) error {
@@ -96,5 +97,5 @@ func snapshotRecordContentHash(record snapshotRecord) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return objectContentHash(data), nil
+	return codec.ContentHash(data), nil
 }

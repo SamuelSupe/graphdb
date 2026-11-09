@@ -1,4 +1,4 @@
-package storage
+package codec
 
 import (
 	"maps"
@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 )
 
 // Typed timestamps must have the same UTC representation in JSON content
 // hashes and Parquet columns. Arbitrary field values retain their wire values.
 // Copy nested collections only when converting them; callers may share them.
-func entityTimesUTC(entity graph.Entity) graph.Entity {
+func EntityTimesUTC(entity graph.Entity) graph.Entity {
 	entity.CreatedAt = entity.CreatedAt.UTC()
 	entity.UpdatedAt = entity.UpdatedAt.UTC()
 	entity.FieldSources = fieldSourceTimesUTC(entity.FieldSources)
@@ -78,12 +79,12 @@ func existenceSourceTimeUTC(source *graph.FieldSource) *graph.FieldSource {
 func entitySliceTimesUTC(entities []graph.Entity) []graph.Entity {
 	entities = slices.Clone(entities)
 	for i := range entities {
-		entities[i] = entityTimesUTC(entities[i])
+		entities[i] = EntityTimesUTC(entities[i])
 	}
 	return entities
 }
 
-func edgeSliceTimesUTC(edges []graph.Edge) []graph.Edge {
+func EdgeSliceTimesUTC(edges []graph.Edge) []graph.Edge {
 	edges = slices.Clone(edges)
 	for i := range edges {
 		edges[i] = edgeTimesUTC(edges[i])
@@ -91,9 +92,9 @@ func edgeSliceTimesUTC(edges []graph.Edge) []graph.Edge {
 	return edges
 }
 
-func mutationTimesUTC(mutations graph.Mutations) graph.Mutations {
+func MutationTimesUTC(mutations graph.Mutations) graph.Mutations {
 	mutations.UpsertEntities = entitySliceTimesUTC(mutations.UpsertEntities)
-	mutations.UpsertEdges = edgeSliceTimesUTC(mutations.UpsertEdges)
+	mutations.UpsertEdges = EdgeSliceTimesUTC(mutations.UpsertEdges)
 	mutations.SplitEntities = slices.Clone(mutations.SplitEntities)
 	for i := range mutations.SplitEntities {
 		mutations.SplitEntities[i].Entities = entitySliceTimesUTC(mutations.SplitEntities[i].Entities)
@@ -101,12 +102,12 @@ func mutationTimesUTC(mutations graph.Mutations) graph.Mutations {
 	return mutations
 }
 
-func ingestRequestTimesUTC(request IngestRequest) IngestRequest {
+func IngestRequestTimesUTC(request ingest.IngestRequest) ingest.IngestRequest {
 	request.Items = slices.Clone(request.Items)
 	for i := range request.Items {
 		item := &request.Items[i]
 		if item.Entity != nil {
-			entity := entityTimesUTC(*item.Entity)
+			entity := EntityTimesUTC(*item.Entity)
 			item.Entity = &entity
 		}
 		if item.Edge != nil {

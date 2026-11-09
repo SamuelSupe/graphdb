@@ -2,10 +2,10 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func (s *TenantStore) putCommitObjectIfAbsent(ctx context.Context, key string, commit graph.Commit) error {
@@ -25,7 +25,7 @@ func (s *TenantStore) putCommitObjectIfAbsentMetaNormalized(
 	key string,
 	commit graph.Commit,
 ) (ObjectMeta, graph.Commit, error) {
-	data, normalized, err := marshalParquetCommitObjectNormalized(ctx, commit)
+	data, normalized, err := codec.MarshalCommitNormalized(ctx, commit)
 	if err != nil {
 		return ObjectMeta{}, graph.Commit{}, err
 	}
@@ -44,7 +44,7 @@ func (s *TenantStore) getCommitObject(ctx context.Context, key string) (graph.Co
 }
 
 func marshalCommitObject(commit graph.Commit) ([]byte, error) {
-	return marshalParquetCommitObject(context.Background(), commit)
+	return codec.MarshalCommit(context.Background(), commit)
 }
 
 func unmarshalCommitObject(data []byte) (graph.Commit, error) {
@@ -55,22 +55,9 @@ func unmarshalCommitObjectWithContext(ctx context.Context, data []byte) (graph.C
 	if !isParquetBytes(data) {
 		return graph.Commit{}, fmt.Errorf("unsupported commit object: only parquet commits are readable")
 	}
-	return decodeParquetCommitObject(ctx, data)
+	return codec.DecodeCommit(ctx, data)
 }
 
 func isParquetBytes(data []byte) bool {
 	return len(data) >= 4 && string(data[:4]) == "PAR1"
-}
-
-func commitPayloadHash(commit graph.Commit) (string, error) {
-	data, err := commitPayloadJSON(commit)
-	if err != nil {
-		return "", err
-	}
-	return objectContentHash(data), nil
-}
-
-func commitPayloadJSON(commit graph.Commit) ([]byte, error) {
-	commit.LayoutVersion = CurrentObjectLayoutVersion
-	return json.Marshal(legacyCommitWire(commit))
 }

@@ -3,17 +3,19 @@ package storage
 import (
 	"context"
 	"errors"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 )
 
 func (s *TenantStore) loadLocalEntityPage(ctx context.Context, tenantID string, version int64, spec EntityPageSpec, options EntityScanOptions, cursor scanCursor) (loaded loadedEntityScanPage, err error) {
 	// Waiting decoders must not retain all object-read permits: WAL publication
 	// and graph loading need those permits to read their control metadata.
-	releaseDecode, err := acquireParquetDecode(ctx)
+	releaseDecode, err := parquetio.AcquireDecode(ctx)
 	if err != nil {
 		return loaded, err
 	}
 	defer releaseDecode()
-	ctx = context.WithValue(ctx, parquetDecodeAdmissionKey{}, true)
+	ctx = parquetio.WithDecodeAdmission(ctx)
 	key := firstIndexObjectKey(spec.Objects, "page", s.parquetEntityPageVersionKey(tenantID, version, spec.Shard))
 	reader, err := openFileReader(ctx, s.Objects, key)
 	if errors.Is(err, ErrNotFound) {

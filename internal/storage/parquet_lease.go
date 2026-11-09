@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -32,8 +33,8 @@ func marshalParquetWriterLease(ctx context.Context, lease WriterLease) ([]byte, 
 
 	builder.Field(parquetWriterLeaseColumnTenantID).(*array.StringBuilder).Append(lease.TenantID)
 	builder.Field(parquetWriterLeaseColumnOwnerID).(*array.StringBuilder).Append(lease.OwnerID)
-	builder.Field(parquetWriterLeaseColumnExpiresAt).(*array.StringBuilder).Append(formatParquetTime(lease.ExpiresAt))
-	builder.Field(parquetWriterLeaseColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(lease.UpdatedAt))
+	builder.Field(parquetWriterLeaseColumnExpiresAt).(*array.StringBuilder).Append(parquetio.FormatTime(lease.ExpiresAt))
+	builder.Field(parquetWriterLeaseColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(lease.UpdatedAt))
 	builder.Field(parquetWriterLeaseColumnContentHash).(*array.StringBuilder).Append(writerLeaseContentHash(lease))
 	builder.Field(parquetWriterLeaseColumnFenceToken).(*array.StringBuilder).Append(lease.FenceToken)
 	builder.Field(parquetWriterLeaseColumnFenceEpoch).(*array.Int64Builder).Append(lease.FenceEpoch)
@@ -46,14 +47,14 @@ func marshalParquetWriterLease(ctx context.Context, lease WriterLease) ([]byte, 
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetWriterLease(ctx context.Context, data []byte) (WriterLease, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return WriterLease{}, err
 	}
@@ -72,41 +73,41 @@ func decodeParquetWriterLease(ctx context.Context, data []byte) (WriterLease, er
 		return WriterLease{}, fmt.Errorf("parquet writer lease is empty")
 	}
 	batch := reader.RecordBatch()
-	tenantColumn, err := parquetStringColumn(batch, parquetWriterLeaseColumnTenantID, "tenant_id")
+	tenantColumn, err := parquetio.StringColumn(batch, parquetWriterLeaseColumnTenantID, "tenant_id")
 	if err != nil {
 		return WriterLease{}, err
 	}
-	ownerColumn, err := parquetStringColumn(batch, parquetWriterLeaseColumnOwnerID, "owner_id")
+	ownerColumn, err := parquetio.StringColumn(batch, parquetWriterLeaseColumnOwnerID, "owner_id")
 	if err != nil {
 		return WriterLease{}, err
 	}
-	expiresColumn, err := parquetStringColumn(batch, parquetWriterLeaseColumnExpiresAt, "expires_at")
+	expiresColumn, err := parquetio.StringColumn(batch, parquetWriterLeaseColumnExpiresAt, "expires_at")
 	if err != nil {
 		return WriterLease{}, err
 	}
-	updatedColumn, err := parquetStringColumn(batch, parquetWriterLeaseColumnUpdatedAt, "updated_at")
+	updatedColumn, err := parquetio.StringColumn(batch, parquetWriterLeaseColumnUpdatedAt, "updated_at")
 	if err != nil {
 		return WriterLease{}, err
 	}
-	hashColumn, err := parquetStringColumn(batch, parquetWriterLeaseColumnContentHash, "content_hash")
+	hashColumn, err := parquetio.StringColumn(batch, parquetWriterLeaseColumnContentHash, "content_hash")
 	if err != nil {
 		return WriterLease{}, err
 	}
 	lease := WriterLease{
 		TenantID:  tenantColumn.Value(0),
 		OwnerID:   ownerColumn.Value(0),
-		ExpiresAt: parseParquetTime(expiresColumn.Value(0)),
-		UpdatedAt: parseParquetTime(updatedColumn.Value(0)),
+		ExpiresAt: parquetio.ParseTime(expiresColumn.Value(0)),
+		UpdatedAt: parquetio.ParseTime(updatedColumn.Value(0)),
 	}
 	if table.NumCols() > int64(parquetWriterLeaseColumnFenceToken) {
-		fenceColumn, err := parquetStringColumn(batch, parquetWriterLeaseColumnFenceToken, "fence_token")
+		fenceColumn, err := parquetio.StringColumn(batch, parquetWriterLeaseColumnFenceToken, "fence_token")
 		if err != nil {
 			return WriterLease{}, err
 		}
 		lease.FenceToken = fenceColumn.Value(0)
 	}
 	if table.NumCols() > int64(parquetWriterLeaseColumnFenceEpoch) {
-		fenceEpochColumn, err := parquetInt64Column(batch, parquetWriterLeaseColumnFenceEpoch, "fence_epoch")
+		fenceEpochColumn, err := parquetio.Int64Column(batch, parquetWriterLeaseColumnFenceEpoch, "fence_epoch")
 		if err != nil {
 			return WriterLease{}, err
 		}
@@ -138,8 +139,8 @@ func writerLeaseContentHash(lease WriterLease) string {
 	parts := []string{
 		lease.TenantID,
 		lease.OwnerID,
-		formatParquetTime(lease.ExpiresAt),
-		formatParquetTime(lease.UpdatedAt),
+		parquetio.FormatTime(lease.ExpiresAt),
+		parquetio.FormatTime(lease.UpdatedAt),
 	}
 	if lease.FenceToken != "" {
 		parts = append(parts, lease.FenceToken)

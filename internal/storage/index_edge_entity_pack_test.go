@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/compress"
@@ -568,7 +568,7 @@ func packedReverseEdgeShardFixture(t *testing.T) (EdgeShardData, *graph.ShardedM
 
 func rewriteEdgeShardWithRowGroups(t *testing.T, ctx context.Context, data []byte, rowGroupSize int64) []byte {
 	t.Helper()
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := parquetio.ReadTable(ctx, data)
 	if err != nil {
 		t.Fatalf("read edge table for row groups: %v", err)
 	}

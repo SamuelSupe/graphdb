@@ -1,6 +1,9 @@
 package storage
 
-import "github.com/SamuelSupe/graphdb/v2/internal/graph"
+import (
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+)
 
 // legacySnapshotRecord preserves the 1.0 JSON field order and entity wire
 // shape used by snapshot content hashes.
@@ -21,9 +24,9 @@ func legacySnapshotRecordWire(record snapshotRecord) legacySnapshotRecord {
 		TenantID:      record.TenantID,
 		Version:       record.Snapshot.Version,
 		CITypes:       record.Snapshot.CITypes,
-		Entities:      legacyEntities(record.Snapshot.Entities),
+		Entities:      codec.LegacyEntities(record.Snapshot.Entities),
 		RelationTypes: record.Snapshot.RelationTypes,
-		Edges:         edgeSliceTimesUTC(record.Snapshot.Edges),
+		Edges:         codec.EdgeSliceTimesUTC(record.Snapshot.Edges),
 		Index:         record.Snapshot.Index,
 	}
 }

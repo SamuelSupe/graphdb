@@ -138,6 +138,11 @@ No separate scheduler or task execution engine is introduced. See [object backup
 | `internal/ha` / `internal/replication` | Raft majority replication, membership/protocols, snapshots and replica recovery |
 | `internal/sharding` | Catalog groups, tenant placement, routing and cross-group migration |
 | `internal/storage` | Persistence, tenant generations, read views, publication, query index selection and task lifecycle |
+| `internal/storage/ingest` | Ingestion contracts, identifier validation, preconditions, mutation conversion and conflict attribution |
+| `internal/storage/codec` | Commit Parquet codecs, shared entity/edge rows, layout versions and compatible content hashes |
+| `internal/storage/parquetio` | Arrow columns, scalar values, reader/writer settings and process-wide decode admission |
+| `internal/storage/admission` | Write-pressure samples, thresholds and backpressure errors |
+| `internal/storage/identity` | Tenant identifiers, escaped object-path segments and commit IDs |
 | `internal/maintenance` | Scheduling and decisions using storage operations/budgets, with usage and audit callbacks |
 | `internal/graph` / `internal/query` | Graph structures, planning and execution |
 | `internal/backupstore` | Optional object-storage backup transport, outside online reads/writes |
@@ -145,6 +150,12 @@ No separate scheduler or task execution engine is introduced. See [object backup
 Local file access retains narrow interfaces for testing and observation, random reads and bounded
 directory scans. The unused single-writer wrapper is removed. Maintenance scheduling can run
 without an HTTP server.
+
+Storage subpackages do not import `storage`. Tenant locking, WAL scheduling, publication and
+recovery remain coordinated by `storage`; existing public types and entry points are retained
+through aliases and thin wrappers. See the [storage module guide](../internal/storage/README.md)
+for file responsibilities and dependency direction. Object keys, Parquet/WAL encodings, error
+identity and publication order are preserved by this split.
 
 ## Deployment and compatibility
 

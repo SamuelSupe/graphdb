@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 )
 
 func BenchmarkReplicatedFilePublication(b *testing.B) {
@@ -123,7 +124,7 @@ func BenchmarkIngestConflictAssociationLargeBatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = ingestConflicts(request, conflicts)
+		_ = ingest.IngestConflicts(request, conflicts)
 	}
 }
 

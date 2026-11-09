@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func TestCommitObjectParquetRoundTrip(t *testing.T) {
@@ -102,7 +103,7 @@ func TestCommitObjectParquetRoundTripAllMutationKinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	normalized, _, err := normalizeCommitForParquet(commit)
+	normalized, _, err := codec.NormalizeCommitForParquet(commit)
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}

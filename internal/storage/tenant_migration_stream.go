@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"sync"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 type tenantMigrationObjectWriter func(context.Context, string, []byte) error
@@ -45,7 +47,7 @@ func (s *TenantStore) copyTenantMigrationSegments(
 			return nil, nil, err
 		}
 		segmentHashes[ref.Key] = hash
-		objectHashes[ref.Key] = objectContentHash(rewritten)
+		objectHashes[ref.Key] = codec.ContentHash(rewritten)
 	}
 	return segmentHashes, objectHashes, nil
 }
@@ -137,7 +139,7 @@ func (s *TenantStore) copyTenantMigrationPage(
 					errorMu.Unlock()
 					continue
 				}
-				hashes[index] = objectContentHash(data)
+				hashes[index] = codec.ContentHash(data)
 				copied[index] = true
 			}
 		}()

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 )
 
 const (
@@ -26,7 +28,7 @@ type cachedTenantPurgeTombstone struct {
 }
 
 func (s *TenantStore) tenantPurgeTombstoneKey(tenantID string) string {
-	return path.Join(s.Prefix, "control", "tenant-purges", objectSegment(tenantID)+".parquet")
+	return path.Join(s.Prefix, "control", "tenant-purges", identity.ObjectSegment(tenantID)+".parquet")
 }
 
 func (s *TenantStore) beginTenantPurge(

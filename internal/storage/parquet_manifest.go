@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -66,7 +67,7 @@ func marshalParquetManifest(ctx context.Context, manifest Manifest) ([]byte, err
 		builder.Field(parquetManifestColumnSnapshotKey).(*array.StringBuilder).Append(normalized.SnapshotKey)
 		builder.Field(parquetManifestColumnSnapshotCatalogKey).(*array.StringBuilder).Append(normalized.SnapshotCatalogKey)
 		builder.Field(parquetManifestColumnSnapshotVersion).(*array.Int64Builder).Append(normalized.SnapshotVersion)
-		builder.Field(parquetManifestColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(normalized.UpdatedAt))
+		builder.Field(parquetManifestColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(normalized.UpdatedAt))
 		builder.Field(parquetManifestColumnContentHash).(*array.StringBuilder).Append(hash)
 		builder.Field(parquetManifestColumnCommitSegmentCount).(*array.Int64Builder).Append(int64(len(normalized.CommitSegments)))
 		builder.Field(parquetManifestColumnCommitKeyCount).(*array.Int64Builder).Append(int64(len(normalized.CommitKeys)))
@@ -103,14 +104,14 @@ func marshalParquetManifest(ctx context.Context, manifest Manifest) ([]byte, err
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -149,7 +150,7 @@ func decodeParquetManifest(ctx context.Context, data []byte) (Manifest, error) {
 				SnapshotKey:        columns.snapshotKey.Value(i),
 				SnapshotCatalogKey: columns.snapshotCatalogKey.Value(i),
 				SnapshotVersion:    columns.snapshotVersion.Value(i),
-				UpdatedAt:          parseParquetTime(columns.updatedAt.Value(i)),
+				UpdatedAt:          parquetio.ParseTime(columns.updatedAt.Value(i)),
 			}
 			if columns.writerFence != nil {
 				rowManifest.WriterFence = columns.writerFence.Value(i)
@@ -241,78 +242,78 @@ type parquetManifestColumnSet struct {
 func parquetManifestColumns(batch arrow.RecordBatch) (parquetManifestColumnSet, error) {
 	var columns parquetManifestColumnSet
 	var err error
-	if columns.layoutVersion, err = parquetInt64Column(batch, parquetManifestColumnLayoutVersion, "layout_version"); err != nil {
+	if columns.layoutVersion, err = parquetio.Int64Column(batch, parquetManifestColumnLayoutVersion, "layout_version"); err != nil {
 		return columns, err
 	}
-	if columns.tenantID, err = parquetStringColumn(batch, parquetManifestColumnTenantID, "tenant_id"); err != nil {
+	if columns.tenantID, err = parquetio.StringColumn(batch, parquetManifestColumnTenantID, "tenant_id"); err != nil {
 		return columns, err
 	}
-	if columns.version, err = parquetInt64Column(batch, parquetManifestColumnVersion, "version"); err != nil {
+	if columns.version, err = parquetio.Int64Column(batch, parquetManifestColumnVersion, "version"); err != nil {
 		return columns, err
 	}
-	if columns.headCommitID, err = parquetStringColumn(batch, parquetManifestColumnHeadCommitID, "head_commit_id"); err != nil {
+	if columns.headCommitID, err = parquetio.StringColumn(batch, parquetManifestColumnHeadCommitID, "head_commit_id"); err != nil {
 		return columns, err
 	}
-	if columns.snapshotKey, err = parquetStringColumn(batch, parquetManifestColumnSnapshotKey, "snapshot_key"); err != nil {
+	if columns.snapshotKey, err = parquetio.StringColumn(batch, parquetManifestColumnSnapshotKey, "snapshot_key"); err != nil {
 		return columns, err
 	}
-	if columns.snapshotCatalogKey, err = parquetStringColumn(batch, parquetManifestColumnSnapshotCatalogKey, "snapshot_catalog_key"); err != nil {
+	if columns.snapshotCatalogKey, err = parquetio.StringColumn(batch, parquetManifestColumnSnapshotCatalogKey, "snapshot_catalog_key"); err != nil {
 		return columns, err
 	}
-	if columns.snapshotVersion, err = parquetInt64Column(batch, parquetManifestColumnSnapshotVersion, "snapshot_version"); err != nil {
+	if columns.snapshotVersion, err = parquetio.Int64Column(batch, parquetManifestColumnSnapshotVersion, "snapshot_version"); err != nil {
 		return columns, err
 	}
-	if columns.updatedAt, err = parquetStringColumn(batch, parquetManifestColumnUpdatedAt, "updated_at"); err != nil {
+	if columns.updatedAt, err = parquetio.StringColumn(batch, parquetManifestColumnUpdatedAt, "updated_at"); err != nil {
 		return columns, err
 	}
-	if columns.contentHash, err = parquetStringColumn(batch, parquetManifestColumnContentHash, "content_hash"); err != nil {
+	if columns.contentHash, err = parquetio.StringColumn(batch, parquetManifestColumnContentHash, "content_hash"); err != nil {
 		return columns, err
 	}
-	if columns.commitSegmentCount, err = parquetInt64Column(batch, parquetManifestColumnCommitSegmentCount, "commit_segment_count"); err != nil {
+	if columns.commitSegmentCount, err = parquetio.Int64Column(batch, parquetManifestColumnCommitSegmentCount, "commit_segment_count"); err != nil {
 		return columns, err
 	}
-	if columns.commitKeyCount, err = parquetInt64Column(batch, parquetManifestColumnCommitKeyCount, "commit_key_count"); err != nil {
+	if columns.commitKeyCount, err = parquetio.Int64Column(batch, parquetManifestColumnCommitKeyCount, "commit_key_count"); err != nil {
 		return columns, err
 	}
-	if columns.rowKind, err = parquetStringColumn(batch, parquetManifestColumnRowKind, "row_kind"); err != nil {
+	if columns.rowKind, err = parquetio.StringColumn(batch, parquetManifestColumnRowKind, "row_kind"); err != nil {
 		return columns, err
 	}
-	if columns.ordinal, err = parquetInt64Column(batch, parquetManifestColumnOrdinal, "ordinal"); err != nil {
+	if columns.ordinal, err = parquetio.Int64Column(batch, parquetManifestColumnOrdinal, "ordinal"); err != nil {
 		return columns, err
 	}
-	if columns.commitKey, err = parquetStringColumn(batch, parquetManifestColumnCommitKey, "commit_key"); err != nil {
+	if columns.commitKey, err = parquetio.StringColumn(batch, parquetManifestColumnCommitKey, "commit_key"); err != nil {
 		return columns, err
 	}
-	if columns.segmentKey, err = parquetStringColumn(batch, parquetManifestColumnSegmentKey, "segment_key"); err != nil {
+	if columns.segmentKey, err = parquetio.StringColumn(batch, parquetManifestColumnSegmentKey, "segment_key"); err != nil {
 		return columns, err
 	}
-	if columns.segmentCodec, err = parquetStringColumn(batch, parquetManifestColumnSegmentCodec, "segment_codec"); err != nil {
+	if columns.segmentCodec, err = parquetio.StringColumn(batch, parquetManifestColumnSegmentCodec, "segment_codec"); err != nil {
 		return columns, err
 	}
-	if columns.segmentFirstVersion, err = parquetInt64Column(batch, parquetManifestColumnSegmentFirstVersion, "segment_first_version"); err != nil {
+	if columns.segmentFirstVersion, err = parquetio.Int64Column(batch, parquetManifestColumnSegmentFirstVersion, "segment_first_version"); err != nil {
 		return columns, err
 	}
-	if columns.segmentLastVersion, err = parquetInt64Column(batch, parquetManifestColumnSegmentLastVersion, "segment_last_version"); err != nil {
+	if columns.segmentLastVersion, err = parquetio.Int64Column(batch, parquetManifestColumnSegmentLastVersion, "segment_last_version"); err != nil {
 		return columns, err
 	}
-	if columns.segmentCount, err = parquetInt64Column(batch, parquetManifestColumnSegmentCount, "segment_count"); err != nil {
+	if columns.segmentCount, err = parquetio.Int64Column(batch, parquetManifestColumnSegmentCount, "segment_count"); err != nil {
 		return columns, err
 	}
-	if columns.segmentContentHash, err = parquetStringColumn(batch, parquetManifestColumnSegmentContentHash, "segment_content_hash"); err != nil {
+	if columns.segmentContentHash, err = parquetio.StringColumn(batch, parquetManifestColumnSegmentContentHash, "segment_content_hash"); err != nil {
 		return columns, err
 	}
 	if batch.NumCols() > int64(parquetManifestColumnWriterFence) {
-		if columns.writerFence, err = parquetStringColumn(batch, parquetManifestColumnWriterFence, "writer_fence"); err != nil {
+		if columns.writerFence, err = parquetio.StringColumn(batch, parquetManifestColumnWriterFence, "writer_fence"); err != nil {
 			return columns, err
 		}
 	}
 	if batch.NumCols() > int64(parquetManifestColumnWriterFenceEpoch) {
-		if columns.writerFenceEpoch, err = parquetInt64Column(batch, parquetManifestColumnWriterFenceEpoch, "writer_fence_epoch"); err != nil {
+		if columns.writerFenceEpoch, err = parquetio.Int64Column(batch, parquetManifestColumnWriterFenceEpoch, "writer_fence_epoch"); err != nil {
 			return columns, err
 		}
 	}
 	if batch.NumCols() > int64(parquetManifestColumnDataHash) {
-		if columns.dataHash, err = parquetStringColumn(batch, parquetManifestColumnDataHash, "data_hash"); err != nil {
+		if columns.dataHash, err = parquetio.StringColumn(batch, parquetManifestColumnDataHash, "data_hash"); err != nil {
 			return columns, err
 		}
 	}
@@ -365,7 +366,7 @@ func sameManifestMetadata(left Manifest, right Manifest) bool {
 		left.WriterFence == right.WriterFence &&
 		left.WriterFenceEpoch == right.WriterFenceEpoch &&
 		left.DataHash == right.DataHash &&
-		formatParquetTime(left.UpdatedAt) == formatParquetTime(right.UpdatedAt)
+		parquetio.FormatTime(left.UpdatedAt) == parquetio.FormatTime(right.UpdatedAt)
 }
 
 func manifestContentHash(manifest Manifest) (string, error) {
@@ -378,7 +379,7 @@ func manifestContentHash(manifest Manifest) (string, error) {
 		normalized.SnapshotKey,
 		normalized.SnapshotCatalogKey,
 		formatInt64ForHash(normalized.SnapshotVersion),
-		formatParquetTime(normalized.UpdatedAt),
+		parquetio.FormatTime(normalized.UpdatedAt),
 		formatInt64ForHash(int64(len(normalized.CommitSegments))),
 		formatInt64ForHash(int64(len(normalized.CommitKeys))),
 	}

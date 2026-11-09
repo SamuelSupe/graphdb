@@ -201,7 +201,7 @@ func (s *TenantStore) CheckTaskDiskSpace(ctx context.Context, task Task) error {
 	var usage TenantUsageReport
 	var err error
 	if s.Backpressure != nil {
-		if bytes, ok := s.Backpressure.recentTenantBytes(task.TenantID); ok {
+		if bytes, ok := s.Backpressure.RecentTenantBytes(task.TenantID); ok {
 			usage.TotalBytes = bytes
 		} else {
 			usage, err = s.TenantUsage(ctx, task.TenantID)

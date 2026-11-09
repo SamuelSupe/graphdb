@@ -8,6 +8,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -172,7 +173,7 @@ type loadedGraph struct {
 }
 
 func NewTenantStore(objects ObjectStore, prefix string) *TenantStore {
-	instanceID, err := newCommitID()
+	instanceID, err := identity.NewCommitID()
 	if err != nil {
 		instanceID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}

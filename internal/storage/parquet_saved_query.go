@@ -9,7 +9,8 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -152,7 +153,7 @@ func marshalParquetSavedQuery(ctx context.Context, saved SavedQuery) ([]byte, er
 }
 
 func decodeParquetSavedQuery(ctx context.Context, data []byte) (SavedQuery, error) {
-	table, release, err := readParquetTable(ctx, data)
+	table, release, err := parquetio.ReadTable(ctx, data)
 	if err != nil {
 		return SavedQuery{}, err
 	}
@@ -210,37 +211,37 @@ func normalizeSavedQueryForParquet(saved SavedQuery) (SavedQuery, string, error)
 	if err := json.Unmarshal(payload, &normalized); err != nil {
 		return SavedQuery{}, "", err
 	}
-	return normalized, objectContentHash(payload), nil
+	return normalized, codec.ContentHash(payload), nil
 }
 
 func savedQueryRows(request query.Request) ([]savedQueryParquetRow, error) {
 	rows := []savedQueryParquetRow{{Kind: savedQueryRowMetadata}}
-	filterFields := sortedAnyMapKeys(request.Filters)
+	filterFields := codec.SortedAnyMapKeys(request.Filters)
 	for i, field := range filterFields {
-		value, err := parquetValueFromAny(request.Filters[field])
+		value, err := parquetio.ValueFromAny(request.Filters[field])
 		if err != nil {
 			return nil, err
 		}
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowFilter, Ordinal: i, Field: field, Value: value})
 	}
 	for i, filter := range request.Where {
-		value, err := parquetValueFromAny(filter.Value)
+		value, err := parquetio.ValueFromAny(filter.Value)
 		if err != nil {
 			return nil, err
 		}
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowWhere, Ordinal: i, Field: filter.Field, Op: filter.Op, Value: value})
 	}
 	for i, relationType := range request.RelationTypes {
-		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowRelationType, Ordinal: i, Value: stringCommitValue(relationType)})
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowRelationType, Ordinal: i, Value: codec.StringCommitValue(relationType)})
 	}
 	for i, kind := range request.Path.NodeKinds {
-		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathNodeKind, Ordinal: i, Value: stringCommitValue(kind)})
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathNodeKind, Ordinal: i, Value: codec.StringCommitValue(kind)})
 	}
 	for i, relationType := range request.Path.RelationTypes {
-		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathRelationType, Ordinal: i, Value: stringCommitValue(relationType)})
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowPathRelationType, Ordinal: i, Value: codec.StringCommitValue(relationType)})
 	}
 	for i, filter := range request.Path.EndWhere {
-		value, err := parquetValueFromAny(filter.Value)
+		value, err := parquetio.ValueFromAny(filter.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -250,7 +251,7 @@ func savedQueryRows(request query.Request) ([]savedQueryParquetRow, error) {
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowSort, Ordinal: i, Field: sortSpec.Field, Desc: sortSpec.Desc})
 	}
 	for i, field := range request.Project {
-		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowProject, Ordinal: i, Value: stringCommitValue(field)})
+		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowProject, Ordinal: i, Value: codec.StringCommitValue(field)})
 	}
 	for i, aggregate := range request.Aggregate {
 		rows = append(rows, savedQueryParquetRow{Kind: savedQueryRowAggregate, Ordinal: i, Name: aggregate.Name, Op: aggregate.Op, Field: aggregate.Field})
@@ -262,8 +263,8 @@ func appendSavedQueryRow(builder *array.RecordBuilder, saved SavedQuery, hash st
 	builder.Field(parquetSavedQueryColumnTenantID).(*array.StringBuilder).Append(saved.TenantID)
 	builder.Field(parquetSavedQueryColumnName).(*array.StringBuilder).Append(saved.Name)
 	builder.Field(parquetSavedQueryColumnDescription).(*array.StringBuilder).Append(saved.Description)
-	builder.Field(parquetSavedQueryColumnCreatedAt).(*array.StringBuilder).Append(formatParquetTime(saved.CreatedAt))
-	builder.Field(parquetSavedQueryColumnUpdatedAt).(*array.StringBuilder).Append(formatParquetTime(saved.UpdatedAt))
+	builder.Field(parquetSavedQueryColumnCreatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(saved.CreatedAt))
+	builder.Field(parquetSavedQueryColumnUpdatedAt).(*array.StringBuilder).Append(parquetio.FormatTime(saved.UpdatedAt))
 	builder.Field(parquetSavedQueryColumnContentHash).(*array.StringBuilder).Append(hash)
 	builder.Field(parquetSavedQueryColumnRequestOp).(*array.StringBuilder).Append(saved.Request.Op)
 	builder.Field(parquetSavedQueryColumnTargetOp).(*array.StringBuilder).Append(saved.Request.TargetOp)
@@ -299,8 +300,8 @@ func savedQueryFromColumns(columns savedQueryColumnSet, row int) SavedQuery {
 		TenantID:    columns.tenantID.Value(row),
 		Name:        columns.name.Value(row),
 		Description: columns.description.Value(row),
-		CreatedAt:   parseParquetTime(columns.createdAt.Value(row)),
-		UpdatedAt:   parseParquetTime(columns.updatedAt.Value(row)),
+		CreatedAt:   parquetio.ParseTime(columns.createdAt.Value(row)),
+		UpdatedAt:   parquetio.ParseTime(columns.updatedAt.Value(row)),
 		Request: query.Request{
 			Op:                columns.requestOp.Value(row),
 			TargetOp:          columns.targetOp.Value(row),
@@ -347,7 +348,7 @@ func applySavedQueryRow(request *query.Request, row savedQueryParquetRow) error 
 	case savedQueryRowMetadata:
 		return nil
 	case savedQueryRowFilter:
-		value, err := anyFromParquetValue(row.Value)
+		value, err := parquetio.AnyFromValue(row.Value)
 		if err != nil {
 			return err
 		}
@@ -356,31 +357,31 @@ func applySavedQueryRow(request *query.Request, row savedQueryParquetRow) error 
 		}
 		request.Filters[row.Field] = value
 	case savedQueryRowWhere:
-		value, err := anyFromParquetValue(row.Value)
+		value, err := parquetio.AnyFromValue(row.Value)
 		if err != nil {
 			return err
 		}
 		request.Where = setQueryFilterAt(request.Where, row.Ordinal, query.Filter{Field: row.Field, Op: row.Op, Value: value})
 	case savedQueryRowRelationType:
-		value, err := stringFromCommitValue(row.Value)
+		value, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
 			return err
 		}
-		request.RelationTypes = setStringAt(request.RelationTypes, row.Ordinal, value)
+		request.RelationTypes = codec.SetStringAt(request.RelationTypes, row.Ordinal, value)
 	case savedQueryRowPathNodeKind:
-		value, err := stringFromCommitValue(row.Value)
+		value, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
 			return err
 		}
-		request.Path.NodeKinds = setStringAt(request.Path.NodeKinds, row.Ordinal, value)
+		request.Path.NodeKinds = codec.SetStringAt(request.Path.NodeKinds, row.Ordinal, value)
 	case savedQueryRowPathRelationType:
-		value, err := stringFromCommitValue(row.Value)
+		value, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
 			return err
 		}
-		request.Path.RelationTypes = setStringAt(request.Path.RelationTypes, row.Ordinal, value)
+		request.Path.RelationTypes = codec.SetStringAt(request.Path.RelationTypes, row.Ordinal, value)
 	case savedQueryRowPathEndWhere:
-		value, err := anyFromParquetValue(row.Value)
+		value, err := parquetio.AnyFromValue(row.Value)
 		if err != nil {
 			return err
 		}
@@ -388,11 +389,11 @@ func applySavedQueryRow(request *query.Request, row savedQueryParquetRow) error 
 	case savedQueryRowSort:
 		request.Sort = setQuerySortAt(request.Sort, row.Ordinal, query.SortSpec{Field: row.Field, Desc: row.Desc})
 	case savedQueryRowProject:
-		value, err := stringFromCommitValue(row.Value)
+		value, err := codec.StringFromCommitValue(row.Value)
 		if err != nil {
 			return err
 		}
-		request.Project = setStringAt(request.Project, row.Ordinal, value)
+		request.Project = codec.SetStringAt(request.Project, row.Ordinal, value)
 	case savedQueryRowAggregate:
 		request.Aggregate = setQueryAggregateAt(request.Aggregate, row.Ordinal, query.Aggregation{Name: row.Name, Op: row.Op, Field: row.Field})
 	default:
@@ -433,7 +434,7 @@ func savedQueryColumns(batch arrow.RecordBatch) (savedQueryColumnSet, error) {
 		{&columns.stringValue, parquetSavedQueryColumnStringValue, "string_value"},
 	}
 	for _, item := range stringColumns {
-		if *item.target, err = parquetStringColumn(batch, item.index, item.name); err != nil {
+		if *item.target, err = parquetio.StringColumn(batch, item.index, item.name); err != nil {
 			return columns, err
 		}
 	}
@@ -451,20 +452,20 @@ func savedQueryColumns(batch arrow.RecordBatch) (savedQueryColumnSet, error) {
 		{&columns.parentOrdinal, parquetSavedQueryColumnParentOrdinal, "parent_ordinal"},
 	}
 	for _, item := range intColumns {
-		if *item.target, err = parquetInt64Column(batch, item.index, item.name); err != nil {
+		if *item.target, err = parquetio.Int64Column(batch, item.index, item.name); err != nil {
 			return columns, err
 		}
 	}
-	if columns.profile, err = parquetBoolColumn(batch, parquetSavedQueryColumnProfile, "profile"); err != nil {
+	if columns.profile, err = parquetio.BoolColumn(batch, parquetSavedQueryColumnProfile, "profile"); err != nil {
 		return columns, err
 	}
-	if columns.desc, err = parquetBoolColumn(batch, parquetSavedQueryColumnDesc, "desc"); err != nil {
+	if columns.desc, err = parquetio.BoolColumn(batch, parquetSavedQueryColumnDesc, "desc"); err != nil {
 		return columns, err
 	}
-	if columns.boolValue, err = parquetBoolColumn(batch, parquetSavedQueryColumnBoolValue, "bool_value"); err != nil {
+	if columns.boolValue, err = parquetio.BoolColumn(batch, parquetSavedQueryColumnBoolValue, "bool_value"); err != nil {
 		return columns, err
 	}
-	if columns.floatValue, err = parquetFloat64Column(batch, parquetSavedQueryColumnFloatValue, "float_value"); err != nil {
+	if columns.floatValue, err = parquetio.Float64Column(batch, parquetSavedQueryColumnFloatValue, "float_value"); err != nil {
 		return columns, err
 	}
 	return columns, nil
@@ -520,7 +521,7 @@ func savedQueryContentHash(saved SavedQuery) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return objectContentHash(payload), nil
+	return codec.ContentHash(payload), nil
 }
 
 func setQueryFilterAt(values []query.Filter, index int, value query.Filter) []query.Filter {

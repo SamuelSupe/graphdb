@@ -3,10 +3,12 @@ package storage
 import (
 	"strconv"
 	"strings"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 func parquetScalarContentHash(parts ...string) string {
-	return objectContentHash([]byte(strings.Join(parts, "\x00")))
+	return codec.ContentHash([]byte(strings.Join(parts, "\x00")))
 }
 
 func formatInt64ForHash(value int64) string {

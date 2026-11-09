@@ -1,6 +1,10 @@
 package storage
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
+)
 
 func TestParquetMetadataRowGroupRows(t *testing.T) {
 	tests := []struct {
@@ -13,7 +17,7 @@ func TestParquetMetadataRowGroupRows(t *testing.T) {
 		{rows: maxParquetMetadataRowGroupRows + 1, want: maxParquetMetadataRowGroupRows},
 	}
 	for _, test := range tests {
-		if got := parquetMetadataRowGroupRows(test.rows); got != test.want {
+		if got := parquetio.MetadataRowGroupRows(test.rows); got != test.want {
 			t.Fatalf("rows %d: got %d, want %d", test.rows, got, test.want)
 		}
 	}

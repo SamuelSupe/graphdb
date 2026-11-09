@@ -1,4 +1,4 @@
-package storage
+package ingest
 
 import (
 	"encoding/json"
@@ -40,7 +40,7 @@ type IngestPrecondition struct {
 	ValueFrom    string `json:"value_from,omitempty"`
 }
 
-type ingestPreconditionError struct {
+type PreconditionError struct {
 	Index        int
 	Precondition IngestPrecondition
 	Actual       any
@@ -48,7 +48,7 @@ type ingestPreconditionError struct {
 	Reason       string
 }
 
-func (e *ingestPreconditionError) Error() string {
+func (e *PreconditionError) Error() string {
 	target := e.Precondition.ResourceType + " " + e.Precondition.ID
 	if e.Precondition.Field != "" {
 		target += " field " + e.Precondition.Field
@@ -56,7 +56,7 @@ func (e *ingestPreconditionError) Error() string {
 	return fmt.Sprintf("%s: condition %d on %s with op %s: %s", ErrIngestPreconditionFailed, e.Index, target, e.Precondition.Op, e.Reason)
 }
 
-func (e *ingestPreconditionError) Unwrap() error {
+func (e *PreconditionError) Unwrap() error {
 	return ErrIngestPreconditionFailed
 }
 
@@ -123,15 +123,15 @@ func validateIngestPrecondition(condition IngestPrecondition) error {
 	return nil
 }
 
-func ingestRequestAtomic(request IngestRequest) bool {
+func IngestRequestAtomic(request IngestRequest) bool {
 	return request.FailureMode == IngestFailureModeAtomic
 }
 
-func ingestRequestNeedsIsolatedApply(request IngestRequest) bool {
-	return request.ExpectedVersion != nil || len(request.Preconditions) > 0 || ingestRequestAtomic(request)
+func IngestRequestNeedsIsolatedApply(request IngestRequest) bool {
+	return request.ExpectedVersion != nil || len(request.Preconditions) > 0 || IngestRequestAtomic(request)
 }
 
-func evaluateIngestPreconditions(g *graph.Graph, conditions []IngestPrecondition, acceptedAt time.Time) error {
+func EvaluateIngestPreconditions(g *graph.Graph, conditions []IngestPrecondition, acceptedAt time.Time) error {
 	for index, condition := range conditions {
 		actual, exists := ingestPreconditionValue(g, condition)
 		expected := condition.Value
@@ -140,7 +140,7 @@ func evaluateIngestPreconditions(g *graph.Graph, conditions []IngestPrecondition
 		}
 		matched, reason := ingestPreconditionMatches(condition.Op, actual, expected, exists)
 		if !matched {
-			return &ingestPreconditionError{
+			return &PreconditionError{
 				Index:        index,
 				Precondition: condition,
 				Actual:       actual,
@@ -314,7 +314,7 @@ func ingestTime(value any) (time.Time, bool) {
 	}
 }
 
-func ingestErrorCode(err error) string {
+func IngestErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrVersionConflict):
 		return IngestErrorVersionConflict
@@ -333,7 +333,7 @@ func ingestErrorCode(err error) string {
 
 func ingestConflictFromError(err error) IngestConflict {
 	conflict := IngestConflict{Message: err.Error()}
-	var conditionErr *ingestPreconditionError
+	var conditionErr *PreconditionError
 	if !errors.As(err, &conditionErr) {
 		return conflict
 	}
@@ -349,14 +349,14 @@ func ingestConflictFromError(err error) IngestConflict {
 	return conflict
 }
 
-func markIngestResultFailure(result *IngestResult, request IngestRequest, appliedIndices []int, failure error) {
+func MarkIngestResultFailure(result *IngestResult, request IngestRequest, appliedIndices []int, failure error) {
 	pendingApplied := result.Applied
 	result.Failed += pendingApplied
 	result.Applied = 0
 	if result.Failed == 0 {
 		result.Failed = 1
 	}
-	if code := ingestErrorCode(failure); code != "" {
+	if code := IngestErrorCode(failure); code != "" {
 		result.ErrorCode = code
 	}
 	for _, index := range appliedIndices {

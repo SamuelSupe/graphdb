@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 )
 
 func TestIngestBatchPartialFailureIdempotencyAndCollectorStatus(t *testing.T) {
@@ -1823,10 +1824,10 @@ func TestIngestConflictItemIndexMatchesLinearLookup(t *testing.T) {
 		{ResourceType: "edge", EdgeID: deleteCanonical},
 		{ResourceType: "entity", IncomingID: "missing"},
 	}
-	index := newIngestConflictItemIndex(request.Items)
+	index := ingest.NewIngestConflictItemIndex(request.Items)
 	for _, conflict := range conflicts {
-		wantIndex, wantExternalID, wantFound := findIngestConflictItemLinear(request.Items, conflict)
-		gotIndex, gotExternalID, gotFound := findIngestConflictItem(request.Items, &index, conflict)
+		wantIndex, wantExternalID, wantFound := ingest.FindIngestConflictItemLinear(request.Items, conflict)
+		gotIndex, gotExternalID, gotFound := ingest.FindIngestConflictItem(request.Items, &index, conflict)
 		if gotIndex != wantIndex || gotExternalID != wantExternalID || gotFound != wantFound {
 			t.Fatalf("conflict %#v lookup=%d/%q/%t, want %d/%q/%t", conflict, gotIndex, gotExternalID, gotFound, wantIndex, wantExternalID, wantFound)
 		}

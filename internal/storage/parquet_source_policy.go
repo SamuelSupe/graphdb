@@ -7,7 +7,7 @@ import (
 	"sort"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
-
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/parquetio"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -134,14 +134,14 @@ func marshalParquetSourcePolicy(ctx context.Context, record sourcePolicyRecord) 
 	var buf bytes.Buffer
 	writerProps := parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Snappy))
 	arrowProps := pqarrow.NewArrowWriterProperties(pqarrow.WithStoreSchema(), pqarrow.WithAllocator(memory.DefaultAllocator))
-	if err := pqarrow.WriteTable(table, &buf, parquetMetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
+	if err := pqarrow.WriteTable(table, &buf, parquetio.MetadataRowGroupRows(table.NumRows()), writerProps, arrowProps); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), objectContextErr(ctx)
 }
 
 func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRecord, error) {
-	table, release, err := readParquetControlTable(ctx, data)
+	table, release, err := parquetio.ReadControlTable(ctx, data)
 	if err != nil {
 		return sourcePolicyRecord{}, err
 	}
@@ -170,55 +170,55 @@ func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRe
 	priorityRules := map[string]graph.FieldPriorityRule{}
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		tenantColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnTenantID, "tenant_id")
+		tenantColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnTenantID, "tenant_id")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		defaultPriorityColumn, err := parquetInt64Column(batch, parquetSourcePolicyColumnDefaultPriority, "default_priority")
+		defaultPriorityColumn, err := parquetio.Int64Column(batch, parquetSourcePolicyColumnDefaultPriority, "default_priority")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourceCountColumn, err := parquetInt64Column(batch, parquetSourcePolicyColumnSourceCount, "source_count")
+		sourceCountColumn, err := parquetio.Int64Column(batch, parquetSourcePolicyColumnSourceCount, "source_count")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		hashColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnContentHash, "content_hash")
+		hashColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnContentHash, "content_hash")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourceNameColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnSourceName, "source_name")
+		sourceNameColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnSourceName, "source_name")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourcePriorityColumn, err := parquetInt64Column(batch, parquetSourcePolicyColumnSourcePriority, "source_priority")
+		sourcePriorityColumn, err := parquetio.Int64Column(batch, parquetSourcePolicyColumnSourcePriority, "source_priority")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourceDescriptionColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnSourceDescription, "source_description")
+		sourceDescriptionColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnSourceDescription, "source_description")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		fieldAliasCountColumn, err := parquetInt64Column(batch, parquetSourcePolicyColumnFieldAliasCount, "field_alias_count")
+		fieldAliasCountColumn, err := parquetio.Int64Column(batch, parquetSourcePolicyColumnFieldAliasCount, "field_alias_count")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		rowKindColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnRowKind, "row_kind")
+		rowKindColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnRowKind, "row_kind")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		aliasSourceColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnAliasSource, "alias_source")
+		aliasSourceColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnAliasSource, "alias_source")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		aliasKindColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnAliasKind, "alias_kind")
+		aliasKindColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnAliasKind, "alias_kind")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		aliasNameColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnAliasName, "alias_name")
+		aliasNameColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnAliasName, "alias_name")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		aliasTargetColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnAliasTarget, "alias_target")
+		aliasTargetColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnAliasTarget, "alias_target")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
@@ -228,23 +228,23 @@ func decodeParquetSourcePolicy(ctx context.Context, data []byte) (sourcePolicyRe
 		var priorityFieldColumn *array.String
 		var priorityValueColumn *array.Int64
 		if hasFieldPriorities {
-			fieldPriorityCountColumn, err = parquetInt64Column(batch, parquetSourcePolicyColumnFieldPriorityCount, "field_priority_count")
+			fieldPriorityCountColumn, err = parquetio.Int64Column(batch, parquetSourcePolicyColumnFieldPriorityCount, "field_priority_count")
 			if err != nil {
 				return sourcePolicyRecord{}, err
 			}
-			prioritySourceColumn, err = parquetStringColumn(batch, parquetSourcePolicyColumnPrioritySource, "priority_source")
+			prioritySourceColumn, err = parquetio.StringColumn(batch, parquetSourcePolicyColumnPrioritySource, "priority_source")
 			if err != nil {
 				return sourcePolicyRecord{}, err
 			}
-			priorityKindColumn, err = parquetStringColumn(batch, parquetSourcePolicyColumnPriorityKind, "priority_kind")
+			priorityKindColumn, err = parquetio.StringColumn(batch, parquetSourcePolicyColumnPriorityKind, "priority_kind")
 			if err != nil {
 				return sourcePolicyRecord{}, err
 			}
-			priorityFieldColumn, err = parquetStringColumn(batch, parquetSourcePolicyColumnPriorityField, "priority_field")
+			priorityFieldColumn, err = parquetio.StringColumn(batch, parquetSourcePolicyColumnPriorityField, "priority_field")
 			if err != nil {
 				return sourcePolicyRecord{}, err
 			}
-			priorityValueColumn, err = parquetInt64Column(batch, parquetSourcePolicyColumnPriorityValue, "priority_value")
+			priorityValueColumn, err = parquetio.Int64Column(batch, parquetSourcePolicyColumnPriorityValue, "priority_value")
 			if err != nil {
 				return sourcePolicyRecord{}, err
 			}
@@ -357,31 +357,31 @@ func decodeParquetSourcePolicyV1Table(table arrow.Table) (sourcePolicyRecord, er
 	rows := 0
 	for reader.Next() {
 		batch := reader.RecordBatch()
-		tenantColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnTenantID, "tenant_id")
+		tenantColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnTenantID, "tenant_id")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		defaultPriorityColumn, err := parquetInt64Column(batch, parquetSourcePolicyColumnDefaultPriority, "default_priority")
+		defaultPriorityColumn, err := parquetio.Int64Column(batch, parquetSourcePolicyColumnDefaultPriority, "default_priority")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourceCountColumn, err := parquetInt64Column(batch, parquetSourcePolicyColumnSourceCount, "source_count")
+		sourceCountColumn, err := parquetio.Int64Column(batch, parquetSourcePolicyColumnSourceCount, "source_count")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		hashColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnContentHash, "content_hash")
+		hashColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnContentHash, "content_hash")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourceNameColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnSourceName, "source_name")
+		sourceNameColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnSourceName, "source_name")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourcePriorityColumn, err := parquetInt64Column(batch, parquetSourcePolicyColumnSourcePriority, "source_priority")
+		sourcePriorityColumn, err := parquetio.Int64Column(batch, parquetSourcePolicyColumnSourcePriority, "source_priority")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}
-		sourceDescriptionColumn, err := parquetStringColumn(batch, parquetSourcePolicyColumnSourceDescription, "source_description")
+		sourceDescriptionColumn, err := parquetio.StringColumn(batch, parquetSourcePolicyColumnSourceDescription, "source_description")
 		if err != nil {
 			return sourcePolicyRecord{}, err
 		}

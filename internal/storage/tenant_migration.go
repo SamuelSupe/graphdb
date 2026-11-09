@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 const tenantMigrationSampleLimit = 100
@@ -301,7 +303,7 @@ func copyTenantObjects(ctx context.Context, source *TenantStore, sourceTenantID 
 	}
 	report.Copied++
 	if manifestSample >= 0 {
-		report.Samples[manifestSample].SHA256 = objectContentHash(manifestData)
+		report.Samples[manifestSample].SHA256 = codec.ContentHash(manifestData)
 	}
 	if err := target.addTenantToRegistry(targetCtx, targetTenantID); err != nil {
 		return report, err
@@ -489,7 +491,7 @@ func rewriteCommitSegmentObject(ctx context.Context, data []byte, tenantID strin
 	if err != nil {
 		return nil, "", err
 	}
-	return rewritten, objectContentHash(payload), nil
+	return rewritten, codec.ContentHash(payload), nil
 }
 
 func rewriteTenantObjectKey(key string, sourcePrefix string, targetPrefix string) string {

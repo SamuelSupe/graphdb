@@ -175,6 +175,7 @@ func (s *TenantStore) loadDirectCommitRecordWithMeta(ctx context.Context, key st
 	record, meta, _, err := s.loadDirectCommitRecordWithData(ctx, key)
 	return record, meta, err
 }
+
 func (s *TenantStore) loadDirectCommitRecordWithData(ctx context.Context, key string) (DirectCommitRecord, ObjectMeta, []byte, error) {
 	data, meta, err := s.Objects.GetWithMeta(ctx, key)
 	if err != nil {

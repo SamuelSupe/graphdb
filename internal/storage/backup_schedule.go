@@ -8,6 +8,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/identity"
 )
 
 type BackupAutomationStatus struct {
@@ -209,7 +211,7 @@ func (s *TenantStore) ScheduleObjectBackup(ctx context.Context, tenant string, n
 		return state, fmt.Errorf("automatic backup requires GRAPHDB_BACKUP_S3_BUCKET")
 	}
 	if state.PlannedParams == nil {
-		id, err := newCommitID()
+		id, err := identity.NewCommitID()
 		if err != nil {
 			return state, err
 		}

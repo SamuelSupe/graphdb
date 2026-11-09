@@ -8,6 +8,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/codec"
 )
 
 const backupManifestFormat = "graphdb-tenant-backup-manifest-v1"
@@ -158,7 +160,7 @@ func (s *TenantStore) backupObjectRef(ctx context.Context, ref BackupObjectRef) 
 	}
 	ref.Bytes = int64(len(data))
 	ref.ETag = meta.ETag
-	ref.SHA256 = objectContentHash(data)
+	ref.SHA256 = codec.ContentHash(data)
 	return ref, nil
 }
 
@@ -186,7 +188,7 @@ func (s *TenantStore) validateBackupManifest(ctx context.Context, manifest Tenan
 		if ref.Bytes > 0 && int64(len(data)) != ref.Bytes {
 			report.Issues = append(report.Issues, "object "+ref.Key+" bytes mismatch")
 		}
-		if ref.SHA256 != "" && objectContentHash(data) != ref.SHA256 {
+		if ref.SHA256 != "" && codec.ContentHash(data) != ref.SHA256 {
 			report.Issues = append(report.Issues, "object "+ref.Key+" sha256 mismatch")
 		}
 	}

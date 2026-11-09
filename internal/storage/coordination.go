@@ -12,8 +12,7 @@ const (
 )
 
 var ErrWriteConflict = errors.New("write conflict")
-var ErrVersionConflict = errors.New("version conflict")
-var ErrIdempotencyConflict = errors.New("idempotency conflict")
+
 var ErrIdempotencyInProgress = errors.New("idempotency request is in progress")
 
 type CoordinatorStatus struct {
@@ -38,10 +37,13 @@ type CollectorStateUpdate struct {
 }
 
 func (s *TenantStore) CoordinationBackend() string { return CoordinationLocal }
+
 func (s *TenantStore) CoordinatorStatus(context.Context) CoordinatorStatus {
 	return localCoordinatorStatus()
 }
+
 func (s *TenantStore) CachedCoordinatorStatus() CoordinatorStatus { return localCoordinatorStatus() }
+
 func localCoordinatorStatus() CoordinatorStatus {
 	return CoordinatorStatus{Backend: CoordinationLocal, Available: true, CheckedAt: time.Now().UTC()}
 }
