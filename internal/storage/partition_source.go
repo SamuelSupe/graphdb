@@ -11,7 +11,7 @@ import (
 // the partitioned generation is active. Metadata, backup records and terminal
 // ingestion receipts remain; graph data and migrated commit bodies are removed
 // in bounded pages so conversion releases its original single-group capacity.
-func (s *TenantStore) RetirePartitionSource(ctx context.Context, tenant string) (bool, error) {
+func (s *TenantStore) RetirePartitionSource(ctx context.Context, tenant string, includeLegacyIndexes bool) (bool, error) {
 	if err := ValidateTenantID(tenant); err != nil {
 		return false, err
 	}
@@ -30,7 +30,13 @@ func (s *TenantStore) RetirePartitionSource(ctx context.Context, tenant string) 
 		}
 	}
 	defer s.invalidateTenantState(tenant)
-	prefixes := []string{s.commitPrefix(tenant), s.snapshotPrefix(tenant), s.tenantObjectPrefix(tenant) + "idempotency/commits/", s.tenantObjectPrefix(tenant) + "indexes/parquet/"}
+	tenantPrefix := s.tenantObjectPrefix(tenant)
+	prefixes := []string{s.commitPrefix(tenant), s.snapshotPrefix(tenant), tenantPrefix + "idempotency/commits/",
+		tenantPrefix + "indexes/parquet/"}
+	if includeLegacyIndexes {
+		prefixes = append(prefixes, s.secondaryIndexPrefix(tenant), s.edgeShardPrefix(tenant),
+			s.reverseIndexPrefix(tenant), s.entityPagePrefix(tenant), s.entityRecordPrefix(tenant), tenantPrefix+"indexs/")
+	}
 	for _, prefix := range prefixes {
 		objects, next, err := listObjectPage(ctx, s.Objects, prefix, "", 128)
 		if err != nil {

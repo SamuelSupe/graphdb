@@ -52,6 +52,8 @@ type httpResult struct {
 }
 
 type Application struct {
+	graphCacheMu        sync.Mutex
+	graphCache          map[string]graphDescriptor
 	Store               *storage.TenantStore
 	Files               *storage.FileStore
 	Handler             http.Handler
@@ -104,6 +106,7 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
+	a.graphCache = nil
 	return a.Files.InstallReplicationSnapshotValidated(ctx, index, bytes.NewReader(data), a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
 }
 
@@ -154,6 +157,7 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
+	a.graphCache = nil
 	return a.Files.InstallReplicationSnapshotValidated(ctx, index, source, a.MaxSnapshotBytes, a.snapshotTenantPrefix(), a.validatePartitionSnapshot)
 }
 
@@ -256,6 +260,11 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		}
 		a.catalogPending = nil
 		a.catalogStatePending = nil
+		for _, cmd := range commands {
+			if cmd.Kind == "graph_partition" {
+				delete(a.graphCache, cmd.Tenant)
+			}
+		}
 		a.observePending()
 		a.mu.Unlock()
 	}()
@@ -425,10 +434,10 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			if g.Generation != action.Generation || g.State != "active" {
 				return resultJSON(http.StatusConflict, map[string]any{"error": "source cleanup generation is not active"})
 			}
-			if g.SourceRetired {
+			if g.SourceRetired && g.SourceCleanupRevision >= action.Revision {
 				return resultJSON(http.StatusOK, g)
 			}
-			done, err := a.Store.RetirePartitionSource(applyCtx, cmd.Tenant)
+			done, err := a.Store.RetirePartitionSource(applyCtx, cmd.Tenant, action.Revision != 0)
 			if err != nil {
 				return nil, err
 			}
@@ -439,19 +448,11 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		}
 		value, err := a.partitionStore().Apply(applyCtx, action)
 		if err != nil {
-			status := 0
-			switch {
-			case errors.Is(err, storage.ErrInvalidArgument):
-				status = http.StatusBadRequest
-			case errors.Is(err, storage.ErrConflict):
-				status = http.StatusConflict
-			case errors.Is(err, storage.ErrNotFound):
-				status = http.StatusNotFound
-			}
-			if status == 0 {
+			status, code := partitionErrorStatus(err)
+			if code == "shard_unavailable" || code == "partition_corrupt" {
 				return nil, err
 			}
-			return resultJSON(status, map[string]any{"code": "graph_partition_conflict", "error": err.Error()})
+			return resultJSON(status, map[string]any{"code": code, "error": err.Error()})
 		}
 		return resultJSON(http.StatusOK, value)
 	case "sharding":

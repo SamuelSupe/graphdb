@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -63,7 +64,7 @@ func (t Tree) pageKey(hash string) string { return t.Prefix + "/" + hash[:2] + "
 
 func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 	if !validDigest(root.Hash) || root.Count <= 0 || root.First == "" || root.First > root.Last {
-		return treePage{}, fmt.Errorf("invalid fragment root")
+		return treePage{}, fmt.Errorf("%w: invalid fragment root", ErrPartitionCorrupt)
 	}
 	if err := ctx.Err(); err != nil {
 		return treePage{}, err
@@ -74,27 +75,27 @@ func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 		}
 	}
 	data, err := t.Objects.Get(ctx, t.pageKey(root.Hash))
-	if err == storage.ErrNotFound {
-		return treePage{}, fmt.Errorf("required fragment page %s is missing", root.Hash)
+	if errors.Is(err, storage.ErrNotFound) {
+		return treePage{}, fmt.Errorf("%w: required fragment page %s is missing", ErrPartitionCorrupt, root.Hash)
 	}
 	if err != nil {
 		return treePage{}, err
 	}
 	if fmt.Sprintf("%x", sha256.Sum256(data)) != root.Hash {
-		return treePage{}, fmt.Errorf("fragment page checksum mismatch")
+		return treePage{}, fmt.Errorf("%w: fragment page checksum mismatch", ErrPartitionCorrupt)
 	}
 	var p treePage
 	if err := json.Unmarshal(data, &p); err != nil {
-		return p, err
+		return p, fmt.Errorf("%w: malformed fragment page: %v", ErrPartitionCorrupt, err)
 	}
 	var count int64
 	first, last := "", ""
 	if len(p.Children) > 0 && len(p.Rows) > 0 || len(p.Children) > pageEntries || len(p.Rows) > pageEntries {
-		return p, fmt.Errorf("invalid fragment page shape")
+		return p, fmt.Errorf("%w: invalid fragment page shape", ErrPartitionCorrupt)
 	}
 	for i, row := range p.Rows {
 		if row.Key == "" || len(row.Value) == 0 || !json.Valid(row.Value) || i > 0 && last >= row.Key {
-			return p, fmt.Errorf("invalid fragment row ordering")
+			return p, fmt.Errorf("%w: invalid fragment row ordering", ErrPartitionCorrupt)
 		}
 		if i == 0 {
 			first = row.Key
@@ -104,7 +105,7 @@ func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 	}
 	for i, child := range p.Children {
 		if !validDigest(child.Hash) || child.Count <= 0 || child.First == "" || child.First > child.Last || i > 0 && last >= child.First {
-			return p, fmt.Errorf("invalid fragment child ordering")
+			return p, fmt.Errorf("%w: invalid fragment child ordering", ErrPartitionCorrupt)
 		}
 		if i == 0 {
 			first = child.First
@@ -113,7 +114,7 @@ func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 		count += child.Count
 	}
 	if first != root.First || last != root.Last || count != root.Count {
-		return p, fmt.Errorf("fragment root metadata mismatch")
+		return p, fmt.Errorf("%w: fragment root metadata mismatch", ErrPartitionCorrupt)
 	}
 	if t.cache != nil {
 		// Encoded bytes bound retained strings/raw values; the extra terms cover
@@ -167,7 +168,7 @@ func (t Tree) save(ctx context.Context, p treePage) (Root, error) {
 func (t Tree) Get(ctx context.Context, root Root, key string) (json.RawMessage, bool, error) {
 	for depth := 0; root.Hash != ""; depth++ {
 		if depth > 32 {
-			return nil, false, fmt.Errorf("fragment tree depth exceeded")
+			return nil, false, fmt.Errorf("%w: fragment tree depth exceeded", ErrPartitionCorrupt)
 		}
 		if key < root.First || key > root.Last {
 			return nil, false, nil
@@ -204,7 +205,7 @@ func (t Tree) Scan(ctx context.Context, root Root, prefix, start string, visit f
 			return true, nil
 		}
 		if depth > 32 {
-			return false, fmt.Errorf("fragment tree depth exceeded")
+			return false, fmt.Errorf("%w: fragment tree depth exceeded", ErrPartitionCorrupt)
 		}
 		if ref.First >= prefix && !strings.HasPrefix(ref.First, prefix) {
 			return false, nil
@@ -279,7 +280,7 @@ func (t Tree) update(ctx context.Context, ref Root, edits []Row, depth int) ([]R
 		return nil, err
 	}
 	if depth > 32 {
-		return nil, fmt.Errorf("fragment tree depth exceeded")
+		return nil, fmt.Errorf("%w: fragment tree depth exceeded", ErrPartitionCorrupt)
 	}
 	p := treePage{}
 	if ref.Hash != "" {

@@ -10,6 +10,7 @@ import (
 )
 
 type ReadRequest struct {
+	Kind       string   `json:"kind,omitempty"`
 	Tenant     string   `json:"tenant_id"`
 	Generation int64    `json:"generation"`
 	Partition  uint8    `json:"partition"`
@@ -28,8 +29,46 @@ type ReadResult struct {
 
 // Read serves a root selected by the trusted graph coordinator, never a
 // client-provided root. Page and byte limits apply before returning any batch.
+const ReadBatchParts = 32
+const fragmentReadBytes = 4 << 20
+
 func (s Store) Read(ctx context.Context, r ReadRequest) (ReadResult, error) {
-	if storage.ValidateTenantID(r.Tenant) != nil || r.Generation <= 0 || r.Epoch == 0 || len(r.Keys) > 128 || r.Limit < 0 || r.Limit > 256 {
+	return s.read(ctx, r, fragmentReadBytes)
+}
+
+func (s Store) ReadBatch(ctx context.Context, requests []ReadRequest) ([]ReadResult, error) {
+	if len(requests) == 0 || len(requests) > ReadBatchParts {
+		return nil, invalid("invalid fragment read batch size")
+	}
+	results := make([]ReadResult, 0, len(requests))
+	remaining := fragmentReadBytes
+	for _, request := range requests {
+		if request.Tenant != requests[0].Tenant || request.Generation != requests[0].Generation {
+			return nil, invalid("fragment batch crosses a graph generation")
+		}
+		if remaining < MaxValueBytes+4096 {
+			break
+		}
+		result, err := s.read(ctx, request, remaining)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+		remaining -= result.rawBytes()
+	}
+	return results, nil
+}
+
+func (r ReadResult) rawBytes() int {
+	size := 0
+	for _, row := range r.Rows {
+		size += len(row.Key) + len(row.Value)
+	}
+	return size
+}
+
+func (s Store) read(ctx context.Context, r ReadRequest, byteLimit int) (ReadResult, error) {
+	if storage.ValidateTenantID(r.Tenant) != nil || r.Generation <= 0 || r.Epoch == 0 || len(r.Keys) > 128 || r.Limit < 0 || r.Limit > 256 || r.Kind != "" && (len(r.Keys) != 0 || r.Prefix != Key("entity_scan")) {
 		return ReadResult{}, invalid("invalid fragment read scope or budget")
 	}
 	state, err := s.Data(ctx, r.Tenant, r.Generation, r.Partition)
@@ -37,7 +76,7 @@ func (s Store) Read(ctx context.Context, r ReadRequest) (ReadResult, error) {
 		return ReadResult{}, err
 	}
 	if state.Epoch != r.Epoch || state.State != "active" && state.State != "frozen" {
-		return ReadResult{}, conflict("partition epoch changed")
+		return ReadResult{}, errors.Join(storage.ErrConflict, ErrPlacementChanged)
 	}
 	tree := s.Tree(r.Tenant, r.Generation, r.Partition)
 	if len(r.Keys) > 1 {
@@ -57,7 +96,7 @@ func (s Store) Read(ctx context.Context, r ReadRequest) (ReadResult, error) {
 			if !found {
 				continue
 			}
-			if bytes+len(key)+len(value) > 4<<20 {
+			if bytes+len(key)+len(value) > byteLimit {
 				out.Remaining = r.Keys[i:]
 				break
 			}
@@ -70,8 +109,23 @@ func (s Store) Read(ctx context.Context, r ReadRequest) (ReadResult, error) {
 	if limit == 0 {
 		limit = 128
 	}
+	scanned := 0
 	err = tree.Scan(ctx, r.Root, r.Prefix, r.Start, func(row Row) (bool, error) {
-		if len(out.Rows) == limit || bytes+len(row.Key)+len(row.Value) > 4<<20 {
+		if r.Kind != "" {
+			if scanned == 2048 {
+				out.Next = row.Key
+				return false, nil
+			}
+			scanned++
+			var entry entityScanEntry
+			if err := decodeRecord(row, &entry); err != nil {
+				return false, fmt.Errorf("%w: malformed entity directory record: %v", ErrPartitionCorrupt, err)
+			}
+			if entry.Kind != r.Kind {
+				return true, nil
+			}
+		}
+		if len(out.Rows) == limit || bytes+len(row.Key)+len(row.Value) > byteLimit {
 			out.Next = row.Key
 			return false, nil
 		}
@@ -107,6 +161,11 @@ type View struct {
 }
 
 var ErrVersionNotReady = errors.New("graph has not reached the requested minimum version")
+var ErrPlacementChanged = errors.New("partition placement changed")
+var ErrShardUnavailable = errors.New("partition group unavailable")
+var ErrGraphBusy = errors.New("graph is busy")
+var ErrPartitionCorrupt = errors.New("partition data is corrupt")
+
 var ErrQuotaExceeded = errors.New("graph quota exceeded")
 
 var ErrReadBudget = errors.New("distributed read budget exceeded")
@@ -117,40 +176,100 @@ type ReadBudget struct {
 	Bytes    int64
 }
 
-func (v View) Read(ctx context.Context, bucket uint8, r ReadRequest) (ReadResult, error) {
-	if v.Budget != nil {
-		v.Budget.mu.Lock()
-		v.Budget.Requests--
-		remaining := v.Budget.Requests
-		v.Budget.mu.Unlock()
-		if remaining < 0 {
-			return ReadResult{}, ErrReadBudget
-		}
+func (b *ReadBudget) charge(requests, bytes int) error {
+	if b == nil {
+		return nil
 	}
-	group, err := v.Graph.GroupFor(bucket)
-	if err != nil {
-		return ReadResult{}, err
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.Requests -= requests
+	b.Bytes -= int64(bytes)
+	if b.Requests < 0 || b.Bytes < 0 {
+		return ErrReadBudget
 	}
+	return nil
+}
+
+func (v View) readScope(bucket uint8, r ReadRequest) ReadRequest {
 	r.Tenant = v.Graph.Tenant
 	r.Generation = v.Graph.Generation
 	r.Partition = bucket
 	r.Epoch = v.Graph.Partitions[bucket].Epoch
 	r.Root = v.Graph.Roots[bucket]
-	result, err := v.Remote.Read(ctx, group, r)
-	if err == nil && v.Budget != nil {
-		bytes := int64(0)
-		for _, row := range result.Rows {
-			bytes += int64(len(row.Key) + len(row.Value))
-		}
-		v.Budget.mu.Lock()
-		v.Budget.Bytes -= bytes
-		remaining := v.Budget.Bytes
-		v.Budget.mu.Unlock()
-		if remaining < 0 {
-			return ReadResult{}, ErrReadBudget
-		}
+	return r
+}
+
+func (v View) Read(ctx context.Context, bucket uint8, r ReadRequest) (ReadResult, error) {
+	if err := v.Budget.charge(1, 0); err != nil {
+		return ReadResult{}, err
+	}
+	group, err := v.Graph.GroupFor(bucket)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	result, err := v.Remote.Read(ctx, group, v.readScope(bucket, r))
+	if err == nil {
+		err = v.Budget.charge(0, result.rawBytes())
 	}
 	return result, err
+}
+
+type batchReader interface {
+	ReadBatch(context.Context, Group, []ReadRequest) ([]ReadResult, error)
+}
+
+// readBatch preserves input order while combining small immutable fragment
+// reads into one RPC per group and counting the actual RPCs against the budget.
+func (v View) readBatch(ctx context.Context, requests []ReadRequest) ([]ReadResult, error) {
+	results := make([]ReadResult, len(requests))
+	remote, ok := v.Remote.(batchReader)
+	if !ok {
+		for i, request := range requests {
+			result, err := v.Read(ctx, request.Partition, request)
+			if err != nil {
+				return nil, err
+			}
+			results[i] = result
+		}
+		return results, nil
+	}
+	indices := map[string][]int{}
+	groups := map[string]Group{}
+	for i, request := range requests {
+		group, err := v.Graph.GroupFor(request.Partition)
+		if err != nil {
+			return nil, err
+		}
+		indices[group.ID] = append(indices[group.ID], i)
+		groups[group.ID] = group
+	}
+	for id, pending := range indices {
+		for len(pending) > 0 {
+			if err := v.Budget.charge(1, 0); err != nil {
+				return nil, err
+			}
+			batch := make([]ReadRequest, min(ReadBatchParts, len(pending)))
+			for i := range batch {
+				request := requests[pending[i]]
+				batch[i] = v.readScope(request.Partition, request)
+			}
+			received, err := remote.ReadBatch(ctx, groups[id], batch)
+			if err != nil {
+				return nil, err
+			}
+			if len(received) == 0 || len(received) > len(batch) {
+				return nil, fmt.Errorf("%w: fragment batch made no progress", ErrPartitionCorrupt)
+			}
+			for i, result := range received {
+				if err := v.Budget.charge(0, result.rawBytes()); err != nil {
+					return nil, err
+				}
+				results[pending[i]] = result
+			}
+			pending = pending[len(received):]
+		}
+	}
+	return results, nil
 }
 
 func (v View) Get(ctx context.Context, bucket uint8, key string, value any) (bool, error) {

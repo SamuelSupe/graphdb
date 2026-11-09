@@ -23,6 +23,9 @@ type Group struct {
 }
 
 type Graph struct {
+	HistoryCutoff          time.Time                     `json:"history_cutoff,omitempty"`
+	SourceCleanupRevision  int                           `json:"source_cleanup_revision,omitempty"`
+	ReadLease              *Pin                          `json:"read_lease,omitempty"`
 	LastGCAt               time.Time                     `json:"last_gc_at,omitempty"`
 	GC                     *GraphGC                      `json:"gc,omitempty"`
 	Move                   *Move                         `json:"move,omitempty"`
@@ -91,24 +94,31 @@ type Prepared struct {
 }
 
 type DataState struct {
-	GC          *DataGC   `json:"gc,omitempty"`
-	LastGC      string    `json:"last_gc,omitempty"`
-	CaptureRoot Root      `json:"capture_root"`
-	Capture     string    `json:"capture,omitempty"`
-	Tenant      string    `json:"tenant_id"`
-	Generation  int64     `json:"generation"`
-	Partition   uint8     `json:"partition"`
-	Epoch       uint64    `json:"epoch"`
-	State       string    `json:"state"`
-	Sequence    uint64    `json:"sequence"`
-	LastTxn     string    `json:"last_txn,omitempty"`
-	Root        Root      `json:"root"`
-	Prepared    *Prepared `json:"prepared,omitempty"`
+	CaptureViews []Root            `json:"capture_views,omitempty"`
+	MoveVerify   *MoveVerification `json:"move_verify,omitempty"`
+	GC           *DataGC           `json:"gc,omitempty"`
+	LastGC       string            `json:"last_gc,omitempty"`
+	CaptureRoot  Root              `json:"capture_root"`
+	Capture      string            `json:"capture,omitempty"`
+	Tenant       string            `json:"tenant_id"`
+	Generation   int64             `json:"generation"`
+	Partition    uint8             `json:"partition"`
+	Epoch        uint64            `json:"epoch"`
+	State        string            `json:"state"`
+	Sequence     uint64            `json:"sequence"`
+	LastTxn      string            `json:"last_txn,omitempty"`
+	Root         Root              `json:"root"`
+	Prepared     *Prepared         `json:"prepared,omitempty"`
 }
 
 // Action is applied inside the existing replication journal. The coordinator
 // performs remote calls before proposing one of these deterministic steps.
+const ActionRevision = 2
+
 type Action struct {
+	Verify          *MoveVerification     `json:"verify,omitempty"`
+	Revision        int                   `json:"revision,omitempty"`
+	Pages           []PageObject          `json:"pages,omitempty"`
 	ErrorCode       string                `json:"error_code,omitempty"`
 	Roots           []Root                `json:"roots,omitempty"`
 	Target          *Group                `json:"target,omitempty"`

@@ -20,15 +20,19 @@ import (
 )
 
 type Client struct {
-	Token          string
-	HTTP           *http.Client
-	graphSlots     chan struct{}
-	mu             sync.Mutex
-	leaders        map[string]cachedLeader
-	metrics        *observability.OperationMetrics
-	lastDiscovery  atomic.Int64
-	discovery      singleflight.Group
-	discoveryEpoch atomic.Uint64
+	Token            string
+	HTTP             *http.Client
+	graphReadSlots   map[string]int
+	graphWriteSlots  map[string]int
+	graphReads       int
+	graphWrites      int
+	graphDescriptors map[string]cachedGraph
+	mu               sync.Mutex
+	leaders          map[string]cachedLeader
+	metrics          *observability.OperationMetrics
+	lastDiscovery    atomic.Int64
+	discovery        singleflight.Group
+	discoveryEpoch   atomic.Uint64
 }
 
 type cachedLeader struct {
@@ -225,9 +229,14 @@ func PreventMutationReplay(r *http.Request) {
 	}
 }
 
+func shardRead(method, path string) bool {
+	return method == http.MethodGet || method == http.MethodPost &&
+		(path == "/cluster/graph/read" || path == "/cluster/graph/read-batch" || path == "/cluster/graph/pages" || path == "/cluster/graph/input")
+}
+
 func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body any, headers ...http.Header) (response *http.Response, err error) {
 	operation := "write_request"
-	if method == http.MethodGet {
+	if shardRead(method, path) {
 		operation = "read_request"
 	}
 	finish := c.metrics.Start(operation)
@@ -254,7 +263,7 @@ func (c *Client) Do(ctx context.Context, shard Shard, method, path string, body 
 	response, err = c.request(ctx, shard, origin, method, path, data, headers...)
 	if err != nil || response.StatusCode == http.StatusServiceUnavailable {
 		c.ForgetLeader(shard)
-		if method == http.MethodGet && ctx.Err() == nil {
+		if shardRead(method, path) && ctx.Err() == nil {
 			c.metrics.Event("read_retry")
 			if response != nil {
 				response.Body.Close()

@@ -16,6 +16,39 @@ import (
 // Remote partitions are validated by their own replica snapshots.
 func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 	prefix := path.Join(s.Prefix, "control/graphs") + "/"
+	validateRoot := func(tenant string, generation int64, id uint8, root Root) error {
+		return s.Tree(tenant, generation, id).Scan(ctx, root, "", "", func(Row) (bool, error) { return true, nil })
+	}
+	validateRoots := func(view Graph, current Graph) error {
+		for i, root := range view.Roots {
+			if current.Partitions[i].Group != group {
+				continue
+			}
+			if _, err := s.Data(ctx, view.Tenant, view.Generation, uint8(i)); err != nil {
+				return fmt.Errorf("required graph partition missing: %w", err)
+			}
+			if err := validateRoot(view.Tenant, view.Generation, uint8(i), root); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	verifiedViews := map[string]bool{}
+	verifyView := func(g Graph, version int64) error {
+		key := s.viewKey(g.Tenant, g.Generation, version)
+		if verifiedViews[key] {
+			return nil
+		}
+		view, err := s.Snapshot(ctx, g.Tenant, g.Generation, version)
+		if err != nil {
+			return err
+		}
+		if err := validateRoots(view, g); err != nil {
+			return err
+		}
+		verifiedViews[key] = true
+		return nil
+	}
 	return s.walkObjects(ctx, prefix, func(object storage.ObjectInfo) error {
 		key := object.Key
 		if !strings.HasSuffix(key, ".json") {
@@ -25,9 +58,7 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 		if err := s.load(ctx, key, &raw); err != nil {
 			return err
 		}
-		validateRoot := func(tenant string, generation int64, id uint8, root Root) error {
-			return s.Tree(tenant, generation, id).Scan(ctx, root, "", "", func(Row) (bool, error) { return true, nil })
-		}
+
 		if strings.HasSuffix(key, "/state.json") {
 			var state DataState
 			if err := json.Unmarshal(raw, &state); err != nil {
@@ -67,9 +98,19 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 					return err
 				}
 			}
+			if state.MoveVerify != nil {
+				if err := validateRoot(state.Tenant, state.Generation, state.Partition, state.MoveVerify.Root); err != nil {
+					return err
+				}
+			}
 			if state.Capture != "" {
 				if !validTokenID(state.Capture) {
 					return fmt.Errorf("invalid partition delta capture identity")
+				}
+				for _, root := range state.CaptureViews {
+					if err := validateRoot(state.Tenant, state.Generation, state.Partition, root); err != nil {
+						return err
+					}
 				}
 				if err := s.deltaTree(state.Tenant, state.Generation, state.Partition, state.Capture).Scan(ctx, state.CaptureRoot, "", "", func(row Row) (bool, error) {
 					if !validDigest(row.Key) {
@@ -100,21 +141,27 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 			if g.Format != FormatVersion || storage.ValidateTenantID(g.Tenant) != nil || g.Generation <= 0 {
 				return fmt.Errorf("invalid graph snapshot scope")
 			}
-			placements := g.Partitions
-			if current, err := s.GetGraph(ctx, g.Tenant); err == nil && current.Generation == g.Generation {
-				placements = current.Partitions
-			} else if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			if strings.Contains(key, "/views/") {
+				if key != s.viewKey(g.Tenant, g.Generation, g.Version) {
+					return fmt.Errorf("graph read view snapshot scope mismatch")
+				}
+				// Historical views without a live pin can remain until
+				// pruning. A move intentionally omits their unreachable pages.
+				return nil
+			}
+			if key != s.graphKey(g.Tenant) {
+				return fmt.Errorf("graph control snapshot scope mismatch")
+			}
+			if err := validateRoots(g, g); err != nil {
 				return err
 			}
-			for i, root := range g.Roots {
-				if placements[i].Group != group {
-					continue
-				}
-				if _, err := s.Data(ctx, g.Tenant, g.Generation, uint8(i)); err != nil {
-					return fmt.Errorf("required graph partition missing: %w", err)
-				}
-				if err := validateRoot(g.Tenant, g.Generation, uint8(i), root); err != nil {
-					return err
+			if g.GC != nil && g.GC.Phase == "starting" {
+				for _, version := range g.GC.Versions {
+					if version != g.Version {
+						if err := verifyView(g, version); err != nil {
+							return err
+						}
+					}
 				}
 			}
 			if g.Active != nil {
@@ -147,8 +194,17 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 			if !validTokenID(pin.ID) || key != s.pinKey(tenant, pin.Generation, pin.ID) {
 				return fmt.Errorf("read pin snapshot scope mismatch")
 			}
-			if _, err := s.Snapshot(ctx, tenant, pin.Generation, pin.Version); err != nil {
+			g, err := s.GetGraph(ctx, tenant)
+			if err != nil {
 				return err
+			}
+			if pin.Generation != g.Generation {
+				return fmt.Errorf("read pin generation mismatch")
+			}
+			if pin.KeepUntil.After(g.HistoryCutoff) {
+				if err := verifyView(g, pin.Version); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

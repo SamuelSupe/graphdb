@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -287,6 +288,82 @@ func BenchmarkDistributedBothEdges(b *testing.B) {
 			}
 			b.ReportMetric(float64(remote.calls)/float64(b.N), "rpc/op")
 			b.ReportMetric(float64(remote.bytes)/float64(b.N), "row_bytes/op")
+		})
+	}
+}
+
+type scanRPCRemote struct {
+	Remote
+	stores map[string]Store
+	calls  int
+}
+
+func (r *scanRPCRemote) Read(ctx context.Context, group Group, req ReadRequest) (ReadResult, error) {
+	r.calls++
+	return r.Remote.Read(ctx, group, req)
+}
+
+func (r *scanRPCRemote) ReadBatch(ctx context.Context, group Group, req []ReadRequest) ([]ReadResult, error) {
+	r.calls++
+	return r.stores[group.ID].ReadBatch(ctx, req)
+}
+
+func TestDistributedScanBatchesHeadsAndPrimaryRecords(t *testing.T) {
+	ctx := context.Background()
+	engine, remote := newLocalGraph(t)
+	g, err := remote.Describe(ctx, engine.Home, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Version = 1
+	g.CITypes = []graph.CIType{{Name: "host"}, {Name: "rare"}}
+	changes := ChangeSet{}
+	const count = 40000
+	for i := range count {
+		id := fmt.Sprintf("node-%05d", i)
+		kind := "host"
+		if i%1000 == 0 {
+			kind = "rare"
+		}
+		bucket := Bucket(id)
+		if err := changes.Set(bucket, EntityKey(id), graph.Entity{ID: id, Kind: kind}); err != nil {
+			t.Fatal(err)
+		}
+		if err := changes.Set(bucket, Key("entity_scan", id), entityScanEntry{ID: id, Kind: kind}); err != nil {
+			t.Fatal(err)
+		}
+		g.EntityCounts[bucket]++
+		g.EntityCount++
+	}
+	for _, bucket := range changes.Participants() {
+		owner, err := g.GroupFor(bucket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.Roots[bucket], err = remote.stores[owner.ID].Tree("t", 1, bucket).Update(ctx, Root{}, changes.Rows(bucket))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := &scanRPCRemote{Remote: remote, stores: remote.stores}
+	view := View{Graph: g, Remote: reader}
+	for _, tc := range []struct {
+		name            string
+		request         query.Request
+		results, maxRPC int
+	}{
+		{"first100", query.Request{Op: "match", Limit: 100}, 100, 32},
+		{"first1000", query.Request{Op: "match", Limit: 1000}, 1000, 128},
+		{"all_sorted", query.Request{Op: "match", Limit: 1000, Sort: []query.SortSpec{{Field: "id"}}}, 1000, 1800},
+		{"rare_sorted", query.Request{Op: "match", Kind: "rare", Limit: 100, Sort: []query.SortSpec{{Field: "id"}}}, 40, 24},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader.calls = 0
+			response, err := ExecuteQuery(ctx, view, tc.request)
+			if err != nil || len(response.Results) != tc.results || reader.calls > tc.maxRPC {
+				t.Fatalf("rows=%d calls=%d error=%v", len(response.Results), reader.calls, err)
+			}
+			t.Logf("rows=%d read RPCs=%d", len(response.Results), reader.calls)
 		})
 	}
 }

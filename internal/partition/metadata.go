@@ -19,12 +19,15 @@ func (s Store) load(ctx context.Context, key string, value any) error {
 	}
 	var envelope metadataEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return err
+		return fmt.Errorf("%w: malformed graph metadata in %q: %v", ErrPartitionCorrupt, key, err)
 	}
 	if !validDigest(envelope.Digest) || fmt.Sprintf("%x", sha256.Sum256(envelope.Data)) != envelope.Digest {
-		return fmt.Errorf("graph metadata checksum mismatch in %q", key)
+		return fmt.Errorf("%w: graph metadata checksum mismatch in %q", ErrPartitionCorrupt, key)
 	}
-	return json.Unmarshal(envelope.Data, value)
+	if err := json.Unmarshal(envelope.Data, value); err != nil {
+		return fmt.Errorf("%w: malformed graph record in %q: %v", ErrPartitionCorrupt, key, err)
+	}
+	return nil
 }
 
 func (s Store) save(ctx context.Context, key string, value any) error {

@@ -73,12 +73,29 @@ func (s Store) applyDataGC(ctx context.Context, a Action) (any, error) {
 			}
 			return nil, conflict("partition is already collecting garbage")
 		}
-		if state.Prepared != nil || len(a.Roots) > 4097 {
+		maxRoots := 4097
+		if a.Revision != 0 {
+			maxRoots = 65536
+		}
+		if state.Prepared != nil || len(a.Roots) > maxRoots {
 			return nil, conflict("resolve partition transaction before GC")
 		}
 		roots := append(append([]Root(nil), a.Roots...), state.Root)
 		state.GC = &DataGC{ID: a.Txn, Phase: "mark", Stack: roots}
 	} else {
+		if a.Operation == "data_gc_step" && a.Purpose == "cancel" {
+			if state.GC == nil {
+				state.LastGC = a.Txn
+				return state, s.save(ctx, s.dataKey(a.Tenant, a.Generation, a.Partition), state)
+			}
+			if state.GC.ID != a.Txn || state.GC.Phase == "sweep" {
+				return nil, conflict("graph GC can no longer cancel this partition")
+			}
+			state.GC.Phase = "cleanup"
+			state.GC.Stack = nil
+			state.GC.Marked = Root{}
+			state.GC.Seen = Root{}
+		}
 		if a.Operation != "data_gc_step" || state.GC == nil || state.GC.ID != a.Txn {
 			return nil, conflict("partition GC identity changed")
 		}

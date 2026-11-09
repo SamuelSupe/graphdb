@@ -70,8 +70,8 @@ func TestDistributedGraphGCProtectsPinsAndConcurrentPreparedWrites(t *testing.T)
 	start := func(at time.Time) {
 		t.Helper()
 		g := apply(Action{Operation: "graph_gc_begin", At: at})
-		for g.GC.Phase == "prune" {
-			g = apply(Action{Operation: "graph_gc_prune", ExpectedCursor: g.GC.Cursor})
+		for g.GC.Phase == "collect" {
+			g = apply(Action{Operation: "graph_gc_collect", At: at, ExpectedCursor: g.GC.Cursor})
 		}
 		var ids []uint8
 		for i := range g.Partitions {
@@ -89,7 +89,18 @@ func TestDistributedGraphGCProtectsPinsAndConcurrentPreparedWrites(t *testing.T)
 			}
 			ids = append(ids, id)
 		}
-		apply(Action{Operation: "graph_gc_started", Participants: ids})
+		g = apply(Action{Operation: "graph_gc_started", Participants: ids})
+		if g.GC.Phase == "prune" {
+			commit(fmt.Sprintf("while-pruning-%s", gcID), graph.Mutations{
+				UpsertEntities: []graph.Entity{{ID: "c", Kind: "host", Fields: graph.Fields{"value": "while-pruning"}}},
+			})
+		}
+		for g.GC.Phase == "prune" {
+			if g.GC.BlocksWrites() {
+				t.Fatal("view pruning still fences writes after data GC is armed")
+			}
+			g = apply(Action{Operation: "graph_gc_prune", ExpectedCursor: g.GC.Cursor})
+		}
 	}
 	finish := func() {
 		t.Helper()

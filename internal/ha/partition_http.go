@@ -14,9 +14,7 @@ func (c *Cluster) servePartitionedGraph(w http.ResponseWriter, r *http.Request, 
 	if tenant == "" || c.App.ShardID == "" || c.config.Protocol < 5 {
 		return false
 	}
-	c.App.mu.RLock()
-	g, err := c.App.partitionStore().GetGraph(r.Context(), tenant)
-	c.App.mu.RUnlock()
+	g, err := c.App.graphDescriptor(r.Context(), tenant)
 	if errors.Is(err, storage.ErrNotFound) {
 		return false
 	}

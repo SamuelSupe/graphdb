@@ -33,7 +33,7 @@ func (e *OutcomeUnknownError) Error() string {
 func (e *OutcomeUnknownError) Unwrap() error { return e.Cause }
 
 func waitWriter(ctx context.Context) error {
-	timer := time.NewTimer(20 * time.Millisecond)
+	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -53,6 +53,17 @@ func (e Engine) control(ctx context.Context, g Graph, a Action, result any) erro
 	a.Tenant = e.Tenant
 	a.Generation = g.Generation
 	return e.Remote.Action(ctx, e.Home, a, result)
+}
+
+func (e Engine) updateTransaction(ctx context.Context, g Graph, a Action, txn *Transaction) error {
+	// Describe results may be shared by concurrent callers. Decode into a new
+	// value so JSON decoding cannot reuse a cached transaction's slices or maps.
+	var next Transaction
+	if err := e.control(ctx, g, a, &next); err != nil {
+		return err
+	}
+	*txn = next
+	return nil
 }
 
 func (e Engine) Submit(ctx context.Context, request CommitRequest) (storage.CommitResult, error) {
@@ -111,15 +122,18 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 			return storage.CommitResult{}, lookupErr
 		}
 		if g.GC.BlocksWrites() {
-			return storage.CommitResult{}, conflict("graph garbage collection is installing its retention boundary")
+			return storage.CommitResult{}, fmt.Errorf("%w: garbage collection is installing its retention boundary", ErrGraphBusy)
 		}
 		if g.Move.BlocksWrites() {
-			return storage.CommitResult{}, conflict("graph partition move is completing its cutover")
+			return storage.CommitResult{}, fmt.Errorf("%w: partition move is completing its cutover", ErrGraphBusy)
 		}
 		if expected != nil && *expected != g.Version {
 			return storage.CommitResult{}, conflict("expected graph version does not match")
 		}
 		if g.Active != nil {
+			if purpose == "commit" && len(inputs) == 0 {
+				return storage.CommitResult{}, fmt.Errorf("%w: another graph transaction is active", ErrGraphBusy)
+			}
 			if err := waitWriter(ctx); err != nil {
 				return storage.CommitResult{}, err
 			}
@@ -246,7 +260,7 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			if errors.Is(err, ErrQuotaExceeded) {
 				code = "quota_exceeded"
 			}
-			if abortErr := e.control(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), ErrorCode: code}, &txn); abortErr != nil {
+			if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), ErrorCode: code}, &txn); abortErr != nil {
 				return txn, abortErr
 			}
 			return e.finish(ctx, g, txn)
@@ -255,7 +269,7 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 		if len(participants) == 0 {
 			participants = []uint8{0}
 		}
-		if err := e.control(ctx, g, Action{Operation: "participants", Txn: txn.ID, Sequence: txn.Sequence, Participants: participants}, &txn); err != nil {
+		if err := e.updateTransaction(ctx, g, Action{Operation: "participants", Txn: txn.ID, Sequence: txn.Sequence, Participants: participants}, &txn); err != nil {
 			return txn, err
 		}
 		workers, prepareCtx := errgroup.WithContext(ctx)
@@ -277,7 +291,7 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 		}
 		if err := workers.Wait(); err != nil {
 			if errors.Is(err, storage.ErrInvalidArgument) || errors.Is(err, storage.ErrConflict) {
-				if abortErr := e.control(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error()}, &txn); abortErr != nil {
+				if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error()}, &txn); abortErr != nil {
 					return txn, abortErr
 				}
 				return e.finish(ctx, g, txn)
@@ -309,7 +323,7 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			return txn, err
 		}
 		result := storage.CommitResult{Manifest: storage.Manifest{TenantID: e.Tenant, Version: version, HeadCommitID: txn.ID, UpdatedAt: txn.At}, ReadableVersion: version, DataHash: digest, Skipped: !plan.Report.Changed, Suppressed: plan.Report.Suppressed, CanonicalEntities: plan.Report.CanonicalEntities, CanonicalEdges: plan.Report.CanonicalEdges}
-		if err := e.control(ctx, g, Action{Operation: "commit", Txn: txn.ID, Sequence: txn.Sequence, Result: &result, CITypes: plan.CITypes, RelationTypes: plan.RelationTypes}, &txn); err != nil {
+		if err := e.updateTransaction(ctx, g, Action{Operation: "commit", Txn: txn.ID, Sequence: txn.Sequence, Result: &result, CITypes: plan.CITypes, RelationTypes: plan.RelationTypes}, &txn); err != nil {
 			return txn, err
 		}
 	}

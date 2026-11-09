@@ -1,6 +1,7 @@
 package partition
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,20 +13,35 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-type Move struct {
-	ID          string    `json:"id"`
-	Partition   uint8     `json:"partition"`
-	Source      Group     `json:"source"`
-	Target      Group     `json:"target"`
-	Epoch       uint64    `json:"epoch"`
-	Sequence    uint64    `json:"sequence"`
-	Root        Root      `json:"root"`
-	Phase       string    `json:"phase"`
-	Cursor      string    `json:"cursor,omitempty"`
-	RetireAfter time.Time `json:"retire_after,omitempty"`
+const moveBatchPages = 32
+const moveBatchBytes = 4 << 20
+
+type MoveVerification struct {
+	Step     uint64 `json:"step"`
+	Root     Root   `json:"root"`
+	Sequence uint64 `json:"sequence"`
+	Stack    []Root `json:"stack"`
 }
 
-func (m *Move) BlocksWrites() bool { return m != nil && m.Phase != "copy" && m.Phase != "cleanup" }
+type Move struct {
+	CaptureAt    time.Time `json:"capture_at,omitempty"`
+	FailureSince time.Time `json:"failure_since,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	ID           string    `json:"id"`
+	Partition    uint8     `json:"partition"`
+	Source       Group     `json:"source"`
+	Target       Group     `json:"target"`
+	Epoch        uint64    `json:"epoch"`
+	Sequence     uint64    `json:"sequence"`
+	Root         Root      `json:"root"`
+	Phase        string    `json:"phase"`
+	Cursor       string    `json:"cursor,omitempty"`
+	RetireAfter  time.Time `json:"retire_after,omitempty"`
+}
+
+func (m *Move) BlocksWrites() bool {
+	return m != nil && m.Phase != "copy" && m.Phase != "cleanup" && m.Phase != "cancel_cleanup"
+}
 
 type PageObject struct {
 	Hash string `json:"hash"`
@@ -53,46 +69,30 @@ func (s Store) ExportPages(ctx context.Context, a Action) (PageExport, error) {
 	if a.Purpose == "delta" {
 		return s.exportDeltaPages(ctx, state, a)
 	}
+	if len(state.CaptureViews) != 0 {
+		if state.Capture != a.Txn || !validTokenID(a.Txn) {
+			return PageExport{}, conflict("move capture changed")
+		}
+		return s.exportReachablePages(ctx, state, a.Cursor)
+	}
 	if a.Cursor != "" && !strings.HasPrefix(a.Cursor, prefix) {
 		return PageExport{}, invalid("partition export cursor scope mismatch")
 	}
-	paged, ok := s.Objects.(interface {
-		ListPage(context.Context, string, string, int) ([]storage.ObjectInfo, string, error)
-	})
-	var objects []storage.ObjectInfo
-	next := ""
-	if ok {
-		objects, next, err = paged.ListPage(ctx, prefix, a.Cursor, 4)
-	} else {
-		err = s.walkObjects(ctx, prefix, func(object storage.ObjectInfo) error {
-			if object.Key > a.Cursor {
-				objects = append(objects, object)
-			}
-			return nil
-		})
-		if len(objects) > 4 {
-			objects = objects[:4]
-			next = objects[len(objects)-1].Key
-		}
-	}
+	objects, next, err := s.objectPage(ctx, prefix, a.Cursor, moveBatchPages)
 	if err != nil {
 		return PageExport{}, err
 	}
 	out := PageExport{}
 	bytes := 0
 	for _, object := range objects {
-		pageKey := object.Key
-		if a.Purpose == "delta" {
-			pageKey = s.Tree(a.Tenant, a.Generation, a.Partition).pageKey(path.Base(object.Key))
-		}
-		data, err := s.Objects.Get(ctx, pageKey)
+		data, err := s.Objects.Get(ctx, object.Key)
 		if err != nil {
 			return out, err
 		}
 		if err := verifyObject(object.Key, data); err != nil {
 			return out, err
 		}
-		if bytes+len(data) > 4<<20 && len(out.Objects) > 0 {
+		if bytes+len(data) > moveBatchBytes && len(out.Objects) > 0 {
 			out.Next = objects[len(out.Objects)-1].Key
 			return out, nil
 		}
@@ -103,6 +103,45 @@ func (s Store) ExportPages(ctx context.Context, a Action) (PageExport, error) {
 		out.Next = objects[len(objects)-1].Key
 	}
 	return out, nil
+}
+
+// VerifyMoveStep runs on the leader before proposing the next install
+// checkpoint. Imported pages are immutable, and apply checks the epoch, move
+// and previous checkpoint before accepting the result.
+func (s Store) VerifyMoveStep(ctx context.Context, a Action) (*MoveVerification, error) {
+	state, err := s.Data(ctx, a.Tenant, a.Generation, a.Partition)
+	if err != nil {
+		return nil, err
+	}
+	if state.Epoch == a.Epoch && state.LastTxn == a.Txn && state.State == "active" && state.Root == a.Base && state.Sequence == a.Sequence {
+		return nil, nil
+	}
+	if state.Epoch != a.Epoch || state.LastTxn != a.Txn || state.State != "importing" || a.Sequence == 0 {
+		return nil, conflict("destination installation changed")
+	}
+	verification := state.MoveVerify
+	if verification == nil {
+		verification = &MoveVerification{Root: a.Base, Sequence: a.Sequence}
+		if a.Base != (Root{}) {
+			verification.Stack = []Root{a.Base}
+		}
+	}
+	if verification.Root != a.Base || verification.Sequence != a.Sequence {
+		return nil, conflict("move verification boundary changed")
+	}
+	tree := s.Tree(a.Tenant, a.Generation, a.Partition)
+	for count := 0; count < 32 && len(verification.Stack) > 0; count++ {
+		last := len(verification.Stack) - 1
+		root := verification.Stack[last]
+		verification.Stack = verification.Stack[:last]
+		page, err := tree.load(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		verification.Stack = append(verification.Stack, page.Children...)
+	}
+	verification.Step++
+	return verification, nil
 }
 
 func (s Store) applyDataMove(ctx context.Context, a Action) (any, error) {
@@ -138,27 +177,52 @@ func (s Store) applyDataMove(ctx context.Context, a Action) (any, error) {
 			if state.State != "active" || state.Capture != "" && state.Capture != a.Txn {
 				return nil, conflict("partition is already capturing another move")
 			}
+			if state.Capture == "" && a.Purpose == "reachable" {
+				if len(a.Roots) == 0 || len(a.Roots) > 65536 || a.Roots[0] != state.Root {
+					return nil, conflict("move capture roots no longer match the source")
+				}
+				state.CaptureViews = a.Roots
+			}
 			state.Capture = a.Txn
-		case "data_move_page":
-			if state.State != "importing" || state.LastTxn != a.Txn || len(a.Data) > 2*MaxValueBytes {
+		case "data_move_page", "data_move_pages":
+			if state.State != "importing" || state.LastTxn != a.Txn {
 				return nil, conflict("partition is not importing this move")
 			}
-			if err := verifyObject(a.Digest, a.Data); err != nil {
-				return nil, invalid(err.Error())
+			pages := a.Pages
+			if a.Operation == "data_move_page" {
+				pages = []PageObject{{Hash: a.Digest, Data: a.Data}}
 			}
-			key := s.Tree(a.Tenant, a.Generation, a.Partition).pageKey(a.Digest)
-			_, err := s.Objects.PutConditional(ctx, key, a.Data, storage.PutCondition{IfNoneMatch: true})
-			if errors.Is(err, storage.ErrConflict) {
-				previous, readErr := s.Objects.Get(ctx, key)
-				if readErr != nil {
-					return nil, readErr
-				}
-				if string(previous) != string(a.Data) {
-					return nil, fmt.Errorf("immutable imported partition page changed")
-				}
-				err = nil
+			size := 0
+			if len(pages) == 0 || len(pages) > moveBatchPages {
+				return nil, invalid("invalid move page batch")
 			}
-			return map[string]bool{"staged": err == nil}, err
+			for _, page := range pages {
+				size += len(page.Data)
+				if size > moveBatchBytes || len(page.Data) > 2*MaxValueBytes || !validDigest(page.Hash) {
+					return nil, invalid("move page batch exceeds its budget")
+				}
+				if err := verifyObject(page.Hash, page.Data); err != nil {
+					return nil, invalid(err.Error())
+				}
+			}
+			tree := s.Tree(a.Tenant, a.Generation, a.Partition)
+			// Check existing content before writing any page in the batch.
+			for _, page := range pages {
+				previous, err := s.Objects.Get(ctx, tree.pageKey(page.Hash))
+				if err == nil && !bytes.Equal(previous, page.Data) {
+					return nil, fmt.Errorf("%w: immutable imported partition page changed", ErrPartitionCorrupt)
+				}
+				if err != nil && !errors.Is(err, storage.ErrNotFound) {
+					return nil, err
+				}
+			}
+			for _, page := range pages {
+				_, err := s.Objects.PutConditional(ctx, tree.pageKey(page.Hash), page.Data, storage.PutCondition{IfNoneMatch: true})
+				if err != nil && !errors.Is(err, storage.ErrConflict) {
+					return nil, err
+				}
+			}
+			return map[string]bool{"staged": true}, nil
 		case "data_move_fence":
 			if state.State == "frozen" && state.LastTxn == a.Txn && state.Sequence == a.Sequence && state.Root == a.Base {
 				return state, nil
@@ -176,8 +240,26 @@ func (s Store) applyDataMove(ctx context.Context, a Action) (any, error) {
 			if state.State != "importing" || state.LastTxn != a.Txn || a.Sequence == 0 {
 				return nil, conflict("destination installation changed")
 			}
-			if err := s.Tree(a.Tenant, a.Generation, a.Partition).Scan(ctx, a.Base, "", "", func(Row) (bool, error) { return true, nil }); err != nil {
-				return nil, err
+			if a.Revision == 0 {
+				// Replaying the old install must produce an active replica in
+				// one entry, because its subsequent cutover is already logged.
+				if err := s.Tree(a.Tenant, a.Generation, a.Partition).Scan(ctx, a.Base, "", "", func(Row) (bool, error) { return true, nil }); err != nil {
+					return nil, err
+				}
+			} else {
+				step := uint64(0)
+				if state.MoveVerify != nil {
+					step = state.MoveVerify.Step
+				}
+				verification := a.Verify
+				if verification == nil || verification.Step != step+1 || verification.Root != a.Base || verification.Sequence != a.Sequence {
+					return nil, conflict("move verification checkpoint changed")
+				}
+				if len(verification.Stack) > 0 {
+					state.MoveVerify = verification
+					break
+				}
+				state.MoveVerify = nil
 			}
 			state.Root = a.Base
 			state.Sequence = a.Sequence
@@ -193,6 +275,7 @@ func (s Store) applyDataMove(ctx context.Context, a Action) (any, error) {
 			}
 			state.Capture = ""
 			state.CaptureRoot = Root{}
+			state.CaptureViews = nil
 			state.Epoch += 2
 			state.Sequence = a.Sequence
 			state.LastTxn = a.Txn
@@ -205,9 +288,11 @@ func (s Store) applyDataMove(ctx context.Context, a Action) (any, error) {
 				return nil, conflict("partition cannot retire this move")
 			}
 			state.State = "retiring"
+			state.MoveVerify = nil
 			state.Root = Root{}
 			state.Capture = ""
 			state.CaptureRoot = Root{}
+			state.CaptureViews = nil
 			for _, prefix := range []string{s.Tree(a.Tenant, a.Generation, a.Partition).Prefix + "/", path.Join(s.namespace(a.Tenant, a.Generation), fmt.Sprintf("partitions/%02x/moves", a.Partition)) + "/"} {
 				var objects []storage.ObjectInfo
 				if paged, ok := s.Objects.(interface {
@@ -250,12 +335,28 @@ func (s Store) applyGraphMove(ctx context.Context, g Graph, a Action) (any, erro
 			return nil, err
 		}
 		g.Move = &Move{ID: a.Txn, Partition: a.Partition, Source: source, Target: *a.Target, Epoch: g.Partitions[a.Partition].Epoch + 1, Phase: "capture"}
+		if a.Revision != 0 {
+			g.Move.CaptureAt = a.At
+		}
 	} else {
 		m := g.Move
 		if m == nil || m.ID != a.Txn || a.Phase != m.Phase || a.ExpectedCursor != m.Cursor {
 			return nil, conflict("graph partition move checkpoint changed")
 		}
 		switch a.Operation {
+		case "graph_move_error":
+			if len(a.Error) > 1024 {
+				return nil, invalid("move error exceeds its budget")
+			}
+			if m.Error == a.Error {
+				return g, nil
+			}
+			m.Error = a.Error
+			if a.Error == "" {
+				m.FailureSince = time.Time{}
+			} else if m.FailureSince.IsZero() {
+				m.FailureSince = a.At
+			}
 		case "graph_move_progress":
 			if a.Purpose != m.Phase && !(m.Phase == "capture" && a.Purpose == "copy") && !(m.Phase == "copy" && a.Purpose == "fence") && !(m.Phase == "fence" && a.Purpose == "final_copy") && !(m.Phase == "final_copy" && a.Purpose == "install") {
 				return nil, invalid("invalid graph move phase transition")
@@ -271,6 +372,8 @@ func (s Store) applyGraphMove(ctx context.Context, g Graph, a Action) (any, erro
 				m.Sequence = g.Sequence
 				m.Root = g.Roots[m.Partition]
 			}
+			m.Error = ""
+			m.FailureSince = time.Time{}
 			m.Phase = a.Purpose
 			m.Cursor = a.Cursor
 		case "graph_move_switch":
@@ -281,16 +384,23 @@ func (s Store) applyGraphMove(ctx context.Context, g Graph, a Action) (any, erro
 			g.Groups[m.Target.ID] = m.Target
 			g.Partitions[m.Partition] = Placement{Group: m.Target.ID, Epoch: m.Epoch}
 			g.LayoutRevision++
+			m.Error = ""
+			m.FailureSince = time.Time{}
 			m.Phase = "cleanup"
+			if m.CaptureAt.After(g.HistoryCutoff) {
+				g.HistoryCutoff = m.CaptureAt
+			}
 			m.Cursor = ""
 			m.RetireAfter = a.At.Add(MaxQueryLifetime)
 		case "graph_move_cancel":
-			if m.Phase == "cleanup" || g.Active != nil || g.Sequence == math.MaxUint64 {
+			if m.Phase == "cleanup" || m.Phase == "cancel_cleanup" || g.Active != nil || g.Sequence == math.MaxUint64 {
 				return nil, conflict("move cannot cancel after cutover or during a transaction")
 			}
 			if m.Phase != "cancel" {
 				g.Sequence++
 				m.Sequence = g.Sequence
+				m.Error = ""
+				m.FailureSince = time.Time{}
 				m.Phase = "cancel"
 				m.Cursor = ""
 			}
@@ -301,9 +411,15 @@ func (s Store) applyGraphMove(ctx context.Context, g Graph, a Action) (any, erro
 			}
 			g.Partitions[m.Partition] = Placement{Group: m.Source.ID, Epoch: receipt.Epoch}
 			g.LayoutRevision++
-			g.Move = nil
+			if a.Revision == 0 {
+				g.Move = nil
+				break
+			}
+			m.Phase = "cancel_cleanup"
+			m.Error = ""
+			m.FailureSince = time.Time{}
 		case "graph_move_complete":
-			if m.Phase != "cleanup" || a.At.Before(m.RetireAfter) {
+			if m.Phase != "cancel_cleanup" && (m.Phase != "cleanup" || a.At.Before(m.RetireAfter)) {
 				return nil, conflict("partition move still protects in-flight reads")
 			}
 			g.Move = nil
@@ -335,7 +451,7 @@ func (s Store) exportDeltaPages(ctx context.Context, state DataState, a Action) 
 		if err := verifyObject(row.Key, data); err != nil {
 			return false, err
 		}
-		if len(out.Objects) >= 4 || bytes+len(data) > 4<<20 && len(out.Objects) > 0 {
+		if len(out.Objects) >= moveBatchPages || bytes+len(data) > moveBatchBytes && len(out.Objects) > 0 {
 			out.Next = row.Key
 			return false, nil
 		}

@@ -3,23 +3,42 @@ package ha
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"golang.org/x/sync/errgroup"
 )
 
-func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) error {
+func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (err error) {
 	if g.GC == nil {
 		return nil
 	}
 	remote := sharding.GraphRemote{Client: c.shards}
 	base := partition.Action{Tenant: g.Tenant, Generation: g.Generation, Txn: g.GC.ID}
-	if g.GC.Phase == "prune" {
-		base.Operation = "graph_gc_prune"
+	if g.GC.Phase == "starting" && !g.GC.FenceAt.IsZero() {
+		defer func() {
+			if err == nil || time.Since(g.GC.FenceAt) < 30*time.Second {
+				return
+			}
+			report, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancel()
+			action := base
+			action.Operation = "graph_gc_cancel_start"
+			action.Error = err.Error()
+			if len(action.Error) > 1024 {
+				action.Error = action.Error[:1024]
+			}
+			if cancelErr := remote.Action(report, c.graphHome(), action, nil); cancelErr != nil {
+				err = errors.Join(err, cancelErr)
+			}
+		}()
+	}
+	if g.GC.Phase == "prune" || g.GC.Phase == "collect" {
+		base.Operation = "graph_gc_" + g.GC.Phase
 		base.ExpectedCursor = g.GC.Cursor
 		return remote.Action(ctx, c.graphHome(), base, nil)
 	}
@@ -31,9 +50,17 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) err
 		}
 		if pending {
 			ids = append(ids, uint8(i))
-			if len(ids) == 8 {
+			if len(ids) == 32 {
 				break
 			}
+		}
+	}
+	var roots map[uint8][]partition.Root
+	if g.GC.Phase == "starting" {
+		var err error
+		roots, err = c.App.partitionStore().GCRootPlan(ctx, g, ids)
+		if err != nil {
+			return err
 		}
 	}
 	workers, workerCtx := errgroup.WithContext(ctx)
@@ -50,12 +77,13 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) err
 			action.Epoch = g.Partitions[id].Epoch
 			var state partition.DataState
 			if g.GC.Phase == "starting" {
-				if err := c.shards.JSON(workerCtx, partitionShard(c.graphHome()), http.MethodGet, "/cluster/graph/gc-roots/"+url.PathEscape(g.Tenant)+"/"+strconv.Itoa(int(id))+"?gc="+url.QueryEscape(g.GC.ID), nil, &action.Roots); err != nil {
-					return err
-				}
+				action.Roots = roots[id]
 				action.Operation = "data_gc_begin"
 			} else {
 				action.Operation = "data_gc_step"
+				if g.GC.Phase == "cancel" {
+					action.Purpose = "cancel"
+				}
 			}
 			if err := remote.Action(workerCtx, group, action, &state); err != nil {
 				return err

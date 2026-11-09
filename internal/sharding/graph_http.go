@@ -2,7 +2,6 @@ package sharding
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,13 +23,25 @@ func graphJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func graphError(w http.ResponseWriter, err error) {
+	writeGraphError(w, err, "graph_conflict")
+}
+
+func writeGraphError(w http.ResponseWriter, err error, conflictCode string) {
 	var unknown *partition.OutcomeUnknownError
 	if errors.As(err, &unknown) {
 		graphJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "write_outcome_unknown", "error": unknown.Error(), "message": unknown.Error(), "retryable": false})
 		return
 	}
-	status, code := http.StatusServiceUnavailable, "shard_unavailable"
+	status, code := http.StatusInternalServerError, "internal_error"
 	switch {
+	case errors.Is(err, partition.ErrPartitionCorrupt):
+		status, code = http.StatusInternalServerError, "partition_corrupt"
+	case errors.Is(err, partition.ErrShardUnavailable):
+		status, code = http.StatusServiceUnavailable, "shard_unavailable"
+	case errors.Is(err, partition.ErrPlacementChanged):
+		status, code = http.StatusConflict, "graph_layout_changed"
+	case errors.Is(err, partition.ErrGraphBusy):
+		status, code = http.StatusTooManyRequests, "graph_busy"
 	case errors.Is(err, partition.ErrQuotaExceeded):
 		status, code = http.StatusTooManyRequests, "quota_exceeded"
 	case errors.Is(err, partition.ErrVersionNotReady):
@@ -42,11 +53,11 @@ func graphError(w http.ResponseWriter, err error) {
 	case errors.Is(err, query.ErrLimitExceeded), errors.Is(err, partition.ErrReadBudget):
 		status, code = http.StatusUnprocessableEntity, "query_limit_exceeded"
 	case errors.Is(err, storage.ErrConflict):
-		status, code = http.StatusConflict, "write_conflict"
+		status, code = http.StatusConflict, conflictCode
 	case errors.Is(err, storage.ErrNotFound):
 		status, code = http.StatusNotFound, "not_found"
 	}
-	graphJSON(w, status, map[string]any{"code": code, "error": err.Error(), "message": err.Error(), "retryable": status >= 500})
+	graphJSON(w, status, map[string]any{"code": code, "error": err.Error(), "message": err.Error(), "retryable": status == 503 || code == "graph_busy" || code == "graph_layout_changed"})
 }
 func graphDecode(w http.ResponseWriter, r *http.Request, value any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, partition.MaxChangeBytes))
@@ -63,30 +74,67 @@ func graphDecode(w http.ResponseWriter, r *http.Request, value any) bool {
 	return true
 }
 
-// ServeGraphData executes supported graph routes at any stateless router. It
-// returns false for management routes, which remain on the graph home group.
-func ServeGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, home partition.Group, client *Client) bool {
+func (c *Client) admitGraph(key string, write bool) func() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	slots, total, tenantLimit, limit := &c.graphReadSlots, &c.graphReads, 8, 32
+	if write {
+		slots, total, tenantLimit, limit = &c.graphWriteSlots, &c.graphWrites, 1, 8
+	}
+	if *total >= limit || (*slots)[key] >= tenantLimit {
+		return nil
+	}
+	if *slots == nil {
+		*slots = make(map[string]int)
+	}
+	(*slots)[key]++
+	*total++
+	return func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		*total--
+		(*slots)[key]--
+		if (*slots)[key] == 0 {
+			delete(*slots, key)
+		}
+	}
+}
+
+func graphDataSupported(r *http.Request) bool {
 	path := r.URL.Path
-	supported := r.Method == http.MethodPost && (path == "/v1/commits" || path == "/v1/query" || path == "/v1/query/stream") || r.Method == http.MethodGet && (path == "/v1/entities" || strings.HasPrefix(path, "/v1/entities/") && path != "/v1/entities/stream" || path == "/v1/ci-types" || path == "/v1/entity-types" || path == "/v1/relation-types" || path == "/v1/source-policy")
-	if !supported {
+	return r.Method == http.MethodPost && (path == "/v1/commits" || path == "/v1/query" || path == "/v1/query/stream") ||
+		r.Method == http.MethodGet && (path == "/v1/entities" || strings.HasPrefix(path, "/v1/entities/") && path != "/v1/entities/stream" ||
+			path == "/v1/ci-types" || path == "/v1/entity-types" || path == "/v1/relation-types" || path == "/v1/source-policy")
+}
+
+func (c *Client) admitGraphRequest(w http.ResponseWriter, r *http.Request, home partition.Group, tenant string) func() {
+	release := c.admitGraph(home.ClusterID+"/"+tenant, r.URL.Path == "/v1/commits")
+	if release == nil {
+		w.Header().Set("Retry-After", "1")
+		graphJSON(w, http.StatusTooManyRequests, map[string]any{"code": "graph_busy", "error": "graph request concurrency budget is exhausted", "retryable": true})
+	}
+	return release
+}
+
+// ServeGraphData returns false for management routes, which remain on the
+// graph home group.
+func ServeGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, home partition.Group, client *Client) bool {
+	if !graphDataSupported(r) {
 		return false
 	}
-	client.mu.Lock()
-	if client.graphSlots == nil {
-		client.graphSlots = make(chan struct{}, 8)
+	release := client.admitGraphRequest(w, r, home, g.Tenant)
+	if release == nil {
+		return true
 	}
-	slots := client.graphSlots
-	client.mu.Unlock()
+	defer release()
+	return serveGraphData(w, r, g, home, client)
+}
+
+func serveGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, home partition.Group, client *Client) bool {
+	path := r.URL.Path
 	ctx, cancel := context.WithTimeout(r.Context(), partition.MaxQueryLifetime)
 	defer cancel()
 	r = r.WithContext(ctx)
-	select {
-	case slots <- struct{}{}:
-		defer func() { <-slots }()
-	default:
-		graphJSON(w, http.StatusTooManyRequests, map[string]any{"code": "graph_busy", "error": "graph request concurrency budget is exhausted", "retryable": true})
-		return true
-	}
 	if g.State != "active" {
 		graphJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "shard_unavailable", "error": "partitioned graph is not active", "message": "partitioned graph is not active", "retryable": true})
 		return true
@@ -117,7 +165,7 @@ func ServeGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 		}
 		result, err := (partition.Engine{Remote: remote, Home: home, Tenant: g.Tenant, Generation: g.Generation}).Submit(r.Context(), request)
 		if err != nil {
-			graphError(w, err)
+			writeGraphError(w, err, "write_conflict")
 		} else {
 			graphJSON(w, http.StatusOK, result)
 		}
@@ -203,15 +251,11 @@ func ServeGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 			graphError(w, fmt.Errorf("%w: invalid entity ID", storage.ErrInvalidArgument))
 			return true
 		}
-		digest := fmt.Sprintf("%x", sha256.Sum256([]byte("entity:"+id)))
-		pinned, err := remote.Pin(r.Context(), home, g.Tenant, g.Generation, g.Version, digest, "")
+		pinned, err := partition.AcquireReadView(r.Context(), remote, home, g)
 		if err != nil {
 			graphError(w, err)
 			return true
 		}
-		defer func() {
-			_ = remote.Action(r.Context(), home, partition.Action{Operation: "release_pin", Tenant: g.Tenant, Generation: g.Generation, Txn: pinned.Pin.ID, Digest: digest}, nil)
-		}()
 		view.Graph = pinned.Graph
 		entity, found, err := (&partition.Lookup{View: view}).GetEntity(r.Context(), id, nil)
 		if err != nil {
@@ -219,7 +263,7 @@ func ServeGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 		} else if !found {
 			graphError(w, storage.ErrNotFound)
 		} else {
-			graphJSON(w, http.StatusOK, map[string]any{"version": g.Version, "entity": entity.JSONValue()})
+			graphJSON(w, http.StatusOK, map[string]any{"version": pinned.Graph.Version, "entity": entity.JSONValue()})
 		}
 		return true
 	}

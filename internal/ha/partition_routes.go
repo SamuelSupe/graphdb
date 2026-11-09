@@ -2,6 +2,7 @@ package ha
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,43 @@ func (a *Application) partitionStore() partition.Store {
 	return partition.Store{Objects: a.Files, Prefix: a.Store.Prefix}
 }
 
+type graphDescriptor struct {
+	graph partition.Graph
+	etag  string
+	err   error
+}
+
+func (a *Application) graphDescriptor(ctx context.Context, tenant string) (partition.Graph, error) {
+	entry := a.cachedGraphDescriptor(ctx, tenant)
+	return entry.graph, entry.err
+}
+
+func (a *Application) cachedGraphDescriptor(ctx context.Context, tenant string) graphDescriptor {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	a.graphCacheMu.Lock()
+	defer a.graphCacheMu.Unlock()
+	if entry, ok := a.graphCache[tenant]; ok {
+		return entry
+	}
+	g, err := a.partitionStore().GetGraph(ctx, tenant)
+	entry := graphDescriptor{graph: g, err: err}
+	if err == nil {
+		data, marshalErr := json.Marshal(g)
+		if marshalErr != nil {
+			return graphDescriptor{err: marshalErr}
+		}
+		entry.etag = fmt.Sprintf(`"%x"`, sha256.Sum256(data))
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		return entry
+	}
+	if a.graphCache == nil || len(a.graphCache) >= 128 {
+		a.graphCache = make(map[string]graphDescriptor)
+	}
+	a.graphCache[tenant] = entry
+	return entry
+}
+
 func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) ([]byte, error) {
 	if c.config.Protocol < 5 || c.App.Catalog || c.App.ShardID == "" {
 		return nil, fmt.Errorf("graph partitions require a protocol-5 data group")
@@ -29,7 +67,7 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	var scopeErr error
 	switch action.Operation {
 	case "initialize", "reserve", "reserve_partitions", "data_move_reserve":
-	case "prepare", "finalize", "discard", "fence", "data_move_page", "data_move_fence", "data_move_install", "data_move_thaw", "data_move_retire", "data_move_capture", "data_gc_begin", "data_gc_step":
+	case "prepare", "finalize", "discard", "fence", "data_move_page", "data_move_pages", "data_move_fence", "data_move_install", "data_move_thaw", "data_move_retire", "data_move_capture", "data_gc_begin", "data_gc_step":
 		_, scopeErr = c.App.partitionStore().Data(ctx, action.Tenant, action.Generation, action.Partition)
 	default:
 		var g partition.Graph
@@ -42,10 +80,17 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	if scopeErr != nil {
 		return nil, scopeErr
 	}
-	if action.Operation == "prepare" || action.Operation == "stage_input" || action.Operation == "data_gc_begin" || action.Operation == "data_move_page" {
+	if action.Operation == "prepare" || action.Operation == "stage_input" || action.Operation == "data_gc_begin" || action.Operation == "data_move_page" || action.Operation == "data_move_pages" {
 		if err := c.App.Store.CheckWriteDiskSpace(ctx, int64(len(action.Data))+partition.MaxChangeBytes*2); err != nil {
 			return nil, err
 		}
+	}
+	if action.Operation == "data_move_install" {
+		verified, err := c.App.partitionStore().VerifyMoveStep(ctx, action)
+		if err != nil {
+			return nil, err
+		}
+		action.Verify = verified
 	}
 	cmd, err := newCommand("graph_partition")
 	if err != nil {
@@ -54,6 +99,7 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	if action.Operation == "pin" || strings.HasPrefix(action.Operation, "graph_move_") || strings.HasPrefix(action.Operation, "graph_gc_") {
 		action.At = cmd.At
 	}
+	action.Revision = partition.ActionRevision
 	cmd.Tenant = action.Tenant
 	cmd.Body, err = json.Marshal(action)
 	if err != nil {
@@ -86,15 +132,18 @@ func (c *Cluster) registerPartitionRoutes(mux *http.ServeMux) {
 			http.Error(w, "invalid tenant", http.StatusBadRequest)
 			return
 		}
-		c.App.mu.RLock()
-		g, err := c.App.partitionStore().GetGraph(r.Context(), tenant)
-		c.App.mu.RUnlock()
-		if err != nil {
-			c.partitionError(w, err)
+		entry := c.App.cachedGraphDescriptor(r.Context(), tenant)
+		if entry.err != nil {
+			c.partitionError(w, entry.err)
+			return
+		}
+		w.Header().Set("ETag", entry.etag)
+		if r.Header.Get("If-None-Match") == entry.etag {
+			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(g)
+		json.NewEncoder(w).Encode(entry.graph)
 	})
 	mux.HandleFunc("GET /cluster/graph/transactions/{tenant}/{identity}", func(w http.ResponseWriter, r *http.Request) {
 		if !ready(w, r) {
@@ -176,39 +225,77 @@ func (c *Cluster) registerPartitionRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
-	mux.HandleFunc("POST /cluster/graph/read", func(w http.ResponseWriter, r *http.Request) {
-		if !ready(w, r) {
+	fragmentRead := func(w http.ResponseWriter, r *http.Request) {
+		if c.config.Protocol < 5 || c.App.Catalog || c.App.ShardID == "" {
+			http.Error(w, "graph partitions require protocol 5", http.StatusConflict)
 			return
 		}
 		var input partition.ReadRequest
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		var batch []partition.ReadRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&input) != nil {
+		isBatch := r.URL.Path == "/cluster/graph/read-batch"
+		var target any = &input
+		if isBatch {
+			target = &batch
+		}
+		if decoder.Decode(target) != nil {
 			http.Error(w, "invalid partition read", http.StatusBadRequest)
 			return
 		}
-		c.App.mu.RLock()
-		result, err := c.App.partitionStore().Read(r.Context(), input)
-		c.App.mu.RUnlock()
+		read := func() (any, error) {
+			c.App.mu.RLock()
+			defer c.App.mu.RUnlock()
+			if isBatch {
+				return c.App.partitionStore().ReadBatch(r.Context(), batch)
+			}
+			return c.App.partitionStore().Read(r.Context(), input)
+		}
+		result, err := read()
+		// The home group already selected an immutable root. A successful
+		// local read needs no quorum round trip on the data group. On a miss
+		// or epoch mismatch, wait for the leader to apply before classifying it.
+		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrConflict) || errors.Is(err, partition.ErrPartitionCorrupt) {
+			if err := c.Node.ReadBarrier(r.Context()); err != nil {
+				c.writeError(w, err)
+				return
+			}
+			result, err = read()
+		}
 		if err != nil {
 			c.partitionError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
-	})
+	}
+	mux.HandleFunc("POST /cluster/graph/read", fragmentRead)
+	mux.HandleFunc("POST /cluster/graph/read-batch", fragmentRead)
+}
+
+func partitionErrorStatus(err error) (int, string) {
+	switch {
+	case errors.Is(err, partition.ErrVersionNotReady):
+		return http.StatusServiceUnavailable, "reader_not_fresh"
+	case errors.Is(err, partition.ErrGraphBusy):
+		return http.StatusTooManyRequests, "graph_busy"
+	case errors.Is(err, partition.ErrPartitionCorrupt):
+		return http.StatusInternalServerError, "partition_corrupt"
+	case errors.Is(err, storage.ErrNotFound):
+		return http.StatusNotFound, "not_found"
+	case errors.Is(err, partition.ErrPlacementChanged):
+		return http.StatusConflict, "graph_layout_changed"
+	case errors.Is(err, storage.ErrConflict):
+		return http.StatusConflict, "graph_conflict"
+	case errors.Is(err, storage.ErrInvalidArgument):
+		return http.StatusBadRequest, "bad_request"
+	default:
+		return http.StatusServiceUnavailable, "shard_unavailable"
+	}
 }
 
 func (c *Cluster) partitionError(w http.ResponseWriter, err error) {
-	status := http.StatusServiceUnavailable
-	switch {
-	case errors.Is(err, storage.ErrNotFound):
-		status = http.StatusNotFound
-	case errors.Is(err, storage.ErrConflict):
-		status = http.StatusConflict
-	case errors.Is(err, storage.ErrInvalidArgument):
-		status = http.StatusBadRequest
-	}
-	data, _ := resultJSON(status, map[string]any{"code": "graph_partition_error", "error": err.Error(), "retryable": status >= 500})
+	status, code := partitionErrorStatus(err)
+	data, _ := resultJSON(status, map[string]any{"code": code, "error": err.Error(), "retryable": status == 503 || status == 429 || code == "graph_layout_changed"})
 	writeResult(w, data)
 }

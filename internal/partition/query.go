@@ -11,8 +11,9 @@ import (
 )
 
 type Lookup struct {
-	View     View
-	entities map[string]graph.Entity
+	View       View
+	entities   map[string]graph.Entity
+	scanWindow int
 }
 
 func (l *Lookup) GetEntity(ctx context.Context, id string, _ []string) (graph.Entity, bool, error) {
@@ -58,26 +59,38 @@ func (l *Lookup) GetEntities(ctx context.Context, ids []string, _ []string) (map
 			byPartition[Bucket(id)] = append(byPartition[Bucket(id)], EntityKey(id))
 		}
 	}
+	var requests []ReadRequest
 	for bucket, keys := range byPartition {
 		for len(keys) > 0 {
 			end := min(128, len(keys))
-			pending := keys[:end]
-			for len(pending) > 0 {
-				batch, err := l.View.Read(ctx, bucket, ReadRequest{Keys: pending})
-				if err != nil {
-					return nil, false, err
-				}
-				for _, row := range batch.Rows {
-					var entity graph.Entity
-					if err := decodeRecord(row, &entity); err != nil {
-						return nil, false, err
-					}
-					out[entity.ID] = entity
-				}
-				pending = batch.Remaining
-			}
+			requests = append(requests, ReadRequest{Partition: bucket, Keys: keys[:end]})
 			keys = keys[end:]
 		}
+	}
+	for len(requests) > 0 {
+		batches, err := l.View.readBatch(ctx, requests)
+		if err != nil {
+			return nil, false, err
+		}
+		next := requests[:0]
+		for i, batch := range batches {
+			for _, row := range batch.Rows {
+				var entity graph.Entity
+				if err := decodeRecord(row, &entity); err != nil {
+					return nil, false, fmt.Errorf("%w: malformed entity record: %v", ErrPartitionCorrupt, err)
+				}
+				out[entity.ID] = entity
+			}
+			if len(batch.Remaining) > 0 {
+				if len(batch.Remaining) >= len(requests[i].Keys) {
+					return nil, false, fmt.Errorf("%w: entity batch made no progress", ErrPartitionCorrupt)
+				}
+				pending := requests[i]
+				pending.Keys = batch.Remaining
+				next = append(next, pending)
+			}
+		}
+		requests = next
 	}
 	return out, true, nil
 }
@@ -87,70 +100,80 @@ func (l *Lookup) MatchFieldIndex(context.Context, string, string, []any) ([]stri
 }
 
 type entityIterator struct {
-	lookup *Lookup
-	bucket uint8
-	prefix string
-	next   string
-	rows   []Row
-	done   bool
-	seen   bool
-	entity graph.Entity
+	lookup  *Lookup
+	request ReadRequest
+	rows    []Row
+	done    bool
+	id      string
 }
 
-func (it *entityIterator) advance(ctx context.Context, kind string) (bool, error) {
-	for {
-		if len(it.rows) == 0 {
-			if it.done {
-				return false, nil
-			}
-			result, err := it.lookup.View.Read(ctx, it.bucket, ReadRequest{Prefix: it.prefix, Start: it.next, Limit: 16})
-			if err != nil {
-				return false, err
-			}
-			it.rows = result.Rows
-			it.next = result.Next
-			it.done = result.Next == ""
-			if len(it.rows) == 0 {
-				if !it.seen && it.done {
-					return false, fmt.Errorf("entity scan directory is missing")
-				}
-				if !it.done {
-					return false, fmt.Errorf("fragment scan made no progress")
-				}
-				return false, nil
-			}
+func (it *entityIterator) accept(result ReadResult) error {
+	if len(result.Rows) == 0 && result.Next == "" && it.request.Start == "" && it.request.Kind == "" {
+		return fmt.Errorf("%w: entity scan directory is missing", ErrPartitionCorrupt)
+	}
+	if result.Next != "" && result.Next <= it.request.Start {
+		return fmt.Errorf("%w: fragment scan made no progress", ErrPartitionCorrupt)
+	}
+	it.rows = result.Rows
+	it.request.Start = result.Next
+	it.done = result.Next == ""
+	return nil
+}
+
+func (it *entityIterator) advance(ctx context.Context) (bool, error) {
+	for len(it.rows) == 0 {
+		if it.done {
+			return false, nil
 		}
-		it.seen = true
-		row := it.rows[0]
-		it.rows = it.rows[1:]
-		if err := decodeRecord(row, &it.entity); err != nil {
+		result, err := it.lookup.View.Read(ctx, it.request.Partition, it.request)
+		if err != nil {
 			return false, err
 		}
-		if kind == "" || it.entity.Kind == kind {
-			return true, nil
+		if err := it.accept(result); err != nil {
+			return false, err
 		}
 	}
+	var entry entityScanEntry
+	if err := decodeRecord(it.rows[0], &entry); err != nil {
+		return false, fmt.Errorf("%w: malformed entity directory record: %v", ErrPartitionCorrupt, err)
+	}
+	it.rows = it.rows[1:]
+	it.id = entry.ID
+	return true, nil
 }
 
 type entityHeap []*entityIterator
 
 func (h entityHeap) Len() int           { return len(h) }
-func (h entityHeap) Less(i, j int) bool { return h[i].entity.ID < h[j].entity.ID }
+func (h entityHeap) Less(i, j int) bool { return h[i].id < h[j].id }
 func (h entityHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *entityHeap) Push(x any)        { *h = append(*h, x.(*entityIterator)) }
 func (h *entityHeap) Pop() any          { old := *h; x := old[len(old)-1]; *h = old[:len(old)-1]; return x }
 
 func (l *Lookup) VisitEntities(ctx context.Context, kind string, _ []string, start string, visit func(graph.Entity) (bool, error)) (bool, error) {
 	var pending entityHeap
+	window := max(2, l.scanWindow)
+	var requests []ReadRequest
 	for i, count := range l.View.Graph.EntityCounts {
 		if count == 0 {
 			continue
 		}
-		it := &entityIterator{lookup: l, bucket: uint8(i), prefix: Key("entity_scan")}
+		request := ReadRequest{Partition: uint8(i), Prefix: Key("entity_scan"), Limit: max(16, window), Kind: kind}
 		if start != "" {
-			it.next = Key("entity_scan", start)
+			request.Start = Key("entity_scan", start)
 		}
-		found, err := it.advance(ctx, kind)
+		requests = append(requests, request)
+	}
+	initial, err := l.View.readBatch(ctx, requests)
+	if err != nil {
+		return false, err
+	}
+	for i, result := range initial {
+		it := &entityIterator{lookup: l, request: requests[i]}
+		if err := it.accept(result); err != nil {
+			return false, err
+		}
+		found, err := it.advance(ctx)
 		if err != nil {
 			return false, err
 		}
@@ -158,26 +181,49 @@ func (l *Lookup) VisitEntities(ctx context.Context, kind string, _ []string, sta
 			heap.Push(&pending, it)
 		}
 	}
+	ids := make([]string, 0, 128)
 	for len(pending) > 0 {
-		it := heap.Pop(&pending).(*entityIterator)
-		entity, found, err := l.GetEntity(ctx, it.entity.ID, nil)
+		ids = ids[:0]
+		var last *entityIterator
+		for len(ids) < window && len(pending) > 0 {
+			last = heap.Pop(&pending).(*entityIterator)
+			ids = append(ids, last.id)
+			if len(ids) == window {
+				break
+			}
+			found, err := last.advance(ctx)
+			if err != nil {
+				return false, err
+			}
+			if found {
+				heap.Push(&pending, last)
+			}
+			last = nil
+		}
+		entities, _, err := l.GetEntities(ctx, ids, nil)
 		if err != nil {
 			return false, err
 		}
-		if !found {
-			return false, fmt.Errorf("entity scan directory has no matching primary record")
+		for _, id := range ids {
+			entity, found := entities[id]
+			if !found {
+				return false, fmt.Errorf("%w: entity scan directory has no matching primary record", ErrPartitionCorrupt)
+			}
+			more, err := visit(entity)
+			if err != nil || !more {
+				return true, err
+			}
 		}
-		more, err := visit(entity)
-		if err != nil || !more {
-			return true, err
+		if last != nil {
+			found, err := last.advance(ctx)
+			if err != nil {
+				return false, err
+			}
+			if found {
+				heap.Push(&pending, last)
+			}
 		}
-		found, err = it.advance(ctx, kind)
-		if err != nil {
-			return false, err
-		}
-		if found {
-			heap.Push(&pending, it)
-		}
+		window = min(128, window*2)
 	}
 	return true, nil
 }
@@ -223,7 +269,7 @@ func (l *Lookup) edges(ctx context.Context, id, direction string, allowed map[st
 		for _, loc := range locations {
 			edge, ok := edges[loc.ID]
 			if !ok {
-				return false, fmt.Errorf("adjacency references a missing edge")
+				return false, fmt.Errorf("%w: adjacency references a missing edge", ErrPartitionCorrupt)
 			}
 			if len(allowed) > 0 {
 				if _, ok := allowed[edge.Type]; !ok {
@@ -272,7 +318,11 @@ func ExecuteQuery(ctx context.Context, view View, request query.Request) (query.
 	if view.Budget == nil {
 		view.Budget = &ReadBudget{Requests: 2048, Bytes: 64 << 20}
 	}
-	lookup := &Lookup{View: view}
+	window := min(128, request.Limit+1)
+	if len(request.Sort) != 0 || len(request.Aggregate) != 0 || len(request.GroupBy) != 0 {
+		window = 128
+	}
+	lookup := &Lookup{View: view, scanWindow: window}
 	stats := query.PlannerStats{Version: view.Graph.Version, EntityScanAvailable: true, ForwardEdgeIndexAvailable: true, ReverseEdgeIndexAvailable: true}
 	for i, count := range view.Graph.EntityCounts {
 		if count > 0 {

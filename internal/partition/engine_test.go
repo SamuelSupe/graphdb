@@ -54,6 +54,14 @@ func (r *localRemote) Read(ctx context.Context, g Group, input ReadRequest) (Rea
 func (r *localRemote) Action(ctx context.Context, g Group, a Action, result any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	a.Revision = ActionRevision
+	if a.Operation == "data_move_install" {
+		verified, err := r.stores[g.ID].VerifyMoveStep(ctx, a)
+		if err != nil {
+			return err
+		}
+		a.Verify = verified
+	}
 	value, err := r.stores[g.ID].Apply(ctx, a)
 	if err != nil {
 		return err
@@ -357,5 +365,68 @@ func TestDistributedGraphScanDoesNotLoadAllPartitionPayloads(t *testing.T) {
 	response, err := ExecuteQuery(ctx, View{Graph: g, Remote: remote, Budget: &ReadBudget{Requests: 2048, Bytes: 32 << 10}}, query.Request{Op: "match", Kind: "host", Limit: 1})
 	if err != nil || len(response.Results) != 1 || len(response.Results[0].Entity.Fields["payload"].(string)) != 2048 {
 		t.Fatalf("bounded scan fetched every partition payload: results=%d error=%v", len(response.Results), err)
+	}
+}
+
+func TestSharedReadLeaseSurvivesLegacyPinCapacityAndRenews(t *testing.T) {
+	ctx := context.Background()
+	engine, remote := newLocalGraph(t)
+	if _, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{
+		UpsertCITypes:  []graph.CIType{{Name: "host"}},
+		UpsertEntities: []graph.Entity{{ID: "a", Kind: "host"}, {ID: "b", Kind: "host"}, {ID: "c", Kind: "host"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	store := remote.stores[engine.Home.ID]
+	g, err := store.GetGraph(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Snapshot(ctx, "t", g.Generation, g.Version); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("commit created an unleased historical view: %v", err)
+	}
+	now := time.Now().UTC()
+	for i := range 4096 {
+		id := fmt.Sprintf("%032x", i+1)
+		pin := Pin{ID: id, Generation: g.Generation, Version: g.Version, Query: strings.Repeat("a", 64), ExpiresAt: now.Add(CursorLifetime), KeepUntil: now.Add(CursorLifetime + MaxQueryLifetime)}
+		if err := store.save(ctx, store.pinKey("t", g.Generation, id), pin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := query.Request{Op: "match", Kind: "host", Limit: 1}
+	page, err := ExecutePinnedQuery(ctx, remote, engine.Home, g, request)
+	if err != nil || page.NextCursor == "" {
+		t.Fatalf("legacy pin capacity blocked a new read: %+v %v", page, err)
+	}
+	g, err = store.GetGraph(ctx, "t")
+	if err != nil || g.ReadLease == nil {
+		t.Fatalf("no reusable lease: %v", err)
+	}
+	// A ready lease does not invoke Action, including for abandoned first pages.
+	remote.lose = "pin"
+	for range 40 {
+		if _, err := ExecutePinnedQuery(ctx, remote, engine.Home, g, request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	remote.lose = ""
+	pins, err := store.Objects.List(ctx, store.pinPrefix("t", g.Generation))
+	if err != nil || len(pins) != 4097 {
+		t.Fatalf("first pages created individual pins: %d %v", len(pins), err)
+	}
+	lease := *g.ReadLease
+	lease.ExpiresAt = now.Add(time.Minute)
+	lease.KeepUntil = lease.ExpiresAt.Add(MaxQueryLifetime)
+	if err := store.save(ctx, store.pinKey("t", g.Generation, lease.ID), lease); err != nil {
+		t.Fatal(err)
+	}
+	request.Cursor = page.NextCursor
+	next, err := ExecutePinnedQuery(ctx, remote, engine.Home, g, request)
+	if err != nil || len(next.Results) != 1 || next.Results[0].Entity.ID != "b" || next.NextCursor == "" {
+		t.Fatalf("continuation failed: %+v %v", next, err)
+	}
+	renewed, err := store.Pinned(ctx, "t", lease.ID, "", now)
+	if err != nil || !renewed.Pin.ExpiresAt.After(lease.ExpiresAt) {
+		t.Fatalf("cursor did not renew its live lease: %v", err)
 	}
 }

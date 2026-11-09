@@ -3,6 +3,8 @@ package ha
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -14,7 +16,7 @@ func partitionShard(g partition.Group) sharding.Shard {
 	return sharding.Shard{ID: g.ID, ClusterID: g.ClusterID, Peers: g.Peers}
 }
 
-func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) error {
+func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) (err error) {
 	m := g.Move
 	if m == nil {
 		return nil
@@ -28,6 +30,32 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) e
 		a.ExpectedCursor = m.Cursor
 		return remote.Action(ctx, c.graphHome(), a, nil)
 	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		message := err.Error()
+		if len(message) > 1024 {
+			message = message[:1024]
+		}
+		action := partition.Action{Operation: "graph_move_error", Error: message}
+		if (m.Phase == "capture" || m.Phase == "fence" || m.Phase == "final_copy" || m.Phase == "install") &&
+			!m.FailureSince.IsZero() && time.Since(m.FailureSince) >= 30*time.Second {
+			action.Operation = "graph_move_cancel"
+		} else if message == m.Error {
+			return
+		}
+		// A failed remote step may have used up its own deadline.
+		report, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		original := ctx
+		ctx = report
+		reportErr := control(action)
+		ctx = original
+		if reportErr != nil {
+			err = errors.Join(err, fmt.Errorf("record move failure: %w", reportErr))
+		}
+	}()
 	data := func(group partition.Group, operation string, epoch uint64, result any) error {
 		return remote.Action(ctx, group, partition.Action{Operation: operation, Tenant: g.Tenant, Generation: g.Generation, Partition: m.Partition, Epoch: epoch, Txn: m.ID, Sequence: m.Sequence, Base: m.Root}, result)
 	}
@@ -36,7 +64,13 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) e
 		if err := data(m.Target, "data_move_reserve", m.Epoch, nil); err != nil {
 			return err
 		}
-		if err := data(m.Source, "data_move_capture", m.Epoch-1, nil); err != nil {
+		roots, err := c.App.partitionStore().MoveRoots(ctx, g, m.Partition, m.CaptureAt)
+		if err != nil {
+			return err
+		}
+		capture := partition.Action{Operation: "data_move_capture", Purpose: "reachable", Tenant: g.Tenant,
+			Generation: g.Generation, Partition: m.Partition, Epoch: m.Epoch - 1, Txn: m.ID, Roots: roots}
+		if err := remote.Action(ctx, m.Source, capture, nil); err != nil {
 			return err
 		}
 		return control(partition.Action{Operation: "graph_move_progress", Purpose: "copy"})
@@ -51,8 +85,8 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) e
 		if err := c.shards.JSON(ctx, partitionShard(m.Source), http.MethodPost, "/cluster/graph/pages", input, &exported); err != nil {
 			return err
 		}
-		for _, object := range exported.Objects {
-			if err := remote.Action(ctx, m.Target, partition.Action{Operation: "data_move_page", Tenant: g.Tenant, Generation: g.Generation, Partition: m.Partition, Epoch: m.Epoch, Txn: m.ID, Digest: object.Hash, Data: object.Data}, nil); err != nil {
+		if len(exported.Objects) != 0 {
+			if err := remote.Action(ctx, m.Target, partition.Action{Operation: "data_move_pages", Tenant: g.Tenant, Generation: g.Generation, Partition: m.Partition, Epoch: m.Epoch, Txn: m.ID, Pages: exported.Objects}, nil); err != nil {
 				return err
 			}
 		}
@@ -74,6 +108,12 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) e
 		if err := data(m.Target, "data_move_install", m.Epoch, &installed); err != nil {
 			return err
 		}
+		if installed.State != "active" {
+			if m.Error != "" {
+				return control(partition.Action{Operation: "graph_move_error"})
+			}
+			return nil
+		}
 		return control(partition.Action{Operation: "graph_move_switch", DataState: &installed})
 	case "cleanup":
 		if time.Now().Before(m.RetireAfter) {
@@ -88,10 +128,13 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) e
 		}
 		return control(partition.Action{Operation: "graph_move_complete"})
 	case "cancel":
-		var restored, retired partition.DataState
+		var restored partition.DataState
 		if err := data(m.Source, "data_move_thaw", m.Epoch-1, &restored); err != nil {
 			return err
 		}
+		return control(partition.Action{Operation: "graph_move_cancelled", DataState: &restored})
+	case "cancel_cleanup":
+		var retired partition.DataState
 		if err := data(m.Target, "data_move_reserve", m.Epoch, nil); err != nil {
 			return err
 		}
@@ -101,7 +144,7 @@ func (c *Cluster) advancePartitionMove(ctx context.Context, g partition.Graph) e
 		if retired.State != "retired" {
 			return nil
 		}
-		return control(partition.Action{Operation: "graph_move_cancelled", DataState: &restored})
+		return control(partition.Action{Operation: "graph_move_complete"})
 	}
 	return nil
 }

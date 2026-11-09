@@ -71,3 +71,11 @@ dependency outage: the graph may already be committed.
 Unsupported mutation Content-Type returns HTTP 415 / `bad_request` before execution.
 Do not blindly replay an uncertain non-idempotent mutation after a 500: check its
 batch or idempotency status first. Tenant scope denial uses 403 / `operation_disabled`.
+
+
+The protocol-5 large-graph preview additionally returns these codes.
+
+- `graph_busy` returns 429 and allows retries when the graph reaches its concurrency budget or installs a maintenance fence.
+- `graph_layout_changed` returns a retryable 409 when a read must resolve the current partition placement.
+- `graph_conflict` returns a non-retryable 409 when a graph operation conflicts with the generation or operation state.
+- `partition_corrupt` returns a non-retryable 500 when a required page or directory fails validation.

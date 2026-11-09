@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -106,7 +107,19 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 	for partition.Bucket(left)%2 == partition.Bucket(right)%2 {
 		right += "x"
 	}
-	request = partition.CommitRequest{IdempotencyKey: "first", Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: left, Kind: "host"}, {ID: right, Kind: "host"}}, UpsertEdges: []graph.Edge{{From: left, To: right, Type: "calls"}}}}
+	used := map[uint8]bool{partition.Bucket(left): true, partition.Bucket(right): true}
+	pageIDs := []string{"a-page-only", "z-page-only"}
+	for i, id := range pageIDs {
+		for used[partition.Bucket(id)] {
+			id += "x"
+		}
+		used[partition.Bucket(id)] = true
+		pageIDs[i] = id
+	}
+	request = partition.CommitRequest{IdempotencyKey: "first", Mutations: graph.Mutations{
+		UpsertEntities: []graph.Entity{{ID: left, Kind: "host"}, {ID: right, Kind: "host"}, {ID: pageIDs[0], Kind: "host"}, {ID: pageIDs[1], Kind: "host"}},
+		UpsertEdges:    []graph.Edge{{From: left, To: right, Type: "calls"}},
+	}}
 	first := call(http.MethodPost, "/v1/commits", "big", request, http.StatusOK)
 	var committed storage.CommitResult
 	if err := json.Unmarshal(first.Body.Bytes(), &committed); err != nil || committed.Version != 2 {
@@ -118,6 +131,37 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 		if json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Results) != 1 || result.Version != 2 {
 			t.Fatalf("query: %s", response.Body.String())
 		}
+	}
+	// The second page may exhaust some partitions before reaching the cursor.
+	// Both public entry points must continue the same immutable view.
+	var listed struct {
+		Version    int64          `json:"version"`
+		NextCursor string         `json:"next_cursor"`
+		Entities   []graph.Entity `json:"entities"`
+	}
+	listing := "/v1/entities?limit=2"
+	page := call(http.MethodGet, listing, "big", nil, http.StatusOK)
+	if err := json.Unmarshal(page.Body.Bytes(), &listed); err != nil || listed.NextCursor == "" || len(listed.Entities) != 2 {
+		t.Fatalf("entity first page: %s", page.Body.String())
+	}
+	lastID := listed.Entities[1].ID
+	page = call(http.MethodGet, listing+"&cursor="+url.QueryEscape(listed.NextCursor), "big", nil, http.StatusOK)
+	listed.Entities = nil
+	listed.NextCursor = ""
+	if err := json.Unmarshal(page.Body.Bytes(), &listed); err != nil || listed.Version != 2 || len(listed.Entities) != 2 || listed.Entities[0].ID <= lastID || listed.NextCursor != "" {
+		t.Fatalf("entity second page: %s", page.Body.String())
+	}
+	match := query.Request{Op: "match", Kind: "host", Limit: 2}
+	page = call(http.MethodPost, "/v1/query", "big", match, http.StatusOK)
+	var matched query.Response
+	if err := json.Unmarshal(page.Body.Bytes(), &matched); err != nil || matched.NextCursor == "" {
+		t.Fatalf("match first page: %s", page.Body.String())
+	}
+	match.Cursor = matched.NextCursor
+	page = call(http.MethodPost, "/v1/query", "big", match, http.StatusOK)
+	matched = query.Response{}
+	if err := json.Unmarshal(page.Body.Bytes(), &matched); err != nil || matched.Version != 2 || len(matched.Results) != 2 || matched.Results[0].Entity.ID <= lastID {
+		t.Fatalf("match second page: %s", page.Body.String())
 	}
 	// Exercise the real private multi-key path under a fixed published root.
 	remote := sharding.GraphRemote{Client: router.Client}

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
@@ -138,47 +140,107 @@ func (c *Cluster) enablePartitionedGraph(ctx context.Context, input partition.En
 }
 
 func (c *Cluster) runPartitionBackground(ctx context.Context) {
+	const concurrency = 8
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
+	type result struct {
+		tenant string
+		err    error
+	}
+	done := make(chan result, concurrency)
+	active := map[string]bool{}
+	failed := map[string]time.Time{}
+	failures := map[string]string{}
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	offset := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case result := <-done:
+			delete(active, result.tenant)
+			if result.err == nil {
+				delete(failed, result.tenant)
+				delete(failures, result.tenant)
+			} else if ctx.Err() == nil {
+				failed[result.tenant] = time.Now().Add(time.Second)
+				if failures[result.tenant] != result.err.Error() {
+					failures[result.tenant] = result.err.Error()
+					slog.Warn("graph background step failed", "tenant", result.tenant, "group", c.App.ShardID, "error", result.err)
+				}
+			}
 		case <-ticker.C:
-		}
-		operation, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if c.Node.ReadBarrier(operation) == nil {
+			if len(active) == concurrency || c.Node.LeaderID() != c.config.ID {
+				continue
+			}
+			operation, cancel := context.WithTimeout(ctx, time.Second)
+			if c.Node.ReadBarrier(operation) != nil {
+				cancel()
+				continue
+			}
 			c.App.mu.RLock()
 			tenants, err := c.App.partitionStore().GraphTenants(operation)
 			c.App.mu.RUnlock()
-			if err == nil {
-				for _, tenant := range tenants {
-					c.App.mu.RLock()
-					g, err := c.App.partitionStore().GetGraph(operation, tenant)
-					c.App.mu.RUnlock()
-					if err == nil && g.State == "active" && g.SourceRetired && g.Active == nil && g.Move == nil && g.GC == nil {
-						interval := g.Config.Maintenance.GCIntervalSeconds
-						if interval != nil && *interval > 0 && time.Now().After(g.LastGCAt.Add(time.Duration(*interval)*time.Second)) {
-							id, idErr := newCommand("graph_gc")
-							if idErr == nil {
-								_ = (sharding.GraphRemote{Client: c.shards}).Action(operation, c.graphHome(), partition.Action{Operation: "graph_gc_begin", Tenant: tenant, Generation: g.Generation, Txn: id.ID}, nil)
-							}
-						}
-					}
-					if err == nil && g.GC != nil {
-						_ = c.advancePartitionGC(operation, g)
-					}
-					if err == nil && g.Move != nil {
-						_ = c.advancePartitionMove(operation, g)
-					}
-					if err == nil && g.Active != nil {
-						_, _ = (partition.Engine{Remote: sharding.GraphRemote{Client: c.shards}, Home: c.graphHome(), Tenant: tenant}).Resume(operation)
-					}
+			cancel()
+			if err != nil {
+				slog.Warn("list graph background work", "group", c.App.ShardID, "error", err)
+				continue
+			}
+			for count := 0; count < len(tenants) && len(active) < concurrency; count++ {
+				offset %= len(tenants)
+				tenant := tenants[offset]
+				offset++
+				if active[tenant] || time.Now().Before(failed[tenant]) {
+					continue
 				}
+				active[tenant] = true
+				workers.Go(func() {
+					operation, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					done <- result{tenant, c.advancePartitionBackground(operation, tenant)}
+				})
 			}
 		}
-		cancel()
 	}
+}
+
+func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string) error {
+	g, err := c.App.graphDescriptor(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	remote := sharding.GraphRemote{Client: c.shards}
+	if g.Active != nil {
+		_, err := (partition.Engine{Remote: remote, Home: c.graphHome(), Tenant: tenant}).Resume(ctx)
+		if err != nil || g.GC == nil || g.GC.BlocksWrites() {
+			return err
+		}
+		g, err = c.App.graphDescriptor(ctx, tenant)
+		if err != nil {
+			return err
+		}
+	}
+	if g.Move != nil {
+		return c.advancePartitionMove(ctx, g)
+	}
+	if g.GC != nil {
+		return c.advancePartitionGC(ctx, g)
+	}
+	if g.State == "active" && g.SourceCleanupRevision < partition.ActionRevision {
+		return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "retire_source", Tenant: tenant, Generation: g.Generation}, nil)
+	}
+	if g.State == "active" && g.SourceRetired {
+		interval := g.Config.Maintenance.GCIntervalSeconds
+		if interval != nil && *interval > 0 && time.Now().After(g.LastGCAt.Add(time.Duration(*interval)*time.Second)) {
+			id, err := newCommand("graph_gc")
+			if err != nil {
+				return err
+			}
+			return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "graph_gc_begin", Tenant: tenant, Generation: g.Generation, Txn: id.ID}, nil)
+		}
+	}
+	return nil
 }
 
 func (c *Cluster) registerPartitionEnable(mux *http.ServeMux) {

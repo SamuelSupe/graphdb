@@ -1,6 +1,7 @@
 package sharding
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -15,14 +16,24 @@ func groupDescriptor(s Shard) partition.Group {
 }
 
 func (r *Router) serveGraph(w http.ResponseWriter, request *http.Request, resolution Resolution, tenant string) bool {
+	if !graphDataSupported(request) {
+		return false
+	}
 	remote := GraphRemote{Client: r.Client}
 	home := groupDescriptor(resolution.Shard)
-	g, err := remote.Describe(request.Context(), home, tenant)
-	if err != nil {
-		r.writeError(w, err)
+	release := r.Client.admitGraphRequest(w, request, home, tenant)
+	if release == nil {
 		return true
 	}
-	return ServeGraphData(w, request, g, home, r.Client)
+	defer release()
+	ctx, cancel := context.WithTimeout(request.Context(), partition.MaxQueryLifetime)
+	defer cancel()
+	g, err := remote.Describe(ctx, home, tenant)
+	if err != nil {
+		graphError(w, err)
+		return true
+	}
+	return serveGraphData(w, request.WithContext(ctx), g, home, r.Client)
 }
 
 func (r *Router) graphAdmin(w http.ResponseWriter, request *http.Request) bool {

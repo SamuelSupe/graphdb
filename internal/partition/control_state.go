@@ -68,6 +68,7 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 			return nil, conflict("source cleanup requires an active graph")
 		}
 		g.SourceRetired = true
+		g.SourceCleanupRevision = a.Revision
 		return g, s.save(ctx, s.graphKey(g.Tenant), g)
 	}
 	if a.Operation == "activate" {
@@ -82,8 +83,10 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		}
 		g.State = "active"
 		g.Copy = nil
-		if err := s.saveView(ctx, g); err != nil {
-			return nil, err
+		if a.Revision == 0 {
+			if err := s.saveView(ctx, g); err != nil {
+				return nil, err
+			}
 		}
 		return g, s.save(ctx, s.graphKey(g.Tenant), g)
 	}
@@ -129,6 +132,9 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		return g, s.save(ctx, s.graphKey(g.Tenant), g)
 	}
 	if a.Operation == "pin" {
+		if a.Revision == 0 {
+			return s.createLegacyPin(ctx, g, a)
+		}
 		return s.createPin(ctx, g, a)
 	}
 	if a.Operation == "release_pin" {
@@ -144,7 +150,7 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if pin.Query != a.Digest {
+		if pin.Query == "" || pin.Query != a.Digest {
 			return nil, conflict("graph pin belongs to a different query")
 		}
 		return map[string]bool{"released": true}, s.Objects.Delete(ctx, key)
@@ -279,6 +285,9 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 				g.HashBuckets[bucket] = digest
 			}
 		}
+		if g.Version != a.Result.Version {
+			g.ReadLease = nil
+		}
 		g.Version = a.Result.Version
 		if g.EntityCount < 0 || g.EdgeCount < 0 {
 			return nil, invalid("negative graph record count")
@@ -296,8 +305,10 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		g.RelationTypes = a.RelationTypes
 		txn.State = "committed"
 		txn.Result = *a.Result
-		if err := s.saveView(ctx, g); err != nil {
-			return nil, err
+		if a.Revision == 0 {
+			if err := s.saveView(ctx, g); err != nil {
+				return nil, err
+			}
 		}
 	case "abort":
 		if txn.State == "committed" {
@@ -323,11 +334,12 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 			}
 		}
 		g.Active = nil
-		if txn.State == "committed" {
+		if a.Revision == 0 && txn.State == "committed" {
 			if err := s.saveView(ctx, g); err != nil {
 				return nil, err
 			}
 		}
+
 		return *txn, s.save(ctx, s.graphKey(a.Tenant), g)
 	default:
 		return nil, invalid("unsupported graph action")

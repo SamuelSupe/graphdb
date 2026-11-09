@@ -539,3 +539,59 @@ func TestClientLostMutationResponseDoesNotReplay(t *testing.T) {
 		})
 	}
 }
+
+func TestClientRetriesFragmentReadAfterLeaderFailure(t *testing.T) {
+	var attempts atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/raft/status" {
+			json.NewEncoder(w).Encode(map[string]any{"leader_id": 1})
+			return
+		}
+		var input []map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil || len(input) != 1 || input[0]["tenant_id"] != "t" {
+			t.Errorf("fragment request body changed: %+v %v", input, err)
+		}
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]any{{"rows": []any{}}})
+	}))
+	defer backend.Close()
+	client := NewClient("token")
+	defer client.HTTP.CloseIdleConnections()
+	shard := Shard{ID: "a", ClusterID: "c", Peers: map[uint64]string{1: backend.URL}}
+	var result []map[string]any
+	err := client.JSON(context.Background(), shard, http.MethodPost, "/cluster/graph/read-batch", []map[string]string{{"tenant_id": "t"}}, &result)
+	if err != nil || attempts.Load() != 2 || len(result) != 1 {
+		t.Fatalf("immutable read did not recover: attempts=%d response=%v error=%v", attempts.Load(), result, err)
+	}
+}
+
+func TestGraphAdmissionKeepsOtherTenantsAndReadsAvailable(t *testing.T) {
+	client := NewClient("token")
+	releases := make([]func(), 0, 8)
+	for range 8 {
+		release := client.admitGraph("cluster/slow", false)
+		if release == nil {
+			t.Fatal("slow tenant exhausted its budget early")
+		}
+		releases = append(releases, release)
+	}
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
+	if release := client.admitGraph("cluster/slow", false); release != nil {
+		release()
+		t.Fatal("slow tenant exceeded its read budget")
+	}
+	write := client.admitGraph("cluster/healthy", true)
+	read := client.admitGraph("cluster/healthy", false)
+	if write == nil || read == nil {
+		t.Fatal("healthy tenant lost access when another tenant filled its read slots")
+	}
+	write()
+	read()
+}

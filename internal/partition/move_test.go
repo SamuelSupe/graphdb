@@ -2,7 +2,9 @@ package partition
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -103,7 +105,7 @@ func TestDistributedGraphMoveCapturesWritesPinsAndCancellation(t *testing.T) {
 	g = control(Action{Operation: "graph_move_progress", Purpose: "fence"})
 	data(source, "data_move_fence", 1, g.Move.Root, g.Move.Sequence)
 	control(Action{Operation: "graph_move_progress", Purpose: "final_copy"})
-	if _, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "blocked", Kind: "host"}}}}); !errors.Is(err, storage.ErrConflict) {
+	if _, err := engine.Submit(ctx, CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "blocked", Kind: "host"}}}}); !errors.Is(err, ErrGraphBusy) {
 		t.Fatalf("write crossed source fence: %v", err)
 	}
 	// Reopen storage handles, as after source/coordinator leader replacement.
@@ -144,11 +146,113 @@ func TestDistributedGraphMoveCapturesWritesPinsAndCancellation(t *testing.T) {
 	for data(source, "data_move_retire", 3, Root{}, 0).State != "retired" {
 	}
 	g = control(Action{Operation: "graph_move_cancelled", DataState: &restored})
-	if g.Move != nil || g.Partitions[id].Epoch != 4 || g.Partitions[id].Group != "b" {
+	if g.Move.BlocksWrites() || g.Partitions[id].Epoch != 4 || g.Partitions[id].Group != "b" {
 		t.Fatalf("cancelled layout: %+v", g.Partitions[id])
 	}
 	submit("after-cancel", graph.Mutations{UpsertEntities: []graph.Entity{{ID: left, Kind: "host", Fields: graph.Fields{"name": "after cancel"}}}})
 	if _, err := remote.stores["b"].Read(ctx, ReadRequest{Tenant: "t", Generation: 1, Partition: id, Epoch: 2, Root: g.Roots[id], Keys: []string{EntityKey(left)}}); !errors.Is(err, storage.ErrConflict) {
 		t.Fatalf("stale epoch remained readable: %v", err)
 	}
+}
+
+func TestMoveTransfersReachablePagesAndVerifiesBoundedSteps(t *testing.T) {
+	ctx := context.Background()
+	source := Store{Objects: storage.NewMemoryStore(), Prefix: "graphdb"}
+	target := Store{Objects: storage.NewMemoryStore(), Prefix: "graphdb"}
+	a := Action{Tenant: "t", Generation: 1, Partition: 7, Txn: "11111111111111111111111111111111", Revision: ActionRevision, Epoch: 1}
+	apply := func(store Store, action Action) DataState {
+		t.Helper()
+		value, err := store.Apply(ctx, action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, _ := value.(DataState)
+		return state
+	}
+	a.Operation = "reserve"
+	state := apply(source, a)
+	tree := source.Tree("t", 1, 7)
+	garbage, err := tree.Update(ctx, Root{}, []Row{{Key: "unreachable", Value: json.RawMessage(`1`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]Row, MaxChanges)
+	for i := range rows {
+		rows[i] = Row{Key: fmt.Sprintf("k-%05d", i), Value: json.RawMessage(`1`)}
+	}
+	state.Root, err = tree.Update(ctx, Root{}, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.save(ctx, source.dataKey("t", 1, 7), state); err != nil {
+		t.Fatal(err)
+	}
+	a.Operation = "data_move_capture"
+	a.Purpose = "reachable"
+	a.Roots = []Root{state.Root}
+	apply(source, a)
+	reserve := a
+	reserve.Epoch = 2
+	reserve.Operation = "data_move_reserve"
+	apply(target, reserve)
+	for {
+		exported, err := source.ExportPages(ctx, a)
+		if err != nil || len(exported.Objects) == 0 {
+			t.Fatalf("export failed or stalled: %d %v", len(exported.Objects), err)
+		}
+		for _, page := range exported.Objects {
+			if page.Hash == garbage.Hash {
+				t.Fatal("export copied an unreachable historical page")
+			}
+		}
+		stage := reserve
+		stage.Operation = "data_move_pages"
+		stage.Pages = exported.Objects
+		apply(target, stage)
+		if exported.Next == "" {
+			break
+		}
+		a.Cursor = exported.Next
+	}
+	install := reserve
+	install.Operation = "data_move_install"
+	install.Base = state.Root
+	install.Sequence = 2
+	step, err := target.VerifyMoveStep(ctx, install)
+	if err != nil || step == nil || len(step.Stack) == 0 {
+		t.Fatalf("large install was not checkpointed: %v", err)
+	}
+	install.Verify = step
+	pending := apply(target, install)
+	if pending.State != "importing" || pending.MoveVerify == nil {
+		t.Fatal("partial verification published the target")
+	}
+	nextRoot := step.Stack[len(step.Stack)-1]
+	key := target.Tree("t", 1, 7).pageKey(nextRoot.Hash)
+	data, err := target.Objects.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Objects.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.VerifyMoveStep(ctx, install); !errors.Is(err, ErrPartitionCorrupt) {
+		t.Fatalf("missing page was not detected before proposal: %v", err)
+	}
+	if err := target.Objects.Put(ctx, key, data); err != nil {
+		t.Fatal(err)
+	}
+	for count := 0; count < 8; count++ {
+		install.Verify, err = target.VerifyMoveStep(ctx, install)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if installed := apply(target, install); installed.State == "active" {
+			if installed.Root != state.Root {
+				t.Fatal("installed the wrong root")
+			}
+			return
+		}
+	}
+	t.Fatal("verification did not resume to completion")
 }
