@@ -190,7 +190,9 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files.EnableLocalReceiptPacking("graphdb")
+	if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+		t.Fatal(err)
+	}
 	store := storage.NewTenantStoreWithOptions(files, "graphdb", storage.TenantStoreOptions{InstanceID: "recovery"})
 	request := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "committed", Cursor: "100", Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "host:a", Kind: "host"}}}}
 	first, err := store.Ingest(ctx, "tenant-a", request)
@@ -374,7 +376,9 @@ func TestRuntimeRecoveryRestoresPendingWALAndOperationalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restoredFiles.Close()
-	restoredFiles.EnableLocalReceiptPacking("graphdb")
+	if err := restoredFiles.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+		t.Fatal(err)
+	}
 	restored := storage.NewTenantStoreWithOptions(restoredFiles, "graphdb", storage.TenantStoreOptions{InstanceID: "recovery"})
 	for _, name := range []string{"hosts", ".hidden", ".tmp-hosts", ".runtime-restore-hosts"} {
 		if saved, err := restored.GetSavedQuery(ctx, "tenant-a", name); err != nil || saved.Request.Kind != "host" {

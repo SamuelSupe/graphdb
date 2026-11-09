@@ -15,6 +15,10 @@ import (
 
 type FileStore struct {
 	receiptPrefix          string
+	receiptMu              sync.Mutex
+	receiptDBs             map[string]*receiptDBHandle
+	receiptWork            map[string]uint64
+	receiptRevision        uint64
 	caseMu                 sync.Mutex
 	caseMode               atomic.Int32
 	directorySpellings     map[string]directorySpellings
@@ -194,6 +198,11 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	if err := checkCondition(condition, currentETag, exists); err != nil {
 		return ObjectMeta{Key: key, ETag: currentETag, Exists: exists}, err
 	}
+	if s.isReceiptDB(key) {
+		if err := s.closeReceiptDB(ctx, key); err != nil {
+			return ObjectMeta{}, err
+		}
+	}
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key, ETag: currentETag, Exists: exists}, err
 	}
@@ -212,6 +221,9 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	journal := s.replicationJournal(ctx)
 	if err := writeFileAtomicContext(ctx, path, data, journal); err != nil {
 		return ObjectMeta{}, err
+	}
+	if receipt, ok := s.receipt(key); ok {
+		s.queueReceiptDirectory(filepath.ToSlash(filepath.Dir(receipt.database)) + "/")
 	}
 	etag = sha256Hex(data)
 	return ObjectMeta{Key: key, ETag: etag, Exists: true}, nil
@@ -287,6 +299,11 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	}
 	if view, ok := ctx.Value(gcViewKey{}).(*gcView); ok && !view.canDelete(key) {
 		return errGCViewPinned
+	}
+	if s.isReceiptDB(key) {
+		if err := s.closeReceiptDB(ctx, key); err != nil {
+			return err
+		}
 	}
 	defer s.changed(key, "", true)
 	journal := s.replicationJournal(ctx)

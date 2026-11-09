@@ -180,6 +180,8 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	response := errorResponseFor(http.StatusInternalServerError, err, "", nil)
 	if response.Code == ErrorCodeInternal {
 		response = buildErrorResponse(ErrorCodeInternal, "internal storage error", false, nil)
+	} else if errors.Is(err, storage.ErrReceiptStoreUnavailable) {
+		response = buildErrorResponse(ErrorCodeRepairRequired, "tenant receipt database is unavailable", false, nil)
 	}
 	writeJSON(w, storageErrorStatus(response.Code), response)
 }
@@ -300,7 +302,7 @@ func classifyError(err error, fallback ErrorCode, retryable bool) (ErrorCode, bo
 		return ErrorCodeIdempotencyConflict, false
 	case errors.Is(err, storage.ErrMaintenanceBusy):
 		return ErrorCodeMaintenanceTaskRunning, true
-	case errors.Is(err, storage.ErrIngestRepairRequired), errors.Is(err, storage.ErrTenantMetadataMissing):
+	case errors.Is(err, storage.ErrIngestRepairRequired), errors.Is(err, storage.ErrTenantMetadataMissing), errors.Is(err, storage.ErrReceiptStoreUnavailable):
 		return ErrorCodeRepairRequired, false
 	case errors.Is(err, storage.ErrTenantDisabled):
 		return ErrorCodeTenantDisabled, false

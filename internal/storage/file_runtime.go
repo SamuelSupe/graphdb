@@ -118,7 +118,7 @@ func (s *FileStore) Close() error {
 		}
 		s.runtime.mu.Unlock()
 		s.runtime.active.Wait()
-		s.runtime.closeErr = errors.Join(syscall.Flock(int(s.runtime.lock.Fd()), syscall.LOCK_UN), s.runtime.lock.Close())
+		s.runtime.closeErr = errors.Join(s.closeReceiptDBs(""), syscall.Flock(int(s.runtime.lock.Fd()), syscall.LOCK_UN), s.runtime.lock.Close())
 	})
 	return s.runtime.closeErr
 }

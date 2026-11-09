@@ -271,6 +271,30 @@ func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, reco
 	}
 
 	idempotencyKey := s.ingestIdempotencyKey(tenantID, record.Request.Source, record.Request.CollectorID, record.Request.IdempotencyKey)
+	if s.LocalReceiptPackingEnabled() {
+		packCtx := ctx
+		done := func(error) {}
+		if metered := FindMeteredObjectStore(s.Objects); metered != nil {
+			packCtx, done = metered.start(ctx, "put_ingest_receipt_pair", batchKey, len(data)*2)
+		}
+		meta, stored, err := s.localFileStore().putNewIngestReceiptPair(packCtx, batchKey, idempotencyKey, data)
+		done(err)
+		if err != nil {
+			return fmt.Errorf("save packed ingest receipts: %w", err)
+		}
+		if stored {
+			cache := FindWriterObjectCache(s.Objects)
+			for _, key := range []string{batchKey, idempotencyKey} {
+				s.markObjectKeyCached(key)
+				if cache != nil {
+					meta.Key = key
+					cache.cachePositive(key, data, meta, true)
+					cache.updateCachedLists(key, ObjectInfo{Key: key, Size: int64(len(data)), ETag: meta.ETag}, false)
+				}
+			}
+			return nil
+		}
+	}
 	var (
 		idempotencyErr error
 		batchErr       error

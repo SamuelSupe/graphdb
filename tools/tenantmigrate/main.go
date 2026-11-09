@@ -58,7 +58,7 @@ func run() error {
 	sourceTenant := storage.NewTenantStore(sourceStore, source.prefix)
 	targetTenant := storage.NewTenantStore(targetStore, target.prefix)
 	for _, store := range []*storage.TenantStore{sourceTenant, targetTenant} {
-		if err := store.EnsureLocalWriterAllowed(context.Background()); err != nil {
+		if err := store.EnsureLocalMigrationAllowed(context.Background()); err != nil {
 			return err
 		}
 	}

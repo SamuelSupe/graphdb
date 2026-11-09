@@ -12,6 +12,7 @@ const (
 	commandHelp
 	commandRouter
 	commandRecovery
+	commandReceiptCheck
 )
 
 type commandHandler func([]string, *storage.TenantStore) error
@@ -25,6 +26,7 @@ type commandSpec struct {
 }
 
 var commandSpecs = []commandSpec{
+	{name: "receipt-check", usage: []string{"graphdb receipt-check <tenant-id> (offline)"}, kind: commandReceiptCheck},
 	{name: "runtime-backup", usage: []string{"graphdb runtime-backup <archive> [--max-bytes <bytes>] (offline)"}, kind: commandRecovery},
 	{name: "runtime-restore", usage: []string{"graphdb runtime-restore <archive> [--max-bytes <bytes>] [--isolated-cluster-recovery] (offline, empty target; isolation acknowledgement required for Raft)"}, kind: commandRecovery, mutation: true},
 	{name: "serve", usage: []string{"graphdb serve"}, kind: commandServe},

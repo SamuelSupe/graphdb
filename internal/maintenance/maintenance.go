@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -129,7 +130,8 @@ func (s *Runner) Start(ctx context.Context, interval time.Duration) {
 			defer pressure.Stop()
 			pressureTick = pressure.C
 		}
-		cursors := map[string]string{}
+		packs := map[string]receiptPackProgress{}
+		receiptsDiscovered := false
 		receiptOffset, gcOffset := 0, 0
 		for {
 			select {
@@ -140,7 +142,7 @@ func (s *Runner) Start(ctx context.Context, interval time.Duration) {
 			case <-pressureTick:
 				_ = s.run(ctx, time.Now().UTC(), true)
 			case <-receiptTick:
-				s.packLocalReceipts(ctx, cursors, &receiptOffset)
+				s.packLocalReceipts(ctx, &receiptsDiscovered, packs, &receiptOffset)
 			case <-followup.C:
 				s.continueGC(ctx, &gcOffset)
 			}
@@ -148,30 +150,51 @@ func (s *Runner) Start(ctx context.Context, interval time.Duration) {
 	})
 }
 
-func (s *Runner) packLocalReceipts(ctx context.Context, cursors map[string]string, offset *int) {
+type receiptPackProgress struct {
+	revision uint64
+	cursor   string
+	retryAt  time.Time
+}
+
+func (s *Runner) packLocalReceipts(ctx context.Context, discovered *bool, packs map[string]receiptPackProgress, offset *int) {
 	work, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
 	defer cancel()
-	tenants, err := s.Store.ListManagedTenants(work)
-	if err != nil {
-		if work.Err() == nil {
-			s.auditError("receipt_pack_list_failed", "", err, nil)
+	if !*discovered {
+		if err := s.Store.QueueExistingLocalReceiptPacks(work); err != nil {
+			if work.Err() == nil {
+				s.auditError("receipt_pack_list_failed", "", err, nil)
+			}
+			return
 		}
-		return
+		*discovered = true
 	}
+	pending := s.Store.PendingLocalReceiptPacks()
+	tenants := slices.Sorted(maps.Keys(pending))
 	for count := 0; count < len(tenants) && work.Err() == nil; count++ {
 		tenant := tenants[*offset%len(tenants)]
 		*offset = (*offset + 1) % len(tenants)
-		next, _, err := s.Store.PackLocalReceipts(work, tenant, cursors[tenant])
+		progress := packs[tenant]
+		if time.Now().Before(progress.retryAt) {
+			continue
+		}
+		if progress.revision == 0 {
+			progress.revision = pending[tenant]
+		}
+		next, _, err := s.Store.PackLocalReceipts(work, tenant, progress.cursor)
 		if err != nil {
 			if work.Err() == nil {
 				s.auditError("receipt_pack_failed", tenant, err, nil)
+				progress.retryAt = time.Now().Add(30 * time.Second)
 			}
+			packs[tenant] = progress
 			continue
 		}
 		if next == "" {
-			delete(cursors, tenant)
+			s.Store.CompleteLocalReceiptPack(tenant, progress.revision)
+			delete(packs, tenant)
 		} else {
-			cursors[tenant] = next
+			progress.cursor = next
+			packs[tenant] = progress
 		}
 	}
 }

@@ -61,14 +61,21 @@ func (s *FileStore) beginDirectoryChange(ctx context.Context, key string) (func(
 			done := make(chan struct{})
 			r.directoryChanges[prefix] = done
 			r.mu.Unlock()
+			closeErr := s.closeReceiptDBs(prefix)
 			unlock()
-			return sync.OnceFunc(func() {
+			finish := sync.OnceFunc(func() {
+				s.queueReceiptDirectory(prefix)
 				r.mu.Lock()
 				delete(r.directoryChanges, prefix)
 				close(done)
 				r.mu.Unlock()
 				release()
-			}), nil
+			})
+			if closeErr != nil {
+				finish()
+				return nil, closeErr
+			}
+			return finish, nil
 		}
 		r.mu.Unlock()
 		unlock()

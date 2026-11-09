@@ -66,6 +66,16 @@ func run(args []string) (err error) {
 	if cfg.Raft.Enabled && command.kind != commandServe {
 		return fmt.Errorf("offline commands are disabled in HA mode; use the cluster HTTP API")
 	}
+	if command.kind == commandReceiptCheck {
+		if len(args) != 2 {
+			return fmt.Errorf("usage: graphdb receipt-check <tenant-id>")
+		}
+		count, err := storage.CheckLocalReceiptDatabase(context.Background(), cfg.DataDir, cfg.Prefix, args[1])
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"tenant_id": args[1], "receipts_checked": count})
+	}
 	runtime, err := bootstrap.NewStorageRuntime(context.Background(), cfg)
 	if err != nil {
 		return err

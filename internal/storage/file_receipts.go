@@ -4,14 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
-	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -20,22 +16,14 @@ const receiptDatabase = "receipts.v1.db"
 
 var receiptBucket = []byte("receipts")
 
-type looseReceiptKey struct{}
-
 type receiptLocation struct {
 	database string
 	key      string
 	ingest   bool
 }
 
-// EnableLocalReceiptPacking is called before standalone storage begins serving.
-// Raft continues to journal the original per-object files.
-func (s *FileStore) EnableLocalReceiptPacking(prefix string) {
-	s.receiptPrefix = path.Join(cleanPrefix(prefix), "tenants") + "/"
-}
-
-func (s *FileStore) receipt(ctx context.Context, key string) (receiptLocation, bool) {
-	if s.receiptPrefix == "" || s.replicatedWrites.Load() || ctx.Value(looseReceiptKey{}) != nil {
+func (s *FileStore) receipt(key string) (receiptLocation, bool) {
+	if s.receiptPrefix == "" || s.replicatedWrites.Load() {
 		return receiptLocation{}, false
 	}
 	relative, ok := strings.CutPrefix(key, s.receiptPrefix)
@@ -52,59 +40,8 @@ func (s *FileStore) receipt(ctx context.Context, key string) (receiptLocation, b
 	return location, location.ingest
 }
 
-// The caller holds a directory IO permit. Open handles stay inside the permit
-// so purge and directory replacement never leave a writer on a retired inode.
-func (s *FileStore) withReceiptDB(ctx context.Context, key string, write bool, operation func(*bolt.DB) error) error {
-	unlock, err := s.lockObjectContext(ctx, key)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	filename, err := s.path(key)
-	if err != nil {
-		return err
-	}
-	if write {
-		if err := s.ensureSafeParent(filename, nil); err != nil {
-			return err
-		}
-	} else if err := s.verifySafeParent(filename); err != nil {
-		return err
-	}
-	options := &bolt.Options{ReadOnly: !write, Timeout: time.Second,
-		OpenFile: func(name string, flags int, mode os.FileMode) (*os.File, error) {
-			return os.OpenFile(name, flags|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
-		}}
-	info, err := os.Lstat(filename)
-	if err == nil && !info.Mode().IsRegular() {
-		return fmt.Errorf("receipt database is not a regular file")
-	}
-	if err != nil && (!write || !os.IsNotExist(err)) {
-		if os.IsNotExist(err) {
-			return ErrNotFound
-		}
-		return err
-	}
-	db, err := bolt.Open(filename, 0600, options)
-	if err != nil {
-		return err
-	}
-	if write {
-		// A previous create may have lost its directory barrier. The database
-		// must be durable before publishing a record or deleting its loose copy.
-		err = syncDir(filepath.Dir(filename))
-	}
-	if err == nil {
-		err = operation(db)
-	}
-	if closeErr := db.Close(); closeErr != nil {
-		return errors.Join(err, closeErr)
-	}
-	return err
-}
-
 func (s *FileStore) packedReceipt(ctx context.Context, key string) ([]byte, error) {
-	location, ok := s.receipt(ctx, key)
+	location, ok := s.receipt(key)
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -126,7 +63,7 @@ func (s *FileStore) packedReceipt(ctx context.Context, key string) ([]byte, erro
 // New ingest receipts go straight into the pack. Existing loose keys keep
 // their original CAS path until the maintenance copy is durable.
 func (s *FileStore) putReceiptIfPacked(ctx context.Context, key, filename string, data []byte, condition PutCondition) (ObjectMeta, bool, error) {
-	location, ok := s.receipt(ctx, key)
+	location, ok := s.receipt(key)
 	if !ok {
 		return ObjectMeta{}, false, nil
 	}
@@ -150,9 +87,8 @@ func (s *FileStore) putReceiptIfPacked(ctx context.Context, key, filename string
 		}
 		return ObjectMeta{Key: key, ETag: sha256Hex(stored), Exists: true}, true, ErrConflict
 	}
-	if err := s.syncPendingDirectories(); err != nil {
-		return ObjectMeta{}, true, err
-	}
+	// Ingest metadata is written after the graph publication returns.
+	// Its own transaction does not publish pending graph renames.
 	meta := ObjectMeta{Key: key}
 	err := s.withReceiptDB(ctx, location.database, true, func(db *bolt.DB) error {
 		return db.Update(func(tx *bolt.Tx) error {
@@ -178,8 +114,71 @@ func (s *FileStore) putReceiptIfPacked(ctx context.Context, key, filename string
 	return meta, true, err
 }
 
+// A new ingest outcome and its idempotency alias share one transaction and
+// durability barrier. Existing loose or packed keys use the usual CAS path.
+func (s *FileStore) putNewIngestReceiptPair(ctx context.Context, batchKey, aliasKey string, data []byte) (ObjectMeta, bool, error) {
+	batch, batchOK := s.receipt(batchKey)
+	alias, aliasOK := s.receipt(aliasKey)
+	if !batchOK || !aliasOK || !batch.ingest || !alias.ingest || batch.database != alias.database {
+		return ObjectMeta{}, false, nil
+	}
+	release, err := s.beginOperation(ctx, batch.database)
+	if err != nil {
+		return ObjectMeta{}, false, err
+	}
+	defer release()
+	// Batch paths sort before idempotency paths, as in loose compaction.
+	for _, key := range []string{batchKey, aliasKey} {
+		unlock, err := s.lockObjectContext(ctx, key)
+		if err != nil {
+			return ObjectMeta{}, false, err
+		}
+		defer unlock()
+		filename, err := s.path(key)
+		if err != nil {
+			return ObjectMeta{}, false, err
+		}
+		if err := s.verifySafeParent(filename); err != nil && !errors.Is(err, ErrNotFound) {
+			return ObjectMeta{}, false, err
+		}
+		if _, err := os.Lstat(filename); !os.IsNotExist(err) {
+			return ObjectMeta{}, false, err
+		}
+	}
+	err = s.withReceiptDB(ctx, batch.database, true, func(db *bolt.DB) error {
+		return db.Update(func(tx *bolt.Tx) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			bucket, err := tx.CreateBucketIfNotExists(receiptBucket)
+			if err != nil {
+				return err
+			}
+			batchName, aliasName := []byte(batch.key), []byte(alias.key)
+			if bucket.Get(batchName) != nil || bucket.Get(aliasName) != nil {
+				return ErrConflict
+			}
+			if err := bucket.Put(batchName, data); err != nil {
+				return err
+			}
+			return bucket.Put(aliasName, data)
+		})
+	})
+	if errors.Is(err, ErrConflict) {
+		return ObjectMeta{}, false, nil
+	}
+	if err != nil {
+		return ObjectMeta{}, false, err
+	}
+	meta := ObjectMeta{Key: batchKey, ETag: sha256Hex(data), Exists: true}
+	s.changed(batch.database, "", false)
+	s.changed(batchKey, meta.ETag, false)
+	s.changed(aliasKey, meta.ETag, false)
+	return meta, true, nil
+}
+
 func (s *FileStore) deletePackedReceipt(ctx context.Context, key string, condition PutCondition) error {
-	location, ok := s.receipt(ctx, key)
+	location, ok := s.receipt(key)
 	if !ok {
 		return checkCondition(condition, "", false)
 	}
@@ -217,7 +216,7 @@ func (s *FileStore) deletePackedReceipt(ctx context.Context, key string, conditi
 // Collector history is the only logical listing of packed records. Tenant
 // usage, purge and offline archives continue to enumerate physical objects.
 func (s *FileStore) mergePackedIngestPage(ctx context.Context, prefix, after string, limit int, loose []ObjectInfo, next string) ([]ObjectInfo, string, error) {
-	location, ok := s.receipt(ctx, prefix+"entry.parquet")
+	location, ok := s.receipt(prefix + "entry.parquet")
 	if !ok || !location.ingest || !strings.Contains(location.key, "/batches/") {
 		return loose, next, nil
 	}

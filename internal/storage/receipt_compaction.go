@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,51 @@ import (
 func (s *TenantStore) LocalReceiptPackingEnabled() bool {
 	files := s.localFileStore()
 	return files != nil && files.receiptPrefix != "" && !files.replicatedWrites.Load()
+}
+
+// Discover pre-upgrade receipts once. Subsequent sweeps are requested by a
+// successful loose write or tenant directory replacement.
+func (s *TenantStore) QueueExistingLocalReceiptPacks(ctx context.Context) error {
+	tenants, err := s.ListManagedTenants(ctx)
+	if err != nil {
+		return err
+	}
+	files := s.localFileStore()
+	for _, tenant := range tenants {
+		files.queueReceiptDirectory(s.tenantObjectPrefix(tenant))
+	}
+	return nil
+}
+
+func (s *FileStore) queueReceiptDirectory(prefix string) {
+	tenant, ok := strings.CutPrefix(prefix, s.receiptPrefix)
+	tenant = strings.TrimSuffix(tenant, "/")
+	if !ok || s.receiptPrefix == "" || s.replicatedWrites.Load() || tenant == "" || strings.Contains(tenant, "/") {
+		return
+	}
+	s.receiptMu.Lock()
+	defer s.receiptMu.Unlock()
+	if s.receiptWork == nil {
+		s.receiptWork = make(map[string]uint64)
+	}
+	s.receiptRevision++
+	s.receiptWork[tenant] = s.receiptRevision
+}
+
+func (s *TenantStore) PendingLocalReceiptPacks() map[string]uint64 {
+	files := s.localFileStore()
+	files.receiptMu.Lock()
+	defer files.receiptMu.Unlock()
+	return maps.Clone(files.receiptWork)
+}
+
+func (s *TenantStore) CompleteLocalReceiptPack(tenant string, revision uint64) {
+	files := s.localFileStore()
+	files.receiptMu.Lock()
+	defer files.receiptMu.Unlock()
+	if files.receiptWork[tenant] == revision {
+		delete(files.receiptWork, tenant)
+	}
 }
 
 // PackLocalReceipts migrates one bounded page. The cursor is exclusive and
@@ -54,7 +100,14 @@ func (s *TenantStore) PackLocalReceipts(ctx context.Context, tenant, cursor stri
 	} else if cursor != "" && !strings.HasPrefix(cursor, prefix) {
 		return "", 0, fmt.Errorf("%w: invalid receipt compaction cursor", ErrInvalidArgument)
 	}
-	objects, next, err := files.listLoosePage(ctx, prefix, cursor, 256)
+	var descend func(string) bool
+	if prefix == ingest {
+		descend = func(subtree string) bool {
+			_, remainder, _ := strings.Cut(strings.TrimPrefix(subtree, ingest), "/")
+			return remainder == "" || strings.HasPrefix(remainder, "batches/") || strings.HasPrefix(remainder, "idempotency/")
+		}
+	}
+	objects, next, err := files.listLoosePageMatching(ctx, prefix, cursor, 256, descend)
 	if err != nil {
 		return "", 0, err
 	}
@@ -95,7 +148,7 @@ func (s *FileStore) compactReceiptPage(ctx context.Context, database string, obj
 	var entries []looseReceipt
 	used := int64(0)
 	for i, object := range objects {
-		location, ok := s.receipt(ctx, object.Key)
+		location, ok := s.receipt(object.Key)
 		if !ok || location.database != database {
 			continue
 		}

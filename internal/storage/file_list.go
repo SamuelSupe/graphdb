@@ -25,7 +25,11 @@ func (s *FileStore) ListPage(ctx context.Context, prefix, after string, limit in
 	return s.mergePackedIngestPage(ctx, prefix, after, limit, loose, next)
 }
 
-func (s *FileStore) listLoosePage(ctx context.Context, prefix, after string, limit int) (result []ObjectInfo, next string, err error) {
+func (s *FileStore) listLoosePage(ctx context.Context, prefix, after string, limit int) ([]ObjectInfo, string, error) {
+	return s.listLoosePageMatching(ctx, prefix, after, limit, nil)
+}
+
+func (s *FileStore) listLoosePageMatching(ctx context.Context, prefix, after string, limit int, descend func(string) bool) (result []ObjectInfo, next string, err error) {
 	defer func() { recordReplicationFailure(ctx, err) }()
 	release, err := s.beginOperation(ctx, prefix)
 	if err != nil {
@@ -118,7 +122,7 @@ func (s *FileStore) listLoosePage(ctx context.Context, prefix, after string, lim
 			if entry.IsDir() {
 				subtree := key + "/"
 				if (!strings.HasPrefix(subtree, prefix) && !strings.HasPrefix(prefix, subtree)) ||
-					(subtree < after && !strings.HasPrefix(after, subtree)) {
+					(subtree < after && !strings.HasPrefix(after, subtree)) || (descend != nil && !descend(subtree)) {
 					continue
 				}
 				if err := walk(path); err != nil {

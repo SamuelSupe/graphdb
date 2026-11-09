@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,6 +78,19 @@ func copyTenantMigrationStaged(ctx context.Context, source *TenantStore, sourceT
 		return stagedReport, err
 	}
 	if err := ValidateTenantMigrationSource(ctx, stage, targetTenantID, nil); err != nil {
+		return stagedReport, err
+	}
+	if _, err := stageFiles.Head(ctx, target.tenantObjectPrefix(targetTenantID)+receiptDatabase); err == nil {
+		if files == nil {
+			return stagedReport, fmt.Errorf("packed receipts require a standalone local migration target")
+		}
+		if err := files.CheckStandaloneDirectory(); err != nil {
+			return stagedReport, err
+		}
+		if err := files.ensurePackedReceiptMarker(ctx, target.Prefix); err != nil {
+			return stagedReport, err
+		}
+	} else if !errors.Is(err, ErrNotFound) {
 		return stagedReport, err
 	}
 	if files == nil {

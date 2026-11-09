@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestStandaloneReceiptPackingReclaimsInodesAndPreservesHistory(t *testing.T) {
@@ -57,7 +59,9 @@ func TestStandaloneReceiptPackingReclaimsInodesAndPreservesHistory(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	files.EnableLocalReceiptPacking("graphdb")
+	if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+		t.Fatal(err)
+	}
 	store = NewTenantStore(files, "graphdb")
 	reclaimed := 0
 	for cursor, steps := "", 0; ; steps++ {
@@ -94,7 +98,7 @@ func TestStandaloneReceiptPackingReclaimsInodesAndPreservesHistory(t *testing.T)
 	}
 	packed := 0
 	for _, object := range objects {
-		if location, loose := files.receipt(ctx, object.Key); loose {
+		if location, loose := files.receipt(object.Key); loose {
 			t.Fatalf("loose receipt remains in %q: %s", location.database, object.Key)
 		}
 		if filepath.Base(object.Key) == receiptDatabase {
@@ -114,7 +118,9 @@ func TestStandaloneReceiptPackingReclaimsInodesAndPreservesHistory(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	files.EnableLocalReceiptPacking("graphdb")
+	if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+		t.Fatal(err)
+	}
 	store = NewTenantStore(files, "graphdb")
 	record, err := store.GetIngestBatch(ctx, tenant, first.Source, first.CollectorID, first.BatchID)
 	if err != nil || record.Result.Version != direct.Version {
@@ -149,7 +155,9 @@ func TestLocalWALRecoversPackedTerminalReceipt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		files.EnableLocalReceiptPacking("graphdb")
+		if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+			t.Fatal(err)
+		}
 		service, err := OpenIngestService(NewTenantStore(files, "graphdb"), config)
 		if err != nil {
 			files.Close()
@@ -223,5 +231,108 @@ func TestLocalWALAdmissionChecksDataInodesBeforeAppend(t *testing.T) {
 	}
 	if _, err := service.Wait(ctx, accepted); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCorruptPackedReceiptIsTenantLocal(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	open := func() *FileStore {
+		t.Helper()
+		files, err := OpenFileStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = files.Close() })
+		if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+			t.Fatal(err)
+		}
+		return files
+	}
+	files := open()
+	store := NewTenantStore(files, "graphdb")
+	request := ingestEntityRequest("packed-corruption", "host:packed")
+	request.IdempotencyKey = "retry"
+	for _, tenant := range []string{"broken", "healthy"} {
+		if _, err := store.Ingest(ctx, tenant, request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(root, "graphdb", "tenants", "broken", receiptDatabase)
+	db, err := bolt.Open(filename, 0600, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page int64
+	pageSize := int64(db.Info().PageSize)
+	if err := db.View(func(tx *bolt.Tx) error {
+		page = int64(tx.Bucket(receiptBucket).Root())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil || page == 0 {
+		t.Fatalf("invalid corruption fixture: page=%d err=%v", page, err)
+	}
+	file, err := os.OpenFile(filename, os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the bbolt page type while leaving the database metadata intact.
+	_, err = file.WriteAt([]byte{0, 0}, page*pageSize+8)
+	if err := errors.Join(err, file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	files = open()
+	store = NewTenantStore(files, "graphdb")
+	for range 2 {
+		if _, err := store.GetIngestBatch(ctx, "broken", request.Source, request.CollectorID, request.BatchID); !errors.Is(err, ErrReceiptStoreUnavailable) {
+			t.Fatalf("corrupt database was not quarantined: %v", err)
+		}
+	}
+	if _, err := store.Ingest(ctx, "broken", ingestEntityRequest("new-batch", "host:new")); !errors.Is(err, ErrReceiptStoreUnavailable) {
+		t.Fatalf("accepted batch while previous outcomes could not be checked: %v", err)
+	}
+	if _, manifest, err := store.Load(ctx, "broken"); err != nil || manifest.Version != 1 {
+		t.Fatalf("graph could not be read independently of receipts: %d %v", manifest.Version, err)
+	}
+	if _, err := store.Ingest(ctx, "healthy", ingestEntityRequest("healthy-next", "host:next")); err != nil {
+		t.Fatalf("corruption affected an unrelated tenant: %v", err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := CheckLocalReceiptDatabase(ctx, root, "graphdb", "healthy"); err != nil || count != 3 {
+		t.Fatalf("healthy database check: %d %v", count, err)
+	}
+	if _, err := CheckLocalReceiptDatabase(ctx, root, "graphdb", "broken"); !errors.Is(err, ErrReceiptStoreUnavailable) {
+		t.Fatalf("offline check did not report the corrupt page: %v", err)
+	}
+}
+
+func TestPackedReceiptHandleDoesNotSurvivePurge(t *testing.T) {
+	ctx := context.Background()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := files.EnableLocalReceiptPacking(ctx, "graphdb"); err != nil {
+		t.Fatal(err)
+	}
+	store := NewTenantStore(files, "graphdb")
+	request := ingestEntityRequest("packed-purge", "host:packed")
+	if _, err := store.Ingest(ctx, "tenant", request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PurgeTenant(ctx, "tenant", true); err != nil {
+		t.Fatal(err)
+	}
+	key := store.ingestBatchKey("tenant", request.Source, request.CollectorID, request.BatchID)
+	if _, err := files.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("purged receipt is visible through an old handle: %v", err)
 	}
 }
