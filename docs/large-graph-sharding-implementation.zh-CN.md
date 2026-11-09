@@ -1,6 +1,6 @@
 # 大图分片实施说明
 
-2026-11-09，基于 `28bb6df` 的开发分支 `codex/large-graph-sharding`。完整目标见[设计](large-graph-sharding-design.zh-CN.md)。读路径优化与当前局部测量见[第一轮优化记录](large-graph-sharding-optimization-2026-11-09.zh-CN.md)。本说明描述已写入代码的范围，不代表 2.4.4 已发布能力或跨主机容量资格。
+适用于 GGraphDB 2.5.0 的协议 5 大图分片预览。完整目标见[设计](large-graph-sharding-design.zh-CN.md)，读路径优化与局部测量见[第一轮优化记录](large-graph-sharding-optimization-2026-11-09.zh-CN.md)。发行验证和适用范围见[2.5.0 验证记录](validation-v2.5.0.md)。
 
 ## 已实现路径
 
