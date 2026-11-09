@@ -1,6 +1,6 @@
-# GGraphDB 2.4.4 Release Deployment
+# GGraphDB 2.5.0 Release Deployment
 
-[简体中文](release-deployment.zh-CN.md) · [User guide](README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4)
+[简体中文](release-deployment.zh-CN.md) · [User guide](README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0)
 
 Choose a deployment, verify the package, then start the service. Standalone uses
 one process and one persistent local directory; each Raft replica owns a separate directory.
@@ -18,17 +18,39 @@ linked guides and [readiness report](../raft-release-readiness.zh-CN.md).
 
 ## Install a release archive
 
+For Linux, download the archive and its `.sha256` file for your architecture
+from the [2.5.0 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0).
+
+| Host architecture | Archive |
+| --- | --- |
+| x86_64 (AMD64) | `graphdb-v2.5.0-linux-amd64.tar.gz` |
+| aarch64 (ARM64) | `graphdb-v2.5.0-linux-arm64.tar.gz` |
+
+```sh
+archive=graphdb-v2.5.0-linux-amd64.tar.gz
+sha256sum -c "$archive.sha256"
+tar -xzf "$archive"
+cd "${archive%.tar.gz}"
+./graphdb version
+GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 ./graphdb serve
+```
+
+### Full archive
+
+The full archive includes all binaries, deployment examples and gate evidence.
+Follow these steps when using the full archive.
+
 ### 1. Download and verify
 
-Download `graphdb-v2.4.4.tar.gz` and `graphdb-v2.4.4.tar.gz.sha256` from the
-[2.4.4 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4) into the same directory.
+Download `graphdb-v2.5.0.tar.gz` and `graphdb-v2.5.0.tar.gz.sha256` from the
+[2.5.0 release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0) into the same directory.
 
 On Linux:
 
 ```sh
-sha256sum -c graphdb-v2.4.4.tar.gz.sha256
-tar -xzf graphdb-v2.4.4.tar.gz
-cd v2.4.4
+sha256sum -c graphdb-v2.5.0.tar.gz.sha256
+tar -xzf graphdb-v2.5.0.tar.gz
+cd v2.5.0
 sha256sum -c SHA256SUMS
 ```
 
@@ -68,7 +90,7 @@ Open **[http://127.0.0.1:8080/ui/](http://127.0.0.1:8080/ui/)** and follow the
 
 ## Container alternative
 
-From the repository root, or the unpacked archive's `v2.4.4/` directory:
+From the repository root, or the unpacked archive's `v2.5.0/` directory:
 
 ```sh
 docker compose up -d --build
@@ -82,20 +104,20 @@ Stop the service before using offline CLI tools on its directory. Use HTTP for l
 
 | Existing installation | Upgrade rule |
 | --- | --- |
-| Standalone 2.0 / 2.1 / 2.2 | Stop the old process; reuse the compatible directory with 2.4.4 |
+| Standalone 2.0 / 2.1 / 2.2 | Stop the old process; reuse the compatible directory with 2.5.0 |
 | Raft | Follow the [qualified rolling window](../raft-rolling-upgrade.zh-CN.md); untested versions require maintenance or migration |
 | 1.x | Start with a fresh directory; no 1.x data migration is provided |
 
 ### Standalone upgrade checklist
 
-1. Create and verify a snapshot; retain the pre-upgrade backup for rollback.
+1. Create and verify a complete pre-upgrade runtime backup including the data and WAL directories. A logical graph snapshot alone cannot preserve the receipt and coordination state.
 2. Stop the old process. Never run two versions against the same directory.
-3. Replace the binary and start 2.4.4 with the same `GRAPHDB_DATA_DIR` and prefix.
+3. Replace the binary and start 2.5.0 with the same `GRAPHDB_DATA_DIR` and prefix.
 4. Check readiness, representative queries and WAL status before reopening traffic.
 
-Downgrading after enabling new automation is unsupported. After Raft protocol 3
-activation, a binary with maximum protocol 2 cannot reopen the same replica directory.
-See [version boundaries](../naming-and-compatibility.md).
+Standalone `serve` persists local directory format v2 before enabling packed
+receipts. To return to an older binary, restore the complete pre-upgrade backup
+into a separate directory. See [version boundaries](../naming-and-compatibility.md).
 
 ## Before exposing the service
 

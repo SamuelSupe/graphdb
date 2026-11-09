@@ -1,6 +1,6 @@
-# GGraphDB 2.4.4 发行版部署
+# GGraphDB 2.5.0 发行版部署
 
-[English](release-deployment.md) · [用户指南](README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4)
+[English](release-deployment.md) · [用户指南](README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0)
 
 先选择部署，再校验发行包并启动。单机使用一个进程和一个持久化本地目录，
 每个 Raft 副本使用独立目录。
@@ -17,17 +17,37 @@
 
 ## 安装发行包
 
+Linux 用户可从 [2.5.0 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0) 下载对应架构的安装包和同名 `.sha256` 文件。
+
+| 主机架构 | 安装包 |
+| --- | --- |
+| x86_64（AMD64） | `graphdb-v2.5.0-linux-amd64.tar.gz` |
+| aarch64（ARM64） | `graphdb-v2.5.0-linux-arm64.tar.gz` |
+
+```sh
+archive=graphdb-v2.5.0-linux-amd64.tar.gz
+sha256sum -c "$archive.sha256"
+tar -xzf "$archive"
+cd "${archive%.tar.gz}"
+./graphdb version
+GRAPHDB_DATA_DIR=/var/lib/graphdb-v2 ./graphdb serve
+```
+
+### 完整发行包
+
+需要所有平台程序、部署示例或发行验证证据时，使用以下完整包步骤。
+
 ### 1. 下载并校验
 
-从 [2.4.4 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.4.4)
-下载 `graphdb-v2.4.4.tar.gz` 和 `graphdb-v2.4.4.tar.gz.sha256`，放在同一目录。
+从 [2.5.0 Release](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.0)
+下载 `graphdb-v2.5.0.tar.gz` 和 `graphdb-v2.5.0.tar.gz.sha256`，放在同一目录。
 
 Linux 上执行：
 
 ```sh
-sha256sum -c graphdb-v2.4.4.tar.gz.sha256
-tar -xzf graphdb-v2.4.4.tar.gz
-cd v2.4.4
+sha256sum -c graphdb-v2.5.0.tar.gz.sha256
+tar -xzf graphdb-v2.5.0.tar.gz
+cd v2.5.0
 sha256sum -c SHA256SUMS
 ```
 
@@ -65,7 +85,7 @@ curl -fsS http://127.0.0.1:8080/v1/health
 
 ## 使用容器
 
-在仓库根目录或解压后的 `v2.4.4/` 目录执行：
+在仓库根目录或解压后的 `v2.5.0/` 目录执行：
 
 ```sh
 docker compose up -d --build
@@ -79,19 +99,18 @@ docker compose up -d --build
 
 | 已有安装 | 升级规则 |
 | --- | --- |
-| 单机 2.0／2.1／2.2 | 停止旧进程，使用 2.4.4 沿用兼容目录 |
+| 单机 2.0／2.1／2.2 | 停止旧进程，使用 2.5.0 沿用兼容目录 |
 | Raft | 遵循[已验收的滚动窗口](../raft-rolling-upgrade.zh-CN.md)；未验证版本使用维护或迁移流程 |
 | 1.x | 使用新目录，不提供 1.x 数据迁移 |
 
 ### 单机升级步骤
 
-1. 创建并验证快照，保留升级前备份用于回滚。
+1. 创建并验证升级前的完整运行状态备份，包含数据目录和 WAL 目录。仅备份逻辑图无法保留回执与协调状态。
 2. 停止旧进程，禁止两个版本同时使用同一目录。
-3. 替换程序，使用相同 `GRAPHDB_DATA_DIR` 和 prefix 启动 2.4.4。
+3. 替换程序，使用相同 `GRAPHDB_DATA_DIR` 和 prefix 启动 2.5.0。
 4. 检查就绪、代表性查询和 WAL 状态，再恢复流量。
 
-不支持启用新自动化后直接降级旧进程。Raft 协议 3 启用后，最高协议为 2 的旧程序
-不能打开同一副本目录。详见[版本边界](../naming-and-compatibility.zh-CN.md)。
+单机 `serve` 会在启用打包回执前持久化本地目录格式 v2。回退旧版时，将升级前的完整备份恢复到独立目录。详见[版本边界](../naming-and-compatibility.zh-CN.md)。
 
 ## 对外开放前
 

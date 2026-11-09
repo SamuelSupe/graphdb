@@ -205,6 +205,16 @@ jobs:
           tar -C dist -czf "dist/graphdb-${tag}.tar.gz" "$tag"
           (cd dist && sha256sum "graphdb-${tag}.tar.gz" > "graphdb-${tag}.tar.gz.sha256")
 
+          for arch in amd64 arm64; do
+            name="graphdb-${tag}-linux-${arch}"
+            mkdir -p "dist/$name"
+            install -m 0755 "$root/bin/graphdb-linux-$arch" "dist/$name/graphdb"
+            cp "$root"/{VERSION,LICENSE,BUILD-METADATA.json} "dist/$name/"
+            cp release/local-disk.md "dist/$name/RELEASE-NOTES.md"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          done
+
       - name: Verify extracted release package
         shell: bash
         run: |
@@ -212,6 +222,14 @@ jobs:
           (cd dist && sha256sum -c "graphdb-${GITHUB_REF_NAME}.tar.gz.sha256")
           unpacked="$(mktemp -d)"
           tar -xzf "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" -C "$unpacked"
+          for arch in amd64 arm64; do
+            name="graphdb-${GITHUB_REF_NAME}-linux-${arch}"
+            (cd dist && sha256sum -c "$name.tar.gz.sha256")
+            tar -xzf "dist/$name.tar.gz" -C "$unpacked"
+            test -x "$unpacked/$name/graphdb"
+            cmp "$unpacked/$name/graphdb" "$unpacked/$GITHUB_REF_NAME/bin/graphdb-linux-$arch"
+            cmp "$unpacked/$name/BUILD-METADATA.json" "$unpacked/$GITHUB_REF_NAME/BUILD-METADATA.json"
+          done
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           cd "$unpacked/$GITHUB_REF_NAME"
           sha256sum -c SHA256SUMS
@@ -271,4 +289,8 @@ jobs:
             --target main --verify-tag --latest=true \
             --notes-file release/local-disk.md \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" \
-            "dist/graphdb-${GITHUB_REF_NAME}.tar.gz.sha256"
+            "dist/graphdb-${GITHUB_REF_NAME}.tar.gz.sha256" \
+            "dist/graphdb-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
+            "dist/graphdb-${GITHUB_REF_NAME}-linux-amd64.tar.gz.sha256" \
+            "dist/graphdb-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
+            "dist/graphdb-${GITHUB_REF_NAME}-linux-arm64.tar.gz.sha256"

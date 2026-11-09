@@ -1,42 +1,39 @@
-# GGraphDB v2.4.4
+# GGraphDB v2.5.0
 
 多租户属性图数据库，支持单机、Raft 高可用和按租户分片，内置中英文管理控制台。
-A multi-tenant property graph database with standalone, Raft and tenant-sharded deployments, plus an embedded management console.
 
 ## 本版更新
 
-- **身份匹配正确性**：修复 CI 组合字段及 source/external_id 分隔符碰撞导致的误合并。新提交记录匹配规则，旧提交保留原重放语义。
-- **WAL 持续写入**：无效标识在接收前拒绝；历史尚未准备发布的无效批次会持久化为失败，并放行后续合法批次。采集状态可跨重启查询。
-- **重复数组写入**：`append_unique` 使用值索引去重，保留顺序与原有等价规则。同机三次 HTTP 对照中，16,000 项字符串数组重复写入中位数由约 4.25 秒降到 7 毫秒；这是局部回归结果，不是生产吞吐或延迟保证。
-- **查询响应**：避免平均值累加溢出；求和超出浮点范围时返回明确错误，JSON 编码失败不再返回 HTTP 200 空响应。
-- **升级性能**：首次升级后的无变化写入保留新索引，且不更改实体时间、版本或来源归属。
+- **单机 inode 回收**。按租户打包接入回执和直接提交的幂等记录，后台逐批迁移旧回执并清理空目录。自动 GC 支持配置每轮删除量、运行预算、续扫节拍和 inode 压力检查。
+- **持久性与诊断**。回执提交前同步待持久化的图对象目录。首次建库使用临时文件并原子发布。`receipt-check` 在独立进程中检查记录、页面和空闲页表。开发阶段完成五个虚拟机断电恢复场景，覆盖共享图文件复用、首次建库、WAL 重放和幂等重试。
+- **大图跨组分片预览**。Raft 协议 5 可显式启用单图跨组分片。改进续页、读 pin、搬迁、GC 和事务恢复。Raft 默认使用协议 1。
 
-延续 2.4.3 的 inode 保护和租户元数据在线自动恢复；单机无需新增配置。
+## 升级与回退
 
-## Upgrade notes
+单机首次运行 `serve` 时先持久化本地目录格式 v2，再启用回执打包。升级前请验证完整运行状态备份，包含数据、WAL 和协调状态。回退旧版时将升级前的备份恢复到独立目录。Raft 协议激活和版本滚动窗口见[升级手册](https://github.com/SamuelSupe/graphdb/blob/v2.5.0/docs/raft-rolling-upgrade.zh-CN.md)。
 
-New writes use unambiguous identity tuples and persist their matching rules. Old commits retain their original replay semantics; already merged entities cannot be automatically separated. Keep a verified pre-upgrade backup: do not downgrade a directory after new-format writes.
+## Linux 下载
 
-Raft still defaults to protocol 1. Protocols 1–3 retain historical write semantics. Upgrade every voter and router before separately activating `GRAPHDB_RAFT_PROTOCOL_VERSION=4`; the persisted protocol floor prevents unsafe downgrade. Protocol 4 also retires invalid legacy accepted batches through replicated state.
+| 平台 | 发行包 |
+| --- | --- |
+| x86_64（AMD64） | `graphdb-v2.5.0-linux-amd64.tar.gz` |
+| aarch64（ARM64） | `graphdb-v2.5.0-linux-arm64.tar.gz` |
 
-Ingest identifiers must fit their escaped path components: `source` up to 255 bytes; `collector_id`, `batch_id` and `idempotency_key` up to 247 bytes; NUL is rejected. Already prepared publication groups retain their integrity checks and are never silently discarded.
-
-## Download and run
-
-The archive includes **Linux AMD64, Linux ARM64 and macOS ARM64** binaries built with **Go 1.27.3**, source, SDKs, deployment examples and gate evidence.
+下载对应架构的发行包和同名 `.sha256` 文件。在同一目录执行：
 
 ```sh
-sha256sum -c graphdb-v2.4.4.tar.gz.sha256
-tar -xzf graphdb-v2.4.4.tar.gz
-cd v2.4.4
-sha256sum -c SHA256SUMS
-GRAPHDB_DATA_DIR=./data bin/graphdb-linux-amd64 serve
+archive=graphdb-v2.5.0-linux-amd64.tar.gz
+sha256sum -c "$archive.sha256"
+tar -xzf "$archive"
+cd "${archive%.tar.gz}"
+./graphdb version
+GRAPHDB_DATA_DIR=./data ./graphdb serve
 ```
 
-Choose the binary for your platform, then open `http://127.0.0.1:8080/ui/`.
+完整包 `graphdb-v2.5.0.tar.gz` 还包含 macOS ARM64、源码、SDK、部署示例和门禁证据。发行二进制使用 Go 1.27.3。
 
 ## Validation
 
-Publication requires the existing unit/vet/race/SDK, direct/WAL recovery, S3 backup, gateway, rolling upgrade, and both thirty-minute soak gates, plus protocol-4 process/recovery checks. No gate waiver. Packaged evidence and the final verification record distinguish candidate, publication and independent-download results. Cross-host recovery, day-scale stability and production capacity remain unqualified.
+Publication requires the exact-tag unit, vet, race, SDK, direct/WAL recovery, S3 backup, gateway, Raft and 30-minute soak gates. The full archive contains runtime qualification evidence. Protocol 5 is an opt-in preview. Cross-host recovery, day-scale stability and production capacity remain unqualified.
 
-[README](https://github.com/SamuelSupe/graphdb/blob/main/README.md) · [中文 README](https://github.com/SamuelSupe/graphdb/blob/main/README.zh-CN.md) · [Validation](https://github.com/SamuelSupe/graphdb/blob/main/docs/validation-v2.4.4.md) · [Upgrade guide](https://github.com/SamuelSupe/graphdb/blob/main/docs/raft-rolling-upgrade.zh-CN.md)
+[Deployment](https://github.com/SamuelSupe/graphdb/blob/v2.5.0/docs/user/release-deployment.md) · [中文部署指南](https://github.com/SamuelSupe/graphdb/blob/v2.5.0/docs/user/release-deployment.zh-CN.md) · [Validation](https://github.com/SamuelSupe/graphdb/blob/v2.5.0/docs/validation-v2.5.0.md)

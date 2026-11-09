@@ -3,6 +3,21 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [2.5.0] - 2026-11-09
+
+- Add opt-in large-graph partitioning across Raft groups with protocol 5.
+  Harden scan pagination, pinned reads, partition moves, GC and transaction
+  recovery. The default remains protocol 1.
+- Reduce standalone inode usage by packing ingest and direct-commit idempotency
+  receipts into per-tenant databases. Add tunable GC budgets and
+  pressure-triggered continuation.
+- Persist the standalone directory format guard before enabling packed receipts.
+  Sync graph objects before receipt commits and atomically publish new receipt
+  databases, preserving WAL recovery and idempotent retry after interruption.
+- Add offline `receipt-check` with subprocess isolation, page checks and
+  actionable diagnostics. Bound open receipt handles and background discovery.
+- Publish standalone Linux AMD64 and ARM64 archives with SHA-256 checksums.
+
 ## [2.4.4] - 2026-10-30
 
 - Encode composite CI and source identities without delimiter ambiguity. Persist

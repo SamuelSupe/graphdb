@@ -1,6 +1,6 @@
 # 产品可靠性与运维
 
-本文描述 2.4.4 的产品可靠性与运维契约，发行二进制资格见[当前验证范围](validation-v2.4.4.md)。单机 direct/WAL、单组 Raft 和租户分片均保留；历史设计沿革见[设计说明](product-hardening-design.zh-CN.md)与[当时验证记录](product-hardening-validation-2026-10-02.zh-CN.md)。
+本文描述 2.5.0 的产品可靠性与运维契约，发行二进制资格见[当前验证范围](validation-v2.5.0.md)。单机 direct/WAL、单组 Raft 和租户分片均保留；历史设计沿革见[设计说明](product-hardening-design.zh-CN.md)与[当时验证记录](product-hardening-validation-2026-10-02.zh-CN.md)。
 
 ## 2.4.4 身份、接入与查询修复
 
