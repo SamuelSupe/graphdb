@@ -43,7 +43,7 @@ Prefer a packaged binary? Follow [release deployment](docs/user/release-deployme
 <details>
 <summary>Container alternative</summary>
 
-Run from the repository root. The default Compose deployment has one service and one persistent volume.
+Run from the repository root. The standalone Compose deployment has one service and one persistent volume. Ingest batches use the local WAL and return HTTP 202 after fsync. Use `GRAPHDB_INGEST_MODE=direct` for synchronous ingestion without a WAL, or send `Prefer: wait=committed` to wait for a WAL batch's terminal result.
 
 ```sh
 docker compose up -d --build

@@ -38,9 +38,10 @@ at each batch flush, rather than having a 10-minute total duration limit.
 | `GRAPHDB_MODE` | `all`; other modes fail startup |
 | `GRAPHDB_STORAGE` | `local`; other values fail startup |
 | `GRAPHDB_COORDINATION` | `local`; PostgreSQL settings fail startup |
-| `GRAPHDB_INGEST_MODE` | `direct` or `wal` |
+| `GRAPHDB_INGEST_MODE` | `direct` by default for `graphdb serve`; standalone Compose selects `wal` |
 | `GRAPHDB_INGEST_WAL_DURABILITY` | `sync`; fsync before durable acknowledgement |
 | `GRAPHDB_INGEST_WAL_DIR` | `<data-dir>/wal/ingest` |
+| `GRAPHDB_INGEST_FLUSH_INTERVAL` | `10s`; standalone Compose passes through overrides such as `500ms` |
 | `GRAPHDB_READER_CACHE_MAX_BYTES` | 512 MiB |
 | `GRAPHDB_READER_CACHE_MAX_TENANTS` | 64 |
 
@@ -188,8 +189,12 @@ sync to each sync-mode group; no throughput improvement is claimed.
 After direct/WAL ingest manifest publication, an in-process worker advances indexes in version
 order. At most eight background updates are retained across all tenants; when
 full, ingest finishes its index work synchronously after releasing the tenant lock.
-Adjacent pending batches share a bounded delta; more than 8192 change
-references start another bounded incremental batch. `committed` still means durable, readable graph
+Adjacent pending batches share a bounded delta. Regular incremental batches
+start a new batch above 8192 change references. When a standalone WAL update's
+graph estimates exceed the maintenance budget, it queues only the bounded
+changes and captures the graph after the predecessor and build budget are
+ready. If the delta overflows or the catalog base no longer matches, the
+worker rebuilds from the current head. `committed` still means durable, readable graph
 data. Queries use a graph view meeting `min_version` when indexes lag. The
 `/v1/commits` API still waits for its index update and shares that ordering chain. GC, restore, and directory close
 wait for those file references. A crash can leave indexes behind the durable

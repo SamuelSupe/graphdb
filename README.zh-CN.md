@@ -41,7 +41,7 @@ GRAPHDB_DATA_DIR=./.graphdb bin/graphdb serve
 <details>
 <summary>使用容器启动</summary>
 
-在仓库根目录执行。默认 Compose 部署包含一个服务和一个持久化卷。
+在仓库根目录执行。单机 Compose 包含一个服务和一个持久化卷。采集批次先写入本地 WAL，fsync 后返回 HTTP 202。需要无 WAL 的同步接入时设置 `GRAPHDB_INGEST_MODE=direct`，需要等待 WAL 批次终态时发送 `Prefer: wait=committed`。
 
 ```sh
 docker compose up -d --build

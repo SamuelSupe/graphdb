@@ -68,6 +68,9 @@ func (s *IngestService) completePendingStateLocked(pending *ingestPending, resul
 	pending.result = result
 	pending.err = err
 	pending.finishedAt = time.Now().UTC()
+	if observer := s.config.Observer; observer != nil && !pending.envelope.AcceptedAt.IsZero() {
+		observer.RecordIngestTerminal(state, max(0, pending.finishedAt.Sub(pending.envelope.AcceptedAt)))
+	}
 	s.pendingBytes -= pending.bytes
 	delete(s.active, ingestRequestIdentity(pending.envelope.TenantID, pending.envelope.Request))
 	statusKey := ingestStatusKey(

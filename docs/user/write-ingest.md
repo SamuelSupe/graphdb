@@ -334,17 +334,21 @@ rechecking them against versions created earlier in the same flush.
 
 ### Local WAL mode
 
-`GRAPHDB_INGEST_MODE=direct` remains the default synchronous `200/207`
-behavior. A single-writer deployment using `GRAPHDB_COORDINATION=local` can
-explicitly enable `GRAPHDB_INGEST_MODE=wal`. Requests are first appended to one
+`graphdb serve` defaults to synchronous `200/207` ingestion. The standalone
+Compose configuration selects `GRAPHDB_INGEST_MODE=wal` with sync durability.
+For a standalone binary deployment, set `GRAPHDB_INGEST_MODE=wal` to enable
+the same path. Requests are first appended to one
 process-wide segmented WAL, so tenants share group fsync while the default
 single graph-write worker preserves per-tenant FIFO order. One tenant flush
 keeps the logical commit order of its requests, writes those commits to one
 Parquet commit segment, and publishes the manifest once.
 
 Sync durability returns `202 Accepted`, `Location`, and a status URL after the
-WAL fsync. Send `Prefer: wait=committed` to wait for the final `200/207` result,
-or query status. Cancellation, timeout, service failure, or forced shutdown ends
+WAL fsync. A collector can save the batch identity and `status_url`, continue
+submitting batches, and check for `committed` or `failed` separately. Use the
+same idempotency key when retrying an ambiguous submission. Send
+`Prefer: wait=committed` when the caller needs the terminal result before
+proceeding. Cancellation, timeout, service failure, or forced shutdown ends
 the wait without revoking durable acceptance. A service failure returns its
 storage error instead of a request timeout. Keep `Location` for a status query
 after recovery, or retry with the same batch identity:
@@ -401,6 +405,10 @@ Main settings are `GRAPHDB_INGEST_WAL_DIR` (default
 `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`,
 `GRAPHDB_INGEST_FLUSH_WORKERS=1`, and
 `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`.
+
+Standalone Compose passes through `GRAPHDB_INGEST_FLUSH_INTERVAL`. For a
+lower-volume tenant, a shorter interval reduces the time a batch waits for a
+flush. It also gives the worker less time to group batches.
 
 Recovery finishes before HTTP starts and holds an exclusive process lock on the
 WAL directory. Middle corruption fails closed; only an incomplete final record

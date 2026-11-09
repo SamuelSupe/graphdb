@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1067,6 +1068,94 @@ func TestWALBacklogLargerThanCommitTailMakesProgress(t *testing.T) {
 	manifest, err := store.CurrentManifest(ctx, "tenant-a")
 	if err != nil || manifest.Version == 0 || manifest.Version > 4 {
 		t.Fatalf("oversized backlog made no bounded progress: version=%d error=%v", manifest.Version, err)
+	}
+}
+
+func TestLocalWALCommitsWhileOversizedIndexesCatchUp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	files, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	blocked := &versionedCatalogPause{
+		ObjectStore: files, version: 2, paused: make(chan struct{}), resume: make(chan struct{}),
+	}
+	counted := newIngestBatchCountingStore(blocked)
+	store := NewTenantStore(blocked, "test")
+	store.Objects = counted
+	store.MaxMaintenanceBytes = 256 << 10
+	defer store.ShutdownTasks(context.Background())
+	seed := indexMutations()
+	seed.UpsertEntities[0].Fields["padding"] = strings.Repeat("x", 256<<10)
+	if _, err := store.Commit(ctx, "tenant-a", seed, CommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RebuildIndexes(ctx, "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+	initialCatalogPuts := counted.count(store.indexCatalogKey("tenant-a"))
+
+	config := testIngestServiceConfig(t)
+	config.FlushMaxRequests = 1
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	resume := sync.OnceFunc(func() { close(blocked.resume) })
+	defer resume()
+
+	for version := int64(2); version <= 4; version++ {
+		request := ingestEntityRequest(fmt.Sprint("batch-", version), "host:updated")
+		request.Items[0].Entity.Fields["hostname"] = fmt.Sprint("name-", version)
+		accepted, err := service.Accept(ctx, "tenant-a", request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version == 2 {
+			select {
+			case <-blocked.paused:
+			case <-ctx.Done():
+				t.Fatal("index publication did not start")
+			}
+		}
+		result, err := service.Wait(ctx, accepted)
+		if err != nil || result.Version != version || result.Applied != 1 {
+			t.Fatalf("WAL did not commit while the catalog was paused: %+v, %v", result, err)
+		}
+	}
+	g, manifest, err := store.Load(ctx, "tenant-a")
+	if err != nil || manifest.Version != 4 {
+		t.Fatalf("published graph version=%d, err=%v", manifest.Version, err)
+	}
+	if entity, ok := g.Entities.Get("host:updated"); !ok || entity.Fields["hostname"] != "name-4" {
+		t.Fatalf("latest committed value is missing: %+v", entity)
+	}
+	health, err := store.IndexHealth(ctx, "tenant-a")
+	if err != nil || health.CatalogVersion != 1 || !health.Updating {
+		t.Fatalf("paused catalog health: %+v, %v", health, err)
+	}
+	resume()
+	for {
+		catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+		if err == nil && catalog.Version == 4 {
+			lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: 4, Catalog: catalog}
+			entity, ok, err := lookup.GetEntity(ctx, "host:updated", nil)
+			if err != nil || !ok || entity.Fields["hostname"] != "name-4" {
+				t.Fatalf("latest indexed value is missing: %+v, %v", entity, err)
+			}
+			if got := counted.count(store.indexCatalogKey("tenant-a")) - initialCatalogPuts; got != 2 {
+				t.Fatalf("catalog publications=%d, want one active update and one merged update", got)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("catalog did not catch up: version=%d, err=%v", catalog.Version, err)
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 

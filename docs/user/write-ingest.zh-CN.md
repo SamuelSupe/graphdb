@@ -308,9 +308,9 @@ atomic，或没有 expected version 但带前置条件的请求作为隔离 barr
 
 ### 本地 WAL 模式
 
-默认 `GRAPHDB_INGEST_MODE=direct` 保持原来的同步 `200/207` 行为。单 writer、
-`GRAPHDB_COORDINATION=local` 部署可以显式设置
-`GRAPHDB_INGEST_MODE=wal`。该模式会先把请求追加到进程级分段 WAL；不同租户
+`graphdb serve` 默认同步接入并返回 `200/207`。单机 Compose 默认启用同步落盘的 WAL，
+直接运行单机二进制时可设置 `GRAPHDB_INGEST_MODE=wal` 启用同一路径。
+该模式会先把请求追加到进程级分段 WAL；不同租户
 可共享一次 group-fsync，而后台默认只使用一个 graph write worker，并保持
 同租户 FIFO 顺序。同一租户的一次 flush 保留每个请求的逻辑 commit 顺序，
 但把这些 commit 写入一个 Parquet commit segment，并只发布一次 manifest。
@@ -328,7 +328,9 @@ atomic，或没有 expected version 但带前置条件的请求作为隔离 barr
 }
 ```
 
-需要等待最终结果的兼容调用方可以发送 `Prefer: wait=committed`。请求取消、超时、
+采集端收到 202 后保存批次身份与 `status_url`，可以继续提交下一批，另行查询
+`committed` 或 `failed`。提交结果不确定时使用原幂等键重试。
+需要等待最终结果的调用方可以发送 `Prefer: wait=committed`。请求取消、超时、
 服务故障或强制关闭会结束等待，但不会撤销已持久化接管的批次。服务故障按存储错误
 返回，不会误报为请求超时。保留 `Location`，恢复后查询状态，或使用相同批次身份重试：
 
@@ -384,6 +386,10 @@ Content-Type: application/json
 - `GRAPHDB_INGEST_FLUSH_MAX_BYTES=8MiB`
 - `GRAPHDB_INGEST_FLUSH_WORKERS=1`
 - `GRAPHDB_INGEST_SHUTDOWN_TIMEOUT=30s`
+
+单机 Compose 支持从环境变量或 `.env` 传入 `GRAPHDB_INGEST_FLUSH_INTERVAL`。低流量场景可用
+`GRAPHDB_INGEST_FLUSH_INTERVAL=500ms docker compose up -d` 缩短调度等待，
+较短的窗口也会减少同一次 flush 合并批次的机会。
 
 WAL 在 HTTP 监听前完成恢复并持有目录进程锁。损坏的中间记录会阻止启动；
 只有最后一个 segment 的不完整尾记录会被截断。已经 durable accepted 的

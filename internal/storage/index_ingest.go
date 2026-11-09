@@ -18,7 +18,7 @@ const (
 // Retain bounded incremental batches in publication order. Coalesce only the
 // last queued batch; a full delta starts another batch rather than a rebuild.
 // Read views keep every queued version's inputs alive through publication.
-func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate) bool {
+func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantID string, work *commitIndexUpdate, deferOversized bool) bool {
 	if IsReplicatedContext(ctx) {
 		return false
 	}
@@ -51,38 +51,21 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	work.fence = bound.fence
 	work.background = true
 	s.indexUpdateMu.Lock()
-	if s.localIndexMaintenance[tenantID] > 0 {
-		// Foreground durability does not wait for an online rebuild. Coalesce
-		// one deferred catch-up without retaining graphs or reserving memory
-		// that the predecessor still needs in order to finish.
-		if pending := s.pendingIngestIndexes[tenantID]; pending != nil && pending.onlineRebuild && pending.after == nil && pending.fence == work.fence && s.indexUpdateTails[tenantID] == pending.done {
+	deferred := s.localIndexMaintenance[tenantID] > 0
+	// An unreserved predecessor may need the full budget before it can finish.
+	if !deferred && s.indexUnreservedTails[tenantID] != nil {
+		s.indexUpdateMu.Unlock()
+		release()
+		return false
+	}
+	if pending := s.pendingIngestIndexes[tenantID]; pending != nil && pending.fence == work.fence && s.indexUpdateTails[tenantID] == pending.done {
+		if deferred && pending.onlineRebuild && pending.after == nil {
 			s.mergeDeferredIndexUpdate(pending, work)
 			s.indexUpdateMu.Unlock()
 			release()
 			return true
 		}
-		if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
-			s.indexUpdateMu.Unlock()
-			release()
-			return false
-		}
-		input := *work
-		*work = commitIndexUpdate{baseVersion: input.baseVersion, version: input.baseVersion, onlineRebuild: true, background: true, fence: input.fence}
-		s.mergeDeferredIndexUpdate(work, &input)
-		s.localIndexMaintenance[tenantID]++
-		if maintenance := s.localMaintenanceWait[tenantID]; maintenance != nil {
-			work.maintenanceDone = maintenance.done
-		}
-	} else {
-		// Do not reserve memory behind a synchronous predecessor: that predecessor
-		// may need the same memory before it can complete and release this work.
-		if s.indexUnreservedTails[tenantID] != nil {
-			s.indexUpdateMu.Unlock()
-			release()
-			return false
-		}
-		if pending := s.pendingIngestIndexes[tenantID]; pending != nil &&
-			s.indexUpdateTails[tenantID] == pending.done && pending.version == work.baseVersion && pending.fence == work.fence &&
+		if !deferred && pending.reservation != nil && pending.version == work.baseVersion &&
 			len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
 				len(pending.report.AffectedEdgeIDs)+len(work.report.AffectedEdgeIDs) <= maxPendingIndexChanges &&
 			pending.reservation.resize(pendingIndexBytes(pending.before, work.after)) {
@@ -91,18 +74,36 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 			release()
 			return true
 		}
-		// Do not wait for capacity while holding the tenant lock: a queued rebuild
-		// can need that lock. The caller falls back to finishing after unlocking.
-		if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
-			s.indexUpdateMu.Unlock()
-			release()
-			return false
+	}
+	if s.activeIngestIndexUpdates >= maxBackgroundIndexUpdates {
+		s.indexUpdateMu.Unlock()
+		release()
+		return false
+	}
+	if !deferred {
+		bytes := pendingIndexBytes(work.before, work.after)
+		deferred = deferOversized && bytes > s.backgroundIndexByteLimit()
+		if !deferred {
+			// Capacity can become available after the caller releases the tenant lock.
+			work.reservation = s.reserveIndexMemory(bytes)
+			if work.reservation == nil {
+				s.indexUpdateMu.Unlock()
+				release()
+				return false
+			}
 		}
-		work.reservation = s.reserveIndexMemory(pendingIndexBytes(work.before, work.after))
-		if work.reservation == nil {
-			s.indexUpdateMu.Unlock()
-			release()
-			return false
+	}
+	if deferred {
+		// Retain only the delta until the predecessor and build budget are ready.
+		input := *work
+		*work = commitIndexUpdate{baseVersion: input.baseVersion, version: input.baseVersion, onlineRebuild: true, background: true, fence: input.fence}
+		s.mergeDeferredIndexUpdate(work, &input)
+		if s.localIndexMaintenance == nil {
+			s.localIndexMaintenance = make(map[string]int)
+		}
+		s.localIndexMaintenance[tenantID]++
+		if maintenance := s.localMaintenanceWait[tenantID]; maintenance != nil {
+			work.maintenanceDone = maintenance.done
 		}
 	}
 	s.activeIngestIndexUpdates++

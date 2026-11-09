@@ -137,7 +137,7 @@ func (s *TenantStore) ingest(ctx context.Context, tenantID string, request Inges
 			result.Conflicts = append(result.Conflicts, ingest.IngestConflicts(request, commitResult.Suppressed)...)
 		}
 	}
-	if indexWork != nil && s.localFileStore() != nil && s.enqueueLocalIngestIndexUpdate(ctx, tenantID, indexWork) {
+	if indexWork != nil && s.localFileStore() != nil && s.enqueueLocalIngestIndexUpdate(ctx, tenantID, indexWork, false) {
 		indexWork = nil
 	} else {
 		s.enqueueCommitIndexUpdate(ctx, tenantID, indexWork)

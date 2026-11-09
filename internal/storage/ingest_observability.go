@@ -8,6 +8,7 @@ type IngestObserver interface {
 	RecordIngestWALState(bufferBytes int, diskBytes int64, writtenLSN uint64, durableLSN uint64)
 	RecordIngestQueue(pending int, bytes int64, oldest time.Duration)
 	RecordIngestQueueCache(event string)
+	RecordIngestTerminal(state string, duration time.Duration)
 	RecordIngestFlush(
 		status string,
 		duration time.Duration,

@@ -540,6 +540,9 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	if statusBody.State != storage.IngestStateAccepted {
 		t.Fatalf("status state = %q", statusBody.State)
 	}
+	if bytes.Contains(obs.Metrics.SnapshotPrometheus(), []byte("graphdb_ingest_wal_terminal_duration_seconds_count")) {
+		t.Fatal("pending WAL batch was counted as terminal")
+	}
 
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -562,6 +565,8 @@ func TestHTTPIngestWALMetricsLogsAndTraceLinks(t *testing.T) {
 	}
 	metrics := metricsResponse.Body.String()
 	for _, want := range []string{
+		`graphdb_http_request_duration_seconds_count{method="POST",route="POST /v1/ingest/batches",status="202"} 1`,
+		`graphdb_ingest_wal_terminal_duration_seconds_count{state="committed"} 1`,
 		`graphdb_ingest_wal_append_total{record_type="accepted",status="ok"} 1`,
 		`graphdb_ingest_wal_fsync_total{status="ok"}`,
 		`graphdb_ingest_queue_pending_requests 0`,

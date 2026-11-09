@@ -469,7 +469,7 @@ func TestIndexQueueDoesNotReserveBehindSynchronousPredecessor(t *testing.T) {
 	predecessor := &commitIndexUpdate{}
 	store.enqueueCommitIndexUpdate(ctx, "tenant-a", predecessor)
 	next := &commitIndexUpdate{before: graph.New(), after: graph.New()}
-	accepted := store.enqueueLocalIngestIndexUpdate(ctx, "tenant-a", next)
+	accepted := store.enqueueLocalIngestIndexUpdate(ctx, "tenant-a", next, true)
 	// Always drain the predecessor, including on failure, so no background worker
 	// outlives the test's data directory.
 	if err := store.runCommitIndexUpdate(ctx, "tenant-a", predecessor); err != nil {

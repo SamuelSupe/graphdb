@@ -827,6 +827,9 @@ func (o *blockingFirstIngestWALAppendObserver) RecordIngestQueueCache(string) {}
 func (o *blockingFirstIngestWALAppendObserver) RecordIngestFlush(string, time.Duration, int, int, int, int, int, bool) {
 }
 
+func (o *blockingFirstIngestWALAppendObserver) RecordIngestTerminal(string, time.Duration) {
+}
+
 func (o *blockingFirstIngestWALAppendObserver) RecordIngestRecovery(string, int, int, int, time.Duration) {
 }
 

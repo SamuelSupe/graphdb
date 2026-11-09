@@ -866,6 +866,7 @@ func (o *ingestWALTestObserver) RecordIngestFlush(string, time.Duration, int, in
 }
 
 func (o *ingestWALTestObserver) RecordIngestRecovery(string, int, int, int, time.Duration) {}
+func (o *ingestWALTestObserver) RecordIngestTerminal(string, time.Duration)                {}
 
 func (o *ingestWALTestObserver) syncSnapshot() []ingestWALSyncObservation {
 	o.mu.Lock()

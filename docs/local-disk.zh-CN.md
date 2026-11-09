@@ -25,8 +25,9 @@
 | `GRAPHDB_MODE` | 仅支持 `all` |
 | `GRAPHDB_STORAGE` | 仅支持 `local` |
 | `GRAPHDB_COORDINATION` | 仅支持 `local`，拒绝 PostgreSQL 配置 |
-| `GRAPHDB_INGEST_MODE` | 默认 `direct`，可选 `wal` |
+| `GRAPHDB_INGEST_MODE` | `graphdb serve` 默认 `direct`，单机 Compose 默认 `wal` |
 | `GRAPHDB_INGEST_WAL_DURABILITY` | 默认 `sync`，持久化确认前执行 fsync |
+| `GRAPHDB_INGEST_FLUSH_INTERVAL` | 默认 `10s`，单机 Compose 可传入 `500ms` 等覆盖值 |
 | `GRAPHDB_INGEST_WAL_DIR` | 默认 `<data-dir>/wal/ingest` |
 | `GRAPHDB_READER_CACHE_MAX_BYTES` | 默认 512 MiB |
 | `GRAPHDB_READER_CACHE_MAX_TENANTS` | 默认 64 |
@@ -116,7 +117,8 @@ Direct/WAL ingest 的 manifest 发布后，索引在进程内按版本顺序追�
 
 本地索引重建进入同一条有序索引发布队列；ingest 可继续发布，后续索引在重建之后追赶。
 任务完成表示已处理其捕获的版本；持续写入时，更新的图头仍可能等待后续索引工作。
-本地 compact 或重建期间，追平工作有界合并需求，不保留中间图，也不预留维护仍需使用的内存；
+本地 compact 或重建期间，以及单机 WAL 批次的图索引估算超过维护预算时，追平工作有界合并需求，
+只保留增量，等前序工作和构建预算就绪后再加载图；
 队列只保留旧标量值和旧边端点，最多 8192 个变更引用，字节估计上限为 `min(维护预算 / 64, 8MiB)`。
 等待前序工作和图构建预算后才加载最新图；若等待期间新写入增大了图，先释放不足的预算，再按最新估算申请。
 预算等待不持有租户锁或保留中间图，期间继续合并追平需求；超预算的构建独占维护预算。

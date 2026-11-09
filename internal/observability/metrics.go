@@ -15,6 +15,7 @@ var queryBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5
 var writeBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 var ingestGroupBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 128, 256}
 var ingestSegmentBuckets = []float64{0, 1, 2, 4, 8}
+var ingestTerminalBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300}
 
 type Metrics struct {
 	mu           sync.Mutex
@@ -66,6 +67,7 @@ type Metrics struct {
 	ingestQueueCache   map[string]float64
 	ingestFlush        map[string]float64
 	ingestFlushTime    map[string]*histogram
+	ingestTerminalTime map[string]*histogram
 	ingestFlushReqs    map[string]*histogram
 	ingestFlushCommit  map[string]*histogram
 	ingestFlushSegs    map[string]*histogram
@@ -122,6 +124,7 @@ func NewMetrics() *Metrics {
 		ingestQueueCache:       map[string]float64{},
 		ingestFlush:            map[string]float64{},
 		ingestFlushTime:        map[string]*histogram{},
+		ingestTerminalTime:     map[string]*histogram{},
 		ingestFlushReqs:        map[string]*histogram{},
 		ingestFlushCommit:      map[string]*histogram{},
 		ingestFlushSegs:        map[string]*histogram{},
@@ -458,6 +461,15 @@ func (m *Metrics) RecordIngestFlush(
 	}
 }
 
+func (m *Metrics) RecordIngestTerminal(state string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.observe(m.ingestTerminalTime, state, ingestTerminalBuckets, duration.Seconds())
+}
+
 func (m *Metrics) RecordIngestRecovery(status string, records int, pending int, prepared int, duration time.Duration) {
 	if m == nil {
 		return
@@ -532,6 +544,7 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	writeScalar(&b, "graphdb_ingest_queue_cache_evictions_total", "Completed ingest requests evicted from the in-memory status index.", "counter", m.ingestQueueCache["eviction"])
 	writeCounter(&b, "graphdb_ingest_flush_total", "Tenant ingest flushes by status.", []string{"status"}, m.ingestFlush)
 	writeHistogram(&b, "graphdb_ingest_flush_duration_seconds", "Tenant ingest flush latency.", []string{"status"}, m.ingestFlushTime)
+	writeHistogram(&b, "graphdb_ingest_wal_terminal_duration_seconds", "Local WAL batch latency from acceptance to terminal outcome.", []string{"state"}, m.ingestTerminalTime)
 	writeHistogram(&b, "graphdb_ingest_flush_requests", "Requests processed by each tenant ingest flush.", []string{"status"}, m.ingestFlushReqs)
 	writeHistogram(&b, "graphdb_ingest_flush_logical_commits", "Logical graph commits emitted by each tenant ingest flush.", []string{"status"}, m.ingestFlushCommit)
 	writeHistogram(&b, "graphdb_ingest_flush_segments", "Commit segments emitted by each tenant ingest flush.", []string{"status"}, m.ingestFlushSegs)

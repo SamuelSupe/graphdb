@@ -62,6 +62,26 @@ sum by (job, instance) (increase(graphdb_raft_operation_seconds_count{
   operation=~"message_send|control_send|snapshot_send",status=~"error|timeout"}[5m]))
 ```
 
+## 单机 WAL 受理与终态延迟
+
+HTTP 202 的耗时衡量采集请求到 WAL 受理响应的时间。终态直方图
+`graphdb_ingest_wal_terminal_duration_seconds` 从批次的 `accepted_at` 起算，
+到后台完成 WAL 终态处理时记录，包含等待调度、发布和重试的时间。
+`state="committed"` 和 `state="failed"` 分开统计。每条已受理的 WAL 记录完成时记一次，
+包括重新进入 WAL 后以幂等结果完成的重试。用
+`graphdb_ingest_queue_oldest_seconds` 同时观察仍在等待的批次。
+
+```promql
+# 按实例查看 HTTP 202 受理 P99
+histogram_quantile(0.99, sum by (instance, le) (
+  rate(graphdb_http_request_duration_seconds_bucket{
+    method="POST",route="POST /v1/ingest/batches",status="202"}[5m])))
+
+# 按实例查看受理到提交 P99
+histogram_quantile(0.99, sum by (instance, le) (
+  rate(graphdb_ingest_wal_terminal_duration_seconds_bucket{state="committed"}[5m])))
+```
+
 ## 观察边界与部署
 
 [2.2.4 的离线恢复保护](product-p0-p1-review5-2026-10-03.zh-CN.md)在 CLI 错误中区分角色目录锁、Raft 数据库锁和归档目标子目录冲突；失败命令以非零状态退出。这些命令在 HTTP 服务之外运行，没有新增服务指标。Raft 启动的目录锁冲突也记录在启动日志；先检查所有角色目录的真实占用进程，不要删除锁文件绕过检查。
