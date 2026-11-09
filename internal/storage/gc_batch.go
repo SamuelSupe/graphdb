@@ -61,6 +61,7 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 			}
 		}()
 	}
+	started := time.Now()
 	for {
 		if admission != nil && !admission.acquire(ctx) {
 			return report, ctx.Err()
@@ -79,6 +80,10 @@ func (s *TenantStore) RunGC(ctx context.Context, tenantID string, options GCOpti
 		next := batch.Checkpoint.NextCursor
 		if next == "" || next <= options.CheckpointCursor {
 			return report, fmt.Errorf("gc checkpoint did not advance from %q", options.CheckpointCursor)
+		}
+		if options.RunBudget > 0 && time.Since(started) >= options.RunBudget {
+			sort.Strings(report.DeletedKeys)
+			return report, nil
 		}
 		options.CheckpointCursor = next
 		if maxDeletes > 0 {

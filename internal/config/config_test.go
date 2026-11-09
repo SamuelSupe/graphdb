@@ -34,6 +34,39 @@ func TestLoadInodeAdmissionPolicy(t *testing.T) {
 	}
 }
 
+func TestLoadMaintenanceGCPolicy(t *testing.T) {
+	setLocalConfigEnv(t)
+	const prefix = "GRAPHDB_MAINTENANCE_GC_"
+	t.Setenv(prefix+"MAX_DELETES", "5000")
+	t.Setenv(prefix+"RUN_BUDGET", "1500ms")
+	t.Setenv(prefix+"CONTINUATION_INTERVAL", "300ms")
+	t.Setenv(prefix+"INODE_PRESSURE_INTERVAL", "0")
+	t.Setenv(prefix+"INODE_PRESSURE_MULTIPLIER", "3")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gc := cfg.MaintenanceGC
+	if gc.MaxDeletes != 5000 || gc.RunBudget != 1500*time.Millisecond || gc.ContinuationInterval != 300*time.Millisecond || gc.InodePressureInterval != 0 || gc.InodePressureMultiplier != 3 {
+		t.Fatalf("unexpected maintenance GC policy: %+v", gc)
+	}
+	for _, setting := range []struct{ key, value string }{
+		{"MAX_DELETES", "0"},
+		{"RUN_BUDGET", "0s"},
+		{"CONTINUATION_INTERVAL", "0s"},
+		{"INODE_PRESSURE_INTERVAL", "-1s"},
+		{"INODE_PRESSURE_MULTIPLIER", "0"},
+	} {
+		t.Run(setting.key, func(t *testing.T) {
+			key := prefix + setting.key
+			t.Setenv(key, setting.value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("expected validation error for %s: %v", key, err)
+			}
+		})
+	}
+}
+
 func TestLoadSupportsStandaloneAndRaftIngestion(t *testing.T) {
 	for _, mode := range []string{"direct", "wal"} {
 		t.Run(mode, func(t *testing.T) {
@@ -717,6 +750,11 @@ func setLocalConfigEnv(t *testing.T) {
 	t.Setenv("GRAPHDB_SLOW_QUERY_THRESHOLD", "")
 	t.Setenv("GRAPHDB_INDEX_HEALTH_INTERVAL", "")
 	t.Setenv("GRAPHDB_MAINTENANCE_INTERVAL", "")
+	t.Setenv("GRAPHDB_MAINTENANCE_GC_MAX_DELETES", "")
+	t.Setenv("GRAPHDB_MAINTENANCE_GC_RUN_BUDGET", "")
+	t.Setenv("GRAPHDB_MAINTENANCE_GC_CONTINUATION_INTERVAL", "")
+	t.Setenv("GRAPHDB_MAINTENANCE_GC_INODE_PRESSURE_INTERVAL", "")
+	t.Setenv("GRAPHDB_MAINTENANCE_GC_INODE_PRESSURE_MULTIPLIER", "")
 	t.Setenv("GRAPHDB_TENANT_USAGE_CACHE_TTL", "")
 	t.Setenv("GRAPHDB_READER_CATCHUP_TIMEOUT", "")
 	t.Setenv("GRAPHDB_READINESS_TIMEOUT", "")

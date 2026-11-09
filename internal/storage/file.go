@@ -14,6 +14,7 @@ import (
 )
 
 type FileStore struct {
+	receiptPrefix          string
 	caseMu                 sync.Mutex
 	caseMode               atomic.Int32
 	directorySpellings     map[string]directorySpellings
@@ -90,11 +91,14 @@ func (s *FileStore) Get(ctx context.Context, key string) (result []byte, err err
 		return nil, err
 	}
 	if err := s.verifySafeParent(path); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return s.packedReceipt(ctx, key)
+		}
 		return nil, err
 	}
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		return nil, ErrNotFound
+		return s.packedReceipt(ctx, key)
 	}
 	if err != nil {
 		return nil, err
@@ -104,7 +108,7 @@ func (s *FileStore) Get(ctx context.Context, key string) (result []byte, err err
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return nil, ErrNotFound
+		return s.packedReceipt(ctx, key)
 	}
 	return data, err
 }
@@ -135,10 +139,18 @@ func (s *FileStore) Head(ctx context.Context, key string) (result ObjectMeta, er
 	if err != nil {
 		return ObjectMeta{}, err
 	}
-	if err := s.verifySafeParent(path); err != nil {
+	if err := s.verifySafeParent(path); err != nil && !errors.Is(err, ErrNotFound) {
 		return ObjectMeta{Key: key}, err
 	}
-	return s.readMeta(ctx, key, path)
+	meta, err := s.readMeta(ctx, key, path)
+	if !errors.Is(err, ErrNotFound) {
+		return meta, err
+	}
+	data, err := s.packedReceipt(ctx, key)
+	if err != nil {
+		return meta, err
+	}
+	return ObjectMeta{Key: key, ETag: sha256Hex(data), Exists: true}, nil
 }
 
 func (s *FileStore) Put(ctx context.Context, key string, data []byte) error {
@@ -169,6 +181,9 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 	}
 	unlock := s.lockObject(key)
 	defer unlock()
+	if meta, handled, err := s.putReceiptIfPacked(ctx, key, path, data, condition); handled {
+		return meta, err
+	}
 	if err := s.ensureSafeParent(path, s.replicationJournal(ctx)); err != nil {
 		return ObjectMeta{}, err
 	}
@@ -240,19 +255,13 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	defer unlock()
 	if err := s.verifySafeMutationParent(ctx, path); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			if checkErr := checkCondition(condition, "", false); checkErr != nil {
-				return checkErr
-			}
-			return nil
+			return s.deletePackedReceipt(ctx, key, condition)
 		}
 		return err
 	}
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		if checkErr := checkCondition(condition, "", false); checkErr != nil {
-			return checkErr
-		}
-		return nil
+		return s.deletePackedReceipt(ctx, key, condition)
 	}
 	if err != nil {
 		return err

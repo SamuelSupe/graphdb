@@ -43,6 +43,7 @@ func NewStorageRuntime(ctx context.Context, cfg config.Config) (*StorageRuntime,
 			files.Close()
 			return nil, err
 		}
+		files.EnableLocalReceiptPacking(cfg.Prefix)
 	}
 	pressure := storage.NewWritePressure(cfg.BackpressureConfig())
 	objects = storage.NewDelayedReadObjectStore(objects, cfg.FaultObjectReadDelay)

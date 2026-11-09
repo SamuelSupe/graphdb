@@ -161,6 +161,7 @@ func serveContext(ctx context.Context, cfg config.Config, runtime *bootstrap.Sto
 		IngestService:         apiIngestService,
 		Observability:         obs,
 		UsageCacheTTL:         cfg.TenantUsageCacheTTL,
+		MaintenanceGC:         cfg.MaintenanceGC,
 	}
 	var cluster *ha.Cluster
 	if cfg.Raft.Enabled {
@@ -343,6 +344,11 @@ Environment:
   GRAPHDB_SLOW_QUERY_THRESHOLD=500ms
   GRAPHDB_INDEX_HEALTH_INTERVAL=30s
   GRAPHDB_MAINTENANCE_INTERVAL=30s
+  GRAPHDB_MAINTENANCE_GC_MAX_DELETES=4096
+  GRAPHDB_MAINTENANCE_GC_RUN_BUDGET=2s
+  GRAPHDB_MAINTENANCE_GC_CONTINUATION_INTERVAL=1s
+  GRAPHDB_MAINTENANCE_GC_INODE_PRESSURE_INTERVAL=30s
+  GRAPHDB_MAINTENANCE_GC_INODE_PRESSURE_MULTIPLIER=2
   GRAPHDB_TENANT_USAGE_CACHE_TTL=60s
   GRAPHDB_READER_CACHE_IDLE_TTL=15m
   GRAPHDB_READER_CACHE_MAX_TENANTS=64

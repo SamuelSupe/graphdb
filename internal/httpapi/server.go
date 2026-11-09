@@ -42,6 +42,7 @@ type Server struct {
 	IngestService         IngestService
 	Observability         *observability.Observability
 	UsageCacheTTL         time.Duration
+	MaintenanceGC         maintenance.GCConfig
 	maintenance           *maintenance.Runner
 	maintenanceOnce       sync.Once
 	usageCache            *tenantUsageCache

@@ -14,7 +14,7 @@ type StorageLayoutFinding = maintenance.StorageLayoutFinding
 
 func (s *Server) maintenanceRuntime() *maintenance.Runner {
 	s.maintenanceOnce.Do(func() {
-		s.maintenance = &maintenance.Runner{Store: s.Store,
+		s.maintenance = &maintenance.Runner{Store: s.Store, GC: s.MaintenanceGC,
 			Usage: func(ctx context.Context, tenant string) (storage.TenantUsageReport, error) {
 				return s.cachedTenantUsage(ctx, tenant, time.Now().UTC())
 			},

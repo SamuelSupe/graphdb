@@ -17,7 +17,15 @@ type fileListDirectories map[string][]os.DirEntry
 
 // ListPage retains only one page and the entries of directories on its path.
 // Completed subtrees are skipped using the exclusive object-key cursor.
-func (s *FileStore) ListPage(ctx context.Context, prefix, after string, limit int) (result []ObjectInfo, next string, err error) {
+func (s *FileStore) ListPage(ctx context.Context, prefix, after string, limit int) ([]ObjectInfo, string, error) {
+	loose, next, err := s.listLoosePage(ctx, prefix, after, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.mergePackedIngestPage(ctx, prefix, after, limit, loose, next)
+}
+
+func (s *FileStore) listLoosePage(ctx context.Context, prefix, after string, limit int) (result []ObjectInfo, next string, err error) {
 	defer func() { recordReplicationFailure(ctx, err) }()
 	release, err := s.beginOperation(ctx, prefix)
 	if err != nil {

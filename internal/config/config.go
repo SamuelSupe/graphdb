@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
+	"github.com/SamuelSupe/graphdb/v2/internal/maintenance"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -81,6 +82,7 @@ type Config struct {
 	SlowQueryThreshold                time.Duration
 	IndexHealthInterval               time.Duration
 	MaintenanceInterval               time.Duration
+	MaintenanceGC                     maintenance.GCConfig
 	TenantUsageCacheTTL               time.Duration
 	ReaderCatchupTimeout              time.Duration
 	ReadinessTimeout                  time.Duration
@@ -174,6 +176,7 @@ func Load() (Config, error) {
 		SlowQueryThreshold:                500 * time.Millisecond,
 		IndexHealthInterval:               30 * time.Second,
 		MaintenanceInterval:               30 * time.Second,
+		MaintenanceGC:                     maintenance.DefaultGCConfig(),
 		TenantUsageCacheTTL:               60 * time.Second,
 		ReaderCatchupTimeout:              2 * time.Second,
 		ReadinessTimeout:                  2 * time.Second,
@@ -361,6 +364,9 @@ func Load() (Config, error) {
 	if err := loadDurationEnv("GRAPHDB_MAINTENANCE_INTERVAL", &cfg.MaintenanceInterval); err != nil {
 		return Config{}, err
 	}
+	if err := loadMaintenanceGCConfig(&cfg.MaintenanceGC); err != nil {
+		return Config{}, err
+	}
 	if err := loadDurationEnv("GRAPHDB_TENANT_USAGE_CACHE_TTL", &cfg.TenantUsageCacheTTL); err != nil {
 		return Config{}, err
 	}
@@ -537,6 +543,40 @@ func (cfg Config) WriterObjectCacheConfig() storage.WriterObjectCacheConfig {
 		MaxKeys:     cfg.WriterObjectCacheMaxKeys,
 		NegativeTTL: cfg.WriterObjectCacheNegativeTTL,
 	}
+}
+
+func loadMaintenanceGCConfig(gc *maintenance.GCConfig) error {
+	const prefix = "GRAPHDB_MAINTENANCE_GC_"
+	if err := loadIntEnv(prefix+"MAX_DELETES", &gc.MaxDeletes); err != nil {
+		return err
+	}
+	if gc.MaxDeletes == 0 {
+		return fmt.Errorf("%sMAX_DELETES must be > 0", prefix)
+	}
+	for _, setting := range []struct {
+		name   string
+		value  *time.Duration
+		zeroOK bool
+	}{
+		{"RUN_BUDGET", &gc.RunBudget, false},
+		{"CONTINUATION_INTERVAL", &gc.ContinuationInterval, false},
+		{"INODE_PRESSURE_INTERVAL", &gc.InodePressureInterval, true},
+	} {
+		key := prefix + setting.name
+		if err := loadDurationEnv(key, setting.value); err != nil {
+			return err
+		}
+		if !setting.zeroOK && *setting.value == 0 {
+			return fmt.Errorf("%s must be > 0", key)
+		}
+	}
+	if err := loadInt64Env(prefix+"INODE_PRESSURE_MULTIPLIER", &gc.InodePressureMultiplier); err != nil {
+		return err
+	}
+	if gc.InodePressureMultiplier == 0 {
+		return fmt.Errorf("%sINODE_PRESSURE_MULTIPLIER must be > 0", prefix)
+	}
+	return nil
 }
 
 func loadBoolEnv(key string, target *bool) error {

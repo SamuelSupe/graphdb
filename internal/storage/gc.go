@@ -11,6 +11,9 @@ import (
 )
 
 type GCOptions struct {
+	// RunBudget yields at an already completed checkpoint. A single batch
+	// still follows the normal GC safety checks and may take longer.
+	RunBudget               time.Duration
 	KeepSnapshots           int
 	DeadLetterMaxAge        time.Duration
 	TaskMaxAge              time.Duration

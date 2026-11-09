@@ -103,6 +103,18 @@ func (s *IngestService) Accept(ctx context.Context, tenantID string, request Ing
 		s.mu.Unlock()
 		defer s.acceptors.Done()
 
+		// A WAL on a separate filesystem can still have space when the data
+		// filesystem cannot publish another batch. Refuse new work before
+		// assigning a durable LSN, while allowing existing pending retries.
+		if store, ok := s.store.(interface {
+			CheckWriteDiskSpace(context.Context, int64) error
+		}); ok {
+			if err := store.CheckWriteDiskSpace(ctx, 0); err != nil {
+				s.failAcceptFlight(identity, statusKey, flight, err)
+				return IngestAcceptance{}, err
+			}
+		}
+
 		generationCtx, cancelGeneration := context.WithTimeout(ctx, ingestWALGenerationCaptureTimeout)
 		generation, generationErr := s.captureIngestWALGeneration(generationCtx, tenantID)
 		cancelGeneration()

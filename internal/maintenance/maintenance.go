@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -13,7 +14,33 @@ type Runner struct {
 	Store       *storage.TenantStore
 	Usage       func(context.Context, string) (storage.TenantUsageReport, error)
 	Audit       func(event, tenant string, err error, fields map[string]any)
+	GC          GCConfig
 	maintenance state
+}
+
+type GCConfig struct {
+	MaxDeletes              int
+	RunBudget               time.Duration
+	ContinuationInterval    time.Duration
+	InodePressureInterval   time.Duration
+	InodePressureMultiplier int64
+}
+
+func DefaultGCConfig() GCConfig {
+	return GCConfig{
+		MaxDeletes:              4096,
+		RunBudget:               2 * time.Second,
+		ContinuationInterval:    time.Second,
+		InodePressureInterval:   30 * time.Second,
+		InodePressureMultiplier: 2,
+	}
+}
+
+func (s *Runner) gcConfig() GCConfig {
+	if s.GC == (GCConfig{}) {
+		return DefaultGCConfig()
+	}
+	return s.GC
 }
 
 func (s *Runner) tenantUsage(ctx context.Context, tenant string) (storage.TenantUsageReport, error) {
@@ -39,10 +66,7 @@ type state struct {
 	gcCursor map[string]string
 }
 
-const (
-	defaultMaintenanceGCMaxDeletes = 256
-	autoCompactObjectMinTail       = 16
-)
+const autoCompactObjectMinTail = 16
 
 type MaintenanceReport struct {
 	StartedAt      time.Time                 `json:"started_at"`
@@ -89,20 +113,112 @@ func (s *Runner) Start(ctx context.Context, interval time.Duration) {
 		return
 	}
 	s.Store.StartBackground(ctx, func(ctx context.Context) {
+		gc := s.gcConfig()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		followup := time.NewTicker(gc.ContinuationInterval)
+		defer followup.Stop()
+		var receiptTick, pressureTick <-chan time.Time
+		if s.Store.LocalReceiptPackingEnabled() {
+			receipts := time.NewTicker(time.Second)
+			defer receipts.Stop()
+			receiptTick = receipts.C
+		}
+		if gc.InodePressureInterval > 0 {
+			pressure := time.NewTicker(gc.InodePressureInterval)
+			defer pressure.Stop()
+			pressureTick = pressure.C
+		}
+		cursors := map[string]string{}
+		receiptOffset, gcOffset := 0, 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				_ = s.Run(ctx, time.Now().UTC())
+			case <-pressureTick:
+				_ = s.run(ctx, time.Now().UTC(), true)
+			case <-receiptTick:
+				s.packLocalReceipts(ctx, cursors, &receiptOffset)
+			case <-followup.C:
+				s.continueGC(ctx, &gcOffset)
 			}
 		}
 	})
 }
 
-func (s *Runner) Run(ctx context.Context, now time.Time) (report MaintenanceReport) {
+func (s *Runner) packLocalReceipts(ctx context.Context, cursors map[string]string, offset *int) {
+	work, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	tenants, err := s.Store.ListManagedTenants(work)
+	if err != nil {
+		if work.Err() == nil {
+			s.auditError("receipt_pack_list_failed", "", err, nil)
+		}
+		return
+	}
+	for count := 0; count < len(tenants) && work.Err() == nil; count++ {
+		tenant := tenants[*offset%len(tenants)]
+		*offset = (*offset + 1) % len(tenants)
+		next, _, err := s.Store.PackLocalReceipts(work, tenant, cursors[tenant])
+		if err != nil {
+			if work.Err() == nil {
+				s.auditError("receipt_pack_failed", tenant, err, nil)
+			}
+			continue
+		}
+		if next == "" {
+			delete(cursors, tenant)
+		} else {
+			cursors[tenant] = next
+		}
+	}
+}
+
+// Continue one tenant per tick, rotating across the active cursors. A
+// continuation uses the existing GC cursor and maintenance admission.
+func (s *Runner) continueGC(ctx context.Context, offset *int) {
+	state := &s.maintenance
+	state.mu.Lock()
+	pending := len(state.gcCursor) != 0
+	state.mu.Unlock()
+	if !pending {
+		return
+	}
+	tenants, err := s.Store.ListManagedTenants(ctx)
+	if err != nil {
+		s.auditError("maintenance_gc_list_failed", "", err, nil)
+		return
+	}
+	for range tenants {
+		tenant := tenants[*offset%len(tenants)]
+		*offset = (*offset + 1) % len(tenants)
+		if s.gcCursor(tenant) == "" {
+			continue
+		}
+		config, _, err := s.Store.GetTenantConfig(ctx, tenant)
+		if err != nil {
+			s.auditError("maintenance_gc_config_failed", tenant, err, nil)
+			return
+		}
+		config = storage.TenantConfigWithDefaults(config)
+		if int64Value(config.Maintenance.GCIntervalSeconds, 0) <= 0 {
+			state.mu.Lock()
+			delete(state.gcCursor, tenant)
+			state.mu.Unlock()
+			return
+		}
+		s.maybeRunGC(ctx, tenant, time.Now(), config.Maintenance, false, &MaintenanceReport{}, &TenantMaintenanceReport{})
+		return
+	}
+}
+
+func (s *Runner) Run(ctx context.Context, now time.Time) MaintenanceReport {
+	return s.run(ctx, now, false)
+}
+
+func (s *Runner) run(ctx context.Context, now time.Time, pressureOnly bool) (report MaintenanceReport) {
 	report.StartedAt = now
 	defer func() {
 		report.FinishedAt = time.Now().UTC()
@@ -110,24 +226,49 @@ func (s *Runner) Run(ctx context.Context, now time.Time) (report MaintenanceRepo
 	if s.Store == nil {
 		return report
 	}
+	inodePressure := s.inodePressure(ctx)
+	if pressureOnly && !inodePressure {
+		return report
+	}
 	tenants, err := s.Store.ListManagedTenants(ctx)
 	if err != nil {
 		report.addError("", "list_tenants", err)
 		return report
 	}
+	state := &s.maintenance
+	state.mu.Lock()
+	for tenant := range state.gcCursor {
+		if _, managed := slices.BinarySearch(tenants, tenant); !managed {
+			delete(state.gcCursor, tenant)
+		}
+	}
+	state.mu.Unlock()
 	for _, tenantID := range tenants {
 		if err := ctx.Err(); err != nil {
 			report.addError(tenantID, "context", err)
 			break
 		}
-		tenantReport := s.maintainTenant(ctx, tenantID, now, &report)
+		if pressureOnly && s.gcCursor(tenantID) != "" {
+			continue
+		}
+		tenantReport := s.maintainTenant(ctx, tenantID, now, inodePressure, pressureOnly, &report)
 		report.TenantsChecked++
 		report.Tenants = append(report.Tenants, tenantReport)
 	}
 	return report
 }
 
-func (s *Runner) maintainTenant(ctx context.Context, tenantID string, now time.Time, report *MaintenanceReport) TenantMaintenanceReport {
+func (s *Runner) inodePressure(ctx context.Context) bool {
+	gc := s.gcConfig()
+	if gc.InodePressureInterval <= 0 {
+		return false
+	}
+	disk, err := s.Store.DiskSpace(ctx)
+	return err == nil && disk.InodesKnown && disk.MinimumFreeInodes > 0 &&
+		disk.AvailableInodes/gc.InodePressureMultiplier < disk.MinimumFreeInodes
+}
+
+func (s *Runner) maintainTenant(ctx context.Context, tenantID string, now time.Time, inodePressure, pressureOnly bool, report *MaintenanceReport) TenantMaintenanceReport {
 	manifest, err := s.Store.CurrentManifest(ctx, tenantID)
 	if err != nil {
 		report.addError(tenantID, "manifest", err)
@@ -149,6 +290,10 @@ func (s *Runner) maintainTenant(ctx context.Context, tenantID string, now time.T
 	} else {
 		config = storage.TenantConfigWithDefaults(config)
 	}
+	if pressureOnly {
+		s.maybeRunGC(ctx, tenantID, now, config.Maintenance, inodePressure, report, &tenantReport)
+		return tenantReport
+	}
 	state, err := s.Store.ScheduleObjectBackup(ctx, tenantID, now)
 	if boolValue(config.Backup.Enabled) || state.TaskID != "" || err != nil {
 		state = state.Public()
@@ -159,7 +304,7 @@ func (s *Runner) maintainTenant(ctx context.Context, tenantID string, now time.T
 		}
 	}
 	manifest = s.maybeAutoCompact(ctx, tenantID, manifest, config.Maintenance, report, &tenantReport)
-	s.maybeRunGC(ctx, tenantID, now, config.Maintenance, report, &tenantReport)
+	s.maybeRunGC(ctx, tenantID, now, config.Maintenance, inodePressure, report, &tenantReport)
 	tenantReport.StorageFindings = s.storageLayoutFindings(ctx, tenantID, config.Maintenance, report)
 	s.RebuildIndexesIfNeeded(ctx, tenantID, config.Indexes, report, &tenantReport)
 	tenantReport.Manifest = manifest.Version
@@ -249,12 +394,16 @@ func (s *Runner) CompactDecision(ctx context.Context, tenantID string, manifest 
 	return CompactDecision{}
 }
 
-func (s *Runner) maybeRunGC(ctx context.Context, tenantID string, now time.Time, config storage.TenantMaintenanceConfig, report *MaintenanceReport, tenantReport *TenantMaintenanceReport) {
+func (s *Runner) maybeRunGC(ctx context.Context, tenantID string, now time.Time, config storage.TenantMaintenanceConfig, inodePressure bool, report *MaintenanceReport, tenantReport *TenantMaintenanceReport) {
 	if config.GCIntervalSeconds == nil || *config.GCIntervalSeconds <= 0 {
 		return
 	}
+	gc := s.gcConfig()
 	interval := time.Duration(*config.GCIntervalSeconds) * time.Second
-	if !s.gcDue(tenantID, now, interval) {
+	if inodePressure {
+		interval = min(interval, gc.InodePressureInterval)
+	}
+	if !tenantReport.Compacted && !s.gcDue(tenantID, now, interval) {
 		return
 	}
 	ctx, release, ok := s.enterScheduledMaintenance(ctx, tenantID, "gc", report, tenantReport)
@@ -269,7 +418,8 @@ func (s *Runner) maybeRunGC(ctx context.Context, tenantID string, now time.Time,
 		TaskMaxAge:          time.Duration(int64Value(config.TaskMaxAgeSeconds, 0)) * time.Second,
 		CleanupIndexOrphans: boolPtrValue(config.CleanupIndexOrphans, true),
 		CheckpointCursor:    s.gcCursor(tenantID),
-		MaxDeletes:          defaultMaintenanceGCMaxDeletes,
+		MaxDeletes:          gc.MaxDeletes,
+		RunBudget:           gc.RunBudget,
 	})
 	if err != nil {
 		report.addError(tenantID, "gc", err)
@@ -285,6 +435,10 @@ func (s *Runner) maybeRunGC(ctx context.Context, tenantID string, now time.Time,
 		"deleted_deadletters": gcReport.DeletedDeadLetters,
 		"deleted_tasks":       gcReport.DeletedTasks,
 		"deleted_commits":     gcReport.CommitCleanup.Deleted,
+		"deleted_objects":     gcReport.Checkpoint.Deleted,
+		"deferred_files":      gcReport.Checkpoint.DeferredFiles,
+		"paused":              gcReport.Checkpoint.Paused,
+		"inode_pressure":      inodePressure,
 	})
 }
 
