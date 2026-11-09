@@ -30,6 +30,7 @@ type commitIndexUpdate struct {
 	deferredEdges      map[string]graph.Edge
 	deferredBytes      int64
 	deferredGraphBytes int64
+	manifest           Manifest
 	fence              writerFenceRef
 	waitFor            <-chan struct{}
 	done               chan struct{}
@@ -173,14 +174,7 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 				releaseMemory()
 				return err
 			}
-			loaded, err := s.loadForWriteLocked(buildCtx, tenantID)
-			if err != nil {
-				unlock()
-				releaseMemory()
-				return err
-			}
 			s.indexUpdateMu.Lock()
-			work.deferredGraphBytes = maintenanceGraphBytes(loaded.Graph)
 			actualBytes := addWriteCacheBytes(work.deferredGraphBytes, work.deferredBytes)
 			limit := s.backgroundIndexByteLimit()
 			// Demand can grow during admission. Release an undersized reservation
@@ -192,19 +186,26 @@ func (s *TenantStore) runCommitIndexUpdate(ctx context.Context, tenantID string,
 				releaseMemory()
 				continue
 			}
-			// A direct commit or rebuild can have joined behind this demand. Its
-			// changes are not in our delta, so only a full build can cover that head.
-			if loaded.Manifest.Version != work.version {
-				work.baseVersion = -1
-			}
 			if s.pendingIngestIndexes[tenantID] == work {
 				delete(s.pendingIngestIndexes, tenantID)
 			}
-			work.after = loaded.Graph
-			work.version = loaded.Manifest.Version
 			s.indexUpdateMu.Unlock()
+			cached, ok := s.getWriteCache(tenantID)
 			unlock()
 			defer releaseMemory()
+			if ok && sameManifestReadSet(cached.Manifest, work.manifest) {
+				work.after = cached.Graph
+			} else {
+				// The read view pins the immutable snapshot and commits even if
+				// newer publications or compaction have replaced the tenant head.
+				started := time.Now()
+				loaded, err := s.loadManifestGraph(buildCtx, tenantID, work.manifest, ObjectMeta{})
+				s.recordMaintenance("index_deferred_load", started)
+				if err != nil {
+					return err
+				}
+				work.after = loaded.Graph
+			}
 			ctx = buildCtx
 			break
 		}
@@ -242,9 +243,6 @@ func (s *TenantStore) completeIndexUpdate(tenantID string, done chan struct{}) {
 	defer s.indexUpdateMu.Unlock()
 	if s.indexUnreservedTails[tenantID] == done {
 		delete(s.indexUnreservedTails, tenantID)
-	}
-	if s.indexDeferredRepairs[tenantID] == done {
-		delete(s.indexDeferredRepairs, tenantID)
 	}
 	if s.indexUpdateTails[tenantID] == done {
 		delete(s.indexUpdateTails, tenantID)
@@ -762,6 +760,7 @@ func (s *TenantStore) commitOnceLocked(ctx context.Context, tenantID string, mut
 		mutations:   mutations,
 		report:      report,
 		version:     version,
+		manifest:    manifest,
 	}
 
 	return result, nil

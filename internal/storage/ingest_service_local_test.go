@@ -1186,7 +1186,7 @@ func TestLocalWALCommitsWhileOversizedIndexesCatchUp(t *testing.T) {
 	}
 }
 
-func TestLocalWALBoundsIndexRebuildsDuringDeltaOverflow(t *testing.T) {
+func TestLocalWALSplitsDeferredIndexDeltaInVersionOrder(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	files, err := OpenFileStore(t.TempDir())
@@ -1195,7 +1195,7 @@ func TestLocalWALBoundsIndexRebuildsDuringDeltaOverflow(t *testing.T) {
 	}
 	defer files.Close()
 	blocked := &versionedCatalogPause{
-		ObjectStore: files, version: 5, paused: make(chan struct{}), resume: make(chan struct{}),
+		ObjectStore: files, version: 3, paused: make(chan struct{}), resume: make(chan struct{}),
 	}
 	store := NewTenantStore(blocked, "test")
 	store.MaxMaintenanceBytes = 256 << 10
@@ -1226,56 +1226,45 @@ func TestLocalWALBoundsIndexRebuildsDuringDeltaOverflow(t *testing.T) {
 	}
 	release = sync.OnceFunc(release)
 	defer release()
-	accept := func(version int) IngestAcceptance {
+	commit := func(version int) {
 		t.Helper()
 		request := ingestEntityRequest(fmt.Sprint("overflow-", version), fmt.Sprint("host:overflow-", version))
+		request.Items[0].Entity.Fields["hostname"] = fmt.Sprint("name-", version)
+		if version == 4 {
+			// One of these changes fits in the prefix, but both must go
+			// into the next segment to keep a whole version atomic.
+			request.Items = append(request.Items, ingestEntityRequest("extra", "host:extra").Items[0])
+		}
+		if version == 5 {
+			request.Items[0].ExternalID = "host:overflow-2"
+			request.Items[0].Entity.ID = "host:overflow-2"
+		}
 		accepted, err := service.Accept(ctx, "tenant-a", request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return accepted
-	}
-	for version := 2; version < 5; version++ {
-		if result, err := service.Wait(ctx, accept(version)); err != nil || result.Version != int64(version) {
-			t.Fatalf("batch before overflow did not commit: %+v, %v", result, err)
+		if result, err := service.Wait(ctx, accepted); err != nil || result.Version != int64(version) || result.Applied != len(request.Items) {
+			t.Fatalf("batch did not commit while catch-up was paused: %+v, %v", result, err)
 		}
 	}
-	overflow := accept(5)
-	for {
-		manifest, _, err := store.getManifest(ctx, "tenant-a")
-		if err == nil && manifest.Version == 5 {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("overflowing batch did not publish its manifest: %+v, %v", manifest, err)
-		case <-time.After(time.Millisecond):
-		}
+	for version := 2; version <= 5; version++ {
+		commit(version)
 	}
 	release()
 	select {
 	case <-blocked.paused:
 	case <-ctx.Done():
-		t.Fatal("overflow did not schedule a catalog rebuild")
+		t.Fatal("the sealed prefix did not publish at its own version")
 	}
-	const lastVersion = 21
-	var last IngestAcceptance
+	const lastVersion = 10
 	for version := 6; version <= lastVersion; version++ {
-		last = accept(version)
-	}
-	select {
-	case <-overflow.completion:
-		t.Fatal("overflowing batch completed before its repair released the backlog")
-	default:
+		commit(version)
 	}
 	manifest, _, err := store.getManifest(ctx, "tenant-a")
-	if err != nil || manifest.Version != 5 {
-		t.Fatalf("backlog advanced while repair was blocked: version=%d, err=%v", manifest.Version, err)
+	if err != nil || manifest.Version != lastVersion {
+		t.Fatalf("WAL failed to advance past the blocked prefix: version=%d, err=%v", manifest.Version, err)
 	}
 	resume()
-	if result, err := service.WaitCommitted(ctx, last); err != nil || result.Version != lastVersion {
-		t.Fatalf("backlog did not commit after repair: %+v, %v", result, err)
-	}
 	for {
 		health, err := store.IndexHealth(ctx, "tenant-a")
 		if err == nil && health.CatalogVersion == lastVersion && !health.Updating {
@@ -1287,8 +1276,26 @@ func TestLocalWALBoundsIndexRebuildsDuringDeltaOverflow(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	if got := rebuild.calls.Load(); got != 1 {
-		t.Fatalf("deferred rebuilds=%d, want 1", got)
+	if got := rebuild.calls.Load(); got != 0 {
+		t.Fatalf("deferred rebuilds=%d, want 0", got)
+	}
+	catalog, err := store.GetIndexCatalog(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := &PersistedIndexLookup{Store: store, TenantID: "tenant-a", Version: catalog.Version, Catalog: catalog}
+	for _, id := range []string{"host:extra", "host:overflow-4", "host:overflow-10"} {
+		if _, ok, err := lookup.GetEntity(ctx, id, nil); err != nil || !ok {
+			t.Fatalf("missing entity %s after catch-up: %v", id, err)
+		}
+	}
+	for _, name := range []string{"name-2", "name-5"} {
+		ids, available, err := lookup.MatchFieldIndex(ctx, "host", "hostname", []any{name})
+		if err != nil || !available ||
+			(name == "name-2" && len(ids) != 0) ||
+			(name == "name-5" && (len(ids) != 1 || ids[0] != "host:overflow-2")) {
+			t.Fatalf("incorrect posting after updating a prior segment: name=%s, ids=%v, available=%v, err=%v", name, ids, available, err)
+		}
 	}
 }
 

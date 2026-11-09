@@ -12,8 +12,9 @@ versioning; release tags and binaries expose the exact build commit and date.
   the previous synchronous behavior. With WAL enabled, `Prefer: wait=committed`
   requests an immediate flush in tenant order and returns the terminal result.
 - Allow oversized WAL index updates to queue behind a synchronous predecessor
-  and merge with pending work at the background limit. Bound repeated full
-  rebuilds under delta overflow and expose the fallback in maintenance metrics.
+  and merge with pending work at the background limit. Split a coalescing
+  overflow into bounded incremental updates at their original manifest
+  versions. Expose splits, historical loads, and rebuilds in maintenance metrics.
 
 ## [2.5.0] - 2026-11-09
 

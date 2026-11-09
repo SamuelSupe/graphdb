@@ -9,9 +9,23 @@ import (
 // Keep old scalar values and edge endpoints, not graphs or source histories.
 // A small byte cap also bounds an unusually large indexed scalar value.
 func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate) (overflow bool) {
-	pending.deferredGraphBytes = maintenanceGraphBytes(next.after)
+	var addedEntities, addedEdges []string
+	bytes := pending.deferredBytes
 	defer func() {
+		if overflow {
+			// The prefix still has to publish at its original manifest version.
+			for _, id := range addedEntities {
+				delete(pending.deferredEntities, id)
+			}
+			for _, id := range addedEdges {
+				delete(pending.deferredEdges, id)
+			}
+			return
+		}
 		pending.version = next.version
+		pending.manifest = next.manifest
+		pending.deferredGraphBytes = maintenanceGraphBytes(next.after)
+		pending.deferredBytes = bytes
 		if pending.baseVersion < 0 {
 			pending.deferredEntities, pending.deferredEdges = nil, nil
 			pending.deferredBytes = 0
@@ -30,30 +44,29 @@ func (s *TenantStore) mergeDeferredIndexUpdate(pending, next *commitIndexUpdate)
 		if _, seen := pending.deferredEntities[id]; !seen {
 			entity, _ := next.before.Entities.Get(id)
 			image := graph.Entity{ID: entity.ID, Kind: entity.Kind, Fields: make(graph.Fields)}
-			bytes := int64(1024 + len(id) + len(entity.Kind))
+			bytes += int64(1024 + len(id) + len(entity.Kind))
 			for field, value := range entity.Fields {
 				if key, scalar := graph.ScalarIndexKey(value); scalar {
 					bytes += int64(64 + len(field) + len(key))
 					image.Fields[field] = value
 				}
 			}
-			pending.deferredBytes += bytes
-			if pending.deferredBytes > limit || len(pending.deferredEntities)+len(pending.deferredEdges) == maxPendingIndexChanges {
-				pending.baseVersion = -1
+			if bytes > limit || len(pending.deferredEntities)+len(pending.deferredEdges) == maxPendingIndexChanges {
 				return true
 			}
 			pending.deferredEntities[id] = image
+			addedEntities = append(addedEntities, id)
 		}
 	}
 	for _, id := range next.report.AffectedEdgeIDs {
 		if _, seen := pending.deferredEdges[id]; !seen {
 			edge, _ := next.before.Edges.Get(id)
-			pending.deferredBytes += int64(1024 + len(id) + len(edge.Type) + len(edge.From) + len(edge.To))
-			if pending.deferredBytes > limit || len(pending.deferredEntities)+len(pending.deferredEdges) == maxPendingIndexChanges {
-				pending.baseVersion = -1
+			bytes += int64(1024 + len(id) + len(edge.Type) + len(edge.From) + len(edge.To))
+			if bytes > limit || len(pending.deferredEntities)+len(pending.deferredEdges) == maxPendingIndexChanges {
 				return true
 			}
 			pending.deferredEdges[id] = graph.Edge{ID: edge.ID, Type: edge.Type, From: edge.From, To: edge.To}
+			addedEdges = append(addedEdges, id)
 		}
 	}
 	return false

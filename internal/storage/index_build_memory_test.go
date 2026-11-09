@@ -569,7 +569,7 @@ func TestBackgroundIndexFailureReleasesResourcesAndAllowsRepair(t *testing.T) {
 				for {
 					store.indexUpdateMu.Lock()
 					active := store.activeIngestIndexUpdates
-					queued := len(store.indexUpdateTails) + len(store.indexUnreservedTails) + len(store.indexDeferredRepairs) + len(store.localIndexMaintenance)
+					queued := len(store.indexUpdateTails) + len(store.indexUnreservedTails) + len(store.localIndexMaintenance)
 					store.indexUpdateMu.Unlock()
 					if active == 0 {
 						if queued != 0 {

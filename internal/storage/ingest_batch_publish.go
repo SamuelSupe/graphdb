@@ -134,6 +134,7 @@ func (s *TenantStore) publishIngestBatch(
 		mutations:   aggregateMutations,
 		report:      aggregateReport,
 		version:     manifest.Version,
+		manifest:    manifest,
 	}
 	if s.localFileStore() != nil && s.enqueueLocalIngestIndexUpdate(ctx, tenantID, indexWork, true) {
 		// The WAL and manifest are already durable. Index failures cannot undo

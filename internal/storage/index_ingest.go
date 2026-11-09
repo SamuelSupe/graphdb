@@ -54,28 +54,18 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 	s.indexUpdateMu.Lock()
 	maintenance := s.localIndexMaintenance[tenantID] > 0
 	deferred := maintenance || oversized
-	if s.indexDeferredRepairs[tenantID] != nil {
-		s.indexUpdateMu.Unlock()
-		release()
-		return false
-	}
 	if pending := s.pendingIngestIndexes[tenantID]; pending != nil && pending.fence == work.fence && s.indexUpdateTails[tenantID] == pending.done {
 		if pending.deferred && (deferred || pending.maintenanceDone != nil) {
-			overflow := s.mergeDeferredIndexUpdate(pending, work)
-			if overflow {
-				// This repair covers the new head. Slow down WAL publication
-				// until it finishes so another overflowing delta cannot pile up.
-				if s.indexDeferredRepairs == nil {
-					s.indexDeferredRepairs = make(map[string]chan struct{})
-				}
-				s.indexDeferredRepairs[tenantID] = pending.done
+			started := time.Now()
+			if !s.mergeDeferredIndexUpdate(pending, work) {
+				s.indexUpdateMu.Unlock()
+				release()
+				return true
 			}
-			s.indexUpdateMu.Unlock()
-			release()
-			if overflow {
-				s.recordMaintenance("index_deferred_overflow", time.Now())
-			}
-			return !overflow
+			// Seal the prefix even if the next job needs a foreground slot.
+			delete(s.pendingIngestIndexes, tenantID)
+			deferred = true
+			defer s.recordMaintenance("index_deferred_overflow", started)
 		}
 		if !deferred && s.indexUnreservedTails[tenantID] == nil && pending.reservation != nil && pending.version == work.baseVersion &&
 			len(pending.report.AffectedEntityIDs)+len(work.report.AffectedEntityIDs)+
@@ -111,6 +101,12 @@ func (s *TenantStore) enqueueLocalIngestIndexUpdate(ctx context.Context, tenantI
 			s.indexUpdateMu.Unlock()
 			release()
 			return false
+		}
+		if overflow {
+			// Preserve online maintenance progress when even one publication
+			// cannot fit the delta budget.
+			next.baseVersion = -1
+			s.mergeDeferredIndexUpdate(&next, work)
 		}
 		*work = next
 		if completion := s.localMaintenanceWait[tenantID]; completion != nil {
