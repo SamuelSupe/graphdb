@@ -18,6 +18,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -119,6 +120,9 @@ func newCommand(kind string) (command, error) {
 	return command{ID: hex.EncodeToString(id[:]), At: time.Now().UTC(), Kind: kind, TenantScopeValidation: true}, nil
 }
 func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
+	if c.config.Protocol < partition.IngestProtocol && (cmd.Kind == "partition_accept" || cmd.Kind == "partition_ingest_complete") {
+		return nil, fmt.Errorf("%w: partitioned ingest requires home Raft protocol %d", replication.ErrUnavailable, partition.IngestProtocol)
+	}
 	release, err := c.admitTenantMutation(cmd)
 	if err != nil {
 		return nil, err

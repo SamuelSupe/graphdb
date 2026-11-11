@@ -18,7 +18,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func newTestPartitionedGraph(t *testing.T, wal bool) (a, b, catalog *testCluster, router *sharding.Router, call func(string, string, string, any, int) *httptest.ResponseRecorder) {
+func newTestPartitionedGraph(t *testing.T, wal bool, homeProtocol int) (a, b, catalog *testCluster, router *sharding.Router, call func(string, string, string, any, int) *httptest.ResponseRecorder) {
 	t.Helper()
 	catalog = newTestClusterRole(t, false, "", true)
 	a = newTestClusterRole(t, wal, "a", false)
@@ -29,6 +29,9 @@ func newTestPartitionedGraph(t *testing.T, wal bool) (a, b, catalog *testCluster
 		}
 		for i, node := range group.nodes {
 			node.cfg.Raft.Protocol = 5
+			if group == a {
+				node.cfg.Raft.Protocol = homeProtocol
+			}
 			node.cfg.Raft.SnapshotEntries = 1000
 			if wal {
 				node.cfg.IngestFlushInterval = time.Hour
@@ -104,7 +107,7 @@ func newTestPartitionedGraph(t *testing.T, wal bool) (a, b, catalog *testCluster
 }
 
 func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
-	a, b, catalog, router, call := newTestPartitionedGraph(t, false)
+	a, b, catalog, router, call := newTestPartitionedGraph(t, false, 5)
 	definition := func(group *testCluster, id string) sharding.Shard {
 		cfg := group.nodes[0].cfg.Raft
 		return sharding.Shard{ID: id, ClusterID: cfg.ClusterID, Peers: cfg.Peers}

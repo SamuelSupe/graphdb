@@ -63,6 +63,9 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	if storage.ValidateTenantID(action.Tenant) != nil || action.Generation <= 0 {
 		return nil, fmt.Errorf("%w: invalid graph scope", storage.ErrInvalidArgument)
 	}
+	if c.config.Protocol < partition.IngestProtocol && (action.Purpose == "ingest" || action.IngestResult != nil) {
+		return nil, fmt.Errorf("%w: partitioned ingest requires home Raft protocol %d", storage.ErrConflict, partition.IngestProtocol)
+	}
 	c.App.mu.RLock()
 	var scopeErr error
 	switch action.Operation {

@@ -334,13 +334,25 @@ func (n *Node) propose(ctx context.Context, data []byte) ([]byte, error) {
 		// A durable command already records activation by a checked leader.
 		// Requiring an offline voter again would defeat majority failover.
 		if minimum < n.protocolVersion() {
-			for id := range n.raft.Status().Config.Voters.IDs() {
+			status := n.raft.Status()
+			members := status.Config.Voters.IDs()
+			if n.protocolVersion() >= 6 {
+				// Protocol 6 enables a background writer on every eligible leader.
+				// Each replica must run the protocol before it can take over.
+				for id := range status.Progress {
+					members[id] = struct{}{}
+				}
+			}
+			for id := range members {
 				if id == n.cfg.ID {
 					continue
 				}
 				peer, err := n.peerStatus(ctx, id)
 				if err != nil || max(peer.Protocol, peer.MaxProtocol) < n.protocolVersion() {
 					return nil, fmt.Errorf("%w: upgrade every voter before activating protocol %d (peer %d: %v)", ErrUnavailable, n.protocolVersion(), id, err)
+				}
+				if n.protocolVersion() >= 6 && peer.Protocol < n.protocolVersion() {
+					return nil, fmt.Errorf("%w: configure every replica for protocol %d before activation (peer %d runs protocol %d)", ErrUnavailable, n.protocolVersion(), id, peer.Protocol)
 				}
 			}
 		}

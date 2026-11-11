@@ -16,7 +16,7 @@ import (
 )
 
 func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
-	a, b, catalog, router, call := newTestPartitionedGraph(t, true)
+	a, b, catalog, router, call := newTestPartitionedGraph(t, true, partition.IngestProtocol)
 	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}}}, http.StatusOK)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

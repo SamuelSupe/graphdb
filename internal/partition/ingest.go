@@ -13,6 +13,8 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 )
 
+const IngestProtocol = 6
+
 // IngestInput binds execution to the original durable acceptance time, including
 // after leadership changes and retries of accepted_at preconditions.
 type IngestInput struct {

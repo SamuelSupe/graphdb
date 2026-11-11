@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 )
 
 type RaftConfig struct {
@@ -101,12 +103,12 @@ func loadRaftConfig(dataDir string) (RaftConfig, error) {
 	if err := loadBoolEnv("GRAPHDB_RAFT_STREAM_SNAPSHOTS", &cfg.StreamSnapshots); err != nil {
 		return cfg, err
 	}
-	cfg.Protocol = 1
+	cfg.Protocol = replication.ProtocolVersion
 	if err := loadIntEnv("GRAPHDB_RAFT_PROTOCOL_VERSION", &cfg.Protocol); err != nil {
 		return cfg, err
 	}
-	if cfg.Protocol < 1 || cfg.Protocol > 5 {
-		return cfg, fmt.Errorf("Raft protocol version must be between 1 and 5")
+	if cfg.Protocol < replication.ProtocolVersion || cfg.Protocol > replication.MaxProtocolVersion {
+		return cfg, fmt.Errorf("Raft protocol version must be between %d and %d", replication.ProtocolVersion, replication.MaxProtocolVersion)
 	}
 	if err := loadDurationEnv("GRAPHDB_RAFT_TICK", &cfg.Tick); err != nil {
 		return cfg, err

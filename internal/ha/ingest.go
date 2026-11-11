@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -103,6 +104,7 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 	if err != nil {
 		return nil, err
 	}
+	sourceGeneration := generation
 	partitioned := cmd.Kind == "partition_accept"
 	if partitioned {
 		g, err := a.partitionStore().GetGraph(ctx, cmd.Tenant)
@@ -120,6 +122,7 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		return nil, err
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(after))
+	candidate := acceptedRequest{Partitioned: partitioned, Tenant: cmd.Tenant, Request: request, Digest: digest, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
 	record, err := a.accepted(ctx, key)
 	if partitioned && errors.Is(err, storage.ErrNotFound) && request.IdempotencyKey != "" {
 		previous, found, aliasErr := a.partitionIngestAlias(ctx, cmd.Tenant, generation, request)
@@ -152,6 +155,26 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return nil, err
 	} else {
+		if partitioned && cmd.ReplaySourceIngest {
+			if generation == sourceGeneration+1 {
+				previous, found, replayErr := a.replayPartitionSourceIngest(ctx, candidate, sourceGeneration)
+				if errors.Is(replayErr, storage.ErrIngestIdentityConflict) {
+					return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": replayErr.Error()})
+				}
+				if replayErr != nil {
+					return nil, replayErr
+				}
+				if found {
+					return a.acceptanceResponse(previous)
+				}
+			}
+			if request.FullSync {
+				return resultJSON(http.StatusNotImplemented, map[string]any{"code": "operation_disabled", "error": "partitioned full_sync requires a reconciliation task"})
+			}
+			if _, err := (partition.IngestInput{Request: request, AcceptedAt: cmd.At}).Encode(); err != nil {
+				return resultJSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+			}
+		}
 		budget := a.MaxPendingBytes
 		if cmd.QueueBudget != nil {
 			budget = *cmd.QueueBudget
@@ -167,7 +190,7 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		if err := a.Store.EnsureTenantWritable(ctx, cmd.Tenant); err != nil {
 			return resultJSON(http.StatusConflict, map[string]any{"error": err.Error()})
 		}
-		record = acceptedRequest{Partitioned: partitioned, Tenant: cmd.Tenant, Request: request, Digest: digest, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
+		record = candidate
 		if err := a.saveAccepted(ctx, key, record); err != nil {
 			return nil, err
 		}
@@ -304,6 +327,7 @@ func (c *Cluster) batchStatus(w http.ResponseWriter, r *http.Request) {
 		segments[i] = decoded
 	}
 	generation, err := c.App.Store.ReplicationTenantGeneration(r.Context(), r.Header.Get("X-Tenant-ID"))
+	sourceGeneration := generation
 	if err == nil && c.App.ShardID != "" {
 		g, graphErr := c.App.graphDescriptor(r.Context(), r.Header.Get("X-Tenant-ID"))
 		if graphErr == nil {
@@ -319,6 +343,9 @@ func (c *Cluster) batchStatus(w http.ResponseWriter, r *http.Request) {
 	key := c.App.ingestKey(r.Header.Get("X-Tenant-ID"), segments[0], segments[1], segments[2], generation)
 	c.App.mu.RLock()
 	record, err := c.App.accepted(r.Context(), key)
+	if errors.Is(err, storage.ErrNotFound) && generation == sourceGeneration+1 {
+		record, err = c.App.partitionSourceIngestStatus(r.Context(), r.Header.Get("X-Tenant-ID"), sourceGeneration, segments[0], segments[1], segments[2])
+	}
 	c.App.mu.RUnlock()
 	if err != nil {
 		if !errors.Is(err, storage.ErrNotFound) {

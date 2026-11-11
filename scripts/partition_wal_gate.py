@@ -1,4 +1,4 @@
-"""Exercise partitioned WAL recovery using isolated Compose replicas on Linux.
+"""Exercise partitioned WAL crash recovery and offline restore on Linux.
 
 Set GRAPHDB_GATE_IMAGE to a locally built candidate; this never publishes images
 or releases. All containers and volumes belong to a fresh, private project.
@@ -17,9 +17,10 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(os.environ["GRAPHDB_GATE_OUTPUT"]).resolve()
-OUT.mkdir(parents=True, exist_ok=False)
+OUT.mkdir(mode=0o700, parents=True, exist_ok=False)
 IMAGE = os.environ["GRAPHDB_GATE_IMAGE"]
 PROJECT = "graphdb-partition-wal-" + secrets.token_hex(4)
+SOURCE_PROJECT = PROJECT
 TOKEN = secrets.token_hex(32)
 OFFSET = int(os.environ.get("GRAPHDB_GATE_PORT_OFFSET", "-20000"))
 ENV = {**os.environ, "GRAPHDB_HA_IMAGE": IMAGE, "GRAPHDB_RAFT_TOKEN": TOKEN, "GRAPHDB_INGEST_MODE": "wal"}
@@ -28,7 +29,7 @@ services = {}
 for group, port in (("catalog", 47100), ("a", 47200), ("b", 47300)):
     for i in range(1, 4):
         services[group + str(i)] = {"ports": [f"127.0.0.1:{port + i + OFFSET}:8080"], "environment": {
-            "GRAPHDB_RAFT_PROTOCOL_VERSION": "5", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES": "1000",
+            "GRAPHDB_RAFT_PROTOCOL_VERSION": "6" if group == "a" else "5", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES": "1000",
             "GRAPHDB_RAFT_ELECTION_TICKS": "10", "GRAPHDB_INGEST_FLUSH_INTERVAL": "1h",
             "GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES": "1048576"}}
 for i, name in enumerate(("router", "router2")):
@@ -37,19 +38,19 @@ override = {"services": services}
 if os.environ.get("GRAPHDB_GATE_SUBNET"):
     override["networks"] = {"default": {"ipam": {"config": [{"subnet": os.environ["GRAPHDB_GATE_SUBNET"]}]}}}
 (OUT / "override.json").write_text(json.dumps(override))
-COMPOSE = ["docker", "compose", "-p", PROJECT, "-f", str(ROOT / "docker-compose.sharded.yml"), "-f", str(OUT / "override.json")]
+COMPOSE_FILES = ["-f", str(ROOT / "docker-compose.sharded.yml"), "-f", str(OUT / "override.json")]
 events = []
 
 
-def command(*args, check=True):
-    result = subprocess.run(args, env=ENV, capture_output=True, text=True)
+def command(*args, check=True, timeout=None):
+    result = subprocess.run(args, env=ENV, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode:
         raise RuntimeError(result.stdout + result.stderr)
     return result
 
 
-def compose(*args, check=True):
-    return command(*COMPOSE, *args, check=check)
+def compose(*args, check=True, timeout=None):
+    return command("docker", "compose", "-p", PROJECT, *COMPOSE_FILES, *args, check=check, timeout=timeout)
 
 
 def container(name):
@@ -116,6 +117,44 @@ def record(name, **details):
     (OUT / "results.json").write_text(json.dumps(events, indent=2) + "\n")
 
 
+def entity_id(name, group):
+    while hashlib.sha256(name.encode()).digest()[0] % 2 != group:
+        name += "x"
+    return name
+
+
+def restore_offline():
+    global PROJECT
+    # Stop the home group before resuming data replicas so the pending
+    # acceptances are captured without a later graph decision.
+    compose("stop", "router", "router2", "a1", "a2", "a3")
+    command("docker", "unpause", *(container("b" + str(i)) for i in range(1, 4)))
+    compose("stop", "catalog1", "catalog2", "catalog3", "b1", "b2", "b3")
+    archives = OUT / "archives"
+    archives.mkdir(mode=0o777)
+    archives.chmod(0o777)
+    mount = str(archives) + ":/archives"
+    for name in NODES:
+        compose("run", "--rm", "--no-deps", "-T", "-v", mount, name, "runtime-backup", f"/archives/{name}.runtime")
+    (OUT / "source-containers.log").write_text(compose("logs", "--no-color").stdout)
+    compose("down")
+    PROJECT = SOURCE_PROJECT + "-restored"
+    for name in NODES:
+        compose("run", "--rm", "--no-deps", "-T", "-v", mount + ":ro", name, "runtime-restore",
+                f"/archives/{name}.runtime", "--isolated-cluster-recovery")
+    old_image = os.environ.get("GRAPHDB_GATE_PROTOCOL5_IMAGE")
+    if old_image:
+        ENV["GRAPHDB_HA_IMAGE"] = old_image
+        try:
+            result = compose("run", "--rm", "--no-deps", "-T", "-e", "GRAPHDB_RAFT_PROTOCOL_VERSION=5", "a1", "serve",
+                             check=False, timeout=20)
+        finally:
+            ENV["GRAPHDB_HA_IMAGE"] = IMAGE
+        assert result.returncode != 0 and "Raft data requires protocol 6" in result.stderr, result.stderr
+        record("protocol-5 binary rejected restored protocol-6 state")
+    compose("up", "-d", "--no-build", *NODES, "router", "router2")
+
+
 try:
     compose("up", "-d", "--no-build", *NODES, "router", "router2")
     wait(lambda: request("GET", "/v1/cluster")[0] == 200)
@@ -127,14 +166,19 @@ try:
     expect("POST", "/v1/tenants", {"tenant_id": "big"})
     expect("POST", "/v1/cluster/graphs", {"tenant_id": "big", "data_groups": ["shard-a", "shard-b"]}, status=202)
     wait(lambda: value.get("format") == 1 and value.get("state") == "active" if (value := expect("GET", "/v1/cluster/graphs/big")) else False)
-    expect("POST", "/v1/commits", {"idempotency_key": "schema", "mutations": {"upsert_ci_types": [{"name": "host"}]}})
-    first_id = "durable-first"
-    while hashlib.sha256(first_id.encode()).digest()[0] % 2 != 1:
-        first_id += "x"
-    first = {"source": "agent", "collector_id": "collector", "batch_id": "one", "idempotency_key": "one", "expected_version": 1,
+    expect("POST", "/v1/commits", {"idempotency_key": "schema", "mutations": {"upsert_ci_types": [{"name": "host"}],
+           "upsert_relation_types": [{"name": "calls", "from_kind": "host", "to_kind": "host", "directed": True}]}})
+    left, right = entity_id("seed-left", 0), entity_id("seed-right", 1)
+    seed = {"idempotency_key": "seed", "mutations": {
+        "upsert_entities": [{"id": left, "kind": "host"}, {"id": right, "kind": "host"}],
+        "upsert_edges": [{"from": left, "to": right, "type": "calls"}]}}
+    published_seed = expect("POST", "/v1/commits", seed)
+    assert published_seed["version"] == 2, published_seed
+    first_id = entity_id("durable-first", 1)
+    first = {"source": "agent", "collector_id": "collector", "batch_id": "one", "idempotency_key": "one", "expected_version": 2,
              "preconditions": [{"resource_type": "entity", "id": first_id, "op": "not_exists"}],
              "items": [{"entity": {"id": first_id, "kind": "host", "fields": {"payload": "survives-sigkill"}}}]}
-    second = {"source": "agent", "collector_id": "collector", "batch_id": "two", "expected_version": 2,
+    second = {"source": "agent", "collector_id": "collector", "batch_id": "two", "expected_version": 3,
               "items": [{"entity": {"id": "durable-second", "kind": "host"}}]}
     command("docker", "pause", *(container("b" + str(i)) for i in range(1, 4)))
     accepted = expect("POST", "/v1/ingest/batches", first, status=202)
@@ -159,23 +203,34 @@ try:
     replay = expect("POST", "/v1/ingest/batches", alias, status=202, router=1)
     assert replay["status_url"] == accepted["status_url"] and replay["accepted_lsn"] == accepted["accepted_lsn"]
     record("all home replicas and routers SIGKILL", acceptance_lsn=replay["accepted_lsn"])
-    command("docker", "unpause", *(container("b" + str(i)) for i in range(1, 4)))
+    restore_offline()
     for i, url in enumerate((accepted["status_url"], "/v1/ingest/batches/agent/collector/two")):
         terminal = wait(lambda: (value if value.get("result") else None) if (value := expect("GET", url, router=1)) else None)
-        assert terminal["state"] == "committed" and terminal["result"]["version"] == i + 2 and terminal["result"]["applied"] == 1, terminal
+        assert terminal["state"] == "committed" and terminal["result"]["version"] == i + 3 and terminal["result"]["applied"] == 1, terminal
+        if i == 0:
+            assert terminal["accepted_lsn"] == accepted["accepted_lsn"] and terminal["accepted_at"] == accepted["accepted_at"], terminal
     result = expect("POST", "/v1/ingest/batches", first, router=1, headers={"Prefer": "wait=committed"})
-    assert result["version"] == 2
+    assert result["version"] == 3
+    replay_seed = expect("POST", "/v1/commits", seed)
+    assert replay_seed["idempotent_replay"] and replay_seed["data_hash"] == published_seed["data_hash"], replay_seed
     expect("POST", "/v1/ingest/batches", {**first, "cursor": "conflicting-payload"}, status=409)
     descriptor = expect("GET", "/v1/cluster/graphs/big")
-    assert descriptor["version"] == 3 and descriptor["entity_count"] == 2, descriptor
+    assert descriptor["version"] == 4 and descriptor["entity_count"] == 4 and descriptor["edge_count"] == 1, descriptor
+    for start, end, direction in ((left, right, "out"), (right, left, "in")):
+        neighbors = expect("POST", "/v1/query", {"op": "neighbors", "id": start, "direction": direction, "limit": 10})
+        assert neighbors["version"] == 4 and len(neighbors["results"]) == 1 and neighbors["results"][0]["entity"]["id"] == end, neighbors
     entity = expect("GET", "/v1/entities/" + first_id)
     assert entity["entity"]["fields"]["payload"] == "survives-sigkill", entity
-    record("ordered recovery and exactly-once retry", version=descriptor["version"], data_hash=descriptor["data_hash"])
+    record("offline restore to fresh volumes and exactly-once recovery", archives=len(NODES),
+           version=descriptor["version"], data_hash=descriptor["data_hash"])
 finally:
     logs = compose("logs", "--no-color", check=False)
     (OUT / "containers.log").write_text(logs.stdout + logs.stderr)
     for i in range(1, 4):
         command("docker", "unpause", container("b" + str(i)), check=False)
     compose("down", "-v", "--remove-orphans", check=False)
+    if PROJECT != SOURCE_PROJECT:
+        PROJECT = SOURCE_PROJECT
+        compose("down", "-v", "--remove-orphans", check=False)
 
-print("Partitioned WAL crash gate passed. Evidence:", OUT)
+print("Partitioned WAL crash and offline recovery gate passed. Evidence:", OUT)

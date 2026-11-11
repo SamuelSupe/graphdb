@@ -5,7 +5,12 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
-- Add majority-durable WAL acceptance for protocol-5 partitioned graphs. Queue
+- Require Raft protocol 6 on the home group for partitioned ingest. Check replica
+  configuration before activation and preserve the durable downgrade fence.
+- Preserve ingest status and idempotency across single-group conversion by
+  resolving source receipts on the home group. Extend the Linux recovery gate
+  to restore the catalog and data groups from offline archives to new volumes.
+- Add majority-durable WAL acceptance for partitioned graphs. Queue
   batches independently of the active graph transaction, recover them in tenant
   acceptance order after leader changes, and persist ingest results with graph
   decisions so retries cannot republish committed batches. Preserve conditional

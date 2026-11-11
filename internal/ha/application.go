@@ -23,6 +23,8 @@ import (
 )
 
 type command struct {
+	// Logged so replay of older acceptance commands keeps their original semantics.
+	ReplaySourceIngest    bool                        `json:"replay_source_ingest,omitempty"`
 	TupleIdentity         bool                        `json:"tuple_identity,omitempty"`
 	TenantScopeValidation bool                        `json:"tenant_scope_validation,omitempty"`
 	ExpectedGeneration    int64                       `json:"expected_generation,omitempty"`

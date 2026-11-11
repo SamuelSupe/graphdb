@@ -212,6 +212,9 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 	}
 	remote := sharding.GraphRemote{Client: c.shards}
 	if g.Active != nil {
+		if g.Active.Purpose == "ingest" && c.config.Protocol < partition.IngestProtocol {
+			return nil
+		}
 		_, err := (partition.Engine{Remote: remote, Home: c.graphHome(), Tenant: tenant}).Resume(ctx)
 		if err != nil {
 			return err
@@ -252,7 +255,7 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 			return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "graph_gc_begin", Tenant: tenant, Generation: g.Generation, Txn: id.ID}, nil)
 		}
 	}
-	if g.State == "active" && !g.Move.BlocksWrites() && !g.GC.BlocksWrites() {
+	if c.config.Protocol >= partition.IngestProtocol && g.State == "active" && !g.Move.BlocksWrites() && !g.GC.BlocksWrites() {
 		_, err := c.advancePartitionIngest(ctx, g)
 		return err
 	}

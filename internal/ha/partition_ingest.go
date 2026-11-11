@@ -79,6 +79,11 @@ func (c *Cluster) servePartitionIngest(w http.ResponseWriter, r *http.Request, b
 		c.batchStatus(w, r)
 		return true
 	}
+	if c.config.Protocol < partition.IngestProtocol {
+		data, _ := resultJSON(http.StatusNotImplemented, map[string]any{"code": "operation_disabled", "error": fmt.Sprintf("partitioned ingest requires home Raft protocol %d", partition.IngestProtocol)})
+		writeResult(w, data)
+		return true
+	}
 	var request storage.IngestRequest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
@@ -97,15 +102,7 @@ func (c *Cluster) servePartitionIngest(w http.ResponseWriter, r *http.Request, b
 		writeResult(w, data)
 		return true
 	}
-	if request.FullSync {
-		data, _ := resultJSON(http.StatusNotImplemented, map[string]any{"code": "operation_disabled", "error": "partitioned full_sync requires a reconciliation task"})
-		writeResult(w, data)
-		return true
-	}
 	cmd, err := newCommand("partition_accept")
-	if err == nil {
-		_, err = (partition.IngestInput{Request: request, AcceptedAt: cmd.At}).Encode()
-	}
 	if err != nil {
 		c.partitionError(w, err)
 		return true
@@ -115,6 +112,7 @@ func (c *Cluster) servePartitionIngest(w http.ResponseWriter, r *http.Request, b
 		return true
 	}
 	cmd.Tenant, cmd.ExpectedGeneration = g.Tenant, g.Generation
+	cmd.ReplaySourceIngest = true
 	cmd.Method, cmd.URI = r.Method, r.URL.RequestURI()
 	cmd.Header = http.Header{"X-Tenant-ID": []string{g.Tenant}}
 	cmd.RouteEpoch, _ = strconv.ParseUint(r.Header.Get(sharding.EpochHeader), 10, 64)

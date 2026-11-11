@@ -83,7 +83,8 @@ func (n *Node) changeMember(w http.ResponseWriter, r *http.Request) {
 		probe, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		peer, err := n.peerStatus(probe, change.ID)
 		cancel()
-		if err != nil || peer.Error != "" || peer.SnapshotError != "" || peer.Applied < status.Commit {
+		if err != nil || peer.Error != "" || peer.SnapshotError != "" || peer.Applied < status.Commit ||
+			(n.protocolVersion() >= 6 && peer.Protocol < n.protocolVersion()) {
 			http.Error(w, "learner application or protocol has not caught up", http.StatusConflict)
 			return
 		}

@@ -60,6 +60,15 @@ func (s *TenantStore) GetIngestBatch(ctx context.Context, tenantID string, sourc
 	return IngestBatchRecord{}, ErrNotFound
 }
 
+// LookupIngestReplay finds a terminal receipt for a prepared request and checks
+// that any matching batch or idempotency identity still refers to its content.
+func (s *TenantStore) LookupIngestReplay(ctx context.Context, tenantID string, request IngestRequest) (IngestBatchRecord, bool, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return IngestBatchRecord{}, false, err
+	}
+	return s.loadIngestRecord(ctx, tenantID, request)
+}
+
 func (s *TenantStore) loadIngestRecord(ctx context.Context, tenantID string, request IngestRequest) (IngestBatchRecord, bool, error) {
 	candidates := make([]ingestRecordLookupCandidate, 0, 6)
 	if request.IdempotencyKey != "" {

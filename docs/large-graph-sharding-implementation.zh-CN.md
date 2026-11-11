@@ -17,7 +17,7 @@
 
 ## 管理接口
 
-管理请求使用 router 的 Bearer 令牌。目录组、home group 和所有目标数据组均须完成协议 5 升级，每个数据组至少三个独立副本。本轮改动能重放旧协议 5 预览版的日志。使用旧预览版的集群须在维护窗口统一升级 Router 与各组二进制，再启用流量和后台任务。以下示例的地址和组 ID 按部署填写。
+管理请求使用 Router 的 Bearer 令牌。目录组、home group 和目标数据组使用协议 5 或更高版本，每个数据组至少三个独立副本。协议 5 预览版的日志可继续重放。使用分片 WAL 的 home group 按[升级顺序](partition-wal-ingestion.zh-CN.md#当前范围)切到协议 6。以下示例的地址和组 ID 按部署填写。
 
 ```http
 POST /v1/cluster/graphs
@@ -72,7 +72,7 @@ GET /v1/cluster/graphs/big/gc
 
 ## 尚未实现及使用边界
 
-当前分片模式只开放上述数据路径。来源全量对账 `full_sync`、import、collector/deadletter 管理、GQL/GraphQL、边扫描/导出、跨组备份恢复/clone、完整租户生命周期、配置写入及带存量数据的 schema 修改尚未接入；不支持的接口返回 `501 operation_disabled`，不能落到已退役的旧单组数据。转换前的历史 ingest 身份迁移仍未实现，须按 WAL 说明完成旧队列交接。当前仅有 Raft 副本快照恢复，不等于整图跨组备份恢复。
+新批次的来源全量对账 `full_sync`、import、collector/deadletter 管理、GQL/GraphQL、边扫描/导出、在线整图备份恢复、clone、完整租户生命周期、配置写入和带存量数据的 schema 修改返回 `501 operation_disabled`。分片增量 ingest 需 home group 启用协议 6，并兼容转换前保留的批次状态和幂等收据。全组停机归档可用于[离线集群恢复](product-operations.zh-CN.md#大图分片离线集群恢复)。
 
 转换发布前的取消接口、失效受理前暂存块清理、幂等收据保留策略、超级节点 segment、hash 范围继续拆分、home group 搬迁和已用数据组的自动排空尚未完成。目录保守保留图关联，注销曾关联的组可能仍被拒绝。转换已进入初始化后应排除错误并继续，不得手工删描述或改目录强行恢复旧模式。
 
@@ -84,7 +84,7 @@ GET /v1/cluster/graphs/big/gc
 
 已通过的行为包括跨组边和反向查询、全局 unique/关系基数、级联删除、与单组相同逻辑摘要、准备/决定响应丢失、统一版本分页与到期、旧图转换及旧请求重试、搬迁中写入与取消、搬迁和 GC 期间控制 Leader 替换、回收期间的准备写入及 pin 保护、缺输入/缺准备页的快照拒绝，以及捕获快照安装到独立目录。
 
-测试入口为 `internal/partition` 及 `internal/ha/partition_test.go`。全仓库、race 和静态检查结果见下表；本页不将这些检查写成完整发布门禁。尚未验证真实多主机容量、超过单机内存的图、分片备份恢复、双版本协议 5 滚动、磁盘满及完整故障矩阵，未测量线性扩展收益。
+测试入口为 `internal/partition` 及 `internal/ha/partition_test.go`。全仓库、race 和静态检查结果见下表。协议 6 的离线恢复演练记录见[分片 WAL 验证](partition-wal-ingestion.zh-CN.md#验证入口)。真实多主机容量、超过单机内存的图、在线整图备份恢复、双版本协议 5 滚动、磁盘满及完整故障矩阵仍需验收。
 
 首轮实现候选 Go 源码摘要（修改及新增的 Go 文件，按路径排序，哈希输入为路径、NUL、内容、NUL）：`0bc3ea0d45963d229fb47b70966d9ddc1b54830db01ea3d777a4468995374986`。验证日志位于 worktree 的 `.workflow/large-graph/`，不纳入发布文件。
 
