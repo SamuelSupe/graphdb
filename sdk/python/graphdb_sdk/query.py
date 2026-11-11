@@ -4,6 +4,13 @@ from .stream import NDJSONStream
 
 
 class QueryMixin:
+    def cypher(self, text: str, parameters: dict | None = None, **options) -> dict:
+        """Execute one statement in the 3.0 development read-only profile."""
+        return self._json("POST", "/v1/query/cypher", body={**options, "query": text, "parameters": parameters or {}})
+
+    def stream_cypher(self, text: str, parameters: dict | None = None, **options) -> NDJSONStream:
+        return self._stream("POST", "/v1/query/cypher/stream", body={**options, "query": text, "parameters": parameters or {}})
+
     def query(self, body: dict) -> dict:
         return self._json("POST", "/v1/query", body=body)
 

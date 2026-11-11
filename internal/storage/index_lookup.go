@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/query"
 )
 
 type PersistedIndexLookup struct {
@@ -99,21 +100,40 @@ func uniqueEdgesByID(edges []graph.Edge) []graph.Edge {
 }
 
 func (l *PersistedIndexLookup) GetEntity(ctx context.Context, id string, fields []string) (graph.Entity, bool, error) {
+	return l.getEntity(ctx, id, fields, false)
+}
+
+// GetEntityChecked distinguishes an absent ID from catalog or page failures.
+// A missing candidate page is reported as ErrIndexUnavailable.
+func (l *PersistedIndexLookup) GetEntityChecked(ctx context.Context, id string, fields []string) (graph.Entity, bool, error) {
+	return l.getEntity(ctx, id, fields, true)
+}
+
+func (l *PersistedIndexLookup) getEntity(ctx context.Context, id string, fields []string, requireReadable bool) (graph.Entity, bool, error) {
 	if l == nil || l.Catalog.Version != l.Version {
+		if requireReadable {
+			return graph.Entity{}, false, query.ErrIndexUnavailable
+		}
 		return graph.Entity{}, false, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return graph.Entity{}, false, err
 	}
 	if err := l.compileCatalog(); err != nil {
+		if requireReadable {
+			return graph.Entity{}, false, query.ErrIndexUnavailable
+		}
 		return graph.Entity{}, false, nil
 	}
-	for _, shard := range indexShardIDCandidates(id) {
+	shards := indexShardIDCandidates(id)
+	unreadable := false
+	for _, shard := range shards {
 		if spec, ok := l.catalogEntityPageSpec(shard); ok && hasIndexRanges(spec.Objects) {
-			entity, found, err := l.getEntityFromRangePage(ctx, id, fields, spec)
+			entity, found, readable, err := l.getEntityFromRangePage(ctx, id, fields, spec)
 			if err != nil || found {
 				return entity, found, err
 			}
+			unreadable = unreadable || !readable
 		}
 	}
 	if l.Store.UseEntityRecordsForRead {
@@ -130,13 +150,17 @@ func (l *PersistedIndexLookup) GetEntity(ctx context.Context, id string, fields 
 			}
 		}
 	}
-	for _, shard := range indexShardIDCandidates(id) {
+	for _, shard := range shards {
 		if spec, ok := l.catalogEntityPageSpec(shard); ok && !hasIndexRanges(spec.Objects) {
-			entity, found, err := l.getEntityByIDFromParquetPage(ctx, id, fields, spec)
+			entity, found, readable, err := l.getEntityByIDFromParquetPage(ctx, id, fields, spec)
 			if err != nil || found {
 				return entity, found, err
 			}
+			unreadable = unreadable || !readable
 		}
+	}
+	if requireReadable && unreadable {
+		return graph.Entity{}, false, query.ErrIndexUnavailable
 	}
 	return graph.Entity{}, false, nil
 }

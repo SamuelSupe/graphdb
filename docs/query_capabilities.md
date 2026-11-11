@@ -4,6 +4,8 @@
 
 本文说明当前 GGraphDB 的用户侧查询能力。查询对象是租户当前可见快照，不提供历史版本查询；读一致性通过 `min_version` 和 `allow_stale` 控制。
 
+3.0 开发分支另提供[只读 openCypher 查询 profile](opencypher.zh-CN.md)，使用独立的列/行结果与 NDJSON 协议，不属于下文的 2.5.1 合同。
+
 ## 入口
 
 HTTP 查询入口：

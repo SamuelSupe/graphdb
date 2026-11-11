@@ -576,7 +576,7 @@ func readRequest(r *http.Request) bool {
 		return true
 	case http.MethodPost:
 		switch r.URL.Path {
-		case "/v1/query", "/v1/query/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream":
+		case "/v1/query", "/v1/query/stream", "/v1/query/cypher", "/v1/query/cypher/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream":
 			return true
 		}
 		// Executing a saved template reads; POST /v1/query/templates saves one.

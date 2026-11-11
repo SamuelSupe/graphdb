@@ -68,7 +68,8 @@ class TransportMixin:
             headers["Content-Type"] = "application/json"
         return NDJSONStream(
             self._open(method, path, "", None, data, headers),
-            require_done=parse.urlsplit(path).path.endswith("/v1/export/snapshot/stream"),
+            require_done=parse.urlsplit(path).path in ("/v1/export/snapshot/stream", "/v1/query/cypher/stream"),
+            require_success=parse.urlsplit(path).path == "/v1/query/cypher/stream",
         )
 
     def _open(self, method: str, path: str, tenant_id: str | None, query: dict | None, data: bytes | None, headers: dict):

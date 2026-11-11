@@ -102,7 +102,7 @@ func (c *Client) admitGraph(key string, write bool) func() {
 
 func graphDataSupported(r *http.Request) bool {
 	path := r.URL.Path
-	return r.Method == http.MethodPost && (path == "/v1/commits" || path == "/v1/query" || path == "/v1/query/stream") ||
+	return r.Method == http.MethodPost && (path == "/v1/commits" || path == "/v1/query" || path == "/v1/query/stream" || path == "/v1/query/cypher" || path == "/v1/query/cypher/stream") ||
 		r.Method == http.MethodGet && (path == "/v1/entities" || strings.HasPrefix(path, "/v1/entities/") && path != "/v1/entities/stream" ||
 			path == "/v1/ci-types" || path == "/v1/entity-types" || path == "/v1/relation-types" || path == "/v1/source-policy")
 }
@@ -146,6 +146,10 @@ func serveGraphData(w http.ResponseWriter, r *http.Request, g partition.Graph, h
 	w.Header().Set("X-GraphDB-Tenant-Generation", strconv.FormatInt(g.Generation, 10))
 	remote := GraphRemote{Client: client}
 	view := partition.View{Graph: g, Remote: remote}
+	if path == "/v1/query/cypher" || path == "/v1/query/cypher/stream" {
+		serveGraphCypher(w, r, g, home, remote)
+		return true
+	}
 	if path == "/v1/commits" {
 		allowed := false
 		httpapi.ProtectBrowserWrite(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { allowed = true })).ServeHTTP(w, r)

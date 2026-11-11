@@ -29,3 +29,11 @@ guide.
 Since 2.3.4: consume snapshot streams through EOF and check `Stream.Err()`; a
 missing final `done:true` is reported as `io.ErrUnexpectedEOF`. Early `Close()`
 remains a caller cancellation, not a successful export.
+
+The 3.0 development branch additionally provides `Client.Cypher(ctx,
+CypherRequest{Query: "MATCH (n:host) RETURN n.hostname AS hostname LIMIT 10"})`
+and `Client.CypherStream`. Dynamic numeric cells are `json.Number`; consume a
+stream through EOF and check `Stream.Err()` for failed or missing terminal
+frames. Each `Next` replaces the destination with the current Cypher frame.
+See the [read-only profile](../../../docs/opencypher.md). These methods
+require the development server and are not a 2.5.1 release capability.

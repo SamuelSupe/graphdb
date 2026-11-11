@@ -63,20 +63,20 @@ func (s *TenantStore) loadEdgeRangePage(ctx context.Context, tenantID string, ve
 	return shard, true, ctx.Err()
 }
 
-func (l *PersistedIndexLookup) getEntityFromRangePage(ctx context.Context, id string, fields []string, spec EntityPageSpec) (graph.Entity, bool, error) {
+func (l *PersistedIndexLookup) getEntityFromRangePage(ctx context.Context, id string, fields []string, spec EntityPageSpec) (entity graph.Entity, found, readable bool, err error) {
 	if err := ctx.Err(); err != nil {
-		return graph.Entity{}, false, err
+		return graph.Entity{}, false, false, err
 	}
 	n := rangeObjectIndex(spec.Objects, id)
 	page, ok, err := l.Store.borrowEntityRange(ctx, l.TenantID, l.Version, spec, n)
 	if err != nil || !ok {
-		return graph.Entity{}, false, err
+		return graph.Entity{}, false, false, err
 	}
 	i := sort.Search(len(page.Entities), func(i int) bool { return page.Entities[i].ID >= id })
 	if i == len(page.Entities) || page.Entities[i].ID != id {
-		return graph.Entity{}, false, nil
+		return graph.Entity{}, false, true, nil
 	}
-	return trimEntityFields(page.Entities[i], fields), true, nil
+	return trimEntityFields(page.Entities[i], fields), true, true, nil
 }
 
 func (s *TenantStore) borrowEntityRange(ctx context.Context, tenantID string, version int64, spec EntityPageSpec, n int) (EntityPageData, bool, error) {

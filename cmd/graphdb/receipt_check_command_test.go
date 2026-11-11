@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 	bolt "go.etcd.io/bbolt"
 )
@@ -34,15 +35,43 @@ func TestReceiptCheckCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = storage.NewTenantStore(files, prefix).InitTenant(ctx, "clean")
+	t.Cleanup(func() { _ = files.Close() })
+	if err := files.EnableLocalReceiptPacking(ctx, prefix); err != nil {
+		t.Fatal(err)
+	}
+	store := storage.NewTenantStore(files, prefix)
+	if _, err := store.InitTenant(ctx, "clean"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Ingest(ctx, "damaged", storage.IngestRequest{
+		Source: "agent", CollectorID: "test", BatchID: "receipt-check",
+		Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "host:a", Kind: "host"}}},
+	})
 	if err := errors.Join(err, files.Close()); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, prefix, "tenants", "damaged")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
+
+	check := func(tenant string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "receipt-check", tenant)
+		cmd.Env = []string{receiptCheckTestCLI + "=1", "GRAPHDB_DATA_DIR=" + root, "GRAPHDB_PREFIX=" + prefix}
+		return cmd.Output()
 	}
-	filename := filepath.Join(dir, "receipts.v1.db")
+	assertCount := func(tenant string, count int) {
+		t.Helper()
+		output, err := check(tenant)
+		var report struct {
+			TenantID string `json:"tenant_id"`
+			Checked  *int   `json:"receipts_checked"`
+		}
+		if err != nil || json.Unmarshal(output, &report) != nil || report.TenantID != tenant || report.Checked == nil || *report.Checked != count {
+			t.Fatalf("unexpected receipt check output for %q: %s %v", tenant, output, err)
+		}
+	}
+	assertCount("clean", 0)
+
+	filename := filepath.Join(root, prefix, "tenants", "damaged", "receipts.v1.db")
 	db, err := bolt.Open(filename, 0600, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +98,8 @@ func TestReceiptCheckCLI(t *testing.T) {
 	if err := errors.Join(err, db.Close()); err != nil || page == 0 {
 		t.Fatalf("non-inline bucket fixture: page=%d err=%v", page, err)
 	}
+	assertCount("damaged", 1)
+
 	f, err := os.OpenFile(filename, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -80,27 +111,13 @@ func TestReceiptCheckCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	check := func(tenant string) ([]byte, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, os.Args[0], "receipt-check", tenant)
-		cmd.Env = []string{receiptCheckTestCLI + "=1", "GRAPHDB_DATA_DIR=" + root, "GRAPHDB_PREFIX=" + prefix}
-		return cmd.Output()
-	}
-	output, err := check("clean")
-	var report struct {
-		TenantID string `json:"tenant_id"`
-		Checked  *int   `json:"receipts_checked"`
-	}
-	if err != nil || json.Unmarshal(output, &report) != nil || report.TenantID != "clean" || report.Checked == nil || *report.Checked != 0 {
-		t.Fatalf("unexpected receipt check output: %s %v", output, err)
-	}
 	for _, tc := range []struct {
-		tenant string
-		want   string
+		tenant     string
+		wantPrefix string
+		want       string
 	}{
-		{"damaged", "Page expected to be:"},
-		{"absent", `tenant "absent" directory`},
+		{"damaged", "error: " + storage.ErrReceiptStoreUnavailable.Error() + ": damaged: ", "Page expected to be:"},
+		{"absent", `error: tenant "absent" directory:`, ""},
 	} {
 		t.Run(tc.tenant, func(t *testing.T) {
 			output, err := check(tc.tenant)
@@ -109,8 +126,7 @@ func TestReceiptCheckCLI(t *testing.T) {
 				t.Fatalf("expected a CLI diagnostic and exit 1, got %q %v", output, err)
 			}
 			diagnostic := strings.TrimSpace(string(exit.Stderr))
-			unavailable := strings.Contains(diagnostic, storage.ErrReceiptStoreUnavailable.Error())
-			if !strings.Contains(diagnostic, tc.want) || strings.Contains(diagnostic, "\n") || unavailable != (tc.tenant == "damaged") {
+			if !strings.HasPrefix(diagnostic, tc.wantPrefix) || !strings.Contains(diagnostic, tc.want) || strings.Contains(diagnostic, "\n") {
 				t.Fatalf("unexpected CLI diagnostic: %q", diagnostic)
 			}
 		})

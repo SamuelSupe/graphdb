@@ -30,6 +30,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"stream":true}\n{"done":true}\n')
         elif self.path == "/v1/query/graphql":
             self._json({"data": {"graph": {"version": 1}}})
+        elif self.path == "/v1/query/cypher":
+            self._json({"version": 1, "columns": ["n"], "rows": [[json.loads(body)["parameters"]["n"]]]})
+        elif self.path == "/v1/query/cypher/stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+            self.wfile.write(b'{"stream":true}\n{"row":[9007199254740993]}\n')
+            if json.loads(body)["query"] == "failed":
+                self.wfile.write(b'{"done":true,"success":false,"error":{"code":"query_limit_exceeded","message":"budget"}}\n')
+            elif json.loads(body)["query"] == "ok":
+                self.wfile.write(b'{"done":true,"success":true}\n')
         elif self.path == "/v1/query":
             self.send_response(429)
             self.send_header("Retry-After", "2")
@@ -310,6 +321,20 @@ class ClientTest(unittest.TestCase):
         method, path, _, body = Handler.requests[-1]
         self.assertEqual((method, path), ("POST", "/v1/query/graphql"))
         self.assertEqual(json.loads(body)["operationName"], "Version")
+
+    def test_cypher_precision_and_stream_completion(self):
+        client = GraphDBClient(self.base_url, tenant_id="tenant-a")
+        result = client.cypher("RETURN $n AS n", {"n": 9007199254740993})
+        self.assertEqual(result["rows"], [[9007199254740993]])
+        with client.stream_cypher("ok") as stream:
+            self.assertEqual(list(stream)[1]["row"], [9007199254740993])
+        with client.stream_cypher("truncated") as stream:
+            with self.assertRaises(EOFError):
+                list(stream)
+        with client.stream_cypher("failed") as stream:
+            with self.assertRaises(GraphDBAPIError) as caught:
+                list(stream)
+            self.assertEqual(caught.exception.code, "query_limit_exceeded")
 
     def test_source_policy_field_aliases_are_sent(self):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")

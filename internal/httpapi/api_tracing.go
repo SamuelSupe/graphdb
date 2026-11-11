@@ -192,6 +192,10 @@ func apiTraceRouteForRequest(r *http.Request) apiTraceRoute {
 		return apiTraceRoute{"query.gql_stream", "POST /v1/query/gql/stream"}
 	case path == "/v1/query/graphql":
 		return apiTraceRoute{"query.graphql", "POST /v1/query/graphql"}
+	case path == "/v1/query/cypher":
+		return apiTraceRoute{"query.cypher", "POST /v1/query/cypher"}
+	case path == "/v1/query/cypher/stream":
+		return apiTraceRoute{"query.cypher_stream", "POST /v1/query/cypher/stream"}
 	case path == "/v1/queries/running":
 		return apiTraceRoute{"running_query.list", "GET /v1/queries/running"}
 	case strings.HasPrefix(path, "/v1/queries/running/"):

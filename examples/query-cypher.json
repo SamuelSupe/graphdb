@@ -1,0 +1,6 @@
+{
+  "query": "MATCH (s:service)-[:runs_on]->(h:host) WHERE h.hostname = $hostname RETURN s.name AS service, h.hostname AS hostname ORDER BY service LIMIT $limit",
+  "parameters": {"hostname": "app-01", "limit": 100},
+  "timeout_ms": 3000,
+  "cost_limit": 100000
+}

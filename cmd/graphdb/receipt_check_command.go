@@ -45,8 +45,8 @@ func runReceiptCheck(cfg config.Config, args []string) error {
 	return err
 }
 
-// A bbolt assertion or mapped-file fault can kill the worker goroutine's
-// process before it returns an error. Keep that failure local to the checker.
+// A mapped-file fault in bbolt's checker goroutine can terminate the worker
+// before it returns an error.
 func receiptCheckSubprocess(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	output, err := cmd.Output()
 	if err == nil {

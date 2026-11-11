@@ -8,22 +8,22 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 )
 
-func (l *PersistedIndexLookup) getEntityByIDFromParquetPage(ctx context.Context, id string, fields []string, spec EntityPageSpec) (graph.Entity, bool, error) {
+func (l *PersistedIndexLookup) getEntityByIDFromParquetPage(ctx context.Context, id string, fields []string, spec EntityPageSpec) (entity graph.Entity, found, readable bool, err error) {
 	page, ok, err := l.loadParquetEntityPage(ctx, spec)
 	if err != nil {
 		if ctx.Err() != nil {
-			return graph.Entity{}, false, err
+			return graph.Entity{}, false, false, err
 		}
-		return graph.Entity{}, false, nil
+		return graph.Entity{}, false, false, nil
 	}
 	if !ok {
-		return graph.Entity{}, false, nil
+		return graph.Entity{}, false, false, nil
 	}
-	entity, ok := l.entityFromCachedPage(spec.Shard, id, page)
+	entity, ok = l.entityFromCachedPage(spec.Shard, id, page)
 	if !ok {
-		return graph.Entity{}, false, nil
+		return graph.Entity{}, false, true, nil
 	}
-	return trimEntityFields(entity, fields), true, nil
+	return trimEntityFields(entity, fields), true, true, nil
 }
 
 func (l *PersistedIndexLookup) getEntityFromParquetPage(ctx context.Context, record EntityRecord, fields []string, spec EntityPageSpec) (graph.Entity, bool, error) {

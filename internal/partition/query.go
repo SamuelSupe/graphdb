@@ -322,6 +322,30 @@ func ExecuteQuery(ctx context.Context, view View, request query.Request) (query.
 	if len(request.Sort) != 0 || len(request.Aggregate) != 0 || len(request.GroupBy) != 0 {
 		window = 128
 	}
+	g, options, err := queryReadOptions(view, window)
+	if err != nil {
+		return query.Response{}, err
+	}
+	if !query.SupportsLazyRead(request, options.PlannerStats) {
+		return query.Response{}, fmt.Errorf("%w: distributed execution does not support this query", query.ErrInvalid)
+	}
+	result, err := query.ExecuteContextWithOptions(ctx, g, request, options)
+	if errors.Is(err, ErrReadBudget) {
+		err = fmt.Errorf("%w: %v", query.ErrLimitExceeded, err)
+	}
+	return result, err
+}
+
+var _ query.IndexLookup = (*Lookup)(nil)
+var _ query.EntityBatchLookup = (*Lookup)(nil)
+var _ query.EntityPageLookup = (*Lookup)(nil)
+var _ query.BothEdgeVisitLookup = (*Lookup)(nil)
+var _ query.InEdgeVisitLookup = (*Lookup)(nil)
+
+func queryReadOptions(view View, window int) (*graph.Graph, query.ExecuteOptions, error) {
+	if view.Budget == nil {
+		view.Budget = &ReadBudget{Requests: 2048, Bytes: 64 << 20}
+	}
 	lookup := &Lookup{View: view, scanWindow: window}
 	stats := query.PlannerStats{Version: view.Graph.Version, EntityScanAvailable: true, ForwardEdgeIndexAvailable: true, ReverseEdgeIndexAvailable: true}
 	for i, count := range view.Graph.EntityCounts {
@@ -337,20 +361,8 @@ func ExecuteQuery(ctx context.Context, view View, request query.Request) (query.
 	}
 	g, err := graph.FromSnapshot(graph.Snapshot{Version: view.Graph.Version, CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes})
 	if err != nil {
-		return query.Response{}, err
+		return nil, query.ExecuteOptions{}, err
 	}
-	if !query.SupportsLazyRead(request, stats) {
-		return query.Response{}, fmt.Errorf("%w: distributed execution does not support this query", query.ErrInvalid)
-	}
-	result, err := query.ExecuteContextWithOptions(ctx, g, request, query.ExecuteOptions{PlannerStats: stats, IndexLookup: lookup, EntityLookup: lookup})
-	if errors.Is(err, ErrReadBudget) {
-		err = fmt.Errorf("%w: %v", query.ErrLimitExceeded, err)
-	}
-	return result, err
-}
 
-var _ query.IndexLookup = (*Lookup)(nil)
-var _ query.EntityBatchLookup = (*Lookup)(nil)
-var _ query.EntityPageLookup = (*Lookup)(nil)
-var _ query.BothEdgeVisitLookup = (*Lookup)(nil)
-var _ query.InEdgeVisitLookup = (*Lookup)(nil)
+	return g, query.ExecuteOptions{PlannerStats: stats, IndexLookup: lookup, EntityLookup: lookup}, nil
+}

@@ -489,7 +489,7 @@ func TestRouterLostQueryResponseRemainsRetryable(t *testing.T) {
 	shard := Shard{ID: "a", ClusterID: "c", Peers: map[uint64]string{1: backend.URL}}
 	router := NewRouter(shard, "token")
 	defer router.Client.HTTP.CloseIdleConnections()
-	for _, path := range []string{"/v1/query", "/v1/query/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream", "/v1/query/templates/example"} {
+	for _, path := range []string{"/v1/query", "/v1/query/stream", "/v1/query/cypher", "/v1/query/cypher/stream", "/v1/query/graphql", "/v1/query/gql", "/v1/query/gql/stream", "/v1/query/templates/example"} {
 		t.Run(path, func(t *testing.T) {
 			before := queries.Load()
 			response := httptest.NewRecorder()

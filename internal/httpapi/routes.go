@@ -117,6 +117,8 @@ func (s *Server) registerDataRoutes(mux *http.ServeMux) {
 		routeSpec{pattern: "POST /v1/query", handler: s.query},
 		routeSpec{pattern: "POST /v1/query/stream", handler: s.queryStream},
 		routeSpec{pattern: "POST /v1/query/graphql", handler: s.queryGraphQL},
+		routeSpec{pattern: "POST /v1/query/cypher", handler: s.queryCypher},
+		routeSpec{pattern: "POST /v1/query/cypher/stream", handler: s.queryCypherStream},
 		routeSpec{pattern: "POST /v1/query/gql", handler: s.queryGQL},
 		routeSpec{pattern: "POST /v1/query/gql/stream", handler: s.queryGQLStream},
 		routeSpec{pattern: "GET /v1/query/templates", handler: s.listQueryTemplates},

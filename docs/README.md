@@ -6,6 +6,8 @@ The current release is **2.5.1**; its validation record tracks exact-tag gates, 
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 
+The 3.0 development branch adds a [read-only openCypher profile](opencypher.md); it is not part of the 2.5.1 release qualification.
+
 ## Suggested reading paths
 
 | Your goal | Suggested order |

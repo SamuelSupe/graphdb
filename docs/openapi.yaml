@@ -794,6 +794,66 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         '503':
           $ref: '#/components/responses/ReaderNotFresh'
+  /v1/query/cypher:
+    post:
+      summary: Execute the 3.0 development read-only openCypher 9 profile.
+      description: One bounded statement, with bound parameters and one snapshot for all clauses. Updates and procedure calls are rejected. This is a documented subset, not full Neo4j or Bolt compatibility. Numeric dynamic cells preserve signed int64 or finite float64 values. A point lookup with a missing candidate index page returns index_stale.
+      parameters:
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CypherRequest'
+      responses:
+        '200':
+          description: Complete result, with at most 1000 rows. Exceeding the limit fails rather than truncating results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CypherResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
+  /v1/query/cypher/stream:
+    post:
+      summary: Stream the 3.0 development read-only openCypher profile as NDJSON.
+      description: Emits meta, row envelopes, then a terminal with done=true and success=true. A failed terminal has success=false and an error envelope. HTTP 200 and partial rows do not establish success. Blocking operators use bounded buffers; nonblocking single-branch pipelines apply backpressure while reading. Output is limited to 100000 rows.
+      parameters:
+        - $ref: '#/components/parameters/ReadMinVersion'
+        - $ref: '#/components/parameters/ReadAllowStale'
+        - $ref: '#/components/parameters/ReadMinVersionHeader'
+        - $ref: '#/components/parameters/ReadAllowStaleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CypherRequest'
+      responses:
+        '200':
+          description: NDJSON stream; require a successful terminal.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ReaderNotFresh'
   /v1/query/graphql:
     post:
       summary: Execute a GraphQL query document.
@@ -3379,6 +3439,61 @@ components:
             additionalProperties: true
         edge_where_expr:
           $ref: '#/components/schemas/FilterExpr'
+    CypherRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: One read-only statement; text is limited to 64 KiB.
+        parameters:
+          type: object
+          additionalProperties: true
+        min_version:
+          type: integer
+          format: int64
+          minimum: 0
+        allow_stale:
+          type: boolean
+        timeout_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        cost_limit:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          description: Zero or absent uses 100000.
+        profile:
+          type: boolean
+    CypherResponse:
+      type: object
+      required: [version, columns, rows, stats]
+      properties:
+        version:
+          type: integer
+          format: int64
+        columns:
+          type: array
+          items:
+            type: string
+        rows:
+          type: array
+          items:
+            type: array
+            items: {}
+        stats:
+          type: object
+          additionalProperties: true
+        plan:
+          type: object
+          additionalProperties: true
+        profile:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
     GraphQLRequest:
       type: object
       required: [query]
