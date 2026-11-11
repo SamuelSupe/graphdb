@@ -190,7 +190,13 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 			if ref.Stage != a.Txn {
 				return nil, invalid("transaction input belongs to a different staging session")
 			}
+			if ref.Acceptance != "" && (a.Purpose != "ingest" || len(a.Inputs) != 1 || ref.Digest != a.Digest) {
+				return nil, invalid("invalid ingest acceptance reference")
+			}
 			if _, err := s.Input(ctx, a.Tenant, a.Generation, ref); err != nil {
+				if a.Revision >= InputGCRevision && ref.Acceptance == "" && errors.Is(err, errInputMissing) {
+					return nil, ErrInputExpired
+				}
 				return nil, err
 			}
 		}
@@ -337,6 +343,9 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 			return nil, err
 		}
 		for _, input := range inputs {
+			if input.Acceptance != "" {
+				continue // The WAL receipt owns this input until queue completion.
+			}
 			if err := s.Objects.Delete(ctx, s.inputKey(g.Tenant, g.Generation, input.Stage, input.Digest)); err != nil {
 				return nil, err
 			}

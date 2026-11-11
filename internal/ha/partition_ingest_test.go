@@ -3,7 +3,11 @@ package ha
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +20,107 @@ import (
 )
 
 func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
-	a, b, catalog, router, call := newTestPartitionedGraph(t, true, partition.IngestProtocol)
+	for _, protocol := range []int{partition.IngestProtocol, partition.CompactIngestProtocol} {
+		t.Run(fmt.Sprint(protocol), func(t *testing.T) { testHAPartitionIngestRecovery(t, protocol) })
+	}
+}
+
+func TestPartitionReceiptExpiryFencesReusedAcceptance(t *testing.T) {
+	ctx := context.Background()
+	open := func() *Application {
+		t.Helper()
+		files, err := storage.OpenFileStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { files.Close() })
+		return &Application{Files: files, Store: storage.NewTenantStore(files, "graphdb"), ShardID: "a", MaxSnapshotBytes: 64 << 20}
+	}
+	app := open()
+	finished := time.Date(2026, time.November, 11, 1, 0, 0, 0, time.UTC)
+	const ttl = time.Hour
+	request := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "terminal", IdempotencyKey: "stable"}
+	key := app.ingestKey("big", request.Source, request.CollectorID, request.BatchID, 2)
+	pendingRequest := request
+	pendingRequest.BatchID, pendingRequest.IdempotencyKey = "pending", "pending"
+	pendingKey := app.ingestKey("big", pendingRequest.Source, pendingRequest.CollectorID, pendingRequest.BatchID, 2)
+	seed := func(index uint64, id string, seed func(context.Context) error) {
+		t.Helper()
+		if _, err := app.Files.ApplyReplicated(ctx, index, id, finished, func(ctx context.Context) ([]byte, error) {
+			return nil, seed(ctx)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	terminal := acceptedRequest{Partitioned: true, Tenant: "big", Generation: 2, Index: 1, State: "committed", Request: request,
+		AcceptedAt: finished.Add(-2 * ttl), FinishedAt: finished, ReceiptRetention: ttl, Result: &storage.IngestResult{BatchID: request.BatchID}}
+	pending := acceptedRequest{Partitioned: true, Tenant: "big", Generation: 2, Index: 2, State: "accepted", Request: pendingRequest,
+		AcceptedAt: terminal.AcceptedAt, ReceiptRetention: ttl}
+	seed(1, "terminal", func(ctx context.Context) error {
+		if err := app.saveAccepted(ctx, key, terminal); err != nil {
+			return err
+		}
+		return app.savePartitionIngestAlias(ctx, terminal, key)
+	})
+	seed(2, "pending", func(ctx context.Context) error { return app.saveAccepted(ctx, pendingKey, pending) })
+	restore := func(index uint64) {
+		t.Helper()
+		snapshot, err := app.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		app = open()
+		if err := app.Restore(ctx, index, snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restore(2)
+	apply := func(index uint64, cmd command, status int) {
+		t.Helper()
+		encoded, _ := json.Marshal(cmd)
+		data, err := app.Apply(ctx, index, encoded)
+		var result httpResult
+		if err != nil || json.Unmarshal(data, &result) != nil || result.Status != status {
+			t.Fatalf("%s at index %d: %s %v", cmd.Kind, index, data, err)
+		}
+	}
+	candidates, _ := json.Marshal([]expiringPartitionReceipt{{Key: app.managedReceiptKey(key), Index: 1}, {Key: app.managedReceiptKey(pendingKey), Index: 2}})
+	expiry := terminal.receiptExpiresAt()
+	apply(3, command{ID: "before", At: expiry.Add(-time.Nanosecond), Kind: "partition_ingest_expire", Body: candidates}, http.StatusOK)
+	if record, err := app.accepted(ctx, key); err != nil || record.Index != 1 {
+		t.Fatalf("retained receipt missing from restored snapshot: %v", err)
+	}
+	apply(4, command{ID: "due", At: expiry, Kind: "partition_ingest_expire", Body: candidates}, http.StatusOK)
+	restore(4)
+	if _, err := app.accepted(ctx, key); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expired receipt survived cleanup and restore: %v", err)
+	}
+	if _, found, err := app.partitionIngestAlias(ctx, "big", 2, request); err != nil || found {
+		t.Fatalf("expired alias survived cleanup and restore: %v %v", found, err)
+	}
+	if record, err := app.accepted(ctx, pendingKey); err != nil || record.Index != 2 || record.State != "accepted" {
+		t.Fatalf("expiry affected unfinished acceptance: %+v %v", record, err)
+	}
+	terminal.Index, terminal.FinishedAt = 5, expiry
+	seed(5, "reused", func(ctx context.Context) error {
+		if err := app.saveAccepted(ctx, key, terminal); err != nil {
+			return err
+		}
+		return app.savePartitionIngestAlias(ctx, terminal, key)
+	})
+	apply(6, command{ID: "stale-expiry", At: terminal.receiptExpiresAt(), Kind: "partition_ingest_expire", Body: candidates}, http.StatusOK)
+	apply(7, command{ID: "stale-completion", At: expiry, Kind: "partition_ingest_complete", Tenant: "big", ExpectedGeneration: 2, PartitionAcceptedIndex: 1, IDs: []string{key}}, http.StatusConflict)
+	if alias, found, err := app.partitionIngestAlias(ctx, "big", 2, request); err != nil || !found || alias.Index != 5 {
+		t.Fatalf("stale maintenance removed the reused alias: %+v %v %v", alias, found, err)
+	}
+	if record, err := app.accepted(ctx, key); err != nil || record.Index != 5 {
+		t.Fatalf("stale maintenance removed the reused receipt: %+v %v", record, err)
+	}
+}
+
+func testHAPartitionIngestRecovery(t *testing.T, protocol int) {
+	compact := protocol >= partition.CompactIngestProtocol
+	a, b, catalog, router, call := newTestPartitionedGraph(t, true, protocol)
 	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}}}, http.StatusOK)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -50,6 +154,10 @@ func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
 	}
 	firstVersion, secondVersion := int64(1), int64(2)
 	first := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "one", IdempotencyKey: "stable-one", ExpectedVersion: &firstVersion, Items: []storage.IngestItem{{Entity: &graph.Entity{ID: id, Kind: "host"}}}}
+	var cursor [64 << 10]byte
+	random := rand.NewChaCha8([32]byte{42})
+	_, _ = random.Read(cursor[:])
+	first.Cursor = base64.RawStdEncoding.EncodeToString(cursor[:])
 	first.Preconditions = []storage.IngestPrecondition{{ResourceType: "entity", ID: id, Op: "not_exists"}}
 	second := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "two", ExpectedVersion: &secondVersion, Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "queued-second", Kind: "host"}}}}
 	var acceptance struct {
@@ -68,6 +176,9 @@ func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
 	g := waitGraph(func(g partition.Graph) bool { return g.Active != nil })
 	if g.Version != 1 {
 		t.Fatal("blocked data group unexpectedly published the batch")
+	}
+	if len(g.Active.Inputs) != 1 || (g.Active.Inputs[0].Acceptance != "") != compact {
+		t.Fatalf("unexpected transaction input for protocol %d: %+v", protocol, g.Active.Inputs)
 	}
 	call(http.MethodPost, "/v1/ingest/batches", "big", second, http.StatusAccepted)
 	changed := first
@@ -110,6 +221,16 @@ func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
 	if err := restored.Restore(ctx, checkpoint.Index, snapshot); err != nil {
 		t.Fatal(err)
 	}
+	stagePrefix := fmt.Sprintf("graphdb/control/graphs/big/%d/inputs/", g.Generation)
+	staged, err := files.List(ctx, stagePrefix)
+	expectedStaged := 0
+	if !compact {
+		expectedStaged = 1
+	}
+	if err != nil || len(staged) != expectedStaged {
+		t.Fatalf("unexpected staged input files in restored snapshot: %v %v", staged, err)
+	}
+	t.Logf("active home snapshot: %d compressed bytes, %d staged input objects", len(snapshot), len(staged))
 	pending, err := restored.pendingSnapshot(ctx)
 	if err != nil || len(pending) != 2 {
 		t.Fatalf("snapshot lost accepted work: %d %v", len(pending), err)
@@ -117,6 +238,18 @@ func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
 	storedAlias, found, err := restored.partitionIngestAlias(ctx, "big", acceptance.Generation, first)
 	if err != nil || !found || storedAlias.Key != restored.ingestKey("big", "agent", "collector", "one", acceptance.Generation) {
 		t.Fatalf("snapshot lost idempotency alias: %+v %v", storedAlias, err)
+	}
+	cleanup, err := newCommand("partition_ingest_compact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup.IDs = []string{storedAlias.Key}
+	cleanupData, _ := json.Marshal(cleanup)
+	if _, err := restored.Apply(ctx, checkpoint.Index+1, cleanupData); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restored.partitionStore().Transaction(ctx, "big", acceptance.Generation, partitionIngestIdentity(storedAlias.Key)); err != nil {
+		t.Fatalf("receipt cleanup removed an unfinished transaction: %v", err)
 	}
 	for i := range a.nodes {
 		a.stop(i)
@@ -193,6 +326,76 @@ func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
 	g = waitGraph(func(g partition.Graph) bool { return g.Active == nil })
 	if g.Version != 3 || g.EntityCount != 2 {
 		t.Fatalf("retry republished the graph: version=%d entities=%d", g.Version, g.EntityCount)
+	}
+	leader = a.leader(-1)
+	snapshot, err = a.nodes[leader].cluster.App.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err = a.nodes[leader].files.ReplicationCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Restore(ctx, checkpoint.Index, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	key := restored.ingestKey("big", first.Source, first.CollectorID, first.BatchID, g.Generation)
+	terminal, err := restored.accepted(ctx, key)
+	if err != nil || terminal.Result == nil || terminal.Result.Version != 2 || terminal.Result.Cursor != first.Cursor || terminal.Index != firstLSN {
+		t.Fatalf("terminal snapshot lost the original receipt: %v", err)
+	}
+	_, err = restored.partitionStore().Transaction(ctx, "big", g.Generation, partitionIngestIdentity(key))
+	if (compact && !errors.Is(err, storage.ErrNotFound)) || (!compact && err != nil) {
+		t.Fatalf("unexpected presence of a duplicate transaction receipt: %v", err)
+	}
+	t.Logf("terminal home snapshot: %d compressed bytes", len(snapshot))
+	if !compact {
+		// Upgrade an existing protocol-6 history through the normal startup
+		// path. The compatibility sweep must preserve canonical and alias retries.
+		for i := range a.nodes {
+			a.stop(i)
+		}
+		for i := range a.nodes {
+			a.nodes[i].cfg.Raft.Protocol = partition.CompactIngestProtocol
+			a.start(i)
+		}
+		leader = a.leader(-1)
+		for {
+			app := a.nodes[leader].cluster.App
+			app.mu.RLock()
+			_, err := app.partitionStore().Transaction(ctx, "big", g.Generation, partitionIngestIdentity(key))
+			app.mu.RUnlock()
+			if errors.Is(err, storage.ErrNotFound) {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("upgraded leader did not compact historical receipts: %v", err)
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
+		for _, request := range []storage.IngestRequest{first, alias} {
+			response = call(http.MethodPost, "/v1/ingest/batches", "big", request, http.StatusAccepted)
+			if json.Unmarshal(response.Body.Bytes(), &acceptance) != nil || acceptance.LSN != firstLSN || acceptance.StatusURL != firstURL {
+				t.Fatalf("cleanup changed historical idempotency: %s", response.Body.String())
+			}
+		}
+		snapshot, err = a.nodes[leader].cluster.App.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkpoint, err = a.nodes[leader].files.ReplicationCheckpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := restored.Restore(ctx, checkpoint.Index, snapshot); err != nil {
+			t.Fatal(err)
+		}
+		restoredReceipt, err := restored.accepted(ctx, key)
+		if err != nil || restoredReceipt.Result == nil || restoredReceipt.Result.Cursor != first.Cursor || restoredReceipt.Index != firstLSN {
+			t.Fatalf("historical cleanup snapshot lost the original result: %v", err)
+		}
+		t.Logf("historical receipt cleanup snapshot: %d compressed bytes", len(snapshot))
 	}
 	for _, node := range a.nodes {
 		node.cluster.App.mu.Lock()

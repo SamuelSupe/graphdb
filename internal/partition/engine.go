@@ -78,10 +78,10 @@ func (e Engine) Submit(ctx context.Context, request CommitRequest) (storage.Comm
 	if request.IdempotencyKey != "" {
 		identity = "direct:" + request.IdempotencyKey
 	}
-	return e.submitInput(ctx, data, identity, request.ExpectedVersion, "commit")
+	return e.submitInput(ctx, data, identity, request.ExpectedVersion, "commit", "")
 }
 
-func (e Engine) submitInput(ctx context.Context, data []byte, identity string, expected *int64, purpose string) (storage.CommitResult, error) {
+func (e Engine) submitInput(ctx context.Context, data []byte, identity string, expected *int64, purpose, acceptance string) (storage.CommitResult, error) {
 	if len(data) > MaxChangeBytes {
 		return storage.CommitResult{}, invalid("graph transaction exceeds its input budget")
 	}
@@ -140,19 +140,32 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 			continue
 		}
 		if len(inputs) == 0 {
-			for offset := 0; offset < len(data); offset += MaxValueBytes {
-				chunk := data[offset:min(offset+MaxValueBytes, len(data))]
-				var input Input
-				if err := e.control(ctx, g, Action{Operation: "stage_input", Txn: id, Data: chunk, Digest: fmt.Sprintf("%x", sha256.Sum256(chunk))}, &input); err != nil {
-					return storage.CommitResult{}, err
+			if acceptance != "" {
+				inputs = []Input{{Stage: id, Digest: digest, Bytes: len(data), Acceptance: acceptance}}
+			} else {
+				for offset := 0; offset < len(data); offset += MaxValueBytes {
+					chunk := data[offset:min(offset+MaxValueBytes, len(data))]
+					var input Input
+					if err := e.control(ctx, g, Action{Operation: "stage_input", Txn: id, Data: chunk, Digest: fmt.Sprintf("%x", sha256.Sum256(chunk))}, &input); err != nil {
+						return storage.CommitResult{}, err
+					}
+					inputs = append(inputs, input)
 				}
-				inputs = append(inputs, input)
 			}
 			stagedGeneration = g.Generation
 		}
 		err = e.control(ctx, g, Action{Operation: "begin", Purpose: purpose, Txn: id, Identity: identity, Digest: digest, Inputs: inputs, At: time.Now().UTC(), BaseVersion: g.Version, ExpectedVersion: expected}, &txn)
 		if err == nil {
 			break
+		}
+		if errors.Is(err, ErrInputExpired) {
+			inputs = nil
+			continue
+		}
+		if acceptance != "" && errors.Is(err, storage.ErrConflict) {
+			// The WAL driver retries from the current queue head, which may have
+			// changed while this coordinator was waiting on Raft.
+			return storage.CommitResult{}, err
 		}
 		if !errors.Is(err, storage.ErrConflict) {
 			return storage.CommitResult{}, &OutcomeUnknownError{Txn: id, Cause: err}

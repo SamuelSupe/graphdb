@@ -14,16 +14,17 @@ import (
 )
 
 type GraphGC struct {
-	FenceAt     time.Time `json:"fence_at,omitempty"`
-	Error       string    `json:"error,omitempty"`
-	ID          string    `json:"id"`
-	BaseVersion int64     `json:"base_version"`
-	Phase       string    `json:"phase"`
-	Versions    []int64   `json:"versions"`
-	Cursor      string    `json:"cursor,omitempty"`
-	Started     [256]bool `json:"started"`
-	Done        [256]bool `json:"done"`
-	Collected   bool      `json:"collected,omitempty"`
+	FenceAt       time.Time `json:"fence_at,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	ID            string    `json:"id"`
+	BaseVersion   int64     `json:"base_version"`
+	Phase         string    `json:"phase"`
+	Versions      []int64   `json:"versions"`
+	Cursor        string    `json:"cursor,omitempty"`
+	Started       [256]bool `json:"started"`
+	Done          [256]bool `json:"done"`
+	Collected     bool      `json:"collected,omitempty"`
+	ReclaimInputs bool      `json:"reclaim_inputs,omitempty"`
 }
 
 func (gc *GraphGC) BlocksWrites() bool {
@@ -47,7 +48,7 @@ func (s Store) applyGraphGC(ctx context.Context, g Graph, a Action) (any, error)
 		if g.State != "active" || g.Active != nil || g.Move != nil || g.GC != nil || !validTokenID(a.Txn) || a.At.IsZero() {
 			return nil, conflict("graph is not ready for GC")
 		}
-		g.GC = &GraphGC{ID: a.Txn, BaseVersion: g.Version, Phase: "collect"}
+		g.GC = &GraphGC{ID: a.Txn, BaseVersion: g.Version, Phase: "collect", ReclaimInputs: a.Revision >= InputGCRevision}
 		if a.Revision == 0 {
 			// Old log entries expect pruning before the mark boundary.
 			g.GC.Phase = "prune"
@@ -139,7 +140,21 @@ func (s Store) applyGraphGC(ctx context.Context, g Graph, a Action) (any, error)
 				gc.Phase = "starting" // Resume an old prune-first operation.
 				if gc.Collected {
 					gc.Phase = "running"
+					if gc.ReclaimInputs {
+						gc.Phase = "inputs"
+					}
 				}
+			}
+		case "graph_gc_inputs":
+			if gc.Phase != "inputs" || gc.Cursor != a.ExpectedCursor || !gc.ReclaimInputs {
+				return nil, conflict("graph input GC checkpoint changed")
+			}
+			if err := s.reclaimInputs(ctx, g, a); err != nil {
+				return nil, err
+			}
+			gc.Cursor = a.Cursor
+			if gc.Cursor == "" {
+				gc.Phase = "running"
 			}
 		case "graph_gc_started":
 			if gc.Phase != "starting" {

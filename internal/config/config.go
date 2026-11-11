@@ -74,6 +74,7 @@ type Config struct {
 	IngestWALSegmentBytes             int64
 	IngestWALAppendQueue              int
 	IngestQueueMemoryBytes            int64
+	PartitionIngestReceiptRetention   time.Duration
 	IngestFlushInterval               time.Duration
 	IngestFlushMaxRequests            int
 	IngestFlushMaxBytes               int64
@@ -338,6 +339,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := loadBytesEnv("GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES", &cfg.IngestQueueMemoryBytes); err != nil {
+		return Config{}, err
+	}
+	if err := loadDurationEnv("GRAPHDB_PARTITION_INGEST_RECEIPT_RETENTION", &cfg.PartitionIngestReceiptRetention); err != nil {
 		return Config{}, err
 	}
 	if err := loadDurationEnv("GRAPHDB_INGEST_FLUSH_INTERVAL", &cfg.IngestFlushInterval); err != nil {

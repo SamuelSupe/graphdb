@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,6 +41,7 @@ type replicationJournal struct {
 	writers     atomic.Int32
 	directoryMu sync.Mutex
 	directories map[string]struct{}
+	deleted     map[string]string
 	fileMu      sync.Mutex
 	fileSyncs   map[string]struct{}
 }
@@ -89,8 +91,8 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		db.Close()
 		return nil, err
 	}
-	ctx = context.WithValue(ReplicatedContext(ctx, id, at), replicationJournalKey{}, journal)
-	response, applyErr := apply(ctx)
+	applyCtx := context.WithValue(ReplicatedContext(ctx, id, at), replicationJournalKey{}, journal)
+	response, applyErr := apply(applyCtx)
 	journal.mu.Lock()
 	// A handler can translate cancellation into an HTTP response before any
 	// file operation records a failure. That response must not become durable.
@@ -134,6 +136,20 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	if err := s.recoverReplication(); err != nil {
 		return nil, err
 	}
+	// Keep rollback's parent directories intact until the checkpoint is durable.
+	// Empty-directory cleanup is local housekeeping and cannot reject that entry.
+	if len(journal.deleted) != 0 {
+		keys := make([]string, 0, len(journal.deleted))
+		for _, key := range journal.deleted {
+			keys = append(keys, key)
+		}
+		pruneCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		err := s.pruneEmptyObjectParents(pruneCtx, keys)
+		cancel()
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("prune empty replica object directories", "error", err)
+		}
+	}
 	return response, nil
 }
 
@@ -156,6 +172,16 @@ func (j *replicationJournal) deferDirectorySync(dir string) {
 		j.directories = make(map[string]struct{})
 	}
 	j.directories[dir] = struct{}{}
+}
+
+func (j *replicationJournal) deferDeletedObject(dir, key string) {
+	j.deferDirectorySync(dir)
+	j.directoryMu.Lock()
+	defer j.directoryMu.Unlock()
+	if j.deleted == nil {
+		j.deleted = make(map[string]string)
+	}
+	j.deleted[dir] = key
 }
 
 func (j *replicationJournal) syncDirectories() error {

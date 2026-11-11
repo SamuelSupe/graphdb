@@ -35,6 +35,7 @@ type Cluster struct {
 	FlushInterval      time.Duration
 	FlushMaxRequests   int
 	FlushMaxBytes      int64
+	receiptRetention   time.Duration
 	flushWake          chan struct{}
 	config             config.RaftConfig
 	diskPolicy         storage.DiskSpacePolicy
@@ -54,7 +55,7 @@ type Cluster struct {
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{flushWake: make(chan struct{}, 1), diskPolicy: cfg.DiskSpacePolicy(), App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{flushWake: make(chan struct{}, 1), diskPolicy: cfg.DiskSpacePolicy(), receiptRetention: cfg.PartitionIngestReceiptRetention, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
@@ -106,6 +107,21 @@ func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 			c.background.Add(1)
 			go func() { defer c.background.Done(); c.runPartitionBackground(ctx) }()
 		}
+		if cfg.Protocol >= partition.CompactIngestProtocol {
+			c.background.Add(2)
+			go func() {
+				defer c.background.Done()
+				c.runPartitionReceiptSweep(ctx, "partition receipt cleanup", time.Second, 0, c.partitionReceiptCleanupStep)
+			}()
+			go func() {
+				defer c.background.Done()
+				interval := time.Minute
+				if c.receiptRetention > 0 {
+					interval = min(interval, max(time.Second, c.receiptRetention/4))
+				}
+				c.runPartitionReceiptSweep(ctx, "partition receipt expiry", 200*time.Millisecond, interval, c.partitionReceiptExpiryStep)
+			}()
+		}
 		c.background.Add(1)
 		go func() { defer c.background.Done(); c.runExportCleanup(ctx) }()
 	}
@@ -120,8 +136,17 @@ func newCommand(kind string) (command, error) {
 	return command{ID: hex.EncodeToString(id[:]), At: time.Now().UTC(), Kind: kind, TenantScopeValidation: true}, nil
 }
 func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
+	if (cmd.Kind == "partition_ingest_compact" || cmd.Kind == "partition_ingest_expire") && c.config.Protocol < partition.CompactIngestProtocol {
+		return nil, fmt.Errorf("%w: partition receipt cleanup requires home Raft protocol %d", replication.ErrUnavailable, partition.CompactIngestProtocol)
+	}
 	if c.config.Protocol < partition.IngestProtocol && (cmd.Kind == "partition_accept" || cmd.Kind == "partition_ingest_complete") {
 		return nil, fmt.Errorf("%w: partitioned ingest requires home Raft protocol %d", replication.ErrUnavailable, partition.IngestProtocol)
+	}
+	if cmd.Kind == "partition_ingest_complete" {
+		cmd.CompactPartitionIngest = c.config.Protocol >= partition.CompactIngestProtocol
+	}
+	if cmd.Kind == "partition_accept" && c.config.Protocol >= partition.CompactIngestProtocol {
+		cmd.PartitionReceiptRetention = c.receiptRetention
 	}
 	release, err := c.admitTenantMutation(cmd)
 	if err != nil {

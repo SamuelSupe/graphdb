@@ -14,6 +14,7 @@ import (
 )
 
 const IngestProtocol = 6
+const CompactIngestProtocol = 7
 
 // IngestInput binds execution to the original durable acceptance time, including
 // after leadership changes and retries of accepted_at preconditions.
@@ -43,6 +44,12 @@ func (input IngestInput) Encode() ([]byte, error) {
 // SubmitIngest uses the acceptance identity as the transaction fence. The
 // ingest result is published with the graph decision, before queue completion.
 func (e Engine) SubmitIngest(ctx context.Context, identity string, input IngestInput) (storage.IngestResult, error) {
+	return e.SubmitAcceptedIngest(ctx, identity, input, "")
+}
+
+// SubmitAcceptedIngest references a replicated acceptance instead of staging
+// its payload again. An empty reference uses the protocol-6 staging path.
+func (e Engine) SubmitAcceptedIngest(ctx context.Context, identity string, input IngestInput, acceptance string) (storage.IngestResult, error) {
 	if !strings.HasPrefix(identity, "ingest:") || input.AcceptedAt.IsZero() || e.Generation <= 0 {
 		return storage.IngestResult{}, invalid("ingest requires a durable identity, generation and acceptance time")
 	}
@@ -50,7 +57,7 @@ func (e Engine) SubmitIngest(ctx context.Context, identity string, input IngestI
 	if err != nil {
 		return storage.IngestResult{}, err
 	}
-	_, submitErr := e.submitInput(ctx, data, identity, nil, "ingest")
+	_, submitErr := e.submitInput(ctx, data, identity, nil, "ingest", acceptance)
 	txn, err := e.Remote.Transaction(ctx, e.Home, e.Tenant, e.Generation, identity)
 	if err != nil {
 		return storage.IngestResult{}, errors.Join(submitErr, err)

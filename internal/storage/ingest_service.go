@@ -96,20 +96,21 @@ type IngestAcceptance struct {
 }
 
 type IngestBatchStatus struct {
-	WriterID        string        `json:"writer_id,omitempty"`
-	TenantID        string        `json:"tenant_id"`
-	Source          string        `json:"source"`
-	CollectorID     string        `json:"collector_id"`
-	BatchID         string        `json:"batch_id"`
-	State           string        `json:"state"`
-	Durability      string        `json:"durability"`
-	AcceptedLSN     uint64        `json:"accepted_lsn,omitempty"`
-	AcceptedAt      time.Time     `json:"accepted_at,omitempty"`
-	EstimatedFlush  time.Time     `json:"estimated_flush_at,omitempty"`
-	FinishedAt      time.Time     `json:"finished_at,omitempty"`
-	Result          *IngestResult `json:"result,omitempty"`
-	LastError       string        `json:"last_error,omitempty"`
-	RecoveryPending bool          `json:"recovery_pending,omitempty"`
+	WriterID         string        `json:"writer_id,omitempty"`
+	TenantID         string        `json:"tenant_id"`
+	Source           string        `json:"source"`
+	CollectorID      string        `json:"collector_id"`
+	BatchID          string        `json:"batch_id"`
+	State            string        `json:"state"`
+	Durability       string        `json:"durability"`
+	AcceptedLSN      uint64        `json:"accepted_lsn,omitempty"`
+	AcceptedAt       time.Time     `json:"accepted_at,omitempty"`
+	EstimatedFlush   time.Time     `json:"estimated_flush_at,omitempty"`
+	FinishedAt       time.Time     `json:"finished_at,omitempty"`
+	ReceiptExpiresAt *time.Time    `json:"receipt_expires_at,omitempty"`
+	Result           *IngestResult `json:"result,omitempty"`
+	LastError        string        `json:"last_error,omitempty"`
+	RecoveryPending  bool          `json:"recovery_pending,omitempty"`
 }
 
 type IngestServiceReadiness struct {

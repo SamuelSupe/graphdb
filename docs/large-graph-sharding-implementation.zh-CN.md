@@ -17,7 +17,7 @@
 
 ## 管理接口
 
-管理请求使用 Router 的 Bearer 令牌。目录组、home group 和目标数据组使用协议 5 或更高版本，每个数据组至少三个独立副本。协议 5 预览版的日志可继续重放。使用分片 WAL 的 home group 按[升级顺序](partition-wal-ingestion.zh-CN.md#当前范围)切到协议 6。以下示例的地址和组 ID 按部署填写。
+管理请求使用 Router 的 Bearer 令牌。目录组、home group 和目标数据组使用协议 5 或更高版本，每个数据组至少三个独立副本。协议 5 预览版的日志可继续重放。使用分片 WAL 的 home group 按[升级顺序](partition-wal-ingestion.zh-CN.md#当前范围)切到协议 6。启用[受理正文复用和终态回执去重](partition-wal-ingestion.zh-CN.md#磁盘和快照)需要 home group 使用协议 7。以下示例的地址和组 ID 按部署填写。
 
 ```http
 POST /v1/cluster/graphs
@@ -66,6 +66,8 @@ GET /v1/cluster/graphs/big/gc
 | 搬迁 | 每批最多 32 页、4 MiB，一次 Raft 提交。安装每步最多校验 32 页 |
 | GC | 每步有界标记、扫描及删除；删除数据有 8 MiB 批次预算 |
 
+home group 使用协议 7 时，GC 另清理未被活动事务认领的暂存输入，最多 32 个文件、8 MiB 一步。启动后的历史回执清理只删除已有完整终态回执对应的重复事务，详见[磁盘和快照](partition-wal-ingestion.zh-CN.md#磁盘和快照)。
+
 控制组仅在首次访问版本或租约临近过期时写入租约，并按需保存视图。读取当前图描述仍通过控制组的 ReadBarrier，Router 用 ETag 复用未变化的描述。数据组直接读取已发布的不可变根，缺页或 epoch 不匹配时才等 Raft 应用后复核。只读分片 RPC 遇到连接失败或 503 时重新发现 Leader 并重试一次。
 
 这些是保护上限，不是已验收的大图容量参数。来源全量清理、超大级联删除等操作可能超出提交闭包预算，需要后续维护任务。逻辑摘要维持 `sha256-shards-v2`；单叶更新仍可能重算该逻辑桶，不能视为恒定成本。
@@ -74,7 +76,7 @@ GET /v1/cluster/graphs/big/gc
 
 新批次的来源全量对账 `full_sync`、import、collector/deadletter 管理、GQL/GraphQL、边扫描/导出、在线整图备份恢复、clone、完整租户生命周期、配置写入和带存量数据的 schema 修改返回 `501 operation_disabled`。分片增量 ingest 需 home group 启用协议 6，并兼容转换前保留的批次状态和幂等收据。全组停机归档可用于[离线集群恢复](product-operations.zh-CN.md#大图分片离线集群恢复)。
 
-转换发布前的取消接口、失效受理前暂存块清理、幂等收据保留策略、超级节点 segment、hash 范围继续拆分、home group 搬迁和已用数据组的自动排空尚未完成。目录保守保留图关联，注销曾关联的组可能仍被拒绝。转换已进入初始化后应排除错误并继续，不得手工删描述或改目录强行恢复旧模式。
+协议 7 可以为新受理的分片批次配置[终态回执保留期](partition-wal-ingestion.zh-CN.md#终态回执保留期)，既有回执继续沿用原规则。转换发布前的取消接口、超级节点 segment、hash 范围继续拆分、home group 搬迁和已用数据组的自动排空尚未完成。目录保守保留图关联，注销曾关联的组可能仍被拒绝。转换已进入初始化后应排除错误并继续，不得手工删描述或改目录强行恢复旧模式。
 
 因此本分支用于开发和资格验证；设计第 4 阶段尚未全部完成，第 5 阶段未实现。不能在仍依赖上述接口的生产租户上直接切换。三副本需要独立故障域；三台机器三副本不会增加基础可用容量。
 

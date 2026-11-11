@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,17 +20,18 @@ import (
 )
 
 type acceptedRequest struct {
-	Partitioned bool                  `json:"partitioned,omitempty"`
-	Tenant      string                `json:"tenant_id"`
-	Request     storage.IngestRequest `json:"request"`
-	Digest      string                `json:"request_digest,omitempty"`
-	Generation  int64                 `json:"generation"`
-	Index       uint64                `json:"accepted_lsn"`
-	AcceptedAt  time.Time             `json:"accepted_at"`
-	FinishedAt  time.Time             `json:"finished_at,omitempty"`
-	State       string                `json:"state"`
-	Result      *storage.IngestResult `json:"result,omitempty"`
-	Error       string                `json:"last_error,omitempty"`
+	ReceiptRetention time.Duration         `json:"receipt_retention_ns,omitempty"`
+	Partitioned      bool                  `json:"partitioned,omitempty"`
+	Tenant           string                `json:"tenant_id"`
+	Request          storage.IngestRequest `json:"request"`
+	Digest           string                `json:"request_digest,omitempty"`
+	Generation       int64                 `json:"generation"`
+	Index            uint64                `json:"accepted_lsn"`
+	AcceptedAt       time.Time             `json:"accepted_at"`
+	FinishedAt       time.Time             `json:"finished_at,omitempty"`
+	State            string                `json:"state"`
+	Result           *storage.IngestResult `json:"result,omitempty"`
+	Error            string                `json:"last_error,omitempty"`
 }
 
 func (a *Application) ingestPrefix() string {
@@ -40,8 +42,18 @@ func (a *Application) ingestKey(tenant, source, collector, batch string, generat
 	return a.ingestPrefix() + fmt.Sprintf("%x.json", sum)
 }
 func (a *Application) accepted(ctx context.Context, key string) (acceptedRequest, error) {
+	record, err := loadAcceptance(ctx, a.Store.Objects, key)
+	if errors.Is(err, storage.ErrNotFound) && a.ShardID != "" {
+		if managedKey := a.managedReceiptKey(key); managedKey != "" {
+			return loadAcceptance(ctx, a.Store.Objects, managedKey)
+		}
+	}
+	return record, err
+}
+
+func loadAcceptance(ctx context.Context, objects storage.ObjectStore, key string) (acceptedRequest, error) {
 	var record acceptedRequest
-	data, err := a.Store.Objects.Get(ctx, key)
+	data, err := objects.Get(ctx, key)
 	if err != nil {
 		return record, err
 	}
@@ -60,8 +72,20 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 			return err
 		}
 	}
-	if err := a.Store.Objects.Put(ctx, key, data); err != nil {
+	objectKey := key
+	if !record.receiptExpiresAt().IsZero() {
+		objectKey = a.managedReceiptKey(key)
+		if objectKey == "" {
+			return fmt.Errorf("invalid managed partition receipt key")
+		}
+	}
+	if err := a.Store.Objects.Put(ctx, objectKey, data); err != nil {
 		return err
+	}
+	if objectKey != key {
+		if err := a.Store.Objects.Delete(ctx, key); err != nil {
+			return err
+		}
 	}
 	if a.pending != nil {
 		if previous, ok := a.pending[key]; ok {
@@ -123,6 +147,9 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(after))
 	candidate := acceptedRequest{Partitioned: partitioned, Tenant: cmd.Tenant, Request: request, Digest: digest, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
+	if partitioned {
+		candidate.ReceiptRetention = cmd.PartitionReceiptRetention
+	}
 	record, err := a.accepted(ctx, key)
 	if partitioned && errors.Is(err, storage.ErrNotFound) && request.IdempotencyKey != "" {
 		previous, found, aliasErr := a.partitionIngestAlias(ctx, cmd.Tenant, generation, request)
@@ -136,6 +163,9 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 			record, err := a.accepted(ctx, previous.Key)
 			if err != nil {
 				return nil, err
+			}
+			if previous.Index != 0 && previous.Index != record.Index {
+				return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": "ingest alias no longer matches its acceptance"})
 			}
 			return a.acceptanceResponse(record)
 		}
@@ -205,6 +235,9 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 
 func (a *Application) acceptanceResponse(record acceptedRequest) ([]byte, error) {
 	statusURL := "/v1/ingest/batches/" + url.PathEscape(record.Request.Source) + "/" + url.PathEscape(record.Request.CollectorID) + "/" + url.PathEscape(record.Request.BatchID)
+	if record.ReceiptRetention > 0 {
+		statusURL += "?accepted_lsn=" + strconv.FormatUint(record.Index, 10)
+	}
 	body, _ := json.Marshal(map[string]any{"tenant_id": record.Tenant, "writer_id": a.Store.InstanceID, "batch_id": record.Request.BatchID, "source": record.Request.Source, "collector_id": record.Request.CollectorID, "generation": record.Generation, "state": record.State, "durability": "raft_majority", "accepted_lsn": record.Index, "accepted_at": record.AcceptedAt, "estimated_flush_at": a.estimatedFlushAt(record), "status_url": statusURL})
 	return json.Marshal(httpResult{Status: http.StatusAccepted, Header: http.Header{"Content-Type": []string{"application/json"}, "Location": []string{statusURL}, "X-GraphDB-Tenant-Generation": []string{fmt.Sprint(record.Generation)}}, Body: body})
 }
@@ -347,6 +380,9 @@ func (c *Cluster) batchStatus(w http.ResponseWriter, r *http.Request) {
 		record, err = c.App.partitionSourceIngestStatus(r.Context(), r.Header.Get("X-Tenant-ID"), sourceGeneration, segments[0], segments[1], segments[2])
 	}
 	c.App.mu.RUnlock()
+	if lsn := r.URL.Query().Get("accepted_lsn"); err == nil && lsn != "" && lsn != strconv.FormatUint(record.Index, 10) {
+		err = storage.ErrNotFound
+	}
 	if err != nil {
 		if !errors.Is(err, storage.ErrNotFound) {
 			c.writeError(w, err)
@@ -356,7 +392,11 @@ func (c *Cluster) batchStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(storage.IngestBatchStatus{TenantID: record.Tenant, WriterID: c.App.Store.InstanceID, Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID, State: record.State, Durability: "raft_majority", AcceptedLSN: record.Index, AcceptedAt: record.AcceptedAt, EstimatedFlush: c.App.estimatedFlushAt(record), FinishedAt: record.FinishedAt, Result: record.Result, LastError: record.Error})
+	status := storage.IngestBatchStatus{TenantID: record.Tenant, WriterID: c.App.Store.InstanceID, Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID, State: record.State, Durability: "raft_majority", AcceptedLSN: record.Index, AcceptedAt: record.AcceptedAt, EstimatedFlush: c.App.estimatedFlushAt(record), FinishedAt: record.FinishedAt, Result: record.Result, LastError: record.Error}
+	if expiresAt := record.receiptExpiresAt(); !expiresAt.IsZero() {
+		status.ReceiptExpiresAt = &expiresAt
+	}
+	json.NewEncoder(w).Encode(status)
 }
 
 func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data []byte) error {
@@ -374,6 +414,8 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		Collector  string `json:"collector_id"`
 		Batch      string `json:"batch_id"`
 		Generation int64  `json:"generation"`
+		Index      uint64 `json:"accepted_lsn"`
+		StatusURL  string `json:"status_url"`
 	}
 	if err := json.Unmarshal(response.Body, &acceptance); err != nil {
 		return err
@@ -388,6 +430,10 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		c.App.mu.RLock()
 		record, err := c.App.accepted(ctx, key)
 		c.App.mu.RUnlock()
+		if strings.Contains(acceptance.StatusURL, "?accepted_lsn=") && (errors.Is(err, storage.ErrNotFound) || err == nil && acceptance.Index != record.Index) {
+			http.Error(w, "ingest receipt expired", http.StatusNotFound)
+			return nil
+		}
 		if err != nil {
 			return err
 		}

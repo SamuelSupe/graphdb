@@ -620,6 +620,48 @@ func TestReplicationSnapshotValidatesArchiveBeforePublication(t *testing.T) {
 	}
 }
 
+func TestReplicatedDeletionReclaimsEmptyDirectoriesAfterCommit(t *testing.T) {
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	ctx := context.Background()
+	const key = "graphdb/inputs/stage/chunk"
+	const other = "graphdb/inputs/other/chunk"
+	if _, err := files.ApplyReplicated(ctx, 1, "stage", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		if err := files.Put(ctx, key, []byte("original")); err != nil {
+			return nil, err
+		}
+		return nil, files.Put(ctx, other, []byte("other"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.ApplyReplicated(ctx, 2, "rollback", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		if err := files.Delete(ctx, key); err != nil {
+			return nil, err
+		}
+		return nil, &ReplicationRejectedError{}
+	}); err == nil {
+		t.Fatal("expected rollback")
+	}
+	if data, err := files.Get(ctx, key); err != nil || string(data) != "original" {
+		t.Fatalf("rollback lost the staged input: %q %v", data, err)
+	}
+	if _, err := files.ApplyReplicated(ctx, 2, "complete", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		return nil, files.Delete(ctx, key)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.Dir(key))); !os.IsNotExist(err) {
+		t.Fatalf("completed stage still consumes a directory inode: %v", err)
+	}
+	if data, err := files.Get(ctx, other); err != nil || string(data) != "other" {
+		t.Fatalf("directory cleanup affected another stage: %q %v", data, err)
+	}
+}
+
 func TestStreamingSnapshotPinsPublishedPosition(t *testing.T) {
 	ctx := context.Background()
 	dotKeys := []string{"graphdb/tenants/tenant-a/indexes/parquet/versions/v1/node/name/shard.parquet", ".namespace/queries/.hidden.parquet", "graphdb/queries/.tmp-hosts.parquet", "graphdb/indexes/.tmp-kind/data.parquet", "graphdb/queries/.runtime-restore-hosts.parquet"}

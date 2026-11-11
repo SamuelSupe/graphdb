@@ -155,7 +155,7 @@ func (e Engine) Import(ctx context.Context, chunk ImportChunk, key string) (stor
 	if err != nil {
 		return storage.CommitResult{}, err
 	}
-	return e.submitInput(ctx, data, "build:"+key, nil, "build")
+	return e.submitInput(ctx, data, "build:"+key, nil, "build", "")
 }
 
 func ImportIdentity(phase, cursor string) string {

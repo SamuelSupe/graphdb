@@ -8,6 +8,7 @@ import (
 
 type pendingAcceptance struct {
 	partitioned  bool
+	indexedTxn   bool
 	tenant       string
 	generation   int64
 	index        uint64
@@ -17,7 +18,7 @@ type pendingAcceptance struct {
 
 func pendingInfo(record acceptedRequest, objectBytes int64) (pendingAcceptance, error) {
 	request, err := json.Marshal(record.Request)
-	return pendingAcceptance{partitioned: record.Partitioned, tenant: record.Tenant, generation: record.Generation,
+	return pendingAcceptance{partitioned: record.Partitioned, indexedTxn: record.ReceiptRetention > 0, tenant: record.Tenant, generation: record.Generation,
 		index: record.Index, requestBytes: int64(len(request)), objectBytes: objectBytes}, err
 }
 

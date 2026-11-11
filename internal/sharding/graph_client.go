@@ -52,6 +52,8 @@ func graphRemoteError(err error) error {
 		}
 		_ = json.Unmarshal([]byte(response.Body), &body)
 		switch body.Code {
+		case "graph_input_expired":
+			return errors.Join(partition.ErrInputExpired, err)
 		case "reader_not_fresh":
 			return errors.Join(partition.ErrVersionNotReady, err)
 		case "graph_busy":

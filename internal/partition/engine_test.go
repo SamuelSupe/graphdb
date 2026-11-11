@@ -16,10 +16,11 @@ import (
 )
 
 type localRemote struct {
-	mu      sync.Mutex
-	stores  map[string]Store
-	lose    string
-	blocked string
+	mu       sync.Mutex
+	stores   map[string]Store
+	lose     string
+	blocked  string
+	revision int
 }
 
 func (r *localRemote) Transaction(ctx context.Context, g Group, tenant string, generation int64, identity string) (Transaction, error) {
@@ -56,6 +57,9 @@ func (r *localRemote) Action(ctx context.Context, g Group, a Action, result any)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a.Revision = ActionRevision
+	if r.revision != 0 {
+		a.Revision = r.revision
+	}
 	if r.blocked == a.Operation {
 		return context.DeadlineExceeded
 	}

@@ -16,7 +16,13 @@ import (
 )
 
 func (a *Application) partitionStore() partition.Store {
-	return partition.Store{Objects: a.Files, Prefix: a.Store.Prefix}
+	return a.partitionStoreFor(a.Files)
+}
+
+func (a *Application) partitionStoreFor(objects storage.ObjectStore) partition.Store {
+	return partition.Store{Objects: objects, Prefix: a.Store.Prefix, ReadIngestInput: func(ctx context.Context, tenant string, generation int64, ref string) ([]byte, error) {
+		return a.readPartitionIngestInput(ctx, objects, tenant, generation, ref)
+	}}
 }
 
 type graphDescriptor struct {
@@ -66,6 +72,16 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	if c.config.Protocol < partition.IngestProtocol && (action.Purpose == "ingest" || action.IngestResult != nil) {
 		return nil, fmt.Errorf("%w: partitioned ingest requires home Raft protocol %d", storage.ErrConflict, partition.IngestProtocol)
 	}
+	if c.config.Protocol < partition.CompactIngestProtocol {
+		if action.Operation == "graph_gc_inputs" {
+			return nil, fmt.Errorf("%w: graph input GC requires home Raft protocol %d", storage.ErrConflict, partition.CompactIngestProtocol)
+		}
+		for _, input := range action.Inputs {
+			if input.Acceptance != "" {
+				return nil, fmt.Errorf("%w: graph ingest acceptance references require home Raft protocol %d", storage.ErrConflict, partition.CompactIngestProtocol)
+			}
+		}
+	}
 	c.App.mu.RLock()
 	var scopeErr error
 	switch action.Operation {
@@ -103,6 +119,9 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 		action.At = cmd.At
 	}
 	action.Revision = partition.ActionRevision
+	if c.config.Protocol >= partition.CompactIngestProtocol && (action.Operation == "begin" || action.Operation == "graph_gc_begin") {
+		action.Revision = partition.InputGCRevision
+	}
 	cmd.Tenant = action.Tenant
 	cmd.Body, err = json.Marshal(action)
 	if err != nil {
@@ -278,6 +297,8 @@ func (c *Cluster) registerPartitionRoutes(mux *http.ServeMux) {
 
 func partitionErrorStatus(err error) (int, string) {
 	switch {
+	case errors.Is(err, partition.ErrInputExpired):
+		return http.StatusConflict, "graph_input_expired"
 	case errors.Is(err, partition.ErrVersionNotReady):
 		return http.StatusServiceUnavailable, "reader_not_fresh"
 	case errors.Is(err, partition.ErrGraphBusy):
@@ -299,6 +320,6 @@ func partitionErrorStatus(err error) (int, string) {
 
 func (c *Cluster) partitionError(w http.ResponseWriter, err error) {
 	status, code := partitionErrorStatus(err)
-	data, _ := resultJSON(status, map[string]any{"code": code, "error": err.Error(), "retryable": status == 503 || status == 429 || code == "graph_layout_changed"})
+	data, _ := resultJSON(status, map[string]any{"code": code, "error": err.Error(), "retryable": status == 503 || status == 429 || code == "graph_layout_changed" || code == "graph_input_expired"})
 	writeResult(w, data)
 }

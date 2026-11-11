@@ -23,8 +23,12 @@ import (
 )
 
 type command struct {
-	// Logged so replay of older acceptance commands keeps their original semantics.
-	ReplaySourceIngest    bool                        `json:"replay_source_ingest,omitempty"`
+	// Logged so replay keeps the original acceptance and completion semantics.
+	ReplaySourceIngest        bool          `json:"replay_source_ingest,omitempty"`
+	CompactPartitionIngest    bool          `json:"compact_partition_ingest,omitempty"`
+	PartitionReceiptRetention time.Duration `json:"partition_receipt_retention_ns,omitempty"`
+	PartitionAcceptedIndex    uint64        `json:"partition_accepted_index,omitempty"`
+
 	TupleIdentity         bool                        `json:"tuple_identity,omitempty"`
 	TenantScopeValidation bool                        `json:"tenant_scope_validation,omitempty"`
 	ExpectedGeneration    int64                       `json:"expected_generation,omitempty"`
@@ -462,7 +466,7 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			if code == "shard_unavailable" || code == "partition_corrupt" {
 				return nil, err
 			}
-			return resultJSON(status, map[string]any{"code": code, "error": err.Error()})
+			return resultJSON(status, map[string]any{"code": code, "error": err.Error(), "retryable": code == "graph_input_expired"})
 		}
 		return resultJSON(http.StatusOK, value)
 	case "sharding":
@@ -531,6 +535,10 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		return a.accept(applyCtx, index, cmd)
 	case "partition_ingest_complete":
 		return a.completePartitionIngest(applyCtx, cmd)
+	case "partition_ingest_compact":
+		return a.compactPartitionIngest(applyCtx, cmd)
+	case "partition_ingest_expire":
+		return a.expirePartitionIngest(applyCtx, cmd)
 	case "flush":
 		return a.flush(applyCtx, cmd)
 	case "capture_backup":

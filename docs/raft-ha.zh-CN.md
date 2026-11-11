@@ -43,6 +43,7 @@ HA 下离线修改命令拒绝启动；数据目录也拒绝绕过 Raft 的普�
 - direct 请求在多数派持久化日志、Leader 发布本地图版本后返回成功。
 - WAL `202` 返回 `durability=raft_majority`：内容、身份和租户代次已多数派持久化。独立本机 ingest WAL 不再启用。Leader 将明确的请求列表写入 `flush` 日志后合批发布；新主继续处理受理队列。
 - 受理队列使用 `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES` 作为未完成请求的字节预算；Raft 还限制等待提案及未应用日志积压。超出预算返回可重试错误。
+- 协议 7 home group 可通过 `GRAPHDB_PARTITION_INGEST_RECEIPT_RETENTION` 为新分片批次启用[终态回执保留期](partition-wal-ingestion.zh-CN.md#终态回执保留期)，默认 `0s`。
 - 请求断开或超时仍可能提交。使用相同幂等键重试，并通过状态接口核对；同一身份的不同内容会产生冲突。
 - 普通查询在 `ReadIndex` 多数派确认后等待本地应用，随后固定读取范围。Follower 转发到当前 Leader 执行，不能联系多数派的隔离节点返回 `503`；响应的 `X-GraphDB-Leader-ID` 是发现提示，客户端应重试高可用入口。
 - `/v1/health` 返回 Raft 节点 ID、Leader ID、term、提交与应用位置、应用积压条数、当前应用缓冲字节、待响应提案字节和错误。`application_entries` 和 `application_commits` 分别统计本进程成功应用的日志条数与本地应用事务数，可用增量观察合并程度；重启后计数重置。`/v1/readiness` 是节点流量准入依据；判断 Leader 使用本地健康响应的节点 ID 和 Leader ID。

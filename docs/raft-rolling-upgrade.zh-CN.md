@@ -87,7 +87,7 @@ inventory 为 `{"groups":[{"cluster_id":"graphdb-ha","nodes":[...]}]}`，每个 
 {"id":1,"url":"http://127.0.0.1:19081","restart":["docker","compose","-p","graphdb-ha","-f","docker-compose.raft.yml","up","-d","--no-deps","--no-build","--force-recreate","node1"]}
 ```
 
-group 可配置 `protocol_version` 为 1、2、3、4 或 5，缺省为 1。协议 5 是显式启用的预览；协调器要求组内所有成员保持该协议，不能用一次滚动操作混合或激活不同协议。启用协议 3 前，先在原协议下升级全部副本和 router，并确认每个副本的 `protocol_max` 至少为 3，再按独立变更启用。协议 3 提案持久化后，最高支持协议为 2 的旧程序不能原目录回退。协议 3 同构建串行重启的本机证据见[本轮验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
+group 可配置 `protocol_version` 为 1 至 7，缺省为 1。协议 5 是显式启用的预览，协议 6 和 7 用于[分片 WAL](partition-wal-ingestion.zh-CN.md#当前范围)。协调器要求组内所有成员保持已配置的协议，协议激活需单独安排。启用协议 3 前，先在原协议下升级全部副本和 router，并确认每个副本的 `protocol_max` 至少为 3，再按独立变更启用。协议 3 提案持久化后，最高支持协议为 2 的旧程序不能原目录回退。协议 3 同构建串行重启的本机证据见[本轮验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
 
 inventory 必须包含该组全部投票节点。restart 只替换对应进程并复用原数据卷，不经过 shell。相同 inventory 的本机文件锁防止本机重复执行；不同宿主机的串行约束由部署控制器保证。
 

@@ -401,7 +401,9 @@ paths:
     post:
       summary: Apply a collector batch with idempotency and partial failure reporting. Synchronous WAL returns durable 202 acceptance.
       description: |
-        Partitioned ingest requires Raft protocol 6 on the home group. The home group majority-persists the full normalized batch in an acceptance queue independently of the active graph transaction. WAL mode returns 202 with durability=raft_majority and a router-independent status_url. Batches execute individually in tenant acceptance order. Version checks and preconditions are evaluated during execution, and accepted_at conditions retain the original timestamp. The graph decision stores the terminal ingest result. Direct mode waits on the same durable queue. Retrying a preserved source receipt returns its original outcome and status URL after conversion. New full_sync requests return 501 before entering the queue. Other partition transaction budgets apply.
+        Partitioned ingest requires Raft protocol 6 or later on the home group. The home group majority-persists the full normalized batch in an acceptance queue independently of the active graph transaction. WAL mode returns 202 with durability=raft_majority and a router-independent status_url. Batches execute individually in tenant acceptance order. Version checks and preconditions are evaluated during execution, and accepted_at conditions retain the original timestamp. The graph decision stores the terminal ingest result until queue completion. Direct mode waits on the same durable queue. Retrying a preserved source receipt returns its original outcome and status URL after conversion. New full_sync requests return 501 before entering the queue. Other partition transaction budgets apply.
+
+        Protocol 7 can apply a configured retention period to new partitioned batches after they reach a terminal state. Use the full status_url, including its accepted_lsn query parameter when present. Once an expired receipt has been removed, a retry can be accepted as a new batch.
 
         A local WAL flush containing at least two non-atomic mutation candidates with present and identical `expected_version` values forms a CAS cohort. The writer compares the expected version and all request preconditions once against the common flush baseline. Each request retains an independent result; changed requests receive consecutive logical versions in that writer's WAL order, while the changed cohort uses one copy-on-write apply, one commit segment, and one candidate manifest.
 
@@ -451,13 +453,15 @@ paths:
             Location:
               schema:
                 type: string
-              description: 'Local batch status resource: /v1/ingest/batches/{source}/{collector_id}/{batch_id}.'
+              description: Batch status URL, including its acceptance LSN when a retention period applies.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IngestAccepted'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404':
+          description: The original partitioned receipt was reclaimed before the synchronous waiter could read it.
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
         '409':
@@ -489,6 +493,11 @@ paths:
           required: true
           schema:
             type: string
+        - name: accepted_lsn
+          in: query
+          description: Binds the status lookup to the original partitioned WAL acceptance when a batch ID is reused.
+          schema:
+            type: integer
       responses:
         '200':
           description: Active or finalized batch status.
@@ -3109,6 +3118,10 @@ components:
         finished_at:
           type: string
           format: date-time
+        receipt_expires_at:
+          type: string
+          format: date-time
+          description: Earliest reclamation time for a terminal partitioned receipt with retention enabled.
         status_url:
           type: string
           description: Optional local batch status resource. Clients must retain the status_url from the 202 response or Location header because a finalized status response may omit this convenience field.

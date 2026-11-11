@@ -324,7 +324,7 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	if err == nil {
 		if journal != nil {
 			journal.forgetFileSync(path)
-			journal.deferDirectorySync(filepath.Dir(path))
+			journal.deferDeletedObject(filepath.Dir(path), key)
 			return nil
 		}
 		if batched {

@@ -1,6 +1,7 @@
 package partition
 
 import (
+	"context"
 	"crypto/sha256"
 	"strings"
 	"time"
@@ -57,9 +58,10 @@ type Graph struct {
 }
 
 type Input struct {
-	Stage  string `json:"stage"`
-	Digest string `json:"digest"`
-	Bytes  int    `json:"bytes"`
+	Stage      string `json:"stage"`
+	Digest     string `json:"digest"`
+	Bytes      int    `json:"bytes"`
+	Acceptance string `json:"acceptance,omitempty"`
 }
 
 type Transaction struct {
@@ -116,6 +118,9 @@ type DataState struct {
 // performs remote calls before proposing one of these deterministic steps.
 const ActionRevision = 2
 
+// InputGCRevision allows unclaimed staging chunks to expire before begin.
+const InputGCRevision = 3
+
 type Action struct {
 	IngestResult    *storage.IngestResult `json:"ingest_result,omitempty"`
 	Verify          *MoveVerification     `json:"verify,omitempty"`
@@ -157,8 +162,9 @@ type Action struct {
 }
 
 type Store struct {
-	Objects storage.ObjectStore
-	Prefix  string
+	Objects         storage.ObjectStore
+	Prefix          string
+	ReadIngestInput func(context.Context, string, int64, string) ([]byte, error)
 }
 
 func Bucket(key string) uint8 { return sha256.Sum256([]byte(key))[0] }

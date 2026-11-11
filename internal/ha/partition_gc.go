@@ -37,6 +37,14 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 			}
 		}()
 	}
+	if g.GC.Phase == "inputs" {
+		plan, err := c.App.partitionStore().InputGCPlan(ctx, g)
+		if err != nil {
+			return err
+		}
+		plan.Tenant, plan.Generation, plan.Txn = g.Tenant, g.Generation, g.GC.ID
+		return remote.Action(ctx, c.graphHome(), plan, nil)
+	}
 	if g.GC.Phase == "prune" || g.GC.Phase == "collect" {
 		base.Operation = "graph_gc_" + g.GC.Phase
 		base.ExpectedCursor = g.GC.Cursor

@@ -56,17 +56,38 @@ func (s Store) Transaction(ctx context.Context, tenant string, generation int64,
 	return txn, err
 }
 func (s Store) Input(ctx context.Context, tenant string, generation int64, input Input) ([]byte, error) {
-	if !validTokenID(input.Stage) || !validDigest(input.Digest) || input.Bytes <= 0 || input.Bytes > MaxValueBytes {
-		return nil, fmt.Errorf("invalid transaction input reference")
+	if !validTokenID(input.Stage) || !validDigest(input.Digest) || input.Bytes <= 0 {
+		return nil, invalid("invalid transaction input reference")
 	}
-	data, err := s.Objects.Get(ctx, s.inputKey(tenant, generation, input.Stage, input.Digest))
+	var data []byte
+	var err error
+	if input.Acceptance != "" {
+		if !validDigest(input.Acceptance) || input.Bytes > MaxChangeBytes || s.ReadIngestInput == nil {
+			return nil, invalid("invalid ingest acceptance input reference")
+		}
+		data, err = s.ReadIngestInput(ctx, tenant, generation, input.Acceptance)
+	} else {
+		if input.Bytes > MaxValueBytes {
+			return nil, fmt.Errorf("invalid transaction input reference")
+		}
+		data, err = s.Objects.Get(ctx, s.inputKey(tenant, generation, input.Stage, input.Digest))
+	}
 	if errors.Is(err, storage.ErrNotFound) {
-		return nil, fmt.Errorf("durable graph input %s is missing", input.Digest)
+		return nil, fmt.Errorf("%w: durable graph input %s is missing", errInputMissing, input.Digest)
 	}
 	if err == nil && (len(data) != input.Bytes || fmt.Sprintf("%x", sha256.Sum256(data)) != input.Digest) {
+		if input.Acceptance != "" {
+			return nil, invalid("graph input differs from its acceptance")
+		}
 		err = fmt.Errorf("durable graph input checksum mismatch")
 	}
 	return data, err
+}
+
+// RetireIngestDecision is called in the same Raft application that saves the
+// terminal acceptance, once every participant has finished the transaction.
+func (s Store) RetireIngestDecision(ctx context.Context, txn Transaction) error {
+	return s.Objects.Delete(ctx, s.txnKey(txn.Tenant, txn.Generation, txn.Identity))
 }
 
 func invalid(message string) error  { return fmt.Errorf("%w: %s", storage.ErrInvalidArgument, message) }

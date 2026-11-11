@@ -2,6 +2,8 @@ package partition
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path"
 	"testing"
@@ -13,8 +15,15 @@ import (
 )
 
 func TestDistributedGraphGCProtectsPinsAndConcurrentPreparedWrites(t *testing.T) {
+	for _, revision := range []int{ActionRevision, InputGCRevision} {
+		t.Run(fmt.Sprint(revision), func(t *testing.T) { testDistributedGraphGC(t, revision) })
+	}
+}
+
+func testDistributedGraphGC(t *testing.T, revision int) {
 	ctx := context.Background()
 	engine, remote := newLocalGraph(t)
+	remote.revision = revision
 	commit := func(key string, m graph.Mutations) {
 		t.Helper()
 		if _, err := engine.Submit(ctx, CommitRequest{IdempotencyKey: key, Mutations: m}); err != nil {
@@ -101,6 +110,13 @@ func TestDistributedGraphGCProtectsPinsAndConcurrentPreparedWrites(t *testing.T)
 			}
 			g = apply(Action{Operation: "graph_gc_prune", ExpectedCursor: g.GC.Cursor})
 		}
+		for g.GC.Phase == "inputs" {
+			plan, err := remote.stores[engine.Home.ID].InputGCPlan(ctx, g)
+			if err != nil {
+				t.Fatal(err)
+			}
+			g = apply(plan)
+		}
 	}
 	finish := func() {
 		t.Helper()
@@ -174,5 +190,120 @@ func TestDistributedGraphGCProtectsPinsAndConcurrentPreparedWrites(t *testing.T)
 	finish()
 	if _, err := ExecutePinnedQuery(ctx, remote, engine.Home, describe(), request); err == nil {
 		t.Fatal("expired GC pin continued on a newer graph")
+	}
+}
+
+type reclaimBeforeBeginRemote struct {
+	Remote
+	store     Store
+	reclaimed bool
+}
+
+func (r *reclaimBeforeBeginRemote) Action(ctx context.Context, group Group, action Action, result any) error {
+	if action.Operation == "begin" && !r.reclaimed {
+		g, err := r.store.GetGraph(ctx, action.Tenant)
+		if err != nil {
+			return err
+		}
+		g.GC = &GraphGC{}
+		plan, err := r.store.InputGCPlan(ctx, g)
+		if err != nil {
+			return err
+		}
+		if err := r.store.reclaimInputs(ctx, g, plan); err != nil {
+			return err
+		}
+		r.reclaimed = true
+	}
+	return r.Remote.Action(ctx, group, action, result)
+}
+
+func TestGraphInputGCProtectsRecoveryAndRestagesUnclaimedInputs(t *testing.T) {
+	ctx := context.Background()
+	engine, remote := newLocalGraph(t)
+	remote.revision = InputGCRevision
+	store := remote.stores[engine.Home.ID]
+	collector := &reclaimBeforeBeginRemote{Remote: remote, store: store}
+	engine.Remote = collector
+	if _, err := engine.Submit(ctx, CommitRequest{IdempotencyKey: "schema", Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}}}); err != nil {
+		t.Fatalf("request could not restage after GC won the begin race: %v", err)
+	}
+	if !collector.reclaimed {
+		t.Fatal("test did not cross the staging / begin race")
+	}
+	remote.blocked = "prepare"
+	request := CommitRequest{IdempotencyKey: "pending", Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "host:1", Kind: "host"}}}}
+	if _, err := engine.Submit(ctx, request); err == nil {
+		t.Fatal("prepare did not pause")
+	}
+	g, err := store.GetGraph(ctx, "t")
+	if err != nil || g.Active == nil || len(g.Active.Inputs) == 0 {
+		t.Fatalf("test did not retain an active input: %v", err)
+	}
+	for i := range 40 {
+		payload := []byte("orphan")
+		if i < 10 {
+			payload = make([]byte, MaxValueBytes)
+		}
+		_, err := store.Apply(ctx, Action{Operation: "stage_input", Tenant: "t", Generation: 1, Txn: fmt.Sprintf("%032x", i+1), Data: payload, Digest: fmt.Sprintf("%x", sha256.Sum256(payload))})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	cursor := ""
+	steps := 0
+	for {
+		g.GC = &GraphGC{Cursor: cursor}
+		plan, err := store.InputGCPlan(ctx, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = store.reclaimInputs(ctx, g, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cursor = plan.Cursor
+		steps++
+		if cursor == "" {
+			break
+		}
+		if steps > 10 {
+			t.Fatal("input GC did not advance")
+		}
+	}
+	if steps < 2 {
+		t.Fatal("input GC did not respect its batch budget")
+	}
+	remaining, err := store.Objects.List(ctx, path.Join(store.namespace("t", 1), "inputs")+"/")
+	if err != nil || len(remaining) != len(g.Active.Inputs) {
+		t.Fatalf("orphan inputs retained or active inputs deleted: %d, %v", len(remaining), err)
+	}
+	if err := store.ValidateSnapshot(ctx, engine.Home.ID); err != nil {
+		t.Fatalf("GC broke the active transaction's snapshot: %v", err)
+	}
+	// Missing active input is corruption, and must retain the snapshot/recovery
+	// failure rather than being mistaken for a request that can be restaged.
+	input := g.Active.Inputs[0]
+	payload, err := store.Input(ctx, "t", 1, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := store.inputKey("t", 1, input.Stage, input.Digest)
+	if err := store.Objects.Delete(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateSnapshot(ctx, engine.Home.ID); err == nil || errors.Is(err, ErrInputExpired) {
+		t.Fatalf("snapshot accepted or misclassified a missing active input: %v", err)
+	}
+	if err := store.Objects.Put(ctx, key, payload); err != nil {
+		t.Fatal(err)
+	}
+	remote.blocked = ""
+	if _, err := engine.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.Submit(ctx, request)
+	if err != nil || !result.IdempotentReplay || result.Version != 2 {
+		t.Fatalf("GC changed the pending transaction's result: %+v %v", result, err)
 	}
 }

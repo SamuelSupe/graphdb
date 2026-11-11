@@ -5,6 +5,16 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+- Add opt-in Raft protocol 7 on the home group. Partitioned WAL executes from
+  the durable acceptance and retains one terminal receipt, reducing duplicate
+  disk objects and snapshots. Raft deletions also reclaim empty object
+  directories after the application checkpoint is durable.
+- Reclaim historical duplicate partitioned ingest decisions in bounded startup
+  batches. Protocol-7 graph GC also collects unclaimed staging chunks while
+  preserving active transaction inputs and transparently restaging begin races.
+- Add opt-in retention for new partitioned ingest receipts. Terminal receipts
+  stay outside the pending WAL scan and expire with their aliases. Status URLs
+  retain their acceptance LSN when a batch ID is reused.
 - Require Raft protocol 6 on the home group for partitioned ingest. Check replica
   configuration before activation and preserve the durable downgrade fence.
 - Preserve ingest status and idempotency across single-group conversion by

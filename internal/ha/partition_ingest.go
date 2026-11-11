@@ -22,10 +22,36 @@ import (
 type partitionIngestAlias struct {
 	Key    string `json:"key"`
 	Digest string `json:"digest"`
+	Index  uint64 `json:"accepted_lsn,omitempty"`
 }
 
 func partitionIngestIdentity(key string) string {
 	return fmt.Sprintf("ingest:%x", sha256.Sum256([]byte(key)))
+}
+
+func partitionIngestTxnIdentity(key string, index uint64, indexed bool) string {
+	identity := partitionIngestIdentity(key)
+	if indexed {
+		return identity + ":" + strconv.FormatUint(index, 10)
+	}
+	return identity
+}
+
+func partitionIngestReference(key string) string {
+	return strings.TrimSuffix(path.Base(key), ".json")
+}
+
+func (a *Application) readPartitionIngestInput(ctx context.Context, objects storage.ObjectStore, tenant string, generation int64, ref string) ([]byte, error) {
+	key := a.ingestPrefix() + ref + ".json"
+	record, err := loadAcceptance(ctx, objects, key)
+	if err != nil {
+		return nil, err
+	}
+	if !record.Partitioned || record.Tenant != tenant || record.Generation != generation || record.State != "accepted" ||
+		key != a.ingestKey(tenant, record.Request.Source, record.Request.CollectorID, record.Request.BatchID, generation) {
+		return nil, fmt.Errorf("invalid partition ingest input scope or state")
+	}
+	return (partition.IngestInput{Request: record.Request, AcceptedAt: record.AcceptedAt}).Encode()
 }
 
 // An idempotency key may be retried with a new batch ID. Bind it to the first
@@ -54,7 +80,11 @@ func (a *Application) partitionIngestAlias(ctx context.Context, tenant string, g
 }
 
 func (a *Application) savePartitionIngestAlias(ctx context.Context, record acceptedRequest, key string) error {
-	data, err := json.Marshal(partitionIngestAlias{Key: key, Digest: partitionIngestDigest(record.Request)})
+	alias := partitionIngestAlias{Key: key, Digest: partitionIngestDigest(record.Request)}
+	if record.ReceiptRetention > 0 {
+		alias.Index = record.Index
+	}
+	data, err := json.Marshal(alias)
 	if err != nil {
 		return err
 	}
@@ -154,8 +184,15 @@ func (a *Application) validatePartitionIngestBegin(ctx context.Context, action p
 	if err != nil {
 		return err
 	}
-	if key == "" || partitionIngestIdentity(key) != action.Identity {
+	pending := a.pending[key]
+	if key == "" || partitionIngestTxnIdentity(key, pending.index, pending.indexedTxn) != action.Identity {
 		return fmt.Errorf("%w: ingest must execute in durable acceptance order", storage.ErrConflict)
+	}
+	if len(action.Inputs) == 1 && action.Inputs[0].Acceptance != "" {
+		if action.Inputs[0].Acceptance != partitionIngestReference(key) {
+			return fmt.Errorf("%w: ingest reference differs from the durable queue head", storage.ErrConflict)
+		}
+		return nil // Store.Input validates the referenced payload against the digest.
 	}
 	record, err := a.accepted(ctx, key)
 	if err != nil {
@@ -178,16 +215,20 @@ func (a *Application) completePartitionIngest(ctx context.Context, cmd command) 
 		return resultJSON(http.StatusBadRequest, map[string]any{"error": "invalid partitioned acceptance identity"})
 	}
 	record, err := a.accepted(ctx, cmd.IDs[0])
+	if errors.Is(err, storage.ErrNotFound) && cmd.PartitionAcceptedIndex != 0 {
+		return resultJSON(http.StatusConflict, map[string]any{"error": "ingest acceptance was reclaimed"})
+	}
 	if err != nil {
 		return nil, err
 	}
-	if !record.Partitioned || record.Tenant != cmd.Tenant || record.Generation != cmd.ExpectedGeneration {
+	if !record.Partitioned || record.Tenant != cmd.Tenant || record.Generation != cmd.ExpectedGeneration ||
+		((record.ReceiptRetention > 0 || cmd.PartitionAcceptedIndex != 0) && cmd.PartitionAcceptedIndex != record.Index) {
 		return resultJSON(http.StatusConflict, map[string]any{"error": "partitioned acceptance scope changed"})
 	}
 	if record.State != "accepted" {
 		return resultJSON(http.StatusOK, record.Result)
 	}
-	txn, err := a.partitionStore().Transaction(ctx, record.Tenant, record.Generation, partitionIngestIdentity(cmd.IDs[0]))
+	txn, err := a.partitionStore().Transaction(ctx, record.Tenant, record.Generation, partitionIngestTxnIdentity(cmd.IDs[0], record.Index, record.ReceiptRetention > 0))
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return resultJSON(http.StatusConflict, map[string]any{"error": "ingest transaction is not decided"})
@@ -207,9 +248,18 @@ func (a *Application) completePartitionIngest(ctx context.Context, cmd command) 
 	if record.Result.Failed > 0 {
 		record.State = "failed"
 	}
-	record.Request = storage.IngestRequest{Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID}
+	identity := storage.IngestRequest{Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID}
+	if record.ReceiptRetention > 0 {
+		identity.IdempotencyKey = record.Request.IdempotencyKey
+	}
+	record.Request = identity
 	if err := a.saveAccepted(ctx, cmd.IDs[0], record); err != nil {
 		return nil, err
+	}
+	if cmd.CompactPartitionIngest {
+		if err := a.partitionStore().RetireIngestDecision(ctx, txn); err != nil {
+			return nil, err
+		}
 	}
 	return resultJSON(http.StatusOK, record.Result)
 }
@@ -244,7 +294,21 @@ func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph) (
 		return false, err
 	}
 	engine := partition.Engine{Remote: sharding.GraphRemote{Client: c.shards}, Home: c.graphHome(), Tenant: g.Tenant, Generation: g.Generation}
-	if _, err := engine.SubmitIngest(ctx, partitionIngestIdentity(key), partition.IngestInput{Request: record.Request, AcceptedAt: record.AcceptedAt}); err != nil {
+	ref := ""
+	if c.config.Protocol >= partition.CompactIngestProtocol {
+		ref = partitionIngestReference(key)
+	}
+	if _, err := engine.SubmitAcceptedIngest(ctx, partitionIngestTxnIdentity(key, record.Index, record.ReceiptRetention > 0), partition.IngestInput{Request: record.Request, AcceptedAt: record.AcceptedAt}, ref); err != nil {
+		// A coordinator from an earlier term may have already moved the
+		// decision into the receipt while this coordinator was submitting it.
+		if ref != "" {
+			c.App.mu.RLock()
+			latest, readErr := c.App.accepted(ctx, key)
+			c.App.mu.RUnlock()
+			if readErr == nil && latest.Index == record.Index && latest.Result != nil && latest.State != "accepted" {
+				return true, nil
+			}
+		}
 		return true, err
 	}
 	cmd, err := newCommand("partition_ingest_complete")
@@ -252,6 +316,9 @@ func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph) (
 		return true, err
 	}
 	cmd.Tenant, cmd.ExpectedGeneration, cmd.IDs = g.Tenant, g.Generation, []string{key}
+	if record.ReceiptRetention > 0 {
+		cmd.PartitionAcceptedIndex = record.Index
+	}
 	response, err := c.propose(ctx, cmd)
 	if err == nil {
 		var result httpResult
