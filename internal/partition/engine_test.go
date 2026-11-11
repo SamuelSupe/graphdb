@@ -16,9 +16,10 @@ import (
 )
 
 type localRemote struct {
-	mu     sync.Mutex
-	stores map[string]Store
-	lose   string
+	mu      sync.Mutex
+	stores  map[string]Store
+	lose    string
+	blocked string
 }
 
 func (r *localRemote) Transaction(ctx context.Context, g Group, tenant string, generation int64, identity string) (Transaction, error) {
@@ -55,6 +56,9 @@ func (r *localRemote) Action(ctx context.Context, g Group, a Action, result any)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a.Revision = ActionRevision
+	if r.blocked == a.Operation {
+		return context.DeadlineExceeded
+	}
 	if a.Operation == "data_move_install" {
 		verified, err := r.stores[g.ID].VerifyMoveStep(ctx, a)
 		if err != nil {

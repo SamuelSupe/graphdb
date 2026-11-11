@@ -10,6 +10,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+	"github.com/SamuelSupe/graphdb/v2/internal/storage/ingest"
 )
 
 type CommitRequest struct {
@@ -19,6 +20,7 @@ type CommitRequest struct {
 }
 
 type Plan struct {
+	IngestResult  *storage.IngestResult
 	Changes       ChangeSet
 	CITypes       []graph.CIType
 	RelationTypes []graph.RelationType
@@ -242,6 +244,10 @@ func (l *fragmentLoader) snapshot() graph.Snapshot {
 // identity/unique/cardinality directories bring conflicting owners into the
 // same validation graph; unrelated graph partitions stay on disk.
 func BuildPlan(ctx context.Context, view View, request CommitRequest, at time.Time) (Plan, error) {
+	return buildPlan(ctx, view, request, at, nil, false)
+}
+
+func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Time, conditions []storage.IngestPrecondition, atomic bool) (Plan, error) {
 	if view.Budget == nil {
 		view.Budget = &ReadBudget{Requests: 8192, Bytes: 64 << 20}
 	}
@@ -277,6 +283,15 @@ func BuildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 		return Plan{}, invalid(err.Error())
 	}
 	l := &fragmentLoader{view: view, ctx: ctx, entities: map[string]graph.Entity{}, edges: map[string]graph.Edge{}, entityLookups: map[string][]string{}, edgeLookups: map[string]bool{}}
+	for _, condition := range conditions {
+		if condition.ResourceType == "entity" {
+			if _, err := l.entity(condition.ID); err != nil {
+				return Plan{}, err
+			}
+		} else if err := l.edge(condition.ID); err != nil {
+			return Plan{}, err
+		}
+	}
 	for _, entity := range m.UpsertEntities {
 		if err := l.constraints(preview, entity, true); err != nil {
 			return Plan{}, err
@@ -362,6 +377,9 @@ func BuildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 		if err != nil {
 			return Plan{}, err
 		}
+		if err := ingest.EvaluateIngestPreconditions(before, conditions, at); err != nil {
+			return Plan{}, err
+		}
 		after, report, err = before.ApplyCommitCopyWithOptions(graph.Commit{IdentityEncoding: graph.IdentityEncodingTuple, ID: "partition-plan", Version: view.Graph.Version + 1, CreatedAt: at, Mutations: m}, graph.ApplyOptions{})
 		if err != nil {
 			return Plan{}, invalid(err.Error())
@@ -394,6 +412,9 @@ func BuildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 		}
 	}
 	report.Suppressed = append(policyReport.Suppressed, report.Suppressed...)
+	if atomic && len(report.Suppressed) > 0 {
+		return Plan{}, fmt.Errorf("%w: %d mutation conflicts", ingest.ErrIngestAtomicSuppressed, len(report.Suppressed))
+	}
 	if !report.Changed {
 		after = before
 	}

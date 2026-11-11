@@ -19,6 +19,7 @@ type ImportChunk struct {
 }
 
 type transactionInput struct {
+	Ingest               *IngestInput                  `json:"ingest,omitempty"`
 	LegacyCollectorState *storage.CollectorStateUpdate `json:"legacy_collector_state,omitempty"`
 	Commit               *CommitRequest                `json:"commit,omitempty"`
 	Import               *ImportChunk                  `json:"import,omitempty"`

@@ -213,7 +213,7 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 	remote := sharding.GraphRemote{Client: c.shards}
 	if g.Active != nil {
 		_, err := (partition.Engine{Remote: remote, Home: c.graphHome(), Tenant: tenant}).Resume(ctx)
-		if err != nil || g.GC == nil || g.GC.BlocksWrites() {
+		if err != nil {
 			return err
 		}
 		g, err = c.App.graphDescriptor(ctx, tenant)
@@ -222,15 +222,27 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 		}
 	}
 	if g.Move != nil {
-		return c.advancePartitionMove(ctx, g)
+		if err := c.advancePartitionMove(ctx, g); err != nil {
+			return err
+		}
+		g, err = c.App.graphDescriptor(ctx, tenant)
+		if err != nil {
+			return err
+		}
 	}
 	if g.GC != nil {
-		return c.advancePartitionGC(ctx, g)
+		if err := c.advancePartitionGC(ctx, g); err != nil {
+			return err
+		}
+		g, err = c.App.graphDescriptor(ctx, tenant)
+		if err != nil {
+			return err
+		}
 	}
 	if g.State == "active" && g.SourceCleanupRevision < partition.ActionRevision {
 		return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "retire_source", Tenant: tenant, Generation: g.Generation}, nil)
 	}
-	if g.State == "active" && g.SourceRetired {
+	if g.State == "active" && g.SourceRetired && g.GC == nil && g.Move == nil {
 		interval := g.Config.Maintenance.GCIntervalSeconds
 		if interval != nil && *interval > 0 && time.Now().After(g.LastGCAt.Add(time.Duration(*interval)*time.Second)) {
 			id, err := newCommand("graph_gc")
@@ -239,6 +251,10 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 			}
 			return remote.Action(ctx, c.graphHome(), partition.Action{Operation: "graph_gc_begin", Tenant: tenant, Generation: g.Generation, Txn: id.ID}, nil)
 		}
+	}
+	if g.State == "active" && !g.Move.BlocksWrites() && !g.GC.BlocksWrites() {
+		_, err := c.advancePartitionIngest(ctx, g)
+		return err
 	}
 	return nil
 }

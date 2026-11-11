@@ -13,20 +13,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type acceptedRequest struct {
-	Tenant     string                `json:"tenant_id"`
-	Request    storage.IngestRequest `json:"request"`
-	Digest     string                `json:"request_digest,omitempty"`
-	Generation int64                 `json:"generation"`
-	Index      uint64                `json:"accepted_lsn"`
-	AcceptedAt time.Time             `json:"accepted_at"`
-	FinishedAt time.Time             `json:"finished_at,omitempty"`
-	State      string                `json:"state"`
-	Result     *storage.IngestResult `json:"result,omitempty"`
-	Error      string                `json:"last_error,omitempty"`
+	Partitioned bool                  `json:"partitioned,omitempty"`
+	Tenant      string                `json:"tenant_id"`
+	Request     storage.IngestRequest `json:"request"`
+	Digest      string                `json:"request_digest,omitempty"`
+	Generation  int64                 `json:"generation"`
+	Index       uint64                `json:"accepted_lsn"`
+	AcceptedAt  time.Time             `json:"accepted_at"`
+	FinishedAt  time.Time             `json:"finished_at,omitempty"`
+	State       string                `json:"state"`
+	Result      *storage.IngestResult `json:"result,omitempty"`
+	Error       string                `json:"last_error,omitempty"`
 }
 
 func (a *Application) ingestPrefix() string {
@@ -101,6 +103,17 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 	if err != nil {
 		return nil, err
 	}
+	partitioned := cmd.Kind == "partition_accept"
+	if partitioned {
+		g, err := a.partitionStore().GetGraph(ctx, cmd.Tenant)
+		if err != nil {
+			return nil, err
+		}
+		if g.State != "active" || cmd.ExpectedGeneration != g.Generation {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "tenant_generation_changed", "error": "partitioned graph generation is not active"})
+		}
+		generation = g.Generation
+	}
 	key := a.ingestKey(cmd.Tenant, request.Source, request.CollectorID, request.BatchID, generation)
 	after, err := json.Marshal(request)
 	if err != nil {
@@ -108,6 +121,22 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(after))
 	record, err := a.accepted(ctx, key)
+	if partitioned && errors.Is(err, storage.ErrNotFound) && request.IdempotencyKey != "" {
+		previous, found, aliasErr := a.partitionIngestAlias(ctx, cmd.Tenant, generation, request)
+		if aliasErr != nil {
+			return nil, aliasErr
+		}
+		if found {
+			if previous.Digest != partitionIngestDigest(request) {
+				return resultJSON(http.StatusConflict, map[string]any{"code": "idempotency_conflict", "error": "ingest idempotency key was used for a different request"})
+			}
+			record, err := a.accepted(ctx, previous.Key)
+			if err != nil {
+				return nil, err
+			}
+			return a.acceptanceResponse(record)
+		}
+	}
 	if err == nil {
 		previous := record.Digest
 		if previous == "" {
@@ -138,14 +167,30 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 		if err := a.Store.EnsureTenantWritable(ctx, cmd.Tenant); err != nil {
 			return resultJSON(http.StatusConflict, map[string]any{"error": err.Error()})
 		}
-		record = acceptedRequest{Tenant: cmd.Tenant, Request: request, Digest: digest, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
+		record = acceptedRequest{Partitioned: partitioned, Tenant: cmd.Tenant, Request: request, Digest: digest, Generation: generation, Index: index, AcceptedAt: cmd.At, State: "accepted"}
 		if err := a.saveAccepted(ctx, key, record); err != nil {
 			return nil, err
 		}
+		if partitioned && request.IdempotencyKey != "" {
+			if err := a.savePartitionIngestAlias(ctx, record, key); err != nil {
+				return nil, err
+			}
+		}
 	}
+	return a.acceptanceResponse(record)
+}
+
+func (a *Application) acceptanceResponse(record acceptedRequest) ([]byte, error) {
 	statusURL := "/v1/ingest/batches/" + url.PathEscape(record.Request.Source) + "/" + url.PathEscape(record.Request.CollectorID) + "/" + url.PathEscape(record.Request.BatchID)
-	body, _ := json.Marshal(map[string]any{"tenant_id": record.Tenant, "writer_id": a.Store.InstanceID, "batch_id": record.Request.BatchID, "source": record.Request.Source, "collector_id": record.Request.CollectorID, "generation": record.Generation, "state": record.State, "durability": "raft_majority", "accepted_lsn": record.Index, "accepted_at": record.AcceptedAt, "estimated_flush_at": record.AcceptedAt.Add(a.FlushInterval), "status_url": statusURL})
-	return json.Marshal(httpResult{Status: http.StatusAccepted, Header: http.Header{"Content-Type": []string{"application/json"}, "Location": []string{statusURL}, "X-GraphDB-Tenant-Generation": []string{fmt.Sprint(generation)}}, Body: body})
+	body, _ := json.Marshal(map[string]any{"tenant_id": record.Tenant, "writer_id": a.Store.InstanceID, "batch_id": record.Request.BatchID, "source": record.Request.Source, "collector_id": record.Request.CollectorID, "generation": record.Generation, "state": record.State, "durability": "raft_majority", "accepted_lsn": record.Index, "accepted_at": record.AcceptedAt, "estimated_flush_at": a.estimatedFlushAt(record), "status_url": statusURL})
+	return json.Marshal(httpResult{Status: http.StatusAccepted, Header: http.Header{"Content-Type": []string{"application/json"}, "Location": []string{statusURL}, "X-GraphDB-Tenant-Generation": []string{fmt.Sprint(record.Generation)}}, Body: body})
+}
+
+func (a *Application) estimatedFlushAt(record acceptedRequest) time.Time {
+	if record.Partitioned {
+		return record.AcceptedAt
+	}
+	return record.AcceptedAt.Add(a.FlushInterval)
 }
 
 func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
@@ -170,6 +215,9 @@ func (a *Application) flush(ctx context.Context, cmd command) ([]byte, error) {
 		record, err := a.accepted(ctx, key)
 		if err != nil {
 			return nil, err
+		}
+		if record.Partitioned {
+			return resultJSON(http.StatusConflict, map[string]any{"code": "graph_mode_changed", "error": "partitioned ingest requires a distributed transaction"})
 		}
 		if record.Tenant != cmd.Tenant {
 			return nil, fmt.Errorf("replicated flush contains another tenant")
@@ -256,18 +304,32 @@ func (c *Cluster) batchStatus(w http.ResponseWriter, r *http.Request) {
 		segments[i] = decoded
 	}
 	generation, err := c.App.Store.ReplicationTenantGeneration(r.Context(), r.Header.Get("X-Tenant-ID"))
+	if err == nil && c.App.ShardID != "" {
+		g, graphErr := c.App.graphDescriptor(r.Context(), r.Header.Get("X-Tenant-ID"))
+		if graphErr == nil {
+			generation = g.Generation
+		} else if !errors.Is(graphErr, storage.ErrNotFound) {
+			err = graphErr
+		}
+	}
 	if err != nil {
 		c.writeError(w, err)
 		return
 	}
 	key := c.App.ingestKey(r.Header.Get("X-Tenant-ID"), segments[0], segments[1], segments[2], generation)
+	c.App.mu.RLock()
 	record, err := c.App.accepted(r.Context(), key)
+	c.App.mu.RUnlock()
 	if err != nil {
+		if !errors.Is(err, storage.ErrNotFound) {
+			c.writeError(w, err)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(storage.IngestBatchStatus{TenantID: record.Tenant, WriterID: c.App.Store.InstanceID, Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID, State: record.State, Durability: "raft_majority", AcceptedLSN: record.Index, AcceptedAt: record.AcceptedAt, EstimatedFlush: record.AcceptedAt.Add(c.App.FlushInterval), FinishedAt: record.FinishedAt, Result: record.Result, LastError: record.Error})
+	json.NewEncoder(w).Encode(storage.IngestBatchStatus{TenantID: record.Tenant, WriterID: c.App.Store.InstanceID, Source: record.Request.Source, CollectorID: record.Request.CollectorID, BatchID: record.Request.BatchID, State: record.State, Durability: "raft_majority", AcceptedLSN: record.Index, AcceptedAt: record.AcceptedAt, EstimatedFlush: c.App.estimatedFlushAt(record), FinishedAt: record.FinishedAt, Result: record.Result, LastError: record.Error})
 }
 
 func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data []byte) error {
@@ -305,12 +367,8 @@ func (c *Cluster) waitCommitted(ctx context.Context, w http.ResponseWriter, data
 		if record.Result != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Preference-Applied", "wait=committed")
-			status := http.StatusOK
-			if record.Result.Failed > 0 {
-				status = http.StatusMultiStatus
-			}
-			w.WriteHeader(status)
-			return json.NewEncoder(w).Encode(record.Result)
+			httpapi.WriteIngestResult(w, *record.Result)
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -333,6 +391,9 @@ func (c *Cluster) flushPendingTenant(ctx context.Context, tenant string) (err er
 	}
 	var requests []pendingFlushRequest
 	for key, record := range queue {
+		if record.partitioned {
+			continue
+		}
 		if tenant != "" && record.tenant != tenant {
 			continue
 		}

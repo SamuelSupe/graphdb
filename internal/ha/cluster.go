@@ -135,7 +135,7 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 		}
 		cmd.Backpressure = &policy
 	}
-	if cmd.Kind == "accept" {
+	if cmd.Kind == "accept" || cmd.Kind == "partition_accept" {
 		budget := c.App.MaxPendingBytes
 		cmd.QueueBudget = &budget
 	}
@@ -149,7 +149,7 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 		return nil, err
 	}
 	response, err := c.Node.Propose(ctx, data)
-	if err == nil && cmd.Kind == "accept" {
+	if err == nil && (cmd.Kind == "accept" || cmd.Kind == "partition_accept") {
 		select {
 		case c.flushWake <- struct{}{}:
 		default:
@@ -254,7 +254,7 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 	if !valid {
 		return
 	}
-	if c.servePartitionedGraph(w, r, body, tenant) {
+	if c.servePartitionedGraph(w, r.WithContext(ctx), body, tenant) {
 		return
 	}
 	var expectedGeneration int64

@@ -359,11 +359,12 @@ func MarkIngestResultFailure(result *IngestResult, request IngestRequest, applie
 	if code := IngestErrorCode(failure); code != "" {
 		result.ErrorCode = code
 	}
+	message := failure.Error()
 	for _, index := range appliedIndices {
 		result.Failures = append(result.Failures, IngestFailure{
 			Index:      index,
 			ExternalID: request.Items[index].ExternalID,
-			Error:      failure.Error(),
+			Error:      message,
 		})
 	}
 	result.Conflicts = append(result.Conflicts, ingestConflictFromError(failure))

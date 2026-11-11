@@ -159,7 +159,7 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		if a.Purpose == "" {
 			a.Purpose = "commit"
 		}
-		if a.Purpose != "commit" && a.Purpose != "build" || a.Purpose == "build" && g.State != "initializing" {
+		if a.Purpose != "commit" && a.Purpose != "build" && a.Purpose != "ingest" || a.Purpose == "build" && g.State != "initializing" {
 			return nil, invalid("invalid graph transaction purpose")
 		}
 		if a.Identity == "" || len(a.Identity) > 512 || a.Txn == "" || !validDigest(a.Digest) || a.At.IsZero() || len(a.Inputs) == 0 || len(a.Inputs) > 16 {
@@ -254,6 +254,9 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		if txn.State != "preparing" || len(txn.Participants) == 0 || len(txn.Prepared) != len(txn.Participants) || a.Result == nil || g.Version != txn.BaseVersion {
 			return nil, conflict("transaction is not fully prepared")
 		}
+		if txn.Purpose == "ingest" && a.IngestResult == nil {
+			return nil, invalid("ingest publication requires its terminal result")
+		}
 		if a.Result.Version != g.Version && a.Result.Version != g.Version+1 || g.Version == math.MaxInt64 {
 			return nil, conflict("invalid graph publication version")
 		}
@@ -305,6 +308,7 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		g.RelationTypes = a.RelationTypes
 		txn.State = "committed"
 		txn.Result = *a.Result
+		txn.IngestResult = a.IngestResult
 		if a.Revision == 0 {
 			if err := s.saveView(ctx, g); err != nil {
 				return nil, err
@@ -314,9 +318,13 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		if txn.State == "committed" {
 			return nil, conflict("committed graph transactions cannot abort")
 		}
+		if txn.Purpose == "ingest" && a.IngestResult == nil {
+			return nil, invalid("ingest abort requires its terminal result")
+		}
 		txn.State = "aborted"
 		txn.Error = a.Error
 		txn.ErrorCode = a.ErrorCode
+		txn.IngestResult = a.IngestResult
 	case "complete":
 		if txn.State != "committed" && txn.State != "aborted" {
 			return nil, conflict("transaction is undecided")

@@ -187,7 +187,7 @@ paths:
       security:
         - GatewayBearer: []
       summary: Enable a partitioned graph (development, protocol 5, serve-router only).
-      description: Requires the router token and protocol 5 on the catalog, home and selected data groups. The tenant must exist. Nonempty sources need current paged indexes and a published digest; rebuild indexes before conversion. The maintenance-window conversion is resumable and preserves graph version and direct-commit identities. This development mode does not support WAL ingest, full lifecycle, cross-group backup/restore or supernode splitting; unsupported data APIs return 501. Poll the tenant graph endpoint for progress.
+      description: Requires the router token and protocol 5 on the catalog, home and selected data groups. The tenant must exist. Nonempty sources need current paged indexes and a published digest; rebuild indexes before conversion. The maintenance-window conversion is resumable and preserves graph version and direct-commit identities. The development main branch supports incremental WAL batch ingest; full_sync, historical ingest identity migration across conversion, full lifecycle, cross-group backup/restore and supernode splitting remain unsupported. Unsupported data APIs return 501. Upgrade all groups and routers together before enabling the new queue commands. Poll the tenant graph endpoint for progress.
       requestBody:
         required: true
         content:
@@ -401,6 +401,8 @@ paths:
     post:
       summary: Apply a collector batch with idempotency and partial failure reporting. Synchronous WAL returns durable 202 acceptance.
       description: |
+        For protocol-5 partitioned graphs, the home group majority-persists the full normalized batch in an acceptance queue independently of the active graph transaction. WAL mode returns 202 with durability=raft_majority and a router-independent status_url. Batches execute individually in tenant acceptance order; expected_version and preconditions are checked at execution, not acceptance, and accepted_at conditions retain the original timestamp. Graph decisions include the terminal ingest result, so leader changes and retries cannot republish decided batches. The batch becomes eligible without waiting for the local WAL flush interval; direct mode waits on the same durable queue. full_sync is rejected with 501 before acceptance. Other partition transaction budgets continue to apply.
+
         A local WAL flush containing at least two non-atomic mutation candidates with present and identical `expected_version` values forms a CAS cohort. The writer compares the expected version and all request preconditions once against the common flush baseline. Each request retains an independent result; changed requests receive consecutive logical versions in that writer's WAL order, while the changed cohort uses one copy-on-write apply, one commit segment, and one candidate manifest.
 
         A stale cohort gives every member a `409` `version_conflict` result and publishes no graph version. A request-local precondition failure only fails that request; other accepted cohort members may still publish. Requests without `expected_version` and without preconditions remain on the ordinary fast batch path. Contiguous requests with different expected versions form separate WAL-order groups; a single CAS request, an atomic request, or a no-`expected_version` request with preconditions is an isolation barrier.
@@ -3040,6 +3042,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Conflict'
+        details_truncated:
+          type: boolean
+          description: The partitioned ingest receipt omitted some oversized failure or conflict details. Counts and error codes still describe the complete batch.
     IngestAccepted:
       type: object
       required: [writer_id, source, collector_id, batch_id, state, durability, accepted_at, estimated_flush_at, status_url]
@@ -3071,6 +3076,7 @@ components:
         estimated_flush_at:
           type: string
           format: date-time
+          description: Earliest estimated flush eligibility, not a visibility deadline. For partitioned graphs this equals accepted_at because the worker does not wait for the local WAL batching interval.
         status_url:
           type: string
           description: 'Local batch status resource: /v1/ingest/batches/{source}/{collector_id}/{batch_id}.'

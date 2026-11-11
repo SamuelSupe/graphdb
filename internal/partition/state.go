@@ -63,22 +63,23 @@ type Input struct {
 }
 
 type Transaction struct {
-	ErrorCode    string               `json:"error_code,omitempty"`
-	Purpose      string               `json:"purpose,omitempty"`
-	Tenant       string               `json:"tenant_id"`
-	Generation   int64                `json:"generation"`
-	ID           string               `json:"id"`
-	Sequence     uint64               `json:"sequence"`
-	Identity     string               `json:"identity"`
-	Digest       string               `json:"digest"`
-	Inputs       []Input              `json:"inputs"`
-	At           time.Time            `json:"at"`
-	BaseVersion  int64                `json:"base_version"`
-	State        string               `json:"state"`
-	Prepared     map[uint8]Prepared   `json:"prepared,omitempty"`
-	Participants []uint8              `json:"participants,omitempty"`
-	Result       storage.CommitResult `json:"result"`
-	Error        string               `json:"error,omitempty"`
+	IngestResult *storage.IngestResult `json:"ingest_result,omitempty"`
+	ErrorCode    string                `json:"error_code,omitempty"`
+	Purpose      string                `json:"purpose,omitempty"`
+	Tenant       string                `json:"tenant_id"`
+	Generation   int64                 `json:"generation"`
+	ID           string                `json:"id"`
+	Sequence     uint64                `json:"sequence"`
+	Identity     string                `json:"identity"`
+	Digest       string                `json:"digest"`
+	Inputs       []Input               `json:"inputs"`
+	At           time.Time             `json:"at"`
+	BaseVersion  int64                 `json:"base_version"`
+	State        string                `json:"state"`
+	Prepared     map[uint8]Prepared    `json:"prepared,omitempty"`
+	Participants []uint8               `json:"participants,omitempty"`
+	Result       storage.CommitResult  `json:"result"`
+	Error        string                `json:"error,omitempty"`
 }
 
 type Prepared struct {
@@ -116,6 +117,7 @@ type DataState struct {
 const ActionRevision = 2
 
 type Action struct {
+	IngestResult    *storage.IngestResult `json:"ingest_result,omitempty"`
 	Verify          *MoveVerification     `json:"verify,omitempty"`
 	Revision        int                   `json:"revision,omitempty"`
 	Pages           []PageObject          `json:"pages,omitempty"`
@@ -143,14 +145,15 @@ type Action struct {
 	At              time.Time             `json:"at,omitempty"`
 	Inputs          []Input               `json:"inputs,omitempty"`
 	Data            []byte                `json:"data,omitempty"`
-	Changes         []Row                 `json:"changes,omitempty"`
-	Graph           *Graph                `json:"graph,omitempty"`
-	Prepared        *Prepared             `json:"prepared,omitempty"`
-	Participants    []uint8               `json:"participants,omitempty"`
-	Result          *storage.CommitResult `json:"result,omitempty"`
-	CITypes         []graph.CIType        `json:"ci_types,omitempty"`
-	RelationTypes   []graph.RelationType  `json:"relation_types,omitempty"`
-	Error           string                `json:"error,omitempty"`
+	// Empty and nil changes have different prepare digests; preserve [] on the wire.
+	Changes       []Row                 `json:"changes"`
+	Graph         *Graph                `json:"graph,omitempty"`
+	Prepared      *Prepared             `json:"prepared,omitempty"`
+	Participants  []uint8               `json:"participants,omitempty"`
+	Result        *storage.CommitResult `json:"result,omitempty"`
+	CITypes       []graph.CIType        `json:"ci_types,omitempty"`
+	RelationTypes []graph.RelationType  `json:"relation_types,omitempty"`
+	Error         string                `json:"error,omitempty"`
 }
 
 type Store struct {

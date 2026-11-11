@@ -18,10 +18,11 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
-func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
-	catalog := newTestClusterRole(t, false, "", true)
-	a := newTestClusterRole(t, false, "a", false)
-	b := newTestClusterRole(t, false, "b", false)
+func newTestPartitionedGraph(t *testing.T, wal bool) (a, b, catalog *testCluster, router *sharding.Router, call func(string, string, string, any, int) *httptest.ResponseRecorder) {
+	t.Helper()
+	catalog = newTestClusterRole(t, false, "", true)
+	a = newTestClusterRole(t, wal, "a", false)
+	b = newTestClusterRole(t, wal, "b", false)
 	for _, group := range []*testCluster{catalog, a, b} {
 		for i := range group.nodes {
 			group.stop(i)
@@ -29,6 +30,9 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 		for i, node := range group.nodes {
 			node.cfg.Raft.Protocol = 5
 			node.cfg.Raft.SnapshotEntries = 1000
+			if wal {
+				node.cfg.IngestFlushInterval = time.Hour
+			}
 			group.start(i)
 		}
 		group.leader(-1)
@@ -38,9 +42,9 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 		return sharding.Shard{ID: id, ClusterID: cfg.ClusterID, Peers: cfg.Peers}
 	}
 	token := catalog.nodes[0].cfg.Raft.Token
-	router := sharding.NewRouter(definition(catalog, "catalog"), token)
-	defer router.Client.HTTP.CloseIdleConnections()
-	call := func(method, path, tenant string, body any, want int) *httptest.ResponseRecorder {
+	router = sharding.NewRouter(definition(catalog, "catalog"), token)
+	t.Cleanup(router.Client.HTTP.CloseIdleConnections)
+	call = func(method, path, tenant string, body any, want int) *httptest.ResponseRecorder {
 		t.Helper()
 		encoded, err := json.Marshal(body)
 		if err != nil {
@@ -78,11 +82,6 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 		call(http.MethodPost, "/v1/cluster/shards", "", definition(item.group, item.id), http.StatusAccepted)
 	}
 	call(http.MethodPost, "/v1/tenants", "", map[string]any{"tenant_id": "big"}, http.StatusOK)
-	oversized := make([]string, 257)
-	for i := range oversized {
-		oversized[i] = fmt.Sprintf("group-%d", i)
-	}
-	call(http.MethodPost, "/v1/cluster/graphs", "", map[string]any{"tenant_id": "big", "data_groups": oversized}, http.StatusBadRequest)
 
 	call(http.MethodPost, "/v1/cluster/graphs", "", map[string]any{"tenant_id": "big", "data_groups": []string{"a", "b"}}, http.StatusAccepted)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -101,6 +100,23 @@ func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	return a, b, catalog, router, call
+}
+
+func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {
+	a, b, catalog, router, call := newTestPartitionedGraph(t, false)
+	definition := func(group *testCluster, id string) sharding.Shard {
+		cfg := group.nodes[0].cfg.Raft
+		return sharding.Shard{ID: id, ClusterID: cfg.ClusterID, Peers: cfg.Peers}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	oversized := make([]string, 257)
+	for i := range oversized {
+		oversized[i] = fmt.Sprintf("group-%d", i)
+	}
+	call(http.MethodPost, "/v1/cluster/graphs", "", map[string]any{"tenant_id": "big", "data_groups": oversized}, http.StatusBadRequest)
+
 	request := partition.CommitRequest{IdempotencyKey: "schema", Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}, UpsertRelationTypes: []graph.RelationType{{Name: "calls", FromKind: "host", ToKind: "host", Directed: true}}}}
 	call(http.MethodPost, "/v1/commits", "big", request, http.StatusOK)
 	left, right := "left", "right"

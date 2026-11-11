@@ -25,6 +25,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/config"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
 	"github.com/SamuelSupe/graphdb/v2/internal/observability"
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
@@ -38,6 +39,7 @@ type testReplica struct {
 	peer                *httptest.Server
 	blocked             atomic.Bool
 	blockedMessages     atomic.Bool
+	blockGraphFinalize  atomic.Bool
 	loseInstallResponse atomic.Bool
 	loseStageResponse   atomic.Bool
 	stageRequests       atomic.Int64
@@ -79,6 +81,19 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 			if replica.legacyExportOnly.Load() && strings.HasPrefix(r.URL.Path, "/cluster/export/") {
 				http.NotFound(w, r)
 				return
+			}
+			if replica.blockGraphFinalize.Load() && r.Method == http.MethodPost && r.URL.Path == "/cluster/graph/action" {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				var action partition.Action
+				if json.Unmarshal(body, &action) == nil && action.Operation == "finalize" {
+					http.Error(w, "finalization paused", http.StatusServiceUnavailable)
+					return
+				}
 			}
 			if r.Method == http.MethodPost && r.URL.Path == "/cluster/action" {
 				body, err := io.ReadAll(r.Body)

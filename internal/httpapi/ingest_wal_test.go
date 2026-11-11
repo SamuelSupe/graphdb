@@ -217,7 +217,7 @@ func TestHTTPWALCommittedWaitReturnsServiceFailure(t *testing.T) {
 
 func TestWriteIngestResultMapsAsynchronousIdentityConflict(t *testing.T) {
 	response := httptest.NewRecorder()
-	writeIngestResult(response, storage.IngestResult{
+	WriteIngestResult(response, storage.IngestResult{
 		BatchID:   "batch-conflict",
 		Failed:    1,
 		ErrorCode: storage.IngestErrorIdempotencyConflict,

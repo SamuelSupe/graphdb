@@ -169,7 +169,7 @@ func (a *Application) snapshotTenantPrefix() string {
 }
 
 func publicationCommand(cmd command) bool {
-	return cmd.Kind == "accept" || cmd.Kind == "flush" || cmd.Kind == "restore_part" ||
+	return cmd.Kind == "accept" || cmd.Kind == "partition_accept" || cmd.Kind == "partition_ingest_complete" || cmd.Kind == "flush" || cmd.Kind == "restore_part" ||
 		(cmd.Kind == "http" && cmd.Method == http.MethodPost &&
 			(cmd.URI == "/v1/ingest/batches" || cmd.URI == "/v1/commits"))
 }
@@ -340,7 +340,7 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			return nil, err
 		}
 	}
-	if a.ShardID != "" && (cmd.Kind == "http" || cmd.Kind == "accept") {
+	if a.ShardID != "" && (cmd.Kind == "http" || cmd.Kind == "accept" || cmd.Kind == "partition_accept") {
 		valid, err := a.checkOwnership(applyCtx, cmd.Tenant, cmd.RouteEpoch)
 		if err != nil {
 			return nil, err
@@ -352,7 +352,7 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			return resultJSON(http.StatusConflict, map[string]any{"code": "shard_epoch_changed", "error": err.Error(), "retryable": true})
 		}
 	}
-	if cmd.ExpectedGeneration > 0 {
+	if cmd.ExpectedGeneration > 0 && cmd.Kind != "partition_accept" && cmd.Kind != "partition_ingest_complete" {
 		generation, err := a.Store.ReplicationTenantGeneration(applyCtx, cmd.Tenant)
 		if err != nil {
 			return nil, err
@@ -393,6 +393,14 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		}
 		if a.Catalog || a.ShardID == "" || action.Tenant != cmd.Tenant {
 			return resultJSON(http.StatusConflict, map[string]any{"code": "graph_partition_conflict", "error": "graph actions require a matching data-group tenant"})
+		}
+		if action.Operation == "begin" && action.Purpose == "ingest" {
+			if err := a.validatePartitionIngestBegin(applyCtx, action); err != nil {
+				if !errors.Is(err, storage.ErrConflict) {
+					return nil, err
+				}
+				return resultJSON(http.StatusConflict, map[string]any{"code": "graph_busy", "error": err.Error(), "retryable": true})
+			}
 		}
 		if action.Operation == "initialize" {
 			if action.Graph == nil {
@@ -517,8 +525,10 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			writer.Header().Set("X-GraphDB-Tenant-Generation", fmt.Sprint(generation))
 		}
 		return json.Marshal(httpResult{Status: writer.Code, Header: writer.Header(), Body: writer.Body.Bytes()})
-	case "accept":
+	case "accept", "partition_accept":
 		return a.accept(applyCtx, index, cmd)
+	case "partition_ingest_complete":
+		return a.completePartitionIngest(applyCtx, cmd)
 	case "flush":
 		return a.flush(applyCtx, cmd)
 	case "capture_backup":

@@ -93,7 +93,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		"source": request.Source, "collector_id": request.CollectorID, "batch_id": result.BatchID,
 		"applied": result.Applied, "failed": result.Failed, "suppressed": result.Suppressed, "skipped": result.Skipped, "skip_reason": result.SkipReason,
 	})
-	writeIngestResult(w, result)
+	WriteIngestResult(w, result)
 }
 
 func (s *Server) acceptWALIngest(w http.ResponseWriter, r *http.Request, tenantID string, request storage.IngestRequest, release func()) {
@@ -154,10 +154,12 @@ func (s *Server) writeCompletedIngest(w http.ResponseWriter, tenantID string, re
 		s.obs().Metrics.RecordIngestSuppressed(tenantID, request.Source, result.Suppressed)
 		s.recordIngestConflictResources(tenantID, result.Conflicts)
 	}
-	writeIngestResult(w, result)
+	WriteIngestResult(w, result)
 }
 
-func writeIngestResult(w http.ResponseWriter, result storage.IngestResult) {
+// WriteIngestResult preserves the terminal ingest HTTP status and error detail
+// contract for both local and replicated acceptance queues.
+func WriteIngestResult(w http.ResponseWriter, result storage.IngestResult) {
 	if result.Failed == 0 {
 		writeJSON(w, http.StatusOK, result)
 		return

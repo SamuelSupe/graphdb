@@ -131,7 +131,7 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 			return storage.CommitResult{}, conflict("expected graph version does not match")
 		}
 		if g.Active != nil {
-			if purpose == "commit" && len(inputs) == 0 {
+			if (purpose == "commit" || purpose == "ingest") && len(inputs) == 0 {
 				return storage.CommitResult{}, fmt.Errorf("%w: another graph transaction is active", ErrGraphBusy)
 			}
 			if err := waitWriter(ctx); err != nil {
@@ -244,9 +244,11 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			return txn, err
 		}
 		var plan Plan
-		if input.Commit != nil && input.Import == nil {
+		if input.Ingest != nil && input.Commit == nil && input.Import == nil && txn.Purpose == "ingest" {
+			plan, err = buildIngestPlan(ctx, View{Graph: g, Remote: e.Remote}, *input.Ingest)
+		} else if input.Commit != nil && input.Import == nil && input.Ingest == nil {
 			plan, err = BuildPlan(ctx, View{Graph: g, Remote: e.Remote}, *input.Commit, txn.At)
-		} else if input.Import != nil && input.Commit == nil && txn.Purpose == "build" {
+		} else if input.Import != nil && input.Commit == nil && input.Ingest == nil && txn.Purpose == "build" {
 			plan, err = BuildImportPlan(ctx, View{Graph: g, Remote: e.Remote}, *input.Import)
 		} else {
 			err = invalid("invalid durable graph transaction input")
@@ -260,7 +262,7 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			if errors.Is(err, ErrQuotaExceeded) {
 				code = "quota_exceeded"
 			}
-			if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), ErrorCode: code}, &txn); abortErr != nil {
+			if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), ErrorCode: code, IngestResult: failedIngestResult(input.Ingest, err)}, &txn); abortErr != nil {
 				return txn, abortErr
 			}
 			return e.finish(ctx, g, txn)
@@ -291,7 +293,7 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 		}
 		if err := workers.Wait(); err != nil {
 			if errors.Is(err, storage.ErrInvalidArgument) || errors.Is(err, storage.ErrConflict) {
-				if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error()}, &txn); abortErr != nil {
+				if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), IngestResult: failedIngestResult(input.Ingest, err)}, &txn); abortErr != nil {
 					return txn, abortErr
 				}
 				return e.finish(ctx, g, txn)
@@ -323,7 +325,14 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			return txn, err
 		}
 		result := storage.CommitResult{Manifest: storage.Manifest{TenantID: e.Tenant, Version: version, HeadCommitID: txn.ID, UpdatedAt: txn.At}, ReadableVersion: version, DataHash: digest, Skipped: !plan.Report.Changed, Suppressed: plan.Report.Suppressed, CanonicalEntities: plan.Report.CanonicalEntities, CanonicalEdges: plan.Report.CanonicalEdges}
-		if err := e.updateTransaction(ctx, g, Action{Operation: "commit", Txn: txn.ID, Sequence: txn.Sequence, Result: &result, CITypes: plan.CITypes, RelationTypes: plan.RelationTypes}, &txn); err != nil {
+		if plan.IngestResult != nil {
+			// The bounded ingest result already carries the public diagnostics.
+			result.Suppressed, result.CanonicalEntities, result.CanonicalEdges = nil, nil, nil
+			if plan.IngestResult.Applied > 0 {
+				plan.IngestResult.Version = version
+			}
+		}
+		if err := e.updateTransaction(ctx, g, Action{Operation: "commit", Txn: txn.ID, Sequence: txn.Sequence, Result: &result, IngestResult: plan.IngestResult, CITypes: plan.CITypes, RelationTypes: plan.RelationTypes}, &txn); err != nil {
 			return txn, err
 		}
 	}

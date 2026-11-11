@@ -35,17 +35,18 @@ type IngestItem struct {
 }
 
 type IngestResult struct {
-	BatchID    string           `json:"batch_id"`
-	Version    int64            `json:"version"`
-	Applied    int              `json:"applied"`
-	Failed     int              `json:"failed"`
-	ErrorCode  string           `json:"error_code,omitempty"`
-	Suppressed int              `json:"suppressed,omitempty"`
-	Skipped    bool             `json:"skipped"`
-	SkipReason string           `json:"skip_reason,omitempty"`
-	Cursor     string           `json:"cursor,omitempty"`
-	Failures   []IngestFailure  `json:"failures,omitempty"`
-	Conflicts  []IngestConflict `json:"conflicts,omitempty"`
+	DetailsTruncated bool             `json:"details_truncated,omitempty"`
+	BatchID          string           `json:"batch_id"`
+	Version          int64            `json:"version"`
+	Applied          int              `json:"applied"`
+	Failed           int              `json:"failed"`
+	ErrorCode        string           `json:"error_code,omitempty"`
+	Suppressed       int              `json:"suppressed,omitempty"`
+	Skipped          bool             `json:"skipped"`
+	SkipReason       string           `json:"skip_reason,omitempty"`
+	Cursor           string           `json:"cursor,omitempty"`
+	Failures         []IngestFailure  `json:"failures,omitempty"`
+	Conflicts        []IngestConflict `json:"conflicts,omitempty"`
 }
 
 const (

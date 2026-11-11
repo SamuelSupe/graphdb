@@ -22,6 +22,9 @@ func (c *Cluster) servePartitionedGraph(w http.ResponseWriter, r *http.Request, 
 		c.partitionError(w, err)
 		return true
 	}
+	if c.servePartitionIngest(w, r, body, g) {
+		return true
+	}
 	if body != nil {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	}

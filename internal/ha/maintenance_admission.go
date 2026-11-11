@@ -30,7 +30,7 @@ func (c *Cluster) tenantAdmission(tenant string) *tenantAdmission {
 }
 
 func (c *Cluster) admitTenantMutation(cmd command) (func(), error) {
-	if cmd.Tenant == "" || (cmd.Kind != "http" && cmd.Kind != "accept" && cmd.Kind != "sharding") {
+	if cmd.Tenant == "" || (cmd.Kind != "http" && cmd.Kind != "accept" && cmd.Kind != "partition_accept" && cmd.Kind != "sharding") {
 		return func() {}, nil
 	}
 	c.admissionMu.Lock()

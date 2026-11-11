@@ -3,6 +3,18 @@
 All notable GGraphDB changes are recorded here. Versions follow semantic
 versioning; release tags and binaries expose the exact build commit and date.
 
+## [Unreleased]
+
+- Add majority-durable WAL acceptance for protocol-5 partitioned graphs. Queue
+  batches independently of the active graph transaction, recover them in tenant
+  acceptance order after leader changes, and persist ingest results with graph
+  decisions so retries cannot republish committed batches. Preserve conditional
+  and atomic ingest results. Full-source reconciliation remains unsupported.
+- Preserve empty prepare changes through JSON transport, fixing digest mismatches
+  for distributed no-op and rejected ingest transactions.
+- Add a nine-replica partitioned WAL crash gate covering SIGKILL of the home
+  leader, all home replicas and routers, followed by ordered recovery and retry.
+
 ## [2.5.1] - 2026-11-10
 
 - **Breaking for standalone Compose ingest clients.** The default changes from
