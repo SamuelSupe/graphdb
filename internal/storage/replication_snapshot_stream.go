@@ -27,6 +27,12 @@ type ReplicationSnapshotSource struct {
 // The caller excludes application until capture returns; compression can then
 // run while later publications replace or unlink those inodes.
 func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64) (*ReplicationSnapshotSource, error) {
+	// Directory cleanup can run between applications. Keep its removals out
+	// of this walk until every live inode has been linked into the view.
+	if s.runtime != nil {
+		s.runtime.replicationMu.Lock()
+		defer s.runtime.replicationMu.Unlock()
+	}
 	release, err := s.beginLifecycleOperation(ctx)
 	if err != nil {
 		return nil, err
@@ -170,7 +176,7 @@ func (s *FileStore) putReader(ctx context.Context, key string, reader io.Reader)
 		return err
 	}
 	digest := sha256.New()
-	if err := writeReaderAtomicContext(ctx, filename, io.TeeReader(reader, digest), journal); err != nil {
+	if err := writeReaderAtomicContext(ctx, filename, io.TeeReader(reader, digest), journal, false); err != nil {
 		return err
 	}
 	s.changed(key, fmt.Sprintf("%x", digest.Sum(nil)), false)

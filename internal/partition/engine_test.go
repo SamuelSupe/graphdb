@@ -2,6 +2,7 @@ package partition
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,8 +119,78 @@ func newLocalGraph(t *testing.T) (Engine, *localRemote) {
 	return engine, r
 }
 
+func TestPlanBatchesDirectoryReads(t *testing.T) {
+	ctx := context.Background()
+	engine, remote := newLocalGraph(t)
+	g, err := remote.Describe(ctx, engine.Home, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.CITypes = []graph.CIType{{Name: "host", Fields: map[string]graph.FieldSpec{"name": {Type: "string", Unique: true}}}}
+	at := time.Unix(1700000000, 0).UTC()
+	seed := CommitRequest{Mutations: graph.Mutations{UpsertEntities: []graph.Entity{
+		{ID: "retained", Kind: "host", Source: "collector", ExternalID: "retained", Fields: graph.Fields{"name": "retained"}},
+	}}}
+	plan, err := BuildPlan(ctx, View{Graph: g, Remote: remote}, seed, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket := Bucket("retained")
+	var retained graph.Entity
+	if err := decodeRecord(plan.Changes[bucket][EntityKey("retained")], &retained); err != nil {
+		t.Fatal(err)
+	}
+	retained.MergedFrom = []string{"former"}
+	if err := plan.Changes.Set(bucket, EntityKey(retained.ID), retained); err != nil {
+		t.Fatal(err)
+	}
+	aliasKey := EntityAliasKey("former")
+	if err := plan.Changes.Set(Bucket(aliasKey), aliasKey, []string{retained.ID}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bucket := range plan.Changes.Participants() {
+		owner, err := g.GroupFor(bucket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.Roots[bucket], err = remote.stores[owner.ID].Tree("t", 1, bucket).Update(ctx, Root{}, plan.Changes.Rows(bucket))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.Version++
+	g.EntityCount = 1
+	request := CommitRequest{Mutations: graph.Mutations{DeleteEntities: []string{"former"}}}
+	for i := range 16 {
+		id := fmt.Sprintf("new-%02d", i)
+		request.Mutations.UpsertEntities = append(request.Mutations.UpsertEntities,
+			graph.Entity{ID: id, Kind: "host", Source: "collector", ExternalID: id, Fields: graph.Fields{"name": id}})
+	}
+	single := &countedReadRemote{Remote: remote}
+	batched := &scanRPCRemote{Remote: remote, stores: remote.stores}
+	// Capture the rows produced before batching, including the alias removal.
+	const wantDigest = "a07533ee7f5dc7745651cc64c123924f2d18183ed0cc42ae94869935b5a2743d"
+	for _, reader := range []Remote{single, batched} {
+		plan, err := BuildPlan(ctx, View{Graph: g, Remote: reader}, request, at.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(plan.Changes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if digest := fmt.Sprintf("%x", sha256.Sum256(data)); digest != wantDigest {
+			t.Fatalf("%T changed the transaction rows: %s", reader, digest)
+		}
+	}
+	t.Logf("single fragment RPCs: %d, batched fragment RPCs: %d", single.calls, batched.calls)
+	if batched.calls > 12 || single.calls <= batched.calls {
+		t.Fatal("plan did not batch primary, identity and alias reads")
+	}
+}
+
 func TestDistributedGraphCommitQueryAndRecovery(t *testing.T) {
-	for _, lost := range []string{"begin", "prepare", "commit", "finalize", "complete"} {
+	for _, lost := range []string{"begin", "prepare", "prepared", "commit", "finalize", "complete"} {
 		t.Run(lost, func(t *testing.T) {
 			ctx := context.Background()
 			engine, remote := newLocalGraph(t)
@@ -135,7 +206,7 @@ func TestDistributedGraphCommitQueryAndRecovery(t *testing.T) {
 			request := CommitRequest{IdempotencyKey: "write", Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: left, Kind: "host", Fields: graph.Fields{"name": "a"}}, {ID: right, Kind: "host", Fields: graph.Fields{"name": "b"}}}, UpsertEdges: []graph.Edge{{Type: "calls", From: left, To: right}}}}
 			remote.lose = lost
 			resolved, err := engine.Submit(ctx, request)
-			unknown := lost == "begin" || lost == "prepare"
+			unknown := lost == "begin" || lost == "prepare" || lost == "prepared"
 			if unknown && !errors.Is(err, context.DeadlineExceeded) || !unknown && (err != nil || resolved.Version != 2) {
 				t.Fatalf("lost response recovery: %+v %v", resolved, err)
 			}
@@ -199,6 +270,9 @@ func TestDistributedGraphCommitQueryAndRecovery(t *testing.T) {
 			current, reloadErr := remote.Describe(ctx, engine.Home, "t")
 			if reloadErr != nil {
 				t.Fatal(reloadErr)
+			}
+			if lost == "prepared" && (current.Active == nil || len(current.Active.Prepared) == 0) {
+				t.Fatal("lost prepare acknowledgement did not leave a durable control receipt")
 			}
 			if current.Active != nil {
 				if _, err := restarted.Resume(ctx); err != nil {

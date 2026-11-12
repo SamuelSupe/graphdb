@@ -1,8 +1,8 @@
-# GGraphDB 2.5.1
+# GGraphDB
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [Documentation](docs/README.md) · [Preview release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -12,7 +12,9 @@ storage is optional for snapshot backups.
 
 [Start](#start) · [Write and query](#write-and-query) · [Choose a deployment](#deployment-options) · [Validation](#validation-and-limits)
 
-## Current release
+## Releases
+
+**[2.6.0-preview.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0-preview.1)** includes opt-in large-graph sharding and partitioned WAL with Raft protocols 5–11. Raft defaults to protocol 1. See [activation and upgrade limits](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级) and [cold-write validation](docs/validation-v2.6.0-preview.1.md).
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** enables durable asynchronous WAL ingestion in standalone Compose and splits oversized index catch-up into ordered incremental updates. Release binaries use **Go 1.27.3**.
 

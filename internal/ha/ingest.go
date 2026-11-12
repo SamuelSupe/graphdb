@@ -221,6 +221,12 @@ func (a *Application) accept(ctx context.Context, index uint64, cmd command) ([]
 			return resultJSON(http.StatusConflict, map[string]any{"error": err.Error()})
 		}
 		record = candidate
+		if partitioned && request.IdempotencyKey != "" {
+			aliasKey := a.partitionIngestAliasKey(record.Tenant, record.Generation, record.Request)
+			if err := a.Files.JournalReplicatedObjects(ctx, []string{key, aliasKey}); err != nil {
+				return nil, err
+			}
+		}
 		if err := a.saveAccepted(ctx, key, record); err != nil {
 			return nil, err
 		}

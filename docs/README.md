@@ -1,8 +1,8 @@
-# GGraphDB 2.5.1 Documentation
+# GGraphDB Documentation
 
 [简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)
 
-The current release is **2.5.1**; its validation record tracks exact-tag gates, publication and independent downloaded-asset checks. See the validation record for evidence and limits. Choose a task below or follow a suggested reading path.
+The stable release is **2.5.1**. See [preview validation](validation-v2.6.0-preview.1.md) for the opt-in **2.6.0-preview.1** large-graph sharding scope and measured cold writes. Choose a task below or follow a suggested reading path.
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 
@@ -62,14 +62,14 @@ some cluster operations guides are currently Chinese-only.
 | Topic | Documentation |
 | --- | --- |
 | Positioning and architecture | [Database introduction](database-introduction.md) · [中文](database-introduction.zh-CN.md) · [Architecture](architecture.en.md) |
-| Proposed architecture | [Large-graph sharding design](large-graph-sharding-design.zh-CN.md) · [Development implementation and limits](large-graph-sharding-implementation.zh-CN.md) · [Read-path optimization](large-graph-sharding-optimization-2026-11-09.zh-CN.md) |
+| Large-graph sharding preview | [Design](large-graph-sharding-design.zh-CN.md) · [Implementation and limits](large-graph-sharding-implementation.zh-CN.md) · [Activation and upgrades](partition-wal-ingestion.zh-CN.md#显式启用与升级) · [Validation](validation-v2.6.0-preview.1.md) |
 | API contracts | [API map](user/api-map.md) · [中文](user/api-map.zh-CN.md) · [OpenAPI](openapi.yaml) · [Error codes](error_codes.md) |
 | Query languages | [Query capabilities](query_capabilities.md) · [GraphQL](graphql.md) · [中文](graphql.zh-CN.md) · [Legacy text DSL](gql.md) |
 | Versions and gaps | [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md) · [Product gaps](product_function_gaps.md) |
-| 2.5.1 release evidence | [Release notes](../release/local-disk.md) · [Validation](validation-v2.5.1.md) |
+| 2.5.1 release evidence | [Release notes](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [Validation](validation-v2.5.1.md) |
 | 2.3.6 matched performance replay | [Maintenance windows and 30-minute Raft growth replay](performance-tail-validation-2026-10-20.zh-CN.md) · [Earlier 6-minute comparison](performance-tail-validation-2026-10-19.zh-CN.md) |
 
-SDK/OpenAPI versions are 2.5.1. Module `/v2`, HTTP `/v1` and separate Raft protocol
+SDK and OpenAPI versions in this checkout are 2.6.0-preview.1. Module `/v2`, HTTP `/v1` and separate Raft protocol
 identifiers follow their own contracts; do not substitute the product version.
 
 ## Historical designs and validation

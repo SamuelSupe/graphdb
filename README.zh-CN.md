@@ -1,8 +1,8 @@
-# GGraphDB 2.5.1
+# GGraphDB
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载稳定版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [文档中心](docs/README.zh-CN.md) · [预览发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -10,7 +10,9 @@
 
 [快速启动](#启动) · [写入与查询](#写入与查询) · [选择部署](#部署方式) · [验证范围](#验证与限制)
 
-## 当前版本
+## 发行版本
+
+**[2.6.0-preview.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0-preview.1)** 支持显式启用大图分片和分片 WAL，默认 Raft 协议为 1。协议 5–11 的能力和配置见[启用及升级说明](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级)，实测和使用边界见[预览验证](docs/validation-v2.6.0-preview.1.md)。
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** 在单机 Compose 中默认启用持久化 WAL 异步接入，并将超出合并预算的索引增量分段追平。发行二进制使用 **Go 1.27.3**。
 

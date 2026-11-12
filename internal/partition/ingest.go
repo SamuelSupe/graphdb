@@ -57,7 +57,11 @@ func (e Engine) SubmitAcceptedIngest(ctx context.Context, identity string, input
 	if err != nil {
 		return storage.IngestResult{}, err
 	}
-	_, submitErr := e.submitInput(ctx, data, identity, nil, "ingest", acceptance)
+	var completed Transaction
+	_, submitErr := e.submitInput(ctx, data, identity, nil, "ingest", acceptance, &completed)
+	if completed.IngestResult != nil {
+		return *completed.IngestResult, nil
+	}
 	txn, err := e.Remote.Transaction(ctx, e.Home, e.Tenant, e.Generation, identity)
 	if err != nil {
 		return storage.IngestResult{}, errors.Join(submitErr, err)

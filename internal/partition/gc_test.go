@@ -3,9 +3,11 @@ package partition
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 )
 
 func TestDistributedGraphGCProtectsPinsAndConcurrentPreparedWrites(t *testing.T) {
-	for _, revision := range []int{ActionRevision, InputGCRevision} {
+	for _, revision := range []int{ActionRevision, InputGCRevision, BatchGCRevision, BufferedGCRevision} {
 		t.Run(fmt.Sprint(revision), func(t *testing.T) { testDistributedGraphGC(t, revision) })
 	}
 }
@@ -164,6 +166,31 @@ func testDistributedGraphGC(t *testing.T, revision int) {
 	if _, err := engine.Submit(ctx, pending); err == nil {
 		t.Fatal("expected simulated response loss")
 	}
+	if revision == BufferedGCRevision {
+		active := describe()
+		var prepared int
+		for _, bucket := range active.Active.Participants {
+			owner := active.Partitions[bucket].Group
+			state, err := remote.stores[owner].Data(ctx, "t", 1, bucket)
+			if err != nil || state.GC == nil || !state.GC.Buffered {
+				t.Fatalf("missing buffered GC state: %+v %v", state, err)
+			}
+			if state.Prepared != nil {
+				prepared++
+				if state.GC.Marked.Hash != "" || !slices.Contains(state.GC.Pending, state.Prepared.Root.Hash) {
+					t.Fatal("prepare did not protect its new root in partition state")
+				}
+			}
+		}
+		if prepared == 0 {
+			t.Fatal("response loss did not leave a prepared participant")
+		}
+		for name, store := range remote.stores {
+			if err := store.ValidateSnapshot(ctx, name); err != nil {
+				t.Fatalf("snapshot with buffered protection: %v", err)
+			}
+		}
+	}
 	finish()
 	if _, err := engine.Resume(ctx); err != nil {
 		t.Fatal(err)
@@ -190,6 +217,160 @@ func testDistributedGraphGC(t *testing.T, revision int) {
 	finish()
 	if _, err := ExecutePinnedQuery(ctx, remote, engine.Home, describe(), request); err == nil {
 		t.Fatal("expired GC pin continued on a newer graph")
+	}
+}
+
+func TestBufferedGCSweepsWithBothMarkRepresentations(t *testing.T) {
+	ctx := context.Background()
+	store := Store{Objects: storage.NewMemoryStore(), Prefix: "graphdb"}
+	action := Action{Tenant: "t", Generation: 1, Epoch: 1, Txn: "11111111111111111111111111111111", Revision: BufferedGCRevision}
+	for _, operation := range []string{"reserve", "data_gc_begin", "data_gc_step"} {
+		action.Operation = operation
+		if _, err := store.Apply(ctx, action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := store.Data(ctx, "t", 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := store.Tree("t", 1, 0)
+	var protected []Row
+	for i := range gcPendingLimit + 3 {
+		page, err := tree.Update(ctx, Root{}, []Row{{Key: fmt.Sprint(i), Value: []byte(`true`)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		protected = append(protected, Row{Key: page.Hash, Value: []byte(`true`)})
+	}
+	if err := store.recordNewPages(ctx, &state, protected[:gcPendingLimit+1], BufferedGCRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.recordNewPages(ctx, &state, protected[gcPendingLimit+1:], BufferedGCRevision); err != nil {
+		t.Fatal(err)
+	}
+	if state.GC.Marked.Hash == "" || len(state.GC.Pending) != 2 {
+		t.Fatal("protection should span the mark tree and the pending list")
+	}
+	if err := store.save(ctx, store.dataKey("t", 1, 0), state); err != nil {
+		t.Fatal(err)
+	}
+	obsolete, err := tree.Update(ctx, Root{}, []Row{{Key: "obsolete", Value: []byte(`true`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateSnapshot(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	pendingKey := tree.pageKey(state.GC.Pending[0])
+	data, err := store.Objects.Get(ctx, pendingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Objects.Delete(ctx, pendingKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateSnapshot(ctx, "a"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("snapshot accepted a missing pending page: %v", err)
+	}
+	if err := store.Objects.Put(ctx, pendingKey, data); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		value, err := store.Apply(ctx, action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state = value.(DataState)
+		if state.GC == nil {
+			break
+		}
+	}
+	if state.GC != nil || state.LastGC != action.Txn {
+		t.Fatal("sweep did not finish within its bounded steps")
+	}
+	if _, err := store.Objects.Get(ctx, tree.pageKey(obsolete.Hash)); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("obsolete page survived sweep: %v", err)
+	}
+	for _, row := range protected {
+		if _, err := store.Objects.Get(ctx, tree.pageKey(row.Key)); err != nil {
+			t.Fatalf("protected page disappeared: %v", err)
+		}
+	}
+}
+
+type noSweepListing struct {
+	storage.ObjectStore
+}
+
+func (noSweepListing) ListPage(context.Context, string, string, int) ([]storage.ObjectInfo, string, error) {
+	return nil, "", errors.New("planned sweep listed objects during application")
+}
+
+func TestPlannedGCSweepRechecksConcurrentPrepare(t *testing.T) {
+	ctx := context.Background()
+	store := Store{Objects: storage.NewMemoryStore(), Prefix: "graphdb"}
+	step := Action{Tenant: "t", Generation: 1, Epoch: 1, Txn: "11111111111111111111111111111111", Revision: BufferedGCRevision}
+	for _, op := range []string{"reserve", "data_gc_begin", "data_gc_step"} {
+		step.Operation = op
+		if _, err := store.Apply(ctx, step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tree := store.Tree("t", 1, 0)
+	changes := []Row{{Key: "reused", Value: []byte(`true`)}}
+	reused, err := tree.Update(ctx, Root{}, changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsolete, err := tree.Update(ctx, Root{}, []Row{{Key: "obsolete", Value: []byte(`true`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Data(ctx, "t", 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PlanGCSweep(ctx, &step, state); err != nil || step.GCSweep == nil || len(step.GCSweep.Pages) != 2 {
+		t.Fatalf("expected both obsolete page candidates: %+v %v", step.GCSweep, err)
+	}
+
+	// A newer transaction reuses an immutable page after it was listed.
+	prepare := step
+	prepare.GCSweep = nil
+	prepare.Operation, prepare.Txn, prepare.Sequence = "prepare", "22222222222222222222222222222222", 1
+	prepare.Changes = changes
+	encoded, err := json.Marshal(changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepare.Digest = fmt.Sprintf("%x", sha256.Sum256(encoded))
+	if _, err := store.ApplyFragment(ctx, prepare); err != nil {
+		t.Fatal(err)
+	}
+	stale := step
+	stale.ExpectedCursor = "different"
+	if _, err := store.ApplyFragment(ctx, stale); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("stale sweep advanced: %v", err)
+	}
+	if _, err := store.Objects.Get(ctx, tree.pageKey(obsolete.Hash)); err != nil {
+		t.Fatalf("stale sweep removed page: %v", err)
+	}
+	store.Objects = noSweepListing{store.Objects}
+	result, err := store.ApplyFragment(ctx, step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = result.(DataState)
+	if state.GC.Phase != "cleanup" || state.Prepared == nil || state.Prepared.Root != reused {
+		t.Fatalf("unexpected state after sweep: %+v", state)
+	}
+	if _, err := store.Objects.Get(ctx, tree.pageKey(obsolete.Hash)); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("obsolete page survived sweep: %v", err)
+	}
+	store.Objects = tree.Objects
+	if err := store.ValidateSnapshot(ctx, "a"); err != nil {
+		t.Fatalf("planned sweep lost the prepared page: %v", err)
 	}
 }
 

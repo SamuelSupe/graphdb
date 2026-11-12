@@ -1,9 +1,9 @@
 package partition
 
 import (
-	"context"
 	"encoding/json"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -15,37 +15,51 @@ func equalJSON(a, b any) bool {
 	return string(left) == string(right)
 }
 
-type directoryEdit struct {
-	bucket uint8
-	key    string
-	before map[string]bool
-	after  map[string]bool
-}
 type changeBuilder struct {
-	ctx         context.Context
-	view        View
-	changes     ChangeSet
-	directories map[string]*directoryEdit
+	changes    ChangeSet
+	ownerEdits map[string]map[string]bool
 }
 
-func (b *changeBuilder) directory(key, owner string, add bool) error {
-	edit := b.directories[key]
-	if edit == nil {
-		var owners []string
-		if _, err := b.view.Get(b.ctx, Bucket(key), key, &owners); err != nil {
+func (b *changeBuilder) directory(key, owner string, add bool) {
+	edits := b.ownerEdits[key]
+	if edits == nil {
+		edits = map[string]bool{}
+		b.ownerEdits[key] = edits
+	}
+	edits[owner] = add
+}
+
+func (b *changeBuilder) finishDirectories(d *directoryReads, violation string) error {
+	if err := d.prefetch(slices.Collect(maps.Keys(b.ownerEdits))); err != nil {
+		return err
+	}
+	for key, edits := range b.ownerEdits {
+		owners := d.owners[key]
+		before := make(map[string]bool, len(owners))
+		for _, id := range owners {
+			before[id] = true
+		}
+		after := maps.Clone(before)
+		for id, add := range edits {
+			if add {
+				after[id] = true
+			} else {
+				delete(after, id)
+			}
+		}
+		if len(after) > 1 && (strings.HasPrefix(key, Key("constraint")) || strings.HasPrefix(key, Key("cardinality"))) {
+			return invalid(violation)
+		}
+		if maps.Equal(before, after) {
+			continue
+		}
+		var value any
+		if len(after) > 0 {
+			value = slices.Sorted(maps.Keys(after))
+		}
+		if err := b.changes.Set(Bucket(key), key, value); err != nil {
 			return err
 		}
-		edit = &directoryEdit{bucket: Bucket(key), key: key, before: map[string]bool{}, after: map[string]bool{}}
-		for _, id := range owners {
-			edit.before[id] = true
-			edit.after[id] = true
-		}
-		b.directories[key] = edit
-	}
-	if add {
-		edit.after[owner] = true
-	} else {
-		delete(edit.after, owner)
 	}
 	return nil
 }
@@ -73,14 +87,10 @@ func (b *changeBuilder) entity(g *graph.Graph, entity graph.Entity, add bool) er
 		return err
 	}
 	for _, ref := range refs {
-		if err := b.directory(ConstraintKey(ref), entity.ID, add); err != nil {
-			return err
-		}
+		b.directory(ConstraintKey(ref), entity.ID, add)
 	}
 	for _, alias := range graph.PartitionEntityAliases(entity) {
-		if err := b.directory(EntityAliasKey(alias), entity.ID, add); err != nil {
-			return err
-		}
+		b.directory(EntityAliasKey(alias), entity.ID, add)
 	}
 	return nil
 }
@@ -107,20 +117,17 @@ func (b *changeBuilder) edge(g *graph.Graph, edge graph.Edge, add bool) error {
 		return err
 	}
 	for _, alias := range graph.PartitionEdgeAliases(edge) {
-		if err := b.directory(EdgeAliasKey(alias), edge.ID, add); err != nil {
-			return err
-		}
+		b.directory(EdgeAliasKey(alias), edge.ID, add)
 	}
 	for _, key := range cardinalityKeys(edge, g.RelationTypes) {
-		if err := b.directory(key, edge.ID, add); err != nil {
-			return err
-		}
+		b.directory(key, edge.ID, add)
 	}
 	return nil
 }
 
-func buildChanges(ctx context.Context, view View, before, after *graph.Graph, report graph.ApplyReport) (Plan, error) {
-	b := &changeBuilder{ctx: ctx, view: view, changes: ChangeSet{}, directories: map[string]*directoryEdit{}}
+func buildChanges(d *directoryReads, before, after *graph.Graph, report graph.ApplyReport) (Plan, error) {
+	view := d.view
+	b := &changeBuilder{changes: ChangeSet{}, ownerEdits: map[string]map[string]bool{}}
 	plan := Plan{Changes: b.changes, CITypes: after.ListCITypes(), RelationTypes: after.ListRelationTypes(), Report: report, EntityCount: view.Graph.EntityCount, EdgeCount: view.Graph.EdgeCount}
 	for id, entity := range before.Entities.All() {
 		next, ok := after.Entities.Get(id)
@@ -166,26 +173,8 @@ func buildChanges(ctx context.Context, view View, before, after *graph.Graph, re
 			}
 		}
 	}
-	for _, edit := range b.directories {
-		if len(edit.after) > 1 && (strings.HasPrefix(edit.key, Key("constraint")) || strings.HasPrefix(edit.key, Key("cardinality"))) {
-			return Plan{}, invalid("mutation violates a global identity, unique or cardinality constraint")
-		}
-
-		if equalJSON(edit.before, edit.after) {
-			continue
-		}
-		ids := make([]string, 0, len(edit.after))
-		for id := range edit.after {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		var value any
-		if len(ids) > 0 {
-			value = ids
-		}
-		if err := b.changes.Set(edit.bucket, edit.key, value); err != nil {
-			return Plan{}, err
-		}
+	if err := b.finishDirectories(d, "mutation violates a global identity, unique or cardinality constraint"); err != nil {
+		return Plan{}, err
 	}
 	oldTypes := map[string]graph.CIType{}
 	for _, v := range view.Graph.CITypes {

@@ -21,6 +21,7 @@ OUT = Path(os.environ["GRAPHDB_GATE_OUTPUT"]).resolve()
 OUT.mkdir(mode=0o700, parents=True, exist_ok=False)
 IMAGE = os.environ["GRAPHDB_GATE_IMAGE"]
 HOME_PROTOCOL = int(os.environ.get("GRAPHDB_GATE_HOME_PROTOCOL", "7"))
+DATA_PROTOCOL = int(os.environ.get("GRAPHDB_GATE_DATA_PROTOCOL", "5"))
 RECEIPT_RETENTION = os.environ.get("GRAPHDB_GATE_RECEIPT_RETENTION")
 if RECEIPT_RETENTION and HOME_PROTOCOL < 7:
     raise ValueError("receipt expiry requires home protocol 7")
@@ -34,7 +35,7 @@ services = {}
 for group, port in (("catalog", 47100), ("a", 47200), ("b", 47300)):
     for i in range(1, 4):
         services[group + str(i)] = {"ports": [f"127.0.0.1:{port + i + OFFSET}:8080"], "environment": {
-            "GRAPHDB_RAFT_PROTOCOL_VERSION": str(HOME_PROTOCOL) if group == "a" else "5", "GRAPHDB_RAFT_SNAPSHOT_ENTRIES": "1000",
+            "GRAPHDB_RAFT_PROTOCOL_VERSION": str(HOME_PROTOCOL if group == "a" else DATA_PROTOCOL if group == "b" else 5), "GRAPHDB_RAFT_SNAPSHOT_ENTRIES": "1000",
             "GRAPHDB_RAFT_ELECTION_TICKS": "10", "GRAPHDB_INGEST_FLUSH_INTERVAL": "1h",
             "GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES": "1048576"}}
         if group == "a":

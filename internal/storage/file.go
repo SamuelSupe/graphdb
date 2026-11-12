@@ -163,7 +163,21 @@ func (s *FileStore) Put(ctx context.Context, key string, data []byte) error {
 	return err
 }
 
-func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (result ObjectMeta, err error) {
+// PutReplicatedObject syncs the new file before renaming it. The active
+// application journal still owns rollback and the directory barrier.
+func (s *FileStore) PutReplicatedObject(ctx context.Context, key string, data []byte) error {
+	if s.replicationJournal(ctx) == nil {
+		return ErrReplicationWriteRequired
+	}
+	_, err := s.putConditional(ctx, key, data, PutCondition{}, true)
+	return err
+}
+
+func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte, condition PutCondition) (ObjectMeta, error) {
+	return s.putConditional(ctx, key, data, condition, false)
+}
+
+func (s *FileStore) putConditional(ctx context.Context, key string, data []byte, condition PutCondition, syncOnWrite bool) (result ObjectMeta, err error) {
 	defer func() { recordReplicationFailure(ctx, err) }()
 	if err := s.checkReplicatedWrite(ctx); err != nil {
 		return ObjectMeta{}, err
@@ -220,7 +234,7 @@ func (s *FileStore) PutConditional(ctx context.Context, key string, data []byte,
 		return ObjectMeta{}, err
 	}
 	journal := s.replicationJournal(ctx)
-	if err := writeFileAtomicContext(ctx, path, data, journal); err != nil {
+	if err := writeFileAtomicContext(ctx, path, data, journal, syncOnWrite); err != nil {
 		return ObjectMeta{}, err
 	}
 	if receipt, ok := s.receipt(key); ok {
@@ -419,17 +433,17 @@ func validateFileStoreKey(key string) error {
 }
 
 func writeFileAtomic(path string, data []byte) error {
-	return writeFileAtomicContext(context.Background(), path, data, nil)
+	return writeFileAtomicContext(context.Background(), path, data, nil, false)
 }
 
-func writeFileAtomicContext(ctx context.Context, path string, data []byte, journal *replicationJournal) error {
+func writeFileAtomicContext(ctx context.Context, path string, data []byte, journal *replicationJournal, syncOnWrite bool) error {
 	if bytes, ok := ctx.Value(fileBatchBytesKey{}).(*atomic.Int64); ok {
 		bytes.Add(int64(len(data)))
 	}
-	return writeReaderAtomicContext(ctx, path, bytes.NewReader(data), journal)
+	return writeReaderAtomicContext(ctx, path, bytes.NewReader(data), journal, syncOnWrite)
 }
 
-func writeReaderAtomicContext(ctx context.Context, path string, reader io.Reader, journal *replicationJournal) error {
+func writeReaderAtomicContext(ctx context.Context, path string, reader io.Reader, journal *replicationJournal, syncOnWrite bool) error {
 	dir := filepath.Dir(path)
 	// The destination may already use the filesystem's full component limit.
 	file, err := os.CreateTemp(dir, ".tmp-")
@@ -451,7 +465,7 @@ func writeReaderAtomicContext(ctx context.Context, path string, reader io.Reader
 		_ = file.Close()
 		return err
 	}
-	if journal == nil {
+	if journal == nil || syncOnWrite {
 		if err := syncStorageFile(file); err != nil {
 			_ = file.Close()
 			return err
@@ -471,7 +485,11 @@ func writeReaderAtomicContext(ctx context.Context, path string, reader io.Reader
 	}
 	cleanup = false
 	if journal != nil {
-		journal.deferFileSync(path)
+		if syncOnWrite {
+			journal.forgetFileSync(path)
+		} else {
+			journal.deferFileSync(path)
+		}
 		journal.deferDirectorySync(dir)
 		return nil
 	}

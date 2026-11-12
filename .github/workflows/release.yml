@@ -193,6 +193,7 @@ jobs:
             scripts/local_disk_report.py scripts/local_disk_optimization.py \
             scripts/object_backup_gate.sh scripts/object_backup_http.py "$root/scripts/"
           cp scripts/raft_gate.sh scripts/raft_gate_dual.py scripts/raft_gate_sharded.py scripts/raft_gate_metrics.py "$root/scripts/"
+          cp scripts/partition_wal_gate.py "$root/scripts/"
           cp scripts/gateway_gate.sh scripts/gateway_auth_gate.py "$root/scripts/"
           cp -R scripts/gateway-gate "$root/scripts/"
           cp scripts/raft_rolling_upgrade.py scripts/raft_rolling_gate.py scripts/raft_rolling_gate_test.py "$root/scripts/"
@@ -241,6 +242,7 @@ jobs:
           protocol3 = json.loads(Path('release/evidence/raft-gate/protocol3/metadata.json').read_text())
           protocol4 = json.loads(Path('release/evidence/raft-gate/protocol4/metadata.json').read_text())
           rolling = json.loads(Path('release/evidence/raft-gate/rolling/metadata.json').read_text())
+          partitioned = json.loads(Path('release/evidence/raft-gate/partitioned/metadata.json').read_text())
           gateway = json.loads(Path('release/evidence/gateway-gate/metadata.json').read_text())
           digest = hashlib.file_digest(Path('bin/graphdb-linux-amd64').open('rb'), 'sha256').hexdigest()
           assert report['result'] == 'PASS', report
@@ -249,6 +251,7 @@ jobs:
           assert protocol3['result'] == 'PASS' and protocol3['protocol'] == 3 and protocol3['binary_sha256'] == digest, 'protocol 3 qualification differs from the packaged binary'
           assert protocol4['result'] == 'PASS' and protocol4['protocol'] == 4 and protocol4['binary_sha256'] == digest, 'protocol 4 qualification differs from the packaged binary'
           assert rolling['result'] == 'PASS' and rolling['target']['binary_sha256'] == digest, 'rolling target differs from the packaged binary'
+          assert partitioned['result'] == 'PASS' and partitioned['protocol'] == 11 and partitioned['binary_sha256'] == digest, 'partitioned WAL qualification differs from the packaged binary'
           assert gateway['result'] == 'PASS' and gateway['binary_sha256'] == digest, 'gateway qualification differs from the packaged binary'
           config_digest = hashlib.sha256(Path('deploy/nginx/graphdb.conf.example').read_bytes()).hexdigest()
           assert gateway['gateway_config_sha256'] == config_digest, 'gateway configuration differs from the qualified configuration'
@@ -283,10 +286,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags=(--prerelease --latest=false)
+          else
+            release_flags=(--latest=true)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "GGraphDB $GITHUB_REF_NAME" \
-            --target main --verify-tag --latest=true \
+            --target main --verify-tag "${release_flags[@]}" \
             --notes-file release/local-disk.md \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz" \
             "dist/graphdb-${GITHUB_REF_NAME}.tar.gz.sha256" \

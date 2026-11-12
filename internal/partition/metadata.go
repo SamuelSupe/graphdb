@@ -5,11 +5,20 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+
+	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
 type metadataEnvelope struct {
 	Digest string          `json:"digest"`
 	Data   json.RawMessage `json:"data"`
+}
+
+func (s Store) journalObjects(ctx context.Context, keys ...string) error {
+	if files, ok := s.Objects.(*storage.FileStore); ok && len(keys) > 1 {
+		return files.JournalReplicatedObjects(ctx, keys)
+	}
+	return nil
 }
 
 func (s Store) load(ctx context.Context, key string, value any) error {

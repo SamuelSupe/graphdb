@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
@@ -186,6 +187,16 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 		if g.State != "active" && g.State != "initializing" {
 			return nil, conflict("graph is not active")
 		}
+		var participants []uint8
+		if a.Revision >= BatchGCRevision && len(a.Participants) != 0 {
+			if a.Purpose != "ingest" || a.LayoutRevision != g.LayoutRevision {
+				return nil, conflict("preplanned ingest layout changed")
+			}
+			if err := validateParticipants(a.Participants); err != nil {
+				return nil, err
+			}
+			participants = a.Participants
+		}
 		for _, ref := range a.Inputs {
 			if ref.Stage != a.Txn {
 				return nil, invalid("transaction input belongs to a different staging session")
@@ -201,11 +212,8 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 			}
 		}
 		g.Sequence++
-		g.Active = &Transaction{Purpose: a.Purpose, Tenant: g.Tenant, Generation: g.Generation, ID: a.Txn, Identity: a.Identity, Sequence: g.Sequence, Digest: a.Digest, Inputs: a.Inputs, At: a.At, BaseVersion: g.Version, State: "preparing", Prepared: map[uint8]Prepared{}}
-		if err := s.save(ctx, s.txnKey(a.Tenant, a.Generation, a.Identity), g.Active); err != nil {
-			return nil, err
-		}
-		return *g.Active, s.save(ctx, s.graphKey(a.Tenant), g)
+		g.Active = &Transaction{Purpose: a.Purpose, Tenant: g.Tenant, Generation: g.Generation, ID: a.Txn, Identity: a.Identity, Sequence: g.Sequence, Digest: a.Digest, Inputs: a.Inputs, At: a.At, BaseVersion: g.Version, State: "preparing", Prepared: map[uint8]Prepared{}, Participants: participants}
+		return *g.Active, s.saveGraphTransaction(ctx, g)
 	}
 	if g.Active == nil || g.Active.ID != a.Txn || g.Active.Sequence != a.Sequence {
 		return nil, conflict("active graph transaction changed")
@@ -223,39 +231,27 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 				return nil, conflict("participant set is immutable")
 			}
 		}
-		seen := map[uint8]bool{}
-		for _, id := range a.Participants {
-			if seen[id] {
-				return nil, invalid("duplicate participant")
-			}
-			seen[id] = true
+		if err := validateParticipants(a.Participants); err != nil {
+			return nil, err
 		}
 		txn.Participants = a.Participants
 	case "prepared":
-		if txn.State != "preparing" || a.Prepared == nil || a.Prepared.Txn != txn.ID || a.Prepared.Sequence != txn.Sequence || a.Prepared.Base != g.Roots[a.Partition] {
+		if a.Prepared == nil {
 			return nil, conflict("invalid prepare result")
 		}
-		found := false
-		for _, id := range txn.Participants {
-			found = found || id == a.Partition
+		if err := registerPrepared(&g, txn, a.Partition, *a.Prepared); err != nil {
+			return nil, err
 		}
-		if !found {
-			return nil, conflict("unregistered transaction participant")
-		}
-		if txn.Prepared == nil {
-			txn.Prepared = map[uint8]Prepared{}
-		}
-		if old, ok := txn.Prepared[a.Partition]; ok {
-			left, _ := json.Marshal(old)
-			right, _ := json.Marshal(a.Prepared)
-			if string(left) != string(right) {
-				return nil, conflict("prepare result changed")
-			}
-		}
-		txn.Prepared[a.Partition] = *a.Prepared
 	case "commit":
 		if txn.State == "committed" {
 			return *txn, nil
+		}
+		for i := range g.Partitions {
+			if p, ok := a.PreparedBatch[uint8(i)]; ok {
+				if err := registerPrepared(&g, txn, uint8(i), p); err != nil {
+					return nil, err
+				}
+			}
 		}
 		if txn.State != "preparing" || len(txn.Participants) == 0 || len(txn.Prepared) != len(txn.Participants) || a.Result == nil || g.Version != txn.BaseVersion {
 			return nil, conflict("transaction is not fully prepared")
@@ -336,11 +332,19 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 			return nil, conflict("transaction is undecided")
 		}
 		inputs := txn.Inputs
+		if a.ReceiptRef != "" && (txn.Purpose != "ingest" || len(inputs) != 1 || inputs[0].Acceptance != a.ReceiptRef || txn.IngestResult == nil) {
+			return nil, conflict("graph completion receipt does not match its input")
+		}
+		if err := s.journalObjects(ctx, s.graphKey(g.Tenant), s.txnKey(g.Tenant, g.Generation, txn.Identity)); err != nil {
+			return nil, err
+		}
 		txn.Inputs = nil
 		txn.Prepared = nil
 		txn.Participants = nil
-		if err := s.save(ctx, s.txnKey(a.Tenant, a.Generation, txn.Identity), txn); err != nil {
-			return nil, err
+		if a.ReceiptRef == "" {
+			if err := s.save(ctx, s.txnKey(a.Tenant, a.Generation, txn.Identity), txn); err != nil {
+				return nil, err
+			}
 		}
 		for _, input := range inputs {
 			if input.Acceptance != "" {
@@ -361,10 +365,46 @@ func (s Store) applyControl(ctx context.Context, a Action) (any, error) {
 	default:
 		return nil, invalid("unsupported graph action")
 	}
-	if err := s.save(ctx, s.txnKey(a.Tenant, a.Generation, txn.Identity), txn); err != nil {
-		return nil, err
+	return *txn, s.saveGraphTransaction(ctx, g)
+}
+
+func (s Store) saveGraphTransaction(ctx context.Context, g Graph) error {
+	graphKey, txnKey := s.graphKey(g.Tenant), s.txnKey(g.Tenant, g.Generation, g.Active.Identity)
+	if err := s.journalObjects(ctx, graphKey, txnKey); err != nil {
+		return err
 	}
-	return *txn, s.save(ctx, s.graphKey(a.Tenant), g)
+	if err := s.save(ctx, txnKey, g.Active); err != nil {
+		return err
+	}
+	return s.save(ctx, graphKey, g)
+}
+
+func validateParticipants(ids []uint8) error {
+	var seen [256]bool
+	for _, id := range ids {
+		if seen[id] {
+			return invalid("duplicate participant")
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+func registerPrepared(g *Graph, txn *Transaction, id uint8, p Prepared) error {
+	if txn.State != "preparing" || p.Txn != txn.ID || p.Sequence != txn.Sequence || p.Base != g.Roots[id] {
+		return conflict("invalid prepare result")
+	}
+	if !slices.Contains(txn.Participants, id) {
+		return conflict("unregistered transaction participant")
+	}
+	if old, ok := txn.Prepared[id]; ok && !samePrepared(old, p) {
+		return conflict("prepare result changed")
+	}
+	if txn.Prepared == nil {
+		txn.Prepared = map[uint8]Prepared{}
+	}
+	txn.Prepared[id] = p
+	return nil
 }
 
 func (s Store) GraphTenants(ctx context.Context) ([]string, error) {

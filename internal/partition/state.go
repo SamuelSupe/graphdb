@@ -121,7 +121,23 @@ const ActionRevision = 2
 // InputGCRevision allows unclaimed staging chunks to expire before begin.
 const InputGCRevision = 3
 
+const BatchProtocol = 8
+const BatchGCRevision = 4
+
+const BufferedGCProtocol = 9
+const BufferedGCRevision = 5
+
+const PlannedGCProtocol = 10
+const PlannedGCRevision = 6
+
+const BalancedLeafProtocol = 11
+const BalancedLeafRevision = 7
+
 type Action struct {
+	GCSweep         *GCSweepPlan          `json:"gc_sweep,omitempty"`
+	PreparedBatch   map[uint8]Prepared    `json:"prepared_batch,omitempty"`
+	LayoutRevision  uint64                `json:"layout_revision,omitempty"`
+	ReceiptRef      string                `json:"receipt_ref,omitempty"`
 	IngestResult    *storage.IngestResult `json:"ingest_result,omitempty"`
 	Verify          *MoveVerification     `json:"verify,omitempty"`
 	Revision        int                   `json:"revision,omitempty"`

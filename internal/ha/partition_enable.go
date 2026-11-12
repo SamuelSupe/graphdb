@@ -196,7 +196,11 @@ func (c *Cluster) runPartitionBackground(ctx context.Context) {
 				}
 				active[tenant] = true
 				workers.Go(func() {
-					operation, cancel := context.WithTimeout(ctx, 5*time.Second)
+					budget := 5 * time.Second
+					if c.config.Protocol >= partition.BatchProtocol {
+						budget = 15 * time.Second
+					}
+					operation, cancel := context.WithTimeout(ctx, budget)
 					defer cancel()
 					done <- result{tenant, c.advancePartitionBackground(operation, tenant)}
 				})
@@ -215,7 +219,9 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 		if g.Active.Purpose == "ingest" && c.config.Protocol < partition.IngestProtocol {
 			return nil
 		}
-		_, err := (partition.Engine{Remote: remote, Home: c.graphHome(), Tenant: tenant}).Resume(ctx)
+		recovery, cancel := context.WithTimeout(ctx, 8*time.Second)
+		_, err := c.partitionEngine(tenant, g.Generation, g.Active.Purpose == "ingest" && c.config.Protocol >= partition.BatchProtocol).Resume(recovery)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -225,7 +231,10 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 		}
 	}
 	if g.Move != nil {
-		if err := c.advancePartitionMove(ctx, g); err != nil {
+		maintenance, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := c.advancePartitionMove(maintenance, g)
+		cancel()
+		if err != nil {
 			return err
 		}
 		g, err = c.App.graphDescriptor(ctx, tenant)
@@ -233,11 +242,35 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 			return err
 		}
 	}
+	if c.config.Protocol >= partition.PlannedGCProtocol && g.State == "active" && g.Move == nil &&
+		g.SourceCleanupRevision >= partition.ActionRevision && g.GC != nil && g.GC.Phase == "running" {
+		// The WAL driver can plan while one bounded GC step runs. Wait
+		// before publishing so maintenance does not consume its write slice.
+		done := make(chan error, 1)
+		publishAfter := make(chan struct{})
+		go func() {
+			maintenance, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			defer close(publishAfter)
+			done <- c.advancePartitionGC(maintenance, g)
+		}()
+		_, writeErr := c.advancePartitionIngest(ctx, g, publishAfter)
+		return errors.Join(writeErr, <-done)
+	}
 	if g.GC != nil {
-		if err := c.advancePartitionGC(ctx, g); err != nil {
-			return err
+		maintenance, cancel := context.WithTimeout(ctx, 5*time.Second)
+		for {
+			err = c.advancePartitionGC(maintenance, g)
+			if err == nil {
+				g, err = c.App.graphDescriptor(maintenance, tenant)
+			}
+			// The startup fence already blocks this graph's writes. Keep
+			// installing its bounded waves without waiting for scheduler ticks.
+			if err != nil || c.config.Protocol < partition.BufferedGCProtocol || g.GC == nil || g.GC.Phase != "starting" {
+				break
+			}
 		}
-		g, err = c.App.graphDescriptor(ctx, tenant)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -256,7 +289,7 @@ func (c *Cluster) advancePartitionBackground(ctx context.Context, tenant string)
 		}
 	}
 	if c.config.Protocol >= partition.IngestProtocol && g.State == "active" && !g.Move.BlocksWrites() && !g.GC.BlocksWrites() {
-		_, err := c.advancePartitionIngest(ctx, g)
+		_, err := c.advancePartitionIngest(ctx, g, nil)
 		return err
 	}
 	return nil

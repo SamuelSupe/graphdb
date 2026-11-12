@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
@@ -53,7 +51,7 @@ func BuildImportPlan(ctx context.Context, view View, chunk ImportChunk) (Plan, e
 	if err != nil {
 		return Plan{}, err
 	}
-	b := &changeBuilder{ctx: ctx, view: view, changes: ChangeSet{}, directories: map[string]*directoryEdit{}}
+	b := &changeBuilder{changes: ChangeSet{}, ownerEdits: map[string]map[string]bool{}}
 	if chunk.Schema {
 		for _, ci := range view.Graph.CITypes {
 			if err := b.changes.Logical(0, ci.Name, ci); err != nil {
@@ -126,28 +124,11 @@ func BuildImportPlan(ctx context.Context, view View, chunk ImportChunk) (Plan, e
 			return Plan{}, err
 		}
 	}
-	for _, edit := range b.directories {
-		if len(edit.after) > 1 && (strings.HasPrefix(edit.key, Key("constraint")) || strings.HasPrefix(edit.key, Key("cardinality"))) {
-			return Plan{}, invalid("import violates a global identity, unique or cardinality constraint")
-		}
-		if equalJSON(edit.before, edit.after) {
-			continue
-		}
-		ids := sortedOwners(edit.after)
-		if err := b.changes.Set(edit.bucket, edit.key, ids); err != nil {
-			return Plan{}, err
-		}
+	directories := &directoryReads{ctx: ctx, view: view, owners: map[string][]string{}}
+	if err := b.finishDirectories(directories, "import violates a global identity, unique or cardinality constraint"); err != nil {
+		return Plan{}, err
 	}
 	return Plan{Changes: b.changes, CITypes: view.Graph.CITypes, RelationTypes: view.Graph.RelationTypes, Report: graph.ApplyReport{Changed: len(b.changes) > 0}}, nil
-}
-
-func sortedOwners(owners map[string]bool) []string {
-	ids := make([]string, 0, len(owners))
-	for id := range owners {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
 }
 
 func (e Engine) Import(ctx context.Context, chunk ImportChunk, key string) (storage.CommitResult, error) {
@@ -155,7 +136,7 @@ func (e Engine) Import(ctx context.Context, chunk ImportChunk, key string) (stor
 	if err != nil {
 		return storage.CommitResult{}, err
 	}
-	return e.submitInput(ctx, data, "build:"+key, nil, "build", "")
+	return e.submitInput(ctx, data, "build:"+key, nil, "build", "", nil)
 }
 
 func ImportIdentity(phase, cursor string) string {

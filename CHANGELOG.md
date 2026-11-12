@@ -5,6 +5,23 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.6.0-preview.1] - 2026-11-12
+
+- Ship large-graph sharding as an explicit preview. Raft defaults to protocol 1.
+  Graph conversion and asynchronous WAL acceptance require separate opt-in.
+  Upgrade all voters and Routers with the existing protocol before activating
+  a new protocol per group. The durable protocol floor fences older binaries.
+- Add protocol 8 for bounded partition prepare, finalize and GC batches,
+  plus atomic terminal receipt completion on the home group.
+- Add protocol 9 for batched page protection during new GC cycles and
+  protocol 10 for leader-side sweep planning and overlap with WAL planning.
+- Add protocol 11 for balanced splits of existing leaves on new prepares.
+  Old prepare revisions replay with their original split rule. Bound file
+  publication concurrency and expose transaction and sync phase metrics.
+- Record the nine-node cold-write and overwrite tests. With two offered batches
+  per second, the pure cold run committed 1.71 batches per second in the final
+  five minutes and reported an 84.16 s commit P99. Coverage and limitations are
+  in the [preview validation](docs/validation-v2.6.0-preview.1.md).
 - Add opt-in Raft protocol 7 on the home group. Partitioned WAL executes from
   the durable acceptance and retains one terminal receipt, reducing duplicate
   disk objects and snapshots. Raft deletions also reclaim empty object

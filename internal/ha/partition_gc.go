@@ -9,9 +9,43 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
+	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"golang.org/x/sync/errgroup"
 )
+
+func (c *Cluster) planGCSteps(ctx context.Context, actions []partition.Action) error {
+	if c.Node.LeaderID() != c.config.ID {
+		return replication.ErrNotLeader
+	}
+	store := c.App.partitionStore()
+	states := make([]partition.DataState, len(actions))
+	c.App.mu.RLock()
+	for i, action := range actions {
+		state, err := store.Data(ctx, action.Tenant, action.Generation, action.Partition)
+		if err != nil {
+			c.App.mu.RUnlock()
+			return err
+		}
+		states[i] = state
+	}
+	c.App.mu.RUnlock()
+	workers, workCtx := errgroup.WithContext(ctx)
+	workers.SetLimit(4)
+	for i, state := range states {
+		if state.GC != nil && state.GC.Phase == "sweep" {
+			workers.Go(func() error { return c.planGCStep(workCtx, &actions[i], state) })
+		}
+	}
+	return workers.Wait()
+}
+
+func (c *Cluster) planGCStep(ctx context.Context, a *partition.Action, state partition.DataState) error {
+	finish := c.metrics.Start("partition_gc_scan")
+	err := c.App.partitionStore().PlanGCSweep(ctx, a, state)
+	finish(err)
+	return err
+}
 
 func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (err error) {
 	if g.GC == nil {
@@ -71,36 +105,24 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 			return err
 		}
 	}
-	workers, workerCtx := errgroup.WithContext(ctx)
-	workers.SetLimit(4)
-	completed := make([]bool, len(ids))
-	for index, id := range ids {
-		workers.Go(func() error {
-			group, err := g.GroupFor(id)
-			if err != nil {
-				return err
+	actions := make([]partition.Action, 0, len(ids))
+	for _, id := range ids {
+		action := base
+		action.Partition = id
+		action.Epoch = g.Partitions[id].Epoch
+		if g.GC.Phase == "starting" {
+			action.Roots = roots[id]
+			action.Operation = "data_gc_begin"
+		} else {
+			action.Operation = "data_gc_step"
+			if g.GC.Phase == "cancel" {
+				action.Purpose = "cancel"
 			}
-			action := base
-			action.Partition = id
-			action.Epoch = g.Partitions[id].Epoch
-			var state partition.DataState
-			if g.GC.Phase == "starting" {
-				action.Roots = roots[id]
-				action.Operation = "data_gc_begin"
-			} else {
-				action.Operation = "data_gc_step"
-				if g.GC.Phase == "cancel" {
-					action.Purpose = "cancel"
-				}
-			}
-			if err := remote.Action(workerCtx, group, action, &state); err != nil {
-				return err
-			}
-			completed[index] = g.GC.Phase == "starting" || state.GC == nil
-			return nil
-		})
+		}
+		actions = append(actions, action)
 	}
-	if err := workers.Wait(); err != nil {
+	states, err := partition.ExecuteFragmentActions[partition.DataState](ctx, remote, g, actions, c.config.Protocol >= partition.BatchProtocol)
+	if err != nil {
 		return err
 	}
 	base.Operation = "graph_gc_done"
@@ -108,7 +130,7 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 		base.Operation = "graph_gc_started"
 	}
 	for index, id := range ids {
-		if completed[index] {
+		if g.GC.Phase == "starting" || states[index].GC == nil {
 			base.Participants = append(base.Participants, id)
 		}
 	}

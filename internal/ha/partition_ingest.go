@@ -244,7 +244,28 @@ func (a *Application) completePartitionIngest(ctx context.Context, cmd command) 
 		txn.IngestResult.BatchID != record.Request.BatchID || txn.Digest != fmt.Sprintf("%x", sha256.Sum256(data)) {
 		return resultJSON(http.StatusConflict, map[string]any{"error": "ingest transaction has no matching durable result"})
 	}
-	record.State, record.Result, record.FinishedAt = "committed", txn.IngestResult, cmd.At
+	if err := a.savePartitionIngestResult(ctx, cmd.IDs[0], record, txn, cmd.At, cmd.CompactPartitionIngest); err != nil {
+		return nil, err
+	}
+	return resultJSON(http.StatusOK, txn.IngestResult)
+}
+
+func (a *Application) completeGraphIngestReceipt(ctx context.Context, ref string, txn partition.Transaction, at time.Time) error {
+	key := a.ingestPrefix() + ref + ".json"
+	record, err := a.accepted(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !record.Partitioned || record.Tenant != txn.Tenant || record.Generation != txn.Generation || record.State != "accepted" ||
+		txn.Identity != partitionIngestTxnIdentity(key, record.Index, record.ReceiptRetention > 0) ||
+		record.Request.BatchID != txn.IngestResult.BatchID {
+		return fmt.Errorf("graph completion does not match the durable ingest acceptance")
+	}
+	return a.savePartitionIngestResult(ctx, key, record, txn, at, true)
+}
+
+func (a *Application) savePartitionIngestResult(ctx context.Context, key string, record acceptedRequest, txn partition.Transaction, at time.Time, compact bool) error {
+	record.State, record.Result, record.FinishedAt = "committed", txn.IngestResult, at
 	if record.Result.Failed > 0 {
 		record.State = "failed"
 	}
@@ -253,33 +274,56 @@ func (a *Application) completePartitionIngest(ctx context.Context, cmd command) 
 		identity.IdempotencyKey = record.Request.IdempotencyKey
 	}
 	record.Request = identity
-	if err := a.saveAccepted(ctx, cmd.IDs[0], record); err != nil {
-		return nil, err
-	}
-	if cmd.CompactPartitionIngest {
-		if err := a.partitionStore().RetireIngestDecision(ctx, txn); err != nil {
-			return nil, err
+	if !record.receiptExpiresAt().IsZero() {
+		if managed := a.managedReceiptKey(key); managed != "" {
+			if err := a.Files.JournalReplicatedObjects(ctx, []string{managed, key}); err != nil {
+				return err
+			}
 		}
 	}
-	return resultJSON(http.StatusOK, record.Result)
+	if err := a.saveAccepted(ctx, key, record); err != nil {
+		return err
+	}
+	if compact {
+		return a.partitionStore().RetireIngestDecision(ctx, txn)
+	}
+	return nil
 }
 
-func (c *Cluster) advancePartitionIngest(ctx context.Context, g partition.Graph) (bool, error) {
+func (c *Cluster) advancePartitionIngest(ctx context.Context, g partition.Graph, publishAfter <-chan struct{}) (bool, error) {
+	const writeSlice = 1500 * time.Millisecond
 	worked := false
+	batched := c.config.Protocol >= partition.BatchProtocol
+	sliceEnd := time.Now().Add(writeSlice)
 	for range max(1, c.FlushMaxRequests) {
-		if deadline, ok := ctx.Deadline(); worked && ok && time.Until(deadline) < time.Second {
+		if deadline, ok := ctx.Deadline(); ok {
+			if batched && time.Until(deadline) < 2*time.Second || !batched && worked && time.Until(deadline) < time.Second {
+				break
+			}
+		}
+		// Give an active collection regular turns even while a hot tenant's
+		// WAL remains nonempty. A started transaction gets its own deadline.
+		if batched && worked && g.GC != nil && time.Now().After(sliceEnd) {
 			break
 		}
-		applied, err := c.flushPartitionIngest(ctx, g)
+		transaction, cancel := context.WithTimeout(ctx, 8*time.Second)
+		applied, err := c.flushPartitionIngest(transaction, g, publishAfter)
+		cancel()
 		worked = worked || applied
 		if err != nil || !applied {
 			return worked, err
+		}
+		if publishAfter != nil {
+			// The first batch waited for GC before publishing. Give the WAL
+			// its own time slice once the overlap is over.
+			publishAfter = nil
+			sliceEnd = time.Now().Add(writeSlice)
 		}
 	}
 	return worked, nil
 }
 
-func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph) (bool, error) {
+func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph, publishAfter <-chan struct{}) (bool, error) {
 	c.App.mu.Lock()
 	key, err := c.App.firstPartitionIngest(ctx, g.Tenant, g.Generation)
 	var record acceptedRequest
@@ -290,26 +334,41 @@ func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph) (
 	if err != nil || key == "" {
 		return false, err
 	}
-	if err := c.Node.ReadBarrier(ctx); err != nil {
+	finish := c.metrics.Start("partition_wal_execute")
+	finishBarrier := c.metrics.Start("partition_wal_read_barrier")
+	err = c.Node.ReadBarrier(ctx)
+	finishBarrier(err)
+	if err != nil {
+		finish(err)
 		return false, err
 	}
-	engine := partition.Engine{Remote: sharding.GraphRemote{Client: c.shards}, Home: c.graphHome(), Tenant: g.Tenant, Generation: g.Generation}
+	engine := c.partitionEngine(g.Tenant, g.Generation, c.config.Protocol >= partition.BatchProtocol)
+	engine.PublishAfter = publishAfter
 	ref := ""
 	if c.config.Protocol >= partition.CompactIngestProtocol {
 		ref = partitionIngestReference(key)
 	}
-	if _, err := engine.SubmitAcceptedIngest(ctx, partitionIngestTxnIdentity(key, record.Index, record.ReceiptRetention > 0), partition.IngestInput{Request: record.Request, AcceptedAt: record.AcceptedAt}, ref); err != nil {
-		// A coordinator from an earlier term may have already moved the
-		// decision into the receipt while this coordinator was submitting it.
-		if ref != "" {
-			c.App.mu.RLock()
-			latest, readErr := c.App.accepted(ctx, key)
-			c.App.mu.RUnlock()
-			if readErr == nil && latest.Index == record.Index && latest.Result != nil && latest.State != "accepted" {
-				return true, nil
-			}
+	_, submitErr := engine.SubmitAcceptedIngest(ctx, partitionIngestTxnIdentity(key, record.Index, record.ReceiptRetention > 0), partition.IngestInput{Request: record.Request, AcceptedAt: record.AcceptedAt}, ref)
+	finish(submitErr)
+	if ref != "" && (submitErr != nil || engine.BatchFragments) {
+		// Protocol 8 completes the receipt with graph cleanup. An older
+		// decision may still require the separate completion command.
+		c.App.mu.RLock()
+		latest, readErr := c.App.accepted(ctx, key)
+		c.App.mu.RUnlock()
+		if readErr == nil && latest.Index == record.Index && latest.Result != nil && latest.State != "accepted" {
+			return true, nil
 		}
-		return true, err
+	}
+	if submitErr != nil {
+		return true, submitErr
+	}
+	if publishAfter != nil {
+		select {
+		case <-publishAfter:
+		case <-ctx.Done():
+			return true, ctx.Err()
+		}
 	}
 	cmd, err := newCommand("partition_ingest_complete")
 	if err != nil {

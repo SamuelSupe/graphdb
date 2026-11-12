@@ -49,10 +49,11 @@ type treeReadCache struct {
 }
 
 type Tree struct {
-	cache   *treeReadCache
-	saved   func(context.Context, string) error
-	Objects storage.ObjectStore
-	Prefix  string
+	balanceLeaves bool
+	cache         *treeReadCache
+	saved         func(context.Context, string) error
+	Objects       storage.ObjectStore
+	Prefix        string
 }
 
 func validDigest(s string) bool {
@@ -328,6 +329,19 @@ func (t Tree) update(ctx context.Context, ref Root, edits []Row, depth int) ([]R
 		j++
 	}
 	var refs []Root
+	if t.balanceLeaves && ref.Hash != "" {
+		if split := balancedLeafSplit(rows); split != 0 {
+			left, err := t.save(ctx, treePage{Rows: rows[:split]})
+			if err != nil {
+				return nil, err
+			}
+			right, err := t.save(ctx, treePage{Rows: rows[split:]})
+			if err != nil {
+				return nil, err
+			}
+			return []Root{left, right}, nil
+		}
+	}
 	for len(rows) > 0 {
 		end, total := 0, 0
 		for end < len(rows) && end < pageEntries {
@@ -346,6 +360,42 @@ func (t Tree) update(ctx context.Context, ref Root, edits []Row, depth int) ([]R
 		rows = rows[end:]
 	}
 	return refs, nil
+}
+
+// Prefer two similarly populated leaves when an existing leaf overflows.
+// Both halves must fit the original budgets, including the singleton exception
+// for a large value. Bulk edits that need more leaves use the existing packing.
+func balancedLeafSplit(rows []Row) int {
+	if len(rows) < 2 || len(rows) > 2*pageEntries {
+		return 0
+	}
+	total := 0
+	for _, row := range rows {
+		total += len(row.Key) + len(row.Value)
+	}
+	if len(rows) <= pageEntries && total <= pageBytes {
+		return 0
+	}
+	best, left := 0, 0
+	middle := (len(rows) + 1) / 2
+	for i, row := range rows[:len(rows)-1] {
+		left += len(row.Key) + len(row.Value)
+		split := i + 1
+		rightCount := len(rows) - split
+		if split > pageEntries || rightCount > pageEntries ||
+			(split > 1 && left > pageBytes) || (rightCount > 1 && total-left > pageBytes) {
+			continue
+		}
+		if split <= middle || best == 0 {
+			best = split
+			continue
+		}
+		if split-middle < middle-best {
+			best = split
+		}
+		break
+	}
+	return best
 }
 
 func (t Tree) saveBranches(ctx context.Context, children []Root) ([]Root, error) {

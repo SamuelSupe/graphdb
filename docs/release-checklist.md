@@ -8,6 +8,12 @@ checklist, not a record that every published version passed every item.
 
 See the [2.5.1 verification record](validation-v2.5.1.md) for the exact-tag gates, Linux archives and download checks.
 
+## 2.6.0-preview.1 qualification
+
+The [preview validation](validation-v2.6.0-preview.1.md) records the opt-in
+protocols and measured cold-write limits. The tag workflow verifies protocol 11
+partitioned WAL recovery against the packaged Linux AMD64 binary.
+
 ## Previous 2.5.0 qualification
 
 See the [2.5.0 verification record](validation-v2.5.0.md) for the exact-tag gates, Linux archives and download checks.
@@ -128,6 +134,7 @@ See [Raft release readiness](raft-release-readiness.zh-CN.md) for current gaps a
 
 - [ ] Fast-forward GitHub `main` to the verified standalone/Raft implementation; preserve historical tags.
 - [ ] Publish a new annotated tag matching `VERSION` on that commit.
-- [ ] Publish as a stable Release with `latest=true`, after gates pass or the release-specific exception is recorded as above.
+- [ ] Publish after all required gates pass. A stable tag uses `latest=true`.
+  A SemVer prerelease tag uses `--prerelease --latest=false`.
 - [ ] Verify remote main/tag, workflow conclusions and SDK/module versions; verify GitHub Pages when site content changes.
 - [ ] Download published assets, verify both checksum layers and execute the matching binary.

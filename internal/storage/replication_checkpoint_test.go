@@ -67,10 +67,10 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 					if err := files.Delete(ctx, old); err != nil {
 						return nil, err
 					}
-					if err := files.Put(ctx, old, []byte("replaced")); err != nil {
+					if err := files.PutReplicatedObject(ctx, old, []byte("replaced")); err != nil {
 						return nil, err
 					}
-					if err := files.Put(ctx, fmt.Sprintf("graphdb/prepared/new/%d", object), []byte("new")); err != nil {
+					if err := files.PutReplicatedObject(ctx, fmt.Sprintf("graphdb/prepared/new/%d", object), []byte("new")); err != nil {
 						return nil, err
 					}
 				}
@@ -236,7 +236,7 @@ func TestReplicationApplicationDirectorySyncFailure(t *testing.T) {
 	}
 	defer files.Close()
 	_, err = files.ApplyReplicated(context.Background(), 1, "directory-failure", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
-		if err := files.Put(ctx, "graphdb/pages/a", []byte("new")); err != nil {
+		if err := files.PutReplicatedObject(ctx, "graphdb/pages/a", []byte("new")); err != nil {
 			return nil, err
 		}
 		// Simulate a directory disappearing before the publication barrier.
@@ -659,6 +659,61 @@ func TestReplicatedDeletionReclaimsEmptyDirectoriesAfterCommit(t *testing.T) {
 	}
 	if data, err := files.Get(ctx, other); err != nil || string(data) != "other" {
 		t.Fatalf("directory cleanup affected another stage: %q %v", data, err)
+	}
+}
+
+func TestReplicatedDeletionRetriesDirectoryCleanup(t *testing.T) {
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keys := make([]string, 16)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("graphdb/retired/%02d/page", i)
+	}
+	if _, err := files.ApplyReplicated(ctx, 1, "prepare", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		for _, key := range keys {
+			if err := files.Put(ctx, key, []byte("old page")); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var release func()
+	_, err = files.ApplyReplicated(ctx, 2, "delete", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		for _, key := range keys {
+			if err := files.Delete(ctx, key); err != nil {
+				return nil, err
+			}
+		}
+		// A reader still holds a shared permit when Raft checkpoints the delete.
+		var err error
+		release, err = files.lockDirectoryIO(ctx)
+		return nil, err
+	})
+	cancel()
+	if release != nil {
+		release()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := os.Stat(filepath.Join(root, "graphdb", "retired"))
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil || time.Now().After(deadline) {
+			t.Fatalf("directory cleanup did not catch up after commit: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

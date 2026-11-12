@@ -60,6 +60,7 @@ func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
 	c.metrics = observability.NewOperationMetrics()
+	c.App.metrics = c.metrics
 	if _, err := c.App.Applied(); err != nil {
 		return err
 	}

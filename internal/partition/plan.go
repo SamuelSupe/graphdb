@@ -35,13 +35,15 @@ type edgeLocation struct {
 }
 
 type fragmentLoader struct {
-	view          View
-	ctx           context.Context
-	entities      map[string]graph.Entity
-	edges         map[string]graph.Edge
-	entityLookups map[string][]string
-	edgeLookups   map[string]bool
-	bytes         int
+	view           View
+	ctx            context.Context
+	entities       map[string]graph.Entity
+	edges          map[string]graph.Edge
+	entityLookups  map[string][]string
+	primaryMissing map[string]bool
+	edgeLookups    map[string]bool
+	directories    *directoryReads
+	bytes          int
 }
 
 func (l *fragmentLoader) charge(value any) error {
@@ -65,21 +67,21 @@ func (l *fragmentLoader) entity(id string) ([]string, error) {
 	}
 	l.entityLookups[id] = nil
 	var entity graph.Entity
-	found, err := l.view.Get(l.ctx, Bucket(id), EntityKey(id), &entity)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		if entity.ID != id {
-			return nil, fmt.Errorf("entity fragment identity mismatch")
+	if !l.primaryMissing[id] {
+		found, err := l.view.Get(l.ctx, Bucket(id), EntityKey(id), &entity)
+		if err != nil {
+			return nil, err
 		}
-		l.entities[id] = entity
-		l.entityLookups[id] = []string{id}
-		return []string{id}, l.charge(entity)
+		if found {
+			if entity.ID != id {
+				return nil, fmt.Errorf("entity fragment identity mismatch")
+			}
+			l.entities[id] = entity
+			l.entityLookups[id] = []string{id}
+			return []string{id}, l.charge(entity)
+		}
 	}
-	key := EntityAliasKey(id)
-	var owners []string
-	_, err = l.view.Get(l.ctx, Bucket(key), key, &owners)
+	owners, err := l.directories.get(EntityAliasKey(id))
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +97,44 @@ func (l *fragmentLoader) entity(id string) ([]string, error) {
 	return owners, nil
 }
 
+func (l *fragmentLoader) prefetchEntities(entities []graph.Entity) error {
+	if len(entities) < 2 {
+		return nil
+	}
+	if _, ok := l.view.Remote.(batchReader); !ok {
+		return nil
+	}
+	l.primaryMissing = make(map[string]bool)
+	lookup := Lookup{View: l.view}
+	for start := 0; start < len(entities); start += 128 {
+		var ids []string
+		seen := make(map[string]bool)
+		for _, entity := range entities[start:min(len(entities), start+128)] {
+			id := strings.TrimSpace(entity.ID)
+			if id != "" && !seen[id] && !l.primaryMissing[id] && len(l.entityLookups[id]) == 0 {
+				ids = append(ids, id)
+				seen[id] = true
+			}
+		}
+		found, _, err := lookup.GetEntities(l.ctx, ids, nil)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if entity, ok := found[id]; ok {
+				l.entities[id] = entity
+				l.entityLookups[id] = []string{id}
+				if err := l.charge(entity); err != nil {
+					return err
+				}
+			} else {
+				l.primaryMissing[id] = true
+			}
+		}
+	}
+	return nil
+}
+
 func (l *fragmentLoader) edge(id string) error {
 	if id == "" || l.edgeLookups[id] {
 		return nil
@@ -107,9 +147,8 @@ func (l *fragmentLoader) edge(id string) error {
 		return err
 	}
 	if !found {
-		key = EdgeAliasKey(id)
-		var owners []string
-		if _, err := l.view.Get(l.ctx, Bucket(key), key, &owners); err != nil {
+		owners, err := l.directories.get(EdgeAliasKey(id))
+		if err != nil {
 			return err
 		}
 		for _, owner := range owners {
@@ -165,18 +204,32 @@ func (l *fragmentLoader) incident(id string) error {
 	return nil
 }
 
-func (l *fragmentLoader) constraints(g *graph.Graph, entity graph.Entity, incoming bool) error {
-	normalized, refs, err := g.PartitionEntityReferences(entity, incoming)
-	if err != nil {
-		return invalid(err.Error())
+func (l *fragmentLoader) constraints(g *graph.Graph, entities []graph.Entity, incoming bool) error {
+	var ids, constraints, aliases []string
+	for _, entity := range entities {
+		normalized, refs, err := g.PartitionEntityReferences(entity, incoming)
+		if err != nil {
+			return invalid(err.Error())
+		}
+		ids = append(ids, normalized.ID)
+		if l.primaryMissing[normalized.ID] {
+			aliases = append(aliases, EntityAliasKey(normalized.ID))
+		}
+		for _, ref := range refs {
+			constraints = append(constraints, ConstraintKey(ref))
+		}
 	}
-	if _, err := l.entity(normalized.ID); err != nil {
+	if err := l.directories.prefetch(append(aliases, constraints...)); err != nil {
 		return err
 	}
-	for _, ref := range refs {
-		key := ConstraintKey(ref)
-		var owners []string
-		if _, err := l.view.Get(l.ctx, Bucket(key), key, &owners); err != nil {
+	for _, id := range ids {
+		if _, err := l.entity(id); err != nil {
+			return err
+		}
+	}
+	for _, key := range constraints {
+		owners, err := l.directories.get(key)
+		if err != nil {
 			return err
 		}
 		for _, id := range owners {
@@ -214,8 +267,8 @@ func (l *fragmentLoader) edgeDependencies(edge graph.Edge, types map[string]grap
 		}
 	}
 	for _, key := range cardinalityKeys(edge, types) {
-		var owners []string
-		if _, err := l.view.Get(l.ctx, Bucket(key), key, &owners); err != nil {
+		owners, err := l.directories.get(key)
+		if err != nil {
 			return err
 		}
 		for _, owner := range owners {
@@ -282,7 +335,11 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 	if err != nil {
 		return Plan{}, invalid(err.Error())
 	}
-	l := &fragmentLoader{view: view, ctx: ctx, entities: map[string]graph.Entity{}, edges: map[string]graph.Edge{}, entityLookups: map[string][]string{}, edgeLookups: map[string]bool{}}
+	directories := &directoryReads{ctx: ctx, view: view, owners: map[string][]string{}}
+	l := &fragmentLoader{view: view, ctx: ctx, entities: map[string]graph.Entity{}, edges: map[string]graph.Edge{}, entityLookups: map[string][]string{}, edgeLookups: map[string]bool{}, directories: directories}
+	if err := l.prefetchEntities(m.UpsertEntities); err != nil {
+		return Plan{}, err
+	}
 	for _, condition := range conditions {
 		if condition.ResourceType == "entity" {
 			if _, err := l.entity(condition.ID); err != nil {
@@ -292,10 +349,8 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 			return Plan{}, err
 		}
 	}
-	for _, entity := range m.UpsertEntities {
-		if err := l.constraints(preview, entity, true); err != nil {
-			return Plan{}, err
-		}
+	if err := l.constraints(preview, m.UpsertEntities, true); err != nil {
+		return Plan{}, err
 	}
 	var incident []string
 	incident = append(incident, m.DeleteEntities...)
@@ -304,7 +359,7 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 			incident = append(incident, r.ID)
 		} else {
 			entity := graph.Entity{Kind: r.Kind, Source: r.Source, ExternalID: r.ExternalID}
-			if err := l.constraints(preview, entity, true); err != nil {
+			if err := l.constraints(preview, []graph.Entity{entity}, true); err != nil {
 				return Plan{}, err
 			}
 			_, refs, err := preview.PartitionEntityReferences(entity, true)
@@ -312,9 +367,8 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 				return Plan{}, err
 			}
 			for _, ref := range refs {
-				var owners []string
-				key := ConstraintKey(ref)
-				if _, err := view.Get(ctx, Bucket(key), key, &owners); err != nil {
+				owners, err := directories.get(ConstraintKey(ref))
+				if err != nil {
 					return Plan{}, err
 				}
 				incident = append(incident, owners...)
@@ -327,10 +381,8 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 	}
 	for _, r := range m.SplitEntities {
 		incident = append(incident, r.SourceID)
-		for _, entity := range r.Entities {
-			if err := l.constraints(preview, entity, true); err != nil {
-				return Plan{}, err
-			}
+		if err := l.constraints(preview, r.Entities, true); err != nil {
+			return Plan{}, err
 		}
 	}
 	for _, id := range incident {
@@ -384,10 +436,12 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 		if err != nil {
 			return Plan{}, invalid(err.Error())
 		}
+		entities := make([]graph.Entity, 0, after.Entities.Len())
 		for _, entity := range after.Entities.All() {
-			if err := l.constraints(after, entity, false); err != nil {
-				return Plan{}, err
-			}
+			entities = append(entities, entity)
+		}
+		if err := l.constraints(after, entities, false); err != nil {
+			return Plan{}, err
 		}
 		for _, edge := range after.Edges.All() {
 			if err := l.edgeDependencies(edge, after.RelationTypes); err != nil {
@@ -418,7 +472,7 @@ func buildPlan(ctx context.Context, view View, request CommitRequest, at time.Ti
 	if !report.Changed {
 		after = before
 	}
-	plan, err := buildChanges(ctx, view, before, after, report)
+	plan, err := buildChanges(directories, before, after, report)
 	if err != nil {
 		return Plan{}, err
 	}

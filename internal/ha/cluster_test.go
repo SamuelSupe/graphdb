@@ -82,15 +82,22 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 				http.NotFound(w, r)
 				return
 			}
-			if replica.blockGraphFinalize.Load() && r.Method == http.MethodPost && r.URL.Path == "/cluster/graph/action" {
+			if replica.blockGraphFinalize.Load() && r.Method == http.MethodPost &&
+				(r.URL.Path == "/cluster/graph/action" || r.URL.Path == "/cluster/graph/fragment-batch") {
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Error(err)
 					return
 				}
 				r.Body = io.NopCloser(bytes.NewReader(body))
-				var action partition.Action
-				if json.Unmarshal(body, &action) == nil && action.Operation == "finalize" {
+				var actions []partition.Action
+				if r.URL.Path == "/cluster/graph/action" {
+					actions = make([]partition.Action, 1)
+					_ = json.Unmarshal(body, &actions[0])
+				} else {
+					_ = json.Unmarshal(body, &actions)
+				}
+				if len(actions) > 0 && actions[0].Operation == "finalize" {
 					http.Error(w, "finalization paused", http.StatusServiceUnavailable)
 					return
 				}

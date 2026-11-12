@@ -20,7 +20,7 @@ import (
 )
 
 func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
-	for _, protocol := range []int{partition.IngestProtocol, partition.CompactIngestProtocol} {
+	for _, protocol := range []int{partition.IngestProtocol, partition.CompactIngestProtocol, partition.BatchProtocol} {
 		t.Run(fmt.Sprint(protocol), func(t *testing.T) { testHAPartitionIngestRecovery(t, protocol) })
 	}
 }

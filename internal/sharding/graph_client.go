@@ -13,6 +13,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+	"golang.org/x/sync/errgroup"
 )
 
 type GraphRemote struct{ Client *Client }
@@ -143,4 +144,32 @@ func (p GraphRemote) ReadBatch(ctx context.Context, g partition.Group, requests 
 
 func (p GraphRemote) Action(ctx context.Context, g partition.Group, a partition.Action, result any) error {
 	return graphRemoteError(p.Client.JSON(ctx, graphShard(g), http.MethodPost, "/cluster/graph/action", a, result))
+}
+
+func (p GraphRemote) FragmentBatch(ctx context.Context, g partition.Group, actions []partition.Action) ([]json.RawMessage, error) {
+	body, err := json.Marshal(actions)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) <= partition.MaxFragmentBatchBytes {
+		var result []json.RawMessage
+		err := p.Client.JSON(ctx, graphShard(g), http.MethodPost, "/cluster/graph/fragment-batch", json.RawMessage(body), &result)
+		if err == nil {
+			return result, nil
+		}
+		var response *HTTPError
+		if !errors.As(err, &response) || (response.Status != http.StatusNotImplemented &&
+			(response.Status != http.StatusNotFound || response.Body != "404 page not found\n")) {
+			return nil, graphRemoteError(err)
+		}
+	}
+	// The legacy endpoint is used only before a batch was proposed, or when
+	// an otherwise valid set exceeds the bounded batch request size.
+	results := make([]json.RawMessage, len(actions))
+	workers, workerCtx := errgroup.WithContext(ctx)
+	workers.SetLimit(4)
+	for i, action := range actions {
+		workers.Go(func() error { return p.Action(workerCtx, g, action, &results[i]) })
+	}
+	return results, workers.Wait()
 }

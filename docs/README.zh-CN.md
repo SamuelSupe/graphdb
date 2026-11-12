@@ -1,8 +1,8 @@
-# GGraphDB 2.5.1 文档中心
+# GGraphDB 文档中心
 
 [English](README.md) · [项目首页](../README.zh-CN.md) · [下载发行版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)
 
-当前发行版本为 **2.5.1**，标签门禁、发布状态与独立下载核验详见本版验证记录。从下面的任务入口进入指南，或先按推荐路径阅读。
+当前稳定版为 **2.5.1**。**2.6.0-preview.1** 的大图分片启用方式、使用限制和冷写结果见[预览验证](validation-v2.6.0-preview.1.md)。
 用户指南与控制台文档均提供中英文版本；部分集群运维专题目前仅有中文。
 
 ## 推荐阅读路径
@@ -61,14 +61,14 @@
 | 主题 | 文档 |
 | --- | --- |
 | 定位与架构 | [数据库简介](database-introduction.zh-CN.md) · [English](database-introduction.md) · [整体架构](architecture.md) |
-| 大图分片开发 | [设计](large-graph-sharding-design.zh-CN.md) · [实施范围、接口与限制](large-graph-sharding-implementation.zh-CN.md) · [读路径优化](large-graph-sharding-optimization-2026-11-09.zh-CN.md) |
+| 大图分片预览 | [设计](large-graph-sharding-design.zh-CN.md) · [实施范围、接口与限制](large-graph-sharding-implementation.zh-CN.md) · [显式启用与升级](partition-wal-ingestion.zh-CN.md#显式启用与升级) · [预览验证](validation-v2.6.0-preview.1.md) |
 | API 契约 | [API 地图](user/api-map.zh-CN.md) · [English](user/api-map.md) · [OpenAPI](openapi.yaml) · [错误码](error_codes.md) |
 | 查询语言 | [查询能力](query_capabilities.md) · [GraphQL](graphql.zh-CN.md) · [English](graphql.md) · [旧文本 DSL](gql.md) |
 | 版本与缺口 | [命名与兼容](naming-and-compatibility.zh-CN.md) · [English](naming-and-compatibility.md) · [功能缺口](product_function_gaps.md) |
-| 2.5.1 发行证据 | [发行说明](../release/local-disk.md) · [发布验证](validation-v2.5.1.md) |
+| 2.5.1 发行证据 | [发行说明](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [发布验证](validation-v2.5.1.md) |
 | 2.3.6 优化候选性能对照 | [维护窗口与 30 分钟 Raft 增长负载对照](performance-tail-validation-2026-10-20.zh-CN.md) · [此前六分钟对照](performance-tail-validation-2026-10-19.zh-CN.md) |
 
-SDK/OpenAPI 版本为 2.5.1；Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
+当前源码的 SDK 与 OpenAPI 版本为 2.6.0-preview.1。Go 模块 `/v2`、HTTP `/v1` 和独立 Raft 协议编号
 各自遵循兼容契约，不能用产品版本号替换。
 
 ## 历史设计与验证记录

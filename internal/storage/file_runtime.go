@@ -104,6 +104,9 @@ type fileRuntime struct {
 	closeOnce          sync.Once
 	closeErr           error
 	restoreCleanup     chan string
+	parentCleanup      chan []string
+	parentCleanupStop  context.CancelFunc
+	replicationMu      sync.Mutex
 }
 
 func (s *FileStore) Close() error {
@@ -115,6 +118,10 @@ func (s *FileStore) Close() error {
 		s.runtime.closed = true
 		if s.runtime.restoreCleanup != nil {
 			close(s.runtime.restoreCleanup)
+		}
+		if s.runtime.parentCleanup != nil {
+			s.runtime.parentCleanupStop()
+			close(s.runtime.parentCleanup)
 		}
 		s.runtime.mu.Unlock()
 		s.runtime.active.Wait()

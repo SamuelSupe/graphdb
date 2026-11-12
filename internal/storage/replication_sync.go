@@ -35,6 +35,9 @@ func (j *replicationJournal) syncFiles() error {
 	}
 	sort.Strings(paths)
 	workers := min(2, len(paths))
+	if j.batched.Load() {
+		workers = min(indexWriteConcurrency, len(paths))
+	}
 	err := runIndexWriteJobs(context.Background(), workers, func(ctx context.Context, worker int) error {
 		for index := worker; index < len(paths); index += workers {
 			if err := ctx.Err(); err != nil {

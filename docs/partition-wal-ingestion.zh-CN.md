@@ -1,10 +1,10 @@
 # 分片 WAL 接入与复制受理队列
 
-这是 main 的开发功能，适用于已启用大图分片且 home group 运行协议 6 或更高版本的租户。生产化边界见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)。
+适用于 **GGraphDB 2.6.0-preview.1** 中已启用大图分片且 home group 运行协议 6 或更高版本的租户。使用范围见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)，启用前请核对[协议与升级步骤](#显式启用与升级)。
 
 ## 接入契约
 
-home group 的所有副本设置 `GRAPHDB_RAFT_PROTOCOL_VERSION=6` 和 `GRAPHDB_INGEST_MODE=wal`，通过 Router 提交现有批次 API：
+在 home group 的所有副本统一配置协议 6 或更高版本，并设置 `GRAPHDB_INGEST_MODE=wal`。通过 Router 提交现有批次 API。
 
 ```http
 POST /v1/ingest/batches
@@ -18,7 +18,7 @@ Content-Type: application/json
 
 通过原 `status_url` 查询 `accepted / committed / failed`。状态可经其他 Router 或新 Leader 查询，终态包含 `result`。客户端需要写后立即读时发送 `Prefer: wait=committed`；返回终态成功后使用结果的 `version` 和受理返回的 generation 读取。调用取消或超时只结束等待，不撤销已经持久受理的请求；保留状态 URL，并以原身份重试。分片 home group 使用 `direct` 模式时也经过同一复制队列，但等待终态再响应。
 
-每张图按受理 Raft index 执行批次，活动事务和排队记录互相独立。后台约每 200ms 调度，单轮最多处理 `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS` 个批次，并受现有 5 秒后台工作期限约束；不会为每个批次等待一个 tick，也不等待 `GRAPHDB_INGEST_FLUSH_INTERVAL`。`estimated_flush_at=accepted_at` 表示立即具备调度资格，不是完成期限。每图仍串行发布，当前实现不合并多个批次为一个图事务。
+每张图按受理 Raft index 执行批次，活动事务和排队记录互相独立。后台约每 200ms 调度，单轮最多处理 `GRAPHDB_INGEST_FLUSH_MAX_REQUESTS` 个批次。协议 6 和 7 的后台工作期限为 5 秒。协议 8 为事务和维护步骤分别设置期限，图 GC 期间在短写入轮次之间推进回收。分片队列无需等待 `GRAPHDB_INGEST_FLUSH_INTERVAL`。`estimated_flush_at=accepted_at` 表示立即具备调度资格。每张图串行发布，每个 WAL 批次独立执行前置条件和版本检查。
 
 `expected_version`、实体/边前置条件和 atomic/best_effort 沿用现有语义；它们在执行时对当前图版本判断。`value_from=accepted_at` 始终使用第一次持久受理的时间。版本、前置条件、atomic 校验及 atomic 抑制失败分别保持 `409 / 412 / 422 / 409`；通过异步状态查询时，失败原因在 `result.error_code`。版本或前置条件失败、atomic 整批失败不会增加图版本。best_effort 可发布有效项并返回 `failed` 状态及对应版本；这些终态都不会阻塞后续合法批次。
 
@@ -48,7 +48,33 @@ home group 启用协议 7 后，分片 WAL 事务引用已有的受理正文。L
 
 设置保留期的终态回执转入独立目录，以哈希分桶，重启重建待处理队列时跳过该目录。Leader 每步检查最多 64 条、约 4 MiB，步骤间隔 200 ms。扫描完一轮后最多等待一分钟再扫描。应用删除前重新核对到期时间和原受理 LSN，回执和对应别名在同一次应用里删除。`partition_receipt_expiry` 记录步骤耗时和失败。到期到实际回收的延迟取决于扫描积压和 Leader 可用性。
 
-Raft 删除文件并持久化检查点后，会尝试回收空父目录，回收失败或超时时由下次启动清理。已经被快照硬链接固定的文件继续由该快照持有，直到快照构建结束。
+Raft 删除文件并持久化检查点后，每个副本在本地回收空父目录。批量删除进入有界队列，后台分批检查目录是否仍为空，短暂的读取争用会重试。未能完成的目录清理可在下次启动时补齐。已经被快照硬链接固定的文件继续由该快照持有，直到快照构建结束。
+
+### 协议 8 的跨组提交和回收
+
+home group 在固定图版本和布局 revision 上提前规划 WAL 批次。Raft 受理事务时确认队头、版本、布局和输入摘要，并登记参与分区。控制组将准备凭证和图版本一起持久化，参与分区收尾后，在同一次 Raft 应用中保存终态回执并清理活动事务。重启后从持久受理正文和活动事务恢复。
+
+支持协议 8 的数据组可将最多 32 个分区的同阶段操作写成一条有界 Raft 命令，图页回收每条最多推进 16 个分区。小型变更先在内存生成，再统一记录回滚所需的原始内容，最后持久化。图页回收单分区每步最多标记 32 页或扫描 128 个对象，扫描阶段沿用每步 8 MiB 的删除预算。使用较早协议的数据组沿用逐分区操作。
+
+### 协议 9 的图页保护
+
+协议 9 数据组启动的新回收周期将最多 128 个待合并的页哈希随分区状态持久化，超过上限时批量合并到标记树。扫描同时查两份保护记录，快照校验覆盖两份记录引用的图页。标记和删除预算沿用协议 8。使用协议 9 的 home group 在 GC 启动写栅栏内连续推进有界的安装批次，以缩短等待。
+
+### 协议 10 的扫页清单和写入调度
+
+协议 10 数据组的 Leader 在应用锁外枚举最多 128 个页候选，将清单和预期游标写入 Raft。应用时重新检查分区 epoch、GC 身份、阶段、游标和当前保护标记，然后按原删除字节预算推进。清单生成期间新增的页可以留到下一轮回收。历史日志按原方式重放。
+
+协议 10 的 home group 可在一个有界 GC 步骤运行时规划下一批 WAL，待该步骤完成后顺序提交。GC 启动仍需安装保护边界。Raft 应用的阶段耗时可从 `graphdb_ha_operation_seconds` 查看，操作名包括 `partition_gc_scan`、`partition_gc_apply`、`replication_before_images`、`replication_object_sync` 和 `partition_wal_read_barrier`。回滚日志和同步指标覆盖相应的复制文件操作。
+
+home group 的 `partition_wal_execute` 从取出队头后计时。可用 `partition_txn_plan`、`partition_txn_wait_gc`、`partition_txn_begin`、`partition_txn_prepare`、`partition_txn_commit`、`partition_txn_finalize` 和 `partition_txn_complete` 查看事务阶段。数据组的 `partition_fragment_prepare` 衡量本地应用处理，`replication_journal_open`、`replication_checkpoint`、`replication_sync_files` 和 `replication_sync_directories` 衡量相应的落盘步骤。
+
+缓冲的分区准备和收尾命令在批量记录回滚数据后，按文件分派给有界写入协程。各协程在关闭临时文件前完成文件同步。重命名仍由复制日志保护，目录同步完成后才推进应用检查点。
+
+### 协议 11 的均衡叶页分裂
+
+协议 11 数据组为新提交的分区准备命令记录修订号 7。已有叶页溢出且能容纳在两个叶页时，选择最接近按行数平分的有效分界。两个新页沿用原有的行数和字节预算及大记录单行例外。需要三个或更多页的批量更新沿用原有装页规则。
+
+旧修订号的准备命令按原规则重放，产生原有的页根。重试已准备的事务复用持久化的准备结果。现有页格式、未触及的页、批量初始化以及 GC 和快照配置沿用原规则。
 
 ## 当前范围
 
@@ -60,12 +86,57 @@ Raft 删除文件并持久化检查点后，会尝试回收空父目录，回收
 
 启用磁盘优化时，先保持原协议更新 Router 和 home group 的全部副本，再在维护窗口将 home group 统一设置为 `GRAPHDB_RAFT_PROTOCOL_VERSION=7`。协议 7 持久化后，最高只支持协议 6 的二进制会拒绝启动该目录。
 
+## 显式启用与升级
+
+Raft 默认协议仍为 1。对预览租户，先按[管理接口](large-graph-sharding-implementation.zh-CN.md#管理接口)显式启用大图分片。需要异步受理时，另在 home group 的每个副本设置 `GRAPHDB_INGEST_MODE=wal`。
+
+按组为全部投票副本设置 `GRAPHDB_RAFT_PROTOCOL_VERSION`。在 Compose 部署中，通过附加的 Compose 配置为每个副本的 `environment` 显式设置。目录组可继续使用协议 5。
+
+| 协议 | home group | 承载图分区的数据组 |
+| --- | --- | --- |
+| 8 | WAL 提前规划、合批协调、终态回执随事务清理持久化 | 分区准备、收尾和 GC 批处理。低于 8 的数据组使用逐分区请求 |
+| 9 | 连续安装有界 GC 保护批次 | 新启动的 GC 周期合并页保护标记。在途周期按原格式完成 |
+| 10 | 在有界 GC 步骤期间并行规划下一批 WAL | Leader 在应用锁外准备扫页清单 |
+| 11 | 同时承载图分区时启用该组的均衡分裂 | 仅新准备命令启用均衡分裂。历史日志和已准备事务保留原页根 |
+
+1. 在测试环境恢复一份完整的离线集群归档，并核对图版本、内容摘要和 WAL 状态。为已有组安排维护窗口，暂停写入和迁移，确认副本健康及追赶位置。
+2. 保持原协议更新 Router 和相关组的全部副本。通过私有 `/raft/status` 核对每个投票副本的 `protocol_max` 覆盖目标版本。
+3. 在独立维护步骤中，为目标组的每个投票副本统一配置目标协议并重启。所有副本报告目标 `protocol_version` 后，检查组健康及读写，再恢复流量。首次激活协议 6 及以上时，Leader 会核对全组配置。
+4. 组内日志或快照持久化新协议后，原目录的协议下限随之提高。支持新协议的二进制会保留该下限，配置更小的协议号也不会降低它。低于下限的旧二进制会拒绝原目录。需要回到旧版本时，使用激活前、已验证可恢复的完整归档和隔离目录。
+
+现有自动滚动脚本只接受协议 1–4 的 inventory。协议 5 及以上使用上述维护窗口。当前预览的协议 11 门禁验证了故障后的恢复及旧二进制拒绝打开高协议目录，真实跨版本大图滚动升级仍待验收。
+
+以下为九副本 Compose 示例，使用 `shard-a` 作为预览租户的 home group。保存为 `compose.preview.yml`，与 `docker-compose.sharded.yml` 叠加。已有数据卷按上面的升级顺序操作。
+
+```yaml
+x-preview-catalog: &preview-catalog
+  GRAPHDB_RAFT_PROTOCOL_VERSION: "5"
+x-preview-home: &preview-home
+  GRAPHDB_RAFT_PROTOCOL_VERSION: "11"
+  GRAPHDB_INGEST_MODE: wal
+x-preview-data: &preview-data
+  GRAPHDB_RAFT_PROTOCOL_VERSION: "11"
+services:
+  catalog1: {environment: *preview-catalog}
+  catalog2: {environment: *preview-catalog}
+  catalog3: {environment: *preview-catalog}
+  a1: {environment: *preview-home}
+  a2: {environment: *preview-home}
+  a3: {environment: *preview-home}
+  b1: {environment: *preview-data}
+  b2: {environment: *preview-data}
+  b3: {environment: *preview-data}
+```
+
+新建试验集群时，设置 `GRAPHDB_RAFT_TOKEN` 后运行 `docker compose -f docker-compose.sharded.yml -f compose.preview.yml up -d --build`。注册数据组后，通过 Router 创建并核对租户归属，再调用[分片管理接口](large-graph-sharding-implementation.zh-CN.md#管理接口)将指定租户切换为分片图。
+
 ## 验证入口
 
 - `TestPartitionIngestDecisionSurvivesLostResponses`：丢失 begin、prepare、commit、finalize、complete 响应，重试保持原结果和图版本。
 - `TestPartitionIngestTransactionalFailuresAndRecovery`：版本/前置条件/atomic 失败、accepted_at 条件以及后续 best_effort 批次。
 - `TestHAPartitionIngestDurableQueueAndLeaderRecovery`：真实九节点 HTTP 复制，数据组故障期间受理、排队预算、独立快照安装、全部 home 副本重启、图已发布但队列未完成时切主、跨 Router 幂等重试，以及 home 少数派拒绝持久化受理。
 - `TestHAPartitionIngestUpgradePreservesSourceReceipts`：验证混合协议拒绝激活、转换后旧状态 URL、历史 `full_sync` 重放、正文冲突及切主后的终态。
+- `TestBalancedLeafPreparePreservesLegacyReplay`：验证旧修订号页根、修订号 7 的分裂结果以及切换后的准备重试。
 - `scripts/partition_wal_gate.py`：暂停数据组并强杀 Leader、全部 home 副本及两个 Router。确认原卷重启后能读取待完成批次，再通过离线归档恢复到新卷，核对原受理时间、LSN、提交顺序、内容及重试后的图版本。可通过 `GRAPHDB_GATE_PROTOCOL5_IMAGE` 检查旧二进制拒绝打开已激活的归档。
 
 运行容器故障门禁时，先构建本地候选镜像，再设置 `GRAPHDB_GATE_IMAGE` 和一个不存在的 `GRAPHDB_GATE_OUTPUT` 目录执行脚本。home group 默认使用协议 7，可通过 `GRAPHDB_GATE_HOME_PROTOCOL=6` 验证原路径，或通过 `GRAPHDB_GATE_PREVIOUS_HOME_IMAGE` 验证旧二进制拒绝打开已激活的归档。脚本只创建和清理自己随机命名的 Compose 项目。端口可用 `GRAPHDB_GATE_PORT_OFFSET` 平移；地址池不足时可通过 `GRAPHDB_GATE_SUBNET` 指定空闲子网。这些记录覆盖单机上的进程故障，宿主机断电、多主机容灾及容量仍需独立验收。

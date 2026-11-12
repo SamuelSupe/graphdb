@@ -85,15 +85,30 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 				if err := s.gcTree(state, "seen").Scan(ctx, state.GC.Seen, "", "", func(Row) (bool, error) { return true, nil }); err != nil {
 					return err
 				}
-				if err := s.gcTree(state, "marks").Scan(ctx, state.GC.Marked, "", "", func(row Row) (bool, error) {
-					if !validDigest(row.Key) {
-						return false, fmt.Errorf("invalid marked page digest")
+				pages := s.Tree(state.Tenant, state.Generation, state.Partition)
+				verifyMarked := func(hash string) error {
+					if !validDigest(hash) {
+						return fmt.Errorf("invalid marked page digest")
 					}
-					data, err := s.Objects.Get(ctx, s.Tree(state.Tenant, state.Generation, state.Partition).pageKey(row.Key))
+					data, err := s.Objects.Get(ctx, pages.pageKey(hash))
 					if err != nil {
-						return false, err
+						return err
 					}
-					return true, verifyObject(row.Key, data)
+					return verifyObject(hash, data)
+				}
+				if len(state.GC.Pending) > gcPendingLimit || !state.GC.Buffered && len(state.GC.Pending) > 0 {
+					return fmt.Errorf("invalid pending GC marks")
+				}
+				for i, hash := range state.GC.Pending {
+					if i > 0 && state.GC.Pending[i-1] >= hash {
+						return fmt.Errorf("invalid pending GC mark order")
+					}
+					if err := verifyMarked(hash); err != nil {
+						return err
+					}
+				}
+				if err := s.gcTree(state, "marks").Scan(ctx, state.GC.Marked, "", "", func(row Row) (bool, error) {
+					return true, verifyMarked(row.Key)
 				}); err != nil {
 					return err
 				}

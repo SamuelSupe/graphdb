@@ -88,7 +88,12 @@ func (a *Application) expirePartitionIngest(ctx context.Context, cmd command) ([
 		}
 	}
 	count := 0
+	seen := make(map[string]bool)
+	var deletes []string
 	for _, candidate := range candidates {
+		if seen[candidate.Key] {
+			continue
+		}
 		record, err := loadAcceptance(ctx, a.Store.Objects, candidate.Key)
 		if errors.Is(err, storage.ErrNotFound) {
 			continue
@@ -101,22 +106,26 @@ func (a *Application) expirePartitionIngest(ctx context.Context, cmd command) ([
 		if record.Index != candidate.Index || expiry.IsZero() || cmd.At.Before(expiry) || a.managedReceiptKey(canonical) != candidate.Key {
 			continue
 		}
+		seen[candidate.Key] = true
 		if record.Request.IdempotencyKey != "" {
 			alias, found, err := a.partitionIngestAlias(ctx, record.Tenant, record.Generation, record.Request)
 			if err != nil {
 				return nil, err
 			}
 			if found && alias.Key == canonical && alias.Index == record.Index {
-				key := a.partitionIngestAliasKey(record.Tenant, record.Generation, record.Request)
-				if err := a.Store.Objects.Delete(ctx, key); err != nil {
-					return nil, err
-				}
+				deletes = append(deletes, a.partitionIngestAliasKey(record.Tenant, record.Generation, record.Request))
 			}
 		}
-		if err := a.Store.Objects.Delete(ctx, candidate.Key); err != nil {
+		deletes = append(deletes, candidate.Key)
+		count++
+	}
+	if err := a.Files.JournalReplicatedObjects(ctx, deletes); err != nil {
+		return nil, err
+	}
+	for _, key := range deletes {
+		if err := a.Store.Objects.Delete(ctx, key); err != nil {
 			return nil, err
 		}
-		count++
 	}
 	return resultJSON(http.StatusOK, map[string]any{"expired": count})
 }

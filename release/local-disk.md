@@ -1,40 +1,37 @@
-# GGraphDB v2.5.1
+# GGraphDB v2.6.0-preview.1
 
-多租户属性图数据库，支持单机、Raft 高可用和按租户分片，内置中英文管理控制台。
+大图分片预览用于隔离环境试用。Raft 默认协议为 1。大图分片按租户显式启用，分片异步受理另需在 home group 开启 WAL。稳定版下载仍指向 [2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)。
 
-## 本版更新
+## 分片协议
 
-- **单机 Compose 默认异步接入**。采集批次在 WAL 同步落盘后返回 HTTP 202。轮询 `status_url` 获取终态，需要等待提交时发送 `Prefer: wait=committed`。该请求会主动调度批次，同时保留同租户顺序和失败退避。
-- **分段追平索引**。合并增量超出预算时，按 manifest 版本封存该段并继续排队。后台按版本依次提交增量索引，跟踪分段、历史图加载和全量重建。积压期间图提交可以继续，查询可能看到索引滞后。
+- 协议 6–7 增加多数派持久 WAL 受理、切主恢复、幂等重试，以及终态回执和历史暂存输入回收。
+- 协议 8 支持分区准备、收尾和 GC 批处理。协议 9 合并新 GC 周期的页保护标记。协议 10 在应用锁外规划扫页，并让下一批 WAL 提前规划。
+- 协议 11 对新准备命令启用均衡叶页分裂。旧日志仍按原修订号重放，已准备事务保留原页根。写入协程对暂存文件同步后再重命名，复制回滚和目录同步屏障继续生效。
 
-同一大图的开发阶段 A/B 压测中，WAL 受理 P99 从 263 ms 降至 190 ms，受理后到提交终态 P99 从 11.30 s 降至 569 ms。新版停写后约 95 秒索引追平。负载与验证边界见[版本验证](https://github.com/SamuelSupe/graphdb/blob/v2.5.1/docs/validation-v2.5.1.md)。
+先在原协议下升级所有相关副本和 Router，再在维护窗口逐组统一设置 `GRAPHDB_RAFT_PROTOCOL_VERSION`。协议持久化后原目录保留该协议下限，低于下限的旧二进制拒绝启动。自动滚动脚本的 inventory 范围为协议 1–4。具体配置、Compose 示例、备份和回退步骤见[启用与升级](https://github.com/SamuelSupe/graphdb/blob/v2.6.0-preview.1/docs/partition-wal-ingestion.zh-CN.md#显式启用与升级)。
 
-## 升级与回退
+## 实测与边界
 
-依赖 HTTP 200/207 同步响应的 Compose 客户端，可设置 `GRAPHDB_INGEST_MODE=direct` 继续使用原同步接入方式。升级前请验证完整运行状态备份，包含数据、WAL 和协调状态。使用同一数据目录切换接入模式前，请先停止旧进程并处理待提交的 WAL。Raft 协议激活和版本滚动窗口见[升级手册](https://github.com/SamuelSupe/graphdb/blob/v2.5.1/docs/raft-rolling-upgrade.zh-CN.md)。
+九个 Raft 节点和两个 Router 在同一宿主机上以每秒 2 批运行，保持 45 秒 GC 间隔和 500 条日志的快照阈值。
 
-## Linux 下载
+- 纯冷写为 28,800 个不重复实体首次建立采集身份，提交 P99 为 **84.16 秒**。末五分钟提交 1.71 批/秒，队列从 65 升至 151 批。七轮写入期 GC 中末四轮结束后剩余 9,592–9,845 个可回收历史页。
+- 原负载冷阶段提交 P99 为 **67.11 秒**。末五分钟队列从 111 降至 86 批。覆盖写提交 P99 为 **1.26 秒**，队列峰值 3 批。
+- 最终候选共 5,400 批全部提交，图内容摘要一致。持续冷写稳态、真实多主机容量、跨版本大图滚动升级和在线整图备份恢复仍待验收。[验证记录](https://github.com/SamuelSupe/graphdb/blob/v2.6.0-preview.1/docs/validation-v2.6.0-preview.1.md)
 
-| 平台 | 发行包 |
+## 下载和校验
+
+| 平台 | 归档 |
 | --- | --- |
-| x86_64（AMD64） | `graphdb-v2.5.1-linux-amd64.tar.gz` |
-| aarch64（ARM64） | `graphdb-v2.5.1-linux-arm64.tar.gz` |
+| Linux x86_64 | `graphdb-v2.6.0-preview.1-linux-amd64.tar.gz` |
+| Linux aarch64 | `graphdb-v2.6.0-preview.1-linux-arm64.tar.gz` |
 
-下载对应架构的发行包和同名 `.sha256` 文件。在同一目录执行：
+将所选归档和对应的 `.sha256` 文件放在同一目录。以 Linux AMD64 为例：
 
 ```sh
-archive=graphdb-v2.5.1-linux-amd64.tar.gz
+archive=graphdb-v2.6.0-preview.1-linux-amd64.tar.gz
 sha256sum -c "$archive.sha256"
 tar -xzf "$archive"
-cd "${archive%.tar.gz}"
-./graphdb version
-GRAPHDB_DATA_DIR=./data ./graphdb serve
+./graphdb-v2.6.0-preview.1-linux-amd64/graphdb version
 ```
 
-完整包 `graphdb-v2.5.1.tar.gz` 还包含 macOS ARM64、源码、SDK、部署示例和门禁证据。发行二进制使用 Go 1.27.3。
-
-## Validation
-
-Publication requires the exact-tag unit, vet, race, SDK, direct/WAL recovery, S3 backup, gateway, Raft and 30-minute soak gates. The full archive contains runtime qualification evidence. Protocol 5 is an opt-in preview. Cross-host recovery, day-scale stability and production capacity remain unqualified.
-
-[Deployment](https://github.com/SamuelSupe/graphdb/blob/v2.5.1/docs/user/release-deployment.md) · [中文部署指南](https://github.com/SamuelSupe/graphdb/blob/v2.5.1/docs/user/release-deployment.zh-CN.md) · [Validation](https://github.com/SamuelSupe/graphdb/blob/v2.5.1/docs/validation-v2.5.1.md)
+完整版还包含 macOS ARM64、源码、SDK、部署示例和门禁证据。Go 工具链为 1.27.3。包内 `BUILD-METADATA.json` 记录版本和提交，`release/evidence/raft-gate/partitioned/` 记录协议 11 分片恢复结果。

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 )
@@ -13,7 +15,7 @@ import (
 // Pruning runs after object operations and their publication barriers. Taking
 // all IO permits excludes the gap between another writer's mkdir and rename.
 // Replication retains its directories until journal recovery/commit completes.
-func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) error {
+func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) (result error) {
 	if s.runtime == nil || len(keys) == 0 || IsReplicatedContext(ctx) {
 		return nil
 	}
@@ -23,8 +25,22 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 	}
 	defer release()
 	var unlock func()
+	dirty := make(map[string]struct{})
+	syncParents := func() error {
+		parents := make([]string, 0, len(dirty))
+		for dir := range dirty {
+			parents = append(parents, dir)
+		}
+		sort.Strings(parents)
+		err := runIndexWriteJobs(context.Background(), len(parents), func(_ context.Context, index int) error {
+			return syncDir(parents[index])
+		})
+		clear(dirty)
+		return err
+	}
 	defer func() {
 		if unlock != nil {
+			result = errors.Join(result, syncParents())
 			unlock()
 		}
 	}()
@@ -45,6 +61,9 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 		// Share the IO gate with foreground work even when a GC batch retires
 		// many directories. Never leave a pending directory barrier behind.
 		if unlock != nil && (index%64 == 0 || time.Since(started) >= 50*time.Millisecond) {
+			if err := syncParents(); err != nil {
+				return err
+			}
 			unlock()
 			unlock = nil
 			clear(seen)
@@ -113,12 +132,81 @@ func (s *FileStore) pruneEmptyObjectParents(ctx context.Context, keys []string) 
 				}
 			}
 			s.caseMu.Unlock()
-			if err := syncDir(filepath.Dir(dir)); err != nil {
-				return err
-			}
+			delete(dirty, dir)
+			dirty[filepath.Dir(dir)] = struct{}{}
 		}
 	}
 	return nil
+}
+
+// Large replicated deletions should not spend their application deadline on
+// empty directories. The bounded queue applies backpressure if pruning falls
+// behind. A stopped process can recover abandoned directories on startup.
+func (s *FileStore) pruneReplicatedObjectParents(ctx context.Context, keys []string) {
+	if s.runtime == nil || len(keys) == 0 {
+		return
+	}
+	if len(keys) <= 8 {
+		pruneCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		err := s.pruneEmptyObjectParents(pruneCtx, keys)
+		cancel()
+		if err == nil {
+			return
+		}
+	}
+	sort.Strings(keys)
+	runtime := s.runtime
+	runtime.mu.Lock()
+	if runtime.closed {
+		runtime.mu.Unlock()
+		return
+	}
+	if runtime.parentCleanup == nil {
+		runtime.parentCleanup = make(chan []string, 64)
+		cleanup, cancel := context.WithCancel(context.Background())
+		runtime.parentCleanupStop = cancel
+		runtime.active.Add(1)
+		go s.runParentCleanup(cleanup, runtime.parentCleanup)
+	}
+	select {
+	case runtime.parentCleanup <- keys:
+		runtime.mu.Unlock()
+	default:
+		runtime.mu.Unlock()
+		pruneCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		err := s.pruneEmptyObjectParents(pruneCtx, keys)
+		cancel()
+		if err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("replica directory cleanup queue saturated", "error", err)
+		}
+	}
+}
+
+func (s *FileStore) runParentCleanup(ctx context.Context, queue <-chan []string) {
+	defer s.runtime.active.Done()
+	for keys := range queue {
+		for start := 0; start < len(keys) && ctx.Err() == nil; {
+			end := min(len(keys), start+32)
+			// A newer uncommitted application may have deleted another
+			// file here. Its journal still needs the parent directory.
+			s.runtime.replicationMu.Lock()
+			step, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+			err := s.pruneEmptyObjectParents(step, keys[start:end])
+			cancel()
+			s.runtime.replicationMu.Unlock()
+			if errors.Is(err, context.DeadlineExceeded) {
+				select {
+				case <-ctx.Done():
+				case <-time.After(20 * time.Millisecond):
+				}
+				continue
+			}
+			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrFileStoreClosed) {
+				slog.Warn("prune empty replica object directories", "error", err)
+			}
+			start = end
+		}
+	}
 }
 
 // This is only a hint: rmdir rechecks emptiness under the exclusive IO gate.

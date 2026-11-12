@@ -36,6 +36,10 @@ func (s Store) applyData(ctx context.Context, a Action) (any, error) {
 		}
 		return nil, err
 	}
+	return s.applyDataState(ctx, a, state)
+}
+
+func (s Store) applyDataState(ctx context.Context, a Action, state DataState) (any, error) {
 	if state.Epoch != a.Epoch || state.State != "active" {
 		return nil, conflict("partition ownership changed")
 	}
@@ -63,6 +67,8 @@ func (s Store) applyData(ctx context.Context, a Action) (any, error) {
 			return nil, conflict("partition base or transaction sequence changed")
 		}
 		tree := s.Tree(a.Tenant, a.Generation, a.Partition)
+		tree.cache = &treeReadCache{}
+		tree.balanceLeaves = a.Revision >= BalancedLeafRevision
 		var captured []Row
 		if state.Capture != "" || state.GC != nil && state.GC.Phase != "cleanup" {
 			tree.saved = func(_ context.Context, hash string) error {
@@ -74,7 +80,7 @@ func (s Store) applyData(ctx context.Context, a Action) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := s.recordNewPages(ctx, &state, uniqueHashRows(captured)); err != nil {
+		if err := s.recordNewPages(ctx, &state, uniqueHashRows(captured), a.Revision); err != nil {
 			return nil, err
 		}
 		prepared := Prepared{EdgeTypeDelta: map[string]int64{}, Txn: a.Txn, Sequence: a.Sequence, Base: a.Base, Root: root, Digest: a.Digest}
@@ -84,7 +90,7 @@ func (s Store) applyData(ctx context.Context, a Action) (any, error) {
 			if !entity && !edge {
 				continue
 			}
-			previous, found, err := s.Tree(a.Tenant, a.Generation, a.Partition).Get(ctx, a.Base, row.Key)
+			previous, found, err := tree.Get(ctx, a.Base, row.Key)
 			if err != nil {
 				return nil, err
 			}
@@ -115,7 +121,7 @@ func (s Store) applyData(ctx context.Context, a Action) (any, error) {
 				}
 			}
 		}
-		prepared.HashBuckets, err = s.Tree(a.Tenant, a.Generation, a.Partition).LogicalBuckets(ctx, root, a.Changes)
+		prepared.HashBuckets, err = tree.LogicalBuckets(ctx, root, a.Changes)
 		if err != nil {
 			return nil, err
 		}

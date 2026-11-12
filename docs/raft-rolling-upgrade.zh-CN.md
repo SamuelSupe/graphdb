@@ -1,6 +1,6 @@
 # Raft 不停机滚动升级
 
-适用于 **GGraphDB 2.5.1**；发行资格见[版本验证](validation-v2.5.1.md)，升级约束见[版本边界](naming-and-compatibility.zh-CN.md)。
+已发布 **GGraphDB 2.5.1** 的滚动资格见[版本验证](validation-v2.5.1.md)。**2.6.0-preview.1** 的大图分片协议按[显式启用与升级](partition-wal-ingestion.zh-CN.md#显式启用与升级)在维护窗口激活。
 
 滚动升级适用于至少三个投票副本的 Raft 组。分片的目录组和每个数据组分别遵守同一流程，入口至少两个 router。Compose 的 HAProxy 持续解析 Docker 服务名，避免替换容器改变 IP 后仍连接旧地址；其他部署需配置对应 DNS/服务发现。每次只替换一个进程，保留节点 ID、配置、数据目录和 Raft 日志；该副本追赶并恢复健康后才操作下一个。始终保留多数派，正常图请求继续执行强一致屏障。
 
@@ -87,7 +87,7 @@ inventory 为 `{"groups":[{"cluster_id":"graphdb-ha","nodes":[...]}]}`，每个 
 {"id":1,"url":"http://127.0.0.1:19081","restart":["docker","compose","-p","graphdb-ha","-f","docker-compose.raft.yml","up","-d","--no-deps","--no-build","--force-recreate","node1"]}
 ```
 
-group 可配置 `protocol_version` 为 1 至 7，缺省为 1。协议 5 是显式启用的预览，协议 6 和 7 用于[分片 WAL](partition-wal-ingestion.zh-CN.md#当前范围)。协调器要求组内所有成员保持已配置的协议，协议激活需单独安排。启用协议 3 前，先在原协议下升级全部副本和 router，并确认每个副本的 `protocol_max` 至少为 3，再按独立变更启用。协议 3 提案持久化后，最高支持协议为 2 的旧程序不能原目录回退。协议 3 同构建串行重启的本机证据见[本轮验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
+2.5.1 支持协议 1 至 5，2.6.0-preview.1 支持协议 1 至 11。两者默认协议均为 1。自动滚动脚本接受协议 1 至 4 的 inventory，并要求组内所有成员保持已配置的协议。协议激活需单独安排。启用协议 3 前，先在原协议下升级全部副本和 Router，并确认每个副本的 `protocol_max` 至少为 3，再按独立变更启用。协议 3 提案持久化后，最高支持协议为 2 的旧程序不能原目录回退。协议 3 同构建串行重启的本机证据见[本轮验证](raft-isolation-validation-2026-10-02.zh-CN.md)。
 
 inventory 必须包含该组全部投票节点。restart 只替换对应进程并复用原数据卷，不经过 shell。相同 inventory 的本机文件锁防止本机重复执行；不同宿主机的串行约束由部署控制器保证。
 

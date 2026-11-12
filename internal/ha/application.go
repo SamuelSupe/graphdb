@@ -16,6 +16,7 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/backupstore"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
@@ -58,6 +59,7 @@ type httpResult struct {
 }
 
 type Application struct {
+	metrics             *observability.OperationMetrics
 	graphCacheMu        sync.Mutex
 	graphCache          map[string]graphDescriptor
 	Store               *storage.TenantStore
@@ -180,6 +182,28 @@ func publicationCommand(cmd command) bool {
 			(cmd.URI == "/v1/ingest/batches" || cmd.URI == "/v1/commits"))
 }
 
+func batchableCommand(cmd command) bool {
+	if cmd.Kind != "graph_partition" {
+		return publicationCommand(cmd)
+	}
+	// Keep large prepares and graph-wide barriers in separate journals.
+	if len(cmd.Body) > 128<<10 {
+		return false
+	}
+	var action struct {
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(cmd.Body, &action) != nil {
+		return false
+	}
+	switch action.Operation {
+	case "prepare", "prepared", "finalize", "discard", "data_gc_begin", "data_gc_step":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Application) Apply(ctx context.Context, index uint64, data []byte) ([]byte, error) {
 	responses, err := a.ApplyBatch(ctx, []replication.ApplyEntry{{Index: index, Data: data}})
 	if err != nil {
@@ -231,21 +255,22 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 				return nil, err
 			}
 		}
-		if len(commands) > 0 && (!publicationCommand(cmd) || cmd.ID == "" || cmd.At.IsZero() ||
+		batchable := batchableCommand(cmd)
+		if len(commands) > 0 && (!batchable || cmd.ID == "" || cmd.At.IsZero() ||
 			(cmd.Role != "" && cmd.Role != a.replicationRole()) ||
 			(cmd.Prefix != "" && cmd.Prefix != a.snapshotTenantPrefix()) || entry.Index != entries[len(commands)-1].Index+1 ||
 			cmd.Kind != commands[0].Kind || cmd.URI != commands[0].URI) {
 			break
 		}
 		commands = append(commands, cmd)
-		if !publicationCommand(cmd) {
+		if !batchable {
 			break
 		}
 	}
 	entries = entries[:len(commands)]
 	publication := publicationCommand(commands[0])
-	// Only immutable publications share a journal. A task, ownership change,
-	// configuration entry or other control operation remains its own barrier.
+	// Graph participant actions can share a journal while still holding the
+	// reader barrier for the whole application.
 	// Keep acceptance separate from graph publication so its durable response
 	// does not wait for a later flush in the same log window.
 	if !publication {
@@ -305,7 +330,7 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		}
 	}
 	last := len(entries) - 1
-	data, err := a.Files.ApplyReplicated(ctx, entries[last].Index, commands[last].ID, commands[last].At, func(applyCtx context.Context) ([]byte, error) {
+	data, err := a.Files.ApplyReplicated(storage.WithReplicationMetrics(ctx, a.metrics), entries[last].Index, commands[last].ID, commands[last].At, func(applyCtx context.Context) ([]byte, error) {
 		for i, entry := range entries {
 			if entry.Index <= checkpoint.Index || len(entry.Data) == 0 {
 				continue
@@ -392,6 +417,8 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 		}
 	}
 	switch cmd.Kind {
+	case "graph_fragment_batch":
+		return a.applyFragmentBatch(applyCtx, cmd)
 	case "graph_partition":
 		var action partition.Action
 		if err := json.Unmarshal(cmd.Body, &action); err != nil {
@@ -467,6 +494,11 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 				return nil, err
 			}
 			return resultJSON(status, map[string]any{"code": code, "error": err.Error(), "retryable": code == "graph_input_expired"})
+		}
+		if action.Operation == "complete" && action.ReceiptRef != "" {
+			if err := a.completeGraphIngestReceipt(applyCtx, action.ReceiptRef, value.(partition.Transaction), cmd.At); err != nil {
+				return nil, err
+			}
 		}
 		return resultJSON(http.StatusOK, value)
 	case "sharding":

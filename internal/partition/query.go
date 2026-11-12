@@ -79,6 +79,9 @@ func (l *Lookup) GetEntities(ctx context.Context, ids []string, _ []string) (map
 				if err := decodeRecord(row, &entity); err != nil {
 					return nil, false, fmt.Errorf("%w: malformed entity record: %v", ErrPartitionCorrupt, err)
 				}
+				if row.Key != EntityKey(entity.ID) || Bucket(entity.ID) != requests[i].Partition {
+					return nil, false, fmt.Errorf("%w: entity fragment identity mismatch", ErrPartitionCorrupt)
+				}
 				out[entity.ID] = entity
 			}
 			if len(batch.Remaining) > 0 {

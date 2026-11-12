@@ -29,7 +29,7 @@ func newTestPartitionedGraph(t *testing.T, wal bool, homeProtocol int) (a, b, ca
 		}
 		for i, node := range group.nodes {
 			node.cfg.Raft.Protocol = 5
-			if group == a {
+			if group == a || group == b && homeProtocol >= partition.BatchProtocol {
 				node.cfg.Raft.Protocol = homeProtocol
 			}
 			node.cfg.Raft.SnapshotEntries = 1000

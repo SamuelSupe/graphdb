@@ -1,6 +1,6 @@
 # GGraphDB Python SDK
 
-Version **2.5.1**, matching the [server release](../../docs/validation-v2.5.1.md).
+Version **2.6.0-preview.1**, matching the [server preview](../../docs/validation-v2.6.0-preview.1.md). Python packaging normalizes this version to `2.6.0rc1`.
 
 Install locally:
 

@@ -8,18 +8,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 	"golang.org/x/sync/errgroup"
 )
 
 type Engine struct {
-	Remote     Remote
-	Home       Group
-	Tenant     string
-	Generation int64
+	Remote         Remote
+	Home           Group
+	Tenant         string
+	Generation     int64
+	BatchFragments bool
+	Metrics        *observability.OperationMetrics
+	// PublishAfter permits immutable planning while a maintenance step runs.
+	PublishAfter <-chan struct{}
+}
+
+func (e Engine) waitToPublish(ctx context.Context) error {
+	if e.PublishAfter == nil {
+		return nil
+	}
+	finish := e.Metrics.Start("partition_txn_wait_gc")
+	select {
+	case <-e.PublishAfter:
+	case <-ctx.Done():
+	}
+	err := ctx.Err()
+	finish(err)
+	return err
 }
 
 type OutcomeUnknownError struct {
@@ -52,7 +72,10 @@ func transactionID() (string, error) {
 func (e Engine) control(ctx context.Context, g Graph, a Action, result any) error {
 	a.Tenant = e.Tenant
 	a.Generation = g.Generation
-	return e.Remote.Action(ctx, e.Home, a, result)
+	finish := e.Metrics.Start("partition_txn_" + a.Operation)
+	err := e.Remote.Action(ctx, e.Home, a, result)
+	finish(err)
+	return err
 }
 
 func (e Engine) updateTransaction(ctx context.Context, g Graph, a Action, txn *Transaction) error {
@@ -78,10 +101,10 @@ func (e Engine) Submit(ctx context.Context, request CommitRequest) (storage.Comm
 	if request.IdempotencyKey != "" {
 		identity = "direct:" + request.IdempotencyKey
 	}
-	return e.submitInput(ctx, data, identity, request.ExpectedVersion, "commit", "")
+	return e.submitInput(ctx, data, identity, request.ExpectedVersion, "commit", "", nil)
 }
 
-func (e Engine) submitInput(ctx context.Context, data []byte, identity string, expected *int64, purpose, acceptance string) (storage.CommitResult, error) {
+func (e Engine) submitInput(ctx context.Context, data []byte, identity string, expected *int64, purpose, acceptance string, finished *Transaction) (storage.CommitResult, error) {
 	if len(data) > MaxChangeBytes {
 		return storage.CommitResult{}, invalid("graph transaction exceeds its input budget")
 	}
@@ -99,6 +122,7 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 	var inputs []Input
 	var g Graph
 	var txn Transaction
+	var planned *Plan
 	var stagedGeneration int64
 	for {
 		g, err = e.Remote.Describe(ctx, e.Home, e.Tenant)
@@ -114,6 +138,9 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 				return storage.CommitResult{}, conflict("idempotency key was used with different content")
 			}
 			if previous.State != "retryable" {
+				if err := e.waitToPublish(ctx); err != nil {
+					return storage.CommitResult{}, err
+				}
 				txn = previous
 				break
 			}
@@ -154,10 +181,32 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 			}
 			stagedGeneration = g.Generation
 		}
-		err = e.control(ctx, g, Action{Operation: "begin", Purpose: purpose, Txn: id, Identity: identity, Digest: digest, Inputs: inputs, At: time.Now().UTC(), BaseVersion: g.Version, ExpectedVersion: expected}, &txn)
+		begin := Action{Operation: "begin", Purpose: purpose, Txn: id, Identity: identity, Digest: digest, Inputs: inputs, At: time.Now().UTC(), BaseVersion: g.Version, ExpectedVersion: expected}
+		if e.BatchFragments && acceptance != "" {
+			var input transactionInput
+			if json.Unmarshal(data, &input) == nil && input.Ingest != nil {
+				// Leave time to establish the durable active transaction even
+				// when a data group cannot answer the speculative reads.
+				planning, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+				finish := e.Metrics.Start("partition_txn_plan")
+				plan, planErr := buildIngestPlan(planning, View{Graph: g, Remote: e.Remote}, *input.Ingest)
+				finish(planErr)
+				cancel()
+				if planErr == nil {
+					begin.Participants = planParticipants(plan)
+					begin.LayoutRevision = g.LayoutRevision
+					planned = &plan
+				}
+			}
+		}
+		if err := e.waitToPublish(ctx); err != nil {
+			return storage.CommitResult{}, err
+		}
+		err = e.control(ctx, g, begin, &txn)
 		if err == nil {
 			break
 		}
+		planned = nil
 		if errors.Is(err, ErrInputExpired) {
 			inputs = nil
 			continue
@@ -176,7 +225,18 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 	}
 	replay := txn.ID != id
 	for txn.State != "committed" && txn.State != "aborted" {
-		_, resumeErr := e.Resume(ctx)
+		var resolved Transaction
+		var resumeErr error
+		if planned != nil && !replay {
+			resolved, resumeErr = e.resume(ctx, g, txn, data, planned)
+			planned = nil
+		} else {
+			resolved, resumeErr = e.Resume(ctx)
+		}
+		if resumeErr == nil && resolved.ID == txn.ID {
+			txn = resolved
+			break
+		}
 		latest, lookupErr := e.Remote.Transaction(ctx, e.Home, e.Tenant, g.Generation, identity)
 		if lookupErr == nil {
 			txn = latest
@@ -208,6 +268,9 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 		}
 		txn = completed
 	}
+	if finished != nil {
+		*finished = txn
+	}
 	if txn.State == "aborted" {
 		if txn.ErrorCode == "quota_exceeded" {
 			return storage.CommitResult{}, fmt.Errorf("%w: %s", ErrQuotaExceeded, txn.Error)
@@ -233,20 +296,24 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 	if g.Active == nil {
 		return Transaction{}, conflict("graph has no active transaction")
 	}
-	txn := *g.Active
+	return e.resume(ctx, g, *g.Active, nil, nil)
+}
+
+func (e Engine) resume(ctx context.Context, g Graph, txn Transaction, encoded []byte, planned *Plan) (Transaction, error) {
 	if txn.State == "preparing" {
-		var encoded []byte
-		for _, input := range txn.Inputs {
-			chunk, err := e.Remote.Input(ctx, e.Home, e.Tenant, g.Generation, input)
-			if err != nil {
-				return txn, err
-			}
-			if len(chunk) != input.Bytes || fmt.Sprintf("%x", sha256.Sum256(chunk)) != input.Digest {
-				return txn, fmt.Errorf("graph transaction input checksum mismatch")
-			}
-			encoded = append(encoded, chunk...)
-			if len(encoded) > MaxChangeBytes {
-				return txn, fmt.Errorf("durable graph input exceeds its budget")
+		if encoded == nil {
+			for _, input := range txn.Inputs {
+				chunk, err := e.Remote.Input(ctx, e.Home, e.Tenant, g.Generation, input)
+				if err != nil {
+					return txn, err
+				}
+				if len(chunk) != input.Bytes || fmt.Sprintf("%x", sha256.Sum256(chunk)) != input.Digest {
+					return txn, fmt.Errorf("graph transaction input checksum mismatch")
+				}
+				encoded = append(encoded, chunk...)
+				if len(encoded) > MaxChangeBytes {
+					return txn, fmt.Errorf("durable graph input exceeds its budget")
+				}
 			}
 		}
 		if fmt.Sprintf("%x", sha256.Sum256(encoded)) != txn.Digest {
@@ -257,7 +324,10 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			return txn, err
 		}
 		var plan Plan
-		if input.Ingest != nil && input.Commit == nil && input.Import == nil && txn.Purpose == "ingest" {
+		var err error
+		if planned != nil {
+			plan = *planned
+		} else if input.Ingest != nil && input.Commit == nil && input.Import == nil && txn.Purpose == "ingest" {
 			plan, err = buildIngestPlan(ctx, View{Graph: g, Remote: e.Remote}, *input.Ingest)
 		} else if input.Commit != nil && input.Import == nil && input.Ingest == nil {
 			plan, err = BuildPlan(ctx, View{Graph: g, Remote: e.Remote}, *input.Commit, txn.At)
@@ -280,31 +350,39 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			}
 			return e.finish(ctx, g, txn)
 		}
-		participants := plan.Changes.Participants()
-		if len(participants) == 0 {
-			participants = []uint8{0}
+		participants := planParticipants(plan)
+		if len(txn.Participants) == 0 {
+			if err := e.updateTransaction(ctx, g, Action{Operation: "participants", Txn: txn.ID, Sequence: txn.Sequence, Participants: participants}, &txn); err != nil {
+				return txn, err
+			}
+		} else if !slices.Equal(txn.Participants, participants) {
+			return txn, conflict("participant set is immutable")
 		}
-		if err := e.updateTransaction(ctx, g, Action{Operation: "participants", Txn: txn.ID, Sequence: txn.Sequence, Participants: participants}, &txn); err != nil {
-			return txn, err
-		}
-		workers, prepareCtx := errgroup.WithContext(ctx)
-		workers.SetLimit(4)
+		var actions []Action
 		for _, id := range participants {
-			workers.Go(func() error {
-				group, err := g.GroupFor(id)
-				if err != nil {
-					return err
-				}
-				changes := plan.Changes.Rows(id)
-				payload, _ := json.Marshal(changes)
-				var prepared Prepared
-				if err := e.Remote.Action(prepareCtx, group, Action{Operation: "prepare", Tenant: e.Tenant, Generation: g.Generation, Partition: id, Epoch: g.Partitions[id].Epoch, Txn: txn.ID, Sequence: txn.Sequence, Base: g.Roots[id], Changes: changes, Digest: fmt.Sprintf("%x", sha256.Sum256(payload))}, &prepared); err != nil {
-					return err
-				}
-				return e.control(prepareCtx, g, Action{Operation: "prepared", Txn: txn.ID, Sequence: txn.Sequence, Partition: id, Prepared: &prepared}, nil)
-			})
+			if _, recorded := txn.Prepared[id]; recorded {
+				continue
+			}
+			changes := plan.Changes.Rows(id)
+			payload, _ := json.Marshal(changes)
+			actions = append(actions, Action{Operation: "prepare", Tenant: e.Tenant, Generation: g.Generation, Partition: id, Epoch: g.Partitions[id].Epoch, Txn: txn.ID, Sequence: txn.Sequence, Base: g.Roots[id], Changes: changes, Digest: fmt.Sprintf("%x", sha256.Sum256(payload))})
 		}
-		if err := workers.Wait(); err != nil {
+		var preparedBatch map[uint8]Prepared
+		if e.BatchFragments {
+			var prepared []Prepared
+			finish := e.Metrics.Start("partition_txn_prepare")
+			prepared, err = ExecuteFragmentActions[Prepared](ctx, e.Remote, g, actions, true)
+			finish(err)
+			if err == nil {
+				preparedBatch = make(map[uint8]Prepared, len(prepared))
+				for i, p := range prepared {
+					preparedBatch[actions[i].Partition] = p
+				}
+			}
+		} else {
+			err = e.prepareLegacy(ctx, g, actions)
+		}
+		if err != nil {
 			if errors.Is(err, storage.ErrInvalidArgument) || errors.Is(err, storage.ErrConflict) {
 				if abortErr := e.updateTransaction(ctx, g, Action{Operation: "abort", Txn: txn.ID, Sequence: txn.Sequence, Error: err.Error(), IngestResult: failedIngestResult(input.Ingest, err)}, &txn); abortErr != nil {
 					return txn, abortErr
@@ -313,9 +391,11 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			}
 			return txn, err
 		}
-		txn, err = e.Remote.Transaction(ctx, e.Home, e.Tenant, g.Generation, txn.Identity)
-		if err != nil {
-			return txn, err
+		if !e.BatchFragments && len(txn.Prepared) != len(participants) {
+			txn, err = e.Remote.Transaction(ctx, e.Home, e.Tenant, g.Generation, txn.Identity)
+			if err != nil {
+				return txn, err
+			}
 		}
 		if txn.State != "preparing" {
 			return e.finish(ctx, g, txn)
@@ -325,7 +405,11 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 			version++
 		}
 		buckets := g.HashBuckets
-		for _, p := range txn.Prepared {
+		for _, id := range participants {
+			p, ok := preparedBatch[id]
+			if !ok {
+				p = txn.Prepared[id]
+			}
 			for index, digest := range p.HashBuckets {
 				if index < 0 || index >= len(buckets) {
 					return txn, fmt.Errorf("invalid prepare logical bucket")
@@ -345,11 +429,37 @@ func (e Engine) Resume(ctx context.Context) (Transaction, error) {
 				plan.IngestResult.Version = version
 			}
 		}
-		if err := e.updateTransaction(ctx, g, Action{Operation: "commit", Txn: txn.ID, Sequence: txn.Sequence, Result: &result, IngestResult: plan.IngestResult, CITypes: plan.CITypes, RelationTypes: plan.RelationTypes}, &txn); err != nil {
+		if err := e.updateTransaction(ctx, g, Action{Operation: "commit", Txn: txn.ID, Sequence: txn.Sequence, PreparedBatch: preparedBatch, Result: &result, IngestResult: plan.IngestResult, CITypes: plan.CITypes, RelationTypes: plan.RelationTypes}, &txn); err != nil {
 			return txn, err
 		}
 	}
 	return e.finish(ctx, g, txn)
+}
+
+func planParticipants(plan Plan) []uint8 {
+	if ids := plan.Changes.Participants(); len(ids) > 0 {
+		return ids
+	}
+	return []uint8{0}
+}
+
+func (e Engine) prepareLegacy(ctx context.Context, g Graph, actions []Action) error {
+	workers, workCtx := errgroup.WithContext(ctx)
+	workers.SetLimit(4)
+	for _, a := range actions {
+		workers.Go(func() error {
+			group, err := g.GroupFor(a.Partition)
+			if err != nil {
+				return err
+			}
+			var prepared Prepared
+			if err := e.Remote.Action(workCtx, group, a, &prepared); err != nil {
+				return err
+			}
+			return e.control(workCtx, g, Action{Operation: "prepared", Txn: a.Txn, Sequence: a.Sequence, Partition: a.Partition, Prepared: &prepared}, nil)
+		})
+	}
+	return workers.Wait()
 }
 
 func (e Engine) finish(ctx context.Context, g Graph, txn Transaction) (Transaction, error) {
@@ -360,21 +470,26 @@ func (e Engine) finish(ctx context.Context, g Graph, txn Transaction) (Transacti
 	if txn.State == "committed" {
 		operation = "finalize"
 	}
+	actions := make([]Action, 0, len(txn.Participants))
 	for _, id := range txn.Participants {
-		group, err := g.GroupFor(id)
-		if err != nil {
-			return txn, err
-		}
 		a := Action{Operation: operation, Tenant: e.Tenant, Generation: g.Generation, Partition: id, Epoch: g.Partitions[id].Epoch, Txn: txn.ID, Sequence: txn.Sequence}
 		if prepared, ok := txn.Prepared[id]; ok {
 			a.Prepared = &prepared
 		}
-		if err := e.Remote.Action(ctx, group, a, nil); err != nil {
-			return txn, err
-		}
+		actions = append(actions, a)
+	}
+	finish := e.Metrics.Start("partition_txn_finalize")
+	_, err := ExecuteFragmentActions[struct{}](ctx, e.Remote, g, actions, e.BatchFragments)
+	finish(err)
+	if err != nil {
+		return txn, err
 	}
 	var completed Transaction
-	if err := e.control(ctx, g, Action{Operation: "complete", Txn: txn.ID, Sequence: txn.Sequence}, &completed); err != nil {
+	complete := Action{Operation: "complete", Txn: txn.ID, Sequence: txn.Sequence}
+	if e.BatchFragments && txn.Purpose == "ingest" && len(txn.Inputs) == 1 {
+		complete.ReceiptRef = txn.Inputs[0].Acceptance
+	}
+	if err := e.control(ctx, g, complete, &completed); err != nil {
 		return txn, err
 	}
 	return completed, nil

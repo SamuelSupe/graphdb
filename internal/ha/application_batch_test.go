@@ -20,9 +20,108 @@ import (
 
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/partition"
 	"github.com/SamuelSupe/graphdb/v2/internal/replication"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestApplicationPartitionBatchRollsBackBeforeCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	files, err := storage.OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	app := &Application{Files: files, Store: storage.NewTenantStore(files, "test"), ShardID: "a"}
+	entry := func(index uint64, action partition.Action) replication.ApplyEntry {
+		t.Helper()
+		cmd, err := newCommand("graph_partition")
+		if err != nil {
+			t.Fatal(err)
+		}
+		action.Tenant, action.Generation, action.Epoch = "big", 1, 1
+		cmd.Tenant = action.Tenant
+		cmd.Body, err = json.Marshal(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return replication.ApplyEntry{Index: index, Data: data}
+	}
+	reserve := entry(1, partition.Action{Operation: "reserve_partitions", Participants: []uint8{0, 1}})
+	if _, err := app.Apply(ctx, reserve.Index, reserve.Data); err != nil {
+		t.Fatal(err)
+	}
+	discard := partition.Action{Operation: "discard", Txn: "txn", Sequence: 1}
+	first := entry(2, discard)
+	discard.Partition = 2 // Missing ownership is an application error.
+	if _, err := app.ApplyBatch(ctx, []replication.ApplyEntry{first, entry(3, discard)}); err == nil {
+		t.Fatal("batch acknowledged a missing participant")
+	}
+	state, err := app.partitionStore().Data(ctx, "big", 1, 0)
+	if err != nil || state.Sequence != 0 {
+		t.Fatalf("first participant escaped rollback: %+v %v", state, err)
+	}
+	checkpoint, err := files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 1 {
+		t.Fatalf("checkpoint after rollback: %+v %v", checkpoint, err)
+	}
+	discard.Partition = 1
+	responses, err := app.ApplyBatch(ctx, []replication.ApplyEntry{first, entry(3, discard)})
+	if err != nil || len(responses) != 2 {
+		t.Fatalf("batch retry: %d responses, %v", len(responses), err)
+	}
+	for _, id := range []uint8{0, 1} {
+		state, err := app.partitionStore().Data(ctx, "big", 1, id)
+		if err != nil || state.Sequence != 1 || state.LastTxn != discard.Txn {
+			t.Fatalf("participant %d after retry: %+v %v", id, state, err)
+		}
+	}
+	batch := func(index uint64, epoch uint64) int {
+		t.Helper()
+		left := partition.Action{Operation: "discard", Tenant: "big", Generation: 1, Epoch: 1, Txn: "next", Sequence: 2}
+		right := left
+		right.Partition, right.Epoch = 1, epoch
+		body, err := json.Marshal([]partition.Action{left, right})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd, err := newCommand("graph_fragment_batch")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Tenant, cmd.Body = "big", body
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := app.Apply(ctx, index, data)
+		var response httpResult
+		if err != nil || json.Unmarshal(raw, &response) != nil {
+			t.Fatalf("apply fragment batch: %s %v", raw, err)
+		}
+		return response.Status
+	}
+	if got := batch(4, 2); got != http.StatusConflict {
+		t.Fatalf("stale partition epoch returned %d", got)
+	}
+	state, err = app.partitionStore().Data(ctx, "big", 1, 0)
+	if err != nil || state.Sequence != 1 {
+		t.Fatalf("stale epoch changed the other partition: %+v %v", state, err)
+	}
+	if got := batch(5, 1); got != http.StatusOK {
+		t.Fatalf("valid fragment batch returned %d", got)
+	}
+	for _, id := range []uint8{0, 1} {
+		state, err := app.partitionStore().Data(ctx, "big", 1, id)
+		if err != nil || state.Sequence != 2 || state.LastTxn != "next" {
+			t.Fatalf("participant %d after fragment batch: %+v %v", id, state, err)
+		}
+	}
+}
 
 func TestApplicationProtocol4RetiresInvalidLegacyAcceptances(t *testing.T) {
 	ctx := context.Background()

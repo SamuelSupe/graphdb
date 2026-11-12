@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -39,6 +39,7 @@ type replicationJournal struct {
 	mu          sync.Mutex
 	failure     error
 	writers     atomic.Int32
+	batched     atomic.Bool
 	directoryMu sync.Mutex
 	directories map[string]struct{}
 	deleted     map[string]string
@@ -47,6 +48,20 @@ type replicationJournal struct {
 }
 
 type replicationJournalKey struct{}
+
+type replicationMetricsKey struct{}
+
+func WithReplicationMetrics(ctx context.Context, metrics *observability.OperationMetrics) context.Context {
+	if metrics == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, replicationMetricsKey{}, metrics)
+}
+
+func replicationOperation(ctx context.Context, name string) func(error) {
+	metrics, _ := ctx.Value(replicationMetricsKey{}).(*observability.OperationMetrics)
+	return metrics.Start(name)
+}
 
 func (s *FileStore) ReplicationCheckpoint() (ReplicationCheckpoint, error) {
 	data, err := os.ReadFile(filepath.Join(s.root, replicationDirectory, "checkpoint.json"))
@@ -65,6 +80,10 @@ func (s *FileStore) ReplicationCheckpoint() (ReplicationCheckpoint, error) {
 // commit marker covers both graph publication and the applied log position.
 // Startup rolls back an interrupted application before any reader is admitted.
 func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string, at time.Time, apply func(context.Context) ([]byte, error)) ([]byte, error) {
+	if s.runtime != nil {
+		s.runtime.replicationMu.Lock()
+		defer s.runtime.replicationMu.Unlock()
+	}
 	checkpoint, err := s.ReplicationCheckpoint()
 	if err != nil {
 		return nil, err
@@ -77,8 +96,10 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	if err != nil {
 		return nil, err
 	}
+	finishOpen := replicationOperation(ctx, "replication_journal_open")
 	db, err := bolt.Open(filepath.Join(dir, "pending.db"), 0600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
+		finishOpen(err)
 		return nil, err
 	}
 	// Coalesce concurrent before-images without delaying serial applications.
@@ -87,7 +108,9 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	journal := &replicationJournal{db: db, files: s}
 	// bbolt initializes new databases durably. Create the objects bucket with
 	// the first before-image instead of syncing a separate empty transaction.
-	if err := syncDir(dir); err != nil {
+	err = syncDir(dir)
+	finishOpen(err)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -106,18 +129,11 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		}
 		return nil, errors.Join(applyErr, failure, rollbackErr)
 	}
-	if err := s.syncPendingDirectories(); err != nil {
+	if err := s.syncReplicationObjects(ctx, journal); err != nil {
 		db.Close()
 		return nil, err
 	}
-	if err := journal.syncFiles(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := journal.syncDirectories(); err != nil {
-		db.Close()
-		return nil, err
-	}
+	finishCheckpoint := replicationOperation(ctx, "replication_checkpoint")
 	checkpoint = ReplicationCheckpoint{Index: index, Response: response}
 	data, err := json.Marshal(checkpoint)
 	if err == nil {
@@ -131,9 +147,12 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	}
 	err = errors.Join(err, db.Close())
 	if err != nil {
+		finishCheckpoint(err)
 		return nil, err
 	}
-	if err := s.recoverReplication(); err != nil {
+	err = s.recoverReplication()
+	finishCheckpoint(err)
+	if err != nil {
 		return nil, err
 	}
 	// Keep rollback's parent directories intact until the checkpoint is durable.
@@ -143,14 +162,27 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		for _, key := range journal.deleted {
 			keys = append(keys, key)
 		}
-		pruneCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-		err := s.pruneEmptyObjectParents(pruneCtx, keys)
-		cancel()
-		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			slog.Warn("prune empty replica object directories", "error", err)
-		}
+		s.pruneReplicatedObjectParents(ctx, keys)
 	}
 	return response, nil
+}
+
+func (s *FileStore) syncReplicationObjects(ctx context.Context, journal *replicationJournal) (err error) {
+	finish := replicationOperation(ctx, "replication_object_sync")
+	defer func() { finish(err) }()
+	if err := s.syncPendingDirectories(); err != nil {
+		return err
+	}
+	finishFiles := replicationOperation(ctx, "replication_sync_files")
+	err = journal.syncFiles()
+	finishFiles(err)
+	if err != nil {
+		return err
+	}
+	finishDirectories := replicationOperation(ctx, "replication_sync_directories")
+	err = journal.syncDirectories()
+	finishDirectories(err)
+	return err
 }
 
 func (s *FileStore) replicationJournal(ctx context.Context) *replicationJournal {
@@ -325,6 +357,17 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 		}
 	}
 	return nil
+}
+
+// JournalReplicatedObjects records a set of before-images before the caller
+// changes it. The replicated application must own all keys until it finishes.
+func (s *FileStore) JournalReplicatedObjects(ctx context.Context, keys []string) (err error) {
+	if journal := s.replicationJournal(ctx); journal != nil {
+		journal.batched.Store(true)
+		finish := replicationOperation(ctx, "replication_before_images")
+		defer func() { finish(err) }()
+	}
+	return s.journalObjects(ctx, keys)
 }
 
 func (s *FileStore) journalDirectory(ctx context.Context, targetKey, incoming string) error {
