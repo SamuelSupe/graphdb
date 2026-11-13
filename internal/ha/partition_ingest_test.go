@@ -573,15 +573,27 @@ func testHAPartitionIngestRecovery(t *testing.T, protocol int) {
 		request := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: test.name, Items: []storage.IngestItem{{Entity: &graph.Entity{ID: test.name, Kind: "host"}}}}
 		test.edit(&request)
 		data, _ := json.Marshal(request)
-		r := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", bytes.NewReader(data)).WithContext(ctx)
-		r.Header.Set("Authorization", "Bearer "+catalog.nodes[0].cfg.Raft.Token)
-		r.Header.Set("X-Tenant-ID", "big")
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("Prefer", "wait=committed")
-		w := httptest.NewRecorder()
-		fresh.ServeHTTP(w, r)
-		if w.Code != test.code {
-			t.Fatalf("%s terminal HTTP result: %d %s", test.name, w.Code, w.Body.String())
+		for {
+			r := httptest.NewRequest(http.MethodPost, "/v1/ingest/batches", bytes.NewReader(data)).WithContext(ctx)
+			r.Header.Set("Authorization", "Bearer "+catalog.nodes[0].cfg.Raft.Token)
+			r.Header.Set("X-Tenant-ID", "big")
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Prefer", "wait=committed")
+			w := httptest.NewRecorder()
+			fresh.ServeHTTP(w, r)
+			if w.Code == test.code {
+				break
+			}
+			// The Router may still know the old leader after the group restart.
+			// The same batch identity is safe to retry until routing converges.
+			if w.Code != http.StatusServiceUnavailable && w.Code != http.StatusBadGateway {
+				t.Fatalf("%s terminal HTTP result: %d %s", test.name, w.Code, w.Body.String())
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("%s terminal HTTP result: %d %s", test.name, w.Code, w.Body.String())
+			case <-time.After(25 * time.Millisecond):
+			}
 		}
 	}
 	g = waitGraph(func(g partition.Graph) bool { return g.Active == nil })
