@@ -9,12 +9,16 @@ import (
 const indexWriteConcurrency = 4
 
 func runIndexWriteJobs(ctx context.Context, count int, fn func(context.Context, int) error) error {
+	return runWriteJobs(ctx, count, indexWriteConcurrency, fn)
+}
+
+func runWriteJobs(ctx context.Context, count, concurrency int, fn func(context.Context, int) error) error {
 	if count == 0 {
 		return nil
 	}
 	writeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	workers := min(indexWriteConcurrency, count)
+	workers := min(concurrency, count)
 	jobs := make(chan int)
 	errCh := make(chan error, 1)
 	var group sync.WaitGroup

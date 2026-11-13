@@ -14,7 +14,7 @@ storage is optional for snapshot backups.
 
 ## Releases
 
-**[2.6.0-preview.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0-preview.1)** includes opt-in large-graph sharding and partitioned WAL with Raft protocols 5–11. Raft defaults to protocol 1. See [activation and upgrade limits](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级) and [cold-write validation](docs/validation-v2.6.0-preview.1.md).
+**[2.6.0-preview.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0-preview.2)** includes opt-in large-graph sharding and partitioned WAL. Raft defaults to protocol 1. Protocol 12 requires explicit activation on the home group. See [activation and upgrade limits](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级) and [cold-write validation](docs/validation-v2.6.0-preview.2.md).
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** enables durable asynchronous WAL ingestion in standalone Compose and splits oversized index catch-up into ordered incremental updates. Release binaries use **Go 1.27.3**.
 

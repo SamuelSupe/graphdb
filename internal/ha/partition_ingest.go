@@ -166,13 +166,18 @@ func (c *Cluster) servePartitionIngest(w http.ResponseWriter, r *http.Request, b
 }
 
 func (a *Application) firstPartitionIngest(ctx context.Context, tenant string, generation int64) (string, error) {
+	return a.partitionIngestAfter(ctx, tenant, generation, 0)
+}
+
+func (a *Application) partitionIngestAfter(ctx context.Context, tenant string, generation int64, after uint64) (string, error) {
 	if err := a.ensurePending(ctx); err != nil {
 		return "", err
 	}
 	key := ""
 	var first uint64
 	for candidate, pending := range a.pending {
-		if pending.partitioned && pending.tenant == tenant && pending.generation == generation && (key == "" || pending.index < first) {
+		if pending.partitioned && pending.tenant == tenant && pending.generation == generation &&
+			(after == 0 || pending.index > after) && (key == "" || pending.index < first) {
 			key, first = candidate, pending.index
 		}
 	}
@@ -264,6 +269,26 @@ func (a *Application) completeGraphIngestReceipt(ctx context.Context, ref string
 	return a.savePartitionIngestResult(ctx, key, record, txn, at, true)
 }
 
+func (a *Application) beginNextPartitionIngest(ctx context.Context, complete partition.Action, at time.Time) error {
+	next := complete.NextIngest
+	begin := partition.Action{
+		Operation: "begin", Purpose: "ingest", Tenant: complete.Tenant, Generation: complete.Generation,
+		Txn: next.Txn, Identity: next.Identity, Digest: next.Input.Digest, Inputs: []partition.Input{next.Input},
+		At: at, BaseVersion: next.BaseVersion, LayoutRevision: next.LayoutRevision, Participants: next.Participants,
+		Revision: partition.BatchGCRevision,
+	}
+	err := a.validatePartitionIngestBegin(ctx, begin)
+	if err == nil {
+		_, err = a.partitionStore().Apply(ctx, begin)
+	}
+	// A stale successor is optional. Both begin validations report conflicts
+	// before writing. Storage failures still abort the entire journal.
+	if errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrInvalidArgument) {
+		return nil
+	}
+	return err
+}
+
 func (a *Application) savePartitionIngestResult(ctx context.Context, key string, record acceptedRequest, txn partition.Transaction, at time.Time, compact bool) error {
 	record.State, record.Result, record.FinishedAt = "committed", txn.IngestResult, at
 	if record.Result.Failed > 0 {
@@ -295,7 +320,12 @@ func (c *Cluster) advancePartitionIngest(ctx context.Context, g partition.Graph,
 	worked := false
 	batched := c.config.Protocol >= partition.BatchProtocol
 	sliceEnd := time.Now().Add(writeSlice)
-	for range max(1, c.FlushMaxRequests) {
+	limit := max(1, c.FlushMaxRequests)
+	var run *partitionIngestRun
+	if c.config.Protocol >= partition.IngestHandoffProtocol {
+		run = &partitionIngestRun{}
+	}
+	for i := range limit {
 		if deadline, ok := ctx.Deadline(); ok {
 			if batched && time.Until(deadline) < 2*time.Second || !batched && worked && time.Until(deadline) < time.Second {
 				break
@@ -307,7 +337,14 @@ func (c *Cluster) advancePartitionIngest(ctx context.Context, g partition.Graph,
 			break
 		}
 		transaction, cancel := context.WithTimeout(ctx, 8*time.Second)
-		applied, err := c.flushPartitionIngest(transaction, g, publishAfter)
+		if run != nil {
+			run.canContinue = func() bool {
+				deadline, bounded := ctx.Deadline()
+				return i+1 < limit && ctx.Err() == nil && (!bounded || time.Until(deadline) >= 2*time.Second) &&
+					(publishAfter != nil || g.GC == nil || time.Now().Before(sliceEnd))
+			}
+		}
+		applied, err := c.flushPartitionIngest(transaction, g, publishAfter, run)
 		cancel()
 		worked = worked || applied
 		if err != nil || !applied {
@@ -323,7 +360,7 @@ func (c *Cluster) advancePartitionIngest(ctx context.Context, g partition.Graph,
 	return worked, nil
 }
 
-func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph, publishAfter <-chan struct{}) (bool, error) {
+func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph, publishAfter <-chan struct{}, run *partitionIngestRun) (bool, error) {
 	c.App.mu.Lock()
 	key, err := c.App.firstPartitionIngest(ctx, g.Tenant, g.Generation)
 	var record acceptedRequest
@@ -344,6 +381,13 @@ func (c *Cluster) flushPartitionIngest(ctx context.Context, g partition.Graph, p
 	}
 	engine := c.partitionEngine(g.Tenant, g.Generation, c.config.Protocol >= partition.BatchProtocol)
 	engine.PublishAfter = publishAfter
+	if run != nil {
+		remote := engine.Remote.(partitionCoordinator)
+		remote.ingest = run
+		engine.Remote = remote
+		engine.IngestPreparation = run.preparation
+		run.preparation = nil
+	}
 	ref := ""
 	if c.config.Protocol >= partition.CompactIngestProtocol {
 		ref = partitionIngestReference(key)

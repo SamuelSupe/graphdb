@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 )
 
 const replicationDirectory = ".graphdb-replication"
+const maxReusableJournalBytes = 1 << 20
 
 type ReplicationCheckpoint struct {
 	Index    uint64 `json:"index"`
@@ -40,11 +42,13 @@ type replicationJournal struct {
 	failure     error
 	writers     atomic.Int32
 	batched     atomic.Bool
+	syncOnWrite atomic.Bool
 	directoryMu sync.Mutex
 	directories map[string]struct{}
 	deleted     map[string]string
 	fileMu      sync.Mutex
 	fileSyncs   map[string]struct{}
+	reclaim     []string
 }
 
 type replicationJournalKey struct{}
@@ -97,7 +101,13 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		return nil, err
 	}
 	finishOpen := replicationOperation(ctx, "replication_journal_open")
-	db, err := bolt.Open(filepath.Join(dir, "pending.db"), 0600, &bolt.Options{Timeout: time.Second})
+	pending := filepath.Join(dir, "pending.db")
+	_, statErr := os.Stat(pending)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		finishOpen(statErr)
+		return nil, statErr
+	}
+	db, err := bolt.Open(pending, 0600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
 		finishOpen(err)
 		return nil, err
@@ -108,7 +118,24 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	journal := &replicationJournal{db: db, files: s}
 	// bbolt initializes new databases durably. Create the objects bucket with
 	// the first before-image instead of syncing a separate empty transaction.
-	err = syncDir(dir)
+	if statErr == nil {
+		err = db.View(func(tx *bolt.Tx) error {
+			meta := tx.Bucket([]byte("meta"))
+			if meta == nil || meta.Get([]byte("committed")) == nil {
+				return fmt.Errorf("replication journal requires recovery before reuse")
+			}
+			var committed ReplicationCheckpoint
+			if err := json.Unmarshal(meta.Get([]byte("committed")), &committed); err != nil {
+				return err
+			}
+			if committed.Index != checkpoint.Index || !bytes.Equal(committed.Response, checkpoint.Response) {
+				return fmt.Errorf("replication journal differs from the published checkpoint")
+			}
+			return nil
+		})
+	} else {
+		err = syncDir(dir)
+	}
 	finishOpen(err)
 	if err != nil {
 		db.Close()
@@ -136,6 +163,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	finishCheckpoint := replicationOperation(ctx, "replication_checkpoint")
 	checkpoint = ReplicationCheckpoint{Index: index, Response: response}
 	data, err := json.Marshal(checkpoint)
+	keep := false
 	if err == nil {
 		err = db.Update(func(tx *bolt.Tx) error {
 			meta, err := tx.CreateBucketIfNotExists([]byte("meta"))
@@ -144,16 +172,34 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 			}
 			return meta.Put([]byte("committed"), data)
 		})
+		if err == nil {
+			err = db.View(func(tx *bolt.Tx) error {
+				keep = tx.Size() <= maxReusableJournalBytes
+				return nil
+			})
+		}
 	}
 	err = errors.Join(err, db.Close())
 	if err != nil {
 		finishCheckpoint(err)
 		return nil, err
 	}
-	err = s.recoverReplication()
+	// The committed marker already contains these checkpoint bytes. Publish
+	// them directly. A small committed journal can be reused by replacing its
+	// previous marker and before-images in the first mutation transaction.
+	// Startup and older binaries can still recover the same committed marker.
+	err = writeFileAtomic(filepath.Join(dir, "checkpoint.json"), data)
+	if err == nil && !keep {
+		// The next application syncs a newly created name before any write.
+		// Until then, a surviving journal can only recover this checkpoint.
+		err = os.Remove(pending)
+	}
 	finishCheckpoint(err)
 	if err != nil {
 		return nil, err
+	}
+	if len(journal.reclaim) != 0 {
+		s.reclaimReplicatedPages(applyCtx, journal.reclaim)
 	}
 	// Keep rollback's parent directories intact until the checkpoint is durable.
 	// Empty-directory cleanup is local housekeeping and cannot reject that entry.
@@ -206,8 +252,10 @@ func (j *replicationJournal) deferDirectorySync(dir string) {
 	j.directories[dir] = struct{}{}
 }
 
-func (j *replicationJournal) deferDeletedObject(dir, key string) {
-	j.deferDirectorySync(dir)
+func (j *replicationJournal) deferDeletedObject(dir, key string, durable bool) {
+	if durable {
+		j.deferDirectorySync(dir)
+	}
 	j.directoryMu.Lock()
 	defer j.directoryMu.Unlock()
 	if j.deleted == nil {
@@ -226,7 +274,13 @@ func (j *replicationJournal) syncDirectories() error {
 	sort.Strings(dirs)
 	// Independent directory barriers may complete together, but all must
 	// finish before ApplyReplicated writes the durable commit marker.
-	if err := runIndexWriteJobs(context.Background(), len(dirs), func(_ context.Context, index int) error {
+	// Batched page publication can touch dozens of directories after its
+	// file writers finish. Keep the smaller pool for deletion batches.
+	workers := indexWriteConcurrency
+	if j.batched.Load() && j.syncOnWrite.Load() && len(j.deleted) == 0 {
+		workers = 16
+	}
+	if err := runWriteJobs(context.Background(), len(dirs), workers, func(_ context.Context, index int) error {
 		return syncDir(dirs[index])
 	}); err != nil {
 		return err
@@ -242,8 +296,7 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	}
 	var recorded bool
 	if err := journal.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte("objects"))
-		recorded = bucket != nil && bucket.Get([]byte(key)) != nil
+		recorded = hasBeforeImage(tx, key)
 		return nil
 	}); err != nil {
 		return err
@@ -267,7 +320,7 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	// Callers hold the object lock or the directory replacement gate until
 	// Batch returns. Its callback may be retried; file reads stay outside it.
 	persist := func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("objects"))
+		bucket, err := beforeImages(tx)
 		if err != nil {
 			return err
 		}
@@ -284,6 +337,30 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 	return journal.db.Batch(persist)
 }
 
+func beforeImages(tx *bolt.Tx) (*bolt.Bucket, error) {
+	if meta := tx.Bucket([]byte("meta")); meta != nil && meta.Get([]byte("committed")) != nil {
+		// The previous command left a durable marker. Reset it in the same
+		// transaction as the first new before-images, before any object changes.
+		if err := meta.Delete([]byte("committed")); err != nil {
+			return nil, err
+		}
+		if tx.Bucket([]byte("objects")) != nil {
+			if err := tx.DeleteBucket([]byte("objects")); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return tx.CreateBucketIfNotExists([]byte("objects"))
+}
+
+func hasBeforeImage(tx *bolt.Tx, key string) bool {
+	if meta := tx.Bucket([]byte("meta")); meta != nil && meta.Get([]byte("committed")) != nil {
+		return false
+	}
+	bucket := tx.Bucket([]byte("objects"))
+	return bucket != nil && bucket.Get([]byte(key)) != nil
+}
+
 // Prepared publication owns the application barrier, so none of these objects
 // can change while their before-images are captured. Persist bounded groups
 // before any mutation instead of syncing one rollback transaction per object.
@@ -291,7 +368,7 @@ func (s *FileStore) journalObject(ctx context.Context, key string) error {
 // retained before-images. A 64-entry limit amplifies fsync for small files.
 func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 	journal := s.replicationJournal(ctx)
-	if journal == nil {
+	if journal == nil || len(keys) == 0 {
 		return nil
 	}
 	for start := 0; start < len(keys); {
@@ -305,8 +382,7 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 			start++
 			var recorded bool
 			if err := journal.db.View(func(tx *bolt.Tx) error {
-				bucket := tx.Bucket([]byte("objects"))
-				recorded = bucket != nil && bucket.Get([]byte(key)) != nil
+				recorded = hasBeforeImage(tx, key)
 				return nil
 			}); err != nil {
 				return err
@@ -321,15 +397,18 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 			if err := s.verifySafeMutationParent(ctx, filename); err != nil && !errors.Is(err, ErrNotFound) {
 				return err
 			}
-			if info, err := os.Lstat(filename); err == nil && !info.Mode().IsRegular() {
-				return fmt.Errorf("non-regular replication object %s", filename)
-			} else if err != nil && !os.IsNotExist(err) {
-				return err
-			}
-			data, err := os.ReadFile(filename)
 			value := []byte{0}
+			info, err := os.Lstat(filename)
 			if err == nil {
-				value = append([]byte{1}, data...)
+				if !info.Mode().IsRegular() {
+					return fmt.Errorf("non-regular replication object %s", filename)
+				}
+				data, err := os.ReadFile(filename)
+				if err == nil {
+					value = append([]byte{1}, data...)
+				} else if !os.IsNotExist(err) {
+					return err
+				}
 			} else if !os.IsNotExist(err) {
 				return err
 			}
@@ -340,7 +419,7 @@ func (s *FileStore) journalObjects(ctx context.Context, keys []string) error {
 			continue
 		}
 		if err := journal.db.Update(func(tx *bolt.Tx) error {
-			bucket, err := tx.CreateBucketIfNotExists([]byte("objects"))
+			bucket, err := beforeImages(tx)
 			if err != nil {
 				return err
 			}

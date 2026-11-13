@@ -78,6 +78,58 @@ func (e Engine) SubmitAcceptedIngest(ctx context.Context, identity string, input
 	return storage.IngestResult{}, fmt.Errorf("ingest transaction has no durable result")
 }
 
+func (e Engine) planIngest(ctx context.Context, g Graph, input IngestInput) (Plan, error) {
+	// Leave time to publish even when a data group cannot answer speculative reads.
+	planning, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	finish := e.Metrics.Start("partition_txn_plan")
+	plan, err := buildIngestPlan(planning, View{Graph: g, Remote: e.Remote}, input)
+	finish(err)
+	return plan, err
+}
+
+// IngestPreparation keeps the speculative plan local to one WAL driver.
+// Only Begin is sent to Raft.
+type IngestPreparation struct {
+	Begin      IngestBegin
+	generation int64
+	roots      [256]Root
+	plan       Plan
+}
+
+func (p *IngestPreparation) matches(g Graph, txn Transaction) bool {
+	return p != nil && g.Active != nil && g.Active.ID == txn.ID && txn.State == "preparing" &&
+		txn.Purpose == "ingest" && txn.ID == p.Begin.Txn && txn.Identity == p.Begin.Identity &&
+		g.Generation == p.generation && txn.BaseVersion == g.Version && g.Version == p.Begin.BaseVersion &&
+		g.LayoutRevision == p.Begin.LayoutRevision && g.Roots == p.roots &&
+		len(txn.Inputs) == 1 && txn.Inputs[0] == p.Begin.Input
+}
+
+// PlanIngestBegin binds the successor to the currently published graph and the
+// original acceptance. A leader can reconstruct the plan from these fences.
+func (e Engine) PlanIngestBegin(ctx context.Context, g Graph, identity, acceptance string, input IngestInput) (*IngestPreparation, error) {
+	data, err := input.Encode()
+	if err != nil {
+		return nil, err
+	}
+	id, err := transactionID()
+	if err != nil {
+		return nil, err
+	}
+	plan, err := e.planIngest(ctx, g, input)
+	if err != nil {
+		return nil, err
+	}
+	return &IngestPreparation{
+		Begin: IngestBegin{
+			Txn: id, Identity: identity, BaseVersion: g.Version, LayoutRevision: g.LayoutRevision,
+			Input:        Input{Stage: id, Acceptance: acceptance, Digest: fmt.Sprintf("%x", sha256.Sum256(data)), Bytes: len(data)},
+			Participants: planParticipants(plan),
+		},
+		generation: g.Generation, roots: g.Roots, plan: plan,
+	}, nil
+}
+
 func buildIngestPlan(ctx context.Context, view View, input IngestInput) (Plan, error) {
 	request := input.Request
 	result, mutations, indices := ingest.BuildIngestMutations(request)

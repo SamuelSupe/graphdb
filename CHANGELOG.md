@@ -5,6 +5,39 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.6.0-preview.2] - 2026-11-13
+
+- Add opt-in home-group Raft protocol 12 for partitioned ingest. A backlogged
+  queue can finish one batch and establish its next transaction in one Raft
+  entry after participant finalization. The new leader can resume the successor
+  from its durable acceptance. Earlier protocol entries retain their original
+  behavior.
+- Reuse a successor's local plan when it matches the active transaction and
+  graph roots. Increase bounded prepare file publication concurrency and
+  publish the existing replication checkpoint directly from its durable
+  journal marker.
+- On protocol 12, advance up to 64 partitions per running GC turn, capped at
+  32 per data group. Preserve the existing 16-partition Raft entry limit and
+  per-partition scan and deletion budgets.
+- Wake the protocol-12 partitioned WAL driver after durable acceptance. Use
+  full data-group batches to install the GC fence for a single protected view.
+- Use up to 16 directory sync workers for pre-journaled Raft file publication.
+  Keep deletion batches on the existing smaller pool.
+- Reclaim unreachable immutable pages after the durable checkpoint for a
+  planned GC sweep. A later sweep collects pages left by interrupted cleanup.
+- Reuse small committed Raft application journals. The next mutation records
+  its first before-images and clears the previous commit marker in one durable
+  transaction, avoiding database creation and directory sync on each apply.
+- Verify the upgrade from preview.1 at protocol 11, replay of its committed
+  logs, and protocol 12 recovery after process crashes and offline restore.
+  Activating protocol 12 raises the durable protocol floor. Preview.1 cannot
+  open those directories. Raft defaults to protocol 1.
+- In the nine-node, two-batch/s disk tests, commit P99 moved from 7.69 s to
+  2.14 s for the original cold workload, from 1.01 s to 0.66 s for overwrites,
+  and from 1.01 s to 1.22 s for 28,800 distinct-entity cold writes. All 5,400
+  batches committed. Workload, queue, GC and recovery scope are in
+  [preview validation](docs/validation-v2.6.0-preview.2.md).
+
 ## [2.6.0-preview.1] - 2026-11-12
 
 - Ship large-graph sharding as an explicit preview. Raft defaults to protocol 1.

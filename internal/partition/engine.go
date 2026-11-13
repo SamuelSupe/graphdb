@@ -26,6 +26,8 @@ type Engine struct {
 	Metrics        *observability.OperationMetrics
 	// PublishAfter permits immutable planning while a maintenance step runs.
 	PublishAfter <-chan struct{}
+	// IngestPreparation is reusable only for its durably established successor.
+	IngestPreparation *IngestPreparation
 }
 
 func (e Engine) waitToPublish(ctx context.Context) error {
@@ -123,6 +125,7 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 	var g Graph
 	var txn Transaction
 	var planned *Plan
+	var plannedTxn string
 	var stagedGeneration int64
 	for {
 		g, err = e.Remote.Describe(ctx, e.Home, e.Tenant)
@@ -142,6 +145,10 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 					return storage.CommitResult{}, err
 				}
 				txn = previous
+				if e.IngestPreparation.matches(g, txn) {
+					planned, plannedTxn = &e.IngestPreparation.plan, txn.ID
+					e.Metrics.Event("partition_ingest_plan_reused")
+				}
 				break
 			}
 		}
@@ -185,17 +192,11 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 		if e.BatchFragments && acceptance != "" {
 			var input transactionInput
 			if json.Unmarshal(data, &input) == nil && input.Ingest != nil {
-				// Leave time to establish the durable active transaction even
-				// when a data group cannot answer the speculative reads.
-				planning, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
-				finish := e.Metrics.Start("partition_txn_plan")
-				plan, planErr := buildIngestPlan(planning, View{Graph: g, Remote: e.Remote}, *input.Ingest)
-				finish(planErr)
-				cancel()
+				plan, planErr := e.planIngest(ctx, g, *input.Ingest)
 				if planErr == nil {
 					begin.Participants = planParticipants(plan)
 					begin.LayoutRevision = g.LayoutRevision
-					planned = &plan
+					planned, plannedTxn = &plan, id
 				}
 			}
 		}
@@ -227,7 +228,7 @@ func (e Engine) submitInput(ctx context.Context, data []byte, identity string, e
 	for txn.State != "committed" && txn.State != "aborted" {
 		var resolved Transaction
 		var resumeErr error
-		if planned != nil && !replay {
+		if planned != nil && plannedTxn == txn.ID {
 			resolved, resumeErr = e.resume(ctx, g, txn, data, planned)
 			planned = nil
 		} else {

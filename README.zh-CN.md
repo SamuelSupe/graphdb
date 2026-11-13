@@ -12,7 +12,7 @@
 
 ## 发行版本
 
-**[2.6.0-preview.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0-preview.1)** 支持显式启用大图分片和分片 WAL，默认 Raft 协议为 1。协议 5–11 的能力和配置见[启用及升级说明](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级)，实测和使用边界见[预览验证](docs/validation-v2.6.0-preview.1.md)。
+**[2.6.0-preview.2](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0-preview.2)** 支持显式启用大图分片和分片 WAL，默认 Raft 协议为 1。协议 12 需在 home group 显式激活。配置和升级限制见[启用及升级说明](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级)，实测和使用边界见[预览验证](docs/validation-v2.6.0-preview.2.md)。
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** 在单机 Compose 中默认启用持久化 WAL 异步接入，并将超出合并预算的索引增量分段追平。发行二进制使用 **Go 1.27.3**。
 

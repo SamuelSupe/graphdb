@@ -1,6 +1,6 @@
 # 大图分片实施说明
 
-适用于 **GGraphDB 2.6.0-preview.1** 的大图分片预览。2.5.0 和 2.5.1 提供协议 5 预览。协议 6–11 的 WAL、回收和分裂能力见[分片 WAL 接入](partition-wal-ingestion.zh-CN.md)，启用时按[升级步骤](partition-wal-ingestion.zh-CN.md#显式启用与升级)操作。完整目标见[设计](large-graph-sharding-design.zh-CN.md)，本次预览的负载边界见[验证记录](validation-v2.6.0-preview.1.md)。
+适用于 **GGraphDB 2.6.0-preview.2** 的大图分片预览。2.5.0 和 2.5.1 提供协议 5 预览。协议 6–12 的 WAL、回收和分裂能力见[分片 WAL 接入](partition-wal-ingestion.zh-CN.md)，启用时按[升级步骤](partition-wal-ingestion.zh-CN.md#显式启用与升级)操作。完整目标见[设计](large-graph-sharding-design.zh-CN.md)，本次预览的负载边界见[验证记录](validation-v2.6.0-preview.2.md)。
 
 ## 已实现路径
 
@@ -87,7 +87,7 @@ home group 使用协议 7 时，GC 另清理未被活动事务认领的暂存输
 
 ## 预览验证与早期实现记录
 
-最新的九节点冷写结果和预览发布门禁见[2.6.0-preview.1 验证记录](validation-v2.6.0-preview.1.md)。以下保留早期实现的验证口径。
+最新的九节点冷写结果和预览发布门禁见[2.6.0-preview.2 验证记录](validation-v2.6.0-preview.2.md)。以下保留早期实现的验证口径。
 
 运行环境：OrbStack Linux arm64，`golang:1.27.3-bookworm`，使用仓库已有依赖，没有新增运行依赖。九个真实 Raft 节点组成一个三副本目录组及两个三副本数据组，各副本独立目录，通过 HTTP 复制。节点运行在同一 Go 测试进程，测试逐节点关闭和重建；这不等价于九个独立服务进程或跨主机验收。
 

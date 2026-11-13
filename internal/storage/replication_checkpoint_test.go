@@ -27,11 +27,44 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		if err := files.RequireReplicatedWrites(); err != nil {
 			t.Fatal(err)
 		}
-		_, err = files.ApplyReplicated(context.Background(), 2, "crashing-command", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
-			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "empty" {
+		stage := os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE")
+		if stage == "reused" {
+			_, err := files.ApplyReplicated(context.Background(), 2, "initial", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+				if err := files.Put(ctx, "graphdb/new-data", []byte("old data")); err != nil {
+					return nil, err
+				}
+				if err := files.Delete(ctx, "graphdb/new-data"); err != nil {
+					return nil, err
+				}
+				return []byte("old-response"), files.Put(ctx, "graphdb/manifest", []byte("old-version"))
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(root, replicationDirectory, "pending.db")); err != nil {
+				t.Fatalf("expected a reusable committed journal: %v", err)
+			}
+		}
+		index := uint64(2)
+		if stage == "reused" {
+			index = 3
+		}
+		_, err = files.ApplyReplicated(context.Background(), index, "crashing-command", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+			if stage == "empty" {
 				os.Exit(0)
 			}
-			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "concurrent" {
+			if stage == "reused" {
+				if err := files.JournalReplicatedObjects(ctx, []string{"graphdb/manifest", "graphdb/new-data"}); err != nil {
+					return nil, err
+				}
+				for key, data := range map[string]string{"graphdb/manifest": "interrupted", "graphdb/new-data": "first persisted"} {
+					if err := files.Put(ctx, key, []byte(data)); err != nil {
+						return nil, err
+					}
+				}
+				os.Exit(0)
+			}
+			if stage == "concurrent" {
 				jobs := make([]func() error, 8)
 				for worker := range jobs {
 					jobs[worker] = func() error {
@@ -51,7 +84,7 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 				}
 				os.Exit(0)
 			}
-			if os.Getenv("GRAPHDB_TEST_REPLICA_CRASH_STAGE") == "prepared" {
+			if stage == "prepared" {
 				var keys []string
 				for object := range preparedObjects {
 					keys = append(keys, fmt.Sprintf("graphdb/prepared/old/%d", object), fmt.Sprintf("graphdb/prepared/new/%d", object))
@@ -102,7 +135,7 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 		})
 		t.Fatal(err)
 	}
-	for _, stage := range []string{"empty", "partial", "concurrent", "prepared"} {
+	for _, stage := range []string{"empty", "partial", "concurrent", "prepared", "reused"} {
 		t.Run(stage, func(t *testing.T) {
 			root := t.TempDir()
 			files, err := OpenFileStore(root)
@@ -187,11 +220,15 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 				}
 			}
 			checkpoint, err := files.ReplicationCheckpoint()
-			if err != nil || checkpoint.Index != 1 {
+			previous := uint64(1)
+			if stage == "reused" {
+				previous = 2
+			}
+			if err != nil || checkpoint.Index != previous {
 				t.Fatalf("applied position advanced across crash: %+v, %v", checkpoint, err)
 			}
 			for i := 0; i < 2; i++ {
-				_, err = files.ApplyReplicated(context.Background(), 2, "replay", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+				_, err = files.ApplyReplicated(context.Background(), previous+1, "replay", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
 					if err := files.Delete(ctx, "graphdb/manifest"); err != nil {
 						return nil, err
 					}
@@ -207,7 +244,7 @@ func TestReplicationApplicationCrashRecovery(t *testing.T) {
 				}
 			}
 			checkpoint, err = files.ReplicationCheckpoint()
-			if err != nil || checkpoint.Index != 2 || string(checkpoint.Response) != "new-response" {
+			if err != nil || checkpoint.Index != previous+1 || string(checkpoint.Response) != "new-response" {
 				t.Fatalf("replay checkpoint mismatch: %+v, %v", checkpoint, err)
 			}
 			if err := files.Close(); err != nil {
@@ -235,18 +272,33 @@ func TestReplicationApplicationDirectorySyncFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer files.Close()
-	_, err = files.ApplyReplicated(context.Background(), 1, "directory-failure", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
-		if err := files.PutReplicatedObject(ctx, "graphdb/pages/a", []byte("new")); err != nil {
+	const existing = "graphdb/state/retained"
+	if _, err := files.ApplyReplicated(context.Background(), 1, "before", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		return nil, files.Put(ctx, existing, []byte("before"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{existing}
+	for i := range 12 {
+		keys = append(keys, fmt.Sprintf("graphdb/pages/%02d/page", i))
+	}
+	_, err = files.ApplyReplicated(context.Background(), 2, "directory-failure", time.Unix(2, 0), func(ctx context.Context) ([]byte, error) {
+		if err := files.JournalReplicatedObjects(ctx, keys); err != nil {
 			return nil, err
 		}
+		for _, key := range keys {
+			if err := files.PutReplicatedObject(ctx, key, []byte("new")); err != nil {
+				return nil, err
+			}
+		}
 		// Simulate a directory disappearing before the publication barrier.
-		return []byte("response"), os.RemoveAll(filepath.Join(root, "graphdb", "pages"))
+		return []byte("response"), os.RemoveAll(filepath.Join(root, "graphdb", "pages", "04"))
 	})
 	if err == nil {
 		t.Fatal("failed publication directory sync was checkpointed")
 	}
 	checkpoint, err := files.ReplicationCheckpoint()
-	if err != nil || checkpoint.Index != 0 {
+	if err != nil || checkpoint.Index != 1 {
 		t.Fatalf("failed directory sync advanced checkpoint: %+v, %v", checkpoint, err)
 	}
 	if err := files.Close(); err != nil {
@@ -257,8 +309,136 @@ func TestReplicationApplicationDirectorySyncFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer files.Close()
-	if _, err := files.Get(context.Background(), "graphdb/pages/a"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("failed publication was not rolled back: %v", err)
+	data, err := files.Get(context.Background(), existing)
+	if err != nil || string(data) != "before" {
+		t.Fatalf("rollback did not restore the prior object: %q, %v", data, err)
+	}
+	for _, key := range keys[1:] {
+		if _, err := files.Get(context.Background(), key); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("failed publication left %q: %v", key, err)
+		}
+	}
+}
+
+func TestReplicationApplicationReclaimsPagesAfterCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	files, err := OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	const page, state = "graphdb/pages/unreachable", "graphdb/partition/state"
+	at := time.Unix(1, 0)
+	if _, err := files.ApplyReplicated(ctx, 1, "initial", at, func(ctx context.Context) ([]byte, error) {
+		return nil, files.Put(ctx, page, []byte("historical page"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	apply := func(ctx context.Context, fail bool) ([]byte, error) {
+		if err := files.DeferReplicatedPageReclaim(ctx, []string{page}); err != nil {
+			return nil, err
+		}
+		if _, err := files.Get(ctx, page); err != nil {
+			return nil, fmt.Errorf("page disappeared during application: %w", err)
+		}
+		if err := files.PutReplicatedObject(ctx, state, []byte("advanced sweep")); err != nil {
+			return nil, err
+		}
+		if fail {
+			return nil, os.RemoveAll(filepath.Join(root, "graphdb", "partition"))
+		}
+		return nil, nil
+	}
+	_, err = files.ApplyReplicated(ctx, 2, "sweep", at, func(ctx context.Context) ([]byte, error) {
+		return apply(ctx, true)
+	})
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected checkpoint barrier failure: %v", err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err = OpenFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	checkpoint, err := files.ReplicationCheckpoint()
+	if err != nil || checkpoint.Index != 1 {
+		t.Fatalf("failed sweep advanced checkpoint: %+v, %v", checkpoint, err)
+	}
+	if _, err := files.ApplyReplicated(ctx, 2, "sweep", at, func(ctx context.Context) ([]byte, error) {
+		return apply(ctx, false)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Get(ctx, page); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("durable sweep left the historical page: %v", err)
+	}
+	if data, err := files.Get(ctx, state); err != nil || string(data) != "advanced sweep" {
+		t.Fatalf("durable sweep state: %q, %v", data, err)
+	}
+}
+
+func TestReplicationRecoversDurableMarkerAcrossCheckpointPublication(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	open := func() *FileStore {
+		t.Helper()
+		files, err := OpenFileStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { files.Close() })
+		return files
+	}
+	files := open()
+	dir := filepath.Join(root, replicationDirectory)
+	checkpoint := filepath.Join(dir, "checkpoint.json")
+	pending := filepath.Join(dir, "pending.db")
+	now := time.Unix(1, 0)
+	if _, err := files.ApplyReplicated(ctx, 1, "first", now, func(ctx context.Context) ([]byte, error) {
+		if err := files.PutReplicatedObject(ctx, "graphdb/pages/a", []byte("published")); err != nil {
+			return nil, err
+		}
+		// The journal can commit, but the checkpoint rename will fail.
+		return []byte("first-result"), os.Mkdir(checkpoint, 0o755)
+	}); err == nil {
+		t.Fatal("checkpoint publication failure was acknowledged")
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	marker, err := os.ReadFile(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	for _, resurrect := range []bool{false, true} {
+		if resurrect {
+			// Model a crash that retained an already unlinked journal name.
+			if err := os.WriteFile(pending, marker, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		files = open()
+		data, err := files.Get(ctx, "graphdb/pages/a")
+		if err != nil || string(data) != "published" {
+			t.Fatalf("committed object after reopen: %q %v", data, err)
+		}
+		replay, err := files.ApplyReplicated(ctx, 1, "first", now, func(context.Context) ([]byte, error) {
+			t.Fatal("replayed a committed application")
+			return nil, nil
+		})
+		if err != nil || string(replay) != "first-result" {
+			t.Fatalf("committed result after reopen: %q %v", replay, err)
+		}
+		if err := files.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

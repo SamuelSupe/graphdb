@@ -78,6 +78,15 @@ func (c *Cluster) partitionAction(ctx context.Context, action partition.Action) 
 	if action.ReceiptRef != "" && (action.Operation != "complete" || c.config.Protocol < partition.BatchProtocol) {
 		return nil, fmt.Errorf("%w: atomic graph receipt completion requires protocol %d", storage.ErrConflict, partition.BatchProtocol)
 	}
+	if action.NextIngest != nil {
+		if c.config.Protocol < partition.IngestHandoffProtocol {
+			return nil, fmt.Errorf("%w: ingest handoff requires home Raft protocol %d", storage.ErrConflict, partition.IngestHandoffProtocol)
+		}
+		if action.Operation != "complete" || action.ReceiptRef == "" ||
+			action.NextIngest.Input.Acceptance == "" || len(action.NextIngest.Participants) == 0 {
+			return nil, fmt.Errorf("%w: ingest handoff requires a completion and a preplanned successor", storage.ErrInvalidArgument)
+		}
+	}
 	if c.config.Protocol < partition.IngestProtocol && (action.Purpose == "ingest" || action.IngestResult != nil) {
 		return nil, fmt.Errorf("%w: partitioned ingest requires home Raft protocol %d", storage.ErrConflict, partition.IngestProtocol)
 	}

@@ -107,6 +107,7 @@ func (a *Application) applyFragmentBatch(ctx context.Context, cmd command) (_ []
 	defer func() { finish(err) }()
 	store := a.partitionStore()
 	writes := make([]map[string][]byte, len(actions))
+	reclaims := make([][]string, len(actions))
 	results := make([]any, len(actions))
 	failures := make([]error, len(actions))
 	var workers errgroup.Group
@@ -119,6 +120,7 @@ func (a *Application) applyFragmentBatch(ctx context.Context, cmd command) (_ []
 				value, err = store.ApplyFragment(ctx, action)
 			} else if err == nil {
 				writes[i] = buffer.writes
+				reclaims[i] = buffer.reclaim
 			}
 			failures[i] = err
 			if err == nil {
@@ -156,8 +158,15 @@ func (a *Application) applyFragmentBatch(ctx context.Context, cmd command) (_ []
 		}
 		return nil, &storage.ReplicationRejectedError{Response: response}
 	}
-	if err := a.flushBufferedFragments(ctx, writes, operation == "prepare" || operation == "finalize"); err != nil {
+	if err := a.flushBufferedFragments(ctx, writes, operation); err != nil {
 		return nil, err
+	}
+	for _, keys := range reclaims {
+		if len(keys) != 0 {
+			if err := a.Files.DeferReplicatedPageReclaim(ctx, keys); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return resultJSON(http.StatusOK, results)
 }

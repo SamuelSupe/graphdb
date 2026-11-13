@@ -40,6 +40,7 @@ type testReplica struct {
 	blocked             atomic.Bool
 	blockedMessages     atomic.Bool
 	blockGraphFinalize  atomic.Bool
+	graphAction         atomic.Pointer[func(http.ResponseWriter, *http.Request, *Cluster, partition.Action) bool]
 	loseInstallResponse atomic.Bool
 	loseStageResponse   atomic.Bool
 	stageRequests       atomic.Int64
@@ -82,7 +83,8 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 				http.NotFound(w, r)
 				return
 			}
-			if replica.blockGraphFinalize.Load() && r.Method == http.MethodPost &&
+			graphAction := replica.graphAction.Load()
+			if (replica.blockGraphFinalize.Load() || graphAction != nil) && r.Method == http.MethodPost &&
 				(r.URL.Path == "/cluster/graph/action" || r.URL.Path == "/cluster/graph/fragment-batch") {
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -97,8 +99,11 @@ func newTestClusterRole(t *testing.T, wal bool, shardID string, catalog bool, de
 				} else {
 					_ = json.Unmarshal(body, &actions)
 				}
-				if len(actions) > 0 && actions[0].Operation == "finalize" {
+				if len(actions) > 0 && actions[0].Operation == "finalize" && replica.blockGraphFinalize.Load() {
 					http.Error(w, "finalization paused", http.StatusServiceUnavailable)
+					return
+				}
+				if graphAction != nil && r.URL.Path == "/cluster/graph/action" && (*graphAction)(w, r, cluster, actions[0]) {
 					return
 				}
 			}

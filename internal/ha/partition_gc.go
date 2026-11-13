@@ -84,19 +84,7 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 		base.ExpectedCursor = g.GC.Cursor
 		return remote.Action(ctx, c.graphHome(), base, nil)
 	}
-	var ids []uint8
-	for i := range g.Partitions {
-		pending := !g.GC.Done[i]
-		if g.GC.Phase == "starting" {
-			pending = !g.GC.Started[i]
-		}
-		if pending {
-			ids = append(ids, uint8(i))
-			if len(ids) == 32 {
-				break
-			}
-		}
-	}
+	ids := pendingGCPartitions(g, c.config.Protocol)
 	var roots map[uint8][]partition.Root
 	if g.GC.Phase == "starting" {
 		var err error
@@ -138,6 +126,40 @@ func (c *Cluster) advancePartitionGC(ctx context.Context, g partition.Graph) (er
 		return nil
 	}
 	return remote.Action(ctx, c.graphHome(), base, nil)
+}
+
+func pendingGCPartitions(g partition.Graph, protocol int) []uint8 {
+	limit := partition.MaxFragmentBatch
+	var perGroup map[string]int
+	starting := g.GC.Phase == "starting"
+	if protocol >= partition.GCSchedulingProtocol && (g.GC.Phase == "running" || starting && len(g.GC.Versions) == 1) {
+		// Startup can install one full Raft batch per group for a single
+		// protected view. Multiple views can carry a larger root payload.
+		// Running GC still splits each group into bounded sweep entries.
+		limit *= 2
+		perGroup = make(map[string]int)
+	}
+	processed := g.GC.Done[:]
+	if starting {
+		processed = g.GC.Started[:]
+	}
+	ids := make([]uint8, 0, limit)
+	for i, placement := range g.Partitions {
+		if processed[i] {
+			continue
+		}
+		if perGroup != nil {
+			if perGroup[placement.Group] == partition.MaxFragmentBatch {
+				continue
+			}
+			perGroup[placement.Group]++
+		}
+		ids = append(ids, uint8(i))
+		if len(ids) == limit {
+			break
+		}
+	}
+	return ids
 }
 
 func (c *Cluster) registerPartitionGC(mux *http.ServeMux) {

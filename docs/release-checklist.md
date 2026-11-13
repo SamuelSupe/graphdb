@@ -8,7 +8,15 @@ checklist, not a record that every published version passed every item.
 
 See the [2.5.1 verification record](validation-v2.5.1.md) for the exact-tag gates, Linux archives and download checks.
 
-## 2.6.0-preview.1 qualification
+## 2.6.0-preview.2 qualification
+
+The [preview validation](validation-v2.6.0-preview.2.md) records protocol 12
+activation and cold-write measurements. The tag workflow requires the
+protocol 11 to 12 upgrade and recovery report for the packaged AMD64 binary.
+Both Linux archives must pass checksum, version and read/write checks on
+their corresponding native runners before publication.
+
+## Previous 2.6.0-preview.1 qualification
 
 The [preview validation](validation-v2.6.0-preview.1.md) records the opt-in
 protocols and measured cold-write limits. The tag workflow verifies protocol 11

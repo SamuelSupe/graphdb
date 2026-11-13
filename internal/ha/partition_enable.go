@@ -148,21 +148,40 @@ func (c *Cluster) runPartitionBackground(ctx context.Context) {
 		err    error
 	}
 	done := make(chan result, concurrency)
+	// Each active tenant can retain one wake until its worker returns. The
+	// periodic pass still finds durable work after missed hints or failover.
 	active := map[string]bool{}
 	failed := map[string]time.Time{}
 	failures := map[string]string{}
 	var workers sync.WaitGroup
 	defer workers.Wait()
+	budget := 5 * time.Second
+	if c.config.Protocol >= partition.BatchProtocol {
+		budget = 15 * time.Second
+	}
+	start := func(tenant string) {
+		active[tenant] = false
+		workers.Go(func() {
+			operation, cancel := context.WithTimeout(ctx, budget)
+			defer cancel()
+			done <- result{tenant, c.advancePartitionBackground(operation, tenant)}
+		})
+	}
 	offset := 0
 	for {
+		var wake string
 		select {
 		case <-ctx.Done():
 			return
 		case result := <-done:
+			wokeWhileActive := active[result.tenant]
 			delete(active, result.tenant)
 			if result.err == nil {
 				delete(failed, result.tenant)
 				delete(failures, result.tenant)
+				if wokeWhileActive {
+					wake = result.tenant
+				}
 			} else if ctx.Err() == nil {
 				failed[result.tenant] = time.Now().Add(time.Second)
 				if failures[result.tenant] != result.err.Error() {
@@ -170,41 +189,49 @@ func (c *Cluster) runPartitionBackground(ctx context.Context) {
 					slog.Warn("graph background step failed", "tenant", result.tenant, "group", c.App.ShardID, "error", result.err)
 				}
 			}
+			if wake == "" {
+				continue
+			}
+		case wake = <-c.partitionWake:
+			if _, running := active[wake]; running {
+				active[wake] = true
+				continue
+			}
 		case <-ticker.C:
-			if len(active) == concurrency || c.Node.LeaderID() != c.config.ID {
-				continue
-			}
-			operation, cancel := context.WithTimeout(ctx, time.Second)
-			if c.Node.ReadBarrier(operation) != nil {
-				cancel()
-				continue
-			}
-			c.App.mu.RLock()
-			tenants, err := c.App.partitionStore().GraphTenants(operation)
-			c.App.mu.RUnlock()
+		}
+		if len(active) == concurrency || c.Node.LeaderID() != c.config.ID {
+			continue
+		}
+		// Leave the last slot to the round-robin pass when wakes are frequent.
+		if wake != "" && (len(active) == concurrency-1 || time.Now().Before(failed[wake])) {
+			continue
+		}
+		operation, cancel := context.WithTimeout(ctx, time.Second)
+		if c.Node.ReadBarrier(operation) != nil {
 			cancel()
-			if err != nil {
-				slog.Warn("list graph background work", "group", c.App.ShardID, "error", err)
+			continue
+		}
+		if wake != "" {
+			cancel()
+			start(wake)
+			continue
+		}
+		c.App.mu.RLock()
+		tenants, err := c.App.partitionStore().GraphTenants(operation)
+		c.App.mu.RUnlock()
+		cancel()
+		if err != nil {
+			slog.Warn("list graph background work", "group", c.App.ShardID, "error", err)
+			continue
+		}
+		for count := 0; count < len(tenants) && len(active) < concurrency; count++ {
+			offset %= len(tenants)
+			tenant := tenants[offset]
+			offset++
+			if _, running := active[tenant]; running || time.Now().Before(failed[tenant]) {
 				continue
 			}
-			for count := 0; count < len(tenants) && len(active) < concurrency; count++ {
-				offset %= len(tenants)
-				tenant := tenants[offset]
-				offset++
-				if active[tenant] || time.Now().Before(failed[tenant]) {
-					continue
-				}
-				active[tenant] = true
-				workers.Go(func() {
-					budget := 5 * time.Second
-					if c.config.Protocol >= partition.BatchProtocol {
-						budget = 15 * time.Second
-					}
-					operation, cancel := context.WithTimeout(ctx, budget)
-					defer cancel()
-					done <- result{tenant, c.advancePartitionBackground(operation, tenant)}
-				})
-			}
+			start(tenant)
 		}
 	}
 }

@@ -84,6 +84,30 @@ jobs:
           digest="$(docker run --rm --entrypoint sha256sum "$GRAPHDB_GATE_IMAGE" /usr/local/bin/graphdb | cut -d' ' -f1)"
           printf '{"result":"PASS","protocol":11,"commit":"%s","binary_sha256":"%s"}\n' \
             "$GITHUB_SHA" "$digest" > "$GRAPHDB_GATE_OUTPUT/metadata.json"
+      - name: Replay protocol 11 logs, activate protocol 12 and recover partitioned WAL
+        env:
+          GRAPHDB_GATE_IMAGE: graphdb:raft-gate
+          GRAPHDB_GATE_UPGRADE_FROM_IMAGE: graphdb:partition-wal-preview1
+          GRAPHDB_GATE_HOME_PROTOCOL: "12"
+          GRAPHDB_GATE_DATA_PROTOCOL: "11"
+          GRAPHDB_GATE_RECEIPT_RETENTION: 30s
+        run: |
+          set -euo pipefail
+          baseline="$(mktemp -d "$RUNNER_TEMP/partition-wal-preview1.XXXXXX")"
+          previous="$(git rev-parse 'v2.6.0-preview.1^{commit}')"
+          git archive "$previous" | tar -x -C "$baseline"
+          docker build --build-arg VERSION=v2.6.0-preview.1 --build-arg COMMIT="$previous" \
+            --build-arg BUILD_DATE="$(git show -s --format=%cI "$previous")" \
+            -t "$GRAPHDB_GATE_UPGRADE_FROM_IMAGE" "$baseline"
+          export GRAPHDB_GATE_OUTPUT="$RUNNER_TEMP/partition-wal-protocol12"
+          evidence="$GITHUB_WORKSPACE/artifacts/raft-gate/partitioned-protocol12"
+          mkdir -p "$evidence"
+          trap 'if [[ -d "$GRAPHDB_GATE_OUTPUT" ]]; then find "$GRAPHDB_GATE_OUTPUT" -maxdepth 1 -type f -exec cp {} "$evidence/" \;; fi' EXIT
+          python3 scripts/partition_wal_gate.py
+          digest="$(docker run --rm --entrypoint sha256sum "$GRAPHDB_GATE_IMAGE" /usr/local/bin/graphdb | cut -d' ' -f1)"
+          source_digest="$(docker run --rm --entrypoint sha256sum "$GRAPHDB_GATE_UPGRADE_FROM_IMAGE" /usr/local/bin/graphdb | cut -d' ' -f1)"
+          printf '{"result":"PASS","protocol":12,"source_protocol":11,"source_commit":"%s","source_binary_sha256":"%s","commit":"%s","binary_sha256":"%s"}\n' \
+            "$previous" "$source_digest" "$GITHUB_SHA" "$digest" > "$GRAPHDB_GATE_OUTPUT/metadata.json"
       - name: Run protocol 3 GC isolation and rolling restart gate
         env:
           GRAPHDB_GATE_IMAGE: graphdb:raft-gate

@@ -4,9 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 )
+
+// DeferReplicatedPageReclaim queues immutable pages the sweep proved
+// unreachable. The application still owns the affected partitions when it
+// deletes these pages, so a later prepare cannot reuse them before deletion.
+func (s *FileStore) DeferReplicatedPageReclaim(ctx context.Context, keys []string) error {
+	journal := s.replicationJournal(ctx)
+	if journal == nil {
+		return ErrReplicationWriteRequired
+	}
+	journal.reclaim = append(journal.reclaim, keys...)
+	return nil
+}
+
+func (s *FileStore) reclaimReplicatedPages(ctx context.Context, keys []string) {
+	// The checkpoint is already durable. An interruption can leave an orphan
+	// for the next sweep. The durable graph never refers to these pages.
+	finish := replicationOperation(ctx, "replication_reclaim_pages")
+	err := runIndexWriteJobs(context.WithoutCancel(ctx), len(keys), func(ctx context.Context, index int) error {
+		return s.deleteConditional(ctx, keys[index], PutCondition{}, true)
+	})
+	finish(err)
+	if err != nil {
+		slog.Warn("reclaim unreachable replica pages", "error", err)
+	}
+}
 
 // Every mutation has a durable before-image, including an absence marker for
 // new objects. Sync each final file once before directories and the commit

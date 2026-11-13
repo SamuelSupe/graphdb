@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,158 @@ import (
 func TestHAPartitionIngestDurableQueueAndLeaderRecovery(t *testing.T) {
 	for _, protocol := range []int{partition.IngestProtocol, partition.CompactIngestProtocol, partition.BatchProtocol} {
 		t.Run(fmt.Sprint(protocol), func(t *testing.T) { testHAPartitionIngestRecovery(t, protocol) })
+	}
+}
+
+func TestHAPartitionIngestHandoffLeaderRecovery(t *testing.T) {
+	t.Run("durable_successor", func(t *testing.T) { testHAPartitionIngestHandoff(t, false) })
+	t.Run("stale_successor", func(t *testing.T) { testHAPartitionIngestHandoff(t, true) })
+}
+
+func testHAPartitionIngestHandoff(t *testing.T, stale bool) {
+	a, _, _, router, call := newTestPartitionedGraph(t, true, partition.BalancedLeafProtocol)
+	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{Mutations: graph.Mutations{
+		UpsertCITypes: []graph.CIType{{Name: "host"}},
+	}}, http.StatusOK)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	begin, allowBegin := context.WithCancel(ctx)
+	defer allowBegin()
+	handoff := make(chan partition.Action, 1)
+	hook := func(w http.ResponseWriter, r *http.Request, cluster *Cluster, action partition.Action) bool {
+		if action.Operation == "begin" && action.Purpose == "ingest" {
+			// Hold the first begin while the next acceptance becomes durable.
+			select {
+			case <-begin.Done():
+			case <-r.Context().Done():
+				return true
+			}
+		}
+		if action.NextIngest == nil {
+			return false
+		}
+		if stale {
+			action.NextIngest.BaseVersion--
+			body, err := json.Marshal(action)
+			if err != nil {
+				t.Error(err)
+				return true
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		rec := httptest.NewRecorder()
+		cluster.PrivateHandler().ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			http.Error(w, rec.Body.String(), rec.Code)
+			return true
+		}
+		// Lose the response after application. This driver cannot process the
+		// successor before the test stops its leader.
+		select {
+		case handoff <- action:
+		default:
+		}
+		<-r.Context().Done()
+		return true
+	}
+	for _, node := range a.nodes {
+		node.graphAction.Store(&hook)
+	}
+	path := "/v1/ingest/batches"
+	firstVersion, secondVersion := int64(1), int64(2)
+	first := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "first", IdempotencyKey: "first-key",
+		ExpectedVersion: &firstVersion, Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "first", Kind: "host"}}}}
+	second := storage.IngestRequest{Source: "agent", CollectorID: "collector", BatchID: "second", IdempotencyKey: "second-key",
+		ExpectedVersion: &secondVersion, Items: []storage.IngestItem{{Entity: &graph.Entity{ID: "second", Kind: "host"}}}}
+	type acceptance struct {
+		AcceptedLSN uint64 `json:"accepted_lsn"`
+		StatusURL   string `json:"status_url"`
+	}
+	accept := func(request storage.IngestRequest) acceptance {
+		t.Helper()
+		response := call(http.MethodPost, path, "big", request, http.StatusAccepted)
+		var status acceptance
+		if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.AcceptedLSN == 0 || status.StatusURL == "" {
+			t.Fatalf("invalid acceptance: %s %v", response.Body.String(), err)
+		}
+		return status
+	}
+	firstAccepted, secondAccepted := accept(first), accept(second)
+	// Recover both protocol-11 acceptances from the existing directories.
+	for i := range a.nodes {
+		a.stop(i)
+	}
+	for i, node := range a.nodes {
+		node.cfg.Raft.Protocol = partition.IngestHandoffProtocol
+		a.start(i)
+	}
+	a.leader(-1)
+	allowBegin()
+	var action partition.Action
+	select {
+	case action = <-handoff:
+	case <-ctx.Done():
+		t.Fatal("the two queued batches did not use a combined Raft entry")
+	}
+	leader := a.leader(-1)
+	app := a.nodes[leader].cluster.App
+	g, err := app.graphDescriptor(ctx, "big")
+	if err != nil || g.Version != 2 {
+		t.Fatalf("handoff changed the published graph version: %d %v", g.Version, err)
+	}
+	if stale {
+		if g.Active != nil {
+			t.Fatalf("stale successor became active: %+v", g.Active)
+		}
+	} else if g.Active == nil || g.Active.ID != action.NextIngest.Txn ||
+		g.Active.State != "preparing" || g.Active.Sequence != action.Sequence+1 {
+		t.Fatalf("successor not established by the completion: %+v", g.Active)
+	}
+	readStatus := func(acceptance acceptance) storage.IngestBatchStatus {
+		t.Helper()
+		response := call(http.MethodGet, acceptance.StatusURL, "big", nil, http.StatusOK)
+		var status storage.IngestBatchStatus
+		if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.AcceptedLSN != acceptance.AcceptedLSN {
+			t.Fatalf("acceptance identity changed: %s %v", response.Body.String(), err)
+		}
+		return status
+	}
+	if status := readStatus(firstAccepted); status.State != "committed" || status.Result == nil || status.Result.Version != 2 {
+		t.Fatalf("predecessor did not become terminal with handoff: %+v", status)
+	}
+	a.stop(leader)
+	a.leader(leader)
+	for {
+		status := readStatus(secondAccepted)
+		if status.Result != nil {
+			if status.State != "committed" || status.Result.Version != 3 || status.Result.Applied != 1 {
+				t.Fatalf("successor did not recover exactly once: %+v", status)
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("new leader stranded the successor")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	a.start(leader)
+	first.BatchID = "alias-first"
+	second.BatchID = "alias-second"
+	if replay := accept(first); replay.AcceptedLSN != firstAccepted.AcceptedLSN || replay.StatusURL != firstAccepted.StatusURL {
+		t.Fatalf("predecessor retry created a new acceptance: %+v", replay)
+	}
+	if replay := accept(second); replay.AcceptedLSN != secondAccepted.AcceptedLSN || replay.StatusURL != secondAccepted.StatusURL {
+		t.Fatalf("successor retry created a new acceptance: %+v", replay)
+	}
+	home := partition.Group{ID: "a", ClusterID: a.nodes[0].cfg.Raft.ClusterID, Peers: a.nodes[0].cfg.Raft.Peers}
+	remote := sharding.GraphRemote{Client: router.Client}
+	if err := remote.Action(ctx, home, action, nil); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("stale completion should not restart either batch: %v", err)
+	}
+	g, err = remote.Describe(ctx, home, "big")
+	if err != nil || g.Version != 3 || g.Active != nil {
+		t.Fatalf("retry changed the graph: version=%d active=%+v error=%v", g.Version, g.Active, err)
 	}
 }
 

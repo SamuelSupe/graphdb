@@ -133,11 +133,26 @@ const PlannedGCRevision = 6
 const BalancedLeafProtocol = 11
 const BalancedLeafRevision = 7
 
+const IngestHandoffProtocol = 12
+const GCSchedulingProtocol = 12
+
+// IngestBegin starts the next durable acceptance after the current one completes.
+// Its tenant and generation are inherited from the completion.
+type IngestBegin struct {
+	Txn            string  `json:"txn"`
+	Identity       string  `json:"identity"`
+	BaseVersion    int64   `json:"base_version"`
+	LayoutRevision uint64  `json:"layout_revision"`
+	Input          Input   `json:"input"`
+	Participants   []uint8 `json:"participants"`
+}
+
 type Action struct {
 	GCSweep         *GCSweepPlan          `json:"gc_sweep,omitempty"`
 	PreparedBatch   map[uint8]Prepared    `json:"prepared_batch,omitempty"`
 	LayoutRevision  uint64                `json:"layout_revision,omitempty"`
 	ReceiptRef      string                `json:"receipt_ref,omitempty"`
+	NextIngest      *IngestBegin          `json:"next_ingest,omitempty"`
 	IngestResult    *storage.IngestResult `json:"ingest_result,omitempty"`
 	Verify          *MoveVerification     `json:"verify,omitempty"`
 	Revision        int                   `json:"revision,omitempty"`

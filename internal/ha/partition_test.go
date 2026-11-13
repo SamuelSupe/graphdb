@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,46 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/sharding"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
+
+func TestPendingGCPartitionsSpansPlacements(t *testing.T) {
+	var g partition.Graph
+	// An uneven layout can leave all the lowest pending IDs on one group.
+	for i := range g.Partitions {
+		group := "a"
+		if i >= 224 {
+			group = "b"
+		}
+		g.Partitions[i] = partition.Placement{Group: group, Epoch: 2}
+	}
+	for _, tc := range []struct {
+		name, phase string
+		versions    []int64
+		wantB       int
+	}{
+		{name: "running", phase: "running", wantB: 31},
+		{name: "starting with one protected view", phase: "starting", versions: []int64{3}, wantB: 31},
+		{name: "starting with pinned history", phase: "starting", versions: []int64{1, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g.GC = &partition.GraphGC{Phase: tc.phase, Versions: tc.versions}
+			if tc.phase == "starting" {
+				g.GC.Started[0], g.GC.Started[255] = true, true
+			} else {
+				g.GC.Done[0], g.GC.Done[255] = true, true
+			}
+			counts := map[string]int{}
+			for _, id := range pendingGCPartitions(g, partition.GCSchedulingProtocol) {
+				if id == 0 || id == 255 {
+					t.Fatalf("scheduled completed partition %d", id)
+				}
+				counts[g.Partitions[id].Group]++
+			}
+			if counts["a"] != 32 || counts["b"] != tc.wantB {
+				t.Fatalf("GC scheduled unexpected per-group counts: %v", counts)
+			}
+		})
+	}
+}
 
 func newTestPartitionedGraph(t *testing.T, wal bool, homeProtocol int) (a, b, catalog *testCluster, router *sharding.Router, call func(string, string, string, any, int) *httptest.ResponseRecorder) {
 	t.Helper()
@@ -104,6 +145,82 @@ func newTestPartitionedGraph(t *testing.T, wal bool, homeProtocol int) (a, b, ca
 		time.Sleep(50 * time.Millisecond)
 	}
 	return a, b, catalog, router, call
+}
+
+func TestHAPartitionGCRecoversUnacknowledgedFragments(t *testing.T) {
+	a, b, _, _, call := newTestPartitionedGraph(t, false, partition.GCSchedulingProtocol)
+	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{IdempotencyKey: "schema",
+		Mutations: graph.Mutations{UpsertCITypes: []graph.CIType{{Name: "host"}}}}, http.StatusOK)
+	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{IdempotencyKey: "entity",
+		Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "retained", Kind: "host"}}}}, http.StatusOK)
+	const graphPath = "/v1/cluster/graphs/big"
+	describe := func() partition.Graph {
+		t.Helper()
+		response := call(http.MethodGet, graphPath, "", nil, http.StatusOK)
+		var g partition.Graph
+		if err := json.Unmarshal(response.Body.Bytes(), &g); err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	id := partition.Bucket("retained")
+	previous := describe().Roots[id]
+	call(http.MethodPost, "/v1/commits", "big", partition.CommitRequest{IdempotencyKey: "update",
+		Mutations: graph.Mutations{UpsertEntities: []graph.Entity{{ID: "retained", Kind: "host", Fields: graph.Fields{"value": "current"}}}}}, http.StatusOK)
+	before := describe()
+	if previous.Hash == "" || previous.Hash == before.Roots[id].Hash {
+		t.Fatal("update did not produce an obsolete fragment root")
+	}
+	old := a.leader(-1)
+	completed := make(chan struct{}, 1)
+	hook := func(_ http.ResponseWriter, r *http.Request, _ *Cluster, action partition.Action) bool {
+		if action.Operation != "graph_gc_done" || len(action.Participants) <= partition.MaxFragmentBatch {
+			return false
+		}
+		// The data groups finished this turn. Stop the home leader before it
+		// can record their completion in the graph descriptor.
+		select {
+		case completed <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+		return true
+	}
+	a.nodes[old].graphAction.Store(&hook)
+	call(http.MethodPost, graphPath+"/gc", "", nil, http.StatusAccepted)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	select {
+	case <-completed:
+	case <-ctx.Done():
+		t.Fatal("GC did not finish a turn spanning more than one batch of partitions")
+	}
+	a.stop(old)
+	a.leader(old)
+	for {
+		g := describe()
+		if g.GC == nil && g.LastGCAt.After(before.LastGCAt) {
+			if g.Version != before.Version || g.DataHash != before.DataHash {
+				t.Fatal("GC recovery changed the published graph")
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("the new leader did not finish the interrupted GC")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	call(http.MethodGet, "/v1/entities/retained", "big", nil, http.StatusOK)
+	owner := a
+	if before.Partitions[id].Group == "b" {
+		owner = b
+	}
+	node := owner.nodes[owner.leader(-1)]
+	tree := (partition.Store{Prefix: node.store.Prefix}).Tree("big", before.Generation, id)
+	if _, err := node.files.Get(ctx, tree.Prefix+"/"+previous.Hash[:2]+"/"+previous.Hash); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("recovered GC retained the obsolete page: %v", err)
+	}
 }
 
 func TestHAPartitionedGraphRoutesAndLeaderRecovery(t *testing.T) {

@@ -166,10 +166,14 @@ func (s *FileStore) Put(ctx context.Context, key string, data []byte) error {
 // PutReplicatedObject syncs the new file before renaming it. The active
 // application journal still owns rollback and the directory barrier.
 func (s *FileStore) PutReplicatedObject(ctx context.Context, key string, data []byte) error {
-	if s.replicationJournal(ctx) == nil {
+	journal := s.replicationJournal(ctx)
+	if journal == nil {
 		return ErrReplicationWriteRequired
 	}
 	_, err := s.putConditional(ctx, key, data, PutCondition{}, true)
+	if err == nil {
+		journal.syncOnWrite.Store(true)
+	}
 	return err
 }
 
@@ -203,7 +207,8 @@ func (s *FileStore) putConditional(ctx context.Context, key string, data []byte,
 	if meta, handled, err := s.putReceiptIfPacked(ctx, key, path, data, condition); handled {
 		return meta, err
 	}
-	if err := s.ensureSafeParent(path, s.replicationJournal(ctx)); err != nil {
+	journal := s.replicationJournal(ctx)
+	if err := s.ensureSafeParent(path, journal); err != nil {
 		return ObjectMeta{}, err
 	}
 	currentETag, exists, err := s.objectState(key, path, fileStorePutNeedsCurrentETag(condition))
@@ -221,9 +226,10 @@ func (s *FileStore) putConditional(ctx context.Context, key string, data []byte,
 	if err := objectContextErr(ctx); err != nil {
 		return ObjectMeta{Key: key, ETag: currentETag, Exists: exists}, err
 	}
-	if _, batched := ctx.Value(fileBatchKey{}).(*FileStore); !batched {
+	if _, batched := ctx.Value(fileBatchKey{}).(*FileStore); journal == nil && !batched {
 		// A reused immutable file may belong to another in-flight batch. Every
-		// standalone publication drains pending renames, including that batch.
+		// standalone publication drains pending renames. Replicated writes
+		// drain them once at the journal's publication barrier.
 		if err := s.syncPendingDirectories(); err != nil {
 			return ObjectMeta{}, err
 		}
@@ -233,7 +239,6 @@ func (s *FileStore) putConditional(ctx context.Context, key string, data []byte,
 	if err := s.journalObject(ctx, key); err != nil {
 		return ObjectMeta{}, err
 	}
-	journal := s.replicationJournal(ctx)
 	if err := writeFileAtomicContext(ctx, path, data, journal, syncOnWrite); err != nil {
 		return ObjectMeta{}, err
 	}
@@ -248,8 +253,14 @@ func (s *FileStore) Delete(ctx context.Context, key string) error {
 	return s.DeleteConditional(ctx, key, PutCondition{})
 }
 
-func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) (err error) {
-	defer func() { recordReplicationFailure(ctx, err) }()
+func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition PutCondition) error {
+	return s.deleteConditional(ctx, key, condition, false)
+}
+
+func (s *FileStore) deleteConditional(ctx context.Context, key string, condition PutCondition, reclaim bool) (err error) {
+	if !reclaim {
+		defer func() { recordReplicationFailure(ctx, err) }()
+	}
 	if err := s.checkReplicatedWrite(ctx); err != nil {
 		return err
 	}
@@ -328,8 +339,10 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 		s.runtime.publicationMu.Lock()
 		defer s.runtime.publicationMu.Unlock()
 	}
-	if err := s.journalObject(ctx, key); err != nil {
-		return err
+	if !reclaim {
+		if err := s.journalObject(ctx, key); err != nil {
+			return err
+		}
 	}
 	err = os.Remove(path)
 	if os.IsNotExist(err) {
@@ -338,7 +351,7 @@ func (s *FileStore) DeleteConditional(ctx context.Context, key string, condition
 	if err == nil {
 		if journal != nil {
 			journal.forgetFileSync(path)
-			journal.deferDeletedObject(filepath.Dir(path), key)
+			journal.deferDeletedObject(filepath.Dir(path), key, !reclaim)
 			return nil
 		}
 		if batched {

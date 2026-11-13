@@ -239,7 +239,7 @@ func (s Store) applyDataGCState(ctx context.Context, a Action, state DataState) 
 				}
 				gc.Cursor = object.Key
 			}
-			if err := s.deleteGCObjects(ctx, deletes); err != nil {
+			if err := s.deleteGCObjects(ctx, deletes, a.GCSweep != nil); err != nil {
 				return nil, err
 			}
 			if next == "" {
@@ -268,7 +268,7 @@ func (s Store) applyDataGCState(ctx context.Context, a Action, state DataState) 
 			for i, object := range objects {
 				keys[i] = object.Key
 			}
-			if err := s.deleteGCObjects(ctx, keys); err != nil {
+			if err := s.deleteGCObjects(ctx, keys, false); err != nil {
 				return nil, err
 			}
 			if len(objects) == 0 || gc.Buffered && next == "" {
@@ -282,7 +282,14 @@ func (s Store) applyDataGCState(ctx context.Context, a Action, state DataState) 
 	return state, s.save(ctx, s.dataKey(a.Tenant, a.Generation, a.Partition), state)
 }
 
-func (s Store) deleteGCObjects(ctx context.Context, keys []string) error {
+func (s Store) deleteGCObjects(ctx context.Context, keys []string, plannedSweep bool) error {
+	if plannedSweep {
+		if reclaimer, ok := s.Objects.(interface {
+			DeferPageReclaim(context.Context, []string) error
+		}); ok {
+			return reclaimer.DeferPageReclaim(ctx, keys)
+		}
+	}
 	if err := s.journalObjects(ctx, keys...); err != nil {
 		return err
 	}

@@ -37,6 +37,7 @@ type Cluster struct {
 	FlushMaxBytes      int64
 	receiptRetention   time.Duration
 	flushWake          chan struct{}
+	partitionWake      chan string
 	config             config.RaftConfig
 	diskPolicy         storage.DiskSpacePolicy
 	shards             *sharding.Client
@@ -55,7 +56,7 @@ type Cluster struct {
 
 func New(cfg config.Config, store *storage.TenantStore, files *storage.FileStore) *Cluster {
 	store.ReplicationMode = true
-	return &Cluster{flushWake: make(chan struct{}, 1), diskPolicy: cfg.DiskSpacePolicy(), receiptRetention: cfg.PartitionIngestReceiptRetention, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
+	return &Cluster{flushWake: make(chan struct{}, 1), partitionWake: make(chan string, 1), diskPolicy: cfg.DiskSpacePolicy(), receiptRetention: cfg.PartitionIngestReceiptRetention, App: &Application{Store: store, Files: files, MaxSnapshotBytes: cfg.Raft.MaxSnapshotBytes, MaxPendingBytes: cfg.IngestQueueMemoryBytes, FlushInterval: cfg.IngestFlushInterval, ShardID: cfg.Raft.ShardID, Catalog: cfg.Raft.Catalog}, WAL: cfg.IngestMode == "wal", FlushInterval: cfg.IngestFlushInterval, FlushMaxRequests: cfg.IngestFlushMaxRequests, FlushMaxBytes: cfg.IngestFlushMaxBytes}
 }
 
 func (c *Cluster) Start(ctx context.Context, cfg config.RaftConfig) error {
@@ -179,7 +180,12 @@ func (c *Cluster) propose(ctx context.Context, cmd command) ([]byte, error) {
 		return nil, err
 	}
 	response, err := c.Node.Propose(ctx, data)
-	if err == nil && (cmd.Kind == "accept" || cmd.Kind == "partition_accept") {
+	if err == nil && cmd.Kind == "partition_accept" && c.config.Protocol >= partition.IngestHandoffProtocol {
+		select {
+		case c.partitionWake <- cmd.Tenant:
+		default:
+		}
+	} else if err == nil && (cmd.Kind == "accept" || cmd.Kind == "partition_accept") {
 		select {
 		case c.flushWake <- struct{}{}:
 		default:

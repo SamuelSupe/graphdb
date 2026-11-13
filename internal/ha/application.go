@@ -499,6 +499,11 @@ func (a *Application) applyCommand(applyCtx context.Context, index uint64, cmd c
 			if err := a.completeGraphIngestReceipt(applyCtx, action.ReceiptRef, value.(partition.Transaction), cmd.At); err != nil {
 				return nil, err
 			}
+			if action.NextIngest != nil {
+				if err := a.beginNextPartitionIngest(applyCtx, action, cmd.At); err != nil {
+					return nil, err
+				}
+			}
 		}
 		return resultJSON(http.StatusOK, value)
 	case "sharding":
