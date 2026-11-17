@@ -94,8 +94,9 @@ func (t Tree) load(ctx context.Context, root Root) (treePage, error) {
 	if len(p.Children) > 0 && len(p.Rows) > 0 || len(p.Children) > pageEntries || len(p.Rows) > pageEntries {
 		return p, fmt.Errorf("%w: invalid fragment page shape", ErrPartitionCorrupt)
 	}
+	// Unmarshal validated each raw JSON value while decoding the page.
 	for i, row := range p.Rows {
-		if row.Key == "" || len(row.Value) == 0 || !json.Valid(row.Value) || i > 0 && last >= row.Key {
+		if row.Key == "" || len(row.Value) == 0 || i > 0 && last >= row.Key {
 			return p, fmt.Errorf("%w: invalid fragment row ordering", ErrPartitionCorrupt)
 		}
 		if i == 0 {

@@ -20,9 +20,19 @@ import (
 const replicationDirectory = ".graphdb-replication"
 const maxReusableJournalBytes = 1 << 20
 
+// ReplicationIngestQueue identifies pending receipts at this applied position.
+// A nil hint means the writer did not index the queue. Spilled queues use
+// journaled membership objects instead of growing every Raft checkpoint.
+type ReplicationIngestQueue struct {
+	Count   int      `json:"count"`
+	Keys    []string `json:"keys,omitempty"`
+	Spilled bool     `json:"spilled,omitempty"`
+}
+
 type ReplicationCheckpoint struct {
-	Index    uint64 `json:"index"`
-	Response []byte `json:"response,omitempty"`
+	IngestQueue *ReplicationIngestQueue `json:"ingest_queue,omitempty"`
+	Index       uint64                  `json:"index"`
+	Response    []byte                  `json:"response,omitempty"`
 }
 
 // ReplicationRejectedError carries a deterministic application rejection. Only
@@ -36,6 +46,7 @@ func (*ReplicationRejectedError) Error() string {
 }
 
 type replicationJournal struct {
+	ingestQueue *ReplicationIngestQueue
 	db          *bolt.DB
 	files       *FileStore
 	mu          sync.Mutex
@@ -115,7 +126,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	// Coalesce concurrent before-images without delaying serial applications.
 	db.MaxBatchSize = 8
 	db.MaxBatchDelay = 100 * time.Microsecond
-	journal := &replicationJournal{db: db, files: s}
+	journal := &replicationJournal{db: db, files: s, ingestQueue: checkpoint.IngestQueue}
 	// bbolt initializes new databases durably. Create the objects bucket with
 	// the first before-image instead of syncing a separate empty transaction.
 	if statErr == nil {
@@ -161,7 +172,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		return nil, err
 	}
 	finishCheckpoint := replicationOperation(ctx, "replication_checkpoint")
-	checkpoint = ReplicationCheckpoint{Index: index, Response: response}
+	checkpoint = ReplicationCheckpoint{Index: index, Response: response, IngestQueue: journal.ingestQueue}
 	data, err := json.Marshal(checkpoint)
 	keep := false
 	if err == nil {
@@ -229,6 +240,17 @@ func (s *FileStore) syncReplicationObjects(ctx context.Context, journal *replica
 	err = journal.syncDirectories()
 	finishDirectories(err)
 	return err
+}
+
+// SetReplicationIngestQueue publishes the hint with the same commit marker
+// as the receipt changes. The application owns this journal exclusively.
+func (s *FileStore) SetReplicationIngestQueue(ctx context.Context, hint *ReplicationIngestQueue) error {
+	journal := s.replicationJournal(ctx)
+	if journal == nil {
+		return fmt.Errorf("ingest queue checkpoint requires a replicated application")
+	}
+	journal.ingestQueue = hint
+	return nil
 }
 
 func (s *FileStore) replicationJournal(ctx context.Context) *replicationJournal {

@@ -1,6 +1,6 @@
 # 分片 WAL 接入与复制受理队列
 
-适用于 **GGraphDB 2.6.0-preview.2** 中已启用大图分片且 home group 运行协议 6 或更高版本的租户。使用范围见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)，启用前请核对[协议与升级步骤](#显式启用与升级)。
+适用于 **GGraphDB 2.6.0-preview.3** 中已启用大图分片且 home group 运行协议 6 或更高版本的租户。使用范围见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)，启用前请核对[协议与升级步骤](#显式启用与升级)。
 
 ## 接入契约
 
@@ -27,8 +27,10 @@ Content-Type: application/json
 - 同一 generation 内，租户、source、collector、batch 组成批次身份；相同身份的不同正文返回 `409 idempotency_conflict`。idempotency_key 在租户、source、collector 内绑定第一次受理；同内容换 batch ID 重试仍返回原受理和原状态 URL，不新建排队项。
 - 队头进入分片事务前验证身份和输入摘要，后面的批次不能越过它。事务的图决定和 ingest 结果一起复制；只有匹配该决定的队列完成命令才能移除排队项。
 - Leader 在 `202` 后、输入准备中、图发布后或队列终态更新前退出，新 Leader 都从受理记录及原事务继续。图已经发布而队列仍为 accepted 时，补齐原结果，不重新应用原请求。
-- 副本快照包含排队请求、身份别名、活动事务输入和决定。重启重建内存队列索引；终态后缩小请求正文，保留摘要、受理身份及结果。
+- 副本快照包含排队请求、身份别名、活动事务输入和决定。终态后缩小请求正文，保留摘要、受理身份及结果。
 - `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES` 沿用复制队列的字节预算，默认 256 MiB，作用于该 home group 的所有租户。满时新请求返回可重试的 `503 ingest_queue_full`，已受理请求和原身份重试继续保留。接入前也检查数据盘空间。编码后的事务输入限 8 MiB、4096 个 item，编码后的 cursor 限 1 MiB，另受依赖闭包和分区变更预算限制。失败和冲突详情合计限约 1 MiB，超过时结果标记 `details_truncated`，计数和错误码照常保留，避免超大的回执阻塞队列。
+
+home 副本在同一次 Raft 应用中持久化收据和待处理队列索引。小队列的收据键直接保存在复制检查点，超过 64 项时按收据键分桶，最多 256 个桶，只重写成员变化的桶，排空后恢复内联。正常重启或安装快照后，按索引读取待处理收据，用原受理 LSN 恢复顺序，并按实际收据大小重建队列字节计数。读取没有索引的旧检查点或执行完分片迁移命令后，从原收据重建。永久保留的历史收据和幂等别名仍按原身份查询，重试继续返回原状态 URL、受理时间和结果。已配置保留期的回执按下述规则处理。
 
 队列量可从节点状态的 `raft.ingest_queue` 查看；后台失败日志带 tenant、group 和原因，未完成的受理记录继续保留。不同图使用已有的有界后台并发。
 
@@ -251,6 +253,9 @@ services:
 
 ## 验证入口
 
+队列重建开销、持续写入提交 P99 和停写后的排空时间见[跨 GC 实测](performance-wal-gc-2026-11-18.zh-CN.md)。
+
+- `TestPendingRecoveryAcrossLegacyCheckpointSpillAndRollback` 覆盖旧检查点重建、大队列分桶、失败回滚及新卷快照恢复。
 - `TestPartitionIngestDecisionSurvivesLostResponses`：丢失 begin、prepare、commit、finalize、complete 响应，重试保持原结果和图版本。
 - `TestPartitionIngestTransactionalFailuresAndRecovery`：版本/前置条件/atomic 失败、accepted_at 条件以及后续 best_effort 批次。
 - `TestHAPartitionIngestDurableQueueAndLeaderRecovery`：真实九节点 HTTP 复制，数据组故障期间受理、排队预算、独立快照安装、全部 home 副本重启、图已发布但队列未完成时切主、跨 Router 幂等重试，以及 home 少数派拒绝持久化受理。

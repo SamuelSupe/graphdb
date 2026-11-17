@@ -5,6 +5,18 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.6.0-preview.3] - 2026-11-18
+
+- Rebuild shard WAL queues from pending receipt keys persisted with the
+  replicated checkpoint. Existing volumes without a queue index rebuild it
+  from canonical receipts. Historical identity, acceptance LSN and terminal
+  results continue to come from the receipts.
+- Reserve the standalone WAL checkpoint list based on the recovered pending
+  count. Skip duplicate JSON validation after decoding a partition leaf.
+- Protocol 6 comparisons recorded faster queue rebuilds and lower standalone
+  checkpoint allocations, with roughly 9% higher commit P99 across GC cycles.
+  See [workload details and limitations](docs/performance-wal-gc-2026-11-18.zh-CN.md).
+
 ## [2.6.0-preview.2] - 2026-11-13
 
 - Add opt-in home-group Raft protocol 12 for partitioned ingest. A backlogged

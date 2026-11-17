@@ -1,6 +1,6 @@
 # GGraphDB Go SDK
 
-Version **2.6.0-preview.2**, matching the [server preview](../../../docs/validation-v2.6.0-preview.2.md).
+Version **2.6.0-preview.3**, matching the [server preview](../../../docs/performance-wal-gc-2026-11-18.zh-CN.md).
 
 Import path inside this repository:
 

@@ -8,6 +8,12 @@ checklist, not a record that every published version passed every item.
 
 See the [2.5.1 verification record](validation-v2.5.1.md) for the exact-tag gates, Linux archives and download checks.
 
+## 2.6.0-preview.3 qualification
+
+See the [WAL and GC comparison](performance-wal-gc-2026-11-18.zh-CN.md) for
+queue rebuild costs and the measured protocol 6 commit P99 regression. The
+tag workflow verifies the packaged candidate and protocol 12 recovery.
+
 ## 2.6.0-preview.2 qualification
 
 The [preview validation](validation-v2.6.0-preview.2.md) records protocol 12

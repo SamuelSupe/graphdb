@@ -285,7 +285,7 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 				return nil, err
 			}
 		}
-		return checkpoint.Response, nil
+		return checkpoint.Response, s.SetReplicationIngestQueue(applyCtx, checkpoint.IngestQueue)
 	})
 	return err
 }

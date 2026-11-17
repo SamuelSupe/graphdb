@@ -76,6 +76,7 @@ type Application struct {
 	activeReads         map[*applicationRead]struct{}
 	pending             map[string]pendingAcceptance
 	pendingBytes        int64
+	pendingIndex        pendingReceiptIndex
 	queueObservation    atomic.Pointer[queueObservation]
 	catalogObservation  atomic.Pointer[catalogObservation]
 	catalogPending      *catalogObservation
@@ -110,7 +111,7 @@ func (a *Application) Restore(ctx context.Context, index uint64, data []byte) er
 	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pending = nil
+	a.resetPending()
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
@@ -161,7 +162,7 @@ func (a *Application) RestoreSnapshot(ctx context.Context, index uint64, source 
 	defer a.readers.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pending = nil
+	a.resetPending()
 	a.queueObservation.Store(nil)
 	a.catalogObservation.Store(nil)
 	a.catalogState.Store(nil)
@@ -282,7 +283,7 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 	a.catalogStatePending = nil
 	defer func() {
 		if err != nil {
-			a.pending = nil
+			a.resetPending()
 			a.catalogObservation.Store(nil)
 			a.catalogState.Store(nil)
 		} else if a.catalogPending != nil {
@@ -313,7 +314,7 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 			return nil, fmt.Errorf("replicated data prefix %q differs from configured prefix %q", cmd.Prefix, a.snapshotTenantPrefix())
 		}
 		if cmd.Kind == "sharding" {
-			a.pending = nil
+			a.resetPending()
 		}
 	}
 	var checkpoint storage.ReplicationCheckpoint
@@ -351,6 +352,19 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 				return nil, err
 			}
 			responses[i] = response
+		}
+		if a.ShardID != "" {
+			if commands[0].Kind == "sharding" {
+				// Transfers replace receipt objects outside saveAccepted.
+				a.resetPending()
+				if err := a.Files.SetReplicationIngestQueue(applyCtx, nil); err != nil {
+					return nil, err
+				}
+			} else if a.pending != nil {
+				if err := a.checkpointPending(applyCtx); err != nil {
+					return nil, err
+				}
+			}
 		}
 		return responses[last], nil
 	})

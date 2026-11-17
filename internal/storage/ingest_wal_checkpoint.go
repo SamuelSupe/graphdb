@@ -61,7 +61,7 @@ func (s *ingestWALWriterState) checkpoint() error {
 	if _, _, _, err := scanIngestWAL(s.wal.config.Dir, recovery.apply); err != nil {
 		return errors.Join(ErrIngestWALFailed, err)
 	}
-	checkpoint := ingestWALCheckpoint{Version: 1, Through: s.writtenLSN}
+	checkpoint := ingestWALCheckpoint{Version: 1, Through: s.writtenLSN, Pending: make([]walIngestEnvelope, 0, len(recovery.pending))}
 	for _, pending := range recovery.pending {
 		checkpoint.Pending = append(checkpoint.Pending, pending.envelope)
 	}

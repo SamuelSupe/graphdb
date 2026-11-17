@@ -52,18 +52,28 @@ func (a *Application) accepted(ctx context.Context, key string) (acceptedRequest
 }
 
 func loadAcceptance(ctx context.Context, objects storage.ObjectStore, key string) (acceptedRequest, error) {
+	record, _, err := loadAcceptanceWithSize(ctx, objects, key)
+	return record, err
+}
+
+func loadAcceptanceWithSize(ctx context.Context, objects storage.ObjectStore, key string) (acceptedRequest, int64, error) {
 	var record acceptedRequest
 	data, err := objects.Get(ctx, key)
 	if err != nil {
-		return record, err
+		return record, 0, err
 	}
 	err = json.Unmarshal(data, &record)
-	return record, err
+	return record, int64(len(data)), err
 }
 func (a *Application) saveAccepted(ctx context.Context, key string, record acceptedRequest) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
+	}
+	if a.ShardID != "" && a.Files != nil && a.pending == nil {
+		if err := a.ensurePending(ctx); err != nil {
+			return err
+		}
 	}
 	var pending pendingAcceptance
 	if a.pending != nil && record.State == "accepted" {
@@ -88,7 +98,11 @@ func (a *Application) saveAccepted(ctx context.Context, key string, record accep
 		}
 	}
 	if a.pending != nil {
-		if previous, ok := a.pending[key]; ok {
+		previous, wasPending := a.pending[key]
+		if wasPending != (record.State == "accepted") {
+			a.pendingIndex.update(key, record.State == "accepted")
+		}
+		if wasPending {
 			a.pendingBytes -= previous.objectBytes
 		}
 		delete(a.pending, key)
