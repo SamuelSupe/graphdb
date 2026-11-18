@@ -179,4 +179,21 @@ func TestPendingRecoveryAcrossLegacyCheckpointSpillAndRollback(t *testing.T) {
 			t.Fatalf("restored historical receipt: %+v %v", old, err)
 		}
 	})
+	t.Run("unrelated tenant assignment preserves spilled membership", func(t *testing.T) {
+		cmd, err := newCommand("sharding")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Body = []byte(`{"operation":"own","tenant_id":"other","epoch":1}`)
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := app.Apply(ctx, 6, data)
+		var result httpResult
+		if err != nil || json.Unmarshal(response, &result) != nil || result.Status != 200 {
+			t.Fatalf("assign other tenant: %s %v", response, err)
+		}
+		cold(extra+1, extra+1, 0)
+	})
 }

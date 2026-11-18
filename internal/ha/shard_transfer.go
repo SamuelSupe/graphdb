@@ -235,6 +235,7 @@ func (a *Application) installTenantTransfer(ctx context.Context, action sharding
 	// Restore the source incarnation before acquiring the destination writer
 	// fence: a previously retired shard still has a local purge tombstone.
 	// These controls and the graph replacement share the replication journal.
+	installedReceipt := false
 	for _, key := range keys {
 		if strings.HasPrefix(key, tenantPrefix) {
 			continue
@@ -248,6 +249,13 @@ func (a *Application) installTenantTransfer(ctx context.Context, action sharding
 				return err
 			}
 		} else if err := a.Files.Put(ctx, key, data); err != nil {
+			return err
+		} else if strings.HasPrefix(key, a.ingestPrefix()) {
+			installedReceipt = true
+		}
+	}
+	if installedReceipt {
+		if err := a.invalidatePendingCheckpoint(ctx); err != nil {
 			return err
 		}
 	}

@@ -107,6 +107,12 @@ func (a *Application) pendingCheckpointKeys(ctx context.Context, hint *storage.R
 	return keys, nil
 }
 
+// Tenant transfers can replace canonical receipts outside saveAccepted.
+func (a *Application) invalidatePendingCheckpoint(ctx context.Context) error {
+	a.resetPending()
+	return a.Files.SetReplicationIngestQueue(ctx, nil)
+}
+
 func (a *Application) checkpointPending(ctx context.Context) error {
 	index := &a.pendingIndex
 	if index.current {

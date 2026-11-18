@@ -19,22 +19,38 @@ type ObjectView struct {
 }
 
 const objectViewMarker = ".graphdb-migration-view"
+const objectViewPrefix = ".snapshot-view-graphdb-v1-"
 
-// CaptureObjectView pins selected immutable files. The caller excludes
-// application during capture; later reads and temporary writes use the view.
-func (s *FileStore) CaptureObjectView(ctx context.Context, keys []string, budget int64) (*ObjectView, error) {
+// Every temporary file is beneath the ownership marker directory. Any link
+// surviving a crash is therefore identifiable without fsync in the capture lock.
+func (s *FileStore) newObjectView(ctx context.Context) (*ObjectView, error) {
 	release, err := s.beginLifecycleOperation(ctx)
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.MkdirTemp(s.root, ".snapshot-view-")
+	if err := s.verifySafeParent(filepath.Join(s.root, ".snapshot-view")); err != nil {
+		release()
+		return nil, err
+	}
+	root, err := os.MkdirTemp(s.root, objectViewPrefix)
 	if err != nil {
 		release()
 		return nil, err
 	}
-	view := &ObjectView{root: root, release: release, Store: NewFileStore(filepath.Join(root, "objects"))}
-	if err := os.WriteFile(filepath.Join(root, objectViewMarker), []byte("1\n"), 0600); err != nil {
+	work := filepath.Join(root, objectViewMarker)
+	view := &ObjectView{root: root, release: release, Store: NewFileStore(filepath.Join(work, "objects"))}
+	if err := os.Mkdir(work, 0700); err != nil {
 		view.Close()
+		return nil, err
+	}
+	return view, nil
+}
+
+// CaptureObjectView pins selected immutable files. The caller excludes
+// application during capture; later reads and temporary writes use the view.
+func (s *FileStore) CaptureObjectView(ctx context.Context, keys []string, budget int64) (*ObjectView, error) {
+	view, err := s.newObjectView(ctx)
+	if err != nil {
 		return nil, err
 	}
 	var total int64
@@ -78,7 +94,9 @@ func (s *FileStore) CaptureObjectView(ctx context.Context, keys []string, budget
 	return view, nil
 }
 
-func (v *ObjectView) CreateTemp() (*os.File, error) { return os.CreateTemp(v.root, "transfer-") }
+func (v *ObjectView) workspace() string { return filepath.Join(v.root, objectViewMarker) }
+
+func (v *ObjectView) CreateTemp() (*os.File, error) { return os.CreateTemp(v.workspace(), "transfer-") }
 
 func (v *ObjectView) Close() error {
 	var err error
@@ -104,6 +122,13 @@ func removeAbandonedObjectViews(root string) error {
 		if err != nil {
 			return err
 		}
+		if strings.HasPrefix(entry.Name(), objectViewPrefix) && info.IsDir() {
+			if err := os.RemoveAll(dir); err != nil {
+				return err
+			}
+			continue
+		}
+		// Older migration exports use a regular marker with a small signature.
 		if !info.Mode().IsRegular() || info.Size() != 2 {
 			continue
 		}

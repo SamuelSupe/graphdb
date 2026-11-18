@@ -158,11 +158,12 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 	defer compressed.Close()
 	limited := &io.LimitedReader{R: compressed, N: maxBytes + 1}
 	archive := tar.NewReader(limited)
-	staging, err := os.MkdirTemp(s.root, ".graphdb-replication-snapshot-")
+	staged, err := s.newObjectView(ctx)
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
+	defer staged.Close()
+	staging := staged.workspace()
 	objects := make(map[string]string)
 	var checkpoint ReplicationCheckpoint
 	var total int64
@@ -235,7 +236,7 @@ func (s *FileStore) InstallReplicationSnapshotValidated(ctx context.Context, ind
 		return fmt.Errorf("snapshot applied position mismatch")
 	}
 	if prefix != "" || validate != nil {
-		view := NewFileStore(filepath.Join(staging, "view"))
+		view := staged.Store
 		for key, filename := range objects {
 			destination := filepath.Join(view.root, key)
 			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {

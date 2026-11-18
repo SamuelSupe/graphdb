@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
 type ReplicationSnapshotSource struct {
@@ -15,12 +14,10 @@ type ReplicationSnapshotSource struct {
 	// encoding. It does not limit which objects the replication snapshot includes.
 	Validate       func(context.Context, ObjectStore) error
 	TenantPrefix   string
-	root           string
+	view           *ObjectView
 	checkpoint     ReplicationCheckpoint
 	budget         int64
 	estimatedBytes int64
-	release        func()
-	once           sync.Once
 }
 
 // CaptureReplicationSnapshot pins immutable inodes at one application position.
@@ -33,25 +30,21 @@ func (s *FileStore) CaptureReplicationSnapshot(ctx context.Context, budget int64
 		s.runtime.replicationMu.Lock()
 		defer s.runtime.replicationMu.Unlock()
 	}
-	release, err := s.beginLifecycleOperation(ctx)
+	view, err := s.newObjectView(ctx)
 	if err != nil {
 		return nil, err
 	}
 	checkpoint, err := s.ReplicationCheckpoint()
 	if err != nil {
-		release()
+		view.Close()
 		return nil, err
 	}
-	if err := s.verifySafeParent(filepath.Join(s.root, ".snapshot-view")); err != nil {
-		release()
+	dir := view.Store.root
+	if err := os.Mkdir(dir, 0700); err != nil {
+		view.Close()
 		return nil, err
 	}
-	dir, err := os.MkdirTemp(s.root, ".snapshot-view-")
-	if err != nil {
-		release()
-		return nil, err
-	}
-	source := &ReplicationSnapshotSource{root: dir, checkpoint: checkpoint, budget: budget, release: release}
+	source := &ReplicationSnapshotSource{view: view, checkpoint: checkpoint, budget: budget}
 	var total int64
 	preparedParents := make(map[string]bool)
 	err = filepath.WalkDir(s.root, func(filename string, entry os.DirEntry, walkErr error) error {
@@ -122,7 +115,7 @@ func (s *ReplicationSnapshotSource) Bytes(ctx context.Context) ([]byte, error) {
 	if err := s.validateTenantGraphs(ctx); err != nil {
 		return nil, err
 	}
-	return replicationSnapshotBytes(ctx, s.root, s.checkpoint, s.budget)
+	return replicationSnapshotBytes(ctx, s.view.Store.root, s.checkpoint, s.budget)
 }
 
 func (s *ReplicationSnapshotSource) WriteTo(ctx context.Context, output io.WriteSeeker) error {
@@ -133,7 +126,7 @@ func (s *ReplicationSnapshotSource) WriteTo(ctx context.Context, output io.Write
 		return err
 	}
 	digest := sha256.New()
-	if err := writeSnapshotArchive(ctx, s.root, s.checkpoint, s.budget, io.MultiWriter(output, digest)); err != nil {
+	if err := writeSnapshotArchive(ctx, s.view.Store.root, s.checkpoint, s.budget, io.MultiWriter(output, digest)); err != nil {
 		return err
 	}
 	if _, err := output.Seek(0, io.SeekStart); err != nil {
@@ -144,9 +137,7 @@ func (s *ReplicationSnapshotSource) WriteTo(ctx context.Context, output io.Write
 }
 
 func (s *ReplicationSnapshotSource) Close() error {
-	var err error
-	s.once.Do(func() { err = os.RemoveAll(s.root); s.release() })
-	return err
+	return s.view.Close()
 }
 
 func (s *FileStore) putReader(ctx context.Context, key string, reader io.Reader) (err error) {

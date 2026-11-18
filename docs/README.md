@@ -1,8 +1,8 @@
 # GGraphDB Documentation
 
-[简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)
+[简体中文](README.zh-CN.md) · [Project home](../README.md) · [Download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0)
 
-The stable release is **2.5.1**. See [preview validation](performance-wal-gc-2026-11-18.zh-CN.md) for the opt-in **2.6.0-preview.3** large-graph sharding scope and WAL performance measurements. Choose a task below or follow a suggested reading path.
+The stable release is **2.6.0**. See the [release notes](../release/local-disk.md) for stability fixes, large-graph sharding opt-in, upgrade limits, and WAL measurements.
 User guides and console documentation have English and Simplified Chinese versions;
 some cluster operations guides are currently Chinese-only.
 
@@ -12,7 +12,7 @@ some cluster operations guides are currently Chinese-only.
 | --- | --- |
 | Try the database | [Quick start](user/quickstart.md) → [Console](management-ui.md) → [Usage manual](user/usage-manual.md) |
 | Integrate business data | [Data model](user/data-model.md) → [Ingestion](user/write-ingest.md) → [Queries](user/read-query.md) → [SDKs](user/sdk.md) |
-| Prepare a deployment | [Release deployment](user/release-deployment.md) → [Security](security-deployment.md) → [Backup/restore](object-backup.md) → [Validation](validation-v2.5.1.md) |
+| Prepare a deployment | [Release deployment](user/release-deployment.md) → [Security](security-deployment.md) → [Backup/restore](object-backup.md) → [Release checks](release-checklist.md#260-qualification) |
 
 ## User guides
 
@@ -62,14 +62,14 @@ some cluster operations guides are currently Chinese-only.
 | Topic | Documentation |
 | --- | --- |
 | Positioning and architecture | [Database introduction](database-introduction.md) · [中文](database-introduction.zh-CN.md) · [Architecture](architecture.en.md) |
-| Large-graph sharding preview | [Design](large-graph-sharding-design.zh-CN.md) · [Implementation and limits](large-graph-sharding-implementation.zh-CN.md) · [Activation and upgrades](partition-wal-ingestion.zh-CN.md#显式启用与升级) · [Validation](performance-wal-gc-2026-11-18.zh-CN.md) |
+| Large-graph sharding | [Design](large-graph-sharding-design.zh-CN.md) · [Implementation and limits](large-graph-sharding-implementation.zh-CN.md) · [Activation and upgrades](partition-wal-ingestion.zh-CN.md#显式启用与升级) · [Validation](performance-wal-gc-2026-11-18.zh-CN.md) |
 | API contracts | [API map](user/api-map.md) · [中文](user/api-map.zh-CN.md) · [OpenAPI](openapi.yaml) · [Error codes](error_codes.md) |
 | Query languages | [Query capabilities](query_capabilities.md) · [GraphQL](graphql.md) · [中文](graphql.zh-CN.md) · [Legacy text DSL](gql.md) |
 | Versions and gaps | [Naming and compatibility](naming-and-compatibility.md) · [中文](naming-and-compatibility.zh-CN.md) · [Product gaps](product_function_gaps.md) |
 | 2.5.1 release evidence | [Release notes](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [Validation](validation-v2.5.1.md) |
 | 2.3.6 matched performance replay | [Maintenance windows and 30-minute Raft growth replay](performance-tail-validation-2026-10-20.zh-CN.md) · [Earlier 6-minute comparison](performance-tail-validation-2026-10-19.zh-CN.md) |
 
-SDK and OpenAPI versions in this checkout are 2.6.0-preview.3. Module `/v2`, HTTP `/v1` and separate Raft protocol
+SDK and OpenAPI versions in this checkout are 2.6.0. Module `/v2`, HTTP `/v1` and separate Raft protocol
 identifiers follow their own contracts; do not substitute the product version.
 
 ## Historical designs and validation
@@ -77,9 +77,7 @@ identifiers follow their own contracts; do not substitute the product version.
 <details>
 <summary>Browse historical designs, reviews and validation</summary>
 
-These records retain their own dates, builds and PASS/FAIL/skipped/unpublished
-conclusions. [2.5.1 validation](validation-v2.5.1.md) qualifies the current release;
-historical performance measurements do not establish current production capacity.
+These records retain their original dates and conclusions. See the [2.6.0 release checks](release-checklist.md#260-qualification) for the current release.
 
 - [Product P0/P1 review after 2.2.2](product-p0-p1-review-2026-10-03.zh-CN.md)
 - [Follow-up review: missing heads, graph digests and source identities](product-p0-p1-review2-2026-10-03.zh-CN.md)

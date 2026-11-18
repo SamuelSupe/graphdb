@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"sort"
 )
@@ -21,17 +20,19 @@ func (s *FileStore) DeferReplicatedPageReclaim(ctx context.Context, keys []strin
 	return nil
 }
 
-func (s *FileStore) reclaimReplicatedPages(ctx context.Context, keys []string) {
-	// The checkpoint is already durable. An interruption can leave an orphan
-	// for the next sweep. The durable graph never refers to these pages.
-	finish := replicationOperation(ctx, "replication_reclaim_pages")
-	err := runIndexWriteJobs(context.WithoutCancel(ctx), len(keys), func(ctx context.Context, index int) error {
-		return s.deleteConditional(ctx, keys[index], PutCondition{}, true)
-	})
-	finish(err)
-	if err != nil {
-		slog.Warn("reclaim unreachable replica pages", "error", err)
+func (s *FileStore) reclaimReplicatedPages(ctx context.Context, journal *replicationJournal) error {
+	if len(journal.reclaim) == 0 {
+		return nil
 	}
+	finish := replicationOperation(ctx, "replication_reclaim_pages")
+	err := runIndexWriteJobs(context.WithoutCancel(ctx), len(journal.reclaim), func(ctx context.Context, index int) error {
+		return s.deleteConditional(ctx, journal.reclaim[index], PutCondition{}, true)
+	})
+	if err == nil {
+		err = journal.syncDirectories()
+	}
+	finish(err)
+	return err
 }
 
 // Every mutation has a durable before-image, including an absence marker for

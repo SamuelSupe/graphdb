@@ -4,7 +4,15 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
-## Current 2.5.1 qualification
+## 2.6.0 qualification
+
+The [release notes](../release/local-disk.md) record the stability fixes and
+sustained partitioned WAL comparison. The
+[tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.0)
+runs the full release gates and verifies the Linux AMD64 and ARM64 archives
+on native runners. The full archive includes the collected gate evidence.
+
+## Previous 2.5.1 qualification
 
 See the [2.5.1 verification record](validation-v2.5.1.md) for the exact-tag gates, Linux archives and download checks.
 

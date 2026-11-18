@@ -381,6 +381,82 @@ func TestReplicationApplicationReclaimsPagesAfterCheckpoint(t *testing.T) {
 	}
 }
 
+func TestReplicationRetriesInterruptedLocalPageReclaimBeforeReuse(t *testing.T) {
+	root := t.TempDir()
+	open := func() *FileStore {
+		t.Helper()
+		f, err := OpenFileStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		return f
+	}
+	ctx, at := t.Context(), time.Unix(1, 0)
+	files := open()
+	const page = "graphdb/pages/immutable"
+	if _, err := files.ApplyReplicated(ctx, 1, "seed", at, func(ctx context.Context) ([]byte, error) {
+		return nil, files.Put(ctx, page, []byte("same content"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make just the local unlink fail after the journal's commit marker.
+	name := filepath.Join(root, page)
+	if err := os.Rename(name, name+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(name, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(name, "busy"), []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := files.ApplyReplicated(ctx, 2, "sweep", at, func(ctx context.Context) ([]byte, error) {
+		return []byte("swept"), files.DeferReplicatedPageReclaim(ctx, []string{page})
+	})
+	if err == nil {
+		t.Fatal("sweep acknowledged an incomplete local reclaim")
+	}
+	if cp, err := files.ReplicationCheckpoint(); err != nil || cp.Index != 1 {
+		t.Fatalf("checkpoint before local reclaim: %d %v", cp.Index, err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := OpenFileStore(root); err == nil {
+		f.Close()
+		t.Fatal("reopened with an unfinished local reclaim")
+	}
+	if err := os.Remove(filepath.Join(name, "busy")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(name+".saved", name); err != nil {
+		t.Fatal(err)
+	}
+	files = open()
+	if _, err := files.Get(ctx, page); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recovery left an unreachable page: %v", err)
+	}
+	if cp, err := files.ReplicationCheckpoint(); err != nil || cp.Index != 2 || string(cp.Response) != "swept" {
+		t.Fatalf("recovered sweep: %+v %v", cp, err)
+	}
+	if _, err := files.ApplyReplicated(ctx, 3, "reuse-page", at, func(ctx context.Context) ([]byte, error) {
+		return nil, files.Put(ctx, page, []byte("same content"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := open().Get(ctx, page); err != nil || string(data) != "same content" {
+		t.Fatalf("later publication lost the reused page: %q %v", data, err)
+	}
+}
+
 func TestReplicationRecoversDurableMarkerAcrossCheckpointPublication(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

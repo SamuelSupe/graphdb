@@ -1,6 +1,6 @@
 # 分片 WAL 接入与复制受理队列
 
-适用于 **GGraphDB 2.6.0-preview.3** 中已启用大图分片且 home group 运行协议 6 或更高版本的租户。使用范围见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)，启用前请核对[协议与升级步骤](#显式启用与升级)。
+适用于 **GGraphDB 2.6.0** 中已启用大图分片且 home group 运行协议 6 或更高版本的租户。使用范围见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)，启用前请核对[协议与升级步骤](#显式启用与升级)。
 
 ## 接入契约
 
@@ -30,7 +30,7 @@ Content-Type: application/json
 - 副本快照包含排队请求、身份别名、活动事务输入和决定。终态后缩小请求正文，保留摘要、受理身份及结果。
 - `GRAPHDB_INGEST_QUEUE_MEMORY_MAX_BYTES` 沿用复制队列的字节预算，默认 256 MiB，作用于该 home group 的所有租户。满时新请求返回可重试的 `503 ingest_queue_full`，已受理请求和原身份重试继续保留。接入前也检查数据盘空间。编码后的事务输入限 8 MiB、4096 个 item，编码后的 cursor 限 1 MiB，另受依赖闭包和分区变更预算限制。失败和冲突详情合计限约 1 MiB，超过时结果标记 `details_truncated`，计数和错误码照常保留，避免超大的回执阻塞队列。
 
-home 副本在同一次 Raft 应用中持久化收据和待处理队列索引。小队列的收据键直接保存在复制检查点，超过 64 项时按收据键分桶，最多 256 个桶，只重写成员变化的桶，排空后恢复内联。正常重启或安装快照后，按索引读取待处理收据，用原受理 LSN 恢复顺序，并按实际收据大小重建队列字节计数。读取没有索引的旧检查点或执行完分片迁移命令后，从原收据重建。永久保留的历史收据和幂等别名仍按原身份查询，重试继续返回原状态 URL、受理时间和结果。已配置保留期的回执按下述规则处理。
+home 副本在同一次 Raft 应用中持久化收据和待处理队列索引。小队列的收据键直接保存在复制检查点，超过 64 项时按收据键分桶，最多 256 个桶，只重写成员变化的桶，排空后恢复内联。正常重启或安装快照后，按索引读取待处理收据，用原受理 LSN 恢复顺序，并按实际收据大小重建队列字节计数。读取没有索引的旧检查点，或迁移实际导入、删除收据后，从原收据重建。租户归属分配和迁移分块暂存保留已有索引。永久保留的历史收据和幂等别名仍按原身份查询，重试继续返回原状态 URL、受理时间和结果。已配置保留期的回执按下述规则处理。
 
 队列量可从节点状态的 `raft.ingest_queue` 查看；后台失败日志带 tenant、group 和原因，未完成的受理记录继续保留。不同图使用已有的有界后台并发。
 
@@ -66,7 +66,7 @@ home group 在固定图版本和布局 revision 上提前规划 WAL 批次。Raf
 
 协议 10 数据组的 Leader 在应用锁外枚举最多 128 个页候选，将清单和预期游标写入 Raft。应用时重新检查分区 epoch、GC 身份、阶段、游标和当前保护标记，然后按原删除字节预算推进。清单生成期间新增的页可以留到下一轮回收。历史日志按原方式重放。
 
-2.6.0-preview.2 先持久化计划扫页的分区进度与应用检查点，再在同一复制应用的写入屏障内回收已确认不可达的不可变页。检查点后的回收省去这些页的前镜像复制和删除目录同步。回收中断可能留下垃圾页，下一轮 GC 会重新扫描。回收失败会记录日志，本地回收耗时计入 `replication_reclaim_pages`。
+计划扫页时，每个副本先持久化分区进度，再把本地待删页清单写入同一事务的提交标记。副本删除这些页并同步受影响的目录后，才发布应用检查点。如果中途退出，副本在启动时重新执行清单，完成后才能应用新的写入。后续事务可以安全复用相同内容的页。回收耗时计入 `replication_reclaim_pages`。对旧版本已经遗漏、没有本地清单的页，可在该副本成为数据组 Leader 后运行一次完整图 GC 来收回空间。
 
 协议 10 的 home group 可在一个有界 GC 步骤运行时规划下一批 WAL，待该步骤完成后顺序提交。GC 启动仍需安装保护边界。Raft 应用的阶段耗时可从 `graphdb_ha_operation_seconds` 查看，操作名包括 `partition_gc_scan`、`partition_gc_apply`、`replication_before_images`、`replication_object_sync` 和 `partition_wal_read_barrier`。回滚日志和同步指标覆盖相应的复制文件操作。
 
@@ -206,7 +206,7 @@ home group 的分片 WAL 受理落盘后，唤醒该租户的分片后台驱动�
 
 ## 显式启用与升级
 
-Raft 默认协议仍为 1。对预览租户，先按[管理接口](large-graph-sharding-implementation.zh-CN.md#管理接口)显式启用大图分片。需要异步受理时，另在 home group 的每个副本设置 `GRAPHDB_INGEST_MODE=wal`。
+Raft 默认协议仍为 1。先按[管理接口](large-graph-sharding-implementation.zh-CN.md#管理接口)显式启用大图分片。需要异步受理时，另在 home group 的每个副本设置 `GRAPHDB_INGEST_MODE=wal`。
 
 按组为全部投票副本设置 `GRAPHDB_RAFT_PROTOCOL_VERSION`。在 Compose 部署中，通过附加的 Compose 配置为每个副本的 `environment` 显式设置。目录组可继续使用协议 5。
 

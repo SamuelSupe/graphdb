@@ -16,16 +16,6 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-const receiptCheckTestCLI = "GRAPHDB_TEST_RECEIPT_CHECK_CLI"
-
-func TestMain(m *testing.M) {
-	if os.Getenv(receiptCheckTestCLI) == "1" {
-		main()
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
-}
-
 func TestReceiptCheckCLI(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -80,11 +70,17 @@ func TestReceiptCheckCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Exercise the shipped entry point. os.Exit in a test binary can cut
+	// short the bbolt checker's asynchronous panic while it is unwinding.
+	cli := filepath.Join(t.TempDir(), "graphdb")
+	if output, err := exec.CommandContext(t.Context(), "go", "build", "-o", cli, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build graphdb: %s: %v", output, err)
+	}
 	check := func(tenant string) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, os.Args[0], "receipt-check", tenant)
-		cmd.Env = []string{receiptCheckTestCLI + "=1", "GRAPHDB_DATA_DIR=" + root, "GRAPHDB_PREFIX=" + prefix}
+		cmd := exec.CommandContext(ctx, cli, "receipt-check", tenant)
+		cmd.Env = []string{"GRAPHDB_DATA_DIR=" + root, "GRAPHDB_PREFIX=" + prefix}
 		return cmd.Output()
 	}
 	output, err := check("clean")

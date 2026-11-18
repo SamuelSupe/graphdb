@@ -11,6 +11,8 @@ Optional [S3-compatible snapshot backups](object-backup.md) support recovery aft
 
 This guide describes the local storage and standalone path. The same release also supports independent [Raft replicas](raft-ha.zh-CN.md) and [tenant sharding](sharding.zh-CN.md); replicated durability, administration, recovery and rolling upgrades have their own contracts.
 
+Raft snapshot capture and installation use marked, node-local temporary directories. After an interruption, the next exclusive open removes these directories and releases their hard links. Older unmarked directories require an offline ownership check before manual cleanup.
+
 Since 2.3.4: parent directories above the data root may be
 symlinks (for example macOS `/tmp` or a Linux mount alias). The data root itself
 and managed paths inside it must remain real directories. Directory publication

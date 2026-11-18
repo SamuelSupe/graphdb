@@ -313,9 +313,6 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 		if cmd.Prefix != "" && cmd.Prefix != a.snapshotTenantPrefix() {
 			return nil, fmt.Errorf("replicated data prefix %q differs from configured prefix %q", cmd.Prefix, a.snapshotTenantPrefix())
 		}
-		if cmd.Kind == "sharding" {
-			a.resetPending()
-		}
 	}
 	var checkpoint storage.ReplicationCheckpoint
 	if len(entries) > 1 {
@@ -353,17 +350,9 @@ func (a *Application) applyBatch(ctx context.Context, entries []replication.Appl
 			}
 			responses[i] = response
 		}
-		if a.ShardID != "" {
-			if commands[0].Kind == "sharding" {
-				// Transfers replace receipt objects outside saveAccepted.
-				a.resetPending()
-				if err := a.Files.SetReplicationIngestQueue(applyCtx, nil); err != nil {
-					return nil, err
-				}
-			} else if a.pending != nil {
-				if err := a.checkpointPending(applyCtx); err != nil {
-					return nil, err
-				}
+		if a.ShardID != "" && a.pending != nil {
+			if err := a.checkpointPending(applyCtx); err != nil {
+				return nil, err
 			}
 		}
 		return responses[last], nil

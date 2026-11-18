@@ -59,6 +59,12 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 			return err
 		}
 
+		// Only the component after tenant and generation identifies the record family.
+		parts := strings.SplitN(strings.TrimPrefix(key, prefix), "/", 4)
+		var family string
+		if len(parts) == 4 {
+			family = parts[2]
+		}
 		if strings.HasSuffix(key, "/state.json") {
 			var state DataState
 			if err := json.Unmarshal(raw, &state); err != nil {
@@ -148,7 +154,7 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 					return err
 				}
 			}
-		} else if strings.HasSuffix(key, "/graph.json") || strings.Contains(key, "/views/") {
+		} else if strings.HasSuffix(key, "/graph.json") || family == "views" {
 			var g Graph
 			if err := json.Unmarshal(raw, &g); err != nil {
 				return err
@@ -156,7 +162,7 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 			if g.Format != FormatVersion || storage.ValidateTenantID(g.Tenant) != nil || g.Generation <= 0 {
 				return fmt.Errorf("invalid graph snapshot scope")
 			}
-			if strings.Contains(key, "/views/") {
+			if family == "views" {
 				if key != s.viewKey(g.Tenant, g.Generation, g.Version) {
 					return fmt.Errorf("graph read view snapshot scope mismatch")
 				}
@@ -186,7 +192,7 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 					}
 				}
 			}
-		} else if strings.Contains(key, "/transactions/") {
+		} else if family == "transactions" {
 			var txn Transaction
 			if err := json.Unmarshal(raw, &txn); err != nil {
 				return err
@@ -199,13 +205,12 @@ func (s Store) ValidateSnapshot(ctx context.Context, group string) error {
 					return err
 				}
 			}
-		} else if strings.Contains(key, "/pins/") {
+		} else if family == "pins" {
 			var pin Pin
 			if err := json.Unmarshal(raw, &pin); err != nil {
 				return err
 			}
-			relative := strings.TrimPrefix(key, prefix)
-			tenant := strings.SplitN(relative, "/", 2)[0]
+			tenant := parts[0]
 			if !validTokenID(pin.ID) || key != s.pinKey(tenant, pin.Generation, pin.ID) {
 				return fmt.Errorf("read pin snapshot scope mismatch")
 			}

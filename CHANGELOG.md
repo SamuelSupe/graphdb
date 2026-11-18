@@ -5,6 +5,18 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-18
+
+- Validate partition snapshot records by their position inside the tenant namespace.
+  Recover interrupted Raft snapshot capture and installation directories on reopen.
+- Persist each replica's pending GC page deletions in its local commit marker
+  and finish them before publishing the applied position or admitting later writes.
+- Preserve the shard WAL pending index across ownership changes and transfer
+  staging. Receipt import and removal still invalidate it in the same transaction.
+- Release the 2.6 series. Large-graph sharding and partitioned WAL require explicit
+  activation. See the [release notes](release/local-disk.md) for upgrade and
+  verification details.
+
 ## [2.6.0-preview.3] - 2026-11-18
 
 - Rebuild shard WAL queues from pending receipt keys persisted with the

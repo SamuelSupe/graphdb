@@ -297,6 +297,10 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 		}
 		return err
 	}
+	if reclaim {
+		// A previous attempt may have unlinked the file and missed its directory barrier.
+		s.replicationJournal(ctx).deferDirectorySync(filepath.Dir(path))
+	}
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return s.deletePackedReceipt(ctx, key, condition)
@@ -305,6 +309,9 @@ func (s *FileStore) deleteConditional(ctx context.Context, key string, condition
 		return err
 	}
 	if !info.Mode().IsRegular() {
+		if reclaim {
+			return fmt.Errorf("replication page %q is not a regular file", key)
+		}
 		if checkErr := checkCondition(condition, "", false); checkErr != nil {
 			return checkErr
 		}

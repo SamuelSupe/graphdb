@@ -19,6 +19,50 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
+func TestPartitionSnapshotRoundTripWithMetadataNames(t *testing.T) {
+	const prefix, tenant = "archive/pins", "views"
+	open := func() *Application {
+		t.Helper()
+		files, err := storage.OpenFileStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { files.Close() })
+		return &Application{Files: files, Store: storage.NewTenantStore(files, prefix), ShardID: "home", MaxSnapshotBytes: 4 << 20}
+	}
+	source, target := open(), open()
+	ctx := t.Context()
+	g := partition.Graph{Tenant: tenant, Format: partition.FormatVersion, Generation: 1}
+	for i := range g.Partitions {
+		g.Partitions[i] = partition.Placement{Group: "data", Epoch: 1}
+	}
+	_, err := source.Files.ApplyReplicated(ctx, 1, "init", time.Unix(1, 0), func(ctx context.Context) ([]byte, error) {
+		store := source.partitionStore()
+		if _, err := store.Apply(ctx, partition.Action{Operation: "initialize", Tenant: tenant, Generation: 1, Graph: &g}); err != nil {
+			return nil, err
+		}
+		_, err := store.Apply(ctx, partition.Action{Operation: "activate", Tenant: tenant, Generation: 1})
+		return nil, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := source.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Restore(ctx, 1, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := target.partitionStore().GetGraph(ctx, tenant)
+	if err != nil || restored.State != "active" || restored.Generation != g.Generation || restored.Partitions != g.Partitions {
+		t.Fatalf("restored graph: generation=%d err=%v", restored.Generation, err)
+	}
+	if view, err := target.partitionStore().Snapshot(ctx, tenant, g.Generation, g.Version); err != nil || view.Partitions != g.Partitions {
+		t.Fatalf("restored read view: version=%d err=%v", view.Version, err)
+	}
+}
+
 func TestPendingGCPartitionsSpansPlacements(t *testing.T) {
 	var g partition.Graph
 	// An uneven layout can leave all the lowest pending IDs on one group.

@@ -35,6 +35,12 @@ type ReplicationCheckpoint struct {
 	Response    []byte                  `json:"response,omitempty"`
 }
 
+// Only this replica owns the reclaim list. Snapshots carry the public checkpoint.
+type replicationCommitMarker struct {
+	ReplicationCheckpoint
+	Reclaim []string `json:"reclaim,omitempty"`
+}
+
 // ReplicationRejectedError carries a deterministic application rejection. Only
 // a clean rollback without a recorded file failure may return it directly.
 type ReplicationRejectedError struct {
@@ -174,6 +180,10 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	finishCheckpoint := replicationOperation(ctx, "replication_checkpoint")
 	checkpoint = ReplicationCheckpoint{Index: index, Response: response, IngestQueue: journal.ingestQueue}
 	data, err := json.Marshal(checkpoint)
+	marker := data
+	if err == nil && len(journal.reclaim) != 0 {
+		marker, err = json.Marshal(replicationCommitMarker{ReplicationCheckpoint: checkpoint, Reclaim: journal.reclaim})
+	}
 	keep := false
 	if err == nil {
 		err = db.Update(func(tx *bolt.Tx) error {
@@ -181,7 +191,7 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 			if err != nil {
 				return err
 			}
-			return meta.Put([]byte("committed"), data)
+			return meta.Put([]byte("committed"), marker)
 		})
 		if err == nil {
 			err = db.View(func(tx *bolt.Tx) error {
@@ -195,10 +205,13 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 		finishCheckpoint(err)
 		return nil, err
 	}
-	// The committed marker already contains these checkpoint bytes. Publish
-	// them directly. A small committed journal can be reused by replacing its
-	// previous marker and before-images in the first mutation transaction.
-	// Startup and older binaries can still recover the same committed marker.
+	// Publish the applied position only after all local unlinks are durable.
+	// On interruption recovery finishes this list before any later prepare
+	// can reuse one of its content-addressed pages.
+	if err := s.reclaimReplicatedPages(applyCtx, journal); err != nil {
+		finishCheckpoint(err)
+		return nil, err
+	}
 	err = writeFileAtomic(filepath.Join(dir, "checkpoint.json"), data)
 	if err == nil && !keep {
 		// The next application syncs a newly created name before any write.
@@ -208,9 +221,6 @@ func (s *FileStore) ApplyReplicated(ctx context.Context, index uint64, id string
 	finishCheckpoint(err)
 	if err != nil {
 		return nil, err
-	}
-	if len(journal.reclaim) != 0 {
-		s.reclaimReplicatedPages(applyCtx, journal.reclaim)
 	}
 	// Keep rollback's parent directories intact until the checkpoint is durable.
 	// Empty-directory cleanup is local housekeeping and cannot reject that entry.
@@ -294,10 +304,8 @@ func (j *replicationJournal) syncDirectories() error {
 		dirs = append(dirs, dir)
 	}
 	sort.Strings(dirs)
-	// Independent directory barriers may complete together, but all must
-	// finish before ApplyReplicated writes the durable commit marker.
-	// Batched page publication can touch dozens of directories after its
-	// file writers finish. Keep the smaller pool for deletion batches.
+	// Batched page publication can touch dozens of independent directories
+	// after its file writers finish. Keep the smaller pool for deletion batches.
 	workers := indexWriteConcurrency
 	if j.batched.Load() && j.syncOnWrite.Load() && len(j.deleted) == 0 {
 		workers = 16
@@ -528,9 +536,21 @@ func (s *FileStore) recoverReplication() error {
 	err = db.View(func(tx *bolt.Tx) error {
 		if meta := tx.Bucket([]byte("meta")); meta != nil {
 			if data := meta.Get([]byte("committed")); data != nil {
-				var checkpoint ReplicationCheckpoint
-				if err := json.Unmarshal(data, &checkpoint); err != nil {
+				var marker replicationCommitMarker
+				if err := json.Unmarshal(data, &marker); err != nil {
 					return err
+				}
+				if len(marker.Reclaim) != 0 {
+					journal := &replicationJournal{files: s, reclaim: marker.Reclaim}
+					ctx := context.WithValue(context.Background(), replicationJournalKey{}, journal)
+					if err := s.reclaimReplicatedPages(ctx, journal); err != nil {
+						return err
+					}
+					var err error
+					data, err = json.Marshal(marker.ReplicationCheckpoint)
+					if err != nil {
+						return err
+					}
 				}
 				return writeFileAtomic(filepath.Join(dir, "checkpoint.json"), data)
 			}

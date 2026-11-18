@@ -227,6 +227,7 @@ func (a *Application) removeMigratedTenant(ctx context.Context, tenant string) e
 	if err != nil {
 		return err
 	}
+	removedReceipt := false
 	for _, object := range objects {
 		record, err := a.accepted(ctx, object.Key)
 		if err != nil {
@@ -236,6 +237,12 @@ func (a *Application) removeMigratedTenant(ctx context.Context, tenant string) e
 			if err := a.Files.Delete(ctx, object.Key); err != nil {
 				return err
 			}
+			removedReceipt = true
+		}
+	}
+	if removedReceipt {
+		if err := a.invalidatePendingCheckpoint(ctx); err != nil {
+			return err
 		}
 	}
 	return a.deleteTransferChunks(ctx, tenant)

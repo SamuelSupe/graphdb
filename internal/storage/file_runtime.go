@@ -52,7 +52,7 @@ func openFileStore(root string, recovery bool) (*FileStore, error) {
 	// temporary views left by a killed process. They are not recovery state.
 	if err := removeAbandonedObjectViews(root); err != nil {
 		s.Close()
-		return nil, fmt.Errorf("clean abandoned migration views: %w", err)
+		return nil, fmt.Errorf("clean abandoned object views: %w", err)
 	}
 	if recovery {
 		return s, nil

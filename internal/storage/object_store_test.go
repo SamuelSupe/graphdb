@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -759,11 +760,29 @@ func TestFileStoreProcessDeathReleasesDirectory(t *testing.T) {
 		if _, err := temporary.Write([]byte("unfinished export")); err != nil {
 			t.Fatal(err)
 		}
-		stop := make(chan os.Signal, 1)
-		signal.Notify(stop, os.Interrupt)
-		defer signal.Stop(stop)
-		fmt.Println("ready")
-		<-stop
+		const budget = 1 << 20
+		source, err := files.CaptureReplicationSnapshot(t.Context(), budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := source.Bytes(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The parent kills this process with both the captured inode and
+		// the unpacked installation still in use.
+		err = files.InstallReplicationSnapshotValidated(t.Context(), 0, bytes.NewReader(snapshot), budget, "", func(context.Context, ObjectStore) error {
+			stop := make(chan os.Signal, 1)
+			signal.Notify(stop, os.Interrupt)
+			defer signal.Stop(stop)
+			fmt.Println("ready")
+			<-stop
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
 	root := t.TempDir()
 	unowned := filepath.Join(root, ".snapshot-view-unowned")
@@ -793,13 +812,20 @@ func TestFileStoreProcessDeathReleasesDirectory(t *testing.T) {
 	if _, err := OpenFileStore(root); !errors.Is(err, ErrDataDirectoryLocked) {
 		t.Fatalf("process lock: %v", err)
 	}
-	if views, err := filepath.Glob(filepath.Join(root, ".snapshot-view-*")); err != nil || len(views) != 2 {
-		t.Fatalf("locked open removed the live export: %v %v", views, err)
+	if views, err := filepath.Glob(filepath.Join(root, ".snapshot-view-*")); err != nil || len(views) != 4 {
+		t.Fatalf("locked open removed a live view: %v %v", views, err)
 	}
 	if err := child.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	_ = child.Wait()
+	legacy := filepath.Join(root, ".snapshot-view-legacy")
+	if err := os.Mkdir(legacy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, objectViewMarker), []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	files, err := OpenFileStore(root)
 	if err != nil {
 		t.Fatal(err)

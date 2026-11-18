@@ -1,6 +1,6 @@
 # GGraphDB Python SDK
 
-Version **2.6.0-preview.3**, matching the [server preview](../../docs/performance-wal-gc-2026-11-18.zh-CN.md). Python packaging normalizes this version to `2.6.0rc3`.
+Version **2.6.0**, matching the [server release](../../release/local-disk.md).
 
 Install locally:
 

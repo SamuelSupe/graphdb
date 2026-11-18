@@ -2,7 +2,7 @@
 
 **A multi-tenant property graph database, with a built-in management console.**
 
-[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1) · [Documentation](docs/README.md) · [Preview release notes](release/local-disk.md)
+[简体中文](README.zh-CN.md) · [Stable download](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0) · [Documentation](docs/README.md) · [Release notes](release/local-disk.md)
 
 Manage entities, relationships and source-governed ingestion; query the graph with
 JSON DSL or GraphQL. Start with one process and one local disk. Add independent
@@ -14,20 +14,20 @@ storage is optional for snapshot backups.
 
 ## Releases
 
-**[2.6.0-preview.3](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0-preview.3)** includes opt-in large-graph sharding and partitioned WAL. Raft defaults to protocol 1. Protocol 12 requires explicit activation on the home group. See [activation and upgrade limits](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级) and [WAL performance measurements](docs/performance-wal-gc-2026-11-18.zh-CN.md).
+**[2.6.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0)** includes opt-in large-graph sharding and partitioned WAL. Raft defaults to protocol 1. Protocol 12 requires explicit activation on the home group. See [activation and upgrade limits](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级) and [release validation](release/local-disk.md#持续写入验证).
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** enables durable asynchronous WAL ingestion in standalone Compose and splits oversized index catch-up into ordered incremental updates. Release binaries use **Go 1.27.3**.
 
-| Area | What 2.5.1 provides |
+| Area | Capabilities in 2.6.0 |
 | --- | --- |
 | Management UI | Embedded English / Simplified Chinese console at `/ui/`; no separate frontend service |
 | Daily workflows | Chart overview, structured forms and details, query workbench, ingestion and maintenance |
 | Large tenant registries | Server-side tenant ID search and bounded pages for tenant selection and cluster placements |
 | Bounded indexes | Opt-in adjacency trees, local page merging and pruned range scans; legacy layouts and global edge cursors retained |
 | Reliability | Durable receipt publication, WAL replay, offline receipt checks and automatic inode reclamation |
-| Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups, with opt-in large-graph partitioning in protocol 5 |
+| Deployment | Standalone direct/WAL, independent Raft replicas and tenant-sharded Raft groups, with opt-in large-graph partitioning and partitioned WAL |
 
-See [release validation](docs/validation-v2.5.1.md) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
+See [release checks](docs/release-checklist.md#260-qualification) for evidence and [version boundaries](docs/naming-and-compatibility.md) for compatibility.
 
 ## Start
 
@@ -182,7 +182,7 @@ decoding and rollback still consume resources. See [architecture](docs/architect
 | Use the console | [Management UI](docs/management-ui.md) |
 | Build a query or client | [Query capabilities](docs/query_capabilities.md) · [GraphQL](docs/graphql.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | Maintain the service | [Product operations](docs/product-operations.zh-CN.md) · [Raft operations](docs/raft-operations.zh-CN.md) · [Diagnostic metrics](docs/diagnostics-metrics.zh-CN.md) |
-| Check release evidence | [2.5.1 validation](docs/validation-v2.5.1.md) · [Compatibility](docs/naming-and-compatibility.md) |
+| Check release evidence | [2.6.0 release checks](docs/release-checklist.md#260-qualification) · [Compatibility](docs/naming-and-compatibility.md) |
 
 Some cluster operations guides are currently Chinese-only; the user guide and console documentation are bilingual.
 

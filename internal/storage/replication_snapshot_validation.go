@@ -6,7 +6,7 @@ import (
 )
 
 func (s *ReplicationSnapshotSource) validateTenantGraphs(ctx context.Context) error {
-	view := NewFileStore(s.root)
+	view := s.view.Store
 	if err := validateReplicationSnapshotTenantGraphs(ctx, view, s.TenantPrefix); err != nil {
 		return err
 	}
