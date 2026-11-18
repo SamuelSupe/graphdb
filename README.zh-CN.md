@@ -2,7 +2,7 @@
 
 **多租户属性图数据库，内置中英文管理控制台。**
 
-[English](README.md) · [下载稳定版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
+[English](README.md) · [下载稳定版](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.1) · [文档中心](docs/README.zh-CN.md) · [发行说明](release/local-disk.md)
 
 管理实体、关系与来源治理，通过 JSON DSL 或 GraphQL 查询图数据。从一个进程、
 一块本地磁盘开始；需要高可用时增加独立 Raft 副本，需要横向扩展时使用租户分片。
@@ -12,7 +12,9 @@
 
 ## 发行版本
 
-**[2.6.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0)** 支持显式启用大图分片和分片 WAL，默认 Raft 协议为 1。协议 12 需在 home group 显式激活。配置和升级限制见[启用及升级说明](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级)，实测和使用边界见[持续写入验证](release/local-disk.md#持续写入验证)。
+**[2.6.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.1)** 修复 Raft 维护取消读请求时可能出现的 502。尚未开始响应的读取会收到完整、可重试的 HTTP 503。已经开始写入的流式响应仍有写入时限。
+
+**[2.6.0](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0)** 支持显式启用大图分片和分片 WAL，默认 Raft 协议为 1。协议 12 需在 home group 显式激活。配置和升级限制见[启用及升级说明](docs/partition-wal-ingestion.zh-CN.md#显式启用与升级)，实测和使用边界见[2.6.0 持续写入验证](https://github.com/SamuelSupe/graphdb/blob/v2.6.0/release/local-disk.md#持续写入验证)。
 
 **[2.5.1](https://github.com/SamuelSupe/graphdb/releases/tag/v2.5.1)** 在单机 Compose 中默认启用持久化 WAL 异步接入，并将超出合并预算的索引增量分段追平。发行二进制使用 **Go 1.27.3**。
 
@@ -25,7 +27,7 @@
 | 稳定性 | 回执持久发布、WAL 重放、离线回执校验和 inode 自动回收 |
 | 部署 | 单机 direct/WAL、独立 Raft 副本、按租户分片的 Raft 组，可选启用大图分片和分片 WAL |
 
-验证证据见[发布验收](docs/release-checklist.md#260-qualification)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
+验证证据见[发布验收](docs/release-checklist.md#261-qualification)，兼容规则见[版本边界](docs/naming-and-compatibility.zh-CN.md)。
 
 ## 启动
 
@@ -171,7 +173,7 @@ Raft 在协议允许时把维护准备移出应用屏障，仅暂停维护租户
 | 使用控制台 | [管理 UI](docs/management-ui.zh-CN.md) |
 | 编写查询或客户端 | [查询能力](docs/query_capabilities.md) · [GraphQL](docs/graphql.zh-CN.md) · [OpenAPI](docs/openapi.yaml) · [Go SDK](sdk/go/graphdb/README.md) · [Python SDK](sdk/python/README.md) |
 | 维护服务 | [产品运维](docs/product-operations.zh-CN.md) · [Raft 运维](docs/raft-operations.zh-CN.md) · [诊断指标](docs/diagnostics-metrics.zh-CN.md) |
-| 核对发行证据 | [2.6.0 发布验收](docs/release-checklist.md#260-qualification) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
+| 核对发行证据 | [2.6.1 发布验收](docs/release-checklist.md#261-qualification) · [兼容规则](docs/naming-and-compatibility.zh-CN.md) |
 
 用户指南与控制台文档提供中英文版本；部分集群运维专题目前仅有中文。
 

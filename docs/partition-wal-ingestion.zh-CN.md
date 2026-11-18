@@ -1,6 +1,6 @@
 # 分片 WAL 接入与复制受理队列
 
-适用于 **GGraphDB 2.6.0** 中已启用大图分片且 home group 运行协议 6 或更高版本的租户。使用范围见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)，启用前请核对[协议与升级步骤](#显式启用与升级)。
+适用于 **GGraphDB 2.6** 中已启用大图分片且 home group 运行协议 6 或更高版本的租户。使用范围见[分片实施说明](large-graph-sharding-implementation.zh-CN.md)，启用前请核对[协议与升级步骤](#显式启用与升级)。
 
 ## 接入契约
 

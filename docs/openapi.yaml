@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GGraphDB API
-  version: 2.6.0
+  version: 2.6.1
   description: GGraphDB 2.x local-disk, multi-tenant graph API. The default is single-process; optional Raft HA uses three independent replicas and majority durability. Optional tenant sharding uses an independent catalog group and multiple data groups, with stable placements and complete-tenant migration through serve-router. HA clients pair min_version with X-GraphDB-Read-Generation from the prior X-GraphDB-Tenant-Generation response header. Standalone 2.2 retains the 2.0/2.1 data format and optional S3 backup automation; Raft has separate replica-directory and protocol upgrade requirements. Stop the old process before reusing a 2.0/2.1 directory. Replacing 1.x requires a fresh directory; no 1.x migration is provided.
 servers:
   - url: http://localhost:8080
@@ -828,6 +828,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GraphQLResponse'
+        '503':
+          $ref: '#/components/responses/RaftReadUnavailable'
   /v1/query/gql:
     post:
       deprecated: true
@@ -1057,6 +1059,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TenantUsage'
+        '503':
+          $ref: '#/components/responses/RaftReadUnavailable'
   /v1/tenants/{tenant_id}:
     get:
       summary: Get tenant status and metadata.
@@ -2190,7 +2194,18 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     ReaderNotFresh:
-      description: Reader cannot satisfy the requested minimum version before catch-up timeout.
+      description: The reader cannot satisfy the requested minimum version, or Raft is temporarily unable to serve the read.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Retry delay in seconds.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RaftReadUnavailable:
+      description: Raft cannot serve the read, or maintenance interrupted the read before its response began. The response carries the raft_unavailable code.
       headers:
         Retry-After:
           schema:

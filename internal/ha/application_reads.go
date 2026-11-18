@@ -42,8 +42,10 @@ func (a *Application) lockReaders() {
 	timer := time.AfterFunc(time.Second, func() {
 		a.readMu.Lock()
 		for read := range a.activeReads {
-			read.cancel()
+			// Mark the response first so a handler that returns on cancellation
+			// cannot publish its original status before seeing the interruption.
 			read.interrupt()
+			read.cancel()
 		}
 		a.readMu.Unlock()
 		close(interrupted)

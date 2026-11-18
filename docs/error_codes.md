@@ -52,7 +52,7 @@ The following top-level `code` values are stable:
 | `write_admission_queue_timeout` | 429 | yes | Write admission queue timed out. |
 | `write_backpressure` | 429 | yes | Generic write backpressure category. |
 | `request_timeout` | 504 | yes | Request execution timed out. |
-| `raft_unavailable` | 503/504 | yes | Raft leader, quorum, application, or snapshot capacity is unavailable. Use the HA entry point and retain write idempotency on retries. |
+| `raft_unavailable` | 503/504 | yes | Raft leader, quorum, application, or snapshot capacity is unavailable, or Raft maintenance interrupted a read before its response began. Use the HA entry point, follow `Retry-After` when present, and retain write idempotency on retries. |
 | `write_outcome_unknown` | 502/503/504 | no | A submitted or forwarded mutation may have committed but its result was not observed. Check its batch/idempotency status; repeat only the exact request with the same durable identity. |
 | `tenant_generation_changed` | 409 | no | Restore or purge replaced the tenant incarnation. Obtain a new generation before using min_version or retrying fenced mutations. |
 | `ingest_queue_full` | 503 | yes | Replicated accepted requests reached their byte budget. |

@@ -5,6 +5,11 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-11-18
+
+- Return a complete retryable HTTP 503 when Raft maintenance interrupts a read
+  before the response begins, and bound writes on streams already in progress.
+
 ## [2.6.0] - 2026-11-18
 
 - Validate partition snapshot records by their position inside the tenant namespace.

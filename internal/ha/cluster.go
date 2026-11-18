@@ -303,57 +303,11 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		expectedGeneration = parsed
 	}
 	if !mutation {
-		graphRead := tenant != "" && (strings.HasPrefix(r.URL.Path, "/v1/query") && r.URL.Path != "/v1/query/templates" ||
-			strings.HasPrefix(r.URL.Path, "/v1/entities") || strings.HasPrefix(r.URL.Path, "/v1/edges") || strings.HasPrefix(r.URL.Path, "/v1/export/snapshot"))
-		readCtx, releaseRead := c.App.readContext(r.Context(), func() { _ = http.NewResponseController(w).SetWriteDeadline(time.Now()) })
+		response := &raftReadResponse{ResponseWriter: w, cluster: c}
+		readCtx, releaseRead := c.App.readContext(r.Context(), response.interrupt)
 		defer releaseRead()
-		r = r.WithContext(readCtx)
-		c.App.mu.RLock()
-		locked := true
-		defer func() {
-			if locked {
-				c.App.mu.RUnlock()
-			}
-		}()
-		if c.App.ShardID != "" && tenant != "" {
-			valid, err := c.App.checkOwnership(ctx, tenant, routeEpoch)
-			if err != nil || !valid {
-				http.Error(w, "tenant ownership changed before reading", http.StatusConflict)
-				return
-			}
-		}
-		if tenant != "" {
-			generation, err := c.App.Store.ReplicationTenantGeneration(ctx, tenant)
-			if err != nil {
-				c.writeError(w, err)
-				return
-			}
-			if expectedGeneration > 0 && generation != expectedGeneration {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(map[string]any{"code": "tenant_generation_changed", "error": "tenant has been replaced; obtain a new read token", "message": "tenant has been replaced; obtain a new read token", "retryable": false})
-				return
-			}
-			w.Header().Set("X-GraphDB-Tenant-Generation", fmt.Sprint(generation))
-		}
-		if c.WAL && (strings.HasPrefix(r.URL.Path, "/v1/ingest/batches/") || strings.HasPrefix(r.URL.Path, "/v1/ingest/writers/")) {
-			c.App.mu.RUnlock()
-			locked = false
-			c.batchStatus(w, r)
-			return
-		}
-		if graphRead {
-			readCtx, release, err := c.App.Store.ReadViewContext(r.Context(), tenant)
-			if err != nil {
-				c.writeError(w, err)
-				return
-			}
-			defer release()
-			r = r.WithContext(readCtx)
-		}
-		c.App.mu.RUnlock()
-		locked = false
-		next.ServeHTTP(w, r)
+		c.serveRead(ctx, response, r.WithContext(readCtx), tenant, routeEpoch, expectedGeneration, next)
+		response.finish()
 		return
 	}
 	cmd, err := newCommand("http")
@@ -426,6 +380,57 @@ func (c *Cluster) ServeRoute(w http.ResponseWriter, r *http.Request, mutation, r
 		return
 	}
 	writeResult(w, data)
+}
+
+func (c *Cluster) serveRead(ctx context.Context, w http.ResponseWriter, r *http.Request, tenant string, routeEpoch uint64, expectedGeneration int64, next http.Handler) {
+	graphRead := tenant != "" && (strings.HasPrefix(r.URL.Path, "/v1/query") && r.URL.Path != "/v1/query/templates" ||
+		strings.HasPrefix(r.URL.Path, "/v1/entities") || strings.HasPrefix(r.URL.Path, "/v1/edges") || strings.HasPrefix(r.URL.Path, "/v1/export/snapshot"))
+	c.App.mu.RLock()
+	locked := true
+	defer func() {
+		if locked {
+			c.App.mu.RUnlock()
+		}
+	}()
+	if c.App.ShardID != "" && tenant != "" {
+		valid, err := c.App.checkOwnership(ctx, tenant, routeEpoch)
+		if err != nil || !valid {
+			http.Error(w, "tenant ownership changed before reading", http.StatusConflict)
+			return
+		}
+	}
+	if tenant != "" {
+		generation, err := c.App.Store.ReplicationTenantGeneration(ctx, tenant)
+		if err != nil {
+			c.writeError(w, err)
+			return
+		}
+		if expectedGeneration > 0 && generation != expectedGeneration {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"code": "tenant_generation_changed", "error": "tenant has been replaced; obtain a new read token", "message": "tenant has been replaced; obtain a new read token", "retryable": false})
+			return
+		}
+		w.Header().Set("X-GraphDB-Tenant-Generation", fmt.Sprint(generation))
+	}
+	if c.WAL && (strings.HasPrefix(r.URL.Path, "/v1/ingest/batches/") || strings.HasPrefix(r.URL.Path, "/v1/ingest/writers/")) {
+		c.App.mu.RUnlock()
+		locked = false
+		c.batchStatus(w, r)
+		return
+	}
+	if graphRead {
+		readCtx, release, err := c.App.Store.ReadViewContext(r.Context(), tenant)
+		if err != nil {
+			c.writeError(w, err)
+			return
+		}
+		defer release()
+		r = r.WithContext(readCtx)
+	}
+	c.App.mu.RUnlock()
+	locked = false
+	next.ServeHTTP(w, r)
 }
 
 func (c *Cluster) writeError(w http.ResponseWriter, err error) {

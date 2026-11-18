@@ -1,44 +1,31 @@
-# GGraphDB v2.6.0
+# GGraphDB v2.6.1
 
-2.6.0 是 2.6 系列正式版。大图分片按租户启用，分片 WAL 由 home group 显式配置。Raft 默认协议为 1，协议 12 在 home group 单独激活。
+2.6.1 修复 Raft 维护取消慢读时可能出现的网关 502 或连接提前关闭。
 
-## 稳定性修复
+- 维护取消读取时，如果响应尚未开始写入，服务返回完整的 JSON `503 raft_unavailable`，其中 `retryable` 为 `true`，并附带 `Retry-After: 1`。
+- 已经开始写入的响应在取消后最多还有一秒写入时间，流式处理器无法续长维护设定的期限。
 
-- 按租户命名空间中的路径位置识别分片快照记录。与内部目录同名的租户和存储前缀可以正常生成和恢复快照。
-- 副本在下次独占打开数据目录时清理中断的快照捕获和安装文件，释放遗留的硬链接。
-- 副本持久化本地 GC 待删页清单，完成删除和目录同步后再发布应用检查点。重启会完成中断的清单，后续写入可以安全复用相同内容的页。
-- 租户归属分配和迁移分块暂存保留分片 WAL 待处理索引。无索引的旧检查点从原收据重建，历史收据继续提供原身份、状态 URL、受理 LSN 和结果。
-
-## 持续写入验证
-
-以 `v2.6.0-preview.3` 为基线，在同一台 Linux ARM64 虚拟机上对照运行。每次使用九个 Raft 副本，目录组使用协议 5，两个数据组使用协议 12。每次写入期间完成三轮 GC。表中的两组数字对应交换运行顺序后的两次对照。
-
-| 输入 | 写入时长 | 提交 P99 (ms)，基线 → 2.6.0 | 峰值队列（批），基线 → 2.6.0 |
-| --- | ---: | --- | --- |
-| 6 批/秒 | 约 105 秒 | 46.56 → 56.85 / 63.60 → 48.94 | 1 → 1 / 2 → 1 |
-| 24 批/秒 | 约 60 秒 | 124.10 → 86.74 / 82.10 → 77.98 | 7 → 4 / 4 → 3 |
-
-八次运行停写时均只剩一批，最后一批在 30 ms 内可见。修复版逐条核验了 4,140 份收据，按批抽读实体并核对图版本和实体总数。这些结果适用于上述同机负载和数据规模。[标签工作流及发布门禁](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.0)
+三节点 Raft 与 HAProxy 的定向回归在竞态检测下连续通过五轮。GC 与慢速租户用量读取、普通查询同时运行时，两类读取均收到完整的 503，GC 在 1.14 到 1.33 秒内完成。维护后两类查询均返回 200。另有阻塞流式连接按期限释放的回归用例。[Raft 读排空语义](https://github.com/SamuelSupe/graphdb/blob/v2.6.1/docs/raft-ha.zh-CN.md#243-读排空与转发修正) · [标签工作流](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.1)
 
 ## 升级
 
-在各组沿用原协议的情况下替换 Router 和副本二进制。首次激活协议 12 需要单独的维护窗口。协议 12 持久化后，原目录要求支持协议 12 的二进制。旧版本遗留的无标记快照目录需离线确认归属后再清理。[启用、升级及回退步骤](https://github.com/SamuelSupe/graphdb/blob/v2.6.0/docs/partition-wal-ingestion.zh-CN.md#显式启用与升级)
+替换二进制时使用各 Raft 组已配置的协议。协议激活按独立的维护窗口流程执行。[Raft 升级说明](https://github.com/SamuelSupe/graphdb/blob/v2.6.1/docs/raft-rolling-upgrade.zh-CN.md) · [2.6.0 发行说明](https://github.com/SamuelSupe/graphdb/releases/tag/v2.6.0)
 
 ## 下载和校验
 
 | 平台 | 归档 |
 | --- | --- |
-| Linux x86_64 | `graphdb-v2.6.0-linux-amd64.tar.gz` |
-| Linux aarch64 | `graphdb-v2.6.0-linux-arm64.tar.gz` |
-| 完整版（含 macOS ARM64 二进制） | `graphdb-v2.6.0.tar.gz` |
+| Linux x86_64 | `graphdb-v2.6.1-linux-amd64.tar.gz` |
+| Linux aarch64 | `graphdb-v2.6.1-linux-arm64.tar.gz` |
+| 完整版（含 macOS ARM64 二进制） | `graphdb-v2.6.1.tar.gz` |
 
-将归档与对应的 `.sha256` 文件放在同一目录。以下命令校验 Linux AMD64 归档并检查版本。
+将归档与对应的 `.sha256` 放在同一目录。以下命令校验 Linux AMD64 归档并检查版本。
 
 ```sh
-archive=graphdb-v2.6.0-linux-amd64.tar.gz
+archive=graphdb-v2.6.1-linux-amd64.tar.gz
 sha256sum -c "$archive.sha256"
 tar -xzf "$archive"
-./graphdb-v2.6.0-linux-amd64/graphdb version
+./graphdb-v2.6.1-linux-amd64/graphdb version
 ```
 
-完整版同时包含源码、SDK、部署示例和门禁证据。`BUILD-METADATA.json` 记录版本和提交。`release/evidence/raft-gate/partitioned-protocol12/` 保存协议 11 到 12 的升级和恢复证据。
+完整版包含源码、SDK、部署示例和发布门禁证据。`BUILD-METADATA.json` 记录版本和构建提交。

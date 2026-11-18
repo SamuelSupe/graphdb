@@ -2732,7 +2732,10 @@ func TestHAControlDrainsCompletedReadBesideSlowRead(t *testing.T) {
 		read: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			entered <- struct{}{}
 			if r.URL.Query().Get("slow") == "true" {
+				w.Header().Set("Content-Length", "4")
+				w.WriteHeader(http.StatusOK)
 				<-r.Context().Done()
+				time.Sleep(interruptedReadWriteGrace + 50*time.Millisecond)
 				return
 			}
 			select {
@@ -2757,12 +2760,15 @@ func TestHAControlDrainsCompletedReadBesideSlowRead(t *testing.T) {
 				defer response.Body.Close()
 				var body []byte
 				body, err = io.ReadAll(response.Body)
-				if !slow && (response.StatusCode != http.StatusOK || string(body) != `{"complete":true}`) {
+				if slow {
+					var retry httpapi.ErrorResponse
+					if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" ||
+						json.Unmarshal(body, &retry) != nil || retry.Code != httpapi.ErrorCodeRaftUnavailable || !retry.Retryable {
+						err = fmt.Errorf("interrupted read: status=%d body=%q err=%v", response.StatusCode, body, err)
+					}
+				} else if response.StatusCode != http.StatusOK || string(body) != `{"complete":true}` {
 					err = fmt.Errorf("completed read: status=%d body=%q err=%v", response.StatusCode, body, err)
 				}
-			}
-			if slow {
-				err = nil // This intentionally blocked read is allowed to be revoked.
 			}
 			responses <- err
 		}()
@@ -2851,15 +2857,21 @@ func TestHASlowNetworkReadCannotRetainControlBarrier(t *testing.T) {
 	group := newTestCluster(t, false)
 	leader := group.leader(-1)
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
-	entered, finished := make(chan struct{}), make(chan struct{})
+	entered, finished := make(chan struct{}), make(chan error, 1)
+	extendDeadline := make(chan error, 1)
 	api := &httpapi.Server{Store: group.nodes[leader].store, Mode: "all", Cluster: controlledReadGate{
 		Cluster: group.nodes[leader].cluster,
 		read: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			controller := http.NewResponseController(w)
+			stop := context.AfterFunc(r.Context(), func() {
+				extendDeadline <- controller.SetWriteDeadline(time.Now().Add(time.Minute))
+			})
+			defer stop()
 			w.WriteHeader(http.StatusOK)
-			_ = http.NewResponseController(w).Flush()
+			_ = controller.Flush()
 			close(entered)
-			_, _ = w.Write(bytes.Repeat([]byte("x"), 32<<20))
-			close(finished)
+			_, err := w.Write(bytes.Repeat([]byte("x"), 32<<20))
+			finished <- err
 		}),
 	}}
 	server := httptest.NewServer(api.Handler())
@@ -2872,7 +2884,7 @@ func TestHASlowNetworkReadCannotRetainControlBarrier(t *testing.T) {
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetReadBuffer(1024)
 	}
-	if _, err = fmt.Fprintf(conn, "POST /v1/query HTTP/1.1\r\nHost: localhost\r\nX-Tenant-ID: tenant-a\r\nContent-Length: 0\r\n\r\n"); err != nil {
+	if _, err = fmt.Fprintf(conn, "POST /v1/query/stream HTTP/1.1\r\nHost: localhost\r\nX-Tenant-ID: tenant-a\r\nContent-Length: 0\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -2887,9 +2899,20 @@ func TestHASlowNetworkReadCannotRetainControlBarrier(t *testing.T) {
 	}
 	group.mustRequest(leader, "POST", "/v1/tenants", `{"tenant_id":"tenant-b"}`, http.StatusOK, 3*time.Second)
 	select {
-	case <-finished:
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("blocked stream wrote its full response")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("revoked socket writer did not release")
+	}
+	select {
+	case err := <-extendDeadline:
+		if !errors.Is(err, errRaftReadInterrupted) {
+			t.Fatalf("extending the interrupted stream's deadline: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream did not try to extend its deadline")
 	}
 }
 

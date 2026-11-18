@@ -1,6 +1,6 @@
 # 大图分片实施说明
 
-适用于 **GGraphDB 2.6.0** 中已显式启用大图分片的租户。2.5.0 和 2.5.1 提供协议 5 预览。协议 6–12 的 WAL、回收和分裂能力见[分片 WAL 接入](partition-wal-ingestion.zh-CN.md)，启用时按[升级步骤](partition-wal-ingestion.zh-CN.md#显式启用与升级)操作。完整目标见[设计](large-graph-sharding-design.zh-CN.md)，本版本的验证范围见[发行说明](../release/local-disk.md)。
+适用于 **GGraphDB 2.6** 中已显式启用大图分片的租户。2.5.0 和 2.5.1 提供协议 5 预览。协议 6–12 的 WAL、回收和分裂能力见[分片 WAL 接入](partition-wal-ingestion.zh-CN.md)，启用时按[升级步骤](partition-wal-ingestion.zh-CN.md#显式启用与升级)操作。完整目标见[设计](large-graph-sharding-design.zh-CN.md)，本版本的验证范围见[发行说明](../release/local-disk.md)。
 
 ## 已实现路径
 
