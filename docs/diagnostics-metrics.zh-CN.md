@@ -12,7 +12,7 @@
 
 | 排查方向 | 主要指标 |
 | --- | --- |
-| 请求与查询 | 既有 `graphdb_http_requests_total`、`graphdb_http_request_duration_seconds`、`graphdb_queries_total`、查询耗时、慢查询、读版本及 catch-up；`graphdb_queries_running` 为本进程运行或等待准入的查询数 |
+| 请求与查询 | 中断流计入 HTTP 请求数和耗时，已发送的 HTTP 状态码保留。`graphdb_http_interrupted_streams_total` 单独统计服务端中断连接的次数。指标包括 `graphdb_http_requests_total`、`graphdb_http_request_duration_seconds`、`graphdb_queries_total`、查询耗时、慢查询、读版本及 catch-up；`graphdb_queries_running` 为本进程运行或等待准入的查询数 |
 | 并发与排队 | `graphdb_admission_{enabled,active,waiting,global_limit,per_tenant_limit,queue_timeout_seconds}{pool}（query/read/write）`；已有读、写准入等待直方图和背压原因计数 |
 | 存储容量 | `graphdb_filesystem_{inspection_success,total_bytes,available_bytes,minimum_free_bytes,write_ready}{role}（data/wal/raft）`；分别检查配置的真实目录。相同文件系统的各角色容量不能相加；JSON 中 `filesystem_id` 可识别共享磁盘。旧 `graphdb_disk_*` 数据磁盘指标继续保留 |
 | inode（2.4.3） | `graphdb_filesystem_{inodes_known,total_inodes,available_inodes,minimum_free_inodes}{role}`；`inodes_known=0` 表示文件系统未提供有限 inode 总量或检查失败。`write_ready` 同时考虑字节与已知 inode 余量；不足时 diagnostics 标记 `disk_inodes_low`（独立 WAL/Raft 带角色前缀）。共享文件系统的 inode 数不能按角色相加 |

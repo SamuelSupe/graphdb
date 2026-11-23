@@ -34,6 +34,9 @@ func (r *Router) catalogRead(ctx context.Context, path string, result any) error
 	probe, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	err := r.Client.JSON(probe, r.Catalog, http.MethodGet, path, nil, result)
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	r.catalogUnavailable.Store(catalogUnavailable(err))
 	if catalogUnavailable(err) {
 		r.catalogRetryAt.Store(time.Now().Add(time.Second).UnixNano())

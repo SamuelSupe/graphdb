@@ -186,31 +186,29 @@ func (s *Server) executeQueryStream(w http.ResponseWriter, r *http.Request, tena
 		return
 	}
 	defer release()
-	if handled, streamErr := s.tryLazyQueryStreamAdmitted(w, r, tenantID, request); handled {
-		streamErr = normalizeQueryExecutionError(r.Context(), streamErr)
-		s.observeQuery(tenantID, request, query.Response{}, streamErr, time.Since(start))
-		return
+	stream := queryStreamWriter{w: w, encoder: json.NewEncoder(w)}
+	var response query.Response
+	handled, err := s.tryLazyQueryStreamAdmitted(&stream, r, tenantID, request)
+	if !handled {
+		response, err = s.executeQueryAdmitted(r, tenantID, request)
+		if err == nil {
+			err = encodeMaterializedQueryStream(&stream, r, response)
+		}
 	}
-	response, err := s.executeQueryAdmitted(r, tenantID, request)
-	err = normalizeQueryExecutionError(r.Context(), err)
 	if err != nil {
-		s.observeQuery(tenantID, request, response, err, time.Since(start))
-		writeQueryError(w, err)
-		return
+		err = normalizeQueryExecutionError(r.Context(), err)
 	}
-	err = encodeMaterializedQueryStream(w, r, response)
-	s.observeQuery(tenantID, request, response, normalizeQueryExecutionError(r.Context(), err), time.Since(start))
+	s.observeQuery(tenantID, request, response, err, time.Since(start))
+	if err != nil {
+		stream.finishError(err)
+	}
 }
 
-func encodeMaterializedQueryStream(w http.ResponseWriter, r *http.Request, response query.Response) (err error) {
+func encodeMaterializedQueryStream(stream *queryStreamWriter, r *http.Request, response query.Response) (err error) {
 	ctx, span := startAPIPhase(r.Context(), "encode_stream", queryResponseTraceAttributes(response)...)
 	defer func() { endHTTPSpan(span, err) }()
-	r = r.WithContext(ctx)
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	encoder := json.NewEncoder(w)
-	flush := streamFlush(w)
 	stats := response.Stats
-	if err = encodeStreamItem(r.Context(), encoder, query.StreamMeta{
+	if err = stream.write(ctx, query.StreamMeta{
 		Version:    response.Version,
 		NextCursor: response.NextCursor,
 		Stats:      &stats,
@@ -218,15 +216,15 @@ func encodeMaterializedQueryStream(w http.ResponseWriter, r *http.Request, respo
 		Groups:     response.Groups,
 		Plan:       response.Plan,
 		Profile:    response.Profile,
-	}, flush); err != nil {
+	}); err != nil {
 		return err
 	}
 	for _, result := range response.Results {
-		if err = encodeStreamItem(r.Context(), encoder, result, flush); err != nil {
+		if err = stream.write(ctx, result); err != nil {
 			return err
 		}
 	}
-	err = encodeStreamItem(r.Context(), encoder, query.StreamMeta{
+	err = stream.write(ctx, query.StreamMeta{
 		Version:    response.Version,
 		NextCursor: response.NextCursor,
 		Stats:      &stats,
@@ -234,21 +232,20 @@ func encodeMaterializedQueryStream(w http.ResponseWriter, r *http.Request, respo
 		Groups:     response.Groups,
 		Profile:    response.Profile,
 		Done:       true,
-	}, flush)
+	})
 	return err
 }
 
-func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Request, tenantID string, request query.Request) (handled bool, resultErr error) {
+func (s *Server) tryLazyQueryStreamAdmitted(stream *queryStreamWriter, r *http.Request, tenantID string, request query.Request) (handled bool, resultErr error) {
 	ctx, span := startAPIPhase(r.Context(), "execute_lazy_stream", append([]attribute.KeyValue{
 		attribute.String("graphdb.tenant", tenantID),
 	}, queryRequestTraceAttributes(request)...)...)
 	r = r.WithContext(ctx)
-	started := false
 	defer func() {
 		if span != nil {
 			span.SetAttributes(
 				attribute.Bool("graphdb.query.lazy_stream.handled", handled),
-				attribute.Bool("graphdb.query.lazy_stream.started", started),
+				attribute.Bool("graphdb.query.lazy_stream.started", stream.started),
 			)
 		}
 		endHTTPSpan(span, resultErr)
@@ -256,8 +253,6 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 
 	target, err := s.readTarget(r, tenantID, queryReadFreshness(request))
 	if err != nil {
-		err = normalizeQueryExecutionError(r.Context(), err)
-		writeQueryError(w, err)
 		return true, err
 	}
 	options, version, ok := s.Store.SelectQueryRead(r.Context(), tenantID, request, target.TargetVersion, target.ManifestVersion, s.cachedMaterializedQueryAvailable(tenantID, target))
@@ -266,32 +261,56 @@ func (s *Server) tryLazyQueryStreamAdmitted(w http.ResponseWriter, r *http.Reque
 	}
 	g := graph.New()
 	g.Version = version
-	encoder := json.NewEncoder(w)
-	flush := streamFlush(w)
 	ok, err = query.StreamContextWithOptions(r.Context(), g, request, options, func(item any) error {
-		if !started {
-			w.Header().Set("Content-Type", "application/x-ndjson")
-			started = true
-		}
-		return encodeStreamItem(r.Context(), encoder, item, flush)
+		return stream.write(r.Context(), item)
 	})
 	if !ok {
 		return false, nil
 	}
-	if err != nil {
-		if !started {
-			if errors.Is(err, query.ErrIndexUnavailable) {
-				s.Store.MarkQueryIndexUnavailable(tenantID, version)
-				return false, nil
-			}
-			err = normalizeQueryExecutionError(r.Context(), err)
-			writeQueryError(w, err)
-			return true, err
-		}
-		err = normalizeQueryExecutionError(r.Context(), err)
-		_ = encodeStreamItem(r.Context(), encoder, queryStreamError(err), flush)
+	if !stream.started && errors.Is(err, query.ErrIndexUnavailable) {
+		s.Store.MarkQueryIndexUnavailable(tenantID, version)
+		return false, nil
 	}
 	return true, err
+}
+
+type queryStreamWriter struct {
+	w           http.ResponseWriter
+	encoder     *json.Encoder
+	flush       func() error
+	started     bool
+	writeFailed bool
+}
+
+func (s *queryStreamWriter) write(ctx context.Context, item any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !s.started {
+		s.w.Header().Set("Content-Type", "application/x-ndjson")
+		s.flush = streamFlush(s.w)
+		s.started = true
+	}
+	err := s.encoder.Encode(item)
+	if err == nil {
+		err = s.flush()
+	}
+	s.writeFailed = err != nil
+	return err
+}
+
+func (s *queryStreamWriter) finishError(err error) {
+	if !s.started {
+		writeQueryError(s.w, err)
+		return
+	}
+	// A partial JSON write cannot be repaired. A query timeout can still use the connection.
+	if s.writeFailed {
+		panic(http.ErrAbortHandler)
+	}
+	if err := s.encoder.Encode(queryStreamError(err)); err != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func encodeStreamItem(ctx context.Context, encoder *json.Encoder, item any, flush func() error) error {

@@ -479,34 +479,49 @@ func (s *Server) observeHTTP(next http.Handler) http.Handler {
 		var apiSpan trace.Span
 		var apiTraced bool
 		r, apiSpan, apiTraced = startAPIRequestTrace(r)
+		var interrupted bool
 		if apiTraced {
-			defer func() { endAPIRequestTrace(apiSpan, recorder.status) }()
+			defer func() { endAPIRequestTrace(apiSpan, recorder.status, interrupted) }()
 		}
 		start := time.Now()
+		defer func() {
+			failure := recover()
+			interrupted = failure == http.ErrAbortHandler
+			if failure != nil && !interrupted {
+				panic(failure)
+			}
+			duration := time.Since(start)
+			route := observedRoute(r)
+			span.SetName(route)
+			obs.Metrics.RecordHTTPRequest(r.Method, route, recorder.status, duration)
+			if interrupted {
+				obs.Metrics.RecordInterruptedHTTPStream()
+				span.SetStatus(codes.Error, "stream interrupted")
+			}
+			span.SetAttributes(
+				attribute.String("http.request.method", r.Method),
+				attribute.String("url.path", r.URL.Path),
+				attribute.String("http.route", route),
+				attribute.Int("http.response.status_code", recorder.status),
+				attribute.String("graphdb.tenant", tenantID),
+			)
+			if recorder.status >= 500 || recorder.status == statusClientClosedRequest {
+				span.SetStatus(codes.Error, traceHTTPStatusText(recorder.status))
+			}
+			obs.Logger.Info("http_request", map[string]any{
+				"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,
+				"interrupted": interrupted, "status": recorder.status, "duration_ms": float64(duration.Microseconds()) / 1000,
+			})
+			if interrupted {
+				panic(http.ErrAbortHandler)
+			}
+		}()
 		next.ServeHTTP(recorder, r)
 		if recorder.status < 400 && r.Pattern != "" && s.Store != nil && storage.ValidateTenantID(tenantID) == nil && !obs.HasTenant(tenantID) {
 			if version, err := s.Store.CurrentVersion(r.Context(), tenantID); err == nil && version > 0 {
 				obs.RegisterTenant(tenantID)
 			}
 		}
-		duration := time.Since(start)
-		route := observedRoute(r)
-		span.SetName(route)
-		obs.Metrics.RecordHTTPRequest(r.Method, route, recorder.status, duration)
-		span.SetAttributes(
-			attribute.String("http.request.method", r.Method),
-			attribute.String("url.path", r.URL.Path),
-			attribute.String("http.route", route),
-			attribute.Int("http.response.status_code", recorder.status),
-			attribute.String("graphdb.tenant", tenantID),
-		)
-		if recorder.status >= 500 || recorder.status == statusClientClosedRequest {
-			span.SetStatus(codes.Error, traceHTTPStatusText(recorder.status))
-		}
-		obs.Logger.Info("http_request", map[string]any{
-			"tenant": tenantID, "method": r.Method, "path": r.URL.Path, "route": route,
-			"status": recorder.status, "duration_ms": float64(duration.Microseconds()) / 1000,
-		})
 	})
 }
 
@@ -522,11 +537,11 @@ func (w *statusRecorder) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
-func (w *statusRecorder) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
+func (w *statusRecorder) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
+
+func (w *statusRecorder) Flush() { _ = w.FlushError() }
 
 func observedRoute(r *http.Request) string {
 	if r.Pattern != "" {

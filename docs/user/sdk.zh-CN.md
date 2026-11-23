@@ -238,6 +238,8 @@ if err := stream.Err(); err != nil {
 }
 ```
 
+查询、GQL、实体、边和快照的流式读取都应消费到结尾。缺少完成标记时，Go 的 `Stream.Err()` 返回 `io.ErrUnexpectedEOF`，Python 迭代抛出 `EOFError`。终止错误帧仍可读取，随后 Go 通过 `Stream.Err()` 报告 `APIError`，Python 迭代抛出 `GraphDBAPIError`。
+
 ### Go：错误处理
 
 ```go

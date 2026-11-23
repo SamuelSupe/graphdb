@@ -286,19 +286,25 @@ func (s *TenantStore) saveIngestBatch(ctx context.Context, tenantID string, reco
 		if metered := FindMeteredObjectStore(s.Objects); metered != nil {
 			packCtx, done = metered.start(ctx, "put_ingest_receipt_pair", batchKey, len(data)*2)
 		}
+		cache := FindWriterObjectCache(s.Objects)
+		keys := [...]string{batchKey, idempotencyKey}
+		var generations [len(keys)]uint64
+		if cache != nil {
+			for i, key := range keys {
+				generations[i] = cache.generation(key)
+			}
+		}
 		meta, stored, err := s.localFileStore().putNewIngestReceiptPair(packCtx, batchKey, idempotencyKey, data)
 		done(err)
 		if err != nil {
 			return fmt.Errorf("save packed ingest receipts: %w", err)
 		}
 		if stored {
-			cache := FindWriterObjectCache(s.Objects)
-			for _, key := range []string{batchKey, idempotencyKey} {
+			for i, key := range keys {
 				s.markObjectKeyCached(key)
 				if cache != nil {
 					meta.Key = key
-					cache.cachePositive(key, data, meta, true)
-					cache.updateCachedLists(key, ObjectInfo{Key: key, Size: int64(len(data)), ETag: meta.ETag}, false)
+					cache.finishMutation(key, generations[i], data, meta, true, false)
 				}
 			}
 			return nil

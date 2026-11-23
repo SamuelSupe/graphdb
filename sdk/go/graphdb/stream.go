@@ -3,14 +3,14 @@ package graphdb
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 )
 
 type Stream struct {
-	body        io.ReadCloser
-	decoder     *json.Decoder
-	err         error
-	requireDone bool
-	done        bool
+	body    io.ReadCloser
+	decoder *json.Decoder
+	err     error
+	done    bool
 }
 
 func newStream(body io.ReadCloser) *Stream {
@@ -22,31 +22,29 @@ func (s *Stream) Next(v any) bool {
 		return false
 	}
 	var raw json.RawMessage
-	target := v
-	if s.requireDone {
-		target = &raw
-	}
-	if err := s.decoder.Decode(target); err != nil {
+	if err := s.decoder.Decode(&raw); err != nil {
 		if err != io.EOF {
 			s.err = err
-		} else if s.requireDone && !s.done {
+		} else if !s.done {
 			s.err = io.ErrUnexpectedEOF
 		}
 		return false
 	}
-	if s.requireDone {
-		var meta struct {
-			Done bool `json:"done"`
-		}
-		if err := json.Unmarshal(raw, &meta); err != nil {
-			s.err = err
-			return false
-		}
-		s.done = s.done || meta.Done
-		if err := json.Unmarshal(raw, v); err != nil {
-			s.err = err
-			return false
-		}
+	var meta struct {
+		Done  bool   `json:"done"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		s.err = err
+		return false
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		s.err = err
+		return false
+	}
+	s.done = s.done || meta.Done
+	if meta.Done && meta.Error != "" {
+		s.err = apiErrorFromBody(http.StatusOK, raw)
 	}
 	return true
 }

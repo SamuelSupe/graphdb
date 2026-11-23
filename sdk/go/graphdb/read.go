@@ -142,7 +142,5 @@ func (c *Client) streamGet(ctx context.Context, path string, values url.Values) 
 	if err != nil {
 		return nil, err
 	}
-	stream := newStream(resp.Body)
-	stream.requireDone = path == "/v1/export/snapshot/stream"
-	return stream, nil
+	return newStream(resp.Body), nil
 }

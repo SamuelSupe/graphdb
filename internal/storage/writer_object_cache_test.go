@@ -71,8 +71,8 @@ func TestWriterObjectCacheDoesNotRetainOversizedList(t *testing.T) {
 
 func TestWriterObjectCacheCountsListsAgainstByteLimit(t *testing.T) {
 	cache := NewWriterObjectCache(NewMemoryStore(), WriterObjectCacheConfig{MaxBytes: 512, MaxKeys: 100})
-	cache.cacheList("objects/", []ObjectInfo{{Key: "objects/a", ETag: "etag"}})
-	cache.cachePositive("objects/data", make([]byte, 480), ObjectMeta{Key: "objects/data"}, false)
+	cache.cacheList("objects/", []ObjectInfo{{Key: "objects/a", ETag: "etag"}}, 0)
+	cache.fillObject("objects/data", cache.generation("objects/data"), writerObjectEntry{data: make([]byte, 480), hasData: true})
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	if cache.bytes+cache.listBytes > cache.maxBytes {
@@ -263,4 +263,68 @@ func (s *countingObjectStore) List(ctx context.Context, prefix string) ([]Object
 	s.listCalls++
 	s.mu.Unlock()
 	return s.ObjectStore.List(ctx, prefix)
+}
+
+type delayedCacheRead struct {
+	ObjectStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *delayedCacheRead) GetWithMeta(ctx context.Context, key string) ([]byte, ObjectMeta, error) {
+	data, meta, err := s.ObjectStore.GetWithMeta(ctx, key)
+	if ctx.Value(s) == true {
+		close(s.entered)
+		<-s.release
+	}
+	return data, meta, err
+}
+
+func TestConcurrentColdReadCannotReplaceCompletedWrite(t *testing.T) {
+	for _, initial := range []string{"missing", "present"} {
+		t.Run(initial, func(t *testing.T) {
+			base := NewMemoryStore()
+			source := &delayedCacheRead{base, make(chan struct{}), make(chan struct{})}
+			cache := NewWriterObjectCache(source, WriterObjectCacheConfig{MaxKeys: 8, MaxBytes: 100, NegativeTTL: time.Minute})
+			const key = "query"
+			if initial == "present" {
+				if err := base.Put(t.Context(), key, []byte("old")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			done := make(chan struct{})
+			go func() { defer close(done); cache.GetWithMeta(context.WithValue(t.Context(), source, true), key) }()
+			<-source.entered
+			_, err := cache.PutConditional(t.Context(), key, []byte("updated"), PutCondition{})
+			close(source.release)
+			<-done
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, _, err := cache.GetWithMeta(t.Context(), key)
+			if err != nil || string(data) != "updated" {
+				t.Fatalf("after both calls: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestOversizedObjectRetainsOtherHotKeys(t *testing.T) {
+	base := newCountingObjectStore(NewMemoryStore())
+	cache := NewWriterObjectCache(base, WriterObjectCacheConfig{MaxBytes: 64, MaxKeys: 8})
+	for _, key := range []string{"hot", "large"} {
+		if err := cache.Put(t.Context(), key, []byte(key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cache.Put(t.Context(), "large", make([]byte, 128)); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := cache.Get(t.Context(), "large"); err != nil || len(data) != 128 {
+		t.Fatalf("updated oversized value: %d, %v", len(data), err)
+	}
+	base.reset()
+	if data, err := cache.Get(t.Context(), "hot"); err != nil || string(data) != "hot" || base.getCalls != 0 {
+		t.Fatalf("hot read: %q, %v, backing reads %d", data, err, base.getCalls)
+	}
 }

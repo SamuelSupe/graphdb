@@ -1313,3 +1313,44 @@ func TestInlineSnapshotBudgetCountsRawState(t *testing.T) {
 		t.Fatalf("snapshot: %+v %v", envelope, err)
 	}
 }
+
+func TestSnapshotPreservesProtocolOfLaterLogEntries(t *testing.T) {
+	dir := t.TempDir()
+	disk, _, err := openStorage(dir, 1, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(index uint64, protocol int) {
+		data, err := json.Marshal(proposal{ID: "write", Protocol: protocol})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := disk.save(raft.Ready{Entries: []raftpb.Entry{{Index: index, Term: 1, Data: data}}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(1, 11)
+	data, err := json.Marshal(snapshotEnvelope{Version: 1, Protocol: 11, State: []byte("snapshot"), Peers: map[uint64]string{1: "http://localhost"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := disk.CreateSnapshot(1, &raftpb.ConfState{Voters: []uint64{1}}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(2, 12)
+	if err := disk.saveSnapshot(snapshot, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+	disk, _, err = openStorage(dir, 1, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disk.Close()
+	if minimum, err := disk.minimumProtocol(); err != nil || minimum != 12 {
+		t.Fatalf("reopened minimum protocol = %d, err = %v", minimum, err)
+	}
+}

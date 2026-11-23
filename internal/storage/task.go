@@ -112,7 +112,7 @@ func (s *TenantStore) startTaskIDLocked(ctx context.Context, tenantID, taskType 
 		return Task{}, err
 	}
 	if s.ReplicationMode && !replace {
-		tasks, err := s.queuedTasksForStart(ctx, tenantID, taskType)
+		tasks, err := s.queuedTasks(ctx, tenantID, TaskListOptions{Type: taskType, Status: TaskStatusQueued, Limit: 1})
 		if err != nil {
 			return Task{}, err
 		}
@@ -218,8 +218,11 @@ func (s *TenantStore) GetTask(ctx context.Context, tenantID string, taskID strin
 	task, err := s.getTaskObject(ctx, tenantID, taskID)
 	if errors.Is(err, ErrNotFound) {
 		indexTask, indexErr := s.GetIndexTask(ctx, tenantID, taskID)
-		if indexErr != nil {
+		if errors.Is(indexErr, errInvalidIndexTask) {
 			return Task{}, err
+		}
+		if indexErr != nil {
+			return Task{}, indexErr
 		}
 		return taskFromIndexTask(indexTask), nil
 	}
@@ -237,6 +240,14 @@ func (s *TenantStore) GetTask(ctx context.Context, tenantID string, taskID strin
 	// runtime registry. Once observed, subsequent admission must see it too.
 	s.rememberTaskState(task)
 	return task, nil
+}
+
+// QueuedMaintenanceTasks returns current runnable candidates for the HA scheduler.
+func (s *TenantStore) QueuedMaintenanceTasks(ctx context.Context, tenantID string) ([]Task, error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return nil, err
+	}
+	return s.queuedTasks(ctx, tenantID, TaskListOptions{Status: TaskStatusQueued})
 }
 
 func (s *TenantStore) ListTasks(ctx context.Context, tenantID string, options TaskListOptions) ([]Task, error) {

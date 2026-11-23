@@ -262,9 +262,13 @@ func quotaDecreased(previous *graph.Graph, next *graph.Graph, config Backpressur
 	return entityOK && edgeOK
 }
 
-func (s *TenantStore) recordManifestCASConflict(tenantID string) {
+func (s *TenantStore) recordManifestCASConflict(ctx context.Context, tenantID string) {
 	if s.Backpressure != nil {
-		s.Backpressure.RecordManifestCASConflict(tenantID)
+		config, err := s.effectiveBackpressureConfig(ctx, tenantID)
+		if err != nil {
+			config = s.Backpressure.Config()
+		}
+		s.Backpressure.RecordManifestCASConflictWithConfig(tenantID, config)
 	}
 	if s.backpressureObserver != nil {
 		s.backpressureObserver.RecordManifestCASConflict(tenantID)

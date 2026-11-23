@@ -1,6 +1,7 @@
 package ha
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/SamuelSupe/graphdb/v2/internal/httpapi"
+	"github.com/SamuelSupe/graphdb/v2/internal/observability"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
 )
 
@@ -41,7 +43,9 @@ func TestHAInterruptedStreamFailsWhileReadingBody(t *testing.T) {
 	leader := group.leader(-1)
 	group.mustRequest(leader, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
 	const firstLine = "{\"version\":1}\n"
-	api := &httpapi.Server{Store: group.nodes[leader].store, Mode: "all", Cluster: controlledReadGate{
+	var access bytes.Buffer
+	obs := observability.New(&access, time.Second)
+	api := &httpapi.Server{Observability: obs, Store: group.nodes[leader].store, Mode: "all", Cluster: controlledReadGate{
 		Cluster: group.nodes[leader].cluster,
 		read: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/x-ndjson")
@@ -75,6 +79,17 @@ func TestHAInterruptedStreamFailsWhileReadingBody(t *testing.T) {
 	group.mustRequest(leader, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-b"}`, http.StatusOK, 3*time.Second)
 	if body, err := io.ReadAll(res.Body); err != io.ErrUnexpectedEOF {
 		t.Fatalf("interrupted stream must report a truncated HTTP body: body=%q err=%v", body, err)
+	}
+	server.Close()
+	var record struct {
+		Interrupted bool
+		Status      int
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(access.Bytes()), &record); err != nil || !record.Interrupted || record.Status != res.StatusCode {
+		t.Fatalf("interrupted access log %q: %v", access.String(), err)
+	}
+	if metrics := string(obs.Metrics.SnapshotPrometheus()); !strings.Contains(metrics, "graphdb_http_interrupted_streams_total 1\n") || !strings.Contains(metrics, "graphdb_http_requests_total{") {
+		t.Fatal("interrupted stream missing from HTTP metrics")
 	}
 }
 

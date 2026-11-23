@@ -36,9 +36,17 @@ func (e *APIError) Error() string {
 
 func parseAPIError(resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	apiErr := apiErrorFromBody(resp.StatusCode, data)
+	if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > 0 {
+		apiErr.RetryAfter = retryAfter
+	}
+	return apiErr
+}
+
+func apiErrorFromBody(status int, data []byte) *APIError {
 	envelope := decodeErrorEnvelope(data)
 	apiErr := &APIError{
-		StatusCode: resp.StatusCode,
+		StatusCode: status,
 		Code:       envelope.Code,
 		Message:    envelope.Message,
 		Retryable:  envelope.Retryable,
@@ -48,9 +56,6 @@ func parseAPIError(resp *http.Response) error {
 	}
 	if envelope.RetryAfterMS > 0 {
 		apiErr.RetryAfter = time.Duration(envelope.RetryAfterMS) * time.Millisecond
-	}
-	if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > 0 {
-		apiErr.RetryAfter = retryAfter
 	}
 	return apiErr
 }

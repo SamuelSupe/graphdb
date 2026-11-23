@@ -250,6 +250,8 @@ if err := stream.Err(); err != nil {
 }
 ```
 
+For query, GQL, entity, edge and snapshot streams, consume to EOF. Go reports a missing completion marker through `Stream.Err()` as `io.ErrUnexpectedEOF`. Python raises `EOFError`. A terminal error frame remains readable and reports `APIError` in Go or `GraphDBAPIError` in Python. Closing early cancels consumption.
+
 ### Go: Error Handling
 
 ```go

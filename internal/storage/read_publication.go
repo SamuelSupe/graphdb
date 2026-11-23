@@ -46,7 +46,8 @@ func (s *TenantStore) localFileChanged(key string) {
 	if !ok {
 		return
 	}
-	if strings.HasPrefix(name, "tasks/") && !strings.Contains(strings.TrimPrefix(name, "tasks/"), "/") {
+	taskName := strings.TrimPrefix(name, "indexes/")
+	if strings.HasPrefix(taskName, "tasks/") && !strings.Contains(strings.TrimPrefix(taskName, "tasks/"), "/") {
 		s.taskObjectChanged(tenant, name)
 	}
 	if name == "control/writer-lease.parquet" {

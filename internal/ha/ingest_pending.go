@@ -106,18 +106,45 @@ func (a *Application) ensurePending(ctx context.Context) error {
 	return nil
 }
 
-func (a *Application) pendingSnapshot(ctx context.Context) (map[string]pendingAcceptance, error) {
-	a.mu.RLock()
-	if a.pending != nil {
-		pending := maps.Clone(a.pending)
+// Return with the read lock held, including after rebuilding the durable queue.
+func (a *Application) lockPending(ctx context.Context) error {
+	for {
+		a.mu.RLock()
+		if a.pending != nil {
+			return nil
+		}
 		a.mu.RUnlock()
-		return pending, nil
+		a.mu.Lock()
+		err := a.ensurePending(ctx)
+		a.mu.Unlock()
+		if err != nil {
+			return err
+		}
 	}
-	a.mu.RUnlock()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err := a.ensurePending(ctx); err != nil {
+}
+
+func (a *Application) pendingSnapshot(ctx context.Context) (map[string]pendingAcceptance, error) {
+	if err := a.lockPending(ctx); err != nil {
 		return nil, err
 	}
+	defer a.mu.RUnlock()
 	return maps.Clone(a.pending), nil
+}
+
+func (a *Application) pendingFlushGroups(ctx context.Context, tenant string) (map[string][]pendingFlushRequest, error) {
+	if err := a.lockPending(ctx); err != nil {
+		return nil, err
+	}
+	defer a.mu.RUnlock()
+	var groups map[string][]pendingFlushRequest
+	for key, record := range a.pending {
+		if record.partitioned || (tenant != "" && record.tenant != tenant) {
+			continue
+		}
+		if groups == nil {
+			groups = make(map[string][]pendingFlushRequest)
+		}
+		groups[record.tenant] = append(groups[record.tenant], pendingFlushRequest{key, record})
+	}
+	return groups, nil
 }

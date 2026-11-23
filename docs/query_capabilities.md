@@ -503,7 +503,7 @@ path 排序支持：
 
 `POST /v1/query/stream` 和 `POST /v1/query/gql/stream` 输出 NDJSON。lazy match 且无 sort/aggregate/group 时可以边拉取边输出；其他查询会先执行得到当前页或聚合结果，再按 NDJSON 输出。stream meta 会包含 `aggregates` 和 `groups`。
 
-2.3.4 起：流式响应每次批量 flush 后重新获得 10 分钟写入预算；持续推进的导出不再受到连接总时长 10 分钟的限制。连接停滞或中断仍可能截断响应，客户端必须确认最终 `done:true`，不能仅凭 HTTP 200 判断完成。
+流式响应的写入截止时间固定为流开始后的 10 分钟。连接停滞或中断仍可能截断响应，客户端必须确认最终 `done:true`，不能仅凭 HTTP 200 判断完成。
 
 典型输出：
 

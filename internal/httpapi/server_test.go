@@ -21,6 +21,7 @@ import (
 	"github.com/SamuelSupe/graphdb/v2/internal/graph"
 	"github.com/SamuelSupe/graphdb/v2/internal/query"
 	"github.com/SamuelSupe/graphdb/v2/internal/storage"
+	sdk "github.com/SamuelSupe/graphdb/v2/sdk/go/graphdb"
 )
 
 func TestEntityHTTPResponsesPreserveJSON(t *testing.T) {
@@ -1420,7 +1421,14 @@ func TestHTTPQueryStreamStopsOnEncoderError(t *testing.T) {
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	req.Header.Set("Content-Type", "application/json")
 	rr := &failingResponseWriter{header: http.Header{}, failOnWrite: 2}
-	handler.ServeHTTP(rr, req)
+	func() {
+		defer func() {
+			if failure := recover(); failure != http.ErrAbortHandler {
+				t.Fatalf("stream termination = %v", failure)
+			}
+		}()
+		handler.ServeHTTP(rr, req)
+	}()
 	if rr.writes != 2 {
 		t.Fatalf("writes = %d, want stop after first encoder error", rr.writes)
 	}
@@ -2213,5 +2221,43 @@ func TestHTTPAggregateOverflowAndFiniteAverage(t *testing.T) {
 		} else if rr.Code != 200 || body["aggregates"].(map[string]any)[op+"_value"] != 1e308 {
 			t.Fatalf("%s: %d %s", op, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+type slowFirstFlush struct{ http.ResponseWriter }
+
+func (w slowFirstFlush) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w slowFirstFlush) Flush() {
+	w.ResponseWriter.(http.Flusher).Flush()
+	time.Sleep(1100 * time.Millisecond)
+}
+
+func TestQueryBudgetExpiresAfterFirstStreamFrame(t *testing.T) {
+	store := storage.NewTenantStore(storage.NewMemoryStore(), "test")
+	_, err := store.Commit(t.Context(), "a", graph.Mutations{UpsertEntities: []graph.Entity{{ID: "a", Kind: "host"}}}, storage.CommitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := (&Server{Store: store, Mode: "all"}).Handler()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(slowFirstFlush{w}, r) }))
+	defer server.Close()
+	client, err := sdk.NewClient(server.URL, sdk.WithTenant("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.QueryStream(t.Context(), sdk.QueryRequest{Op: "match", Kind: "host", TimeoutMS: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var frame map[string]any
+	if !stream.Next(&frame) || frame["done"] == true {
+		t.Fatalf("first frame %v, %v", frame, stream.Err())
+	}
+	for stream.Next(&frame) {
+	}
+	var apiErr *sdk.APIError
+	if !errors.As(stream.Err(), &apiErr) || apiErr.Code != string(ErrorCodeRequestTimeout) {
+		t.Fatalf("incomplete query: %v", stream.Err())
 	}
 }

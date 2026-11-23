@@ -71,7 +71,7 @@ func (c *Cluster) runQueuedTask(ctx context.Context) (err error) {
 	}
 	var candidates []storage.Task
 	for _, tenant := range tenants {
-		tasks, err := c.App.Store.ListTasks(ctx, tenant, storage.TaskListOptions{Status: storage.TaskStatusQueued})
+		tasks, err := c.App.Store.QueuedMaintenanceTasks(ctx, tenant)
 		if err != nil {
 			return err
 		}

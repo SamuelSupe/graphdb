@@ -23,6 +23,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"version": 3, "readable_version": 3})
         elif self.path == "/v1/query/gql":
             self._json({"version": 9, "results": [], "stats": {"returned": 0}})
+        elif self.path == "/v1/query/stream":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"version":1}\n')
+            if json.loads(body)["op"] == "timeout":
+                self.wfile.write(b'{"done":true,"error":"timed out","code":"request_timeout"}\n')
         elif self.path == "/v1/query/gql/stream":
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson")
@@ -288,6 +294,13 @@ class ClientTest(unittest.TestCase):
                 list(stream)
         with client.stream_snapshot(min_version=2) as stream:
             self.assertEqual(len(list(stream)), 3)
+
+    def test_query_stream_completion_errors(self):
+        client = GraphDBClient(self.base_url, tenant_id="tenant-a")
+        for mode, expected in [("truncated", EOFError), ("timeout", GraphDBAPIError)]:
+            with self.subTest(mode=mode), client.stream_query({"op": mode}) as stream:
+                with self.assertRaises(expected):
+                    list(stream)
 
     def test_gql_and_stream(self):
         client = GraphDBClient(self.base_url, tenant_id="tenant-a")

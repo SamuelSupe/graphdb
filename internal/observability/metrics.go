@@ -21,11 +21,12 @@ type Metrics struct {
 	mu           sync.Mutex
 	tenantLabels map[string]struct{}
 
-	httpRequests        map[string]float64
-	httpDuration        map[string]*histogram
-	objectDuration      map[string]*histogram
-	maintenanceDuration map[string]*histogram
-	maintenanceMemory   map[string]float64
+	httpRequests           map[string]float64
+	httpInterruptedStreams uint64
+	httpDuration           map[string]*histogram
+	objectDuration         map[string]*histogram
+	maintenanceDuration    map[string]*histogram
+	maintenanceMemory      map[string]float64
 
 	queries              map[string]float64
 	queryDuration        map[string]*histogram
@@ -153,6 +154,14 @@ func (m *Metrics) RecordMaintenancePhase(phase string, duration time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.observe(m.maintenanceDuration, phase, writeBuckets, duration.Seconds())
+}
+
+func (m *Metrics) RecordInterruptedHTTPStream() {
+	if m != nil {
+		m.mu.Lock()
+		m.httpInterruptedStreams++
+		m.mu.Unlock()
+	}
 }
 
 func (m *Metrics) RecordHTTPRequest(method string, route string, status int, duration time.Duration) {
@@ -500,6 +509,7 @@ func (m *Metrics) SnapshotPrometheus() []byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var b bytes.Buffer
+	fmt.Fprintf(&b, "# TYPE graphdb_http_interrupted_streams_total counter\ngraphdb_http_interrupted_streams_total %d\n", m.httpInterruptedStreams)
 	writeCounter(&b, "graphdb_http_requests_total", "HTTP requests by method, route and status.", []string{"method", "route", "status"}, m.httpRequests)
 	writeGaugeValues(&b, "graphdb_maintenance_estimated_bytes", "Estimated bytes charged to maintenance admission pools, not RSS.", []string{"pool"}, m.maintenanceMemory)
 	writeHistogram(&b, "graphdb_maintenance_phase_seconds", "Local maintenance wait and processing time.", []string{"phase"}, m.maintenanceDuration)

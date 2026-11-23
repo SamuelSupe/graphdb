@@ -23,6 +23,4 @@ result = client.commit({
 
 See [SDK user guide](../../docs/user/sdk.md) for the full user guide.
 
-Since 2.3.4: consuming `stream_snapshot()` to EOF raises `EOFError` if the final
-`done:true` marker is missing. Closing a stream early cancels consumption and does
-not qualify the export as complete.
+Consume query, GQL, entity, edge and snapshot streams to the end. A missing final completion marker raises `EOFError`. Iteration yields a terminal error frame and then raises `GraphDBAPIError`. Closing early cancels consumption.

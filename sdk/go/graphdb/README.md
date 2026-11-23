@@ -26,6 +26,4 @@ result, err := client.Commit(ctx, graphdb.Mutations{
 See [SDK user guide](../../../docs/user/sdk.md) for the full user
 guide.
 
-Since 2.3.4: consume snapshot streams through EOF and check `Stream.Err()`; a
-missing final `done:true` is reported as `io.ErrUnexpectedEOF`. Early `Close()`
-remains a caller cancellation, not a successful export.
+Consume query, GQL, entity, edge and snapshot streams through EOF and check `Stream.Err()`. A missing final completion marker returns `io.ErrUnexpectedEOF`. A terminal error frame is available to the caller and sets an `APIError`. Closing early cancels consumption.

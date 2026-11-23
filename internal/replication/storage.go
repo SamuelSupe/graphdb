@@ -122,6 +122,19 @@ func (s *diskStorage) InitialState() (hard raftpb.HardState, conf raftpb.ConfSta
 	return hard, s.conf, err
 }
 
+func raiseMinimumProtocol(meta *bolt.Bucket, minimum uint64) error {
+	key := []byte("minimum-protocol")
+	if data := meta.Get(key); data != nil {
+		if len(data) != 8 {
+			return fmt.Errorf("invalid minimum protocol")
+		}
+		if binary.BigEndian.Uint64(data) >= minimum {
+			return nil
+		}
+	}
+	return meta.Put(key, indexKey(minimum))
+}
+
 func (s *diskStorage) minimumProtocol() (minimum int, err error) {
 	err = s.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket([]byte("meta")).Get([]byte("minimum-protocol"))
@@ -268,9 +281,6 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
 		minimum := uint64(ProtocolVersion)
-		if data := meta.Get([]byte("minimum-protocol")); len(data) == 8 {
-			minimum = binary.BigEndian.Uint64(data)
-		}
 		if envelope != nil {
 			minimum = max(minimum, uint64(envelope.Protocol))
 		}
@@ -282,7 +292,7 @@ func (s *diskStorage) save(ready raft.Ready, envelope *snapshotEnvelope) error {
 				}
 			}
 		}
-		if err := meta.Put([]byte("minimum-protocol"), indexKey(minimum)); err != nil {
+		if err := raiseMinimumProtocol(meta, minimum); err != nil {
 			return err
 		}
 		entries := tx.Bucket([]byte("entries"))
@@ -383,7 +393,7 @@ func (s *diskStorage) saveSnapshot(snapshot raftpb.Snapshot, retain uint64) erro
 	err = s.db.Update(func(tx *bolt.Tx) error {
 		envelope, decodeErr := decodeSnapshot(snapshot.Data)
 		if decodeErr == nil && envelope.Protocol > ProtocolVersion {
-			if err := tx.Bucket([]byte("meta")).Put([]byte("minimum-protocol"), indexKey(uint64(envelope.Protocol))); err != nil {
+			if err := raiseMinimumProtocol(tx.Bucket([]byte("meta")), uint64(envelope.Protocol)); err != nil {
 				return err
 			}
 		}

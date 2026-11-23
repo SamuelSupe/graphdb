@@ -48,12 +48,15 @@ func startAPIRequestTrace(r *http.Request) (*http.Request, trace.Span, bool) {
 	return r.WithContext(ctx), span, true
 }
 
-func endAPIRequestTrace(span trace.Span, status int) {
+func endAPIRequestTrace(span trace.Span, status int, interrupted bool) {
 	if span == nil {
 		return
 	}
 	result := "ok"
-	if status == statusClientClosedRequest {
+	if interrupted {
+		result = "interrupted"
+		span.SetStatus(codes.Error, "stream interrupted")
+	} else if status == statusClientClosedRequest {
 		result = "canceled"
 	} else if status >= 500 {
 		result = "server_error"

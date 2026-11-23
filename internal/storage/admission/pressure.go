@@ -61,6 +61,11 @@ func (e *BackpressureError) RetryAfterMS() int64 {
 	return e.RetryAfter.Milliseconds()
 }
 
+type conflictHistory struct {
+	times   []time.Time
+	expires time.Time
+}
+
 type WritePressure struct {
 	mu           sync.Mutex
 	clock        func() time.Time
@@ -69,7 +74,7 @@ type WritePressure struct {
 	latencyTimes []time.Time
 	latencyEWMA  time.Duration
 	objectErrors []time.Time
-	conflicts    map[string][]time.Time
+	conflicts    map[string]conflictHistory
 	maxSamples   int
 	lastTailSize map[string]int
 	lastUsage    map[string]tenantPressureUsage
@@ -85,7 +90,7 @@ func NewWritePressure(config BackpressureConfig) *WritePressure {
 	config = NormalizeConfig(config)
 	return &WritePressure{
 		config:       config,
-		conflicts:    map[string][]time.Time{},
+		conflicts:    map[string]conflictHistory{},
 		maxSamples:   128,
 		lastTailSize: map[string]int{},
 		lastUsage:    map[string]tenantPressureUsage{},
@@ -161,13 +166,21 @@ func (p *WritePressure) RecordObjectOperation(duration time.Duration, err error)
 }
 
 func (p *WritePressure) RecordManifestCASConflict(tenantID string) {
+	if p != nil {
+		p.RecordManifestCASConflictWithConfig(tenantID, p.Config())
+	}
+}
+
+func (p *WritePressure) RecordManifestCASConflictWithConfig(tenantID string, config BackpressureConfig) {
 	if p == nil || tenantID == "" {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
-	p.conflicts[tenantID] = append(p.trimConflictsLocked(tenantID, now), now)
+	window := NormalizeConfig(config).CASConflictWindow
+	times := p.conflictsInWindow(tenantID, now, window)
+	p.conflicts[tenantID] = conflictHistory{times: append(times, now), expires: now.Add(window)}
 }
 
 func (p *WritePressure) RecordCommitTail(tenantID string, length int) {
@@ -232,7 +245,7 @@ func (p *WritePressure) ReasonsWithConfig(tenantID string, config BackpressureCo
 		}
 	}
 	if config.CASConflictThreshold > 0 {
-		count := len(p.trimConflictsLockedWithConfigLocked(tenantID, now, config))
+		count := len(p.conflictsInWindow(tenantID, now, config.CASConflictWindow))
 		if count >= config.CASConflictThreshold {
 			reasons = append(reasons, BackpressureReason{
 				Code:      "manifest_cas_conflicts_high",
@@ -273,26 +286,22 @@ func NewError(reasons []BackpressureReason, retryAfter time.Duration) error {
 	return &BackpressureError{Reasons: reasons, RetryAfter: retryAfter}
 }
 
-func (p *WritePressure) trimConflictsLocked(tenantID string, now time.Time) []time.Time {
-	return p.trimConflictsLockedWithConfigLocked(tenantID, now, p.config)
-}
-
-func (p *WritePressure) trimConflictsLockedWithConfigLocked(tenantID string, now time.Time, config BackpressureConfig) []time.Time {
-	items := p.conflicts[tenantID]
-	if len(items) == 0 {
+func (p *WritePressure) conflictsInWindow(tenantID string, now time.Time, window time.Duration) []time.Time {
+	history, ok := p.conflicts[tenantID]
+	if !ok {
 		return nil
 	}
-	config = NormalizeConfig(config)
-	cutoff := now.Add(-config.CASConflictWindow)
+	if now.After(history.expires) {
+		delete(p.conflicts, tenantID)
+		return nil
+	}
+	items := history.times
+	cutoff := now.Add(-window)
 	start := 0
 	for start < len(items) && items[start].Before(cutoff) {
 		start++
 	}
-	if start > 0 {
-		items = append([]time.Time(nil), items[start:]...)
-		p.conflicts[tenantID] = items
-	}
-	return items
+	return items[start:]
 }
 
 func (p *WritePressure) trimObjectErrorsLocked(now time.Time, config BackpressureConfig) []time.Time {

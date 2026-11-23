@@ -28,8 +28,7 @@ Since 2.3.4: ordinary JSON snapshot export encodes one record at a
 time while retaining its immutable read view, avoiding a copied snapshot and a
 full-response JSON buffer. It still materializes the graph. Prefer the NDJSON
 snapshot endpoint for large tenants and check its final `done:true`; a stream
-without that marker is incomplete. Active streams renew a 10-minute write budget
-at each batch flush, rather than having a 10-minute total duration limit.
+without that marker is incomplete. The write deadline is fixed at 10 minutes from the start of each stream.
 
 ## Configuration
 

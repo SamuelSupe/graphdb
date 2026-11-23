@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSmallCompletionsDoNotRewriteLargePendingCheckpoint(t *testing.T) {
@@ -54,5 +55,60 @@ func TestIngestWALCoalescesStaleCheckpointRequests(t *testing.T) {
 	after, _ := os.Stat(filepath.Join(cfg.Dir, ingestWALCheckpointFile))
 	if !os.SameFile(before, after) {
 		t.Fatal("duplicate pressure requests rewrote pending checkpoint")
+	}
+}
+
+func TestRecoveryReusesCheckpointAndDrainsPendingWrites(t *testing.T) {
+	config := testIngestServiceConfig(t)
+	config.FlushInterval = time.Hour
+	config.FlushMaxRequests = 1024
+	config.WAL.AppendQueue = 2
+	store := NewTenantStore(NewMemoryStore(), "test")
+	service, err := OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lastRequest IngestRequest
+	for i := range 64 {
+		id := fmt.Sprint(i)
+		lastRequest = ingestEntityRequest(id, "host:"+id)
+		_, err = service.Accept(t.Context(), "a", lastRequest)
+		if err != nil {
+			crashIngestService(t, service)
+			t.Fatal(err)
+		}
+	}
+	if err := service.prune(t.Context()); err != nil {
+		crashIngestService(t, service)
+		t.Fatal(err)
+	}
+	crashIngestService(t, service)
+	path := filepath.Join(config.WAL.Dir, ingestWALCheckpointFile)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.FlushMaxRequests = 2
+	config.FlushInterval = time.Millisecond
+	service, err = OpenIngestService(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeIngestService(t, service)
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("reopening compacted WAL replaced the pending checkpoint")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	last, err := service.Accept(ctx, "a", lastRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Wait(ctx, last); err != nil {
+		t.Fatalf("recovered write: %v", err)
 	}
 }

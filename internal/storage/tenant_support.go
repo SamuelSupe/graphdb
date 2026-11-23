@@ -122,7 +122,7 @@ func (s *TenantStore) putManifestMetaUnchecked(ctx context.Context, tenantID str
 	}
 	next, err := s.Objects.PutConditional(ctx, s.manifestKey(tenantID), data, condition)
 	if errors.Is(err, ErrConflict) {
-		s.recordManifestCASConflict(tenantID)
+		s.recordManifestCASConflict(ctx, tenantID)
 		return ObjectMeta{}, fmt.Errorf("%w: manifest for tenant %q changed while publishing", ErrConflict, tenantID)
 	}
 	if files := s.localFileStore(); err == nil && files != nil {

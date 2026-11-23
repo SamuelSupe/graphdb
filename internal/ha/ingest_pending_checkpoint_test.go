@@ -197,3 +197,21 @@ func TestPendingRecoveryAcrossLegacyCheckpointSpillAndRollback(t *testing.T) {
 		cold(extra+1, extra+1, 0)
 	})
 }
+
+func BenchmarkPartitionOnlyFlush(b *testing.B) {
+	for _, tenants := range []int{1, 16, 64, 256} {
+		b.Run(fmt.Sprint(tenants), func(b *testing.B) {
+			cluster := &Cluster{App: &Application{pending: make(map[string]pendingAcceptance)}}
+			for i := range 1024 {
+				cluster.App.pending[fmt.Sprint(i)] = pendingAcceptance{partitioned: true, tenant: fmt.Sprint(i % tenants), requestBytes: 512}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if err := cluster.flushReady(context.Background(), true); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

@@ -290,7 +290,7 @@ func (r *Router) proxy(w http.ResponseWriter, request *http.Request, shard Shard
 			}
 		},
 		ModifyResponse: func(response *http.Response) error {
-			if response.StatusCode == http.StatusConflict || response.StatusCode >= 500 {
+			if response.StatusCode >= 500 {
 				r.forgetPlacement(tenant)
 			}
 			if response.StatusCode == http.StatusServiceUnavailable {
@@ -354,6 +354,7 @@ func (r *Router) migrationResponse(ctx context.Context, response *http.Response,
 	if len(body) > 4096 || json.Unmarshal(body, &rejection) != nil || rejection.Code != "shard_epoch_changed" || !rejection.Retryable {
 		return nil
 	}
+	r.forgetPlacement(tenant)
 	var resolution Resolution
 	if r.catalogRead(ctx, "/cluster/placement/"+url.PathEscape(tenant), &resolution) != nil || resolution.Placement.State == "active" {
 		return nil

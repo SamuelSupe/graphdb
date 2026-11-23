@@ -1254,7 +1254,7 @@ func TestFileStoreManifestCacheTracksPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	bytesCache := NewWriterObjectCache(files, WriterObjectCacheConfig{MaxBytes: 1 << 20, MaxKeys: 16})
-	bytesCache.cachePositive(store.manifestKey("a"), oldData, meta, true)
+	bytesCache.fillObject(store.manifestKey("a"), bytesCache.generation(store.manifestKey("a")), writerObjectEntry{data: oldData, hasData: true, meta: meta, hasMeta: true})
 	files.runtime.mu.Lock()
 	clear(files.runtime.manifests)
 	files.runtime.manifestBytes = 0

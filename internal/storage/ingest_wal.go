@@ -175,10 +175,11 @@ type ingestWALWriteFile interface {
 }
 
 type IngestWAL struct {
-	checkpointGeneration atomic.Uint64
-	recoveredLSN         uint64
-	config               IngestWALConfig
-	lockFile             *os.File
+	checkpointGeneration         atomic.Uint64
+	recoveredLSN                 uint64
+	recoveredSegmentsNeedPruning bool
+	config                       IngestWALConfig
+	lockFile                     *os.File
 
 	appendCh chan ingestWALAppendRequest
 	pruneCh  chan ingestWALPruneRequest
@@ -226,14 +227,15 @@ func OpenIngestWAL(config IngestWALConfig, replay func(IngestWALRecord) error) (
 		return nil, err
 	}
 	wal := &IngestWAL{
-		recoveredLSN: nextLSN - 1,
-		config:       config,
-		lockFile:     lockFile,
-		appendCh:     make(chan ingestWALAppendRequest, config.AppendQueue),
-		pruneCh:      make(chan ingestWALPruneRequest),
-		closeCh:      make(chan struct{}),
-		done:         make(chan struct{}),
-		ready:        make(chan error, 1),
+		recoveredLSN:                 nextLSN - 1,
+		recoveredSegmentsNeedPruning: len(segments) > 1 || (len(segments) == 1 && segments[0].size > 0),
+		config:                       config,
+		lockFile:                     lockFile,
+		appendCh:                     make(chan ingestWALAppendRequest, config.AppendQueue),
+		pruneCh:                      make(chan ingestWALPruneRequest),
+		closeCh:                      make(chan struct{}),
+		done:                         make(chan struct{}),
+		ready:                        make(chan error, 1),
 	}
 	go wal.run(segments, nextLSN, totalBytes)
 	if err := <-wal.ready; err != nil {

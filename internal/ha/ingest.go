@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -475,46 +477,9 @@ func (c *Cluster) flushPending(ctx context.Context) (err error) {
 	return c.flushPendingTenant(ctx, "")
 }
 
-func (c *Cluster) flushPendingTenant(ctx context.Context, tenant string) (err error) {
-	finish := c.metrics.Start("ingest_flush_poll")
-	defer func() { finish(err) }()
-	queue, err := c.App.pendingSnapshot(ctx)
-	if err != nil {
-		return err
-	}
-	var requests []pendingFlushRequest
-	for key, record := range queue {
-		if record.partitioned {
-			continue
-		}
-		if tenant != "" && record.tenant != tenant {
-			continue
-		}
-		requests = append(requests, pendingFlushRequest{key, record})
-	}
-	sort.Slice(requests, func(i, j int) bool { return requests[i].record.index < requests[j].record.index })
-	if len(requests) == 0 {
-		return nil
-	}
-
-	var failures error
-	for len(requests) > 0 {
-		selected := requests[0].record.tenant
-		var group, remaining []pendingFlushRequest
-		for _, request := range requests {
-			if request.record.tenant == selected {
-				group = append(group, request)
-			} else {
-				remaining = append(remaining, request)
-			}
-		}
-		failures = errors.Join(failures, c.flushPendingBatch(ctx, group))
-		if ctx.Err() != nil {
-			return errors.Join(failures, ctx.Err())
-		}
-		requests = remaining
-	}
-	return failures
+// An explicit drain publishes one bounded batch per selected tenant.
+func (c *Cluster) flushPendingTenant(ctx context.Context, tenant string) error {
+	return c.flushQueues(ctx, tenant, true, true)
 }
 
 type pendingFlushRequest struct {
@@ -545,17 +510,8 @@ func (c *Cluster) flushPendingBatch(ctx context.Context, requests []pendingFlush
 	if err != nil {
 		return err
 	}
-	var size int64
-	generation := requests[0].record.generation
-	for _, pending := range requests {
-		if pending.record.tenant != cmd.Tenant || pending.record.generation != generation {
-			continue
-		}
-		if len(cmd.IDs) > 0 && (len(cmd.IDs) >= max(c.FlushMaxRequests, 1) || size+pending.record.requestBytes > c.FlushMaxBytes) {
-			break
-		}
-		cmd.IDs = append(cmd.IDs, pending.key)
-		size += pending.record.requestBytes
+	for _, request := range requests {
+		cmd.IDs = append(cmd.IDs, request.key)
 	}
 	_, err = c.propose(ctx, cmd)
 	return err
@@ -564,44 +520,56 @@ func (c *Cluster) flushPendingBatch(ctx context.Context, requests []pendingFlush
 // A bounded queue snapshot drives each pass. Failed tenants retain their WAL
 // and cannot prevent other tenants from publishing; new arrivals wake another pass.
 func (c *Cluster) flushReady(ctx context.Context, all bool) error {
-	queue, err := c.App.pendingSnapshot(ctx)
-	if err != nil {
+	return c.flushQueues(ctx, "", all, false)
+}
+
+func (c *Cluster) flushQueues(ctx context.Context, tenant string, all, oneBatch bool) (err error) {
+	finish := c.metrics.Start("ingest_flush_poll")
+	defer func() { finish(err) }()
+	groups, err := c.App.pendingFlushGroups(ctx, tenant)
+	if err != nil || len(groups) == 0 {
 		return err
 	}
-	counts := make(map[string]int)
-	bytes := make(map[string]int64)
-	for _, r := range queue {
-		counts[r.tenant]++
-		bytes[r.tenant] += r.requestBytes
-	}
-	tenants := make([]string, 0, len(counts))
-	for tenant := range counts {
-		tenants = append(tenants, tenant)
-	}
-	sort.Strings(tenants)
 	var failures error
-	for _, tenant := range tenants {
-		for counts[tenant] > 0 && (all || counts[tenant] >= max(c.FlushMaxRequests, 1) || bytes[tenant] >= max(c.FlushMaxBytes, 1)) {
-			if err := c.flushPendingTenant(ctx, tenant); err != nil {
+	for _, tenant := range slices.Sorted(maps.Keys(groups)) {
+		requests := groups[tenant]
+		sort.Slice(requests, func(i, j int) bool { return requests[i].record.index < requests[j].record.index })
+		var bytes int64
+		for _, r := range requests {
+			bytes += r.record.requestBytes
+		}
+		limit := max(c.FlushMaxRequests, 1)
+		for len(requests) > 0 && (all || len(requests) >= limit || bytes >= max(c.FlushMaxBytes, 1)) {
+			count, size := 1, requests[0].record.requestBytes
+			for count < len(requests) && count < limit {
+				next := requests[count].record
+				if next.generation != requests[0].record.generation || size+next.requestBytes > c.FlushMaxBytes {
+					break
+				}
+				count++
+				size += next.requestBytes
+			}
+			if err := c.flushPendingBatch(ctx, requests[:count]); err != nil {
 				failures = errors.Join(failures, err)
 				break
 			}
-			next, err := c.App.pendingSnapshot(ctx)
-			if err != nil {
-				return errors.Join(failures, err)
-			}
-			count := 0
-			var size int64
-			for _, r := range next {
-				if r.tenant == tenant {
-					count++
-					size += r.requestBytes
-				}
-			}
-			if count >= counts[tenant] {
+			if oneBatch || len(requests) == count {
 				break
 			}
-			counts[tenant], bytes[tenant] = count, size
+			// A fenced proposal can return a business response without removing a receipt.
+			// Do not bypass its batch until the application has published it.
+			c.App.mu.RLock()
+			_, stillPending := c.App.pending[requests[0].key]
+			ready := c.App.pending != nil && !stillPending
+			c.App.mu.RUnlock()
+			if !ready {
+				break
+			}
+			requests = requests[count:]
+			bytes -= size
+		}
+		if ctx.Err() != nil {
+			return errors.Join(failures, ctx.Err())
 		}
 	}
 	return failures
