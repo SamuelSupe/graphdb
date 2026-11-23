@@ -91,6 +91,9 @@ curl -sS "$READER/v1/export/snapshot/stream?inline=true" \
 
 ## 一致性
 
+流式读取实体、边和快照时，检查最后一行是否包含 `done: true`。读取响应体出错
+或缺少最终记录时，应将该流视为不完整。
+
 在特定写入后导出时使用 `min_version`：
 
 ```sh

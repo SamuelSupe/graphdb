@@ -21,7 +21,9 @@ type raftReadResponse struct {
 	mu          sync.Mutex
 	started     bool
 	interrupted bool
+	finished    bool
 	deadline    time.Time
+	ndjson      bool
 }
 
 func (w *raftReadResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -29,7 +31,7 @@ func (w *raftReadResponse) Unwrap() http.ResponseWriter { return w.ResponseWrite
 func (w *raftReadResponse) interrupt() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.interrupted {
+	if w.interrupted || w.finished {
 		return
 	}
 	w.interrupted = true
@@ -97,8 +99,11 @@ func (w *raftReadResponse) start() error {
 		}
 		return errRaftReadInterrupted
 	}
-	if !started && w.status != 0 {
-		w.ResponseWriter.WriteHeader(w.status)
+	if !started {
+		w.ndjson = w.Header().Get("Content-Type") == "application/x-ndjson"
+		if w.status != 0 {
+			w.ResponseWriter.WriteHeader(w.status)
+		}
 	}
 	return nil
 }
@@ -111,7 +116,14 @@ func (w *raftReadResponse) limitWriteTime() {
 }
 
 func (w *raftReadResponse) finish() {
-	if !w.started {
+	w.mu.Lock()
+	w.finished = true
+	started, interrupted := w.started, w.interrupted
+	w.mu.Unlock()
+	if !started {
 		_ = w.start()
+	} else if interrupted && w.ndjson {
+		// A normal HTTP EOF would let clients accept a stream missing its final record.
+		panic(http.ErrAbortHandler)
 	}
 }

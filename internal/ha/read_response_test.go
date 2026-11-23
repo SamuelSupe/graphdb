@@ -36,6 +36,48 @@ func (s slowRaftReads) ListPage(ctx context.Context, prefix, after string, limit
 	return s.FileStore.ListPage(ctx, prefix, after, limit)
 }
 
+func TestHAInterruptedStreamFailsWhileReadingBody(t *testing.T) {
+	group := newTestCluster(t, false)
+	leader := group.leader(-1)
+	group.mustRequest(leader, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-a"}`, http.StatusOK)
+	const firstLine = "{\"version\":1}\n"
+	api := &httpapi.Server{Store: group.nodes[leader].store, Mode: "all", Cluster: controlledReadGate{
+		Cluster: group.nodes[leader].cluster,
+		read: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			if _, err := io.WriteString(w, firstLine); err != nil {
+				return
+			}
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				return
+			}
+			<-r.Context().Done()
+		}),
+	}}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/query/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	first := make([]byte, len(firstLine))
+	if _, err := io.ReadFull(res.Body, first); res.StatusCode != http.StatusOK || err != nil || string(first) != firstLine {
+		t.Fatalf("stream start: status=%d data=%q err=%v", res.StatusCode, first, err)
+	}
+	group.mustRequest(leader, http.MethodPost, "/v1/tenants", `{"tenant_id":"tenant-b"}`, http.StatusOK, 3*time.Second)
+	if body, err := io.ReadAll(res.Body); err != io.ErrUnexpectedEOF {
+		t.Fatalf("interrupted stream must report a truncated HTTP body: body=%q err=%v", body, err)
+	}
+}
+
 func TestHAGCCompletesWithSlowReadsThroughHAProxy(t *testing.T) {
 	haproxy, err := exec.LookPath("haproxy")
 	if err != nil {

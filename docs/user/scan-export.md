@@ -94,6 +94,10 @@ curl -sS "$READER/v1/export/snapshot/stream?inline=true" \
 
 ## Consistency
 
+For entity scans, edge scans, and snapshot exports, check for a final
+`done: true` record. A body read error or a missing final record means the
+stream is incomplete.
+
 Use `min_version` when exporting after a specific write:
 
 ```sh

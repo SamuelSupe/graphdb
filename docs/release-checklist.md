@@ -4,9 +4,17 @@ Complete this checklist against the exact candidate binary and retained evidence
 A passing short test does not establish a performance claim. This is the default
 checklist, not a record that every published version passed every item.
 
+## 2.6.2 qualification
+
+The [release notes](../release/local-disk.md) record the interrupted NDJSON
+regression and the three-node HAProxy checks. The
+[tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.2)
+runs the release gates, verifies the Linux AMD64 and ARM64 archives on native
+runners, and packages the gate evidence.
+
 ## 2.6.1 qualification
 
-The [release notes](../release/local-disk.md) describe the Raft read interruption
+The [2.6.1 release notes](https://github.com/SamuelSupe/graphdb/blob/v2.6.1/release/local-disk.md) describe the Raft read interruption
 fix and three-node HAProxy regression. The
 [tag workflow](https://github.com/SamuelSupe/graphdb/actions/workflows/release.yml?query=branch%3Av2.6.1)
 runs the release gates and verifies the Linux AMD64 and ARM64 archives on native

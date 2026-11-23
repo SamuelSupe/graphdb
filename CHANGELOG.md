@@ -5,6 +5,12 @@ versioning; release tags and binaries expose the exact build commit and date.
 
 ## [Unreleased]
 
+## [2.6.2] - 2026-11-24
+
+- Abort NDJSON responses interrupted by Raft maintenance after streaming begins
+  so clients can detect incomplete results. Keep the retryable HTTP 503 for
+  reads interrupted before the response starts and the deadline for blocked writes.
+
 ## [2.6.1] - 2026-11-18
 
 - Return a complete retryable HTTP 503 when Raft maintenance interrupts a read

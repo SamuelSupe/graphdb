@@ -263,6 +263,7 @@ cursor 视为不透明值。
 
 使用 `POST /v1/query/stream` 或 `POST /v1/query/gql/stream` 获取
 NDJSON。响应依次输出 meta 行、结果行和最终 done 行。
+读取响应体出错或缺少最终 done 行时，应将结果视为不完整。
 
 ## Explain 与 Profile
 

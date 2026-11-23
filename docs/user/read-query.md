@@ -266,6 +266,7 @@ version even when they contain only an offset. Prefer the opaque returned cursor
 
 Use `POST /v1/query/stream` or `POST /v1/query/gql/stream` for NDJSON output.
 The response emits one meta row, result rows, then a final done row.
+Treat a body read error or a missing final done row as an incomplete result.
 
 ## Explain And Profile
 
